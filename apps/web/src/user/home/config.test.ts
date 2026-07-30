@@ -6,6 +6,7 @@ import {
   COUNT_LIMITS,
   DEFAULT_LAYOUT,
   HOME_CONFIG_STORAGE_KEY,
+  clampVariant,
   moveWidget,
   moveWidgetToSlot,
   parseHomeConfig,
@@ -16,6 +17,8 @@ import {
   setWidgetSize,
   WIDGET_SIZE_RULES,
   WIDGET_TYPES,
+  WIDGET_VARIANT_RULES,
+  widgetVariant,
   writeHomeConfig,
   type HomeConfig,
   type WidgetType,
@@ -524,5 +527,156 @@ describe('moveWidgetToSlot', () => {
   test('leaves the original board untouched', () => {
     moveWidgetToSlot(board, 'w0', 4);
     expect(types(board)).toEqual(['net-worth', 'news', 'allocation', 'upcoming']);
+  });
+});
+
+// ─── Display variants ────────────────────────────────────────────────────────
+
+/**
+ * A `variant` is the one settings key that **clamps** instead of dropping. The
+ * reason is the rollback case: a board written by a build that had a third form
+ * must still render as something, and "the type's default form" is the only
+ * honest answer. Dropping would be equivalent here, but clamping keeps the
+ * invariant that a variant-capable widget always has a resolvable form.
+ */
+describe('clampVariant', () => {
+  test('keeps a form the type actually offers', () => {
+    expect(clampVariant('cashflow-chart', 'columns')).toBe('columns');
+    expect(clampVariant('allocation', 'bars')).toBe('bars');
+  });
+
+  test.each([
+    ['a form from a newer build', 'sunburst'],
+    ['another type’s form', 'donut'],
+    ['not a string', 7],
+    ['empty', ''],
+  ])('falls back to the type’s default — %s', (_label, value) => {
+    expect(clampVariant('cashflow-chart', value)).toBe(
+      WIDGET_VARIANT_RULES['cashflow-chart']!.default,
+    );
+  });
+
+  test('a type with no forms has none to clamp to', () => {
+    // `attention` is a plain list — offering it a "display" would be a lie.
+    expect(clampVariant('attention', 'bars')).toBeUndefined();
+  });
+
+  test('every declared default is one of that type’s own allowed forms', () => {
+    const inconsistent = Object.entries(WIDGET_VARIANT_RULES).filter(
+      ([, rules]) => rules !== undefined && !rules.allowed.includes(rules.default),
+    );
+    expect(inconsistent).toEqual([]);
+  });
+
+  test('no type declares a single form, which would be a picker with one option', () => {
+    const pointless = Object.entries(WIDGET_VARIANT_RULES).filter(
+      ([, rules]) => (rules?.allowed.length ?? 0) < 2,
+    );
+    expect(pointless).toEqual([]);
+  });
+});
+
+describe('widgetVariant', () => {
+  test('prefers the stored form over the default', () => {
+    expect(widgetVariant('allocation', { variant: 'bars' })).toBe('bars');
+  });
+
+  test('falls back to the type’s default when unset', () => {
+    expect(widgetVariant('allocation', {})).toBe('donut');
+  });
+
+  test('is undefined for a type with no forms', () => {
+    expect(widgetVariant('attention', {})).toBeUndefined();
+  });
+});
+
+describe('variant parsing', () => {
+  function variantOf(type: WidgetType, settings: unknown): string | undefined {
+    return parseHomeConfig(
+      JSON.stringify({ version: 1, widgets: [{ id: 'a', type, size: 'm', settings }] }),
+    ).widgets[0]?.settings.variant;
+  }
+
+  test('round-trips a known form', () => {
+    expect(variantOf('cashflow-chart', { variant: 'columns' })).toBe('columns');
+  });
+
+  test('an unknown form is stored back as the type’s default', () => {
+    expect(variantOf('cashflow-chart', { variant: 'treemap' })).toBe('net');
+  });
+
+  test('absent stays absent — the widget resolves its own default', () => {
+    expect(variantOf('cashflow-chart', {})).toBeUndefined();
+  });
+
+  test('a form stored against a type that has none is dropped', () => {
+    expect(variantOf('attention', { variant: 'bars' })).toBeUndefined();
+  });
+
+  test('parsing still never writes', () => {
+    const raw = JSON.stringify({
+      version: 1,
+      widgets: [{ id: 'a', type: 'allocation', size: 'm', settings: { variant: 'sunburst' } }],
+    });
+    localStorage.setItem(HOME_CONFIG_STORAGE_KEY, raw);
+    readHomeConfig();
+    expect(localStorage.getItem(HOME_CONFIG_STORAGE_KEY)).toBe(raw);
+  });
+});
+
+// ─── Adding at a position ────────────────────────────────────────────────────
+
+/**
+ * The ⊕ on an insertion line hands its slot straight to `addWidget`, in the same
+ * numbering the placement lines use. Anything unusable degrades to appending,
+ * which is what the header's own Add button relies on.
+ */
+describe('addWidget at a slot', () => {
+  const board: HomeConfig = {
+    version: 1,
+    widgets: (['net-worth', 'news', 'allocation'] as const).map((type, index) => ({
+      id: `w${index}`,
+      type,
+      size: WIDGET_SIZE_RULES[type].default,
+      settings: {},
+    })),
+  };
+
+  test('appends when no slot is given', () => {
+    expect(types(addWidget(board, 'alerts', {}))).toEqual([
+      'net-worth',
+      'news',
+      'allocation',
+      'alerts',
+    ]);
+  });
+
+  test.each([
+    ['the very start', 0, ['alerts', 'net-worth', 'news', 'allocation']],
+    ['the middle', 1, ['net-worth', 'alerts', 'news', 'allocation']],
+    ['before the last', 2, ['net-worth', 'news', 'alerts', 'allocation']],
+    ['the end slot', 3, ['net-worth', 'news', 'allocation', 'alerts']],
+  ])('inserts at %s', (_label, at, expected) => {
+    expect(types(addWidget(board, 'alerts', {}, at))).toEqual(expected);
+  });
+
+  test.each([
+    ['negative', -1],
+    ['past the end slot', 9],
+    ['fractional', 1.5],
+    ['NaN', Number.NaN],
+  ])('an unusable slot (%s) appends rather than throwing away the widget', (_label, at) => {
+    expect(types(addWidget(board, 'alerts', {}, at)).at(-1)).toBe('alerts');
+    expect(addWidget(board, 'alerts', {}, at).widgets).toHaveLength(4);
+  });
+
+  test('carries the type’s default settings in and leaves the board alone', () => {
+    const next = addWidget(board, 'liquidity', { scope: 'all', variant: 'bar' }, 0);
+    expect(next.widgets[0]).toMatchObject({
+      type: 'liquidity',
+      size: WIDGET_SIZE_RULES.liquidity.default,
+      settings: { scope: 'all', variant: 'bar' },
+    });
+    expect(board.widgets).toHaveLength(3);
   });
 });

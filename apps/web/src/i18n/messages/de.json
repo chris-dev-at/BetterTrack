@@ -3992,7 +3992,35 @@
       },
       "placeBefore": "Vor {{title}} einfügen",
       "placeEnd": "Am Ende einfügen",
-      "placeCancel": "{{title}} nicht verschieben"
+      "placeCancel": "{{title}} nicht verschieben",
+      "moveHere": "Hierhin",
+      "addHere": "Hier hinzufügen",
+      "addBefore": "Widget vor {{title}} hinzufügen",
+      "addEnd": "Widget am Ende hinzufügen",
+      "variantLabel": "Darstellung",
+      "variantAriaLabel": "Darstellung von {{title}}",
+      "variant": {
+        "cashflow-chart": {
+          "net": "Netto",
+          "columns": "Ein / aus"
+        },
+        "allocation": {
+          "donut": "Ring",
+          "bars": "Balken"
+        },
+        "top-movers": {
+          "list": "Liste",
+          "chips": "Chips"
+        },
+        "portfolio-cards": {
+          "cards": "Karten",
+          "table": "Tabelle"
+        },
+        "liquidity": {
+          "ring": "Ring",
+          "bar": "Balken"
+        }
+      }
     },
     "widgets": {
       "range": {
@@ -4031,7 +4059,9 @@
         "empty": "Noch keine Cashflow-Daten.",
         "ariaLabel": "Netto-Cashflow pro Monat",
         "incomeWord": "rein",
-        "spentWord": "raus"
+        "spentWord": "raus",
+        "netWord": "netto",
+        "columnsAriaLabel": "Einnahmen und Ausgaben pro Monat"
       },
       "allocation": {
         "title": "Aufteilung",
@@ -4056,7 +4086,11 @@
         "title": "Portfolios",
         "description": "Alle Portfolios mit Wert und Verlauf",
         "empty": "Noch keine Portfolios.",
-        "sparkAriaLabel": "Verlauf von {{name}} über einen Monat"
+        "sparkAriaLabel": "Verlauf von {{name}} über einen Monat",
+        "colName": "Portfolio",
+        "colValue": "Wert",
+        "colToday": "Heute",
+        "colShare": "Anteil"
       },
       "news": {
         "title": "News",
@@ -4128,6 +4162,19 @@
         "armed": "Scharf",
         "triggered": "Ausgelöst",
         "empty": "Noch keine Alarme."
+      },
+      "liquidity": {
+        "title": "Liquidität",
+        "description": "Wie viel davon Cash ist statt investiert",
+        "empty": "Noch nichts zu messen.",
+        "ofWord": "von"
+      },
+      "concentration": {
+        "title": "Konzentration",
+        "description": "Wie viel an der größten Position hängt",
+        "empty": "Noch keine Positionen zum Messen.",
+        "inWord": "in",
+        "topN": "Top {{n}} zusammen: {{pct}}"
       }
     }
   },

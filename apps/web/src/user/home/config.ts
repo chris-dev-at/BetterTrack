@@ -41,6 +41,8 @@ export const HOME_CONFIG_VERSION = 1;
 export const WIDGET_TYPES = [
   'net-worth',
   'today-change',
+  'liquidity',
+  'concentration',
   'performance-chart',
   'net-worth-history',
   'cashflow-chart',
@@ -90,6 +92,13 @@ export interface WidgetSettings {
    * Purely a display cache — never trusted as identity.
    */
   assetLabel?: string;
+  /**
+   * Which display form the widget uses — the same question answered a different
+   * way (a donut vs. a ranked bar list, a net area vs. in/out columns). The
+   * vocabulary is per type; see {@link WIDGET_VARIANT_RULES}, which is also what
+   * validates a stored value.
+   */
+  variant?: string;
 }
 
 /**
@@ -144,6 +153,40 @@ export const WIDGET_SIZE_RULES: Record<
   // to fill a full-width band with.
   alerts: { allowed: ['s', 'm'], default: 's' },
   shortcuts: { allowed: ['m', 'l'], default: 'l' },
+  // Single-ratio indicators: a gauge and two numbers. They exist to sit in a
+  // column beside something bigger, so they never span the full width.
+  liquidity: { allowed: ['s', 'm'], default: 's' },
+  concentration: { allowed: ['s', 'm'], default: 's' },
+};
+
+/**
+ * The display forms each type offers, and which it starts in.
+ *
+ * A **variant** answers the same question a different way — the cash-flow chart
+ * as a net area or as per-month in/out columns, allocation as a donut or as a
+ * ranked bar list. It is deliberately not a place for skins: a type only appears
+ * here when a second form genuinely reads better for some boards.
+ *
+ * Lives beside {@link WIDGET_SIZE_RULES} and for the same reason — it is what
+ * validates a *stored* variant, so it must be reachable without importing any
+ * React component. A type absent from this table has no variants, and a `variant`
+ * setting stored against it is dropped on read.
+ */
+export const WIDGET_VARIANT_RULES: Partial<
+  Record<WidgetType, { allowed: readonly string[]; default: string }>
+> = {
+  // "Did I save or burn money" (net polarity) vs. "what came in and what went
+  // out each month" (the two gross figures side by side).
+  'cashflow-chart': { allowed: ['net', 'columns'], default: 'net' },
+  // Shape of the whole vs. a ranked list you can read exact shares off.
+  allocation: { allowed: ['donut', 'bars'], default: 'donut' },
+  // Two labelled columns vs. a dense strip of chips that fits a small tile.
+  'top-movers': { allowed: ['list', 'chips'], default: 'list' },
+  // One card per portfolio vs. a table that compares them line by line.
+  'portfolio-cards': { allowed: ['cards', 'table'], default: 'cards' },
+  // The same ratio as an arc or as a single bar — the bar survives size `s`
+  // beside a long number better than a ring does.
+  liquidity: { allowed: ['ring', 'bar'], default: 'ring' },
 };
 
 const WIDGET_TYPE_SET: ReadonlySet<string> = new Set<string>(WIDGET_TYPES);
@@ -209,6 +252,26 @@ export function clampSize(type: WidgetType, size: unknown): WidgetSize {
 }
 
 /**
+ * The variant a type should actually render, given whatever was stored.
+ *
+ * Unlike {@link clampSize} this can answer "none": a type with no variants has no
+ * default to fall back to, and a `variant` stored against it is meaningless. A
+ * *known* type with an *unknown* variant degrades to that type's default — the
+ * rollback case, where a form this build has never heard of must still render as
+ * something rather than blank.
+ */
+export function clampVariant(type: WidgetType, variant: unknown): string | undefined {
+  const rules = WIDGET_VARIANT_RULES[type];
+  if (rules === undefined) return undefined;
+  return typeof variant === 'string' && rules.allowed.includes(variant) ? variant : rules.default;
+}
+
+/** The variant a widget instance renders in — its stored one, or its type's default. */
+export function widgetVariant(type: WidgetType, settings: WidgetSettings): string | undefined {
+  return settings.variant ?? WIDGET_VARIANT_RULES[type]?.default;
+}
+
+/**
  * Keep only the settings keys this build understands, each type-checked. Unknown
  * keys are dropped rather than carried through, so a newer build's settings can
  * never reach a widget that would misread them.
@@ -216,9 +279,10 @@ export function clampSize(type: WidgetType, size: unknown): WidgetSize {
  * An out-of-range or wrong-typed *known* key is dropped too, never coerced: the
  * widget then falls back to its own documented default, which is a state it is
  * built to render. Silently clamping 9 000 rows to 50 would instead hand the
- * widget a number the user never chose.
+ * widget a number the user never chose. `variant` is the exception and clamps
+ * rather than drops — see {@link clampVariant}.
  */
-function parseSettings(raw: unknown): WidgetSettings {
+function parseSettings(raw: unknown, type: WidgetType): WidgetSettings {
   if (!isRecord(raw)) return {};
   const settings: WidgetSettings = {};
   if (typeof raw.scope === 'string' && raw.scope.length > 0) settings.scope = raw.scope;
@@ -239,6 +303,10 @@ function parseSettings(raw: unknown): WidgetSettings {
   if (typeof raw.assetLabel === 'string' && raw.assetLabel.length > 0) {
     settings.assetLabel = raw.assetLabel;
   }
+  if (raw.variant !== undefined) {
+    const variant = clampVariant(type, raw.variant);
+    if (variant !== undefined) settings.variant = variant;
+  }
   return settings;
 }
 
@@ -254,7 +322,7 @@ function parseWidget(raw: unknown, index: number): WidgetConfig | null {
     id,
     type: widgetType,
     size: clampSize(widgetType, raw.size),
-    settings: parseSettings(raw.settings),
+    settings: parseSettings(raw.settings, widgetType),
   };
 }
 
@@ -323,24 +391,35 @@ export function clearHomeConfig(): void {
 
 // ─── Board edits (pure — the page owns the state, these own the rules) ───────
 
-/** Append a widget of `type` with its default size and settings. */
+/**
+ * Add a widget of `type` with its default size and settings.
+ *
+ * `at` is an insertion slot in the same numbering the placement lines use (slot
+ * `i` = "before the widget currently at `i`", `widgets.length` = at the end), so
+ * the ⊕ on a line can hand straight through what the user pointed at. Omitted or
+ * out of range ⇒ appended, which is what the header's "Add widget" wants: the new
+ * widget lands at the bottom of the page the user just scrolled through rather
+ * than silently in the middle.
+ */
 export function addWidget(
   config: HomeConfig,
   type: WidgetType,
   defaultSettings: WidgetSettings,
+  at?: number,
 ): HomeConfig {
-  return {
-    ...config,
-    widgets: [
-      ...config.widgets,
-      {
-        id: newWidgetId(type),
-        type,
-        size: WIDGET_SIZE_RULES[type].default,
-        settings: { ...defaultSettings },
-      },
-    ],
+  const entry: WidgetConfig = {
+    id: newWidgetId(type),
+    type,
+    size: WIDGET_SIZE_RULES[type].default,
+    settings: { ...defaultSettings },
   };
+  const slot =
+    at !== undefined && Number.isInteger(at) && at >= 0 && at <= config.widgets.length
+      ? at
+      : config.widgets.length;
+  const widgets = [...config.widgets];
+  widgets.splice(slot, 0, entry);
+  return { ...config, widgets };
 }
 
 export function removeWidget(config: HomeConfig, id: string): HomeConfig {

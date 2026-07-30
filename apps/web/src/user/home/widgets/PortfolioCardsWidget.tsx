@@ -2,22 +2,29 @@ import { Link } from 'react-router-dom';
 import { useQueries } from '@tanstack/react-query';
 
 import { useT } from '../../../i18n';
+import { EM_DASH, formatPercent } from '../../../lib/format';
 import { getPortfolioHistory } from '../../../lib/portfolioApi';
 import { MAIN_SERIES } from '../../../ui/charts/palette';
 import { MoneyText } from '../../../ui';
 import { Badge, Empty, SkeletonBlock } from '../../../ui/origin';
 import { ACTIVE_PORTFOLIO_PARAM } from '../../portfolio/PortfolioSwitcher';
+import { widgetVariant } from '../config';
 import { usePortfolioSummaries } from '../homeData';
 import type { WidgetProps } from './types';
 
 /**
- * Every active portfolio as one compact card — the "overview over all my
- * portfolios" the owner asked for. Name, current value, today's move and a
- * month-shaped sparkline; the whole card opens that portfolio.
- *
- * Both reads reuse the portfolio pages' cache entries (`['portfolio', id]` and
+ * Every active portfolio — the "overview over all my portfolios" the owner asked
+ * for. Both reads reuse the portfolio pages' cache entries (`['portfolio', id]` and
  * `['portfolio', id, 'history', '1M']`), so a user who also keeps a performance
  * widget on 1M pays for the series once.
+ *
+ * **Two forms.** `cards` (default) gives each portfolio a tile with its value,
+ * today's move and a month-shaped sparkline — browsable, and it survives a narrow
+ * column. `table` drops the sparklines for aligned columns plus each portfolio's
+ * **share of the total**, which is the comparison a card grid cannot make: figures
+ * in separate tiles are read one at a time, figures in a column are read against
+ * each other. The share is computed here rather than fetched — it is simply each
+ * portfolio's total over the sum of the totals already on screen.
  */
 
 /** The sparkline window. Matches the portfolio page's default range. */
@@ -69,7 +76,7 @@ function MiniSpark({ values, label }: { values: readonly number[]; label: string
   );
 }
 
-export function PortfolioCardsWidget({ portfolios, portfoliosLoading }: WidgetProps) {
+export function PortfolioCardsWidget({ settings, portfolios, portfoliosLoading }: WidgetProps) {
   const t = useT();
   const summaries = usePortfolioSummaries(portfolios);
   const histories = useQueries({
@@ -91,6 +98,59 @@ export function PortfolioCardsWidget({ portfolios, portfoliosLoading }: WidgetPr
   }
 
   if (portfolios.length === 0) return <Empty title={t('home.widgets.portfolioCards.empty')} />;
+
+  if (widgetVariant('portfolio-cards', settings) === 'table') {
+    const totalValue = portfolios.reduce(
+      (sum, _portfolio, index) => sum + (summaries[index]?.data?.totals.totalValueEur ?? 0),
+      0,
+    );
+    return (
+      <table className="bt-table bt-home-ptable">
+        <thead>
+          <tr>
+            <th scope="col">{t('home.widgets.portfolioCards.colName')}</th>
+            <th className="is-num" scope="col">
+              {t('home.widgets.portfolioCards.colValue')}
+            </th>
+            <th className="is-num" scope="col">
+              {t('home.widgets.portfolioCards.colToday')}
+            </th>
+            <th className="is-num" scope="col">
+              {t('home.widgets.portfolioCards.colShare')}
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {portfolios.map((portfolio, index) => {
+            const totals = summaries[index]?.data?.totals ?? null;
+            return (
+              <tr key={portfolio.id}>
+                <td>
+                  <Link
+                    className="bt-home-txn__link"
+                    to={`/portfolio?${ACTIVE_PORTFOLIO_PARAM}=${portfolio.id}`}
+                  >
+                    {portfolio.name}
+                  </Link>
+                </td>
+                <td className="is-num">
+                  {totals === null ? EM_DASH : <MoneyText amount={totals.totalValueEur} />}
+                </td>
+                <td className="is-num">
+                  {totals === null ? EM_DASH : <MoneyText amount={totals.dayChangeEur} signed />}
+                </td>
+                <td className="is-num bt-muted">
+                  {totals === null || totalValue <= 0
+                    ? EM_DASH
+                    : formatPercent((totals.totalValueEur / totalValue) * 100)}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    );
+  }
 
   return (
     <div className="bt-home-pcards">

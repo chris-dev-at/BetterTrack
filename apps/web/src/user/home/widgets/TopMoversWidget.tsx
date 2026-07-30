@@ -7,9 +7,9 @@ import { cx } from '../../../lib/cx';
 import { formatSignedPercent } from '../../../lib/format';
 import { MoneyText } from '../../../ui';
 import { Empty, Seg, SkeletonBlock } from '../../../ui/origin';
+import { widgetVariant, type MoverMetric } from '../config';
 import { usePortfolioSummaries } from '../homeData';
 import { mergeHoldings } from '../holdings';
-import type { MoverMetric } from '../config';
 import type { WidgetProps } from './types';
 
 /**
@@ -19,6 +19,12 @@ import type { WidgetProps } from './types';
  * At size S only the climbers list is shown (that is the question people
  * actually ask a small tile); M and L show both columns. The metric toggle is
  * direct manipulation and persists into the widget's settings.
+ *
+ * **Two forms.** `list` (default) gives each mover a row with its name and the
+ * money delta beside the percentage — the readable version. `chips` drops to
+ * symbol + percentage only, wrapped inline, which fits roughly three times as many
+ * movers into the same tile: the right trade when the board is a dashboard and the
+ * question is just "what is moving today?". Both rank identically.
  */
 
 const LIMIT = 4;
@@ -111,6 +117,8 @@ export function TopMoversWidget({
     .sort((a, b) => a.pct - b.pct)
     .slice(0, LIMIT);
 
+  const chips = widgetVariant('top-movers', settings) === 'chips';
+
   return (
     <div>
       <div className="bt-home-movers__bar">
@@ -124,12 +132,43 @@ export function TopMoversWidget({
           value={metric}
         />
       </div>
-      <div className="bt-home-movers">
-        <MoverList items={climbers} title={t('home.widgets.topMovers.climbers')} />
-        {size === 's' ? null : (
-          <MoverList items={fallers} title={t('home.widgets.topMovers.fallers')} />
-        )}
-      </div>
+      {chips ? (
+        <MoverChips items={[...climbers, ...[...fallers].reverse()]} />
+      ) : (
+        <div className="bt-home-movers">
+          <MoverList items={climbers} title={t('home.widgets.topMovers.climbers')} />
+          {size === 's' ? null : (
+            <MoverList items={fallers} title={t('home.widgets.topMovers.fallers')} />
+          )}
+        </div>
+      )}
     </div>
+  );
+}
+
+/**
+ * The compact form: one chip per mover, best first, wrapped. Ordered climbers-down
+ * then fallers-up so the strip reads as a single ranking from best to worst rather
+ * than as two lists that happen to be adjacent.
+ */
+function MoverChips({ items }: { items: readonly Ranked[] }) {
+  const t = useT();
+  if (items.length === 0) return <p className="bt-meta">{t('home.widgets.topMovers.none')}</p>;
+
+  return (
+    <ul className="bt-home-chips">
+      {items.map(({ holding, pct }) => (
+        <li key={holding.asset.id}>
+          <Link
+            className={cx('bt-home-chip', pct > 0 ? 'is-pos' : pct < 0 ? 'is-neg' : undefined)}
+            title={holding.asset.name}
+            to={`/assets/${holding.asset.id}`}
+          >
+            <span className="bt-home-chip__sym">{holding.asset.symbol}</span>
+            <span className="bt-num">{formatSignedPercent(pct)}</span>
+          </Link>
+        </li>
+      ))}
+    </ul>
   );
 }

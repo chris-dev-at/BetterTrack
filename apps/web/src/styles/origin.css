@@ -2468,173 +2468,396 @@
   margin-top: -2px;
 }
 
-/* ── Click-to-place insertion lines ──────────────────────────────────────────
-   Reordering is a discrete choice, not a drag: arming a widget reveals one gold
-   line per legal destination and clicking a line moves it there.
+/* ── Click-to-place: insertion slots ────────────────────────────────────────
+   Reordering is a discrete choice, not a drag. Entering the builder OPENS THE
+   BOARD UP (wider gaps below) so every position between widgets has room of its
+   own, and each position is a button carrying a labelled gold pill:
 
-   Every line is absolutely positioned INTO the grid's own gap and hosted by the
-   widget it lands in front of, so revealing them cannot reflow the board — the
-   widgets hold still while the user decides. The last widget additionally hosts
-   the "at the end" line at its trailing edge.
+     - nothing picked up ⇒ ⊕ "Add here", which opens the drawer and inserts there;
+     - a widget picked up ⇒ "Move here" on each legal destination.
 
-   ORIENTATION follows the grid, because a line that does not match the axis it
-   divides is unreadable — and a vertical line hugging a full-width widget would
-   read as exactly the left-edge accent bar this design forbids. So:
+   Each slot is absolutely positioned INTO the gap and hosted by the widget it
+   lands in front of, so revealing the slots never reflows the board — the widgets
+   hold still while the user decides.
 
-     - a widget sharing its row with a predecessor gets a VERTICAL line in the
-       28px column gap (the default below);
-     - a widget spanning all 12 columns is stacked, so it gets a HORIZONTAL line
-       in the 32px row gap.
+   ORIENTATION is set by the page from the MEASURED layout (`is-h` / `is-v`), not
+   guessed from a widget's declared span. That is what keeps a line from ever being
+   drawn across the boundary it is not dividing: only slots whose two neighbours
+   genuinely share a row are vertical.
 
-   Which sizes span the full row changes at each breakpoint (l always; m from
-   ≤1180px; everything in the ≤760px single column), so the horizontal block is
-   restated per regime rather than guessed at once. A sub-full-width widget that
-   happens to *start* a row still gets a vertical line at that row's leading edge
-   — which is where the widget would actually land, so it still reads true.
-
-   Deliberately un-transitioned: the lines appear and disappear instantly, which
-   is both what the interaction wants (they are a menu, not an animation) and what
-   `prefers-reduced-motion` would demand anyway. */
+   Deliberately un-transitioned: the slots are a menu, not an animation, which is
+   also what `prefers-reduced-motion` would ask for. */
 
 .bt-home-place {
   position: absolute;
-  z-index: 2;
-  /* The generous part of the hit area: the whole gap, full height of the widget. */
-  top: 0;
-  bottom: 0;
-  width: 30px;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
   padding: 0;
   border: 0;
   background: none;
   cursor: pointer;
-  /* No transition — see the note above. */
 }
 
-.bt-home-place--before {
-  /* Half the 30px target sits either side of the column gap's centre line. */
-  left: -15px;
-}
-
-.bt-home-place--after {
-  right: -15px;
-}
-
-/* The visible line: 2px of brand gold, centred in the target. Gold because this
-   IS the active action — the one moment the board asks a direct question. */
+/* The line itself, drawn behind the pill and sized by the axis rules below. */
 .bt-home-place::after {
   content: '';
   position: absolute;
+  border-radius: 1px;
+  background: var(--bt-gold);
+  opacity: 0.75;
+}
+
+/* ── Horizontal slot: a row boundary, so the line spans the widget's width ── */
+
+.bt-home-place.is-h {
+  right: 0;
+  left: 0;
+  height: 34px;
+}
+
+/* Centre the 34px slot on the row gap's mid-line: half the gap out, then half
+   the slot back. The leading and trailing slots have no gap to sit in, which is
+   what the grid's edit-mode padding is for. */
+.bt-home-place.is-h.bt-home-place--before {
+  top: calc(-1 * var(--bt-home-rowgap) / 2 - 17px);
+}
+
+.bt-home-place.is-h.bt-home-place--after {
+  bottom: calc(-1 * var(--bt-home-rowgap) / 2 - 17px);
+}
+
+.bt-home-place.is-h::after {
+  top: 50%;
+  right: 0;
+  left: 0;
+  height: 2px;
+  margin-top: -1px;
+}
+
+/* ── Vertical slot: a column boundary inside the column gap ───────────────── */
+
+.bt-home-place.is-v {
+  top: 0;
+  bottom: 0;
+  width: var(--bt-home-colgap);
+}
+
+.bt-home-place.is-v.bt-home-place--before {
+  left: calc(var(--bt-home-colgap) / -1);
+}
+
+.bt-home-place.is-v.bt-home-place--after {
+  right: calc(var(--bt-home-colgap) / -1);
+}
+
+.bt-home-place.is-v::after {
   top: 0;
   bottom: 0;
   left: 50%;
   width: 2px;
   margin-left: -1px;
-  border-radius: 1px;
-  background: var(--bt-gold);
-  opacity: 0.8;
+}
+
+/* ── The pill ──────────────────────────────────────────────────────────────
+   What makes a slot read as a target rather than as decoration. On a vertical
+   slot the column gap has no room for words, so the text is dropped and the pill
+   collapses to its icon — the button keeps its full accessible name either way. */
+
+.bt-home-place__pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  padding: 3px 9px;
+  border: 1px solid var(--bt-gold);
+  border-radius: 999px;
+  background: var(--bt-bg);
+  color: var(--bt-gold);
+  font-size: 11.5px;
+  font-weight: 560;
+  line-height: 1.35;
+  white-space: nowrap;
+}
+
+.bt-home-place.is-v .bt-home-place__text {
+  display: none;
+}
+
+.bt-home-place.is-v .bt-home-place__pill {
+  gap: 0;
+  padding: 4px;
+}
+
+/* Idle ⊕ slots stay quiet so a board in edit mode is not a wall of gold; the
+   move targets are the active question and read at full strength. */
+.bt-home-place.is-add {
+  opacity: 0.5;
+}
+
+.bt-home-place:hover,
+.bt-home-place:focus-visible {
+  opacity: 1;
 }
 
 .bt-home-place:hover::after,
 .bt-home-place:focus-visible::after {
   opacity: 1;
-  box-shadow: 0 0 0 3px var(--bt-gold-soft);
 }
 
-/* The focus ring belongs to the line itself, not to the invisible 30px box. */
+.bt-home-place:hover .bt-home-place__pill,
+.bt-home-place:focus-visible .bt-home-place__pill {
+  background: var(--bt-gold);
+  color: var(--bt-gold-ink);
+}
+
+/* The ring belongs to the pill, not to the invisible full-gap hit box. */
 .bt-home-place:focus-visible {
   outline: none;
 }
 
-/* Full-width widget ⇒ horizontal line, centred in the 32px row gap so it clears
-   the dashed edit outline (which sits 12px out) on both neighbours. */
-.bt-home-w[data-size='l'] > .bt-home-place {
-  top: auto;
-  right: 0;
-  bottom: auto;
-  left: 0;
-  width: auto;
-  height: 30px;
+.bt-home-place:focus-visible .bt-home-place__pill {
+  box-shadow: 0 0 0 3px var(--bt-gold-soft);
 }
 
-.bt-home-w[data-size='l'] > .bt-home-place--before {
-  top: -16px;
+/* ── Indicators: liquidity, concentration ───────────────────────────────────
+   One ratio, stated. No thresholds and no pos/neg ink: "good" liquidity or
+   "safe" concentration depends on an intent the app does not know, so these
+   widgets report and let the user judge. */
+
+.bt-home-ind {
+  display: flex;
+  align-items: center;
+  gap: 14px;
 }
 
-.bt-home-w[data-size='l'] > .bt-home-place--after {
-  bottom: -16px;
+.bt-home-ind--stack {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 7px;
 }
 
-.bt-home-w[data-size='l'] > .bt-home-place::after {
-  top: 50%;
-  right: 0;
-  bottom: auto;
-  left: 0;
-  width: auto;
-  height: 2px;
-  margin-top: -1px;
-  margin-left: 0;
+.bt-home-ind__arc {
+  flex: 0 0 auto;
 }
 
-/* ≤1180px: `m` widens to all 12 columns, so it stacks too. */
-@media (max-width: 1180px) {
-  .bt-home-w[data-size='m'] > .bt-home-place {
-    top: auto;
-    right: 0;
-    bottom: auto;
-    left: 0;
-    width: auto;
-    height: 30px;
-  }
-
-  .bt-home-w[data-size='m'] > .bt-home-place--before {
-    top: -16px;
-  }
-
-  .bt-home-w[data-size='m'] > .bt-home-place--after {
-    bottom: -16px;
-  }
-
-  .bt-home-w[data-size='m'] > .bt-home-place::after {
-    top: 50%;
-    right: 0;
-    bottom: auto;
-    left: 0;
-    width: auto;
-    height: 2px;
-    margin-top: -1px;
-    margin-left: 0;
-  }
+.bt-home-ind__figures {
+  min-width: 0;
 }
 
-/* ≤760px the board is a single column: every position is a row boundary, and the
-   row gap tightens to 26px (with the edit outline pulled in to 8px). */
+.bt-home-ind__value {
+  font-size: 25px;
+  font-weight: 620;
+  line-height: 1.1;
+}
+
+/* Split bar: the two shares butt against each other, no track needed — together
+   they are the whole. */
+.bt-home-ind__bar {
+  display: flex;
+  flex: 1;
+  overflow: hidden;
+  height: 10px;
+  border-radius: 999px;
+}
+
+/* Share of a whole ⇒ a track, because the empty part is as meaningful as the
+   filled part. */
+.bt-home-ind__track {
+  overflow: hidden;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--bt-surface-strong);
+}
+
+.bt-home-ind__track > span {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--bt-text-soft);
+}
+
+/* ── Cash flow, in/out columns ──────────────────────────────────────────────
+   Two same-unit series on one shared scale: no second axis, no rescaling, so the
+   bars are directly comparable by height. */
+
+.bt-home-cols__plot {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+}
+
+.bt-home-cols__group {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  min-width: 0;
+}
+
+.bt-home-cols__bars {
+  display: flex;
+  align-items: flex-end;
+  justify-content: center;
+  width: 100%;
+}
+
+.bt-home-cols__bars > span {
+  flex: 1;
+  max-width: 22px;
+  border-radius: 2px 2px 0 0;
+}
+
+.bt-home-cols__label {
+  overflow: hidden;
+  max-width: 100%;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bt-home-cols__legend {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.bt-home-cols__key {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+}
+
+.bt-home-cols__key:not(:first-child) {
+  margin-left: 8px;
+}
+
+/* ── Allocation, ranked bars ────────────────────────────────────────────────
+   Bars scale to the LARGEST segment, not the total, so the ranking stays legible
+   when one position dominates; the printed share carries the absolute reading. */
+
+.bt-home-alloc {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+}
+
+.bt-home-alloc__row {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 2px 10px;
+}
+
+.bt-home-alloc__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  grid-column: 1 / -1;
+}
+
+.bt-home-alloc__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bt-home-alloc__pct {
+  flex: 0 0 auto;
+}
+
+.bt-home-alloc__track {
+  overflow: hidden;
+  height: 6px;
+  border-radius: 999px;
+  background: var(--bt-surface-strong);
+  align-self: center;
+}
+
+.bt-home-alloc__track > span {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+}
+
+.bt-home-alloc__amount {
+  align-self: center;
+}
+
+/* ── Movers, compact chips ──────────────────────────────────────────────────
+   A day/period move is genuine polarity, so the chips earn the pos/neg palette. */
+
+.bt-home-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.bt-home-chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  padding: 4px 9px;
+  border: 1px solid var(--bt-border);
+  border-radius: 999px;
+  background: var(--bt-surface);
+  color: var(--bt-text-soft);
+  font-size: 12px;
+  text-decoration: none;
+}
+
+.bt-home-chip:hover {
+  border-color: var(--bt-border-strong);
+  background: var(--bt-surface-hover);
+}
+
+.bt-home-chip__sym {
+  color: var(--bt-text);
+  font-weight: 560;
+}
+
+.bt-home-chip.is-pos {
+  color: var(--bt-pos);
+}
+
+.bt-home-chip.is-neg {
+  color: var(--bt-neg);
+}
+
+/* ── Portfolios, dense table ────────────────────────────────────────────── */
+
+.bt-home-ptable {
+  width: 100%;
+}
+
+/* ── Board spacing while editing ────────────────────────────────────────────
+   The owner explicitly allowed extra room here: the reading board stays tight,
+   and the builder trades density for slots that are unmistakably BETWEEN widgets
+   rather than touching one. The gaps are custom properties so the slot geometry
+   above derives from them instead of restating the numbers. */
+
+.bt-home-grid {
+  --bt-home-rowgap: 32px;
+  --bt-home-colgap: 28px;
+}
+
+.bt-home-grid.is-editing {
+  --bt-home-rowgap: 64px;
+  --bt-home-colgap: 44px;
+  gap: var(--bt-home-rowgap) var(--bt-home-colgap);
+  /* Room for the leading and trailing slots, which sit outside the first and last
+     rows rather than between them: half a row gap out (32px) plus half a slot
+     (17px), rounded up so neither ever pokes past the board. */
+  padding: 52px 0;
+}
+
 @media (max-width: 759.98px) {
-  .bt-home-w > .bt-home-place {
-    top: auto;
-    right: 0;
-    bottom: auto;
-    left: 0;
-    width: auto;
-    height: 26px;
-  }
-
-  .bt-home-w > .bt-home-place--before {
-    top: -13px;
-  }
-
-  .bt-home-w > .bt-home-place--after {
-    bottom: -13px;
-  }
-
-  .bt-home-w > .bt-home-place::after {
-    top: 50%;
-    right: 0;
-    bottom: auto;
-    left: 0;
-    width: auto;
-    height: 2px;
-    margin-top: -1px;
-    margin-left: 0;
+  .bt-home-grid.is-editing {
+    /* One column, so no vertical slot can occur; the row gap is what matters. */
+    --bt-home-colgap: 30px;
+    --bt-home-rowgap: 58px;
+    padding: 48px 0;
   }
 }
 

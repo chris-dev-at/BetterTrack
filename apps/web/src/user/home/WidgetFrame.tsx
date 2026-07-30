@@ -13,8 +13,8 @@ import type { PortfolioSummary } from '@bettertrack/contracts';
 
 import { useT } from '../../i18n';
 import { cx } from '../../lib/cx';
-import { Badge, Button, Field, Select, Seg } from '../../ui/origin';
-import type { WidgetConfig, WidgetSettings, WidgetSize } from './config';
+import { Badge, Button, Field, Icon, Select, Seg } from '../../ui/origin';
+import { widgetVariant, type WidgetConfig, type WidgetSettings, type WidgetSize } from './config';
 import type { WidgetDefinition } from './widgets';
 
 /**
@@ -27,10 +27,31 @@ import type { WidgetDefinition } from './widgets';
  * only.
  */
 
-/** One place this widget could go: the gold line the user clicks. */
+/** Which grid boundary a slot divides, and therefore how its line is drawn. */
+export type PlacementAxis = 'h' | 'v';
+
+/**
+ * One position on the board the user can act on. Both actions live on the same
+ * lines, distinguished by what is currently held:
+ *
+ *  - `move` — a widget is armed, and this slot is somewhere it may go;
+ *  - `add`  — nothing is armed, and this slot will receive a brand-new widget
+ *             chosen from the drawer.
+ */
 export interface PlacementTarget {
-  /** Accessible name — names the position, e.g. "Place before Net worth". */
+  /**
+   * Accessible name, which always says *where*: "Place before Upcoming", "Add a
+   * widget at the end". Screen-reader users get the position they cannot see.
+   */
   label: string;
+  /**
+   * The short text on the pill — "Move here" / "Add here". Sighted users already
+   * have the position from where the line is, so the pill carries the action
+   * instead of repeating it, and stays narrow enough to sit inside a gap.
+   */
+  pillText: string;
+  axis: PlacementAxis;
+  mode: 'move' | 'add';
   onSelect: () => void;
 }
 
@@ -87,6 +108,7 @@ export function WidgetFrame({
   const configurable =
     definition.supportsScope ||
     definition.rangeOptions !== undefined ||
+    definition.variants !== undefined ||
     definition.SettingsExtra !== undefined;
 
   /**
@@ -108,8 +130,8 @@ export function WidgetFrame({
       data-widget-id={widget.id}
       onClick={onSectionClick}
     >
-      {placeBefore !== null ? <PlacementLine target={placeBefore} where="before" /> : null}
-      {placeAfter !== null ? <PlacementLine target={placeAfter} where="after" /> : null}
+      {placeBefore !== null ? <PlacementSlot target={placeBefore} where="before" /> : null}
+      {placeAfter !== null ? <PlacementSlot target={placeAfter} where="after" /> : null}
       <div className="bt-home-w__head">
         <span className="bt-label bt-home-w__title">{title}</span>
         {scopeLabel !== null ? <Badge>{scopeLabel}</Badge> : null}
@@ -183,23 +205,38 @@ export function WidgetFrame({
 }
 
 /**
- * One gold insertion line. Absolutely positioned into the grid's own gap — the
- * column gap on the desktop grid, the row gap in the ≤760px single column — so
- * showing the targets never reflows the board: the widgets do not move while the
- * user is deciding where to move one.
+ * One insertion position: a gold line with a labelled pill sitting on it.
  *
- * A real `<button>` rather than a styled div, so it is keyboard-reachable in
- * visual order and announces the position it represents. The hit area is the
- * whole gap; the 2px line inside it is drawn by the stylesheet.
+ * Absolutely positioned into the grid's own gap (widened while editing, see the
+ * stylesheet), so revealing the slots never reflows the board — the widgets hold
+ * still while the user decides. `axis` comes from the *measured* layout rather
+ * than from the widget's declared size, so a line can never end up drawn across
+ * the boundary it is not dividing.
+ *
+ * A real `<button>`: keyboard-reachable in visual order, and its accessible name
+ * is the same text the pill shows. The pill is `aria-hidden` so the name is not
+ * announced twice; the hit area is the whole gap, not just the pill.
  */
-function PlacementLine({ target, where }: { target: PlacementTarget; where: 'before' | 'after' }) {
+function PlacementSlot({ target, where }: { target: PlacementTarget; where: 'before' | 'after' }) {
   return (
     <button
       aria-label={target.label}
-      className={cx('bt-home-place', `bt-home-place--${where}`)}
+      className={cx(
+        'bt-home-place',
+        `bt-home-place--${where}`,
+        `is-${target.axis}`,
+        `is-${target.mode}`,
+      )}
       onClick={target.onSelect}
       type="button"
-    />
+    >
+      <span aria-hidden="true" className="bt-home-place__pill">
+        <Icon name={target.mode === 'move' ? 'arrow-right' : 'plus'} size={13} />
+        {/* Hidden by CSS on a vertical line, where a column gap has no room for
+            words — the button keeps its full accessible name either way. */}
+        <span className="bt-home-place__text">{target.pillText}</span>
+      </span>
+    </button>
   );
 }
 
@@ -309,6 +346,21 @@ function SettingsPopover({
                   </option>
                 ))}
               </Select>
+            </Field>
+          ) : null}
+          {definition.variants ? (
+            <Field label={t('home.builder.variantLabel')}>
+              {/* A Seg, not a Select: two or three forms shown at once let the
+                  user see what the alternative even is before switching. */}
+              <Seg
+                ariaLabel={t('home.builder.variantAriaLabel', { title })}
+                onChange={(next) => onSettingsChange({ variant: next })}
+                options={definition.variants.map((option) => ({
+                  value: option.value,
+                  label: t(option.labelKey),
+                }))}
+                value={widgetVariant(definition.type, settings) ?? ''}
+              />
             </Field>
           ) : null}
           {definition.SettingsExtra ? (
