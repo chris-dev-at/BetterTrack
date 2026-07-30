@@ -3165,7 +3165,10 @@
       "loadEarlier": "Load earlier messages",
       "sendError": "Couldn't send your message. Please try again.",
       "banned": "You can't send messages right now. You can still read this conversation.",
+      "composerLabel": "Message",
       "composerPlaceholder": "Message",
+      "logLabel": "Messages with {{username}}",
+      "newMessages": "New messages",
       "send": "Send",
       "attach": "Share an item",
       "chip": {
