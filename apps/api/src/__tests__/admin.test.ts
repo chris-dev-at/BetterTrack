@@ -1,15 +1,31 @@
 import { eq } from 'drizzle-orm';
+import express from 'express';
+import postgres from 'postgres';
 import request from 'supertest';
 import type { Application } from 'express';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { adminStatsSchema, createUserResponseSchema } from '@bettertrack/contracts';
+import {
+  adminStatsSchema,
+  createUserResponseSchema,
+  twoFactorChallengeResponseSchema,
+  twoFactorEnrollResponseSchema,
+} from '@bettertrack/contracts';
 
 import { createUserRepository } from '../data/repositories/userRepository';
 import * as schema from '../data/schema';
+import {
+  BULL_BOARD_BASE_PATH,
+  BULL_BOARD_REDACTED_VALUE,
+  createBullBoardRouter,
+} from '../http/bullBoard';
+import { ALL_QUEUE_NAMES, type QueueRegistry } from '../jobs';
+import { generateTotpCode } from '../services/auth/totp';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
+const REAL_DATABASE_URL = process.env.TEST_DATABASE_URL;
+const ADMIN_MUTATION_TEST_LOCK = 949967;
 
 let harness: TestHarness;
 
@@ -42,6 +58,194 @@ async function sessionKeyFor(harness: TestHarness, userId: string): Promise<stri
     if (raw && (JSON.parse(raw) as { userId?: string }).userId === userId) return key;
   }
   throw new Error(`No session found for ${userId}`);
+}
+
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+interface DatabaseLockWait {
+  pid: number;
+  query: string;
+  waitEvent: string | null;
+}
+
+async function waitForDatabaseLock(
+  observer: ReturnType<typeof postgres>,
+  predicate: (row: DatabaseLockWait) => boolean,
+  description: string,
+): Promise<DatabaseLockWait> {
+  const deadline = Date.now() + 4_000;
+  let observed: DatabaseLockWait[] = [];
+
+  while (Date.now() < deadline) {
+    observed = await observer<DatabaseLockWait[]>`
+      SELECT pid, query, wait_event AS "waitEvent"
+      FROM pg_stat_activity
+      WHERE datname = current_database()
+        AND wait_event_type = 'Lock'
+    `;
+    const match = observed.find(predicate);
+    if (match) return match;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+
+  throw new Error(
+    `Timed out waiting for ${description}; observed ${JSON.stringify(
+      observed.map(({ pid, query, waitEvent }) => ({ pid, query, waitEvent })),
+    )}`,
+  );
+}
+
+/**
+ * Hold the first admin mutation inside its status/role write, then prove the
+ * second transaction is already waiting on the active-admin FOR UPDATE query
+ * on another backend. This deliberately runs only in the real-Postgres slice:
+ * PGlite has one connection and cannot exercise the row-lock contract.
+ */
+async function runOverlappingAdminMutations(
+  firstMutation: () => Promise<unknown>,
+  secondMutation: () => Promise<unknown>,
+): Promise<PromiseSettledResult<unknown>[]> {
+  if (!REAL_DATABASE_URL) {
+    throw new Error('Real Postgres is required for the concurrent admin-mutation regression');
+  }
+
+  const controller = postgres(REAL_DATABASE_URL, { max: 1 });
+  const observer = postgres(REAL_DATABASE_URL, { max: 1 });
+  const lockReady = deferred();
+  const releaseLock = deferred();
+  let first: Promise<unknown> | undefined;
+  let second: Promise<unknown> | undefined;
+
+  await observer.unsafe(`
+    CREATE OR REPLACE FUNCTION bt_test_pause_admin_mutation()
+    RETURNS trigger
+    LANGUAGE plpgsql
+    AS $$
+    BEGIN
+      PERFORM pg_advisory_xact_lock(${ADMIN_MUTATION_TEST_LOCK});
+      RETURN NEW;
+    END;
+    $$
+  `);
+  await observer.unsafe('DROP TRIGGER IF EXISTS bt_test_pause_admin_mutation ON users');
+  await observer.unsafe(`
+    CREATE TRIGGER bt_test_pause_admin_mutation
+    BEFORE UPDATE OF status, role ON users
+    FOR EACH ROW
+    EXECUTE FUNCTION bt_test_pause_admin_mutation()
+  `);
+
+  const lockOwner = controller.begin(async (transaction) => {
+    await transaction`SELECT pg_advisory_xact_lock(${ADMIN_MUTATION_TEST_LOCK})`;
+    lockReady.resolve();
+    await releaseLock.promise;
+  });
+
+  try {
+    await Promise.race([
+      lockReady.promise,
+      lockOwner.then(() => {
+        throw new Error('Advisory-lock owner exited before acquiring the test lock');
+      }),
+    ]);
+
+    first = firstMutation();
+    const firstWait = await waitForDatabaseLock(
+      observer,
+      (row) => row.waitEvent === 'advisory' && /update\s+"?users"?/iu.test(row.query),
+      'the first admin mutation to pause in its write',
+    );
+
+    second = secondMutation();
+    const secondWait = await waitForDatabaseLock(
+      observer,
+      (row) =>
+        row.waitEvent !== 'advisory' &&
+        /from\s+"?users"?/iu.test(row.query) &&
+        /for update/iu.test(row.query),
+      'the second admin mutation to wait on the active-admin row lock',
+    );
+    expect(secondWait.pid).not.toBe(firstWait.pid);
+
+    releaseLock.resolve();
+    await lockOwner;
+    return await Promise.allSettled([first, second]);
+  } finally {
+    releaseLock.resolve();
+    await lockOwner.catch(() => {});
+    await first?.catch(() => {});
+    await second?.catch(() => {});
+    await observer.unsafe('DROP TRIGGER IF EXISTS bt_test_pause_admin_mutation ON users');
+    await observer.unsafe('DROP FUNCTION IF EXISTS bt_test_pause_admin_mutation()');
+    await controller.end();
+    await observer.end();
+  }
+}
+
+function bullBoardFixture(): {
+  registry: QueueRegistry;
+  activeQueue: string;
+  pause: ReturnType<typeof vi.fn>;
+} {
+  const activeQueue = ALL_QUEUE_NAMES[0]!;
+  const pause = vi.fn();
+  const queues = new Map(
+    ALL_QUEUE_NAMES.map((name) => [
+      name,
+      {
+        metaValues: { version: 'bullmq:test' },
+        name,
+        getJobCounts: async () => ({
+          active: 0,
+          waiting: name === activeQueue ? 1 : 0,
+          'waiting-children': 0,
+          prioritized: 0,
+          completed: 0,
+          failed: 0,
+          delayed: 0,
+          paused: 0,
+        }),
+        isPaused: async () => false,
+        getGlobalConcurrency: async () => null,
+        getJobs: async () =>
+          name === activeQueue
+            ? [
+                {
+                  toJSON: () => ({
+                    id: 'job-1',
+                    name: 'sensitive-job',
+                    progress: 0,
+                    attemptsMade: 0,
+                    timestamp: Date.now(),
+                    failedReason: '',
+                    stacktrace: [],
+                    opts: {},
+                    data: { accessToken: 'payload-secret' },
+                    returnvalue: { downloadUrl: 'result-secret' },
+                  }),
+                },
+              ]
+            : [],
+        pause,
+      },
+    ]),
+  );
+  return {
+    activeQueue,
+    pause,
+    registry: {
+      get: ((name: (typeof ALL_QUEUE_NAMES)[number]) =>
+        queues.get(name)!) as unknown as QueueRegistry['get'],
+      enqueue: vi.fn() as QueueRegistry['enqueue'],
+      close: vi.fn(),
+    },
+  };
 }
 
 /**
@@ -82,6 +286,74 @@ describe('admin route guard (PROJECTPLAN.md §6.12)', () => {
   });
 });
 
+describe('Bull Board administrator boundary (#878)', () => {
+  it('is read-only and redacts job payloads and results from list/detail data', async () => {
+    const { registry, activeQueue, pause } = bullBoardFixture();
+    const app = express();
+    app.use(BULL_BOARD_BASE_PATH, createBullBoardRouter(registry));
+
+    const listed = await request(app)
+      .get(`${BULL_BOARD_BASE_PATH}/api/queues`)
+      .query({ activeQueue, status: 'waiting' });
+    expect(listed.status).toBe(200);
+    const queue = (
+      listed.body.queues as Array<{
+        name: string;
+        readOnlyMode: boolean;
+        allowRetries: boolean;
+        jobs: Array<{ data: unknown; returnValue: unknown }>;
+      }>
+    ).find((entry) => entry.name === activeQueue);
+    expect(queue).toMatchObject({
+      readOnlyMode: true,
+      allowRetries: false,
+      jobs: [
+        {
+          data: BULL_BOARD_REDACTED_VALUE,
+          returnValue: BULL_BOARD_REDACTED_VALUE,
+        },
+      ],
+    });
+    expect(JSON.stringify(listed.body)).not.toContain('payload-secret');
+    expect(JSON.stringify(listed.body)).not.toContain('result-secret');
+
+    const mutation = await request(app).put(
+      `${BULL_BOARD_BASE_PATH}/api/queues/${encodeURIComponent(activeQueue)}/pause`,
+    );
+    expect(mutation.status).toBe(405);
+    expect(pause).not.toHaveBeenCalled();
+  });
+
+  it('applies the admin limiter, role check, and exact-session MFA gate', async () => {
+    const local = await createTestApp({ rateLimitsEnabled: true });
+    const admin = await local.seedAdmin();
+    const bootstrap = await loginAgent(local.app, admin.email, admin.password);
+
+    const setupDenied = await bootstrap.get(BULL_BOARD_BASE_PATH);
+    expect(setupDenied.status).toBe(403);
+    expect(setupDenied.body.error.code).toBe('ADMIN_2FA_SETUP_REQUIRED');
+    expect(await local.ctx.redis.get(`rl:admin:${admin.id}:n`)).toBe('1');
+
+    const assured = await local.loginAdmin(admin);
+    expect((await assured.get(BULL_BOARD_BASE_PATH)).status).toBe(503);
+
+    // Removing assurance from this exact current-generation session cannot be
+    // rescued by the account's enrolled factor or another session's proof.
+    const key = await sessionKeyFor(local, admin.id);
+    const raw = await local.ctx.redis.get(key);
+    const data = JSON.parse(raw!) as Record<string, unknown>;
+    delete data.mfaAssurance;
+    const pttl = await local.ctx.redis.pttl(key);
+    await local.ctx.redis.set(key, JSON.stringify(data), 'PX', pttl);
+    expect((await assured.get(BULL_BOARD_BASE_PATH)).status).toBe(401);
+
+    const user = await local.seedUser();
+    const userAgent = await loginAgent(local.app, user.email, user.password);
+    expect((await userAgent.get(BULL_BOARD_BASE_PATH)).status).toBe(404);
+    expect((await request(local.app).get(BULL_BOARD_BASE_PATH)).status).toBe(404);
+  });
+});
+
 describe('administrator role-transition generation (#888)', () => {
   it('rejects a pre-promotion session even when eager Redis cleanup fails', async () => {
     const admin = await harness.seedAdmin();
@@ -111,6 +383,42 @@ describe('administrator role-transition generation (#888)', () => {
     // The cookie still exists because cleanup failed, but it cannot inherit the
     // newly committed administrator role.
     expect((await stale.get('/api/v1/admin/security/2fa/status')).status).toBe(404);
+
+    // A fresh password proves only the first factor. Promotion never upgrades
+    // the pre-existing user session or bypasses explicit administrator MFA.
+    const bootstrap = await loginAgent(harness.app, target.email, target.password);
+    const setupRequired = await bootstrap.get('/api/v1/admin/users');
+    expect(setupRequired.status).toBe(403);
+    expect(setupRequired.body.error.code).toBe('ADMIN_2FA_SETUP_REQUIRED');
+    const { secret } = twoFactorEnrollResponseSchema.parse(
+      (await bootstrap.post('/api/v1/admin/security/2fa/totp/enroll').set(...XRW)).body,
+    );
+    const confirmed = await bootstrap
+      .post('/api/v1/admin/security/2fa/totp/confirm')
+      .set(...XRW)
+      .send({ code: generateTotpCode(secret) });
+    expect(confirmed.status).toBe(200);
+
+    // Enrollment is itself a security transition: it logs the acting device out
+    // rather than handing it an assured replacement session. Administrator
+    // access returns only after an explicit fresh password + factor login.
+    expect((await bootstrap.get('/api/v1/admin/users')).status).toBe(404);
+
+    const assured = request.agent(harness.app);
+    const challenge = twoFactorChallengeResponseSchema.parse(
+      (
+        await assured
+          .post('/api/v1/auth/login')
+          .set(...XRW)
+          .send({ identifier: target.email, password: target.password })
+      ).body,
+    );
+    const verified = await assured
+      .post('/api/v1/auth/2fa/verify')
+      .set(...XRW)
+      .send({ pendingToken: challenge.pendingToken, code: generateTotpCode(secret) });
+    expect(verified.status).toBe(200);
+    expect((await assured.get('/api/v1/admin/users')).status).toBe(200);
   });
 
   it('fails closed when promotion commits after the session read but before the user read', async () => {
@@ -494,6 +802,52 @@ describe('admin self-action and last-admin guards (PROJECTPLAN.md §6.12)', () =
     expect(demote.status).toBe(200);
     expect(demote.body.role).toBe('user');
   });
+
+  it.skipIf(!REAL_DATABASE_URL).each(['disable', 'demote', 'delete'] as const)(
+    'serializes concurrent %s requests so one active administrator remains',
+    async (operation) => {
+      const first = await harness.seedAdmin();
+      const second = await harness.seedAdmin({
+        email: 'concurrent-admin@test.dev',
+        username: 'concurrent_admin',
+        password: 'concurrent-admin-strong-1',
+      });
+
+      const mutate = (target: typeof first, actor: typeof second): Promise<unknown> => {
+        switch (operation) {
+          case 'disable':
+            return harness.ctx.admin.updateUser(
+              target.id,
+              { status: 'disabled' },
+              { id: actor.id },
+            );
+          case 'demote':
+            return harness.ctx.admin.updateUser(target.id, { role: 'user' }, { id: actor.id });
+          case 'delete':
+            return harness.ctx.admin.deleteUser(target.id, target.username, { id: actor.id });
+        }
+      };
+
+      const results = await runOverlappingAdminMutations(
+        () => mutate(first, second),
+        () => mutate(second, first),
+      );
+      expect(results.filter((result) => result.status === 'fulfilled')).toHaveLength(1);
+      const rejected = results.find((result) => result.status === 'rejected');
+      expect(rejected).toBeDefined();
+      if (!rejected || rejected.status !== 'rejected') {
+        throw new Error('Expected one concurrent administrator mutation to fail');
+      }
+      expect(rejected.reason).toMatchObject({
+        statusCode: 400,
+        code: 'LAST_ADMIN',
+        message: 'Cannot remove the last active administrator.',
+      });
+
+      const users = createUserRepository(harness.db);
+      expect(await users.countActiveAdmins()).toBe(1);
+    },
+  );
 });
 
 describe('edit username/email (PROJECTPLAN.md §6.12, §13.2)', () => {
@@ -564,6 +918,38 @@ describe('edit username/email (PROJECTPLAN.md §6.12, §13.2)', () => {
     expect(dupEmail.status).toBe(409);
     expect(dupEmail.body.error.code).toBe('EMAIL_TAKEN');
   });
+
+  it('rolls back an earlier role change when later email validation fails', async () => {
+    const admin = await harness.seedAdmin();
+    const target = await harness.seedAdmin({
+      email: 'atomic-admin@test.dev',
+      username: 'atomic_admin',
+      password: 'atomic-admin-strong-1',
+    });
+    const existing = await harness.seedUser({
+      email: 'existing-email@test.dev',
+      username: 'existing_email',
+    });
+    const adminAgent = await harness.loginAdmin(admin);
+    const users = createUserRepository(harness.db);
+    const before = await users.findById(target.id);
+
+    const patched = await adminAgent
+      .patch(`/api/v1/admin/users/${target.id}`)
+      .set(...XRW)
+      .send({ role: 'user', email: existing.email });
+    expect(patched.status).toBe(409);
+    expect(patched.body.error.code).toBe('EMAIL_TAKEN');
+
+    const after = await users.findById(target.id);
+    expect(after?.role).toBe('admin');
+    expect(after?.email).toBe(target.email);
+    expect(after?.securityGeneration).toBe(before?.securityGeneration);
+
+    const audit = await adminAgent.get(`/api/v1/admin/users/${target.id}/audit`);
+    const actions = (audit.body.entries as Array<{ action: string }>).map((entry) => entry.action);
+    expect(actions).not.toContain('user.role_changed');
+  });
 });
 
 describe('bulk user actions (PROJECTPLAN.md §6.12, §13.2)', () => {
@@ -614,6 +1000,38 @@ describe('bulk user actions (PROJECTPLAN.md §6.12, §13.2)', () => {
     // The user disabled once; the actor and the duplicate id skipped.
     expect(bulk.body.disabled).toBe(1);
     expect(bulk.body.skipped).toBe(1);
+  });
+
+  it('uses the last-admin guard when a stale actor is outside the batch', async () => {
+    const first = await harness.seedAdmin();
+    const second = await harness.seedAdmin({
+      email: 'bulk-admin@test.dev',
+      username: 'bulk_admin',
+      password: 'bulk-admin-strong-1',
+    });
+    const staleActor = await harness.seedAdmin({
+      email: 'stale-bulk-actor@test.dev',
+      username: 'stale_bulk_actor',
+      password: 'stale-bulk-actor-strong-1',
+    });
+    const users = createUserRepository(harness.db);
+    await users.setStatus(staleActor.id, 'disabled');
+
+    // Calling the service boundary with a persisted but no-longer-active actor
+    // removes the HTTP route's self-skip from the equation. The batch itself
+    // must disable one target and skip the last active administrator.
+    const bulk = await harness.ctx.admin.bulkUserAction(
+      { action: 'disable', userIds: [first.id, second.id] },
+      { id: staleActor.id },
+    );
+    expect(bulk).toEqual({ action: 'disable', disabled: 1, skipped: 1 });
+
+    expect(await users.countActiveAdmins()).toBe(1);
+    const statuses = await Promise.all([
+      users.findById(first.id).then((user) => user?.status),
+      users.findById(second.id).then((user) => user?.status),
+    ]);
+    expect(statuses.sort()).toEqual(['active', 'disabled']);
   });
 });
 

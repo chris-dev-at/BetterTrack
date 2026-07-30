@@ -16,11 +16,10 @@ jobs:
       fail-fast: false
       matrix:
         shard: [1, 2, 3, 4]
-    # Run 30146369738 reached 49 project tests in 45 minutes, or about 55 seconds
-    # per test. A three-shard dispatch still exhausted 45 minutes when retries
-    # doubled failing specs, so four shards cap the load at about 25 tests each.
-    # The suite has a 60-minute execution budget. Keep ten minutes outside that
-    # budget for Playwright to flush its blob report and for artifact uploads.
+    # The current suite has 50 tests in each of two projects (desktop and phone),
+    # so four real Playwright shards carry 24–26 project tests each (100 / 4).
+    # The 60-minute soft test limit leaves ten minutes before the job deadline
+    # for Playwright to flush its blob report and for artifact uploads.
     # A GitHub job timeout cancels the runner before those cleanup steps can run.
     timeout-minutes: 70
     services:
@@ -67,10 +66,12 @@ jobs:
       - name: Install Playwright browsers
         run: pnpm exec playwright install --with-deps chromium
 
-      - name: Run e2e happy path
+      - name: Run Playwright shard
         # Fail the test step before the job deadline so Playwright receives an
         # interrupt, flushes the blob reporter, and the report upload below runs.
-        run: timeout --signal=INT --kill-after=2m 60m pnpm test:e2e -- --shard=${{ matrix.shard }}/4
+        # Invoke Playwright directly: passing `-- --shard=…` through the pnpm
+        # script forwards a literal `--` and silently runs every test per shard.
+        run: timeout --signal=INT --kill-after=2m 60m pnpm exec playwright test --shard=${{ matrix.shard }}/4
 
       - name: Upload Playwright shard report
         # This single upload is deliberately after the soft timeout above. A

@@ -1,12 +1,12 @@
-import { eq } from 'drizzle-orm';
+import { and, eq, gt, isNull } from 'drizzle-orm';
 
 import type { Database } from '../db';
-import { passwordResetTokens, type PasswordResetTokenRow } from '../schema';
+import { passwordResetTokens, users, type PasswordResetTokenRow } from '../schema';
 
 /**
  * Self-service password-reset token persistence (PROJECTPLAN.md §6.1, §14). Only
  * the SHA-256 `tokenHash` is ever stored — the raw token lives in the emailed
- * link. Tokens are single-use (`markUsed`) and revoked wholesale for a user on
+ * link. Tokens are single-use (`consume`) and revoked wholesale for a user on
  * issue of a new one and on any password change (`deleteForUser`).
  */
 export interface CreatePasswordResetTokenInput {
@@ -17,17 +17,32 @@ export interface CreatePasswordResetTokenInput {
 
 export function createPasswordResetTokenRepository(db: Database) {
   return {
-    async create(input: CreatePasswordResetTokenInput): Promise<PasswordResetTokenRow> {
-      const [row] = await db
-        .insert(passwordResetTokens)
-        .values({
-          userId: input.userId,
-          tokenHash: input.tokenHash,
-          expiresAt: input.expiresAt,
-        })
-        .returning();
-      if (!row) throw new Error('Failed to insert password reset token');
-      return row;
+    /**
+     * Replace the user's outstanding reset token under a lock on the owning
+     * account. Locking the stable user row makes concurrent first-time issues
+     * serialize even when there is no prior token row to lock.
+     */
+    async issue(input: CreatePasswordResetTokenInput): Promise<PasswordResetTokenRow> {
+      return db.transaction(async (tx) => {
+        const [owner] = await tx
+          .select({ id: users.id })
+          .from(users)
+          .where(eq(users.id, input.userId))
+          .for('update');
+        if (!owner) throw new Error('Cannot issue a password reset token for a missing user');
+
+        await tx.delete(passwordResetTokens).where(eq(passwordResetTokens.userId, input.userId));
+        const [row] = await tx
+          .insert(passwordResetTokens)
+          .values({
+            userId: input.userId,
+            tokenHash: input.tokenHash,
+            expiresAt: input.expiresAt,
+          })
+          .returning();
+        if (!row) throw new Error('Failed to insert password reset token');
+        return row;
+      });
     },
 
     async findByTokenHash(tokenHash: string): Promise<PasswordResetTokenRow | undefined> {
@@ -39,11 +54,23 @@ export function createPasswordResetTokenRepository(db: Database) {
       return row;
     },
 
-    async markUsed(id: string, when: Date): Promise<void> {
-      await db
+    /**
+     * The sole reset-completion gate: exactly one caller may transition a live
+     * token from unused to used. Expiry is checked in the same statement.
+     */
+    async consume(id: string, when: Date): Promise<boolean> {
+      const [row] = await db
         .update(passwordResetTokens)
         .set({ usedAt: when })
-        .where(eq(passwordResetTokens.id, id));
+        .where(
+          and(
+            eq(passwordResetTokens.id, id),
+            isNull(passwordResetTokens.usedAt),
+            gt(passwordResetTokens.expiresAt, when),
+          ),
+        )
+        .returning({ id: passwordResetTokens.id });
+      return Boolean(row);
     },
 
     /** Drop every outstanding token for a user — revoke-on-use and on password change. */

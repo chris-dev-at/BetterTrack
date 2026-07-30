@@ -22,7 +22,7 @@ import { beforeAll, describe, expect, it } from 'vitest';
  */
 
 const drizzleDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '../../drizzle');
-const TARGET = '0075_cash_fusion';
+const TARGET = '0076_cash_fusion';
 
 interface JournalEntry {
   idx: number;
@@ -147,7 +147,7 @@ const SEED = `
 /** Signed net of U_MAIN's five seeded magnitudes: -12.34 -7.66 +2500.00 -45.00. */
 const U_MAIN_NET = 2435;
 
-describe('migration 0075_cash_fusion — expenses become portfolio cash', () => {
+describe('migration 0076_cash_fusion — expenses become portfolio cash', () => {
   let client: PGlite;
 
   beforeAll(async () => {

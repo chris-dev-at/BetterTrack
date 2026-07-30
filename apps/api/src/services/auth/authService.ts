@@ -37,8 +37,13 @@ import { checkPasswordPolicy } from '../password/passwordPolicy';
 import { createProgressiveLimiter } from '../security/progressiveLimiter';
 import { describeUserAgent } from '../sessions/deviceLabel';
 import {
+  authenticationMethodOf,
   isPersistent,
+  mfaAssuranceOf,
   type SecurityMutationContext,
+  type SessionAuthenticationMethod,
+  type SessionMfaAssurance,
+  type SessionMfaMethod,
   type SessionService,
 } from '../sessions/sessionService';
 import {
@@ -197,7 +202,13 @@ export interface AuthService {
   resolveSession(
     sessionId: string,
     userAgent?: string | null,
-  ): Promise<{ user: UserRow; persistent: boolean; securityGeneration: number } | null>;
+  ): Promise<{
+    user: UserRow;
+    persistent: boolean;
+    securityGeneration: number;
+    authenticationMethod: SessionAuthenticationMethod | null;
+    mfaAssurance: SessionMfaAssurance | null;
+  } | null>;
   changePassword(
     userId: string,
     input: ChangePasswordRequest,
@@ -359,6 +370,8 @@ interface Pending2faState {
   userId: string;
   /** Durable authority generation that established the first-factor proof. */
   securityGeneration: number;
+  /** First-factor path that established this pending challenge. */
+  authenticationMethod?: SessionAuthenticationMethod;
   /** A pre-login session id to rotate out on successful verify, if any. */
   priorSessionId?: string;
   /**
@@ -562,10 +575,15 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
     ip?: string | null,
     priorSessionId?: string,
     persistent?: boolean,
+    authenticationMethod: SessionAuthenticationMethod = 'password',
   ): Promise<TwoFactorChallenge> {
     const methods = await twoFactor.getMethods(user.id);
     const pendingToken = randomBytes(32).toString('base64url');
-    const state: Pending2faState = { userId: user.id, securityGeneration };
+    const state: Pending2faState = {
+      userId: user.id,
+      securityGeneration,
+      authenticationMethod,
+    };
     if (priorSessionId) state.priorSessionId = priorSessionId;
     // Carry the password-step persistence choice to the verify step (V4-P2b).
     if (persistent !== undefined) state.persistent = persistent;
@@ -620,7 +638,9 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
     user: UserRow,
     ip?: string | null,
   ): Promise<{ sessionId: string; user: UserRow }> {
-    const sessionId = await sessions.create(user.id, user.securityGeneration, false);
+    const sessionId = await sessions.create(user.id, user.securityGeneration, false, {
+      method: 'pin',
+    });
     const now = new Date();
     await userRepo.setLastLogin(user.id, now);
     await audit.record({
@@ -728,7 +748,9 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       if (currentSessionId) {
         await destroySessionAndInvalidate(currentSessionId);
       }
-      const sessionId = await sessions.create(user.id, user.securityGeneration, persistent);
+      const sessionId = await sessions.create(user.id, user.securityGeneration, persistent, {
+        method: 'password',
+      });
 
       const now = new Date();
       await userRepo.setLastLogin(user.id, now);
@@ -798,15 +820,22 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       // then as a TOTP — the two are disjoint, so order only affects which state
       // a match burns.
       let ok = false;
+      let mfaMethod: SessionMfaMethod | null = null;
       if (recoveryCode) {
         ok = await twoFactor.consumeRecoveryCode(userId, recoveryCode);
+        if (ok) mfaMethod = 'recovery';
       } else if (code) {
-        ok =
-          (await consumeEmailCode(pendingToken, code)) ||
-          (await twoFactor.verifyTotpCode(userId, code));
+        const emailVerified = await consumeEmailCode(pendingToken, code);
+        if (emailVerified) {
+          ok = true;
+          mfaMethod = 'email';
+        } else if (await twoFactor.verifyTotpCode(userId, code)) {
+          ok = true;
+          mfaMethod = 'totp';
+        }
       }
 
-      if (!ok) {
+      if (!ok || !mfaMethod) {
         const decision = await twoFactorThrottle.consume(userId);
         await audit.record({
           action: AuditAction.TwoFactorVerifyFail,
@@ -824,9 +853,16 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
         throw unauthorized('That code is incorrect or has expired.', 'TWO_FACTOR_INVALID_CODE');
       }
 
-      // Verified: burn the pending state + email code, clear the throttles, and
-      // mint the real session (rotating out any pre-login id).
-      await redis.del(pendingKey(pendingToken), emailCodeKey(pendingToken));
+      // Claim the verified challenge atomically before minting a session. Two
+      // requests may both load the same state and validate the same live TOTP;
+      // Redis DEL elects exactly one winner, while expiry or a concurrent
+      // verifier makes every other request fail closed.
+      const claimed = (await redis.del(pendingKey(pendingToken))) === 1;
+      if (!claimed) {
+        await redis.del(emailCodeKey(pendingToken));
+        throw pendingInvalid();
+      }
+      await redis.del(emailCodeKey(pendingToken));
       await twoFactorThrottle.reset(userId);
       await clearFailures(userId);
       if (state.priorSessionId) {
@@ -835,7 +871,15 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       // Honour the persistence choice made at the password step (V4-P2b); a
       // reset-originated challenge carries none → persistent, today's behavior.
       const persistent = state.persistent ?? true;
-      const sessionId = await sessions.create(userId, state.securityGeneration, persistent);
+      const sessionId = await sessions.create(userId, state.securityGeneration, persistent, {
+        method:
+          authenticationMethodOf({ authenticationMethod: state.authenticationMethod }) ??
+          // Legacy pending states carried no provenance marker. They are
+          // short-lived, so preserve their pre-deploy password-session behavior
+          // across a rolling deploy instead of minting an unusable session.
+          'password',
+        mfaAssurance: { method: mfaMethod, verifiedAt: Date.now() },
+      });
 
       const now = new Date();
       await userRepo.setLastLogin(userId, now);
@@ -934,6 +978,8 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
         user,
         persistent: isPersistent(data),
         securityGeneration: data.securityGeneration,
+        authenticationMethod: authenticationMethodOf(data),
+        mfaAssurance: mfaAssuranceOf(data),
       };
     },
 
@@ -1069,7 +1115,9 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
         audit: { actorId: user.id, targetType: 'user', targetId: user.id, ip },
       });
 
-      const sessionId = await sessions.create(user.id, user.securityGeneration);
+      const sessionId = await sessions.create(user.id, user.securityGeneration, true, {
+        method: 'registration',
+      });
       return { user, sessionId, persistent: true };
     },
 
@@ -1080,10 +1128,10 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       // Everything below is skipped for a non-match, but the caller always sees
       // the same generic acknowledgement — no user enumeration (§6.1).
       if (user && user.role === 'user' && user.status === 'active') {
-        // One outstanding link per account: drop any prior token before issuing.
-        await passwordResetRepo.deleteForUser(user.id);
         const { token, tokenHash } = generateToken();
-        await passwordResetRepo.create({
+        // The repository serializes concurrent issues around the owning user,
+        // replacing any prior token in the same transaction.
+        await passwordResetRepo.issue({
           userId: user.id,
           tokenHash,
           expiresAt: new Date(Date.now() + RESET_TOKEN_TTL_MS),
@@ -1094,14 +1142,19 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
           targetId: user.id,
           ip,
         });
-        // Best-effort send after the token is committed — a mail failure never
-        // throws back (§6.11). The email_log row is written either way (§6.10).
+        // Best-effort send after the token is committed. SMTP latency must never
+        // become an account-existence oracle; the detached send still owns the
+        // normal email_log and failure-audit semantics (§6.10/§6.11).
         const resetUrl = `${config.appOrigin}/reset/${token}`;
-        await email.sendPasswordReset({
-          to: user.email,
-          resetUrl,
-          audit: { actorId: user.id, targetType: 'user', targetId: user.id, ip },
-        });
+        void email
+          .sendPasswordReset({
+            to: user.email,
+            resetUrl,
+            audit: { actorId: user.id, targetType: 'user', targetId: user.id, ip },
+          })
+          .catch((err) => {
+            logger?.warn({ err, userId: user.id }, 'detached password-reset email failed');
+          });
       }
     },
 
@@ -1110,9 +1163,7 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
         badRequest('This reset link is invalid or has expired.', 'INVALID_RESET');
 
       const record = await passwordResetRepo.findByTokenHash(hashToken(token));
-      if (!record || record.usedAt || new Date(record.expiresAt).getTime() <= Date.now()) {
-        throw invalid();
-      }
+      if (!record) throw invalid();
 
       const user = await userRepo.findById(record.userId);
       // The token was only ever issued to an active user-kind account; re-check
@@ -1121,6 +1172,10 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
 
       const policy = checkPasswordPolicy(newPassword);
       if (!policy.ok) throw badRequest(policy.reason, 'WEAK_PASSWORD');
+
+      // One conditional write linearizes completion before the expensive hash or
+      // any credential/session mutation. A concurrent loser stops here.
+      if (!(await passwordResetRepo.consume(record.id, new Date()))) throw invalid();
 
       const passwordHash = await passwordHasher.hash(newPassword);
       const securityGeneration = await userRepo.updatePassword(
@@ -1131,8 +1186,7 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       );
       if (securityGeneration === null) throw invalid();
 
-      // Consume this token and revoke every other outstanding one for the user.
-      await passwordResetRepo.markUsed(record.id, new Date());
+      // Revoke every other outstanding token after the password transition.
       await passwordResetRepo.deleteForUser(user.id);
 
       // A password change kills all sessions (§6.1).
@@ -1159,11 +1213,20 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       // on, withhold the session and require a second factor, mirroring login;
       // otherwise the reset lands the user signed in with no redundant prompt.
       if (await twoFactor.isEnabled(user.id)) {
-        const challenge = await issueTwoFactorChallenge(user, securityGeneration, ip);
+        const challenge = await issueTwoFactorChallenge(
+          user,
+          securityGeneration,
+          ip,
+          undefined,
+          undefined,
+          'password_reset',
+        );
         return { status: 'two_factor_required', challenge };
       }
 
-      const sessionId = await sessions.create(user.id, securityGeneration);
+      const sessionId = await sessions.create(user.id, securityGeneration, true, {
+        method: 'password_reset',
+      });
       const updated = await userRepo.findById(user.id);
       return {
         status: 'authenticated',
@@ -1326,7 +1389,9 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
         audit: { actorId: user.id, targetType: 'user', targetId: user.id, ip },
       });
 
-      const sessionId = await sessions.create(user.id, user.securityGeneration);
+      const sessionId = await sessions.create(user.id, user.securityGeneration, true, {
+        method: 'registration',
+      });
       return { status: 'authenticated', user, sessionId, persistent: true };
     },
 

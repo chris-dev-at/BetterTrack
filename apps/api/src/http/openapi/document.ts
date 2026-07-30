@@ -39,6 +39,7 @@ const componentSchemas = {
   ApiError: contracts.apiErrorSchema,
   OkResponse: contracts.okResponseSchema,
   HealthResponse: contracts.healthResponseSchema,
+  ReadinessResponse: contracts.readinessResponseSchema,
   VersionResponse: contracts.versionResponseSchema,
   VaultHistoryListResponse: contracts.vaultHistoryListResponseSchema,
   ParanoidMediaStateResponse: contracts.paranoidMediaStateResponseSchema,
@@ -403,6 +404,7 @@ const componentSchemas = {
   ExportRequest: contracts.exportRequestSchema,
   ExportRequestResponse: contracts.exportRequestResponseSchema,
   ExportStatusResponse: contracts.exportStatusResponseSchema,
+  ExportDownloadRequest: contracts.exportDownloadRequestSchema,
 
   // Price alerts (§14, V3-P10)
   Alert: contracts.alertSchema,
@@ -435,6 +437,8 @@ const componentSchemas = {
   OAuthAuthorizationDetailsResponse: contracts.oauthAuthorizationDetailsResponseSchema,
   OAuthApproveRequest: contracts.oauthApproveRequestSchema,
   OAuthApproveResponse: contracts.oauthApproveResponseSchema,
+  OAuthDenyRequest: contracts.oauthDenyRequestSchema,
+  OAuthDenyResponse: contracts.oauthDenyResponseSchema,
   OAuthTokenRequest: contracts.oauthTokenRequestSchema,
   OAuthTokenResponse: contracts.oauthTokenResponseSchema,
 };
@@ -507,6 +511,8 @@ interface EndpointDef {
   status: number;
   /** Success response schema; omit for empty (204) responses. */
   response?: z.ZodTypeAny;
+  /** Contract body returned with HTTP 503 by readiness-style public probes. */
+  unavailableResponse?: z.ZodTypeAny;
   /**
    * Success response media type; defaults to JSON. Paranoid-vault ciphertext
    * reads use `application/octet-stream` and describe their opaque bodies with a
@@ -531,6 +537,16 @@ const endpoints: EndpointDef[] = [
     public: true,
     status: 200,
     response: R.HealthResponse,
+  },
+  {
+    method: 'get',
+    path: '/health/ready',
+    tag: 'Meta',
+    summary: 'Postgres and Redis readiness probe.',
+    public: true,
+    status: 200,
+    response: R.ReadinessResponse,
+    unavailableResponse: R.ReadinessResponse,
   },
   {
     method: 'get',
@@ -679,12 +695,12 @@ const endpoints: EndpointDef[] = [
     response: R.ExportStatusResponse,
   },
   {
-    method: 'get',
+    method: 'post',
     path: '/account/export/download',
     tag: 'Account',
     summary:
-      'Download the ready export zip; session-authenticated and token-gated (foreign/expired tokens 404).',
-    query: contracts.exportDownloadQuerySchema,
+      'Consume a one-time token from the request body and download the ready export zip; foreign, expired, or replayed tokens 404.',
+    body: R.ExportDownloadRequest,
     status: 200,
   },
   {
@@ -3768,6 +3784,22 @@ const endpoints: EndpointDef[] = [
   // OAuth 2.0 flow (§6.13, V2-P12).
   {
     method: 'get',
+    path: '/oauth/client-logos/{clientId}',
+    tag: 'OAuth',
+    summary:
+      'Serve immutable, save-time-cached OAuth client logo bytes from BetterTrack (never the registered remote URL).',
+    public: true,
+    params: contracts.oauthClientLogoParamsSchema,
+    status: 200,
+    response: z.string().openapi({
+      type: 'string',
+      format: 'binary',
+      description: 'Validated PNG, JPEG, GIF or WebP logo bytes.',
+    }),
+    responseContentType: 'image/*',
+  },
+  {
+    method: 'get',
     path: '/oauth/authorization-details',
     tag: 'OAuth',
     summary: 'Consent-screen data for an authorize request (app + plain-language scopes).',
@@ -3784,6 +3816,16 @@ const endpoints: EndpointDef[] = [
     body: R.OAuthApproveRequest,
     status: 200,
     response: R.OAuthApproveResponse,
+  },
+  {
+    method: 'post',
+    path: '/oauth/deny',
+    tag: 'OAuth',
+    summary:
+      'Deny consent: validate the authorize request and return an access_denied redirect target.',
+    body: R.OAuthDenyRequest,
+    status: 200,
+    response: R.OAuthDenyResponse,
   },
   {
     method: 'post',
@@ -3943,6 +3985,12 @@ for (const ep of endpoints) {
   }
   if (!ep.public) {
     responses['401'] = errorResponse('Authentication required.');
+  }
+  if (ep.unavailableResponse) {
+    responses['503'] = {
+      description: 'Required dependency unavailable.',
+      content: jsonContent(ep.unavailableResponse),
+    };
   }
   // Idempotency conflict semantics (§13.4 V4-P2a, #417): reusing a key for a
   // different request, or racing an in-flight one, is a typed 409.

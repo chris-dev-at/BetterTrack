@@ -9,10 +9,10 @@ import { ALL_QUEUE_NAMES, type QueueRegistry } from '../jobs';
 /**
  * bull-board queue inspector (PROJECTPLAN.md §13.4 V4-P5a), mounted admin-only.
  *
- * The router this returns is mounted INSIDE the `/api/v1/admin` router, so it
- * already sits behind `requireAdmin` (+ mandatory 2FA): a non-admin or anonymous
- * request 404s before ever reaching here (§6.12's no-information-leak rule). This
- * module just serves the inspector UI/API for the durable BullMQ queues (§9).
+ * The router is mounted at the app root behind the admin limiter, `requireAdmin`,
+ * and the current-session MFA gate: a non-admin or anonymous request 404s before
+ * ever reaching here (§6.12's no-information-leak rule). This module serves the
+ * read-only inspector UI/API for the durable BullMQ queues (§9).
  *
  * When this process holds no live queue registry (tests run on ioredis-mock,
  * which BullMQ cannot drive), there are no queues to inspect: the guard still
@@ -22,6 +22,25 @@ import { ALL_QUEUE_NAMES, type QueueRegistry } from '../jobs';
 
 /** Full base path the inspector is mounted at (the admin router adds `/queues`). */
 export const BULL_BOARD_BASE_PATH = '/api/v1/admin/queues';
+export const BULL_BOARD_REDACTED_VALUE = '[redacted]';
+
+/**
+ * Queue adapters are diagnostics-only. Bull Board enforces read-only mode on
+ * every mutation endpoint, while formatters ensure its list/detail APIs never
+ * serialize the job payload or return value (both may contain user data or
+ * delivery secrets).
+ */
+export function createBullBoardQueueAdapter(
+  queue: ConstructorParameters<typeof BullMQAdapter>[0],
+): BullMQAdapter {
+  const adapter = new BullMQAdapter(queue, {
+    readOnlyMode: true,
+    allowRetries: false,
+  });
+  adapter.setFormatter('data', () => BULL_BOARD_REDACTED_VALUE);
+  adapter.setFormatter('returnValue', () => BULL_BOARD_REDACTED_VALUE);
+  return adapter;
+}
 
 export function createBullBoardRouter(queues: QueueRegistry | null): Router {
   const router = Router();
@@ -41,7 +60,7 @@ export function createBullBoardRouter(queues: QueueRegistry | null): Router {
   const serverAdapter = new ExpressAdapter();
   serverAdapter.setBasePath(BULL_BOARD_BASE_PATH);
   createBullBoard({
-    queues: ALL_QUEUE_NAMES.map((name) => new BullMQAdapter(queues.get(name))),
+    queues: ALL_QUEUE_NAMES.map((name) => createBullBoardQueueAdapter(queues.get(name))),
     serverAdapter,
   });
   // getRouter() is typed `any` by the adapter; it is a plain Express 5 router.

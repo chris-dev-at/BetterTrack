@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { FormEvent } from 'react';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -11,7 +11,7 @@ import { ApiError } from '../../../lib/apiClient';
 import { formatDate, setMoneyCurrency } from '../../../lib/format';
 import { getAccountSettings, updateAccountSettings } from '../../../lib/settingsApi';
 import {
-  dataExportDownloadUrl,
+  downloadDataExport,
   getDataExportStatus,
   getMe,
   requestDataExport,
@@ -19,37 +19,27 @@ import {
 import { Skeleton } from '../../../ui';
 import { Button, Field, Input, Select } from '../../../ui/origin';
 import { Alert } from '../../components/ui';
+import { vaultMoneyErrorKey } from '../../vault/engine/errorCopy';
+import type { VaultMoneyFailure } from '../../vault/engine/errors';
+import { useVaultMoneySession } from '../../vault/engine/VaultMoneyEngineProvider';
+import { createClientCleartextExport } from '../../vault/export/cleartext';
+import { deliverClientDownload } from '../../vault/export/deliver';
+import { usePrivacyMode } from '../../vault/usePrivacyMode';
 import { PanelForm, PanelGroup, PanelHead, PanelNote, Row } from './panelKit';
 
 const ME_KEY = ['auth', 'me'] as const;
 const ACCOUNT_SETTINGS_KEY = ['settings', 'account'] as const;
 const EXPORT_STATUS_KEY = ['settings', 'export'] as const;
 
-// The raw download token is delivered once (in the request response) and only
-// its hash is stored server-side, so the SPA keeps it in localStorage — keyed by
-// job id — to survive a reload until the export is downloaded or expires.
-const EXPORT_TOKEN_STORAGE_KEY = 'bt.export.token';
+// #951 removes the old durable token cache. Clear it synchronously on mount so
+// upgrades cannot leave a previously persisted credential behind.
+const LEGACY_EXPORT_TOKEN_STORAGE_KEY = 'bt.export.token';
 
-function readStoredExportToken(): { jobId: string; token: string } | null {
+function clearLegacyExportToken(): void {
   try {
-    const raw = localStorage.getItem(EXPORT_TOKEN_STORAGE_KEY);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as { jobId?: unknown; token?: unknown };
-    if (typeof parsed.jobId === 'string' && typeof parsed.token === 'string') {
-      return { jobId: parsed.jobId, token: parsed.token };
-    }
+    localStorage.removeItem(LEGACY_EXPORT_TOKEN_STORAGE_KEY);
   } catch {
-    // Corrupt/blocked storage — treat as no stored token.
-  }
-  return null;
-}
-
-function writeStoredExportToken(value: { jobId: string; token: string } | null): void {
-  try {
-    if (value) localStorage.setItem(EXPORT_TOKEN_STORAGE_KEY, JSON.stringify(value));
-    else localStorage.removeItem(EXPORT_TOKEN_STORAGE_KEY);
-  } catch {
-    // Storage unavailable — the token simply won't persist across reloads.
+    // Storage may be blocked; there is no durable-token fallback.
   }
 }
 
@@ -202,16 +192,19 @@ function BaseCurrencyRow() {
 
 /**
  * Account data export (§13.4 V4-P6a, #494): re-auth → async zip build →
- * expiring, token-gated download. The raw download token is kept in
- * localStorage (see helpers above) since the server stores only its hash; the
- * status poll drives the pending/ready/expired states.
+ * expiring, token-gated download. The raw download token is held only in
+ * component memory (#951) since the server stores only its hash; the status
+ * poll drives the pending/ready/expired states.
  */
 function ExportRow() {
   const t = useT();
   const queryClient = useQueryClient();
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const [stored, setStored] = useState(() => readStoredExportToken());
+  const [held, setHeld] = useState<{ jobId: string; token: string } | null>(() => {
+    clearLegacyExportToken();
+    return null;
+  });
 
   const status = useQuery({
     queryKey: EXPORT_STATUS_KEY,
@@ -223,9 +216,7 @@ function ExportRow() {
   const mutation = useMutation({
     mutationFn: () => requestDataExport({ password }),
     onSuccess: (res) => {
-      const next = { jobId: res.jobId, token: res.downloadToken };
-      writeStoredExportToken(next);
-      setStored(next);
+      setHeld({ jobId: res.jobId, token: res.downloadToken });
       setPassword('');
       setError(null);
       void queryClient.invalidateQueries({ queryKey: EXPORT_STATUS_KEY });
@@ -234,10 +225,47 @@ function ExportRow() {
   });
 
   const current = status.data;
-  // The stored token only unlocks the CURRENT ready job (job ids must match).
-  const tokenForJob = current?.jobId && stored?.jobId === current.jobId ? stored.token : null;
+  // The in-memory token only unlocks the CURRENT ready job (job ids must match).
+  const tokenForJob = current?.jobId && held?.jobId === current.jobId ? held.token : null;
   const isReady = current?.status === 'ready';
   const isPending = current?.status === 'pending';
+
+  const downloadMutation = useMutation({
+    mutationFn: async () => {
+      if (!tokenForJob) throw new Error('No export download token is available');
+      await downloadDataExport({ token: tokenForJob });
+    },
+    onSuccess: () => {
+      // The server-side exchange is one-time. Drop the only client-held copy as
+      // soon as the browser has accepted the download.
+      setHeld(null);
+      setError(null);
+    },
+    onError: (err) => {
+      if (err instanceof ApiError && err.code === 'EXPORT_NOT_FOUND') setHeld(null);
+      setError(t('settings.export.downloadFailed'));
+    },
+  });
+
+  // A ready response includes the authoritative server expiry. Remove the
+  // in-memory credential at that instant and refresh the status so a panel left
+  // open naturally moves to the request-again state.
+  useEffect(() => {
+    if (current?.status !== 'ready' || !current.expiresAt) return;
+    const expiresAt = Date.parse(current.expiresAt);
+    if (!Number.isFinite(expiresAt)) return;
+    const expire = () => {
+      setHeld(null);
+      void status.refetch();
+    };
+    const delay = expiresAt - Date.now();
+    if (delay <= 0) {
+      expire();
+      return;
+    }
+    const timer = window.setTimeout(expire, delay);
+    return () => window.clearTimeout(timer);
+  }, [current?.expiresAt, current?.status, status.refetch]);
 
   function onSubmit(e: FormEvent) {
     e.preventDefault();
@@ -256,9 +284,17 @@ function ExportRow() {
               ? t('settings.export.readyUntil', { date: formatDate(current.expiresAt) })
               : t('settings.export.ready')}
           </span>
-          <a className="bt-btn bt-btn--sm" href={dataExportDownloadUrl(tokenForJob)}>
+          <Button
+            disabled={downloadMutation.isPending}
+            onClick={() => {
+              setError(null);
+              downloadMutation.mutate();
+            }}
+            size="sm"
+            type="button"
+          >
             {t('settings.export.download')}
-          </a>
+          </Button>
         </div>
       ) : isReady && !tokenForJob ? (
         <PanelNote>{t('settings.export.readyNoToken')}</PanelNote>
@@ -295,6 +331,85 @@ function ExportRow() {
 }
 
 /**
+ * Client-side cleartext export for paranoid accounts (PD7, paranoid design
+ * §12): a JSON + CSV zip built entirely in browser memory from the unlocked
+ * vault — the server never sees cleartext portfolio data, and nothing is
+ * persisted beyond the transient download. Locked vaults cannot export.
+ */
+function CleartextExportRow() {
+  const t = useT();
+  const { locale } = useI18n();
+  const session = useVaultMoneySession();
+  const [busy, setBusy] = useState(false);
+  const [failure, setFailure] = useState<VaultMoneyFailure | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+
+  // Locking drops `session` while this row stays mounted, and leaving the panel
+  // unmounts it — both must abort an in-flight generation before any bytes are
+  // handed over, so the cleanup is keyed on the session identity.
+  useEffect(
+    () => () => {
+      abortRef.current?.abort();
+    },
+    [session],
+  );
+
+  const exportLocale = locale === 'de' ? 'de' : 'en';
+
+  async function onExport() {
+    if (session === null || busy) return;
+    const controller = new AbortController();
+    abortRef.current = controller;
+    setBusy(true);
+    setFailure(null);
+    try {
+      const result = await createClientCleartextExport(session.sync, {
+        locale: exportLocale,
+        signal: controller.signal,
+      });
+      if (controller.signal.aborted) return;
+      if (!result.ok) {
+        setFailure(result.error);
+        return;
+      }
+      deliverClientDownload(result.value.bytes, result.value.mediaType, result.value.filename);
+    } finally {
+      if (abortRef.current === controller) abortRef.current = null;
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Row
+      hint={t('settings.export.cleartext.description')}
+      label={t('settings.export.cleartext.title')}
+      stack
+    >
+      {failure ? <Alert tone="error">{t(vaultMoneyErrorKey(failure))}</Alert> : null}
+
+      {session === null ? (
+        <PanelNote>{t('settings.export.cleartext.locked')}</PanelNote>
+      ) : (
+        <div>
+          <Button disabled={busy} onClick={() => void onExport()} size="sm" type="button">
+            {busy
+              ? t('settings.export.cleartext.generating')
+              : t('settings.export.cleartext.button')}
+          </Button>
+        </div>
+      )}
+    </Row>
+  );
+}
+
+/** Paranoid-only: normal accounts keep exactly the single server export row. */
+function CleartextExportGate() {
+  const privacy = usePrivacyMode();
+  if (privacy.privacyMode !== 'paranoid') return null;
+  return <CleartextExportRow />;
+}
+
+/**
  * Control Center → Account (PROJECTPLAN.md §6.11, §13.3 V3-P1). Who you are and
  * how the app renders for you: the read-only identity from `GET /auth/me`, the
  * display-language and base-currency pickers, and the re-auth-gated data export.
@@ -320,6 +435,7 @@ export function AccountPanel() {
 
       <PanelGroup label={t('settings.account.yourData')}>
         <ExportRow />
+        <CleartextExportGate />
       </PanelGroup>
     </div>
   );

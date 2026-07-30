@@ -9,6 +9,7 @@ import {
   type SecretBoxKey,
   type SecretBoxKeyring,
 } from '../services/crypto/secretBox';
+import { isKnownSecretPlaceholder } from '../services/password/knownPlaceholders';
 import type { ProgressiveSchedule } from '../services/security/progressiveLimiter';
 import { API_SERVICE_NAME, API_VERSION } from '../version';
 
@@ -765,6 +766,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   if (sessionSecrets.length === 0) {
     throw new Error(
       'Invalid environment configuration:\n  - SESSION_SECRET: at least one secret is required',
+    );
+  }
+  if (isProduction && sessionSecrets.some(isKnownSecretPlaceholder)) {
+    throw new Error(
+      'Invalid environment configuration:\n' +
+        '  - SESSION_SECRET: replace the example placeholder before production',
     );
   }
 

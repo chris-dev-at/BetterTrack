@@ -3,14 +3,18 @@ import { Router } from 'express';
 import {
   oauthApproveRequestSchema,
   oauthAuthorizationDetailsQuerySchema,
+  oauthClientLogoParamsSchema,
+  oauthDenyRequestSchema,
   oauthTokenRequestSchema,
   type OAuthApproveRequest,
   type OAuthAuthorizationDetailsQuery,
+  type OAuthClientLogoParams,
+  type OAuthDenyRequest,
   type OAuthTokenRequest,
 } from '@bettertrack/contracts';
 
 import { requireUser } from '../middleware/session';
-import { validateBody, validateQuery } from '../middleware/validate';
+import { validateBody, validateParams, validateQuery } from '../middleware/validate';
 import type { AppContext } from '../context';
 
 /**
@@ -26,6 +30,29 @@ import type { AppContext } from '../context';
 /** Public token exchange — mounted pre-CSRF (no cookie, no session). */
 export function createOAuthPublicRouter(ctx: AppContext): Router {
   const router = Router();
+
+  // GET /oauth/client-logos/:clientId — public, immutable raster bytes fetched
+  // once at client-save time. This endpoint never contacts the registered URL.
+  // If logo mutation is added, version this path by a content hash before
+  // retaining the one-year `immutable` cache policy below.
+  router.get(
+    '/client-logos/:clientId',
+    validateParams(oauthClientLogoParamsSchema),
+    async (req, res) => {
+      const { clientId } = req.valid?.params as OAuthClientLogoParams;
+      const logo = await ctx.oauth.getClientLogo(clientId);
+      if (!logo) {
+        res.status(404).end();
+        return;
+      }
+      res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+      // The configured web and API hosts can be distinct origins. Logos are
+      // public client branding, so override Helmet's same-origin default.
+      res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+      res.setHeader('Content-Type', logo.contentType);
+      res.send(logo.bytes);
+    },
+  );
 
   // POST /oauth/token — authorization_code or refresh_token grant.
   router.post('/token', validateBody(oauthTokenRequestSchema), async (req, res) => {
@@ -63,6 +90,14 @@ export function createOAuthRouter(ctx: AppContext): Router {
   router.post('/authorize', validateBody(oauthApproveRequestSchema), async (req, res) => {
     const body = req.valid?.body as OAuthApproveRequest;
     const result = await ctx.oauth.approve({ userId: req.authUser!.id, body, ip: req.ip ?? null });
+    res.json(result);
+  });
+
+  // POST /oauth/deny — the user declined: validate the authorize request with
+  // the approval path's rules, then return only the registered callback target.
+  router.post('/deny', validateBody(oauthDenyRequestSchema), async (req, res) => {
+    const body = req.valid?.body as OAuthDenyRequest;
+    const result = await ctx.oauth.deny(body);
     res.json(result);
   });
 
