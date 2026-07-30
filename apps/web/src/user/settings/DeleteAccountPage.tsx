@@ -159,7 +159,12 @@ export function DeleteAccountPage() {
               >
                 {mutation.isPending ? t('deleteAccount.submitting') : t('deleteAccount.submit')}
               </Button>
-              <Link to="/settings/account" className="bt-btn bt-btn--quiet">
+              {/* Cancel leaves for the portfolio, REPLACING this entry. It used
+                  to go back to account settings, which now redirect into the
+                  Control Center — and closing that popup went back in history,
+                  landing on this gate again. Someone who opened the delete link
+                  directly could not escape the loop. */}
+              <Link className="bt-btn bt-btn--quiet" replace to="/portfolio">
                 {t('common.cancel')}
               </Link>
             </div>
