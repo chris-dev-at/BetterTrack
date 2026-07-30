@@ -247,7 +247,6 @@
     "unknown": "unbekannt",
     "private": "Privat",
     "friends": "Freunde",
-    "soon": "Bald",
     "comingSoon": "Demnächst",
     "genericError": "Etwas ist schiefgelaufen. Bitte versuche es erneut.",
     "continue": "Weiter",
@@ -500,12 +499,9 @@
     "openSearch": "Suche öffnen (⌘K)",
     "accountMenu": "Kontomenü",
     "account": "Konto",
-    "myPortfolio": "Mein Portfolio",
     "settings": "Einstellungen",
     "discreetMode": "Diskreter Modus",
     "discreetModeError": "Änderung konnte nicht gespeichert werden. Bitte erneut versuchen.",
-    "inviteOthers": "Andere einladen",
-    "shareProfile": "Profil teilen",
     "logout": "Abmelden",
     "home": "Home",
     "portfolios": "Portfolio",
@@ -634,6 +630,8 @@
     },
     "notifications": {
       "title": "Benachrichtigungen",
+      "bellAria": "Benachrichtigungen",
+      "bellUnreadAria": "Benachrichtigungen ({{count}} ungelesen)",
       "loadError": {
         "title": "Deine Benachrichtigungseinstellungen konnten nicht geladen werden"
       },
