@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { beforeEach, expect, test, vi } from 'vitest';
@@ -111,9 +111,14 @@ test('create-user flow shows the generated temp password exactly once', async ()
     username: 'newbie',
     role: 'user',
   });
+
+  await user.keyboard('{Escape}');
+  expect(screen.getByText(created.tempPassword)).toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: "I've saved this" }));
+  expect(screen.queryByText(created.tempPassword)).not.toBeInTheDocument();
 });
 
-test('bulk-select drives a bulk-disable action', async () => {
+test('bulk-disable names the selected count and only runs after confirmation', async () => {
   vi.mocked(api.bulkUserAction).mockResolvedValue({ action: 'disable', disabled: 1, skipped: 0 });
 
   const user = userEvent.setup();
@@ -123,6 +128,19 @@ test('bulk-select drives a bulk-disable action', async () => {
   await user.click(screen.getByLabelText('Select jane'));
   await user.click(await screen.findByRole('button', { name: 'Disable selected' }));
 
-  expect(api.bulkUserAction).toHaveBeenCalledWith({ action: 'disable', userIds: ['user-1'] });
+  expect(await screen.findByRole('dialog', { name: 'Disable selected users?' })).toHaveTextContent(
+    'Disable 1 selected user(s)?',
+  );
+  expect(api.bulkUserAction).not.toHaveBeenCalled();
+
+  await user.click(screen.getByRole('button', { name: 'Cancel' }));
+  expect(api.bulkUserAction).not.toHaveBeenCalled();
+
+  await user.click(screen.getByRole('button', { name: 'Disable selected' }));
+  await user.click(await screen.findByRole('button', { name: 'Disable 1 users' }));
+
+  await waitFor(() =>
+    expect(api.bulkUserAction).toHaveBeenCalledWith({ action: 'disable', userIds: ['user-1'] }),
+  );
   expect(await screen.findByText(/Disabled 1 user/)).toBeInTheDocument();
 });

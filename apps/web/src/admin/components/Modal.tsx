@@ -117,10 +117,13 @@ export function Modal({
   title,
   onClose,
   children,
+  dismissable = true,
 }: {
   title: string;
   onClose: () => void;
   children: ReactNode;
+  /** Disable Escape and backdrop dismissal until the caller acknowledges a one-time value. */
+  dismissable?: boolean;
 }) {
   const dialogRef = useRef<HTMLDivElement>(null);
   // Capture this during the initial render, before React commits descendants
@@ -130,13 +133,15 @@ export function Modal({
     document.activeElement instanceof HTMLElement ? document.activeElement : null,
   );
   const onCloseRef = useRef(onClose);
+  const dismissableRef = useRef(dismissable);
   const titleId = useId();
 
   onCloseRef.current = onClose;
+  dismissableRef.current = dismissable;
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onCloseRef.current();
+      if (e.key === 'Escape' && dismissableRef.current) onCloseRef.current();
     };
     document.addEventListener('keydown', onKey);
     const prevOverflow = document.body.style.overflow;
@@ -188,7 +193,9 @@ export function Modal({
   return (
     <div
       className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/70 p-4 sm:items-center"
-      onMouseDown={onClose}
+      onMouseDown={() => {
+        if (dismissable) onClose();
+      }}
     >
       <div
         ref={dialogRef}

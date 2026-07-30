@@ -22,6 +22,7 @@ export function Dialog({
   children,
   footer,
   widthClassName = 'max-w-lg',
+  dismissable = true,
 }: {
   title: string;
   description?: string;
@@ -36,11 +37,13 @@ export function Dialog({
   footer?: ReactNode;
   /** Tailwind max-width for the panel. Defaults to `max-w-lg`. */
   widthClassName?: string;
+  /** Disable every incidental close affordance until a one-time value is acknowledged. */
+  dismissable?: boolean;
 }) {
   const t = useT();
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape' && dismissable) onClose();
     };
     document.addEventListener('keydown', onKey);
     const prevOverflow = document.body.style.overflow;
@@ -49,7 +52,7 @@ export function Dialog({
       document.removeEventListener('keydown', onKey);
       document.body.style.overflow = prevOverflow;
     };
-  }, [onClose]);
+  }, [dismissable, onClose]);
 
   // Pinned-footer variant: a height-bounded flex column (bt-dialog__panel is one
   // already) so header and footer stay put while only the body scrolls. Plain
@@ -66,14 +69,16 @@ export function Dialog({
         <h2 className="bt-dialog__title">{title}</h2>
         {description ? <p className="bt-meta mt-1">{description}</p> : null}
       </div>
-      <button
-        type="button"
-        onClick={onClose}
-        aria-label={t('common.closeDialogAria')}
-        className="bt-btn bt-btn--quiet bt-btn--sm bt-btn--icon shrink-0"
-      >
-        ✕
-      </button>
+      {dismissable ? (
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label={t('common.closeDialogAria')}
+          className="bt-btn bt-btn--quiet bt-btn--sm bt-btn--icon shrink-0"
+        >
+          ✕
+        </button>
+      ) : null}
     </div>
   );
 
@@ -82,7 +87,9 @@ export function Dialog({
       <div className="bt-scrim" aria-hidden="true" />
       <div
         className="fixed inset-0 z-[71] flex items-start justify-center overflow-y-auto p-4 sm:items-center"
-        onMouseDown={onClose}
+        onMouseDown={() => {
+          if (dismissable) onClose();
+        }}
       >
         <div
           role="dialog"

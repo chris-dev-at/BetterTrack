@@ -8,6 +8,7 @@ import {
   type OAuthClientSummary,
 } from '@bettertrack/contracts';
 
+import { useT } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
 import * as api from '../../lib/adminApi';
 import { ScopePicker } from '../../ui';
@@ -47,6 +48,7 @@ export function OAuthAppsPage() {
   const [rowError, setRowError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [editing, setEditing] = useState<OAuthClientSummary | null>(null);
+  const [deleting, setDeleting] = useState<OAuthClientSummary | null>(null);
 
   const apps = useResource((signal) => api.listFirstPartyApps(signal), []);
 
@@ -79,11 +81,13 @@ export function OAuthAppsPage() {
   }
 
   async function remove(app: OAuthClientSummary) {
+    if (busyId !== null) return;
     setRowError(null);
     setBusyId(app.id);
     try {
       await api.deleteFirstPartyApp(app.id);
       apps.reload();
+      setDeleting(null);
     } catch (err) {
       setRowError(errorMessage(err));
     } finally {
@@ -197,7 +201,7 @@ export function OAuthAppsPage() {
                   <Button
                     variant="danger"
                     disabled={busyId === app.id}
-                    onClick={() => void remove(app)}
+                    onClick={() => setDeleting(app)}
                   >
                     Delete
                   </Button>
@@ -221,24 +225,7 @@ export function OAuthAppsPage() {
         </div>
       )}
 
-      {created ? (
-        <Modal title="App registered" onClose={() => setCreated(null)}>
-          <div className="flex flex-col gap-4">
-            <p className="text-sm text-neutral-400">
-              <span className="text-neutral-200">{created.client.name}</span> is ready. Put the
-              client ID in the app&apos;s OAuth config.
-              {created.clientSecret
-                ? ' The client secret is shown only once — copy it now.'
-                : ' This is a public client, so there is no secret (it uses PKCE).'}
-            </p>
-            <CopyField label="Client ID" value={created.client.clientId} />
-            {created.clientSecret ? (
-              <CopyField label="Client secret (shown once)" value={created.clientSecret} />
-            ) : null}
-            <Button onClick={() => setCreated(null)}>Done</Button>
-          </div>
-        </Modal>
-      ) : null}
+      {created ? <CreatedOAuthAppDialog result={created} onClose={() => setCreated(null)} /> : null}
 
       {editing ? (
         <EditOAuthAppModal
@@ -250,7 +237,104 @@ export function OAuthAppsPage() {
           }}
         />
       ) : null}
+
+      {deleting ? (
+        <DeleteOAuthAppDialog
+          app={deleting}
+          busy={busyId === deleting.id}
+          onCancel={() => setDeleting(null)}
+          onConfirm={() => void remove(deleting)}
+        />
+      ) : null}
     </div>
+  );
+}
+
+function CreatedOAuthAppDialog({
+  result,
+  onClose,
+}: {
+  result: CreateOAuthClientResponse;
+  onClose: () => void;
+}) {
+  const t = useT();
+  const [acknowledged, setAcknowledged] = useState(result.clientSecret == null);
+
+  return (
+    <Modal
+      title={t('admin.oneTimeCredentials.oauthClient.title')}
+      onClose={onClose}
+      dismissable={acknowledged}
+    >
+      <div className="flex flex-col gap-4">
+        <p className="text-sm text-neutral-400">
+          {result.clientSecret
+            ? t('admin.oneTimeCredentials.oauthClient.secretDescription', {
+                name: result.client.name,
+              })
+            : t('admin.oneTimeCredentials.oauthClient.publicDescription', {
+                name: result.client.name,
+              })}
+        </p>
+        <CopyField
+          label={t('admin.oneTimeCredentials.oauthClient.clientIdLabel')}
+          value={result.client.clientId}
+        />
+        {result.clientSecret ? (
+          <CopyField
+            label={t('admin.oneTimeCredentials.oauthClient.clientSecretLabel')}
+            value={result.clientSecret}
+            onCopied={() => setAcknowledged(true)}
+          />
+        ) : null}
+        <Button
+          onClick={() => {
+            setAcknowledged(true);
+            onClose();
+          }}
+        >
+          {result.clientSecret ? t('common.savedOneTimeSecret') : t('common.done')}
+        </Button>
+      </div>
+    </Modal>
+  );
+}
+
+function DeleteOAuthAppDialog({
+  app,
+  busy,
+  onCancel,
+  onConfirm,
+}: {
+  app: OAuthClientSummary;
+  busy: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  const t = useT();
+
+  return (
+    <Modal
+      title={t('admin.confirmations.deleteOAuthApp.title')}
+      onClose={onCancel}
+      dismissable={!busy}
+    >
+      <div className="flex flex-col gap-4">
+        <p className="text-sm text-neutral-400">
+          {t('admin.confirmations.deleteOAuthApp.description', { name: app.name })}
+        </p>
+        <div className="flex justify-end gap-2">
+          <Button variant="secondary" disabled={busy} onClick={onCancel}>
+            {t('common.cancel')}
+          </Button>
+          <Button variant="danger" disabled={busy} onClick={onConfirm}>
+            {busy
+              ? t('admin.confirmations.deleteOAuthApp.pending')
+              : t('admin.confirmations.deleteOAuthApp.confirm')}
+          </Button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 

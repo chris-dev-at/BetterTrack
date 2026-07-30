@@ -2,7 +2,7 @@ import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, expect, test, vi } from 'vitest';
 
-import type { AppSettingsResponse, MeResponse } from '@bettertrack/contracts';
+import type { AppSettingsResponse, MeResponse, RegistrationToken } from '@bettertrack/contracts';
 
 vi.mock('../../lib/adminApi');
 import * as api from '../../lib/adminApi';
@@ -29,6 +29,17 @@ const settings: AppSettingsResponse = {
   betaMode: false,
   updatedAt: null,
   updatedBy: null,
+};
+
+const registrationToken: RegistrationToken = {
+  id: '00000000-0000-0000-0000-0000000000dd',
+  label: 'beta wave 1',
+  status: 'active',
+  maxUses: 3,
+  useCount: 0,
+  expiresAt: null,
+  revokedAt: null,
+  createdAt: '2026-07-14T00:00:00.000Z',
 };
 
 function renderPage() {
@@ -105,6 +116,27 @@ test('creates a registration token and shows the register URL once', async () =>
 
   await waitFor(() => expect(api.createRegistrationToken).toHaveBeenCalled());
   expect(await screen.findByText(/RAW-SECRET/)).toBeInTheDocument();
+});
+
+test('requires confirmation before revoking a registration token', async () => {
+  vi.mocked(api.listRegistrationTokens).mockResolvedValue({ tokens: [registrationToken] });
+  vi.mocked(api.revokeRegistrationToken).mockResolvedValue(undefined);
+  const user = userEvent.setup();
+  renderPage();
+
+  await screen.findByText(registrationToken.label!);
+  await user.click(screen.getByRole('button', { name: 'Revoke' }));
+  expect(await screen.findByText('Revoke registration token “beta wave 1”?')).toBeInTheDocument();
+  expect(api.revokeRegistrationToken).not.toHaveBeenCalled();
+
+  await user.click(screen.getByRole('button', { name: 'Cancel' }));
+  expect(api.revokeRegistrationToken).not.toHaveBeenCalled();
+
+  await user.click(screen.getByRole('button', { name: 'Revoke' }));
+  await user.click(screen.getByRole('button', { name: 'Confirm revoke' }));
+  await waitFor(() =>
+    expect(api.revokeRegistrationToken).toHaveBeenCalledWith(registrationToken.id),
+  );
 });
 
 test('approves a pending registration from the queue', async () => {

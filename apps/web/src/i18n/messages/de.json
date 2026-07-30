@@ -201,6 +201,7 @@
   },
   "common": {
     "save": "Speichern",
+    "done": "Fertig",
     "cancel": "Abbrechen",
     "close": "Schließen",
     "delete": "Löschen",
@@ -231,6 +232,7 @@
     "escKey": "Esc",
     "escToClose": "zum Schließen",
     "closeDialogAria": "Dialog schließen",
+    "savedOneTimeSecret": "Ich habe es gespeichert",
     "charts": {
       "noAllocationData": "Noch keine Allokationsdaten.",
       "selectRange": "Chart-Zeitraum wählen",
@@ -3519,6 +3521,55 @@
     }
   },
   "admin": {
+    "confirmations": {
+      "deleteAnnouncement": {
+        "title": "Ankündigung löschen?",
+        "description": "„{{name}}“ löschen? Dies kann nicht rückgängig gemacht werden.",
+        "confirm": "Ankündigung löschen",
+        "pending": "Wird gelöscht…"
+      },
+      "deleteOAuthApp": {
+        "title": "OAuth-App löschen?",
+        "description": "„{{name}}“ löschen? Bestehende Integrationen funktionieren dann nicht mehr.",
+        "confirm": "App löschen",
+        "pending": "Wird gelöscht…"
+      },
+      "bulkDisable": {
+        "title": "Ausgewählte Nutzer deaktivieren?",
+        "description": "{{count}} ausgewählte Nutzer deaktivieren? Sie können sich danach nicht mehr anmelden.",
+        "confirm": "{{count}} Nutzer deaktivieren",
+        "pending": "Wird deaktiviert…"
+      },
+      "revokeInvite": {
+        "prompt": "Einladung für {{email}} widerrufen?",
+        "confirm": "Widerruf bestätigen",
+        "pending": "Wird widerrufen…"
+      },
+      "revokeRegistrationToken": {
+        "prompt": "Registrierungstoken „{{name}}“ widerrufen?",
+        "confirm": "Widerruf bestätigen",
+        "pending": "Wird widerrufen…"
+      }
+    },
+    "oneTimeCredentials": {
+      "temporaryPassword": {
+        "title": "Nutzer erstellt",
+        "description": "Teile dieses temporäre Passwort mit {{email}}. Es wird nur einmal angezeigt und der Nutzer muss es bei der ersten Anmeldung ändern.",
+        "label": "Temporäres Passwort"
+      },
+      "invite": {
+        "title": "Einladung erstellt",
+        "description": "Teile diesen einmaligen Link mit {{email}}. Er läuft am {{expiresAt}} ab und wird hier nur einmal angezeigt.",
+        "label": "Einladungs-URL"
+      },
+      "oauthClient": {
+        "title": "App registriert",
+        "secretDescription": "{{name}} ist bereit. Hinterlege die Client-ID in der OAuth-Konfiguration der App. Das Client-Secret wird nur einmal angezeigt — kopiere es jetzt.",
+        "publicDescription": "{{name}} ist bereit. Hinterlege die Client-ID in der OAuth-Konfiguration der App. Dies ist ein öffentlicher Client und hat daher kein Secret (er verwendet PKCE).",
+        "clientIdLabel": "Client-ID",
+        "clientSecretLabel": "Client-Secret (nur einmal angezeigt)"
+      }
+    },
     "nav": {
       "security": "Sicherheit",
       "health": "Zustand",

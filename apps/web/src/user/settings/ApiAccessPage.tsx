@@ -51,11 +51,13 @@ function ScopeChip({ scope }: { scope: string }) {
 function TokenModal({ result, onClose }: { result: CreateApiKeyResponse; onClose: () => void }) {
   const t = useT();
   const [copied, setCopied] = useState(false);
+  const [acknowledged, setAcknowledged] = useState(false);
 
   async function copy() {
     try {
       await navigator.clipboard.writeText(result.token);
       setCopied(true);
+      setAcknowledged(true);
     } catch {
       setCopied(false);
     }
@@ -66,6 +68,7 @@ function TokenModal({ result, onClose }: { result: CreateApiKeyResponse; onClose
       title={t('settings.api.keys.tokenModal.title')}
       description={t('settings.api.keys.tokenModal.description')}
       onClose={onClose}
+      dismissable={acknowledged}
     >
       <div className="flex flex-col gap-4">
         <div className="flex items-center gap-2">
@@ -83,8 +86,14 @@ function TokenModal({ result, onClose }: { result: CreateApiKeyResponse; onClose
           {t('settings.api.keys.tokenModal.storeWarning', { name: result.key.name })}
         </Alert>
         <div className="flex justify-end">
-          <Button onClick={onClose} variant="primary">
-            {t('settings.api.done')}
+          <Button
+            onClick={() => {
+              setAcknowledged(true);
+              onClose();
+            }}
+            variant="primary"
+          >
+            {t('common.savedOneTimeSecret')}
           </Button>
         </div>
       </div>
@@ -238,12 +247,14 @@ function OAuthCredentialsModal({
 }) {
   const t = useT();
   const [copiedSecret, setCopiedSecret] = useState(false);
+  const [acknowledged, setAcknowledged] = useState(result.clientSecret == null);
 
   async function copySecret() {
     if (result.clientSecret == null) return;
     try {
       await navigator.clipboard.writeText(result.clientSecret);
       setCopiedSecret(true);
+      setAcknowledged(true);
     } catch {
       setCopiedSecret(false);
     }
@@ -258,6 +269,7 @@ function OAuthCredentialsModal({
           : t('settings.api.oauth.credentialsModal.descriptionPublic')
       }
       onClose={onClose}
+      dismissable={acknowledged}
     >
       <div className="flex flex-col gap-4">
         <div className="flex flex-col gap-1.5">
@@ -291,8 +303,14 @@ function OAuthCredentialsModal({
             : t('settings.api.oauth.credentialsModal.publicClientNotice')}
         </Alert>
         <div className="flex justify-end">
-          <Button onClick={onClose} variant="primary">
-            {t('settings.api.done')}
+          <Button
+            onClick={() => {
+              setAcknowledged(true);
+              onClose();
+            }}
+            variant="primary"
+          >
+            {result.clientSecret ? t('common.savedOneTimeSecret') : t('settings.api.done')}
           </Button>
         </div>
       </div>

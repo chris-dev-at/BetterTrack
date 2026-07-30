@@ -319,6 +319,35 @@ test('keeps Escape handling and its accessible title', async () => {
   expect(onClose).toHaveBeenCalledOnce();
 });
 
+test('guards incidental dismissal without affecting focus containment', async () => {
+  const user = userEvent.setup();
+  const onClose = vi.fn();
+  const { rerender } = render(
+    <Modal title="One-time secret" onClose={onClose} dismissable={false}>
+      <button>I've saved this</button>
+    </Modal>,
+  );
+
+  const saved = screen.getByRole('button', { name: "I've saved this" });
+  expect(saved).toHaveFocus();
+
+  await user.keyboard('{Escape}');
+  await user.click(screen.getByRole('dialog').parentElement!);
+  expect(onClose).not.toHaveBeenCalled();
+
+  await user.tab();
+  expect(saved).toHaveFocus();
+
+  rerender(
+    <Modal title="One-time secret" onClose={onClose} dismissable>
+      <button>I've saved this</button>
+    </Modal>,
+  );
+
+  await user.keyboard('{Escape}');
+  expect(onClose).toHaveBeenCalledOnce();
+});
+
 test('restores focus to the opener when the modal unmounts', () => {
   const opener = document.createElement('button');
   opener.textContent = 'Open modal';

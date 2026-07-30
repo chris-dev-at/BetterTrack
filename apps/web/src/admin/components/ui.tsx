@@ -115,12 +115,21 @@ export function Badge({ tone, children }: { tone: BadgeTone; children: ReactNode
 }
 
 /** A read-only secret (temp password / invite URL) with a copy button. */
-export function CopyField({ value, label }: { value: string; label: string }) {
+export function CopyField({
+  value,
+  label,
+  onCopied,
+}: {
+  value: string;
+  label: string;
+  onCopied?: () => void;
+}) {
   const [copied, setCopied] = useState(false);
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(value);
       setCopied(true);
+      onCopied?.();
     } catch {
       setCopied(false);
     }

@@ -8,10 +8,12 @@ import {
   type UpdateAnnouncementRequest,
 } from '@bettertrack/contracts';
 
+import { useT } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
 import * as api from '../../lib/adminApi';
 import { formatDateTime } from '../../lib/format';
 import { useResource } from '../useResource';
+import { Modal } from '../components/Modal';
 import {
   Alert,
   Badge,
@@ -101,6 +103,7 @@ function fromAnnouncement(row: Announcement): ComposerState {
 }
 
 export function AnnouncementsPage() {
+  const t = useT();
   const announcements = useResource((signal) => api.listAnnouncements(signal), []);
   const [composer, setComposer] = useState<ComposerState>(EMPTY_COMPOSER);
   const [formError, setFormError] = useState<string | null>(null);
@@ -108,6 +111,7 @@ export function AnnouncementsPage() {
   const [saved, setSaved] = useState<string | null>(null);
   const [rowError, setRowError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState<Announcement | null>(null);
 
   useEffect(() => {
     if (!saved) return;
@@ -177,6 +181,7 @@ export function AnnouncementsPage() {
   }
 
   async function removeAnnouncement(row: Announcement) {
+    if (busyId !== null) return;
     setRowError(null);
     setBusyId(row.id);
     try {
@@ -184,6 +189,7 @@ export function AnnouncementsPage() {
       announcements.reload();
       // If the composer was editing this row, clear it too.
       if (composer.id === row.id) resetComposer();
+      setDeleting(null);
     } catch (err) {
       setRowError(errorMessage(err));
     } finally {
@@ -407,7 +413,7 @@ export function AnnouncementsPage() {
                       <Button
                         variant="danger"
                         disabled={busyId === row.id}
-                        onClick={() => void removeAnnouncement(row)}
+                        onClick={() => setDeleting(row)}
                       >
                         Delete
                       </Button>
@@ -419,6 +425,38 @@ export function AnnouncementsPage() {
           </table>
         </div>
       )}
+
+      {deleting ? (
+        <Modal
+          title={t('admin.confirmations.deleteAnnouncement.title')}
+          onClose={() => setDeleting(null)}
+          dismissable={busyId !== deleting.id}
+        >
+          <div className="flex flex-col gap-4">
+            <p className="text-sm text-neutral-400">
+              {t('admin.confirmations.deleteAnnouncement.description', { name: deleting.titleEn })}
+            </p>
+            <div className="flex justify-end gap-2">
+              <Button
+                variant="secondary"
+                disabled={busyId === deleting.id}
+                onClick={() => setDeleting(null)}
+              >
+                {t('common.cancel')}
+              </Button>
+              <Button
+                variant="danger"
+                disabled={busyId === deleting.id}
+                onClick={() => void removeAnnouncement(deleting)}
+              >
+                {busyId === deleting.id
+                  ? t('admin.confirmations.deleteAnnouncement.pending')
+                  : t('admin.confirmations.deleteAnnouncement.confirm')}
+              </Button>
+            </div>
+          </div>
+        </Modal>
+      ) : null}
     </div>
   );
 }
