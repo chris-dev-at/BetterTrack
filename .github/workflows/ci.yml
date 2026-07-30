@@ -35,6 +35,12 @@ jobs:
           GITLEAKS_ENABLE_COMMENTS: 'false'
           GITLEAKS_ENABLE_UPLOAD_ARTIFACT: 'false'
 
+      # The action writes this generated SARIF report into the checkout even
+      # when artifact upload is disabled. Keep generated scanner output out of
+      # the existing repository-wide format gate below.
+      - name: Remove generated Gitleaks report
+        run: rm -f results.sarif
+
       - name: Enable Corepack
         run: corepack enable
 
