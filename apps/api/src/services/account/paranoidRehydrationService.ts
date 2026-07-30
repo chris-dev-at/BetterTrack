@@ -143,10 +143,19 @@ const CASH_AMOUNT_STORAGE_SCALE = 6;
  * Values are represented as integers at their column scale, so `1n` is derived
  * from the storage definition: it is exactly one `numeric(20,8)` quantum
  * (`10^-8`), not an independently chosen epsilon.
+ *
+ * **The cash ledger deliberately gets no counterpart — it stays exact.** The
+ * envelope above is only justified because the rounding that produces a quantity
+ * shortfall is already invisible when the document is captured. Cash has no such
+ * preimage: every writer floors amounts to whole cents before storage
+ * (`floorCents`, §5.4) and `persistedNumeric` hard-rejects a document amount
+ * finer than scale 6, so no cash amount is ever quantized away. An exact scale-6
+ * cash shortfall is therefore always a genuine overdraw, and a per-row allowance
+ * could only admit overdraw — never rescue a reachable ledger. If #918 makes the
+ * money columns quantize at this boundary instead of rejecting, the envelope
+ * arrives with the rounding that justifies it.
  */
 const PERSISTED_QUANTITY_ROUNDING_TOLERANCE = 1n;
-/** One integer storage unit is exactly one `numeric(20,6)` cash quantum (`10^-6`). */
-const PERSISTED_CASH_ROUNDING_TOLERANCE = 1n;
 
 const UUID_RADIX_DIGITS = 32;
 const TIMESTAMP_RADIX_DIGITS = 17;
@@ -313,6 +322,15 @@ function orderedForPersistedReplay<T extends PersistedReplayRow>(input: readonly
   return ordered.map((entry) => entry.row);
 }
 
+/**
+ * One typed pre-write diagnostic for both ledgers: which entity, which field,
+ * the persisted value, and why it fails. `INVALID_CASH_LEDGER` is the single
+ * ledger-solvency code — it covers position oversell too, despite reading as
+ * cash-only, because it is the taxonomy PD3b routing and the sibling paranoid
+ * work already key off; the message names the ledger that actually failed. A
+ * dedicated `INVALID_SOLVENCY` code belongs to whichever change first surfaces
+ * these on the wire.
+ */
 function solvencyError(
   entity: EntityOf<'transaction'> | EntityOf<'cashMovement'>,
   field: 'quantity' | 'amountEur',
@@ -1368,7 +1386,10 @@ function validateGraph(
   let cashMovementReplayVisits = 0;
   let transactionReplayVisits = 0;
   try {
-    const balancesBySource = new Map<string, { publicBalance: number; epochRows: bigint }>();
+    // Cash stays exact: amounts are stored at whole cents and rejected beyond
+    // scale 6, so integer scale-6 accumulation IS the persisted balance (see
+    // PERSISTED_QUANTITY_ROUNDING_TOLERANCE for why quantities differ).
+    const balancesBySource = new Map<string, bigint>();
     for (const movement of orderedMovements) {
       cashMovementReplayVisits += 1;
       const amount = persistedNumeric(
@@ -1381,19 +1402,8 @@ function validateGraph(
       if (amount === 0n || (requiredSign === 1 ? amount < 0n : amount > 0n)) {
         throw solvencyError(movement, 'amountEur', movement.data.amountEur, 'has the wrong sign');
       }
-      const state = balancesBySource.get(movement.data.sourceId) ?? {
-        publicBalance: 0,
-        epochRows: 0n,
-      };
-      state.epochRows += 1n;
-      const persistedBalance = publicNumberAtScale(
-        state.publicBalance,
-        CASH_AMOUNT_STORAGE_SCALE,
-        'cash balance',
-      );
-      const shortfall = -(persistedBalance + amount);
-      const allowance = state.epochRows * PERSISTED_CASH_ROUNDING_TOLERANCE;
-      if (shortfall > allowance && !mirrorReplicaSourceIds.has(movement.data.sourceId)) {
+      const balance = (balancesBySource.get(movement.data.sourceId) ?? 0n) + amount;
+      if (balance < 0n && !mirrorReplicaSourceIds.has(movement.data.sourceId)) {
         throw solvencyError(
           movement,
           'amountEur',
@@ -1401,21 +1411,7 @@ function validateGraph(
           'would overdraw its cash source',
         );
       }
-      state.publicBalance += publicNumberReadback(
-        amount,
-        CASH_AMOUNT_STORAGE_SCALE,
-        'cash-movement amount',
-      );
-      if (shortfall > 0n && !mirrorReplicaSourceIds.has(movement.data.sourceId)) {
-        state.publicBalance = 0;
-      }
-      if (
-        publicNumberAtScale(state.publicBalance, CASH_AMOUNT_STORAGE_SCALE, 'cash balance') === 0n
-      ) {
-        state.publicBalance = 0;
-        state.epochRows = 0n;
-      }
-      balancesBySource.set(movement.data.sourceId, state);
+      balancesBySource.set(movement.data.sourceId, balance);
     }
 
     const positionsByPortfolioAsset = new Map<
@@ -1461,7 +1457,16 @@ function validateGraph(
         }
 
         state.publicQuantity -= publicQuantity;
-        if (shortfall > 0n || transaction.data.allowUncovered) {
+        // `allowUncovered` acknowledges that a sell MAY exceed the holding; it
+        // never asserts that this one does, and the contract documents it as
+        // ignored on a covered sell. The write path agrees: `reducePosition`
+        // closes the position at 0 only when the sell actually exceeds the held
+        // quantity and otherwise keeps `held -= quantity`
+        // (packages/domain/src/holdings.ts). So key the clamp off the shortfall
+        // alone — an acknowledged oversell already lands in `shortfall > 0n` and
+        // closes at 0, while a flagged *covered* sell keeps its remainder for the
+        // rows that follow instead of stranding them as a phantom oversell.
+        if (shortfall > 0n) {
           state.publicQuantity = 0;
         }
         // A closed position starts a new bounded rounding epoch; old rows can

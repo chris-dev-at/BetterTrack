@@ -433,6 +433,67 @@ describe('paranoid rehydration solvency conformance', () => {
     ).toHaveLength(4);
   });
 
+  it('accepts a covered sell flagged allowUncovered followed by the sell that closes the rest', async () => {
+    const harness = await createTestApp();
+    const user = await harness.seedUser();
+    const portfolioId = await harness.ctx.portfolio.getDefaultPortfolioId(user.id);
+    const assetId = '018f0000-1000-7000-8000-000000000013';
+    await seedGlobalAsset(harness, assetId, 'FLAGGED-COVERED');
+
+    await harness.ctx.portfolio.createTransactions(user.id, portfolioId, [
+      {
+        assetId,
+        side: 'buy',
+        quantity: 10,
+        price: 10,
+        fee: 0,
+        executedAt: '2026-07-23T10:00:00.000Z',
+      },
+    ]);
+    // Covered sell carrying the acknowledgment: the write path ignores the flag
+    // (`reducePosition` keeps `held -= quantity` → 7 left) but persists it.
+    await harness.ctx.portfolio.createTransactions(user.id, portfolioId, [
+      {
+        assetId,
+        side: 'sell',
+        quantity: 3,
+        price: 11,
+        fee: 0,
+        executedAt: '2026-07-23T10:01:00.000Z',
+        allowUncovered: true,
+      },
+    ]);
+    // Only reachable while the remaining 7 survives the replay.
+    await harness.ctx.portfolio.createTransactions(user.id, portfolioId, [
+      {
+        assetId,
+        side: 'sell',
+        quantity: 7,
+        price: 12,
+        fee: 0,
+        executedAt: '2026-07-23T10:02:00.000Z',
+      },
+    ]);
+
+    const document = await capturePortfolioDocument(harness, portfolioId);
+    expect(
+      document.entities
+        .filter((row): row is StrictTransactionEntity => row.kind === 'transaction')
+        .map((row) => ({ quantity: row.data.quantity, allowUncovered: row.data.allowUncovered }))
+        .sort((left, right) => left.quantity.localeCompare(right.quantity)),
+    ).toEqual([
+      { quantity: '10.00000000', allowUncovered: false },
+      { quantity: '3.00000000', allowUncovered: true },
+      { quantity: '7.00000000', allowUncovered: false },
+    ]);
+
+    await replaceNormalRowsWithServerVault(harness, user.id);
+    await rehydrate(harness, user.id, document);
+    expect(
+      await harness.db.select().from(transactions).where(eq(transactions.portfolioId, portfolioId)),
+    ).toHaveLength(3);
+  });
+
   it('rejects the high-magnitude no-preimage sell as a typed pre-write solvency error', async () => {
     const harness = await createTestApp();
     const user = await harness.seedUser();
@@ -476,7 +537,7 @@ describe('paranoid rehydration solvency conformance', () => {
     mutationTransaction.mockRestore();
   });
 
-  it('absorbs a cash shortfall at the per-epoch storage envelope', async () => {
+  it('accepts a cash ledger the normal path drove back to exactly zero', async () => {
     const harness = await createTestApp();
     const user = await harness.seedUser();
     const portfolioId = await harness.ctx.portfolio.getDefaultPortfolioId(user.id);
@@ -489,12 +550,6 @@ describe('paranoid rehydration solvency conformance', () => {
       executedAt: '2026-07-23T10:01:00.000Z',
     });
     const document = await capturePortfolioDocument(harness, portfolioId);
-    const withdrawal = document.entities.find(
-      (row): row is StrictCashMovementEntity =>
-        row.kind === 'cashMovement' && row.data.kind === 'withdrawal',
-    );
-    if (!withdrawal) throw new Error('expected withdrawal');
-    withdrawal.data.amountEur = '-1.000002';
 
     await replaceNormalRowsWithServerVault(harness, user.id);
     await rehydrate(harness, user.id, document);
@@ -506,7 +561,7 @@ describe('paranoid rehydration solvency conformance', () => {
     ).toHaveLength(2);
   });
 
-  it('rejects a cash shortfall beyond its storage envelope with the same diagnostic shape', async () => {
+  it('rejects the finest representable cash overdraw — the cash ledger carries no envelope', async () => {
     const harness = await createTestApp();
     const user = await harness.seedUser();
     const portfolioId = await harness.ctx.portfolio.getDefaultPortfolioId(user.id);
@@ -524,14 +579,16 @@ describe('paranoid rehydration solvency conformance', () => {
         row.kind === 'cashMovement' && row.data.kind === 'withdrawal',
     );
     if (!withdrawal) throw new Error('expected withdrawal');
-    withdrawal.data.amountEur = '-1.000003';
+    // One scale-6 quantum past the deposit: no writer can produce this (cash is
+    // floored to cents) so it is a genuine overdraw, not absorbable drift.
+    withdrawal.data.amountEur = '-1.000001';
     await replaceNormalRowsWithServerVault(harness, user.id);
     const mutationTransaction = vi.spyOn(harness.db, 'transaction');
 
     await expect(rehydrate(harness, user.id, document)).rejects.toMatchObject({
       code: 'INVALID_CASH_LEDGER',
       message:
-        `cashMovement[${withdrawal.id}].amountEur=` + '"-1.000003" would overdraw its cash source',
+        `cashMovement[${withdrawal.id}].amountEur=` + '"-1.000001" would overdraw its cash source',
     });
     expect(mutationTransaction).not.toHaveBeenCalled();
     expect(await harness.db.select().from(portfolioCashMovements)).toEqual([]);
