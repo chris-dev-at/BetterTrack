@@ -22,7 +22,7 @@ function expiryFor(value) {
 
 export function evaluateDependencyAudit(audit, waivers, now = new Date()) {
   const issues = [];
-  const advisoryIds = new Set();
+  const advisoryModules = new Map();
 
   if (
     !audit ||
@@ -42,7 +42,16 @@ export function evaluateDependencyAudit(audit, waivers, now = new Date()) {
       issues.push('pnpm audit returned an advisory without a valid GitHub advisory ID.');
       continue;
     }
-    advisoryIds.add(advisoryId);
+
+    const moduleName = advisory?.module_name;
+    if (typeof moduleName !== 'string' || !moduleName.trim()) {
+      issues.push(`pnpm audit returned ${advisoryId} without a valid module name.`);
+      continue;
+    }
+
+    const modulesForAdvisory = advisoryModules.get(advisoryId) ?? new Set();
+    modulesForAdvisory.add(moduleName);
+    advisoryModules.set(advisoryId, modulesForAdvisory);
   }
 
   const activeWaivers = new Set();
@@ -56,9 +65,11 @@ export function evaluateDependencyAudit(audit, waivers, now = new Date()) {
       !waiver ||
       typeof waiver !== 'object' ||
       typeof waiver.reason !== 'string' ||
-      !waiver.reason.trim()
+      !waiver.reason.trim() ||
+      typeof waiver.moduleName !== 'string' ||
+      !waiver.moduleName.trim()
     ) {
-      issues.push(`Waiver ${advisoryId} needs a non-empty reason.`);
+      issues.push(`Waiver ${advisoryId} needs a non-empty reason and expected module name.`);
       continue;
     }
 
@@ -71,15 +82,22 @@ export function evaluateDependencyAudit(audit, waivers, now = new Date()) {
       issues.push(`Waiver ${advisoryId} expired on ${waiver.expires}.`);
       continue;
     }
-    if (!advisoryIds.has(advisoryId)) {
+    const modulesForAdvisory = advisoryModules.get(advisoryId);
+    if (!modulesForAdvisory) {
       issues.push(`Waiver ${advisoryId} is no longer needed and must be removed.`);
+      continue;
+    }
+    if (modulesForAdvisory.size !== 1 || !modulesForAdvisory.has(waiver.moduleName)) {
+      issues.push(
+        `Waiver ${advisoryId} is for ${waiver.moduleName}, but pnpm audit reports ${[...modulesForAdvisory].sort().join(', ')}.`,
+      );
       continue;
     }
 
     activeWaivers.add(advisoryId);
   }
 
-  for (const advisoryId of advisoryIds) {
+  for (const advisoryId of advisoryModules.keys()) {
     if (!activeWaivers.has(advisoryId)) {
       issues.push(`Production dependency advisory ${advisoryId} has no active waiver.`);
     }

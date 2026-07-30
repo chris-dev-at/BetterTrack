@@ -7,9 +7,12 @@ audit policy lives in
 
 An advisory must be fixed in a reviewed dependency update whenever practical.
 If a pre-existing advisory cannot safely be fixed in the same change, its waiver
-must name the exact GHSA, explain the compatibility work still needed, and expire
-quickly. The verifier fails for an unwaived advisory, an expired or malformed
-waiver, or a waiver no longer reported by `pnpm audit --prod`.
+must name the exact GHSA and audited package, explain the compatibility work still
+needed, and expire quickly. The verifier fails for an unwaived advisory, an
+expired or malformed waiver, a package mismatch, or a waiver no longer reported
+by `pnpm audit --prod`. Expiries are staggered by remediation family so their
+renewal work remains incremental rather than creating one repository-wide expiry
+cliff.
 
 The nightly portion of that workflow builds all three deployable images and
 uploads readable Trivy reports. Those scans are intentionally report-only so a

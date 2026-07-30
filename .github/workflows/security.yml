@@ -3,7 +3,7 @@ name: Supply-chain security
 on:
   pull_request:
   schedule:
-    - cron: '30 3 * * 0'
+    - cron: '30 3 * * *'
   workflow_dispatch: {}
 
 permissions:
@@ -11,12 +11,13 @@ permissions:
 
 concurrency:
   group: security-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   dependency-audit:
     name: Production dependency audit
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
@@ -31,12 +32,16 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Test dependency-audit verifier
+        run: node --test .github/scripts/audit-production-dependencies.test.mjs
+
       - name: Audit production dependencies
         run: node .github/scripts/audit-production-dependencies.mjs
 
   secret-scan:
     name: Secret scan
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -57,6 +62,7 @@ jobs:
     name: Nightly container scan (${{ matrix.image.name }})
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
