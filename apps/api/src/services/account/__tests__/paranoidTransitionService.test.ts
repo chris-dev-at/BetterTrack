@@ -430,6 +430,73 @@ describe('paranoid public transitions', () => {
     ).toEqual([]);
   });
 
+  it('keeps the gated retired-server recovery set across an idempotent enable retry', async () => {
+    const user = await harness.seedUser();
+    await seedNormalGraph(user, { vaultVersion: 2 });
+    const driveOnly: ParanoidEnableRequest = {
+      mediaSet: ['drive'],
+      vaultVersion: 2,
+      driveAttestation: { verifiedRoundTrip: true, vaultVersion: 2 },
+    };
+    const first = await harness.ctx.paranoidTransitions.enable(user.id, driveOnly);
+    expect(first.idempotent).toBe(false);
+
+    // PD3a's media switch retires the server medium NON-destructively: the blob
+    // and its history move into paranoid_vault_retired behind the signed purge
+    // gate (matching version + Ed25519 proof + retention window), which is
+    // exactly why paranoid_vaults/history are empty afterwards.
+    await harness.db.insert(paranoidVaultRetired).values({
+      userId: user.id,
+      version: 2,
+      formatVersion: 1,
+      sizeBytes: 7,
+      blob: Buffer.from('retired'),
+      createdAt: new Date('2026-07-29T10:00:00.000Z'),
+    });
+    await harness.db.insert(paranoidVaultRetirements).values({
+      userId: user.id,
+      retiredVersion: 2,
+      retirementProofPublicKey: 'public-verifier-only',
+    });
+    await harness.db.insert(paranoidVaultServerCandidates).values({
+      userId: user.id,
+      version: 3,
+      formatVersion: 1,
+      sizeBytes: 9,
+      blob: Buffer.from('candidate'),
+      expiresAt: new Date('2026-07-31T11:00:00.000Z'),
+    });
+
+    // A replay of the original enable passes every retry guard, so it must not
+    // destroy the user's last readable copy behind "nothing changed".
+    const retry = await harness.ctx.paranoidTransitions.enable(user.id, driveOnly);
+    expect(retry.idempotent).toBe(true);
+
+    expect(
+      await harness.db
+        .select()
+        .from(paranoidVaultRetired)
+        .where(eq(paranoidVaultRetired.userId, user.id)),
+    ).toMatchObject([{ version: 2, sizeBytes: 7 }]);
+    expect(
+      await harness.db
+        .select()
+        .from(paranoidVaultRetirements)
+        .where(eq(paranoidVaultRetirements.userId, user.id)),
+    ).toMatchObject([{ retiredVersion: 2, retirementProofPublicKey: 'public-verifier-only' }]);
+    expect(
+      await harness.db
+        .select()
+        .from(paranoidVaultServerCandidates)
+        .where(eq(paranoidVaultServerCandidates.userId, user.id)),
+    ).toMatchObject([{ version: 3 }]);
+    expect(await accountState(user.id)).toMatchObject({
+      privacyMode: 'paranoid',
+      mediaSet: ['drive'],
+      driveVersion: 2,
+    });
+  });
+
   it('refuses every transition precondition before destructive work', async () => {
     const user = await harness.seedUser();
     const { portfolioId } = await seedNormalGraph(user);

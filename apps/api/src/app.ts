@@ -78,7 +78,8 @@ export function createApp(ctx: AppContext) {
   app.use(createCorsMiddleware(ctx.config.corsOrigins));
   const regularJson = express.json({ limit: '100kb' });
   app.use((req, res, next) => {
-    // The decrypted restore can be as large as the bounded encrypted envelope.
+    // The decrypted restore is a deflate-expanded multiple of the bounded
+    // encrypted envelope (see `PARANOID_RESTORE_PLAINTEXT_FACTOR`).
     // Defer that one parser to the route, after authentication + its vault rate
     // limiter; every other JSON request keeps the 100 KiB global bound. Express
     // routes case-insensitively by default, so match the same way — otherwise

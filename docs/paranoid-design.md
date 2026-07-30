@@ -346,12 +346,35 @@ on next sync and drop their vaults. Disable is idempotent-resumable: a crashed
 rehydration can re-run (rows are re-created under fresh ids only after a full
 wipe of the partial batch — no half-hydrated ghosts).
 
+**Disable payload ceiling.** Disable is the only exit, so its request-body bound
+is sized from the PLAINTEXT it carries, not from `BT_VAULT_MAX_BYTES`: the
+envelope is deflate-compressed before encryption, so the restore JSON is always
+at least as large as the stored blob and usually several-fold larger. The route
+allows `BT_VAULT_MAX_BYTES × 8 + 64 KiB`
+(`PARANOID_RESTORE_PLAINTEXT_FACTOR`) — with the 16 MiB default, a practical
+plaintext ceiling of ~128 MiB. A document that both fits the storage bound
+compressed and exceeds that expanded would be un-disable-able, which is why the
+factor is deliberately generous rather than 1:1.
+
 Enable is likewise one account-locked database transaction: media and
 preconditions are re-read under the lock before sharing is revoked, every
 vault-classified row is purged, and the mode is committed. Broad inbound friend
 audiences use mode-dependent exclusion rows during revocation so an implicit
 `all_friends`/friend-side `public_link` grant cannot silently reappear after
 disable; a later deliberate owner audience edit clears that exclusion.
+
+**The idempotent enable retry never destroys gated state.** A repeat call whose
+media evidence matches the account's committed state is acknowledged with
+`idempotent: true` and re-runs only operations that are already true (the
+cleartext purge, revocation, derived-state retirement). It specifically does NOT
+clear `paranoid_vault_server_candidates`, `paranoid_vault_retired` or
+`paranoid_vault_retirements`, which a fresh `normal → paranoid` transition does
+clear because they cannot exist yet. On an established account those rows are
+the §5 retirement recovery set, destroyable only through the signed purge gate
+(matching retired version + Ed25519 retirement proof + the minimum retention
+window); a replayed enable satisfies none of those checks, and an account that
+retired the server medium passes the retry's "no server ciphertext" test
+precisely because the ciphertext lives there.
 
 Revocation of INBOUND shares is permanent and one-directional: the account's
 membership rows in other users' audiences and friend groups are deleted, and

@@ -20,6 +20,7 @@ import {
   withParanoidTransitionTransaction,
   type ParanoidAdminMetadata,
 } from '../../data/repositories/paranoidTransitionRepository';
+import type { Logger } from '../../logger';
 import { AuditAction, type AuditService } from '../audit/auditService';
 import {
   ParanoidRehydrationError,
@@ -57,6 +58,8 @@ export interface ParanoidTransitionServiceDeps {
   lockDb?: Database;
   rehydration: ParanoidRehydrationService;
   audit: AuditService;
+  /** Optional so unit harnesses can compose the service without a log sink. */
+  logger?: Logger;
   now?: () => Date;
   /** Deterministic invalidation/rebuild seam, invoked only after disable commits. */
   runPostCommit?: (userId: string, plan: ParanoidRehydrationPostCommitPlan) => void | Promise<void>;
@@ -96,8 +99,8 @@ export interface ParanoidTransitionService {
   /** Non-sensitive admin-only mode/media/blob metadata; never returns blob bytes. */
   adminMetadata(userId: string): Promise<ParanoidAdminMetadata | null>;
   /**
-   * The same metadata for a whole page of accounts in one locked batch. List
-   * callers MUST use this instead of fanning {@link adminMetadata} out per row.
+   * The same metadata for a whole page of accounts in bounded locked batches.
+   * List callers MUST use this instead of fanning {@link adminMetadata} per row.
    */
   adminMetadataMany(
     userIds: readonly string[],
@@ -257,7 +260,14 @@ export function createParanoidTransitionService(
       const purgeDerivedState = async (customAssetIds: readonly string[]): Promise<void> => {
         try {
           await deps.beforeEnableCommit?.(userId, { customAssetIds });
-        } catch {
+        } catch (error) {
+          // Stay fail-closed (the caller sees a 409 and the transaction rolls
+          // back) but keep the cause: a Redis or gateway fault here is
+          // otherwise a 409 with no trace in the logs or the Problems page.
+          deps.logger?.error(
+            { err: error, userId },
+            'paranoid enable could not retire user-derived server state',
+          );
           throw new ParanoidTransitionError(
             'TRANSITION_CONFLICT',
             'User-derived server state could not be retired safely.',
@@ -303,6 +313,16 @@ export function createParanoidTransitionService(
                 mediaSet: input.mediaSet,
                 driveAttestedVersion: input.driveAttestation?.vaultVersion ?? null,
                 keepServerCiphertext: input.mediaSet.includes('server'),
+                // A retry never re-clears the staged candidate or the retired
+                // server recovery set. An established Drive-only account that
+                // retired the server medium through PD3a satisfies every guard
+                // above (its vault/history rows are empty precisely BECAUSE the
+                // ciphertext moved into `paranoid_vault_retired`), so a replay
+                // of the original enable would otherwise destroy the retirement
+                // proof and the last readable copy — bypassing the signed purge
+                // gate and its retention window while answering "nothing
+                // changed".
+                freshTransition: false,
                 completedAt,
               });
               await permanentlyRetirePrepared();
@@ -378,6 +398,7 @@ export function createParanoidTransitionService(
               mediaSet: input.mediaSet,
               driveAttestedVersion: input.driveAttestation?.vaultVersion ?? null,
               keepServerCiphertext: input.mediaSet.includes('server'),
+              freshTransition: true,
               completedAt,
             });
             await stage('modeEnabled');

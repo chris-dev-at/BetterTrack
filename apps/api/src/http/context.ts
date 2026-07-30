@@ -1808,6 +1808,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     lockDb: privacyLockDb,
     rehydration: paranoidRehydration,
     audit,
+    logger,
     beforeEnableCommit: async (userId, plan) => {
       // This runs while enable still owns the exclusive account lock. Any
       // owner-scoped read that started first has completed; later work re-reads

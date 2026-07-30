@@ -25,8 +25,25 @@ import type { RateLimiters } from '../middleware/rateLimit';
 import type { AppContext } from '../context';
 
 export const PARANOID_DISABLE_HTTP_PATH = '/api/v1/account/paranoid/disable';
+
+/**
+ * Plaintext allowance over the stored ciphertext bound for the one route that
+ * carries a decrypted vault. The client deflates the envelope BEFORE encrypting
+ * it, so the restore JSON is never smaller than the blob and is typically
+ * several-fold larger. Deriving the body limit from `BT_VAULT_MAX_BYTES` alone
+ * would accept a document for storage that can never be handed back — and
+ * disable is the only way out of paranoid mode, so a 413 there is a trap with no
+ * second exit. The factor covers the ratio deflate reaches on this JSON
+ * (repeated keys, ISO dates, decimal strings) with margin; see
+ * docs/paranoid-design.md §7 for the resulting practical ceiling.
+ *
+ * The buffered-body cost that buys is accepted: the route is session-gated and
+ * rides the per-account vault rate schedule, and rehydrating a document of that
+ * size already costs strictly more memory than holding its bytes.
+ */
+export const PARANOID_RESTORE_PLAINTEXT_FACTOR = 8;
 export const paranoidDisableJsonLimitBytes = (vaultMaxBytes: number): number =>
-  vaultMaxBytes + 64 * 1024;
+  vaultMaxBytes * PARANOID_RESTORE_PLAINTEXT_FACTOR + 64 * 1024;
 
 /**
  * Bound how long one download may hold the account transition lock. The transfer

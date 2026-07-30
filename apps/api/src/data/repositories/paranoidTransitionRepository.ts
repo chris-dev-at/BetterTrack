@@ -102,6 +102,19 @@ export interface ParanoidTransitionTransactionRepository {
     mediaSet: VaultMediaSet;
     driveAttestedVersion: number | null;
     keepServerCiphertext: boolean;
+    /**
+     * True only for a `normal → paranoid` transition, whose initial selected
+     * state by definition contains no staged candidate and no retired-server
+     * recovery set. It MUST be false on an idempotent retry against an already
+     * paranoid account: `paranoid_vault_retired` / `paranoid_vault_retirements`
+     * (and an unexpired candidate) are gated state, destroyable only through
+     * `POST /account/vault/retired/purge` — matching retired version, an Ed25519
+     * retirement proof over a server-issued challenge, and the minimum
+     * retention window. A replayed enable satisfies none of those, so it must
+     * leave those rows alone rather than hard-delete the user's last readable
+     * copy behind a `200 {"idempotent": true}`.
+     */
+    freshTransition: boolean;
     completedAt: Date;
   }): Promise<void>;
 }
@@ -782,15 +795,20 @@ export function createParanoidTransitionTransactionRepository(
     },
 
     async completeEnable(input) {
-      // Candidates and retired media are never part of the initial selected
-      // state. Drive-only additionally leaves no ciphertext bytes anywhere.
-      await tx
-        .delete(paranoidVaultServerCandidates)
-        .where(eq(paranoidVaultServerCandidates.userId, input.userId));
-      await tx.delete(paranoidVaultRetired).where(eq(paranoidVaultRetired.userId, input.userId));
-      await tx
-        .delete(paranoidVaultRetirements)
-        .where(eq(paranoidVaultRetirements.userId, input.userId));
+      if (input.freshTransition) {
+        // Candidates and retired media are never part of the initial selected
+        // state of a normal → paranoid transition. A retry against an
+        // established account keeps them: see `freshTransition`.
+        await tx
+          .delete(paranoidVaultServerCandidates)
+          .where(eq(paranoidVaultServerCandidates.userId, input.userId));
+        await tx.delete(paranoidVaultRetired).where(eq(paranoidVaultRetired.userId, input.userId));
+        await tx
+          .delete(paranoidVaultRetirements)
+          .where(eq(paranoidVaultRetirements.userId, input.userId));
+      }
+      // Drive-only leaves no active ciphertext bytes anywhere. On a retry the
+      // locked state already proved both tables empty, so this is a no-op.
       if (!input.keepServerCiphertext) {
         await tx.delete(paranoidVaultHistory).where(eq(paranoidVaultHistory.userId, input.userId));
         await tx.delete(paranoidVaults).where(eq(paranoidVaults.userId, input.userId));
@@ -866,12 +884,18 @@ export async function withParanoidTransitionTransaction<T>(
  *     and the reads it guards must never share a pool — otherwise N concurrent
  *     calls exhaust that pool with transactions waiting on queries queued behind
  *     the very connections those transactions hold (both pools cap at 10).
- *  2. ONE lock and a fixed number of set-based queries cover the whole batch, so
- *     the cost of an admin page is independent of the account count instead of
+ *  2. ONE lock and a fixed number of set-based queries cover a batch, so the cost
+ *     of an admin page is independent of the account count instead of
  *     `1 lock + 3 round trips` per user.
+ *  3. A batch larger than {@link PARANOID_ADMIN_METADATA_LOCK_CHUNK} is split, so
+ *     neither the `FOR KEY SHARE` hold nor the `inArray` list grows with an
+ *     unbounded account table. A transition's `FOR UPDATE` therefore waits for at
+ *     most one chunk of a list refresh, never for the whole table.
  *
  * Ids that no longer resolve are simply absent from the returned map.
  */
+export const PARANOID_ADMIN_METADATA_LOCK_CHUNK = 100;
+
 export async function getParanoidAdminMetadata(
   db: Database,
   lockDb: Database,
@@ -879,46 +903,48 @@ export async function getParanoidAdminMetadata(
 ): Promise<Map<string, ParanoidAdminMetadata>> {
   const ids = [...new Set(userIds)];
   const metadata = new Map<string, ParanoidAdminMetadata>();
-  if (ids.length === 0) return metadata;
-  return withFreshLockedPrivacyModes(lockDb, ids, async () => {
-    const [accounts, vaults, histories] = await Promise.all([
-      db
-        .select({
-          id: users.id,
-          privacyMode: users.privacyMode,
-          mediaSet: users.paranoidMediaSet,
-        })
-        .from(users)
-        .where(inArray(users.id, ids)),
-      db
-        .select({
-          userId: paranoidVaults.userId,
-          version: paranoidVaults.version,
-          sizeBytes: paranoidVaults.sizeBytes,
-          updatedAt: paranoidVaults.updatedAt,
-        })
-        .from(paranoidVaults)
-        .where(inArray(paranoidVaults.userId, ids)),
-      db
-        .select({ userId: paranoidVaultHistory.userId, value: count() })
-        .from(paranoidVaultHistory)
-        .where(inArray(paranoidVaultHistory.userId, ids))
-        .groupBy(paranoidVaultHistory.userId),
-    ]);
-    const vaultByUser = new Map(vaults.map(({ userId, ...vault }) => [userId, vault] as const));
-    const historyByUser = new Map(
-      histories.map((row) => [row.userId, Number(row.value ?? 0)] as const),
-    );
-    for (const account of accounts) {
-      metadata.set(account.id, {
-        privacyMode: account.privacyMode,
-        mediaSet: account.mediaSet as VaultMediaSet | null,
-        vault: vaultByUser.get(account.id) ?? null,
-        historyCount: historyByUser.get(account.id) ?? 0,
-      });
-    }
-    return metadata;
-  });
+  for (let offset = 0; offset < ids.length; offset += PARANOID_ADMIN_METADATA_LOCK_CHUNK) {
+    const chunk = ids.slice(offset, offset + PARANOID_ADMIN_METADATA_LOCK_CHUNK);
+    await withFreshLockedPrivacyModes(lockDb, chunk, async () => {
+      const [accounts, vaults, histories] = await Promise.all([
+        db
+          .select({
+            id: users.id,
+            privacyMode: users.privacyMode,
+            mediaSet: users.paranoidMediaSet,
+          })
+          .from(users)
+          .where(inArray(users.id, chunk)),
+        db
+          .select({
+            userId: paranoidVaults.userId,
+            version: paranoidVaults.version,
+            sizeBytes: paranoidVaults.sizeBytes,
+            updatedAt: paranoidVaults.updatedAt,
+          })
+          .from(paranoidVaults)
+          .where(inArray(paranoidVaults.userId, chunk)),
+        db
+          .select({ userId: paranoidVaultHistory.userId, value: count() })
+          .from(paranoidVaultHistory)
+          .where(inArray(paranoidVaultHistory.userId, chunk))
+          .groupBy(paranoidVaultHistory.userId),
+      ]);
+      const vaultByUser = new Map(vaults.map(({ userId, ...vault }) => [userId, vault] as const));
+      const historyByUser = new Map(
+        histories.map((row) => [row.userId, Number(row.value ?? 0)] as const),
+      );
+      for (const account of accounts) {
+        metadata.set(account.id, {
+          privacyMode: account.privacyMode,
+          mediaSet: account.mediaSet as VaultMediaSet | null,
+          vault: vaultByUser.get(account.id) ?? null,
+          historyCount: historyByUser.get(account.id) ?? 0,
+        });
+      }
+    });
+  }
+  return metadata;
 }
 
 export function serverVaultMatches(state: LockedParanoidTransitionState, version: number): boolean {
