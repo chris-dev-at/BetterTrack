@@ -9,6 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   applyImportResponseSchema,
   IMPORT_MAX_DISTINCT_INSTRUMENTS,
+  IMPORT_MAX_FILE_BYTES,
   importBrokerListResponseSchema,
   importPreviewResponseSchema,
   type AssetSearchResult,
@@ -312,6 +313,98 @@ describe('POST /imports — staged preview', () => {
     });
   });
 
+  it('accepts a safe quoted boundary at the multipart header-pair limit', async () => {
+    const { agent, pid } = await setup();
+    const boundary = 'bettertrack-import-quoted-boundary';
+    const res = await agent
+      .post('/api/v1/imports')
+      .set(...XRW)
+      .set('Content-Type', `multipart/form-data; boundary="${boundary}"`)
+      .send(
+        rawMultipartUpload(
+          boundary,
+          {
+            name: 'portfolioId',
+            value: pid,
+            headerPairs: MULTIPART_HEADER_PAIRS_LIMIT,
+          },
+          FIXTURE,
+        ),
+      );
+
+    expect(res.status).toBe(201);
+    expect(() => importPreviewResponseSchema.parse(res.body)).not.toThrow();
+  });
+
+  it('fails closed when a quoted boundary escape would diverge from Busboy', async () => {
+    const { agent, pid } = await setup();
+    const boundary = 'bettertrack-import\\q';
+    const res = await agent
+      .post('/api/v1/imports')
+      .set(...XRW)
+      .set('Content-Type', `multipart/form-data; boundary="${boundary}"`)
+      .send(
+        rawMultipartUpload(
+          boundary,
+          {
+            name: 'portfolioId',
+            value: pid,
+            headerPairs: MULTIPART_HEADER_PAIRS_LIMIT + 1,
+          },
+          FIXTURE,
+        ),
+      );
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toEqual({
+      code: 'IMPORT_FILE_INVALID',
+      message: 'Invalid file upload.',
+    });
+  });
+
+  it('rejects a pathological unterminated boundary without backtracking', async () => {
+    const { agent } = await setup();
+    const startedAt = performance.now();
+    const res = await agent
+      .post('/api/v1/imports')
+      .set(...XRW)
+      .set('Content-Type', `multipart/form-data; boundary="${'\\'.repeat(64)}`)
+      .send(Buffer.alloc(0));
+
+    expect(performance.now() - startedAt).toBeLessThan(1_000);
+    expect(res.status).toBe(400);
+    expect(res.body.error).toEqual({
+      code: 'IMPORT_FILE_INVALID',
+      message: 'Invalid file upload.',
+    });
+  });
+
+  it('keeps the specific file-size message when the header guard also rejects', async () => {
+    const { agent, pid } = await setup();
+    const boundary = 'bettertrack-import-file-size-priority';
+    const res = await agent
+      .post('/api/v1/imports')
+      .set(...XRW)
+      .set('Content-Type', `multipart/form-data; boundary=${boundary}`)
+      .send(
+        rawMultipartUpload(
+          boundary,
+          {
+            name: 'portfolioId',
+            value: pid,
+            headerPairs: MULTIPART_HEADER_PAIRS_LIMIT + 1,
+          },
+          'x'.repeat(IMPORT_MAX_FILE_BYTES + 1),
+        ),
+      );
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toEqual({
+      code: 'IMPORT_FILE_INVALID',
+      message: 'The file exceeds the 5 MB upload limit.',
+    });
+  });
+
   it('accepts the distinct-instrument cap and rejects cap+1 before queued resolution', async () => {
     const { user, pid } = await setup();
     const mapper: BrokerMapper = {
@@ -547,6 +640,10 @@ describe('POST /imports — staged preview', () => {
         brokerId: 'trade_republic',
       });
       await providerStarted.promise;
+      // `providerStarted` resolves just before the enrichment waiter registers
+      // its timeout. Flush that continuation before advancing fake time so this
+      // regression fails on its assertions instead of hanging nondeterministically.
+      await vi.advanceTimersByTimeAsync(0);
       await vi.advanceTimersByTimeAsync(IMPORT_ENRICHMENT_WAIT_BUDGET_MS);
 
       const preview = await pending;

@@ -8,17 +8,98 @@ const BUSBOY_MAX_HEADER_BYTES = 16 * 1024;
 export const MULTIPART_HEADER_PAIRS_LIMIT = 32;
 
 export interface MultipartHeaderPairObservation {
-  /** Detach the raw-stream observer and report whether any part exceeded the limit. */
+  /** Detach the observer and report an unsafe boundary or over-limit part. */
   finish(): boolean;
 }
 
 type ScannerState = 'opening-boundary' | 'headers' | 'body' | 'done';
 
-function multipartBoundary(contentType: string | undefined): string | null {
-  if (!contentType || !/^multipart\/form-data(?:\s*;|$)/i.test(contentType)) return null;
-  const match = /(?:^|;)\s*boundary\s*=\s*(?:"((?:\\.|[^"])*)"|([^;\s]+))/i.exec(contentType);
-  const boundary = match?.[1]?.replace(/\\(.)/g, '$1') ?? match?.[2];
-  return boundary ? boundary : null;
+type MultipartBoundary =
+  | { kind: 'not-multipart' }
+  | { kind: 'invalid' }
+  | { kind: 'valid'; value: string };
+
+const HTTP_TOKEN_CHARACTER = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]$/;
+
+function isOws(value: string): boolean {
+  return value === ' ' || value === '\t';
+}
+
+function multipartBoundary(contentType: string | undefined): MultipartBoundary {
+  if (!contentType) return { kind: 'not-multipart' };
+
+  const mediaType = /^multipart\/form-data/i.exec(contentType);
+  if (!mediaType) return { kind: 'not-multipart' };
+
+  let cursor = mediaType[0].length;
+  if (
+    cursor < contentType.length &&
+    !isOws(contentType[cursor] ?? '') &&
+    contentType[cursor] !== ';'
+  ) {
+    return { kind: 'not-multipart' };
+  }
+
+  let boundary: string | undefined;
+  while (cursor < contentType.length) {
+    while (cursor < contentType.length && isOws(contentType[cursor] ?? '')) cursor += 1;
+    if (cursor === contentType.length) break;
+    if (contentType[cursor] !== ';') return { kind: 'invalid' };
+    cursor += 1;
+
+    while (cursor < contentType.length && isOws(contentType[cursor] ?? '')) cursor += 1;
+    const nameStart = cursor;
+    while (cursor < contentType.length && HTTP_TOKEN_CHARACTER.test(contentType[cursor] ?? '')) {
+      cursor += 1;
+    }
+    if (cursor === nameStart || contentType[cursor] !== '=') return { kind: 'invalid' };
+    const name = contentType.slice(nameStart, cursor).toLowerCase();
+    cursor += 1;
+    if (cursor === contentType.length) return { kind: 'invalid' };
+
+    let value = '';
+    if (contentType[cursor] === '"') {
+      cursor += 1;
+      const valueStart = cursor;
+      let closed = false;
+      while (cursor < contentType.length) {
+        const character = contentType[cursor] ?? '';
+        if (character === '\\') {
+          // Busboy preserves some quoted escapes and collapses others. Reject
+          // escaped boundary values so this guard can never scan for bytes that
+          // differ from Multer's parser. RFC multipart boundaries do not need
+          // quote or backslash characters.
+          if (name === 'boundary' && boundary === undefined) return { kind: 'invalid' };
+          cursor += 2;
+          if (cursor > contentType.length) return { kind: 'invalid' };
+          continue;
+        }
+        if (character === '"') {
+          value = contentType.slice(valueStart, cursor);
+          cursor += 1;
+          closed = true;
+          break;
+        }
+        const code = character.charCodeAt(0);
+        if (code !== 9 && (code < 32 || code === 127 || code > 255)) {
+          return { kind: 'invalid' };
+        }
+        cursor += 1;
+      }
+      if (!closed) return { kind: 'invalid' };
+    } else {
+      const valueStart = cursor;
+      while (cursor < contentType.length && HTTP_TOKEN_CHARACTER.test(contentType[cursor] ?? '')) {
+        cursor += 1;
+      }
+      if (cursor === valueStart) return { kind: 'invalid' };
+      value = contentType.slice(valueStart, cursor);
+    }
+
+    if (name === 'boundary' && boundary === undefined) boundary = value;
+  }
+
+  return boundary ? { kind: 'valid', value: boundary } : { kind: 'invalid' };
 }
 
 /**
@@ -185,9 +266,10 @@ export function observeMultipartHeaderPairs(
   const rawContentType = req.headers['content-type'];
   const contentType = Array.isArray(rawContentType) ? rawContentType[0] : rawContentType;
   const boundary = multipartBoundary(contentType);
-  if (boundary === null) return { finish: () => false };
+  if (boundary.kind === 'not-multipart') return { finish: () => false };
+  if (boundary.kind === 'invalid') return { finish: () => true };
 
-  const scanner = new MultipartHeaderPairScanner(boundary, limit);
+  const scanner = new MultipartHeaderPairScanner(boundary.value, limit);
   const onData = (chunk: Buffer | string): void => scanner.push(chunk);
   req.on('data', onData);
 

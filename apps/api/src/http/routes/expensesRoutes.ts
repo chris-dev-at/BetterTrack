@@ -91,8 +91,9 @@ export function createExpensesRouter(ctx: AppContext): Router {
   // Multipart budget: two text fields (bankId + optional overrides), one file,
   // a parts-limit sentinel of four (Busboy emits at equality, so this admits
   // exactly the three allowed parts), a field-size sentinel of 1,000,001
-  // (Busboy truncates at equality, so this admits the overrides contract's
-  // 1,000,000-byte maximum), and 32 header pairs per part (normally just 1–2).
+  // (Busboy truncates at equality, so this admits the machine-generated ASCII
+  // overrides contract's 1,000,000-character maximum), and 32 header pairs per
+  // part (normally just 1–2).
   // Busboy 1.6 ignores `headerPairs`, so the raw-stream observer enforces it.
   const upload = multer({
     storage: multer.memoryStorage(),
@@ -110,20 +111,21 @@ export function createExpensesRouter(ctx: AppContext): Router {
   const uploadFile: RequestHandler = (req, res, next) => {
     const headerPairs = observeMultipartHeaderPairs(req);
     upload.single('file')(req, res, (err?: unknown) => {
-      if (headerPairs.finish()) {
-        next(badRequest('Invalid file upload.', 'EXPENSE_IMPORT_FILE_INVALID'));
-        return;
-      }
-      if (!err) {
-        next();
-        return;
-      }
+      const multipartGuardViolated = headerPairs.finish();
       if (err instanceof MulterError) {
         const message =
           err.code === 'LIMIT_FILE_SIZE'
             ? `The file exceeds the ${Math.round(IMPORT_MAX_FILE_BYTES / (1024 * 1024))} MB upload limit.`
             : 'Invalid file upload.';
         next(badRequest(message, 'EXPENSE_IMPORT_FILE_INVALID'));
+        return;
+      }
+      if (multipartGuardViolated) {
+        next(badRequest('Invalid file upload.', 'EXPENSE_IMPORT_FILE_INVALID'));
+        return;
+      }
+      if (!err) {
+        next();
         return;
       }
       next(err);

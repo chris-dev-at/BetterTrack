@@ -64,20 +64,21 @@ export function createImportsRouter(ctx: AppContext): Router {
   const uploadFile: RequestHandler = (req, res, next) => {
     const headerPairs = observeMultipartHeaderPairs(req);
     upload.single('file')(req, res, (err?: unknown) => {
-      if (headerPairs.finish()) {
-        next(badRequest('Invalid file upload.', 'IMPORT_FILE_INVALID'));
-        return;
-      }
-      if (!err) {
-        next();
-        return;
-      }
+      const multipartGuardViolated = headerPairs.finish();
       if (err instanceof MulterError) {
         const message =
           err.code === 'LIMIT_FILE_SIZE'
             ? `The file exceeds the ${Math.round(IMPORT_MAX_FILE_BYTES / (1024 * 1024))} MB upload limit.`
             : 'Invalid file upload.';
         next(badRequest(message, 'IMPORT_FILE_INVALID'));
+        return;
+      }
+      if (multipartGuardViolated) {
+        next(badRequest('Invalid file upload.', 'IMPORT_FILE_INVALID'));
+        return;
+      }
+      if (!err) {
+        next();
         return;
       }
       next(err);
