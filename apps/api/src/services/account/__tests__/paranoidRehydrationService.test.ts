@@ -306,6 +306,8 @@ function strictCashMovementEntity(row: typeof portfolioCashMovements.$inferSelec
     createdAt: row.createdAt.toISOString(),
     note: row.note,
     source: row.source,
+    dedupHash: row.dedupHash,
+    originalCurrency: row.originalCurrency,
   });
 }
 
@@ -541,6 +543,8 @@ function request(rehydrationId = REHYDRATION_ID): ParanoidDisableRehydrationRequ
           source: 'manual',
         }),
         entity(MOVEMENT_ID, 'cashMovement', {
+          dedupHash: null,
+          originalCurrency: null,
           portfolioId: PORTFOLIO_ID,
           sourceId: CASH_SOURCE_ID,
           kind: 'deposit',
@@ -601,6 +605,8 @@ function exhaustiveRequest(): ParanoidDisableRehydrationRequest {
       source: 'manual',
     }),
     entity('018f0000-0000-7000-8000-000000000011', 'cashMovement', {
+      dedupHash: null,
+      originalCurrency: null,
       portfolioId: PORTFOLIO_ID,
       sourceId: CASH_SOURCE_ID,
       kind: 'dividend',
@@ -1575,6 +1581,8 @@ describe('paranoid rehydration service', () => {
         source: 'import:flatex',
       }),
       entity(dividendMovementId, 'cashMovement', {
+        dedupHash: null,
+        originalCurrency: null,
         portfolioId: PORTFOLIO_ID,
         sourceId: CASH_SOURCE_ID,
         kind: 'dividend',
@@ -2017,6 +2025,8 @@ describe('paranoid rehydration service', () => {
         source: 'manual',
       }),
       entity('018f0000-0000-7000-8000-00000000000e', 'cashMovement', {
+        dedupHash: null,
+        originalCurrency: null,
         portfolioId: PORTFOLIO_ID,
         sourceId: CASH_SOURCE_ID,
         kind: 'dividend',
@@ -2032,6 +2042,8 @@ describe('paranoid rehydration service', () => {
         source: 'manual',
       }),
       entity('018f0000-0000-7000-8000-00000000000f', 'cashMovement', {
+        dedupHash: null,
+        originalCurrency: null,
         portfolioId: PORTFOLIO_ID,
         sourceId: CASH_SOURCE_ID,
         kind: 'tax_withholding',
@@ -2756,6 +2768,8 @@ describe('paranoid rehydration service', () => {
         }),
         ...captured.bookedRows.map((movement) =>
           entity(movement.id, 'cashMovement', {
+            dedupHash: null,
+            originalCurrency: null,
             portfolioId: movement.portfolioId,
             sourceId: movement.sourceId,
             kind: movement.kind,
@@ -3032,6 +3046,8 @@ describe('paranoid rehydration service', () => {
         source: 'manual',
       }),
       entity(TRANSFER_OUT_ID, 'cashMovement', {
+        dedupHash: null,
+        originalCurrency: null,
         portfolioId: PORTFOLIO_ID,
         sourceId: CASH_SOURCE_ID,
         kind: 'sell_proceeds',
@@ -3070,6 +3086,8 @@ describe('paranoid rehydration service', () => {
     movement.data.createdAt = '2026-07-24T09:59:00.000Z';
     input.document.entities.push(
       entity('018f0000-0000-7000-8000-00000000000d', 'cashMovement', {
+        dedupHash: null,
+        originalCurrency: null,
         portfolioId: PORTFOLIO_ID,
         sourceId: CASH_SOURCE_ID,
         kind: 'deposit',
@@ -3116,6 +3134,8 @@ describe('paranoid rehydration service', () => {
     gross.data.kind = 'sell_proceeds';
     gross.data.transactionId = TRANSACTION_ID;
     const settlement = entity('018f0000-0000-7000-8000-00000000000d', 'cashMovement', {
+      dedupHash: null,
+      originalCurrency: null,
       portfolioId: PORTFOLIO_ID,
       sourceId: CASH_SOURCE_ID,
       kind: 'tax_withholding',
@@ -3162,6 +3182,8 @@ describe('paranoid rehydration service', () => {
       costBasis: 'moving-average' as const,
     };
     const settlement = entity('018f0000-0000-7000-8000-00000000000f', 'cashMovement', {
+      dedupHash: null,
+      originalCurrency: null,
       portfolioId: PORTFOLIO_ID,
       sourceId: CASH_SOURCE_ID,
       kind: 'tax_withholding',
@@ -3193,6 +3215,8 @@ describe('paranoid rehydration service', () => {
         source: 'manual',
       }),
       entity('018f0000-0000-7000-8000-00000000000e', 'cashMovement', {
+        dedupHash: null,
+        originalCurrency: null,
         portfolioId: PORTFOLIO_ID,
         sourceId: CASH_SOURCE_ID,
         kind: 'dividend',
@@ -3244,6 +3268,8 @@ describe('paranoid rehydration service', () => {
     movement.data.transactionId = TRANSACTION_ID;
     input.document.entities.push(
       entity('018f0000-0000-7000-8000-00000000000d', 'cashMovement', {
+        dedupHash: null,
+        originalCurrency: null,
         portfolioId: PORTFOLIO_ID,
         sourceId: CASH_SOURCE_ID,
         kind: 'deposit',
@@ -3283,6 +3309,8 @@ describe('paranoid rehydration service', () => {
     movement.data.transactionId = TRANSACTION_ID;
     input.document.entities.push(
       entity('018f0000-0000-7000-8000-00000000000d', 'cashMovement', {
+        dedupHash: null,
+        originalCurrency: null,
         portfolioId: PORTFOLIO_ID,
         sourceId: CASH_SOURCE_ID,
         kind: 'deposit',
@@ -3342,6 +3370,8 @@ describe('paranoid rehydration service', () => {
     );
     input.document.entities.push(
       entity('018f0000-0000-7000-8000-00000000000f', 'cashMovement', {
+        dedupHash: null,
+        originalCurrency: null,
         portfolioId: PORTFOLIO_ID,
         sourceId: CASH_SOURCE_ID,
         kind: 'deposit',
@@ -3357,6 +3387,8 @@ describe('paranoid rehydration service', () => {
         source: 'manual',
       }),
       entity('018f0000-0000-7000-8000-000000000000', 'cashMovement', {
+        dedupHash: null,
+        originalCurrency: null,
         portfolioId: PORTFOLIO_ID,
         sourceId: CASH_SOURCE_ID,
         kind: 'withdrawal',
@@ -3503,6 +3535,8 @@ describe('paranoid rehydration service', () => {
         createdAt: editedAt,
       }),
       entity(TRANSFER_OUT_ID, 'cashMovement', {
+        dedupHash: null,
+        originalCurrency: null,
         portfolioId: SECOND_PORTFOLIO_ID,
         sourceId: SECOND_CASH_SOURCE_ID,
         kind: 'buy',
@@ -3539,6 +3573,8 @@ describe('paranoid rehydration service', () => {
         createdAt: editedAt,
       }),
       entity(TRANSFER_OUT_ID, 'cashMovement', {
+        dedupHash: null,
+        originalCurrency: null,
         portfolioId: PORTFOLIO_ID,
         sourceId: CASH_SOURCE_ID,
         kind: 'transfer_out',
