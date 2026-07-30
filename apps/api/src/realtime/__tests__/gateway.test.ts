@@ -403,6 +403,31 @@ describe('realtime gateway — rooms (§4.5)', () => {
     expect(await ownerGot).toEqual({ portfolioId, occurredAt: expect.any(String) });
     expect(await friendGot).toEqual({ portfolioId, occurredAt: expect.any(String) });
     await strangerSilent;
+
+    // Established sockets are REauthorized per frame under the viewer's account
+    // lock — admission was taken against the owner's audience, so unsharing (or
+    // an owner transition) must stop delivery on the next frame, not at the
+    // viewer's next reconnect.
+    await aliceLogin.agent
+      .patch(`/api/v1/portfolios/${portfolioId}`)
+      .set(...XRW)
+      .send({ visibility: 'private' })
+      .expect(200);
+    const ownerStillGets = waitForEvent(aliceSocket, REALTIME_SERVER_EVENTS.portfolioChanged);
+    const revokedSilent = expectSilence(bobSocket, REALTIME_SERVER_EVENTS.portfolioChanged);
+    await harness.ctx.events.publish({
+      type: 'portfolio.changed',
+      userId: alice.id,
+      portfolioId,
+      occurredAt: new Date().toISOString(),
+    });
+    expect(await ownerStillGets).toEqual({ portfolioId, occurredAt: expect.any(String) });
+    await revokedSilent;
+    // …and the socket was evicted from the room, so a re-join has to re-earn it.
+    expect(await joinRoom(bobSocket, 'portfolio', portfolioId)).toEqual({
+      ok: false,
+      error: 'FORBIDDEN',
+    });
   });
 
   it('rejects malformed room frames without crashing the socket', async () => {

@@ -77,11 +77,23 @@ export interface HeldAssetHolderRow {
 export interface MarketIntelRepository {
   /** Held (net > 0) + watched assets for one user, deduped by asset (earnings). */
   listUserWatchAndHoldAssets(userId: string): Promise<UserIntelAsset[]>;
-  /** Watchlisted assets for one user, without touching portfolio transactions. */
+  /**
+   * GLOBAL watchlisted assets for one user, without touching portfolio
+   * transactions and without reading any account-owned (custom) asset row —
+   * the unguarded/paranoid earnings branch. A custom asset's symbol, name and
+   * provider ref are that account's own content, so they are never selected
+   * here; the guarded branch reads them through
+   * {@link listUserWatchAndHoldAssets} instead.
+   */
   listUserWatchAssets(userId: string): Promise<UserIntelAsset[]>;
   /** Held + watched assets across EVERY user, tagged with the owner (earnings). */
   listAllWatchAndHoldAssets(): Promise<UserIntelAssetWithUser[]>;
-  /** Watchlisted assets across every user, without touching portfolio transactions. */
+  /**
+   * GLOBAL watchlisted assets across every user — the scan job's unguarded
+   * first pass. Account-owned (custom) assets are excluded for the same
+   * provenance reason as {@link listUserWatchAssets}; the job picks them up
+   * per user inside that account's transition lock.
+   */
   listAllWatchAssets(): Promise<UserIntelAssetWithUser[]>;
   /** Active normal user ids; holding jobs lock each id before reading transactions. */
   listNormalUserIds(): Promise<string[]>;
@@ -172,7 +184,7 @@ export function createMarketIntelRepository(db: Database): MarketIntelRepository
         })
         .from(workboardItems)
         .innerJoin(assets, eq(workboardItems.assetId, assets.id))
-        .where(eq(workboardItems.userId, userId))
+        .where(and(eq(workboardItems.userId, userId), isNull(assets.ownerId)))
         .groupBy(assets.id, assets.symbol, assets.name, assets.providerId, assets.providerRef);
       return merge([], watched);
     },
@@ -239,6 +251,7 @@ export function createMarketIntelRepository(db: Database): MarketIntelRepository
         })
         .from(workboardItems)
         .innerJoin(assets, eq(workboardItems.assetId, assets.id))
+        .where(isNull(assets.ownerId))
         .groupBy(
           workboardItems.userId,
           assets.id,

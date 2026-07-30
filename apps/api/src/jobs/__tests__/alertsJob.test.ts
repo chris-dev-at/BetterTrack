@@ -242,4 +242,130 @@ describe('alerts.evaluate job (§14, V3-P10)', () => {
       expect.objectContaining({ type: 'alert.triggered', userId, alertId: alert.id }),
     ]);
   });
+
+  it('never quotes, fires, or flips a paranoid account custom-asset alert', async () => {
+    const { userId, assetId } = await seedUserAndAsset(db);
+    const [customAsset] = await db
+      .insert(schema.assets)
+      .values({
+        providerId: 'manual',
+        providerRef: `house:${userId}`,
+        ownerId: userId,
+        type: 'custom',
+        symbol: 'HOUSE',
+        name: 'Private House',
+        currency: 'EUR',
+      })
+      .returning({ id: schema.assets.id });
+    const alertRepo = createAlertRepository(db);
+    const globalAlert = await alertRepo.create({
+      userId,
+      assetId,
+      kind: 'price_above',
+      threshold: 100,
+      refPrice: null,
+      repeat: false,
+    });
+    const customAlert = await alertRepo.create({
+      userId,
+      assetId: customAsset!.id,
+      kind: 'price_above',
+      threshold: 100,
+      refPrice: null,
+      repeat: false,
+    });
+
+    const quotedRefs: string[] = [];
+    const notify = recordingCenter();
+    const paranoidOwnerGuard = {
+      async runAllowed<T>(): Promise<T> {
+        // The account went paranoid: the custom-asset rail must abort BEFORE
+        // the alerts are loaded, so no quote, emit, or state flip can land.
+        throw new ParanoidModeError('portfolioServer');
+      },
+      async runAllowedWithOptional<T>(
+        _requiredUserIds: readonly string[],
+        optionalUserIds: readonly string[],
+        _capability: Parameters<ParanoidModeGuard['runAllowedWithOptional']>[2],
+        action: (allowedOptionalUserIds: ReadonlySet<string>) => Promise<T>,
+      ): Promise<T> {
+        return action(new Set(optionalUserIds));
+      },
+    } satisfies Pick<ParanoidModeGuard, 'runAllowed' | 'runAllowedWithOptional'>;
+    const job = createAlertsEvaluateJob({
+      db,
+      marketData: createStubMarketData({
+        quote: (ref) => {
+          quotedRefs.push(ref.providerRef);
+          return quoteResult(150);
+        },
+      }),
+      notify,
+      paranoid: paranoidOwnerGuard,
+    });
+
+    await job.handler(makeJob(Date.parse('2026-07-07T12:10:00.000Z')), makeCtx(recordingBus()));
+
+    // The manual (own-valuation) provider ref never reached the market core.
+    expect(quotedRefs).toEqual(['AAPL']);
+    // Only the global market alert fired and flipped.
+    expect(notify.emitted).toEqual([
+      expect.objectContaining({ type: 'alert.triggered', alertId: globalAlert.id }),
+    ]);
+    const rows = await db
+      .select({ id: schema.alerts.id, status: schema.alerts.status })
+      .from(schema.alerts);
+    expect(rows.find((row) => row.id === globalAlert.id)!.status).toBe('triggered');
+    expect(rows.find((row) => row.id === customAlert.id)!.status).toBe('active');
+  });
+
+  it('evaluates a normal account custom-asset alert inside its transition lock', async () => {
+    const { userId } = await seedUserAndAsset(db);
+    const [customAsset] = await db
+      .insert(schema.assets)
+      .values({
+        providerId: 'manual',
+        providerRef: `house:${userId}`,
+        ownerId: userId,
+        type: 'custom',
+        symbol: 'HOUSE',
+        name: 'Private House',
+        currency: 'EUR',
+      })
+      .returning({ id: schema.assets.id });
+    const customAlert = await createAlertRepository(db).create({
+      userId,
+      assetId: customAsset!.id,
+      kind: 'price_above',
+      threshold: 100,
+      refPrice: null,
+      repeat: false,
+    });
+
+    const guarded: string[] = [];
+    const notify = recordingCenter();
+    const job = createAlertsEvaluateJob({
+      db,
+      marketData: createStubMarketData({ quote: () => quoteResult(150) }),
+      notify,
+      paranoid: {
+        async runAllowed<T>(
+          user: string,
+          _capability: Parameters<ParanoidModeGuard['runAllowed']>[1],
+          action: () => Promise<T>,
+        ): Promise<T> {
+          guarded.push(user);
+          return action();
+        },
+        runAllowedWithOptional: allowingParanoidGuard.runAllowedWithOptional,
+      },
+    });
+
+    await job.handler(makeJob(Date.parse('2026-07-07T12:15:00.000Z')), makeCtx(recordingBus()));
+
+    expect(guarded).toContain(userId);
+    expect(notify.emitted).toEqual([
+      expect.objectContaining({ type: 'alert.triggered', alertId: customAlert.id }),
+    ]);
+  });
 });

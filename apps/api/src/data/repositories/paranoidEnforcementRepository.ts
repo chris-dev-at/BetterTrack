@@ -99,6 +99,23 @@ export function withExclusiveParanoidTransitionTestLock<T>(
  * KEY SHARE is deliberate. It conflicts with the transition's FOR UPDATE but
  * remains compatible with FK checks and non-key account updates performed by
  * the guarded action on another pooled connection.
+ *
+ * TWO KNOWN LIMITS, both deliberate and both worth reading before trusting a
+ * green suite:
+ *
+ *  1. Under `NODE_ENV=test` the default (PGlite) harness has ONE physical
+ *     connection, so a real `FOR KEY SHARE` would self-deadlock. The
+ *     in-process reader/writer emulation above preserves the ORDERING the
+ *     regressions assert, but it is NOT the production primitive — only the
+ *     integration mode (`TEST_DATABASE_URL`, real Postgres 17) exercises the
+ *     row locks themselves.
+ *  2. In production the guarded action runs inside this open transaction, and
+ *     several callers perform provider I/O within it (alert quote reads, the
+ *     earnings calendar across a whole watchlist, the per-user reminder scan).
+ *     That is required by the "hold the guard through response construction"
+ *     rule, but it means one idle-in-transaction connection is held for the
+ *     duration of upstream latency — bounded by the provider timeouts in
+ *     `providers/resilience.ts`.
  */
 export async function withLockedPrivacyModes<T>(
   db: Database,

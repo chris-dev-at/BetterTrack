@@ -16,7 +16,10 @@ import { runEarningsReminderScan } from '../earningsReminder';
 const NOW = Date.parse('2026-07-18T09:00:00.000Z');
 const day = (n: number) => new Date(NOW + n * 86_400_000).toISOString();
 
-function asset(over: Partial<UserIntelAssetWithUser>): UserIntelAssetWithUser {
+/** A fixture row; `custom` marks an account-OWNED asset (`assets.owner_id`). */
+type IntelRow = UserIntelAssetWithUser & { custom?: boolean };
+
+function asset(over: Partial<IntelRow>): IntelRow {
   return {
     userId: 'u1',
     assetId: 'a-aapl',
@@ -30,13 +33,22 @@ function asset(over: Partial<UserIntelAssetWithUser>): UserIntelAssetWithUser {
   };
 }
 
-function intelRepo(rows: UserIntelAssetWithUser[]) {
+/**
+ * Models the production queries: the unguarded all-users watch query is
+ * GLOBAL-only (it never selects an account-owned asset row), while the
+ * per-user query the scan runs inside that account's transition lock returns
+ * everything that account holds or watches.
+ */
+function intelRepo(rows: IntelRow[]) {
+  const strip = ({ custom: _custom, ...row }: IntelRow): UserIntelAssetWithUser => row;
   return {
     listAllWatchAssets: async () =>
-      rows.filter((row) => row.watched).map((row) => ({ ...row, held: false })),
+      rows
+        .filter((row) => row.watched && !row.custom)
+        .map((row) => ({ ...strip(row), held: false })),
     listNormalUserIds: async () => [...new Set(rows.map((row) => row.userId))],
     listUserWatchAndHoldAssets: async (userId: string) =>
-      rows.filter((row) => row.userId === userId),
+      rows.filter((row) => row.userId === userId).map(strip),
   };
 }
 
@@ -222,5 +234,62 @@ describe('runEarningsReminderScan (V5-P5)', () => {
     expect(res).toEqual({ scanned: 1, reminded: 1 });
     expect(notify.events).toHaveLength(1);
     expect(notify.events[0]).toMatchObject({ assetId: 'watched', symbol: 'WATCH' });
+  });
+
+  it('never reads a paranoid account custom watchlist asset, but keeps a normal one', async () => {
+    const rows = [
+      asset({
+        userId: 'paranoid',
+        assetId: 'house',
+        providerRef: 'HOUSE',
+        symbol: 'HOUSE',
+        name: 'Paranoid House',
+        held: false,
+        watched: true,
+        custom: true,
+      }),
+      asset({
+        userId: 'paranoid',
+        assetId: 'global',
+        providerRef: 'GLOBAL',
+        symbol: 'GLOBAL',
+        held: false,
+        watched: true,
+      }),
+      asset({
+        userId: 'normal',
+        assetId: 'boat',
+        providerRef: 'BOAT',
+        symbol: 'BOAT',
+        name: 'Normal Boat',
+        held: false,
+        watched: true,
+        custom: true,
+      }),
+    ];
+    const notify = stubNotify();
+    const res = await runEarningsReminderScan({
+      intelRepo: intelRepo(rows),
+      marketData: marketDataWithEarnings({ HOUSE: day(1), GLOBAL: day(1), BOAT: day(1) }),
+      redis,
+      notify,
+      enabled: true,
+      // Only the paranoid account's guarded pass is refused; the global pass
+      // above it is unguarded and the normal account's pass runs.
+      runIfAllowed: async (userId, action) => {
+        if (userId === 'paranoid') return false;
+        await action();
+        return true;
+      },
+      now: () => NOW,
+    });
+
+    // The paranoid account's OWN custom watchlist row is never processed —
+    // it is not in the global pass, and its guarded pass never runs.
+    expect(notify.events.map((event) => (event as { symbol: string }).symbol).sort()).toEqual([
+      'BOAT',
+      'GLOBAL',
+    ]);
+    expect(res.reminded).toBe(2);
   });
 });

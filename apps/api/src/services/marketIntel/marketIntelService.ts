@@ -133,9 +133,10 @@ export function createMarketIntelService(deps: MarketIntelServiceDeps): MarketIn
     // Invisible when unconfigured: the gate off ⇒ no book scan, no entries.
     if (!enabled) return { available: false, entries: [] };
 
-    // The paranoid branch uses a physically watchlist-only query. Filtering a
-    // combined result after the fact would still make the kept calendar read
-    // killed transaction/holding rows from the server.
+    // The paranoid branch uses a physically watchlist-only, GLOBAL-only query.
+    // Filtering a combined result after the fact would still make the kept
+    // calendar read killed transaction/holding rows — and the account's own
+    // custom-asset symbol/name/provider ref — from the server.
     const assets = includeHoldings
       ? await intelRepo.listUserWatchAndHoldAssets(userId)
       : await intelRepo.listUserWatchAssets(userId);

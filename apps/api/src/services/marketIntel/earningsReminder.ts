@@ -155,23 +155,23 @@ export async function runEarningsReminderScan(
     reminded += 1;
   };
 
-  // Watchlist provenance is kept in paranoid mode. This query never joins
-  // portfolios/transactions, so these rows and their provider work are safe
-  // without an account-mode guard.
+  // GLOBAL watchlist provenance is kept in paranoid mode. This query never
+  // joins portfolios/transactions and never selects an account-owned (custom)
+  // asset row, so these rows and their provider work are safe without an
+  // account-mode guard.
   for (const watched of await intelRepo.listAllWatchAssets()) {
     await processAsset(watched);
   }
 
-  // Discover accounts from account metadata only. Every holding aggregation
-  // then happens inside that user's transition lock, and the lock stays held
-  // through provider work plus enqueue. If enable won, no transaction query is
-  // issued for that account at all.
+  // Discover accounts from account metadata only. Every holding aggregation —
+  // and every account-owned custom watchlist row, which the global pass above
+  // deliberately skipped — then happens inside that user's transition lock, and
+  // the lock stays held through provider work plus enqueue. If enable won, no
+  // transaction or custom-asset query is issued for that account at all. The
+  // `processed` set makes the global rows this returns a no-op second time.
   for (const userId of await intelRepo.listNormalUserIds()) {
     await deps.runIfAllowed(userId, async () => {
-      const holdingOnly = (await intelRepo.listUserWatchAndHoldAssets(userId)).filter(
-        (asset) => asset.held && !asset.watched,
-      );
-      for (const asset of holdingOnly) {
+      for (const asset of await intelRepo.listUserWatchAndHoldAssets(userId)) {
         await processAsset({ ...asset, userId });
       }
     });

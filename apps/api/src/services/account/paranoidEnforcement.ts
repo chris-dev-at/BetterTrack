@@ -232,19 +232,21 @@ export const PARANOID_SERVICE_BINDINGS: readonly ParanoidServiceBinding[] = [
  */
 export const PARANOID_SERVICE_EXEMPTIONS: readonly ParanoidServiceExemption[] = [
   {
+    // A fresh basket has no constituents and delete surfaces no asset row, so
+    // neither can carry the owner's custom-asset provenance.
     service: 'conglomerate',
-    methods: [
-      'list',
-      'get',
-      'create',
-      'update',
-      'replacePositions',
-      'activate',
-      'remove',
-      'resolved',
-      'allocate',
-    ],
+    methods: ['create', 'remove'],
     handling: 'kept',
+  },
+  {
+    // Private baskets stay usable in paranoid mode, but a CONSTITUENT may be
+    // the account's own custom asset. Every branch that would surface, embed,
+    // or price one is scoped to global market assets under the caller's
+    // transition lock.
+    service: 'conglomerate',
+    methods: ['list', 'get', 'update', 'replacePositions', 'activate', 'resolved', 'allocate'],
+    handling: 'internallyFiltered',
+    coverage: ['accountMode', 'ownedAssetProvenance'],
   },
   {
     service: 'workboard',

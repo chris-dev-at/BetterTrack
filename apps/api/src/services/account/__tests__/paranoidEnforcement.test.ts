@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import type { Application } from 'express';
 import request from 'supertest';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -11,6 +11,7 @@ import {
   assets,
   alerts,
   portfolioCashMovements,
+  conglomeratePositions,
   conglomerates,
   friendGroupMembers,
   friendGroups,
@@ -18,8 +19,10 @@ import {
   mirrorChainInvites,
   mirrorChainMembers,
   mirrorChainOps,
+  mirrorRows,
   notifications,
   itemReactions,
+  portfolioCashSources,
   portfolios,
   shareAudiences,
   transactions,
@@ -36,6 +39,7 @@ import {
   createParanoidUserJobFilter,
   type JobDefinition,
 } from '../../../jobs';
+import { createAlertsEvaluateJob } from '../../../jobs/definitions/alertsJob';
 import { buildRouteTable } from '../../../scripts/checkOpenapiCoverage';
 import { createTestApp, type TestHarness } from '../../../testing/createTestApp';
 import {
@@ -131,6 +135,118 @@ function representativePath(rule: (typeof PARANOID_KILL_REGISTRY)[number]['route
   if ('exact' in rule && rule.exact) return rule.exact;
   if ('prefix' in rule && rule.prefix) return `${rule.prefix}probe`;
   return '/ideas/018f0000-0000-7000-8000-000000000001/clone';
+}
+
+/**
+ * One reachable invocation per method that declares `ownedAssetProvenance`,
+ * built over a paranoid account that watches, holds, alerts on, and embeds its
+ * OWN custom asset. Each probe is called for its leak surface — the assertion
+ * lives at the call site; the fixtures live here.
+ */
+async function ownedAssetProvenanceProbes(
+  userId: string,
+  customAssetId: string,
+): Promise<Record<string, () => Promise<unknown>>> {
+  const ctx = harness.ctx;
+  const [watchlist] = await harness.db
+    .insert(watchlists)
+    .values({ userId, name: 'Provenance', isDefault: true })
+    .returning();
+  await harness.db
+    .insert(workboardItems)
+    .values({ userId, watchlistId: watchlist!.id, assetId: customAssetId, sortOrder: 0 });
+  const [alert] = await harness.db
+    .insert(alerts)
+    .values({
+      userId,
+      assetId: customAssetId,
+      kind: 'price_above',
+      threshold: '1',
+      repeat: false,
+      status: 'active',
+    })
+    .returning();
+  const [basket] = await harness.db
+    .insert(conglomerates)
+    .values({ ownerId: userId, name: 'Provenance basket', status: 'draft' })
+    .returning();
+  const [sibling] = await harness.db
+    .insert(conglomerates)
+    .values({ ownerId: userId, name: 'Provenance sibling', status: 'draft' })
+    .returning();
+  await harness.db.insert(conglomeratePositions).values({
+    conglomerateId: basket!.id,
+    assetId: customAssetId,
+    weightPct: '100',
+    sortOrder: 0,
+  });
+
+  // A friend + open conversation so the chat rails are actually invoked; their
+  // provenance obligation is the shared-item chip, which must never resolve to
+  // this account's custom asset.
+  const friend = await harness.seedUser({
+    email: 'provenance-friend@bettertrack.test',
+    username: 'provenance_friend',
+  });
+  const [userA, userB] = [userId, friend.id].sort();
+  await harness.db.insert(friendships).values({ userA: userA!, userB: userB! });
+  const conversation = await ctx.chat.openConversation(friend.id, userId);
+
+  return {
+    'assets.getDetail': () => ctx.assets.getDetail(userId, customAssetId),
+    'assets.getQuote': () => ctx.assets.getQuote(userId, customAssetId),
+    'assets.getHistory': () => ctx.assets.getHistory(userId, customAssetId, '1M'),
+    'assets.getDailyCloses': () => ctx.assets.getDailyCloses(userId, customAssetId),
+    'search.search': () => ctx.search.search(userId, 'PRIVATE'),
+    'search.searchWithFreshness': () => ctx.search.searchWithFreshness(userId, 'PRIVATE'),
+    'search.catalogFreshness': () => ctx.search.catalogFreshness(userId),
+    'marketIntel.capabilities': () => ctx.marketIntel.capabilities(userId, customAssetId),
+    'marketIntel.dividends': () => ctx.marketIntel.dividends(userId, customAssetId),
+    'marketIntel.earnings': () => ctx.marketIntel.earnings(userId, customAssetId),
+    'marketIntel.news': () => ctx.marketIntel.news(userId, customAssetId),
+    'marketIntel.splits': () => ctx.marketIntel.splits(userId, customAssetId),
+    'marketIntel.earningsCalendar': () => ctx.marketIntel.earningsCalendar(userId),
+    'workboard.list': () => ctx.workboard.list(userId),
+    'workboard.listInWatchlist': () => ctx.workboard.listInWatchlist(userId, watchlist!.id),
+    'workboard.listWatchlists': () => ctx.workboard.listWatchlists(userId),
+    'workboard.addItem': () => ctx.workboard.addItem(userId, customAssetId),
+    'workboard.renameWatchlist': () =>
+      ctx.workboard.renameWatchlist(userId, watchlist!.id, 'Renamed'),
+    'workboard.itemsForSharedView': () => ctx.workboard.itemsForSharedView(watchlist!.id),
+    'alerts.list': () => ctx.alerts.list(userId),
+    'alerts.create': () =>
+      ctx.alerts.create(userId, {
+        assetId: customAssetId,
+        kind: 'price_above',
+        threshold: 1,
+        repeat: false,
+      }),
+    'alerts.update': () => ctx.alerts.update(userId, alert!.id, { threshold: 2 }),
+    'alerts.rearm': () => ctx.alerts.rearm(userId, alert!.id),
+    'backtest.runPreview': () =>
+      ctx.backtest.runPreview(userId, {
+        positions: [{ assetId: customAssetId, weight: 1 }],
+        range: '1Y',
+      }),
+    'backtest.runComparison': () =>
+      ctx.backtest.runComparison(userId, {
+        conglomerateIds: [basket!.id, sibling!.id],
+        range: '1Y',
+      }),
+    'conglomerate.list': () => ctx.conglomerate.list(userId),
+    'conglomerate.get': () => ctx.conglomerate.get(userId, basket!.id),
+    'conglomerate.update': () => ctx.conglomerate.update(userId, basket!.id, { name: 'Renamed' }),
+    'conglomerate.replacePositions': () =>
+      ctx.conglomerate.replacePositions(userId, basket!.id, [
+        { assetId: customAssetId, weightPct: 100 },
+      ]),
+    'conglomerate.activate': () => ctx.conglomerate.activate(userId, basket!.id),
+    'conglomerate.resolved': () => ctx.conglomerate.resolved(userId, basket!.id),
+    'conglomerate.allocate': () =>
+      ctx.conglomerate.allocate(userId, basket!.id, { budgetEur: 1000, mode: 'whole' }),
+    'chat.getThread': () => ctx.chat.getThread(userId, conversation.id, {}),
+    'chat.sendMessage': () => ctx.chat.sendMessage(userId, conversation.id, { body: 'probe' }),
+  };
 }
 
 function expectUnique(values: readonly string[], rail: string): void {
@@ -324,15 +440,51 @@ describe('paranoid kill registry', () => {
         'dynamicPrincipals',
       );
     }
-    for (const [serviceName, methods] of [
-      ['workboard', ['list', 'listInWatchlist', 'addItem']],
-      ['alerts', ['list', 'create', 'update', 'rearm']],
-      ['backtest', ['runPreview', 'runComparison']],
-    ] as const) {
-      for (const method of methods) {
-        expect(semanticCoverageFor(serviceName, method), `${serviceName}.${method}`).toContain(
-          'ownedAssetProvenance',
-        );
+    // `ownedAssetProvenance` is an EXECUTABLE obligation, not a label: every
+    // method declaring it must be reachable through a probe below, and no probe
+    // may surface this paranoid account's own custom-asset identity — whether
+    // it returns a payload or the established opaque rejection. Declaring the
+    // coverage without writing a probe fails here, which is exactly what let a
+    // false `marketIntel.earningsCalendar` declaration through before.
+    const declaringOwnedAssetProvenance = [
+      ...PARANOID_SERVICE_BINDINGS.filter((binding) =>
+        binding.coverage?.includes('ownedAssetProvenance'),
+      ),
+      ...PARANOID_SERVICE_EXEMPTIONS.filter(
+        (exemption) =>
+          exemption.handling !== 'kept' && exemption.coverage.includes('ownedAssetProvenance'),
+      ),
+    ].flatMap((entry) =>
+      registeredServiceMethods(context[entry.service]!, entry).map(
+        (method) => `${entry.service}.${method}`,
+      ),
+    );
+    const probes = await ownedAssetProvenanceProbes(user.id, asset!.id);
+    expect(
+      Object.keys(probes).sort(),
+      'every method declaring ownedAssetProvenance needs an executable probe',
+    ).toEqual([...declaringOwnedAssetProvenance].sort());
+
+    const secrets = ['PRIVATE', 'Private matrix asset', `matrix:${user.id}`];
+    for (const [rail, probe] of Object.entries(probes)) {
+      expect(
+        semanticCoverageFor(rail.split('.')[0]!, rail.slice(rail.indexOf('.') + 1)),
+        rail,
+      ).toContain('ownedAssetProvenance');
+      let serialized: string;
+      try {
+        serialized = JSON.stringify(await probe()) ?? '';
+      } catch (error) {
+        // A refusal is a legitimate outcome — but the refusal itself must not
+        // name the custom asset either.
+        serialized = JSON.stringify({
+          message: (error as Error).message,
+          code: (error as { code?: string }).code,
+          details: (error as { details?: unknown }).details,
+        });
+      }
+      for (const secret of secrets) {
+        expect(serialized.includes(secret), `${rail} leaked ${secret}`).toBe(false);
       }
     }
 
@@ -387,7 +539,12 @@ describe('paranoid kill registry', () => {
       const handler = vi.fn(async () => {});
       handlers.set(name, handler);
       const definition = { name, handler } as unknown as JobDefinition;
-      if (!policy.capability) {
+      if (policy.mode === 'internallyFiltered') {
+        // Capability-null but NOT kept: the queue survives while the handler
+        // scopes its own account-owned rails. The binding is what separates the
+        // two — a registry entry claiming this without one must fail below.
+        definitions.push(bindParanoidJob(definition, { mode: 'internallyFiltered' }));
+      } else if (!policy.capability) {
         definitions.push(definition);
       } else if (policy.mode === 'portfolio') {
         definitions.push(
@@ -424,6 +581,36 @@ describe('paranoid kill registry', () => {
     expect(() =>
       assertParanoidJobBindings(definitions, [...ALL_QUEUE_NAMES, 'future.unclassified']),
     ).toThrow(/registry drift/);
+    // An `internallyFiltered` declaration carries a real proof obligation:
+    // strip the binding off the definition and the matrix refuses it, so the
+    // classification can never quietly degrade into `kept`.
+    for (const [name, policy] of Object.entries(PARANOID_JOB_POLICIES)) {
+      if (policy.mode !== 'internallyFiltered') continue;
+      const unbound = definitions.map((definition) =>
+        definition.name === name
+          ? ({ name, handler: handlers.get(name)! } as unknown as JobDefinition)
+          : definition,
+      );
+      expect(() => assertParanoidJobBindings(unbound, ALL_QUEUE_NAMES), name).toThrow(
+        new RegExp(`unbound internallyFiltered job ${name.replace('.', '\\.')}`),
+      );
+    }
+    // The real composed definition carries it — not just this test's stand-in.
+    expect(() =>
+      assertParanoidJobBindings(
+        definitions.map((definition) =>
+          definition.name === 'alerts.evaluate'
+            ? createAlertsEvaluateJob({
+                db: harness.db,
+                marketData: harness.ctx.marketData,
+                notify: harness.ctx.notify,
+                paranoid: harness.ctx.paranoidGuard,
+              })
+            : definition,
+        ),
+        ALL_QUEUE_NAMES,
+      ),
+    ).not.toThrow();
 
     const jobContext = { logger: { info: vi.fn() } } as never;
     await definitions
@@ -777,6 +964,69 @@ describe('paranoid kill registry', () => {
         .from(portfolios)
         .where(eq(portfolios.userId, recipient.id)),
     ).toHaveLength(portfoliosBefore.length);
+  });
+
+  it('anchors a join on a guarded copy after ownership moved off the founder', async () => {
+    const founder = await harness.seedUser({
+      email: 'mirror-founder@bettertrack.test',
+      username: 'mirror_founder',
+    });
+    const successor = await harness.seedUser({
+      email: 'mirror-successor@bettertrack.test',
+      username: 'mirror_successor',
+    });
+    const joiner = await harness.seedUser({
+      email: 'mirror-joiner@bettertrack.test',
+      username: 'mirror_joiner',
+    });
+    const befriend = async (a: string, b: string) => {
+      const [userA, userB] = [a, b].sort();
+      await harness.db.insert(friendships).values({ userA: userA!, userB: userB! });
+    };
+    await befriend(founder.id, successor.id);
+    await befriend(successor.id, joiner.id);
+
+    const founderPortfolioId = await harness.ctx.portfolio.getDefaultPortfolioId(founder.id);
+    const { chain } = await harness.ctx.mirror.convertToChain(founder.id, founderPortfolioId);
+    await harness.ctx.mirror.inviteMember(founder.id, chain.id, successor.id);
+    const successorInvite = (await harness.ctx.mirror.listInvites(successor.id)).incoming[0]!;
+    await harness.ctx.mirror.acceptInvite(successor.id, successorInvite.id);
+    // Ownership moves to the later joiner: the FOUNDER is now merely the
+    // earliest-joined active member, i.e. the anchor the old code picked.
+    await harness.ctx.mirror.transferOwnership(founder.id, chain.id, successor.id);
+
+    await harness.ctx.mirror.inviteMember(successor.id, chain.id, joiner.id);
+    const joinerInvite = (await harness.ctx.mirror.listInvites(joiner.id)).incoming[0]!;
+
+    // Make the anchor choice observable: drop the founder copy's Main link.
+    // The join guards the joiner, the inviter and the CURRENT owner — never the
+    // founder — so anchoring on the founder's copy both reads an unguarded
+    // account and now fails loudly; anchoring on the owner's copy succeeds.
+    const [founderMain] = await harness.db
+      .select({ id: portfolioCashSources.id })
+      .from(portfolioCashSources)
+      .where(
+        and(
+          eq(portfolioCashSources.portfolioId, founderPortfolioId),
+          eq(portfolioCashSources.isMain, true),
+        ),
+      );
+    const founderMainId = founderMain!.id;
+    await harness.db.delete(mirrorRows).where(eq(mirrorRows.localId, founderMainId));
+    await setParanoid(founder.id);
+
+    const { portfolioId } = await harness.ctx.mirror.acceptInvite(joiner.id, joinerInvite.id);
+    expect(portfolioId).toBeTruthy();
+    // The paranoid founder's copy was never touched: no Main was re-created and
+    // its (deleted) link stays absent.
+    expect(
+      await harness.db.select().from(mirrorRows).where(eq(mirrorRows.localId, founderMainId)),
+    ).toEqual([]);
+    const joinerRows = await harness.db
+      .select({ mirrorId: mirrorRows.mirrorId })
+      .from(mirrorRows)
+      .where(eq(mirrorRows.portfolioId, portfolioId));
+    expect(joinerRows.length).toBeGreaterThan(0);
   });
 
   it('filters a chain switcher row when the owner transition wins before enrichment', async () => {
@@ -1422,12 +1672,23 @@ describe('paranoid kill registry', () => {
       .insert(watchlists)
       .values({ userId: user.id, name: 'General', isDefault: true })
       .returning();
-    await harness.db.insert(workboardItems).values({
-      userId: user.id,
-      watchlistId: watchlist!.id,
-      assetId: watchedAsset!.id,
-      sortOrder: 0,
-    });
+    await harness.db.insert(workboardItems).values([
+      {
+        userId: user.id,
+        watchlistId: watchlist!.id,
+        assetId: watchedAsset!.id,
+        sortOrder: 0,
+      },
+      // The custom asset is ALREADY on the watchlist when the transition wins:
+      // the watchlist-only calendar branch must still refuse to read its
+      // symbol/name/provider ref, exactly like the holding branch.
+      {
+        userId: user.id,
+        watchlistId: watchlist!.id,
+        assetId: customAsset!.id,
+        sortOrder: 1,
+      },
+    ]);
 
     let releaseModeChange!: () => void;
     let modeChangeLocked!: () => void;
@@ -1642,6 +1903,12 @@ describe('paranoid kill registry', () => {
     await harness.ctx.conglomerate.replacePositions(user.id, privateOne.id, [
       { assetId: customExisting!.id, weightPct: 100 },
     ]);
+    // A parent that only NESTS the custom-asset basket: the taint has to
+    // propagate through the owner-local nesting graph, not just direct edges.
+    const nestedParent = await harness.ctx.conglomerate.create(user.id, { name: 'Nested parent' });
+    await harness.ctx.conglomerate.replacePositions(user.id, nestedParent.id, [
+      { childId: privateOne.id, weightPct: 100 },
+    ]);
 
     const previewInput = {
       positions: [{ assetId: customExisting!.id, weight: 100 }],
@@ -1825,6 +2092,113 @@ describe('paranoid kill registry', () => {
       .set(...XRW)
       .send({ conglomerateIds: [globalOne.id, globalTwo.id], range: 'MAX' });
     expect(globalCompare.status).toBe(200);
+  });
+
+  it('keeps private conglomerates usable for global assets across a winning transition', async () => {
+    const user = await harness.seedUser({
+      email: 'basket-provenance-race@bettertrack.test',
+      username: 'basket_provenance_race',
+    });
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const [globalAsset, customAsset, customBlocked] = await harness.db
+      .insert(assets)
+      .values([
+        {
+          providerId: 'yahoo',
+          providerRef: 'BASKET-GLOBAL',
+          type: 'stock',
+          symbol: 'BASKET-GLOBAL',
+          name: 'Basket Global',
+          currency: 'EUR',
+        },
+        {
+          providerId: 'manual',
+          providerRef: `basket-existing:${user.id}`,
+          ownerId: user.id,
+          type: 'custom',
+          symbol: 'BASKET-PRIVATE',
+          name: 'Basket Private',
+          currency: 'EUR',
+        },
+        {
+          providerId: 'manual',
+          providerRef: `basket-blocked:${user.id}`,
+          ownerId: user.id,
+          type: 'custom',
+          symbol: 'BASKET-BLOCKED',
+          name: 'Basket Blocked',
+          currency: 'EUR',
+        },
+      ])
+      .returning();
+    const globalBasket = await harness.ctx.conglomerate.create(user.id, { name: 'Global basket' });
+    const customBasket = await harness.ctx.conglomerate.create(user.id, { name: 'Custom basket' });
+    // A parent that only NESTS the custom-asset basket: the taint has to
+    // propagate through the owner-local nesting graph, not just direct edges.
+    const nestedParent = await harness.ctx.conglomerate.create(user.id, { name: 'Nested parent' });
+    await harness.ctx.conglomerate.replacePositions(user.id, globalBasket.id, [
+      { assetId: globalAsset!.id, weightPct: 100 },
+    ]);
+    await harness.ctx.conglomerate.replacePositions(user.id, customBasket.id, [
+      { assetId: customAsset!.id, weightPct: 100 },
+    ]);
+    await harness.ctx.conglomerate.replacePositions(user.id, nestedParent.id, [
+      { childId: customBasket.id, weightPct: 100 },
+    ]);
+
+    const transition = await startWinningParanoidTransition(user.id);
+    const directList = harness.ctx.conglomerate.list(user.id);
+    const directGet = harness.ctx.conglomerate.get(user.id, customBasket.id);
+    const directResolved = harness.ctx.conglomerate.resolved(user.id, nestedParent.id);
+    const directAllocate = harness.ctx.conglomerate.allocate(user.id, customBasket.id, {
+      budgetEur: 1000,
+      mode: 'whole',
+    });
+    const directActivate = harness.ctx.conglomerate.activate(user.id, customBasket.id);
+    const directEmbed = harness.ctx.conglomerate.replacePositions(user.id, globalBasket.id, [
+      { assetId: customBlocked!.id, weightPct: 100 },
+    ]);
+    const routeGet = agent
+      .get(`/api/v1/conglomerates/${customBasket.id}`)
+      .then((response) => response);
+    let settled = 0;
+    for (const pending of [
+      directList,
+      directGet.catch(() => undefined),
+      directResolved.catch(() => undefined),
+      directAllocate.catch(() => undefined),
+      directActivate.catch(() => undefined),
+      directEmbed.catch(() => undefined),
+      routeGet,
+    ]) {
+      void pending.finally(() => {
+        settled += 1;
+      });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(settled).toBe(0);
+
+    await transition.finish();
+    // Baskets that resolve to the account's own custom asset — directly or
+    // through nesting — drop out of the list entirely.
+    expect((await directList).conglomerates.map((row) => row.id)).toEqual([globalBasket.id]);
+    for (const blocked of [
+      directGet,
+      directResolved,
+      directAllocate,
+      directActivate,
+      directEmbed,
+    ]) {
+      await expect(blocked).rejects.toMatchObject({
+        statusCode: 404,
+        code: expect.stringMatching(/^(CONGLOMERATE_NOT_FOUND|ASSET_NOT_FOUND)$/),
+      });
+    }
+    expect((await routeGet).status).toBe(404);
+    // The refused embed left the global basket untouched, and it stays usable.
+    await expect(harness.ctx.conglomerate.get(user.id, globalBasket.id)).resolves.toMatchObject({
+      positions: [expect.objectContaining({ assetId: globalAsset!.id })],
+    });
   });
 
   it('serializes owner-derived public, shared-sandbox, and followed-item reads', async () => {

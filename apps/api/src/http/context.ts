@@ -1285,6 +1285,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     marketData,
     currencyService: currency,
     audience,
+    paranoid: paranoidGuard,
   });
 
   // Backtest preview (§6.5/§6.6): reuses the market-data history + currency

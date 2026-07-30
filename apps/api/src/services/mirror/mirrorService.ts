@@ -1621,6 +1621,11 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
   type JoinPrincipalContext = {
     chain: MirrorChainRow | null;
     members: MirrorChainMemberRow[];
+    /**
+     * Exactly the accounts whose transition lock this scope holds. Any member
+     * copy the action reads or writes must belong to one of them.
+     */
+    guardedUserIds: ReadonlySet<string>;
   };
 
   type JoinPrincipalAttempt<T> = { retry: true; ownerId: string } | { retry: false; value: T };
@@ -1662,7 +1667,10 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
           if (ownerId && !guardedSet.has(ownerId)) {
             return { retry: true, ownerId };
           }
-          return { retry: false, value: await action({ chain, members }) };
+          return {
+            retry: false,
+            value: await action({ chain, members, guardedUserIds: guardedSet }),
+          };
         }),
       );
       if (!result.retry) return result.value;
@@ -1794,6 +1802,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
   async function attachMemberCopyUnderLock(
     chain: MirrorChainRow,
     existingMembers: MirrorChainMemberRow[],
+    guardedUserIds: ReadonlySet<string>,
     userId: string,
     opts?: { role?: 'manager' | 'member'; invitedBy?: string },
   ): Promise<{ member: MirrorChainMemberRow; portfolioId: string }> {
@@ -1802,9 +1811,20 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     }
     const username = await usernameOf(userId);
 
-    // The chain's Main identity: every copy's Main is linked to it (§8) —
-    // derive it from any active member's copy (there is always ≥1).
-    const anchor = existingMembers.find((member) => member.portfolioId);
+    // The chain's Main identity: every copy's Main is linked to it (§8) — so
+    // ANY active copy would resolve it, but `getOrCreateMain` reads and may
+    // write that member's portfolio. Anchor only on a member whose account this
+    // scope already holds the transition lock for: `listActiveMembers` orders
+    // by join time, so the earliest-joined member is normally the FORMER owner
+    // after an ownership transfer, and reading their copy unguarded would let a
+    // paranoid transition win underneath the join. The current owner is always
+    // in the guarded set (`withJoinPrincipalGuards` re-reads ownership under
+    // the chain lock), so the preferred anchor is theirs.
+    const guardedAnchor = (member: MirrorChainMemberRow): boolean =>
+      Boolean(member.portfolioId) && member.userId !== null && guardedUserIds.has(member.userId);
+    const anchor =
+      existingMembers.find((member) => member.role === 'owner' && guardedAnchor(member)) ??
+      existingMembers.find(guardedAnchor);
     if (!anchor?.portfolioId) {
       throw badRequest('This group portfolio has no active copies to join.', 'MIRROR_NO_MEMBERS');
     }
@@ -2306,11 +2326,11 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
       return withJoinPrincipalGuards(
         chainId,
         [userId, opts?.invitedBy],
-        async ({ chain, members }) => {
+        async ({ chain, members, guardedUserIds }) => {
           if (!chain || chain.status !== 'active') {
             throw chainNotFound();
           }
-          return attachMemberCopyUnderLock(chain, members, userId, opts);
+          return attachMemberCopyUnderLock(chain, members, guardedUserIds, userId, opts);
         },
       );
     },
@@ -2745,7 +2765,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
       return withJoinPrincipalGuards(
         candidateInvite.chainId,
         [userId, candidateInvite.fromUser],
-        async ({ chain, members }) => {
+        async ({ chain, members, guardedUserIds }) => {
           const invite = await repo.getInvite(inviteId);
           if (
             !invite ||
@@ -2792,10 +2812,13 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
           }
           // Materialize the zero-config copy while recipient, inviter, current
           // owner, and chain remain locked through every write and enqueue.
-          const { portfolioId } = await attachMemberCopyUnderLock(chain, members, userId, {
-            role: 'member',
-            invitedBy: invite.fromUser,
-          });
+          const { portfolioId } = await attachMemberCopyUnderLock(
+            chain,
+            members,
+            guardedUserIds,
+            userId,
+            { role: 'member', invitedBy: invite.fromUser },
+          );
           await repo.setInviteStatus(inviteId, 'accepted', new Date(now()));
           // Notify the owner a member joined. The join op advanced last_seq, so
           // its value discriminates a re-join occurrence.

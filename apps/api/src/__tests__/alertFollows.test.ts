@@ -168,6 +168,7 @@ async function evaluate(now: number, price = 500) {
     marketData: createStubMarketData({ quote: () => quoteResult(price) }),
     redis: harness.ctx.redis,
     notify: harness.ctx.notify,
+    paranoid: harness.ctx.paranoidGuard,
     followFanout: {
       follows: followsRepo,
       paranoid: harness.ctx.paranoidGuard,

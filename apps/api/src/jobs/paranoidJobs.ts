@@ -34,7 +34,16 @@ export type ParanoidJobBinding =
       readonly mode: 'perUser';
       readonly filter: ParanoidUserJobFilter;
     }
-  | { readonly mode: 'serviceFiltered' };
+  | { readonly mode: 'serviceFiltered' }
+  /**
+   * The queue survives paranoid mode, but the handler itself splits its work
+   * into an unguarded global rail and account-owned rails it runs under the
+   * owning account's transition lock. Nothing is wrapped here: the binding is
+   * the executable declaration that the filtering exists, and
+   * {@link assertParanoidJobBindings} refuses a registry entry claiming
+   * `internallyFiltered` whose definition never carries it.
+   */
+  | { readonly mode: 'internallyFiltered' };
 
 export function createParanoidUserJobFilter(
   jobName: string,
@@ -68,7 +77,7 @@ export function bindParanoidJob<N extends QueueName>(
   binding: ParanoidJobBinding,
 ): JobDefinition<N> {
   const policy = paranoidJobPolicy(definition.name);
-  if (!policy.capability) {
+  if (!policy.capability && policy.mode !== 'internallyFiltered') {
     throw new Error(`cannot bind kept paranoid job ${definition.name}`);
   }
   if (policy.mode !== binding.mode) {
@@ -126,7 +135,10 @@ export function bindParanoidJob<N extends QueueName>(
 
 /**
  * Startup/test completeness gate: every queue is classified and every killed
- * job has exactly one concrete definition carrying a registry binding.
+ * OR internally filtered job has exactly one concrete definition carrying a
+ * registry binding. `internallyFiltered` is deliberately not exempt: without
+ * this, a capability-null `internallyFiltered` entry would be indistinguishable
+ * from `kept` and could claim filtering it never performs.
  */
 export function assertParanoidJobBindings(
   definitions: readonly JobDefinition[],
@@ -159,10 +171,11 @@ export function assertParanoidJobBindings(
     const isBound = Boolean(
       (matches[0] as JobDefinition & { [PARANOID_JOB_BOUND]?: boolean })[PARANOID_JOB_BOUND],
     );
-    if (policy.capability && !isBound) {
-      throw new Error(`paranoid job registry has unbound killed job ${name}`);
+    const mustBind = Boolean(policy.capability) || policy.mode === 'internallyFiltered';
+    if (mustBind && !isBound) {
+      throw new Error(`paranoid job registry has unbound ${policy.mode} job ${name}`);
     }
-    if (!policy.capability && isBound) {
+    if (!mustBind && isBound) {
       throw new Error(`paranoid job registry bound kept job ${name}`);
     }
   }

@@ -257,12 +257,18 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
     const { room } = parsed.data;
     if (room.kind === 'portfolio') {
       // Owner-or-shared, recomputed at join time — revoking a share stops new
-      // joins immediately (§6.9). Errors fail closed.
-      const allowed = await deps.canViewPortfolio(userId, room.id).catch(() => false);
-      if (!allowed) {
-        respond({ ok: false, error: 'FORBIDDEN' });
-        return;
-      }
+      // joins immediately (§6.9). Errors fail closed. The viewer's account lock
+      // is held across the check, the join AND the ack (same shape as
+      // `forwardLiveFrame`): otherwise a transition committing in that gap
+      // would leave the socket admitted on an authorization taken before it.
+      const admitted = await withAccountPrivacyLock(userId, async () => {
+        const allowed = await deps.canViewPortfolio(userId, room.id).catch(() => false);
+        if (!allowed) return false;
+        await socket.join(roomName(room));
+        return true;
+      });
+      respond(admitted ? { ok: true } : { ok: false, error: 'FORBIDDEN' });
+      return;
     }
     await socket.join(roomName(room));
     respond({ ok: true });
@@ -510,6 +516,52 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
     );
   }
 
+  /**
+   * Reauthorize every established shared viewer before each `portfolio.changed`
+   * frame — the room-join sibling of {@link forwardLiveFrame}. Admission was
+   * decided against the owner's audience at join time, and a share revocation
+   * or a paranoid transition on either side must stop delivery immediately, not
+   * at the socket's next reconnect. Each viewer's account lock is held across
+   * the recheck and the emit, so a transition either wins (viewer evicted, no
+   * frame) or loses (frame precedes the transition). The owner's own tabs are
+   * addressed through their user room and need no audience recheck.
+   */
+  async function forwardPortfolioChanged(
+    server: SocketIOServer,
+    portfolioId: string,
+    ownerId: string,
+    occurredAt: string,
+  ): Promise<void> {
+    const payload: RealtimePortfolioChanged = { portfolioId, occurredAt };
+    server.to(userRoom(ownerId)).emit(REALTIME_SERVER_EVENTS.portfolioChanged, payload);
+
+    const room = portfolioRoom(portfolioId);
+    const viewers = [...server.sockets.sockets.values()].filter(
+      // The owner is already served by their user room above; `.to().to()`
+      // used to dedupe that overlap, so skipping them keeps it single-emit.
+      (socket) => socket.rooms.has(room) && socket.data.userId !== ownerId,
+    );
+    await Promise.allSettled(
+      viewers.map(async (socket) => {
+        const userId = socket.data.userId as string;
+        try {
+          await withAccountPrivacyLock(userId, async () => {
+            const allowed = await deps.canViewPortfolio(userId, portfolioId).catch(() => false);
+            if (!allowed) {
+              await socket.leave(room);
+              return;
+            }
+            if (!socket.disconnected) {
+              socket.emit(REALTIME_SERVER_EVENTS.portfolioChanged, payload);
+            }
+          });
+        } catch (err) {
+          logger.warn({ err, userId, portfolioId }, 'portfolio room authorization failed');
+        }
+      }),
+    );
+  }
+
   /** Bridge the typed domain events into room emissions (§4.5). */
   async function subscribeBus(server: SocketIOServer): Promise<void> {
     unsubscribers.push(
@@ -532,16 +584,7 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
     );
     unsubscribers.push(
       await bus.subscribe('portfolio.changed', (event) => {
-        const payload: RealtimePortfolioChanged = {
-          portfolioId: event.portfolioId,
-          occurredAt: event.occurredAt,
-        };
-        // Owner's own tabs + any admitted shared viewers; `.to().to()` targets
-        // the union and Socket.IO dedupes sockets sitting in both rooms.
-        server
-          .to(userRoom(event.userId))
-          .to(portfolioRoom(event.portfolioId))
-          .emit(REALTIME_SERVER_EVENTS.portfolioChanged, payload);
+        void forwardPortfolioChanged(server, event.portfolioId, event.userId, event.occurredAt);
       }),
     );
     unsubscribers.push(
