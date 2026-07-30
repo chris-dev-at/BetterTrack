@@ -175,10 +175,7 @@ function UserShell() {
               <Route path="activity" element={<TransactionsPage />} />
               {/* Custom assets are user-scoped (`/api/v1/custom-assets`), not a
                   portfolio's own list, so they live under Assets now. */}
-              <Route
-                path="custom-assets"
-                element={<LegacyRedirect to="/assets/custom-assets" />}
-              />
+              <Route path="custom-assets" element={<LegacyRedirect to="/assets/custom-assets" />} />
               <Route path="cash-flow" element={<CashFlowLayout />}>
                 <Route index element={<ExpenseDashboardPage />} />
                 <Route path="transactions" element={<ExpenseTransactionsPage />} />
@@ -299,10 +296,7 @@ function UserShell() {
             <Route path="settings/security" element={<LegacyRedirect to="/control/sign-in" />} />
             {/* Public profile moved into the Control Center (owner order). */}
             <Route path="settings/profile" element={<LegacyRedirect to="/control/profile" />} />
-            <Route
-              path="settings/taxes"
-              element={<LegacyRedirect to="/control/defaults" />}
-            />
+            <Route path="settings/taxes" element={<LegacyRedirect to="/control/defaults" />} />
             <Route
               path="settings/connections"
               element={<LegacyRedirect to="/control/connections" />}
