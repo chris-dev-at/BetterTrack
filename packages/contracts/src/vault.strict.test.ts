@@ -1,8 +1,12 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  paranoidDisableRequestSchema,
   paranoidDisableRehydrationRequestSchema,
   paranoidDisableRehydrationResultSchema,
+  paranoidDisableResponseSchema,
+  paranoidEnableRequestSchema,
+  paranoidEnableResponseSchema,
   VAULT_DOCUMENT_V1_VERSION,
   VAULT_ENTITY_KINDS,
   type VaultStrictEntity,
@@ -24,6 +28,96 @@ const CASH_TAG_ID = uuid(30);
 const CASH_BUDGET_ID = uuid(32);
 const CASH_RULE_ID = uuid(34);
 const ORIGINAL_EXPENSE_HASH = 'a'.repeat(64);
+
+describe('public paranoid transitions', () => {
+  const emptyDocument = {
+    schemaVersion: VAULT_DOCUMENT_V1_VERSION,
+    entities: [],
+    mergeLog: [],
+  };
+
+  it('ties selected media evidence to one exact supported vault version', () => {
+    expect(
+      paranoidEnableRequestSchema.parse({
+        mediaSet: ['server'],
+        vaultVersion: 1,
+      }),
+    ).toEqual({ mediaSet: ['server'], vaultVersion: 1, driveAttestation: null });
+    expect(
+      paranoidEnableRequestSchema.parse({
+        mediaSet: ['drive'],
+        vaultVersion: 7,
+        driveAttestation: { verifiedRoundTrip: true, vaultVersion: 7 },
+      }),
+    ).toEqual({
+      mediaSet: ['drive'],
+      vaultVersion: 7,
+      driveAttestation: { verifiedRoundTrip: true, vaultVersion: 7 },
+    });
+
+    for (const invalid of [
+      { mediaSet: ['drive'], vaultVersion: 7 },
+      {
+        mediaSet: ['drive'],
+        vaultVersion: 7,
+        driveAttestation: { verifiedRoundTrip: true, vaultVersion: 6 },
+      },
+      {
+        mediaSet: ['server'],
+        vaultVersion: 7,
+        driveAttestation: { verifiedRoundTrip: true, vaultVersion: 7 },
+      },
+      { mediaSet: ['server'], vaultVersion: 0 },
+      { mediaSet: ['server'], vaultVersion: 1, plaintextHash: 'forbidden' },
+    ]) {
+      expect(paranoidEnableRequestSchema.safeParse(invalid).success).toBe(false);
+    }
+  });
+
+  it('requires explicit disable confirmation and preserves the PD3a idempotency key', () => {
+    const request = {
+      confirm: true,
+      rehydrationId: uuid(90),
+      document: emptyDocument,
+    };
+    expect(paranoidDisableRequestSchema.parse(request)).toEqual(request);
+    expect(paranoidDisableRequestSchema.safeParse({ ...request, confirm: false }).success).toBe(
+      false,
+    );
+    expect(
+      paranoidDisableRequestSchema.safeParse({
+        ...request,
+        document: { ...emptyDocument, schemaVersion: 2 },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('keeps public receipts portfolio-free and strict', () => {
+    const enabled = {
+      mode: 'paranoid',
+      mediaSet: ['server'],
+      vaultVersion: 3,
+      completedAt: AT,
+      idempotent: false,
+    };
+    expect(paranoidEnableResponseSchema.parse(enabled)).toEqual(enabled);
+    expect(paranoidEnableResponseSchema.safeParse({ ...enabled, portfolioCount: 2 }).success).toBe(
+      false,
+    );
+
+    const disabled = {
+      mode: 'normal',
+      rehydrationId: uuid(90),
+      completedAt: AT,
+      idempotent: true,
+      postCommit: { invalidate: ['account'] },
+    };
+    expect(paranoidDisableResponseSchema.parse(disabled)).toEqual(disabled);
+    expect(
+      paranoidDisableResponseSchema.safeParse({ ...disabled, documentHash: 'no' }).success,
+    ).toBe(false);
+  });
+});
 
 const meta = (id: string) => ({
   id,

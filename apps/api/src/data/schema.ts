@@ -2076,6 +2076,9 @@ export const shareAudiences = pgTable(
 export const shareAudienceMembers = pgTable(
   'share_audience_members',
   {
+    // Mode-dependent relationship: inclusion for `specific_friends`; exclusion
+    // for broad (`all_friends`/`public_link`) audiences after a recipient enters
+    // paranoid mode. Owner setAudience replaces the set in either case.
     audienceId: uuid('audience_id')
       .notNull()
       .references(() => shareAudiences.id, { onDelete: 'cascade' }),

@@ -72,6 +72,23 @@ const PREVIEW_TTL_SECONDS = 3600; // 1 h (§6.6).
 const SHARED_SANDBOX_UNAVAILABLE_MESSAGE =
   'This shared basket can’t be backtested with the selected settings.';
 
+/**
+ * Remove every user-scoped memoised result before paranoid mode commits.
+ *
+ * SCAN keeps this bounded on production Redis; both key families contain
+ * private basket composition and computed portfolio-derived results.
+ */
+export async function purgeBacktestCaches(redis: Redis, userId: string): Promise<void> {
+  for (const pattern of [`backtest:preview:${userId}:*`, `backtest:compare:${userId}:*`]) {
+    let cursor = '0';
+    do {
+      const [nextCursor, keys] = await redis.scan(cursor, 'MATCH', pattern, 'COUNT', 100);
+      cursor = String(nextCursor);
+      if (keys.length > 0) await redis.del(...keys);
+    } while (cursor !== '0');
+  }
+}
+
 /** Calendar years back for each finite preview range. */
 const RANGE_YEARS: Record<Exclude<BacktestPreviewRange, 'MAX'>, number> = {
   '1Y': 1,

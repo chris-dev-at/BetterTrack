@@ -290,6 +290,8 @@ export interface RealtimeGateway {
    * connected Engine.IO clients, or 0 when the gateway is disabled/unattached.
    */
   connectionCount(): number;
+  /** Drop this user's retained refs to account-owned assets before mode enable. */
+  invalidateOwnedLiveMode(userId: string): Promise<void>;
   /** Disconnect all clients, drop bus subscriptions, close the socket server. */
   close(): Promise<void>;
 }
@@ -1960,6 +1962,21 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
 
     connectionCount(): number {
       return io?.engine?.clientsCount ?? 0;
+    },
+
+    async invalidateOwnedLiveMode(userId): Promise<void> {
+      if (!io) return;
+      const sockets = [...io.sockets.sockets.values()].filter(
+        (socket) => principalOf(socket)?.userId === userId,
+      );
+      for (const socket of sockets) {
+        const ownedEntries = [...liveAssetsOf(socket)].filter(
+          ([, entry]) => entry.ownerId === userId,
+        );
+        for (const [assetId, entry] of ownedEntries) {
+          await releaseLiveWatch(socket, assetId, entry, true);
+        }
+      }
     },
 
     async close(): Promise<void> {

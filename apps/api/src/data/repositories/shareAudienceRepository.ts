@@ -95,9 +95,12 @@ export function createShareAudienceRepository(db: Database) {
    * once and reused by every friend-mode query. A viewer is granted by audience
    * when it is `all_friends`, `public_link` (public is strictly broader than
    * friends), `specific_friends` with the viewer in the membership set, or
-   * `group` with the viewer in the referenced circle's CURRENT roster. It is
-   * ALWAYS combined with a friendship join by the caller, so `private` — and any
-   * audience the viewer isn't named in — grants nothing.
+   * `group` with the viewer in the referenced circle's CURRENT roster. On the
+   * two broad modes a membership row is instead a durable exclusion marker,
+   * written by paranoid enable so an implicit inbound share cannot resurrect
+   * after disable. A later owner-driven setAudience replaces the set and clears
+   * that marker. It is ALWAYS combined with a friendship join by the caller, so
+   * `private` — and any audience the viewer isn't named in — grants nothing.
    *
    * The `group` branch reads the live membership, so editing a circle instantly
    * changes who sees existing shares; a `group` share whose group was deleted
@@ -106,7 +109,14 @@ export function createShareAudienceRepository(db: Database) {
    */
   function audienceGrants(viewerId: string) {
     return sql`(
-      ${shareAudiences.audience} in ('all_friends', 'public_link')
+      (
+        ${shareAudiences.audience} in ('all_friends', 'public_link')
+        and not exists (
+          select 1 from ${shareAudienceMembers}
+          where ${shareAudienceMembers.audienceId} = ${shareAudiences.id}
+            and ${shareAudienceMembers.friendId} = ${viewerId}
+        )
+      )
       or (
         ${shareAudiences.audience} = 'specific_friends'
         and exists (
@@ -849,7 +859,10 @@ export function createShareAudienceRepository(db: Database) {
         .select({
           subjectId: shareAudiences.subjectId,
           audience: shareAudiences.audience,
-          friendCount: sql<number>`count(${shareAudienceMembers.friendId})`.mapWith(Number),
+          friendCount:
+            sql<number>`count(${shareAudienceMembers.friendId}) filter (where ${shareAudiences.audience} = 'specific_friends')`.mapWith(
+              Number,
+            ),
         })
         .from(shareAudiences)
         .leftJoin(shareAudienceMembers, eq(shareAudienceMembers.audienceId, shareAudiences.id))
@@ -895,7 +908,8 @@ export function createShareAudienceRepository(db: Database) {
 
       return {
         audience: row.audience,
-        friendIds: members.map((m) => m.friendId),
+        // Broad-mode rows are transition exclusions, not owner-selected members.
+        friendIds: row.audience === 'specific_friends' ? members.map((m) => m.friendId) : [],
         // A `group` audience carries its live reference; every other rung is null.
         groupId: row.audience === 'group' ? row.groupId : null,
         link: { active: link !== undefined, createdAt: link?.createdAt ?? null },
