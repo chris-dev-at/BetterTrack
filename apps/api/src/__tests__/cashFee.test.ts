@@ -470,35 +470,26 @@ describe('cash `fee` kind (§16 2026-07-30)', () => {
 
   // --- Cash-fusion tagging: deferred, and the seed proves it is reachable ----
 
-  it('does NOT carry the `fees` system tag yet — auto-tagging is v5/cash-phase-2', async () => {
-    // DEFERRED, DELIBERATELY. Attaching the app-owned `fees` tag
-    // (`CASH_SYSTEM_TAGS`, `system_key = 'fees'`, migration 0076) to a booked fee
-    // needs the kind → system-tag auto-tagging engine, and NOTHING assigns cash
-    // tags on this branch: `cash_tags` / `cash_movement_tags` are schema + data
-    // migration only (cash fusion phase 1), with the engine, the endpoints and
-    // the tag service all in phase 2 (`v5/cash-phase-2`, a parallel agent).
-    //
-    // Migration 0076 also seeds the system tags only for users that EXISTED when
-    // it ran (`FROM "users" u`), and the "tag service seeds them for every new
-    // one" half is likewise phase-2 work — so a freshly registered account like
-    // this one has no system tags at all yet. Half-building the tagging path here
-    // would mean inventing that seed too.
-    //
-    // Pinned as the current state rather than left unsaid: when phase 2 wires the
-    // engine, this test fails and is the checklist item to flip.
+  it('carries the `fees` system tag — the checkpoint phase 2 was built to flip', async () => {
+    // This was pinned as UNLINKED while the fee kind and the tagging engine were
+    // two parallel branches: `cash_tags` / `cash_movement_tags` existed as schema
+    // only, so a booked fee could not be labelled and saying so was better than
+    // half-building the seed. Phase 2 landed the engine, the system-tag seeding
+    // for accounts created after migration 0076, and `SYSTEM_TAG_FOR_KIND` — an
+    // exhaustive map, so adding `fee` to the kind enum was a COMPILE ERROR until
+    // someone wrote the mapping. This is the other half of that tripwire: the
+    // label now has to be there, and it has to be the `fees` one specifically.
     const { agent: fresh, portfolioId: freshPid } = await seedAgent(h, 'tagcheck');
     await recordCash(fresh, freshPid, 'deposit', 100, { executedAt: tsOffset(-4) });
     const charged = await recordCash(fresh, freshPid, 'fee', 5, { executedAt: tsOffset(-2) });
 
     const links = await h.db
-      .select({ n: sql<number>`count(*)::int` })
+      .select({ systemKey: schema.cashTags.systemKey })
       .from(schema.cashMovementTags)
+      .innerJoin(schema.cashTags, eq(schema.cashMovementTags.tagId, schema.cashTags.id))
       .where(eq(schema.cashMovementTags.movementId, charged.movement.id));
-    expect(links[0]?.n).toBe(0);
 
-    // The contract phase 2 must implement is present and names the key, so the
-    // deferred work has an unambiguous target (asserted from the contract, which
-    // is the single source of truth for both the migration seed and the service).
+    expect(links.map((row) => row.systemKey)).toEqual(['fees']);
     expect(CASH_SYSTEM_TAGS.map((t) => t.key)).toContain('fees');
   });
 });
