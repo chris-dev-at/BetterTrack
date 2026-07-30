@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { beforeEach, expect, test, vi } from 'vitest';
@@ -171,7 +171,7 @@ test('a Google-verified account completes the email step without any code entry'
   await clickContinue(u);
 
   await screen.findByRole('heading', { name: 'Verify your email' });
-  expect(await screen.findByText(/arrived verified from Google/i)).toBeInTheDocument();
+  expect(await screen.findByText(/already verified through Google/i)).toBeInTheDocument();
   expect(screen.queryByLabelText('Verification code')).not.toBeInTheDocument();
 
   await clickContinue(u);
@@ -234,6 +234,84 @@ test('a mismatched PIN confirmation never reaches the server', async () => {
   expect(api.setPin).not.toHaveBeenCalled();
 });
 
+// ── The side step rail ───────────────────────────────────────────────────────
+
+/** The rail row for a step, by its visible label. */
+function railRow(label: string): HTMLElement {
+  return screen.getByRole('button', { name: label });
+}
+
+/** The EN rail labels, in registry order. */
+const RAIL_LABELS = ['You', 'Email', 'Security', 'Preferences', 'Tax', 'Profile', 'Done'] as const;
+
+test('the rail lists every registered step up front, current marked, rest upcoming', async () => {
+  renderWelcome();
+  await screen.findByRole('heading', { name: 'Is this you?' });
+
+  // The whole run is visible, so it reads as bounded rather than open-ended —
+  // and the rail is driven by the registry, so this covers every step there is.
+  expect(RAIL_LABELS).toHaveLength(FIRST_RUN_STEP_META.length);
+  for (const label of RAIL_LABELS) expect(railRow(label)).toBeInTheDocument();
+
+  expect(railRow('You')).toHaveAttribute('data-state', 'current');
+  expect(railRow('You')).toHaveAttribute('aria-current', 'step');
+  // Everything ahead is upcoming and inert — not a dead-looking link.
+  expect(railRow('Security')).toHaveAttribute('data-state', 'upcoming');
+  expect(railRow('Security')).toBeDisabled();
+  expect(railRow('Done')).toBeDisabled();
+});
+
+test('the rail distinguishes done from skipped', async () => {
+  const u = userEvent.setup();
+  renderWelcome();
+  await screen.findByRole('heading', { name: 'Is this you?' });
+
+  // Profile completes itself; the parked email step does not.
+  await clickContinue(u);
+  await screen.findByRole('heading', { name: 'Verify your email' });
+  await clickContinue(u);
+  await screen.findByRole('heading', { name: 'Add a second lock?' });
+
+  expect(railRow('You')).toHaveAttribute('data-state', 'done');
+  // Skipped is deliberately NOT the done state — passing over something must
+  // never read as having handled it.
+  expect(railRow('Email')).toHaveAttribute('data-state', 'skipped');
+  expect(railRow('Security')).toHaveAttribute('data-state', 'current');
+});
+
+test('a visited rail row navigates back; an unreached one does nothing', async () => {
+  const u = userEvent.setup();
+  renderWelcome();
+  await screen.findByRole('heading', { name: 'Is this you?' });
+  await clickContinue(u);
+  await clickContinue(u);
+  await screen.findByRole('heading', { name: 'Add a second lock?' });
+
+  // Clicking a completed row jumps back to it.
+  await u.click(railRow('You'));
+  expect(await screen.findByRole('heading', { name: 'Is this you?' })).toBeInTheDocument();
+  // …and the steps ahead are upcoming again.
+  expect(railRow('Security')).toHaveAttribute('data-state', 'upcoming');
+
+  // An unreached row is inert: clicking it leaves the question alone.
+  await u.click(railRow('Tax'));
+  expect(screen.getByRole('heading', { name: 'Is this you?' })).toBeInTheDocument();
+});
+
+test('each step renders exactly one figure, and it is hidden from assistive tech', async () => {
+  const u = userEvent.setup();
+  renderWelcome();
+  await screen.findByRole('heading', { name: 'Is this you?' });
+
+  for (let i = 0; i < FIRST_RUN_STEPS.length; i += 1) {
+    const figures = document.querySelectorAll('.bt-frfig');
+    // One per step — a figure, never a gallery.
+    expect(figures).toHaveLength(1);
+    expect(figures[0]).toHaveAttribute('aria-hidden', 'true');
+    if (i < FIRST_RUN_STEPS.length - 1) await clickContinue(u);
+  }
+});
+
 // ── Leaving the wizard ───────────────────────────────────────────────────────
 
 test('"Do this later" closes the run out and hands over the app', async () => {
@@ -256,8 +334,10 @@ test('the last step summarises what was set versus deferred, then opens the app'
   for (let i = 0; i < FIRST_RUN_STEPS.length - 1; i += 1) await clickContinue(u);
 
   expect(await screen.findByRole('heading', { name: 'You are set up' })).toBeInTheDocument();
-  // Profile confirmed itself; the parked email step did not.
-  const rows = screen.getAllByRole('listitem');
+  // Profile confirmed itself; the parked email step did not. Scoped to the step
+  // body — the step rail is a list too, and its rows come first in the document.
+  const body = document.querySelector('.bt-fr__body') as HTMLElement;
+  const rows = within(body).getAllByRole('listitem');
   expect(rows[0]).toHaveTextContent('Set');
   expect(rows[1]).toHaveTextContent('Later');
   // The terminal step offers no "later" — there is nothing left to defer.

@@ -92,9 +92,9 @@ export function InvitePage() {
     setSubmitting(true);
     try {
       await acceptInvite({ token, username, password });
-      // Accepting an invite creates the account, so it is a first run exactly
-      // like /register — and in an invite-only deployment it is the ONLY way in.
-      navigate('/welcome', { replace: true });
+      // Land the app; `FirstRunGate` diverts a never-set-up account to /welcome
+      // (one trigger for every §6.12 mode — see RegisterPage).
+      navigate('/', { replace: true });
     } catch (err) {
       setError(acceptErrorMessage(t, err));
     } finally {

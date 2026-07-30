@@ -2762,53 +2762,36 @@
 /* ── First-run wizard ────────────────────────────────────────────────────── */
 
 .bt-fr {
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+
+/* Single column by default (phones): no rail, the compact line carries position.
+   The split arrives at 900px — same breakpoint as the auth gate, so both
+   standalone surfaces change shape at one place. */
+.bt-fr__shell {
   display: flex;
   min-height: 100vh;
   min-height: 100dvh;
   flex-direction: column;
-  align-items: center;
-  padding: clamp(24px, 6vh, 64px) 18px 40px;
 }
 
-.bt-fr__inner {
+.bt-fr__main {
   display: flex;
-  width: min(520px, 100%);
+  width: min(560px, 100%);
   flex: 1;
   flex-direction: column;
+  margin-inline: auto;
+  padding: clamp(20px, 4vh, 40px) 18px 40px;
 }
 
-.bt-fr__head {
+/* Position on narrow viewports. A tall rail stacked above the question would
+   push the actual question off the first screenful, so it becomes one line. */
+.bt-fr__compact {
   display: flex;
   flex-direction: column;
-  gap: 18px;
-  margin-bottom: 34px;
-}
-
-/* Dot stepper: the current step is the only gold thing up here. */
-.bt-fr__dots {
-  display: flex;
-  align-items: center;
-  gap: 7px;
-}
-
-.bt-fr__dot {
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--bt-border-strong);
-  transition:
-    background var(--bt-t-fast),
-    width var(--bt-t-fast);
-}
-
-.bt-fr__dot[data-state='done'] {
-  background: var(--bt-faint);
-}
-
-.bt-fr__dot[data-state='current'] {
-  width: 20px;
-  border-radius: 4px;
-  background: var(--bt-gold);
+  gap: 14px;
+  margin-bottom: 30px;
 }
 
 .bt-fr__stepnow {
@@ -2819,17 +2802,172 @@
   text-transform: uppercase;
 }
 
+/* ── The step rail (≥900px) ───────────────────────────────────────────────── */
+
+.bt-fr__rail {
+  display: none;
+}
+
+@media (min-width: 900px) {
+  .bt-fr__shell {
+    display: grid;
+    grid-template-columns: 260px minmax(0, 1fr);
+  }
+
+  .bt-fr__rail {
+    position: sticky;
+    top: 0;
+    display: flex;
+    height: 100vh;
+    height: 100dvh;
+    flex-direction: column;
+    gap: 34px;
+    overflow-y: auto;
+    padding: 30px 26px;
+    background: var(--bt-nav);
+    border-right: 1px solid var(--bt-border);
+  }
+
+  .bt-fr__main {
+    width: min(560px, 100%);
+    padding: clamp(40px, 8vh, 88px) clamp(28px, 4vw, 56px) 48px;
+  }
+
+  /* The rail owns position at this width. */
+  .bt-fr__compact {
+    display: none;
+  }
+}
+
+/* Every step listed up front, so the run reads as bounded. Row pitch is fixed —
+   never stretched to fill the rail — so the connector always reaches the next
+   marker instead of dangling. */
+.bt-fr__steps {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.bt-fr__steprow {
+  position: relative;
+  display: grid;
+  width: 100%;
+  align-items: center;
+  grid-template-columns: 22px minmax(0, 1fr);
+  gap: 11px;
+  padding: 7px 6px;
+  border: 0;
+  border-radius: 6px;
+  background: none;
+  font: inherit;
+  text-align: left;
+  transition:
+    background var(--bt-t-fast),
+    color var(--bt-t-fast);
+}
+
+/* A visited step can be revisited; an unreached one is inert, not a dead link. */
+.bt-fr__steprow:not(:disabled) {
+  cursor: pointer;
+}
+
+.bt-fr__steprow:not(:disabled):hover {
+  background: var(--bt-surface-soft);
+}
+
+.bt-fr__steprow:disabled {
+  cursor: default;
+}
+
+/* The trail between markers, drawn from each row to the next. */
+.bt-fr__steps > li:not(:last-child) .bt-fr__stepmark::after {
+  content: '';
+  position: absolute;
+  top: calc(100% + 3px);
+  left: 50%;
+  width: 1px;
+  height: 11px;
+  background: var(--bt-border-strong);
+  transform: translateX(-50%);
+}
+
+.bt-fr__stepmark {
+  position: relative;
+  display: inline-flex;
+  width: 22px;
+  height: 22px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--bt-border-strong);
+  border-radius: 50%;
+  color: var(--bt-faint);
+  font-size: 11.5px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.bt-fr__steplabel {
+  overflow: hidden;
+  color: var(--bt-faint);
+  font-size: 13px;
+  font-weight: 560;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Done — the only place green appears in the wizard: it means "on/ok", nothing
+   decorative. */
+.bt-fr__steprow[data-state='done'] .bt-fr__stepmark {
+  border-color: color-mix(in srgb, var(--bt-pos) 30%, transparent);
+  background: var(--bt-pos-soft);
+  color: var(--bt-pos);
+}
+
+.bt-fr__steprow[data-state='done'] .bt-fr__steplabel {
+  color: var(--bt-text-soft);
+}
+
+/* Skipped — deliberately NOT a tick and not green: a dash on the plain neutral
+   marker, so "passed over" never reads as "handled". */
+.bt-fr__steprow[data-state='skipped'] .bt-fr__stepmark {
+  border-style: dashed;
+  color: var(--bt-muted);
+}
+
+.bt-fr__steprow[data-state='skipped'] .bt-fr__steplabel {
+  color: var(--bt-muted);
+}
+
+/* Current — the brightest ink in the rail and its single gold hit. */
+.bt-fr__steprow[data-state='current'] .bt-fr__stepmark {
+  border-color: var(--bt-gold);
+  background: var(--bt-gold);
+  color: var(--bt-gold-ink);
+  font-weight: 700;
+}
+
+.bt-fr__steprow[data-state='current'] .bt-fr__steplabel {
+  color: var(--bt-text);
+  font-weight: 620;
+}
+
 .bt-fr__body {
   flex: 1;
 }
 
+/* The question is the page title here, so it sits in the 27–32px title band —
+   and a 27px ivory heading against the figure's 14px value is what guarantees
+   the eye reads the question first. */
 .bt-fr__q {
   margin-bottom: 6px;
   color: var(--bt-text);
-  font-size: 25px;
+  font-size: 27px;
   font-weight: 650;
-  letter-spacing: -0.01em;
-  line-height: 1.25;
+  letter-spacing: -0.012em;
+  line-height: 1.22;
 }
 
 .bt-fr__hint {
@@ -2938,7 +3076,7 @@
     animation: none;
   }
 
-  .bt-fr__dot {
+  .bt-fr__steprow {
     transition: none;
   }
 }
@@ -4812,4 +4950,98 @@
   .bt-authfig__card {
     animation: none;
   }
+}
+
+/* ===== R2: firstrun figures =================================================
+ * One small live figure per wizard step, above the question.
+ *
+ * Sized and toned to LOSE to the question below it: a 64px flat strip, one
+ * hairline, muted labels, at most one accent hit — against a 25px ivory heading.
+ * That ordering is the whole point. The reference design put a full-height
+ * decorative panel beside every question with the same border weight as the
+ * control, which is what made it read as graphics-first.
+ *
+ * Every figure reflects real state (see FirstRunFigures.tsx), so none of this is
+ * ornament for its own sake, and there is nothing to animate — no drift here,
+ * unlike the auth panel's cards. Money is tabular.
+ * ========================================================================== */
+
+.bt-frfig {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 22px;
+  padding: 12px 14px;
+  min-height: 64px;
+  background: var(--bt-surface-soft);
+  border: 1px solid var(--bt-border);
+  border-radius: 8px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* A quiet square for the step's glyph — neutral, never gold: the rail's current
+   marker and the Continue button already own the accent on this screen. */
+.bt-frfig__tile {
+  display: inline-flex;
+  width: 34px;
+  height: 34px;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  border-radius: 7px;
+  background: var(--bt-surface-strong);
+  color: var(--bt-muted);
+}
+
+.bt-frfig__stack {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.bt-frfig__value {
+  overflow: hidden;
+  color: var(--bt-text);
+  font-size: 14px;
+  font-weight: 570;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bt-frfig__meta {
+  overflow: hidden;
+  color: var(--bt-muted);
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bt-frfig__chips {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 7px;
+}
+
+/* Off by default, lit when the thing is genuinely on — the figure's only job is
+   to say which. Green means "on", matching the rail's done marker. */
+/* Same type and geometry as `.bt-badge` — a chip here must not read as a new
+   kind of object. */
+.bt-frfig__chip {
+  min-height: 20px;
+  padding: 1px 8px;
+  border: 1px solid var(--bt-border-strong);
+  border-radius: 999px;
+  color: var(--bt-faint);
+  font-size: 11.5px;
+  font-weight: 570;
+  white-space: nowrap;
+}
+
+.bt-frfig__chip--on {
+  border-color: color-mix(in srgb, var(--bt-pos) 30%, transparent);
+  background: var(--bt-pos-soft);
+  color: var(--bt-pos);
 }

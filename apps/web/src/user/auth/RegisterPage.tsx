@@ -246,12 +246,11 @@ export function RegisterPage() {
         setPending(true);
         return;
       }
-      // A brand-new account opens on first-run setup rather than on Home — the
-      // one moment the offer is actually welcome. Covers the Google-assisted
-      // path too: a first-time Google identity is routed through this same form
-      // (`?google=connected`), so it lands here as well. `replace` keeps Back
-      // from returning to a spent registration form.
-      navigate('/welcome', { replace: true });
+      // Land the app; `FirstRunGate` diverts a never-set-up account to /welcome.
+      // Deliberately NOT a direct navigate to /welcome: the trigger belongs in
+      // one place for every registration mode (§6.12) — an admin-created user or
+      // an approved applicant never passes through this form at all.
+      navigate('/', { replace: true });
     } catch (err) {
       setError(registerErrorMessage(t, err));
     } finally {

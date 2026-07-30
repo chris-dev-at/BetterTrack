@@ -4462,7 +4462,6 @@
     "profile": {
       "label": "Du",
       "title": "Bist das du?",
-      "hint": "Name und Adresse, mit denen dein Konto angelegt wurde.",
       "nameLabel": "Anzeigename",
       "nameParked": "Das Umbenennen kommt mit der Profilbearbeitung.",
       "emailLabel": "E-Mail"
@@ -4470,10 +4469,9 @@
     "verifyEmail": {
       "label": "E-Mail",
       "title": "E-Mail bestätigen",
-      "verified": "{{email}} kam bestätigt von Google — hier ist nichts zu tun.",
+      "verified": "Bereits über Google bestätigt.",
       "parkedNote": "Kommt mit dem E-Mail-Versand.",
-      "codeLabel": "Bestätigungscode",
-      "codeHint": "Sobald der Versand läuft, geht ein Code an {{email}}."
+      "codeLabel": "Bestätigungscode"
     },
     "security": {
       "label": "Sicherheit",
@@ -4535,6 +4533,22 @@
       "title": "Du bist eingerichtet",
       "set": "Erledigt",
       "later": "Später"
+    },
+    "figures": {
+      "on": "Aktiv",
+      "off": "Aus",
+      "verified": "Über Google bestätigt",
+      "awaitingDelivery": "Wartet auf den E-Mail-Versand",
+      "pin": "PIN",
+      "twoFactor": "2FA",
+      "notSet": "Nicht gesetzt",
+      "taxMeta": "Vorgabe für neue Portfolios",
+      "public": "Öffentlich",
+      "private": "Privat",
+      "publicMeta": "Für alle mit dem Link sichtbar",
+      "privateMeta": "Nur du siehst diese Seite",
+      "setCount": "{{count}} erledigt",
+      "laterCount": "{{count}} für später"
     }
   }
 }

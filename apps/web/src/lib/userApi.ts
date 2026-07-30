@@ -379,6 +379,15 @@ export async function forgetRememberedDevice(): Promise<void> {
   });
 }
 
+/**
+ * Mark first-run setup as finished or dismissed (§6.12). Idempotent and set-once
+ * server-side, so a double-clicked exit cannot move the recorded timestamp.
+ */
+export async function completeFirstRun(): Promise<MeResponse> {
+  const data = await apiRequest<unknown>('/auth/first-run/complete', { method: 'POST' });
+  return meResponseSchema.parse(data);
+}
+
 /** Enable or change the PIN (§6.1). */
 export async function setPin(body: SetPinRequest): Promise<MeResponse> {
   const data = await apiRequest<unknown>('/auth/pin', { method: 'PUT', body });

@@ -3,8 +3,7 @@ import { useEffect } from 'react';
 
 import { useT } from '../../../i18n';
 import { getGoogleLinkStatus } from '../../../lib/userApi';
-import { Badge, Icon } from '../../../ui/origin';
-import { useAuth } from '../../AuthContext';
+import { Badge } from '../../../ui/origin';
 import { PinInput } from '../../components/PinInput';
 import type { FirstRunStepProps } from '../types';
 
@@ -31,7 +30,6 @@ const GOOGLE_LINK_KEY = ['auth', 'google', 'linkStatus'] as const;
  */
 export function VerifyEmailStep({ report }: FirstRunStepProps) {
   const t = useT();
-  const { user } = useAuth();
 
   // Best-effort: a deployment without Google configured 404s here, which reads
   // exactly like "not linked". Only a 401 ever triggers a session bounce, so an
@@ -48,18 +46,10 @@ export function VerifyEmailStep({ report }: FirstRunStepProps) {
     report({ status: verified ? 'complete' : 'skipped' });
   }, [report, verified]);
 
+  // The figure above already shows the address and its state, so the words here
+  // are only what a screen reader needs — the figure is aria-hidden.
   if (verified) {
-    return (
-      <p className="bt-soft flex items-start gap-2.5 text-sm">
-        <Icon
-          name="check"
-          size={16}
-          className="mt-0.5 shrink-0"
-          style={{ color: 'var(--bt-pos)' }}
-        />
-        <span>{t('firstrun.verifyEmail.verified', { email: user?.email ?? '' })}</span>
-      </p>
-    );
+    return <p className="bt-soft text-sm">{t('firstrun.verifyEmail.verified')}</p>;
   }
 
   return (
@@ -76,7 +66,6 @@ export function VerifyEmailStep({ report }: FirstRunStepProps) {
           // Parked: there is no code to accept until delivery ships.
         }}
         disabled
-        hint={t('firstrun.verifyEmail.codeHint', { email: user?.email ?? '' })}
       />
     </div>
   );

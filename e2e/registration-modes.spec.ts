@@ -208,6 +208,10 @@ test('registration modes: approval mode gates on admin approve / reject via the 
     // account with the same email + username + password.
     await approvePage.goto('/login');
     await passwordSignIn(approvePage, approveUsername, ACCOUNT_PASSWORD);
+    // An approved applicant never touches a signup screen — they just log in —
+    // so this is the mode the old per-page redirect could never reach. The
+    // assertion is deliberately strict: it proves setup now finds them.
+    await dismissFirstRun(approvePage);
     await expect(approvePage.getByRole('button', { name: 'Account menu' })).toBeVisible({
       timeout: 20_000,
     });

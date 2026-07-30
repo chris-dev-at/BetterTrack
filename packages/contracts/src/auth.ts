@@ -305,6 +305,19 @@ export const meResponseSchema = z.object({
    */
   discreetMode: z.boolean().optional(),
   lastLoginAt: z.string().datetime().nullable(),
+  /**
+   * When the account finished (or dismissed) first-run setup; `null` means it
+   * never has, which is what sends a new user to `/welcome` (§6.12). This is
+   * NOT inferable from {@link lastLoginAt} — every sign-in path stamps that
+   * before the response body is built, so it is already set on a user's first
+   * `/auth/me`.
+   *
+   * Optional on the schema so pre-0074 fixtures still parse; the server always
+   * emits it (see `toMeResponse`). A client must therefore read `undefined` as
+   * "unknown", never as "not completed" — guessing the latter would send every
+   * established user of an older server back through setup.
+   */
+  firstRunCompletedAt: z.string().datetime().nullable().optional(),
   createdAt: z.string().datetime(),
 });
 export type MeResponse = z.infer<typeof meResponseSchema>;
