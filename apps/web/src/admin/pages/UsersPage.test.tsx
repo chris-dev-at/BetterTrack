@@ -1,4 +1,4 @@
-import { render, screen, within } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { beforeEach, expect, test, vi } from 'vitest';
@@ -6,6 +6,8 @@ import { beforeEach, expect, test, vi } from 'vitest';
 import type { AdminStats, AdminUser, CreateUserResponse, MeResponse } from '@bettertrack/contracts';
 
 vi.mock('../../lib/adminApi');
+import { I18nProvider } from '../../i18n';
+import { ApiError } from '../../lib/apiClient';
 import * as api from '../../lib/adminApi';
 import { AuthProvider } from '../AuthContext';
 import { UsersPage } from './UsersPage';
@@ -44,20 +46,23 @@ const stats: AdminStats = {
   pendingInviteCount: 0,
 };
 
-function renderPage() {
+function renderPage(locale = 'en') {
   return render(
-    <AuthProvider>
-      <MemoryRouter initialEntries={['/admin/users']}>
-        <Routes>
-          <Route path="/admin/users" element={<UsersPage />} />
-          <Route path="/admin/users/:userId" element={<div>User detail view</div>} />
-        </Routes>
-      </MemoryRouter>
-    </AuthProvider>,
+    <I18nProvider initialLocale={locale}>
+      <AuthProvider>
+        <MemoryRouter initialEntries={['/admin/users']}>
+          <Routes>
+            <Route path="/admin/users" element={<UsersPage />} />
+            <Route path="/admin/users/:userId" element={<div>User detail view</div>} />
+          </Routes>
+        </MemoryRouter>
+      </AuthProvider>
+    </I18nProvider>,
   );
 }
 
 beforeEach(() => {
+  vi.clearAllMocks();
   vi.mocked(api.getMe).mockResolvedValue(admin);
   vi.mocked(api.getTwoFactorStatus).mockResolvedValue({
     setupRequired: false,
@@ -111,9 +116,14 @@ test('create-user flow shows the generated temp password exactly once', async ()
     username: 'newbie',
     role: 'user',
   });
+
+  await user.keyboard('{Escape}');
+  expect(screen.getByText(created.tempPassword)).toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: "I've saved this" }));
+  expect(screen.queryByText(created.tempPassword)).not.toBeInTheDocument();
 });
 
-test('bulk-select drives a bulk-disable action', async () => {
+test('bulk-disable names the selected count and only runs after confirmation', async () => {
   vi.mocked(api.bulkUserAction).mockResolvedValue({ action: 'disable', disabled: 1, skipped: 0 });
 
   const user = userEvent.setup();
@@ -123,6 +133,58 @@ test('bulk-select drives a bulk-disable action', async () => {
   await user.click(screen.getByLabelText('Select jane'));
   await user.click(await screen.findByRole('button', { name: 'Disable selected' }));
 
-  expect(api.bulkUserAction).toHaveBeenCalledWith({ action: 'disable', userIds: ['user-1'] });
+  expect(await screen.findByRole('dialog', { name: 'Disable selected users?' })).toHaveTextContent(
+    'Disable 1 selected user?',
+  );
+  expect(api.bulkUserAction).not.toHaveBeenCalled();
+
+  await user.click(screen.getByRole('button', { name: 'Cancel' }));
+  expect(api.bulkUserAction).not.toHaveBeenCalled();
+
+  await user.click(screen.getByRole('button', { name: 'Disable selected' }));
+  await user.click(await screen.findByRole('button', { name: 'Disable 1 user' }));
+
+  await waitFor(() =>
+    expect(api.bulkUserAction).toHaveBeenCalledWith({ action: 'disable', userIds: ['user-1'] }),
+  );
   expect(await screen.findByText(/Disabled 1 user/)).toBeInTheDocument();
+});
+
+test('bulk-disable names its single affected user in German', async () => {
+  const user = userEvent.setup();
+  renderPage('de');
+  await screen.findByText('jane@bettertrack.test');
+
+  await user.click(screen.getByLabelText('Select jane'));
+  await user.click(screen.getByRole('button', { name: 'Ausgewählte deaktivieren' }));
+
+  const dialog = await screen.findByRole('dialog', {
+    name: 'Ausgewählte Nutzer deaktivieren?',
+  });
+  expect(dialog).toHaveTextContent('1 ausgewählten Nutzer deaktivieren?');
+  expect(within(dialog).getByRole('button', { name: '1 Nutzer deaktivieren' })).toBeInTheDocument();
+});
+
+test('keeps a bulk-disable failure visible in its confirmation dialog', async () => {
+  vi.mocked(api.bulkUserAction).mockRejectedValue(
+    new ApiError(500, 'internal_error', 'Could not disable the selected users.'),
+  );
+  const user = userEvent.setup();
+  renderPage();
+
+  await screen.findByText('jane@bettertrack.test');
+  await user.click(screen.getByLabelText('Select jane'));
+  await user.click(screen.getByRole('button', { name: 'Disable selected' }));
+  const dialog = await screen.findByRole('dialog', { name: 'Disable selected users?' });
+  const confirm = within(dialog).getByRole('button', { name: 'Disable 1 user' });
+
+  await user.click(confirm);
+
+  expect(await within(dialog).findByRole('alert')).toHaveTextContent(
+    'Could not disable the selected users.',
+  );
+  expect(confirm).toBeEnabled();
+
+  await user.click(confirm);
+  await waitFor(() => expect(api.bulkUserAction).toHaveBeenCalledTimes(2));
 });

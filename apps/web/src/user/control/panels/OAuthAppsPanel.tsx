@@ -57,12 +57,14 @@ function OAuthCredentialsModal({
 }) {
   const t = useT();
   const [copiedSecret, setCopiedSecret] = useState(false);
+  const [acknowledged, setAcknowledged] = useState(result.clientSecret == null);
 
   async function copySecret() {
     if (result.clientSecret == null) return;
     try {
       await navigator.clipboard.writeText(result.clientSecret);
       setCopiedSecret(true);
+      setAcknowledged(true);
     } catch {
       setCopiedSecret(false);
     }
@@ -77,6 +79,7 @@ function OAuthCredentialsModal({
           : t('settings.api.oauth.credentialsModal.descriptionPublic')
       }
       onClose={onClose}
+      dismissable={acknowledged}
     >
       <div className="flex flex-col gap-4">
         <div className="flex flex-col gap-1.5">
@@ -110,8 +113,15 @@ function OAuthCredentialsModal({
             : t('settings.api.oauth.credentialsModal.publicClientNotice')}
         </Alert>
         <div className="flex justify-end">
-          <Button onClick={onClose} size="sm" variant="primary">
-            {t('settings.api.done')}
+          <Button
+            onClick={() => {
+              setAcknowledged(true);
+              onClose();
+            }}
+            size="sm"
+            variant="primary"
+          >
+            {result.clientSecret ? t('common.savedOneTimeSecret') : t('settings.api.done')}
           </Button>
         </div>
       </div>

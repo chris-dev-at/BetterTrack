@@ -215,6 +215,7 @@
   },
   "common": {
     "save": "Save",
+    "done": "Done",
     "cancel": "Cancel",
     "close": "Close",
     "delete": "Delete",
@@ -247,6 +248,7 @@
     "escKey": "Esc",
     "escToClose": "to close",
     "closeDialogAria": "Close dialog",
+    "savedOneTimeSecret": "I've saved this",
     "charts": {
       "noAllocationData": "No allocation data yet.",
       "selectRange": "Select chart range",
@@ -3586,6 +3588,64 @@
     }
   },
   "admin": {
+    "confirmations": {
+      "deleteAnnouncement": {
+        "title": "Delete announcement?",
+        "description": "Delete “{{name}}”? This cannot be undone.",
+        "confirm": "Delete announcement",
+        "pending": "Deleting…"
+      },
+      "deleteOAuthApp": {
+        "title": "Delete OAuth app?",
+        "description": "Delete “{{name}}”? Existing integrations will stop working.",
+        "confirm": "Delete app",
+        "pending": "Deleting…"
+      },
+      "bulkDisable": {
+        "title": "Disable selected users?",
+        "descriptionOne": "Disable 1 selected user? They will no longer be able to sign in.",
+        "descriptionOther": "Disable {{count}} selected users? They will no longer be able to sign in.",
+        "confirmOne": "Disable 1 user",
+        "confirmOther": "Disable {{count}} users",
+        "pending": "Disabling…"
+      },
+      "revokeInvite": {
+        "prompt": "Revoke invite for {{email}}?",
+        "confirm": "Confirm revoke",
+        "pending": "Revoking…"
+      },
+      "revokeRegistrationToken": {
+        "prompt": "Revoke registration token “{{name}}”?",
+        "confirm": "Confirm revoke",
+        "pending": "Revoking…"
+      }
+    },
+    "actions": {
+      "delete": "Delete",
+      "revoke": "Revoke",
+      "disableSelected": "Disable selected",
+      "disabling": "Disabling…"
+    },
+    "oneTimeCredentials": {
+      "temporaryPassword": {
+        "title": "User created",
+        "resetTitle": "Password reset",
+        "description": "Share this temporary password with {{email}}. It is shown only once and the user must change it on first login.",
+        "label": "Temporary password"
+      },
+      "invite": {
+        "title": "Invite created",
+        "description": "Share this one-time link with {{email}}. It expires on {{expiresAt}} and is shown only once here.",
+        "label": "Invite URL"
+      },
+      "oauthClient": {
+        "title": "App registered",
+        "secretDescription": "{{name}} is ready. Put the client ID in the app's OAuth config. The client secret is shown only once — copy it now.",
+        "publicDescription": "{{name}} is ready. Put the client ID in the app's OAuth config. This is a public client, so there is no secret (it uses PKCE).",
+        "clientIdLabel": "Client ID",
+        "clientSecretLabel": "Client secret (shown once)"
+      }
+    },
     "nav": {
       "security": "Security",
       "health": "Health",
