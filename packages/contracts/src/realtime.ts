@@ -23,6 +23,9 @@ import { currencyCodeSchema, marketStateSchema } from './market';
  *     so it presents a personal API key (`btk_…`) or a delegated OAuth access
  *     token (`bto_…`) via the socket.io auth payload (`handshake.auth.token`)
  *     and/or an `Authorization: Bearer …` upgrade header (either is accepted).
+ *     Engine.IO provisionally admits a no-Origin transport because the auth
+ *     payload arrives in the later Socket.IO namespace CONNECT packet; that
+ *     namespace path accepts only a bearer and never resolves a session cookie.
  *     The token is validated through the SAME service the HTTP bearer middleware
  *     uses — revocation, expiry and consent-scope clamping included — so socket
  *     auth never drifts from, or widens, the HTTP surface. The gateway enforces
@@ -31,12 +34,13 @@ import { currencyCodeSchema, marketStateSchema } from './market';
  *
  * ── Transports ──────────────────────────────────────────────────────────────
  * Both Engine.IO transports are supported: a client may open the websocket
- * transport directly (the mobile app dials `?EIO=4&transport=websocket` with no
- * prior polling handshake) or take the polling→websocket upgrade the web SPA
- * performs. A literal HTTP 400 (`{"code":3}`) on `transport=websocket` means the
- * request reached Engine.IO WITHOUT a valid WebSocket upgrade (typically a
- * reverse proxy not forwarding the `Upgrade`/`Connection` headers) — the gateway
- * itself accepts websocket-first connections.
+ * transport directly (the mobile app and same-origin SPA dial
+ * `?EIO=4&transport=websocket` with no prior polling handshake) or take the
+ * polling→websocket upgrade used by cross-origin web deployments. A literal
+ * HTTP 400 (`{"code":3}`) on `transport=websocket` means the request reached
+ * Engine.IO WITHOUT a valid WebSocket upgrade (typically a reverse proxy not
+ * forwarding the `Upgrade`/`Connection` headers) — the gateway itself accepts
+ * websocket-first connections.
  *
  * The gateway is an enhancement layer: every push maps to a TanStack Query
  * cache invalidation on the client, and the SPA's poll/refetch behavior stays
