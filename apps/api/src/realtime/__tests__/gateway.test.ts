@@ -90,13 +90,32 @@ async function login(
   return { agent, cookie: first.split(';')[0]! };
 }
 
+type HandshakeTransport = 'polling' | 'websocket';
+
+interface ConnectOptions {
+  /** Undefined models a browser at the configured web Origin; null omits the header. */
+  origin?: string | null;
+  transport?: HandshakeTransport;
+}
+
+function handshakeHeaders(
+  origin: string | null | undefined,
+  extraHeaders: Record<string, string> = {},
+): Record<string, string> {
+  const effectiveOrigin = origin === undefined ? harness.ctx.config.topology.webOrigin : origin;
+  return {
+    ...(effectiveOrigin === null ? {} : { Origin: effectiveOrigin }),
+    ...extraHeaders,
+  };
+}
+
 /** Open a socket; resolves on connect, rejects with the connect_error message. */
-function connect(cookie?: string): Promise<ClientSocket> {
+function connect(cookie?: string, options: ConnectOptions = {}): Promise<ClientSocket> {
   const socket = ioClient(baseUrl, {
     path: REALTIME_PATH,
-    transports: ['websocket'],
+    transports: [options.transport ?? 'websocket'],
     reconnection: false,
-    extraHeaders: cookie ? { cookie } : {},
+    extraHeaders: handshakeHeaders(options.origin, cookie ? { cookie } : {}),
   });
   openSockets.push(socket);
   return new Promise<ClientSocket>((resolve, reject) => {
@@ -106,21 +125,24 @@ function connect(cookie?: string): Promise<ClientSocket> {
 }
 
 /**
- * Open a socket over the websocket transport with arbitrary handshake auth — a
- * bearer via the socket.io auth payload (`auth.token`) and/or an
- * `Authorization: Bearer …` upgrade header — the way the cookieless mobile app
- * connects. Resolves on connect, rejects with the connect_error message.
+ * Open a socket with arbitrary transport and handshake auth — a bearer via the
+ * socket.io auth payload (`auth.token`) and/or an `Authorization: Bearer …`
+ * handshake header. Native/no-Origin cases must use the latter. Resolves on
+ * connect, rejects with the connect_error message.
  */
 function connectWith(opts: {
   auth?: Record<string, unknown>;
   extraHeaders?: Record<string, string>;
+  /** Undefined models a browser at the configured web Origin; null omits the header. */
+  origin?: string | null;
+  transport?: HandshakeTransport;
 }): Promise<ClientSocket> {
   const socket = ioClient(baseUrl, {
     path: REALTIME_PATH,
-    transports: ['websocket'],
+    transports: [opts.transport ?? 'websocket'],
     reconnection: false,
     auth: opts.auth,
-    extraHeaders: opts.extraHeaders ?? {},
+    extraHeaders: handshakeHeaders(opts.origin, opts.extraHeaders),
   });
   openSockets.push(socket);
   return new Promise<ClientSocket>((resolve, reject) => {
@@ -402,6 +424,98 @@ async function closeControlledGateway(
   }
 }
 
+describe('realtime gateway — Origin admission', () => {
+  it.each(['websocket', 'polling'] as const)(
+    'accepts an exact configured Origin over %s',
+    async (transport) => {
+      await listenWithGateway();
+      const user = await harness.seedUser();
+      const { cookie } = await login(user.email, user.password);
+
+      const socket = await connect(cookie, {
+        origin: harness.ctx.config.topology.webOrigin,
+        transport,
+      });
+
+      expect(socket.connected).toBe(true);
+      expect(socket.io.engine.transport.name).toBe(transport);
+    },
+  );
+
+  it.each([
+    ['cross-site', 'https://attacker.example', 'websocket'],
+    ['same-site sibling', 'http://localhost:5175', 'websocket'],
+    ['cross-site', 'https://attacker.example', 'polling'],
+  ] as const)(
+    'rejects a %s Origin (%s) over %s before credential resolution',
+    async (_kind, origin, transport) => {
+      await listenWithGateway();
+      const user = await harness.seedUser();
+      const { cookie } = await login(user.email, user.password);
+      const token = await mintKey(user.id);
+      const sessionSpy = vi.spyOn(harness.ctx.auth, 'resolveSession');
+      const bearerSpy = vi.spyOn(harness.ctx.apiKeys, 'authenticate');
+
+      try {
+        await expect(
+          connectWith({
+            origin,
+            transport,
+            extraHeaders: { cookie, Authorization: `Bearer ${token}` },
+          }),
+        ).rejects.toBeInstanceOf(Error);
+
+        expect(sessionSpy).not.toHaveBeenCalled();
+        expect(bearerSpy).not.toHaveBeenCalled();
+        expect(harness.ctx.realtime.connectionCount()).toBe(0);
+      } finally {
+        sessionSpy.mockRestore();
+        bearerSpy.mockRestore();
+      }
+    },
+  );
+
+  it.each(['websocket', 'polling'] as const)(
+    'accepts a no-Origin native bearer over %s',
+    async (transport) => {
+      await listenWithGateway();
+      const user = await harness.seedUser();
+      const token = await mintKey(user.id);
+
+      const socket = await connectWith({
+        origin: null,
+        transport,
+        extraHeaders: { Authorization: `Bearer ${token}` },
+      });
+
+      expect(socket.connected).toBe(true);
+      expect(socket.io.engine.transport.name).toBe(transport);
+    },
+  );
+
+  it('rejects no-Origin cookie authentication without ever resolving the session', async () => {
+    await listenWithGateway();
+    const user = await harness.seedUser();
+    const { cookie } = await login(user.email, user.password);
+    const sessionSpy = vi.spyOn(harness.ctx.auth, 'resolveSession');
+
+    try {
+      await expect(connect(cookie, { origin: null })).rejects.toBeInstanceOf(Error);
+      await expect(
+        connectWith({
+          origin: null,
+          extraHeaders: { cookie, Authorization: 'Bearer garbage' },
+        }),
+      ).rejects.toThrow(/UNAUTHORIZED/);
+
+      expect(sessionSpy).not.toHaveBeenCalled();
+      await vi.waitFor(() => expect(harness.ctx.realtime.connectionCount()).toBe(0));
+    } finally {
+      sessionSpy.mockRestore();
+    }
+  });
+});
+
 describe('realtime gateway — handshake auth (§4.5)', () => {
   it('rejects an unauthenticated handshake (no cookie)', async () => {
     await listenWithGateway();
@@ -505,6 +619,7 @@ describe('realtime gateway — handshake auth (§4.5)', () => {
         transports: ['websocket'],
         reconnection: false,
         auth: { token: 'controlled-token' },
+        extraHeaders: { Origin: harness.ctx.config.topology.webOrigin },
       });
       clientSockets.push(client);
       client.on('connect_error', () => undefined);
@@ -538,6 +653,7 @@ describe('realtime gateway — handshake auth (§4.5)', () => {
         transports: ['websocket'],
         reconnection: false,
         auth: { token: 'controlled-token' },
+        extraHeaders: { Origin: harness.ctx.config.topology.webOrigin },
       });
       clientSockets.push(client);
       await new Promise<void>((resolve, reject) => {
@@ -588,6 +704,7 @@ describe('realtime gateway — handshake auth (§4.5)', () => {
         transports: ['websocket'],
         reconnection: false,
         auth: { token: 'controlled-token' },
+        extraHeaders: { Origin: harness.ctx.config.topology.webOrigin },
       });
       clientSockets.push(client);
       await new Promise<void>((resolve, reject) => {
@@ -659,6 +776,7 @@ describe('realtime gateway — handshake auth (§4.5)', () => {
         transports: ['websocket'],
         reconnection: false,
         auth: { token: 'controlled-token' },
+        extraHeaders: { Origin: harness.ctx.config.topology.webOrigin },
       });
       clientSockets.push(client);
       await new Promise<void>((resolve, reject) => {
@@ -689,6 +807,7 @@ describe('realtime gateway — handshake auth (§4.5)', () => {
         transports: ['websocket'],
         reconnection: false,
         auth: { token: 'controlled-token' },
+        extraHeaders: { Origin: harness.ctx.config.topology.webOrigin },
       });
       clientSockets.push(replacement);
       await new Promise<void>((resolve, reject) => {
@@ -757,6 +876,7 @@ describe('realtime gateway — handshake auth (§4.5)', () => {
         transports: ['websocket'],
         reconnection: false,
         auth: { token: 'controlled-token' },
+        extraHeaders: { Origin: harness.ctx.config.topology.webOrigin },
       });
       clientSockets.push(client);
       await new Promise<void>((resolve, reject) => {
