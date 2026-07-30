@@ -20,7 +20,23 @@ import { provisionUser } from './support/users';
  * evaluation path is re-driven. Meanwhile the owner's portfolio value + ledger
  * are captured before and after and must come back byte-identical.
  */
-test('expenses: bank import → categorize → dashboard → single budget alert, portfolio untouched', async ({
+// SKIPPED (V5 cash fusion, phase 2 — web side): this spec drove the retired
+// `expense_*` island end to end and no longer has a runnable path.
+// `/portfolio/cash-flow/import` is now a parked placeholder (statement import
+// is being rebuilt on the portfolio cash ledger — no upload form exists to
+// drive), the auto-seeded "Groceries"/"Salary" starter categories this spec
+// selects by label no longer exist (tags start empty; only the 9 app-owned
+// system tags are seeded), and the rule/budget dialogs' field shapes changed
+// (multi-tag toggle-chips replace the single category combobox). Restore this
+// as a new spec against the fused ledger — rule creation → manual/import
+// movement → tag assignment → budget-exceeded alert — once statement import
+// re-lands pointed at the portfolio ledger, which is the ONLY remaining
+// blocker: the server side is already proven by `apps/api` →
+// `cashTagging.test.ts`, whose "alerts exactly once per period however often
+// it is evaluated" case pins the same (budget, period) idempotency key this
+// spec was written to guard. Left in place (not deleted) because that
+// guarantee is real intended behaviour worth re-testing end to end.
+test.skip('expenses: bank import → categorize → dashboard → single budget alert, portfolio untouched', async ({
   browser,
 }) => {
   test.setTimeout(240_000);

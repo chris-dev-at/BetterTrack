@@ -447,7 +447,9 @@ function CreateMenu() {
 
   const items: ReadonlyArray<{ to: string; icon: IconName; labelKey: string }> = [
     { to: '/portfolio/activity?create=trade', icon: 'assets', labelKey: 'create.trade' },
-    { to: '/portfolio/cash-flow?create=transaction', icon: 'cash', labelKey: 'create.cashFlow' },
+    // See commands.ts: no create-a-movement flow exists post cash-fusion, so
+    // this jumps straight to the tagged ledger instead of a dead `?create=`.
+    { to: '/portfolio/cash-flow/movements', icon: 'cash', labelKey: 'create.cashFlow' },
     {
       to: '/portfolio/cash-flow/accounts?create=transfer',
       icon: 'wallet',

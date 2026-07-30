@@ -5397,3 +5397,90 @@
   width: 16px;
   height: 16px;
 }
+
+/* ===== R2: cash flow =========================================================
+ * V5 cash fusion: flat tags replace the old expense-tracking categories,
+ * applied directly on the portfolio's own cash ledger instead of a separate
+ * user-scoped island. A movement can carry several tags at once, so tag
+ * identity everywhere in this area — the ledger, budgets, tag management,
+ * rules — renders through ONE presentational piece (`TagChip`,
+ * apps/web/src/user/portfolio/cashflow/TagChip.tsx): a pill tinted from the
+ * tag's own colour at low alpha, with that same hue carrying the text. This
+ * copies `.bt-pf-chip`'s technique above (tint the surface, keep the ink
+ * strong) rather than inventing a second one — but unlike that fixed
+ * six-colour set, a tag's colour is arbitrary (`#RRGGBB`, user- or
+ * engine-chosen), so the ink is precomputed per chip (`tagChipColor.ts`,
+ * WCAG relative luminance) instead of hand-tuned per named variant, and
+ * handed to CSS as the `--bt-tag-ink-dark` / `--bt-tag-ink-light` pair below
+ * — this file still owns which one applies in which theme. Flat surfaces
+ * throughout: no nested cards, no left-edge accent bars on any row, gold
+ * reserved for the toggle picker's keyboard focus ring only.
+ * ========================================================================== */
+
+.bt-tag-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--bt-tag-color) 32%, transparent);
+  background: color-mix(in srgb, var(--bt-tag-color) 15%, transparent);
+  color: var(--bt-tag-ink-dark);
+  font-size: 11.5px;
+  font-weight: 610;
+  line-height: 1.6;
+  white-space: nowrap;
+}
+
+:root[data-bt-theme='light'] .bt-tag-chip {
+  color: var(--bt-tag-ink-light);
+}
+
+/* The remove control inside a tag chip (the movement tag editor): no
+   left-edge accent, no transition — an instant opacity/tint step already
+   respects reduced motion by never animating in the first place. */
+.bt-tag-chip__remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 13px;
+  height: 13px;
+  margin: 0 -3px 0 1px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  color: inherit;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.7;
+}
+
+.bt-tag-chip__remove:hover {
+  opacity: 1;
+  background: color-mix(in srgb, currentColor 22%, transparent);
+}
+
+/* Unstyled button wrapper around a `TagChip`, used wherever tags are picked
+   from a set (the movement tag editor, a rule's tag picker): dimmed when off,
+   full strength when on — the SELECTION state is the chip's own opacity, not
+   a colour or an edge, so it never competes with gold. The focus ring is the
+   one gold use in this whole section, reserved exactly for keyboard focus. */
+.bt-tag-toggle {
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: none;
+  cursor: pointer;
+  opacity: 0.45;
+}
+
+.bt-tag-toggle[aria-pressed='true'] {
+  opacity: 1;
+}
+
+.bt-tag-toggle:focus-visible {
+  outline: 2px solid var(--bt-gold);
+  outline-offset: 2px;
+}

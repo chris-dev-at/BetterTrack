@@ -1,9 +1,10 @@
 import { Outlet, useLocation } from 'react-router-dom';
 
 import { useT } from '../../i18n';
-import { LocalNav } from '../components/LocalNav';
+import { LocalNav, usePreservedSearch } from '../components/LocalNav';
 import { SECTION_NAV, useSectionNavItems } from '../components/sectionNav';
 import { SubTabLink } from '../../ui/origin';
+import { ACTIVE_PORTFOLIO_PARAM } from './PortfolioSwitcher';
 
 /**
  * The portfolio workspace (PRODUCT_BLUEPRINT.md §4 "Portfolio-local
@@ -33,19 +34,23 @@ export function PortfolioWorkspace() {
 }
 
 /**
- * Cash-flow area inside the portfolio workspace: hosts the expense suite
- * (V5-P9) plus the cash accounts page as one sub-tabbed region. Expense data
- * is household-scoped today; the portfolio data model grows into it later.
+ * Cash-flow area inside the portfolio workspace (V5 cash fusion): one tagged
+ * ledger on the portfolio's own cash movements, sub-tabbed into an overview,
+ * the ledger itself, budgets, tag management, auto-tagging rules, the parked
+ * statement importer, and the (untouched) cash-accounts page. Every sub-tab
+ * is scoped to the SAME active portfolio, so `?portfolio=<id>` is preserved
+ * across them exactly like every other section's local nav (#322).
  */
 export function CashFlowLayout() {
   const t = useT();
   const location = useLocation();
+  const search = usePreservedSearch([ACTIVE_PORTFOLIO_PARAM]);
 
   const subtabs = [
     { to: '/portfolio/cash-flow', label: t('cashflow.tabs.overview'), end: true },
-    { to: '/portfolio/cash-flow/transactions', label: t('cashflow.tabs.transactions') },
+    { to: '/portfolio/cash-flow/movements', label: t('cashflow.tabs.movements') },
     { to: '/portfolio/cash-flow/budgets', label: t('cashflow.tabs.budgets') },
-    { to: '/portfolio/cash-flow/categories', label: t('cashflow.tabs.categories') },
+    { to: '/portfolio/cash-flow/tags', label: t('cashflow.tabs.tags') },
     { to: '/portfolio/cash-flow/rules', label: t('cashflow.tabs.rules') },
     { to: '/portfolio/cash-flow/import', label: t('cashflow.tabs.import') },
     { to: '/portfolio/cash-flow/accounts', label: t('cashflow.tabs.accounts') },
@@ -55,7 +60,11 @@ export function CashFlowLayout() {
     <div>
       <nav aria-label={t('cashflow.aria')} className="bt-subtabs" style={{ marginBottom: 20 }}>
         {subtabs.map((tab) => (
-          <SubTabLink end={tab.end} key={tab.to} to={tab.to}>
+          <SubTabLink
+            end={tab.end}
+            key={tab.to}
+            to={search ? { pathname: tab.to, search } : tab.to}
+          >
             {tab.label}
           </SubTabLink>
         ))}

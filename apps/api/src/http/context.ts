@@ -163,6 +163,15 @@ import {
   createExpenseBudgetService,
   type ExpenseBudgetService,
 } from '../services/expenses/budgetService';
+import { createCashTagRepository } from '../data/repositories/cashTagRepository';
+import { createCashBudgetRepository } from '../data/repositories/cashBudgetRepository';
+import { createCashRuleRepository } from '../data/repositories/cashRuleRepository';
+import { createCashSummaryRepository } from '../data/repositories/cashSummaryRepository';
+import { createCashTagService, type CashTagService } from '../services/cash/cashTagService';
+import {
+  createCashBudgetService,
+  type CashBudgetService,
+} from '../services/cash/cashBudgetService';
 import {
   createWebhookSubscriptionRepository,
   createWebhookDeliveryRepository,
@@ -337,6 +346,10 @@ export interface AppContext {
   expenseImports: ExpenseImportService;
   /** Expense dashboards + per-category budgets with matrix-routed alerts (§13.5 V5-P9, issue 3/3). */
   expenseBudgets: ExpenseBudgetService;
+  /** Cash-flow tags + auto-tagging rules on the portfolio cash ledger (V5 cash fusion). */
+  cashTags: CashTagService;
+  /** Cash-flow budgets per (portfolio, tag, month), plus the monthly summary and trends. */
+  cashBudgets: CashBudgetService;
   /**
    * Paranoid vault — the blind server blob store for a paranoid account's
    * client-encrypted vault (§13.5 V5-P13 arc b): opaque GET/PUT with ETag CAS,
@@ -607,6 +620,10 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // Shared by auth/admin (default-portfolio provisioning at account creation,
   // §5.5) and the portfolio service below.
   const portfolioRepo = createPortfolioRepository(db);
+  // Created here rather than beside the other cash-fusion repositories below: the
+  // portfolio service takes it (read-only) so the cash ledger DTO can carry each
+  // movement's tags, and that service is constructed well before them.
+  const cashTagRepo = createCashTagRepository(db);
   // Per-portfolio setting overrides (issue #636): the override layer feeding the
   // tax service's scoping cascade.
   const portfolioSettingsRepo = createPortfolioSettingsRepository(db);
@@ -1201,6 +1218,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     transactionRepo,
     cashMovementRepo,
     cashSourceRepo,
+    cashTagRepo,
     marketData,
     currencyService: currency,
     referenceBackfill,
@@ -1385,6 +1403,25 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     rules: expenseRuleRepo,
     mappers: ALL_BANK_MAPPERS,
     onApply: (userId) => expenseBudgets.evaluate(userId),
+  });
+
+  // V5 cash fusion: the classification layer ON the portfolio cash ledger, which
+  // supersedes the expense island above. Tags are per user, budgets per
+  // (portfolio, tag, month), rules per user. `cashAutoTag` is what stamps a
+  // freshly-booked movement with its app-owned system tag — see `cashAutoTag.ts`
+  // for the kind → tag table and what an edited trade does to a manual tag.
+  const cashRuleRepo = createCashRuleRepository(db);
+  const cashBudgetRepo = createCashBudgetRepository(db);
+  const cashSummaryRepo = createCashSummaryRepository(db);
+  const cashTags = createCashTagService({ tags: cashTagRepo, rules: cashRuleRepo });
+  const cashBudgets = createCashBudgetService({
+    budgets: cashBudgetRepo,
+    summaries: cashSummaryRepo,
+    tags: cashTagRepo,
+    portfolios: portfolioRepo,
+    notify,
+    now: deps.budgetNow,
+    logger,
   });
 
   // Friend requests + friendships (§6.9): no-enumeration request creation,
@@ -1744,6 +1781,8 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     expenses,
     expenseImports,
     expenseBudgets,
+    cashTags,
+    cashBudgets,
     paranoidVault,
     webhooks,
     webhookBridge,
