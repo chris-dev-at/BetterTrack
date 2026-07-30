@@ -630,6 +630,8 @@ describe('landing registration status presentation', () => {
     for (const mode of ['invite_token', 'approval', 'open']) {
       expect(html).toContain(`data-registration-label-${mode}=`);
     }
+    expect(html).toContain('js-registration-note');
+    expect(html).toContain('js-register-cta');
     expect(html).toContain('data-registration-copy-unavailable=');
     expect(html).toContain(unavailableCopy);
   });
@@ -639,7 +641,7 @@ describe('landing registration status presentation', () => {
 
     expect(styles).toContain('@media (max-width: 480px)');
     expect(styles).toContain('flex-wrap: wrap;');
-    expect(styles).toContain('.header-actions {\n    width: 100%;');
+    expect(styles).toMatch(/\.header-actions\s*\{\s*width:\s*100%;/);
   });
 });
 
