@@ -536,6 +536,13 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
     server.to(userRoom(ownerId)).emit(REALTIME_SERVER_EVENTS.portfolioChanged, payload);
 
     const room = portfolioRoom(portfolioId);
+    // Per-socket iteration instead of one room broadcast: reauthorization needs
+    // each viewer's own account lock. Two consequences worth knowing before this
+    // is scaled (V5-P1 topology work): the cost is one locked `canViewPortfolio`
+    // transaction per admitted viewer per frame, and `sockets.sockets` is the
+    // LOCAL socket map — correct today because the tree ships no Socket.IO
+    // adapter (every socket is on this node), but a Redis adapter would make
+    // this node-local and the recheck would have to move to a per-node handler.
     const viewers = [...server.sockets.sockets.values()].filter(
       // The owner is already served by their user room above; `.to().to()`
       // used to dedupe that overlap, so skipping them keeps it single-emit.

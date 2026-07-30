@@ -64,8 +64,6 @@ export interface ImportServiceDeps {
   mappers: readonly BrokerMapper[];
   logger?: Logger;
   paranoid?: Pick<ParanoidModeGuard, 'assertAllowed'>;
-  /** Test seam used to hold an apply after its pending→applied claim. */
-  afterApplyClaim?: (userId: string, batchId: string) => void | Promise<void>;
 }
 
 export interface CreateImportBatchInput {
@@ -501,7 +499,6 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
       if (!claimed) {
         throw conflict('This import was already applied.', 'IMPORT_ALREADY_APPLIED');
       }
-      await deps.afterApplyClaim?.(userId, batch.id);
 
       const rows = await importRepo.listRows(batch.id);
       // Duplicate truth is re-derived NOW (preview flags could be stale against

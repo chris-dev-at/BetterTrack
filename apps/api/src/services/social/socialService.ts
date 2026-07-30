@@ -319,6 +319,28 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
   // center is fire-and-forget: a queue failure logs and never fails the action.
   const emit = notify.emit.bind(notify);
 
+  /**
+   * Compatibility precheck for the two follow mutations that take a
+   * CALLER-SUPPLIED target id (`updateFollow`, `unfollowUser`), mirroring the
+   * one {@link SocialService.followUser} does before its own guard.
+   *
+   * The transition lock seeds an id with no account row to `null`, which the
+   * multi-principal guard treats exactly like `paranoid` (fail-closed). Handing
+   * an unresolved id straight to the guard would therefore answer 403
+   * `PARANOID_MODE` where the route has always answered an opaque 404 — both a
+   * payload regression for a plain normal-account request and an existence
+   * oracle, because 404 would then mean "exists, normal, not followed" while 403
+   * meant "unknown OR paranoid". Establishing the caller's OWN follow row first
+   * keeps the 404 (`user_follows` cascades on account deletion, so a live row
+   * also proves the target account row exists) and leaves 403 to mean exactly
+   * "the target really is paranoid". This is not a check-then-write gap: the
+   * mutation re-runs its own existence check inside the lock, so an unfollow
+   * racing the guard still ends in the same 404.
+   */
+  async function assertFollowExists(userId: string, targetId: string): Promise<void> {
+    if (!(await follows.isFollowing(userId, targetId))) throw NOT_FOLLOWING();
+  }
+
   /** Re-read one owned group after a mutation, or 404 if it vanished mid-flight. */
   async function groupOrThrow(userId: string, groupId: string): Promise<FriendGroup> {
     const all = await groups.listGroups(userId);
@@ -747,9 +769,9 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
         const removed = await follows.unfollow(userId, targetId);
         if (!removed) throw NOT_FOLLOWING();
       };
-      return deps.paranoid
-        ? deps.paranoid.runAllowedMany([userId, targetId], 'sharing', unfollow)
-        : unfollow();
+      if (!deps.paranoid) return unfollow();
+      await assertFollowExists(userId, targetId);
+      return deps.paranoid.runAllowedMany([userId, targetId], 'sharing', unfollow);
     },
 
     async updateFollow(userId, targetId, patch) {
@@ -764,9 +786,9 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
         if (!row) throw NOT_FOLLOWING(); // unfollowed between the two statements
         return toFollowingEntry(row);
       };
-      return deps.paranoid
-        ? deps.paranoid.runAllowedMany([userId, targetId], 'sharing', update)
-        : update();
+      if (!deps.paranoid) return update();
+      await assertFollowExists(userId, targetId);
+      return deps.paranoid.runAllowedMany([userId, targetId], 'sharing', update);
     },
 
     async listFollowing(userId) {

@@ -73,6 +73,17 @@ function unfollow(agent: Agent, userId: string): Promise<request.Response> {
     .send();
 }
 
+function patchFollow(
+  agent: Agent,
+  userId: string,
+  patch: Record<string, boolean>,
+): Promise<request.Response> {
+  return agent
+    .patch(`/api/v1/social/follows/${userId}`)
+    .set(...XRW)
+    .send(patch);
+}
+
 function putAudience(
   agent: Agent,
   kind: 'portfolio' | 'conglomerate' | 'watchlist',
@@ -189,6 +200,24 @@ describe('follows — CRUD, lists, isolation', () => {
     expect((await follow(aliceAgent, MISSING_ID)).status).toBe(404);
     // Unfollowing someone you never followed 404s (like removing a non-friend).
     expect((await unfollow(bobAgent, alice.id)).status).toBe(404);
+  });
+
+  it('keeps the opaque 404 for an UNKNOWN target on both follow-mutation verbs', async () => {
+    // The paranoid transition lock treats an id with no account row as unsafe
+    // (fail-closed), so a caller-supplied id must be established as the caller's
+    // OWN follow before the guard sees it. Otherwise these two verbs answer 403
+    // PARANOID_MODE for a plain normal-account request — a payload regression
+    // and an existence oracle (404 "exists but unfollowed" vs 403 "unknown or
+    // paranoid"). Both must stay a uniform FOLLOW_NOT_FOUND.
+    const alice = await harness.seedUser({ email: 'alice@bt.test', username: 'alice' });
+    const aliceAgent = await loginAgent(harness.app, alice.email, alice.password);
+
+    const deleted = await unfollow(aliceAgent, MISSING_ID);
+    expect(deleted.status).toBe(404);
+    expect(deleted.body.error?.code).toBe('FOLLOW_NOT_FOUND');
+    const patched = await patchFollow(aliceAgent, MISSING_ID, { autoFollowItems: true });
+    expect(patched.status).toBe(404);
+    expect(patched.body.error?.code).toBe('FOLLOW_NOT_FOUND');
   });
 });
 

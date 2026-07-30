@@ -81,7 +81,11 @@ export interface WebhookBridgeDeps {
   /** Enqueue one delivery (durable BullMQ in prod; synchronous under test). */
   enqueue: (job: WebhookDeliveryJob) => Promise<void>;
   logger: Logger;
-  paranoid?: Pick<ParanoidModeGuard, 'runAllowedMany'>;
+  /**
+   * `runAllowedMany` gates the fan-out under every subject's transition lock;
+   * `isParanoid` only classifies an already-decided drop for the log line.
+   */
+  paranoid?: Pick<ParanoidModeGuard, 'runAllowedMany' | 'isParanoid'>;
 }
 
 export interface WebhookBridge {
@@ -123,19 +127,35 @@ export function createWebhookBridge(deps: WebhookBridgeDeps): WebhookBridge {
         }
       };
 
-      if (!isParanoidKilledWebhookEvent(event) || !deps.paranoid) {
+      const paranoid = deps.paranoid;
+      if (!isParanoidKilledWebhookEvent(event) || !paranoid) {
         await enqueueDeliveries();
         return;
       }
+      const subjectIds = paranoidWebhookSubjectIds(event);
       try {
-        await deps.paranoid.runAllowedMany(
-          paranoidWebhookSubjectIds(event),
-          'portfolioWebhooks',
-          enqueueDeliveries,
-        );
+        await paranoid.runAllowedMany(subjectIds, 'portfolioWebhooks', enqueueDeliveries);
       } catch (error) {
-        if (error instanceof ParanoidModeError) return;
-        throw error;
+        if (!(error instanceof ParanoidModeError)) throw error;
+        // Fail-closed by design: the transition lock treats a subject id with NO
+        // account row exactly like a paranoid one, so a stale MIRRORCHAIN/sharing
+        // event whose actor has since DELETED their account drops for every
+        // remaining (normal) member too. That is the safe side, but the two
+        // reasons are operationally different — one is a privacy opt-out, the
+        // other a data-lifecycle artifact — so the drop is logged with the
+        // classification instead of vanishing. The reads below are unlocked and
+        // diagnostic only: a subject that flipped back to normal meanwhile is
+        // reported as unresolved, which never affects the drop decision itself.
+        const paranoidSubjectIds: string[] = [];
+        const unresolvedSubjectIds: string[] = [];
+        for (const subjectId of subjectIds) {
+          if (await paranoid.isParanoid(subjectId)) paranoidSubjectIds.push(subjectId);
+          else unresolvedSubjectIds.push(subjectId);
+        }
+        logger.warn(
+          { type: event.type, paranoidSubjectIds, unresolvedSubjectIds },
+          'webhook bridge: fan-out dropped by paranoid subject guard',
+        );
       }
     },
   };

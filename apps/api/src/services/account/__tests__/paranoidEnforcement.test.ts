@@ -1450,6 +1450,28 @@ describe('paranoid kill registry', () => {
     expect(rows).toHaveLength(2);
     expect(rows.every((row) => row.autoFollowItems === false)).toBe(true);
     expect(rows.every((row) => row.notifyOnAlertFire === false)).toBe(true);
+
+    // The guard's fail-closed default (an id with no account row locks as
+    // `null`, i.e. NOT normal) must never surface on these caller-supplied
+    // target ids: both verbs keep the opaque 404 for an id that is simply not
+    // followed, so 403 means exactly "the target is paranoid" and the pair
+    // cannot be used as an account-existence oracle.
+    const unknownTargetId = '00000000-0000-0000-7000-000000000000';
+    await expect(
+      harness.ctx.social.updateFollow(follower.id, unknownTargetId, { autoFollowItems: true }),
+    ).rejects.toMatchObject({ statusCode: 404, code: 'FOLLOW_NOT_FOUND' });
+    await expect(
+      harness.ctx.social.unfollowUser(follower.id, unknownTargetId),
+    ).rejects.toMatchObject({ statusCode: 404, code: 'FOLLOW_NOT_FOUND' });
+    // A live but unfollowed NORMAL account is indistinguishable from that.
+    const stranger = await harness.seedUser({
+      email: 'follow-mutation-stranger@bettertrack.test',
+      username: 'follow_mutation_stranger',
+    });
+    await expect(harness.ctx.social.unfollowUser(follower.id, stranger.id)).rejects.toMatchObject({
+      statusCode: 404,
+      code: 'FOLLOW_NOT_FOUND',
+    });
   });
 
   it('filters comments and reaction actors after a winning author transition', async () => {
