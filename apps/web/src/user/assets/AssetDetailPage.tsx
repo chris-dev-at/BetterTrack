@@ -654,12 +654,16 @@ function WatchlistIconButton({ assetId, symbol }: { assetId: string; symbol: str
           aria-pressed={watched}
           aria-label={
             watched
-              ? `${symbol} is on your watchlist`
+              ? t('assets.searchBox.onWatchlistAria', { symbol })
               : addMutation.isError
-                ? `Retry adding ${symbol} to your watchlist`
-                : `Add ${symbol} to watchlist`
+                ? t('assets.searchBox.retryWatchlistAria', { symbol })
+                : t('assets.searchBox.addToWatchlistAria', { symbol })
           }
-          title={watched ? 'On your watchlist' : 'Add to watchlist'}
+          title={
+            watched
+              ? t('assets.searchBox.onWatchlistTitle')
+              : t('assets.searchBox.addToWatchlistTitle')
+          }
           className={cx(
             'rounded-l-md p-2 transition-colors',
             watched ? 'bt-link' : 'bt-muted  hover:',
@@ -675,7 +679,7 @@ function WatchlistIconButton({ assetId, symbol }: { assetId: string; symbol: str
           ref={triggerRef}
           type="button"
           onClick={() => setListPickerOpen((o) => !o)}
-          aria-label={`Choose a watchlist for ${symbol}`}
+          aria-label={t('assets.searchBox.chooseWatchlistAria', { symbol })}
           aria-haspopup="menu"
           aria-expanded={listPickerOpen}
           className="p-1.5 text-xs bt-muted"
@@ -689,7 +693,7 @@ function WatchlistIconButton({ assetId, symbol }: { assetId: string; symbol: str
         <div
           ref={menuRef}
           role="menu"
-          aria-label={`Watchlists for ${symbol}`}
+          aria-label={t('assets.searchBox.watchlistsMenuAria', { symbol })}
           className="bt-popover w-48 p-2 text-xs"
           style={{ right: 0, top: 'calc(100% + 4px)' }}
           onKeyDown={onMenuKeyDown}

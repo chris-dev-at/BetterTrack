@@ -156,17 +156,50 @@ export function restoreFocusTo(
   if (main !== null) focusProgrammatically(main);
 }
 
+/**
+ * How many open overlays currently hold each element inert.
+ *
+ * "Remove only what I added" is not enough on its own: two *sibling* overlays
+ * (a portalled dialog and a portalled palette above it) inert the very same
+ * background elements, and whichever closes first would drop the attribute and
+ * bring the page live under the one still open. Counting the holds means the
+ * attribute survives until the last overlay releases it. An element the app
+ * marked inert itself is never counted, so it is never removed.
+ */
+const inertHolds = new WeakMap<HTMLElement, number>();
+
+/** Takes an inert hold on `element`, or `null` if the app already owns one. */
+function holdInert(element: HTMLElement): (() => void) | null {
+  const holds = inertHolds.get(element) ?? 0;
+  if (holds === 0 && element.hasAttribute('inert')) return null;
+
+  inertHolds.set(element, holds + 1);
+  element.setAttribute('inert', '');
+
+  let released = false;
+  return () => {
+    if (released) return;
+    released = true;
+    const remaining = (inertHolds.get(element) ?? 1) - 1;
+    if (remaining > 0) {
+      inertHolds.set(element, remaining);
+      return;
+    }
+    inertHolds.delete(element);
+    element.removeAttribute('inert');
+  };
+}
+
 function makeBackgroundInert(container: HTMLElement) {
-  const changed: Array<{ element: HTMLElement; hadInert: boolean }> = [];
+  const releases: Array<() => void> = [];
   let branch: HTMLElement = container;
 
   while (branch.parentElement) {
     const parent = branch.parentElement;
     for (const sibling of parent.children) {
       if (!(sibling instanceof HTMLElement) || sibling === branch) continue;
-      const hadInert = sibling.hasAttribute('inert');
-      changed.push({ element: sibling, hadInert });
-      sibling.setAttribute('inert', '');
+      const release = holdInert(sibling);
+      if (release !== null) releases.push(release);
     }
 
     if (parent === document.body) break;
@@ -174,9 +207,7 @@ function makeBackgroundInert(container: HTMLElement) {
   }
 
   return () => {
-    for (const { element, hadInert } of changed) {
-      if (!hadInert) element.removeAttribute('inert');
-    }
+    for (const release of releases) release();
   };
 }
 

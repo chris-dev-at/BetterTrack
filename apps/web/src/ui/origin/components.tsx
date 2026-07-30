@@ -6,6 +6,7 @@ import {
   type HTMLAttributes,
   type InputHTMLAttributes,
   type ReactNode,
+  type Ref,
   type SelectHTMLAttributes,
   type TextareaHTMLAttributes,
 } from 'react';
@@ -31,6 +32,12 @@ export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   icon?: IconName;
   iconOnly?: boolean;
   loading?: boolean;
+  /**
+   * React 19 passes `ref` through props, so declaring it here is all a caller
+   * needs to keep the primitive instead of hand-rolling a `<button>` just to
+   * reach the DOM node (menu triggers need one for focus restoration).
+   */
+  ref?: Ref<HTMLButtonElement>;
 }
 
 export function Button({

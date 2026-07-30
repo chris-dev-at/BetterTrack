@@ -59,6 +59,44 @@ test('focuses only available descendants, contains Tab, and restores the opener'
   opener.remove();
 });
 
+function InertBackgroundFixture() {
+  const { containerRef, onKeyDown } = useFocusTrap<HTMLDivElement>({ inertBackground: true });
+  return createElement(
+    'div',
+    { ref: containerRef, onKeyDown, tabIndex: -1 },
+    createElement('button', null, 'Overlay control'),
+  );
+}
+
+test('the background stays inert until the last sibling overlay releases it', () => {
+  // Two overlays that are DOM siblings, not nested — a dialog and the palette
+  // above it, both portalled to <body> — inert the very same background.
+  const page = document.createElement('div');
+  page.append(document.createElement('button'));
+  const appOwned = document.createElement('div');
+  appOwned.setAttribute('inert', '');
+  document.body.append(page, appOwned);
+
+  const first = render(createElement(InertBackgroundFixture));
+  expect(page).toHaveAttribute('inert');
+
+  const second = render(createElement(InertBackgroundFixture));
+  expect(page).toHaveAttribute('inert');
+
+  // The first one closes while the second is still open: dropping the attribute
+  // here would bring the page live underneath it.
+  first.unmount();
+  expect(page).toHaveAttribute('inert');
+
+  second.unmount();
+  expect(page).not.toHaveAttribute('inert');
+  // Inertness the app owns is never counted, so it is never taken away.
+  expect(appOwned).toHaveAttribute('inert');
+
+  page.remove();
+  appOwned.remove();
+});
+
 test('handles each Tab once when focus traps are nested', async () => {
   const user = userEvent.setup();
   render(createElement(NestedTrapFixture));

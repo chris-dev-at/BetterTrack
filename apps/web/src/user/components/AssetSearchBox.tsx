@@ -717,12 +717,17 @@ function ConglomeratePicker({
         {t('assets.searchBox.createNewConglomerate')}
       </button>
 
+      {/* Last in DOM order so the menu's initial focus lands on a blueprint row
+          rather than on Close, and absolutely positioned back into the header —
+          `right-3`/`top-2` reproduce the popover's `p-2` plus the header's
+          `px-1`, i.e. exactly where the old header-flex ✕ sat. Its roving stop
+          is therefore the last one, after "create new". */}
       <button
         type="button"
         role="menuitem"
         onClick={onClose}
         aria-label={t('common.close')}
-        className="absolute right-2 top-2 rounded p-0.5 bt-muted hover:bt-soft"
+        className="absolute right-3 top-2 rounded p-0.5 bt-muted hover:bt-soft"
       >
         ✕
       </button>

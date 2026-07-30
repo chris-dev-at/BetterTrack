@@ -486,18 +486,17 @@ function CreateMenu() {
 
   return (
     <div className="relative" ref={rootRef}>
-      <button
+      <Button
         ref={triggerRef}
         aria-expanded={open}
         aria-haspopup="menu"
         aria-label={t('create.button')}
-        className="bt-btn bt-btn--primary"
-        type="button"
+        icon="plus"
         onClick={() => setOpen((value) => !value)}
+        variant="primary"
       >
-        <Icon name="plus" size={16} />
         <span className="bt-hide-below-sm">{t('create.button')}</span>
-      </button>
+      </Button>
       {open ? (
         <div
           ref={menuRef}
@@ -530,6 +529,9 @@ export function OriginShell() {
   const location = useLocation();
   const { pathname } = location;
   const [paletteOpen, setPaletteOpen] = useState(false);
+  // The shell root — also the palette's mount parent, which is why the ⌘K guard
+  // below asks whether *this* branch is inert.
+  const shellRef = useRef<HTMLDivElement>(null);
   const [collapsed, setCollapsed] = useState(() => {
     try {
       return localStorage.getItem(RAIL_STORAGE_KEY) === 'collapsed';
@@ -568,11 +570,17 @@ export function OriginShell() {
     function handleKey(event: KeyboardEvent) {
       if (event.key === 'k' && (event.metaKey || event.ctrlKey)) {
         event.preventDefault();
-        // A portalled modal makes this shell branch inert. Mounting the palette
-        // inside that inert branch would make its initial focus and controls
-        // unreachable, so only allow the shortcut to close an existing palette
-        // while any modal is active.
-        if (!paletteOpen && document.querySelector('[aria-modal="true"]') !== null) return;
+        // The palette mounts inside this shell, so the one thing that can make
+        // it unreachable is this branch being inert — which is exactly what a
+        // portalled modal's background inerting does. Test that precondition and
+        // nothing broader: "any `aria-modal` node exists" also matched the
+        // Control Center (`control/ControlCenterOverlay.tsx`), which portals to
+        // <body> and never inerts the shell, so it silently killed the shortcut
+        // on every `/control*` route — i.e. the whole settings hub — where the
+        // palette layers above it and works fine. An open palette can always be
+        // closed, inert or not.
+        const shell = shellRef.current;
+        if (!paletteOpen && shell !== null && shell.closest('[inert]') !== null) return;
         setPaletteOpen((open) => !open);
       }
     }
@@ -596,7 +604,7 @@ export function OriginShell() {
     pathname === '/portfolio' || pathname.startsWith('/portfolio/') || pathname === '/portfolios';
 
   return (
-    <div className="bt-app">
+    <div className="bt-app" ref={shellRef}>
       <a
         className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-50 focus:rounded-md focus:bg-[var(--bt-surface)] focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:text-[var(--bt-text)] focus:shadow-lg focus:outline-none focus:ring-2 focus:ring-[var(--bt-gold)]"
         href="#main-content"

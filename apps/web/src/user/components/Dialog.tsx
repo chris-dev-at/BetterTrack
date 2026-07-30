@@ -59,7 +59,18 @@ export function Dialog({
   // Escape goes through the shared overlay stack: a dialog opened from inside
   // another dialog closes alone, leaving its parent — and the context the user
   // is halfway through — standing.
-  useOverlayEscape(dismissable, onClose, containerRef);
+  //
+  // Registered unconditionally, with `dismissable` gating the *callback*: an
+  // un-dismissable dialog still has to claim the keystroke, or the stack would
+  // route it to whatever overlay sits below and close the user's context out
+  // from under a panel that refuses to go away.
+  useOverlayEscape(
+    true,
+    () => {
+      if (dismissable) onClose();
+    },
+    containerRef,
+  );
 
   useEffect(() => {
     const prevOverflow = document.body.style.overflow;

@@ -92,6 +92,31 @@ test('does not dismiss a guarded one-time-value dialog on Escape', async () => {
   expect(dialog.contains(document.activeElement)).toBe(true);
 });
 
+test('a guarded dialog swallows Escape instead of letting the dialog below take it', async () => {
+  const closeGuarded = vi.fn();
+  const closeUnderneath = vi.fn();
+  const user = userEvent.setup();
+  render(
+    <>
+      <Dialog title="Editing in progress" onClose={closeUnderneath}>
+        <button type="button">Keep editing</button>
+      </Dialog>
+      <Dialog dismissable={false} title="One-time secret" onClose={closeGuarded}>
+        <button type="button">Acknowledge secret</button>
+      </Dialog>
+    </>,
+  );
+
+  await user.keyboard('{Escape}');
+
+  // Not registering the guarded dialog would hand the keystroke to the overlay
+  // below it — closing the user's context out from under a panel that refuses
+  // to go away.
+  expect(closeGuarded).not.toHaveBeenCalled();
+  expect(closeUnderneath).not.toHaveBeenCalled();
+  expect(screen.getByRole('dialog', { name: 'Editing in progress' })).toBeInTheDocument();
+});
+
 /**
  * The supported composition: `MirrorchainPanel`'s member sheet renders the
  * invite / rename / confirm dialogs inside itself.
