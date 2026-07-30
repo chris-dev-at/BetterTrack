@@ -5,9 +5,11 @@
 # from host cron AFTER `backup.sh` produces the daily dump into the shared
 # `pgbackups` volume — see infra/docker-compose.offsite.yml and docs/ops.md.
 #
-# Alpine 3.20 keeps the image small (~40 MB). Both `age` (community) and
-# `rclone` (main) are pinned to the distro release; no external downloads.
-FROM alpine:3.20
+# Alpine 3.24 is supported through 2028-06-01 and keeps the image small
+# (~40 MB). Both `age` (community) and `rclone` (main) are pinned to the
+# distro release; no external downloads. Pin the manifest list so rebuilds
+# cannot silently move to a different base image.
+FROM alpine:3.24.1@sha256:28bd5fe8b56d1bd048e5babf5b10710ebe0bae67db86916198a6eec434943f8b
 
 RUN apk add --no-cache \
         bash \
