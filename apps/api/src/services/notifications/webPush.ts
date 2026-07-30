@@ -1,7 +1,15 @@
+import type { Agent as HttpsAgent } from 'node:https';
+
 import webpush from 'web-push';
 
 import type { PushSubscriptionRepository } from '../../data/repositories/pushSubscriptionRepository';
 import type { Logger } from '../../logger';
+import {
+  UnsafeOutboundUrlError,
+  createPinnedHttpsAgent,
+  resolveSafeOutboundUrl,
+  type OutboundUrlResolver,
+} from '../security/outboundUrlGuard';
 
 import type { PushMessage } from './fcm';
 
@@ -23,6 +31,7 @@ export interface WebPushTransport {
   sendNotification(
     subscription: { endpoint: string; keys: { p256dh: string; auth: string } },
     payload: string,
+    options: { agent: HttpsAgent },
   ): Promise<unknown>;
 }
 
@@ -38,6 +47,8 @@ export interface CreateWebPushChannelDeps {
   logger: Logger;
   /** Injectable transport (tests). Defaults to the real `web-push` module. */
   transport?: WebPushTransport;
+  /** DNS seam for the mandatory send-time outbound destination check. */
+  resolveHostname?: OutboundUrlResolver;
 }
 
 /** Build the webpush channel, or null when VAPID is unconfigured. */
@@ -61,16 +72,33 @@ export function createWebPushChannel(deps: CreateWebPushChannelDeps): WebPushCha
       const subs = await subscriptions.listForUser(userId);
       for (const sub of subs) {
         try {
-          await transport.sendNotification(
-            { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
-            JSON.stringify({
-              type: message.type,
-              title: message.title,
-              body: message.body,
-              data: message.data,
-            }),
+          const target = await resolveSafeOutboundUrl(
+            sub.endpoint,
+            deps.resolveHostname === undefined ? undefined : { resolver: deps.resolveHostname },
           );
+          const agent = createPinnedHttpsAgent(target);
+          try {
+            await transport.sendNotification(
+              { endpoint: sub.endpoint, keys: { p256dh: sub.p256dh, auth: sub.auth } },
+              JSON.stringify({
+                type: message.type,
+                title: message.title,
+                body: message.body,
+                data: message.data,
+              }),
+              { agent },
+            );
+          } finally {
+            agent.destroy();
+          }
         } catch (err) {
+          if (err instanceof UnsafeOutboundUrlError) {
+            // Persisted legacy rows and DNS-rebound destinations are permanent
+            // failures: prune them before any transport call, avoiding retries.
+            await subscriptions.deleteByEndpoint(sub.endpoint);
+            logger.warn({ reason: err.reason }, 'pruned unsafe web-push subscription');
+            continue;
+          }
           const status = (err as { statusCode?: number }).statusCode;
           if (status === 404 || status === 410) {
             // The push service says this subscription is gone — prune it (#350).

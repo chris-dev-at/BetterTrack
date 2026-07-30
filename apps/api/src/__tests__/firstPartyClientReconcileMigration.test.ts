@@ -35,6 +35,7 @@ import { FIRST_PARTY_CLIENTS, seedFirstPartyClients } from '../services/oauth/fi
 const drizzleDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '../../drizzle');
 const TARGET_0029 = '0029_first_party_client_reconcile';
 const TARGET_0030 = '0030_first_party_client_alerts_scopes';
+const OAUTH_LOGO_CACHE_MIGRATION = '0074_oauth_client_logo_cache';
 
 const MOBILE = FIRST_PARTY_CLIENTS.find((c) => c.clientId === 'btc_IbT1mzw_7kBiPHPkGfaE0Q')!;
 const CLIENT_ID = MOBILE.clientId;
@@ -321,7 +322,11 @@ describe(`migration ${TARGET_0030} — first-party client alerts scopes (union-o
     expect(migrateOnly.scopes).toEqual(CEILING);
 
     // migrate+seed install → the seed finds nothing to do (a true no-op) and the
-    // row stays at the exact same ceiling. The two deploy channels never fight.
+    // row stays at the exact same ceiling. Bring this deliberately historical
+    // fixture up to the current oauth_clients shape before exercising the
+    // current repository; 0074 only adds nullable logo-cache columns and cannot
+    // alter the 0030 scope result under test.
+    await applyMigration(client, OAUTH_LOGO_CACHE_MIGRATION);
     const repo = createOAuthRepository(drizzlePglite(client, { schema }) as unknown as Database);
     const seeded = (await seedFirstPartyClients(repo)).find((r) => r.clientId === CLIENT_ID)!;
     expect(seeded.action).toBe('unchanged');

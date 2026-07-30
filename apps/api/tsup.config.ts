@@ -4,6 +4,7 @@ export default defineConfig({
   entry: [
     'src/server.ts',
     'src/scripts/worker.ts',
+    'src/scripts/workerHealth.ts',
     'src/scripts/migrate.ts',
     'src/scripts/seed.ts',
     'src/scripts/reencryptRecordSecrets.ts',
