@@ -45,6 +45,19 @@ export interface RangeOption {
 }
 
 /**
+ * One display form the widget offers, plus the i18n key naming it.
+ *
+ * The values must match the type's entry in `WIDGET_VARIANT_RULES` — that table
+ * is what validates a *stored* variant, and it lives in `config.ts` because
+ * parsing may not import React. This list is the same vocabulary expressed for
+ * the picker; the registry keeps the two in step.
+ */
+export interface VariantOption {
+  value: string;
+  labelKey: string;
+}
+
+/**
  * Props for a widget's own settings fields ({@link WidgetDefinition.SettingsExtra}).
  *
  * Deliberately narrower than {@link WidgetProps}: a settings field edits the
@@ -79,6 +92,12 @@ export interface WidgetDefinition {
   scopeAllowsAll?: boolean;
   /** Present ⇒ the settings popover offers a range picker over these tokens. */
   rangeOptions?: readonly RangeOption[];
+  /**
+   * Present ⇒ the settings popover offers a display-form picker. Two or three
+   * forms at most: past that it stops being "the same question, differently" and
+   * becomes a menu of unrelated widgets wearing one name.
+   */
+  variants?: readonly VariantOption[];
   /**
    * Extra settings fields for types whose configuration is not scope-or-range —
    * a row count, a watchlist, an asset. Rendered by the frame's settings popover

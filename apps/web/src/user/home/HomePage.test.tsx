@@ -6,6 +6,7 @@ import { beforeEach, expect, test, vi } from 'vitest';
 
 import type {
   Alert,
+  Holding,
   CashSource,
   DividendCalendarEntry,
   HistoryResponse,
@@ -625,8 +626,24 @@ test('an unscoped widget offers no scope picker', async () => {
   await screen.findByRole('region', { name: 'Net worth' });
   await user.click(screen.getByRole('button', { name: 'Customize' }));
 
-  // "Portfolios" is the all-portfolios overview — scoping it would be meaningless.
-  expect(screen.queryByRole('button', { name: 'Portfolios settings' })).not.toBeInTheDocument();
+  // "Portfolios" IS the all-portfolios overview, so scoping it would be
+  // meaningless — but it does offer display forms, so it still has a settings
+  // button. The absence to assert is the scope field itself, not the button.
+  await user.click(screen.getByRole('button', { name: 'Portfolios settings' }));
+  expect(screen.queryByLabelText('Portfolio')).not.toBeInTheDocument();
+  expect(screen.getByRole('group', { name: 'Portfolios display form' })).toBeInTheDocument();
+});
+
+test('a widget with neither scope, range nor display forms has no settings button', async () => {
+  const user = editMode();
+  storeBoard('attention');
+  renderHome();
+  await screen.findByRole('region', { name: 'Needs attention' });
+  await user.click(screen.getByRole('button', { name: 'Customize' }));
+
+  expect(
+    screen.queryByRole('button', { name: 'Needs attention settings' }),
+  ).not.toBeInTheDocument();
 });
 
 // ─── The expanded catalog ─────────────────────────────────────────────────────
@@ -1179,4 +1196,257 @@ test('a single-widget board offers no placement targets', async () => {
 
   // Nowhere else to go — arming is honest about it rather than showing a no-op line.
   expect(placementLabels()).toEqual([]);
+});
+
+// ─── Display variants and indicators ─────────────────────────────────────────
+
+/**
+ * A variant answers the same question a different way, so these cases assert the
+ * *other* reading appears — the figures a donut cannot state, the two gross
+ * numbers a net line hides — rather than just that markup changed.
+ */
+
+function holding(symbol: string, marketValueEur: number, dayChangePct: number): Holding {
+  return {
+    asset: { ...APPLE, id: `as-${symbol}`, symbol, name: `${symbol} Inc.` },
+    quantity: 10,
+    avgCost: 100,
+    realizedPnl: 0,
+    price: 100,
+    marketValueEur,
+    costBasisEur: marketValueEur - 100,
+    unrealizedPnlEur: 100,
+    unrealizedPnlPct: 4,
+    dayChangeEur: marketValueEur * (dayChangePct / 100),
+    dayChangePct,
+  };
+}
+
+/** Main gets the holdings; Savings stays empty so the roll-up maths stays readable. */
+function withHoldings(...holdings: Holding[]) {
+  vi.mocked(getPortfolio).mockImplementation(async (id: string) =>
+    id === MAIN.id
+      ? { ...summary(9_000, 1_000, 250), holdings }
+      : { ...summary(3_500, 500, -50), holdings: [] },
+  );
+}
+
+test('the cash-flow widget’s in/out columns state both gross figures per month', async () => {
+  vi.mocked(getExpenseTrends).mockResolvedValue({
+    points: [
+      { month: '2026-06', income: 4_000, expense: 3_600 },
+      { month: '2026-07', income: 4_200, expense: 1_000 },
+    ],
+  });
+  storeBoard(['cashflow-chart', { variant: 'columns' }]);
+
+  renderHome();
+  const widget = await screen.findByRole('region', { name: 'Cash flow' });
+
+  // The point of the variant: a flat net month could be 4 000/3 600 or 400/0, and
+  // only this form distinguishes them. Bars carry both values in their titles.
+  expect(await within(widget).findByTitle(/4,000\.00/)).toBeInTheDocument();
+  expect(within(widget).getByTitle(/3,600\.00/)).toBeInTheDocument();
+  expect(
+    within(widget).getByRole('img', { name: 'Money in and money out per month' }),
+  ).toBeInTheDocument();
+  // The totals row now also carries the net (8 200 in − 4 600 out).
+  expect(within(widget).getByText('+3,600.00 €')).toBeInTheDocument();
+  expect(within(widget).getByText(/net$/)).toBeInTheDocument();
+});
+
+test('the cash-flow widget defaults to the net form', async () => {
+  vi.mocked(getExpenseTrends).mockResolvedValue({
+    points: [{ month: '2026-07', income: 4_200, expense: 1_000 }],
+  });
+  storeBoard('cashflow-chart');
+
+  renderHome();
+  const widget = await screen.findByRole('region', { name: 'Cash flow' });
+
+  expect(await within(widget).findByRole('img', { name: 'Net cash flow by month' })).toBeVisible();
+  expect(
+    within(widget).queryByRole('img', { name: 'Money in and money out per month' }),
+  ).not.toBeInTheDocument();
+});
+
+test('allocation as ranked bars prints the share and amount a donut only implies', async () => {
+  withHoldings(holding('AAPL', 6_000, 1.5), holding('MSFT', 3_000, -0.5));
+  storeBoard(['allocation', { scope: MAIN.id, variant: 'bars' }]);
+
+  renderHome();
+  const widget = await screen.findByRole('region', { name: 'Allocation' });
+
+  // 6 000 + 3 000 + 1 000 cash = 10 000, so AAPL is exactly 60 %.
+  expect(await within(widget).findByText('60.00%')).toBeInTheDocument();
+  expect(within(widget).getByText('30.00%')).toBeInTheDocument();
+  expect(within(widget).getByText('10.00%')).toBeInTheDocument();
+  expect(within(widget).getByText('6,000.00 €')).toBeInTheDocument();
+  expect(within(widget).getByText('Cash')).toBeInTheDocument();
+});
+
+test('movers as chips put every mover in one ranked strip', async () => {
+  withHoldings(holding('AAPL', 6_000, 3.5), holding('MSFT', 3_000, -1.25));
+  storeBoard(['top-movers', { scope: MAIN.id, variant: 'chips' }]);
+
+  renderHome();
+  const widget = await screen.findByRole('region', { name: 'Movers' });
+
+  const chips = await within(widget).findAllByRole('link');
+  expect(chips.map((chip) => chip.textContent)).toEqual(['AAPL+3.50%', 'MSFT-1.25%']);
+  // The two-column form's headings are gone — this is one strip, not two lists.
+  expect(within(widget).queryByText('Climbers')).not.toBeInTheDocument();
+});
+
+test('portfolios as a table adds each one’s share of the total', async () => {
+  storeBoard(['portfolio-cards', { variant: 'table' }]);
+
+  renderHome();
+  const widget = await screen.findByRole('region', { name: 'Portfolios' });
+
+  expect(await within(widget).findByRole('columnheader', { name: 'Share' })).toBeInTheDocument();
+  // 10 000 and 4 000 of a 14 000 total.
+  expect(within(widget).getByText('71.43%')).toBeInTheDocument();
+  expect(within(widget).getByText('28.57%')).toBeInTheDocument();
+  expect(within(widget).getByRole('link', { name: 'Main' })).toHaveAttribute(
+    'href',
+    '/portfolio?portfolio=p-main',
+  );
+});
+
+test('the liquidity indicator states the cash share of the scoped total', async () => {
+  storeBoard(['liquidity', { scope: MAIN.id }]);
+
+  renderHome();
+  const widget = await screen.findByRole('region', { name: 'Liquidity' });
+
+  // Main is 9 000 invested + 1 000 cash ⇒ 10 % liquid.
+  expect(await within(widget).findByText('10.00%')).toBeInTheDocument();
+  expect(within(widget).getByText('1,000.00 €')).toBeInTheDocument();
+  expect(within(widget).getByText('10,000.00 €')).toBeInTheDocument();
+});
+
+test('the liquidity indicator rolls every portfolio up when unscoped', async () => {
+  storeBoard('liquidity');
+
+  renderHome();
+  const widget = await screen.findByRole('region', { name: 'Liquidity' });
+
+  // 1 000 + 500 cash of a 14 000 total.
+  expect(await within(widget).findByText('10.71%')).toBeInTheDocument();
+});
+
+test('the concentration indicator names the biggest position and its share', async () => {
+  withHoldings(holding('AAPL', 6_000, 1), holding('MSFT', 2_000, 1), holding('SAP', 1_000, 1));
+  storeBoard(['concentration', { scope: MAIN.id }]);
+
+  renderHome();
+  const widget = await screen.findByRole('region', { name: 'Concentration' });
+
+  // 6 000 of Main's 10 000 total value (cash included).
+  expect(await within(widget).findByText('60.00%')).toBeInTheDocument();
+  expect(within(widget).getByRole('link', { name: 'AAPL' })).toBeInTheDocument();
+  // 6 000 + 2 000 + 1 000 = 9 000 of 10 000.
+  expect(within(widget).getByText('Top 3 together: 90.00%')).toBeInTheDocument();
+});
+
+test('switching a display form persists and re-renders in the other form', async () => {
+  const user = editMode();
+  withHoldings(holding('AAPL', 6_000, 1.5));
+  storeBoard(['allocation', { scope: MAIN.id }]);
+  renderHome();
+  await screen.findByRole('region', { name: 'Allocation' });
+
+  await user.click(screen.getByRole('button', { name: 'Customize' }));
+  await user.click(screen.getByRole('button', { name: 'Allocation settings' }));
+  const forms = screen.getByRole('group', { name: 'Allocation display form' });
+  await user.click(within(forms).getByRole('button', { name: 'Bars' }));
+
+  expect(persisted().widgets[0]?.settings.variant).toBe('bars');
+  const widget = screen.getByRole('region', { name: 'Allocation' });
+  expect(await within(widget).findByText('85.71%')).toBeInTheDocument();
+});
+
+// ─── Adding at a position ────────────────────────────────────────────────────
+
+test('edit mode offers an ⊕ at every position when nothing is picked up', async () => {
+  const user = editMode();
+  renderHome();
+  await screen.findByRole('region', { name: 'Net worth' });
+
+  await user.click(screen.getByRole('button', { name: 'Customize' }));
+
+  // A new widget can go anywhere: five widgets ⇒ six positions.
+  const adders = screen.getAllByRole('button', { name: /^Add a widget/ });
+  expect(adders).toHaveLength(DEFAULT_LAYOUT.widgets.length + 1);
+  expect(adders.map((button) => button.getAttribute('aria-label'))).toEqual([
+    'Add a widget before Net worth',
+    'Add a widget before Portfolios',
+    'Add a widget before Needs attention',
+    'Add a widget before Upcoming',
+    'Add a widget before Jump in',
+    'Add a widget at the end',
+  ]);
+});
+
+test('the ⊕ on a line inserts the chosen widget at exactly that position', async () => {
+  const user = editMode();
+  renderHome();
+  await screen.findByRole('region', { name: 'Net worth' });
+  await user.click(screen.getByRole('button', { name: 'Customize' }));
+
+  await user.click(screen.getByRole('button', { name: 'Add a widget before Needs attention' }));
+  const drawer = screen.getByRole('complementary', { name: 'Add a widget' });
+  await user.click(within(drawer).getByRole('button', { name: /^Alerts/ }));
+
+  // Third position, not appended — the persisted layout is the claim.
+  expect(persisted().widgets.map((widget) => widget.type)).toEqual([
+    'net-worth',
+    'portfolio-cards',
+    'alerts',
+    'attention',
+    'upcoming',
+    'shortcuts',
+  ]);
+  expect(boardOrder()).toEqual([
+    'Net worth',
+    'Portfolios',
+    'Alerts',
+    'Needs attention',
+    'Upcoming',
+    'Jump in',
+  ]);
+});
+
+test('the header’s Add button still appends, ignoring any earlier ⊕', async () => {
+  const user = editMode();
+  renderHome();
+  await screen.findByRole('region', { name: 'Net worth' });
+  await user.click(screen.getByRole('button', { name: 'Customize' }));
+
+  // Open from a line, dismiss it, then use the header button: the pending slot
+  // must not survive into an add the user started somewhere else.
+  await user.click(screen.getByRole('button', { name: 'Add a widget before Net worth' }));
+  const pending = screen.getByRole('complementary', { name: 'Add a widget' });
+  await user.click(within(pending).getByRole('button', { name: 'Close' }));
+  await user.click(screen.getByRole('button', { name: 'Add widget' }));
+  const drawer = screen.getByRole('complementary', { name: 'Add a widget' });
+  await user.click(within(drawer).getByRole('button', { name: /^Alerts/ }));
+
+  expect(persisted().widgets.at(-1)?.type).toBe('alerts');
+});
+
+test('picking a widget up swaps the ⊕ positions for Move here targets', async () => {
+  const user = editMode();
+  renderHome();
+  await screen.findByRole('region', { name: 'Net worth' });
+  await user.click(screen.getByRole('button', { name: 'Customize' }));
+  await user.click(screen.getByRole('button', { name: 'Reorder Net worth' }));
+
+  // The add affordance stands down while something is held…
+  expect(screen.queryAllByRole('button', { name: /^Add a widget/ })).toHaveLength(0);
+  // …and every legal destination now says so, visibly.
+  const targets = screen.getAllByRole('button', { name: /^Place / });
+  expect(targets).toHaveLength(DEFAULT_LAYOUT.widgets.length - 1);
+  expect(screen.getAllByText('Move here')).toHaveLength(targets.length);
 });

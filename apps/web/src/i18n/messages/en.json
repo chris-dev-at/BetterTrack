@@ -3977,7 +3977,35 @@
       },
       "placeBefore": "Place before {{title}}",
       "placeEnd": "Place at the end",
-      "placeCancel": "Stop placing {{title}}"
+      "placeCancel": "Stop placing {{title}}",
+      "moveHere": "Move here",
+      "addHere": "Add here",
+      "addBefore": "Add a widget before {{title}}",
+      "addEnd": "Add a widget at the end",
+      "variantLabel": "Display",
+      "variantAriaLabel": "{{title}} display form",
+      "variant": {
+        "cashflow-chart": {
+          "net": "Net",
+          "columns": "In / out"
+        },
+        "allocation": {
+          "donut": "Donut",
+          "bars": "Bars"
+        },
+        "top-movers": {
+          "list": "List",
+          "chips": "Chips"
+        },
+        "portfolio-cards": {
+          "cards": "Cards",
+          "table": "Table"
+        },
+        "liquidity": {
+          "ring": "Ring",
+          "bar": "Bar"
+        }
+      }
     },
     "widgets": {
       "range": {
@@ -4016,7 +4044,9 @@
         "empty": "No cash-flow data yet.",
         "ariaLabel": "Net cash flow by month",
         "incomeWord": "in",
-        "spentWord": "out"
+        "spentWord": "out",
+        "netWord": "net",
+        "columnsAriaLabel": "Money in and money out per month"
       },
       "allocation": {
         "title": "Allocation",
@@ -4041,7 +4071,11 @@
         "title": "Portfolios",
         "description": "Every portfolio with value and trend",
         "empty": "No portfolios yet.",
-        "sparkAriaLabel": "One-month trend for {{name}}"
+        "sparkAriaLabel": "One-month trend for {{name}}",
+        "colName": "Portfolio",
+        "colValue": "Value",
+        "colToday": "Today",
+        "colShare": "Share"
       },
       "news": {
         "title": "News",
@@ -4113,6 +4147,19 @@
         "armed": "Armed",
         "triggered": "Triggered",
         "empty": "No alerts yet."
+      },
+      "liquidity": {
+        "title": "Liquidity",
+        "description": "How much of it is cash, not invested",
+        "empty": "Nothing to measure yet.",
+        "ofWord": "of"
+      },
+      "concentration": {
+        "title": "Concentration",
+        "description": "How much rides on the biggest position",
+        "empty": "No positions to measure yet.",
+        "inWord": "in",
+        "topN": "Top {{n}} together: {{pct}}"
       }
     }
   },

@@ -1,11 +1,13 @@
-import { WIDGET_SIZE_RULES, WIDGET_TYPES, type WidgetType } from '../config';
+import { WIDGET_SIZE_RULES, WIDGET_TYPES, WIDGET_VARIANT_RULES, type WidgetType } from '../config';
 import { AlertsWidget } from './AlertsWidget';
 import { AllocationWidget } from './AllocationWidget';
 import { AssetSpotlightSettings, AssetSpotlightWidget } from './AssetSpotlightWidget';
 import { AttentionWidget } from './AttentionWidget';
 import { CashBalancesWidget } from './CashBalancesWidget';
 import { CASHFLOW_MONTHS, CashflowChartWidget } from './CashflowChartWidget';
+import { ConcentrationWidget } from './ConcentrationWidget';
 import { DividendsWidget } from './DividendsWidget';
+import { LiquidityWidget } from './LiquidityWidget';
 import { NetWorthHistoryWidget } from './NetWorthHistoryWidget';
 import { NetWorthWidget } from './NetWorthWidget';
 import { NewsWidget } from './NewsWidget';
@@ -18,6 +20,21 @@ import { TopMoversWidget } from './TopMoversWidget';
 import { UpcomingWidget } from './UpcomingWidget';
 import { WatchlistSettings, WatchlistWidget } from './WatchlistWidget';
 import type { WidgetDefinition, WidgetGroup } from './types';
+
+/**
+ * A type's display forms, expressed for the picker. `WIDGET_VARIANT_RULES` in
+ * `config.ts` is the authority on which values are *valid* (it validates stored
+ * payloads without importing React); this turns that same list into labelled
+ * options, so the two cannot drift apart.
+ */
+function variantsOf(type: WidgetType) {
+  const rules = WIDGET_VARIANT_RULES[type];
+  if (rules === undefined) return undefined;
+  return rules.allowed.map((value) => ({
+    value,
+    labelKey: `home.builder.variant.${type}.${value}`,
+  }));
+}
 
 /** The range picker offers the same window set as the per-portfolio chart. */
 const PERFORMANCE_RANGE_OPTIONS = PERFORMANCE_RANGES.map((range) => ({
@@ -57,6 +74,29 @@ export const WIDGET_REGISTRY = {
     supportsScope: true,
     Component: TodayChangeWidget,
   },
+  liquidity: {
+    type: 'liquidity',
+    icon: 'scale',
+    labelKey: 'home.widgets.liquidity.title',
+    descriptionKey: 'home.widgets.liquidity.description',
+    group: 'overview',
+    allowedSizes: WIDGET_SIZE_RULES.liquidity.allowed,
+    defaultSettings: { scope: 'all' },
+    supportsScope: true,
+    variants: variantsOf('liquidity'),
+    Component: LiquidityWidget,
+  },
+  concentration: {
+    type: 'concentration',
+    icon: 'target',
+    labelKey: 'home.widgets.concentration.title',
+    descriptionKey: 'home.widgets.concentration.description',
+    group: 'overview',
+    allowedSizes: WIDGET_SIZE_RULES.concentration.allowed,
+    defaultSettings: { scope: 'all' },
+    supportsScope: true,
+    Component: ConcentrationWidget,
+  },
   'portfolio-cards': {
     type: 'portfolio-cards',
     icon: 'portfolios',
@@ -68,6 +108,7 @@ export const WIDGET_REGISTRY = {
     // The widget IS the all-portfolios overview; scoping it to one would be a
     // worse version of the net-worth widget.
     supportsScope: false,
+    variants: variantsOf('portfolio-cards'),
     Component: PortfolioCardsWidget,
   },
   'performance-chart': {
@@ -112,6 +153,7 @@ export const WIDGET_REGISTRY = {
       value: range,
       labelKey: `home.widgets.range.${range}`,
     })),
+    variants: variantsOf('cashflow-chart'),
     Component: CashflowChartWidget,
   },
   allocation: {
@@ -123,6 +165,7 @@ export const WIDGET_REGISTRY = {
     allowedSizes: WIDGET_SIZE_RULES.allocation.allowed,
     defaultSettings: { scope: 'all' },
     supportsScope: true,
+    variants: variantsOf('allocation'),
     Component: AllocationWidget,
   },
   'asset-spotlight': {
@@ -151,6 +194,7 @@ export const WIDGET_REGISTRY = {
     allowedSizes: WIDGET_SIZE_RULES['top-movers'].allowed,
     defaultSettings: { scope: 'all', metric: 'day' },
     supportsScope: true,
+    variants: variantsOf('top-movers'),
     Component: TopMoversWidget,
   },
   news: {
