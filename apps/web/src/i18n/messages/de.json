@@ -3536,9 +3536,9 @@
       },
       "bulkDisable": {
         "title": "Ausgewählte Nutzer deaktivieren?",
-        "descriptionOne": "Den ausgewählten Nutzer deaktivieren? Er kann sich danach nicht mehr anmelden.",
+        "descriptionOne": "1 ausgewählten Nutzer deaktivieren? Er kann sich danach nicht mehr anmelden.",
         "descriptionOther": "{{count}} ausgewählte Nutzer deaktivieren? Sie können sich danach nicht mehr anmelden.",
-        "confirmOne": "Nutzer deaktivieren",
+        "confirmOne": "1 Nutzer deaktivieren",
         "confirmOther": "{{count}} Nutzer deaktivieren",
         "pending": "Wird deaktiviert…"
       },

@@ -3536,9 +3536,9 @@
       },
       "bulkDisable": {
         "title": "Disable selected users?",
-        "descriptionOne": "Disable the selected user? They will no longer be able to sign in.",
+        "descriptionOne": "Disable 1 selected user? They will no longer be able to sign in.",
         "descriptionOther": "Disable {{count}} selected users? They will no longer be able to sign in.",
-        "confirmOne": "Disable user",
+        "confirmOne": "Disable 1 user",
         "confirmOther": "Disable {{count}} users",
         "pending": "Disabling…"
       },

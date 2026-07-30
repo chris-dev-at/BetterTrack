@@ -131,7 +131,7 @@ test('bulk-disable names the selected count and only runs after confirmation', a
   await user.click(await screen.findByRole('button', { name: 'Disable selected' }));
 
   expect(await screen.findByRole('dialog', { name: 'Disable selected users?' })).toHaveTextContent(
-    'Disable the selected user?',
+    'Disable 1 selected user?',
   );
   expect(api.bulkUserAction).not.toHaveBeenCalled();
 
@@ -139,7 +139,7 @@ test('bulk-disable names the selected count and only runs after confirmation', a
   expect(api.bulkUserAction).not.toHaveBeenCalled();
 
   await user.click(screen.getByRole('button', { name: 'Disable selected' }));
-  await user.click(await screen.findByRole('button', { name: 'Disable user' }));
+  await user.click(await screen.findByRole('button', { name: 'Disable 1 user' }));
 
   await waitFor(() =>
     expect(api.bulkUserAction).toHaveBeenCalledWith({ action: 'disable', userIds: ['user-1'] }),
@@ -158,7 +158,7 @@ test('keeps a bulk-disable failure visible in its confirmation dialog', async ()
   await user.click(screen.getByLabelText('Select jane'));
   await user.click(screen.getByRole('button', { name: 'Disable selected' }));
   const dialog = await screen.findByRole('dialog', { name: 'Disable selected users?' });
-  const confirm = within(dialog).getByRole('button', { name: 'Disable user' });
+  const confirm = within(dialog).getByRole('button', { name: 'Disable 1 user' });
 
   await user.click(confirm);
 
