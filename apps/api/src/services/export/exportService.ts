@@ -1,4 +1,4 @@
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, rm, writeFile } from 'node:fs/promises';
 import { join as joinPath } from 'node:path';
 
 import type { Redis } from 'ioredis';
@@ -185,25 +185,24 @@ export function createExportService(deps: ExportServiceDeps): ExportService {
     async requestExport({ userId, body, ip }) {
       await verifyReauth(userId, body, ip);
 
-      // 1/day gate: a non-failed job within the window blocks a fresh request
-      // (a failed one may be retried immediately). Retry-After points at the
-      // moment the window opens again.
-      const latest = await exportRepo.findLatestForUser(userId);
-      if (latest && latest.status !== 'failed') {
-        const elapsed = now().getTime() - latest.createdAt.getTime();
-        if (elapsed < EXPORT_RATE_LIMIT_MS) {
-          const retryAfter = Math.ceil((EXPORT_RATE_LIMIT_MS - elapsed) / 1000);
-          throw new ApiError(
-            429,
-            'EXPORT_RATE_LIMITED',
-            'You can request a data export once per day. Please try again later.',
-            { retryAfter },
-          );
-        }
-      }
-
       const { token, tokenHash } = generateToken();
-      const job = await exportRepo.create({ userId, downloadTokenHash: tokenHash });
+      const requestedAt = now();
+      const reservation = await exportRepo.reserveWithinRateLimit({
+        userId,
+        downloadTokenHash: tokenHash,
+        since: new Date(requestedAt.getTime() - EXPORT_RATE_LIMIT_MS),
+      });
+      if (reservation.kind === 'rate_limited') {
+        const elapsed = requestedAt.getTime() - reservation.latest.createdAt.getTime();
+        const retryAfter = Math.ceil((EXPORT_RATE_LIMIT_MS - elapsed) / 1000);
+        throw new ApiError(
+          429,
+          'EXPORT_RATE_LIMITED',
+          'You can request a data export once per day. Please try again later.',
+          { retryAfter },
+        );
+      }
+      const { job } = reservation;
       await audit.record({
         action: AuditAction.AccountExportRequested,
         targetType: 'user',
@@ -241,9 +240,11 @@ export function createExportService(deps: ExportServiceDeps): ExportService {
         const collected = await collectUserExport(db, job.userId);
         const generatedAt = now();
         const zip = buildExportZip({ userId: job.userId, collected, generatedAt });
-        await mkdir(dir, { recursive: true });
+        await mkdir(dir, { recursive: true, mode: 0o700 });
+        await chmod(dir, 0o700);
         const filePath = filePathFor(jobId);
-        await writeFile(filePath, zip);
+        await writeFile(filePath, zip, { mode: 0o600 });
+        await chmod(filePath, 0o600);
         await exportRepo.markReady({
           id: jobId,
           filePath,
@@ -269,12 +270,13 @@ export function createExportService(deps: ExportServiceDeps): ExportService {
 
     async resolveDownload({ userId, token }) {
       if (!token) throw badRequest('A download token is required.', 'EXPORT_TOKEN_REQUIRED');
-      const row = await exportRepo.findDownloadable({
+      const row = await exportRepo.consumeDownloadable({
         userId,
         downloadTokenHash: hashToken(token),
         now: now(),
       });
-      // Fail closed: a foreign, expired, unknown or not-yet-ready token is an
+      // The conditional update both validates and consumes the token. A
+      // foreign, expired, replayed, unknown or not-yet-ready token is an
       // indistinguishable 404 — never a distinct signal to a probing caller.
       if (!row || !row.filePath) {
         throw notFound('This export is no longer available.', 'EXPORT_NOT_FOUND');

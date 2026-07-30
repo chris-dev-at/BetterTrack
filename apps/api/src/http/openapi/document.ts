@@ -404,6 +404,7 @@ const componentSchemas = {
   ExportRequest: contracts.exportRequestSchema,
   ExportRequestResponse: contracts.exportRequestResponseSchema,
   ExportStatusResponse: contracts.exportStatusResponseSchema,
+  ExportDownloadRequest: contracts.exportDownloadRequestSchema,
 
   // Price alerts (§14, V3-P10)
   Alert: contracts.alertSchema,
@@ -692,12 +693,12 @@ const endpoints: EndpointDef[] = [
     response: R.ExportStatusResponse,
   },
   {
-    method: 'get',
+    method: 'post',
     path: '/account/export/download',
     tag: 'Account',
     summary:
-      'Download the ready export zip; session-authenticated and token-gated (foreign/expired tokens 404).',
-    query: contracts.exportDownloadQuerySchema,
+      'Consume a one-time token from the request body and download the ready export zip; foreign, expired, or replayed tokens 404.',
+    body: R.ExportDownloadRequest,
     status: 200,
   },
   {

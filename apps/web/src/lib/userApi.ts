@@ -32,6 +32,7 @@ import {
   type AcceptInviteRequest,
   type ChangePasswordRequest,
   type DeleteAccountRequest,
+  type ExportDownloadRequest,
   type ExportRequest,
   type ExportRequestResponse,
   type ExportStatusResponse,
@@ -563,7 +564,7 @@ export async function deleteAccount(body: DeleteAccountRequest): Promise<void> {
  * Request an account data export (§13.4 V4-P6a, #494): re-auth (password or a
  * fresh 2FA code / recovery code) + a 1/day server gate → an async zip build.
  * The response carries the RAW download token ONCE (only its hash is stored),
- * which the caller keeps to build the download URL once the job is `ready`.
+ * which the caller holds in memory until the job is `ready`.
  * `suppressAuthRedirect`: a 401 (wrong credential) is an in-form error.
  */
 export async function requestDataExport(body: ExportRequest): Promise<ExportRequestResponse> {
@@ -581,14 +582,63 @@ export async function getDataExportStatus(signal?: AbortSignal): Promise<ExportS
   return exportStatusResponseSchema.parse(data);
 }
 
+// A click queues download navigation for a later task. Keep the object URL alive
+// long enough for Safari/Firefox to start consuming it before releasing it.
+const EXPORT_OBJECT_URL_TTL_MS = 60_000;
+
+function exportFileName(response: Response): string {
+  const disposition = response.headers.get('Content-Disposition') ?? '';
+  const encoded = disposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
+  const quoted = disposition.match(/filename="([^"]+)"/i)?.[1];
+  let candidate = quoted;
+  if (encoded) {
+    try {
+      candidate = decodeURIComponent(encoded);
+    } catch {
+      candidate = undefined;
+    }
+  }
+  const basename = candidate?.split(/[\\/]/).pop();
+  const safeName = basename
+    ? [...basename].filter((character) => {
+        const code = character.charCodeAt(0);
+        return code >= 32 && code !== 127;
+      })
+    : [];
+  return safeName.join('') || 'bettertrack-export.zip';
+}
+
 /**
- * The absolute URL that streams the ready export zip for the held raw token. A
- * top-level navigation to it sends the session cookie (SameSite=Lax) and the
- * server streams the file with `Content-Disposition: attachment`; the token is
- * validated + owner-scoped server-side.
+ * Exchange the held one-time token in a POST body and trigger the browser
+ * download. The credential never enters a URL, history, or durable web
+ * storage; the server consumes it before streaming the no-store response.
  */
-export function dataExportDownloadUrl(token: string): string {
-  return `${apiBaseUrl()}/account/export/download?token=${encodeURIComponent(token)}`;
+export async function downloadDataExport(body: ExportDownloadRequest): Promise<void> {
+  const response = await rawVaultRequest('/account/export/download', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Requested-With': 'BetterTrack',
+    },
+    body: JSON.stringify(body),
+  });
+  if (!response.ok) {
+    const payload: unknown = await response.json().catch(() => undefined);
+    throwRawApiError(response.status, payload);
+  }
+
+  const url = URL.createObjectURL(await response.blob());
+  try {
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = exportFileName(response);
+    link.rel = 'noopener';
+    document.body.append(link);
+    link.click();
+    link.remove();
+  } finally {
+    globalThis.setTimeout(() => URL.revokeObjectURL(url), EXPORT_OBJECT_URL_TTL_MS);
+  }
 }
 
 // ── Passkeys / WebAuthn (§13.4 V4-P4) ────────────────────────────────────────
