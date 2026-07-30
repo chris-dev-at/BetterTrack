@@ -47,6 +47,28 @@ export const negativeCacheKey = (logicalKey: string): string => `mkt:neg:${logic
 /** Redis namespace for the short cross-process load lock (§5.3 coalescing). */
 export const loadLockKey = (logicalKey: string): string => `mkt:lock:${logicalKey}`;
 
+/**
+ * Delete every cached representation of account-owned manual assets. Paranoid
+ * enable calls this only after local revalidations settle and while its account
+ * transition lock excludes new owner-scoped reads.
+ */
+export async function purgeManualAssetCaches(
+  redis: Redis,
+  assetIds: readonly string[],
+): Promise<void> {
+  for (const assetId of new Set(assetIds)) {
+    for (const namespace of ['fresh', 'stale', 'neg', 'lock']) {
+      let cursor = '0';
+      const pattern = `mkt:${namespace}:manual:${assetId}:*`;
+      do {
+        const [nextCursor, keys] = await redis.scan(cursor, 'MATCH', pattern, 'COUNT', 100);
+        cursor = String(nextCursor);
+        if (keys.length > 0) await redis.del(...keys);
+      } while (cursor !== '0');
+    }
+  }
+}
+
 interface StoredEntry<T> {
   value: T;
   /** Epoch ms when this value was fetched from upstream. */

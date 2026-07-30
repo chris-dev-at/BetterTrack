@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   adminStatsSchema,
+  adminUserListResponseSchema,
   createUserResponseSchema,
   twoFactorChallengeResponseSchema,
   twoFactorEnrollResponseSchema,
@@ -283,6 +284,104 @@ describe('admin route guard (PROJECTPLAN.md §6.12)', () => {
 
     const anon = await request(harness.app).get('/api/v1/admin/users');
     expect(anon.status).toBe(404);
+  });
+});
+
+describe('paranoid account administration (#730)', () => {
+  it('keeps normal-account admin serialization byte-for-byte compatible', async () => {
+    const admin = await harness.seedAdmin();
+    const adminAgent = await harness.loginAdmin(admin);
+    const target = await harness.seedUser({
+      email: 'normal-admin-view@bt.test',
+      username: 'normal_admin_view',
+    });
+
+    const response = await adminAgent.get('/api/v1/admin/users');
+    expect(response.status).toBe(200);
+    const user = (response.body.users as Array<Record<string, unknown>>).find(
+      (candidate) => candidate.id === target.id,
+    );
+    expect(user).toBeDefined();
+    expect(user).not.toHaveProperty('privacyMode');
+    expect(user).not.toHaveProperty('paranoid');
+  });
+
+  it('returns operational metadata without ciphertext, Drive credentials, or key material', async () => {
+    const admin = await harness.seedAdmin();
+    const adminAgent = await harness.loginAdmin(admin);
+    const target = await harness.seedUser({
+      email: 'paranoid-admin-view@bt.test',
+      username: 'paranoid_admin_view',
+    });
+    const currentBlob = Buffer.from('current-ciphertext-secret');
+    const historicalBlob = Buffer.from('historical-ciphertext-secret');
+    await harness.db
+      .update(schema.users)
+      .set({
+        privacyMode: 'paranoid',
+        paranoidMediaSet: ['server'],
+        paranoidDriveAttestedVersion: null,
+      })
+      .where(eq(schema.users.id, target.id));
+    await harness.db.insert(schema.paranoidVaults).values({
+      userId: target.id,
+      version: 2,
+      formatVersion: 1,
+      sizeBytes: currentBlob.byteLength,
+      blob: currentBlob,
+    });
+    await harness.db.insert(schema.paranoidVaultHistory).values({
+      userId: target.id,
+      version: 1,
+      formatVersion: 1,
+      sizeBytes: historicalBlob.byteLength,
+      blob: historicalBlob,
+    });
+
+    const response = await adminAgent.get('/api/v1/admin/users');
+    expect(response.status).toBe(200);
+    const body = adminUserListResponseSchema.parse(response.body);
+    const user = body.users.find((candidate) => candidate.id === target.id);
+    expect(user).toMatchObject({
+      privacyMode: 'paranoid',
+      paranoid: {
+        mediaSet: ['server'],
+        vault: {
+          version: 2,
+          sizeBytes: currentBlob.byteLength,
+        },
+        historyCount: 1,
+      },
+    });
+    expect(user?.paranoid?.vault?.updatedAt).toMatch(/Z$/);
+    const serialized = JSON.stringify(user);
+    expect(serialized).not.toContain('current-ciphertext-secret');
+    expect(serialized).not.toContain('historical-ciphertext-secret');
+    expect(serialized).not.toMatch(/blob|ciphertext|passphrase|driveToken|recoveryKey/i);
+
+    for (const forbiddenMutation of [
+      { privacyMode: 'normal' },
+      { passphrase: 'admin-cannot-reset-this' },
+      { wipeVault: true },
+    ]) {
+      const mutation = await adminAgent
+        .patch(`/api/v1/admin/users/${target.id}`)
+        .set(...XRW)
+        .send(forbiddenMutation);
+      expect(mutation.status).toBe(400);
+    }
+    expect(
+      await harness.db
+        .select({ privacyMode: schema.users.privacyMode })
+        .from(schema.users)
+        .where(eq(schema.users.id, target.id)),
+    ).toEqual([{ privacyMode: 'paranoid' }]);
+    expect(
+      await harness.db
+        .select({ version: schema.paranoidVaults.version })
+        .from(schema.paranoidVaults)
+        .where(eq(schema.paranoidVaults.userId, target.id)),
+    ).toEqual([{ version: 2 }]);
   });
 });
 

@@ -554,3 +554,19 @@ export const PARANOID_VAULT_TABLE_NAMES: readonly string[] = Object.entries(
   .filter(([, c]) => c === 'vault')
   .map(([table]) => table)
   .sort();
+
+/**
+ * Normal account-export entities that remain safe as cleartext for a paranoid
+ * account. Deriving this from both compulsory table classifications means a new
+ * exported money table cannot silently enter the paranoid archive.
+ */
+export const PARANOID_SERVER_EXPORTED_ENTITY_NAMES: readonly string[] = [
+  ...new Set(
+    Object.entries(EXPORT_TABLE_CLASSIFICATION)
+      .filter(
+        ([table, classification]) =>
+          classification.kind === 'export' && PARANOID_TABLE_CLASSIFICATION[table] === 'server',
+      )
+      .map(([, classification]) => (classification as { entity: string }).entity),
+  ),
+].sort();

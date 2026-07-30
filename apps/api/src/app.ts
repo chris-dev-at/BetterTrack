@@ -23,7 +23,7 @@ import {
 } from './http/middleware/session';
 import { createGrafanaProxyMiddleware } from './http/grafanaProxy';
 import { createOpenApiRouter } from './http/openapi';
-import { createAccountRouter } from './http/routes/accountRoutes';
+import { createAccountRouter, PARANOID_DISABLE_HTTP_PATH } from './http/routes/accountRoutes';
 import { createAdminRouter } from './http/routes/adminRoutes';
 import { createAiRouter } from './http/routes/aiRoutes';
 import { createAlertsRouter } from './http/routes/alertsRoutes';
@@ -76,7 +76,20 @@ export function createApp(ctx: AppContext) {
   // session/rate-limit work and cross-origin web/admin callers get their headers
   // (§4.6, §10). The allowlist is the derived web+admin origins.
   app.use(createCorsMiddleware(ctx.config.corsOrigins));
-  app.use(express.json({ limit: '100kb' }));
+  const regularJson = express.json({ limit: '100kb' });
+  app.use((req, res, next) => {
+    // The decrypted restore can be as large as the bounded encrypted envelope.
+    // Defer that one parser to the route, after authentication + its vault rate
+    // limiter; every other JSON request keeps the 100 KiB global bound.
+    if (
+      req.method === 'POST' &&
+      (req.path === PARANOID_DISABLE_HTTP_PATH || req.path === `${PARANOID_DISABLE_HTTP_PATH}/`)
+    ) {
+      next();
+      return;
+    }
+    regularJson(req, res, next);
+  });
   app.use(cookieParser(ctx.config.sessionSecrets));
 
   // Public API docs (§5 Meta, §6.13): mounted at the origin root, BEFORE the

@@ -15,6 +15,17 @@ import { pathAcceptsBearer } from '../middleware/bearerAuth';
 // workspace, so this also covers the contract schemas we register below.
 extendZodWithOpenApi(z);
 
+// zod-to-openapi cannot traverse ZodLazy. The strict restore contract uses one
+// recursive JSON-value schema for persisted JSON columns; their shipped values
+// are objects (or nullable objects), so attach the narrow documentation hint to
+// the original schema instance before its already-built parents are registered.
+// Runtime request validation remains the recursive contracts schema.
+const documentedVaultJsonSchema = contracts.vaultJsonSchema.openapi({
+  type: 'object',
+  additionalProperties: true,
+});
+contracts.vaultJsonSchema._def.openapi = documentedVaultJsonSchema._def.openapi;
+
 /**
  * OpenAPI 3 document generated from the `@bettertrack/contracts` zod schemas
  * (PROJECTPLAN.md §5, §6.13). Every `/api/v1` endpoint is registered here with
@@ -46,6 +57,10 @@ const componentSchemas = {
   ParanoidMediaTransitionRequest: contracts.paranoidMediaTransitionRequestSchema,
   ParanoidMediaTransitionResponse: contracts.paranoidMediaTransitionResponseSchema,
   ParanoidServerCandidateMetadata: contracts.paranoidServerCandidateMetadataSchema,
+  ParanoidEnableRequest: contracts.paranoidEnableRequestSchema,
+  ParanoidEnableResponse: contracts.paranoidEnableResponseSchema,
+  ParanoidDisableRequest: contracts.paranoidDisableRequestSchema,
+  ParanoidDisableResponse: contracts.paranoidDisableResponseSchema,
   RetiredServerPurgeChallengeRequest: contracts.retiredServerPurgeChallengeRequestSchema,
   RetiredServerPurgeChallengeResponse: contracts.retiredServerPurgeChallengeResponseSchema,
   RetiredServerPurgeRequest: contracts.retiredServerPurgeRequestSchema,
@@ -685,6 +700,26 @@ const endpoints: EndpointDef[] = [
     body: R.ExportRequest,
     status: 200,
     response: R.ExportRequestResponse,
+  },
+  {
+    method: 'post',
+    path: '/account/paranoid/enable',
+    tag: 'Account',
+    summary:
+      'Atomically verify encrypted media, purge cleartext portfolio data, revoke sharing, and enable paranoid mode.',
+    body: R.ParanoidEnableRequest,
+    status: 200,
+    response: R.ParanoidEnableResponse,
+  },
+  {
+    method: 'post',
+    path: '/account/paranoid/disable',
+    tag: 'Account',
+    summary:
+      'Atomically rehydrate a complete unlocked vault and return the account to normal mode.',
+    body: R.ParanoidDisableRequest,
+    status: 200,
+    response: R.ParanoidDisableResponse,
   },
   {
     method: 'get',

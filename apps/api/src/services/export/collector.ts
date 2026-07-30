@@ -38,7 +38,7 @@ import {
   workboardItems,
 } from '../../data/schema';
 
-import { EXPORTED_ENTITY_NAMES } from './manifest';
+import { EXPORTED_ENTITY_NAMES, PARANOID_SERVER_EXPORTED_ENTITY_NAMES } from './manifest';
 
 /**
  * The assembled contents of one user's export (§13.4 V4-P6a, #494), before zip
@@ -118,7 +118,11 @@ function toCsv(headers: string[], rows: unknown[][]): string {
  * transactions/cash, a conglomerate's positions/links, an audience's members,
  * a custom asset's price points) so every query is strictly the caller's rows.
  */
-export async function collectUserExport(db: Database, userId: string): Promise<CollectedExport> {
+export async function collectUserExport(
+  db: Database,
+  userId: string,
+  options: { serverOnly?: boolean } = {},
+): Promise<CollectedExport> {
   // Owner-id sets that the indirected tables key off. Resolved first so their
   // dependents can `inArray` on them (empty set ⇒ no rows, never a broad scan).
   const [portfolioRows, conglomerateRows, audienceRows, customAssetRows] = await Promise.all([
@@ -253,7 +257,7 @@ export async function collectUserExport(db: Database, userId: string): Promise<C
     db.select().from(portfolios).where(eq(portfolios.userId, userId)),
   ]);
 
-  const entities: Record<string, unknown[]> = {
+  const allEntities: Record<string, unknown[]> = {
     account: sanitize(accountRows),
     apiKeys: sanitize(apiKeyRows),
     externalIdentities: sanitize(externalIdentityRows),
@@ -289,13 +293,19 @@ export async function collectUserExport(db: Database, userId: string): Promise<C
     customAssets: sanitize(customAssetFull),
     customAssetPriceHistory: sanitize(customAssetPriceRows),
   };
+  const allowedEntities = new Set(
+    options.serverOnly ? PARANOID_SERVER_EXPORTED_ENTITY_NAMES : EXPORTED_ENTITY_NAMES,
+  );
+  const entities = Object.fromEntries(
+    Object.entries(allEntities).filter(([entity]) => allowedEntities.has(entity)),
+  );
 
   // Invariant guard: the collector must produce exactly the entities the
   // classification claims are exported — no missing key, no stray extra. The
   // completeness test asserts this too; failing fast here makes a wiring slip
   // obvious at build time.
   const produced = Object.keys(entities).sort();
-  const expected = [...EXPORTED_ENTITY_NAMES];
+  const expected = [...allowedEntities].sort();
   if (produced.length !== expected.length || produced.some((k, i) => k !== expected[i])) {
     throw new Error(
       `export collector/manifest drift: produced [${produced.join(', ')}] vs expected [${expected.join(', ')}]`,

@@ -21,6 +21,7 @@ import { createNotificationDigestRepository } from '../data/repositories/notific
 import { createPushSubscriptionRepository } from '../data/repositories/pushSubscriptionRepository';
 import {
   createParanoidEnforcementRepository,
+  withFreshLockedPrivacyModes,
   withLockedPrivacyModes,
 } from '../data/repositories/paranoidEnforcementRepository';
 import { createUserRepository } from '../data/repositories/userRepository';
@@ -301,6 +302,8 @@ const dataExportService = createExportService({
   enqueueBuild: async (jobId) => {
     await registry.enqueue('data.export', { jobId });
   },
+  withAccountTransitionLock: (userId, run) =>
+    withFreshLockedPrivacyModes(lockDb, [userId], () => run()),
   logger,
 });
 

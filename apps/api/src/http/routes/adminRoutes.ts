@@ -81,6 +81,13 @@ const actorOf = (req: Request): AdminActor => ({ id: req.authUser!.id, ip: req.i
  */
 export function createAdminRouter(ctx: AppContext, limiters: RateLimiters): Router {
   const router = Router();
+  const serializeAdminUser = async (
+    row: Parameters<typeof toAdminUser>[0],
+  ): Promise<ReturnType<typeof toAdminUser>> => {
+    const metadata = await ctx.paranoidTransitions.adminMetadata(row.id);
+    if (!metadata) throw new Error('Admin user disappeared during serialization.');
+    return toAdminUser(row, metadata);
+  };
 
   router.use(limiters.admin);
   router.use(requireAdmin);
@@ -123,7 +130,7 @@ export function createAdminRouter(ctx: AppContext, limiters: RateLimiters): Rout
   router.get('/users', validateQuery(adminUserListQuerySchema), async (req, res) => {
     const { search } = (req.valid?.query ?? {}) as { search?: string };
     const users = await ctx.admin.listUsers(search);
-    res.json({ users: users.map(toAdminUser) });
+    res.json({ users: await Promise.all(users.map(serializeAdminUser)) });
   });
 
   // Bulk actions from the slimmed user list (§6.12, §13.2). Registered before
@@ -141,7 +148,7 @@ export function createAdminRouter(ctx: AppContext, limiters: RateLimiters): Rout
       req.valid?.body as CreateUserRequest,
       actorOf(req),
     );
-    res.status(201).json({ user: toAdminUser(user), tempPassword });
+    res.status(201).json({ user: await serializeAdminUser(user), tempPassword });
   });
 
   router.patch(
@@ -155,14 +162,14 @@ export function createAdminRouter(ctx: AppContext, limiters: RateLimiters): Rout
         req.valid?.body as UpdateUserRequest,
         actorOf(req),
       );
-      res.json(toAdminUser(user));
+      res.json(await serializeAdminUser(user));
     },
   );
 
   router.post('/users/:id/reset-password', validateParams(idParamSchema), async (req, res) => {
     const { id } = req.valid?.params as { id: string };
     const { user, tempPassword } = await ctx.admin.resetPassword(id, actorOf(req));
-    res.json({ user: toAdminUser(user), tempPassword });
+    res.json({ user: await serializeAdminUser(user), tempPassword });
   });
 
   router.delete(
@@ -240,7 +247,7 @@ export function createAdminRouter(ctx: AppContext, limiters: RateLimiters): Rout
     async (req, res) => {
       const { id } = req.valid?.params as { id: string };
       const user = await ctx.admin.approveRegistrationRequest(id, actorOf(req));
-      res.json(toAdminUser(user));
+      res.json(await serializeAdminUser(user));
     },
   );
 

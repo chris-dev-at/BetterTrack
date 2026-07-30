@@ -148,6 +148,7 @@ function buildInertContext(): AppContext {
     expenseImports: inertService('expenseImports'),
     expenseBudgets: inertService('expenseBudgets'),
     paranoidVault: inertService('paranoidVault'),
+    paranoidTransitions: inertService('paranoidTransitions'),
     webhooks: inertService('webhooks'),
     webhookBridge: inertService('webhookBridge'),
     analytics: inertService('analytics'),
