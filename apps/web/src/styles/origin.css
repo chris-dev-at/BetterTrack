@@ -5260,3 +5260,33 @@
   background: var(--bt-pos-soft);
   color: var(--bt-pos);
 }
+
+/* ===== R2: dialog portal + wizard-sized panel ==============================
+ * Dialogs portal to <body> (see ODialog/Dialog): rendered in place they inherit
+ * the nearest containing block for fixed positioning, and the topbar's
+ * `backdrop-filter` makes the topbar exactly that — a dialog opened from the
+ * portfolio switcher used to lay itself out inside that strip. The portal root
+ * carries `bt-app` for the app's ink and type, so it must not repaint the page
+ * canvas underneath it.
+ * ========================================================================== */
+
+.bt-dialog-root {
+  position: static;
+  min-height: 0;
+  background: none;
+}
+
+/* A wizard is a big centred popup, not a form panel: the Control Center's own
+   geometry, so the two read as one system. The body scrolls inside it, which is
+   what keeps a long step from pushing the footer off screen. */
+.bt-dialog__panel--wizard {
+  width: min(960px, 94vw);
+  height: min(660px, 90vh);
+  max-height: none;
+}
+
+.bt-dialog__panel--wizard > .bt-dialog__body {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}

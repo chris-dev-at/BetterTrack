@@ -174,7 +174,7 @@ export function PortfolioWizard({
   const busy = commit.isPending || Boolean(reported.busy);
 
   return (
-    <ODialog onClose={onClose} open title={t('portfolio.wizard.title')}>
+    <ODialog onClose={onClose} open size="wizard" title={t('portfolio.wizard.title')}>
       <form
         className="bt-pfw"
         onSubmit={(event) => {
