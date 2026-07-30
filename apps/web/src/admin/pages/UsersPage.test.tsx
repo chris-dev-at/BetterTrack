@@ -6,6 +6,7 @@ import { beforeEach, expect, test, vi } from 'vitest';
 import type { AdminStats, AdminUser, CreateUserResponse, MeResponse } from '@bettertrack/contracts';
 
 vi.mock('../../lib/adminApi');
+import { I18nProvider } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
 import * as api from '../../lib/adminApi';
 import { AuthProvider } from '../AuthContext';
@@ -45,16 +46,18 @@ const stats: AdminStats = {
   pendingInviteCount: 0,
 };
 
-function renderPage() {
+function renderPage(locale = 'en') {
   return render(
-    <AuthProvider>
-      <MemoryRouter initialEntries={['/admin/users']}>
-        <Routes>
-          <Route path="/admin/users" element={<UsersPage />} />
-          <Route path="/admin/users/:userId" element={<div>User detail view</div>} />
-        </Routes>
-      </MemoryRouter>
-    </AuthProvider>,
+    <I18nProvider initialLocale={locale}>
+      <AuthProvider>
+        <MemoryRouter initialEntries={['/admin/users']}>
+          <Routes>
+            <Route path="/admin/users" element={<UsersPage />} />
+            <Route path="/admin/users/:userId" element={<div>User detail view</div>} />
+          </Routes>
+        </MemoryRouter>
+      </AuthProvider>
+    </I18nProvider>,
   );
 }
 
@@ -145,6 +148,21 @@ test('bulk-disable names the selected count and only runs after confirmation', a
     expect(api.bulkUserAction).toHaveBeenCalledWith({ action: 'disable', userIds: ['user-1'] }),
   );
   expect(await screen.findByText(/Disabled 1 user/)).toBeInTheDocument();
+});
+
+test('bulk-disable names its single affected user in German', async () => {
+  const user = userEvent.setup();
+  renderPage('de');
+  await screen.findByText('jane@bettertrack.test');
+
+  await user.click(screen.getByLabelText('Select jane'));
+  await user.click(screen.getByRole('button', { name: 'Ausgewählte deaktivieren' }));
+
+  const dialog = await screen.findByRole('dialog', {
+    name: 'Ausgewählte Nutzer deaktivieren?',
+  });
+  expect(dialog).toHaveTextContent('1 ausgewählten Nutzer deaktivieren?');
+  expect(within(dialog).getByRole('button', { name: '1 Nutzer deaktivieren' })).toBeInTheDocument();
 });
 
 test('keeps a bulk-disable failure visible in its confirmation dialog', async () => {
