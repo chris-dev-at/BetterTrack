@@ -54,50 +54,71 @@ BT_MODE=ports docker compose --env-file infra/.env.production.example \
 
 ## Backup architecture
 
-Two independent layers, both env-gated. The offsite layer is OPTIONAL — the
-stack keeps working without it exactly as it did before V4-P6.
+Local recovery points are part of the base deployment. Encrypted offsite upload
+is optional, and remote deletion is a third, separately credentialed step that
+is off by default.
 
 ```
-┌─────────────────────┐   pg_dump | gzip                    ┌────────────┐
-│ db container        │ ──────────────────────────────────▶ │ pgbackups  │
-│  (postgres:17)      │   backup.sh                         │  volume    │
-│                     │   local retention: 14d              │ /backups   │
-└─────────────────────┘                                     └─────┬──────┘
-                                                                  │ read-only
-                                                                  ▼
-                                                        ┌───────────────────┐
-              age (encrypt-to-recipient) + rclone       │ backup-offsite    │
-              ─ optional sidecar, host cron ─────────── │  (sidecar)        │
-                                                        │  offsite.sh       │
-                                                        │  remote retention │
-                                                        │  30d              │
-                                                        └────────┬──────────┘
-                                                                 │
-                                                     rclone copy │
-                                                                 ▼
-                                                        ┌───────────────────┐
-                                                        │ Google Drive      │
-                                                        │ (or any rclone    │
-                                                        │  remote — `local` │
-                                                        │  works for drills)│
-                                                        └───────────────────┘
+backup-scheduler ── pg_dump + gzip ──▶ pgbackups volume
+       │                                  │
+       │ status-only healthcheck          ├─ backup-status.env
+       │                                  └─ restore-attestations.jsonl
+       │
+       ├─ restore-drill.sh ──▶ disposable database (create → probe → drop)
+       │
+       └─ optional backup-offsite ── age + delete-less rclone copy ──▶ remote
+                                                    ▲
+             optional backup-offsite-retention ─────┘
+             separate credential + explicit profile/enable switch
 ```
 
-**Local layer (always on).** `infra/backup/backup.sh` runs inside the `db`
-service via `docker compose exec`, produces
-`bettertrack-YYYYmmdd-HHMMSS.sql.gz` into the `pgbackups` volume, verifies the
-archive (`gzip -t`), then deletes dumps older than `BACKUP_RETENTION_DAYS`
-(default 14). Configure it in `infra/.env`; run it from host cron.
+### Local schedule, status, and health
 
-**Offsite layer (optional).** `infra/backup/offsite.sh` runs inside the
-`backup-offsite` sidecar (`infra/docker-compose.offsite.yml`). It reads the
-shared `pgbackups` volume read-only, finds every eligible local dump absent
-from the remote (newest-first), encrypts each with `age` to an owner-provided
-PUBLIC recipient, uploads via `rclone` to a configured remote (Google Drive in
-production; any rclone backend works, including `local` for drills), then
-prunes remote objects older than `BT_BACKUP_REMOTE_RETENTION_DAYS` (default
-30). If either the recipient or the remote is unset, it logs one `offsite
-skipped` line and exits 0.
+`backup-scheduler` starts with the production Compose stack, takes one dump
+immediately, and installs `BT_BACKUP_CRON` in its own cron daemon. The default is
+`0 3 * * *` in UTC, matching the former 03:00 schedule. No host scheduler or
+external account is needed.
+
+| Variable                         | Default     | Meaning                                                     |
+| -------------------------------- | ----------- | ----------------------------------------------------------- |
+| `BT_BACKUP_CRON`                 | `0 3 * * *` | Five-field numeric cron expression, evaluated in UTC        |
+| `BACKUP_RETENTION_DAYS`          | `14`        | Local dump retention                                        |
+| `BT_BACKUP_FRESHNESS_MAX_HOURS`  | `26`        | Maximum age of the newest successful local dump             |
+| `BT_BACKUP_RESTORE_MAX_AGE_DAYS` | `35`        | Maximum age of the newest successful restore-drill evidence |
+
+Every attempt atomically updates `/backups/backup-status.env`. This
+schema-versioned key/value file is the only freshness source used by the Docker
+healthcheck. It records the last attempt and success, artifact name, byte size,
+SHA-256 checksum, offsite outcomes, restore evidence, and current health reason.
+
+```bash
+cd /path/to/bettertrack/infra
+docker compose ps backup-scheduler
+docker compose exec -T backup-scheduler \
+    sh -c 'sed -n "1,120p" /backups/backup-status.env'
+docker compose exec -T backup-scheduler /opt/bettertrack/backup.sh
+```
+
+Missing evidence, a missing or truncated recorded artifact, a dump older than
+26 hours, or a restore drill older than 35 days makes the scheduler unhealthy.
+It stays running so the next scheduled dump can recover backup freshness.
+
+### Automated local restore drill
+
+Run the drill at least monthly and after database-version, recipient, or backup
+script changes:
+
+```bash
+docker compose exec -T backup-scheduler /opt/bettertrack/restore-drill.sh
+```
+
+The script reads the newest successful artifact from the status file, verifies
+its checksum, creates `bettertrack_restore_drill`, restores with
+`ON_ERROR_STOP`, probes connectivity and public tables, then drops the scratch
+database even on failure. It rejects the live `POSTGRES_DB`, `postgres`, and
+template database names. Each attempt appends JSON evidence to
+`/backups/restore-attestations.jsonl`; passing evidence also updates the status
+file used by health.
 
 ### Security posture
 
@@ -105,20 +126,26 @@ skipped` line and exits 0.
   (a `age1...` public key). The matching identity (private key) stays
   OFFLINE with the owner and is never present on the deploy host, in any
   image, in git, or in any environment variable.
-- **rclone.conf is a secret.** It contains OAuth refresh tokens for the
-  Drive remote. It lives on the host filesystem, is bind-mounted read-only
-  into the sidecar, and is never committed or logged. `offsite.sh` runs
-  without `set -x` so no tracing exposes it.
+- **rclone.conf is a secret.** Each config lives on the host filesystem, is
+  bind-mounted read-only, and is never committed or logged. `offsite.sh` runs
+  without shell tracing.
+- **Upload cannot prune.** `backup-offsite` never invokes `rclone delete` and
+  mounts only the upload config. Give that credential create/list/upload
+  rights on one dedicated folder, but no delete permission.
+- **Retention is isolated.** `backup-offsite-retention` mounts only its
+  deletion-capable config and requires both its profile and
+  `BT_BACKUP_REMOTE_RETENTION_ENABLED=true`. Prefer provider-side object lock,
+  retention policy, or version history over running this service.
 - **Plaintext dumps never leave the box.** Only the `.sql.gz.age` artifact
   is uploaded; the plaintext `.sql.gz` stays inside the `pgbackups` volume
   under `BACKUP_RETENTION_DAYS` local retention.
 - **Encrypted artifact is atomic.** It is encrypted to a temp path, uploaded,
   and only then removed. A failed upload leaves the local `.sql.gz`
-  untouched and exits non-zero so cron surfaces the failure. Every later run
+  untouched and exits non-zero so orchestration surfaces the failure. Every later run
   compares all eligible local dumps with the remote and retries every missing
   artifact, including a missed prior day.
 
-## Enabling offsite backup
+## Enabling encrypted offsite upload
 
 ### 1. Generate an age keypair (offline, one time)
 
@@ -142,181 +169,130 @@ Copy ONLY the recipient file to the deploy host, e.g.
 `/etc/bettertrack/age-recipient`. Root-owned, mode `0644` is fine (it holds
 public-key material only).
 
-### 2. Configure the rclone Drive remote (one time)
+### 2. Configure a delete-less rclone upload remote
 
 On the deploy host:
 
 ```bash
-# Install rclone (Debian/Ubuntu: apt-get install rclone; or download the
-# static binary from rclone.org — the sidecar has its own copy either way).
 rclone config
 #   n) New remote
-#   name> gdrive
+#   name> gdrive-upload
 #   Storage> drive
 #   client_id>       (leave blank — uses rclone's default, or set your own)
 #   client_secret>   (blank)
-#   scope> 1         (Full access — required for delete-on-prune)
-#   root_folder_id>  (optional; the id of a dedicated backup folder in Drive)
+#   scope>            (narrowest create/list/upload scope the provider supports)
+#   root_folder_id>  (id of a dedicated BetterTrack backup folder)
 #   service_account_file> (blank — interactive user login)
 #   Edit advanced config> n
 #   Use auto config> n (headless server; follow the browser dance on a
 #                       machine that has one, paste the resulting token)
 ```
 
-Store the resulting `~/.config/rclone/rclone.conf` at a stable host path
-(e.g. `/etc/bettertrack/rclone.conf`), root-owned, mode `0600`. This file
-contains a Google OAuth refresh token — treat as a secret.
+Store the resulting config at `/etc/bettertrack/rclone-upload.conf`,
+root-owned, mode `0600`. Enable provider version history/trash retention on the
+dedicated destination. Confirm this credential can list and upload but cannot
+delete an existing test object.
 
 Verify manually:
 
 ```bash
-rclone --config /etc/bettertrack/rclone.conf lsd gdrive:
-rclone --config /etc/bettertrack/rclone.conf mkdir gdrive:bettertrack-backups
+rclone --config /etc/bettertrack/rclone-upload.conf lsd gdrive-upload:
+rclone --config /etc/bettertrack/rclone-upload.conf mkdir \
+    gdrive-upload:bettertrack-backups
 ```
 
 ### 3. Fill in `infra/.env`
 
 ```dotenv
 BT_BACKUP_AGE_RECIPIENT_HOST_FILE=/etc/bettertrack/age-recipient
-BT_BACKUP_RCLONE_CONFIG_HOST_FILE=/etc/bettertrack/rclone.conf
-BT_BACKUP_RCLONE_REMOTE=gdrive:bettertrack-backups
-BT_BACKUP_REMOTE_RETENTION_DAYS=30
+BT_BACKUP_RCLONE_CONFIG_HOST_FILE=/etc/bettertrack/rclone-upload.conf
+BT_BACKUP_RCLONE_REMOTE=gdrive-upload:bettertrack-backups
+BT_BACKUP_REMOTE_RETENTION_ENABLED=false
 ```
 
-The base compose file does NOT know about these — they only take effect
-when the offsite override is layered on the compose stack (next step).
+These values affect only the optional offsite override.
 
-### 4. Layer the offsite override + wire cron
+### 4. Run the upload step
 
-`docker-compose.offsite.yml` adds the `backup-offsite` sidecar (an alpine
-image with `age` + `rclone`). It is `profiles: [offsite]`-gated: even with
-the override on the stack, `up -d` leaves it stopped. Invoke it as a
-one-shot after `backup.sh`:
-
-```bash
-# Host crontab (crontab -e) — nightly at 03:00 server time:
-0 3 * * * cd /path/to/bettertrack/infra && \
-    docker compose exec -T db bash /opt/bettertrack/backup.sh && \
-    docker compose -f docker-compose.yml \
-                   -f docker-compose.subdomains.yml \
-                   -f docker-compose.offsite.yml \
-                   run --rm backup-offsite \
-    >> /var/log/bettertrack-backup.log 2>&1
-```
-
-The `&&` sequencing means the offsite step only runs if the local dump
-succeeded; a failed dump aborts before uploading anything stale.
-
-Take a manual offsite run on demand (same command, sans cron), or bypass
-the local step to retry every eligible artifact missing from the remote:
+The profile-gated upload scans every local dump, compares the full remote
+listing, and uploads every missing encrypted artifact—not only the newest. It
+never invokes delete and therefore works with the delete-less credential:
 
 ```bash
 cd /path/to/bettertrack/infra
-docker compose -f docker-compose.yml \
-               -f docker-compose.subdomains.yml \
-               -f docker-compose.offsite.yml \
-               run --rm backup-offsite
+docker compose \
+    -f docker-compose.yml \
+    -f docker-compose.subdomains.yml \
+    -f docker-compose.offsite.yml \
+    --profile offsite \
+    run --rm backup-offsite
 ```
 
-## Internal backup sidecar paths
+Run this from the trusted offsite control plane or backup product that owns the
+upload credential. Local dumps do not depend on this optional step. If the
+recipient or remote is unset, upload records `skipped_unconfigured`; an
+explicitly configured but unreadable recipient fails.
 
-Owner-supplied backup variables and their defaults are documented once in
-`infra/.env.production.example`. These two container-only paths are fixed by the
-offsite Compose overlay:
+### Optional remote pruning with a separate credential
 
-| Variable                       | Default    | Notes                                                                                         |
-| ------------------------------ | ---------- | --------------------------------------------------------------------------------------------- |
-| `BT_BACKUP_AGE_RECIPIENT_FILE` | (fixed)    | Set by the Compose override to `/etc/bettertrack/age-recipient`; do not configure on the host |
-| `BT_BACKUP_SOURCE_DIR`         | `/backups` | Shared `pgbackups` mount inside the backup sidecar; do not configure on the host              |
+Provider-side immutable retention, object lock, or version history is the
+recommended default. If client-side pruning is unavoidable, create a second
+rclone config with delete rights scoped only to the dedicated backup folder.
+Never reuse the upload config.
 
-### Retention contract
+```dotenv
+BT_BACKUP_REMOTE_RETENTION_ENABLED=true
+BT_BACKUP_RETENTION_RCLONE_CONFIG_HOST_FILE=/etc/bettertrack/rclone-retention.conf
+BT_BACKUP_RETENTION_RCLONE_REMOTE=gdrive-retention:bettertrack-backups
+BT_BACKUP_REMOTE_RETENTION_DAYS=30
+```
 
-- **Local:** every run of `backup.sh` deletes local dumps older than
-  `BACKUP_RETENTION_DAYS`. Default 14 days.
-- **Remote:** after a successful eligible-dump scan/upload pass, `offsite.sh`
-  deletes remote objects matching `bettertrack-*.sql.gz.age` that are older
-  than `BT_BACKUP_REMOTE_RETENTION_DAYS`. This includes a pass where every
-  eligible artifact was already present remotely. Default 30 days.
-- The two windows are independent; changing one does not affect the other.
-- A failed upload does NOT trigger a prune — retention stays at whatever
-  the last successful run set it to.
-
-## Restore drill
-
-The drill below restores a chosen encrypted dump onto a fresh scratch
-Postgres and verifies the schema/row counts match expectations. Run it at
-least once at the V4 gate (per §13.4 acceptance) and any time the age
-identity or rclone remote changes.
-
-### Prerequisites
-
-- `age` v1.x AND `rclone` v1.60+ on the machine you drill from (the
-  sidecar has its own copies; the drill runs OUTSIDE that container).
-- The offline age IDENTITY file, e.g. `bettertrack-backup-identity.txt`
-  (bring it from cold storage; keep it offline again after).
-- Access to the rclone remote (the same `rclone.conf` used by the sidecar,
-  or a separate identity that can read the backup folder).
-- A scratch Postgres 17 you can freely trash — the compose dev stack
-  (`docker compose -f infra/docker-compose.dev.yml up -d db`) is perfect.
-
-### Steps
+Run the doubly gated step from the more trusted retention control plane:
 
 ```bash
-# 1. Pick a dump to restore. List what's on the remote:
-rclone --config /etc/bettertrack/rclone.conf lsl gdrive:bettertrack-backups \
-    | grep '.sql.gz.age'
-# Choose one — e.g. bettertrack-20260715-030000.sql.gz.age
-
-# 2. Fetch it to a scratch directory (NOT the deploy host's backup volume).
-mkdir -p /tmp/bt-restore && cd /tmp/bt-restore
-rclone --config /etc/bettertrack/rclone.conf copy \
-    gdrive:bettertrack-backups/bettertrack-20260715-030000.sql.gz.age .
-
-# 3. Decrypt using the offline identity (bring it in, use it, take it back
-#    offline). age reads the identity from a file with `-i`.
-age -d -i /media/usb/bettertrack-backup-identity.txt \
-    -o bettertrack-20260715-030000.sql.gz \
-    bettertrack-20260715-030000.sql.gz.age
-
-# 4. Verify the gzip is intact.
-gzip -t bettertrack-20260715-030000.sql.gz && echo 'gzip ok'
-
-# 5. Bring up a SCRATCH Postgres 17 and pipe the dump in. The dumps were
-#    taken with --clean --if-exists, so the restore drops+recreates every
-#    object itself; a bone-empty database works fine as the target.
-docker run -d --name bt-restore-scratch \
-    -e POSTGRES_USER=bt -e POSTGRES_PASSWORD=scratch -e POSTGRES_DB=bettertrack \
-    -p 55432:5432 postgres:17
-# Wait ~10s for the container to accept connections, then:
-gunzip -c bettertrack-20260715-030000.sql.gz \
-    | docker exec -i -e PGPASSWORD=scratch bt-restore-scratch \
-        psql -U bt -d bettertrack
-
-# 6. Sanity check — the schema and a handful of table sizes should look
-#    right for the day the dump was taken.
-docker exec -e PGPASSWORD=scratch bt-restore-scratch \
-    psql -U bt -d bettertrack -c '\dt' | head -20
-docker exec -e PGPASSWORD=scratch bt-restore-scratch \
-    psql -U bt -d bettertrack -c \
-    "select relname, n_live_tup from pg_stat_user_tables order by n_live_tup desc limit 10;"
-
-# 7. Tear down the scratch DB.
-docker rm -f bt-restore-scratch
-rm -rf /tmp/bt-restore
+docker compose \
+    -f docker-compose.yml \
+    -f docker-compose.subdomains.yml \
+    -f docker-compose.offsite.yml \
+    --profile offsite-retention \
+    run --rm backup-offsite-retention
 ```
 
-The drill is considered PASSED if step 4 (`gzip ok`), step 5 (psql exits 0),
-and step 6 (tables present, non-trivial row counts on user-owned tables)
-all succeed. Log the drill result in the operations journal per the V4-P6
-acceptance criterion.
+With the switch left `false`, the same command records `disabled`, exits
+successfully, and never invokes `rclone delete`. Local and remote windows remain
+independent; failed upload never triggers retention.
+
+## Recovering an offsite archive
+
+Use a read-only recovery credential, not either production credential:
+
+```bash
+# List current objects. If one was removed, restore it from the provider's
+# object versions, retention vault, or trash before continuing.
+rclone --config /media/usb/rclone-recovery.conf \
+    lsl gdrive-recovery:bettertrack-backups
+
+rclone --config /media/usb/rclone-recovery.conf copy \
+    gdrive-recovery:bettertrack-backups/bettertrack-20260715-030000.sql.gz.age \
+    /tmp/bt-restore/
+
+age -d -i /media/usb/bettertrack-backup-identity.txt \
+    -o /tmp/bt-restore/bettertrack-20260715-030000.sql.gz \
+    /tmp/bt-restore/bettertrack-20260715-030000.sql.gz.age
+gzip -t /tmp/bt-restore/bettertrack-20260715-030000.sql.gz
+```
+
+Provider history is the availability boundary when the deploy host or upload
+credential is compromised. Test version/trash recovery whenever provider
+policy or credentials change.
 
 ### Restoring in place (production emergency)
 
-Same procedure, but at step 5 restore into the running `db` container
-after stopping api + worker (see the "Restore from a dump" block in
-`README.md` — the local-dump variant of this procedure). The offsite
-artifact is a superset of that dump; once decrypted it's a normal
-`.sql.gz` file usable with the existing local-restore procedure.
+After recovering and decrypting an archive, follow the production restore block
+in `README.md`: stop API and worker writes, place the verified `.sql.gz` in the
+backup volume, restore it explicitly, and restart services. Do not use the
+automated drill for in-place recovery; it intentionally refuses the live
+database.
 
 ## Market-data provider failover
 
@@ -425,6 +401,12 @@ access are disabled. See `infra/.env.production.example` for every knob.
 
 ## Troubleshooting
 
+**`backup-scheduler` is unhealthy** — inspect
+`/backups/backup-status.env` inside that service. `health_reason` distinguishes
+a missing/stale dump, a missing/truncated artifact, and missing/stale restore
+evidence. Run `backup.sh` for dump freshness or `restore-drill.sh` for restore
+evidence after resolving the underlying database error.
+
 **"offsite skipped (unset: …)"** — one or both of
 `BT_BACKUP_AGE_RECIPIENT_FILE` / `BT_BACKUP_RCLONE_REMOTE` is empty inside
 the sidecar. Check that `infra/.env` sets `BT_BACKUP_RCLONE_REMOTE` and the
@@ -436,12 +418,12 @@ resolve to a real file. Check that `BT_BACKUP_AGE_RECIPIENT_HOST_FILE`
 points at an existing, readable file on the host.
 
 **Rclone upload fails but the local dump is still there** — expected;
-the local dump is preserved on any offsite failure. Inspect
-`/var/log/bettertrack-backup.log`; the next run scans every eligible local
-dump, skips artifacts already on the remote, and retries every missing one.
+the local dump is preserved on any offsite failure. Inspect the one-shot
+container output and `offsite_outcome` in the status file. The next run scans
+every eligible local dump, skips remote artifacts, and retries every missing
+one.
 
-**Drive fills up despite the 30-day retention** — the prune step runs after a
-successful eligible-dump scan/upload pass, including one where every eligible
-artifact was already present remotely. If uploads have been failing (see
-above), the pass stops before prune and retention stops advancing. Fix the
-upload path first, then the next successful pass will prune the backlog.
+**The remote keeps every archive** — this is the safe default. Configure
+provider-side lifecycle/version retention, or explicitly enable and run
+`backup-offsite-retention` with its separate deletion credential. The upload
+service will never prune.
