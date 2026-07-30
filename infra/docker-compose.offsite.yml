@@ -27,12 +27,19 @@ name: bettertrack
 #
 # Fallbacks intentionally omitted: unset host paths must fail compose so
 # operators notice, not silently mount nothing.
+x-bounded-logging: &bounded-logging
+  driver: local
+  options:
+    max-size: '10m'
+    max-file: '3'
+
 services:
   backup-offsite:
     build:
       context: ./backup
       dockerfile: Dockerfile
     restart: 'no'
+    logging: *bounded-logging
     profiles: ['offsite']
     environment:
       BT_BACKUP_SOURCE_DIR: '/backups'

@@ -72,6 +72,23 @@ function renderAtWithLocation(path: string) {
 const anonymous = () =>
   vi.mocked(api.getMe).mockRejectedValue(new ApiError(401, 'UNAUTHENTICATED', 'Not signed in.'));
 
+/**
+ * Budget for the first assertion after a sign-in. Landing authenticated is the
+ * longest chain in this file — the login mutation flips the auth gate, the
+ * legacy path redirects into its Origin destination, the shell and the
+ * destination mount, and only then does that page's own query paint the text
+ * being asserted on.
+ *
+ * Idle, that chain settles in well under 100ms; it is also the part of these
+ * tests most sensitive to CPU contention, measured repeatedly past 2s on a
+ * loaded machine while the sign-in-page waits around it stayed in the tens of
+ * milliseconds. So on a saturated CI runner it is Testing Library's 1s default
+ * that expires, not the app failing to render. These waits are still bounded
+ * and still fail on a genuine regression — just not on runner load.
+ * `AppShell.test.tsx` budgets the same shell surfaces the same way.
+ */
+const SIGNED_IN_RENDER = { timeout: 5_000 } as const;
+
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(api.getParanoidMediaState).mockResolvedValue({
@@ -109,7 +126,11 @@ test('after signing in, the user returns to the originally requested route', asy
   // Landed on the intended route (the legacy /workboard path redirects into
   // the Workbench destination), not the Home command center.
   expect(
-    await screen.findByText('Your watched assets, alerts and blueprints at a glance.'),
+    await screen.findByText(
+      'Your watched assets, alerts and blueprints at a glance.',
+      {},
+      SIGNED_IN_RENDER,
+    ),
   ).toBeInTheDocument();
   expect(screen.queryByRole('heading', { name: /Welcome back/ })).not.toBeInTheDocument();
   expect(api.login).toHaveBeenCalledWith({
@@ -330,7 +351,9 @@ test('logout then login as a different user shows no stale account data (#253)',
   await user.type(screen.getByLabelText('Password'), 'correct horse');
   await user.click(screen.getByRole('button', { name: 'Sign in' }));
 
-  expect(await screen.findByText('jane@bettertrack.test')).toBeInTheDocument();
+  expect(
+    await screen.findByText('jane@bettertrack.test', {}, SIGNED_IN_RENDER),
+  ).toBeInTheDocument();
 
   await user.click(screen.getByRole('button', { name: 'Account menu' }));
   await user.click(screen.getByRole('menuitem', { name: 'Logout' }));
@@ -349,7 +372,7 @@ test('logout then login as a different user shows no stale account data (#253)',
   await user.type(screen.getByLabelText('Password'), 'another correct horse');
   await user.click(screen.getByRole('button', { name: 'Sign in' }));
 
-  expect(await screen.findByText('bob@bettertrack.test')).toBeInTheDocument();
+  expect(await screen.findByText('bob@bettertrack.test', {}, SIGNED_IN_RENDER)).toBeInTheDocument();
   expect(screen.queryByText('jane@bettertrack.test')).not.toBeInTheDocument();
 });
 

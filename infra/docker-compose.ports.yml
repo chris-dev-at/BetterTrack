@@ -9,8 +9,15 @@ name: bettertrack
 # proxy routes each `listen` port to its origin, including the product/mobile
 # ports which reverse-proxy to the internal `landing` container (V3-P12 arc (c)).
 
+x-bounded-logging: &bounded-logging
+  driver: local
+  options:
+    max-size: '10m'
+    max-file: '3'
+
 services:
   web:
+    logging: *bounded-logging
     ports:
       - '${BT_PORT_WEB:-8080}:${BT_PORT_WEB:-8080}'
       - '${BT_PORT_ADMIN:-8081}:${BT_PORT_ADMIN:-8081}'

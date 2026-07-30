@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { FormEvent } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 
 import type { AdminStats, CreateUserResponse } from '@bettertrack/contracts';
 
@@ -31,12 +31,11 @@ function errorMessage(err: unknown): string {
 
 /**
  * Slimmed user list (PROJECTPLAN.md §6.12, §13.2): only the essential columns so
- * it fits a phone without horizontal scroll. A row opens the user detail view —
- * the home for every per-user action — while bulk select drives bulk actions.
+ * it remains usable on narrow screens. User details are opened through the
+ * primary identity link, while bulk select drives bulk actions.
  */
 export function UsersPage() {
   const t = useT();
-  const navigate = useNavigate();
   const [searchInput, setSearchInput] = useState('');
   const [search, setSearch] = useState('');
   const [dialog, setDialog] = useState<Dialog | null>(null);
@@ -159,8 +158,8 @@ export function UsersPage() {
           {search ? 'No users match your search.' : 'No users yet. Create the first one.'}
         </EmptyState>
       ) : (
-        <div className="overflow-hidden rounded-lg border border-neutral-800">
-          <table className="w-full text-left text-sm">
+        <div className="overflow-x-auto rounded-lg border border-neutral-800">
+          <table className="w-full min-w-[40rem] text-left text-sm">
             <thead className="bg-neutral-900 text-xs uppercase tracking-wide text-neutral-500">
               <tr>
                 <th className="w-10 px-3 py-3">
@@ -178,12 +177,8 @@ export function UsersPage() {
             </thead>
             <tbody className="divide-y divide-neutral-800">
               {rows.map((u) => (
-                <tr
-                  key={u.id}
-                  className="cursor-pointer hover:bg-neutral-900/50"
-                  onClick={() => navigate(`/admin/users/${u.id}`)}
-                >
-                  <td className="px-3 py-3" onClick={(e) => e.stopPropagation()}>
+                <tr key={u.id} className="hover:bg-neutral-900/50">
+                  <td className="px-3 py-3">
                     <input
                       type="checkbox"
                       aria-label={`Select ${u.username}`}
@@ -192,8 +187,13 @@ export function UsersPage() {
                     />
                   </td>
                   <td className="px-4 py-3">
-                    <div className="font-medium text-neutral-200">{u.email}</div>
-                    <div className="text-xs text-neutral-500">{u.username}</div>
+                    <Link
+                      to={`/admin/users/${u.id}`}
+                      className="block rounded-sm text-sky-400 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+                    >
+                      <span className="block font-medium">{u.email}</span>
+                      <span className="block text-xs text-neutral-500">{u.username}</span>
+                    </Link>
                   </td>
                   <td className="px-4 py-3">
                     <Badge tone={u.role === 'admin' ? 'sky' : 'neutral'}>{u.role}</Badge>

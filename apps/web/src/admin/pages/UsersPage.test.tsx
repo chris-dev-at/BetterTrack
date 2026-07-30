@@ -61,6 +61,22 @@ function renderPage(locale = 'en') {
   );
 }
 
+function renderPersistentPage(locale = 'en') {
+  return render(
+    <I18nProvider initialLocale={locale}>
+      <AuthProvider>
+        <MemoryRouter initialEntries={['/admin/users']}>
+          <UsersPage />
+          <Routes>
+            <Route path="/admin/users" element={null} />
+            <Route path="/admin/users/:userId" element={<div>User detail view</div>} />
+          </Routes>
+        </MemoryRouter>
+      </AuthProvider>
+    </I18nProvider>,
+  );
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(api.getMe).mockResolvedValue(admin);
@@ -84,12 +100,46 @@ test('renders the slimmed users table with essential columns and stats', async (
   expect(await screen.findByText('Pending invites')).toBeInTheDocument();
 });
 
-test('clicking a user row opens the user detail view', async () => {
+test('the user link is keyboard-operable without changing the selection', async () => {
+  const user = userEvent.setup();
+  renderPersistentPage();
+
+  const checkbox = await screen.findByLabelText('Select jane');
+  await user.click(checkbox);
+  expect(checkbox).toBeChecked();
+  expect(checkbox).toHaveFocus();
+
+  const link = screen.getByRole('link', { name: /jane@bettertrack\.test jane/ });
+  expect(link).toHaveAttribute('href', '/admin/users/user-1');
+
+  await user.tab();
+  expect(link).toHaveFocus();
+
+  await user.keyboard('{Enter}');
+  expect(await screen.findByText('User detail view')).toBeInTheDocument();
+  expect(checkbox).toBeChecked();
+  expect(screen.getByText('1 selected')).toBeInTheDocument();
+});
+
+test('clicking a user checkbox does not navigate', async () => {
   const user = userEvent.setup();
   renderPage();
 
-  await user.click(await screen.findByText('jane@bettertrack.test'));
-  expect(await screen.findByText('User detail view')).toBeInTheDocument();
+  const checkbox = await screen.findByLabelText('Select jane');
+  await user.click(checkbox);
+
+  expect(checkbox).toBeChecked();
+  expect(screen.queryByText('User detail view')).not.toBeInTheDocument();
+});
+
+test('the users table scrolls horizontally instead of clipping columns', async () => {
+  renderPage();
+
+  const table = await screen.findByRole('table');
+  // jsdom does not calculate CSS overflow, so these classes are the regression contract.
+  expect(table).toHaveClass('min-w-[40rem]');
+  expect(table.parentElement).toHaveClass('overflow-x-auto');
+  expect(table.parentElement).not.toHaveClass('overflow-hidden');
 });
 
 test('create-user flow shows the generated temp password exactly once', async () => {
