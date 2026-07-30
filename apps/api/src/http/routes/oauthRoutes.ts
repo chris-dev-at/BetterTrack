@@ -4,10 +4,12 @@ import {
   oauthApproveRequestSchema,
   oauthAuthorizationDetailsQuerySchema,
   oauthClientLogoParamsSchema,
+  oauthDenyRequestSchema,
   oauthTokenRequestSchema,
   type OAuthApproveRequest,
   type OAuthAuthorizationDetailsQuery,
   type OAuthClientLogoParams,
+  type OAuthDenyRequest,
   type OAuthTokenRequest,
 } from '@bettertrack/contracts';
 
@@ -88,6 +90,14 @@ export function createOAuthRouter(ctx: AppContext): Router {
   router.post('/authorize', validateBody(oauthApproveRequestSchema), async (req, res) => {
     const body = req.valid?.body as OAuthApproveRequest;
     const result = await ctx.oauth.approve({ userId: req.authUser!.id, body, ip: req.ip ?? null });
+    res.json(result);
+  });
+
+  // POST /oauth/deny — the user declined: validate the authorize request with
+  // the approval path's rules, then return only the registered callback target.
+  router.post('/deny', validateBody(oauthDenyRequestSchema), async (req, res) => {
+    const body = req.valid?.body as OAuthDenyRequest;
+    const result = await ctx.oauth.deny(body);
     res.json(result);
   });
 

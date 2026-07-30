@@ -437,6 +437,8 @@ const componentSchemas = {
   OAuthAuthorizationDetailsResponse: contracts.oauthAuthorizationDetailsResponseSchema,
   OAuthApproveRequest: contracts.oauthApproveRequestSchema,
   OAuthApproveResponse: contracts.oauthApproveResponseSchema,
+  OAuthDenyRequest: contracts.oauthDenyRequestSchema,
+  OAuthDenyResponse: contracts.oauthDenyResponseSchema,
   OAuthTokenRequest: contracts.oauthTokenRequestSchema,
   OAuthTokenResponse: contracts.oauthTokenResponseSchema,
 };
@@ -3806,6 +3808,16 @@ const endpoints: EndpointDef[] = [
     body: R.OAuthApproveRequest,
     status: 200,
     response: R.OAuthApproveResponse,
+  },
+  {
+    method: 'post',
+    path: '/oauth/deny',
+    tag: 'OAuth',
+    summary:
+      'Deny consent: validate the authorize request and return an access_denied redirect target.',
+    body: R.OAuthDenyRequest,
+    status: 200,
+    response: R.OAuthDenyResponse,
   },
   {
     method: 'post',

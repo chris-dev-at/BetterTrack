@@ -182,7 +182,8 @@
       "revokeHint": ". Du kannst diesen Zugriff jederzeit unter Einstellungen → API-Zugang widerrufen.",
       "authorizing": "Wird autorisiert…",
       "approve": "Zustimmen",
-      "approveError": "Die Autorisierung konnte nicht abgeschlossen werden. Bitte versuche es erneut."
+      "approveError": "Die Autorisierung konnte nicht abgeschlossen werden. Bitte versuche es erneut.",
+      "denyError": "Die sichere Rückkehr zur anfragenden App ist fehlgeschlagen. Es wurde kein Zugriff gewährt."
     },
     "google": {
       "button": "Weiter mit Google",
