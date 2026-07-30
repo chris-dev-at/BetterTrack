@@ -8,11 +8,13 @@ import type {
   MeResponse,
   OAuthApproveResponse,
   OAuthAuthorizationDetailsResponse,
+  OAuthDenyResponse,
 } from '@bettertrack/contracts';
 
 vi.mock('../../lib/oauthApi', () => ({
   getAuthorizationDetails: vi.fn(),
   approveAuthorization: vi.fn(),
+  denyAuthorization: vi.fn(),
   // The Settings page (loaded via UserApp) also imports these; stub them so the
   // module mock is complete even though this suite never exercises them.
   listOAuthClients: vi.fn(),
@@ -41,7 +43,11 @@ vi.mock('../../lib/runtimeConfig', async (importOriginal) => {
 });
 
 import { ApiError } from '../../lib/apiClient';
-import { approveAuthorization, getAuthorizationDetails } from '../../lib/oauthApi';
+import {
+  approveAuthorization,
+  denyAuthorization,
+  getAuthorizationDetails,
+} from '../../lib/oauthApi';
 import * as userApi from '../../lib/userApi';
 import { AuthProvider } from '../AuthContext';
 import { UserApp } from '../UserApp';
@@ -80,6 +86,10 @@ const DETAILS: OAuthAuthorizationDetailsResponse = {
 
 const APPROVED: OAuthApproveResponse = {
   redirectTo: 'https://app.example.com/cb?code=one-time-code&state=opaque-state-xyz',
+};
+
+const DENIED: OAuthDenyResponse = {
+  redirectTo: 'https://app.example.com/cb?error=access_denied&state=opaque-state-xyz',
 };
 
 const meUser: MeResponse = {
@@ -255,17 +265,46 @@ test('Use another account signs the current session out and lands on the login s
   expect(approveAuthorization).not.toHaveBeenCalled();
 });
 
-test('cancelling does not issue a code or navigate to the redirect URI', async () => {
+test('cancelling sends the full request and navigates only to the server denial redirect', async () => {
   vi.mocked(getAuthorizationDetails).mockResolvedValue(DETAILS);
+  vi.mocked(denyAuthorization).mockResolvedValue(DENIED);
   const user = userEvent.setup();
   renderConsent();
 
   await screen.findByText('Third-party app');
   await user.click(screen.getByRole('button', { name: 'Cancel' }));
 
-  expect(await screen.findByText('Authorization cancelled')).toBeInTheDocument();
+  await waitFor(() => expect(window.location.href).toBe(DENIED.redirectTo));
+  expect(denyAuthorization).toHaveBeenCalledWith(
+    expect.objectContaining({
+      client_id: 'btc_charting_buddy',
+      redirect_uri: 'https://app.example.com/cb',
+      scope: 'portfolio:read market:read',
+      state: 'opaque-state-xyz',
+      code_challenge: 'a-pkce-code-challenge',
+      code_challenge_method: 'S256',
+    }),
+  );
   expect(approveAuthorization).not.toHaveBeenCalled();
+});
+
+test('a rejected denial stays local and shows the no-access fallback', async () => {
+  vi.mocked(getAuthorizationDetails).mockResolvedValue(DETAILS);
+  vi.mocked(denyAuthorization).mockRejectedValue(
+    new ApiError(400, 'INVALID_REDIRECT_URI', 'bad redirect'),
+  );
+  const user = userEvent.setup();
+  renderConsent();
+
+  await screen.findByText('Third-party app');
+  await user.click(screen.getByRole('button', { name: 'Cancel' }));
+
+  expect(
+    await screen.findByText(/could not safely return to the requesting app/i),
+  ).toBeInTheDocument();
+  expect(screen.getByText('Authorization cancelled')).toBeInTheDocument();
   expect(window.location.href).toBe('http://localhost/');
+  expect(approveAuthorization).not.toHaveBeenCalled();
 });
 
 test('an invalid request (400 from the API) shows an error and never redirects', async () => {
