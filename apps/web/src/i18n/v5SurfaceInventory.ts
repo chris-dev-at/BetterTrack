@@ -52,9 +52,9 @@
  * root in EN and DE, and scans the listed TSX files for literal UI copy. State
  * outcomes are explicit: `unverified` records review evidence that has not yet
  * been checked against component code, `covered` is reserved for evidence that
- * the follow-up state gate verifies mechanically, `not-applicable` explains why
- * no async state exists, and `hidden-by-design` records a binding privacy or
- * capability decision rather than silently omitting a state.
+ * the accompanying state gate verifies mechanically, `not-applicable` explains
+ * why no async state exists, and `hidden-by-design` records a binding privacy
+ * or capability decision rather than silently omitting a state.
  */
 
 /** Directories under `apps/web/src` that hold user-facing TSX modules. */
@@ -1393,6 +1393,195 @@ export const NON_V5_ROUTES = [
     note: 'BacktestsPage lives in the inventoried user/workboard/WorkboardSection.tsx (P6).',
   },
 ] as const satisfies readonly V5RouteExemption[];
+
+/** Async read states that the inventory gate verifies at each hook call site. */
+export type V5AsyncReadState = 'loading' | 'error';
+
+/**
+ * A read may deliberately delegate or suppress one of its states, but that is
+ * a code-review decision rather than an inference the AST gate is allowed to
+ * make. Keep every such decision here, tied to one stable read-site name.
+ */
+export interface V5AsyncReadExemption {
+  component: string;
+  read: string;
+  states: readonly V5AsyncReadState[];
+  reason: string;
+  delegatedTo?: string;
+}
+
+export const V5_ASYNC_READ_EXEMPTIONS = [
+  {
+    component: 'user/forecast/ForecastPage.tsx',
+    read: 'usePortfolioPrefill.portfoliosQuery',
+    states: ['loading', 'error'],
+    reason:
+      'usePortfolioPrefill returns the portfolio-list flags and retry to ForecastPage, which renders both states.',
+    delegatedTo: 'ForecastPage',
+  },
+  {
+    component: 'user/forecast/ForecastPage.tsx',
+    read: 'usePortfolioPrefill.portfolioQuery',
+    states: ['loading', 'error'],
+    reason:
+      'usePortfolioPrefill folds the detail flags into its returned prefill flags and retry rendered by ForecastPage.',
+    delegatedTo: 'ForecastPage',
+  },
+  {
+    component: 'user/forecast/ForecastPage.tsx',
+    read: 'usePortfolioPrefill.analyticsQuery',
+    states: ['loading', 'error'],
+    reason:
+      'usePortfolioPrefill selects this normal-mode read as modeQuery and returns its flags to ForecastPage.',
+    delegatedTo: 'ForecastPage',
+  },
+  {
+    component: 'user/forecast/ForecastPage.tsx',
+    read: 'usePortfolioPrefill.historyQuery',
+    states: ['loading', 'error'],
+    reason:
+      'usePortfolioPrefill selects this paranoid-mode read as modeQuery and returns its flags to ForecastPage.',
+    delegatedTo: 'ForecastPage',
+  },
+] as const satisfies readonly V5AsyncReadExemption[];
+
+/**
+ * Frozen V5 async-state debt. The AST gate prints the concrete line-numbered
+ * form of every row, rejects any new row, and rejects stale rows after a fix so
+ * this list must shrink alongside #739 remediation.
+ */
+export interface V5AsyncStateDebt {
+  component: string;
+  read: string;
+  states: readonly V5AsyncReadState[];
+}
+
+export type V5AsyncStateDebtLedger = Readonly<
+  Record<string, Readonly<Record<string, readonly V5AsyncReadState[]>>>
+>;
+
+/** Ratchet this downward whenever #739 removes a read site or missing state. */
+export const V5_ASYNC_STATE_DEBT_CEILING = { readSites: 63, stateGaps: 110 } as const;
+
+export const V5_ASYNC_STATE_DEBT = {
+  'admin/pages/UsersPage.tsx': {
+    'UsersPage.stats': ['loading', 'error'],
+  },
+  'user/assets/AssetDetailPage.tsx': {
+    'AssetDetailPage.historyQuery': ['error'],
+    'AssetDetailPage.quoteQuery': ['loading', 'error'],
+    'DividendsSection.data': ['loading', 'error'],
+    'EarningsSection.data': ['loading', 'error'],
+    'NewsSection.data': ['loading', 'error'],
+    'SplitsSection.data': ['loading', 'error'],
+    'WatchlistIconButton.listsQuery': ['error'],
+  },
+  'user/components/AssetSearchBox.tsx': {
+    'AssetSearchBox.conglomeratesQuery': ['error'],
+    'AssetSearchBox.portfoliosQuery': ['loading', 'error'],
+    'AssetSearchBox.workboardQuery': ['loading', 'error'],
+    'WatchlistControl.listsQuery': ['error'],
+  },
+  'user/components/TransactionDialog.tsx': {
+    'TransactionDialog.taxSettingsQuery': ['loading', 'error'],
+  },
+  'user/control/panels/AccountPanel.tsx': {
+    'BaseCurrencyRow.query': ['error'],
+    'ExportRow.status': ['loading', 'error'],
+  },
+  'user/control/panels/NotificationsPanel.tsx': {
+    'DiscordRows.query': ['loading', 'error'],
+    'DiscordSetup.query': ['loading', 'error'],
+    'TelegramRows.query': ['loading', 'error'],
+    'TelegramSetup.query': ['loading', 'error'],
+  },
+  'user/forecast/ProjectionSection.tsx': {
+    'ProjectionSection.analyticsQuery': ['loading', 'error'],
+    'ProjectionSection.dividendQuery': ['loading', 'error'],
+    'ProjectionSection.historyQuery': ['loading', 'error'],
+    'ProjectionSection.ordersQuery': ['loading', 'error'],
+    'ProjectionSection.portfolioQuery': ['loading', 'error'],
+  },
+  'user/home/HomePage.tsx': {
+    'HomeBoard.portfoliosQuery': ['error'],
+  },
+  'user/portfolio/cashflow/CashBudgetsPage.tsx': {
+    'CashBudgetsPage.tagsQuery': ['loading', 'error'],
+  },
+  'user/portfolio/cashflow/CashMovementsPage.tsx': {
+    'CashMovementsPage.tagsQuery': ['loading', 'error'],
+  },
+  'user/portfolio/cashflow/CashOverviewPage.tsx': {
+    'CashOverviewPage.movementsQuery': ['loading', 'error'],
+    'CashOverviewPage.sourcesQuery': ['loading', 'error'],
+  },
+  'user/portfolio/cashflow/RecordCashDialog.tsx': {
+    'RecordCashDialog.previewQuery': ['loading', 'error'],
+    'RecordCashDialog.sourcesQuery': ['loading', 'error'],
+    'RecordCashDialog.tagsQuery': ['loading', 'error'],
+  },
+  'user/portfolio/CashSourcesPage.tsx': {
+    'CashSourcesPage.cashQuery': ['loading', 'error'],
+  },
+  'user/portfolio/ImportPage.tsx': {
+    'ImportPage.brokersQuery': ['loading', 'error'],
+    'ImportPage.cashSourcesQuery': ['loading', 'error'],
+    'ImportPage.portfoliosQuery': ['loading', 'error'],
+  },
+  'user/portfolio/MirrorchainPanel.tsx': {
+    'InviteDialog.friendsQuery': ['error'],
+    'MemberSheet.activityQuery': ['loading', 'error'],
+    'useMirrorInvites.$return': ['loading', 'error'],
+  },
+  'user/portfolio/PortfolioPage.tsx': {
+    'DividendIntelSection.calendar': ['loading', 'error'],
+    'DividendIntelSection.projection': ['loading', 'error'],
+    'PortfolioPage.cashSourcesQuery': ['loading', 'error'],
+    'PortfolioPage.historyQuery': ['error'],
+    'PortfolioPage.transactionsQuery': ['loading', 'error'],
+    'RecategorizeBanner.statusQuery': ['loading', 'error'],
+  },
+  'user/portfolio/PortfolioSettingsPage.tsx': {
+    'PortfolioSettingsPage.archivedQuery': ['error'],
+  },
+  'user/portfolio/PortfolioSwitcher.tsx': {
+    'PortfolioSwitcher.activeQuery': ['loading', 'error'],
+  },
+  'user/portfolio/TaxReportPrintPage.tsx': {
+    'TaxReportPrintPage.portfoliosQuery': ['loading', 'error'],
+  },
+  'user/social/chatSurface.tsx': {
+    'ChipShareShortcut.audienceQuery': ['loading', 'error'],
+    'NewChatDialog.data': ['error'],
+    'SharePickerDialog.conglomeratesQuery': ['error'],
+    'SharePickerDialog.ideasQuery': ['error'],
+    'SharePickerDialog.portfoliosQuery': ['error'],
+  },
+  'user/social/FriendGroupsSection.tsx': {
+    'GroupCard.friendsQuery': ['loading', 'error'],
+  },
+  'user/social/MySharedItemsPage.tsx': {
+    'AlertSharingControl.data': ['loading', 'error'],
+  },
+  'user/vault/ui/VaultUnlockGate.tsx': {
+    'StuckFold.twoFactor': ['loading', 'error'],
+  },
+  'user/workboard/BudgetCalculator.tsx': {
+    'BudgetCalculator.portfoliosQuery': ['loading', 'error'],
+  },
+  'user/workboard/ConglomerateDetailPage.tsx': {
+    'ConglomerateDetailPage.resolvedQuery': ['loading'],
+  },
+  'user/workboard/IdeasListPage.tsx': {
+    'IdeasListPage.mySharedQuery': ['loading', 'error'],
+  },
+  'user/workboard/WorkboardPage.tsx': {
+    'UpcomingEarningsZone.data': ['loading', 'error'],
+    'WatchlistRow.quoteQuery': ['error'],
+    'WatchlistRow.sparklineQuery': ['error'],
+    'WatchlistSharingToggle.data': ['loading', 'error'],
+  },
+} as const satisfies V5AsyncStateDebtLedger;
 
 /**
  * Frozen literal-copy debt, by file. These pre-V5 admin pages were never

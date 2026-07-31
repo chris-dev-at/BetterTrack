@@ -27,7 +27,13 @@ import {
   NON_V5_ROUTES,
   NON_V5_SURFACES,
   SURFACE_UNIVERSE_ROOTS,
+  V5_ASYNC_READ_EXEMPTIONS,
+  V5_ASYNC_STATE_DEBT,
+  V5_ASYNC_STATE_DEBT_CEILING,
   V5_SURFACE_INVENTORY,
+  type V5AsyncReadExemption,
+  type V5AsyncReadState,
+  type V5AsyncStateDebt,
 } from './v5SurfaceInventory';
 import { matchControlPanel } from '../user/control/ControlCenterOverlay';
 
@@ -338,6 +344,482 @@ function parseTsx(relativePath: string, sourceText?: string): ts.SourceFile {
   );
 }
 
+const ASYNC_READ_HOOKS = new Set([
+  'useInfiniteQuery',
+  'usePortfoliosQuery',
+  'useQuery',
+  'useResource',
+]);
+
+const ASYNC_STATE_PROPERTIES: Record<V5AsyncReadState, ReadonlySet<string>> = {
+  loading: new Set([
+    'isFetching',
+    'isInitialLoading',
+    'isLoading',
+    'isPending',
+    'isRefetching',
+    'loading',
+  ]),
+  error: new Set(['error', 'isError', 'isLoadingError', 'isRefetchError']),
+};
+
+const ASYNC_READ_STATES = ['loading', 'error'] as const satisfies readonly V5AsyncReadState[];
+
+interface AsyncReadSite {
+  component: string;
+  hook: string;
+  line: number;
+  read: string;
+  observed: ReadonlySet<V5AsyncReadState>;
+}
+
+interface AsyncReadOffender extends Omit<AsyncReadSite, 'observed'> {
+  states: readonly V5AsyncReadState[];
+}
+
+interface AsyncReadGateResult {
+  reads: readonly AsyncReadSite[];
+  offenders: readonly AsyncReadOffender[];
+  invalidExemptions: readonly string[];
+  staleExemptions: readonly string[];
+}
+
+interface ReadBinding {
+  label: string;
+  resultName?: string;
+  directProperties: readonly {
+    property: string;
+    localName: string | null;
+    localStart: number;
+  }[];
+}
+
+interface RawAsyncRead {
+  component: string;
+  hook: string;
+  line: number;
+  readBase: string;
+  binding: ReadBinding;
+  scope: ts.Node;
+}
+
+function asyncHookName(node: ts.CallExpression): string | null {
+  if (!ts.isIdentifier(node.expression)) return null;
+  return ASYNC_READ_HOOKS.has(node.expression.text) ? node.expression.text : null;
+}
+
+function isFunctionScope(node: ts.Node): node is ts.FunctionLikeDeclaration {
+  return (
+    ts.isArrowFunction(node) ||
+    ts.isFunctionDeclaration(node) ||
+    ts.isFunctionExpression(node) ||
+    ts.isGetAccessorDeclaration(node) ||
+    ts.isMethodDeclaration(node) ||
+    ts.isSetAccessorDeclaration(node)
+  );
+}
+
+function functionScopeName(node: ts.FunctionLikeDeclaration, sourceFile: ts.SourceFile): string {
+  if (ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node)) {
+    if (node.name) return node.name.getText(sourceFile);
+  }
+  if (
+    ts.isGetAccessorDeclaration(node) ||
+    ts.isMethodDeclaration(node) ||
+    ts.isSetAccessorDeclaration(node)
+  ) {
+    return node.name.getText(sourceFile);
+  }
+  const parent = node.parent;
+  if (ts.isVariableDeclaration(parent) && ts.isIdentifier(parent.name)) {
+    return parent.name.text;
+  }
+  if (ts.isPropertyAssignment(parent)) return parent.name.getText(sourceFile);
+  return '<anonymous>';
+}
+
+function readScope(node: ts.Node, sourceFile: ts.SourceFile): { name: string; node: ts.Node } {
+  for (let current = node.parent; current; current = current.parent) {
+    if (isFunctionScope(current)) {
+      return { name: functionScopeName(current, sourceFile), node: current };
+    }
+  }
+  return { name: '<module>', node: sourceFile };
+}
+
+function unwrapParentExpression(expression: ts.Expression): ts.Expression {
+  let current = expression;
+  while (
+    (ts.isAsExpression(current.parent) ||
+      ts.isNonNullExpression(current.parent) ||
+      ts.isParenthesizedExpression(current.parent) ||
+      ts.isSatisfiesExpression(current.parent)) &&
+    current.parent.expression === current
+  ) {
+    current = current.parent;
+  }
+  return current;
+}
+
+function readBinding(call: ts.CallExpression, sourceFile: ts.SourceFile): ReadBinding {
+  const expression = unwrapParentExpression(call);
+  const parent = expression.parent;
+  if (ts.isVariableDeclaration(parent) && parent.initializer === expression) {
+    if (ts.isIdentifier(parent.name)) {
+      return { label: parent.name.text, resultName: parent.name.text, directProperties: [] };
+    }
+    if (ts.isObjectBindingPattern(parent.name)) {
+      const properties = parent.name.elements.map((element) => ({
+        property: (element.propertyName ?? element.name).getText(sourceFile),
+        localName: ts.isIdentifier(element.name) ? element.name.text : null,
+        localStart: element.name.getStart(sourceFile),
+      }));
+      const dataBinding = parent.name.elements.find(
+        (element) => (element.propertyName ?? element.name).getText(sourceFile) === 'data',
+      );
+      const label = dataBinding?.name.getText(sourceFile) ?? '$destructured';
+      return { label, directProperties: properties };
+    }
+  }
+  if (ts.isReturnStatement(parent) && parent.expression === expression) {
+    return { label: '$return', directProperties: [] };
+  }
+  return { label: '$call', directProperties: [] };
+}
+
+function stateForProperty(property: string): V5AsyncReadState | null {
+  for (const state of ASYNC_READ_STATES) {
+    if (ASYNC_STATE_PROPERTIES[state].has(property)) return state;
+  }
+  return null;
+}
+
+function isIdentifierUse(node: ts.Identifier): boolean {
+  const parent = node.parent;
+  if (ts.isPropertyAccessExpression(parent) && parent.name === node) return false;
+  if (ts.isBindingElement(parent) && parent.propertyName === node) return false;
+  if (
+    (ts.isPropertyAssignment(parent) || ts.isPropertyDeclaration(parent)) &&
+    parent.name === node
+  ) {
+    return false;
+  }
+  return true;
+}
+
+function containsJsx(node: ts.Node | undefined): boolean {
+  if (!node) return false;
+  let found = false;
+  const visit = (child: ts.Node): void => {
+    if (found) return;
+    if (ts.isJsxElement(child) || ts.isJsxFragment(child) || ts.isJsxSelfClosingElement(child)) {
+      found = true;
+      return;
+    }
+    ts.forEachChild(child, visit);
+  };
+  visit(node);
+  return found;
+}
+
+function stateReferenceIsRendered(
+  node: ts.Node,
+  scope: ts.Node,
+  seenBindings: Set<string>,
+): boolean {
+  let current = node;
+  while (current !== scope && current.parent) {
+    const parent = current.parent;
+    if (ts.isJsxExpression(parent)) return true;
+    if (ts.isIfStatement(parent) && parent.expression === current) {
+      return containsJsx(parent.thenStatement) || containsJsx(parent.elseStatement);
+    }
+    if (
+      (ts.isBinaryExpression(parent) || ts.isConditionalExpression(parent)) &&
+      containsJsx(parent)
+    ) {
+      return true;
+    }
+    if (ts.isReturnStatement(parent)) return containsJsx(parent.expression);
+    if (ts.isVariableDeclaration(parent) && parent.initializer === current) {
+      if (!ts.isIdentifier(parent.name)) return false;
+      const key = `${parent.name.text}\0${parent.name.getStart()}`;
+      if (seenBindings.has(key)) return false;
+      seenBindings.add(key);
+      return bindingIsRendered(scope, parent.name.text, parent.name.getStart(), seenBindings);
+    }
+    if (isFunctionScope(parent) && parent !== scope) return false;
+    current = parent;
+  }
+  return false;
+}
+
+function bindingIsRendered(
+  scope: ts.Node,
+  localName: string | null,
+  localStart: number,
+  seenBindings = new Set<string>(),
+): boolean {
+  if (localName === null) return false;
+  let rendered = false;
+  const visit = (node: ts.Node): void => {
+    if (rendered) return;
+    if (
+      ts.isIdentifier(node) &&
+      node.text === localName &&
+      node.getStart() !== localStart &&
+      isIdentifierUse(node) &&
+      stateReferenceIsRendered(node, scope, seenBindings)
+    ) {
+      rendered = true;
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(scope);
+  return rendered;
+}
+
+function propertyStateObservations(raw: RawAsyncRead): ReadonlySet<V5AsyncReadState> {
+  const observed = new Set<V5AsyncReadState>();
+  for (const property of raw.binding.directProperties) {
+    const state = stateForProperty(property.property);
+    if (state && bindingIsRendered(raw.scope, property.localName, property.localStart)) {
+      observed.add(state);
+    }
+  }
+  if (!raw.binding.resultName) return observed;
+
+  const resultName = raw.binding.resultName;
+  const recordProperty = (property: string, reference: ts.Node) => {
+    const state = stateForProperty(property);
+    if (state && stateReferenceIsRendered(reference, raw.scope, new Set())) observed.add(state);
+  };
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isPropertyAccessExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      node.expression.text === resultName
+    ) {
+      recordProperty(node.name.text, node);
+    }
+    if (
+      ts.isElementAccessExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      node.expression.text === resultName &&
+      node.argumentExpression &&
+      ts.isStringLiteral(node.argumentExpression)
+    ) {
+      recordProperty(node.argumentExpression.text, node);
+    }
+    if (
+      ts.isVariableDeclaration(node) &&
+      node.initializer &&
+      ts.isIdentifier(node.initializer) &&
+      node.initializer.text === resultName &&
+      ts.isObjectBindingPattern(node.name)
+    ) {
+      for (const element of node.name.elements) {
+        if (
+          bindingIsRendered(
+            raw.scope,
+            ts.isIdentifier(element.name) ? element.name.text : null,
+            element.name.getStart(),
+          )
+        ) {
+          const state = stateForProperty((element.propertyName ?? element.name).getText());
+          if (state) observed.add(state);
+        }
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(raw.scope);
+  return observed;
+}
+
+function rawAsyncReads(relativePath: string, sourceText?: string): RawAsyncRead[] {
+  const sourceFile = parseTsx(relativePath, sourceText);
+  const reads: RawAsyncRead[] = [];
+  const visit = (node: ts.Node): void => {
+    if (ts.isCallExpression(node)) {
+      const hook = asyncHookName(node);
+      if (hook) {
+        const scope = readScope(node, sourceFile);
+        const binding = readBinding(node, sourceFile);
+        reads.push({
+          component: relativePath,
+          hook,
+          line: sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1,
+          readBase: `${scope.name}.${binding.label}`,
+          binding,
+          scope: scope.node,
+        });
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return reads;
+}
+
+function nameAsyncReads(rawReads: readonly RawAsyncRead[]): AsyncReadSite[] {
+  const totals = new Map<string, number>();
+  for (const read of rawReads) totals.set(read.readBase, (totals.get(read.readBase) ?? 0) + 1);
+  const occurrences = new Map<string, number>();
+  return rawReads.map((raw) => {
+    const occurrence = (occurrences.get(raw.readBase) ?? 0) + 1;
+    occurrences.set(raw.readBase, occurrence);
+    return {
+      component: raw.component,
+      hook: raw.hook,
+      line: raw.line,
+      read: totals.get(raw.readBase) === 1 ? raw.readBase : `${raw.readBase}#${occurrence}`,
+      observed: propertyStateObservations(raw),
+    };
+  });
+}
+
+function analyzeAsyncReadStates(
+  components: readonly string[],
+  exemptions: readonly V5AsyncReadExemption[],
+  sourceTextByComponent: Readonly<Record<string, string>> = {},
+): AsyncReadGateResult {
+  const reads = components.flatMap((component) =>
+    nameAsyncReads(rawAsyncReads(component, sourceTextByComponent[component])),
+  );
+  const invalidExemptions: string[] = [];
+  const exemptionKeys = new Set<string>();
+  for (const exemption of exemptions) {
+    const prefix = `${exemption.component} ${exemption.read}`;
+    if (exemption.component.trim().length === 0 || exemption.read.trim().length === 0) {
+      invalidExemptions.push(`${prefix}: component and read are required`);
+    }
+    if (exemption.states.length === 0) {
+      invalidExemptions.push(`${prefix}: at least one state is required`);
+    }
+    if (exemption.reason.trim().length === 0) {
+      invalidExemptions.push(`${prefix}: exemption reason is empty`);
+    }
+    if (exemption.delegatedTo !== undefined && exemption.delegatedTo.trim().length === 0) {
+      invalidExemptions.push(`${prefix}: delegatedTo is empty`);
+    }
+    for (const state of exemption.states) {
+      const key = `${exemption.component}\0${exemption.read}\0${state}`;
+      if (exemptionKeys.has(key)) invalidExemptions.push(`${prefix}: duplicate ${state} exemption`);
+      exemptionKeys.add(key);
+    }
+  }
+
+  const validExemptionKeys = new Set(
+    exemptions
+      .filter(
+        (exemption) =>
+          exemption.component.trim().length > 0 &&
+          exemption.read.trim().length > 0 &&
+          exemption.states.length > 0 &&
+          exemption.reason.trim().length > 0 &&
+          (exemption.delegatedTo === undefined || exemption.delegatedTo.trim().length > 0),
+      )
+      .flatMap((exemption) =>
+        exemption.states.map((state) => `${exemption.component}\0${exemption.read}\0${state}`),
+      ),
+  );
+  const rawMissingKeys = new Set<string>();
+  const offenders: AsyncReadOffender[] = [];
+  for (const read of reads) {
+    const missing = ASYNC_READ_STATES.filter((state) => !read.observed.has(state));
+    for (const state of missing) rawMissingKeys.add(`${read.component}\0${read.read}\0${state}`);
+    const unexempted = missing.filter(
+      (state) => !validExemptionKeys.has(`${read.component}\0${read.read}\0${state}`),
+    );
+    if (unexempted.length > 0) {
+      offenders.push({
+        component: read.component,
+        hook: read.hook,
+        line: read.line,
+        read: read.read,
+        states: unexempted,
+      });
+    }
+  }
+
+  const staleExemptions = [...validExemptionKeys]
+    .filter((key) => !rawMissingKeys.has(key))
+    .map((key) => {
+      const [component, read, state] = key.split('\0');
+      return `${component} ${read}: stale ${state} exemption`;
+    })
+    .sort();
+  return {
+    reads,
+    offenders,
+    invalidExemptions: invalidExemptions.sort(),
+    staleExemptions,
+  };
+}
+
+function debtRows(offenders: readonly AsyncReadOffender[]): V5AsyncStateDebt[] {
+  return offenders
+    .map(({ component, read, states }) => ({ component, read, states }))
+    .sort((left, right) =>
+      `${left.component}\0${left.read}`.localeCompare(`${right.component}\0${right.read}`),
+    );
+}
+
+function formatAsyncReadOffenders(offenders: readonly AsyncReadOffender[]): string {
+  if (offenders.length === 0) return '(none)';
+  return [...offenders]
+    .sort((left, right) =>
+      `${left.component}\0${left.read}`.localeCompare(`${right.component}\0${right.read}`),
+    )
+    .map(
+      (offender) =>
+        `${offender.component}:${offender.line} ${offender.read} (${offender.hook}) missing ${offender.states.join(' + ')}`,
+    )
+    .join('\n');
+}
+
+function hasEmptyStateSignal(relativePath: string): boolean {
+  const sourceFile = parseTsx(relativePath);
+  let found = false;
+  const isLength = (node: ts.Node) =>
+    ts.isPropertyAccessExpression(node) && node.name.text === 'length';
+  const isZero = (node: ts.Node) => ts.isNumericLiteral(node) && Number(node.text) === 0;
+  const visit = (node: ts.Node): void => {
+    if (found) return;
+    if (ts.isJsxOpeningLikeElement(node) && /(?:Empty|NoData)$/.test(node.tagName.getText())) {
+      found = true;
+      return;
+    }
+    if (
+      ts.isCallExpression(node) &&
+      node.arguments[0] &&
+      ts.isStringLiteral(node.arguments[0]) &&
+      /(?:^|\.)(?:empty|noData|noItems|noResults|none)(?:\.|$)/i.test(node.arguments[0].text)
+    ) {
+      found = true;
+      return;
+    }
+    if (
+      ts.isBinaryExpression(node) &&
+      ((isLength(node.left) && isZero(node.right)) || (isZero(node.left) && isLength(node.right)))
+    ) {
+      found = true;
+      return;
+    }
+    if (ts.isPrefixUnaryExpression(node) && node.operator === ts.SyntaxKind.ExclamationToken) {
+      if (isLength(node.operand)) {
+        found = true;
+        return;
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return found;
+}
+
 const USER_FACING_ATTRIBUTES = new Set([
   'alt',
   'aria-label',
@@ -540,6 +1022,89 @@ function registeredRoutes(relativePath: string, base: string): RegisteredRoute[]
   return routes;
 }
 
+describe('V5 async-read state gate', () => {
+  const fixturePath = 'synthetic-async-state-probe.tsx';
+
+  test('accepts a read whose loading and error states are observed', () => {
+    const result = analyzeAsyncReadStates([fixturePath], [], {
+      [fixturePath]: `
+          function Probe() {
+            const query = useQuery({ queryKey: ['probe'], queryFn: loadProbe });
+            if (query.isPending) return <Spinner />;
+            if (query.isError) return <Retry onClick={() => query.refetch()} />;
+            return <p>{query.data}</p>;
+          }
+        `,
+    });
+
+    expect(result.reads).toHaveLength(1);
+    expect(result.offenders).toEqual([]);
+  });
+
+  test('reports an unobserved read with its component and read site', () => {
+    const result = analyzeAsyncReadStates([fixturePath], [], {
+      [fixturePath]: `
+          function Probe() {
+            const query = useQuery({ queryKey: ['probe'], queryFn: loadProbe });
+            return <p>{query.data}</p>;
+          }
+        `,
+    });
+
+    expect(result.offenders).toMatchObject([
+      {
+        component: fixturePath,
+        hook: 'useQuery',
+        read: 'Probe.query',
+        states: ['loading', 'error'],
+      },
+    ]);
+    expect(formatAsyncReadOffenders(result.offenders)).toContain(
+      `${fixturePath}:3 Probe.query (useQuery) missing loading + error`,
+    );
+
+    const unusedDestructure = analyzeAsyncReadStates([fixturePath], [], {
+      [fixturePath]: `
+          function Probe() {
+            const { data, isLoading, isError } = useQuery({ queryKey: ['probe'], queryFn: loadProbe });
+            return <p>{data}</p>;
+          }
+        `,
+    });
+    expect(unusedDestructure.offenders[0]).toMatchObject({
+      read: 'Probe.data',
+      states: ['loading', 'error'],
+    });
+  });
+
+  test('accepts a per-read exemption only when it records a reason', () => {
+    const source = `
+      function Probe() {
+        const query = useQuery({ queryKey: ['probe'], queryFn: loadProbe });
+        return <p>{query.data}</p>;
+      }
+    `;
+    const reasoned: V5AsyncReadExemption = {
+      component: fixturePath,
+      read: 'Probe.query',
+      states: ['loading', 'error'],
+      reason: 'The named parent owns both states for this read.',
+      delegatedTo: 'ProbeParent',
+    };
+    const exempted = analyzeAsyncReadStates([fixturePath], [reasoned], { [fixturePath]: source });
+    expect(exempted.invalidExemptions).toEqual([]);
+    expect(exempted.offenders).toEqual([]);
+
+    const unreasoned = analyzeAsyncReadStates([fixturePath], [{ ...reasoned, reason: '' }], {
+      [fixturePath]: source,
+    });
+    expect(unreasoned.invalidExemptions).toEqual([
+      `${fixturePath} Probe.query: exemption reason is empty`,
+    ]);
+    expect(unreasoned.offenders).toHaveLength(1);
+  });
+});
+
 describe('V5-P14 surface traceability inventory', () => {
   test('the literal-copy gate sees JSX expression and template literals, but not catalog keys', () => {
     const findings = literalCopy(
@@ -682,10 +1247,99 @@ describe('V5-P14 surface traceability inventory', () => {
           `${surface.id}: ${state}`,
         ).toContain(review.status);
         expect(review.evidence, `${surface.id}: ${state} evidence`).not.toHaveLength(0);
+      }
+    }
+  });
+
+  test('verifies async-state claims against component code and freezes the existing debt', () => {
+    const components = V5_SURFACE_INVENTORY.flatMap((surface) => surface.components);
+    const result = analyzeAsyncReadStates(components, V5_ASYNC_READ_EXEMPTIONS);
+    const report = formatAsyncReadOffenders(result.offenders);
+
+    console.info(
+      `V5 async-state debt (${result.offenders.length} of ${result.reads.length} read sites):\n${report}`,
+    );
+
+    expect(
+      result.reads.length,
+      'The async-hook walk unexpectedly found too few reads; update the established wrapper list rather than silently shrinking the gate.',
+    ).toBeGreaterThan(100);
+
+    expect(
+      result.invalidExemptions,
+      `Invalid V5 async-read exemptions:\n${result.invalidExemptions.join('\n')}`,
+    ).toEqual([]);
+    expect(
+      result.staleExemptions,
+      `Async-read exemptions whose state is now observed or whose read disappeared; remove them:\n${result.staleExemptions.join('\n')}`,
+    ).toEqual([]);
+
+    const actualDebt = debtRows(result.offenders);
+    const expectedDebt = Object.entries(V5_ASYNC_STATE_DEBT)
+      .flatMap(([component, reads]) =>
+        Object.entries(reads).map(([read, states]) => ({ component, read, states })),
+      )
+      .sort((left, right) =>
+        `${left.component}\0${left.read}`.localeCompare(`${right.component}\0${right.read}`),
+      );
+    expect(
+      {
+        readSites: expectedDebt.length,
+        stateGaps: expectedDebt.reduce((total, row) => total + row.states.length, 0),
+      },
+      'The V5 async-state debt ceiling is a downward-only ratchet. Lower it with remediation; never raise it for a new offender.',
+    ).toEqual(V5_ASYNC_STATE_DEBT_CEILING);
+    expect(
+      actualDebt,
+      `V5 async-state debt changed. New offenders are forbidden; remove fixed rows from V5_ASYNC_STATE_DEBT so the ledger only shrinks.\n\nFull current offender list:\n${report}`,
+    ).toEqual(expectedDebt);
+
+    const projectionReads = result.reads.filter(
+      (read) => read.component === 'user/forecast/ProjectionSection.tsx',
+    );
+    const projectionErrors = result.offenders.filter(
+      (offender) =>
+        offender.component === 'user/forecast/ProjectionSection.tsx' &&
+        offender.states.includes('error'),
+    );
+    expect(projectionReads, 'ProjectionSection async reads').toHaveLength(5);
+    expect(
+      projectionErrors,
+      `ProjectionSection must remain visible in the worklist until all five read errors are handled.\n${report}`,
+    ).toHaveLength(5);
+
+    for (const surface of V5_SURFACE_INVENTORY) {
+      const surfaceComponents = new Set<string>(surface.components);
+      const surfaceReads = result.reads.filter((read) => surfaceComponents.has(read.component));
+      for (const state of ASYNC_READ_STATES) {
+        if ((surface.states[state].status as string) !== 'covered') continue;
         expect(
-          review.status,
-          `${surface.id}: ${state} cannot claim covered until #1025 verifies the evidence against component code`,
-        ).not.toBe('covered');
+          surfaceReads.length,
+          `${surface.id}: ${state} cannot claim covered without a statically located async read`,
+        ).toBeGreaterThan(0);
+        const uncovered = result.offenders.filter(
+          (offender) =>
+            surfaceComponents.has(offender.component) && offender.states.includes(state),
+        );
+        expect(
+          uncovered,
+          `${surface.id}: ${state} claims covered, but these reads do not observe it:\n${formatAsyncReadOffenders(uncovered)}`,
+        ).toEqual([]);
+      }
+
+      if ((surface.states.empty.status as string) === 'covered') {
+        const asyncComponents = [...new Set(surfaceReads.map((read) => read.component))];
+        expect(
+          asyncComponents.length,
+          `${surface.id}: empty cannot claim covered without a statically located async read`,
+        ).toBeGreaterThan(0);
+        const withoutEmptySignal = asyncComponents.filter(
+          (component) => !hasEmptyStateSignal(component),
+        );
+        expect(
+          withoutEmptySignal,
+          `${surface.id}: empty claims covered, but these async components have no AST-visible empty branch:\n${withoutEmptySignal.join('\n')}`,
+        ).toEqual([]);
       }
     }
   });
