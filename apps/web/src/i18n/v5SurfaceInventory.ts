@@ -50,16 +50,17 @@
  * A surface is listed once, even when it serves more than one V5 phase. The
  * accompanying test locks the component and route sets, verifies every catalog
  * root in EN and DE, and scans the listed TSX files for literal UI copy. State
- * outcomes are explicit: `covered` points to the implementation/test evidence,
- * `not-applicable` explains why no async state exists, and `hidden-by-design`
- * records a binding privacy/capability decision rather than silently omitting a
- * state.
+ * outcomes are explicit: `unverified` records review evidence that has not yet
+ * been checked against component code, `covered` is reserved for evidence that
+ * the follow-up state gate verifies mechanically, `not-applicable` explains why
+ * no async state exists, and `hidden-by-design` records a binding privacy or
+ * capability decision rather than silently omitting a state.
  */
 
 /** Directories under `apps/web/src` that hold user-facing TSX modules. */
 export const SURFACE_UNIVERSE_ROOTS = ['user', 'admin', 'ui'] as const;
 
-export type V5ReviewStatus = 'covered' | 'not-applicable' | 'hidden-by-design';
+export type V5ReviewStatus = 'covered' | 'unverified' | 'not-applicable' | 'hidden-by-design';
 
 export interface V5StateReview {
   status: V5ReviewStatus;
@@ -86,7 +87,7 @@ const notAsync = (evidence: string): V5StateReview => ({
   evidence,
 });
 
-const covered = (evidence: string): V5StateReview => ({ status: 'covered', evidence });
+const unverified = (evidence: string): V5StateReview => ({ status: 'unverified', evidence });
 
 const hidden = (evidence: string): V5StateReview => ({
   status: 'hidden-by-design',
@@ -103,11 +104,11 @@ export const V5_SURFACE_INVENTORY = [
     copyReview:
       'LoginPage/RegisterPage plus mirrored switch boxes; EN behavior retained, DE informal.',
     states: {
-      loading: covered(
+      loading: unverified(
         'Google/session submit progress in LoginPage.test.tsx and RegisterPage.test.tsx.',
       ),
       empty: notAsync('Credential forms have no collection-backed empty result.'),
-      error: covered(
+      error: unverified(
         'Recoverable auth/Google failures remain inline and actionable in both page tests.',
       ),
     },
@@ -126,11 +127,11 @@ export const V5_SURFACE_INVENTORY = [
     copyRoots: ['admin.accountDefaults', 'profile.icon'],
     copyReview: 'Kill-switch columns and curated icon picker/rendering reviewed in both catalogs.',
     states: {
-      loading: covered('Account defaults spinner; icon set is synchronous and bundled.'),
+      loading: unverified('Account defaults spinner; icon set is synchronous and bundled.'),
       empty: notAsync(
         'The defaults record is a required singleton; finite icons are always bundled.',
       ),
-      error: covered(
+      error: unverified(
         'Account defaults exposes a localized retry; profile mutation errors stay inline.',
       ),
     },
@@ -161,9 +162,9 @@ export const V5_SURFACE_INVENTORY = [
     copyRoots: ['ui.scopePicker', 'settings.api', 'auth.oauthConsent', 'admin.oauthApps'],
     copyReview: 'Module rows, info points, consent copy, and first-party editor reviewed.',
     states: {
-      loading: covered('Every collection/consent read renders Skeleton or Spinner.'),
-      empty: covered('Keys, apps, grants, and first-party apps have compact empty rows/cards.'),
-      error: covered(
+      loading: unverified('Every collection/consent read renders Skeleton or Spinner.'),
+      empty: unverified('Keys, apps, grants, and first-party apps have compact empty rows/cards.'),
+      error: unverified(
         'All collection failures expose localized retry; consent preserves deny/back recovery.',
       ),
     },
@@ -205,13 +206,13 @@ export const V5_SURFACE_INVENTORY = [
     copyReview:
       'Moved Google identity, broker-import source tags, source filters, and capability tags reviewed.',
     states: {
-      loading: covered(
+      loading: unverified(
         'Connection, sign-in, import, and cash-source reads render progress states.',
       ),
-      empty: covered(
+      empty: unverified(
         'Passkeys, import previews, and cash sources distinguish genuine empty outcomes.',
       ),
-      error: covered('Identity, import, and cash-source failures expose localized recovery.'),
+      error: unverified('Identity, import, and cash-source failures expose localized recovery.'),
     },
     tests: [
       'user/control/panels/ConnectionsPanel.test.tsx',
@@ -249,13 +250,13 @@ export const V5_SURFACE_INVENTORY = [
     copyReview:
       'Intraday/live labels, prior-close label, dense-chart states, and failover status reviewed.',
     states: {
-      loading: covered(
+      loading: unverified(
         'Portfolio, analytics, asset, watchlist, and health reads all render skeleton/spinner states.',
       ),
-      empty: covered(
+      empty: unverified(
         'No-portfolio analytics offers creation; holdings/chart/watchlist/provider absence uses compact shared empty states or neutral rows.',
       ),
-      error: covered(
+      error: unverified(
         'Portfolio and analytics reads retry without conflating a successful empty portfolio list with failure.',
       ),
     },
@@ -280,13 +281,13 @@ export const V5_SURFACE_INVENTORY = [
     copyReview:
       'Console chrome every V5 admin surface is reached through: the section nav entries added by P0 (Account defaults), P2 (Problems, Monitoring, Usage analytics, Feature flags), P10 (API keys), P12 (AI) and P13c (Security), plus the console title, language switch, and burger-drawer labels.',
     states: {
-      loading: covered(
+      loading: unverified(
         'AdminLayout renders the localized admin.nav.loading spinner until the session resolves.',
       ),
       empty: notAsync(
         'Navigation is a fixed section list and the route table is static; neither is a collection that can come back empty.',
       ),
-      error: covered(
+      error: unverified(
         'AdminApp traps session-unavailable above routing with a localized retry; an anonymous session redirects to the admin login.',
       ),
     },
@@ -310,11 +311,11 @@ export const V5_SURFACE_INVENTORY = [
     copyRoots: ['admin.monitoring', 'admin.problems', 'admin.usageAnalytics', 'admin.featureFlags'],
     copyReview: 'Zero-setup monitoring, Problems, analytics, and kill-switch copy reviewed.',
     states: {
-      loading: covered('Each admin resource renders Spinner while no prior payload exists.'),
-      empty: covered(
+      loading: unverified('Each admin resource renders Spinner while no prior payload exists.'),
+      empty: unverified(
         'Problems and analytics have explicit no-data states; fixed flag rows are not collection-empty.',
       ),
-      error: covered('Refresh controls remain visible and failed initial reads expose retry.'),
+      error: unverified('Refresh controls remain visible and failed initial reads expose retry.'),
     },
     tests: [
       'admin/pages/MonitoringPage.test.tsx',
@@ -335,9 +336,11 @@ export const V5_SURFACE_INVENTORY = [
     copyRoots: ['settings.notifications'],
     copyReview: 'Digest cadence, quiet hours, channels, bell, and log copy reviewed.',
     states: {
-      loading: covered('Panel and bell use Skeleton; paged log retains its loading row.'),
-      empty: covered('Bell/log and per-channel setup use compact empty/disabled states.'),
-      error: covered('Settings load failure now includes retry; bell/log retain refresh recovery.'),
+      loading: unverified('Panel and bell use Skeleton; paged log retains its loading row.'),
+      empty: unverified('Bell/log and per-channel setup use compact empty/disabled states.'),
+      error: unverified(
+        'Settings load failure now includes retry; bell/log retain refresh recovery.',
+      ),
     },
     tests: [
       'user/control/panels/NotificationsPanel.test.tsx',
@@ -359,11 +362,13 @@ export const V5_SURFACE_INVENTORY = [
     copyRoots: ['settings.taxes', 'portfolio.taxReport', 'vaultExports.tax'],
     copyReview: 'AT/DE/custom modes, exports, print view, and disclaimer terminology reviewed.',
     states: {
-      loading: covered(
+      loading: unverified(
         'Default, report-year, detail, and print reads expose Skeleton/loading copy.',
       ),
-      empty: covered('No mode, no taxable events, and no year data are explicit compact states.'),
-      error: covered('Default/report reads expose retry; print has browser refresh recovery.'),
+      empty: unverified(
+        'No mode, no taxable events, and no year data are explicit compact states.',
+      ),
+      error: unverified('Default/report reads expose retry; print has browser refresh recovery.'),
     },
     tests: [
       'user/control/panels/DefaultsPanel.test.tsx',
@@ -388,8 +393,10 @@ export const V5_SURFACE_INVENTORY = [
     ],
     copyReview: 'Dividend, earnings, split, per-asset news, and digest wording reviewed.',
     states: {
-      loading: covered('Digest renders skeletons; embedded blocks avoid layout churn.'),
-      empty: covered('Digest has a shared empty state; configured feeds can render no headlines.'),
+      loading: unverified('Digest renders skeletons; embedded blocks avoid layout churn.'),
+      empty: unverified(
+        'Digest has a shared empty state; configured feeds can render no headlines.',
+      ),
       error: hidden(
         'Optional per-asset provider blocks are invisible when unconfigured by binding P5 spec; digest failure remains retryable.',
       ),
@@ -428,13 +435,13 @@ export const V5_SURFACE_INVENTORY = [
     copyReview:
       'N-way comparison and nested Blueprint copy reviewed; malformed German singulars corrected.',
     states: {
-      loading: covered(
+      loading: unverified(
         'Blueprint lists, nested picks, and comparison execution use loading frames.',
       ),
-      empty: covered(
+      empty: unverified(
         'Insufficient selections, no Blueprints/ideas, and no positions are explicit.',
       ),
-      error: covered(
+      error: unverified(
         'Blueprint-list, nested-list, comparison-execution, and idea-resolution outages are distinct and retry in place; confirmed missing references stay terminal.',
       ),
     },
@@ -462,11 +469,13 @@ export const V5_SURFACE_INVENTORY = [
     copyReview:
       'Projection factors, order schedules, and all calculator labels reviewed in informal DE.',
     states: {
-      loading: covered(
+      loading: unverified(
         'Forecast prefill reads show compact progress while standalone calculators remain usable.',
       ),
-      empty: covered('No portfolio, no orders, and no calculator positions have compact guidance.'),
-      error: covered(
+      empty: unverified(
+        'No portfolio, no orders, and no calculator positions have compact guidance.',
+      ),
+      error: unverified(
         'Portfolio-list failure gates dependent sections; detail/analytics/history prefill failures retry without hiding projections, orders, or standalone calculators.',
       ),
     },
@@ -489,11 +498,11 @@ export const V5_SURFACE_INVENTORY = [
     copyReview:
       'Owner/manager/member, invite, fork, transfer, and sync activity language reviewed.',
     states: {
-      loading: covered('Member/activity/dialog reads render localized loading rows.'),
-      empty: covered(
+      loading: unverified('Member/activity/dialog reads render localized loading rows.'),
+      empty: unverified(
         'No members/activity/invites use compact rows without exposing hidden identities.',
       ),
-      error: covered(
+      error: unverified(
         'Member/activity failures retain close/reopen recovery; mutations remain retryable in place.',
       ),
     },
@@ -536,11 +545,11 @@ export const V5_SURFACE_INVENTORY = [
     copyReview:
       'Groups, audience ladder, threads/reactions, shared titles, and chat copy reviewed.',
     states: {
-      loading: covered(
+      loading: unverified(
         'Audience, MIRRORCHAIN metadata, lists, profiles, shared pages, chat, and comments expose loading states.',
       ),
-      empty: covered('Every collection has a contextual EmptyState or compact no-comments row.'),
-      error: covered(
+      empty: unverified('Every collection has a contextual EmptyState or compact no-comments row.'),
+      error: unverified(
         'Fresh audience/co-member metadata gates sharing; chat and shared-item outages retry, while confirmed 401/403/404 outcomes remain privacy-indistinguishable.',
       ),
     },
@@ -581,11 +590,11 @@ export const V5_SURFACE_INVENTORY = [
     copyRoots: ['expenses', 'cashflow'],
     copyReview: 'Dashboard, bank import, rules, categories, budgets, and dialogs reviewed.',
     states: {
-      loading: covered('All six routed reads render Skeletons; dialogs expose pending labels.'),
-      empty: covered(
+      loading: unverified('All six routed reads render Skeletons; dialogs expose pending labels.'),
+      empty: unverified(
         'All expense collections and zero-trend results have compact EmptyState guidance.',
       ),
-      error: covered(
+      error: unverified(
         'P14 focused regressions cover dashboard, transaction, budget, category, and rule retries.',
       ),
     },
@@ -607,9 +616,9 @@ export const V5_SURFACE_INVENTORY = [
     copyReview:
       'Webhook signing/delivery and key-tier/audit copy reviewed; admin page fully extracted.',
     states: {
-      loading: covered('Webhook/key/tier/audit collections render Skeleton or Spinner.'),
-      empty: covered('No subscriptions, keys, tiers, or audit rows are explicit.'),
-      error: covered('Each collection now exposes its own localized retry action.'),
+      loading: unverified('Webhook/key/tier/audit collections render Skeleton or Spinner.'),
+      empty: unverified('No subscriptions, keys, tiers, or audit rows are explicit.'),
+      error: unverified('Each collection now exposes its own localized retry action.'),
     },
     tests: ['user/control/panels/WebhooksPanel.test.tsx', 'admin/pages/ApiKeysPage.test.tsx'],
   },
@@ -626,11 +635,13 @@ export const V5_SURFACE_INVENTORY = [
     copyReview:
       'Local-only framing, informational disclaimer, cap, and reviewed-draft wording reviewed.',
     states: {
-      loading: covered('Admin load and both explicit user-triggered requests expose pending copy.'),
+      loading: unverified(
+        'Admin load and both explicit user-triggered requests expose pending copy.',
+      ),
       empty: hidden(
         'Unconfigured AI is invisible to users by binding P12 spec; admin shows Not configured.',
       ),
-      error: covered(
+      error: unverified(
         'Admin retries load; insight/builder errors keep their explicit re-run actions.',
       ),
     },
@@ -675,13 +686,13 @@ export const V5_SURFACE_INVENTORY = [
     copyReview:
       'Shared V5 shell, command/search entry points, cash editors, and portfolio-store boundary reviewed.',
     states: {
-      loading: covered(
+      loading: unverified(
         'Session, search, home, portfolio-store, wizard, and editor reads use their compact progress states.',
       ),
-      empty: covered(
+      empty: unverified(
         'Search, home board, parked routes, and value editors provide contextual empty guidance.',
       ),
-      error: covered(
+      error: unverified(
         'Session and data reads retain retry/reload actions; dialog mutations remain editable and retryable.',
       ),
     },
@@ -712,13 +723,13 @@ export const V5_SURFACE_INVENTORY = [
     copyReview:
       'Discreet masking (including allocation charts), custody, media, enable/unlock/sync, loss, and recovery copy reviewed.',
     states: {
-      loading: covered(
+      loading: unverified(
         'Account-mode, enable, unlock, and sync transitions expose Splash/progress/status.',
       ),
       empty: hidden(
         'Killed social/server features stay absent in paranoid mode; this is a privacy boundary, not an empty collection.',
       ),
-      error: covered(
+      error: unverified(
         'Mode bootstrap and vault operations provide retry, unlock, start-fresh, or disable recovery.',
       ),
     },
@@ -753,11 +764,13 @@ export const V5_SURFACE_INVENTORY = [
     copyReview:
       'Phone-safe admin login/traps, registration settings, and user management reviewed in both catalogs; responsive behavior remains covered by the P13b admin-mobile gate.',
     states: {
-      loading: covered('Session, settings, user, token, request, and 2FA progress stays explicit.'),
-      empty: covered(
+      loading: unverified(
+        'Session, settings, user, token, request, and 2FA progress stays explicit.',
+      ),
+      empty: unverified(
         'User search, registration tokens, and approval requests distinguish empty results.',
       ),
-      error: covered(
+      error: unverified(
         'Session and resource reads expose localized retry; form and mutation failures remain inline.',
       ),
     },
@@ -776,11 +789,11 @@ export const V5_SURFACE_INVENTORY = [
     copyRoots: ['admin.security'],
     copyReview: 'Independent 6–24 h admin-session policy and no-step-up wording reviewed.',
     states: {
-      loading: covered('2FA and session-policy resources render localized Spinner states.'),
+      loading: unverified('2FA and session-policy resources render localized Spinner states.'),
       empty: notAsync(
         'Policy is a required singleton; 2FA method absence is an actionable setup state.',
       ),
-      error: covered('Both resource failures expose retry; save validation remains inline.'),
+      error: unverified('Both resource failures expose retry; save validation remains inline.'),
     },
     tests: ['admin/pages/SecuritySettingsPage.test.tsx'],
   },

@@ -670,10 +670,14 @@ describe('V5-P14 surface traceability inventory', () => {
 
       for (const [state, review] of Object.entries(surface.states)) {
         expect(
-          ['covered', 'not-applicable', 'hidden-by-design'],
+          ['covered', 'unverified', 'not-applicable', 'hidden-by-design'],
           `${surface.id}: ${state}`,
         ).toContain(review.status);
         expect(review.evidence, `${surface.id}: ${state} evidence`).not.toHaveLength(0);
+        expect(
+          review.status,
+          `${surface.id}: ${state} cannot claim covered until #1025 verifies the evidence against component code`,
+        ).not.toBe('covered');
       }
     }
   });
