@@ -2652,16 +2652,23 @@
 }
 
 /* ── Cash account cards ────────────────────────────────────────────────────
-   Name, then balance, then a two-half action footer that IS the card's bottom
-   edge (owner, 2026-07-31, fourth pass). The footer carries no inset and no
-   radius of its own: `overflow: hidden` on the card clips the two halves into
-   its own bottom corners, so + and − run corner to corner with nothing
-   between them and the edge. Cards are narrow — the stack only needs to be as
-   wide as a balance — so a row still fits several across. */
+   Name, then balance, then + and − AS THE BOTTOM BORDER (owner, 2026-08-01,
+   fifth pass).
+
+   The fourth pass gave the actions a 34px footer over a hairline rule, and the
+   owner read that — correctly — as two chunky buttons bolted under a card. So
+   the card now has NO bottom border at all: `border-bottom: 0`, and the tinted
+   20px band closes the shape instead. It is the same thickness a border would
+   be if a border could be pressed, which is the whole idea — the affordance is
+   the edge, not an object sitting on it.
+
+   Everything else tightens with it: a card carrying two facts has no business
+   being 95px tall. Name and balance sit on 7px of padding, and the grid packs
+   to 148px, so a normal set of accounts reads as one compact strip. */
 .bt-acctgrid {
   display: grid;
-  gap: 8px;
-  grid-template-columns: repeat(auto-fill, minmax(176px, 1fr));
+  gap: 7px;
+  grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));
 }
 
 .bt-acctcard {
@@ -2669,14 +2676,16 @@
   flex-direction: column;
   overflow: hidden;
   border: 1px solid var(--bt-border);
-  border-radius: 10px;
+  /* The action band is the bottom edge — see the note above. */
+  border-bottom: 0;
+  border-radius: 9px;
   background: var(--bt-surface);
 }
 
 .bt-acctcard__name {
-  padding: 9px 11px 0;
+  padding: 7px 9px 0;
   color: var(--bt-text-soft);
-  font-size: 12px;
+  font-size: 11.5px;
   font-weight: 570;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -2684,12 +2693,12 @@
 }
 
 .bt-acctcard__value {
-  /* `margin-bottom: auto` pins the footer down when cards in a row differ in
-     height, so every footer in the row lines up. */
+  /* `margin-bottom: auto` pins the band down when cards in a row differ in
+     height, so every band in the row lines up. */
   margin-bottom: auto;
-  padding: 1px 11px 9px;
+  padding: 0 9px 6px;
   color: var(--bt-text);
-  font-size: 17px;
+  font-size: 15.5px;
   font-weight: 650;
   letter-spacing: -0.01em;
   white-space: nowrap;
@@ -2698,14 +2707,14 @@
 .bt-acctcard__actions {
   display: grid;
   grid-template-columns: 1fr 1fr;
-  border-top: 1px solid var(--bt-border);
 }
 
 .bt-acctcard__action {
   display: flex;
   align-items: center;
   justify-content: center;
-  min-height: 34px;
+  /* A border's worth of height, not a button's. */
+  min-height: 20px;
   border: 0;
   border-radius: 0;
   background: none;
@@ -2714,13 +2723,15 @@
 }
 
 .bt-acctcard__action svg {
-  width: 16px;
-  height: 16px;
+  width: 12px;
+  height: 12px;
 }
 
-/* The only line inside the footer: the seam between the two halves. */
+/* The seam between the two halves is the card's own background showing
+   through, so the band reads as one edge split in two rather than as two
+   things placed side by side. */
 .bt-acctcard__action--in {
-  border-right: 1px solid var(--bt-border);
+  border-right: 1px solid var(--bt-surface);
   background: var(--bt-pos-soft);
   color: var(--bt-pos);
 }
@@ -2742,6 +2753,8 @@
    and the link fills it so the whole card is the target. */
 .bt-acctcard--manage {
   border-style: dashed;
+  /* No action band, so this one closes with an ordinary border. */
+  border-bottom: 1px dashed var(--bt-border);
   background: none;
 }
 
@@ -2751,8 +2764,8 @@
   align-items: center;
   justify-content: center;
   gap: 7px;
-  min-height: 76px;
-  padding: 10px;
+  min-height: 58px;
+  padding: 8px;
   color: var(--bt-text-soft);
   font-size: 12.5px;
   font-weight: 570;
@@ -2925,91 +2938,6 @@
   background: color-mix(in srgb, var(--bt-neg) 22%, transparent);
 }
 
-/* ── Cash account cards ─────────────────────────────────────────────────────
-   Replaces a row of tag-shaped pills. A pill says "label"; these hold a
-   balance and two actions, so they are cards.
-
-   The actions are a FULL-BLEED FOOTER: flush to the card's left, right and
-   bottom edges, splitting the width in half, separated from the balance by the
-   card's own hairline. Insetting them left a moat of dead padding on three
-   sides and made two buttons float inside a box instead of finishing it. The
-   card carries no bottom padding for the same reason. */
-.bt-acctgrid {
-  display: grid;
-  gap: 10px;
-  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-}
-
-.bt-acctcard {
-  display: flex;
-  flex-direction: column;
-  border: 1px solid var(--bt-border);
-  border-radius: 10px;
-  background: var(--bt-surface);
-  overflow: hidden;
-}
-
-.bt-acctcard__body {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  padding: 11px 13px 12px;
-}
-
-.bt-acctcard__name {
-  color: var(--bt-text-soft);
-  font-size: 12px;
-  font-weight: 570;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.bt-acctcard__value {
-  color: var(--bt-text);
-  font-size: 18px;
-  font-weight: 650;
-}
-
-.bt-acctcard__actions {
-  display: flex;
-  border-top: 1px solid var(--bt-border);
-}
-
-.bt-acctcard__action {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: 1;
-  min-height: 32px;
-  border: 0;
-  background: none;
-  color: var(--bt-text-soft);
-  cursor: pointer;
-  transition:
-    background var(--bt-t-fast),
-    color var(--bt-t-fast);
-}
-
-.bt-acctcard__action svg {
-  width: 15px;
-  height: 15px;
-}
-
-.bt-acctcard__action--in {
-  border-right: 1px solid var(--bt-border);
-}
-
-.bt-acctcard__action--in:hover {
-  background: var(--bt-pos-soft);
-  color: var(--bt-pos);
-}
-
-.bt-acctcard__action--out:hover {
-  background: var(--bt-neg-soft);
-  color: var(--bt-neg);
-}
-
 /* ── Month picker ───────────────────────────────────────────────────────────
    Arrows plus the month's NAME. Replaces `<input type="month">`, which renders
    as a locale-dependent numeric field and made "go back one month" an edit
@@ -3113,79 +3041,6 @@
 
 .bt-recordpair__half--out:hover {
   background: color-mix(in srgb, var(--bt-neg) 22%, transparent);
-}
-
-/* ── Cash account cards ─────────────────────────────────────────────────────
-   Replaces a row of tag-shaped pills. A pill says "label"; these hold a
-   balance and two actions, so they are cards — and the actions are ON them
-   because "spend from savings" was three presses away otherwise. */
-.bt-acctgrid {
-  display: grid;
-  gap: 10px;
-  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
-}
-
-.bt-acctcard {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 12px 14px;
-  border: 1px solid var(--bt-border);
-  border-radius: 10px;
-  background: var(--bt-surface);
-}
-
-.bt-acctcard__name {
-  color: var(--bt-text-soft);
-  font-size: 12px;
-  font-weight: 570;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.bt-acctcard__value {
-  color: var(--bt-text);
-  font-size: 18px;
-  font-weight: 650;
-}
-
-.bt-acctcard__actions {
-  display: flex;
-  gap: 6px;
-}
-
-.bt-acctcard__action {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: 1;
-  min-height: 26px;
-  border: 1px solid var(--bt-border);
-  border-radius: 6px;
-  background: transparent;
-  color: var(--bt-text-soft);
-  font: inherit;
-  font-size: 15px;
-  font-weight: 700;
-  line-height: 1;
-  cursor: pointer;
-  transition:
-    background var(--bt-t-fast),
-    color var(--bt-t-fast),
-    border-color var(--bt-t-fast);
-}
-
-.bt-acctcard__action--neg:hover {
-  background: var(--bt-neg-soft);
-  border-color: color-mix(in srgb, var(--bt-neg) 40%, transparent);
-  color: var(--bt-neg);
-}
-
-.bt-acctcard__action--pos:hover {
-  background: var(--bt-pos-soft);
-  border-color: color-mix(in srgb, var(--bt-pos) 40%, transparent);
-  color: var(--bt-pos);
 }
 
 /* ── Cashflow chart ─────────────────────────────────────────────────────────

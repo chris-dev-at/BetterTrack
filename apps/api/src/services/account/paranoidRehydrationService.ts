@@ -1673,13 +1673,16 @@ function forkOpMovementKind(
   }
 }
 
-/** The chain-scoped source a cash op targets for one of its leg identities. */
+/**
+ * The chain-scoped source a cash op targets for one of its leg identities.
+ *
+ * See `forkOpExecutedAt`: `cash.fee` never reached this switch either, so a fee
+ * booked into a non-Main source resolved to Main and failed the proof.
+ */
 function forkOpSourceMirrorId(payload: MirrorOpPayload, mirrorId: string): string | null {
   switch (payload.kind) {
     case 'cash.deposit':
     case 'cash.withdraw':
-    // See `forkOpExecutedAt`: `cash.fee` never reached this switch either, so a
-    // fee booked into a non-Main source resolved to Main and failed the proof.
     case 'cash.fee':
     case 'cash.update':
     case 'cash.setBalance':
@@ -1712,17 +1715,19 @@ function forkOpCounterpartSourceMirrorId(
  * writer runs before storage, so calling it here compares the persisted row with
  * the value the op could actually have produced — not a re-derivation of it.
  */
-/** The instant an external cash op books on every copy. */
+/**
+ * The instant an external cash op books on every copy.
+ *
+ * `cash.fee` was added to the op set (§16 2026-07-30) without reaching this
+ * switch or `forkOpSignedAmountEur` / `forkOpSourceMirrorId`, so a fork holding
+ * a replicated fee failed its own provenance proof with "has no external cash
+ * amount" — the fee's amount and date were unreadable here even though its
+ * payload carries both. Found while adding `cash.update` (§16 2026-07-31).
+ */
 function forkOpExecutedAt(payload: MirrorOpPayload): string | null {
   switch (payload.kind) {
     case 'cash.deposit':
     case 'cash.withdraw':
-    // `cash.fee` was added to the op set (§16 2026-07-30) without reaching this
-    // switch or `forkOpSignedAmountEur`/`forkOpSourceMirrorId` below, so a fork
-    // holding a replicated fee failed its own provenance proof with "has no
-    // external cash amount" — the fee's amount and date were unreadable here
-    // even though its payload carries both. Found while adding cash.update
-    // (§16 2026-07-31).
     case 'cash.fee':
     case 'cash.update':
     case 'cash.setBalance':
