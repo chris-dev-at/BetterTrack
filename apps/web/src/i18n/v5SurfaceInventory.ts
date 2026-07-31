@@ -1492,6 +1492,107 @@ export const V5_ASYNC_READ_EXEMPTIONS = [
 ] as const satisfies readonly V5AsyncReadExemption[];
 
 /**
+ * The declared boundary of the async-read analysis.
+ *
+ * Issue #1025 scopes this gate to reads made through "`useQuery` / `useResource`
+ * and the established wrappers". Inventoried surfaces also load asynchronously
+ * without any of those — an effect that awaits a promise into `useState`, or a
+ * `useSyncExternalStore` subscription. Analysing those is deliberately NOT built
+ * here (remediation belongs to parent #739), but leaving them unlisted is how a
+ * scope limit turns into a silent gap. So the gate enumerates them off the same
+ * code, requires each one to appear below with a written note, prints them
+ * beside the offender list, and fails on any site that is new or gone.
+ *
+ * These rows carry no claim about the state UI at each site. They record what
+ * the analysis does not look at, and why that is a spec limit rather than an
+ * oversight.
+ */
+export interface V5NonHookAsyncSite {
+  component: string;
+  /** `<scope>.<mechanism>`, numbered when a scope has several. */
+  site: string;
+  note: string;
+}
+
+export const V5_NON_HOOK_ASYNC_BOUNDARY = [
+  {
+    component: 'admin/pages/LoginPage.tsx',
+    site: 'LoginPage.useEffect',
+    note: 'Fetches the API build marker for the footer; a failure is swallowed by design.',
+  },
+  {
+    component: 'user/AuthContext.tsx',
+    site: 'AuthProvider.useEffect',
+    note: 'Session bootstrap with its own retry/outage state machine, not a rendered read.',
+  },
+  {
+    component: 'user/auth/LoginPage.tsx',
+    site: 'LoginPage.useEffect',
+    note: 'Probes registration mode and Google availability to decide which controls exist.',
+  },
+  {
+    component: 'user/auth/RegisterPage.tsx',
+    site: 'RegisterPage.useEffect#1',
+    note: 'Registration info behind the page’s own pending/error phase union.',
+  },
+  {
+    component: 'user/auth/RegisterPage.tsx',
+    site: 'RegisterPage.useEffect#2',
+    note: 'Resolves the pending Google ticket on a ?google=connected landing.',
+  },
+  {
+    component: 'user/components/TransactionDialog.tsx',
+    site: 'TransactionDialog.useEffect#1',
+    note: 'Daily closes for the linked asset, driving price/date auto-fill.',
+  },
+  {
+    component: 'user/components/TransactionDialog.tsx',
+    site: 'TransactionDialog.useEffect#2',
+    note: 'Debounced cash preview for the linked cash row.',
+  },
+  {
+    component: 'user/control/panels/ConnectionsPanel.tsx',
+    site: 'useDriveAuthorization.useSyncExternalStore',
+    note: 'Drive authorization snapshot from the vault connection controller.',
+  },
+  {
+    component: 'user/control/panels/NotificationsPanel.tsx',
+    site: 'WebPushRow.useEffect',
+    note: 'Reads the browser web-push permission/subscription state on mount.',
+  },
+  {
+    component: 'user/portfolio/CashDialog.tsx',
+    site: 'CashDialog.useEffect',
+    note: 'Debounced cash preview against the active store.',
+  },
+  {
+    component: 'user/portfolio/TaxReportPage.tsx',
+    site: 'ParanoidTaxReport.useEffect',
+    note: 'Paranoid-mode portfolio list from the local vault store, with its own status union.',
+  },
+  {
+    component: 'user/portfolio/TaxReportPage.tsx',
+    site: 'ParanoidYearTable.useEffect',
+    note: 'Client-side tax derivation, with its own pending/error/ready status union.',
+  },
+  {
+    component: 'user/portfolio/cashflow/RecordCashDialog.tsx',
+    site: 'RecordCashDialog.useEffect',
+    note: 'Debounced auto-tag rule preview; a failed preview is a courtesy, never surfaced.',
+  },
+  {
+    component: 'user/social/chatSurface.tsx',
+    site: 'ChatThreadPane.useEffect',
+    note: 'Marks the open thread read — a write, with no rendered state of its own.',
+  },
+  {
+    component: 'user/workboard/ConglomerateBuilderPage.tsx',
+    site: 'Builder.useEffect',
+    note: 'Debounced autosave; its saving/error states belong to the builder, not to a read.',
+  },
+] as const satisfies readonly V5NonHookAsyncSite[];
+
+/**
  * Frozen V5 async-state debt. The AST gate prints the concrete line-numbered
  * form of every row, rejects any new row, and rejects stale rows after a fix so
  * this list must shrink alongside #739 remediation.
