@@ -132,17 +132,14 @@ test('happy path: invite through friend sharing', async ({ browser }) => {
   const switcherPopover = owner.getByRole('group', { name: 'Portfolios' });
   await switcher.click();
   // The switcher's single create entry point is the add-portfolio wizard:
-  // name → icon → book → done, one gold primary per step.
+  // name, icon and who keeps the book on ONE panel, one press (2026-07-31).
   await switcherPopover.getByRole('button', { name: 'Add portfolio' }).click();
   const wizard = owner.getByRole('dialog', { name: 'Add portfolio' });
   await wizard.getByLabel('Portfolio name').fill('Growth');
-  await wizard.getByRole('button', { name: 'Continue' }).click();
   await wizard.getByRole('radio', { name: 'Savings' }).click();
-  await wizard.getByRole('button', { name: 'Continue' }).click();
   await wizard.getByRole('radio', { name: /Just me/ }).click();
-  await wizard.getByRole('button', { name: 'Continue' }).click();
-  // Created: the summary reads it back, and the primary activates it.
-  await wizard.getByRole('button', { name: 'Open portfolio' }).click();
+  await wizard.getByRole('button', { name: 'Create portfolio' }).click();
+  // Created: the wizard hands the portfolio to the switcher and gets out.
   await expect(wizard).toBeHidden();
   await expect(switcher).toContainText('Growth');
   // The icon picked in the wizard is the one the trigger now carries.

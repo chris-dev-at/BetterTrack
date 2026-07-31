@@ -15,26 +15,26 @@ import type { PortfolioDraft, PortfolioWizardStepReport } from './types';
  * The add-portfolio wizard (PROJECTPLAN.md §6.8) — the single "Add portfolio"
  * entry point in the switcher footer.
  *
- * A popup-scale dialog holding one question at a time: a slim dot stepper, the
- * question, that step's own control, and exactly one gold primary. Steps live in
- * `stepMeta.ts` + `steps.ts` and know nothing about the API; this frame owns the
- * chrome, the draft and every write.
+ * ── ONE SCREEN (owner, 2026-07-31) ──
  *
- * WHERE CREATION HAPPENS. Nothing exists server-side until Continue is pressed
- * on the **book** step — the first moment all three answers are in and, on the
- * shared branch, the moment we learn the wizard must not create a plain
- * portfolio at all (the MIRRORCHAIN flow creates its own). That makes Escape
- * safe on every earlier step: there is nothing to undo.
+ * It used to be four: name, icon, who keeps the book, and a read-back of what
+ * was made. Four presses of Continue for three questions, two of which have a
+ * perfectly good default and none of which depends on an earlier answer — so
+ * they are one panel now, and making a portfolio is one press. The dot stepper
+ * comes back automatically if a genuinely dependent question is ever added:
+ * this frame reads `steps` and renders the stepper whenever there is more than
+ * one, so the collapse cost the architecture nothing.
+ *
+ * WHERE CREATION HAPPENS. Nothing exists server-side until the primary is
+ * pressed, so Escape is always safe — there is nothing to undo. On the shared
+ * branch the wizard creates nothing at all: it hands off to the MIRRORCHAIN
+ * create-chain → invite-a-friend flow, which creates its own group portfolio,
+ * so nobody ends up with an orphan plain portfolio beside the group one.
  *
  * CREATION HAPPENS ONCE, and the guard is a ref rather than the mutation's
  * `isPending`: pending only becomes true on the next render, so a double-click
  * or a held Enter would otherwise fire a second POST inside the same tick. The
- * ref is released only when the create *failed*, which is also why the terminal
- * step has no Back — once the portfolio exists, changing it is a deliberate trip
- * to its settings tab, exactly as the rest of this surface treats it.
- *
- * The shared branch hands off to the existing create-chain → invite-a-friend
- * dialogs, unchanged, through `onSharedBook` — see `PortfolioSwitcher`.
+ * ref is released only when the create *failed*.
  */
 export function PortfolioWizard({
   allowShared = true,
@@ -69,9 +69,9 @@ export function PortfolioWizard({
   /** Synchronous once-only latch for the POST — see the note above. */
   const creatingRef = useRef(false);
 
-  const steps = allowShared
-    ? PORTFOLIO_WIZARD_STEPS
-    : PORTFOLIO_WIZARD_STEPS.filter((entry) => entry.id !== 'book');
+  // `allowShared` no longer removes a step — the book choice is a section
+  // inside the one panel, so the step itself decides whether to render it.
+  const steps = PORTFOLIO_WIZARD_STEPS;
   const step = steps[index];
   const total = steps.length;
 
@@ -96,13 +96,14 @@ export function PortfolioWizard({
       setError(null);
       setCreated(portfolio);
       // The portfolio EXISTS now, so every list of portfolios is stale from this
-      // moment — not from whenever the user happens to finish the wizard. It used
-      // to be refreshed only by `onCreated`, which fires solely on the terminal
-      // step's Continue: closing the wizard any other way left the switcher
-      // showing a list without the portfolio you had just made, until a manual
-      // reload (owner, 2026-07-31).
+      // moment. This used to be refreshed only by `onCreated` on a terminal
+      // step's Continue, so closing the wizard any other way left the switcher
+      // showing a list without the portfolio you had just made (owner,
+      // 2026-07-31). With no terminal step left, the wizard's job is done here:
+      // hand the portfolio over and get out of the way.
       void queryClient.invalidateQueries({ queryKey: ['portfolios'] });
-      goTo(index + 1);
+      onCreated(portfolio);
+      onClose();
     },
     onError: (err) => {
       // Nothing was created, so let the next attempt through.
@@ -134,31 +135,23 @@ export function PortfolioWizard({
     setIndex(Math.max(0, Math.min(nextIndex, total - 1)));
   }
 
-  /** Continue — and Enter, since the panel is a form. */
+  /** The primary — and Enter, since the panel is a form. */
   function advance() {
     if (!step || reported.busy || commit.isPending) return;
-    if (step.terminal) {
-      if (created) onCreated(created);
-      onClose();
+    // Not the last step: this only fires once a dependent question is added.
+    if (index < total - 1) {
+      goTo(index + 1);
       return;
     }
-    if (step.id === 'book') {
-      if (draft.book === 'shared') {
-        onSharedBook(draft.name.trim());
-        return;
-      }
-      if (creatingRef.current || created !== null) return;
-      creatingRef.current = true;
-      commit.mutate();
+    // A group book is created by the MIRRORCHAIN flow, not here — hand off with
+    // the name already typed so it is never asked for twice.
+    if (allowShared && draft.book === 'shared') {
+      onSharedBook(draft.name.trim());
       return;
     }
-    if (!allowShared && step.id === 'icon') {
-      if (creatingRef.current || created !== null) return;
-      creatingRef.current = true;
-      commit.mutate();
-      return;
-    }
-    goTo(index + 1);
+    if (creatingRef.current || created !== null) return;
+    creatingRef.current = true;
+    commit.mutate();
   }
 
   // Hand focus to the step's own control (the checked radio, else the field),
@@ -214,28 +207,41 @@ export function PortfolioWizard({
         }}
         ref={formRef}
       >
-        <div className="bt-pfw__stepper">
-          <div aria-hidden="true" className="bt-pfw__dots">
-            {steps.map((entry, position) => (
-              <span
-                className="bt-pfw__dot"
-                data-state={position === index ? 'current' : position < index ? 'done' : 'upcoming'}
-                key={entry.id}
-              />
-            ))}
+        {/* The stepper is chrome for a JOURNEY. With one step there is no
+            journey, and "step 1 of 1" beside a single dot is noise. */}
+        {total > 1 ? (
+          <div className="bt-pfw__stepper">
+            <div aria-hidden="true" className="bt-pfw__dots">
+              {steps.map((entry, position) => (
+                <span
+                  className="bt-pfw__dot"
+                  data-state={
+                    position === index ? 'current' : position < index ? 'done' : 'upcoming'
+                  }
+                  key={entry.id}
+                />
+              ))}
+            </div>
+            <p className="bt-pfw__stepnow">
+              {t('portfolio.wizard.stepOf', { current: index + 1, total })}
+              {' · '}
+              {t(step.labelKey)}
+            </p>
           </div>
-          <p className="bt-pfw__stepnow">
-            {t('portfolio.wizard.stepOf', { current: index + 1, total })}
-            {' · '}
-            {t(step.labelKey)}
-          </p>
-        </div>
+        ) : null}
 
         {/* Keyed so each step mounts fresh — no state leaks between questions. */}
         <div className="bt-pfw__body" key={step.id} ref={bodyRef}>
           <h3 className="bt-pfw__q">{t(step.titleKey)}</h3>
           {step.hintKey ? <p className="bt-pfw__hint">{t(step.hintKey)}</p> : null}
-          <Component created={created} draft={draft} error={error} patch={patch} report={report} />
+          <Component
+            allowShared={allowShared}
+            created={created}
+            draft={draft}
+            error={error}
+            patch={patch}
+            report={report}
+          />
         </div>
 
         <div className="bt-pfw__foot">

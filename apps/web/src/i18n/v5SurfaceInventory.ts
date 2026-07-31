@@ -1225,24 +1225,9 @@ export const NON_V5_SURFACES = [
     note: 'R2 portfolio-wizard parked row.',
   },
   {
-    path: 'user/portfolio/wizard/steps/BookStep.tsx',
+    path: 'user/portfolio/wizard/steps/SetupStep.tsx',
     reason: 'no-v5-deliverable',
-    note: 'R2 portfolio-wizard step (book).',
-  },
-  {
-    path: 'user/portfolio/wizard/steps/DoneStep.tsx',
-    reason: 'no-v5-deliverable',
-    note: 'R2 portfolio-wizard step (done).',
-  },
-  {
-    path: 'user/portfolio/wizard/steps/IconStep.tsx',
-    reason: 'no-v5-deliverable',
-    note: 'R2 portfolio-wizard step (icon).',
-  },
-  {
-    path: 'user/portfolio/wizard/steps/NameStep.tsx',
-    reason: 'no-v5-deliverable',
-    note: 'R2 portfolio-wizard step (name).',
+    note: 'R2 portfolio-wizard setup panel — the name/icon/book steps collapsed onto one screen (2026-07-31).',
   },
   {
     path: 'user/settings/DeleteAccountPage.tsx',

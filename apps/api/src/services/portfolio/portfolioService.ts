@@ -1,8 +1,11 @@
 import type {
+  CashDeletionResponse,
   CashEntryRequest,
   CashMovement as CashMovementDto,
   CashMovementResponse,
   CashMovementsResponse,
+  EditableCashMovementKind,
+  UpdateCashMovementRequest,
   CashPreviewRequest,
   CashPreviewResponse,
   CashSource as CashSourceDto,
@@ -30,7 +33,7 @@ import type {
   UpdatePortfolioRequest,
   UpdateTransactionRequest,
 } from '@bettertrack/contracts';
-import { customAssetCategorySchema } from '@bettertrack/contracts';
+import { customAssetCategorySchema, editableCashMovementKindSchema } from '@bettertrack/contracts';
 
 import type { AssetRow } from '../../data/schema';
 import { newId } from '../../data/ids';
@@ -378,6 +381,41 @@ export interface PortfolioService {
     input: CashEntryRequest,
     opts?: { source?: string; force?: boolean },
   ): Promise<CashMovementResponse>;
+  /**
+   * Correct a HAND-ENTERED cash movement in place (V5 cash fusion, §16
+   * 2026-07-31) — deposit / withdrawal / fee, the three kinds a person typed.
+   *
+   * Refuses a derived movement (buy / sell leg, dividend inflow, tax
+   * settlement, transfer leg) with `409 CASH_MOVEMENT_NOT_EDITABLE`: those
+   * follow their parent row, and editing a leg on its own would leave the
+   * ledger disagreeing with the books.
+   *
+   * The correction is validated by REPLAY, not by arithmetic on the current
+   * balance: the whole ledger is re-projected with the old row removed and the
+   * new one in its place, so a raised withdrawal that would have overdrawn the
+   * source *on some day between then and now* is refused even when today's
+   * balance would cover it. `opts.force` waives that gate for a MIRRORCHAIN
+   * replica apply, exactly as on {@link withdrawCash}.
+   */
+  updateCashMovement(
+    userId: string,
+    portfolioId: string,
+    movementId: string,
+    patch: UpdateCashMovementRequest,
+    opts?: { force?: boolean },
+  ): Promise<CashMovementResponse>;
+  /**
+   * Delete a hand-entered cash movement (V5 cash fusion, §16 2026-07-31). Same
+   * editability rule and same replay gate as {@link updateCashMovement} —
+   * removing an INFLOW can strand a later outflow, so a delete is solvency-
+   * checked just as an edit is.
+   */
+  deleteCashMovement(
+    userId: string,
+    portfolioId: string,
+    movementId: string,
+    opts?: { force?: boolean },
+  ): Promise<CashDeletionResponse>;
   /** Live "available → after" preview against one source's balance (§14, V3-P3). */
   previewCash(
     userId: string,
@@ -874,6 +912,60 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       }
       throw err;
     }
+  }
+
+  /**
+   * Does the portfolio's ledger replay clean AS IT STANDS (V5 cash fusion)?
+   *
+   * The edit/delete gates below are about the change the caller is making, and a
+   * ledger can already be negative through no fault of theirs: a MIRRORCHAIN
+   * replica applies its origin's ops in force mode (design §2/§8) and a
+   * tax-skewed copy can legitimately sit below zero. Enforcing solvency
+   * unconditionally would freeze every correction on exactly the ledgers that
+   * most need correcting, so the gate applies only where it was clean to begin
+   * with — where a refusal genuinely means "your change caused this".
+   */
+  function replaysClean(existing: readonly CashMovementRecord[]): boolean {
+    try {
+      projectCashLedgerBySource(existing.map(toDomainMovement));
+      return true;
+    } catch (err) {
+      if (err instanceof InsufficientCashError) return false;
+      throw err;
+    }
+  }
+
+  /**
+   * Resolve a movement the caller may correct, or explain why they may not
+   * (V5 cash fusion, §16 2026-07-31).
+   *
+   * Only the three HAND-ENTERED kinds are editable. Everything else is derived
+   * from a parent row — a buy's cash leg, a dividend's inflow and its tax
+   * settlement, a transfer's two halves — and is kept in step by the path that
+   * owns that parent. Editing such a leg on its own is not a smaller version of
+   * editing the parent; it is a way to make the ledger disagree with the books,
+   * so it is a 409 with the parent named rather than a silent partial success.
+   */
+  async function requireEditableMovement(
+    portfolioId: string,
+    movementId: string,
+  ): Promise<CashMovementRecord & { kind: EditableCashMovementKind }> {
+    const movement = await cashMovementRepo.findByIdForPortfolio(portfolioId, movementId);
+    if (!movement) throw notFound('Cash movement not found.', 'CASH_MOVEMENT_NOT_FOUND');
+    const editable = editableCashMovementKindSchema.safeParse(movement.kind);
+    if (!editable.success) {
+      throw conflict(
+        movement.transactionId
+          ? 'This movement belongs to a trade. Edit the trade instead.'
+          : movement.dividendId
+            ? 'This movement belongs to a dividend. Edit the dividend instead.'
+            : movement.transferId
+              ? 'Transfers move money between two sources at once. Delete the transfer and record it again.'
+              : 'This movement is recorded by BetterTrack and cannot be edited directly.',
+        'CASH_MOVEMENT_NOT_EDITABLE',
+      );
+    }
+    return { ...movement, kind: editable.data };
   }
 
   /**
@@ -2168,6 +2260,92 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       // which `domain/cashLedger` decides from the kind alone. Two copied bodies
       // here would be exactly the drift the return-series audit found elsewhere.
       return recordCashOutflow('fee', userId, portfolioId, input, opts);
+    },
+
+    async updateCashMovement(userId, portfolioId, movementId, patch, opts) {
+      await requireOwnedPortfolio(userId, portfolioId);
+      const existing = await requireEditableMovement(portfolioId, movementId);
+
+      // Merge onto the stored row — an omitted field keeps its value, and only
+      // `note` distinguishes "left alone" (undefined) from "cleared" (null).
+      const kind = patch.kind ?? existing.kind;
+      // Staying put is always allowed; MOVING onto an archived source is not.
+      // A row that has always lived on a since-archived source would otherwise
+      // be uncorrectable — the archive is about where NEW money goes.
+      const source =
+        patch.sourceId === undefined || patch.sourceId === existing.sourceId
+          ? await requireSource(portfolioId, existing.sourceId)
+          : await resolveFlowSource(portfolioId, patch.sourceId);
+      const executedAt = patch.executedAt ? new Date(patch.executedAt) : existing.executedAt;
+      const note = patch.note === undefined ? existing.note : (patch.note ?? null);
+      // The request carries a positive MAGNITUDE, exactly as create does; the
+      // sign comes from the resulting kind, so flipping a deposit into a
+      // withdrawal can never leave a row the CHECK constraint would reject.
+      const magnitude = floorCents(patch.amountEur ?? Math.abs(existing.amountEur));
+      const amountEur = magnitude * CASH_MOVEMENT_SIGN[kind];
+
+      // Validate by REPLAY, with the pre-edit row taken out of the history. The
+      // gate is not "does today's balance cover it" — a raised withdrawal has to
+      // be affordable on every day from its own date onward, and moving a row
+      // EARLIER can strand outflows that used to sit safely after it.
+      const all = await cashMovementRepo.listForPortfolio(portfolioId);
+      if (!opts?.force && replaysClean(all)) {
+        assertCashSolvent(
+          all.filter((m) => m.id !== movementId),
+          [
+            {
+              kind,
+              amountEur,
+              occurredAt: executedAt.toISOString(),
+              sourceId: source.id,
+            },
+          ],
+        );
+      }
+
+      const updated = await cashMovementRepo.updateForPortfolio(
+        portfolioId,
+        movementId,
+        existing.kind,
+        { sourceId: source.id, kind, amountEur, executedAt, note },
+      );
+      if (!updated) throw notFound('Cash movement not found.', 'CASH_MOVEMENT_NOT_FOUND');
+      // The curve is wrong from the EARLIER of the two dates: moving a movement
+      // back in time reshapes history the old date never touched, and moving it
+      // forward leaves the old date's point stale. Recomputing from the earlier
+      // one covers both without a second pass (§16 rule 4).
+      const from = executedAt < existing.executedAt ? executedAt : existing.executedAt;
+      await invalidateHistory(portfolioId, dayOf(from));
+      const { balanceBySource, totalEur } = await loadCashState(portfolioId);
+      return {
+        movement: movementToDto(updated),
+        sourceBalanceEur: balanceBySource.get(source.id) ?? 0,
+        balanceEur: totalEur,
+      };
+    },
+
+    async deleteCashMovement(userId, portfolioId, movementId, opts) {
+      await requireOwnedPortfolio(userId, portfolioId);
+      const existing = await requireEditableMovement(portfolioId, movementId);
+      // Removing an INFLOW is the dangerous direction: the deposit that funded
+      // three later withdrawals cannot simply vanish. Replaying what is left
+      // catches exactly that, and costs nothing when the row is an outflow.
+      const all = await cashMovementRepo.listForPortfolio(portfolioId);
+      if (!opts?.force && replaysClean(all)) {
+        assertCashSolvent(
+          all.filter((m) => m.id !== movementId),
+          [],
+        );
+      }
+      const removed = await cashMovementRepo.deleteForPortfolio(portfolioId, movementId);
+      if (!removed) throw notFound('Cash movement not found.', 'CASH_MOVEMENT_NOT_FOUND');
+      await invalidateHistory(portfolioId, dayOf(existing.executedAt));
+      const { balanceBySource, totalEur } = await loadCashState(portfolioId);
+      return {
+        sourceId: existing.sourceId,
+        sourceBalanceEur: balanceBySource.get(existing.sourceId) ?? 0,
+        balanceEur: totalEur,
+      };
     },
 
     async previewCash(userId, portfolioId, input) {

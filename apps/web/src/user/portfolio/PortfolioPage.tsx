@@ -1422,7 +1422,6 @@ function PageHeader({ onRecord, onNewCustom }: { onRecord: () => void; onNewCust
           </Button>
         </>
       }
-      sub={t('portfolio.overview.subtitle')}
       title={t('portfolio.overview.title')}
     />
   );

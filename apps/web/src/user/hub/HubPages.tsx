@@ -18,7 +18,7 @@ export function AskPage() {
   const t = useT();
   return (
     <div>
-      <PageHead sub={t('ask.subtitle')} title={t('ask.title')} />
+      <PageHead title={t('ask.title')} />
       <ParkedPage page="ask" />
     </div>
   );
@@ -28,7 +28,7 @@ export function ReviewPage() {
   const t = useT();
   return (
     <div>
-      <PageHead sub={t('review.subtitle')} title={t('review.title')} />
+      <PageHead title={t('review.title')} />
       <ParkedPage page="review" />
     </div>
   );

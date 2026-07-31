@@ -20,7 +20,9 @@ import {
   SOURCE_TAG_SYNC_MIRRORCHAIN,
   mirrorOpPayloadSchema,
   strippedMirrorAttribution,
+  type CashDeletionResponse,
   type CashEntryRequest,
+  type UpdateCashMovementRequest,
   type CashMovementResponse,
   type CashTransferRequest,
   type CashTransferResponse,
@@ -439,6 +441,25 @@ export interface MirrorService {
     portfolioId: string,
     input: CashEntryRequest,
   ): Promise<CashMovementResponse>;
+  /**
+   * Correct a hand-entered cash movement (§16 2026-07-31). Replicated as FULL
+   * state, like `tx.update`, and optimistically concurrent on `baseSeq`: two
+   * members correcting the same movement is a `409 MIRROR_CONFLICT`, not a
+   * last-writer-wins overwrite of somebody else's fix.
+   */
+  submitCashUpdate(
+    userId: string,
+    portfolioId: string,
+    movementId: string,
+    patch: UpdateCashMovementRequest,
+    opts?: { baseSeq?: number },
+  ): Promise<CashMovementResponse>;
+  submitCashDelete(
+    userId: string,
+    portfolioId: string,
+    movementId: string,
+    opts?: { baseSeq?: number },
+  ): Promise<CashDeletionResponse>;
   submitCashTransfer(
     userId: string,
     portfolioId: string,
@@ -901,6 +922,48 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
           createdByUsername: meta.actorUsername,
         });
         return { applied: true, rowKind: 'cash_movement', localId: res.movement.id, result: res };
+      }
+
+      case 'cash.update': {
+        // A correction to a hand-entered movement (§16 2026-07-31). Full state,
+        // so a copy that is behind still converges: it applies the corrected
+        // row wholesale rather than a delta against a base it may not have.
+        const link = await repo.findMirrorRow('cash_movement', payload.mirrorId, portfolioId);
+        // A copy that never received the create has nothing to correct. Skipping
+        // is right rather than an error: the op stream is ordered, so this can
+        // only mean the movement is already gone here (a delete that arrived out
+        // of band on a severed copy), and inventing a row would be worse.
+        if (!link) return { applied: false };
+        const sourceId = await resolveLocalSourceId(portfolioId, payload.sourceMirrorId);
+        const res = await portfolio.updateCashMovement(
+          userId,
+          portfolioId,
+          link.localId,
+          {
+            kind: payload.cashKind,
+            amountEur: payload.amountEur,
+            sourceId,
+            executedAt: payload.executedAt,
+            note: payload.note,
+          },
+          // Same waiver as every replicated outflow: a tax-skewed copy renders
+          // its negative balance honestly rather than refusing the origin's op.
+          { force },
+        );
+        return { applied: true, rowKind: 'cash_movement', localId: link.localId, result: res };
+      }
+
+      case 'cash.delete': {
+        const link = await repo.findMirrorRow('cash_movement', payload.mirrorId, portfolioId);
+        if (!link) return { applied: false };
+        try {
+          await portfolio.deleteCashMovement(userId, portfolioId, link.localId, { force });
+        } catch (err) {
+          // Idempotent re-delivery against a copy that already dropped the row.
+          if (!(force && isApiError(err, 'CASH_MOVEMENT_NOT_FOUND'))) throw err;
+        }
+        await repo.deleteMirrorRow('cash_movement', payload.mirrorId, portfolioId);
+        return { applied: true, rowKind: 'cash_movement', localId: link.localId };
       }
 
       case 'cash.setBalance': {
@@ -1937,6 +2000,10 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
         return `${actor} withdrew cash`;
       case 'cash.fee':
         return `${actor} recorded a cash fee`;
+      case 'cash.update':
+        return `${actor} edited a cash movement`;
+      case 'cash.delete':
+        return `${actor} deleted a cash movement`;
       case 'cash.transfer':
         return `${actor} transferred cash`;
       case 'cash.setBalance':
@@ -3671,6 +3738,95 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
 
     async submitCashFee(userId, portfolioId, input) {
       return submitCashEntry(userId, portfolioId, input, 'cash.fee');
+    },
+
+    async submitCashUpdate(userId, portfolioId, movementId, patch, opts) {
+      await assertMirrorAllowed(userId);
+      const membership = await membershipForWrite(userId, portfolioId);
+      if (!membership) {
+        return portfolio.updateCashMovement(userId, portfolioId, movementId, patch);
+      }
+      const username = await usernameOf(userId);
+      return withSubmitPrincipalGuards(userId, membership, async (member) => {
+        const link = await repo.findMirrorRowByLocal('cash_movement', movementId);
+        // A movement with no chain row is copy-derived (a buy's leg, a dividend
+        // inflow) — the service refuses those by kind anyway, so let it produce
+        // the explanatory 409 rather than throwing an internal error here.
+        if (!link) return portfolio.updateCashMovement(userId, portfolioId, movementId, patch);
+        const baseSeq = await checkEntityGuard(member.chainId, link.mirrorId, opts?.baseSeq);
+        // Apply locally FIRST so the op carries the merged full state rather
+        // than the patch: a copy applying a field diff against a base it never
+        // saw is exactly the divergence design §3 forbids.
+        const res = await portfolio.updateCashMovement(userId, portfolioId, movementId, patch);
+        const movement = res.movement;
+        const payload: Payload<'cash.update'> = {
+          opVersion: MIRROR_OP_VERSION,
+          kind: 'cash.update',
+          mirrorId: link.mirrorId,
+          baseSeq,
+          sourceMirrorId: await mirrorIdOfLocalSource(movement.sourceId),
+          amountEur: Math.abs(movement.amountEur),
+          executedAt: movement.executedAt,
+          note: movement.note,
+          originSource: 'manual',
+          // Narrowed by the service, which refuses every other kind outright.
+          cashKind: movement.kind as 'deposit' | 'withdrawal' | 'fee',
+        };
+        await appendAndFinish(
+          member,
+          userId,
+          [
+            {
+              kind: 'cash.update',
+              mirrorId: link.mirrorId,
+              actorUserId: userId,
+              actorUsername: username,
+              originPortfolioId: portfolioId,
+              payload,
+              baseSeq,
+            },
+          ],
+          [{ applied: true, rowKind: 'cash_movement', localId: movementId, result: res }],
+        );
+        return res;
+      });
+    },
+
+    async submitCashDelete(userId, portfolioId, movementId, opts) {
+      await assertMirrorAllowed(userId);
+      const membership = await membershipForWrite(userId, portfolioId);
+      if (!membership) return portfolio.deleteCashMovement(userId, portfolioId, movementId);
+      const username = await usernameOf(userId);
+      return withSubmitPrincipalGuards(userId, membership, async (member) => {
+        const link = await repo.findMirrorRowByLocal('cash_movement', movementId);
+        if (!link) return portfolio.deleteCashMovement(userId, portfolioId, movementId);
+        const baseSeq = await checkEntityGuard(member.chainId, link.mirrorId, opts?.baseSeq);
+        const res = await portfolio.deleteCashMovement(userId, portfolioId, movementId);
+        await repo.deleteMirrorRow('cash_movement', link.mirrorId, portfolioId);
+        const payload: Payload<'cash.delete'> = {
+          opVersion: MIRROR_OP_VERSION,
+          kind: 'cash.delete',
+          mirrorId: link.mirrorId,
+          baseSeq,
+        };
+        await appendAndFinish(
+          member,
+          userId,
+          [
+            {
+              kind: 'cash.delete',
+              mirrorId: link.mirrorId,
+              actorUserId: userId,
+              actorUsername: username,
+              originPortfolioId: portfolioId,
+              payload,
+              baseSeq,
+            },
+          ],
+          [{ applied: true, rowKind: 'cash_movement', localId: movementId }],
+        );
+        return res;
+      });
     },
 
     async submitCashTransfer(userId, portfolioId, input) {

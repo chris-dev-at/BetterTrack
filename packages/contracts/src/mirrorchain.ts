@@ -102,8 +102,14 @@ export type MirrorRowKind = z.infer<typeof mirrorRowKindSchema>;
 /**
  * Ledger ops (design §2) — applied per copy through the copy's own services, so
  * every copy derives its own side effects (cash legs, tax movements) locally.
- * Hand-entered cash movements are append-only (no movement edit/delete surface),
- * so the only cash "corrections" are new deposits/withdrawals/fees.
+ *
+ * `cash.update` / `cash.delete` (V5 cash fusion, §16 2026-07-31) end the
+ * append-only era for HAND-ENTERED movements — the three kinds a member typed
+ * (deposit / withdrawal / fee). They replicate for the same reason their create
+ * ops do: a member corrected origin data, and a copy that kept the uncorrected
+ * row would disagree with the origin's balance forever. Derived movements (buy /
+ * sell legs, dividend inflows, tax settlements, transfer legs) are still never
+ * edited directly on any copy — they follow their parent, which has its own ops.
  *
  * `cash.fee` (V5, §16 2026-07-30) replicates exactly like `cash.withdraw`: a
  * member TYPED it, so it is origin data, not a per-copy derivation. Note that
@@ -120,6 +126,8 @@ export const MIRROR_LEDGER_OP_KINDS = [
   'cash.deposit',
   'cash.withdraw',
   'cash.fee',
+  'cash.update',
+  'cash.delete',
   'cash.transfer',
   'cash.setBalance',
   'source.create',
@@ -320,6 +328,36 @@ const cashFeePayload = z
   .object({ ...cashMovementPayloadBase, kind: z.literal('cash.fee') })
   .strict();
 
+/**
+ * Correcting a hand-entered movement (V5 cash fusion). **Full state, never a
+ * field diff** — the same rule `tx.update` follows (design §3): the origin
+ * merges the patch onto its own row and ships the result, so a copy that missed
+ * an op still converges instead of applying a delta to the wrong base.
+ *
+ * `cashKind` carries the corrected kind because an edit may cross between the
+ * three editable kinds, and the crossing is the whole point of two of them: a
+ * withdrawal reclassified as a `fee` moves from "external flow, divided out of
+ * the return" to "cost of holding, drags the return". A copy that kept the old
+ * kind would keep the old return.
+ */
+const cashUpdatePayload = z
+  .object({
+    ...cashMovementPayloadBase,
+    kind: z.literal('cash.update'),
+    baseSeq: baseSeqSchema,
+    cashKind: z.enum(['deposit', 'withdrawal', 'fee']),
+  })
+  .strict();
+
+const cashDeletePayload = z
+  .object({
+    opVersion: mirrorOpVersionSchema,
+    kind: z.literal('cash.delete'),
+    mirrorId: mirrorIdSchema,
+    baseSeq: baseSeqSchema,
+  })
+  .strict();
+
 const cashTransferPayload = z
   .object({
     opVersion: mirrorOpVersionSchema,
@@ -498,6 +536,8 @@ export const mirrorOpPayloadSchema = z.discriminatedUnion('kind', [
   cashDepositPayload,
   cashWithdrawPayload,
   cashFeePayload,
+  cashUpdatePayload,
+  cashDeletePayload,
   cashTransferPayload,
   cashSetBalancePayload,
   sourceCreatePayload,

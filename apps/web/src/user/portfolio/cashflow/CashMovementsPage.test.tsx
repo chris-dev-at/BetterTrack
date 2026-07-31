@@ -16,9 +16,17 @@ vi.mock('../../../lib/cashApi', () => ({
   CASH_TAGS_QUERY_KEY: ['cash', 'tags'],
   listCashTags: vi.fn(),
   setCashMovementTags: vi.fn(),
+  // The edit dialog previews which rules a note would fire; never the subject here.
+  previewCashRules: vi.fn().mockResolvedValue({ tagIds: [] }),
 }));
 
-import { getCashMovements, listPortfolios } from '../../../lib/portfolioApi';
+import {
+  deleteCashMovement,
+  getCashMovements,
+  listCashSources,
+  listPortfolios,
+  updateCashMovement,
+} from '../../../lib/portfolioApi';
 import { listCashTags, setCashMovementTags } from '../../../lib/cashApi';
 
 import { CashMovementsPage } from './CashMovementsPage';
@@ -70,10 +78,21 @@ function movement(over: Partial<CashMovement> = {}): CashMovement {
 
 const TAGGED = movement({ id: 'm-tagged', note: 'REWE', tags: [FOOD.id, RENT.id] });
 const PLAIN = movement({ id: 'm-plain', note: 'Landlord' });
+/**
+ * A DERIVED row — a trade's cash leg. It has no financial edit here (it follows
+ * its transaction), so its row action stays "Edit tags" while a hand-entered row
+ * gets the full editor.
+ */
+const DERIVED = movement({
+  id: 'm-buy',
+  kind: 'buy',
+  note: 'Bought VWCE',
+  transactionId: 'tx-1',
+});
 
 const LEDGER: CashMovementsResponse = {
   balanceEur: 1_000,
-  movements: [TAGGED, PLAIN],
+  movements: [TAGGED, PLAIN, DERIVED],
   sources: [],
 };
 
@@ -126,7 +145,7 @@ describe('CashMovementsPage', () => {
     const user = userEvent.setup();
     renderPage();
     await screen.findByText('REWE');
-    expect(screen.getAllByRole('row')).toHaveLength(3); // header + 2 movements
+    expect(screen.getAllByRole('row')).toHaveLength(4); // header + 3 movements
 
     await user.selectOptions(screen.getByLabelText('Tag'), FOOD.id);
     expect(screen.getAllByRole('row')).toHaveLength(2); // header + the one Food-tagged movement
@@ -134,19 +153,106 @@ describe('CashMovementsPage', () => {
   });
 
   test('the tag editor PUTs the full selected set and invalidates the ledger', async () => {
-    vi.mocked(setCashMovementTags).mockResolvedValue({ movementId: 'm-plain', tags: [FOOD] });
+    vi.mocked(setCashMovementTags).mockResolvedValue({ movementId: 'm-buy', tags: [FOOD] });
     const user = userEvent.setup();
     const client = renderPage();
     const invalidate = vi.spyOn(client, 'invalidateQueries');
-    const plainRow = (await screen.findByText('Landlord')).closest('tr')!;
+    // A derived row: tags are the only thing about it this page may change.
+    const derivedRow = (await screen.findByText('Bought VWCE')).closest('tr')!;
 
-    await user.click(within(plainRow).getByRole('button', { name: 'Edit tags' }));
+    await user.click(within(derivedRow).getByRole('button', { name: 'Edit tags' }));
     const dialog = screen.getByRole('dialog', { name: 'Edit tags' });
     await user.click(within(dialog).getByText('Food'));
     await user.click(within(dialog).getByRole('button', { name: 'Save' }));
 
-    expect(setCashMovementTags).toHaveBeenCalledWith('m-plain', [FOOD.id]);
+    expect(setCashMovementTags).toHaveBeenCalledWith('m-buy', [FOOD.id]);
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['cash'] });
+  });
+
+  test('a hand-entered movement opens the full editor, prefilled', async () => {
+    vi.mocked(listCashSources).mockResolvedValue({
+      sources: [
+        {
+          id: 'src-1',
+          name: 'Main',
+          type: 'bank',
+          isMain: true,
+          balanceEur: 1_000,
+          archivedAt: null,
+          createdAt: '2026-01-01T00:00:00.000Z',
+        },
+      ],
+    });
+    const user = userEvent.setup();
+    renderPage();
+    const plainRow = (await screen.findByText('Landlord')).closest('tr')!;
+
+    await user.click(within(plainRow).getByRole('button', { name: 'Edit' }));
+
+    const dialog = await screen.findByRole('dialog', { name: 'Edit transaction' });
+    // Prefilled from the row: the magnitude, not the stored negative amount.
+    expect(within(dialog).getByLabelText('Amount')).toHaveValue('50');
+    expect(within(dialog).getByLabelText('What for')).toHaveValue('Landlord');
+    expect(within(dialog).getByRole('button', { name: 'Money out' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+  });
+
+  test('a derived movement offers no financial edit', async () => {
+    renderPage();
+    const derivedRow = (await screen.findByText('Bought VWCE')).closest('tr')!;
+
+    expect(within(derivedRow).queryByRole('button', { name: 'Edit' })).not.toBeInTheDocument();
+    expect(within(derivedRow).getByRole('button', { name: 'Edit tags' })).toBeInTheDocument();
+  });
+
+  test('saving an edit PATCHes the movement and closes', async () => {
+    vi.mocked(listCashSources).mockResolvedValue({ sources: [] });
+    vi.mocked(updateCashMovement).mockResolvedValue({
+      movement: { ...PLAIN, amountEur: -75 },
+      sourceBalanceEur: 925,
+      balanceEur: 925,
+    });
+    const user = userEvent.setup();
+    renderPage();
+    const plainRow = (await screen.findByText('Landlord')).closest('tr')!;
+    await user.click(within(plainRow).getByRole('button', { name: 'Edit' }));
+
+    const dialog = await screen.findByRole('dialog', { name: 'Edit transaction' });
+    const amount = within(dialog).getByLabelText('Amount');
+    await user.clear(amount);
+    await user.type(amount, '75');
+    await user.click(within(dialog).getByRole('button', { name: 'Save changes' }));
+
+    expect(updateCashMovement).toHaveBeenCalledWith(
+      'p1',
+      'm-plain',
+      expect.objectContaining({ amountEur: 75, kind: 'withdrawal', note: 'Landlord' }),
+    );
+  });
+
+  test('deleting asks first, then calls the API', async () => {
+    vi.mocked(listCashSources).mockResolvedValue({ sources: [] });
+    vi.mocked(deleteCashMovement).mockResolvedValue({
+      sourceId: 'src-1',
+      sourceBalanceEur: 1_050,
+      balanceEur: 1_050,
+    });
+    const user = userEvent.setup();
+    renderPage();
+    const plainRow = (await screen.findByText('Landlord')).closest('tr')!;
+    await user.click(within(plainRow).getByRole('button', { name: 'Edit' }));
+
+    const dialog = await screen.findByRole('dialog', { name: 'Edit transaction' });
+    await user.click(within(dialog).getByRole('button', { name: 'Delete' }));
+    // One press arms it; nothing has been deleted yet.
+    expect(deleteCashMovement).not.toHaveBeenCalled();
+
+    expect(within(dialog).getByText('Delete this transaction?')).toBeInTheDocument();
+    await user.click(within(dialog).getAllByRole('button', { name: 'Delete' })[0]!);
+
+    expect(deleteCashMovement).toHaveBeenCalledWith('p1', 'm-plain');
   });
 
   test('renders a load error when the ledger request fails', async () => {
