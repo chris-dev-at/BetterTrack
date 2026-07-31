@@ -29,6 +29,36 @@ const FUNDING_DATE = '2026-01-05';
 const SPEND_DATE = '2026-01-12';
 
 /**
+ * In-app navigation inside the Cash area — tab clicks, not `page.goto`.
+ *
+ * Every `page.goto` is a full SPA reload that refires the shell's provider
+ * queries (auth/me, feature flags, portfolios, notifications, announcements,
+ * vault media) on top of the target page's own. At Playwright speed this
+ * spec's ~12 reloads landed 254 API requests inside the limiter's 10-second
+ * burst window (trace-verified), and the 429s failed the very queries the
+ * spec asserts on. A person clicks the tab strip; so does the spec — one goto
+ * enters the area, everything after rides the client-side router.
+ */
+async function openCashTab(
+  page: Page,
+  tab: 'Overview' | 'Transactions' | 'Budgets',
+): Promise<void> {
+  const strip = page.getByRole('navigation', { name: 'Cash', exact: true });
+  if (!(await strip.isVisible().catch(() => false))) await page.goto('/portfolio/cash');
+  await strip.getByRole('link', { name: tab, exact: true }).click();
+}
+
+/** Labels & rules is setup, off the tab strip — Movements links to it. */
+async function openCashLabels(page: Page): Promise<void> {
+  if (page.url().includes('/portfolio/cash/labels')) return;
+  await openCashTab(page, 'Transactions');
+  await page.getByRole('link', { name: 'Labels & rules' }).click();
+  await expect(page.getByRole('heading', { name: 'Labels & rules' })).toBeVisible({
+    timeout: 15_000,
+  });
+}
+
+/**
  * Record one movement through the NEW fast path: the record pair ("Record
  * money in" / "Record money out") in the Cash page header, not the accounts
  * table.
@@ -47,11 +77,10 @@ async function recordCashEntry(
     countsToPerformance?: boolean;
   },
 ): Promise<void> {
-  // Only navigate when we are not already here. The overview loads four queries
-  // (balance, month summary, trend, ledger), so re-entering it for every single
-  // entry burned through the burst limiter — and re-navigating to a page you are
-  // standing on is not what a person does anyway.
-  if (!page.url().endsWith('/portfolio/cash')) await page.goto('/portfolio/cash');
+  // Only navigate when we are not already here — and via the tab strip, never
+  // a reload; re-navigating to a page you are standing on is not what a person
+  // does anyway.
+  if (!page.url().endsWith('/portfolio/cash')) await openCashTab(page, 'Overview');
   // The opener is a joined pair now — one tinted half per direction (owner,
   // 2026-07-31, second pass) — so there is no single "Record transaction"
   // button; the group carries that name, its halves are the buttons.
@@ -78,7 +107,7 @@ async function recordCashEntry(
 
 /** Create a user tag through the Tags tab. */
 async function createTag(page: Page, name: string): Promise<void> {
-  await page.goto('/portfolio/cash/labels');
+  await openCashLabels(page);
   await page.getByRole('button', { name: 'New tag' }).click();
   const dialog = page.getByRole('dialog', { name: 'New tag' });
   await dialog.getByLabel('Name', { exact: true }).fill(name);
@@ -88,7 +117,7 @@ async function createTag(page: Page, name: string): Promise<void> {
 
 /** Create an auto-tagging rule through the Rules tab. */
 async function createRule(page: Page, pattern: string, tagName: string): Promise<void> {
-  await page.goto('/portfolio/cash/labels');
+  await openCashLabels(page);
   await page.getByRole('button', { name: 'New rule' }).click();
   const dialog = page.getByRole('dialog', { name: 'New rule' });
   await dialog.getByLabel('Pattern', { exact: true }).fill(pattern);
@@ -134,14 +163,14 @@ test('cash flow: a rule tags a real entry, the ledger shows it, and a budget blo
     // THE POINT OF THE WHOLE FEATURE: the spend arrived already labelled, with
     // BOTH halves of auto-tagging — `Withdrawal` from its kind, `Groceries`
     // from the user's rule. Nothing was tagged by hand.
-    await page.goto('/portfolio/cash/movements');
+    await openCashTab(page, 'Transactions');
     const spendRow = movementRow(page, 'SPAR MARKT 4021');
     await expect(spendRow).toBeVisible({ timeout: 15_000 });
     await expect(spendRow).toContainText('Groceries');
     await expect(spendRow).toContainText('Withdrawal');
 
     // ── A €200 target the €300 spend has already blown ──
-    await page.goto('/portfolio/cash/budgets');
+    await openCashTab(page, 'Budgets');
     await page.getByRole('button', { name: 'New budget' }).click();
     const budgetDialog = page.getByRole('dialog', { name: 'New budget' });
     await budgetDialog.getByLabel('Tag', { exact: true }).selectOption({ label: 'Groceries' });
@@ -167,7 +196,7 @@ test('cash flow: a rule tags a real entry, the ledger shows it, and a budget blo
       note: 'Custody charge Q1',
       countsToPerformance: true,
     });
-    await page.goto('/portfolio/cash/movements');
+    await openCashTab(page, 'Transactions');
     const feeRow = movementRow(page, 'Custody charge Q1');
     await expect(feeRow).toBeVisible({ timeout: 15_000 });
     await expect(feeRow).toContainText('Fees');
@@ -183,21 +212,21 @@ test('cash flow: a rule tags a real entry, the ledger shows it, and a budget blo
       date: SPEND_DATE,
       note: 'BILLA DANKT 77',
     });
-    await page.goto('/portfolio/cash/movements');
+    await openCashTab(page, 'Transactions');
     const lateRow = movementRow(page, 'BILLA DANKT 77');
     await expect(lateRow).toBeVisible({ timeout: 15_000 });
     await expect(lateRow).not.toContainText('Groceries');
 
     await createRule(page, 'BILLA', 'Groceries');
     // Still untagged — a new rule changes nothing that already happened.
-    await page.goto('/portfolio/cash/movements');
+    await openCashTab(page, 'Transactions');
     await expect(movementRow(page, 'BILLA DANKT 77')).not.toContainText('Groceries');
 
-    await page.goto('/portfolio/cash/labels');
+    await openCashLabels(page);
     await page.getByRole('button', { name: 'Apply to existing' }).click();
     await expect(page.getByRole('alert')).toContainText(/Tagged 1 movement/, { timeout: 20_000 });
 
-    await page.goto('/portfolio/cash/movements');
+    await openCashTab(page, 'Transactions');
     await expect(movementRow(page, 'BILLA DANKT 77')).toContainText('Groceries', {
       timeout: 15_000,
     });

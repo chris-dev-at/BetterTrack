@@ -190,7 +190,13 @@ test.describe('mirrorchain lifecycle UI gate', () => {
       expect(replicated.mirror?.addedBy.username).toBe(member.username);
       await owner.page.goto(`/portfolio?portfolio=${ownerChain.portfolioId}`);
       await owner.page.getByRole('button', { name: 'Expand SAP.DE transactions' }).click();
-      await expect(owner.page.getByTitle(`Added by ${member.username}`)).toBeVisible({
+      // Scoped to Holdings: attribution renders in BOTH the expanded holding
+      // and Recent transactions since the second merge wave restored it on
+      // each surface (this branch's overview fix + main's transactions one),
+      // so the bare title lookup is a strict-mode violation.
+      await expect(
+        owner.page.getByLabel('Holdings').getByTitle(`Added by ${member.username}`),
+      ).toBeVisible({
         timeout: 20_000,
       });
       await expect(member.page.getByRole('button', { name: /Open member sheet/ })).toBeVisible({
@@ -402,9 +408,14 @@ test('mirrorchain: a member buy propagates to every copy, attributed', async ({ 
   expect(propagated.mirror?.addedBy.username).toBe(member.username);
 
   // …and the owner SEES it, with the attribution chip, in the rendered UI (§11).
+  // Scoped to Holdings — the chip also renders in Recent transactions now
+  // (both surfaces regained attribution in the second merge wave), and the
+  // bare title lookup is a strict-mode violation against the pair.
   await owner.page.goto(`/portfolio?portfolio=${ownerCopy}`);
   await owner.page.getByRole('button', { name: 'Expand SAP.DE transactions' }).click();
-  await expect(owner.page.getByTitle(`Added by ${member.username}`)).toBeVisible({
+  await expect(
+    owner.page.getByLabel('Holdings').getByTitle(`Added by ${member.username}`),
+  ).toBeVisible({
     timeout: 20_000,
   });
 
