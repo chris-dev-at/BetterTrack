@@ -30,6 +30,7 @@ import {
   createParanoidAppPortfolioStore,
 } from './portfolio/PortfolioStoreProvider';
 import { apiPortfolioStore } from '../lib/portfolioStore';
+import { removePlaintextQueries } from './vault/plaintextQueries';
 import { ResolvedPrivacyModeProvider, usePrivacyMode } from './vault/usePrivacyMode';
 import { useVaultRuntime } from './vault/VaultRuntimeProvider';
 import { VaultUnlockGate } from './vault/ui/VaultUnlockGate';
@@ -413,20 +414,6 @@ function VaultRuntimeRoot({ children }: { children: ReactNode }) {
   );
 }
 
-const PLAINTEXT_QUERY_ROOTS = new Set([
-  'analytics',
-  'cash',
-  'custom-asset',
-  'custom-assets',
-  'expenses',
-  'forecast',
-  'portfolio',
-  'portfolios',
-  'standingOrders',
-  'tax',
-  'transactions',
-]);
-
 /**
  * Resolve the account mode before any money route mounts. Normal accounts keep
  * today's API adapter; paranoid accounts receive the decrypted PD5/PD7 seam
@@ -470,15 +457,7 @@ export function AccountModeRoot({ children }: { children: ReactNode }) {
     if (runtime.phase !== 'locked') return;
     if (privacy.privacyMode !== 'paranoid' && !sawDecryptedSession.current) return;
     sawDecryptedSession.current = false;
-    cache.removeQueries({
-      predicate: (query) => {
-        const root = query.queryKey[0];
-        return (
-          (typeof root === 'string' && PLAINTEXT_QUERY_ROOTS.has(root)) ||
-          (root === 'settings' && query.queryKey[1] === 'taxes')
-        );
-      },
-    });
+    removePlaintextQueries(cache);
   }, [cache, privacy.privacyMode, runtime.phase]);
 
   useLayoutEffect(() => {

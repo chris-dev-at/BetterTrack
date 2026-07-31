@@ -8,6 +8,7 @@ import { passwordSchema } from '@bettertrack/contracts';
 import { useT } from '../../../i18n';
 import { deliverClientDownload } from '../../vault/export/deliver';
 import { useVaultMoneySession } from '../../vault/engine/VaultMoneyEngineProvider';
+import { hasUnambiguousBranch, type VaultSyncStatus } from '../../vault/sync';
 import { usePrivacyMode } from '../../vault/usePrivacyMode';
 import { useVaultRuntime } from '../../vault/VaultRuntimeProvider';
 import { ParanoidEnableWizard } from '../../vault/ui/ParanoidEnableWizard';
@@ -105,9 +106,16 @@ export function PrivacyPanel() {
             document={money?.sync.state.active?.document ?? null}
             syncStatus={money?.sync.state.status ?? null}
             onDisabled={async () => {
-              await runtime.cleanupAfterDisable();
-              privacy.acceptNormal();
-              void privacy.refetch();
+              // The mode flip is NOT conditional on the local tidying: the
+              // server already committed, so an account left rendering the
+              // paranoid subtree because a Drive delete failed would be stuck
+              // behind a lock whose vault no longer exists.
+              try {
+                await runtime.cleanupAfterDisable();
+              } finally {
+                privacy.acceptNormal();
+                void privacy.refetch();
+              }
             }}
             onNotice={setNotice}
             // Through the store's delete idiom, never a raw document rewrite:
@@ -321,15 +329,6 @@ function VaultSecurityActions({
   );
 }
 
-/**
- * Disable rehydrates the ACTIVE branch and the server then drops the blob and
- * its history — so a split the user has not resolved would lose the other side
- * for good. `synced` / `pending-offline` both have exactly one branch (the
- * newest local write is the active one); every other status is either an
- * unmerged split or an unreadable vault, and disable stays closed there.
- */
-const DISABLEABLE_SYNC_STATUSES = new Set(['synced', 'pending-offline']);
-
 function VaultDestructiveActions({
   accountId,
   document,
@@ -340,7 +339,9 @@ function VaultDestructiveActions({
 }: {
   accountId: string | null;
   document: Parameters<typeof disableUnlockedVault>[0] | null;
-  syncStatus: string | null;
+  // The real union, not `string`: the single-branch predicate below is only a
+  // guard if a status that no longer exists fails to compile.
+  syncStatus: VaultSyncStatus | null;
   onDisabled(): Promise<void>;
   onNotice(notice: Notice): void;
   onStartFresh(): Promise<void>;
@@ -349,7 +350,10 @@ function VaultDestructiveActions({
   const [freshConfirmed, setFreshConfirmed] = useState(false);
   const [disableConfirmed, setDisableConfirmed] = useState(false);
   const [working, setWorking] = useState(false);
-  const disableBlocked = syncStatus == null || !DISABLEABLE_SYNC_STATUSES.has(syncStatus);
+  // Disable rehydrates the ACTIVE branch and the server then drops the blob and
+  // its history, so a split the user has not resolved would lose the other side
+  // for good. Same single-branch predicate the unlocked session initializes on.
+  const disableBlocked = !hasUnambiguousBranch(syncStatus);
 
   async function startFresh() {
     setWorking(true);
@@ -371,10 +375,21 @@ function VaultDestructiveActions({
     onNotice(null);
     try {
       await disableUnlockedVault(document, accountId);
-      await onDisabled();
     } catch {
       onNotice({ tone: 'error', key: 'vault.settings.disableError' });
       setWorking(false);
+      return;
+    }
+    // Past this line the server has COMMITTED the rehydration — the account is
+    // already normal and the ciphertext is gone. Post-commit cleanup therefore
+    // sits OUTSIDE the guarded try: `vault.settings.disableError` says "your
+    // data is still encrypted", and it must never appear once that is false.
+    // `working` deliberately stays true — the mode flip unmounts this subtree.
+    try {
+      await onDisabled();
+    } catch {
+      // Best-effort local tidying (Drive delete, cache wipe). The transition
+      // stands regardless; the next mount re-resolves the mode from the server.
     }
   }
 

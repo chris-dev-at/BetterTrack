@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 
-import type { ParanoidVaultMediaState, VaultMedium } from '@bettertrack/contracts';
+import { VAULT_MEDIA, type ParanoidVaultMediaState } from '@bettertrack/contracts';
 
 import { useT } from '../../../i18n';
 import { formatDateTime } from '../../../lib/format';
@@ -9,8 +9,6 @@ import { Icon } from '../../../ui/origin';
 import { cx } from '../../components/ui';
 import { projectVaultMediaSyncStatus } from '../media/status';
 import { useVaultRuntime } from '../VaultRuntimeProvider';
-
-const MEDIUMS: readonly VaultMedium[] = ['server', 'drive'];
 
 export function VaultSyncChip({ media }: { media: ParanoidVaultMediaState }) {
   const t = useT();
@@ -91,7 +89,7 @@ export function VaultSyncChip({ media }: { media: ParanoidVaultMediaState }) {
             </div>
 
             <dl className="flex flex-col gap-2">
-              {MEDIUMS.filter((medium) => media.mediaSet.includes(medium)).map((medium) => (
+              {VAULT_MEDIA.filter((medium) => media.mediaSet.includes(medium)).map((medium) => (
                 <div className="flex items-center justify-between gap-4" key={medium}>
                   <dt className="text-sm">{t(`vault.sync.medium.${medium}`)}</dt>
                   <dd className="bt-muted text-xs">

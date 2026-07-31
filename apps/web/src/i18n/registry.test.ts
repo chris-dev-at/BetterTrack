@@ -1,6 +1,9 @@
 import { describe, expect, test } from 'vitest';
 
+import { VAULT_MEDIA } from '@bettertrack/contracts';
+
 import { vaultStoreErrorKey } from '../user/vault/engine/errorCopy';
+import { VAULT_MEDIUM_SYNC_STATES } from '../user/vault/media/status';
 import { VAULT_ENABLE_STAGES } from '../user/vault/ui/enable';
 import { VAULT_PORTFOLIO_STORE_ERROR_CODES } from '../user/vault/vaultPortfolioStore';
 import { LOCALES, localizedMessage, type MessageNode } from './registry';
@@ -71,6 +74,23 @@ test('registers progress + error copy for every paranoid enable stage in EN and 
       for (const key of [`vault.enable.progress.${stage}`, `vault.enable.errors.${stage}`]) {
         expect(localizedMessage(locale.code, key), `${locale.code}: ${key}`).not.toBe(key);
       }
+    }
+  }
+});
+
+test('registers status copy for every vault sync state and medium in EN and DE', () => {
+  // Same blind spot as the enable stages: `VaultSyncChip` renders
+  // `vault.sync.status.<state>` and `vault.sync.medium.<medium>` as template
+  // literals — for the button label, its aria-label and every medium row — so a
+  // member missing from BOTH catalogs is parity-clean and paints its dot-path.
+  for (const locale of Object.values(LOCALES)) {
+    for (const state of VAULT_MEDIUM_SYNC_STATES) {
+      const key = `vault.sync.status.${state}`;
+      expect(localizedMessage(locale.code, key), `${locale.code}: ${key}`).not.toBe(key);
+    }
+    for (const medium of VAULT_MEDIA) {
+      const key = `vault.sync.medium.${medium}`;
+      expect(localizedMessage(locale.code, key), `${locale.code}: ${key}`).not.toBe(key);
     }
   }
 });

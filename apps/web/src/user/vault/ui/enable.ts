@@ -158,6 +158,12 @@ export async function enablePreparedVault(
    * 2. `toStrictRestoreDocument` — the exact restore-boundary conversion the
    *    disable exit ships to `validateCustomAssetFacts`/`validateGraph`, so a
    *    document that opens but could never be disabled also stops here.
+   *
+   * "Exact" is load-bearing, not a figure of speech: this proof covers the exit
+   * only while `../paranoidDisable` holds the SINGLE copy of that conversion.
+   * A second copy in `ui/disable.ts` once made this sentence quietly false —
+   * the wizard proved restorability with one converter while the exit shipped
+   * another, which dropped §7.1 fork provenance. Never fork it; extend it.
    */
   input.onStage?.('validate');
   try {

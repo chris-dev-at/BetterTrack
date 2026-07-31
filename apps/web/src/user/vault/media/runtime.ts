@@ -25,7 +25,12 @@ import { createLocalDataHome } from '../localDataHome';
 import { captureForkProvenanceIntoVault } from '../mirrorProvenance';
 import { createIndexedDbVaultQuarantineStore } from '../quarantine';
 import { createServerBlobDataHome } from '../serverBlobDataHome';
-import { createVaultSyncEngine, type VaultSyncEngine, type VaultSyncState } from '../sync';
+import {
+  createVaultSyncEngine,
+  hasUnambiguousBranch,
+  type VaultSyncEngine,
+  type VaultSyncState,
+} from '../sync';
 import { reconcilePortfolioDocument } from '../vaultPortfolioStore';
 import { VaultCryptoError } from '../errors';
 import { equalBytes } from '../bytes';
@@ -167,7 +172,7 @@ export function createUnlockedVaultDriveRuntime(
     requireActive();
     const state = await sync.reconnect();
     requireActive();
-    if (state.active == null || (state.status !== 'synced' && state.status !== 'pending-offline')) {
+    if (state.active == null || !hasUnambiguousBranch(state.status)) {
       throw new Error('No unambiguous readable vault is available on this device.');
     }
     const ensured = await retirementProof.ensure(state.active.document);

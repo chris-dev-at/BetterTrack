@@ -32,6 +32,27 @@ export type VaultSyncStatus =
   | 'locked'
   | 'empty';
 
+/**
+ * The statuses under which the vault has exactly ONE readable branch: the newest
+ * local write is unambiguously the active one. `pending-offline` qualifies
+ * because the pending candidate IS the active candidate — a write the primary
+ * has not acknowledged yet, not a second version of the truth. Every other
+ * status is either an unmerged split (`unresolved`, `conflict`) or nothing to
+ * read (`corrupt`, `locked`, `empty`).
+ *
+ * One home because two callers must agree, and disagreeing is expensive in both
+ * directions: `media/runtime.ts` refuses to initialize an unlocked session
+ * without it, and the disable exit refuses to rehydrate without it — a disable
+ * on a split branch drops the other side for good when the server purges the
+ * blob and its history.
+ */
+const UNAMBIGUOUS_SYNC_STATUSES = new Set<VaultSyncStatus>(['synced', 'pending-offline']);
+
+/** True when {@link VaultSyncStatus} names exactly one readable branch. */
+export function hasUnambiguousBranch(status: VaultSyncStatus | null | undefined): boolean {
+  return status != null && UNAMBIGUOUS_SYNC_STATUSES.has(status);
+}
+
 export interface VaultSyncState {
   status: VaultSyncStatus;
   /** A failed pull or validation never clears an already-readable candidate. */

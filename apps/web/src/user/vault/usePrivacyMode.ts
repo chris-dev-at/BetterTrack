@@ -10,6 +10,7 @@ import {
 } from '@bettertrack/contracts';
 
 import { getParanoidMediaState } from '../../lib/userApi';
+import { removePlaintextQueries } from './plaintextQueries';
 
 /** Shared with Settings → Connections so one fetch serves both surfaces. */
 export const VAULT_MEDIA_QUERY_KEY = ['vault', 'media'] as const;
@@ -117,6 +118,13 @@ export function usePrivacyMode(enabled = true, accountId: string | null = null):
       const result = enabledState(receipt);
       queryClient.setQueryData(queryKey, result);
       cacheParanoidMode(accountId, result);
+      // The enable transition never passes through phase 'locked' (it runs
+      // locked → unlocking → unlocked while the mode flips), so `AccountModeRoot`'s
+      // eviction effect does not fire for it. Without this, the pre-enable
+      // server-derived entries — 60 s `staleTime`, still fresh — are served
+      // straight into the freshly unlocked paranoid session, including the
+      // analytics contribution column §8 item 12 requires to be absent.
+      removePlaintextQueries(queryClient);
     },
     acceptNormal() {
       const result: ParanoidMediaStateResponse = {
