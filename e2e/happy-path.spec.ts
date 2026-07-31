@@ -111,10 +111,12 @@ test('happy path: invite through friend sharing', async ({ browser }) => {
   await owner.goto('/portfolio');
   // Locale-agnostic: EN "600.00" (en-GB) vs DE "600,00" (de-AT).
   const totals = owner.getByRole('region', { name: 'Portfolio totals' });
-  const cashStat = totals.locator('.bt-stat').filter({
-    has: totals.getByText('Cash', { exact: true }),
-  });
-  await expect(cashStat.locator('.bt-stat__value')).toHaveText(/600[.,]00/, {
+  const cashLabel = totals.locator('.bt-stat__label').filter({ hasText: 'Cash' });
+  await expect(cashLabel).toHaveText('Cash');
+  const cashValue = cashLabel.locator(
+    'xpath=following-sibling::*[contains(@class, "bt-stat__value")]',
+  );
+  await expect(cashValue).toHaveText(/600[.,]00/, {
     timeout: 15_000,
   });
 

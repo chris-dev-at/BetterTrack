@@ -719,11 +719,12 @@ function ConfirmActionDialog({
     },
     onSuccess: onDone,
   });
-  const title = t(`mirrorchain.confirm.${action.kind}.title`);
-  const body = t(`mirrorchain.confirm.${action.kind}.body`, {
+  const copyVars = {
     chain: chainName,
     username: 'target' in action ? action.target.username : '',
-  });
+  };
+  const title = t(`mirrorchain.confirm.${action.kind}.title`, copyVars);
+  const body = t(`mirrorchain.confirm.${action.kind}.body`, copyVars);
   const confirmLabel = t(`mirrorchain.confirm.${action.kind}.confirm`);
   const danger = action.kind === 'dissolve' || action.kind === 'kick' || action.kind === 'leave';
   return (

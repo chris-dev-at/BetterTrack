@@ -108,8 +108,8 @@ test('comments: audience-scoped thread, reactions, delete-own and owner moderati
   // Wait for onSuccess to clear the first draft before typing the second, or that
   // late clear can erase it while the substring locator still matches "Posting…".
   await expect(composer).toHaveValue('', { timeout: 15_000 });
-  await expect(post).toBeEnabled();
   await composer.fill('owner-moderation probe comment');
+  await expect(post).toBeEnabled();
   await post.click();
   await expect(member.page.getByText('owner-moderation probe comment')).toBeVisible({
     timeout: 15_000,
