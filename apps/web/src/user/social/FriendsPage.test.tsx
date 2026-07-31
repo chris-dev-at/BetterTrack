@@ -126,7 +126,7 @@ describe('FriendsPage', () => {
     );
   });
 
-  test('accepts an incoming request and refreshes the lists', async () => {
+  test('accepts an incoming request and refreshes every friendship-dependent list', async () => {
     vi.mocked(listFriendRequests).mockResolvedValue({
       incoming: [
         {
@@ -150,6 +150,7 @@ describe('FriendsPage', () => {
     expect(acceptFriendRequest).toHaveBeenCalledWith('req-1');
     await waitFor(() => expect(listFriendRequests).toHaveBeenCalledTimes(2));
     expect(listFriends).toHaveBeenCalledTimes(2);
+    expect(listSharedWithMe).toHaveBeenCalledTimes(2);
   });
 
   test('declines an incoming request', async () => {
