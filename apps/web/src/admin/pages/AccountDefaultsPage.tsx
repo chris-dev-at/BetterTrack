@@ -13,13 +13,13 @@ import {
 
 import { useT } from '../../i18n';
 import type { TranslateFn } from '../../i18n';
-import { ApiError } from '../../lib/apiClient';
 import * as api from '../../lib/adminApi';
 import { useResource } from '../useResource';
 import { Alert, Badge, Button, PageHeader, Spinner } from '../components/ui';
 
 function errorMessage(err: unknown, t: TranslateFn): string {
-  return err instanceof ApiError ? err.message : t('common.genericError');
+  void err;
+  return t('common.genericError');
 }
 
 function channelLabels(t: TranslateFn): Record<NotificationSettingChannel, string> {

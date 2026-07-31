@@ -3,7 +3,7 @@ import type { FormEvent } from 'react';
 import { Navigate, useNavigate } from 'react-router-dom';
 
 import { Wordmark } from '../../components/Wordmark';
-import { useT } from '../../i18n';
+import { useT, type TranslateFn } from '../../i18n';
 import * as api from '../../lib/adminApi';
 import { ApiError } from '../../lib/apiClient';
 import { NotAdminError, useAuth } from '../AuthContext';
@@ -14,6 +14,20 @@ import { Alert, Button, Spinner, TextField } from '../components/ui';
  * Shortened to 7 chars; `"unknown"` in dev/test or an unstamped build.
  */
 const WEB_SHA = (import.meta.env.VITE_BUILD_SHA ?? 'unknown').slice(0, 7);
+
+function loginErrorMessage(t: TranslateFn, err: unknown): string {
+  if (err instanceof NotAdminError) return t('auth.adminLogin.notAdmin');
+  if (err instanceof ApiError) {
+    if (err.status === 429) return t('auth.login.rateLimited');
+    if (err.status === 403 && err.code === 'ACCOUNT_DISABLED') {
+      return t('auth.login.accountDisabled');
+    }
+    if (err.status === 401 || err.code === 'INVALID_CREDENTIALS') {
+      return t('auth.adminLogin.invalidCredentials');
+    }
+  }
+  return t('auth.adminLogin.genericError');
+}
 
 /**
  * Admin sign-in. Its own minimal, app-shell-free screen (PROJECTPLAN.md §6.12).
@@ -54,7 +68,7 @@ export function LoginPage() {
         <h1 id="admin-login-heading" className="sr-only">
           {t('auth.adminLogin.heading')}
         </h1>
-        <Spinner label="Checking session…" />
+        <Spinner label={t('auth.common.checkingSession')} />
       </main>
     );
   }
@@ -70,14 +84,7 @@ export function LoginPage() {
       // `password-change-required`); this navigation is a no-op for them.
       navigate('/admin/users', { replace: true });
     } catch (err) {
-      if (err instanceof NotAdminError) {
-        setError(err.message);
-      } else if (err instanceof ApiError) {
-        // The API returns a deliberately generic, non-enumerating message.
-        setError(err.message);
-      } else {
-        setError('Unable to sign in. Please try again.');
-      }
+      setError(loginErrorMessage(t, err));
     } finally {
       setSubmitting(false);
     }
@@ -101,7 +108,7 @@ export function LoginPage() {
         >
           {error ? <Alert tone="error">{error}</Alert> : null}
           <TextField
-            label="Email or username"
+            label={t('auth.login.identifierLabel')}
             name="identifier"
             autoComplete="username"
             autoFocus
@@ -110,7 +117,7 @@ export function LoginPage() {
             required
           />
           <TextField
-            label="Password"
+            label={t('auth.login.passwordLabel')}
             name="password"
             type="password"
             autoComplete="current-password"
@@ -119,7 +126,7 @@ export function LoginPage() {
             required
           />
           <Button type="submit" disabled={submitting}>
-            {submitting ? 'Signing in…' : 'Sign in'}
+            {submitting ? t('auth.login.submitting') : t('auth.login.submit')}
           </Button>
         </form>
         {/* Deploy-verification marker: which web bundle + api commit is live. */}

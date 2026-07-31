@@ -4,8 +4,7 @@ import { Link } from 'react-router-dom';
 
 import type { AdminStats, CreateUserResponse } from '@bettertrack/contracts';
 
-import { useT } from '../../i18n';
-import { ApiError } from '../../lib/apiClient';
+import { useT, type TranslateFn } from '../../i18n';
 import * as api from '../../lib/adminApi';
 import { useResource } from '../useResource';
 import { Modal } from '../components/Modal';
@@ -25,8 +24,9 @@ type Dialog =
   | { type: 'created'; result: CreateUserResponse }
   | { type: 'bulkDisable'; userIds: string[] };
 
-function errorMessage(err: unknown): string {
-  return err instanceof ApiError ? err.message : 'Something went wrong. Please try again.';
+function errorMessage(err: unknown, t: TranslateFn): string {
+  void err;
+  return t('common.genericError');
 }
 
 /**
@@ -91,14 +91,22 @@ export function UsersPage() {
       stats.reload();
       setSelected(new Set());
       setDialog(null);
+      const disabled = t(
+        result.disabled === 1
+          ? 'admin.users.bulkResult.disabledOne'
+          : 'admin.users.bulkResult.disabledOther',
+        { count: result.disabled },
+      );
       setBanner({
         tone: 'success',
-        text:
-          `Disabled ${result.disabled} user${result.disabled === 1 ? '' : 's'}` +
-          (result.skipped > 0 ? `; skipped ${result.skipped}.` : '.'),
+        text: `${disabled}${
+          result.skipped > 0
+            ? `; ${t('admin.users.bulkResult.skipped', { count: result.skipped })}.`
+            : '.'
+        }`,
       });
     } catch (err) {
-      setBanner({ tone: 'error', text: errorMessage(err) });
+      setBanner({ tone: 'error', text: errorMessage(err, t) });
     } finally {
       setBulkBusy(false);
     }
@@ -107,16 +115,16 @@ export function UsersPage() {
   return (
     <div className="flex flex-col gap-6">
       <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
-        <PageHeader title="Users" description="Manage accounts, access, and credentials." />
-        <Button onClick={() => setDialog({ type: 'create' })}>Create user</Button>
+        <PageHeader title={t('admin.users.title')} description={t('admin.users.subtitle')} />
+        <Button onClick={() => setDialog({ type: 'create' })}>{t('admin.users.create')}</Button>
       </div>
 
       <StatsStrip data={stats.data} />
 
       <TextField
-        label="Search"
+        label={t('admin.users.searchLabel')}
         name="search"
-        placeholder="Filter by email or username"
+        placeholder={t('admin.users.searchPlaceholder')}
         value={searchInput}
         onChange={(e) => setSearchInput(e.target.value)}
       />
@@ -125,10 +133,14 @@ export function UsersPage() {
 
       {selected.size > 0 ? (
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-neutral-800 bg-neutral-900 px-4 py-3">
-          <span className="text-sm text-neutral-300">{selected.size} selected</span>
+          <span className="text-sm text-neutral-300">
+            {t(selected.size === 1 ? 'admin.users.selectedOne' : 'admin.users.selectedOther', {
+              count: selected.size,
+            })}
+          </span>
           <div className="flex gap-2">
             <Button variant="secondary" onClick={() => setSelected(new Set())}>
-              Clear
+              {t('admin.users.clear')}
             </Button>
             <Button
               variant="danger"
@@ -145,18 +157,16 @@ export function UsersPage() {
       ) : null}
 
       {users.loading ? (
-        <Spinner label="Loading users…" />
+        <Spinner label={t('admin.users.loading')} />
       ) : users.error ? (
         <Alert tone="error">
           {users.error}{' '}
           <button className="underline" onClick={users.reload}>
-            Retry
+            {t('common.retry')}
           </button>
         </Alert>
       ) : rows.length === 0 ? (
-        <EmptyState>
-          {search ? 'No users match your search.' : 'No users yet. Create the first one.'}
-        </EmptyState>
+        <EmptyState>{search ? t('admin.users.emptySearch') : t('admin.users.empty')}</EmptyState>
       ) : (
         <div className="overflow-x-auto rounded-lg border border-neutral-800">
           <table className="w-full min-w-[40rem] text-left text-sm">
@@ -165,14 +175,14 @@ export function UsersPage() {
                 <th className="w-10 px-3 py-3">
                   <input
                     type="checkbox"
-                    aria-label="Select all users"
+                    aria-label={t('admin.users.selectAll')}
                     checked={allSelected}
                     onChange={toggleAll}
                   />
                 </th>
-                <th className="px-4 py-3 font-medium">User</th>
-                <th className="px-4 py-3 font-medium">Role</th>
-                <th className="px-4 py-3 font-medium">Status</th>
+                <th className="px-4 py-3 font-medium">{t('admin.users.columns.user')}</th>
+                <th className="px-4 py-3 font-medium">{t('admin.users.columns.role')}</th>
+                <th className="px-4 py-3 font-medium">{t('admin.users.columns.status')}</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-neutral-800">
@@ -181,7 +191,7 @@ export function UsersPage() {
                   <td className="px-3 py-3">
                     <input
                       type="checkbox"
-                      aria-label={`Select ${u.username}`}
+                      aria-label={t('admin.users.selectUser', { username: u.username })}
                       checked={selected.has(u.id)}
                       onChange={() => toggleOne(u.id)}
                     />
@@ -196,10 +206,18 @@ export function UsersPage() {
                     </Link>
                   </td>
                   <td className="px-4 py-3">
-                    <Badge tone={u.role === 'admin' ? 'sky' : 'neutral'}>{u.role}</Badge>
+                    <Badge tone={u.role === 'admin' ? 'sky' : 'neutral'}>
+                      {u.role === 'admin'
+                        ? t('admin.users.roles.admin')
+                        : t('admin.users.roles.user')}
+                    </Badge>
                   </td>
                   <td className="px-4 py-3">
-                    <Badge tone={u.status === 'active' ? 'green' : 'red'}>{u.status}</Badge>
+                    <Badge tone={u.status === 'active' ? 'green' : 'red'}>
+                      {u.status === 'active'
+                        ? t('admin.users.status.active')
+                        : t('admin.users.status.disabled')}
+                    </Badge>
                   </td>
                 </tr>
               ))}
@@ -306,12 +324,13 @@ function CreatedUserDialog({
 }
 
 function StatsStrip({ data }: { data: AdminStats | null }) {
+  const t = useT();
   if (!data) return null;
   const cards = [
-    { label: 'Users', value: data.userCount },
-    { label: 'Active (≤30d)', value: data.activeUserCount },
-    { label: 'Disabled', value: data.disabledUserCount },
-    { label: 'Pending invites', value: data.pendingInviteCount },
+    { label: t('admin.users.stats.users'), value: data.userCount },
+    { label: t('admin.users.stats.active'), value: data.activeUserCount },
+    { label: t('admin.users.stats.disabled'), value: data.disabledUserCount },
+    { label: t('admin.users.stats.pendingInvites'), value: data.pendingInviteCount },
   ];
   return (
     <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
@@ -335,6 +354,7 @@ function CreateUserDialog({
   onClose: () => void;
   onCreated: (result: CreateUserResponse) => void;
 }) {
+  const t = useT();
   const [email, setEmail] = useState('');
   const [username, setUsername] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -352,18 +372,18 @@ function CreateUserDialog({
       });
       onCreated(result);
     } catch (err) {
-      setError(errorMessage(err));
+      setError(errorMessage(err, t));
     } finally {
       setSubmitting(false);
     }
   }
 
   return (
-    <Modal title="Create user" onClose={onClose}>
+    <Modal title={t('admin.users.create')} onClose={onClose}>
       <form onSubmit={onSubmit} className="flex flex-col gap-4">
         {error ? <Alert tone="error">{error}</Alert> : null}
         <TextField
-          label="Email"
+          label={t('admin.users.emailLabel')}
           name="email"
           type="email"
           autoComplete="off"
@@ -373,20 +393,20 @@ function CreateUserDialog({
           required
         />
         <TextField
-          label="Username"
+          label={t('admin.users.usernameLabel')}
           name="username"
           autoComplete="off"
-          hint="3–40 characters: letters, numbers, dot, dash, underscore."
+          hint={t('admin.users.usernameHint')}
           value={username}
           onChange={(e) => setUsername(e.target.value)}
           required
         />
         <div className="flex justify-end gap-2">
           <Button variant="secondary" onClick={onClose}>
-            Cancel
+            {t('common.cancel')}
           </Button>
           <Button type="submit" disabled={submitting}>
-            {submitting ? 'Creating…' : 'Create user'}
+            {submitting ? t('common.creating') : t('admin.users.create')}
           </Button>
         </div>
       </form>

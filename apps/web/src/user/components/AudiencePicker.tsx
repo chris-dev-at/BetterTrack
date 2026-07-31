@@ -1,4 +1,4 @@
-import { useMemo, useState, type CSSProperties } from 'react';
+import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { SHARE_AUDIENCES, type ShareAudience, type ShareKind } from '@bettertrack/contracts';
@@ -167,16 +167,31 @@ export function AudiencePicker({
   const [mintedUrl, setMintedUrl] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [search, setSearch] = useState('');
+  const [snapshotKey, setSnapshotKey] = useState<string | null>(null);
 
-  // Seed local state from the server once, on first load.
-  const loaded = audienceQuery.data;
-  const audience: ShareAudience = selected ?? loaded?.audience ?? 'private';
-  if (selected === null && loaded && friendIds.size === 0 && loaded.friendIds.length > 0) {
+  const readsFetching =
+    audienceQuery.isFetching || friendsQuery.isFetching || groupsQuery.isFetching;
+  const authoritativeKey =
+    audienceQuery.isSuccess && friendsQuery.isSuccess && groupsQuery.isSuccess && !readsFetching
+      ? `${audienceQuery.dataUpdatedAt}:${friendsQuery.dataUpdatedAt}:${groupsQuery.dataUpdatedAt}`
+      : null;
+
+  // A cached query mounts as successful while TanStack refreshes it. Do not seed
+  // editable privacy state from that stale payload: wait for all three active
+  // reads to settle, then take one coherent snapshot. A later focus refresh
+  // temporarily gates the form and reconciles it again before Save reappears.
+  useEffect(() => {
+    const loaded = audienceQuery.data;
+    if (!authoritativeKey || snapshotKey === authoritativeKey || !loaded) return;
+    setSelected(loaded.audience);
     setFriendIds(new Set(loaded.friendIds));
-  }
-  if (selected === null && groupId === null && loaded?.groupId) {
     setGroupId(loaded.groupId);
-  }
+    setAcknowledged(false);
+    setSnapshotKey(authoritativeKey);
+  }, [audienceQuery.data, authoritativeKey, snapshotKey]);
+
+  const snapshotReady = authoritativeKey !== null && snapshotKey === authoritativeKey;
+  const audience: ShareAudience = selected ?? 'private';
 
   const mutation = useMutation({
     mutationFn: () =>
@@ -234,12 +249,15 @@ export function AudiencePicker({
   }
 
   const groups = groupsQuery.data?.groups ?? [];
-  const readsPending = audienceQuery.isPending || friendsQuery.isPending || groupsQuery.isPending;
+  const readsPending =
+    audienceQuery.isPending ||
+    friendsQuery.isPending ||
+    groupsQuery.isPending ||
+    readsFetching ||
+    !snapshotReady;
   const readsFailed = audienceQuery.isError || friendsQuery.isError || groupsQuery.isError;
   const canSubmit =
-    audienceQuery.isSuccess &&
-    friendsQuery.isSuccess &&
-    groupsQuery.isSuccess &&
+    snapshotReady &&
     !mutation.isPending &&
     !(audience === 'public_link' && !acknowledged) &&
     // The group tier's friction: a group must actually be chosen to share.

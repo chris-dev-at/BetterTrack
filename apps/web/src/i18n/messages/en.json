@@ -21,7 +21,13 @@
       "waitMoment": " Please wait a moment and try again."
     },
     "adminLogin": {
-      "heading": "Admin sign in"
+      "heading": "Admin sign in",
+      "notAdmin": "This is a user account, not an administrator — please sign in through the main app.",
+      "invalidCredentials": "Invalid email/username or password.",
+      "genericError": "Unable to sign in. Please try again."
+    },
+    "adminForcedPassword": {
+      "info": "Set a new password before continuing to the admin console."
     },
     "login": {
       "subtitle": "Sign in to your account",
@@ -141,6 +147,7 @@
       "promptWithUser": "Welcome back, {{username}}. Enter your {{length}}-digit PIN to keep going.",
       "prompt": "Enter your {{length}}-digit PIN to keep going.",
       "inputLabel": "PIN",
+      "digitLabel": "{{label}} digit {{position}}",
       "fallbackError": "Too many incorrect PINs. Please sign in with your password.",
       "invalidPin": "Incorrect PIN. Please try again.",
       "rateLimited": "Too many attempts. Please wait a moment and try again.",
@@ -282,7 +289,10 @@
       "priceChartDataDate": "Date",
       "priceChartDataValue": "Value",
       "priceChartDataSampled": "Showing {{shown}} of {{total}} plotted points.",
-      "allocationFallbackTitle": "Allocation breakdown"
+      "allocationFallbackTitle": "Allocation breakdown",
+      "noTrendData": "No trend data",
+      "trendUp": "Trend up",
+      "trendDown": "Trend down"
     },
     "marketState": {
       "open": "Open",
@@ -2631,7 +2641,8 @@
         "loadError": "Couldn't load this idea.",
         "thesisHeading": "Thesis",
         "backtestHeading": "Backtest",
-        "conglomerateGone": "The blueprint this idea references is no longer available."
+        "conglomerateGone": "The blueprint this idea references is no longer available.",
+        "conglomerateLoadError": "Could not load this idea's blueprint. Please try again."
       }
     },
     "comparison": {
@@ -3937,6 +3948,119 @@
         "people": "People",
         "configuration": "Configuration",
         "diagnostics": "Diagnostics"
+      }
+    },
+    "settings": {
+      "title": "Settings",
+      "subtitle": "Global app configuration — how accounts come to exist and app-wide feature toggles.",
+      "loading": "Loading settings…",
+      "save": "Save settings",
+      "saved": "Settings saved.",
+      "unsaved": "Unsaved changes",
+      "registration": {
+        "title": "Registration mode",
+        "description": "How new accounts come to exist. Switching a mode takes effect immediately.",
+        "modes": {
+          "closed": {
+            "title": "Closed",
+            "description": "Only admin-created users and invite links. The default, fully enforced."
+          },
+          "inviteToken": {
+            "title": "Invite / access-token",
+            "description": "Self-serve registration page that requires a valid access token (below)."
+          },
+          "approval": {
+            "title": "Approval",
+            "description": "Open registration form; accounts wait in the approval queue (below)."
+          },
+          "open": {
+            "title": "Open",
+            "description": "Automatic registration — anyone can create an account and sign straight in."
+          }
+        }
+      },
+      "features": {
+        "title": "Feature toggles",
+        "description": "App-wide feature flags and access rules live here. More toggles land post-v1.",
+        "betaLabel": "Beta mode",
+        "placeholder": "Placeholder",
+        "betaDescription": "Gate experimental surfaces behind a beta flag. No app behaviour depends on it yet."
+      },
+      "tokens": {
+        "title": "Registration tokens",
+        "description": "Access tokens for the invite-token registration mode.",
+        "inactive": "They only take effect while the mode above is Invite / access-token.",
+        "label": "Label (optional)",
+        "labelPlaceholder": "beta wave 1",
+        "maxUses": "Max uses",
+        "expiresInDays": "Expires in days (optional)",
+        "never": "never",
+        "create": "Create token",
+        "urlLabel": "Registration URL (copy now — shown once)",
+        "loading": "Loading tokens…",
+        "untitled": "Untitled token",
+        "status": {
+          "active": "active",
+          "exhausted": "exhausted",
+          "expired": "expired",
+          "revoked": "revoked"
+        },
+        "uses": "{{used}}/{{max}} uses",
+        "expires": "expires {{date}}",
+        "noExpiry": "no expiry",
+        "empty": "No registration tokens yet."
+      },
+      "approvals": {
+        "title": "Approval queue",
+        "description": "Pending self-serve registrations awaiting review.",
+        "inactive": "New applications only arrive while the mode above is Approval.",
+        "loading": "Loading requests…",
+        "requested": "requested {{date}}",
+        "approve": "Approve",
+        "reject": "Reject",
+        "empty": "No pending registrations."
+      }
+    },
+    "users": {
+      "title": "Users",
+      "subtitle": "Manage accounts, access, and credentials.",
+      "create": "Create user",
+      "searchLabel": "Search",
+      "searchPlaceholder": "Filter by email or username",
+      "selectedOne": "{{count}} selected",
+      "selectedOther": "{{count}} selected",
+      "clear": "Clear",
+      "loading": "Loading users…",
+      "emptySearch": "No users match your search.",
+      "empty": "No users yet. Create the first one.",
+      "selectAll": "Select all users",
+      "selectUser": "Select {{username}}",
+      "columns": {
+        "user": "User",
+        "role": "Role",
+        "status": "Status"
+      },
+      "roles": {
+        "admin": "admin",
+        "user": "user"
+      },
+      "status": {
+        "active": "active",
+        "disabled": "disabled"
+      },
+      "stats": {
+        "users": "Users",
+        "active": "Active (≤30d)",
+        "disabled": "Disabled",
+        "pendingInvites": "Pending invites"
+      },
+      "emailLabel": "Email",
+      "usernameLabel": "Username",
+      "usernameHint": "3–40 characters: letters, numbers, dot, dash, underscore.",
+      "bulkResult": {
+        "disabledOne": "Disabled {{count}} user",
+        "disabledOther": "Disabled {{count}} users",
+        "skipped": "skipped {{count}}"
       }
     },
     "accountDefaults": {

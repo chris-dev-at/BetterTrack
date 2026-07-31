@@ -61,10 +61,11 @@ export function useResource<T>(
           requireTwoFactorSetup();
           return;
         }
-        const message =
-          err instanceof ApiError
-            ? err.message
-            : localizedMessage(localeRef.current, 'common.genericError');
+        // API envelopes are authored by the server and are not locale-aware.
+        // Authorization/setup outcomes above keep their structural handling;
+        // every displayable failure uses catalog copy so DE never leaks an
+        // English transport or 5xx message.
+        const message = localizedMessage(localeRef.current, 'common.genericError');
         setState({ data: null, loading: false, error: message });
       }
     })();

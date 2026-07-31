@@ -142,7 +142,7 @@ export const V5_SURFACE_INVENTORY = [
   },
   {
     id: 'p0b-permission-pickers',
-    phases: ['P0b'],
+    phases: ['P0b', 'P13b'],
     routes: [
       '/control/api',
       '/control/oauth-apps',
@@ -223,7 +223,7 @@ export const V5_SURFACE_INVENTORY = [
   },
   {
     id: 'p1-performance-and-failover',
-    phases: ['P1'],
+    phases: ['P1', 'P13b'],
     routes: ['/portfolio', '/portfolio/analysis', '/workbench', '/assets/:id', '/admin/health'],
     components: [
       'ui/MarketStateBadge.tsx',
@@ -270,7 +270,7 @@ export const V5_SURFACE_INVENTORY = [
   },
   {
     id: 'v5-admin-shell',
-    phases: ['P0', 'P2', 'P10', 'P12', 'P13c'],
+    phases: ['P0', 'P2', 'P10', 'P12', 'P13b', 'P13c'],
     // The shell owns no route of its own: AdminApp *is* the `/admin/*` registry
     // and AdminLayout wraps every page inside it, so each concrete route is
     // claimed by the phase surface that ships it.
@@ -294,7 +294,7 @@ export const V5_SURFACE_INVENTORY = [
   },
   {
     id: 'p2-admin-operations',
-    phases: ['P2'],
+    phases: ['P2', 'P13b'],
     routes: [
       '/admin/monitoring',
       '/admin/problems',
@@ -435,13 +435,14 @@ export const V5_SURFACE_INVENTORY = [
         'Insufficient selections, no Blueprints/ideas, and no positions are explicit.',
       ),
       error: covered(
-        'Blueprint-list, nested-list, and comparison-execution failures are distinct and retry in place.',
+        'Blueprint-list, nested-list, comparison-execution, and idea-resolution outages are distinct and retry in place; confirmed missing references stay terminal.',
       ),
     },
     tests: [
       'user/workboard/ComparisonPage.test.tsx',
       'user/workboard/ConglomerateBuilderPage.test.tsx',
       'user/workboard/ConglomerateDetailPage.test.tsx',
+      'user/workboard/IdeaWorkboardPage.test.tsx',
       'user/workboard/IdeasListPage.test.tsx',
       'user/workboard/WatchlistsPage.test.tsx',
     ],
@@ -466,7 +467,7 @@ export const V5_SURFACE_INVENTORY = [
       ),
       empty: covered('No portfolio, no orders, and no calculator positions have compact guidance.'),
       error: covered(
-        'Portfolio/detail/history prefill and standing-order failures expose retry; calculators stay standalone.',
+        'Portfolio-list failure gates dependent sections; detail/analytics/history prefill failures retry without hiding projections, orders, or standalone calculators.',
       ),
     },
     tests: [
@@ -540,13 +541,14 @@ export const V5_SURFACE_INVENTORY = [
       ),
       empty: covered('Every collection has a contextual EmptyState or compact no-comments row.'),
       error: covered(
-        'Audience and co-member metadata gate sharing until retry succeeds; confirmed 401/403/404 outcomes remain privacy-indistinguishable.',
+        'Fresh audience/co-member metadata gates sharing; chat and shared-item outages retry, while confirmed 401/403/404 outcomes remain privacy-indistinguishable.',
       ),
     },
     tests: [
       'user/social/CommentThread.test.tsx',
       'user/social/FriendGroupsSection.test.tsx',
       'user/social/FriendsPage.test.tsx',
+      'user/social/ChatPage.test.tsx',
       'user/social/MySharedItemsPage.test.tsx',
       'user/social/SharedConglomeratePage.test.tsx',
       'user/social/SharedPortfolioPage.test.tsx',
@@ -598,7 +600,7 @@ export const V5_SURFACE_INVENTORY = [
   },
   {
     id: 'p10-api-platform',
-    phases: ['P10'],
+    phases: ['P10', 'P13b'],
     routes: ['/control/webhooks', '/admin/api-keys'],
     components: ['user/control/panels/WebhooksPanel.tsx', 'admin/pages/ApiKeysPage.tsx'],
     copyRoots: ['settings.api.webhooks', 'admin.apiKeys'],
@@ -613,7 +615,7 @@ export const V5_SURFACE_INVENTORY = [
   },
   {
     id: 'p12-local-ai',
-    phases: ['P12'],
+    phases: ['P12', 'P13b'],
     routes: ['/admin/ai', '/portfolio/analysis', '/workbench/blueprints/new'],
     components: [
       'admin/pages/AiSettingsPage.tsx',
@@ -640,7 +642,7 @@ export const V5_SURFACE_INVENTORY = [
   },
   {
     id: 'v5-shared-shell-and-portfolio-entry',
-    phases: ['P0', 'P0c', 'P1', 'P6b', 'P13'],
+    phases: ['P0', 'P0c', 'P1', 'P6b', 'P13', 'P13b'],
     routes: [
       '/',
       '/assets/custom-assets',
@@ -730,6 +732,43 @@ export const V5_SURFACE_INVENTORY = [
     ],
   },
   {
+    id: 'p13b-admin-phone-usability',
+    phases: ['P13b'],
+    routes: ['/admin/login', '/admin/settings', '/admin/users'],
+    components: [
+      'admin/pages/ForcedPasswordChangePage.tsx',
+      'admin/pages/LoginPage.tsx',
+      'admin/pages/SettingsPage.tsx',
+      'admin/pages/TwoFactorChallengePage.tsx',
+      'admin/pages/TwoFactorSetupPage.tsx',
+      'admin/pages/UsersPage.tsx',
+    ],
+    copyRoots: [
+      'auth.adminLogin',
+      'auth.adminForcedPassword',
+      'admin.settings',
+      'admin.twoFactor',
+      'admin.users',
+    ],
+    copyReview:
+      'Phone-safe admin login/traps, registration settings, and user management reviewed in both catalogs; responsive behavior remains covered by the P13b admin-mobile gate.',
+    states: {
+      loading: covered('Session, settings, user, token, request, and 2FA progress stays explicit.'),
+      empty: covered(
+        'User search, registration tokens, and approval requests distinguish empty results.',
+      ),
+      error: covered(
+        'Session and resource reads expose localized retry; form and mutation failures remain inline.',
+      ),
+    },
+    tests: [
+      'admin/AdminApp.test.tsx',
+      'admin/pages/LoginPage.test.tsx',
+      'admin/pages/SettingsPage.test.tsx',
+      'admin/pages/UsersPage.test.tsx',
+    ],
+  },
+  {
     id: 'p13c-admin-session-policy',
     phases: ['P13c'],
     routes: ['/admin/security'],
@@ -793,7 +832,7 @@ export const NON_V5_SURFACES = [
   {
     path: 'admin/components/Modal.tsx',
     reason: 'no-user-copy',
-    note: 'V1 admin modal frame; heading and body are caller props.',
+    note: 'P13b made this V1 frame phone-safe, but heading/body remain caller props and it owns no copy.',
   },
   {
     path: 'admin/components/twoFactor.tsx',
@@ -821,44 +860,14 @@ export const NON_V5_SURFACES = [
     note: 'V1 SMTP diagnostics (#81); still English-only.',
   },
   {
-    path: 'admin/pages/ForcedPasswordChangePage.tsx',
-    reason: 'no-v5-deliverable',
-    note: 'V2 forced admin password change (#272); still English-only.',
-  },
-  {
     path: 'admin/pages/InvitesPage.tsx',
     reason: 'no-v5-deliverable',
     note: 'V1 invite management (#11); still English-only.',
   },
   {
-    path: 'admin/pages/LoginPage.tsx',
-    reason: 'no-v5-deliverable',
-    note: 'V1 admin login (#11); still English-only.',
-  },
-  {
-    path: 'admin/pages/SettingsPage.tsx',
-    reason: 'no-v5-deliverable',
-    note: 'V4 registration modes and app-wide toggles (#204); still English-only.',
-  },
-  {
-    path: 'admin/pages/TwoFactorChallengePage.tsx',
-    reason: 'no-v5-deliverable',
-    note: 'V4 admin-2FA login challenge (#450).',
-  },
-  {
-    path: 'admin/pages/TwoFactorSetupPage.tsx',
-    reason: 'no-v5-deliverable',
-    note: 'V4 mandatory admin-2FA enrolment (#450).',
-  },
-  {
     path: 'admin/pages/UserDetailPage.tsx',
     reason: 'no-v5-deliverable',
     note: 'V2 admin user detail (#265); still English-only.',
-  },
-  {
-    path: 'admin/pages/UsersPage.tsx',
-    reason: 'no-v5-deliverable',
-    note: 'V1 admin user list (#11); still English-only.',
   },
   {
     path: 'ui/ComingSoon.tsx',
@@ -897,8 +906,8 @@ export const NON_V5_SURFACES = [
   },
   {
     path: 'ui/charts/Sparkline.tsx',
-    reason: 'no-user-copy',
-    note: 'V1 sparkline renderer (#20); axis-free, no copy.',
+    reason: 'no-v5-deliverable',
+    note: 'V1 sparkline renderer (#20); Q1 localized its shared accessibility fallback.',
   },
   {
     path: 'ui/origin/components.tsx',
@@ -984,8 +993,8 @@ export const NON_V5_SURFACES = [
   },
   {
     path: 'user/components/PinInput.tsx',
-    reason: 'no-user-copy',
-    note: 'V2 segmented PIN inputs (#287); labels come from callers.',
+    reason: 'no-v5-deliverable',
+    note: 'V2 segmented PIN inputs (#287); Q1 localized its per-digit accessibility suffix.',
   },
   {
     path: 'user/components/askdock/AskDock.tsx',
@@ -1301,17 +1310,6 @@ export const NON_V5_ROUTES = [
   { path: '/admin/audit', reason: 'no-v5-deliverable', note: 'V1 admin audit log.' },
   { path: '/admin/email', reason: 'no-v5-deliverable', note: 'V1 SMTP diagnostics.' },
   { path: '/admin/invites', reason: 'no-v5-deliverable', note: 'V1 invite management.' },
-  {
-    path: '/admin/login',
-    reason: 'no-v5-deliverable',
-    note: 'V1 admin login; V4 added its 2FA challenge.',
-  },
-  {
-    path: '/admin/settings',
-    reason: 'no-v5-deliverable',
-    note: 'V4 registration modes and app-wide toggles.',
-  },
-  { path: '/admin/users', reason: 'no-v5-deliverable', note: 'V1 admin user list.' },
   { path: '/admin/users/:userId', reason: 'no-v5-deliverable', note: 'V2 admin user detail.' },
   {
     path: '/ask',
@@ -1374,18 +1372,16 @@ export const NON_V5_ROUTES = [
 /**
  * Frozen literal-copy debt, by file. These pre-V5 admin pages were never
  * localized; #739 requires non-V5 surfaces to be preserved, so the debt is
- * recorded rather than paid here. The test asserts each file stays at or below
- * its budget and that no other file may join the map — so the debt can only
- * shrink, and new hardcoded copy anywhere in the universe fails.
+ * recorded rather than paid here. These counts include JSX expression and
+ * template literals (the P13b review closed that former scanner blind spot).
+ * The test asserts each file stays at or below its budget and that no other file
+ * may join the map — so the debt can only shrink, and new hardcoded copy anywhere
+ * in the universe fails.
  */
 export const LEGACY_LITERAL_COPY: Readonly<Record<string, number>> = {
-  'admin/pages/AnnouncementsPage.tsx': 28,
-  'admin/pages/AuditPage.tsx': 10,
-  'admin/pages/EmailPage.tsx': 19,
-  'admin/pages/ForcedPasswordChangePage.tsx': 4,
-  'admin/pages/InvitesPage.tsx': 12,
-  'admin/pages/LoginPage.tsx': 3,
-  'admin/pages/SettingsPage.tsx': 32,
-  'admin/pages/UserDetailPage.tsx': 32,
-  'admin/pages/UsersPage.tsx': 17,
+  'admin/pages/AnnouncementsPage.tsx': 36,
+  'admin/pages/AuditPage.tsx': 13,
+  'admin/pages/EmailPage.tsx': 21,
+  'admin/pages/InvitesPage.tsx': 14,
+  'admin/pages/UserDetailPage.tsx': 46,
 };

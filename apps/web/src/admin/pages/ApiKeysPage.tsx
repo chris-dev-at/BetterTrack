@@ -5,7 +5,6 @@ import type { AdminApiKey, ApiKeyAuditResponse, ApiKeyTier } from '@bettertrack/
 
 import { useT } from '../../i18n';
 import type { TranslateFn } from '../../i18n';
-import { ApiError } from '../../lib/apiClient';
 import * as api from '../../lib/adminApi';
 import { formatDateTime } from '../../lib/format';
 import { useResource } from '../useResource';
@@ -13,7 +12,8 @@ import { Modal } from '../components/Modal';
 import { Alert, Badge, Button, EmptyState, PageHeader, Spinner, TextField } from '../components/ui';
 
 function errorMessage(err: unknown, t: TranslateFn): string {
-  return err instanceof ApiError ? err.message : t('common.genericError');
+  void err;
+  return t('common.genericError');
 }
 
 /**

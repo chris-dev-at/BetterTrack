@@ -81,7 +81,10 @@ function usePortfolioPrefill(): {
   prefill: Prefill;
   isLoading: boolean;
   isError: boolean;
+  portfolioListLoading: boolean;
+  portfolioListError: boolean;
   portfolios: PortfolioSummary[];
+  retryPortfolioList: () => void;
   retry: () => void;
 } {
   const store = usePortfolioStore();
@@ -133,9 +136,13 @@ function usePortfolioPrefill(): {
     },
     isLoading: portfoliosQuery.isLoading || portfolioQuery.isLoading || modeQuery.isLoading,
     isError: portfoliosQuery.isError || portfolioQuery.isError || modeQuery.isError,
+    portfolioListLoading: portfoliosQuery.isLoading,
+    portfolioListError: portfoliosQuery.isError,
     portfolios,
-    retry: () => {
+    retryPortfolioList: () => {
       void portfoliosQuery.refetch();
+    },
+    retry: () => {
       if (portfolioId !== null) {
         void portfolioQuery.refetch();
         void modeQuery.refetch();
@@ -548,6 +555,9 @@ export function ForecastPage() {
     portfolios,
     isLoading: prefillLoading,
     isError: prefillError,
+    portfolioListLoading,
+    portfolioListError,
+    retryPortfolioList,
     retry: retryPrefill,
   } = usePortfolioPrefill();
 
@@ -558,14 +568,14 @@ export function ForecastPage() {
         <p className="text-sm bt-muted">{t('forecast.subtitle')}</p>
       </header>
 
-      {prefillLoading && !prefillError ? (
+      {portfolioListLoading && !portfolioListError ? (
         <div className="bt-panel bt-panel--soft p-4">
           <Spinner label={t('forecast.prefill.loading')} />
         </div>
-      ) : prefillError ? (
+      ) : portfolioListError ? (
         <div className="flex flex-col items-start gap-3">
           <Alert tone="error">{t('forecast.prefill.error')}</Alert>
-          <Button onClick={retryPrefill}>{t('common.retry')}</Button>
+          <Button onClick={retryPortfolioList}>{t('common.retry')}</Button>
         </div>
       ) : (
         <>
@@ -592,10 +602,19 @@ export function ForecastPage() {
           </h2>
           <p className="text-xs bt-muted">{t('forecast.calculators.description')}</p>
         </div>
-        {!prefillLoading &&
-        !prefillError &&
-        prefill.portfolioValueEur === null &&
-        prefill.averageReturnPctPerYear === null ? (
+        {!portfolioListLoading && !portfolioListError && prefillLoading && !prefillError ? (
+          <div className="bt-panel bt-panel--soft p-4">
+            <Spinner label={t('forecast.prefill.loading')} />
+          </div>
+        ) : !portfolioListError && prefillError ? (
+          <div className="flex flex-col items-start gap-3">
+            <Alert tone="error">{t('forecast.prefill.error')}</Alert>
+            <Button onClick={retryPrefill}>{t('common.retry')}</Button>
+          </div>
+        ) : !prefillLoading &&
+          !prefillError &&
+          prefill.portfolioValueEur === null &&
+          prefill.averageReturnPctPerYear === null ? (
           <Alert tone="info">{t('forecast.calculators.prefillUnavailable')}</Alert>
         ) : null}
         <CalculatorCard

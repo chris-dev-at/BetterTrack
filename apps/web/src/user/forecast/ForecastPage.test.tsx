@@ -220,22 +220,64 @@ test('retries failed portfolio-detail and analytics prefill reads together', asy
   ).toBeInTheDocument();
   await waitFor(() => {
     expect(getPortfolio).toHaveBeenCalledTimes(1);
-    expect(getAnalyticsSeries).toHaveBeenCalledTimes(1);
+    expect(
+      vi.mocked(getAnalyticsSeries).mock.calls.filter(([, params]) => params?.mode === 'perf'),
+    ).toHaveLength(1);
   });
+  expect(screen.getByRole('heading', { name: 'Net-worth projection' })).toBeInTheDocument();
+  expect(screen.getByRole('heading', { name: 'Standing orders' })).toBeInTheDocument();
 
   await user.click(screen.getByRole('button', { name: 'Try again' }));
 
-  expect(await screen.findByRole('heading', { name: 'Net-worth projection' })).toBeInTheDocument();
-  expect(getPortfolio).toHaveBeenCalledTimes(2);
+  await waitFor(() => {
+    expect(getPortfolio).toHaveBeenCalledTimes(2);
+    expect(
+      vi.mocked(getAnalyticsSeries).mock.calls.filter(([, params]) => params?.mode === 'perf'),
+    ).toHaveLength(2);
+  });
   expect(
-    vi.mocked(getAnalyticsSeries).mock.calls.filter(([, params]) => params?.mode === 'perf'),
-  ).toHaveLength(2);
+    screen.queryByText('Could not load the portfolio data used by forecasts. Please try again.'),
+  ).not.toBeInTheDocument();
+});
+
+test('an analytics-only prefill outage keeps projections and standing orders available', async () => {
+  let perfReads = 0;
+  vi.mocked(getAnalyticsSeries).mockImplementation((_portfolioId, params) => {
+    if (params?.mode === 'perf' && perfReads++ === 0) {
+      return Promise.reject(new Error('analytics offline'));
+    }
+    return Promise.resolve(ANALYTICS);
+  });
+  const user = userEvent.setup();
+  renderForecast();
+
+  expect(
+    await screen.findByText(
+      'Could not load the portfolio data used by forecasts. Please try again.',
+    ),
+  ).toBeInTheDocument();
+  expect(screen.getByRole('heading', { name: 'Net-worth projection' })).toBeInTheDocument();
+  expect(screen.getByRole('heading', { name: 'Standing orders' })).toBeInTheDocument();
+  expect(await screen.findByText('No standing orders yet')).toBeInTheDocument();
+
+  await user.click(screen.getByRole('button', { name: 'Try again' }));
+
+  await waitFor(() =>
+    expect(
+      screen.queryByText('Could not load the portfolio data used by forecasts. Please try again.'),
+    ).not.toBeInTheDocument(),
+  );
+  expect(perfReads).toBe(2);
 });
 
 test('retries the encrypted-history prefill read in paranoid mode', async () => {
-  vi.mocked(getPortfolioHistory)
-    .mockRejectedValueOnce(new Error('history offline'))
-    .mockResolvedValueOnce(HISTORY);
+  let maxReads = 0;
+  vi.mocked(getPortfolioHistory).mockImplementation((_portfolioId, range) => {
+    if (range === 'MAX' && maxReads++ === 0) {
+      return Promise.reject(new Error('history offline'));
+    }
+    return Promise.resolve(HISTORY);
+  });
   const user = userEvent.setup();
   renderForecast('paranoid');
 
@@ -250,6 +292,7 @@ test('retries the encrypted-history prefill read in paranoid mode', async () => 
   expect(
     vi.mocked(getPortfolioHistory).mock.calls.filter(([, range]) => range === 'MAX'),
   ).toHaveLength(2);
+  expect(maxReads).toBe(2);
 });
 
 test('the projection engine fills the net-worth projection slot', async () => {

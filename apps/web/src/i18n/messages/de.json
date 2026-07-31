@@ -21,7 +21,13 @@
       "waitMoment": " Bitte warte einen Moment und versuche es erneut."
     },
     "adminLogin": {
-      "heading": "Admin-Anmeldung"
+      "heading": "Admin-Anmeldung",
+      "notAdmin": "Dies ist ein Nutzerkonto, kein Administratorkonto — melde dich bitte über die Haupt-App an.",
+      "invalidCredentials": "E-Mail/Benutzername oder Passwort ist falsch.",
+      "genericError": "Anmeldung fehlgeschlagen. Bitte versuche es erneut."
+    },
+    "adminForcedPassword": {
+      "info": "Lege ein neues Passwort fest, bevor du mit der Admin-Konsole fortfährst."
     },
     "login": {
       "subtitle": "Melde dich bei deinem Konto an",
@@ -141,6 +147,7 @@
       "promptWithUser": "Willkommen zurück, {{username}}. Gib deine {{length}}-stellige PIN ein, um fortzufahren.",
       "prompt": "Gib deine {{length}}-stellige PIN ein, um fortzufahren.",
       "inputLabel": "PIN",
+      "digitLabel": "{{label}}, Ziffer {{position}}",
       "fallbackError": "Zu viele falsche PINs. Bitte melde dich mit deinem Passwort an.",
       "invalidPin": "Falsche PIN. Bitte versuche es erneut.",
       "rateLimited": "Zu viele Versuche. Bitte warte einen Moment und versuche es erneut.",
@@ -282,7 +289,10 @@
       "priceChartDataDate": "Datum",
       "priceChartDataValue": "Wert",
       "priceChartDataSampled": "Es werden {{shown}} von {{total}} dargestellten Punkten angezeigt.",
-      "allocationFallbackTitle": "Aufteilung im Überblick"
+      "allocationFallbackTitle": "Aufteilung im Überblick",
+      "noTrendData": "Keine Trenddaten",
+      "trendUp": "Aufwärtstrend",
+      "trendDown": "Abwärtstrend"
     },
     "marketState": {
       "open": "Geöffnet",
@@ -2631,7 +2641,8 @@
         "loadError": "Diese Idee konnte nicht geladen werden.",
         "thesisHeading": "These",
         "backtestHeading": "Backtest",
-        "conglomerateGone": "Der Blueprint, auf den diese Idee verweist, ist nicht mehr verfügbar."
+        "conglomerateGone": "Der Blueprint, auf den diese Idee verweist, ist nicht mehr verfügbar.",
+        "conglomerateLoadError": "Der Blueprint dieser Idee konnte nicht geladen werden. Bitte versuche es erneut."
       }
     },
     "comparison": {
@@ -3937,6 +3948,119 @@
         "people": "Personen",
         "configuration": "Konfiguration",
         "diagnostics": "Diagnose"
+      }
+    },
+    "settings": {
+      "title": "Einstellungen",
+      "subtitle": "Globale App-Konfiguration — wie Konten entstehen und welche Funktionen appweit gelten.",
+      "loading": "Einstellungen werden geladen…",
+      "save": "Einstellungen speichern",
+      "saved": "Einstellungen gespeichert.",
+      "unsaved": "Ungespeicherte Änderungen",
+      "registration": {
+        "title": "Registrierungsmodus",
+        "description": "Legt fest, wie neue Konten entstehen. Ein Wechsel gilt sofort.",
+        "modes": {
+          "closed": {
+            "title": "Geschlossen",
+            "description": "Nur vom Admin erstellte Nutzer und Einladungslinks. Das ist der vollständig durchgesetzte Standard."
+          },
+          "inviteToken": {
+            "title": "Einladung / Zugriffstoken",
+            "description": "Selbstständige Registrierung mit einem gültigen Zugriffstoken von unten."
+          },
+          "approval": {
+            "title": "Freigabe",
+            "description": "Offenes Registrierungsformular; Konten warten danach unten auf ihre Freigabe."
+          },
+          "open": {
+            "title": "Offen",
+            "description": "Automatische Registrierung — jeder kann ein Konto erstellen und sich direkt anmelden."
+          }
+        }
+      },
+      "features": {
+        "title": "Funktionsschalter",
+        "description": "Hier liegen appweite Feature-Flags und Zugriffsregeln. Weitere Schalter folgen nach V1.",
+        "betaLabel": "Beta-Modus",
+        "placeholder": "Platzhalter",
+        "betaDescription": "Experimentelle Bereiche lassen sich damit hinter einem Beta-Flag sperren. Derzeit hängt noch kein App-Verhalten davon ab."
+      },
+      "tokens": {
+        "title": "Registrierungstoken",
+        "description": "Zugriffstoken für den Registrierungsmodus Einladung / Zugriffstoken.",
+        "inactive": "Sie gelten nur, solange oben Einladung / Zugriffstoken ausgewählt ist.",
+        "label": "Bezeichnung (optional)",
+        "labelPlaceholder": "Beta-Welle 1",
+        "maxUses": "Maximale Nutzungen",
+        "expiresInDays": "Läuft ab in Tagen (optional)",
+        "never": "nie",
+        "create": "Token erstellen",
+        "urlLabel": "Registrierungs-URL (jetzt kopieren — nur einmal sichtbar)",
+        "loading": "Token werden geladen…",
+        "untitled": "Token ohne Bezeichnung",
+        "status": {
+          "active": "aktiv",
+          "exhausted": "aufgebraucht",
+          "expired": "abgelaufen",
+          "revoked": "widerrufen"
+        },
+        "uses": "{{used}}/{{max}} Nutzungen",
+        "expires": "läuft am {{date}} ab",
+        "noExpiry": "läuft nicht ab",
+        "empty": "Noch keine Registrierungstoken."
+      },
+      "approvals": {
+        "title": "Freigabewarteschlange",
+        "description": "Selbstständige Registrierungen, die auf eine Prüfung warten.",
+        "inactive": "Neue Anträge kommen nur an, solange oben Freigabe ausgewählt ist.",
+        "loading": "Anträge werden geladen…",
+        "requested": "beantragt {{date}}",
+        "approve": "Freigeben",
+        "reject": "Ablehnen",
+        "empty": "Keine ausstehenden Registrierungen."
+      }
+    },
+    "users": {
+      "title": "Nutzer",
+      "subtitle": "Konten, Zugriffe und Anmeldedaten verwalten.",
+      "create": "Nutzer erstellen",
+      "searchLabel": "Suchen",
+      "searchPlaceholder": "Nach E-Mail oder Benutzername filtern",
+      "selectedOne": "{{count}} ausgewählt",
+      "selectedOther": "{{count}} ausgewählt",
+      "clear": "Auswahl aufheben",
+      "loading": "Nutzer werden geladen…",
+      "emptySearch": "Keine Nutzer passen zu deiner Suche.",
+      "empty": "Noch keine Nutzer. Erstelle den ersten.",
+      "selectAll": "Alle Nutzer auswählen",
+      "selectUser": "{{username}} auswählen",
+      "columns": {
+        "user": "Nutzer",
+        "role": "Rolle",
+        "status": "Status"
+      },
+      "roles": {
+        "admin": "Admin",
+        "user": "Nutzer"
+      },
+      "status": {
+        "active": "aktiv",
+        "disabled": "deaktiviert"
+      },
+      "stats": {
+        "users": "Nutzer",
+        "active": "Aktiv (≤30 T.)",
+        "disabled": "Deaktiviert",
+        "pendingInvites": "Ausstehende Einladungen"
+      },
+      "emailLabel": "E-Mail",
+      "usernameLabel": "Benutzername",
+      "usernameHint": "3–40 Zeichen: Buchstaben, Zahlen, Punkt, Bindestrich und Unterstrich.",
+      "bulkResult": {
+        "disabledOne": "{{count}} Nutzer deaktiviert",
+        "disabledOther": "{{count}} Nutzer deaktiviert",
+        "skipped": "{{count}} übersprungen"
       }
     },
     "accountDefaults": {

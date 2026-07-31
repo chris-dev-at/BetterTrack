@@ -7,6 +7,7 @@ import type { AdminApiKey, ApiKeyTier, MeResponse } from '@bettertrack/contracts
 vi.mock('../../lib/adminApi');
 import * as api from '../../lib/adminApi';
 import { I18nProvider } from '../../i18n';
+import { ApiError } from '../../lib/apiClient';
 import { AuthProvider } from '../AuthContext';
 import { ApiKeysPage } from './ApiKeysPage';
 
@@ -186,4 +187,20 @@ test('retries a failed per-key audit read', async () => {
 
   expect(await within(dialog).findByText('No recorded requests yet.')).toBeInTheDocument();
   expect(api.getApiKeyAudit).toHaveBeenCalledTimes(2);
+});
+
+test('localizes an API mutation failure instead of rendering the server message', async () => {
+  vi.mocked(api.createApiKeyTier).mockRejectedValue(
+    new ApiError(500, 'INTERNAL', 'The tier could not be created.'),
+  );
+  const user = userEvent.setup();
+  renderPage('de');
+
+  await user.type(await screen.findByLabelText('Name'), 'Langsam');
+  await user.click(screen.getByRole('button', { name: 'Stufe hinzufügen' }));
+
+  expect(await screen.findByRole('alert')).toHaveTextContent(
+    'Etwas ist schiefgelaufen. Bitte versuche es erneut.',
+  );
+  expect(screen.queryByText(/tier could not be created/i)).not.toBeInTheDocument();
 });

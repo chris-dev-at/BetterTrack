@@ -12,6 +12,7 @@ import {
 vi.mock('../../lib/adminApi');
 import * as api from '../../lib/adminApi';
 import { I18nProvider } from '../../i18n';
+import { ApiError } from '../../lib/apiClient';
 import { AuthProvider } from '../AuthContext';
 import { AccountDefaultsPage } from './AccountDefaultsPage';
 
@@ -141,4 +142,33 @@ test('retries a failed defaults read', async () => {
   await user.click(await screen.findByRole('button', { name: 'Try again' }));
   expect(await screen.findByRole('columnheader', { name: 'In-app' })).toBeInTheDocument();
   expect(api.getAccountDefaults).toHaveBeenCalledTimes(2);
+});
+
+test('localizes an API resource failure instead of rendering the server message', async () => {
+  vi.mocked(api.getAccountDefaults).mockRejectedValue(
+    new ApiError(503, 'UNAVAILABLE', 'Unable to reach the server. Check your connection.'),
+  );
+
+  renderPage('de');
+
+  expect(await screen.findByRole('alert')).toHaveTextContent(
+    'Etwas ist schiefgelaufen. Bitte versuche es erneut.',
+  );
+  expect(screen.queryByText(/Unable to reach the server/i)).not.toBeInTheDocument();
+});
+
+test('localizes an API mutation failure instead of rendering the server message', async () => {
+  vi.mocked(api.getAccountDefaults).mockResolvedValue(makeDefaults());
+  vi.mocked(api.updateAccountDefaults).mockRejectedValue(
+    new ApiError(500, 'INTERNAL', 'The defaults could not be saved.'),
+  );
+  const user = userEvent.setup();
+
+  renderPage('de');
+
+  await user.click(await screen.findByRole('button', { name: 'Vorgaben speichern' }));
+  expect(await screen.findByRole('alert')).toHaveTextContent(
+    'Etwas ist schiefgelaufen. Bitte versuche es erneut.',
+  );
+  expect(screen.queryByText(/defaults could not be saved/i)).not.toBeInTheDocument();
 });

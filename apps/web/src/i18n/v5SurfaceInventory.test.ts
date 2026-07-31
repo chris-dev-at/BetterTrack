@@ -55,12 +55,18 @@ admin/pages/AccountDefaultsPage.tsx
 admin/pages/AiSettingsPage.tsx
 admin/pages/ApiKeysPage.tsx
 admin/pages/FeatureFlagsPage.tsx
+admin/pages/ForcedPasswordChangePage.tsx
 admin/pages/HealthPage.tsx
+admin/pages/LoginPage.tsx
 admin/pages/MonitoringPage.tsx
 admin/pages/OAuthAppsPage.tsx
 admin/pages/ProblemsPage.tsx
 admin/pages/SecuritySettingsPage.tsx
+admin/pages/SettingsPage.tsx
+admin/pages/TwoFactorChallengePage.tsx
+admin/pages/TwoFactorSetupPage.tsx
 admin/pages/UsageAnalyticsPage.tsx
+admin/pages/UsersPage.tsx
 ui/MoneyText.tsx
 ui/ScopePicker.tsx
 ui/MarketStateBadge.tsx
@@ -177,11 +183,14 @@ const EXPECTED_V5_ROUTES = baseline(`
 /admin/api-keys
 /admin/feature-flags
 /admin/health
+/admin/login
 /admin/monitoring
 /admin/oauth-apps
 /admin/problems
 /admin/security
+/admin/settings
 /admin/usage-analytics
+/admin/users
 /assets/:id
 /assets/custom-assets
 /assets/news
@@ -253,6 +262,7 @@ const EXPECTED_V5_PHASES = [
   'P10',
   'P12',
   'P13',
+  'P13b',
   'P13c',
 ].sort();
 
@@ -305,11 +315,11 @@ function universeModules(): string[] {
   return found.sort();
 }
 
-function parseTsx(relativePath: string): ts.SourceFile {
+function parseTsx(relativePath: string, sourceText?: string): ts.SourceFile {
   const absolutePath = resolve(SRC_ROOT, relativePath);
   return ts.createSourceFile(
     absolutePath,
-    readFileSync(absolutePath, 'utf8'),
+    sourceText ?? readFileSync(absolutePath, 'utf8'),
     ts.ScriptTarget.Latest,
     true,
     ts.ScriptKind.TSX,
@@ -326,11 +336,17 @@ const USER_FACING_ATTRIBUTES = new Set([
   'subtitle',
   'title',
 ]);
-const ALLOWED_TECHNICAL_VALUES = new Set(['http://localhost:11434', 'llama3.1:8b']);
+const ALLOWED_TECHNICAL_VALUES = new Set([
+  'http://localhost:11434',
+  'llama3.1:8b',
+  'myapp://callback',
+  'web …',
+  'web … · api …',
+]);
 
 /** Literal user-facing strings rendered by a TSX module, as `path:line "text"`. */
-function literalCopy(relativePath: string): string[] {
-  const sourceFile = parseTsx(relativePath);
+function literalCopy(relativePath: string, sourceText?: string): string[] {
+  const sourceFile = parseTsx(relativePath, sourceText);
   const findings: string[] = [];
 
   const record = (node: ts.Node, value: string) => {
@@ -346,6 +362,62 @@ function literalCopy(relativePath: string): string[] {
     findings.push(`${relativePath}:${line} ${JSON.stringify(normalized)}`);
   };
 
+  const recordExpression = (node: ts.Node): void => {
+    if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)) {
+      record(node, node.text);
+      return;
+    }
+    if (ts.isTemplateExpression(node)) {
+      record(
+        node,
+        `${node.head.text}${node.templateSpans.map((span) => `…${span.literal.text}`).join('')}`,
+      );
+      return;
+    }
+    // Translation calls contain string-literal catalog keys; those are not
+    // rendered copy. JSX nested inside an expression is visited normally by
+    // the outer walk and must not be double-counted here.
+    if (
+      ts.isCallExpression(node) ||
+      ts.isJsxElement(node) ||
+      ts.isJsxSelfClosingElement(node) ||
+      ts.isJsxFragment(node)
+    ) {
+      return;
+    }
+    if (ts.isConditionalExpression(node)) {
+      recordExpression(node.whenTrue);
+      recordExpression(node.whenFalse);
+      return;
+    }
+    if (ts.isBinaryExpression(node)) {
+      if (node.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken) {
+        recordExpression(node.right);
+      } else if (
+        node.operatorToken.kind === ts.SyntaxKind.BarBarToken ||
+        node.operatorToken.kind === ts.SyntaxKind.QuestionQuestionToken ||
+        node.operatorToken.kind === ts.SyntaxKind.PlusToken
+      ) {
+        recordExpression(node.left);
+        recordExpression(node.right);
+      }
+      return;
+    }
+    if (
+      ts.isParenthesizedExpression(node) ||
+      ts.isAsExpression(node) ||
+      ts.isTypeAssertionExpression(node) ||
+      ts.isNonNullExpression(node) ||
+      ts.isAwaitExpression(node)
+    ) {
+      recordExpression(node.expression);
+      return;
+    }
+    if (ts.isArrayLiteralExpression(node)) {
+      for (const element of node.elements) recordExpression(element);
+    }
+  };
+
   const visit = (node: ts.Node) => {
     if (ts.isJsxText(node)) record(node, node.getText(sourceFile));
     if (
@@ -355,6 +427,17 @@ function literalCopy(relativePath: string): string[] {
       ts.isStringLiteral(node.initializer)
     ) {
       record(node, node.initializer.text);
+    }
+    if (ts.isJsxExpression(node) && node.expression) {
+      const parent = node.parent;
+      if (
+        (ts.isJsxAttribute(parent) &&
+          USER_FACING_ATTRIBUTES.has(parent.name.getText(sourceFile))) ||
+        ts.isJsxElement(parent) ||
+        ts.isJsxFragment(parent)
+      ) {
+        recordExpression(node.expression);
+      }
     }
     ts.forEachChild(node, visit);
   };
@@ -446,6 +529,18 @@ function registeredRoutes(relativePath: string, base: string): RegisteredRoute[]
 }
 
 describe('V5-P14 surface traceability inventory', () => {
+  test('the literal-copy gate sees JSX expression and template literals, but not catalog keys', () => {
+    const findings = literalCopy(
+      'synthetic-copy-probe.tsx',
+      "const Probe = ({ name }) => <><p>{true ? 'Visible choice' : t('copy.key')}</p><input aria-label={`Select ${name}`} /><p>{t('other.key')}</p></>;",
+    );
+
+    expect(findings.some((finding) => finding.includes('Visible choice'))).toBe(true);
+    expect(findings.some((finding) => finding.includes('Select …'))).toBe(true);
+    expect(findings.some((finding) => finding.includes('copy.key'))).toBe(false);
+    expect(findings.some((finding) => finding.includes('other.key'))).toBe(false);
+  });
+
   test('classifies every user-facing module as a V5 surface or a reasoned exemption', () => {
     const universe = universeModules();
     const inventoried = new Set<string>(

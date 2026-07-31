@@ -6,6 +6,7 @@ import type { AppSettingsResponse, MeResponse, RegistrationToken } from '@better
 
 vi.mock('../../lib/adminApi');
 import * as api from '../../lib/adminApi';
+import { I18nProvider } from '../../i18n';
 import { AuthProvider } from '../AuthContext';
 import { SettingsPage } from './SettingsPage';
 
@@ -42,11 +43,13 @@ const registrationToken: RegistrationToken = {
   createdAt: '2026-07-14T00:00:00.000Z',
 };
 
-function renderPage() {
+function renderPage(locale: 'en' | 'de' = 'en') {
   return render(
-    <AuthProvider>
-      <SettingsPage />
-    </AuthProvider>,
+    <I18nProvider initialLocale={locale}>
+      <AuthProvider>
+        <SettingsPage />
+      </AuthProvider>
+    </I18nProvider>,
   );
 }
 
@@ -191,10 +194,12 @@ test('offers a retry after a load failure', async () => {
   );
   renderPage();
 
-  expect(await screen.findByRole('alert')).toHaveTextContent('Something went wrong.');
+  expect(await screen.findByRole('alert')).toHaveTextContent(
+    'Something went wrong. Please try again.',
+  );
 
   vi.mocked(api.getSettings).mockResolvedValueOnce(settings);
-  await userEvent.click(screen.getByRole('button', { name: /retry/i }));
+  await userEvent.click(screen.getByRole('button', { name: 'Try again' }));
 
   expect(await screen.findByRole('radio', { name: /Closed/i })).toBeInTheDocument();
 });
@@ -209,5 +214,14 @@ test('surfaces a save error from the API', async () => {
   await userEvent.click(await screen.findByRole('checkbox', { name: /Beta mode/i }));
   await userEvent.click(screen.getByRole('button', { name: /save settings/i }));
 
-  expect(await screen.findByText(/registration mode not allowed/i)).toBeInTheDocument();
+  expect(await screen.findByText(/something went wrong. please try again/i)).toBeInTheDocument();
+});
+
+test('renders the P13b settings surface in German', async () => {
+  renderPage('de');
+
+  expect(await screen.findByRole('heading', { name: 'Einstellungen' })).toBeInTheDocument();
+  expect(screen.getByRole('radio', { name: /Geschlossen/i })).toBeChecked();
+  expect(screen.getByRole('heading', { name: 'Registrierungstoken' })).toBeInTheDocument();
+  expect(screen.getByRole('heading', { name: 'Freigabewarteschlange' })).toBeInTheDocument();
 });

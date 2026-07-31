@@ -1,6 +1,7 @@
-import { render } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import { describe, expect, test } from 'vitest';
 
+import { I18nProvider } from '../../i18n';
 import { Sparkline } from './Sparkline';
 import { sampleSparkline } from './fixtures';
 
@@ -35,5 +36,17 @@ describe('Sparkline', () => {
     const single = render(<Sparkline data={[42]} />);
     expect(single.container.querySelector('polyline')).toBeNull();
     expect(single.container.querySelector('line')).not.toBeNull();
+  });
+
+  test('localizes its expression-backed accessibility fallbacks', () => {
+    render(
+      <I18nProvider initialLocale="de">
+        <Sparkline data={[1, 2]} />
+        <Sparkline data={[]} />
+      </I18nProvider>,
+    );
+
+    expect(screen.getByRole('img', { name: 'Aufwärtstrend' })).toBeInTheDocument();
+    expect(screen.getByRole('img', { name: 'Keine Trenddaten' })).toBeInTheDocument();
   });
 });

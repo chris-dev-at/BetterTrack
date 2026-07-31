@@ -23,8 +23,10 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-function renderPicker(onClose = vi.fn()) {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+function renderPicker(
+  onClose = vi.fn(),
+  queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+) {
   return render(
     <QueryClientProvider client={queryClient}>
       <AudiencePicker kind="portfolio" subjectId={SUBJECT} subjectLabel="Main" onClose={onClose} />
@@ -47,6 +49,79 @@ beforeEach(() => {
 });
 
 describe('AudiencePicker — authoritative reads', () => {
+  test('refreshes a cached audience before exposing or saving its recipients', async () => {
+    const oldFriendId = '00000000-0000-0000-0000-0000000000a1';
+    const currentFriendId = '00000000-0000-0000-0000-0000000000b2';
+    const audienceRead = deferred<Awaited<ReturnType<typeof getAudience>>>();
+    vi.mocked(getAudience).mockReturnValue(audienceRead.promise);
+    vi.mocked(listFriends).mockResolvedValue({
+      friends: [
+        {
+          user: { id: currentFriendId, username: 'current-friend' },
+          createdAt: '2026-01-01T00:00:00.000Z',
+        },
+      ],
+    });
+    vi.mocked(setAudience).mockResolvedValue({
+      state: {
+        kind: 'portfolio',
+        subjectId: SUBJECT,
+        audience: 'specific_friends',
+        friendIds: [currentFriendId],
+        groupId: null,
+        link: { active: false, createdAt: null },
+      },
+    });
+
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(['social', 'audience', 'portfolio', SUBJECT], {
+      kind: 'portfolio',
+      subjectId: SUBJECT,
+      audience: 'specific_friends',
+      friendIds: [oldFriendId],
+      groupId: null,
+      link: { active: false, createdAt: null },
+    });
+    queryClient.setQueryData(['social', 'friends'], {
+      friends: [
+        {
+          user: { id: oldFriendId, username: 'old-friend' },
+          createdAt: '2026-01-01T00:00:00.000Z',
+        },
+      ],
+    });
+    queryClient.setQueryData(['social', 'groups'], { groups: [] });
+
+    const user = userEvent.setup();
+    renderPicker(vi.fn(), queryClient);
+
+    expect(await screen.findByText('Loading sharing settings…')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^save$/i })).not.toBeInTheDocument();
+    expect(screen.queryByText('old-friend')).not.toBeInTheDocument();
+
+    await act(async () => {
+      audienceRead.resolve({
+        kind: 'portfolio',
+        subjectId: SUBJECT,
+        audience: 'specific_friends',
+        friendIds: [currentFriendId],
+        groupId: null,
+        link: { active: false, createdAt: null },
+      });
+    });
+
+    const currentFriend = await screen.findByRole('checkbox', { name: 'current-friend' });
+    expect(currentFriend).toBeChecked();
+    await user.click(screen.getByRole('button', { name: /^save$/i }));
+
+    await waitFor(() => expect(setAudience).toHaveBeenCalledTimes(1));
+    expect(setAudience).toHaveBeenCalledWith('portfolio', SUBJECT, {
+      audience: 'specific_friends',
+      friendIds: [currentFriendId],
+      acknowledgePublic: undefined,
+    });
+  });
+
   test('does not expose a save action before the current audience is known', async () => {
     const audienceRead = deferred<Awaited<ReturnType<typeof getAudience>>>();
     vi.mocked(getAudience).mockReturnValue(audienceRead.promise);
