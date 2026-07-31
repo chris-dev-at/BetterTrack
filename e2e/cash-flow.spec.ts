@@ -29,12 +29,13 @@ const FUNDING_DATE = '2026-01-05';
 const SPEND_DATE = '2026-01-12';
 
 /**
- * Record one movement through the NEW fast path: the "Record transaction"
- * button on the Cash page, not the accounts table.
+ * Record one movement through the NEW fast path: the record pair ("Record
+ * money in" / "Record money out") in the Cash page header, not the accounts
+ * table.
  *
- * This is the flow the redesign exists for — press one button, type an amount,
- * type what it was for. Date, account and the counts-against-performance choice
- * live behind "More" and are only opened when a case actually needs them.
+ * This is the flow the redesign exists for — press the half that matches the
+ * direction, type an amount, type what it was for. Date and the holding-cost
+ * tick sit in the main form; only manual tags live behind "Details".
  */
 async function recordCashEntry(
   page: Page,
@@ -51,17 +52,27 @@ async function recordCashEntry(
   // entry burned through the burst limiter — and re-navigating to a page you are
   // standing on is not what a person does anyway.
   if (!page.url().endsWith('/portfolio/cash')) await page.goto('/portfolio/cash');
-  await page.getByRole('button', { name: 'Record transaction' }).click();
+  // The opener is a joined pair now — one tinted half per direction (owner,
+  // 2026-07-31, second pass) — so there is no single "Record transaction"
+  // button; the group carries that name, its halves are the buttons.
+  await page
+    .getByRole('button', {
+      name: entry.direction === 'Money in' ? 'Record money in' : 'Record money out',
+      exact: true,
+    })
+    .click();
   const dialog = page.getByRole('dialog', { name: 'Record transaction' });
-  await dialog.getByRole('button', { name: entry.direction }).click();
+  // The half pre-arms the direction; clicking the segment keeps the spec
+  // honest about which one is active either way.
+  await dialog.getByRole('button', { name: entry.direction, exact: true }).click();
   await dialog.getByLabel('Amount').fill(entry.amount);
   if (entry.note !== undefined) await dialog.getByLabel('What for').fill(entry.note);
-  if (entry.date !== undefined || entry.countsToPerformance) {
-    await dialog.getByRole('button', { name: /Details/ }).click();
-    if (entry.date !== undefined) await dialog.getByLabel('Date').fill(entry.date);
-    if (entry.countsToPerformance) await dialog.getByRole('checkbox').check();
-  }
-  await dialog.getByRole('button', { name: 'Record' }).click();
+  // Date sits in the main form now (the "Details" disclosure only holds tags
+  // and the receipt slot), and the holding-cost tick — the user-facing face of
+  // the `fee` kind — rides beside the date whenever the direction is out.
+  if (entry.date !== undefined) await dialog.getByLabel('Date').fill(entry.date);
+  if (entry.countsToPerformance) await dialog.getByRole('checkbox').check();
+  await dialog.getByRole('button', { name: 'Record', exact: true }).click();
   await expect(dialog).toBeHidden({ timeout: 15_000 });
 }
 

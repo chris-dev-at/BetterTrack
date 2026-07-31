@@ -186,7 +186,10 @@ test('happy path: invite through friend sharing', async ({ browser }) => {
   await expect(friendCard).toBeVisible({ timeout: 15_000 });
   await friendCard.click();
 
-  const sharedLink = friend.getByRole('link', { name: 'Main' });
+  // Anchored: role-name matching is substring by default, and the shell's
+  // "Skip to main content" link would otherwise match 'Main' too. The shared
+  // link's accessible name is "Main <balance>", so anchor on the word.
+  const sharedLink = friend.getByRole('link', { name: /^Main\b/ });
   await expect(sharedLink).toBeVisible({ timeout: 15_000 });
   await sharedLink.click();
 
