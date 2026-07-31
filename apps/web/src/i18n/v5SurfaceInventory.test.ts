@@ -22,6 +22,9 @@ import { describe, expect, test } from 'vitest';
 
 import { LOCALES, localizedMessage, type MessageNode } from './registry';
 import {
+  DEFERRED_NON_V5_ASYNC_READ_SITE_BASELINE,
+  DEFERRED_NON_V5_ASYNC_STATE_DEBT,
+  DEFERRED_NON_V5_ASYNC_STATE_DEBT_CEILING,
   LEGACY_LITERAL_COPY,
   NON_SURFACE_ROUTE_ELEMENTS,
   NON_V5_ROUTES,
@@ -2459,7 +2462,39 @@ describe('V5-P14 surface traceability inventory', () => {
       coveredClaimFindings,
       `Mechanically covered state claims do not match component code:\n${coveredClaimFindings.join('\n')}`,
     ).toEqual([]);
-  });
+  }, 60_000);
+
+  test('keeps every deferred non-V5 async-state offender named and non-growing', () => {
+    const components = NON_V5_SURFACES.map((surface) => surface.path);
+    const result = analyzeAsyncReadStates(components, []);
+    const report = formatAsyncReadOffenders(result.offenders);
+    const actualDebt = debtRows(result.offenders);
+    const expectedDebt = Object.entries(DEFERRED_NON_V5_ASYNC_STATE_DEBT)
+      .flatMap(([component, reads]) =>
+        Object.entries(reads).map(([read, states]) => ({ component, read, states })),
+      )
+      .sort(compareComponentRead);
+
+    console.info(
+      `Deferred non-V5 async-state debt (${result.offenders.length} of ${result.reads.length} read sites):\n${report}`,
+    );
+
+    expect(
+      result.reads.length,
+      'The deferred non-V5 async-read universe changed; review the source-derived ledger instead of silently narrowing it.',
+    ).toBe(DEFERRED_NON_V5_ASYNC_READ_SITE_BASELINE);
+    expect(
+      {
+        readSites: expectedDebt.length,
+        stateGaps: expectedDebt.reduce((total, row) => total + row.states.length, 0),
+      },
+      'The deferred non-V5 debt ceiling may only shrink when v6 remediates a named offender.',
+    ).toEqual(DEFERRED_NON_V5_ASYNC_STATE_DEBT_CEILING);
+    expect(
+      actualDebt,
+      `Deferred non-V5 async-state debt changed. New offenders are forbidden; remove fixed rows when v6 pays them down.\n\nFull current offender list:\n${report}`,
+    ).toEqual(expectedDebt);
+  }, 60_000);
 
   test('contains no literal user-facing copy outside the frozen legacy debt', () => {
     const universe = universeModules();

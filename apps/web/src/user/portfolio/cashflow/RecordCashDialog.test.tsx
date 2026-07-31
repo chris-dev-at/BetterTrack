@@ -53,11 +53,11 @@ const MAIN = {
   updatedAt: '2026-01-01T00:00:00.000Z',
 };
 
-function renderDialog() {
+function renderDialog(props: Partial<React.ComponentProps<typeof RecordCashDialog>> = {}) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={client}>
-      <RecordCashDialog onClose={vi.fn()} portfolioId="p1" />
+      <RecordCashDialog onClose={vi.fn()} portfolioId="p1" {...props} />
     </QueryClientProvider>,
   );
 }
@@ -83,6 +83,28 @@ test('renders a source read failure without hiding the cash-entry form', async (
 
   expect(await screen.findByText("This information isn't available.")).toBeInTheDocument();
   expect(screen.getByLabelText('Amount')).toBeInTheDocument();
+});
+
+test.each([
+  ['pending', () => new Promise<never>(() => undefined)],
+  ['failed', () => Promise.reject(new Error('sources unavailable'))],
+])('keeps a quick action scoped to its source while the source read is %s', async (_, read) => {
+  vi.mocked(listCashSources).mockReturnValue(read());
+  vi.mocked(withdrawCash).mockResolvedValue({
+    movement: { id: 'm-scoped', tags: [] },
+  } as unknown as Awaited<ReturnType<typeof withdrawCash>>);
+  const user = userEvent.setup();
+  renderDialog({ sourceId: 's-savings' });
+
+  await user.type(screen.getByLabelText('Amount'), '25');
+  await user.click(screen.getByRole('button', { name: 'Record' }));
+
+  await waitFor(() =>
+    expect(withdrawCash).toHaveBeenCalledWith('p1', {
+      amountEur: 25,
+      sourceId: 's-savings',
+    }),
+  );
 });
 
 test('a spend is two fields — amount, what for, record', async () => {

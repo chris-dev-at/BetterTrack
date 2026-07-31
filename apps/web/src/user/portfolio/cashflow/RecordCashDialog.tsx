@@ -143,7 +143,14 @@ export function RecordCashDialog({
     () => sortSourcesMainFirst(activeSources(sourcesQuery.data?.sources ?? [])),
     [sourcesQuery.data],
   );
-  const target = sources.find((candidate) => candidate.id === source) ?? sources[0] ?? null;
+  const target = source
+    ? (sources.find((candidate) => candidate.id === source) ?? null)
+    : (sources[0] ?? null);
+  // A source-card quick action is already scoped before this metadata read
+  // starts. Keep that explicit id authoritative while the source list is
+  // pending or unavailable; omitting it would make the API silently book the
+  // movement against Main instead.
+  const targetSourceId = source ?? target?.id;
   const tagsById = useMemo(
     () => new Map<string, CashTag>((tagsQuery.data?.tags ?? []).map((tag) => [tag.id, tag])),
     [tagsQuery.data],
@@ -179,7 +186,7 @@ export function RecordCashDialog({
       direction,
       countsToPerformance,
       parsedAmount,
-      target?.id,
+      targetSourceId,
     ],
     queryFn: ({ signal }) =>
       previewCash(
@@ -187,11 +194,11 @@ export function RecordCashDialog({
         {
           kind: direction === 'in' ? 'deposit' : countsToPerformance ? 'fee' : 'withdrawal',
           amountEur: parsedAmount,
-          ...(target ? { sourceId: target.id } : {}),
+          ...(targetSourceId ? { sourceId: targetSourceId } : {}),
         },
         signal,
       ),
-    enabled: amountValid && target !== null,
+    enabled: amountValid && targetSourceId !== undefined,
     staleTime: 0,
   });
 
@@ -199,7 +206,7 @@ export function RecordCashDialog({
     mutationFn: async () => {
       const body = {
         amountEur: parsedAmount,
-        ...(target ? { sourceId: target.id } : {}),
+        ...(targetSourceId ? { sourceId: targetSourceId } : {}),
         ...(date === today() ? {} : { executedAt: new Date(`${date}T12:00:00Z`).toISOString() }),
         ...(note.trim() === '' ? {} : { note: note.trim() }),
       };

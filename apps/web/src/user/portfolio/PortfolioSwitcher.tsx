@@ -316,7 +316,7 @@ export function PortfolioSwitcher() {
             onRetry={() => void activeQuery.refetch()}
           />
 
-          {!activeQuery.isLoading && !activeQuery.error ? (
+          {activeQuery.data ? (
             <div className="bt-portfolio-list">
               {visible.length === 0 ? (
                 <p className="bt-portfolio-empty">{t('portfolio.switcher.noMatches')}</p>

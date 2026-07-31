@@ -1030,7 +1030,7 @@ export function AssetDetailPage() {
             onRetry={() => void historyQuery.refetch()}
           />
         ) : null}
-        {!liveActive && historyQuery.error ? (
+        {!liveActive && historyQuery.error && !historyQuery.data ? (
           <Seg
             ariaLabel={t('common.charts.selectRange')}
             onChange={setRange}
@@ -1052,7 +1052,7 @@ export function AssetDetailPage() {
             emptyMessage={t('assets.live.waiting')}
             ariaLabel={t('assets.live.chartAriaLabel', { symbol: asset.symbol })}
           />
-        ) : !historyQuery.error ? (
+        ) : !historyQuery.error || historyQuery.data ? (
           <PriceChart
             series={chartPoints}
             mode={chartMode}

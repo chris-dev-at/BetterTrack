@@ -169,7 +169,7 @@ describe('FriendsPage', () => {
 
   test('retries a failed group-portfolio invite read', async () => {
     vi.mocked(listMirrorInvites)
-      .mockRejectedValueOnce(new Error('offline'))
+      .mockRejectedValueOnce(new ApiError(503, 'UNAVAILABLE', 'offline'))
       .mockResolvedValueOnce(EMPTY_MIRROR_INVITES);
     const user = userEvent.setup();
     renderPage();
@@ -180,6 +180,20 @@ describe('FriendsPage', () => {
     await waitFor(() => expect(message).not.toBeInTheDocument());
     expect(listMirrorInvites).toHaveBeenCalledTimes(2);
   });
+
+  test.each([403, 404])(
+    'keeps a confirmed %i group-portfolio invite rejection unavailable without retry',
+    async (status) => {
+      vi.mocked(listMirrorInvites).mockRejectedValue(
+        new ApiError(status, 'NOT_AVAILABLE', 'private detail'),
+      );
+      renderPage();
+
+      expect(await screen.findByText("This information isn't available.")).toBeInTheDocument();
+      expect(screen.queryByText('private detail')).not.toBeInTheDocument();
+      expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
+    },
+  );
 
   test('keeps shared-item loading distinct from a genuine empty result', async () => {
     let resolveShared!: (value: typeof EMPTY_SHARED) => void;

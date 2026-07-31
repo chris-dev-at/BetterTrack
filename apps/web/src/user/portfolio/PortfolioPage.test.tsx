@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { cloneElement, isValidElement } from 'react';
 import { MemoryRouter } from 'react-router-dom';
@@ -236,15 +236,15 @@ const HISTORY = {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function renderPage() {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
+function renderPage(client = new QueryClient({ defaultOptions: { queries: { retry: false } } })) {
+  const view = render(
     <QueryClientProvider client={client}>
       <MemoryRouter>
         <PortfolioPage />
       </MemoryRouter>
     </QueryClientProvider>,
   );
+  return { ...view, client };
 }
 
 beforeEach(() => {
@@ -527,6 +527,30 @@ describe('PortfolioPage — value chart range toggle', () => {
     ).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '1W' })).toBeInTheDocument();
     expect(screen.queryByText(/Could not load your portfolio/i)).not.toBeInTheDocument();
+  });
+
+  test('keeps cached portfolio history visible after a failed background refetch', async () => {
+    const { client } = renderPage();
+
+    expect(
+      await screen.findByRole('img', { name: 'Portfolio value over time' }),
+    ).toBeInTheDocument();
+
+    vi.mocked(getPortfolioHistory).mockRejectedValue(
+      new ApiError(503, 'UNAVAILABLE', 'history offline'),
+    );
+    await act(async () => {
+      await client.refetchQueries({
+        queryKey: ['portfolio', DEFAULT_PORTFOLIO_ID, 'history'],
+        type: 'active',
+      });
+    });
+
+    expect(screen.getByRole('img', { name: 'Portfolio value over time' })).toBeInTheDocument();
+    expect(
+      await screen.findByText("Portfolio history couldn't be loaded. Please try again."),
+    ).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Try again' })).toBeInTheDocument();
   });
 
   test('offers 1D/1W/1M/6M/1Y/5Y/Max (V4-P0 spans) — 3M stays intentionally omitted', async () => {

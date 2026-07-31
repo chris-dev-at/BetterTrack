@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
@@ -123,9 +123,9 @@ function makeQueryClient() {
   });
 }
 
-function renderPage(assetId = ASSET_ID) {
-  return render(
-    <QueryClientProvider client={makeQueryClient()}>
+function renderPage(assetId = ASSET_ID, client = makeQueryClient()) {
+  const view = render(
+    <QueryClientProvider client={client}>
       <MemoryRouter initialEntries={[`/assets/${assetId}`]}>
         <Routes>
           <Route path="/assets/:id" element={<AssetDetailPage />} />
@@ -133,6 +133,7 @@ function renderPage(assetId = ASSET_ID) {
       </MemoryRouter>
     </QueryClientProvider>,
   );
+  return { ...view, client };
 }
 
 // ─── Watchlist hook mocks (shared with search results, #256) ─────────────────
@@ -427,6 +428,25 @@ describe('AssetDetailPage — range switching', () => {
     ).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '3M' })).toBeInTheDocument();
     expect(screen.queryByText(/Could not load asset details/i)).not.toBeInTheDocument();
+  });
+
+  test('keeps cached price history visible after a failed background refetch', async () => {
+    const { client } = renderPage();
+
+    expect(await screen.findByRole('img', { name: 'Price chart for BAYN.DE' })).toBeInTheDocument();
+
+    vi.mocked(getAssetHistory).mockRejectedValue(
+      new ApiError(503, 'UNAVAILABLE', 'history offline'),
+    );
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ['asset', ASSET_ID, 'history'], type: 'active' });
+    });
+
+    expect(screen.getByRole('img', { name: 'Price chart for BAYN.DE' })).toBeInTheDocument();
+    expect(
+      screen.getByText("Price history couldn't be loaded. Please try again."),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeInTheDocument();
   });
 
   test('renders all six range buttons', async () => {

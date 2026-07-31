@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, within } from '@testing-library/react';
+import { act, render, screen, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
@@ -29,6 +29,7 @@ vi.mock('../../../lib/cashApi', () => ({
 
 import { getCashMovements, listCashSources, listPortfolios } from '../../../lib/portfolioApi';
 import { getCashSummary, getCashTrends } from '../../../lib/cashApi';
+import { ApiError } from '../../../lib/apiClient';
 
 import { CashOverviewPage } from './CashOverviewPage';
 
@@ -62,13 +63,14 @@ function summary(over: Partial<CashMonthlySummaryResponse> = {}): CashMonthlySum
 
 function renderPage() {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  render(
+  const view = render(
     <QueryClientProvider client={client}>
       <MemoryRouter>
         <CashOverviewPage />
       </MemoryRouter>
     </QueryClientProvider>,
   );
+  return { ...view, client };
 }
 
 beforeEach(() => {
@@ -100,6 +102,40 @@ describe('CashOverviewPage', () => {
     expect(screen.getByText(/3\.200,00.*this month/)).toBeInTheDocument();
     expect(screen.queryByText('No cash accounts yet.')).not.toBeInTheDocument();
     expect(screen.queryByText('Total cash')).not.toBeInTheDocument();
+  });
+
+  test('keeps cached cash accounts visible after a failed background refetch', async () => {
+    vi.mocked(listCashSources).mockResolvedValue({
+      sources: [
+        {
+          id: 'src-savings',
+          name: 'Savings',
+          type: 'bank',
+          isMain: true,
+          archivedAt: null,
+          createdAt: '2026-01-01T00:00:00.000Z',
+          balanceEur: 1_234,
+        },
+      ],
+    });
+    const { client } = renderPage();
+
+    expect(await screen.findByText('Savings')).toBeInTheDocument();
+    expect(screen.getByText('Total cash')).toBeInTheDocument();
+
+    vi.mocked(listCashSources).mockRejectedValue(
+      new ApiError(503, 'UNAVAILABLE', 'sources offline'),
+    );
+    await act(async () => {
+      await client.refetchQueries({
+        queryKey: ['portfolio', 'p1', 'cash-sources', false],
+        type: 'active',
+      });
+    });
+
+    expect(screen.getByText('Savings')).toBeInTheDocument();
+    expect(screen.getByText('Total cash')).toBeInTheDocument();
+    expect(await screen.findByRole('button', { name: 'Try again' })).toBeInTheDocument();
   });
 
   test('renders in/out/net for the resolved portfolio', async () => {

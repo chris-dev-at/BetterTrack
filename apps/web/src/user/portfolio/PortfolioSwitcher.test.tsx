@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, useSearchParams } from 'react-router-dom';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
@@ -27,6 +27,7 @@ vi.mock('../../lib/socialApi', async (importOriginal) => ({
 import { MIRROR_MAX_MEMBERS } from '@bettertrack/contracts';
 
 import { createMirrorChain, getMirrorMembers } from '../../lib/mirrorApi';
+import { ApiError } from '../../lib/apiClient';
 import { createPortfolio, listPortfolios } from '../../lib/portfolioApi';
 import { listFriends } from '../../lib/socialApi';
 import {
@@ -130,7 +131,7 @@ function ActiveProbe() {
 
 function renderSwitcher(initialPath = '/portfolio') {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
+  const view = render(
     <MemoryRouter initialEntries={[initialPath]}>
       <QueryClientProvider client={client}>
         <PortfolioSwitcher />
@@ -138,6 +139,7 @@ function renderSwitcher(initialPath = '/portfolio') {
       </QueryClientProvider>
     </MemoryRouter>,
   );
+  return { ...view, client };
 }
 
 beforeEach(() => {
@@ -198,6 +200,28 @@ describe('PortfolioSwitcher', () => {
     const menu = await findPopover();
     expect(within(menu).getByRole('button', { name: /Main/ })).toBeInTheDocument();
     expect(within(menu).getByRole('button', { name: /Trading/ })).toBeInTheDocument();
+  });
+
+  test('keeps the cached portfolio choices visible after a failed background refetch', async () => {
+    vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [MAIN, TRADING] });
+    const user = userEvent.setup();
+    const { client } = renderSwitcher();
+
+    const trigger = await screen.findByRole('button', { name: 'Switch portfolio' });
+    await waitFor(() => expect(trigger).toHaveTextContent('Main'));
+    await user.click(trigger);
+    const menu = await findPopover();
+
+    vi.mocked(listPortfolios).mockRejectedValue(
+      new ApiError(503, 'UNAVAILABLE', 'portfolios offline'),
+    );
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ['portfolios'], type: 'active' });
+    });
+
+    expect(within(menu).getByRole('button', { name: /Main/ })).toBeInTheDocument();
+    expect(within(menu).getByRole('button', { name: /Trading/ })).toBeInTheDocument();
+    expect(await within(menu).findByRole('button', { name: 'Try again' })).toBeInTheDocument();
   });
 
   test('is a disclosure, not a menu: no menu roles, natural tab order, aria-current', async () => {

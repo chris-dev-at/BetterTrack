@@ -221,6 +221,19 @@ test('renders an empty state when there is no portfolio to project', () => {
   expect(screen.queryByTestId('projection-series-base')).not.toBeInTheDocument();
 });
 
+test('does not start portfolio-scoped reads for an empty account when dividends are offline', () => {
+  vi.mocked(getPortfolioDividendProjection).mockRejectedValue(new Error('dividends offline'));
+  renderSection([]);
+
+  expect(screen.getByText('No portfolio to project yet')).toBeInTheDocument();
+  expect(getPortfolio).not.toHaveBeenCalled();
+  expect(listStandingOrders).not.toHaveBeenCalled();
+  expect(getAnalyticsSeries).not.toHaveBeenCalled();
+  expect(getPortfolioHistory).not.toHaveBeenCalled();
+  expect(getPortfolioDividendProjection).not.toHaveBeenCalled();
+  expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
+});
+
 test('what-if plans render as separate overlay series and can be added and removed', async () => {
   const user = userEvent.setup();
   renderSection();

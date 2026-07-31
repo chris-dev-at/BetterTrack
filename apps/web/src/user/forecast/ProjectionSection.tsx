@@ -127,7 +127,7 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
   const dividendQuery = useQuery({
     queryKey: ['portfolio', 'dividend-projection'],
     queryFn: ({ signal }) => getPortfolioDividendProjection(signal),
-    enabled: privacyMode === 'normal',
+    enabled: portfolioId !== null && privacyMode === 'normal',
     staleTime: 60_000,
   });
 
@@ -145,11 +145,14 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
     dividendQuery.error;
 
   function retryPrefill() {
-    const retries: Promise<unknown>[] = [portfolioQuery.refetch(), ordersQuery.refetch()];
-    if (privacyMode === 'normal') {
-      retries.push(analyticsQuery.refetch(), dividendQuery.refetch());
-    } else {
-      retries.push(historyQuery.refetch());
+    const retries: Promise<unknown>[] = [];
+    if (portfolioId !== null) {
+      retries.push(portfolioQuery.refetch(), ordersQuery.refetch());
+      if (privacyMode === 'normal') {
+        retries.push(analyticsQuery.refetch(), dividendQuery.refetch());
+      } else {
+        retries.push(historyQuery.refetch());
+      }
     }
     void Promise.all(retries);
   }

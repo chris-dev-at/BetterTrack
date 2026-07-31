@@ -1380,7 +1380,7 @@ export function PortfolioPage() {
               errorLabel={t('portfolio.overview.chart.loadError')}
               onRetry={() => void historyQuery.refetch()}
             />
-            {historyQuery.error ? (
+            {historyQuery.error && !historyQuery.data ? (
               <Seg
                 ariaLabel={t('common.charts.selectRange')}
                 onChange={setRange}
@@ -1389,7 +1389,7 @@ export function PortfolioPage() {
               />
             ) : null}
             <div className="bt-chart">
-              {!historyQuery.error ? (
+              {!historyQuery.error || historyQuery.data ? (
                 <PriceChart
                   series={chartPoints}
                   mode={perfMode ? 'baseline' : 'area'}

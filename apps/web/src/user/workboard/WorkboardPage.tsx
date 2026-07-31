@@ -101,20 +101,23 @@ function WatchlistRow({
       <td className="px-2 py-3">
         {sparklineQuery.isLoading ? (
           <Skeleton width="w-24" height="h-7" />
-        ) : sparklineQuery.error ? (
-          <AsyncReadState
-            compact
-            loading={false}
-            error={sparklineQuery.error}
-            onRetry={() => void sparklineQuery.refetch()}
-          />
         ) : (
-          <Sparkline
-            data={sparkData}
-            ariaLabel={t('workboard.overview.watchlist.sparklineAriaLabel', {
-              symbol: item.asset.symbol,
-            })}
-          />
+          <div className="flex flex-col items-start gap-1">
+            {sparklineQuery.data ? (
+              <Sparkline
+                data={sparkData}
+                ariaLabel={t('workboard.overview.watchlist.sparklineAriaLabel', {
+                  symbol: item.asset.symbol,
+                })}
+              />
+            ) : null}
+            <AsyncReadState
+              compact
+              loading={false}
+              error={sparklineQuery.error}
+              onRetry={() => void sparklineQuery.refetch()}
+            />
+          </div>
         )}
       </td>
 
@@ -140,17 +143,20 @@ function WatchlistRow({
       <td className="px-3 py-3 text-right text-sm">
         {quoteQuery.isLoading ? (
           <Skeleton variant="line" width="w-20" className="ml-auto" />
-        ) : quoteQuery.error ? (
-          <AsyncReadState
-            compact
-            loading={false}
-            error={quoteQuery.error}
-            onRetry={() => void quoteQuery.refetch()}
-          />
-        ) : quote ? (
-          <MoneyText amount={quote.price} currency={quote.currency} unitPrice />
         ) : (
-          <span className="bt-muted">—</span>
+          <div className="flex flex-col items-end gap-1">
+            {quote ? (
+              <MoneyText amount={quote.price} currency={quote.currency} unitPrice />
+            ) : quoteQuery.error ? null : (
+              <span className="bt-muted">—</span>
+            )}
+            <AsyncReadState
+              compact
+              loading={false}
+              error={quoteQuery.error}
+              onRetry={() => void quoteQuery.refetch()}
+            />
+          </div>
         )}
       </td>
 

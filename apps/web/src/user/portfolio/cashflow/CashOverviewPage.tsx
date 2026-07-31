@@ -16,7 +16,7 @@ import { EM_DASH, formatDate, formatMoney } from '../../../lib/format';
 import { Alert } from '../../components/ui';
 import { AsyncReadState } from '../../components/AsyncReadState';
 import { EmptyState, MoneyText, Skeleton } from '../../../ui';
-import { Button, Icon, PageHead } from '../../../ui/origin';
+import { Icon, PageHead } from '../../../ui/origin';
 import { AllocationDonut } from '../../../ui/charts';
 import { CashflowChart } from './CashflowChart';
 import { MonthPicker } from './MonthPicker';
@@ -191,7 +191,7 @@ export function CashOverviewPage() {
 
         <div className="flex flex-wrap items-end justify-between gap-x-8 gap-y-3">
           <div>
-            {!sourcesQuery.isLoading && !sourcesQuery.error ? (
+            {sourcesQuery.data ? (
               <>
                 <p className="bt-label">{t('cashflow.overview.total')}</p>
                 <p className="bt-hero-value" style={{ marginTop: 4 }}>
@@ -207,7 +207,7 @@ export function CashOverviewPage() {
           </div>
         </div>
 
-        {!sourcesQuery.isLoading && !sourcesQuery.error ? (
+        {sourcesQuery.data ? (
           <>
             {sources.length === 0 ? (
               <p className="bt-meta">{t('cashflow.overview.noAccounts')}</p>
@@ -354,24 +354,29 @@ export function CashOverviewPage() {
         </div>
         {trendsQuery.isLoading ? (
           <Skeleton height="h-32" />
-        ) : trendsQuery.isError ? (
-          <div className="flex flex-col gap-3">
-            <Alert tone="error">{t('cashflow.overview.loadError')}</Alert>
-            <div>
-              <Button onClick={() => void trendsQuery.refetch()}>{t('common.retry')}</Button>
-            </div>
-          </div>
-        ) : trendEmpty ? (
-          <EmptyState
-            description={t('cashflow.overview.emptyDescription')}
-            icon="📊"
-            title={t('cashflow.overview.emptyTitle')}
-          />
         ) : (
-          <CashflowChart
-            monthLabel={(month) => shortMonthLabel(month, locale)}
-            points={trendPoints}
-          />
+          <>
+            <AsyncReadState
+              loading={false}
+              error={trendsQuery.error}
+              errorLabel={t('cashflow.overview.loadError')}
+              onRetry={() => void trendsQuery.refetch()}
+            />
+            {trendsQuery.data ? (
+              trendEmpty ? (
+                <EmptyState
+                  description={t('cashflow.overview.emptyDescription')}
+                  icon="📊"
+                  title={t('cashflow.overview.emptyTitle')}
+                />
+              ) : (
+                <CashflowChart
+                  monthLabel={(month) => shortMonthLabel(month, locale)}
+                  points={trendPoints}
+                />
+              )
+            ) : null}
+          </>
         )}
       </section>
       {/* ── Recent movements: enough to recognise, not the ledger ── */}
@@ -388,25 +393,27 @@ export function CashOverviewPage() {
           errorLabel={t('cashflow.overview.loadError')}
           onRetry={() => void movementsQuery.refetch()}
         />
-        {!movementsQuery.isLoading && !movementsQuery.error && recent.length === 0 ? (
-          <p className="bt-meta">{t('cashflow.movements.emptyDescription')}</p>
-        ) : !movementsQuery.isLoading && !movementsQuery.error ? (
-          <ul
-            className="bt-band flex flex-col"
-            style={{ borderBlock: '1px solid var(--bt-border)' }}
-          >
-            {recent.map((movement) => (
-              <li className="bt-band__row flex flex-wrap items-center gap-3" key={movement.id}>
-                <span className="bt-muted shrink-0 whitespace-nowrap" style={{ fontSize: 12 }}>
-                  {formatDate(movement.executedAt)}
-                </span>
-                <span className="min-w-0 flex-1 truncate">{movement.note ?? EM_DASH}</span>
-                <span className="shrink-0 bt-num">
-                  <MoneyText amount={movement.amountEur} currency="EUR" signed />
-                </span>
-              </li>
-            ))}
-          </ul>
+        {movementsQuery.data ? (
+          recent.length === 0 ? (
+            <p className="bt-meta">{t('cashflow.movements.emptyDescription')}</p>
+          ) : (
+            <ul
+              className="bt-band flex flex-col"
+              style={{ borderBlock: '1px solid var(--bt-border)' }}
+            >
+              {recent.map((movement) => (
+                <li className="bt-band__row flex flex-wrap items-center gap-3" key={movement.id}>
+                  <span className="bt-muted shrink-0 whitespace-nowrap" style={{ fontSize: 12 }}>
+                    {formatDate(movement.executedAt)}
+                  </span>
+                  <span className="min-w-0 flex-1 truncate">{movement.note ?? EM_DASH}</span>
+                  <span className="shrink-0 bt-num">
+                    <MoneyText amount={movement.amountEur} currency="EUR" signed />
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )
         ) : null}
       </section>
     </div>

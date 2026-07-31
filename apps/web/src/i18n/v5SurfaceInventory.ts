@@ -1455,7 +1455,7 @@ export const V5_ASYNC_READ_EXEMPTIONS = [
     read: 'useMirrorInvites.$return',
     states: ['loading', 'error'],
     reason:
-      'The shared hook returns the complete query to MirrorInvitesSection, which renders loading and failure recovery in Social requests.',
+      'The shared hook returns the complete query to MirrorInvitesSection, which renders loading and classifies terminal versus retryable failures in Social requests.',
     delegatedTo: 'MirrorInvitesSection',
   },
   {
@@ -1687,6 +1687,126 @@ export const V5_ASYNC_READ_SITE_BASELINE = 179;
 export const V5_ASYNC_STATE_DEBT_CEILING = { readSites: 0, stateGaps: 0 } as const;
 
 export const V5_ASYNC_STATE_DEBT: V5AsyncStateDebtLedger = {};
+
+/**
+ * Pre-V5 async-state debt, deliberately deferred to v6 by #1026. This is a
+ * separate source-verified ledger: zero V5 debt must never make these older
+ * offenders disappear from the review record. The reason each component is
+ * outside the V5 deliverable lives beside it in NON_V5_SURFACES.
+ */
+export const DEFERRED_NON_V5_ASYNC_READ_SITE_BASELINE = 53;
+
+export const DEFERRED_NON_V5_ASYNC_STATE_DEBT_CEILING = {
+  readSites: 42,
+  stateGaps: 63,
+} as const;
+
+export const DEFERRED_NON_V5_ASYNC_STATE_DEBT: V5AsyncStateDebtLedger = {
+  'user/assets/AssetsWorkspace.tsx': {
+    'AssetsWorkspace.items': ['loading', 'error'],
+  },
+  'user/components/AnnouncementBanner.tsx': {
+    'AnnouncementBanner.data': ['loading', 'error'],
+  },
+  'user/firstrun/FirstRunFigures.tsx': {
+    'PreferencesFigure.settings': ['loading', 'error'],
+    'PublicProfileFigure.profile': ['loading', 'error'],
+    'SecurityFigure.twoFactor': ['loading', 'error'],
+    'TaxFigure.settings': ['loading', 'error'],
+    'VerifyEmailFigure.link': ['loading', 'error'],
+  },
+  'user/firstrun/steps/PreferencesStep.tsx': {
+    'PreferencesStep.settings': ['loading', 'error'],
+  },
+  'user/firstrun/steps/PublicProfileStep.tsx': {
+    'PublicProfileStep.profile': ['loading', 'error'],
+  },
+  'user/firstrun/steps/SecurityStep.tsx': {
+    'SecurityStep.twoFactor': ['loading', 'error'],
+  },
+  'user/firstrun/steps/TaxStep.tsx': {
+    'TaxStep.settings': ['loading', 'error'],
+  },
+  'user/firstrun/steps/VerifyEmailStep.tsx': {
+    'VerifyEmailStep.link': ['loading', 'error'],
+  },
+  'user/home/widgets/AlertsWidget.tsx': {
+    'AlertsWidget.alertsQuery': ['error'],
+  },
+  'user/home/widgets/AllocationWidget.tsx': {
+    'AllocationWidget.results': ['error'],
+  },
+  'user/home/widgets/AssetSpotlightWidget.tsx': {
+    'AssetSpotlightWidget.historyQuery': ['error'],
+    'AssetSpotlightWidget.quoteQuery': ['loading', 'error'],
+  },
+  'user/home/widgets/AttentionWidget.tsx': {
+    'AttentionWidget.notificationsQuery': ['error'],
+  },
+  'user/home/widgets/CashBalancesWidget.tsx': {
+    'CashBalancesWidget.merged': ['error'],
+  },
+  'user/home/widgets/CashflowChartWidget.tsx': {
+    'CashflowChartWidget.combined': ['error'],
+  },
+  'user/home/widgets/ConcentrationWidget.tsx': {
+    'ConcentrationWidget.results': ['error'],
+  },
+  'user/home/widgets/LiquidityWidget.tsx': {
+    'LiquidityWidget.results': ['error'],
+  },
+  'user/home/widgets/NetWorthHistoryWidget.tsx': {
+    'NetWorthHistoryWidget.combined': ['error'],
+  },
+  'user/home/widgets/NetWorthWidget.tsx': {
+    'NetWorthWidget.rollup': ['error'],
+  },
+  'user/home/widgets/PerformanceChartWidget.tsx': {
+    'PerformanceChartWidget.combined': ['error'],
+    'PerformanceChartWidget.historyQuery': ['error'],
+  },
+  'user/home/widgets/PortfolioCardsWidget.tsx': {
+    'PortfolioCardsWidget.histories': ['loading', 'error'],
+    'PortfolioCardsWidget.summaries': ['loading', 'error'],
+  },
+  'user/home/widgets/QuickCashWidget.tsx': {
+    'QuickCashWidget.sourcesQuery': ['error'],
+  },
+  'user/home/widgets/RecentTransactionsWidget.tsx': {
+    'RecentTransactionsWidget.merged': ['error'],
+  },
+  'user/home/widgets/TodayChangeWidget.tsx': {
+    'TodayChangeWidget.rollup': ['error'],
+  },
+  'user/home/widgets/TopMoversWidget.tsx': {
+    'TopMoversWidget.results': ['error'],
+  },
+  'user/home/widgets/UpcomingWidget.tsx': {
+    'UpcomingWidget.ordersQuery': ['error'],
+  },
+  'user/home/widgets/WatchlistWidget.tsx': {
+    'WatchlistSettings.listsQuery': ['loading', 'error'],
+    'WatchlistWidget.itemsQuery': ['error'],
+    'WatchlistWidget.listsQuery': ['error'],
+    'WatchlistWidget.quotes': ['loading', 'error'],
+  },
+  'user/people/PeopleLayout.tsx': {
+    'PeopleLayout.items': ['loading', 'error'],
+  },
+  'user/settings/DeleteAccountPage.tsx': {
+    'DeleteAccountPage.twoFactor': ['loading', 'error'],
+  },
+  'user/social/FollowButton.tsx': {
+    'FollowButton.followingQuery': ['error'],
+    'useFollowingEntry.followingQuery': ['loading', 'error'],
+  },
+  'user/social/ItemFollowButton.tsx': {
+    'ItemFollowButton.followsQuery': ['error'],
+  },
+  'user/workbench/WorkbenchLayout.tsx': {
+    'WorkbenchLayout.items': ['loading', 'error'],
+  },
+};
 
 /**
  * Frozen literal-copy debt, by file. These pre-V5 admin pages were never
