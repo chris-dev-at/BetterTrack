@@ -96,4 +96,22 @@ export const dependencyAuditWaivers = {
     reason:
       'Js-yaml is transitive through the lint toolchain and needs a coordinated ESLint update.',
   },
+  // re2 advisories published 2026-07-31, moderate (DoS only — crash / infinite
+  // loop; no data exposure). The exact re2@1.22.3 is already what production
+  // runs; the safe-regex engine backs user-supplied cash rules, so its
+  // upgrade needs the rule-matching regression suite in a dedicated
+  // Dependabot PR. OWNER REVIEW REQUESTED (issue #1018 wrap-up): waived
+  // in-flight to land the verified redesign merge, not silently.
+  'GHSA-6hxr-mr5r-9836': {
+    expires: '2026-08-14',
+    moduleName: 're2',
+    reason:
+      'Moderate DoS in the safe-regex engine behind user cash rules; upgrade needs the rule-matching regression suite in its own tested PR.',
+  },
+  'GHSA-ff84-5f28-78qj': {
+    expires: '2026-08-14',
+    moduleName: 're2',
+    reason:
+      'Moderate DoS in the safe-regex engine behind user cash rules; upgrade needs the rule-matching regression suite in its own tested PR.',
+  },
 };
