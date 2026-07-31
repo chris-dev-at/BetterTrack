@@ -60,6 +60,17 @@ describe('ApiKeysPanel', () => {
     expect(await screen.findByText(/no api keys yet/i)).toBeInTheDocument();
   });
 
+  test('retries a failed key-list read in place', async () => {
+    vi.mocked(listApiKeys).mockRejectedValueOnce(new Error('offline')).mockResolvedValueOnce(EMPTY);
+    const user = userEvent.setup();
+    renderPanel();
+
+    await user.click(await screen.findByRole('button', { name: 'Try again' }));
+
+    expect(await screen.findByText(/no api keys yet/i)).toBeInTheDocument();
+    expect(listApiKeys).toHaveBeenCalledTimes(2);
+  });
+
   test('lists existing keys with their scopes', async () => {
     vi.mocked(listApiKeys).mockResolvedValue(ONE_KEY);
     renderPanel();

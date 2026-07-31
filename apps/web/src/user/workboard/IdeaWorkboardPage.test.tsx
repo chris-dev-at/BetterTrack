@@ -20,6 +20,7 @@ vi.mock('./BacktestPanel', () => ({
 
 import { getResolvedConglomerate } from '../../lib/conglomerateApi';
 import { getIdea } from '../../lib/ideasApi';
+import { ApiError } from '../../lib/apiClient';
 import { IdeaWorkboardPage } from './IdeaWorkboardPage';
 
 const IDEA_ID = '00000000-0000-0000-0000-0000000000a1';
@@ -41,6 +42,28 @@ function adhocIdea(): Idea {
     createdAt: '2026-07-01T00:00:00.000Z',
     updatedAt: '2026-07-01T00:00:00.000Z',
   };
+}
+
+function conglomerateIdea(): Idea {
+  return {
+    ...adhocIdea(),
+    thesis: null,
+    state: {
+      source: { kind: 'conglomerate', conglomerateId: CONGLOMERATE_ID },
+      range: '1Y',
+      benchmark: null,
+      mode: 'clip',
+      rebalance: 'none',
+    },
+  };
+}
+
+function resolvedConglomerate(): ConglomerateResolvedResponse {
+  return {
+    conglomerateId: CONGLOMERATE_ID,
+    nested: false,
+    positions: [{ assetId: ASSET_ID, weightPct: 70, asset: { symbol: 'A', name: 'A' } }],
+  } as unknown as ConglomerateResolvedResponse;
 }
 
 function renderPage() {
@@ -85,26 +108,11 @@ describe('IdeaWorkboardPage', () => {
   });
 
   test('reopens a blueprint-sourced idea by resolving the referenced basket', async () => {
-    const idea: Idea = {
-      ...adhocIdea(),
-      thesis: null,
-      state: {
-        source: { kind: 'conglomerate', conglomerateId: CONGLOMERATE_ID },
-        range: '1Y',
-        benchmark: null,
-        mode: 'clip',
-        rebalance: 'none',
-      },
-    };
+    const idea = conglomerateIdea();
     vi.mocked(getIdea).mockResolvedValue({ idea });
     // The resolved view (V5-P6): effective asset weights — nested baskets and
     // weight-0 rows are already flattened away server-side.
-    const resolved = {
-      conglomerateId: CONGLOMERATE_ID,
-      nested: false,
-      positions: [{ assetId: ASSET_ID, weightPct: 70, asset: { symbol: 'A', name: 'A' } }],
-    } as unknown as ConglomerateResolvedResponse;
-    vi.mocked(getResolvedConglomerate).mockResolvedValue(resolved);
+    vi.mocked(getResolvedConglomerate).mockResolvedValue(resolvedConglomerate());
     renderPage();
 
     await screen.findByTestId('backtest-panel');
@@ -139,5 +147,33 @@ describe('IdeaWorkboardPage', () => {
     renderPage();
     expect(screen.getAllByRole('status').length).toBeGreaterThan(0);
     resolve({ idea: adhocIdea() });
+  });
+
+  test('retries a transient blueprint resolution failure in place', async () => {
+    vi.mocked(getIdea).mockResolvedValue({ idea: conglomerateIdea() });
+    vi.mocked(getResolvedConglomerate)
+      .mockRejectedValueOnce(new ApiError(503, 'UNAVAILABLE', 'offline'))
+      .mockResolvedValueOnce(resolvedConglomerate());
+    const user = userEvent.setup();
+    renderPage();
+
+    expect(
+      await screen.findByText("Could not load this idea's blueprint. Please try again."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/no longer available/i)).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Try again' }));
+
+    expect(await screen.findByTestId('backtest-panel')).toBeInTheDocument();
+    expect(getResolvedConglomerate).toHaveBeenCalledTimes(2);
+  });
+
+  test('keeps a confirmed missing blueprint terminal and non-retryable', async () => {
+    vi.mocked(getIdea).mockResolvedValue({ idea: conglomerateIdea() });
+    vi.mocked(getResolvedConglomerate).mockRejectedValue(new ApiError(404, 'NOT_FOUND', 'missing'));
+    renderPage();
+
+    expect(await screen.findByText(/no longer available/i)).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
   });
 });

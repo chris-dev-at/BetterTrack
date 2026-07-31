@@ -252,7 +252,7 @@ export function FriendGroupsSection() {
   const queryClient = useQueryClient();
   const [newName, setNewName] = useState('');
 
-  const { data, isLoading, isError } = useQuery({
+  const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ['social', 'groups'],
     queryFn: ({ signal }) => listGroups(signal),
     staleTime: GROUPS_STALE_MS,
@@ -302,7 +302,10 @@ export function FriendGroupsSection() {
       {isLoading ? (
         <SkeletonBlock height={64} />
       ) : isError || !data ? (
-        <Alert tone="error">{t('social.groups.loadError')}</Alert>
+        <div className="flex flex-col items-start gap-2">
+          <Alert tone="error">{t('social.groups.loadError')}</Alert>
+          <Button onClick={() => void refetch()}>{t('common.retry')}</Button>
+        </div>
       ) : data.groups.length === 0 ? (
         <EmptyState
           icon="👥"

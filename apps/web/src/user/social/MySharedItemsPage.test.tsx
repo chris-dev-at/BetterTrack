@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
@@ -10,6 +10,7 @@ vi.mock('../../lib/socialApi', () => ({
   listMyShared: vi.fn(),
   getAudience: vi.fn(),
   listFriends: vi.fn(),
+  listGroups: vi.fn(),
   setAudience: vi.fn(),
 }));
 
@@ -23,7 +24,7 @@ vi.mock('../../lib/portfolioApi', () => ({
   listPortfolios: vi.fn(),
 }));
 
-import { getAudience, listFriends, listMyShared } from '../../lib/socialApi';
+import { getAudience, listFriends, listGroups, listMyShared } from '../../lib/socialApi';
 import { getAlertSharing, updateAlertSharing } from '../../lib/alertsApi';
 import { listPortfolios } from '../../lib/portfolioApi';
 import { MySharedItemsPage } from './MySharedItemsPage';
@@ -33,6 +34,50 @@ const CONGLOMERATE_ID = '00000000-0000-0000-0000-0000000000e1';
 const WATCHLIST_ID = '00000000-0000-0000-0000-0000000000c1';
 
 const EMPTY: MySharedResponse = { portfolios: [], conglomerates: [], watchlists: [], ideas: [] };
+
+const WITH_PORTFOLIO: MySharedResponse = {
+  portfolios: [
+    { portfolioId: PORTFOLIO_ID, name: 'Main', audience: 'all_friends', friendCount: 0 },
+  ],
+  conglomerates: [],
+  watchlists: [],
+  ideas: [],
+};
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((next) => {
+    resolve = next;
+  });
+  return { promise, resolve };
+}
+
+function portfolioList(mirror = false): Awaited<ReturnType<typeof listPortfolios>> {
+  return {
+    portfolios: [
+      {
+        id: PORTFOLIO_ID,
+        name: 'Main',
+        visibility: 'private',
+        sortOrder: 0,
+        isDefault: true,
+        defaultPayFromCash: false,
+        archivedAt: null,
+        ...(mirror
+          ? {
+              mirror: {
+                chainId: '00000000-0000-0000-0000-0000000000c1',
+                chainName: 'Household',
+                role: 'owner' as const,
+                memberCount: 2,
+                sync: { appliedSeq: 4, lastSeq: 4, percent: 100, synced: true },
+              },
+            }
+          : {}),
+      },
+    ],
+  };
+}
 
 function renderPage() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -56,6 +101,7 @@ beforeEach(() => {
     link: { active: false, createdAt: null },
   });
   vi.mocked(listFriends).mockResolvedValue({ friends: [] });
+  vi.mocked(listGroups).mockResolvedValue({ groups: [] });
   vi.mocked(getAlertSharing).mockResolvedValue({ visibleToFollowers: false });
   // MIRRORCHAIN §10 (V5-P7 M5): the page cross-references the portfolios list
   // to know which shared portfolios are synced copies of an active chain — the
@@ -64,6 +110,64 @@ beforeEach(() => {
 });
 
 describe('MySharedItemsPage', () => {
+  test('keeps portfolio sharing disabled while MIRRORCHAIN metadata is pending', async () => {
+    const read = deferred<Awaited<ReturnType<typeof listPortfolios>>>();
+    vi.mocked(listMyShared).mockResolvedValue(WITH_PORTFOLIO);
+    vi.mocked(listPortfolios).mockReturnValue(read.promise);
+    renderPage();
+
+    const share = await screen.findByRole('button', { name: 'Share' });
+    expect(screen.getByText('Checking group-portfolio privacy…')).toBeInTheDocument();
+    expect(share).toBeDisabled();
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+
+    await act(async () => {
+      read.resolve(portfolioList());
+    });
+
+    await waitFor(() => expect(share).toBeEnabled());
+  });
+
+  test('retries failed MIRRORCHAIN metadata before opening a live, authoritative picker', async () => {
+    vi.mocked(listMyShared).mockResolvedValue(WITH_PORTFOLIO);
+    vi.mocked(listPortfolios)
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce(portfolioList(true));
+    const user = userEvent.setup();
+    renderPage();
+
+    const share = await screen.findByRole('button', { name: 'Share' });
+    expect(
+      await screen.findByText(
+        "Could not verify this portfolio's group-sharing notice. Try again before sharing it.",
+      ),
+    ).toBeInTheDocument();
+    expect(share).toBeDisabled();
+
+    await user.click(screen.getByRole('button', { name: 'Try again' }));
+    await waitFor(() => expect(share).toBeEnabled());
+    await user.click(share);
+
+    expect(await screen.findByRole('dialog')).toBeInTheDocument();
+    expect(
+      screen.getByText(/others in this group portfolio will remain visible to you/i),
+    ).toBeInTheDocument();
+    expect(listPortfolios).toHaveBeenCalledTimes(2);
+  });
+
+  test('retries a failed item-list read in place', async () => {
+    vi.mocked(listMyShared)
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce(EMPTY);
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole('button', { name: 'Try again' }));
+
+    expect(await screen.findByText("You don't own anything yet")).toBeInTheDocument();
+    expect(listMyShared).toHaveBeenCalledTimes(2);
+  });
+
   test('shows an empty state when the caller owns nothing', async () => {
     vi.mocked(listMyShared).mockResolvedValue(EMPTY);
     renderPage();
@@ -98,7 +202,9 @@ describe('MySharedItemsPage', () => {
 
     // Clicking Share opens the reusable picker dialog.
     const user = userEvent.setup();
-    await user.click(screen.getAllByRole('button', { name: /share/i })[0]!);
+    const share = screen.getAllByRole('button', { name: /share/i })[0]!;
+    await waitFor(() => expect(share).toBeEnabled());
+    await user.click(share);
     await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument());
     // The reusable AudiencePicker renders the audience ladder.
     expect(screen.getByRole('radio', { name: /all friends/i })).toBeInTheDocument();
@@ -191,7 +297,9 @@ describe('MySharedItemsPage', () => {
     // Its own Share control opens the picker for THAT portfolio (private selected).
     const user = userEvent.setup();
     const shareButtons = screen.getAllByRole('button', { name: /share/i });
-    await user.click(shareButtons[shareButtons.length - 1]!);
+    const secondaryShare = shareButtons[shareButtons.length - 1]!;
+    await waitFor(() => expect(secondaryShare).toBeEnabled());
+    await user.click(secondaryShare);
     await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument());
     expect(screen.getByRole('radio', { name: /only me/i })).toBeInTheDocument();
     expect(screen.getByRole('radio', { name: /all friends/i })).toBeInTheDocument();

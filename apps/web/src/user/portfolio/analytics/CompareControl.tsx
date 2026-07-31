@@ -6,6 +6,7 @@ import type { AnalyticsCompareKind } from '@bettertrack/contracts';
 import { useT } from '../../../i18n';
 import { cx } from '../../../lib/cx';
 import { listConglomerates } from '../../../lib/conglomerateApi';
+import { Button } from '../../../ui/origin';
 import { AssetSearchBox } from '../../components/AssetSearchBox';
 import { usePortfolioStore } from '../PortfolioStoreProvider';
 
@@ -114,6 +115,7 @@ export function CompareControl({
           errorLabel={t('common.genericError')}
           loading={portfoliosQuery.isLoading}
           error={portfoliosQuery.isError}
+          onRetry={() => void portfoliosQuery.refetch()}
           options={otherPortfolios.map((p) => ({ id: p.id, name: p.name }))}
           selectedId={value?.kind === 'portfolio' ? value.id : ''}
           onPick={(id, name) => onChange({ kind: 'portfolio', id, label: name })}
@@ -128,6 +130,7 @@ export function CompareControl({
           errorLabel={t('common.genericError')}
           loading={conglomeratesQuery.isLoading}
           error={conglomeratesQuery.isError}
+          onRetry={() => void conglomeratesQuery.refetch()}
           options={conglomerates.map((c) => ({ id: c.id, name: c.name }))}
           selectedId={value?.kind === 'conglomerate' ? value.id : ''}
           onPick={(id, name) => onChange({ kind: 'conglomerate', id, label: name })}
@@ -148,6 +151,7 @@ function PickerSelect({
   options,
   selectedId,
   onPick,
+  onRetry,
 }: {
   label: string;
   placeholder: string;
@@ -158,12 +162,21 @@ function PickerSelect({
   options: { id: string; name: string }[];
   selectedId: string;
   onPick: (id: string, name: string) => void;
+  onRetry: () => void;
 }) {
+  const t = useT();
   if (loading) {
     return <p className="bt-meta">{placeholder}</p>;
   }
   if (error) {
-    return <p className="text-xs text-rose-400">{errorLabel}</p>;
+    return (
+      <div className="flex flex-col items-start gap-2">
+        <p className="text-xs text-rose-400">{errorLabel}</p>
+        <Button onClick={onRetry} size="sm">
+          {t('common.retry')}
+        </Button>
+      </div>
+    );
   }
   if (options.length === 0) {
     return <p className="bt-meta">{emptyLabel}</p>;

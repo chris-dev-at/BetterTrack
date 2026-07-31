@@ -21,7 +21,13 @@
       "waitMoment": " Bitte warte einen Moment und versuche es erneut."
     },
     "adminLogin": {
-      "heading": "Admin-Anmeldung"
+      "heading": "Admin-Anmeldung",
+      "notAdmin": "Dies ist ein Nutzerkonto, kein Administratorkonto — melde dich bitte über die Haupt-App an.",
+      "invalidCredentials": "E-Mail/Benutzername oder Passwort ist falsch.",
+      "genericError": "Anmeldung fehlgeschlagen. Bitte versuche es erneut."
+    },
+    "adminForcedPassword": {
+      "info": "Lege ein neues Passwort fest, bevor du mit der Admin-Konsole fortfährst."
     },
     "login": {
       "subtitle": "Melde dich bei deinem Konto an",
@@ -141,6 +147,7 @@
       "promptWithUser": "Willkommen zurück, {{username}}. Gib deine {{length}}-stellige PIN ein, um fortzufahren.",
       "prompt": "Gib deine {{length}}-stellige PIN ein, um fortzufahren.",
       "inputLabel": "PIN",
+      "digitLabel": "{{label}}, Ziffer {{position}}",
       "fallbackError": "Zu viele falsche PINs. Bitte melde dich mit deinem Passwort an.",
       "invalidPin": "Falsche PIN. Bitte versuche es erneut.",
       "rateLimited": "Zu viele Versuche. Bitte warte einen Moment und versuche es erneut.",
@@ -246,6 +253,8 @@
     "loading": "Wird geladen…",
     "saving": "Wird gespeichert…",
     "retry": "Erneut versuchen",
+    "copy": "Kopieren",
+    "copied": "Kopiert",
     "search": "Suchen",
     "yes": "Ja",
     "no": "Nein",
@@ -280,7 +289,10 @@
       "priceChartDataDate": "Datum",
       "priceChartDataValue": "Wert",
       "priceChartDataSampled": "Es werden {{shown}} von {{total}} dargestellten Punkten angezeigt.",
-      "allocationFallbackTitle": "Aufteilung im Überblick"
+      "allocationFallbackTitle": "Aufteilung im Überblick",
+      "noTrendData": "Keine Trenddaten",
+      "trendUp": "Aufwärtstrend",
+      "trendDown": "Abwärtstrend"
     },
     "marketState": {
       "open": "Geöffnet",
@@ -1476,6 +1488,10 @@
         "title": "Noch nichts zu analysieren",
         "description": "Füge deinem Portfolio eine Position hinzu, um die Analyse zu sehen."
       },
+      "noPortfolio": {
+        "title": "Noch kein Portfolio für die Analyse",
+        "description": "Erstelle zuerst ein Portfolio. Danach siehst du hier seine Performance- und Risikoanalyse."
+      },
       "range": {
         "heading": "Zeitraum",
         "m1": "1M",
@@ -2098,15 +2114,15 @@
       },
       "backtests": {
         "title": "Backtests",
-        "description": "Eigenständige Backtests über beliebige Anlagenkörbe — über den ins Blueprints eingebetteten Backtest hinaus."
+        "description": "Eigenständige Backtests über beliebige Anlagenkörbe — über den im Blueprint eingebetteten Backtest hinaus."
       },
       "calculators": {
         "title": "Rechner",
-        "description": "Eigenständige Investitionsrechner — verwandle ein Budget in eine genaue Kaufliste ohne gespeichertes Blueprints."
+        "description": "Eigenständige Investitionsrechner — verwandle ein Budget in eine genaue Kaufliste ohne gespeicherten Blueprint."
       },
       "comparisons": {
         "title": "Vergleiche",
-        "description": "Direkter Vergleich von Anlagen und Konglomeraten nach Rendite, Risiko und Aufteilung."
+        "description": "Direkter Vergleich von Anlagen und Blueprints nach Rendite, Risiko und Aufteilung."
       },
       "savedIdeas": {
         "title": "Gespeicherte Ideen",
@@ -2333,8 +2349,8 @@
       "loadError": "Deine Blueprints konnten nicht geladen werden. Bitte lade die Seite neu.",
       "emptyTitle": "Noch keine Blueprints",
       "emptyDescription": "Erstelle einen individuellen ETF-artigen Korb, backteste ihn und verwandle ein Budget in eine Kaufliste.",
-      "emptyCta": "Neues Blueprints →",
-      "newCardLabel": "Neues Blueprints",
+      "emptyCta": "Neuer Blueprint →",
+      "newCardLabel": "Neuer Blueprint",
       "positionCountOne": "{{count}} Position",
       "positionCountOther": "{{count}} Positionen",
       "status": {
@@ -2352,19 +2368,19 @@
       "noPositionsDescription": "Füge im Builder Anlagen und Gewichte hinzu, um diesen Korb aufzuteilen.",
       "assetHeader": "Anlage",
       "weightHeader": "Gewicht",
-      "deleteDialogTitle": "Blueprints löschen?",
+      "deleteDialogTitle": "Blueprint löschen?",
       "deleteDialogBody": "Dies löscht {{name}} und alle seine Positionen dauerhaft. Dies kann nicht rückgängig gemacht werden.",
-      "deleteError": "Dieses Blueprints konnte nicht gelöscht werden. Bitte versuche es erneut.",
+      "deleteError": "Dieser Blueprint konnte nicht gelöscht werden. Bitte versuche es erneut.",
       "deleting": "Wird gelöscht…",
-      "backToConglomeratesError": "← Zurück zu Konglomeraten",
+      "backToConglomeratesError": "← Zurück zu Blueprints",
       "backLink": "← Blueprints",
-      "loadError": "Dieses Blueprints konnte nicht geladen werden. Es existiert möglicherweise nicht oder der Server ist vorübergehend nicht erreichbar.",
+      "loadError": "Dieser Blueprint konnte nicht geladen werden. Er existiert möglicherweise nicht oder der Server ist vorübergehend nicht erreichbar.",
       "shareButton": "Mit Freunden teilen",
       "sharedButton": "Mit Freunden geteilt",
       "shareError": "Freigabe konnte nicht aktualisiert werden. Bitte versuche es erneut.",
       "positionsHeading": "Positionen",
       "allocationHeading": "Aufteilung",
-      "allocationChartTitle": "Blueprints-Aufteilung",
+      "allocationChartTitle": "Blueprint-Aufteilung",
       "backtestHeading": "Backtest",
       "calculatorHeading": "Rechner",
       "viewToggleAriaLabel": "Positionsansicht",
@@ -2372,12 +2388,12 @@
       "viewResolved": "Aufgelöst",
       "resolvedHint": "Effektive Asset-Gewichte nach Auflösung verschachtelter Blueprints.",
       "resolvedLoadError": "Die aufgelöste Ansicht konnte nicht geladen werden.",
-      "deleteInUseError": "Dieses Blueprints ist Bestandteil von {{parents}} — entferne es zuerst dort."
+      "deleteInUseError": "Dieser Blueprint ist Bestandteil von {{parents}} — entferne ihn zuerst dort."
     },
     "builder": {
       "loading": "Builder wird geladen…",
-      "defaultName": "Unbenanntes Blueprints",
-      "nameAriaLabel": "Konglomeratname",
+      "defaultName": "Unbenannter Blueprint",
+      "nameAriaLabel": "Blueprint-Name",
       "closeAriaLabel": "Builder schließen",
       "activatableHint": "Aktiv = dein validierter Live-Korb, den der Rechner verwendet; die Gewichte müssen 100 % ergeben.",
       "notActivatableHint": "Gewichte müssen 100 % (±0,01) ergeben, bevor aktiviert werden kann.",
@@ -2385,7 +2401,7 @@
       "reactivate": "Erneut aktivieren",
       "activate": "Aktivieren",
       "activateValidationError": "Gewichte müssen 100 % (±0,01) ergeben, mit jeder Position über 0, bevor aktiviert werden kann.",
-      "activateError": "Dieses Blueprints konnte nicht aktiviert werden. Bitte versuche es erneut.",
+      "activateError": "Dieser Blueprint konnte nicht aktiviert werden. Bitte versuche es erneut.",
       "saving": "Wird gespeichert…",
       "saveFailed": "Speichern fehlgeschlagen",
       "draftSaved": "Entwurf — gespeichert",
@@ -2410,7 +2426,7 @@
       "autoBalance": "Auto-Balance",
       "normalize": "Normalisieren",
       "noPositionsMessage": "Noch keine Positionen. Suche links und klicke eine Anlage an, um sie hinzuzufügen.",
-      "positionsListAriaLabel": "Blueprints-Positionen",
+      "positionsListAriaLabel": "Blueprint-Positionen",
       "weightSliderAriaLabel": "Gewichtsregler für {{symbol}}",
       "weightAriaLabel": "Gewicht für {{symbol}}",
       "lockAriaLabel": "{{symbol}} sperren",
@@ -2427,19 +2443,19 @@
       "statLargest": "Größte",
       "backtestPreviewAriaLabel": "Backtest-Vorschau (folgt in Kürze)",
       "backtestPreviewText": "Backtest-Vorschau — folgt mit dem Backtest-Panel.",
-      "nestConglomerateHeading": "Blueprints verschachteln",
-      "nestConglomerateHint": "Füge eines deiner eigenen Blueprints als gewichteten Anteil hinzu — seine Gewichte werden bei Backtest und Aufteilung rekursiv aufgelöst.",
+      "nestConglomerateHeading": "Blueprint verschachteln",
+      "nestConglomerateHint": "Füge einen deiner eigenen Blueprints als gewichteten Anteil hinzu — seine Gewichte werden bei Backtest und Aufteilung rekursiv aufgelöst.",
       "nestConglomerateEmpty": "Noch keine anderen Blueprints zum Verschachteln.",
       "nestConglomerateLoadError": "Deine Blueprints konnten nicht geladen werden.",
       "nestConglomerateListAriaLabel": "Deine Blueprints",
       "nestConglomerateAddAriaLabel": "{{name}} als Bestandteil hinzufügen",
-      "saveIdeaNestedHint": "Ideen enthalten nur Asset-Gewichte — ein Korb mit verschachtelten Konglomeraten kann nicht als Idee gespeichert werden.",
+      "saveIdeaNestedHint": "Ideen enthalten nur Asset-Gewichte — ein Korb mit verschachtelten Blueprints kann nicht als Idee gespeichert werden.",
       "errors": {
-        "maxPositions": "Ein Blueprints darf höchstens {{max}} Positionen haben.",
-        "duplicateAsset": "Dieses Asset ist bereits in diesem Blueprints.",
-        "duplicateConglomerate": "Dieses Blueprints ist bereits ein Bestandteil.",
-        "selfNest": "Ein Blueprints kann sich nicht selbst enthalten.",
-        "nestingCycle": "Diese Verschachtelung würde einen Zyklus erzeugen — ein Blueprints kann sich nicht selbst enthalten, auch nicht über ein anderes Blueprints.",
+        "maxPositions": "Ein Blueprint darf höchstens {{max}} Positionen haben.",
+        "duplicateAsset": "Dieses Asset ist bereits in diesem Blueprint.",
+        "duplicateConglomerate": "Dieser Blueprint ist bereits ein Bestandteil.",
+        "selfNest": "Ein Blueprint kann sich nicht selbst enthalten.",
+        "nestingCycle": "Diese Verschachtelung würde einen Zyklus erzeugen — ein Blueprint kann sich nicht selbst enthalten, auch nicht über einen anderen Blueprint.",
         "nestingTooDeep": "Blueprints können höchstens {{max}} Ebenen tief verschachtelt werden."
       }
     },
@@ -2447,7 +2463,7 @@
       "list": {
         "title": "Ideen",
         "emptyTitle": "Noch keine gespeicherten Ideen",
-        "emptyBody": "Speichere einen Korb samt Backtest aus einem Blueprints oder dem Builder, um später darauf zurückzukommen.",
+        "emptyBody": "Speichere einen Korb samt Backtest aus einem Blueprint oder dem Builder, um später darauf zurückzukommen.",
         "open": "Öffnen",
         "share": "Teilen",
         "thesisNone": "Keine These",
@@ -2474,7 +2490,8 @@
         "loadError": "Diese Idee konnte nicht geladen werden.",
         "thesisHeading": "These",
         "backtestHeading": "Backtest",
-        "conglomerateGone": "Das Blueprints, auf das diese Idee verweist, ist nicht mehr verfügbar."
+        "conglomerateGone": "Der Blueprint, auf den diese Idee verweist, ist nicht mehr verfügbar.",
+        "conglomerateLoadError": "Der Blueprint dieser Idee konnte nicht geladen werden. Bitte versuche es erneut."
       }
     },
     "comparison": {
@@ -2486,9 +2503,10 @@
       "emptyPositions": "Keine Positionen",
       "noConglomerates": "Noch nicht genug Blueprints",
       "noConglomeratesHint": "Erstelle mindestens zwei Blueprints mit Positionen, um sie hier zu vergleichen.",
+      "listError": "Deine Blueprints konnten nicht geladen werden. Bitte versuche es erneut.",
       "needTwo": "Wähle mindestens {{min}} Blueprints zum Vergleich.",
       "error": "Der Vergleich konnte nicht berechnet werden. Bitte versuche es erneut.",
-      "windowError": "Eines der ausgewählten Blueprints hat zu wenig Kurshistorie für das Vergleichsfenster. Wähle einen kürzeren Zeitraum oder entferne es.",
+      "windowError": "Einer der ausgewählten Blueprints hat zu wenig Kurshistorie für das Vergleichsfenster. Wähle einen kürzeren Zeitraum oder entferne ihn.",
       "chartAriaLabel": "Vergleichschart der Blueprints",
       "legendAriaLabel": "Verglichene Blueprints",
       "baselineLabel": "Basis",
@@ -2503,6 +2521,10 @@
     "title": "Prognose",
     "subtitle": "Projiziere dein Portfolio in die Zukunft und rechne schnell nach.",
     "prefillFromPortfolio": "Aus meinem Portfolio übernehmen",
+    "prefill": {
+      "loading": "Portfolio-Daten für die Prognose werden geladen…",
+      "error": "Die Portfolio-Daten für die Prognose konnten nicht geladen werden. Bitte versuche es erneut."
+    },
     "projection": {
       "title": "Vermögensprognose",
       "description": "Projiziere dein Vermögen aus dem Portfoliowert, seiner historischen Rendite und deinen Daueraufträgen — und lege Was-wäre-wenn-Pläne darüber.",
@@ -2671,6 +2693,7 @@
       "chartAriaLabel": "Kursdiagramm für {{symbol}}",
       "stale": "Veraltet",
       "asOf": "Stand {{time}}",
+      "previousClose": "Vortagesschluss",
       "delayedNote": "Daten können verzögert sein.",
       "alerts": {
         "title": "Deine Alarme zu dieser Anlage",
@@ -2680,8 +2703,8 @@
       },
       "appearsIn": {
         "title": "Enthalten in",
-        "emptyTitle": "In keinem Blueprints oder Portfolio",
-        "emptyDescription": "Füge diese Anlage einem Blueprints hinzu oder erfasse eine Transaktion, um sie hier zu sehen."
+        "emptyTitle": "In keinem Blueprint oder Portfolio",
+        "emptyDescription": "Füge diese Anlage einem Blueprint hinzu oder erfasse eine Transaktion, um sie hier zu sehen."
       },
       "dividends": {
         "title": "Dividenden",
@@ -2711,7 +2734,7 @@
       "watchlistAddError": "Konnte nicht zur Watchlist hinzugefügt werden. Bitte versuche es erneut.",
       "quickActions": "Schnellaktionen",
       "addToPortfolio": "+ Portfolio",
-      "addToConglomerate": "+ Blueprints",
+      "addToConglomerate": "+ Blueprint",
       "backToSearch": "← Zurück zur Suche",
       "backShort": "← Suche",
       "loadError": "Die Anlagedetails konnten nicht geladen werden. Die Anlage existiert möglicherweise nicht oder der Server ist vorübergehend nicht erreichbar.",
@@ -2776,9 +2799,9 @@
       "searchingMore": "Der Markt wird nach weiteren Ergebnissen durchsucht…",
       "resultsAria": "Suchergebnisse",
       "openAria": "{{symbol}} öffnen — {{name}}",
-      "toConglomerate": "→ Blueprints",
+      "toConglomerate": "→ Blueprint",
       "toPortfolio": "→ Portfolio",
-      "addToConglomerateAria": "{{symbol}} zu einem Blueprints hinzufügen",
+      "addToConglomerateAria": "{{symbol}} zu einem Blueprint hinzufügen",
       "recordBuyAria": "Kauf für {{symbol}} erfassen",
       "onWatchlistAria": "{{symbol}} ist auf deiner Watchlist",
       "retryWatchlistAria": "{{symbol}} erneut zur Watchlist hinzufügen",
@@ -2787,14 +2810,14 @@
       "addToWatchlistTitle": "Zur Watchlist hinzufügen",
       "chooseWatchlistAria": "Watchlist für {{symbol}} wählen",
       "watchlistsMenuAria": "Watchlists für {{symbol}}",
-      "pickerMenuAria": "{{symbol}} zu einem Blueprints hinzufügen",
-      "pickerTitle": "Zu Blueprints hinzufügen",
+      "pickerMenuAria": "{{symbol}} zu einem Blueprint hinzufügen",
+      "pickerTitle": "Zu einem Blueprint hinzufügen",
       "noConglomerates": "Du hast noch keine Blueprints.",
       "addedTo": "Zu {{name}} hinzugefügt.",
-      "createNewConglomerate": "+ Neues Blueprints erstellen",
+      "createNewConglomerate": "+ Neuen Blueprint erstellen",
       "selectAria": "{{symbol}} auswählen",
       "select": "Auswählen →",
-      "addToConglomerateError": "Konnte nicht zu diesem Blueprints hinzugefügt werden."
+      "addToConglomerateError": "Konnte nicht zu diesem Blueprint hinzugefügt werden."
     },
     "aria": "Anlagen",
     "tabs": {
@@ -2846,6 +2869,8 @@
     "save": "Speichern",
     "saving": "Wird gespeichert…",
     "cancel": "Abbrechen",
+    "loading": "Freigabeeinstellungen werden geladen…",
+    "loadError": "Die aktuellen Freigabeeinstellungen konnten nicht geladen werden. Bitte versuche es erneut.",
     "error": "Freigabe konnte nicht aktualisiert werden. Bitte versuche es erneut.",
     "stopSharing": "Freigabe beenden",
     "shareButton": "Teilen",
@@ -2903,7 +2928,7 @@
         "other": "{{count}} Portfolios"
       },
       "conglomerate": {
-        "one": "{{count}} Blueprints",
+        "one": "{{count}} Blueprint",
         "other": "{{count}} Blueprints"
       },
       "watchlist": {
@@ -2936,8 +2961,10 @@
       "title": "Meine Elemente",
       "subtitle": "Alles bleibt privat, bis du es teilst.",
       "emptyTitle": "Du besitzt noch nichts",
-      "emptyBody": "Erstelle ein Portfolio, Blueprints oder eine Watchlist, um hier die Freigabe zu verwalten.",
+      "emptyBody": "Erstelle ein Portfolio, einen Blueprint oder eine Watchlist, um hier die Freigabe zu verwalten.",
       "error": "Deine Elemente konnten nicht geladen werden. Bitte lade die Seite neu.",
+      "portfolioMetadataLoading": "Datenschutz des Gruppen-Portfolios wird geprüft…",
+      "portfolioMetadataError": "Der Hinweis zur Gruppenfreigabe dieses Portfolios konnte nicht geprüft werden. Versuche es vor dem Teilen erneut.",
       "publicProfileLink": "Öffentliches Profil verwalten"
     },
     "alertSharing": {
@@ -2966,7 +2993,7 @@
       "unfollowAria": "{{username}} entfolgen",
       "loginToFollow": "Zum Folgen anmelden",
       "listTitle": "Folge ich",
-      "listSubtitle": "Personen, denen du folgst. Du erhältst eine Benachrichtigung, wenn sie ein Portfolio, eine Watchlist oder ein Blueprints öffentlich machen.",
+      "listSubtitle": "Personen, denen du folgst. Du erhältst eine Benachrichtigung, wenn sie ein Portfolio, eine Watchlist oder einen Blueprint öffentlich machen.",
       "empty": "Du folgst noch niemandem.",
       "emptyHint": "Öffne das öffentliche Profil einer Person, um ihr zu folgen.",
       "error": "Deine gefolgten Personen konnten nicht geladen werden. Bitte lade die Seite neu.",
@@ -2993,7 +3020,7 @@
       "sharesHeading": "Teilt mit dir",
       "sharesEmpty": "{{username}} teilt noch nichts mit dir.",
       "followHeading": "Neuigkeiten über diese Person",
-      "followHint": "Folge, um zu erfahren, wenn sie ein Portfolio, eine Watchlist oder ein Blueprints öffentlich macht."
+      "followHint": "Folge, um zu erfahren, wenn sie ein Portfolio, eine Watchlist oder einen Blueprint öffentlich macht."
     },
     "chat": {
       "title": "Nachrichten",
@@ -3011,7 +3038,7 @@
         "shared": {
           "asset": "Anlage geteilt",
           "portfolio": "Portfolio geteilt",
-          "conglomerate": "Blueprints geteilt",
+          "conglomerate": "Blueprint geteilt",
           "watchlist": "Watchlist geteilt",
           "idea": "Hat eine Idee geteilt"
         }
@@ -3039,7 +3066,7 @@
         "kind": {
           "asset": "Anlage",
           "portfolio": "Portfolio",
-          "conglomerate": "Blueprints",
+          "conglomerate": "Blueprint",
           "watchlist": "Watchlist",
           "idea": "Idee"
         },
@@ -3101,15 +3128,18 @@
     },
     "shared": {
       "backToFriends": "← Freunde",
+      "loadError": "Dieses geteilte Element konnte nicht geladen werden. Bitte versuche es erneut.",
       "portfolioLoadError": "Dieses geteilte Portfolio konnte nicht geladen werden. Bitte lade die Seite neu.",
       "portfolioEmptyTitle": "Noch nichts zu zeigen",
       "portfolioEmptyDescription": "{{username}} hat in diesem Portfolio noch keine Bestände erfasst.",
       "portfolioChartAria": "Wertverlauf des geteilten Portfolios",
-      "conglomerateUnavailableTitle": "Dieses Blueprints ist nicht verfügbar",
+      "portfolioUnavailableTitle": "Dieses Portfolio ist nicht verfügbar",
+      "conglomerateUnavailableTitle": "Dieser Blueprint ist nicht verfügbar",
       "watchlistUnavailableTitle": "Diese Watchlist ist nicht verfügbar",
+      "watchlistTitle": "{{name}} von {{owner}}",
       "unavailableDescription": "Die Person teilt es möglicherweise nicht mehr, oder ihr seid nicht mehr befreundet.",
       "noPositionsTitle": "Keine Positionen",
-      "noPositionsDescription": "Dieses Blueprints enthält noch keine Anlagen.",
+      "noPositionsDescription": "Dieser Blueprint enthält noch keine Anlagen.",
       "watchlistEmptyTitle": "Leere Watchlist",
       "watchlistEmptyDescription": "Diese Person beobachtet noch keine Anlagen.",
       "sharedByReadOnly": "Geteilt von {{username}} · nur Lesezugriff",
@@ -3143,6 +3173,7 @@
     "comments": {
       "count": "{{count}} Kommentare",
       "empty": "Noch keine Kommentare.",
+      "loadError": "Die Kommentare konnten nicht geladen werden. Bitte versuche es erneut.",
       "placeholder": "Kommentar hinzufügen…",
       "post": "Senden",
       "posting": "Wird gesendet…",
@@ -3153,7 +3184,7 @@
     },
     "groups": {
       "title": "Gruppen",
-      "subtitle": "Benannte Freundeskreise, mit denen du als eine Zielgruppe teilen kannst.",
+      "subtitle": "Benannte Freundeskreise, mit denen du Inhalte auf einmal teilen kannst.",
       "newLabel": "Name der neuen Gruppe",
       "newPlaceholder": "z. B. Familie",
       "create": "Erstellen",
@@ -3350,7 +3381,8 @@
       "outgoingTitle": "Von dir gesendete Einladungen",
       "incomingLabel": "{{inviter}} hat dich eingeladen zu",
       "outgoingLabel": "{{invitee}} — eingeladen zu",
-      "openAccept": "Ansehen"
+      "openAccept": "Ansehen",
+      "loadError": "Deine Einladungen zu Gruppenportfolios konnten nicht geladen werden. Bitte versuche es erneut."
     },
     "share": {
       "syncedNotice": "Andere Mitglieder dieses Gruppenportfolios bleiben für dich sichtbar, ihre Namen werden aber für Personen ausgeblendet, mit denen du das Portfolio teilst und die selbst nicht Mitglied sind."
@@ -3767,9 +3799,245 @@
         "diagnostics": "Diagnose"
       }
     },
+    "settings": {
+      "title": "Einstellungen",
+      "subtitle": "Globale App-Konfiguration — wie Konten entstehen und welche Funktionen appweit gelten.",
+      "loading": "Einstellungen werden geladen…",
+      "save": "Einstellungen speichern",
+      "saved": "Einstellungen gespeichert.",
+      "unsaved": "Ungespeicherte Änderungen",
+      "registration": {
+        "title": "Registrierungsmodus",
+        "description": "Legt fest, wie neue Konten entstehen. Ein Wechsel gilt sofort.",
+        "modes": {
+          "closed": {
+            "title": "Geschlossen",
+            "description": "Nur vom Admin erstellte Nutzer und Einladungslinks. Das ist der vollständig durchgesetzte Standard."
+          },
+          "inviteToken": {
+            "title": "Einladung / Zugriffstoken",
+            "description": "Selbstständige Registrierung mit einem gültigen Zugriffstoken von unten."
+          },
+          "approval": {
+            "title": "Freigabe",
+            "description": "Offenes Registrierungsformular; Konten warten danach unten auf ihre Freigabe."
+          },
+          "open": {
+            "title": "Offen",
+            "description": "Automatische Registrierung — jeder kann ein Konto erstellen und sich direkt anmelden."
+          }
+        }
+      },
+      "features": {
+        "title": "Funktionsschalter",
+        "description": "Hier liegen appweite Feature-Flags und Zugriffsregeln. Weitere Schalter folgen nach V1.",
+        "betaLabel": "Beta-Modus",
+        "placeholder": "Platzhalter",
+        "betaDescription": "Experimentelle Bereiche lassen sich damit hinter einem Beta-Flag sperren. Derzeit hängt noch kein App-Verhalten davon ab."
+      },
+      "tokens": {
+        "title": "Registrierungstoken",
+        "description": "Zugriffstoken für den Registrierungsmodus Einladung / Zugriffstoken.",
+        "inactive": "Sie gelten nur, solange oben Einladung / Zugriffstoken ausgewählt ist.",
+        "label": "Bezeichnung (optional)",
+        "labelPlaceholder": "Beta-Welle 1",
+        "maxUses": "Maximale Nutzungen",
+        "expiresInDays": "Läuft ab in Tagen (optional)",
+        "never": "nie",
+        "create": "Token erstellen",
+        "urlLabel": "Registrierungs-URL (jetzt kopieren — nur einmal sichtbar)",
+        "loading": "Token werden geladen…",
+        "untitled": "Token ohne Bezeichnung",
+        "status": {
+          "active": "aktiv",
+          "exhausted": "aufgebraucht",
+          "expired": "abgelaufen",
+          "revoked": "widerrufen"
+        },
+        "uses": "{{used}}/{{max}} Nutzungen",
+        "expires": "läuft am {{date}} ab",
+        "noExpiry": "läuft nicht ab",
+        "empty": "Noch keine Registrierungstoken."
+      },
+      "approvals": {
+        "title": "Freigabewarteschlange",
+        "description": "Selbstständige Registrierungen, die auf eine Prüfung warten.",
+        "inactive": "Neue Anträge kommen nur an, solange oben Freigabe ausgewählt ist.",
+        "loading": "Anträge werden geladen…",
+        "requested": "beantragt {{date}}",
+        "approve": "Freigeben",
+        "reject": "Ablehnen",
+        "empty": "Keine ausstehenden Registrierungen."
+      }
+    },
+    "users": {
+      "title": "Nutzer",
+      "subtitle": "Konten, Zugriffe und Anmeldedaten verwalten.",
+      "create": "Nutzer erstellen",
+      "searchLabel": "Suchen",
+      "searchPlaceholder": "Nach E-Mail oder Benutzername filtern",
+      "selectedOne": "{{count}} ausgewählt",
+      "selectedOther": "{{count}} ausgewählt",
+      "clear": "Auswahl aufheben",
+      "loading": "Nutzer werden geladen…",
+      "emptySearch": "Keine Nutzer passen zu deiner Suche.",
+      "empty": "Noch keine Nutzer. Erstelle den ersten.",
+      "selectAll": "Alle Nutzer auswählen",
+      "selectUser": "{{username}} auswählen",
+      "columns": {
+        "user": "Nutzer",
+        "role": "Rolle",
+        "status": "Status"
+      },
+      "roles": {
+        "admin": "Admin",
+        "user": "Nutzer"
+      },
+      "status": {
+        "active": "aktiv",
+        "disabled": "deaktiviert"
+      },
+      "stats": {
+        "users": "Nutzer",
+        "active": "Aktiv (≤30 T.)",
+        "disabled": "Deaktiviert",
+        "pendingInvites": "Ausstehende Einladungen"
+      },
+      "emailLabel": "E-Mail",
+      "usernameLabel": "Benutzername",
+      "usernameHint": "3–40 Zeichen: Buchstaben, Zahlen, Punkt, Bindestrich und Unterstrich.",
+      "bulkResult": {
+        "disabledOne": "{{count}} Nutzer deaktiviert",
+        "disabledOther": "{{count}} Nutzer deaktiviert",
+        "skipped": "{{count}} übersprungen"
+      }
+    },
+    "accountDefaults": {
+      "title": "Kontovorgaben",
+      "subtitle": "Damit startet jedes NEUE Konto. Änderungen gelten nur für die nächste Registrierung — bestehende Konten bleiben unverändert.",
+      "loading": "Kontovorgaben werden geladen…",
+      "starterTitle": "Startvorgaben",
+      "chatLabel": "Chat aktiviert",
+      "chatHint": "Ist der Chat aus, können neue Konten keine Direktnachrichten senden, aber weiterhin Nachrichten lesen.",
+      "visibilityAria": "Standard-Sichtbarkeit für Portfolios",
+      "visibilityTitle": "Standard-Sichtbarkeit für Portfolios",
+      "visibilityPrivate": "Privat",
+      "visibilityFriends": "Für Freunde sichtbar",
+      "developerLabel": "Entwicklerstatus",
+      "inertBadge": "Noch ohne Wirkung",
+      "developerHint": "Wird für neue Konten gespeichert, hat aber noch keine Wirkung — die Funktion folgt erst mit dem Entwicklerstatus (V6-9).",
+      "notificationsTitle": "Benachrichtigungsvorgaben",
+      "notificationsDescription": "Mit dieser Matrix aus Typen und Kanälen startet ein neues Konto. Vorausgefüllt ist die schlanke E-Mail-Vorgabe: E-Mails sind nur für Konto und Sicherheit aktiv. Danach können Nutzer alles selbst ändern.",
+      "typeHeader": "Typ",
+      "channels": {
+        "inapp": "In der App",
+        "email": "E-Mail",
+        "telegram": "Telegram",
+        "discord": "Discord",
+        "push": "Handy",
+        "webpush": "Browser"
+      },
+      "types": {
+        "friendRequest": "Freundschaftsanfragen",
+        "friendAccepted": "Angenommene Freundschaftsanfragen",
+        "portfolioShared": "Geteilte Portfolios",
+        "accountInvite": "Kontoeinladungen",
+        "tempPassword": "Temporäre Passwörter",
+        "dataExport": "Datenexporte",
+        "alertTriggered": "Preisalarme",
+        "earningsReminder": "Ergebniserinnerungen",
+        "chatMessage": "Chatnachrichten",
+        "watchlistShared": "Geteilte Watchlists",
+        "conglomerateShared": "Geteilte Blueprints",
+        "friendActivity": "Freundesaktivität",
+        "followPublished": "Neue Inhalte von gefolgten Personen",
+        "followAlertCreated": "Neue Alarme von gefolgten Personen",
+        "followAlertFired": "Ausgelöste Alarme von gefolgten Personen",
+        "dividendEvent": "Dividendenerinnerungen",
+        "budgetExceeded": "Budgetalarme",
+        "mirrorInvite": "Einladungen zu Gruppenportfolios",
+        "mirrorMemberJoined": "Mitglied beigetreten",
+        "mirrorMemberLeft": "Mitglied ausgetreten",
+        "mirrorMemberRemoved": "Mitglied entfernt",
+        "mirrorRemoved": "Aus Gruppenportfolio entfernt",
+        "mirrorOwnershipTransferred": "Eigentum übertragen",
+        "mirrorChainDissolved": "Gruppenportfolio aufgelöst",
+        "mirrorSyncStalled": "Synchronisierungsprobleme"
+      },
+      "saved": "Kontovorgaben gespeichert.",
+      "save": "Vorgaben speichern"
+    },
+    "oauthApps": {
+      "title": "OAuth-Apps",
+      "subtitle": "Registriere die offiziellen BetterTrack-Apps. Sie gelten als vertrauenswürdig: Nutzer sehen das BetterTrack-Branding und überspringen bei der Anmeldung die Zustimmungsseite.",
+      "scopeRequired": "Wähle mindestens eine Berechtigung aus.",
+      "redirectRequired": "Füge mindestens eine Redirect-URI hinzu.",
+      "appNameLabel": "App-Name",
+      "appNamePlaceholder": "BetterTrack Mobile",
+      "redirectLabel": "Redirect-URI",
+      "redirectPlaceholder": "https://app.bettertrack.io/callback",
+      "redirectHint": "Hierhin kehren Nutzer nach der Anmeldung zurück. Erlaubt sind HTTPS, lokales HTTP oder ein eigenes URL-Schema.",
+      "scopes": "Berechtigungen",
+      "publicClient": "Öffentlicher Client (PKCE)",
+      "publicClientHint": "Für mobile Apps und SPAs, die kein Secret sicher aufbewahren können. Deaktiviere dies für ein Backend, das ein Client-Secret schützen kann.",
+      "registering": "Wird registriert…",
+      "register": "App registrieren",
+      "loading": "Apps werden geladen…",
+      "empty": "Noch keine offiziellen Apps. Registriere oben die erste.",
+      "firstParty": "offiziell",
+      "publicPkce": "öffentlich / PKCE",
+      "confidential": "vertraulich",
+      "edit": "Bearbeiten",
+      "redirectCreated": "Redirect: {{redirects}} · Erstellt {{date}}",
+      "editTitle": "{{name}} bearbeiten",
+      "clientIdImmutable": "Client-ID (unveränderlich)",
+      "redirectUris": "Redirect-URIs",
+      "redirectUrisHint": "Eine pro Zeile. Erlaubt sind HTTPS, lokales HTTP oder ein Deep Link mit eigenem URL-Schema.",
+      "scopeChangeHint": "Eine neue Berechtigung gilt nicht automatisch für bereits angemeldete Nutzer — sie müssen erneut zustimmen. Entfernte Berechtigungen werden sofort entzogen.",
+      "saveChanges": "Änderungen speichern"
+    },
+    "apiKeys": {
+      "title": "API-Schlüssel",
+      "subtitle": "Konfiguriere Limits pro Schlüssel und prüfe die Nutzung jedes Schlüssels.",
+      "validation": "Gib einen Namen, ein Limit und ein Zeitfenster ein.",
+      "rateTiers": {
+        "title": "Limitstufen",
+        "description": "Eine Stufe legt fest, wie viele Anfragen pro Zeitfenster erlaubt sind. Schlüssel ohne Zuordnung verwenden die Standardstufe.",
+        "loading": "Limitstufen werden geladen…",
+        "empty": "Noch keine Limitstufen definiert.",
+        "name": "Name",
+        "limit": "Limit",
+        "window": "Zeitfenster (s)",
+        "default": "Standard",
+        "makeDefault": "Als Standard festlegen",
+        "add": "Stufe hinzufügen"
+      },
+      "keys": {
+        "title": "Schlüssel",
+        "loading": "Schlüssel werden geladen…",
+        "empty": "Noch keine API-Schlüssel erstellt.",
+        "name": "Name",
+        "owner": "Inhaber",
+        "tier": "Limitstufe",
+        "lastUsed": "Zuletzt verwendet",
+        "revoked": "Widerrufen",
+        "tierAria": "Limitstufe für {{name}}",
+        "defaultTier": "Standard",
+        "viewAudit": "Protokoll ansehen"
+      },
+      "audit": {
+        "title": "Anfrageprotokoll — {{name}}",
+        "loading": "Protokoll wird geladen…",
+        "empty": "Noch keine Anfragen aufgezeichnet.",
+        "when": "Zeitpunkt",
+        "method": "Methode",
+        "path": "Pfad",
+        "status": "Status"
+      }
+    },
     "monitoring": {
       "title": "Monitoring",
-      "subtitle": "Selbst-gehostete Metrik-Dashboards (Prometheus + Grafana) und wie sie erreichbar sind.",
+      "subtitle": "Selbst gehostete Metrik-Dashboards (Prometheus + Grafana) und wie sie erreichbar sind.",
       "refresh": "Aktualisieren",
       "loadError": "Der Monitoring-Status konnte nicht geladen werden.",
       "actionError": "Der externe Zugriff konnte nicht geändert werden.",

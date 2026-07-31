@@ -322,12 +322,33 @@ describe('ConglomerateDetailPage', () => {
   });
 
   test('shows an error message when the Blueprint fails to load', async () => {
-    vi.mocked(getConglomerate).mockRejectedValue(new Error('nope'));
+    vi.mocked(getConglomerate)
+      .mockRejectedValueOnce(new Error('nope'))
+      .mockResolvedValueOnce(DETAIL);
+    const user = userEvent.setup();
     renderPage();
 
     await waitFor(() =>
       expect(screen.getByText(/Could not load this Blueprint/i)).toBeInTheDocument(),
     );
+    await user.click(screen.getByRole('button', { name: 'Try again' }));
+    expect(await screen.findByText('Core Growth')).toBeInTheDocument();
+    expect(getConglomerate).toHaveBeenCalledTimes(2);
+  });
+
+  test('retries a failed resolved-weight read in place', async () => {
+    vi.mocked(getConglomerate).mockResolvedValue(NESTED_DETAIL);
+    vi.mocked(getResolvedConglomerate)
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce(NESTED_RESOLVED);
+    const user = userEvent.setup();
+    renderPage();
+
+    expect(await screen.findByText(/resolved view could not be loaded/i)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Try again' }));
+
+    await waitFor(() => expect(getResolvedConglomerate).toHaveBeenCalledTimes(2));
+    expect(screen.queryByText(/resolved view could not be loaded/i)).not.toBeInTheDocument();
   });
 
   test('shows an inline error when toggling sharing fails', async () => {

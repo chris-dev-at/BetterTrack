@@ -21,7 +21,13 @@
       "waitMoment": " Please wait a moment and try again."
     },
     "adminLogin": {
-      "heading": "Admin sign in"
+      "heading": "Admin sign in",
+      "notAdmin": "This is a user account, not an administrator — please sign in through the main app.",
+      "invalidCredentials": "Invalid email/username or password.",
+      "genericError": "Unable to sign in. Please try again."
+    },
+    "adminForcedPassword": {
+      "info": "Set a new password before continuing to the admin console."
     },
     "login": {
       "subtitle": "Sign in to your account",
@@ -141,6 +147,7 @@
       "promptWithUser": "Welcome back, {{username}}. Enter your {{length}}-digit PIN to keep going.",
       "prompt": "Enter your {{length}}-digit PIN to keep going.",
       "inputLabel": "PIN",
+      "digitLabel": "{{label}} digit {{position}}",
       "fallbackError": "Too many incorrect PINs. Please sign in with your password.",
       "invalidPin": "Incorrect PIN. Please try again.",
       "rateLimited": "Too many attempts. Please wait a moment and try again.",
@@ -246,6 +253,8 @@
     "loading": "Loading…",
     "saving": "Saving…",
     "retry": "Try again",
+    "copy": "Copy",
+    "copied": "Copied",
     "search": "Search",
     "yes": "Yes",
     "no": "No",
@@ -280,7 +289,10 @@
       "priceChartDataDate": "Date",
       "priceChartDataValue": "Value",
       "priceChartDataSampled": "Showing {{shown}} of {{total}} plotted points.",
-      "allocationFallbackTitle": "Allocation breakdown"
+      "allocationFallbackTitle": "Allocation breakdown",
+      "noTrendData": "No trend data",
+      "trendUp": "Trend up",
+      "trendDown": "Trend down"
     },
     "marketState": {
       "open": "Open",
@@ -1476,6 +1488,10 @@
         "title": "Nothing to analyze yet",
         "description": "Add a holding to your portfolio to see the analytics deep-dive."
       },
+      "noPortfolio": {
+        "title": "No portfolio to analyze yet",
+        "description": "Create a portfolio first, then its performance and risk analysis will appear here."
+      },
       "range": {
         "heading": "Date range",
         "m1": "1M",
@@ -2474,7 +2490,8 @@
         "loadError": "Couldn't load this idea.",
         "thesisHeading": "Thesis",
         "backtestHeading": "Backtest",
-        "conglomerateGone": "The blueprint this idea references is no longer available."
+        "conglomerateGone": "The blueprint this idea references is no longer available.",
+        "conglomerateLoadError": "Could not load this idea's blueprint. Please try again."
       }
     },
     "comparison": {
@@ -2486,6 +2503,7 @@
       "emptyPositions": "No positions",
       "noConglomerates": "Not enough blueprints yet",
       "noConglomeratesHint": "Build at least two blueprints with positions to compare them here.",
+      "listError": "Could not load your blueprints. Please try again.",
       "needTwo": "Select at least {{min}} blueprints to compare.",
       "error": "The comparison could not be computed. Please try again.",
       "windowError": "One of the selected blueprints has too little price history to cover the comparison window. Try a shorter range or deselect it.",
@@ -2503,6 +2521,10 @@
     "title": "Forecast",
     "subtitle": "Project your portfolio forward and run the number quickly.",
     "prefillFromPortfolio": "Prefill from my portfolio",
+    "prefill": {
+      "loading": "Loading portfolio data for forecasts…",
+      "error": "Could not load the portfolio data used by forecasts. Please try again."
+    },
     "projection": {
       "title": "Net-worth projection",
       "description": "Project your net worth forward from your portfolio value, its historical return and your standing orders — then overlay what-if plans.",
@@ -2671,6 +2693,7 @@
       "chartAriaLabel": "Price chart for {{symbol}}",
       "stale": "Stale",
       "asOf": "As of {{time}}",
+      "previousClose": "Prev Close",
       "delayedNote": "Data may be delayed.",
       "alerts": {
         "title": "Your alerts on this asset",
@@ -2846,6 +2869,8 @@
     "save": "Save",
     "saving": "Saving…",
     "cancel": "Cancel",
+    "loading": "Loading sharing settings…",
+    "loadError": "Could not load the current sharing settings. Please try again.",
     "error": "Could not update sharing. Please try again.",
     "stopSharing": "Stop sharing",
     "shareButton": "Share",
@@ -2938,6 +2963,8 @@
       "emptyTitle": "You don't own anything yet",
       "emptyBody": "Create a portfolio, blueprint or watchlist and it appears here to manage its sharing.",
       "error": "Could not load your items. Please refresh the page.",
+      "portfolioMetadataLoading": "Checking group-portfolio privacy…",
+      "portfolioMetadataError": "Could not verify this portfolio's group-sharing notice. Try again before sharing it.",
       "publicProfileLink": "Manage your public profile"
     },
     "alertSharing": {
@@ -3101,12 +3128,15 @@
     },
     "shared": {
       "backToFriends": "← Friends",
+      "loadError": "Could not load this shared item. Please try again.",
       "portfolioLoadError": "Could not load this shared portfolio. Please refresh the page.",
       "portfolioEmptyTitle": "Nothing to show yet",
       "portfolioEmptyDescription": "{{username}} hasn't recorded any holdings in this portfolio.",
       "portfolioChartAria": "Shared portfolio value over time",
+      "portfolioUnavailableTitle": "This portfolio isn't available",
       "conglomerateUnavailableTitle": "This blueprint isn't available",
       "watchlistUnavailableTitle": "This watchlist isn't available",
+      "watchlistTitle": "{{owner}}’s {{name}}",
       "unavailableDescription": "The owner may have stopped sharing it, or you're no longer friends.",
       "noPositionsTitle": "No positions",
       "noPositionsDescription": "This blueprint has no assets yet.",
@@ -3143,6 +3173,7 @@
     "comments": {
       "count": "{{count}} comments",
       "empty": "No comments yet.",
+      "loadError": "Couldn't load the comments. Please try again.",
       "placeholder": "Add a comment…",
       "post": "Post",
       "posting": "Posting…",
@@ -3350,7 +3381,8 @@
       "outgoingTitle": "Invites you've sent",
       "incomingLabel": "{{inviter}} invited you to",
       "outgoingLabel": "{{invitee}} — invited to",
-      "openAccept": "Review"
+      "openAccept": "Review",
+      "loadError": "Could not load your group portfolio invites. Please try again."
     },
     "share": {
       "syncedNotice": "Others in this group portfolio will remain visible to you, but their names are hidden from anyone you share with who is not also a member."
@@ -3765,6 +3797,242 @@
         "people": "People",
         "configuration": "Configuration",
         "diagnostics": "Diagnostics"
+      }
+    },
+    "settings": {
+      "title": "Settings",
+      "subtitle": "Global app configuration — how accounts come to exist and app-wide feature toggles.",
+      "loading": "Loading settings…",
+      "save": "Save settings",
+      "saved": "Settings saved.",
+      "unsaved": "Unsaved changes",
+      "registration": {
+        "title": "Registration mode",
+        "description": "How new accounts come to exist. Switching a mode takes effect immediately.",
+        "modes": {
+          "closed": {
+            "title": "Closed",
+            "description": "Only admin-created users and invite links. The default, fully enforced."
+          },
+          "inviteToken": {
+            "title": "Invite / access-token",
+            "description": "Self-serve registration page that requires a valid access token (below)."
+          },
+          "approval": {
+            "title": "Approval",
+            "description": "Open registration form; accounts wait in the approval queue (below)."
+          },
+          "open": {
+            "title": "Open",
+            "description": "Automatic registration — anyone can create an account and sign straight in."
+          }
+        }
+      },
+      "features": {
+        "title": "Feature toggles",
+        "description": "App-wide feature flags and access rules live here. More toggles land post-v1.",
+        "betaLabel": "Beta mode",
+        "placeholder": "Placeholder",
+        "betaDescription": "Gate experimental surfaces behind a beta flag. No app behaviour depends on it yet."
+      },
+      "tokens": {
+        "title": "Registration tokens",
+        "description": "Access tokens for the invite-token registration mode.",
+        "inactive": "They only take effect while the mode above is Invite / access-token.",
+        "label": "Label (optional)",
+        "labelPlaceholder": "beta wave 1",
+        "maxUses": "Max uses",
+        "expiresInDays": "Expires in days (optional)",
+        "never": "never",
+        "create": "Create token",
+        "urlLabel": "Registration URL (copy now — shown once)",
+        "loading": "Loading tokens…",
+        "untitled": "Untitled token",
+        "status": {
+          "active": "active",
+          "exhausted": "exhausted",
+          "expired": "expired",
+          "revoked": "revoked"
+        },
+        "uses": "{{used}}/{{max}} uses",
+        "expires": "expires {{date}}",
+        "noExpiry": "no expiry",
+        "empty": "No registration tokens yet."
+      },
+      "approvals": {
+        "title": "Approval queue",
+        "description": "Pending self-serve registrations awaiting review.",
+        "inactive": "New applications only arrive while the mode above is Approval.",
+        "loading": "Loading requests…",
+        "requested": "requested {{date}}",
+        "approve": "Approve",
+        "reject": "Reject",
+        "empty": "No pending registrations."
+      }
+    },
+    "users": {
+      "title": "Users",
+      "subtitle": "Manage accounts, access, and credentials.",
+      "create": "Create user",
+      "searchLabel": "Search",
+      "searchPlaceholder": "Filter by email or username",
+      "selectedOne": "{{count}} selected",
+      "selectedOther": "{{count}} selected",
+      "clear": "Clear",
+      "loading": "Loading users…",
+      "emptySearch": "No users match your search.",
+      "empty": "No users yet. Create the first one.",
+      "selectAll": "Select all users",
+      "selectUser": "Select {{username}}",
+      "columns": {
+        "user": "User",
+        "role": "Role",
+        "status": "Status"
+      },
+      "roles": {
+        "admin": "admin",
+        "user": "user"
+      },
+      "status": {
+        "active": "active",
+        "disabled": "disabled"
+      },
+      "stats": {
+        "users": "Users",
+        "active": "Active (≤30d)",
+        "disabled": "Disabled",
+        "pendingInvites": "Pending invites"
+      },
+      "emailLabel": "Email",
+      "usernameLabel": "Username",
+      "usernameHint": "3–40 characters: letters, numbers, dot, dash, underscore.",
+      "bulkResult": {
+        "disabledOne": "Disabled {{count}} user",
+        "disabledOther": "Disabled {{count}} users",
+        "skipped": "skipped {{count}}"
+      }
+    },
+    "accountDefaults": {
+      "title": "Account defaults",
+      "subtitle": "What every NEW account starts with. Changes apply to the next registration only — existing accounts are never touched.",
+      "loading": "Loading account defaults…",
+      "starterTitle": "Starter settings",
+      "chatLabel": "Chat enabled",
+      "chatHint": "When off, new accounts start unable to send direct messages (they can still read).",
+      "visibilityAria": "Default portfolio visibility",
+      "visibilityTitle": "Default portfolio visibility",
+      "visibilityPrivate": "Private",
+      "visibilityFriends": "Visible to friends",
+      "developerLabel": "Developer status",
+      "inertBadge": "Inert",
+      "developerHint": "Stored on new accounts but has no effect yet — consumed only when developer status ships (V6-9).",
+      "notificationsTitle": "Notification defaults",
+      "notificationsDescription": "The per-type × channel matrix a new account starts with. Pre-filled with the lean email default (email on only for account & security). Users can change theirs afterwards.",
+      "typeHeader": "Type",
+      "channels": {
+        "inapp": "In-app",
+        "email": "Email",
+        "telegram": "Telegram",
+        "discord": "Discord",
+        "push": "Phone",
+        "webpush": "Browser"
+      },
+      "types": {
+        "friendRequest": "friend.request",
+        "friendAccepted": "friend.accepted",
+        "portfolioShared": "portfolio.shared",
+        "accountInvite": "account.invite",
+        "tempPassword": "account.temp_password",
+        "dataExport": "account.data_export",
+        "alertTriggered": "alert.triggered",
+        "earningsReminder": "earnings.reminder",
+        "chatMessage": "chat.message",
+        "watchlistShared": "watchlist.shared",
+        "conglomerateShared": "conglomerate.shared",
+        "friendActivity": "friend.activity",
+        "followPublished": "follow.published",
+        "followAlertCreated": "follow.alert.created",
+        "followAlertFired": "follow.alert.fired",
+        "dividendEvent": "dividend.event",
+        "budgetExceeded": "budget.exceeded",
+        "mirrorInvite": "mirror.invite",
+        "mirrorMemberJoined": "mirror.member_joined",
+        "mirrorMemberLeft": "mirror.member_left",
+        "mirrorMemberRemoved": "mirror.member_removed",
+        "mirrorRemoved": "mirror.removed",
+        "mirrorOwnershipTransferred": "mirror.ownership_transferred",
+        "mirrorChainDissolved": "mirror.chain_dissolved",
+        "mirrorSyncStalled": "mirror.sync_stalled"
+      },
+      "saved": "Account defaults saved.",
+      "save": "Save defaults"
+    },
+    "oauthApps": {
+      "title": "OAuth apps",
+      "subtitle": "Register the official first-party BetterTrack apps. They're trusted — users see BetterTrack branding and skip the consent screen when signing in.",
+      "scopeRequired": "Select at least one scope.",
+      "redirectRequired": "Add at least one redirect URI.",
+      "appNameLabel": "App name",
+      "appNamePlaceholder": "BetterTrack Mobile",
+      "redirectLabel": "Redirect URI",
+      "redirectPlaceholder": "https://app.bettertrack.io/callback",
+      "redirectHint": "Where users return after login. https, http-loopback, or a custom scheme.",
+      "scopes": "Scopes",
+      "publicClient": "Public client (PKCE)",
+      "publicClientHint": "Mobile / SPA apps that can't keep a secret. Uncheck for a backend that can hold a client secret.",
+      "registering": "Registering…",
+      "register": "Register app",
+      "loading": "Loading apps…",
+      "empty": "No first-party apps yet. Register one above.",
+      "firstParty": "first-party",
+      "publicPkce": "public / PKCE",
+      "confidential": "confidential",
+      "edit": "Edit",
+      "redirectCreated": "Redirect: {{redirects}} · Created {{date}}",
+      "editTitle": "Edit {{name}}",
+      "clientIdImmutable": "Client ID (immutable)",
+      "redirectUris": "Redirect URIs",
+      "redirectUrisHint": "One per line. https, http-loopback, or a custom-scheme deep link.",
+      "scopeChangeHint": "Adding a scope does not grant it to users already signed in — they must re-consent. Removing a scope takes effect immediately.",
+      "saveChanges": "Save changes"
+    },
+    "apiKeys": {
+      "title": "API keys",
+      "subtitle": "Configure per-key rate tiers and review each key's usage.",
+      "validation": "Enter a name, limit and window.",
+      "rateTiers": {
+        "title": "Rate tiers",
+        "description": "A tier is a request allowance (limit) per window. Unassigned keys use the default tier.",
+        "loading": "Loading tiers…",
+        "empty": "No tiers defined yet.",
+        "name": "Name",
+        "limit": "Limit",
+        "window": "Window (s)",
+        "default": "Default",
+        "makeDefault": "Make default",
+        "add": "Add tier"
+      },
+      "keys": {
+        "title": "Keys",
+        "loading": "Loading keys…",
+        "empty": "No API keys have been created yet.",
+        "name": "Name",
+        "owner": "Owner",
+        "tier": "Tier",
+        "lastUsed": "Last used",
+        "revoked": "Revoked",
+        "tierAria": "Tier for {{name}}",
+        "defaultTier": "Default",
+        "viewAudit": "View audit"
+      },
+      "audit": {
+        "title": "Request log — {{name}}",
+        "loading": "Loading audit…",
+        "empty": "No recorded requests yet.",
+        "when": "When",
+        "method": "Method",
+        "path": "Path",
+        "status": "Status"
       }
     },
     "monitoring": {

@@ -20,7 +20,7 @@ import { formatDate, formatPercent, formatSignedPercent } from '../../lib/format
 import { useT } from '../../i18n';
 import type { TranslateFn } from '../../i18n';
 import { EmptyState, Skeleton } from '../../ui';
-import { PageHead } from '../../ui/origin';
+import { Button, PageHead } from '../../ui/origin';
 import { overlayColor, PriceChart, type ChartPoint } from '../../ui/charts';
 import { Alert } from '../components/ui';
 
@@ -356,6 +356,11 @@ export function ComparisonPage() {
 
       {listQuery.isLoading ? (
         <Skeleton height="h-40" />
+      ) : listQuery.isError ? (
+        <div className="flex flex-col items-start gap-3">
+          <Alert tone="error">{t('workboard.comparison.listError')}</Alert>
+          <Button onClick={() => void listQuery.refetch()}>{t('common.retry')}</Button>
+        </div>
       ) : conglomerates.length < COMPARISON_MIN_SERIES ? (
         <EmptyState
           title={t('workboard.comparison.noConglomerates')}
@@ -377,11 +382,14 @@ export function ComparisonPage() {
             ) : compareQuery.isLoading ? (
               <Skeleton height="h-80" />
             ) : compareQuery.isError ? (
-              <Alert tone="error">
-                {errorCode === 'BACKTEST_UNAVAILABLE'
-                  ? t('workboard.comparison.windowError')
-                  : t('workboard.comparison.error')}
-              </Alert>
+              <div className="flex flex-col items-start gap-2">
+                <Alert tone="error">
+                  {errorCode === 'BACKTEST_UNAVAILABLE'
+                    ? t('workboard.comparison.windowError')
+                    : t('workboard.comparison.error')}
+                </Alert>
+                <Button onClick={() => void compareQuery.refetch()}>{t('common.retry')}</Button>
+              </div>
             ) : !data ? null : (
               <>
                 <PriceChart

@@ -1,4 +1,5 @@
 import { cx } from '../../lib/cx';
+import { useT } from '../../i18n';
 
 export interface SparklineProps {
   /** Short series of values (e.g. the workboard 1M closes, PROJECTPLAN.md §6.4). */
@@ -30,6 +31,7 @@ export function Sparkline({
   className,
   ariaLabel,
 }: SparklineProps) {
+  const t = useT();
   const usable = data.filter((n) => Number.isFinite(n));
 
   // Empty / single-point: nothing meaningful to draw — show a muted baseline.
@@ -39,7 +41,7 @@ export function Sparkline({
         width={width}
         height={height}
         role="img"
-        aria-label={ariaLabel ?? 'No trend data'}
+        aria-label={ariaLabel ?? t('common.charts.noTrendData')}
         className={cx('overflow-visible', className)}
       >
         <line
@@ -84,7 +86,9 @@ export function Sparkline({
       height={height}
       viewBox={`0 0 ${width} ${height}`}
       role="img"
-      aria-label={ariaLabel ?? `Trend ${trendUp ? 'up' : 'down'}`}
+      aria-label={
+        ariaLabel ?? (trendUp ? t('common.charts.trendUp') : t('common.charts.trendDown'))
+      }
       className={cx('overflow-visible', className)}
       preserveAspectRatio="none"
     >

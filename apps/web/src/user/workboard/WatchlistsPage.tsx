@@ -33,7 +33,7 @@ export function WatchlistsPage() {
   const [renaming, setRenaming] = useState<WatchlistSummary | null>(null);
   const [sharing, setSharing] = useState<WatchlistSummary | null>(null);
 
-  const { data, isLoading, isError } = useQuery({
+  const { data, isLoading, isError, refetch } = useQuery({
     queryKey: WATCHLISTS_QUERY_KEY,
     queryFn: ({ signal }) => listWatchlists(signal),
   });
@@ -70,7 +70,12 @@ export function WatchlistsPage() {
     );
   }
   if (isError || !data) {
-    return <Alert tone="error">{t('watchlists.loadError')}</Alert>;
+    return (
+      <div className="flex flex-col items-start gap-3">
+        <Alert tone="error">{t('watchlists.loadError')}</Alert>
+        <Button onClick={() => void refetch()}>{t('common.retry')}</Button>
+      </div>
+    );
   }
 
   return (

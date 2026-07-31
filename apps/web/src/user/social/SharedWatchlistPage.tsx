@@ -2,9 +2,11 @@ import { useQuery } from '@tanstack/react-query';
 import { Link, useParams } from 'react-router-dom';
 
 import { useT } from '../../i18n';
+import { isConfirmedApiOutcome } from '../../lib/apiClient';
 import { getSharedWatchlist } from '../../lib/socialApi';
 import { EmptyState, Skeleton } from '../../ui';
-import { PageHead } from '../../ui/origin';
+import { Button, PageHead } from '../../ui/origin';
+import { Alert } from '../components/ui';
 import { CommentThread } from './CommentThread';
 import { ItemFollowButton } from './ItemFollowButton';
 
@@ -18,7 +20,7 @@ const SHARED_STALE_MS = 30_000;
 export function SharedWatchlistPage() {
   const t = useT();
   const { watchlistId = '' } = useParams<{ watchlistId: string }>();
-  const { data, isLoading, isError } = useQuery({
+  const { data, error, isLoading, isError, refetch } = useQuery({
     queryKey: ['social', 'shared', 'watchlist', watchlistId],
     queryFn: ({ signal }) => getSharedWatchlist(watchlistId, signal),
     staleTime: SHARED_STALE_MS,
@@ -34,7 +36,29 @@ export function SharedWatchlistPage() {
     );
   }
 
-  if (isError || !data) {
+  if (isError && isConfirmedApiOutcome(error)) {
+    return (
+      <div className="flex flex-col gap-4">
+        <BackLink />
+        <EmptyState
+          title={t('social.shared.watchlistUnavailableTitle')}
+          description={t('social.shared.unavailableDescription')}
+        />
+      </div>
+    );
+  }
+
+  if (isError) {
+    return (
+      <div className="flex flex-col items-start gap-3">
+        <BackLink />
+        <Alert tone="error">{t('social.shared.loadError')}</Alert>
+        <Button onClick={() => void refetch()}>{t('common.retry')}</Button>
+      </div>
+    );
+  }
+
+  if (!data) {
     return (
       <div className="flex flex-col gap-4">
         <BackLink />
@@ -53,11 +77,10 @@ export function SharedWatchlistPage() {
         actions={
           <ItemFollowButton kind="watchlist" subjectId={data.watchlistId} ownerId={data.owner.id} />
         }
-        title={
-          <>
-            {data.owner.username}&rsquo;s {data.name}
-          </>
-        }
+        title={t('social.shared.watchlistTitle', {
+          owner: data.owner.username,
+          name: data.name,
+        })}
       />
 
       {data.items.length === 0 ? (

@@ -48,6 +48,19 @@ beforeEach(() => {
 });
 
 describe('AuthorizedAppsPanel', () => {
+  test('retries a failed grant-list read in place', async () => {
+    vi.mocked(listOAuthGrants)
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce(NO_GRANTS);
+    const user = userEvent.setup();
+    renderPanel();
+
+    await user.click(await screen.findByRole('button', { name: 'Try again' }));
+
+    expect(await screen.findByText(/no authorized apps/i)).toBeInTheDocument();
+    expect(listOAuthGrants).toHaveBeenCalledTimes(2);
+  });
+
   test('lists an authorized app in plain language and revokes it after confirmation', async () => {
     vi.mocked(listOAuthGrants).mockResolvedValue(ONE_GRANT);
     vi.mocked(revokeOAuthGrant).mockResolvedValue(undefined);

@@ -58,7 +58,10 @@ export function StandingOrdersSection({ portfolios }: { portfolios: PortfolioSum
           <Skeleton height="h-16" />
         </div>
       ) : query.isError ? (
-        <Alert tone="error">{t('forecast.standingOrders.loadError')}</Alert>
+        <div className="flex flex-col items-start gap-2">
+          <Alert tone="error">{t('forecast.standingOrders.loadError')}</Alert>
+          <Button onClick={() => void query.refetch()}>{t('common.retry')}</Button>
+        </div>
       ) : orders.length === 0 ? (
         <EmptyState
           icon="🔁"

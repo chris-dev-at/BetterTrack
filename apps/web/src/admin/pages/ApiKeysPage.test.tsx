@@ -6,6 +6,8 @@ import type { AdminApiKey, ApiKeyTier, MeResponse } from '@bettertrack/contracts
 
 vi.mock('../../lib/adminApi');
 import * as api from '../../lib/adminApi';
+import { I18nProvider } from '../../i18n';
+import { ApiError } from '../../lib/apiClient';
 import { AuthProvider } from '../AuthContext';
 import { ApiKeysPage } from './ApiKeysPage';
 
@@ -24,11 +26,13 @@ const admin: MeResponse = {
   createdAt: '2026-01-01T00:00:00.000Z',
 };
 
-function renderPage() {
+function renderPage(locale: 'en' | 'de' = 'en') {
   return render(
-    <AuthProvider>
-      <ApiKeysPage />
-    </AuthProvider>,
+    <I18nProvider initialLocale={locale}>
+      <AuthProvider>
+        <ApiKeysPage />
+      </AuthProvider>
+    </I18nProvider>,
   );
 }
 
@@ -56,6 +60,7 @@ const key = (over: Partial<AdminApiKey> = {}): AdminApiKey => ({
 });
 
 beforeEach(() => {
+  vi.clearAllMocks();
   vi.mocked(api.getMe).mockResolvedValue(admin);
   vi.mocked(api.getTwoFactorStatus).mockResolvedValue({
     setupRequired: false,
@@ -127,4 +132,75 @@ test('opens the per-key audit log', async () => {
   );
   const dialog = await screen.findByRole('dialog');
   expect(within(dialog).getByText('/portfolios')).toBeInTheDocument();
+});
+
+test('renders the extracted key-governance copy in German', async () => {
+  renderPage('de');
+
+  expect(await screen.findByRole('heading', { name: 'API-Schlüssel' })).toBeInTheDocument();
+  expect(screen.getByRole('heading', { name: 'Limitstufen' })).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Stufe hinzufügen' })).toBeInTheDocument();
+});
+
+test('retries a failed tier-list read without hiding the key list', async () => {
+  vi.mocked(api.listApiKeyTiers)
+    .mockRejectedValueOnce(new Error('offline'))
+    .mockResolvedValueOnce({ tiers: [tier()] });
+  const user = userEvent.setup();
+  renderPage();
+
+  expect(await screen.findByText('CI bot')).toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: 'Try again' }));
+
+  expect(await screen.findByText('120')).toBeInTheDocument();
+  expect(api.listApiKeyTiers).toHaveBeenCalledTimes(2);
+});
+
+test('retries a failed key-list read without hiding the tier list', async () => {
+  vi.mocked(api.listAdminApiKeys)
+    .mockRejectedValueOnce(new Error('offline'))
+    .mockResolvedValueOnce({ keys: [key()] });
+  const user = userEvent.setup();
+  renderPage();
+
+  expect(await screen.findByText('120')).toBeInTheDocument();
+  const keysSection = screen.getByRole('heading', { level: 2, name: 'Keys' }).closest('section');
+  expect(keysSection).not.toBeNull();
+  await user.click(within(keysSection!).getByRole('button', { name: 'Try again' }));
+
+  expect(await within(keysSection!).findByText('CI bot')).toBeInTheDocument();
+  expect(api.listAdminApiKeys).toHaveBeenCalledTimes(2);
+});
+
+test('retries a failed per-key audit read', async () => {
+  vi.mocked(api.getApiKeyAudit).mockRejectedValueOnce(new Error('offline')).mockResolvedValueOnce({
+    keyId: 'k-1',
+    lastUsedAt: null,
+    entries: [],
+  });
+  const user = userEvent.setup();
+  renderPage();
+
+  await user.click(await screen.findByRole('button', { name: 'View audit' }));
+  const dialog = await screen.findByRole('dialog');
+  await user.click(within(dialog).getByRole('button', { name: 'Try again' }));
+
+  expect(await within(dialog).findByText('No recorded requests yet.')).toBeInTheDocument();
+  expect(api.getApiKeyAudit).toHaveBeenCalledTimes(2);
+});
+
+test('localizes an API mutation failure instead of rendering the server message', async () => {
+  vi.mocked(api.createApiKeyTier).mockRejectedValue(
+    new ApiError(500, 'INTERNAL', 'The tier could not be created.'),
+  );
+  const user = userEvent.setup();
+  renderPage('de');
+
+  await user.type(await screen.findByLabelText('Name'), 'Langsam');
+  await user.click(screen.getByRole('button', { name: 'Stufe hinzufügen' }));
+
+  expect(await screen.findByRole('alert')).toHaveTextContent(
+    'Etwas ist schiefgelaufen. Bitte versuche es erneut.',
+  );
+  expect(screen.queryByText(/tier could not be created/i)).not.toBeInTheDocument();
 });

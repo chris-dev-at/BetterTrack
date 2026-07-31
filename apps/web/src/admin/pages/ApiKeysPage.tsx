@@ -3,15 +3,17 @@ import type { FormEvent } from 'react';
 
 import type { AdminApiKey, ApiKeyAuditResponse, ApiKeyTier } from '@bettertrack/contracts';
 
-import { ApiError } from '../../lib/apiClient';
+import { useT } from '../../i18n';
+import type { TranslateFn } from '../../i18n';
 import * as api from '../../lib/adminApi';
 import { formatDateTime } from '../../lib/format';
 import { useResource } from '../useResource';
 import { Modal } from '../components/Modal';
 import { Alert, Badge, Button, EmptyState, PageHeader, Spinner, TextField } from '../components/ui';
 
-function errorMessage(err: unknown): string {
-  return err instanceof ApiError ? err.message : 'Something went wrong. Please try again.';
+function errorMessage(err: unknown, t: TranslateFn): string {
+  void err;
+  return t('common.genericError');
 }
 
 /**
@@ -21,19 +23,18 @@ function errorMessage(err: unknown): string {
  * opens the bounded, PII-scrubbed per-key request-log audit trail.
  */
 export function ApiKeysPage() {
+  const t = useT();
   const tiers = useResource((signal) => api.listApiKeyTiers(signal), []);
   const keys = useResource((signal) => api.listAdminApiKeys(signal), []);
 
   return (
     <div className="space-y-8">
-      <PageHeader
-        title="API keys"
-        description="Configure per-key rate tiers and review each key's usage."
-      />
+      <PageHeader title={t('admin.apiKeys.title')} description={t('admin.apiKeys.subtitle')} />
       <TiersPanel
         tiers={tiers.data?.tiers ?? []}
         loading={tiers.loading}
         error={tiers.error}
+        onRetry={tiers.reload}
         onChanged={() => {
           tiers.reload();
           keys.reload();
@@ -44,6 +45,7 @@ export function ApiKeysPage() {
         tiers={tiers.data?.tiers ?? []}
         loading={keys.loading}
         error={keys.error}
+        onRetry={keys.reload}
         onChanged={() => keys.reload()}
       />
     </div>
@@ -54,13 +56,16 @@ function TiersPanel({
   tiers,
   loading,
   error,
+  onRetry,
   onChanged,
 }: {
   tiers: ApiKeyTier[];
   loading: boolean;
   error: string | null;
+  onRetry: () => void;
   onChanged: () => void;
 }) {
+  const t = useT();
   const [name, setName] = useState('');
   const [requestLimit, setRequestLimit] = useState('120');
   const [windowSec, setWindowSec] = useState('60');
@@ -75,7 +80,7 @@ function TiersPanel({
     const limit = Number(requestLimit);
     const window = Number(windowSec);
     if (!name.trim() || !Number.isFinite(limit) || !Number.isFinite(window)) {
-      setFormError('Enter a name, limit and window.');
+      setFormError(t('admin.apiKeys.validation'));
       return;
     }
     setBusy(true);
@@ -92,7 +97,7 @@ function TiersPanel({
       setIsDefault(false);
       onChanged();
     } catch (err) {
-      setFormError(errorMessage(err));
+      setFormError(errorMessage(err, t));
     } finally {
       setBusy(false);
     }
@@ -104,7 +109,7 @@ function TiersPanel({
       await api.updateApiKeyTier(tier.id, { isDefault: true });
       onChanged();
     } catch (err) {
-      setRowError(errorMessage(err));
+      setRowError(errorMessage(err, t));
     }
   }
 
@@ -114,31 +119,34 @@ function TiersPanel({
       await api.deleteApiKeyTier(tier.id);
       onChanged();
     } catch (err) {
-      setRowError(errorMessage(err));
+      setRowError(errorMessage(err, t));
     }
   }
 
   return (
     <section className="space-y-4">
-      <h2 className="text-lg font-semibold">Rate tiers</h2>
-      <p className="text-sm text-slate-500">
-        A tier is a request allowance (limit) per window. Unassigned keys use the default tier.
-      </p>
+      <h2 className="text-lg font-semibold">{t('admin.apiKeys.rateTiers.title')}</h2>
+      <p className="text-sm text-slate-500">{t('admin.apiKeys.rateTiers.description')}</p>
       {rowError ? <Alert tone="error">{rowError}</Alert> : null}
 
       {loading ? (
-        <Spinner label="Loading tiers…" />
+        <Spinner label={t('admin.apiKeys.rateTiers.loading')} />
       ) : error ? (
-        <Alert tone="error">{error}</Alert>
+        <Alert tone="error">
+          {error}{' '}
+          <button className="underline" onClick={onRetry}>
+            {t('common.retry')}
+          </button>
+        </Alert>
       ) : tiers.length === 0 ? (
-        <EmptyState>No tiers defined yet.</EmptyState>
+        <EmptyState>{t('admin.apiKeys.rateTiers.empty')}</EmptyState>
       ) : (
         <table className="w-full text-left text-sm">
           <thead className="text-slate-500">
             <tr>
-              <th className="py-2">Name</th>
-              <th className="py-2">Limit</th>
-              <th className="py-2">Window (s)</th>
+              <th className="py-2">{t('admin.apiKeys.rateTiers.name')}</th>
+              <th className="py-2">{t('admin.apiKeys.rateTiers.limit')}</th>
+              <th className="py-2">{t('admin.apiKeys.rateTiers.window')}</th>
               <th className="py-2" />
             </tr>
           </thead>
@@ -146,7 +154,10 @@ function TiersPanel({
             {tiers.map((tier) => (
               <tr key={tier.id} className="border-t border-slate-200/60">
                 <td className="py-2">
-                  {tier.name} {tier.isDefault ? <Badge tone="sky">Default</Badge> : null}
+                  {tier.name}{' '}
+                  {tier.isDefault ? (
+                    <Badge tone="sky">{t('admin.apiKeys.rateTiers.default')}</Badge>
+                  ) : null}
                 </td>
                 <td className="py-2">{tier.requestLimit}</td>
                 <td className="py-2">{tier.windowSec}</td>
@@ -154,10 +165,10 @@ function TiersPanel({
                   {!tier.isDefault ? (
                     <span className="inline-flex gap-2">
                       <Button variant="ghost" onClick={() => void makeDefault(tier)}>
-                        Make default
+                        {t('admin.apiKeys.rateTiers.makeDefault')}
                       </Button>
                       <Button variant="ghost" onClick={() => void remove(tier)}>
-                        Delete
+                        {t('common.delete')}
                       </Button>
                     </span>
                   ) : null}
@@ -169,16 +180,20 @@ function TiersPanel({
       )}
 
       <form className="flex flex-wrap items-end gap-3" onSubmit={onCreate}>
-        <TextField label="Name" value={name} onChange={(e) => setName(e.target.value)} />
         <TextField
-          label="Limit"
+          label={t('admin.apiKeys.rateTiers.name')}
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+        />
+        <TextField
+          label={t('admin.apiKeys.rateTiers.limit')}
           type="number"
           min={1}
           value={requestLimit}
           onChange={(e) => setRequestLimit(e.target.value)}
         />
         <TextField
-          label="Window (s)"
+          label={t('admin.apiKeys.rateTiers.window')}
           type="number"
           min={1}
           value={windowSec}
@@ -190,10 +205,10 @@ function TiersPanel({
             checked={isDefault}
             onChange={(e) => setIsDefault(e.target.checked)}
           />
-          Default
+          {t('admin.apiKeys.rateTiers.default')}
         </label>
         <Button type="submit" disabled={busy}>
-          Add tier
+          {t('admin.apiKeys.rateTiers.add')}
         </Button>
       </form>
       {formError ? <Alert tone="error">{formError}</Alert> : null}
@@ -206,14 +221,17 @@ function KeysPanel({
   tiers,
   loading,
   error,
+  onRetry,
   onChanged,
 }: {
   keys: AdminApiKey[];
   tiers: ApiKeyTier[];
   loading: boolean;
   error: string | null;
+  onRetry: () => void;
   onChanged: () => void;
 }) {
+  const t = useT();
   const [rowError, setRowError] = useState<string | null>(null);
   const [auditKey, setAuditKey] = useState<AdminApiKey | null>(null);
 
@@ -223,28 +241,33 @@ function KeysPanel({
       await api.assignApiKeyTier(key.id, tierId === '' ? null : tierId);
       onChanged();
     } catch (err) {
-      setRowError(errorMessage(err));
+      setRowError(errorMessage(err, t));
     }
   }
 
   return (
     <section className="space-y-4">
-      <h2 className="text-lg font-semibold">Keys</h2>
+      <h2 className="text-lg font-semibold">{t('admin.apiKeys.keys.title')}</h2>
       {rowError ? <Alert tone="error">{rowError}</Alert> : null}
       {loading ? (
-        <Spinner label="Loading keys…" />
+        <Spinner label={t('admin.apiKeys.keys.loading')} />
       ) : error ? (
-        <Alert tone="error">{error}</Alert>
+        <Alert tone="error">
+          {error}{' '}
+          <button className="underline" onClick={onRetry}>
+            {t('common.retry')}
+          </button>
+        </Alert>
       ) : keys.length === 0 ? (
-        <EmptyState>No API keys have been created yet.</EmptyState>
+        <EmptyState>{t('admin.apiKeys.keys.empty')}</EmptyState>
       ) : (
         <table className="w-full text-left text-sm">
           <thead className="text-slate-500">
             <tr>
-              <th className="py-2">Name</th>
-              <th className="py-2">Owner</th>
-              <th className="py-2">Tier</th>
-              <th className="py-2">Last used</th>
+              <th className="py-2">{t('admin.apiKeys.keys.name')}</th>
+              <th className="py-2">{t('admin.apiKeys.keys.owner')}</th>
+              <th className="py-2">{t('admin.apiKeys.keys.tier')}</th>
+              <th className="py-2">{t('admin.apiKeys.keys.lastUsed')}</th>
               <th className="py-2" />
             </tr>
           </thead>
@@ -252,7 +275,10 @@ function KeysPanel({
             {keys.map((key) => (
               <tr key={key.id} className="border-t border-slate-200/60">
                 <td className="py-2">
-                  {key.name} {key.revokedAt ? <Badge tone="amber">Revoked</Badge> : null}
+                  {key.name}{' '}
+                  {key.revokedAt ? (
+                    <Badge tone="amber">{t('admin.apiKeys.keys.revoked')}</Badge>
+                  ) : null}
                 </td>
                 <td className="py-2 font-mono text-xs">{key.userId}</td>
                 <td className="py-2">
@@ -261,9 +287,9 @@ function KeysPanel({
                     value={key.tierId ?? ''}
                     onChange={(e) => void assign(key, e.target.value)}
                     disabled={Boolean(key.revokedAt)}
-                    aria-label={`Tier for ${key.name}`}
+                    aria-label={t('admin.apiKeys.keys.tierAria', { name: key.name })}
                   >
-                    <option value="">Default</option>
+                    <option value="">{t('admin.apiKeys.keys.defaultTier')}</option>
                     {tiers.map((tier) => (
                       <option key={tier.id} value={tier.id}>
                         {tier.name}
@@ -274,7 +300,7 @@ function KeysPanel({
                 <td className="py-2">{key.lastUsedAt ? formatDateTime(key.lastUsedAt) : '—'}</td>
                 <td className="py-2 text-right">
                   <Button variant="ghost" onClick={() => setAuditKey(key)}>
-                    View audit
+                    {t('admin.apiKeys.keys.viewAudit')}
                   </Button>
                 </td>
               </tr>
@@ -289,27 +315,33 @@ function KeysPanel({
 }
 
 function AuditModal({ apiKey, onClose }: { apiKey: AdminApiKey; onClose: () => void }) {
+  const t = useT();
   const audit = useResource<ApiKeyAuditResponse>(
     (signal) => api.getApiKeyAudit(apiKey.id, signal),
     [apiKey.id],
   );
 
   return (
-    <Modal title={`Request log — ${apiKey.name}`} onClose={onClose}>
+    <Modal title={t('admin.apiKeys.audit.title', { name: apiKey.name })} onClose={onClose}>
       {audit.loading ? (
-        <Spinner label="Loading audit…" />
+        <Spinner label={t('admin.apiKeys.audit.loading')} />
       ) : audit.error ? (
-        <Alert tone="error">{audit.error}</Alert>
+        <Alert tone="error">
+          {audit.error}{' '}
+          <button className="underline" onClick={audit.reload}>
+            {t('common.retry')}
+          </button>
+        </Alert>
       ) : !audit.data || audit.data.entries.length === 0 ? (
-        <EmptyState>No recorded requests yet.</EmptyState>
+        <EmptyState>{t('admin.apiKeys.audit.empty')}</EmptyState>
       ) : (
         <table className="w-full text-left text-sm">
           <thead className="text-slate-500">
             <tr>
-              <th className="py-2">When</th>
-              <th className="py-2">Method</th>
-              <th className="py-2">Path</th>
-              <th className="py-2">Status</th>
+              <th className="py-2">{t('admin.apiKeys.audit.when')}</th>
+              <th className="py-2">{t('admin.apiKeys.audit.method')}</th>
+              <th className="py-2">{t('admin.apiKeys.audit.path')}</th>
+              <th className="py-2">{t('admin.apiKeys.audit.status')}</th>
             </tr>
           </thead>
           <tbody>

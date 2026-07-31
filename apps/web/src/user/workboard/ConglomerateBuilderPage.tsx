@@ -570,7 +570,7 @@ function NestConglomeratePanel({
   positions: BuilderPosition[];
 }) {
   const t = useT();
-  const { data, isLoading, isError } = useQuery({
+  const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ['conglomerates'],
     queryFn: ({ signal }) => listConglomerates(signal),
   });
@@ -588,7 +588,10 @@ function NestConglomeratePanel({
         {isLoading ? (
           <Spinner label={t('workboard.builder.loading')} />
         ) : isError ? (
-          <Alert tone="error">{t('workboard.builder.nestConglomerateLoadError')}</Alert>
+          <div className="flex flex-col items-start gap-2">
+            <Alert tone="error">{t('workboard.builder.nestConglomerateLoadError')}</Alert>
+            <Button onClick={() => void refetch()}>{t('common.retry')}</Button>
+          </div>
         ) : candidates.length === 0 ? (
           <p className="text-xs bt-muted">{t('workboard.builder.nestConglomerateEmpty')}</p>
         ) : (

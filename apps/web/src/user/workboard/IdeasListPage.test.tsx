@@ -11,11 +11,18 @@ vi.mock('../../lib/socialApi', () => ({
   listMyShared: vi.fn(),
   getAudience: vi.fn(),
   listFriends: vi.fn(),
+  listGroups: vi.fn(),
   setAudience: vi.fn(),
 }));
 
 import { deleteIdea, listIdeas } from '../../lib/ideasApi';
-import { getAudience, listFriends, listMyShared, setAudience } from '../../lib/socialApi';
+import {
+  getAudience,
+  listFriends,
+  listGroups,
+  listMyShared,
+  setAudience,
+} from '../../lib/socialApi';
 import { IdeasListPage } from './IdeasListPage';
 
 const IDEA_ID = '00000000-0000-0000-0000-0000000000a1';
@@ -60,6 +67,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(listMyShared).mockResolvedValue(EMPTY_SHARED);
   vi.mocked(listFriends).mockResolvedValue({ friends: [] });
+  vi.mocked(listGroups).mockResolvedValue({ groups: [] });
   vi.mocked(getAudience).mockResolvedValue({
     kind: 'idea',
     subjectId: IDEA_ID,
@@ -138,6 +146,7 @@ describe('IdeasListPage', () => {
     await waitFor(() =>
       expect(getAudience).toHaveBeenCalledWith('idea', IDEA_ID, expect.anything()),
     );
+    expect(listGroups).toHaveBeenCalledWith(expect.anything());
 
     // public → strong acknowledgment; all-friends → light confirm (the §16 ladder).
     await userEvent.click(await screen.findByText('Public link'));
