@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, stat, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -367,6 +367,51 @@ test('rejects traversal, unknown profiles, unsafe names, and never echoes tokens
           return true;
         },
       );
+    }
+  });
+});
+
+test('a symlinked auth root is followed, while a symlinked vault is still refused', async () => {
+  await withAuthRoot(async (realRoot) => {
+    // The deploy worktree reaches the vault through a symlink on purpose.
+    // Condemning it emptied the accounts panel and dropped every lane back to
+    // the legacy .env account, with nothing in the log to say why.
+    const linkParent = await mkdtemp(join(tmpdir(), 'bettertrack-claude-credentials-link-'));
+    const linkedRoot = join(linkParent, 'auth');
+    try {
+      await symlink(realRoot, linkedRoot, 'dir');
+
+      const viaLink = createClaudeCredentialStore({ authRoot: linkedRoot });
+      const profile = await viaLink.save({ name: 'ChrisiWiesi', setupToken: TOKEN_ONE });
+      assert.equal((await viaLink.list()).profiles.length, 1);
+
+      // Same vault, reached directly: the link is a route, not a second store.
+      const direct = createClaudeCredentialStore({ authRoot: realRoot });
+      assert.deepEqual(
+        (await direct.list()).profiles.map((entry) => entry.name),
+        ['ChrisiWiesi'],
+      );
+      assert.equal(await direct.tokenForProfile(profile.id), TOKEN_ONE);
+    } finally {
+      await rm(linkParent, { recursive: true, force: true });
+    }
+  });
+
+  // The guard that matters is untouched: swapping the vault directory itself
+  // for a symlink would redirect credential material, so it stays fatal.
+  await withAuthRoot(async (authRoot) => {
+    const elsewhere = await mkdtemp(join(tmpdir(), 'bettertrack-claude-credentials-vault-'));
+    try {
+      await symlink(elsewhere, join(authRoot, '.claude-credentials'), 'dir');
+      await assert.rejects(
+        async () => createClaudeCredentialStore({ authRoot }).list(),
+        (error) => {
+          assert.equal(error.code, 'UNSAFE_STORAGE');
+          return true;
+        },
+      );
+    } finally {
+      await rm(elsewhere, { recursive: true, force: true });
     }
   });
 });
