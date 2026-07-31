@@ -40,7 +40,7 @@ import { createVaultMediaSwitcher, type VaultMediaApi } from './media/mediaSwitc
 import { createVaultRetirementProofManager } from './media/retirementProof';
 import { createVaultEnvelopeAuthenticator } from './media/verification';
 import { captureForkProvenanceIntoVault } from './mirrorProvenance';
-import { strictVaultDocumentForDisable } from './paranoidDisable';
+import { toStrictRestoreDocument } from './paranoidDisable';
 import { createMemoryVaultQuarantineStore } from './quarantine';
 import {
   createCurrentServerRestoreCandidateSource,
@@ -2222,7 +2222,7 @@ describe('severed-fork provenance through the client vault seam', () => {
 
     // 4. The disable carriage takes exactly that map into the restore payload,
     // tombstone included on the entity side.
-    const payload = strictVaultDocumentForDisable(published);
+    const payload = toStrictRestoreDocument(published);
     expect(payload.mirrorProvenance).toEqual([keptEntry]);
     expect(payload.entities.map((row) => [row.id, row.deletedAt])).toEqual([
       [ENTITY_A, null],

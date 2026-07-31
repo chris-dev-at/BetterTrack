@@ -72,6 +72,7 @@ const WORKBOARD_ITEM_ID = '018f0000-0000-7000-8000-000000000022';
 const CONGLOMERATE_ID = '018f0000-0000-7000-8000-000000000023';
 const CONGLOMERATE_POSITION_ID = '018f0000-0000-7000-8000-000000000024';
 const ALERT_ID = '018f0000-0000-7000-8000-000000000025';
+const MARKET_TRANSACTION_ID = '018f0000-0000-7000-8000-000000000027';
 const editedAt = '2026-07-24T10:00:00.000Z';
 let restoreUserId = DEVICE_ID;
 
@@ -2473,6 +2474,138 @@ describe('paranoid rehydration service', () => {
       code: 'INVALID_REFERENCE',
     });
     expect(await db.select().from(assets).where(eq(assets.id, ASSET_ID))).toEqual([]);
+  });
+
+  it('restores a migration-shaped document: owner assets carried, market assets resolved globally', async () => {
+    // The exact document the web client hands back on disable — what
+    // `buildNormalVaultDocument` collects, filtered by `toStrictRestoreDocument`
+    // (apps/web/src/user/vault/ui). Its local asset table also snapshots every
+    // market asset a holding references, but only the OWNER's custom assets may
+    // cross this boundary: the global `assets` row survived the enable purge
+    // and is re-resolved here. A client that carried its market snapshots
+    // instead would fail `validateCustomAssetFacts` on every attempt, leaving
+    // the account no exit but destruction.
+    const harness = await makeParanoid();
+    const { db, user } = harness;
+    await seedDetachedCustomAssetReferences(harness, user.id);
+    const [market] = await db
+      .insert(assets)
+      .values({
+        providerId: 'yahoo',
+        providerRef: 'ACME',
+        ownerId: null,
+        type: 'stock',
+        symbol: 'ACME',
+        name: 'Acme',
+        exchange: 'XETRA',
+        currency: 'EUR',
+      })
+      .returning();
+    if (!market) throw new Error('expected market asset');
+
+    const input = request();
+    input.document.entities.push(
+      entity(MARKET_TRANSACTION_ID, 'transaction', {
+        portfolioId: PORTFOLIO_ID,
+        assetId: market.id,
+        side: 'buy',
+        quantity: '2.00000000',
+        price: '10.000000',
+        fee: '0.000000',
+        executedAt: editedAt,
+        note: null,
+        taxMode: null,
+        taxCountry: null,
+        taxAmountEur: null,
+        taxParams: null,
+        allowUncovered: false,
+        uncoveredEntryPrice: null,
+        source: 'manual',
+      }),
+      entity('018f0000-0000-7000-8000-000000000026', 'customAssetValue', {
+        assetId: ASSET_ID,
+        date: '2026-07-24',
+        close: '250000.0000000',
+      }),
+    );
+    // The migrated document names the owner's custom asset and nothing else.
+    expect(
+      input.document.entities.filter((entry) => entry.kind === 'customAsset').map((e) => e.id),
+    ).toEqual([ASSET_ID]);
+
+    await expect(
+      createParanoidRehydrationService({ db }).rehydrate(user.id, input),
+    ).resolves.toMatchObject({ idempotent: false });
+
+    const restored = await db
+      .select({ assetId: transactions.assetId })
+      .from(transactions)
+      .where(eq(transactions.portfolioId, PORTFOLIO_ID));
+    expect(restored.map((row) => row.assetId).sort()).toEqual([ASSET_ID, market.id].sort());
+    // The custom asset comes back under its retained identity claim...
+    expect(
+      await db.select({ ownerId: assets.ownerId }).from(assets).where(eq(assets.id, ASSET_ID)),
+    ).toEqual([{ ownerId: user.id }]);
+    // ...while the market row is untouched and stays ownerless.
+    expect(
+      await db
+        .select({ ownerId: assets.ownerId, providerId: assets.providerId })
+        .from(assets)
+        .where(eq(assets.id, market.id)),
+    ).toEqual([{ ownerId: null, providerId: 'yahoo' }]);
+    expect(
+      await db.select({ privacyMode: users.privacyMode }).from(users).where(eq(users.id, user.id)),
+    ).toEqual([{ privacyMode: 'normal' }]);
+  });
+
+  it('negative control: a carried market snapshot makes the same document unrestorable', async () => {
+    // Why the client filters rather than sending its local asset table as-is:
+    // one market snapshot and the account can never disable again — on any
+    // device, at any later time — because the check runs before the
+    // transaction opens and the row can never satisfy it.
+    const harness = await makeParanoid();
+    const { db, user } = harness;
+    await seedDetachedCustomAssetReferences(harness, user.id);
+    const [market] = await db
+      .insert(assets)
+      .values({
+        providerId: 'yahoo',
+        providerRef: 'ACME',
+        ownerId: null,
+        type: 'stock',
+        symbol: 'ACME',
+        name: 'Acme',
+        exchange: 'XETRA',
+        currency: 'EUR',
+      })
+      .returning();
+    if (!market) throw new Error('expected market asset');
+
+    const input = request();
+    input.document.entities.push(
+      entity(market.id, 'customAsset', {
+        providerId: 'yahoo',
+        providerRef: 'ACME',
+        ownerId: null,
+        type: 'stock',
+        symbol: 'ACME',
+        name: 'Acme',
+        exchange: 'XETRA',
+        currency: 'EUR',
+        meta: null,
+        searchText: 'ACME Acme',
+      }),
+    );
+
+    await expect(
+      createParanoidRehydrationService({ db }).rehydrate(user.id, input),
+    ).rejects.toMatchObject({
+      code: 'INVALID_REFERENCE',
+      message: expect.stringContaining('manual-provider identity is invalid'),
+    });
+    expect(
+      await db.select({ privacyMode: users.privacyMode }).from(users).where(eq(users.id, user.id)),
+    ).toEqual([{ privacyMode: 'paranoid' }]);
   });
 
   it('replays positions per portfolio and rejects an oversell in a separate portfolio', async () => {

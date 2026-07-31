@@ -5,6 +5,7 @@ import {
   inviteValidationResponseSchema,
   loginResponseSchema,
   meResponseSchema,
+  paranoidEnableResponseSchema,
   paranoidForkProvenanceResponseSchema,
   paranoidMediaStateResponseSchema,
   paranoidMediaTransitionResponseSchema,
@@ -52,6 +53,8 @@ import {
   type PasskeyRegisterVerifyRequest,
   type PasswordResetComplete,
   type PasswordResetRequest,
+  type ParanoidEnableRequest,
+  type ParanoidEnableResponse,
   type ParanoidForkProvenanceResponse,
   type ParanoidMediaStateResponse,
   type ParanoidMediaTransitionRequest,
@@ -145,6 +148,17 @@ export async function getParanoidForkProvenance(
 ): Promise<ParanoidForkProvenanceResponse> {
   const data = await apiRequest<unknown>('/account/paranoid/fork-provenance', { signal });
   return paranoidForkProvenanceResponseSchema.parse(data);
+}
+
+/** Commit the destructive normal → paranoid transition after every medium verified its blob. */
+export async function enableParanoidMode(
+  body: ParanoidEnableRequest,
+): Promise<ParanoidEnableResponse> {
+  const data = await apiRequest<unknown>('/account/paranoid/enable', {
+    method: 'POST',
+    body,
+  });
+  return paranoidEnableResponseSchema.parse(data);
 }
 
 /** Portfolio-free paranoid media state; no Drive capability crosses this API. */
