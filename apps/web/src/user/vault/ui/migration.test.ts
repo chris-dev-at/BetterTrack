@@ -30,12 +30,15 @@ import {
 } from '../../../lib/expensesApi';
 import { getTaxYearReport, getTaxYearReports, listDividends } from '../../../lib/portfolioApi';
 import { apiPortfolioStore } from '../../../lib/portfolioStore';
+import { toStrictRestoreDocument } from './disable';
 import { buildNormalVaultDocument } from './migration';
 
 const USER_ID = '018f0000-0000-7000-8000-000000000001';
 const PORTFOLIO_ID = '018f0000-0000-7000-8000-000000000010';
 const TRANSACTION_ID = '018f0000-0000-7000-8000-000000000020';
 const ASSET_ID = '018f0000-0000-7000-8000-000000000030';
+const CUSTOM_ASSET_ID = '018f0000-0000-7000-8000-000000000031';
+const DEVICE_ID = '018f0000-0000-7000-8000-0000000000d1';
 const NEXT_CURSOR = '018f0000-0000-7000-8000-000000000040';
 const NOW = '2026-07-30T10:00:00.000Z';
 
@@ -240,6 +243,8 @@ describe('buildNormalVaultDocument', () => {
             },
           },
         ],
+        // The local asset table: a market asset is snapshotted for the client
+        // engine only, keyed by the same global id the server keeps.
         customAsset: [
           {
             id: ASSET_ID,
@@ -261,6 +266,119 @@ describe('buildNormalVaultDocument', () => {
         ],
       },
     });
+  });
+
+  it('emits a restorable custom-asset identity and keeps market snapshots client-only', async () => {
+    // The three facts `paranoidRehydrationService.validateCustomAssetFacts`
+    // demands of EVERY customAsset entity it receives: this account's owner id,
+    // the `manual` provider, and a provider reference equal to the entity id
+    // (what `customAssetRepository.create` writes server-side). Enable is
+    // one-way, so a document that fails them can never be disabled again — only
+    // discarded.
+    const store: PortfolioStore = {
+      ...apiPortfolioStore,
+      listPortfolios: vi.fn(async () => ({
+        portfolios: [
+          {
+            id: PORTFOLIO_ID,
+            name: 'Main',
+            visibility: 'private' as const,
+            sortOrder: 0,
+            isDefault: true,
+            defaultPayFromCash: false,
+            archivedAt: null,
+          },
+        ],
+      })),
+      listTransactions: vi.fn(async () => ({
+        items: [
+          {
+            id: TRANSACTION_ID,
+            assetId: ASSET_ID,
+            side: 'buy' as const,
+            quantity: 1,
+            price: 100,
+            fee: 0,
+            executedAt: '2026-07-01T09:00:00.000Z',
+            note: null,
+            allowUncovered: false,
+            uncoveredEntryPrice: null,
+            source: 'manual',
+            asset: ASSET,
+          },
+        ],
+        nextCursor: null,
+      })),
+      getCashMovements: vi.fn(async () => ({ balanceEur: 0, movements: [], sources: [] })),
+      getPortfolioTaxSettings: vi.fn(async () => ({
+        effective: { mode: 'none' as const, country: null },
+        override: null,
+        userDefault: { mode: 'none' as const, country: null },
+        source: 'system' as const,
+      })),
+      getTaxSettings: vi.fn(async () => ({ mode: 'none' as const, country: null })),
+      listCustomAssets: vi.fn(async () => ({
+        assets: [
+          {
+            id: CUSTOM_ASSET_ID,
+            symbol: 'HOUSE',
+            name: 'House',
+            category: 'other' as const,
+            currency: 'EUR',
+            type: 'custom' as const,
+            smoothing: false,
+            needsRecategorization: false,
+            latestValue: { date: '2026-07-01', value: 250_000 },
+          },
+        ],
+      })),
+      getValuePoints: vi.fn(async () => ({ points: [{ date: '2026-07-01', value: 250_000 }] })),
+      listStandingOrders: vi.fn(async () => ({ orders: [] })),
+    };
+
+    const document = await buildNormalVaultDocument({
+      userId: USER_ID,
+      deviceId: DEVICE_ID,
+      store,
+      now: () => NOW,
+    });
+
+    // In the vault document both assets are present — the client engine
+    // resolves every transaction through this bucket and cannot value a
+    // holding whose asset it has no local snapshot of.
+    expect((document.entities.customAsset ?? []).map((entity) => entity.id)).toEqual([
+      ASSET_ID,
+      CUSTOM_ASSET_ID,
+    ]);
+    expect(document.entities.customAsset?.[1]?.data).toMatchObject({
+      providerId: 'manual',
+      providerRef: CUSTOM_ASSET_ID,
+      ownerId: USER_ID,
+      meta: { category: 'other', smoothing: false },
+    });
+
+    // At the restore boundary only the owner's custom assets cross: the market
+    // asset is a global row that survived the enable purge, and the server
+    // re-resolves it (`resolveReferencedAssets`) instead of accepting a copy.
+    const restore = toStrictRestoreDocument(document);
+    const restoredAssets = restore.entities.filter((entity) => entity.kind === 'customAsset');
+    expect(restoredAssets.map((entity) => entity.id)).toEqual([CUSTOM_ASSET_ID]);
+    for (const asset of restoredAssets) {
+      expect(asset.data.ownerId).toBe(USER_ID);
+      expect(asset.data.providerId).toBe('manual');
+      expect(asset.data.providerRef).toBe(asset.id);
+    }
+    // The market holding itself still travels; only its snapshot is dropped.
+    expect(
+      restore.entities.some(
+        (entity) => entity.kind === 'transaction' && entity.data.assetId === ASSET_ID,
+      ),
+    ).toBe(true);
+    expect(
+      restore.entities.some(
+        (entity) => entity.kind === 'customAssetValue' && entity.data.assetId === CUSTOM_ASSET_ID,
+      ),
+    ).toBe(true);
   });
 
   it('freezes each sell under the country it was RECORDED with, not the current settings', async () => {

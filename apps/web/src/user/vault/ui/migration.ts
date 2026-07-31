@@ -230,20 +230,7 @@ export async function buildNormalVaultDocument(
     });
   }
   for (const asset of assets.values()) {
-    append('customAsset', asset.id, {
-      providerId: asset.isCustom ? 'manual' : 'yahoo',
-      providerRef: asset.symbol,
-      ownerId: asset.isCustom ? options.userId : null,
-      type: asset.type,
-      symbol: asset.symbol,
-      name: asset.name,
-      exchange: asset.exchange,
-      currency: asset.currency,
-      meta: asset.isCustom
-        ? { category: asset.category ?? 'other', smoothing: asset.smoothing === true }
-        : null,
-      searchText: `${asset.symbol} ${asset.name}`.trim(),
-    });
+    append('customAsset', asset.id, assetSnapshotRow(asset, options.userId));
     if (asset.isCustom) {
       const points = await store.getValuePoints(asset.id, signal);
       for (const point of points.points) {
@@ -434,6 +421,50 @@ function previousIsoDay(day: string): string {
   return date.toISOString().slice(0, 10);
 }
 
+/** The public catalog every non-custom asset row in this deployment came from. */
+const CATALOG_PROVIDER_ID = 'yahoo';
+
+/**
+ * A row of the vault's LOCAL ASSET TABLE. One is emitted for every asset the
+ * document references — market-catalog ones included — because the client
+ * engine resolves each transaction, dividend and standing order through this
+ * bucket (`engine/session.ts` graph validation, `engine/model.ts`), and a
+ * paranoid client has to render and value a position without any
+ * portfolio-linked server call.
+ *
+ * Only the OWNER's custom assets are vault data, though. A market asset lives
+ * in the global `assets` table, survives the enable purge untouched, and is
+ * re-resolved server-side on rehydration (`resolveReferencedAssets`), so its
+ * snapshot here is client-only and is dropped again at the restore boundary
+ * (`toStrictRestoreDocument`) — the server refuses a document that carries one.
+ * Its `providerId`/`providerRef` therefore describe the public catalog the row
+ * came from: that is the pair the §11 autonomy seam reads when a future client
+ * fetches quotes without BetterTrack's API.
+ *
+ * A custom asset's identity must instead match, field for field, what the
+ * server writes for a manual asset (`customAssetRepository.create`):
+ * `providerId: 'manual'`, `providerRef: <the asset id>`, `ownerId: <owner>`.
+ * `validateCustomAssetFacts` re-checks all three on the way back — over
+ * tombstones too — and enable is one-way, so a mismatch would leave the account
+ * with no exit but destruction.
+ */
+function assetSnapshotRow(asset: PortfolioAsset, userId: string): Record<string, unknown> {
+  return {
+    providerId: asset.isCustom ? 'manual' : CATALOG_PROVIDER_ID,
+    providerRef: asset.isCustom ? asset.id : asset.symbol,
+    ownerId: asset.isCustom ? userId : null,
+    type: asset.type,
+    symbol: asset.symbol,
+    name: asset.name,
+    exchange: asset.exchange,
+    currency: asset.currency,
+    meta: asset.isCustom
+      ? { category: asset.category ?? 'other', smoothing: asset.smoothing === true }
+      : null,
+    searchText: `${asset.symbol} ${asset.name}`.trim(),
+  };
+}
+
 /**
  * Tax facts as FROZEN on the row at recording time. `taxMode`/`taxCountry`/
  * `taxParams` are never rewritten by a later mode switch, so the portfolio's
@@ -496,6 +527,10 @@ function frozenFactsForTransaction(
   if (facts === undefined) {
     throw new Error(`Vault migration cannot prove the frozen tax facts of sell ${transaction.id}.`);
   }
+  // No second read to cross-check against, unlike a dividend: `transactionSchema`
+  // exposes no frozen tax columns at all (packages/contracts/src/portfolio.ts),
+  // so the year report is the ONLY endpoint that states a sell's recorded
+  // mode/country/amount. `assertProvenTaxFacts` is therefore the whole guard.
   return assertProvenTaxFacts(facts, `sell ${transaction.id}`);
 }
 
@@ -509,9 +544,10 @@ function frozenFactsForDividend(
       `Vault migration cannot prove the frozen tax facts of dividend ${dividend.id}.`,
     );
   }
-  // The dividend list and the year report read the same frozen columns; a
-  // disagreement means one of the two reads is stale, so refuse rather than
-  // pick a side in a one-way migration.
+  // The dividend list and the year report read the same frozen columns — this
+  // is the one row kind with two independent reads — so a disagreement means
+  // one of them is stale: refuse rather than pick a side in a one-way
+  // migration.
   if (facts.taxMode !== dividend.taxMode || facts.taxCountry !== dividend.taxCountry) {
     throw new Error(`Vault migration found conflicting tax facts for dividend ${dividend.id}.`);
   }

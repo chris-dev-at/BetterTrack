@@ -224,11 +224,12 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
     // Every bucket survives with its rows TOMBSTONED — an absent row carries no
     // delete signal through the entity-union merge, so a second device holding
     // the pre-wipe document would union its copy straight back in. The only
-    // live row anywhere is the seeded replacement portfolio.
+    // live rows anywhere are the seeded replacement portfolio and its default
+    // tax setting.
     for (const [kind, rows] of Object.entries(wiped.entities)) {
       expect(rows.length, `${kind} rows must be kept as tombstones`).toBeGreaterThan(0);
       for (const row of rows) {
-        if (kind === 'portfolio' && row.deletedAt === null) continue;
+        if ((kind === 'portfolio' || kind === 'taxSetting') && row.deletedAt === null) continue;
         expect(row.deletedAt, `${kind}/${row.id} must be tombstoned`).toBe(AT);
         expect(row.rev).toBeGreaterThan(0);
       }
@@ -237,15 +238,27 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
     // §6.8: the account keeps exactly one active portfolio, the same guarantee
     // `portfolioRepository.getOrCreateMain` gives a normal account — without it
     // the emptied vault could neither create a portfolio nor be rehydrated.
-    const live = Object.values(wiped.entities)
-      .flat()
-      .filter((row) => row.deletedAt === null);
-    expect(live).toHaveLength(1);
-    expect(live[0]?.data).toMatchObject({ userId: USER_ID, name: 'Main', archivedAt: null });
+    const livePortfolios = (wiped.entities.portfolio ?? []).filter((row) => row.deletedAt === null);
+    const liveTaxSettings = (wiped.entities.taxSetting ?? []).filter(
+      (row) => row.deletedAt === null,
+    );
+    expect(
+      Object.values(wiped.entities)
+        .flat()
+        .filter((row) => row.deletedAt === null),
+    ).toHaveLength(2);
+    expect(livePortfolios[0]?.data).toMatchObject({
+      userId: USER_ID,
+      name: 'Main',
+      archivedAt: null,
+    });
+    // The owner id is readable from a LIVE row rather than only from a
+    // tombstone, so deleting the seeded portfolio later cannot orphan the vault.
+    expect(liveTaxSettings[0]?.data).toMatchObject({ userId: USER_ID, mode: 'none' });
     await expect(store.listPortfolios()).resolves.toEqual({
       portfolios: [
         {
-          id: live[0]!.id,
+          id: livePortfolios[0]!.id,
           name: 'Main',
           visibility: 'private',
           sortOrder: 0,
@@ -255,6 +268,7 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
         },
       ],
     });
+    await expect(store.getTaxSettings()).resolves.toMatchObject({ mode: 'none', country: null });
   });
 
   it('keeps the emptied vault usable: a new portfolio, tax settings and disable all work', async () => {
@@ -2272,6 +2286,19 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
       category: 'other',
       currency: 'EUR',
       smoothing: true,
+    });
+    // The manual-asset identity the server writes for its own custom assets and
+    // re-checks on every restored row (`validateCustomAssetFacts`): a reference
+    // that is anything but the entity id blocks the vault's only
+    // non-destructive exit.
+    expect(
+      engine.state.active?.document.entities.customAsset?.find(
+        (row) => row.id === createdAsset.asset.id,
+      )?.data,
+    ).toMatchObject({
+      providerId: 'manual',
+      providerRef: createdAsset.asset.id,
+      ownerId: USER_ID,
     });
     await expect(
       store.putValuePoints(createdAsset.asset.id, [

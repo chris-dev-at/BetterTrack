@@ -1134,10 +1134,17 @@ async function deletePortfolioTree(context: StoreContext, portfolioId: string): 
  * mode. Seeding inside the SAME mutation mirrors `portfolioRepository`'s
  * `getOrCreateMain` — the empty account a normal registration (and the
  * locked-vault discard) starts from.
+ *
+ * The default tax setting is seeded with it. It states the same `none` mode a
+ * settings-free account already reads, so nothing about the account changes —
+ * but it keeps the owner id resolvable BY CONSTRUCTION (the migration always
+ * emits one too) instead of leaving {@link portfolioOwnerUserId}'s tombstone
+ * fallback as the only thing standing between a later portfolio delete and an
+ * ownerless vault.
  */
 async function discardAllData(context: StoreContext): Promise<void> {
   requireDocument(context.engine);
-  let seededId: string | null = null;
+  let seeded: { kind: VaultEntityKind; id: string }[] = [];
   const mutationState = await context.engine.mutate(({ document }) => {
     const timestamp = context.now();
     let next = document;
@@ -1152,10 +1159,15 @@ async function discardAllData(context: StoreContext): Promise<void> {
         );
       }
     }
-    seededId = safeNewId(context);
-    return appendEntities(next, 'portfolio', [
+    const portfolioId = safeNewId(context);
+    const taxSettingId = safeNewId(context);
+    seeded = [
+      { kind: 'portfolio', id: portfolioId },
+      { kind: 'taxSetting', id: taxSettingId },
+    ];
+    next = appendEntities(next, 'portfolio', [
       entityRecord(
-        seededId,
+        portfolioId,
         context.engine.deviceId,
         timestamp,
         strictPortfolioData({
@@ -1168,21 +1180,36 @@ async function discardAllData(context: StoreContext): Promise<void> {
         }),
       ),
     ]);
+    return appendEntities(next, 'taxSetting', [
+      entityRecord(
+        taxSettingId,
+        context.engine.deviceId,
+        timestamp,
+        strictTaxSettingData({
+          userId,
+          mode: 'none',
+          country: null,
+          manualDefaultAmountEur: null,
+          manualDefaultRatePct: null,
+          customParams: null,
+          updatedAt: timestamp,
+        }),
+      ),
+    ]);
   });
   const committed = mutationState.active?.document;
-  // Exactly one row survives the wipe, and it is the portfolio just seeded.
+  // Exactly the seeded rows survive the wipe, and nothing else.
   const survivors =
     committed == null
       ? []
       : VAULT_ENTITY_KINDS.flatMap((kind) =>
-          liveEntities(committed, kind).map((entity) => ({ kind, id: entity.id })),
+          liveEntities(committed, kind).map((entity) => `${kind} ${entity.id}`),
         );
+  const expected = seeded.map((row) => `${row.kind} ${row.id}`);
   if (
     committed == null ||
-    seededId == null ||
-    survivors.length !== 1 ||
-    survivors[0]?.kind !== 'portfolio' ||
-    survivors[0]?.id !== seededId
+    survivors.length !== expected.length ||
+    !expected.every((key) => survivors.includes(key))
   ) {
     throw storeError('VAULT_DATA_UNAVAILABLE', 'The vault wipe was not committed locally.');
   }
@@ -1524,7 +1551,12 @@ async function createCustomAsset(
       timestamp,
       strictCustomAssetData({
         providerId: 'manual',
-        providerRef: parsed.name,
+        // The manual-asset identity the server writes for its own custom assets
+        // (`customAssetRepository.create`) and re-checks on every rehydrated row
+        // (`validateCustomAssetFacts`): the reference IS the asset id, never the
+        // name. A row that disagrees would block the vault's only
+        // non-destructive exit.
+        providerRef: id,
         ownerId,
         type: 'custom',
         symbol: parsed.name,

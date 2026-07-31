@@ -15,13 +15,47 @@ import { disableParanoidMode } from '../../../lib/userApi';
 
 const REHYDRATION_ID_PREFIX = 'bettertrack:vault-rehydration:';
 
-/** Strip v2 client-only security material and validate every restore row. */
+/**
+ * Strip the client-only rows (v2 security material, market-asset snapshots) and
+ * validate every restore row.
+ *
+ * The vault's `customAsset` bucket doubles as the client's LOCAL ASSET TABLE:
+ * it also snapshots the market-catalog assets a transaction, dividend or
+ * standing order references, because the client engine resolves every asset
+ * through it (`engine/session.ts`, `engine/model.ts`). Those snapshots are not
+ * vault data — the global `assets` row survived the enable purge and
+ * rehydration re-resolves it from there (`resolveReferencedAssets`) — and the
+ * server refuses a document that carries them: `validateCustomAssetFacts`
+ * requires EVERY `customAsset` entity, tombstones included, to be this
+ * account's own manual asset. So the market snapshots stop here, live and
+ * tombstoned alike, and what crosses is exactly the owner's custom assets —
+ * which is also exactly the set `retainedCustomAssetRetireIds` requires the
+ * document to account for.
+ *
+ * The two identity fields the server derives rather than stores independently
+ * (`providerId: 'manual'`, `providerRef: <the asset id>` — see
+ * `customAssetRepository.create`) are restated from the entity id instead of
+ * passed through. They carry no information of their own for an owned asset,
+ * and this is the account's only non-destructive exit: it must not be blockable
+ * by a value that is derivable. The owner claim itself is NOT rewritten —
+ * unlocking already refuses a vault whose asset rows claim a different owner.
+ */
 export function toStrictRestoreDocument(document: VaultDocument): VaultStrictDocumentV1 {
   const entities: VaultStrictEntity[] = [];
   for (const kind of VAULT_ENTITY_KINDS) {
     const rows = document.entities[kind] ?? [];
     for (const row of rows) {
-      entities.push(parseStrictEntity(kind, row));
+      if (kind !== 'customAsset') {
+        entities.push(parseStrictEntity(kind, row));
+        continue;
+      }
+      if (row.data.ownerId == null) continue;
+      entities.push(
+        parseStrictEntity(kind, {
+          ...row,
+          data: { ...row.data, providerId: 'manual', providerRef: row.id },
+        }),
+      );
     }
   }
   return vaultStrictDocumentV1Schema.parse({

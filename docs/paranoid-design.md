@@ -95,6 +95,26 @@ and cascade all consumers through database lifecycle triggers. The identity
 table is explicitly server-classified and skipped by account export because it
 contains no asset content; the completeness tests bind both decisions.
 
+**The document's asset bucket is wider than the vault classification, and the
+restore boundary narrows it back.** A client that computes valuations locally
+(§10) must be able to name and price every asset a holding references, so the
+vault document's `customAsset` bucket doubles as the client's LOCAL ASSET
+TABLE: it also snapshots the market-catalog assets — under the same global
+UUID, with the catalog `providerId`/`providerRef` the §11 autonomy seam will
+need — because the client engine resolves every transaction, dividend and
+standing order through that bucket. Those snapshots are **not** vault data: the
+global `assets` row is `server`-classified, survives the enable purge untouched,
+and rehydration re-resolves it from the database. They are therefore dropped
+again on the way back (`toStrictRestoreDocument`), and the server refuses a
+restore document that carries one: every `customAsset` entity it receives —
+tombstones included — must be this account's own manual asset
+(`providerId: 'manual'`, `providerRef` = the entity id, `ownerId` = the
+account), which is also exactly the set the retained-identity check requires the
+document to account for. Binding: the two derivable identity fields are
+restated from the entity id at that boundary, never passed through, so a stale
+or third-party-written value cannot block the account's only non-destructive
+exit.
+
 The account itself gains `users.privacy_mode` enum `normal | paranoid`
 (default `normal`) plus the media-set record (§5) — account metadata, present
 even in Drive-only mode (knowing THAT a user is paranoid is not portfolio

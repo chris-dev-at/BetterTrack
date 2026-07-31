@@ -178,6 +178,12 @@ export const analyticsContributionRowSchema = z
      * derives its holdings client-side and has no per-asset history to measure
      * the window's change against. The column is then ABSENT rather than
      * carrying a different metric under the same header.
+     *
+     * This schema is the shared `PortfolioStore` contract, not only the HTTP
+     * response: `vaultPortfolioStore` implements it from the decrypted vault
+     * and is the only producer of the `null`. The API itself always states a
+     * number, so a server-side consumer never meets one — but the shape stays
+     * nullable because the SPA reads both stores through the same type.
      */
     contributionPct: z.number().nullable(),
   })
