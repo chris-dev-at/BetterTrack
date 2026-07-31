@@ -930,6 +930,11 @@ export const PARANOID_JOB_POLICIES: readonly ParanoidJobPolicyEntry[] = [
     mode: 'kept',
     reason: 'API-key audit-log cleanup is retention infrastructure.',
   }),
+  jobPolicy('retentionJobs.ts', 'createDataRetentionCleanupJob', 'data.retentionCleanup', {
+    capability: null,
+    mode: 'kept',
+    reason: 'Audit and email-log cleanup is global retention infrastructure.',
+  }),
 ] as const;
 
 const servicesFor = (capability: ParanoidKilledCapability): readonly ParanoidServiceBinding[] =>

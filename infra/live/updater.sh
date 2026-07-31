@@ -314,8 +314,8 @@ while true; do
         # && chain's success semantics are unchanged.
         #
         # Deploy the WHOLE app stack: every compose service that builds app code
-        # (web, api, worker, landing) must be in BOTH the `build` and the final
-        # `up -d` list. Each buildable service owns its own image tag
+        # (web, api, worker, landing, backup-scheduler) must be in BOTH the
+        # `build` and final `up -d` lists. Each buildable service owns its own image tag
         # (<project>-<service>), so building web+api alone leaves the worker's
         # image untouched, and `up -d` never recreates a service it doesn't
         # list. Historically only web+api deployed: the worker container stayed
@@ -338,11 +338,11 @@ while true; do
           GIT_SHA="$(git -C "$APP" rev-parse HEAD 2>/dev/null || echo unknown)" &&
           GIT_BUILD_TIME="$(date -u '+%Y-%m-%dT%H:%M:%SZ')" &&
           export GIT_SHA GIT_BUILD_TIME &&
-          dc build web api worker landing >>"$LOG" 2>&1 &&
+          dc build web api worker landing backup-scheduler >>"$LOG" 2>&1 &&
           dc up -d db redis >>"$LOG" 2>&1 &&
           dc run --rm api node dist/scripts/migrate.js >>"$LOG" 2>&1 &&
           dc run --rm api node dist/scripts/seed.js >>"$LOG" 2>&1 &&
-          dc up -d db redis api web worker landing prometheus grafana node-exporter cadvisor postgres-exporter redis-exporter >>"$LOG" 2>&1; then
+          dc up -d db redis api web worker landing backup-scheduler prometheus grafana node-exporter cadvisor postgres-exporter redis-exporter >>"$LOG" 2>&1; then
           printf '%s\n' "$REMOTE" >"$DEPLOYED_SHA"
           notify "update complete -> ${REMOTE}"
           deploy_ok
@@ -370,7 +370,7 @@ while true; do
   # that no container references (including the updater's own active image).
   # Neither command has a volume flag or names a Compose service. Never replace
   # these with system/volume prune or --volumes: pgdata, redisdata, exportdata,
-  # pgbackups, promdata, and grafanadata are persistent application data.
+  # pgbackups, backupstatus, promdata, and grafanadata are persistent data.
   reclaim_docker_storage
   sleep "$INTERVAL"
 done

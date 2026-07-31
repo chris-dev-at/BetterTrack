@@ -87,9 +87,11 @@ function AdminShell() {
 /**
  * The admin world (PROJECTPLAN.md §6.12): its own auth provider and router,
  * mounted at `/admin/*`, with a layout entirely separate from the normal app.
- * Routes here are relative to `/admin`. Wrapped in {@link I18nProvider} so the
- * admin surfaces (§13.3 V3-P1) render the chosen language — the graceful EN
- * fallback keeps `useT()` working in unit tests even without a provider.
+ * Routes here are relative to `/admin`. Unlike the user app's profile-backed
+ * locale sync, this console resolves and persists its language only in the
+ * admin origin's `localStorage`; browser storage is origin-scoped, so a user-app
+ * choice does not cross into the console. The graceful EN fallback keeps `useT()`
+ * working in unit tests even without a provider.
  */
 export function AdminApp() {
   return (

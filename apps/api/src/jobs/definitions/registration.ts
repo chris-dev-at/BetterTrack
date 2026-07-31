@@ -171,6 +171,12 @@ export const JOB_REGISTRATION_DESCRIPTORS = [
     'apiKeyJobs.ts',
     'createApiKeyRequestLogCleanupJob',
   ),
+  descriptor(
+    'createDataRetentionCleanupJob',
+    QUEUE_NAMES.dataRetentionCleanup,
+    'retentionJobs.ts',
+    'createDataRetentionCleanupJob',
+  ),
 ] as const;
 
 type ProductionJobRegistration = (typeof JOB_REGISTRATION_DESCRIPTORS)[number];

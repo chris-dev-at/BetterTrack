@@ -1,4 +1,4 @@
-import { and, desc, eq, lt } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, lt } from 'drizzle-orm';
 
 import type { Database } from '../db';
 import { auditLog, type AuditLogRow } from '../schema';
@@ -62,6 +62,25 @@ export function createAuditRepository(db: Database) {
       const hasMore = rows.length > params.limit;
       const entries = hasMore ? rows.slice(0, params.limit) : rows;
       return { entries, nextCursor: hasMore ? (entries.at(-1)?.id ?? null) : null };
+    },
+
+    /**
+     * Delete at most `limit` oldest rows before `cutoff`. The scheduled
+     * retention sweep repeats this bounded statement until it returns fewer
+     * than `limit`, avoiding one unbounded full-table delete.
+     */
+    async deleteOlderThan(cutoff: Date, limit: number): Promise<number> {
+      const candidates = db
+        .select({ id: auditLog.id })
+        .from(auditLog)
+        .where(lt(auditLog.createdAt, cutoff))
+        .orderBy(asc(auditLog.createdAt), asc(auditLog.id))
+        .limit(limit);
+      const deleted = await db
+        .delete(auditLog)
+        .where(inArray(auditLog.id, candidates))
+        .returning({ id: auditLog.id });
+      return deleted.length;
     },
   };
 }

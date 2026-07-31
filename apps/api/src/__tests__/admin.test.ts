@@ -21,6 +21,11 @@ import {
   createBullBoardRouter,
 } from '../http/bullBoard';
 import { ALL_QUEUE_NAMES, type QueueRegistry } from '../jobs';
+import {
+  pinQuickAuthMarkerKey,
+  rememberedDeviceKey,
+  rememberedDevicesForUserKey,
+} from '../services/auth/loginThrottle';
 import { generateTotpCode } from '../services/auth/totp';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
@@ -799,6 +804,31 @@ describe('audit log (PROJECTPLAN.md §5.5, §10)', () => {
     expect(stats.status).toBe(200);
     const parsed = adminStatsSchema.parse(stats.body);
     expect(parsed.userCount).toBeGreaterThanOrEqual(1);
+  });
+
+  it('admin deletion clears remembered devices without retaining the username', async () => {
+    const actor = await harness.seedAdmin();
+    const target = await harness.seedUser({
+      email: 'admin-delete-target@test.dev',
+      username: 'admin_delete_target',
+    });
+    await harness.ctx.auth.setPin(target.id, '4242');
+    const remembered = await harness.ctx.auth.rememberDevice(target.id);
+    await harness.ctx.redis.set(pinQuickAuthMarkerKey(remembered.deviceId), '1');
+
+    await harness.ctx.admin.deleteUser(target.id, target.username, { id: actor.id });
+
+    expect(await harness.ctx.redis.get(rememberedDeviceKey(remembered.deviceId))).toBeNull();
+    expect(await harness.ctx.redis.get(pinQuickAuthMarkerKey(remembered.deviceId))).toBeNull();
+    expect(await harness.ctx.redis.exists(rememberedDevicesForUserKey(target.id))).toBe(0);
+
+    const entries = await harness.db
+      .select()
+      .from(schema.auditLog)
+      .where(eq(schema.auditLog.targetId, target.id));
+    const deletion = entries.find((entry) => entry.action === 'user.deleted');
+    expect(deletion?.meta).toEqual({ via: 'admin' });
+    expect(JSON.stringify(deletion?.meta)).not.toContain(target.username);
   });
 });
 

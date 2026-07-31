@@ -55,6 +55,9 @@ const offsiteInterpolationEnvironment = {
   BT_BACKUP_AGE_RECIPIENT_HOST_FILE: '/tmp/bettertrack-compose-check-age-recipient',
   BT_BACKUP_RCLONE_CONFIG_HOST_FILE: '/tmp/bettertrack-compose-check-rclone.conf',
   BT_BACKUP_RCLONE_REMOTE: 'check:bettertrack-backups',
+  BT_BACKUP_RETENTION_RCLONE_CONFIG_HOST_FILE:
+    '/tmp/bettertrack-compose-check-retention-rclone.conf',
+  BT_BACKUP_RETENTION_RCLONE_REMOTE: 'check-retention:bettertrack-backups',
 };
 
 const topologies: ReadonlyArray<ProductionTopology> = [
@@ -68,7 +71,7 @@ const topologies: ReadonlyArray<ProductionTopology> = [
     label: 'subdomains+offsite',
     mode: 'subdomains',
     overlays: [resolve(repoRoot, 'infra/docker-compose.subdomains.yml'), offsiteCompose],
-    profiles: ['offsite'],
+    profiles: ['offsite', 'offsite-retention'],
     interpolationEnvironment: offsiteInterpolationEnvironment,
     webPortTargets: [80],
   },
@@ -82,7 +85,7 @@ const topologies: ReadonlyArray<ProductionTopology> = [
     label: 'ports+offsite',
     mode: 'ports',
     overlays: [resolve(repoRoot, 'infra/docker-compose.ports.yml'), offsiteCompose],
-    profiles: ['offsite'],
+    profiles: ['offsite', 'offsite-retention'],
     interpolationEnvironment: offsiteInterpolationEnvironment,
     webPortTargets: [3000, 8080, 8081, 8082, 8083],
   },
