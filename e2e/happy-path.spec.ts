@@ -182,7 +182,7 @@ test('happy path: invite through friend sharing', async ({ browser }) => {
   await expect(friendCard).toBeVisible({ timeout: 15_000 });
   await friendCard.click();
 
-  const sharedLink = friend.getByRole('link', { name: 'Main', exact: true });
+  const sharedLink = friend.getByRole('link', { name: /^Main\b/ });
   await expect(sharedLink).toBeVisible({ timeout: 15_000 });
   await sharedLink.click();
 
