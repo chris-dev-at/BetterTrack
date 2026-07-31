@@ -290,7 +290,14 @@ test('a usage cap still writes the mode when the factory is down at fire time', 
 test('a stop action is still skipped while the factory is already down', async () => {
   // Unchanged on purpose: stopping a stopped factory is meaningless, and the
   // trigger should not pretend it acted.
-  const trigger = { id: 's', type: 'usage', metric: 'five_hour', threshold: 90, action: 'stop', armed: true };
+  const trigger = {
+    id: 's',
+    type: 'usage',
+    metric: 'five_hour',
+    threshold: 90,
+    action: 'stop',
+    armed: true,
+  };
   const performed = [];
   const outcome = await evaluateUsageThresholdTrigger(
     trigger,
@@ -311,7 +318,13 @@ test('a stop action is still skipped while the factory is already down', async (
 });
 
 test('a timer trigger carrying a mode action also applies while down', async () => {
-  const trigger = { id: 't', type: 'timer', action: 'mode-run-out', armed: true, fireAt: '2026-07-31T02:00:00Z' };
+  const trigger = {
+    id: 't',
+    type: 'timer',
+    action: 'mode-run-out',
+    armed: true,
+    fireAt: '2026-07-31T02:00:00Z',
+  };
   const performed = [];
   await evaluateTimerTrigger(trigger, {
     now: Date.parse('2026-07-31T02:00:01Z'),

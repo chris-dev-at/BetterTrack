@@ -36,8 +36,14 @@ test('only a profile-scoped, unexpired credential can read quota', () => {
   const now = 1_000;
   // This is the whole reason the panel was blank: setup tokens are inference-only
   // and /api/oauth/usage answers them 403, so they must never be attempted.
-  assert.equal(credentialUsable(parseHostCredential(KEYCHAIN(['user:inference'], 9_000)), now), false);
-  assert.equal(credentialState(parseHostCredential(KEYCHAIN(['user:inference'], 9_000)), now), 'unscoped');
+  assert.equal(
+    credentialUsable(parseHostCredential(KEYCHAIN(['user:inference'], 9_000)), now),
+    false,
+  );
+  assert.equal(
+    credentialState(parseHostCredential(KEYCHAIN(['user:inference'], 9_000)), now),
+    'unscoped',
+  );
   assert.equal(credentialState(parseHostCredential(KEYCHAIN([USAGE_SCOPE], 500)), now), 'expired');
   assert.equal(credentialState(parseHostCredential(KEYCHAIN([USAGE_SCOPE], 9_000)), now), 'ready');
   assert.equal(credentialState(null, now), 'absent');
@@ -93,9 +99,13 @@ test('bindings persist without secrets and survive a corrupt file', async () => 
   const dir = await mkdtemp(join(tmpdir(), 'mf-usage-binding-'));
   try {
     const file = join(dir, 'usage-bindings.json');
-    await writeBindings(file, { 'profile-1': { email: 'a@example.com', linkedAt: '2026-07-31T00:00:00Z' } });
+    await writeBindings(file, {
+      'profile-1': { email: 'a@example.com', linkedAt: '2026-07-31T00:00:00Z' },
+    });
     const back = await readBindings(file);
-    assert.deepEqual(back, { 'profile-1': { email: 'a@example.com', linkedAt: '2026-07-31T00:00:00Z' } });
+    assert.deepEqual(back, {
+      'profile-1': { email: 'a@example.com', linkedAt: '2026-07-31T00:00:00Z' },
+    });
     const raw = await readFile(file, 'utf8');
     assert.doesNotMatch(raw, /accessToken|sk-ant/);
     assert.deepEqual(await readBindings(join(dir, 'missing.json')), {});

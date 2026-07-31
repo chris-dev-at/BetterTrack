@@ -4428,7 +4428,9 @@
           return;
         }
         const pct = (v) =>
-          typeof v === 'number' && Number.isFinite(v) ? Math.max(0, Math.min(100, Math.round(v))) : null;
+          typeof v === 'number' && Number.isFinite(v)
+            ? Math.max(0, Math.min(100, Math.round(v)))
+            : null;
         const bar = (label, n) =>
           n == null
             ? ''
@@ -4440,7 +4442,13 @@
             const seven = pct(u.sevenDay?.pct);
             const lanes = (entry.lanes || []).length
               ? (entry.lanes || [])
-                  .map((l) => (l === 'default' ? 'default' : l === 'master' ? 'master' : l.replace('worker-', 'w')))
+                  .map((l) =>
+                    l === 'default'
+                      ? 'default'
+                      : l === 'master'
+                        ? 'master'
+                        : l.replace('worker-', 'w'),
+                  )
                   .join(' · ')
               : 'no lanes';
             const meters =

@@ -38,7 +38,9 @@ export function parseHostCredential(raw) {
   if (!oauth || typeof oauth !== 'object') return null;
   const accessToken = typeof oauth.accessToken === 'string' ? oauth.accessToken : '';
   if (!accessToken) return null;
-  const scopes = Array.isArray(oauth.scopes) ? oauth.scopes.filter((s) => typeof s === 'string') : [];
+  const scopes = Array.isArray(oauth.scopes)
+    ? oauth.scopes.filter((s) => typeof s === 'string')
+    : [];
   const expiresAt = Number.isFinite(oauth.expiresAt) ? oauth.expiresAt : null;
   return { accessToken, scopes, expiresAt };
 }
@@ -129,7 +131,8 @@ export function createHostUsageSource({
       if (!boundEmail) return { token: null, reason: 'unbound' };
       const who = await identity();
       if (!who) return { token: null, reason: 'identity-unknown' };
-      if (who.email !== boundEmail) return { token: null, reason: 'other-account', signedInAs: who.email };
+      if (who.email !== boundEmail)
+        return { token: null, reason: 'other-account', signedInAs: who.email };
       return { token: cred.accessToken, reason: 'ready', signedInAs: who.email };
     },
   };
@@ -149,7 +152,10 @@ export function sanitizeBindings(value) {
   for (const [profileId, entry] of Object.entries(value.bindings || {})) {
     const email = typeof entry?.email === 'string' ? entry.email.slice(0, 320) : '';
     if (!email) continue;
-    out[profileId] = { email, linkedAt: typeof entry.linkedAt === 'string' ? entry.linkedAt : null };
+    out[profileId] = {
+      email,
+      linkedAt: typeof entry.linkedAt === 'string' ? entry.linkedAt : null,
+    };
   }
   return out;
 }

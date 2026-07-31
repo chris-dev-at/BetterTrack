@@ -111,7 +111,9 @@ test('a stored sample rehydrates into the snapshot the panel renders', () => {
     sevenDay: { pct: 85, resetsAt: '2026-08-05T11:00:00.000Z' },
     scoped: [{ name: 'Opus 4.8', pct: 40 }],
   };
-  const restored = usageHistoryEntryToSnapshot(usageSnapshotToHistoryEntry(usage, 1_700_000_000_000));
+  const restored = usageHistoryEntryToSnapshot(
+    usageSnapshotToHistoryEntry(usage, 1_700_000_000_000),
+  );
   assert.deepEqual(restored.fiveHour, usage.fiveHour);
   assert.deepEqual(restored.sevenDay, usage.sevenDay);
   assert.deepEqual(restored.scoped, usage.scoped);

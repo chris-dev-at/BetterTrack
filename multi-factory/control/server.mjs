@@ -981,7 +981,11 @@ async function evalTriggers() {
             changed = true;
             await clog(
               `trigger[${t.id}] ${t.metric} ${metric.pct}% ≥ ${t.threshold}% → ${t.action}${
-                state.running ? '' : outcome.attempted ? ' (factory down — mode written for next start)' : ' (factory already down)'
+                state.running
+                  ? ''
+                  : outcome.attempted
+                    ? ' (factory down — mode written for next start)'
+                    : ' (factory already down)'
               }`,
             );
           }
