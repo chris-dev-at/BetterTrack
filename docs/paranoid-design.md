@@ -1,13 +1,14 @@
 # PARANOID MODE — client-encrypted privacy mode design note (V5-P13, arc b)
 
-**Status:** binding design, §16-logged 2026-07-21 (issue #651). Per the §13.5
-design-note-first rule this note is merged BEFORE any paranoid feature code,
-and — stricter than mirrorchain — implementation is **not even composed** until
-the owner acks it (the spec says "§16-logged **and owner-acked** BEFORE any
-code"; the ack gate is a filed `awaiting-owner` issue). The implementation
-issues in §14 build against this text; every "planner-defined" point in the
-§13.5 spec row is decided here. Deviations found during implementation go back
-through §16.
+**Status:** binding design, §16-logged 2026-07-21 (issue #651). The
+implementation was **owner-approved before composition** under the 2026-07-24
+briefs, culminating in the owner-authored `v5-p13-pd9-20260724` brief on issue
+#733. That issue's 2026-07-28 owner audit also directs this note to adopt #896's
+retired-recovery semantics; the amendment is recorded in PROJECTPLAN §16. The
+older #654 gate is explicitly superseded and is not approval evidence. The
+implementation issues in §14 build against this text; every "planner-defined"
+point in the §13.5 spec row is decided here. Deviations found during
+implementation go back through §16.
 
 **The model in one paragraph.** A paranoid account's portfolio data lives in
 ONE client-side encrypted **vault**: the client (web/PWA) holds the cleartext
@@ -15,15 +16,17 @@ in memory after local decryption, does all money math itself with the **same
 audited domain code the server uses** (extracted to a shared package — never
 reimplemented), and persists only ciphertext — a single versioned **blob** —
 to the storage media the user picked: the BetterTrack server, the user's
-Google Drive, both, or **Drive-only** (zero portfolio bytes on our side). The
-server keeps running everything that never reads the portfolio — identity,
-auth, friends, chat, price alerts, notifications, market data — and for the
-vault it is a **blind blob store with compare-and-swap**, exactly as blind as
-Drive. The key never leaves the user's devices; there is no escrow, no reset,
-no support backdoor: **lost key ⇒ lost data, by design.** Day to day the app
-looks and feels like normal mode — same pages, same components — because every
-portfolio-touching client feature reads through one seam (`PortfolioStore`)
-with a vault-backed implementation behind it.
+Google Drive, both, or **Drive-only** (zero cleartext portfolio rows and no
+active server-medium copy). A retired encrypted recovery copy can remain until
+the separate signed purge in §5. The server keeps running everything that never
+reads the portfolio — identity, auth, friends, chat, price alerts,
+notifications, market data — and for the vault it is a **blind blob store with
+compare-and-swap**, exactly as blind as Drive. The key never leaves the user's
+devices; there is no escrow, no reset, no support backdoor: **lost key ⇒ lost
+data, by design.** Day to day the app looks and feels like normal mode — same
+pages, same components — because every portfolio-touching client feature reads
+through one seam (`PortfolioStore`) with a vault-backed implementation behind
+it.
 
 Glossary: _vault_ = the user's full portfolio dataset as one logical document;
 _blob_ / _envelope_ = one encrypted serialization of the vault (header +
@@ -271,17 +274,27 @@ sequence for every switch:
    medium live.
 2. **Remove a medium:** allowed only while at least one OTHER medium holds a
    verified-fresh copy (same round-trip check, re-run now). Removing `server`
-   ⇒ the PATCH transaction **hard-deletes the blob + its entire bounded
-   history server-side** — this is the moment the Drive-only "zero portfolio
-   bytes server-side" state begins. Removing `drive` ⇒ the client best-effort
-   deletes the Drive file (and tells the user if it could not; the leftover is
-   their own ciphertext in their own Drive).
+   ⇒ the PATCH transaction atomically removes the blob + bounded history from
+   the **active server medium** and moves those ciphertext versions into the
+   **retired recovery set**. Drive-only begins immediately — active server blob
+   and history reads are empty — while the recoverable ciphertext stays behind
+   a separately authenticated signed purge gate for its seven-day minimum
+   retention window. Only that later gate (matching the retired version, a
+   fresh Drive readback, the server challenge, and client-held Ed25519 proof)
+   destroys the retired bytes; a media PATCH or client attestation alone never
+   does. Removing `drive` ⇒ the client best-effort deletes the Drive file (and
+   tells the user if it could not; the leftover is their own ciphertext in
+   their own Drive).
 3. The last medium can never be removed (media set non-empty; the server
    validates the PATCH, the UI never offers it).
 
-The §13.5 "media switching migrates the blob correctly" test follows this
-sequence literally: enable on server → add Drive (round trip verified) →
-remove server → probe zero vault bytes server-side → app fully functional.
+The §13.5 "media switching migrates the blob correctly" test follows the
+shipped #896 sequence literally: enable on Drive → add server through an
+inactive candidate (round trip verified) → force a Drive verification failure
+and prove the active server source is retained → retry removal → probe zero
+active/history server bytes plus the recoverable retired set → app fully
+functional. Total server ciphertext reaches zero only through the separate
+retention-qualified signed purge gate.
 
 ## 6. The Google Drive medium (end-user OAuth)
 
@@ -296,10 +309,12 @@ remove server → probe zero vault bytes server-side → app fully functional.
   and are **never sent to, stored by, or refreshable by the BetterTrack
   server. There is no server-side Drive integration at all — no tokens, no
   file ids, no proxy endpoints.** Consequence, and the binding Drive-only
-  guarantee: the server holds zero portfolio bytes AND zero _capability_ to
-  fetch them — it cannot read the ciphertext even if compelled to try.
-  Per-user consent is end-user OAuth (issue-confirmed: not owner setup); the
-  only owner-provided item is the SPA client id env var.
+  guarantee: the server holds zero cleartext portfolio rows and zero active
+  server-medium ciphertext, and has zero _capability_ to fetch the Drive copy.
+  A separately gated retired recovery set can remain as described in §5; it is
+  opaque ciphertext that only the client-held key can decrypt. Per-user consent
+  is end-user OAuth (issue-confirmed: not owner setup); the only owner-provided
+  item is the SPA client id env var.
 - **Connections hub (V5-P0c):** the Drive connection renders as a Connections
   card (status, connect, disconnect) — state is client-attested metadata (the
   server only knows `drive ∈ mediaSet`). Disconnect = remove the medium per
@@ -393,8 +408,9 @@ clear because they cannot exist yet. On an established account those rows are
 the §5 retirement recovery set, destroyable only through the signed purge gate
 (matching retired version + Ed25519 retirement proof + the minimum retention
 window); a replayed enable satisfies none of those checks, and an account that
-retired the server medium passes the retry's "no server ciphertext" test
-precisely because the ciphertext lives there.
+retired the server medium passes the retry's "no active server ciphertext"
+test precisely because its recovery ciphertext lives outside the active
+medium.
 
 Revocation of INBOUND shares is permanent and one-directional: the account's
 membership rows in other users' audiences and friend groups are deleted, and
@@ -788,11 +804,12 @@ them.
   your encrypted data lives — default **server** ("encrypted on BetterTrack;
   only you can read it" — the simplest mental model), "also keep a copy in my
   Google Drive" as a checkbox, **Drive-only behind one "advanced" disclosure**
-  ("nothing on BetterTrack servers — not even encrypted"); (3) passphrase +
-  forced recovery-kit download + the strong-rung acknowledgment: "If I lose
-  my vault passphrase and my recovery kit, my data is gone forever.
-  BetterTrack cannot recover it."; (4) migration progress → done. Three
-  clicks on the main path; no expert corner.
+  ("no active BetterTrack copy; an encrypted recovery copy stays retained until
+  I explicitly delete it after the safety window"); (3) passphrase + forced
+  recovery-kit download + the strong-rung acknowledgment: "If I lose my vault
+  passphrase and my recovery kit, my data is gone forever. BetterTrack cannot
+  recover it."; (4) migration progress → done. Three clicks on the main path;
+  no expert corner.
 - **Unlock:** a vault gate visually analogous to the PIN gate (passphrase
   field, "keep unlocked on this device", lock action in the profile menu;
   auto-lock per §3). After unlock the app IS the normal app — same pages,
@@ -842,8 +859,8 @@ issue).
    tests (offline-fork worked cases).
 6. **PD6 — Drive data home + Connections card + media switching**
    (`diff:hard`): GIS token client, appdata adapter, §5 migrate-then-drop,
-   Drive-only PATCH semantics (server blob hard-delete), sync-chip Drive
-   states.
+   Drive-only PATCH semantics (active-copy retirement + signed purge gate),
+   sync-chip Drive states.
 7. **PD7 — Client valuation/stats/tax engine + client exports** (`diff:max`,
    money): the §10 engine on the shared domain, client tax reports +
    CSV/PDF, client cleartext export, standing-order client materialization
@@ -865,7 +882,7 @@ PD4–PD7); PD9 last.
 
 | §13.5 "done when" criterion                                                                       | Decided by                                                  |
 | ------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
-| Design note §16-logged + owner-acked BEFORE code                                                  | This note's status block + the `awaiting-owner` gate        |
+| Design note §16-logged + owner-acked BEFORE code                                                  | Status + PROJECTPLAN §16 + owner-approved #733 brief        |
 | Mode on ⇒ server stores no cleartext portfolio data (schema/probe test)                           | §1 (classification), §7 (purge sweep), §8 (enforcement)     |
 | Drive-only round trip: zero portfolio rows server-side and the app remains fully functional (e2e) | §5 (removal semantics), §6 (guarantee), §8 (kept list), §10 |
 | Media switching migrates the blob correctly (test)                                                | §5 (migrate-then-drop, verbatim sequence)                   |
