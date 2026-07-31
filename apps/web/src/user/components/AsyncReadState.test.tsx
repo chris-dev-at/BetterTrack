@@ -59,3 +59,98 @@ describe('AsyncReadState', () => {
     expect(screen.queryByRole('button')).not.toBeInTheDocument();
   });
 });
+
+// A surface with several concurrent reads used to collapse them with `??`, so
+// whichever error was DECLARED first decided the classification for all of
+// them: a 5xx behind a confirmed 403 silently lost its Retry, and a confirmed
+// 403 behind a 5xx gained one. Order must not decide any of this, which is why
+// every case below is asserted in both declaration orders.
+describe('AsyncReadState over a group of reads', () => {
+  const outage = () => new ApiError(503, 'UNAVAILABLE', 'down');
+  const confirmed = (status: number) => new ApiError(status, 'NOT_AVAILABLE', 'secret');
+
+  test.each([401, 403, 404])(
+    'offers recovery for a simultaneous outage and confirmed %i, in either order',
+    (status) => {
+      const retryOutage = vi.fn();
+      const retryConfirmed = vi.fn();
+
+      for (const reads of [
+        [
+          { error: outage(), refetch: retryOutage },
+          { error: confirmed(status), refetch: retryConfirmed },
+        ],
+        [
+          { error: confirmed(status), refetch: retryConfirmed },
+          { error: outage(), refetch: retryOutage },
+        ],
+      ]) {
+        retryOutage.mockClear();
+        retryConfirmed.mockClear();
+        const view = renderState({ loading: false, reads });
+
+        fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+        // Only the recoverable read is re-run; the confirmed rejection is never
+        // retried, and its message never reaches the user.
+        expect(retryOutage).toHaveBeenCalledOnce();
+        expect(retryConfirmed).not.toHaveBeenCalled();
+        expect(screen.queryByText('secret')).not.toBeInTheDocument();
+        view.unmount();
+      }
+    },
+  );
+
+  test('re-runs every outage read in the group and nothing else', () => {
+    const first = vi.fn();
+    const second = vi.fn();
+    const healthy = vi.fn();
+    const rejected = vi.fn();
+    renderState({
+      loading: false,
+      reads: [
+        { error: outage(), refetch: first },
+        { error: null, refetch: healthy },
+        { error: confirmed(403), refetch: rejected },
+        { error: outage(), refetch: second },
+      ],
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    expect(first).toHaveBeenCalledOnce();
+    expect(second).toHaveBeenCalledOnce();
+    expect(healthy).not.toHaveBeenCalled();
+    expect(rejected).not.toHaveBeenCalled();
+  });
+
+  test.each([401, 403, 404])(
+    'keeps a group of confirmed %i failures terminal, with no retry',
+    (status) => {
+      renderState({
+        loading: false,
+        reads: [
+          { error: confirmed(status), refetch: vi.fn() },
+          { error: new Error('unknown'), refetch: vi.fn() },
+        ],
+      });
+
+      expect(screen.getByRole('alert')).toHaveTextContent("This information isn't available.");
+      expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
+    },
+  );
+
+  test('renders nothing while every read in the group is healthy', () => {
+    const { container } = renderState({
+      loading: false,
+      reads: [{ error: null }, { error: null, refetch: vi.fn() }],
+    });
+
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  test('states an outage without a retry affordance when the read cannot be re-run', () => {
+    renderState({ loading: false, reads: [{ error: outage() }] });
+
+    expect(screen.getByRole('alert')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
+  });
+});

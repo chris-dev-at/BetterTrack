@@ -1283,13 +1283,15 @@ export function PortfolioPage() {
         onNewCustom={() => setCustomOpen(true)}
       />
 
+      {/* Both supporting reads are classified separately: whichever of them is a
+          recoverable outage keeps its Retry, and that Retry re-runs only it. */}
       <AsyncReadState
         loading={transactionsQuery.isLoading || cashSourcesQuery.isLoading}
-        error={transactionsQuery.error ?? cashSourcesQuery.error}
+        reads={[
+          { error: transactionsQuery.error, refetch: () => transactionsQuery.refetch() },
+          { error: cashSourcesQuery.error, refetch: () => cashSourcesQuery.refetch() },
+        ]}
         errorLabel={t('portfolio.overview.detailsLoadError')}
-        onRetry={() => {
-          void Promise.all([transactionsQuery.refetch(), cashSourcesQuery.refetch()]);
-        }}
       />
 
       <NormalModeOnly>

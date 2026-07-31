@@ -197,6 +197,44 @@ describe('ImportPage', () => {
     expect(screen.getByLabelText('CSV export')).toBeInTheDocument();
   });
 
+  // The reference reads are classified individually. Collapsing them with `??`
+  // let declaration order decide the class for the whole group, so both orders
+  // are pinned: the recoverable read always keeps recovery, and Retry never
+  // re-runs the confirmed rejection.
+  test('retries only the outage when the outage is declared first', async () => {
+    vi.mocked(portfolioApi.listPortfolios).mockRejectedValue(
+      new ApiError(503, 'UNAVAILABLE', 'portfolios unavailable'),
+    );
+    vi.mocked(importsApi.listImportBrokers).mockRejectedValue(
+      new ApiError(403, 'FORBIDDEN', 'secret'),
+    );
+    renderPage();
+
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: 'Try again' }));
+
+    await waitFor(() => expect(vi.mocked(portfolioApi.listPortfolios)).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(importsApi.listImportBrokers)).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText('secret')).not.toBeInTheDocument();
+  });
+
+  test('keeps recovery for an outage declared after a confirmed rejection', async () => {
+    vi.mocked(portfolioApi.listPortfolios).mockRejectedValue(
+      new ApiError(403, 'FORBIDDEN', 'secret'),
+    );
+    vi.mocked(importsApi.listImportBrokers).mockRejectedValue(
+      new ApiError(503, 'UNAVAILABLE', 'brokers unavailable'),
+    );
+    renderPage();
+
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: 'Try again' }));
+
+    await waitFor(() => expect(vi.mocked(importsApi.listImportBrokers)).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(portfolioApi.listPortfolios)).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText('secret')).not.toBeInTheDocument();
+  });
+
   test('uploads the chosen file and renders the preview with per-row flags', async () => {
     renderPage();
     await screen.findByRole('option', { name: 'Trade Republic' });

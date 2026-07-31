@@ -26,7 +26,7 @@ import { listCashSources, listPortfolios } from '../../lib/portfolioApi';
 import { EmptyState, MoneyText } from '../../ui';
 import { Badge, Button, Field, PageHead, Select, type BadgeTone } from '../../ui/origin';
 import { Alert } from '../components/ui';
-import { AsyncReadState } from '../components/AsyncReadState';
+import { AsyncReadState, type AsyncRead } from '../components/AsyncReadState';
 import { ACTIVE_PORTFOLIO_PARAM, resolveActivePortfolio } from './PortfolioSwitcher';
 
 /**
@@ -155,13 +155,17 @@ export function ImportPage() {
 
   const referenceLoading =
     portfoliosQuery.isLoading || brokersQuery.isLoading || cashSourcesQuery.isLoading;
-  const referenceError = portfoliosQuery.error ?? brokersQuery.error ?? cashSourcesQuery.error;
-
-  function retryReferenceData() {
-    const retries: Promise<unknown>[] = [portfoliosQuery.refetch(), brokersQuery.refetch()];
-    if (preview !== null) retries.push(cashSourcesQuery.refetch());
-    void Promise.all(retries);
-  }
+  // Handed over as a group so each reference read is classified on its own: a
+  // recoverable 5xx keeps its Retry even behind a confirmed rejection, and that
+  // Retry re-runs only the reads that can actually recover. The cash-source read
+  // only exists once a preview does, so it joins the group only then.
+  const referenceReads: AsyncRead[] = [
+    { error: portfoliosQuery.error, refetch: () => portfoliosQuery.refetch() },
+    { error: brokersQuery.error, refetch: () => brokersQuery.refetch() },
+    ...(preview !== null
+      ? [{ error: cashSourcesQuery.error, refetch: () => cashSourcesQuery.refetch() }]
+      : []),
+  ];
 
   const reset = () => {
     setPreview(null);
@@ -229,9 +233,8 @@ export function ImportPage() {
 
       <AsyncReadState
         loading={referenceLoading}
-        error={referenceError}
+        reads={referenceReads}
         errorLabel={t('portfolio.import.referenceDataLoadError')}
-        onRetry={retryReferenceData}
       />
 
       {/* ── Step 1: file + broker ── */}

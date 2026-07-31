@@ -13,6 +13,7 @@ vi.mock('../../../lib/cashApi', () => ({
   setCashMovementTags: vi.fn(),
 }));
 
+import { ApiError } from '../../../lib/apiClient';
 import { listCashTags, previewCashRules, setCashMovementTags } from '../../../lib/cashApi';
 import {
   chargeCashFee,
@@ -83,6 +84,35 @@ test('renders a source read failure without hiding the cash-entry form', async (
 
   expect(await screen.findByText("This information isn't available.")).toBeInTheDocument();
   expect(screen.getByLabelText('Amount')).toBeInTheDocument();
+});
+
+// Sources and tags are two independent reads. Collapsing them with `??` let
+// declaration order classify both at once, so each order is pinned: the
+// recoverable read keeps its Retry and the confirmed one is never re-run.
+test('retries only the source read when it is the outage', async () => {
+  vi.mocked(listCashSources).mockRejectedValue(new ApiError(503, 'UNAVAILABLE', 'down'));
+  vi.mocked(listCashTags).mockRejectedValue(new ApiError(403, 'FORBIDDEN', 'secret'));
+  const user = userEvent.setup();
+  renderDialog();
+
+  await user.click(await screen.findByRole('button', { name: 'Try again' }));
+
+  await waitFor(() => expect(listCashSources).toHaveBeenCalledTimes(2));
+  expect(listCashTags).toHaveBeenCalledTimes(1);
+  expect(screen.queryByText('secret')).not.toBeInTheDocument();
+});
+
+test('keeps recovery for a tag outage behind a confirmed source rejection', async () => {
+  vi.mocked(listCashSources).mockRejectedValue(new ApiError(403, 'FORBIDDEN', 'secret'));
+  vi.mocked(listCashTags).mockRejectedValue(new ApiError(503, 'UNAVAILABLE', 'down'));
+  const user = userEvent.setup();
+  renderDialog();
+
+  await user.click(await screen.findByRole('button', { name: 'Try again' }));
+
+  await waitFor(() => expect(listCashTags).toHaveBeenCalledTimes(2));
+  expect(listCashSources).toHaveBeenCalledTimes(1);
+  expect(screen.queryByText('secret')).not.toBeInTheDocument();
 });
 
 test.each([

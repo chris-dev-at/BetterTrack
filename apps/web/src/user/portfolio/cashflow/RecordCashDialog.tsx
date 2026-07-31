@@ -375,13 +375,15 @@ export function RecordCashDialog({
       widthClassName="max-w-md"
     >
       <form className="flex flex-col gap-4" onSubmit={handleSubmit}>
+        {/* Sources and tags fail independently; each keeps (or is denied) its own
+            Retry rather than borrowing the other read's classification. */}
         <AsyncReadState
           loading={sourcesQuery.isLoading || tagsQuery.isLoading}
-          error={sourcesQuery.error ?? tagsQuery.error}
+          reads={[
+            { error: sourcesQuery.error, refetch: () => sourcesQuery.refetch() },
+            { error: tagsQuery.error, refetch: () => tagsQuery.refetch() },
+          ]}
           errorLabel={t('common.genericError')}
-          onRetry={() => {
-            void Promise.all([sourcesQuery.refetch(), tagsQuery.refetch()]);
-          }}
         />
 
         {/* Direction — armed state is legible by colour alone. */}

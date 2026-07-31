@@ -38,6 +38,7 @@ vi.mock('../../lib/standingOrdersApi', () => ({ listStandingOrders: vi.fn() }));
 vi.mock('../../lib/marketIntelApi', () => ({ getPortfolioDividendProjection: vi.fn() }));
 
 import { getAnalyticsSeries } from '../../lib/analyticsApi';
+import { ApiError } from '../../lib/apiClient';
 import { getPortfolioDividendProjection } from '../../lib/marketIntelApi';
 import { getPortfolio, getPortfolioHistory } from '../../lib/portfolioApi';
 import { listStandingOrders } from '../../lib/standingOrdersApi';
@@ -232,6 +233,45 @@ test('does not start portfolio-scoped reads for an empty account when dividends 
   expect(getPortfolioHistory).not.toHaveBeenCalled();
   expect(getPortfolioDividendProjection).not.toHaveBeenCalled();
   expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
+});
+
+// The prefill reads are handed to `AsyncReadState` as a group so each is
+// classified on its own. Collapsing them with `??` made declaration order pick
+// the class for all of them, so both orders are pinned here.
+test('an outage declared before a confirmed rejection retries only the outage read', async () => {
+  const user = userEvent.setup();
+  vi.mocked(getPortfolio).mockRejectedValue(new ApiError(503, 'UNAVAILABLE', 'down'));
+  vi.mocked(getAnalyticsSeries).mockRejectedValue(new ApiError(403, 'FORBIDDEN', 'secret'));
+  renderSection();
+
+  const retry = await screen.findByRole('button', { name: 'Try again' });
+  expect(getPortfolio).toHaveBeenCalledTimes(1);
+  expect(getAnalyticsSeries).toHaveBeenCalledTimes(1);
+
+  await user.click(retry);
+
+  await waitFor(() => expect(getPortfolio).toHaveBeenCalledTimes(2));
+  // The confirmed rejection is never re-run on another read's behalf, and the
+  // healthy reads are left alone.
+  expect(getAnalyticsSeries).toHaveBeenCalledTimes(1);
+  expect(listStandingOrders).toHaveBeenCalledTimes(1);
+  expect(screen.queryByText('secret')).not.toBeInTheDocument();
+});
+
+test('an outage declared after a confirmed rejection keeps its own recovery', async () => {
+  const user = userEvent.setup();
+  vi.mocked(getAnalyticsSeries).mockRejectedValue(new ApiError(403, 'FORBIDDEN', 'secret'));
+  vi.mocked(getPortfolioDividendProjection).mockRejectedValue(
+    new ApiError(503, 'UNAVAILABLE', 'down'),
+  );
+  renderSection();
+
+  const retry = await screen.findByRole('button', { name: 'Try again' });
+  await user.click(retry);
+
+  await waitFor(() => expect(getPortfolioDividendProjection).toHaveBeenCalledTimes(2));
+  expect(getAnalyticsSeries).toHaveBeenCalledTimes(1);
+  expect(screen.queryByText('secret')).not.toBeInTheDocument();
 });
 
 test('what-if plans render as separate overlay series and can be added and removed', async () => {

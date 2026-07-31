@@ -19,7 +19,7 @@ import { DISCREET_MASK, formatMoney, isDiscreetMode } from '../../lib/format';
 import { getPortfolioDividendProjection } from '../../lib/marketIntelApi';
 import { EmptyState, StatCard } from '../../ui';
 import { overlayColor } from '../../ui/charts';
-import { AsyncReadState } from '../components/AsyncReadState';
+import { AsyncReadState, type AsyncRead } from '../components/AsyncReadState';
 import { Button, TextField } from '../components/ui';
 import { usePortfolioStore } from '../portfolio/PortfolioStoreProvider';
 import { clientSeriesCagrPct } from '../vault/engine/clientSeries';
@@ -137,25 +137,24 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
     historyQuery.isLoading ||
     ordersQuery.isLoading ||
     dividendQuery.isLoading;
-  const prefillError =
-    portfolioQuery.error ??
-    analyticsQuery.error ??
-    historyQuery.error ??
-    ordersQuery.error ??
-    dividendQuery.error;
-
-  function retryPrefill() {
-    const retries: Promise<unknown>[] = [];
-    if (portfolioId !== null) {
-      retries.push(portfolioQuery.refetch(), ordersQuery.refetch());
-      if (privacyMode === 'normal') {
-        retries.push(analyticsQuery.refetch(), dividendQuery.refetch());
-      } else {
-        retries.push(historyQuery.refetch());
-      }
-    }
-    void Promise.all(retries);
-  }
+  // The reads that actually apply to this account: without a portfolio nothing
+  // is enabled, and each mode samples its return from a different series. The
+  // group is handed over whole so `AsyncReadState` classifies each failure on
+  // its own — one read's 5xx can no longer be masked by another's confirmed
+  // 403, and Retry re-runs only the reads that are genuinely recoverable.
+  const prefillReads: AsyncRead[] =
+    portfolioId === null
+      ? []
+      : [
+          { error: portfolioQuery.error, refetch: () => portfolioQuery.refetch() },
+          { error: ordersQuery.error, refetch: () => ordersQuery.refetch() },
+          ...(privacyMode === 'normal'
+            ? [
+                { error: analyticsQuery.error, refetch: () => analyticsQuery.refetch() },
+                { error: dividendQuery.error, refetch: () => dividendQuery.refetch() },
+              ]
+            : [{ error: historyQuery.error, refetch: () => historyQuery.refetch() }]),
+        ];
 
   // The sampled historical return over the selected window (null when the series
   // is too short to state a CAGR); it drives the return field until edited. The
@@ -268,10 +267,9 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
 
       <AsyncReadState
         loading={prefillLoading}
-        error={prefillError}
+        reads={prefillReads}
         errorLabel={t('forecast.prefill.error')}
         loadingLabel={t('forecast.prefill.loading')}
-        onRetry={retryPrefill}
       />
 
       {/* ── Factor controls ─────────────────────────────────────────────── */}

@@ -38,7 +38,7 @@ import { getAudience, listFriends, setAudience } from '../../lib/socialApi';
 import { formatDateTime } from '../../lib/format';
 import { useT, type TranslateFn } from '../../i18n';
 import { EmptyState } from '../../ui';
-import { AsyncReadState } from '../components/AsyncReadState';
+import { AsyncReadState, type AsyncRead } from '../components/AsyncReadState';
 import { Badge, Button, SkeletonBlock } from '../../ui/origin';
 import { useAuth } from '../AuthContext';
 import { Avatar } from '../components/Avatar';
@@ -608,15 +608,17 @@ function SharePickerDialog({
   const ideas = ideasQuery.data?.ideas ?? [];
   const empty = portfolios.length === 0 && conglomerates.length === 0 && ideas.length === 0;
   const loading = portfoliosQuery.isLoading || conglomeratesQuery.isLoading || ideasQuery.isLoading;
-  const error = portfoliosQuery.error ?? conglomeratesQuery.error ?? ideasQuery.error;
-
-  function retryAttachableItems() {
-    void Promise.all([
-      portfoliosQuery.refetch(),
-      conglomeratesQuery.refetch(),
-      ideasQuery.refetch(),
-    ]);
-  }
+  // The three attachable sources fail independently: each is classified on its
+  // own, so a recoverable 5xx keeps its Retry even next to a confirmed
+  // rejection, and Retry re-runs only the reads that can actually recover.
+  const attachableReads: AsyncRead[] = [
+    { error: portfoliosQuery.error, refetch: () => portfoliosQuery.refetch() },
+    { error: conglomeratesQuery.error, refetch: () => conglomeratesQuery.refetch() },
+    { error: ideasQuery.error, refetch: () => ideasQuery.refetch() },
+  ];
+  // Any failure at all still suppresses the list: a partial set would read as
+  // "this is everything you can attach" when it is not.
+  const failed = attachableReads.some((read) => read.error != null);
 
   function row(item: Attachable) {
     return (
@@ -647,13 +649,12 @@ function SharePickerDialog({
         <p className="bt-meta">{t('social.chat.share.disclaimer')}</p>
         <AsyncReadState
           loading={loading}
-          error={error}
+          reads={attachableReads}
           errorLabel={t('social.chat.error')}
-          onRetry={retryAttachableItems}
         />
-        {!loading && !error && empty ? (
+        {!loading && !failed && empty ? (
           <p className="bt-meta">{t('social.chat.share.empty')}</p>
-        ) : !loading && !error ? (
+        ) : !loading && !failed ? (
           <ul className="flex max-h-80 flex-col overflow-y-auto">
             {portfolios.map((p) => row({ kind: 'portfolio', subjectId: p.id, name: p.name }))}
             {conglomerates.map((c) => row({ kind: 'conglomerate', subjectId: c.id, name: c.name }))}

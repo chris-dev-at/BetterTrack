@@ -297,6 +297,37 @@ describe('PortfolioPage — empty & error states', () => {
     expect(await screen.findByRole('region', { name: 'Portfolio totals' })).toBeInTheDocument();
   });
 
+  // Transactions and cash sources are two independent supporting reads. They
+  // used to be collapsed with `??`, so whichever was declared first classified
+  // both — pin each order.
+  test('retries only the transactions read when it is the outage', async () => {
+    vi.mocked(getPortfolio).mockResolvedValue(PORTFOLIO);
+    vi.mocked(listTransactions).mockRejectedValue(new ApiError(503, 'UNAVAILABLE', 'down'));
+    vi.mocked(listCashSources).mockRejectedValue(new ApiError(403, 'FORBIDDEN', 'secret'));
+    renderPage();
+
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: 'Try again' }));
+
+    await waitFor(() => expect(vi.mocked(listTransactions)).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(listCashSources)).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText('secret')).not.toBeInTheDocument();
+  });
+
+  test('keeps recovery for the cash-source outage behind a confirmed transactions rejection', async () => {
+    vi.mocked(getPortfolio).mockResolvedValue(PORTFOLIO);
+    vi.mocked(listTransactions).mockRejectedValue(new ApiError(403, 'FORBIDDEN', 'secret'));
+    vi.mocked(listCashSources).mockRejectedValue(new ApiError(503, 'UNAVAILABLE', 'down'));
+    renderPage();
+
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole('button', { name: 'Try again' }));
+
+    await waitFor(() => expect(vi.mocked(listCashSources)).toHaveBeenCalledTimes(2));
+    expect(vi.mocked(listTransactions)).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText('secret')).not.toBeInTheDocument();
+  });
+
   test('shows a designed empty state when there are no holdings', async () => {
     vi.mocked(getPortfolio).mockResolvedValue(EMPTY_PORTFOLIO);
     vi.mocked(listTransactions).mockResolvedValue({ items: [], nextCursor: null });
