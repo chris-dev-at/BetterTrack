@@ -82,7 +82,7 @@ export function TwoFactorSetupPage() {
               <h2 className="text-sm font-semibold text-neutral-100">
                 {t('admin.twoFactor.email.cardTitle')}
               </h2>
-              <p className="text-xs text-neutral-500">
+              <p className="text-xs text-neutral-400">
                 {t('admin.twoFactor.email.cardDescription')}
               </p>
               <EmailEnrollForm
@@ -103,7 +103,7 @@ export function TwoFactorSetupPage() {
                 <span className="text-sm font-medium text-neutral-100">
                   {t('admin.twoFactor.totp.cardTitle')}
                 </span>
-                <span className="text-xs text-neutral-500">
+                <span className="text-xs text-neutral-400">
                   {t('admin.twoFactor.totp.cardDescription')}
                 </span>
               </button>
@@ -116,7 +116,7 @@ export function TwoFactorSetupPage() {
                 <span className="text-sm font-medium text-neutral-100">
                   {t('admin.twoFactor.email.cardTitle')}
                 </span>
-                <span className="text-xs text-neutral-500">
+                <span className="text-xs text-neutral-400">
                   {t('admin.twoFactor.email.cardDescription')}
                 </span>
               </button>

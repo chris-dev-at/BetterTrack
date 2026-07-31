@@ -64,7 +64,7 @@ export function TextField({ label, hint, error, id, className, ...rest }: TextFi
         id={inputId}
         className={cx(
           'rounded-md bg-neutral-950 px-3 py-2 text-sm text-neutral-100',
-          'ring-1 ring-inset ring-neutral-700 placeholder:text-neutral-600',
+          'ring-1 ring-inset ring-neutral-700 placeholder:text-neutral-400',
           'focus:outline-none focus:ring-2 focus:ring-sky-500',
           className,
         )}
@@ -73,7 +73,7 @@ export function TextField({ label, hint, error, id, className, ...rest }: TextFi
         aria-invalid={hasError || undefined}
       />
       {hint ? (
-        <p id={hintId} className="text-xs text-neutral-500">
+        <p id={hintId} className="text-xs text-neutral-400">
           {hint}
         </p>
       ) : null}
@@ -159,7 +159,7 @@ export function CopyField({
   };
   return (
     <div className="flex flex-col gap-1.5">
-      <span className="text-xs font-medium uppercase tracking-wide text-neutral-500">{label}</span>
+      <span className="text-xs font-medium uppercase tracking-wide text-neutral-400">{label}</span>
       <div className="flex items-stretch gap-2">
         <code className="flex-1 overflow-x-auto rounded-md bg-neutral-950 px-3 py-2 font-mono text-sm text-neutral-100 ring-1 ring-inset ring-neutral-700">
           {value}
@@ -184,7 +184,7 @@ export function PageHeader({ title, description }: { title: string; description?
 
 export function EmptyState({ children }: { children: ReactNode }) {
   return (
-    <div className="rounded-md border border-dashed border-neutral-800 px-6 py-10 text-center text-sm text-neutral-500">
+    <div className="rounded-md border border-dashed border-neutral-800 px-6 py-10 text-center text-sm text-neutral-400">
       {children}
     </div>
   );

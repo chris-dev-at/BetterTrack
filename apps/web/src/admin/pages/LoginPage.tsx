@@ -123,7 +123,7 @@ export function LoginPage() {
           </Button>
         </form>
         {/* Deploy-verification marker: which web bundle + api commit is live. */}
-        <p className="mt-6 text-center text-xs text-neutral-600">
+        <p className="mt-6 text-center text-xs text-neutral-400">
           {apiSha ? `web ${WEB_SHA} · api ${apiSha}` : `web ${WEB_SHA}`}
         </p>
       </div>

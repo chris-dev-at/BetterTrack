@@ -114,7 +114,7 @@ export function UsageAnalyticsPage() {
 function StatTile({ label, value }: { label: string; value: number }) {
   return (
     <div className="rounded-lg border border-neutral-800 bg-neutral-900 p-4">
-      <div className="text-xs uppercase tracking-wide text-neutral-500">{label}</div>
+      <div className="text-xs uppercase tracking-wide text-neutral-400">{label}</div>
       <div className="mt-1 text-2xl font-semibold text-neutral-100">{value}</div>
     </div>
   );
@@ -133,7 +133,7 @@ function Panel({
     <section className="flex flex-col gap-3 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
       <div className="flex items-baseline justify-between gap-2">
         <h3 className="text-sm font-medium text-neutral-100">{title}</h3>
-        {hint ? <span className="text-xs text-neutral-500">{hint}</span> : null}
+        {hint ? <span className="text-xs text-neutral-400">{hint}</span> : null}
       </div>
       {children}
     </section>
@@ -141,7 +141,7 @@ function Panel({
 }
 
 function Empty({ children }: { children: React.ReactNode }) {
-  return <p className="text-sm text-neutral-500">{children}</p>;
+  return <p className="text-sm text-neutral-400">{children}</p>;
 }
 
 function Funnel({ points }: { points: { stage: UsageFunnelStage; count: number }[] }) {

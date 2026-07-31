@@ -120,7 +120,7 @@ export function AuditPage() {
           {paginationError ? errorMessage(paginationError, loadMore) : null}
           <div className="overflow-x-auto rounded-lg border border-neutral-800">
             <table className="w-full min-w-[48rem] text-left text-sm">
-              <thead className="bg-neutral-900 text-xs uppercase tracking-wide text-neutral-500">
+              <thead className="bg-neutral-900 text-xs uppercase tracking-wide text-neutral-400">
                 <tr>
                   <th className="px-4 py-3 font-medium">When</th>
                   <th className="px-4 py-3 font-medium">Action</th>
@@ -137,7 +137,7 @@ export function AuditPage() {
                       {formatDateTime(entry.createdAt)}
                     </td>
                     <td className="px-4 py-3 font-medium text-neutral-200">{entry.action}</td>
-                    <td className="px-4 py-3 font-mono text-xs text-neutral-500">
+                    <td className="px-4 py-3 font-mono text-xs text-neutral-400">
                       {entry.actorId ?? 'system'}
                     </td>
                     <td className="px-4 py-3 text-neutral-400">
@@ -145,7 +145,7 @@ export function AuditPage() {
                         <span>
                           {entry.targetType}
                           {entry.targetId ? (
-                            <span className="font-mono text-xs text-neutral-500">
+                            <span className="font-mono text-xs text-neutral-400">
                               {' '}
                               {entry.targetId}
                             </span>
@@ -155,11 +155,11 @@ export function AuditPage() {
                         '—'
                       )}
                     </td>
-                    <td className="px-4 py-3 font-mono text-xs text-neutral-500">
+                    <td className="px-4 py-3 font-mono text-xs text-neutral-400">
                       {entry.ip ?? '—'}
                     </td>
                     <td
-                      className="max-w-xs truncate px-4 py-3 text-neutral-500"
+                      className="max-w-xs truncate px-4 py-3 text-neutral-400"
                       title={metaSummary(entry.meta)}
                     >
                       {metaSummary(entry.meta)}

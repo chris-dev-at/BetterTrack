@@ -115,7 +115,7 @@ export function EmailPage() {
         <h2 className="text-sm font-semibold uppercase tracking-wide text-neutral-400">
           Email log
         </h2>
-        <p className="text-sm text-neutral-500">
+        <p className="text-sm text-neutral-400">
           Every send attempt — invites, temp passwords, welcome and notification emails. No bodies
           or secrets are stored.
         </p>

@@ -728,10 +728,10 @@ export function OriginShell() {
               >
                 {LEGAL_LINKS.map((link) => (
                   <a
+                    className="bt-footer-link"
                     href={legalUrl(link.page, locale)}
                     key={link.page}
                     rel="noreferrer"
-                    style={{ color: 'var(--bt-faint)', textDecoration: 'none' }}
                     target="_blank"
                   >
                     {t(link.labelKey)}

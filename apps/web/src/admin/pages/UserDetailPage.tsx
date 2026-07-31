@@ -237,7 +237,7 @@ function BackLink() {
 function Detail({ label, value }: { label: string; value: string }) {
   return (
     <div className="flex justify-between gap-4 py-1">
-      <dt className="text-neutral-500">{label}</dt>
+      <dt className="text-neutral-400">{label}</dt>
       <dd className="text-neutral-300">{value}</dd>
     </div>
   );
@@ -396,7 +396,7 @@ function UserAuditLog({ userId }: { userId: string }) {
     <div className="flex flex-col gap-4">
       <div className="overflow-x-auto rounded-lg border border-neutral-800">
         <table className="w-full min-w-[36rem] text-left text-sm">
-          <thead className="bg-neutral-900 text-xs uppercase tracking-wide text-neutral-500">
+          <thead className="bg-neutral-900 text-xs uppercase tracking-wide text-neutral-400">
             <tr>
               <th className="px-4 py-3 font-medium">When</th>
               <th className="px-4 py-3 font-medium">Action</th>
@@ -411,7 +411,7 @@ function UserAuditLog({ userId }: { userId: string }) {
                 </td>
                 <td className="px-4 py-3 font-medium text-neutral-200">{entry.action}</td>
                 <td
-                  className="max-w-xs truncate px-4 py-3 text-neutral-500"
+                  className="max-w-xs truncate px-4 py-3 text-neutral-400"
                   title={metaSummary(entry.meta)}
                 >
                   {metaSummary(entry.meta)}
