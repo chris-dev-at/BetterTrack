@@ -183,7 +183,17 @@ function MirrorInvitesSection() {
   const revoke = useRevokeMirrorInvite();
   const [acceptTarget, setAcceptTarget] = useState<MirrorInvite | null>(null);
 
-  if (invitesQuery.isLoading || !invitesQuery.data) return null;
+  if (invitesQuery.isLoading) return null;
+  if (invitesQuery.isError || !invitesQuery.data) {
+    return (
+      <div className="flex flex-col items-start gap-2">
+        <Alert tone="error">{t('mirrorchain.invites.loadError')}</Alert>
+        <Button onClick={() => void invitesQuery.refetch()} size="sm">
+          {t('common.retry')}
+        </Button>
+      </div>
+    );
+  }
   const { incoming, outgoing } = invitesQuery.data;
   if (incoming.length === 0 && outgoing.length === 0) return null;
 
@@ -265,7 +275,7 @@ function RequestsSection({ sharingAllowed }: { sharingAllowed: boolean }) {
   const t = useT();
   const queryClient = useQueryClient();
 
-  const { data, isLoading, isError } = useQuery({
+  const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ['social', 'requests'],
     queryFn: ({ signal }) => listFriendRequests(signal),
     staleTime: REQUESTS_STALE_MS,
@@ -308,7 +318,14 @@ function RequestsSection({ sharingAllowed }: { sharingAllowed: boolean }) {
   }
 
   if (isError || !data) {
-    return <Alert tone="error">{t('social.friends.requestsLoadError')}</Alert>;
+    return (
+      <div className="flex flex-col items-start gap-2">
+        <Alert tone="error">{t('social.friends.requestsLoadError')}</Alert>
+        <Button onClick={() => void refetch()} size="sm">
+          {t('common.retry')}
+        </Button>
+      </div>
+    );
   }
 
   return (
@@ -618,7 +635,7 @@ function FriendsListSection({ sharingAllowed }: { sharingAllowed: boolean }) {
   const queryClient = useQueryClient();
   const [removeTarget, setRemoveTarget] = useState<Friendship | null>(null);
 
-  const { data, isLoading, isError } = useQuery({
+  const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ['social', 'friends'],
     queryFn: ({ signal }) => listFriends(signal),
     staleTime: FRIENDS_STALE_MS,
@@ -652,12 +669,27 @@ function FriendsListSection({ sharingAllowed }: { sharingAllowed: boolean }) {
   }
 
   if (isError || !data) {
-    return <Alert tone="error">{t('social.friends.friendsLoadError')}</Alert>;
+    return (
+      <div className="flex flex-col items-start gap-2">
+        <Alert tone="error">{t('social.friends.friendsLoadError')}</Alert>
+        <Button onClick={() => void refetch()} size="sm">
+          {t('common.retry')}
+        </Button>
+      </div>
+    );
   }
 
   return (
     <section className="flex flex-col gap-3">
       <h2 className="bt-h2">{t('common.friends')}</h2>
+      {sharedQuery.isError ? (
+        <div className="flex flex-col items-start gap-2">
+          <Alert tone="error">{t('social.shared.loadError')}</Alert>
+          <Button onClick={() => void sharedQuery.refetch()} size="sm">
+            {t('common.retry')}
+          </Button>
+        </div>
+      ) : null}
       {data.friends.length === 0 ? (
         <EmptyState
           icon="🫂"

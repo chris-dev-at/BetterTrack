@@ -5,6 +5,7 @@ import type { NewsDigestGroup } from '@bettertrack/contracts';
 import { useT } from '../../i18n';
 import { getNewsDigest, PORTFOLIO_NEWS_DIGEST_QUERY_KEY } from '../../lib/marketIntelApi';
 import { EmptyState, Skeleton } from '../../ui';
+import { Button } from '../../ui/origin';
 import { Alert } from '../components/ui';
 import { Link } from 'react-router-dom';
 
@@ -56,7 +57,7 @@ function NewsGroupCard({ group }: { group: NewsDigestGroup }) {
  */
 export function NewsDigestPage() {
   const t = useT();
-  const { data, isLoading, isError } = useQuery({
+  const { data, isLoading, isError, refetch } = useQuery({
     queryKey: PORTFOLIO_NEWS_DIGEST_QUERY_KEY,
     queryFn: ({ signal }) => getNewsDigest(signal),
     staleTime: NEWS_DIGEST_STALE_MS,
@@ -84,7 +85,10 @@ export function NewsDigestPage() {
             </div>
           </>
         ) : isError ? (
-          <Alert tone="error">{t('assets.news.loadError')}</Alert>
+          <div className="flex flex-col items-start gap-2">
+            <Alert tone="error">{t('assets.news.loadError')}</Alert>
+            <Button onClick={() => void refetch()}>{t('common.retry')}</Button>
+          </div>
         ) : groups.length === 0 ? (
           <EmptyState
             icon="📰"

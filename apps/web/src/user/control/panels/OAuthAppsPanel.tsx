@@ -430,6 +430,7 @@ export function OAuthAppsPanel() {
         ) : query.isError ? (
           <Row stack>
             <Alert tone="error">{t('settings.api.oauth.loadError.title')}</Alert>
+            <Button onClick={() => void query.refetch()}>{t('common.retry')}</Button>
           </Row>
         ) : clients.length === 0 ? (
           <Row stack>

@@ -127,9 +127,15 @@ describe('DefaultsPanel (issue #636)', () => {
   });
 
   test('surfaces a load error without crashing', async () => {
-    vi.mocked(getTaxSettings).mockRejectedValue(new Error('boom'));
+    vi.mocked(getTaxSettings)
+      .mockRejectedValueOnce(new Error('boom'))
+      .mockResolvedValueOnce({ mode: 'none', country: null });
+    const user = userEvent.setup();
     renderPanel();
     expect(await screen.findByText(/Couldn’t load your tax settings/i)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Try again' }));
+    expect(await screen.findByRole('radio', { name: /No tax tracking/i })).toBeChecked();
+    expect(getTaxSettings).toHaveBeenCalledTimes(2);
   });
 
   test('saved DE default marks Germany selected — not Austria', async () => {

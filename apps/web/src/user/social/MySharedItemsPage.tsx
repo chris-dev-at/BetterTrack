@@ -178,7 +178,7 @@ export function MySharedItemsPage() {
   const queryClient = useQueryClient();
   const [picker, setPicker] = useState<PickerTarget | null>(null);
 
-  const { data, isLoading, isError } = useQuery({
+  const { data, isLoading, isError, refetch } = useQuery({
     queryKey: MY_SHARED_KEY,
     queryFn: ({ signal }) => listMyShared(signal),
     staleTime: MY_SHARED_STALE_MS,
@@ -213,7 +213,12 @@ export function MySharedItemsPage() {
   }
 
   if (isError || !data) {
-    return <Alert tone="error">{t('social.myShared.error')}</Alert>;
+    return (
+      <div className="flex flex-col items-start gap-3">
+        <Alert tone="error">{t('social.myShared.error')}</Alert>
+        <Button onClick={() => void refetch()}>{t('common.retry')}</Button>
+      </div>
+    );
   }
 
   const nothing =

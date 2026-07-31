@@ -223,22 +223,37 @@ describe('TaxReportPage', () => {
   });
 
   test('load failure shows the error state', async () => {
-    vi.mocked(portfolioApi.getTaxYearReports).mockRejectedValue(new Error('boom'));
+    vi.mocked(portfolioApi.getTaxYearReports)
+      .mockRejectedValueOnce(new Error('boom'))
+      .mockResolvedValueOnce({ years: [YEAR_2026] });
+    const user = userEvent.setup();
     renderPage();
     expect(await screen.findByText(/Couldn’t load your tax report/i)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Try again' }));
+    expect(await screen.findByText('2026')).toBeInTheDocument();
+    expect(portfolioApi.getTaxYearReports).toHaveBeenCalledTimes(2);
   });
 
   test('a failing portfolio list shows the error state instead of an eternal skeleton', async () => {
-    vi.mocked(portfolioApi.listPortfolios).mockRejectedValue(new Error('boom'));
+    vi.mocked(portfolioApi.listPortfolios)
+      .mockRejectedValueOnce(new Error('boom'))
+      .mockResolvedValueOnce(PORTFOLIO_LIST);
+    const user = userEvent.setup();
     renderPage();
     expect(await screen.findByText(/Couldn’t load your tax report/i)).toBeInTheDocument();
     expect(portfolioApi.getTaxYearReports).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: 'Try again' }));
+    expect(await screen.findByText('2026')).toBeInTheDocument();
+    expect(portfolioApi.listPortfolios).toHaveBeenCalledTimes(2);
   });
 
   test('a failing tax-settings query shows the error state, not the "tax tracking off" state', async () => {
     // On a settings failure `mode` falls back to 'none'; the error must win over
     // the disabled gate so the user is not wrongly told tax is simply off.
-    vi.mocked(portfolioApi.getPortfolioTaxSettings).mockRejectedValue(new Error('boom'));
+    vi.mocked(portfolioApi.getPortfolioTaxSettings)
+      .mockRejectedValueOnce(new Error('boom'))
+      .mockResolvedValueOnce(AT_TAX_VIEW);
+    const user = userEvent.setup();
     renderPage();
 
     expect(await screen.findByText(/Couldn’t load your tax report/i)).toBeInTheDocument();
@@ -246,6 +261,9 @@ describe('TaxReportPage', () => {
     // …and the mode line claims nothing it could not resolve.
     expect(screen.queryByText(/Computed with tax mode/i)).not.toBeInTheDocument();
     expect(portfolioApi.getTaxYearReports).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: 'Try again' }));
+    expect(await screen.findByText(/Computed with tax mode: Austria/i)).toBeInTheDocument();
+    expect(portfolioApi.getPortfolioTaxSettings).toHaveBeenCalledTimes(2);
   });
 
   test('no portfolios at all shows the empty state instead of an eternal skeleton', async () => {

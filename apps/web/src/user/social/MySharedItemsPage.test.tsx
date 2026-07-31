@@ -64,6 +64,19 @@ beforeEach(() => {
 });
 
 describe('MySharedItemsPage', () => {
+  test('retries a failed item-list read in place', async () => {
+    vi.mocked(listMyShared)
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce(EMPTY);
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole('button', { name: 'Try again' }));
+
+    expect(await screen.findByText("You don't own anything yet")).toBeInTheDocument();
+    expect(listMyShared).toHaveBeenCalledTimes(2);
+  });
+
   test('shows an empty state when the caller owns nothing', async () => {
     vi.mocked(listMyShared).mockResolvedValue(EMPTY);
     renderPage();

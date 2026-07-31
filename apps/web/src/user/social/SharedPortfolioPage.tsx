@@ -6,12 +6,13 @@ import type { Time } from 'lightweight-charts';
 import type { Holding, PortfolioTotals } from '@bettertrack/contracts';
 
 import { useT } from '../../i18n';
+import { isConfirmedApiOutcome } from '../../lib/apiClient';
 import { assetTypeLabels } from '../portfolio/assetTypeLabels';
 import { getSharedPortfolio } from '../../lib/socialApi';
 import { cx } from '../../lib/cx';
 import { formatQuantity, formatSignedPercent } from '../../lib/format';
 import { EmptyState, MoneyText, Skeleton } from '../../ui';
-import { PageHead, Stat, StatStrip } from '../../ui/origin';
+import { Button, PageHead, Stat, StatStrip } from '../../ui/origin';
 import { AllocationDonut, PriceChart } from '../../ui/charts';
 import { CommentThread } from './CommentThread';
 import { ItemFollowButton } from './ItemFollowButton';
@@ -213,7 +214,16 @@ export function SharedPortfolioPage() {
     );
   }
 
-  if (query.isError || !query.data) {
+  if (query.isError && !isConfirmedApiOutcome(query.error)) {
+    return (
+      <div className="flex flex-col items-start gap-3">
+        <Alert tone="error">{t('social.shared.portfolioLoadError')}</Alert>
+        <Button onClick={() => void query.refetch()}>{t('common.retry')}</Button>
+      </div>
+    );
+  }
+
+  if (!query.data) {
     return <Alert tone="error">{t('social.shared.portfolioLoadError')}</Alert>;
   }
 

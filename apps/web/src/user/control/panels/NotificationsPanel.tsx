@@ -1043,6 +1043,7 @@ export function NotificationsPanel() {
           compact
           description={t('settings.retryHint')}
           title={t('settings.notifications.loadError.title')}
+          cta={<Button onClick={() => void query.refetch()}>{t('common.retry')}</Button>}
         />
       </div>
     );

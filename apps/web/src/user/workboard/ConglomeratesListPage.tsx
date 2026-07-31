@@ -7,7 +7,7 @@ import { listConglomerates } from '../../lib/conglomerateApi';
 import { useT } from '../../i18n';
 import type { TranslateFn } from '../../i18n';
 import { EmptyState, Skeleton } from '../../ui';
-import { Alert } from '../components/ui';
+import { Alert, Button } from '../components/ui';
 
 function statusLabels(t: TranslateFn): Record<ConglomerateStatus, string> {
   return {
@@ -104,7 +104,7 @@ function NewConglomerateCard() {
  */
 export function ConglomeratesListPage() {
   const t = useT();
-  const { data, isLoading, isError } = useQuery({
+  const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ['conglomerates'],
     queryFn: ({ signal }) => listConglomerates(signal),
     staleTime: 30_000,
@@ -126,7 +126,10 @@ export function ConglomeratesListPage() {
           <Skeleton height="h-[104px]" />
         </div>
       ) : isError ? (
-        <Alert tone="error">{t('workboard.conglomerates.loadError')}</Alert>
+        <div className="flex flex-col items-start gap-2">
+          <Alert tone="error">{t('workboard.conglomerates.loadError')}</Alert>
+          <Button onClick={() => void refetch()}>{t('common.retry')}</Button>
+        </div>
       ) : data!.conglomerates.length === 0 ? (
         <EmptyState
           icon="📊"

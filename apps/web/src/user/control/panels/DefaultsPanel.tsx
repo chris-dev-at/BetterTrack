@@ -7,6 +7,7 @@ import type { TaxSettingsResponse, UpdateTaxSettingsRequest } from '@bettertrack
 
 import { useT } from '../../../i18n';
 import { Disclaimer, Skeleton } from '../../../ui';
+import { Button } from '../../../ui/origin';
 import { Alert } from '../../components/ui';
 import { usePortfolioStore } from '../../portfolio/PortfolioStoreProvider';
 import { PanelGroup, PanelHead, PanelNote, Row } from './panelKit';
@@ -67,7 +68,12 @@ export function DefaultsPanel() {
           </Row>
         </PanelGroup>
       ) : query.isError ? (
-        <PanelNote>{t('settings.taxes.loadError.title')}</PanelNote>
+        <PanelGroup label={t('settings.taxes.title')}>
+          <Row stack>
+            <PanelNote>{t('settings.taxes.loadError.title')}</PanelNote>
+            <Button onClick={() => void query.refetch()}>{t('common.retry')}</Button>
+          </Row>
+        </PanelGroup>
       ) : (
         <>
           <PanelGroup label={t('settings.taxes.title')}>

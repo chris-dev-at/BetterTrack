@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import type { ButtonHTMLAttributes, InputHTMLAttributes, ReactNode } from 'react';
 
+import { useT } from '../../i18n';
+
 /** Tiny class-name joiner — avoids pulling in a dependency for one helper. */
 export function cx(...parts: Array<string | false | null | undefined>): string {
   return parts.filter(Boolean).join(' ');
@@ -102,14 +104,15 @@ export function Alert({ tone, children }: { tone: AlertTone; children: ReactNode
   );
 }
 
-export function Spinner({ label = 'Loading…' }: { label?: string }) {
+export function Spinner({ label }: { label?: string }) {
+  const t = useT();
   return (
     <div className="flex items-center gap-3 text-sm text-neutral-400" role="status">
       <span
         className="h-4 w-4 animate-spin rounded-full border-2 border-neutral-600 border-t-sky-400"
         aria-hidden="true"
       />
-      <span>{label}</span>
+      <span>{label ?? t('common.loading')}</span>
     </div>
   );
 }
@@ -147,6 +150,7 @@ export function CopyField({
   label: string;
   onCopied?: () => void;
 }) {
+  const t = useT();
   const [copied, setCopied] = useState(false);
   const copy = async () => {
     try {
@@ -165,7 +169,7 @@ export function CopyField({
           {value}
         </code>
         <Button variant="secondary" onClick={copy}>
-          {copied ? 'Copied' : 'Copy'}
+          {copied ? t('common.copied') : t('common.copy')}
         </Button>
       </div>
     </div>

@@ -16,7 +16,7 @@ vi.mock('../../../lib/webhooksApi', () => ({
   listWebhookDeliveries: vi.fn(),
 }));
 
-import { createWebhook, listWebhooks } from '../../../lib/webhooksApi';
+import { createWebhook, listWebhookDeliveries, listWebhooks } from '../../../lib/webhooksApi';
 import { ResolvedPrivacyModeProvider } from '../../vault/usePrivacyMode';
 import { WebhooksPanel } from './WebhooksPanel';
 
@@ -82,6 +82,34 @@ describe('WebhooksPanel', () => {
     expect(await screen.findByText(/no webhooks yet/i)).toBeInTheDocument();
     expect(screen.getByLabelText('Payload URL')).toBeInTheDocument();
     expect(listWebhooks).toHaveBeenCalledTimes(1);
+  });
+
+  test('retries a failed subscription-list read in place', async () => {
+    vi.mocked(listWebhooks)
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce(EMPTY);
+    const user = userEvent.setup();
+    renderPanel();
+
+    await user.click(await screen.findByRole('button', { name: 'Try again' }));
+
+    expect(await screen.findByText(/no webhooks yet/i)).toBeInTheDocument();
+    expect(listWebhooks).toHaveBeenCalledTimes(2);
+  });
+
+  test('retries a failed on-demand delivery read', async () => {
+    vi.mocked(listWebhooks).mockResolvedValue(ONE);
+    vi.mocked(listWebhookDeliveries)
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce({ deliveries: [] });
+    const user = userEvent.setup();
+    renderPanel();
+
+    await user.click(await screen.findByRole('button', { name: 'Deliveries' }));
+    await user.click(await screen.findByRole('button', { name: 'Try again' }));
+
+    expect(await screen.findByText(/no deliveries recorded yet/i)).toBeInTheDocument();
+    expect(listWebhookDeliveries).toHaveBeenCalledTimes(2);
   });
 
   test('creates a webhook and shows the signing secret exactly once', async () => {

@@ -44,6 +44,7 @@ vi.mock('lightweight-charts', () => ({
 }));
 
 import { getSharedConglomerate, previewSharedConglomerateSandbox } from '../../lib/socialApi';
+import { ApiError } from '../../lib/apiClient';
 import { SharedConglomeratePage } from './SharedConglomeratePage';
 
 const CONGLOMERATE_ID = '00000000-0000-0000-0000-000000000010';
@@ -153,6 +154,29 @@ describe('SharedConglomeratePage — what-if sandbox (V5-P6 arc c)', () => {
     );
     expect(screen.queryByLabelText('Weight for AAA')).toBeNull();
     expect(previewSharedConglomerateSandbox).not.toHaveBeenCalled();
+  });
+
+  test('retries an outage without weakening confirmed audience privacy', async () => {
+    (getSharedConglomerate as unknown as Mock)
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce(detail);
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole('button', { name: 'Try again' }));
+
+    expect(await screen.findByText('Duo')).toBeInTheDocument();
+    expect(getSharedConglomerate).toHaveBeenCalledTimes(2);
+  });
+
+  test('keeps a confirmed audience rejection indistinguishable and non-retryable', async () => {
+    (getSharedConglomerate as unknown as Mock).mockRejectedValue(
+      new ApiError(404, 'NOT_FOUND', 'not found'),
+    );
+    renderPage();
+
+    expect(await screen.findByText("This blueprint isn't available")).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
   });
 
   test('opening previews at the shared weights; a tweak recomputes locally; reset restores exactly', async () => {

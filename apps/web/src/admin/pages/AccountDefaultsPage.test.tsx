@@ -1,4 +1,5 @@
 import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { beforeEach, expect, test, vi } from 'vitest';
 
 import {
@@ -10,6 +11,7 @@ import {
 
 vi.mock('../../lib/adminApi');
 import * as api from '../../lib/adminApi';
+import { I18nProvider } from '../../i18n';
 import { AuthProvider } from '../AuthContext';
 import { AccountDefaultsPage } from './AccountDefaultsPage';
 
@@ -58,11 +60,13 @@ const admin: MeResponse = {
   createdAt: '2026-01-01T00:00:00.000Z',
 };
 
-function renderPage() {
+function renderPage(locale: 'en' | 'de' = 'en') {
   return render(
-    <AuthProvider>
-      <AccountDefaultsPage />
-    </AuthProvider>,
+    <I18nProvider initialLocale={locale}>
+      <AuthProvider>
+        <AccountDefaultsPage />
+      </AuthProvider>
+    </I18nProvider>,
   );
 }
 
@@ -112,4 +116,29 @@ test('kill-switch ON: renders every matrix column', async () => {
   expect(screen.getByRole('columnheader', { name: 'Discord' })).toBeInTheDocument();
   expect(screen.getByRole('checkbox', { name: 'friend.request · Telegram' })).toBeInTheDocument();
   expect(screen.getByRole('checkbox', { name: 'friend.request · Discord' })).toBeInTheDocument();
+});
+
+test('renders the extracted admin copy in natural German', async () => {
+  vi.mocked(api.getAccountDefaults).mockResolvedValue(makeDefaults());
+
+  renderPage('de');
+
+  expect(await screen.findByRole('heading', { name: 'Kontovorgaben' })).toBeInTheDocument();
+  expect(await screen.findByRole('columnheader', { name: 'In der App' })).toBeInTheDocument();
+  expect(
+    screen.getByRole('checkbox', { name: 'Freundschaftsanfragen · In der App' }),
+  ).toBeInTheDocument();
+});
+
+test('retries a failed defaults read', async () => {
+  vi.mocked(api.getAccountDefaults)
+    .mockRejectedValueOnce(new Error('offline'))
+    .mockResolvedValueOnce(makeDefaults());
+  const user = userEvent.setup();
+
+  renderPage();
+
+  await user.click(await screen.findByRole('button', { name: 'Try again' }));
+  expect(await screen.findByRole('columnheader', { name: 'In-app' })).toBeInTheDocument();
+  expect(api.getAccountDefaults).toHaveBeenCalledTimes(2);
 });

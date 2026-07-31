@@ -109,21 +109,35 @@ describe('FriendsPage', () => {
   });
 
   test('shows an error affordance when requests fail to load', async () => {
-    vi.mocked(listFriendRequests).mockRejectedValue(new Error('nope'));
+    vi.mocked(listFriendRequests)
+      .mockRejectedValueOnce(new Error('nope'))
+      .mockResolvedValueOnce(EMPTY_REQUESTS);
+    const user = userEvent.setup();
     renderPage();
 
     await waitFor(() =>
       expect(screen.getByText(/Could not load your friend requests/i)).toBeInTheDocument(),
     );
+    const error = screen.getByText(/Could not load your friend requests/i).parentElement!;
+    await user.click(within(error).getByRole('button', { name: 'Try again' }));
+    expect(await screen.findByText('Incoming requests')).toBeInTheDocument();
+    expect(listFriendRequests).toHaveBeenCalledTimes(2);
   });
 
   test('shows an error affordance when friends fail to load', async () => {
-    vi.mocked(listFriends).mockRejectedValue(new Error('nope'));
+    vi.mocked(listFriends)
+      .mockRejectedValueOnce(new Error('nope'))
+      .mockResolvedValueOnce(EMPTY_FRIENDS);
+    const user = userEvent.setup();
     renderPage();
 
     await waitFor(() =>
       expect(screen.getByText(/Could not load your friends/i)).toBeInTheDocument(),
     );
+    const error = screen.getByText(/Could not load your friends/i).parentElement!;
+    await user.click(within(error).getByRole('button', { name: 'Try again' }));
+    expect(await screen.findByText('No friends yet')).toBeInTheDocument();
+    expect(listFriends).toHaveBeenCalledTimes(2);
   });
 
   test('accepts an incoming request and refreshes every friendship-dependent list', async () => {

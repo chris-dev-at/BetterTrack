@@ -290,7 +290,16 @@ export function TaxReportPrintPage() {
       ) : reportQuery.isPending ? (
         <p className="text-sm text-neutral-700">{EM_DASH}</p>
       ) : reportQuery.isError ? (
-        <p className="text-sm text-red-700">{t('portfolio.taxReport.print.loadError')}</p>
+        <div className="flex flex-col items-start gap-2">
+          <p className="text-sm text-red-700">{t('portfolio.taxReport.print.loadError')}</p>
+          <button
+            className="tax-print-toolbar rounded border border-neutral-400 px-3 py-1 text-sm"
+            onClick={() => void reportQuery.refetch()}
+            type="button"
+          >
+            {t('common.retry')}
+          </button>
+        </div>
       ) : (
         <div className="flex flex-col gap-4">
           <SummaryTable summary={reportQuery.data.summary} t={t} />

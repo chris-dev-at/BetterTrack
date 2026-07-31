@@ -176,7 +176,7 @@ export function ConglomerateDetailPage() {
   const queryClient = useQueryClient();
   const [confirmOpen, setConfirmOpen] = useState(false);
 
-  const { data, isLoading, isError } = useQuery({
+  const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ['conglomerate', id],
     queryFn: ({ signal }) => getConglomerate(id!, signal),
     enabled: !!id,
@@ -248,6 +248,9 @@ export function ConglomerateDetailPage() {
           {t('workboard.detail.backToConglomeratesError')}
         </Link>
         <Alert tone="error">{t('workboard.detail.loadError')}</Alert>
+        <div>
+          <Button onClick={() => void refetch()}>{t('common.retry')}</Button>
+        </div>
       </div>
     );
   }
@@ -353,7 +356,10 @@ export function ConglomerateDetailPage() {
             ) : null}
           </div>
           {resolvedQuery.isError ? (
-            <Alert tone="error">{t('workboard.detail.resolvedLoadError')}</Alert>
+            <div className="flex flex-col items-start gap-2">
+              <Alert tone="error">{t('workboard.detail.resolvedLoadError')}</Alert>
+              <Button onClick={() => void resolvedQuery.refetch()}>{t('common.retry')}</Button>
+            </div>
           ) : null}
           {showResolved && resolved ? (
             <>

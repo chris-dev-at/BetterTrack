@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 
+import { localizedMessage, useI18n } from '../i18n';
 import { ApiError } from '../lib/apiClient';
 import { isAdminTwoFactorSetupRequired, useAuth } from './AuthContext';
 
@@ -26,6 +27,7 @@ export function useResource<T>(
   fetcher: (signal: AbortSignal) => Promise<T>,
   deps: readonly unknown[],
 ): Resource<T> {
+  const { locale } = useI18n();
   const { clearSession, requireTwoFactorSetup } = useAuth();
   const [state, setState] = useState<ResourceState<T>>({
     data: null,
@@ -54,14 +56,15 @@ export function useResource<T>(
           requireTwoFactorSetup();
           return;
         }
-        const message = err instanceof ApiError ? err.message : 'Something went wrong.';
+        const message =
+          err instanceof ApiError ? err.message : localizedMessage(locale, 'common.genericError');
         setState({ data: null, loading: false, error: message });
       }
     })();
     return () => controller.abort();
     // `fetcher` is intentionally excluded from the dependency list — callers pass
     // an inline closure and declare its real inputs through `deps`.
-  }, [nonce, clearSession, requireTwoFactorSetup, ...deps]);
+  }, [nonce, clearSession, locale, requireTwoFactorSetup, ...deps]);
 
   return { ...state, reload };
 }

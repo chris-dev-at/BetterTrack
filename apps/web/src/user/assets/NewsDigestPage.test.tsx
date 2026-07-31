@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
@@ -108,13 +109,19 @@ describe('NewsDigestPage (§13.5 V5-P5, arc c)', () => {
   });
 
   test('shows a graceful error state when the request fails', async () => {
-    vi.mocked(getNewsDigest).mockRejectedValue(new Error('boom'));
+    vi.mocked(getNewsDigest)
+      .mockRejectedValueOnce(new Error('boom'))
+      .mockResolvedValueOnce({ available: true, groups: [] });
+    const user = userEvent.setup();
     renderPage();
     expect(
       await screen.findByText('Could not load the news digest. Please try again.'),
     ).toBeInTheDocument();
     expect(screen.getByRole('region', { name: 'News' })).toHaveAttribute('aria-busy', 'false');
     expect(screen.queryByRole('status', { name: 'Loading…' })).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Try again' }));
+    expect(await screen.findByText('No recent news')).toBeInTheDocument();
+    expect(getNewsDigest).toHaveBeenCalledTimes(2);
   });
 
   test('renders no news UI when the capability is unconfigured (regression)', async () => {

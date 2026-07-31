@@ -342,12 +342,20 @@ describe('NotificationsPanel', () => {
   });
 
   test('shows an error affordance when settings fail to load', async () => {
-    vi.mocked(getNotificationSettings).mockRejectedValue(new Error('nope'));
+    vi.mocked(getNotificationSettings)
+      .mockRejectedValueOnce(new Error('nope'))
+      .mockResolvedValueOnce(makeSettings());
+    const user = userEvent.setup();
     renderPanel();
 
     await waitFor(() =>
       expect(screen.getByText(/Couldn't load your notification settings/i)).toBeInTheDocument(),
     );
+    await user.click(screen.getByRole('button', { name: 'Try again' }));
+    expect(
+      await screen.findByRole('switch', { name: 'Friend requests via In-app' }),
+    ).toBeInTheDocument();
+    expect(getNotificationSettings).toHaveBeenCalledTimes(2);
   });
 });
 

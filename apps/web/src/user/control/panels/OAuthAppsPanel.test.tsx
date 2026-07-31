@@ -51,6 +51,19 @@ beforeEach(() => {
 });
 
 describe('OAuthAppsPanel', () => {
+  test('retries a failed app-list read in place', async () => {
+    vi.mocked(listOAuthClients)
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce(NO_CLIENTS);
+    const user = userEvent.setup();
+    renderPanel();
+
+    await user.click(await screen.findByRole('button', { name: 'Try again' }));
+
+    expect(await screen.findByText(/no oauth apps yet/i)).toBeInTheDocument();
+    expect(listOAuthClients).toHaveBeenCalledTimes(2);
+  });
+
   test('registers an OAuth app and shows the one-time client secret', async () => {
     vi.mocked(createOAuthClient).mockResolvedValue(CREATED_CLIENT);
     const user = userEvent.setup();

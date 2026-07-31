@@ -11,6 +11,7 @@ import {
 
 import { useT } from '../../i18n';
 import type { TranslateFn } from '../../i18n';
+import { isConfirmedApiOutcome } from '../../lib/apiClient';
 import { getSharedConglomerate, previewSharedConglomerateSandbox } from '../../lib/socialApi';
 import { formatPercent, formatSignedPercent } from '../../lib/format';
 import { EmptyState, Skeleton } from '../../ui';
@@ -18,6 +19,7 @@ import { Button, Icon, Input, PageHead, Seg, Stat, StatStrip } from '../../ui/or
 import { PriceChart, type ChartPoint } from '../../ui/charts';
 import { useDebounce } from '../hooks/useDebounce';
 import { NestedBadge } from '../workboard/ConglomeratesListPage';
+import { Alert } from '../components/ui';
 import { CommentThread } from './CommentThread';
 import { ItemFollowButton } from './ItemFollowButton';
 
@@ -44,7 +46,7 @@ function constituentId(position: SharedSandboxConstituent): string {
 export function SharedConglomeratePage() {
   const t = useT();
   const { id = '' } = useParams<{ id: string }>();
-  const { data, isLoading, isError } = useQuery({
+  const { data, error, isLoading, isError, refetch } = useQuery({
     queryKey: ['social', 'shared', 'conglomerate', id],
     queryFn: ({ signal }) => getSharedConglomerate(id, signal),
     staleTime: SHARED_STALE_MS,
@@ -60,7 +62,17 @@ export function SharedConglomeratePage() {
     );
   }
 
-  if (isError || !data) {
+  if (isError && !isConfirmedApiOutcome(error)) {
+    return (
+      <div className="flex flex-col items-start gap-3">
+        <BackLink />
+        <Alert tone="error">{t('social.shared.loadError')}</Alert>
+        <Button onClick={() => void refetch()}>{t('common.retry')}</Button>
+      </div>
+    );
+  }
+
+  if (!data) {
     return (
       <div className="flex flex-col gap-4">
         <BackLink />
