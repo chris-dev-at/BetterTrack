@@ -42,6 +42,7 @@ import type {
   CashSourceRecord,
   CashSourceRepository,
 } from '../../data/repositories/cashSourceRepository';
+import type { CashTagRepository } from '../../data/repositories/cashTagRepository';
 import type { FriendshipRepository } from '../../data/repositories/friendshipRepository';
 import type { ProfileRepository } from '../../data/repositories/profileRepository';
 import type { PortfolioRepository } from '../../data/repositories/portfolioRepository';
@@ -130,6 +131,12 @@ export interface PortfolioServiceDeps {
   transactionRepo: TransactionRepository;
   cashMovementRepo: CashMovementRepository;
   cashSourceRepo: CashSourceRepository;
+  /**
+   * Cash-flow tags (V5 cash fusion) — read-only here, purely so the ledger DTO
+   * can carry each movement's tag set. Narrowed to the one method so this service
+   * cannot start writing classification as a side effect of moving money.
+   */
+  cashTagRepo: Pick<CashTagRepository, 'tagIdsForMovements'>;
   marketData: MarketDataService;
   currencyService: CurrencyService;
   referenceBackfill: ReferenceBackfill;
@@ -355,6 +362,22 @@ export interface PortfolioService {
     input: CashEntryRequest,
     opts?: { source?: string; force?: boolean },
   ): Promise<CashMovementResponse>;
+  /**
+   * Record a standing custody / account / platform **fee** against a source
+   * (Main by default) — V5, §16 2026-07-30. Mechanically a withdrawal (positive
+   * magnitude in, negative amount stored, same per-source overdraw gate), but a
+   * `fee` kind, which is what makes it a cost of HOLDING: `domain/cashLedger`
+   * classifies it internal, so it drags the performance curve instead of being
+   * divided back out of it the way a withdrawal is. `opts.force` (MIRRORCHAIN
+   * replica apply, design §2/§8) waives the overdraw gate, exactly as on
+   * {@link withdrawCash}.
+   */
+  chargeCashFee(
+    userId: string,
+    portfolioId: string,
+    input: CashEntryRequest,
+    opts?: { source?: string; force?: boolean },
+  ): Promise<CashMovementResponse>;
   /** Live "available → after" preview against one source's balance (§14, V3-P3). */
   previewCash(
     userId: string,
@@ -455,6 +478,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
     transactionRepo,
     cashMovementRepo,
     cashSourceRepo,
+    cashTagRepo,
     marketData,
     currencyService,
     referenceBackfill,
@@ -732,7 +756,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
     };
   }
 
-  function movementToDto(r: CashMovementRecord): CashMovementDto {
+  function movementToDto(r: CashMovementRecord, tags?: readonly string[]): CashMovementDto {
     return {
       id: r.id,
       kind: r.kind,
@@ -747,6 +771,11 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       note: r.note,
       source: r.source,
       createdAt: r.createdAt.toISOString(),
+      // Cash-flow overlay (V5 cash fusion). Both fields are OPTIONAL in the
+      // contract, so a caller that does not resolve tags simply omits them and
+      // every pre-fusion fixture still parses; `[]` genuinely means untagged.
+      ...(tags !== undefined ? { tags: [...tags] } : {}),
+      ...(r.originalCurrency !== null ? { originalCurrency: r.originalCurrency } : {}),
     };
   }
 
@@ -845,6 +874,77 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       }
       throw err;
     }
+  }
+
+  /**
+   * The ONE hand-entered cash-outflow write path, shared by `withdrawCash` and
+   * `chargeCashFee` (V5, §16 2026-07-30). Everything mechanical is identical for
+   * both kinds — cent quantization (#322), the per-source no-silent-negative gate,
+   * the source tag, and the history invalidation from the (possibly back-dated)
+   * movement day (§16 rule 4) — and the ONLY difference is the stored `kind`,
+   * from which `domain/cashLedger` derives the meaning: a `withdrawal` is an
+   * external flow divided back out of the performance curve, a `fee` is a cost of
+   * holding that stays inside it and drags. Keeping one body is deliberate: two
+   * copies of a cash rule drifting apart is the exact bug class the return-series
+   * audit uncovered.
+   *
+   * `kind` is constrained to the negative-signed hand-entered kinds; the engine
+   * kinds (`buy` / `sell_proceeds` / tax settlements) are written by their own
+   * paths with their parent rows, never here.
+   */
+  async function recordCashOutflow(
+    kind: 'withdrawal' | 'fee',
+    userId: string,
+    portfolioId: string,
+    input: CashEntryRequest,
+    opts?: { source?: string; force?: boolean },
+  ): Promise<CashMovementResponse> {
+    await requireOwnedPortfolio(userId, portfolioId);
+    const source = await resolveFlowSource(portfolioId, input.sourceId);
+    const executedAt = input.executedAt ? new Date(input.executedAt) : new Date(now());
+    // Cash is whole-cent money — quantize the entered amount to cents (#322),
+    // so a withdraw-all (the cent-exact reported balance) cancels the ledger
+    // to exactly €0.00 rather than stranding sub-cent residue.
+    const amountEur = floorCents(input.amountEur);
+    const existing = await cashMovementRepo.listForPortfolio(portfolioId);
+    // Guard against an overdraw of THIS source at *any* point once this
+    // (possibly back-dated) outflow is replayed — no silent negatives.
+    // Waived in MIRRORCHAIN force mode (design §2/§8): a tax-skewed replica
+    // renders its negative balance honestly rather than diverging.
+    if (!opts?.force) {
+      assertCashSolvent(existing, [
+        {
+          kind,
+          amountEur: -amountEur,
+          occurredAt: executedAt.toISOString(),
+          sourceId: source.id,
+        },
+      ]);
+    }
+    const movement = await cashMovementRepo.insert(portfolioId, {
+      sourceId: source.id,
+      kind,
+      amountEur: -amountEur,
+      executedAt,
+      note: input.note ?? null,
+      // Source tag (V5-P0c): `manual` unless the CSV apply path stamps a broker.
+      source: opts?.source ?? 'manual',
+      // TODO(v5/cash-phase-2): a `fee` should also receive the app-owned `fees`
+      // system tag (`CASH_SYSTEM_TAGS`, `system_key = 'fees'`, migration 0076).
+      // Nothing assigns system tags yet — the kind → tag auto-tagging engine and
+      // the `cash_movement_tags` write path are cash-fusion phase 2 — so this is
+      // deliberately left unwired rather than half-built here. The tag rows and
+      // their seed already exist, so phase 2 backfills existing fees by kind.
+    });
+    // Cash is part of the net-worth curve (#311): a (possibly back-dated)
+    // outflow reshapes it from its own day on (§16 rule 4).
+    await invalidateHistory(portfolioId, dayOf(executedAt));
+    const { balanceBySource, totalEur } = await loadCashState(portfolioId);
+    return {
+      movement: movementToDto(movement),
+      sourceBalanceEur: balanceBySource.get(source.id) ?? 0,
+      balanceEur: totalEur,
+    };
   }
 
   /**
@@ -1793,9 +1893,16 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       // requested tag, but balances still roll up the FULL ledger — a filter is
       // a view, never a re-computation of net worth.
       const visible = opts?.source ? records.filter((r) => r.source === opts.source) : records;
+      // One extra query for the whole page's labels (V5 cash fusion) — the
+      // tagged ledger is what the Cash flow tab renders, so resolving them per
+      // movement would be N+1 on the busiest read in the area.
+      const tagsByMovement = await cashTagRepo.tagIdsForMovements(
+        portfolioId,
+        visible.map((r) => r.id),
+      );
       return {
         balanceEur: totalEur,
-        movements: visible.map(movementToDto),
+        movements: visible.map((r) => movementToDto(r, tagsByMovement.get(r.id) ?? [])),
         sources: sources.map((s) => sourceToDto(s, balanceBySource.get(s.id) ?? 0)),
       };
     },
@@ -2050,46 +2157,17 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
     },
 
     async withdrawCash(userId, portfolioId, input, opts) {
-      await requireOwnedPortfolio(userId, portfolioId);
-      const source = await resolveFlowSource(portfolioId, input.sourceId);
-      const executedAt = input.executedAt ? new Date(input.executedAt) : new Date(now());
-      // Cash is whole-cent money — quantize the entered amount to cents (#322),
-      // so a withdraw-all (the cent-exact reported balance) cancels the ledger
-      // to exactly €0.00 rather than stranding sub-cent residue.
-      const amountEur = floorCents(input.amountEur);
-      const existing = await cashMovementRepo.listForPortfolio(portfolioId);
-      // Guard against an overdraw of THIS source at *any* point once this
-      // (possibly back-dated) withdrawal is replayed — no silent negatives.
-      // Waived in MIRRORCHAIN force mode (design §2/§8): a tax-skewed replica
-      // renders its negative balance honestly rather than diverging.
-      if (!opts?.force) {
-        assertCashSolvent(existing, [
-          {
-            kind: 'withdrawal',
-            amountEur: -amountEur,
-            occurredAt: executedAt.toISOString(),
-            sourceId: source.id,
-          },
-        ]);
-      }
-      const movement = await cashMovementRepo.insert(portfolioId, {
-        sourceId: source.id,
-        kind: 'withdrawal',
-        amountEur: -amountEur,
-        executedAt,
-        note: input.note ?? null,
-        // Source tag (V5-P0c): `manual` unless the CSV apply path stamps a broker.
-        source: opts?.source ?? 'manual',
-      });
-      // Cash is part of the net-worth curve (#311): a (possibly back-dated)
-      // withdrawal reshapes it from its own day on (§16 rule 4).
-      await invalidateHistory(portfolioId, dayOf(executedAt));
-      const { balanceBySource, totalEur } = await loadCashState(portfolioId);
-      return {
-        movement: movementToDto(movement),
-        sourceBalanceEur: balanceBySource.get(source.id) ?? 0,
-        balanceEur: totalEur,
-      };
+      return recordCashOutflow('withdrawal', userId, portfolioId, input, opts);
+    },
+
+    async chargeCashFee(userId, portfolioId, input, opts) {
+      // Deliberately the SAME code path as a withdrawal, differing only in the
+      // stored `kind`. The two are mechanically identical (positive magnitude in,
+      // negative amount out, same per-source overdraw gate, same history
+      // invalidation) and differ only in what they MEAN to the return series —
+      // which `domain/cashLedger` decides from the kind alone. Two copied bodies
+      // here would be exactly the drift the return-series audit found elsewhere.
+      return recordCashOutflow('fee', userId, portfolioId, input, opts);
     },
 
     async previewCash(userId, portfolioId, input) {

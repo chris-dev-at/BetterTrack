@@ -115,6 +115,19 @@ const envSchema = z.object({
   // ladder as the steady-state limiter.
   RATE_LIMIT_BURST_WINDOW_SEC: z.coerce.number().int().positive().default(10),
   RATE_LIMIT_BURST_LIMIT: z.coerce.number().int().positive().default(60),
+  /**
+   * Per-IP login attempts per minute. The DEFAULT IS THE PRODUCTION CONTROL and
+   * is not to be raised there — 25/min per IP is what blunts single-IP
+   * credential stuffing (§6.1).
+   *
+   * It is settable only so the e2e suite can stop poisoning itself: one shard
+   * funnels 40-60 logins a minute from a single address, trips the limiter, and
+   * the escalating cooldown then fails every later spec for a reason that has
+   * nothing to do with the product. Raised in playwright.config.ts against a
+   * throwaway database, nowhere else (owner decision, 2026-07-30).
+   */
+  RATE_LIMIT_LOGIN_IP_WINDOW_SEC: z.coerce.number().int().positive().default(60),
+  RATE_LIMIT_LOGIN_IP_LIMIT: z.coerce.number().int().positive().default(25),
 
   // ── Realtime gateway (§4.5, §13.3 V3-P7a) ──────────────────────────────────
   // Feature flag for the Socket.IO gateway at /ws. Default on; off means the
@@ -827,8 +840,30 @@ export interface AppConfig {
   };
 }
 
+/**
+ * An empty variable means UNSET, not "the empty value".
+ *
+ * Docker Compose renders every declared variable it knows about, so an optional
+ * setting nobody filled in arrives as `FOO=''` rather than as an absent key —
+ * `'${BT_PRODUCT_ORIGIN:-}'` in infra/docker-compose.yml is exactly that. Zod's
+ * `.optional()` accepts `undefined`, not `''`, so without this the container
+ * refuses to boot with "BT_PRODUCT_ORIGIN: Invalid url" for a setting that is
+ * legitimately not configured — a deployment with no product site, no mobile
+ * origin or no SMTP server, which every fresh box is.
+ *
+ * Required variables still fail, just with the honest message ("Required"
+ * instead of a format complaint about an empty string).
+ */
+function dropEmpty(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const out: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (value !== '') out[key] = value;
+  }
+  return out;
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
-  const parsed = envSchema.safeParse(env);
+  const parsed = envSchema.safeParse(dropEmpty(env));
   if (!parsed.success) {
     const issues = parsed.error.issues.map(
       (i) => `  - ${i.path.join('.') || '(root)'}: ${i.message}`,
@@ -1145,8 +1180,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
       // Login is stricter and per-IP: blunts single-IP credential stuffing while
       // tolerating shared-NAT bursts. Over-limit → 30 s → 5 m → 10 m → 15 m.
       loginIp: {
-        windowSec: 60,
-        limit: 25,
+        windowSec: e.RATE_LIMIT_LOGIN_IP_WINDOW_SEC,
+        limit: e.RATE_LIMIT_LOGIN_IP_LIMIT,
         cooldownsSec: [30, 300, 600, 900],
         decaySec: 15 * 60,
       },

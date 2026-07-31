@@ -471,7 +471,7 @@ describe('isExternalCashMovement', () => {
   });
 
   it('pins the classification of EVERY kind, so a new one cannot default in silently', () => {
-    // `isExternalCashMovement` is a whitelist test: a 10th kind added to
+    // `isExternalCashMovement` is a whitelist test: a further kind added to
     // CASH_MOVEMENT_KINDS would be internal by omission, with no failing test to
     // notice. This table makes that decision explicit — extend it deliberately.
     const expected: Readonly<Record<CashMovementKind, boolean>> = {
@@ -484,11 +484,172 @@ describe('isExternalCashMovement', () => {
       dividend: false,
       tax_withholding: false,
       tax_refund: false,
+      // A cost of HOLDING, so internal on purpose (§16 2026-07-30): it must drag
+      // the return, not be divided back out of it like a withdrawal.
+      fee: false,
     };
     expect(Object.keys(expected).sort()).toEqual([...CASH_MOVEMENT_KINDS].sort());
     for (const kind of CASH_MOVEMENT_KINDS) {
       expect(isExternalCashMovement(kind)).toBe(expected[kind]);
     }
+  });
+
+  it('pins the required sign of EVERY kind, so a new one cannot pick one by accident', () => {
+    // Companion to the classification table: `CASH_MOVEMENT_SIGN` is a total
+    // record, so TypeScript forces a new kind to declare *a* sign — but not the
+    // RIGHT one. A fee that admitted a positive amount would lift the curve.
+    const expected: Readonly<Record<CashMovementKind, 1 | -1>> = {
+      deposit: 1,
+      sell_proceeds: 1,
+      transfer_in: 1,
+      dividend: 1,
+      tax_refund: 1,
+      withdrawal: -1,
+      buy: -1,
+      transfer_out: -1,
+      tax_withholding: -1,
+      fee: -1,
+    };
+    expect(Object.keys(expected).sort()).toEqual([...CASH_MOVEMENT_KINDS].sort());
+    for (const kind of CASH_MOVEMENT_KINDS) {
+      expect(CASH_MOVEMENT_SIGN[kind]).toBe(expected[kind]);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The `fee` kind (V5, §16 2026-07-30) — a cost of holding, so it DRAGS
+// ---------------------------------------------------------------------------
+
+describe('fee movement kind', () => {
+  it('is negative-only: a positive fee is rejected, a negative one accepted', () => {
+    expect(CASH_MOVEMENT_SIGN.fee).toBe(-1);
+    expect(() => cashBalance([mv('fee', 12.5, '2026-01-05T09:00:00Z')])).toThrow(CashLedgerError);
+    expect(() => cashBalance([mv('fee', 12.5, '2026-01-05T09:00:00Z')])).toThrow(
+      /strictly negative/,
+    );
+    expect(cashBalance([mv('fee', -12.5, '2026-01-05T09:00:00Z')])).toBeCloseTo(-12.5, 9);
+  });
+
+  it('lowers the cash balance and is gated by the same no-negative-balance rule', () => {
+    const movements = [
+      mv('deposit', 100, '2026-01-05T09:00:00Z'),
+      mv('fee', -2.5, '2026-01-06T09:00:00Z'),
+    ];
+    const entries = projectCashLedger(movements);
+    expect(entries.map((e) => e.balanceEur)).toEqual([100, 97.5]);
+    // No cash → no fee: an unfunded fee is an overdraw like any other outflow.
+    expect(() => projectCashLedger([mv('fee', -2.5, '2026-01-06T09:00:00Z')])).toThrow(
+      InsufficientCashError,
+    );
+  });
+
+  it('is NOT an external flow: it never enters the TWR flow series', () => {
+    const movements = [
+      mv('deposit', 1000, '2026-01-05T09:00:00Z'),
+      mv('fee', -10, '2026-01-06T09:00:00Z'),
+      mv('withdrawal', -10, '2026-01-07T09:00:00Z'),
+    ];
+    // Only the deposit and the withdrawal show up; the fee is absent entirely.
+    expect(externalCashFlowsForTwr(movements)).toEqual([
+      { date: '2026-01-05', flowEur: 1000 },
+      { date: '2026-01-07', flowEur: -10 },
+    ]);
+  });
+
+  it('DRAGS the return: a fee-charged portfolio returns less than an identical fee-free one', () => {
+    // Two portfolios, same 1000 € deposited on day 1, same asset, same +10 %
+    // market move on day 3. One is charged a 10 € custody fee on day 2.
+    //
+    //   fee-free : 1000 → 1000 → 1100
+    //   fee-paid : 1000 →  990 → 1089   (the 10 € gone, then the same +10 %)
+    const feeFreeValues: ValuePoint[] = [
+      { date: '2026-01-05', valueEur: 1000 },
+      { date: '2026-01-06', valueEur: 1000 },
+      { date: '2026-01-07', valueEur: 1100 },
+    ];
+    const feePaidValues: ValuePoint[] = [
+      { date: '2026-01-05', valueEur: 1000 },
+      { date: '2026-01-06', valueEur: 990 },
+      { date: '2026-01-07', valueEur: 1089 },
+    ];
+    const deposit = mv('deposit', 1000, '2026-01-05T09:00:00Z');
+    const feeFree = timeWeightedReturn(feeFreeValues, externalCashFlowsForTwr([deposit]));
+    const feePaid = timeWeightedReturn(
+      feePaidValues,
+      externalCashFlowsForTwr([deposit, mv('fee', -10, '2026-01-06T09:00:00Z')]),
+    );
+
+    // The fee-free portfolio earns the pure market return.
+    expect(feeFree.at(-1)?.pct).toBeCloseTo(10, 9);
+    // The fee-charged one earns strictly less — the fee is inside the curve.
+    // Day 2: 990/1000 − 1 = −1 %. Day 3: ×1.10 ⇒ 0.99 × 1.10 = 1.089 ⇒ +8.9 %.
+    expect(feePaid[1]?.pct).toBeCloseTo(-1, 9);
+    expect(feePaid.at(-1)?.pct).toBeCloseTo(8.9, 9);
+    expect(feePaid.at(-1)!.pct).toBeLessThan(feeFree.at(-1)!.pct);
+  });
+
+  it('a withdrawal of the same amount does NOT drag — which is why the kind exists', () => {
+    // The counterfactual the audit called out: booked as a `withdrawal`, the very
+    // same 10 € leaving on the very same day is divided back out of the curve, so
+    // the fee-eaten portfolio reports the fee-free portfolio's return.
+    const values: ValuePoint[] = [
+      { date: '2026-01-05', valueEur: 1000 },
+      { date: '2026-01-06', valueEur: 990 },
+      { date: '2026-01-07', valueEur: 1089 },
+    ];
+    const deposit = mv('deposit', 1000, '2026-01-05T09:00:00Z');
+    const asWithdrawal = timeWeightedReturn(
+      values,
+      externalCashFlowsForTwr([deposit, mv('withdrawal', -10, '2026-01-06T09:00:00Z')]),
+    );
+    const asFee = timeWeightedReturn(
+      values,
+      externalCashFlowsForTwr([deposit, mv('fee', -10, '2026-01-06T09:00:00Z')]),
+    );
+    // Neutralised out: (990 − (−10))/1000 − 1 = 0 on the fee day, so the curve
+    // ends at the untouched +10 % — the pre-fix misreport, pinned as a contrast.
+    expect(asWithdrawal[1]?.pct).toBeCloseTo(0, 9);
+    expect(asWithdrawal.at(-1)?.pct).toBeCloseTo(10, 9);
+    // Same ledger amounts, honest answer.
+    expect(asFee.at(-1)?.pct).toBeCloseTo(8.9, 9);
+    expect(asFee.at(-1)!.pct).toBeLessThan(asWithdrawal.at(-1)!.pct);
+  });
+
+  it('still counts toward net worth — the money really left the account', () => {
+    // Internal for TWR does NOT mean invisible: the balance and the absolute
+    // value curve both fall by the fee (that is exactly what makes it a drag).
+    const series = netWorthSeries({
+      holdingsValues: [],
+      movements: [
+        mv('deposit', 1000, '2026-01-05T09:00:00Z'),
+        mv('fee', -10, '2026-01-06T09:00:00Z'),
+      ],
+      today: '2026-01-06',
+    });
+    expect(series).toEqual([
+      { date: '2026-01-05', valueEur: 1000 },
+      { date: '2026-01-06', valueEur: 990 },
+    ]);
+  });
+
+  it('is not a transfer leg: it belongs to exactly one source and never pairs', () => {
+    const movements: SourcedCashMovement[] = [
+      { ...mv('deposit', 100, '2026-01-05T09:00:00Z'), sourceId: 'bank' },
+      { ...mv('fee', -4, '2026-01-06T09:00:00Z'), sourceId: 'bank' },
+      { ...mv('deposit', 50, '2026-01-05T09:00:00Z'), sourceId: 'main' },
+    ];
+    expect([...cashBalancesBySource(movements).entries()].sort()).toEqual([
+      ['bank', 96],
+      ['main', 50],
+    ]);
+    // Solvency is per source: "main" cannot cover a fee charged to "bank".
+    expect(() =>
+      projectCashLedgerBySource([
+        { ...mv('deposit', 1, '2026-01-05T09:00:00Z'), sourceId: 'main' },
+        { ...mv('fee', -4, '2026-01-06T09:00:00Z'), sourceId: 'bank' },
+      ]),
+    ).toThrow(InsufficientCashError);
   });
 });
 

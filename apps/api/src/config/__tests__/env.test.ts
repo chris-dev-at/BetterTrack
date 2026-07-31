@@ -440,3 +440,26 @@ describe('stored-record encryption configuration (#879)', () => {
     }
   });
 });
+
+describe('empty variables', () => {
+  // Docker Compose renders `'${FOO:-}'` as FOO='' for every optional setting
+  // nobody filled in, and zod's .optional() rejects '' — so a fresh box with no
+  // product site, no mobile origin and no SMTP server refused to boot at all.
+  it('treats an empty optional variable as unset, not as a bad value', () => {
+    const parsed = config({
+      BT_MODE: 'subdomains',
+      BT_DOMAIN: 'example.test',
+      BT_PRODUCT_ORIGIN: '',
+      BT_MOBILE_ORIGIN: '',
+      SMTP_HOST: '',
+      SMTP_PORT: '',
+    });
+
+    // Derived from the mode rather than inherited from the empty string.
+    expect(parsed.topology.productOrigin).toBe('https://example.test');
+  });
+
+  it('still rejects an empty REQUIRED variable', () => {
+    expect(() => config({ SESSION_SECRET: '' })).toThrow(/SESSION_SECRET/);
+  });
+});

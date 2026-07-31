@@ -73,6 +73,21 @@ export function usageSnapshotToHistoryEntry(usage, now = Date.now()) {
   });
 }
 
+// The inverse codec. A control server that restarts while the upstream usage
+// endpoint is throttled has no in-memory last-good sample, and the panel then
+// shows a bare transport error even though a perfectly good reading is on disk.
+// Rehydrating one lets the dashboard fall back to cached figures instead.
+export function usageHistoryEntryToSnapshot(entry) {
+  const clean = sanitizeUsageHistoryEntry(entry);
+  if (!clean) return null;
+  return {
+    fiveHour: clean.f5 == null ? null : { pct: clean.f5, resetsAt: clean.r5 || null },
+    sevenDay: clean.d7 == null ? null : { pct: clean.d7, resetsAt: clean.r7 || null },
+    scoped: (clean.sc || []).map((meter) => ({ name: meter.n, pct: meter.p })),
+    sampledAt: clean.at,
+  };
+}
+
 export function compactUsageHistory(entries, now = Date.now()) {
   if (!Array.isArray(entries)) return [];
   const cutoff = now - USAGE_HISTORY_RETENTION_MS;

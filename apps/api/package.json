@@ -20,7 +20,8 @@
     "db:migrate": "tsx src/scripts/migrate.ts",
     "db:seed": "tsx src/scripts/seed.ts",
     "admin:break-glass": "tsx src/scripts/adminTwoFactorBreakGlass.ts",
-    "repair:taxed-sell-snapshots": "tsx src/scripts/repairTaxedSellSnapshots.ts"
+    "repair:taxed-sell-snapshots": "tsx src/scripts/repairTaxedSellSnapshots.ts",
+    "catchup:cash-fusion": "tsx src/scripts/catchUpCashFusion.ts"
   },
   "dependencies": {
     "@asteasolutions/zod-to-openapi": "^7.3.0",

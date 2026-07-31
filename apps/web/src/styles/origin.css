@@ -53,6 +53,25 @@
   /* Motion */
   --bt-t-fast: 160ms cubic-bezier(0.3, 0, 0.2, 1);
   --bt-t-panel: 320ms cubic-bezier(0.32, 0.72, 0.22, 1);
+  /*
+   * Interface scale (see `user/uiScale.ts`). A CSS pixel is not a physical size:
+   * on a HiDPI panel the browser paints it with 2+ device pixels, on a 1× 1080p
+   * or 1440p desktop monitor with one — so the same layout reads comfortably on
+   * a Mac and too small on those monitors. `zoom` is the one lever that scales
+   * type, controls, spacing AND hairlines together; the app sets --bt-zoom per
+   * DEVICE and everything follows.
+   *
+   * Viewport units do not: in every engine `100vh` inside a zoomed subtree is
+   * still a full viewport height and then gets multiplied by the zoom, which
+   * would push every full-height surface off screen. So the stylesheet reads
+   * them through these three properties, which divide the scale back out. At
+   * the default scale of 1 they are exactly `1vh` / `1vw` / `1dvh`.
+   */
+  --bt-zoom: 1;
+  --bt-vh: calc(1vh / var(--bt-zoom));
+  --bt-vw: calc(1vw / var(--bt-zoom));
+  --bt-dvh: calc(1dvh / var(--bt-zoom));
+  zoom: var(--bt-zoom);
   font-variant-numeric: tabular-nums;
 }
 
@@ -88,7 +107,7 @@
 /* ── Base canvas ─────────────────────────────────────────────────────────── */
 
 .bt-app {
-  min-height: 100vh;
+  min-height: calc(100 * var(--bt-vh));
   background:
     radial-gradient(circle at 40% -16%, rgba(56, 189, 248, 0.05), transparent 30rem),
     radial-gradient(circle at 94% 6%, rgba(246, 184, 46, 0.035), transparent 24rem), var(--bt-bg);
@@ -153,7 +172,7 @@
 .bt-shell {
   display: grid;
   grid-template-columns: var(--bt-rail-w) minmax(0, 1fr);
-  min-height: 100vh;
+  min-height: calc(100 * var(--bt-vh));
   transition: grid-template-columns var(--bt-t-panel);
 }
 
@@ -167,7 +186,7 @@
   top: 0;
   display: flex;
   flex-direction: column;
-  height: 100vh;
+  height: calc(100 * var(--bt-vh));
   /* No overflow here: tall trees scroll INSIDE .bt-rail__group--suite, and the
      account popover must be able to escape a collapsed 64px rail unclipped. */
   background: var(--bt-nav);
@@ -387,7 +406,7 @@
   align-items: center;
   gap: 10px;
   min-height: var(--bt-topbar-h);
-  padding: 0 clamp(16px, 3vw, var(--bt-gutter));
+  padding: 0 clamp(16px, calc(3 * var(--bt-vw)), var(--bt-gutter));
   background: color-mix(in srgb, var(--bt-bg) 88%, transparent);
   backdrop-filter: blur(10px);
   border-bottom: 1px solid var(--bt-border);
@@ -395,6 +414,31 @@
 
 .bt-topbar__spacer {
   flex: 1 1 auto;
+}
+
+/* Compact account trigger. Stands in for the rail's account row once the rail
+   is hidden (≤760px), so the account menu — My profile, Settings, Discreet
+   mode, Logout — stays a persistent utility on a phone. 44px keeps it a full
+   touch target (docs/redesign/REAL_APP_REDESIGN_PROMPT.md). */
+.bt-topbar__account {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  min-width: 44px;
+  min-height: 44px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: none;
+  color: var(--bt-text-soft);
+  font: inherit;
+  cursor: pointer;
+  transition: background var(--bt-t-fast);
+}
+
+.bt-topbar__account:hover {
+  background: var(--bt-surface-soft);
 }
 
 .bt-topbar__actions {
@@ -409,13 +453,13 @@
   min-width: 0;
   display: flex;
   flex-direction: column;
-  min-height: 100vh;
+  min-height: calc(100 * var(--bt-vh));
 }
 
 .bt-canvas {
   flex: 1 1 auto;
   width: 100%;
-  padding: var(--bt-gutter-y) clamp(16px, 3.4vw, var(--bt-gutter)) 64px;
+  padding: var(--bt-gutter-y) clamp(16px, calc(3.4 * var(--bt-vw)), var(--bt-gutter)) 64px;
 }
 
 .bt-canvas--narrow {
@@ -490,7 +534,7 @@
 }
 
 .bt-hero-value {
-  font-size: clamp(30px, 4vw, 40px);
+  font-size: clamp(30px, calc(4 * var(--bt-vw)), 40px);
   font-weight: 640;
   letter-spacing: -0.025em;
   line-height: 1.05;
@@ -1125,7 +1169,7 @@
 
 .bt-chart {
   position: relative;
-  margin-inline: calc(-1 * clamp(0px, 1vw, 8px));
+  margin-inline: calc(-1 * clamp(0px, calc(1 * var(--bt-vw)), 8px));
 }
 
 .bt-chart text,
@@ -1174,7 +1218,7 @@
 .bt-dialog__panel {
   pointer-events: auto;
   width: min(560px, 100%);
-  max-height: min(84vh, 720px);
+  max-height: min(calc(84 * var(--bt-vh)), 720px);
   display: flex;
   flex-direction: column;
   background: var(--bt-bg-raised);
@@ -1215,7 +1259,7 @@
   position: fixed;
   inset: 0 0 0 auto;
   z-index: 71;
-  width: min(420px, 94vw);
+  width: min(420px, calc(94 * var(--bt-vw)));
   display: flex;
   flex-direction: column;
   background: var(--bt-bg-raised);
@@ -1293,7 +1337,7 @@
   display: flex;
   align-items: center;
   gap: 10px;
-  max-width: min(92vw, 480px);
+  max-width: min(calc(92 * var(--bt-vw)), 480px);
   padding: 10px 14px;
   background: var(--bt-surface-strong);
   border: 1px solid var(--bt-border-strong);
@@ -1330,7 +1374,7 @@
 /* Parked feature surface: present in the IA, waiting on its build. */
 .bt-parked {
   position: relative;
-  padding: 40px clamp(20px, 4vw, 48px) 44px;
+  padding: 40px clamp(20px, calc(4 * var(--bt-vw)), 48px) 44px;
   border: 1px dashed var(--bt-border-strong);
   border-radius: 10px;
   background: linear-gradient(160deg, var(--bt-gold-soft), transparent 34%), var(--bt-surface);
@@ -1441,11 +1485,11 @@
 /* ── Auth / standalone card screens ──────────────────────────────────────── */
 
 .bt-gate {
-  min-height: 100vh;
+  min-height: calc(100 * var(--bt-vh));
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: clamp(28px, 9vh, 96px) 18px 40px;
+  padding: clamp(28px, calc(9 * var(--bt-vh)), 96px) 18px 40px;
 }
 
 .bt-gate__card {
@@ -1638,6 +1682,34 @@
     display: grid;
   }
 
+  /* The topbar is the phone's ONLY home for the search, Create, Notifications
+     and account-menu utilities, so the two space hogs have to yield to them.
+     At 412px the full wordmark (140px) plus the switcher's 200px floor left no
+     room, and the utilities pushed the topbar to a 559px scroll width — which
+     scrolled the whole document sideways and, because a portalled dialog's
+     `position: fixed` overlay sizes to that widened containing block, centred
+     every dialog half outside the visible viewport. */
+  .bt-topbar {
+    gap: 8px;
+  }
+
+  .bt-topbar .bt-rail__brand-full {
+    display: none;
+  }
+
+  .bt-topbar .bt-rail__brand-mini {
+    display: inline-flex;
+  }
+
+  .bt-topbar .bt-rail__brand {
+    padding: 0;
+  }
+
+  .bt-topbar .bt-portfolio-trigger {
+    min-width: 0;
+    max-width: 42vw;
+  }
+
   .bt-canvas {
     padding-bottom: 96px;
   }
@@ -1673,7 +1745,7 @@
   }
 
   .bt-drawer {
-    width: 100vw;
+    width: calc(100 * var(--bt-vw));
     border-left: 0;
   }
 }
@@ -2445,6 +2517,708 @@
 }
 
 /* The total sits under a rule as a summary line, not as another row. */
+/* ── Month picker ───────────────────────────────────────────────────────────
+   Arrows plus the month's NAME. Replaces `<input type="month">`, which renders
+   as a locale-dependent numeric field and made "go back one month" an edit
+   rather than a press. */
+.bt-monthpick {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--bt-border);
+  border-radius: 8px;
+  background: var(--bt-bg-raised);
+}
+
+.bt-monthpick__arrow {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  min-height: 24px;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  color: var(--bt-text-soft);
+  font: inherit;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    background var(--bt-t-fast),
+    color var(--bt-t-fast);
+}
+
+.bt-monthpick__arrow:hover:not(:disabled) {
+  background: var(--bt-surface-strong);
+  color: var(--bt-text);
+}
+
+.bt-monthpick__arrow:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.bt-monthpick__label {
+  min-width: 5.4rem;
+  padding: 0 2px;
+  color: var(--bt-text-soft);
+  font-size: 12px;
+  font-weight: 570;
+  text-align: center;
+  white-space: nowrap;
+}
+
+/* ── Icon button ────────────────────────────────────────────────────────────
+   A quiet, square action that sits beside the loud ones. Same height as the
+   record pair and the month picker so the header reads as one row. */
+.bt-iconbtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  min-height: 34px;
+  border: 1px solid var(--bt-border);
+  border-radius: 8px;
+  background: var(--bt-bg-raised);
+  color: var(--bt-text-soft);
+  cursor: pointer;
+  transition:
+    background var(--bt-t-fast),
+    color var(--bt-t-fast);
+}
+
+.bt-iconbtn:hover {
+  background: var(--bt-surface-strong);
+  color: var(--bt-text);
+}
+
+.bt-iconbtn svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* ── Record pair ────────────────────────────────────────────────────────────
+   Two halves of ONE object: add money on the left, take money out on the
+   right. Each half carries its direction's colour at rest — a bare + / − says
+   nothing about money, so the meaning cannot live in hover alone. Only the
+   outer corners are rounded, and the halves share a single hairline, so it
+   reads as one control rather than two buttons that happen to touch. */
+.bt-recordpair {
+  display: inline-flex;
+  align-items: stretch;
+  border: 1px solid var(--bt-border-strong);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.bt-recordpair__half {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  min-height: 32px;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  transition:
+    background var(--bt-t-fast),
+    color var(--bt-t-fast);
+}
+
+.bt-recordpair__half svg {
+  width: 17px;
+  height: 17px;
+}
+
+.bt-recordpair__half--in {
+  background: var(--bt-pos-soft);
+  color: var(--bt-pos);
+  border-right: 1px solid var(--bt-border-strong);
+}
+
+.bt-recordpair__half--out {
+  background: var(--bt-neg-soft);
+  color: var(--bt-neg);
+}
+
+.bt-recordpair__half--in:hover {
+  background: color-mix(in srgb, var(--bt-pos) 22%, transparent);
+}
+
+.bt-recordpair__half--out:hover {
+  background: color-mix(in srgb, var(--bt-neg) 22%, transparent);
+}
+
+/* ── Cash account rows ─────────────────────────────────────────────────────
+   ONE LINE per account (owner, 2026-07-31, third pass). The card version
+   stacked a name over a balance over a full-width action footer — roughly 95px
+   of card to carry two facts, most of it empty, with buttons that read as tiny
+   against all that space. Laid out horizontally the same two facts need ~44px,
+   and the actions can be a sensible size because they are no longer competing
+   with a column of air. */
+.bt-acctgrid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+}
+
+.bt-acctrow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px 6px 12px;
+  border: 1px solid var(--bt-border);
+  border-radius: 9px;
+  background: var(--bt-surface);
+}
+
+.bt-acctrow__name {
+  flex: 1;
+  min-width: 0;
+  color: var(--bt-text-soft);
+  font-size: 12.5px;
+  font-weight: 570;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bt-acctrow__value {
+  color: var(--bt-text);
+  font-size: 14px;
+  font-weight: 640;
+  white-space: nowrap;
+}
+
+.bt-acctrow__actions {
+  display: inline-flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.bt-acctrow__action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--bt-border);
+  border-radius: 7px;
+  background: var(--bt-bg-raised);
+  color: var(--bt-text-soft);
+  cursor: pointer;
+  transition:
+    background var(--bt-t-fast),
+    border-color var(--bt-t-fast),
+    color var(--bt-t-fast);
+}
+
+.bt-acctrow__action svg {
+  width: 15px;
+  height: 15px;
+}
+
+.bt-acctrow__action--in:hover {
+  background: var(--bt-pos-soft);
+  border-color: color-mix(in srgb, var(--bt-pos) 40%, transparent);
+  color: var(--bt-pos);
+}
+
+.bt-acctrow__action--out:hover {
+  background: var(--bt-neg-soft);
+  border-color: color-mix(in srgb, var(--bt-neg) 40%, transparent);
+  color: var(--bt-neg);
+}
+
+/* The list's own entry into managing accounts: same row shape, quieter. */
+.bt-acctrow--manage {
+  justify-content: flex-start;
+  gap: 8px;
+  border-style: dashed;
+  background: none;
+  color: var(--bt-text-soft);
+  text-decoration: none;
+  transition: background var(--bt-t-fast);
+}
+
+.bt-acctrow--manage:hover {
+  background: var(--bt-surface);
+}
+
+.bt-acctrow--manage svg {
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+}
+
+/* ── By-tag: donut beside the ranked bars ───────────────────────────────────
+   The donut answers "what share", the bars answer "how much and in what
+   order". Side by side they are one figure read two ways; the donut collapses
+   under the bars on a narrow viewport rather than shrinking to a dot. */
+.bt-bytag {
+  display: flex;
+  align-items: center;
+  gap: 22px;
+  flex-wrap: wrap;
+}
+
+.bt-bytag__chart {
+  flex-shrink: 0;
+}
+
+.bt-bytag__bars {
+  flex: 1;
+  min-width: 240px;
+}
+
+/* ── Month picker ───────────────────────────────────────────────────────────
+   Arrows plus the month's NAME. Replaces `<input type="month">`, which renders
+   as a locale-dependent numeric field and made "go back one month" an edit
+   rather than a press. */
+.bt-monthpick {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--bt-border);
+  border-radius: 8px;
+  background: var(--bt-bg-raised);
+}
+
+.bt-monthpick__arrow {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  min-height: 24px;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  color: var(--bt-text-soft);
+  font: inherit;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    background var(--bt-t-fast),
+    color var(--bt-t-fast);
+}
+
+.bt-monthpick__arrow:hover:not(:disabled) {
+  background: var(--bt-surface-strong);
+  color: var(--bt-text);
+}
+
+.bt-monthpick__arrow:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.bt-monthpick__label {
+  min-width: 5.4rem;
+  padding: 0 2px;
+  color: var(--bt-text-soft);
+  font-size: 12px;
+  font-weight: 570;
+  text-align: center;
+  white-space: nowrap;
+}
+
+/* ── Icon button ────────────────────────────────────────────────────────────
+   A quiet, square action that sits beside the loud ones. Same height as the
+   record pair and the month picker so the header reads as one row. */
+.bt-iconbtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  min-height: 34px;
+  border: 1px solid var(--bt-border);
+  border-radius: 8px;
+  background: var(--bt-bg-raised);
+  color: var(--bt-text-soft);
+  cursor: pointer;
+  transition:
+    background var(--bt-t-fast),
+    color var(--bt-t-fast);
+}
+
+.bt-iconbtn:hover {
+  background: var(--bt-surface-strong);
+  color: var(--bt-text);
+}
+
+.bt-iconbtn svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* ── Record pair ────────────────────────────────────────────────────────────
+   Two halves of ONE object: add money on the left, take money out on the
+   right. Each half carries its direction's colour at rest — a bare + / − says
+   nothing about money, so the meaning cannot live in hover alone. Only the
+   outer corners are rounded, and the halves share a single hairline, so it
+   reads as one control rather than two buttons that happen to touch. */
+.bt-recordpair {
+  display: inline-flex;
+  align-items: stretch;
+  border: 1px solid var(--bt-border-strong);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.bt-recordpair__half {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  min-height: 32px;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  transition:
+    background var(--bt-t-fast),
+    color var(--bt-t-fast);
+}
+
+.bt-recordpair__half svg {
+  width: 17px;
+  height: 17px;
+}
+
+.bt-recordpair__half--in {
+  background: var(--bt-pos-soft);
+  color: var(--bt-pos);
+  border-right: 1px solid var(--bt-border-strong);
+}
+
+.bt-recordpair__half--out {
+  background: var(--bt-neg-soft);
+  color: var(--bt-neg);
+}
+
+.bt-recordpair__half--in:hover {
+  background: color-mix(in srgb, var(--bt-pos) 22%, transparent);
+}
+
+.bt-recordpair__half--out:hover {
+  background: color-mix(in srgb, var(--bt-neg) 22%, transparent);
+}
+
+/* ── Cash account cards ─────────────────────────────────────────────────────
+   Replaces a row of tag-shaped pills. A pill says "label"; these hold a
+   balance and two actions, so they are cards.
+
+   The actions are a FULL-BLEED FOOTER: flush to the card's left, right and
+   bottom edges, splitting the width in half, separated from the balance by the
+   card's own hairline. Insetting them left a moat of dead padding on three
+   sides and made two buttons float inside a box instead of finishing it. The
+   card carries no bottom padding for the same reason. */
+.bt-acctgrid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+}
+
+.bt-acctcard {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--bt-border);
+  border-radius: 10px;
+  background: var(--bt-surface);
+  overflow: hidden;
+}
+
+.bt-acctcard__body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 11px 13px 12px;
+}
+
+.bt-acctcard__name {
+  color: var(--bt-text-soft);
+  font-size: 12px;
+  font-weight: 570;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bt-acctcard__value {
+  color: var(--bt-text);
+  font-size: 18px;
+  font-weight: 650;
+}
+
+.bt-acctcard__actions {
+  display: flex;
+  border-top: 1px solid var(--bt-border);
+}
+
+.bt-acctcard__action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  min-height: 32px;
+  border: 0;
+  background: none;
+  color: var(--bt-text-soft);
+  cursor: pointer;
+  transition:
+    background var(--bt-t-fast),
+    color var(--bt-t-fast);
+}
+
+.bt-acctcard__action svg {
+  width: 15px;
+  height: 15px;
+}
+
+.bt-acctcard__action--in {
+  border-right: 1px solid var(--bt-border);
+}
+
+.bt-acctcard__action--in:hover {
+  background: var(--bt-pos-soft);
+  color: var(--bt-pos);
+}
+
+.bt-acctcard__action--out:hover {
+  background: var(--bt-neg-soft);
+  color: var(--bt-neg);
+}
+
+/* ── Month picker ───────────────────────────────────────────────────────────
+   Arrows plus the month's NAME. Replaces `<input type="month">`, which renders
+   as a locale-dependent numeric field and made "go back one month" an edit
+   rather than a press. */
+.bt-monthpick {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--bt-border);
+  border-radius: 8px;
+  background: var(--bt-bg-raised);
+}
+
+.bt-monthpick__arrow {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  min-height: 24px;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  color: var(--bt-text-soft);
+  font: inherit;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    background var(--bt-t-fast),
+    color var(--bt-t-fast);
+}
+
+.bt-monthpick__arrow:hover:not(:disabled) {
+  background: var(--bt-surface-strong);
+  color: var(--bt-text);
+}
+
+.bt-monthpick__arrow:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.bt-monthpick__label {
+  min-width: 8.5rem;
+  padding: 0 4px;
+  color: var(--bt-text-soft);
+  font-size: 12px;
+  font-weight: 570;
+  text-align: center;
+  white-space: nowrap;
+}
+
+/* ── Record pair ────────────────────────────────────────────────────────────
+   Two halves of ONE object: add money on the left, take money out on the
+   right. Each half carries its direction's colour at rest — a bare + / − says
+   nothing about money, so the meaning cannot live in hover alone. Only the
+   outer corners are rounded, and the halves share a single hairline, so it
+   reads as one control rather than two buttons that happen to touch. */
+.bt-recordpair {
+  display: inline-flex;
+  align-items: stretch;
+  border: 1px solid var(--bt-border-strong);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.bt-recordpair__half {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  min-height: 32px;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  transition:
+    background var(--bt-t-fast),
+    color var(--bt-t-fast);
+}
+
+.bt-recordpair__half svg {
+  width: 17px;
+  height: 17px;
+}
+
+.bt-recordpair__half--in {
+  background: var(--bt-pos-soft);
+  color: var(--bt-pos);
+  border-right: 1px solid var(--bt-border-strong);
+}
+
+.bt-recordpair__half--out {
+  background: var(--bt-neg-soft);
+  color: var(--bt-neg);
+}
+
+.bt-recordpair__half--in:hover {
+  background: color-mix(in srgb, var(--bt-pos) 22%, transparent);
+}
+
+.bt-recordpair__half--out:hover {
+  background: color-mix(in srgb, var(--bt-neg) 22%, transparent);
+}
+
+/* ── Cash account cards ─────────────────────────────────────────────────────
+   Replaces a row of tag-shaped pills. A pill says "label"; these hold a
+   balance and two actions, so they are cards — and the actions are ON them
+   because "spend from savings" was three presses away otherwise. */
+.bt-acctgrid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+}
+
+.bt-acctcard {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--bt-border);
+  border-radius: 10px;
+  background: var(--bt-surface);
+}
+
+.bt-acctcard__name {
+  color: var(--bt-text-soft);
+  font-size: 12px;
+  font-weight: 570;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bt-acctcard__value {
+  color: var(--bt-text);
+  font-size: 18px;
+  font-weight: 650;
+}
+
+.bt-acctcard__actions {
+  display: flex;
+  gap: 6px;
+}
+
+.bt-acctcard__action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  min-height: 26px;
+  border: 1px solid var(--bt-border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--bt-text-soft);
+  font: inherit;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    background var(--bt-t-fast),
+    color var(--bt-t-fast),
+    border-color var(--bt-t-fast);
+}
+
+.bt-acctcard__action--neg:hover {
+  background: var(--bt-neg-soft);
+  border-color: color-mix(in srgb, var(--bt-neg) 40%, transparent);
+  color: var(--bt-neg);
+}
+
+.bt-acctcard__action--pos:hover {
+  background: var(--bt-pos-soft);
+  border-color: color-mix(in srgb, var(--bt-pos) 40%, transparent);
+  color: var(--bt-pos);
+}
+
+/* ── Cashflow chart ─────────────────────────────────────────────────────────
+   The month labels live OUTSIDE the SVG: the chart stretches with
+   `preserveAspectRatio="none"`, which would smear any text drawn inside it. A
+   flex row of equal columns lines them up with the slots by construction. */
+.bt-cashchart__axis {
+  display: flex;
+  margin-top: 2px;
+}
+
+.bt-cashchart__axis > span {
+  flex: 1;
+  color: var(--bt-text-soft);
+  font-size: 10px;
+  text-align: center;
+}
+
+/* ── Quick cash (Home) ──────────────────────────────────────────────────────
+   A form living inside a board tile. The tile is short and the field must not
+   be, so the amount takes every pixel the submit button does not, and the note
+   sits on its own line rather than squeezing a third control onto the first. */
+.bt-home-quickcash {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.bt-home-quickcash__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.bt-home-quickcash__row .bt-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.bt-home-quickcash__row .bt-btn {
+  flex-shrink: 0;
+}
+
+.bt-home-quickcash__target {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 2px;
+}
+
 .bt-home-cash__total {
   display: flex;
   align-items: baseline;
@@ -3018,8 +3792,8 @@
        stretch the full row height or they collapse to centered bands. */
     align-items: stretch;
     grid-template-columns: minmax(320px, 40%) minmax(0, 1fr);
-    height: 100vh;
-    height: 100dvh;
+    height: calc(100 * var(--bt-vh));
+    height: calc(100 * var(--bt-dvh));
     padding: 0;
   }
 
@@ -3030,7 +3804,7 @@
     justify-content: flex-end;
     gap: 12px;
     overflow: hidden;
-    padding: clamp(36px, 4vw, 56px);
+    padding: clamp(36px, calc(4 * var(--bt-vw)), 56px);
     background: var(--bt-nav);
     border-right: 1px solid var(--bt-border);
   }
@@ -3058,7 +3832,7 @@
     flex-direction: column;
     justify-content: center;
     overflow-y: auto;
-    padding: 48px clamp(28px, 5vw, 72px);
+    padding: 48px clamp(28px, calc(5 * var(--bt-vw)), 72px);
   }
 
   /* On the split the working column IS the surface — drop the card chrome. */
@@ -3092,7 +3866,7 @@
 }
 
 .bt-gate__mark {
-  font-size: clamp(25px, 2.4vw, 32px);
+  font-size: clamp(25px, calc(2.4 * var(--bt-vw)), 32px);
 }
 
 .bt-gate__tagline {
@@ -3114,8 +3888,8 @@
 /* ── First-run wizard ────────────────────────────────────────────────────── */
 
 .bt-fr {
-  min-height: 100vh;
-  min-height: 100dvh;
+  min-height: calc(100 * var(--bt-vh));
+  min-height: calc(100 * var(--bt-dvh));
 }
 
 /* Single column by default (phones): no rail, the compact line carries position.
@@ -3123,8 +3897,8 @@
    standalone surfaces change shape at one place. */
 .bt-fr__shell {
   display: flex;
-  min-height: 100vh;
-  min-height: 100dvh;
+  min-height: calc(100 * var(--bt-vh));
+  min-height: calc(100 * var(--bt-dvh));
   flex-direction: column;
 }
 
@@ -3134,7 +3908,7 @@
   flex: 1;
   flex-direction: column;
   margin-inline: auto;
-  padding: clamp(20px, 4vh, 40px) 18px 40px;
+  padding: clamp(20px, calc(4 * var(--bt-vh)), 40px) 18px 40px;
 }
 
 /* Position on narrow viewports. A tall rail stacked above the question would
@@ -3170,8 +3944,8 @@
     position: sticky;
     top: 0;
     display: flex;
-    height: 100vh;
-    height: 100dvh;
+    height: calc(100 * var(--bt-vh));
+    height: calc(100 * var(--bt-dvh));
     flex-direction: column;
     gap: 34px;
     overflow-y: auto;
@@ -3182,7 +3956,8 @@
 
   .bt-fr__main {
     width: min(560px, 100%);
-    padding: clamp(40px, 8vh, 88px) clamp(28px, 4vw, 56px) 48px;
+    padding: clamp(40px, calc(8 * var(--bt-vh)), 88px) clamp(28px, calc(4 * var(--bt-vw)), 56px)
+      48px;
   }
 
   /* The rail owns position at this width. */
@@ -3461,8 +4236,8 @@
 
 .bt-cc__panel {
   pointer-events: auto;
-  width: min(960px, 94vw);
-  height: min(660px, 90vh);
+  width: min(960px, calc(94 * var(--bt-vw)));
+  height: min(660px, calc(90 * var(--bt-vh)));
   display: flex;
   flex-direction: column;
   background: var(--bt-bg-raised);
@@ -3612,8 +4387,8 @@
   }
 
   .bt-cc__panel {
-    width: 100vw;
-    height: 100dvh;
+    width: calc(100 * var(--bt-vw));
+    height: calc(100 * var(--bt-dvh));
     border: 0;
     border-radius: 0;
   }
@@ -3624,7 +4399,7 @@
   }
 
   .bt-cc__nav {
-    max-height: 38vh;
+    max-height: calc(38 * var(--bt-vh));
     border-right: 0;
     border-bottom: 1px solid var(--bt-border);
   }
@@ -3961,7 +4736,7 @@
  */
 
 .bt-portfolio-menu {
-  max-width: calc(100vw - 24px);
+  max-width: calc(calc(100 * var(--bt-vw)) - 24px);
 }
 
 .bt-portfolio-search {
@@ -4167,11 +4942,20 @@
   right: 16px;
   bottom: 16px;
   z-index: 45;
-  width: 396px;
-  max-width: calc(100vw - 32px);
+  /* A share of the window, not a fixed box (owner: "it shouldnt be too small nor
+     to big no matter what device" — 396px read as a proper side column on a
+     laptop and as a little popup on a 1440p monitor). The clamps keep it a chat
+     column at both ends: never narrower than a message bubble wants, never a
+     second content pane. */
+  width: clamp(380px, calc(27 * var(--bt-vw)), 560px);
+  max-width: calc(calc(100 * var(--bt-vw)) - 32px);
   /* Never touches top and bottom: the inset holds it off both edges and the cap
      keeps it from stretching the full height of a tall monitor. */
-  max-height: min(700px, calc(100vh - var(--bt-topbar-h) - 30px));
+  max-height: min(
+    880px,
+    calc(80 * var(--bt-vh)),
+    calc(calc(100 * var(--bt-vh)) - var(--bt-topbar-h) - 30px)
+  );
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -4193,8 +4977,8 @@
   border-bottom: 1px solid var(--bt-border);
 }
 
-/* Maximized: the Control Center's own popup geometry (min(960px, 94vw) ×
-   min(660px, 90vh), centered, 10px corners) so the two large surfaces feel like
+/* Maximized: the Control Center's own popup geometry (960 × 660 capped to the
+   viewport, centered, 10px corners) so the two large surfaces feel like
    one system. It is NOT modal, though — it stays at z-index 45 under the modal
    layer, and centering by translate rather than a full-viewport grid wrapper
    means only the panel's own box takes pointer events, so the page around it
@@ -4205,8 +4989,8 @@
   right: auto;
   bottom: auto;
   translate: -50% -50%;
-  width: min(960px, 94vw);
-  height: min(660px, 90vh);
+  width: min(960px, calc(94 * var(--bt-vw)));
+  height: min(660px, calc(90 * var(--bt-vh)));
   max-width: none;
   max-height: none;
   animation: bt-rise 300ms cubic-bezier(0.32, 0.72, 0.22, 1) both;
@@ -4324,7 +5108,7 @@
    edge to edge with no page chrome around them. */
 .bt-chatwindow {
   display: flex;
-  height: 100vh;
+  height: calc(100 * var(--bt-vh));
 }
 
 .bt-chatwindow__frame {
@@ -4466,7 +5250,7 @@
   justify-content: flex-start;
   gap: 9px;
   min-width: 200px;
-  max-width: min(340px, 42vw);
+  max-width: min(340px, calc(42 * var(--bt-vw)));
   min-height: 40px;
   padding: 0 10px 0 5px;
   background: var(--bt-surface);
@@ -4775,7 +5559,7 @@
   display: flex;
   align-items: center;
   gap: 9px;
-  width: clamp(260px, 24vw, 340px);
+  width: clamp(260px, calc(24 * var(--bt-vw)), 340px);
   min-height: 34px;
   padding: 0 8px 0 11px;
   border: 1px solid var(--bt-border-strong);
@@ -4821,7 +5605,7 @@
   display: flex;
   align-items: flex-start;
   justify-content: center;
-  padding: min(12vh, 96px) 16px 16px;
+  padding: min(calc(12 * var(--bt-vh)), 96px) 16px 16px;
   background: var(--bt-scrim);
   backdrop-filter: blur(4px);
   animation: bt-fade var(--bt-t-fast) both;
@@ -4831,7 +5615,7 @@
   display: flex;
   flex-direction: column;
   width: min(640px, 100%);
-  max-height: min(72vh, 620px);
+  max-height: min(calc(72 * var(--bt-vh)), 620px);
   overflow: hidden;
   background: var(--bt-bg-raised);
   border: 1px solid var(--bt-border-strong);
@@ -5023,7 +5807,7 @@
 
 @media (max-width: 639.98px) {
   .bt-palette-overlay {
-    padding: 8vh 10px 10px;
+    padding: calc(8 * var(--bt-vh)) 10px 10px;
   }
 
   .bt-palette__meta {
@@ -5068,8 +5852,8 @@
    depth. Sits in the panel's upper two-thirds; the wordmark owns the foot. */
 .bt-authfig {
   position: absolute;
-  top: clamp(52px, 13vh, 148px);
-  left: clamp(30px, 5vw, 66px);
+  top: clamp(52px, calc(13 * var(--bt-vh)), 148px);
+  left: clamp(30px, calc(5 * var(--bt-vw)), 66px);
   width: min(384px, 86%);
   height: 374px;
   pointer-events: none;
@@ -5417,8 +6201,8 @@
    geometry, so the two read as one system. The body scrolls inside it, which is
    what keeps a long step from pushing the footer off screen. */
 .bt-dialog__panel--wizard {
-  width: min(960px, 94vw);
-  height: min(660px, 90vh);
+  width: min(960px, calc(94 * var(--bt-vw)));
+  height: min(660px, calc(90 * var(--bt-vh)));
   max-height: none;
 }
 
@@ -5457,4 +6241,120 @@
   bottom: -4px;
   width: 16px;
   height: 16px;
+}
+
+/* ===== R2: cash flow =========================================================
+ * V5 cash fusion: flat tags replace the old expense-tracking categories,
+ * applied directly on the portfolio's own cash ledger instead of a separate
+ * user-scoped island. A movement can carry several tags at once, so tag
+ * identity everywhere in this area — the ledger, budgets, tag management,
+ * rules — renders through ONE presentational piece (`TagChip`,
+ * apps/web/src/user/portfolio/cashflow/TagChip.tsx): a pill tinted from the
+ * tag's own colour at low alpha, with that same hue carrying the text. This
+ * copies `.bt-pf-chip`'s technique above (tint the surface, keep the ink
+ * strong) rather than inventing a second one — but unlike that fixed
+ * six-colour set, a tag's colour is arbitrary (`#RRGGBB`, user- or
+ * engine-chosen), so the ink is precomputed per chip (`tagChipColor.ts`,
+ * WCAG relative luminance) instead of hand-tuned per named variant, and
+ * handed to CSS as the `--bt-tag-ink-dark` / `--bt-tag-ink-light` pair below
+ * — this file still owns which one applies in which theme. Flat surfaces
+ * throughout: no nested cards, no left-edge accent bars on any row, gold
+ * reserved for the toggle picker's keyboard focus ring only.
+ * ========================================================================== */
+
+/* ── Balance pill ───────────────────────────────────────────────────────────
+   One cash account and its balance, side by side, on the Cash overview. A
+   label-then-number pair rather than a table row: there are two or three of
+   them, they are read at a glance, and a table would give three columns of
+   chrome to six words. The number carries `bt-num` at the call site so it
+   lines up with every other figure on the page. */
+.bt-pill {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--bt-border);
+  background: var(--bt-surface);
+  white-space: nowrap;
+}
+
+.bt-pill__label {
+  color: var(--bt-text-soft);
+  font-size: 12px;
+  font-weight: 570;
+}
+
+.bt-pill__value {
+  color: var(--bt-text);
+  font-size: 13px;
+  font-weight: 620;
+}
+
+.bt-tag-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--bt-tag-color) 32%, transparent);
+  background: color-mix(in srgb, var(--bt-tag-color) 15%, transparent);
+  color: var(--bt-tag-ink-dark);
+  font-size: 11.5px;
+  font-weight: 610;
+  line-height: 1.6;
+  white-space: nowrap;
+}
+
+:root[data-bt-theme='light'] .bt-tag-chip {
+  color: var(--bt-tag-ink-light);
+}
+
+/* The remove control inside a tag chip (the movement tag editor): no
+   left-edge accent, no transition — an instant opacity/tint step already
+   respects reduced motion by never animating in the first place. */
+.bt-tag-chip__remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 13px;
+  height: 13px;
+  margin: 0 -3px 0 1px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: none;
+  color: inherit;
+  font-size: 12px;
+  line-height: 1;
+  cursor: pointer;
+  opacity: 0.7;
+}
+
+.bt-tag-chip__remove:hover {
+  opacity: 1;
+  background: color-mix(in srgb, currentColor 22%, transparent);
+}
+
+/* Unstyled button wrapper around a `TagChip`, used wherever tags are picked
+   from a set (the movement tag editor, a rule's tag picker): dimmed when off,
+   full strength when on — the SELECTION state is the chip's own opacity, not
+   a colour or an edge, so it never competes with gold. The focus ring is the
+   one gold use in this whole section, reserved exactly for keyboard focus. */
+.bt-tag-toggle {
+  padding: 0;
+  border: 0;
+  border-radius: 999px;
+  background: none;
+  cursor: pointer;
+  opacity: 0.45;
+}
+
+.bt-tag-toggle[aria-pressed='true'] {
+  opacity: 1;
+}
+
+.bt-tag-toggle:focus-visible {
+  outline: 2px solid var(--bt-gold);
+  outline-offset: 2px;
 }

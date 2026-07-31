@@ -130,6 +130,12 @@ export interface PortfolioStore {
   ): Promise<CashPreviewResponse>;
   depositCash(portfolioId: string, body: CashEntryRequest): Promise<CashMovementResponse>;
   withdrawCash(portfolioId: string, body: CashEntryRequest): Promise<CashMovementResponse>;
+  /**
+   * Record a standing custody/account fee (V5, §16 2026-07-30). At parity in
+   * BOTH store implementations, so the fee surface cannot work in normal mode
+   * and silently fail — or bypass the vault — in paranoid mode.
+   */
+  chargeCashFee(portfolioId: string, body: CashEntryRequest): Promise<CashMovementResponse>;
   transferCash(portfolioId: string, body: CashTransferRequest): Promise<CashTransferResponse>;
   setCashBalance(
     portfolioId: string,
@@ -184,6 +190,7 @@ export const apiPortfolioStore: PortfolioStore = {
   previewCash: (...args) => portfolioApi.previewCash(...args),
   depositCash: (...args) => portfolioApi.depositCash(...args),
   withdrawCash: (...args) => portfolioApi.withdrawCash(...args),
+  chargeCashFee: (...args) => portfolioApi.chargeCashFee(...args),
   transferCash: (...args) => portfolioApi.transferCash(...args),
   setCashBalance: (...args) => portfolioApi.setCashBalance(...args),
   listStandingOrders: (...args) => standingOrdersApi.listStandingOrders(...args),

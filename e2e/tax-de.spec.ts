@@ -38,6 +38,10 @@ const CSRF_HEADERS = { 'X-Requested-With': 'BetterTrack' };
 async function enableGermanyTaxMode(page: Page): Promise<void> {
   await page.goto('/settings/taxes');
   const germany = page.getByRole('radio', { name: /Germany \(Abgeltungsteuer\)/i });
+  // `click()`, not `check()`: the mode radio is CONTROLLED by server state and
+  // only flips once the settings PATCH returns, which `check()`'s same-tick
+  // verification can never observe (it re-clicks instead). `toBeChecked()` below
+  // is the auto-retrying wait — the assertion is unchanged.
   await germany.click();
   await expect(germany).toBeChecked();
   // The per-year report signpost only renders once a mode is active — a live proof
@@ -46,8 +50,10 @@ async function enableGermanyTaxMode(page: Page): Promise<void> {
 }
 
 /** Deposit EUR into Main so the dividend's withholding never trips the overdraw gate. */
+// Dated explicitly: solvency is replayed chronologically per source, so the
+// funding deposit must predate the backdated trades it settles (see tax-at).
 async function depositToMain(page: Page, amount: string, date: string): Promise<void> {
-  await page.goto('/portfolio/cash-flow/accounts');
+  await page.goto('/portfolio/cash/accounts');
   const rows = page.locator('table[aria-label="Cash sources"] tbody tr');
   // sortSourcesMainFirst: Main is row 0 on a fresh account.
   await rows.nth(0).getByRole('button', { name: 'Deposit' }).click();
@@ -211,8 +217,9 @@ test('DE tax mode: FIFO, Sparer-Pauschbetrag exhaustion, both loss pots, and rep
   await expect(deStatValue(page, /Other-loss pot/)).toContainText(/300/);
   // FIFO: the 2025 sell realizes +€2,000 (oldest 5 @ €100 lot), never the +€1,500
   // a moving-average basis (½·(€100+€300)) would have produced. Resolve the
-  // nearest table for the detail column: the year summary now wraps
-  // the expanded detail row and therefore also contains the same descendant text.
+  // nearest table for the detail column: the year summary wraps the expanded
+  // detail row and therefore also contains the same descendant text, so anchor
+  // on the "Cost basis" columnheader and take its own table.
   const sellsTable = page
     .getByRole('columnheader', { name: 'Cost basis' })
     .locator('xpath=ancestor::table[1]');

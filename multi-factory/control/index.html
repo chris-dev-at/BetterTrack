@@ -1920,6 +1920,170 @@
         text-overflow: ellipsis;
         white-space: nowrap;
       }
+      .claude-account-layout {
+        display: grid;
+        grid-template-columns: minmax(260px, 0.85fr) minmax(420px, 1.25fr);
+        gap: 14px;
+      }
+      .credential-panel {
+        min-width: 0;
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        padding: 13px;
+        background: rgba(18, 33, 38, 0.38);
+      }
+      .credential-panel h3 {
+        margin: 0 0 4px;
+        color: var(--ink);
+        font-size: 13px;
+      }
+      .credential-connect {
+        display: grid;
+        grid-template-columns: minmax(150px, 1fr) auto;
+        gap: 8px;
+        align-items: end;
+        margin-top: 12px;
+      }
+      .credential-connect label {
+        display: grid;
+        gap: 5px;
+      }
+      .credential-profile-list {
+        display: grid;
+        gap: 7px;
+        margin-top: 11px;
+      }
+      .credential-profile {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 8px;
+        align-items: center;
+        border-top: 1px solid var(--border);
+        padding-top: 9px;
+      }
+      .credential-profile strong {
+        display: block;
+        overflow: hidden;
+        color: var(--ink);
+        font-size: 12px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+      .credential-profile-actions {
+        display: flex;
+        gap: 5px;
+      }
+      .credential-usage {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px 9px;
+        align-items: center;
+        margin-top: 5px;
+      }
+      .credential-usage .hint {
+        flex-basis: 100%;
+      }
+      .credential-usage-lanes {
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        padding: 1px 7px;
+        color: var(--ink2);
+        font-size: 10px;
+        letter-spacing: 0.03em;
+      }
+      .credential-usage-lanes.idle {
+        opacity: 0.6;
+      }
+      .credential-usage-meter {
+        display: inline-flex;
+        gap: 5px;
+        align-items: center;
+        color: var(--ink2);
+        font-size: 10px;
+      }
+      .credential-usage-meter b {
+        color: var(--ink2);
+        font-weight: 600;
+      }
+      .credential-usage-meter em {
+        color: var(--ink);
+        font-style: normal;
+        font-variant-numeric: tabular-nums;
+      }
+      .credential-usage-meter .meter {
+        width: 54px;
+      }
+      .routing-accounts {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 7px 14px;
+        margin: 0 0 11px;
+      }
+      .routing-account {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px 8px;
+        align-items: center;
+        border: 1px solid var(--border);
+        border-radius: 9px;
+        padding: 6px 10px;
+      }
+      .routing-account-name {
+        color: var(--ink);
+        font-size: 11px;
+        font-weight: 600;
+      }
+      .credential-login-state {
+        margin-top: 10px;
+        border: 1px solid var(--border);
+        border-radius: 9px;
+        padding: 9px 10px;
+        color: var(--ink2);
+        font-size: 11px;
+      }
+      .credential-login-state.good {
+        border-color: rgba(61, 217, 168, 0.35);
+      }
+      .credential-login-state.bad {
+        border-color: rgba(255, 107, 126, 0.38);
+      }
+      .credential-code {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) auto;
+        gap: 7px;
+        margin-top: 8px;
+      }
+      .credential-assignment-list {
+        display: grid;
+        gap: 0;
+        margin-top: 10px;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        overflow: hidden;
+      }
+      .credential-assignment {
+        display: grid;
+        grid-template-columns: minmax(125px, 0.65fr) minmax(190px, 1fr);
+        gap: 12px;
+        align-items: center;
+        padding: 9px 10px;
+        border-bottom: 1px solid var(--border);
+      }
+      .credential-assignment:last-child {
+        border-bottom: 0;
+      }
+      .credential-assignment .lane {
+        color: var(--ink2);
+        font-size: 11.5px;
+      }
+      .credential-assignment .lane small {
+        display: block;
+        color: var(--muted);
+        font-size: 9.5px;
+      }
+      .credential-assignment select {
+        width: 100%;
+      }
       .route-table {
         overflow: hidden;
         border: 1px solid var(--border);
@@ -2399,6 +2563,9 @@
         .provider-grid {
           grid-template-columns: 1fr;
         }
+        .claude-account-layout {
+          grid-template-columns: 1fr;
+        }
         .bar {
           display: grid;
           grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -2860,11 +3027,57 @@
             never appear in this page.
           </div>
         </div>
+        <div class="card" id="claude-accounts-card" style="margin-bottom: 10px">
+          <h2>
+            Claude accounts
+            <span class="hint">named OAuth credentials · default plus per-lane overrides</span>
+          </h2>
+          <div class="claude-account-layout">
+            <div class="credential-panel">
+              <h3>Saved accounts</h3>
+              <div class="hint">
+                Connect runs Anthropic’s official <code>claude setup-token</code> browser flow. The
+                one-year, model-only credential is stored under the gitignored MultiFactory auth
+                directory and is never returned to this page or written to logs.
+              </div>
+              <div class="credential-connect">
+                <label>
+                  <span class="hint">Account label</span>
+                  <input
+                    id="claude-profile-name"
+                    type="text"
+                    maxlength="64"
+                    autocomplete="off"
+                    placeholder="e.g. Factory Claude"
+                  />
+                </label>
+                <button id="claude-login-start" class="primary" onclick="claudeLoginStart(this)">
+                  Connect account
+                </button>
+              </div>
+              <div id="claude-login-state" aria-live="polite"></div>
+              <div id="claude-profiles" class="credential-profile-list"></div>
+            </div>
+            <div class="credential-panel">
+              <h3>Account assignment</h3>
+              <div class="hint">
+                Master covers composer and CI repair. Each worker selection covers that lane’s
+                writer, reviewers, fixers, and checker. Changes apply to the next Claude role; an
+                already-running role keeps the credential it started with.
+              </div>
+              <div id="claude-assignments" class="credential-assignment-list"></div>
+            </div>
+          </div>
+        </div>
         <div class="card">
           <h2>
             Difficulty → model routing
             <span class="hint">saves apply from the NEXT agent run — no restart needed</span>
           </h2>
+          <!-- Which Claude subscription every claude-provider route below actually
+               draws on, and how much of it is left. Routing decides the model;
+               this decides whether the model can run at all. -->
+          <div id="routing-accounts" class="routing-accounts"></div>
           <div class="route-table" role="table" aria-label="Difficulty routing">
             <div class="route-head" role="row">
               <span role="columnheader">Difficulty</span>
@@ -2976,7 +3189,9 @@
         <div class="card" style="margin-bottom: 12px">
           <h2>
             Subscription windows
-            <span class="hint">live provider telemetry when available</span>
+            <span class="hint" id="ua-subscription-account"
+              >Master Claude account · live provider telemetry when available</span
+            >
           </h2>
           <div class="strip" id="ua-subscription" style="margin-bottom: 12px"></div>
           <div style="display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap">
@@ -3350,7 +3565,6 @@
           fetchUsage(true);
           fetchUsageHist(true);
         }
-        if (t === 'models' && S) renderModels(S);
         if (moveFocus) $('tab-' + t)?.focus();
       }
 
@@ -3429,6 +3643,7 @@
         'wk-plus',
         'tg-add',
         'm-save',
+        'claude-login-start',
       ];
       function disableMutationControls() {
         for (const id of MUTATING_CONTROL_IDS) {
@@ -3439,7 +3654,9 @@
           }
         }
         document
-          .querySelectorAll('#triggers button, #provs button')
+          .querySelectorAll(
+            '#triggers button, #provs button, #claude-accounts-card button, #claude-accounts-card select, #claude-accounts-card input',
+          )
           .forEach((control) => (control.disabled = true));
       }
       async function act(action, btn, confirm = false, payload = {}) {
@@ -3559,6 +3776,353 @@
         wkDesired = n;
         $('wk-n').textContent = n;
         act('set-workers', btn, false, { value: n });
+      }
+
+      /* ---- Claude credential profiles ---- */
+      const claudeAssignmentDraft = new Map();
+      const claudeAssignmentPending = new Set();
+      const claudeRenderRevision = {
+        login: null,
+        profiles: null,
+        assignments: null,
+      };
+      let claudeSubmittedLabel = null,
+        claudeHandledCompletion = null;
+      function setClaudePanelHtml(panel, node, revision, html) {
+        if (claudeRenderRevision[panel] === revision) return false;
+        node.innerHTML = html;
+        claudeRenderRevision[panel] = revision;
+        return true;
+      }
+      const claudeCredentialState = (s = S) => s?.credentials?.providers?.claude || null;
+      const claudeProfileName = (state, profileId) => {
+        if (!profileId || profileId === 'factory-env') return 'Factory .env';
+        return (
+          state?.profiles?.find((profile) => profile.id === profileId)?.name || 'Missing account'
+        );
+      };
+      async function claudeLoginStart(button) {
+        const input = $('claude-profile-name');
+        const name = input.value.trim();
+        if (!name) {
+          toast('Enter a label for this Claude account.', false);
+          input.focus();
+          return;
+        }
+        claudeSubmittedLabel = name;
+        const result = await act('claude-login-start', button, false, { name });
+        if (!result?.ok && claudeSubmittedLabel === name) claudeSubmittedLabel = null;
+        return result;
+      }
+      async function claudeLoginCode(button) {
+        const input = $('claude-login-code');
+        const code = input?.value || '';
+        if (input) input.value = '';
+        await act('claude-login-code', button, false, { code });
+      }
+      function claudeLoginCancel(button) {
+        claudeSubmittedLabel = null;
+        return act('claude-login-cancel', button);
+      }
+      async function claudeAssign(target, select) {
+        const profileId = select.value || null;
+        claudeAssignmentDraft.set(target, select.value);
+        claudeAssignmentPending.add(target);
+        select.disabled = true;
+        select.setAttribute('aria-busy', 'true');
+        let result;
+        try {
+          result = await act('claude-profile-assign', select, false, {
+            target,
+            profileId,
+          });
+          if (!result?.ok) claudeAssignmentDraft.delete(target);
+          return result;
+        } finally {
+          claudeAssignmentPending.delete(target);
+          if (S) renderClaudeCredentials(S);
+        }
+      }
+      function claudeTestProfile(profileId, button) {
+        const route = mAllRoutes(S?.models).find((entry) => entry.provider === 'claude');
+        return act('claude-profile-test', button, false, {
+          profileId,
+          ...(route?.model ? { model: route.model } : {}),
+          ...(route?.effort ? { effort: route.effort } : {}),
+        });
+      }
+      // Quota is readable only through a profile-scoped login. This binds one
+      // saved account to the Claude login this Mac is signed in as; the token is
+      // read from the Keychain per poll, never copied into the factory vault.
+      function claudeUsageLink(profileId, button) {
+        return act('claude-usage-link', button, false, { profileId });
+      }
+      function claudeUsageUnlink(profileId, button) {
+        return act('claude-usage-unlink', button, false, { profileId });
+      }
+      function claudeAssignmentOptions(state, target, selected) {
+        const assignments = state.assignments || {};
+        const defaultId = assignments.default || 'factory-env';
+        const options = [];
+        if (target !== 'default') {
+          options.push({
+            id: '',
+            name: `Inherit default — ${claudeProfileName(state, defaultId)}`,
+          });
+        }
+        if (state.legacyConfigured || selected === 'factory-env' || defaultId === 'factory-env') {
+          options.push({ id: 'factory-env', name: 'Factory .env (legacy)' });
+        }
+        for (const profile of state.profiles || []) {
+          options.push({ id: profile.id, name: profile.name });
+        }
+        return options
+          .map(
+            (option) =>
+              `<option value="${esc(option.id)}"${option.id === selected ? ' selected' : ''}>${esc(option.name)}</option>`,
+          )
+          .join('');
+      }
+      function renderClaudeCredentials(s) {
+        const state = claudeCredentialState(s);
+        const profilesNode = $('claude-profiles');
+        const assignmentsNode = $('claude-assignments');
+        const loginNode = $('claude-login-state');
+        if (!profilesNode || !assignmentsNode || !loginNode) return;
+        if (!state) {
+          setClaudePanelHtml(
+            'profiles',
+            profilesNode,
+            'unsupported',
+            '<div class="hint">Credential profile support is unavailable in this control server.</div>',
+          );
+          setClaudePanelHtml('assignments', assignmentsNode, 'unsupported', '');
+          setClaudePanelHtml('login', loginNode, 'unsupported', '');
+          return;
+        }
+        if (state.unavailable) {
+          $('claude-profile-name').disabled = true;
+          $('claude-login-start').disabled = true;
+          setClaudePanelHtml(
+            'profiles',
+            profilesNode,
+            'unavailable',
+            '<div class="hint">Saved Claude accounts cannot be read safely right now.</div>',
+          );
+          setClaudePanelHtml('assignments', assignmentsNode, 'unavailable', '');
+          loginNode.className = 'credential-login-state bad';
+          setClaudePanelHtml(
+            'login',
+            loginNode,
+            `unavailable:${state.error || ''}`,
+            `<b>Claude accounts unavailable</b><div class="hint">${esc(state.error || 'Credential storage is unavailable.')}</div>`,
+          );
+          return;
+        }
+
+        const login = state.login || { status: 'idle' };
+        const active = ['starting', 'waiting-browser', 'needs-code'].includes(login.status);
+        const controlsAvailable = controlPlaneState(s).available;
+        $('claude-profile-name').disabled = active;
+        $('claude-login-start').disabled = active || !controlsAvailable;
+        const completionKey =
+          login.status === 'completed' && login.profileId
+            ? `${login.profileId}:${login.completedAt || ''}`
+            : null;
+        if (completionKey && completionKey !== claudeHandledCompletion) {
+          const input = $('claude-profile-name');
+          if (
+            claudeSubmittedLabel &&
+            login.name === claudeSubmittedLabel &&
+            input.value.trim() === claudeSubmittedLabel
+          ) {
+            input.value = '';
+          }
+          if (login.name === claudeSubmittedLabel) claudeSubmittedLabel = null;
+          claudeHandledCompletion = completionKey;
+        }
+
+        const loginRevision = JSON.stringify({
+          status: login.status,
+          name: login.name || null,
+          message: login.message || null,
+          needsCode: login.needsCode === true,
+          profileId: login.profileId || null,
+          startedAt: login.startedAt || null,
+          completedAt: login.completedAt || null,
+          controlsAvailable,
+        });
+        if (login.status === 'idle') {
+          setClaudePanelHtml('login', loginNode, loginRevision, '');
+          loginNode.className = '';
+        } else if (claudeRenderRevision.login !== loginRevision) {
+          const tone =
+            login.status === 'completed' ? ' good' : login.status === 'failed' ? ' bad' : '';
+          loginNode.className = `credential-login-state${tone}`;
+          const existingAuthorizationCodeInput = $('claude-login-code');
+          if (login.needsCode === true && existingAuthorizationCodeInput) {
+            const title = loginNode.querySelector('[data-claude-login-title]');
+            const message = loginNode.querySelector('[data-claude-login-message]');
+            if (title) title.textContent = login.name || 'Claude sign-in';
+            if (message) message.textContent = login.message || login.status;
+            existingAuthorizationCodeInput.disabled = !controlsAvailable;
+            loginNode
+              .querySelectorAll('button')
+              .forEach((button) => (button.disabled = !controlsAvailable));
+            claudeRenderRevision.login = loginRevision;
+          } else {
+            const code =
+              login.needsCode === true
+                ? `<div class="credential-code"><input id="claude-login-code" type="password" autocomplete="off" placeholder="Authorization code" aria-label="Claude authorization code"${controlsAvailable ? '' : ' disabled'}><button onclick="claudeLoginCode(this)"${controlsAvailable ? '' : ' disabled'}>Submit code</button></div>`
+                : '';
+            const cancel = active
+              ? `<button class="small" style="margin-top:7px" onclick="claudeLoginCancel(this)"${controlsAvailable ? '' : ' disabled'}>Cancel sign-in</button>`
+              : '';
+            setClaudePanelHtml(
+              'login',
+              loginNode,
+              loginRevision,
+              `<b data-claude-login-title>${esc(login.name || 'Claude sign-in')}</b><div class="hint" data-claude-login-message>${esc(login.message || login.status)}</div>${code}${cancel}`,
+            );
+          }
+        }
+
+        const profiles = state.profiles || [];
+        // Quota per account, not just the master lane's. Deciding which account
+        // to assign next is the whole point of holding two, and that decision
+        // needs both numbers side by side.
+        const accountUsage = new Map(
+          (state.accountUsage || []).map((entry) => [entry.profileId, entry]),
+        );
+        const laneLabel = (service) =>
+          service === 'default'
+            ? 'default'
+            : service === 'master'
+              ? 'master'
+              : service.replace('worker-', 'w');
+        const usagePct = (value) =>
+          typeof value === 'number' && Number.isFinite(value)
+            ? Math.max(0, Math.min(100, Math.round(value)))
+            : null;
+        const usageBar = (label, n) =>
+          n == null
+            ? ''
+            : `<span class="credential-usage-meter"><b>${label}</b><span class="meter"><i class="${n >= 90 ? 'crit' : n >= 75 ? 'warn' : ''}" style="width:${n}%"></i></span><em>${n}%</em></span>`;
+        const usageLine = (profileId) => {
+          const entry = accountUsage.get(profileId);
+          const u = entry?.usage;
+          const lanes = (entry?.lanes || []).map(laneLabel).join(' · ');
+          const lanesHtml = lanes
+            ? `<span class="credential-usage-lanes">${esc(lanes)}</span>`
+            : '<span class="credential-usage-lanes idle">unassigned</span>';
+          if (!u) return `<div class="credential-usage">${lanesHtml}</div>`;
+          const five = usagePct(u.fiveHour?.pct);
+          const seven = usagePct(u.sevenDay?.pct);
+          if (five == null && seven == null) {
+            const throttled = String(u.error || '').includes('429');
+            const retry =
+              u.retryAt && Number.isFinite(u.retryAt)
+                ? ` · retry in ${tuntil(new Date(u.retryAt).toISOString())}`
+                : '';
+            const why = throttled
+              ? 'Anthropic is rate-limiting usage reads'
+              : u.error || 'no reading yet';
+            // Quota needs a profile-scoped login; the factory's own setup token
+            // cannot read it. Offer the one-click fix right where it is missing.
+            const link =
+              u.telemetry && u.telemetry.reason !== 'ready'
+                ? `<button class="small" onclick="claudeUsageLink('${esc(profileId)}',this)"${controlsAvailable ? '' : ' disabled'}>Use this Mac’s login</button>`
+                : '';
+            return `<div class="credential-usage">${lanesHtml}<span class="hint">${esc(why)}${retry}</span>${link}</div>`;
+          }
+          const scoped = (u.scoped || [])
+            .filter((meter) => usagePct(meter.pct) != null)
+            .map((meter) => `${meter.name} ${usagePct(meter.pct)}%`)
+            .join(' · ');
+          const note = [
+            scoped,
+            u.sevenDay?.resetsAt ? `weekly resets in ${tuntil(u.sevenDay.resetsAt)}` : '',
+            u.stale ? 'cached' : '',
+          ]
+            .filter(Boolean)
+            .join(' · ');
+          return `<div class="credential-usage">${lanesHtml}${usageBar('5h', five)}${usageBar('7d', seven)}${note ? `<span class="hint">${esc(note)}</span>` : ''}</div>`;
+        };
+        const profilesRevision = JSON.stringify({
+          profiles,
+          controlsAvailable,
+          accountUsage: (state.accountUsage || []).map((entry) => ({
+            id: entry.profileId,
+            lanes: entry.lanes,
+            five: entry.usage?.fiveHour?.pct ?? null,
+            seven: entry.usage?.sevenDay?.pct ?? null,
+            stale: entry.usage?.stale === true,
+            error: entry.usage?.error || null,
+          })),
+        });
+        const profilesHtml =
+          profiles
+            .map(
+              (profile) => `<div class="credential-profile">
+                <div><strong title="${esc(profile.name)}">${esc(profile.name)}</strong><span class="hint">saved <span data-claude-profile-age="${esc(profile.id)}">${profile.createdAt ? tago(profile.createdAt) : 'locally'}</span> · credential hidden</span>${usageLine(profile.id)}</div>
+                <div class="credential-profile-actions"><button class="small" onclick="claudeTestProfile('${esc(profile.id)}',this)"${controlsAvailable ? '' : ' disabled'}>Test</button></div>
+              </div>`,
+            )
+            .join('') ||
+          '<div class="hint">No named Claude accounts yet. Factory .env remains the fallback.</div>';
+        setClaudePanelHtml('profiles', profilesNode, profilesRevision, profilesHtml);
+        for (const profile of profiles) {
+          const age = profilesNode.querySelector(`[data-claude-profile-age="${profile.id}"]`);
+          if (age) age.textContent = profile.createdAt ? tago(profile.createdAt) : 'locally';
+        }
+
+        const assignments = state.assignments || {};
+        const desired = Number(s?.workers?.desired || 2);
+        const rows = [
+          ['default', 'Default', 'new and inheriting lanes'],
+          ['master', 'Master', 'composer · CI repair'],
+          ...[1, 2, 3, 4].map((id) => [
+            `worker-${id}`,
+            `Worker ${id}`,
+            id <= desired ? 'writer · review · fix' : 'inactive · saved for later',
+          ]),
+        ];
+        const rowState = rows.map(([target, label, detail]) => {
+          const stored =
+            target === 'default' ? assignments.default || 'factory-env' : assignments[target] || '';
+          if (claudeAssignmentDraft.has(target) && claudeAssignmentDraft.get(target) === stored) {
+            claudeAssignmentDraft.delete(target);
+          }
+          return {
+            target,
+            label,
+            detail,
+            stored,
+            selected: claudeAssignmentDraft.has(target)
+              ? claudeAssignmentDraft.get(target)
+              : stored,
+            pending: claudeAssignmentPending.has(target),
+          };
+        });
+        const assignmentsRevision = JSON.stringify({
+          legacyConfigured: state.legacyConfigured === true,
+          profiles: profiles.map(({ id, name }) => ({ id, name })),
+          rows: rowState,
+          controlsAvailable,
+        });
+        const assignmentsHtml = rowState
+          .map(({ target, label, detail, selected, pending }) => {
+            const disabled = pending || !controlsAvailable;
+            return `<label class="credential-assignment"><span class="lane">${esc(label)}<small>${esc(detail)}</small></span><select data-claude-target="${esc(target)}" aria-label="${esc(label)} Claude account" onchange="claudeAssign('${target}',this)"${disabled ? ' disabled' : ''}${pending ? ' aria-busy="true"' : ''}>${claudeAssignmentOptions(state, target, selected)}</select></label>`;
+          })
+          .join('');
+        setClaudePanelHtml('assignments', assignmentsNode, assignmentsRevision, assignmentsHtml);
+        assignmentsNode.querySelectorAll('select[data-claude-target]').forEach((select) => {
+          const pending = claudeAssignmentPending.has(select.dataset.claudeTarget);
+          select.disabled = pending || !controlsAvailable;
+          if (pending) select.setAttribute('aria-busy', 'true');
+          else select.removeAttribute('aria-busy');
+        });
       }
 
       /* ---- models (difficulty → provider/model/effort) UI ---- */
@@ -3850,6 +4414,52 @@
               `<option value="${esc(v)}"${v === sel ? ' selected' : ''}>${esc(labels?.[v] || v)}</option>`,
           )
           .join('');
+      // The Claude accounts backing the routing table, with live quota. Rendered
+      // from the same accountUsage payload the accounts card uses, so the two
+      // views can never disagree about how much is left.
+      function mRenderRoutingAccounts(s) {
+        const node = $('routing-accounts');
+        if (!node) return;
+        const claude = s?.credentials?.providers?.claude || {};
+        const accounts = claude.accountUsage || [];
+        const usesClaude = mAllRoutes(s?.models).some((entry) => entry.provider === 'claude');
+        if (!usesClaude || !accounts.length) {
+          node.innerHTML = '';
+          return;
+        }
+        const pct = (v) =>
+          typeof v === 'number' && Number.isFinite(v)
+            ? Math.max(0, Math.min(100, Math.round(v)))
+            : null;
+        const bar = (label, n) =>
+          n == null
+            ? ''
+            : `<span class="credential-usage-meter"><b>${label}</b><span class="meter"><i class="${n >= 90 ? 'crit' : n >= 75 ? 'warn' : ''}" style="width:${n}%"></i></span><em>${n}%</em></span>`;
+        node.innerHTML = accounts
+          .map((entry) => {
+            const u = entry.usage || {};
+            const five = pct(u.fiveHour?.pct);
+            const seven = pct(u.sevenDay?.pct);
+            const lanes = (entry.lanes || []).length
+              ? (entry.lanes || [])
+                  .map((l) =>
+                    l === 'default'
+                      ? 'default'
+                      : l === 'master'
+                        ? 'master'
+                        : l.replace('worker-', 'w'),
+                  )
+                  .join(' · ')
+              : 'no lanes';
+            const meters =
+              five == null && seven == null
+                ? `<span class="hint">${esc(u.error || 'no reading')}</span>`
+                : `${bar('5h', five)}${bar('7d', seven)}${u.stale ? '<span class="hint">cached</span>' : ''}`;
+            return `<div class="routing-account"><span class="routing-account-name">${esc(entry.name)}</span><span class="credential-usage-lanes">${esc(lanes)}</span>${meters}</div>`;
+          })
+          .join('');
+      }
+
       function mRenderRows(m) {
         const df = m.difficulties || {};
         const defs = providerMap();
@@ -4049,6 +4659,7 @@
       function renderModels(s) {
         if (activeTab !== 'models' || !s) return;
         syncProviderDefs(s);
+        renderClaudeCredentials(s);
         const pv = s.providers || {};
         const pj = JSON.stringify({
           pv,
@@ -4084,6 +4695,10 @@
             })
             .join('');
         }
+        // Ahead of every early return below: quota moves independently of the
+        // routing config, so gating it on a models-JSON change would freeze the
+        // numbers whenever routing is untouched — which is almost always.
+        mRenderRoutingAccounts(s);
         const providerCapabilitiesChanged = renderedProviderRevision !== providerRevision;
         if (mDirty && !providerCapabilitiesChanged) return; // never clobber unsaved edits
         if (mDirty && providerCapabilitiesChanged) {
@@ -4665,6 +5280,31 @@
         optionalRecord(issue.meta) &&
         optionalArray(issue.meta?.dependsOn) &&
         optionalArray(issue.meta?.touches, (touch) => typeof touch === 'string');
+      const containsPrivateCredentialField = (value) => {
+        if (Array.isArray(value)) return value.some(containsPrivateCredentialField);
+        if (!recordValue(value)) return false;
+        return Object.entries(value).some(
+          ([key, nested]) =>
+            /token|secret|authorization.?code|stdout|stderr|raw.?output/i.test(key) ||
+            containsPrivateCredentialField(nested),
+        );
+      };
+      const validClaudeProfile = (profile) =>
+        recordValue(profile) &&
+        typeof profile.id === 'string' &&
+        typeof profile.name === 'string' &&
+        (profile.createdAt == null || typeof profile.createdAt === 'string') &&
+        (profile.updatedAt == null || typeof profile.updatedAt === 'string');
+      const validClaudeCredentialState = (claude) =>
+        claude == null ||
+        (recordValue(claude) &&
+          !containsPrivateCredentialField(claude) &&
+          optionalArray(claude.profiles, validClaudeProfile) &&
+          optionalRecord(claude.assignments) &&
+          Object.values(claude.assignments || {}).every(
+            (selection) => selection === null || typeof selection === 'string',
+          ) &&
+          optionalRecord(claude.login));
       const validSnapshot = (value) => {
         if (
           !recordValue(value) ||
@@ -4701,6 +5341,9 @@
           !optionalRecord(value.models?.difficulties) ||
           !optionalRecord(value.models?.roles) ||
           !optionalRecord(value.providers) ||
+          !optionalRecord(value.credentials) ||
+          !optionalRecord(value.credentials?.providers) ||
+          !validClaudeCredentialState(value.credentials?.providers?.claude) ||
           !optionalRecord(value.control)
         )
           return false;
@@ -4972,6 +5615,12 @@
       function renderSubscriptionUsage(u = {}) {
         const u5 = u.fiveHour;
         const u7 = u.sevenDay;
+        const accountName =
+          typeof u.account?.name === 'string' && u.account.name
+            ? u.account.name
+            : 'Master Claude account';
+        $('ua-subscription-account').textContent =
+          `${accountName} · Master scope · live provider telemetry when available`;
         const meter = (pct) => {
           const n = pctValue(pct);
           const cls = n >= 90 ? 'crit' : n >= 75 ? 'warn' : '';
@@ -5880,15 +6529,20 @@
             .join('') ||
           '<div class="empty-state">No per-issue OpenAI-family usage in this range.</div>';
       }
+      const selectOptionRevisions = new Map();
       function selectOptions(id, allLabel, values, selected) {
         const node = $(id);
-        node.innerHTML =
-          `<option value="all">${esc(allLabel)}</option>` +
-          listOfStrings(values)
-            .map((value) => `<option value="${esc(value)}">${esc(value)}</option>`)
-            .join('');
-        node.value = selected || 'all';
-        if (node.value !== (selected || 'all')) node.value = 'all';
+        const options = listOfStrings(values);
+        const revision = JSON.stringify([allLabel, options]);
+        if (selectOptionRevisions.get(id) !== revision) {
+          node.innerHTML =
+            `<option value="all">${esc(allLabel)}</option>` +
+            options.map((value) => `<option value="${esc(value)}">${esc(value)}</option>`).join('');
+          selectOptionRevisions.set(id, revision);
+        }
+        const desired = selected || 'all';
+        if (node.value !== desired) node.value = desired;
+        if (node.value !== desired) node.value = 'all';
       }
       function renderOpenAIUsage(c) {
         const totals = c.totals || {};

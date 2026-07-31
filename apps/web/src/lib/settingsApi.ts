@@ -2,6 +2,7 @@ import {
   accountSettingsResponseSchema,
   discordSettingsResponseSchema,
   discordTestResponseSchema,
+  homeLayoutEnvelopeSchema,
   notificationSettingsResponseSchema,
   taxSettingsResponseSchema,
   telegramConfirmResponseSchema,
@@ -10,6 +11,7 @@ import {
   type DiscordSettingsResponse,
   type DiscordTestResponse,
   type DiscordWebhookRequest,
+  type HomeLayoutEnvelope,
   type NotificationSettingsResponse,
   type TaxSettingsResponse,
   type TelegramConfirmResponse,
@@ -85,6 +87,39 @@ export async function updateTaxSettings(
 ): Promise<TaxSettingsResponse> {
   const data = await apiRequest<unknown>('/settings/taxes', { method: 'PATCH', body });
   return taxSettingsResponseSchema.parse(data);
+}
+
+// ── Home widget board (R2 home-widgets) ─────────────────────────────────────
+//
+// Both calls parse only the ENVELOPE (`homeLayoutEnvelopeSchema`) and hand the
+// layout through as `unknown`. Validating the board against this build's own
+// schema would mean a document saved by a newer web deploy failing the response
+// parse and blanking Home; instead `parseHomeLayout` degrades it — keeping the
+// widgets this build knows and dropping the rest WITHOUT rewriting anything.
+
+/** `GET /settings/home` — the caller's board; both fields null when none was saved. */
+export async function getHomeLayout(signal?: AbortSignal): Promise<HomeLayoutEnvelope> {
+  const data = await apiRequest<unknown>('/settings/home', { signal });
+  return homeLayoutEnvelopeSchema.parse(data);
+}
+
+/**
+ * `PUT /settings/home` — replace the board outright (`null` clears it). Returns
+ * the stored revision, which the caller records as its last-synced marker.
+ *
+ * `keepalive` is set by the `pagehide` flush only: the browser then finishes the
+ * request after the tab is gone, so the last edit before a fast close is not lost.
+ */
+export async function putHomeLayout(
+  layout: unknown,
+  options: { keepalive?: boolean } = {},
+): Promise<HomeLayoutEnvelope> {
+  const data = await apiRequest<unknown>('/settings/home', {
+    method: 'PUT',
+    body: { layout },
+    keepalive: options.keepalive,
+  });
+  return homeLayoutEnvelopeSchema.parse(data);
 }
 
 // ── Telegram + Discord channels (§13.4 V4-P10) ──────────────────────────────

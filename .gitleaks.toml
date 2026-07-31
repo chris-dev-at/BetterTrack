@@ -22,5 +22,9 @@ id = "generic-api-key"
     '''^apps/api/src/config/__tests__/env\.test\.ts$''',
     '''^apps/api/src/services/imports/__tests__/importService\.test\.ts$''',
     '''^apps/web/src/user/vault/vectors\.fixture\.json$''',
+    # The redesign demo is a static SPA of hand-written fixture data; its
+    # deterministic ids (e.g. `idempotencyKey: 'basis_msft_lot_2020-11'`)
+    # trip only this generic heuristic.
+    '''^apps/redesign-demo/src/OriginAutomation\.tsx$''',
     '''^docs/ops\.md$''',
   ]

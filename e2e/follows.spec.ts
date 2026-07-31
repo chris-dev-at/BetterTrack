@@ -15,7 +15,7 @@ import { befriend, provisionUser } from './support/users';
  * it (the item-follow toggle round-trips). When the owner opts into alert
  * sharing — now from the Social "My items" area, not Settings — a single
  * "Follow their alerts" toggle appears in the same row expansion; and the
- * retired `/people/following` path redirects to the Friends tab.
+ * retired `/following` path redirects to the Friends tab.
  */
 test('follows: follow + bookmark from the Friends tab, alert toggle, /following redirect', async ({
   browser,
@@ -108,8 +108,12 @@ test('follows: follow + bookmark from the Friends tab, alert toggle, /following 
     }),
   ).toHaveAttribute('aria-checked', 'true', { timeout: 15_000 });
 
-  // The retired Following page redirects to the Friends tab.
-  await follower.page.goto('/people/following');
+  // The retired Following page redirects to the Friends tab. The path is the
+  // top-level `/following` the app actually keeps a LegacyRedirect for; the
+  // redesign's `/social` → `/people` sweep had rewritten this to
+  // `/people/following`, which no route matches, so it fell through the
+  // catch-all to `/` and never exercised the redirect at all.
+  await follower.page.goto('/following');
   await expect(follower.page).toHaveURL(/\/people$/);
 
   await owner.context.close();

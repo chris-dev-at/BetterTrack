@@ -2240,6 +2240,7 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
           executedAt: row.executedAt,
           note: row.note ?? null,
           source: row.source,
+          originalCurrency: row.originalCurrency ?? null,
           createdAt: row.createdAt,
         }),
       ),

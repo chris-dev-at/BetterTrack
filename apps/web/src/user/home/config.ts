@@ -2,15 +2,17 @@
  * Home dashboard configuration (R2 home-widgets workstream).
  *
  * The Home screen is a user-composed widget board: which widgets appear, in
- * which order, how wide, and what each one is scoped to. The whole layout lives
- * client-side under one `localStorage` key — there is no server model for it —
- * so this module is the single source of truth for the shape, its defaults and
- * its **forward-safe** parsing.
+ * which order, how wide, and what each one is scoped to. This module is the
+ * single source of truth for the shape, its defaults and its **forward-safe**
+ * parsing. Where the board is *kept* — the per-account server copy and the local
+ * paint cache in front of it — is `homeSync.ts`'s job, so this file stays a pure
+ * model with no storage, no React and no network in it.
  *
- * Forward-safety matters because the key survives deploys and rollbacks: a
- * payload written by a newer build (unknown widget types, unknown settings) must
- * never crash an older one, and a payload from an unknown *version* must never
- * be interpreted under this version's rules. The rules, in order:
+ * Forward-safety matters because a stored board outlives deploys and rollbacks,
+ * and now travels between devices on different builds: a payload written by a
+ * newer build (unknown widget types, unknown settings) must never crash an older
+ * one, and a payload from an unknown *version* must never be interpreted under
+ * this version's rules. The rules, in order:
  *
  *  - unreadable payload (absent, bad JSON, not an object, `widgets` not an
  *    array) or a `version` this build does not own ⇒ {@link DEFAULT_LAYOUT};
@@ -20,15 +22,13 @@
  *    empty state instead of resurrecting the defaults the user just cleared.
  *
  * Parsing NEVER writes. A rollback that drops unknown widget types on read
- * leaves the stored payload intact, so rolling forward again restores them.
+ * leaves the stored payload intact — locally *and* on the server, which stores
+ * the document verbatim — so rolling forward again restores them.
  *
  * Kept free of React and of the widget components on purpose: the registry
  * (`widgets/index.ts`) imports these types, not the other way round, and this
  * module stays unit-testable in isolation.
  */
-
-/** The `localStorage` key holding the whole board. Versioned in the key itself. */
-export const HOME_CONFIG_STORAGE_KEY = 'bt.home.v1';
 
 /** The schema version this build reads and writes. */
 export const HOME_CONFIG_VERSION = 1;
@@ -55,6 +55,7 @@ export const WIDGET_TYPES = [
   'upcoming',
   'recent-transactions',
   'cash-balances',
+  'quick-cash',
   'watchlist',
   'dividends',
   'alerts',
@@ -181,6 +182,9 @@ export const WIDGET_SIZE_RULES: Record<
   upcoming: { allowed: ['s', 'm', 'l'], default: 'm' },
   'recent-transactions': { allowed: ['s', 'm', 'l'], default: 'm' },
   'cash-balances': { allowed: ['s', 'm', 'l'], default: 'm' },
+  // A form, not a report: it needs room for a segmented control and a field on
+  // one line, and it has nothing to spread across a full-width band.
+  'quick-cash': { allowed: ['s', 'm'], default: 'm' },
   watchlist: { allowed: ['s', 'm', 'l'], default: 'm' },
   dividends: { allowed: ['s', 'm', 'l'], default: 'm' },
   // A count plus a couple of rows — it reads fine in one column and has nothing
@@ -393,19 +397,16 @@ function parseWidget(raw: unknown, index: number): WidgetConfig | null {
 }
 
 /**
- * Parse a stored payload (the raw `localStorage` string, or `null`) into a board.
- * Never throws and never writes — see the module docblock for the exact rules.
+ * Parse an already-decoded board document into a board this build can render.
+ * Never throws and never mutates its input — see the module docblock for the
+ * exact rules.
+ *
+ * Takes `unknown` rather than a string because a board now arrives from two
+ * places with the same rules: the local cache (a string) and the server (parsed
+ * JSON, handed through unvalidated on purpose so a document from a newer build
+ * degrades here instead of being rejected wholesale by a response schema).
  */
-export function parseHomeConfig(raw: string | null | undefined): HomeConfig {
-  if (typeof raw !== 'string' || raw.trim() === '') return defaultLayout();
-
-  let decoded: unknown;
-  try {
-    decoded = JSON.parse(raw);
-  } catch {
-    return defaultLayout();
-  }
-
+export function parseHomeLayout(decoded: unknown): HomeConfig {
   if (!isRecord(decoded)) return defaultLayout();
   // A version this build does not own may mean anything at all — do not guess.
   if (decoded.version !== HOME_CONFIG_VERSION) return defaultLayout();
@@ -427,31 +428,13 @@ export function parseHomeConfig(raw: string | null | undefined): HomeConfig {
   return { version: HOME_CONFIG_VERSION, widgets };
 }
 
-/** Read + parse the persisted board. Falls back to the defaults on any failure. */
-export function readHomeConfig(): HomeConfig {
+/** {@link parseHomeLayout} over a raw JSON string (or `null`). Never throws. */
+export function parseHomeConfig(raw: string | null | undefined): HomeConfig {
+  if (typeof raw !== 'string' || raw.trim() === '') return defaultLayout();
   try {
-    return parseHomeConfig(localStorage.getItem(HOME_CONFIG_STORAGE_KEY));
+    return parseHomeLayout(JSON.parse(raw));
   } catch {
-    // No storage available (private mode, disabled cookies) — still render.
     return defaultLayout();
-  }
-}
-
-/** Persist the board. A storage failure is non-fatal: the session keeps its layout. */
-export function writeHomeConfig(config: HomeConfig): void {
-  try {
-    localStorage.setItem(HOME_CONFIG_STORAGE_KEY, JSON.stringify(config));
-  } catch {
-    // Ignored on purpose — persistence is a convenience, not a correctness need.
-  }
-}
-
-/** Forget the stored board so the next read returns {@link DEFAULT_LAYOUT}. */
-export function clearHomeConfig(): void {
-  try {
-    localStorage.removeItem(HOME_CONFIG_STORAGE_KEY);
-  } catch {
-    // Ignored — see writeHomeConfig.
   }
 }
 

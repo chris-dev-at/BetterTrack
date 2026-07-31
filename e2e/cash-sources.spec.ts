@@ -20,7 +20,7 @@ test('cash sources: create, deposit and transfer between two sources', async ({ 
   await apiRequest.dispose();
 
   const page = owner.page;
-  await page.goto('/portfolio/cash-flow/accounts');
+  await page.goto('/portfolio/cash/accounts');
 
   // Create a second cash source (the "Transfer" affordance only earns its place
   // once a second active source exists).

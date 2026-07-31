@@ -79,6 +79,7 @@ export function createParanoidAppPortfolioStore(session: VaultMoneySession): Por
     previewCash: (...args) => session.store.previewCash(...args),
     depositCash: (...args) => session.store.depositCash(...args),
     withdrawCash: (...args) => session.store.withdrawCash(...args),
+    chargeCashFee: (...args) => session.store.chargeCashFee(...args),
     transferCash: (...args) => session.store.transferCash(...args),
     setCashBalance: (...args) => session.store.setCashBalance(...args),
     listStandingOrders: (...args) => session.store.listStandingOrders(...args),

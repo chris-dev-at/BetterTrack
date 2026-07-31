@@ -64,6 +64,15 @@ export interface PriceChartProps {
    * 1Y/3Y/5Y/Max, PROJECTPLAN.md §6.5/§6.6). Defaults to `true`.
    */
   showRangeToggle?: boolean;
+  /**
+   * Which end of the chart's header row the range toggle sits at. `start` (the
+   * default) keeps it under the page heading, where a full-page chart wants it;
+   * `end` puts it on the right, which is what the Home widgets use — their own
+   * title already owns the left of that row, and the toggle lines up with the
+   * widget's right edge instead of hanging off its heading. Series legends take
+   * the other end either way.
+   */
+  rangeAlign?: 'start' | 'end';
   /** Optional overlay series, e.g. a benchmark index (PROJECTPLAN.md §6.6). */
   benchmark?: BenchmarkSeries | null;
   /**
@@ -425,6 +434,7 @@ export function PriceChart({
   ranges = PRICE_RANGES,
   onRangeChange,
   showRangeToggle = true,
+  rangeAlign = 'start',
   benchmark = null,
   markers = [],
   overlays = [],
@@ -775,38 +785,43 @@ export function PriceChart({
     onFallbackRedraw,
   ]);
 
+  const toggle = showRangeToggle ? (
+    <RangeToggle active={activeRange} ranges={ranges} onSelect={selectRange} />
+  ) : null;
+  const legend =
+    hasBenchmark || overlayCount > 0 ? (
+      <div className="flex flex-wrap items-center gap-3">
+        {hasBenchmark ? (
+          <span className="bt-meta flex items-center gap-1.5">
+            <span
+              aria-hidden="true"
+              className="inline-block h-0.5 w-4"
+              style={{ backgroundColor: BENCHMARK_LINE }}
+            />
+            {benchmark.label}
+          </span>
+        ) : null}
+        {overlays.map((overlay, i) => (
+          <span className="bt-meta flex items-center gap-1.5" key={overlay.label}>
+            <span
+              aria-hidden="true"
+              className="inline-block h-0.5 w-4"
+              style={{ backgroundColor: overlayColor(i) }}
+            />
+            {overlay.label}
+          </span>
+        ))}
+      </div>
+    ) : null;
+  // `justify-between` with a placeholder for whichever end is empty: the toggle
+  // sits at its declared end whether or not there is a legend to face it.
+  const [leading, trailing] = rangeAlign === 'end' ? [legend, toggle] : ([toggle, legend] as const);
+
   return (
     <div className={cx('flex flex-col gap-3', className)}>
       <div className="flex flex-wrap items-center justify-between gap-3">
-        {showRangeToggle ? (
-          <RangeToggle active={activeRange} ranges={ranges} onSelect={selectRange} />
-        ) : (
-          <span aria-hidden="true" />
-        )}
-        {hasBenchmark || overlayCount > 0 ? (
-          <div className="flex flex-wrap items-center gap-3">
-            {hasBenchmark ? (
-              <span className="bt-meta flex items-center gap-1.5">
-                <span
-                  aria-hidden="true"
-                  className="inline-block h-0.5 w-4"
-                  style={{ backgroundColor: BENCHMARK_LINE }}
-                />
-                {benchmark.label}
-              </span>
-            ) : null}
-            {overlays.map((overlay, i) => (
-              <span className="bt-meta flex items-center gap-1.5" key={overlay.label}>
-                <span
-                  aria-hidden="true"
-                  className="inline-block h-0.5 w-4"
-                  style={{ backgroundColor: overlayColor(i) }}
-                />
-                {overlay.label}
-              </span>
-            ))}
-          </div>
-        ) : null}
+        {leading ?? <span aria-hidden="true" />}
+        {trailing}
       </div>
 
       {loading ? (

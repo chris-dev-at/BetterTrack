@@ -47,7 +47,7 @@ export const COMMANDS: readonly CommandEntry[] = [
   },
   {
     labelKey: 'portfolio.tabs.cashFlow',
-    to: '/portfolio/cash-flow',
+    to: '/portfolio/cash',
     group: 'navigate',
     icon: 'cash',
     extra: ['expenses', 'budget', 'ausgaben'],
@@ -75,10 +75,24 @@ export const COMMANDS: readonly CommandEntry[] = [
   },
   {
     labelKey: 'cashflow.tabs.accounts',
-    to: '/portfolio/cash-flow/accounts',
+    to: '/portfolio/cash/accounts',
     group: 'navigate',
     icon: 'wallet',
     extra: ['cash sources'],
+  },
+  {
+    labelKey: 'cashflow.tabs.budgets',
+    to: '/portfolio/cash/budgets',
+    group: 'navigate',
+    icon: 'target',
+    extra: ['cash budgets'],
+  },
+  {
+    labelKey: 'cashflow.tabs.tags',
+    to: '/portfolio/cash/labels',
+    group: 'navigate',
+    icon: 'pen',
+    extra: ['cash tags', 'categories'],
   },
   {
     labelKey: 'portfolio.tabs.import',
@@ -250,15 +264,19 @@ export const COMMANDS: readonly CommandEntry[] = [
     suggested: 1,
   },
   {
+    // V5 cash fusion: there is no longer a standalone "record an income or
+    // expense" flow to open (deposits/withdrawals live on Cash accounts,
+    // trades on Activity) — this now jumps straight to the tagged ledger
+    // rather than carrying a `?create=` intent nothing reads.
     labelKey: 'create.cashFlow',
-    to: '/portfolio/cash-flow?create=transaction',
+    to: '/portfolio/cash/movements',
     group: 'create',
     icon: 'cash',
     extra: ['cash flow', 'cashflow', 'income', 'expense', 'einnahme', 'ausgabe'],
   },
   {
     labelKey: 'create.transfer',
-    to: '/portfolio/cash-flow/accounts?create=transfer',
+    to: '/portfolio/cash/accounts?create=transfer',
     group: 'create',
     icon: 'wallet',
     extra: ['cash transfer', 'umbuchung', 'überweisung'],

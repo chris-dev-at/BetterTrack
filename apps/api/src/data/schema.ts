@@ -207,6 +207,17 @@ export const users = pgTable(
     // excludes row counts, document hashes, keys, tokens, and all portfolio data.
     paranoidMediaSet: text('paranoid_media_set').array(),
     paranoidDriveAttestedVersion: integer('paranoid_drive_attested_version'),
+    // The Home widget board (R2 home-widgets), stored per ACCOUNT so the layout
+    // a user composes on one device is the layout they get on every other one.
+    // NULL = never saved a board; the SPA then renders its default layout.
+    //
+    // Deliberately opaque jsonb: the server validates the document's SHAPE and
+    // SIZE (contracts' `homeLayoutSchema`) and never its widget vocabulary, so a
+    // client one deploy ahead can store widget types and settings this build has
+    // never heard of and get them back verbatim. Interpreting them here would
+    // mean an older server silently deleting a newer client's widgets.
+    homeLayout: jsonb('home_layout'),
+    homeLayoutUpdatedAt: timestamp('home_layout_updated_at', { withTimezone: true }),
     lastLoginAt: timestamp('last_login_at', { withTimezone: true }),
     // When the account finished (or dismissed) first-run setup — `null` means it
     // has never been through it. Deliberately NOT derivable from `lastLoginAt`:
@@ -1290,6 +1301,11 @@ export const cashMovementKindEnum = pgEnum('cash_movement_kind', [
   'dividend',
   'tax_withholding',
   'tax_refund',
+  // A standing cost of HOLDING — custody / account / platform fee (V5,
+  // migration 0077, §16 2026-07-30). Always negative, and deliberately NOT a
+  // withdrawal: `domain/cashLedger` classifies it internal so it drags the
+  // performance curve instead of being divided back out of it.
+  'fee',
 ]);
 
 /**
@@ -1449,10 +1465,12 @@ export const portfolioCashMovements = pgTable(
     uniqueIndex('portfolio_cash_movements_dedup_unique').on(t.portfolioId, t.dedupHash),
     // Defense-in-depth mirror of domain/cashLedger's CASH_MOVEMENT_SIGN: the
     // amount's sign must match the kind, and never zero (the ledger never guesses).
+    // A kind in NEITHER list fails the CHECK, so a future kind is rejected at the
+    // DB until it declares its direction here as well as in the domain.
     check(
       'portfolio_cash_movements_sign',
       sql`(${t.kind} in ('deposit','sell_proceeds','transfer_in','dividend','tax_refund') and ${t.amountEur} > 0)
-          or (${t.kind} in ('withdrawal','buy','transfer_out','tax_withholding') and ${t.amountEur} < 0)`,
+          or (${t.kind} in ('withdrawal','buy','transfer_out','tax_withholding','fee') and ${t.amountEur} < 0)`,
     ),
     // Transfer legs always carry their pairing columns; other kinds never do.
     check(
@@ -1473,6 +1491,17 @@ export const portfolioCashMovements = pgTable(
     check(
       'portfolio_cash_movements_original_currency_not_eur',
       sql`${t.originalCurrency} is null or ${t.originalCurrency} <> 'EUR'`,
+    ),
+    // A `fee` is a standing cost of HOLDING, never a trade or dividend fee (V5,
+    // migration 0077). Per-trade fees already ride the transaction's cost basis
+    // and per-dividend withholding is a tax kind, so a `fee` row that linked one
+    // of those parents would be counting the same cost twice. The other three
+    // kind-referencing CHECKs above already pass verbatim for `fee` (it is not a
+    // transfer leg, carries no tax year and is not a dividend); this one states
+    // the remaining half of the invariant instead of leaving it to convention.
+    check(
+      'portfolio_cash_movements_fee_standalone',
+      sql`${t.kind} <> 'fee' or (${t.transactionId} is null and ${t.dividendId} is null)`,
     ),
   ],
 );

@@ -14,6 +14,7 @@ const KILLED_PREFIXES = [
   '/settings/profile',
   '/portfolio/import',
   '/portfolio/cash-flow/import',
+  '/portfolio/cash/import',
   '/portfolio/people',
   '/portfolio/tax/print',
   '/assets/news',
@@ -35,6 +36,13 @@ const KILLED_PREFIXES = [
  *
  * `/portfolio/cash-flow/accounts` deliberately stays live: cash sources are
  * portfolio rows served by the vault store, not expense rows.
+ *
+ * The area was renamed `/portfolio/cash` with three tabs plus setup pages
+ * (V5 cash fusion phase 2 — the fused ledger's overview/movements/budgets/
+ * labels read the SERVER cash endpoints, which the PD3b registry refuses for a
+ * paranoid account), so the SAME kill decision covers both vocabularies: the
+ * legacy names for deep links and bookmarks, the canonical names for the live
+ * router. `/portfolio/cash/accounts` stays live exactly like its legacy alias.
  */
 const KILLED_EXACT_PATHS = new Set([
   '/portfolio/cash-flow',
@@ -42,6 +50,14 @@ const KILLED_EXACT_PATHS = new Set([
   '/portfolio/cash-flow/budgets',
   '/portfolio/cash-flow/categories',
   '/portfolio/cash-flow/rules',
+  '/portfolio/cash',
+  '/portfolio/cash/movements',
+  '/portfolio/cash/transactions',
+  '/portfolio/cash/budgets',
+  '/portfolio/cash/labels',
+  '/portfolio/cash/tags',
+  '/portfolio/cash/rules',
+  '/portfolio/cash/categories',
 ]);
 
 /** Pure route-matrix predicate shared by routing and focused tests. */
@@ -91,7 +107,11 @@ export function safeDestination(pathname: string): string {
   if (pathname.startsWith('/control')) return '/control/account';
   if (pathname.startsWith('/people') || pathname.startsWith('/social')) return '/people';
   if (pathname.startsWith('/assets')) return '/assets';
-  if (pathname.startsWith('/portfolio/cash-flow')) return '/portfolio/cash-flow/accounts';
+  // Both vocabularies land on the CANONICAL accounts page — the legacy alias
+  // would only bounce through the router's LegacyRedirect to the same place.
+  if (pathname.startsWith('/portfolio/cash-flow') || pathname.startsWith('/portfolio/cash')) {
+    return '/portfolio/cash/accounts';
+  }
   if (pathname.includes('/tax/print')) return '/portfolio/tax';
   return '/portfolio';
 }

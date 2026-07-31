@@ -158,6 +158,9 @@ test('comments: audience-scoped thread, reactions, delete-own and owner moderati
   await expect(outsider.page.getByRole('link', { name: /Main/ })).toHaveCount(0);
   // Fail-closed at the API too: the thread (and its reaction state) is a uniform
   // 404 for a viewer the audience does not admit (§6.9 no-enumeration).
+  // The path must be the real `/social/**` mount: while this read pointed at the
+  // non-existent `/api/v1/people/**`, Express answered 404 for EVERY caller and
+  // this privacy assertion passed without once exercising the audience check.
   const outsiderThread = await outsider.context.request.get(
     apiV1(`/social/items/portfolio/${portfolioId}/thread`),
   );

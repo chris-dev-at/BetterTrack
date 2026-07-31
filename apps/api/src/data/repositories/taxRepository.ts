@@ -5,6 +5,7 @@ import { newId } from '../ids';
 import { dividends, portfolioCashMovements, userTaxSettings } from '../schema';
 import type { CashMovementRow, DividendRow, UserTaxSettingsRow } from '../schema';
 import type { NewCashMovement } from './cashMovementRepository';
+import { stampMovementTags } from './cashSystemTagStamp';
 
 /**
  * Tax-engine persistence (V3-P4, §13.3, issue #331): the per-user tax-mode
@@ -191,6 +192,9 @@ export function createTaxRepository(db: Database) {
               })),
             )
             .returning();
+          // Auto-tagging (V5 cash fusion): the inflow becomes `dividend`, its
+          // settlement legs `tax`, in the dividend's own transaction.
+          await stampMovementTags(tx, portfolioId, movementRows);
         }
         return { dividend: toRecord(row), movements: movementRows };
       });

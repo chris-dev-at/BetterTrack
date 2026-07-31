@@ -15,6 +15,7 @@ check(){
 }
 
 REAL_NODE=$(command -v node)
+export REAL_NODE
 ORIGINAL_PATH=$PATH
 mkdir -p "$T/bin" "$T/state/control" "$T/repo"
 
@@ -28,6 +29,9 @@ cat >"$T/bin/node" <<'STUB'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$NODE_CALLS"
 case "$1" in
+  *claude-credential-sync.mjs)
+    exec "$REAL_NODE" "$@"
+    ;;
   *ccr-ensure.mjs)
     [ "${NODE_ENSURE_CASE:-ok}" = fail ] && exit 1
     exit 0
@@ -516,12 +520,32 @@ fi
 
 echo "— Compose auth isolation, override and generated workers"
 L=$T/launcher
-mkdir -p "$L/multi-factory" "$L/factory" "$L/home/.codex" "$L/overlay dir"
+mkdir -p "$L/multi-factory/control" "$L/factory" "$L/home/.codex" "$L/overlay dir"
 cp autorun.sh compose.yml "$L/multi-factory/"
+cp control/claude-credential-sync.mjs control/claude-credentials.mjs \
+  "$L/multi-factory/control/"
 touch "$L/factory/.env"
 printf '%s\n' '{"auth_mode":"fixture"}' >"$L/home/.codex/auth.json"
 printf '%s\n' '{"models":[]}' >"$L/home/.codex/models_cache.json"
 printf '%s\n' 'name: hostile-overlay' 'services: {}' >"$L/overlay dir/runtime.yml"
+CLAUDE_FIXTURE_TOKEN=sk-ant-oat01-launcher_profile-secret-123456
+(
+  cd "$L/multi-factory"
+  CLAUDE_FIXTURE_TOKEN=$CLAUDE_FIXTURE_TOKEN "$REAL_NODE" --input-type=module -e '
+    import { createClaudeCredentialStore } from "./control/claude-credentials.mjs";
+    const store = createClaudeCredentialStore({ authRoot: "./auth" });
+    const profile = await store.save({
+      name: "Secondary Claude",
+      setupToken: process.env.CLAUDE_FIXTURE_TOKEN,
+    });
+    await store.assign({ target: "default", profileId: profile.id });
+    await store.assign({ target: "worker-4", profileId: "factory-env" });
+  '
+)
+# Prove autorun invokes the materializer instead of merely accepting whatever
+# happened to be in a service directory before startup.
+printf '%s\n' 'stale-token-before-autorun' \
+  >"$L/multi-factory/auth/master/claude/oauth-token"
 cat >"$T/bin/docker" <<'STUB'
 #!/usr/bin/env bash
 [ "$1" = info ] && exit 0
@@ -545,6 +569,12 @@ OVERRIDE_CANON=$(cd "$(dirname "$OVERRIDE")" && pwd -P)/$(basename "$OVERRIDE")
     ./multi-factory/autorun.sh --dry >/dev/null
 )
 for service in master worker-1 worker-2 worker-3 worker-4; do
+  if [ -d "$L/multi-factory/auth/$service/claude" ] \
+    && [ -f "$L/multi-factory/auth/$service/claude/profile.json" ]; then
+    ok "$service has independent materialized Claude state"
+  else
+    bad "$service missing materialized Claude state"
+  fi
   if [ -d "$L/multi-factory/auth/$service/ccr" ]; then
     ok "$service has independent CCR state"
   else
@@ -557,6 +587,41 @@ for service in master worker-1 worker-2 worker-3 worker-4; do
     bad "$service missing Codex auth/model cache"
   fi
 done
+for service in master worker-1 worker-2 worker-3; do
+  check "$service inherits the selected default Claude profile" "Secondary Claude" \
+    "$(jq -r .name "$L/multi-factory/auth/$service/claude/profile.json")"
+  check "$service receives the selected default Claude token" "$CLAUDE_FIXTURE_TOKEN" \
+    "$(<"$L/multi-factory/auth/$service/claude/oauth-token")"
+done
+check "worker-4 keeps its explicit Factory .env override" "factory-env" \
+  "$(jq -r .source "$L/multi-factory/auth/worker-4/claude/profile.json")"
+check "Factory .env override removes any materialized Claude token" 0 \
+  "$([ -e "$L/multi-factory/auth/worker-4/claude/oauth-token" ] && echo 1 || echo 0)"
+check "Claude profile metadata never persists the setup token" 0 \
+  "$(grep -R -l --exclude=oauth-token "$CLAUDE_FIXTURE_TOKEN" \
+    "$L/multi-factory/auth" 2>/dev/null | wc -l | tr -d ' ')"
+check "base Compose defines three independent Claude-account mounts" 3 \
+  "$(grep -c ':/home/factory/.claude-auth:ro' compose.yml)"
+check "generated Compose defines worker 3/4 Claude-account mounts" 2 \
+  "$(grep -c ':/home/factory/.claude-auth:ro' "$L/multi-factory/compose.extra.yml")"
+grep -q 'MF_CLAUDE_TOKEN_FILE:' compose.yml \
+  && ok "base Compose plumbs the selected Claude token file" \
+  || bad "base Claude token path missing"
+grep -q 'MF_CLAUDE_PROFILE_FILE:' compose.yml \
+  && ok "base Compose plumbs the selected Claude profile marker" \
+  || bad "base Claude profile path missing"
+grep -q "MF_CLAUDE_PROFILE_REQUIRED: '1'" compose.yml \
+  && ok "base Compose requires a Claude selection marker" \
+  || bad "base Compose permits a missing Claude selection marker"
+grep -q 'MF_CLAUDE_TOKEN_FILE:' "$L/multi-factory/compose.extra.yml" \
+  && ok "generated workers plumb the selected Claude token file" \
+  || bad "generated Claude token path missing"
+grep -q 'MF_CLAUDE_PROFILE_FILE:' "$L/multi-factory/compose.extra.yml" \
+  && ok "generated workers plumb the selected Claude profile marker" \
+  || bad "generated Claude profile path missing"
+grep -q "MF_CLAUDE_PROFILE_REQUIRED: '1'" "$L/multi-factory/compose.extra.yml" \
+  && ok "generated workers require a Claude selection marker" \
+  || bad "generated workers permit a missing Claude selection marker"
 check "base Compose defines three independent CCR mounts" 3 \
   "$(grep -c ':/home/factory/.claude-code-router' compose.yml)"
 check "generated Compose defines worker 3/4 CCR mounts" 2 \

@@ -1,17 +1,22 @@
 import { defineConfig, devices } from '@playwright/test';
 
 import {
+  ADMIN_BASE_URL,
   ADMIN_EMAIL,
   ADMIN_PASSWORD,
+  ADMIN_PORT,
   API_BASE_URL,
+  API_PORT,
   DATABASE_URL,
   FAKE_GOOGLE_PORT,
   FAKE_GOOGLE_URL,
   GOOGLE_CLIENT_ID,
   GOOGLE_CLIENT_SECRET,
+  METRICS_PORT,
   REDIS_URL,
   SESSION_SECRET,
   WEB_BASE_URL,
+  WEB_PORT,
   WORKER_HEALTH_PORT,
   WORKER_HEALTH_URL,
 } from './e2e/support/config';
@@ -30,12 +35,20 @@ const apiEnv = {
   // roll-up on every auth landing (Origin redesign), so the human-scale burst
   // window needs e2e headroom; the steady-state limit stays enforced.
   RATE_LIMIT_BURST_LIMIT: '240',
+  // Make the API listen where the specs look (see config.ts API_PORT) instead of
+  // inheriting `PORT`'s 3000 default, and pin the Prometheus port so a dev
+  // stack's API on the same host cannot cause an EADDRINUSE crash at boot.
+  PORT: API_PORT,
+  BT_METRICS_PORT: METRICS_PORT,
   DATABASE_URL,
   REDIS_URL,
   SESSION_SECRET,
   BT_API_ORIGIN: API_BASE_URL,
   BT_WEB_ORIGIN: WEB_BASE_URL,
-  BT_ADMIN_ORIGIN: WEB_BASE_URL,
+  // The admin console has its own origin here, like it does in production —
+  // see e2e/support/config.ts. Pointing this at the user origin left the API
+  // treating the console as an unknown origin.
+  BT_ADMIN_ORIGIN: ADMIN_BASE_URL,
   ADMIN_EMAIL,
   ADMIN_PASSWORD,
   // Google sign-in against the fake IdP (issue #520). The client id/secret turn
@@ -47,6 +60,12 @@ const apiEnv = {
   BT_GOOGLE_AUTHORIZE_ENDPOINT: `${FAKE_GOOGLE_URL}/authorize`,
   BT_GOOGLE_TOKEN_ENDPOINT: `${FAKE_GOOGLE_URL}/token`,
   BT_GOOGLE_JWKS_URI: `${FAKE_GOOGLE_URL}/jwks`,
+  // One shard drives 40-60 sign-ins a minute from a single address — well past
+  // the production per-IP login limit of 25/min, whose escalating cooldown then
+  // fails every later spec for a reason that has nothing to do with the product.
+  // Raised HERE ONLY, against a throwaway database; the production default in
+  // apps/api/src/config/env.ts is untouched (owner decision, 2026-07-30).
+  RATE_LIMIT_LOGIN_IP_LIMIT: '10000',
 };
 
 // Both processes read the API environment, but only the HTTP API needs the
@@ -90,13 +109,49 @@ export default defineConfig({
         'pnpm --filter @bettertrack/api db:migrate && pnpm --filter @bettertrack/api db:seed && pnpm --filter @bettertrack/api dev',
       url: `${API_BASE_URL}/api/v1/health`,
       env: apiEnv,
-      reuseExistingServer: !process.env.CI,
+      // NEVER adopt a server we did not start — not even locally. `/api/v1/health`
+      // answers the same "ok" whatever database is behind it, so an already-running
+      // stack passed the readiness poll and became the system under test, skipping
+      // the migrate+seed above and silently discarding every env var in `apiEnv`
+      // — `DATABASE_URL` included. That is how a local run ended up interrogating
+      // the developer's own dev database (2026-07-30). The ports in
+      // e2e/support/config.ts now sit off the dev stack's, so the only thing that
+      // can own this one is a leaked e2e server, and failing loudly on it is
+      // right: a stale server would be running pre-migration code.
+      reuseExistingServer: false,
       timeout: 120_000,
     },
     {
-      command: 'pnpm --filter @bettertrack/web dev',
+      command: `pnpm --filter @bettertrack/web dev --port ${WEB_PORT} --strictPort`,
       url: WEB_BASE_URL,
-      reuseExistingServer: !process.env.CI,
+      // Vite's dev proxy target must follow the API's port, or a moved API base
+      // URL would leave `/api` pointing at whatever owns 3000 (§4.6 same-origin
+      // dev topology). `--strictPort` makes a busy port a loud failure instead
+      // of Vite silently serving the suite from the next free one.
+      //
+      // VITE_GOOGLE_DRIVE_CLIENT_ID: the ConnectionsPanel gates its Drive
+      // app-data controls (PD8's "Add server copy" among them) on this build
+      // var being non-empty; without it PD9-A4 finds the button permanently
+      // disabled behind "not configured on this deployment". The fake id
+      // mirrors the fake-IdP pattern — it is only ever read as a boolean here,
+      // and the Drive boundary itself is doubled by e2e/support/pd9Drive.
+      env: {
+        ...process.env,
+        BT_WEB_DEV_PROXY_TARGET: API_BASE_URL,
+        VITE_GOOGLE_DRIVE_CLIENT_ID: GOOGLE_CLIENT_ID,
+      },
+      reuseExistingServer: false,
+      timeout: 60_000,
+    },
+    // The ADMIN console: the same SPA, served in admin mode on its own origin,
+    // the way nginx does it per server block in production (§7.1). Without it
+    // `/admin/*` resolves against the USER app, which has no such route — so
+    // every admin-UI spec landed on the sign-in page instead.
+    {
+      command: `pnpm --filter @bettertrack/web exec vite --config vite.admin.config.mts --port ${ADMIN_PORT} --strictPort`,
+      url: ADMIN_BASE_URL,
+      env: { ...process.env, BT_WEB_DEV_PROXY_TARGET: API_BASE_URL },
+      reuseExistingServer: false,
       timeout: 60_000,
     },
     // The BullMQ worker (issue #426, flow 6): the alerts evaluator only runs
@@ -107,7 +162,7 @@ export default defineConfig({
       command: 'node e2e/support/workerServer.mjs',
       url: WORKER_HEALTH_URL,
       env: workerEnv,
-      reuseExistingServer: !process.env.CI,
+      reuseExistingServer: false,
       timeout: 120_000,
     },
     // Fake Google IdP (issue #520): a local OAuth/OIDC stand-in so the real
@@ -123,7 +178,7 @@ export default defineConfig({
         BT_GOOGLE_CLIENT_ID: GOOGLE_CLIENT_ID,
         E2E_GOOGLE_CALLBACK_ORIGIN: WEB_BASE_URL,
       },
-      reuseExistingServer: !process.env.CI,
+      reuseExistingServer: false,
       timeout: 60_000,
     },
   ],

@@ -291,18 +291,21 @@ function RequestsSection({ sharingAllowed }: { sharingAllowed: boolean }) {
   function invalidate() {
     void queryClient.invalidateQueries({ queryKey: ['social', 'requests'] });
     void queryClient.invalidateQueries({ queryKey: ['social', 'friends'] });
+    // Becoming friends CHANGES WHAT IS SHARED WITH YOU: anything the other
+    // person had already shared to "all friends" becomes visible the moment the
+    // request is accepted. Without this the new friend's row read "nothing
+    // shared yet" until a manual reload — the share was there, the cache was
+    // not. The same pair is invalidated together on the un-friend path below.
+    void queryClient.invalidateQueries({ queryKey: ['social', 'shared-with-me'] });
   }
 
+  // `invalidate()` already refreshes shared-with-me: `all_friends` audiences
+  // admit this user the moment the friendship forms, and the shared pair is
+  // covered there for accept and un-friend alike (both sides of the second
+  // merge wave had added this fix — once each).
   const acceptMutation = useMutation({
     mutationFn: (id: string) => acceptFriendRequest(id),
-    onSuccess: () => {
-      invalidate();
-      // `all_friends` audiences admit this user for the first time at the same
-      // moment the friendship forms. Refresh the enforcement-derived overview
-      // so an already-mounted Friends page does not keep its pre-accept empty
-      // result until the normal stale window expires.
-      void queryClient.invalidateQueries({ queryKey: ['social', 'shared-with-me'] });
-    },
+    onSuccess: invalidate,
   });
   const declineMutation = useMutation({
     mutationFn: (id: string) => declineFriendRequest(id),

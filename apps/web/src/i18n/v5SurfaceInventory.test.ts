@@ -29,6 +29,7 @@ import {
   SURFACE_UNIVERSE_ROOTS,
   V5_SURFACE_INVENTORY,
 } from './v5SurfaceInventory';
+import { matchControlPanel } from '../user/control/ControlCenterOverlay';
 
 const SRC_ROOT = resolve(process.cwd(), 'src');
 
@@ -103,16 +104,6 @@ user/control/panels/ProfilePanel.tsx
 user/control/panels/SignInPanel.tsx
 user/control/panels/WebhooksPanel.tsx
 user/control/panels/taxModeList.tsx
-user/expenses/BudgetDialog.tsx
-user/expenses/BudgetsPage.tsx
-user/expenses/CategoriesPage.tsx
-user/expenses/CategoryDialog.tsx
-user/expenses/DashboardPage.tsx
-user/expenses/ImportPage.tsx
-user/expenses/RuleDialog.tsx
-user/expenses/RulesPage.tsx
-user/expenses/TransactionDialog.tsx
-user/expenses/TransactionsPage.tsx
 user/forecast/ForecastPage.tsx
 user/forecast/ProjectionSection.tsx
 user/forecast/StandingOrderDialog.tsx
@@ -143,6 +134,22 @@ user/portfolio/analytics/AiInsightsPanel.tsx
 user/portfolio/analytics/AnalyticsPage.tsx
 user/portfolio/analytics/CompareControl.tsx
 user/portfolio/analytics/ContributionTable.tsx
+user/portfolio/cashflow/CashBudgetDialog.tsx
+user/portfolio/cashflow/CashBudgetsPage.tsx
+user/portfolio/cashflow/CashLabelsPage.tsx
+user/portfolio/cashflow/CashMovementTagsDialog.tsx
+user/portfolio/cashflow/CashMovementsPage.tsx
+user/portfolio/cashflow/CashOverviewPage.tsx
+user/portfolio/cashflow/CashRuleDialog.tsx
+user/portfolio/cashflow/CashRulesPage.tsx
+user/portfolio/cashflow/CashTagDialog.tsx
+user/portfolio/cashflow/CashTagsPage.tsx
+user/portfolio/cashflow/CashflowChart.tsx
+user/portfolio/cashflow/MonthPicker.tsx
+user/portfolio/cashflow/RecordCashButton.tsx
+user/portfolio/cashflow/RecordCashDialog.tsx
+user/portfolio/cashflow/SectionHead.tsx
+user/portfolio/cashflow/TagChip.tsx
 user/portfolio/wizard/PortfolioWizard.tsx
 user/settings/taxModePicker.tsx
 user/social/ChatPage.tsx
@@ -219,13 +226,11 @@ const EXPECTED_V5_ROUTES = baseline(`
 /portfolio
 /portfolio/activity
 /portfolio/analysis
-/portfolio/cash-flow
-/portfolio/cash-flow/accounts
-/portfolio/cash-flow/budgets
-/portfolio/cash-flow/categories
-/portfolio/cash-flow/import
-/portfolio/cash-flow/rules
-/portfolio/cash-flow/transactions
+/portfolio/cash
+/portfolio/cash/accounts
+/portfolio/cash/budgets
+/portfolio/cash/labels
+/portfolio/cash/movements
 /portfolio/import
 /portfolio/settings
 /portfolio/tax
@@ -267,12 +272,19 @@ const EXPECTED_V5_PHASES = [
 ].sort();
 
 /**
- * The Control Center is one route (`/control/:panel?`) whose panels are
- * addressable deep links; the inventory names the panels, the registry names
- * the parameterized route.
+ * The Control Center is an addressable overlay rather than a route element:
+ * `UserShell` resolves `/control/:panel?` with `matchControlPanel` and keeps the
+ * page behind it mounted. The inventory names the panel deep links, so the
+ * route-completeness gate verifies them against that matcher as well as the two
+ * ordinary `<Route>` registries.
  */
 const CONTROL_PANEL_ROUTE = '/control/:panel?';
 const CONTROL_PANEL_DEEP_LINK = /^\/control\/[a-z-]+$/;
+
+function isAddressableControlSurface(path: string): boolean {
+  if (path === CONTROL_PANEL_ROUTE) return matchControlPanel('/control') !== null;
+  return CONTROL_PANEL_DEEP_LINK.test(path) && matchControlPanel(path) !== null;
+}
 
 function messageNode(root: MessageNode, path: string): string | MessageNode | undefined {
   let value: string | MessageNode | undefined = root;
@@ -624,11 +636,7 @@ describe('V5-P14 surface traceability inventory', () => {
     ).toEqual([]);
 
     const unregistered = [...inventoried]
-      .filter(
-        (path) =>
-          !registeredPaths.has(path) &&
-          !(registeredPaths.has(CONTROL_PANEL_ROUTE) && CONTROL_PANEL_DEEP_LINK.test(path)),
-      )
+      .filter((path) => !registeredPaths.has(path) && !isAddressableControlSurface(path))
       .sort();
     expect(
       unregistered,

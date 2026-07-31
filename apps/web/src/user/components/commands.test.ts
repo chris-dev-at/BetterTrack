@@ -61,7 +61,7 @@ describe('filterCommands', () => {
 
   test('ranks a label prefix above a mid-word containment', () => {
     const hits = labels('cash');
-    expect(hits[0]).toBe('Cash flow');
+    expect(hits[0]).toBe('Cash');
     // "Backtests" contains no "cash"; "Cash accounts" is a prefix hit too.
     expect(hits).toContain('Cash accounts');
   });
@@ -85,7 +85,7 @@ describe('filterCommands', () => {
   });
 
   test('matching is case-insensitive', () => {
-    expect(labels('CASH FLOW')).toContain('Cash flow');
+    expect(labels('CASH')).toContain('Cash');
   });
 
   test('is stable within a score (registry order decides ties)', () => {
@@ -97,7 +97,7 @@ describe('filterCommands', () => {
 
 describe('sectionLabelKeyFor', () => {
   test('names the parent section of a nested destination', () => {
-    expect(sectionLabelKeyFor('/portfolio/cash-flow')).toBe('nav.portfolios');
+    expect(sectionLabelKeyFor('/portfolio/cash')).toBe('nav.portfolios');
     expect(sectionLabelKeyFor('/workbench/blueprints')).toBe('nav.workbench');
     expect(sectionLabelKeyFor('/control/security')).toBe('nav.controlCenter');
   });

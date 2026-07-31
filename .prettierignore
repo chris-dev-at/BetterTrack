@@ -9,3 +9,7 @@ MODELUSE.md
 CLAUDE.md
 STARTAUTOMATE.md
 .claude
+
+# nginx include stubs — config syntax prettier cannot parse; a --write pass
+# deletes their comment headers and mangles the map blocks
+*.inc

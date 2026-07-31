@@ -257,6 +257,23 @@ export function createPortfolioRouter(ctx: AppContext): Router {
     }),
   );
 
+  // POST /portfolios/:portfolioId/cash/fee — record a standing custody / account
+  // / platform fee; 400 on overdraw, exactly like a withdrawal (V5, §16
+  // 2026-07-30). Same body as deposit/withdraw; the difference is the stored
+  // kind, which makes the fee a cost of HOLDING that drags the performance curve
+  // rather than an external flow divided back out of it.
+  router.post(
+    '/:portfolioId/cash/fee',
+    validateParams(portfolioIdParamSchema),
+    idempotency,
+    withIdempotencyExecution(validateBody(cashEntryRequestSchema), async (req, res) => {
+      const { portfolioId } = req.valid?.params as { portfolioId: string };
+      const body = req.valid?.body as CashEntryRequest;
+      const result = await ctx.mirror.submitCashFee(req.authUser!.id, portfolioId, body);
+      res.status(201).json(result);
+    }),
+  );
+
   // POST /portfolios/:portfolioId/cash/preview — live "available → after" preview (§14).
   router.post(
     '/:portfolioId/cash/preview',
