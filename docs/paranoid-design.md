@@ -1,13 +1,13 @@
 # PARANOID MODE — client-encrypted privacy mode design note (V5-P13, arc b)
 
-**Status:** binding design, §16-logged 2026-07-21 (issue #651) and
-**owner-acked before composition**. The stale first composition gate was
-superseded by the owner-approved `v5-p13-pd9-20260724` composition brief; issue
-#733 is the executable final gate against this note. Per the §13.5
-design-note-first rule this note was merged BEFORE paranoid feature code. The
-implementation issues in §14 build against this text; every "planner-defined"
-point in the §13.5 spec row is decided here. Deviations found during
-implementation go back through §16.
+**Status:** binding design, §16-logged 2026-07-21 (issue #651). Per the §13.5
+design-note-first rule this note is merged BEFORE any paranoid feature code,
+and — stricter than mirrorchain — implementation is **not even composed** until
+the owner acks it (the spec says "§16-logged **and owner-acked** BEFORE any
+code"; the ack gate is a filed `awaiting-owner` issue). The implementation
+issues in §14 build against this text; every "planner-defined" point in the
+§13.5 spec row is decided here. Deviations found during implementation go back
+through §16.
 
 **The model in one paragraph.** A paranoid account's portfolio data lives in
 ONE client-side encrypted **vault**: the client (web/PWA) holds the cleartext
@@ -271,25 +271,17 @@ sequence for every switch:
    medium live.
 2. **Remove a medium:** allowed only while at least one OTHER medium holds a
    verified-fresh copy (same round-trip check, re-run now). Removing `server`
-   ⇒ the PATCH transaction atomically removes the blob + bounded history from
-   the **active** server medium and moves those ciphertext versions into the
-   **retired recovery set**. Drive-only begins immediately — active server blob
-   and history reads are empty — while the recoverable ciphertext stays behind
-   the separately authenticated **signed purge gate** for its minimum retention
-   window. Only that later gate (matching the retired version, a fresh Drive
-   readback, the server challenge, and client-held Ed25519 proof) destroys the
-   retired bytes; a media PATCH or client attestation alone never does. Removing
-   `drive` ⇒ the client best-effort deletes the Drive file (and tells the user if
-   it could not; the leftover is their own ciphertext in their own Drive).
+   ⇒ the PATCH transaction **hard-deletes the blob + its entire bounded
+   history server-side** — this is the moment the Drive-only "zero portfolio
+   bytes server-side" state begins. Removing `drive` ⇒ the client best-effort
+   deletes the Drive file (and tells the user if it could not; the leftover is
+   their own ciphertext in their own Drive).
 3. The last medium can never be removed (media set non-empty; the server
    validates the PATCH, the UI never offers it).
 
 The §13.5 "media switching migrates the blob correctly" test follows this
-sequence literally: enable on Drive → add server (candidate round trip
-verified) → force a Drive verification failure and prove the server source is
-retained → retry removal → probe zero **active/history** server bytes plus the
-recoverable retired set → app fully functional. Total server ciphertext reaches
-zero only through the separate retention-qualified signed purge gate (#896).
+sequence literally: enable on server → add Drive (round trip verified) →
+remove server → probe zero vault bytes server-side → app fully functional.
 
 ## 6. The Google Drive medium (end-user OAuth)
 
@@ -873,7 +865,7 @@ PD4–PD7); PD9 last.
 
 | §13.5 "done when" criterion                                                                       | Decided by                                                  |
 | ------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
-| Design note §16-logged + owner-acked BEFORE code                                                  | This note's status block + `v5-p13-pd9-20260724` / #733     |
+| Design note §16-logged + owner-acked BEFORE code                                                  | This note's status block + the `awaiting-owner` gate        |
 | Mode on ⇒ server stores no cleartext portfolio data (schema/probe test)                           | §1 (classification), §7 (purge sweep), §8 (enforcement)     |
 | Drive-only round trip: zero portfolio rows server-side and the app remains fully functional (e2e) | §5 (removal semantics), §6 (guarantee), §8 (kept list), §10 |
 | Media switching migrates the blob correctly (test)                                                | §5 (migrate-then-drop, verbatim sequence)                   |

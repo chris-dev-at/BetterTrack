@@ -4,8 +4,13 @@ import {
   test,
   type APIResponse,
   type Page,
+  type TestInfo,
 } from '@playwright/test';
 
+import {
+  isParanoidKilledPath,
+  safeDestination,
+} from '../apps/web/src/user/vault/ui/ParanoidSurfaceGate';
 import { loginAsAdmin } from './support/adminApi';
 import { API_BASE_URL } from './support/config';
 import {
@@ -16,6 +21,7 @@ import {
 } from './support/pd9';
 import {
   assertNoPd9Secrets,
+  assertPd9DriveInstalled,
   fillPd9Secret,
   installPd9Drive,
   pd9CiphertextCanaries,
@@ -37,6 +43,7 @@ const KILLED_ROUTE_MATRIX = [
   ['/people/shared/pd9-portfolio', '/people'],
   ['/people/profile', '/people'],
   ['/control/profile', '/control/account'],
+  ['/settings/profile', '/portfolio'],
   ['/portfolio/import', '/portfolio'],
   ['/portfolio/cash-flow', '/portfolio/cash-flow/accounts'],
   ['/portfolio/cash-flow/transactions', '/portfolio/cash-flow/accounts'],
@@ -55,7 +62,11 @@ const KILLED_ROUTE_MATRIX = [
 interface MoneyFixture {
   portfolioId: string;
   asset: { id: string; symbol: string; name: string };
-  alert: { id: string; symbol: string };
+}
+
+interface AlertFixture {
+  id: string;
+  symbol: string;
 }
 
 // These scenarios intentionally enter real passphrases into the DOM. Keep
@@ -71,9 +82,11 @@ test.describe('PD9 paranoid-mode end-to-end gate', () => {
     const monitor = await installPd9Drive(context);
     const admin = await newRequestContext.newContext({ baseURL: API_BASE_URL });
     let owner: E2EUser | null = null;
+    let bodyFailure: unknown;
     try {
       await loginAsAdmin(admin);
       owner = await provisionUserInContext(context, admin, 'pd9normal');
+      await assertPd9DriveInstalled(owner.page);
       collectSanitizedDiagnostics(owner.page, diagnostics);
 
       const portfolioReads: string[] = [];
@@ -88,11 +101,14 @@ test.describe('PD9 paranoid-mode end-to-end gate', () => {
 
       const portfolios = await owner.context.request.get(apiV1('/portfolios'));
       expect(portfolios.ok(), await portfolios.text()).toBeTruthy();
+    } catch (error) {
+      bodyFailure = error;
+      throw error;
     } finally {
       try {
         await admin.dispose();
       } finally {
-        await assertNoPd9Secrets(testInfo, diagnostics);
+        await softAssertNoPd9Secrets(testInfo, diagnostics, [], bodyFailure);
       }
     }
   });
@@ -112,6 +128,7 @@ test.describe('PD9 paranoid-mode end-to-end gate', () => {
     const admin = await newRequestContext.newContext({ baseURL: API_BASE_URL });
     const harness = createPd9Harness();
     let owner: E2EUser | null = null;
+    let bodyFailure: unknown;
 
     try {
       await test.step('[PD9-A1] binding design precondition', async () => {
@@ -122,6 +139,7 @@ test.describe('PD9 paranoid-mode end-to-end gate', () => {
       await loginAsAdmin(admin);
       owner = await provisionUserInContext(context, admin, 'pd9vault');
       const { page } = owner;
+      await assertPd9DriveInstalled(page);
       collectSanitizedDiagnostics(page, diagnostics);
       const fixture = await createMoneyFixture(owner);
       const purgeOnly = await harness.seedPurgeOnlyFixture({
@@ -184,17 +202,29 @@ test.describe('PD9 paranoid-mode end-to-end gate', () => {
       });
 
       await test.step('[PD9-A5] killed/kept browser route matrix', async () => {
-        for (const [from, to] of KILLED_ROUTE_MATRIX) await expectRedirect(page, from, to);
+        for (const [from, to] of KILLED_ROUTE_MATRIX) {
+          expect(isParanoidKilledPath(from), `${from} must remain in the product kill list`).toBe(
+            true,
+          );
+          expect(safeDestination(from), `${from} safe destination drifted`).toBe(to);
+          await expectRedirect(page, from, to);
+        }
         await navigateInApp(page, '/people');
         await expect(page.getByRole('heading', { name: 'Friends' })).toBeVisible();
       });
 
       await test.step('[PD9-A7] real evaluator and notification dispatcher', async () => {
-        const fired = await harness.fireAlert({ email: owner!.email, alertId: fixture.alert.id });
-        expect(fired).toEqual({ evaluated: 1, fired: 1, status: 'triggered' });
+        // Create this kept, global-asset row only after paranoid enable. That
+        // removes the several-minute window in which the scheduled worker could
+        // consume a one-shot before this focused evaluator call. If the worker
+        // wins the remaining instant, final status + UI delivery are still the
+        // invariant; race-sensitive evaluated/fired counters are not.
+        const alert = await createKeptAlert(owner!);
+        const fired = await harness.fireAlert({ email: owner!.email, alertId: alert.id });
+        expect(fired.status).toBe('triggered');
 
         await navigateInApp(page, '/workbench/alerts');
-        const alertRow = page.getByRole('listitem').filter({ hasText: fixture.alert.symbol });
+        const alertRow = page.getByRole('listitem').filter({ hasText: alert.symbol });
         await expect(alertRow).toContainText('Triggered');
         const bell = page.getByRole('button', { name: /Notifications \(\d+ unread\)/ });
         await expect(bell).toBeVisible();
@@ -202,7 +232,7 @@ test.describe('PD9 paranoid-mode end-to-end gate', () => {
         await expect(
           page
             .getByRole('group', { name: 'Notifications' })
-            .getByText(`Price alert: ${fixture.alert.symbol}`),
+            .getByText(`Price alert: ${alert.symbol}`),
         ).toBeVisible();
       });
 
@@ -346,11 +376,14 @@ test.describe('PD9 paranoid-mode end-to-end gate', () => {
         await navigateInApp(page, '/portfolio');
         await assertKnownMoney(page, fixture);
       });
+    } catch (error) {
+      bodyFailure = error;
+      throw error;
     } finally {
       try {
         await Promise.all([admin.dispose(), harness.dispose()]);
       } finally {
-        await assertNoPd9Secrets(testInfo, diagnostics, sensitive);
+        await softAssertNoPd9Secrets(testInfo, diagnostics, sensitive, bodyFailure);
       }
     }
   });
@@ -421,6 +454,11 @@ async function createMoneyFixture(owner: E2EUser): Promise<MoneyFixture> {
     }),
   );
 
+  return { portfolioId: portfolioId!, asset };
+}
+
+async function createKeptAlert(owner: E2EUser): Promise<AlertFixture> {
+  const api = owner.context.request;
   const search = await json<{
     results: Array<{ id: string; symbol: string; ownerId?: string | null }>;
   }>(await api.get(apiV1('/search?q=AAPL')));
@@ -440,7 +478,7 @@ async function createMoneyFixture(owner: E2EUser): Promise<MoneyFixture> {
     }),
   );
 
-  return { portfolioId: portfolioId!, asset, alert: { id: alertBody.alert.id, symbol: 'AAPL' } };
+  return { id: alertBody.alert.id, symbol: 'AAPL' };
 }
 
 async function enableDriveOnly(page: Page, sensitive: Pd9SensitiveCanary[]): Promise<void> {
@@ -611,6 +649,31 @@ function collectSanitizedDiagnostics(page: Page, diagnostics: string[]): void {
       `requestfailed:${request.method()}:${new URL(request.url()).pathname}:${request.failure()?.errorText ?? ''}`,
     );
   });
+}
+
+/**
+ * Preserve the browser flow's original failure while still making a sentinel
+ * leak fail the test. Passing the in-flight error closes the gap before
+ * Playwright copies it into `testInfo.errors`; a soft assertion records a
+ * second failure without replacing the defect that caused the flow to abort.
+ */
+async function softAssertNoPd9Secrets(
+  testInfo: TestInfo,
+  diagnostics: readonly string[],
+  sensitive: readonly Pd9SensitiveCanary[],
+  bodyFailure: unknown,
+): Promise<void> {
+  const failureDiagnostics =
+    bodyFailure instanceof Error
+      ? [bodyFailure.message, bodyFailure.stack ?? '']
+      : bodyFailure === undefined
+        ? []
+        : [String(bodyFailure)];
+  try {
+    await assertNoPd9Secrets(testInfo, [...diagnostics, ...failureDiagnostics], sensitive);
+  } catch (scanError) {
+    expect.soft(scanError, 'PD9 secret sentinel scan').toBeUndefined();
+  }
 }
 
 async function json<T>(response: APIResponse): Promise<T> {

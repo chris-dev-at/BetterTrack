@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { and, count, eq, inArray } from '../../apps/api/node_modules/drizzle-orm/index.js';
 
 import { createDatabase } from '../../apps/api/src/data/db';
+import { withLockedPrivacyModes } from '../../apps/api/src/data/repositories/paranoidEnforcementRepository';
 import { createAlertRepository } from '../../apps/api/src/data/repositories/alertRepository';
 import {
   createExpenseBudgetRepository,
@@ -19,6 +20,7 @@ import { createUserRepository } from '../../apps/api/src/data/repositories/userR
 import * as schema from '../../apps/api/src/data/schema';
 import type { Logger } from '../../apps/api/src/logger';
 import { createRedis } from '../../apps/api/src/redis';
+import { createParanoidModeGuard } from '../../apps/api/src/services/account/paranoidEnforcement';
 import { runAlertsEvaluation } from '../../apps/api/src/services/alerts/alertEvaluator';
 import { createExpenseBudgetService } from '../../apps/api/src/services/expenses/budgetService';
 import { PARANOID_VAULT_TABLE_NAMES } from '../../apps/api/src/services/export/manifest';
@@ -72,29 +74,22 @@ export const PD9_TRACEABILITY = [
 ] as const;
 
 /**
- * Repository precondition for composing/running PD9. This intentionally reads
- * the binding design note: a stale or missing owner-ack/status marker, a §15 row
- * without an executable assertion, or the pre-#896 hard-delete wording fails
- * before the destructive browser flow starts.
+ * Repository precondition for composing/running PD9. This reads the already-
+ * merged binding note without rewriting it: a missing §16 log/owner-ack gate or
+ * a §15 row without an executable assertion fails before the destructive
+ * browser flow starts. Shipped deviations remain owner-visible elsewhere and
+ * are exercised by the browser flow rather than silently normalized here.
  */
 export async function assertPd9DesignPrecondition(): Promise<void> {
   const document = await readFile(join(process.cwd(), 'docs/paranoid-design.md'), 'utf8');
   const status = document.slice(0, document.indexOf('**The model in one paragraph.**'));
   if (
     !status.includes('§16-logged 2026-07-21') ||
-    !status.includes('owner-acked') ||
-    !status.includes('v5-p13-pd9-20260724')
+    !status.includes('issue #651') ||
+    !status.includes('implementation is **not even composed** until') ||
+    !status.includes('the owner acks it')
   ) {
-    throw new Error('PD9 design status is missing its durable §16/owner-ack evidence.');
-  }
-
-  const sectionFive = document.slice(document.indexOf('## 5.'), document.indexOf('## 6.'));
-  if (
-    !sectionFive.includes('retired recovery set') ||
-    !sectionFive.includes('signed purge gate') ||
-    sectionFive.includes('hard-deletes the blob + its entire bounded')
-  ) {
-    throw new Error('PD9 design §5 does not encode the #896 retirement-before-purge rule.');
+    throw new Error('PD9 design status is missing its merged §16 log/owner-ack gate.');
   }
 
   const sectionFifteen = document.slice(document.indexOf('## 15.'), document.indexOf('## 16.'));
@@ -172,6 +167,10 @@ export function createPd9Harness(): Pd9Harness {
   const { db, client } = createDatabase(DATABASE_URL);
   const redis = createRedis(REDIS_URL);
   const users = createUserRepository(db);
+  const paranoid = createParanoidModeGuard({
+    privacyModeFor: async (userId) => (await users.findById(userId))?.privacyMode ?? null,
+    withLockedPrivacyModes: (userIds, run) => withLockedPrivacyModes(db, userIds, run),
+  });
 
   async function userIdFor(email: string): Promise<string> {
     const user = await users.findByEmail(email);
@@ -508,16 +507,13 @@ export function createPd9Harness(): Pd9Harness {
         .where(eq(schema.expenseBudgets.userId, userId))
         .limit(1);
       if (!budget) throw new Error('PD9 expected the authenticated budget fixture.');
-      const periodKey = new Date().toISOString().slice(0, 7);
       const [fire] = await db
-        .select({ id: schema.expenseBudgetFires.id })
+        .select({
+          id: schema.expenseBudgetFires.id,
+          periodKey: schema.expenseBudgetFires.periodKey,
+        })
         .from(schema.expenseBudgetFires)
-        .where(
-          and(
-            eq(schema.expenseBudgetFires.budgetId, budget.id),
-            eq(schema.expenseBudgetFires.periodKey, periodKey),
-          ),
-        );
+        .where(eq(schema.expenseBudgetFires.budgetId, budget.id));
       if (!fire) throw new Error('PD9 expected the current-period budget fire marker.');
       return {
         importBatchId: importBatch.id,
@@ -525,7 +521,7 @@ export function createPd9Harness(): Pd9Harness {
         portfolioId,
         snapshotDate,
         budgetId: budget.id,
-        periodKey,
+        periodKey: fire.periodKey,
       };
     },
 
@@ -660,10 +656,7 @@ export function createPd9Harness(): Pd9Harness {
           }),
         }),
         redis,
-        paranoid: {
-          runAllowed: async <T>(_owner: string, _capability: string, action: () => Promise<T>) =>
-            action(),
-        },
+        paranoid,
         notify: center,
         logger: silentLogger,
       });

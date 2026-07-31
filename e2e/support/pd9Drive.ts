@@ -78,6 +78,7 @@ declare global {
     __bettertrackPd9Drive?: BrowserDriveControl;
     __bettertrackPd9Secrets?: Record<Pd9SecretName, string>;
     __bettertrackE2EVaultDependencies?: unknown;
+    __bettertrackPd9DependencyConsumed?: boolean;
   }
 }
 
@@ -126,13 +127,20 @@ export async function installPd9Drive(context: BrowserContext): Promise<Pd9Drive
   await context.route(/\/src\/user\/vault\/VaultRuntimeProvider\.tsx(?:\?|$)/, async (route) => {
     const response = await route.fetch();
     const body = await response.text();
-    const marker = '  _s();\n  const [core]';
-    if (!body.includes(marker)) {
+    const coreDeclaration = /^(\s*)const \[core\]/m;
+    if (!coreDeclaration.test(body)) {
       throw new Error('PD9 could not install the e2e Drive dependency at the vault boundary.');
     }
     const patched = body.replace(
-      marker,
-      '  _s();\n  dependencies = globalThis.__bettertrackE2EVaultDependencies ?? dependencies;\n  const [core]',
+      coreDeclaration,
+      [
+        '$1const pd9Dependencies = globalThis.__bettertrackE2EVaultDependencies;',
+        '$1if (pd9Dependencies) {',
+        '$1  dependencies = pd9Dependencies;',
+        '$1  globalThis.__bettertrackPd9DependencyConsumed = true;',
+        '$1}',
+        '$1const [core]',
+      ].join('\n'),
     );
     await route.fulfill({ response, body: patched });
   });
@@ -426,6 +434,14 @@ export async function installPd9Drive(context: BrowserContext): Promise<Pd9Drive
     since: (mark) => events.slice(mark),
     all: () => [...events],
   };
+}
+
+/** Prove the transformed provider consumed the boundary double on this page. */
+export async function assertPd9DriveInstalled(page: Page): Promise<void> {
+  const consumed = await page.evaluate(() => window.__bettertrackPd9DependencyConsumed === true);
+  if (!consumed) {
+    throw new Error('PD9 Drive dependency was installed but not consumed by the vault provider.');
+  }
 }
 
 /** Fill a password input without passing the cleartext value through Playwright. */
