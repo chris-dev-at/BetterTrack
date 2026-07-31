@@ -1363,7 +1363,6 @@
     },
     "overview": {
       "title": "Portfolio",
-      "subtitle": "Was du besitzt, was es wert ist, und wie es sich entwickelt.",
       "newCustomButton": "+ Individuelle Anlage",
       "recordButton": "+ Transaktion",
       "loadError": "Dein Portfolio konnte nicht geladen werden. Bitte lade die Seite neu.",
@@ -1468,7 +1467,6 @@
     },
     "analytics": {
       "title": "Analyse",
-      "subtitle": "Sieh dein Portfolio im Detail — konfiguriere den Graphen, vergleiche eine Benchmark und betrachte die Rendite inflationsbereinigt.",
       "backToOverview": "← Zurück zur Übersicht",
       "loadError": "Analyse für dieses Portfolio konnte nicht geladen werden.",
       "displayModeAriaLabel": "Diagrammanzeige",
@@ -1762,6 +1760,11 @@
         "template": "Mit einer Vorlage starten",
         "balances": "Anfangsbestände",
         "import": "Broker-Datei importieren"
+      },
+      "setup": {
+        "label": "Einrichtung",
+        "title": "Neues Portfolio",
+        "primary": "Portfolio erstellen"
       }
     },
     "cash": {
@@ -1791,7 +1794,6 @@
     },
     "cashSources": {
       "title": "Geldquellen",
-      "subtitle": "Teile deine Liquidität auf Bank-, Vorsorge- und Bargeldkonten auf — jedes mit eigenem Bestand und Verlauf.",
       "addButton": "Quelle hinzufügen",
       "transferButton": "Umbuchen",
       "depositButton": "Einzahlen",
@@ -2048,7 +2050,6 @@
     },
     "settings": {
       "title": "Portfolio-Einstellungen",
-      "subtitle": "Verwalte dieses Portfolio.",
       "loadError": "Dieses Portfolio konnte nicht geladen werden.",
       "generalHeading": "Allgemein",
       "nameSaved": "Gespeichert.",
@@ -2258,7 +2259,7 @@
     },
     "alerts": {
       "title": "Preisalarme",
-      "subtitle": "Werde benachrichtigt, wenn eine Anlage eine Kursmarke über- oder unterschreitet oder sich um einen Prozentsatz bewegt. Wird jede Minute anhand des aktuellsten Kurses ausgewertet.",
+      "subtitle": "Wird jede Minute gegen den aktuellen Kurs geprüft.",
       "newAlert": "+ Neuer Alarm",
       "loadError": "Deine Alarme konnten nicht geladen werden. Bitte lade die Seite neu.",
       "emptyTitle": "Noch keine Alarme",
@@ -2445,7 +2446,6 @@
     "ideas": {
       "list": {
         "title": "Ideen",
-        "subtitle": "Gespeicherte Workbench-Analysen — jede exakt wie gespeichert wieder öffnen oder mit Freunden teilen.",
         "emptyTitle": "Noch keine gespeicherten Ideen",
         "emptyBody": "Speichere einen Korb samt Backtest aus einem Blueprints oder dem Builder, um später darauf zurückzukommen.",
         "open": "Öffnen",
@@ -2479,7 +2479,7 @@
     },
     "comparison": {
       "title": "Blueprints vergleichen",
-      "description": "Überlagere 2–6 deiner Blueprints in einem Chart und vergleiche Rendite und Risiko nebeneinander.",
+      "description": "2–6 Blueprints in einem Chart überlagern.",
       "selectHeading": "Blueprints auswählen",
       "selectHint": "Wähle {{min}}–{{max}} Blueprints zum Vergleich.",
       "selectionCount": "{{count}}/{{max}} ausgewählt",
@@ -2866,7 +2866,6 @@
   },
   "watchlists": {
     "title": "Watchlists",
-    "subtitle": "Ordne, was du verfolgst, in benannte Listen.",
     "create": "Neue Watchlist",
     "createTitle": "Neue Watchlist",
     "namePlaceholder": "Name der Watchlist",
@@ -2935,7 +2934,7 @@
     },
     "myShared": {
       "title": "Meine Elemente",
-      "subtitle": "Jedes Portfolio, Blueprints und jede Watchlist, die dir gehört, ist hier — lege fest, wer welches sehen kann. Alles bleibt privat, bis du es teilst.",
+      "subtitle": "Alles bleibt privat, bis du es teilst.",
       "emptyTitle": "Du besitzt noch nichts",
       "emptyBody": "Erstelle ein Portfolio, Blueprints oder eine Watchlist, um hier die Freigabe zu verwalten.",
       "error": "Deine Elemente konnten nicht geladen werden. Bitte lade die Seite neu.",
@@ -2998,7 +2997,6 @@
     },
     "chat": {
       "title": "Nachrichten",
-      "subhead": "Direktnachrichten mit deinen Freunden. Teile eine Anlage oder eines deiner Elemente direkt im Chat.",
       "new": "Neue Nachricht",
       "newPrompt": "Wähle einen Freund zum Chatten aus.",
       "noFriends": "Füge zuerst Freunde hinzu, um zu chatten.",
@@ -3073,7 +3071,6 @@
       "description": "Ein leichter Feed mit Investmentideen, die Freunde miteinander teilen."
     },
     "friends": {
-      "subtitle": "Füge Freunde per Benutzername oder E-Mail hinzu, beantworte Anfragen und verwalte, mit wem du verbunden bist.",
       "addTitle": "Freund:in hinzufügen",
       "identifierLabel": "Benutzername oder E-Mail",
       "identifierPlaceholder": "jane oder jane@example.com",
@@ -4424,7 +4421,13 @@
       "balanceAfter": "Saldo danach",
       "countsToPerformanceShort": "Haltekosten",
       "quickIn": "Geld rein erfassen",
-      "quickOut": "Geld raus erfassen"
+      "quickOut": "Geld raus erfassen",
+      "editTitle": "Transaktion bearbeiten",
+      "saveEdit": "Änderungen speichern",
+      "delete": "Löschen",
+      "deleteConfirm": "Diese Transaktion löschen?",
+      "deleteConfirmYes": "Löschen",
+      "deleteError": "Die Transaktion konnte nicht gelöscht werden. Bitte erneut versuchen."
     },
     "matchType": {
       "contains": "Enthält",
@@ -4433,7 +4436,6 @@
       "regex": "Regex"
     },
     "overview": {
-      "subtitle": "",
       "loadError": "Cashflow-Übersicht konnte nicht geladen werden.",
       "month": "Monat",
       "inflow": "Eingang",
@@ -4459,7 +4461,6 @@
       "byTagList": "Ausgaben nach Tag"
     },
     "movements": {
-      "subtitle": "",
       "loadError": "Bargeldbuch konnte nicht geladen werden.",
       "emptyTitle": "Noch keine Bargeldbewegungen",
       "emptyDescription": "Einzahlungen, Abhebungen, Trades und Dividenden erscheinen hier.",
@@ -4481,7 +4482,6 @@
       "manageLabels": "Labels & Regeln"
     },
     "budgets": {
-      "subtitle": "",
       "loadError": "Budgets konnten nicht geladen werden.",
       "deleteError": "Budget konnte nicht gelöscht werden. Bitte versuche es erneut.",
       "new": "Neues Budget",
@@ -4566,7 +4566,6 @@
     },
     "labels": {
       "title": "Labels & Regeln",
-      "subtitle": "Die Tags, die eine Bewegung tragen kann — und die Regeln, die sie automatisch vergeben.",
       "backToMovements": "Zurück zu Bewegungen"
     }
   },
@@ -4596,12 +4595,10 @@
     }
   },
   "ask": {
-    "title": "BetterTrack fragen",
-    "subtitle": "Ein KI-Arbeitsbereich mit klar begrenztem, erlaubnisbasiertem Zugriff auf deine Daten."
+    "title": "BetterTrack fragen"
   },
   "review": {
-    "title": "Review",
-    "subtitle": "Eine Liste für alles, was deine Entscheidung braucht."
+    "title": "Review"
   },
   "control": {
     "title": "Kontrollzentrum",

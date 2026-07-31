@@ -1622,6 +1622,10 @@ const FORK_OP_ROW_KINDS = {
   // lands in the cash ledger like a withdrawal, and only its TWR treatment
   // differs.
   'cash.fee': 'cash_movement',
+  // Correcting or removing a hand-entered movement (§16 2026-07-31) acts on the
+  // very row its create op minted, so it carries the same row kind.
+  'cash.update': 'cash_movement',
+  'cash.delete': 'cash_movement',
   'cash.transfer': 'cash_movement',
   'cash.setBalance': 'cash_movement',
   'source.create': 'cash_source',
@@ -1631,7 +1635,14 @@ const FORK_OP_ROW_KINDS = {
 } as const satisfies Record<(typeof MIRROR_LEDGER_OP_KINDS)[number], MirrorRowKind>;
 
 /** An authoritative win by one of these means the logical entity is gone. */
-const FORK_OP_DELETE_KINDS: ReadonlySet<string> = new Set(['tx.delete', 'dividend.delete']);
+const FORK_OP_DELETE_KINDS: ReadonlySet<string> = new Set([
+  'tx.delete',
+  'dividend.delete',
+  // A deleted cash movement is gone on every copy, same as a deleted trade
+  // (§16 2026-07-31) — a fork that resurrected it would prove provenance for a
+  // row the origin no longer has.
+  'cash.delete',
+]);
 
 /** The movement kind each external cash op produces on every copy. */
 function forkOpMovementKind(
@@ -1648,6 +1659,11 @@ function forkOpMovementKind(
     // misreport the kind exists to prevent.
     case 'cash.fee':
       return 'fee';
+    // A correction ships the CORRECTED kind (§16 2026-07-31), which is the
+    // point: a withdrawal reclassified as a fee must land as a fee on every
+    // copy, or the copies keep computing the pre-correction return.
+    case 'cash.update':
+      return payload.cashKind;
     case 'cash.setBalance':
       return payload.deltaEur > 0 ? 'deposit' : 'withdrawal';
     case 'cash.transfer':
@@ -1662,6 +1678,10 @@ function forkOpSourceMirrorId(payload: MirrorOpPayload, mirrorId: string): strin
   switch (payload.kind) {
     case 'cash.deposit':
     case 'cash.withdraw':
+    // See `forkOpExecutedAt`: `cash.fee` never reached this switch either, so a
+    // fee booked into a non-Main source resolved to Main and failed the proof.
+    case 'cash.fee':
+    case 'cash.update':
     case 'cash.setBalance':
       return payload.sourceMirrorId;
     case 'cash.transfer':
@@ -1697,6 +1717,14 @@ function forkOpExecutedAt(payload: MirrorOpPayload): string | null {
   switch (payload.kind) {
     case 'cash.deposit':
     case 'cash.withdraw':
+    // `cash.fee` was added to the op set (§16 2026-07-30) without reaching this
+    // switch or `forkOpSignedAmountEur`/`forkOpSourceMirrorId` below, so a fork
+    // holding a replicated fee failed its own provenance proof with "has no
+    // external cash amount" — the fee's amount and date were unreadable here
+    // even though its payload carries both. Found while adding cash.update
+    // (§16 2026-07-31).
+    case 'cash.fee':
+    case 'cash.update':
     case 'cash.setBalance':
     case 'cash.transfer':
       return payload.executedAt;
@@ -1709,8 +1737,18 @@ function forkOpSignedAmountEur(payload: MirrorOpPayload, mirrorId: string): numb
   switch (payload.kind) {
     case 'cash.deposit':
       return floorCents(payload.amountEur);
+    // A fee is signed like a withdrawal — negative — and differs from one only
+    // in what it means to the RETURN, which `kind` already carries.
     case 'cash.withdraw':
+    case 'cash.fee':
       return -floorCents(payload.amountEur);
+    // A correction ships a positive magnitude plus the corrected kind, exactly
+    // as create does, so the sign follows the corrected kind and a
+    // deposit→withdrawal fix flips it.
+    case 'cash.update':
+      return payload.cashKind === 'deposit'
+        ? floorCents(payload.amountEur)
+        : -floorCents(payload.amountEur);
     case 'cash.setBalance':
       // Replicated as the origin-computed signed delta: `|delta|` is deposited or
       // withdrawn, so the persisted magnitude is floored, then signed.
@@ -2294,9 +2332,12 @@ async function proveForkProvenance(
               `is not the cash source its chain operation resolves to (${JSON.stringify(expected)})`,
             );
           }
-          // An external cash movement is append-only on every copy — no edit or
-          // delete surface exists — so its full persisted state is the op's for
-          // good, and the waiver may be granted only for exactly that amount.
+          // The row's full persisted state is its AUTHORITATIVE op's state, and
+          // the waiver may be granted only for exactly that amount. Since §16
+          // 2026-07-31 that op may be a `cash.update` rather than the create —
+          // which is precisely why a correction replicates as full state (design
+          // §3): the latest op alone still describes the whole row, so this
+          // check needs no history to fold.
           const signedAmount = forkOpSignedAmountEur(op.payload, entry.mirrorId);
           const opExecutedAt = forkOpExecutedAt(op.payload);
           if (signedAmount === null || opExecutedAt === null) {

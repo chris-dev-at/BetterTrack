@@ -1021,6 +1021,62 @@ export const cashEntryRequestSchema = z
 export type CashEntryRequest = z.infer<typeof cashEntryRequestSchema>;
 
 /**
+ * The three cash kinds a person TYPED and may therefore correct (V5 cash
+ * fusion, §16 2026-07-31). Everything else in `cashMovementKindSchema` is
+ * *derived*: `buy` / `sell_proceeds` belong to a transaction, `dividend` and
+ * the tax settlements to a dividend, and both transfer legs to each other. A
+ * derived row is edited by editing its parent — editing the leg directly would
+ * desynchronise the two and leave the ledger disagreeing with the books — so
+ * the edit surface refuses them by kind rather than trying to keep up.
+ */
+export const EDITABLE_CASH_MOVEMENT_KINDS = ['deposit', 'withdrawal', 'fee'] as const;
+export const editableCashMovementKindSchema = z.enum(EDITABLE_CASH_MOVEMENT_KINDS);
+export type EditableCashMovementKind = z.infer<typeof editableCashMovementKindSchema>;
+
+/** `{ portfolioId, movementId }` path params for the movement edit/delete routes. */
+export const portfolioCashMovementParamsSchema = z
+  .object({ portfolioId: z.string().uuid(), movementId: z.string().uuid() })
+  .strict();
+
+/**
+ * `PATCH /portfolios/:id/cash/movements/:movementId` body — a **full-shape**
+ * correction of a hand-entered movement (V5 cash fusion).
+ *
+ * Every field is optional and an omitted one keeps its stored value, but `note`
+ * is deliberately `nullish` rather than merely optional: `null` clears the note
+ * and `undefined` leaves it, which a plain optional could not distinguish.
+ *
+ * `kind` may move between the three editable kinds, which is how "count into
+ * performance" is toggled after the fact (withdrawal ⇄ fee) and how a
+ * mis-keyed direction is fixed (deposit ⇄ withdrawal). `amountEur` stays a
+ * positive **magnitude** here exactly as on create — the service assigns the
+ * sign from the resulting kind, so a flipped direction can never leave a row
+ * whose sign contradicts its kind.
+ *
+ * An empty body is rejected: a PATCH that changes nothing is a client bug, and
+ * failing it loudly beats reporting a successful no-op edit.
+ */
+export const updateCashMovementRequestSchema = z
+  .object({
+    kind: editableCashMovementKindSchema.optional(),
+    amountEur: cashAmountEurSchema.optional(),
+    sourceId: z.string().uuid().optional(),
+    executedAt: z.string().datetime().optional(),
+    note: z.string().max(1000).nullish(),
+    /**
+     * Stale-edit guard on a synced copy (V5-P7 M5, mirrorchain design §3) — the
+     * movement's `mirror.version` when the client opened the editor. It is not a
+     * change, so it does not satisfy the "at least one field" rule below.
+     */
+    baseSeq: z.number().int().nonnegative().optional(),
+  })
+  .strict()
+  .refine((body) => Object.keys(body).some((key) => key !== 'baseSeq'), {
+    message: 'Provide at least one field to change.',
+  });
+export type UpdateCashMovementRequest = z.infer<typeof updateCashMovementRequestSchema>;
+
+/**
  * `POST /portfolios/:id/cash/deposit|withdraw|fee` response — the new movement,
  * the affected source's balance, and the portfolio's rolled-up balance.
  */
@@ -1032,6 +1088,22 @@ export const cashMovementResponseSchema = z
   })
   .strict();
 export type CashMovementResponse = z.infer<typeof cashMovementResponseSchema>;
+
+/**
+ * `DELETE /portfolios/:id/cash/movements/:movementId` response — the balances
+ * that are left. It answers with a body rather than a bare 204 because a delete
+ * moves money: the client needs the source's new balance and the portfolio's
+ * roll-up to repaint without a second round trip, and `sourceId` says which
+ * source moved (the deleted row is gone, so the client can no longer look it up).
+ */
+export const cashDeletionResponseSchema = z
+  .object({
+    sourceId: z.string().uuid(),
+    sourceBalanceEur: z.number(),
+    balanceEur: z.number(),
+  })
+  .strict();
+export type CashDeletionResponse = z.infer<typeof cashDeletionResponseSchema>;
 
 /**
  * `POST /portfolios/:id/cash/preview` body — a proposed movement of `kind` and

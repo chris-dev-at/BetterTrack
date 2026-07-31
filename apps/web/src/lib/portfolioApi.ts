@@ -1,4 +1,5 @@
 import {
+  cashDeletionResponseSchema,
   cashMovementResponseSchema,
   cashMovementsResponseSchema,
   cashPreviewResponseSchema,
@@ -22,6 +23,7 @@ import {
   transactionSchema,
   updatePortfolioResponseSchema,
   valuePointsResponseSchema,
+  type CashDeletionResponse,
   type CashEntryRequest,
   type CashMovementResponse,
   type CashMovementsResponse,
@@ -52,6 +54,7 @@ import {
   type Transaction,
   type TransactionInput,
   type TransactionListResponse,
+  type UpdateCashMovementRequest,
   type UpdateCashSourceRequest,
   type UpdateCustomAssetRequest,
   type UpdatePortfolioRequest,
@@ -401,6 +404,38 @@ export async function chargeCashFee(
     { method: 'POST', body },
   );
   return cashMovementResponseSchema.parse(data);
+}
+
+/**
+ * `PATCH /portfolios/:id/cash/movements/:movementId` — correct a hand-entered
+ * movement (V5 cash fusion, §16 2026-07-31).
+ *
+ * Only deposit / withdrawal / fee are editable; the server answers `409
+ * CASH_MOVEMENT_NOT_EDITABLE` for a movement derived from a trade, a dividend or
+ * a transfer, with a message naming what to edit instead.
+ */
+export async function updateCashMovement(
+  portfolioId: string,
+  movementId: string,
+  body: UpdateCashMovementRequest,
+): Promise<CashMovementResponse> {
+  const data = await apiRequest<unknown>(
+    `/portfolios/${encodeURIComponent(portfolioId)}/cash/movements/${encodeURIComponent(movementId)}`,
+    { method: 'PATCH', body },
+  );
+  return cashMovementResponseSchema.parse(data);
+}
+
+/** `DELETE /portfolios/:id/cash/movements/:movementId` — returns what is left. */
+export async function deleteCashMovement(
+  portfolioId: string,
+  movementId: string,
+): Promise<CashDeletionResponse> {
+  const data = await apiRequest<unknown>(
+    `/portfolios/${encodeURIComponent(portfolioId)}/cash/movements/${encodeURIComponent(movementId)}`,
+    { method: 'DELETE' },
+  );
+  return cashDeletionResponseSchema.parse(data);
 }
 
 /**

@@ -10,17 +10,11 @@
 import type { ComponentType } from 'react';
 
 import { PORTFOLIO_WIZARD_STEP_META } from './stepMeta';
-import { BookStep } from './steps/BookStep';
-import { DoneStep } from './steps/DoneStep';
-import { IconStep } from './steps/IconStep';
-import { NameStep } from './steps/NameStep';
+import { SetupStep } from './steps/SetupStep';
 import type { PortfolioWizardStep, PortfolioWizardStepId, PortfolioWizardStepProps } from './types';
 
 const STEP_COMPONENTS: Record<PortfolioWizardStepId, ComponentType<PortfolioWizardStepProps>> = {
-  name: NameStep,
-  icon: IconStep,
-  book: BookStep,
-  done: DoneStep,
+  setup: SetupStep,
 };
 
 export const PORTFOLIO_WIZARD_STEPS: readonly PortfolioWizardStep[] =

@@ -2651,103 +2651,121 @@
   background: color-mix(in srgb, var(--bt-neg) 22%, transparent);
 }
 
-/* ── Cash account rows ─────────────────────────────────────────────────────
-   ONE LINE per account (owner, 2026-07-31, third pass). The card version
-   stacked a name over a balance over a full-width action footer — roughly 95px
-   of card to carry two facts, most of it empty, with buttons that read as tiny
-   against all that space. Laid out horizontally the same two facts need ~44px,
-   and the actions can be a sensible size because they are no longer competing
-   with a column of air. */
+/* ── Cash account cards ────────────────────────────────────────────────────
+   Name, then balance, then a two-half action footer that IS the card's bottom
+   edge (owner, 2026-07-31, fourth pass). The footer carries no inset and no
+   radius of its own: `overflow: hidden` on the card clips the two halves into
+   its own bottom corners, so + and − run corner to corner with nothing
+   between them and the edge. Cards are narrow — the stack only needs to be as
+   wide as a balance — so a row still fits several across. */
 .bt-acctgrid {
   display: grid;
   gap: 8px;
-  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(176px, 1fr));
 }
 
-.bt-acctrow {
+.bt-acctcard {
   display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 6px 8px 6px 12px;
+  flex-direction: column;
+  overflow: hidden;
   border: 1px solid var(--bt-border);
-  border-radius: 9px;
+  border-radius: 10px;
   background: var(--bt-surface);
 }
 
-.bt-acctrow__name {
-  flex: 1;
-  min-width: 0;
+.bt-acctcard__name {
+  padding: 9px 11px 0;
   color: var(--bt-text-soft);
-  font-size: 12.5px;
+  font-size: 12px;
   font-weight: 570;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.bt-acctrow__value {
+.bt-acctcard__value {
+  /* `margin-bottom: auto` pins the footer down when cards in a row differ in
+     height, so every footer in the row lines up. */
+  margin-bottom: auto;
+  padding: 1px 11px 9px;
   color: var(--bt-text);
-  font-size: 14px;
-  font-weight: 640;
+  font-size: 17px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
   white-space: nowrap;
 }
 
-.bt-acctrow__actions {
-  display: inline-flex;
-  gap: 4px;
-  flex-shrink: 0;
+.bt-acctcard__actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  border-top: 1px solid var(--bt-border);
 }
 
-.bt-acctrow__action {
-  display: inline-flex;
+.bt-acctcard__action {
+  display: flex;
   align-items: center;
   justify-content: center;
-  width: 30px;
-  height: 30px;
-  border: 1px solid var(--bt-border);
-  border-radius: 7px;
-  background: var(--bt-bg-raised);
-  color: var(--bt-text-soft);
+  min-height: 34px;
+  border: 0;
+  border-radius: 0;
+  background: none;
   cursor: pointer;
-  transition:
-    background var(--bt-t-fast),
-    border-color var(--bt-t-fast),
-    color var(--bt-t-fast);
+  transition: background var(--bt-t-fast);
 }
 
-.bt-acctrow__action svg {
-  width: 15px;
-  height: 15px;
+.bt-acctcard__action svg {
+  width: 16px;
+  height: 16px;
 }
 
-.bt-acctrow__action--in:hover {
+/* The only line inside the footer: the seam between the two halves. */
+.bt-acctcard__action--in {
+  border-right: 1px solid var(--bt-border);
   background: var(--bt-pos-soft);
-  border-color: color-mix(in srgb, var(--bt-pos) 40%, transparent);
   color: var(--bt-pos);
 }
 
-.bt-acctrow__action--out:hover {
+.bt-acctcard__action--out {
   background: var(--bt-neg-soft);
-  border-color: color-mix(in srgb, var(--bt-neg) 40%, transparent);
   color: var(--bt-neg);
 }
 
-/* The list's own entry into managing accounts: same row shape, quieter. */
-.bt-acctrow--manage {
-  justify-content: flex-start;
-  gap: 8px;
+.bt-acctcard__action--in:hover {
+  background: color-mix(in srgb, var(--bt-pos) 20%, transparent);
+}
+
+.bt-acctcard__action--out:hover {
+  background: color-mix(in srgb, var(--bt-neg) 20%, transparent);
+}
+
+/* The list's own entry into managing accounts: same card outline, quieter,
+   and the link fills it so the whole card is the target. */
+.bt-acctcard--manage {
   border-style: dashed;
   background: none;
+}
+
+.bt-acctcard__manage {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-height: 76px;
+  padding: 10px;
   color: var(--bt-text-soft);
+  font-size: 12.5px;
+  font-weight: 570;
+  text-align: center;
   text-decoration: none;
   transition: background var(--bt-t-fast);
 }
 
-.bt-acctrow--manage:hover {
+.bt-acctcard__manage:hover {
   background: var(--bt-surface);
 }
 
-.bt-acctrow--manage svg {
+.bt-acctcard__manage svg {
   width: 15px;
   height: 15px;
   flex-shrink: 0;
@@ -5490,6 +5508,24 @@
 }
 
 /* Parked rows: stated in the bt-parked voice, never a control that does nothing. */
+/* A labelled group inside the one-screen setup panel (2026-07-31). The label is
+   a caption, not a heading: the panel already asks one question, and these are
+   its two optional answers rather than two new questions. */
+.bt-pfw__section {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.bt-pfw__sectionlabel {
+  margin: 0;
+  color: var(--bt-text-soft);
+  font-size: 0.7rem;
+  font-weight: 560;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
 .bt-pfw__parkedset {
   display: flex;
   flex-direction: column;

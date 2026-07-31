@@ -63,6 +63,12 @@ export interface AssetSearchBoxProps {
   /** Auto-focus the input on mount when it is the dialog's primary control. */
   autoFocus?: boolean;
   placeholder?: string;
+  /**
+   * Id for the input, so a host form can label it as one of its own fields
+   * rather than leaving it a floating control with only an aria-label
+   * (TransactionDialog's folded-in asset field, 2026-07-31).
+   */
+  inputId?: string;
 }
 
 /**
@@ -81,6 +87,7 @@ export function AssetSearchBox({
   onSelect,
   autoFocus = false,
   placeholder,
+  inputId,
 }: AssetSearchBoxProps) {
   const t = useT();
   const [query, setQuery] = useState('');
@@ -269,6 +276,7 @@ export function AssetSearchBox({
       <input
         ref={inputRef}
         autoFocus={autoFocus}
+        id={inputId}
         type="search"
         value={query}
         onChange={(e) => setQuery(e.target.value)}

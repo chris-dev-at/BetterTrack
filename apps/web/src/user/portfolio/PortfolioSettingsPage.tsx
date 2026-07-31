@@ -192,7 +192,7 @@ export function PortfolioSettingsPage() {
 
   return (
     <div className="flex flex-col">
-      <PageHead sub={t('portfolio.settings.subtitle')} title={t('portfolio.settings.title')} />
+      <PageHead title={t('portfolio.settings.title')} />
 
       {/* ── General ─────────────────────────────────────────────────────── */}
       <section aria-label={t('portfolio.settings.generalHeading')} className="bt-section">
