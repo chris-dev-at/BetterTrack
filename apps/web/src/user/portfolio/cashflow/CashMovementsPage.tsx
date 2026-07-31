@@ -2,6 +2,7 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 
+import { EDITABLE_CASH_MOVEMENT_KINDS } from '@bettertrack/contracts';
 import type { CashMovement, CashTag } from '@bettertrack/contracts';
 
 import { useT } from '../../../i18n';
@@ -29,6 +30,16 @@ function kindLabel(t: TranslateFn, kind: CashMovement['kind']): string {
 }
 
 /**
+ * Can this row be corrected here? Only the three kinds a person TYPED. The
+ * predicate mirrors the server's `EDITABLE_CASH_MOVEMENT_KINDS` — the server is
+ * the authority and 409s a derived row regardless, so this is about not
+ * offering a button that cannot work, not about enforcement.
+ */
+function isEditable(kind: CashMovement['kind']): boolean {
+  return (EDITABLE_CASH_MOVEMENT_KINDS as readonly string[]).includes(kind);
+}
+
+/**
  * The tagged cash ledger (V5 cash fusion): every movement in this portfolio,
  * newest first, with its tags as chips and inline tag editing. Reads through
  * the existing `GET /portfolios/:id/cash` (no new ledger endpoint — only
@@ -40,6 +51,7 @@ export function CashMovementsPage() {
   const { portfoliosQuery, portfolioId } = useActivePortfolio();
   const [tagFilter, setTagFilter] = useState<string>(ALL_FILTER);
   const [editing, setEditing] = useState<CashMovement | null>(null);
+  const [tagging, setTagging] = useState<CashMovement | null>(null);
   const [recording, setRecording] = useState(false);
   const search = usePreservedSearch([ACTIVE_PORTFOLIO_PARAM]);
   const labelsTo = search
@@ -115,7 +127,6 @@ export function CashMovementsPage() {
             </Button>
           </>
         }
-        sub={t('cashflow.movements.subtitle')}
         title={t('cashflow.tabs.movements')}
       />
 
@@ -209,10 +220,21 @@ export function CashMovementsPage() {
                     <td className="bt-muted max-w-[12rem] truncate" title={m.note ?? undefined}>
                       {m.note ?? EM_DASH}
                     </td>
+                    {/* A hand-entered row opens the full editor — amount, date,
+                        account, direction, note and tags. A DERIVED row (a
+                        trade's cash leg, a dividend, a tax settlement, a
+                        transfer) has no financial edit: it follows its parent,
+                        so only its labels are the user's to change here. */}
                     <td className="is-num">
-                      <Button onClick={() => setEditing(m)} size="sm" variant="quiet">
-                        {t('cashflow.movements.editTagsAction')}
-                      </Button>
+                      {isEditable(m.kind) ? (
+                        <Button onClick={() => setEditing(m)} size="sm" variant="quiet">
+                          {t('common.edit')}
+                        </Button>
+                      ) : (
+                        <Button onClick={() => setTagging(m)} size="sm" variant="quiet">
+                          {t('cashflow.movements.editTagsAction')}
+                        </Button>
+                      )}
                     </td>
                   </tr>
                 );
@@ -227,11 +249,19 @@ export function CashMovementsPage() {
       ) : null}
 
       {editing ? (
-        <CashMovementTagsDialog
-          movementId={editing.id}
+        <RecordCashDialog
+          movement={editing}
           onClose={() => setEditing(null)}
+          portfolioId={portfolioId}
+        />
+      ) : null}
+
+      {tagging ? (
+        <CashMovementTagsDialog
+          movementId={tagging.id}
+          onClose={() => setTagging(null)}
           onSaved={refetchAll}
-          selectedTagIds={editing.tags ?? []}
+          selectedTagIds={tagging.tags ?? []}
           tags={tags}
         />
       ) : null}

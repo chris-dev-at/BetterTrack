@@ -422,7 +422,6 @@ export function CashSourcesPage() {
             </Button>
           </>
         }
-        sub={t('portfolio.cashSources.subtitle')}
         title={t('portfolio.cashSources.title')}
       />
 

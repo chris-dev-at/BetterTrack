@@ -50,7 +50,6 @@ export function ChatPage() {
             target={userId ? { userId } : conversationId ? { conversationId } : null}
           />
         }
-        sub={t('social.chat.subhead')}
         title={t('social.chat.title')}
       />
 

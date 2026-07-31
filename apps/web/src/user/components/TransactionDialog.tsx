@@ -26,7 +26,7 @@ import { AssetSearchBox } from './AssetSearchBox';
 import { AsyncReadState } from './AsyncReadState';
 import { Dialog } from './Dialog';
 import { dateForPrice, priceForDate, toDailyPoints, type DailyPoint } from './priceDateLink';
-import { Alert, Button, cx } from './ui';
+import { Alert, cx } from './ui';
 import { usePortfolioStore } from '../portfolio/PortfolioStoreProvider';
 
 /** Compact native-currency suffix for the Price field (falls back to the code). */
@@ -470,6 +470,7 @@ export function TransactionDialog(props: TransactionDialogProps) {
   const isEdit = !!transaction;
   const today = isoToday(props.today);
   const headingId = useId();
+  const assetSearchId = useId();
   const store = usePortfolioStore();
 
   // THIS portfolio's effective tax mode (issue #636: override ?? user default ??
@@ -983,7 +984,14 @@ export function TransactionDialog(props: TransactionDialogProps) {
         : t('portfolio.transaction.recordBuy')
       : t('portfolio.transaction.record');
 
-  const footer = picking ? undefined : (
+  // The footer is ALWAYS here, including while an asset is still being chosen
+  // (owner, 2026-07-31). Picking used to replace the whole dialog with a search
+  // box — the total and the record button vanished, and choosing an asset felt
+  // like arriving at a second screen rather than filling in the first field.
+  // Now the search IS the first field: the total reads "—" and the button is
+  // disabled until there is something to record, and the dialog never swaps out
+  // from under you.
+  const footer = (
     <div className="flex flex-col gap-3">
       {error ? <Alert tone="error">{error}</Alert> : null}
       <div className="flex items-baseline justify-between">
@@ -995,7 +1003,7 @@ export function TransactionDialog(props: TransactionDialogProps) {
       <button
         type="submit"
         form={headingId}
-        disabled={submitting || cashBlocksRecord || uncoveredBlocksRecord}
+        disabled={rows.length === 0 || submitting || cashBlocksRecord || uncoveredBlocksRecord}
         className="bt-btn bt-btn--primary w-full"
       >
         {submitting ? t('portfolio.transaction.saving') : ctaLabel}
@@ -1011,110 +1019,120 @@ export function TransactionDialog(props: TransactionDialogProps) {
       footer={footer}
       widthClassName="max-w-lg"
     >
-      {picking ? (
-        <div className="flex flex-col gap-3">
-          <p className="text-sm bt-muted">{t('portfolio.transaction.searchPrompt')}</p>
-          <AssetSearchBox
-            onSelect={pickAsset}
-            autoFocus
-            placeholder={t('portfolio.transaction.searchPlaceholder')}
-          />
-          <Button type="button" variant="secondary" onClick={onClose}>
-            {t('portfolio.transaction.cancel')}
-          </Button>
-        </div>
-      ) : (
-        <form onSubmit={handleSubmit} id={headingId} className="flex flex-col gap-5">
-          <AsyncReadState
-            loading={taxSettingsQuery.isLoading}
-            error={taxSettingsQuery.error}
-            onRetry={() => void taxSettingsQuery.refetch()}
-          />
-
-          {isEdit && transaction && transaction.source !== SOURCE_TAG_MANUAL ? (
-            // Editing an imported/synced row (V5-P0c): surface where it came from
-            // so a hand edit is a deliberate choice, never a silent overwrite of
-            // synced data. The badge stays quiet for `manual` (the common case).
-            <div
-              className="flex items-center gap-2 rounded-md border px-3 py-2 text-xs bt-muted"
-              style={{ borderColor: 'var(--bt-border)', background: 'var(--bt-surface-soft)' }}
+      <form onSubmit={handleSubmit} id={headingId} className="flex flex-col gap-5">
+        {/* The asset field — a search box until something is chosen, then the
+            row's own header takes over with a "Change" affordance that brings
+            it back. One surface, one form, no second screen. */}
+        {picking ? (
+          <div className="flex flex-col gap-1.5">
+            <label
+              className="text-[0.7rem] font-medium uppercase tracking-wide bt-muted"
+              htmlFor={assetSearchId}
             >
-              <span>{t('portfolio.sourceTag.filterLabel')}:</span>
-              <SourceBadge source={transaction.source} />
-            </div>
-          ) : null}
-          {rows.map((row, index) => {
-            // The link assist lives on the single-asset create row (see above).
-            const link: RowLink | undefined =
-              linkAsset && (seriesLoading || hasSeries)
-                ? {
-                    linked,
-                    loading: seriesLoading,
-                    priceAuto,
-                    dateAuto,
-                    note: linkNote,
-                    onToggle: toggleLinked,
-                    onPriceBlur: handlePriceBlur,
+              {t('portfolio.transaction.assetLabel')}
+            </label>
+            <AssetSearchBox
+              autoFocus
+              inputId={assetSearchId}
+              onSelect={pickAsset}
+              placeholder={t('portfolio.transaction.searchPlaceholder')}
+            />
+            <p className="text-sm bt-muted">{t('portfolio.transaction.searchPrompt')}</p>
+          </div>
+        ) : null}
+        {!picking ? (
+          <>
+            <AsyncReadState
+              loading={taxSettingsQuery.isLoading}
+              error={taxSettingsQuery.error}
+              onRetry={() => void taxSettingsQuery.refetch()}
+            />
+
+            {isEdit && transaction && transaction.source !== SOURCE_TAG_MANUAL ? (
+              // Editing an imported/synced row (V5-P0c): surface where it came from
+              // so a hand edit is a deliberate choice, never a silent overwrite of
+              // synced data. The badge stays quiet for `manual` (the common case).
+              <div
+                className="flex items-center gap-2 rounded-md border px-3 py-2 text-xs bt-muted"
+                style={{ borderColor: 'var(--bt-border)', background: 'var(--bt-surface-soft)' }}
+              >
+                <span>{t('portfolio.sourceTag.filterLabel')}:</span>
+                <SourceBadge source={transaction.source} />
+              </div>
+            ) : null}
+            {rows.map((row, index) => {
+              // The link assist lives on the single-asset create row (see above).
+              const link: RowLink | undefined =
+                linkAsset && (seriesLoading || hasSeries)
+                  ? {
+                      linked,
+                      loading: seriesLoading,
+                      priceAuto,
+                      dateAuto,
+                      note: linkNote,
+                      onToggle: toggleLinked,
+                      onPriceBlur: handlePriceBlur,
+                    }
+                  : undefined;
+              // The cash-link toggle lives on the same eligible row (see above).
+              const cash: RowCash | undefined =
+                cashRow && cashRow.key === row.key
+                  ? {
+                      checked: row.cashLinked,
+                      loading: cashPreviewLoading,
+                      preview: cashPreview,
+                      afterNegative: cashAfterNegative,
+                      backdatedShort,
+                      settleToday,
+                      buyDate: row.date,
+                      onToggle: toggleCashLinked,
+                      onToggleSettleToday: toggleSettleToday,
+                    }
+                  : undefined;
+              // The uncovered-sell card lives on the same eligible create row.
+              const uncovered: RowUncovered | undefined =
+                uncoveredRow && uncoveredRow.key === row.key && uncoveredInfo
+                  ? {
+                      info: uncoveredInfo,
+                      acknowledged: row.allowUncovered,
+                      mode: row.uncoveredMode,
+                      entryPrice: row.uncoveredEntryPrice,
+                      currency: row.asset.currency,
+                      onToggleAck: toggleUncoveredAck,
+                      onSetMode: setUncoveredMode,
+                      onSetEntryPrice: setUncoveredEntryPrice,
+                    }
+                  : undefined;
+              const canChangeAsset = !isEdit && !props.asset && !props.prefill && rows.length === 1;
+              return (
+                <RowFields
+                  key={row.key}
+                  row={row}
+                  t={t}
+                  showAssetHeader={rows.length > 1}
+                  showDivider={index > 0}
+                  onChangeAsset={
+                    canChangeAsset
+                      ? () => {
+                          setRows([]);
+                          setPicking(true);
+                          setError(null);
+                        }
+                      : undefined
                   }
-                : undefined;
-            // The cash-link toggle lives on the same eligible row (see above).
-            const cash: RowCash | undefined =
-              cashRow && cashRow.key === row.key
-                ? {
-                    checked: row.cashLinked,
-                    loading: cashPreviewLoading,
-                    preview: cashPreview,
-                    afterNegative: cashAfterNegative,
-                    backdatedShort,
-                    settleToday,
-                    buyDate: row.date,
-                    onToggle: toggleCashLinked,
-                    onToggleSettleToday: toggleSettleToday,
-                  }
-                : undefined;
-            // The uncovered-sell card lives on the same eligible create row.
-            const uncovered: RowUncovered | undefined =
-              uncoveredRow && uncoveredRow.key === row.key && uncoveredInfo
-                ? {
-                    info: uncoveredInfo,
-                    acknowledged: row.allowUncovered,
-                    mode: row.uncoveredMode,
-                    entryPrice: row.uncoveredEntryPrice,
-                    currency: row.asset.currency,
-                    onToggleAck: toggleUncoveredAck,
-                    onSetMode: setUncoveredMode,
-                    onSetEntryPrice: setUncoveredEntryPrice,
-                  }
-                : undefined;
-            const canChangeAsset = !isEdit && !props.asset && !props.prefill && rows.length === 1;
-            return (
-              <RowFields
-                key={row.key}
-                row={row}
-                t={t}
-                showAssetHeader={rows.length > 1}
-                showDivider={index > 0}
-                onChangeAsset={
-                  canChangeAsset
-                    ? () => {
-                        setRows([]);
-                        setPicking(true);
-                        setError(null);
-                      }
-                    : undefined
-                }
-                onChange={link ? handleLinkedChange : (patch) => updateRow(row.key, patch)}
-                onFillMax={maxForRow(row) != null ? () => fillMax(row) : undefined}
-                link={link}
-                cash={cash}
-                uncovered={uncovered}
-                showTax={manualTaxActive && row.side === 'sell'}
-                taxDefaultActive={manualDefaultActive}
-              />
-            );
-          })}
-        </form>
-      )}
+                  onChange={link ? handleLinkedChange : (patch) => updateRow(row.key, patch)}
+                  onFillMax={maxForRow(row) != null ? () => fillMax(row) : undefined}
+                  link={link}
+                  cash={cash}
+                  uncovered={uncovered}
+                  showTax={manualTaxActive && row.side === 'sell'}
+                  taxDefaultActive={manualDefaultActive}
+                />
+              );
+            })}
+          </>
+        ) : null}
+      </form>
     </Dialog>
   );
 }

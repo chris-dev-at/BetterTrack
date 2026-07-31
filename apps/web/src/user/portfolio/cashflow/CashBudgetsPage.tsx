@@ -118,7 +118,6 @@ export function CashBudgetsPage() {
             </Button>
           </>
         }
-        sub={t('cashflow.budgets.subtitle')}
         title={t('cashflow.tabs.budgets')}
       />
 

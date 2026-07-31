@@ -755,7 +755,7 @@ export function FriendsPage() {
   const sharingAllowed = useResolvedPrivacyMode() === 'normal';
   return (
     <div className="flex flex-col">
-      <PageHead sub={t('social.friends.subtitle')} title={t('common.friends')} />
+      <PageHead title={t('common.friends')} />
       {/* PageHead already carries its own 22px rhythm below the title, so the
           section stack starts here rather than inheriting the page gap. */}
       <div className="flex flex-col gap-8">

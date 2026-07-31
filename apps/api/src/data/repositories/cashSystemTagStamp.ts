@@ -202,3 +202,50 @@ export async function stampMovementTags(
     // Likewise: a bad user regex must never cost somebody their trade.
   }
 }
+
+/**
+ * RE-stamp a movement that was CORRECTED in place (V5 cash fusion, §16
+ * 2026-07-31) — the edit path's counterpart to `stampMovementTags`.
+ *
+ * The row keeps its id through an edit, which is the whole point: the user tags
+ * somebody put on it survive their correcting a typo in the amount. But two
+ * things do have to move:
+ *
+ *   1. **The system tag, when the kind changed.** A withdrawal reclassified as a
+ *      `fee` would otherwise keep wearing "Withdrawal" forever, and a person
+ *      reading their labels would be reading the pre-edit truth. This is the ONE
+ *      place auto-tagging removes a link, and it removes exactly one: the system
+ *      tag the OLD kind earned. A same-named tag the user made themselves has a
+ *      NULL `system_key` and is never touched.
+ *   2. **The rules, because the note changed.** Additive, like every other rule
+ *      run — a corrected note can earn new labels but never strips old ones.
+ *
+ * Never throws, for the same reason the create path does not: a labelling fault
+ * must not roll back a correction the user asked for.
+ */
+export async function restampMovementTags(
+  executor: SystemTagStampExecutor,
+  portfolioId: string,
+  movement: StampableMovement,
+  previousKind: CashMovementKind,
+): Promise<void> {
+  const wasKey = SYSTEM_TAG_FOR_KIND[previousKind];
+  if (wasKey !== SYSTEM_TAG_FOR_KIND[movement.kind]) {
+    try {
+      await executor.execute(sql`
+        DELETE FROM "cash_movement_tags" cmt
+        USING "cash_tags" t, "portfolio_cash_movements" pm, "portfolios" p
+        WHERE cmt."movement_id" = ${movement.id}::uuid
+          AND cmt."tag_id" = t."id"
+          AND pm."id" = cmt."movement_id"
+          AND pm."portfolio_id" = ${portfolioId}
+          AND p."id" = pm."portfolio_id"
+          AND t."user_id" = p."user_id"
+          AND t."system_key" = ${wasKey}
+      `);
+    } catch {
+      // A stale label is survivable; losing the edit is not.
+    }
+  }
+  await stampMovementTags(executor, portfolioId, [movement]);
+}

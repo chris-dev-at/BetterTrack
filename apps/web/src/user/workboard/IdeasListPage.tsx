@@ -173,7 +173,7 @@ export function IdeasListPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <PageHead sub={t('workboard.ideas.list.subtitle')} title={t('workboard.ideas.list.title')} />
+      <PageHead title={t('workboard.ideas.list.title')} />
 
       {!paranoid ? (
         <AsyncReadState

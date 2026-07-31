@@ -2,7 +2,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useId, useMemo, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 
-import type { CashTag } from '@bettertrack/contracts';
+import type { CashMovement, CashTag } from '@bettertrack/contracts';
 
 import { useT } from '../../../i18n';
 import { ApiError } from '../../../lib/apiClient';
@@ -16,9 +16,11 @@ import { cx } from '../../../lib/cx';
 import { formatDate } from '../../../lib/format';
 import {
   chargeCashFee,
+  deleteCashMovement,
   depositCash,
   listCashSources,
   previewCash,
+  updateCashMovement,
   withdrawCash,
 } from '../../../lib/portfolioApi';
 import { Dialog } from '../../components/Dialog';
@@ -69,11 +71,52 @@ export interface RecordCashDialogProps {
   sourceId?: string;
   /** Preselects a direction — the account cards' quick actions use this. */
   direction?: Direction;
+  /**
+   * EDIT MODE (owner, 2026-07-31): the movement being corrected. The same form
+   * records and edits deliberately — one dialog means the fields, the vocabulary
+   * ("money in / money out") and the tag preview cannot drift between creating a
+   * transaction and fixing one, which is exactly what a separate edit form would
+   * eventually do.
+   */
+  movement?: CashMovement;
   onClose: () => void;
 }
 
 function today(): string {
   return new Date().toISOString().slice(0, 10);
+}
+
+/** `2026-07-31T12:00:00Z` → `2026-07-31`, for the date input. */
+function dayOf(iso: string): string {
+  return iso.slice(0, 10);
+}
+
+/**
+ * Reconcile the tags of a movement that was just corrected.
+ *
+ * A naive "send what the user ticked" would strip the system tag the kind
+ * earns, and a naive "merge everything" would make un-ticking a tag do nothing.
+ * So the write is: the server's post-edit set, MINUS the user tags that were on
+ * the row and are no longer ticked, PLUS the ones that now are. System tags and
+ * anything the rules just assigned are carried through untouched — they are not
+ * the user's to lose by editing an amount.
+ *
+ * Sends nothing when the result equals what the server already has.
+ */
+async function syncEditedTags(
+  before: CashMovement,
+  serverTags: readonly string[],
+  ticked: ReadonlySet<string>,
+  userTagIds: ReadonlySet<string>,
+): Promise<void> {
+  const next = new Set(serverTags);
+  for (const id of before.tags ?? []) {
+    if (userTagIds.has(id) && !ticked.has(id)) next.delete(id);
+  }
+  for (const id of ticked) next.add(id);
+  const unchanged = next.size === serverTags.length && serverTags.every((id) => next.has(id));
+  if (unchanged) return;
+  await setCashMovementTags(before.id, [...next]);
 }
 
 /** A hoverable "i" carrying the long explanation a short label cannot. */
@@ -109,6 +152,7 @@ export function RecordCashDialog({
   portfolioId,
   sourceId,
   direction: initialDirection,
+  movement,
   onClose,
 }: RecordCashDialogProps) {
   const t = useT();
@@ -118,14 +162,23 @@ export function RecordCashDialog({
   const dateId = useId();
   const accountFieldId = useId();
 
-  const [direction, setDirection] = useState<Direction>(initialDirection ?? 'out');
-  const [amount, setAmount] = useState('');
-  const [note, setNote] = useState('');
-  const [date, setDate] = useState(today());
-  const [source, setSource] = useState<string | undefined>(sourceId);
-  const [countsToPerformance, setCountsToPerformance] = useState(false);
-  const [manualTagIds, setManualTagIds] = useState<Set<string>>(new Set());
-  const [showDetails, setShowDetails] = useState(false);
+  const editing = movement ?? null;
+  const [direction, setDirection] = useState<Direction>(
+    editing ? (editing.amountEur > 0 ? 'in' : 'out') : (initialDirection ?? 'out'),
+  );
+  const [amount, setAmount] = useState(editing ? String(Math.abs(editing.amountEur)) : '');
+  const [note, setNote] = useState(editing?.note ?? '');
+  const [date, setDate] = useState(editing ? dayOf(editing.executedAt) : today());
+  const [source, setSource] = useState<string | undefined>(editing?.sourceId ?? sourceId);
+  const [countsToPerformance, setCountsToPerformance] = useState(editing?.kind === 'fee');
+  // In edit mode this starts as the movement's CURRENT set, so the tag
+  // toggles show what is on the row rather than an empty slate — and so
+  // un-ticking one actually removes it.
+  const [manualTagIds, setManualTagIds] = useState<Set<string>>(new Set(editing?.tags ?? []));
+  // The details block holds the tags; when a row already has some, hiding them
+  // behind a disclosure would mean an edit that silently drops what it cannot see.
+  const [showDetails, setShowDetails] = useState((editing?.tags ?? []).length > 0);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const sourcesQuery = useQuery({
@@ -155,6 +208,13 @@ export function RecordCashDialog({
     () => new Map<string, CashTag>((tagsQuery.data?.tags ?? []).map((tag) => [tag.id, tag])),
     [tagsQuery.data],
   );
+  const userTags = useMemo(
+    () => (tagsQuery.data?.tags ?? []).filter((tag) => !tag.system),
+    [tagsQuery.data],
+  );
+  // Which ids the toggles actually govern — an edit may only add or remove
+  // these, never a system tag the kind earns.
+  const userTagIds = useMemo(() => new Set(userTags.map((tag) => tag.id)), [userTags]);
 
   const [ruleTagIds, setRuleTagIds] = useState<readonly string[]>([]);
   useEffect(() => {
@@ -178,6 +238,12 @@ export function RecordCashDialog({
 
   const parsedAmount = Number(amount);
   const amountValid = Number.isFinite(parsedAmount) && parsedAmount > 0;
+  const kind = direction === 'in' ? 'deposit' : countsToPerformance ? 'fee' : 'withdrawal';
+  // The server preview answers "what does ADDING this leave?", which is the
+  // wrong question for an edit — the row is already in the balance it would be
+  // compared against. In edit mode the receipt does the arithmetic locally
+  // (take the old amount out, put the new one in) and the server still has the
+  // final word on solvency when Save is pressed.
   const previewQuery = useQuery({
     queryKey: [
       'portfolio',
@@ -191,23 +257,32 @@ export function RecordCashDialog({
     queryFn: ({ signal }) =>
       previewCash(
         portfolioId,
-        {
-          kind: direction === 'in' ? 'deposit' : countsToPerformance ? 'fee' : 'withdrawal',
-          amountEur: parsedAmount,
-          ...(targetSourceId ? { sourceId: targetSourceId } : {}),
-        },
+        { kind, amountEur: parsedAmount, ...(targetSourceId ? { sourceId: targetSourceId } : {}) },
         signal,
       ),
-    enabled: amountValid && targetSourceId !== undefined,
+    enabled: editing === null && amountValid && targetSourceId !== undefined,
     staleTime: 0,
   });
 
   const submit = useMutation({
     mutationFn: async () => {
+      const executedAt = new Date(`${date}T12:00:00Z`).toISOString();
+      if (editing) {
+        const result = await updateCashMovement(portfolioId, editing.id, {
+          kind,
+          amountEur: parsedAmount,
+          ...(targetSourceId ? { sourceId: targetSourceId } : {}),
+          executedAt,
+          // `null` clears the note; omitting it would leave the old one in place.
+          note: note.trim() === '' ? null : note.trim(),
+        });
+        await syncEditedTags(editing, result.movement.tags ?? [], manualTagIds, userTagIds);
+        return result;
+      }
       const body = {
         amountEur: parsedAmount,
         ...(targetSourceId ? { sourceId: targetSourceId } : {}),
-        ...(date === today() ? {} : { executedAt: new Date(`${date}T12:00:00Z`).toISOString() }),
+        ...(date === today() ? {} : { executedAt }),
         ...(note.trim() === '' ? {} : { note: note.trim() }),
       };
       const result =
@@ -232,9 +307,27 @@ export function RecordCashDialog({
     },
     onError: (err) => {
       setError(
-        err instanceof ApiError && err.code === 'INSUFFICIENT_CASH'
+        err instanceof ApiError &&
+          (err.code === 'INSUFFICIENT_CASH' || err.code === 'CASH_MOVEMENT_NOT_EDITABLE')
           ? err.message
           : t('portfolio.cash.saveError'),
+      );
+    },
+  });
+
+  const remove = useMutation({
+    mutationFn: () => deleteCashMovement(portfolioId, editing!.id),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ['portfolio'] });
+      void queryClient.invalidateQueries({ queryKey: ['cash'] });
+      onClose();
+    },
+    onError: (err) => {
+      setError(
+        err instanceof ApiError &&
+          (err.code === 'INSUFFICIENT_CASH' || err.code === 'CASH_MOVEMENT_NOT_EDITABLE')
+          ? err.message
+          : t('cashflow.record.deleteError'),
       );
     },
   });
@@ -261,11 +354,26 @@ export function RecordCashDialog({
   const previewTags = [...new Set([...ruleTagIds, ...manualTagIds])]
     .map((id) => tagsById.get(id))
     .filter((tag): tag is CashTag => tag !== undefined);
-  const userTags = (tagsQuery.data?.tags ?? []).filter((tag) => !tag.system);
   const signed = direction === 'in' ? parsedAmount : -parsedAmount;
+  // The balance the receipt counts down from. Adding leaves the source's
+  // balance where it is and appends; editing has to take the old row out first,
+  // and a row MOVED to another account leaves the old one entirely.
+  const balanceBefore =
+    editing && target && editing.sourceId === target.id
+      ? target.balanceEur - editing.amountEur
+      : (target?.balanceEur ?? 0);
+  const balanceAfter = editing
+    ? balanceBefore + (amountValid ? signed : 0)
+    : previewQuery.data
+      ? previewQuery.data.afterEur
+      : (target?.balanceEur ?? 0);
 
   return (
-    <Dialog onClose={onClose} title={t('cashflow.record.title')} widthClassName="max-w-md">
+    <Dialog
+      onClose={onClose}
+      title={editing ? t('cashflow.record.editTitle') : t('cashflow.record.title')}
+      widthClassName="max-w-md"
+    >
       <form className="flex flex-col gap-4" onSubmit={handleSubmit}>
         <AsyncReadState
           loading={sourcesQuery.isLoading || tagsQuery.isLoading}
@@ -460,16 +568,13 @@ export function RecordCashDialog({
             </span>
             <span className="flex items-baseline gap-1.5">
               <span className="bt-num bt-muted" style={{ fontSize: 11 }}>
-                <MoneyText amount={target.balanceEur} currency="EUR" />
+                <MoneyText amount={balanceBefore} currency="EUR" />
               </span>
               <span aria-hidden="true" className="bt-muted" style={{ fontSize: 11 }}>
                 →
               </span>
               <span className="bt-num font-bold bt-gold" style={{ fontSize: 15 }}>
-                <MoneyText
-                  amount={previewQuery.data ? previewQuery.data.afterEur : target.balanceEur}
-                  currency="EUR"
-                />
+                <MoneyText amount={balanceAfter} currency="EUR" />
               </span>
               {amountValid ? (
                 <span
@@ -495,8 +600,50 @@ export function RecordCashDialog({
         {error ? <Alert tone="error">{error}</Alert> : null}
 
         <button className="bt-btn bt-btn--primary w-full" disabled={submit.isPending} type="submit">
-          {submit.isPending ? t('common.saving') : t('cashflow.record.submit')}
+          {submit.isPending
+            ? t('common.saving')
+            : editing
+              ? t('cashflow.record.saveEdit')
+              : t('cashflow.record.submit')}
         </button>
+
+        {/* Delete is available but never the easy press: quiet, below the
+            commit button, and it asks once. Two-step in place rather than a
+            second dialog — a confirm stacked on a dialog is a trap on mobile. */}
+        {editing ? (
+          <div className="flex items-center justify-between gap-3">
+            {confirmingDelete ? (
+              <>
+                <span className="bt-meta">{t('cashflow.record.deleteConfirm')}</span>
+                <span className="flex items-center gap-2">
+                  <button
+                    className="bt-btn bt-btn--sm"
+                    onClick={() => setConfirmingDelete(false)}
+                    type="button"
+                  >
+                    {t('common.cancel')}
+                  </button>
+                  <button
+                    className="bt-btn bt-btn--sm bt-btn--danger"
+                    disabled={remove.isPending}
+                    onClick={() => remove.mutate()}
+                    type="button"
+                  >
+                    {remove.isPending ? t('common.saving') : t('cashflow.record.deleteConfirmYes')}
+                  </button>
+                </span>
+              </>
+            ) : (
+              <button
+                className="bt-btn bt-btn--sm bt-btn--quiet"
+                onClick={() => setConfirmingDelete(true)}
+                type="button"
+              >
+                {t('cashflow.record.delete')}
+              </button>
+            )}
+          </div>
+        ) : null}
       </form>
     </Dialog>
   );

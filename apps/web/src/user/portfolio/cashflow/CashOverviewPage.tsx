@@ -167,7 +167,6 @@ export function CashOverviewPage() {
             </Link>
           </>
         }
-        sub={t('cashflow.overview.subtitle')}
         title={t('cashflow.aria')}
       />
 
@@ -207,63 +206,60 @@ export function CashOverviewPage() {
           </div>
         </div>
 
+        {/* Only claim "no accounts" once the read actually answered — a failed
+            or pending sources read must not read as an empty cash book. Cached
+            data still renders beside a refetch error. */}
         {sourcesQuery.data ? (
-          <>
-            {sources.length === 0 ? (
-              <p className="bt-meta">{t('cashflow.overview.noAccounts')}</p>
-            ) : (
-              <ul
-                aria-label={t('cashflow.overview.accountsHeading')}
-                className="bt-acctgrid"
-                role="list"
-              >
-                {sources.map((source) => (
-                  <li className="bt-acctrow" key={source.id}>
-                    <span className="bt-acctrow__name" title={source.name}>
-                      {source.name}
-                    </span>
-                    <span className="bt-acctrow__value bt-num">
-                      <MoneyText amount={source.balanceEur} currency="EUR" />
-                    </span>
-                    {/* Inline, and a real size: "spend from Savings" is one press. */}
-                    <span className="bt-acctrow__actions">
-                      <button
-                        aria-label={t('cashflow.overview.quickDeposit', { source: source.name })}
-                        className="bt-acctrow__action bt-acctrow__action--in"
-                        onClick={() => setQuick({ sourceId: source.id, direction: 'in' })}
-                        title={t('cashflow.overview.quickDeposit', { source: source.name })}
-                        type="button"
-                      >
-                        <Icon name="plus" />
-                      </button>
-                      <button
-                        aria-label={t('cashflow.overview.quickWithdraw', { source: source.name })}
-                        className="bt-acctrow__action bt-acctrow__action--out"
-                        onClick={() => setQuick({ sourceId: source.id, direction: 'out' })}
-                        title={t('cashflow.overview.quickWithdraw', { source: source.name })}
-                        type="button"
-                      >
-                        <Icon name="minus" />
-                      </button>
-                    </span>
-                  </li>
-                ))}
-                {/* The list's own way into managing them — the header icon is for
-                    people who already know it is there. */}
-                <li>
-                  <Link
-                    className="bt-acctrow bt-acctrow--manage"
-                    to={to('/portfolio/cash/accounts')}
-                  >
-                    <Icon name="sliders" />
-                    <span className="bt-acctrow__name">
-                      {t('cashflow.overview.manageAccounts')}
-                    </span>
-                  </Link>
+          sources.length === 0 ? (
+            <p className="bt-meta">{t('cashflow.overview.noAccounts')}</p>
+          ) : (
+            <ul
+              aria-label={t('cashflow.overview.accountsHeading')}
+              className="bt-acctgrid"
+              role="list"
+            >
+              {sources.map((source) => (
+                <li className="bt-acctcard" key={source.id}>
+                  <span className="bt-acctcard__name" title={source.name}>
+                    {source.name}
+                  </span>
+                  <span className="bt-acctcard__value bt-num">
+                    <MoneyText amount={source.balanceEur} currency="EUR" />
+                  </span>
+                  {/* The footer IS the card's bottom edge — no inset, no rounding
+                      of its own, so the two halves meet the card's own corners. */}
+                  <span className="bt-acctcard__actions">
+                    <button
+                      aria-label={t('cashflow.overview.quickDeposit', { source: source.name })}
+                      className="bt-acctcard__action bt-acctcard__action--in"
+                      onClick={() => setQuick({ sourceId: source.id, direction: 'in' })}
+                      title={t('cashflow.overview.quickDeposit', { source: source.name })}
+                      type="button"
+                    >
+                      <Icon name="plus" />
+                    </button>
+                    <button
+                      aria-label={t('cashflow.overview.quickWithdraw', { source: source.name })}
+                      className="bt-acctcard__action bt-acctcard__action--out"
+                      onClick={() => setQuick({ sourceId: source.id, direction: 'out' })}
+                      title={t('cashflow.overview.quickWithdraw', { source: source.name })}
+                      type="button"
+                    >
+                      <Icon name="minus" />
+                    </button>
+                  </span>
                 </li>
-              </ul>
-            )}
-          </>
+              ))}
+              {/* The list's own way into managing them — the header icon is for
+                  people who already know it is there. */}
+              <li className="bt-acctcard bt-acctcard--manage">
+                <Link className="bt-acctcard__manage" to={to('/portfolio/cash/accounts')}>
+                  <Icon name="sliders" />
+                  {t('cashflow.overview.manageAccounts')}
+                </Link>
+              </li>
+            </ul>
+          )
         ) : null}
       </section>
 
