@@ -83,7 +83,12 @@ export function surfaceAllowed(mode: PrivacyMode, surface: 'kept' | 'killed'): b
   return mode === 'normal' || surface === 'kept';
 }
 
-function safeDestination(pathname: string): string {
+/** Where a killed path lands. Exported so the route matrix is testable whole. */
+export function safeDestination(pathname: string): string {
+  // The Control Center is an OVERLAY: sending a killed `/control/*` deep link
+  // to `/portfolio` would close the popup the user just opened, so it lands on
+  // the neighbouring panel instead.
+  if (pathname.startsWith('/control')) return '/control/account';
   if (pathname.startsWith('/people') || pathname.startsWith('/social')) return '/people';
   if (pathname.startsWith('/assets')) return '/assets';
   if (pathname.startsWith('/portfolio/cash-flow')) return '/portfolio/cash-flow/accounts';

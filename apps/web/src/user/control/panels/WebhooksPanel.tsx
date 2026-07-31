@@ -308,6 +308,7 @@ function DeliveriesList({ id }: { id: string }) {
 /** One subscription row with pause/enable, delete (two-step), and a deliveries toggle. */
 function WebhookRow({ subscription }: { subscription: WebhookSubscription }) {
   const t = useT();
+  const paranoid = useResolvedPrivacyMode() === 'paranoid';
   const queryClient = useQueryClient();
   const [confirming, setConfirming] = useState(false);
   const [showDeliveries, setShowDeliveries] = useState(false);
@@ -393,12 +394,23 @@ function WebhookRow({ subscription }: { subscription: WebhookSubscription }) {
           {subscription.description ? (
             <span className="bt-cc-row__hint">{subscription.description}</span>
           ) : null}
+          {/* An event this privacy mode never fires is MARKED, never dropped —
+              the same rule the scope chips follow: the subscription really does
+              carry it and it starts delivering again the moment paranoid mode
+              is disabled, so a shortened list would misstate the endpoint. */}
           <span className="flex flex-wrap gap-1">
-            {subscription.eventTypes.map((type) => (
-              <Badge className="bt-cc-mono" key={type} outline>
-                {type}
-              </Badge>
-            ))}
+            {subscription.eventTypes.map((type) => {
+              const inactive = paranoid && PARANOID_PORTFOLIO_EVENTS.has(type);
+              const label = inactive ? t('settings.api.webhooks.eventInactive') : undefined;
+              return (
+                <Badge className="bt-cc-mono" key={type} outline title={label}>
+                  <span className={inactive ? 'line-through opacity-70' : undefined}>{type}</span>
+                  {inactive ? (
+                    <span className="bt-cc-row__hint ml-1 no-underline">({label})</span>
+                  ) : null}
+                </Badge>
+              );
+            })}
           </span>
           {/* A real constraint: repeated failures switch delivery off for good
               until the user re-enables it. */}

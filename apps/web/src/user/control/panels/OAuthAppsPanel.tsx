@@ -34,10 +34,19 @@ const OAUTH_CLIENTS_KEY = ['settings', 'oauth-clients'] as const;
 const OAUTH_GRANTS_KEY = ['settings', 'oauth-grants'] as const;
 
 /** One scope token, rendered as a quiet monospace chip. */
-function ScopeChip({ scope }: { scope: string }) {
+/**
+ * One scope token. A scope this account's privacy mode refuses is shown
+ * MARKED, never dropped — same rule as `ApiKeysPanel.ScopeChip`: the client is
+ * really registered with it (and it goes live again the moment paranoid mode is
+ * disabled), so a shortened list would understate what the app may ask for.
+ */
+function ScopeChip({ scope, inactive = false }: { scope: string; inactive?: boolean }) {
+  const t = useT();
+  const label = inactive ? t('settings.api.keys.scopeInactive') : undefined;
   return (
-    <Badge className="bt-cc-mono" outline>
-      {scope}
+    <Badge className="bt-cc-mono" outline title={label}>
+      <span className={inactive ? 'line-through opacity-70' : undefined}>{scope}</span>
+      {inactive ? <span className="bt-cc-row__hint ml-1 no-underline">({label})</span> : null}
     </Badge>
   );
 }
@@ -138,6 +147,7 @@ function RegisterOAuthClientForm({
   onCreated: (result: CreateOAuthClientResponse) => void;
 }) {
   const t = useT();
+  const paranoid = useResolvedPrivacyMode() === 'paranoid';
   const queryClient = useQueryClient();
   const [name, setName] = useState('');
   const [redirectUris, setRedirectUris] = useState<string[]>(['']);
@@ -249,13 +259,17 @@ function RegisterOAuthClientForm({
       </fieldset>
       {/* V5-P0b: shared ScopePicker (one row per module, write implies read),
           collapsed by default — already the right popup pattern. The hint is a
-          real constraint: these are the words the consent screen shows users. */}
+          real constraint: these are the words the consent screen shows users.
+          `paranoid` drops the module this account can never grant, so a client
+          cannot be registered with a scope that would only show up struck
+          through in its own row. */}
       <div className="flex flex-col gap-1.5">
         <PanelNote>{t('settings.api.oauth.scopesHint')}</PanelNote>
         <ScopePicker
           collapsible
           legend={t('settings.api.scopesLegend')}
           onChange={setScopes}
+          paranoid={paranoid}
           scopes={scopes}
         />
       </div>
@@ -358,11 +372,13 @@ function OAuthClientRow({ client }: { client: OAuthClientSummary }) {
             {client.clientId}
           </code>
           <span className="flex flex-wrap gap-1">
-            {client.scopes
-              .filter((scope) => !paranoid || !isParanoidBlockedScope(scope))
-              .map((scope) => (
-                <ScopeChip key={scope} scope={scope} />
-              ))}
+            {client.scopes.map((scope) => (
+              <ScopeChip
+                inactive={paranoid && isParanoidBlockedScope(scope)}
+                key={scope}
+                scope={scope}
+              />
+            ))}
           </span>
           {client.redirectUris.map((uri) => (
             <span className="bt-cc-mono" key={uri} style={{ color: 'var(--bt-muted)' }}>

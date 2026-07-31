@@ -69,15 +69,24 @@ function OAuthGrantRow({ grant }: { grant: OAuthGrantSummary }) {
             {t('settings.api.grants.canAccess', { appName: grant.appName })}
           </span>
           {/* The plain-language scope descriptions, not the raw scope strings —
-              this is a privacy control, so it reads in the user's words. */}
+              this is a privacy control, so it reads in the user's words. A
+              scope this privacy mode refuses is MARKED, never dropped (the
+              `ApiKeysPanel.ScopeChip` rule): the grant really does carry it and
+              it goes live again the moment paranoid mode is disabled, so a
+              shortened list would understate what the app was allowed. */}
           <ul className="flex flex-col">
-            {grant.scopes
-              .filter((scope) => !paranoid || !isParanoidBlockedScope(scope))
-              .map((scope) => (
+            {grant.scopes.map((scope) => {
+              const inactive = paranoid && isParanoidBlockedScope(scope);
+              return (
                 <li className="bt-cc-row__hint" key={scope}>
-                  · {OAUTH_SCOPE_LABELS[scope]}
+                  ·{' '}
+                  <span className={inactive ? 'line-through opacity-70' : undefined}>
+                    {OAUTH_SCOPE_LABELS[scope]}
+                  </span>
+                  {inactive ? <span> ({t('settings.api.keys.scopeInactive')})</span> : null}
                 </li>
-              ))}
+              );
+            })}
           </ul>
           <span className="bt-cc-row__hint">
             {grant.lastUsedAt

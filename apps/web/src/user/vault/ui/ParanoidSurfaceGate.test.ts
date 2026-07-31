@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { isParanoidKilledPath, surfaceAllowed } from './ParanoidSurfaceGate';
+import { isParanoidKilledPath, safeDestination, surfaceAllowed } from './ParanoidSurfaceGate';
 
 describe('paranoid route and surface matrix', () => {
   it.each([
@@ -48,6 +48,20 @@ describe('paranoid route and surface matrix', () => {
     '/control/account',
   ])('keeps explicit private/auth/client surface %s', (path) => {
     expect(isParanoidKilledPath(path)).toBe(false);
+  });
+
+  it.each([
+    // The Control Center is an overlay: a killed panel must land on a sibling
+    // panel, not on /portfolio, which would close the popup outright.
+    ['/control/profile', '/control/account'],
+    ['/people/profile', '/people'],
+    ['/social/my-shared', '/people'],
+    ['/assets/news', '/assets'],
+    ['/portfolio/cash-flow/budgets', '/portfolio/cash-flow/accounts'],
+    ['/portfolio/tax/print', '/portfolio/tax'],
+    ['/portfolio/import', '/portfolio'],
+  ])('redirects killed %s to %s', (from, to) => {
+    expect(safeDestination(from)).toBe(to);
   });
 
   it('keeps normal-mode compatibility while allowing only kept paranoid surfaces', () => {

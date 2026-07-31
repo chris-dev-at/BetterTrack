@@ -225,11 +225,18 @@ export function VaultRuntimeProvider({
   useEffect(() => {
     if (connection == null || sync == null) return;
     const refresh = () => {
+      let next: VaultSyncState | null;
       try {
-        setSyncState(sync.state);
+        next = sync.state;
       } catch {
-        setSyncState(null);
+        next = null;
       }
+      // The replica coordinator hands out a fresh `{ ...state }` snapshot on
+      // every read, so storing it unconditionally would re-render every
+      // `useVaultRuntime()` consumer once a second for as long as the vault is
+      // unlocked. Its fields ARE stable references, so returning the previous
+      // state when nothing moved lets React bail out of the render entirely.
+      setSyncState((previous) => (sameSyncState(previous, next) ? previous : next));
       setDriveAuthorization(connection.authorization);
     };
     refresh();
@@ -603,6 +610,23 @@ async function readProductionEnvelope(
   }
 
   throw new VaultCryptoError('locked', 'No encrypted vault envelope is available for this device.');
+}
+
+/**
+ * Whether two sync snapshots describe the same state. The snapshot object is
+ * recreated on every read, but `active` / `pending` are only replaced when the
+ * engine actually publishes a new state, so identity on those three fields is
+ * exact — nothing the UI reads can change without one of them changing.
+ */
+function sameSyncState(left: VaultSyncState | null, right: VaultSyncState | null): boolean {
+  if (left === right) return true;
+  if (left == null || right == null) return false;
+  return (
+    left.status === right.status &&
+    left.active === right.active &&
+    left.pending === right.pending &&
+    left.lastFailure === right.lastFailure
+  );
 }
 
 function custodyDeviceId(userId: string): string {

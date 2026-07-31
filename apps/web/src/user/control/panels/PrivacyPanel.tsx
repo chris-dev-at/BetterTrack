@@ -1,6 +1,8 @@
 import { useState, type FormEvent } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 
+import { useQueryClient } from '@tanstack/react-query';
+
 import { passwordSchema } from '@bettertrack/contracts';
 
 import { useT } from '../../../i18n';
@@ -26,6 +28,7 @@ export function PrivacyPanel() {
   const privacy = usePrivacyMode(true, user?.id ?? null);
   const runtime = useVaultRuntime();
   const money = useVaultMoneySession();
+  const queryClient = useQueryClient();
   const [searchParams] = useSearchParams();
   const [wizard, setWizard] = useState(false);
   const [notice, setNotice] = useState<Notice>(null);
@@ -110,10 +113,16 @@ export function PrivacyPanel() {
             // Through the store's delete idiom, never a raw document rewrite:
             // an entity-union merge reads tombstones, not absence, so a
             // second device would otherwise resurrect the whole vault on its
-            // next unlock (see `VaultPortfolioStore.discardAllData`).
+            // next unlock. The same mutation seeds one empty default portfolio
+            // so the emptied vault stays usable and still disable-able
+            // (see `VaultPortfolioStore.discardAllData`).
             onStartFresh={async () => {
               if (money == null) throw new Error('locked');
               await money.store.discardAllData();
+              // Every cached read still describes rows that are now
+              // tombstoned, so drop the lot: what the app shows afterwards is
+              // the single seeded portfolio, not a list of dead ids.
+              await queryClient.invalidateQueries();
             }}
           />
         </>

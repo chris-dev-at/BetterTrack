@@ -282,6 +282,11 @@ export interface VaultPortfolioStore {
    * `deletePortfolioTree` / `deleteTransaction` / `deleteStandingOrder` use.
    * `mergeLog` is preserved for the same reason: it is the bounded convergence
    * history the merge path reads, not user data.
+   *
+   * The same mutation then seeds one empty default portfolio, so the emptied
+   * vault is a usable fresh account (§6.8: an account always owns at least one
+   * active portfolio) rather than a document that can neither be added to nor
+   * rehydrated back to normal mode.
    */
   discardAllData(): Promise<void>;
 }
@@ -1112,17 +1117,32 @@ async function deletePortfolioTree(context: StoreContext, portfolioId: string): 
 }
 
 /**
- * Tombstone every live entity in one atomic mutation — the "start fresh" write
- * behind {@link VaultPortfolioStore.discardAllData}. Deliberately NOT a
- * `entities: {}` rewrite: see the interface note for why absence is not a
- * delete signal in an entity-union merge. The bucket keys and `mergeLog` are
- * left exactly as they were.
+ * Tombstone every live entity in one atomic mutation and seed the guaranteed
+ * default portfolio — the "start fresh" write behind
+ * {@link VaultPortfolioStore.discardAllData}.
+ *
+ * The wipe is deliberately NOT an `entities: {}` rewrite: see the interface
+ * note for why absence is not a delete signal in an entity-union merge. The
+ * bucket keys and `mergeLog` are left exactly as they were.
+ *
+ * The seed is what makes the result a *usable* empty account rather than a
+ * dead end. Everything downstream of the wipe assumes the §6.8 invariant that
+ * an account always owns at least one active portfolio: the store resolves the
+ * owner id from a live portfolio row ({@link portfolioOwnerUserId}), and the
+ * server refuses a rehydration whose graph restores no active portfolio, so an
+ * all-tombstoned vault could neither create a portfolio nor leave Paranoid
+ * mode. Seeding inside the SAME mutation mirrors `portfolioRepository`'s
+ * `getOrCreateMain` — the empty account a normal registration (and the
+ * locked-vault discard) starts from.
  */
 async function discardAllData(context: StoreContext): Promise<void> {
   requireDocument(context.engine);
+  let seededId: string | null = null;
   const mutationState = await context.engine.mutate(({ document }) => {
     const timestamp = context.now();
     let next = document;
+    // Read the owner before the wipe; it stays readable from the tombstones.
+    const userId = portfolioOwnerUserId(next);
     for (const kind of VAULT_ENTITY_KINDS) {
       for (const entity of liveEntities(next, kind)) {
         next = replaceEntity(
@@ -1132,12 +1152,37 @@ async function discardAllData(context: StoreContext): Promise<void> {
         );
       }
     }
-    return next;
+    seededId = safeNewId(context);
+    return appendEntities(next, 'portfolio', [
+      entityRecord(
+        seededId,
+        context.engine.deviceId,
+        timestamp,
+        strictPortfolioData({
+          userId,
+          name: DEFAULT_PORTFOLIO_NAME,
+          visibility: 'private',
+          sortOrder: 0,
+          defaultPayFromCash: false,
+          archivedAt: null,
+        }),
+      ),
+    ]);
   });
   const committed = mutationState.active?.document;
+  // Exactly one row survives the wipe, and it is the portfolio just seeded.
+  const survivors =
+    committed == null
+      ? []
+      : VAULT_ENTITY_KINDS.flatMap((kind) =>
+          liveEntities(committed, kind).map((entity) => ({ kind, id: entity.id })),
+        );
   if (
     committed == null ||
-    VAULT_ENTITY_KINDS.some((kind) => liveEntities(committed, kind).length > 0)
+    seededId == null ||
+    survivors.length !== 1 ||
+    survivors[0]?.kind !== 'portfolio' ||
+    survivors[0]?.id !== seededId
   ) {
     throw storeError('VAULT_DATA_UNAVAILABLE', 'The vault wipe was not committed locally.');
   }
@@ -2726,8 +2771,21 @@ function defaultPortfolioId(portfolios: readonly VaultEntity[]): string | null {
   return best?.id ?? null;
 }
 
+/** The server's portfolioRepository.DEFAULT_PORTFOLIO_NAME. */
+const DEFAULT_PORTFOLIO_NAME = 'Main';
+
+/**
+ * The account every vault row belongs to. A live portfolio is the normal
+ * source; a TOMBSTONED one (or the tax setting, which carries the same id) is
+ * read as a fallback so a momentarily portfolio-less document — the middle of
+ * {@link discardAllData}'s wipe — still knows whose vault it is instead of
+ * locking the account out of creating its next portfolio.
+ */
 function portfolioOwnerUserId(document: VaultDocument): string {
-  const owner = liveEntities(document, 'portfolio')[0];
+  const owner =
+    liveEntities(document, 'portfolio')[0] ??
+    (document.entities.portfolio ?? [])[0] ??
+    (document.entities.taxSetting ?? [])[0];
   if (owner == null) {
     throw storeError(
       'VAULT_OPERATION_UNAVAILABLE',

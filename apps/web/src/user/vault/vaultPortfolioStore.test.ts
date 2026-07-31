@@ -46,6 +46,7 @@ import {
 } from './localDataHome';
 import { createMemoryVaultQuarantineStore } from './quarantine';
 import { createVaultSyncEngine, type VaultSyncEngine, type VaultSyncState } from './sync';
+import { toStrictRestoreDocument } from './ui/disable';
 import {
   createVaultPortfolioStore,
   reconcilePortfolioDocument,
@@ -222,16 +223,69 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
     const wiped = engine.state.active!.document;
     // Every bucket survives with its rows TOMBSTONED — an absent row carries no
     // delete signal through the entity-union merge, so a second device holding
-    // the pre-wipe document would union its copy straight back in.
+    // the pre-wipe document would union its copy straight back in. The only
+    // live row anywhere is the seeded replacement portfolio.
     for (const [kind, rows] of Object.entries(wiped.entities)) {
       expect(rows.length, `${kind} rows must be kept as tombstones`).toBeGreaterThan(0);
       for (const row of rows) {
+        if (kind === 'portfolio' && row.deletedAt === null) continue;
         expect(row.deletedAt, `${kind}/${row.id} must be tombstoned`).toBe(AT);
         expect(row.rev).toBeGreaterThan(0);
       }
     }
     expect(wiped.mergeLog).toHaveLength(1);
-    await expect(store.listPortfolios()).resolves.toEqual({ portfolios: [] });
+    // §6.8: the account keeps exactly one active portfolio, the same guarantee
+    // `portfolioRepository.getOrCreateMain` gives a normal account — without it
+    // the emptied vault could neither create a portfolio nor be rehydrated.
+    const live = Object.values(wiped.entities)
+      .flat()
+      .filter((row) => row.deletedAt === null);
+    expect(live).toHaveLength(1);
+    expect(live[0]?.data).toMatchObject({ userId: USER_ID, name: 'Main', archivedAt: null });
+    await expect(store.listPortfolios()).resolves.toEqual({
+      portfolios: [
+        {
+          id: live[0]!.id,
+          name: 'Main',
+          visibility: 'private',
+          sortOrder: 0,
+          isDefault: true,
+          defaultPayFromCash: false,
+          archivedAt: null,
+        },
+      ],
+    });
+  });
+
+  it('keeps the emptied vault usable: a new portfolio, tax settings and disable all work', async () => {
+    const engine = createMutableEngine(initialDocument());
+    const store = createVaultPortfolioStore(engine, {
+      now: () => AT,
+      newId: idSequence(),
+    });
+    await store.depositCash(PORTFOLIO_ID, { amountEur: 100, sourceId: CASH_SOURCE_ID });
+
+    await store.discardAllData();
+
+    // The owner id survives the wipe, so every write that needs it still works.
+    await expect(store.createPortfolio('Second')).resolves.toMatchObject({
+      name: 'Second',
+      sortOrder: 1,
+    });
+    await expect(store.updateTaxSettings({ mode: 'none' })).resolves.toMatchObject({
+      mode: 'none',
+    });
+    await expect(store.listPortfolios()).resolves.toMatchObject({
+      portfolios: [{ name: 'Main' }, { name: 'Second' }],
+    });
+
+    // And the exit stays open: the restore document the disable call ships
+    // carries the active portfolio the server's rehydration graph demands.
+    const restore = toStrictRestoreDocument(engine.state.active!.document);
+    const activePortfolios = restore.entities.filter(
+      (entity) => entity.kind === 'portfolio' && entity.deletedAt === null,
+    );
+    expect(activePortfolios).toHaveLength(2);
   });
 
   it('provisions the Main cash source on first implicit cash touch like the server', async () => {

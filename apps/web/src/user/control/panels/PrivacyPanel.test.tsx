@@ -1,3 +1,4 @@
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
@@ -50,10 +51,13 @@ vi.mock('../../vault/engine/VaultMoneyEngineProvider', () => ({
 import { PrivacyPanel } from './PrivacyPanel';
 
 function renderPanel() {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
-    <MemoryRouter>
-      <PrivacyPanel />
-    </MemoryRouter>,
+    <QueryClientProvider client={client}>
+      <MemoryRouter>
+        <PrivacyPanel />
+      </MemoryRouter>
+    </QueryClientProvider>,
   );
 }
 
@@ -165,13 +169,15 @@ describe('PrivacyPanel (§13.5 V5-P13)', () => {
     renderPanel();
 
     await user.click(screen.getByRole('checkbox', { name: /permanently replaced/i }));
-    await user.click(screen.getByRole('button', { name: 'Replace with empty vault' }));
+    await user.click(screen.getByRole('button', { name: 'Replace with an empty portfolio' }));
 
     // The store tombstones every entity; a raw `sync.mutate` wipe would leave a
     // second device free to union its copy back in on the next unlock.
     await waitFor(() => expect(discardAllData).toHaveBeenCalledTimes(1));
     expect(syncMutate).not.toHaveBeenCalled();
-    expect(await screen.findByText('The encrypted vault is now empty.')).toBeInTheDocument();
+    expect(
+      await screen.findByText('The encrypted vault now holds a single empty portfolio.'),
+    ).toBeInTheDocument();
   });
 
   test('disable is available once the vault has a single acknowledged branch', async () => {
