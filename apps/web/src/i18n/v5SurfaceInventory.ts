@@ -52,9 +52,9 @@
  * root in EN and DE, and scans the listed TSX files for literal UI copy. State
  * outcomes are explicit: `unverified` records review evidence that has not yet
  * been checked against component code, `covered` is reserved for evidence that
- * the follow-up state gate verifies mechanically, `not-applicable` explains why
- * no async state exists, and `hidden-by-design` records a binding privacy or
- * capability decision rather than silently omitting a state.
+ * the accompanying state gate verifies mechanically, `not-applicable` explains
+ * why no async state exists, and `hidden-by-design` records a binding privacy
+ * or capability decision rather than silently omitting a state.
  */
 
 /** Directories under `apps/web/src` that hold user-facing TSX modules. */
@@ -86,6 +86,8 @@ const notAsync = (evidence: string): V5StateReview => ({
   status: 'not-applicable',
   evidence,
 });
+
+const covered = (evidence: string): V5StateReview => ({ status: 'covered', evidence });
 
 const unverified = (evidence: string): V5StateReview => ({ status: 'unverified', evidence });
 
@@ -311,11 +313,11 @@ export const V5_SURFACE_INVENTORY = [
     copyRoots: ['admin.monitoring', 'admin.problems', 'admin.usageAnalytics', 'admin.featureFlags'],
     copyReview: 'Zero-setup monitoring, Problems, analytics, and kill-switch copy reviewed.',
     states: {
-      loading: unverified('Each admin resource renders Spinner while no prior payload exists.'),
+      loading: covered('Each admin resource renders Spinner while no prior payload exists.'),
       empty: unverified(
         'Problems and analytics have explicit no-data states; fixed flag rows are not collection-empty.',
       ),
-      error: unverified('Refresh controls remain visible and failed initial reads expose retry.'),
+      error: covered('Refresh controls remain visible and failed initial reads expose retry.'),
     },
     tests: [
       'admin/pages/MonitoringPage.test.tsx',
@@ -1393,6 +1395,344 @@ export const NON_V5_ROUTES = [
     note: 'BacktestsPage lives in the inventoried user/workboard/WorkboardSection.tsx (P6).',
   },
 ] as const satisfies readonly V5RouteExemption[];
+
+/** Async read states that the inventory gate verifies at each hook call site. */
+export type V5AsyncReadState = 'loading' | 'error';
+
+/**
+ * A read may deliberately delegate or suppress one of its states, but that is
+ * a code-review decision rather than an inference the AST gate is allowed to
+ * make. Keep every such decision here, tied to one stable read-site name.
+ */
+export interface V5AsyncReadExemption {
+  component: string;
+  read: string;
+  states: readonly V5AsyncReadState[];
+  reason: string;
+  delegatedTo?: string;
+}
+
+export const V5_ASYNC_READ_EXEMPTIONS = [
+  {
+    component: 'user/forecast/ForecastPage.tsx',
+    read: 'usePortfolioPrefill.portfoliosQuery',
+    states: ['loading', 'error'],
+    reason:
+      'usePortfolioPrefill returns the portfolio-list flags and retry to ForecastPage, which renders both states.',
+    delegatedTo: 'ForecastPage',
+  },
+  {
+    component: 'user/forecast/ForecastPage.tsx',
+    read: 'usePortfolioPrefill.portfolioQuery',
+    states: ['loading', 'error'],
+    reason:
+      'usePortfolioPrefill folds the detail flags into its returned prefill flags and retry rendered by ForecastPage.',
+    delegatedTo: 'ForecastPage',
+  },
+  {
+    component: 'user/forecast/ForecastPage.tsx',
+    read: 'usePortfolioPrefill.analyticsQuery',
+    states: ['loading', 'error'],
+    reason:
+      'usePortfolioPrefill selects this normal-mode read as modeQuery and returns its flags to ForecastPage.',
+    delegatedTo: 'ForecastPage',
+  },
+  {
+    component: 'user/forecast/ForecastPage.tsx',
+    read: 'usePortfolioPrefill.historyQuery',
+    states: ['loading', 'error'],
+    reason:
+      'usePortfolioPrefill selects this paranoid-mode read as modeQuery and returns its flags to ForecastPage.',
+    delegatedTo: 'ForecastPage',
+  },
+  {
+    component: 'user/portfolio/analytics/AiInsightsPanel.tsx',
+    read: 'AiInsightsPanel.capability',
+    states: ['loading', 'error'],
+    reason:
+      'The binding P12 capability gate deliberately renders no AI surface until availability is confirmed; loading and failure are therefore indistinguishable from disabled AI.',
+  },
+  {
+    component: 'user/workboard/NlBuilderPanel.tsx',
+    read: 'NlBuilderPanel.capability',
+    states: ['loading', 'error'],
+    reason:
+      'The binding P12 capability gate deliberately renders no AI surface until availability is confirmed; loading and failure are therefore indistinguishable from disabled AI.',
+  },
+  {
+    component: 'user/components/OriginShell.tsx',
+    read: 'RailGroup.children',
+    states: ['loading', 'error'],
+    reason:
+      'The navigation helper deliberately defaults runtime feature flags to enabled while they load or fail; server route guards remain the authoritative kill-switch boundary.',
+  },
+  {
+    component: 'user/portfolio/PortfolioWorkspace.tsx',
+    read: 'PortfolioWorkspace.items',
+    states: ['loading', 'error'],
+    reason:
+      'The navigation helper deliberately defaults runtime feature flags to enabled while they load or fail; server route guards remain the authoritative kill-switch boundary.',
+  },
+  {
+    component: 'user/control/panels/PrivacyPanel.tsx',
+    read: 'PrivacyPanel.privacy',
+    states: ['loading', 'error'],
+    reason:
+      'AccountModeRoot resolves the same account-scoped privacy query before the authenticated Control Center can mount.',
+    delegatedTo: 'AccountModeRoot',
+  },
+  {
+    component: 'user/home/HomePage.tsx',
+    read: 'HomeBoard.$destructured',
+    states: ['loading', 'error'],
+    reason:
+      'AccountModeRoot resolves the same account-scoped privacy query before the authenticated home board can mount.',
+    delegatedTo: 'AccountModeRoot',
+  },
+] as const satisfies readonly V5AsyncReadExemption[];
+
+/**
+ * The declared boundary of the async-read analysis.
+ *
+ * Issue #1025 scopes this gate to reads made through "`useQuery` / `useResource`
+ * and the established wrappers". Inventoried surfaces also load asynchronously
+ * without any of those — an effect that awaits a promise into `useState`, or a
+ * `useSyncExternalStore` subscription. Analysing those is deliberately NOT built
+ * here (remediation belongs to parent #739), but leaving them unlisted is how a
+ * scope limit turns into a silent gap. So the gate enumerates them off the same
+ * code, requires each one to appear below with a written note, prints them
+ * beside the offender list, and fails on any site that is new or gone.
+ *
+ * These rows carry no claim about the state UI at each site. They record what
+ * the analysis does not look at, and why that is a spec limit rather than an
+ * oversight.
+ */
+export interface V5NonHookAsyncSite {
+  component: string;
+  /** `<scope>.<mechanism>`, numbered when a scope has several. */
+  site: string;
+  note: string;
+}
+
+export const V5_NON_HOOK_ASYNC_BOUNDARY = [
+  {
+    component: 'admin/pages/LoginPage.tsx',
+    site: 'LoginPage.useEffect',
+    note: 'Fetches the API build marker for the footer; a failure is swallowed by design.',
+  },
+  {
+    component: 'user/AuthContext.tsx',
+    site: 'AuthProvider.useEffect',
+    note: 'Session bootstrap with its own retry/outage state machine, not a rendered read.',
+  },
+  {
+    component: 'user/auth/LoginPage.tsx',
+    site: 'LoginPage.useEffect',
+    note: 'Probes registration mode and Google availability to decide which controls exist.',
+  },
+  {
+    component: 'user/auth/RegisterPage.tsx',
+    site: 'RegisterPage.useEffect#1',
+    note: 'Registration info behind the page’s own pending/error phase union.',
+  },
+  {
+    component: 'user/auth/RegisterPage.tsx',
+    site: 'RegisterPage.useEffect#2',
+    note: 'Resolves the pending Google ticket on a ?google=connected landing.',
+  },
+  {
+    component: 'user/components/TransactionDialog.tsx',
+    site: 'TransactionDialog.useEffect#1',
+    note: 'Daily closes for the linked asset, driving price/date auto-fill.',
+  },
+  {
+    component: 'user/components/TransactionDialog.tsx',
+    site: 'TransactionDialog.useEffect#2',
+    note: 'Debounced cash preview for the linked cash row.',
+  },
+  {
+    component: 'user/control/panels/ConnectionsPanel.tsx',
+    site: 'useDriveAuthorization.useSyncExternalStore',
+    note: 'Drive authorization snapshot from the vault connection controller.',
+  },
+  {
+    component: 'user/control/panels/NotificationsPanel.tsx',
+    site: 'WebPushRow.useEffect',
+    note: 'Reads the browser web-push permission/subscription state on mount.',
+  },
+  {
+    component: 'user/portfolio/CashDialog.tsx',
+    site: 'CashDialog.useEffect',
+    note: 'Debounced cash preview against the active store.',
+  },
+  {
+    component: 'user/portfolio/TaxReportPage.tsx',
+    site: 'ParanoidTaxReport.useEffect',
+    note: 'Paranoid-mode portfolio list from the local vault store, with its own status union.',
+  },
+  {
+    component: 'user/portfolio/TaxReportPage.tsx',
+    site: 'ParanoidYearTable.useEffect',
+    note: 'Client-side tax derivation, with its own pending/error/ready status union.',
+  },
+  {
+    component: 'user/portfolio/cashflow/RecordCashDialog.tsx',
+    site: 'RecordCashDialog.useEffect',
+    note: 'Debounced auto-tag rule preview; a failed preview is a courtesy, never surfaced.',
+  },
+  {
+    component: 'user/social/chatSurface.tsx',
+    site: 'ChatThreadPane.useEffect',
+    note: 'Marks the open thread read — a write, with no rendered state of its own.',
+  },
+  {
+    component: 'user/workboard/ConglomerateBuilderPage.tsx',
+    site: 'Builder.useEffect',
+    note: 'Debounced autosave; its saving/error states belong to the builder, not to a read.',
+  },
+] as const satisfies readonly V5NonHookAsyncSite[];
+
+/**
+ * Frozen V5 async-state debt. The AST gate prints the concrete line-numbered
+ * form of every row, rejects any new row, and rejects stale rows after a fix so
+ * this list must shrink alongside #739 remediation.
+ */
+export interface V5AsyncStateDebt {
+  component: string;
+  read: string;
+  states: readonly V5AsyncReadState[];
+}
+
+export type V5AsyncStateDebtLedger = Readonly<
+  Record<string, Readonly<Record<string, readonly V5AsyncReadState[]>>>
+>;
+
+/** Exact anti-shrinkage baseline for the source-derived asynchronous read universe. */
+export const V5_ASYNC_READ_SITE_BASELINE = 179;
+
+/** Ratchet this downward whenever #739 removes a read site or missing state. */
+export const V5_ASYNC_STATE_DEBT_CEILING = { readSites: 64, stateGaps: 112 } as const;
+
+export const V5_ASYNC_STATE_DEBT = {
+  'admin/pages/UsersPage.tsx': {
+    'UsersPage.stats': ['loading', 'error'],
+  },
+  'user/assets/AssetDetailPage.tsx': {
+    'AssetDetailPage.historyQuery': ['error'],
+    'AssetDetailPage.quoteQuery': ['loading', 'error'],
+    'DividendsSection.data': ['loading', 'error'],
+    'EarningsSection.data': ['loading', 'error'],
+    'NewsSection.data': ['loading', 'error'],
+    'SplitsSection.data': ['loading', 'error'],
+    'WatchlistIconButton.$destructured': ['loading', 'error'],
+    'WatchlistIconButton.listsQuery': ['error'],
+  },
+  'user/components/AssetSearchBox.tsx': {
+    'AssetSearchBox.conglomeratesQuery': ['error'],
+    'AssetSearchBox.portfoliosQuery': ['loading', 'error'],
+    'AssetSearchBox.workboardQuery': ['loading', 'error'],
+    'WatchlistControl.listsQuery': ['error'],
+  },
+  'user/components/TransactionDialog.tsx': {
+    'TransactionDialog.taxSettingsQuery': ['loading', 'error'],
+  },
+  'user/control/panels/AccountPanel.tsx': {
+    'BaseCurrencyRow.query': ['error'],
+    'ExportRow.status': ['loading', 'error'],
+  },
+  'user/control/panels/NotificationsPanel.tsx': {
+    'DiscordRows.query': ['loading', 'error'],
+    'DiscordSetup.query': ['loading', 'error'],
+    'TelegramRows.query': ['loading', 'error'],
+    'TelegramSetup.query': ['loading', 'error'],
+  },
+  'user/forecast/ProjectionSection.tsx': {
+    'ProjectionSection.analyticsQuery': ['loading', 'error'],
+    'ProjectionSection.dividendQuery': ['loading', 'error'],
+    'ProjectionSection.historyQuery': ['loading', 'error'],
+    'ProjectionSection.ordersQuery': ['loading', 'error'],
+    'ProjectionSection.portfolioQuery': ['loading', 'error'],
+  },
+  'user/home/HomePage.tsx': {
+    'HomeBoard.portfoliosQuery': ['error'],
+  },
+  'user/portfolio/cashflow/CashBudgetsPage.tsx': {
+    'CashBudgetsPage.tagsQuery': ['loading', 'error'],
+  },
+  'user/portfolio/cashflow/CashMovementsPage.tsx': {
+    'CashMovementsPage.tagsQuery': ['loading', 'error'],
+  },
+  'user/portfolio/cashflow/CashOverviewPage.tsx': {
+    'CashOverviewPage.movementsQuery': ['loading', 'error'],
+    'CashOverviewPage.sourcesQuery': ['loading', 'error'],
+  },
+  'user/portfolio/cashflow/RecordCashDialog.tsx': {
+    'RecordCashDialog.previewQuery': ['loading', 'error'],
+    'RecordCashDialog.sourcesQuery': ['loading', 'error'],
+    'RecordCashDialog.tagsQuery': ['loading', 'error'],
+  },
+  'user/portfolio/CashSourcesPage.tsx': {
+    'CashSourcesPage.cashQuery': ['loading', 'error'],
+  },
+  'user/portfolio/ImportPage.tsx': {
+    'ImportPage.brokersQuery': ['loading', 'error'],
+    'ImportPage.cashSourcesQuery': ['loading', 'error'],
+    'ImportPage.portfoliosQuery': ['loading', 'error'],
+  },
+  'user/portfolio/MirrorchainPanel.tsx': {
+    'InviteDialog.friendsQuery': ['error'],
+    'MemberSheet.activityQuery': ['loading', 'error'],
+    'useMirrorInvites.$return': ['loading', 'error'],
+  },
+  'user/portfolio/PortfolioPage.tsx': {
+    'DividendIntelSection.calendar': ['loading', 'error'],
+    'DividendIntelSection.projection': ['loading', 'error'],
+    'PortfolioPage.cashSourcesQuery': ['loading', 'error'],
+    'PortfolioPage.historyQuery': ['error'],
+    'PortfolioPage.transactionsQuery': ['loading', 'error'],
+    'RecategorizeBanner.statusQuery': ['loading', 'error'],
+  },
+  'user/portfolio/PortfolioSettingsPage.tsx': {
+    'PortfolioSettingsPage.archivedQuery': ['error'],
+  },
+  'user/portfolio/PortfolioSwitcher.tsx': {
+    'PortfolioSwitcher.activeQuery': ['loading', 'error'],
+  },
+  'user/portfolio/TaxReportPrintPage.tsx': {
+    'TaxReportPrintPage.portfoliosQuery': ['loading', 'error'],
+  },
+  'user/social/chatSurface.tsx': {
+    'ChipShareShortcut.audienceQuery': ['loading', 'error'],
+    'NewChatDialog.data': ['error'],
+    'SharePickerDialog.conglomeratesQuery': ['error'],
+    'SharePickerDialog.ideasQuery': ['error'],
+    'SharePickerDialog.portfoliosQuery': ['error'],
+  },
+  'user/social/FriendGroupsSection.tsx': {
+    'GroupCard.friendsQuery': ['loading', 'error'],
+  },
+  'user/social/MySharedItemsPage.tsx': {
+    'AlertSharingControl.data': ['loading', 'error'],
+  },
+  'user/vault/ui/VaultUnlockGate.tsx': {
+    'StuckFold.twoFactor': ['loading', 'error'],
+  },
+  'user/workboard/BudgetCalculator.tsx': {
+    'BudgetCalculator.portfoliosQuery': ['loading', 'error'],
+  },
+  'user/workboard/ConglomerateDetailPage.tsx': {
+    'ConglomerateDetailPage.resolvedQuery': ['loading'],
+  },
+  'user/workboard/IdeasListPage.tsx': {
+    'IdeasListPage.mySharedQuery': ['loading', 'error'],
+  },
+  'user/workboard/WorkboardPage.tsx': {
+    'UpcomingEarningsZone.data': ['loading', 'error'],
+    'WatchlistRow.quoteQuery': ['error'],
+    'WatchlistRow.sparklineQuery': ['error'],
+    'WatchlistSharingToggle.data': ['loading', 'error'],
+  },
+} as const satisfies V5AsyncStateDebtLedger;
 
 /**
  * Frozen literal-copy debt, by file. These pre-V5 admin pages were never
