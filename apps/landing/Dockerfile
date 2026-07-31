@@ -8,7 +8,9 @@
 #   docker build -f apps/landing/Dockerfile -t bettertrack-landing .
 FROM nginx:alpine@sha256:4a73073bd557c65b759505da037898b61f1be6cbcc3c2c3aeac22d2a470c1752 AS runner
 
-# Static site content → nginx web root.
+# Static site content → nginx web root. The canonical legal directories under
+# site/ are copied with the landing pages, so nginx resolves /<page>/ and
+# /<page>/de/ through each directory's index.html.
 COPY apps/landing/site/ /usr/share/nginx/html/
 
 # Origin-injection hook: nginx:alpine runs /docker-entrypoint.d/*.sh before start.

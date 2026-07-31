@@ -250,3 +250,29 @@ describe('worker entry registers the durable notification consumer + bridge (gua
     );
   });
 });
+
+describe('live legal pages consume the canonical landing tree (#984)', () => {
+  const updater = read('infra/live/updater.sh');
+  const liveEdge = read('infra/live/edge/bt-live-edge.conf');
+  const productBlock = liveEdge.slice(
+    liveEdge.indexOf('# ── Product page'),
+    liveEdge.indexOf('# ── Mobile placeholder'),
+  );
+
+  it('copies only the four legal directories from the landing source', () => {
+    expect(updater).toContain('_src="$APP/apps/landing/site"');
+    expect(updater).toContain('for _name in terms privacy impressum cookies; do');
+    expect(updater).toContain('cp -R "$_dir" "${_dst}/"');
+    expect(updater).not.toContain('_src="$APP/infra/live/edge/html/product"');
+  });
+
+  it('keeps the live edge directory-route contract unchanged', () => {
+    expect(productBlock).toContain('root /usr/share/nginx/bt-live/product;');
+    expect(productBlock).toContain('index index.html;');
+    expect(productBlock).toContain('try_files $uri $uri/ =404;');
+    for (const page of ['terms', 'privacy', 'impressum', 'cookies']) {
+      expect(productBlock).toContain(`/${page}/`);
+      expect(productBlock).toContain(`/${page}/de/`);
+    }
+  });
+});

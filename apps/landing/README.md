@@ -14,6 +14,7 @@ pages render instantly.
 | `de.html`        | Product landing — German                    |
 | `mobile.html`    | Mobile placeholder — English                |
 | `mobile.de.html` | Mobile placeholder — German                 |
+| `{page}/`        | EN/DE legal pages (`index.html`, `de/`)     |
 | `styles.css`     | Shared styles (app dark aesthetic)          |
 | `landing.js`     | CSP-safe runtime link + registration wiring |
 | `screens/*.svg`  | Feature screenshots                         |
@@ -22,6 +23,11 @@ pages render instantly.
 Language is a visible EN/DE switch that links between the sibling files — the
 SPA's runtime i18n layer does not apply to this separate static site. A human DE
 pass is part of V3-P13.
+
+`site/{terms,privacy,impressum,cookies}/` is the repository's single canonical
+legal-document source. The generic landing image serves those directories
+directly; `infra/live/updater.sh` overlays the same four directories onto the
+bespoke `bettertrack.at` product mount after each successful deploy.
 
 > **Screenshots.** The `screens/*.svg` assets are faithful, framework-free
 > reproductions of the real app surfaces (portfolio, Conglomerate builder,

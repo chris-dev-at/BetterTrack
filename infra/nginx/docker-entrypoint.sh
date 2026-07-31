@@ -2,10 +2,11 @@
 # BetterTrack web front-proxy entrypoint (PROJECTPLAN.md §4.6, §11).
 #
 # Selects the nginx server-block layout from BT_MODE (subdomains | ports),
-# derives the public API origin exactly like apps/api/src/config/env.ts
-# (deriveOrigins), and renders the chosen template with envsubst. The SAME built
-# image boots in either mode from env alone — no rebuild, no per-origin config
-# baked in (config.js is generated per server block, §7.1).
+# derives the public API and product origins exactly like
+# apps/api/src/config/env.ts (deriveOrigins), and renders the chosen template
+# with envsubst. The SAME built image boots in either mode from env alone — no
+# rebuild, no per-origin config baked in (config.js is generated per server
+# block, §7.1).
 set -eu
 
 MODE="${BT_MODE:-subdomains}"
@@ -50,6 +51,32 @@ case "$API_SCHEME" in
         ;;
     *)
         echo "bettertrack-web: BT_API_ORIGIN must use http:// or https://" >&2
+        exit 1
+        ;;
+esac
+
+# Derived product-site origin (explicit override wins), consumed by the SPA's
+# legal-link helper. It follows the same topology as the landing proxy: apex in
+# subdomains mode, dedicated product port in ports mode.
+if [ -n "${BT_PRODUCT_ORIGIN:-}" ]; then
+    PRODUCT_ORIGIN="$BT_PRODUCT_ORIGIN"
+elif [ "$MODE" = "subdomains" ]; then
+    PRODUCT_ORIGIN="${SCHEME}://${DOMAIN}"
+else
+    PRODUCT_ORIGIN="${SCHEME}://${DOMAIN}:${BT_PORT_PRODUCT:-8082}"
+fi
+PRODUCT_ORIGIN="${PRODUCT_ORIGIN%/}"
+PRODUCT_SCHEME="$(printf '%s' "${PRODUCT_ORIGIN%%://*}" | tr '[:upper:]' '[:lower:]')"
+PRODUCT_REST="${PRODUCT_ORIGIN#*://}"
+case "$PRODUCT_SCHEME" in
+    https)
+        PRODUCT_ORIGIN="https://${PRODUCT_REST}"
+        ;;
+    http)
+        PRODUCT_ORIGIN="http://${PRODUCT_REST}"
+        ;;
+    *)
+        echo "bettertrack-web: BT_PRODUCT_ORIGIN must use http:// or https://" >&2
         exit 1
         ;;
 esac
@@ -118,7 +145,7 @@ export API_UPSTREAM="${API_UPSTREAM:-api:3000}"
 # (§13.3 V3-P12). The apex origin serves its product page, `mobile.` serves the
 # mobile placeholder — both proxied to this upstream over the internal network.
 export LANDING_UPSTREAM="${LANDING_UPSTREAM:-landing:80}"
-export API_ORIGIN WS_ORIGIN GRAFANA_FRAME_SRC
+export API_ORIGIN PRODUCT_ORIGIN WS_ORIGIN GRAFANA_FRAME_SRC
 
 # The override keeps the shipped paths fixed while allowing the topology test to
 # execute this exact entrypoint against an isolated temporary nginx tree (same
@@ -132,7 +159,7 @@ if [ ! -f "$TEMPLATE" ]; then
 fi
 
 # Restrict envsubst to OUR vars so nginx runtime vars ($host, $uri, …) survive.
-VARS='${BT_DOMAIN} ${BT_SUB_API} ${BT_SUB_WEB} ${BT_SUB_ADMIN} ${BT_SUB_MOBILE} ${BT_PORT_API} ${BT_PORT_WEB} ${BT_PORT_ADMIN} ${BT_PORT_PRODUCT} ${BT_PORT_MOBILE} ${API_UPSTREAM} ${LANDING_UPSTREAM} ${API_ORIGIN} ${WS_ORIGIN} ${GRAFANA_FRAME_SRC}'
+VARS='${BT_DOMAIN} ${BT_SUB_API} ${BT_SUB_WEB} ${BT_SUB_ADMIN} ${BT_SUB_MOBILE} ${BT_PORT_API} ${BT_PORT_WEB} ${BT_PORT_ADMIN} ${BT_PORT_PRODUCT} ${BT_PORT_MOBILE} ${API_UPSTREAM} ${LANDING_UPSTREAM} ${API_ORIGIN} ${PRODUCT_ORIGIN} ${WS_ORIGIN} ${GRAFANA_FRAME_SRC}'
 INCLUDE_DIR="${NGINX_ROOT}/bt-includes"
 mkdir -p "$INCLUDE_DIR"
 envsubst "$VARS" \
@@ -146,5 +173,5 @@ else
 fi
 envsubst "$VARS" < "$TEMPLATE" > "${NGINX_ROOT}/conf.d/default.conf"
 
-echo "bettertrack-web: mode=${MODE} apiOrigin=${API_ORIGIN}"
+echo "bettertrack-web: mode=${MODE} apiOrigin=${API_ORIGIN} productOrigin=${PRODUCT_ORIGIN}"
 exec nginx -g 'daemon off;'

@@ -5,7 +5,11 @@
  * loads. That decouples the image from the deployment topology — no rebuild to
  * move between subdomains and ports mode.
  *
- *   window.__BT__ = { app: "user" | "admin", apiOrigin: "https://api.example" }
+ *   window.__BT__ = {
+ *     app: "user" | "admin",
+ *     apiOrigin: "https://api.example",
+ *     productOrigin: "https://example"
+ *   }
  *
  * `apiOrigin` empty (the dev/default stub) means "same origin" — the Vite proxy
  * (dev) or a co-located nginx (single-origin fallback) forwards `/api`.
@@ -16,6 +20,8 @@ export interface RuntimeConfig {
   app: AppKind;
   /** Absolute API origin, or '' for same-origin (relative /api/v1). */
   apiOrigin: string;
+  /** Absolute product-site origin that serves the public legal documents. */
+  productOrigin: string;
 }
 
 declare global {
@@ -24,7 +30,11 @@ declare global {
   }
 }
 
-const DEFAULTS: RuntimeConfig = { app: 'user', apiOrigin: '' };
+const DEFAULTS: RuntimeConfig = {
+  app: 'user',
+  apiOrigin: '',
+  productOrigin: 'https://bettertrack.at',
+};
 
 export function getRuntimeConfig(): RuntimeConfig {
   const injected = typeof window !== 'undefined' ? window.__BT__ : undefined;
@@ -33,7 +43,11 @@ export function getRuntimeConfig(): RuntimeConfig {
     typeof injected?.apiOrigin === 'string'
       ? injected.apiOrigin.replace(/\/$/, '')
       : DEFAULTS.apiOrigin;
-  return { app, apiOrigin };
+  const productOrigin =
+    typeof injected?.productOrigin === 'string' && injected.productOrigin.length > 0
+      ? injected.productOrigin.replace(/\/$/, '')
+      : DEFAULTS.productOrigin;
+  return { app, apiOrigin, productOrigin };
 }
 
 /** Base URL for the JSON API: `${apiOrigin}/api/v1`, or relative `/api/v1`. */

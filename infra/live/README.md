@@ -15,11 +15,12 @@ non-secret live-box artifacts straight from the freshly fast-forwarded clone, so
 a routine change to any of them deploys from a merged PR alone — no hands on the
 box. In order:
 
-1. **Static product pages** — every subdirectory of
-   `infra/live/edge/html/product/` is overlay-copied into the control dir's
-   served `edge/html/product/` mount. Non-destructive: control-dir-only pages
-   and files are never deleted; on conflicts the repo copy wins. Served live
-   immediately (no reload). One `edge-sync:` log line per adopted directory.
+1. **Static legal pages** — the four canonical directories in
+   `apps/landing/site/` (`terms`, `privacy`, `impressum`, `cookies`) are
+   overlay-copied into the control dir's served `edge/html/product/` mount.
+   Non-destructive: control-dir-only pages and files are never deleted; on
+   conflicts the repo copy wins. Served live immediately (no reload). One
+   `edge-sync:` log line per adopted directory.
 2. **Edge conf** — when `edge/bt-live-edge.conf` differs from the running copy,
    the updater saves the running copy as `bt-live-edge.conf.prev`, stages the
    candidate onto the mounted path (nginx only reads it at (re)load, so this is
@@ -163,16 +164,18 @@ Unlike the updater, this file is read by nginx at (re)load, so the reload is wha
 picks up the change. `nginx -s reload` is zero-downtime; the restart is the
 fallback if a reload is refused.
 
-## `edge/html/product/` — product-site legal pages
+## Product-site legal pages
 
-Canonical copies of the **legal document set** served on the product origin
-(`bettertrack.at`): Terms of Service (`/terms/` + `/terms/de/`), the privacy
-policy (`/privacy/` + `/privacy/de/`), the Impressum (`/impressum/` +
-`/impressum/de/`), and the cookie note (`/cookies/` + `/cookies/de/`). Each
-document is one directory holding `index.html` (EN) and `de/index.html` (DE),
-self-contained static HTML that links the product site's existing shared
-`/style.css` (which stays a live-box file — the pages only add page-local
-inline styles on top, so dropping them in changes nothing else).
+The one canonical copy of the **legal document set** is
+`apps/landing/site/{terms,privacy,impressum,cookies}/`. It is served on the
+product origin (`bettertrack.at`) as Terms of Service (`/terms/` +
+`/terms/de/`), the privacy policy (`/privacy/` + `/privacy/de/`), the Impressum
+(`/impressum/` + `/impressum/de/`), and the cookie note (`/cookies/` +
+`/cookies/de/`). Each document is one directory holding `index.html` (EN) and
+`de/index.html` (DE). The generic landing image ships those directories
+directly; the live updater copies the same files into its control-dir mount.
+On the bespoke live site they continue to use the control dir's existing shared
+`/style.css`.
 
 The rest of the product site (`index`, `features`, `security`, `roadmap`,
 `style.css`, images) intentionally remains control-dir-only for now; only the
@@ -185,14 +188,15 @@ this repository.
 
 ### Adopt (on the prod host)
 
-**Automatic** since the self-adopting pipeline: every subdirectory here is
-overlay-copied into the served mount on each successful deploy tick (the live
-`web` nginx serves the control dir's `edge/html` mount directly, so no reload
-is involved). Manual fallback, from the control dir:
+**Automatic** since the self-adopting pipeline: the four legal directories are
+overlay-copied from `apps/landing/site/` into the served mount on each
+successful deploy tick (the live `web` nginx serves the control dir's
+`edge/html` mount directly, so no reload is involved). Manual fallback, from
+the control dir:
 
 ```sh
-cp -R app/infra/live/edge/html/product/terms     ./edge/html/product/
-cp -R app/infra/live/edge/html/product/privacy   ./edge/html/product/
-cp -R app/infra/live/edge/html/product/impressum ./edge/html/product/
-cp -R app/infra/live/edge/html/product/cookies   ./edge/html/product/
+cp -R app/apps/landing/site/terms     ./edge/html/product/
+cp -R app/apps/landing/site/privacy   ./edge/html/product/
+cp -R app/apps/landing/site/impressum ./edge/html/product/
+cp -R app/apps/landing/site/cookies   ./edge/html/product/
 ```

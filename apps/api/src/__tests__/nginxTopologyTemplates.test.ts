@@ -48,6 +48,34 @@ function section(value: string, start: string, end: string): string {
   return value.slice(value.indexOf(start), value.indexOf(end));
 }
 
+const LEGAL_PAGES = ['terms', 'privacy', 'impressum', 'cookies'] as const;
+const LEGAL_DOCUMENTS = LEGAL_PAGES.flatMap((page) => [
+  {
+    route: `/${page}/`,
+    repositoryPath: `apps/landing/site/${page}/index.html`,
+  },
+  {
+    route: `/${page}/de/`,
+    repositoryPath: `apps/landing/site/${page}/de/index.html`,
+  },
+]);
+
+function assertShippedLegalRoutes(
+  renderedTemplate: string,
+  productSectionStart: string,
+  mobileSectionStart: string,
+): void {
+  const product = section(renderedTemplate, productSectionStart, mobileSectionStart);
+  expect(product).toContain('location / {');
+  expect(product).toContain('proxy_pass http://landing:80;');
+  for (const document of LEGAL_DOCUMENTS) {
+    expect(
+      existsSync(resolve(repoDir, document.repositoryPath)),
+      `${document.route} must resolve to shipped landing content`,
+    ).toBe(true);
+  }
+}
+
 /** Mirror the entrypoint's restricted envsubst: replace only `${NAME}` for NAME in env. */
 function render(raw: string, env: Record<string, string>): string {
   return raw.replace(/\$\{(\w+)\}/g, (match, name: string) => env[name] ?? match);
@@ -374,6 +402,7 @@ const SUBDOMAINS_ENV: Record<string, string> = {
   API_UPSTREAM: 'api:3000',
   LANDING_UPSTREAM: 'landing:80',
   API_ORIGIN: 'https://api.track.example.at',
+  PRODUCT_ORIGIN: 'https://track.example.at',
   WS_ORIGIN: 'wss://api.track.example.at',
   // Rendered empty unless BT_GRAFANA_PUBLIC_URL is configured; the entrypoint
   // suite below covers the configured shape against the real script.
@@ -389,6 +418,7 @@ const PORTS_ENV: Record<string, string> = {
   API_UPSTREAM: 'api:3000',
   LANDING_UPSTREAM: 'landing:80',
   API_ORIGIN: 'http://track.example.at:3000',
+  PRODUCT_ORIGIN: 'http://track.example.at:8082',
   WS_ORIGIN: 'ws://track.example.at:3000',
   GRAFANA_FRAME_SRC: '',
 };
@@ -407,6 +437,8 @@ describe('subdomains template', () => {
     expect(out).toContain('server_name track.example.at;');
     // The apex block reverse-proxies to the static landing container.
     expect(out).toContain('proxy_pass http://landing:80;');
+    expect(out).toContain('productOrigin: "https://track.example.at"');
+    assertShippedLegalRoutes(out, '# ── Product origin', '# ── Mobile origin');
   });
 
   it('serves the mobile placeholder from its own subdomain, rooting at mobile.html', () => {
@@ -415,7 +447,9 @@ describe('subdomains template', () => {
   });
 
   it('substitutes every whitelisted var (no topology value left)', () => {
-    expect(out).not.toMatch(/\$\{(BT_|LANDING_UPSTREAM|API_UPSTREAM|API_ORIGIN|WS_ORIGIN)/);
+    expect(out).not.toMatch(
+      /\$\{(BT_|LANDING_UPSTREAM|API_UPSTREAM|API_ORIGIN|PRODUCT_ORIGIN|WS_ORIGIN)/,
+    );
   });
 
   it('applies the shared policy and conditional HSTS to every static response path', () => {
@@ -440,10 +474,14 @@ describe('ports template', () => {
     expect(out).toContain('listen 8083;');
     expect(out).toContain('proxy_pass http://landing:80;');
     expect(out).toContain('proxy_pass http://landing:80/mobile.html;');
+    expect(out).toContain('productOrigin: "http://track.example.at:8082"');
+    assertShippedLegalRoutes(out, '# ── Product port', '# ── Mobile port');
   });
 
   it('substitutes every whitelisted var', () => {
-    expect(out).not.toMatch(/\$\{(BT_|LANDING_UPSTREAM|API_UPSTREAM|API_ORIGIN|WS_ORIGIN)/);
+    expect(out).not.toMatch(
+      /\$\{(BT_|LANDING_UPSTREAM|API_UPSTREAM|API_ORIGIN|PRODUCT_ORIGIN|WS_ORIGIN)/,
+    );
   });
 
   it('applies the shared policy to every static response path without literal HSTS', () => {
@@ -451,6 +489,50 @@ describe('ports template', () => {
     expect(occurrences(out, CONDITIONAL_HSTS_INCLUDE)).toBe(8);
     expect(section(out, '# ── API port', '# ── Web port')).not.toContain(SECURITY_INCLUDE);
     expect(out).not.toContain('add_header Strict-Transport-Security');
+  });
+});
+
+describe('canonical landing legal documents', () => {
+  it('keeps exactly one tracked EN/DE copy of every legal page', () => {
+    const tracked = spawnSync('git', ['ls-files', '--cached', '--others', '--exclude-standard'], {
+      cwd: repoDir,
+      encoding: 'utf8',
+    });
+    if (tracked.status !== 0) {
+      throw new Error(`git ls-files failed: ${tracked.stderr}`);
+    }
+    const legalCopies = tracked.stdout
+      .split('\n')
+      .filter((path) => path.length > 0 && existsSync(resolve(repoDir, path)))
+      .filter((path) =>
+        /(?:^|\/)(?:terms|privacy|impressum|cookies)(?:\/de)?\/index\.html$/.test(path),
+      )
+      .sort();
+
+    expect(legalCopies).toEqual(LEGAL_DOCUMENTS.map(({ repositoryPath }) => repositoryPath).sort());
+  });
+
+  it('copies the canonical tree into the generic landing image', () => {
+    const dockerfile = readFileSync(resolve(repoDir, 'apps/landing/Dockerfile'), 'utf8');
+    expect(dockerfile).toContain('COPY apps/landing/site/ /usr/share/nginx/html/');
+  });
+
+  it.each([
+    ['index.html', LEGAL_PAGES.map((page) => `href="/${page}/"`), 'aria-label="Legal"'],
+    ['de.html', LEGAL_PAGES.map((page) => `href="/${page}/de/"`), 'aria-label="Rechtliches"'],
+  ])('links the matching legal locale from the compact footer in %s', (file, links, label) => {
+    const html = readFileSync(resolve(repoDir, 'apps/landing/site', file), 'utf8');
+    for (const link of links) expect(html).toContain(link);
+    expect(html.match(/<nav class="legal-links"/g)).toHaveLength(1);
+    expect(html).toContain(label);
+  });
+
+  it('keeps all four links in one low-emphasis footer row', () => {
+    const styles = readFileSync(resolve(repoDir, 'apps/landing/site/styles.css'), 'utf8');
+    const legalLinksRule = styles.match(/\.legal-links\s*\{[^}]+\}/)?.[0] ?? '';
+    expect(legalLinksRule).toContain('display: flex');
+    expect(legalLinksRule).toContain('width: 100%');
+    expect(legalLinksRule).toContain('font-size: 13px');
   });
 });
 
@@ -652,7 +734,9 @@ describe('shipped web Compose topology → rendered browser policy', () => {
     // does not reach nginx (the round-2 landing regression, one layer over).
     const shipped = composeWebEnvironment({});
     expect(Object.keys(shipped)).toContain('BT_API_ORIGIN');
+    expect(Object.keys(shipped)).toContain('BT_PRODUCT_ORIGIN');
     expect(Object.keys(shipped)).toContain('BT_GRAFANA_PUBLIC_URL');
+    expect(shipped['BT_PRODUCT_ORIGIN']).toBe('');
     expect(shipped['BT_GRAFANA_PUBLIC_URL']).toBe('');
     expect(
       composeWebEnvironment({ BT_GRAFANA_PUBLIC_URL: 'https://grafana.bettertrack.at' })[
@@ -683,7 +767,8 @@ describe('shipped web Compose topology → rendered browser policy', () => {
     expect(csp).not.toContain('  ');
     expect(csp).not.toContain(' ;');
     expect(rendered.defaultConf).toContain('server_name gateway.money.example.net;');
-    expect(rendered.defaultConf).not.toMatch(/\$\{(BT_|API_|LANDING_|WS_|GRAFANA_)/);
+    expect(rendered.defaultConf).toContain('productOrigin: "https://money.example.net"');
+    expect(rendered.defaultConf).not.toMatch(/\$\{(BT_|API_|LANDING_|PRODUCT_|WS_|GRAFANA_)/);
   });
 
   it('allows exactly the configured Grafana subdomain in frame-src', () => {
@@ -738,6 +823,20 @@ describe('shipped web Compose topology → rendered browser policy', () => {
     expect(csp).toContain(
       "frame-src 'self' http://track.lan:4300 https://accounts.google.com http://track.lan:3001;",
     );
+    expect(rendered.defaultConf).toContain('productOrigin: "http://track.lan:8082"');
+  });
+
+  it('honors and normalizes the explicit product origin passed through Compose', () => {
+    const rendered = runWebEntrypoint(
+      composeWebEnvironment({
+        BT_MODE: 'subdomains',
+        BT_DOMAIN: 'internal.example.net',
+        BT_PRODUCT_ORIGIN: 'HTTPS://PUBLIC.Example.NET/',
+      }),
+    );
+
+    expect(rendered.status).toBe(0);
+    expect(rendered.defaultConf).toContain('productOrigin: "https://PUBLIC.Example.NET"');
   });
 
   it.each([

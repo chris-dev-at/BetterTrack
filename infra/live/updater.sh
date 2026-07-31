@@ -195,19 +195,23 @@ reclaim_docker_storage() {
 # kind, compose.override.yml, and all non-product control-dir content —
 # secrets and machine-local config stay control-dir-only.
 
-# Overlay-copy every subdirectory of the repo's product html into the served
-# mount. Non-destructive: control-dir-only pages and files are never deleted;
-# on conflicts the repo copy wins. nginx serves the mount live, so adopted
-# pages are public immediately — no reload needed.
+# Overlay-copy the canonical legal directories from the generic landing tree
+# into the bespoke live edge's served product mount. Non-destructive:
+# control-dir-only pages and files are never deleted; on conflicts the repo copy
+# wins. nginx serves the mount live, so adopted pages are public immediately —
+# no reload needed.
 sync_product_html() {
-  _src="$APP/infra/live/edge/html/product"
+  _src="$APP/apps/landing/site"
   _dst="$CONTROL/edge/html/product"
   [ -d "$_src" ] || return 0
   [ -d "$_dst" ] || { log "edge-sync: SKIP — ${_dst} missing on this box"; return 0; }
-  for _dir in "$_src"/*/; do
-    [ -d "$_dir" ] || continue
-    _name="$(basename "$_dir")"
-    if cp -R "${_src}/${_name}" "${_dst}/" 2>>"$LOG"; then
+  for _name in terms privacy impressum cookies; do
+    _dir="${_src}/${_name}"
+    if [ ! -d "$_dir" ]; then
+      log "edge-sync: FAILED — canonical landing directory ${_dir} is missing"
+      continue
+    fi
+    if cp -R "$_dir" "${_dst}/" 2>>"$LOG"; then
       log "edge-sync: adopted product/${_name}/ from repo"
     else
       log "edge-sync: FAILED to adopt product/${_name}/ (see output above)"
