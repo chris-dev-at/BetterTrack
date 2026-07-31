@@ -11,24 +11,57 @@ import {
   type PortfolioVisibility,
 } from '@bettertrack/contracts';
 
-import { ApiError } from '../../lib/apiClient';
+import { useT } from '../../i18n';
+import type { TranslateFn } from '../../i18n';
 import * as api from '../../lib/adminApi';
 import { useResource } from '../useResource';
 import { Alert, Badge, Button, PageHeader, Spinner } from '../components/ui';
 
-function errorMessage(err: unknown): string {
-  return err instanceof ApiError ? err.message : 'Something went wrong. Please try again.';
+function errorMessage(err: unknown, t: TranslateFn): string {
+  void err;
+  return t('common.genericError');
 }
 
-/** Plain-language labels for the notification-matrix channel columns. */
-const CHANNEL_LABEL: Record<NotificationSettingChannel, string> = {
-  inapp: 'In-app',
-  email: 'Email',
-  telegram: 'Telegram',
-  discord: 'Discord',
-  push: 'Phone',
-  webpush: 'Browser',
-};
+function channelLabels(t: TranslateFn): Record<NotificationSettingChannel, string> {
+  return {
+    inapp: t('admin.accountDefaults.channels.inapp'),
+    email: t('admin.accountDefaults.channels.email'),
+    telegram: t('admin.accountDefaults.channels.telegram'),
+    discord: t('admin.accountDefaults.channels.discord'),
+    push: t('admin.accountDefaults.channels.push'),
+    webpush: t('admin.accountDefaults.channels.webpush'),
+  };
+}
+
+function notificationTypeLabels(t: TranslateFn): Record<NotificationType, string> {
+  return {
+    'friend.request': t('admin.accountDefaults.types.friendRequest'),
+    'friend.accepted': t('admin.accountDefaults.types.friendAccepted'),
+    'portfolio.shared': t('admin.accountDefaults.types.portfolioShared'),
+    'watchlist.shared': t('admin.accountDefaults.types.watchlistShared'),
+    'conglomerate.shared': t('admin.accountDefaults.types.conglomerateShared'),
+    'friend.activity': t('admin.accountDefaults.types.friendActivity'),
+    'follow.published': t('admin.accountDefaults.types.followPublished'),
+    'follow.alert.created': t('admin.accountDefaults.types.followAlertCreated'),
+    'follow.alert.fired': t('admin.accountDefaults.types.followAlertFired'),
+    'account.invite': t('admin.accountDefaults.types.accountInvite'),
+    'account.temp_password': t('admin.accountDefaults.types.tempPassword'),
+    'account.data_export': t('admin.accountDefaults.types.dataExport'),
+    'alert.triggered': t('admin.accountDefaults.types.alertTriggered'),
+    'earnings.reminder': t('admin.accountDefaults.types.earningsReminder'),
+    'chat.message': t('admin.accountDefaults.types.chatMessage'),
+    'dividend.event': t('admin.accountDefaults.types.dividendEvent'),
+    'budget.exceeded': t('admin.accountDefaults.types.budgetExceeded'),
+    'mirror.invite': t('admin.accountDefaults.types.mirrorInvite'),
+    'mirror.member_joined': t('admin.accountDefaults.types.mirrorMemberJoined'),
+    'mirror.member_left': t('admin.accountDefaults.types.mirrorMemberLeft'),
+    'mirror.member_removed': t('admin.accountDefaults.types.mirrorMemberRemoved'),
+    'mirror.removed': t('admin.accountDefaults.types.mirrorRemoved'),
+    'mirror.ownership_transferred': t('admin.accountDefaults.types.mirrorOwnershipTransferred'),
+    'mirror.chain_dissolved': t('admin.accountDefaults.types.mirrorChainDissolved'),
+    'mirror.sync_stalled': t('admin.accountDefaults.types.mirrorSyncStalled'),
+  };
+}
 
 /**
  * New-account defaults (PROJECTPLAN.md §13.4 V4-P0d): what EVERY new account
@@ -39,6 +72,7 @@ const CHANNEL_LABEL: Record<NotificationSettingChannel, string> = {
  * `GET /admin/account-defaults` and persists via `PATCH` (audit-logged).
  */
 export function AccountDefaultsPage() {
+  const t = useT();
   const defaults = useResource((signal) => api.getAccountDefaults(signal), []);
   const { data } = defaults;
 
@@ -71,6 +105,8 @@ export function AccountDefaultsPage() {
     if (channel === 'discord') return channelsConfigurable.discord;
     return true;
   });
+  const channelLabel = channelLabels(t);
+  const typeLabel = notificationTypeLabels(t);
 
   function setCell(type: NotificationType, channel: NotificationSettingChannel, value: boolean) {
     setSaved(false);
@@ -96,7 +132,7 @@ export function AccountDefaultsPage() {
       setChannelsConfigurable(next.channelsConfigurable);
       setSaved(true);
     } catch (err) {
-      setSaveError(errorMessage(err));
+      setSaveError(errorMessage(err, t));
     } finally {
       setSaving(false);
     }
@@ -105,24 +141,24 @@ export function AccountDefaultsPage() {
   return (
     <div className="flex flex-col gap-6">
       <PageHeader
-        title="Account defaults"
-        description="What every NEW account starts with. Changes apply to the next registration only — existing accounts are never touched."
+        title={t('admin.accountDefaults.title')}
+        description={t('admin.accountDefaults.subtitle')}
       />
 
       {defaults.loading ? (
-        <Spinner label="Loading account defaults…" />
+        <Spinner label={t('admin.accountDefaults.loading')} />
       ) : defaults.error ? (
         <Alert tone="error">
           {defaults.error}{' '}
           <button className="underline" onClick={defaults.reload}>
-            Retry
+            {t('common.retry')}
           </button>
         </Alert>
       ) : matrix ? (
         <>
           <section className="flex flex-col gap-3 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
             <h2 className="text-sm font-semibold uppercase tracking-wide text-neutral-400">
-              Starter settings
+              {t('admin.accountDefaults.starterTitle')}
             </h2>
 
             <label
@@ -130,9 +166,11 @@ export function AccountDefaultsPage() {
               className="flex items-start justify-between gap-3 rounded-md border border-neutral-700 px-3 py-3"
             >
               <span className="flex flex-col gap-1">
-                <span className="text-sm font-medium text-neutral-100">Chat enabled</span>
+                <span className="text-sm font-medium text-neutral-100">
+                  {t('admin.accountDefaults.chatLabel')}
+                </span>
                 <span className="text-sm text-neutral-400">
-                  When off, new accounts start unable to send direct messages (they can still read).
+                  {t('admin.accountDefaults.chatHint')}
                 </span>
               </span>
               <input
@@ -149,10 +187,10 @@ export function AccountDefaultsPage() {
 
             <fieldset
               className="flex flex-col gap-2 rounded-md border border-neutral-700 px-3 py-3"
-              aria-label="Default portfolio visibility"
+              aria-label={t('admin.accountDefaults.visibilityAria')}
             >
               <legend className="px-1 text-sm font-medium text-neutral-100">
-                Default portfolio visibility
+                {t('admin.accountDefaults.visibilityTitle')}
               </legend>
               {(['private', 'friends'] as const).map((value) => (
                 <label
@@ -172,7 +210,9 @@ export function AccountDefaultsPage() {
                       setVisibility(value);
                     }}
                   />
-                  {value === 'private' ? 'Private' : 'Visible to friends'}
+                  {value === 'private'
+                    ? t('admin.accountDefaults.visibilityPrivate')
+                    : t('admin.accountDefaults.visibilityFriends')}
                 </label>
               ))}
             </fieldset>
@@ -183,12 +223,11 @@ export function AccountDefaultsPage() {
             >
               <span className="flex flex-col gap-1">
                 <span className="flex items-center gap-2 text-sm font-medium text-neutral-100">
-                  Developer status
-                  <Badge tone="neutral">Inert</Badge>
+                  {t('admin.accountDefaults.developerLabel')}
+                  <Badge tone="neutral">{t('admin.accountDefaults.inertBadge')}</Badge>
                 </span>
                 <span className="text-sm text-neutral-400">
-                  Stored on new accounts but has no effect yet — consumed only when developer status
-                  ships (V6-9).
+                  {t('admin.accountDefaults.developerHint')}
                 </span>
               </span>
               <input
@@ -207,12 +246,10 @@ export function AccountDefaultsPage() {
           <section className="flex flex-col gap-3 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
             <div className="flex flex-col gap-1">
               <h2 className="text-sm font-semibold uppercase tracking-wide text-neutral-400">
-                Notification defaults
+                {t('admin.accountDefaults.notificationsTitle')}
               </h2>
               <p className="text-sm text-neutral-400">
-                The per-type × channel matrix a new account starts with. Pre-filled with the lean
-                email default (email on only for account &amp; security). Users can change theirs
-                afterwards.
+                {t('admin.accountDefaults.notificationsDescription')}
               </p>
             </div>
 
@@ -220,10 +257,12 @@ export function AccountDefaultsPage() {
               <table className="w-full min-w-[36rem] text-left text-sm">
                 <thead className="bg-neutral-950 text-xs uppercase tracking-wide text-neutral-400">
                   <tr>
-                    <th className="px-4 py-2 font-medium">Type</th>
+                    <th className="px-4 py-2 font-medium">
+                      {t('admin.accountDefaults.typeHeader')}
+                    </th>
                     {visibleChannels.map((channel) => (
                       <th key={channel} className="px-3 py-2 text-center font-medium">
-                        {CHANNEL_LABEL[channel]}
+                        {channelLabel[channel]}
                       </th>
                     ))}
                   </tr>
@@ -231,13 +270,13 @@ export function AccountDefaultsPage() {
                 <tbody className="divide-y divide-neutral-800">
                   {NOTIFICATION_TYPES.map((type) => (
                     <tr key={type} className="hover:bg-neutral-900/60">
-                      <td className="px-4 py-2 font-mono text-xs text-neutral-300">{type}</td>
+                      <td className="px-4 py-2 text-xs text-neutral-300">{typeLabel[type]}</td>
                       {visibleChannels.map((channel) => (
                         <td key={channel} className="px-3 py-2 text-center">
                           <input
                             type="checkbox"
                             className="h-4 w-4 accent-sky-500"
-                            aria-label={`${type} · ${CHANNEL_LABEL[channel]}`}
+                            aria-label={`${typeLabel[type]} · ${channelLabel[channel]}`}
                             checked={matrix[type][channel]}
                             onChange={(e) => setCell(type, channel, e.target.checked)}
                           />
@@ -251,11 +290,11 @@ export function AccountDefaultsPage() {
           </section>
 
           {saveError ? <Alert tone="error">{saveError}</Alert> : null}
-          {saved ? <Alert tone="success">Account defaults saved.</Alert> : null}
+          {saved ? <Alert tone="success">{t('admin.accountDefaults.saved')}</Alert> : null}
 
           <div>
             <Button onClick={() => void onSave()} disabled={saving}>
-              {saving ? 'Saving…' : 'Save defaults'}
+              {saving ? t('common.saving') : t('admin.accountDefaults.save')}
             </Button>
           </div>
         </>

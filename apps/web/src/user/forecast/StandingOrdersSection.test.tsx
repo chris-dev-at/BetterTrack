@@ -175,12 +175,18 @@ describe('StandingOrdersSection', () => {
   });
 
   test('surfaces the load-error banner when the fetch fails', async () => {
-    vi.mocked(standingOrdersApi.listStandingOrders).mockRejectedValue(new Error('boom'));
+    vi.mocked(standingOrdersApi.listStandingOrders)
+      .mockRejectedValueOnce(new Error('boom'))
+      .mockResolvedValueOnce({ orders: [] });
+    const user = userEvent.setup();
     renderSection();
 
     expect(
       await screen.findByText('Could not load your standing orders. Please try again.'),
     ).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Try again' }));
+    expect(await screen.findByText('No standing orders yet')).toBeInTheDocument();
+    expect(standingOrdersApi.listStandingOrders).toHaveBeenCalledTimes(2);
   });
 
   test('paused orders show "No next run scheduled" instead of a date', async () => {

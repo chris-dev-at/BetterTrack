@@ -165,6 +165,17 @@ export function PortfolioSwitcher() {
   // back here however that chain ends.
   const triggerRef = useRef<HTMLButtonElement>(null);
 
+  // Global create links (command palette, shell and empty states) converge on
+  // this query flag. Consume it once so browser Back does not reopen the
+  // wizard after the user closes it.
+  useEffect(() => {
+    if (searchParams.get('create') !== '1') return;
+    setWizardOpen(true);
+    const next = new URLSearchParams(searchParams);
+    next.delete('create');
+    setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams]);
+
   // Every close path — Escape, an outside click, picking a portfolio, opening
   // the wizard — hands focus back deliberately instead of dropping it on the
   // `<body>` with the popover that held it. The ladder covers the case where

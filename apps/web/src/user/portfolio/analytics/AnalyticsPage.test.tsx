@@ -269,6 +269,48 @@ beforeEach(() => {
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 describe('AnalyticsPage — main graph, stats & contribution table', () => {
+  test('retries a failed analytics read without leaving the page', async () => {
+    vi.mocked(getAnalyticsSeries)
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce(RESP_FULL);
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole('button', { name: 'Try again' }));
+
+    expect(await screen.findByRole('table')).toBeInTheDocument();
+    expect(getAnalyticsSeries).toHaveBeenCalledTimes(2);
+  });
+
+  test('retries a failed portfolio bootstrap', async () => {
+    vi.mocked(listPortfolios)
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce(PORTFOLIO_LIST);
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole('button', { name: 'Try again' }));
+
+    expect(await screen.findByRole('table')).toBeInTheDocument();
+    expect(listPortfolios).toHaveBeenCalledTimes(2);
+  });
+
+  test('shows a create-portfolio empty state when the portfolio list succeeds empty', async () => {
+    vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [] });
+    renderPage();
+
+    expect(await screen.findByText('No portfolio to analyze yet')).toBeInTheDocument();
+    expect(
+      screen.queryByText("Couldn't load analytics for this portfolio."),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'New portfolio' })).toHaveAttribute(
+      'href',
+      '/portfolios?create=1',
+    );
+    expect(getPortfolio).not.toHaveBeenCalled();
+  });
+
   test('renders the primary curve, per-series stats, contribution rows and the locale-formatted window', async () => {
     renderPage();
 
@@ -374,7 +416,9 @@ describe('AnalyticsPage — compare mode', () => {
   });
 
   test('a failing compare-target list shows an error, not the "none yet" empty label', async () => {
-    vi.mocked(listConglomerates).mockRejectedValue(new Error('boom'));
+    vi.mocked(listConglomerates)
+      .mockRejectedValueOnce(new Error('boom'))
+      .mockResolvedValueOnce({ conglomerates: [] });
     const user = userEvent.setup();
     renderPage();
     await screen.findByRole('table');
@@ -383,6 +427,9 @@ describe('AnalyticsPage — compare mode', () => {
 
     expect(await screen.findByText('Something went wrong. Please try again.')).toBeInTheDocument();
     expect(screen.queryByText("You don't have any blueprints yet.")).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Try again' }));
+    expect(await screen.findByText("You don't have any blueprints yet.")).toBeInTheDocument();
+    expect(listConglomerates).toHaveBeenCalledTimes(2);
   });
 
   test('compare vs an asset/index renders both series overlaid + side-by-side stats', async () => {
@@ -477,6 +524,22 @@ describe('AnalyticsPage — range & overlay', () => {
         expect.anything(),
       ),
     );
+  });
+
+  test('retries a failed asset-overlay history read', async () => {
+    vi.mocked(getPortfolioHistory)
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce(
+        HISTORY_WITH_ASSETS as unknown as Awaited<ReturnType<typeof getPortfolioHistory>>,
+      );
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByRole('table');
+
+    await user.click(screen.getByRole('button', { name: 'Overlay assets' }));
+    await user.click(await screen.findByRole('button', { name: 'Try again' }));
+
+    await waitFor(() => expect(getPortfolioHistory).toHaveBeenCalledTimes(2));
   });
 });
 

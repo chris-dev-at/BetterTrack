@@ -7,7 +7,7 @@ import { cx } from '../../lib/cx';
 import { formatMoney, formatPercent } from '../../lib/format';
 import type { PortfolioSummary } from '@bettertrack/contracts';
 import { StatCard } from '../../ui';
-import { Alert, Button, TextField } from '../components/ui';
+import { Alert, Button, Spinner, TextField } from '../components/ui';
 
 import {
   compoundInterest,
@@ -80,7 +80,12 @@ function round2(value: number): number {
 function usePortfolioPrefill(): {
   prefill: Prefill;
   isLoading: boolean;
+  isError: boolean;
+  portfolioListLoading: boolean;
+  portfolioListError: boolean;
   portfolios: PortfolioSummary[];
+  retryPortfolioList: () => void;
+  retry: () => void;
 } {
   const store = usePortfolioStore();
   const paranoid = useResolvedPrivacyMode() === 'paranoid';
@@ -130,7 +135,19 @@ function usePortfolioPrefill(): {
         : (analyticsQuery.data?.primary.stats.cagrPct ?? null),
     },
     isLoading: portfoliosQuery.isLoading || portfolioQuery.isLoading || modeQuery.isLoading,
+    isError: portfoliosQuery.isError || portfolioQuery.isError || modeQuery.isError,
+    portfolioListLoading: portfoliosQuery.isLoading,
+    portfolioListError: portfoliosQuery.isError,
     portfolios,
+    retryPortfolioList: () => {
+      void portfoliosQuery.refetch();
+    },
+    retry: () => {
+      if (portfolioId !== null) {
+        void portfolioQuery.refetch();
+        void modeQuery.refetch();
+      }
+    },
   };
 }
 
@@ -533,7 +550,16 @@ function WithdrawalPlanCard({ prefill, t }: { prefill: Prefill; t: TranslateFn }
  */
 export function ForecastPage() {
   const t = useT();
-  const { prefill, portfolios } = usePortfolioPrefill();
+  const {
+    prefill,
+    portfolios,
+    isLoading: prefillLoading,
+    isError: prefillError,
+    portfolioListLoading,
+    portfolioListError,
+    retryPortfolioList,
+    retry: retryPrefill,
+  } = usePortfolioPrefill();
 
   return (
     <div className="flex flex-col gap-8">
@@ -542,16 +568,32 @@ export function ForecastPage() {
         <p className="text-sm bt-muted">{t('forecast.subtitle')}</p>
       </header>
 
-      <section aria-labelledby="forecast-projection-heading" className="bt-panel bt-panel--soft">
-        <div className="bt-b-rule px-4 py-3">
-          <h2 id="forecast-projection-heading" className="text-sm font-semibold bt-soft">
-            {t('forecast.projection.title')}
-          </h2>
+      {portfolioListLoading && !portfolioListError ? (
+        <div className="bt-panel bt-panel--soft p-4">
+          <Spinner label={t('forecast.prefill.loading')} />
         </div>
-        <ProjectionSection portfolios={portfolios} />
-      </section>
+      ) : portfolioListError ? (
+        <div className="flex flex-col items-start gap-3">
+          <Alert tone="error">{t('forecast.prefill.error')}</Alert>
+          <Button onClick={retryPortfolioList}>{t('common.retry')}</Button>
+        </div>
+      ) : (
+        <>
+          <section
+            aria-labelledby="forecast-projection-heading"
+            className="bt-panel bt-panel--soft"
+          >
+            <div className="bt-b-rule px-4 py-3">
+              <h2 id="forecast-projection-heading" className="text-sm font-semibold bt-soft">
+                {t('forecast.projection.title')}
+              </h2>
+            </div>
+            <ProjectionSection portfolios={portfolios} />
+          </section>
 
-      <StandingOrdersSection portfolios={portfolios} />
+          <StandingOrdersSection portfolios={portfolios} />
+        </>
+      )}
 
       <section aria-labelledby="forecast-calculators-heading" className="flex flex-col gap-3">
         <div className="flex flex-col gap-1">
@@ -560,7 +602,19 @@ export function ForecastPage() {
           </h2>
           <p className="text-xs bt-muted">{t('forecast.calculators.description')}</p>
         </div>
-        {prefill.portfolioValueEur === null && prefill.averageReturnPctPerYear === null ? (
+        {!portfolioListLoading && !portfolioListError && prefillLoading && !prefillError ? (
+          <div className="bt-panel bt-panel--soft p-4">
+            <Spinner label={t('forecast.prefill.loading')} />
+          </div>
+        ) : !portfolioListError && prefillError ? (
+          <div className="flex flex-col items-start gap-3">
+            <Alert tone="error">{t('forecast.prefill.error')}</Alert>
+            <Button onClick={retryPrefill}>{t('common.retry')}</Button>
+          </div>
+        ) : !prefillLoading &&
+          !prefillError &&
+          prefill.portfolioValueEur === null &&
+          prefill.averageReturnPctPerYear === null ? (
           <Alert tone="info">{t('forecast.calculators.prefillUnavailable')}</Alert>
         ) : null}
         <CalculatorCard

@@ -4,6 +4,7 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, test, vi } from 'vitest';
 
+import { I18nProvider } from '../../i18n';
 import { PinInput } from './PinInput';
 
 const MASK = '•';
@@ -37,6 +38,16 @@ describe('PinInput', () => {
   test('renders one box per digit of the configured length', () => {
     render(<Harness length={6} />);
     expect(screen.getAllByRole('textbox')).toHaveLength(6);
+  });
+
+  test('localizes the per-digit template label', () => {
+    render(
+      <I18nProvider initialLocale="de">
+        <Harness />
+      </I18nProvider>,
+    );
+
+    expect(screen.getByLabelText('PIN, Ziffer 2')).toBeInTheDocument();
   });
 
   test('typing auto-advances focus to the next box', async () => {

@@ -69,6 +69,7 @@ export function PortfolioTaxSection({ portfolioId }: { portfolioId: string }) {
       <EmptyState
         description={t('settings.retryHint')}
         title={t('portfolio.settings.tax.loadError')}
+        cta={<Button onClick={() => void query.refetch()}>{t('common.retry')}</Button>}
       />
     );
   }

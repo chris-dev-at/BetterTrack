@@ -1,6 +1,8 @@
 import { useRef } from 'react';
 import type { ClipboardEvent, KeyboardEvent } from 'react';
 
+import { useT } from '../../i18n';
+
 /** The mask glyph rendered in place of a typed PIN digit. */
 const MASK_GLYPH = '•';
 
@@ -41,6 +43,7 @@ export function PinInput({
   disabled,
   hint,
 }: PinInputProps) {
+  const t = useT();
   const baseId = label.toLowerCase().replace(/\s+/g, '-');
   const inputsRef = useRef<Array<HTMLInputElement | null>>([]);
 
@@ -109,7 +112,9 @@ export function PinInput({
                 inputsRef.current[index] = el;
               }}
               id={`${baseId}-${index}`}
-              aria-label={index === 0 ? label : `${label} digit ${index + 1}`}
+              aria-label={
+                index === 0 ? label : t('auth.pin.digitLabel', { label, position: index + 1 })
+              }
               type="text"
               inputMode="numeric"
               autoComplete="off"

@@ -22,7 +22,7 @@ import { getAnalyticsSeries, type AnalyticsSeriesParams } from '../../../lib/ana
 import { cx } from '../../../lib/cx';
 import { EM_DASH, formatDate, formatPercent, formatSignedPercent } from '../../../lib/format';
 import { EmptyState, Skeleton } from '../../../ui';
-import { PageHead, Stat, StatStrip } from '../../../ui/origin';
+import { Button, PageHead, Stat, StatStrip } from '../../../ui/origin';
 import { PriceChart } from '../../../ui/charts';
 import type { BenchmarkSeries, ChartPoint } from '../../../ui/charts';
 import { Alert } from '../../components/ui';
@@ -381,11 +381,39 @@ export function AnalyticsPage() {
     );
   }
 
-  if (portfoliosQuery.isError || portfolioId === null || portfolioQuery.isError) {
+  if (portfoliosQuery.isError || (portfolioId !== null && portfolioQuery.isError)) {
     return (
       <div className="flex flex-col gap-4">
         <PageHeader t={t} />
         <Alert tone="error">{t('portfolio.analytics.loadError')}</Alert>
+        <div>
+          <Button
+            onClick={() => {
+              void portfoliosQuery.refetch();
+              if (portfolioId !== null) void portfolioQuery.refetch();
+            }}
+          >
+            {t('common.retry')}
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  if (portfolioId === null) {
+    return (
+      <div className="flex flex-col gap-6">
+        <PageHeader t={t} />
+        <EmptyState
+          icon="📊"
+          title={t('portfolio.analytics.noPortfolio.title')}
+          description={t('portfolio.analytics.noPortfolio.description')}
+          cta={
+            <Link className="bt-btn bt-btn--primary" to="/portfolios?create=1">
+              {t('create.portfolio')}
+            </Link>
+          }
+        />
       </div>
     );
   }
@@ -410,7 +438,16 @@ export function AnalyticsPage() {
       <PageHeader t={t} />
 
       {analyticsQuery.isError ? (
-        <Alert tone="error">{t('portfolio.analytics.loadError')}</Alert>
+        <div className="flex flex-col items-start gap-2">
+          <Alert tone="error">{t('portfolio.analytics.loadError')}</Alert>
+          <Button onClick={() => void analyticsQuery.refetch()}>{t('common.retry')}</Button>
+        </div>
+      ) : null}
+      {overlayAssets && overlayHistory.isError ? (
+        <div className="flex flex-col items-start gap-2">
+          <Alert tone="error">{t('portfolio.analytics.loadError')}</Alert>
+          <Button onClick={() => void overlayHistory.refetch()}>{t('common.retry')}</Button>
+        </div>
       ) : null}
 
       {/* Top controls: display mode, range presets + custom window, inflation. */}

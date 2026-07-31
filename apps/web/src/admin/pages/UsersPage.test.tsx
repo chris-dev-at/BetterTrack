@@ -205,7 +205,7 @@ test('bulk-disable names its single affected user in German', async () => {
   renderPage('de');
   await screen.findByText('jane@bettertrack.test');
 
-  await user.click(screen.getByLabelText('Select jane'));
+  await user.click(screen.getByLabelText('jane auswählen'));
   await user.click(screen.getByRole('button', { name: 'Ausgewählte deaktivieren' }));
 
   const dialog = await screen.findByRole('dialog', {
@@ -231,10 +231,19 @@ test('keeps a bulk-disable failure visible in its confirmation dialog', async ()
   await user.click(confirm);
 
   expect(await within(dialog).findByRole('alert')).toHaveTextContent(
-    'Could not disable the selected users.',
+    'Something went wrong. Please try again.',
   );
   expect(confirm).toBeEnabled();
 
   await user.click(confirm);
   await waitFor(() => expect(api.bulkUserAction).toHaveBeenCalledTimes(2));
+});
+
+test('renders the P13b users surface in German', async () => {
+  renderPage('de');
+
+  expect(await screen.findByRole('heading', { name: 'Nutzer' })).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Nutzer erstellen' })).toBeInTheDocument();
+  expect(screen.getByPlaceholderText('Nach E-Mail oder Benutzername filtern')).toBeInTheDocument();
+  expect(screen.getByRole('columnheader', { name: 'Rolle' })).toBeInTheDocument();
 });

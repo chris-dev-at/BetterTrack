@@ -177,6 +177,19 @@ describe('ConnectionsPanel — connector slots (V5-P0c)', () => {
 });
 
 describe('ConnectionsPanel — Google account (§13.4 V4-P4b, moved from Security)', () => {
+  test('retries a recoverable Google status failure', async () => {
+    vi.mocked(getGoogleLinkStatus)
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce(LINKED);
+    const user = userEvent.setup();
+    renderPanel();
+
+    await user.click(await screen.findByRole('button', { name: 'Try again' }));
+
+    expect(await screen.findByText('Linked as me@example.com')).toBeInTheDocument();
+    expect(getGoogleLinkStatus).toHaveBeenCalledTimes(2);
+  });
+
   test('the section is hidden when Google is not configured (routes 404 / disabled)', async () => {
     renderPanel();
     // The connectors still render; the Google section resolves to nothing once
@@ -262,6 +275,23 @@ describe('ConnectionsPanel — Google account (§13.4 V4-P4b, moved from Securit
 });
 
 describe('ConnectionsPanel — paranoid Google Drive app data', () => {
+  test('retries a recoverable storage-status failure', async () => {
+    vi.mocked(getParanoidMediaState)
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce(SERVER_MEDIA);
+    const user = userEvent.setup();
+    renderPanel('/settings/connections', {
+      driveConnection: controller(),
+      driveConfigured: true,
+    });
+
+    const error = await screen.findByText(/storage status could not be loaded/i);
+    await user.click(screen.getByRole('button', { name: 'Try again' }));
+
+    await waitFor(() => expect(error).not.toBeInTheDocument());
+    expect(getParanoidMediaState).toHaveBeenCalledTimes(2);
+  });
+
   test('connects a server-only vault through the verified media flow', async () => {
     vi.mocked(getParanoidMediaState).mockResolvedValue(SERVER_MEDIA);
     const drive = controller();

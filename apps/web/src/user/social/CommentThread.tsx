@@ -9,6 +9,7 @@ import {
 } from '@bettertrack/contracts';
 
 import { useT } from '../../i18n';
+import { isConfirmedApiOutcome } from '../../lib/apiClient';
 import {
   deleteComment,
   getCommentThread,
@@ -19,6 +20,7 @@ import {
 import { formatDateTime } from '../../lib/format';
 import { Button, Textarea } from '../../ui/origin';
 import { Avatar } from '../components/Avatar';
+import { Alert } from '../components/ui';
 
 /**
  * Comments + reactions on a shared item (§13.5 V5-P8). Mounted ONLY on the
@@ -83,7 +85,7 @@ export function CommentThread({ kind, subjectId }: { kind: ShareKind; subjectId:
   const [draft, setDraft] = useState('');
 
   const threadKey = ['social', 'thread', kind, subjectId] as const;
-  const { data, isLoading, isError } = useQuery({
+  const { data, error, isLoading, isError, refetch } = useQuery({
     queryKey: threadKey,
     queryFn: ({ signal }) => getCommentThread(kind, subjectId, signal),
     // Poll refetch is the only freshness mechanism (no realtime for comments).
@@ -114,9 +116,21 @@ export function CommentThread({ kind, subjectId }: { kind: ShareKind; subjectId:
     onSuccess: () => void invalidate(),
   });
 
-  // The thread 404s for a viewer the audience no longer admits; render nothing
-  // rather than a broken shell (the page around it already handles the 404).
-  if (isError) return null;
+  // A confirmed audience rejection stays invisible: exposing a different state
+  // would leak whether the item still exists. A transport/server failure is
+  // recoverable, so keep one compact retry row instead of silently removing the
+  // entire comments surface.
+  if (isError && isConfirmedApiOutcome(error)) return null;
+  if (isError) {
+    return (
+      <section className="bt-t-rule flex flex-col items-start gap-2" style={{ paddingTop: 18 }}>
+        <Alert tone="error">{t('social.comments.loadError')}</Alert>
+        <Button onClick={() => void refetch()} size="sm" variant="quiet">
+          {t('common.retry')}
+        </Button>
+      </section>
+    );
+  }
 
   const count = data?.commentCount ?? 0;
   const trimmed = draft.trim();
@@ -127,11 +141,12 @@ export function CommentThread({ kind, subjectId }: { kind: ShareKind; subjectId:
         <Button
           onClick={() => setExpanded((v) => !v)}
           aria-expanded={expanded}
+          disabled={isLoading}
           size="sm"
           variant="quiet"
         >
           <span aria-hidden="true">💬</span>
-          {t('social.comments.count', { count })}
+          {isLoading ? t('common.loading') : t('social.comments.count', { count })}
           <span aria-hidden="true" className="bt-muted">
             {expanded ? '▲' : '▼'}
           </span>

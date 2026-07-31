@@ -267,8 +267,16 @@ function DeliveriesList({ id }: { id: string }) {
   });
 
   if (query.isPending) return <Skeleton height="h-12" />;
-  if (query.isError)
-    return <p className="bt-field__error">{t('settings.api.webhooks.deliveries.loadError')}</p>;
+  if (query.isError) {
+    return (
+      <div className="flex flex-col items-start gap-2">
+        <p className="bt-field__error">{t('settings.api.webhooks.deliveries.loadError')}</p>
+        <Button onClick={() => void query.refetch()} size="sm">
+          {t('common.retry')}
+        </Button>
+      </div>
+    );
+  }
 
   const deliveries = query.data?.deliveries ?? [];
   if (deliveries.length === 0)
@@ -468,6 +476,7 @@ export function WebhooksPanel() {
         ) : query.isError ? (
           <Row stack>
             <Alert tone="error">{t('settings.api.webhooks.loadError.title')}</Alert>
+            <Button onClick={() => void query.refetch()}>{t('common.retry')}</Button>
           </Row>
         ) : subscriptions.length === 0 ? (
           <Row stack>

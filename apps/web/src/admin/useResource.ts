@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
+import { localizedMessage, useI18n } from '../i18n';
 import { ApiError } from '../lib/apiClient';
 import { isAdminTwoFactorSetupRequired, useAuth } from './AuthContext';
 
@@ -26,6 +27,8 @@ export function useResource<T>(
   fetcher: (signal: AbortSignal) => Promise<T>,
   deps: readonly unknown[],
 ): Resource<T> {
+  const { locale } = useI18n();
+  const localeRef = useRef(locale);
   const { clearSession, requireTwoFactorSetup } = useAuth();
   const [state, setState] = useState<ResourceState<T>>({
     data: null,
@@ -35,6 +38,10 @@ export function useResource<T>(
   const [nonce, setNonce] = useState(0);
 
   const reload = useCallback(() => setNonce((n) => n + 1), []);
+
+  useEffect(() => {
+    localeRef.current = locale;
+  }, [locale]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -54,7 +61,11 @@ export function useResource<T>(
           requireTwoFactorSetup();
           return;
         }
-        const message = err instanceof ApiError ? err.message : 'Something went wrong.';
+        // API envelopes are authored by the server and are not locale-aware.
+        // Authorization/setup outcomes above keep their structural handling;
+        // every displayable failure uses catalog copy so DE never leaks an
+        // English transport or 5xx message.
+        const message = localizedMessage(localeRef.current, 'common.genericError');
         setState({ data: null, loading: false, error: message });
       }
     })();

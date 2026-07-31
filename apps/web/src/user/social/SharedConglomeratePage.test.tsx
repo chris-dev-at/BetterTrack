@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { beforeEach, describe, expect, test, vi, type Mock } from 'vitest';
@@ -44,6 +44,7 @@ vi.mock('lightweight-charts', () => ({
 }));
 
 import { getSharedConglomerate, previewSharedConglomerateSandbox } from '../../lib/socialApi';
+import { ApiError } from '../../lib/apiClient';
 import { SharedConglomeratePage } from './SharedConglomeratePage';
 
 const CONGLOMERATE_ID = '00000000-0000-0000-0000-000000000010';
@@ -119,7 +120,7 @@ const previewResponse: SharedSandboxPreviewResponse = {
 
 function renderPage() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
+  const rendered = render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={[`/social/shared/conglomerate/${CONGLOMERATE_ID}`]}>
         <Routes>
@@ -128,6 +129,7 @@ function renderPage() {
       </MemoryRouter>
     </QueryClientProvider>,
   );
+  return { ...rendered, queryClient };
 }
 
 /** The `positions` array of the most recent sandbox preview call. */
@@ -153,6 +155,38 @@ describe('SharedConglomeratePage — what-if sandbox (V5-P6 arc c)', () => {
     );
     expect(screen.queryByLabelText('Weight for AAA')).toBeNull();
     expect(previewSharedConglomerateSandbox).not.toHaveBeenCalled();
+  });
+
+  test('retries an outage without weakening confirmed audience privacy', async () => {
+    (getSharedConglomerate as unknown as Mock)
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce(detail);
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole('button', { name: 'Try again' }));
+
+    expect(await screen.findByText('Duo')).toBeInTheDocument();
+    expect(getSharedConglomerate).toHaveBeenCalledTimes(2);
+  });
+
+  test('replaces stale shared data after a confirmed audience rejection', async () => {
+    (getSharedConglomerate as unknown as Mock)
+      .mockResolvedValueOnce(detail)
+      .mockRejectedValueOnce(new ApiError(404, 'NOT_FOUND', 'not found'));
+    const { queryClient } = renderPage();
+
+    expect(await screen.findByText('Duo')).toBeInTheDocument();
+    await act(async () => {
+      await queryClient.refetchQueries({
+        queryKey: ['social', 'shared', 'conglomerate', CONGLOMERATE_ID],
+      });
+    });
+
+    expect(await screen.findByText("This blueprint isn't available")).toBeInTheDocument();
+    expect(screen.queryByText('Duo')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
+    expect(getSharedConglomerate).toHaveBeenCalledTimes(2);
   });
 
   test('opening previews at the shared weights; a tweak recomputes locally; reset restores exactly', async () => {

@@ -11,6 +11,7 @@ import type {
 vi.mock('../../lib/adminApi');
 import { ApiError } from '../../lib/apiClient';
 import * as api from '../../lib/adminApi';
+import { I18nProvider } from '../../i18n';
 import { AuthProvider } from '../AuthContext';
 import { OAuthAppsPage } from './OAuthAppsPage';
 
@@ -60,11 +61,13 @@ beforeEach(() => {
   vi.mocked(api.listFirstPartyApps).mockResolvedValue({ clients: [app] });
 });
 
-function renderPage() {
+function renderPage(locale: 'en' | 'de' = 'en') {
   return render(
-    <AuthProvider>
-      <OAuthAppsPage />
-    </AuthProvider>,
+    <I18nProvider initialLocale={locale}>
+      <AuthProvider>
+        <OAuthAppsPage />
+      </AuthProvider>
+    </I18nProvider>,
   );
 }
 
@@ -128,4 +131,31 @@ test('keeps a one-time OAuth client secret open until it is acknowledged', async
 
   await user.click(screen.getByRole('button', { name: "I've saved this" }));
   await waitFor(() => expect(screen.queryByText(created.clientSecret!)).not.toBeInTheDocument());
+});
+
+test('renders the extracted page copy in German', async () => {
+  vi.mocked(api.listFirstPartyApps).mockResolvedValue({ clients: [] });
+
+  renderPage('de');
+
+  expect(await screen.findByRole('heading', { name: 'OAuth-Apps' })).toBeInTheDocument();
+  expect(
+    screen.getByText('Noch keine offiziellen Apps. Registriere oben die erste.'),
+  ).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'App registrieren' })).toBeInTheDocument();
+});
+
+test('retries a failed app-list read', async () => {
+  vi.mocked(api.listFirstPartyApps)
+    .mockRejectedValueOnce(new Error('offline'))
+    .mockResolvedValueOnce({ clients: [] });
+  const user = userEvent.setup();
+
+  renderPage();
+
+  await user.click(await screen.findByRole('button', { name: 'Try again' }));
+  expect(
+    await screen.findByText('No first-party apps yet. Register one above.'),
+  ).toBeInTheDocument();
+  expect(api.listFirstPartyApps).toHaveBeenCalledTimes(2);
 });

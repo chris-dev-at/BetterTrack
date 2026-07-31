@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
@@ -186,6 +187,20 @@ describe('TaxReportPrintPage', () => {
     renderPrint('/portfolio/tax/print');
     expect(await screen.findByText(/Choose a portfolio and year to print/i)).toBeInTheDocument();
     expect(portfolioApi.getTaxYearReport).not.toHaveBeenCalled();
+  });
+
+  test('retries a failed print-report read before opening print', async () => {
+    vi.mocked(portfolioApi.getTaxYearReport)
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce(AT_REPORT);
+    const user = userEvent.setup();
+    renderPrint('/portfolio/tax/print?portfolio=p1&year=2026');
+
+    await user.click(await screen.findByRole('button', { name: 'Try again' }));
+
+    expect((await screen.findAllByText('350,00 €')).length).toBeGreaterThan(0);
+    expect(portfolioApi.getTaxYearReport).toHaveBeenCalledTimes(2);
+    expect(window.print).toHaveBeenCalledTimes(1);
   });
 
   test('a paranoid account renders the on-device hint and never fetches or auto-prints (PD7)', async () => {

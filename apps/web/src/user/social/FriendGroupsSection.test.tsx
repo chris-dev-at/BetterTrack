@@ -43,6 +43,19 @@ beforeEach(() => {
 });
 
 describe('FriendGroupsSection (V5-P8)', () => {
+  test('retries a failed group-list read in place', async () => {
+    vi.mocked(listGroups)
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce({ groups: [] });
+    const user = userEvent.setup();
+    renderSection();
+
+    await user.click(await screen.findByRole('button', { name: 'Try again' }));
+
+    expect(await screen.findByText('No groups yet')).toBeInTheDocument();
+    expect(listGroups).toHaveBeenCalledTimes(2);
+  });
+
   test('creates a group from the inline form', async () => {
     vi.mocked(createGroup).mockResolvedValue({
       id: GROUP,

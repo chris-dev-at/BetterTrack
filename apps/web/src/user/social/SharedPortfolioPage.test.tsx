@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { describe, expect, test, vi, beforeEach } from 'vitest';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 
@@ -34,13 +35,14 @@ vi.mock('lightweight-charts', () => ({
 }));
 
 import { getSharedPortfolio } from '../../lib/socialApi';
+import { ApiError } from '../../lib/apiClient';
 import { SharedPortfolioPage } from './SharedPortfolioPage';
 
 const PORTFOLIO_ID = '00000000-0000-0000-0000-000000000001';
 
 function renderPage() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
+  const rendered = render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={[`/social/shared-with-me/${PORTFOLIO_ID}`]}>
         <Routes>
@@ -49,6 +51,7 @@ function renderPage() {
       </MemoryRouter>
     </QueryClientProvider>,
   );
+  return { ...rendered, queryClient };
 }
 
 const ASSET_ID = '00000000-0000-0000-0000-000000000002';
@@ -177,11 +180,34 @@ describe('SharedPortfolioPage', () => {
   });
 
   test('shows an error affordance when the fetch fails', async () => {
-    vi.mocked(getSharedPortfolio).mockRejectedValue(new Error('boom'));
+    vi.mocked(getSharedPortfolio)
+      .mockRejectedValueOnce(new Error('boom'))
+      .mockResolvedValueOnce(detail);
+    const user = userEvent.setup();
     renderPage();
 
     await waitFor(() =>
       expect(screen.getByText(/Could not load this shared portfolio/i)).toBeInTheDocument(),
     );
+    await user.click(screen.getByRole('button', { name: 'Try again' }));
+    expect(await screen.findByText("Jane's Main")).toBeInTheDocument();
+    expect(getSharedPortfolio).toHaveBeenCalledTimes(2);
+  });
+
+  test('replaces stale shared data after a confirmed audience rejection', async () => {
+    vi.mocked(getSharedPortfolio)
+      .mockResolvedValueOnce(detail)
+      .mockRejectedValueOnce(new ApiError(404, 'NOT_FOUND', 'not found'));
+    const { queryClient } = renderPage();
+
+    expect(await screen.findByText("Jane's Main")).toBeInTheDocument();
+    await act(async () => {
+      await queryClient.refetchQueries({ queryKey: ['social', 'shared', PORTFOLIO_ID] });
+    });
+
+    expect(await screen.findByText("This portfolio isn't available")).toBeInTheDocument();
+    expect(screen.queryByText("Jane's Main")).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
+    expect(getSharedPortfolio).toHaveBeenCalledTimes(2);
   });
 });

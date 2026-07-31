@@ -21,7 +21,7 @@ import {
   type ShareKind,
 } from '@bettertrack/contracts';
 
-import { ApiError } from '../../lib/apiClient';
+import { ApiError, isConfirmedApiOutcome } from '../../lib/apiClient';
 
 import {
   getThread,
@@ -503,7 +503,7 @@ export function ConversationListPane({
   const { user } = useAuth();
   const [newOpen, setNewOpen] = useState(false);
 
-  const { data, isLoading, isError } = useQuery({
+  const { data, isLoading, isError, refetch } = useQuery({
     queryKey: CONVERSATIONS_KEY,
     queryFn: ({ signal }) => listConversations(signal),
     refetchInterval: LIST_POLL_MS,
@@ -527,8 +527,11 @@ export function ConversationListPane({
           <SkeletonBlock height={48} />
         </div>
       ) : isError ? (
-        <div style={{ padding: 14 }}>
+        <div className="flex flex-col items-start gap-2" style={{ padding: 14 }}>
           <Alert tone="error">{t('social.chat.error')}</Alert>
+          <Button onClick={() => void refetch()} size="sm">
+            {t('common.retry')}
+          </Button>
         </div>
       ) : !data || data.conversations.length === 0 ? (
         <EmptyState
@@ -896,8 +899,9 @@ export function ChatThreadPane({
     );
   }
 
-  if (convoQuery.isError) {
-    // A non-friend / unknown user — the API 404s and we show a calm state, no data.
+  if (convoQuery.isError && isConfirmedApiOutcome(convoQuery.error)) {
+    // A confirmed non-friend / unknown user stays privacy-indistinguishable and
+    // calm. Transport/5xx failures below must never manufacture this outcome.
     return (
       <div className="flex h-full items-center justify-center p-6">
         <EmptyState
@@ -905,6 +909,17 @@ export function ChatThreadPane({
           title={t('social.chat.notFriend.title')}
           description={t('social.chat.notFriend.body')}
         />
+      </div>
+    );
+  }
+
+  if (convoQuery.isError) {
+    return (
+      <div className="flex h-full items-center justify-center p-6">
+        <div className="flex flex-col items-start gap-3">
+          <Alert tone="error">{t('social.chat.error')}</Alert>
+          <Button onClick={() => void convoQuery.refetch()}>{t('common.retry')}</Button>
+        </div>
       </div>
     );
   }
@@ -971,7 +986,12 @@ export function ChatThreadPane({
               <SkeletonBlock height={48} />
             </div>
           ) : threadQuery.isError ? (
-            <Alert tone="error">{t('social.chat.error')}</Alert>
+            <div className="flex flex-col items-start gap-2">
+              <Alert tone="error">{t('social.chat.error')}</Alert>
+              <Button onClick={() => void threadQuery.refetch()} size="sm">
+                {t('common.retry')}
+              </Button>
+            </div>
           ) : messages.length === 0 ? (
             <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center">
               <Avatar name={otherName} iconId={other?.profileIcon ?? null} size="lg" />

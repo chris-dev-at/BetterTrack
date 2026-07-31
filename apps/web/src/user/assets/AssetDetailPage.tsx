@@ -195,6 +195,7 @@ function StatsRow({
   detail: AssetDetailResponse;
   liveQuote: QuoteResponse | undefined;
 }) {
+  const t = useT();
   const quote = liveQuote?.quote ?? detail.quote;
   if (!quote) return null;
 
@@ -205,7 +206,7 @@ function StatsRow({
     <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
       {/* Previous close is a per-unit price (§7.1 rule 4) — sub-cent tokens keep precision. */}
       <StatCard
-        label="Prev Close"
+        label={t('assets.detail.previousClose')}
         value={<MoneyText amount={prevClose} currency={currency} unitPrice />}
       />
     </div>

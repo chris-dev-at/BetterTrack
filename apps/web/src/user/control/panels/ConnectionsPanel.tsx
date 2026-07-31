@@ -135,6 +135,7 @@ function GoogleSection() {
       <PanelGroup label={t('settings.security.google.title')}>
         <Row stack>
           <PanelNote>{t('settings.security.google.loadError')}</PanelNote>
+          <Button onClick={() => void query.refetch()}>{t('common.retry')}</Button>
         </Row>
       </PanelGroup>
     );
@@ -316,6 +317,7 @@ function DriveVaultSection({
       <PanelGroup label={t('settings.connections.drive.title')}>
         <Row stack>
           <PanelNote>{t('settings.connections.drive.loadError')}</PanelNote>
+          <Button onClick={() => void query.refetch()}>{t('common.retry')}</Button>
         </Row>
       </PanelGroup>
     );

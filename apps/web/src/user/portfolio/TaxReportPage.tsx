@@ -16,7 +16,7 @@ import type { TranslateFn } from '../../i18n';
 import { EM_DASH, formatDate, formatQuantity } from '../../lib/format';
 import { getTaxYearReport, getTaxYearReports, taxYearReportCsvUrl } from '../../lib/portfolioApi';
 import { Disclaimer, EmptyState, MoneyText } from '../../ui';
-import { Badge, Icon, PageHead, Panel, SkeletonBlock } from '../../ui/origin';
+import { Badge, Button, Icon, PageHead, Panel, SkeletonBlock } from '../../ui/origin';
 import { Alert } from '../components/ui';
 import { vaultMoneyErrorKey } from '../vault/engine/errorCopy';
 import { asMoneyFailure, type VaultMoneyFailure } from '../vault/engine/errors';
@@ -229,8 +229,11 @@ function YearDetail({ portfolioId, year }: { portfolioId: string; year: number }
   }
   if (query.isError) {
     return (
-      <div className="p-3">
+      <div className="flex flex-col items-start gap-2 p-3">
         <Alert tone="error">{t('portfolio.taxReport.detailError')}</Alert>
+        <Button onClick={() => void query.refetch()} size="sm">
+          {t('common.retry')}
+        </Button>
       </div>
     );
   }
@@ -429,6 +432,7 @@ export function TaxReportPage() {
         <EmptyState
           description={t('settings.retryHint')}
           title={t('portfolio.taxReport.loadError.title')}
+          cta={<Button onClick={() => void portfoliosQuery.refetch()}>{t('common.retry')}</Button>}
         />
       </div>
     );
@@ -484,6 +488,7 @@ export function TaxReportPage() {
           <EmptyState
             description={t('settings.retryHint')}
             title={t('portfolio.taxReport.loadError.title')}
+            cta={<Button onClick={() => void settingsQuery.refetch()}>{t('common.retry')}</Button>}
           />
         ) : !taxActive ? (
           // The report is only meaningful with a tax mode active for THIS
@@ -499,6 +504,7 @@ export function TaxReportPage() {
           <EmptyState
             description={t('settings.retryHint')}
             title={t('portfolio.taxReport.loadError.title')}
+            cta={<Button onClick={() => void reportQuery.refetch()}>{t('common.retry')}</Button>}
           />
         ) : years.length === 0 ? (
           <EmptyState
@@ -561,6 +567,7 @@ function ParanoidTaxReport({ header }: { header: ReactNode }) {
   const [searchParams] = useSearchParams();
   const session = useVaultMoneySession();
   const param = searchParams.get(ACTIVE_PORTFOLIO_PARAM);
+  const [portfolioAttempt, setPortfolioAttempt] = useState(0);
   const [portfolios, setPortfolios] = useState<
     | { status: 'pending' }
     | { status: 'error'; failure: VaultMoneyFailure }
@@ -584,7 +591,7 @@ function ParanoidTaxReport({ header }: { header: ReactNode }) {
       },
     );
     return () => controller.abort();
-  }, [session]);
+  }, [portfolioAttempt, session]);
 
   if (session === null) {
     return (
@@ -613,6 +620,13 @@ function ParanoidTaxReport({ header }: { header: ReactNode }) {
       <div>
         {header}
         <EmptyState
+          cta={
+            portfolios.failure.retryable ? (
+              <Button onClick={() => setPortfolioAttempt((attempt) => attempt + 1)}>
+                {t('portfolio.taxReport.paranoid.retry')}
+              </Button>
+            ) : undefined
+          }
           description={t(vaultMoneyErrorKey(portfolios.failure))}
           title={t('portfolio.taxReport.loadError.title')}
         />

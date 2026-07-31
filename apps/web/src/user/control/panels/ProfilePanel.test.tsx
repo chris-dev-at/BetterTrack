@@ -210,9 +210,17 @@ describe('ProfilePanel', () => {
   });
 
   test('a load failure says so instead of rendering an empty form', async () => {
-    vi.mocked(getProfileSettings).mockRejectedValue(new Error('boom'));
+    vi.mocked(getProfileSettings)
+      .mockRejectedValueOnce(new Error('boom'))
+      .mockResolvedValueOnce(makeProfile());
+    const user = userEvent.setup();
     renderPanel();
 
     expect(await screen.findByText(/could not load your profile settings/i)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Try again' }));
+    expect(
+      await screen.findByRole('switch', { name: 'Make my profile public' }),
+    ).toBeInTheDocument();
+    expect(getProfileSettings).toHaveBeenCalledTimes(2);
   });
 });

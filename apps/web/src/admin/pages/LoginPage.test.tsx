@@ -4,17 +4,20 @@ import { beforeEach, expect, test, vi } from 'vitest';
 
 vi.mock('../../lib/adminApi');
 import * as api from '../../lib/adminApi';
+import { I18nProvider } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
 import { AuthProvider } from '../AuthContext';
 import { LoginPage } from './LoginPage';
 
-function renderLogin() {
+function renderLogin(locale: 'en' | 'de' = 'en') {
   return render(
-    <MemoryRouter>
-      <AuthProvider>
-        <LoginPage />
-      </AuthProvider>
-    </MemoryRouter>,
+    <I18nProvider initialLocale={locale}>
+      <MemoryRouter>
+        <AuthProvider>
+          <LoginPage />
+        </AuthProvider>
+      </MemoryRouter>
+    </I18nProvider>,
   );
 }
 
@@ -55,4 +58,14 @@ test('appends the api sha once the version fetch resolves', async () => {
   renderLogin();
 
   expect(await screen.findByText(/web unknown · api def5678/)).toBeInTheDocument();
+});
+
+test('renders the P13b admin sign-in surface in German', async () => {
+  vi.mocked(api.getVersion).mockRejectedValue(new ApiError(0, 'NETWORK_ERROR', 'offline'));
+
+  renderLogin('de');
+
+  expect(await screen.findByRole('button', { name: 'Anmelden' })).toBeInTheDocument();
+  expect(screen.getByLabelText('E-Mail oder Benutzername')).toBeInTheDocument();
+  expect(screen.getByLabelText('Passwort')).toBeInTheDocument();
 });

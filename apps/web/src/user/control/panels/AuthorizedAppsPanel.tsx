@@ -137,6 +137,7 @@ export function AuthorizedAppsPanel() {
         ) : query.isError ? (
           <Row stack>
             <Alert tone="error">{t('settings.api.grants.loadError.title')}</Alert>
+            <Button onClick={() => void query.refetch()}>{t('common.retry')}</Button>
           </Row>
         ) : grants.length === 0 ? (
           <Row stack>

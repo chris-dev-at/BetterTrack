@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
@@ -15,8 +15,18 @@ import { AudiencePicker } from './AudiencePicker';
 
 const SUBJECT = '00000000-0000-0000-0000-000000000001';
 
-function renderPicker(onClose = vi.fn()) {
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((next) => {
+    resolve = next;
+  });
+  return { promise, resolve };
+}
+
+function renderPicker(
+  onClose = vi.fn(),
+  queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+) {
   return render(
     <QueryClientProvider client={queryClient}>
       <AudiencePicker kind="portfolio" subjectId={SUBJECT} subjectLabel="Main" onClose={onClose} />
@@ -36,6 +46,161 @@ beforeEach(() => {
   });
   vi.mocked(listFriends).mockResolvedValue({ friends: [] });
   vi.mocked(listGroups).mockResolvedValue({ groups: [] });
+});
+
+describe('AudiencePicker — authoritative reads', () => {
+  test('refreshes a cached audience before exposing or saving its recipients', async () => {
+    const oldFriendId = '00000000-0000-0000-0000-0000000000a1';
+    const currentFriendId = '00000000-0000-0000-0000-0000000000b2';
+    const audienceRead = deferred<Awaited<ReturnType<typeof getAudience>>>();
+    vi.mocked(getAudience).mockReturnValue(audienceRead.promise);
+    vi.mocked(listFriends).mockResolvedValue({
+      friends: [
+        {
+          user: { id: currentFriendId, username: 'current-friend' },
+          createdAt: '2026-01-01T00:00:00.000Z',
+        },
+      ],
+    });
+    vi.mocked(setAudience).mockResolvedValue({
+      state: {
+        kind: 'portfolio',
+        subjectId: SUBJECT,
+        audience: 'specific_friends',
+        friendIds: [currentFriendId],
+        groupId: null,
+        link: { active: false, createdAt: null },
+      },
+    });
+
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    queryClient.setQueryData(['social', 'audience', 'portfolio', SUBJECT], {
+      kind: 'portfolio',
+      subjectId: SUBJECT,
+      audience: 'specific_friends',
+      friendIds: [oldFriendId],
+      groupId: null,
+      link: { active: false, createdAt: null },
+    });
+    queryClient.setQueryData(['social', 'friends'], {
+      friends: [
+        {
+          user: { id: oldFriendId, username: 'old-friend' },
+          createdAt: '2026-01-01T00:00:00.000Z',
+        },
+      ],
+    });
+    queryClient.setQueryData(['social', 'groups'], { groups: [] });
+
+    const user = userEvent.setup();
+    renderPicker(vi.fn(), queryClient);
+
+    expect(await screen.findByText('Loading sharing settings…')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^save$/i })).not.toBeInTheDocument();
+    expect(screen.queryByText('old-friend')).not.toBeInTheDocument();
+
+    await act(async () => {
+      audienceRead.resolve({
+        kind: 'portfolio',
+        subjectId: SUBJECT,
+        audience: 'specific_friends',
+        friendIds: [currentFriendId],
+        groupId: null,
+        link: { active: false, createdAt: null },
+      });
+    });
+
+    const currentFriend = await screen.findByRole('checkbox', { name: 'current-friend' });
+    expect(currentFriend).toBeChecked();
+    await user.click(screen.getByRole('button', { name: /^save$/i }));
+
+    await waitFor(() => expect(setAudience).toHaveBeenCalledTimes(1));
+    expect(setAudience).toHaveBeenCalledWith('portfolio', SUBJECT, {
+      audience: 'specific_friends',
+      friendIds: [currentFriendId],
+      acknowledgePublic: undefined,
+    });
+  });
+
+  test('does not expose a save action before the current audience is known', async () => {
+    const audienceRead = deferred<Awaited<ReturnType<typeof getAudience>>>();
+    vi.mocked(getAudience).mockReturnValue(audienceRead.promise);
+    renderPicker();
+
+    expect(await screen.findByText('Loading sharing settings…')).toBeInTheDocument();
+    expect(screen.queryByRole('radio')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^save$/i })).not.toBeInTheDocument();
+    expect(setAudience).not.toHaveBeenCalled();
+
+    await act(async () => {
+      audienceRead.resolve({
+        kind: 'portfolio',
+        subjectId: SUBJECT,
+        audience: 'all_friends',
+        friendIds: [],
+        groupId: null,
+        link: { active: false, createdAt: null },
+      });
+    });
+
+    expect(await screen.findByRole('radio', { name: /all friends/i })).toBeChecked();
+    expect(setAudience).not.toHaveBeenCalled();
+  });
+
+  test('a failed current-audience read retries without defaulting or overwriting it', async () => {
+    vi.mocked(getAudience)
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce({
+        kind: 'portfolio',
+        subjectId: SUBJECT,
+        audience: 'all_friends',
+        friendIds: [],
+        groupId: null,
+        link: { active: false, createdAt: null },
+      });
+    const user = userEvent.setup();
+    renderPicker();
+
+    expect(
+      await screen.findByText('Could not load the current sharing settings. Please try again.'),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('radio')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^save$/i })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Try again' }));
+
+    expect(await screen.findByRole('radio', { name: /all friends/i })).toBeChecked();
+    expect(getAudience).toHaveBeenCalledTimes(2);
+    expect(setAudience).not.toHaveBeenCalled();
+  });
+
+  test.each(['friends', 'groups'] as const)(
+    'a failed %s roster stays distinct from a genuine empty roster and can retry',
+    async (read) => {
+      if (read === 'friends') {
+        vi.mocked(listFriends)
+          .mockRejectedValueOnce(new Error('offline'))
+          .mockResolvedValueOnce({ friends: [] });
+      } else {
+        vi.mocked(listGroups)
+          .mockRejectedValueOnce(new Error('offline'))
+          .mockResolvedValueOnce({ groups: [] });
+      }
+      const user = userEvent.setup();
+      renderPicker();
+
+      expect(
+        await screen.findByText('Could not load the current sharing settings. Please try again.'),
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/You have no (friends|groups) yet/i)).not.toBeInTheDocument();
+
+      await user.click(screen.getByRole('button', { name: 'Try again' }));
+
+      expect(await screen.findByRole('radio', { name: /only me/i })).toBeChecked();
+      expect(read === 'friends' ? listFriends : listGroups).toHaveBeenCalledTimes(2);
+      expect(setAudience).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe('AudiencePicker — friction ladder (§16)', () => {
