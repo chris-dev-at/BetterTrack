@@ -44,10 +44,32 @@
     }
   }
 
+  function safeWebPath(value) {
+    if (value === null || value === '') return '';
+    if (
+      typeof value !== 'string' ||
+      value.trim() !== value ||
+      hasControlCharacter(value) ||
+      value.charAt(0) !== '/' ||
+      value.charAt(1) === '/'
+    ) {
+      return null;
+    }
+
+    try {
+      var base = 'https://bettertrack.invalid';
+      var url = new URL(value, base);
+      return url.origin === base ? url.pathname + url.search + url.hash : null;
+    } catch {
+      return null;
+    }
+  }
+
   if (webOrigin) {
     var links = document.querySelectorAll('.js-web-link');
     for (var index = 0; index < links.length; index++) {
-      links[index].setAttribute('href', webOrigin);
+      var webPath = safeWebPath(links[index].getAttribute('data-web-path'));
+      if (webPath !== null) links[index].setAttribute('href', webOrigin + webPath);
     }
   }
 

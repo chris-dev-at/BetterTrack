@@ -10,6 +10,7 @@
     />
     <link rel="icon" type="image/png" href="/BT_AppIcon.png" />
     <link rel="stylesheet" href="/style.css?v=2" />
+    <script src="/env.js"></script>
     <link rel="alternate" hreflang="en" href="https://bettertrack.at/terms/" />
     <link rel="alternate" hreflang="de" href="https://bettertrack.at/terms/de/" />
     <style>
@@ -65,7 +66,7 @@
             ><a href="/terms/" aria-current="page">EN</a><span>·</span
             ><a href="/terms/de/">DE</a></span
           >
-          <a class="btn" href="https://web.bettertrack.at">Open the app</a>
+          <a class="btn js-web-link" href="https://web.bettertrack.at">Open the app</a>
         </div>
       </div>
     </nav>
@@ -81,7 +82,8 @@
         <h2>1. Who we are, and what these Terms cover</h2>
         <p>
           BetterTrack ("the service", "we") is a personal portfolio-tracking service operated from
-          Austria — the web app at <a href="https://web.bettertrack.at">web.bettertrack.at</a>, the
+          Austria — the web app at
+          <a class="js-web-link" href="https://web.bettertrack.at">web.bettertrack.at</a>, the
           BetterTrack mobile app, and this site. The operator's identity and contact details are
           published in the <a href="/impressum/">Impressum</a>. These Terms govern every use of the
           service. The service is currently an invite-only closed beta; access can be limited to
@@ -160,9 +162,13 @@
         <p>
           You can end this agreement at any time by deleting your account — in the app under
           Settings → Account → Delete account, or at
-          <a href="https://web.bettertrack.at/account/delete">web.bettertrack.at/account/delete</a>.
-          We may suspend or terminate an account that violates these Terms, endangers the security
-          or legal compliance of the service, or as part of ending the closed beta; where
+          <a
+            class="js-web-link"
+            data-web-path="/account/delete"
+            href="https://web.bettertrack.at/account/delete"
+            >web.bettertrack.at/account/delete</a
+          >. We may suspend or terminate an account that violates these Terms, endangers the
+          security or legal compliance of the service, or as part of ending the closed beta; where
           reasonable, we give prior notice.
         </p>
 
@@ -214,7 +220,8 @@
           ><a href="/security/">Security</a><a href="/roadmap/">Roadmap</a>
         </div>
         <div class="col">
-          <span class="h">App</span><a href="https://web.bettertrack.at">Web app</a
+          <span class="h">App</span
+          ><a class="js-web-link" href="https://web.bettertrack.at">Web app</a
           ><a href="https://mobile.bettertrack.at">Mobile (in development)</a>
         </div>
         <div class="col">
@@ -228,5 +235,6 @@
         </p>
       </div>
     </footer>
+    <script src="/landing.js"></script>
   </body>
 </html>

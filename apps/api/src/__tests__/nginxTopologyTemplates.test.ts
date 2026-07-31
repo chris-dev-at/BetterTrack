@@ -48,6 +48,28 @@ function section(value: string, start: string, end: string): string {
   return value.slice(value.indexOf(start), value.indexOf(end));
 }
 
+const LEGAL_PAGES = ['terms', 'privacy', 'impressum', 'cookies'] as const;
+const LEGAL_DOCUMENTS = LEGAL_PAGES.flatMap((page) => [
+  {
+    route: `/${page}/`,
+    repositoryPath: `apps/landing/site/${page}/index.html`,
+  },
+  {
+    route: `/${page}/de/`,
+    repositoryPath: `apps/landing/site/${page}/de/index.html`,
+  },
+]);
+
+function assertProductLandingProxy(
+  renderedTemplate: string,
+  productSectionStart: string,
+  mobileSectionStart: string,
+): void {
+  const product = section(renderedTemplate, productSectionStart, mobileSectionStart);
+  expect(product).toContain('location / {');
+  expect(product).toContain('proxy_pass http://landing:80;');
+}
+
 /** Mirror the entrypoint's restricted envsubst: replace only `${NAME}` for NAME in env. */
 function render(raw: string, env: Record<string, string>): string {
   return raw.replace(/\$\{(\w+)\}/g, (match, name: string) => env[name] ?? match);
@@ -179,6 +201,7 @@ type LandingRegistrationMode = 'closed' | 'invite_token' | 'approval' | 'open';
 interface LandingScriptRun {
   documentElement: LandingElement;
   webLink: LandingElement;
+  webPathLink: LandingElement;
   registerCta: LandingElement;
   registrationNote: LandingElement;
   title: LandingElement;
@@ -192,9 +215,14 @@ async function runLandingScript(options: {
   includeRegistrationUi?: boolean;
   webOrigin?: string;
   apiOrigin?: string;
+  webPath?: string;
 }): Promise<LandingScriptRun> {
   const documentElement = landingElement('HTML');
   const webLink = landingElement('A', { href: 'https://web.bettertrack.at' });
+  const webPathLink = landingElement('A', {
+    href: 'https://web.bettertrack.at/account/delete',
+    'data-web-path': options.webPath ?? '/account/delete',
+  });
   const registerCta = landingElement('A', {
     'data-registration-label-invite_token': 'Register with an invite token',
     'data-registration-label-approval': 'Request an account',
@@ -251,7 +279,7 @@ async function runLandingScript(options: {
       return null;
     },
     querySelectorAll(selector: string) {
-      if (selector === '.js-web-link') return [webLink];
+      if (selector === '.js-web-link') return [webLink, webPathLink];
       const match = /^\[data-registration-copy-(.+)]$/.exec(selector);
       if (!match?.[1]) return [];
       return copyElements.filter(
@@ -277,7 +305,16 @@ async function runLandingScript(options: {
   runInNewContext(landingScript, { Error, URL, document, fetch, window });
   await new Promise<void>((resolvePromise) => setImmediate(resolvePromise));
 
-  return { documentElement, webLink, registerCta, registrationNote, title, description, footer };
+  return {
+    documentElement,
+    webLink,
+    webPathLink,
+    registerCta,
+    registrationNote,
+    title,
+    description,
+    footer,
+  };
 }
 
 interface WebEntrypointRun {
@@ -362,6 +399,29 @@ function contentSecurityPolicy(rendered: string | null): string {
   return rendered?.match(/add_header Content-Security-Policy "([^"]+)"/)?.[1] ?? '';
 }
 
+/**
+ * Evaluate every `location = /config.js` body the rendered layout serves, in
+ * source order (user block, then admin block).
+ *
+ * This is the browser's view of the entrypoint's output: the nginx literal is
+ * SINGLE-quoted, so a `"` in an origin never breaks the nginx config — it
+ * breaks out of the JavaScript string. Running the payload in a fresh context
+ * and reporting which globals it defined catches exactly that, where a string
+ * match on the expected origin would not.
+ */
+function runtimeConfigs(
+  rendered: string | null,
+): { globals: string[]; value: Record<string, string> }[] {
+  return [...(rendered ?? '').matchAll(/return 200 '([^']*)';/g)].map((match) => {
+    const sandbox: Record<string, unknown> = { window: {} };
+    runInNewContext(match[1] ?? '', sandbox);
+    return {
+      globals: Object.keys(sandbox),
+      value: (sandbox['window'] as { __BT__: Record<string, string> }).__BT__,
+    };
+  });
+}
+
 const SECURITY_INCLUDE = 'include /etc/nginx/bt-includes/static-security-headers.conf;';
 const CONDITIONAL_HSTS_INCLUDE = 'include /etc/nginx/bt-includes/static-hsts.conf;';
 
@@ -374,6 +434,7 @@ const SUBDOMAINS_ENV: Record<string, string> = {
   API_UPSTREAM: 'api:3000',
   LANDING_UPSTREAM: 'landing:80',
   API_ORIGIN: 'https://api.track.example.at',
+  PRODUCT_ORIGIN: 'https://track.example.at',
   WS_ORIGIN: 'wss://api.track.example.at',
   // Rendered empty unless BT_GRAFANA_PUBLIC_URL is configured; the entrypoint
   // suite below covers the configured shape against the real script.
@@ -389,6 +450,7 @@ const PORTS_ENV: Record<string, string> = {
   API_UPSTREAM: 'api:3000',
   LANDING_UPSTREAM: 'landing:80',
   API_ORIGIN: 'http://track.example.at:3000',
+  PRODUCT_ORIGIN: 'http://track.example.at:8082',
   WS_ORIGIN: 'ws://track.example.at:3000',
   GRAFANA_FRAME_SRC: '',
 };
@@ -407,6 +469,8 @@ describe('subdomains template', () => {
     expect(out).toContain('server_name track.example.at;');
     // The apex block reverse-proxies to the static landing container.
     expect(out).toContain('proxy_pass http://landing:80;');
+    expect(out).toContain('productOrigin: "https://track.example.at"');
+    assertProductLandingProxy(out, '# ── Product origin', '# ── Mobile origin');
   });
 
   it('serves the mobile placeholder from its own subdomain, rooting at mobile.html', () => {
@@ -415,7 +479,9 @@ describe('subdomains template', () => {
   });
 
   it('substitutes every whitelisted var (no topology value left)', () => {
-    expect(out).not.toMatch(/\$\{(BT_|LANDING_UPSTREAM|API_UPSTREAM|API_ORIGIN|WS_ORIGIN)/);
+    expect(out).not.toMatch(
+      /\$\{(BT_|LANDING_UPSTREAM|API_UPSTREAM|API_ORIGIN|PRODUCT_ORIGIN|WS_ORIGIN)/,
+    );
   });
 
   it('applies the shared policy and conditional HSTS to every static response path', () => {
@@ -440,10 +506,14 @@ describe('ports template', () => {
     expect(out).toContain('listen 8083;');
     expect(out).toContain('proxy_pass http://landing:80;');
     expect(out).toContain('proxy_pass http://landing:80/mobile.html;');
+    expect(out).toContain('productOrigin: "http://track.example.at:8082"');
+    assertProductLandingProxy(out, '# ── Product port', '# ── Mobile port');
   });
 
   it('substitutes every whitelisted var', () => {
-    expect(out).not.toMatch(/\$\{(BT_|LANDING_UPSTREAM|API_UPSTREAM|API_ORIGIN|WS_ORIGIN)/);
+    expect(out).not.toMatch(
+      /\$\{(BT_|LANDING_UPSTREAM|API_UPSTREAM|API_ORIGIN|PRODUCT_ORIGIN|WS_ORIGIN)/,
+    );
   });
 
   it('applies the shared policy to every static response path without literal HSTS', () => {
@@ -451,6 +521,93 @@ describe('ports template', () => {
     expect(occurrences(out, CONDITIONAL_HSTS_INCLUDE)).toBe(8);
     expect(section(out, '# ── API port', '# ── Web port')).not.toContain(SECURITY_INCLUDE);
     expect(out).not.toContain('add_header Strict-Transport-Security');
+  });
+});
+
+describe('canonical landing legal documents', () => {
+  it('ships every canonical legal route from the landing tree', () => {
+    for (const document of LEGAL_DOCUMENTS) {
+      expect(
+        existsSync(resolve(repoDir, document.repositoryPath)),
+        `${document.route} must resolve to shipped landing content`,
+      ).toBe(true);
+    }
+  });
+
+  it('keeps exactly one tracked EN/DE copy of every legal page', () => {
+    const tracked = spawnSync('git', ['ls-files', '--cached', '--others', '--exclude-standard'], {
+      cwd: repoDir,
+      encoding: 'utf8',
+    });
+    if (tracked.status !== 0) {
+      throw new Error(`git ls-files failed: ${tracked.stderr}`);
+    }
+    const legalCopies = tracked.stdout
+      .split('\n')
+      .filter((path) => path.length > 0 && existsSync(resolve(repoDir, path)))
+      .filter((path) =>
+        /(?:^|\/)(?:terms|privacy|impressum|cookies)(?:\/de)?\/index\.html$/.test(path),
+      )
+      .sort();
+
+    expect(legalCopies).toEqual(LEGAL_DOCUMENTS.map(({ repositoryPath }) => repositoryPath).sort());
+  });
+
+  it('copies the canonical tree into the generic landing image', () => {
+    const dockerfile = readFileSync(resolve(repoDir, 'apps/landing/Dockerfile'), 'utf8');
+    expect(dockerfile).toContain('COPY apps/landing/site/ /usr/share/nginx/html/');
+    expect(dockerfile).toContain('for route in features security roadmap; do');
+    expect(dockerfile).toContain(
+      'cp /usr/share/nginx/html/index.html "/usr/share/nginx/html/${route}/index.html"',
+    );
+  });
+
+  it('ships the live-compatible legal chrome dependencies in the generic image', () => {
+    const landingRoot = resolve(repoDir, 'apps/landing/site');
+    const compatibilityStyles = readFileSync(resolve(landingRoot, 'style.css'), 'utf8');
+    const icon = readFileSync(resolve(landingRoot, 'BT_AppIcon.png'));
+
+    expect(compatibilityStyles).toContain("@import url('/styles.css');");
+    for (const token of ['--text-3', '--surface-2', '--line-soft']) {
+      expect(compatibilityStyles).toContain(token);
+    }
+    expect(icon.subarray(0, 8).toString('hex')).toBe('89504e470d0a1a0a');
+
+    for (const document of LEGAL_DOCUMENTS) {
+      const html = readFileSync(resolve(repoDir, document.repositoryPath), 'utf8');
+      expect(html).toContain('href="/style.css?v=2"');
+      expect(html).toContain('href="/BT_AppIcon.png"');
+      expect(html).toContain('<script src="/env.js"></script>');
+      expect(html).toContain('<script src="/landing.js"></script>');
+
+      const webLinks =
+        html.match(/<a\b[^>]*href="https:\/\/web\.bettertrack\.at[^"]*"[^>]*>/g) ?? [];
+      expect(webLinks.length).toBeGreaterThan(0);
+      for (const link of webLinks) {
+        expect(link).toMatch(/\bclass="[^"]*\bjs-web-link\b[^"]*"/);
+      }
+      if (html.includes('/account/delete')) {
+        expect(html).toContain('data-web-path="/account/delete"');
+      }
+    }
+  });
+
+  it.each([
+    ['index.html', LEGAL_PAGES.map((page) => `href="/${page}/"`), 'aria-label="Legal"'],
+    ['de.html', LEGAL_PAGES.map((page) => `href="/${page}/de/"`), 'aria-label="Rechtliches"'],
+  ])('links the matching legal locale from the compact footer in %s', (file, links, label) => {
+    const html = readFileSync(resolve(repoDir, 'apps/landing/site', file), 'utf8');
+    for (const link of links) expect(html).toContain(link);
+    expect(html.match(/<nav class="legal-links"/g)).toHaveLength(1);
+    expect(html).toContain(label);
+  });
+
+  it('keeps all four links in one low-emphasis footer row', () => {
+    const styles = readFileSync(resolve(repoDir, 'apps/landing/site/styles.css'), 'utf8');
+    const legalLinksRule = styles.match(/\.legal-links\s*\{[^}]+\}/)?.[0] ?? '';
+    expect(legalLinksRule).toContain('display: flex');
+    expect(legalLinksRule).toContain('width: 100%');
+    expect(legalLinksRule).toContain('font-size: 13px');
   });
 });
 
@@ -579,6 +736,7 @@ describe('landing registration status presentation', () => {
 
     expect(page.documentElement.getAttribute('data-registration-mode')).toBe(expectation.mode);
     expect(page.webLink.getAttribute('href')).toBe('https://web.example.net');
+    expect(page.webPathLink.getAttribute('href')).toBe('https://web.example.net/account/delete');
     expect(page.registrationNote.hidden).toBe(false);
     expect(page.registrationNote.textContent).toBe(expectation.note);
     expect(page.title.textContent).toBe(expectation.title);
@@ -612,6 +770,23 @@ describe('landing registration status presentation', () => {
       });
 
       expect(page.webLink.getAttribute('href')).toBe('https://web.bettertrack.at');
+      expect(page.webPathLink.getAttribute('href')).toBe(
+        'https://web.bettertrack.at/account/delete',
+      );
+    },
+  );
+
+  it.each(['//attacker.example/delete', 'javascript:alert(1)', '/account/delete\nignored'])(
+    'does not append an unsafe page path to the runtime web origin (%j)',
+    async (webPath) => {
+      const page = await runLandingScript({
+        includeRegistrationUi: false,
+        webPath,
+      });
+
+      expect(page.webPathLink.getAttribute('href')).toBe(
+        'https://web.bettertrack.at/account/delete',
+      );
     },
   );
 
@@ -652,7 +827,9 @@ describe('shipped web Compose topology → rendered browser policy', () => {
     // does not reach nginx (the round-2 landing regression, one layer over).
     const shipped = composeWebEnvironment({});
     expect(Object.keys(shipped)).toContain('BT_API_ORIGIN');
+    expect(Object.keys(shipped)).toContain('BT_PRODUCT_ORIGIN');
     expect(Object.keys(shipped)).toContain('BT_GRAFANA_PUBLIC_URL');
+    expect(shipped['BT_PRODUCT_ORIGIN']).toBe('');
     expect(shipped['BT_GRAFANA_PUBLIC_URL']).toBe('');
     expect(
       composeWebEnvironment({ BT_GRAFANA_PUBLIC_URL: 'https://grafana.bettertrack.at' })[
@@ -683,7 +860,8 @@ describe('shipped web Compose topology → rendered browser policy', () => {
     expect(csp).not.toContain('  ');
     expect(csp).not.toContain(' ;');
     expect(rendered.defaultConf).toContain('server_name gateway.money.example.net;');
-    expect(rendered.defaultConf).not.toMatch(/\$\{(BT_|API_|LANDING_|WS_|GRAFANA_)/);
+    expect(rendered.defaultConf).toContain('productOrigin: "https://money.example.net"');
+    expect(rendered.defaultConf).not.toMatch(/\$\{(BT_|API_|LANDING_|PRODUCT_|WS_|GRAFANA_)/);
   });
 
   it('allows exactly the configured Grafana subdomain in frame-src', () => {
@@ -738,6 +916,143 @@ describe('shipped web Compose topology → rendered browser policy', () => {
     expect(csp).toContain(
       "frame-src 'self' http://track.lan:4300 https://accounts.google.com http://track.lan:3001;",
     );
+    expect(rendered.defaultConf).toContain('productOrigin: "http://track.lan:8082"');
+  });
+
+  it('honors and normalizes the explicit product origin passed through Compose', () => {
+    const rendered = runWebEntrypoint(
+      composeWebEnvironment({
+        BT_MODE: 'subdomains',
+        BT_DOMAIN: 'internal.example.net',
+        BT_PRODUCT_ORIGIN: 'HTTPS://PUBLIC.Example.NET/',
+      }),
+    );
+
+    expect(rendered.status).toBe(0);
+    // Scheme AND host are normalized (both are case-insensitive), so the front
+    // proxy renders the same override byte-for-byte as the landing container's
+    // Node entrypoint, whose `new URL(...).origin` lowercases the authority.
+    expect(rendered.defaultConf).toContain('productOrigin: "https://public.example.net"');
+    expect(
+      landingRuntimeConfig(
+        renderLandingEntrypoint({
+          BT_MODE: 'subdomains',
+          BT_DOMAIN: 'internal.example.net',
+          BT_WEB_ORIGIN: 'HTTPS://PUBLIC.Example.NET/',
+        }),
+      ).webOrigin,
+    ).toBe('https://public.example.net');
+  });
+
+  it.each(['', '   '])(
+    'derives the product origin when the Compose override is blank (%j)',
+    (blank) => {
+      const rendered = runWebEntrypoint(
+        composeWebEnvironment({
+          BT_MODE: 'subdomains',
+          BT_DOMAIN: 'bettertrack.at',
+          BT_PRODUCT_ORIGIN: blank,
+        }),
+      );
+
+      expect(rendered.status).toBe(0);
+      expect(rendered.defaultConf).toContain('productOrigin: "https://bettertrack.at"');
+    },
+  );
+
+  it.each([
+    ['subdomains', 'https://api.money.example.net', 'https://money.example.net'],
+    ['ports', 'http://money.example.net:3000', 'http://money.example.net:8082'],
+  ])(
+    'emits a runtime config in %s mode that evaluates to exactly the two origins',
+    (mode, apiOrigin, productOrigin) => {
+      const rendered = runWebEntrypoint(
+        composeWebEnvironment({ BT_MODE: mode, BT_DOMAIN: 'money.example.net' }),
+      );
+
+      expect(rendered.status).toBe(0);
+      // Evaluate what the browser actually receives from `location = /config.js`
+      // rather than string-matching it: a value that escaped the JavaScript
+      // string would assign a global, and this asserts none ever appears.
+      const configs = runtimeConfigs(rendered.defaultConf);
+      expect(configs.map((config) => config.globals)).toEqual([['window'], ['window']]);
+      expect(configs.map((config) => config.value)).toEqual([
+        { app: 'user', apiOrigin, productOrigin },
+        { app: 'admin', apiOrigin, productOrigin },
+      ]);
+    },
+  );
+
+  // Every one of these is a well-formed URL as far as the api's zod `.url()`
+  // contract goes, so nothing upstream stops them; the nginx literal they land
+  // in is SINGLE-quoted, so a `"` breaks out of the JavaScript string (not the
+  // nginx config) on every user AND admin page. The entrypoint must refuse the
+  // boot, in both layouts, for the product origin and the API origin alike.
+  const hostileOrigins: [string, string][] = [
+    [
+      'closes the runtime config object',
+      'https://product.example/" }; globalThis.pwned = true; window.__BT__ = { productOrigin: "https://product.example',
+    ],
+    ['embeds a quote', 'https://product.example/"'],
+    ['embeds a policy separator', 'https://product.example/; script-src *'],
+    ['embeds an object terminator', 'https://product.example/}'],
+    ['embeds a backslash escape', 'https://product.example/\\'],
+    ['embeds a control character', 'https://product.example/\u0007'],
+    ['hides a payload on a second line', 'https://product.example\nglobalThis.pwned = true'],
+    ['carries userinfo', 'https://user:secret@product.example'],
+    ['carries a path and query', 'https://product.example/legal?lang=de'],
+    ['is not an absolute origin', '//product.example'],
+  ];
+
+  it.each(hostileOrigins)('refuses to boot on a product origin that %s (%j)', (_reason, value) => {
+    for (const mode of ['subdomains', 'ports']) {
+      const rendered = runWebEntrypoint(
+        composeWebEnvironment({
+          BT_MODE: mode,
+          BT_DOMAIN: 'bettertrack.at',
+          BT_PRODUCT_ORIGIN: value,
+        }),
+      );
+
+      expect(rendered.status).not.toBe(0);
+      expect(rendered.stderr).toContain('BT_PRODUCT_ORIGIN');
+      // Nothing rendered at all: the value never reaches config.js or a header.
+      expect(rendered.defaultConf).toBeNull();
+      expect(rendered.policy).toBeNull();
+    }
+  });
+
+  it.each(hostileOrigins)('refuses to boot on an API origin that %s (%j)', (_reason, value) => {
+    for (const mode of ['subdomains', 'ports']) {
+      const rendered = runWebEntrypoint(
+        composeWebEnvironment({
+          BT_MODE: mode,
+          BT_DOMAIN: 'bettertrack.at',
+          BT_API_ORIGIN: value,
+        }),
+      );
+
+      expect(rendered.status).not.toBe(0);
+      expect(rendered.stderr).toContain('BT_API_ORIGIN');
+      expect(rendered.defaultConf).toBeNull();
+      expect(rendered.policy).toBeNull();
+    }
+  });
+
+  it('refuses to boot when the derived origins inherit a hostile domain', () => {
+    // The same validation runs on the DERIVED origin, so the hole cannot be
+    // reopened one layer down through the topology inputs.
+    const rendered = runWebEntrypoint(
+      composeWebEnvironment({
+        BT_MODE: 'subdomains',
+        BT_DOMAIN: 'bettertrack.at/" }; globalThis.pwned = true; //',
+      }),
+    );
+
+    expect(rendered.status).not.toBe(0);
+    expect(rendered.stderr).toContain('BT_DOMAIN');
+    expect(rendered.defaultConf).toBeNull();
+    expect(rendered.policy).toBeNull();
   });
 
   it.each([

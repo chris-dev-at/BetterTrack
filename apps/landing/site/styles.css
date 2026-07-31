@@ -322,6 +322,14 @@ button:focus-visible {
 .site-footer a {
   color: var(--muted);
 }
+.legal-links {
+  display: flex;
+  width: 100%;
+  justify-content: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  font-size: 13px;
+}
 
 /* ── Mobile placeholder page ───────────────────────────────────────────── */
 .placeholder {

@@ -52,6 +52,16 @@ BT_MODE=ports docker compose --env-file infra/.env.production.example \
   -f infra/docker-compose.ports.yml config -q
 ```
 
+The public legal documents have one canonical source:
+`apps/landing/site/{terms,privacy,impressum,cookies}/`, with EN at `index.html`
+and DE at `de/index.html`. The generic `landing` image copies that tree as-is,
+so both proxy modes serve `/<page>/` and `/<page>/de/`. The bespoke live updater
+overlays those same four directories into
+`$CONTROL/edge/html/product/` after each successful deploy; nginx serves the
+mounted files immediately without a reload. Update legal files only in the
+landing tree, then use the render commands above and the updater checks before
+deployment.
+
 ## Deployment-host log and image retention
 
 Every repository Compose service uses Docker's `local` log driver with an

@@ -10,6 +10,7 @@
     />
     <link rel="icon" type="image/png" href="/BT_AppIcon.png" />
     <link rel="stylesheet" href="/style.css?v=2" />
+    <script src="/env.js"></script>
     <link rel="alternate" hreflang="en" href="https://bettertrack.at/impressum/" />
     <link rel="alternate" hreflang="de" href="https://bettertrack.at/impressum/de/" />
     <style>
@@ -71,7 +72,7 @@
             ><a href="/impressum/">EN</a><span>·</span
             ><a href="/impressum/de/" aria-current="page">DE</a></span
           >
-          <a class="btn" href="https://web.bettertrack.at">App öffnen</a>
+          <a class="btn js-web-link" href="https://web.bettertrack.at">App öffnen</a>
         </div>
       </div>
     </nav>
@@ -146,7 +147,8 @@
           ><a href="/security/">Security</a><a href="/roadmap/">Roadmap</a>
         </div>
         <div class="col">
-          <span class="h">App</span><a href="https://web.bettertrack.at">Web-App</a
+          <span class="h">App</span
+          ><a class="js-web-link" href="https://web.bettertrack.at">Web-App</a
           ><a href="https://mobile.bettertrack.at">Mobile (in Entwicklung)</a>
         </div>
         <div class="col">
@@ -161,5 +163,6 @@
         </p>
       </div>
     </footer>
+    <script src="/landing.js"></script>
   </body>
 </html>
