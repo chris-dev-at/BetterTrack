@@ -19,7 +19,7 @@ import type { PortfolioSummary } from '@bettertrack/contracts';
 
 import type { PortfolioKind } from '../portfolioKinds';
 
-export type PortfolioWizardStepId = 'name' | 'icon' | 'book' | 'done';
+export type PortfolioWizardStepId = 'setup';
 
 /**
  * Who keeps the book. `solo` is a plain portfolio; `shared` hands off to the
@@ -52,10 +52,16 @@ export interface PortfolioWizardStepProps {
    */
   report: (state: PortfolioWizardStepReport) => void;
   /**
-   * The created portfolio, once the frame has created it — null on every step
-   * before that. Only the terminal summary needs it.
+   * The created portfolio, once the frame has created it — null before that.
+   * Kept on the contract for steps that read back what was made.
    */
   created: PortfolioSummary | null;
+  /**
+   * Whether a group book is on the table at all. False in the contexts that
+   * only ever make a plain portfolio, where offering the choice and then
+   * ignoring it would be a lie.
+   */
+  allowShared: boolean;
   /** The frame's last create/rename failure, rendered by the step that caused it. */
   error: string | null;
 }

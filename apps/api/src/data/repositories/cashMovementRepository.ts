@@ -3,7 +3,7 @@ import { and, asc, eq, sql } from 'drizzle-orm';
 import type { Database } from '../db';
 import { portfolioCashMovements } from '../schema';
 import type { CashMovementRow } from '../schema';
-import { stampMovementTags } from './cashSystemTagStamp';
+import { restampMovementTags, stampMovementTags } from './cashSystemTagStamp';
 
 /**
  * Per-portfolio cash-ledger persistence (PROJECTPLAN.md §14, #220/#278; cash
@@ -212,6 +212,75 @@ export function createCashMovementRepository(db: Database) {
         .where(eq(portfolioCashMovements.portfolioId, portfolioId))
         .orderBy(asc(portfolioCashMovements.executedAt), asc(portfolioCashMovements.id));
       return rows.map(toRecord);
+    },
+
+    /**
+     * Correct a hand-entered movement IN PLACE (V5 cash fusion, §16 2026-07-31).
+     *
+     * The row keeps its id, which is the deliberate difference from the way an
+     * edited *trade* reworks its cash: a trade edit deletes the old movement and
+     * books a new one, so the new row carries no user tags. A hand-entered
+     * movement corrected here is still the same movement — a typo'd amount, a
+     * wrong date — so the labels somebody put on it stay put, and only the
+     * system tag moves when the kind does (`restampMovementTags`).
+     *
+     * The WHERE clause re-states the portfolio scope even though the service has
+     * already resolved the row: the guarantee that no cross-portfolio id can
+     * ever be written is worth stating in the statement that does the writing.
+     * Returns null when nothing matched, which the service reads as a 404.
+     */
+    async updateForPortfolio(
+      portfolioId: string,
+      id: string,
+      previousKind: Kind,
+      patch: {
+        sourceId: string;
+        kind: Kind;
+        amountEur: number;
+        executedAt: Date;
+        note: string | null;
+      },
+    ): Promise<CashMovementRecord | null> {
+      const [row] = await db
+        .update(portfolioCashMovements)
+        .set({
+          sourceId: patch.sourceId,
+          kind: patch.kind,
+          amountEur: String(patch.amountEur),
+          executedAt: patch.executedAt,
+          note: patch.note,
+        })
+        .where(
+          and(
+            eq(portfolioCashMovements.id, id),
+            eq(portfolioCashMovements.portfolioId, portfolioId),
+          ),
+        )
+        .returning();
+      if (!row) return null;
+      // Re-labelling hangs off the write path for the same reason stamping does
+      // (see `cashSystemTagStamp`): a caller cannot forget it.
+      await restampMovementTags(db, portfolioId, row, previousKind);
+      return toRecord(row);
+    },
+
+    /**
+     * Remove a hand-entered movement. `cash_movement_tags` cascades on
+     * `movement_id`, so the labels go with it and no orphan link survives.
+     * Returns whether a row was actually removed, so a repeat delete is a 404
+     * rather than a silent success.
+     */
+    async deleteForPortfolio(portfolioId: string, id: string): Promise<boolean> {
+      const rows = await db
+        .delete(portfolioCashMovements)
+        .where(
+          and(
+            eq(portfolioCashMovements.id, id),
+            eq(portfolioCashMovements.portfolioId, portfolioId),
+          ),
+        )
+        .returning({ id: portfolioCashMovements.id });
+      return rows.length > 0;
     },
 
     /** A single movement scoped to its portfolio, else null (defense-in-depth). */

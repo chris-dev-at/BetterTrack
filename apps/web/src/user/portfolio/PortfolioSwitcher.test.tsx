@@ -296,12 +296,11 @@ describe('PortfolioSwitcher', () => {
     await userEvent.click(await findRow('Add portfolio'));
 
     await userEvent.type(await screen.findByLabelText('Portfolio name'), 'Retirement');
-    await userEvent.click(screen.getByRole('button', { name: 'Continue' })); // → icon
-    await userEvent.click(screen.getByRole('button', { name: 'Continue' })); // → book
-    await userEvent.click(screen.getByRole('button', { name: 'Continue' })); // creates
+    // One screen, one press (owner, 2026-07-31): the wizard creates and hands
+    // the portfolio straight to the switcher, which activates it.
+    await userEvent.click(screen.getByRole('button', { name: 'Create portfolio' }));
 
     await waitFor(() => expect(createPortfolio).toHaveBeenCalledWith('Retirement'));
-    await userEvent.click(await screen.findByRole('button', { name: 'Open portfolio' }));
     await waitFor(() => expect(screen.getByTestId('active-param')).toHaveTextContent('p9'));
   });
 
@@ -523,10 +522,8 @@ describe('PortfolioSwitcher', () => {
     await userEvent.click(await screen.findByRole('button', { name: 'Switch portfolio' }));
     await userEvent.click(await findRow('Add portfolio'));
     await userEvent.type(await screen.findByLabelText('Portfolio name'), 'Household');
-    await userEvent.click(screen.getByRole('button', { name: 'Continue' })); // → icon
-    await userEvent.click(screen.getByRole('button', { name: 'Continue' })); // → book
     await userEvent.click(screen.getByRole('radio', { name: /Shared with people/ }));
-    await userEvent.click(screen.getByRole('button', { name: 'Continue' }));
+    await userEvent.click(screen.getByRole('button', { name: 'Create portfolio' }));
 
     // The §11 CreateChainDialog, exactly as the retired menu item opened it —
     // and no plain portfolio was created on the way.
@@ -562,10 +559,8 @@ describe('PortfolioSwitcher', () => {
     await user.click(trigger);
     await user.click(await findRow('Add portfolio'));
     await user.type(await screen.findByLabelText('Portfolio name'), 'Household');
-    await user.click(screen.getByRole('button', { name: 'Continue' })); // → icon
-    await user.click(screen.getByRole('button', { name: 'Continue' })); // → book
     await user.click(screen.getByRole('radio', { name: /Shared with people/ }));
-    await user.click(screen.getByRole('button', { name: 'Continue' }));
+    await user.click(screen.getByRole('button', { name: 'Create portfolio' }));
 
     await screen.findByRole('dialog', { name: 'New group portfolio' });
     await user.click(screen.getByRole('button', { name: 'Create' }));

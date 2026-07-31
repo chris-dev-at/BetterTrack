@@ -80,7 +80,7 @@ export function WatchlistsPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <PageHead sub={t('watchlists.subtitle')} title={t('watchlists.title')} />
+      <PageHead title={t('watchlists.title')} />
 
       <form
         className="flex items-end gap-2"
