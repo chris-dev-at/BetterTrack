@@ -2459,7 +2459,14 @@ describe('V5-P14 surface traceability inventory', () => {
       coveredClaimFindings,
       `Mechanically covered state claims do not match component code:\n${coveredClaimFindings.join('\n')}`,
     ).toEqual([]);
-  });
+    // This gate parses every inventoried component and walks 179 async read
+    // sites; on a shared CI runner it lands around 20s, which is exactly the
+    // suite default. That made it fail on runner load rather than on a defect —
+    // it took main red and blocked every open PR, including the remediation
+    // work it exists to guard. An exhaustive AST sweep is the wrong thing to
+    // hold to a wall clock, so give it room; a real regression still fails on
+    // the assertions above, not on the timer.
+  }, 180_000);
 
   test('contains no literal user-facing copy outside the frozen legacy debt', () => {
     const universe = universeModules();
