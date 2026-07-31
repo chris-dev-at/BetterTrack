@@ -1,6 +1,7 @@
 import type { Response } from 'express';
 
 import type { AppConfig } from '../config/env';
+import { REMEMBERED_DEVICE_TTL_SECONDS } from '../services/auth/loginThrottle';
 
 /**
  * Session cookie (PROJECTPLAN.md §6.1, §10): httpOnly, SameSite=Lax, Secure in
@@ -51,7 +52,7 @@ export function clearSessionCookie(res: Response, config: AppConfig): void {
  */
 export const REMEMBERED_DEVICE_COOKIE = 'bt_rdid';
 /** ~400 days (the browser cap for a persisted cookie) — the closest to "no expiry". */
-export const REMEMBERED_DEVICE_MAX_AGE_MS = 400 * 24 * 60 * 60 * 1000;
+export const REMEMBERED_DEVICE_MAX_AGE_MS = REMEMBERED_DEVICE_TTL_SECONDS * 1000;
 
 export function setRememberedDeviceCookie(
   res: Response,
