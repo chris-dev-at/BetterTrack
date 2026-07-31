@@ -6,6 +6,7 @@ import { join } from 'node:path';
 // repositories through `apps/api` below.
 import { and, count, eq, inArray } from '../../apps/api/node_modules/drizzle-orm/index.js';
 
+import { VAULT_RETIRED_SERVER_MIN_RETENTION_MS } from '../../packages/contracts/src/vault';
 import { createDatabase } from '../../apps/api/src/data/db';
 import { withLockedPrivacyModes } from '../../apps/api/src/data/repositories/paranoidEnforcementRepository';
 import { createAlertRepository } from '../../apps/api/src/data/repositories/alertRepository';
@@ -53,7 +54,7 @@ export const PD9_TRACEABILITY = [
   {
     criterion:
       'Drive-only round trip: zero portfolio rows server-side and the app remains fully functional (e2e)',
-    assertion: '[PD9-A3] Drive-only enable and zero-server round trip',
+    assertion: '[PD9-A3] Drive-only enable and zero active server medium round trip',
   },
   {
     criterion: 'Media switching migrates the blob correctly (test)',
@@ -74,22 +75,67 @@ export const PD9_TRACEABILITY = [
 ] as const;
 
 /**
- * Repository precondition for composing/running PD9. This reads the already-
- * merged binding note without rewriting it: a missing §16 log/owner-ack gate or
- * a §15 row without an executable assertion fails before the destructive
- * browser flow starts. Shipped deviations remain owner-visible elsewhere and
- * are exercised by the browser flow rather than silently normalized here.
+ * Repository precondition for composing/running PD9. The binding note and the
+ * project decision log must agree on the current affirmative owner approval
+ * and #896's retired-recovery semantics before the destructive browser flow
+ * starts. A §15 row without an executable assertion also fails the gate.
  */
 export async function assertPd9DesignPrecondition(): Promise<void> {
-  const document = await readFile(join(process.cwd(), 'docs/paranoid-design.md'), 'utf8');
-  const status = document.slice(0, document.indexOf('**The model in one paragraph.**'));
+  const [document, projectPlan] = await Promise.all([
+    readFile(join(process.cwd(), 'docs/paranoid-design.md'), 'utf8'),
+    readFile(join(process.cwd(), 'PROJECTPLAN.md'), 'utf8'),
+  ]);
+  const normalized = (value: string) => value.replace(/\s+/g, ' ');
+  const status = normalized(document.slice(0, document.indexOf('**The model in one paragraph.**')));
+  const approvalEvidence = [
+    '§16-logged 2026-07-21 (issue #651)',
+    'owner-approved before composition',
+    '`v5-p13-pd9-20260724` brief on issue #733',
+    '#654 gate is explicitly superseded and is not approval evidence',
+  ];
+  if (approvalEvidence.some((evidence) => !status.includes(evidence))) {
+    throw new Error('PD9 design status is missing its current affirmative owner-approval record.');
+  }
   if (
-    !status.includes('§16-logged 2026-07-21') ||
-    !status.includes('issue #651') ||
-    !status.includes('implementation is **not even composed** until') ||
-    !status.includes('the owner acks it')
+    status.includes('implementation is **not even composed** until') ||
+    status.includes('ack gate is a filed `awaiting-owner` issue')
   ) {
-    throw new Error('PD9 design status is missing its merged §16 log/owner-ack gate.');
+    throw new Error('PD9 design status still relies on the superseded pending-ack gate.');
+  }
+
+  const sectionFive = normalized(
+    document.slice(document.indexOf('## 5.'), document.indexOf('## 6.')),
+  );
+  const retirementSemantics = [
+    'active server medium',
+    'retired recovery set',
+    'seven-day minimum retention window',
+    'fresh Drive readback',
+    'client-held Ed25519 proof',
+    'a media PATCH or client attestation alone never does',
+    'Total server ciphertext reaches zero only through the separate retention-qualified signed purge gate',
+  ];
+  if (
+    VAULT_RETIRED_SERVER_MIN_RETENTION_MS !== 7 * 24 * 60 * 60 * 1000 ||
+    retirementSemantics.some((evidence) => !sectionFive.includes(evidence)) ||
+    sectionFive.includes('hard-deletes the blob + its entire bounded history server-side')
+  ) {
+    throw new Error(
+      'PD9 design §5 does not encode the approved #896 retirement and purge semantics.',
+    );
+  }
+
+  const decisionLog = normalized(projectPlan.slice(projectPlan.indexOf('## 16. Decision Log')));
+  const loggedDecision = [
+    'V5-P13 PD6/PD9 media-removal COD reconciliation',
+    'issue #895 / PR #896',
+    'owner audit on #733',
+    'seven-day minimum retention',
+    'zero active server-medium ciphertext',
+    'A successful signed purge leaves zero server ciphertext',
+  ];
+  if (loggedDecision.some((evidence) => !decisionLog.includes(evidence))) {
+    throw new Error('PD9 design §5 reconciliation is missing from PROJECTPLAN §16.');
   }
 
   const sectionFifteen = document.slice(document.indexOf('## 15.'), document.indexOf('## 16.'));

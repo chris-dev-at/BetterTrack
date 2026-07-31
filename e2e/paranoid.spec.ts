@@ -175,7 +175,7 @@ test.describe('PD9 paranoid-mode end-to-end gate', () => {
 
       await assertNormalMoneyApi(owner, fixture);
 
-      await test.step('[PD9-A3] Drive-only enable and zero-server round trip', async () => {
+      await test.step('[PD9-A3] Drive-only enable and zero active server medium round trip', async () => {
         const enableMark = monitor.mark();
         await enableDriveOnly(page, sensitive);
         sensitive.push(...(await pd9CiphertextCanaries(page)));
