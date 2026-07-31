@@ -43,7 +43,7 @@ import {
 } from '@bettertrack/contracts';
 import { z } from 'zod';
 
-import { badRequest } from '../../errors';
+import { ApiError, badRequest } from '../../errors';
 import { requireUser } from '../middleware/session';
 import { validateBody, validateParams, validateQuery } from '../middleware/validate';
 import type { AppContext } from '../context';
@@ -81,6 +81,40 @@ export function createExpensesRouter(ctx: AppContext): Router {
   const router = Router();
 
   router.use(requireUser);
+
+  /**
+   * WRITE RETIREMENT (V5 cash fusion, phase 2). Every expense row now lives on
+   * the portfolio cash ledger, classified by `cash_tags` and served by
+   * `/api/v1/cash`. Migration 0076 left these tables writable so the old UI kept
+   * working, and the price was divergence: anything written here afterwards had
+   * to be swept up by `scripts/catchUpCashFusion.ts`. This gate ends that — after
+   * the catch-up runs, nothing can add to the gap again.
+   *
+   * READS STILL WORK, deliberately, for one release: the `expense_*` tables are
+   * the rollback and diagnosis path while the fused surfaces bed in, and the
+   * paranoid vault still restores into them. The tables are dropped in a later
+   * migration once both of those are re-pointed (see the phase-2 report).
+   *
+   * 410 rather than 404 or 405: the resource genuinely existed and is genuinely
+   * gone, and a client that sees it should stop retrying rather than treat it as
+   * a transient miss or a wrong verb.
+   */
+  // Named, not anonymous: the paranoid route table identifies opaque `use`
+  // mounts by their handler name, so an anonymous gate would appear there as an
+  // unclassifiable surface.
+  router.use(function refuseRetiredExpenseWrite(req, _res, next) {
+    if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') {
+      next();
+      return;
+    }
+    next(
+      new ApiError(
+        410,
+        'EXPENSE_AREA_RETIRED',
+        'Expense tracking has moved onto the portfolio cash ledger. Use /api/v1/cash.',
+      ),
+    );
+  });
 
   // In-memory multipart parsing for the one CSV part of a bank-statement import —
   // files are capped well below anything worth streaming to disk (§13.5 V5-P9).

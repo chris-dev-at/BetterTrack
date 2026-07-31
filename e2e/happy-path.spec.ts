@@ -98,6 +98,10 @@ test('happy path: invite through friend sharing', async ({ browser }) => {
   await buyDialog.getByRole('button', { name: 'Select SAP.DE', exact: true }).click();
   await buyDialog.getByLabel('Quantity for SAP.DE').fill('4');
   await buyDialog.getByLabel('Price for SAP.DE').fill('50');
+  // Keyboard toggle + checked assertion (main's #1019 hardening) — .check()
+  // proved unreliable against the styled control. The preview assertion states
+  // the resulting balance: 800 deposited − 4 × 50 = 600, the property the
+  // preview exists for. Locale-agnostic: EN "600.00" vs DE "600,00".
   const payFromCash = buyDialog.getByLabel('Pay from cash balance');
   await payFromCash.press('Space');
   await expect(payFromCash).toBeChecked();
@@ -182,6 +186,9 @@ test('happy path: invite through friend sharing', async ({ browser }) => {
   await expect(friendCard).toBeVisible({ timeout: 15_000 });
   await friendCard.click();
 
+  // Anchored: role-name matching is substring by default, and the shell's
+  // "Skip to main content" link would otherwise match 'Main' too. The shared
+  // link's accessible name is "Main <balance>", so anchor on the word.
   const sharedLink = friend.getByRole('link', { name: /^Main\b/ });
   await expect(sharedLink).toBeVisible({ timeout: 15_000 });
   await sharedLink.click();

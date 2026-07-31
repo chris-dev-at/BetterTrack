@@ -341,166 +341,6 @@
       }
     }
   },
-  "expenses": {
-    "title": "Ausgaben",
-    "tagline": "Behalte deine Ausgaben und Einnahmen im Blick — getrennt von deinem Portfolio.",
-    "nav": {
-      "dashboard": "Übersicht",
-      "transactions": "Transaktionen",
-      "budgets": "Budgets",
-      "categories": "Kategorien",
-      "rules": "Regeln",
-      "import": "Import"
-    },
-    "direction": {
-      "expense": "Ausgabe",
-      "income": "Einnahme",
-      "expensePlural": "Ausgaben",
-      "incomePlural": "Einnahmen"
-    },
-    "transactions": {
-      "subtitle": "Deine Ausgaben und Einnahmen, neueste zuerst.",
-      "new": "Neue Transaktion",
-      "loadError": "Transaktionen konnten nicht geladen werden.",
-      "categoryLoadError": "Kategorien konnten nicht geladen werden.",
-      "recategorizeError": "Die Transaktionskategorie konnte nicht geändert werden. Bitte versuche es erneut.",
-      "deleteError": "Die Transaktion konnte nicht gelöscht werden. Bitte versuche es erneut.",
-      "recategorize": "Kategorie ändern",
-      "uncategorized": "Ohne Kategorie",
-      "emptyTitle": "Noch keine Transaktionen",
-      "emptyDescription": "Füge deine erste Ausgabe oder Einnahme hinzu, um zu starten.",
-      "emptyCta": "Transaktion hinzufügen",
-      "dialog": {
-        "newTitle": "Neue Transaktion",
-        "editTitle": "Transaktion bearbeiten",
-        "direction": "Richtung",
-        "amount": "Betrag",
-        "amountRequired": "Gib einen Betrag größer als 0 ein.",
-        "date": "Datum",
-        "dateRequired": "Wähle ein Datum.",
-        "description": "Beschreibung",
-        "descriptionPlaceholder": "z. B. BILLA Lebensmittel",
-        "descriptionRequired": "Gib eine Beschreibung ein.",
-        "category": "Kategorie",
-        "saveError": "Transaktion konnte nicht gespeichert werden. Bitte versuche es erneut."
-      }
-    },
-    "categories": {
-      "subtitle": "Ordne deine Ausgaben und Einnahmen in Kategorien.",
-      "new": "Neue Kategorie",
-      "loadError": "Kategorien konnten nicht geladen werden.",
-      "deleteError": "Kategorie konnte nicht gelöscht werden. Bitte versuche es erneut.",
-      "emptyTitle": "Noch keine Kategorien",
-      "emptyDescription": "Erstelle eine Kategorie, um deine Ausgaben und Einnahmen zu ordnen.",
-      "emptyCta": "Kategorie erstellen",
-      "dialog": {
-        "newTitle": "Neue Kategorie",
-        "editTitle": "Kategorie bearbeiten",
-        "name": "Name",
-        "namePlaceholder": "z. B. Lebensmittel",
-        "nameRequired": "Gib einen Namen ein.",
-        "nameTaken": "Du hast bereits eine Kategorie mit diesem Namen.",
-        "direction": "Richtung",
-        "color": "Farbe",
-        "saveError": "Kategorie konnte nicht gespeichert werden. Bitte versuche es erneut."
-      }
-    },
-    "rules": {
-      "subtitle": "Regeln kategorisieren importierte Transaktionen automatisch anhand ihres Textes.",
-      "new": "Neue Regel",
-      "loadError": "Deine Regeln konnten nicht geladen werden.",
-      "deleteError": "Regel konnte nicht gelöscht werden. Bitte versuche es erneut.",
-      "emptyTitle": "Noch keine Regeln",
-      "emptyDescription": "Lege eine Regel an, um Transaktionen beim Import automatisch zu kategorisieren.",
-      "unknownCategory": "Unbekannte Kategorie",
-      "disabled": "Aus",
-      "matchType": {
-        "contains": "Enthält",
-        "equals": "Ist gleich",
-        "starts_with": "Beginnt mit",
-        "regex": "Regex"
-      },
-      "dialog": {
-        "newTitle": "Neue Regel",
-        "editTitle": "Regel bearbeiten",
-        "category": "Kategorie",
-        "categoryRequired": "Wähle eine Kategorie.",
-        "matchType": "Vergleichsart",
-        "pattern": "Muster",
-        "patternPlaceholder": "z. B. SPOTIFY",
-        "patternRequired": "Gib ein Muster ein.",
-        "regexUnsupported": "Dieses Regex-Muster verwendet nicht unterstützte Syntax. Verwende ein einfacheres Muster ohne Lookarounds oder Rückverweise.",
-        "priority": "Priorität",
-        "enabled": "Aktiv",
-        "saveError": "Regel konnte nicht gespeichert werden. Bitte versuche es erneut."
-      }
-    },
-    "import": {
-      "subtitle": "Importiere einen Kontoauszug (CSV) — Zeilen werden automatisch kategorisiert, Duplikate übersprungen.",
-      "uploadTitle": "Auszug hochladen",
-      "chooseFile": "CSV-Datei auswählen",
-      "bank": "Bank",
-      "bankAuto": "Automatisch erkennen",
-      "preview": "Vorschau",
-      "previewing": "Wird gelesen…",
-      "uploadHint": "Unterstützt werden CSV-Exporte von Erste/George, Raiffeisen ELBA, N26 und Revolut.",
-      "previewError": "Die Datei konnte nicht gelesen werden. Prüfe, ob es ein unterstützter Bank-Export ist.",
-      "applyError": "Die Transaktionen konnten nicht importiert werden. Bitte versuche es erneut.",
-      "applied": "{{applied}} importiert · {{duplicate}} Duplikate · {{error}} übersprungen.",
-      "importAnother": "Weiteren Auszug importieren",
-      "previewTitle": "{{bank}} erkannt",
-      "counts": "{{new}} neu · {{duplicate}} Duplikate · {{error}} Fehler",
-      "colDate": "Datum",
-      "colDescription": "Beschreibung",
-      "colAmount": "Betrag",
-      "colCategory": "Kategorie",
-      "flag": {
-        "new": "Neu",
-        "duplicate": "Dupl.",
-        "error": "Fehler"
-      },
-      "uncategorized": "Ohne Kategorie",
-      "applying": "Wird importiert…",
-      "apply": "{{count}} Transaktionen importieren"
-    },
-    "dashboard": {
-      "subtitle": "Wohin dein Geld diesen Monat geflossen ist.",
-      "month": "Monat",
-      "loadError": "Übersicht konnte nicht geladen werden.",
-      "income": "Einnahmen",
-      "spend": "Ausgaben",
-      "net": "Saldo",
-      "spendByCategory": "Ausgaben nach Kategorie",
-      "noSpend": "Für diesen Monat sind keine Ausgaben erfasst.",
-      "uncategorized": "Ohne Kategorie",
-      "trend": "Einnahmen vs. Ausgaben",
-      "emptyTitle": "Noch keine Aktivität",
-      "emptyDescription": "Erfasse Transaktionen, um deine monatlichen Trends zu sehen."
-    },
-    "budgets": {
-      "subtitle": "Lege pro Kategorie ein monatliches Ziel fest — wir warnen dich, wenn eines überschritten wird.",
-      "new": "Neues Budget",
-      "loadError": "Budgets konnten nicht geladen werden.",
-      "deleteError": "Budget konnte nicht gelöscht werden. Bitte versuche es erneut.",
-      "exceeded": "Überschritten",
-      "over": "{{amount}} über",
-      "left": "{{amount}} übrig",
-      "emptyTitle": "Noch keine Budgets",
-      "emptyDescription": "Lege für eine Kategorie ein monatliches Ziel fest, um deine Ausgaben dagegen zu verfolgen.",
-      "emptyCta": "Budget hinzufügen",
-      "dialog": {
-        "newTitle": "Neues Budget",
-        "editTitle": "Budget bearbeiten",
-        "category": "Kategorie",
-        "categoryRequired": "Wähle eine Kategorie.",
-        "categoryTaken": "Diese Kategorie hat bereits ein Budget.",
-        "noCategories": "Jede Ausgabenkategorie hat bereits ein Budget.",
-        "amount": "Monatliches Ziel",
-        "amountRequired": "Gib einen Betrag größer als 0 ein.",
-        "saveError": "Budget konnte nicht gespeichert werden. Bitte versuche es erneut."
-      }
-    }
-  },
   "nav": {
     "portfolio": "Portfolio",
     "workboard": "Workbench",
@@ -1294,6 +1134,11 @@
       },
       "hint": "Nur die Anzeige — Beträge bleiben in der Währung des jeweiligen Assets gespeichert."
     },
+    "uiScale": {
+      "title": "Oberflächengröße",
+      "hint": "Skaliert die gesamte App nur auf diesem Gerät — es wird nicht mit deinem Konto synchronisiert. Automatisch liest den Bildschirm aus: 100 % auf einem HiDPI-Display, größer auf einem 1×-Monitor.",
+      "auto": "Automatisch ({{percent}} %)"
+    },
     "newPortfolioDefaults": {
       "navLabel": "Standardwerte für neue Portfolios",
       "tax": {
@@ -1921,9 +1766,11 @@
     },
     "cash": {
       "title": "Bargeldbestand",
-      "kindGroupAriaLabel": "Einzahlen oder abheben",
+      "kindGroupAriaLabel": "Einzahlen, abheben oder Gebühr erfassen",
       "depositTab": "Einzahlen",
       "withdrawTab": "Abheben",
+      "feeTab": "Gebühr",
+      "feeHint": "Eine Depot-, Konto- oder Plattformgebühr — Kosten des Haltens. Sie senkt deine Performance und gilt nicht als Geld, das du entnommen hast.",
       "amountLabel": "Betrag (EUR)",
       "amountAriaLabel": "Betrag",
       "previewAriaLabel": "Vorschau: Bargeld danach",
@@ -1935,6 +1782,7 @@
       "noteAriaLabel": "Notiz",
       "depositSubmit": "Bargeld einzahlen",
       "withdrawSubmit": "Bargeld abheben",
+      "feeSubmit": "Gebühr erfassen",
       "amountRequired": "Gib einen Betrag größer als 0 ein.",
       "blockedError": "Das würde den Bargeldbestand negativ werden lassen.",
       "invalidDate": "Wähle ein gültiges Datum.",
@@ -1984,7 +1832,8 @@
         "transfer_in": "Umbuchung eingehend",
         "dividend": "Dividende",
         "tax_withholding": "Steuereinbehalt",
-        "tax_refund": "Steuererstattung"
+        "tax_refund": "Steuererstattung",
+        "fee": "Gebühr"
       },
       "history": {
         "heading": "Bewegungsverlauf",
@@ -2177,9 +2026,9 @@
     },
     "tabs": {
       "overview": "Übersicht",
-      "activity": "Aktivität",
+      "activity": "Transaktionen",
       "customAssets": "Eigene Anlagen",
-      "cashFlow": "Cashflow",
+      "cashFlow": "Bargeld",
       "analysis": "Analyse",
       "tax": "Steuern",
       "import": "Import",
@@ -3496,6 +3345,9 @@
       "empty": "Hier ist noch nichts passiert.",
       "loadError": "Die Aktivitätsliste konnte nicht geladen werden. Bitte versuche es erneut."
     },
+    "membersListAria": "Mitglieder",
+    "activityListAria": "Aktivität",
+    "inviteListAria": "Freunde, die du einladen kannst",
     "invites": {
       "incomingTitle": "Einladungen zu Gruppenportfolios",
       "outgoingTitle": "Von dir gesendete Einladungen",
@@ -4491,6 +4343,15 @@
         "empty": "Noch keine Cash-Quellen.",
         "total": "Gesamt"
       },
+      "quickCash": {
+        "title": "Schnellbuchung",
+        "description": "Einzahlung, Auszahlung oder Gebühr erfassen, ohne Home zu verlassen.",
+        "submit": "Erfassen",
+        "notePlaceholder": "Notiz (optional)",
+        "into": "Auf {{source}}",
+        "needsScope": "Wähle ein Portfolio für dieses Widget — eine Bargeldbewegung muss irgendwo konkret landen.",
+        "noSource": "Dieses Portfolio hat noch kein Bargeldkonto."
+      },
       "watchlist": {
         "title": "Watchlist",
         "description": "Eine Watchlist mit aktuellen Kursen",
@@ -4529,15 +4390,184 @@
     }
   },
   "cashflow": {
-    "aria": "Cashflow",
+    "aria": "Bargeld",
     "tabs": {
       "overview": "Übersicht",
-      "transactions": "Transaktionen",
+      "movements": "Transaktionen",
       "budgets": "Budgets",
-      "categories": "Kategorien",
+      "tags": "Tags",
       "rules": "Regeln",
       "import": "Import",
       "accounts": "Cash-Konten"
+    },
+    "untagged": "Ohne Tag",
+    "record": {
+      "title": "Transaktion erfassen",
+      "directionAria": "Geld raus oder Geld rein",
+      "moneyOut": "Geld raus",
+      "moneyIn": "Geld rein",
+      "noteLabel": "Wofür",
+      "notePlaceholder": "z. B. SPAR MARKT 4021",
+      "willBeTagged": "Wird markiert als",
+      "moreToggle": "Mehr — Datum, Konto, Tags",
+      "lessToggle": "Weniger",
+      "tagsLabel": "Tags",
+      "countsToPerformance": "Auf meine Anlage-Performance anrechnen",
+      "countsToPerformanceHint": "Für Haltekosten — eine Konto- oder Depotgebühr gehört zum Investieren und soll die ausgewiesene Rendite senken. Alltägliche Ausgaben nicht.",
+      "receiptLabel": "Beleg",
+      "receiptPlanned": "Geplant",
+      "into": "Auf {{source}}",
+      "submit": "Erfassen",
+      "action": "Transaktion erfassen",
+      "amountLabel": "Betrag",
+      "details": "Details",
+      "balanceAfter": "Saldo danach",
+      "countsToPerformanceShort": "Haltekosten",
+      "quickIn": "Geld rein erfassen",
+      "quickOut": "Geld raus erfassen"
+    },
+    "matchType": {
+      "contains": "Enthält",
+      "equals": "Ist gleich",
+      "starts_with": "Beginnt mit",
+      "regex": "Regex"
+    },
+    "overview": {
+      "subtitle": "",
+      "loadError": "Cashflow-Übersicht konnte nicht geladen werden.",
+      "month": "Monat",
+      "inflow": "Eingang",
+      "outflow": "Ausgang",
+      "net": "Saldo",
+      "byTag": "Nach Tag",
+      "noActivity": "Für diesen Monat sind keine Bargeldbewegungen erfasst.",
+      "notSumNote": "Tags überschneiden sich — eine Bewegung mit zwei Tags zählt bei beiden, darum ergeben diese Zeilen nicht die Summe oben.",
+      "trend": "Trend",
+      "emptyTitle": "Noch keine Aktivität",
+      "emptyDescription": "Erfasse Bargeldbewegungen, um deine monatlichen Trends zu sehen.",
+      "total": "Gesamtes Bargeld",
+      "accountsHeading": "Konten",
+      "manageAccounts": "Konten verwalten",
+      "recentHeading": "Letzte Bewegungen",
+      "allMovements": "Alle Bewegungen",
+      "thisMonthChange": "{{amount}} diesen Monat",
+      "noAccounts": "Noch keine Bargeldkonten.",
+      "quickDeposit": "Auf {{source}} einzahlen",
+      "quickWithdraw": "Von {{source}} ausgeben",
+      "previousMonth": "Voriger Monat",
+      "nextMonth": "Nächster Monat",
+      "byTagList": "Ausgaben nach Tag"
+    },
+    "movements": {
+      "subtitle": "",
+      "loadError": "Bargeldbuch konnte nicht geladen werden.",
+      "emptyTitle": "Noch keine Bargeldbewegungen",
+      "emptyDescription": "Einzahlungen, Abhebungen, Trades und Dividenden erscheinen hier.",
+      "listAriaLabel": "Bargeldbewegungen",
+      "filterLabel": "Tag",
+      "filterAll": "Alle Tags",
+      "dateColumn": "Datum",
+      "kindColumn": "Art",
+      "amountColumn": "Betrag",
+      "tagsColumn": "Tags",
+      "noteColumn": "Notiz",
+      "editTagsAction": "Tags bearbeiten",
+      "originalCurrency": "urspr. {{currency}}",
+      "tagDialog": {
+        "title": "Tags bearbeiten",
+        "noTags": "Du hast noch keine Tags — leg zuerst eines im Tab „Tags“ an.",
+        "saveError": "Tags konnten nicht aktualisiert werden. Bitte versuche es erneut."
+      },
+      "manageLabels": "Labels & Regeln"
+    },
+    "budgets": {
+      "subtitle": "",
+      "loadError": "Budgets konnten nicht geladen werden.",
+      "deleteError": "Budget konnte nicht gelöscht werden. Bitte versuche es erneut.",
+      "new": "Neues Budget",
+      "month": "Monat",
+      "exceeded": "Überschritten",
+      "recurring": "Wiederkehrend",
+      "thisMonthOnly": "Nur {{month}}",
+      "over": "{{amount}} über",
+      "left": "{{amount}} übrig",
+      "emptyTitle": "Noch keine Budgets",
+      "emptyDescription": "Lege für einen Tag ein Ausgabenziel fest, um es gegen das Bargeld dieses Portfolios zu verfolgen.",
+      "emptyCta": "Budget hinzufügen",
+      "dialog": {
+        "newTitle": "Neues Budget",
+        "editTitle": "Budget bearbeiten",
+        "tag": "Tag",
+        "tagRequired": "Wähle einen Tag.",
+        "noTags": "Jeder Tag hat für diesen Zeitraum bereits ein Budget.",
+        "period": "Zeitraum",
+        "periodRecurring": "Wiederkehrend",
+        "periodThisMonth": "Nur dieser Monat",
+        "amount": "Monatliches Ziel",
+        "amountRequired": "Gib einen Betrag größer als 0 ein.",
+        "alreadyBudgeted": "Dieser Tag hat für diesen Zeitraum bereits ein Budget.",
+        "saveError": "Budget konnte nicht gespeichert werden. Bitte versuche es erneut."
+      }
+    },
+    "tags": {
+      "subtitle": "Flache Labels, die eine Bargeldbewegung tragen kann — auch mehrere gleichzeitig.",
+      "loadError": "Deine Tags konnten nicht geladen werden.",
+      "deleteError": "Tag konnte nicht gelöscht werden. Bitte versuche es erneut.",
+      "new": "Neuer Tag",
+      "systemHeading": "App-Tags",
+      "userHeading": "Deine Tags",
+      "systemBadge": "App-eigen",
+      "emptyTitle": "Noch keine Tags",
+      "emptyDescription": "Leg einen Tag an, um deine Bargeldbewegungen zu beschriften.",
+      "emptyCta": "Tag anlegen",
+      "deleteConfirm": "„{{name}}“ löschen? Seine Budgets und Regel-Verknüpfungen werden mitgelöscht.",
+      "removeFromMovement": "{{name}} entfernen",
+      "dialog": {
+        "newTitle": "Neuer Tag",
+        "editTitle": "Tag bearbeiten",
+        "name": "Name",
+        "namePlaceholder": "z. B. Lebensmittel",
+        "nameRequired": "Gib einen Namen ein.",
+        "nameTaken": "Du hast bereits einen Tag mit diesem Namen.",
+        "color": "Farbe",
+        "saveError": "Tag konnte nicht gespeichert werden. Bitte versuche es erneut."
+      }
+    },
+    "rules": {
+      "subtitle": "Regeln taggen Importe und manuelle Einträge automatisch, anhand ihrer Notiz. Die erste Übereinstimmung gewinnt.",
+      "applyToExisting": "Auf Bestehende anwenden",
+      "applying": "Wird angewendet…",
+      "applyTagged": "{{count}} Bewegungen markiert.",
+      "applyNoneTagged": "Nichts Neues zu markieren — jede passende Bewegung trägt ihre Tags bereits.",
+      "applyError": "Regeln konnten nicht angewendet werden. Bitte erneut versuchen.",
+      "loadError": "Deine Regeln konnten nicht geladen werden.",
+      "deleteError": "Regel konnte nicht gelöscht werden. Bitte versuche es erneut.",
+      "new": "Neue Regel",
+      "disabled": "Aus",
+      "priorityLabel": "Priorität {{priority}}",
+      "unknownTag": "Unbekannter Tag",
+      "emptyTitle": "Noch keine Regeln",
+      "emptyDescription": "Lege eine Regel an, um Bewegungen automatisch zu taggen, sobald sie eintreffen.",
+      "dialog": {
+        "newTitle": "Neue Regel",
+        "editTitle": "Regel bearbeiten",
+        "matchType": "Vergleichsart",
+        "pattern": "Muster",
+        "patternPlaceholder": "z. B. SPOTIFY",
+        "patternRequired": "Gib ein Muster ein.",
+        "regexUnsupported": "Dieses Regex-Muster verwendet nicht unterstützte Syntax. Verwende ein einfacheres Muster ohne Lookarounds oder Rückverweise.",
+        "tags": "Tags",
+        "tagsRequired": "Wähle mindestens einen Tag.",
+        "noTags": "Leg zuerst einen Tag an — eine Regel braucht mindestens einen, um zu greifen.",
+        "priority": "Priorität",
+        "enabled": "Aktiv",
+        "saveError": "Regel konnte nicht gespeichert werden. Bitte versuche es erneut."
+      }
+    },
+    "labels": {
+      "title": "Labels & Regeln",
+      "subtitle": "Die Tags, die eine Bewegung tragen kann — und die Regeln, die sie automatisch vergeben.",
+      "backToMovements": "Zurück zu Bewegungen"
     }
   },
   "workbench": {
@@ -4654,7 +4684,9 @@
       "events": "Ereignisse",
       "health": "Datenqualität",
       "rebalancePage": "Rebalancing",
-      "privateMarkets": "Private Märkte"
+      "privateMarkets": "Private Märkte",
+      "cashMovements": "Bargeldbuch ansehen",
+      "cashRules": "Regeln einrichten"
     },
     "portfolioPlan": {
       "title": "Plan",
@@ -4807,6 +4839,13 @@
       "p2": "Jede Zahl verlinkt zurück auf Datensätze und Annahmen",
       "p3": "Szenario-Antworten öffnen sich als Workbench-Entwürfe",
       "p4": "Kein Schreibzugriff ohne deine ausdrückliche Bestätigung"
+    },
+    "cashImport": {
+      "title": "Auszugsimport",
+      "body": "Der Kontoauszugs-Import wird gerade auf das getaggte Portfolio-Bargeldbuch umgebaut. Er ist noch nicht so weit — erfasse Bargeld bis dahin manuell oder richte schon Tag-Regeln ein.",
+      "p1": "CSV-Import zeigt künftig auf das Portfolio-Bargeldbuch, nicht auf eine eigene Liste",
+      "p2": "Importierte Zeilen kommen als getaggte Bewegungen an — deine Regeln greifen automatisch",
+      "p3": "Duplikaterkennung übernimmt der Auszugs-Import"
     }
   },
   "palette": {

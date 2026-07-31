@@ -8,6 +8,11 @@ import {
   assetIdentities,
   assets,
   dividends,
+  cashBudgets,
+  cashMovementTags,
+  cashRuleTags,
+  cashRules,
+  cashTags,
   expenseBudgets,
   expenseCategories,
   expenseRules,
@@ -63,6 +68,14 @@ export interface ParanoidRehydrationSourceRepository {
   restoreExpenseTransactions(rows: readonly EntityOf<'expenseTransaction'>[]): Promise<void>;
   restoreExpenseRules(rows: readonly EntityOf<'expenseRule'>[]): Promise<void>;
   restoreExpenseBudgets(rows: readonly EntityOf<'expenseBudget'>[]): Promise<void>;
+  // V5 cash fusion: the classification layer on the portfolio cash ledger. It
+  // has writers as of phase 2, so a paranoid disable that could not restore it
+  // would silently drop every tag, budget and rule the user has.
+  restoreCashTags(rows: readonly EntityOf<'cashTag'>[]): Promise<void>;
+  restoreCashRules(rows: readonly EntityOf<'cashRule'>[]): Promise<void>;
+  restoreCashRuleTags(rows: readonly EntityOf<'cashRuleTag'>[]): Promise<void>;
+  restoreCashBudgets(rows: readonly EntityOf<'cashBudget'>[]): Promise<void>;
+  restoreCashMovementTags(rows: readonly EntityOf<'cashMovementTag'>[]): Promise<void>;
 }
 
 const REHYDRATION_INSERT_CHUNK_SIZE = 1_000;
@@ -423,6 +436,90 @@ export function createParanoidRehydrationSourceRepository(
             currency: entity.data.currency,
             createdAt: new Date(entity.data.createdAt),
             updatedAt: new Date(entity.data.updatedAt),
+          })),
+        );
+      });
+    },
+
+    // ── V5 cash fusion ───────────────────────────────────────────────────────
+    // Ordering is the caller's job and it matters: tags before the rules,
+    // budgets and movement links that reference them, and movement links after
+    // the movements themselves. `validateGraph` proves the references first, so
+    // these are plain inserts with no conflict handling — a duplicate here means
+    // a malformed vault, which must fail loudly rather than be absorbed.
+
+    async restoreCashTags(rows) {
+      await forEachChunk(rows, async (chunk) => {
+        await tx.insert(cashTags).values(
+          chunk.map((entity) => ({
+            id: entity.id,
+            userId: entity.data.userId,
+            name: entity.data.name,
+            color: entity.data.color,
+            system: entity.data.system,
+            systemKey: entity.data.systemKey,
+            createdAt: new Date(entity.data.createdAt),
+            updatedAt: new Date(entity.data.updatedAt),
+          })),
+        );
+      });
+    },
+
+    async restoreCashRules(rows) {
+      await forEachChunk(rows, async (chunk) => {
+        await tx.insert(cashRules).values(
+          chunk.map((entity) => ({
+            id: entity.id,
+            userId: entity.data.userId,
+            matchType: entity.data.matchType,
+            pattern: entity.data.pattern,
+            priority: entity.data.priority,
+            enabled: entity.data.enabled,
+            createdAt: new Date(entity.data.createdAt),
+            updatedAt: new Date(entity.data.updatedAt),
+          })),
+        );
+      });
+    },
+
+    async restoreCashRuleTags(rows) {
+      await forEachChunk(rows, async (chunk) => {
+        await tx.insert(cashRuleTags).values(
+          chunk.map((entity) => ({
+            id: entity.id,
+            ruleId: entity.data.ruleId,
+            tagId: entity.data.tagId,
+            createdAt: new Date(entity.data.createdAt),
+          })),
+        );
+      });
+    },
+
+    async restoreCashBudgets(rows) {
+      await forEachChunk(rows, async (chunk) => {
+        await tx.insert(cashBudgets).values(
+          chunk.map((entity) => ({
+            id: entity.id,
+            portfolioId: entity.data.portfolioId,
+            tagId: entity.data.tagId,
+            periodKey: entity.data.periodKey,
+            amount: entity.data.amount,
+            currency: entity.data.currency,
+            createdAt: new Date(entity.data.createdAt),
+            updatedAt: new Date(entity.data.updatedAt),
+          })),
+        );
+      });
+    },
+
+    async restoreCashMovementTags(rows) {
+      await forEachChunk(rows, async (chunk) => {
+        await tx.insert(cashMovementTags).values(
+          chunk.map((entity) => ({
+            id: entity.id,
+            movementId: entity.data.movementId,
+            tagId: entity.data.tagId,
+            createdAt: new Date(entity.data.createdAt),
           })),
         );
       });

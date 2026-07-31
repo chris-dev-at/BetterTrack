@@ -193,54 +193,31 @@ function MirrorGroupRow({
         const state = summary(channel);
         return (
           <td key={channel} className="text-center align-middle">
-            {/* Origin switch look, unchanged semantics: the real input keeps
-                role/aria-checked (incl. the tri-state "mixed") and its label. */}
-            <label
-              className={cx(
-                'relative inline-flex shrink-0 cursor-pointer items-center',
-                gridDisabled && 'cursor-not-allowed',
-              )}
-              style={{
-                width: 34,
-                height: 20,
-                borderRadius: 999,
-                border: `1px solid ${state === 'on' ? 'var(--bt-gold)' : 'var(--bt-border-strong)'}`,
-                background: state === 'on' ? 'var(--bt-gold)' : 'var(--bt-surface-soft)',
-                opacity: gridDisabled ? 0.5 : undefined,
-                transition: 'background var(--bt-t-fast), border-color var(--bt-t-fast)',
+            {/* THE SAME CONTROL AS EVERY CELL BELOW IT (owner, 2026-07-31).
+                This used to be a bespoke sliding pill while every per-type cell
+                in the same table was a checkbox — two vocabularies for one
+                question, with nothing to tell a reader why. It is a master over
+                a column, which is a real difference, but that is what
+                `indeterminate` is FOR: "some of the things under me are on".
+                The tri-state is preserved exactly; only the shape changed. */}
+            <input
+              aria-checked={state === 'mixed' ? 'mixed' : state === 'on'}
+              aria-label={t('settings.notifications.mirrorchain.cellAria', {
+                channel: chLabels[channel],
+              })}
+              checked={state === 'on'}
+              className={cx('h-4 w-4', gridDisabled && 'cursor-not-allowed')}
+              disabled={gridDisabled}
+              onChange={(event) => onToggleAll(channel, event.target.checked)}
+              ref={(node) => {
+                // Only the DOM property can express "mixed" — there is no
+                // attribute for it, so React cannot set it declaratively.
+                if (node) node.indeterminate = state === 'mixed';
               }}
-            >
-              <input
-                type="checkbox"
-                role="switch"
-                checked={state === 'on'}
-                aria-checked={state === 'mixed' ? 'mixed' : state === 'on'}
-                aria-label={t('settings.notifications.mirrorchain.cellAria', {
-                  channel: chLabels[channel],
-                })}
-                disabled={gridDisabled}
-                onChange={(event) => onToggleAll(channel, event.target.checked)}
-                className="sr-only"
-              />
-              <span
-                aria-hidden="true"
-                className="inline-block"
-                style={{
-                  width: 14,
-                  height: 14,
-                  borderRadius: '50%',
-                  marginLeft: 2,
-                  transform: state === 'on' ? 'translateX(14px)' : undefined,
-                  background:
-                    state === 'on'
-                      ? 'var(--bt-gold-ink)'
-                      : state === 'mixed'
-                        ? 'var(--bt-gold)'
-                        : 'var(--bt-muted)',
-                  transition: 'transform var(--bt-t-fast), background var(--bt-t-fast)',
-                }}
-              />
-            </label>
+              role="switch"
+              style={{ accentColor: 'var(--bt-gold)', opacity: gridDisabled ? 0.5 : undefined }}
+              type="checkbox"
+            />
           </td>
         );
       })}

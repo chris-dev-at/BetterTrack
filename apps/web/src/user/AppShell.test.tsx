@@ -168,7 +168,7 @@ test('the rail tree is the vital subset of the full in-page strip', async () => 
 
   // The rail curates; the strip carries everything. Same source table, so the
   // subset relation is structural, not a coincidence.
-  expect(railChildren).toEqual(['Overview', 'Activity', 'Cash flow', 'Settings']);
+  expect(railChildren).toEqual(['Overview', 'Transactions', 'Cash', 'Settings']);
   for (const child of railChildren) expect(stripChildren).toContain(child);
   // Custom assets moved to the Assets section (they are user-scoped), so the
   // portfolio strip carries the portfolio-only extras.
@@ -315,9 +315,9 @@ test('portfolio rail children keep the active portfolio scope', async () => {
 
   const rail = await findRail();
   // `?portfolio=<id>` rides along every child of the section (#322).
-  expect(within(rail).getByRole('link', { name: 'Cash flow' })).toHaveAttribute(
+  expect(within(rail).getByRole('link', { name: 'Cash' })).toHaveAttribute(
     'href',
-    '/portfolio/cash-flow?portfolio=p-7',
+    '/portfolio/cash?portfolio=p-7',
   );
   expect(within(rail).getByRole('link', { name: 'Settings' })).toHaveAttribute(
     'href',
@@ -325,7 +325,7 @@ test('portfolio rail children keep the active portfolio scope', async () => {
   );
 
   // The open child is the current page; its group row is not also "current".
-  expect(within(rail).getByRole('link', { name: 'Activity' })).toHaveAttribute(
+  expect(within(rail).getByRole('link', { name: 'Transactions' })).toHaveAttribute(
     'aria-current',
     'page',
   );
@@ -576,7 +576,7 @@ test('the portfolio workspace shows the switcher and its local tabs', async () =
   const tabs = screen.getByRole('navigation', { name: 'Portfolio workspace' });
   // Parked tabs append the "Planned" dot to their accessible name — anchor the
   // match so "Plan" does not also match every parked tab's name.
-  for (const tab of ['Overview', 'Activity', 'Cash flow', 'Analysis', 'Tax', 'Plan', 'Files']) {
+  for (const tab of ['Overview', 'Transactions', 'Cash', 'Analysis', 'Tax', 'Plan', 'Files']) {
     expect(
       within(tabs).getByRole('link', { name: new RegExp(`^${tab}( Planned)?$`) }),
     ).toBeInTheDocument();
@@ -597,6 +597,44 @@ test('`/workboard` redirects to the Workbench', async () => {
 });
 
 // ─── Control Center overlay: the retired /settings/* shell (R2) ──────────────
+
+/**
+ * The popup opens ON TOP of the page, which stays mounted behind it. It used to
+ * be a route element, so the canvas behind the scrim went blank (owner: "the
+ * control center should open on top of the current thing you are on and not make
+ * the content a blank page").
+ */
+test('the Control Center opens over the page you were on, which stays on screen', async () => {
+  const user = userEvent.setup();
+  renderAt('/assets/search');
+
+  const tabs = await screen.findByRole('navigation', { name: 'Assets' });
+  expect(tabs).toBeInTheDocument();
+
+  const utilities = await screen.findByRole('navigation', { name: 'Utilities' });
+  await user.click(within(utilities).getByRole('link', { name: 'Control Center' }));
+
+  const dialog = await screen.findByRole('dialog', { name: 'Control Center' });
+  expect(dialog).toBeInTheDocument();
+  // The Assets workspace is still there — same element, so its state (and the
+  // user's scroll position) survived opening the popup.
+  expect(screen.getByRole('navigation', { name: 'Assets' })).toBe(tabs);
+  // …and it still knows which page it is on, because the tree renders against
+  // the background location rather than the popup's URL.
+  expect(within(tabs).getByRole('link', { name: /Search/ })).toHaveAttribute(
+    'aria-current',
+    'page',
+  );
+});
+
+test('a cold deep link opens the popup over Home rather than nothing', async () => {
+  renderAt('/control/sessions');
+
+  const dialog = await screen.findByRole('dialog', { name: 'Control Center' });
+  expect(within(dialog).getByRole('link', { name: 'Sessions', current: 'page' })).toBeVisible();
+  const rail = await findRail();
+  expect(within(rail).getByRole('link', { name: 'Home' })).toHaveAttribute('aria-current', 'page');
+});
 
 /**
  * Every legacy `/settings/*` path now redirects onto its Control Center panel.

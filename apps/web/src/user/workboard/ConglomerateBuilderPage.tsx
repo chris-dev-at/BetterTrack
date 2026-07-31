@@ -424,7 +424,9 @@ function Builder({ initial }: { initial: BuilderInitial | null }) {
 // ─── Frame + header ──────────────────────────────────────────────────────────
 
 function BuilderFrame({ children }: { children: React.ReactNode }) {
-  return <div className="flex min-h-screen flex-col bg-[#0b0e14]">{children}</div>;
+  return (
+    <div className="flex min-h-[calc(100*var(--bt-vh))] flex-col bg-[#0b0e14]">{children}</div>
+  );
 }
 
 function BuilderHeader({

@@ -170,6 +170,8 @@ export function PerformanceChartWidget({
           onRangeChange={(next) => onSettingsChange({ range: next })}
           percentValues={showingReturn}
           range={range}
+          // The widget's own header owns the left of this row (owner).
+          rangeAlign="end"
           ranges={PERFORMANCE_RANGES}
           series={combining ? combined.series : single}
           valueCurrency={combining ? combined.baseCurrency : historyQuery.data?.baseCurrency}

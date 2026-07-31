@@ -125,6 +125,8 @@ export function AssetSpotlightWidget({ settings, onSettingsChange, size }: Widge
           mode="area"
           onRangeChange={(next) => onSettingsChange({ range: next })}
           range={range}
+          // The widget's own header owns the left of this row (owner).
+          rangeAlign="end"
           ranges={SPOTLIGHT_RANGES}
           series={series}
           // History owns the plotted points and now carries their native

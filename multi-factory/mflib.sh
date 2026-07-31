@@ -289,6 +289,105 @@ MF_NODE_BIN=${MF_NODE_BIN:-node}
 MF_CCR_BIN=${MF_CCR_BIN:-ccr}
 MF_CLAUDEX_REDACTOR_SCRIPT=${MF_CLAUDEX_REDACTOR_SCRIPT:-/work/mf/claudex-redact.mjs}
 MF_REDACTOR_NODE_BIN=${MF_REDACTOR_NODE_BIN:-node}
+MF_CLAUDE_TOKEN_FILE=${MF_CLAUDE_TOKEN_FILE:-/home/factory/.claude-auth/oauth-token}
+MF_CLAUDE_PROFILE_FILE=${MF_CLAUDE_PROFILE_FILE:-/home/factory/.claude-auth/profile.json}
+MF_CLAUDE_PROFILE_REQUIRED=${MF_CLAUDE_PROFILE_REQUIRED:-0}
+
+# A named Claude account is materialized as one service-local, read-only token
+# file by autorun/control. Read it once per role run so an assignment change
+# affects the next role without changing an in-flight process. Production
+# services require the marker; only direct legacy harnesses may omit it and
+# inherit "Factory .env" during migration.
+mf_claude_profile_token(){
+  local token
+  [ -r "$MF_CLAUDE_TOKEN_FILE" ] || return 1
+  IFS= read -r token <"$MF_CLAUDE_TOKEN_FILE" || true
+  [ -n "$token" ] || return 1
+  case "$token" in *$'\r'*|*$'\n'*) return 1;; esac
+  printf '%s' "$token"
+}
+
+mf_claude_profile_label(){
+  [ -r "$MF_CLAUDE_PROFILE_FILE" ] || return 1
+  jq -r '(.name // .id // empty) | select(type=="string")' \
+    "$MF_CLAUDE_PROFILE_FILE" 2>/dev/null
+}
+
+mf_claude_materialization_state(){
+  if [ ! -e "$MF_CLAUDE_PROFILE_FILE" ]; then
+    if [ "$MF_CLAUDE_PROFILE_REQUIRED" = 1 ]; then
+      printf '%s' unavailable
+    else
+      printf '%s' legacy
+    fi
+    return
+  fi
+  if [ ! -r "$MF_CLAUDE_PROFILE_FILE" ]; then
+    printf '%s' unavailable
+    return
+  fi
+  jq -er '
+    if .source == "factory-env" and ((.status // "ready") == "ready") then "factory-env"
+    elif .source == "profile" and ((.status // "ready") == "ready") then "profile"
+    else "unavailable"
+    end
+  ' "$MF_CLAUDE_PROFILE_FILE" 2>/dev/null || printf '%s' unavailable
+}
+
+# Claude Code's subprocess env scrub is a sandbox, and on Linux that sandbox is
+# bubblewrap. The factory image ships no bwrap, so demanding the isolation makes
+# the CLI abort at startup (rc=1) before it ever reaches the API — which cc()
+# reads as an ambiguous failure, then as exhausted capacity, parking every Claude
+# lane in a 30-minute retry loop that no account swap can clear. Ask for the
+# isolation only where it can actually be delivered, and always pin the flag:
+# leaving it unset would hand the decision to a future CLI default. macOS scrubs
+# without bwrap; elsewhere the probe is functional, not a PATH lookup, because a
+# bwrap that cannot open a namespace fails exactly the same way. MF_CLAUDE_ENV_SCRUB=0|1
+# forces the answer.
+mf_claude_env_scrub(){
+  case "${MF_CLAUDE_ENV_SCRUB:-}" in 0|1) printf '%s' "$MF_CLAUDE_ENV_SCRUB"; return;; esac
+  case "$(uname -s 2>/dev/null)" in Darwin) printf 1; return;; esac
+  if bwrap --ro-bind / / --dev /dev true >/dev/null 2>&1; then printf 1; else printf 0; fi
+}
+
+mf_with_claude_profile(){ # remaining args: command/function and its arguments
+  local token label selection scrub
+  selection=$(mf_claude_materialization_state)
+  if [ "$selection" = unavailable ]; then
+    log "  ↳ Claude account unavailable — refusing legacy credential fallback"
+    return 1
+  fi
+  if [ "$selection" = profile ]; then
+    if ! token=$(mf_claude_profile_token); then
+      log "  ↳ Claude account unavailable — refusing legacy credential fallback"
+      return 1
+    fi
+    label=$(mf_claude_profile_label || true)
+    [ -n "$label" ] && log "  ↳ Claude account: $label"
+    scrub=$(mf_claude_env_scrub)
+    (
+      # Claude subscription OAuth is below API/gateway/cloud credentials in
+      # the CLI precedence order. Scrub those only for a named profile or the
+      # inherited factory environment could silently defeat the selection.
+      unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN
+      unset ANTHROPIC_BASE_URL ANTHROPIC_API_BASE_URL
+      unset ANTHROPIC_CUSTOM_HEADERS
+      unset ANTHROPIC_MODEL ANTHROPIC_SMALL_FAST_MODEL
+      unset CLAUDE_AGENT_API_BASE_URL CLAUDE_CODE_ENABLE_GATEWAY_MODEL_DISCOVERY
+      unset CLAUDE_CODE_OAUTH_REFRESH_TOKEN CLAUDE_CODE_OAUTH_SCOPES
+      unset CLAUDE_CODE_USE_BEDROCK CLAUDE_CODE_USE_FOUNDRY CLAUDE_CODE_USE_VERTEX
+      export CLAUDE_CODE_OAUTH_TOKEN="$token"
+      export CLAUDE_CODE_SUBPROCESS_ENV_SCRUB="$scrub"
+      "$@"
+    )
+  else
+    "$@"
+  fi
+}
+
+mf_wait_for_claude_capacity(){ # $1=reason
+  mf_with_claude_profile wait_for_capacity "$1"
+}
 
 # Run a provider command, mirror its combined stream to the role log, retain the
 # full stream for classification, and return the provider command's exit code.
@@ -866,7 +965,10 @@ $(mf_sol_composer_instructions)"
   fi
   log "$role @ $route → $provider/$model${effort:+ ($effort)}"
   case "$provider" in
-    claude)  CC_ROLE=$role CC_EFFORT=$effort cc "$model" "$prompt";;
+    claude)
+      CC_ROLE="$role" CC_EFFORT="$effort" \
+        mf_with_claude_profile cc "$model" "$prompt"
+      ;;
     claudex)
       if [ "$sol_composer" -eq 1 ]; then
         MF_ROLE_TIMEOUT=$sol_timeout CC_MAX_TURNS=$sol_max_turns \

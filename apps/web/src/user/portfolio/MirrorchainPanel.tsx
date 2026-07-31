@@ -279,7 +279,13 @@ export function MemberSheet({ chainId, onClose }: { chainId: string; onClose: ()
           </div>
         </div>
 
-        <ul className="divide-y divide-neutral-800 rounded-md border border-neutral-800">
+        {/* Named, like every other list in this sheet: three unlabelled lists in
+            one dialog are indistinguishable to a screen reader, and the member
+            rows and the activity feed both mention the same usernames. */}
+        <ul
+          aria-label={t('mirrorchain.membersListAria')}
+          className="divide-y divide-neutral-800 rounded-md border border-neutral-800"
+        >
           {data.members.map((member) => (
             <MemberRow
               key={member.userId ?? member.username}
@@ -434,7 +440,10 @@ function ActivitySection({
       ) : query.data.entries.length === 0 ? (
         <p className="text-sm text-neutral-400">{t('mirrorchain.activity.empty')}</p>
       ) : (
-        <ul className="divide-y divide-neutral-800 rounded-md border border-neutral-800">
+        <ul
+          aria-label={t('mirrorchain.activityListAria')}
+          className="divide-y divide-neutral-800 rounded-md border border-neutral-800"
+        >
           {query.data.entries.slice(0, ACTIVITY_LIMIT).map((entry) => (
             <li
               key={entry.seq}
@@ -512,7 +521,10 @@ export function InviteDialog({
         ) : friends.length === 0 ? (
           <p className="text-sm text-neutral-400">{t('mirrorchain.invite.empty')}</p>
         ) : (
-          <ul className="max-h-72 divide-y divide-neutral-800 overflow-y-auto rounded-md border border-neutral-800">
+          <ul
+            aria-label={t('mirrorchain.inviteListAria')}
+            className="max-h-72 divide-y divide-neutral-800 overflow-y-auto rounded-md border border-neutral-800"
+          >
             {friends.map((friendship) => (
               <li
                 key={friendship.user.id}
@@ -719,12 +731,17 @@ function ConfirmActionDialog({
     },
     onSuccess: onDone,
   });
-  const copyVars = {
+  // Four of the six titles carry `{{username}}` — "Remove {{username}}?",
+  // "Make {{username}} the owner?", both manage-rights ones — so the title needs
+  // the SAME parameters the body does. Without them the dialog header rendered
+  // the placeholder literally, which is what a user actually read before asking
+  // to delete somebody from their group portfolio.
+  const params = {
     chain: chainName,
     username: 'target' in action ? action.target.username : '',
   };
-  const title = t(`mirrorchain.confirm.${action.kind}.title`, copyVars);
-  const body = t(`mirrorchain.confirm.${action.kind}.body`, copyVars);
+  const title = t(`mirrorchain.confirm.${action.kind}.title`, params);
+  const body = t(`mirrorchain.confirm.${action.kind}.body`, params);
   const confirmLabel = t(`mirrorchain.confirm.${action.kind}.confirm`);
   const danger = action.kind === 'dissolve' || action.kind === 'kick' || action.kind === 'leave';
   return (

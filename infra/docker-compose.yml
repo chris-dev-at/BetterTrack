@@ -78,6 +78,10 @@ x-api-worker-environment: &api-worker-environment
   REALTIME_ENABLED: '${REALTIME_ENABLED:-}'
   RATE_LIMIT_BURST_WINDOW_SEC: '${RATE_LIMIT_BURST_WINDOW_SEC:-10}'
   RATE_LIMIT_BURST_LIMIT: '${RATE_LIMIT_BURST_LIMIT:-60}'
+  # Per-IP login limiter (§16 2026-07-30). Defaults mirror the schema's
+  # production values; the e2e raise lives only in playwright.config.ts.
+  RATE_LIMIT_LOGIN_IP_WINDOW_SEC: '${RATE_LIMIT_LOGIN_IP_WINDOW_SEC:-60}'
+  RATE_LIMIT_LOGIN_IP_LIMIT: '${RATE_LIMIT_LOGIN_IP_LIMIT:-25}'
 
   # Optional authentication, notification, and push integrations.
   BT_GOOGLE_CLIENT_ID: '${BT_GOOGLE_CLIENT_ID:-}'

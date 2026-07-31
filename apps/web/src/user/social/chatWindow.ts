@@ -16,11 +16,24 @@ export const CHAT_WINDOW_PATH = '/chat-window';
 export const CHAT_WINDOW_NAME = 'bettertrack-chat';
 
 /**
- * Sized for a second-screen column. `noopener` is deliberately NOT passed: it
- * makes `window.open` return null, which is exactly the signal used to detect a
- * blocked popup.
+ * Sized for a second-screen column, as a share of the screen it opens on rather
+ * than a fixed 440 × 760 (owner: the chat "shouldnt be too small nor to big no
+ * matter what device" — that box is a comfortable column on a laptop and a
+ * postage stamp on a 1440p monitor). Clamped at both ends so it stays a chat
+ * column: never narrower than a message bubble needs, never a second full
+ * window. `noopener` is deliberately NOT passed: it makes `window.open` return
+ * null, which is exactly the signal used to detect a blocked popup.
  */
-export const CHAT_WINDOW_FEATURES = 'popup=yes,width=440,height=760';
+export function chatWindowFeatures(screen?: { availWidth: number; availHeight: number }): string {
+  const available = screen ?? globalThis.screen;
+  const width = clamp(Math.round((available?.availWidth ?? 1440) * 0.26), 420, 620);
+  const height = clamp(Math.round((available?.availHeight ?? 900) * 0.82), 620, 1040);
+  return `popup=yes,width=${width},height=${height}`;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
 
 /** The pop-out URL for a thread, or the conversation list when nothing is open. */
 export function chatWindowPath(target: ChatTarget | null): string {

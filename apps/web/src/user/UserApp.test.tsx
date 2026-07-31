@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { beforeEach, expect, test, vi } from 'vitest';
@@ -389,6 +389,12 @@ test('logout then login as a different user shows no stale account data (#253)',
   await user.type(screen.getByLabelText('Email or username'), 'bob');
   await user.type(screen.getByLabelText('Password'), 'another correct horse');
   await user.click(screen.getByRole('button', { name: 'Sign in' }));
+
+  // Signing out closed the Control Center with the session that opened it, so
+  // the identity has to be asked for again — which is the point: the second
+  // read must come from bob's account, not from jane's cached `['auth','me']`.
+  const utilities = await screen.findByRole('navigation', { name: 'Utilities' });
+  await user.click(within(utilities).getByRole('link', { name: 'Control Center' }));
 
   expect(await screen.findByText('bob@bettertrack.test', {}, SIGNED_IN_RENDER)).toBeInTheDocument();
   expect(screen.queryByText('jane@bettertrack.test')).not.toBeInTheDocument();

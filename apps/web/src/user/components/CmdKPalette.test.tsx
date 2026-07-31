@@ -36,7 +36,7 @@ function renderPalette(props: { isOpen: boolean; onClose?: () => void }) {
           <Route path="/" element={<CmdKPalette isOpen={props.isOpen} onClose={onClose} />} />
           <Route path="/assets/:id" element={<div>Asset detail page</div>} />
           <Route path="/portfolio/activity" element={<div>Activity page</div>} />
-          <Route path="/portfolio/cash-flow" element={<div>Cash flow page</div>} />
+          <Route path="/portfolio/cash" element={<div>Cash page</div>} />
         </Routes>
       </MemoryRouter>
     </QueryClientProvider>,
@@ -220,7 +220,7 @@ describe('default state (empty query)', () => {
     // The registry's `suggested` ranks, in rank order — not registry order.
     expect(rowLabels().length).toBe(6);
     expect(rowLabels()[0]).toContain('Buy or sell');
-    expect(rowLabels().join('|')).toContain('Cash flow');
+    expect(rowLabels().join('|')).toContain('Cash');
     expect(rowLabels().join('|')).toContain('Control Center');
   });
 
@@ -288,7 +288,7 @@ describe('with a query', () => {
     await user.type(input(), 'cash');
 
     // Commands are already there while the asset section only says it is busy.
-    expect(await screen.findByText('Cash flow')).toBeInTheDocument();
+    expect(await screen.findByText('Cash')).toBeInTheDocument();
     expect(screen.getByText('Searching assets…')).toBeInTheDocument();
     expect(screen.queryByText('NVDA')).not.toBeInTheDocument();
 

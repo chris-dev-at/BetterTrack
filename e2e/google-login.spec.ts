@@ -83,9 +83,13 @@ test('google identity block lives under Settings → Connections and is gone fro
       timeout: 20_000,
     });
     await expect(page.getByRole('link', { name: 'Connect Google' })).toBeVisible();
-    // Drive is a paranoid-vault data-home and stays folded away for this normal
-    // plaintext account; Connections must not make an unavailable integration
-    // look configurable.
+    // Drive is the paranoid VAULT's storage medium — `DriveVaultSection`
+    // returns null unless the account's `privacyMode` is 'paranoid', correctly,
+    // since Drive-as-a-vault-medium is meaningless for a normal account. So for
+    // this spec's normal user the section must stay absent: Connections must
+    // not make an unavailable integration look configurable. Covering its
+    // presence end-to-end means enabling paranoid mode, which is its own arc
+    // (§13.5 PD6) and not what a Google-identity spec is for.
     await expect(page.getByRole('heading', { name: 'Google Drive app data' })).toHaveCount(0);
 
     // The old home no longer shows it (only relocated, never duplicated). The

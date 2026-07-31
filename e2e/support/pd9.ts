@@ -237,6 +237,21 @@ export interface Pd9Harness {
     emitted: DispatchableEvent[];
     fireRows: number;
   }>;
+  /**
+   * Seed the LEGACY expense island the way a pre-fusion account still carries
+   * it: one Groceries budget and one current-period transaction, written
+   * through the real repositories. The island's HTTP writes are retired
+   * (410 EXPENSE_AREA_RETIRED — V5 cash fusion), but the rows themselves are
+   * exactly what PD9 must prove the vault carries through enable → purge →
+   * disable → restore, so the fixture bypasses HTTP the same way this harness
+   * drives every other queue-/worker-only path: real repositories, the same
+   * Playwright database, no product change.
+   */
+  seedLegacyExpenseFixture(input: {
+    email: string;
+    bookedOn: string;
+    description: string;
+  }): Promise<void>;
   dispose(): Promise<void>;
 }
 
@@ -832,6 +847,46 @@ export function createPd9Harness(): Pd9Harness {
             .where(inArray(schema.expenseBudgetFires.budgetId, values)),
       );
       return { emitted, fireRows };
+    },
+
+    async seedLegacyExpenseFixture({ email, bookedOn, description }) {
+      const userId = await userIdFor(email);
+      const categories = createExpenseCategoryRepository(db);
+      const groceries = (await categories.listForOwner(userId)).find(
+        (category) => category.name === 'Groceries',
+      );
+      if (!groceries) {
+        throw new Error('PD9 expected the default Groceries category to exist.');
+      }
+      await createExpenseBudgetRepository(db).create(userId, {
+        categoryId: groceries.id,
+        amount: 200,
+        currency: 'EUR',
+      });
+      await createExpenseTransactionRepository(db).create(userId, {
+        categoryId: groceries.id,
+        direction: 'expense',
+        amount: 300,
+        currency: 'EUR',
+        bookedOn,
+        description,
+      });
+      // The retired HTTP write path evaluated budgets as a side effect, and
+      // the €300 spend against the €200 target booked the current period's
+      // fire marker — the purge-only row the PD9 counts assert on. Run the
+      // REAL evaluation so the repository seeding carries the same state.
+      const service = createExpenseBudgetService({
+        categories,
+        transactions: createExpenseTransactionRepository(db),
+        budgets: createExpenseBudgetRepository(db),
+        notify: {
+          async emit() {
+            return true;
+          },
+        },
+        logger: silentLogger,
+      });
+      await service.evaluate(userId);
     },
 
     async dispose() {

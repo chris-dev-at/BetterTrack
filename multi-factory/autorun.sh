@@ -51,6 +51,9 @@ if [ "$WORKERS" -gt 2 ]; then
       MF_DRY_RUN: \${MF_DRY_RUN:-0}
       MF_MODELS_FILE: \${MF_MODELS_FILE:-/work/mfstate/control/models.json}
       CCR_HOME: /home/factory/.claude-code-router
+      MF_CLAUDE_TOKEN_FILE: /home/factory/.claude-auth/oauth-token
+      MF_CLAUDE_PROFILE_FILE: /home/factory/.claude-auth/profile.json
+      MF_CLAUDE_PROFILE_REQUIRED: '1'
       WORKER_ID: '$w'
     volumes:
       - mf-w$w-work:/work/state
@@ -69,6 +72,7 @@ if [ "$WORKERS" -gt 2 ]; then
       - ../factory/prompts:/work/state/prompts:ro
       - ./prompts:/work/state/mf-prompts:ro
       - ../factory/usage:/work/usage
+      - ./auth/worker-$w/claude:/home/factory/.claude-auth:ro
       - ./auth/worker-$w/codex:/home/factory/.codex
       - ./auth/worker-$w/ccr:/home/factory/.claude-code-router
       - ./auth/worker-$w/gemini:/home/factory/.gemini
@@ -129,9 +133,10 @@ sync_provider_auth(){
   local services="master" w c
   for w in $(seq 1 "$WORKERS"); do services="$services worker-$w"; done
   for c in $services; do
-    mkdir -p "auth/$c/codex" "auth/$c/ccr" \
+    mkdir -p "auth/$c/claude" "auth/$c/codex" "auth/$c/ccr" \
       "auth/$c/gemini/antigravity-cli" "auth/$c/gemini/config"
-    chmod 700 "auth/$c/codex" "auth/$c/ccr" "auth/$c/gemini" 2>/dev/null || true
+    chmod 700 "auth/$c/claude" "auth/$c/codex" "auth/$c/ccr" \
+      "auth/$c/gemini" 2>/dev/null || true
     # codex (ChatGPT subscription): auth.json is the credential; config.toml is
     # GENERATED for the container (trust the factory clone), never copied.
     sync_file "$HOME/.codex/auth.json" "auth/$c/codex/auth.json"
@@ -167,6 +172,14 @@ sync_provider_auth(){
   fi
 }
 
+# Named Claude setup-token profiles are stored separately from their
+# service-local materializations. The Node helper owns validation, atomic
+# writes, and permissions; autorun only asks it to resolve the configured
+# master/worker assignments before Compose mounts those directories.
+sync_claude_profiles(){
+  node control/claude-credential-sync.mjs "$WORKERS"
+}
+
 # One-time interactive Antigravity login INSIDE a container: agy writes its OAuth
 # token into the bind-mounted auth/master/gemini, which sync_provider_auth then
 # fans out to the workers. Owner runs this once; the token persists on the host.
@@ -191,6 +204,7 @@ prepare_state(){
   mkdir -p state/assignments state/status state/merge-queue state/control state/logs prompts
   rm -f state/STOP state/control/dry-done
   sync_provider_auth
+  sync_claude_profiles
   # Drop protocol files of workers beyond the configured count so the master
   # never assigns to a container that will not start.
   for f in state/assignments/worker-*.json state/status/worker-*.json state/status/worker-*.hb; do
@@ -234,7 +248,7 @@ cat <<'EOF'
 
 ✓ Multi-factory running: 1 master (composer → scheduler → merger) + workers.
 
-  Dashboard:  node multi-factory/control/server.mjs   →  http://127.0.0.1:8790
+  Dashboard:  node multi-factory/control/server.mjs   →  http://10.0.0.4:8790 (LAN)
   Watch:      ./multi-factory/autorun.sh --logs
   Stop:       ./multi-factory/autorun.sh --stop        (hard, resumable)
   Drain:      echo run-out    > multi-factory/state/control/mode   (finish ALL open issues, then idle)

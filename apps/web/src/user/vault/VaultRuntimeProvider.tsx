@@ -427,9 +427,16 @@ export function VaultRuntimeProvider({
   const cleanupAfterDisable = useCallback(async (): Promise<void> => {
     if (userId == null) return;
     const active = runtimeRef.current?.sync.state.active ?? null;
-    if (active != null && driveRef.current?.userId === userId) {
+    // Resolve the Drive home the same way the `drive` accessor does: an
+    // injected dependency first, the built ref second. Reading `driveRef`
+    // directly skipped the injected seam — the accessor never populates the
+    // ref when `dependencies.drive` exists — so the composed boundary double
+    // (PD9) saw no delete while production, which always builds the ref, did.
+    const driveHome =
+      dependencies?.drive ?? (driveRef.current?.userId === userId ? driveRef.current.home : null);
+    if (active != null && driveHome != null) {
       try {
-        const replicas = await driveRef.current.home.observeReplicas();
+        const replicas = await driveHome.observeReplicas();
         await replicas.deleteIfUnchanged(async (observations) =>
           observations.every(
             (observation) =>
@@ -446,7 +453,7 @@ export function VaultRuntimeProvider({
     }
     forgetKeyId(userId);
     await lock();
-  }, [core, lock, userId]);
+  }, [core, dependencies?.drive, lock, userId]);
 
   const downloadRecoveryKit = useCallback(
     () =>

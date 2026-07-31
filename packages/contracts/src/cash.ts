@@ -45,11 +45,19 @@ export type CashRuleMatchType = z.infer<typeof cashRuleMatchTypeSchema>;
  *
  * They cover the cash-movement kinds the ledger can post — `investment` (a
  * `buy`), `sale_proceeds` (a `sell_proceeds`), `dividend`, `tax` (both
- * `tax_withholding` and `tax_refund`), `transfer` (both legs, which cancel), and
- * plain `deposit` / `withdrawal` for external flows — plus two that no kind
- * produces yet but every bank statement does: `interest` and `fees`. Those two
- * are seeded so an imported bank-interest or account-fee row has a home from day
- * one instead of being back-filled into history later.
+ * `tax_withholding` and `tax_refund`), `transfer` (both legs, which cancel),
+ * `fees` (a `fee`, V5 §16 2026-07-30 — the kind that made this key a real
+ * mapping rather than a placeholder), and plain `deposit` / `withdrawal` for
+ * external flows — plus `interest`, which no kind produces yet but every bank
+ * statement does. It stays seeded so an imported bank-interest row has a home
+ * from day one instead of being back-filled into history later; owner decision
+ * 2026-07-30 deliberately DEFERRED reclassifying interest into its own kind.
+ *
+ * The kind → system-tag engine that assigns these lives in
+ * `apps/api/src/services/cash/cashAutoTag.ts`, stamped from the movement INSERT
+ * paths; a booked `fee` carries `fees` automatically (V5 §16 2026-07-30). The
+ * user's OWN rules run from the same seam and are previewable while typing
+ * (`POST /cash/rules/preview`).
  */
 export const CASH_SYSTEM_TAG_KEYS = [
   'investment',
@@ -92,6 +100,8 @@ export const CASH_TAG_NAME_MAX = 60;
 export const CASH_RULE_PATTERN_MAX = 200;
 /** How many tags one movement or one rule may carry — a label set, not a taxonomy. */
 export const CASH_TAGS_PER_ITEM_MAX = 20;
+/** Trailing-month window the trend endpoint will serve (same cap the expense trends had). */
+export const CASH_TREND_MONTHS_MAX = 24;
 
 /** A calendar month `YYYY-MM` — the budget period and the dashboard bucket. */
 export const cashMonthSchema = z
@@ -366,3 +376,129 @@ export type CashRuleResponse = z.infer<typeof cashRuleResponseSchema>;
 /** Route param for the single-rule endpoints. */
 export const cashRuleIdParamSchema = z.object({ ruleId: z.string().uuid() }).strict();
 export type CashRuleIdParam = z.infer<typeof cashRuleIdParamSchema>;
+
+/**
+ * `POST /cash/rules/apply` response — how many movements gained a tag.
+ *
+ * A MOVEMENT COUNT, NOT A LABEL COUNT: a movement that a three-tag rule matches
+ * is one movement, not three, because "23 movements tagged" is what a person
+ * pressing this means. It counts only what the run actually changed, so a
+ * second press right after the first honestly reports 0 — the operation is
+ * additive and idempotent, and saying "23" again would suggest work that did
+ * not happen.
+ */
+export const cashRuleApplyResponseSchema = z
+  .object({ movementsTagged: z.number().int().min(0) })
+  .strict();
+export type CashRuleApplyResponse = z.infer<typeof cashRuleApplyResponseSchema>;
+
+/**
+ * `POST /cash/rules/preview` — what the caller's rules WOULD tag this note as.
+ *
+ * Read-only, and it exists so the entry form can show the answer while you are
+ * still typing. The alternative was re-implementing the matcher client-side,
+ * which would have put "what a rule does" in two places — and the two would
+ * disagree the first time somebody wrote a regex, since matching runs through
+ * RE2 on the server precisely so a pathological pattern cannot stall anything.
+ *
+ * An empty note is a legal request answering `[]`, because a form with nothing
+ * typed yet is the normal state, not an error.
+ */
+export const cashRulePreviewRequestSchema = z.object({ note: z.string().max(1000) }).strict();
+export type CashRulePreviewRequest = z.infer<typeof cashRulePreviewRequestSchema>;
+
+export const cashRulePreviewResponseSchema = z.object({ tagIds: z.array(z.string()) }).strict();
+export type CashRulePreviewResponse = z.infer<typeof cashRulePreviewResponseSchema>;
+
+// --- Summary + trends --------------------------------------------------------
+
+/**
+ * MULTI-TAG TOTALS DO NOT SUM. This is the one place where flat multi-tags change
+ * a number's meaning versus the single-category world they replace, so it is
+ * stated in the contract rather than left for a reader to discover.
+ *
+ * A movement carrying both `Food` and `Groceries` contributes its full magnitude
+ * to BOTH tag rows, because "how much did I spend on Food" must not depend on
+ * what else that row was labelled. So `sum(tags[].outflow)` is ≥ `totalOutflow`
+ * and the two are equal only when no row carries two tags. `totalOutflow` /
+ * `totalInflow` are the authoritative portfolio figures, computed once from the
+ * movements themselves; the per-tag rows are a breakdown, never an addend.
+ *
+ * `tagId: null` is the untagged bucket — the "uncategorized" state a NULL
+ * category used to mean. It is the one row that IS disjoint from every other.
+ */
+export const cashTagSummarySchema = z
+  .object({
+    /** `null` = the untagged bucket; its `name`/`color` are null and the UI labels it. */
+    tagId: z.string().uuid().nullable(),
+    name: z.string().nullable(),
+    color: z.string().nullable(),
+    /** Whether this row is an app-owned tag (false for the untagged bucket). */
+    system: z.boolean(),
+    /** Magnitude (positive) of the period's outflows carrying this tag. */
+    outflow: z.number(),
+    /** Magnitude (positive) of the period's inflows carrying this tag. */
+    inflow: z.number(),
+    /** How many of the period's movements carry this tag. */
+    movements: z.number().int(),
+  })
+  .strict();
+export type CashTagSummary = z.infer<typeof cashTagSummarySchema>;
+
+/** `GET /cash/summary?portfolioId=&month=` query — omitted month ⇒ this month. */
+export const cashSummaryQuerySchema = z
+  .object({
+    portfolioId: z.string().uuid(),
+    month: cashMonthSchema.optional(),
+  })
+  .strict();
+export type CashSummaryQuery = z.infer<typeof cashSummaryQuerySchema>;
+
+/**
+ * `GET /cash/summary` — one portfolio's month.
+ *
+ * `totalInflow` / `totalOutflow` are magnitudes over EVERY movement in the month
+ * (tagged or not), so `net === totalInflow - totalOutflow` is the portfolio's
+ * real cash delta for the month and reconciles to the ledger. See the note on
+ * {@link cashTagSummarySchema} for why the `tags` rows do not add up to them.
+ */
+export const cashMonthlySummaryResponseSchema = z
+  .object({
+    portfolioId: z.string().uuid(),
+    month: z.string(),
+    totalInflow: z.number(),
+    totalOutflow: z.number(),
+    /** `totalInflow - totalOutflow`. */
+    net: z.number(),
+    /** Per-tag breakdown, outflow-heaviest first; the untagged bucket last. */
+    tags: z.array(cashTagSummarySchema),
+  })
+  .strict();
+export type CashMonthlySummaryResponse = z.infer<typeof cashMonthlySummaryResponseSchema>;
+
+/** One month's inflow + outflow magnitude for the trend chart. */
+export const cashTrendPointSchema = z
+  .object({ month: z.string(), inflow: z.number(), outflow: z.number() })
+  .strict();
+export type CashTrendPoint = z.infer<typeof cashTrendPointSchema>;
+
+/**
+ * `GET /cash/trends?portfolioId=&months=` query. `portfolioId` is REQUIRED — the
+ * fused ledger has a portfolio dimension, so an aggregate over "all cash" would
+ * be a choice this endpoint should not make silently; a caller wanting several
+ * portfolios asks for each and sums client-side (which is what the Home widget
+ * does under the shared query keys).
+ */
+export const cashTrendQuerySchema = z
+  .object({
+    portfolioId: z.string().uuid(),
+    months: z.coerce.number().int().positive().max(CASH_TREND_MONTHS_MAX).optional(),
+  })
+  .strict();
+export type CashTrendQuery = z.infer<typeof cashTrendQuerySchema>;
+
+/** `GET /cash/trends` — oldest→newest, one point per month in the window (gaps as zeros). */
+export const cashTrendResponseSchema = z
+  .object({ portfolioId: z.string().uuid(), points: z.array(cashTrendPointSchema) })
+  .strict();
+export type CashTrendResponse = z.infer<typeof cashTrendResponseSchema>;

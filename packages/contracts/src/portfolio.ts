@@ -826,6 +826,10 @@ export type PortfolioHistoryResponse = z.infer<typeof portfolioHistoryResponseSc
  * flow). `dividend` / `tax_withholding` / `tax_refund` (V3-P4) are the tax
  * engine's postings — dividend income and its KESt/manual settlements — all
  * internal too, so performance reads net of taxes and inclusive of income.
+ * `fee` (V5, §16 2026-07-30) is a standing custody / account / platform fee: a
+ * cost of **holding**, so it is internal and DRAGS the return, unlike the
+ * `withdrawal` it previously had to be entered as (which is divided back out of
+ * the curve). Always negative.
  * Mirrors `domain/cashLedger.CASH_MOVEMENT_KINDS`.
  */
 export const cashMovementKindSchema = z.enum([
@@ -838,6 +842,7 @@ export const cashMovementKindSchema = z.enum([
   'dividend',
   'tax_withholding',
   'tax_refund',
+  'fee',
 ]);
 export type CashMovementKind = z.infer<typeof cashMovementKindSchema>;
 
@@ -1000,10 +1005,10 @@ export const cashMovementsQuerySchema = z
 export type CashMovementsQuery = z.infer<typeof cashMovementsQuerySchema>;
 
 /**
- * `POST /portfolios/:id/cash/deposit` and `.../withdraw` body — a positive EUR
- * **magnitude**; the service assigns the sign by kind. `executedAt` defaults to
- * now (server-side) when omitted. `sourceId` picks the cash source (V3-P3) and
- * defaults to the portfolio's Main source when omitted.
+ * `POST /portfolios/:id/cash/deposit`, `.../withdraw` and `.../fee` body — a
+ * positive EUR **magnitude**; the service assigns the sign by kind. `executedAt`
+ * defaults to now (server-side) when omitted. `sourceId` picks the cash source
+ * (V3-P3) and defaults to the portfolio's Main source when omitted.
  */
 export const cashEntryRequestSchema = z
   .object({
@@ -1016,8 +1021,8 @@ export const cashEntryRequestSchema = z
 export type CashEntryRequest = z.infer<typeof cashEntryRequestSchema>;
 
 /**
- * `POST /portfolios/:id/cash/deposit|withdraw` response — the new movement, the
- * affected source's balance, and the portfolio's rolled-up balance.
+ * `POST /portfolios/:id/cash/deposit|withdraw|fee` response — the new movement,
+ * the affected source's balance, and the portfolio's rolled-up balance.
  */
 export const cashMovementResponseSchema = z
   .object({

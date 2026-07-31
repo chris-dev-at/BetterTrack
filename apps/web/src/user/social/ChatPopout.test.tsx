@@ -35,7 +35,7 @@ import { listIdeas } from '../../lib/ideasApi';
 import { listPortfolios } from '../../lib/portfolioApi';
 import { ChatPage } from './ChatPage';
 import { ChatWindowPage } from './ChatWindowPage';
-import { CHAT_WINDOW_FEATURES, CHAT_WINDOW_NAME } from './chatWindow';
+import { CHAT_WINDOW_NAME, chatWindowFeatures } from './chatWindow';
 
 const CONVO = {
   id: 'c1',
@@ -130,7 +130,7 @@ describe('ChatPage — pop-out control', () => {
     renderAt('/people/chat');
     await user.click(await screen.findByRole('button', { name: 'Pop out' }));
 
-    expect(open).toHaveBeenCalledWith('/chat-window', CHAT_WINDOW_NAME, CHAT_WINDOW_FEATURES);
+    expect(open).toHaveBeenCalledWith('/chat-window', CHAT_WINDOW_NAME, chatWindowFeatures());
     // The page itself is untouched — popping out must not close or replace it.
     expect(screen.getByTestId('location')).toHaveTextContent('/people/chat');
     vi.unstubAllGlobals();
@@ -145,7 +145,7 @@ describe('ChatPage — pop-out control', () => {
     renderAt('/people/chat/u2');
     await user.click(await screen.findByRole('button', { name: 'Pop out' }));
 
-    expect(open).toHaveBeenCalledWith('/chat-window/u2', CHAT_WINDOW_NAME, CHAT_WINDOW_FEATURES);
+    expect(open).toHaveBeenCalledWith('/chat-window/u2', CHAT_WINDOW_NAME, chatWindowFeatures());
     vi.unstubAllGlobals();
   });
 
@@ -162,7 +162,7 @@ describe('ChatPage — pop-out control', () => {
     renderAt('/people/chat/c/c1');
     await user.click(await screen.findByRole('button', { name: 'Pop out' }));
 
-    expect(open).toHaveBeenCalledWith('/chat-window/c/c1', CHAT_WINDOW_NAME, CHAT_WINDOW_FEATURES);
+    expect(open).toHaveBeenCalledWith('/chat-window/c/c1', CHAT_WINDOW_NAME, chatWindowFeatures());
     vi.unstubAllGlobals();
   });
 

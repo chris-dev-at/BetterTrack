@@ -34,6 +34,8 @@ test('friend groups: a portfolio shared to a group is visible to members only', 
   // Owner creates a group and adds only `member` to it.
   await owner.page.goto('/people');
   await owner.page.getByLabel('New group name').fill('Inner Circle');
+  // Scoped to the page body: the Origin topbar's global "Create" menu carries the
+  // same accessible name, so an unscoped lookup is a strict-mode violation.
   await owner.page.getByRole('main').getByRole('button', { name: 'Create' }).click();
 
   // Expand the freshly-created group card, then add `member` from the candidates.

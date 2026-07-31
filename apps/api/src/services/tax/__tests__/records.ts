@@ -83,6 +83,7 @@ export function taxMovement(
     executedAt: new Date('2026-01-01T00:00:00.000Z'),
     note: null,
     source: 'manual',
+    originalCurrency: null,
     createdAt: new Date('2026-01-01T00:00:00.000Z'),
     ...over,
   };

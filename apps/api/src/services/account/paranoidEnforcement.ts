@@ -316,8 +316,20 @@ export const PARANOID_SERVICE_BINDINGS: readonly ParanoidServiceBinding[] = [
     'getYearReport',
   ]),
   serviceBinding('portfolioServer', 'tax', 'userIdField', ['planTransactionTaxes']),
+  // The Home board is UI configuration, but its widget settings carry portfolio
+  // ids, asset ids and the captured asset LABEL (a ticker). Storing that on the
+  // server for an account whose portfolio exists only in the client-encrypted
+  // vault is exactly the leak this mode exists to prevent, so a paranoid account
+  // keeps its board on the device instead of on the account.
+  serviceBinding('portfolioServer', 'homeLayout', 'userIdFirst', ['*']),
   serviceBinding('portfolioServer', 'expenses', 'userIdFirst', ['*']),
   serviceBinding('portfolioServer', 'expenseBudgets', 'userIdFirst', ['*']),
+  // V5 cash fusion: classification ON the portfolio cash ledger, so it dies with
+  // the same capability the ledger does. Auto-tagging itself needs no binding —
+  // it runs inside the movement INSERT (see `data/repositories/cashSystemTagStamp`),
+  // which the ledger's own capability already governs.
+  serviceBinding('portfolioServer', 'cashTags', 'userIdFirst', ['*']),
+  serviceBinding('portfolioServer', 'cashBudgets', 'userIdFirst', ['*']),
   serviceBinding('portfolioServer', 'aiFeatures', 'userIdFirst', ['insights']),
   serviceBinding('portfolioServer', 'snapshots', 'portfolioIdFirst', [
     'getSeries',
@@ -1007,11 +1019,22 @@ export const PARANOID_KILL_REGISTRY: readonly ParanoidKillRegistryEntry[] = [
       { prefix: '/expenses/summary' },
       { prefix: '/expenses/trends' },
       { prefix: '/expenses/budgets' },
+      // V5 cash fusion: classification ON the portfolio cash ledger, so it
+      // belongs to the same capability the ledger itself does. Enumerated by
+      // family (not a bare `/cash` prefix) so a later endpoint under it cannot
+      // fall through to an implicit allow.
+      { prefix: '/cash/tags' },
+      { prefix: '/cash/movements/' },
+      { prefix: '/cash/budgets' },
+      { prefix: '/cash/rules' },
+      { prefix: '/cash/summary' },
+      { prefix: '/cash/trends' },
       { exact: '/assets/portfolio/dividend-calendar' },
       { exact: '/assets/portfolio/dividend-projection' },
       { exact: '/assets/portfolio/news-digest' },
       { method: 'POST', exact: '/ai/insights' },
       { exact: '/settings/taxes' },
+      { exact: '/settings/home' },
     ],
     services: servicesFor('portfolioServer'),
     scopes: [],
@@ -1195,9 +1218,18 @@ export const PARANOID_KEPT_ROUTE_RULES: readonly ParanoidExemptRouteRule[] = [
         handler: 'requireUser',
         occurrence: 2,
       }),
+      // V5 cash fusion: the expense area's write-retirement gate (410 on any
+      // non-read verb) sits beside its `requireUser`, so `/expenses` carries a
+      // second opaque mount. It only ever refuses requests.
+      productionOpaqueRoute({
+        mountedPath: '/api/v1/expenses',
+        normalizedPath: '/expenses',
+        handler: 'refuseRetiredExpenseWrite',
+      }),
       ...[
         '/backtest',
         '/expenses',
+        '/cash',
         '/analytics',
         '/social',
         '/mirrorchain',

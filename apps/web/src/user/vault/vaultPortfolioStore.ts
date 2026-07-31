@@ -263,6 +263,12 @@ export interface VaultPortfolioStore {
   ): Promise<CashPreviewResponse>;
   depositCash(portfolioId: string, body: CashEntryRequest): Promise<CashMovementResponse>;
   withdrawCash(portfolioId: string, body: CashEntryRequest): Promise<CashMovementResponse>;
+  /**
+   * Record a standing custody/account fee (V5, §16 2026-07-30). Kept at parity
+   * with the API store so the fee surface cannot work in normal mode and silently
+   * fail in paranoid mode once the bootstrap composes this seam.
+   */
+  chargeCashFee(portfolioId: string, body: CashEntryRequest): Promise<CashMovementResponse>;
   transferCash(portfolioId: string, body: CashTransferRequest): Promise<CashTransferResponse>;
   setCashBalance(
     portfolioId: string,
@@ -936,6 +942,10 @@ export function createVaultPortfolioStore(
       return createCashMovement(context, portfolioId, body, 'withdrawal');
     },
 
+    async chargeCashFee(portfolioId, body) {
+      return createCashMovement(context, portfolioId, body, 'fee');
+    },
+
     async transferCash(portfolioId, body) {
       return transferCash(context, portfolioId, body);
     },
@@ -1319,7 +1329,7 @@ async function createCashMovement(
   context: StoreContext,
   portfolioId: string,
   body: CashEntryRequest,
-  kind: 'deposit' | 'withdrawal',
+  kind: 'deposit' | 'withdrawal' | 'fee',
 ): Promise<CashMovementResponse> {
   requireDocument(context.engine);
   const parsedBody = cashEntryRequestSchema.parse(body);
@@ -1347,7 +1357,11 @@ async function createCashMovement(
         portfolioId,
         sourceId,
         kind,
-        amountEur: decimalStringFromNumber(kind === 'withdrawal' ? -amountEur : amountEur),
+        // The sign comes from the domain's own table, never a local ternary: a
+        // `kind === 'withdrawal' ? -x : x` check silently stored a POSITIVE `fee`
+        // (V5, §16 2026-07-30), and a positive fee LIFTS the return instead of
+        // dragging it. One source of truth for direction, shared with the server.
+        amountEur: decimalStringFromNumber(CASH_MOVEMENT_SIGN[kind] * amountEur),
         transactionId: null,
         transferId: null,
         counterpartSourceId: null,

@@ -13,6 +13,9 @@ const pkg = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 
 };
 const release = process.env.VITE_APP_RELEASE ?? `bettertrack-web@${pkg.version}`;
 
+/** Dev-server proxy target for `/api` and `/ws` — the local API's origin. */
+const apiProxyTarget = process.env.BT_WEB_DEV_PROXY_TARGET ?? 'http://localhost:3000';
+
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   define: {
@@ -22,10 +25,13 @@ export default defineConfig({
     port: 5173,
     // In dev, the API runs separately; same-origin proxy keeps cookies simple
     // (mirrors the nginx topology described in PROJECTPLAN.md §4.6).
+    // `BT_WEB_DEV_PROXY_TARGET` retargets both hops together so a second stack
+    // (the Playwright e2e boot) can run its own API on another port without its
+    // browser traffic being proxied into the dev stack's API — and its database.
     proxy: {
-      '/api': 'http://localhost:3000',
+      '/api': apiProxyTarget,
       // Realtime gateway websocket (§4.5, V3-P7a) — same-origin in dev, like /api.
-      '/ws': { target: 'http://localhost:3000', ws: true },
+      '/ws': { target: apiProxyTarget, ws: true },
     },
   },
   test: {

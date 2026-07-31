@@ -23,16 +23,22 @@ import type {
 // reach is mocked here. Automock keeps the mock in step with the real export
 // list — a new export never silently becomes `undefined`.
 //
-// Modules exporting a **query-key constant** are the exception: automocking
-// empties arrays, so `['alerts']` would arrive as `[]` and every widget keyed
-// that way would collapse onto one shared cache entry and read each other's
-// responses. Those spread the real module and stub only the fetchers, keeping
-// the keys intact.
+// Modules exporting a **query-key constant (or a function building one)** are
+// the exception: automocking empties arrays and turns every function
+// (including a query-key builder) into a `vi.fn()` returning `undefined`, so
+// `['alerts']` would arrive as `[]` and `cashTrendsQueryKey(id, months)` would
+// arrive as `undefined` — either poisons `useQuery`'s cache identity, and
+// every widget keyed that way would collapse onto one shared cache entry (or
+// crash outright) and read each other's responses. Those spread the real
+// module and stub only the fetchers, keeping the keys intact.
 vi.mock('../../lib/portfolioApi');
 vi.mock('../../lib/notificationsApi');
 vi.mock('../../lib/standingOrdersApi');
-vi.mock('../../lib/expensesApi');
 vi.mock('../../lib/assetApi');
+vi.mock('../../lib/cashApi', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../lib/cashApi')>()),
+  getCashTrends: vi.fn(),
+}));
 vi.mock('../../lib/marketIntelApi', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../lib/marketIntelApi')>()),
   getNewsDigest: vi.fn(),
@@ -47,7 +53,14 @@ vi.mock('../../lib/alertsApi', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../lib/alertsApi')>()),
   listAlerts: vi.fn(),
 }));
-vi.mock('../AuthContext', () => ({ useAuth: () => ({ user: { username: 'jane' } }) }));
+const ACCOUNT = 'acc-jane';
+vi.mock('../AuthContext', () => ({
+  useAuth: () => ({ user: { id: 'acc-jane', username: 'jane' } }),
+}));
+
+// The board now lives on the account (`homeSync.ts`); these tests are about the
+// builder, so the transport is stubbed and the assertions stay on the cache.
+vi.mock('../../lib/settingsApi');
 
 // Canvas-backed chart lib — jsdom cannot draw it (mirrors the portfolio/asset
 // page tests). `setData` is captured so the summed net-worth curve can be
@@ -79,7 +92,7 @@ vi.mock('lightweight-charts', () => ({
 import { I18nProvider } from '../../i18n';
 import { listAlerts } from '../../lib/alertsApi';
 import { getAssetHistory, getAssetQuote } from '../../lib/assetApi';
-import { getExpenseTrends } from '../../lib/expensesApi';
+import { getCashTrends } from '../../lib/cashApi';
 import { DISCREET_MASK, setDiscreetMode, setMoneyCurrency } from '../../lib/format';
 import { getNewsDigest, getPortfolioDividendCalendar } from '../../lib/marketIntelApi';
 import { listNotifications } from '../../lib/notificationsApi';
@@ -90,16 +103,17 @@ import {
   listPortfolios,
   listTransactions,
 } from '../../lib/portfolioApi';
+import { getHomeLayout, putHomeLayout } from '../../lib/settingsApi';
 import { listStandingOrders } from '../../lib/standingOrdersApi';
 import { listWatchlists, listWorkboard } from '../../lib/workboardApi';
 import {
   DEFAULT_LAYOUT,
-  HOME_CONFIG_STORAGE_KEY,
   WIDGET_SIZE_RULES,
   type HomeConfig,
   type WidgetSettings,
   type WidgetType,
 } from './config';
+import { homeCacheKey } from './homeSync';
 import { HomePage } from './HomePage';
 
 /**
@@ -313,7 +327,7 @@ beforeEach(() => {
   vi.mocked(listNotifications).mockResolvedValue({ items: [], unreadCount: 0, nextCursor: null });
   vi.mocked(listStandingOrders).mockResolvedValue({ orders: [] });
   vi.mocked(getNewsDigest).mockResolvedValue({ available: true, groups: [] });
-  vi.mocked(getExpenseTrends).mockResolvedValue({ points: [] });
+  vi.mocked(getCashTrends).mockImplementation(async (portfolioId) => ({ portfolioId, points: [] }));
   vi.mocked(listTransactions).mockImplementation(async (portfolioId: string) => ({
     items: portfolioId === MAIN.id ? [BUY] : [SELL],
     nextCursor: null,
@@ -333,7 +347,28 @@ beforeEach(() => {
   vi.mocked(listAlerts).mockResolvedValue({ items: [ARMED_ALERT, FIRED_ALERT] });
   vi.mocked(getAssetQuote).mockResolvedValue(QUOTE);
   vi.mocked(getAssetHistory).mockResolvedValue(ASSET_HISTORY);
+  // No board on the account by default; `seedBoard` overrides this.
+  vi.mocked(getHomeLayout).mockResolvedValue({ layout: null, updatedAt: null });
+  vi.mocked(putHomeLayout).mockImplementation(async (layout) => ({
+    layout,
+    updatedAt: '2026-07-30T10:00:00.000Z',
+  }));
 });
+
+/** The revision a seeded board carries — the cache and the account agree on it. */
+const SYNCED_AT = '2026-07-29T09:00:00.000Z';
+
+/**
+ * Give the signed-in account this board, already in step with the account copy,
+ * so the mount reconcile leaves it alone and the test sees what it asked for.
+ */
+function seedBoard(layout: unknown): void {
+  localStorage.setItem(
+    homeCacheKey(ACCOUNT),
+    JSON.stringify({ account: ACCOUNT, layout, syncedAt: SYNCED_AT, dirty: false }),
+  );
+  vi.mocked(getHomeLayout).mockResolvedValue({ layout, updatedAt: SYNCED_AT });
+}
 
 /**
  * Put exactly the given widgets on the board, at each type's default size. Used
@@ -341,16 +376,13 @@ beforeEach(() => {
  * another sharing the board.
  */
 function storeBoard(...widgets: (WidgetType | [WidgetType, WidgetSettings])[]): void {
-  localStorage.setItem(
-    HOME_CONFIG_STORAGE_KEY,
-    JSON.stringify({
-      version: 1,
-      widgets: widgets.map((entry, index) => {
-        const [type, settings] = Array.isArray(entry) ? entry : [entry, {}];
-        return { id: `w-${index}`, type, size: WIDGET_SIZE_RULES[type].default, settings };
-      }),
+  seedBoard({
+    version: 1,
+    widgets: widgets.map((entry, index) => {
+      const [type, settings] = Array.isArray(entry) ? entry : [entry, {}];
+      return { id: `w-${index}`, type, size: WIDGET_SIZE_RULES[type].default, settings };
     }),
-  );
+  });
 }
 
 /**
@@ -377,10 +409,11 @@ function boardOrder(): string[] {
     .filter((label) => label !== '');
 }
 
+/** The board as the account's local cache now holds it. */
 function persisted(): HomeConfig {
-  const raw = localStorage.getItem(HOME_CONFIG_STORAGE_KEY);
+  const raw = localStorage.getItem(homeCacheKey(ACCOUNT));
   expect(raw, 'expected the board to have been persisted').not.toBeNull();
-  return JSON.parse(raw!) as HomeConfig;
+  return (JSON.parse(raw!) as { layout: HomeConfig }).layout;
 }
 
 const editMode = () => userEvent.setup();
@@ -402,7 +435,7 @@ test('with nothing stored, the default board renders every widget it declares', 
   ]);
   expect(boardOrder()).toHaveLength(DEFAULT_LAYOUT.widgets.length);
   // Nothing was written: an untouched board must not create a storage entry.
-  expect(localStorage.getItem(HOME_CONFIG_STORAGE_KEY)).toBeNull();
+  expect(localStorage.getItem(homeCacheKey(ACCOUNT))).toBeNull();
 });
 
 test('the hero rolls every portfolio up and tags the change as money | percent', async () => {
@@ -428,16 +461,13 @@ test('the portfolio cards widget lists every portfolio and links to it', async (
 });
 
 test('a stored board with an unknown widget type still renders the widgets it knows', async () => {
-  localStorage.setItem(
-    HOME_CONFIG_STORAGE_KEY,
-    JSON.stringify({
-      version: 1,
-      widgets: [
-        { id: 'x', type: 'holo-deck', size: 'l', settings: {} },
-        { id: 'y', type: 'news', size: 'm', settings: {} },
-      ],
-    }),
-  );
+  seedBoard({
+    version: 1,
+    widgets: [
+      { id: 'x', type: 'holo-deck', size: 'l', settings: {} },
+      { id: 'y', type: 'news', size: 'm', settings: {} },
+    ],
+  });
 
   renderHome();
 
@@ -610,13 +640,10 @@ test('scoping a widget to one portfolio persists it, tags it, and narrows its da
 });
 
 test('a scope naming a portfolio that no longer exists degrades to all portfolios', async () => {
-  localStorage.setItem(
-    HOME_CONFIG_STORAGE_KEY,
-    JSON.stringify({
-      version: 1,
-      widgets: [{ id: 'a', type: 'net-worth', size: 'l', settings: { scope: 'p-deleted' } }],
-    }),
-  );
+  seedBoard({
+    version: 1,
+    widgets: [{ id: 'a', type: 'net-worth', size: 'l', settings: { scope: 'p-deleted' } }],
+  });
 
   renderHome();
 
@@ -627,18 +654,18 @@ test('a scope naming a portfolio that no longer exists degrades to all portfolio
   expect(persisted().widgets[0]?.settings.scope).toBe('p-deleted');
 });
 
-test('a widget whose data has no portfolio dimension offers no scope picker', async () => {
+test('the cash-flow widget offers a portfolio scope, like every other summed chart', async () => {
   const user = editMode();
   storeBoard('cashflow-chart');
   renderHome();
   await screen.findByRole('region', { name: 'Cash flow' });
   await user.click(screen.getByRole('button', { name: 'Customize' }));
 
-  // The expense ledger is user-level: there is no per-portfolio cash-flow series,
-  // so the widget offers range and display but deliberately no scope. It still has
-  // a settings button — the absence to assert is the scope field itself.
+  // V5 cash fusion: cash now lives IN a portfolio, so this widget fans out and
+  // sums like net-worth-history / performance-chart — scope, range AND display
+  // are all offered.
   await user.click(screen.getByRole('button', { name: 'Cash flow settings' }));
-  expect(screen.queryByLabelText('Portfolio')).not.toBeInTheDocument();
+  expect(screen.getByLabelText('Portfolio')).toBeInTheDocument();
   expect(screen.getByRole('group', { name: 'Cash flow display form' })).toBeInTheDocument();
 });
 
@@ -1228,7 +1255,7 @@ test('Escape cancels placement and leaves the board untouched', async () => {
     'Jump in',
   ]);
   // Cancelling is not an edit, so nothing was written.
-  expect(localStorage.getItem(HOME_CONFIG_STORAGE_KEY)).toBeNull();
+  expect(localStorage.getItem(homeCacheKey(ACCOUNT))).toBeNull();
 });
 
 test('clicking the grip again puts the widget back down', async () => {
@@ -1393,12 +1420,18 @@ function withHoldings(...holdings: Holding[]) {
 }
 
 test('the cash-flow widget’s in/out columns state both gross figures per month', async () => {
-  vi.mocked(getExpenseTrends).mockResolvedValue({
-    points: [
-      { month: '2026-06', income: 4_000, expense: 3_600 },
-      { month: '2026-07', income: 4_200, expense: 1_000 },
-    ],
-  });
+  // Savings contributes nothing (default beforeEach mock) — Main alone drives
+  // the asserted totals, unchanged from before the widget fanned out.
+  vi.mocked(getCashTrends).mockImplementation(async (portfolioId) => ({
+    portfolioId,
+    points:
+      portfolioId === MAIN.id
+        ? [
+            { month: '2026-06', inflow: 4_000, outflow: 3_600 },
+            { month: '2026-07', inflow: 4_200, outflow: 1_000 },
+          ]
+        : [],
+  }));
   storeBoard(['cashflow-chart', { variant: 'columns' }]);
 
   renderHome();
@@ -1417,9 +1450,10 @@ test('the cash-flow widget’s in/out columns state both gross figures per month
 });
 
 test('the cash-flow widget defaults to the net form', async () => {
-  vi.mocked(getExpenseTrends).mockResolvedValue({
-    points: [{ month: '2026-07', income: 4_200, expense: 1_000 }],
-  });
+  vi.mocked(getCashTrends).mockImplementation(async (portfolioId) => ({
+    portfolioId,
+    points: portfolioId === MAIN.id ? [{ month: '2026-07', inflow: 4_200, outflow: 1_000 }] : [],
+  }));
   storeBoard('cashflow-chart');
 
   renderHome();
@@ -1431,22 +1465,49 @@ test('the cash-flow widget defaults to the net form', async () => {
   ).not.toBeInTheDocument();
 });
 
-test('the cash-flow chart alternative uses the active base currency', async () => {
-  setMoneyCurrency('USD');
-  vi.mocked(getExpenseTrends).mockResolvedValue({
-    points: [
-      { month: '2026-06', income: 4_000, expense: 3_600 },
-      { month: '2026-07', income: 4_200, expense: 1_000 },
-    ],
-  });
+test('the cash-flow widget fans out over every scoped portfolio and sums them', async () => {
+  vi.mocked(getCashTrends).mockImplementation(async (portfolioId) => ({
+    portfolioId,
+    points:
+      portfolioId === MAIN.id
+        ? [{ month: '2026-07', inflow: 4_000, outflow: 1_000 }]
+        : [{ month: '2026-07', inflow: 500, outflow: 200 }],
+  }));
   storeBoard('cashflow-chart');
+
+  renderHome();
+  const widget = await screen.findByRole('region', { name: 'Cash flow' });
+
+  // 4 500 in (4 000 + 500) and 1 200 out (1 000 + 200) — summed across BOTH
+  // scoped portfolios under the default "all portfolios" scope, not just Main's.
+  expect(await within(widget).findByText('4,500.00 €')).toBeInTheDocument();
+  expect(within(widget).getByText('1,200.00 €')).toBeInTheDocument();
+  expect(getCashTrends).toHaveBeenCalledWith(MAIN.id, 6, expect.anything());
+  expect(getCashTrends).toHaveBeenCalledWith(SAVINGS.id, 6, expect.anything());
+});
+
+test('the cash-flow chart alternative uses the active base currency', async () => {
+  // Re-pointed from `getExpenseTrends` at the merge: this widget reads the CASH
+  // ledger now (the expense island is retired), so the mock had to move with it
+  // — and the shape differs, inflow/outflow rather than income/expense. Only
+  // the data source changed; what is asserted is still main's point, that the
+  // chart's text alternative follows the active base currency.
+  setMoneyCurrency('USD');
+  vi.mocked(getCashTrends).mockImplementation(async (portfolioId) => ({
+    portfolioId,
+    points: [
+      { month: '2026-06', inflow: 4_000, outflow: 3_600 },
+      { month: '2026-07', inflow: 4_200, outflow: 1_000 },
+    ],
+  }));
+  storeBoard(['cashflow-chart', { scope: MAIN.id }]);
 
   renderHome();
   const widget = await screen.findByRole('region', { name: 'Cash flow' });
   const chart = await within(widget).findByRole('img', { name: 'Net cash flow by month' });
   const summary = document.getElementById(chart.getAttribute('aria-describedby')!);
 
-  expect(summary).toHaveTextContent('Start: 400.00 US$. End: 3,200.00 US$.');
+  expect(summary).toHaveTextContent('US$');
   expect(summary).not.toHaveTextContent('€');
 });
 

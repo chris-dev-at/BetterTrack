@@ -341,166 +341,6 @@
       }
     }
   },
-  "expenses": {
-    "title": "Expenses",
-    "tagline": "Track your spending and income — kept separate from your portfolio.",
-    "nav": {
-      "dashboard": "Dashboard",
-      "transactions": "Transactions",
-      "budgets": "Budgets",
-      "categories": "Categories",
-      "rules": "Rules",
-      "import": "Import"
-    },
-    "direction": {
-      "expense": "Expense",
-      "income": "Income",
-      "expensePlural": "Expenses",
-      "incomePlural": "Income"
-    },
-    "transactions": {
-      "subtitle": "Your spending and income, newest first.",
-      "new": "New transaction",
-      "loadError": "Couldn't load your transactions.",
-      "categoryLoadError": "Couldn't load your categories.",
-      "recategorizeError": "Couldn't change the transaction category. Please try again.",
-      "deleteError": "Couldn't delete the transaction. Please try again.",
-      "recategorize": "Change category",
-      "uncategorized": "Uncategorized",
-      "emptyTitle": "No transactions yet",
-      "emptyDescription": "Add your first spend or income entry to get started.",
-      "emptyCta": "Add a transaction",
-      "dialog": {
-        "newTitle": "New transaction",
-        "editTitle": "Edit transaction",
-        "direction": "Direction",
-        "amount": "Amount",
-        "amountRequired": "Enter an amount greater than 0.",
-        "date": "Date",
-        "dateRequired": "Pick a date.",
-        "description": "Description",
-        "descriptionPlaceholder": "e.g. BILLA groceries",
-        "descriptionRequired": "Enter a description.",
-        "category": "Category",
-        "saveError": "Couldn't save the transaction. Please try again."
-      }
-    },
-    "categories": {
-      "subtitle": "Organize your spending and income into categories.",
-      "new": "New category",
-      "loadError": "Couldn't load your categories.",
-      "deleteError": "Couldn't delete the category. Please try again.",
-      "emptyTitle": "No categories yet",
-      "emptyDescription": "Create a category to organize your spending and income.",
-      "emptyCta": "Create category",
-      "dialog": {
-        "newTitle": "New category",
-        "editTitle": "Edit category",
-        "name": "Name",
-        "namePlaceholder": "e.g. Groceries",
-        "nameRequired": "Enter a name.",
-        "nameTaken": "You already have a category with that name.",
-        "direction": "Direction",
-        "color": "Colour",
-        "saveError": "Couldn't save the category. Please try again."
-      }
-    },
-    "rules": {
-      "subtitle": "Rules auto-file imported transactions into categories by matching their description.",
-      "new": "New rule",
-      "loadError": "Couldn't load your rules.",
-      "deleteError": "Couldn't delete the rule. Please try again.",
-      "emptyTitle": "No rules yet",
-      "emptyDescription": "Add a rule to auto-categorize transactions as you import them.",
-      "unknownCategory": "Unknown category",
-      "disabled": "Off",
-      "matchType": {
-        "contains": "Contains",
-        "equals": "Equals",
-        "starts_with": "Starts with",
-        "regex": "Regex"
-      },
-      "dialog": {
-        "newTitle": "New rule",
-        "editTitle": "Edit rule",
-        "category": "Category",
-        "categoryRequired": "Pick a category.",
-        "matchType": "Match type",
-        "pattern": "Pattern",
-        "patternPlaceholder": "e.g. SPOTIFY",
-        "patternRequired": "Enter a pattern.",
-        "regexUnsupported": "This regex uses unsupported syntax. Try a simpler pattern without lookarounds or backreferences.",
-        "priority": "Priority",
-        "enabled": "Enabled",
-        "saveError": "Couldn't save the rule. Please try again."
-      }
-    },
-    "import": {
-      "subtitle": "Import a bank statement CSV — rows are auto-categorized and duplicates are skipped.",
-      "uploadTitle": "Upload a statement",
-      "chooseFile": "Choose a CSV file",
-      "bank": "Bank",
-      "bankAuto": "Auto-detect",
-      "preview": "Preview",
-      "previewing": "Reading…",
-      "uploadHint": "Erste/George, Raiffeisen ELBA, N26 and Revolut CSV exports are supported.",
-      "previewError": "Couldn't read that file. Check it's a supported bank export.",
-      "applyError": "Couldn't import the transactions. Please try again.",
-      "applied": "Imported {{applied}} · {{duplicate}} duplicate · {{error}} skipped.",
-      "importAnother": "Import another",
-      "previewTitle": "Detected {{bank}}",
-      "counts": "{{new}} new · {{duplicate}} duplicate · {{error}} error",
-      "colDate": "Date",
-      "colDescription": "Description",
-      "colAmount": "Amount",
-      "colCategory": "Category",
-      "flag": {
-        "new": "New",
-        "duplicate": "Dup",
-        "error": "Error"
-      },
-      "uncategorized": "Uncategorized",
-      "applying": "Importing…",
-      "apply": "Import {{count}} transactions"
-    },
-    "dashboard": {
-      "subtitle": "Where your money went this month.",
-      "month": "Month",
-      "loadError": "Couldn't load your dashboard.",
-      "income": "Income",
-      "spend": "Spend",
-      "net": "Net",
-      "spendByCategory": "Spend by category",
-      "noSpend": "No spending recorded for this month.",
-      "uncategorized": "Uncategorized",
-      "trend": "Income vs spend",
-      "emptyTitle": "No activity yet",
-      "emptyDescription": "Record some transactions to see your monthly trends."
-    },
-    "budgets": {
-      "subtitle": "Set a monthly target per category — we'll alert you when one is blown.",
-      "new": "New budget",
-      "loadError": "Couldn't load your budgets.",
-      "deleteError": "Couldn't delete the budget. Please try again.",
-      "exceeded": "Over budget",
-      "over": "{{amount}} over",
-      "left": "{{amount}} left",
-      "emptyTitle": "No budgets yet",
-      "emptyDescription": "Set a monthly target for a category to track your spending against it.",
-      "emptyCta": "Add a budget",
-      "dialog": {
-        "newTitle": "New budget",
-        "editTitle": "Edit budget",
-        "category": "Category",
-        "categoryRequired": "Pick a category.",
-        "categoryTaken": "That category already has a budget.",
-        "noCategories": "Every expense category already has a budget.",
-        "amount": "Monthly target",
-        "amountRequired": "Enter an amount greater than 0.",
-        "saveError": "Couldn't save the budget. Please try again."
-      }
-    }
-  },
   "nav": {
     "portfolio": "Portfolio",
     "workboard": "Workbench",
@@ -1294,6 +1134,11 @@
       },
       "hint": "Display only — amounts stay stored in each asset’s own currency."
     },
+    "uiScale": {
+      "title": "Interface size",
+      "hint": "Scales the whole app on this device only — it is not synced to your account. Automatic reads the display: 100 % on a high-DPI screen, larger on a 1× monitor.",
+      "auto": "Automatic ({{percent}} %)"
+    },
     "newPortfolioDefaults": {
       "navLabel": "New portfolio defaults",
       "tax": {
@@ -1921,9 +1766,11 @@
     },
     "cash": {
       "title": "Cash balance",
-      "kindGroupAriaLabel": "Deposit or withdraw",
+      "kindGroupAriaLabel": "Deposit, withdraw or record a fee",
       "depositTab": "Deposit",
       "withdrawTab": "Withdraw",
+      "feeTab": "Fee",
+      "feeHint": "A custody, account or platform fee — a cost of holding, so it lowers your performance instead of counting as money you took out.",
       "amountLabel": "Amount (EUR)",
       "amountAriaLabel": "Amount",
       "previewAriaLabel": "Cash-after preview",
@@ -1935,6 +1782,7 @@
       "noteAriaLabel": "Note",
       "depositSubmit": "Deposit cash",
       "withdrawSubmit": "Withdraw cash",
+      "feeSubmit": "Record fee",
       "amountRequired": "Enter an amount greater than 0.",
       "blockedError": "That would take the cash balance negative.",
       "invalidDate": "Pick a valid date.",
@@ -1984,7 +1832,8 @@
         "transfer_in": "Transfer in",
         "dividend": "Dividend",
         "tax_withholding": "Tax withheld",
-        "tax_refund": "Tax refund"
+        "tax_refund": "Tax refund",
+        "fee": "Fee"
       },
       "history": {
         "heading": "Movement history",
@@ -2177,9 +2026,9 @@
     },
     "tabs": {
       "overview": "Overview",
-      "activity": "Activity",
+      "activity": "Transactions",
       "customAssets": "Custom assets",
-      "cashFlow": "Cash flow",
+      "cashFlow": "Cash",
       "analysis": "Analysis",
       "tax": "Tax",
       "import": "Import",
@@ -3496,6 +3345,9 @@
       "empty": "Nothing has happened here yet.",
       "loadError": "Could not load the activity feed. Please try again."
     },
+    "membersListAria": "Members",
+    "activityListAria": "Activity",
+    "inviteListAria": "Friends you can invite",
     "invites": {
       "incomingTitle": "Group portfolio invites",
       "outgoingTitle": "Invites you've sent",
@@ -4491,6 +4343,15 @@
         "empty": "No cash sources yet.",
         "total": "Total"
       },
+      "quickCash": {
+        "title": "Quick cash",
+        "description": "Record a deposit, withdrawal or fee without leaving Home.",
+        "submit": "Record",
+        "notePlaceholder": "Note (optional)",
+        "into": "Into {{source}}",
+        "needsScope": "Pick one portfolio for this widget — a cash movement has to land somewhere specific.",
+        "noSource": "This portfolio has no cash account yet."
+      },
       "watchlist": {
         "title": "Watchlist",
         "description": "A watchlist with live quotes",
@@ -4529,15 +4390,184 @@
     }
   },
   "cashflow": {
-    "aria": "Cash flow",
+    "aria": "Cash",
     "tabs": {
       "overview": "Overview",
-      "transactions": "Transactions",
+      "movements": "Transactions",
       "budgets": "Budgets",
-      "categories": "Categories",
+      "tags": "Tags",
       "rules": "Rules",
       "import": "Import",
       "accounts": "Cash accounts"
+    },
+    "untagged": "Untagged",
+    "record": {
+      "title": "Record transaction",
+      "directionAria": "Money out or money in",
+      "moneyOut": "Money out",
+      "moneyIn": "Money in",
+      "noteLabel": "What for",
+      "notePlaceholder": "e.g. SPAR MARKT 4021",
+      "willBeTagged": "Will be tagged",
+      "moreToggle": "More — date, account, tags",
+      "lessToggle": "Less",
+      "tagsLabel": "Tags",
+      "countsToPerformance": "Count this against my investment performance",
+      "countsToPerformanceHint": "For costs of holding — an account or custody charge is part of investing, so it should lower your reported return. Everyday spending should not.",
+      "receiptLabel": "Receipt",
+      "receiptPlanned": "Planned",
+      "into": "Into {{source}}",
+      "submit": "Record",
+      "action": "Record transaction",
+      "amountLabel": "Amount",
+      "details": "Details",
+      "balanceAfter": "Balance after",
+      "countsToPerformanceShort": "Holding cost",
+      "quickIn": "Record money in",
+      "quickOut": "Record money out"
+    },
+    "matchType": {
+      "contains": "Contains",
+      "equals": "Equals",
+      "starts_with": "Starts with",
+      "regex": "Regex"
+    },
+    "overview": {
+      "subtitle": "",
+      "loadError": "Couldn't load the cash overview.",
+      "month": "Month",
+      "inflow": "Inflow",
+      "outflow": "Outflow",
+      "net": "Net",
+      "byTag": "By tag",
+      "noActivity": "No cash movements recorded this month.",
+      "notSumNote": "Tag totals overlap — a movement with two tags counts toward both, so they won't add up to the total above.",
+      "trend": "Trend",
+      "emptyTitle": "No activity yet",
+      "emptyDescription": "Record some cash movements to see monthly trends.",
+      "total": "Total cash",
+      "accountsHeading": "Accounts",
+      "manageAccounts": "Manage accounts",
+      "recentHeading": "Recent movements",
+      "allMovements": "All movements",
+      "thisMonthChange": "{{amount}} this month",
+      "noAccounts": "No cash accounts yet.",
+      "quickDeposit": "Add to {{source}}",
+      "quickWithdraw": "Spend from {{source}}",
+      "previousMonth": "Previous month",
+      "nextMonth": "Next month",
+      "byTagList": "Spending by tag"
+    },
+    "movements": {
+      "subtitle": "",
+      "loadError": "Couldn't load the cash ledger.",
+      "emptyTitle": "No cash movements yet",
+      "emptyDescription": "Deposits, withdrawals, trades and dividends will appear here.",
+      "listAriaLabel": "Cash movements",
+      "filterLabel": "Tag",
+      "filterAll": "All tags",
+      "dateColumn": "Date",
+      "kindColumn": "Kind",
+      "amountColumn": "Amount",
+      "tagsColumn": "Tags",
+      "noteColumn": "Note",
+      "editTagsAction": "Edit tags",
+      "originalCurrency": "orig. {{currency}}",
+      "tagDialog": {
+        "title": "Edit tags",
+        "noTags": "You don't have any tags yet — create one on the Tags tab first.",
+        "saveError": "Couldn't update the tags. Please try again."
+      },
+      "manageLabels": "Labels & rules"
+    },
+    "budgets": {
+      "subtitle": "",
+      "loadError": "Couldn't load the budgets.",
+      "deleteError": "Couldn't delete the budget. Please try again.",
+      "new": "New budget",
+      "month": "Month",
+      "exceeded": "Over budget",
+      "recurring": "Recurring",
+      "thisMonthOnly": "{{month}} only",
+      "over": "{{amount}} over",
+      "left": "{{amount}} left",
+      "emptyTitle": "No budgets yet",
+      "emptyDescription": "Set a spend target for a tag to track it against this portfolio's cash.",
+      "emptyCta": "Add a budget",
+      "dialog": {
+        "newTitle": "New budget",
+        "editTitle": "Edit budget",
+        "tag": "Tag",
+        "tagRequired": "Pick a tag.",
+        "noTags": "Every tag already has a budget for this period.",
+        "period": "Period",
+        "periodRecurring": "Recurring",
+        "periodThisMonth": "This month only",
+        "amount": "Monthly target",
+        "amountRequired": "Enter an amount greater than 0.",
+        "alreadyBudgeted": "That tag already has a budget for this period.",
+        "saveError": "Couldn't save the budget. Please try again."
+      }
+    },
+    "tags": {
+      "subtitle": "Flat labels a cash movement can carry — several at once.",
+      "loadError": "Couldn't load your tags.",
+      "deleteError": "Couldn't delete the tag. Please try again.",
+      "new": "New tag",
+      "systemHeading": "App tags",
+      "userHeading": "Your tags",
+      "systemBadge": "App-owned",
+      "emptyTitle": "No tags yet",
+      "emptyDescription": "Create a tag to start labelling your cash movements.",
+      "emptyCta": "Create a tag",
+      "deleteConfirm": "Delete “{{name}}”? Its budgets and rule links go with it.",
+      "removeFromMovement": "Remove {{name}}",
+      "dialog": {
+        "newTitle": "New tag",
+        "editTitle": "Edit tag",
+        "name": "Name",
+        "namePlaceholder": "e.g. Groceries",
+        "nameRequired": "Enter a name.",
+        "nameTaken": "You already have a tag with that name.",
+        "color": "Colour",
+        "saveError": "Couldn't save the tag. Please try again."
+      }
+    },
+    "rules": {
+      "subtitle": "Rules tag imports and manual entries automatically, by matching their note. First match wins.",
+      "applyToExisting": "Apply to existing",
+      "applying": "Applying…",
+      "applyTagged": "Tagged {{count}} movements.",
+      "applyNoneTagged": "Nothing new to tag — every matching movement already carries its tags.",
+      "applyError": "Couldn't apply the rules. Please try again.",
+      "loadError": "Couldn't load your rules.",
+      "deleteError": "Couldn't delete the rule. Please try again.",
+      "new": "New rule",
+      "disabled": "Off",
+      "priorityLabel": "Priority {{priority}}",
+      "unknownTag": "Unknown tag",
+      "emptyTitle": "No rules yet",
+      "emptyDescription": "Add a rule to auto-tag movements as they come in.",
+      "dialog": {
+        "newTitle": "New rule",
+        "editTitle": "Edit rule",
+        "matchType": "Match type",
+        "pattern": "Pattern",
+        "patternPlaceholder": "e.g. SPOTIFY",
+        "patternRequired": "Enter a pattern.",
+        "regexUnsupported": "This regex uses unsupported syntax. Try a simpler pattern without lookarounds or backreferences.",
+        "tags": "Tags",
+        "tagsRequired": "Pick at least one tag.",
+        "noTags": "Create a tag first — a rule needs at least one to apply.",
+        "priority": "Priority",
+        "enabled": "Enabled",
+        "saveError": "Couldn't save the rule. Please try again."
+      }
+    },
+    "labels": {
+      "title": "Labels & rules",
+      "subtitle": "The tags a movement can carry, and the rules that attach them for you.",
+      "backToMovements": "Back to movements"
     }
   },
   "workbench": {
@@ -4654,7 +4684,9 @@
       "events": "Events",
       "health": "Data health",
       "rebalancePage": "Rebalance",
-      "privateMarkets": "Private markets"
+      "privateMarkets": "Private markets",
+      "cashMovements": "View the ledger",
+      "cashRules": "Set up rules"
     },
     "portfolioPlan": {
       "title": "Plan",
@@ -4807,6 +4839,13 @@
       "p2": "Every figure links back to records and assumptions",
       "p3": "Scenario answers open as Workbench drafts",
       "p4": "No write happens without your explicit confirmation"
+    },
+    "cashImport": {
+      "title": "Statement import",
+      "body": "Bank-statement import is being rebuilt on the tagged portfolio ledger. It isn't ready yet — record cash by hand for now, or set up tagging rules ahead of it.",
+      "p1": "CSV import re-pointed at the portfolio cash ledger, not a separate list",
+      "p2": "Imported rows arrive as tagged movements — your rules apply automatically",
+      "p3": "Duplicate detection carries over from the statement importer"
     }
   },
   "palette": {
