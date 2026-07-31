@@ -260,7 +260,7 @@ describe('live legal pages consume the canonical landing tree (#984)', () => {
   );
 
   it('copies the four legal directories plus every remaining live overlay directory', () => {
-    expect(updater).toContain('_legal_src="$APP/apps/landing/site"');
+    expect(updater).toContain('_landing_src="$APP/apps/landing/site"');
     expect(updater).toContain('for _name in terms privacy impressum cookies; do');
     expect(updater).toContain('cp -R "$_dir" "${_dst}/"');
     expect(updater).toContain('_overlay_src="$APP/infra/live/edge/html/product"');
@@ -269,6 +269,21 @@ describe('live legal pages consume the canonical landing tree (#984)', () => {
     expect(read('infra/live/edge/html/product/404/index.html')).toContain(
       '<title>Page not found — BetterTrack</title>',
     );
+  });
+
+  it('publishes every root script loaded by the legal documents without copying the landing root', () => {
+    expect(updater).toContain('for _name in env.js landing.js; do');
+    expect(updater).toContain('_file="${_landing_src}/${_name}"');
+    expect(updater).toContain('cp "$_file" "${_dst}/${_name}"');
+    expect(updater).not.toContain('cp -R "$_landing_src"');
+
+    for (const page of ['terms', 'privacy', 'impressum', 'cookies']) {
+      for (const localePath of ['index.html', 'de/index.html']) {
+        const document = read(`apps/landing/site/${page}/${localePath}`);
+        expect(document).toContain('<script src="/env.js"></script>');
+        expect(document).toContain('<script src="/landing.js"></script>');
+      }
+    }
   });
 
   it('keeps the live edge directory-route contract unchanged', () => {
