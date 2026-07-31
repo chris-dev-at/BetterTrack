@@ -39,7 +39,7 @@ function SummaryTable({ summary, t }: { summary: TaxYearSummary; t: TranslateFn 
   return (
     <table className="w-full border-collapse text-sm">
       <thead>
-        <tr className="border-b border-neutral-400 text-left text-xs uppercase tracking-wide text-neutral-600">
+        <tr className="border-b border-neutral-400 text-left text-xs uppercase tracking-wide text-neutral-700">
           <th className="py-1 pr-3 font-medium">{t('portfolio.taxReport.column.year')}</th>
           <th className="py-1 pr-3 text-right font-medium">
             {t('portfolio.taxReport.column.realized')}
@@ -89,7 +89,7 @@ function DeBlock({ de, t }: { de: TaxYearDeSummary; t: TranslateFn }) {
       <dl className="grid grid-cols-2 gap-x-6 gap-y-1 text-xs sm:grid-cols-3">
         {rows.map(([label, value]) => (
           <div key={label} className="flex flex-col">
-            <dt className="uppercase tracking-wide text-neutral-500">{label}</dt>
+            <dt className="uppercase tracking-wide text-neutral-700">{label}</dt>
             <dd className="tabular-nums">{value}</dd>
           </div>
         ))}
@@ -105,9 +105,9 @@ function PositionBlock({ position, t }: { position: TaxYearPosition; t: Translat
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <span className="flex items-baseline gap-2">
           <span className="font-mono text-sm font-semibold">{position.asset.symbol}</span>
-          <span className="text-xs text-neutral-500">{position.asset.name}</span>
+          <span className="text-xs text-neutral-700">{position.asset.name}</span>
         </span>
-        <span className="flex items-center gap-4 text-xs text-neutral-600">
+        <span className="flex items-center gap-4 text-xs text-neutral-700">
           <span>
             {t('portfolio.taxReport.realized')}{' '}
             <span className="tabular-nums">{eur(position.realizedPnlEur)}</span>
@@ -126,7 +126,7 @@ function PositionBlock({ position, t }: { position: TaxYearPosition; t: Translat
       {position.sells.length > 0 ? (
         <table className="w-full border-collapse text-xs">
           <thead>
-            <tr className="border-b border-neutral-300 text-left uppercase tracking-wide text-neutral-500">
+            <tr className="border-b border-neutral-300 text-left uppercase tracking-wide text-neutral-700">
               <th className="py-1 pr-3 font-medium">{t('portfolio.taxReport.sell.date')}</th>
               <th className="py-1 pr-3 text-right font-medium">
                 {t('portfolio.taxReport.sell.quantity')}
@@ -165,7 +165,7 @@ function PositionBlock({ position, t }: { position: TaxYearPosition; t: Translat
       {position.dividends.length > 0 ? (
         <table className="w-full border-collapse text-xs">
           <thead>
-            <tr className="border-b border-neutral-300 text-left uppercase tracking-wide text-neutral-500">
+            <tr className="border-b border-neutral-300 text-left uppercase tracking-wide text-neutral-700">
               <th className="py-1 pr-3 font-medium">{t('portfolio.taxReport.sell.date')}</th>
               <th className="py-1 pr-3 text-right font-medium">
                 {t('portfolio.taxReport.dividend.gross')}
@@ -272,19 +272,19 @@ export function TaxReportPrintPage() {
 
       <header className="mb-6 flex flex-col gap-1">
         <h1 className="text-xl font-semibold">{t('portfolio.taxReport.title')}</h1>
-        <p className="text-sm text-neutral-600">
+        <p className="text-sm text-neutral-700">
           {[portfolioName, year].filter((v) => v !== null && v !== undefined).join(' · ')}
         </p>
       </header>
 
       {paranoid ? (
-        <p className="text-sm text-neutral-600">{t('portfolio.taxReport.print.paranoidHint')}</p>
+        <p className="text-sm text-neutral-700">{t('portfolio.taxReport.print.paranoidHint')}</p>
       ) : privacy.isError ? (
         <p className="text-sm text-red-700">{t('portfolio.taxReport.print.loadError')}</p>
       ) : !paramsValid ? (
-        <p className="text-sm text-neutral-600">{t('portfolio.taxReport.print.missingParams')}</p>
+        <p className="text-sm text-neutral-700">{t('portfolio.taxReport.print.missingParams')}</p>
       ) : reportQuery.isPending ? (
-        <p className="text-sm text-neutral-600">{EM_DASH}</p>
+        <p className="text-sm text-neutral-700">{EM_DASH}</p>
       ) : reportQuery.isError ? (
         <p className="text-sm text-red-700">{t('portfolio.taxReport.print.loadError')}</p>
       ) : (
@@ -292,14 +292,14 @@ export function TaxReportPrintPage() {
           <SummaryTable summary={reportQuery.data.summary} t={t} />
           {reportQuery.data.summary.de ? <DeBlock de={reportQuery.data.summary.de} t={t} /> : null}
           {reportQuery.data.positions.length === 0 ? (
-            <p className="text-sm text-neutral-600">{t('portfolio.taxReport.detailEmpty')}</p>
+            <p className="text-sm text-neutral-700">{t('portfolio.taxReport.detailEmpty')}</p>
           ) : (
             reportQuery.data.positions.map((position) => (
               <PositionBlock key={position.asset.id} position={position} t={t} />
             ))
           )}
           {/* Owner-mandated liability framing (#635): on the printout/PDF too. */}
-          <footer className="mt-4 border-t border-neutral-300 pt-3 text-xs text-neutral-500">
+          <footer className="mt-4 border-t border-neutral-300 pt-3 text-xs text-neutral-700">
             {t('settings.taxes.disclaimer')}
           </footer>
         </div>

@@ -153,7 +153,7 @@ export function SettingsPage() {
               <h2 className="text-sm font-semibold uppercase tracking-wide text-neutral-400">
                 Registration mode
               </h2>
-              <p className="text-sm text-neutral-500">
+              <p className="text-sm text-neutral-400">
                 How new accounts come to exist. Switching a mode takes effect immediately.
               </p>
             </div>
@@ -183,7 +183,7 @@ export function SettingsPage() {
                     />
                     <span className="flex flex-col gap-1">
                       <span className="text-sm font-medium text-neutral-100">{meta.title}</span>
-                      <span className="text-sm text-neutral-500">{meta.description}</span>
+                      <span className="text-sm text-neutral-400">{meta.description}</span>
                     </span>
                   </label>
                 );
@@ -197,7 +197,7 @@ export function SettingsPage() {
               <Button onClick={() => void onSave()} disabled={saving || !dirty}>
                 {saving ? 'Saving…' : 'Save settings'}
               </Button>
-              {dirty ? <span className="text-sm text-neutral-500">Unsaved changes</span> : null}
+              {dirty ? <span className="text-sm text-neutral-400">Unsaved changes</span> : null}
             </div>
           </section>
 
@@ -209,7 +209,7 @@ export function SettingsPage() {
               <h2 className="text-sm font-semibold uppercase tracking-wide text-neutral-400">
                 Feature toggles
               </h2>
-              <p className="text-sm text-neutral-500">
+              <p className="text-sm text-neutral-400">
                 App-wide feature flags and access rules live here. More toggles land post-v1.
               </p>
             </div>
@@ -223,7 +223,7 @@ export function SettingsPage() {
                   Beta mode
                   <Badge tone="neutral">Placeholder</Badge>
                 </span>
-                <span className="text-sm text-neutral-500">
+                <span className="text-sm text-neutral-400">
                   Gate experimental surfaces behind a beta flag. No app behaviour depends on it yet.
                 </span>
               </span>
@@ -306,7 +306,7 @@ function RegistrationTokensSection({ active }: { active: boolean }) {
         <h2 className="text-sm font-semibold uppercase tracking-wide text-neutral-400">
           Registration tokens
         </h2>
-        <p className="text-sm text-neutral-500">
+        <p className="text-sm text-neutral-400">
           Access tokens for the invite-token registration mode.
           {active ? null : ' They only take effect while the mode above is Invite / access-token.'}
         </p>
@@ -363,7 +363,7 @@ function RegistrationTokensSection({ active }: { active: boolean }) {
                   <span className="truncate">{token.label ?? 'Untitled token'}</span>
                   <Badge tone={TOKEN_STATUS_TONE[token.status]}>{token.status}</Badge>
                 </span>
-                <span className="text-xs text-neutral-500">
+                <span className="text-xs text-neutral-400">
                   {token.useCount}/{token.maxUses} uses
                   {token.expiresAt
                     ? ` · expires ${formatDateTime(token.expiresAt)}`
@@ -448,7 +448,7 @@ function ApprovalQueueSection({ active }: { active: boolean }) {
         <h2 className="text-sm font-semibold uppercase tracking-wide text-neutral-400">
           Approval queue
         </h2>
-        <p className="text-sm text-neutral-500">
+        <p className="text-sm text-neutral-400">
           Pending self-serve registrations awaiting review.
           {active ? null : ' New applications only arrive while the mode above is Approval.'}
         </p>
@@ -469,7 +469,7 @@ function ApprovalQueueSection({ active }: { active: boolean }) {
             >
               <span className="flex min-w-0 flex-col gap-0.5">
                 <span className="truncate text-sm text-neutral-100">{req.username}</span>
-                <span className="break-words text-xs text-neutral-500">
+                <span className="break-words text-xs text-neutral-400">
                   {req.email} · requested {formatDateTime(req.createdAt)}
                 </span>
               </span>

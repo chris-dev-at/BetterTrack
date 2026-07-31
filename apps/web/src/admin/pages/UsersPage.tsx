@@ -160,7 +160,7 @@ export function UsersPage() {
       ) : (
         <div className="overflow-x-auto rounded-lg border border-neutral-800">
           <table className="w-full min-w-[40rem] text-left text-sm">
-            <thead className="bg-neutral-900 text-xs uppercase tracking-wide text-neutral-500">
+            <thead className="bg-neutral-900 text-xs uppercase tracking-wide text-neutral-400">
               <tr>
                 <th className="w-10 px-3 py-3">
                   <input
@@ -192,7 +192,7 @@ export function UsersPage() {
                       className="block rounded-sm text-sky-400 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
                     >
                       <span className="block font-medium">{u.email}</span>
-                      <span className="block text-xs text-neutral-500">{u.username}</span>
+                      <span className="block text-xs text-neutral-400">{u.username}</span>
                     </Link>
                   </td>
                   <td className="px-4 py-3">
@@ -320,7 +320,7 @@ function StatsStrip({ data }: { data: AdminStats | null }) {
           key={c.label}
           className="rounded-lg border border-neutral-800 bg-neutral-900 px-4 py-3"
         >
-          <div className="text-xs uppercase tracking-wide text-neutral-500">{c.label}</div>
+          <div className="text-xs uppercase tracking-wide text-neutral-400">{c.label}</div>
           <div className="mt-1 text-2xl font-semibold text-neutral-100">{c.value}</div>
         </div>
       ))}

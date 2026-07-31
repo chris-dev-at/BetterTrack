@@ -45,3 +45,28 @@
     animation: none;
   }
 }
+
+/**
+ * One policy for every nonessential motion source, including Tailwind's
+ * spinner/pulse utilities. Loading components keep their text or status label,
+ * while their static visual remains in place.
+ */
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+
+  .animate-pulse,
+  .animate-spin {
+    animation: none !important;
+  }
+}

@@ -217,7 +217,7 @@ function ScopeRow({
       </div>
 
       {infoOpen ? (
-        <p className="mt-2 text-xs text-neutral-500" role="note">
+        <p className="mt-2 text-xs text-neutral-400" role="note">
           {description}
         </p>
       ) : null}
@@ -259,7 +259,7 @@ export function ScopePicker({
     <details className="rounded-md border border-neutral-800 bg-neutral-900" open={defaultOpen}>
       <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2 text-sm font-medium text-neutral-200 marker:hidden [&::-webkit-details-marker]:hidden">
         <span>{summaryLabel}</span>
-        <span className="text-xs text-neutral-500">{summaryText}</span>
+        <span className="text-xs text-neutral-400">{summaryText}</span>
       </summary>
       <div className="border-t border-neutral-800 p-3">{rows}</div>
     </details>

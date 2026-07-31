@@ -84,7 +84,7 @@ export function EmailLogTable({ load, emptyLabel }: { load: EmailLogLoader; empt
     <div className="flex flex-col gap-4">
       <div className="overflow-x-auto rounded-lg border border-neutral-800">
         <table className="w-full min-w-[44rem] text-left text-sm">
-          <thead className="bg-neutral-900 text-xs uppercase tracking-wide text-neutral-500">
+          <thead className="bg-neutral-900 text-xs uppercase tracking-wide text-neutral-400">
             <tr>
               <th className="px-4 py-3 font-medium">{t('admin.emailLog.headers.when')}</th>
               <th className="px-4 py-3 font-medium">{t('admin.emailLog.headers.recipient')}</th>

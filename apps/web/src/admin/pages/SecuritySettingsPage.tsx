@@ -31,7 +31,7 @@ function MethodCard({
     <div className="flex flex-col gap-3 rounded-md border border-neutral-800 bg-neutral-900 p-5">
       <div className="flex flex-col gap-0.5">
         <h3 className="text-sm font-semibold text-neutral-100">{title}</h3>
-        <p className="text-xs text-neutral-500">{description}</p>
+        <p className="text-xs text-neutral-400">{description}</p>
       </div>
       {children}
     </div>
@@ -391,7 +391,7 @@ function SessionPolicyCard() {
             value={hours}
             onChange={(e) => setHours(e.target.value)}
           />
-          <p className="text-xs text-neutral-500">
+          <p className="text-xs text-neutral-400">
             {t('admin.security.sessionPolicy.hint', { min, max })}
           </p>
           <div>
