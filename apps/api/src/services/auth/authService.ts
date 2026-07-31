@@ -49,6 +49,7 @@ import {
 import {
   clearLoginThrottle,
   clearPasswordThrottle,
+  isRememberableUser,
   LOGIN_ACCOUNT_NAMESPACE,
   pinFailCountKey,
   PIN_FALLBACK_THRESHOLD,
@@ -59,6 +60,7 @@ import {
   rememberedDevicesForUserKey,
   REMEMBERED_DEVICE_TTL_SECONDS,
   TWO_FACTOR_ACCOUNT_NAMESPACE,
+  type RememberableUser,
 } from './loginThrottle';
 import type { TwoFactorService } from './twoFactorService';
 
@@ -135,21 +137,6 @@ export type LoginResult =
  * `approval` mode parks a pending application and mints NO session (`pending`).
  */
 export type RegisterResult = ({ status: 'authenticated' } & SessionResult) | { status: 'pending' };
-
-type RememberableUser = UserRow & {
-  status: 'active';
-  pinEnabled: true;
-  pinHash: string;
-};
-
-function isRememberableUser(user: UserRow | undefined): user is RememberableUser {
-  return Boolean(
-    user &&
-    user.status === 'active' &&
-    user.pinEnabled === true &&
-    typeof user.pinHash === 'string',
-  );
-}
 
 export interface VerifyTwoFactorInput {
   pendingToken: string;
