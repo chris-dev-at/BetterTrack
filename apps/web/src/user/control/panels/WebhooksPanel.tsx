@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import {
   WEBHOOK_EVENT_TYPES,
+  isParanoidKilledWebhookEventType,
   type CreateWebhookSubscriptionResponse,
   type WebhookEventType,
   type WebhookSubscription,
@@ -36,25 +37,11 @@ import {
 
 const WEBHOOKS_KEY = ['settings', 'webhooks'] as const;
 const deliveriesKey = (id: string) => ['settings', 'webhooks', id, 'deliveries'] as const;
-const PARANOID_PORTFOLIO_EVENTS = new Set<WebhookEventType>([
-  'portfolio.shared',
-  'watchlist.shared',
-  'conglomerate.shared',
-  'friend.activity',
-  'follow.published',
-  'follow.alert.created',
-  'follow.alert.fired',
-  'dividend.event',
-  'budget.exceeded',
-  'mirror.invite',
-  'mirror.member_joined',
-  'mirror.member_left',
-  'mirror.member_removed',
-  'mirror.removed',
-  'mirror.ownership_transferred',
-  'mirror.chain_dissolved',
-  'mirror.sync_stalled',
-]);
+// Which catalog entries a paranoid account can never receive comes from
+// `isParanoidKilledWebhookEventType` (contracts), NOT from a list restated
+// here: the server's PD3b enforcement registry is the truth and the API carries
+// the drift-guard test that keeps the two equal, so a kill-listed event added
+// later cannot silently stay offerable in this form.
 
 /** Maps each catalog event type to its i18n label subkey (camelCase of the type). */
 const EVENT_LABEL_KEY: Record<WebhookEventType, string> = {
@@ -236,7 +223,7 @@ function CreateWebhookForm({
         <legend className="bt-label">{t('settings.api.webhooks.eventsLegend')}</legend>
         <div className="grid grid-cols-1 gap-x-4 gap-y-0.5 sm:grid-cols-2">
           {WEBHOOK_EVENT_TYPES.filter(
-            (type) => !paranoid || !PARANOID_PORTFOLIO_EVENTS.has(type),
+            (type) => !paranoid || !isParanoidKilledWebhookEventType(type),
           ).map((type) => (
             <label
               className="bt-soft flex cursor-pointer items-center gap-2 text-[12.5px]"
@@ -400,7 +387,7 @@ function WebhookRow({ subscription }: { subscription: WebhookSubscription }) {
               is disabled, so a shortened list would misstate the endpoint. */}
           <span className="flex flex-wrap gap-1">
             {subscription.eventTypes.map((type) => {
-              const inactive = paranoid && PARANOID_PORTFOLIO_EVENTS.has(type);
+              const inactive = paranoid && isParanoidKilledWebhookEventType(type);
               const label = inactive ? t('settings.api.webhooks.eventInactive') : undefined;
               return (
                 <Badge className="bt-cc-mono" key={type} outline title={label}>

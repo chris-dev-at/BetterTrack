@@ -55,6 +55,42 @@ export const WEBHOOK_EVENT_TYPES = [
 export type WebhookEventType = (typeof WEBHOOK_EVENT_TYPES)[number];
 export const webhookEventTypeSchema = z.enum(WEBHOOK_EVENT_TYPES);
 
+/**
+ * The subscribable catalog entries a **paranoid** account can never receive
+ * (docs/paranoid-design.md §8 item 8). The server never fans these out for such
+ * an account — the PD3b enforcement registry kills them under the
+ * `portfolioWebhooks` capability — so the create/edit form must not offer them
+ * either. Like {@link WEBHOOK_EVENT_TYPES} this list is the product surface
+ * stated here because contracts cannot import the API layer; the API carries a
+ * drift-guard test asserting it stays exactly the subscribable half of the
+ * registry's `webhookEventTypes` union (the registry additionally kills
+ * `portfolio.changed`, which is not subscribable and so is absent here).
+ */
+export const PARANOID_KILLED_WEBHOOK_EVENT_TYPES = [
+  'portfolio.shared',
+  'watchlist.shared',
+  'conglomerate.shared',
+  'friend.activity',
+  'follow.published',
+  'follow.alert.created',
+  'follow.alert.fired',
+  'dividend.event',
+  'budget.exceeded',
+  'mirror.invite',
+  'mirror.member_joined',
+  'mirror.member_left',
+  'mirror.member_removed',
+  'mirror.removed',
+  'mirror.ownership_transferred',
+  'mirror.chain_dissolved',
+  'mirror.sync_stalled',
+] as const satisfies readonly WebhookEventType[];
+
+/** True when a paranoid account can never receive this subscribable event. */
+export function isParanoidKilledWebhookEventType(type: WebhookEventType): boolean {
+  return (PARANOID_KILLED_WEBHOOK_EVENT_TYPES as readonly WebhookEventType[]).includes(type);
+}
+
 /** Signature transport headers on every delivery POST. */
 export const WEBHOOK_SIGNATURE_HEADER = 'X-BetterTrack-Signature';
 export const WEBHOOK_TIMESTAMP_HEADER = 'X-BetterTrack-Timestamp';

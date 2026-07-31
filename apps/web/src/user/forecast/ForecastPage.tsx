@@ -6,7 +6,6 @@ import { getAnalyticsSeries } from '../../lib/analyticsApi';
 import { cx } from '../../lib/cx';
 import { formatMoney, formatPercent } from '../../lib/format';
 import type { PortfolioSummary } from '@bettertrack/contracts';
-import { computeSeriesStats } from '@bettertrack/domain/seriesStats';
 import { StatCard } from '../../ui';
 import { Alert, Button, TextField } from '../components/ui';
 
@@ -23,6 +22,7 @@ import {
 import { ProjectionSection } from './ProjectionSection';
 import { StandingOrdersSection } from './StandingOrdersSection';
 import { usePortfolioStore } from '../portfolio/PortfolioStoreProvider';
+import { clientSeriesCagrPct } from '../vault/engine/clientSeries';
 import { useResolvedPrivacyMode } from '../vault/usePrivacyMode';
 
 /**
@@ -114,15 +114,10 @@ function usePortfolioPrefill(): {
     enabled: portfolioId !== null && paranoid,
     staleTime: 60_000,
   });
+  // Same shaping as the analytics header (`clientSeriesCagrPct` trims the zero
+  // edges first), so the prefill and the curve it samples never disagree.
   const historyCagr =
-    historyQuery.data == null
-      ? null
-      : computeSeriesStats(
-          historyQuery.data.points.map((point) => ({
-            date: point.date,
-            value: point.valueEur,
-          })),
-        ).cagrPct;
+    historyQuery.data == null ? null : clientSeriesCagrPct(historyQuery.data.points);
 
   const modeQuery = paranoid ? historyQuery : analyticsQuery;
   return {

@@ -106,7 +106,9 @@ function sameAxes(a: readonly PlacementAxis[], b: readonly PlacementAxis[]): boo
  * The widget board, except on a paranoid account: its widgets read
  * `portfolioApi` directly instead of the store seam, so they would mix server
  * reads into an encrypted account. `/` then renders the portfolio page and the
- * saved board comes back untouched on disable (§16 2026-07-30, issue #729).
+ * saved board (localStorage — never vault or server data) comes back untouched
+ * on disable. Recorded as kill-list item 13 in docs/paranoid-design.md §8 and
+ * in PROJECTPLAN §16 (2026-07-31, issue #729).
  */
 export function HomePage() {
   const privacyMode = useResolvedPrivacyMode();

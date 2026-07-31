@@ -432,8 +432,15 @@ const PLAINTEXT_QUERY_ROOTS = new Set([
  * today's API adapter; paranoid accounts receive the decrypted PD5/PD7 seam
  * only after unlock. A lock replaces this whole subtree in the same render.
  */
-function AccountModeRoot({ children }: { children: ReactNode }) {
+/**
+ * The account-mode gate: it decides, for the whole authenticated subtree, which
+ * portfolio store backs it and whether a locked vault replaces it outright.
+ * Exported for `AccountModeRoot.test.tsx`, which drives the privacy/phase
+ * matrix directly — every other consumer should mount `UserApp`.
+ */
+export function AccountModeRoot({ children }: { children: ReactNode }) {
   const t = useT();
+  const location = useLocation();
   const { status, user } = useAuth();
   const privacy = usePrivacyMode(
     status === 'authenticated',
@@ -478,12 +485,22 @@ function AccountModeRoot({ children }: { children: ReactNode }) {
     if (
       status === 'authenticated' &&
       privacy.privacyMode === 'normal' &&
-      runtime.phase !== 'locked'
+      runtime.phase === 'unlocked'
     ) {
       // A disable completed in another tab/device. Revoke the old decrypted
       // session before the normal API-backed subtree is allowed to continue.
       void runtime.lock({ broadcast: false });
     }
+    // 'unlocking', deliberately NOT included: an unlock IN FLIGHT is owned by
+    // whoever started it, and locking here would cancel it (`lock` bumps the
+    // runtime's operation generation). The enable wizard hits exactly that —
+    // it flips the account mode from the receipt and starts the first unlock in
+    // the same turn, but the mode flip arrives one macrotask later than the
+    // phase change (TanStack's notify scheduler is a `setTimeout(0)`, React's
+    // is a microtask), so for one render this reads 'normal' + 'unlocking' and
+    // used to kill the unlock the user had already authenticated. Nothing is
+    // lost by waiting: the effect re-runs when the phase settles, so a real
+    // cross-device disable still locks the moment it reaches 'unlocked'.
   }, [privacy.privacyMode, runtime, status]);
 
   if (status !== 'authenticated') {
@@ -522,6 +539,13 @@ function AccountModeRoot({ children }: { children: ReactNode }) {
     );
   }
   if (runtime.phase !== 'unlocked' || paranoidStore == null) {
+    // Account deletion is on §8's KEPT list (§12) and it is also the stable
+    // public URL the store listing points at, so a locked vault must not make
+    // it unreachable. The page reads no money data at all — typed username plus
+    // one credential, both verified server-side — so it is served directly here
+    // rather than through `children`, which would mount the shell and its
+    // portfolio store behind the gate.
+    if (location.pathname === '/account/delete') return <DeleteAccountPage />;
     // The gate owns the whole authenticated subtree, so the §3 recovery exit
     // has to live ON it: /control/privacy (Start fresh, Disable) is exactly
     // what a user who cannot unlock can no longer reach.

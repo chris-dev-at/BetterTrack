@@ -31,6 +31,7 @@ import { AiInsightsPanel } from './AiInsightsPanel';
 import { CompareControl, type CompareTarget } from './CompareControl';
 import { ContributionTable } from './ContributionTable';
 import { usePortfolioStore } from '../PortfolioStoreProvider';
+import { trimZeroValueEdges } from '../../vault/engine/clientSeries';
 import { useResolvedPrivacyMode } from '../../vault/usePrivacyMode';
 import { NormalModeOnly } from '../../vault/ui/ParanoidSurfaceGate';
 
@@ -85,21 +86,6 @@ function analyticsHistoryRange(preset: RangePreset): PortfolioHistoryRange {
 }
 
 /**
- * Trim leading/trailing non-positive points, exactly like the server's
- * `trimZeroValueEdges`. Without it a window that opens before the first held
- * day starts at 0, and every downstream number collapses: `computeSeriesStats`
- * cannot state a CAGR from a zero base and the perf rebase flattens the whole
- * curve to 0 %.
- */
-function trimZeroValueEdges<T extends { valueEur: number }>(points: readonly T[]): T[] {
-  let lo = 0;
-  let hi = points.length - 1;
-  while (lo <= hi && (points[lo]?.valueEur ?? 0) <= 0) lo += 1;
-  while (hi >= lo && (points[hi]?.valueEur ?? 0) <= 0) hi -= 1;
-  return points.slice(lo, hi + 1);
-}
-
-/**
  * The paranoid substitute for the `analytics/.../series` endpoint, built from
  * the two client-derived reads a decrypted vault can produce. Where the server's
  * quantity is reproducible it is reproduced exactly; where it is not, the field
@@ -121,7 +107,8 @@ function trimZeroValueEdges<T extends { valueEur: number }>(points: readonly T[]
  *   response also carries; those are two different curves.
  * - `contributionPct` is `null`: measuring an asset's share of the window's
  *   change needs the same per-asset history. The table drops the column
- *   instead (§16 2026-07-30).
+ *   instead (docs/paranoid-design.md §8 item 12; PROJECTPLAN §16 2026-07-31,
+ *   issue #729).
  */
 function clientAnalyticsResponse(
   portfolioId: string,

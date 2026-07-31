@@ -30,8 +30,8 @@ const KILLED_PREFIXES = [
  * `migration.ts` carries every category/transaction/rule/budget into the blob,
  * and the whole area returns intact on disable. Re-deriving these pages against
  * the vault store is v6 follow-up work — recorded in PROJECTPLAN §16
- * (2026-07-30) and as kill-list item 11 in docs/paranoid-design.md §8, because
- * §8's rule is that an absent surface is a documented one.
+ * (2026-07-31, issue #729) and as kill-list item 11 in docs/paranoid-design.md
+ * §8, because §8's rule is that an absent surface is a documented one.
  *
  * `/portfolio/cash-flow/accounts` deliberately stays live: cash sources are
  * portfolio rows served by the vault store, not expense rows.

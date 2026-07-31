@@ -11,7 +11,6 @@ import {
 } from 'recharts';
 
 import type { PortfolioHistoryRange, PortfolioSummary } from '@bettertrack/contracts';
-import { computeSeriesStats } from '@bettertrack/domain/seriesStats';
 
 import { useT } from '../../i18n';
 import { getAnalyticsSeries } from '../../lib/analyticsApi';
@@ -22,6 +21,7 @@ import { EmptyState, StatCard } from '../../ui';
 import { overlayColor } from '../../ui/charts';
 import { Button, TextField } from '../components/ui';
 import { usePortfolioStore } from '../portfolio/PortfolioStoreProvider';
+import { clientSeriesCagrPct } from '../vault/engine/clientSeries';
 import { useResolvedPrivacyMode } from '../vault/usePrivacyMode';
 
 import {
@@ -131,19 +131,18 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
   });
 
   // The sampled historical return over the selected window (null when the series
-  // is too short to state a CAGR); it drives the return field until edited.
+  // is too short to state a CAGR); it drives the return field until edited. The
+  // paranoid branch goes through `clientSeriesCagrPct` so the window's zero
+  // edges are trimmed exactly like the analytics header trims them.
   const sampledReturnPct =
     privacyMode === 'paranoid'
       ? historyQuery.data == null
         ? null
-        : computeSeriesStats(
-            historyQuery.data.points
-              .filter((point) => windowFrom === undefined || point.date >= windowFrom)
-              .map((point) => ({
-                date: point.date,
-                value: point.valueEur,
-              })),
-          ).cagrPct
+        : clientSeriesCagrPct(
+            historyQuery.data.points.filter(
+              (point) => windowFrom === undefined || point.date >= windowFrom,
+            ),
+          )
       : (analyticsQuery.data?.primary.stats.cagrPct ?? null);
   useEffect(() => {
     setReturnPct(sampledReturnPct === null ? '' : String(round2(sampledReturnPct)));

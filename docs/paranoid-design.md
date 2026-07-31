@@ -622,7 +622,8 @@ Killed for paranoid accounts:
     into the blob, so the whole area returns intact on disable. What is missing
     is the client-side re-derivation of those five pages against the vault
     store; it is v6 follow-up work and is logged in PROJECTPLAN §16
-    (2026-07-30) alongside the home board and the contribution column.
+    (2026-07-31) alongside the home board (item 13) and the contribution
+    column (item 12).
 12. **Series that need per-asset history — answered with the portfolio's own
     NET-WORTH curve, and labelled as such.** The client engine derives one
     value series per portfolio (holdings + cash, `netWorthSeries`); it has no
@@ -641,6 +642,16 @@ Killed for paranoid accounts:
       net-worth figure too, so the two agree with each other.
       Normal accounts are untouched by both: they keep reading
       `analytics/…/series`, unchanged.
+13. **The Home widget board — replaced by the portfolio page, and this is a
+    recorded deviation too.** Every widget under `apps/web/src/user/home/
+widgets/` reads `portfolioApi` directly instead of the `PortfolioStore`
+    seam (§10), so a paranoid board would mix server reads into an encrypted
+    account. `/` therefore renders `<PortfolioPage />` while the mode is
+    paranoid. The board's saved configuration is not touched — it lives in
+    `localStorage`, never in the vault or on the server — so it comes back
+    exactly as it was on disable. Porting the widgets to the store seam is the
+    v6 follow-up; it is logged in PROJECTPLAN §16 (2026-07-31) with items 11
+    and 12.
 
 Kept, unchanged (the "fully functional" half): the full auth stack (password,
 2FA, passkeys, PIN, sessions, admin-independent), friendships + chat +
