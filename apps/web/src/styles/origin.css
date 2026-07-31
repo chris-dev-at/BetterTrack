@@ -2500,6 +2500,225 @@
 }
 
 .bt-monthpick__label {
+  min-width: 5.4rem;
+  padding: 0 2px;
+  color: var(--bt-text-soft);
+  font-size: 12px;
+  font-weight: 570;
+  text-align: center;
+  white-space: nowrap;
+}
+
+/* ── Icon button ────────────────────────────────────────────────────────────
+   A quiet, square action that sits beside the loud ones. Same height as the
+   record pair and the month picker so the header reads as one row. */
+.bt-iconbtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  min-height: 34px;
+  border: 1px solid var(--bt-border);
+  border-radius: 8px;
+  background: var(--bt-bg-raised);
+  color: var(--bt-text-soft);
+  cursor: pointer;
+  transition:
+    background var(--bt-t-fast),
+    color var(--bt-t-fast);
+}
+
+.bt-iconbtn:hover {
+  background: var(--bt-surface-strong);
+  color: var(--bt-text);
+}
+
+.bt-iconbtn svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* ── Record pair ────────────────────────────────────────────────────────────
+   Two halves of ONE object: add money on the left, take money out on the
+   right. Each half carries its direction's colour at rest — a bare + / − says
+   nothing about money, so the meaning cannot live in hover alone. Only the
+   outer corners are rounded, and the halves share a single hairline, so it
+   reads as one control rather than two buttons that happen to touch. */
+.bt-recordpair {
+  display: inline-flex;
+  align-items: stretch;
+  border: 1px solid var(--bt-border-strong);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.bt-recordpair__half {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  min-height: 32px;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  transition:
+    background var(--bt-t-fast),
+    color var(--bt-t-fast);
+}
+
+.bt-recordpair__half svg {
+  width: 17px;
+  height: 17px;
+}
+
+.bt-recordpair__half--in {
+  background: var(--bt-pos-soft);
+  color: var(--bt-pos);
+  border-right: 1px solid var(--bt-border-strong);
+}
+
+.bt-recordpair__half--out {
+  background: var(--bt-neg-soft);
+  color: var(--bt-neg);
+}
+
+.bt-recordpair__half--in:hover {
+  background: color-mix(in srgb, var(--bt-pos) 22%, transparent);
+}
+
+.bt-recordpair__half--out:hover {
+  background: color-mix(in srgb, var(--bt-neg) 22%, transparent);
+}
+
+/* ── Cash account cards ─────────────────────────────────────────────────────
+   Replaces a row of tag-shaped pills. A pill says "label"; these hold a
+   balance and two actions, so they are cards.
+
+   The actions are a FULL-BLEED FOOTER: flush to the card's left, right and
+   bottom edges, splitting the width in half, separated from the balance by the
+   card's own hairline. Insetting them left a moat of dead padding on three
+   sides and made two buttons float inside a box instead of finishing it. The
+   card carries no bottom padding for the same reason. */
+.bt-acctgrid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+}
+
+.bt-acctcard {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--bt-border);
+  border-radius: 10px;
+  background: var(--bt-surface);
+  overflow: hidden;
+}
+
+.bt-acctcard__body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 11px 13px 12px;
+}
+
+.bt-acctcard__name {
+  color: var(--bt-text-soft);
+  font-size: 12px;
+  font-weight: 570;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bt-acctcard__value {
+  color: var(--bt-text);
+  font-size: 18px;
+  font-weight: 650;
+}
+
+.bt-acctcard__actions {
+  display: flex;
+  border-top: 1px solid var(--bt-border);
+}
+
+.bt-acctcard__action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  min-height: 32px;
+  border: 0;
+  background: none;
+  color: var(--bt-text-soft);
+  cursor: pointer;
+  transition:
+    background var(--bt-t-fast),
+    color var(--bt-t-fast);
+}
+
+.bt-acctcard__action svg {
+  width: 15px;
+  height: 15px;
+}
+
+.bt-acctcard__action--in {
+  border-right: 1px solid var(--bt-border);
+}
+
+.bt-acctcard__action--in:hover {
+  background: var(--bt-pos-soft);
+  color: var(--bt-pos);
+}
+
+.bt-acctcard__action--out:hover {
+  background: var(--bt-neg-soft);
+  color: var(--bt-neg);
+}
+
+/* ── Month picker ───────────────────────────────────────────────────────────
+   Arrows plus the month's NAME. Replaces `<input type="month">`, which renders
+   as a locale-dependent numeric field and made "go back one month" an edit
+   rather than a press. */
+.bt-monthpick {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--bt-border);
+  border-radius: 8px;
+  background: var(--bt-bg-raised);
+}
+
+.bt-monthpick__arrow {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  min-height: 24px;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  color: var(--bt-text-soft);
+  font: inherit;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    background var(--bt-t-fast),
+    color var(--bt-t-fast);
+}
+
+.bt-monthpick__arrow:hover:not(:disabled) {
+  background: var(--bt-surface-strong);
+  color: var(--bt-text);
+}
+
+.bt-monthpick__arrow:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.bt-monthpick__label {
   min-width: 8.5rem;
   padding: 0 4px;
   color: var(--bt-text-soft);
@@ -2509,63 +2728,56 @@
   white-space: nowrap;
 }
 
-/* ── Split action button ────────────────────────────────────────────────────
-   One primary action with a direction shortcut at each end. The ends are the
-   same height and share the outer radius, so it reads as ONE control rather
-   than three buttons that happen to touch. Each end tints on hover in its own
-   direction's colour — the only place the meaning lives, since a bare + / −
-   says nothing on its own. */
-.bt-splitbtn {
+/* ── Record pair ────────────────────────────────────────────────────────────
+   Two halves of ONE object: add money on the left, take money out on the
+   right. Each half carries its direction's colour at rest — a bare + / − says
+   nothing about money, so the meaning cannot live in hover alone. Only the
+   outer corners are rounded, and the halves share a single hairline, so it
+   reads as one control rather than two buttons that happen to touch. */
+.bt-recordpair {
   display: inline-flex;
   align-items: stretch;
+  border: 1px solid var(--bt-border-strong);
   border-radius: 8px;
   overflow: hidden;
-  border: 1px solid var(--bt-border-accent, var(--bt-border-strong));
 }
 
-.bt-splitbtn__main {
-  padding: 0 14px;
-  min-height: 34px;
-  border: 0;
-  background: var(--bt-gold);
-  color: var(--bt-gold-ink);
-  font: inherit;
-  font-size: 13px;
-  font-weight: 620;
-  cursor: pointer;
-  transition: filter var(--bt-t-fast);
-}
-
-.bt-splitbtn__main:hover {
-  filter: brightness(1.06);
-}
-
-.bt-splitbtn__end {
+.bt-recordpair__half {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 32px;
+  width: 40px;
+  min-height: 32px;
   border: 0;
-  background: var(--bt-surface-strong);
-  color: var(--bt-text-soft);
-  font: inherit;
-  font-size: 16px;
-  font-weight: 700;
-  line-height: 1;
+  background: none;
   cursor: pointer;
   transition:
     background var(--bt-t-fast),
     color var(--bt-t-fast);
 }
 
-.bt-splitbtn__end--neg:hover {
+.bt-recordpair__half svg {
+  width: 17px;
+  height: 17px;
+}
+
+.bt-recordpair__half--in {
+  background: var(--bt-pos-soft);
+  color: var(--bt-pos);
+  border-right: 1px solid var(--bt-border-strong);
+}
+
+.bt-recordpair__half--out {
   background: var(--bt-neg-soft);
   color: var(--bt-neg);
 }
 
-.bt-splitbtn__end--pos:hover {
-  background: var(--bt-pos-soft);
-  color: var(--bt-pos);
+.bt-recordpair__half--in:hover {
+  background: color-mix(in srgb, var(--bt-pos) 22%, transparent);
+}
+
+.bt-recordpair__half--out:hover {
+  background: color-mix(in srgb, var(--bt-neg) 22%, transparent);
 }
 
 /* ── Cash account cards ─────────────────────────────────────────────────────

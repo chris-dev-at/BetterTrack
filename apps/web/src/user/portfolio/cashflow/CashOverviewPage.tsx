@@ -15,7 +15,7 @@ import { getCashMovements, listCashSources } from '../../../lib/portfolioApi';
 import { EM_DASH, formatDate, formatMoney } from '../../../lib/format';
 import { Alert } from '../../components/ui';
 import { EmptyState, MoneyText, Skeleton } from '../../../ui';
-import { Button, PageHead } from '../../../ui/origin';
+import { Button, Icon, PageHead } from '../../../ui/origin';
 import { CashflowChart } from './CashflowChart';
 import { MonthPicker } from './MonthPicker';
 import { RecordCashButton } from './RecordCashButton';
@@ -146,6 +146,16 @@ export function CashOverviewPage() {
           <>
             <MonthPicker onChange={setMonth} value={month} />
             <RecordCashButton portfolioId={portfolioId} />
+            {/* Managing accounts is setup, so it is an icon beside the actions
+                rather than a worded button competing with them. */}
+            <Link
+              aria-label={t('cashflow.overview.manageAccounts')}
+              className="bt-iconbtn"
+              title={t('cashflow.overview.manageAccounts')}
+              to={to('/portfolio/cash/accounts')}
+            >
+              <Icon name="sliders" />
+            </Link>
           </>
         }
         sub={t('cashflow.overview.subtitle')}
@@ -175,9 +185,6 @@ export function CashOverviewPage() {
               })}
             </p>
           </div>
-          <Link className="bt-btn" to={to('/portfolio/cash/accounts')}>
-            {t('cashflow.overview.manageAccounts')}
-          </Link>
         </div>
 
         {sources.length === 0 ? (
@@ -190,32 +197,34 @@ export function CashOverviewPage() {
           >
             {sources.map((source) => (
               <li className="bt-acctcard" key={source.id}>
-                <span className="bt-acctcard__name" title={source.name}>
-                  {source.name}
+                <span className="bt-acctcard__body">
+                  <span className="bt-acctcard__name" title={source.name}>
+                    {source.name}
+                  </span>
+                  <span className="bt-acctcard__value bt-num">
+                    <MoneyText amount={source.balanceEur} currency="EUR" />
+                  </span>
                 </span>
-                <span className="bt-acctcard__value bt-num">
-                  <MoneyText amount={source.balanceEur} currency="EUR" />
-                </span>
-                {/* On the card, because "spend from Savings" was three presses
-                    away when the only entry point was the page-level button. */}
+                {/* On the card, because "spend from Savings" was four presses
+                    away when the only entry point was the page-level control. */}
                 <span className="bt-acctcard__actions">
                   <button
-                    aria-label={t('cashflow.overview.quickWithdraw', { source: source.name })}
-                    className="bt-acctcard__action bt-acctcard__action--neg"
-                    onClick={() => setQuick({ sourceId: source.id, direction: 'out' })}
-                    title={t('cashflow.overview.quickWithdraw', { source: source.name })}
-                    type="button"
-                  >
-                    −
-                  </button>
-                  <button
                     aria-label={t('cashflow.overview.quickDeposit', { source: source.name })}
-                    className="bt-acctcard__action bt-acctcard__action--pos"
+                    className="bt-acctcard__action bt-acctcard__action--in"
                     onClick={() => setQuick({ sourceId: source.id, direction: 'in' })}
                     title={t('cashflow.overview.quickDeposit', { source: source.name })}
                     type="button"
                   >
-                    +
+                    <Icon name="plus" />
+                  </button>
+                  <button
+                    aria-label={t('cashflow.overview.quickWithdraw', { source: source.name })}
+                    className="bt-acctcard__action bt-acctcard__action--out"
+                    onClick={() => setQuick({ sourceId: source.id, direction: 'out' })}
+                    title={t('cashflow.overview.quickWithdraw', { source: source.name })}
+                    type="button"
+                  >
+                    <Icon name="minus" />
                   </button>
                 </span>
               </li>

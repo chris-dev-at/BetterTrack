@@ -10,6 +10,9 @@ import { useI18n, useT } from '../../../i18n';
  * to say "July"; and moving one month — overwhelmingly the thing people do
  * here — meant editing a number rather than pressing a direction.
  *
+ * The month is abbreviated ("Jul 2026"): the control was sized for
+ * "September" and spent most of the year housing three letters.
+ *
  * Forward is disabled at the current month: the ledger cannot contain the
  * future, so an enabled arrow would only ever lead to an empty page.
  */
@@ -38,7 +41,7 @@ export function MonthPicker({ value, onChange }: MonthPickerProps) {
 
   const [year, index] = value.split('-').map(Number);
   const label = new Date(Date.UTC(year!, index! - 1, 1)).toLocaleDateString(locale, {
-    month: 'long',
+    month: 'short',
     timeZone: 'UTC',
     year: 'numeric',
   });
