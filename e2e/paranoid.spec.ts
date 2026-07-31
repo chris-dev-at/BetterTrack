@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto';
+
 import {
   expect,
   request as newRequestContext,
@@ -62,6 +64,13 @@ const KILLED_ROUTE_MATRIX = [
 interface MoneyFixture {
   portfolioId: string;
   asset: { id: string; symbol: string; name: string };
+  /**
+   * A unique plaintext marker carried by the seeded expense transaction's
+   * description. Once paranoid mode is on it exists ONLY inside the encrypted
+   * vault document, so it is the content half of AC4: a fail-open that rendered
+   * or logged decrypted portfolio material would carry this exact string.
+   */
+  contentSentinel: string;
 }
 
 interface AlertFixture {
@@ -142,6 +151,12 @@ test.describe('PD9 paranoid-mode end-to-end gate', () => {
       await assertPd9DriveInstalled(page);
       collectSanitizedDiagnostics(page, diagnostics);
       const fixture = await createMoneyFixture(owner);
+      // The decrypted-content canary joins the scan set for the whole flow. It
+      // cannot false-positive on the pre-enable seed traffic: that traffic runs
+      // through the context-level APIRequestContext (no page events at all),
+      // and `collectSanitizedDiagnostics` records only console/pageerror text
+      // plus a failed request's method + pathname — never a body or query.
+      sensitive.push({ name: 'vault-content', value: fixture.contentSentinel });
       const purgeOnly = await harness.seedPurgeOnlyFixture({
         email: owner.email,
         portfolioId: fixture.portfolioId,
@@ -214,14 +229,17 @@ test.describe('PD9 paranoid-mode end-to-end gate', () => {
       });
 
       await test.step('[PD9-A7] real evaluator and notification dispatcher', async () => {
-        // Create this kept, global-asset row only after paranoid enable. That
-        // removes the several-minute window in which the scheduled worker could
-        // consume a one-shot before this focused evaluator call. If the worker
-        // wins the remaining instant, final status + UI delivery are still the
-        // invariant; race-sensitive evaluated/fired counters are not.
+        // A kept, global-asset alert has two legitimate writers: this focused
+        // evaluation and the real minute-scheduled worker. `fireAlert` therefore
+        // converges on the persisted invariant — status `triggered` plus the
+        // delivered inbox row — rather than sampling it once; whichever writer
+        // wins, the state below is what §15's "alerts still fire" claims.
         const alert = await createKeptAlert(owner!);
         const fired = await harness.fireAlert({ email: owner!.email, alertId: alert.id });
-        expect(fired.status).toBe('triggered');
+        expect(fired, 'the kept global alert never converged to a delivered fire').toMatchObject({
+          status: 'triggered',
+        });
+        expect(fired.notifications).toBeGreaterThan(0);
 
         await navigateInApp(page, '/workbench/alerts');
         const alertRow = page.getByRole('listitem').filter({ hasText: alert.symbol });
@@ -270,7 +288,13 @@ test.describe('PD9 paranoid-mode end-to-end gate', () => {
         await expect(page.getByText('That vault passphrase is incorrect.')).toBeVisible();
         await expect(page.getByText('Unlock your vault', { exact: true })).toBeVisible();
         await expect(page.getByText(fixture.asset.symbol, { exact: true })).toHaveCount(0);
+        await expect(page.getByText(fixture.asset.name, { exact: true })).toHaveCount(0);
         await expect(page.getByText(/1[.,]000[.,]00/)).toHaveCount(0);
+        // AC4's second half: never RENDER *or LOG* decrypted portfolio material.
+        // The content canary covers what the symbol/amount checks cannot — a
+        // fail-open that decrypted the document and parked it in a hidden node,
+        // an attribute or a console line while still showing the locked screen.
+        await assertNoDecryptedContent(page, diagnostics, fixture.contentSentinel);
 
         await restorePd9StoredDrive(page);
         await fillPd9Secret(page, 'Vault passphrase', 'passphrase');
@@ -429,6 +453,12 @@ async function createMoneyFixture(owner: E2EUser): Promise<MoneyFixture> {
     }),
   );
 
+  // Unique per run so it cannot collide with any app-emitted text, and never
+  // asserted as expected DOM content anywhere in this spec — a canary that the
+  // happy path can print into a Playwright failure message would poison the
+  // final scan instead of proving anything.
+  const contentSentinel = `PD9-CONTENT-${randomUUID().replace(/-/g, '')}`;
+
   const categories = await json<{ categories: Array<{ id: string; name: string }> }>(
     await api.get(apiV1('/expenses/categories')),
   );
@@ -449,12 +479,12 @@ async function createMoneyFixture(owner: E2EUser): Promise<MoneyFixture> {
         amount: 300,
         currency: 'EUR',
         bookedOn: today,
-        description: 'PD9 current-period groceries',
+        description: `PD9 current-period groceries ${contentSentinel}`,
       },
     }),
   );
 
-  return { portfolioId: portfolioId!, asset };
+  return { portfolioId: portfolioId!, asset, contentSentinel };
 }
 
 async function createKeptAlert(owner: E2EUser): Promise<AlertFixture> {
@@ -639,6 +669,27 @@ function emptyVaultStorage(): Pd9VaultStorageProbe {
     retired: { rows: 0, bytes: 0 },
     retirements: 0,
   };
+}
+
+/**
+ * Assert the decrypted-content canary reached neither the document nor the
+ * collected diagnostics. Both checks reduce to a boolean/count before it
+ * crosses an assertion so a real leak fails on the criterion itself instead of
+ * echoing the canary back into `testInfo.errors` — which the final sentinel
+ * scan would then report as a second, misleading escape.
+ */
+async function assertNoDecryptedContent(
+  page: Page,
+  diagnostics: readonly string[],
+  sentinel: string,
+): Promise<void> {
+  const embedded = await page.evaluate(
+    (needle) => document.documentElement.outerHTML.includes(needle),
+    sentinel,
+  );
+  expect(embedded, 'decrypted vault content reached the locked document').toBe(false);
+  const logged = diagnostics.filter((entry) => entry.includes(sentinel)).length;
+  expect(logged, 'decrypted vault content reached console/pageerror diagnostics').toBe(0);
 }
 
 function collectSanitizedDiagnostics(page: Page, diagnostics: string[]): void {

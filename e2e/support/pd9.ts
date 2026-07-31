@@ -4,7 +4,7 @@ import { join } from 'node:path';
 // The root e2e context has no direct drizzle dependency; resolve the API
 // package's own pinned copy, just as this harness resolves its production
 // repositories through `apps/api` below.
-import { and, count, eq, inArray } from '../../apps/api/node_modules/drizzle-orm/index.js';
+import { and, count, eq, inArray, sql } from '../../apps/api/node_modules/drizzle-orm/index.js';
 
 import { VAULT_RETIRED_SERVER_MIN_RETENTION_MS } from '../../packages/contracts/src/vault';
 import { createDatabase } from '../../apps/api/src/data/db';
@@ -22,7 +22,11 @@ import * as schema from '../../apps/api/src/data/schema';
 import type { Logger } from '../../apps/api/src/logger';
 import { createRedis } from '../../apps/api/src/redis';
 import { createParanoidModeGuard } from '../../apps/api/src/services/account/paranoidEnforcement';
-import { runAlertsEvaluation } from '../../apps/api/src/services/alerts/alertEvaluator';
+import {
+  alertFireLockKey,
+  alertFireWindowStart,
+  runAlertsEvaluation,
+} from '../../apps/api/src/services/alerts/alertEvaluator';
 import { createExpenseBudgetService } from '../../apps/api/src/services/expenses/budgetService';
 import { PARANOID_VAULT_TABLE_NAMES } from '../../apps/api/src/services/export/manifest';
 import { createNotificationCenter } from '../../apps/api/src/services/notifications/notificationCenter';
@@ -41,6 +45,18 @@ const silentLogger = {
   warn() {},
   error() {},
 } as unknown as Logger;
+
+/**
+ * How long {@link Pd9Harness.fireAlert} waits for the fire to CONVERGE — the
+ * alert row persisted `triggered` and its inbox row written. The scheduled
+ * `alerts.evaluate` worker writes the same row, and it emits through the
+ * durable dispatch queue, so the delivery half can land a moment after the
+ * status flip. Any single read is a race; the budget is what bounds it.
+ */
+const PD9_ALERT_CONVERGENCE_TIMEOUT_MS = 45_000;
+
+/** Gap between convergence polls; each poll also re-runs the focused evaluation. */
+const PD9_ALERT_POLL_INTERVAL_MS = 1_000;
 
 export const PD9_TRACEABILITY = [
   {
@@ -185,6 +201,26 @@ export interface Pd9VaultStorageProbe {
   retirements: number;
 }
 
+/**
+ * The converged outcome of one kept-alert proof. `status` + `notifications` are
+ * the invariant §15 asks for; the remaining counters are diagnostics that ride
+ * along into the spec's assertion message when convergence times out.
+ */
+export interface Pd9AlertFireResult {
+  /** Alerts seen across every focused evaluation this call ran. */
+  evaluated: number;
+  /** Fires this harness itself performed (0 when the scheduled worker won). */
+  fired: number;
+  /** Focused evaluations run before the observation below. */
+  attempts: number;
+  /** Milliseconds spent converging. */
+  elapsedMs: number;
+  /** The alert row's persisted status at the final observation. */
+  status: string;
+  /** Inbox rows written for this alert's fire (any trigger window). */
+  notifications: number;
+}
+
 export interface Pd9Harness {
   findUserIdByEmail(email: string): Promise<string>;
   captureCleartextScope(email: string): Promise<Pd9CleartextScope>;
@@ -196,11 +232,7 @@ export interface Pd9Harness {
   }): Promise<Pd9PurgeOnlyFixture>;
   purgeOnlyCounts(fixture: Pd9PurgeOnlyFixture): Promise<Record<string, number>>;
   vaultStorage(email: string): Promise<Pd9VaultStorageProbe>;
-  fireAlert(input: { email: string; alertId: string }): Promise<{
-    evaluated: number;
-    fired: number;
-    status: string;
-  }>;
+  fireAlert(input: { email: string; alertId: string }): Promise<Pd9AlertFireResult>;
   evaluateRestoredCurrentBudget(email: string): Promise<{
     emitted: DispatchableEvent[];
     fireRows: number;
@@ -687,28 +719,83 @@ export function createPd9Harness(): Pd9Harness {
           return 0;
         },
       };
-      const result = await runAlertsEvaluation({
-        alertRepo: scopedAlerts,
-        marketData: createStubMarketData({
-          quote: () => ({
-            value: {
-              price: 500,
-              currency: 'EUR',
-              dayChangePct: null,
-              asOf: new Date().toISOString(),
-            },
-            stale: false,
-            asOf: 0,
+      /**
+       * The observable §15 invariant: the alert row is persisted `triggered`
+       * AND the fire produced its inbox row. Two writers reach that state — this
+       * focused evaluation and the real minute-scheduled `alerts.evaluate`
+       * worker, which sweeps every active GLOBAL alert with no per-account
+       * filter (`paranoid.runAllowed` only gates the custom-asset rail). So the
+       * harness converges on the invariant instead of sampling it once: a
+       * single read can legitimately observe `active` while the worker sits
+       * between its `SET NX` fire lock and `recordTriggered`.
+       */
+      const observe = async (): Promise<{ status: string; notifications: number }> => {
+        const [alert, notifications] = await Promise.all([
+          alerts.findByIdForUser(userId, alertId, { includeCustomAssets: false }),
+          probe(
+            db
+              .select({ value: count() })
+              .from(schema.notifications)
+              .where(
+                and(
+                  eq(schema.notifications.userId, userId),
+                  sql`${schema.notifications.payload} ->> 'eventKey' like ${`alert.triggered:${alertId}:%`}`,
+                ),
+              ),
+          ),
+        ]);
+        if (!alert) throw new Error('PD9 alert vanished during evaluation.');
+        return { status: alert.status, notifications };
+      };
+
+      const startedAt = Date.now();
+      const deadline = startedAt + PD9_ALERT_CONVERGENCE_TIMEOUT_MS;
+      let evaluated = 0;
+      let fired = 0;
+      let attempts = 0;
+      for (;;) {
+        const observed = await observe();
+        const converged = observed.status === 'triggered' && observed.notifications > 0;
+        if (converged || Date.now() >= deadline) {
+          return { evaluated, fired, attempts, elapsedMs: Date.now() - startedAt, ...observed };
+        }
+
+        // The per-(alert, minute) idempotency lock is `SET NX EX 120` and is
+        // never released. A scheduled worker run that claimed it and then failed
+        // its REAL upstream quote call (the nightly runner has no quote
+        // provider; this harness uses a stub) would otherwise lock this focused
+        // evaluation out for the lock's full TTL — two whole trigger windows.
+        // Dropping the current window's key is safe for this fixture: the alert
+        // is one-shot, so a re-fire needs a still-active row; the dispatcher
+        // dedupes `alert.triggered` per (alert, minute); and the spec's bell
+        // assertion reads an unread COUNT, never an exact number. The next
+        // iteration recomputes the window, so a minute rollover between the
+        // delete and the evaluator's own clock read just retries.
+        await redis.del(alertFireLockKey(alertId, alertFireWindowStart(Date.now())));
+        const result = await runAlertsEvaluation({
+          alertRepo: scopedAlerts,
+          marketData: createStubMarketData({
+            quote: () => ({
+              value: {
+                price: 500,
+                currency: 'EUR',
+                dayChangePct: null,
+                asOf: new Date().toISOString(),
+              },
+              stale: false,
+              asOf: 0,
+            }),
           }),
-        }),
-        redis,
-        paranoid,
-        notify: center,
-        logger: silentLogger,
-      });
-      const alert = await alerts.findByIdForUser(userId, alertId, { includeCustomAssets: false });
-      if (!alert) throw new Error('PD9 alert vanished during evaluation.');
-      return { ...result, status: alert.status };
+          redis,
+          paranoid,
+          notify: center,
+          logger: silentLogger,
+        });
+        evaluated += result.evaluated;
+        fired += result.fired;
+        attempts += 1;
+        await delay(PD9_ALERT_POLL_INTERVAL_MS);
+      }
     },
 
     async evaluateRestoredCurrentBudget(email) {
@@ -745,6 +832,12 @@ export function createPd9Harness(): Pd9Harness {
       await Promise.all([redis.quit(), client.end({ timeout: 5 })]);
     },
   };
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
 }
 
 async function ids(query: PromiseLike<Array<{ id: string }>>): Promise<string[]> {
