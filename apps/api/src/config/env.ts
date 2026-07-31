@@ -34,6 +34,11 @@ const optionalPositiveInt = z.preprocess(
   (v) => (typeof v === 'string' && v.trim() === '' ? undefined : v),
   z.coerce.number().int().positive().optional(),
 );
+const retentionDays = (defaultDays: number) =>
+  z.preprocess(
+    (v) => (typeof v === 'string' && v.trim() === '' ? undefined : v),
+    z.coerce.number().int().nonnegative().default(defaultDays),
+  );
 
 const envSchema = z.object({
   NODE_ENV: z.enum(['development', 'test', 'production']).default('development'),
@@ -183,6 +188,13 @@ const envSchema = z.object({
   // so a stock deploy works without configuration; set an explicit durable path
   // in production so a mid-download restart never loses a ready file.
   BT_EXPORT_DIR: z.string().optional(),
+
+  // ── Data retention (§13.5 V5-P14, PL-01) ─────────────────────────────────
+  // Owner-adjustable retention windows for identifying operational trails.
+  // Unset (or blank) uses the conservative defaults below; explicit `0` keeps
+  // that table forever and disables its branch of the scheduled purge.
+  BT_AUDIT_RETENTION_DAYS: retentionDays(400),
+  BT_EMAIL_LOG_RETENTION_DAYS: retentionDays(180),
 
   // ── Telegram notification channel (§13.4 V4-P10) ───────────────────────────
   // Owner-provided bot token that lets the API deliver notifications through
@@ -755,6 +767,14 @@ export interface AppConfig {
     dir: string;
   };
   /**
+   * Operational data retention (§13.5 V5-P14, PL-01). Values are whole days;
+   * `0` means retain forever, while an unset env uses the documented defaults.
+   */
+  retention: {
+    auditDays: number;
+    emailLogDays: number;
+  };
+  /**
    * Telegram notification channel (§13.4 V4-P10). `enabled` is true iff the
    * global kill-switch is ON AND the bot token is set; when false the channel
    * is invisible everywhere (matrix column hidden, link routes 404, dispatcher
@@ -1046,6 +1066,10 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     },
     dataExport: {
       dir: e.BT_EXPORT_DIR && e.BT_EXPORT_DIR.trim() !== '' ? e.BT_EXPORT_DIR : DEFAULT_EXPORT_DIR,
+    },
+    retention: {
+      auditDays: e.BT_AUDIT_RETENTION_DAYS,
+      emailLogDays: e.BT_EMAIL_LOG_RETENTION_DAYS,
     },
     // V5-P0 kill-switch: the SAME flag controls Telegram AND Discord — either
     // both channels are offered by this build or neither. Default OFF so an
