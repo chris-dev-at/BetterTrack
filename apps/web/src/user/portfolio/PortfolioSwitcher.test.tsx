@@ -171,6 +171,15 @@ describe('resolveActivePortfolio session stickiness', () => {
 });
 
 describe('PortfolioSwitcher', () => {
+  test('renders a portfolio-list read failure when the switcher opens', async () => {
+    vi.mocked(listPortfolios).mockRejectedValue(new Error('portfolios unavailable'));
+    const user = userEvent.setup();
+    renderSwitcher();
+
+    await user.click(screen.getByRole('button', { name: 'Switch portfolio' }));
+    expect(await screen.findByText("This information isn't available.")).toBeInTheDocument();
+  });
+
   test('the shared create query opens the portfolio wizard directly', async () => {
     vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [] });
     renderSwitcher('/portfolio?create=1');

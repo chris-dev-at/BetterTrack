@@ -18,6 +18,7 @@ import {
   listWorkboard,
 } from '../../lib/workboardApi';
 import { EmptyState, MarketStateBadge, Skeleton } from '../../ui';
+import { AsyncReadState } from './AsyncReadState';
 import { useAssetSearch } from './useAssetSearch';
 import {
   ACTIVE_SUM,
@@ -316,6 +317,14 @@ export function AssetSearchBox({
         </p>
       ) : null}
 
+      {withDirectActions ? (
+        <AsyncReadState
+          loading={workboardQuery.isLoading}
+          error={workboardQuery.error}
+          onRetry={() => void workboardQuery.refetch()}
+        />
+      ) : null}
+
       {results.length > 0 ? (
         <ul
           className="flex flex-col gap-1"
@@ -336,6 +345,8 @@ export function AssetSearchBox({
                 conglomeratePickerOpen={conglomeratePickerFor === item.id}
                 conglomerates={conglomeratesQuery.data?.conglomerates ?? []}
                 conglomeratesLoading={conglomeratesQuery.isLoading}
+                conglomeratesError={conglomeratesQuery.error}
+                onRetryConglomerates={() => void conglomeratesQuery.refetch()}
                 conglomerateAddState={conglomerateAddState[item.id]}
                 onPickConglomerate={(target) => void handleAddToConglomerate(item, target)}
                 onCloseConglomeratePicker={() => setConglomeratePickerFor(null)}
@@ -347,6 +358,16 @@ export function AssetSearchBox({
         </ul>
       ) : null}
 
+      {portfolioAsset ? (
+        <AsyncReadState
+          loading={portfoliosQuery.isLoading}
+          error={portfoliosQuery.error}
+          onRetry={() => void portfoliosQuery.refetch()}
+        />
+      ) : null}
+      {portfolioAsset && portfoliosQuery.isSuccess && defaultPortfolioId === null ? (
+        <EmptyState compact title={t('forecast.projection.noPortfolioTitle')} />
+      ) : null}
       {portfolioAsset && defaultPortfolioId ? (
         <TransactionDialog
           portfolioId={defaultPortfolioId}
@@ -372,6 +393,8 @@ interface ResultRowProps {
   conglomeratePickerOpen: boolean;
   conglomerates: ConglomerateSummary[];
   conglomeratesLoading: boolean;
+  conglomeratesError: unknown;
+  onRetryConglomerates: () => void;
   conglomerateAddState: { status: 'pending' | 'done' | 'error'; message?: string } | undefined;
   onPickConglomerate: (target: ConglomerateSummary) => void;
   onCloseConglomeratePicker: () => void;
@@ -388,6 +411,8 @@ function ResultRow({
   conglomeratePickerOpen,
   conglomerates,
   conglomeratesLoading,
+  conglomeratesError,
+  onRetryConglomerates,
   conglomerateAddState,
   onPickConglomerate,
   onCloseConglomeratePicker,
@@ -460,6 +485,8 @@ function ResultRow({
               item={item}
               conglomerates={conglomerates}
               isLoading={conglomeratesLoading}
+              error={conglomeratesError}
+              onRetry={onRetryConglomerates}
               addState={conglomerateAddState}
               onPick={onPickConglomerate}
               onClose={closeAndRestoreFocus}
@@ -609,7 +636,11 @@ function WatchlistControl({
               {list.isDefault && added ? <span className="bt-link">✓</span> : null}
             </button>
           ))}
-          {listsQuery.isLoading ? <p className="px-2 py-1.5 bt-muted">…</p> : null}
+          <AsyncReadState
+            loading={listsQuery.isLoading}
+            error={listsQuery.error}
+            onRetry={() => void listsQuery.refetch()}
+          />
         </div>
       ) : null}
     </div>
@@ -640,6 +671,8 @@ function ConglomeratePicker({
   item,
   conglomerates,
   isLoading,
+  error,
+  onRetry,
   addState,
   onPick,
   onClose,
@@ -650,6 +683,8 @@ function ConglomeratePicker({
   item: SearchResultItem;
   conglomerates: ConglomerateSummary[];
   isLoading: boolean;
+  error: unknown;
+  onRetry: () => void;
   addState: { status: 'pending' | 'done' | 'error'; message?: string } | undefined;
   onPick: (target: ConglomerateSummary) => void;
   onClose: () => void;
@@ -673,11 +708,11 @@ function ConglomeratePicker({
         <span className="text-xs font-medium bt-muted">{t('assets.searchBox.pickerTitle')}</span>
       </div>
 
-      {isLoading ? (
-        <p className="px-1 py-2 text-xs bt-muted">{t('common.loading')}</p>
-      ) : conglomerates.length === 0 ? (
+      <AsyncReadState loading={isLoading} error={error} onRetry={onRetry} />
+
+      {!isLoading && !error && conglomerates.length === 0 ? (
         <p className="px-1 py-2 text-xs bt-muted">{t('assets.searchBox.noConglomerates')}</p>
-      ) : (
+      ) : !isLoading && !error ? (
         <ul className="flex max-h-40 flex-col gap-0.5 overflow-y-auto">
           {conglomerates.map((c) => (
             <li key={c.id}>
@@ -698,7 +733,7 @@ function ConglomeratePicker({
             </li>
           ))}
         </ul>
-      )}
+      ) : null}
 
       {addState?.status === 'done' ? (
         <p className="mt-1 px-1 text-xs bt-pos">

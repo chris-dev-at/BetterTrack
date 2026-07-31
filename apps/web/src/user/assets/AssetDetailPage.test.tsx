@@ -330,6 +330,14 @@ describe('AssetDetailPage — dividends block (V5-P5)', () => {
 });
 
 describe('AssetDetailPage — header rendering', () => {
+  test('renders a quote read failure without hiding the asset detail', async () => {
+    vi.mocked(getAssetQuote).mockRejectedValue(new Error('quote unavailable'));
+    renderPage();
+
+    expect(await screen.findByText("This information isn't available.")).toBeInTheDocument();
+    expect(screen.getByText('Bayer AG')).toBeInTheDocument();
+  });
+
   test('shows asset name, symbol and exchange', async () => {
     renderPage();
     await waitFor(() => expect(screen.getByText('Bayer AG')).toBeInTheDocument());

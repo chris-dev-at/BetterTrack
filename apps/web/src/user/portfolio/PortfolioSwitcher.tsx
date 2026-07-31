@@ -6,6 +6,7 @@ import type { PortfolioSummary } from '@bettertrack/contracts';
 
 import { useT } from '../../i18n';
 import { Icon } from '../../ui/origin';
+import { AsyncReadState } from '../components/AsyncReadState';
 import { useOverlayEscape } from '../components/overlayStack';
 import { cx } from '../components/ui';
 import { restoreFocusTo } from '../components/useFocusTrap';
@@ -309,43 +310,51 @@ export function PortfolioSwitcher() {
             </div>
           ) : null}
 
-          <div className="bt-portfolio-list">
-            {visible.length === 0 ? (
-              <p className="bt-portfolio-empty">{t('portfolio.switcher.noMatches')}</p>
-            ) : (
-              visible.map((p) => {
-                const selected = p.id === active?.id;
-                const kind = kinds[p.id] ?? DEFAULT_PORTFOLIO_KIND;
-                return (
-                  <button
-                    key={p.id}
-                    type="button"
-                    aria-current={selected ? 'true' : undefined}
-                    onClick={() => {
-                      setActive(p.id);
-                      closeAndRestoreFocus();
-                    }}
-                    className="bt-menu-item bt-portfolio-option"
-                  >
-                    <PortfolioIconChip
-                      group={isGroupPortfolio(p)}
-                      icon={portfolioIconName(p, kind)}
-                      tint={portfolioIconTint(p, kind)}
-                    />
-                    <span className="bt-portfolio-option__name truncate">{p.name}</span>
-                    {p.isDefault ? (
-                      <span className="bt-badge bt-portfolio-default">
-                        {t('portfolio.switcher.defaultBadge')}
-                      </span>
-                    ) : null}
-                    {selected ? (
-                      <Icon className="bt-gold bt-portfolio-check" name="check" size={15} />
-                    ) : null}
-                  </button>
-                );
-              })
-            )}
-          </div>
+          <AsyncReadState
+            loading={activeQuery.isLoading}
+            error={activeQuery.error}
+            onRetry={() => void activeQuery.refetch()}
+          />
+
+          {!activeQuery.isLoading && !activeQuery.error ? (
+            <div className="bt-portfolio-list">
+              {visible.length === 0 ? (
+                <p className="bt-portfolio-empty">{t('portfolio.switcher.noMatches')}</p>
+              ) : (
+                visible.map((p) => {
+                  const selected = p.id === active?.id;
+                  const kind = kinds[p.id] ?? DEFAULT_PORTFOLIO_KIND;
+                  return (
+                    <button
+                      key={p.id}
+                      type="button"
+                      aria-current={selected ? 'true' : undefined}
+                      onClick={() => {
+                        setActive(p.id);
+                        closeAndRestoreFocus();
+                      }}
+                      className="bt-menu-item bt-portfolio-option"
+                    >
+                      <PortfolioIconChip
+                        group={isGroupPortfolio(p)}
+                        icon={portfolioIconName(p, kind)}
+                        tint={portfolioIconTint(p, kind)}
+                      />
+                      <span className="bt-portfolio-option__name truncate">{p.name}</span>
+                      {p.isDefault ? (
+                        <span className="bt-badge bt-portfolio-default">
+                          {t('portfolio.switcher.defaultBadge')}
+                        </span>
+                      ) : null}
+                      {selected ? (
+                        <Icon className="bt-gold bt-portfolio-check" name="check" size={15} />
+                      ) : null}
+                    </button>
+                  );
+                })
+              )}
+            </div>
+          ) : null}
 
           <div className="bt-menu-rule" />
           <div className="bt-portfolio-actions">

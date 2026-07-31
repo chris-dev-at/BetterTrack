@@ -143,6 +143,14 @@ beforeEach(() => {
 afterEach(() => setMoneyCurrency('EUR'));
 
 describe('AccountPanel', () => {
+  test('renders an export-status read failure without hiding the account panel', async () => {
+    vi.mocked(getDataExportStatus).mockRejectedValue(new Error('export status unavailable'));
+    renderPanel();
+
+    expect(await screen.findByText("This information isn't available.")).toBeInTheDocument();
+    expect(screen.getAllByText('Export my data')).not.toHaveLength(0);
+  });
+
   test('renders identity rows; the base currency has its own picker (V3-P10d)', async () => {
     renderPanel();
 

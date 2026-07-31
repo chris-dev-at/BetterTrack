@@ -27,6 +27,7 @@ import {
 import { EmptyState, MarketStateBadge, MoneyText, Skeleton } from '../../ui';
 import { Sparkline } from '../../ui/charts';
 import { Alert, Button } from '../components/ui';
+import { AsyncReadState } from '../components/AsyncReadState';
 import { NormalModeOnly } from '../vault/ui/ParanoidSurfaceGate';
 
 // ─── Watchlist row ────────────────────────────────────────────────────────────
@@ -100,6 +101,13 @@ function WatchlistRow({
       <td className="px-2 py-3">
         {sparklineQuery.isLoading ? (
           <Skeleton width="w-24" height="h-7" />
+        ) : sparklineQuery.error ? (
+          <AsyncReadState
+            compact
+            loading={false}
+            error={sparklineQuery.error}
+            onRetry={() => void sparklineQuery.refetch()}
+          />
         ) : (
           <Sparkline
             data={sparkData}
@@ -132,6 +140,13 @@ function WatchlistRow({
       <td className="px-3 py-3 text-right text-sm">
         {quoteQuery.isLoading ? (
           <Skeleton variant="line" width="w-20" className="ml-auto" />
+        ) : quoteQuery.error ? (
+          <AsyncReadState
+            compact
+            loading={false}
+            error={quoteQuery.error}
+            onRetry={() => void quoteQuery.refetch()}
+          />
         ) : quote ? (
           <MoneyText amount={quote.price} currency={quote.currency} unitPrice />
         ) : (
@@ -191,11 +206,12 @@ function WatchlistSharingToggle() {
   const t = useT();
   const queryClient = useQueryClient();
   const [error, setError] = useState(false);
-  const { data } = useQuery({
+  const query = useQuery({
     queryKey: WATCHLIST_SHARING_QUERY_KEY,
     queryFn: ({ signal }) => getWatchlistSharing(signal),
     staleTime: 30_000,
   });
+  const data = query.data;
   const mutation = useMutation({
     mutationFn: (visibility: 'private' | 'friends') => updateWatchlistSharing(visibility),
     onSuccess: (res) => {
@@ -208,6 +224,11 @@ function WatchlistSharingToggle() {
   const shared = data?.visibility === 'friends';
   return (
     <div className="flex flex-col items-end gap-1.5">
+      <AsyncReadState
+        loading={query.isLoading}
+        error={query.error}
+        onRetry={() => void query.refetch()}
+      />
       <Button
         variant="secondary"
         onClick={() => mutation.mutate(shared ? 'private' : 'friends')}

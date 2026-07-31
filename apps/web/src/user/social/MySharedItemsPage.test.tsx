@@ -344,6 +344,15 @@ describe('MySharedItemsPage', () => {
 // The "share my alerts" control moved out of Settings into the Social "My items"
 // area (#532) — same behaviour, incl. the all-followers friction dialog + ack.
 describe('MySharedItemsPage — alert sharing (relocated from Settings)', () => {
+  test('renders an alert-sharing read failure without hiding owned items', async () => {
+    vi.mocked(listMyShared).mockResolvedValue(WITH_PORTFOLIO);
+    vi.mocked(getAlertSharing).mockRejectedValue(new Error('sharing unavailable'));
+    renderPage();
+
+    expect(await screen.findByText("This information isn't available.")).toBeInTheDocument();
+    expect(screen.getByText('Main')).toBeInTheDocument();
+  });
+
   test('shows the alert-sharing control even when the caller owns nothing', async () => {
     vi.mocked(listMyShared).mockResolvedValue(EMPTY);
     renderPage();

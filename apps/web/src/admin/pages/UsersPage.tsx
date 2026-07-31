@@ -119,7 +119,20 @@ export function UsersPage() {
         <Button onClick={() => setDialog({ type: 'create' })}>{t('admin.users.create')}</Button>
       </div>
 
-      <StatsStrip data={stats.data} />
+      {stats.loading ? (
+        <Spinner label={t('admin.users.loading')} />
+      ) : stats.error ? (
+        <Alert tone="error">
+          {stats.retryable ? stats.error : t('common.unavailable')}{' '}
+          {stats.retryable ? (
+            <button className="underline" onClick={stats.reload}>
+              {t('common.retry')}
+            </button>
+          ) : null}
+        </Alert>
+      ) : (
+        <StatsStrip data={stats.data} />
+      )}
 
       <TextField
         label={t('admin.users.searchLabel')}

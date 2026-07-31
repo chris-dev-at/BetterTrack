@@ -22,6 +22,7 @@ import {
   withdrawCash,
 } from '../../../lib/portfolioApi';
 import { Dialog } from '../../components/Dialog';
+import { AsyncReadState } from '../../components/AsyncReadState';
 import { Alert } from '../../components/ui';
 import { MoneyText } from '../../../ui';
 import { activeSources, sortSourcesMainFirst } from '../cashSourceUtils';
@@ -259,6 +260,15 @@ export function RecordCashDialog({
   return (
     <Dialog onClose={onClose} title={t('cashflow.record.title')} widthClassName="max-w-md">
       <form className="flex flex-col gap-4" onSubmit={handleSubmit}>
+        <AsyncReadState
+          loading={sourcesQuery.isLoading || tagsQuery.isLoading}
+          error={sourcesQuery.error ?? tagsQuery.error}
+          errorLabel={t('common.genericError')}
+          onRetry={() => {
+            void Promise.all([sourcesQuery.refetch(), tagsQuery.refetch()]);
+          }}
+        />
+
         {/* Direction — armed state is legible by colour alone. */}
         <div aria-label={t('cashflow.record.directionAria')} className="bt-seg w-full" role="group">
           <button
@@ -465,6 +475,12 @@ export function RecordCashDialog({
             </span>
           </div>
         ) : null}
+
+        <AsyncReadState
+          loading={previewQuery.isLoading}
+          error={previewQuery.error}
+          onRetry={() => void previewQuery.refetch()}
+        />
 
         {previewQuery.data && !previewQuery.data.sufficient ? (
           <Alert tone="error">{t('portfolio.cash.blockedError')}</Alert>

@@ -2435,8 +2435,8 @@ describe('V5-P14 surface traceability inventory', () => {
     expect(projectionReads, 'ProjectionSection async reads').toHaveLength(5);
     expect(
       projectionErrors,
-      `ProjectionSection must remain visible in the worklist until all five read errors are handled.\n${report}`,
-    ).toHaveLength(5);
+      `ProjectionSection must keep all five read errors out of the worklist.\n${report}`,
+    ).toHaveLength(0);
 
     const declaredBoundary = V5_NON_HOOK_ASYNC_BOUNDARY.map(
       (site) => `${site.component} ${site.site}`,

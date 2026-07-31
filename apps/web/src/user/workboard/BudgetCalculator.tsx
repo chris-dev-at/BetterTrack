@@ -9,6 +9,7 @@ import { formatMoney, formatPercent, formatQuantity, formatSignedPercent } from 
 import { useT } from '../../i18n';
 import type { TranslateFn } from '../../i18n';
 import { EmptyState, MoneyText, Skeleton, StatCard } from '../../ui';
+import { AsyncReadState } from '../components/AsyncReadState';
 import { Alert, Button } from '../components/ui';
 import {
   TransactionDialog,
@@ -326,6 +327,12 @@ export function BudgetCalculator({ conglomerateId, className }: BudgetCalculator
 
   return (
     <div className={cx('flex flex-col gap-4', className)}>
+      <AsyncReadState
+        loading={portfoliosQuery.isLoading}
+        error={portfoliosQuery.error}
+        onRetry={() => void portfoliosQuery.refetch()}
+      />
+
       <form onSubmit={handleCalculate} className="flex flex-wrap items-end gap-3">
         <div className="flex flex-col gap-1.5">
           <span className="text-sm font-medium bt-soft">

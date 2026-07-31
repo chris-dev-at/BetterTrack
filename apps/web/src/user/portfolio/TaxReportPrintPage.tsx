@@ -6,6 +6,7 @@ import type { TaxYearDeSummary, TaxYearPosition, TaxYearSummary } from '@bettert
 
 import { useT } from '../../i18n';
 import type { TranslateFn } from '../../i18n';
+import { classifyApiError } from '../../lib/apiClient';
 import { EM_DASH, formatDate, formatMoney, formatQuantity } from '../../lib/format';
 import { getTaxYearReport, listPortfolios } from '../../lib/portfolioApi';
 import { useResolvedPrivacyMode } from '../vault/usePrivacyMode';
@@ -282,6 +283,27 @@ export function TaxReportPrintPage() {
           {[portfolioName, year].filter((v) => v !== null && v !== undefined).join(' · ')}
         </p>
       </header>
+
+      {portfoliosQuery.isLoading ? (
+        <p className="mb-4 text-sm text-neutral-700">{t('common.loading')}</p>
+      ) : portfoliosQuery.error ? (
+        <div className="mb-4 flex flex-col items-start gap-2">
+          <p className="text-sm text-neutral-700">
+            {classifyApiError(portfoliosQuery.error) === 'outage'
+              ? t('portfolio.taxReport.print.loadError')
+              : t('common.unavailable')}
+          </p>
+          {classifyApiError(portfoliosQuery.error) === 'outage' ? (
+            <button
+              className="tax-print-toolbar rounded border border-neutral-400 px-3 py-1 text-sm"
+              onClick={() => void portfoliosQuery.refetch()}
+              type="button"
+            >
+              {t('common.retry')}
+            </button>
+          ) : null}
+        </div>
+      ) : null}
 
       {paranoid ? (
         <p className="text-sm text-neutral-700">{t('portfolio.taxReport.print.paranoidHint')}</p>

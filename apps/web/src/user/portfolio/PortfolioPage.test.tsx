@@ -283,6 +283,15 @@ beforeEach(() => {
 // ─── Empty / error ──────────────────────────────────────────────────────────
 
 describe('PortfolioPage — empty & error states', () => {
+  test('renders an auxiliary ledger read failure without hiding portfolio holdings', async () => {
+    vi.mocked(getPortfolio).mockResolvedValue(PORTFOLIO);
+    vi.mocked(listTransactions).mockRejectedValue(new Error('transactions unavailable'));
+    renderPage();
+
+    expect(await screen.findByText("This information isn't available.")).toBeInTheDocument();
+    expect(await screen.findByRole('region', { name: 'Portfolio totals' })).toBeInTheDocument();
+  });
+
   test('shows a designed empty state when there are no holdings', async () => {
     vi.mocked(getPortfolio).mockResolvedValue(EMPTY_PORTFOLIO);
     vi.mocked(listTransactions).mockResolvedValue({ items: [], nextCursor: null });

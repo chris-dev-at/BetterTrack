@@ -92,6 +92,16 @@ beforeEach(() => {
   });
 });
 
+test('renders a tax-settings read failure while keeping the transaction form usable', async () => {
+  vi.mocked(portfolioApi.getPortfolioTaxSettings).mockRejectedValue(
+    new Error('tax settings unavailable'),
+  );
+  renderDialog();
+
+  expect(await screen.findByText("This information isn't available.")).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Record buy' })).toBeInTheDocument();
+});
+
 // --- Pure derivation --------------------------------------------------------
 
 describe('deriveQuantityFromAmount', () => {

@@ -14,6 +14,7 @@ import {
   listCashTags,
 } from '../../../lib/cashApi';
 import { Alert } from '../../components/ui';
+import { AsyncReadState } from '../../components/AsyncReadState';
 import { EmptyState, Skeleton } from '../../../ui';
 import { Badge, Button, PageHead } from '../../../ui/origin';
 import { CashBudgetDialog } from './CashBudgetDialog';
@@ -119,6 +120,13 @@ export function CashBudgetsPage() {
         }
         sub={t('cashflow.budgets.subtitle')}
         title={t('cashflow.tabs.budgets')}
+      />
+
+      <AsyncReadState
+        loading={tagsQuery.isLoading}
+        error={tagsQuery.error}
+        errorLabel={t('cashflow.budgets.loadError')}
+        onRetry={() => void tagsQuery.refetch()}
       />
 
       {budgets.length === 0 ? (

@@ -34,6 +34,7 @@ import {
   updateWatchlistSharing,
 } from '../../lib/workboardApi';
 import { getAssetHistory, getAssetQuote } from '../../lib/assetApi';
+import { ApiError } from '../../lib/apiClient';
 import { getEarningsCalendar } from '../../lib/marketIntelApi';
 import { WorkboardPage } from './WorkboardPage';
 
@@ -204,6 +205,20 @@ describe('WorkboardPage — empty state', () => {
 // ─── Item rendering ───────────────────────────────────────────────────────────
 
 describe('WorkboardPage — item rendering', () => {
+  test('renders terminal failures without retry and offers retry only for an outage', async () => {
+    vi.mocked(listWorkboard).mockResolvedValue({ items: [ITEM_A] });
+    vi.mocked(getAssetQuote).mockRejectedValue(new ApiError(503, 'UNAVAILABLE', 'offline'));
+    vi.mocked(getAssetHistory).mockRejectedValue(new ApiError(404, 'NOT_FOUND', 'missing'));
+    vi.mocked(getWatchlistSharing).mockRejectedValue(new ApiError(403, 'FORBIDDEN', 'forbidden'));
+    renderPage();
+
+    await waitFor(() =>
+      expect(screen.getAllByText("This information isn't available.")).toHaveLength(2),
+    );
+    expect(screen.getByText('Something went wrong. Please try again.')).toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: 'Try again' })).toHaveLength(1);
+  });
+
   test('shows asset symbols and names for all items', async () => {
     vi.mocked(listWorkboard).mockResolvedValue({ items: [ITEM_A, ITEM_B] });
     renderPage();

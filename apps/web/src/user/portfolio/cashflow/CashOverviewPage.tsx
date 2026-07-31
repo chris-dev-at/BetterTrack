@@ -14,6 +14,7 @@ import {
 import { getCashMovements, listCashSources } from '../../../lib/portfolioApi';
 import { EM_DASH, formatDate, formatMoney } from '../../../lib/format';
 import { Alert } from '../../components/ui';
+import { AsyncReadState } from '../../components/AsyncReadState';
 import { EmptyState, MoneyText, Skeleton } from '../../../ui';
 import { Button, Icon, PageHead } from '../../../ui/origin';
 import { AllocationDonut } from '../../../ui/charts';
@@ -181,69 +182,85 @@ export function CashOverviewPage() {
 
       {/* ── The balance, and what it is made of ── */}
       <section aria-label={t('cashflow.overview.total')} className="flex flex-col gap-4">
-        <div className="flex flex-wrap items-end justify-between gap-x-8 gap-y-3">
-          <div>
-            <p className="bt-label">{t('cashflow.overview.total')}</p>
-            <p className="bt-hero-value" style={{ marginTop: 4 }}>
-              <MoneyText amount={totalCash} currency="EUR" />
-            </p>
-            <p className="bt-meta" style={{ marginTop: 5 }}>
-              {t('cashflow.overview.thisMonthChange', {
-                amount: formatMoney(summary.net),
-              })}
-            </p>
-          </div>
-        </div>
+        <AsyncReadState
+          loading={sourcesQuery.isLoading}
+          error={sourcesQuery.error}
+          errorLabel={t('cashflow.overview.loadError')}
+          onRetry={() => void sourcesQuery.refetch()}
+        />
 
-        {sources.length === 0 ? (
-          <p className="bt-meta">{t('cashflow.overview.noAccounts')}</p>
-        ) : (
-          <ul
-            aria-label={t('cashflow.overview.accountsHeading')}
-            className="bt-acctgrid"
-            role="list"
-          >
-            {sources.map((source) => (
-              <li className="bt-acctrow" key={source.id}>
-                <span className="bt-acctrow__name" title={source.name}>
-                  {source.name}
-                </span>
-                <span className="bt-acctrow__value bt-num">
-                  <MoneyText amount={source.balanceEur} currency="EUR" />
-                </span>
-                {/* Inline, and a real size: "spend from Savings" is one press. */}
-                <span className="bt-acctrow__actions">
-                  <button
-                    aria-label={t('cashflow.overview.quickDeposit', { source: source.name })}
-                    className="bt-acctrow__action bt-acctrow__action--in"
-                    onClick={() => setQuick({ sourceId: source.id, direction: 'in' })}
-                    title={t('cashflow.overview.quickDeposit', { source: source.name })}
-                    type="button"
+        {!sourcesQuery.isLoading && !sourcesQuery.error ? (
+          <>
+            <div className="flex flex-wrap items-end justify-between gap-x-8 gap-y-3">
+              <div>
+                <p className="bt-label">{t('cashflow.overview.total')}</p>
+                <p className="bt-hero-value" style={{ marginTop: 4 }}>
+                  <MoneyText amount={totalCash} currency="EUR" />
+                </p>
+                <p className="bt-meta" style={{ marginTop: 5 }}>
+                  {t('cashflow.overview.thisMonthChange', {
+                    amount: formatMoney(summary.net),
+                  })}
+                </p>
+              </div>
+            </div>
+
+            {sources.length === 0 ? (
+              <p className="bt-meta">{t('cashflow.overview.noAccounts')}</p>
+            ) : (
+              <ul
+                aria-label={t('cashflow.overview.accountsHeading')}
+                className="bt-acctgrid"
+                role="list"
+              >
+                {sources.map((source) => (
+                  <li className="bt-acctrow" key={source.id}>
+                    <span className="bt-acctrow__name" title={source.name}>
+                      {source.name}
+                    </span>
+                    <span className="bt-acctrow__value bt-num">
+                      <MoneyText amount={source.balanceEur} currency="EUR" />
+                    </span>
+                    {/* Inline, and a real size: "spend from Savings" is one press. */}
+                    <span className="bt-acctrow__actions">
+                      <button
+                        aria-label={t('cashflow.overview.quickDeposit', { source: source.name })}
+                        className="bt-acctrow__action bt-acctrow__action--in"
+                        onClick={() => setQuick({ sourceId: source.id, direction: 'in' })}
+                        title={t('cashflow.overview.quickDeposit', { source: source.name })}
+                        type="button"
+                      >
+                        <Icon name="plus" />
+                      </button>
+                      <button
+                        aria-label={t('cashflow.overview.quickWithdraw', { source: source.name })}
+                        className="bt-acctrow__action bt-acctrow__action--out"
+                        onClick={() => setQuick({ sourceId: source.id, direction: 'out' })}
+                        title={t('cashflow.overview.quickWithdraw', { source: source.name })}
+                        type="button"
+                      >
+                        <Icon name="minus" />
+                      </button>
+                    </span>
+                  </li>
+                ))}
+                {/* The list's own way into managing them — the header icon is for
+                    people who already know it is there. */}
+                <li>
+                  <Link
+                    className="bt-acctrow bt-acctrow--manage"
+                    to={to('/portfolio/cash/accounts')}
                   >
-                    <Icon name="plus" />
-                  </button>
-                  <button
-                    aria-label={t('cashflow.overview.quickWithdraw', { source: source.name })}
-                    className="bt-acctrow__action bt-acctrow__action--out"
-                    onClick={() => setQuick({ sourceId: source.id, direction: 'out' })}
-                    title={t('cashflow.overview.quickWithdraw', { source: source.name })}
-                    type="button"
-                  >
-                    <Icon name="minus" />
-                  </button>
-                </span>
-              </li>
-            ))}
-            {/* The list's own way into managing them — the header icon is for
-                people who already know it is there. */}
-            <li>
-              <Link className="bt-acctrow bt-acctrow--manage" to={to('/portfolio/cash/accounts')}>
-                <Icon name="sliders" />
-                <span className="bt-acctrow__name">{t('cashflow.overview.manageAccounts')}</span>
-              </Link>
-            </li>
-          </ul>
-        )}
+                    <Icon name="sliders" />
+                    <span className="bt-acctrow__name">
+                      {t('cashflow.overview.manageAccounts')}
+                    </span>
+                  </Link>
+                </li>
+              </ul>
+            )}
+          </>
+        ) : null}
       </section>
 
       {/* ── The month ── */}
@@ -361,9 +378,15 @@ export function CashOverviewPage() {
             {t('cashflow.overview.allMovements')} →
           </Link>
         </div>
-        {recent.length === 0 ? (
+        <AsyncReadState
+          loading={movementsQuery.isLoading}
+          error={movementsQuery.error}
+          errorLabel={t('cashflow.overview.loadError')}
+          onRetry={() => void movementsQuery.refetch()}
+        />
+        {!movementsQuery.isLoading && !movementsQuery.error && recent.length === 0 ? (
           <p className="bt-meta">{t('cashflow.movements.emptyDescription')}</p>
-        ) : (
+        ) : !movementsQuery.isLoading && !movementsQuery.error ? (
           <ul
             className="bt-band flex flex-col"
             style={{ borderBlock: '1px solid var(--bt-border)' }}
@@ -380,7 +403,7 @@ export function CashOverviewPage() {
               </li>
             ))}
           </ul>
-        )}
+        ) : null}
       </section>
     </div>
   );

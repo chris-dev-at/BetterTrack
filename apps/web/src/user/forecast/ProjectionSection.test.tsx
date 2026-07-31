@@ -180,6 +180,14 @@ test('renders the base projection series and headline stats', async () => {
   );
 });
 
+test('renders a prefill read failure without hiding the projection', async () => {
+  vi.mocked(getAnalyticsSeries).mockRejectedValue(new Error('analytics unavailable'));
+  renderSection();
+
+  expect(await screen.findByText("This information isn't available.")).toBeInTheDocument();
+  expect(screen.getByTestId('projection-series-base')).toBeInTheDocument();
+});
+
 test('a normal account samples the holdings-only analytics window, not net worth', async () => {
   // 9,5 % on the server's series vs 5 % on the net-worth curve: the field must
   // show the former, and the net-worth read must not happen at all.

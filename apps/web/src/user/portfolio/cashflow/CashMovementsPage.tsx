@@ -10,6 +10,7 @@ import { CASH_TAGS_QUERY_KEY, listCashTags } from '../../../lib/cashApi';
 import { EM_DASH, formatDate } from '../../../lib/format';
 import { getCashMovements } from '../../../lib/portfolioApi';
 import { Alert } from '../../components/ui';
+import { AsyncReadState } from '../../components/AsyncReadState';
 import { EmptyState, MoneyText, Skeleton } from '../../../ui';
 import { Button, PageHead } from '../../../ui/origin';
 import { SourceBadge } from '../SourceBadge';
@@ -116,6 +117,13 @@ export function CashMovementsPage() {
         }
         sub={t('cashflow.movements.subtitle')}
         title={t('cashflow.tabs.movements')}
+      />
+
+      <AsyncReadState
+        loading={tagsQuery.isLoading}
+        error={tagsQuery.error}
+        errorLabel={t('cashflow.movements.loadError')}
+        onRetry={() => void tagsQuery.refetch()}
       />
 
       {tags.length > 1 ? (

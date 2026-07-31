@@ -9,6 +9,7 @@ import { ApiError } from '../../lib/apiClient';
 import { Skeleton } from '../../ui';
 import { Button, Field, Input, PageHead, SectionHead } from '../../ui/origin';
 import { Dialog } from '../components/Dialog';
+import { AsyncReadState } from '../components/AsyncReadState';
 import { Alert, cx } from '../components/ui';
 import { ConvertChainDialog, MemberSheet, MirrorInviteStepDialog } from './MirrorchainPanel';
 import { PortfolioIconChip } from './PortfolioIconChip';
@@ -299,6 +300,12 @@ export function PortfolioSettingsPage() {
             <Skeleton height="h-10" />
             <Skeleton height="h-10" />
           </div>
+        ) : archivedQuery.isError ? (
+          <AsyncReadState
+            loading={archivedQuery.isLoading}
+            error={archivedQuery.error}
+            onRetry={() => void archivedQuery.refetch()}
+          />
         ) : archived.length === 0 ? (
           <p className="bt-meta">{t('portfolio.switcher.noArchived')}</p>
         ) : (

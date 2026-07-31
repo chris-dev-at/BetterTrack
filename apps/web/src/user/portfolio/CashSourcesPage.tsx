@@ -9,6 +9,7 @@ import type { TranslateFn } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
 import { EM_DASH, formatDate, formatPercent } from '../../lib/format';
 import { Alert } from '../components/ui';
+import { AsyncReadState } from '../components/AsyncReadState';
 import { EmptyState, MoneyText, Skeleton } from '../../ui';
 import { Badge, Button, PageHead } from '../../ui/origin';
 import { ACTIVE_PORTFOLIO_PARAM, resolveActivePortfolio } from './PortfolioSwitcher';
@@ -502,7 +503,15 @@ export function CashSourcesPage() {
         ) : null}
       </section>
 
-      <HistorySection movements={movements} sourceNames={sourceNames} />
+      <AsyncReadState
+        loading={cashQuery.isLoading}
+        error={cashQuery.error}
+        errorLabel={t('portfolio.cashSources.loadError')}
+        onRetry={() => void cashQuery.refetch()}
+      />
+      {!cashQuery.isLoading && !cashQuery.error ? (
+        <HistorySection movements={movements} sourceNames={sourceNames} />
+      ) : null}
 
       {dialog?.kind === 'create' ? (
         <CashSourceDialog

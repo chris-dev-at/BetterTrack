@@ -36,6 +36,7 @@ import { AllocationDonut, PriceChart } from '../../ui/charts';
 import { MAIN_SERIES, POSITIVE } from '../../ui/charts/palette';
 import type { AllocationSegment, PriceRange } from '../../ui/charts';
 import { Alert } from '../components/ui';
+import { AsyncReadState } from '../components/AsyncReadState';
 import { TransactionDialog, type TransactionDialogAsset } from '../components/TransactionDialog';
 import { SourceBadge, sourceTagLabel } from './SourceBadge';
 import { CashDialog } from './CashDialog';
@@ -889,6 +890,16 @@ function RecategorizeBanner() {
       queryClient.invalidateQueries({ queryKey: ['custom-assets', 'recategorization'] }),
   });
 
+  if (statusQuery.isLoading || statusQuery.error) {
+    return (
+      <AsyncReadState
+        loading={statusQuery.isLoading}
+        error={statusQuery.error}
+        onRetry={() => void statusQuery.refetch()}
+      />
+    );
+  }
+
   if (!statusQuery.data || statusQuery.data.pending <= 0) return null;
 
   return (
@@ -1264,6 +1275,15 @@ export function PortfolioPage() {
         onNewCustom={() => setCustomOpen(true)}
       />
 
+      <AsyncReadState
+        loading={transactionsQuery.isLoading || cashSourcesQuery.isLoading}
+        error={transactionsQuery.error ?? cashSourcesQuery.error}
+        errorLabel={t('portfolio.overview.loadError')}
+        onRetry={() => {
+          void Promise.all([transactionsQuery.refetch(), cashSourcesQuery.refetch()]);
+        }}
+      />
+
       <NormalModeOnly>
         <RecategorizeBanner />
       </NormalModeOnly>
@@ -1346,23 +1366,33 @@ export function PortfolioPage() {
                 {t('portfolio.overview.chart.perfHint')}
               </p>
             ) : null}
+            <AsyncReadState
+              loading={false}
+              error={historyQuery.error}
+              errorLabel={t('portfolio.overview.loadError')}
+              onRetry={() => void historyQuery.refetch()}
+            />
             <div className="bt-chart">
-              <PriceChart
-                series={chartPoints}
-                mode={perfMode ? 'baseline' : 'area'}
-                percentValues={perfMode}
-                valueCurrency={historyQuery.data?.baseCurrency ?? portfolioQuery.data?.baseCurrency}
-                range={range}
-                ranges={PORTFOLIO_RANGES}
-                onRangeChange={setRange}
-                loading={historyQuery.isLoading || historyQuery.isFetching}
-                height={340}
-                ariaLabel={
-                  perfMode
-                    ? t('portfolio.overview.chart.ariaLabelPerformance')
-                    : t('portfolio.overview.chart.ariaLabelValue')
-                }
-              />
+              {!historyQuery.error ? (
+                <PriceChart
+                  series={chartPoints}
+                  mode={perfMode ? 'baseline' : 'area'}
+                  percentValues={perfMode}
+                  valueCurrency={
+                    historyQuery.data?.baseCurrency ?? portfolioQuery.data?.baseCurrency
+                  }
+                  range={range}
+                  ranges={PORTFOLIO_RANGES}
+                  onRangeChange={setRange}
+                  loading={historyQuery.isLoading || historyQuery.isFetching}
+                  height={340}
+                  ariaLabel={
+                    perfMode
+                      ? t('portfolio.overview.chart.ariaLabelPerformance')
+                      : t('portfolio.overview.chart.ariaLabelValue')
+                  }
+                />
+              ) : null}
             </div>
           </section>
 

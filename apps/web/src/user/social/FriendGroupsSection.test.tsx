@@ -56,6 +56,18 @@ describe('FriendGroupsSection (V5-P8)', () => {
     expect(listGroups).toHaveBeenCalledTimes(2);
   });
 
+  test('renders a friend-roster read failure inside an expanded group', async () => {
+    vi.mocked(listGroups).mockResolvedValue({
+      groups: [{ id: GROUP, name: 'Family', memberCount: 0, members: [] }],
+    });
+    vi.mocked(listFriends).mockRejectedValue(new Error('friends unavailable'));
+    const user = userEvent.setup();
+    renderSection();
+
+    await user.click(await screen.findByRole('button', { name: /family/i }));
+    expect(await screen.findByText("This information isn't available.")).toBeInTheDocument();
+  });
+
   test('creates a group from the inline form', async () => {
     vi.mocked(createGroup).mockResolvedValue({
       id: GROUP,

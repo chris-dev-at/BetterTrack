@@ -31,6 +31,7 @@ import {
   getAssetSplits,
 } from '../../lib/marketIntelApi';
 import { useLiveSeries } from '../../lib/realtime';
+import { AsyncReadState } from '../components/AsyncReadState';
 import {
   WATCHLISTS_QUERY_KEY,
   listWatchlists,
@@ -614,7 +615,8 @@ function BookmarkIcon({ filled }: { filled: boolean }) {
  */
 function WatchlistIconButton({ assetId, symbol }: { assetId: string; symbol: string }) {
   const t = useT();
-  const { watchedIds } = useWatchlistMembership();
+  const membership = useWatchlistMembership();
+  const { watchedIds } = membership;
   const addMutation = useAddToWatchlist();
   const [listPickerOpen, setListPickerOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
@@ -693,6 +695,12 @@ function WatchlistIconButton({ assetId, symbol }: { assetId: string; symbol: str
         </button>
       </div>
 
+      <AsyncReadState
+        loading={membership.isLoading}
+        error={membership.error}
+        onRetry={() => void membership.refetch()}
+      />
+
       {listPickerOpen ? (
         <div
           ref={menuRef}
@@ -702,21 +710,27 @@ function WatchlistIconButton({ assetId, symbol }: { assetId: string; symbol: str
           style={{ right: 0, top: 'calc(100% + 4px)' }}
           onKeyDown={onMenuKeyDown}
         >
-          {(listsQuery.data?.watchlists ?? []).map((list) => (
-            <button
-              key={list.id}
-              type="button"
-              role="menuitem"
-              onClick={() => {
-                handleAdd(list.isDefault ? undefined : list.id);
-                closeAndRestoreFocus();
-              }}
-              className="flex w-full items-center justify-between rounded px-2 py-1.5 text-left bt-soft"
-            >
-              {list.name}
-            </button>
-          ))}
-          {listsQuery.isLoading ? <p className="px-2 py-1.5 bt-muted">…</p> : null}
+          <AsyncReadState
+            loading={listsQuery.isLoading}
+            error={listsQuery.error}
+            onRetry={() => void listsQuery.refetch()}
+          />
+          {!listsQuery.isLoading && !listsQuery.error
+            ? (listsQuery.data?.watchlists ?? []).map((list) => (
+                <button
+                  key={list.id}
+                  type="button"
+                  role="menuitem"
+                  onClick={() => {
+                    handleAdd(list.isDefault ? undefined : list.id);
+                    closeAndRestoreFocus();
+                  }}
+                  className="flex w-full items-center justify-between rounded px-2 py-1.5 text-left bt-soft"
+                >
+                  {list.name}
+                </button>
+              ))
+            : null}
         </div>
       ) : null}
 
@@ -970,6 +984,13 @@ export function AssetDetailPage() {
       {/* Header */}
       <AssetHeader detail={detail} liveQuote={quoteQuery.data} />
 
+      <AsyncReadState
+        loading={quoteQuery.isLoading}
+        error={quoteQuery.error}
+        errorLabel={t('assets.detail.loadError')}
+        onRetry={() => void quoteQuery.refetch()}
+      />
+
       {/* Quick actions — reachable near the top (§13.2), not buried below the fold */}
       <ActionBar assetId={id} symbol={asset.symbol} />
 
@@ -998,6 +1019,14 @@ export function AssetDetailPage() {
             ) : null}
           </div>
         ) : null}
+        {!liveActive ? (
+          <AsyncReadState
+            loading={false}
+            error={historyQuery.error}
+            errorLabel={t('assets.detail.loadError')}
+            onRetry={() => void historyQuery.refetch()}
+          />
+        ) : null}
         {liveActive ? (
           <PriceChart
             series={liveChartPoints}
@@ -1012,7 +1041,7 @@ export function AssetDetailPage() {
             emptyMessage={t('assets.live.waiting')}
             ariaLabel={t('assets.live.chartAriaLabel', { symbol: asset.symbol })}
           />
-        ) : (
+        ) : !historyQuery.error ? (
           <PriceChart
             series={chartPoints}
             mode={chartMode}
@@ -1028,7 +1057,7 @@ export function AssetDetailPage() {
             loading={historyQuery.isLoading || historyQuery.isFetching}
             ariaLabel={t('assets.detail.chartAriaLabel', { symbol: asset.symbol })}
           />
-        )}
+        ) : null}
       </div>
 
       {/* Stats row */}

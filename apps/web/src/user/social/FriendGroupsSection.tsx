@@ -16,6 +16,7 @@ import { useT } from '../../i18n';
 import { EmptyState } from '../../ui';
 import { Button, Field, Icon, Input, SkeletonBlock } from '../../ui/origin';
 import { Alert } from '../components/ui';
+import { AsyncReadState } from '../components/AsyncReadState';
 import { Avatar } from '../components/Avatar';
 import { Dialog } from '../components/Dialog';
 
@@ -195,9 +196,15 @@ function GroupCard({ group }: { group: FriendGroup }) {
           {/* Add a friend */}
           <div className="flex flex-col gap-2">
             <h4 className="bt-label">{t('social.groups.addMemberHeading')}</h4>
-            {candidates.length === 0 ? (
+            <AsyncReadState
+              loading={friendsQuery.isLoading}
+              error={friendsQuery.error}
+              errorLabel={t('social.groups.loadError')}
+              onRetry={() => void friendsQuery.refetch()}
+            />
+            {!friendsQuery.isLoading && !friendsQuery.error && candidates.length === 0 ? (
               <p className="bt-meta">{t('social.groups.addMemberNone')}</p>
-            ) : (
+            ) : !friendsQuery.isLoading && !friendsQuery.error ? (
               <ul className="bt-band flex max-h-48 flex-col overflow-y-auto pr-1">
                 {candidates.map((f) => (
                   <li
@@ -217,7 +224,7 @@ function GroupCard({ group }: { group: FriendGroup }) {
                   </li>
                 ))}
               </ul>
-            )}
+            ) : null}
           </div>
 
           {addMutation.isError || removeMutation.isError || renameMutation.isError ? (

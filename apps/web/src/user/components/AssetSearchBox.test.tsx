@@ -188,6 +188,13 @@ beforeEach(() => {
 });
 
 describe('AssetSearchBox', () => {
+  test('renders the supporting workboard read failure', async () => {
+    vi.mocked(workboardApi.listWorkboard).mockRejectedValue(new Error('workboard unavailable'));
+    renderSearchBox();
+
+    expect(await screen.findByText("This information isn't available.")).toBeInTheDocument();
+  });
+
   test('renders the search input', () => {
     renderSearchBox();
     expect(screen.getByRole('searchbox', { name: /search assets/i })).toBeInTheDocument();

@@ -182,6 +182,14 @@ beforeEach(() => {
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 describe('ImportPage', () => {
+  test('renders a reference-data read failure without hiding the import form', async () => {
+    vi.mocked(importsApi.listImportBrokers).mockRejectedValue(new Error('brokers unavailable'));
+    renderPage();
+
+    expect(await screen.findByText("This information isn't available.")).toBeInTheDocument();
+    expect(screen.getByLabelText('CSV export')).toBeInTheDocument();
+  });
+
   test('uploads the chosen file and renders the preview with per-row flags', async () => {
     renderPage();
     await screen.findByRole('option', { name: 'Trade Republic' });

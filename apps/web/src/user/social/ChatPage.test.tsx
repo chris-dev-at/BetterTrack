@@ -30,7 +30,7 @@ import {
   sendChatMessage,
 } from '../../lib/chatApi';
 import { ApiError } from '../../lib/apiClient';
-import { getAudience, setAudience } from '../../lib/socialApi';
+import { getAudience, listFriends, setAudience } from '../../lib/socialApi';
 import { listConglomerates } from '../../lib/conglomerateApi';
 import { listPortfolios } from '../../lib/portfolioApi';
 import { listIdeas } from '../../lib/ideasApi';
@@ -80,6 +80,16 @@ beforeEach(() => {
 });
 
 describe('ChatPage — conversation list', () => {
+  test('renders a friend-list read failure inside the new-message dialog', async () => {
+    vi.mocked(listConversations).mockResolvedValue({ conversations: [], unreadTotal: 0 });
+    vi.mocked(listFriends).mockRejectedValue(new Error('friends unavailable'));
+    const user = userEvent.setup();
+    renderAt('/social/chat');
+
+    await user.click(screen.getByRole('button', { name: 'New message' }));
+    expect(await screen.findByText("This information isn't available.")).toBeInTheDocument();
+  });
+
   test('renders conversations with an unread badge', async () => {
     vi.mocked(listConversations).mockResolvedValue({
       conversations: [
@@ -744,6 +754,26 @@ describe('ChatPage — idea chips (V4-P9)', () => {
     // The kind is named, but never a title/name (the server never resolves it).
     expect(screen.getByText('Idea')).toBeInTheDocument();
     expect(screen.queryByText('View')).not.toBeInTheDocument();
+  });
+
+  test('renders an attachable-item read failure inside the share picker', async () => {
+    vi.mocked(getThread).mockResolvedValue({
+      conversation: {
+        id: 'c1',
+        user: { id: 'u2', username: 'bob' },
+        unreadCount: 0,
+        lastMessage: null,
+        lastMessageAt: null,
+      },
+      nextCursor: null,
+      messages: [],
+    });
+    vi.mocked(listIdeas).mockRejectedValue(new Error('ideas unavailable'));
+    const user = userEvent.setup();
+    renderAt('/social/chat/u2');
+
+    await user.click(await screen.findByRole('button', { name: 'Share an item' }));
+    expect(await screen.findByText("This information isn't available.")).toBeInTheDocument();
   });
 
   test('attaches an idea chip from the share picker (never widens access)', async () => {

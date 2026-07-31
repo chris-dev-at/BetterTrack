@@ -77,6 +77,14 @@ beforeEach(() => {
   } as unknown as Awaited<ReturnType<typeof previewCash>>);
 });
 
+test('renders a source read failure without hiding the cash-entry form', async () => {
+  vi.mocked(listCashSources).mockRejectedValue(new Error('sources unavailable'));
+  renderDialog();
+
+  expect(await screen.findByText("This information isn't available.")).toBeInTheDocument();
+  expect(screen.getByLabelText('Amount')).toBeInTheDocument();
+});
+
 test('a spend is two fields — amount, what for, record', async () => {
   vi.mocked(withdrawCash).mockResolvedValue({
     movement: { id: 'm1', tags: [] },

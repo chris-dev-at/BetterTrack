@@ -208,13 +208,13 @@ export const V5_SURFACE_INVENTORY = [
     copyReview:
       'Moved Google identity, broker-import source tags, source filters, and capability tags reviewed.',
     states: {
-      loading: unverified(
+      loading: covered(
         'Connection, sign-in, import, and cash-source reads render progress states.',
       ),
       empty: unverified(
         'Passkeys, import previews, and cash sources distinguish genuine empty outcomes.',
       ),
-      error: unverified('Identity, import, and cash-source failures expose localized recovery.'),
+      error: covered('Identity, import, and cash-source failures expose localized recovery.'),
     },
     tests: [
       'user/control/panels/ConnectionsPanel.test.tsx',
@@ -252,13 +252,13 @@ export const V5_SURFACE_INVENTORY = [
     copyReview:
       'Intraday/live labels, prior-close label, dense-chart states, and failover status reviewed.',
     states: {
-      loading: unverified(
+      loading: covered(
         'Portfolio, analytics, asset, watchlist, and health reads all render skeleton/spinner states.',
       ),
       empty: unverified(
         'No-portfolio analytics offers creation; holdings/chart/watchlist/provider absence uses compact shared empty states or neutral rows.',
       ),
-      error: unverified(
+      error: covered(
         'Portfolio and analytics reads retry without conflating a successful empty portfolio list with failure.',
       ),
     },
@@ -338,11 +338,9 @@ export const V5_SURFACE_INVENTORY = [
     copyRoots: ['settings.notifications'],
     copyReview: 'Digest cadence, quiet hours, channels, bell, and log copy reviewed.',
     states: {
-      loading: unverified('Panel and bell use Skeleton; paged log retains its loading row.'),
+      loading: covered('Panel and bell use Skeleton; paged log retains its loading row.'),
       empty: unverified('Bell/log and per-channel setup use compact empty/disabled states.'),
-      error: unverified(
-        'Settings load failure now includes retry; bell/log retain refresh recovery.',
-      ),
+      error: covered('Settings load failure now includes retry; bell/log retain refresh recovery.'),
     },
     tests: [
       'user/control/panels/NotificationsPanel.test.tsx',
@@ -364,13 +362,13 @@ export const V5_SURFACE_INVENTORY = [
     copyRoots: ['settings.taxes', 'portfolio.taxReport', 'vaultExports.tax'],
     copyReview: 'AT/DE/custom modes, exports, print view, and disclaimer terminology reviewed.',
     states: {
-      loading: unverified(
+      loading: covered(
         'Default, report-year, detail, and print reads expose Skeleton/loading copy.',
       ),
       empty: unverified(
         'No mode, no taxable events, and no year data are explicit compact states.',
       ),
-      error: unverified('Default/report reads expose retry; print has browser refresh recovery.'),
+      error: covered('Default/report reads expose retry; print has browser refresh recovery.'),
     },
     tests: [
       'user/control/panels/DefaultsPanel.test.tsx',
@@ -437,13 +435,13 @@ export const V5_SURFACE_INVENTORY = [
     copyReview:
       'N-way comparison and nested Blueprint copy reviewed; malformed German singulars corrected.',
     states: {
-      loading: unverified(
+      loading: covered(
         'Blueprint lists, nested picks, and comparison execution use loading frames.',
       ),
       empty: unverified(
         'Insufficient selections, no Blueprints/ideas, and no positions are explicit.',
       ),
-      error: unverified(
+      error: covered(
         'Blueprint-list, nested-list, comparison-execution, and idea-resolution outages are distinct and retry in place; confirmed missing references stay terminal.',
       ),
     },
@@ -471,13 +469,13 @@ export const V5_SURFACE_INVENTORY = [
     copyReview:
       'Projection factors, order schedules, and all calculator labels reviewed in informal DE.',
     states: {
-      loading: unverified(
+      loading: covered(
         'Forecast prefill reads show compact progress while standalone calculators remain usable.',
       ),
       empty: unverified(
         'No portfolio, no orders, and no calculator positions have compact guidance.',
       ),
-      error: unverified(
+      error: covered(
         'Portfolio-list failure gates dependent sections; detail/analytics/history prefill failures retry without hiding projections, orders, or standalone calculators.',
       ),
     },
@@ -500,11 +498,11 @@ export const V5_SURFACE_INVENTORY = [
     copyReview:
       'Owner/manager/member, invite, fork, transfer, and sync activity language reviewed.',
     states: {
-      loading: unverified('Member/activity/dialog reads render localized loading rows.'),
+      loading: covered('Member/activity/dialog reads render localized loading rows.'),
       empty: unverified(
         'No members/activity/invites use compact rows without exposing hidden identities.',
       ),
-      error: unverified(
+      error: covered(
         'Member/activity failures retain close/reopen recovery; mutations remain retryable in place.',
       ),
     },
@@ -547,11 +545,11 @@ export const V5_SURFACE_INVENTORY = [
     copyReview:
       'Groups, audience ladder, threads/reactions, shared titles, and chat copy reviewed.',
     states: {
-      loading: unverified(
+      loading: covered(
         'Audience, MIRRORCHAIN metadata, lists, profiles, shared pages, chat, and comments expose loading states.',
       ),
       empty: unverified('Every collection has a contextual EmptyState or compact no-comments row.'),
-      error: unverified(
+      error: covered(
         'Fresh audience/co-member metadata gates sharing; chat and shared-item outages retry, while confirmed 401/403/404 outcomes remain privacy-indistinguishable.',
       ),
     },
@@ -597,13 +595,13 @@ export const V5_SURFACE_INVENTORY = [
     copyReview:
       'Portfolio cash overview, tagged movements, labels/rules, budgets, charts, and recording dialogs reviewed after the fused-ledger replacement.',
     states: {
-      loading: unverified(
+      loading: covered(
         'Overview, movements, budgets, tags, and rules render Skeletons; recording and editor dialogs expose pending labels.',
       ),
       empty: unverified(
         'Cash movement, budget, tag, rule, account, and zero-trend outcomes have compact EmptyState guidance.',
       ),
-      error: unverified(
+      error: covered(
         'Focused regressions cover overview, movement, budget, tag, rule, and recording failures without erasing usable sibling data.',
       ),
     },
@@ -695,13 +693,13 @@ export const V5_SURFACE_INVENTORY = [
     copyReview:
       'Shared V5 shell, command/search entry points, cash editors, and portfolio-store boundary reviewed.',
     states: {
-      loading: unverified(
+      loading: covered(
         'Session, search, home, portfolio-store, wizard, and editor reads use their compact progress states.',
       ),
       empty: unverified(
         'Search, home board, parked routes, and value editors provide contextual empty guidance.',
       ),
-      error: unverified(
+      error: covered(
         'Session and data reads retain retry/reload actions; dialog mutations remain editable and retryable.',
       ),
     },
@@ -732,13 +730,13 @@ export const V5_SURFACE_INVENTORY = [
     copyReview:
       'Discreet masking (including allocation charts), custody, media, enable/unlock/sync, loss, and recovery copy reviewed.',
     states: {
-      loading: unverified(
+      loading: covered(
         'Account-mode, enable, unlock, and sync transitions expose Splash/progress/status.',
       ),
       empty: hidden(
         'Killed social/server features stay absent in paranoid mode; this is a privacy boundary, not an empty collection.',
       ),
-      error: unverified(
+      error: covered(
         'Mode bootstrap and vault operations provide retry, unlock, start-fresh, or disable recovery.',
       ),
     },
@@ -773,13 +771,11 @@ export const V5_SURFACE_INVENTORY = [
     copyReview:
       'Phone-safe admin login/traps, registration settings, and user management reviewed in both catalogs; responsive behavior remains covered by the P13b admin-mobile gate.',
     states: {
-      loading: unverified(
-        'Session, settings, user, token, request, and 2FA progress stays explicit.',
-      ),
+      loading: covered('Session, settings, user, token, request, and 2FA progress stays explicit.'),
       empty: unverified(
         'User search, registration tokens, and approval requests distinguish empty results.',
       ),
-      error: unverified(
+      error: covered(
         'Session and resource reads expose localized retry; form and mutation failures remain inline.',
       ),
     },
@@ -1002,6 +998,11 @@ export const NON_V5_SURFACES = [
     path: 'user/components/AuthFigures.tsx',
     reason: 'no-v5-deliverable',
     note: 'Origin-redesign R2 auth artwork.',
+  },
+  {
+    path: 'user/components/AsyncReadState.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'Shared async-state primitive created by the V5-P14 sweep itself, not by a P0-P13c deliverable.',
   },
   {
     path: 'user/components/Dialog.tsx',
@@ -1414,6 +1415,78 @@ export interface V5AsyncReadExemption {
 
 export const V5_ASYNC_READ_EXEMPTIONS = [
   {
+    component: 'user/social/chatSurface.tsx',
+    read: 'ChipShareShortcut.audienceQuery',
+    states: ['loading', 'error'],
+    reason:
+      'The privacy-sensitive shortcut is intentionally absent unless the owner audience read succeeds; loading, forbidden, and absent remain indistinguishable.',
+  },
+  {
+    component: 'user/workboard/WorkboardPage.tsx',
+    read: 'UpcomingEarningsZone.data',
+    states: ['loading', 'error'],
+    reason:
+      'Binding P5 keeps the optional earnings zone absent while capability is unresolved or unavailable, including request failure.',
+  },
+  {
+    component: 'user/portfolio/PortfolioPage.tsx',
+    read: 'DividendIntelSection.calendar',
+    states: ['loading', 'error'],
+    reason:
+      'Binding P5 keeps the optional portfolio dividend block absent while capability is unresolved or unavailable, including request failure.',
+  },
+  {
+    component: 'user/portfolio/PortfolioPage.tsx',
+    read: 'DividendIntelSection.projection',
+    states: ['loading', 'error'],
+    reason:
+      'Binding P5 keeps the optional portfolio dividend block absent while capability is unresolved or unavailable, including request failure.',
+  },
+  {
+    component: 'user/portfolio/MirrorchainPanel.tsx',
+    read: 'MemberSheet.activityQuery',
+    states: ['loading', 'error'],
+    reason:
+      'MemberSheet passes the complete query to ActivitySection, which renders loading, failure, and empty outcomes in the activity block.',
+    delegatedTo: 'ActivitySection',
+  },
+  {
+    component: 'user/portfolio/MirrorchainPanel.tsx',
+    read: 'useMirrorInvites.$return',
+    states: ['loading', 'error'],
+    reason:
+      'The shared hook returns the complete query to MirrorInvitesSection, which renders loading and failure recovery in Social requests.',
+    delegatedTo: 'MirrorInvitesSection',
+  },
+  {
+    component: 'user/assets/AssetDetailPage.tsx',
+    read: 'DividendsSection.data',
+    states: ['loading', 'error'],
+    reason:
+      'Binding P5 keeps the optional dividend block absent while capability is unresolved or unavailable, including request failure.',
+  },
+  {
+    component: 'user/assets/AssetDetailPage.tsx',
+    read: 'EarningsSection.data',
+    states: ['loading', 'error'],
+    reason:
+      'Binding P5 keeps the optional earnings block absent while capability is unresolved or unavailable, including request failure.',
+  },
+  {
+    component: 'user/assets/AssetDetailPage.tsx',
+    read: 'NewsSection.data',
+    states: ['loading', 'error'],
+    reason:
+      'Binding P5 keeps the optional news block absent while capability is unresolved or unavailable, including request failure.',
+  },
+  {
+    component: 'user/assets/AssetDetailPage.tsx',
+    read: 'SplitsSection.data',
+    states: ['loading', 'error'],
+    reason:
+      'Binding P5 keeps the optional splits block absent while capability is unresolved or unavailable, including request failure.',
+  },
+  {
     component: 'user/forecast/ForecastPage.tsx',
     read: 'usePortfolioPrefill.portfoliosQuery',
     states: ['loading', 'error'],
@@ -1611,128 +1684,9 @@ export type V5AsyncStateDebtLedger = Readonly<
 export const V5_ASYNC_READ_SITE_BASELINE = 179;
 
 /** Ratchet this downward whenever #739 removes a read site or missing state. */
-export const V5_ASYNC_STATE_DEBT_CEILING = { readSites: 64, stateGaps: 112 } as const;
+export const V5_ASYNC_STATE_DEBT_CEILING = { readSites: 0, stateGaps: 0 } as const;
 
-export const V5_ASYNC_STATE_DEBT = {
-  'admin/pages/UsersPage.tsx': {
-    'UsersPage.stats': ['loading', 'error'],
-  },
-  'user/assets/AssetDetailPage.tsx': {
-    'AssetDetailPage.historyQuery': ['error'],
-    'AssetDetailPage.quoteQuery': ['loading', 'error'],
-    'DividendsSection.data': ['loading', 'error'],
-    'EarningsSection.data': ['loading', 'error'],
-    'NewsSection.data': ['loading', 'error'],
-    'SplitsSection.data': ['loading', 'error'],
-    'WatchlistIconButton.$destructured': ['loading', 'error'],
-    'WatchlistIconButton.listsQuery': ['error'],
-  },
-  'user/components/AssetSearchBox.tsx': {
-    'AssetSearchBox.conglomeratesQuery': ['error'],
-    'AssetSearchBox.portfoliosQuery': ['loading', 'error'],
-    'AssetSearchBox.workboardQuery': ['loading', 'error'],
-    'WatchlistControl.listsQuery': ['error'],
-  },
-  'user/components/TransactionDialog.tsx': {
-    'TransactionDialog.taxSettingsQuery': ['loading', 'error'],
-  },
-  'user/control/panels/AccountPanel.tsx': {
-    'BaseCurrencyRow.query': ['error'],
-    'ExportRow.status': ['loading', 'error'],
-  },
-  'user/control/panels/NotificationsPanel.tsx': {
-    'DiscordRows.query': ['loading', 'error'],
-    'DiscordSetup.query': ['loading', 'error'],
-    'TelegramRows.query': ['loading', 'error'],
-    'TelegramSetup.query': ['loading', 'error'],
-  },
-  'user/forecast/ProjectionSection.tsx': {
-    'ProjectionSection.analyticsQuery': ['loading', 'error'],
-    'ProjectionSection.dividendQuery': ['loading', 'error'],
-    'ProjectionSection.historyQuery': ['loading', 'error'],
-    'ProjectionSection.ordersQuery': ['loading', 'error'],
-    'ProjectionSection.portfolioQuery': ['loading', 'error'],
-  },
-  'user/home/HomePage.tsx': {
-    'HomeBoard.portfoliosQuery': ['error'],
-  },
-  'user/portfolio/cashflow/CashBudgetsPage.tsx': {
-    'CashBudgetsPage.tagsQuery': ['loading', 'error'],
-  },
-  'user/portfolio/cashflow/CashMovementsPage.tsx': {
-    'CashMovementsPage.tagsQuery': ['loading', 'error'],
-  },
-  'user/portfolio/cashflow/CashOverviewPage.tsx': {
-    'CashOverviewPage.movementsQuery': ['loading', 'error'],
-    'CashOverviewPage.sourcesQuery': ['loading', 'error'],
-  },
-  'user/portfolio/cashflow/RecordCashDialog.tsx': {
-    'RecordCashDialog.previewQuery': ['loading', 'error'],
-    'RecordCashDialog.sourcesQuery': ['loading', 'error'],
-    'RecordCashDialog.tagsQuery': ['loading', 'error'],
-  },
-  'user/portfolio/CashSourcesPage.tsx': {
-    'CashSourcesPage.cashQuery': ['loading', 'error'],
-  },
-  'user/portfolio/ImportPage.tsx': {
-    'ImportPage.brokersQuery': ['loading', 'error'],
-    'ImportPage.cashSourcesQuery': ['loading', 'error'],
-    'ImportPage.portfoliosQuery': ['loading', 'error'],
-  },
-  'user/portfolio/MirrorchainPanel.tsx': {
-    'InviteDialog.friendsQuery': ['error'],
-    'MemberSheet.activityQuery': ['loading', 'error'],
-    'useMirrorInvites.$return': ['loading', 'error'],
-  },
-  'user/portfolio/PortfolioPage.tsx': {
-    'DividendIntelSection.calendar': ['loading', 'error'],
-    'DividendIntelSection.projection': ['loading', 'error'],
-    'PortfolioPage.cashSourcesQuery': ['loading', 'error'],
-    'PortfolioPage.historyQuery': ['error'],
-    'PortfolioPage.transactionsQuery': ['loading', 'error'],
-    'RecategorizeBanner.statusQuery': ['loading', 'error'],
-  },
-  'user/portfolio/PortfolioSettingsPage.tsx': {
-    'PortfolioSettingsPage.archivedQuery': ['error'],
-  },
-  'user/portfolio/PortfolioSwitcher.tsx': {
-    'PortfolioSwitcher.activeQuery': ['loading', 'error'],
-  },
-  'user/portfolio/TaxReportPrintPage.tsx': {
-    'TaxReportPrintPage.portfoliosQuery': ['loading', 'error'],
-  },
-  'user/social/chatSurface.tsx': {
-    'ChipShareShortcut.audienceQuery': ['loading', 'error'],
-    'NewChatDialog.data': ['error'],
-    'SharePickerDialog.conglomeratesQuery': ['error'],
-    'SharePickerDialog.ideasQuery': ['error'],
-    'SharePickerDialog.portfoliosQuery': ['error'],
-  },
-  'user/social/FriendGroupsSection.tsx': {
-    'GroupCard.friendsQuery': ['loading', 'error'],
-  },
-  'user/social/MySharedItemsPage.tsx': {
-    'AlertSharingControl.data': ['loading', 'error'],
-  },
-  'user/vault/ui/VaultUnlockGate.tsx': {
-    'StuckFold.twoFactor': ['loading', 'error'],
-  },
-  'user/workboard/BudgetCalculator.tsx': {
-    'BudgetCalculator.portfoliosQuery': ['loading', 'error'],
-  },
-  'user/workboard/ConglomerateDetailPage.tsx': {
-    'ConglomerateDetailPage.resolvedQuery': ['loading'],
-  },
-  'user/workboard/IdeasListPage.tsx': {
-    'IdeasListPage.mySharedQuery': ['loading', 'error'],
-  },
-  'user/workboard/WorkboardPage.tsx': {
-    'UpcomingEarningsZone.data': ['loading', 'error'],
-    'WatchlistRow.quoteQuery': ['error'],
-    'WatchlistRow.sparklineQuery': ['error'],
-    'WatchlistSharingToggle.data': ['loading', 'error'],
-  },
-} as const satisfies V5AsyncStateDebtLedger;
+export const V5_ASYNC_STATE_DEBT: V5AsyncStateDebtLedger = {};
 
 /**
  * Frozen literal-copy debt, by file. These pre-V5 admin pages were never

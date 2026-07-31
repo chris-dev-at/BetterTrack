@@ -20,6 +20,7 @@ import { useT } from '../../i18n';
 import { cx } from '../../lib/cx';
 import { EmptyState, Skeleton } from '../../ui';
 import { AllocationDonut } from '../../ui/charts';
+import { AsyncReadState } from '../components/AsyncReadState';
 import { Alert, Button } from '../components/ui';
 import { Dialog } from '../components/Dialog';
 import { BacktestPanel } from './BacktestPanel';
@@ -355,12 +356,12 @@ export function ConglomerateDetailPage() {
               </div>
             ) : null}
           </div>
-          {resolvedQuery.isError ? (
-            <div className="flex flex-col items-start gap-2">
-              <Alert tone="error">{t('workboard.detail.resolvedLoadError')}</Alert>
-              <Button onClick={() => void resolvedQuery.refetch()}>{t('common.retry')}</Button>
-            </div>
-          ) : null}
+          <AsyncReadState
+            loading={resolvedQuery.isLoading}
+            error={resolvedQuery.error}
+            errorLabel={t('workboard.detail.resolvedLoadError')}
+            onRetry={() => void resolvedQuery.refetch()}
+          />
           {showResolved && resolved ? (
             <>
               <p className="text-xs bt-muted">{t('workboard.detail.resolvedHint')}</p>

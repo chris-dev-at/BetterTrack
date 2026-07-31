@@ -134,6 +134,13 @@ beforeEach(() => {
 });
 
 describe('TaxReportPrintPage', () => {
+  test('renders a portfolio-reference read failure in the print document', async () => {
+    vi.mocked(portfolioApi.listPortfolios).mockRejectedValue(new Error('portfolios unavailable'));
+    renderPrint('/portfolio/tax/print?portfolio=p1&year=2026');
+
+    expect(await screen.findByText("This information isn't available.")).toBeInTheDocument();
+  });
+
   test('renders the full year report — same numbers as the on-screen report — and opens print', async () => {
     renderPrint('/portfolio/tax/print?portfolio=p1&year=2026');
 

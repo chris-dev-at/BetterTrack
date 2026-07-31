@@ -10,6 +10,7 @@ import { useT } from '../../i18n';
 import { EmptyState, Skeleton } from '../../ui';
 import { Badge, Button, PageHead, type BadgeTone } from '../../ui/origin';
 import { AudiencePicker } from '../components/AudiencePicker';
+import { AsyncReadState } from '../components/AsyncReadState';
 import { Dialog } from '../components/Dialog';
 import { Alert } from '../components/ui';
 import { useResolvedPrivacyMode } from '../vault/usePrivacyMode';
@@ -173,6 +174,15 @@ export function IdeasListPage() {
   return (
     <div className="flex flex-col gap-6">
       <PageHead sub={t('workboard.ideas.list.subtitle')} title={t('workboard.ideas.list.title')} />
+
+      {!paranoid ? (
+        <AsyncReadState
+          loading={mySharedQuery.isLoading}
+          error={mySharedQuery.error}
+          errorLabel={t('workboard.ideas.list.loadError')}
+          onRetry={() => void mySharedQuery.refetch()}
+        />
+      ) : null}
 
       {ideas.length === 0 ? (
         <EmptyState

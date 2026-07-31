@@ -19,6 +19,7 @@ import { DISCREET_MASK, formatMoney, isDiscreetMode } from '../../lib/format';
 import { getPortfolioDividendProjection } from '../../lib/marketIntelApi';
 import { EmptyState, StatCard } from '../../ui';
 import { overlayColor } from '../../ui/charts';
+import { AsyncReadState } from '../components/AsyncReadState';
 import { Button, TextField } from '../components/ui';
 import { usePortfolioStore } from '../portfolio/PortfolioStoreProvider';
 import { clientSeriesCagrPct } from '../vault/engine/clientSeries';
@@ -130,6 +131,29 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
     staleTime: 60_000,
   });
 
+  const prefillLoading =
+    portfolioQuery.isLoading ||
+    analyticsQuery.isLoading ||
+    historyQuery.isLoading ||
+    ordersQuery.isLoading ||
+    dividendQuery.isLoading;
+  const prefillError =
+    portfolioQuery.error ??
+    analyticsQuery.error ??
+    historyQuery.error ??
+    ordersQuery.error ??
+    dividendQuery.error;
+
+  function retryPrefill() {
+    const retries: Promise<unknown>[] = [portfolioQuery.refetch(), ordersQuery.refetch()];
+    if (privacyMode === 'normal') {
+      retries.push(analyticsQuery.refetch(), dividendQuery.refetch());
+    } else {
+      retries.push(historyQuery.refetch());
+    }
+    void Promise.all(retries);
+  }
+
   // The sampled historical return over the selected window (null when the series
   // is too short to state a CAGR); it drives the return field until edited. The
   // paranoid branch goes through `clientSeriesCagrPct` so the window's zero
@@ -238,6 +262,14 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
   return (
     <div className="flex flex-col gap-5 px-4 py-4">
       <p className="text-sm bt-muted">{t('forecast.projection.description')}</p>
+
+      <AsyncReadState
+        loading={prefillLoading}
+        error={prefillError}
+        errorLabel={t('forecast.prefill.error')}
+        loadingLabel={t('forecast.prefill.loading')}
+        onRetry={retryPrefill}
+      />
 
       {/* ── Factor controls ─────────────────────────────────────────────── */}
       <div className="flex flex-col gap-4 bt-panel bt-panel--pad">

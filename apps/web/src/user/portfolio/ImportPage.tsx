@@ -26,6 +26,7 @@ import { listCashSources, listPortfolios } from '../../lib/portfolioApi';
 import { EmptyState, MoneyText } from '../../ui';
 import { Badge, Button, Field, PageHead, Select, type BadgeTone } from '../../ui/origin';
 import { Alert } from '../components/ui';
+import { AsyncReadState } from '../components/AsyncReadState';
 import { ACTIVE_PORTFOLIO_PARAM, resolveActivePortfolio } from './PortfolioSwitcher';
 
 /**
@@ -152,6 +153,16 @@ export function ImportPage() {
     enabled: preview !== null,
   });
 
+  const referenceLoading =
+    portfoliosQuery.isLoading || brokersQuery.isLoading || cashSourcesQuery.isLoading;
+  const referenceError = portfoliosQuery.error ?? brokersQuery.error ?? cashSourcesQuery.error;
+
+  function retryReferenceData() {
+    const retries: Promise<unknown>[] = [portfoliosQuery.refetch(), brokersQuery.refetch()];
+    if (preview !== null) retries.push(cashSourcesQuery.refetch());
+    void Promise.all(retries);
+  }
+
   const reset = () => {
     setPreview(null);
     setResult(null);
@@ -215,6 +226,13 @@ export function ImportPage() {
       </PageHead>
 
       {error ? <Alert tone="error">{error}</Alert> : null}
+
+      <AsyncReadState
+        loading={referenceLoading}
+        error={referenceError}
+        errorLabel={t('portfolio.import.applyFailed')}
+        onRetry={retryReferenceData}
+      />
 
       {/* ── Step 1: file + broker ── */}
       <section className="bt-section">

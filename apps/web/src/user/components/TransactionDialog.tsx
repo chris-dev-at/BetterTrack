@@ -23,6 +23,7 @@ import { MoneyText } from '../../ui';
 import { useDebounce } from '../hooks/useDebounce';
 import { SourceBadge } from '../portfolio/SourceBadge';
 import { AssetSearchBox } from './AssetSearchBox';
+import { AsyncReadState } from './AsyncReadState';
 import { Dialog } from './Dialog';
 import { dateForPrice, priceForDate, toDailyPoints, type DailyPoint } from './priceDateLink';
 import { Alert, Button, cx } from './ui';
@@ -1024,6 +1025,12 @@ export function TransactionDialog(props: TransactionDialogProps) {
         </div>
       ) : (
         <form onSubmit={handleSubmit} id={headingId} className="flex flex-col gap-5">
+          <AsyncReadState
+            loading={taxSettingsQuery.isLoading}
+            error={taxSettingsQuery.error}
+            onRetry={() => void taxSettingsQuery.refetch()}
+          />
+
           {isEdit && transaction && transaction.source !== SOURCE_TAG_MANUAL ? (
             // Editing an imported/synced row (V5-P0c): surface where it came from
             // so a hand edit is a deliberate choice, never a silent overwrite of
