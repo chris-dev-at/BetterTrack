@@ -1,4 +1,11 @@
 {
+  "notFound": {
+    "title": "Page not found",
+    "description": "This address may be misspelled, outdated, or no longer available.",
+    "requestedPath": "Requested path:",
+    "backToStart": "Back to start",
+    "backToPrevious": "Back to previous page"
+  },
   "accessibility": {
     "skipToContent": "Skip to main content"
   },
@@ -3670,6 +3677,9 @@
       }
     },
     "nav": {
+      "console": "Admin console",
+      "loading": "Loading admin console…",
+      "language": "Console language",
       "security": "Security",
       "health": "Health",
       "menu": "Admin menu",
@@ -3680,7 +3690,20 @@
       "usageAnalytics": "Usage analytics",
       "monitoring": "Monitoring",
       "apiKeys": "API keys",
-      "ai": "AI"
+      "ai": "AI",
+      "users": "Users",
+      "invites": "Invites",
+      "settings": "Settings",
+      "accountDefaults": "Account defaults",
+      "announcements": "Announcements",
+      "oauthApps": "OAuth apps",
+      "email": "Email",
+      "audit": "Audit log",
+      "sections": {
+        "people": "People",
+        "configuration": "Configuration",
+        "diagnostics": "Diagnostics"
+      }
     },
     "monitoring": {
       "title": "Monitoring",

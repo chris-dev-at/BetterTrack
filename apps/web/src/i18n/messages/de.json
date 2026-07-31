@@ -1,4 +1,11 @@
 {
+  "notFound": {
+    "title": "Seite nicht gefunden",
+    "description": "Diese Adresse ist vielleicht falsch, veraltet oder nicht mehr verfügbar.",
+    "requestedPath": "Aufgerufener Pfad:",
+    "backToStart": "Zur Startseite",
+    "backToPrevious": "Zur vorherigen Seite"
+  },
   "accessibility": {
     "skipToContent": "Zum Hauptinhalt springen"
   },
@@ -3670,6 +3677,9 @@
       }
     },
     "nav": {
+      "console": "Admin-Konsole",
+      "loading": "Admin-Konsole wird geladen…",
+      "language": "Sprache der Konsole",
       "security": "Sicherheit",
       "health": "Zustand",
       "menu": "Admin-Menü",
@@ -3680,7 +3690,20 @@
       "usageAnalytics": "Nutzungsanalyse",
       "monitoring": "Monitoring",
       "apiKeys": "API-Schlüssel",
-      "ai": "KI"
+      "ai": "KI",
+      "users": "Nutzer",
+      "invites": "Einladungen",
+      "settings": "Einstellungen",
+      "accountDefaults": "Kontovorgaben",
+      "announcements": "Ankündigungen",
+      "oauthApps": "OAuth-Apps",
+      "email": "E-Mail",
+      "audit": "Audit-Protokoll",
+      "sections": {
+        "people": "Personen",
+        "configuration": "Konfiguration",
+        "diagnostics": "Diagnose"
+      }
     },
     "monitoring": {
       "title": "Monitoring",
