@@ -399,6 +399,29 @@ function contentSecurityPolicy(rendered: string | null): string {
   return rendered?.match(/add_header Content-Security-Policy "([^"]+)"/)?.[1] ?? '';
 }
 
+/**
+ * Evaluate every `location = /config.js` body the rendered layout serves, in
+ * source order (user block, then admin block).
+ *
+ * This is the browser's view of the entrypoint's output: the nginx literal is
+ * SINGLE-quoted, so a `"` in an origin never breaks the nginx config — it
+ * breaks out of the JavaScript string. Running the payload in a fresh context
+ * and reporting which globals it defined catches exactly that, where a string
+ * match on the expected origin would not.
+ */
+function runtimeConfigs(
+  rendered: string | null,
+): { globals: string[]; value: Record<string, string> }[] {
+  return [...(rendered ?? '').matchAll(/return 200 '([^']*)';/g)].map((match) => {
+    const sandbox: Record<string, unknown> = { window: {} };
+    runInNewContext(match[1] ?? '', sandbox);
+    return {
+      globals: Object.keys(sandbox),
+      value: (sandbox['window'] as { __BT__: Record<string, string> }).__BT__,
+    };
+  });
+}
+
 const SECURITY_INCLUDE = 'include /etc/nginx/bt-includes/static-security-headers.conf;';
 const CONDITIONAL_HSTS_INCLUDE = 'include /etc/nginx/bt-includes/static-hsts.conf;';
 
@@ -906,7 +929,130 @@ describe('shipped web Compose topology → rendered browser policy', () => {
     );
 
     expect(rendered.status).toBe(0);
-    expect(rendered.defaultConf).toContain('productOrigin: "https://PUBLIC.Example.NET"');
+    // Scheme AND host are normalized (both are case-insensitive), so the front
+    // proxy renders the same override byte-for-byte as the landing container's
+    // Node entrypoint, whose `new URL(...).origin` lowercases the authority.
+    expect(rendered.defaultConf).toContain('productOrigin: "https://public.example.net"');
+    expect(
+      landingRuntimeConfig(
+        renderLandingEntrypoint({
+          BT_MODE: 'subdomains',
+          BT_DOMAIN: 'internal.example.net',
+          BT_WEB_ORIGIN: 'HTTPS://PUBLIC.Example.NET/',
+        }),
+      ).webOrigin,
+    ).toBe('https://public.example.net');
+  });
+
+  it.each(['', '   '])(
+    'derives the product origin when the Compose override is blank (%j)',
+    (blank) => {
+      const rendered = runWebEntrypoint(
+        composeWebEnvironment({
+          BT_MODE: 'subdomains',
+          BT_DOMAIN: 'bettertrack.at',
+          BT_PRODUCT_ORIGIN: blank,
+        }),
+      );
+
+      expect(rendered.status).toBe(0);
+      expect(rendered.defaultConf).toContain('productOrigin: "https://bettertrack.at"');
+    },
+  );
+
+  it.each([
+    ['subdomains', 'https://api.money.example.net', 'https://money.example.net'],
+    ['ports', 'http://money.example.net:3000', 'http://money.example.net:8082'],
+  ])(
+    'emits a runtime config in %s mode that evaluates to exactly the two origins',
+    (mode, apiOrigin, productOrigin) => {
+      const rendered = runWebEntrypoint(
+        composeWebEnvironment({ BT_MODE: mode, BT_DOMAIN: 'money.example.net' }),
+      );
+
+      expect(rendered.status).toBe(0);
+      // Evaluate what the browser actually receives from `location = /config.js`
+      // rather than string-matching it: a value that escaped the JavaScript
+      // string would assign a global, and this asserts none ever appears.
+      const configs = runtimeConfigs(rendered.defaultConf);
+      expect(configs.map((config) => config.globals)).toEqual([['window'], ['window']]);
+      expect(configs.map((config) => config.value)).toEqual([
+        { app: 'user', apiOrigin, productOrigin },
+        { app: 'admin', apiOrigin, productOrigin },
+      ]);
+    },
+  );
+
+  // Every one of these is a well-formed URL as far as the api's zod `.url()`
+  // contract goes, so nothing upstream stops them; the nginx literal they land
+  // in is SINGLE-quoted, so a `"` breaks out of the JavaScript string (not the
+  // nginx config) on every user AND admin page. The entrypoint must refuse the
+  // boot, in both layouts, for the product origin and the API origin alike.
+  const hostileOrigins: [string, string][] = [
+    [
+      'closes the runtime config object',
+      'https://product.example/" }; globalThis.pwned = true; window.__BT__ = { productOrigin: "https://product.example',
+    ],
+    ['embeds a quote', 'https://product.example/"'],
+    ['embeds a policy separator', 'https://product.example/; script-src *'],
+    ['embeds an object terminator', 'https://product.example/}'],
+    ['embeds a backslash escape', 'https://product.example/\\'],
+    ['embeds a control character', 'https://product.example/\u0007'],
+    ['hides a payload on a second line', 'https://product.example\nglobalThis.pwned = true'],
+    ['carries userinfo', 'https://user:secret@product.example'],
+    ['carries a path and query', 'https://product.example/legal?lang=de'],
+    ['is not an absolute origin', '//product.example'],
+  ];
+
+  it.each(hostileOrigins)('refuses to boot on a product origin that %s (%j)', (_reason, value) => {
+    for (const mode of ['subdomains', 'ports']) {
+      const rendered = runWebEntrypoint(
+        composeWebEnvironment({
+          BT_MODE: mode,
+          BT_DOMAIN: 'bettertrack.at',
+          BT_PRODUCT_ORIGIN: value,
+        }),
+      );
+
+      expect(rendered.status).not.toBe(0);
+      expect(rendered.stderr).toContain('BT_PRODUCT_ORIGIN');
+      // Nothing rendered at all: the value never reaches config.js or a header.
+      expect(rendered.defaultConf).toBeNull();
+      expect(rendered.policy).toBeNull();
+    }
+  });
+
+  it.each(hostileOrigins)('refuses to boot on an API origin that %s (%j)', (_reason, value) => {
+    for (const mode of ['subdomains', 'ports']) {
+      const rendered = runWebEntrypoint(
+        composeWebEnvironment({
+          BT_MODE: mode,
+          BT_DOMAIN: 'bettertrack.at',
+          BT_API_ORIGIN: value,
+        }),
+      );
+
+      expect(rendered.status).not.toBe(0);
+      expect(rendered.stderr).toContain('BT_API_ORIGIN');
+      expect(rendered.defaultConf).toBeNull();
+      expect(rendered.policy).toBeNull();
+    }
+  });
+
+  it('refuses to boot when the derived origins inherit a hostile domain', () => {
+    // The same validation runs on the DERIVED origin, so the hole cannot be
+    // reopened one layer down through the topology inputs.
+    const rendered = runWebEntrypoint(
+      composeWebEnvironment({
+        BT_MODE: 'subdomains',
+        BT_DOMAIN: 'bettertrack.at/" }; globalThis.pwned = true; //',
+      }),
+    );
+
+    expect(rendered.status).not.toBe(0);
+    expect(rendered.stderr).toContain('BT_DOMAIN');
+    expect(rendered.defaultConf).toBeNull();
+    expect(rendered.policy).toBeNull();
   });
 
   it.each([
