@@ -45,6 +45,7 @@ import {
   type LocalVaultRecord,
 } from './localDataHome';
 import { vaultStoreErrorKey } from './engine/errorCopy';
+import { openVaultSession } from './engine/session';
 import { toStrictRestoreDocument } from './paranoidDisable';
 import { createMemoryVaultQuarantineStore } from './quarantine';
 import { createVaultSyncEngine, type VaultSyncEngine, type VaultSyncState } from './sync';
@@ -2551,7 +2552,190 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ deletedAt: null, rev: 2 });
   });
+
+  it.each([
+    ['a vault-created portfolio', 'created'] as const,
+    ['the portfolio discardAllData seeds', 'discarded'] as const,
+  ])('provisions Main with the first sibling cash source on %s', async (_label, origin) => {
+    const engine = createMutableEngine(initialDocument());
+    const store = createVaultPortfolioStore(engine, {
+      now: () => AT,
+      newId: idSequence(),
+    });
+
+    // Both origins start with a portfolio that owns NO cash source at all.
+    let portfolioId: string;
+    if (origin === 'created') {
+      portfolioId = (await store.createPortfolio('Side')).id;
+    } else {
+      await store.discardAllData();
+      portfolioId = PORTFOLIO_ID2(engine);
+    }
+    expect(await store.listCashSources(portfolioId)).toEqual({ sources: [] });
+
+    const reserve = await store.createCashSource(portfolioId, { name: 'Reserve', type: 'bank' });
+
+    // Main is materialised first, in the same mutation as its sibling — the
+    // server's `getOrCreateMain`-before-`createSource` order.
+    await expect(store.listCashSources(portfolioId)).resolves.toMatchObject({
+      sources: [
+        { name: 'Main', isMain: true, archivedAt: null },
+        { id: reserve.id, name: 'Reserve', isMain: false },
+      ],
+    });
+    const document = engine.state.active!.document;
+    expect(() => openVaultSession(document)).not.toThrow();
+    // The client validators never enforced this; the SERVER's restore boundary
+    // does, and a vault that fails it opens but can never be disabled.
+    const restore = toStrictRestoreDocument(document);
+    expectExactlyOneActiveMainPerPortfolio(restore);
+    // Negative control — the pre-fix shape (a sibling, no Main) is exactly what
+    // that rule refuses, so the assertion above is not vacuous.
+    expect(() =>
+      expectExactlyOneActiveMainPerPortfolio({
+        ...restore,
+        entities: restore.entities.filter(
+          (entity) => !(entity.kind === 'cashSource' && entity.data.isMain),
+        ),
+      }),
+    ).toThrow();
+    expectPortfolioApiUnused();
+  });
+
+  it('refuses duplicate value-point dates before anything is written', async () => {
+    // The server rejects them outright (`DUPLICATE_VALUE_POINT`); it has to here
+    // too, because this producer writes one entity per row and two points for
+    // the same day would be durably encrypted under distinct ids — a duplicate
+    // (assetId, date) key `validateRelationships` refuses as VAULT_CORRUPT on
+    // the next unlock, with no way back out of the vault.
+    const engine = createMutableEngine(initialDocument());
+    const store = createVaultPortfolioStore(engine, {
+      now: () => AT,
+      newId: idSequence(),
+    });
+
+    const failure = await captureError(() =>
+      store.putValuePoints(ASSET_ID, [
+        { date: '2026-07-01', value: 1_000 },
+        { date: '2026-07-30', value: 1_050 },
+        { date: '2026-07-01', value: 1_100 },
+      ]),
+    );
+
+    expect(failure).toBeInstanceOf(VaultPortfolioStoreError);
+    expect(failure).toMatchObject({ code: 'VAULT_DATA_INVALID' });
+    expect(vaultStoreErrorKey(failure as VaultPortfolioStoreError)).toBe(
+      'vaultMoney.error.dataInvalid',
+    );
+    // No write at all: the mutation never opened, so not even the tombstoning
+    // of the previous points ran.
+    expect(engine.mutate).not.toHaveBeenCalled();
+    expect(engine.state.active!.document.entities.customAssetValue).toBeUndefined();
+    expect(() => openVaultSession(engine.state.active!.document)).not.toThrow();
+
+    // The same call without the duplicate still writes one row per day.
+    await expect(
+      store.putValuePoints(ASSET_ID, [
+        { date: '2026-07-01', value: 1_000 },
+        { date: '2026-07-30', value: 1_050 },
+      ]),
+    ).resolves.toEqual({
+      points: [
+        { date: '2026-07-01', value: 1_000 },
+        { date: '2026-07-30', value: 1_050 },
+      ],
+    });
+    expect(() => openVaultSession(engine.state.active!.document)).not.toThrow();
+  });
+
+  it('takes the standing-order currency from the snapshot that wins the race', async () => {
+    // Two first references to the same never-seen asset. The first order's
+    // catalog read is still in flight when the second one installs the asset
+    // snapshot, so `appendMarketSnapshots` keeps THAT row — and the late order
+    // has to adopt the winner's currency, not the one its own resolver returned.
+    // Disagreement is refused by `validatePersistedStandingOrder` on the next
+    // unlock ("the buy currency does not match its asset").
+    const engine = createMutableEngine(initialDocument());
+    let releaseFirstRead: (() => void) | null = null;
+    const firstRead = new Promise<void>((resolve) => {
+      releaseFirstRead = resolve;
+    });
+    let reads = 0;
+    const resolveMarketAsset = vi.fn(async (assetId: string) => {
+      reads += 1;
+      const stale = reads === 1;
+      if (stale) await firstRead;
+      return {
+        id: assetId,
+        providerId: 'yahoo',
+        providerRef: 'NVDA',
+        symbol: 'NVDA',
+        name: 'NVIDIA',
+        exchange: 'NASDAQ',
+        // The loser's catalog read disagrees with the winner's.
+        currency: stale ? 'USD' : 'EUR',
+        type: 'stock' as const,
+        isCustom: false,
+      };
+    });
+    const store = createVaultPortfolioStore(engine, {
+      now: () => AT,
+      newId: idSequence(),
+      resolveMarketAsset,
+    });
+    const order = {
+      portfolioId: PORTFOLIO_ID,
+      kind: 'buy-asset' as const,
+      assetId: SECOND_ASSET_ID,
+      amount: 1,
+      cadence: 'monthly' as const,
+      anchorDay: 1,
+      startDate: '2026-08-01',
+    };
+
+    const late = store.createStandingOrder({ ...order, label: 'Late' });
+    expect(reads).toBe(1);
+    const winner = await store.createStandingOrder({ ...order, label: 'Winner' });
+    releaseFirstRead!();
+    const loser = await late;
+
+    expect(resolveMarketAsset).toHaveBeenCalledTimes(2);
+    expect(winner).toMatchObject({ currency: 'EUR', assetSymbol: 'NVDA' });
+    // The late order agrees with the snapshot that is actually in the vault.
+    expect(loser).toMatchObject({ currency: 'EUR', assetSymbol: 'NVDA' });
+    const document = engine.state.active!.document;
+    expect(
+      document.entities.customAsset?.filter((row) => row.id === SECOND_ASSET_ID),
+    ).toMatchObject([{ deletedAt: null, data: { currency: 'EUR' } }]);
+    expect(() => openVaultSession(document)).not.toThrow();
+  });
 });
+
+/**
+ * The rule the SERVER applies at the restore boundary
+ * (`paranoidRehydrationService.validateGraph`: "portfolio <id> must have exactly
+ * one active main cash source"), over live rows only — the same set it builds
+ * the restore graph from. Neither `openVaultSession` nor
+ * `toStrictRestoreDocument` checks it, which is why a producer that breaks it
+ * yields a vault that opens and can never be left.
+ */
+function expectExactlyOneActiveMainPerPortfolio(
+  strict: ReturnType<typeof vaultStrictDocumentV1Schema.parse>,
+): void {
+  const byPortfolio = new Map<string, { isMain: boolean; archivedAt: string | null }[]>();
+  for (const entity of strict.entities) {
+    if (entity.kind !== 'cashSource' || entity.deletedAt !== null) continue;
+    const group = byPortfolio.get(entity.data.portfolioId) ?? [];
+    group.push({ isMain: entity.data.isMain, archivedAt: entity.data.archivedAt });
+    byPortfolio.set(entity.data.portfolioId, group);
+  }
+  for (const [portfolioId, sources] of byPortfolio) {
+    const mains = sources.filter((source) => source.isMain);
+    if (mains.length !== 1 || mains[0]!.archivedAt !== null) {
+      throw new Error(`portfolio ${portfolioId} must have exactly one active main cash source`);
+    }
+  }
+}
 
 /** The live replacement portfolio a discardAllData wipe seeds. */
 function PORTFOLIO_ID2(engine: VaultSyncEngine): string {

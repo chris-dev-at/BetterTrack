@@ -775,23 +775,40 @@ export function createVaultPortfolioStore(
       const current = requireDocument(engine);
       requirePortfolio(current, portfolioId);
       assertUniqueCashSourceName(current, portfolioId, parsed.name);
-      const entity = await appendEntity(context, 'cashSource', (document, id, timestamp) => {
-        requirePortfolio(document, portfolioId);
-        assertUniqueCashSourceName(document, portfolioId, parsed.name);
-        return entityRecord(
-          id,
-          engine.deviceId,
-          timestamp,
-          strictCashSourceData({
-            portfolioId,
-            name: parsed.name,
-            type: parsed.type,
-            isMain: false,
-            archivedAt: null,
-            createdAt: timestamp,
-          }),
-        );
-      });
+      // Materialise Main in the SAME mutation, before the sibling, exactly like
+      // the server (`portfolioService.createCashSource` →
+      // `cashSourceRepository.getOrCreateMain`). A portfolio a vault created —
+      // `createPortfolio`, or the one `discardAllData` seeds — owns no cash
+      // source at all, and a portfolio that owns ANY source but no active Main
+      // is refused wholesale by the restore boundary ("must have exactly one
+      // active main cash source"), which neither `openVaultSession` nor
+      // `toStrictRestoreDocument` would have caught: the vault would open and
+      // then be impossible to leave. Provisioning first also reserves the name,
+      // so a sibling can never squat "Main".
+      const provisionMain = (document: VaultDocument) =>
+        ensureCashSource(context, document, portfolioId, undefined, context.now()).document;
+      const entity = await appendEntity(
+        context,
+        'cashSource',
+        (document, id, timestamp) => {
+          requirePortfolio(document, portfolioId);
+          assertUniqueCashSourceName(document, portfolioId, parsed.name);
+          return entityRecord(
+            id,
+            engine.deviceId,
+            timestamp,
+            strictCashSourceData({
+              portfolioId,
+              name: parsed.name,
+              type: parsed.type,
+              isMain: false,
+              archivedAt: null,
+              createdAt: timestamp,
+            }),
+          );
+        },
+        provisionMain,
+      );
       return cashSourceFromEntity(entity, 0);
     },
 
@@ -1540,16 +1557,23 @@ async function createStandingOrder(
       : new Map<string, Record<string, unknown>>();
   const snapshotted = (document: VaultDocument) =>
     appendMarketSnapshots(document, marketSnapshots, context.engine.deviceId, context.now());
-  const asset =
-    parsed.kind === 'buy-asset'
-      ? resolveTransactionAsset(snapshotted(current), parsed.assetId!)
-      : null;
+  // Fail fast on an asset that cannot be proven, before the mutation opens.
+  // The resolver's own currency is deliberately NOT carried across: see below.
+  if (parsed.kind === 'buy-asset') resolveTransactionAsset(snapshotted(current), parsed.assetId!);
   const entity = await appendEntity(
     context,
     'standingOrder',
     (document, id, createdAt) => {
       requirePortfolio(document, parsed.portfolioId);
-      if (parsed.kind === 'buy-asset') resolveTransactionAsset(document, parsed.assetId!);
+      // Read the asset from the PREPARED document, never from the pre-mutation
+      // resolver read: if a queued mutation or a reconciliation installed the
+      // same asset snapshot while the catalog read was in flight,
+      // `appendMarketSnapshots` correctly keeps that live winner — so the
+      // winner, not the loser, has to decide this order's currency. A buy order
+      // whose currency disagrees with its asset is refused by
+      // `validatePersistedStandingOrder` on the next `openVaultSession`.
+      const orderAsset =
+        parsed.kind === 'buy-asset' ? resolveTransactionAsset(document, parsed.assetId!) : null;
       return entityRecord(
         id,
         context.engine.deviceId,
@@ -1560,7 +1584,7 @@ async function createStandingOrder(
           kind: parsed.kind,
           assetId: parsed.assetId ?? null,
           amount: decimalStringFromNumber(parsed.amount),
-          currency: asset?.currency ?? 'EUR',
+          currency: orderAsset?.currency ?? 'EUR',
           label: parsed.label ?? null,
           cadence: parsed.cadence,
           anchorDay: parsed.anchorDay ?? null,
@@ -1650,6 +1674,7 @@ async function replaceCustomAssetValuePoints(
   points: ValuePoint[],
 ): Promise<void> {
   requireOwnedCustomAsset(requireDocument(context.engine), assetId);
+  assertUniqueValuePointDates(points);
   await context.engine.mutate(({ document }) => {
     requireOwnedCustomAsset(document, assetId);
     const timestamp = context.now();
@@ -1677,6 +1702,26 @@ async function replaceCustomAssetValuePoints(
     );
     return appendEntities(next, 'customAssetValue', entities);
   });
+}
+
+/**
+ * One value point per day (§6.9), rejected loudly rather than silently
+ * collapsed — the same rule `customAssetService.putValuePoints` enforces
+ * (`DUPLICATE_VALUE_POINT`) and the reason it exists here: the server holds it
+ * with a unique index, while this producer writes one entity per input row, so
+ * two contract-valid points for the same day would be durably encrypted under
+ * distinct ids and `validateRelationships` would refuse the whole vault as
+ * `VAULT_CORRUPT` on the next unlock. It has to fail BEFORE the mutation, with
+ * nothing written.
+ */
+function assertUniqueValuePointDates(points: readonly ValuePoint[]): void {
+  const seen = new Set<string>();
+  for (const point of points) {
+    if (seen.has(point.date)) {
+      throw storeError('VAULT_DATA_INVALID', `Duplicate value point for ${point.date}.`);
+    }
+    seen.add(point.date);
+  }
 }
 
 async function updateStandingOrder(
