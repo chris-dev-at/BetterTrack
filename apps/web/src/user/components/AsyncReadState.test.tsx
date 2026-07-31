@@ -20,6 +20,18 @@ describe('AsyncReadState', () => {
     expect(screen.getByRole('status')).toHaveTextContent('Loading…');
   });
 
+  test('can keep a contextual loading status out of the visual layout', () => {
+    renderState({
+      loading: true,
+      error: null,
+      loadingLabel: 'Checking categories…',
+      loadingPresentation: 'sr-only',
+    });
+
+    expect(screen.getByRole('status')).toHaveClass('sr-only');
+    expect(screen.getByRole('status')).toHaveTextContent('Checking categories…');
+  });
+
   test('offers retry for a transport or server outage', () => {
     const onRetry = vi.fn();
     renderState({ loading: false, error: new ApiError(503, 'UNAVAILABLE', 'down'), onRetry });

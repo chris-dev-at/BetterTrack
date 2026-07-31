@@ -1380,6 +1380,7 @@
       "newCustomButton": "+ Custom investment",
       "recordButton": "+ Transaction",
       "loadError": "Could not load your portfolio. Please refresh the page.",
+      "detailsLoadError": "Some portfolio details couldn't be loaded. Please try again.",
       "emptyState": {
         "title": "Your portfolio is empty",
         "description": "Record your first transaction or add a custom investment to start tracking what you own.",
@@ -1475,6 +1476,7 @@
         "performanceMode": "Performance %",
         "analyticsLink": "Analytics →",
         "perfHint": "Deposits and withdrawals are neutralized (time-weighted return) — the curve only moves when your holdings move.",
+        "loadError": "Portfolio history couldn't be loaded. Please try again.",
         "ariaLabelPerformance": "Portfolio performance over time",
         "ariaLabelValue": "Portfolio value over time"
       }
@@ -1960,7 +1962,9 @@
     },
     "recategorize": {
       "message": "Some custom investments need a category. We moved them to “Other” — open one and pick a real category so it groups correctly.",
-      "dismiss": "Dismiss"
+      "dismiss": "Dismiss",
+      "loading": "Checking custom investment categories…",
+      "loadError": "Couldn't check whether custom investments need categories. Please try again."
     },
     "dividends": {
       "ariaLabel": "Dividend income and calendar",
@@ -1987,6 +1991,7 @@
       "uploadCta": "Create preview",
       "uploading": "Uploading…",
       "uploadFailed": "Upload failed.",
+      "referenceDataLoadError": "The choices needed for this import couldn't be loaded. Please try again.",
       "tooManyInstruments": "This file contains more than {{max}} distinct instruments — split it into files with at most {{max}} instruments each.",
       "previewTitle": "Preview: {{filename}}",
       "previewEmptyTitle": "No rows to import",
@@ -2739,6 +2744,8 @@
       "backToSearch": "← Back to Search",
       "backShort": "← Search",
       "loadError": "Could not load asset details. The asset may not exist or the server is temporarily unavailable.",
+      "quoteLoadError": "The latest quote couldn't be loaded. Please try again.",
+      "chartLoadError": "Price history couldn't be loaded. Please try again.",
       "disclaimer": "Market data comes from an unofficial source and may be delayed or inaccurate."
     },
     "live": {
@@ -2797,6 +2804,8 @@
       "failed": "Search failed. Please try again.",
       "noResultsTitle": "No results found",
       "noResultsDescription": "Nothing matched \"{{query}}\". Try a different symbol or name.",
+      "noPortfolioTitle": "Create a portfolio first",
+      "noPortfolioDescription": "You need a portfolio before you can record a buy for this asset.",
       "searchingMore": "Searching the market for more results…",
       "resultsAria": "Search results",
       "openAria": "Open {{symbol}} — {{name}}",

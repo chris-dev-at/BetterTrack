@@ -230,7 +230,7 @@ export function ImportPage() {
       <AsyncReadState
         loading={referenceLoading}
         error={referenceError}
-        errorLabel={t('portfolio.import.applyFailed')}
+        errorLabel={t('portfolio.import.referenceDataLoadError')}
         onRetry={retryReferenceData}
       />
 

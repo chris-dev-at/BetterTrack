@@ -8,6 +8,7 @@ interface AsyncReadStateProps {
   onRetry?: () => void;
   compact?: boolean;
   loadingLabel?: string;
+  loadingPresentation?: 'spinner' | 'sr-only';
   unavailableLabel?: string;
   errorLabel?: string;
 }
@@ -23,12 +24,22 @@ export function AsyncReadState({
   onRetry,
   compact = false,
   loadingLabel,
+  loadingPresentation = 'spinner',
   unavailableLabel,
   errorLabel,
 }: AsyncReadStateProps) {
   const t = useT();
 
-  if (loading) return <Spinner label={loadingLabel} />;
+  if (loading) {
+    if (loadingPresentation === 'sr-only') {
+      return (
+        <span className="sr-only" role="status">
+          {loadingLabel ?? t('common.loading')}
+        </span>
+      );
+    }
+    return <Spinner label={loadingLabel} />;
+  }
   if (error == null) return null;
 
   const outage = classifyApiError(error) === 'outage';

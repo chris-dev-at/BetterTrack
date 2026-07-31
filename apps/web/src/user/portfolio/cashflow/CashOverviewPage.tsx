@@ -189,22 +189,26 @@ export function CashOverviewPage() {
           onRetry={() => void sourcesQuery.refetch()}
         />
 
-        {!sourcesQuery.isLoading && !sourcesQuery.error ? (
-          <>
-            <div className="flex flex-wrap items-end justify-between gap-x-8 gap-y-3">
-              <div>
+        <div className="flex flex-wrap items-end justify-between gap-x-8 gap-y-3">
+          <div>
+            {!sourcesQuery.isLoading && !sourcesQuery.error ? (
+              <>
                 <p className="bt-label">{t('cashflow.overview.total')}</p>
                 <p className="bt-hero-value" style={{ marginTop: 4 }}>
                   <MoneyText amount={totalCash} currency="EUR" />
                 </p>
-                <p className="bt-meta" style={{ marginTop: 5 }}>
-                  {t('cashflow.overview.thisMonthChange', {
-                    amount: formatMoney(summary.net),
-                  })}
-                </p>
-              </div>
-            </div>
+              </>
+            ) : null}
+            <p className="bt-meta" style={{ marginTop: sourcesQuery.data ? 5 : 0 }}>
+              {t('cashflow.overview.thisMonthChange', {
+                amount: formatMoney(summary.net),
+              })}
+            </p>
+          </div>
+        </div>
 
+        {!sourcesQuery.isLoading && !sourcesQuery.error ? (
+          <>
             {sources.length === 0 ? (
               <p className="bt-meta">{t('cashflow.overview.noAccounts')}</p>
             ) : (

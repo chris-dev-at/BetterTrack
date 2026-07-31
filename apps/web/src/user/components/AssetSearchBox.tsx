@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
 
 import type { ConglomerateSummary, SearchResultItem } from '@bettertrack/contracts';
 import { useT } from '../../i18n';
@@ -366,7 +366,16 @@ export function AssetSearchBox({
         />
       ) : null}
       {portfolioAsset && portfoliosQuery.isSuccess && defaultPortfolioId === null ? (
-        <EmptyState compact title={t('forecast.projection.noPortfolioTitle')} />
+        <EmptyState
+          compact
+          title={t('assets.searchBox.noPortfolioTitle')}
+          description={t('assets.searchBox.noPortfolioDescription')}
+          cta={
+            <Link className="bt-btn bt-btn--primary" onClick={onAction} to="/portfolios?create=1">
+              {t('create.portfolio')}
+            </Link>
+          }
+        />
       ) : null}
       {portfolioAsset && defaultPortfolioId ? (
         <TransactionDialog

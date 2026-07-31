@@ -183,10 +183,17 @@ beforeEach(() => {
 
 describe('ImportPage', () => {
   test('renders a reference-data read failure without hiding the import form', async () => {
-    vi.mocked(importsApi.listImportBrokers).mockRejectedValue(new Error('brokers unavailable'));
+    vi.mocked(importsApi.listImportBrokers).mockRejectedValue(
+      new ApiError(503, 'UNAVAILABLE', 'brokers unavailable'),
+    );
     renderPage();
 
-    expect(await screen.findByText("This information isn't available.")).toBeInTheDocument();
+    expect(
+      await screen.findByText(
+        "The choices needed for this import couldn't be loaded. Please try again.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('Import failed.')).not.toBeInTheDocument();
     expect(screen.getByLabelText('CSV export')).toBeInTheDocument();
   });
 

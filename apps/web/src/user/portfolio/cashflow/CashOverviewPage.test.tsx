@@ -90,12 +90,14 @@ beforeEach(() => {
 
 describe('CashOverviewPage', () => {
   test('renders balance-ledger read failures without hiding the monthly summary', async () => {
+    vi.mocked(getCashSummary).mockResolvedValue(summary({ net: 3_200 }));
     vi.mocked(listCashSources).mockRejectedValue(new Error('sources unavailable'));
     vi.mocked(getCashMovements).mockRejectedValue(new Error('movements unavailable'));
     renderPage();
 
     expect(await screen.findAllByText("This information isn't available.")).toHaveLength(2);
     expect(screen.getByRole('heading', { name: 'Cash' })).toBeInTheDocument();
+    expect(screen.getByText(/3\.200,00.*this month/)).toBeInTheDocument();
     expect(screen.queryByText('No cash accounts yet.')).not.toBeInTheDocument();
     expect(screen.queryByText('Total cash')).not.toBeInTheDocument();
   });

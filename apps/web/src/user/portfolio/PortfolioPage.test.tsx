@@ -285,10 +285,15 @@ beforeEach(() => {
 describe('PortfolioPage — empty & error states', () => {
   test('renders an auxiliary ledger read failure without hiding portfolio holdings', async () => {
     vi.mocked(getPortfolio).mockResolvedValue(PORTFOLIO);
-    vi.mocked(listTransactions).mockRejectedValue(new Error('transactions unavailable'));
+    vi.mocked(listTransactions).mockRejectedValue(
+      new ApiError(503, 'UNAVAILABLE', 'transactions unavailable'),
+    );
     renderPage();
 
-    expect(await screen.findByText("This information isn't available.")).toBeInTheDocument();
+    expect(
+      await screen.findByText("Some portfolio details couldn't be loaded. Please try again."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Could not load your portfolio/i)).not.toBeInTheDocument();
     expect(await screen.findByRole('region', { name: 'Portfolio totals' })).toBeInTheDocument();
   });
 
@@ -510,6 +515,19 @@ describe('PortfolioPage — cash balance line + deposit/withdraw', () => {
 
 describe('PortfolioPage — value chart range toggle', () => {
   beforeEach(() => vi.mocked(getPortfolio).mockResolvedValue(PORTFOLIO));
+
+  test('keeps range choices available when portfolio history is temporarily unavailable', async () => {
+    vi.mocked(getPortfolioHistory).mockRejectedValue(
+      new ApiError(503, 'UNAVAILABLE', 'history unavailable'),
+    );
+    renderPage();
+
+    expect(
+      await screen.findByText("Portfolio history couldn't be loaded. Please try again."),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '1W' })).toBeInTheDocument();
+    expect(screen.queryByText(/Could not load your portfolio/i)).not.toBeInTheDocument();
+  });
 
   test('offers 1D/1W/1M/6M/1Y/5Y/Max (V4-P0 spans) — 3M stays intentionally omitted', async () => {
     renderPage();
@@ -768,6 +786,31 @@ describe('PortfolioPage — top winners / losers', () => {
 
 describe('PortfolioPage — re-categorize banner (V3-P2)', () => {
   beforeEach(() => vi.mocked(getPortfolio).mockResolvedValue(PORTFOLIO));
+
+  test('keeps a terminal background-probe failure invisible', async () => {
+    vi.mocked(getRecategorizationStatus).mockRejectedValue(
+      new ApiError(404, 'NOT_FOUND', 'status unavailable'),
+    );
+    renderPage();
+
+    await screen.findByRole('region', { name: 'Holdings' });
+    expect(screen.queryByText("This information isn't available.")).not.toBeInTheDocument();
+    expect(screen.queryByText(/Kategoriestatus|need categories/i)).not.toBeInTheDocument();
+  });
+
+  test('shows a contextual retry only for a background-probe outage', async () => {
+    vi.mocked(getRecategorizationStatus).mockRejectedValue(
+      new ApiError(503, 'UNAVAILABLE', 'status unavailable'),
+    );
+    renderPage();
+
+    expect(
+      await screen.findByText(
+        "Couldn't check whether custom investments need categories. Please try again.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeInTheDocument();
+  });
 
   test('stays hidden when nothing is pending', async () => {
     renderPage();

@@ -49,6 +49,7 @@ import {
 import { Disclaimer, EmptyState, MarketStateBadge, MoneyText, Skeleton, StatCard } from '../../ui';
 import { PriceChart, Sparkline } from '../../ui/charts';
 import type { ChartPoint, PriceRange } from '../../ui/charts';
+import { Seg } from '../../ui/origin';
 import { CapabilityTags } from './capabilityTags';
 import { NewsHeadlineList } from './newsFeed';
 import { AlertDialog, type AlertDialogAsset } from '../components/AlertDialog';
@@ -699,13 +700,12 @@ function WatchlistIconButton({ assetId, symbol }: { assetId: string; symbol: str
         loading={membership.isLoading}
         error={membership.error}
         onRetry={() => void membership.refetch()}
+        compact
       />
 
       {listPickerOpen ? (
         <div
           ref={menuRef}
-          role="menu"
-          aria-label={t('assets.searchBox.watchlistsMenuAria', { symbol })}
           className="bt-popover w-48 p-2 text-xs"
           style={{ right: 0, top: 'calc(100% + 4px)' }}
           onKeyDown={onMenuKeyDown}
@@ -714,23 +714,26 @@ function WatchlistIconButton({ assetId, symbol }: { assetId: string; symbol: str
             loading={listsQuery.isLoading}
             error={listsQuery.error}
             onRetry={() => void listsQuery.refetch()}
+            compact
           />
-          {!listsQuery.isLoading && !listsQuery.error
-            ? (listsQuery.data?.watchlists ?? []).map((list) => (
-                <button
-                  key={list.id}
-                  type="button"
-                  role="menuitem"
-                  onClick={() => {
-                    handleAdd(list.isDefault ? undefined : list.id);
-                    closeAndRestoreFocus();
-                  }}
-                  className="flex w-full items-center justify-between rounded px-2 py-1.5 text-left bt-soft"
-                >
-                  {list.name}
-                </button>
-              ))
-            : null}
+          <div role="menu" aria-label={t('assets.searchBox.watchlistsMenuAria', { symbol })}>
+            {!listsQuery.isLoading && !listsQuery.error
+              ? (listsQuery.data?.watchlists ?? []).map((list) => (
+                  <button
+                    key={list.id}
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      handleAdd(list.isDefault ? undefined : list.id);
+                      closeAndRestoreFocus();
+                    }}
+                    className="flex w-full items-center justify-between rounded px-2 py-1.5 text-left bt-soft"
+                  >
+                    {list.name}
+                  </button>
+                ))
+              : null}
+          </div>
         </div>
       ) : null}
 
@@ -987,7 +990,7 @@ export function AssetDetailPage() {
       <AsyncReadState
         loading={quoteQuery.isLoading}
         error={quoteQuery.error}
-        errorLabel={t('assets.detail.loadError')}
+        errorLabel={t('assets.detail.quoteLoadError')}
         onRetry={() => void quoteQuery.refetch()}
       />
 
@@ -1023,8 +1026,16 @@ export function AssetDetailPage() {
           <AsyncReadState
             loading={false}
             error={historyQuery.error}
-            errorLabel={t('assets.detail.loadError')}
+            errorLabel={t('assets.detail.chartLoadError')}
             onRetry={() => void historyQuery.refetch()}
+          />
+        ) : null}
+        {!liveActive && historyQuery.error ? (
+          <Seg
+            ariaLabel={t('common.charts.selectRange')}
+            onChange={setRange}
+            options={ASSET_DETAIL_RANGES.map((value) => ({ value, label: value }))}
+            value={range}
           />
         ) : null}
         {liveActive ? (

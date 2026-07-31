@@ -18,7 +18,7 @@ import {
   getPortfolioDividendProjection,
 } from '../../lib/marketIntelApi';
 import { useT } from '../../i18n';
-import { ApiError } from '../../lib/apiClient';
+import { ApiError, classifyApiError } from '../../lib/apiClient';
 import { cx } from '../../lib/cx';
 import { assetTypeLabels } from './assetTypeLabels';
 import { ACTIVE_PORTFOLIO_PARAM, resolveActivePortfolio } from './PortfolioSwitcher';
@@ -890,11 +890,19 @@ function RecategorizeBanner() {
       queryClient.invalidateQueries({ queryKey: ['custom-assets', 'recategorization'] }),
   });
 
+  // This is a normally invisible background probe. Keep arrival status
+  // available to assistive tech without adding visual noise, and keep
+  // confirmed/unknown terminal outcomes silent; only a real outage is
+  // actionable enough to interrupt the portfolio surface.
+  if (statusQuery.error && classifyApiError(statusQuery.error) !== 'outage') return null;
   if (statusQuery.isLoading || statusQuery.error) {
     return (
       <AsyncReadState
         loading={statusQuery.isLoading}
         error={statusQuery.error}
+        errorLabel={t('portfolio.recategorize.loadError')}
+        loadingLabel={t('portfolio.recategorize.loading')}
+        loadingPresentation="sr-only"
         onRetry={() => void statusQuery.refetch()}
       />
     );
@@ -1278,7 +1286,7 @@ export function PortfolioPage() {
       <AsyncReadState
         loading={transactionsQuery.isLoading || cashSourcesQuery.isLoading}
         error={transactionsQuery.error ?? cashSourcesQuery.error}
-        errorLabel={t('portfolio.overview.loadError')}
+        errorLabel={t('portfolio.overview.detailsLoadError')}
         onRetry={() => {
           void Promise.all([transactionsQuery.refetch(), cashSourcesQuery.refetch()]);
         }}
@@ -1369,9 +1377,17 @@ export function PortfolioPage() {
             <AsyncReadState
               loading={false}
               error={historyQuery.error}
-              errorLabel={t('portfolio.overview.loadError')}
+              errorLabel={t('portfolio.overview.chart.loadError')}
               onRetry={() => void historyQuery.refetch()}
             />
+            {historyQuery.error ? (
+              <Seg
+                ariaLabel={t('common.charts.selectRange')}
+                onChange={setRange}
+                options={PORTFOLIO_RANGES.map((value) => ({ value, label: value }))}
+                value={range}
+              />
+            ) : null}
             <div className="bt-chart">
               {!historyQuery.error ? (
                 <PriceChart

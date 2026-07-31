@@ -452,6 +452,27 @@ describe('AssetSearchBox', () => {
       // The asset is locked, not re-searched: no second search box appears.
       expect(screen.getAllByRole('searchbox')).toHaveLength(1);
     });
+
+    test('offers portfolio creation when there is nowhere to record the buy', async () => {
+      vi.mocked(searchApi.searchAssets).mockResolvedValue(makeSearchResponse([NVDA]));
+      vi.mocked(portfolioApi.listPortfolios).mockResolvedValue({ portfolios: [] });
+      const user = userEvent.setup();
+      renderSearchBox();
+
+      await user.type(screen.getByRole('searchbox'), 'NV');
+      await screen.findByText('NVDA');
+      await user.click(screen.getByRole('button', { name: /record a buy for nvda/i }));
+
+      expect(await screen.findByText('Create a portfolio first')).toBeInTheDocument();
+      expect(
+        screen.getByText('You need a portfolio before you can record a buy for this asset.'),
+      ).toBeInTheDocument();
+      expect(screen.getByRole('link', { name: 'New portfolio' })).toHaveAttribute(
+        'href',
+        '/portfolios?create=1',
+      );
+      expect(screen.queryByText(/project/i)).not.toBeInTheDocument();
+    });
   });
 
   describe('→ Blueprint (picker, §13.2)', () => {
