@@ -138,10 +138,15 @@ export async function recordSapTrade(page: Page, trade: SapTrade): Promise<void>
   await dialog.getByRole('searchbox', { name: 'Search assets' }).fill('SAP');
   await dialog.getByRole('button', { name: 'Select SAP.DE', exact: true }).click();
 
-  await dialog
-    .getByRole('button', { name: 'Unlink date and price' })
-    .click({ timeout: 20_000 })
-    .catch(() => {});
+  const unlink = dialog.getByRole('button', { name: 'Unlink date and price' });
+  await unlink.waitFor({ state: 'visible', timeout: 20_000 }).catch(() => {});
+  if (await unlink.isVisible()) {
+    await unlink.click();
+    await expect(dialog.getByRole('button', { name: 'Link date and price' })).toHaveAttribute(
+      'aria-pressed',
+      'false',
+    );
+  }
 
   if (trade.side === 'sell') await dialog.getByRole('button', { name: 'Sell' }).click();
   await dialog.getByLabel('Date for SAP.DE').fill(trade.date);
@@ -149,6 +154,7 @@ export async function recordSapTrade(page: Page, trade: SapTrade): Promise<void>
   // Price last: even if the assist is still linked, a manual price wins and a
   // round value never matches an exact historical close, so the date is left be.
   await dialog.getByLabel('Price for SAP.DE').fill(trade.price);
+  await expect(dialog.getByLabel('Date for SAP.DE')).toHaveValue(trade.date);
   await dialog
     .getByRole('button', { name: trade.side === 'sell' ? 'Record sell' : 'Record buy' })
     .click();

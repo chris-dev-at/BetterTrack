@@ -65,7 +65,7 @@ test('bearer scopes: chat:write sends a DM; no notifications:read → 403; admin
     await expect(tokenModal).toBeVisible({ timeout: 15_000 });
     const token = (await tokenModal.locator('code').first().innerText()).trim();
     expect(token).toMatch(/^btk_/);
-    await tokenModal.getByRole('button', { name: 'Done' }).click();
+    await tokenModal.getByRole('button', { name: "I've saved this" }).click();
     await expect(tokenModal).toBeHidden();
 
     // A fresh request context that carries ONLY the bearer — no session cookie.

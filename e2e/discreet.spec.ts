@@ -2,6 +2,7 @@ import { expect, request as newRequestContext, test, type Page } from '@playwrig
 
 import { loginAsAdmin } from './support/adminApi';
 import { API_BASE_URL } from './support/config';
+import { recordSapTrade } from './support/flows';
 import { provisionUser } from './support/users';
 
 /**
@@ -39,8 +40,8 @@ async function flipDiscreetMode(page: Page, enabled: boolean): Promise<void> {
 
 /**
  * V5-P13 arc (a) — discreet mode (#682). One user, one profile-menu quick
- * toggle. The user provisions a portfolio, seeds a manual cash movement so a
- * real absolute amount renders on the portfolio surface, flips discreet mode
+ * toggle. The user provisions a portfolio, seeds a manual cash movement and
+ * holding so real absolute amounts render on the portfolio surface, flips discreet mode
  * ON via the profile menu, and asserts EVERY euro symbol has left the
  * portfolio page (the sweep the acceptance criteria call for) — the masked
  * placeholder `•••` appears in its place. Toggling discreet mode back OFF
@@ -70,6 +71,15 @@ test('discreet mode masks every absolute amount on the portfolio surface and tog
   await cashDialog.getByLabel('Amount', { exact: true }).fill('1234.56');
   await cashDialog.getByRole('button', { name: 'Deposit cash' }).click();
   await expect(cashDialog).toBeHidden();
+  // The empty-portfolio state intentionally omits totals even when cash exists.
+  // Add one holding so the normal portfolio surface paints the cash and asset
+  // values that discreet mode must mask.
+  await recordSapTrade(user.page, {
+    side: 'buy',
+    quantity: '1',
+    price: '100',
+    date: '2026-07-01',
+  });
 
   // Confirm the sanity check: the € symbol renders somewhere on the portfolio
   // surface before we toggle discreet on.

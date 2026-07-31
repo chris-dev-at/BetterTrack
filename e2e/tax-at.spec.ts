@@ -33,13 +33,14 @@ async function enableAustriaTaxMode(page: Page): Promise<void> {
  * Driven from the Cash-sources page (its per-row Deposit works on a brand-new,
  * empty portfolio — unlike the overview button, which the empty state hides).
  */
-async function depositToMain(page: Page, amount: string): Promise<void> {
+async function depositToMain(page: Page, amount: string, date: string): Promise<void> {
   await page.goto('/portfolio/cash-flow/accounts');
   const rows = page.locator('table[aria-label="Cash sources"] tbody tr');
   // sortSourcesMainFirst: Main is row 0 on a fresh account.
   await rows.nth(0).getByRole('button', { name: 'Deposit' }).click();
   const dialog = page.getByRole('dialog', { name: 'Cash balance' });
   await dialog.getByLabel('Amount', { exact: true }).fill(amount);
+  await dialog.getByLabel('Date').fill(date);
   await dialog.getByRole('button', { name: 'Deposit cash' }).click();
   await expect(dialog).toBeHidden();
   await expect(rows.nth(0)).toContainText(/1[.,]000/);
@@ -58,8 +59,9 @@ test('AT tax mode: an intra-year loss sell refunds tax in the per-year report', 
   const page = owner.page;
 
   await enableAustriaTaxMode(page);
-  // Fund Main so the −123.75 € KESt withholding has cash to settle against.
-  await depositToMain(page, '1000');
+  // Fund Main before the backdated trades so their date-aware KESt withdrawals
+  // have cash available as of each sell.
+  await depositToMain(page, '1000', '2026-01-02');
 
   // Cycle 1 — realize +450 €: buy 10 @ 100, sell 10 @ 145 → 27.5 % × 450 = 123.75 withheld.
   await recordSapTrade(page, { side: 'buy', quantity: '10', price: '100', date: '2026-02-02' });

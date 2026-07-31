@@ -98,7 +98,9 @@ test('happy path: invite through friend sharing', async ({ browser }) => {
   await buyDialog.getByRole('button', { name: 'Select SAP.DE', exact: true }).click();
   await buyDialog.getByLabel('Quantity for SAP.DE').fill('4');
   await buyDialog.getByLabel('Price for SAP.DE').fill('50');
-  await buyDialog.getByLabel('Pay from cash balance').check();
+  const payFromCash = buyDialog.getByLabel('Pay from cash balance');
+  await payFromCash.press('Space');
+  await expect(payFromCash).toBeChecked();
   await expect(buyDialog.getByRole('status', { name: 'Cash-after preview' })).toContainText(
     /600[.,]00/,
     { timeout: 15_000 },
@@ -107,13 +109,11 @@ test('happy path: invite through friend sharing', async ({ browser }) => {
   await expect(buyDialog).toBeHidden();
 
   await owner.goto('/portfolio');
-  const cashLabel = owner
-    .getByRole('region', { name: 'Portfolio totals' })
-    .getByText('Cash', { exact: true });
   // Locale-agnostic: EN "600.00" (en-GB) vs DE "600,00" (de-AT).
-  await expect(cashLabel.locator('xpath=following-sibling::p[1]')).toContainText(/600[.,]00/, {
-    timeout: 15_000,
-  });
+  await expect(owner.getByRole('region', { name: 'Portfolio totals' })).toContainText(
+    /Cash\s+600[.,]00/,
+    { timeout: 15_000 },
+  );
 
   // V2-P11: create and switch to a second portfolio — scoped views (holdings)
   // follow the active portfolio, then switch back to the default.
