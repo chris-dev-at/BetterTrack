@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { localizedMessage, useI18n } from '../i18n';
 import { ApiError } from '../lib/apiClient';
@@ -28,6 +28,7 @@ export function useResource<T>(
   deps: readonly unknown[],
 ): Resource<T> {
   const { locale } = useI18n();
+  const localeRef = useRef(locale);
   const { clearSession, requireTwoFactorSetup } = useAuth();
   const [state, setState] = useState<ResourceState<T>>({
     data: null,
@@ -37,6 +38,10 @@ export function useResource<T>(
   const [nonce, setNonce] = useState(0);
 
   const reload = useCallback(() => setNonce((n) => n + 1), []);
+
+  useEffect(() => {
+    localeRef.current = locale;
+  }, [locale]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -57,14 +62,16 @@ export function useResource<T>(
           return;
         }
         const message =
-          err instanceof ApiError ? err.message : localizedMessage(locale, 'common.genericError');
+          err instanceof ApiError
+            ? err.message
+            : localizedMessage(localeRef.current, 'common.genericError');
         setState({ data: null, loading: false, error: message });
       }
     })();
     return () => controller.abort();
     // `fetcher` is intentionally excluded from the dependency list — callers pass
     // an inline closure and declare its real inputs through `deps`.
-  }, [nonce, clearSession, locale, requireTwoFactorSetup, ...deps]);
+  }, [nonce, clearSession, requireTwoFactorSetup, ...deps]);
 
   return { ...state, reload };
 }

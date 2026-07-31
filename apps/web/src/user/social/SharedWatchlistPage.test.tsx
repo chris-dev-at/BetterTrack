@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen } from '@testing-library/react';
+import { act, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
@@ -30,7 +30,7 @@ const DETAIL: SharedWatchlistDetailResponse = {
 
 function renderPage() {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  return render(
+  const rendered = render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter initialEntries={[`/people/shared/watchlists/${WATCHLIST_ID}`]}>
         <Routes>
@@ -39,6 +39,7 @@ function renderPage() {
       </MemoryRouter>
     </QueryClientProvider>,
   );
+  return { ...rendered, queryClient };
 }
 
 beforeEach(() => {
@@ -60,11 +61,22 @@ describe('SharedWatchlistPage recovery and privacy states', () => {
     expect(getSharedWatchlist).toHaveBeenCalledTimes(2);
   });
 
-  test('keeps a confirmed audience rejection non-retryable', async () => {
-    vi.mocked(getSharedWatchlist).mockRejectedValue(new ApiError(404, 'NOT_FOUND', 'not found'));
-    renderPage();
+  test('replaces stale shared data after a confirmed audience rejection', async () => {
+    vi.mocked(getSharedWatchlist)
+      .mockResolvedValueOnce(DETAIL)
+      .mockRejectedValueOnce(new ApiError(404, 'NOT_FOUND', 'not found'));
+    const { queryClient } = renderPage();
+
+    expect(await screen.findByText('ada’s Long term')).toBeInTheDocument();
+    await act(async () => {
+      await queryClient.refetchQueries({
+        queryKey: ['social', 'shared', 'watchlist', WATCHLIST_ID],
+      });
+    });
 
     expect(await screen.findByText("This watchlist isn't available")).toBeInTheDocument();
+    expect(screen.queryByText('ada’s Long term')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
+    expect(getSharedWatchlist).toHaveBeenCalledTimes(2);
   });
 });

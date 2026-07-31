@@ -36,7 +36,19 @@ export function SharedWatchlistPage() {
     );
   }
 
-  if (isError && !isConfirmedApiOutcome(error)) {
+  if (isError && isConfirmedApiOutcome(error)) {
+    return (
+      <div className="flex flex-col gap-4">
+        <BackLink />
+        <EmptyState
+          title={t('social.shared.watchlistUnavailableTitle')}
+          description={t('social.shared.unavailableDescription')}
+        />
+      </div>
+    );
+  }
+
+  if (isError) {
     return (
       <div className="flex flex-col items-start gap-3">
         <BackLink />

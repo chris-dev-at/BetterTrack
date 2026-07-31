@@ -1,3 +1,8 @@
+/**
+ * This manually curated baseline detects later inventory shrinkage; it cannot
+ * prove that the initial V5 inventory included every surface. The initial set
+ * was assembled from the P0-P13 phase history and audited separately.
+ */
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 

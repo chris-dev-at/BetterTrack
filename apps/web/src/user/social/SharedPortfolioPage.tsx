@@ -214,7 +214,11 @@ export function SharedPortfolioPage() {
     );
   }
 
-  if (query.isError && !isConfirmedApiOutcome(query.error)) {
+  if (query.isError && isConfirmedApiOutcome(query.error)) {
+    return <Alert tone="error">{t('social.shared.portfolioLoadError')}</Alert>;
+  }
+
+  if (query.isError) {
     return (
       <div className="flex flex-col items-start gap-3">
         <Alert tone="error">{t('social.shared.portfolioLoadError')}</Alert>

@@ -270,9 +270,7 @@ export function AccountDefaultsPage() {
                 <tbody className="divide-y divide-neutral-800">
                   {NOTIFICATION_TYPES.map((type) => (
                     <tr key={type} className="hover:bg-neutral-900/60">
-                      <td className="px-4 py-2 font-mono text-xs text-neutral-300">
-                        {typeLabel[type]}
-                      </td>
+                      <td className="px-4 py-2 text-xs text-neutral-300">{typeLabel[type]}</td>
                       {visibleChannels.map((channel) => (
                         <td key={channel} className="px-3 py-2 text-center">
                           <input

@@ -62,7 +62,19 @@ export function SharedConglomeratePage() {
     );
   }
 
-  if (isError && !isConfirmedApiOutcome(error)) {
+  if (isError && isConfirmedApiOutcome(error)) {
+    return (
+      <div className="flex flex-col gap-4">
+        <BackLink />
+        <EmptyState
+          title={t('social.shared.conglomerateUnavailableTitle')}
+          description={t('social.shared.unavailableDescription')}
+        />
+      </div>
+    );
+  }
+
+  if (isError) {
     return (
       <div className="flex flex-col items-start gap-3">
         <BackLink />
