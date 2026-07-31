@@ -28,6 +28,7 @@ import {
   NON_V5_SURFACES,
   SURFACE_UNIVERSE_ROOTS,
   V5_ASYNC_READ_EXEMPTIONS,
+  V5_ASYNC_READ_SITE_BASELINE,
   V5_ASYNC_STATE_DEBT,
   V5_ASYNC_STATE_DEBT_CEILING,
   V5_SURFACE_INVENTORY,
@@ -345,26 +346,134 @@ function parseTsx(relativePath: string, sourceText?: string): ts.SourceFile {
   );
 }
 
-const ASYNC_READ_HOOKS = new Set([
-  'useActivePortfolio',
-  'useAiCapability',
-  'useInfiniteQuery',
-  'usePortfoliosQuery',
-  'useQuery',
-  'useResource',
-  'useWatchlistMembership',
-]);
+function parseBoundTsx(
+  relativePath: string,
+  sourceText?: string,
+): { sourceFile: ts.SourceFile; checker: ts.TypeChecker } {
+  const absolutePath = resolve(SRC_ROOT, relativePath);
+  const sourceFile = parseTsx(relativePath, sourceText);
+  const options: ts.CompilerOptions = {
+    jsx: ts.JsxEmit.Preserve,
+    noLib: true,
+    noResolve: true,
+    target: ts.ScriptTarget.Latest,
+  };
+  const host = ts.createCompilerHost(options, true);
+  const loadSourceFile = host.getSourceFile.bind(host);
+  host.getSourceFile = (fileName, ...args) =>
+    resolve(fileName) === absolutePath ? sourceFile : loadSourceFile(fileName, ...args);
+  const program = ts.createProgram([absolutePath], options, host);
+  return {
+    sourceFile: program.getSourceFile(absolutePath)!,
+    checker: program.getTypeChecker(),
+  };
+}
+
+const BASE_ASYNC_READ_HOOKS = new Set(['useInfiniteQuery', 'useQuery', 'useResource']);
+
+interface NamedHookBody {
+  body: ts.ConciseBody;
+  name: string;
+}
+
+function sourceModules(): string[] {
+  const found: string[] = [];
+  const walk = (directory: string) => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const absolute = join(directory, entry.name);
+      if (entry.isDirectory()) {
+        walk(absolute);
+      } else if (
+        /\.tsx?$/.test(entry.name) &&
+        !/\.(?:test|spec)\.tsx?$/.test(entry.name) &&
+        !entry.name.endsWith('.d.ts')
+      ) {
+        found.push(relative(SRC_ROOT, absolute).split(sep).join('/'));
+      }
+    }
+  };
+  walk(SRC_ROOT);
+  return found.sort();
+}
+
+function namedHookBodies(sourceFile: ts.SourceFile): NamedHookBody[] {
+  const hooks: NamedHookBody[] = [];
+  const visit = (node: ts.Node): void => {
+    if (
+      ts.isFunctionDeclaration(node) &&
+      node.name &&
+      node.body &&
+      /^use[A-Z]/.test(node.name.text)
+    ) {
+      hooks.push({ name: node.name.text, body: node.body });
+    }
+    if (
+      ts.isVariableDeclaration(node) &&
+      ts.isIdentifier(node.name) &&
+      node.initializer &&
+      (ts.isArrowFunction(node.initializer) || ts.isFunctionExpression(node.initializer)) &&
+      /^use[A-Z]/.test(node.name.text)
+    ) {
+      hooks.push({ name: node.name.text, body: node.initializer.body });
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return hooks;
+}
+
+function bodyCallsHook(body: ts.ConciseBody, hookNames: ReadonlySet<string>): boolean {
+  let found = false;
+  const visit = (node: ts.Node): void => {
+    if (found) return;
+    if (
+      ts.isCallExpression(node) &&
+      ts.isIdentifier(node.expression) &&
+      hookNames.has(node.expression.text)
+    ) {
+      found = true;
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(body);
+  return found;
+}
+
+/**
+ * Derive established query wrappers from their implementations. A new
+ * `useSomething` hook that calls a known read hook is therefore part of the
+ * gate without somebody remembering to append its name here.
+ */
+function discoverAsyncReadHooks(
+  sourceTextByModule?: Readonly<Record<string, string>>,
+): ReadonlySet<string> {
+  const modules = sourceTextByModule
+    ? Object.entries(sourceTextByModule).map(([path, sourceText]) => parseTsx(path, sourceText))
+    : sourceModules().map((path) => parseTsx(path));
+  const candidates = modules.flatMap(namedHookBodies);
+  const discovered = new Set(BASE_ASYNC_READ_HOOKS);
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const candidate of candidates) {
+      if (discovered.has(candidate.name) || !bodyCallsHook(candidate.body, discovered)) continue;
+      discovered.add(candidate.name);
+      changed = true;
+    }
+  }
+  return discovered;
+}
+
+const ASYNC_READ_HOOKS = discoverAsyncReadHooks();
+
+const NESTED_QUERY_RESULT_PROPERTIES: Readonly<Record<string, ReadonlySet<string>>> = {
+  useActivePortfolio: new Set(['portfoliosQuery']),
+};
 
 const ASYNC_STATE_PROPERTIES: Record<V5AsyncReadState, ReadonlySet<string>> = {
-  loading: new Set([
-    'isFetching',
-    'isInitialLoading',
-    'isLoading',
-    'isPending',
-    'isRefetching',
-    'loading',
-  ]),
-  error: new Set(['error', 'isError', 'isLoadingError', 'isRefetchError']),
+  loading: new Set(['isFetching', 'isInitialLoading', 'isLoading', 'isPending', 'loading']),
+  error: new Set(['error', 'isError', 'isLoadingError']),
 };
 
 const ASYNC_READ_STATES = ['loading', 'error'] as const satisfies readonly V5AsyncReadState[];
@@ -390,11 +499,10 @@ interface AsyncReadGateResult {
 
 interface ReadBinding {
   label: string;
-  resultName?: string;
+  resultBinding?: ts.Identifier;
   directProperties: readonly {
+    localBinding: ts.Identifier | null;
     property: string;
-    localName: string | null;
-    localStart: number;
   }[];
 }
 
@@ -404,12 +512,13 @@ interface RawAsyncRead {
   line: number;
   readBase: string;
   binding: ReadBinding;
+  checker: ts.TypeChecker;
   scope: ts.Node;
 }
 
-function asyncHookName(node: ts.CallExpression): string | null {
+function asyncHookName(node: ts.CallExpression, hookNames: ReadonlySet<string>): string | null {
   if (!ts.isIdentifier(node.expression)) return null;
-  return ASYNC_READ_HOOKS.has(node.expression.text) ? node.expression.text : null;
+  return hookNames.has(node.expression.text) ? node.expression.text : null;
 }
 
 function isFunctionScope(node: ts.Node): node is ts.FunctionLikeDeclaration {
@@ -470,13 +579,12 @@ function readBinding(call: ts.CallExpression, sourceFile: ts.SourceFile): ReadBi
   const parent = expression.parent;
   if (ts.isVariableDeclaration(parent) && parent.initializer === expression) {
     if (ts.isIdentifier(parent.name)) {
-      return { label: parent.name.text, resultName: parent.name.text, directProperties: [] };
+      return { label: parent.name.text, resultBinding: parent.name, directProperties: [] };
     }
     if (ts.isObjectBindingPattern(parent.name)) {
       const properties = parent.name.elements.map((element) => ({
         property: (element.propertyName ?? element.name).getText(sourceFile),
-        localName: ts.isIdentifier(element.name) ? element.name.text : null,
-        localStart: element.name.getStart(sourceFile),
+        localBinding: ts.isIdentifier(element.name) ? element.name : null,
       }));
       const dataBinding = parent.name.elements.find(
         (element) => (element.propertyName ?? element.name).getText(sourceFile) === 'data',
@@ -529,7 +637,8 @@ function containsJsx(node: ts.Node | undefined): boolean {
 function stateReferenceIsRendered(
   node: ts.Node,
   scope: ts.Node,
-  seenBindings: Set<string>,
+  checker: ts.TypeChecker,
+  seenBindings: Set<ts.Symbol>,
 ): boolean {
   let current = node;
   while (current !== scope && current.parent) {
@@ -547,10 +656,10 @@ function stateReferenceIsRendered(
     if (ts.isReturnStatement(parent)) return containsJsx(parent.expression);
     if (ts.isVariableDeclaration(parent) && parent.initializer === current) {
       if (!ts.isIdentifier(parent.name)) return false;
-      const key = `${parent.name.text}\0${parent.name.getStart()}`;
-      if (seenBindings.has(key)) return false;
-      seenBindings.add(key);
-      return bindingIsRendered(scope, parent.name.text, parent.name.getStart(), seenBindings);
+      const symbol = checker.getSymbolAtLocation(parent.name);
+      if (!symbol || seenBindings.has(symbol)) return false;
+      seenBindings.add(symbol);
+      return bindingIsRendered(scope, parent.name, checker, seenBindings);
     }
     if (isFunctionScope(parent) && parent !== scope) return false;
     current = parent;
@@ -560,20 +669,22 @@ function stateReferenceIsRendered(
 
 function bindingIsRendered(
   scope: ts.Node,
-  localName: string | null,
-  localStart: number,
-  seenBindings = new Set<string>(),
+  binding: ts.Identifier | null,
+  checker: ts.TypeChecker,
+  seenBindings = new Set<ts.Symbol>(),
 ): boolean {
-  if (localName === null) return false;
+  if (binding === null) return false;
+  const symbol = checker.getSymbolAtLocation(binding);
+  if (!symbol) return false;
   let rendered = false;
   const visit = (node: ts.Node): void => {
     if (rendered) return;
     if (
       ts.isIdentifier(node) &&
-      node.text === localName &&
-      node.getStart() !== localStart &&
+      node !== binding &&
+      checker.getSymbolAtLocation(node) === symbol &&
       isIdentifierUse(node) &&
-      stateReferenceIsRendered(node, scope, seenBindings)
+      stateReferenceIsRendered(node, scope, checker, seenBindings)
     ) {
       rendered = true;
       return;
@@ -587,23 +698,27 @@ function bindingIsRendered(
 function propertyStateObservations(raw: RawAsyncRead): ReadonlySet<V5AsyncReadState> {
   const observed = new Set<V5AsyncReadState>();
 
-  const observePropertiesOf = (resultName: string) => {
+  const observePropertiesOf = (resultBinding: ts.Identifier) => {
+    const resultSymbol = raw.checker.getSymbolAtLocation(resultBinding);
+    if (!resultSymbol) return;
     const recordProperty = (property: string, reference: ts.Node) => {
       const state = stateForProperty(property);
-      if (state && stateReferenceIsRendered(reference, raw.scope, new Set())) observed.add(state);
+      if (state && stateReferenceIsRendered(reference, raw.scope, raw.checker, new Set())) {
+        observed.add(state);
+      }
     };
     const visit = (node: ts.Node): void => {
       if (
         ts.isPropertyAccessExpression(node) &&
         ts.isIdentifier(node.expression) &&
-        node.expression.text === resultName
+        raw.checker.getSymbolAtLocation(node.expression) === resultSymbol
       ) {
         recordProperty(node.name.text, node);
       }
       if (
         ts.isElementAccessExpression(node) &&
         ts.isIdentifier(node.expression) &&
-        node.expression.text === resultName &&
+        raw.checker.getSymbolAtLocation(node.expression) === resultSymbol &&
         node.argumentExpression &&
         ts.isStringLiteral(node.argumentExpression)
       ) {
@@ -613,15 +728,15 @@ function propertyStateObservations(raw: RawAsyncRead): ReadonlySet<V5AsyncReadSt
         ts.isVariableDeclaration(node) &&
         node.initializer &&
         ts.isIdentifier(node.initializer) &&
-        node.initializer.text === resultName &&
+        raw.checker.getSymbolAtLocation(node.initializer) === resultSymbol &&
         ts.isObjectBindingPattern(node.name)
       ) {
         for (const element of node.name.elements) {
           if (
             bindingIsRendered(
               raw.scope,
-              ts.isIdentifier(element.name) ? element.name.text : null,
-              element.name.getStart(),
+              ts.isIdentifier(element.name) ? element.name : null,
+              raw.checker,
             )
           ) {
             const state = stateForProperty((element.propertyName ?? element.name).getText());
@@ -636,23 +751,34 @@ function propertyStateObservations(raw: RawAsyncRead): ReadonlySet<V5AsyncReadSt
 
   for (const property of raw.binding.directProperties) {
     const state = stateForProperty(property.property);
-    if (state && bindingIsRendered(raw.scope, property.localName, property.localStart)) {
+    if (state && bindingIsRendered(raw.scope, property.localBinding, raw.checker)) {
       observed.add(state);
     }
-    if (property.localName) observePropertiesOf(property.localName);
+    if (property.localBinding && NESTED_QUERY_RESULT_PROPERTIES[raw.hook]?.has(property.property)) {
+      observePropertiesOf(property.localBinding);
+    }
   }
-  if (!raw.binding.resultName) return observed;
-  observePropertiesOf(raw.binding.resultName);
+  if (!raw.binding.resultBinding) return observed;
+  observePropertiesOf(raw.binding.resultBinding);
   return observed;
 }
 
-function rawAsyncReads(relativePath: string, sourceText?: string): RawAsyncRead[] {
-  const sourceFile = parseTsx(relativePath, sourceText);
+function rawAsyncReads(
+  relativePath: string,
+  sourceText?: string,
+  hookNames: ReadonlySet<string> = ASYNC_READ_HOOKS,
+): RawAsyncRead[] {
+  const { sourceFile, checker } = parseBoundTsx(relativePath, sourceText);
+  const localAsyncHooks = new Set(
+    namedHookBodies(sourceFile)
+      .map((hook) => hook.name)
+      .filter((name) => hookNames.has(name) && !BASE_ASYNC_READ_HOOKS.has(name)),
+  );
   const reads: RawAsyncRead[] = [];
   const visit = (node: ts.Node): void => {
     if (ts.isCallExpression(node)) {
-      const hook = asyncHookName(node);
-      if (hook) {
+      const hook = asyncHookName(node, hookNames);
+      if (hook && !localAsyncHooks.has(hook)) {
         const scope = readScope(node, sourceFile);
         const binding = readBinding(node, sourceFile);
         reads.push({
@@ -661,6 +787,7 @@ function rawAsyncReads(relativePath: string, sourceText?: string): RawAsyncRead[
           line: sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1,
           readBase: `${scope.name}.${binding.label}`,
           binding,
+          checker,
           scope: scope.node,
         });
       }
@@ -692,9 +819,10 @@ function analyzeAsyncReadStates(
   components: readonly string[],
   exemptions: readonly V5AsyncReadExemption[],
   sourceTextByComponent: Readonly<Record<string, string>> = {},
+  hookNames: ReadonlySet<string> = ASYNC_READ_HOOKS,
 ): AsyncReadGateResult {
   const reads = components.flatMap((component) =>
-    nameAsyncReads(rawAsyncReads(component, sourceTextByComponent[component])),
+    nameAsyncReads(rawAsyncReads(component, sourceTextByComponent[component], hookNames)),
   );
   const invalidExemptions: string[] = [];
   const exemptionKeys = new Set<string>();
@@ -795,19 +923,21 @@ function compareComponentRead(
 
 function conditionBindingControlsRenderedJsx(
   scope: ts.Node,
-  localName: string,
-  localStart: number,
-  seenBindings: Set<string>,
+  binding: ts.Identifier,
+  checker: ts.TypeChecker,
+  seenBindings: Set<ts.Symbol>,
 ): boolean {
+  const symbol = checker.getSymbolAtLocation(binding);
+  if (!symbol) return false;
   let rendered = false;
   const visit = (node: ts.Node): void => {
     if (rendered) return;
     if (
       ts.isIdentifier(node) &&
-      node.text === localName &&
-      node.getStart() !== localStart &&
+      node !== binding &&
+      checker.getSymbolAtLocation(node) === symbol &&
       isIdentifierUse(node) &&
-      conditionControlsRenderedJsx(node, scope, seenBindings)
+      conditionControlsRenderedJsx(node, scope, checker, seenBindings)
     ) {
       rendered = true;
       return;
@@ -821,7 +951,8 @@ function conditionBindingControlsRenderedJsx(
 function conditionControlsRenderedJsx(
   node: ts.Node,
   scope: ts.Node,
-  seenBindings = new Set<string>(),
+  checker: ts.TypeChecker,
+  seenBindings = new Set<ts.Symbol>(),
 ): boolean {
   let current = node;
   while (current !== scope && current.parent) {
@@ -844,15 +975,10 @@ function conditionControlsRenderedJsx(
     }
     if (ts.isVariableDeclaration(parent) && parent.initializer === current) {
       if (!ts.isIdentifier(parent.name)) return false;
-      const key = `${parent.name.text}\0${parent.name.getStart()}`;
-      if (seenBindings.has(key)) return false;
-      seenBindings.add(key);
-      return conditionBindingControlsRenderedJsx(
-        scope,
-        parent.name.text,
-        parent.name.getStart(),
-        seenBindings,
-      );
+      const symbol = checker.getSymbolAtLocation(parent.name);
+      if (!symbol || seenBindings.has(symbol)) return false;
+      seenBindings.add(symbol);
+      return conditionBindingControlsRenderedJsx(scope, parent.name, checker, seenBindings);
     }
     if (isFunctionScope(parent) && parent !== scope) return false;
     current = parent;
@@ -861,15 +987,15 @@ function conditionControlsRenderedJsx(
 }
 
 function hasEmptyStateSignal(relativePath: string, sourceText?: string): boolean {
-  const sourceFile = parseTsx(relativePath, sourceText);
+  const { sourceFile, checker } = parseBoundTsx(relativePath, sourceText);
   let found = false;
   const isLength = (node: ts.Node) =>
     ts.isPropertyAccessExpression(node) && node.name.text === 'length';
   const isZero = (node: ts.Node) => ts.isNumericLiteral(node) && Number(node.text) === 0;
   const reachesRenderedJsx = (node: ts.Node) =>
-    stateReferenceIsRendered(node, readScope(node, sourceFile).node, new Set());
+    stateReferenceIsRendered(node, readScope(node, sourceFile).node, checker, new Set());
   const controlsRenderedJsx = (node: ts.Node) =>
-    conditionControlsRenderedJsx(node, readScope(node, sourceFile).node);
+    conditionControlsRenderedJsx(node, readScope(node, sourceFile).node, checker);
   const visit = (node: ts.Node): void => {
     if (found) return;
     if (
@@ -1241,6 +1367,76 @@ describe('V5 async-read state gate', () => {
     ]);
   });
 
+  test('derives established wrappers from their implementations', () => {
+    expect(ASYNC_READ_HOOKS.has('useAssetSearch')).toBe(true);
+    expect(ASYNC_READ_HOOKS.has('usePrivacyMode')).toBe(true);
+
+    const hookNames = discoverAsyncReadHooks({
+      'synthetic-wrapper.ts': `
+        export function useSyntheticRead() {
+          return useQuery({ queryKey: ['synthetic'], queryFn: loadSynthetic });
+        }
+      `,
+    });
+    const result = analyzeAsyncReadStates(
+      [fixturePath],
+      [],
+      {
+        [fixturePath]: `
+          function Probe() {
+            const synthetic = useSyntheticRead();
+            return <p>{synthetic.data}</p>;
+          }
+        `,
+      },
+      hookNames,
+    );
+
+    expect(result.reads).toMatchObject([{ hook: 'useSyntheticRead', read: 'Probe.synthetic' }]);
+    expect(result.offenders[0]?.states).toEqual(['loading', 'error']);
+  });
+
+  test('does not mistake response payload fields or shadowed locals for query state', () => {
+    const payloadField = analyzeAsyncReadStates([fixturePath], [], {
+      [fixturePath]: `
+        function Probe() {
+          const { data } = useQuery({ queryKey: ['probe'], queryFn: loadProbe });
+          return <p>{data?.error}</p>;
+        }
+      `,
+    });
+    expect(payloadField.offenders[0]?.states).toEqual(['loading', 'error']);
+
+    const shadowedBinding = analyzeAsyncReadStates([fixturePath], [], {
+      [fixturePath]: `
+        function Probe() {
+          const query = useQuery({ queryKey: ['probe'], queryFn: loadProbe });
+          function Shadowed() {
+            const query = { isPending: true, isError: true };
+            return query.isPending || query.isError ? <Spinner /> : null;
+          }
+          return <><Shadowed /><p>{query.data}</p></>;
+        }
+      `,
+    });
+    expect(shadowedBinding.offenders[0]?.states).toEqual(['loading', 'error']);
+  });
+
+  test('does not accept refetch-only flags as initial loading or error handling', () => {
+    const result = analyzeAsyncReadStates([fixturePath], [], {
+      [fixturePath]: `
+        function Probe() {
+          const query = useQuery({ queryKey: ['probe'], queryFn: loadProbe });
+          if (query.isRefetching) return <Spinner />;
+          if (query.isRefetchError) return <Retry />;
+          return <p>{query.data}</p>;
+        }
+      `,
+    });
+
+    expect(result.offenders[0]?.states).toEqual(['loading', 'error']);
+  });
+
   test('binds covered loading and error claims to analyzed reads', () => {
     const coveredSurface = {
       id: 'synthetic-covered-surface',
@@ -1498,8 +1694,8 @@ describe('V5-P14 surface traceability inventory', () => {
 
     expect(
       result.reads.length,
-      'The async-hook walk unexpectedly found too few reads; update the established wrapper list rather than silently shrinking the gate.',
-    ).toBeGreaterThan(100);
+      'The source-derived async-read universe changed; review every added or removed site and update the exact baseline.',
+    ).toBe(V5_ASYNC_READ_SITE_BASELINE);
 
     expect(
       result.invalidExemptions,

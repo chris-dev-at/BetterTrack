@@ -1459,6 +1459,36 @@ export const V5_ASYNC_READ_EXEMPTIONS = [
     reason:
       'The binding P12 capability gate deliberately renders no AI surface until availability is confirmed; loading and failure are therefore indistinguishable from disabled AI.',
   },
+  {
+    component: 'user/components/OriginShell.tsx',
+    read: 'RailGroup.children',
+    states: ['loading', 'error'],
+    reason:
+      'The navigation helper deliberately defaults runtime feature flags to enabled while they load or fail; server route guards remain the authoritative kill-switch boundary.',
+  },
+  {
+    component: 'user/portfolio/PortfolioWorkspace.tsx',
+    read: 'PortfolioWorkspace.items',
+    states: ['loading', 'error'],
+    reason:
+      'The navigation helper deliberately defaults runtime feature flags to enabled while they load or fail; server route guards remain the authoritative kill-switch boundary.',
+  },
+  {
+    component: 'user/control/panels/PrivacyPanel.tsx',
+    read: 'PrivacyPanel.privacy',
+    states: ['loading', 'error'],
+    reason:
+      'AccountModeRoot resolves the same account-scoped privacy query before the authenticated Control Center can mount.',
+    delegatedTo: 'AccountModeRoot',
+  },
+  {
+    component: 'user/home/HomePage.tsx',
+    read: 'HomeBoard.$destructured',
+    states: ['loading', 'error'],
+    reason:
+      'AccountModeRoot resolves the same account-scoped privacy query before the authenticated home board can mount.',
+    delegatedTo: 'AccountModeRoot',
+  },
 ] as const satisfies readonly V5AsyncReadExemption[];
 
 /**
@@ -1475,6 +1505,9 @@ export interface V5AsyncStateDebt {
 export type V5AsyncStateDebtLedger = Readonly<
   Record<string, Readonly<Record<string, readonly V5AsyncReadState[]>>>
 >;
+
+/** Exact anti-shrinkage baseline for the source-derived asynchronous read universe. */
+export const V5_ASYNC_READ_SITE_BASELINE = 179;
 
 /** Ratchet this downward whenever #739 removes a read site or missing state. */
 export const V5_ASYNC_STATE_DEBT_CEILING = { readSites: 64, stateGaps: 112 } as const;
