@@ -95,6 +95,26 @@ and cascade all consumers through database lifecycle triggers. The identity
 table is explicitly server-classified and skipped by account export because it
 contains no asset content; the completeness tests bind both decisions.
 
+**The document's asset bucket is wider than the vault classification, and the
+restore boundary narrows it back.** A client that computes valuations locally
+(§10) must be able to name and price every asset a holding references, so the
+vault document's `customAsset` bucket doubles as the client's LOCAL ASSET
+TABLE: it also snapshots the market-catalog assets — under the same global
+UUID, with the catalog `providerId`/`providerRef` the §11 autonomy seam will
+need — because the client engine resolves every transaction, dividend and
+standing order through that bucket. Those snapshots are **not** vault data: the
+global `assets` row is `server`-classified, survives the enable purge untouched,
+and rehydration re-resolves it from the database. They are therefore dropped
+again on the way back (`toStrictRestoreDocument`), and the server refuses a
+restore document that carries one: every `customAsset` entity it receives —
+tombstones included — must be this account's own manual asset
+(`providerId: 'manual'`, `providerRef` = the entity id, `ownerId` = the
+account), which is also exactly the set the retained-identity check requires the
+document to account for. Binding: the two derivable identity fields are
+restated from the entity id at that boundary, never passed through, so a stale
+or third-party-written value cannot block the account's only non-destructive
+exit.
+
 The account itself gains `users.privacy_mode` enum `normal | paranoid`
 (default `normal`) plus the media-set record (§5) — account metadata, present
 even in Drive-only mode (knowing THAT a user is paranoid is not portfolio
@@ -591,6 +611,47 @@ Killed for paranoid accounts:
     jobs, dividend/earnings scans keyed to holdings, etc. skip paranoid
     accounts (their input tables are empty by §7); the V4 offsite backup
     carries only ciphertext for them.
+11. **The expense-tracking SURFACES (V5-P9) — absent for now, and this is a
+    recorded deviation, not a design intent.** Every `/expenses/*` route is
+    already refused under the `portfolioServer` capability (the enforcement
+    registry, PD3b), so the pages that read them are hidden rather than left to
+    401 into an empty shell: `/portfolio/cash-flow` and its transactions,
+    budgets, categories and rules tabs are killed paths for a paranoid account.
+    The DATA is not killed — §1 classifies the expense tables as `vault` and
+    the enable migration carries every category, transaction, rule and budget
+    into the blob, so the whole area returns intact on disable. What is missing
+    is the client-side re-derivation of those five pages against the vault
+    store; it is v6 follow-up work and is logged in PROJECTPLAN §16
+    (2026-07-31) alongside the home board (item 13) and the contribution
+    column (item 12).
+12. **Series that need per-asset history — answered with the portfolio's own
+    NET-WORTH curve, and labelled as such.** The client engine derives one
+    value series per portfolio (holdings + cash, `netWorthSeries`); it has no
+    equivalent of the server's `getAssetValueSeries`, which is what the
+    analytics endpoint sums over the _visible_ assets (holdings only). Two
+    surfaces read that quantity, and each answers with the client curve rather
+    than with a relabelled approximation of the server's:
+    - **Analytics** — the primary curve and its stats are the net-worth series.
+      The per-asset/group visibility filters are NOT offered here, so the
+      difference cannot show up as a filter that silently does nothing; the
+      period-contribution column is dropped for the same reason (item 11's
+      §16 row).
+    - **Forecast** — the prefilled "historical average return" samples the same
+      curve, so idle cash damps it relative to a normal account's figure. It is
+      an editable starting point, and the projection's starting value is a
+      net-worth figure too, so the two agree with each other.
+      Normal accounts are untouched by both: they keep reading
+      `analytics/…/series`, unchanged.
+13. **The Home widget board — replaced by the portfolio page, and this is a
+    recorded deviation too.** Every widget under
+    `apps/web/src/user/home/widgets/` reads `portfolioApi` directly instead of
+    the `PortfolioStore` seam (§10), so a paranoid board would mix server reads
+    into an encrypted account. `/` therefore renders `<PortfolioPage />` while the mode is
+    paranoid. The board's saved configuration is not touched — it lives in
+    `localStorage`, never in the vault or on the server — so it comes back
+    exactly as it was on disable. Porting the widgets to the store seam is the
+    v6 follow-up; it is logged in PROJECTPLAN §16 (2026-07-31) with items 11
+    and 12.
 
 Kept, unchanged (the "fully functional" half): the full auth stack (password,
 2FA, passkeys, PIN, sessions, admin-independent), friendships + chat +
@@ -601,6 +662,20 @@ calculators (client-side already), Forecast (client-side already —
 `apps/web/src/user/forecast/` is the precedent), discreet mode (composes:
 discreet hides amounts the client just computed), i18n, announcements,
 account export + deletion (§12).
+
+**Kept ≠ reachable while LOCKED.** The unlock gate replaces the whole
+authenticated subtree — exactly like the PIN gate it is modelled on — so every
+kept surface above is reachable only _after_ the vault opens on that device.
+That is deliberate (a gate that let arbitrary routes through would have to
+reason about which of them can touch the store) and it costs one real
+affordance: **`/oauth/authorize`**. A paranoid account with a locked vault must
+unlock before it can grant an app even a scope §8 keeps, such as
+`market:read`; once mounted, the consent page's own `portfolioScopeBlocked`
+refusal still applies to the portfolio-scoped half. The single exception is
+**`/account/delete`**, served directly from the locked branch (§12 names it
+kept, it is the stable public URL the store listing points at, and it reads no
+money data), so the gate is never a dead end. PD9 asserts both halves: consent
+behind the gate, deletion in front of it.
 
 ## 9. Server-side price alerts with zero portfolio exposure
 
@@ -778,7 +853,9 @@ issue).
    EN + DE strings.
 9. **PD9 — e2e + gate** (`diff:intermediate`): the §15 scenarios as
    Playwright specs (Drive mocked at the data-home boundary; the Drive-only
-   round trip is the headline spec), joining the V5-P14 suite.
+   round trip is the headline spec), joining the V5-P14 suite. Include the §8
+   locked-reachability pair: `/oauth/authorize` sits behind the unlock gate,
+   `/account/delete` in front of it.
 
 Order: PD1 ∥ PD2 first; PD3 after PD2; PD4 → PD5 after PD2; PD6/PD7 after
 PD5; PD8 after PD5 (PD3's server enforcement can land in parallel with

@@ -5,17 +5,12 @@ import type { PortfolioSummary, StandingOrder } from '@bettertrack/contracts';
 
 import { useT, type TranslateFn } from '../../i18n';
 import { formatDate, formatMoney, formatQuantity } from '../../lib/format';
-import {
-  STANDING_ORDERS_QUERY_KEY,
-  deleteStandingOrder,
-  listStandingOrders,
-  pauseStandingOrder,
-  resumeStandingOrder,
-} from '../../lib/standingOrdersApi';
+import { STANDING_ORDERS_QUERY_KEY } from '../../lib/standingOrdersApi';
 import { EmptyState, Skeleton } from '../../ui';
 import { Alert, Button, cx } from '../components/ui';
 
 import { StandingOrderDialog } from './StandingOrderDialog';
+import { usePortfolioStore } from '../portfolio/PortfolioStoreProvider';
 
 const EM_DASH = '—';
 
@@ -29,12 +24,13 @@ const EM_DASH = '—';
  */
 export function StandingOrdersSection({ portfolios }: { portfolios: PortfolioSummary[] }) {
   const t = useT();
+  const store = usePortfolioStore();
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<StandingOrder | null>(null);
 
   const query = useQuery({
     queryKey: STANDING_ORDERS_QUERY_KEY,
-    queryFn: ({ signal }) => listStandingOrders(undefined, signal),
+    queryFn: ({ signal }) => store.listStandingOrders(undefined, signal),
     staleTime: 30_000,
   });
 
@@ -112,6 +108,7 @@ function StandingOrderRow({
   onEdit: (order: StandingOrder) => void;
 }) {
   const t = useT();
+  const store = usePortfolioStore();
   const queryClient = useQueryClient();
   const [confirmingDelete, setConfirmingDelete] = useState(false);
   const rowId = useId();
@@ -123,15 +120,15 @@ function StandingOrderRow({
   const deleteConfirmNoActionId = `${rowId}-delete-confirm-no-action`;
 
   const pauseMutation = useMutation({
-    mutationFn: () => pauseStandingOrder(order.id),
+    mutationFn: () => store.pauseStandingOrder(order.id),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: STANDING_ORDERS_QUERY_KEY }),
   });
   const resumeMutation = useMutation({
-    mutationFn: () => resumeStandingOrder(order.id),
+    mutationFn: () => store.resumeStandingOrder(order.id),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: STANDING_ORDERS_QUERY_KEY }),
   });
   const deleteMutation = useMutation({
-    mutationFn: () => deleteStandingOrder(order.id),
+    mutationFn: () => store.deleteStandingOrder(order.id),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: STANDING_ORDERS_QUERY_KEY }),
   });
 

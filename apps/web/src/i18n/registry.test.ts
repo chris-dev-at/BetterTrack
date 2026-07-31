@@ -1,6 +1,10 @@
 import { describe, expect, test } from 'vitest';
 
+import { VAULT_MEDIA } from '@bettertrack/contracts';
+
 import { vaultStoreErrorKey } from '../user/vault/engine/errorCopy';
+import { VAULT_MEDIUM_SYNC_STATES } from '../user/vault/media/status';
+import { VAULT_ENABLE_STAGES } from '../user/vault/ui/enable';
 import { VAULT_PORTFOLIO_STORE_ERROR_CODES } from '../user/vault/vaultPortfolioStore';
 import { LOCALES, localizedMessage, type MessageNode } from './registry';
 
@@ -60,6 +64,37 @@ test('registers copy for every vault portfolio-store error code in EN and DE', (
   }
 });
 
+test('registers progress + error copy for every paranoid enable stage in EN and DE', () => {
+  // `ParanoidEnableWizard` builds both keys with a template literal, so a stage
+  // missing from BOTH catalogs is parity-clean and still paints its raw
+  // dot-path — on the happy path of a one-way, irreversible flow. Iterate the
+  // stage tuple instead so the union and the catalogs stay bound.
+  for (const stage of VAULT_ENABLE_STAGES) {
+    for (const locale of Object.values(LOCALES)) {
+      for (const key of [`vault.enable.progress.${stage}`, `vault.enable.errors.${stage}`]) {
+        expect(localizedMessage(locale.code, key), `${locale.code}: ${key}`).not.toBe(key);
+      }
+    }
+  }
+});
+
+test('registers status copy for every vault sync state and medium in EN and DE', () => {
+  // Same blind spot as the enable stages: `VaultSyncChip` renders
+  // `vault.sync.status.<state>` and `vault.sync.medium.<medium>` as template
+  // literals — for the button label, its aria-label and every medium row — so a
+  // member missing from BOTH catalogs is parity-clean and paints its dot-path.
+  for (const locale of Object.values(LOCALES)) {
+    for (const state of VAULT_MEDIUM_SYNC_STATES) {
+      const key = `vault.sync.status.${state}`;
+      expect(localizedMessage(locale.code, key), `${locale.code}: ${key}`).not.toBe(key);
+    }
+    for (const medium of VAULT_MEDIA) {
+      const key = `vault.sync.medium.${medium}`;
+      expect(localizedMessage(locale.code, key), `${locale.code}: ${key}`).not.toBe(key);
+    }
+  }
+});
+
 describe.each(nonDefaultLocales.map((l) => [l.code, l.messages] as const))(
   'catalog parity (en ⇄ %s)',
   (code, messages) => {
@@ -90,3 +125,30 @@ describe.each(nonDefaultLocales.map((l) => [l.code, l.messages] as const))(
     });
   },
 );
+
+test('paranoid custody and destructive copy keeps the binding tone in EN and DE', () => {
+  expect(localizedMessage('en', 'vault.enable.lostKeyAcknowledgment')).toBe(
+    'If I lose my vault passphrase and my recovery kit, my data is gone forever. BetterTrack cannot recover it.',
+  );
+  expect(localizedMessage('de', 'vault.enable.lostKeyAcknowledgment')).toBe(
+    'Wenn ich meine Tresor-Passphrase und mein Wiederherstellungspaket verliere, sind meine Daten für immer verloren. BetterTrack kann sie nicht wiederherstellen.',
+  );
+
+  for (const locale of ['en', 'de']) {
+    expect(localizedMessage(locale, 'vault.enable.media.driveOnly.body')).toMatch(
+      locale === 'de' ? /nicht einmal verschlüsselt/i : /not even encrypted/i,
+    );
+    expect(localizedMessage(locale, 'vault.settings.whatsOff')).toMatch(
+      locale === 'de' ? /aus ist/i : /what.s off/i,
+    );
+    expect(localizedMessage(locale, 'vault.sync.needsAttention')).toMatch(
+      locale === 'de' ? /Aufmerksamkeit/i : /needs attention/i,
+    );
+    expect(localizedMessage(locale, 'vault.settings.startFreshConfirm')).toMatch(
+      locale === 'de' ? /dauerhaft ersetzt/i : /permanently replaced/i,
+    );
+    expect(localizedMessage(locale, 'vault.settings.disableConfirm')).toMatch(
+      locale === 'de' ? /deaktivieren/i : /disable Paranoid mode/i,
+    );
+  }
+});

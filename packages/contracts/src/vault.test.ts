@@ -23,6 +23,7 @@ import {
   vaultHistoryListResponseSchema,
   vaultHistoryMetadataSchema,
   vaultHistoryVersionParamSchema,
+  paranoidDisableRequestSchema,
   paranoidMediaStateResponseSchema,
   paranoidMediaTransitionRequestSchema,
   paranoidVaultMediaStateSchema,
@@ -343,5 +344,43 @@ describe('vault document v1', () => {
     expect(
       vaultDocumentV1Schema.safeParse({ schemaVersion: 1, entities: { bogus: [] } }).success,
     ).toBe(false);
+  });
+});
+
+describe('paranoid disable request', () => {
+  const emptyDocument = { schemaVersion: 1 as const, entities: [], mergeLog: [] };
+  const base = { confirm: true as const, rehydrationId: UUID_A, document: emptyDocument };
+
+  it('asks a restoring disable for nothing but the confirmation', () => {
+    expect(paranoidDisableRequestSchema.safeParse(base).success).toBe(true);
+  });
+
+  it('requires the account-deletion rung on the irreversible discard', () => {
+    // Neither half may be optional: the flag destroys a vault whose owner
+    // cannot decrypt it, so it carries the same gates as `DELETE /account`.
+    expect(paranoidDisableRequestSchema.safeParse({ ...base, discard: true }).success).toBe(false);
+    expect(
+      paranoidDisableRequestSchema.safeParse({ ...base, discard: true, confirmUsername: 'ada' })
+        .success,
+    ).toBe(false);
+    expect(
+      paranoidDisableRequestSchema.safeParse({ ...base, discard: true, password: 'hunter2hunter2' })
+        .success,
+    ).toBe(false);
+
+    for (const credential of [
+      { password: 'hunter2hunter2' },
+      { code: '123456' },
+      { recoveryCode: 'abcd-efgh' },
+    ]) {
+      expect(
+        paranoidDisableRequestSchema.safeParse({
+          ...base,
+          discard: true,
+          confirmUsername: 'ada',
+          ...credential,
+        }).success,
+      ).toBe(true);
+    }
   });
 });

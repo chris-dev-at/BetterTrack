@@ -72,6 +72,7 @@ import { getAnalyticsSeries } from '../../../lib/analyticsApi';
 import { listConglomerates } from '../../../lib/conglomerateApi';
 import { formatDate } from '../../../lib/format';
 import { getPortfolio, getPortfolioHistory, listPortfolios } from '../../../lib/portfolioApi';
+import { ResolvedPrivacyModeProvider } from '../../vault/usePrivacyMode';
 import { AnalyticsPage } from './AnalyticsPage';
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
@@ -235,12 +236,14 @@ const HISTORY_WITH_ASSETS = {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function renderPage() {
+function renderPage(mode: 'normal' | 'paranoid' = 'normal') {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
       <MemoryRouter initialEntries={['/portfolio/analytics']}>
-        <AnalyticsPage />
+        <ResolvedPrivacyModeProvider mode={mode}>
+          <AnalyticsPage />
+        </ResolvedPrivacyModeProvider>
       </MemoryRouter>
     </QueryClientProvider>,
   );
@@ -474,5 +477,118 @@ describe('AnalyticsPage — range & overlay', () => {
         expect.anything(),
       ),
     );
+  });
+});
+
+describe('AnalyticsPage — paranoid account', () => {
+  // The client substitute answers with the server's own quantities or with
+  // nothing; it never relabels a different metric (§16 2026-07-30).
+  const PARANOID_PORTFOLIO = {
+    baseCurrency: 'EUR',
+    holdings: [
+      {
+        asset: AAPL,
+        quantity: 10,
+        avgCost: 80,
+        realizedPnl: 0,
+        price: 100,
+        marketValueEur: 1000,
+        costBasisEur: 800,
+        unrealizedPnlEur: 200,
+        unrealizedPnlPct: 25,
+        dayChangeEur: 10,
+        dayChangePct: 1,
+      },
+    ],
+    totals: {},
+  } as unknown as PortfolioResponse;
+
+  // The default range preset is the last 12 months of the REAL clock, so the
+  // window has to be anchored to today or every point filters out.
+  const localDay = (daysAgo: number): string => {
+    const d = new Date();
+    d.setDate(d.getDate() - daysAgo);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(
+      d.getDate(),
+    ).padStart(2, '0')}`;
+  };
+  const WINDOW_START = localDay(30);
+  const WINDOW_END = localDay(0);
+
+  const PARANOID_HISTORY = {
+    range: '1Y' as const,
+    baseCurrency: 'EUR' as const,
+    points: [
+      { date: WINDOW_START, valueEur: 1000 },
+      { date: WINDOW_END, valueEur: 1200 },
+    ],
+    // TWR says +5 % over the same window (money flowed in); the value-normalized
+    // curve says +20 %. Performance mode must render the latter, like the server.
+    performance: [
+      { date: WINDOW_START, pct: 0 },
+      { date: WINDOW_END, pct: 5 },
+    ],
+  };
+
+  beforeEach(() => {
+    vi.mocked(getPortfolio).mockResolvedValue(PARANOID_PORTFOLIO);
+    vi.mocked(getPortfolioHistory).mockResolvedValue(
+      PARANOID_HISTORY as unknown as Awaited<ReturnType<typeof getPortfolioHistory>>,
+    );
+  });
+
+  test('never calls the server endpoint and drops the period-contribution column', async () => {
+    renderPage('paranoid');
+
+    const table = await screen.findByRole('table');
+    expect(vi.mocked(getAnalyticsSeries)).not.toHaveBeenCalled();
+    expect(within(table).getByText('AAPL')).toBeInTheDocument();
+    expect(within(table).queryByRole('columnheader', { name: 'Contribution' })).toBeNull();
+    expect(
+      screen.getByText(/Contribution over the period is not shown for encrypted accounts/),
+    ).toBeInTheDocument();
+  });
+
+  test('performance mode plots the value-normalized curve, not the TWR series', async () => {
+    const user = userEvent.setup();
+    renderPage('paranoid');
+    await screen.findByRole('table');
+
+    await user.click(screen.getByRole('button', { name: 'Performance %' }));
+
+    await waitFor(() => {
+      const points = chartMocks.setData.mock.calls.at(-1)?.[0] as Array<{
+        time: string;
+        value: number;
+      }>;
+      expect(points.map((point) => point.time)).toEqual([WINDOW_START, WINDOW_END]);
+      // 1000 → 1200 rebased = +20 %, NOT the 5 % the TWR series carries.
+      expect(points[1]!.value).toBeCloseTo(20, 6);
+    });
+  });
+
+  test('a leading zero point is trimmed like the server, not used as the base', async () => {
+    // A window that opens before the first held day: the server trims the 0
+    // edge, so the curve anchors at 1000 and rebases to +20 %. Keeping the zero
+    // would zero every stat and flatten the whole perf curve.
+    vi.mocked(getPortfolioHistory).mockResolvedValue({
+      ...PARANOID_HISTORY,
+      points: [{ date: localDay(45), valueEur: 0 }, ...PARANOID_HISTORY.points],
+    } as unknown as Awaited<ReturnType<typeof getPortfolioHistory>>);
+
+    const user = userEvent.setup();
+    renderPage('paranoid');
+    await screen.findByRole('table');
+
+    await user.click(screen.getByRole('button', { name: 'Performance %' }));
+
+    await waitFor(() => {
+      const points = chartMocks.setData.mock.calls.at(-1)?.[0] as Array<{
+        time: string;
+        value: number;
+      }>;
+      expect(points.map((point) => point.time)).toEqual([WINDOW_START, WINDOW_END]);
+      expect(points[1]!.value).toBeCloseTo(20, 6);
+    });
   });
 });

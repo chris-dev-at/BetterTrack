@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import {
   WEBHOOK_EVENT_TYPES,
+  isParanoidKilledWebhookEventType,
   type CreateWebhookSubscriptionResponse,
   type WebhookEventType,
   type WebhookSubscription,
@@ -23,6 +24,7 @@ import { Skeleton } from '../../../ui';
 import { Badge, Button, Field, Input, type BadgeTone } from '../../../ui/origin';
 import { Dialog } from '../../components/Dialog';
 import { Alert } from '../../components/ui';
+import { useResolvedPrivacyMode } from '../../vault/usePrivacyMode';
 import {
   PanelForm,
   PanelGroup,
@@ -35,6 +37,11 @@ import {
 
 const WEBHOOKS_KEY = ['settings', 'webhooks'] as const;
 const deliveriesKey = (id: string) => ['settings', 'webhooks', id, 'deliveries'] as const;
+// Which catalog entries a paranoid account can never receive comes from
+// `isParanoidKilledWebhookEventType` (contracts), NOT from a list restated
+// here: the server's PD3b enforcement registry is the truth and the API carries
+// the drift-guard test that keeps the two equal, so a kill-listed event added
+// later cannot silently stay offerable in this form.
 
 /** Maps each catalog event type to its i18n label subkey (camelCase of the type). */
 const EVENT_LABEL_KEY: Record<WebhookEventType, string> = {
@@ -139,6 +146,7 @@ function CreateWebhookForm({
   onCreated: (result: CreateWebhookSubscriptionResponse) => void;
 }) {
   const t = useT();
+  const paranoid = useResolvedPrivacyMode() === 'paranoid';
   const queryClient = useQueryClient();
   const [url, setUrl] = useState('');
   const [description, setDescription] = useState('');
@@ -214,7 +222,9 @@ function CreateWebhookForm({
       <fieldset className="flex flex-col gap-1.5">
         <legend className="bt-label">{t('settings.api.webhooks.eventsLegend')}</legend>
         <div className="grid grid-cols-1 gap-x-4 gap-y-0.5 sm:grid-cols-2">
-          {WEBHOOK_EVENT_TYPES.map((type) => (
+          {WEBHOOK_EVENT_TYPES.filter(
+            (type) => !paranoid || !isParanoidKilledWebhookEventType(type),
+          ).map((type) => (
             <label
               className="bt-soft flex cursor-pointer items-center gap-2 text-[12.5px]"
               key={type}
@@ -285,6 +295,7 @@ function DeliveriesList({ id }: { id: string }) {
 /** One subscription row with pause/enable, delete (two-step), and a deliveries toggle. */
 function WebhookRow({ subscription }: { subscription: WebhookSubscription }) {
   const t = useT();
+  const paranoid = useResolvedPrivacyMode() === 'paranoid';
   const queryClient = useQueryClient();
   const [confirming, setConfirming] = useState(false);
   const [showDeliveries, setShowDeliveries] = useState(false);
@@ -370,12 +381,23 @@ function WebhookRow({ subscription }: { subscription: WebhookSubscription }) {
           {subscription.description ? (
             <span className="bt-cc-row__hint">{subscription.description}</span>
           ) : null}
+          {/* An event this privacy mode never fires is MARKED, never dropped —
+              the same rule the scope chips follow: the subscription really does
+              carry it and it starts delivering again the moment paranoid mode
+              is disabled, so a shortened list would misstate the endpoint. */}
           <span className="flex flex-wrap gap-1">
-            {subscription.eventTypes.map((type) => (
-              <Badge className="bt-cc-mono" key={type} outline>
-                {type}
-              </Badge>
-            ))}
+            {subscription.eventTypes.map((type) => {
+              const inactive = paranoid && isParanoidKilledWebhookEventType(type);
+              const label = inactive ? t('settings.api.webhooks.eventInactive') : undefined;
+              return (
+                <Badge className="bt-cc-mono" key={type} outline title={label}>
+                  <span className={inactive ? 'line-through opacity-70' : undefined}>{type}</span>
+                  {inactive ? (
+                    <span className="bt-cc-row__hint ml-1 no-underline">({label})</span>
+                  ) : null}
+                </Badge>
+              );
+            })}
           </span>
           {/* A real constraint: repeated failures switch delivery off for good
               until the user re-enables it. */}

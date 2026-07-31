@@ -1053,6 +1053,7 @@
         "descriptionPlaceholder": "z. B. Hausautomatisierung",
         "eventsLegend": "Ereignisse",
         "eventRequired": "Wähle mindestens ein Ereignis aus.",
+        "eventInactive": "im Paranoid-Modus inaktiv",
         "create": "Webhook hinzufügen",
         "creating": "Wird hinzugefügt…",
         "createError": "Der Webhook konnte nicht hinzugefügt werden. Bitte versuche es erneut.",
@@ -1201,7 +1202,8 @@
         },
         "empty": {
           "title": "Noch keine API-Schlüssel"
-        }
+        },
+        "scopeInactive": "im Paranoid-Modus inaktiv"
       },
       "oauth": {
         "yourApps": "Deine Apps",
@@ -1713,7 +1715,8 @@
         "cost": "Einstand",
         "pnl": "G/V",
         "weight": "Gewicht",
-        "contribution": "Beitrag"
+        "contribution": "Beitrag",
+        "periodUnavailable": "Der Beitrag im Zeitraum wird für verschlüsselte Konten nicht angezeigt — dafür wäre ein Verlauf je Anlage nötig, den der Server nie sieht."
       },
       "ai": {
         "title": "KI-Einblicke",
@@ -3533,14 +3536,224 @@
     }
   },
   "vault": {
+    "gate": {
+      "unavailableTitle": "Dein Tresor bleibt gesperrt",
+      "unavailableBody": "BetterTrack konnte den Datenschutzmodus dieses Kontos nicht prüfen. Versuche es erneut, sobald die Verbindung verfügbar ist.",
+      "invalidMedia": "Der verschlüsselte Speicherort ist nicht verfügbar. Es wurden keine Portfoliodaten geöffnet."
+    },
+    "scopes": {
+      "unavailable": "Diese App fordert Portfoliozugriff an, der im paranoiden Modus nicht verfügbar ist."
+    },
+    "lock": {
+      "action": "Tresor sperren"
+    },
+    "enable": {
+      "title": "Paranoiden Modus aktivieren",
+      "step": "Schritt {{current}} von {{total}}",
+      "steps": {
+        "1": {
+          "title": "Was sich ändert"
+        },
+        "2": {
+          "title": "Verschlüsselten Speicher wählen"
+        },
+        "3": {
+          "title": "Tresor schützen"
+        },
+        "4": {
+          "title": "Daten werden übertragen"
+        }
+      },
+      "changesIntro": "BetterTrack verschiebt deine Finanzdaten in einen clientseitig verschlüsselten Tresor. Diese servergestützten Funktionen werden abgeschaltet:",
+      "killList": {
+        "sharing": "Teilen, geteilte Inhalte, Kommentare, Reaktionen und Mirrorchain",
+        "serverReads": "Server-Portfolioanalysen, Steuerexporte, Live-Modus und KI-Einblicke",
+        "imports": "Broker- und Bank-CSV-Importe",
+        "automation": "Serverseitige Daueraufträge und Portfolio-Jobs",
+        "publicProfile": "Dein öffentliches Profil und portfolio-bezogene API-Zugriffe"
+      },
+      "keptSummary": "Manuelle Portfolioarbeit, clientseitige Analysen und Steuern, Forecast, private Watchlists, Anlagen, Alarme, Freundschaften und Chat bleiben verfügbar.",
+      "media": {
+        "server": {
+          "title": "Verschlüsselter BetterTrack-Speicher",
+          "body": "Bei BetterTrack verschlüsselt; nur du kannst die Daten lesen."
+        },
+        "driveCopy": "Zusätzlich eine geprüfte Kopie in meinem Google Drive speichern",
+        "advanced": "Erweitert",
+        "driveOnly": {
+          "title": "Nur Google Drive",
+          "body": "Nichts auf BetterTrack-Servern — nicht einmal verschlüsselt."
+        }
+      },
+      "passphraseDistinct": "Erstelle eine neue Tresor-Passphrase. Sie muss sich von deinem BetterTrack-Anmeldepasswort unterscheiden und wird nie an den Server gesendet.",
+      "passphrase": "Tresor-Passphrase",
+      "passphraseConfirm": "Tresor-Passphrase bestätigen",
+      "passphraseMismatch": "Wähle eine starke Tresor-Passphrase und gib sie zweimal gleich ein.",
+      "downloadRecoveryKit": "Wiederherstellungspaket herunterladen",
+      "downloadAgain": "Wiederherstellungspaket erneut herunterladen",
+      "kitStored": "Ich habe mein Wiederherstellungspaket sicher verwahrt.",
+      "lostKeyAcknowledgment": "Wenn ich meine Tresor-Passphrase und mein Wiederherstellungspaket verliere, sind meine Daten für immer verloren. BetterTrack kann sie nicht wiederherstellen.",
+      "action": "Paranoiden Modus aktivieren",
+      "done": "Der paranoide Modus ist aktiv. Dein verschlüsselter Tresor ist bereit.",
+      "progress": {
+        "preparing": "Geschützte Übertragung wird vorbereitet…",
+        "migrate": "Vollständige Portfoliodaten werden auf diesem Gerät gesammelt…",
+        "validate": "Es wird geprüft, ob sich der vorbereitete Tresor öffnen und zurückholen lässt…",
+        "encrypt": "Der Tresor wird auf diesem Gerät verschlüsselt…",
+        "write-server": "Die verschlüsselte BetterTrack-Kopie wird gespeichert…",
+        "write-drive": "Die verschlüsselte Google-Drive-Kopie wird gespeichert…",
+        "verify-server": "Die BetterTrack-Kopie wird geprüft…",
+        "verify-drive": "Die Google-Drive-Kopie wird geprüft…",
+        "commit": "Der paranoide Modus wird abgeschlossen…"
+      },
+      "errors": {
+        "migrate": "Deine aktuellen Daten konnten nicht vollständig gesammelt werden. Es wurde nichts geändert; versuche es nach Wiederherstellung der Verbindung erneut.",
+        "validate": "Der vorbereitete Tresor hat die Sicherheitsprüfung nicht bestanden, deshalb hat BetterTrack vor dem ersten Schreibvorgang abgebrochen. Es wurde nichts geändert und dein normales Konto ist unverändert.",
+        "encrypt": "Dieser Browser konnte den Tresor nicht verschlüsseln. Es wurde nichts geändert.",
+        "write-server": "Die verschlüsselte BetterTrack-Kopie konnte nicht gespeichert werden. Dein normales Konto ist unverändert.",
+        "write-drive": "Die verschlüsselte Google-Drive-Kopie konnte nicht gespeichert werden. Prüfe deine Google-Anmeldung und versuche es erneut.",
+        "verify-server": "Die BetterTrack-Kopie konnte nicht geprüft werden. Dein normales Konto ist unverändert.",
+        "verify-drive": "Die Google-Drive-Kopie konnte nicht geprüft werden. Dein normales Konto ist unverändert.",
+        "commit": "BetterTrack hat den Modus nicht gewechselt. Dein normales Konto bleibt nutzbar; behebe den Übergangshinweis und versuche es erneut.",
+        "mirrorchainActive": "Verlasse dein MIRRORCHAIN-Gruppenportfolio und behalte dessen Abzweigung, bevor du den paranoiden Modus aktivierst.",
+        "importInFlight": "Schließe den aktiven Import ab oder brich ihn ab, bevor du den paranoiden Modus aktivierst.",
+        "exportInFlight": "Warte, bis der Kontoexport abgeschlossen ist, und aktiviere dann den paranoiden Modus.",
+        "mediaNotReady": "Die gewählte verschlüsselte Kopie war für den letzten Wechsel nicht bereit. Prüfe die Speicherorte und versuche es erneut.",
+        "transitionConflict": "Ein anderer Datenschutzwechsel wird noch abgeschlossen. Warte kurz und versuche es erneut.",
+        "unknown": "Der paranoide Modus konnte nicht aktiviert werden. Dein normales Konto ist unverändert."
+      }
+    },
+    "unlock": {
+      "title": "Tresor entsperren",
+      "description": "Deine Finanzdaten bleiben verschlüsselt, bis dieses Gerät sie entsperrt.",
+      "passphrase": "Tresor-Passphrase",
+      "keepUnlocked": "Auf diesem Gerät entsperrt lassen",
+      "keepUnlockedHint": "Manuelles Sperren, Abmelden oder deine bestehende PIN-Leerlaufsperre widerrufen diesen Geräteschlüssel.",
+      "recoveryKit": "Wiederherstellungspaket verwenden",
+      "recoveryKitHint": "Wähle bettertrack-recovery-kit.txt, anstatt die Passphrase einzugeben.",
+      "driveGesture": "Google bittet dich möglicherweise um eine Anmeldung, damit dieses Gerät die verschlüsselte Drive-Kopie lesen kann.",
+      "action": "Tresor entsperren",
+      "unlocking": "Wird entsperrt…",
+      "stuck": {
+        "title": "Tresor lässt sich nicht entsperren?",
+        "body": "BetterTrack kann eine Tresor-Passphrase nicht zurücksetzen und bewahrt keine Kopie deines Schlüssels auf. Ohne Passphrase, Wiederherstellungspaket oder ein noch entsperrtes Gerät sind die verschlüsselten Daten endgültig verloren — das ist der Kompromiss, den du beim Aktivieren des Paranoid-Modus bestätigt hast.",
+        "keptHint": "Ein Neustart verwirft den verschlüsselten Tresor und führt dieses Konto in ein normales, leeres Konto zurück. Alles, was nie im Tresor lag — Anmeldung, Freundschaften, Chats, Kursalarme, Merklisten und Einstellungen —, bleibt unverändert erhalten.",
+        "driveLeftover": "Die verschlüsselte Kopie in deinem Google Drive bleibt liegen. Sie lässt sich von niemandem mehr öffnen, auch nicht von dir — entferne die bettertrack-vault-Datei bei Bedarf selbst aus Drive.",
+        "confirmLabel": "Tippe deinen Benutzernamen ({{username}}) zur Bestätigung",
+        "passwordLabel": "Aktuelles Kontopasswort",
+        "codeLabel": "Authenticator-Code",
+        "useCode": "Stattdessen einen Authenticator-Code verwenden",
+        "usePassword": "Stattdessen dein Passwort verwenden",
+        "credentialHint": "Dein Kontopasswort (das für die Anmeldung) — nicht die Tresor-Passphrase. BetterTrack prüft es, bevor etwas verworfen wird.",
+        "action": "Tresor verwerfen und neu beginnen",
+        "working": "Wird verworfen…",
+        "error": "Der Tresor konnte nicht verworfen werden. Es wurde nichts geändert — versuche es erneut, sobald die Verbindung verfügbar ist."
+      },
+      "errors": {
+        "wrongPassphrase": "Diese Tresor-Passphrase ist falsch.",
+        "recoveryKit": "Dieses Wiederherstellungspaket ist ungültig oder gehört zu einem anderen Tresor.",
+        "recoveryKitUnreadable": "Diese Datei konnte nicht gelesen werden. Wähle das Wiederherstellungspaket erneut.",
+        "updateRequired": "Dieser Tresor benötigt eine neuere BetterTrack-Version. Aktualisiere die App und versuche es erneut.",
+        "corrupt": "Die Integritätsprüfung des verschlüsselten Tresors ist fehlgeschlagen. Wähle eine bekannte intakte Kopie.",
+        "custody": "Dieser Browser konnte den Tresor nicht sicher entsperrt halten. Entsperre ohne Gerätespeicherung oder verwende einen anderen Browser.",
+        "unavailable": "Der verschlüsselte Tresor ist derzeit nicht verfügbar. Prüfe die Verbindung zum gewählten Speicher und versuche es erneut."
+      }
+    },
     "sync": {
       "synced": "Verschlüsselter Tresor synchronisiert",
       "syncing": "Verschlüsselte Änderungen warten auf Synchronisierung",
       "offline": "Verschlüsselte Änderungen sind offline lokal gespeichert",
       "needsAttention": "Tresor-Synchronisierung benötigt Aufmerksamkeit",
+      "status": {
+        "synced": "Synchronisiert",
+        "syncing": "Wird synchronisiert",
+        "offline": "Offline",
+        "needs-attention": "Aktion erforderlich",
+        "disconnected": "Nicht verbunden"
+      },
+      "popoverTitle": "Synchronisierung des verschlüsselten Tresors",
+      "medium": {
+        "server": "BetterTrack",
+        "drive": "Google Drive"
+      },
+      "lastWrite": "Letzter verschlüsselter Schreibvorgang",
+      "never": "Nie",
+      "pendingWrites": "Verschlüsselte Änderungen sind auf diesem Gerät sicher und warten noch auf eine Remote-Kopie.",
+      "problem": {
+        "conflict": "Zwei verschlüsselte Kopien wurden unabhängig geändert. Wähle die wiederherzustellende Kopie.",
+        "corrupt": "Die Integritätsprüfung einer Speicherkopie ist fehlgeschlagen.",
+        "unresolved": "Ein ausstehender Tresorkonflikt braucht deine Auswahl, bevor die Synchronisierung fortgesetzt werden kann."
+      },
+      "reauthorize": "Bei Google anmelden und fortsetzen",
+      "reauthorizing": "Verbindung wird hergestellt…",
+      "restore": "Speicher- und Wiederherstellungsoptionen",
       "drive": {
         "signIn": "Bei Google anmelden, um zu synchronisieren"
       }
+    },
+    "settings": {
+      "title": "Paranoider Modus",
+      "normal": "Clientseitig verschlüsselter Tresor",
+      "normalHint": "Finanzdaten werden in diesem Browser verschlüsselt, bevor sie deinen gewählten Speicher erreichen.",
+      "enable": "Einrichten",
+      "mediaHint": "Jeder gewählte Speicherort enthält ausschließlich Geheimtext.",
+      "media": {
+        "server": "Bei BetterTrack verschlüsselt",
+        "drive": "Nur Google Drive",
+        "both": "BetterTrack + Google Drive"
+      },
+      "manageMedia": "Speicher verwalten",
+      "whatsOff": "Was im paranoiden Modus aus ist",
+      "off": {
+        "sharing": "Portfolio-Freigaben, geteilte Inhalte, Mirrorchain, Kommentare und Reaktionen",
+        "publicProfile": "Öffentliches Profil und portfolio-bezogene API-Zugriffe",
+        "serverAnalytics": "Serveranalysen, Live-Modus, KI-Einblicke und Server-Steuerexport",
+        "imports": "Broker- und Bank-CSV-Importe",
+        "automation": "Serverseitige Daueraufträge und Portfolio-Jobs"
+      },
+      "security": "Tresorsicherheit",
+      "recoveryKit": "Wiederherstellungspaket",
+      "recoveryHint": "Das Paket entsperrt diesen Tresor ohne Passphrase. Verwahre es offline.",
+      "downloadKit": "Herunterladen",
+      "kitDownloaded": "Ein neues Wiederherstellungspaket wurde heruntergeladen.",
+      "kitRequiresPassphrase": "Sperre den Tresor und entsperre ihn mit deiner Passphrase, bevor du ein Paket exportierst; ein vertrauenswürdiger Geräteschlüssel kann nicht ausgelesen werden.",
+      "changePassphrase": "Tresor-Passphrase ändern",
+      "passphraseHint": "Dabei wird derselbe Tresorschlüssel neu verpackt; dein bestehendes Wiederherstellungspaket bleibt gültig.",
+      "currentPassphrase": "Aktuelle Tresor-Passphrase",
+      "newPassphrase": "Neue Tresor-Passphrase",
+      "confirmPassphrase": "Neue Passphrase bestätigen",
+      "changeAction": "Passphrase ändern",
+      "passphraseInvalid": "Wähle eine starke neue Passphrase und gib sie zweimal gleich ein.",
+      "passphraseError": "Die Passphrase konnte nicht geändert werden. Der bisherige Tresor bleibt maßgeblich.",
+      "passphraseChanged": "Die Tresor-Passphrase wurde geändert. Entsperre den Tresor erneut mit der neuen Passphrase.",
+      "rotateKey": "Tresorschlüssel rotieren",
+      "rotationHint": "Der Tresor wird vollständig neu verschlüsselt. Lade das neue Wiederherstellungspaket herunter und verwahre es sicher, bevor der alte Schlüssel ersetzt wird.",
+      "rotationAcknowledgment": "Mir ist bewusst, dass das heruntergeladene Ersatzpaket nötig ist, falls ich die Passphrase verliere.",
+      "rotateAction": "Schlüssel rotieren",
+      "rotationError": "Der Tresorschlüssel konnte nicht sicher rotiert werden. Bewahre beide Wiederherstellungspakete auf und versuche es erneut, sobald alle Speicherkopien synchron sind.",
+      "rotationDone": "Der Tresorschlüssel wurde rotiert. Bewahre das neue Wiederherstellungspaket auf und entsperre den Tresor erneut.",
+      "restore": {
+        "title": "Verschlüsselte Kopie wiederherstellen",
+        "hint": "Prüfe die gewählten Speicherorte auf Konflikte, beschädigte Kopien oder einen bestätigten Wiederherstellungspunkt. BetterTrack öffnet eine Kopie erst, wenn Schlüssel und Integrität geprüft wurden.",
+        "check": "Speicherkopien prüfen",
+        "checking": "Wird geprüft…",
+        "current": "Alle gewählten verschlüsselten Kopien sind synchron; keine Wiederherstellung ist nötig.",
+        "attention": "Eine Speicherkopie braucht deine Aufmerksamkeit. Lass den Tresor auf anderen Geräten gesperrt und nutze die Wiederherstellungsauswahl dieser Kopie.",
+        "error": "Die verschlüsselten Speicherkopien konnten nicht geprüft werden. Nichts wurde ersetzt."
+      },
+      "danger": "Tresor zurücksetzen und deaktivieren",
+      "startFresh": "Neu beginnen",
+      "startFreshWarning": "Dadurch werden alle Portfolios, Transaktionen und Ausgaben im verschlüsselten Tresor dauerhaft gelöscht; zurück bleibt ein leeres Portfolio als Neustart. Das Konto bleibt paranoid.",
+      "startFreshConfirm": "Mir ist bewusst, dass alle aktuellen Tresordaten dauerhaft ersetzt werden.",
+      "startFreshAction": "Durch leeres Portfolio ersetzen",
+      "freshDone": "Der verschlüsselte Tresor enthält jetzt nur noch ein leeres Portfolio.",
+      "freshError": "Der geleerte Tresor konnte nicht an jedem gewählten Speicherort geprüft werden. Es wurde nichts ersetzt.",
+      "disable": "Paranoiden Modus deaktivieren",
+      "disableWarning": "BetterTrack stellt die entsperrten Daten als normales, serverlesbares Konto wieder her. Der Übergang schreibt alle Zeilen oder keine.",
+      "disableConfirm": "Ich möchte diesen entsperrten Tresor wiederherstellen und den paranoiden Modus deaktivieren.",
+      "disableBlocked": "Dieser Tresor hat nicht abgeglichene Änderungen auf mehreren Geräten. Gleiche den Stand zuerst ab — eine Deaktivierung jetzt würde nur die auf diesem Gerät sichtbare Fassung behalten.",
+      "disableAction": "Normalen Modus wiederherstellen",
+      "disableError": "Der normale Modus konnte nicht vollständig wiederhergestellt werden. Das Konto bleibt paranoid; ein erneuter Versuch setzt dieselbe Wiederherstellung fort."
     }
   },
   "announcements": {
@@ -4434,7 +4647,6 @@
       "search": "Suche öffnen",
       "friends": "Personen öffnen",
       "importsExports": "Import & Export",
-      "security": "Sicherheitseinstellungen",
       "aiInsights": "KI-Insights in der Analyse",
       "nlBuilder": "Blueprint-Builder",
       "standingOrders": "Sparpläne in Prognosen",
@@ -4566,14 +4778,6 @@
       "p1": "Checkpoints, die du prüfen und wiederherstellen kannst",
       "p2": "Portable Exporte in einem offenen Manifest-Format",
       "p3": "Aufbewahrungsregeln unter deiner Kontrolle"
-    },
-    "paranoid": {
-      "title": "Paranoid-Modus",
-      "body": "Deine Daten bleiben nur bei dir: Das Portfolio liegt in einem client-verschlüsselten Tresor — auf BetterTrack, deinem Google Drive, beidem oder nur Drive — und der Server kann es nie lesen. Die Client-Grundlagen sind bereits gemerged; der Aktivierungs-Flow landet hier.",
-      "p1": "Client-seitige Verschlüsselung — der Schlüssel verlässt deine Geräte nie",
-      "p2": "Speichermedien nach Wahl: Server, Drive, beides oder nur Drive",
-      "p3": "Geldberechnung auf deinem Gerät mit derselben geprüften Engine",
-      "p4": "Schlüssel verloren heißt Daten verloren — bewusst so, mit Pflicht-Recovery-Kit"
     },
     "mcp": {
       "title": "MCP",

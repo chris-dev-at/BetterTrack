@@ -14,9 +14,11 @@ import { useT } from '../../../i18n';
 import { createApiKey, listApiKeys, revokeApiKey } from '../../../lib/apiKeysApi';
 import { formatDate } from '../../../lib/format';
 import { ScopePicker, Skeleton } from '../../../ui';
+import { isParanoidBlockedScope } from '../../../ui/ScopePicker';
 import { Badge, Button, Field, Input } from '../../../ui/origin';
 import { Dialog } from '../../components/Dialog';
 import { Alert } from '../../components/ui';
+import { useResolvedPrivacyMode } from '../../vault/usePrivacyMode';
 import {
   PanelForm,
   PanelGroup,
@@ -29,11 +31,20 @@ import {
 
 const API_KEYS_KEY = ['settings', 'api-keys'] as const;
 
-/** One scope token, rendered as a quiet monospace chip. */
-function ScopeChip({ scope }: { scope: string }) {
+/**
+ * One scope token, rendered as a quiet monospace chip. A scope this account's
+ * privacy mode refuses is shown MARKED, never dropped: the key really does
+ * carry it (and it goes live again the moment paranoid mode is disabled), so a
+ * shortened list would understate the credential in the user's own security
+ * review.
+ */
+function ScopeChip({ scope, inactive = false }: { scope: string; inactive?: boolean }) {
+  const t = useT();
+  const label = inactive ? t('settings.api.keys.scopeInactive') : undefined;
   return (
-    <Badge className="bt-cc-mono" outline>
-      {scope}
+    <Badge className="bt-cc-mono" outline title={label}>
+      <span className={inactive ? 'line-through opacity-70' : undefined}>{scope}</span>
+      {inactive ? <span className="bt-cc-row__hint ml-1 no-underline">({label})</span> : null}
     </Badge>
   );
 }
@@ -102,6 +113,7 @@ function TokenModal({ result, onClose }: { result: CreateApiKeyResponse; onClose
 /** Create-key form: a name plus at least one scope. */
 function CreateApiKeyForm({ onCreated }: { onCreated: (result: CreateApiKeyResponse) => void }) {
   const t = useT();
+  const paranoid = useResolvedPrivacyMode() === 'paranoid';
   const queryClient = useQueryClient();
   const [name, setName] = useState('');
   const [scopes, setScopes] = useState<Set<ApiKeyScope>>(new Set());
@@ -152,6 +164,7 @@ function CreateApiKeyForm({ onCreated }: { onCreated: (result: CreateApiKeyRespo
         collapsible
         legend={t('settings.api.scopesLegend')}
         onChange={setScopes}
+        paranoid={paranoid}
         scopes={scopes}
       />
       {/* The panel's single primary action. */}
@@ -171,6 +184,7 @@ function CreateApiKeyForm({ onCreated }: { onCreated: (result: CreateApiKeyRespo
 /** One key row with a two-step confirm before revoking. */
 function ApiKeyRow({ apiKey }: { apiKey: ApiKeySummary }) {
   const t = useT();
+  const paranoid = useResolvedPrivacyMode() === 'paranoid';
   const queryClient = useQueryClient();
   const [confirming, setConfirming] = useState(false);
   const [error, setError] = useState(false);
@@ -219,7 +233,11 @@ function ApiKeyRow({ apiKey }: { apiKey: ApiKeySummary }) {
           <span className="bt-cc-row__label">{apiKey.name}</span>
           <span className="flex flex-wrap gap-1">
             {apiKey.scopes.map((scope) => (
-              <ScopeChip key={scope} scope={scope} />
+              <ScopeChip
+                inactive={paranoid && isParanoidBlockedScope(scope)}
+                key={scope}
+                scope={scope}
+              />
             ))}
           </span>
           <span className="bt-cc-row__hint">

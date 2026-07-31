@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen } from '@testing-library/react';
+import { act, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { beforeEach, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 
 import type { MeResponse } from '@bettertrack/contracts';
 
@@ -10,6 +10,7 @@ vi.mock('../lib/userApi');
 import { ApiError } from '../lib/apiClient';
 import * as api from '../lib/userApi';
 import { AuthProvider, useAuth } from './AuthContext';
+import { VAULT_LOCK_REQUEST_EVENT } from './vault/lockSignal';
 
 const member: MeResponse = {
   id: 'user-1',
@@ -54,6 +55,10 @@ beforeEach(() => {
   vi.clearAllMocks();
   localStorage.clear();
   sessionStorage.clear();
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 test.each([0, 500])(
@@ -102,4 +107,31 @@ test('a confirmed 401 keeps the existing anonymous transition', async () => {
 
   expect(await screen.findByTestId('status')).toHaveTextContent('anonymous');
   expect(screen.getByTestId('user')).toHaveTextContent('none');
+});
+
+test('the existing PIN idle deadline also revokes the unlocked vault immediately', async () => {
+  vi.useFakeTimers({ shouldAdvanceTime: true });
+  vi.setSystemTime(new Date('2026-07-30T10:00:00.000Z'));
+  const pinMember = { ...member, pinEnabled: true, pinLockIdleMinutes: 1 };
+  localStorage.setItem(
+    'bettertrack.pinActivity',
+    JSON.stringify({ u: pinMember.id, t: Date.now() }),
+  );
+  vi.mocked(api.getMe).mockResolvedValue(pinMember);
+  const lockRequested = vi.fn();
+  globalThis.addEventListener(VAULT_LOCK_REQUEST_EVENT, lockRequested);
+
+  try {
+    renderProvider();
+    expect(await screen.findByTestId('status')).toHaveTextContent('authenticated');
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(60_001);
+    });
+
+    expect(screen.getByTestId('status')).toHaveTextContent('pin-required');
+    expect(lockRequested).toHaveBeenCalledOnce();
+  } finally {
+    globalThis.removeEventListener(VAULT_LOCK_REQUEST_EVENT, lockRequested);
+  }
 });

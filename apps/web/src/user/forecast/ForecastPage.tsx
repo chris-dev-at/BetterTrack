@@ -5,7 +5,6 @@ import { useT, type TranslateFn } from '../../i18n';
 import { getAnalyticsSeries } from '../../lib/analyticsApi';
 import { cx } from '../../lib/cx';
 import { formatMoney, formatPercent } from '../../lib/format';
-import { getPortfolio, listPortfolios } from '../../lib/portfolioApi';
 import type { PortfolioSummary } from '@bettertrack/contracts';
 import { StatCard } from '../../ui';
 import { Alert, Button, TextField } from '../components/ui';
@@ -22,6 +21,9 @@ import {
 } from './calc';
 import { ProjectionSection } from './ProjectionSection';
 import { StandingOrdersSection } from './StandingOrdersSection';
+import { usePortfolioStore } from '../portfolio/PortfolioStoreProvider';
+import { clientSeriesCagrPct } from '../vault/engine/clientSeries';
+import { useResolvedPrivacyMode } from '../vault/usePrivacyMode';
 
 /**
  * Forecast tab (PROJECTPLAN.md §13.5 V5-P6b arc (c)). Two zones live in the
@@ -41,8 +43,17 @@ import { StandingOrdersSection } from './StandingOrdersSection';
 interface Prefill {
   /** The active portfolio's total value in EUR, headline `totalValueEur`. */
   portfolioValueEur: number | null;
-  /** Historical CAGR of the active portfolio (%/yr) — inception-window, `perf` mode. */
+  /**
+   * Historical CAGR of the active portfolio (%/yr) — inception-window, `perf`
+   * mode. Normal accounts read the server's analytics `primary` series (the
+   * holdings-only sum); see {@link usePortfolioPrefill} for the paranoid
+   * substitute and why it is a different series.
+   */
   averageReturnPctPerYear: number | null;
+}
+
+function round2(value: number): number {
+  return Math.round((value + Number.EPSILON) * 100) / 100;
 }
 
 /**
@@ -50,15 +61,32 @@ interface Prefill {
  * its headline value + inception CAGR. The tab never blocks on this — cards
  * degrade to their standalone inputs when the fetch is missing or a field is
  * `null`.
+ *
+ * The prefilled return has ONE source per account mode, and they are not the
+ * same series:
+ *
+ * - **normal** — `analytics/…/series` `primary.stats.cagrPct`, i.e. the
+ *   server's `getAssetValueSeries` summed over the visible assets: HOLDINGS
+ *   only. This is the number the tab has always prefilled, so it stays exactly
+ *   that (same endpoint, same query key, unrounded) rather than becoming a
+ *   net-worth CAGR because the store happens to expose history.
+ * - **paranoid** — there is no analytics endpoint (and the client engine
+ *   derives no per-asset series), so the only value curve a decrypted vault can
+ *   state is its NET-WORTH series (`getPortfolioHistory` = holdings + cash).
+ *   Idle cash therefore damps this figure relative to the normal one; it is a
+ *   starting point the user edits, and the projection's starting value is a
+ *   net-worth figure too (see docs/paranoid-design.md §8).
  */
 function usePortfolioPrefill(): {
   prefill: Prefill;
   isLoading: boolean;
   portfolios: PortfolioSummary[];
 } {
+  const store = usePortfolioStore();
+  const paranoid = useResolvedPrivacyMode() === 'paranoid';
   const portfoliosQuery = useQuery({
     queryKey: ['portfolios'],
-    queryFn: ({ signal }) => listPortfolios(signal),
+    queryFn: ({ signal }) => store.listPortfolios(signal),
     staleTime: 60_000,
   });
   const portfolios = portfoliosQuery.data?.portfolios ?? [];
@@ -68,7 +96,7 @@ function usePortfolioPrefill(): {
 
   const portfolioQuery = useQuery({
     queryKey: ['portfolio', portfolioId],
-    queryFn: ({ signal }) => getPortfolio(portfolioId!, signal),
+    queryFn: ({ signal }) => store.getPortfolio(portfolioId!, signal),
     enabled: portfolioId !== null,
     staleTime: 60_000,
   });
@@ -76,16 +104,32 @@ function usePortfolioPrefill(): {
   const analyticsQuery = useQuery({
     queryKey: ['analytics', portfolioId, 'series', { mode: 'perf' }],
     queryFn: ({ signal }) => getAnalyticsSeries(portfolioId!, { mode: 'perf' }, signal),
-    enabled: portfolioId !== null,
+    enabled: portfolioId !== null && !paranoid,
     staleTime: 60_000,
   });
 
+  const historyQuery = useQuery({
+    queryKey: ['portfolio', portfolioId, 'history', 'MAX', false],
+    queryFn: ({ signal }) => store.getPortfolioHistory(portfolioId!, 'MAX', false, signal),
+    enabled: portfolioId !== null && paranoid,
+    staleTime: 60_000,
+  });
+  // Same shaping as the analytics header (`clientSeriesCagrPct` trims the zero
+  // edges first), so the prefill and the curve it samples never disagree.
+  const historyCagr =
+    historyQuery.data == null ? null : clientSeriesCagrPct(historyQuery.data.points);
+
+  const modeQuery = paranoid ? historyQuery : analyticsQuery;
   return {
     prefill: {
       portfolioValueEur: portfolioQuery.data?.totals.totalValueEur ?? null,
-      averageReturnPctPerYear: analyticsQuery.data?.primary.stats.cagrPct ?? null,
+      averageReturnPctPerYear: paranoid
+        ? historyCagr == null
+          ? null
+          : round2(historyCagr)
+        : (analyticsQuery.data?.primary.stats.cagrPct ?? null),
     },
-    isLoading: portfoliosQuery.isLoading || portfolioQuery.isLoading || analyticsQuery.isLoading,
+    isLoading: portfoliosQuery.isLoading || portfolioQuery.isLoading || modeQuery.isLoading,
     portfolios,
   };
 }

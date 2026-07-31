@@ -5,6 +5,7 @@ import {
   inviteValidationResponseSchema,
   loginResponseSchema,
   meResponseSchema,
+  paranoidDisableResponseSchema,
   paranoidEnableResponseSchema,
   paranoidForkProvenanceResponseSchema,
   paranoidMediaStateResponseSchema,
@@ -53,6 +54,8 @@ import {
   type PasskeyRegisterVerifyRequest,
   type PasswordResetComplete,
   type PasswordResetRequest,
+  type ParanoidDisableRequest,
+  type ParanoidDisableResponse,
   type ParanoidEnableRequest,
   type ParanoidEnableResponse,
   type ParanoidForkProvenanceResponse,
@@ -167,6 +170,17 @@ export async function getParanoidMediaState(
 ): Promise<ParanoidMediaStateResponse> {
   const data = await apiRequest<unknown>('/vault/media', { signal });
   return paranoidMediaStateResponseSchema.parse(data);
+}
+
+/** Atomically rehydrate an unlocked strict vault document and return to normal mode. */
+export async function disableParanoidMode(
+  body: ParanoidDisableRequest,
+): Promise<ParanoidDisableResponse> {
+  const data = await apiRequest<unknown>('/account/paranoid/disable', {
+    method: 'POST',
+    body,
+  });
+  return paranoidDisableResponseSchema.parse(data);
 }
 
 /** Persist one verified migrate-then-drop media edge. */

@@ -8,16 +8,12 @@ import type {
 } from '@bettertrack/contracts';
 
 import { useT } from '../../i18n';
-import {
-  clearPortfolioTaxOverride,
-  getPortfolioTaxSettings,
-  setPortfolioTaxOverride,
-} from '../../lib/portfolioApi';
 import { EmptyState } from '../../ui';
 import { Badge, Button, SkeletonBlock } from '../../ui/origin';
 import { Alert } from '../components/ui';
 import { TaxModePicker } from '../settings/taxModePicker';
 import { portfolioTaxSettingsKey, taxModeLabelKey } from './portfolioTax';
+import { usePortfolioStore } from './PortfolioStoreProvider';
 
 /**
  * Portfolio → Settings → Tax (issue #636). The **configuration** half of one
@@ -38,12 +34,13 @@ import { portfolioTaxSettingsKey, taxModeLabelKey } from './portfolioTax';
  */
 export function PortfolioTaxSection({ portfolioId }: { portfolioId: string }) {
   const t = useT();
+  const store = usePortfolioStore();
   const queryClient = useQueryClient();
   const [error, setError] = useState(false);
 
   const query = useQuery({
     queryKey: portfolioTaxSettingsKey(portfolioId),
-    queryFn: ({ signal }) => getPortfolioTaxSettings(portfolioId, signal),
+    queryFn: ({ signal }) => store.getPortfolioTaxSettings(portfolioId, signal),
     staleTime: 30_000,
   });
 
@@ -54,12 +51,13 @@ export function PortfolioTaxSection({ portfolioId }: { portfolioId: string }) {
     setError(false);
   };
   const overrideMutation = useMutation({
-    mutationFn: (body: UpdateTaxSettingsRequest) => setPortfolioTaxOverride(portfolioId, body),
+    mutationFn: (body: UpdateTaxSettingsRequest) =>
+      store.setPortfolioTaxOverride(portfolioId, body),
     onSuccess: applyResult,
     onError: () => setError(true),
   });
   const resetMutation = useMutation({
-    mutationFn: () => clearPortfolioTaxOverride(portfolioId),
+    mutationFn: () => store.clearPortfolioTaxOverride(portfolioId),
     onSuccess: applyResult,
     onError: () => setError(true),
   });

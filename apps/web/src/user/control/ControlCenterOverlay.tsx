@@ -20,6 +20,7 @@ import { ProfilePanel } from './panels/ProfilePanel';
 import { SessionsPanel } from './panels/SessionsPanel';
 import { SignInPanel } from './panels/SignInPanel';
 import { WebhooksPanel } from './panels/WebhooksPanel';
+import { useResolvedPrivacyMode } from '../vault/usePrivacyMode';
 
 /**
  * The Control Center overlay (R2): the settings-absorbing popup that replaced
@@ -176,10 +177,13 @@ export const CONTROL_LINKS: readonly ControlLink[] = [
 /** Flat lookup; the first entry (Account) is what a bare `/control` opens on. */
 const PANELS: readonly ControlPanel[] = CONTROL_GROUPS.flatMap((group) => group.panels);
 
-function findPanel(id: string | undefined): ControlPanel {
+function findPanel(id: string | undefined, paranoid = false): ControlPanel {
   if (id === undefined) return PANELS[0]!;
   const resolved = PANEL_ALIASES[id] ?? id;
-  return PANELS.find((panel) => panel.id === resolved) ?? PANELS[0]!;
+  return (
+    PANELS.find((panel) => panel.id === resolved && (!paranoid || panel.id !== 'profile')) ??
+    PANELS[0]!
+  );
 }
 
 /** Elements the Tab trap cycles through — the panel itself is the fallback. */
@@ -214,8 +218,9 @@ export function ControlCenterOverlay() {
   const titleId = useId();
   const panelRef = useRef<HTMLDivElement>(null);
   const [filter, setFilter] = useState('');
+  const paranoid = useResolvedPrivacyMode() === 'paranoid';
 
-  const active = findPanel(params.panel);
+  const active = findPanel(params.panel, paranoid);
 
   /** Esc / ✕ / scrim: back where the user came from, else the Home canvas. */
   const close = useCallback(() => {
@@ -275,9 +280,11 @@ export function ControlCenterOverlay() {
     () =>
       CONTROL_GROUPS.map((group) => ({
         titleKey: group.titleKey,
-        panels: group.panels.filter((panel) => matches(t, panel.labelKey, needle)),
+        panels: group.panels.filter(
+          (panel) => (!paranoid || panel.id !== 'profile') && matches(t, panel.labelKey, needle),
+        ),
       })).filter((group) => group.panels.length > 0),
-    [needle, t],
+    [needle, paranoid, t],
   );
   const links = CONTROL_LINKS.filter((link) => matches(t, link.labelKey, needle));
   const empty = groups.length === 0 && links.length === 0;

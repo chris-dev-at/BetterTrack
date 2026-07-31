@@ -12,6 +12,7 @@ vi.mock('../../../lib/apiKeysApi', () => ({
 }));
 
 import { createApiKey, listApiKeys, revokeApiKey } from '../../../lib/apiKeysApi';
+import { ResolvedPrivacyModeProvider } from '../../vault/usePrivacyMode';
 import { ApiKeysPanel } from './ApiKeysPanel';
 
 const EMPTY: ApiKeyListResponse = { keys: [] };
@@ -118,6 +119,28 @@ describe('ApiKeysPanel', () => {
     detailsElements.forEach((d) => expect(d.open).toBe(false));
     // Header still shows a "None selected" affordance in the collapsed picker.
     expect(screen.getAllByText(/none selected/i).length).toBeGreaterThanOrEqual(1);
+  });
+
+  test('a paranoid account still sees a granted portfolio scope, marked inactive', async () => {
+    vi.mocked(listApiKeys).mockResolvedValue(ONE_KEY);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 0 } } });
+    render(
+      <QueryClientProvider client={client}>
+        <ResolvedPrivacyModeProvider mode="paranoid">
+          <ApiKeysPanel />
+        </ResolvedPrivacyModeProvider>
+      </QueryClientProvider>,
+    );
+
+    // The key really carries the scope — it only stops resolving while the
+    // account is paranoid — so hiding the chip would understate the credential.
+    expect(await screen.findByText('portfolio:read')).toBeInTheDocument();
+    expect(screen.getByText(/inactive in Paranoid mode/i)).toBeInTheDocument();
+    // New portfolio-scoped grants stay refused: the module is not offered.
+    const createKeyForm = screen.getByRole('button', { name: 'Create key' }).closest('form')!;
+    expect(
+      within(createKeyForm).queryByRole('checkbox', { name: /portfolio · read/i }),
+    ).not.toBeInTheDocument();
   });
 
   test('revokes a key after confirmation', async () => {

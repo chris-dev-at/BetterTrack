@@ -6,13 +6,6 @@ import type { PortfolioSummary } from '@bettertrack/contracts';
 
 import { useT } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
-import {
-  archivePortfolio,
-  deletePortfolio,
-  listPortfolios,
-  restorePortfolio,
-  updatePortfolio,
-} from '../../lib/portfolioApi';
 import { Skeleton } from '../../ui';
 import { Button, Field, Input, PageHead, SectionHead } from '../../ui/origin';
 import { Dialog } from '../components/Dialog';
@@ -27,6 +20,8 @@ import {
   resolveActivePortfolio,
 } from './PortfolioSwitcher';
 import { PORTFOLIO_KINDS, PORTFOLIO_KIND_ICONS, usePortfolioKind } from './portfolioKinds';
+import { usePortfolioStore } from './PortfolioStoreProvider';
+import { NormalModeOnly } from '../vault/ui/ParanoidSurfaceGate';
 
 /**
  * Portfolio settings — the Settings tab of the portfolio workspace
@@ -52,6 +47,7 @@ import { PORTFOLIO_KINDS, PORTFOLIO_KIND_ICONS, usePortfolioKind } from './portf
 export function PortfolioSettingsPage() {
   const t = useT();
   const queryClient = useQueryClient();
+  const store = usePortfolioStore();
   const [searchParams, setSearchParams] = useSearchParams();
 
   const [name, setName] = useState('');
@@ -68,7 +64,7 @@ export function PortfolioSettingsPage() {
 
   const portfoliosQuery = useQuery({
     queryKey: ['portfolios'],
-    queryFn: ({ signal }) => listPortfolios(signal),
+    queryFn: ({ signal }) => store.listPortfolios(signal),
     staleTime: 60_000,
   });
   const portfolios = useMemo(() => portfoliosQuery.data?.portfolios ?? [], [portfoliosQuery.data]);
@@ -81,7 +77,7 @@ export function PortfolioSettingsPage() {
   // The archived list only matters here, so it is fetched with the page.
   const archivedQuery = useQuery({
     queryKey: ['portfolios', 'archived'],
-    queryFn: ({ signal }) => listPortfolios(signal, true),
+    queryFn: ({ signal }) => store.listPortfolios(signal, true),
     staleTime: 60_000,
   });
   const archived = (archivedQuery.data?.portfolios ?? []).filter((p) => p.archivedAt !== null);
@@ -115,7 +111,8 @@ export function PortfolioSettingsPage() {
   }
 
   const renameMutation = useMutation({
-    mutationFn: ({ id, next }: { id: string; next: string }) => updatePortfolio(id, { name: next }),
+    mutationFn: ({ id, next }: { id: string; next: string }) =>
+      store.updatePortfolio(id, { name: next }),
     onSuccess: () => {
       setActionError(null);
       setNameDirty(false);
@@ -133,7 +130,7 @@ export function PortfolioSettingsPage() {
   });
 
   const archiveMutation = useMutation({
-    mutationFn: (id: string) => archivePortfolio(id),
+    mutationFn: (id: string) => store.archivePortfolio(id),
     onSuccess: (_res, id) => {
       setActionError(null);
       setConfirmArchive(null);
@@ -150,7 +147,7 @@ export function PortfolioSettingsPage() {
   });
 
   const deleteMutation = useMutation({
-    mutationFn: (id: string) => deletePortfolio(id),
+    mutationFn: (id: string) => store.deletePortfolio(id),
     onSuccess: (_res, id) => {
       setActionError(null);
       setConfirmDelete(null);
@@ -166,7 +163,7 @@ export function PortfolioSettingsPage() {
   });
 
   const restoreMutation = useMutation({
-    mutationFn: (id: string) => restorePortfolio(id),
+    mutationFn: (id: string) => store.restorePortfolio(id),
     onSuccess: () => {
       setActionError(null);
       refetchLists();
@@ -268,29 +265,31 @@ export function PortfolioSettingsPage() {
       </section>
 
       {/* ── Group portfolio (MIRRORCHAIN) ───────────────────────────────── */}
-      <section aria-label={t('portfolio.settings.groupHeading')} className="bt-section">
-        <SectionHead title={t('portfolio.settings.groupHeading')} />
-        {portfolio.mirror ? (
-          <div className="bt-settings-row">
-            <p className="bt-row-title">
-              {t('portfolio.settings.groupActive', {
-                name: portfolio.mirror.chainName,
-                count: portfolio.mirror.memberCount,
-              })}
-            </p>
-            <Button onClick={() => setMemberSheetOpen(true)}>
-              {t('portfolio.settings.manageGroup')}
-            </Button>
-          </div>
-        ) : (
-          <div className="bt-settings-row">
-            <p className="bt-meta">{t('portfolio.settings.groupHint')}</p>
-            <Button onClick={() => setConvertOpen(true)}>
-              {t('mirrorchain.actions.makeGroup')}
-            </Button>
-          </div>
-        )}
-      </section>
+      <NormalModeOnly>
+        <section aria-label={t('portfolio.settings.groupHeading')} className="bt-section">
+          <SectionHead title={t('portfolio.settings.groupHeading')} />
+          {portfolio.mirror ? (
+            <div className="bt-settings-row">
+              <p className="bt-row-title">
+                {t('portfolio.settings.groupActive', {
+                  name: portfolio.mirror.chainName,
+                  count: portfolio.mirror.memberCount,
+                })}
+              </p>
+              <Button onClick={() => setMemberSheetOpen(true)}>
+                {t('portfolio.settings.manageGroup')}
+              </Button>
+            </div>
+          ) : (
+            <div className="bt-settings-row">
+              <p className="bt-meta">{t('portfolio.settings.groupHint')}</p>
+              <Button onClick={() => setConvertOpen(true)}>
+                {t('mirrorchain.actions.makeGroup')}
+              </Button>
+            </div>
+          )}
+        </section>
+      </NormalModeOnly>
 
       {/* ── Archived ────────────────────────────────────────────────────── */}
       <section aria-label={t('portfolio.switcher.archivedDialogTitle')} className="bt-section">
@@ -419,33 +418,38 @@ export function PortfolioSettingsPage() {
         />
       ) : null}
 
-      {convertOpen && !portfolio.mirror ? (
-        <ConvertChainDialog
-          onClose={() => setConvertOpen(false)}
-          onConverted={(chainId) => {
-            setConvertOpen(false);
-            refetchLists();
-            setInviteChainId(chainId);
-          }}
-          portfolioId={portfolio.id}
-          portfolioName={portfolio.name}
-        />
-      ) : null}
+      <NormalModeOnly>
+        {convertOpen && !portfolio.mirror ? (
+          <ConvertChainDialog
+            onClose={() => setConvertOpen(false)}
+            onConverted={(chainId) => {
+              setConvertOpen(false);
+              refetchLists();
+              setInviteChainId(chainId);
+            }}
+            portfolioId={portfolio.id}
+            portfolioName={portfolio.name}
+          />
+        ) : null}
 
-      {memberSheetOpen && portfolio.mirror ? (
-        <MemberSheet chainId={portfolio.mirror.chainId} onClose={() => setMemberSheetOpen(false)} />
-      ) : null}
+        {memberSheetOpen && portfolio.mirror ? (
+          <MemberSheet
+            chainId={portfolio.mirror.chainId}
+            onClose={() => setMemberSheetOpen(false)}
+          />
+        ) : null}
 
-      {inviteChainId ? (
-        <MirrorInviteStepDialog
-          chainId={inviteChainId}
-          onClose={() => setInviteChainId(null)}
-          onDone={() => {
-            setInviteChainId(null);
-            refetchLists();
-          }}
-        />
-      ) : null}
+        {inviteChainId ? (
+          <MirrorInviteStepDialog
+            chainId={inviteChainId}
+            onClose={() => setInviteChainId(null)}
+            onDone={() => {
+              setInviteChainId(null);
+              refetchLists();
+            }}
+          />
+        ) : null}
+      </NormalModeOnly>
     </div>
   );
 }

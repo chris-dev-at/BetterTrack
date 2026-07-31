@@ -4,10 +4,10 @@ import type { CashSource } from '@bettertrack/contracts';
 
 import { useT } from '../../i18n';
 import { formatMoney } from '../../lib/format';
-import { setCashBalance } from '../../lib/portfolioApi';
 import { MoneyText } from '../../ui';
 import { Dialog } from '../components/Dialog';
 import { Alert, Button } from '../components/ui';
+import { usePortfolioStore } from './PortfolioStoreProvider';
 
 /** Cents-quantized delta between a target and the current balance (matches the server). */
 function deltaEur(target: number, current: number): number {
@@ -36,6 +36,7 @@ export function SetBalanceDialog({
   onSubmitted,
 }: SetBalanceDialogProps) {
   const t = useT();
+  const store = usePortfolioStore();
   const [target, setTarget] = useState('');
   const [note, setNote] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -54,7 +55,7 @@ export function SetBalanceDialog({
     setSubmitting(true);
     setError(null);
     try {
-      await setCashBalance(portfolioId, source.id, {
+      await store.setCashBalance(portfolioId, source.id, {
         balanceEur: parsed,
         note: note.trim() === '' ? null : note.trim(),
       });

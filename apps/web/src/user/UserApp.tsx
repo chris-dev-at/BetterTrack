@@ -1,5 +1,5 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { Suspense, lazy, useEffect } from 'react';
+import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/react-query';
+import { Suspense, lazy, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import type { ReactNode } from 'react';
 import { Navigate, Route, Routes, useLocation, useParams } from 'react-router-dom';
 
@@ -21,7 +21,21 @@ import { RegisterPage } from './auth/RegisterPage';
 import { ResetPasswordPage } from './auth/ResetPasswordPage';
 import { PinGate } from './auth/PinGate';
 import { VaultRuntimeProvider } from './vault/VaultRuntimeProvider';
-import { VaultMoneyEngineProvider } from './vault/engine/VaultMoneyEngineProvider';
+import {
+  VaultMoneyEngineProvider,
+  useVaultMoneySession,
+} from './vault/engine/VaultMoneyEngineProvider';
+import {
+  PortfolioStoreProvider,
+  createParanoidAppPortfolioStore,
+} from './portfolio/PortfolioStoreProvider';
+import { apiPortfolioStore } from '../lib/portfolioStore';
+import { removePlaintextQueries } from './vault/plaintextQueries';
+import { ResolvedPrivacyModeProvider, usePrivacyMode } from './vault/usePrivacyMode';
+import { useVaultRuntime } from './vault/VaultRuntimeProvider';
+import { VaultUnlockGate } from './vault/ui/VaultUnlockGate';
+import { discardLockedVault } from './vault/ui/disable';
+import { ParanoidNavigationGate } from './vault/ui/ParanoidSurfaceGate';
 import { ForecastPage } from './forecast/ForecastPage';
 import { DashboardPage as ExpenseDashboardPage } from './expenses/DashboardPage';
 import { TransactionsPage as ExpenseTransactionsPage } from './expenses/TransactionsPage';
@@ -400,6 +414,149 @@ function VaultRuntimeRoot({ children }: { children: ReactNode }) {
   );
 }
 
+/**
+ * Resolve the account mode before any money route mounts. Normal accounts keep
+ * today's API adapter; paranoid accounts receive the decrypted PD5/PD7 seam
+ * only after unlock. A lock replaces this whole subtree in the same render.
+ */
+/**
+ * The account-mode gate: it decides, for the whole authenticated subtree, which
+ * portfolio store backs it and whether a locked vault replaces it outright.
+ * Exported for `AccountModeRoot.test.tsx`, which drives the privacy/phase
+ * matrix directly — every other consumer should mount `UserApp`.
+ */
+export function AccountModeRoot({ children }: { children: ReactNode }) {
+  const t = useT();
+  const location = useLocation();
+  const { status, user } = useAuth();
+  const privacy = usePrivacyMode(
+    status === 'authenticated',
+    status === 'authenticated' ? (user?.id ?? null) : null,
+  );
+  const runtime = useVaultRuntime();
+  const moneySession = useVaultMoneySession();
+  const cache = useQueryClient();
+  const paranoidStore = useMemo(
+    () => (moneySession == null ? null : createParanoidAppPortfolioStore(moneySession)),
+    [moneySession],
+  );
+
+  // Evict every plaintext money query the moment no decrypted session backs it.
+  // Scoped to vaults: a normal account sits at phase 'locked' for its whole
+  // life, so running this on every normal login would drop those queries just
+  // as their pages mount — refetch churn on a path that must stay
+  // byte-identical to today. `sawDecryptedSession` keeps the purge for the
+  // disable hand-off, where the mode may already read 'normal' by the time the
+  // runtime reports the lock.
+  const sawDecryptedSession = useRef(false);
+  useLayoutEffect(() => {
+    if (runtime.phase === 'unlocked') {
+      sawDecryptedSession.current = true;
+      return;
+    }
+    if (runtime.phase !== 'locked') return;
+    if (privacy.privacyMode !== 'paranoid' && !sawDecryptedSession.current) return;
+    sawDecryptedSession.current = false;
+    removePlaintextQueries(cache);
+  }, [cache, privacy.privacyMode, runtime.phase]);
+
+  useLayoutEffect(() => {
+    if (
+      status === 'authenticated' &&
+      privacy.privacyMode === 'normal' &&
+      runtime.phase === 'unlocked'
+    ) {
+      // A disable completed in another tab/device. Revoke the old decrypted
+      // session before the normal API-backed subtree is allowed to continue.
+      void runtime.lock({ broadcast: false });
+    }
+    // 'unlocking', deliberately NOT included: an unlock IN FLIGHT is owned by
+    // whoever started it, and locking here would cancel it (`lock` bumps the
+    // runtime's operation generation). The enable wizard hits exactly that —
+    // it flips the account mode from the receipt and starts the first unlock in
+    // the same turn, but the mode flip arrives one macrotask later than the
+    // phase change (TanStack's notify scheduler is a `setTimeout(0)`, React's
+    // is a microtask), so for one render this reads 'normal' + 'unlocking' and
+    // used to kill the unlock the user had already authenticated. Nothing is
+    // lost by waiting: the effect re-runs when the phase settles, so a real
+    // cross-device disable still locks the moment it reaches 'unlocked'.
+  }, [privacy.privacyMode, runtime, status]);
+
+  if (status !== 'authenticated') {
+    return (
+      <ResolvedPrivacyModeProvider mode="normal">
+        <PortfolioStoreProvider store={apiPortfolioStore}>{children}</PortfolioStoreProvider>
+      </ResolvedPrivacyModeProvider>
+    );
+  }
+  if (privacy.isPending) return <Splash />;
+  if (privacy.isError || privacy.privacyMode == null) {
+    return (
+      <AuthCard subtitle={t('vault.gate.unavailableTitle')}>
+        <div className="flex flex-col gap-4">
+          <p className="bt-soft text-sm">{t('vault.gate.unavailableBody')}</p>
+          <Button onClick={() => void privacy.refetch()}>{t('common.retry')}</Button>
+        </div>
+      </AuthCard>
+    );
+  }
+  if (privacy.privacyMode === 'normal') {
+    // A mode change received from another device must destroy the decrypted
+    // runtime before any normal API-backed money screen can mount.
+    if (runtime.phase !== 'locked') return <Splash />;
+    return (
+      <ResolvedPrivacyModeProvider accountId={user?.id ?? null} mode="normal">
+        <PortfolioStoreProvider store={apiPortfolioStore}>{children}</PortfolioStoreProvider>
+      </ResolvedPrivacyModeProvider>
+    );
+  }
+  if (privacy.mediaState == null) {
+    return (
+      <AuthCard subtitle={t('vault.gate.unavailableTitle')}>
+        <p className="bt-soft text-sm">{t('vault.gate.invalidMedia')}</p>
+      </AuthCard>
+    );
+  }
+  if (runtime.phase !== 'unlocked' || paranoidStore == null) {
+    // Account deletion is on §8's KEPT list (§12) and it is also the stable
+    // public URL the store listing points at, so a locked vault must not make
+    // it unreachable. The page reads no money data at all — typed username plus
+    // one credential, both verified server-side — so it is served directly here
+    // rather than through `children`, which would mount the shell and its
+    // portfolio store behind the gate.
+    if (location.pathname === '/account/delete') return <DeleteAccountPage />;
+    // The gate owns the whole authenticated subtree, so the §3 recovery exit
+    // has to live ON it: /control/privacy (Start fresh, Disable) is exactly
+    // what a user who cannot unlock can no longer reach.
+    return (
+      <VaultUnlockGate
+        mediaSet={privacy.mediaState.mediaSet}
+        onStartFresh={
+          user?.id == null
+            ? undefined
+            : async (credential) => {
+                await discardLockedVault(user.id, credential);
+                await runtime.cleanupAfterDisable();
+                privacy.acceptNormal();
+                void privacy.refetch();
+              }
+        }
+      />
+    );
+  }
+  return (
+    <ResolvedPrivacyModeProvider
+      accountId={user?.id ?? null}
+      mediaState={privacy.mediaState}
+      mode="paranoid"
+    >
+      <PortfolioStoreProvider store={paranoidStore}>
+        <ParanoidNavigationGate>{children}</ParanoidNavigationGate>
+      </PortfolioStoreProvider>
+    </ResolvedPrivacyModeProvider>
+  );
+}
+
 /** Renders the global 429 toast while it's active (§7.4). Fixed-position overlay — no layout impact. */
 function RateLimitToastPortal() {
   const { rateLimitBanner, clearRateLimitBanner } = useAuth();
@@ -439,10 +596,12 @@ export function UserApp() {
           <VaultRuntimeRoot>
             <LocaleSync />
             <RateLimitToastPortal />
-            <RealtimeRoot>
-              <AnnouncementBannerRoot />
-              <UserShell />
-            </RealtimeRoot>
+            <AccountModeRoot>
+              <RealtimeRoot>
+                <AnnouncementBannerRoot />
+                <UserShell />
+              </RealtimeRoot>
+            </AccountModeRoot>
           </VaultRuntimeRoot>
         </AuthProvider>
       </QueryClientProvider>

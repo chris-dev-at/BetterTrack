@@ -23,15 +23,28 @@ import { VaultCryptoError } from '../errors';
 import { toStrictRestoreDocument } from '../paranoidDisable';
 import { serializeRecoveryKit, type RecoveryKitDownload } from '../recovery';
 
-export type VaultEnableStage =
-  | 'migrate'
-  | 'validate'
-  | 'encrypt'
-  | 'write-server'
-  | 'write-drive'
-  | 'verify-server'
-  | 'verify-drive'
-  | 'commit';
+/**
+ * Every stage the wizard can report, as a value — the union below is derived
+ * from it, so the two cannot drift. The wizard renders both
+ * `vault.enable.progress.<stage>` and `vault.enable.errors.<stage>` as
+ * template-literal keys, which the EN⇄DE parity test cannot see (a key absent
+ * from *both* catalogs is parity-clean and still renders the raw dot-path).
+ * `i18n/registry.test.ts` iterates this tuple instead — same drift-guard shape
+ * as `WEBHOOK_EVENT_TYPES` on the API side. Adding a stage without its two
+ * strings in both locales fails that test.
+ */
+export const VAULT_ENABLE_STAGES = [
+  'migrate',
+  'validate',
+  'encrypt',
+  'write-server',
+  'write-drive',
+  'verify-server',
+  'verify-drive',
+  'commit',
+] as const;
+
+export type VaultEnableStage = (typeof VAULT_ENABLE_STAGES)[number];
 
 export class VaultEnableError extends Error {
   constructor(
@@ -145,6 +158,12 @@ export async function enablePreparedVault(
    * 2. `toStrictRestoreDocument` — the exact restore-boundary conversion the
    *    disable exit ships to `validateCustomAssetFacts`/`validateGraph`, so a
    *    document that opens but could never be disabled also stops here.
+   *
+   * "Exact" is load-bearing, not a figure of speech: this proof covers the exit
+   * only while `../paranoidDisable` holds the SINGLE copy of that conversion.
+   * A second copy in `ui/disable.ts` once made this sentence quietly false —
+   * the wizard proved restorability with one converter while the exit shipped
+   * another, which dropped §7.1 fork provenance. Never fork it; extend it.
    */
   input.onStage?.('validate');
   try {

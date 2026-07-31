@@ -4,10 +4,10 @@ import type { CashSource } from '@bettertrack/contracts';
 
 import { useT } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
-import { transferCash } from '../../lib/portfolioApi';
 import { Dialog } from '../components/Dialog';
 import { Alert, Button } from '../components/ui';
 import { activeSources } from './cashSourceUtils';
+import { usePortfolioStore } from './PortfolioStoreProvider';
 
 export interface TransferDialogProps {
   portfolioId: string;
@@ -31,6 +31,7 @@ export function TransferDialog({
   onSubmitted,
 }: TransferDialogProps) {
   const t = useT();
+  const store = usePortfolioStore();
   const active = activeSources(sources);
   const [fromSourceId, setFromSourceId] = useState(active[0]?.id ?? '');
   const [toSourceId, setToSourceId] = useState(active[1]?.id ?? '');
@@ -70,7 +71,7 @@ export function TransferDialog({
     setSubmitting(true);
     setError(null);
     try {
-      await transferCash(portfolioId, {
+      await store.transferCash(portfolioId, {
         fromSourceId,
         toSourceId,
         amountEur: parsed,

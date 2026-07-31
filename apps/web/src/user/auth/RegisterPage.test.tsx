@@ -58,6 +58,10 @@ beforeEach(() => {
   // Isolate the persisted locale choice — some tests seed 'de' explicitly.
   localStorage.clear();
   vi.mocked(api.getMe).mockRejectedValue(new ApiError(401, 'UNAUTHENTICATED', 'nope'));
+  vi.mocked(api.getParanoidMediaState).mockResolvedValue({
+    privacyMode: 'normal',
+    mediaState: null,
+  });
   vi.mocked(listWorkboard).mockResolvedValue({ items: [] });
 });
 
