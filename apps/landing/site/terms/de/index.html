@@ -10,6 +10,7 @@
     />
     <link rel="icon" type="image/png" href="/BT_AppIcon.png" />
     <link rel="stylesheet" href="/style.css?v=2" />
+    <script src="/env.js"></script>
     <link rel="alternate" hreflang="en" href="https://bettertrack.at/terms/" />
     <link rel="alternate" hreflang="de" href="https://bettertrack.at/terms/de/" />
     <style>
@@ -65,7 +66,7 @@
             ><a href="/terms/">EN</a><span>·</span
             ><a href="/terms/de/" aria-current="page">DE</a></span
           >
-          <a class="btn" href="https://web.bettertrack.at">App öffnen</a>
+          <a class="btn js-web-link" href="https://web.bettertrack.at">App öffnen</a>
         </div>
       </div>
     </nav>
@@ -82,9 +83,9 @@
         <p>
           BetterTrack ("der Dienst", "wir") ist ein von Österreich aus betriebener
           Portfolio-Tracking-Dienst — die Web-App unter
-          <a href="https://web.bettertrack.at">web.bettertrack.at</a>, die BetterTrack-Mobile-App
-          und diese Website. Identität und Kontaktdaten des Betreibers stehen im
-          <a href="/impressum/">Impressum</a>. Diese Bedingungen gelten für jede Nutzung des
+          <a class="js-web-link" href="https://web.bettertrack.at">web.bettertrack.at</a>, die
+          BetterTrack-Mobile-App und diese Website. Identität und Kontaktdaten des Betreibers stehen
+          im <a href="/impressum/">Impressum</a>. Diese Bedingungen gelten für jede Nutzung des
           Dienstes. Der Dienst befindet sich derzeit in einer geschlossenen Beta (nur auf
           Einladung); der Zugang kann jederzeit auf eingeladene Nutzer beschränkt werden.
         </p>
@@ -168,10 +169,14 @@
         <p>
           Du kannst diese Vereinbarung jederzeit beenden, indem du dein Konto löschst — in der App
           unter Einstellungen → Konto → Konto löschen oder unter
-          <a href="https://web.bettertrack.at/account/delete">web.bettertrack.at/account/delete</a>.
-          Wir können ein Konto sperren oder kündigen, wenn es gegen diese Bedingungen verstößt, die
-          Sicherheit oder Rechtskonformität des Dienstes gefährdet, oder im Zuge der Beendigung der
-          geschlossenen Beta; wo zumutbar, kündigen wir das vorher an.
+          <a
+            class="js-web-link"
+            data-web-path="/account/delete"
+            href="https://web.bettertrack.at/account/delete"
+            >web.bettertrack.at/account/delete</a
+          >. Wir können ein Konto sperren oder kündigen, wenn es gegen diese Bedingungen verstößt,
+          die Sicherheit oder Rechtskonformität des Dienstes gefährdet, oder im Zuge der Beendigung
+          der geschlossenen Beta; wo zumutbar, kündigen wir das vorher an.
         </p>
 
         <h2>8. Haftung</h2>
@@ -223,7 +228,8 @@
           ><a href="/security/">Security</a><a href="/roadmap/">Roadmap</a>
         </div>
         <div class="col">
-          <span class="h">App</span><a href="https://web.bettertrack.at">Web-App</a
+          <span class="h">App</span
+          ><a class="js-web-link" href="https://web.bettertrack.at">Web-App</a
           ><a href="https://mobile.bettertrack.at">Mobile (in Entwicklung)</a>
         </div>
         <div class="col">
@@ -238,5 +244,6 @@
         </p>
       </div>
     </footer>
+    <script src="/landing.js"></script>
   </body>
 </html>

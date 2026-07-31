@@ -15,9 +15,11 @@ non-secret live-box artifacts straight from the freshly fast-forwarded clone, so
 a routine change to any of them deploys from a merged PR alone — no hands on the
 box. In order:
 
-1. **Static legal pages** — the four canonical directories in
+1. **Static product pages** — the four canonical legal directories in
    `apps/landing/site/` (`terms`, `privacy`, `impressum`, `cookies`) are
-   overlay-copied into the control dir's served `edge/html/product/` mount.
+   overlay-copied into the control dir's served `edge/html/product/` mount,
+   followed by every live-only directory under
+   `infra/live/edge/html/product/` (currently the wired `/404/` page).
    Non-destructive: control-dir-only pages and files are never deleted; on
    conflicts the repo copy wins. Served live immediately (no reload). One
    `edge-sync:` log line per adopted directory.
@@ -175,11 +177,14 @@ product origin (`bettertrack.at`) as Terms of Service (`/terms/` +
 `de/index.html` (DE). The generic landing image ships those directories
 directly; the live updater copies the same files into its control-dir mount.
 On the bespoke live site they continue to use the control dir's existing shared
-`/style.css`.
+`/style.css`; the generic image supplies a compatibility stylesheet and icon at
+the same URLs.
 
 The rest of the product site (`index`, `features`, `security`, `roadmap`,
-`style.css`, images) intentionally remains control-dir-only for now; only the
-legal set is repo-canonical.
+`style.css`, images) intentionally remains control-dir-only for now. The
+exception is the live-only `infra/live/edge/html/product/404/` overlay, which
+stays version-controlled and is adopted after the canonical legal directories.
+Only the legal set is repo-canonical.
 
 The shared live-edge CSP blocks inline scripts. Before adopting a policy change,
 verify those control-dir-only product pages have externalized every script and
@@ -188,15 +193,16 @@ this repository.
 
 ### Adopt (on the prod host)
 
-**Automatic** since the self-adopting pipeline: the four legal directories are
-overlay-copied from `apps/landing/site/` into the served mount on each
-successful deploy tick (the live `web` nginx serves the control dir's
-`edge/html` mount directly, so no reload is involved). Manual fallback, from
-the control dir:
+**Automatic** since the self-adopting pipeline: the four legal directories from
+`apps/landing/site/` and every directory in the live-only product overlay are
+copied into the served mount on each successful deploy tick (the live `web`
+nginx serves the control dir's `edge/html` mount directly, so no reload is
+involved). Manual fallback, from the control dir:
 
 ```sh
 cp -R app/apps/landing/site/terms     ./edge/html/product/
 cp -R app/apps/landing/site/privacy   ./edge/html/product/
 cp -R app/apps/landing/site/impressum ./edge/html/product/
 cp -R app/apps/landing/site/cookies   ./edge/html/product/
+cp -R app/infra/live/edge/html/product/404 ./edge/html/product/
 ```

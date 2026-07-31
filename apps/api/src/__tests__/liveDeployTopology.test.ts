@@ -259,11 +259,16 @@ describe('live legal pages consume the canonical landing tree (#984)', () => {
     liveEdge.indexOf('# ── Mobile placeholder'),
   );
 
-  it('copies only the four legal directories from the landing source', () => {
-    expect(updater).toContain('_src="$APP/apps/landing/site"');
+  it('copies the four legal directories plus every remaining live overlay directory', () => {
+    expect(updater).toContain('_legal_src="$APP/apps/landing/site"');
     expect(updater).toContain('for _name in terms privacy impressum cookies; do');
     expect(updater).toContain('cp -R "$_dir" "${_dst}/"');
-    expect(updater).not.toContain('_src="$APP/infra/live/edge/html/product"');
+    expect(updater).toContain('_overlay_src="$APP/infra/live/edge/html/product"');
+    expect(updater).toContain('for _dir in "$_overlay_src"/*/; do');
+    expect(updater).toContain('cp -R "${_overlay_src}/${_name}" "${_dst}/"');
+    expect(read('infra/live/edge/html/product/404/index.html')).toContain(
+      '<title>Page not found — BetterTrack</title>',
+    );
   });
 
   it('keeps the live edge directory-route contract unchanged', () => {

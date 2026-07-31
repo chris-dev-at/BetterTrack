@@ -12,6 +12,8 @@ describe('legalUrl', () => {
   it.each([
     [undefined, 'en', 'https://bettertrack.at', ''],
     [undefined, 'de', 'https://bettertrack.at', 'de/'],
+    ['', 'en', 'https://bettertrack.at', ''],
+    ['', 'de', 'https://bettertrack.at', 'de/'],
     ['https://money.example.test/', 'en', 'https://money.example.test', ''],
     ['https://money.example.test/', 'de', 'https://money.example.test', 'de/'],
   ] as const)(

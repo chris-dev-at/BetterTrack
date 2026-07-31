@@ -60,7 +60,7 @@ const LEGAL_DOCUMENTS = LEGAL_PAGES.flatMap((page) => [
   },
 ]);
 
-function assertShippedLegalRoutes(
+function assertProductLandingProxy(
   renderedTemplate: string,
   productSectionStart: string,
   mobileSectionStart: string,
@@ -68,12 +68,6 @@ function assertShippedLegalRoutes(
   const product = section(renderedTemplate, productSectionStart, mobileSectionStart);
   expect(product).toContain('location / {');
   expect(product).toContain('proxy_pass http://landing:80;');
-  for (const document of LEGAL_DOCUMENTS) {
-    expect(
-      existsSync(resolve(repoDir, document.repositoryPath)),
-      `${document.route} must resolve to shipped landing content`,
-    ).toBe(true);
-  }
 }
 
 /** Mirror the entrypoint's restricted envsubst: replace only `${NAME}` for NAME in env. */
@@ -207,6 +201,7 @@ type LandingRegistrationMode = 'closed' | 'invite_token' | 'approval' | 'open';
 interface LandingScriptRun {
   documentElement: LandingElement;
   webLink: LandingElement;
+  webPathLink: LandingElement;
   registerCta: LandingElement;
   registrationNote: LandingElement;
   title: LandingElement;
@@ -220,9 +215,14 @@ async function runLandingScript(options: {
   includeRegistrationUi?: boolean;
   webOrigin?: string;
   apiOrigin?: string;
+  webPath?: string;
 }): Promise<LandingScriptRun> {
   const documentElement = landingElement('HTML');
   const webLink = landingElement('A', { href: 'https://web.bettertrack.at' });
+  const webPathLink = landingElement('A', {
+    href: 'https://web.bettertrack.at/account/delete',
+    'data-web-path': options.webPath ?? '/account/delete',
+  });
   const registerCta = landingElement('A', {
     'data-registration-label-invite_token': 'Register with an invite token',
     'data-registration-label-approval': 'Request an account',
@@ -279,7 +279,7 @@ async function runLandingScript(options: {
       return null;
     },
     querySelectorAll(selector: string) {
-      if (selector === '.js-web-link') return [webLink];
+      if (selector === '.js-web-link') return [webLink, webPathLink];
       const match = /^\[data-registration-copy-(.+)]$/.exec(selector);
       if (!match?.[1]) return [];
       return copyElements.filter(
@@ -305,7 +305,16 @@ async function runLandingScript(options: {
   runInNewContext(landingScript, { Error, URL, document, fetch, window });
   await new Promise<void>((resolvePromise) => setImmediate(resolvePromise));
 
-  return { documentElement, webLink, registerCta, registrationNote, title, description, footer };
+  return {
+    documentElement,
+    webLink,
+    webPathLink,
+    registerCta,
+    registrationNote,
+    title,
+    description,
+    footer,
+  };
 }
 
 interface WebEntrypointRun {
@@ -438,7 +447,7 @@ describe('subdomains template', () => {
     // The apex block reverse-proxies to the static landing container.
     expect(out).toContain('proxy_pass http://landing:80;');
     expect(out).toContain('productOrigin: "https://track.example.at"');
-    assertShippedLegalRoutes(out, '# ── Product origin', '# ── Mobile origin');
+    assertProductLandingProxy(out, '# ── Product origin', '# ── Mobile origin');
   });
 
   it('serves the mobile placeholder from its own subdomain, rooting at mobile.html', () => {
@@ -475,7 +484,7 @@ describe('ports template', () => {
     expect(out).toContain('proxy_pass http://landing:80;');
     expect(out).toContain('proxy_pass http://landing:80/mobile.html;');
     expect(out).toContain('productOrigin: "http://track.example.at:8082"');
-    assertShippedLegalRoutes(out, '# ── Product port', '# ── Mobile port');
+    assertProductLandingProxy(out, '# ── Product port', '# ── Mobile port');
   });
 
   it('substitutes every whitelisted var', () => {
@@ -493,6 +502,15 @@ describe('ports template', () => {
 });
 
 describe('canonical landing legal documents', () => {
+  it('ships every canonical legal route from the landing tree', () => {
+    for (const document of LEGAL_DOCUMENTS) {
+      expect(
+        existsSync(resolve(repoDir, document.repositoryPath)),
+        `${document.route} must resolve to shipped landing content`,
+      ).toBe(true);
+    }
+  });
+
   it('keeps exactly one tracked EN/DE copy of every legal page', () => {
     const tracked = spawnSync('git', ['ls-files', '--cached', '--others', '--exclude-standard'], {
       cwd: repoDir,
@@ -515,6 +533,40 @@ describe('canonical landing legal documents', () => {
   it('copies the canonical tree into the generic landing image', () => {
     const dockerfile = readFileSync(resolve(repoDir, 'apps/landing/Dockerfile'), 'utf8');
     expect(dockerfile).toContain('COPY apps/landing/site/ /usr/share/nginx/html/');
+    expect(dockerfile).toContain('for route in features security roadmap; do');
+    expect(dockerfile).toContain(
+      'cp /usr/share/nginx/html/index.html "/usr/share/nginx/html/${route}/index.html"',
+    );
+  });
+
+  it('ships the live-compatible legal chrome dependencies in the generic image', () => {
+    const landingRoot = resolve(repoDir, 'apps/landing/site');
+    const compatibilityStyles = readFileSync(resolve(landingRoot, 'style.css'), 'utf8');
+    const icon = readFileSync(resolve(landingRoot, 'BT_AppIcon.png'));
+
+    expect(compatibilityStyles).toContain("@import url('/styles.css');");
+    for (const token of ['--text-3', '--surface-2', '--line-soft']) {
+      expect(compatibilityStyles).toContain(token);
+    }
+    expect(icon.subarray(0, 8).toString('hex')).toBe('89504e470d0a1a0a');
+
+    for (const document of LEGAL_DOCUMENTS) {
+      const html = readFileSync(resolve(repoDir, document.repositoryPath), 'utf8');
+      expect(html).toContain('href="/style.css?v=2"');
+      expect(html).toContain('href="/BT_AppIcon.png"');
+      expect(html).toContain('<script src="/env.js"></script>');
+      expect(html).toContain('<script src="/landing.js"></script>');
+
+      const webLinks =
+        html.match(/<a\b[^>]*href="https:\/\/web\.bettertrack\.at[^"]*"[^>]*>/g) ?? [];
+      expect(webLinks.length).toBeGreaterThan(0);
+      for (const link of webLinks) {
+        expect(link).toMatch(/\bclass="[^"]*\bjs-web-link\b[^"]*"/);
+      }
+      if (html.includes('/account/delete')) {
+        expect(html).toContain('data-web-path="/account/delete"');
+      }
+    }
   });
 
   it.each([
@@ -661,6 +713,7 @@ describe('landing registration status presentation', () => {
 
     expect(page.documentElement.getAttribute('data-registration-mode')).toBe(expectation.mode);
     expect(page.webLink.getAttribute('href')).toBe('https://web.example.net');
+    expect(page.webPathLink.getAttribute('href')).toBe('https://web.example.net/account/delete');
     expect(page.registrationNote.hidden).toBe(false);
     expect(page.registrationNote.textContent).toBe(expectation.note);
     expect(page.title.textContent).toBe(expectation.title);
@@ -694,6 +747,23 @@ describe('landing registration status presentation', () => {
       });
 
       expect(page.webLink.getAttribute('href')).toBe('https://web.bettertrack.at');
+      expect(page.webPathLink.getAttribute('href')).toBe(
+        'https://web.bettertrack.at/account/delete',
+      );
+    },
+  );
+
+  it.each(['//attacker.example/delete', 'javascript:alert(1)', '/account/delete\nignored'])(
+    'does not append an unsafe page path to the runtime web origin (%j)',
+    async (webPath) => {
+      const page = await runLandingScript({
+        includeRegistrationUi: false,
+        webPath,
+      });
+
+      expect(page.webPathLink.getAttribute('href')).toBe(
+        'https://web.bettertrack.at/account/delete',
+      );
     },
   );
 

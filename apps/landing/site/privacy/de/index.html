@@ -10,6 +10,7 @@
     />
     <link rel="icon" type="image/png" href="/BT_AppIcon.png" />
     <link rel="stylesheet" href="/style.css?v=2" />
+    <script src="/env.js"></script>
     <link rel="alternate" hreflang="en" href="https://bettertrack.at/privacy/" />
     <link rel="alternate" hreflang="de" href="https://bettertrack.at/privacy/de/" />
     <style>
@@ -71,7 +72,7 @@
             ><a href="/privacy/">EN</a><span>·</span
             ><a href="/privacy/de/" aria-current="page">DE</a></span
           >
-          <a class="btn" href="https://web.bettertrack.at">App öffnen</a>
+          <a class="btn js-web-link" href="https://web.bettertrack.at">App öffnen</a>
         </div>
       </div>
     </nav>
@@ -88,8 +89,8 @@
           braucht. Keine Werbung, keine Analytics, kein Verkauf oder Teilen deiner Daten. Diese
           Seite ist die formale DSGVO-Information hinter diesem Versprechen — sie gilt für die
           Web-App unter
-          <a href="https://web.bettertrack.at">web.bettertrack.at</a>, die BetterTrack-Mobile-App
-          und diese Website.
+          <a class="js-web-link" href="https://web.bettertrack.at">web.bettertrack.at</a>, die
+          BetterTrack-Mobile-App und diese Website.
         </p>
 
         <h2>1. Verantwortlicher</h2>
@@ -215,7 +216,11 @@
           <li>
             <strong>Löschung</strong> (Art. 17) — lösche dein Konto jederzeit selbst, in der App
             unter Einstellungen → Konto → Konto löschen oder direkt unter
-            <a href="https://web.bettertrack.at/account/delete">web.bettertrack.at/account/delete</a
+            <a
+              class="js-web-link"
+              data-web-path="/account/delete"
+              href="https://web.bettertrack.at/account/delete"
+              >web.bettertrack.at/account/delete</a
             >; das entfernt dein Konto und alle zugehörigen Daten dauerhaft;
           </li>
           <li>
@@ -280,7 +285,8 @@
           ><a href="/security/">Security</a><a href="/roadmap/">Roadmap</a>
         </div>
         <div class="col">
-          <span class="h">App</span><a href="https://web.bettertrack.at">Web-App</a
+          <span class="h">App</span
+          ><a class="js-web-link" href="https://web.bettertrack.at">Web-App</a
           ><a href="https://mobile.bettertrack.at">Mobile (in Entwicklung)</a>
         </div>
         <div class="col">
@@ -295,5 +301,6 @@
         </p>
       </div>
     </footer>
+    <script src="/landing.js"></script>
   </body>
 </html>
