@@ -580,6 +580,7 @@ async function storageRoundedMoneyFixture() {
         ...transactionEntities,
       ],
       mergeLog: [],
+      mirrorProvenance: [],
     },
   };
 
