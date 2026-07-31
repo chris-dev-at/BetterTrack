@@ -397,6 +397,13 @@
   flex: 1 1 auto;
 }
 
+.bt-topbar__actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 10px;
+}
+
 /* Main working canvas */
 .bt-main {
   min-width: 0;
@@ -1570,6 +1577,45 @@
   }
 
   .bt-rail {
+    display: none;
+  }
+
+  .bt-topbar {
+    gap: 7px;
+    padding-inline: 10px;
+  }
+
+  .bt-topbar .bt-rail__brand {
+    min-height: 34px;
+    padding: 0;
+  }
+
+  .bt-topbar .bt-rail__brand-full {
+    display: none;
+  }
+
+  .bt-topbar .bt-rail__brand-mini {
+    display: inline-flex;
+  }
+
+  .bt-topbar__actions {
+    gap: 4px;
+  }
+
+  .bt-portfolio-switcher {
+    display: block;
+    flex: 0 1 200px;
+    min-width: 0;
+  }
+
+  .bt-topbar .bt-portfolio-trigger {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    gap: 6px;
+  }
+
+  .bt-topbar .bt-portfolio-trigger .bt-portfolio-default {
     display: none;
   }
 

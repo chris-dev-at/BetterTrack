@@ -98,19 +98,25 @@ test('happy path: invite through friend sharing', async ({ browser }) => {
   await buyDialog.getByRole('button', { name: 'Select SAP.DE', exact: true }).click();
   await buyDialog.getByLabel('Quantity for SAP.DE').fill('4');
   await buyDialog.getByLabel('Price for SAP.DE').fill('50');
-  await buyDialog.getByLabel('Pay from cash balance').check();
-  await expect(buyDialog.getByRole('status', { name: 'Cash-after preview' })).toContainText('→', {
-    timeout: 15_000,
-  });
+  const payFromCash = buyDialog.getByLabel('Pay from cash balance');
+  await payFromCash.press('Space');
+  await expect(payFromCash).toBeChecked();
+  await expect(buyDialog.getByRole('status', { name: 'Cash-after preview' })).toContainText(
+    /600[.,]00/,
+    { timeout: 15_000 },
+  );
   await buyDialog.getByRole('button', { name: 'Record' }).click();
   await expect(buyDialog).toBeHidden();
 
   await owner.goto('/portfolio');
-  const cashLabel = owner
-    .getByRole('region', { name: 'Portfolio totals' })
-    .getByText('Cash', { exact: true });
   // Locale-agnostic: EN "600.00" (en-GB) vs DE "600,00" (de-AT).
-  await expect(cashLabel.locator('xpath=following-sibling::p[1]')).toContainText(/600[.,]00/, {
+  const totals = owner.getByRole('region', { name: 'Portfolio totals' });
+  const cashLabel = totals.locator('.bt-stat__label').filter({ hasText: 'Cash' });
+  await expect(cashLabel).toHaveText('Cash');
+  const cashValue = cashLabel.locator(
+    'xpath=following-sibling::*[contains(@class, "bt-stat__value")]',
+  );
+  await expect(cashValue).toHaveText(/600[.,]00/, {
     timeout: 15_000,
   });
 
@@ -176,7 +182,7 @@ test('happy path: invite through friend sharing', async ({ browser }) => {
   await expect(friendCard).toBeVisible({ timeout: 15_000 });
   await friendCard.click();
 
-  const sharedLink = friend.getByRole('link', { name: 'Main' });
+  const sharedLink = friend.getByRole('link', { name: /^Main\b/ });
   await expect(sharedLink).toBeVisible({ timeout: 15_000 });
   await sharedLink.click();
 

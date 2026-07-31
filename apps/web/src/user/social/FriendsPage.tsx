@@ -277,7 +277,14 @@ function RequestsSection() {
 
   const acceptMutation = useMutation({
     mutationFn: (id: string) => acceptFriendRequest(id),
-    onSuccess: invalidate,
+    onSuccess: () => {
+      invalidate();
+      // `all_friends` audiences admit this user for the first time at the same
+      // moment the friendship forms. Refresh the enforcement-derived overview
+      // so an already-mounted Friends page does not keep its pre-accept empty
+      // result until the normal stale window expires.
+      void queryClient.invalidateQueries({ queryKey: ['social', 'shared-with-me'] });
+    },
   });
   const declineMutation = useMutation({
     mutationFn: (id: string) => declineFriendRequest(id),

@@ -34,14 +34,17 @@ test('friend groups: a portfolio shared to a group is visible to members only', 
   // Owner creates a group and adds only `member` to it.
   await owner.page.goto('/people');
   await owner.page.getByLabel('New group name').fill('Inner Circle');
-  await owner.page.getByRole('button', { name: 'Create' }).click();
+  await owner.page.getByRole('main').getByRole('button', { name: 'Create' }).click();
 
   // Expand the freshly-created group card, then add `member` from the candidates.
   await owner.page.getByRole('button', { name: 'Inner Circle' }).click();
-  const memberCandidate = owner.page
+  const groupCard = owner.page
     .getByRole('listitem')
-    .filter({ hasText: member.username })
-    .filter({ has: owner.page.getByRole('button', { name: 'Add', exact: true }) });
+    .filter({ has: owner.page.getByRole('button', { name: /^Inner Circle 0 members$/ }) });
+  const candidates = groupCard
+    .getByRole('heading', { name: 'Add a friend', level: 4 })
+    .locator('xpath=following-sibling::ul');
+  const memberCandidate = candidates.getByRole('listitem').filter({ hasText: member.username });
   await expect(memberCandidate).toBeVisible({ timeout: 15_000 });
   await memberCandidate.getByRole('button', { name: 'Add', exact: true }).click();
   // Once added, `member` moves out of the candidate list (Add gone for that row).

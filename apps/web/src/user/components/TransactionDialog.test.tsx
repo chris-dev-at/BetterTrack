@@ -522,7 +522,11 @@ describe('TransactionDialog — linked date ↔ price fields', () => {
     expect(screen.getByLabelText(/date for btc/i)).toHaveValue('2026-07-02');
     // The auto marker distinguishes the fetched price from a typed one.
     expect(screen.getByText('auto')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Unlink date and price' })).toBeInTheDocument();
+    const unlink = screen.getByRole('button', { name: 'Unlink date and price' });
+    expect(unlink).toBeInTheDocument();
+    // An interactive link toggle must never sit inside the price input's label:
+    // touch browsers retarget that tap to the labelled input.
+    expect(unlink.closest('label')).toBeNull();
   });
 
   test('default on open: the latest close is cut to cents before it fills the price (owner directive 2026-07-12)', async () => {

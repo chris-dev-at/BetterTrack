@@ -116,6 +116,15 @@ test('an unauthenticated visit to an unknown route still redirects to /login', a
   expect(screen.getByTestId('location')).toHaveTextContent('/login');
 });
 
+test('the retired /people/following deep link redirects to the Friends tab', async () => {
+  vi.mocked(api.getMe).mockResolvedValue(member);
+  vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [] });
+
+  renderAtWithLocation('/people/following');
+
+  await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('/people'));
+});
+
 test('after signing in, the user returns to the originally requested route', async () => {
   anonymous();
   vi.mocked(api.login).mockResolvedValue(member);

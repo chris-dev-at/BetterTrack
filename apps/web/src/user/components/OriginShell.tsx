@@ -705,8 +705,10 @@ export function OriginShell() {
               size="sm"
               variant="quiet"
             />
-            <CreateMenu />
-            <NotificationBell />
+            <div className="bt-topbar__actions">
+              <CreateMenu />
+              <NotificationBell />
+            </div>
           </header>
 
           <main id="main-content" className="bt-canvas" tabIndex={-1}>

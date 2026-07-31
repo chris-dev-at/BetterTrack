@@ -3,6 +3,7 @@ import { expect, request as newRequestContext, test } from '@playwright/test';
 import { loginAsAdmin } from './support/adminApi';
 import { passwordSignIn } from './support/auth';
 import { API_BASE_URL } from './support/config';
+import { expectUserShellReady } from './support/flows';
 import { provisionUser } from './support/users';
 
 /**
@@ -72,7 +73,7 @@ test('announcements: an active announcement reaches every user and stays dismiss
   const aliceReturnPage = await aliceReturn.newPage();
   await aliceReturnPage.goto('/login');
   await passwordSignIn(aliceReturnPage, alice.email, 'Sup3rSecret!Passw0rd2');
-  await aliceReturnPage.waitForURL(/\/portfolio/);
+  await expectUserShellReady(aliceReturnPage);
   await expect(aliceReturnPage.getByTestId(`announcement-${created.id}`)).toHaveCount(0, {
     timeout: 15_000,
   });
