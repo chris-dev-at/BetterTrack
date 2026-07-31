@@ -155,6 +155,22 @@ test('retries a failed tier-list read without hiding the key list', async () => 
   expect(api.listApiKeyTiers).toHaveBeenCalledTimes(2);
 });
 
+test('retries a failed key-list read without hiding the tier list', async () => {
+  vi.mocked(api.listAdminApiKeys)
+    .mockRejectedValueOnce(new Error('offline'))
+    .mockResolvedValueOnce({ keys: [key()] });
+  const user = userEvent.setup();
+  renderPage();
+
+  expect(await screen.findByText('120')).toBeInTheDocument();
+  const keysSection = screen.getByRole('heading', { level: 2, name: 'Keys' }).closest('section');
+  expect(keysSection).not.toBeNull();
+  await user.click(within(keysSection!).getByRole('button', { name: 'Try again' }));
+
+  expect(await within(keysSection!).findByText('CI bot')).toBeInTheDocument();
+  expect(api.listAdminApiKeys).toHaveBeenCalledTimes(2);
+});
+
 test('retries a failed per-key audit read', async () => {
   vi.mocked(api.getApiKeyAudit).mockRejectedValueOnce(new Error('offline')).mockResolvedValueOnce({
     keyId: 'k-1',

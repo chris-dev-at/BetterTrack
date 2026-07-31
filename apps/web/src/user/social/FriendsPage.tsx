@@ -183,7 +183,14 @@ function MirrorInvitesSection() {
   const revoke = useRevokeMirrorInvite();
   const [acceptTarget, setAcceptTarget] = useState<MirrorInvite | null>(null);
 
-  if (invitesQuery.isLoading) return null;
+  if (invitesQuery.isLoading) {
+    return (
+      <div aria-label={t('common.loadingLabel')} className="flex flex-col gap-2" role="status">
+        <SkeletonBlock height={14} width={144} />
+        <SkeletonBlock height={48} />
+      </div>
+    );
+  }
   if (invitesQuery.isError || !invitesQuery.data) {
     return (
       <div className="flex flex-col items-start gap-2">
@@ -525,11 +532,13 @@ function FriendCard({
   person,
   onRequestRemove,
   sharingAllowed,
+  sharesReady,
 }: {
   friendship: Friendship;
   person: SharedPerson | undefined;
   onRequestRemove: () => void;
   sharingAllowed: boolean;
+  sharesReady: boolean;
 }) {
   const t = useT();
   const [open, setOpen] = useState(false);
@@ -590,7 +599,7 @@ function FriendCard({
             </Link>
           </div>
 
-          {sharingAllowed ? (
+          {sharingAllowed && sharesReady ? (
             <div className="flex flex-col gap-2">
               <h3 className="bt-label">{t('social.friend.sharesHeading')}</h3>
               <FriendShares person={person} username={user.username} />
@@ -682,7 +691,12 @@ function FriendsListSection({ sharingAllowed }: { sharingAllowed: boolean }) {
   return (
     <section className="flex flex-col gap-3">
       <h2 className="bt-h2">{t('common.friends')}</h2>
-      {sharedQuery.isError ? (
+      {sharedQuery.isLoading ? (
+        <div aria-label={t('common.loadingLabel')} className="flex flex-col gap-2" role="status">
+          <SkeletonBlock height={14} width={144} />
+          <SkeletonBlock height={48} />
+        </div>
+      ) : sharedQuery.isError ? (
         <div className="flex flex-col items-start gap-2">
           <Alert tone="error">{t('social.shared.loadError')}</Alert>
           <Button onClick={() => void sharedQuery.refetch()} size="sm">
@@ -702,9 +716,12 @@ function FriendsListSection({ sharingAllowed }: { sharingAllowed: boolean }) {
             <FriendCard
               key={friendship.user.id}
               friendship={friendship}
-              person={personFor(sharedQuery.data, friendship.user.id)}
+              person={
+                sharedQuery.isSuccess ? personFor(sharedQuery.data, friendship.user.id) : undefined
+              }
               onRequestRemove={() => setRemoveTarget(friendship)}
               sharingAllowed={sharingAllowed}
+              sharesReady={sharedQuery.isSuccess}
             />
           ))}
         </ul>

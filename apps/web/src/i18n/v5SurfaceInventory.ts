@@ -165,6 +165,8 @@ export const V5_SURFACE_INVENTORY = [
     phases: ['P1'],
     routes: ['/portfolio', '/portfolio/analysis', '/workbench', '/assets/:id', '/admin/health'],
     components: [
+      'ui/MarketStateBadge.tsx',
+      'ui/charts/PriceChart.tsx',
       'user/portfolio/PortfolioPage.tsx',
       'user/portfolio/analytics/AnalyticsPage.tsx',
       'user/portfolio/analytics/CompareControl.tsx',
@@ -174,6 +176,8 @@ export const V5_SURFACE_INVENTORY = [
       'admin/pages/HealthPage.tsx',
     ],
     copyRoots: [
+      'common.charts',
+      'common.marketState',
       'portfolio.overview',
       'portfolio.analytics',
       'assets.detail',
@@ -195,6 +199,8 @@ export const V5_SURFACE_INVENTORY = [
       ),
     },
     tests: [
+      'ui/MarketStateBadge.test.tsx',
+      'ui/charts/PriceChart.test.tsx',
       'user/portfolio/PortfolioPage.test.tsx',
       'user/portfolio/analytics/AnalyticsPage.test.tsx',
       'user/assets/AssetDetailPage.test.tsx',
@@ -607,10 +613,11 @@ export const V5_SURFACE_INVENTORY = [
       'user/vault/ui/VaultSyncChip.tsx',
       'user/vault/ui/VaultUnlockGate.tsx',
       'ui/MoneyText.tsx',
+      'ui/charts/AllocationDonut.tsx',
     ],
-    copyRoots: ['privacy', 'vault', 'vaultMoney', 'vaultExports'],
+    copyRoots: ['privacy', 'vault', 'vaultMoney', 'vaultExports', 'common.charts'],
     copyReview:
-      'Discreet masking, custody, media, enable/unlock/sync, loss, and recovery copy reviewed.',
+      'Discreet masking (including allocation charts), custody, media, enable/unlock/sync, loss, and recovery copy reviewed.',
     states: {
       loading: covered(
         'Account-mode, enable, unlock, and sync transitions expose Splash/progress/status.',
@@ -628,6 +635,7 @@ export const V5_SURFACE_INVENTORY = [
       'user/vault/ui/VaultUnlockGate.test.tsx',
       'user/vault/ui/VaultSyncChip.test.tsx',
       'ui/MoneyText.test.tsx',
+      'ui/charts/AllocationDonut.test.tsx',
     ],
   },
   {

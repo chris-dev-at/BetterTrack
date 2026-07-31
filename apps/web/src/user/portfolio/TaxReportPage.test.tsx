@@ -24,6 +24,7 @@ import {
 import { VaultMoneyEngineProvider } from '../vault/engine/VaultMoneyEngineProvider';
 import { deliverClientDownload, printClientDocument } from '../vault/export/deliver';
 import { ResolvedPrivacyModeProvider } from '../vault/usePrivacyMode';
+import { createVaultPortfolioStore, VaultPortfolioStoreError } from '../vault/vaultPortfolioStore';
 import { TaxReportPage } from './TaxReportPage';
 
 // This portfolio's effective tax view (issue #636): the report reads the mode
@@ -132,6 +133,34 @@ describe('TaxReportPage', () => {
     expect(
       screen.getAllByText(/Estimates for your personal overview only/i).length,
     ).toBeGreaterThanOrEqual(2);
+  });
+
+  test('retries a failed lazy year-detail read', async () => {
+    vi.mocked(portfolioApi.getTaxYearReport)
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce({
+        year: 2026,
+        summary: YEAR_2026,
+        positions: [
+          {
+            asset: APPLE,
+            realizedPnlEur: 350,
+            dividendsGrossEur: 0,
+            taxEur: 96.25,
+            sells: [],
+            dividends: [],
+          },
+        ],
+      });
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole('button', { name: /Show 2026 details/i }));
+    const message = await screen.findByText(/Couldn’t load that year’s details/i);
+    await user.click(within(message.parentElement!).getByRole('button', { name: 'Try again' }));
+
+    expect(await screen.findByText('AAPL')).toBeInTheDocument();
+    expect(portfolioApi.getTaxYearReport).toHaveBeenCalledTimes(2);
   });
 
   test('a past year shows the "Passed" status (not "Locked")', async () => {
@@ -466,6 +495,51 @@ describe('TaxReportPage — paranoid mode (PD7)', () => {
     expect(portfolioApi.getPortfolioTaxSettings).not.toHaveBeenCalled();
     expect(portfolioApi.getTaxYearReports).not.toHaveBeenCalled();
     expect(portfolioApi.getTaxYearReport).not.toHaveBeenCalled();
+  });
+
+  test('retries a retryable encrypted portfolio-list failure', async () => {
+    const fixture = await decryptClientMoneyFixture();
+    const document = withTaxSettings(fixture.document, 'country_specific', 'AT', null);
+    const sync = createMutableTestSync(document, fixture.header, fixture.envelope);
+    const market = createClientMoneyMarket().market;
+    let listAttempts = 0;
+    const createStore: typeof createVaultPortfolioStore = (engine, options) => {
+      const store = createVaultPortfolioStore(engine, options);
+      return {
+        ...store,
+        async listPortfolios(signal?: AbortSignal, includeArchived?: boolean) {
+          listAttempts += 1;
+          if (listAttempts === 1) {
+            throw new VaultPortfolioStoreError(
+              'VAULT_DATA_UNAVAILABLE',
+              'The encrypted portfolio list is temporarily unavailable.',
+            );
+          }
+          return store.listPortfolios(signal, includeArchived);
+        },
+      };
+    };
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const user = userEvent.setup();
+    render(
+      <QueryClientProvider client={client}>
+        <MemoryRouter>
+          <ResolvedPrivacyModeProvider mode="paranoid">
+            <VaultMoneyEngineProvider dependencies={{ sync, market, createStore }}>
+              <TaxReportPage />
+            </VaultMoneyEngineProvider>
+          </ResolvedPrivacyModeProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByText(/Couldn’t load your tax report/i)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Try again' }));
+
+    expect(await screen.findByRole('button', { name: /Show 2026 details/i })).toBeInTheDocument();
+    expect(listAttempts).toBe(2);
+    expect(portfolioApi.listPortfolios).not.toHaveBeenCalled();
+    expect(portfolioApi.getTaxYearReports).not.toHaveBeenCalled();
   });
 
   test('client CSV and printable document come from the same derived in-memory report', async () => {

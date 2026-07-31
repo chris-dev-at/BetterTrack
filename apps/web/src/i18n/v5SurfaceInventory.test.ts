@@ -37,6 +37,9 @@ admin/pages/SecuritySettingsPage.tsx
 admin/pages/UsageAnalyticsPage.tsx
 ui/MoneyText.tsx
 ui/ScopePicker.tsx
+ui/MarketStateBadge.tsx
+ui/charts/AllocationDonut.tsx
+ui/charts/PriceChart.tsx
 user/AuthContext.tsx
 user/UserApp.tsx
 user/assets/AssetDetailPage.tsx
