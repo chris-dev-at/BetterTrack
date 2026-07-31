@@ -23,6 +23,7 @@ const document: VaultDocument = {
   schemaVersion: 1,
   entities: {},
   mergeLog: [],
+  mirrorProvenance: [],
 };
 const subtle = webcrypto.subtle as unknown as SubtleCrypto;
 

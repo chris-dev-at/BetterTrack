@@ -44,6 +44,7 @@ import {
   type LocalDataHomeStorage,
   type LocalVaultRecord,
 } from './localDataHome';
+import { strictVaultDocumentForDisable } from './paranoidDisable';
 import { createMemoryVaultQuarantineStore } from './quarantine';
 import { createVaultSyncEngine, type VaultSyncEngine, type VaultSyncState } from './sync';
 import {
@@ -407,6 +408,7 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
       schemaVersion: 1,
       entities: [{ ...entity!, kind: 'transaction' }],
       mergeLog: [],
+      mirrorProvenance: [],
     });
     const strictTransaction = strict.entities[0];
     if (strictTransaction?.kind !== 'transaction') {
@@ -2155,17 +2157,17 @@ function initialDocument(): VaultDocument {
       ],
     },
     mergeLog: [],
+    mirrorProvenance: [],
   };
 }
 
+/**
+ * The PRODUCTION disable carriage, not a test-local re-implementation: the same
+ * function the disable request is built from, so this round trip fails if the
+ * conversion (including §7.1 provenance carriage) ever drifts.
+ */
 function strictDocumentFrom(document: VaultDocument) {
-  return vaultStrictDocumentV1Schema.parse({
-    schemaVersion: document.schemaVersion,
-    entities: Object.entries(document.entities).flatMap(([kind, entities]) =>
-      entities.map((entity) => ({ ...entity, kind })),
-    ),
-    mergeLog: document.mergeLog,
-  });
+  return strictVaultDocumentForDisable(document);
 }
 
 function documentFromStrictDocument(
@@ -2176,7 +2178,12 @@ function documentFromStrictDocument(
     const { kind, ...entity } = strictEntity;
     entities[kind] = [...(entities[kind] ?? []), entity];
   }
-  return { schemaVersion: strict.schemaVersion, entities, mergeLog: strict.mergeLog };
+  return {
+    schemaVersion: strict.schemaVersion,
+    entities,
+    mergeLog: strict.mergeLog,
+    mirrorProvenance: strict.mirrorProvenance,
+  };
 }
 
 function vaultEntity(id: string, data: Record<string, unknown>): VaultEntity {

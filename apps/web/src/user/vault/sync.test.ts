@@ -18,6 +18,7 @@ import {
   type VaultDocument,
   type VaultEntity,
   type VaultEnvelopeHeader,
+  type VaultMirrorProvenance,
 } from '@bettertrack/contracts';
 
 import { decryptVaultDocument, encryptVaultDocument } from './crypto';
@@ -38,6 +39,8 @@ import type { DriveDataHome } from './drive';
 import { createVaultMediaSwitcher, type VaultMediaApi } from './media/mediaSwitcher';
 import { createVaultRetirementProofManager } from './media/retirementProof';
 import { createVaultEnvelopeAuthenticator } from './media/verification';
+import { captureForkProvenanceIntoVault } from './mirrorProvenance';
+import { strictVaultDocumentForDisable } from './paranoidDisable';
 import { createMemoryVaultQuarantineStore } from './quarantine';
 import {
   createCurrentServerRestoreCandidateSource,
@@ -127,7 +130,7 @@ function entity(
 }
 
 function document(rows: VaultEntity[]): VaultDocument {
-  return { schemaVersion: 1, entities: { transaction: rows }, mergeLog: [] };
+  return { schemaVersion: 1, entities: { transaction: rows }, mergeLog: [], mirrorProvenance: [] };
 }
 
 function header(
@@ -2107,6 +2110,124 @@ describe('restore candidate seam', () => {
     await expect(decryptVaultDocument(restored.envelope, KEY)).resolves.toMatchObject({
       document: { entities: { transaction: [expect.objectContaining({ id: ENTITY_A })] } },
     });
+  });
+});
+
+/**
+ * The §7.1 client seam, end to end through the REAL engine: the capture read the
+ * enable wizard runs, the fold, encryption, publication, a CAS merge, a later
+ * local deletion, and the strict payload the disable request carries. Nothing is
+ * hand-built — every assertion reads the decrypted published ciphertext.
+ */
+describe('severed-fork provenance through the client vault seam', () => {
+  const CHAIN = '018f0000-0000-7000-8000-0000000000e1';
+  const MEMBERSHIP = '018f0000-0000-7000-8000-0000000000e2';
+  const PORTFOLIO = '018f0000-0000-7000-8000-0000000000e3';
+  const keptEntry: VaultMirrorProvenance = {
+    chainId: CHAIN,
+    membershipId: MEMBERSHIP,
+    kind: 'transaction',
+    mirrorId: '018f0000-0000-7000-8000-0000000000e4',
+    portfolioId: PORTFOLIO,
+    localId: ENTITY_A,
+  };
+  const deletedLaterEntry: VaultMirrorProvenance = {
+    ...keptEntry,
+    mirrorId: '018f0000-0000-7000-8000-0000000000e5',
+    localId: ENTITY_B,
+  };
+
+  /** A real persisted transaction row, so the strict restore payload parses. */
+  function transactionRow(): Record<string, unknown> {
+    return {
+      portfolioId: PORTFOLIO,
+      assetId: '018f0000-0000-7000-8000-0000000000e6',
+      side: 'buy',
+      quantity: '1.00000000',
+      price: '10.000000',
+      fee: '0.000000',
+      executedAt: '2026-07-25T09:00:00.000Z',
+      note: null,
+      taxMode: null,
+      taxCountry: null,
+      taxAmountEur: null,
+      taxParams: null,
+      allowUncovered: false,
+      uncoveredEntryPrice: null,
+      source: 'sync:mirrorchain',
+    };
+  }
+
+  async function publishedDocument(remote: MemoryRemote): Promise<VaultDocument> {
+    const read = await remote.read();
+    if (read.status !== 'ok') throw new Error('Expected published remote bytes.');
+    return (await decryptVaultDocument(read.envelope, KEY)).document;
+  }
+
+  it('captures, encrypts, merges, prunes on delete and hands the map to disable', async () => {
+    const initial = document([
+      entity(ENTITY_A, 1, DEVICE_A, transactionRow()),
+      entity(ENTITY_B, 1, DEVICE_A, transactionRow()),
+    ]);
+    const initialEnvelope = await encrypted(initial, 1);
+    const local = createLocalDataHome({ scope: 'fork-provenance', storage: memoryLocalStorage() });
+    await seedLocal(local, initialEnvelope, false);
+    // The concurrent replica: same rows, but it captured the map first.
+    const remoteCapture = await encrypted(
+      { ...initial, mirrorProvenance: [deletedLaterEntry] },
+      2,
+      DEVICE_B,
+      '018f0000-0000-7000-8000-0000000000b3',
+    );
+    const primary = memoryRemote(initialEnvelope, 1, [remoteCapture]);
+    const engine = createVaultSyncEngine({
+      local,
+      primary,
+      vaultKey: KEY,
+      deviceId: DEVICE_A,
+      writeId: writeIds(),
+      now: () => '2026-07-25T10:05:00.000Z',
+      quarantine: createMemoryVaultQuarantineStore(),
+    });
+    await expect(engine.start()).resolves.toMatchObject({ status: 'synced' });
+
+    // 1. The production capture: one read, one mutation, published ciphertext.
+    const state = await captureForkProvenanceIntoVault(engine, async () => [keptEntry]);
+    expect(state).not.toBe(null);
+    // The remote raced in its own capture, so this write hits a CAS conflict and
+    // the merge unions both replicas' identities before the retry publishes.
+    expect((await publishedDocument(primary)).mirrorProvenance).toEqual([
+      keptEntry,
+      deletedLaterEntry,
+    ]);
+
+    // 2. Re-running the capture is a no-op, so an unlock cannot churn versions.
+    expect(await captureForkProvenanceIntoVault(engine, async () => [keptEntry])).toBe(null);
+
+    // 3. A later local deletion prunes its identity on the very next write — the
+    // server rejects an entry naming no restored row, which would block disable.
+    await engine.mutate(({ document: current }) => ({
+      ...current,
+      entities: {
+        ...current.entities,
+        transaction: (current.entities.transaction ?? []).map((row) =>
+          row.id === ENTITY_B
+            ? { ...row, rev: row.rev + 1, deletedAt: '2026-07-25T10:06:00.000Z' }
+            : row,
+        ),
+      },
+    }));
+    const published = await publishedDocument(primary);
+    expect(published.mirrorProvenance).toEqual([keptEntry]);
+
+    // 4. The disable carriage takes exactly that map into the restore payload,
+    // tombstone included on the entity side.
+    const payload = strictVaultDocumentForDisable(published);
+    expect(payload.mirrorProvenance).toEqual([keptEntry]);
+    expect(payload.entities.map((row) => [row.id, row.deletedAt])).toEqual([
+      [ENTITY_A, null],
+      [ENTITY_B, '2026-07-25T10:06:00.000Z'],
+    ]);
   });
 });
 

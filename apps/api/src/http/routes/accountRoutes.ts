@@ -149,6 +149,19 @@ export function createAccountRouter(ctx: AppContext, limiters: RateLimiters): Ro
     },
   );
 
+  // The enable wizard's capture read (docs/paranoid-design.md §7.1). It runs
+  // BEFORE enable, while `mirror_rows` still exists, and returns only the
+  // caller's own severed-fork identity map — never an active membership, another
+  // member's identity, or any chain metadata.
+  router.get(
+    '/paranoid/fork-provenance',
+    requireUser,
+    requireOwnerBrowserSession,
+    async (req, res) => {
+      res.json(await ctx.paranoidTransitions.forkProvenance(req.authUser!.id));
+    },
+  );
+
   // The widened bound is spent ONLY on an account that can legitimately restore.
   // `app.ts` defers the global parser for this one path before any auth runs, so
   // the choice has to be made here — this handler sits after `requireUser`, which

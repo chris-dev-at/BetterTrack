@@ -1,6 +1,11 @@
-import { VAULT_DOCUMENT_VERSION, type VaultDocument } from '@bettertrack/contracts';
+import {
+  VAULT_DOCUMENT_VERSION,
+  type VaultDocument,
+  type VaultMirrorProvenance,
+} from '@bettertrack/contracts';
 
 import {
+  getParanoidForkProvenance,
   getParanoidMediaState,
   purgeRetiredParanoidServer,
   readParanoidServerCandidate,
@@ -17,6 +22,7 @@ import {
   type GoogleDriveTokenClient,
 } from '../drive';
 import { createLocalDataHome } from '../localDataHome';
+import { captureForkProvenanceIntoVault } from '../mirrorProvenance';
 import { createIndexedDbVaultQuarantineStore } from '../quarantine';
 import { createServerBlobDataHome } from '../serverBlobDataHome';
 import { createVaultSyncEngine, type VaultSyncEngine, type VaultSyncState } from '../sync';
@@ -50,6 +56,8 @@ export interface UnlockedVaultDriveRuntimeOptions {
   api?: VaultMediaApi;
   sync?: VaultDriveSyncCoordinator;
   retirementProof?: VaultRetirementProofManager;
+  /** §7.1 capture read; defaults to `GET /account/paranoid/fork-provenance`. */
+  forkProvenance?: () => Promise<readonly VaultMirrorProvenance[]>;
 }
 
 export interface UnlockedVaultDriveRuntime {
@@ -168,6 +176,37 @@ export function createUnlockedVaultDriveRuntime(
       if (confirmed.changed) {
         throw new Error('Committed vault retirement proof material could not be confirmed.');
       }
+    }
+    await captureForkProvenance();
+  }
+
+  /**
+   * §7.1: fold the account's severed-fork identity map into the document on every
+   * unlocked session. This is what puts the map inside the ciphertext BEFORE the
+   * enable wizard's `enable()` purges `mirror_rows` — the map only exists while
+   * the fork's copy does, and after enable the read is empty and this no-ops.
+   *
+   * An unreachable capture read must not block unlocking an already-encrypted
+   * vault (Drive-only can be readable while the API is not), so a failed READ is
+   * skipped and retried on the next unlock. A read that succeeded and produced new
+   * provenance must land durably, exactly like the proof material above: a fork
+   * whose identities never reached the ciphertext could not be restored later.
+   */
+  async function captureForkProvenance(): Promise<void> {
+    const read =
+      options.forkProvenance ?? (async () => (await getParanoidForkProvenance()).provenance);
+    let captured: readonly VaultMirrorProvenance[];
+    try {
+      captured = await read();
+    } catch {
+      return;
+    }
+    requireActive();
+    const committed = await captureForkProvenanceIntoVault(sync, async () => captured);
+    if (committed == null) return;
+    requireActive();
+    if (committed.status !== 'synced' || committed.active == null || committed.pending != null) {
+      throw new Error('Severed-fork MIRRORCHAIN provenance was not durably synchronized.');
     }
   }
 

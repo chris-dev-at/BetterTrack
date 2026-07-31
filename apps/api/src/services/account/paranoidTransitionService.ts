@@ -3,15 +3,18 @@ import { lstat, rename, rm } from 'node:fs/promises';
 import {
   paranoidDisableRequestSchema,
   paranoidEnableRequestSchema,
+  paranoidForkProvenanceResponseSchema,
   PARANOID_TRANSITION_ERROR_CODES,
   type ParanoidDisableRequest,
   type ParanoidDisableResponse,
   type ParanoidEnableRequest,
   type ParanoidEnableResponse,
+  type ParanoidForkProvenanceResponse,
   type ParanoidRehydrationPostCommitPlan,
 } from '@bettertrack/contracts';
 
 import type { Database } from '../../data/db';
+import { createParanoidForkProvenanceRepository } from '../../data/repositories/paranoidRehydrationRepository';
 import {
   createParanoidTransitionTransactionRepository,
   finalizeRetiredCleartextExports,
@@ -96,6 +99,12 @@ export interface PreparedExportFileRetirement {
 export interface ParanoidTransitionService {
   enable(userId: string, request: ParanoidEnableRequest): Promise<ParanoidEnableResponse>;
   disable(userId: string, request: ParanoidDisableRequest): Promise<ParanoidDisableResponse>;
+  /**
+   * The enable wizard's §7.1 capture read: the caller's own severed-fork identity
+   * map, while `mirror_rows` still exists. Read-only and lock-free — it takes no
+   * transition lock precisely so it can run before the wizard commits to enabling.
+   */
+  forkProvenance(userId: string): Promise<ParanoidForkProvenanceResponse>;
   /** Non-sensitive admin-only mode/media/blob metadata; never returns blob bytes. */
   adminMetadata(userId: string): Promise<ParanoidAdminMetadata | null>;
   /**
@@ -198,6 +207,13 @@ export function createParanoidTransitionService(
     async adminMetadata(userId) {
       const metadata = await getParanoidAdminMetadata(deps.db, lockDb, [userId]);
       return metadata.get(userId) ?? null;
+    },
+
+    async forkProvenance(userId) {
+      const provenance = await createParanoidForkProvenanceRepository(
+        deps.db,
+      ).listRetainedForkProvenance(userId);
+      return paranoidForkProvenanceResponseSchema.parse({ provenance });
     },
 
     async enable(userId, request) {

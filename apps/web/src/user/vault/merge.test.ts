@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
-import type { VaultDocument, VaultEntity, VaultMergeRecord } from '@bettertrack/contracts';
+import type {
+  VaultDocument,
+  VaultEntity,
+  VaultMergeRecord,
+  VaultMirrorProvenance,
+} from '@bettertrack/contracts';
 
 import { VaultCryptoError } from './errors';
 import {
@@ -29,11 +34,16 @@ function entity(overrides: Partial<VaultEntity> = {}): VaultEntity {
   };
 }
 
-function document(entities: VaultEntity[], mergeLog: VaultMergeRecord[] = []): VaultDocument {
+function document(
+  entities: VaultEntity[],
+  mergeLog: VaultMergeRecord[] = [],
+  mirrorProvenance: VaultMirrorProvenance[] = [],
+): VaultDocument {
   return {
     schemaVersion: 1,
     entities: { transaction: entities },
     mergeLog,
+    mirrorProvenance,
   };
 }
 
@@ -458,5 +468,71 @@ describe('vault merge metadata and validation', () => {
       expect(caught).toBeInstanceOf(VaultCryptoError);
       expect(caught).toMatchObject({ code: 'envelope-invalid' });
     }
+  });
+});
+
+describe('severed-fork provenance across the CAS merge', () => {
+  const CHAIN = '018f0000-0000-7000-8000-0000000000d1';
+  const left: VaultMirrorProvenance = {
+    chainId: CHAIN,
+    membershipId: '018f0000-0000-7000-8000-0000000000d4',
+    kind: 'transaction',
+    mirrorId: '018f0000-0000-7000-8000-0000000000d2',
+    portfolioId: '018f0000-0000-7000-8000-0000000000d3',
+    localId: ENTITY_A,
+  };
+  const right: VaultMirrorProvenance = {
+    ...left,
+    mirrorId: '018f0000-0000-7000-8000-0000000000d5',
+    localId: ENTITY_B,
+  };
+
+  it('unions both replicas instead of dropping either identity map', () => {
+    const both = [entity({ id: ENTITY_A }), entity({ id: ENTITY_B })];
+    const merged = merge(document(both, [], [left]), document(both, [], [right]));
+    expect(merged.divergent).toBe(true);
+    expect(merged.document.mirrorProvenance).toEqual([left, right]);
+    expect(merge(document(both, [], [right]), document(both, [], [left]))).toEqual(merged);
+  });
+
+  /**
+   * Pruning happens against the MERGED entities: the union must not resurrect an
+   * alias for a row the winning merge tombstoned, because the server rejects an
+   * entry that names no restored row — which would block disable outright.
+   */
+  it('drops an identity whose row the merge deleted', () => {
+    const deleted = entity({ id: ENTITY_B, rev: 2, deletedAt: '2026-07-25T11:00:00Z' });
+    const merged = merge(
+      document([entity({ id: ENTITY_A }), entity({ id: ENTITY_B })], [], [left, right]),
+      document([entity({ id: ENTITY_A }), deleted], [], [left, right]),
+    );
+    expect(merged.document.mirrorProvenance).toEqual([left]);
+  });
+
+  /**
+   * ...and the dominance test prunes BOTH sides first, so a stale entry the loser
+   * still carries cannot force a divergent merge on every single reconcile.
+   */
+  it('still accepts a linear successor whose extra identity names a deleted row', () => {
+    const deleted = entity({ id: ENTITY_B, rev: 2, deletedAt: '2026-07-25T11:00:00Z' });
+    const successor = merge(
+      document([entity({ id: ENTITY_A }), deleted], [], [left]),
+      document([entity({ id: ENTITY_A }), deleted], [], [left, right]),
+      { leftVersion: 9, rightVersion: 4 },
+    );
+    expect(successor.divergent).toBe(false);
+  });
+
+  it('refuses to call a newer document a linear successor while it lacks an identity', () => {
+    // Same entities, but the older parent captured provenance the newer one has
+    // not seen: taking the newer document verbatim would lose the fork's proof.
+    const newer = merge(
+      { ...document([entity({ id: ENTITY_A })], [], []), schemaVersion: 1 },
+      document([entity({ id: ENTITY_A })], [], [left]),
+      { leftVersion: 9, rightVersion: 4 },
+    );
+    expect(newer.divergent).toBe(true);
+    expect(newer.document.mirrorProvenance).toEqual([left]);
+    expect(newer.vaultVersion).toBe(10);
   });
 });
