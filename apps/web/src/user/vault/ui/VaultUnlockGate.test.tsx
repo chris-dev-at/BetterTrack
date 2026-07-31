@@ -208,4 +208,25 @@ describe('VaultUnlockGate', () => {
       screen.queryByRole('button', { name: 'Discard the vault and start fresh' }),
     ).not.toBeInTheDocument();
   });
+
+  it('carries the enable confirmation when it replaces the wizard mid-unlock', async () => {
+    // The wizard's own "done" frame cannot survive the subtree swap the mode
+    // flip causes, so the gate it swapped in shows the confirmation instead —
+    // the one-way flow never ends on a bare passphrase prompt.
+    runtime.phase = 'unlocking';
+    renderGate({ mediaSet: ['server'] });
+
+    expect(screen.getByText('Paranoid mode is on. Your encrypted vault is ready.')).toBeVisible();
+    // An unlock owned by the wizard must not be joined by a second attempt.
+    await waitFor(() => expect(runtime.unlockFromDevice).not.toHaveBeenCalled());
+    expect(screen.getByRole('button', { name: 'Unlocking…' })).toBeDisabled();
+  });
+
+  it('shows no enable confirmation on an ordinary locked visit', () => {
+    renderGate({ mediaSet: ['server'] });
+
+    expect(
+      screen.queryByText('Paranoid mode is on. Your encrypted vault is ready.'),
+    ).not.toBeInTheDocument();
+  });
 });

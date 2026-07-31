@@ -49,6 +49,19 @@ export function VaultUnlockGate({
   const trustedAttempted = useRef(false);
   const driveSelected = mediaSet.includes('drive');
   const busy = runtime.phase === 'unlocking';
+  /*
+   * The enable hand-off, carried by the only signal that survives it. The
+   * wizard commits, flips the account mode from the receipt and starts the
+   * automatic first unlock in the same turn — which swaps the whole
+   * authenticated subtree for this gate, so §13's "migration progress → done"
+   * frame is unmounted before it can paint and the user's last sight of a
+   * one-way, irreversible flow would otherwise be a passphrase prompt.
+   * Mounting while an unlock is ALREADY in flight is exactly that hand-off:
+   * this gate never starts one at mount (the effect below requires 'locked'),
+   * so somebody else owns it. Read once at mount, and never a lie either way —
+   * an account that reaches this gate at all is paranoid, so its vault is on.
+   */
+  const [handedOverFromEnable] = useState(() => runtime.phase === 'unlocking');
 
   useEffect(() => {
     if (trustedAttempted.current || runtime.phase !== 'locked') return;
@@ -78,6 +91,9 @@ export function VaultUnlockGate({
   return (
     <AuthCard subtitle={t('vault.unlock.title')}>
       <form className="flex flex-col gap-4" onSubmit={submit}>
+        {handedOverFromEnable && errorKey == null ? (
+          <Alert tone="success">{t('vault.enable.done')}</Alert>
+        ) : null}
         <p className="bt-soft text-sm">{t('vault.unlock.description')}</p>
 
         <TextField

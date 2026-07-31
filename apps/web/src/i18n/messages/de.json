@@ -3598,6 +3598,7 @@
       "progress": {
         "preparing": "Geschützte Übertragung wird vorbereitet…",
         "migrate": "Vollständige Portfoliodaten werden auf diesem Gerät gesammelt…",
+        "validate": "Es wird geprüft, ob sich der vorbereitete Tresor öffnen und zurückholen lässt…",
         "encrypt": "Der Tresor wird auf diesem Gerät verschlüsselt…",
         "write-server": "Die verschlüsselte BetterTrack-Kopie wird gespeichert…",
         "write-drive": "Die verschlüsselte Google-Drive-Kopie wird gespeichert…",
@@ -3607,6 +3608,7 @@
       },
       "errors": {
         "migrate": "Deine aktuellen Daten konnten nicht vollständig gesammelt werden. Es wurde nichts geändert; versuche es nach Wiederherstellung der Verbindung erneut.",
+        "validate": "Der vorbereitete Tresor hat die Sicherheitsprüfung nicht bestanden, deshalb hat BetterTrack vor dem ersten Schreibvorgang abgebrochen. Es wurde nichts geändert und dein normales Konto ist unverändert.",
         "encrypt": "Dieser Browser konnte den Tresor nicht verschlüsseln. Es wurde nichts geändert.",
         "write-server": "Die verschlüsselte BetterTrack-Kopie konnte nicht gespeichert werden. Dein normales Konto ist unverändert.",
         "write-drive": "Die verschlüsselte Google-Drive-Kopie konnte nicht gespeichert werden. Prüfe deine Google-Anmeldung und versuche es erneut.",

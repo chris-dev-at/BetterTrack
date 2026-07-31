@@ -3598,6 +3598,7 @@
       "progress": {
         "preparing": "Preparing the protected migration…",
         "migrate": "Collecting your complete portfolio data on this device…",
+        "validate": "Checking that the prepared vault opens and restores…",
         "encrypt": "Encrypting your vault on this device…",
         "write-server": "Saving the encrypted BetterTrack copy…",
         "write-drive": "Saving the encrypted Google Drive copy…",
@@ -3607,6 +3608,7 @@
       },
       "errors": {
         "migrate": "Your current data could not be collected completely. Nothing was changed; retry after the connection recovers.",
+        "validate": "The prepared vault failed its safety check, so BetterTrack stopped before writing anything. Nothing was changed and your normal account is unchanged.",
         "encrypt": "This browser could not encrypt the vault. Nothing was changed.",
         "write-server": "The encrypted BetterTrack copy could not be saved. Your normal account is unchanged.",
         "write-drive": "The encrypted Google Drive copy could not be saved. Check your Google sign-in and retry.",

@@ -141,6 +141,13 @@ export function ParanoidEnableWizard({
     // The server transaction has committed. Switch the account-mode gate
     // immediately from the receipt; an authoritative refresh can follow in
     // the background without ever remounting normal portfolio endpoints.
+    // This also ends this component: the paranoid branch swaps the whole
+    // authenticated subtree (wizard, Privacy panel, its success notice) for
+    // `VaultUnlockGate` while the automatic unlock below runs, so §13's "done"
+    // half is shown THERE — see the hand-off note in `VaultUnlockGate`. The
+    // order is not negotiable: unlocking first would leave the cached mode at
+    // 'normal' with a decrypted session live, which `AccountModeRoot` revokes
+    // on sight as a cross-device disable.
     onEnabled(result.receipt);
     try {
       await runtime.unlockWithPassphrase(passphrase, {

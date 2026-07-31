@@ -23,15 +23,28 @@ import { VaultCryptoError } from '../errors';
 import { toStrictRestoreDocument } from '../paranoidDisable';
 import { serializeRecoveryKit, type RecoveryKitDownload } from '../recovery';
 
-export type VaultEnableStage =
-  | 'migrate'
-  | 'validate'
-  | 'encrypt'
-  | 'write-server'
-  | 'write-drive'
-  | 'verify-server'
-  | 'verify-drive'
-  | 'commit';
+/**
+ * Every stage the wizard can report, as a value — the union below is derived
+ * from it, so the two cannot drift. The wizard renders both
+ * `vault.enable.progress.<stage>` and `vault.enable.errors.<stage>` as
+ * template-literal keys, which the EN⇄DE parity test cannot see (a key absent
+ * from *both* catalogs is parity-clean and still renders the raw dot-path).
+ * `i18n/registry.test.ts` iterates this tuple instead — same drift-guard shape
+ * as `WEBHOOK_EVENT_TYPES` on the API side. Adding a stage without its two
+ * strings in both locales fails that test.
+ */
+export const VAULT_ENABLE_STAGES = [
+  'migrate',
+  'validate',
+  'encrypt',
+  'write-server',
+  'write-drive',
+  'verify-server',
+  'verify-drive',
+  'commit',
+] as const;
+
+export type VaultEnableStage = (typeof VAULT_ENABLE_STAGES)[number];
 
 export class VaultEnableError extends Error {
   constructor(

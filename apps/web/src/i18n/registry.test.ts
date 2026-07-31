@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'vitest';
 
 import { vaultStoreErrorKey } from '../user/vault/engine/errorCopy';
+import { VAULT_ENABLE_STAGES } from '../user/vault/ui/enable';
 import { VAULT_PORTFOLIO_STORE_ERROR_CODES } from '../user/vault/vaultPortfolioStore';
 import { LOCALES, localizedMessage, type MessageNode } from './registry';
 
@@ -56,6 +57,20 @@ test('registers copy for every vault portfolio-store error code in EN and DE', (
     const key = vaultStoreErrorKey({ code });
     for (const locale of Object.values(LOCALES)) {
       expect(localizedMessage(locale.code, key)).not.toBe(key);
+    }
+  }
+});
+
+test('registers progress + error copy for every paranoid enable stage in EN and DE', () => {
+  // `ParanoidEnableWizard` builds both keys with a template literal, so a stage
+  // missing from BOTH catalogs is parity-clean and still paints its raw
+  // dot-path — on the happy path of a one-way, irreversible flow. Iterate the
+  // stage tuple instead so the union and the catalogs stay bound.
+  for (const stage of VAULT_ENABLE_STAGES) {
+    for (const locale of Object.values(LOCALES)) {
+      for (const key of [`vault.enable.progress.${stage}`, `vault.enable.errors.${stage}`]) {
+        expect(localizedMessage(locale.code, key), `${locale.code}: ${key}`).not.toBe(key);
+      }
     }
   }
 });

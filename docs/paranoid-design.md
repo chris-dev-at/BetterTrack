@@ -643,10 +643,10 @@ Killed for paranoid accounts:
       Normal accounts are untouched by both: they keep reading
       `analytics/…/series`, unchanged.
 13. **The Home widget board — replaced by the portfolio page, and this is a
-    recorded deviation too.** Every widget under `apps/web/src/user/home/
-widgets/` reads `portfolioApi` directly instead of the `PortfolioStore`
-    seam (§10), so a paranoid board would mix server reads into an encrypted
-    account. `/` therefore renders `<PortfolioPage />` while the mode is
+    recorded deviation too.** Every widget under
+    `apps/web/src/user/home/widgets/` reads `portfolioApi` directly instead of
+    the `PortfolioStore` seam (§10), so a paranoid board would mix server reads
+    into an encrypted account. `/` therefore renders `<PortfolioPage />` while the mode is
     paranoid. The board's saved configuration is not touched — it lives in
     `localStorage`, never in the vault or on the server — so it comes back
     exactly as it was on disable. Porting the widgets to the store seam is the
@@ -662,6 +662,20 @@ calculators (client-side already), Forecast (client-side already —
 `apps/web/src/user/forecast/` is the precedent), discreet mode (composes:
 discreet hides amounts the client just computed), i18n, announcements,
 account export + deletion (§12).
+
+**Kept ≠ reachable while LOCKED.** The unlock gate replaces the whole
+authenticated subtree — exactly like the PIN gate it is modelled on — so every
+kept surface above is reachable only _after_ the vault opens on that device.
+That is deliberate (a gate that let arbitrary routes through would have to
+reason about which of them can touch the store) and it costs one real
+affordance: **`/oauth/authorize`**. A paranoid account with a locked vault must
+unlock before it can grant an app even a scope §8 keeps, such as
+`market:read`; once mounted, the consent page's own `portfolioScopeBlocked`
+refusal still applies to the portfolio-scoped half. The single exception is
+**`/account/delete`**, served directly from the locked branch (§12 names it
+kept, it is the stable public URL the store listing points at, and it reads no
+money data), so the gate is never a dead end. PD9 asserts both halves: consent
+behind the gate, deletion in front of it.
 
 ## 9. Server-side price alerts with zero portfolio exposure
 
@@ -839,7 +853,9 @@ issue).
    EN + DE strings.
 9. **PD9 — e2e + gate** (`diff:intermediate`): the §15 scenarios as
    Playwright specs (Drive mocked at the data-home boundary; the Drive-only
-   round trip is the headline spec), joining the V5-P14 suite.
+   round trip is the headline spec), joining the V5-P14 suite. Include the §8
+   locked-reachability pair: `/oauth/authorize` sits behind the unlock gate,
+   `/account/delete` in front of it.
 
 Order: PD1 ∥ PD2 first; PD3 after PD2; PD4 → PD5 after PD2; PD6/PD7 after
 PD5; PD8 after PD5 (PD3's server enforcement can land in parallel with
