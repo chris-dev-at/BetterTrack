@@ -17,6 +17,7 @@ vi.mock('../../../lib/webhooksApi', () => ({
 }));
 
 import { createWebhook, listWebhooks } from '../../../lib/webhooksApi';
+import { ResolvedPrivacyModeProvider } from '../../vault/usePrivacyMode';
 import { WebhooksPanel } from './WebhooksPanel';
 
 const EMPTY: WebhookSubscriptionListResponse = { subscriptions: [] };
@@ -132,5 +133,32 @@ describe('WebhooksPanel', () => {
 
     expect(await screen.findByText('https://receiver.test/hook')).toBeInTheDocument();
     expect(screen.getByText('Active')).toBeInTheDocument();
+  });
+
+  test('Paranoid mode marks a subscribed event it never fires instead of hiding it', async () => {
+    vi.mocked(listWebhooks).mockResolvedValue({
+      subscriptions: [
+        { ...ONE.subscriptions[0]!, eventTypes: ['alert.triggered', 'mirror.invite'] },
+      ],
+    });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 0 } } });
+    render(
+      <QueryClientProvider client={client}>
+        <ResolvedPrivacyModeProvider mode="paranoid">
+          <WebhooksPanel />
+        </ResolvedPrivacyModeProvider>
+      </QueryClientProvider>,
+    );
+
+    // The subscription really carries the event and starts delivering again as
+    // soon as paranoid mode is off, so the row states it — struck through.
+    expect(await screen.findByText('mirror.invite')).toBeInTheDocument();
+    expect(screen.getByText(/inactive in Paranoid mode/i)).toBeInTheDocument();
+    expect(screen.getByText('alert.triggered')).toBeInTheDocument();
+    // And the create form still refuses to offer the killed event.
+    const createForm = screen.getByRole('button', { name: 'Add webhook' }).closest('form')!;
+    expect(
+      within(createForm).queryByRole('checkbox', { name: /group portfolio invite/i }),
+    ).not.toBeInTheDocument();
   });
 });

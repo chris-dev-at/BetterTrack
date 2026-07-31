@@ -4,12 +4,12 @@ import type { CashMovementKind, CashPreviewResponse, CashSource } from '@bettert
 
 import { useT } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
-import { depositCash, previewCash, withdrawCash } from '../../lib/portfolioApi';
 import { useDebounce } from '../hooks/useDebounce';
 import { Dialog } from '../components/Dialog';
 import { Alert, Button, cx } from '../components/ui';
 import { MoneyText } from '../../ui';
 import { pickDefaultSourceId, sortSourcesMainFirst } from './cashSourceUtils';
+import { usePortfolioStore } from './PortfolioStoreProvider';
 
 export interface CashDialogProps {
   portfolioId: string;
@@ -54,6 +54,7 @@ export function CashDialog({
   today,
 }: CashDialogProps) {
   const t = useT();
+  const store = usePortfolioStore();
   const headingId = useId();
   const [kind, setKind] = useState<'deposit' | 'withdrawal'>(initialKind);
   const [amount, setAmount] = useState('');
@@ -91,11 +92,12 @@ export function CashDialog({
     const controller = new AbortController();
     const previewKind: CashMovementKind = kind;
     setPreviewLoading(true);
-    previewCash(
-      portfolioId,
-      { kind: previewKind, amountEur: debouncedAmount, sourceId: scopedSourceId },
-      controller.signal,
-    )
+    store
+      .previewCash(
+        portfolioId,
+        { kind: previewKind, amountEur: debouncedAmount, sourceId: scopedSourceId },
+        controller.signal,
+      )
       .then((res) => {
         if (!controller.signal.aborted) setPreview(res);
       })
@@ -106,7 +108,7 @@ export function CashDialog({
         if (!controller.signal.aborted) setPreviewLoading(false);
       });
     return () => controller.abort();
-  }, [portfolioId, kind, debouncedAmount, scopedSourceId]);
+  }, [portfolioId, kind, debouncedAmount, scopedSourceId, store]);
 
   const blockedByPreview = kind === 'withdrawal' && preview !== null && !preview.sufficient;
 
@@ -134,8 +136,8 @@ export function CashDialog({
         executedAt: `${date}T00:00:00.000Z`,
         note: note.trim() === '' ? null : note.trim(),
       };
-      if (kind === 'deposit') await depositCash(portfolioId, body);
-      else await withdrawCash(portfolioId, body);
+      if (kind === 'deposit') await store.depositCash(portfolioId, body);
+      else await store.withdrawCash(portfolioId, body);
       onSubmitted();
       onClose();
     } catch (err) {

@@ -27,6 +27,7 @@ import {
 import { EmptyState, MarketStateBadge, MoneyText, Skeleton } from '../../ui';
 import { Sparkline } from '../../ui/charts';
 import { Alert, Button } from '../components/ui';
+import { NormalModeOnly } from '../vault/ui/ParanoidSurfaceGate';
 
 // ─── Watchlist row ────────────────────────────────────────────────────────────
 
@@ -334,7 +335,9 @@ function WatchlistZone() {
         <h2 id="watchlist-heading" className="text-lg font-semibold bt-soft">
           {t('workboard.overview.watchlist.heading')}
         </h2>
-        <WatchlistSharingToggle />
+        <NormalModeOnly>
+          <WatchlistSharingToggle />
+        </NormalModeOnly>
       </div>
 
       {removeError ? <Alert tone="error">{removeError}</Alert> : null}

@@ -38,6 +38,18 @@ describe('ContributionTable', () => {
     expect(within(row).getByText('+12,00 %')).toBeInTheDocument();
   });
 
+  test('drops the contribution column instead of showing another metric under it', () => {
+    render(<ContributionTable rows={[{ ...ROW, contributionPct: null }]} baseCurrency="EUR" />);
+    const table = screen.getByRole('table');
+    expect(within(table).queryByRole('columnheader', { name: 'Contribution' })).toBeNull();
+    // The remaining holdings facts still render — only the period share is gone.
+    expect(within(table).getByText('50,00 %')).toBeInTheDocument();
+    expect(within(table).getAllByRole('row')[1]!.querySelectorAll('td')).toHaveLength(5);
+    expect(
+      screen.getByText(/Contribution over the period is not shown for encrypted accounts/),
+    ).toBeInTheDocument();
+  });
+
   test('shows an empty state when the visible set is empty', () => {
     render(<ContributionTable rows={[]} baseCurrency="EUR" />);
     expect(screen.queryByRole('table')).not.toBeInTheDocument();

@@ -1053,6 +1053,7 @@
         "descriptionPlaceholder": "e.g. Home automation",
         "eventsLegend": "Events",
         "eventRequired": "Select at least one event.",
+        "eventInactive": "inactive in Paranoid mode",
         "create": "Add webhook",
         "creating": "Adding…",
         "createError": "Could not add the webhook. Please try again.",
@@ -1201,7 +1202,8 @@
         },
         "empty": {
           "title": "No API keys yet"
-        }
+        },
+        "scopeInactive": "inactive in Paranoid mode"
       },
       "oauth": {
         "yourApps": "Your apps",
@@ -1713,7 +1715,8 @@
         "cost": "Cost",
         "pnl": "P/L",
         "weight": "Weight",
-        "contribution": "Contribution"
+        "contribution": "Contribution",
+        "periodUnavailable": "Contribution over the period is not shown for encrypted accounts — measuring it needs per-asset history the server never sees."
       },
       "ai": {
         "title": "AI insights",
@@ -3533,14 +3536,222 @@
     }
   },
   "vault": {
+    "gate": {
+      "unavailableTitle": "Your vault is staying locked",
+      "unavailableBody": "BetterTrack could not verify this account’s privacy mode. Try again when the connection is available.",
+      "invalidMedia": "The encrypted storage choice is unavailable. No portfolio data has been opened."
+    },
+    "scopes": {
+      "unavailable": "This app requests portfolio access, which is unavailable while Paranoid mode is on."
+    },
+    "lock": {
+      "action": "Lock vault"
+    },
+    "enable": {
+      "title": "Enable Paranoid mode",
+      "step": "Step {{current}} of {{total}}",
+      "steps": {
+        "1": {
+          "title": "What changes"
+        },
+        "2": {
+          "title": "Choose encrypted storage"
+        },
+        "3": {
+          "title": "Protect your vault"
+        },
+        "4": {
+          "title": "Moving your data"
+        }
+      },
+      "changesIntro": "BetterTrack will move your money data into a client-encrypted vault. These server-powered features turn off:",
+      "killList": {
+        "sharing": "Sharing, shared items, comments, reactions and Mirrorchain",
+        "serverReads": "Server portfolio analytics, tax exports, Live Mode and AI insights",
+        "imports": "Broker and bank CSV imports",
+        "automation": "Server standing-order execution and portfolio jobs",
+        "publicProfile": "Your public profile and portfolio-scoped API access"
+      },
+      "keptSummary": "Manual portfolio work, client analytics and tax, Forecast, private watchlists, assets, alerts, friendships and chat remain available.",
+      "media": {
+        "server": {
+          "title": "BetterTrack encrypted storage",
+          "body": "Encrypted on BetterTrack; only you can read it."
+        },
+        "driveCopy": "Also keep a verified copy in my Google Drive",
+        "advanced": "Advanced",
+        "driveOnly": {
+          "title": "Google Drive only",
+          "body": "Nothing on BetterTrack servers — not even encrypted."
+        }
+      },
+      "passphraseDistinct": "Create a new vault passphrase. It must be different from your BetterTrack login password and never goes to the server.",
+      "passphrase": "Vault passphrase",
+      "passphraseConfirm": "Confirm vault passphrase",
+      "passphraseMismatch": "Choose a strong vault passphrase and enter it the same way twice.",
+      "downloadRecoveryKit": "Download recovery kit",
+      "downloadAgain": "Download recovery kit again",
+      "kitStored": "I have stored my recovery kit safely.",
+      "lostKeyAcknowledgment": "If I lose my vault passphrase and my recovery kit, my data is gone forever. BetterTrack cannot recover it.",
+      "action": "Enable Paranoid mode",
+      "done": "Paranoid mode is on. Your encrypted vault is ready.",
+      "progress": {
+        "preparing": "Preparing the protected migration…",
+        "migrate": "Collecting your complete portfolio data on this device…",
+        "encrypt": "Encrypting your vault on this device…",
+        "write-server": "Saving the encrypted BetterTrack copy…",
+        "write-drive": "Saving the encrypted Google Drive copy…",
+        "verify-server": "Verifying the BetterTrack copy…",
+        "verify-drive": "Verifying the Google Drive copy…",
+        "commit": "Finalizing Paranoid mode…"
+      },
+      "errors": {
+        "migrate": "Your current data could not be collected completely. Nothing was changed; retry after the connection recovers.",
+        "encrypt": "This browser could not encrypt the vault. Nothing was changed.",
+        "write-server": "The encrypted BetterTrack copy could not be saved. Your normal account is unchanged.",
+        "write-drive": "The encrypted Google Drive copy could not be saved. Check your Google sign-in and retry.",
+        "verify-server": "The BetterTrack copy could not be verified. Your normal account is unchanged.",
+        "verify-drive": "The Google Drive copy could not be verified. Your normal account is unchanged.",
+        "commit": "BetterTrack did not switch modes. Your normal account remains usable; resolve any transition warning and retry.",
+        "mirrorchainActive": "Leave your MIRRORCHAIN group portfolio and keep its fork before enabling Paranoid mode.",
+        "importInFlight": "Finish or cancel the active import before enabling Paranoid mode.",
+        "exportInFlight": "Wait for the account export to finish, then enable Paranoid mode.",
+        "mediaNotReady": "The selected encrypted copy was not ready for the final switch. Verify the storage locations and retry.",
+        "transitionConflict": "Another privacy transition is still finishing. Wait a moment and retry.",
+        "unknown": "Paranoid mode could not be enabled. Your normal account is unchanged."
+      }
+    },
+    "unlock": {
+      "title": "Unlock your vault",
+      "description": "Your money data stays encrypted until this device unlocks it.",
+      "passphrase": "Vault passphrase",
+      "keepUnlocked": "Keep unlocked on this device",
+      "keepUnlockedHint": "A manual lock, sign-out, or your existing PIN idle lock revokes this device key.",
+      "recoveryKit": "Use a recovery kit",
+      "recoveryKitHint": "Choose bettertrack-recovery-kit.txt instead of entering the passphrase.",
+      "driveGesture": "Google may ask you to sign in so this device can read the encrypted Drive copy.",
+      "action": "Unlock vault",
+      "unlocking": "Unlocking…",
+      "stuck": {
+        "title": "Can’t unlock this vault?",
+        "body": "BetterTrack cannot reset a vault passphrase and keeps no copy of your key. Without the passphrase, the recovery kit, or a device that is still unlocked, the encrypted data is gone for good — this is the trade-off you confirmed when you turned Paranoid mode on.",
+        "keptHint": "Starting fresh discards the encrypted vault and returns this account to a normal, empty one. Everything that was never in the vault — your sign-in, friends, chats, price alerts, watchlists and settings — stays exactly as it is.",
+        "driveLeftover": "The encrypted copy in your Google Drive is left where it is. It can no longer be opened by anyone, including you — remove the bettertrack-vault file from Drive yourself if you want it gone.",
+        "confirmLabel": "Type your username ({{username}}) to confirm",
+        "passwordLabel": "Current account password",
+        "codeLabel": "Authenticator code",
+        "useCode": "Use an authenticator code instead",
+        "usePassword": "Use your password instead",
+        "credentialHint": "Your account password (the one you sign in with) — not the vault passphrase. BetterTrack verifies it before anything is discarded.",
+        "action": "Discard the vault and start fresh",
+        "working": "Discarding…",
+        "error": "The vault could not be discarded. Nothing changed — try again when the connection is available."
+      },
+      "errors": {
+        "wrongPassphrase": "That vault passphrase is incorrect.",
+        "recoveryKit": "That recovery kit is invalid or belongs to another vault.",
+        "recoveryKitUnreadable": "That file could not be read. Choose the recovery kit again.",
+        "updateRequired": "This vault needs a newer BetterTrack version. Update before trying again.",
+        "corrupt": "The encrypted vault failed its integrity check. Choose a known-good copy to restore.",
+        "custody": "This browser could not securely keep the vault unlocked. Unlock without device storage or try another browser.",
+        "unavailable": "The encrypted vault is unavailable right now. Check the selected storage connection and retry."
+      }
+    },
     "sync": {
       "synced": "Encrypted vault synced",
       "syncing": "Encrypted changes are waiting to sync",
       "offline": "Encrypted changes are saved locally while offline",
       "needsAttention": "Vault sync needs attention",
+      "status": {
+        "synced": "Synced",
+        "syncing": "Syncing",
+        "offline": "Offline",
+        "needs-attention": "Needs attention",
+        "disconnected": "Disconnected"
+      },
+      "popoverTitle": "Encrypted vault sync",
+      "medium": {
+        "server": "BetterTrack",
+        "drive": "Google Drive"
+      },
+      "lastWrite": "Last encrypted write",
+      "never": "Never",
+      "pendingWrites": "Encrypted changes are safe on this device and still waiting for a remote copy.",
+      "problem": {
+        "conflict": "Two encrypted copies changed independently. Choose the copy to restore.",
+        "corrupt": "A storage copy failed its integrity check.",
+        "unresolved": "A pending vault conflict needs your choice before syncing can continue."
+      },
+      "reauthorize": "Sign in to Google and resume",
+      "reauthorizing": "Connecting…",
+      "restore": "Storage and restore options",
       "drive": {
         "signIn": "Sign in to Google to sync"
       }
+    },
+    "settings": {
+      "title": "Paranoid mode",
+      "normal": "Client-encrypted vault",
+      "normalHint": "Encrypt money data in this browser before it reaches your chosen storage.",
+      "enable": "Set up",
+      "mediaHint": "Every selected location stores ciphertext only.",
+      "media": {
+        "server": "Encrypted on BetterTrack",
+        "drive": "Google Drive only",
+        "both": "BetterTrack + Google Drive"
+      },
+      "manageMedia": "Manage storage",
+      "whatsOff": "What’s off in Paranoid mode",
+      "off": {
+        "sharing": "Portfolio sharing, shared items, Mirrorchain, comments and reactions",
+        "publicProfile": "Public profile and portfolio-scoped API access",
+        "serverAnalytics": "Server analytics, Live Mode, AI insights and server tax export",
+        "imports": "Broker and bank CSV imports",
+        "automation": "Server standing orders and portfolio jobs"
+      },
+      "security": "Vault security",
+      "recoveryKit": "Recovery kit",
+      "recoveryHint": "The kit unlocks this vault without the passphrase. Store it offline.",
+      "downloadKit": "Download",
+      "kitDownloaded": "A fresh recovery kit was downloaded.",
+      "kitRequiresPassphrase": "Lock and unlock with your passphrase before exporting a kit; a trusted device key cannot be extracted.",
+      "changePassphrase": "Change vault passphrase",
+      "passphraseHint": "This re-wraps the same vault key; your existing recovery kit stays valid.",
+      "currentPassphrase": "Current vault passphrase",
+      "newPassphrase": "New vault passphrase",
+      "confirmPassphrase": "Confirm new passphrase",
+      "changeAction": "Change passphrase",
+      "passphraseInvalid": "Choose a strong new passphrase and enter it the same way twice.",
+      "passphraseError": "The passphrase could not be changed. The previous vault remains authoritative.",
+      "passphraseChanged": "The vault passphrase was changed. Unlock again with the new passphrase.",
+      "rotateKey": "Rotate vault key",
+      "rotationHint": "This fully re-encrypts the vault. Download and safely store the replacement recovery kit before the old key is retired.",
+      "rotationAcknowledgment": "I understand that the downloaded replacement kit is required if I lose the passphrase.",
+      "rotateAction": "Rotate key",
+      "rotationError": "The vault key could not be rotated safely. Keep both recovery kits and retry after every storage copy is synced.",
+      "rotationDone": "The vault key was rotated. Unlock again after storing the replacement recovery kit.",
+      "restore": {
+        "title": "Restore encrypted copy",
+        "hint": "Check the selected storage locations for a conflict, corrupt copy or verified restore point. BetterTrack never opens a candidate until its key and integrity are verified.",
+        "check": "Check storage copies",
+        "checking": "Checking…",
+        "current": "Every selected encrypted copy is synchronized; no restore is needed.",
+        "attention": "A storage copy needs attention. Keep the vault locked on other devices and use the restore choice shown for that copy.",
+        "error": "The encrypted storage copies could not be checked. Nothing was replaced."
+      },
+      "danger": "Vault reset and disable",
+      "startFresh": "Start fresh",
+      "startFreshWarning": "This permanently deletes every portfolio, transaction and expense in the encrypted vault and leaves one empty portfolio to start from. The account stays paranoid.",
+      "startFreshConfirm": "I understand that all current vault data will be permanently replaced.",
+      "startFreshAction": "Replace with an empty portfolio",
+      "freshDone": "The encrypted vault now holds a single empty portfolio.",
+      "freshError": "The emptied vault could not be verified on every selected storage location. Nothing was replaced.",
+      "disable": "Disable Paranoid mode",
+      "disableWarning": "BetterTrack will restore the unlocked data to a normal server-readable account. The transition commits all rows or none.",
+      "disableConfirm": "I want to rehydrate this unlocked vault and disable Paranoid mode.",
+      "disableBlocked": "This vault has unsynced changes on more than one device. Resolve the sync state first — disabling now would keep only the copy this device shows.",
+      "disableAction": "Restore normal mode",
+      "disableError": "Normal mode could not be restored completely. The account remains paranoid; retry resumes the same rehydration."
     }
   },
   "announcements": {
@@ -4434,7 +4645,6 @@
       "search": "Open search",
       "friends": "Open People",
       "importsExports": "Imports & exports",
-      "security": "Security settings",
       "aiInsights": "AI insights in Analysis",
       "nlBuilder": "Blueprint builder",
       "standingOrders": "Standing orders in Forecasts",
@@ -4566,14 +4776,6 @@
       "p1": "Checkpoints you can verify and restore from",
       "p2": "Portable exports in an open manifest format",
       "p3": "Retention rules you control"
-    },
-    "paranoid": {
-      "title": "Paranoid mode",
-      "body": "Your data stays with just you: the portfolio lives in a client-encrypted vault — on BetterTrack, your Google Drive, both or Drive-only — and the server can never read it. The client foundations are already merged; the enable flow lands here.",
-      "p1": "Client-side encryption with a key that never leaves your devices",
-      "p2": "Storage media you choose: server, Drive, both or Drive-only",
-      "p3": "Money math computed on your device with the same audited engine",
-      "p4": "Lost key means lost data — by design, with a forced recovery kit"
     },
     "mcp": {
       "title": "MCP",

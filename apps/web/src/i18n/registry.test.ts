@@ -90,3 +90,30 @@ describe.each(nonDefaultLocales.map((l) => [l.code, l.messages] as const))(
     });
   },
 );
+
+test('paranoid custody and destructive copy keeps the binding tone in EN and DE', () => {
+  expect(localizedMessage('en', 'vault.enable.lostKeyAcknowledgment')).toBe(
+    'If I lose my vault passphrase and my recovery kit, my data is gone forever. BetterTrack cannot recover it.',
+  );
+  expect(localizedMessage('de', 'vault.enable.lostKeyAcknowledgment')).toBe(
+    'Wenn ich meine Tresor-Passphrase und mein Wiederherstellungspaket verliere, sind meine Daten für immer verloren. BetterTrack kann sie nicht wiederherstellen.',
+  );
+
+  for (const locale of ['en', 'de']) {
+    expect(localizedMessage(locale, 'vault.enable.media.driveOnly.body')).toMatch(
+      locale === 'de' ? /nicht einmal verschlüsselt/i : /not even encrypted/i,
+    );
+    expect(localizedMessage(locale, 'vault.settings.whatsOff')).toMatch(
+      locale === 'de' ? /aus ist/i : /what.s off/i,
+    );
+    expect(localizedMessage(locale, 'vault.sync.needsAttention')).toMatch(
+      locale === 'de' ? /Aufmerksamkeit/i : /needs attention/i,
+    );
+    expect(localizedMessage(locale, 'vault.settings.startFreshConfirm')).toMatch(
+      locale === 'de' ? /dauerhaft ersetzt/i : /permanently replaced/i,
+    );
+    expect(localizedMessage(locale, 'vault.settings.disableConfirm')).toMatch(
+      locale === 'de' ? /deaktivieren/i : /disable Paranoid mode/i,
+    );
+  }
+});

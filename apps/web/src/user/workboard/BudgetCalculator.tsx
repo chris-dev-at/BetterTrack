@@ -6,7 +6,6 @@ import type { AllocatePosition, AllocateRequest, AllocateResponse } from '@bette
 import { allocateConglomerate } from '../../lib/conglomerateApi';
 import { cx } from '../../lib/cx';
 import { formatMoney, formatPercent, formatQuantity, formatSignedPercent } from '../../lib/format';
-import { listPortfolios } from '../../lib/portfolioApi';
 import { useT } from '../../i18n';
 import type { TranslateFn } from '../../i18n';
 import { EmptyState, MoneyText, Skeleton, StatCard } from '../../ui';
@@ -16,6 +15,7 @@ import {
   type TransactionDialogAsset,
   type TransactionPrefillRow,
 } from '../components/TransactionDialog';
+import { usePortfolioStore } from '../portfolio/PortfolioStoreProvider';
 
 type AllocateMode = AllocateRequest['mode'];
 
@@ -271,6 +271,7 @@ function toPrefillRows(positions: AllocatePosition[]): TransactionPrefillRow[] {
  */
 export function BudgetCalculator({ conglomerateId, className }: BudgetCalculatorProps) {
   const t = useT();
+  const store = usePortfolioStore();
   const queryClient = useQueryClient();
   const [budget, setBudget] = useState('1000');
   const [budgetStep, setBudgetStep] = useState<BudgetStep>(1);
@@ -281,7 +282,7 @@ export function BudgetCalculator({ conglomerateId, className }: BudgetCalculator
 
   const portfoliosQuery = useQuery({
     queryKey: ['portfolios'],
-    queryFn: ({ signal }) => listPortfolios(signal),
+    queryFn: ({ signal }) => store.listPortfolios(signal),
     staleTime: 60_000,
   });
   const portfolioId = useMemo(() => {

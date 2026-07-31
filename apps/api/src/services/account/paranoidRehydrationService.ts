@@ -2371,26 +2371,38 @@ export function createParanoidRehydrationService(
         throw new ParanoidRehydrationError('INVALID_REFERENCE', 'rehydration request is malformed');
       }
       const normalizedRequest = parsed.data;
+      // The lost-key destruction exit restores nothing. Keep the flag explicit
+      // so an accidentally empty ordinary document still fails the graph
+      // invariants instead of silently wiping the account.
+      const discarding = normalizedRequest.discard === true;
+      if (discarding && normalizedRequest.document.entities.length > 0) {
+        throw new ParanoidRehydrationError(
+          'INVALID_REFERENCE',
+          'a discarding rehydration must not carry restore rows',
+        );
+      }
       validateCustomAssetFacts(userId, normalizedRequest.document.entities);
       // Tombstones exist for client-side merge convergence only. Construct and
       // validate the restore graph from live facts before any database mutation.
       const entities = liveEntities(normalizedRequest.document);
-      validateGraph(userId, entities);
-      // Authenticated BEFORE the ledger replay and before any transaction: which
-      // movements may legitimately overdraw is a fact about the chain oplog, not a
-      // claim the decrypted document is allowed to make (§7.1).
-      const authenticatedChainMovementIds = await proveForkProvenance(
-        createParanoidForkProvenanceRepository(deps.db),
-        userId,
-        normalizedRequest.document,
-        entities,
-      );
-      validateLedgerSolvency(
-        entities,
-        transactionQuantityRoundingTolerance,
-        authenticatedChainMovementIds,
-        deps.testOnlyObserveSolvencyReplay,
-      );
+      if (!discarding) {
+        validateGraph(userId, entities);
+        // Authenticated BEFORE the ledger replay and before any transaction:
+        // which movements may legitimately overdraw is a fact about the chain
+        // oplog, not a claim the decrypted document is allowed to make (§7.1).
+        const authenticatedChainMovementIds = await proveForkProvenance(
+          createParanoidForkProvenanceRepository(deps.db),
+          userId,
+          normalizedRequest.document,
+          entities,
+        );
+        validateLedgerSolvency(
+          entities,
+          transactionQuantityRoundingTolerance,
+          authenticatedChainMovementIds,
+          deps.testOnlyObserveSolvencyReplay,
+        );
+      }
 
       return withParanoidRehydrationTransaction(deps.db, userId, async (tx) => {
         const transition = createParanoidRehydrationTransactionRepository(tx);
@@ -2418,10 +2430,9 @@ export function createParanoidRehydrationService(
         const sourceRows = createParanoidRehydrationSourceRepository(tx);
         await ensureNoExistingRestorableRows(sourceRows, userId);
         const retainedIdentityIds = await sourceRows.listRetainedCustomAssetIdentityIds(userId);
-        const retireIdentityIds = retainedCustomAssetRetireIds(
-          retainedIdentityIds,
-          normalizedRequest.document.entities,
-        );
+        const retireIdentityIds = discarding
+          ? retainedIdentityIds
+          : retainedCustomAssetRetireIds(retainedIdentityIds, normalizedRequest.document.entities);
         const referencedAssets = await resolveReferencedAssets(sourceRows, entities);
         validateStandingOrderCurrencies(entities, referencedAssets);
 

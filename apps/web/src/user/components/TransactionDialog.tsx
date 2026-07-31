@@ -16,13 +16,6 @@ import { SOURCE_TAG_MANUAL } from '@bettertrack/contracts';
 import { useI18n, useT, type TranslateFn } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
 import { getAssetDailyCloses } from '../../lib/assetApi';
-import {
-  createTransactions,
-  getPortfolioTaxSettings,
-  previewCash,
-  updatePortfolio,
-  updateTransaction,
-} from '../../lib/portfolioApi';
 import { pickDefaultSourceId } from '../portfolio/cashSourceUtils';
 import { formatMoney, formatQuantity } from '../../lib/format';
 import { amountToInput, truncateMoneyForInput } from '../../lib/moneyInput';
@@ -33,6 +26,7 @@ import { AssetSearchBox } from './AssetSearchBox';
 import { Dialog } from './Dialog';
 import { dateForPrice, priceForDate, toDailyPoints, type DailyPoint } from './priceDateLink';
 import { Alert, Button, cx } from './ui';
+import { usePortfolioStore } from '../portfolio/PortfolioStoreProvider';
 
 /** Compact native-currency suffix for the Price field (falls back to the code). */
 function currencySuffix(code: string): string {
@@ -475,6 +469,7 @@ export function TransactionDialog(props: TransactionDialogProps) {
   const isEdit = !!transaction;
   const today = isoToday(props.today);
   const headingId = useId();
+  const store = usePortfolioStore();
 
   // THIS portfolio's effective tax mode (issue #636: override ?? user default ??
   // none). The manual per-trade tax field is offered only while recording a SELL
@@ -482,7 +477,7 @@ export function TransactionDialog(props: TransactionDialogProps) {
   // recording time, §16), so this is fetched for create only.
   const taxSettingsQuery = useQuery({
     queryKey: ['portfolio', 'taxSettings', portfolioId],
-    queryFn: ({ signal }) => getPortfolioTaxSettings(portfolioId, signal),
+    queryFn: ({ signal }) => store.getPortfolioTaxSettings(portfolioId, signal),
     staleTime: 30_000,
     enabled: !isEdit,
   });
@@ -686,16 +681,17 @@ export function TransactionDialog(props: TransactionDialogProps) {
     }
     const controller = new AbortController();
     setCashPreviewLoading(true);
-    previewCash(
-      portfolioId,
-      {
-        kind: cashRowSide === 'sell' ? 'sell_proceeds' : 'buy',
-        amountEur: debouncedCashAmount,
-        sourceId: cashSourceId ?? undefined,
-        asOfDate: asOfDateForPreview,
-      },
-      controller.signal,
-    )
+    store
+      .previewCash(
+        portfolioId,
+        {
+          kind: cashRowSide === 'sell' ? 'sell_proceeds' : 'buy',
+          amountEur: debouncedCashAmount,
+          sourceId: cashSourceId ?? undefined,
+          asOfDate: asOfDateForPreview,
+        },
+        controller.signal,
+      )
       .then((res) => {
         if (controller.signal.aborted) return;
         setCashPreview(res);
@@ -724,6 +720,7 @@ export function TransactionDialog(props: TransactionDialogProps) {
     cashRowSide,
     debouncedCashAmount,
     cashSourceId,
+    store,
     asOfDateForPreview,
   ]);
 
@@ -921,17 +918,17 @@ export function TransactionDialog(props: TransactionDialogProps) {
         // the mirror seam skips the guard.
         if (transaction.mirror) patch.baseSeq = transaction.mirror.version;
         if (Object.keys(patch).length > 0) {
-          await updateTransaction(portfolioId, transaction.id, patch);
+          await store.updateTransaction(portfolioId, transaction.id, patch);
         }
       } else {
-        await createTransactions(portfolioId, inputs);
+        await store.createTransactions(portfolioId, inputs);
         // Sticky default (§14): remember this choice for next time, but only
         // when it actually changed — the toggle itself is always shown, never
         // silently pre-applied.
         if (cashRow && cashRow.cashLinked !== (props.defaultPayFromCash ?? false)) {
-          await updatePortfolio(portfolioId, { defaultPayFromCash: cashRow.cashLinked }).catch(
-            () => undefined,
-          );
+          await store
+            .updatePortfolio(portfolioId, { defaultPayFromCash: cashRow.cashLinked })
+            .catch(() => undefined);
         }
       }
       onSubmitted();

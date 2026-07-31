@@ -10,11 +10,11 @@ import {
 
 import { useT } from '../../i18n';
 import type { TranslateFn } from '../../i18n';
-import { getValuePoints, putValuePoints, updateCustomAsset } from '../../lib/portfolioApi';
 import { Skeleton } from '../../ui';
 import { Dialog } from '../components/Dialog';
 import { Alert, Button } from '../components/ui';
 import { customCategoryLabels } from './customCategories';
+import { usePortfolioStore } from './PortfolioStoreProvider';
 
 export interface ValuePointEditorAsset {
   id: string;
@@ -88,6 +88,7 @@ function validate(t: TranslateFn, rows: EditRow[]): { points?: ValuePoint[]; err
  */
 export function ValuePointEditor({ asset, onClose, onSaved, today }: ValuePointEditorProps) {
   const t = useT();
+  const store = usePortfolioStore();
   const [rows, setRows] = useState<EditRow[]>([]);
   const [category, setCategory] = useState<CustomAssetCategory>(asset.category);
   const [smoothing, setSmoothing] = useState(asset.smoothing);
@@ -98,7 +99,7 @@ export function ValuePointEditor({ asset, onClose, onSaved, today }: ValuePointE
 
   const { data, isLoading, isError } = useQuery({
     queryKey: ['custom-asset', asset.id, 'value-points'],
-    queryFn: ({ signal }) => getValuePoints(asset.id, signal),
+    queryFn: ({ signal }) => store.getValuePoints(asset.id, signal),
     staleTime: 0,
   });
 
@@ -135,9 +136,9 @@ export function ValuePointEditor({ asset, onClose, onSaved, today }: ValuePointE
       if (category !== asset.category) patch.category = category;
       if (smoothing !== asset.smoothing) patch.smoothing = smoothing;
       if (patch.category !== undefined || patch.smoothing !== undefined) {
-        await updateCustomAsset(asset.id, patch);
+        await store.updateCustomAsset(asset.id, patch);
       }
-      await putValuePoints(asset.id, points!);
+      await store.putValuePoints(asset.id, points!);
       onSaved();
       onClose();
     } catch {

@@ -4,6 +4,8 @@ import { useT } from '../../i18n';
 import { LocalNav } from '../components/LocalNav';
 import { SECTION_NAV, useSectionNavItems } from '../components/sectionNav';
 import { SubTabLink } from '../../ui/origin';
+import { isParanoidKilledPath } from '../vault/ui/ParanoidSurfaceGate';
+import { useResolvedPrivacyMode } from '../vault/usePrivacyMode';
 
 /**
  * The portfolio workspace (PRODUCT_BLUEPRINT.md §4 "Portfolio-local
@@ -40,6 +42,7 @@ export function PortfolioWorkspace() {
 export function CashFlowLayout() {
   const t = useT();
   const location = useLocation();
+  const paranoid = useResolvedPrivacyMode() === 'paranoid';
 
   const subtabs = [
     { to: '/portfolio/cash-flow', label: t('cashflow.tabs.overview'), end: true },
@@ -54,11 +57,13 @@ export function CashFlowLayout() {
   return (
     <div>
       <nav aria-label={t('cashflow.aria')} className="bt-subtabs" style={{ marginBottom: 20 }}>
-        {subtabs.map((tab) => (
-          <SubTabLink end={tab.end} key={tab.to} to={tab.to}>
-            {tab.label}
-          </SubTabLink>
-        ))}
+        {subtabs
+          .filter((tab) => !paranoid || !isParanoidKilledPath(tab.to))
+          .map((tab) => (
+            <SubTabLink end={tab.end} key={tab.to} to={tab.to}>
+              {tab.label}
+            </SubTabLink>
+          ))}
       </nav>
       <Outlet key={location.pathname} />
     </div>

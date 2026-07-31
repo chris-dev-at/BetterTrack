@@ -1,7 +1,7 @@
 import type { AnalyticsContributionRow } from '@bettertrack/contracts';
 
 import { useT } from '../../../i18n';
-import { formatPercent, formatSignedPercent } from '../../../lib/format';
+import { EM_DASH, formatPercent, formatSignedPercent } from '../../../lib/format';
 import { MoneyText } from '../../../ui';
 
 /**
@@ -12,6 +12,11 @@ import { MoneyText } from '../../../ui';
  * so the visible rows sum to the filtered total return. Reacts to the same
  * visibility / group filters as the chart (the parent re-requests; hidden rows
  * simply drop out of `contributions`).
+ *
+ * When no row can state that period share (`contributionPct` null — a paranoid
+ * account derives its holdings client-side and has no per-asset history), the
+ * column is dropped with one line of explanation. It is never filled with a
+ * different quantity under the same header.
  *
  * Phone-friendly: the table scrolls horizontally rather than clipping (§7.4).
  */
@@ -31,6 +36,8 @@ export function ContributionTable({
       </p>
     );
   }
+
+  const showContribution = rows.some((row) => row.contributionPct !== null);
 
   return (
     <div className="-mx-4 overflow-x-auto px-4 sm:mx-0 sm:px-0">
@@ -53,9 +60,11 @@ export function ContributionTable({
             <th scope="col" className="py-2 pr-3 text-right font-medium">
               {t('portfolio.analytics.contribution.weight')}
             </th>
-            <th scope="col" className="py-2 text-right font-medium">
-              {t('portfolio.analytics.contribution.contribution')}
-            </th>
+            {showContribution ? (
+              <th scope="col" className="py-2 text-right font-medium">
+                {t('portfolio.analytics.contribution.contribution')}
+              </th>
+            ) : null}
           </tr>
         </thead>
         <tbody>
@@ -77,13 +86,22 @@ export function ContributionTable({
               <td className="bt-soft py-2 pr-3 text-right tabular-nums">
                 {formatPercent(row.weight * 100)}
               </td>
-              <td className="bt-soft py-2 text-right tabular-nums">
-                {formatSignedPercent(row.contributionPct)}
-              </td>
+              {showContribution ? (
+                <td className="bt-soft py-2 text-right tabular-nums">
+                  {row.contributionPct === null
+                    ? EM_DASH
+                    : formatSignedPercent(row.contributionPct)}
+                </td>
+              ) : null}
             </tr>
           ))}
         </tbody>
       </table>
+      {showContribution ? null : (
+        <p className="bt-muted mt-2 text-xs">
+          {t('portfolio.analytics.contribution.periodUnavailable')}
+        </p>
+      )}
     </div>
   );
 }

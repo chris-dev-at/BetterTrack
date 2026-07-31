@@ -121,6 +121,10 @@ beforeEach(() => {
   // needs an authenticated user for the "Signed in as …" line and the logout
   // path. Individual tests override to test the unauthenticated redirect.
   vi.mocked(userApi.getMe).mockResolvedValue(meUser);
+  vi.mocked(userApi.getParanoidMediaState).mockResolvedValue({
+    privacyMode: 'normal',
+    mediaState: null,
+  });
 });
 afterEach(() => {
   Object.defineProperty(window, 'location', {

@@ -8,13 +8,6 @@ import { useT } from '../../i18n';
 import type { TranslateFn } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
 import { EM_DASH, formatDate, formatPercent } from '../../lib/format';
-import {
-  archiveCashSource,
-  getCashMovements,
-  listCashSources,
-  listPortfolios,
-  restoreCashSource,
-} from '../../lib/portfolioApi';
 import { Alert } from '../components/ui';
 import { EmptyState, MoneyText, Skeleton } from '../../ui';
 import { Badge, Button, PageHead } from '../../ui/origin';
@@ -26,6 +19,7 @@ import { MirrorAttributionChip } from './MirrorchainPanel';
 import { SetBalanceDialog } from './SetBalanceDialog';
 import { SourceBadge, sourceTagLabel } from './SourceBadge';
 import { TransferDialog } from './TransferDialog';
+import { usePortfolioStore } from './PortfolioStoreProvider';
 
 /** Human label for a source's descriptive type (V3-P3). */
 function typeLabel(t: TranslateFn, source: CashSource): string {
@@ -313,6 +307,7 @@ function HistorySection({
  */
 export function CashSourcesPage() {
   const t = useT();
+  const store = usePortfolioStore();
   const queryClient = useQueryClient();
   const [searchParams] = useSearchParams();
   const [showArchived, setShowArchived] = useState(false);
@@ -322,7 +317,7 @@ export function CashSourcesPage() {
 
   const portfoliosQuery = useQuery({
     queryKey: ['portfolios'],
-    queryFn: ({ signal }) => listPortfolios(signal),
+    queryFn: ({ signal }) => store.listPortfolios(signal),
     staleTime: 60_000,
   });
 
@@ -335,14 +330,14 @@ export function CashSourcesPage() {
 
   const sourcesQuery = useQuery({
     queryKey: ['portfolio', portfolioId, 'cash-sources', showArchived],
-    queryFn: ({ signal }) => listCashSources(portfolioId!, showArchived, signal),
+    queryFn: ({ signal }) => store.listCashSources(portfolioId!, showArchived, signal),
     enabled: portfolioId !== null,
     staleTime: 30_000,
   });
 
   const cashQuery = useQuery({
     queryKey: ['portfolio', portfolioId, 'cash'],
-    queryFn: ({ signal }) => getCashMovements(portfolioId!, signal),
+    queryFn: ({ signal }) => store.getCashMovements(portfolioId!, signal),
     enabled: portfolioId !== null,
     staleTime: 30_000,
   });
@@ -474,12 +469,16 @@ export function CashSourcesPage() {
                     onWithdraw={() => setDialog({ kind: 'withdraw', sourceId: s.id })}
                     onArchive={() =>
                       void runAction(() =>
-                        archiveCashSource(portfolioId, s.id, { baseSeq: s.mirror?.version }),
+                        store.archiveCashSource(portfolioId, s.id, {
+                          baseSeq: s.mirror?.version,
+                        }),
                       )
                     }
                     onRestore={() =>
                       void runAction(() =>
-                        restoreCashSource(portfolioId, s.id, { baseSeq: s.mirror?.version }),
+                        store.restoreCashSource(portfolioId, s.id, {
+                          baseSeq: s.mirror?.version,
+                        }),
                       )
                     }
                   />

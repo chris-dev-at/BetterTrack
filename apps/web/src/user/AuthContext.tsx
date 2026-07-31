@@ -32,6 +32,7 @@ import { setDiscreetMode, setMoneyCurrency } from '../lib/format';
 import { updateAccountSettings } from '../lib/settingsApi';
 import * as api from '../lib/userApi';
 import { clearRememberedAccount, writeRememberedAccount } from './auth/rememberedAccount';
+import { requestVaultLock } from './vault/lockSignal';
 
 /**
  * `loading` — bootstrapping from the session cookie.
@@ -453,7 +454,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     let timer: ReturnType<typeof setTimeout> | undefined;
     let lastPersistAt = 0;
 
-    const lock = () => setStatus('pin-required');
+    const lock = () => {
+      requestVaultLock();
+      setStatus('pin-required');
+    };
 
     // Re-arm the deadline from the persisted timestamp (used on mount and when
     // another tab records activity) — locks immediately if it's already stale.
@@ -718,6 +722,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 
   const logout = useCallback(async () => {
+    requestVaultLock();
     try {
       await api.logout();
     } catch (err) {

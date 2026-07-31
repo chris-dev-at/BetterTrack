@@ -17,6 +17,9 @@ import { cx } from '../../lib/cx';
 import { legalUrl, type LegalPage } from '../legal';
 import { useAuth } from '../AuthContext';
 import { PortfolioSwitcher } from '../portfolio/PortfolioSwitcher';
+import { useResolvedPrivacyMode, useResolvedPrivacyModeState } from '../vault/usePrivacyMode';
+import { useVaultRuntime } from '../vault/VaultRuntimeProvider';
+import { VaultSyncChip } from '../vault/ui/VaultSyncChip';
 import { Avatar } from './Avatar';
 import {
   ASK_DOCK_ID,
@@ -304,9 +307,11 @@ function RailBrand() {
   );
 }
 
-function AccountMenu({ collapsed }: { collapsed: boolean }) {
+export function AccountMenu({ collapsed }: { collapsed: boolean }) {
   const { t } = useI18n();
   const { user, logout, toggleDiscreetMode } = useAuth();
+  const privacyMode = useResolvedPrivacyMode();
+  const vault = useVaultRuntime();
   const [open, setOpen] = useState(false);
   const [discreetError, setDiscreetError] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -378,15 +383,17 @@ function AccountMenu({ collapsed }: { collapsed: boolean }) {
             </div>
           ) : null}
           <div className="bt-menu-rule" />
-          <Link
-            className="bt-menu-item"
-            onClick={closeAndRestoreFocus}
-            role="menuitem"
-            to="/people/profile"
-          >
-            <Icon name="user" size={15} />
-            {t('nav.myProfile')}
-          </Link>
+          {privacyMode !== 'paranoid' ? (
+            <Link
+              className="bt-menu-item"
+              onClick={closeAndRestoreFocus}
+              role="menuitem"
+              to="/people/profile"
+            >
+              <Icon name="user" size={15} />
+              {t('nav.myProfile')}
+            </Link>
+          ) : null}
           <Link
             className="bt-menu-item"
             onClick={closeAndRestoreFocus}
@@ -418,6 +425,20 @@ function AccountMenu({ collapsed }: { collapsed: boolean }) {
             <p className="bt-field__error" role="alert" style={{ padding: '2px 9px 6px' }}>
               {t('nav.discreetModeError')}
             </p>
+          ) : null}
+          {privacyMode === 'paranoid' ? (
+            <button
+              className="bt-menu-item"
+              onClick={() => {
+                closeAndRestoreFocus();
+                void vault.lock();
+              }}
+              role="menuitem"
+              type="button"
+            >
+              <Icon name="lock" size={15} />
+              {t('vault.lock.action')}
+            </button>
           ) : null}
           <div className="bt-menu-rule" />
           <button
@@ -526,6 +547,7 @@ function CreateMenu() {
 
 export function OriginShell() {
   const { t, locale } = useI18n();
+  const privacy = useResolvedPrivacyModeState();
   const location = useLocation();
   const { pathname } = location;
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -706,6 +728,9 @@ export function OriginShell() {
               variant="quiet"
             />
             <div className="bt-topbar__actions">
+              {privacy.privacyMode === 'paranoid' && privacy.mediaState != null ? (
+                <VaultSyncChip media={privacy.mediaState} />
+              ) : null}
               <CreateMenu />
               <NotificationBell />
             </div>

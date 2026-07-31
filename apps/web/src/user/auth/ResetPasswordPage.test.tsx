@@ -55,6 +55,10 @@ beforeEach(() => {
   vi.clearAllMocks();
   sessionStorage.clear();
   vi.mocked(api.getMe).mockRejectedValue(new ApiError(401, 'UNAUTHENTICATED', 'nope'));
+  vi.mocked(api.getParanoidMediaState).mockResolvedValue({
+    privacyMode: 'normal',
+    mediaState: null,
+  });
   vi.mocked(listWorkboard).mockResolvedValue({ items: [] });
 });
 

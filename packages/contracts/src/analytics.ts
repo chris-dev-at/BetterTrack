@@ -158,7 +158,8 @@ export type AnalyticsSeries = z.infer<typeof analyticsSeriesSchema>;
  * One per-asset contribution row (§13.3). `value`/`cost`/`pnl`/`weight` are the
  * holdings-math facts for the visible set; `contributionPct` is the asset's
  * share of the period change of the filtered series — the visible rows'
- * `contributionPct` sum to the filtered series' total return.
+ * `contributionPct` sum to the filtered series' total return — or `null` where
+ * that quantity is unavailable (see below).
  */
 export const analyticsContributionRowSchema = z
   .object({
@@ -171,8 +172,20 @@ export const analyticsContributionRowSchema = z
     pnl: z.number(),
     /** Fraction (0..1) of the visible set's market value. */
     weight: z.number(),
-    /** (endValue − startValue) / visible-start-total · 100, percent. */
-    contributionPct: z.number(),
+    /**
+     * (endValue − startValue) / visible-start-total · 100, percent. `null` when
+     * the period contribution cannot be computed at all — a paranoid account
+     * derives its holdings client-side and has no per-asset history to measure
+     * the window's change against. The column is then ABSENT rather than
+     * carrying a different metric under the same header.
+     *
+     * This schema is the shared `PortfolioStore` contract, not only the HTTP
+     * response: `vaultPortfolioStore` implements it from the decrypted vault
+     * and is the only producer of the `null`. The API itself always states a
+     * number, so a server-side consumer never meets one — but the shape stays
+     * nullable because the SPA reads both stores through the same type.
+     */
+    contributionPct: z.number().nullable(),
   })
   .strict();
 export type AnalyticsContributionRow = z.infer<typeof analyticsContributionRowSchema>;

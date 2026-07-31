@@ -55,6 +55,8 @@ export const AuditAction = {
   /** Client-encrypted data-home transitions; metadata is media/version only. */
   ParanoidEnabled: 'account.paranoid_enabled',
   ParanoidDisabled: 'account.paranoid_disabled',
+  /** A failed re-auth on the irreversible paranoid discard (throttled like deletion). */
+  ParanoidDiscardFail: 'account.paranoid_discard_fail',
   UserPasswordReset: 'user.pw_reset',
   InviteCreated: 'invite.created',
   InviteUsed: 'invite.used',

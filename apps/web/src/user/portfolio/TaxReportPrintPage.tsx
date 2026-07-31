@@ -8,7 +8,7 @@ import { useT } from '../../i18n';
 import type { TranslateFn } from '../../i18n';
 import { EM_DASH, formatDate, formatMoney, formatQuantity } from '../../lib/format';
 import { getTaxYearReport, listPortfolios } from '../../lib/portfolioApi';
-import { usePrivacyMode } from '../vault/usePrivacyMode';
+import { useResolvedPrivacyMode } from '../vault/usePrivacyMode';
 import { ACTIVE_PORTFOLIO_PARAM } from './PortfolioSwitcher';
 
 /**
@@ -206,19 +206,25 @@ export function TaxReportPrintPage() {
   // context, and the server holds no tax data for it (PD7) — every fetch stays
   // disabled until the account resolves to 'normal'. The in-app print action on
   // the tax report page generates the paranoid printable document instead.
-  const privacy = usePrivacyMode();
-  const paranoid = privacy.privacyMode === 'paranoid';
+  //
+  // The route matrix already redirects `/portfolio/tax/print` away from a
+  // paranoid account (`isParanoidKilledPath`), so the branches below are a
+  // deliberate second line of defense, not a live surface: this page renders
+  // outside the app shell and a single route-table edit would otherwise turn a
+  // hidden surface into a server-read one.
+  const privacyMode = useResolvedPrivacyMode();
+  const paranoid = privacyMode === 'paranoid';
 
   const portfoliosQuery = useQuery({
     queryKey: ['portfolios'],
     queryFn: ({ signal }) => listPortfolios(signal),
     staleTime: 60_000,
-    enabled: privacy.privacyMode === 'normal',
+    enabled: privacyMode === 'normal',
   });
   const reportQuery = useQuery({
     queryKey: ['portfolio', 'taxYear', portfolioId, year],
     queryFn: ({ signal }) => getTaxYearReport(portfolioId!, year!, signal),
-    enabled: paramsValid && privacy.privacyMode === 'normal',
+    enabled: paramsValid && privacyMode === 'normal',
     staleTime: 30_000,
   });
 
@@ -279,8 +285,6 @@ export function TaxReportPrintPage() {
 
       {paranoid ? (
         <p className="text-sm text-neutral-700">{t('portfolio.taxReport.print.paranoidHint')}</p>
-      ) : privacy.isError ? (
-        <p className="text-sm text-red-700">{t('portfolio.taxReport.print.loadError')}</p>
       ) : !paramsValid ? (
         <p className="text-sm text-neutral-700">{t('portfolio.taxReport.print.missingParams')}</p>
       ) : reportQuery.isPending ? (
