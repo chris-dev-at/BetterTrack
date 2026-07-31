@@ -28,11 +28,11 @@ describe('mirrorchain — reserved source tag', () => {
 });
 
 describe('mirrorchain — op kind coverage', () => {
-  it('unions the 14 ledger + 9 chain/membership kinds with no overlap', () => {
-    expect(MIRROR_LEDGER_OP_KINDS).toHaveLength(14);
+  it('unions the 16 ledger + 9 chain/membership kinds with no overlap', () => {
+    expect(MIRROR_LEDGER_OP_KINDS).toHaveLength(16);
     expect(MIRROR_CHAIN_OP_KINDS).toHaveLength(9);
-    expect(MIRROR_OP_KINDS).toHaveLength(23);
-    expect(new Set(MIRROR_OP_KINDS).size).toBe(23);
+    expect(MIRROR_OP_KINDS).toHaveLength(25);
+    expect(new Set(MIRROR_OP_KINDS).size).toBe(25);
   });
 
   it('replicates a hand-entered `fee` as its own ledger op (§16 2026-07-30)', () => {
@@ -40,6 +40,15 @@ describe('mirrorchain — op kind coverage', () => {
     // must replicate as a fee, not a withdrawal, or every non-origin copy would
     // divide it back out of its own performance curve.
     expect(MIRROR_LEDGER_OP_KINDS).toContain('cash.fee');
+  });
+
+  it('replicates a CORRECTION to a hand-entered movement (§16 2026-07-31)', () => {
+    // The cash ledger stopped being append-only for the three kinds a person
+    // typed. A correction is origin data like the create it amends, so a copy
+    // that kept the uncorrected row would disagree with the origin's balance
+    // forever — and a delete has to reach every copy for the same reason.
+    expect(MIRROR_LEDGER_OP_KINDS).toContain('cash.update');
+    expect(MIRROR_LEDGER_OP_KINDS).toContain('cash.delete');
   });
 });
 

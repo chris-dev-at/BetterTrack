@@ -1375,7 +1375,6 @@
     },
     "overview": {
       "title": "Portfolio",
-      "subtitle": "What you own, what it’s worth, and how it’s doing.",
       "newCustomButton": "+ Custom investment",
       "recordButton": "+ Transaction",
       "loadError": "Could not load your portfolio. Please refresh the page.",
@@ -1480,7 +1479,6 @@
     },
     "analytics": {
       "title": "Analytics",
-      "subtitle": "See your portfolio in the most detail — configure the graph, compare a benchmark, and view returns in real terms.",
       "backToOverview": "← Back to overview",
       "loadError": "Couldn't load analytics for this portfolio.",
       "displayModeAriaLabel": "Chart display mode",
@@ -1778,6 +1776,11 @@
         "template": "Start from a template",
         "balances": "Opening balances",
         "import": "Import a broker file"
+      },
+      "setup": {
+        "label": "Setup",
+        "title": "New portfolio",
+        "primary": "Create portfolio"
       }
     },
     "cash": {
@@ -1807,7 +1810,6 @@
     },
     "cashSources": {
       "title": "Cash sources",
-      "subtitle": "Split your liquidity across bank, retirement and cash accounts — each with its own balance and history.",
       "addButton": "Add source",
       "transferButton": "Transfer",
       "depositButton": "Deposit",
@@ -2064,7 +2066,6 @@
     },
     "settings": {
       "title": "Portfolio settings",
-      "subtitle": "Manage this portfolio.",
       "loadError": "Could not load this portfolio.",
       "generalHeading": "General",
       "nameSaved": "Saved.",
@@ -2274,7 +2275,7 @@
     },
     "alerts": {
       "title": "Price alerts",
-      "subtitle": "Get notified when an asset crosses a price or moves by a percentage. Evaluated every minute against the latest quote.",
+      "subtitle": "Evaluated every minute against the latest quote.",
       "newAlert": "+ New alert",
       "loadError": "Could not load your alerts. Please refresh the page.",
       "emptyTitle": "No alerts yet",
@@ -2461,7 +2462,6 @@
     "ideas": {
       "list": {
         "title": "Ideas",
-        "subtitle": "Saved Workbench analyses — reopen any one exactly as saved, or share it with friends.",
         "emptyTitle": "No saved ideas yet",
         "emptyBody": "Save a basket and its backtest from a blueprint or the Builder to revisit it later.",
         "open": "Open",
@@ -2496,7 +2496,7 @@
     },
     "comparison": {
       "title": "Compare blueprints",
-      "description": "Overlay 2–6 of your blueprints on one chart and compare returns and risk side by side.",
+      "description": "Overlay 2–6 blueprints on one chart.",
       "selectHeading": "Choose blueprints",
       "selectHint": "Pick {{min}}–{{max}} blueprints to compare.",
       "selectionCount": "{{count}}/{{max}} selected",
@@ -2891,7 +2891,6 @@
   },
   "watchlists": {
     "title": "Watchlists",
-    "subtitle": "Organize what you follow into named lists.",
     "create": "New watchlist",
     "createTitle": "New watchlist",
     "namePlaceholder": "Watchlist name",
@@ -2960,7 +2959,7 @@
     },
     "myShared": {
       "title": "My items",
-      "subtitle": "Every portfolio, blueprint and watchlist you own is here — choose who can see each one. Everything stays private until you share it.",
+      "subtitle": "Everything stays private until you share it.",
       "emptyTitle": "You don't own anything yet",
       "emptyBody": "Create a portfolio, blueprint or watchlist and it appears here to manage its sharing.",
       "error": "Could not load your items. Please refresh the page.",
@@ -3025,7 +3024,6 @@
     },
     "chat": {
       "title": "Messages",
-      "subhead": "Direct messages with your friends. Share an asset or one of your items right in the chat.",
       "new": "New message",
       "newPrompt": "Pick a friend to chat with.",
       "noFriends": "Add friends first to start chatting.",
@@ -3100,7 +3098,6 @@
       "description": "A lightweight feed of investment ideas shared between friends."
     },
     "friends": {
-      "subtitle": "Add friends by username or email, respond to requests, and manage who you're connected with.",
       "addTitle": "Add a friend",
       "identifierLabel": "Username or email",
       "identifierPlaceholder": "jane or jane@example.com",
@@ -4692,7 +4689,13 @@
       "balanceAfter": "Balance after",
       "countsToPerformanceShort": "Holding cost",
       "quickIn": "Record money in",
-      "quickOut": "Record money out"
+      "quickOut": "Record money out",
+      "editTitle": "Edit transaction",
+      "saveEdit": "Save changes",
+      "delete": "Delete",
+      "deleteConfirm": "Delete this transaction?",
+      "deleteConfirmYes": "Delete",
+      "deleteError": "Couldn't delete this transaction. Please try again."
     },
     "matchType": {
       "contains": "Contains",
@@ -4701,7 +4704,6 @@
       "regex": "Regex"
     },
     "overview": {
-      "subtitle": "",
       "loadError": "Couldn't load the cash overview.",
       "month": "Month",
       "inflow": "Inflow",
@@ -4727,7 +4729,6 @@
       "byTagList": "Spending by tag"
     },
     "movements": {
-      "subtitle": "",
       "loadError": "Couldn't load the cash ledger.",
       "emptyTitle": "No cash movements yet",
       "emptyDescription": "Deposits, withdrawals, trades and dividends will appear here.",
@@ -4749,7 +4750,6 @@
       "manageLabels": "Labels & rules"
     },
     "budgets": {
-      "subtitle": "",
       "loadError": "Couldn't load the budgets.",
       "deleteError": "Couldn't delete the budget. Please try again.",
       "new": "New budget",
@@ -4834,7 +4834,6 @@
     },
     "labels": {
       "title": "Labels & rules",
-      "subtitle": "The tags a movement can carry, and the rules that attach them for you.",
       "backToMovements": "Back to movements"
     }
   },
@@ -4864,12 +4863,10 @@
     }
   },
   "ask": {
-    "title": "Ask BetterTrack",
-    "subtitle": "A scoped, permissioned AI workspace over your data."
+    "title": "Ask BetterTrack"
   },
   "review": {
-    "title": "Review",
-    "subtitle": "One queue for everything that needs your decision."
+    "title": "Review"
   },
   "control": {
     "title": "Control Center",

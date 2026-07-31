@@ -577,7 +577,6 @@ function PageHeader({ t }: { t: TranslateFn }) {
           {t('portfolio.analytics.backToOverview')}
         </Link>
       }
-      sub={t('portfolio.analytics.subtitle')}
       title={t('portfolio.analytics.title')}
     />
   );

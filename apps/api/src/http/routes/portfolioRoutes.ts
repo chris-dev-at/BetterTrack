@@ -17,11 +17,13 @@ import {
   portfolioHistoryQuerySchema,
   portfolioIdParamSchema,
   portfolioListQuerySchema,
+  portfolioCashMovementParamsSchema,
   portfolioTransactionParamsSchema,
   setCashBalanceRequestSchema,
   taxYearExportQuerySchema,
   taxYearParamsSchema,
   transactionListQuerySchema,
+  updateCashMovementRequestSchema,
   updateCashSourceRequestSchema,
   updatePortfolioRequestSchema,
   updateTaxSettingsRequestSchema,
@@ -42,6 +44,7 @@ import {
   type PortfolioListQuery,
   type PortfolioMutationResponse,
   type SetCashBalanceRequest,
+  type UpdateCashMovementRequest,
   type TaxExportLocale,
   type TransactionInput,
   type TransactionListQuery,
@@ -271,6 +274,56 @@ export function createPortfolioRouter(ctx: AppContext): Router {
       const body = req.valid?.body as CashEntryRequest;
       const result = await ctx.mirror.submitCashFee(req.authUser!.id, portfolioId, body);
       res.status(201).json(result);
+    }),
+  );
+
+  // PATCH /portfolios/:portfolioId/cash/movements/:movementId — correct a
+  // hand-entered movement (V5 cash fusion, §16 2026-07-31).
+  //
+  // 409 `CASH_MOVEMENT_NOT_EDITABLE` for a DERIVED row (a trade's cash leg, a
+  // dividend inflow, a tax settlement, a transfer leg): those follow their
+  // parent, and the message names which parent to edit instead. Solvency is
+  // re-checked by replaying the whole ledger without the old row, so raising a
+  // past withdrawal is refused when it would have overdrawn back then, not
+  // merely when it overdraws today.
+  router.patch(
+    '/:portfolioId/cash/movements/:movementId',
+    validateParams(portfolioCashMovementParamsSchema),
+    idempotency,
+    withIdempotencyExecution(validateBody(updateCashMovementRequestSchema), async (req, res) => {
+      const { portfolioId, movementId } = req.valid?.params as {
+        portfolioId: string;
+        movementId: string;
+      };
+      const { baseSeq, ...patch } = req.valid?.body as UpdateCashMovementRequest;
+      const result = await ctx.mirror.submitCashUpdate(
+        req.authUser!.id,
+        portfolioId,
+        movementId,
+        patch,
+        { baseSeq },
+      );
+      res.json(result);
+    }),
+  );
+
+  // DELETE /portfolios/:portfolioId/cash/movements/:movementId — remove a
+  // hand-entered movement. Answers with the balances that are left rather than
+  // a bare 204: a delete moves money, and the client would otherwise have to
+  // re-fetch to repaint. Body may carry `baseSeq` on a synced copy.
+  router.delete(
+    '/:portfolioId/cash/movements/:movementId',
+    validateParams(portfolioCashMovementParamsSchema),
+    idempotency,
+    withIdempotencyExecution(validateBody(mirrorGuardRequestSchema), async (req, res) => {
+      const { portfolioId, movementId } = req.valid?.params as {
+        portfolioId: string;
+        movementId: string;
+      };
+      const { baseSeq } = req.valid?.body as MirrorGuardRequest;
+      res.json(
+        await ctx.mirror.submitCashDelete(req.authUser!.id, portfolioId, movementId, { baseSeq }),
+      );
     }),
   );
 

@@ -37,7 +37,6 @@ export function CashLabelsPage() {
             {t('cashflow.labels.backToMovements')}
           </Link>
         }
-        sub={t('cashflow.labels.subtitle')}
         title={t('cashflow.labels.title')}
       />
       <CashTagsPage embedded />

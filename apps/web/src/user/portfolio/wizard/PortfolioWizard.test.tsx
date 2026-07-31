@@ -14,6 +14,15 @@ import { createPortfolio, updatePortfolio } from '../../../lib/portfolioApi';
 import { getPortfolioKind, resetPortfolioKindCache } from '../portfolioKinds';
 import { PortfolioWizard } from './PortfolioWizard';
 
+/**
+ * ONE SCREEN (owner, 2026-07-31). This file used to walk four steps; the wizard
+ * now asks its three questions on one panel and creates on the single primary.
+ * What survives from the old suite is everything that was about BEHAVIOUR
+ * rather than chrome: the name rule, exactly-once creation (including the
+ * two-clicks-in-one-tick window), the name-clash retry, the shared handoff, the
+ * icon reaching the same store the Settings picker writes, and the focus trap.
+ */
+
 type Summary = {
   id: string;
   name: string;
@@ -37,7 +46,7 @@ function summary(over: Partial<Summary> & { id: string; name: string }): Summary
 
 const CREATED = summary({ id: 'p9', name: 'Retirement' });
 
-function renderWizard() {
+function renderWizard(props: { allowShared?: boolean } = {}) {
   const onClose = vi.fn();
   const onCreated = vi.fn();
   const onSharedBook = vi.fn();
@@ -45,21 +54,22 @@ function renderWizard() {
   render(
     <MemoryRouter>
       <QueryClientProvider client={client}>
-        <PortfolioWizard onClose={onClose} onCreated={onCreated} onSharedBook={onSharedBook} />
+        <PortfolioWizard
+          onClose={onClose}
+          onCreated={onCreated}
+          onSharedBook={onSharedBook}
+          {...props}
+        />
       </QueryClientProvider>
     </MemoryRouter>,
   );
   return { onClose, onCreated, onSharedBook };
 }
 
-const primary = () => screen.getByRole('button', { name: /Continue|Open portfolio/ });
+const primary = () => screen.getByRole('button', { name: 'Create portfolio' });
 
-/** Fill the name and walk to the book step — the state every branch starts from. */
-async function walkToBook(name = 'Retirement') {
+async function nameIt(name = 'Retirement') {
   await userEvent.type(await screen.findByLabelText('Portfolio name'), name);
-  await userEvent.click(primary()); // name → icon
-  await userEvent.click(primary()); // icon → book
-  await screen.findByRole('radio', { name: /Just me/ });
 }
 
 beforeEach(() => {
@@ -68,32 +78,24 @@ beforeEach(() => {
   resetPortfolioKindCache();
 });
 
-describe('PortfolioWizard — steps', () => {
-  test('walks name → icon → book → done, one question at a time', async () => {
-    vi.mocked(createPortfolio).mockResolvedValue(CREATED);
+describe('PortfolioWizard — one screen', () => {
+  test('asks name, icon and book together, with no stepper to walk', async () => {
     renderWizard();
 
-    expect(await screen.findByText('Step 1 of 4 · Name')).toBeInTheDocument();
-    expect(screen.getByText('What is this portfolio called?')).toBeInTheDocument();
+    expect(await screen.findByText('New portfolio')).toBeInTheDocument();
+    expect(screen.getByLabelText('Portfolio name')).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: 'Private' })).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: /Just me/ })).toBeInTheDocument();
 
-    await userEvent.type(screen.getByLabelText('Portfolio name'), 'Retirement');
-    await userEvent.click(primary());
-    expect(await screen.findByText('Step 2 of 4 · Icon')).toBeInTheDocument();
-
-    await userEvent.click(primary());
-    expect(await screen.findByText('Step 3 of 4 · Book')).toBeInTheDocument();
-
-    await userEvent.click(primary());
-    expect(await screen.findByText('Step 4 of 4 · Done')).toBeInTheDocument();
-    // Terminal step: the primary leaves, and there is nothing left to go back to.
-    expect(screen.getByRole('button', { name: 'Open portfolio' })).toBeInTheDocument();
+    // The journey chrome is gone with the journey.
+    expect(screen.queryByText(/Step \d of \d/)).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Back' })).not.toBeInTheDocument();
   });
 
-  test('the name is required before the wizard will advance', async () => {
+  test('the name is required before anything can be created', async () => {
     renderWizard();
 
-    const cta = await screen.findByRole('button', { name: 'Continue' });
+    const cta = await screen.findByRole('button', { name: 'Create portfolio' });
     expect(cta).toBeDisabled();
 
     await userEvent.type(screen.getByLabelText('Portfolio name'), '   ');
@@ -104,7 +106,7 @@ describe('PortfolioWizard — steps', () => {
     expect(screen.getByLabelText('Portfolio name')).toHaveAttribute('maxLength', '120');
   });
 
-  test('the name field takes focus, and Enter advances', async () => {
+  test('the name field takes focus, and Enter creates', async () => {
     vi.mocked(createPortfolio).mockResolvedValue(CREATED);
     renderWizard();
 
@@ -112,35 +114,38 @@ describe('PortfolioWizard — steps', () => {
     await waitFor(() => expect(field).toHaveFocus());
 
     await userEvent.type(field, 'Retirement{Enter}');
-    expect(await screen.findByText('Step 2 of 4 · Icon')).toBeInTheDocument();
+    await waitFor(() => expect(createPortfolio).toHaveBeenCalledWith('Retirement'));
   });
 
   test('Escape closes without creating anything', async () => {
     renderWizard();
-    await userEvent.type(await screen.findByLabelText('Portfolio name'), 'Retirement');
+    await nameIt();
 
     await userEvent.keyboard('{Escape}');
     expect(createPortfolio).not.toHaveBeenCalled();
   });
 
-  test('each step parks what the API cannot do yet, as prose and not as a control', async () => {
-    vi.mocked(createPortfolio).mockResolvedValue(CREATED);
+  test('parks what the API cannot do yet, as prose and not as a control', async () => {
     renderWizard();
 
-    // Step 1 — the two portfolio-shaped things that do not exist yet.
-    for (const parked of ['Its own base currency', 'Start from a template']) {
-      expect(screen.getByText(parked)).toBeInTheDocument();
+    for (const parked of [
+      'Its own base currency',
+      'Start from a template',
+      'Opening balances',
+      'Import a broker file',
+    ]) {
+      expect(await screen.findByText(parked)).toBeInTheDocument();
       expect(screen.queryByRole('button', { name: parked })).not.toBeInTheDocument();
       expect(screen.queryByRole('checkbox', { name: parked })).not.toBeInTheDocument();
     }
+  });
 
-    await walkToBook();
-    await userEvent.click(primary()); // creates → done
+  test('hides the book choice where a group book is not on the table', async () => {
+    renderWizard({ allowShared: false });
+    await screen.findByLabelText('Portfolio name');
 
-    for (const parked of ['Opening balances', 'Import a broker file']) {
-      expect(await screen.findByText(parked)).toBeInTheDocument();
-      expect(screen.queryByRole('button', { name: parked })).not.toBeInTheDocument();
-    }
+    expect(screen.queryByRole('radio', { name: /Just me/ })).not.toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: 'Private' })).toBeInTheDocument();
   });
 });
 
@@ -149,13 +154,11 @@ describe('PortfolioWizard — icon', () => {
     vi.mocked(createPortfolio).mockResolvedValue(CREATED);
     renderWizard();
 
-    await userEvent.type(await screen.findByLabelText('Portfolio name'), 'Retirement');
-    await userEvent.click(primary());
+    await nameIt();
     await userEvent.click(await screen.findByRole('radio', { name: 'Savings' }));
     expect(screen.getByRole('radio', { name: 'Savings' })).toHaveAttribute('aria-checked', 'true');
 
-    await userEvent.click(primary()); // → book
-    await userEvent.click(primary()); // creates
+    await userEvent.click(primary());
 
     await waitFor(() => expect(getPortfolioKind('p9')).toBe('savings'));
     // …through the same store the Settings picker writes, so it survives a reload.
@@ -163,11 +166,11 @@ describe('PortfolioWizard — icon', () => {
     expect(getPortfolioKind('p9')).toBe('savings');
   });
 
-  test('an untouched icon step still stores the private default', async () => {
+  test('an untouched icon still stores the private default', async () => {
     vi.mocked(createPortfolio).mockResolvedValue(CREATED);
     renderWizard();
 
-    await walkToBook();
+    await nameIt();
     await userEvent.click(primary());
 
     await waitFor(() => expect(getPortfolioKind('p9')).toBe('private'));
@@ -179,7 +182,7 @@ describe('PortfolioWizard — book', () => {
     vi.mocked(createPortfolio).mockResolvedValue(CREATED);
     const { onSharedBook } = renderWizard();
 
-    await walkToBook();
+    await nameIt();
     expect(screen.getByRole('radio', { name: /Just me/ })).toHaveAttribute('aria-checked', 'true');
     await userEvent.click(primary());
 
@@ -190,44 +193,34 @@ describe('PortfolioWizard — book', () => {
   test('shared hands off to the group-create flow and creates nothing itself', async () => {
     const { onSharedBook } = renderWizard();
 
-    await walkToBook('Household');
+    await nameIt('Household');
     await userEvent.click(screen.getByRole('radio', { name: /Shared with people/ }));
     await userEvent.click(primary());
 
-    expect(onSharedBook).toHaveBeenCalledTimes(1);
+    expect(onSharedBook).toHaveBeenCalledWith('Household');
     expect(createPortfolio).not.toHaveBeenCalled();
     expect(updatePortfolio).not.toHaveBeenCalled();
   });
 });
 
 describe('PortfolioWizard — creation', () => {
-  test('walking the steps back and forward still POSTs exactly once', async () => {
+  test('creates once, hands the portfolio over and closes', async () => {
     vi.mocked(createPortfolio).mockResolvedValue(CREATED);
-    renderWizard();
+    const { onClose, onCreated } = renderWizard();
 
-    await walkToBook();
-    // Back to the icon, back to the name, then forward again — the draft is
-    // carried, and nothing has been created yet at any point.
-    await userEvent.click(screen.getByRole('button', { name: 'Back' }));
-    await userEvent.click(screen.getByRole('button', { name: 'Back' }));
-    expect(screen.getByLabelText('Portfolio name')).toHaveValue('Retirement');
-    expect(createPortfolio).not.toHaveBeenCalled();
+    await nameIt();
+    await userEvent.click(primary());
 
-    await userEvent.click(primary()); // → icon
-    await userEvent.click(primary()); // → book
-    await userEvent.click(primary()); // creates
-    await waitFor(() => expect(createPortfolio).toHaveBeenCalledTimes(1));
-
-    // Terminal: no Back to walk into a second create.
-    expect(screen.queryByRole('button', { name: 'Back' })).not.toBeInTheDocument();
+    await waitFor(() => expect(onCreated).toHaveBeenCalledWith(CREATED));
     expect(createPortfolio).toHaveBeenCalledTimes(1);
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  test('two Continue presses inside one tick cannot POST twice', async () => {
+  test('two presses inside one tick cannot POST twice', async () => {
     vi.mocked(createPortfolio).mockResolvedValue(CREATED);
     renderWizard();
 
-    await walkToBook();
+    await nameIt();
     const cta = primary();
 
     // Both presses dispatched before React re-renders: this is the exact window
@@ -239,73 +232,50 @@ describe('PortfolioWizard — creation', () => {
       cta.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
     });
 
-    await waitFor(() =>
-      expect(screen.getByRole('button', { name: 'Open portfolio' })).toBeVisible(),
-    );
+    await waitFor(() => expect(createPortfolio).toHaveBeenCalled());
     expect(createPortfolio).toHaveBeenCalledTimes(1);
   });
 
-  test('a name clash comes back on the name step, and the retry creates', async () => {
+  test('a name clash stays on the panel with the message, and the retry creates', async () => {
     vi.mocked(createPortfolio)
       .mockRejectedValueOnce(new ApiError(409, 'PORTFOLIO_NAME_TAKEN', 'taken'))
       .mockResolvedValue(summary({ id: 'p9', name: 'Pension' }));
-    renderWizard();
+    const { onClose } = renderWizard();
 
-    await walkToBook();
+    await nameIt();
     await userEvent.click(primary());
 
     expect(await screen.findByText('You already have a portfolio with that name.')).toBeVisible();
-    expect(await screen.findByText('Step 1 of 4 · Name')).toBeInTheDocument();
+    // Still here — a refused create must not close the thing that can fix it.
+    expect(onClose).not.toHaveBeenCalled();
 
     const field = screen.getByLabelText('Portfolio name');
     await userEvent.clear(field);
     await userEvent.type(field, 'Pension');
-    await userEvent.click(primary()); // → icon
-    await userEvent.click(primary()); // → book
-    await userEvent.click(primary()); // creates, second and last time
+    await userEvent.click(primary());
 
     await waitFor(() => expect(createPortfolio).toHaveBeenLastCalledWith('Pension'));
     expect(createPortfolio).toHaveBeenCalledTimes(2); // one refusal + one success
-    expect(await screen.findByText('Step 4 of 4 · Done')).toBeInTheDocument();
   });
 
-  test('a generic failure surfaces the generic error on the name step', async () => {
+  test('a generic failure surfaces the generic error', async () => {
     vi.mocked(createPortfolio).mockRejectedValue(new ApiError(500, 'BOOM', 'boom'));
-    renderWizard();
+    const { onClose } = renderWizard();
 
-    await walkToBook();
+    await nameIt();
     await userEvent.click(primary());
 
     expect(
       await screen.findByText('Could not create the portfolio. Please try again.'),
     ).toBeVisible();
-    expect(await screen.findByText('Step 1 of 4 · Name')).toBeInTheDocument();
-  });
-
-  test('the summary reads back what was made, and the primary activates it', async () => {
-    vi.mocked(createPortfolio).mockResolvedValue(CREATED);
-    const { onClose, onCreated } = renderWizard();
-
-    await userEvent.type(await screen.findByLabelText('Portfolio name'), 'Retirement');
-    await userEvent.click(primary());
-    await userEvent.click(await screen.findByRole('radio', { name: 'Property' }));
-    await userEvent.click(primary()); // → book
-    await userEvent.click(primary()); // creates
-
-    const summaryRow = await screen.findByText('Retirement');
-    expect(summaryRow).toBeInTheDocument();
-    expect(screen.getByText('Property')).toBeInTheDocument();
-
-    await userEvent.click(screen.getByRole('button', { name: 'Open portfolio' }));
-    expect(onCreated).toHaveBeenCalledWith(expect.objectContaining({ id: 'p9' }));
-    expect(onClose).toHaveBeenCalledTimes(1);
+    expect(onClose).not.toHaveBeenCalled();
   });
 
   test('the trimmed name is what gets created', async () => {
     vi.mocked(createPortfolio).mockResolvedValue(CREATED);
     renderWizard();
 
-    await walkToBook('   Retirement   ');
+    await nameIt('   Retirement   ');
     await userEvent.click(primary());
 
     await waitFor(() => expect(createPortfolio).toHaveBeenCalledWith('Retirement'));
@@ -324,34 +294,11 @@ describe('PortfolioWizard — focus', () => {
     }
   });
 
-  test('the checked icon keeps focus when the step opens', async () => {
+  test('every portfolio icon is offered', async () => {
     renderWizard();
-    await userEvent.type(await screen.findByLabelText('Portfolio name'), 'Retirement');
-    await userEvent.click(primary());
+    await screen.findByRole('radio', { name: 'Private' });
 
-    const picked = await screen.findByRole('radio', { name: 'Private' });
-    await waitFor(() => expect(picked).toHaveFocus());
-    expect(within(screen.getByRole('radiogroup')).getAllByRole('radio')).toHaveLength(5);
-  });
-});
-
-describe('PortfolioWizard — dismissal after a successful create', () => {
-  test('closing the wizard still reports the portfolio it just made', async () => {
-    vi.mocked(createPortfolio).mockResolvedValue(CREATED);
-    const { onClose, onCreated } = renderWizard();
-
-    await walkToBook('Retirement');
-    await userEvent.click(screen.getByRole('radio', { name: /Just me/ }));
-    await userEvent.click(primary());
-    await waitFor(() => expect(createPortfolio).toHaveBeenCalled());
-
-    // Dismiss instead of pressing the terminal Continue. The portfolio EXISTS,
-    // so the app has to learn about it either way — before this, closing here
-    // left the user on their old portfolio with the new one absent from the
-    // switcher until a manual reload (owner, 2026-07-31).
-    await userEvent.click(screen.getAllByRole('button', { name: /Close/i })[0]!);
-
-    expect(onCreated).toHaveBeenCalledWith(CREATED);
-    expect(onClose).toHaveBeenCalled();
+    const picker = screen.getByRole('radiogroup', { name: 'Portfolio icon' });
+    expect(within(picker).getAllByRole('radio')).toHaveLength(5);
   });
 });
