@@ -15,7 +15,11 @@ const assetRepo = {
 } as unknown as AssetRepository;
 
 function intelRepo(assets: UserIntelAsset[]) {
-  return { listUserWatchAndHoldAssets: async () => assets };
+  return {
+    listUserWatchAndHoldAssets: async () => assets,
+    listUserWatchAssets: async () =>
+      assets.filter((asset) => asset.watched).map((asset) => ({ ...asset, held: false })),
+  };
 }
 
 const AAPL: UserIntelAsset = {

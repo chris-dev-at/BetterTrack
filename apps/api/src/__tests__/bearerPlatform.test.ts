@@ -22,6 +22,7 @@ import {
 import { createTwoFactorRepository } from '../data/repositories/twoFactorRepository';
 import { createUserRepository } from '../data/repositories/userRepository';
 import * as schema from '../data/schema';
+import { pathAcceptsBearer } from '../http/middleware/bearerAuth';
 import { generateTotpCode } from '../services/auth/totp';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
@@ -945,5 +946,134 @@ describe('#405 bearer /alerts coverage — the mobile alerts 403 root cause', ()
     const list = await request(harness.app).get('/api/v1/alerts').set(bearer(token));
     expect(list.status, JSON.stringify(list.body)).toBe(200);
     expect(alertListResponseSchema.safeParse(list.body).success).toBe(true);
+  });
+});
+
+describe('#730 paranoid transitions are session-only, like /vault/* (the surface they purge)', () => {
+  // Both directions of the privacy-mode transition and the vault media they act
+  // on. Enable hard-deletes every cleartext row and revokes every share with no
+  // undo; disable writes a caller-authored document back into the account. The
+  // policy table's `/account/` branch classified them as `account:security` —
+  // a scope a third-party OAuth app can plausibly hold for a sessions/2FA
+  // integration — so both were reachable by a bearer, without CSRF, on nothing
+  // but the caller's own Drive attestation.
+  const SESSION_ONLY: { name: string; method: 'get' | 'post' | 'put'; path: string }[] = [
+    { name: 'paranoid enable', method: 'post', path: '/account/paranoid/enable' },
+    { name: 'paranoid disable', method: 'post', path: '/account/paranoid/disable' },
+    // The sibling rule this one mirrors, previously unasserted here: opaque vault
+    // bytes are never staged, read, retired or purged through a bearer either.
+    { name: 'vault read', method: 'get', path: '/vault' },
+    { name: 'vault stage', method: 'put', path: '/vault' },
+    { name: 'vault media state', method: 'get', path: '/vault/media' },
+    { name: 'retired vault purge', method: 'post', path: '/vault/media/retired/purge' },
+  ];
+
+  const ENABLE_BODY = {
+    mediaSet: ['drive'],
+    vaultVersion: 1,
+    driveAttestation: { verifiedRoundTrip: true, vaultVersion: 1 },
+  };
+
+  const call = (token: string, row: (typeof SESSION_ONLY)[number]) => {
+    const url = `/api/v1${row.path}`;
+    const base = request(harness.app);
+    const started =
+      row.method === 'get' ? base.get(url) : row.method === 'put' ? base.put(url) : base.post(url);
+    return started.set(bearer(token)).send(ENABLE_BODY);
+  };
+
+  it.each(SESSION_ONLY)(
+    'a personal key holding account:security gets 403 API_KEY_FORBIDDEN: $name',
+    async (row) => {
+      const { token } = await mintKey(['account:security']);
+      const res = await call(token, row);
+      expect(res.status, `${row.method} ${row.path} → ${JSON.stringify(res.body)}`).toBe(403);
+      expect(res.body.error.code).toBe('API_KEY_FORBIDDEN');
+    },
+  );
+
+  it.each(SESSION_ONLY)(
+    'a delegated OAuth token holding account:security gets 403 API_KEY_FORBIDDEN: $name',
+    async (row) => {
+      const { token } = await mintOAuthToken(['account:security']);
+      const res = await call(token, row);
+      expect(res.status, `${row.method} ${row.path} → ${JSON.stringify(res.body)}`).toBe(403);
+      expect(res.body.error.code).toBe('API_KEY_FORBIDDEN');
+    },
+  );
+
+  it('the refusal survives a variant-cased path, which Express routes to the same handler', async () => {
+    // Express matches routes case-insensitively, so `/Account/Paranoid/enable`
+    // reaches the identical handler. A policy table that compared the raw path
+    // would fall through this carve-out onto the coarse `/account/` scope row and
+    // hand the destructive route right back to the bearer.
+    const { token } = await mintKey(['account:security']);
+    for (const path of [
+      '/api/v1/Account/Paranoid/enable',
+      '/api/v1/account/PARANOID/disable',
+      '/api/v1/Vault',
+    ]) {
+      const res = await request(harness.app).post(path).set(bearer(token)).send(ENABLE_BODY);
+      expect(res.status, `POST ${path} → ${JSON.stringify(res.body)}`).toBe(403);
+      expect(res.body.error.code, `POST ${path}`).toBe('API_KEY_FORBIDDEN');
+    }
+  });
+
+  it('the policy TABLE itself refuses them, independently of the router’s local guard', () => {
+    // Both layers now say no: the global table (asserted here, and again through
+    // the derived OpenAPI `security` in openapi.test.ts) and the per-route
+    // `requireOwnerBrowserSession` in accountRoutes. Pinning the table directly
+    // means a regression there is still caught even though the local guard would
+    // keep the end-to-end 403s above green.
+    for (const path of [
+      '/account/paranoid',
+      '/account/paranoid/enable',
+      '/account/paranoid/disable',
+      '/Account/Paranoid/enable',
+      '/vault',
+      '/vault/media',
+    ]) {
+      expect(pathAcceptsBearer(path), `pathAcceptsBearer(${path})`).toBe(false);
+    }
+    // …while the coarse account-security surface it sits inside is untouched.
+    for (const path of ['/account', '/account/export', '/auth/sessions', '/auth/2fa/status']) {
+      expect(pathAcceptsBearer(path), `pathAcceptsBearer(${path})`).toBe(true);
+    }
+  });
+
+  it('the carve-out is surgical: the rest of the account-security surface stays bearer-callable', async () => {
+    const { token } = await mintKey(['account:security']);
+    await request(harness.app).get('/api/v1/auth/sessions').set(bearer(token)).expect(200);
+    await request(harness.app).get('/api/v1/account/export').set(bearer(token)).expect(200);
+  });
+
+  it('CSRF is the live gate for the cookie session that owns these routes', async () => {
+    // With the bearer refused, the browser cookie session is the ONLY caller —
+    // so its own mutation guard has to be asserted, not assumed.
+    const user = await seedFreshUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+
+    for (const path of ['/api/v1/account/paranoid/enable', '/api/v1/account/paranoid/disable']) {
+      const noHeader = await agent.post(path).send(ENABLE_BODY);
+      expect(noHeader.status, `${path} without X-Requested-With`).toBe(403);
+      expect(noHeader.body.error.code).toBe('CSRF_HEADER_REQUIRED');
+
+      const foreignOrigin = await agent
+        .post(path)
+        .set(...XRW)
+        .set('Origin', 'https://evil.example')
+        .send(ENABLE_BODY);
+      expect(foreignOrigin.status, `${path} from a foreign origin`).toBe(403);
+      expect(foreignOrigin.body.error.code).toBe('CSRF_ORIGIN_REJECTED');
+    }
+
+    // And the same session DOES reach the handler once it carries the header:
+    // a malformed body is answered by validation (400), not by the policy rail —
+    // proof the 403s above are the guard, not an unreachable route.
+    const reached = await agent
+      .post('/api/v1/account/paranoid/enable')
+      .set(...XRW)
+      .send({ mediaSet: [] });
+    expect(reached.status, JSON.stringify(reached.body)).toBe(400);
   });
 });

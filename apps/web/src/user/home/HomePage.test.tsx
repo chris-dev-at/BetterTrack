@@ -93,6 +93,7 @@ import { I18nProvider } from '../../i18n';
 import { listAlerts } from '../../lib/alertsApi';
 import { getAssetHistory, getAssetQuote } from '../../lib/assetApi';
 import { getCashTrends } from '../../lib/cashApi';
+import { DISCREET_MASK, setDiscreetMode, setMoneyCurrency } from '../../lib/format';
 import { getNewsDigest, getPortfolioDividendCalendar } from '../../lib/marketIntelApi';
 import { listNotifications } from '../../lib/notificationsApi';
 import {
@@ -301,6 +302,7 @@ const QUOTE: QuoteResponse = {
 const ASSET_HISTORY: HistoryResponse = {
   range: '1M',
   interval: '1d',
+  currency: 'USD',
   points: [
     { time: '2026-07-01T00:00:00.000Z', close: 180 },
     { time: '2026-07-02T00:00:00.000Z', close: 190.5 },
@@ -311,6 +313,8 @@ const ASSET_HISTORY: HistoryResponse = {
 
 beforeEach(() => {
   localStorage.clear();
+  setDiscreetMode(false);
+  setMoneyCurrency('EUR');
   // Call history, not implementations: several cases below assert *how often* an
   // endpoint was hit (cache sharing, the "asks before it fetches" guarantee), and
   // those claims are meaningless if the counts carry over from earlier tests.
@@ -1029,6 +1033,24 @@ test('a picked spotlight shows the asset’s price, day move and chart', async (
   expect(getAssetHistory).toHaveBeenCalledWith(APPLE.id, '1M', expect.anything());
 });
 
+test('a spotlight keeps its history alternative masked when the quote is unavailable', async () => {
+  setDiscreetMode(true);
+  vi.mocked(getAssetQuote).mockRejectedValueOnce(new Error('quote unavailable'));
+  storeBoard(['asset-spotlight', { assetId: APPLE.id, assetLabel: 'AAPL', range: '1M' }]);
+
+  renderHome();
+  const widget = await screen.findByRole('region', { name: 'Spotlight' });
+  const chart = await within(widget).findByRole('img');
+
+  await vi.waitFor(() => {
+    expect(getAssetHistory).toHaveBeenCalledWith(APPLE.id, '1M', expect.anything());
+  });
+  const summary = document.getElementById(chart.getAttribute('aria-describedby')!);
+  expect(summary).toHaveTextContent(`Start: ${DISCREET_MASK}`);
+  expect(summary).not.toHaveTextContent('180');
+  expect(within(widget).getByRole('button', { name: 'Show chart data' })).toBeInTheDocument();
+});
+
 test('every widget in the catalog is offered in the drawer and renders when added', async () => {
   const user = editMode();
   const added: WidgetType[] = [
@@ -1462,6 +1484,31 @@ test('the cash-flow widget fans out over every scoped portfolio and sums them', 
   expect(within(widget).getByText('1,200.00 €')).toBeInTheDocument();
   expect(getCashTrends).toHaveBeenCalledWith(MAIN.id, 6, expect.anything());
   expect(getCashTrends).toHaveBeenCalledWith(SAVINGS.id, 6, expect.anything());
+});
+
+test('the cash-flow chart alternative uses the active base currency', async () => {
+  // Re-pointed from `getExpenseTrends` at the merge: this widget reads the CASH
+  // ledger now (the expense island is retired), so the mock had to move with it
+  // — and the shape differs, inflow/outflow rather than income/expense. Only
+  // the data source changed; what is asserted is still main's point, that the
+  // chart's text alternative follows the active base currency.
+  setMoneyCurrency('USD');
+  vi.mocked(getCashTrends).mockImplementation(async (portfolioId) => ({
+    portfolioId,
+    points: [
+      { month: '2026-06', inflow: 4_000, outflow: 3_600 },
+      { month: '2026-07', inflow: 4_200, outflow: 1_000 },
+    ],
+  }));
+  storeBoard(['cashflow-chart', { scope: MAIN.id }]);
+
+  renderHome();
+  const widget = await screen.findByRole('region', { name: 'Cash flow' });
+  const chart = await within(widget).findByRole('img', { name: 'Net cash flow by month' });
+  const summary = document.getElementById(chart.getAttribute('aria-describedby')!);
+
+  expect(summary).toHaveTextContent('US$');
+  expect(summary).not.toHaveTextContent('€');
 });
 
 test('allocation as ranked bars prints the share and amount a donut only implies', async () => {

@@ -34,6 +34,17 @@ function createUserQueries(db: Database) {
     },
 
     /**
+     * Batch lookup for sweeps that resolve many ids at once (§13.5 V5-P14): the
+     * remembered-device retention pass reads one page of bound accounts per
+     * Redis SCAN page instead of one round trip per key. Missing ids are simply
+     * absent from the result.
+     */
+    async listByIds(ids: string[]): Promise<UserRow[]> {
+      if (ids.length === 0) return [];
+      return db.select().from(users).where(inArray(users.id, ids));
+    },
+
+    /**
      * Re-read and lock one administrator-edit target inside the caller's
      * transaction. The active-administrator set is locked first by
      * `withSerializedAdminMutation`, so every admin mutation takes locks in the

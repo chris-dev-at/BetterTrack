@@ -6,13 +6,13 @@
 #
 # Build from the repo root so the compose `context: ..` resolves this path:
 #   docker build -f apps/landing/Dockerfile -t bettertrack-landing .
-FROM nginx:alpine AS runner
+FROM nginx:alpine@sha256:4a73073bd557c65b759505da037898b61f1be6cbcc3c2c3aeac22d2a470c1752 AS runner
 
 # Static site content → nginx web root.
 COPY apps/landing/site/ /usr/share/nginx/html/
 
 # Origin-injection hook: nginx:alpine runs /docker-entrypoint.d/*.sh before start.
 COPY apps/landing/docker-entrypoint.sh /docker-entrypoint.d/40-bt-landing-env.sh
-RUN chmod +x /docker-entrypoint.d/40-bt-landing-env.sh
+RUN apk add --no-cache nodejs && chmod +x /docker-entrypoint.d/40-bt-landing-env.sh
 
 EXPOSE 80

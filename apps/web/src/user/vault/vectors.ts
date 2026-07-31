@@ -24,6 +24,9 @@ export const vaultVectorDocument: VaultDocument = {
     ],
   },
   mergeLog: [],
+  // Deliberately no `mirrorProvenance`: this is the published pre-§7.1 document,
+  // and an absent key keeps its plaintext — and therefore these fixed envelope
+  // bytes — byte-identical through decrypt/re-encrypt.
 };
 
 export interface VaultInteroperabilityFixture {

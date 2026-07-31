@@ -133,6 +133,7 @@ describe('alert.triggered fan-out through the real worker pipeline (P1 2026-07-1
       marketData: createStubMarketData({ quote: () => quoteResult(56_000) }),
       redis: harness.ctx.redis,
       notify: harness.ctx.notify,
+      paranoid: harness.ctx.paranoidGuard,
       logger: harness.ctx.logger,
       now: () => Date.parse('2026-07-11T12:30:00.000Z'),
     });
@@ -172,6 +173,7 @@ describe('alert.triggered fan-out through the real worker pipeline (P1 2026-07-1
       marketData: createStubMarketData({ quote: () => quoteResult(56_000) }),
       redis: harness.ctx.redis,
       notify: harness.ctx.notify,
+      paranoid: harness.ctx.paranoidGuard,
       logger: harness.ctx.logger,
       now: () => Date.parse('2026-07-11T12:31:00.000Z'),
     });

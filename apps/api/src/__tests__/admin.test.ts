@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   adminStatsSchema,
+  adminUserListResponseSchema,
   createUserResponseSchema,
   twoFactorChallengeResponseSchema,
   twoFactorEnrollResponseSchema,
@@ -20,6 +21,11 @@ import {
   createBullBoardRouter,
 } from '../http/bullBoard';
 import { ALL_QUEUE_NAMES, type QueueRegistry } from '../jobs';
+import {
+  pinQuickAuthMarkerKey,
+  rememberedDeviceKey,
+  rememberedDevicesForUserKey,
+} from '../services/auth/loginThrottle';
 import { generateTotpCode } from '../services/auth/totp';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
@@ -283,6 +289,160 @@ describe('admin route guard (PROJECTPLAN.md §6.12)', () => {
 
     const anon = await request(harness.app).get('/api/v1/admin/users');
     expect(anon.status).toBe(404);
+  });
+});
+
+describe('paranoid account administration (#730)', () => {
+  it('keeps normal-account admin serialization byte-for-byte compatible', async () => {
+    const admin = await harness.seedAdmin();
+    const adminAgent = await harness.loginAdmin(admin);
+    const target = await harness.seedUser({
+      email: 'normal-admin-view@bt.test',
+      username: 'normal_admin_view',
+    });
+
+    const response = await adminAgent.get('/api/v1/admin/users');
+    expect(response.status).toBe(200);
+    const user = (response.body.users as Array<Record<string, unknown>>).find(
+      (candidate) => candidate.id === target.id,
+    );
+    expect(user).toBeDefined();
+    expect(user).not.toHaveProperty('privacyMode');
+    expect(user).not.toHaveProperty('paranoid');
+  });
+
+  it('returns operational metadata without ciphertext, Drive credentials, or key material', async () => {
+    const admin = await harness.seedAdmin();
+    const adminAgent = await harness.loginAdmin(admin);
+    const target = await harness.seedUser({
+      email: 'paranoid-admin-view@bt.test',
+      username: 'paranoid_admin_view',
+    });
+    const currentBlob = Buffer.from('current-ciphertext-secret');
+    const historicalBlob = Buffer.from('historical-ciphertext-secret');
+    await harness.db
+      .update(schema.users)
+      .set({
+        privacyMode: 'paranoid',
+        paranoidMediaSet: ['server'],
+        paranoidDriveAttestedVersion: null,
+      })
+      .where(eq(schema.users.id, target.id));
+    await harness.db.insert(schema.paranoidVaults).values({
+      userId: target.id,
+      version: 2,
+      formatVersion: 1,
+      sizeBytes: currentBlob.byteLength,
+      blob: currentBlob,
+    });
+    await harness.db.insert(schema.paranoidVaultHistory).values({
+      userId: target.id,
+      version: 1,
+      formatVersion: 1,
+      sizeBytes: historicalBlob.byteLength,
+      blob: historicalBlob,
+    });
+
+    const response = await adminAgent.get('/api/v1/admin/users');
+    expect(response.status).toBe(200);
+    const body = adminUserListResponseSchema.parse(response.body);
+    const user = body.users.find((candidate) => candidate.id === target.id);
+    expect(user).toMatchObject({
+      privacyMode: 'paranoid',
+      paranoid: {
+        mediaSet: ['server'],
+        vault: {
+          version: 2,
+          sizeBytes: currentBlob.byteLength,
+        },
+        historyCount: 1,
+      },
+    });
+    expect(user?.paranoid?.vault?.updatedAt).toMatch(/Z$/);
+    const serialized = JSON.stringify(user);
+    expect(serialized).not.toContain('current-ciphertext-secret');
+    expect(serialized).not.toContain('historical-ciphertext-secret');
+    expect(serialized).not.toMatch(/blob|ciphertext|passphrase|driveToken|recoveryKey/i);
+
+    for (const forbiddenMutation of [
+      { privacyMode: 'normal' },
+      { passphrase: 'admin-cannot-reset-this' },
+      { wipeVault: true },
+    ]) {
+      const mutation = await adminAgent
+        .patch(`/api/v1/admin/users/${target.id}`)
+        .set(...XRW)
+        .send(forbiddenMutation);
+      expect(mutation.status).toBe(400);
+    }
+    expect(
+      await harness.db
+        .select({ privacyMode: schema.users.privacyMode })
+        .from(schema.users)
+        .where(eq(schema.users.id, target.id)),
+    ).toEqual([{ privacyMode: 'paranoid' }]);
+    expect(
+      await harness.db
+        .select({ version: schema.paranoidVaults.version })
+        .from(schema.paranoidVaults)
+        .where(eq(schema.paranoidVaults.userId, target.id)),
+    ).toEqual([{ version: 2 }]);
+  });
+
+  it('maps batched metadata to the right account across a mixed page', async () => {
+    const admin = await harness.seedAdmin();
+    const adminAgent = await harness.loginAdmin(admin);
+    const normal = await harness.seedUser({
+      email: 'mixed-normal@bt.test',
+      username: 'mixed_normal',
+    });
+    const paranoid = await Promise.all([
+      harness.seedUser({ email: 'mixed-drive@bt.test', username: 'mixed_drive' }),
+      harness.seedUser({ email: 'mixed-server@bt.test', username: 'mixed_server' }),
+    ]);
+    // Drive-only: paranoid, but zero server bytes — no vault row, no history.
+    await harness.db
+      .update(schema.users)
+      .set({ privacyMode: 'paranoid', paranoidMediaSet: ['drive'] })
+      .where(eq(schema.users.id, paranoid[0]!.id));
+    await harness.db
+      .update(schema.users)
+      .set({ privacyMode: 'paranoid', paranoidMediaSet: ['server', 'drive'] })
+      .where(eq(schema.users.id, paranoid[1]!.id));
+    await harness.db.insert(schema.paranoidVaults).values({
+      userId: paranoid[1]!.id,
+      version: 7,
+      formatVersion: 1,
+      sizeBytes: 42,
+      blob: Buffer.from('server-ciphertext'),
+    });
+    await harness.db.insert(schema.paranoidVaultHistory).values(
+      [5, 6].map((version) => ({
+        userId: paranoid[1]!.id,
+        version,
+        formatVersion: 1,
+        sizeBytes: 41,
+        blob: Buffer.from(`history-${version}`),
+      })),
+    );
+
+    const response = await adminAgent.get('/api/v1/admin/users');
+    expect(response.status).toBe(200);
+    const body = adminUserListResponseSchema.parse(response.body);
+    const byId = new Map(body.users.map((user) => [user.id, user]));
+    expect(byId.get(normal.id)).not.toHaveProperty('paranoid');
+    expect(byId.get(paranoid[0]!.id)).toMatchObject({
+      privacyMode: 'paranoid',
+      paranoid: { mediaSet: ['drive'], vault: null, historyCount: 0 },
+    });
+    expect(byId.get(paranoid[1]!.id)).toMatchObject({
+      privacyMode: 'paranoid',
+      paranoid: {
+        mediaSet: ['server', 'drive'],
+        vault: { version: 7, sizeBytes: 42 },
+        historyCount: 2,
+      },
+    });
   });
 });
 
@@ -644,6 +804,31 @@ describe('audit log (PROJECTPLAN.md §5.5, §10)', () => {
     expect(stats.status).toBe(200);
     const parsed = adminStatsSchema.parse(stats.body);
     expect(parsed.userCount).toBeGreaterThanOrEqual(1);
+  });
+
+  it('admin deletion clears remembered devices without retaining the username', async () => {
+    const actor = await harness.seedAdmin();
+    const target = await harness.seedUser({
+      email: 'admin-delete-target@test.dev',
+      username: 'admin_delete_target',
+    });
+    await harness.ctx.auth.setPin(target.id, '4242');
+    const remembered = await harness.ctx.auth.rememberDevice(target.id);
+    await harness.ctx.redis.set(pinQuickAuthMarkerKey(remembered.deviceId), '1');
+
+    await harness.ctx.admin.deleteUser(target.id, target.username, { id: actor.id });
+
+    expect(await harness.ctx.redis.get(rememberedDeviceKey(remembered.deviceId))).toBeNull();
+    expect(await harness.ctx.redis.get(pinQuickAuthMarkerKey(remembered.deviceId))).toBeNull();
+    expect(await harness.ctx.redis.exists(rememberedDevicesForUserKey(target.id))).toBe(0);
+
+    const entries = await harness.db
+      .select()
+      .from(schema.auditLog)
+      .where(eq(schema.auditLog.targetId, target.id));
+    const deletion = entries.find((entry) => entry.action === 'user.deleted');
+    expect(deletion?.meta).toEqual({ via: 'admin' });
+    expect(JSON.stringify(deletion?.meta)).not.toContain(target.username);
   });
 });
 

@@ -42,7 +42,7 @@ export interface IdeasServiceDeps {
   /** Ownership check for a referenced conglomerate on create/update (§8). */
   conglomerates: Pick<ConglomerateRepository, 'findByIdForOwner'>;
   /** The ONE enforcement layer — gates clone + drops the audience row on delete. */
-  audience: Pick<AudienceService, 'authorizeIdeaRead' | 'clearForSubject'>;
+  audience: Pick<AudienceService, 'withAuthorizedIdeaRead' | 'clearForSubject'>;
 }
 
 export interface IdeasService {
@@ -83,6 +83,18 @@ export function createIdeasService(deps: IdeasServiceDeps): IdeasService {
     if (state.source.kind !== 'conglomerate') return;
     const owned = await conglomerates.findByIdForOwner(ownerId, state.source.conglomerateId);
     if (!owned) throw CONGLOMERATE_NOT_OWNED();
+  }
+
+  async function cloneRecord(viewerId: string, source: IdeaRecord): Promise<IdeaResponse> {
+    // Byte-exact private copy (exact reproduction is the point). A conglomerate
+    // reference is copied verbatim even across owners — the Workboard resolves
+    // ownership on reopen; we never rewrite the saved state on clone.
+    const record = await repo.create(viewerId, {
+      name: source.name,
+      thesis: source.thesis,
+      state: source.state,
+    });
+    return { idea: toIdea(record) };
   }
 
   return {
@@ -128,23 +140,22 @@ export function createIdeasService(deps: IdeasServiceDeps): IdeasService {
     },
 
     async clone(viewerId, ideaId) {
-      // Audience-gated, recomputed now: the owner sees their own idea (ownership),
-      // an admitted friend/public viewer passes the enforcement join, everyone
-      // else gets `undefined` → a uniform 404 (no existence leak).
-      const authorized = await audience.authorizeIdeaRead(viewerId, ideaId);
-      const isOwner = (await repo.findByIdForOwner(viewerId, ideaId)) !== null;
-      if (!authorized && !isOwner) throw IDEA_NOT_FOUND();
-      const source = await repo.findById(ideaId);
-      if (!source) throw IDEA_NOT_FOUND();
-      // Byte-exact private copy (exact reproduction is the point). A conglomerate
-      // reference is copied verbatim even across owners — the Workboard resolves
-      // ownership on reopen; we never rewrite the saved state on clone.
-      const record = await repo.create(viewerId, {
-        name: source.name,
-        thesis: source.thesis,
-        state: source.state,
+      // Hold the viewer + discovered owner privacy locks from authorization
+      // through the source read AND clone insert. If the owner's transition wins,
+      // no byte from the stale share is read or persisted into the viewer's book.
+      const sharedClone = await audience.withAuthorizedIdeaRead(viewerId, ideaId, async () => {
+        const source = await repo.findById(ideaId);
+        if (!source) throw IDEA_NOT_FOUND();
+        return cloneRecord(viewerId, source);
       });
-      return { idea: toIdea(record) };
+      if (sharedClone) return sharedClone;
+
+      // The owner is not their own friend, so the audience join deliberately
+      // returns nothing for an own idea. The registry's caller guard remains held
+      // around this owner-only path.
+      const owned = await repo.findByIdForOwner(viewerId, ideaId);
+      if (!owned) throw IDEA_NOT_FOUND();
+      return cloneRecord(viewerId, owned);
     },
   };
 }

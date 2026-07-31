@@ -15,6 +15,38 @@ import { pathAcceptsBearer } from '../middleware/bearerAuth';
 // workspace, so this also covers the contract schemas we register below.
 extendZodWithOpenApi(z);
 
+// zod-to-openapi (7.3.x) has no ZodLazy transformer at all: reaching the strict
+// restore contract's recursive JSON-value schema throws unless the instance the
+// generator lands on already carries a `type` hint, which short-circuits the
+// traversal. The hint therefore cannot live on a separate documentation schema
+// registered in `componentSchemas` — `.openapi()` CLONES, while the contract
+// parents captured the original instance, so a clone is never what the generator
+// walks into. What it can do is stop being permanent: install the hint only for
+// the duration of one `generateDocument()` call and put the previous value back,
+// so `@bettertrack/contracts` is observably unmodified before and after (nothing
+// else runs inside that synchronous call). Runtime request validation always uses
+// the untouched recursive schema.
+const VAULT_JSON_DOCUMENTATION = {
+  type: 'object' as const,
+  additionalProperties: true,
+  description:
+    'A persisted JSON column, passed through verbatim. Documented as an object because ' +
+    'OpenAPI 3.0 cannot express a recursive any-JSON union; the endpoint actually accepts ' +
+    'any JSON value there (object, array, string, number, boolean or null) and validates it ' +
+    'against the recursive contract schema.',
+};
+
+function withVaultJsonDocumentation<T>(generate: () => T): T {
+  const schema = contracts.vaultJsonSchema;
+  const original = schema._def.openapi;
+  schema._def.openapi = schema.openapi(VAULT_JSON_DOCUMENTATION)._def.openapi;
+  try {
+    return generate();
+  } finally {
+    schema._def.openapi = original;
+  }
+}
+
 /**
  * OpenAPI 3 document generated from the `@bettertrack/contracts` zod schemas
  * (PROJECTPLAN.md §5, §6.13). Every `/api/v1` endpoint is registered here with
@@ -46,6 +78,11 @@ const componentSchemas = {
   ParanoidMediaTransitionRequest: contracts.paranoidMediaTransitionRequestSchema,
   ParanoidMediaTransitionResponse: contracts.paranoidMediaTransitionResponseSchema,
   ParanoidServerCandidateMetadata: contracts.paranoidServerCandidateMetadataSchema,
+  ParanoidEnableRequest: contracts.paranoidEnableRequestSchema,
+  ParanoidEnableResponse: contracts.paranoidEnableResponseSchema,
+  ParanoidDisableRequest: contracts.paranoidDisableRequestSchema,
+  ParanoidForkProvenanceResponse: contracts.paranoidForkProvenanceResponseSchema,
+  ParanoidDisableResponse: contracts.paranoidDisableResponseSchema,
   RetiredServerPurgeChallengeRequest: contracts.retiredServerPurgeChallengeRequestSchema,
   RetiredServerPurgeChallengeResponse: contracts.retiredServerPurgeChallengeResponseSchema,
   RetiredServerPurgeRequest: contracts.retiredServerPurgeRequestSchema,
@@ -708,6 +745,35 @@ const endpoints: EndpointDef[] = [
     body: R.ExportRequest,
     status: 200,
     response: R.ExportRequestResponse,
+  },
+  {
+    method: 'post',
+    path: '/account/paranoid/enable',
+    tag: 'Account',
+    summary:
+      'Atomically verify encrypted media, purge cleartext portfolio data, revoke sharing, and enable paranoid mode.',
+    body: R.ParanoidEnableRequest,
+    status: 200,
+    response: R.ParanoidEnableResponse,
+  },
+  {
+    method: 'post',
+    path: '/account/paranoid/disable',
+    tag: 'Account',
+    summary:
+      'Atomically rehydrate a complete unlocked vault and return the account to normal mode.',
+    body: R.ParanoidDisableRequest,
+    status: 200,
+    response: R.ParanoidDisableResponse,
+  },
+  {
+    method: 'get',
+    path: '/account/paranoid/fork-provenance',
+    tag: 'Account',
+    summary:
+      'The caller’s own severed-MIRRORCHAIN-fork identity map, captured into the encrypted vault before enable purges it. No active membership, co-member identity, or chain metadata.',
+    status: 200,
+    response: R.ParanoidForkProvenanceResponse,
   },
   {
     method: 'get',
@@ -4352,6 +4418,10 @@ export const INTEGRATION_GUIDE = [
  * Cached at module scope by {@link getOpenApiDocument}.
  */
 export function buildOpenApiDocument() {
+  return withVaultJsonDocumentation(() => generateOpenApiDocument());
+}
+
+function generateOpenApiDocument() {
   const generator = new OpenApiGeneratorV3(registry.definitions);
   return generator.generateDocument({
     openapi: '3.0.3',

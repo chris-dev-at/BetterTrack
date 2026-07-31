@@ -1,4 +1,4 @@
-import { useQuery } from '@tanstack/react-query';
+import { keepPreviousData, useQuery } from '@tanstack/react-query';
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 
@@ -16,6 +16,7 @@ import { EM_DASH, formatDate, formatMoney } from '../../../lib/format';
 import { Alert } from '../../components/ui';
 import { EmptyState, MoneyText, Skeleton } from '../../../ui';
 import { Button, Icon, PageHead } from '../../../ui/origin';
+import { AllocationDonut } from '../../../ui/charts';
 import { CashflowChart } from './CashflowChart';
 import { MonthPicker } from './MonthPicker';
 import { RecordCashButton } from './RecordCashButton';
@@ -83,6 +84,10 @@ export function CashOverviewPage() {
     queryFn: ({ signal }) => getCashSummary(portfolioId!, month, signal),
     enabled: portfolioId !== null,
     staleTime: 30_000,
+    // Changing month must not blank the page. Without this the whole section
+    // fell back to a skeleton on every arrow press — taking the month picker
+    // with it, so the control vanished from under the pointer that used it.
+    placeholderData: keepPreviousData,
   });
   const trendsQuery = useQuery({
     queryKey: portfolioId
@@ -105,6 +110,9 @@ export function CashOverviewPage() {
     staleTime: 30_000,
   });
 
+  // `isLoading` is first-load-only by design (it is `isPending && isFetching`),
+  // and with `keepPreviousData` a month change never returns to pending — so
+  // this gate now fires exactly once, on arrival.
   if (portfoliosQuery.isLoading || (portfolioId !== null && summaryQuery.isLoading)) {
     return (
       <div className="flex flex-col gap-6">
@@ -196,21 +204,18 @@ export function CashOverviewPage() {
             role="list"
           >
             {sources.map((source) => (
-              <li className="bt-acctcard" key={source.id}>
-                <span className="bt-acctcard__body">
-                  <span className="bt-acctcard__name" title={source.name}>
-                    {source.name}
-                  </span>
-                  <span className="bt-acctcard__value bt-num">
-                    <MoneyText amount={source.balanceEur} currency="EUR" />
-                  </span>
+              <li className="bt-acctrow" key={source.id}>
+                <span className="bt-acctrow__name" title={source.name}>
+                  {source.name}
                 </span>
-                {/* On the card, because "spend from Savings" was four presses
-                    away when the only entry point was the page-level control. */}
-                <span className="bt-acctcard__actions">
+                <span className="bt-acctrow__value bt-num">
+                  <MoneyText amount={source.balanceEur} currency="EUR" />
+                </span>
+                {/* Inline, and a real size: "spend from Savings" is one press. */}
+                <span className="bt-acctrow__actions">
                   <button
                     aria-label={t('cashflow.overview.quickDeposit', { source: source.name })}
-                    className="bt-acctcard__action bt-acctcard__action--in"
+                    className="bt-acctrow__action bt-acctrow__action--in"
                     onClick={() => setQuick({ sourceId: source.id, direction: 'in' })}
                     title={t('cashflow.overview.quickDeposit', { source: source.name })}
                     type="button"
@@ -219,7 +224,7 @@ export function CashOverviewPage() {
                   </button>
                   <button
                     aria-label={t('cashflow.overview.quickWithdraw', { source: source.name })}
-                    className="bt-acctcard__action bt-acctcard__action--out"
+                    className="bt-acctrow__action bt-acctrow__action--out"
                     onClick={() => setQuick({ sourceId: source.id, direction: 'out' })}
                     title={t('cashflow.overview.quickWithdraw', { source: source.name })}
                     type="button"
@@ -229,6 +234,14 @@ export function CashOverviewPage() {
                 </span>
               </li>
             ))}
+            {/* The list's own way into managing them — the header icon is for
+                people who already know it is there. */}
+            <li>
+              <Link className="bt-acctrow bt-acctrow--manage" to={to('/portfolio/cash/accounts')}>
+                <Icon name="sliders" />
+                <span className="bt-acctrow__name">{t('cashflow.overview.manageAccounts')}</span>
+              </Link>
+            </li>
           </ul>
         )}
       </section>
@@ -250,35 +263,54 @@ export function CashOverviewPage() {
           <p className="bt-meta">{t('cashflow.overview.noActivity')}</p>
         ) : (
           <>
-            <ul className="flex flex-col gap-2.5">
-              {summary.tags.map((tag) => (
-                <li className="flex items-center gap-3" key={tag.tagId ?? 'untagged'}>
-                  <span className="w-40 shrink-0 truncate">
-                    {tag.tagId === null || tag.name === null || tag.color === null ? (
-                      <span className="bt-muted">{t('cashflow.untagged')}</span>
-                    ) : (
-                      <TagChip color={tag.color} name={tag.name} />
-                    )}
-                  </span>
-                  <span
-                    aria-hidden="true"
-                    className="h-2 flex-1 overflow-hidden rounded-full"
-                    style={{ background: 'var(--bt-surface-strong)' }}
-                  >
-                    <span
-                      className="block h-full rounded-full"
-                      style={{
-                        background: tag.color ?? 'var(--bt-text-soft)',
-                        width: `${(tag.outflow / tagMax) * 100}%`,
-                      }}
-                    />
-                  </span>
-                  <span className="w-24 shrink-0 text-right bt-num">
-                    {formatMoney(tag.outflow)}
-                  </span>
-                </li>
-              ))}
-            </ul>
+            <div className="bt-bytag">
+              {/* Share of the month's outflow — the same numbers the bars rank,
+                  answering "what proportion" instead of "how much". */}
+              <div className="bt-bytag__chart">
+                <AllocationDonut
+                  data={summary.tags
+                    .filter((tag) => tag.outflow > 0)
+                    .map((tag) => ({
+                      label: tag.name ?? t('cashflow.untagged'),
+                      value: tag.outflow,
+                      color: tag.color ?? 'var(--bt-text-soft)',
+                    }))}
+                  size={170}
+                  title={t('cashflow.overview.byTag')}
+                />
+              </div>
+              <div className="bt-bytag__bars">
+                <ul aria-label={t('cashflow.overview.byTagList')} className="flex flex-col gap-2.5">
+                  {summary.tags.map((tag) => (
+                    <li className="flex items-center gap-3" key={tag.tagId ?? 'untagged'}>
+                      <span className="w-40 shrink-0 truncate">
+                        {tag.tagId === null || tag.name === null || tag.color === null ? (
+                          <span className="bt-muted">{t('cashflow.untagged')}</span>
+                        ) : (
+                          <TagChip color={tag.color} name={tag.name} />
+                        )}
+                      </span>
+                      <span
+                        aria-hidden="true"
+                        className="h-2 flex-1 overflow-hidden rounded-full"
+                        style={{ background: 'var(--bt-surface-strong)' }}
+                      >
+                        <span
+                          className="block h-full rounded-full"
+                          style={{
+                            background: tag.color ?? 'var(--bt-text-soft)',
+                            width: `${(tag.outflow / tagMax) * 100}%`,
+                          }}
+                        />
+                      </span>
+                      <span className="w-24 shrink-0 text-right bt-num">
+                        {formatMoney(tag.outflow)}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            </div>
             <p className="bt-meta">{t('cashflow.overview.notSumNote')}</p>
           </>
         )}

@@ -1,51 +1,85 @@
 name: bettertrack
 
-# Optional offsite backup sidecar (PROJECTPLAN.md §13.4 V4-P6 arc-b;
-# §16 Decision Log 2026-07-15).
+# Optional encrypted offsite upload and separately credentialed retention.
 #
-# Adds a sixth service (`backup-offsite`) to the base topology. Owners who do
-# NOT need offsite backup NEVER include this override — the base five-service
-# topology (§4.6) is unchanged.
-#
-# The service is `profiles: [offsite]`-gated, so plain `up -d` — even with
-# this override on the compose stack — leaves it stopped. Invoke as a one-shot
-# after backup.sh (see docs/ops.md for the full runbook and the host cron
-# line):
+# Both services are profile-gated one-shots. `backup-offsite` can use a
+# delete-less upload credential. `backup-offsite-retention` is double-gated by
+# its own profile and BT_BACKUP_REMOTE_RETENTION_ENABLED=true, and mounts only
+# its separate retention credential.
 #
 #   docker compose \
 #     -f docker-compose.yml \
 #     -f docker-compose.subdomains.yml \
 #     -f docker-compose.offsite.yml \
+#     --profile offsite \
 #     run --rm backup-offsite
 #
-# Required env (in infra/.env when this override is included):
+# Upload env:
 #   BT_BACKUP_AGE_RECIPIENT_HOST_FILE — host path to the age recipient (public)
-#   BT_BACKUP_RCLONE_CONFIG_HOST_FILE — host path to rclone.conf (Drive tokens)
+#   BT_BACKUP_RCLONE_CONFIG_HOST_FILE — host path to delete-less rclone.conf
 #   BT_BACKUP_RCLONE_REMOTE           — e.g. gdrive:bettertrack-backups
-# Optional:
+# Optional retention env (all required before enabling the retention profile):
+#   BT_BACKUP_REMOTE_RETENTION_ENABLED
+#   BT_BACKUP_RETENTION_RCLONE_CONFIG_HOST_FILE
+#   BT_BACKUP_RETENTION_RCLONE_REMOTE
 #   BT_BACKUP_REMOTE_RETENTION_DAYS   — default 30
 #
-# Fallbacks intentionally omitted: unset host paths must fail compose so
-# operators notice, not silently mount nothing.
+# Upload host-path fallbacks are intentionally omitted: unset paths must fail
+# Compose so operators notice. The disabled retention profile alone uses
+# /dev/null so the optional overlay remains renderable without owner setup.
+x-bounded-logging: &bounded-logging
+  driver: local
+  options:
+    max-size: '10m'
+    max-file: '3'
+
 services:
   backup-offsite:
     build:
       context: ./backup
       dockerfile: Dockerfile
+    image: bettertrack-backup:local
+    entrypoint: ['/bin/bash', '/opt/bettertrack/offsite.sh']
     restart: 'no'
+    logging: *bounded-logging
     profiles: ['offsite']
     environment:
+      BT_BACKUP_OFFSITE_MODE: 'upload'
       BT_BACKUP_SOURCE_DIR: '/backups'
       BT_BACKUP_AGE_RECIPIENT_FILE: '/etc/bettertrack/age-recipient'
       BT_BACKUP_RCLONE_REMOTE: '${BT_BACKUP_RCLONE_REMOTE:-}'
-      BT_BACKUP_REMOTE_RETENTION_DAYS: '${BT_BACKUP_REMOTE_RETENTION_DAYS:-30}'
-      # rclone reads its config from $RCLONE_CONFIG; the compose bind mount
-      # below places the file at this fixed in-container path.
-      RCLONE_CONFIG: '/etc/bettertrack/rclone.conf'
+      BT_BACKUP_UPLOAD_RCLONE_CONFIG: '/etc/bettertrack/upload-rclone.conf'
+      BT_BACKUP_STATUS_FILE: '/status/backup-status.env'
     volumes:
+      # Plaintext dumps stay read-only; only the separate status volume is writable.
       - pgbackups:/backups:ro
+      - backupstatus:/status
       - '${BT_BACKUP_AGE_RECIPIENT_HOST_FILE}:/etc/bettertrack/age-recipient:ro'
-      - '${BT_BACKUP_RCLONE_CONFIG_HOST_FILE}:/etc/bettertrack/rclone.conf:ro'
+      - '${BT_BACKUP_RCLONE_CONFIG_HOST_FILE}:/etc/bettertrack/upload-rclone.conf:ro'
+
+  backup-offsite-retention:
+    build:
+      context: ./backup
+      dockerfile: Dockerfile
+    image: bettertrack-backup:local
+    entrypoint: ['/bin/bash', '/opt/bettertrack/offsite.sh']
+    restart: 'no'
+    logging: *bounded-logging
+    profiles: ['offsite-retention']
+    environment:
+      BT_BACKUP_OFFSITE_MODE: 'retention'
+      BT_BACKUP_SOURCE_DIR: '/backups'
+      BT_BACKUP_REMOTE_RETENTION_ENABLED: '${BT_BACKUP_REMOTE_RETENTION_ENABLED:-false}'
+      BT_BACKUP_RETENTION_RCLONE_CONFIG: '/etc/bettertrack/retention-rclone.conf'
+      BT_BACKUP_RETENTION_RCLONE_REMOTE: '${BT_BACKUP_RETENTION_RCLONE_REMOTE:-}'
+      BT_BACKUP_REMOTE_RETENTION_DAYS: '${BT_BACKUP_REMOTE_RETENTION_DAYS:-30}'
+      BT_BACKUP_STATUS_FILE: '/status/backup-status.env'
+    volumes:
+      - backupstatus:/status
+      # /dev/null keeps the disabled profile renderable without owner setup.
+      # Enabling retention without an explicit file still fails safely.
+      - '${BT_BACKUP_RETENTION_RCLONE_CONFIG_HOST_FILE:-/dev/null}:/etc/bettertrack/retention-rclone.conf:ro'
 
 volumes:
   pgbackups:
+  backupstatus:

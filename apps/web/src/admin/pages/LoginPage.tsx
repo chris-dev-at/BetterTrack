@@ -3,6 +3,7 @@ import type { FormEvent } from 'react';
 import { Navigate, useNavigate } from 'react-router-dom';
 
 import { Wordmark } from '../../components/Wordmark';
+import { useT } from '../../i18n';
 import * as api from '../../lib/adminApi';
 import { ApiError } from '../../lib/apiClient';
 import { NotAdminError, useAuth } from '../AuthContext';
@@ -19,6 +20,7 @@ const WEB_SHA = (import.meta.env.VITE_BUILD_SHA ?? 'unknown').slice(0, 7);
  * Already-authenticated admins are bounced straight to the users page.
  */
 export function LoginPage() {
+  const t = useT();
   const { status, login } = useAuth();
   const navigate = useNavigate();
   const [identifier, setIdentifier] = useState('');
@@ -45,9 +47,15 @@ export function LoginPage() {
 
   if (status === 'loading') {
     return (
-      <div className="grid min-h-screen place-items-center bg-neutral-950">
+      <main
+        className="grid min-h-screen place-items-center bg-neutral-950"
+        aria-labelledby="admin-login-heading"
+      >
+        <h1 id="admin-login-heading" className="sr-only">
+          {t('auth.adminLogin.heading')}
+        </h1>
         <Spinner label="Checking session…" />
-      </div>
+      </main>
     );
   }
   if (status === 'authenticated') return <Navigate to="/admin/users" replace />;
@@ -76,10 +84,16 @@ export function LoginPage() {
   }
 
   return (
-    <div className="grid min-h-screen place-items-center bg-neutral-950 px-4">
+    <main
+      className="grid min-h-screen place-items-center bg-neutral-950 px-4"
+      aria-labelledby="admin-login-heading"
+    >
       <div className="w-full max-w-sm">
         <div className="mb-8 text-center">
           <Wordmark edition="Admin" className="text-2xl" />
+          <h1 id="admin-login-heading" className="sr-only">
+            {t('auth.adminLogin.heading')}
+          </h1>
         </div>
         <form
           onSubmit={onSubmit}
@@ -113,6 +127,6 @@ export function LoginPage() {
           {apiSha ? `web ${WEB_SHA} · api ${apiSha}` : `web ${WEB_SHA}`}
         </p>
       </div>
-    </div>
+    </main>
   );
 }

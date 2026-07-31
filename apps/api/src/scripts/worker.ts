@@ -19,10 +19,18 @@ import { createMarketIntelRepository } from '../data/repositories/marketIntelRep
 import { createNotificationRepository } from '../data/repositories/notificationRepository';
 import { createNotificationDigestRepository } from '../data/repositories/notificationDigestRepository';
 import { createPushSubscriptionRepository } from '../data/repositories/pushSubscriptionRepository';
+import {
+  createParanoidEnforcementRepository,
+  withFreshLockedPrivacyModes,
+  withLockedPrivacyModes,
+} from '../data/repositories/paranoidEnforcementRepository';
 import { createUserRepository } from '../data/repositories/userRepository';
 import { createEventBus } from '../events';
 import {
+  ALL_QUEUE_NAMES,
   assembleRegisteredJobDefinitions,
+  assertParanoidJobBindings,
+  bindParanoidJob,
   createBackfillScheduler,
   createDeadLetter,
   createExportBuildJob,
@@ -30,6 +38,7 @@ import {
   createJobWorkers,
   createAlertsEvaluateJob,
   createFxRefreshSpotJob,
+  createParanoidUserJobFilter,
   createMirrorReplicateJob,
   createMirrorInviteCleanupJob,
   createMirrorConsistencySweepJob,
@@ -38,6 +47,7 @@ import {
   createWebhookDeliverJob,
   createWebhookDeliveryCleanupJob,
   createApiKeyRequestLogCleanupJob,
+  createDataRetentionCleanupJob,
   createNotificationsDispatchJob,
   createDigestDailyJob,
   createDigestWeeklyJob,
@@ -113,6 +123,12 @@ import { createDigestService } from '../services/notifications/digestService';
 import { createPresenceStore } from '../services/notifications/presence';
 import { createWebPushChannel } from '../services/notifications/webPush';
 import { createCashTagRepository } from '../data/repositories/cashTagRepository';
+import {
+  createParanoidModeGuard,
+  isParanoidOwnedSubjectBlocked,
+  ParanoidModeError,
+  runIfParanoidOwnedSubjectAllowed,
+} from '../services/account/paranoidEnforcement';
 
 const config = loadConfig();
 const logger = createLogger(config);
@@ -136,6 +152,40 @@ const registry = createQueueRegistry(createConnection());
 // The market-data jobs read/write Postgres and reach providers through the same
 // caching/resilience service the API uses.
 const { db, client } = createDatabase(config.databaseUrl);
+// Dedicated privacy-lock pool, same rule as in `server.ts`: every privacy-mode
+// lock reserves a connection here rather than on the job pool above, so a lock
+// held across a read never waits on a connection its own callback needs. Its size
+// (`createDatabase`, `max: 10`) is the concurrency budget for privacy-guarded
+// work; on this side the holders are the export build and the expiry sweep, both
+// bounded per job rather than by a client socket.
+const { db: lockDb, client: lockClient } = createDatabase(config.databaseUrl);
+const workerUserRepo = createUserRepository(db);
+const paranoidGuard = createParanoidModeGuard({
+  privacyModeFor: async (userId) => (await workerUserRepo.findById(userId))?.privacyMode ?? null,
+  withLockedPrivacyModes: (userIds, run) => withLockedPrivacyModes(lockDb, userIds, run),
+});
+const paranoidSubjects = createParanoidEnforcementRepository(db);
+const isBlockedPortfolio = async (portfolioId: string) =>
+  isParanoidOwnedSubjectBlocked(await paranoidSubjects.portfolioOwner(portfolioId), paranoidGuard);
+const runPortfolioJobIfAllowed = async (portfolioId: string, action: () => Promise<void>) =>
+  runIfParanoidOwnedSubjectAllowed(
+    await paranoidSubjects.portfolioOwner(portfolioId),
+    paranoidGuard,
+    'portfolioJobs',
+    action,
+  );
+const earningsParanoidFilter = createParanoidUserJobFilter(
+  'notifications.earningsRemind',
+  paranoidGuard,
+);
+const dividendParanoidFilter = createParanoidUserJobFilter(
+  'marketIntel.dividendScan',
+  paranoidGuard,
+);
+const standingOrderParanoidFilter = createParanoidUserJobFilter(
+  'standingOrders.process',
+  paranoidGuard,
+);
 // DB-backed problem capture (§13.5 V5-P2 arc (d), the Sentry replacement): the
 // worker captures its own permanently-failed jobs and provider failures into
 // the shared `problems` table. No audit sink here — resolve/reopen is admin-only.
@@ -260,6 +310,8 @@ const dataExportService = createExportService({
   enqueueBuild: async (jobId) => {
     await registry.enqueue('data.export', { jobId });
   },
+  withAccountTransitionLock: (userId, run) =>
+    withFreshLockedPrivacyModes(lockDb, [userId], () => run()),
   logger,
 });
 
@@ -276,6 +328,8 @@ const snapshots = createPortfolioSnapshotService({
   cashMovementRepo: createCashMovementRepository(db),
   marketData,
   currencyService: createCurrencyService({ source: createMarketDataFxSource(marketData) }),
+  isParanoidPortfolio: isBlockedPortfolio,
+  runIfAllowedPortfolio: runPortfolioJobIfAllowed,
   logger,
 });
 
@@ -301,6 +355,7 @@ const audience = createAudienceService({
   profile: profileRepo,
   notify,
   logger,
+  paranoid: paranoidGuard,
 });
 const taxService = createTaxService({
   taxRepo,
@@ -312,6 +367,7 @@ const taxService = createTaxService({
   currencyService,
   snapshots,
   logger,
+  paranoid: paranoidGuard,
 });
 const portfolioService = createPortfolioService({
   portfolioRepo,
@@ -360,6 +416,7 @@ const mirror = createMirrorService({
   redis: deadLetterConnection,
   enqueueReplicate: enqueueMirrorReplicate,
   logger,
+  paranoid: paranoidGuard,
 });
 
 // V5-P6b standing orders (#593): the worker owns the engine that the daily
@@ -376,6 +433,9 @@ const standingOrders = createStandingOrderService({
   cashSourceRepo: createCashSourceRepository(db),
   marketData,
   snapshots,
+  paranoid: paranoidGuard,
+  isParanoidForProcessing: standingOrderParanoidFilter,
+  runIfAllowedForProcessing: standingOrderParanoidFilter.runAllowed,
   logger,
 });
 
@@ -409,12 +469,14 @@ const webhookBridge = createWebhookBridge({
     await registry.enqueue('webhooks.deliver', job);
   },
   logger,
+  paranoid: paranoidGuard,
 });
 
 const coreJobDeps = {
   db,
   marketData,
   notify,
+  paranoid: paranoidGuard,
   // Custom assets (the `manual` provider) are durable in our own DB; the price
   // jobs must not fetch them (see MarketDataJobDeps.isLocalProvider).
   isLocalProvider: (providerId: string) =>
@@ -426,6 +488,9 @@ const definitions = assembleRegisteredJobDefinitions({
   createPricesRefreshDailyJob: createPricesRefreshDailyJob(coreJobDeps),
   createPricesBackfillJob: createPricesBackfillJob(coreJobDeps),
   createFxRefreshSpotJob: createFxRefreshSpotJob(coreJobDeps),
+  // `alerts.evaluate` survives paranoid mode but splits itself into an
+  // unguarded global rail and an owner-locked custom-asset rail; the factory
+  // returns the definition already carrying that `internallyFiltered` binding.
   createAlertsEvaluateJob: createAlertsEvaluateJob(coreJobDeps),
   createNotificationsDispatchJob: createNotificationsDispatchJob({
     dispatcher,
@@ -436,46 +501,79 @@ const definitions = assembleRegisteredJobDefinitions({
   createDeferredDeliveryJob: createDeferredDeliveryJob({ digest: digestService }),
   createExportBuildJob: createExportBuildJob({ exportService: dataExportService }),
   createExportCleanupJob: createExportCleanupJob({ exportService: dataExportService }),
-  createSnapshotsRecomputeJob: createSnapshotsRecomputeJob({ snapshots }),
-  createSnapshotsBackfillJob: createSnapshotsBackfillJob({ snapshots }),
+  createSnapshotsRecomputeJob: bindParanoidJob(createSnapshotsRecomputeJob({ snapshots }), {
+    mode: 'portfolio',
+    runIfAllowed: runPortfolioJobIfAllowed,
+  }),
+  createSnapshotsBackfillJob: bindParanoidJob(createSnapshotsBackfillJob({ snapshots }), {
+    mode: 'serviceFiltered',
+  }),
   createUsageRollupJob: createUsageRollupJob({ usageAnalytics }),
   // V5-P5 market intelligence (#582): the daily opt-in earnings-reminder scan
   // over every user's held + watched assets. Gated by MARKET_INTEL_ENABLED — a
   // no-op scan when the arc is unconfigured. Idempotency store = ctx.redis.
-  createEarningsReminderJob: createEarningsReminderJob({
-    intelRepo: createMarketIntelRepository(db),
-    marketData,
-    notify,
-    enabled: config.marketIntel.enabled,
-  }),
+  createEarningsReminderJob: bindParanoidJob(
+    createEarningsReminderJob({
+      intelRepo: createMarketIntelRepository(db),
+      marketData,
+      notify,
+      enabled: config.marketIntel.enabled,
+      runIfAllowed: earningsParanoidFilter.runAllowed,
+    }),
+    { mode: 'perUser', filter: earningsParanoidFilter },
+  ),
   // V5-P5 dividend-event scan (#581): fires opt-in ex-date reminders for held
   // assets. Gated by MARKET_INTEL_ENABLED; per-user opt-in read from the matrix.
-  createDividendEventsScanJob: createDividendEventsScanJob({
-    repo: createMarketIntelRepository(db),
-    marketData,
-    notify,
-    isEnabled: dividendNotifyGate(notificationRepo),
-    enabled: config.marketIntel.enabled,
-  }),
+  createDividendEventsScanJob: bindParanoidJob(
+    createDividendEventsScanJob({
+      repo: createMarketIntelRepository(db),
+      marketData,
+      notify,
+      isEnabled: dividendNotifyGate(notificationRepo),
+      enabled: config.marketIntel.enabled,
+      runIfAllowed: dividendParanoidFilter.runAllowed,
+    }),
+    { mode: 'perUser', filter: dividendParanoidFilter },
+  ),
   // V5-P6b standing orders (#593): the daily scan that books each active order's
   // newest due occurrence exactly once.
-  createStandingOrdersJob: createStandingOrdersJob({ standingOrders }),
+  createStandingOrdersJob: bindParanoidJob(createStandingOrdersJob({ standingOrders }), {
+    mode: 'perUser',
+    filter: standingOrderParanoidFilter,
+  }),
   // V5-P7 MIRRORCHAIN (#644): per-chain replication — strictly ordered,
   // idempotent, watermark-resumed; permanent failure dead-letters → Problems.
-  createMirrorReplicateJob: createMirrorReplicateJob({
-    mirror,
-    enqueue: enqueueMirrorReplicate,
-  }),
+  createMirrorReplicateJob: bindParanoidJob(
+    createMirrorReplicateJob({ mirror, enqueue: enqueueMirrorReplicate }),
+    { mode: 'serviceFiltered' },
+  ),
   // V5-P7 MIRRORCHAIN (#680): the daily sweep that retires pending invites past
   // the 30-day token-hygiene horizon (frees the pending-unique slot).
   createMirrorInviteCleanupJob: createMirrorInviteCleanupJob({ repo: mirrorchainRepo }),
   // V5-P7 MIRRORCHAIN (#684): the daily defense-in-depth repair sweep — re-applies
   // §7 succession to any ownerless chain and surfaces the two crash residuals
   // (design §2 (a)/(b)) onto the admin Problems page.
-  createMirrorConsistencySweepJob: createMirrorConsistencySweepJob({ mirror, problems }),
+  createMirrorConsistencySweepJob: bindParanoidJob(
+    createMirrorConsistencySweepJob({ mirror, problems }),
+    { mode: 'serviceFiltered' },
+  ),
   // V5-P10 outbound webhooks (#648): the signed delivery job (retry/backoff via
   // job options + auto-disable) and the daily delivery-log retention sweep.
-  createWebhookDeliverJob: createWebhookDeliverJob({ dispatcher: webhookDispatcher }),
+  createWebhookDeliverJob: bindParanoidJob(
+    createWebhookDeliverJob({ dispatcher: webhookDispatcher }),
+    {
+      mode: 'event',
+      runIfAllowed: async (userIds, action) => {
+        try {
+          await paranoidGuard.runAllowedMany(userIds, 'portfolioWebhooks', action);
+          return true;
+        } catch (error) {
+          if (error instanceof ParanoidModeError) return false;
+          throw error;
+        }
+      },
+    },
+  ),
   createWebhookDeliveryCleanupJob: createWebhookDeliveryCleanupJob({
     deliveries: webhookDeliveryRepo,
   }),
@@ -484,7 +582,20 @@ const definitions = assembleRegisteredJobDefinitions({
   createApiKeyRequestLogCleanupJob: createApiKeyRequestLogCleanupJob({
     requestLog: createApiKeyRequestLogRepository(db),
   }),
+  // V5-P14 PL-01: bounded daily retention sweep over identifying operational
+  // trails. A zero-day config keeps that table forever and skips its branch;
+  // the remembered-device sweep runs regardless, since those bindings carry a
+  // fixed lifetime rather than an owner-configured window.
+  createDataRetentionCleanupJob: createDataRetentionCleanupJob({
+    audit: createAuditRepository(db),
+    emailLog: createEmailLogRepository(db),
+    users: workerUserRepo,
+    auditRetentionDays: config.retention.auditDays,
+    emailLogRetentionDays: config.retention.emailLogDays,
+  }),
 });
+
+assertParanoidJobBindings(definitions, ALL_QUEUE_NAMES);
 
 const ctx: JobContext = { events, deadLetter, redis: deadLetterConnection, logger };
 
@@ -537,6 +648,7 @@ async function shutdown(signal: string): Promise<void> {
     await events.close();
     await deadLetterConnection.quit();
     await marketDataConnection.quit();
+    await lockClient.end();
     await client.end();
     // Flush any buffered Sentry events before the process exits.
     await observability.close();

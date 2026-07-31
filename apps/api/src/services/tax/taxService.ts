@@ -68,6 +68,7 @@ import {
   type TaxableTransaction,
   type TaxMovementSpec,
 } from '../../domain/tax';
+import type { ParanoidModeGuard } from '../account/paranoidEnforcement';
 import {
   deEventsByYear,
   dePotsInForYear,
@@ -182,6 +183,8 @@ export interface TaxServiceDeps {
   logger?: Logger;
   /** Injectable clock (tests); defaults to the wall clock. */
   now?: () => number;
+  /** Direct planning calls must fail closed as well as public tax routes. */
+  paranoid?: Pick<ParanoidModeGuard, 'assertAllowed'>;
 }
 
 /** The tax outcome planned for one transaction input (parallel to the batch). */
@@ -942,6 +945,7 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
     planInput: TransactionTaxPlanInput,
   ): Promise<TransactionTaxPlan> {
     const { userId, portfolioId, inputs, assetsById, resolveSourceId } = planInput;
+    await deps.paranoid?.assertAllowed(userId, 'portfolioServer');
     // Issue #636: resolve the mode that applies to THIS portfolio (override ??
     // user default ?? none). It still freezes onto each row at recording time.
     const settings = await effectiveSettings(userId, portfolioId);

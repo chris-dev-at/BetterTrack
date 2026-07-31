@@ -12,6 +12,11 @@ import {
 } from '@bettertrack/contracts';
 
 import * as schema from '../data/schema';
+import {
+  pinQuickAuthMarkerKey,
+  rememberedDeviceKey,
+  rememberedDevicesForUserKey,
+} from '../services/auth/loginThrottle';
 import { generateTotpCode } from '../services/auth/totp';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
@@ -102,6 +107,14 @@ function deleteAccount(agent: Agent, body: Record<string, unknown>): request.Tes
     .delete('/api/v1/account')
     .set(...XRW)
     .send(body);
+}
+
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
 }
 
 /**
@@ -294,7 +307,128 @@ describe('DELETE /account — hard delete (acceptance sweep)', () => {
     const entry = audits.find((a) => a.action === 'user.deleted' && a.targetId === user.id);
     expect(entry).toBeDefined();
     expect(entry!.actorId).toBeNull();
-    expect(entry!.meta).toMatchObject({ username: user.username, via: 'self' });
+    expect(entry!.meta).toEqual({ via: 'self' });
+    expect(JSON.stringify(entry!.meta)).not.toContain(user.username);
+  });
+
+  it('removes every remembered-device binding and its quick-auth marker', async () => {
+    const user = await seedPerson('forgotten_devices');
+    await harness.ctx.auth.setPin(user.id, '4242');
+    const first = await harness.ctx.auth.rememberDevice(user.id);
+    const second = await harness.ctx.auth.rememberDevice(user.id);
+    const legacyDeviceId = 'legacy-unindexed-device';
+    await harness.ctx.redis.set(rememberedDeviceKey(legacyDeviceId), user.id);
+    await harness.ctx.redis.set(pinQuickAuthMarkerKey(first.deviceId), '1');
+    await harness.ctx.redis.set(pinQuickAuthMarkerKey(second.deviceId), '1');
+    await harness.ctx.redis.set(pinQuickAuthMarkerKey(legacyDeviceId), '1');
+
+    expect((await harness.ctx.redis.smembers(rememberedDevicesForUserKey(user.id))).sort()).toEqual(
+      [first.deviceId, second.deviceId].sort(),
+    );
+
+    await deleteAccount(user.agent, {
+      confirmUsername: user.username,
+      password: user.password,
+    }).expect(200);
+
+    expect(await harness.ctx.redis.get(rememberedDeviceKey(first.deviceId))).toBeNull();
+    expect(await harness.ctx.redis.get(rememberedDeviceKey(second.deviceId))).toBeNull();
+    expect(await harness.ctx.redis.get(rememberedDeviceKey(legacyDeviceId))).toBeNull();
+    expect(await harness.ctx.redis.get(pinQuickAuthMarkerKey(first.deviceId))).toBeNull();
+    expect(await harness.ctx.redis.get(pinQuickAuthMarkerKey(second.deviceId))).toBeNull();
+    expect(await harness.ctx.redis.get(pinQuickAuthMarkerKey(legacyDeviceId))).toBeNull();
+    expect(await harness.ctx.redis.exists(rememberedDevicesForUserKey(user.id))).toBe(0);
+  });
+
+  it('removes a remembered-device binding created before the pre-delete index reset', async () => {
+    const user = await seedPerson('racing_remembered_device');
+    await harness.ctx.auth.setPin(user.id, '4242');
+    const indexKey = rememberedDevicesForUserKey(user.id);
+    const firstIndexResetStarted = deferred();
+    const releaseDeletion = deferred();
+    const originalDel = harness.ctx.redis.del.bind(harness.ctx.redis);
+    let indexDeleteCount = 0;
+
+    harness.ctx.redis.del = (async (...keys: string[]) => {
+      if (keys.includes(indexKey) && indexDeleteCount++ === 0) {
+        firstIndexResetStarted.resolve();
+        await releaseDeletion.promise;
+      }
+      return originalDel(...keys);
+    }) as typeof harness.ctx.redis.del;
+
+    let deletion: Promise<request.Response> | undefined;
+    try {
+      deletion = deleteAccount(user.agent, {
+        confirmUsername: user.username,
+        password: user.password,
+      }).then((response) => response);
+      await firstIndexResetStarted.promise;
+
+      // The first sweep already took both snapshots but has not reset the
+      // reverse index. This writer can still revalidate against the active row;
+      // the pending DEL then erases only its index membership.
+      const raced = await harness.ctx.auth.rememberDevice(user.id);
+      expect(await harness.ctx.redis.get(rememberedDeviceKey(raced.deviceId))).toBe(user.id);
+      expect(await harness.ctx.redis.smembers(indexKey)).toContain(raced.deviceId);
+
+      releaseDeletion.resolve();
+      const response = await deletion;
+      expect(response.status, JSON.stringify(response.body)).toBe(200);
+      expect(await harness.ctx.redis.get(rememberedDeviceKey(raced.deviceId))).toBeNull();
+      expect(await harness.ctx.redis.exists(indexKey)).toBe(0);
+    } finally {
+      releaseDeletion.resolve();
+      await deletion?.catch(() => undefined);
+      harness.ctx.redis.del = originalDel as typeof harness.ctx.redis.del;
+    }
+  });
+
+  it('cascades the current encrypted vault and every historical generation', async () => {
+    const user = await seedPerson('paranoid_delete');
+    const currentBlob = Buffer.from('current-ciphertext');
+    const historicalBlob = Buffer.from('historical-ciphertext');
+    await harness.db
+      .update(schema.users)
+      .set({
+        privacyMode: 'paranoid',
+        paranoidMediaSet: ['server'],
+        paranoidDriveAttestedVersion: null,
+      })
+      .where(eq(schema.users.id, user.id));
+    await harness.db.insert(schema.paranoidVaults).values({
+      userId: user.id,
+      version: 2,
+      formatVersion: 1,
+      sizeBytes: currentBlob.byteLength,
+      blob: currentBlob,
+    });
+    await harness.db.insert(schema.paranoidVaultHistory).values({
+      userId: user.id,
+      version: 1,
+      formatVersion: 1,
+      sizeBytes: historicalBlob.byteLength,
+      blob: historicalBlob,
+    });
+
+    const response = await deleteAccount(user.agent, {
+      confirmUsername: user.username,
+      password: user.password,
+    });
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+
+    expect(
+      await harness.db
+        .select()
+        .from(schema.paranoidVaults)
+        .where(eq(schema.paranoidVaults.userId, user.id)),
+    ).toEqual([]);
+    expect(
+      await harness.db
+        .select()
+        .from(schema.paranoidVaultHistory)
+        .where(eq(schema.paranoidVaultHistory.userId, user.id)),
+    ).toEqual([]);
   });
 
   it('a fresh TOTP code is valid re-auth on its own', async () => {

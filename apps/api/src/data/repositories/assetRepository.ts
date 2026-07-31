@@ -67,11 +67,22 @@ export function createAssetRepository(db: Database) {
      * caller's own custom asset. Another user's custom asset returns null — same
      * as a missing id, so no existence is leaked (§10).
      */
-    async findByIdForUser(id: string, userId: string): Promise<AssetRow | null> {
+    async findByIdForUser(
+      id: string,
+      userId: string,
+      options?: { includeCustomAssets?: boolean },
+    ): Promise<AssetRow | null> {
       const rows = await db
         .select()
         .from(assets)
-        .where(and(eq(assets.id, id), or(isNull(assets.ownerId), eq(assets.ownerId, userId))))
+        .where(
+          and(
+            eq(assets.id, id),
+            options?.includeCustomAssets === false
+              ? isNull(assets.ownerId)
+              : or(isNull(assets.ownerId), eq(assets.ownerId, userId)),
+          ),
+        )
         .limit(1);
       return rows[0] ?? null;
     },
@@ -99,6 +110,7 @@ export function createAssetRepository(db: Database) {
       userId: string,
       query: string,
       limit: number,
+      options?: { includeCustomAssets?: boolean },
     ): Promise<CatalogSearchMatch[]> {
       const prefix = `${escapeLike(query)}%`;
       const substring = `%${escapeLike(query)}%`;
@@ -126,7 +138,9 @@ export function createAssetRepository(db: Database) {
         .from(assets)
         .where(
           and(
-            or(isNull(assets.ownerId), eq(assets.ownerId, userId)),
+            options?.includeCustomAssets === false
+              ? isNull(assets.ownerId)
+              : or(isNull(assets.ownerId), eq(assets.ownerId, userId)),
             or(
               sql`upper(${assets.symbol}) like upper(${prefix})`,
               ilike(assets.name, substring),
@@ -153,13 +167,20 @@ export function createAssetRepository(db: Database) {
      * instead of a 304) is always safe, and content edits (a rename that keeps
      * the id) are caught by the per-request body ETag, not this watermark.
      */
-    async catalogWatermark(userId: string): Promise<Date | null> {
+    async catalogWatermark(
+      userId: string,
+      options?: { includeCustomAssets?: boolean },
+    ): Promise<Date | null> {
       // Newest visible id (uuid order == time order) — an ORDER BY over the id
       // index, no aggregate on the uuid type (portable across engines).
       const rows = await db
         .select({ id: assets.id })
         .from(assets)
-        .where(or(isNull(assets.ownerId), eq(assets.ownerId, userId)))
+        .where(
+          options?.includeCustomAssets === false
+            ? isNull(assets.ownerId)
+            : or(isNull(assets.ownerId), eq(assets.ownerId, userId)),
+        )
         .orderBy(desc(assets.id))
         .limit(1);
       const newest = rows[0]?.id ?? null;
@@ -217,6 +238,16 @@ export function createAssetRepository(db: Database) {
         .where(eq(priceHistory.assetId, assetId))
         .limit(1);
       return rows.length > 0;
+    },
+
+    /** The global (owner-less) asset for its public id, or null. */
+    async findGlobalById(id: string): Promise<AssetRow | null> {
+      const rows = await db
+        .select()
+        .from(assets)
+        .where(and(eq(assets.id, id), isNull(assets.ownerId)))
+        .limit(1);
+      return rows[0] ?? null;
     },
 
     /** The global (owner-less) asset for a provider ref, or null. */

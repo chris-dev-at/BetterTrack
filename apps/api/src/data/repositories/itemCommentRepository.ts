@@ -1,4 +1,4 @@
-import { and, asc, eq, isNull, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, isNull, sql } from 'drizzle-orm';
 
 import type { ShareKind } from '@bettertrack/contracts';
 
@@ -34,6 +34,12 @@ export interface CommentSubjectRef {
   deletedAt: Date | null;
 }
 
+/** Identity-only thread discovery used before participant privacy locks. */
+export interface CommentParticipantRow {
+  id: string;
+  authorId: string;
+}
+
 export function createItemCommentRepository(db: Database) {
   return {
     /** Insert one comment; returns its id + created timestamp. */
@@ -50,8 +56,17 @@ export function createItemCommentRepository(db: Database) {
       return row!;
     },
 
-    /** Every LIVE comment on one item, oldest-first, joined to the author identity. */
-    async listForItem(kind: ShareKind, subjectId: string): Promise<CommentRow[]> {
+    /**
+     * Every LIVE comment on one item, oldest-first, joined to the author
+     * identity. `authorIds` is the transition-locked participant snapshot; an
+     * author who was not admitted by that snapshot is never enriched here.
+     */
+    async listForItem(
+      kind: ShareKind,
+      subjectId: string,
+      authorIds?: readonly string[],
+    ): Promise<CommentRow[]> {
+      if (authorIds?.length === 0) return [];
       return db
         .select({
           id: itemComments.id,
@@ -68,9 +83,31 @@ export function createItemCommentRepository(db: Database) {
             eq(itemComments.kind, kind),
             eq(itemComments.subjectId, subjectId),
             isNull(itemComments.deletedAt),
+            authorIds ? inArray(itemComments.authorId, [...authorIds]) : undefined,
           ),
         )
         .orderBy(asc(itemComments.createdAt));
+    },
+
+    /**
+     * Live comment ids + author ids only. Thread reads use this non-content
+     * discovery query to acquire optional author/reaction locks before loading a
+     * body or profile identity.
+     */
+    async listParticipantsForItem(
+      kind: ShareKind,
+      subjectId: string,
+    ): Promise<CommentParticipantRow[]> {
+      return db
+        .select({ id: itemComments.id, authorId: itemComments.authorId })
+        .from(itemComments)
+        .where(
+          and(
+            eq(itemComments.kind, kind),
+            eq(itemComments.subjectId, subjectId),
+            isNull(itemComments.deletedAt),
+          ),
+        );
     },
 
     /** Count of LIVE comments on one item (drives the collapsed-count UI). */

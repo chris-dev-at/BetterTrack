@@ -1,11 +1,12 @@
 import type { AlertKind, AlertStatus } from '@bettertrack/contracts';
 import type { Redis } from 'ioredis';
 
-import type { AlertRepository } from '../../data/repositories/alertRepository';
-import type { AlertFollowRecipient } from '../../data/repositories/userFollowsRepository';
+import type { ActiveAlert, AlertRepository } from '../../data/repositories/alertRepository';
 import type { Logger } from '../../logger';
 import type { MarketDataService } from '../../providers';
+import { ParanoidModeError, type ParanoidModeGuard } from '../account/paranoidEnforcement';
 import type { NotificationCenter } from '../notifications/notificationCenter';
+import { withAlertFollowRecipients, type AlertFollowerFanoutDeps } from './alertFollowerFanout';
 
 /**
  * The price-alert evaluator (PROJECTPLAN.md §14, V3-P10 arc b). A BullMQ
@@ -94,6 +95,14 @@ export interface AlertsEvaluatorDeps {
   alertRepo: AlertRepository;
   marketData: Pick<MarketDataService, 'getQuote'>;
   redis: Redis;
+  /**
+   * Registry-bound transition guard for the evaluator's account-owned rail
+   * (`alerts.evaluate` is classified `internallyFiltered`). The global-asset
+   * rail needs no guard; an alert on the owner's OWN custom asset is killed
+   * content, so it is only loaded, quoted, emitted and flipped inside that
+   * account's transition lock.
+   */
+  paranoid: Pick<ParanoidModeGuard, 'runAllowed'>;
   /** The central notification pipeline (#368) — fires enter the durable queue here. */
   notify: NotificationCenter;
   /**
@@ -104,9 +113,7 @@ export interface AlertsEvaluatorDeps {
    * Optional: absent = no follower fan-out (the owner's own delivery is
    * untouched either way).
    */
-  followFanout?: {
-    listFireRecipients(ownerId: string): Promise<AlertFollowRecipient[]>;
-  };
+  followFanout?: AlertFollowerFanoutDeps;
   logger: Logger;
   /** Injectable clock (tests). Defaults to `Date.now`. */
   now?: () => number;
@@ -127,6 +134,19 @@ function errorMessage(err: unknown): string {
  * Evaluate every active alert once and fire those whose condition is met. One
  * cached quote is fetched per distinct asset regardless of how many alerts
  * reference it, so the evaluator never fans out per-alert to the provider.
+ *
+ * The run has two rails. Alerts on GLOBAL market assets carry no account
+ * provenance and are evaluated directly. Alerts on an account's OWN custom
+ * asset are killed content in paranoid mode: their owners are discovered from
+ * identity-only metadata, and each owner's alerts are loaded, quoted, emitted
+ * and flipped inside that account's transition lock — so an enable that wins
+ * the race means the custom-asset query never runs and no side effect lands.
+ *
+ * An alert on a custom asset owned by a THIRD account fits neither rail: the
+ * global rail excludes owned assets, and locking the alert's owner would not
+ * lock the account whose content the asset actually is. Such a row is dropped
+ * fail-closed — but it is counted and logged rather than vanishing silently
+ * between the two `where` clauses.
  */
 export async function runAlertsEvaluation(
   deps: AlertsEvaluatorDeps,
@@ -134,127 +154,167 @@ export async function runAlertsEvaluation(
   const { alertRepo, marketData, redis, notify, logger } = deps;
   const now = deps.now ? deps.now() : Date.now();
 
-  const active = await alertRepo.listActiveWithAsset();
-  if (active.length === 0) return { evaluated: 0, fired: 0 };
+  const globalActive = await alertRepo.listActiveWithAsset({ includeCustomAssets: false });
+  let evaluated = globalActive.length;
+  let fired = await evaluateBatch(globalActive);
 
-  // Group by asset so each asset's quote is read exactly once from the cache.
-  const byAsset = new Map<string, typeof active>();
-  for (const alert of active) {
-    const group = byAsset.get(alert.assetId);
-    if (group) group.push(alert);
-    else byAsset.set(alert.assetId, [alert]);
-  }
-
-  const windowStart = alertFireWindowStart(now);
-  const occurredAt = new Date(now).toISOString();
-  let fired = 0;
-
-  for (const group of byAsset.values()) {
-    const first = group[0]!;
-    let price: number;
-    let dayChangePct: number | null;
+  for (const ownerId of await alertRepo.listActiveCustomAssetOwnerIds()) {
     try {
-      const quote = (
-        await marketData.getQuote({ providerId: first.providerId, providerRef: first.providerRef })
-      ).value;
-      price = quote.price;
-      dayChangePct = quote.dayChangePct ?? null;
-    } catch (err) {
-      logger.warn(
-        { assetId: first.assetId, providerRef: first.providerRef, err: errorMessage(err) },
-        'alerts.evaluate: quote fetch failed, skipping asset',
-      );
-      continue;
-    }
-
-    for (const alert of group) {
-      if (
-        !alertConditionMet({
-          kind: alert.kind,
-          threshold: alert.threshold,
-          refPrice: alert.refPrice,
-          price,
-          dayChangePct,
-        })
-      ) {
-        continue;
-      }
-
-      // Repeat cooldown: a still-active repeat alert only re-fires after 24 h.
-      if (
-        alert.repeat &&
-        alert.lastTriggeredAt &&
-        now - alert.lastTriggeredAt.getTime() < ALERT_COOLDOWN_MS
-      ) {
-        continue;
-      }
-
-      // Idempotency: only the first evaluator run to claim this (alert, window)
-      // lock may fire it. A concurrent/repeated run in the same minute loses the
-      // race and no-ops — no double publish, no double notification (§14).
-      const acquired = await redis.set(
-        alertFireLockKey(alert.id, windowStart),
-        '1',
-        'EX',
-        ALERT_FIRE_LOCK_TTL_SECONDS,
-        'NX',
-      );
-      if (acquired !== 'OK') continue;
-
-      // Emit FIRST, then flip the alert's state: if the process dies between
-      // the two, the worst case is a re-fire next window (deduped by the
-      // dispatcher's eventKey), never a triggered-but-never-delivered alert —
-      // the exact #367 failure this ordering kills.
-      const emitted = await notify.emit({
-        type: 'alert.triggered',
-        userId: alert.userId,
-        alertId: alert.id,
-        assetId: alert.assetId,
-        occurredAt,
+      await deps.paranoid.runAllowed(ownerId, 'portfolioServer', async () => {
+        const owned = await alertRepo.listActiveCustomAssetsForUser(ownerId);
+        evaluated += owned.length;
+        fired += await evaluateBatch(owned);
       });
-      if (!emitted) {
-        // Enqueue failed (the center logged it): leave the alert untouched so
-        // the next window retries — same #367 rule for a Redis hiccup as for a
-        // crash: a fire may be delayed and re-attempted, never dropped after
-        // the state already flipped.
-        continue;
-      }
-
-      // Alert-follow fan-out (#455): IN ADDITION TO the owner's delivery above,
-      // notify followers who opted into fired-alert news — the recipient query
-      // joins the owner's visibility opt-in per fire. Recipients are disjoint
-      // from the owner (self-follows are impossible), so the owner is never
-      // doubled. Best-effort like the channel fan-outs: a failed follower emit
-      // logs (the center already did) and never blocks the owner's fire — and
-      // it runs BEFORE the state flip so a crash can only re-fire (deduped per
-      // window downstream), never strand the followers of a one-shot alert.
-      if (deps.followFanout) {
-        try {
-          const recipients = await deps.followFanout.listFireRecipients(alert.userId);
-          for (const recipient of recipients) {
-            await notify.emit({
-              type: 'follow.alert.fired',
-              userId: recipient.followerId,
-              actorId: alert.userId,
-              actorUsername: recipient.ownerUsername,
-              alertId: alert.id,
-              assetId: alert.assetId,
-              occurredAt,
-            });
-          }
-        } catch (err) {
-          logger.warn(
-            { alertId: alert.id, err: errorMessage(err) },
-            'alerts.evaluate: follower fan-out failed',
-          );
-        }
-      }
-
-      const status: AlertStatus = alert.repeat ? 'active' : 'triggered';
-      await alertRepo.recordTriggered(alert.id, status, new Date(now));
-      fired += 1;
+    } catch (err) {
+      // The account went paranoid: its custom-asset alerts are simply not
+      // evaluated this run. Global alerts (already handled above) are untouched.
+      if (err instanceof ParanoidModeError) continue;
+      throw err;
     }
   }
 
-  return { evaluated: active.length, fired };
+  const unreachable = await alertRepo.countActiveForeignCustomAssetAlerts();
+  if (unreachable > 0) {
+    logger.warn(
+      { unreachable },
+      'alerts.evaluate: active alerts on a foreign account-owned asset are served by neither rail and were not evaluated',
+    );
+  }
+
+  return { evaluated, fired };
+
+  /** Evaluate one provenance-homogeneous batch; returns the number of fires. */
+  async function evaluateBatch(active: readonly ActiveAlert[]): Promise<number> {
+    if (active.length === 0) return 0;
+
+    // Group by asset so each asset's quote is read exactly once from the cache.
+    const byAsset = new Map<string, ActiveAlert[]>();
+    for (const alert of active) {
+      const group = byAsset.get(alert.assetId);
+      if (group) group.push(alert);
+      else byAsset.set(alert.assetId, [alert]);
+    }
+
+    const windowStart = alertFireWindowStart(now);
+    const occurredAt = new Date(now).toISOString();
+    let batchFired = 0;
+
+    for (const group of byAsset.values()) {
+      const first = group[0]!;
+      let price: number;
+      let dayChangePct: number | null;
+      try {
+        const quote = (
+          await marketData.getQuote({
+            providerId: first.providerId,
+            providerRef: first.providerRef,
+          })
+        ).value;
+        price = quote.price;
+        dayChangePct = quote.dayChangePct ?? null;
+      } catch (err) {
+        logger.warn(
+          { assetId: first.assetId, providerRef: first.providerRef, err: errorMessage(err) },
+          'alerts.evaluate: quote fetch failed, skipping asset',
+        );
+        continue;
+      }
+
+      for (const alert of group) {
+        if (
+          !alertConditionMet({
+            kind: alert.kind,
+            threshold: alert.threshold,
+            refPrice: alert.refPrice,
+            price,
+            dayChangePct,
+          })
+        ) {
+          continue;
+        }
+
+        // Repeat cooldown: a still-active repeat alert only re-fires after 24 h.
+        if (
+          alert.repeat &&
+          alert.lastTriggeredAt &&
+          now - alert.lastTriggeredAt.getTime() < ALERT_COOLDOWN_MS
+        ) {
+          continue;
+        }
+
+        // Idempotency: only the first evaluator run to claim this (alert, window)
+        // lock may fire it. A concurrent/repeated run in the same minute loses the
+        // race and no-ops — no double publish, no double notification (§14).
+        const acquired = await redis.set(
+          alertFireLockKey(alert.id, windowStart),
+          '1',
+          'EX',
+          ALERT_FIRE_LOCK_TTL_SECONDS,
+          'NX',
+        );
+        if (acquired !== 'OK') continue;
+
+        // Emit FIRST, then flip the alert's state: if the process dies between
+        // the two, the worst case is a re-fire next window (deduped by the
+        // dispatcher's eventKey), never a triggered-but-never-delivered alert —
+        // the exact #367 failure this ordering kills.
+        const emitted = await notify.emit({
+          type: 'alert.triggered',
+          userId: alert.userId,
+          alertId: alert.id,
+          assetId: alert.assetId,
+          occurredAt,
+        });
+        if (!emitted) {
+          // Enqueue failed (the center logged it): leave the alert untouched so
+          // the next window retries — same #367 rule for a Redis hiccup as for a
+          // crash: a fire may be delayed and re-attempted, never dropped after
+          // the state already flipped.
+          continue;
+        }
+
+        // Alert-follow fan-out (#455): IN ADDITION TO the owner's delivery above,
+        // notify followers who opted into fired-alert news — the recipient query
+        // joins the owner's visibility opt-in per fire. Recipients are disjoint
+        // from the owner (self-follows are impossible), so the owner is never
+        // doubled. Best-effort like the channel fan-outs: a failed follower emit
+        // logs (the center already did) and never blocks the owner's fire — and
+        // it runs BEFORE the state flip so a crash can only re-fire (deduped per
+        // window downstream), never strand the followers of a one-shot alert.
+        if (deps.followFanout) {
+          try {
+            await withAlertFollowRecipients(
+              deps.followFanout,
+              alert.userId,
+              'fire',
+              async (recipients) => {
+                for (const recipient of recipients) {
+                  await notify.emit({
+                    type: 'follow.alert.fired',
+                    userId: recipient.followerId,
+                    actorId: alert.userId,
+                    actorUsername: recipient.ownerUsername,
+                    alertId: alert.id,
+                    assetId: alert.assetId,
+                    occurredAt,
+                  });
+                }
+              },
+            );
+          } catch (err) {
+            logger.warn(
+              { alertId: alert.id, err: errorMessage(err) },
+              'alerts.evaluate: follower fan-out failed',
+            );
+          }
+        }
+
+        const status: AlertStatus = alert.repeat ? 'active' : 'triggered';
+        await alertRepo.recordTriggered(alert.id, status, new Date(now));
+        batchFired += 1;
+      }
+    }
+
+    return batchFired;
+  }
 }

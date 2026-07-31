@@ -1,12 +1,27 @@
 {
+  "notFound": {
+    "title": "Page not found",
+    "description": "This address may be misspelled, outdated, or no longer available.",
+    "requestedPath": "Requested path:",
+    "backToStart": "Back to start",
+    "backToPrevious": "Back to previous page"
+  },
+  "accessibility": {
+    "skipToContent": "Skip to main content"
+  },
   "auth": {
     "common": {
       "checkingSession": "Checking session…",
+      "sessionUnavailableTitle": "We can’t verify your session right now",
+      "sessionUnavailableBody": "BetterTrack couldn’t reach the server. You haven’t been signed out; try again when the connection is available.",
       "minPasswordHint": "At least {{count}} characters.",
       "signOut": "Sign out",
       "waitSecondsOne": " Please wait {{count}} second and try again.",
       "waitSecondsOther": " Please wait {{count}} seconds and try again.",
       "waitMoment": " Please wait a moment and try again."
+    },
+    "adminLogin": {
+      "heading": "Admin sign in"
     },
     "login": {
       "subtitle": "Sign in to your account",
@@ -24,7 +39,8 @@
       "passkeyButton": "Sign in with a passkey",
       "passkeySigningIn": "Waiting for your passkey…",
       "passkeyError": "Passkey sign-in didn't work. Please try again or use your password.",
-      "passkeyRateLimited": "Too many attempts. Please wait and try again."
+      "passkeyRateLimited": "Too many attempts. Please wait and try again.",
+      "registrationUnavailable": "Registration status is temporarily unavailable."
     },
     "oauthStay": {
       "subtitle": "Signing in",
@@ -105,7 +121,9 @@
       "usernameTaken": "That username is already taken — pick another.",
       "emailTaken": "An account already exists for this email.",
       "invalidInvite": "This invite link is no longer valid. Ask your admin for a new one.",
-      "acceptFailed": "Could not create your account. Please try again."
+      "acceptFailed": "Could not create your account. Please try again.",
+      "unavailableSubtitle": "Check your invite",
+      "unavailableMessage": "We can’t check this invite right now. It hasn’t been marked invalid; please try again."
     },
     "forcedPasswordChange": {
       "subtitle": "Choose a new password",
@@ -159,7 +177,8 @@
         "connecting": "Connecting to Google…",
         "connectedAs": "Connected to Google as {{email}}. Finish setting up your account below.",
         "emailLockedHint": "Set by Google and can't be changed.",
-        "ticketExpired": "Your Google connection expired. Please continue with Google again."
+        "ticketExpired": "Your Google connection expired. Please continue with Google again.",
+        "ticketUnavailable": "We can’t check your Google connection right now. It hasn’t been marked expired; please try again."
       }
     },
     "oauthConsent": {
@@ -215,6 +234,7 @@
   },
   "common": {
     "save": "Save",
+    "done": "Done",
     "cancel": "Cancel",
     "close": "Close",
     "delete": "Delete",
@@ -234,7 +254,6 @@
     "unknown": "unknown",
     "private": "Private",
     "friends": "Friends",
-    "soon": "Soon",
     "comingSoon": "Coming soon",
     "genericError": "Something went wrong. Please try again.",
     "continue": "Continue",
@@ -247,12 +266,20 @@
     "escKey": "Esc",
     "escToClose": "to close",
     "closeDialogAria": "Close dialog",
+    "savedOneTimeSecret": "I've saved this",
     "charts": {
       "noAllocationData": "No allocation data yet.",
       "selectRange": "Select chart range",
       "loadingChart": "Loading chart…",
       "noPriceData": "No price data for this range yet.",
       "priceChartAria": "Price chart",
+      "priceChartSummary": "Period: {{startDate}} to {{endDate}}. Start: {{startValue}}. End: {{endValue}}. Change: {{change}} ({{changePercent}}). Minimum: {{minimum}} on {{minimumDate}}. Maximum: {{maximum}} on {{maximumDate}}.",
+      "priceChartDataExpand": "Show chart data",
+      "priceChartDataCollapse": "Hide chart data",
+      "priceChartDataTableCaption": "Chart data",
+      "priceChartDataDate": "Date",
+      "priceChartDataValue": "Value",
+      "priceChartDataSampled": "Showing {{shown}} of {{total}} plotted points.",
       "allocationFallbackTitle": "Allocation breakdown"
     },
     "marketState": {
@@ -326,12 +353,9 @@
     "openSearch": "Open search (⌘K)",
     "accountMenu": "Account menu",
     "account": "Account",
-    "myPortfolio": "My Portfolio",
     "settings": "Settings",
     "discreetMode": "Discreet mode",
     "discreetModeError": "Couldn't save that change. Please try again.",
-    "inviteOthers": "Invite Others",
-    "shareProfile": "Share Profile",
     "logout": "Logout",
     "home": "Home",
     "portfolios": "Portfolio",
@@ -460,6 +484,8 @@
     },
     "notifications": {
       "title": "Notifications",
+      "bellAria": "Notifications",
+      "bellUnreadAria": "Notifications ({{count}} unread)",
       "loadError": {
         "title": "Couldn't load your notification settings"
       },
@@ -1997,7 +2023,7 @@
     },
     "tabs": {
       "overview": "Overview",
-      "activity": "Activity",
+      "activity": "Transactions",
       "customAssets": "Custom assets",
       "cashFlow": "Cash",
       "analysis": "Analysis",
@@ -2858,6 +2884,7 @@
   "publicShare": {
     "loading": "Loading shared view…",
     "notFound": "This shared link is no longer available.",
+    "unavailable": "This shared view is temporarily unavailable. The link may still be valid.",
     "ownerLabel": "Shared by {{username}}",
     "readOnly": "Read-only shared view",
     "netWorth": "Net worth",
@@ -2999,7 +3026,10 @@
       "loadEarlier": "Load earlier messages",
       "sendError": "Couldn't send your message. Please try again.",
       "banned": "You can't send messages right now. You can still read this conversation.",
+      "composerLabel": "Message",
       "composerPlaceholder": "Message",
+      "logLabel": "Messages with {{username}}",
+      "newMessages": "New messages",
       "send": "Send",
       "attach": "Share an item",
       "chip": {
@@ -3166,6 +3196,8 @@
     "saved": "Profile saved.",
     "publicBadge": "Public profile",
     "notAvailable": "This profile isn't available.",
+    "temporarilyUnavailable": "This profile is temporarily unavailable. It may still be public.",
+    "itemTemporarilyUnavailable": "This item is temporarily unavailable. It may still be shared.",
     "emptyPublic": "This profile has no public items yet.",
     "icon": {
       "title": "Profile icon",
@@ -3438,7 +3470,68 @@
     }
   },
   "admin": {
+    "confirmations": {
+      "deleteAnnouncement": {
+        "title": "Delete announcement?",
+        "description": "Delete “{{name}}”? This cannot be undone.",
+        "confirm": "Delete announcement",
+        "pending": "Deleting…"
+      },
+      "deleteOAuthApp": {
+        "title": "Delete OAuth app?",
+        "description": "Delete “{{name}}”? Existing integrations will stop working.",
+        "confirm": "Delete app",
+        "pending": "Deleting…"
+      },
+      "bulkDisable": {
+        "title": "Disable selected users?",
+        "descriptionOne": "Disable 1 selected user? They will no longer be able to sign in.",
+        "descriptionOther": "Disable {{count}} selected users? They will no longer be able to sign in.",
+        "confirmOne": "Disable 1 user",
+        "confirmOther": "Disable {{count}} users",
+        "pending": "Disabling…"
+      },
+      "revokeInvite": {
+        "prompt": "Revoke invite for {{email}}?",
+        "confirm": "Confirm revoke",
+        "pending": "Revoking…"
+      },
+      "revokeRegistrationToken": {
+        "prompt": "Revoke registration token “{{name}}”?",
+        "confirm": "Confirm revoke",
+        "pending": "Revoking…"
+      }
+    },
+    "actions": {
+      "delete": "Delete",
+      "revoke": "Revoke",
+      "disableSelected": "Disable selected",
+      "disabling": "Disabling…"
+    },
+    "oneTimeCredentials": {
+      "temporaryPassword": {
+        "title": "User created",
+        "resetTitle": "Password reset",
+        "description": "Share this temporary password with {{email}}. It is shown only once and the user must change it on first login.",
+        "label": "Temporary password"
+      },
+      "invite": {
+        "title": "Invite created",
+        "description": "Share this one-time link with {{email}}. It expires on {{expiresAt}} and is shown only once here.",
+        "label": "Invite URL"
+      },
+      "oauthClient": {
+        "title": "App registered",
+        "secretDescription": "{{name}} is ready. Put the client ID in the app's OAuth config. The client secret is shown only once — copy it now.",
+        "publicDescription": "{{name}} is ready. Put the client ID in the app's OAuth config. This is a public client, so there is no secret (it uses PKCE).",
+        "clientIdLabel": "Client ID",
+        "clientSecretLabel": "Client secret (shown once)"
+      }
+    },
     "nav": {
+      "console": "Admin console",
+      "loading": "Loading admin console…",
+      "language": "Console language",
       "security": "Security",
       "health": "Health",
       "menu": "Admin menu",
@@ -3449,7 +3542,20 @@
       "usageAnalytics": "Usage analytics",
       "monitoring": "Monitoring",
       "apiKeys": "API keys",
-      "ai": "AI"
+      "ai": "AI",
+      "users": "Users",
+      "invites": "Invites",
+      "settings": "Settings",
+      "accountDefaults": "Account defaults",
+      "announcements": "Announcements",
+      "oauthApps": "OAuth apps",
+      "email": "Email",
+      "audit": "Audit log",
+      "sections": {
+        "people": "People",
+        "configuration": "Configuration",
+        "diagnostics": "Diagnostics"
+      }
     },
     "monitoring": {
       "title": "Monitoring",
@@ -4074,7 +4180,7 @@
     "aria": "Cash",
     "tabs": {
       "overview": "Overview",
-      "movements": "Movements",
+      "movements": "Transactions",
       "budgets": "Budgets",
       "tags": "Tags",
       "rules": "Rules",
@@ -4114,7 +4220,7 @@
       "regex": "Regex"
     },
     "overview": {
-      "subtitle": "Where this portfolio's cash moved this month.",
+      "subtitle": "",
       "loadError": "Couldn't load the cash overview.",
       "month": "Month",
       "inflow": "Inflow",
@@ -4136,10 +4242,11 @@
       "quickDeposit": "Add to {{source}}",
       "quickWithdraw": "Spend from {{source}}",
       "previousMonth": "Previous month",
-      "nextMonth": "Next month"
+      "nextMonth": "Next month",
+      "byTagList": "Spending by tag"
     },
     "movements": {
-      "subtitle": "This portfolio's cash ledger, tagged.",
+      "subtitle": "",
       "loadError": "Couldn't load the cash ledger.",
       "emptyTitle": "No cash movements yet",
       "emptyDescription": "Deposits, withdrawals, trades and dividends will appear here.",
@@ -4161,7 +4268,7 @@
       "manageLabels": "Labels & rules"
     },
     "budgets": {
-      "subtitle": "Spend targets per tag, for this portfolio.",
+      "subtitle": "",
       "loadError": "Couldn't load the budgets.",
       "deleteError": "Couldn't delete the budget. Please try again.",
       "new": "New budget",

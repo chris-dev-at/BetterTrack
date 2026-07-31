@@ -129,6 +129,13 @@ export function AssetSpotlightWidget({ settings, onSettingsChange, size }: Widge
           rangeAlign="end"
           ranges={SPOTLIGHT_RANGES}
           series={series}
+          // History owns the plotted points and now carries their native
+          // currency. Do not couple the accessible alternative to the separate
+          // live-quote request: history can be useful while that request is
+          // pending or unavailable, and PriceChart will still mask it in
+          // discreet mode.
+          valueCurrency={historyQuery.data?.currency}
+          valueFormat="unitPrice"
         />
       </div>
     </div>

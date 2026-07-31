@@ -46,13 +46,21 @@ export function earningsReminderLockKey(userId: string, assetId: string, dateKey
 }
 
 export interface EarningsReminderScanDeps {
-  intelRepo: Pick<MarketIntelRepository, 'listAllWatchAndHoldAssets'>;
+  intelRepo: Pick<
+    MarketIntelRepository,
+    'listAllWatchAssets' | 'listNormalUserIds' | 'listUserWatchAndHoldAssets'
+  >;
   marketData: Pick<MarketDataService, 'intelCapabilities' | 'getEarningsEvents'>;
   redis: Redis;
   /** The central notification pipeline (#368) — reminders enter the durable queue here. */
   notify: NotificationCenter;
   /** The `MARKET_INTEL_ENABLED` gate; false ⇒ the scan is a no-op. */
   enabled: boolean;
+  /**
+   * Registry-bound transition lock held before each user's holding aggregation,
+   * provider work, and reminder side effects. Returns false when enable won.
+   */
+  runIfAllowed: (userId: string, action: () => Promise<void>) => Promise<boolean>;
   logger?: Logger;
   /** Injectable clock (tests). Defaults to `Date.now`. */
   now?: () => number;
@@ -83,16 +91,20 @@ export async function runEarningsReminderScan(
 
   if (!enabled) return { scanned: 0, reminded: 0 };
 
-  const inScope = await intelRepo.listAllWatchAndHoldAssets();
-  if (inScope.length === 0) return { scanned: 0, reminded: 0 };
-
   // The next earnings report per distinct asset, fetched once and reused across
   // every user who holds/watches it. `undefined` = not yet resolved.
   const nextByAsset = new Map<string, EarningsEvent | null>();
   const occurredAt = new Date(now).toISOString();
+  const processed = new Set<string>();
   let reminded = 0;
 
-  for (const a of inScope) {
+  const processAsset = async (
+    a: Awaited<ReturnType<MarketIntelRepository['listAllWatchAssets']>>[number],
+  ) => {
+    const rowKey = `${a.userId}:${a.assetId}`;
+    if (processed.has(rowKey)) return;
+    processed.add(rowKey);
+
     let next = nextByAsset.get(a.assetId);
     if (next === undefined) {
       next = null;
@@ -112,17 +124,17 @@ export async function runEarningsReminderScan(
       nextByAsset.set(a.assetId, next);
     }
 
-    if (!next || !next.date) continue;
+    if (!next || !next.date) return;
     const dueMs = Date.parse(next.date);
-    if (Number.isNaN(dueMs)) continue;
+    if (Number.isNaN(dueMs)) return;
     // Only upcoming reports within the lead window; a past date is never a
     // reminder (the ahead-of-time fires already landed on earlier scan days).
-    if (dueMs < now || dueMs - now > EARNINGS_REMINDER_LEAD_MS) continue;
+    if (dueMs < now || dueMs - now > EARNINGS_REMINDER_LEAD_MS) return;
 
     const dateKey = next.date.slice(0, 10);
     const lockKey = earningsReminderLockKey(a.userId, a.assetId, dateKey);
     const acquired = await redis.set(lockKey, '1', 'EX', EARNINGS_REMINDER_LOCK_TTL_SECONDS, 'NX');
-    if (acquired !== 'OK') continue;
+    if (acquired !== 'OK') return;
 
     const emitted = await notify.emit({
       type: 'earnings.reminder',
@@ -138,10 +150,32 @@ export async function runEarningsReminderScan(
       // Enqueue failed (the center logged it): release the lock so the next
       // scan retries — a hiccup delays, never drops (the #367 rule).
       await redis.del(lockKey);
-      continue;
+      return;
     }
     reminded += 1;
+  };
+
+  // GLOBAL watchlist provenance is kept in paranoid mode. This query never
+  // joins portfolios/transactions and never selects an account-owned (custom)
+  // asset row, so these rows and their provider work are safe without an
+  // account-mode guard.
+  for (const watched of await intelRepo.listAllWatchAssets()) {
+    await processAsset(watched);
   }
 
-  return { scanned: inScope.length, reminded };
+  // Discover accounts from account metadata only. Every holding aggregation —
+  // and every account-owned custom watchlist row, which the global pass above
+  // deliberately skipped — then happens inside that user's transition lock, and
+  // the lock stays held through provider work plus enqueue. If enable won, no
+  // transaction or custom-asset query is issued for that account at all. The
+  // `processed` set makes the global rows this returns a no-op second time.
+  for (const userId of await intelRepo.listNormalUserIds()) {
+    await deps.runIfAllowed(userId, async () => {
+      for (const asset of await intelRepo.listUserWatchAndHoldAssets(userId)) {
+        await processAsset({ ...asset, userId });
+      }
+    });
+  }
+
+  return { scanned: processed.size, reminded };
 }

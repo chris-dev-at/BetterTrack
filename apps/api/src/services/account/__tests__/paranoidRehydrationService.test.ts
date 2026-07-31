@@ -491,11 +491,101 @@ async function storageRoundedQuantityFixture(
         ...transactionEntities,
       ],
       mergeLog: [],
+      mirrorProvenance: [],
     },
   };
 
   await replaceNormalPortfolioGraphWithServerVault(harness, user.id);
   return { harness, user, portfolioId, rawQuantities, sourceTransactions, input };
+}
+
+async function storageRoundedMoneyFixture() {
+  const rawMoney = [
+    { price: '0.00001234', fee: '0.00000049' },
+    // Exact halves. PostgreSQL rounds them away from zero, so the quantizer has
+    // to round up here — the toward-zero literals above cannot prove that
+    // branch, and a truncating quantizer would pass them.
+    { price: '0.0000125', fee: '0.0000005' },
+  ] as const;
+  const harness = await createTestApp();
+  const user = await harness.seedUser();
+  const portfolioId = await harness.ctx.portfolio.getDefaultPortfolioId(user.id);
+  const [asset] = await harness.db
+    .insert(assets)
+    .values({
+      providerId: 'test',
+      providerRef: 'MONEY-ROUNDING.EUR',
+      ownerId: null,
+      type: 'crypto',
+      symbol: 'TINY',
+      name: 'Money rounding boundary',
+      exchange: null,
+      currency: 'EUR',
+    })
+    .returning();
+  if (!asset) throw new Error('expected market asset');
+
+  const created = await harness.ctx.portfolio.createTransactions(
+    user.id,
+    portfolioId,
+    rawMoney.map((money) => ({
+      assetId: asset.id,
+      side: 'buy' as const,
+      quantity: 1,
+      price: Number(money.price),
+      fee: Number(money.fee),
+      executedAt: editedAt,
+    })),
+  );
+  if (created.length !== rawMoney.length) throw new Error('expected normal transactions');
+
+  const [sourcePortfolio] = await harness.db
+    .select()
+    .from(portfolios)
+    .where(eq(portfolios.id, portfolioId));
+  const sourceTransactions: (typeof transactions.$inferSelect)[] = [];
+  for (const row of created) {
+    const [stored] = await harness.db
+      .select()
+      .from(transactions)
+      .where(eq(transactions.id, row.id));
+    if (!stored) throw new Error('expected normal storage row');
+    sourceTransactions.push(stored);
+  }
+  const sourceCashSources = await harness.db
+    .select()
+    .from(portfolioCashSources)
+    .where(eq(portfolioCashSources.portfolioId, portfolioId));
+  if (!sourcePortfolio) throw new Error('expected normal storage rows');
+  expect(sourceTransactions.map((row) => ({ price: row.price, fee: row.fee }))).toEqual([
+    { price: '0.000012', fee: '0.000000' },
+    { price: '0.000013', fee: '0.000001' },
+  ]);
+
+  // The normal service accepted the numeric literals above and PostgreSQL is
+  // the storage oracle. A strict vault retains their expanded raw decimals.
+  const transactionEntities = sourceTransactions.map((row, index) => {
+    const strict = strictTransactionEntity(row);
+    strict.data.price = rawMoney[index]!.price;
+    strict.data.fee = rawMoney[index]!.fee;
+    return strict;
+  });
+  const input: ParanoidDisableRehydrationRequest = {
+    rehydrationId: REHYDRATION_ID,
+    document: {
+      schemaVersion: 1,
+      entities: [
+        strictPortfolioEntity(sourcePortfolio),
+        ...sourceCashSources.map(strictCashSourceEntity),
+        ...transactionEntities,
+      ],
+      mergeLog: [],
+      mirrorProvenance: [],
+    },
+  };
+
+  await replaceNormalPortfolioGraphWithServerVault(harness, user.id);
+  return { harness, user, portfolioId, sourceTransactions, input };
 }
 
 function request(rehydrationId = REHYDRATION_ID): ParanoidDisableRehydrationRequest {
@@ -568,6 +658,7 @@ function request(rehydrationId = REHYDRATION_ID): ParanoidDisableRehydrationRequ
         }),
       ],
       mergeLog: [],
+      mirrorProvenance: [],
     },
   };
 }
@@ -1235,6 +1326,175 @@ describe('paranoid rehydration service', () => {
     });
   });
 
+  it('rehydrates normal-accepted price and fee literals to the same storage values', async () => {
+    const { harness, user, sourceTransactions, input } = await storageRoundedMoneyFixture();
+
+    await expect(
+      createParanoidRehydrationService({ db: harness.db }).rehydrate(user.id, input),
+    ).resolves.toMatchObject({ idempotent: false });
+
+    const restored = await harness.db
+      .select({
+        id: transactions.id,
+        price: transactions.price,
+        fee: transactions.fee,
+      })
+      .from(transactions)
+      .where(
+        inArray(
+          transactions.id,
+          sourceTransactions.map((row) => row.id),
+        ),
+      );
+    const byId = (rows: { id: string; price: string; fee: string }[]) =>
+      [...rows].sort((left, right) => left.id.localeCompare(right.id));
+    expect(byId(restored)).toEqual(
+      byId(sourceTransactions.map(({ id, price, fee }) => ({ id, price, fee }))),
+    );
+  });
+
+  it('quantizes sub-quantum amount drift before linked comparisons and restore', async () => {
+    const { db, user } = await makeParanoid();
+    const input = exhaustiveRequest();
+    const transaction = input.document.entities.find(
+      (entry): entry is StrictTransactionEntity => entry.kind === 'transaction',
+    );
+    const dividend = input.document.entities.find(
+      (entry): entry is StrictDividendEntity => entry.kind === 'dividend',
+    );
+    const dividendMovement = input.document.entities.find(
+      (entry): entry is StrictCashMovementEntity =>
+        entry.kind === 'cashMovement' && entry.data.dividendId === dividend?.id,
+    );
+    const deposit = input.document.entities.find(
+      (entry): entry is StrictCashMovementEntity =>
+        entry.kind === 'cashMovement' && entry.id === MOVEMENT_ID,
+    );
+    if (!transaction || !dividend || !dividendMovement || !deposit) {
+      throw new Error('expected transaction, dividend, and cash movements');
+    }
+    transaction.data.price = '0.00001234';
+    transaction.data.fee = '0.00000049';
+    // The linked pair straddles the half: the gross only matches its already
+    // scale-6 cash movement if the quantizer rounds up the way PostgreSQL
+    // does. A quantizer that truncated would read `10.000000` here and reject.
+    dividend.data.grossAmountEur = '10.0000005';
+    dividendMovement.data.amountEur = '10.000001';
+    deposit.data.amountEur = '100.00000049';
+
+    await expect(
+      createParanoidRehydrationService({ db }).rehydrate(user.id, input),
+    ).resolves.toMatchObject({ idempotent: false });
+
+    const [restoredTransaction] = await db
+      .select({ price: transactions.price, fee: transactions.fee })
+      .from(transactions)
+      .where(eq(transactions.id, TRANSACTION_ID));
+    const [restoredDividend] = await db
+      .select({ grossAmountEur: dividends.grossAmountEur })
+      .from(dividends)
+      .where(eq(dividends.id, dividend.id));
+    const restoredMovements = await db
+      .select({
+        id: portfolioCashMovements.id,
+        amountEur: portfolioCashMovements.amountEur,
+      })
+      .from(portfolioCashMovements)
+      .where(inArray(portfolioCashMovements.id, [deposit.id, dividendMovement.id]));
+    expect(restoredTransaction).toEqual({ price: '0.000012', fee: '0.000000' });
+    expect(restoredDividend).toEqual({ grossAmountEur: '10.000001' });
+    expect(Object.fromEntries(restoredMovements.map((row) => [row.id, row.amountEur]))).toEqual({
+      [deposit.id]: '100.000000',
+      [dividendMovement.id]: '10.000001',
+    });
+  });
+
+  // The pair below straddles the rounding boundary rather than a full quantum:
+  // `10.0000004` stores as `10.000000` and `10.0000016` as `10.000002`, so the
+  // two no longer describe one client number and the link is genuinely broken.
+  it('rejects linked amount divergence beyond the storage rounding boundary before restore', async () => {
+    const { db, user } = await makeParanoid();
+    const input = exhaustiveRequest();
+    const stages: string[] = [];
+    const dividend = input.document.entities.find(
+      (entry): entry is StrictDividendEntity => entry.kind === 'dividend',
+    );
+    const dividendMovement = input.document.entities.find(
+      (entry): entry is StrictCashMovementEntity =>
+        entry.kind === 'cashMovement' && entry.data.dividendId === dividend?.id,
+    );
+    if (!dividend || !dividendMovement) {
+      throw new Error('expected dividend and gross cash movement');
+    }
+    dividend.data.grossAmountEur = '10.0000004';
+    dividendMovement.data.amountEur = '10.0000016';
+
+    await expect(
+      createParanoidRehydrationService({
+        db,
+        afterStage(stage) {
+          stages.push(stage);
+        },
+      }).rehydrate(user.id, input),
+    ).rejects.toMatchObject({
+      code: 'INVALID_REFERENCE',
+      message: 'a dividend requires one matching gross cash movement',
+    });
+    expect(stages).toEqual([]);
+    expect(await db.select().from(portfolios).where(eq(portfolios.userId, user.id))).toEqual([]);
+    expect(await db.select().from(dividends)).toEqual([]);
+    expect(await db.select().from(portfolioCashMovements)).toEqual([]);
+  });
+
+  // `numeric(20,6)` holds 14 integer digits. Both literals below fit before
+  // rounding; only the carry of the first one does not, and PostgreSQL would
+  // reject exactly that one as an overflow on insert.
+  it('rejects a money value whose rounding carries past the column precision', async () => {
+    const { db, user } = await makeParanoid();
+    const input = request();
+    const stages: string[] = [];
+    const transaction = input.document.entities.find(
+      (entry): entry is StrictTransactionEntity => entry.kind === 'transaction',
+    );
+    if (!transaction) throw new Error('expected transaction');
+    transaction.data.price = '99999999999999.9999995';
+
+    await expect(
+      createParanoidRehydrationService({
+        db,
+        afterStage(stage) {
+          stages.push(stage);
+        },
+      }).rehydrate(user.id, input),
+    ).rejects.toMatchObject({
+      code: 'INVALID_REFERENCE',
+      message: 'transaction price exceeds its persisted precision',
+    });
+    expect(stages).toEqual([]);
+    expect(await db.select().from(transactions)).toEqual([]);
+    expect(await db.select().from(portfolios).where(eq(portfolios.userId, user.id))).toEqual([]);
+  });
+
+  it('accepts the largest money value that still rounds inside the column precision', async () => {
+    const { db, user } = await makeParanoid();
+    const input = request();
+    const transaction = input.document.entities.find(
+      (entry): entry is StrictTransactionEntity => entry.kind === 'transaction',
+    );
+    if (!transaction) throw new Error('expected transaction');
+    transaction.data.price = '99999999999999.9999994';
+
+    await expect(
+      createParanoidRehydrationService({ db }).rehydrate(user.id, input),
+    ).resolves.toMatchObject({ idempotent: false });
+
+    const [restored] = await db
+      .select({ price: transactions.price })
+      .from(transactions)
+      .where(eq(transactions.id, TRANSACTION_ID));
+    expect(restored).toEqual({ price: '99999999999999.999999' });
+  });
+
   it('rehydrates raw vault quantities to the same numeric(20,8) rows as normal writes', async () => {
     const { harness, user, portfolioId, sourceTransactions, input } =
       await storageRoundedQuantityFixture();
@@ -1507,6 +1767,7 @@ describe('paranoid rehydration service', () => {
           ...sourceMovements.map(strictCashMovementEntity),
         ],
         mergeLog: [],
+        mirrorProvenance: [],
       },
     };
 
@@ -2374,6 +2635,7 @@ describe('paranoid rehydration service', () => {
           ...sourceMovements.map(strictCashMovementEntity),
         ],
         mergeLog: [],
+        mirrorProvenance: [],
       },
     };
 
@@ -2515,7 +2777,19 @@ describe('paranoid rehydration service', () => {
       ),
     ).toBe(true);
 
-    const input: ParanoidDisableRehydrationRequest = {
+    // §7.1 capture: the enable wizard reads the identity map while `mirror_rows`
+    // still exists, through the production read the route serves.
+    const captured = await harness.ctx.paranoidTransitions.forkProvenance(bob.id);
+    expect(captured.provenance.length).toBeGreaterThan(0);
+    expect(
+      captured.provenance.every(
+        (entry) => entry.chainId === chain.id && entry.portfolioId === bobForkId,
+      ),
+    ).toBe(true);
+
+    const documentWith = (
+      mirrorProvenance: ParanoidDisableRehydrationRequest['document']['mirrorProvenance'],
+    ): ParanoidDisableRehydrationRequest => ({
       rehydrationId: REHYDRATION_ID,
       document: {
         schemaVersion: 1,
@@ -2536,11 +2810,29 @@ describe('paranoid rehydration service', () => {
           }),
         ],
         mergeLog: [],
+        mirrorProvenance,
       },
-    };
+    });
+    const input = documentWith(captured.provenance);
 
     await replaceNormalPortfolioGraphWithServerVault(harness, bob.id);
     await harness.db.delete(userTaxSettings).where(eq(userTaxSettings.userId, bob.id));
+
+    // The `sync:mirrorchain` tag alone no longer waives anything: without the
+    // authenticated identity map the overdrawn prefix is a plain overdraw.
+    await expect(
+      createParanoidRehydrationService({ db: harness.db, now: () => new Date(now) }).rehydrate(
+        bob.id,
+        documentWith([]),
+      ),
+    ).rejects.toMatchObject({ code: 'INVALID_CASH_LEDGER' });
+    expect(
+      await harness.db
+        .select()
+        .from(portfolioCashMovements)
+        .where(inArray(portfolioCashMovements.portfolioId, sourcePortfolioIds)),
+    ).toEqual([]);
+
     await expect(
       createParanoidRehydrationService({
         db: harness.db,
@@ -2778,6 +3070,7 @@ describe('paranoid rehydration service', () => {
           ...sourceMovements.map(strictCashMovementEntity),
         ],
         mergeLog: [],
+        mirrorProvenance: [],
       },
     };
 

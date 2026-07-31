@@ -11,7 +11,7 @@ import type { Redis } from 'ioredis';
 import type { Logger } from '../../logger';
 import type { MarketDataService } from '../../providers';
 
-import { createLiveRingBuffer, type LiveRingBuffer } from './ringBuffer';
+import { createLiveRingBuffer, liveRingKey, type LiveRingBuffer } from './ringBuffer';
 
 /**
  * Live Mode core (PROJECTPLAN.md §6.3, §5.3, V3-P7b; overhauled per #372): the
@@ -111,6 +111,11 @@ export interface LiveModeService {
   pollIntervalMs(assetId: string): number | null;
   /** Promptly reconcile a follower after another process releases poll ownership. */
   reconcile(assetId: string): void;
+  /**
+   * Fence provider work and delete retained live frames for assets whose
+   * server-side identities are being retired by a paranoid-mode transition.
+   */
+  retireAssets(assetIds: readonly string[]): Promise<void>;
   /** Stop every loop and drop all subscribers (shutdown). */
   close(): void;
 }
@@ -248,6 +253,7 @@ export function createLiveModeService(deps: LiveModeServiceDeps): LiveModeServic
 
   const ring: LiveRingBuffer = createLiveRingBuffer(deps.redis, { capacity, retentionMs });
   const loops = new Map<string, AssetLoop>();
+  const inFlightTicks = new Map<string, Set<Promise<void>>>();
   const handlers = new Set<(frame: RealtimeLiveFrame) => void>();
   let coordinationTimer: NodeJS.Timeout | null = null;
   let closed = false;
@@ -294,7 +300,7 @@ export function createLiveModeService(deps: LiveModeServiceDeps): LiveModeServic
     }
     clearTimeout(loop.timer);
     const delay = Math.max(0, loop.lastTickAt + loop.intervalMs - now());
-    loop.timer = setTimeout(() => void tick(assetId, loop), delay);
+    loop.timer = setTimeout(() => launchTick(assetId, loop), delay);
   }
 
   function stopPolling(loop: AssetLoop): void {
@@ -378,7 +384,7 @@ export function createLiveModeService(deps: LiveModeServiceDeps): LiveModeServic
             loop.leader = true;
             loop.failures = 0;
             applyCadence(loop);
-            void tick(assetId, loop);
+            launchTick(assetId, loop);
           }
         } else if (!ownsLoop && loop.leader) {
           stopPolling(loop);
@@ -514,9 +520,24 @@ export function createLiveModeService(deps: LiveModeServiceDeps): LiveModeServic
         now() < loop.leaderLeaseExpiresAt &&
         watcherTotal(loop) > 0
       ) {
-        loop.timer = setTimeout(() => void tick(assetId, loop), loop.intervalMs);
+        loop.timer = setTimeout(() => launchTick(assetId, loop), loop.intervalMs);
       }
     }
+  }
+
+  function launchTick(assetId: string, loop: AssetLoop): void {
+    const task = tick(assetId, loop);
+    const tasks = inFlightTicks.get(assetId) ?? new Set<Promise<void>>();
+    tasks.add(task);
+    inFlightTicks.set(assetId, tasks);
+    void task
+      .finally(() => {
+        tasks.delete(task);
+        if (tasks.size === 0) inFlightTicks.delete(assetId);
+      })
+      .catch((err) => {
+        logger.warn({ err, assetId }, 'live poll tick escaped its error boundary');
+      });
   }
 
   return {
@@ -645,6 +666,34 @@ export function createLiveModeService(deps: LiveModeServiceDeps): LiveModeServic
     reconcile(assetId) {
       const loop = loops.get(assetId);
       if (loop) requestCoordination(assetId, loop, true);
+    },
+
+    async retireAssets(assetIds) {
+      const retiredIds = [...new Set(assetIds)];
+      const releases: Promise<void>[] = [];
+      const ticks: Promise<void>[] = [];
+
+      for (const assetId of retiredIds) {
+        const loop = loops.get(assetId);
+        if (loop) {
+          stopPolling(loop);
+          loops.delete(assetId);
+          releases.push(releaseProcessRegistration(assetId, loop.coordinationId));
+        }
+        ticks.push(...(inFlightTicks.get(assetId) ?? []));
+      }
+      stopCoordinationTimerWhenIdle();
+
+      const releaseResults = await Promise.allSettled(releases);
+      for (const result of releaseResults) {
+        if (result.status === 'rejected') {
+          logger.warn({ err: result.reason }, 'live poll ownership retirement release failed');
+        }
+      }
+      await Promise.allSettled(ticks);
+      if (retiredIds.length > 0) {
+        await deps.redis.del(...retiredIds.map(liveRingKey));
+      }
     },
 
     close() {

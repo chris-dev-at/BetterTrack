@@ -127,10 +127,13 @@ test('happy path: invite through friend sharing', async ({ browser }) => {
   // V2-P11: create and switch to a second portfolio — scoped views (holdings)
   // follow the active portfolio, then switch back to the default.
   const switcher = owner.getByRole('button', { name: 'Switch portfolio' });
+  // A filterable picker, so a labelled disclosure group rather than an ARIA
+  // menu (#977): its rows and actions are ordinary buttons and links.
+  const switcherPopover = owner.getByRole('group', { name: 'Portfolios' });
   await switcher.click();
   // The switcher's single create entry point is the add-portfolio wizard:
   // name → icon → book → done, one gold primary per step.
-  await owner.getByRole('menuitem', { name: 'Add portfolio' }).click();
+  await switcherPopover.getByRole('button', { name: 'Add portfolio' }).click();
   const wizard = owner.getByRole('dialog', { name: 'Add portfolio' });
   await wizard.getByLabel('Portfolio name').fill('Growth');
   await wizard.getByRole('button', { name: 'Continue' }).click();
@@ -147,7 +150,7 @@ test('happy path: invite through friend sharing', async ({ browser }) => {
   await expect(owner.getByText('Your portfolio is empty')).toBeVisible({ timeout: 15_000 });
 
   await switcher.click();
-  await owner.getByRole('menuitemradio', { name: 'Main' }).click();
+  await switcherPopover.getByRole('button', { name: 'Main' }).click();
   await expect(switcher).toContainText('Main');
   await expect(ownerHoldings.getByRole('link', { name: 'AAPL' })).toBeVisible({
     timeout: 15_000,

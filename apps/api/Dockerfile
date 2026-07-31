@@ -1,4 +1,4 @@
-FROM node:22-alpine AS base
+FROM node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32 AS base
 ENV PNPM_HOME="/pnpm"
 ENV PATH="$PNPM_HOME:$PATH"
 RUN corepack enable
@@ -23,7 +23,7 @@ FROM build AS deploy-prep
 RUN pnpm deploy --filter @bettertrack/api --prod /deploy
 
 # ── runner: minimal production image ────────────────────────────────────────
-FROM node:22-alpine AS runner
+FROM node:22-alpine@sha256:c610fcdfb1d5b4740dd70c284ed3cb16bb857e0f7166196e36a5501df7a3aa32 AS runner
 WORKDIR /app
 RUN addgroup -S bettertrack && adduser -S bettertrack -G bettertrack \
     && mkdir -p /var/lib/bettertrack/exports \
@@ -48,6 +48,11 @@ COPY --from=build --chown=bettertrack:bettertrack /app/apps/api/dist ./dist
 COPY --from=build --chown=bettertrack:bettertrack /app/apps/api/drizzle ./drizzle
 
 COPY --from=build --chown=bettertrack:bettertrack /app/apps/api/package.json ./
+
+# The runtime starts the already-built server with `node`; npm and npx are
+# build-only tools and retaining their bundled dependency tree needlessly grows
+# the attack surface of the production image.
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
 
 USER bettertrack
 EXPOSE 3000

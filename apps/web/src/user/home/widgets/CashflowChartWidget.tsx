@@ -6,7 +6,7 @@ import type { CashTrendPoint } from '@bettertrack/contracts';
 
 import { useT } from '../../../i18n';
 import { cashTrendsQueryKey, getCashTrends } from '../../../lib/cashApi';
-import { formatMoney } from '../../../lib/format';
+import { formatMoney, getMoneyCurrency } from '../../../lib/format';
 import { MoneyText } from '../../../ui';
 import { PriceChart } from '../../../ui/charts';
 import { NEGATIVE, POSITIVE } from '../../../ui/charts/palette';
@@ -86,6 +86,9 @@ export function CashflowChartWidget({
   const t = useT();
   const months = monthsFor(settings.range);
   const charted = scopedPortfolios.slice(0, MAX_HISTORY_PORTFOLIOS);
+  // The visible aggregate totals below use the active base currency. Keep the
+  // chart alternative in that same denomination rather than hard-coding EUR.
+  const currency = getMoneyCurrency();
 
   const combined = useQueries({
     queries: charted.map((portfolio) => ({
@@ -139,6 +142,7 @@ export function CashflowChartWidget({
             mode="baseline"
             series={series}
             showRangeToggle={false}
+            valueCurrency={currency}
           />
         </div>
       )}

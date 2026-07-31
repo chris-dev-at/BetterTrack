@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
@@ -101,8 +101,18 @@ describe('WebhooksPanel', () => {
     );
 
     // The one-time secret is revealed with a "won't be shown again" notice.
-    expect(await screen.findByText(CREATED.secret)).toBeInTheDocument();
+    const dialog = await screen.findByRole('dialog', { name: 'Your webhook signing secret' });
+    expect(within(dialog).getByText(CREATED.secret)).toBeInTheDocument();
     expect(screen.getByText(/won't be shown again/i)).toBeInTheDocument();
+
+    await user.keyboard('{Escape}');
+    fireEvent.mouseDown(dialog.parentElement!);
+    expect(screen.getByText(CREATED.secret)).toBeInTheDocument();
+
+    await user.click(within(dialog).getByRole('button', { name: 'Copy' }));
+    expect(await within(dialog).findByRole('button', { name: 'Copied' })).toBeInTheDocument();
+    fireEvent.mouseDown(dialog.parentElement!);
+    await waitFor(() => expect(screen.queryByText(CREATED.secret)).not.toBeInTheDocument());
   });
 
   test('blocks creation with no event selected', async () => {

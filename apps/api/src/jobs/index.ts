@@ -36,6 +36,13 @@ export {
 } from './scheduler';
 export { createJobWorkers, type RunningWorkers, type CreateJobWorkersDeps } from './worker';
 export {
+  assertParanoidJobBindings,
+  bindParanoidJob,
+  createParanoidUserJobFilter,
+  type ParanoidJobBinding,
+  type ParanoidUserJobFilter,
+} from './paranoidJobs';
+export {
   assembleRegisteredJobDefinitions,
   JOB_REGISTRATION_DESCRIPTORS,
   type JobRegistrationDescriptor,
@@ -82,6 +89,13 @@ export {
   API_KEY_REQUEST_LOG_CLEANUP_CRON,
   API_KEY_REQUEST_LOG_CLEANUP_TZ,
   type ApiKeyRequestLogCleanupJobDeps,
+  createDataRetentionCleanupJob,
+  DATA_RETENTION_DELETE_BATCH_SIZE,
+  DATA_RETENTION_MAX_ROWS_PER_RUN,
+  DATA_RETENTION_CLEANUP_SCHEDULER_ID,
+  DATA_RETENTION_CLEANUP_CRON,
+  DATA_RETENTION_CLEANUP_TZ,
+  type DataRetentionCleanupJobDeps,
   createDigestDailyJob,
   createDigestWeeklyJob,
   createDeferredDeliveryJob,

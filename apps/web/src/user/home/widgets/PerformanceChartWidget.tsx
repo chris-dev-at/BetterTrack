@@ -118,6 +118,7 @@ export function PerformanceChartWidget({
     combine: (results) => ({
       series: combineSamples(results.map((result) => normalizeSamples(result.data?.points ?? []))),
       loading: results.some((result) => result.isLoading || result.isFetching),
+      baseCurrency: results.find((result) => result.data !== undefined)?.data?.baseCurrency,
     }),
   });
 
@@ -173,6 +174,7 @@ export function PerformanceChartWidget({
           rangeAlign="end"
           ranges={PERFORMANCE_RANGES}
           series={combining ? combined.series : single}
+          valueCurrency={combining ? combined.baseCurrency : historyQuery.data?.baseCurrency}
         />
       </div>
       {showingReturn ? (

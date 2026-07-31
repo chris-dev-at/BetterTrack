@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import type { RefObject } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import {
@@ -471,11 +472,13 @@ export function InviteDialog({
   existingMemberUserIds,
   onClose,
   onDone,
+  restoreFocusRef,
 }: {
   chainId: string;
   existingMemberUserIds: Set<string>;
   onClose: () => void;
   onDone: () => void;
+  restoreFocusRef?: RefObject<HTMLElement | null>;
 }) {
   const t = useT();
   const [query, setQuery] = useState('');
@@ -498,7 +501,12 @@ export function InviteDialog({
   }, [friendsQuery.data, existingMemberUserIds, query]);
 
   return (
-    <Dialog title={t('mirrorchain.invite.title')} onClose={onClose} widthClassName="max-w-md">
+    <Dialog
+      title={t('mirrorchain.invite.title')}
+      onClose={onClose}
+      restoreFocusRef={restoreFocusRef}
+      widthClassName="max-w-md"
+    >
       <div className="flex flex-col gap-3">
         <p className="text-sm text-neutral-400">{t('mirrorchain.invite.body')}</p>
         <input
@@ -570,10 +578,18 @@ export function MirrorInviteStepDialog({
   chainId,
   onClose,
   onDone,
+  restoreFocusRef,
 }: {
   chainId: string;
   onClose: () => void;
   onDone: () => void;
+  /**
+   * The caller's own stable trigger. This dialog is reached by *replacing* the
+   * create dialog, and swaps its own loading panel for the friend picker, so
+   * the control that opened each panel is already detached when it closes —
+   * without this, focus would end up on `<body>` (§13.5 V5-P14, #977).
+   */
+  restoreFocusRef?: RefObject<HTMLElement | null>;
 }) {
   const t = useT();
   const membersQuery = useQuery({
@@ -582,14 +598,24 @@ export function MirrorInviteStepDialog({
   });
   if (membersQuery.isLoading) {
     return (
-      <Dialog title={t('mirrorchain.invite.title')} onClose={onClose} widthClassName="max-w-md">
+      <Dialog
+        title={t('mirrorchain.invite.title')}
+        onClose={onClose}
+        restoreFocusRef={restoreFocusRef}
+        widthClassName="max-w-md"
+      >
         <p className="text-sm text-neutral-500">{t('common.loading')}</p>
       </Dialog>
     );
   }
   if (membersQuery.isError || !membersQuery.data) {
     return (
-      <Dialog title={t('mirrorchain.invite.title')} onClose={onClose} widthClassName="max-w-md">
+      <Dialog
+        title={t('mirrorchain.invite.title')}
+        onClose={onClose}
+        restoreFocusRef={restoreFocusRef}
+        widthClassName="max-w-md"
+      >
         <Alert tone="error">{t('mirrorchain.memberSheet.loadError')}</Alert>
       </Dialog>
     );
@@ -603,6 +629,7 @@ export function MirrorInviteStepDialog({
       existingMemberUserIds={existingMemberUserIds}
       onClose={onClose}
       onDone={onDone}
+      restoreFocusRef={restoreFocusRef}
     />
   );
 }
@@ -756,6 +783,7 @@ export function CreateChainDialog({
   initialName = '',
   onClose,
   onCreated,
+  restoreFocusRef,
 }: {
   /**
    * Seed for the name field — the add-portfolio wizard passes the name the user
@@ -765,6 +793,8 @@ export function CreateChainDialog({
   initialName?: string;
   onClose: () => void;
   onCreated: (chainId: string) => void;
+  /** Stable trigger to hand focus back to — see {@link MirrorInviteStepDialog}. */
+  restoreFocusRef?: RefObject<HTMLElement | null>;
 }) {
   const t = useT();
   const [name, setName] = useState(initialName);
@@ -778,6 +808,7 @@ export function CreateChainDialog({
       title={t('mirrorchain.create.title')}
       description={t('mirrorchain.create.body')}
       onClose={onClose}
+      restoreFocusRef={restoreFocusRef}
       widthClassName="max-w-md"
     >
       <form

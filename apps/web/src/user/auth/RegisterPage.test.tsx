@@ -255,6 +255,30 @@ test('an expired Google ticket falls back to the plain form with a notice', asyn
   expect(email).not.toBeDisabled();
 });
 
+test.each([0, 500])(
+  'a status %i Google-ticket outage stays retryable instead of reporting expiry',
+  async (status) => {
+    vi.mocked(api.getRegistrationInfo).mockResolvedValue({ mode: 'open', googleEnabled: true });
+    vi.mocked(api.getGoogleRegisterTicket)
+      .mockRejectedValueOnce(
+        new ApiError(status, status === 0 ? 'NETWORK_ERROR' : 'UNKNOWN', 'unavailable'),
+      )
+      .mockResolvedValueOnce({ email: 'ada@gmail.com', name: 'Ada Lovelace' });
+    const user = userEvent.setup();
+    renderAt('/register?google=connected');
+
+    expect(
+      await screen.findByText(/can’t check your Google connection right now/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Google connection expired/i)).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Try again' }));
+
+    expect(await screen.findByText(/Connected to Google as ada@gmail.com/i)).toBeInTheDocument();
+    expect(api.getGoogleRegisterTicket).toHaveBeenCalledTimes(2);
+  },
+);
+
 test('the connected invite-token form keeps the token field fillable and sends it', async () => {
   vi.mocked(api.getRegistrationInfo).mockResolvedValue({
     mode: 'invite_token',

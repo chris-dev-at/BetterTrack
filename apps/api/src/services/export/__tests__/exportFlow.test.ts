@@ -1,7 +1,7 @@
 import { tmpdir } from 'node:os';
 import { dirname, join as joinPath } from 'node:path';
 import { existsSync } from 'node:fs';
-import { stat } from 'node:fs/promises';
+import { rm, stat } from 'node:fs/promises';
 
 import { unzipSync, strFromU8 } from 'fflate';
 import { and, eq } from 'drizzle-orm';
@@ -14,7 +14,7 @@ import { exportRequestResponseSchema, exportStatusResponseSchema } from '@better
 import * as schema from '../../../data/schema';
 import { hashToken } from '../../crypto/tokens';
 import { collectUserExport } from '../collector';
-import { EXPORTED_ENTITY_NAMES } from '../manifest';
+import { EXPORTED_ENTITY_NAMES, PARANOID_SERVER_EXPORTED_ENTITY_NAMES } from '../manifest';
 import { createTestApp, type TestHarness } from '../../../testing/createTestApp';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
@@ -303,6 +303,34 @@ describe('account data export', () => {
     expect(expired.body.error.code).toBe('EXPORT_NOT_FOUND');
   });
 
+  it('fails a download closed when the ready archive is gone from disk', async () => {
+    // A `ready` row can outlive its bytes: a paranoid enable unlinks the staged
+    // archive BEFORE its transaction commits, and that commit is allowed to fail
+    // outcome-ambiguously (an unlink that started is never undone). Operator-side
+    // deletion lands in the same state. The reply must be the ordinary opaque 404,
+    // not a 500 raised mid-stream — asserted through the real HTTP route.
+    const user = await harness.seedUser({ email: 'gone@bettertrack.test', username: 'gone' });
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const reqRes = await agent
+      .post('/api/v1/account/export')
+      .set(...XRW)
+      .send({ password: user.password });
+    const { jobId, downloadToken } = exportRequestResponseSchema.parse(reqRes.body);
+    const [row] = await harness.db
+      .select()
+      .from(schema.exportJobs)
+      .where(eq(schema.exportJobs.id, jobId));
+    await rm(row!.filePath!);
+    expect(existsSync(row!.filePath!)).toBe(false);
+
+    const gone = await agent
+      .post('/api/v1/account/export/download')
+      .set(...XRW)
+      .send({ token: downloadToken });
+    expect(gone.status, JSON.stringify(gone.body)).toBe(404);
+    expect(gone.body.error.code).toBe('EXPORT_NOT_FOUND');
+  });
+
   it('cleanup deletes expired export files and rows', async () => {
     const user = await harness.seedUser();
     const agent = await loginAgent(harness.app, user.email, user.password);
@@ -332,5 +360,153 @@ describe('account data export', () => {
       .from(schema.exportJobs)
       .where(eq(schema.exportJobs.id, jobId));
     expect(after.length).toBe(0);
+  });
+
+  it('exports only server-classified data plus the current opaque server vault', async () => {
+    const user = await harness.seedUser();
+    const blob = Buffer.from([0, 1, 2, 3, 255, 42]);
+    await harness.db
+      .update(schema.users)
+      .set({
+        privacyMode: 'paranoid',
+        paranoidMediaSet: ['server'],
+        paranoidDriveAttestedVersion: null,
+      })
+      .where(eq(schema.users.id, user.id));
+    await harness.db.insert(schema.paranoidVaults).values({
+      userId: user.id,
+      version: 7,
+      formatVersion: 1,
+      sizeBytes: blob.byteLength,
+      blob,
+    });
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const requested = await agent
+      .post('/api/v1/account/export')
+      .set(...XRW)
+      .send({ password: user.password });
+    const { downloadToken } = exportRequestResponseSchema.parse(requested.body);
+    const downloaded = await agent
+      .post('/api/v1/account/export/download')
+      .set(...XRW)
+      .send({ token: downloadToken })
+      .responseType('blob');
+    expect(downloaded.status).toBe(200);
+
+    const files = unzipSync(new Uint8Array(downloaded.body as Buffer));
+    const manifest = JSON.parse(strFromU8(files['manifest.json']!)) as {
+      entities: Record<string, number>;
+      csv: string[];
+      paranoidVault: Record<string, unknown>;
+    };
+    expect(Object.keys(manifest.entities).sort()).toEqual([
+      ...PARANOID_SERVER_EXPORTED_ENTITY_NAMES,
+    ]);
+    expect(manifest.csv).toEqual([]);
+    expect(manifest.paranoidVault).toMatchObject({
+      mediaSet: ['server'],
+      included: true,
+      file: 'paranoid/current-vault.btvault',
+      version: 7,
+      formatVersion: 1,
+      sizeBytes: blob.byteLength,
+    });
+    expect(Buffer.from(files['paranoid/current-vault.btvault']!)).toEqual(blob);
+    expect(files['data/portfolios.json']).toBeUndefined();
+    expect(files['csv/transactions.csv']).toBeUndefined();
+    expect(strFromU8(files['README.txt']!)).toContain('client-encrypted vault');
+  });
+
+  it('exports no blob and no cleartext portfolio files for Drive-only accounts', async () => {
+    const user = await harness.seedUser();
+    await harness.db
+      .update(schema.users)
+      .set({
+        privacyMode: 'paranoid',
+        paranoidMediaSet: ['drive'],
+        paranoidDriveAttestedVersion: 3,
+      })
+      .where(eq(schema.users.id, user.id));
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const requested = await agent
+      .post('/api/v1/account/export')
+      .set(...XRW)
+      .send({ password: user.password });
+    const { downloadToken } = exportRequestResponseSchema.parse(requested.body);
+    const downloaded = await agent
+      .post('/api/v1/account/export/download')
+      .set(...XRW)
+      .send({ token: downloadToken })
+      .responseType('blob');
+    const files = unzipSync(new Uint8Array(downloaded.body as Buffer));
+    const manifest = JSON.parse(strFromU8(files['manifest.json']!)) as {
+      paranoidVault: Record<string, unknown>;
+    };
+    expect(manifest.paranoidVault).toMatchObject({
+      mediaSet: ['drive'],
+      included: false,
+    });
+    expect(files['paranoid/current-vault.btvault']).toBeUndefined();
+    expect(files['data/portfolios.json']).toBeUndefined();
+    expect(files['csv/transactions.csv']).toBeUndefined();
+  });
+
+  it('serializes a normal build with enable and retires the cleartext archive before commit', async () => {
+    let collectionReached!: () => void;
+    let releaseCollection!: () => void;
+    const reached = new Promise<void>((resolve) => {
+      collectionReached = resolve;
+    });
+    const release = new Promise<void>((resolve) => {
+      releaseCollection = resolve;
+    });
+    harness = await createTestApp({
+      env: { BT_EXPORT_DIR: EXPORT_DIR },
+      exportAfterCollect: async () => {
+        collectionReached();
+        await release;
+      },
+    });
+    const user = await harness.seedUser();
+    await seedPortfolio(user.id, 'Cleartext portfolio');
+    const blob = Buffer.from('opaque transition vault');
+    await harness.db.insert(schema.paranoidVaults).values({
+      userId: user.id,
+      version: 1,
+      formatVersion: 1,
+      sizeBytes: blob.byteLength,
+      blob,
+    });
+    const agent = await loginAgent(harness.app, user.email, user.password);
+
+    const exportPromise = agent
+      .post('/api/v1/account/export')
+      .set(...XRW)
+      .send({ password: user.password })
+      .then((response) => response);
+    await reached;
+    const enablePromise = harness.ctx.paranoidTransitions.enable(user.id, {
+      mediaSet: ['server'],
+      vaultVersion: 1,
+      driveAttestation: null,
+    });
+    releaseCollection();
+    const [exportResponse, enabled] = await Promise.all([exportPromise, enablePromise]);
+    expect(exportResponse.status).toBe(200);
+    expect(enabled.mode).toBe('paranoid');
+    const { jobId } = exportRequestResponseSchema.parse(exportResponse.body);
+    const expectedPath = joinPath(EXPORT_DIR, `${jobId}.zip`);
+    expect(existsSync(expectedPath)).toBe(false);
+    const [job] = await harness.db
+      .select()
+      .from(schema.exportJobs)
+      .where(eq(schema.exportJobs.id, jobId));
+    expect(job).toMatchObject({
+      status: 'failed',
+      filePath: null,
+      fileSize: null,
+      error: 'RETIRED_FOR_PARANOID_MODE',
+      downloadTokenHash: null,
+    });
   });
 });

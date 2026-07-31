@@ -50,6 +50,7 @@ import {
   type UpdateUserRequest,
 } from '@bettertrack/contracts';
 
+import { notFound } from '../../errors';
 import type { AdminActor } from '../../services/admin/adminService';
 import type { AppContext } from '../context';
 import { requireAdmin, requireAdminTwoFactor } from '../middleware/session';
@@ -81,6 +82,16 @@ const actorOf = (req: Request): AdminActor => ({ id: req.authUser!.id, ip: req.i
  */
 export function createAdminRouter(ctx: AppContext, limiters: RateLimiters): Router {
   const router = Router();
+  // Single-resource responses: the account was read (or just mutated) a moment
+  // ago, so a vanished row is a benign delete race — 404 that one resource
+  // instead of raising an unexpected 500.
+  const serializeAdminUser = async (
+    row: Parameters<typeof toAdminUser>[0],
+  ): Promise<ReturnType<typeof toAdminUser>> => {
+    const metadata = await ctx.paranoidTransitions.adminMetadata(row.id);
+    if (!metadata) throw notFound('This account no longer exists.');
+    return toAdminUser(row, metadata);
+  };
 
   router.use(limiters.admin);
   router.use(requireAdmin);
@@ -123,7 +134,18 @@ export function createAdminRouter(ctx: AppContext, limiters: RateLimiters): Rout
   router.get('/users', validateQuery(adminUserListQuerySchema), async (req, res) => {
     const { search } = (req.valid?.query ?? {}) as { search?: string };
     const users = await ctx.admin.listUsers(search);
-    res.json({ users: users.map(toAdminUser) });
+    // ONE locked batch for the whole page. Fanning the per-user read out over an
+    // unbounded list would hold one lock transaction per account while queueing
+    // its own reads behind them, exhausting the pool on a real instance.
+    const metadata = await ctx.paranoidTransitions.adminMetadataMany(users.map((row) => row.id));
+    res.json({
+      users: users.flatMap((row) => {
+        // Deleted between the list read and this one: drop the single stale row
+        // rather than failing the whole page.
+        const paranoidMetadata = metadata.get(row.id);
+        return paranoidMetadata ? [toAdminUser(row, paranoidMetadata)] : [];
+      }),
+    });
   });
 
   // Bulk actions from the slimmed user list (§6.12, §13.2). Registered before
@@ -141,7 +163,7 @@ export function createAdminRouter(ctx: AppContext, limiters: RateLimiters): Rout
       req.valid?.body as CreateUserRequest,
       actorOf(req),
     );
-    res.status(201).json({ user: toAdminUser(user), tempPassword });
+    res.status(201).json({ user: await serializeAdminUser(user), tempPassword });
   });
 
   router.patch(
@@ -155,14 +177,14 @@ export function createAdminRouter(ctx: AppContext, limiters: RateLimiters): Rout
         req.valid?.body as UpdateUserRequest,
         actorOf(req),
       );
-      res.json(toAdminUser(user));
+      res.json(await serializeAdminUser(user));
     },
   );
 
   router.post('/users/:id/reset-password', validateParams(idParamSchema), async (req, res) => {
     const { id } = req.valid?.params as { id: string };
     const { user, tempPassword } = await ctx.admin.resetPassword(id, actorOf(req));
-    res.json({ user: toAdminUser(user), tempPassword });
+    res.json({ user: await serializeAdminUser(user), tempPassword });
   });
 
   router.delete(
@@ -240,7 +262,7 @@ export function createAdminRouter(ctx: AppContext, limiters: RateLimiters): Rout
     async (req, res) => {
       const { id } = req.valid?.params as { id: string };
       const user = await ctx.admin.approveRegistrationRequest(id, actorOf(req));
-      res.json(toAdminUser(user));
+      res.json(await serializeAdminUser(user));
     },
   );
 

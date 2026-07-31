@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
@@ -133,8 +133,10 @@ describe('CashOverviewPage', () => {
     );
     renderPage();
 
-    expect(await screen.findByText('Food')).toBeInTheDocument();
-    expect(screen.getByText('Groceries')).toBeInTheDocument();
+    // Scoped to the ranked bars: the donut beside them carries the same labels.
+    const bars = await screen.findByRole('list', { name: 'Spending by tag' });
+    expect(within(bars).getByText('Food')).toBeInTheDocument();
+    expect(within(bars).getByText('Groceries')).toBeInTheDocument();
     // 300 + 300 ≠ 500 — the note explaining why must be on screen, not just implied.
     expect(
       screen.getByText(
@@ -162,7 +164,8 @@ describe('CashOverviewPage', () => {
     );
     renderPage();
 
-    expect(await screen.findByText('Untagged')).toBeInTheDocument();
+    const bars = await screen.findByRole('list', { name: 'Spending by tag' });
+    expect(within(bars).getByText('Untagged')).toBeInTheDocument();
   });
 
   test('omits the breakdown and its note when nothing happened this month', async () => {

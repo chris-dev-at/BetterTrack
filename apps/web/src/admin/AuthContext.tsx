@@ -9,7 +9,7 @@ import {
   type TwoFactorChallengeResponse,
 } from '@bettertrack/contracts';
 
-import { ApiError } from '../lib/apiClient';
+import { ApiError, isConfirmedUnauthorized } from '../lib/apiClient';
 import * as api from '../lib/adminApi';
 
 /**
@@ -30,6 +30,7 @@ import * as api from '../lib/adminApi';
  */
 type AuthStatus =
   | 'loading'
+  | 'session-unavailable'
   | 'authenticated'
   | 'anonymous'
   | 'password-change-required'
@@ -54,6 +55,8 @@ interface AuthContextValue {
    *  in the forced-change trap or an admin is in the 2FA challenge/setup traps
    *  (the identity isn't used until the trap clears). */
   user: MeResponse | null;
+  /** Retry a bootstrap whose outcome is unknown because the backend was unreachable. */
+  retrySession: () => void;
   /** The pending login 2FA challenge while `status === 'two-factor-required'`. */
   twoFactorChallenge: TwoFactorChallengeResponse | null;
   login: (credentials: LoginRequest) => Promise<void>;
@@ -99,6 +102,7 @@ const AuthContext = createContext<AuthContextValue | null>(null);
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<AuthStatus>('loading');
   const [user, setUser] = useState<MeResponse | null>(null);
+  const [bootstrapAttempt, setBootstrapAttempt] = useState(0);
   const [twoFactorChallenge, setTwoFactorChallenge] = useState<TwoFactorChallengeResponse | null>(
     null,
   );
@@ -139,10 +143,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [],
   );
 
-  // Bootstrap from the session cookie. Anonymous, non-admin, and 401/404
-  // responses all resolve to "anonymous" — no route detail is surfaced. An
+  const retrySession = useCallback(() => {
+    setStatus('loading');
+    setBootstrapAttempt((attempt) => attempt + 1);
+  }, []);
+
+  // Bootstrap from the session cookie. Anonymous, non-admin, and a confirmed
+  // 401 resolve to "anonymous" — no route detail is surfaced. An
   // authenticated admin is routed through the same forced-change / 2FA resolution
-  // as a fresh login, so a reload never skips the mandatory-2FA gate.
+  // as a fresh login, so a reload never skips the mandatory-2FA gate. An outage
+  // holds a distinct retryable gate and never manufactures a signed-out state.
   useEffect(() => {
     const controller = new AbortController();
     void (async () => {
@@ -166,14 +176,16 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         ) {
           setUser(null);
           setStatus('password-change-required');
-        } else {
+        } else if (isConfirmedUnauthorized(err)) {
           setUser(null);
           setStatus('anonymous');
+        } else {
+          setStatus('session-unavailable');
         }
       }
     })();
     return () => controller.abort();
-  }, [applyAdminSession]);
+  }, [applyAdminSession, bootstrapAttempt]);
 
   const login = useCallback(
     async (credentials: LoginRequest) => {
@@ -278,6 +290,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     () => ({
       status,
       user,
+      retrySession,
       twoFactorChallenge,
       login,
       verifyTwoFactor,
@@ -291,6 +304,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     [
       status,
       user,
+      retrySession,
       twoFactorChallenge,
       login,
       verifyTwoFactor,

@@ -54,6 +54,49 @@ export class ApiError extends Error {
   }
 }
 
+export type ApiFailureClassification = 'outage' | 'confirmed-domain-outcome' | 'unknown';
+
+const CONFIRMED_DOMAIN_STATUSES = new Set([401, 403, 404]);
+
+/**
+ * Classify a client failure without making each surface reinterpret HTTP
+ * statuses independently. Network failures and server errors are retryable
+ * outages; authentication/authorization/not-found responses and explicitly
+ * named domain codes are confirmed outcomes. Everything else stays unknown so
+ * callers can fail safely instead of presenting a guessed terminal state.
+ */
+export function classifyApiError(
+  error: unknown,
+  knownDomainCodes: readonly string[] = [],
+): ApiFailureClassification {
+  if (!(error instanceof ApiError)) return 'unknown';
+  if (error.status === 0 || error.status >= 500) return 'outage';
+  if (CONFIRMED_DOMAIN_STATUSES.has(error.status) || knownDomainCodes.includes(error.code)) {
+    return 'confirmed-domain-outcome';
+  }
+  return 'unknown';
+}
+
+export function isApiOutage(error: unknown): error is ApiError {
+  return classifyApiError(error) === 'outage';
+}
+
+export function isConfirmedApiOutcome(
+  error: unknown,
+  knownDomainCodes: readonly string[] = [],
+): error is ApiError {
+  return classifyApiError(error, knownDomainCodes) === 'confirmed-domain-outcome';
+}
+
+/** Only a confirmed 401 proves that a previously usable session is gone. */
+export function isConfirmedUnauthorized(error: unknown): error is ApiError {
+  return (
+    error instanceof ApiError &&
+    error.status === 401 &&
+    classifyApiError(error) === 'confirmed-domain-outcome'
+  );
+}
+
 interface RequestOptions {
   method?: HttpMethod;
   body?: unknown;

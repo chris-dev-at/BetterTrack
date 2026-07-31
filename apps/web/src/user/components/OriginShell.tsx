@@ -30,6 +30,7 @@ import { CmdKPalette } from './CmdKPalette';
 import { usePreservedSearch } from './LocalNav';
 import { NotificationBell } from './NotificationBell';
 import { isChildActive, SECTION_NAV, useRailNavChildren, type SectionKey } from './sectionNav';
+import { useMenuKeyboard } from './useMenuKeyboard';
 
 /**
  * Origin application frame (docs/redesign/REAL_APP_REDESIGN_PROMPT.md,
@@ -327,28 +328,39 @@ function AccountMenu({
   const [open, setOpen] = useState(false);
   const [discreetError, setDiscreetError] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const discreet = user?.discreetMode === true;
   const name = user?.username ?? user?.email ?? '·';
+  const closeMenu = useCallback(() => setOpen(false), []);
+  const {
+    closeAndRestoreFocus,
+    menuRef,
+    onKeyDown: onMenuKeyDown,
+  } = useMenuKeyboard({
+    open,
+    onClose: closeMenu,
+    triggerRef,
+  });
 
+  // Escape is arbitrated by the shared overlay stack inside `useMenuKeyboard`;
+  // only the click-away belongs to this shell.
   useEffect(() => {
     if (!open) return;
     function onPointerDown(event: MouseEvent) {
-      if (rootRef.current && !rootRef.current.contains(event.target as Node)) setOpen(false);
-    }
-    function onKeyDown(event: KeyboardEvent) {
-      if (event.key === 'Escape') setOpen(false);
+      if (rootRef.current && !rootRef.current.contains(event.target as Node)) {
+        closeAndRestoreFocus();
+      }
     }
     document.addEventListener('mousedown', onPointerDown);
-    document.addEventListener('keydown', onKeyDown);
     return () => {
       document.removeEventListener('mousedown', onPointerDown);
-      document.removeEventListener('keydown', onKeyDown);
     };
-  }, [open]);
+  }, [closeAndRestoreFocus, open]);
 
   return (
     <div className="relative" ref={rootRef}>
       <button
+        ref={triggerRef}
         aria-expanded={open}
         aria-haspopup="menu"
         aria-label={t('nav.accountMenu')}
@@ -372,8 +384,10 @@ function AccountMenu({
 
       {open ? (
         <div
+          ref={menuRef}
           aria-label={t('nav.account')}
           className="bt-popover"
+          onKeyDown={onMenuKeyDown}
           role="menu"
           // The rail sits at the foot of the viewport, so its menu rises; the
           // topbar's hangs down from the trigger and is right-anchored.
@@ -396,7 +410,7 @@ function AccountMenu({
           <div className="bt-menu-rule" />
           <Link
             className="bt-menu-item"
-            onClick={() => setOpen(false)}
+            onClick={closeAndRestoreFocus}
             role="menuitem"
             to="/people/profile"
           >
@@ -405,7 +419,7 @@ function AccountMenu({
           </Link>
           <Link
             className="bt-menu-item"
-            onClick={() => setOpen(false)}
+            onClick={closeAndRestoreFocus}
             role="menuitem"
             to="/settings/account"
           >
@@ -439,7 +453,7 @@ function AccountMenu({
           <button
             className="bt-menu-item"
             onClick={() => {
-              setOpen(false);
+              closeAndRestoreFocus();
               void logout();
             }}
             role="menuitem"
@@ -458,22 +472,32 @@ function CreateMenu() {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const closeMenu = useCallback(() => setOpen(false), []);
+  const {
+    closeAndRestoreFocus,
+    menuRef,
+    onKeyDown: onMenuKeyDown,
+  } = useMenuKeyboard({
+    open,
+    onClose: closeMenu,
+    triggerRef,
+  });
 
+  // Escape is arbitrated by the shared overlay stack inside `useMenuKeyboard`;
+  // only the click-away belongs to this shell.
   useEffect(() => {
     if (!open) return;
     function onPointerDown(event: MouseEvent) {
-      if (rootRef.current && !rootRef.current.contains(event.target as Node)) setOpen(false);
-    }
-    function onKeyDown(event: KeyboardEvent) {
-      if (event.key === 'Escape') setOpen(false);
+      if (rootRef.current && !rootRef.current.contains(event.target as Node)) {
+        closeAndRestoreFocus();
+      }
     }
     document.addEventListener('mousedown', onPointerDown);
-    document.addEventListener('keydown', onKeyDown);
     return () => {
       document.removeEventListener('mousedown', onPointerDown);
-      document.removeEventListener('keydown', onKeyDown);
     };
-  }, [open]);
+  }, [closeAndRestoreFocus, open]);
 
   const items: ReadonlyArray<{ to: string; icon: IconName; labelKey: string }> = [
     { to: '/portfolio/activity?create=trade', icon: 'assets', labelKey: 'create.trade' },
@@ -495,6 +519,7 @@ function CreateMenu() {
   return (
     <div className="relative" ref={rootRef}>
       <Button
+        ref={triggerRef}
         aria-expanded={open}
         aria-haspopup="menu"
         aria-label={t('create.button')}
@@ -506,8 +531,10 @@ function CreateMenu() {
       </Button>
       {open ? (
         <div
+          ref={menuRef}
           aria-label={t('create.button')}
           className="bt-popover"
+          onKeyDown={onMenuKeyDown}
           role="menu"
           style={{ top: 'calc(100% + 6px)', right: 0 }}
         >
@@ -515,7 +542,7 @@ function CreateMenu() {
             <Link
               className="bt-menu-item"
               key={item.to}
-              onClick={() => setOpen(false)}
+              onClick={closeAndRestoreFocus}
               role="menuitem"
               to={item.to}
             >
@@ -537,6 +564,9 @@ export function OriginShell() {
   // The rail is display:none at this width, so anything that lives only inside
   // it has to be rendered elsewhere (see the topbar's AccountMenu).
   const compactShell = useCompactShell();
+  // The shell root — also the palette's mount parent, which is why the ⌘K guard
+  // below asks whether *this* branch is inert.
+  const shellRef = useRef<HTMLDivElement>(null);
   const [collapsed, setCollapsed] = useState(() => {
     try {
       return localStorage.getItem(RAIL_STORAGE_KEY) === 'collapsed';
@@ -575,12 +605,23 @@ export function OriginShell() {
     function handleKey(event: KeyboardEvent) {
       if (event.key === 'k' && (event.metaKey || event.ctrlKey)) {
         event.preventDefault();
+        // The palette mounts inside this shell, so the one thing that can make
+        // it unreachable is this branch being inert — which is exactly what a
+        // portalled modal's background inerting does. Test that precondition and
+        // nothing broader: "any `aria-modal` node exists" also matched the
+        // Control Center (`control/ControlCenterOverlay.tsx`), which portals to
+        // <body> and never inerts the shell, so it silently killed the shortcut
+        // on every `/control*` route — i.e. the whole settings hub — where the
+        // palette layers above it and works fine. An open palette can always be
+        // closed, inert or not.
+        const shell = shellRef.current;
+        if (!paletteOpen && shell !== null && shell.closest('[inert]') !== null) return;
         setPaletteOpen((open) => !open);
       }
     }
     document.addEventListener('keydown', handleKey);
     return () => document.removeEventListener('keydown', handleKey);
-  }, []);
+  }, [paletteOpen]);
 
   function toggleRail() {
     setCollapsed((value) => {
@@ -598,7 +639,14 @@ export function OriginShell() {
     pathname === '/portfolio' || pathname.startsWith('/portfolio/') || pathname === '/portfolios';
 
   return (
-    <div className="bt-app">
+    <div className="bt-app" ref={shellRef}>
+      <a
+        className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-50 focus:rounded-md focus:bg-[var(--bt-surface)] focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:text-[var(--bt-text)] focus:shadow-lg focus:outline-none focus:ring-2 focus:ring-[var(--bt-gold)]"
+        href="#main-content"
+        onClick={() => document.getElementById('main-content')?.focus()}
+      >
+        {t('accessibility.skipToContent')}
+      </a>
       <div className="bt-shell" data-rail={collapsed ? 'collapsed' : 'expanded'}>
         <aside className="bt-rail">
           <RailBrand />
@@ -706,7 +754,7 @@ export function OriginShell() {
             {compactShell ? <AccountMenu collapsed={false} placement="topbar" /> : null}
           </header>
 
-          <main className="bt-canvas">
+          <main id="main-content" className="bt-canvas" tabIndex={-1}>
             {/* resetKey, not key: keying by pathname remounted the whole page
                 tree on every navigation — replaying overlay entrance animations
                 and resetting page state. The boundary only needs navigation to

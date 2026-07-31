@@ -167,17 +167,17 @@ export function createPortfolioRouter(ctx: AppContext): Router {
     async (req, res) => {
       const { portfolioId } = req.valid?.params as { portfolioId: string };
       const patch = req.valid?.body as UpdatePortfolioRequest;
-      const portfolio = await ctx.portfolio.updatePortfolio(req.authUser!.id, portfolioId, patch);
-      // Keep the legacy visibility toggle flowing into the single audience model
-      // (V3-P5): only after updatePortfolio confirmed ownership (else it 404s).
-      if (patch.visibility !== undefined) {
-        await ctx.social.applyAudienceVisibility(
-          req.authUser!.id,
-          'portfolio',
-          portfolioId,
-          patch.visibility,
-        );
-      }
+      // Visibility is a mixed private-metadata + sharing mutation. Its dedicated
+      // service entry point acquires owner + recipient guards before either
+      // persistence model or the `portfolio.shared` event can change.
+      const portfolio =
+        patch.visibility === undefined
+          ? await ctx.portfolio.updatePortfolio(req.authUser!.id, portfolioId, patch)
+          : await ctx.portfolio.updatePortfolioWithVisibility(
+              req.authUser!.id,
+              portfolioId,
+              patch as UpdatePortfolioRequest & { visibility: 'private' | 'friends' },
+            );
       const body: UpdatePortfolioResponse = { portfolio };
       res.json(body);
     },

@@ -8,6 +8,7 @@ import type {
 
 import { badRequest } from '../../errors';
 import type { Logger } from '../../logger';
+import type { ParanoidModeGuard } from '../account/paranoidEnforcement';
 import type { AnalyticsService } from '../analytics/analyticsService';
 import type { PortfolioService } from '../portfolio/portfolioService';
 import type { SearchService } from '../search/searchService';
@@ -37,6 +38,7 @@ export interface AiFeaturesServiceDeps {
   analytics: Pick<AnalyticsService, 'getSeries'>;
   search: Pick<SearchService, 'search'>;
   logger: Logger;
+  paranoid?: Pick<ParanoidModeGuard, 'assertAllowed'>;
 }
 
 export interface AiFeaturesService {
@@ -53,6 +55,7 @@ export function createAiFeaturesService(deps: AiFeaturesServiceDeps): AiFeatures
   const { ai, portfolio, analytics, search, logger } = deps;
 
   async function insights(userId: string, input: AiInsightsRequest): Promise<AiInsightsResponse> {
+    await deps.paranoid?.assertAllowed(userId, 'portfolioServer');
     // `getPortfolio` enforces ownership (404/403), so this doubles as the
     // authorization check on the portfolio the caller asked about.
     const overview = await portfolio.getPortfolio(userId, input.portfolioId);

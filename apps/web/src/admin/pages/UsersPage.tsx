@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { FormEvent } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { Link } from 'react-router-dom';
 
 import type { AdminStats, CreateUserResponse } from '@bettertrack/contracts';
 
+import { useT } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
 import * as api from '../../lib/adminApi';
 import { useResource } from '../useResource';
@@ -19,7 +20,10 @@ import {
   TextField,
 } from '../components/ui';
 
-type Dialog = { type: 'create' } | { type: 'created'; result: CreateUserResponse };
+type Dialog =
+  | { type: 'create' }
+  | { type: 'created'; result: CreateUserResponse }
+  | { type: 'bulkDisable'; userIds: string[] };
 
 function errorMessage(err: unknown): string {
   return err instanceof ApiError ? err.message : 'Something went wrong. Please try again.';
@@ -27,11 +31,11 @@ function errorMessage(err: unknown): string {
 
 /**
  * Slimmed user list (PROJECTPLAN.md §6.12, §13.2): only the essential columns so
- * it fits a phone without horizontal scroll. A row opens the user detail view —
- * the home for every per-user action — while bulk select drives bulk actions.
+ * it remains usable on narrow screens. User details are opened through the
+ * primary identity link, while bulk select drives bulk actions.
  */
 export function UsersPage() {
-  const navigate = useNavigate();
+  const t = useT();
   const [searchInput, setSearchInput] = useState('');
   const [search, setSearch] = useState('');
   const [dialog, setDialog] = useState<Dialog | null>(null);
@@ -74,18 +78,19 @@ export function UsersPage() {
     setSelected(allSelected ? new Set() : new Set(rows.map((u) => u.id)));
   }
 
-  async function bulkDisable() {
-    if (selected.size === 0) return;
+  async function bulkDisable(userIds: string[]) {
+    if (userIds.length === 0 || bulkBusy) return;
     setBanner(null);
     setBulkBusy(true);
     try {
       const result = await api.bulkUserAction({
         action: 'disable',
-        userIds: [...selected],
+        userIds,
       });
       users.reload();
       stats.reload();
       setSelected(new Set());
+      setDialog(null);
       setBanner({
         tone: 'success',
         text:
@@ -125,8 +130,15 @@ export function UsersPage() {
             <Button variant="secondary" onClick={() => setSelected(new Set())}>
               Clear
             </Button>
-            <Button variant="danger" disabled={bulkBusy} onClick={() => void bulkDisable()}>
-              {bulkBusy ? 'Disabling…' : 'Disable selected'}
+            <Button
+              variant="danger"
+              disabled={bulkBusy || dialog?.type === 'bulkDisable'}
+              onClick={() => {
+                setBanner(null);
+                setDialog({ type: 'bulkDisable', userIds: [...selected] });
+              }}
+            >
+              {bulkBusy ? t('admin.actions.disabling') : t('admin.actions.disableSelected')}
             </Button>
           </div>
         </div>
@@ -146,8 +158,8 @@ export function UsersPage() {
           {search ? 'No users match your search.' : 'No users yet. Create the first one.'}
         </EmptyState>
       ) : (
-        <div className="overflow-hidden rounded-lg border border-neutral-800">
-          <table className="w-full text-left text-sm">
+        <div className="overflow-x-auto rounded-lg border border-neutral-800">
+          <table className="w-full min-w-[40rem] text-left text-sm">
             <thead className="bg-neutral-900 text-xs uppercase tracking-wide text-neutral-500">
               <tr>
                 <th className="w-10 px-3 py-3">
@@ -165,12 +177,8 @@ export function UsersPage() {
             </thead>
             <tbody className="divide-y divide-neutral-800">
               {rows.map((u) => (
-                <tr
-                  key={u.id}
-                  className="cursor-pointer hover:bg-neutral-900/50"
-                  onClick={() => navigate(`/admin/users/${u.id}`)}
-                >
-                  <td className="px-3 py-3" onClick={(e) => e.stopPropagation()}>
+                <tr key={u.id} className="hover:bg-neutral-900/50">
+                  <td className="px-3 py-3">
                     <input
                       type="checkbox"
                       aria-label={`Select ${u.username}`}
@@ -179,8 +187,13 @@ export function UsersPage() {
                     />
                   </td>
                   <td className="px-4 py-3">
-                    <div className="font-medium text-neutral-200">{u.email}</div>
-                    <div className="text-xs text-neutral-500">{u.username}</div>
+                    <Link
+                      to={`/admin/users/${u.id}`}
+                      className="block rounded-sm text-sky-400 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+                    >
+                      <span className="block font-medium">{u.email}</span>
+                      <span className="block text-xs text-neutral-500">{u.username}</span>
+                    </Link>
                   </td>
                   <td className="px-4 py-3">
                     <Badge tone={u.role === 'admin' ? 'sky' : 'neutral'}>{u.role}</Badge>
@@ -207,19 +220,88 @@ export function UsersPage() {
       )}
 
       {dialog?.type === 'created' && (
-        <Modal title="User created" onClose={() => setDialog(null)}>
+        <CreatedUserDialog result={dialog.result} onClose={() => setDialog(null)} />
+      )}
+
+      {dialog?.type === 'bulkDisable' && (
+        <Modal
+          title={t('admin.confirmations.bulkDisable.title')}
+          onClose={() => setDialog(null)}
+          dismissable={!bulkBusy}
+        >
           <div className="flex flex-col gap-4">
             <p className="text-sm text-neutral-400">
-              Share this temporary password with{' '}
-              <span className="text-neutral-200">{dialog.result.user.email}</span>. It is shown only
-              once and the user must change it on first login.
+              {t(
+                dialog.userIds.length === 1
+                  ? 'admin.confirmations.bulkDisable.descriptionOne'
+                  : 'admin.confirmations.bulkDisable.descriptionOther',
+                { count: dialog.userIds.length },
+              )}
             </p>
-            <CopyField label="Temporary password" value={dialog.result.tempPassword} />
-            <Button onClick={() => setDialog(null)}>Done</Button>
+            {banner?.tone === 'error' ? <Alert tone="error">{banner.text}</Alert> : null}
+            <div className="flex justify-end gap-2">
+              <Button variant="secondary" disabled={bulkBusy} onClick={() => setDialog(null)}>
+                {t('common.cancel')}
+              </Button>
+              <Button
+                variant="danger"
+                disabled={bulkBusy}
+                onClick={() => void bulkDisable(dialog.userIds)}
+              >
+                {bulkBusy
+                  ? t('admin.confirmations.bulkDisable.pending')
+                  : t(
+                      dialog.userIds.length === 1
+                        ? 'admin.confirmations.bulkDisable.confirmOne'
+                        : 'admin.confirmations.bulkDisable.confirmOther',
+                      { count: dialog.userIds.length },
+                    )}
+              </Button>
+            </div>
           </div>
         </Modal>
       )}
     </div>
+  );
+}
+
+function CreatedUserDialog({
+  result,
+  onClose,
+}: {
+  result: CreateUserResponse;
+  onClose: () => void;
+}) {
+  const t = useT();
+  const [acknowledged, setAcknowledged] = useState(false);
+
+  return (
+    <Modal
+      title={t('admin.oneTimeCredentials.temporaryPassword.title')}
+      onClose={onClose}
+      dismissable={acknowledged}
+    >
+      <div className="flex flex-col gap-4">
+        <p className="text-sm text-neutral-400">
+          {t('admin.oneTimeCredentials.temporaryPassword.description', {
+            email: result.user.email,
+          })}
+        </p>
+        <CopyField
+          label={t('admin.oneTimeCredentials.temporaryPassword.label')}
+          value={result.tempPassword}
+          onCopied={() => setAcknowledged(true)}
+        />
+        <Button
+          onClick={() => {
+            setAcknowledged(true);
+            onClose();
+          }}
+        >
+          {t('common.savedOneTimeSecret')}
+        </Button>
+      </div>
+    </Modal>
   );
 }
 

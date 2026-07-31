@@ -7,6 +7,7 @@ import {
   type RegistrationToken,
 } from '@bettertrack/contracts';
 
+import { useT } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
 import * as api from '../../lib/adminApi';
 import { useResource } from '../useResource';
@@ -247,6 +248,7 @@ export function SettingsPage() {
  * expiry; the register URL is shown once. Revoke kills a token immediately.
  */
 function RegistrationTokensSection({ active }: { active: boolean }) {
+  const t = useT();
   const tokens = useResource((signal) => api.listRegistrationTokens(signal), []);
 
   const [label, setLabel] = useState('');
@@ -255,6 +257,8 @@ function RegistrationTokensSection({ active }: { active: boolean }) {
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [createdUrl, setCreatedUrl] = useState<string | null>(null);
+  const [revokingId, setRevokingId] = useState<string | null>(null);
+  const [revokeBusy, setRevokeBusy] = useState(false);
 
   async function onCreate(e: FormEvent) {
     e.preventDefault();
@@ -282,12 +286,17 @@ function RegistrationTokensSection({ active }: { active: boolean }) {
   }
 
   async function onRevoke(id: string) {
+    if (revokingId !== id || revokeBusy) return;
     setError(null);
+    setRevokeBusy(true);
     try {
       await api.revokeRegistrationToken(id);
       tokens.reload();
+      setRevokingId(null);
     } catch (err) {
       setError(errorMessage(err));
+    } finally {
+      setRevokeBusy(false);
     }
   }
 
@@ -362,9 +371,42 @@ function RegistrationTokensSection({ active }: { active: boolean }) {
                 </span>
               </span>
               {token.status === 'active' ? (
-                <Button variant="secondary" onClick={() => void onRevoke(token.id)}>
-                  Revoke
-                </Button>
+                revokingId === token.id ? (
+                  <span className="flex flex-wrap items-center justify-end gap-2">
+                    <span className="text-xs text-neutral-400">
+                      {t('admin.confirmations.revokeRegistrationToken.prompt', {
+                        name: token.label ?? token.id,
+                      })}
+                    </span>
+                    <Button
+                      variant="secondary"
+                      disabled={revokeBusy}
+                      onClick={() => void onRevoke(token.id)}
+                    >
+                      {revokeBusy
+                        ? t('admin.confirmations.revokeRegistrationToken.pending')
+                        : t('admin.confirmations.revokeRegistrationToken.confirm')}
+                    </Button>
+                    <Button
+                      variant="secondary"
+                      disabled={revokeBusy}
+                      onClick={() => setRevokingId(null)}
+                    >
+                      {t('common.cancel')}
+                    </Button>
+                  </span>
+                ) : (
+                  <Button
+                    variant="secondary"
+                    disabled={revokingId !== null || revokeBusy}
+                    onClick={() => {
+                      setError(null);
+                      setRevokingId(token.id);
+                    }}
+                  >
+                    {t('admin.actions.revoke')}
+                  </Button>
+                )
               ) : null}
             </li>
           ))}

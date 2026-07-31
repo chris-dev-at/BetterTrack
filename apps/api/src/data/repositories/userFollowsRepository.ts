@@ -1,4 +1,4 @@
-import { and, asc, eq, sql } from 'drizzle-orm';
+import { and, asc, eq, inArray, sql } from 'drizzle-orm';
 
 import type { Database } from '../db';
 import { userFollows, users } from '../schema';
@@ -155,6 +155,28 @@ export function createUserFollowsRepository(db: Database) {
       return row !== undefined;
     },
 
+    /**
+     * Id-only discovery for transition-safe list reads. The service locks every
+     * discovered counterpart before it performs the enriched username/icon
+     * query, so this first pass deliberately carries no profile data.
+     */
+    async listFollowingIds(followerId: string): Promise<string[]> {
+      const rows = await db
+        .select({ userId: userFollows.followedId })
+        .from(userFollows)
+        .where(eq(userFollows.followerId, followerId));
+      return rows.map((row) => row.userId);
+    },
+
+    /** Id-only counterpart discovery for the inbound followers list. */
+    async listFollowerIds(followedId: string): Promise<string[]> {
+      const rows = await db
+        .select({ userId: userFollows.followerId })
+        .from(userFollows)
+        .where(eq(userFollows.followedId, followedId));
+      return rows.map((row) => row.userId);
+    },
+
     /** The users `followerId` follows — the other party + per-follow prefs, by username. */
     async listFollowing(followerId: string): Promise<FollowingUserRow[]> {
       return db
@@ -217,10 +239,33 @@ export function createUserFollowsRepository(db: Database) {
      * stops delivery immediately. The owner can never appear (self-follows are
      * CHECK-rejected), so their own `alert.triggered` delivery is never doubled.
      */
+    async listAlertFollowRecipientIds(
+      followedId: string,
+      trigger: 'create' | 'fire',
+    ): Promise<string[]> {
+      const pref =
+        trigger === 'create' ? userFollows.notifyOnAlertCreate : userFollows.notifyOnAlertFire;
+      const rows = await db
+        .select({ followerId: userFollows.followerId })
+        .from(userFollows)
+        .innerJoin(
+          users,
+          and(eq(users.id, userFollows.followedId), eq(users.alertsVisibleToFollowers, true)),
+        )
+        .where(and(eq(userFollows.followedId, followedId), eq(pref, true)));
+      return rows.map((row) => row.followerId);
+    },
+
+    /**
+     * Enriched alert recipients, optionally restricted to the exact follower
+     * snapshot admitted by the account privacy guards.
+     */
     async listAlertFollowRecipients(
       followedId: string,
       trigger: 'create' | 'fire',
+      followerIds?: readonly string[],
     ): Promise<AlertFollowRecipient[]> {
+      if (followerIds?.length === 0) return [];
       const pref =
         trigger === 'create' ? userFollows.notifyOnAlertCreate : userFollows.notifyOnAlertFire;
       return db
@@ -230,7 +275,13 @@ export function createUserFollowsRepository(db: Database) {
           users,
           and(eq(users.id, userFollows.followedId), eq(users.alertsVisibleToFollowers, true)),
         )
-        .where(and(eq(userFollows.followedId, followedId), eq(pref, true)));
+        .where(
+          and(
+            eq(userFollows.followedId, followedId),
+            eq(pref, true),
+            followerIds ? inArray(userFollows.followerId, [...followerIds]) : undefined,
+          ),
+        );
     },
 
     /** How many users follow `userId` (public follower count on the profile). */

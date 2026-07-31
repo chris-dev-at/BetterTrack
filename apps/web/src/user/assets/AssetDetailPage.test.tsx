@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
@@ -67,7 +67,7 @@ import {
   getAssetNews,
   getAssetSplits,
 } from '../../lib/marketIntelApi';
-import { useAddToWatchlist, useWatchlistMembership } from '../../lib/workboardApi';
+import { listWatchlists, useAddToWatchlist, useWatchlistMembership } from '../../lib/workboardApi';
 import { AssetDetailPage } from './AssetDetailPage';
 
 const UNAVAILABLE_EARNINGS = { available: false as const, next: null, recent: [] };
@@ -105,6 +105,7 @@ const baseDetail = {
 const baseHistory = {
   range: '1M' as const,
   interval: '30m' as const,
+  currency: 'EUR' as const,
   points: [
     { time: '2024-05-01T00:00:00.000Z', close: 27.0 },
     { time: '2024-06-01T00:00:00.000Z', close: 28.5 },
@@ -357,7 +358,8 @@ describe('AssetDetailPage — header rendering', () => {
     renderPage();
     await waitFor(() => expect(screen.getByText('Bayer AG')).toBeInTheDocument());
     // Price 28.50 EUR should be rendered via MoneyText — check the formatted value
-    expect(screen.getByText(/28/)).toBeInTheDocument();
+    const assetHeader = screen.getByRole('region', { name: 'Bayer AG' });
+    expect(within(assetHeader).getByText(/28/)).toBeInTheDocument();
     expect(screen.getByText(/2,5/)).toBeInTheDocument(); // day change pct
   });
 
@@ -665,6 +667,84 @@ describe('AssetDetailPage — quick actions (§13.2)', () => {
     renderPage();
     await waitFor(() => expect(screen.getByText('Bayer AG')).toBeInTheDocument());
     expect(screen.getByText(/Failed to add to Watchlist/i)).toBeInTheDocument();
+  });
+
+  test('supports the complete keyboard pattern in the watchlist picker', async () => {
+    vi.mocked(listWatchlists).mockResolvedValue({
+      watchlists: [
+        { id: 'wl-general', name: 'General', isDefault: true, itemCount: 1, audience: 'private' },
+        {
+          id: 'wl-research',
+          name: 'Research',
+          isDefault: false,
+          itemCount: 2,
+          audience: 'private',
+        },
+      ],
+    });
+    const user = userEvent.setup();
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Bayer AG')).toBeInTheDocument());
+
+    const trigger = screen.getByRole('button', { name: 'Choose a watchlist for BAYN.DE' });
+    await user.click(trigger);
+    const menu = await screen.findByRole('menu', { name: 'Watchlists for BAYN.DE' });
+    const general = await within(menu).findByRole('menuitem', { name: 'General' });
+    const research = within(menu).getByRole('menuitem', { name: 'Research' });
+
+    await waitFor(() => expect(general).toHaveFocus());
+    await user.keyboard('{ArrowDown}');
+    expect(research).toHaveFocus();
+    await user.keyboard('{ArrowUp}');
+    expect(general).toHaveFocus();
+    await user.keyboard('{End}');
+    expect(research).toHaveFocus();
+    await user.keyboard('{Home}');
+    expect(general).toHaveFocus();
+    await user.keyboard('{Escape}');
+
+    expect(screen.queryByRole('menu', { name: 'Watchlists for BAYN.DE' })).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+
+    await user.click(trigger);
+    const reopened = await screen.findByRole('menu', { name: 'Watchlists for BAYN.DE' });
+    await waitFor(() =>
+      expect(within(reopened).getByRole('menuitem', { name: 'General' })).toHaveFocus(),
+    );
+    fireEvent.mouseDown(document.body);
+
+    expect(screen.queryByRole('menu', { name: 'Watchlists for BAYN.DE' })).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+  });
+
+  test('restores focus after choosing a named watchlist', async () => {
+    vi.mocked(listWatchlists).mockResolvedValue({
+      watchlists: [
+        {
+          id: 'wl-research',
+          name: 'Research',
+          isDefault: false,
+          itemCount: 2,
+          audience: 'private',
+        },
+      ],
+    });
+    const user = userEvent.setup();
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Bayer AG')).toBeInTheDocument());
+
+    const trigger = screen.getByRole('button', { name: 'Choose a watchlist for BAYN.DE' });
+    await user.click(trigger);
+    const research = await screen.findByRole('menuitem', { name: 'Research' });
+    await waitFor(() => expect(research).toHaveFocus());
+    await user.click(research);
+
+    expect(addToWatchlistMutate).toHaveBeenCalledWith({
+      assetId: ASSET_ID,
+      watchlistId: 'wl-research',
+    });
+    expect(screen.queryByRole('menu', { name: 'Watchlists for BAYN.DE' })).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
   });
 
   test('renders Portfolio and Blueprint quick actions near the top', async () => {

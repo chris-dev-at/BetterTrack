@@ -1,12 +1,27 @@
 {
+  "notFound": {
+    "title": "Seite nicht gefunden",
+    "description": "Diese Adresse ist vielleicht falsch, veraltet oder nicht mehr verfügbar.",
+    "requestedPath": "Aufgerufener Pfad:",
+    "backToStart": "Zur Startseite",
+    "backToPrevious": "Zur vorherigen Seite"
+  },
+  "accessibility": {
+    "skipToContent": "Zum Hauptinhalt springen"
+  },
   "auth": {
     "common": {
       "checkingSession": "Sitzung wird überprüft…",
+      "sessionUnavailableTitle": "Deine Sitzung kann gerade nicht überprüft werden",
+      "sessionUnavailableBody": "BetterTrack kann den Server derzeit nicht erreichen. Du wurdest nicht abgemeldet; versuche es erneut, sobald die Verbindung verfügbar ist.",
       "minPasswordHint": "Mindestens {{count}} Zeichen.",
       "signOut": "Abmelden",
       "waitSecondsOne": " Bitte warte {{count}} Sekunde und versuche es erneut.",
       "waitSecondsOther": " Bitte warte {{count}} Sekunden und versuche es erneut.",
       "waitMoment": " Bitte warte einen Moment und versuche es erneut."
+    },
+    "adminLogin": {
+      "heading": "Admin-Anmeldung"
     },
     "login": {
       "subtitle": "Melde dich bei deinem Konto an",
@@ -24,7 +39,8 @@
       "passkeyButton": "Mit Passkey anmelden",
       "passkeySigningIn": "Warte auf deinen Passkey …",
       "passkeyError": "Die Passkey-Anmeldung hat nicht funktioniert. Bitte versuche es erneut oder verwende dein Passwort.",
-      "passkeyRateLimited": "Zu viele Versuche. Bitte warte und versuche es erneut."
+      "passkeyRateLimited": "Zu viele Versuche. Bitte warte und versuche es erneut.",
+      "registrationUnavailable": "Der Registrierungsstatus ist vorübergehend nicht verfügbar."
     },
     "oauthStay": {
       "subtitle": "Anmeldung",
@@ -105,7 +121,9 @@
       "usernameTaken": "Dieser Benutzername ist bereits vergeben — wähle einen anderen.",
       "emailTaken": "Für diese E-Mail-Adresse existiert bereits ein Konto.",
       "invalidInvite": "Dieser Einladungslink ist nicht mehr gültig. Bitte deinen Administrator um eine neue Einladung.",
-      "acceptFailed": "Konto konnte nicht erstellt werden. Bitte versuche es erneut."
+      "acceptFailed": "Konto konnte nicht erstellt werden. Bitte versuche es erneut.",
+      "unavailableSubtitle": "Einladung überprüfen",
+      "unavailableMessage": "Diese Einladung kann gerade nicht überprüft werden. Sie wurde nicht als ungültig eingestuft; bitte versuche es erneut."
     },
     "forcedPasswordChange": {
       "subtitle": "Wähle ein neues Passwort",
@@ -159,7 +177,8 @@
         "connecting": "Verbinde mit Google…",
         "connectedAs": "Mit Google verbunden als {{email}}. Vervollständige unten dein Konto.",
         "emailLockedHint": "Von Google festgelegt und nicht änderbar.",
-        "ticketExpired": "Deine Google-Verbindung ist abgelaufen. Bitte melde dich erneut mit Google an."
+        "ticketExpired": "Deine Google-Verbindung ist abgelaufen. Bitte melde dich erneut mit Google an.",
+        "ticketUnavailable": "Deine Google-Verbindung kann gerade nicht überprüft werden. Sie wurde nicht als abgelaufen eingestuft; bitte versuche es erneut."
       }
     },
     "oauthConsent": {
@@ -215,6 +234,7 @@
   },
   "common": {
     "save": "Speichern",
+    "done": "Fertig",
     "cancel": "Abbrechen",
     "close": "Schließen",
     "delete": "Löschen",
@@ -234,7 +254,6 @@
     "unknown": "unbekannt",
     "private": "Privat",
     "friends": "Freunde",
-    "soon": "Bald",
     "comingSoon": "Demnächst",
     "genericError": "Etwas ist schiefgelaufen. Bitte versuche es erneut.",
     "continue": "Weiter",
@@ -247,12 +266,20 @@
     "escKey": "Esc",
     "escToClose": "zum Schließen",
     "closeDialogAria": "Dialog schließen",
+    "savedOneTimeSecret": "Ich habe es gespeichert",
     "charts": {
       "noAllocationData": "Noch keine Allokationsdaten.",
       "selectRange": "Chart-Zeitraum wählen",
       "loadingChart": "Chart wird geladen…",
       "noPriceData": "Noch keine Kursdaten für diesen Zeitraum.",
       "priceChartAria": "Kurschart",
+      "priceChartSummary": "Zeitraum: {{startDate}} bis {{endDate}}. Start: {{startValue}}. Ende: {{endValue}}. Veränderung: {{change}} ({{changePercent}}). Tiefstwert: {{minimum}} am {{minimumDate}}. Höchstwert: {{maximum}} am {{maximumDate}}.",
+      "priceChartDataExpand": "Chartdaten anzeigen",
+      "priceChartDataCollapse": "Chartdaten ausblenden",
+      "priceChartDataTableCaption": "Chartdaten",
+      "priceChartDataDate": "Datum",
+      "priceChartDataValue": "Wert",
+      "priceChartDataSampled": "Es werden {{shown}} von {{total}} dargestellten Punkten angezeigt.",
       "allocationFallbackTitle": "Aufteilung im Überblick"
     },
     "marketState": {
@@ -326,12 +353,9 @@
     "openSearch": "Suche öffnen (⌘K)",
     "accountMenu": "Kontomenü",
     "account": "Konto",
-    "myPortfolio": "Mein Portfolio",
     "settings": "Einstellungen",
     "discreetMode": "Diskreter Modus",
     "discreetModeError": "Änderung konnte nicht gespeichert werden. Bitte erneut versuchen.",
-    "inviteOthers": "Andere einladen",
-    "shareProfile": "Profil teilen",
     "logout": "Abmelden",
     "home": "Home",
     "portfolios": "Portfolio",
@@ -460,6 +484,8 @@
     },
     "notifications": {
       "title": "Benachrichtigungen",
+      "bellAria": "Benachrichtigungen",
+      "bellUnreadAria": "Benachrichtigungen ({{count}} ungelesen)",
       "loadError": {
         "title": "Deine Benachrichtigungseinstellungen konnten nicht geladen werden"
       },
@@ -1997,7 +2023,7 @@
     },
     "tabs": {
       "overview": "Übersicht",
-      "activity": "Aktivität",
+      "activity": "Transaktionen",
       "customAssets": "Eigene Anlagen",
       "cashFlow": "Bargeld",
       "analysis": "Analyse",
@@ -2858,6 +2884,7 @@
   "publicShare": {
     "loading": "Geteilte Ansicht wird geladen…",
     "notFound": "Dieser geteilte Link ist nicht mehr verfügbar.",
+    "unavailable": "Diese geteilte Ansicht ist vorübergehend nicht verfügbar. Der Link kann weiterhin gültig sein.",
     "ownerLabel": "Geteilt von {{username}}",
     "readOnly": "Schreibgeschützte geteilte Ansicht",
     "netWorth": "Nettovermögen",
@@ -2999,7 +3026,10 @@
       "loadEarlier": "Ältere Nachrichten laden",
       "sendError": "Deine Nachricht konnte nicht gesendet werden. Bitte versuche es erneut.",
       "banned": "Du kannst derzeit keine Nachrichten senden. Diese Unterhaltung kannst du weiterhin lesen.",
+      "composerLabel": "Nachricht",
       "composerPlaceholder": "Nachricht",
+      "logLabel": "Nachrichten mit {{username}}",
+      "newMessages": "Neue Nachrichten",
       "send": "Senden",
       "attach": "Element teilen",
       "chip": {
@@ -3166,6 +3196,8 @@
     "saved": "Profil gespeichert.",
     "publicBadge": "Öffentliches Profil",
     "notAvailable": "Dieses Profil ist nicht verfügbar.",
+    "temporarilyUnavailable": "Dieses Profil ist vorübergehend nicht verfügbar. Es kann weiterhin öffentlich sein.",
+    "itemTemporarilyUnavailable": "Dieses Element ist vorübergehend nicht verfügbar. Es kann weiterhin geteilt sein.",
     "emptyPublic": "Dieses Profil hat noch keine öffentlichen Elemente.",
     "icon": {
       "title": "Profilbild",
@@ -3438,7 +3470,68 @@
     }
   },
   "admin": {
+    "confirmations": {
+      "deleteAnnouncement": {
+        "title": "Ankündigung löschen?",
+        "description": "„{{name}}“ löschen? Dies kann nicht rückgängig gemacht werden.",
+        "confirm": "Ankündigung löschen",
+        "pending": "Wird gelöscht…"
+      },
+      "deleteOAuthApp": {
+        "title": "OAuth-App löschen?",
+        "description": "„{{name}}“ löschen? Bestehende Integrationen funktionieren dann nicht mehr.",
+        "confirm": "App löschen",
+        "pending": "Wird gelöscht…"
+      },
+      "bulkDisable": {
+        "title": "Ausgewählte Nutzer deaktivieren?",
+        "descriptionOne": "1 ausgewählten Nutzer deaktivieren? Er kann sich danach nicht mehr anmelden.",
+        "descriptionOther": "{{count}} ausgewählte Nutzer deaktivieren? Sie können sich danach nicht mehr anmelden.",
+        "confirmOne": "1 Nutzer deaktivieren",
+        "confirmOther": "{{count}} Nutzer deaktivieren",
+        "pending": "Wird deaktiviert…"
+      },
+      "revokeInvite": {
+        "prompt": "Einladung für {{email}} widerrufen?",
+        "confirm": "Widerruf bestätigen",
+        "pending": "Wird widerrufen…"
+      },
+      "revokeRegistrationToken": {
+        "prompt": "Registrierungstoken „{{name}}“ widerrufen?",
+        "confirm": "Widerruf bestätigen",
+        "pending": "Wird widerrufen…"
+      }
+    },
+    "actions": {
+      "delete": "Löschen",
+      "revoke": "Widerrufen",
+      "disableSelected": "Ausgewählte deaktivieren",
+      "disabling": "Wird deaktiviert…"
+    },
+    "oneTimeCredentials": {
+      "temporaryPassword": {
+        "title": "Nutzer erstellt",
+        "resetTitle": "Passwort zurückgesetzt",
+        "description": "Teile dieses temporäre Passwort mit {{email}}. Es wird nur einmal angezeigt und der Nutzer muss es bei der ersten Anmeldung ändern.",
+        "label": "Temporäres Passwort"
+      },
+      "invite": {
+        "title": "Einladung erstellt",
+        "description": "Teile diesen einmaligen Link mit {{email}}. Er läuft am {{expiresAt}} ab und wird hier nur einmal angezeigt.",
+        "label": "Einladungs-URL"
+      },
+      "oauthClient": {
+        "title": "App registriert",
+        "secretDescription": "{{name}} ist bereit. Hinterlege die Client-ID in der OAuth-Konfiguration der App. Das Client-Secret wird nur einmal angezeigt — kopiere es jetzt.",
+        "publicDescription": "{{name}} ist bereit. Hinterlege die Client-ID in der OAuth-Konfiguration der App. Dies ist ein öffentlicher Client und hat daher kein Secret (er verwendet PKCE).",
+        "clientIdLabel": "Client-ID",
+        "clientSecretLabel": "Client-Secret (nur einmal angezeigt)"
+      }
+    },
     "nav": {
+      "console": "Admin-Konsole",
+      "loading": "Admin-Konsole wird geladen…",
+      "language": "Sprache der Konsole",
       "security": "Sicherheit",
       "health": "Zustand",
       "menu": "Admin-Menü",
@@ -3449,7 +3542,20 @@
       "usageAnalytics": "Nutzungsanalyse",
       "monitoring": "Monitoring",
       "apiKeys": "API-Schlüssel",
-      "ai": "KI"
+      "ai": "KI",
+      "users": "Nutzer",
+      "invites": "Einladungen",
+      "settings": "Einstellungen",
+      "accountDefaults": "Kontovorgaben",
+      "announcements": "Ankündigungen",
+      "oauthApps": "OAuth-Apps",
+      "email": "E-Mail",
+      "audit": "Audit-Protokoll",
+      "sections": {
+        "people": "Personen",
+        "configuration": "Konfiguration",
+        "diagnostics": "Diagnose"
+      }
     },
     "monitoring": {
       "title": "Monitoring",
@@ -4074,7 +4180,7 @@
     "aria": "Bargeld",
     "tabs": {
       "overview": "Übersicht",
-      "movements": "Bewegungen",
+      "movements": "Transaktionen",
       "budgets": "Budgets",
       "tags": "Tags",
       "rules": "Regeln",
@@ -4114,7 +4220,7 @@
       "regex": "Regex"
     },
     "overview": {
-      "subtitle": "Wohin sich das Bargeld dieses Portfolios diesen Monat bewegt hat.",
+      "subtitle": "",
       "loadError": "Cashflow-Übersicht konnte nicht geladen werden.",
       "month": "Monat",
       "inflow": "Eingang",
@@ -4136,10 +4242,11 @@
       "quickDeposit": "Auf {{source}} einzahlen",
       "quickWithdraw": "Von {{source}} ausgeben",
       "previousMonth": "Voriger Monat",
-      "nextMonth": "Nächster Monat"
+      "nextMonth": "Nächster Monat",
+      "byTagList": "Ausgaben nach Tag"
     },
     "movements": {
-      "subtitle": "Das Bargeldbuch dieses Portfolios, getaggt.",
+      "subtitle": "",
       "loadError": "Bargeldbuch konnte nicht geladen werden.",
       "emptyTitle": "Noch keine Bargeldbewegungen",
       "emptyDescription": "Einzahlungen, Abhebungen, Trades und Dividenden erscheinen hier.",
@@ -4161,7 +4268,7 @@
       "manageLabels": "Labels & Regeln"
     },
     "budgets": {
-      "subtitle": "Ausgabenziele pro Tag, für dieses Portfolio.",
+      "subtitle": "",
       "loadError": "Budgets konnten nicht geladen werden.",
       "deleteError": "Budget konnte nicht gelöscht werden. Bitte versuche es erneut.",
       "new": "Neues Budget",

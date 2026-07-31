@@ -141,7 +141,10 @@ test.describe('mirrorchain lifecycle UI gate', () => {
       // The group book is a branch of the add-portfolio wizard now: name → icon
       // → "Shared with people", which hands off to the very same §11 create
       // dialog (pre-filled with the name typed on step one).
-      await owner.page.getByRole('menuitem', { name: 'Add portfolio', exact: true }).click();
+      await owner.page
+        .getByRole('group', { name: 'Portfolios' })
+        .getByRole('button', { name: 'Add portfolio', exact: true })
+        .click();
       const wizard = owner.page.getByRole('dialog', { name: 'Add portfolio' });
       await wizard.getByLabel('Portfolio name').fill(chainName);
       await wizard.getByRole('button', { name: 'Continue' }).click();

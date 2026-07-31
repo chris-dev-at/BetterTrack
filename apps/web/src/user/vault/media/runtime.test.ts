@@ -10,6 +10,7 @@ import type {
   VaultEntity,
   VaultEnvelopeHeader,
   VaultMedium,
+  VaultMirrorProvenance,
 } from '@bettertrack/contracts';
 
 import { base64ToBytes } from '../bytes';
@@ -33,7 +34,12 @@ import {
 } from './retirementProof';
 import { createUnlockedVaultDriveRuntime, type VaultDriveSyncCoordinator } from './runtime';
 
-const baseDocument: VaultDocument = { schemaVersion: 1, entities: {}, mergeLog: [] };
+const baseDocument: VaultDocument = {
+  schemaVersion: 1,
+  entities: {},
+  mergeLog: [],
+  mirrorProvenance: [],
+};
 const securedDocument: VaultDocument = {
   ...baseDocument,
   schemaVersion: 2,
@@ -65,6 +71,68 @@ describe('unlocked Drive runtime', () => {
     expect(sync.mutate).toHaveBeenCalledTimes(1);
     expect(proof.ensure).toHaveBeenCalledTimes(2);
     expect(proof.publicKey).toBe('public-proof');
+  });
+
+  /**
+   * §7.1: the capture read runs on EVERY unlocked session, which is what gets the
+   * severed-fork identity map into the ciphertext before the enable wizard's
+   * `enable()` purges `mirror_rows`. An empty read (every paranoid-mode session,
+   * every account without a fork) must not cost a vault version.
+   */
+  it('folds the severed-fork identity map into the document while unlocking', async () => {
+    const entry: VaultMirrorProvenance = {
+      chainId: '018f0000-0000-7000-8000-0000000000f1',
+      membershipId: '018f0000-0000-7000-8000-0000000000f2',
+      kind: 'transaction',
+      mirrorId: '018f0000-0000-7000-8000-0000000000f3',
+      portfolioId: '018f0000-0000-7000-8000-0000000000f4',
+      localId: '018f0000-0000-7000-8000-000000000042',
+    };
+    // The fold only keeps identities naming a LIVE row, so the fork's row has to
+    // be in the document — exactly as it is after the pre-enable capture.
+    const sync = coordinator('synced', 'synced', {
+      ...baseDocument,
+      entities: { transaction: [concurrentTransaction()] },
+    });
+    const captured = createUnlockedVaultDriveRuntime(
+      new Uint8Array(32).fill(1),
+      fixture.initial.header.keyId,
+      dependencies(sync, proofManager(), async () => [entry]),
+    );
+
+    await expect(captured.ready).resolves.toBeUndefined();
+    // The proof-material mutation plus this one; the fold names a live row, so it
+    // survives the encrypt-time prune.
+    expect(sync.mutate).toHaveBeenCalledTimes(2);
+    expect(sync.state.active?.document.mirrorProvenance).toEqual([entry]);
+
+    const emptySync = coordinator('synced');
+    const empty = createUnlockedVaultDriveRuntime(
+      new Uint8Array(32).fill(1),
+      fixture.initial.header.keyId,
+      dependencies(emptySync, proofManager()),
+    );
+    await expect(empty.ready).resolves.toBeUndefined();
+    expect(emptySync.mutate).toHaveBeenCalledTimes(1);
+  });
+
+  /**
+   * An unreachable capture read must not block unlocking an already-encrypted
+   * vault: Drive-only can be readable while the API is not, and in paranoid mode
+   * there is nothing left to capture anyway. The next unlock retries.
+   */
+  it('still unlocks when the capture read is unreachable', async () => {
+    const sync = coordinator('synced');
+    const runtime = createUnlockedVaultDriveRuntime(
+      new Uint8Array(32).fill(1),
+      fixture.initial.header.keyId,
+      dependencies(sync, proofManager(), async () => {
+        throw new Error('offline');
+      }),
+    );
+
+    await expect(runtime.ready).resolves.toBeUndefined();
+    expect(sync.mutate).toHaveBeenCalledTimes(1);
   });
 
   it('adds proof material to the document refreshed after a concurrent transaction', async () => {
@@ -452,8 +520,9 @@ class RuntimeDrive extends RuntimeRemote implements DriveDataHome {
 function coordinator(
   reconnectStatus: VaultSyncState['status'],
   mutateStatus: VaultSyncState['status'] = 'synced',
+  initialDocument: VaultDocument = baseDocument,
 ): VaultDriveSyncCoordinator {
-  let state = syncState(reconnectStatus, baseDocument);
+  let state = syncState(reconnectStatus, initialDocument);
   const sync: VaultDriveSyncCoordinator = {
     deviceId: 'test-device',
     get state() {
@@ -556,6 +625,7 @@ function proofManager(): VaultRetirementProofManager {
 function dependencies(
   sync: VaultDriveSyncCoordinator,
   retirementProof: VaultRetirementProofManager,
+  forkProvenance: () => Promise<readonly VaultMirrorProvenance[]> = async () => [],
 ) {
   return {
     userId: '018f0000-0000-7000-8000-000000000099',
@@ -566,6 +636,7 @@ function dependencies(
     api: unusedApi(),
     sync,
     retirementProof,
+    forkProvenance,
   };
 }
 

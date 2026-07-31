@@ -2,48 +2,51 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { NavLink, Navigate, Outlet, useLocation } from 'react-router-dom';
 
 import { Wordmark } from '../../components/Wordmark';
-import { useT } from '../../i18n';
+import { SUPPORTED_LOCALES, useI18n, useT } from '../../i18n';
 import { ErrorBoundary } from '../../ui';
 import { useAuth } from '../AuthContext';
 import { Button, Spinner, cx } from './ui';
 
-/** `labelKey` runs through i18n (new entries); `label` is a legacy literal. */
-type NavItem = { to: string; label?: string; labelKey?: string };
+type NavItem = { to: string; labelKey: string };
+type NavSection = { key: string; labelKey: string; items: NavItem[] };
 
 /**
  * Light IA regroup (§13.4 V4-P0d): the grown admin surface, ordered into sane
  * sections — People, Configuration, Diagnostics — shown as three groups in the
  * vertical sidebar. Structural tidy only; the deep redesign stays V6-1.
  */
-const NAV_SECTIONS: Array<{ key: string; items: NavItem[] }> = [
+const NAV_SECTIONS: NavSection[] = [
   {
     key: 'people',
+    labelKey: 'admin.nav.sections.people',
     items: [
-      { to: '/admin/users', label: 'Users' },
-      { to: '/admin/invites', label: 'Invites' },
+      { to: '/admin/users', labelKey: 'admin.nav.users' },
+      { to: '/admin/invites', labelKey: 'admin.nav.invites' },
     ],
   },
   {
     key: 'config',
+    labelKey: 'admin.nav.sections.configuration',
     items: [
-      { to: '/admin/settings', label: 'Settings' },
+      { to: '/admin/settings', labelKey: 'admin.nav.settings' },
       { to: '/admin/feature-flags', labelKey: 'admin.nav.featureFlags' },
       { to: '/admin/ai', labelKey: 'admin.nav.ai' },
-      { to: '/admin/account-defaults', label: 'Account defaults' },
-      { to: '/admin/announcements', label: 'Announcements' },
-      { to: '/admin/oauth-apps', label: 'OAuth apps' },
+      { to: '/admin/account-defaults', labelKey: 'admin.nav.accountDefaults' },
+      { to: '/admin/announcements', labelKey: 'admin.nav.announcements' },
+      { to: '/admin/oauth-apps', labelKey: 'admin.nav.oauthApps' },
       { to: '/admin/api-keys', labelKey: 'admin.nav.apiKeys' },
     ],
   },
   {
     key: 'diagnostics',
+    labelKey: 'admin.nav.sections.diagnostics',
     items: [
       { to: '/admin/health', labelKey: 'admin.nav.health' },
       { to: '/admin/problems', labelKey: 'admin.nav.problems' },
       { to: '/admin/monitoring', labelKey: 'admin.nav.monitoring' },
       { to: '/admin/usage-analytics', labelKey: 'admin.nav.usageAnalytics' },
-      { to: '/admin/email', label: 'Email' },
-      { to: '/admin/audit', label: 'Audit log' },
+      { to: '/admin/email', labelKey: 'admin.nav.email' },
+      { to: '/admin/audit', labelKey: 'admin.nav.audit' },
       { to: '/admin/security', labelKey: 'admin.nav.security' },
     ],
   },
@@ -64,6 +67,7 @@ const NAV_SECTIONS: Array<{ key: string; items: NavItem[] }> = [
  */
 export function AdminLayout() {
   const t = useT();
+  const { locale, setLocale } = useI18n();
   const { status, user, logout } = useAuth();
   const location = useLocation();
   const [drawerOpen, setDrawerOpen] = useState(false);
@@ -132,7 +136,7 @@ export function AdminLayout() {
   if (status === 'loading') {
     return (
       <div className="grid min-h-screen place-items-center bg-neutral-950">
-        <Spinner label="Loading admin console…" />
+        <Spinner label={t('admin.nav.loading')} />
       </div>
     );
   }
@@ -165,12 +169,18 @@ export function AdminLayout() {
           </button>
         ) : null}
       </div>
-      <nav aria-label="Admin" className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto">
+      <nav
+        aria-label={t('admin.nav.console')}
+        className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto"
+      >
         {NAV_SECTIONS.map((section, index) => (
           <div key={section.key} className="flex flex-col gap-1">
             {index > 0 ? (
               <span aria-hidden="true" className="mb-1 h-px w-full bg-neutral-800" />
             ) : null}
+            <h2 className="px-3 pb-1 text-xs font-semibold uppercase tracking-wide text-neutral-500">
+              {t(section.labelKey)}
+            </h2>
             {section.items.map((item) => (
               <NavLink
                 key={item.to}
@@ -184,16 +194,28 @@ export function AdminLayout() {
                   )
                 }
               >
-                {item.labelKey ? t(item.labelKey) : item.label}
+                {t(item.labelKey)}
               </NavLink>
             ))}
           </div>
         ))}
       </nav>
       <div className="flex shrink-0 flex-col gap-2 border-t border-neutral-800 pt-4">
+        <select
+          aria-label={t('admin.nav.language')}
+          className="h-8 rounded-md bg-neutral-950 px-2 text-sm text-neutral-200 ring-1 ring-inset ring-neutral-700 focus:outline-none focus:ring-2 focus:ring-sky-400"
+          onChange={(event) => setLocale(event.target.value)}
+          value={locale}
+        >
+          {SUPPORTED_LOCALES.map((definition) => (
+            <option key={definition.code} value={definition.code}>
+              {definition.label}
+            </option>
+          ))}
+        </select>
         <span className="truncate px-2 text-sm text-neutral-400">{user.email}</span>
         <Button variant="ghost" className="justify-start" onClick={() => void logout()}>
-          Sign out
+          {t('auth.common.signOut')}
         </Button>
       </div>
     </div>
@@ -201,6 +223,13 @@ export function AdminLayout() {
 
   return (
     <div className="min-h-screen bg-neutral-950 text-neutral-100 md:flex">
+      <a
+        className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-50 focus:rounded-md focus:bg-sky-500 focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:text-white focus:outline-none focus:ring-2 focus:ring-white"
+        href="#main-content"
+        onClick={() => document.getElementById('main-content')?.focus()}
+      >
+        {t('accessibility.skipToContent')}
+      </a>
       {/* Mobile-only top bar: burger + wordmark. Hidden at md+ where the sidebar
           is persistent. */}
       <header className="sticky top-0 z-30 flex items-center gap-3 border-b border-neutral-800 bg-neutral-900 px-4 py-3 md:hidden">
@@ -257,7 +286,7 @@ export function AdminLayout() {
         </div>
       ) : null}
 
-      <main className="min-w-0 flex-1">
+      <main id="main-content" className="min-w-0 flex-1" tabIndex={-1}>
         <div className="mx-auto max-w-5xl px-4 py-8">
           {/* Keyed on the route so navigating away from a failed page always
               resets the boundary (§7.1) rather than leaving it stuck. */}

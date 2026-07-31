@@ -86,6 +86,11 @@ describe('ApiKeysPanel', () => {
     // The one-time token is revealed in the modal with a "won't be shown again" notice.
     expect(await screen.findByText(CREATED.token)).toBeInTheDocument();
     expect(screen.getByText(/won't be shown again/i)).toBeInTheDocument();
+
+    await user.keyboard('{Escape}');
+    expect(screen.getByText(CREATED.token)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: "I've saved this" }));
+    await waitFor(() => expect(screen.queryByText(CREATED.token)).not.toBeInTheDocument());
   });
 
   test('blocks creation with no scope selected', async () => {

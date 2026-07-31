@@ -9,7 +9,7 @@ import { badRequest, tooManyRequests, unauthorized } from '../../errors';
 import type { EventBus, RealtimePrincipalInvalidatedEvent } from '../../events';
 import type { Logger } from '../../logger';
 import { AuditAction, type AuditService } from '../audit/auditService';
-import { ACCOUNT_DELETE_NAMESPACE } from '../auth/loginThrottle';
+import { ACCOUNT_DELETE_NAMESPACE, removeRememberedDeviceBindings } from '../auth/loginThrottle';
 import type { TwoFactorService } from '../auth/twoFactorService';
 import type { MirrorService } from '../mirror/mirrorService';
 import type { PasswordHasher } from '../password/passwordHasher';
@@ -178,26 +178,34 @@ export function createAccountDeletionService(
       // credentials need no separate revocation: their rows cascade, and the
       // bearer lookup resolves from the DB per request.
       await sessions.destroyAllForUser(userId);
+      await removeRememberedDeviceBindings(redis, userId);
       // MIRRORCHAIN §7: hand off owned group portfolios (transfer-on-delete to
       // the oldest manager, or dissolve) in the SAME pre-delete slot, so the
       // subsequent row delete only cascades this member's own copy away and
       // every other member's copy + the chain stay intact (V5-P7 M4).
       await mirror.handleAccountDeletion(userId);
       await userRepo.remove(userId);
+      // Repeat the compatibility scan after the durable delete. A request that
+      // already observed the user as active can write between the first scan and
+      // its reverse-index reset, making that binding invisible to an index-only
+      // pass. A full second scan catches every write ordered before deletion;
+      // writes ordered after it see the missing user and remove themselves.
+      await removeRememberedDeviceBindings(redis, userId);
       // The row cascade has now revoked every credential family. Disconnect any
       // socket that authenticated before deletion rather than waiting for its
       // bounded revalidation sweep.
       await invalidateAllRealtimePrincipals(userId);
       await chatRepo.purgeOrphanedConversations();
 
-      // The account is gone, so the trail carries no actor FK — only the
-      // username (PII is email-only, §11 Privacy), matching the admin delete.
+      // The account is gone, so the trail carries no actor FK or copied direct
+      // identifier. The opaque target UUID is enough to correlate this event
+      // until the audit-retention sweep removes it.
       await audit.record({
         action: AuditAction.UserDeleted,
         targetType: 'user',
         targetId: userId,
         ip,
-        meta: { username: user.username, via: 'self' },
+        meta: { via: 'self' },
       });
     },
   };

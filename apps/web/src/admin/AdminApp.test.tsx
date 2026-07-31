@@ -86,6 +86,8 @@ function renderAtWithLocation(path: string) {
 }
 
 beforeEach(() => {
+  vi.clearAllMocks();
+  localStorage.clear();
   vi.mocked(api.getStats).mockResolvedValue(stats);
   vi.mocked(api.listUsers).mockResolvedValue({ users: [jane] });
   // Bootstrap/login now consult the 2FA setup gate — default to an enrolled admin.
@@ -105,6 +107,15 @@ test('anonymous visitors are sent to the admin login, not the users page', async
   expect(screen.queryByText('jane@bettertrack.test')).not.toBeInTheDocument();
 });
 
+test('anonymous visitors to an unknown admin route still reach the admin login', async () => {
+  vi.mocked(api.getMe).mockRejectedValue(new ApiError(401, 'UNAUTHORIZED', 'Not signed in.'));
+
+  renderAtWithLocation('/admin/not-a-real-route');
+
+  expect(await screen.findByText('Admin')).toBeInTheDocument();
+  expect(screen.getByTestId('location')).toHaveTextContent('/admin/login');
+});
+
 test('authenticated admins reach the guarded users page', async () => {
   vi.mocked(api.getMe).mockResolvedValue(admin);
 
@@ -112,6 +123,46 @@ test('authenticated admins reach the guarded users page', async () => {
 
   expect(await screen.findByText('jane@bettertrack.test')).toBeInTheDocument();
 });
+
+test('the admin language control persists across an admin remount', async () => {
+  vi.mocked(api.getMe).mockResolvedValue(admin);
+  const user = userEvent.setup();
+
+  const first = renderAt('/admin/users');
+  expect(await screen.findByRole('link', { name: 'Users' })).toBeInTheDocument();
+
+  await user.selectOptions(screen.getByRole('combobox', { name: 'Console language' }), 'de');
+
+  expect(localStorage.getItem('bettertrack.locale')).toBe('de');
+  expect(screen.getByRole('link', { name: 'Nutzer' })).toBeInTheDocument();
+
+  first.unmount();
+  renderAt('/admin/users');
+
+  expect(await screen.findByRole('link', { name: 'Nutzer' })).toBeInTheDocument();
+});
+
+test.each([0, 500])(
+  'a status %i bootstrap outage offers retry without prompting for admin credentials',
+  async (status) => {
+    vi.mocked(api.getMe)
+      .mockRejectedValueOnce(
+        new ApiError(status, status === 0 ? 'NETWORK_ERROR' : 'UNKNOWN', 'unavailable'),
+      )
+      .mockResolvedValueOnce(admin);
+    const user = userEvent.setup();
+
+    renderAt('/admin/users');
+
+    expect(await screen.findByText(/can’t verify your session right now/i)).toBeInTheDocument();
+    expect(screen.queryByLabelText('Password')).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Try again' }));
+
+    expect(await screen.findByText('jane@bettertrack.test')).toBeInTheDocument();
+    expect(api.getMe).toHaveBeenCalledTimes(2);
+  },
+);
 
 test('a reset admin is trapped into the forced change, then recovers into the console (#248 item 6)', async () => {
   // A reset admin session: /auth/me responds 403 (the forced-change guard blocks
@@ -226,20 +277,20 @@ test('an enrolled admin passes the login 2FA challenge and enters the console (#
   });
 });
 
-test('an unknown nested admin path lands on the users home in one hop, without appending segments', async () => {
+test('an unknown authenticated admin path renders a not-found state without navigating away', async () => {
   vi.mocked(api.getMe).mockResolvedValue(admin);
 
-  // Deep, unmatched sub-path. A relative catch-all redirect would resolve against
-  // the splat's full pathname and append endlessly (/admin/blabla/users/users/…);
-  // the absolute fallback must instead land squarely on the home route.
   renderAtWithLocation('/admin/blabla');
 
-  // We reached the guarded users page (jane), i.e. the redirect resolved to a
-  // real route rather than looping on the fallback.
-  expect(await screen.findByText('jane@bettertrack.test')).toBeInTheDocument();
+  expect(await screen.findByText('Page not found')).toBeInTheDocument();
+  expect(screen.getByText('/admin/blabla', { selector: 'code' })).toBeInTheDocument();
+  expect(screen.getByRole('navigation', { name: 'Admin console' })).toBeInTheDocument();
+  expect(screen.getByRole('link', { name: 'Back to start' })).toHaveAttribute(
+    'href',
+    '/admin/users',
+  );
+  expect(screen.getByRole('button', { name: 'Back to previous page' })).toBeInTheDocument();
 
-  // Exactly the absolute home — no 'blabla', no duplicated segments.
   const pathname = screen.getByTestId('location').textContent;
-  expect(pathname).toBe('/admin/users');
-  expect(pathname).not.toContain('blabla');
+  expect(pathname).toBe('/admin/blabla');
 });

@@ -264,6 +264,7 @@ describe('GET /api/v1/assets/:id/history', () => {
       expect(seenRange).toBe(range);
       expect(parsed.data.range).toBe(range);
       expect(parsed.data.interval).toBe(interval);
+      expect(parsed.data.currency).toBe(asset.currency);
       expect(parsed.data.points).toHaveLength(2);
       expect(parsed.data.asOf).toBe('2026-06-20T10:00:00.000Z');
     }

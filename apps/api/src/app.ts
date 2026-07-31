@@ -2,6 +2,7 @@ import cookieParser from 'cookie-parser';
 import express from 'express';
 import helmet from 'helmet';
 
+import { GLOBAL_JSON_BODY_LIMIT } from './http/bodyLimits';
 import { createBullBoardRouter } from './http/bullBoard';
 import { createErrorHandler } from './http/errorHandler';
 import { createFeatureFlagsRouter } from './http/routes/featureFlagsRoutes';
@@ -23,7 +24,7 @@ import {
 } from './http/middleware/session';
 import { createGrafanaProxyMiddleware } from './http/grafanaProxy';
 import { createOpenApiRouter } from './http/openapi';
-import { createAccountRouter } from './http/routes/accountRoutes';
+import { createAccountRouter, PARANOID_DISABLE_HTTP_PATH } from './http/routes/accountRoutes';
 import { createAdminRouter } from './http/routes/adminRoutes';
 import { createAiRouter } from './http/routes/aiRoutes';
 import { createAlertsRouter } from './http/routes/alertsRoutes';
@@ -51,6 +52,7 @@ import { createSocialRouter } from './http/routes/socialRoutes';
 import { createWebhooksRouter } from './http/routes/webhooksRoutes';
 import { createWorkboardRouter } from './http/routes/workboardRoutes';
 import type { AppContext } from './http/context';
+import { createParanoidRouteGuard } from './services/account/paranoidEnforcement';
 
 // Side-effect import: augments Express's Request type (req.authUser, etc.).
 import './http/types';
@@ -76,7 +78,26 @@ export function createApp(ctx: AppContext) {
   // session/rate-limit work and cross-origin web/admin callers get their headers
   // (§4.6, §10). The allowlist is the derived web+admin origins.
   app.use(createCorsMiddleware(ctx.config.corsOrigins));
-  app.use(express.json({ limit: '100kb' }));
+  const regularJson = express.json({ limit: GLOBAL_JSON_BODY_LIMIT });
+  app.use((req, res, next) => {
+    // The decrypted restore is a deflate-expanded multiple of the bounded
+    // encrypted envelope (see `PARANOID_RESTORE_PLAINTEXT_FACTOR`).
+    // Defer that one parser to the route, after authentication + its vault rate
+    // limiter; every other JSON request keeps the 100 KiB global bound. The
+    // route re-applies this same bound for any caller that is not paranoid, so
+    // the deferral widens nothing for an account with nothing to restore.
+    // Express routes case-insensitively by default, so match the same way —
+    // otherwise `/Disable` reaches the handler under the 100 KiB bound and 413s.
+    const path = req.path.toLowerCase();
+    if (
+      req.method === 'POST' &&
+      (path === PARANOID_DISABLE_HTTP_PATH || path === `${PARANOID_DISABLE_HTTP_PATH}/`)
+    ) {
+      next();
+      return;
+    }
+    regularJson(req, res, next);
+  });
   app.use(cookieParser(ctx.config.sessionSecrets));
 
   // Public API docs (§5 Meta, §6.13): mounted at the origin root, BEFORE the
@@ -137,6 +158,7 @@ export function createApp(ctx: AppContext) {
   app.use('/api/v1/oauth', createOAuthPublicRouter(ctx));
   app.use('/api/v1', createCsrfGuard(ctx.config.corsOrigins));
   app.use('/api/v1', enforcePasswordChange);
+  app.use('/api/v1', createParanoidRouteGuard());
   app.use('/api/v1', enforceApiKeyScope(ctx));
 
   // First-party usage capture (§13.5 V5-P2 arc (b)): folds one in-memory signal

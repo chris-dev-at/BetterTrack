@@ -3,10 +3,21 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>BetterTrack — your personal investing workspace</title>
+    <title
+      data-registration-copy-closed="BetterTrack — registration closed"
+      data-registration-copy-invite_token="BetterTrack — register with an invite token"
+      data-registration-copy-approval="BetterTrack — request an account"
+      data-registration-copy-open="BetterTrack — create an account"
+    >
+      BetterTrack — your personal investing workspace
+    </title>
     <meta
       name="description"
-      content="BetterTrack is a self-hosted personal finance and investing workspace: track every portfolio, build and backtest your own ETF-style baskets, and browse any asset. Invite-only."
+      content="BetterTrack is a self-hosted personal finance and investing workspace: track every portfolio, build and backtest your own ETF-style baskets, and browse any asset."
+      data-registration-copy-closed="BetterTrack is a self-hosted personal finance and investing workspace. Registration is currently closed."
+      data-registration-copy-invite_token="BetterTrack is a self-hosted personal finance and investing workspace. Registration requires an invite token."
+      data-registration-copy-approval="BetterTrack is a self-hosted personal finance and investing workspace. Account requests are reviewed before access."
+      data-registration-copy-open="BetterTrack is a self-hosted personal finance and investing workspace. Registration is open."
     />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <link rel="stylesheet" href="/styles.css" />
@@ -33,7 +44,14 @@
     <main>
       <section class="hero">
         <div class="wrap">
-          <span class="eyebrow">Self-hosted · Invite-only</span>
+          <span
+            class="eyebrow js-registration-eyebrow"
+            data-registration-copy-closed="Self-hosted · Registration closed"
+            data-registration-copy-invite_token="Self-hosted · Invite token required"
+            data-registration-copy-approval="Self-hosted · Approval required"
+            data-registration-copy-open="Self-hosted · Registration open"
+            >Self-hosted personal finance</span
+          >
           <h1>Your whole net worth, one clear workspace.</h1>
           <p class="lede">
             BetterTrack tracks every portfolio you own — stocks, ETFs, crypto and off-market assets
@@ -44,20 +62,26 @@
             <a class="btn btn-primary js-web-link" href="https://web.bettertrack.at"
               >Open the web app</a
             >
-            <!-- Shown only when the instance allows self-serve registration
-                 (§13.4 V4-P4a); the script below reveals it + sets the href. -->
             <a
               class="btn btn-primary js-register-cta"
               href="https://web.bettertrack.at/register"
               hidden
-              >Create an account</a
-            >
+              data-registration-label-invite_token="Register with an invite token"
+              data-registration-label-approval="Request an account"
+              data-registration-label-open="Create an account"
+            ></a>
             <a class="btn btn-ghost" href="#features">See the features</a>
           </div>
-          <p class="invite-note">
-            <strong>Invite-only.</strong> BetterTrack is a closed, single-owner workspace — access
-            is by invitation from the host.
-          </p>
+          <p
+            class="registration-note js-registration-note"
+            aria-live="polite"
+            hidden
+            data-registration-copy-closed="Registration is currently closed. Existing members can sign in to the web app."
+            data-registration-copy-invite_token="Registration requires an invite token from the host."
+            data-registration-copy-approval="Request an account, then wait for approval from the host before signing in."
+            data-registration-copy-open="Registration is open. Create an account to get started."
+            data-registration-copy-unavailable="Registration status unavailable. Please try again later or contact the host."
+          ></p>
           <div class="hero-shot">
             <img
               src="/screens/portfolio.svg"
@@ -158,7 +182,14 @@
           >© BetterTrack —
           <a class="js-web-link" href="https://web.bettertrack.at">web app</a></span
         >
-        <span>Self-hosted personal finance &amp; investing. Invite-only.</span>
+        <span
+          class="js-registration-footer"
+          data-registration-copy-closed="Self-hosted personal finance &amp; investing. Registration is closed."
+          data-registration-copy-invite_token="Self-hosted personal finance &amp; investing. An invite token is required."
+          data-registration-copy-approval="Self-hosted personal finance &amp; investing. Account requests require approval."
+          data-registration-copy-open="Self-hosted personal finance &amp; investing. Registration is open."
+          >Self-hosted personal finance &amp; investing.</span
+        >
       </div>
     </footer>
 

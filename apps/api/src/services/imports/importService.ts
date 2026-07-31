@@ -27,6 +27,7 @@ import type { CashSourceRepository } from '../../data/repositories/cashSourceRep
 import type { PortfolioRepository } from '../../data/repositories/portfolioRepository';
 import type { TransactionRepository } from '../../data/repositories/transactionRepository';
 import type { Logger } from '../../logger';
+import type { ParanoidModeGuard } from '../account/paranoidEnforcement';
 import { createRequestQueue, type RequestQueue } from '../../providers/requestQueue';
 import type { PortfolioService } from '../portfolio/portfolioService';
 import type { SearchService } from '../search/searchService';
@@ -67,6 +68,7 @@ export interface ImportServiceDeps {
   tax: TaxService;
   mappers: readonly BrokerMapper[];
   logger?: Logger;
+  paranoid?: Pick<ParanoidModeGuard, 'assertAllowed'>;
   /**
    * Shared process-local budget for import-driven catalog/provider resolution.
    * Tests may inject a recording queue; production admits four concurrent
@@ -410,6 +412,7 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
     },
 
     async createBatch(userId, input) {
+      await deps.paranoid?.assertAllowed(userId, 'imports');
       await requireOwnedPortfolio(userId, input.portfolioId);
 
       const csv = parseCsv(input.content);
@@ -608,12 +611,14 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
     },
 
     async getBatch(userId, batchId) {
+      await deps.paranoid?.assertAllowed(userId, 'imports');
       const batch = await importRepo.findBatchForOwner(userId, batchId);
       if (!batch) throw notFound('Import not found.', 'IMPORT_NOT_FOUND');
       return buildPreview(batch);
     },
 
     async applyBatch(userId, batchId, input) {
+      await deps.paranoid?.assertAllowed(userId, 'imports');
       const batch = await importRepo.findBatchForOwner(userId, batchId);
       if (!batch) throw notFound('Import not found.', 'IMPORT_NOT_FOUND');
       if (batch.status !== 'pending') {
@@ -816,6 +821,7 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
     },
 
     async discardBatch(userId, batchId) {
+      await deps.paranoid?.assertAllowed(userId, 'imports');
       const deleted = await importRepo.deleteBatchForOwner(userId, batchId);
       if (!deleted) throw notFound('Import not found.', 'IMPORT_NOT_FOUND');
     },

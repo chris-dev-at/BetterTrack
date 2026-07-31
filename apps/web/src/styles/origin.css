@@ -2590,6 +2590,262 @@
   background: color-mix(in srgb, var(--bt-neg) 22%, transparent);
 }
 
+/* ── Cash account rows ─────────────────────────────────────────────────────
+   ONE LINE per account (owner, 2026-07-31, third pass). The card version
+   stacked a name over a balance over a full-width action footer — roughly 95px
+   of card to carry two facts, most of it empty, with buttons that read as tiny
+   against all that space. Laid out horizontally the same two facts need ~44px,
+   and the actions can be a sensible size because they are no longer competing
+   with a column of air. */
+.bt-acctgrid {
+  display: grid;
+  gap: 8px;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+}
+
+.bt-acctrow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px 6px 12px;
+  border: 1px solid var(--bt-border);
+  border-radius: 9px;
+  background: var(--bt-surface);
+}
+
+.bt-acctrow__name {
+  flex: 1;
+  min-width: 0;
+  color: var(--bt-text-soft);
+  font-size: 12.5px;
+  font-weight: 570;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bt-acctrow__value {
+  color: var(--bt-text);
+  font-size: 14px;
+  font-weight: 640;
+  white-space: nowrap;
+}
+
+.bt-acctrow__actions {
+  display: inline-flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+.bt-acctrow__action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border: 1px solid var(--bt-border);
+  border-radius: 7px;
+  background: var(--bt-bg-raised);
+  color: var(--bt-text-soft);
+  cursor: pointer;
+  transition:
+    background var(--bt-t-fast),
+    border-color var(--bt-t-fast),
+    color var(--bt-t-fast);
+}
+
+.bt-acctrow__action svg {
+  width: 15px;
+  height: 15px;
+}
+
+.bt-acctrow__action--in:hover {
+  background: var(--bt-pos-soft);
+  border-color: color-mix(in srgb, var(--bt-pos) 40%, transparent);
+  color: var(--bt-pos);
+}
+
+.bt-acctrow__action--out:hover {
+  background: var(--bt-neg-soft);
+  border-color: color-mix(in srgb, var(--bt-neg) 40%, transparent);
+  color: var(--bt-neg);
+}
+
+/* The list's own entry into managing accounts: same row shape, quieter. */
+.bt-acctrow--manage {
+  justify-content: flex-start;
+  gap: 8px;
+  border-style: dashed;
+  background: none;
+  color: var(--bt-text-soft);
+  text-decoration: none;
+  transition: background var(--bt-t-fast);
+}
+
+.bt-acctrow--manage:hover {
+  background: var(--bt-surface);
+}
+
+.bt-acctrow--manage svg {
+  width: 15px;
+  height: 15px;
+  flex-shrink: 0;
+}
+
+/* ── By-tag: donut beside the ranked bars ───────────────────────────────────
+   The donut answers "what share", the bars answer "how much and in what
+   order". Side by side they are one figure read two ways; the donut collapses
+   under the bars on a narrow viewport rather than shrinking to a dot. */
+.bt-bytag {
+  display: flex;
+  align-items: center;
+  gap: 22px;
+  flex-wrap: wrap;
+}
+
+.bt-bytag__chart {
+  flex-shrink: 0;
+}
+
+.bt-bytag__bars {
+  flex: 1;
+  min-width: 240px;
+}
+
+/* ── Month picker ───────────────────────────────────────────────────────────
+   Arrows plus the month's NAME. Replaces `<input type="month">`, which renders
+   as a locale-dependent numeric field and made "go back one month" an edit
+   rather than a press. */
+.bt-monthpick {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--bt-border);
+  border-radius: 8px;
+  background: var(--bt-bg-raised);
+}
+
+.bt-monthpick__arrow {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  min-height: 24px;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  color: var(--bt-text-soft);
+  font: inherit;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    background var(--bt-t-fast),
+    color var(--bt-t-fast);
+}
+
+.bt-monthpick__arrow:hover:not(:disabled) {
+  background: var(--bt-surface-strong);
+  color: var(--bt-text);
+}
+
+.bt-monthpick__arrow:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.bt-monthpick__label {
+  min-width: 5.4rem;
+  padding: 0 2px;
+  color: var(--bt-text-soft);
+  font-size: 12px;
+  font-weight: 570;
+  text-align: center;
+  white-space: nowrap;
+}
+
+/* ── Icon button ────────────────────────────────────────────────────────────
+   A quiet, square action that sits beside the loud ones. Same height as the
+   record pair and the month picker so the header reads as one row. */
+.bt-iconbtn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  min-height: 34px;
+  border: 1px solid var(--bt-border);
+  border-radius: 8px;
+  background: var(--bt-bg-raised);
+  color: var(--bt-text-soft);
+  cursor: pointer;
+  transition:
+    background var(--bt-t-fast),
+    color var(--bt-t-fast);
+}
+
+.bt-iconbtn:hover {
+  background: var(--bt-surface-strong);
+  color: var(--bt-text);
+}
+
+.bt-iconbtn svg {
+  width: 16px;
+  height: 16px;
+}
+
+/* ── Record pair ────────────────────────────────────────────────────────────
+   Two halves of ONE object: add money on the left, take money out on the
+   right. Each half carries its direction's colour at rest — a bare + / − says
+   nothing about money, so the meaning cannot live in hover alone. Only the
+   outer corners are rounded, and the halves share a single hairline, so it
+   reads as one control rather than two buttons that happen to touch. */
+.bt-recordpair {
+  display: inline-flex;
+  align-items: stretch;
+  border: 1px solid var(--bt-border-strong);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.bt-recordpair__half {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  min-height: 32px;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  transition:
+    background var(--bt-t-fast),
+    color var(--bt-t-fast);
+}
+
+.bt-recordpair__half svg {
+  width: 17px;
+  height: 17px;
+}
+
+.bt-recordpair__half--in {
+  background: var(--bt-pos-soft);
+  color: var(--bt-pos);
+  border-right: 1px solid var(--bt-border-strong);
+}
+
+.bt-recordpair__half--out {
+  background: var(--bt-neg-soft);
+  color: var(--bt-neg);
+}
+
+.bt-recordpair__half--in:hover {
+  background: color-mix(in srgb, var(--bt-pos) 22%, transparent);
+}
+
+.bt-recordpair__half--out:hover {
+  background: color-mix(in srgb, var(--bt-neg) 22%, transparent);
+}
+
 /* ── Cash account cards ─────────────────────────────────────────────────────
    Replaces a row of tag-shaped pills. A pill says "label"; these hold a
    balance and two actions, so they are cards.

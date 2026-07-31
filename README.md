@@ -28,12 +28,12 @@ packages/
   contracts/  # Shared zod schemas + types (the API/client keystone)
   config/     # Shared tsconfig, ESLint, Prettier
 infra/
-  docker-compose.yml            # Production: web + api + worker + landing + db + redis (§4.6)
+  docker-compose.yml            # Production app/data stack + scheduled local backups
   docker-compose.subdomains.yml # Port overlay for BT_MODE=subdomains — layer via -f or override.yml
   docker-compose.ports.yml      # Port overlay for BT_MODE=ports — layer via -f or override.yml
   docker-compose.dev.yml        # Dev: Postgres 17 + Redis 7 only
   nginx/                     # nginx front-proxy: mode templates (subdomains|ports) + entrypoint (§11)
-  backup/                    # backup.sh — nightly pg_dump + rotation, run inside `db` via host cron (§10)
+  backup/                    # Scheduled pg_dump, status/health, offsite, and restore-drill scripts
   .env.example               # Dev env template
   .env.production.example    # Production env template
 factory/      # autonomous build factory (runner + prompts)
@@ -290,9 +290,10 @@ local TLS terminator, e.g. Caddy, and set `BT_TLS` accordingly). Cloudflare's
 proxy is still the only public edge; keep the router forward scoped to it.
 
 Either path: run **First-time setup** (build → migrate → seed → `up -d`) with
-`docker-compose.subdomains.yml` as the override, then schedule nightly backups per
-**Backups & restore** below. Apply updates and re-run migrations exactly as in
-**Day-to-day commands** — the deploy path is identical; only the public edge differs.
+`docker-compose.subdomains.yml` as the override. The in-stack backup scheduler
+starts with the deployment; verify it per **Backups & restore** below. Apply
+updates and re-run migrations exactly as in **Day-to-day commands** — the deploy
+path is identical; only the public edge differs.
 
 ### Day-to-day commands
 
@@ -314,27 +315,10 @@ docker compose up -d          # rolling restart
 
 ### Environment variables
 
-| Variable                      | Required | Notes                                                                                       |
-| ----------------------------- | -------- | ------------------------------------------------------------------------------------------- |
-| `DATABASE_URL`                | yes      | Must use `db` hostname (e.g. `postgres://bt:pw@db:5432/bettertrack`)                        |
-| `POSTGRES_PASSWORD`           | yes      | Password for the `db` service and `DATABASE_URL`                                            |
-| `REDIS_URL`                   | yes      | `redis://redis:6379`                                                                        |
-| `SESSION_SECRET`              | yes      | 64 random hex bytes (`openssl rand -hex 64`); comma-separate for rotation                   |
-| `BT_MODE`                     | no       | `subdomains` (default) or `ports` — picks the deployment topology (§4.6, §11)               |
-| `BT_DOMAIN`                   | yes      | Base domain/host (`track.example.at`); origins are derived from it                          |
-| `BT_TLS`                      | no       | Force the derived scheme; blank = per-mode default (subdomains https, ports http)           |
-| `BT_SUB_API/WEB/ADMIN`        | no       | Subdomain labels in subdomains mode (default `api`/`web`/`admin`)                           |
-| `BT_SUB_MOBILE`               | no       | Mobile-placeholder subdomain label (default `mobile`; product has none — it's the apex)     |
-| `BT_PORT_API/WEB/ADMIN`       | no       | Public service ports in ports mode (default `3000`/`8080`/`8081`)                           |
-| `BT_PORT_PRODUCT/MOBILE`      | no       | Static product/mobile landing ports in ports mode (default `8082`/`8083`)                   |
-| `BT_HTTP_PORT`                | no       | Host port the front proxy binds in subdomains mode (default `80`; TLS in front)             |
-| `BT_API/WEB/ADMIN_ORIGIN`     | no       | Explicit origin overrides — win over derivation (`APP_ORIGIN` = legacy web alias)           |
-| `BT_PRODUCT/MOBILE_ORIGIN`    | no       | Explicit overrides for the static landing origins (never enter the CORS allowlist)          |
-| `SMTP_HOST/FROM`              | no       | Both required to enable email; app runs without them (Gmail preset in `.env`)               |
-| `ADMIN_EMAIL/PASSWORD`        | yes\*    | \*Required for `seed.js` (hard-exits without both, see `scripts/seed.ts`); no-op thereafter |
-| `BACKUP_RETENTION_DAYS`       | no       | Days of nightly dumps to keep in the `pgbackups` volume (default `14`)                      |
-| `RATE_LIMIT_BURST_WINDOW_SEC` | no       | Short burst window for the general API limiter, seconds (default `10`, §10)                 |
-| `RATE_LIMIT_BURST_LIMIT`      | no       | Requests allowed per burst window before it trips the escalation ladder (default `60`)      |
+[`infra/.env.production.example`](infra/.env.production.example) is the single
+production environment reference. It groups every supported variable, explains
+its purpose, marks whether it is secret, and records its rotation requirement.
+Copy it to `infra/.env`; do not maintain a second variable table here.
 
 > **Deployment topology (§4.6, §11):** one env scheme drives every public origin,
 > and the CORS allowlist + session-cookie attributes are **derived** from it —
@@ -345,7 +329,7 @@ docker compose up -d          # rolling restart
 > matching nginx layout from `infra/nginx/templates/` and injects a per-origin
 > `window.__BT__` (`config.js`) at container start. The static product/mobile pages
 > take no credentials, so they are **never** added to the CORS allowlist. See
-> `infra/.env.production.example` for a fully commented both-modes template.
+> `infra/.env.production.example` for the canonical, fully commented template.
 
 ### Worker (BullMQ)
 
@@ -359,27 +343,36 @@ enrichment), and `notifications.dispatch` (friend request/accept/share email + n
 
 ### Backups & restore
 
-The `db` service mounts a dedicated `pgbackups` volume at `/backups` and
-`infra/backup/backup.sh` is bind-mounted read-only into that same container at
-`/opt/bettertrack/backup.sh`. Nothing runs it automatically — wire it to your
-host's cron (kept out of the compose topology so the stack stays at five
-services, §4.6):
+The `backup-scheduler` service takes a local dump and runs a safe restore drill
+immediately on first start. It then follows `BT_BACKUP_CRON` (default
+`0 3 * * *`, UTC) for dumps and `BT_BACKUP_RESTORE_CRON` (default
+`0 4 1 * *`, UTC) for monthly drills. No host scheduler is required. Each dump
+writes a verified, timestamped gzip to the shared `pgbackups` volume, updates
+`/status/backup-status.env` in a separate status volume, and deletes dumps older
+than `BACKUP_RETENTION_DAYS` (default 14).
 
-```bash
-# Host crontab (crontab -e) — nightly at 03:00 server time:
-0 3 * * * cd /path/to/bettertrack/infra && docker compose exec -T db bash /opt/bettertrack/backup.sh >> /var/log/bettertrack-backup.log 2>&1
-```
-
-Each run writes a gzip'd, timestamped dump (`bettertrack-YYYYmmdd-HHMMSS.sql.gz`)
-into the `pgbackups` volume, verifies the archive (`gzip -t`), then deletes
-dumps older than `BACKUP_RETENTION_DAYS` (default 14). Take a manual backup the
-same way, on demand:
+`docker compose ps` marks the scheduler unhealthy if the last successful dump
+is older than `BT_BACKUP_FRESHNESS_MAX_HOURS` (default 26), or the last passing
+restore drill is older than `BT_BACKUP_RESTORE_MAX_AGE_DAYS` (default 35).
+Run a local backup or the safe scratch restore drill on demand:
 
 ```bash
 cd infra
-docker compose exec -T db bash /opt/bettertrack/backup.sh
+docker compose exec -T backup-scheduler /opt/bettertrack/backup.sh
+docker compose exec -T backup-scheduler /opt/bettertrack/restore-drill.sh
+docker compose ps backup-scheduler
 docker compose exec db ls -la /backups
 ```
+
+The drill restores only into a disposable `bettertrack_restore_drill` database,
+runs connectivity and schema probes, drops that database, appends evidence to
+`/backups/restore-attestations.jsonl`, and updates the status file. It runs
+automatically at least monthly and never targets `POSTGRES_DB`.
+
+Deployments upgrading from the former host-cron runbook should remove the old
+`docker compose exec -T db bash /opt/bettertrack/backup.sh` crontab entry. The
+script is no longer mounted into `db`; the in-stack scheduler replaces that local
+job.
 
 **Restore from a dump:**
 
@@ -389,29 +382,36 @@ cd infra
 # 1. Pick a dump (lists everything currently retained).
 docker compose exec db ls -la /backups
 
-# 2. Stop the api and worker so nothing writes during restore.
-docker compose stop api worker
+# 2. Stop all application writes and the backup scheduler so it cannot capture
+#    a partially restored schema.
+docker compose stop api worker backup-scheduler
 
 # 3. Restore — the dump was taken with --clean --if-exists, so it drops and
 #    recreates every object itself; safe to run against the existing database.
 docker compose exec -T db bash -c \
   'gunzip -c /backups/bettertrack-20260704-030000.sql.gz | psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
 
-# 4. Bring the api and worker back up.
+# 4. After the restore completes, bring application traffic back, then restart
+#    the scheduler. Its startup run creates and drills a fresh recovery point.
 docker compose start api worker
+docker compose start backup-scheduler
+docker compose ps backup-scheduler
 ```
 
 **Offsite backup (optional).** An age-encrypted copy of each daily dump can be
 uploaded to Google Drive (or any rclone remote) via the `backup-offsite`
-sidecar in `infra/docker-compose.offsite.yml`. Full runbook — age keypair
-generation, rclone Drive setup, host-cron wiring, retention contract, and the
-end-to-end restore drill — lives in `docs/ops.md`.
+sidecar in `infra/docker-compose.offsite.yml`. Upload works with a delete-less
+credential. Remote pruning is a separate profile, disabled by default, with its
+own credential; provider-side versioning or immutable retention is preferred.
+The full setup, status, retention, drill, and provider-history recovery runbook
+lives in `docs/ops.md`.
 
 ## Quality gates
 
 These are exactly what CI runs (`.github/workflows/ci.yml`):
 
 ```bash
+pnpm --filter @bettertrack/api check:production-compose  # render both deploy topologies
 pnpm typecheck            # tsc --noEmit across all packages
 pnpm lint                 # ESLint (flat config) across the repo
 pnpm format:check         # Prettier

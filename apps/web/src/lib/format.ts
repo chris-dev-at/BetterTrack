@@ -120,6 +120,7 @@ interface LocaleFormatters {
   signedPercent: Intl.NumberFormat;
   signedDelta: Intl.NumberFormat;
   dateTime: Intl.DateTimeFormat;
+  dateTimeSeconds: Intl.DateTimeFormat;
   date: Intl.DateTimeFormat;
   money: Map<string, Intl.NumberFormat>;
 }
@@ -166,6 +167,11 @@ function formatters(): LocaleFormatters {
       dateTime: new Intl.DateTimeFormat(activeLocale, {
         dateStyle: 'medium',
         timeStyle: 'short',
+        timeZone: DISPLAY_TIME_ZONE,
+      }),
+      dateTimeSeconds: new Intl.DateTimeFormat(activeLocale, {
+        dateStyle: 'medium',
+        timeStyle: 'medium',
         timeZone: DISPLAY_TIME_ZONE,
       }),
       date: new Intl.DateTimeFormat(activeLocale, {
@@ -327,6 +333,13 @@ export function formatDateTime(iso: string | null | undefined): string {
   if (!iso) return EM_DASH;
   const date = new Date(iso);
   return Number.isNaN(date.getTime()) ? EM_DASH : formatters().dateTime.format(date);
+}
+
+/** ISO timestamp → localised date + time including seconds, or {@link EM_DASH} when absent/invalid. */
+export function formatDateTimeSeconds(iso: string | null | undefined): string {
+  if (!iso) return EM_DASH;
+  const date = new Date(iso);
+  return Number.isNaN(date.getTime()) ? EM_DASH : formatters().dateTimeSeconds.format(date);
 }
 
 /** ISO timestamp → localised date (Vienna), or {@link EM_DASH} when absent/invalid. */
