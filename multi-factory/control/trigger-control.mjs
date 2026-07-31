@@ -46,6 +46,15 @@ export function usageResetReady(trigger, metric) {
   );
 }
 
+// `stop` on a down factory is a no-op, so it is skipped — but a mode action is a
+// write to control/mode that governs the NEXT start. Skipping that while still
+// disarming the trigger silently defeats it: cross the threshold during a
+// restart window and the factory comes back up in its old mode with the guard
+// already spent. Mode actions therefore run whether or not containers are up.
+function actionAppliesWhileDown(action) {
+  return typeof action === 'string' && action.startsWith('mode-');
+}
+
 export async function evaluateTimerTrigger(
   trigger,
   { now = Date.now(), running = false, slotBusy = false, performAction } = {},
@@ -53,7 +62,8 @@ export async function evaluateTimerTrigger(
   if (!timerTriggerDue(trigger, now)) return unchanged();
   if (!running && slotBusy) return unchanged(true);
   let actionResult = null;
-  if (running) {
+  const acts = running || actionAppliesWhileDown(trigger.action);
+  if (acts) {
     actionResult = await performAction(trigger.action);
     if (actionResultIsBusy(actionResult))
       return { ...unchanged(true), attempted: true, actionResult };
@@ -61,7 +71,7 @@ export async function evaluateTimerTrigger(
   trigger.armed = false;
   trigger.firedAt = new Date(now).toISOString();
   if (!running) trigger.note = 'factory was not running at fire time';
-  return { changed: true, busy: false, attempted: running, actionResult };
+  return { changed: true, busy: false, attempted: acts, actionResult };
 }
 
 export async function evaluateUsageThresholdTrigger(
@@ -72,7 +82,8 @@ export async function evaluateUsageThresholdTrigger(
   if (!usageThresholdReached(trigger, metric)) return unchanged();
   if (!running && slotBusy) return unchanged(true);
   let actionResult = null;
-  if (running) {
+  const acts = running || actionAppliesWhileDown(trigger.action);
+  if (acts) {
     actionResult = await performAction(trigger.action);
     if (actionResultIsBusy(actionResult))
       return { ...unchanged(true), attempted: true, actionResult };
@@ -81,7 +92,7 @@ export async function evaluateUsageThresholdTrigger(
   trigger.firedAt = new Date(now).toISOString();
   trigger.firedResetsAt = metric.resetsAt;
   if (trigger.onReset === 'start') trigger.waitingReset = true;
-  return { changed: true, busy: false, attempted: running, actionResult };
+  return { changed: true, busy: false, attempted: acts, actionResult };
 }
 
 export async function evaluateUsageResetTrigger(

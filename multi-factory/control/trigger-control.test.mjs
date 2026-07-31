@@ -254,3 +254,73 @@ test('server exposes structured busy outcomes and keeps trigger retries interval
   assert.match(source, /setInterval\(evalTriggers, 15000\)/);
   assert.match(source, /if \(triggerBusy\) return/);
 });
+
+test('a usage cap still writes the mode when the factory is down at fire time', async () => {
+  // The hole this closes: cross the cap during a restart window and the old
+  // behaviour disarmed the trigger without writing control/mode, so the factory
+  // came back up in its previous mode with the cap already spent.
+  const trigger = {
+    id: 'cap',
+    type: 'usage',
+    metric: 'seven_day',
+    threshold: 20,
+    action: 'mode-close-down',
+    armed: true,
+  };
+  const performed = [];
+  const outcome = await evaluateUsageThresholdTrigger(
+    trigger,
+    { pct: 25, resetsAt: '2026-08-05T11:00:00Z' },
+    {
+      now: Date.parse('2026-07-31T02:00:00Z'),
+      running: false,
+      slotBusy: false,
+      performAction: async (action) => {
+        performed.push(action);
+        return { ok: true };
+      },
+    },
+  );
+  assert.deepEqual(performed, ['mode-close-down']);
+  assert.equal(outcome.changed, true);
+  assert.equal(outcome.attempted, true);
+  assert.equal(trigger.armed, false);
+});
+
+test('a stop action is still skipped while the factory is already down', async () => {
+  // Unchanged on purpose: stopping a stopped factory is meaningless, and the
+  // trigger should not pretend it acted.
+  const trigger = { id: 's', type: 'usage', metric: 'five_hour', threshold: 90, action: 'stop', armed: true };
+  const performed = [];
+  const outcome = await evaluateUsageThresholdTrigger(
+    trigger,
+    { pct: 95, resetsAt: '2026-08-05T11:00:00Z' },
+    {
+      now: Date.now(),
+      running: false,
+      slotBusy: false,
+      performAction: async (action) => {
+        performed.push(action);
+        return { ok: true };
+      },
+    },
+  );
+  assert.deepEqual(performed, []);
+  assert.equal(outcome.attempted, false);
+  assert.equal(outcome.changed, true);
+});
+
+test('a timer trigger carrying a mode action also applies while down', async () => {
+  const trigger = { id: 't', type: 'timer', action: 'mode-run-out', armed: true, fireAt: '2026-07-31T02:00:00Z' };
+  const performed = [];
+  await evaluateTimerTrigger(trigger, {
+    now: Date.parse('2026-07-31T02:00:01Z'),
+    running: false,
+    slotBusy: false,
+    performAction: async (action) => {
+      performed.push(action);
+      return { ok: true };
+    },
+  });
+  assert.deepEqual(performed, ['mode-run-out']);
+});
