@@ -203,9 +203,10 @@ test.describe('mirrorchain lifecycle UI gate', () => {
       const ownerMemberSheet = owner.page.getByRole('button', { name: /Open member sheet/ });
       await ownerMemberSheet.click();
       const memberSheet = owner.page.getByRole('dialog', { name: chainName });
-      const memberRow = memberSheet.getByRole('listitem').filter({ hasText: member.username });
-      await expect(memberRow).toBeVisible({ timeout: 20_000 });
-      await memberRow.getByRole('button', { name: 'Remove', exact: true }).click();
+      const removeMember = memberSheet.getByRole('button', { name: 'Remove', exact: true });
+      const memberRow = removeMember.locator('xpath=ancestor::li[1]');
+      await expect(memberRow).toContainText(member.username, { timeout: 20_000 });
+      await removeMember.click();
       const removeDialog = owner.page.getByRole('dialog', { name: `Remove ${member.username}?` });
       await removeDialog.getByRole('button', { name: 'Remove', exact: true }).click();
       await expect(removeDialog).toBeHidden({ timeout: 20_000 });
@@ -302,11 +303,13 @@ test.describe('mirrorchain lifecycle UI gate', () => {
       await owner.page.goto(`/portfolio?portfolio=${ownerChain.portfolioId}`);
       await owner.page.getByRole('button', { name: /Open member sheet/ }).click();
       const transferSheet = owner.page.getByRole('dialog', { name: chainName });
-      const successorRow = transferSheet
-        .getByRole('listitem')
-        .filter({ hasText: successor.username });
-      await expect(successorRow).toBeVisible({ timeout: 20_000 });
-      await successorRow.getByRole('button', { name: 'Make owner', exact: true }).click();
+      const makeSuccessorOwner = transferSheet.getByRole('button', {
+        name: 'Make owner',
+        exact: true,
+      });
+      const successorRow = makeSuccessorOwner.locator('xpath=ancestor::li[1]');
+      await expect(successorRow).toContainText(successor.username, { timeout: 20_000 });
+      await makeSuccessorOwner.click();
       const transferDialog = owner.page.getByRole('dialog', {
         name: `Make ${successor.username} the owner?`,
       });
@@ -333,10 +336,12 @@ test.describe('mirrorchain lifecycle UI gate', () => {
       await expect(
         successorSheet.getByRole('button', { name: 'Dissolve group', exact: true }),
       ).toBeVisible({ timeout: 20_000 });
-      const oldOwnerRow = successorSheet.getByRole('listitem').filter({ hasText: owner.username });
-      await expect(
-        oldOwnerRow.getByRole('button', { name: 'Make owner', exact: true }),
-      ).toBeVisible({
+      const restoreOwner = successorSheet.getByRole('button', {
+        name: 'Make owner',
+        exact: true,
+      });
+      const oldOwnerRow = restoreOwner.locator('xpath=ancestor::li[1]');
+      await expect(oldOwnerRow).toContainText(owner.username, {
         timeout: 20_000,
       });
 

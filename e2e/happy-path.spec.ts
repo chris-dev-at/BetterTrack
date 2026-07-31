@@ -110,10 +110,13 @@ test('happy path: invite through friend sharing', async ({ browser }) => {
 
   await owner.goto('/portfolio');
   // Locale-agnostic: EN "600.00" (en-GB) vs DE "600,00" (de-AT).
-  await expect(owner.getByRole('region', { name: 'Portfolio totals' })).toContainText(
-    /Cash\s+600[.,]00/,
-    { timeout: 15_000 },
-  );
+  const totals = owner.getByRole('region', { name: 'Portfolio totals' });
+  const cashStat = totals.locator('.bt-stat').filter({
+    has: totals.getByText('Cash', { exact: true }),
+  });
+  await expect(cashStat.locator('.bt-stat__value')).toHaveText(/600[.,]00/, {
+    timeout: 15_000,
+  });
 
   // V2-P11: create and switch to a second portfolio — scoped views (holdings)
   // follow the active portfolio, then switch back to the default.
