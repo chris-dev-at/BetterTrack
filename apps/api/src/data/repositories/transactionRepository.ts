@@ -3,7 +3,7 @@ import { and, asc, desc, eq, inArray, lt } from 'drizzle-orm';
 import type { Database } from '../db';
 import { assets, portfolioCashMovements, portfolios, transactions } from '../schema';
 import type { AssetRow, TransactionRow } from '../schema';
-import { stampSystemTags } from './cashSystemTagStamp';
+import { stampMovementTags } from './cashSystemTagStamp';
 
 /**
  * Transaction persistence (PROJECTPLAN.md §6.9). Transactions are the source of
@@ -258,11 +258,17 @@ export function createTransactionRepository(db: Database) {
           const booked = await tx
             .insert(portfolioCashMovements)
             .values([...cashRows, ...extraRows])
-            .returning({ id: portfolioCashMovements.id, kind: portfolioCashMovements.kind });
+            .returning({
+              id: portfolioCashMovements.id,
+              kind: portfolioCashMovements.kind,
+              // The note comes back because auto-tagging runs the owner's rules
+              // over it as well as stamping the kind's app-owned tag.
+              note: portfolioCashMovements.note,
+            });
           // Auto-tagging (V5 cash fusion), inside the same transaction as the
           // trade: a buy becomes `investment`, a sell leg `sale_proceeds`, a tax
           // settlement `tax`. Rolled back with the trade if the trade rolls back.
-          await stampSystemTags(tx, portfolioId, booked);
+          await stampMovementTags(tx, portfolioId, booked);
         }
         return inserted.map(toRecord);
       });

@@ -479,9 +479,9 @@ function CreateMenu() {
     { to: '/portfolio/activity?create=trade', icon: 'assets', labelKey: 'create.trade' },
     // See commands.ts: no create-a-movement flow exists post cash-fusion, so
     // this jumps straight to the tagged ledger instead of a dead `?create=`.
-    { to: '/portfolio/cash-flow/movements', icon: 'cash', labelKey: 'create.cashFlow' },
+    { to: '/portfolio/cash/movements', icon: 'cash', labelKey: 'create.cashFlow' },
     {
-      to: '/portfolio/cash-flow/accounts?create=transfer',
+      to: '/portfolio/cash/accounts?create=transfer',
       icon: 'wallet',
       labelKey: 'create.transfer',
     },

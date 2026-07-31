@@ -1,8 +1,10 @@
 import { defineConfig, devices } from '@playwright/test';
 
 import {
+  ADMIN_BASE_URL,
   ADMIN_EMAIL,
   ADMIN_PASSWORD,
+  ADMIN_PORT,
   API_BASE_URL,
   API_PORT,
   DATABASE_URL,
@@ -43,7 +45,10 @@ const apiEnv = {
   SESSION_SECRET,
   BT_API_ORIGIN: API_BASE_URL,
   BT_WEB_ORIGIN: WEB_BASE_URL,
-  BT_ADMIN_ORIGIN: WEB_BASE_URL,
+  // The admin console has its own origin here, like it does in production —
+  // see e2e/support/config.ts. Pointing this at the user origin left the API
+  // treating the console as an unknown origin.
+  BT_ADMIN_ORIGIN: ADMIN_BASE_URL,
   ADMIN_EMAIL,
   ADMIN_PASSWORD,
   // Google sign-in against the fake IdP (issue #520). The client id/secret turn
@@ -104,7 +109,16 @@ export default defineConfig({
         'pnpm --filter @bettertrack/api db:migrate && pnpm --filter @bettertrack/api db:seed && pnpm --filter @bettertrack/api dev',
       url: `${API_BASE_URL}/api/v1/health`,
       env: apiEnv,
-      reuseExistingServer: !process.env.CI,
+      // NEVER adopt a server we did not start — not even locally. `/api/v1/health`
+      // answers the same "ok" whatever database is behind it, so an already-running
+      // stack passed the readiness poll and became the system under test, skipping
+      // the migrate+seed above and silently discarding every env var in `apiEnv`
+      // — `DATABASE_URL` included. That is how a local run ended up interrogating
+      // the developer's own dev database (2026-07-30). The ports in
+      // e2e/support/config.ts now sit off the dev stack's, so the only thing that
+      // can own this one is a leaked e2e server, and failing loudly on it is
+      // right: a stale server would be running pre-migration code.
+      reuseExistingServer: false,
       timeout: 120_000,
     },
     {
@@ -115,7 +129,18 @@ export default defineConfig({
       // dev topology). `--strictPort` makes a busy port a loud failure instead
       // of Vite silently serving the suite from the next free one.
       env: { ...process.env, BT_WEB_DEV_PROXY_TARGET: API_BASE_URL },
-      reuseExistingServer: !process.env.CI,
+      reuseExistingServer: false,
+      timeout: 60_000,
+    },
+    // The ADMIN console: the same SPA, served in admin mode on its own origin,
+    // the way nginx does it per server block in production (§7.1). Without it
+    // `/admin/*` resolves against the USER app, which has no such route — so
+    // every admin-UI spec landed on the sign-in page instead.
+    {
+      command: `pnpm --filter @bettertrack/web exec vite --config vite.admin.config.mts --port ${ADMIN_PORT} --strictPort`,
+      url: ADMIN_BASE_URL,
+      env: { ...process.env, BT_WEB_DEV_PROXY_TARGET: API_BASE_URL },
+      reuseExistingServer: false,
       timeout: 60_000,
     },
     // The BullMQ worker (issue #426, flow 6): the alerts evaluator only runs
@@ -126,7 +151,7 @@ export default defineConfig({
       command: 'node e2e/support/workerServer.mjs',
       url: WORKER_HEALTH_URL,
       env: workerEnv,
-      reuseExistingServer: !process.env.CI,
+      reuseExistingServer: false,
       timeout: 120_000,
     },
     // Fake Google IdP (issue #520): a local OAuth/OIDC stand-in so the real
@@ -142,7 +167,7 @@ export default defineConfig({
         BT_GOOGLE_CLIENT_ID: GOOGLE_CLIENT_ID,
         E2E_GOOGLE_CALLBACK_ORIGIN: WEB_BASE_URL,
       },
-      reuseExistingServer: !process.env.CI,
+      reuseExistingServer: false,
       timeout: 60_000,
     },
   ],

@@ -43,7 +43,6 @@ test('announcements: an active announcement reaches every user and stays dismiss
   });
   expect(create.status()).toBe(201);
   const created = (await create.json()) as { id: string };
-  await apiRequest.dispose();
 
   // Alice sees the banner on any authenticated route.
   await alice.page.goto('/portfolio');
@@ -72,7 +71,13 @@ test('announcements: an active announcement reaches every user and stays dismiss
   const aliceReturnPage = await aliceReturn.newPage();
   await aliceReturnPage.goto('/login');
   await passwordSignIn(aliceReturnPage, alice.email, 'Sup3rSecret!Passw0rd2');
-  await aliceReturnPage.waitForURL(/\/portfolio/);
+  // Off the sign-in page, wherever the app lands. The Origin redesign lands
+  // every sign-in on the Home command center, so waiting specifically for
+  // `/portfolio` waited forever — and the banner is global chrome, so which
+  // authenticated route we arrive on is not what this spec is about.
+  await aliceReturnPage.waitForURL((url) => !url.pathname.startsWith('/login'), {
+    timeout: 30_000,
+  });
   await expect(aliceReturnPage.getByTestId(`announcement-${created.id}`)).toHaveCount(0, {
     timeout: 15_000,
   });
@@ -82,6 +87,19 @@ test('announcements: an active announcement reaches every user and stays dismiss
   await expect(aliceReturnPage.getByText('E2E scheduled maintenance').first()).toBeVisible({
     timeout: 15_000,
   });
+
+  // DELETE the announcement before leaving. An active announcement is GLOBAL —
+  // it renders a banner above every page for every user — so leaving one behind
+  // put a shifting element at the top of the viewport for every spec that ran
+  // afterwards in the same database. The delete cascades its dismissals away.
+  const cleanup = await apiRequest.delete(
+    `${API_BASE_URL}/api/v1/admin/announcements/${created.id}`,
+    {
+      headers: { 'X-Requested-With': 'BetterTrack' },
+    },
+  );
+  expect(cleanup.status()).toBe(204);
+  await apiRequest.dispose();
 
   await aliceReturn.close();
   await bob.context.close();

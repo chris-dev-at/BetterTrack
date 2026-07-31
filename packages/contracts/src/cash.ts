@@ -53,10 +53,11 @@ export type CashRuleMatchType = z.infer<typeof cashRuleMatchTypeSchema>;
  * from day one instead of being back-filled into history later; owner decision
  * 2026-07-30 deliberately DEFERRED reclassifying interest into its own kind.
  *
- * TODO(v5/cash-phase-2): nothing assigns these keys yet — the kind → system-tag
- * auto-tagging engine (and the movement-tag write path) is phase 2. A booked
- * `fee` should carry the `fees` tag automatically once that engine exists; the
- * mapping above is the contract it must implement.
+ * The kind → system-tag engine that assigns these lives in
+ * `apps/api/src/services/cash/cashAutoTag.ts`, stamped from the movement INSERT
+ * paths; a booked `fee` carries `fees` automatically (V5 §16 2026-07-30). The
+ * user's OWN rules run from the same seam and are previewable while typing
+ * (`POST /cash/rules/preview`).
  */
 export const CASH_SYSTEM_TAG_KEYS = [
   'investment',
@@ -375,6 +376,39 @@ export type CashRuleResponse = z.infer<typeof cashRuleResponseSchema>;
 /** Route param for the single-rule endpoints. */
 export const cashRuleIdParamSchema = z.object({ ruleId: z.string().uuid() }).strict();
 export type CashRuleIdParam = z.infer<typeof cashRuleIdParamSchema>;
+
+/**
+ * `POST /cash/rules/apply` response — how many movements gained a tag.
+ *
+ * A MOVEMENT COUNT, NOT A LABEL COUNT: a movement that a three-tag rule matches
+ * is one movement, not three, because "23 movements tagged" is what a person
+ * pressing this means. It counts only what the run actually changed, so a
+ * second press right after the first honestly reports 0 — the operation is
+ * additive and idempotent, and saying "23" again would suggest work that did
+ * not happen.
+ */
+export const cashRuleApplyResponseSchema = z
+  .object({ movementsTagged: z.number().int().min(0) })
+  .strict();
+export type CashRuleApplyResponse = z.infer<typeof cashRuleApplyResponseSchema>;
+
+/**
+ * `POST /cash/rules/preview` — what the caller's rules WOULD tag this note as.
+ *
+ * Read-only, and it exists so the entry form can show the answer while you are
+ * still typing. The alternative was re-implementing the matcher client-side,
+ * which would have put "what a rule does" in two places — and the two would
+ * disagree the first time somebody wrote a regex, since matching runs through
+ * RE2 on the server precisely so a pathological pattern cannot stall anything.
+ *
+ * An empty note is a legal request answering `[]`, because a form with nothing
+ * typed yet is the normal state, not an error.
+ */
+export const cashRulePreviewRequestSchema = z.object({ note: z.string().max(1000) }).strict();
+export type CashRulePreviewRequest = z.infer<typeof cashRulePreviewRequestSchema>;
+
+export const cashRulePreviewResponseSchema = z.object({ tagIds: z.array(z.string()) }).strict();
+export type CashRulePreviewResponse = z.infer<typeof cashRulePreviewResponseSchema>;
 
 // --- Summary + trends --------------------------------------------------------
 

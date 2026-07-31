@@ -5,6 +5,7 @@ import {
   cashBudgetListQuerySchema,
   cashMovementIdParamSchema,
   cashRuleIdParamSchema,
+  cashRulePreviewRequestSchema,
   cashSummaryQuerySchema,
   cashTagIdParamSchema,
   cashTrendQuerySchema,
@@ -19,6 +20,7 @@ import {
   type CashSummaryQuery,
   type CashTrendQuery,
   type CreateCashBudgetRequest,
+  type CashRulePreviewRequest,
   type CreateCashRuleRequest,
   type CreateCashTagRequest,
   type SetCashMovementTagsRequest,
@@ -170,6 +172,26 @@ export function createCashRouter(ctx: AppContext): Router {
     const { ruleId } = req.valid?.params as { ruleId: string };
     await ctx.cashTags.deleteRule(req.authUser!.id, ruleId);
     res.status(204).end();
+  });
+
+  // POST /cash/rules/apply — run the rules over movements that already exist.
+  //
+  // A rule is normally written AFTER the movements it describes, so book-time
+  // tagging alone can never reach a back catalogue. Additive and idempotent: it
+  // attaches tags, never removes one, so a second press honestly reports 0.
+  // No body — rules are per user, so this covers every portfolio they own.
+  router.post('/rules/apply', async (req, res) => {
+    res.json(await ctx.cashTags.applyRules(req.authUser!.id));
+  });
+
+  // POST /cash/rules/preview — what these rules WOULD tag this note as.
+  //
+  // Read-only, and deliberately a round trip: the matcher runs through RE2 here,
+  // so answering it client-side would mean a second implementation that disagrees
+  // with this one the first time somebody writes a regex.
+  router.post('/rules/preview', validateBody(cashRulePreviewRequestSchema), async (req, res) => {
+    const body = req.valid?.body as CashRulePreviewRequest;
+    res.json(await ctx.cashTags.previewRules(req.authUser!.id, body.note));
   });
 
   // ── Summary + trends ───────────────────────────────────────────────────────

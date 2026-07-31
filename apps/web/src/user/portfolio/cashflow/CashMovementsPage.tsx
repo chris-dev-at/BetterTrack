@@ -1,5 +1,6 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 
 import type { CashMovement, CashTag } from '@bettertrack/contracts';
 
@@ -12,7 +13,10 @@ import { Alert } from '../../components/ui';
 import { EmptyState, MoneyText, Skeleton } from '../../../ui';
 import { Button, PageHead } from '../../../ui/origin';
 import { SourceBadge } from '../SourceBadge';
+import { usePreservedSearch } from '../../components/LocalNav';
+import { ACTIVE_PORTFOLIO_PARAM } from '../PortfolioSwitcher';
 import { CashMovementTagsDialog } from './CashMovementTagsDialog';
+import { RecordCashDialog } from './RecordCashDialog';
 import { TagChip } from './TagChip';
 import { useActivePortfolio } from './useActivePortfolio';
 
@@ -35,6 +39,11 @@ export function CashMovementsPage() {
   const { portfoliosQuery, portfolioId } = useActivePortfolio();
   const [tagFilter, setTagFilter] = useState<string>(ALL_FILTER);
   const [editing, setEditing] = useState<CashMovement | null>(null);
+  const [recording, setRecording] = useState(false);
+  const search = usePreservedSearch([ACTIVE_PORTFOLIO_PARAM]);
+  const labelsTo = search
+    ? { pathname: '/portfolio/cash/labels', search }
+    : '/portfolio/cash/labels';
 
   const movementsQuery = useQuery({
     queryKey: ['portfolio', portfolioId, 'cash'],
@@ -92,7 +101,22 @@ export function CashMovementsPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <PageHead sub={t('cashflow.movements.subtitle')} title={t('cashflow.tabs.movements')} />
+      {/* Labels live one click from here on purpose: this is where you are
+          standing when you notice a movement is tagged wrong, or not at all. */}
+      <PageHead
+        actions={
+          <>
+            <Link className="bt-btn" to={labelsTo}>
+              {t('cashflow.movements.manageLabels')}
+            </Link>
+            <Button onClick={() => setRecording(true)} variant="primary">
+              {t('cashflow.record.action')}
+            </Button>
+          </>
+        }
+        sub={t('cashflow.movements.subtitle')}
+        title={t('cashflow.tabs.movements')}
+      />
 
       {tags.length > 1 ? (
         <label className="bt-meta flex items-center gap-1.5">
@@ -189,6 +213,10 @@ export function CashMovementsPage() {
           </table>
         </div>
       )}
+
+      {recording ? (
+        <RecordCashDialog onClose={() => setRecording(false)} portfolioId={portfolioId} />
+      ) : null}
 
       {editing ? (
         <CashMovementTagsDialog

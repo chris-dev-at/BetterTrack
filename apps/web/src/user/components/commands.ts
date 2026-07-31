@@ -47,7 +47,7 @@ export const COMMANDS: readonly CommandEntry[] = [
   },
   {
     labelKey: 'portfolio.tabs.cashFlow',
-    to: '/portfolio/cash-flow',
+    to: '/portfolio/cash',
     group: 'navigate',
     icon: 'cash',
     extra: ['expenses', 'budget', 'ausgaben'],
@@ -75,21 +75,21 @@ export const COMMANDS: readonly CommandEntry[] = [
   },
   {
     labelKey: 'cashflow.tabs.accounts',
-    to: '/portfolio/cash-flow/accounts',
+    to: '/portfolio/cash/accounts',
     group: 'navigate',
     icon: 'wallet',
     extra: ['cash sources'],
   },
   {
     labelKey: 'cashflow.tabs.budgets',
-    to: '/portfolio/cash-flow/budgets',
+    to: '/portfolio/cash/budgets',
     group: 'navigate',
     icon: 'target',
     extra: ['cash budgets'],
   },
   {
     labelKey: 'cashflow.tabs.tags',
-    to: '/portfolio/cash-flow/tags',
+    to: '/portfolio/cash/labels',
     group: 'navigate',
     icon: 'pen',
     extra: ['cash tags', 'categories'],
@@ -269,14 +269,14 @@ export const COMMANDS: readonly CommandEntry[] = [
     // trades on Activity) — this now jumps straight to the tagged ledger
     // rather than carrying a `?create=` intent nothing reads.
     labelKey: 'create.cashFlow',
-    to: '/portfolio/cash-flow/movements',
+    to: '/portfolio/cash/movements',
     group: 'create',
     icon: 'cash',
     extra: ['cash flow', 'cashflow', 'income', 'expense', 'einnahme', 'ausgabe'],
   },
   {
     labelKey: 'create.transfer',
-    to: '/portfolio/cash-flow/accounts?create=transfer',
+    to: '/portfolio/cash/accounts?create=transfer',
     group: 'create',
     icon: 'wallet',
     extra: ['cash transfer', 'umbuchung', 'überweisung'],

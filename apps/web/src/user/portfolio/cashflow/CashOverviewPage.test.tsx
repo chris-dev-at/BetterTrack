@@ -27,7 +27,7 @@ vi.mock('../../../lib/cashApi', () => ({
   getCashTrends: vi.fn(),
 }));
 
-import { listPortfolios } from '../../../lib/portfolioApi';
+import { getCashMovements, listCashSources, listPortfolios } from '../../../lib/portfolioApi';
 import { getCashSummary, getCashTrends } from '../../../lib/cashApi';
 
 import { CashOverviewPage } from './CashOverviewPage';
@@ -76,6 +76,16 @@ beforeEach(() => {
   vi.mocked(listPortfolios).mockResolvedValue(PORTFOLIOS);
   vi.mocked(getCashTrends).mockResolvedValue(EMPTY_TRENDS);
   vi.mocked(getCashSummary).mockResolvedValue(summary());
+  // The overview now also opens on the BALANCE, so it reads the portfolio's
+  // cash sources and its ledger. Both are auto-mocked by `vi.mock` above; give
+  // them empty-but-valid shapes so a case that does not care about them still
+  // renders the rest of the page.
+  vi.mocked(listCashSources).mockResolvedValue({ sources: [] });
+  vi.mocked(getCashMovements).mockResolvedValue({
+    balanceEur: 0,
+    movements: [],
+    sources: [],
+  } as unknown as Awaited<ReturnType<typeof getCashMovements>>);
 });
 
 describe('CashOverviewPage', () => {
@@ -87,9 +97,12 @@ describe('CashOverviewPage', () => {
 
     // No I18nProvider wraps this render (mirrors CashSourcesPage.test.tsx), so
     // `formatMoney` renders under its de-AT module default: "1.234,56 €".
-    expect(await screen.findByText('4.200,00 €')).toBeInTheDocument();
-    expect(screen.getByText('1.000,00 €')).toBeInTheDocument();
-    expect(screen.getByText('3.200,00 €')).toBeInTheDocument();
+    // In/out sit together on the month line; the net reads as a change against
+    // the balance above it ("… this month") rather than as a third bare figure,
+    // so it is matched inside its sentence.
+    expect(await screen.findByText(/4\.200,00/)).toBeInTheDocument();
+    expect(screen.getByText(/1\.000,00/)).toBeInTheDocument();
+    expect(screen.getByText(/3\.200,00.*this month/)).toBeInTheDocument();
   });
 
   test('states plainly that per-tag rows do not sum to the total', async () => {

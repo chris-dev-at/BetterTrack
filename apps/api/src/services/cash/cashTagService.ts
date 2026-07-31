@@ -3,6 +3,8 @@ import {
   type CashMovementTagsResponse,
   type CashRule,
   type CashRuleListResponse,
+  type CashRuleApplyResponse,
+  type CashRulePreviewResponse,
   type CashRuleResponse,
   type CashTag,
   type CashTagListResponse,
@@ -20,7 +22,7 @@ import type {
 } from '../../data/repositories/cashRuleRepository';
 import type { CashTagRecord, CashTagRepository } from '../../data/repositories/cashTagRepository';
 import { badRequest, conflict, notFound } from '../../errors';
-import { isSupportedCashRuleRegex } from './cashRuleEngine';
+import { isSupportedCashRuleRegex, tagsByRules } from './cashRuleEngine';
 
 /**
  * Cash tags and auto-tagging rules (V5 cash fusion).
@@ -104,6 +106,8 @@ export interface CashTagService {
     patch: UpdateCashRuleRequest,
   ): Promise<CashRuleResponse>;
   deleteRule(userId: string, ruleId: string): Promise<void>;
+  applyRules(userId: string): Promise<CashRuleApplyResponse>;
+  previewRules(userId: string, note: string): Promise<CashRulePreviewResponse>;
 }
 
 export function createCashTagService(deps: CashTagServiceDeps): CashTagService {
@@ -227,6 +231,33 @@ export function createCashTagService(deps: CashTagServiceDeps): CashTagService {
     async deleteRule(userId, ruleId): Promise<void> {
       const deleted = await rules.delete(userId, ruleId);
       if (!deleted) throw RULE_NOT_FOUND();
+    },
+
+    /**
+     * Apply the caller's rules to the movements they already have.
+     *
+     * Unlike the book-time path this one is ALLOWED TO FAIL LOUDLY: there, the
+     * user came to record money and a labelling fault must not cost them the
+     * transaction; here the labelling IS the request, so swallowing an error
+     * would report "0 movements tagged" for a run that never happened.
+     */
+    async applyRules(userId): Promise<CashRuleApplyResponse> {
+      return { movementsTagged: await rules.applyToExistingMovements(userId) };
+    },
+
+    /**
+     * What the caller's rules WOULD assign to `note` — the entry form asks this
+     * while you type, so the tag appears before you commit rather than after.
+     *
+     * Writes nothing. It runs the SAME engine over the SAME evaluation order the
+     * booking path uses (`listForOwner` returns rules ordered; the engine walks
+     * that order and stops at the first match), so the preview cannot promise a
+     * tag the booking would not apply.
+     */
+    async previewRules(userId, note): Promise<CashRulePreviewResponse> {
+      const trimmed = note.trim();
+      if (trimmed === '') return { tagIds: [] };
+      return { tagIds: tagsByRules(trimmed, await rules.listForOwner(userId)) };
     },
   };
 }

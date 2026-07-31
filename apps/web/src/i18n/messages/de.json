@@ -1999,7 +1999,7 @@
       "overview": "Übersicht",
       "activity": "Aktivität",
       "customAssets": "Eigene Anlagen",
-      "cashFlow": "Cashflow",
+      "cashFlow": "Bargeld",
       "analysis": "Analyse",
       "tax": "Steuern",
       "import": "Import",
@@ -3310,6 +3310,9 @@
       "empty": "Hier ist noch nichts passiert.",
       "loadError": "Die Aktivitätsliste konnte nicht geladen werden. Bitte versuche es erneut."
     },
+    "membersListAria": "Mitglieder",
+    "activityListAria": "Aktivität",
+    "inviteListAria": "Freunde, die du einladen kannst",
     "invites": {
       "incomingTitle": "Einladungen zu Gruppenportfolios",
       "outgoingTitle": "Von dir gesendete Einladungen",
@@ -4021,6 +4024,15 @@
         "empty": "Noch keine Cash-Quellen.",
         "total": "Gesamt"
       },
+      "quickCash": {
+        "title": "Schnellbuchung",
+        "description": "Einzahlung, Auszahlung oder Gebühr erfassen, ohne Home zu verlassen.",
+        "submit": "Erfassen",
+        "notePlaceholder": "Notiz (optional)",
+        "into": "Auf {{source}}",
+        "needsScope": "Wähle ein Portfolio für dieses Widget — eine Bargeldbewegung muss irgendwo konkret landen.",
+        "noSource": "Dieses Portfolio hat noch kein Bargeldkonto."
+      },
       "watchlist": {
         "title": "Watchlist",
         "description": "Eine Watchlist mit aktuellen Kursen",
@@ -4059,7 +4071,7 @@
     }
   },
   "cashflow": {
-    "aria": "Cashflow",
+    "aria": "Bargeld",
     "tabs": {
       "overview": "Übersicht",
       "movements": "Bewegungen",
@@ -4070,6 +4082,31 @@
       "accounts": "Cash-Konten"
     },
     "untagged": "Ohne Tag",
+    "record": {
+      "title": "Transaktion erfassen",
+      "directionAria": "Geld raus oder Geld rein",
+      "moneyOut": "Geld raus",
+      "moneyIn": "Geld rein",
+      "noteLabel": "Wofür",
+      "notePlaceholder": "z. B. SPAR MARKT 4021",
+      "willBeTagged": "Wird markiert als",
+      "moreToggle": "Mehr — Datum, Konto, Tags",
+      "lessToggle": "Weniger",
+      "tagsLabel": "Tags",
+      "countsToPerformance": "Auf meine Anlage-Performance anrechnen",
+      "countsToPerformanceHint": "Für Haltekosten — eine Konto- oder Depotgebühr gehört zum Investieren und soll die ausgewiesene Rendite senken. Alltägliche Ausgaben nicht.",
+      "receiptLabel": "Beleg",
+      "receiptPlanned": "Geplant",
+      "into": "Auf {{source}}",
+      "submit": "Erfassen",
+      "action": "Transaktion erfassen",
+      "amountLabel": "Betrag",
+      "details": "Details",
+      "balanceAfter": "Saldo danach",
+      "countsToPerformanceShort": "Haltekosten",
+      "quickIn": "Geld rein erfassen",
+      "quickOut": "Geld raus erfassen"
+    },
     "matchType": {
       "contains": "Enthält",
       "equals": "Ist gleich",
@@ -4088,7 +4125,18 @@
       "notSumNote": "Tags überschneiden sich — eine Bewegung mit zwei Tags zählt bei beiden, darum ergeben diese Zeilen nicht die Summe oben.",
       "trend": "Trend",
       "emptyTitle": "Noch keine Aktivität",
-      "emptyDescription": "Erfasse Bargeldbewegungen, um deine monatlichen Trends zu sehen."
+      "emptyDescription": "Erfasse Bargeldbewegungen, um deine monatlichen Trends zu sehen.",
+      "total": "Gesamtes Bargeld",
+      "accountsHeading": "Konten",
+      "manageAccounts": "Konten verwalten",
+      "recentHeading": "Letzte Bewegungen",
+      "allMovements": "Alle Bewegungen",
+      "thisMonthChange": "{{amount}} diesen Monat",
+      "noAccounts": "Noch keine Bargeldkonten.",
+      "quickDeposit": "Auf {{source}} einzahlen",
+      "quickWithdraw": "Von {{source}} ausgeben",
+      "previousMonth": "Voriger Monat",
+      "nextMonth": "Nächster Monat"
     },
     "movements": {
       "subtitle": "Das Bargeldbuch dieses Portfolios, getaggt.",
@@ -4109,7 +4157,8 @@
         "title": "Tags bearbeiten",
         "noTags": "Du hast noch keine Tags — leg zuerst eines im Tab „Tags“ an.",
         "saveError": "Tags konnten nicht aktualisiert werden. Bitte versuche es erneut."
-      }
+      },
+      "manageLabels": "Labels & Regeln"
     },
     "budgets": {
       "subtitle": "Ausgabenziele pro Tag, für dieses Portfolio.",
@@ -4166,6 +4215,11 @@
     },
     "rules": {
       "subtitle": "Regeln taggen Importe und manuelle Einträge automatisch, anhand ihrer Notiz. Die erste Übereinstimmung gewinnt.",
+      "applyToExisting": "Auf Bestehende anwenden",
+      "applying": "Wird angewendet…",
+      "applyTagged": "{{count}} Bewegungen markiert.",
+      "applyNoneTagged": "Nichts Neues zu markieren — jede passende Bewegung trägt ihre Tags bereits.",
+      "applyError": "Regeln konnten nicht angewendet werden. Bitte erneut versuchen.",
       "loadError": "Deine Regeln konnten nicht geladen werden.",
       "deleteError": "Regel konnte nicht gelöscht werden. Bitte versuche es erneut.",
       "new": "Neue Regel",
@@ -4189,6 +4243,11 @@
         "enabled": "Aktiv",
         "saveError": "Regel konnte nicht gespeichert werden. Bitte versuche es erneut."
       }
+    },
+    "labels": {
+      "title": "Labels & Regeln",
+      "subtitle": "Die Tags, die eine Bewegung tragen kann — und die Regeln, die sie automatisch vergeben.",
+      "backToMovements": "Zurück zu Bewegungen"
     }
   },
   "workbench": {

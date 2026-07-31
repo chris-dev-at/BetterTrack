@@ -5,6 +5,7 @@ import type { CashRule, CashTag } from '@bettertrack/contracts';
 
 import { useT } from '../../../i18n';
 import {
+  applyCashRules,
   CASH_RULES_QUERY_KEY,
   CASH_TAGS_QUERY_KEY,
   deleteCashRule,
@@ -13,7 +14,8 @@ import {
 } from '../../../lib/cashApi';
 import { Alert } from '../../components/ui';
 import { EmptyState, Skeleton } from '../../../ui';
-import { Badge, Button, PageHead } from '../../../ui/origin';
+import { Badge, Button } from '../../../ui/origin';
+import { SectionHead } from './SectionHead';
 import { CashRuleDialog } from './CashRuleDialog';
 import { TagChip } from './TagChip';
 
@@ -23,7 +25,7 @@ import { TagChip } from './TagChip';
  * every one of its tags at once. Rules run in ascending priority and the
  * FIRST match wins — stated once here, not per row.
  */
-export function CashRulesPage() {
+export function CashRulesPage({ embedded = false }: { embedded?: boolean } = {}) {
   const t = useT();
   const queryClient = useQueryClient();
   const [creating, setCreating] = useState(false);
@@ -52,6 +54,21 @@ export function CashRulesPage() {
     onSuccess: () => {
       setConfirmDeleteId(null);
       void queryClient.invalidateQueries({ queryKey: CASH_RULES_QUERY_KEY });
+    },
+  });
+
+  /**
+   * Rules only tag movements booked AFTER they exist, and a rule is usually
+   * written after the movements it describes. This is the catch-up: additive,
+   * so it can never remove a tag set by hand, which is why it is a button
+   * rather than something that happens on save.
+   */
+  const applyToExisting = useMutation({
+    mutationFn: () => applyCashRules(),
+    onSuccess: () => {
+      // Every movement list and every tag-derived total may have moved.
+      void queryClient.invalidateQueries({ queryKey: ['portfolio'] });
+      void queryClient.invalidateQueries({ queryKey: ['cash'] });
     },
   });
 
@@ -92,15 +109,44 @@ export function CashRulesPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <PageHead
-        actions={
-          <Button disabled={tags.length === 0} onClick={() => setCreating(true)} variant="primary">
-            {t('cashflow.rules.new')}
-          </Button>
+      <SectionHead
+        action={
+          <>
+            {rules.length > 0 ? (
+              <Button
+                disabled={applyToExisting.isPending}
+                onClick={() => applyToExisting.mutate()}
+                variant="quiet"
+              >
+                {applyToExisting.isPending
+                  ? t('cashflow.rules.applying')
+                  : t('cashflow.rules.applyToExisting')}
+              </Button>
+            ) : null}
+            <Button
+              disabled={tags.length === 0}
+              onClick={() => setCreating(true)}
+              variant="primary"
+            >
+              {t('cashflow.rules.new')}
+            </Button>
+          </>
         }
+        embedded={embedded}
         sub={t('cashflow.rules.subtitle')}
         title={t('cashflow.tabs.rules')}
       />
+
+      {applyToExisting.isSuccess ? (
+        <Alert tone="success">
+          {applyToExisting.data.movementsTagged === 0
+            ? t('cashflow.rules.applyNoneTagged')
+            : t('cashflow.rules.applyTagged', { count: applyToExisting.data.movementsTagged })}
+        </Alert>
+      ) : null}
+      {applyToExisting.isError ? (
+        <Alert tone="error">{t('cashflow.rules.applyError')}</Alert>
+      ) : null}
 
       {rules.length === 0 ? (
         <EmptyState

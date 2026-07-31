@@ -7,7 +7,8 @@ import { useT } from '../../../i18n';
 import { CASH_TAGS_QUERY_KEY, deleteCashTag, listCashTags } from '../../../lib/cashApi';
 import { Alert } from '../../components/ui';
 import { EmptyState, Skeleton } from '../../../ui';
-import { Badge, Button, PageHead } from '../../../ui/origin';
+import { Badge, Button } from '../../../ui/origin';
+import { SectionHead } from './SectionHead';
 import { CashTagDialog } from './CashTagDialog';
 import { TagChip } from './TagChip';
 
@@ -20,7 +21,7 @@ import { TagChip } from './TagChip';
  * tags get full CRUD; deleting one cascades its budgets and rule links away,
  * which the delete confirmation states plainly.
  */
-export function CashTagsPage() {
+export function CashTagsPage({ embedded = false }: { embedded?: boolean } = {}) {
   const t = useT();
   const queryClient = useQueryClient();
   const [creating, setCreating] = useState(false);
@@ -98,12 +99,13 @@ export function CashTagsPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <PageHead
-        actions={
+      <SectionHead
+        action={
           <Button onClick={() => setCreating(true)} variant="primary">
             {t('cashflow.tags.new')}
           </Button>
         }
+        embedded={embedded}
         sub={t('cashflow.tags.subtitle')}
         title={t('cashflow.tabs.tags')}
       />

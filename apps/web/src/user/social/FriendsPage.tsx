@@ -273,6 +273,12 @@ function RequestsSection() {
   function invalidate() {
     void queryClient.invalidateQueries({ queryKey: ['social', 'requests'] });
     void queryClient.invalidateQueries({ queryKey: ['social', 'friends'] });
+    // Becoming friends CHANGES WHAT IS SHARED WITH YOU: anything the other
+    // person had already shared to "all friends" becomes visible the moment the
+    // request is accepted. Without this the new friend's row read "nothing
+    // shared yet" until a manual reload — the share was there, the cache was
+    // not. The same pair is invalidated together on the un-friend path below.
+    void queryClient.invalidateQueries({ queryKey: ['social', 'shared-with-me'] });
   }
 
   const acceptMutation = useMutation({

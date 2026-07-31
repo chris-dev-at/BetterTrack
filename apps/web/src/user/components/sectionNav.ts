@@ -59,7 +59,7 @@ export const SECTION_NAV: Readonly<Record<SectionKey, SectionNav>> = {
     children: [
       { to: '/portfolio', labelKey: 'portfolio.tabs.overview', end: true, rail: true },
       { to: '/portfolio/activity', labelKey: 'portfolio.tabs.activity', rail: true },
-      { to: '/portfolio/cash-flow', labelKey: 'portfolio.tabs.cashFlow', rail: true },
+      { to: '/portfolio/cash', labelKey: 'portfolio.tabs.cashFlow', rail: true },
       { to: '/portfolio/analysis', labelKey: 'portfolio.tabs.analysis' },
       { to: '/portfolio/tax', labelKey: 'portfolio.tabs.tax' },
       { to: '/portfolio/import', labelKey: 'portfolio.tabs.import', flag: 'imports' },

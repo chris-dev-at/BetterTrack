@@ -4,6 +4,7 @@ import { CASH_SYSTEM_TAGS } from '@bettertrack/contracts';
 
 import { SYSTEM_TAG_FOR_KIND } from '../../services/cash/cashAutoTag';
 import type { CashMovementKind } from '../../domain/cashLedger';
+import { applyCashRulesAtBookTime } from './cashRuleTagStamp';
 
 /**
  * AUTO-TAGGING, at the only moment it is correct to do it: when a cash movement
@@ -50,10 +51,21 @@ export interface SystemTagStampExecutor {
   execute(query: ReturnType<typeof sql>): Promise<unknown>;
 }
 
-/** A movement row that has just been inserted. */
+/**
+ * A movement row that has just been inserted.
+ *
+ * `note` is here because the second half of auto-tagging — the user's own rules
+ * — matches on it (see `cashRuleTagStamp.ts`). It is required rather than
+ * optional deliberately: a booking site that narrows its `RETURNING` clause and
+ * drops the note would otherwise silently stop rule-tagging its movements, and
+ * a movement that slips through is never re-tagged. Making it a type error is
+ * the same tripwire discipline `Record<CashMovementKind, …>` applies to the
+ * kind table.
+ */
 export interface StampableMovement {
   id: string;
   kind: CashMovementKind;
+  note: string | null;
 }
 
 /** `db.execute` hands back `{ rows }` on some drivers and a bare array on others. */
@@ -114,11 +126,12 @@ async function seedSystemTagsForOwner(
  * from its very first booking without registration needing to know this exists.
  * In steady state the first statement succeeds and the seed never runs.
  *
- * NEVER THROWS. Booking the money is what the caller came for; a labelling
- * failure must not roll back a recorded trade, dividend or transfer. A movement
- * that fails to be labelled is recoverable by hand — a lost transaction is not.
+ * Internal: it MAY throw, and `stampMovementTags` below is the only caller —
+ * it holds the "a labelling fault never costs you a trade" guarantee for both
+ * halves of auto-tagging, in one place, rather than each half swallowing its
+ * own errors and leaving a reader to check twice.
  */
-export async function stampSystemTags(
+async function stampSystemTags(
   executor: SystemTagStampExecutor,
   portfolioId: string,
   movements: readonly StampableMovement[],
@@ -143,13 +156,49 @@ export async function stampSystemTags(
     `);
   };
 
+  if (rowCount(await link()) > 0) return;
+  // Nothing linked: either every link already existed (a replay — the retry is
+  // then a cheap no-op) or this owner has no system tags yet.
+  await seedSystemTagsForOwner(executor, portfolioId);
+  await link();
+}
+
+/**
+ * THE ONE AUTO-TAGGING ENTRY POINT the booking paths call.
+ *
+ * Two halves, in the order a reader expects them:
+ *
+ *   1. the app-owned tag the movement's KIND earns (this file), and
+ *   2. the tags the owner's own RULES assign by matching its note
+ *      (`cashRuleTagStamp.ts`).
+ *
+ * They are one function because they have one correctness argument: hang
+ * labelling off the INSERT paths and a new booking site gets it by
+ * construction, rather than by somebody remembering to call two things. Before
+ * this, half of it was called and half of it was not — the rule engine shipped
+ * with no caller at all (owner decision, 2026-07-30).
+ *
+ * NEVER THROWS. Booking the money is what the caller came for; a labelling
+ * failure must not roll back a recorded trade, dividend or transfer. A movement
+ * that fails to be labelled is recoverable by hand — and now recoverable in
+ * bulk, through `POST /cash/rules/apply` — where a lost transaction is not.
+ * The two halves are caught separately so a fault in one still lets the other
+ * land.
+ */
+export async function stampMovementTags(
+  executor: SystemTagStampExecutor,
+  portfolioId: string,
+  movements: readonly StampableMovement[],
+): Promise<void> {
+  if (movements.length === 0) return;
   try {
-    if (rowCount(await link()) > 0) return;
-    // Nothing linked: either every link already existed (a replay — the retry is
-    // then a cheap no-op) or this owner has no system tags yet.
-    await seedSystemTagsForOwner(executor, portfolioId);
-    await link();
+    await stampSystemTags(executor, portfolioId, movements);
   } catch {
     // A labelling fault must not take the money write down with it.
+  }
+  try {
+    await applyCashRulesAtBookTime(executor, portfolioId, movements);
+  } catch {
+    // Likewise: a bad user regex must never cost somebody their trade.
   }
 }

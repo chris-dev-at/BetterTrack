@@ -77,7 +77,7 @@ test('imports: TR CSV — autodetect, staged preview, transactional apply, re-up
   // Cash source Movement history carries the deposit + dividend legs. Buys are
   // NOT linked to cash by default in the import flow (the linkCash checkbox is
   // off), so no "Buy" movement appears there.
-  await page.goto('/portfolio/cash-flow/accounts');
+  await page.goto('/portfolio/cash/accounts');
   const history = page.getByRole('region', { name: 'Movement history' });
   await expect(history.getByText('Deposit', { exact: true })).toBeVisible({ timeout: 30_000 });
   await expect(history.getByText('Dividend', { exact: true })).toBeVisible();

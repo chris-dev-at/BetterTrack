@@ -3,7 +3,9 @@ import {
   cashBudgetResponseSchema,
   cashMonthlySummaryResponseSchema,
   cashMovementTagsResponseSchema,
+  cashRuleApplyResponseSchema,
   cashRuleListResponseSchema,
+  cashRulePreviewResponseSchema,
   cashRuleResponseSchema,
   cashTagListResponseSchema,
   cashTagResponseSchema,
@@ -12,7 +14,9 @@ import {
   type CashBudgetResponse,
   type CashMonthlySummaryResponse,
   type CashMovementTagsResponse,
+  type CashRuleApplyResponse,
   type CashRuleListResponse,
+  type CashRulePreviewResponse,
   type CashRuleResponse,
   type CashTagListResponse,
   type CashTagResponse,
@@ -167,6 +171,38 @@ export async function updateCashRule(
 
 export async function deleteCashRule(ruleId: string): Promise<void> {
   await apiRequest<unknown>(`/cash/rules/${encodeURIComponent(ruleId)}`, { method: 'DELETE' });
+}
+
+/**
+ * `POST /cash/rules/apply` — run the rules over movements that already exist.
+ *
+ * New rules only tag what arrives after them, and a rule is usually written
+ * after the movements it describes, so this is how a back catalogue gets
+ * labelled. Additive: it never removes a tag, and a second call reports 0.
+ */
+export async function applyCashRules(): Promise<CashRuleApplyResponse> {
+  const data = await apiRequest<unknown>('/cash/rules/apply', { method: 'POST' });
+  return cashRuleApplyResponseSchema.parse(data);
+}
+
+/**
+ * `POST /cash/rules/preview` — what your rules WOULD tag this note as.
+ *
+ * Asked while the user types, so the label shows up before they commit instead
+ * of surprising them afterwards. Round-trips on purpose: the matcher runs
+ * through RE2 server-side, and answering it here would be a second
+ * implementation free to disagree with the one that actually books.
+ */
+export async function previewCashRules(
+  note: string,
+  signal?: AbortSignal,
+): Promise<CashRulePreviewResponse> {
+  const data = await apiRequest<unknown>('/cash/rules/preview', {
+    method: 'POST',
+    body: { note },
+    signal,
+  });
+  return cashRulePreviewResponseSchema.parse(data);
 }
 
 // ── Dashboards ──

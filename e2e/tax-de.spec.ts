@@ -51,7 +51,7 @@ async function enableGermanyTaxMode(page: Page): Promise<void> {
 
 /** Deposit EUR into Main so the dividend's withholding never trips the overdraw gate. */
 async function depositToMain(page: Page, amount: string): Promise<void> {
-  await page.goto('/portfolio/cash-flow/accounts');
+  await page.goto('/portfolio/cash/accounts');
   const rows = page.locator('table[aria-label="Cash sources"] tbody tr');
   // sortSourcesMainFirst: Main is row 0 on a fresh account.
   await rows.nth(0).getByRole('button', { name: 'Deposit' }).click();
@@ -208,8 +208,11 @@ test('DE tax mode: FIFO, Sparer-Pauschbetrag exhaustion, both loss pots, and rep
   await expect(deStatValue(page, /Other-loss pot/)).toContainText(/300/);
   // FIFO: the 2025 sell realizes +€2,000 (oldest 5 @ €100 lot), never the +€1,500
   // a moving-average basis (½·(€100+€300)) would have produced. The per-sell
-  // table is the only one carrying a "Cost basis" column, so it resolves alone.
-  const sellsTable = page.locator('table').filter({ hasText: 'Cost basis' });
+  // table is nested INSIDE the expanded year row's table, so filtering on the
+  // "Cost basis" column alone matches both — the outer table contains the inner
+  // one's text. `:not(:has(table))` takes the innermost, which is the per-sell
+  // one by construction.
+  const sellsTable = page.locator('table:not(:has(table))').filter({ hasText: 'Cost basis' });
   await expect(sellsTable).toContainText(/2[.,]000/);
   await expect(sellsTable).not.toContainText(/1[.,]500/);
 

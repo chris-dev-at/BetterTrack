@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useMutation } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 
 import type { PortfolioSummary } from '@bettertrack/contracts';
 
@@ -60,6 +60,7 @@ export function PortfolioWizard({
   const [reported, setReported] = useState<PortfolioWizardStepReport>({ ready: false });
   const [created, setCreated] = useState<PortfolioSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
   const bodyRef = useRef<HTMLDivElement>(null);
   const formRef = useRef<HTMLFormElement>(null);
   /** Synchronous once-only latch for the POST — see the note above. */
@@ -88,6 +89,13 @@ export function PortfolioWizard({
     onSuccess: (portfolio) => {
       setError(null);
       setCreated(portfolio);
+      // The portfolio EXISTS now, so every list of portfolios is stale from this
+      // moment — not from whenever the user happens to finish the wizard. It used
+      // to be refreshed only by `onCreated`, which fires solely on the terminal
+      // step's Continue: closing the wizard any other way left the switcher
+      // showing a list without the portfolio you had just made, until a manual
+      // reload (owner, 2026-07-31).
+      void queryClient.invalidateQueries({ queryKey: ['portfolios'] });
       goTo(index + 1);
     },
     onError: (err) => {
@@ -103,6 +111,17 @@ export function PortfolioWizard({
       goTo(0);
     },
   });
+
+  /**
+   * Dismissing the wizard is not the same as abandoning the portfolio. If one was
+   * created, report it on the way out — otherwise pressing Escape on the final
+   * step left the user looking at their OLD portfolio with the new one nowhere
+   * in the switcher.
+   */
+  const handleClose = useCallback(() => {
+    if (created) onCreated(created);
+    onClose();
+  }, [created, onClose, onCreated]);
 
   function goTo(nextIndex: number) {
     setReported({ ready: false });
@@ -174,7 +193,7 @@ export function PortfolioWizard({
   const busy = commit.isPending || Boolean(reported.busy);
 
   return (
-    <ODialog onClose={onClose} open size="wizard" title={t('portfolio.wizard.title')}>
+    <ODialog onClose={handleClose} open size="wizard" title={t('portfolio.wizard.title')}>
       <form
         className="bt-pfw"
         onSubmit={(event) => {

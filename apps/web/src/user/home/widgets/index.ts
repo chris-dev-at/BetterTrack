@@ -4,6 +4,7 @@ import { AllocationWidget } from './AllocationWidget';
 import { AssetSpotlightSettings, AssetSpotlightWidget } from './AssetSpotlightWidget';
 import { AttentionWidget } from './AttentionWidget';
 import { CashBalancesWidget } from './CashBalancesWidget';
+import { QuickCashWidget } from './QuickCashWidget';
 import { CASHFLOW_MONTHS, CashflowChartWidget } from './CashflowChartWidget';
 import { ConcentrationWidget } from './ConcentrationWidget';
 import { DividendsWidget } from './DividendsWidget';
@@ -257,6 +258,19 @@ export const WIDGET_REGISTRY = {
     defaultSettings: { scope: 'all' },
     supportsScope: true,
     Component: CashBalancesWidget,
+  },
+  'quick-cash': {
+    type: 'quick-cash',
+    icon: 'cash',
+    labelKey: 'home.widgets.quickCash.title',
+    descriptionKey: 'home.widgets.quickCash.description',
+    group: 'lists',
+    allowedSizes: WIDGET_SIZE_RULES['quick-cash'].allowed,
+    // Scoped by default, unlike every other cash widget: a movement has to land
+    // in ONE portfolio, so "all" is not a meaningful setting here.
+    defaultSettings: { scope: 'all' },
+    supportsScope: true,
+    Component: QuickCashWidget,
   },
   watchlist: {
     type: 'watchlist',

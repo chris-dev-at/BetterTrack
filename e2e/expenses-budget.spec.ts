@@ -22,7 +22,7 @@ import { provisionUser } from './support/users';
  */
 // SKIPPED (V5 cash fusion, phase 2 — web side): this spec drove the retired
 // `expense_*` island end to end and no longer has a runnable path.
-// `/portfolio/cash-flow/import` is now a parked placeholder (statement import
+// `/portfolio/cash/import` is now a parked placeholder (statement import
 // is being rebuilt on the portfolio cash ledger — no upload form exists to
 // drive), the auto-seeded "Groceries"/"Salary" starter categories this spec
 // selects by label no longer exist (tags start empty; only the 9 app-owned
@@ -65,7 +65,7 @@ test.skip('expenses: bank import → categorize → dashboard → single budget 
 
   // ── An auto-categorization rule: everything containing "spar" → Groceries.
   //    (Visiting the page also seeds the default category set.) ──
-  await page.goto('/portfolio/cash-flow/rules');
+  await page.goto('/portfolio/cash/labels');
   await page.getByRole('button', { name: 'New rule' }).click();
   const ruleDialog = page.getByRole('dialog');
   await ruleDialog.getByRole('combobox').first().selectOption({ label: 'Groceries' });
@@ -74,7 +74,7 @@ test.skip('expenses: bank import → categorize → dashboard → single budget 
   await expect(ruleDialog).toBeHidden();
 
   // ── A €200 monthly Groceries budget (no spend yet, so no alert fires now). ──
-  await page.goto('/portfolio/cash-flow/budgets');
+  await page.goto('/portfolio/cash/budgets');
   await page.getByRole('button', { name: 'New budget' }).click();
   const budgetDialog = page.getByRole('dialog');
   await budgetDialog.getByRole('combobox').selectOption({ label: 'Groceries' });
@@ -83,7 +83,7 @@ test.skip('expenses: bank import → categorize → dashboard → single budget 
   await expect(budgetDialog).toBeHidden();
 
   // ── Import the statement: it autodetects as Revolut and stages 4 new rows. ──
-  await page.goto('/portfolio/cash-flow/import');
+  await page.goto('/portfolio/cash/import');
   await page.getByLabel('Choose a CSV file').setInputFiles(stmt.file);
   await page.getByRole('button', { name: 'Preview' }).click();
   await expect(page.getByText('Detected Revolut')).toBeVisible({ timeout: 20_000 });
@@ -106,13 +106,13 @@ test.skip('expenses: bank import → categorize → dashboard → single budget 
   });
 
   // ── Reconcile the dashboard to the imported fixture. ──
-  await page.goto('/portfolio/cash-flow');
+  await page.goto('/portfolio/cash');
   // Total spend = Σ groceries (€300); income = the salary credit (€2 000).
   await expect(page.getByText(/300[.,]00/).first()).toBeVisible({ timeout: 15_000 });
   await expect(page.getByText(/2[.,]000[.,]00/).first()).toBeVisible();
 
   // The Groceries budget reads spend €300 against its €200 target, and is blown.
-  await page.goto('/portfolio/cash-flow/budgets');
+  await page.goto('/portfolio/cash/budgets');
   const groceriesBudget = page.getByRole('listitem').filter({ hasText: 'Groceries' });
   await expect(groceriesBudget).toBeVisible({ timeout: 15_000 });
   await expect(groceriesBudget).toContainText(/300[.,]00/);
@@ -123,7 +123,7 @@ test.skip('expenses: bank import → categorize → dashboard → single budget 
   //    worker's dispatch queue — poll a few reloads, never a bare sleep). ──
   const bell = page.getByRole('button', { name: /Notifications/ });
   await expect(async () => {
-    await page.goto('/portfolio/cash-flow');
+    await page.goto('/portfolio/cash');
     await expect(page.getByRole('button', { name: /Notifications \(\d+ unread\)/ })).toBeVisible({
       timeout: 5_000,
     });
@@ -133,7 +133,7 @@ test.skip('expenses: bank import → categorize → dashboard → single budget 
 
   // ── Re-drive the evaluation path (a budget re-save re-runs evaluate for the
   //    same period): the exactly-once gate means STILL one alert, never two. ──
-  await page.goto('/portfolio/cash-flow/budgets');
+  await page.goto('/portfolio/cash/budgets');
   await groceriesBudget.getByRole('button', { name: 'Edit' }).click();
   const editDialog = page.getByRole('dialog');
   await editDialog.getByRole('spinbutton').fill('150');
@@ -141,7 +141,7 @@ test.skip('expenses: bank import → categorize → dashboard → single budget 
   await expect(editDialog).toBeHidden();
   await expect(groceriesBudget).toContainText(/150[.,]00/);
 
-  await page.goto('/portfolio/cash-flow');
+  await page.goto('/portfolio/cash');
   await bell.click();
   await expect(page.getByText('Budget exceeded: Groceries')).toHaveCount(1);
 

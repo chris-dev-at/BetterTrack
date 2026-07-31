@@ -30,7 +30,7 @@ test('discreet mode masks every absolute amount on the portfolio surface and tog
   // fuzzy `Add cash movement|Add movement|Add cash` alternation matched NO
   // button this app has ever rendered, so this step could only ever time out —
   // the spec had never once reached its discreet-mode assertions.
-  await user.page.goto('/portfolio/cash-flow/accounts');
+  await user.page.goto('/portfolio/cash/accounts');
   const mainRow = user.page.locator('table[aria-label="Cash sources"] tbody tr').first();
   await mainRow.getByRole('button', { name: 'Deposit' }).click();
   const depositDialog = user.page.getByRole('dialog', { name: 'Cash balance' });
@@ -42,7 +42,7 @@ test('discreet mode masks every absolute amount on the portfolio surface and tog
   // seeded figure actually renders. `/portfolio` (Overview) reports "Your
   // portfolio is empty" for an account whose only value is cash, so it carries
   // no absolute amount to mask and can neither confirm nor refute the sweep.
-  const SURFACE = '/portfolio/cash-flow/accounts';
+  const SURFACE = '/portfolio/cash/accounts';
   // Locale-agnostic 2-dp: EN renders "1,234.56 €", DE "1.234,56 €".
   const SEEDED = /1[.,]234[.,]56/;
 

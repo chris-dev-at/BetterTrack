@@ -2,8 +2,6 @@ import RE2 from 're2';
 
 import type { CashRuleMatchType } from '@bettertrack/contracts';
 
-import type { CashRuleRecord } from '../../data/repositories/cashRuleRepository';
-
 /**
  * Cash auto-tagging rule engine (V5 cash fusion). Pure, no I/O — a movement note
  * in, a set of tag ids out — so every matcher is directly unit-testable.
@@ -72,6 +70,21 @@ export function cashRuleMatches(
 }
 
 /**
+ * The four fields evaluating a rule actually needs.
+ *
+ * Structural on purpose: a full `CashRuleRecord` from the repository satisfies
+ * it, and so does the leaner row the book-time path loads straight from SQL
+ * (`cashRuleTagStamp.ts`) — which has no business inventing a `userId` and two
+ * timestamps just to be allowed to ask what a note tags as.
+ */
+export interface EvaluableCashRule {
+  matchType: CashRuleMatchType;
+  pattern: string;
+  enabled: boolean;
+  tagIds: readonly string[];
+}
+
+/**
  * The tags the enabled rules assign to `note`, or an empty array when none
  * matches (→ the movement stays untagged, exactly the "uncategorized" state a
  * NULL category used to mean).
@@ -80,7 +93,7 @@ export function cashRuleMatches(
  * returns them so, and this function deliberately does not re-sort, so there is
  * one place where evaluation order is decided.
  */
-export function tagsByRules(note: string, rules: readonly CashRuleRecord[]): string[] {
+export function tagsByRules(note: string, rules: readonly EvaluableCashRule[]): string[] {
   for (const rule of rules) {
     if (!rule.enabled) continue;
     if (rule.tagIds.length === 0) continue;

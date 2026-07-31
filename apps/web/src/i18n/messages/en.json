@@ -1999,7 +1999,7 @@
       "overview": "Overview",
       "activity": "Activity",
       "customAssets": "Custom assets",
-      "cashFlow": "Cash flow",
+      "cashFlow": "Cash",
       "analysis": "Analysis",
       "tax": "Tax",
       "import": "Import",
@@ -3310,6 +3310,9 @@
       "empty": "Nothing has happened here yet.",
       "loadError": "Could not load the activity feed. Please try again."
     },
+    "membersListAria": "Members",
+    "activityListAria": "Activity",
+    "inviteListAria": "Friends you can invite",
     "invites": {
       "incomingTitle": "Group portfolio invites",
       "outgoingTitle": "Invites you've sent",
@@ -4021,6 +4024,15 @@
         "empty": "No cash sources yet.",
         "total": "Total"
       },
+      "quickCash": {
+        "title": "Quick cash",
+        "description": "Record a deposit, withdrawal or fee without leaving Home.",
+        "submit": "Record",
+        "notePlaceholder": "Note (optional)",
+        "into": "Into {{source}}",
+        "needsScope": "Pick one portfolio for this widget — a cash movement has to land somewhere specific.",
+        "noSource": "This portfolio has no cash account yet."
+      },
       "watchlist": {
         "title": "Watchlist",
         "description": "A watchlist with live quotes",
@@ -4059,7 +4071,7 @@
     }
   },
   "cashflow": {
-    "aria": "Cash flow",
+    "aria": "Cash",
     "tabs": {
       "overview": "Overview",
       "movements": "Movements",
@@ -4070,6 +4082,31 @@
       "accounts": "Cash accounts"
     },
     "untagged": "Untagged",
+    "record": {
+      "title": "Record transaction",
+      "directionAria": "Money out or money in",
+      "moneyOut": "Money out",
+      "moneyIn": "Money in",
+      "noteLabel": "What for",
+      "notePlaceholder": "e.g. SPAR MARKT 4021",
+      "willBeTagged": "Will be tagged",
+      "moreToggle": "More — date, account, tags",
+      "lessToggle": "Less",
+      "tagsLabel": "Tags",
+      "countsToPerformance": "Count this against my investment performance",
+      "countsToPerformanceHint": "For costs of holding — an account or custody charge is part of investing, so it should lower your reported return. Everyday spending should not.",
+      "receiptLabel": "Receipt",
+      "receiptPlanned": "Planned",
+      "into": "Into {{source}}",
+      "submit": "Record",
+      "action": "Record transaction",
+      "amountLabel": "Amount",
+      "details": "Details",
+      "balanceAfter": "Balance after",
+      "countsToPerformanceShort": "Holding cost",
+      "quickIn": "Record money in",
+      "quickOut": "Record money out"
+    },
     "matchType": {
       "contains": "Contains",
       "equals": "Equals",
@@ -4088,7 +4125,18 @@
       "notSumNote": "Tag totals overlap — a movement with two tags counts toward both, so they won't add up to the total above.",
       "trend": "Trend",
       "emptyTitle": "No activity yet",
-      "emptyDescription": "Record some cash movements to see monthly trends."
+      "emptyDescription": "Record some cash movements to see monthly trends.",
+      "total": "Total cash",
+      "accountsHeading": "Accounts",
+      "manageAccounts": "Manage accounts",
+      "recentHeading": "Recent movements",
+      "allMovements": "All movements",
+      "thisMonthChange": "{{amount}} this month",
+      "noAccounts": "No cash accounts yet.",
+      "quickDeposit": "Add to {{source}}",
+      "quickWithdraw": "Spend from {{source}}",
+      "previousMonth": "Previous month",
+      "nextMonth": "Next month"
     },
     "movements": {
       "subtitle": "This portfolio's cash ledger, tagged.",
@@ -4109,7 +4157,8 @@
         "title": "Edit tags",
         "noTags": "You don't have any tags yet — create one on the Tags tab first.",
         "saveError": "Couldn't update the tags. Please try again."
-      }
+      },
+      "manageLabels": "Labels & rules"
     },
     "budgets": {
       "subtitle": "Spend targets per tag, for this portfolio.",
@@ -4166,6 +4215,11 @@
     },
     "rules": {
       "subtitle": "Rules tag imports and manual entries automatically, by matching their note. First match wins.",
+      "applyToExisting": "Apply to existing",
+      "applying": "Applying…",
+      "applyTagged": "Tagged {{count}} movements.",
+      "applyNoneTagged": "Nothing new to tag — every matching movement already carries its tags.",
+      "applyError": "Couldn't apply the rules. Please try again.",
       "loadError": "Couldn't load your rules.",
       "deleteError": "Couldn't delete the rule. Please try again.",
       "new": "New rule",
@@ -4189,6 +4243,11 @@
         "enabled": "Enabled",
         "saveError": "Couldn't save the rule. Please try again."
       }
+    },
+    "labels": {
+      "title": "Labels & rules",
+      "subtitle": "The tags a movement can carry, and the rules that attach them for you.",
+      "backToMovements": "Back to movements"
     }
   },
   "workbench": {

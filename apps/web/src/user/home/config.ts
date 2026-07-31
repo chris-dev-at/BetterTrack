@@ -55,6 +55,7 @@ export const WIDGET_TYPES = [
   'upcoming',
   'recent-transactions',
   'cash-balances',
+  'quick-cash',
   'watchlist',
   'dividends',
   'alerts',
@@ -181,6 +182,9 @@ export const WIDGET_SIZE_RULES: Record<
   upcoming: { allowed: ['s', 'm', 'l'], default: 'm' },
   'recent-transactions': { allowed: ['s', 'm', 'l'], default: 'm' },
   'cash-balances': { allowed: ['s', 'm', 'l'], default: 'm' },
+  // A form, not a report: it needs room for a segmented control and a field on
+  // one line, and it has nothing to spread across a full-width band.
+  'quick-cash': { allowed: ['s', 'm'], default: 'm' },
   watchlist: { allowed: ['s', 'm', 'l'], default: 'm' },
   dividends: { allowed: ['s', 'm', 'l'], default: 'm' },
   // A count plus a couple of rows — it reads fine in one column and has nothing

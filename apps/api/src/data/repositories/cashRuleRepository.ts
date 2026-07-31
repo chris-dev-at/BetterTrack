@@ -4,6 +4,7 @@ import type { CashRuleMatchType } from '@bettertrack/contracts';
 
 import type { Database } from '../db';
 import { cashRuleTags, cashRules, cashTags, type CashRuleRow } from '../schema';
+import { applyCashRulesForOwner } from './cashRuleTagStamp';
 
 /**
  * Cash auto-tagging rule persistence (V5 cash fusion). A rule tests a movement's
@@ -211,6 +212,19 @@ export function createCashRuleRepository(db: Database) {
         .where(and(eq(cashRules.userId, userId), eq(cashRules.id, ruleId)))
         .returning({ id: cashRules.id });
       return deleted.length > 0;
+    },
+
+    /**
+     * Run the owner's rules over the movements they ALREADY have — the
+     * back-catalogue half of auto-tagging, behind an explicit request.
+     *
+     * The work itself lives in `cashRuleTagStamp`, shared verbatim with the
+     * book-time path, so "what a rule does to a movement" is decided once and
+     * cannot drift between the two. Additive: it attaches tags and never
+     * removes one.
+     */
+    async applyToExistingMovements(userId: string): Promise<number> {
+      return applyCashRulesForOwner(db, userId);
     },
   };
 }

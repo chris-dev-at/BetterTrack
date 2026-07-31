@@ -5,7 +5,7 @@ import { dirname, join } from 'node:path';
 
 import type { APIRequestContext, Browser, BrowserContext } from '@playwright/test';
 
-import { ADMIN_EMAIL, ADMIN_PASSWORD, API_BASE_URL, WEB_BASE_URL } from './config';
+import { ADMIN_BASE_URL, ADMIN_EMAIL, ADMIN_PASSWORD, API_BASE_URL } from './config';
 
 /** Every mutating request needs this header or the API's CSRF guard 403s it. */
 const CSRF_HEADERS = { 'X-Requested-With': 'BetterTrack' };
@@ -219,7 +219,12 @@ export async function newAdminBrowserContext(
       'No bt_sid cookie in the admin API context — did you await loginAsAdmin() first?',
     );
   }
-  const context = await browser.newContext({ baseURL: WEB_BASE_URL });
+  // The ADMIN console's origin, not the user app's: the console is the same SPA
+  // in admin mode, and the mode comes from `window.__BT__` — which only the
+  // admin origin serves. Against the user origin, `/admin/*` has no route and
+  // falls through to the sign-in page. Cookies ignore the port, so the session
+  // minted against the API carries over unchanged.
+  const context = await browser.newContext({ baseURL: ADMIN_BASE_URL });
   await context.addCookies(sessionCookies);
   return context;
 }

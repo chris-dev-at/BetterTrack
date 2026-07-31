@@ -298,6 +298,9 @@ const componentSchemas = {
   UpdateCashBudgetRequest: contracts.updateCashBudgetRequestSchema,
   CashRuleListResponse: contracts.cashRuleListResponseSchema,
   CashRuleResponse: contracts.cashRuleResponseSchema,
+  CashRuleApplyResponse: contracts.cashRuleApplyResponseSchema,
+  CashRulePreviewRequest: contracts.cashRulePreviewRequestSchema,
+  CashRulePreviewResponse: contracts.cashRulePreviewResponseSchema,
   CreateCashRuleRequest: contracts.createCashRuleRequestSchema,
   UpdateCashRuleRequest: contracts.updateCashRuleRequestSchema,
   CashMonthlySummaryResponse: contracts.cashMonthlySummaryResponseSchema,
@@ -2653,6 +2656,25 @@ const endpoints: EndpointDef[] = [
     summary: 'Delete an auto-tagging rule.',
     params: contracts.cashRuleIdParamSchema,
     status: 204,
+  },
+  {
+    method: 'post',
+    path: '/cash/rules/apply',
+    tag: 'Cash flow',
+    summary:
+      'Run the rules over movements that already exist, in every portfolio you own — a rule is usually written after the movements it describes. Additive and idempotent, so a second call reports 0.',
+    status: 200,
+    response: R.CashRuleApplyResponse,
+  },
+  {
+    method: 'post',
+    path: '/cash/rules/preview',
+    tag: 'Cash flow',
+    summary:
+      'What your rules would tag this note as. Read-only — the entry form asks while you type, so the label appears before you commit.',
+    body: R.CashRulePreviewRequest,
+    status: 200,
+    response: R.CashRulePreviewResponse,
   },
   {
     method: 'get',

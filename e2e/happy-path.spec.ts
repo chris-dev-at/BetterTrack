@@ -115,8 +115,12 @@ test('happy path: invite through friend sharing', async ({ browser }) => {
   const cashLabel = owner
     .getByRole('region', { name: 'Portfolio totals' })
     .getByText('Cash', { exact: true });
+  // The value element next to the label, whatever tag it is: the Origin `Stat`
+  // renders label and value as sibling `div`s where the old totals table used
+  // `p`, and pinning the tag name made a purely visual change look like lost
+  // money. `exact: true` keeps this off the hero line's lowercase "cash".
   // Locale-agnostic: EN "600.00" (en-GB) vs DE "600,00" (de-AT).
-  await expect(cashLabel.locator('xpath=following-sibling::p[1]')).toContainText(/600[.,]00/, {
+  await expect(cashLabel.locator('xpath=following-sibling::*[1]')).toContainText(/600[.,]00/, {
     timeout: 15_000,
   });
 

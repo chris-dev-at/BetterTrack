@@ -30,7 +30,7 @@ import { provisionUser } from './support/users';
 const PRIMARY_DESTINATIONS = [
   '/',
   '/portfolio',
-  '/portfolio/cash-flow/accounts',
+  '/portfolio/cash/accounts',
   '/workbench',
   '/assets',
   '/people',

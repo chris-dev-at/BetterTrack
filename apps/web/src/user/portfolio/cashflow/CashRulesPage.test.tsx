@@ -13,9 +13,16 @@ vi.mock('../../../lib/cashApi', () => ({
   createCashRule: vi.fn(),
   updateCashRule: vi.fn(),
   deleteCashRule: vi.fn(),
+  applyCashRules: vi.fn(),
 }));
 
-import { createCashRule, deleteCashRule, listCashRules, listCashTags } from '../../../lib/cashApi';
+import {
+  applyCashRules,
+  createCashRule,
+  deleteCashRule,
+  listCashRules,
+  listCashTags,
+} from '../../../lib/cashApi';
 import { ApiError } from '../../../lib/apiClient';
 
 import { CashRulesPage } from './CashRulesPage';
@@ -155,5 +162,37 @@ describe('CashRulesPage', () => {
     renderPage();
 
     expect(await screen.findByText('No rules yet')).toBeInTheDocument();
+  });
+
+  test('applies rules to existing movements and reports how many were tagged', async () => {
+    vi.mocked(listCashRules).mockResolvedValue({ rules: [rule()] });
+    vi.mocked(applyCashRules).mockResolvedValue({ movementsTagged: 3 });
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole('button', { name: 'Apply to existing' }));
+
+    expect(applyCashRules).toHaveBeenCalledTimes(1);
+    expect(await screen.findByText('Tagged 3 movements.')).toBeInTheDocument();
+  });
+
+  test('says plainly when a run changed nothing, rather than claiming work', async () => {
+    vi.mocked(listCashRules).mockResolvedValue({ rules: [rule()] });
+    vi.mocked(applyCashRules).mockResolvedValue({ movementsTagged: 0 });
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole('button', { name: 'Apply to existing' }));
+
+    expect(
+      await screen.findByText(/every matching movement already carries its tags/i),
+    ).toBeInTheDocument();
+  });
+
+  test('offers no catch-up run when there are no rules to run', async () => {
+    renderPage();
+
+    expect(await screen.findByText('No rules yet')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Apply to existing' })).not.toBeInTheDocument();
   });
 });

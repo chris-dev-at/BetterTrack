@@ -2456,6 +2456,240 @@
 }
 
 /* The total sits under a rule as a summary line, not as another row. */
+/* ── Month picker ───────────────────────────────────────────────────────────
+   Arrows plus the month's NAME. Replaces `<input type="month">`, which renders
+   as a locale-dependent numeric field and made "go back one month" an edit
+   rather than a press. */
+.bt-monthpick {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  padding: 2px;
+  border: 1px solid var(--bt-border);
+  border-radius: 8px;
+  background: var(--bt-bg-raised);
+}
+
+.bt-monthpick__arrow {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  min-height: 24px;
+  border: 0;
+  border-radius: 5px;
+  background: none;
+  color: var(--bt-text-soft);
+  font: inherit;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    background var(--bt-t-fast),
+    color var(--bt-t-fast);
+}
+
+.bt-monthpick__arrow:hover:not(:disabled) {
+  background: var(--bt-surface-strong);
+  color: var(--bt-text);
+}
+
+.bt-monthpick__arrow:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.bt-monthpick__label {
+  min-width: 8.5rem;
+  padding: 0 4px;
+  color: var(--bt-text-soft);
+  font-size: 12px;
+  font-weight: 570;
+  text-align: center;
+  white-space: nowrap;
+}
+
+/* ── Split action button ────────────────────────────────────────────────────
+   One primary action with a direction shortcut at each end. The ends are the
+   same height and share the outer radius, so it reads as ONE control rather
+   than three buttons that happen to touch. Each end tints on hover in its own
+   direction's colour — the only place the meaning lives, since a bare + / −
+   says nothing on its own. */
+.bt-splitbtn {
+  display: inline-flex;
+  align-items: stretch;
+  border-radius: 8px;
+  overflow: hidden;
+  border: 1px solid var(--bt-border-accent, var(--bt-border-strong));
+}
+
+.bt-splitbtn__main {
+  padding: 0 14px;
+  min-height: 34px;
+  border: 0;
+  background: var(--bt-gold);
+  color: var(--bt-gold-ink);
+  font: inherit;
+  font-size: 13px;
+  font-weight: 620;
+  cursor: pointer;
+  transition: filter var(--bt-t-fast);
+}
+
+.bt-splitbtn__main:hover {
+  filter: brightness(1.06);
+}
+
+.bt-splitbtn__end {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  border: 0;
+  background: var(--bt-surface-strong);
+  color: var(--bt-text-soft);
+  font: inherit;
+  font-size: 16px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    background var(--bt-t-fast),
+    color var(--bt-t-fast);
+}
+
+.bt-splitbtn__end--neg:hover {
+  background: var(--bt-neg-soft);
+  color: var(--bt-neg);
+}
+
+.bt-splitbtn__end--pos:hover {
+  background: var(--bt-pos-soft);
+  color: var(--bt-pos);
+}
+
+/* ── Cash account cards ─────────────────────────────────────────────────────
+   Replaces a row of tag-shaped pills. A pill says "label"; these hold a
+   balance and two actions, so they are cards — and the actions are ON them
+   because "spend from savings" was three presses away otherwise. */
+.bt-acctgrid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+}
+
+.bt-acctcard {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px 14px;
+  border: 1px solid var(--bt-border);
+  border-radius: 10px;
+  background: var(--bt-surface);
+}
+
+.bt-acctcard__name {
+  color: var(--bt-text-soft);
+  font-size: 12px;
+  font-weight: 570;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bt-acctcard__value {
+  color: var(--bt-text);
+  font-size: 18px;
+  font-weight: 650;
+}
+
+.bt-acctcard__actions {
+  display: flex;
+  gap: 6px;
+}
+
+.bt-acctcard__action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 1;
+  min-height: 26px;
+  border: 1px solid var(--bt-border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--bt-text-soft);
+  font: inherit;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  transition:
+    background var(--bt-t-fast),
+    color var(--bt-t-fast),
+    border-color var(--bt-t-fast);
+}
+
+.bt-acctcard__action--neg:hover {
+  background: var(--bt-neg-soft);
+  border-color: color-mix(in srgb, var(--bt-neg) 40%, transparent);
+  color: var(--bt-neg);
+}
+
+.bt-acctcard__action--pos:hover {
+  background: var(--bt-pos-soft);
+  border-color: color-mix(in srgb, var(--bt-pos) 40%, transparent);
+  color: var(--bt-pos);
+}
+
+/* ── Cashflow chart ─────────────────────────────────────────────────────────
+   The month labels live OUTSIDE the SVG: the chart stretches with
+   `preserveAspectRatio="none"`, which would smear any text drawn inside it. A
+   flex row of equal columns lines them up with the slots by construction. */
+.bt-cashchart__axis {
+  display: flex;
+  margin-top: 2px;
+}
+
+.bt-cashchart__axis > span {
+  flex: 1;
+  color: var(--bt-text-soft);
+  font-size: 10px;
+  text-align: center;
+}
+
+/* ── Quick cash (Home) ──────────────────────────────────────────────────────
+   A form living inside a board tile. The tile is short and the field must not
+   be, so the amount takes every pixel the submit button does not, and the note
+   sits on its own line rather than squeezing a third control onto the first. */
+.bt-home-quickcash {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.bt-home-quickcash__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.bt-home-quickcash__row .bt-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.bt-home-quickcash__row .bt-btn {
+  flex-shrink: 0;
+}
+
+.bt-home-quickcash__target {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  margin-top: 2px;
+}
+
 .bt-home-cash__total {
   display: flex;
   align-items: baseline;
@@ -5498,6 +5732,35 @@
  * throughout: no nested cards, no left-edge accent bars on any row, gold
  * reserved for the toggle picker's keyboard focus ring only.
  * ========================================================================== */
+
+/* ── Balance pill ───────────────────────────────────────────────────────────
+   One cash account and its balance, side by side, on the Cash overview. A
+   label-then-number pair rather than a table row: there are two or three of
+   them, they are read at a glance, and a table would give three columns of
+   chrome to six words. The number carries `bt-num` at the call site so it
+   lines up with every other figure on the page. */
+.bt-pill {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 5px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--bt-border);
+  background: var(--bt-surface);
+  white-space: nowrap;
+}
+
+.bt-pill__label {
+  color: var(--bt-text-soft);
+  font-size: 12px;
+  font-weight: 570;
+}
+
+.bt-pill__value {
+  color: var(--bt-text);
+  font-size: 13px;
+  font-weight: 620;
+}
 
 .bt-tag-chip {
   display: inline-flex;

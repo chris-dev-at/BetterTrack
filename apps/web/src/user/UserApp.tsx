@@ -25,8 +25,7 @@ import { ForecastPage } from './forecast/ForecastPage';
 import { CashOverviewPage } from './portfolio/cashflow/CashOverviewPage';
 import { CashMovementsPage } from './portfolio/cashflow/CashMovementsPage';
 import { CashBudgetsPage } from './portfolio/cashflow/CashBudgetsPage';
-import { CashTagsPage } from './portfolio/cashflow/CashTagsPage';
-import { CashRulesPage } from './portfolio/cashflow/CashRulesPage';
+import { CashLabelsPage } from './portfolio/cashflow/CashLabelsPage';
 import { PortfolioPage } from './portfolio/PortfolioPage';
 import { PortfolioSettingsPage } from './portfolio/PortfolioSettingsPage';
 import { AnalyticsPage } from './portfolio/analytics/AnalyticsPage';
@@ -35,7 +34,7 @@ import { ImportPage } from './portfolio/ImportPage';
 import { TaxReportPage } from './portfolio/TaxReportPage';
 import { TaxReportPrintPage } from './portfolio/TaxReportPrintPage';
 import { CustomAssetsPage, TransactionsPage } from './portfolio/PortfolioSection';
-import { CashFlowLayout, PortfolioWorkspace } from './portfolio/PortfolioWorkspace';
+import { CashLayout, PortfolioWorkspace } from './portfolio/PortfolioWorkspace';
 import { WorkbenchLayout } from './workbench/WorkbenchLayout';
 import { WorkboardPage } from './workboard/WorkboardPage';
 import { BacktestsPage, CalculatorsPage, WatchlistPage } from './workboard/WorkboardSection';
@@ -271,27 +270,39 @@ function UserRoutes({ location }: { location: Location }) {
               {/* Custom assets are user-scoped (`/api/v1/custom-assets`), not a
                   portfolio's own list, so they live under Assets now. */}
               <Route path="custom-assets" element={<LegacyRedirect to="/assets/custom-assets" />} />
-              <Route path="cash-flow" element={<CashFlowLayout />}>
+              {/* CASH — three tabs, plus two setup pages reached from them
+                  rather than from the tab strip (see `CashLayout`). */}
+              <Route path="cash" element={<CashLayout />}>
                 <Route index element={<CashOverviewPage />} />
                 <Route path="movements" element={<CashMovementsPage />} />
                 <Route path="budgets" element={<CashBudgetsPage />} />
-                <Route path="tags" element={<CashTagsPage />} />
-                <Route path="rules" element={<CashRulesPage />} />
+                {/* Tags and rules on ONE page: a tag is the label, a rule is how
+                    it gets applied automatically. Linked from Movements. */}
+                <Route path="labels" element={<CashLabelsPage />} />
+                {/* Account management, linked from the Overview balance strip. */}
+                <Route path="accounts" element={<CashSourcesPage />} />
                 {/* Bank-statement import is parked: it posted to the retired
                     `/expenses/import/*` endpoints and is being rebuilt on the
-                    portfolio cash ledger (V5 cash fusion phase 2). */}
+                    portfolio cash ledger (V5 cash fusion phase 2). Off the tab
+                    strip until there is something behind it — a permanently
+                    empty tab is noise — but the URL still resolves. */}
                 <Route path="import" element={<ParkedPage page="cashImport" />} />
-                <Route path="accounts" element={<CashSourcesPage />} />
-                {/* Pre-fusion sub-tab names, kept resolvable (search preserved). */}
+                {/* Pre-rework tab names, kept resolvable (search preserved). */}
+                <Route path="tags" element={<LegacyRedirect to="/portfolio/cash/labels" />} />
+                <Route path="rules" element={<LegacyRedirect to="/portfolio/cash/labels" />} />
                 <Route
                   path="transactions"
-                  element={<LegacyRedirect to="/portfolio/cash-flow/movements" />}
+                  element={<LegacyRedirect to="/portfolio/cash/movements" />}
                 />
-                <Route
-                  path="categories"
-                  element={<LegacyRedirect to="/portfolio/cash-flow/tags" />}
-                />
+                <Route path="categories" element={<LegacyRedirect to="/portfolio/cash/labels" />} />
               </Route>
+              {/* The whole area moved from `cash-flow` to `cash` (owner,
+                  2026-07-31). `withSplat` carries the sub-path, so every
+                  bookmark and every link in an old email still lands. */}
+              <Route
+                path="cash-flow/*"
+                element={<LegacyRedirect to="/portfolio/cash" withSplat />}
+              />
               <Route path="analysis" element={<AnalyticsPage />} />
               <Route path="tax" element={<TaxReportPage />} />
               <Route path="import" element={<ImportPage />} />
@@ -310,7 +321,9 @@ function UserRoutes({ location }: { location: Location }) {
               {/* Legacy §7.2 portfolio paths. */}
               <Route path="transactions" element={<LegacyRedirect to="/portfolio/activity" />} />
               <Route path="analytics" element={<LegacyRedirect to="/portfolio/analysis" />} />
-              <Route path="cash" element={<LegacyRedirect to="/portfolio/cash-flow/accounts" />} />
+              {/* `/portfolio/cash` used to redirect to the accounts page. It is
+                  now the Cash area's own index, declared above — the redirect
+                  would have shadowed the real route. */}
             </Route>
 
             {/* ── Workbench (the possibility space) ── */}
@@ -444,10 +457,7 @@ function UserRoutes({ location }: { location: Location }) {
               element={<LegacyRedirect to="/workbench/ideas" withSplat />}
             />
             <Route path="forecast" element={<LegacyRedirect to="/workbench/forecasts" />} />
-            <Route
-              path="expenses/*"
-              element={<LegacyRedirect to="/portfolio/cash-flow" withSplat />}
-            />
+            <Route path="expenses/*" element={<LegacyRedirect to="/portfolio/cash" withSplat />} />
             <Route path="social" element={<LegacyRedirect to="/people" />} />
             <Route path="social/friends" element={<LegacyRedirect to="/people" />} />
             <Route path="social/chat/*" element={<LegacyRedirect to="/people/chat" withSplat />} />

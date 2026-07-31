@@ -494,6 +494,12 @@ function RecentTransactionsSection({ transactions }: { transactions: Transaction
                       {txn.asset.symbol}
                     </Link>
                     <SourceBadge source={txn.source} />
+                    {/* Who added it, on a mirrored copy (design §2/§11). This is
+                        the only surface a replicated trade appears on today —
+                        `/portfolio/activity` is still a placeholder and the
+                        per-asset rows are collapsed — so without it a member's
+                        buy reads as the owner's own. */}
+                    {txn.mirror ? <MirrorAttributionChip attribution={txn.mirror.addedBy} /> : null}
                   </div>
                 </td>
                 <td>

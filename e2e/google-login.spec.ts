@@ -83,10 +83,14 @@ test('google identity block lives under Settings → Connections and is gone fro
       timeout: 20_000,
     });
     await expect(page.getByRole('link', { name: 'Connect Google' })).toBeVisible();
-    // The Drive surface on this panel is the real paranoid-vault section
-    // ("Google Drive app data"); the coming-soon "Google Drive backup" slot it
-    // replaced was dropped in ccd0cd2, so this assertion had gone stale.
-    await expect(page.getByRole('heading', { name: 'Google Drive app data' })).toBeVisible();
+    // NOT asserted here: the "Google Drive app data" section. It is the paranoid
+    // VAULT's storage medium and `DriveVaultSection` returns null unless the
+    // account's `privacyMode` is 'paranoid' — correctly, since Drive-as-a-vault
+    // -medium is meaningless for a normal account. This spec's user is a normal
+    // one, so the section can never appear for it; the assertion that used to be
+    // here was read off `ConnectionsPanel.test.tsx`, which mocks a paranoid
+    // media state. Covering it end-to-end means enabling paranoid mode, which is
+    // its own arc (§13.5 PD6) and not what a Google-identity spec is for.
 
     // The old home no longer shows it (only relocated, never duplicated). The
     // former Security page is the Sign-in panel now (credentials); devices and

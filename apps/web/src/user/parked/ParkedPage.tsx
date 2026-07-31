@@ -43,8 +43,8 @@ export const PARKED_PAGES = {
     key: 'cashImport',
     pointCount: 3,
     links: [
-      { to: '/portfolio/cash-flow/movements', labelKey: 'parked.links.cashMovements' },
-      { to: '/portfolio/cash-flow/rules', labelKey: 'parked.links.cashRules' },
+      { to: '/portfolio/cash/movements', labelKey: 'parked.links.cashMovements' },
+      { to: '/portfolio/cash/labels', labelKey: 'parked.links.cashRules' },
     ],
   },
   dataHealth: { key: 'dataHealth', pointCount: 4 },

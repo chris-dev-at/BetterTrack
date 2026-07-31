@@ -141,7 +141,7 @@ test('the rail tree is the vital subset of the full in-page strip', async () => 
 
   // The rail curates; the strip carries everything. Same source table, so the
   // subset relation is structural, not a coincidence.
-  expect(railChildren).toEqual(['Overview', 'Activity', 'Cash flow', 'Settings']);
+  expect(railChildren).toEqual(['Overview', 'Activity', 'Cash', 'Settings']);
   for (const child of railChildren) expect(stripChildren).toContain(child);
   // Custom assets moved to the Assets section (they are user-scoped), so the
   // portfolio strip carries the portfolio-only extras.
@@ -288,9 +288,9 @@ test('portfolio rail children keep the active portfolio scope', async () => {
 
   const rail = await findRail();
   // `?portfolio=<id>` rides along every child of the section (#322).
-  expect(within(rail).getByRole('link', { name: 'Cash flow' })).toHaveAttribute(
+  expect(within(rail).getByRole('link', { name: 'Cash' })).toHaveAttribute(
     'href',
-    '/portfolio/cash-flow?portfolio=p-7',
+    '/portfolio/cash?portfolio=p-7',
   );
   expect(within(rail).getByRole('link', { name: 'Settings' })).toHaveAttribute(
     'href',
@@ -422,7 +422,7 @@ test('the portfolio workspace shows the switcher and its local tabs', async () =
   const tabs = screen.getByRole('navigation', { name: 'Portfolio workspace' });
   // Parked tabs append the "Planned" dot to their accessible name — anchor the
   // match so "Plan" does not also match every parked tab's name.
-  for (const tab of ['Overview', 'Activity', 'Cash flow', 'Analysis', 'Tax', 'Plan', 'Files']) {
+  for (const tab of ['Overview', 'Activity', 'Cash', 'Analysis', 'Tax', 'Plan', 'Files']) {
     expect(
       within(tabs).getByRole('link', { name: new RegExp(`^${tab}( Planned)?$`) }),
     ).toBeInTheDocument();
