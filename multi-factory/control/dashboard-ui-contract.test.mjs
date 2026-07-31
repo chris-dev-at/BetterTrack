@@ -87,8 +87,40 @@ test('runtime, GitHub and control failures stay distinct from a healthy stopped 
       protocol: { workers: [], queue: [], events: [] },
       docker: { multi: { containers: [] }, single: { containers: [] } },
       github: { issues: [], prs: [], merged: [], needsHuman: [] },
+      credentials: {
+        providers: {
+          claude: {
+            profiles: [
+              {
+                id: '00000000-0000-4000-8000-000000000001',
+                name: 'Factory Claude',
+                createdAt: '2026-07-30T12:00:00Z',
+                updatedAt: '2026-07-30T12:00:00Z',
+              },
+            ],
+            assignments: { default: 'factory-env', master: null },
+            login: { status: 'idle', needsCode: false },
+          },
+        },
+      },
     }),
     true,
+  );
+  assert.equal(
+    helpers.validSnapshot({
+      protocol: { workers: [], queue: [], events: [] },
+      docker: { multi: { containers: [] }, single: { containers: [] } },
+      github: { issues: [], prs: [], merged: [], needsHuman: [] },
+      credentials: {
+        providers: {
+          claude: {
+            profiles: [{ id: 'unsafe', name: 'Unsafe', token: 'must-not-render' }],
+            assignments: { default: 'factory-env' },
+          },
+        },
+      },
+    }),
+    false,
   );
   assert.equal(
     helpers.validSnapshot({
@@ -158,6 +190,173 @@ test('general economics use API-equivalent money split by Claude and Codex', () 
   assert.match(script, /title>\$\{x\.date\} Claude:/);
   assert.match(script, /title>\$\{x\.date\} Codex:/);
   assert.doesNotMatch(script, /x\.multi \+ x\.single/);
+});
+
+test('Claude account controls expose named profiles and lane assignments without secret fields', () => {
+  assert.match(html, /id="claude-accounts-card"/);
+  assert.match(html, /claude setup-token/);
+  assert.match(html, /id="claude-profile-name"/);
+  assert.match(html, /id="claude-assignments"/);
+  assert.match(script, /claude-profile-assign/);
+  assert.match(script, /claudeAssignmentDraft/);
+  assert.match(script, /existingAuthorizationCodeInput/);
+  assert.match(script, /data-claude-login-message/);
+  assert.match(html, /Changes apply to the next Claude role/);
+  assert.match(script, /containsPrivateCredentialField/);
+  assert.doesNotMatch(html, /id="claude-(?:oauth-)?token"/i);
+  assert.doesNotMatch(html, /id="claude-login-code"[^>]*\svalue=/i);
+});
+
+test('Claude account drafts and assignment controls survive duplicate live snapshots', async () => {
+  const ui = new Function(`
+    class FakeNode {
+      constructor(id) {
+        this.id = id;
+        this.value = '';
+        this.disabled = false;
+        this.className = '';
+        this.textContent = '';
+        this.dataset = {};
+        this.attributes = new Map();
+        this.writes = 0;
+        this._innerHTML = '';
+      }
+      set innerHTML(value) {
+        this._innerHTML = String(value);
+        this.writes += 1;
+      }
+      get innerHTML() {
+        return this._innerHTML;
+      }
+      focus() {}
+      setAttribute(name, value) {
+        this.attributes.set(name, String(value));
+      }
+      removeAttribute(name) {
+        this.attributes.delete(name);
+      }
+      querySelector() {
+        return null;
+      }
+      querySelectorAll() {
+        return [];
+      }
+    }
+
+    const nodes = new Map(
+      [
+        'claude-profiles',
+        'claude-assignments',
+        'claude-login-state',
+        'claude-profile-name',
+        'claude-login-start',
+      ].map((id) => [id, new FakeNode(id)]),
+    );
+    const $ = (id) => nodes.get(id) || null;
+    const esc = (value) => String(value ?? '');
+    const tago = () => 'now';
+    const toast = () => {};
+    const mAllRoutes = () => [];
+    const act = async () => ({ ok: true });
+    let S = null;
+    let available = true;
+    const controlPlaneState = () => ({ available });
+
+    ${between(script, 'const claudeAssignmentDraft =', '/* ---- models')}
+
+    return {
+      render(snapshot) {
+        S = snapshot;
+        renderClaudeCredentials(snapshot);
+      },
+      async start(label) {
+        $('claude-profile-name').value = label;
+        await claudeLoginStart($('claude-login-start'));
+      },
+      setLabel(value) {
+        $('claude-profile-name').value = value;
+      },
+      label() {
+        return $('claude-profile-name').value;
+      },
+      writes(id) {
+        return $(id).writes;
+      },
+      html(id) {
+        return $(id).innerHTML;
+      },
+      setAvailable(value) {
+        available = value;
+      },
+    };
+  `)();
+
+  const profile = {
+    id: '00000000-0000-4000-8000-000000000001',
+    name: 'First account',
+    createdAt: '2026-07-30T12:00:00Z',
+    updatedAt: '2026-07-30T12:00:00Z',
+  };
+  const snapshot = {
+    now: '2026-07-30T12:00:02Z',
+    workers: { desired: 4 },
+    credentials: {
+      providers: {
+        claude: {
+          legacyConfigured: true,
+          profiles: [profile],
+          assignments: {
+            default: 'factory-env',
+            master: null,
+            'worker-1': null,
+            'worker-2': null,
+            'worker-3': null,
+            'worker-4': null,
+          },
+          login: {
+            status: 'completed',
+            name: 'First account',
+            profileId: profile.id,
+            completedAt: '2026-07-30T12:00:01Z',
+            needsCode: false,
+          },
+        },
+      },
+    },
+  };
+
+  await ui.start('First account');
+  ui.render(snapshot);
+  assert.equal(ui.label(), '', 'the submitted label clears once after its own completion');
+  ui.setLabel('Second account');
+  const assignmentWrites = ui.writes('claude-assignments');
+  const profileWrites = ui.writes('claude-profiles');
+  const loginWrites = ui.writes('claude-login-state');
+
+  ui.render({ ...structuredClone(snapshot), now: '2026-07-30T12:00:04Z' });
+  assert.equal(ui.label(), 'Second account');
+  assert.equal(ui.writes('claude-assignments'), assignmentWrites);
+  assert.equal(ui.writes('claude-profiles'), profileWrites);
+  assert.equal(ui.writes('claude-login-state'), loginWrites);
+
+  const secondProfile = {
+    ...profile,
+    id: '00000000-0000-4000-8000-000000000002',
+    name: 'Second account',
+  };
+  const changed = structuredClone(snapshot);
+  changed.credentials.providers.claude.profiles.push(secondProfile);
+  ui.render(changed);
+  assert.equal(ui.writes('claude-assignments'), assignmentWrites + 1);
+  assert.equal(ui.writes('claude-profiles'), profileWrites + 1);
+  assert.match(ui.html('claude-assignments'), /Second account/);
+
+  ui.setAvailable(false);
+  ui.render(changed);
+  assert.match(ui.html('claude-assignments'), / disabled/);
+  ui.setAvailable(true);
+  ui.render(changed);
+  assert.doesNotMatch(ui.html('claude-assignments'), / disabled/);
 });
 
 test('OpenAI estimate labels preserve CLI, derived, mixed, and unavailable provenance', () => {
@@ -384,4 +583,43 @@ test('usage filters are labelled and event timestamps meet WCAG AA contrast', ()
     contrast(timeColor, logColors.at(-1)) >= 4.5,
     `${timeColor} on ${logColors.at(-1)} must meet WCAG AA`,
   );
+  assert.match(script, /const selectOptionRevisions = new Map\(\)/);
+});
+
+test('each saved Claude account shows its own quota, not only the master lane', () => {
+  // Two subscriptions are held so work can move between them; the move is only
+  // decidable when both accounts' remaining quota is on screen at once.
+  assert.match(script, /state\.accountUsage/);
+  assert.match(script, /credential-usage-meter/);
+  assert.match(script, /credential-usage-lanes/);
+  assert.match(html, /\.credential-usage-meter\s*\{/);
+  // A throttled read must name the throttle and when it lifts, never render as
+  // a silently missing account or a zeroed meter.
+  assert.match(script, /Anthropic is rate-limiting usage reads/);
+  assert.match(script, /retry in \$\{tuntil\(new Date\(u\.retryAt\)/);
+  // The panel re-renders when the numbers move, not only when profiles change.
+  assert.match(script, /accountUsage: \(state\.accountUsage \|\| \[\]\)\.map/);
+});
+
+test('the routing view names the Claude account behind its routes and its quota', () => {
+  // Routing picks the model; the account decides whether that model can run at
+  // all. Seeing one without the other is what made the limit invisible.
+  assert.match(html, /id="routing-accounts"/);
+  assert.match(script, /function mRenderRoutingAccounts\(s\)/);
+  assert.match(script, /mRenderRoutingAccounts\(s\);/);
+  assert.match(html, /\.routing-account\s*\{/);
+});
+
+test('quota telemetry is offered where it is missing, and never from the inference token', async () => {
+  assert.match(script, /claudeUsageLink/);
+  assert.match(script, /claude-usage-link/);
+  const server = await readFile(new URL('./server.mjs', import.meta.url), 'utf8');
+  // The factory's setup token is inference-only: /api/oauth/usage answers it 403.
+  // Sending it anyway would spend a shared rate budget on a call that cannot work.
+  assert.match(server, /const telemetry = await usageTelemetryToken\(cacheKey\)/);
+  assert.match(server, /const token = telemetry\.token;/);
+  assert.doesNotMatch(server, /const token = credential\.token;/);
+  // Binding stores an identity, never a credential.
+  assert.match(server, /bindings\[profileId\] = \{ email: who\.email/);
+  assert.doesNotMatch(server, /bindings\[profileId\] = \{[^}]*accessToken/);
 });

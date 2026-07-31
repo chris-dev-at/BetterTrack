@@ -1,10 +1,11 @@
-import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { Suspense, lazy, useEffect } from 'react';
+import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/react-query';
+import { Suspense, lazy, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
 import type { ReactNode } from 'react';
-import { Navigate, Route, Routes, useLocation, useParams } from 'react-router-dom';
+import { Navigate, Route, Routes, useLocation, useParams, type Location } from 'react-router-dom';
 
 import { I18nProvider, useI18n, useT } from '../i18n';
 import { RealtimeProvider } from '../lib/realtime';
+import { NotFoundState } from '../ui';
 
 import { AuthProvider, useAuth } from './AuthContext';
 import { RequireUser } from './RequireUser';
@@ -20,14 +21,26 @@ import { RegisterPage } from './auth/RegisterPage';
 import { ResetPasswordPage } from './auth/ResetPasswordPage';
 import { PinGate } from './auth/PinGate';
 import { VaultRuntimeProvider } from './vault/VaultRuntimeProvider';
-import { VaultMoneyEngineProvider } from './vault/engine/VaultMoneyEngineProvider';
+import {
+  VaultMoneyEngineProvider,
+  useVaultMoneySession,
+} from './vault/engine/VaultMoneyEngineProvider';
+import {
+  PortfolioStoreProvider,
+  createParanoidAppPortfolioStore,
+} from './portfolio/PortfolioStoreProvider';
+import { apiPortfolioStore } from '../lib/portfolioStore';
+import { removePlaintextQueries } from './vault/plaintextQueries';
+import { ResolvedPrivacyModeProvider, usePrivacyMode } from './vault/usePrivacyMode';
+import { useVaultRuntime } from './vault/VaultRuntimeProvider';
+import { VaultUnlockGate } from './vault/ui/VaultUnlockGate';
+import { discardLockedVault } from './vault/ui/disable';
+import { ParanoidNavigationGate } from './vault/ui/ParanoidSurfaceGate';
 import { ForecastPage } from './forecast/ForecastPage';
-import { DashboardPage as ExpenseDashboardPage } from './expenses/DashboardPage';
-import { TransactionsPage as ExpenseTransactionsPage } from './expenses/TransactionsPage';
-import { BudgetsPage as ExpenseBudgetsPage } from './expenses/BudgetsPage';
-import { CategoriesPage as ExpenseCategoriesPage } from './expenses/CategoriesPage';
-import { RulesPage as ExpenseRulesPage } from './expenses/RulesPage';
-import { ImportPage as ExpenseImportPage } from './expenses/ImportPage';
+import { CashOverviewPage } from './portfolio/cashflow/CashOverviewPage';
+import { CashMovementsPage } from './portfolio/cashflow/CashMovementsPage';
+import { CashBudgetsPage } from './portfolio/cashflow/CashBudgetsPage';
+import { CashLabelsPage } from './portfolio/cashflow/CashLabelsPage';
 import { PortfolioPage } from './portfolio/PortfolioPage';
 import { PortfolioSettingsPage } from './portfolio/PortfolioSettingsPage';
 import { AnalyticsPage } from './portfolio/analytics/AnalyticsPage';
@@ -36,7 +49,7 @@ import { ImportPage } from './portfolio/ImportPage';
 import { TaxReportPage } from './portfolio/TaxReportPage';
 import { TaxReportPrintPage } from './portfolio/TaxReportPrintPage';
 import { CustomAssetsPage, TransactionsPage } from './portfolio/PortfolioSection';
-import { CashFlowLayout, PortfolioWorkspace } from './portfolio/PortfolioWorkspace';
+import { CashLayout, PortfolioWorkspace } from './portfolio/PortfolioWorkspace';
 import { WorkbenchLayout } from './workbench/WorkbenchLayout';
 import { WorkboardPage } from './workboard/WorkboardPage';
 import { BacktestsPage, CalculatorsPage, WatchlistPage } from './workboard/WorkboardSection';
@@ -67,8 +80,9 @@ import { ChatPage } from './social/ChatPage';
 import { ChatWindowPage } from './social/ChatWindowPage';
 import { HomePage } from './home/HomePage';
 import { AskPage, DeveloperPlatformPage, ReviewPage } from './hub/HubPages';
-import { ControlCenterOverlay } from './control/ControlCenterOverlay';
+import { ControlCenterOverlay, matchControlPanel } from './control/ControlCenterOverlay';
 import { ParkedPage } from './parked/ParkedPage';
+import { useUiScaleWatcher } from './useUiScale';
 
 /**
  * The app-wide query cache. Exported so tests that mount {@link UserApp} more
@@ -102,6 +116,56 @@ function LegacyRedirect({ to, withSplat = false }: { to: string; withSplat?: boo
 }
 
 /**
+ * The page the Control Center popup opens over when it is reached cold — a
+ * bookmark, a pasted link, a fresh tab, an email link. The popup always needs a
+ * real page behind it, and Home is the one destination that is always there.
+ */
+const CONTROL_COLD_BACKGROUND: Location = {
+  pathname: '/',
+  search: '',
+  hash: '',
+  state: null,
+  key: 'default',
+};
+
+/**
+ * Paths that must never be remembered as the page behind the popup, because
+ * they do not STAY — each one navigates away as soon as it renders, and a
+ * background that navigates takes the popup's own URL with it.
+ *
+ * Two families:
+ *
+ *  - the legacy paths whose entire job is to redirect INTO the popup. Used as a
+ *    background, the redirect that opened the popup sits underneath it and
+ *    fires again on the next render — a loop, not a background. Keep in sync
+ *    with the `LegacyRedirect to="/control/…"` routes below.
+ *  - the public gates. `/login` renders while a session is being established
+ *    and then leaves; if it were the background, signing in from a legacy
+ *    `/settings/*` link would open the popup over a login screen that
+ *    immediately redirects, replacing `/control/…` in the URL and closing the
+ *    popup that just opened.
+ */
+const NEVER_A_BACKGROUND: readonly RegExp[] = [
+  /^\/settings(?:\/|$)/,
+  /^\/people\/profile\/?$/,
+  /^\/developer\/webhooks\/?$/,
+  // Two hops: `/social/profile` → `/people/profile` → `/control/profile`.
+  /^\/social\/profile\/?$/,
+  /^\/(?:login|register|forgot-password|welcome)\/?$/,
+  /^\/(?:reset|invite)\//,
+  /^\/oauth\/authorize\/?$/,
+  /^\/account\/delete\/?$/,
+];
+
+function isTransientLocation(pathname: string): boolean {
+  return NEVER_A_BACKGROUND.some((pattern) => pattern.test(pathname));
+}
+
+function href(location: Location): string {
+  return `${location.pathname}${location.search}${location.hash}`;
+}
+
+/**
  * The non-admin app (PROJECTPLAN.md §6.1, §7.1; docs/redesign/PRODUCT_BLUEPRINT.md).
  * Two app-wide auth gates sit above routing: the session bootstrap (`loading`)
  * and the forced-password-change trap — while either is in effect no
@@ -118,6 +182,34 @@ function LegacyRedirect({ to, withSplat = false }: { to: string; withSplat?: boo
 function UserShell() {
   const t = useT();
   const { status, retrySession } = useAuth();
+  const location = useLocation();
+
+  /**
+   * The Control Center is a POPUP, not a page (owner): `/control/:panel` must
+   * open ON TOP of whatever the user is looking at instead of replacing it with
+   * a blank canvas — which is what a route element did, since a route element
+   * renders *instead of* the page.
+   *
+   * So while the popup is open the route tree below renders against the last
+   * non-popup location, and the popup is rendered beside it. `<Routes location>`
+   * also publishes that location as the LocationContext, so the page behind
+   * keeps its own `useLocation`, its `?portfolio=` search params and its active
+   * nav states — it does not just stay painted, it stays *itself*.
+   *
+   * The background is REMEMBERED rather than carried in link state: every route
+   * into the popup — the rail, ⌘K, the account menu, a legacy `/settings/*`
+   * redirect, a bookmark — then opens over the page it was opened from, with no
+   * per-link ceremony that a future call site could forget.
+   */
+  const control = matchControlPanel(location.pathname);
+  const background = useRef<Location>(CONTROL_COLD_BACKGROUND);
+  // Only a page an authenticated session is actually looking at can be the page
+  // behind the popup: anything rendered while the session is still resolving is
+  // a gate on its way somewhere else.
+  if (status === 'authenticated' && control === null && !isTransientLocation(location.pathname)) {
+    background.current = location;
+  }
+  const pageLocation = control === null ? location : background.current;
 
   if (status === 'loading') return <Splash />;
   if (status === 'session-unavailable') {
@@ -136,7 +228,23 @@ function UserShell() {
   if (status === 'pin-required') return <PinGate />;
 
   return (
-    <Routes>
+    <>
+      <UserRoutes location={pageLocation} />
+      {/* The popup lives OUTSIDE the route tree, so it needs the guard the tree
+          gives its pages: only a fully authenticated session may see account
+          settings. First run is handled by its own gate inside the tree, which
+          navigates to /welcome and closes the popup with it. */}
+      {control !== null && status === 'authenticated' ? (
+        <ControlCenterOverlay closeTo={href(background.current)} panel={control.panel} />
+      ) : null}
+    </>
+  );
+}
+
+/** The authenticated route tree, rendered at `location` (see {@link UserShell}). */
+function UserRoutes({ location }: { location: Location }) {
+  return (
+    <Routes location={location}>
       <Route path="login" element={<LoginPage />} />
       <Route path="register" element={<RegisterPage />} />
       <Route path="forgot-password" element={<ForgotPasswordPage />} />
@@ -188,15 +296,39 @@ function UserShell() {
               {/* Custom assets are user-scoped (`/api/v1/custom-assets`), not a
                   portfolio's own list, so they live under Assets now. */}
               <Route path="custom-assets" element={<LegacyRedirect to="/assets/custom-assets" />} />
-              <Route path="cash-flow" element={<CashFlowLayout />}>
-                <Route index element={<ExpenseDashboardPage />} />
-                <Route path="transactions" element={<ExpenseTransactionsPage />} />
-                <Route path="budgets" element={<ExpenseBudgetsPage />} />
-                <Route path="categories" element={<ExpenseCategoriesPage />} />
-                <Route path="rules" element={<ExpenseRulesPage />} />
-                <Route path="import" element={<ExpenseImportPage />} />
+              {/* CASH — three tabs, plus two setup pages reached from them
+                  rather than from the tab strip (see `CashLayout`). */}
+              <Route path="cash" element={<CashLayout />}>
+                <Route index element={<CashOverviewPage />} />
+                <Route path="movements" element={<CashMovementsPage />} />
+                <Route path="budgets" element={<CashBudgetsPage />} />
+                {/* Tags and rules on ONE page: a tag is the label, a rule is how
+                    it gets applied automatically. Linked from Movements. */}
+                <Route path="labels" element={<CashLabelsPage />} />
+                {/* Account management, linked from the Overview balance strip. */}
                 <Route path="accounts" element={<CashSourcesPage />} />
+                {/* Bank-statement import is parked: it posted to the retired
+                    `/expenses/import/*` endpoints and is being rebuilt on the
+                    portfolio cash ledger (V5 cash fusion phase 2). Off the tab
+                    strip until there is something behind it — a permanently
+                    empty tab is noise — but the URL still resolves. */}
+                <Route path="import" element={<ParkedPage page="cashImport" />} />
+                {/* Pre-rework tab names, kept resolvable (search preserved). */}
+                <Route path="tags" element={<LegacyRedirect to="/portfolio/cash/labels" />} />
+                <Route path="rules" element={<LegacyRedirect to="/portfolio/cash/labels" />} />
+                <Route
+                  path="transactions"
+                  element={<LegacyRedirect to="/portfolio/cash/movements" />}
+                />
+                <Route path="categories" element={<LegacyRedirect to="/portfolio/cash/labels" />} />
               </Route>
+              {/* The whole area moved from `cash-flow` to `cash` (owner,
+                  2026-07-31). `withSplat` carries the sub-path, so every
+                  bookmark and every link in an old email still lands. */}
+              <Route
+                path="cash-flow/*"
+                element={<LegacyRedirect to="/portfolio/cash" withSplat />}
+              />
               <Route path="analysis" element={<AnalyticsPage />} />
               <Route path="tax" element={<TaxReportPage />} />
               <Route path="import" element={<ImportPage />} />
@@ -215,7 +347,9 @@ function UserShell() {
               {/* Legacy §7.2 portfolio paths. */}
               <Route path="transactions" element={<LegacyRedirect to="/portfolio/activity" />} />
               <Route path="analytics" element={<LegacyRedirect to="/portfolio/analysis" />} />
-              <Route path="cash" element={<LegacyRedirect to="/portfolio/cash-flow/accounts" />} />
+              {/* `/portfolio/cash` used to redirect to the accounts page. It is
+                  now the Cash area's own index, declared above — the redirect
+                  would have shadowed the real route. */}
             </Route>
 
             {/* ── Workbench (the possibility space) ── */}
@@ -264,6 +398,7 @@ function UserShell() {
               <Route path="shared/watchlists/:watchlistId" element={<SharedWatchlistPage />} />
               <Route path="shared/ideas/:ideaId" element={<SharedIdeaPage />} />
               <Route path="shared/:portfolioId" element={<SharedPortfolioPage />} />
+              <Route path="following" element={<LegacyRedirect to="/people" />} />
               {/* Public-profile SETTINGS live in the Control Center panel now
                   (the account menu, this rail tab and ⌘K all point here); the
                   public profile VIEW is still `/u/:username`. */}
@@ -275,15 +410,13 @@ function UserShell() {
             {/* ── Suite utilities ── */}
             <Route path="ask" element={<AskPage />} />
             <Route path="review" element={<ReviewPage />} />
-            {/* The Control Center is an OVERLAY (R2): `/control` opens it on the
-              default panel, `/control/:panel` deep-links one. `control/data`
-              is declared as its own page — a static segment outranks the
-              dynamic `:panel`, so Data management keeps its full page. */}
+            {/* The Control Center is an OVERLAY (R2) and is NOT a route: the
+              shell matches `/control` / `/control/:panel` itself and renders the
+              popup over the page behind it (see UserShell). `control/data` is a
+              real page and stays a route — `matchControlPanel` excludes that
+              segment, exactly as a static route segment used to outrank the
+              dynamic `:panel`. */}
             <Route path="control/data" element={<ParkedPage page="dataManagement" />} />
-            {/* ONE route node for the overlay: `/control` and `/control/:panel`
-              matching separate nodes would remount the dialog on every panel
-              switch and replay its entrance animation. */}
-            <Route path="control/:panel?" element={<ControlCenterOverlay />} />
 
             {/* ── Developer platform ── */}
             <Route path="developer" element={<DeveloperPlatformPage />} />
@@ -351,10 +484,7 @@ function UserShell() {
               element={<LegacyRedirect to="/workbench/ideas" withSplat />}
             />
             <Route path="forecast" element={<LegacyRedirect to="/workbench/forecasts" />} />
-            <Route
-              path="expenses/*"
-              element={<LegacyRedirect to="/portfolio/cash-flow" withSplat />}
-            />
+            <Route path="expenses/*" element={<LegacyRedirect to="/portfolio/cash" withSplat />} />
             <Route path="social" element={<LegacyRedirect to="/people" />} />
             <Route path="social/friends" element={<LegacyRedirect to="/people" />} />
             <Route path="social/chat/*" element={<LegacyRedirect to="/people/chat" withSplat />} />
@@ -366,11 +496,12 @@ function UserShell() {
             <Route path="social/ideas" element={<LegacyRedirect to="/workbench/ideas" />} />
             <Route path="social/profile" element={<LegacyRedirect to="/people/profile" />} />
             <Route path="following" element={<LegacyRedirect to="/people" />} />
+            {/* This stays beneath the existing authenticated/onboarding gates,
+                so signed-out visitors still resolve through RequireUser. */}
+            <Route path="*" element={<NotFoundState homeTo="/" />} />
           </Route>
         </Route>
       </Route>
-      {/* Unknown paths fall back home (which the guard sends to /login if anon). */}
-      <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );
 }
@@ -397,6 +528,149 @@ function VaultRuntimeRoot({ children }: { children: ReactNode }) {
   );
 }
 
+/**
+ * Resolve the account mode before any money route mounts. Normal accounts keep
+ * today's API adapter; paranoid accounts receive the decrypted PD5/PD7 seam
+ * only after unlock. A lock replaces this whole subtree in the same render.
+ */
+/**
+ * The account-mode gate: it decides, for the whole authenticated subtree, which
+ * portfolio store backs it and whether a locked vault replaces it outright.
+ * Exported for `AccountModeRoot.test.tsx`, which drives the privacy/phase
+ * matrix directly — every other consumer should mount `UserApp`.
+ */
+export function AccountModeRoot({ children }: { children: ReactNode }) {
+  const t = useT();
+  const location = useLocation();
+  const { status, user } = useAuth();
+  const privacy = usePrivacyMode(
+    status === 'authenticated',
+    status === 'authenticated' ? (user?.id ?? null) : null,
+  );
+  const runtime = useVaultRuntime();
+  const moneySession = useVaultMoneySession();
+  const cache = useQueryClient();
+  const paranoidStore = useMemo(
+    () => (moneySession == null ? null : createParanoidAppPortfolioStore(moneySession)),
+    [moneySession],
+  );
+
+  // Evict every plaintext money query the moment no decrypted session backs it.
+  // Scoped to vaults: a normal account sits at phase 'locked' for its whole
+  // life, so running this on every normal login would drop those queries just
+  // as their pages mount — refetch churn on a path that must stay
+  // byte-identical to today. `sawDecryptedSession` keeps the purge for the
+  // disable hand-off, where the mode may already read 'normal' by the time the
+  // runtime reports the lock.
+  const sawDecryptedSession = useRef(false);
+  useLayoutEffect(() => {
+    if (runtime.phase === 'unlocked') {
+      sawDecryptedSession.current = true;
+      return;
+    }
+    if (runtime.phase !== 'locked') return;
+    if (privacy.privacyMode !== 'paranoid' && !sawDecryptedSession.current) return;
+    sawDecryptedSession.current = false;
+    removePlaintextQueries(cache);
+  }, [cache, privacy.privacyMode, runtime.phase]);
+
+  useLayoutEffect(() => {
+    if (
+      status === 'authenticated' &&
+      privacy.privacyMode === 'normal' &&
+      runtime.phase === 'unlocked'
+    ) {
+      // A disable completed in another tab/device. Revoke the old decrypted
+      // session before the normal API-backed subtree is allowed to continue.
+      void runtime.lock({ broadcast: false });
+    }
+    // 'unlocking', deliberately NOT included: an unlock IN FLIGHT is owned by
+    // whoever started it, and locking here would cancel it (`lock` bumps the
+    // runtime's operation generation). The enable wizard hits exactly that —
+    // it flips the account mode from the receipt and starts the first unlock in
+    // the same turn, but the mode flip arrives one macrotask later than the
+    // phase change (TanStack's notify scheduler is a `setTimeout(0)`, React's
+    // is a microtask), so for one render this reads 'normal' + 'unlocking' and
+    // used to kill the unlock the user had already authenticated. Nothing is
+    // lost by waiting: the effect re-runs when the phase settles, so a real
+    // cross-device disable still locks the moment it reaches 'unlocked'.
+  }, [privacy.privacyMode, runtime, status]);
+
+  if (status !== 'authenticated') {
+    return (
+      <ResolvedPrivacyModeProvider mode="normal">
+        <PortfolioStoreProvider store={apiPortfolioStore}>{children}</PortfolioStoreProvider>
+      </ResolvedPrivacyModeProvider>
+    );
+  }
+  if (privacy.isPending) return <Splash />;
+  if (privacy.isError || privacy.privacyMode == null) {
+    return (
+      <AuthCard subtitle={t('vault.gate.unavailableTitle')}>
+        <div className="flex flex-col gap-4">
+          <p className="bt-soft text-sm">{t('vault.gate.unavailableBody')}</p>
+          <Button onClick={() => void privacy.refetch()}>{t('common.retry')}</Button>
+        </div>
+      </AuthCard>
+    );
+  }
+  if (privacy.privacyMode === 'normal') {
+    // A mode change received from another device must destroy the decrypted
+    // runtime before any normal API-backed money screen can mount.
+    if (runtime.phase !== 'locked') return <Splash />;
+    return (
+      <ResolvedPrivacyModeProvider accountId={user?.id ?? null} mode="normal">
+        <PortfolioStoreProvider store={apiPortfolioStore}>{children}</PortfolioStoreProvider>
+      </ResolvedPrivacyModeProvider>
+    );
+  }
+  if (privacy.mediaState == null) {
+    return (
+      <AuthCard subtitle={t('vault.gate.unavailableTitle')}>
+        <p className="bt-soft text-sm">{t('vault.gate.invalidMedia')}</p>
+      </AuthCard>
+    );
+  }
+  if (runtime.phase !== 'unlocked' || paranoidStore == null) {
+    // Account deletion is on §8's KEPT list (§12) and it is also the stable
+    // public URL the store listing points at, so a locked vault must not make
+    // it unreachable. The page reads no money data at all — typed username plus
+    // one credential, both verified server-side — so it is served directly here
+    // rather than through `children`, which would mount the shell and its
+    // portfolio store behind the gate.
+    if (location.pathname === '/account/delete') return <DeleteAccountPage />;
+    // The gate owns the whole authenticated subtree, so the §3 recovery exit
+    // has to live ON it: /control/privacy (Start fresh, Disable) is exactly
+    // what a user who cannot unlock can no longer reach.
+    return (
+      <VaultUnlockGate
+        mediaSet={privacy.mediaState.mediaSet}
+        onStartFresh={
+          user?.id == null
+            ? undefined
+            : async (credential) => {
+                await discardLockedVault(user.id, credential);
+                await runtime.cleanupAfterDisable();
+                privacy.acceptNormal();
+                void privacy.refetch();
+              }
+        }
+      />
+    );
+  }
+  return (
+    <ResolvedPrivacyModeProvider
+      accountId={user?.id ?? null}
+      mediaState={privacy.mediaState}
+      mode="paranoid"
+    >
+      <PortfolioStoreProvider store={paranoidStore}>
+        <ParanoidNavigationGate>{children}</ParanoidNavigationGate>
+      </PortfolioStoreProvider>
+    </ResolvedPrivacyModeProvider>
+  );
+}
+
 /** Renders the global 429 toast while it's active (§7.4). Fixed-position overlay — no layout impact. */
 function RateLimitToastPortal() {
   const { rateLimitBanner, clearRateLimitBanner } = useAuth();
@@ -412,6 +686,12 @@ function RateLimitToastPortal() {
 function AnnouncementBannerRoot() {
   const { status } = useAuth();
   return <AnnouncementBanner enabled={status === 'authenticated'} />;
+}
+
+/** Keeps an automatic interface scale correct as the window resizes. */
+function UiScaleWatcher() {
+  useUiScaleWatcher();
+  return null;
 }
 
 /**
@@ -434,12 +714,15 @@ export function UserApp() {
       <QueryClientProvider client={queryClient}>
         <AuthProvider>
           <VaultRuntimeRoot>
+            <UiScaleWatcher />
             <LocaleSync />
             <RateLimitToastPortal />
-            <RealtimeRoot>
-              <AnnouncementBannerRoot />
-              <UserShell />
-            </RealtimeRoot>
+            <AccountModeRoot>
+              <RealtimeRoot>
+                <AnnouncementBannerRoot />
+                <UserShell />
+              </RealtimeRoot>
+            </AccountModeRoot>
           </VaultRuntimeRoot>
         </AuthProvider>
       </QueryClientProvider>

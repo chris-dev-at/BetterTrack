@@ -10,6 +10,7 @@ import type { DataHome, DataHomeReadResult, DataHomeWriteResult } from './dataHo
 import { VaultCryptoError } from './errors';
 import type { LocalDataHome } from './localDataHome';
 import { mergeVaultDocuments } from './merge';
+import { carriedForkProvenance } from './mirrorProvenance';
 import type { VaultQuarantineStore } from './quarantine';
 
 const MAX_CAS_RECONCILIATIONS = 16;
@@ -30,6 +31,27 @@ export type VaultSyncStatus =
   | 'corrupt'
   | 'locked'
   | 'empty';
+
+/**
+ * The statuses under which the vault has exactly ONE readable branch: the newest
+ * local write is unambiguously the active one. `pending-offline` qualifies
+ * because the pending candidate IS the active candidate — a write the primary
+ * has not acknowledged yet, not a second version of the truth. Every other
+ * status is either an unmerged split (`unresolved`, `conflict`) or nothing to
+ * read (`corrupt`, `locked`, `empty`).
+ *
+ * One home because two callers must agree, and disagreeing is expensive in both
+ * directions: `media/runtime.ts` refuses to initialize an unlocked session
+ * without it, and the disable exit refuses to rehydrate without it — a disable
+ * on a split branch drops the other side for good when the server purges the
+ * blob and its history.
+ */
+const UNAMBIGUOUS_SYNC_STATUSES = new Set<VaultSyncStatus>(['synced', 'pending-offline']);
+
+/** True when {@link VaultSyncStatus} names exactly one readable branch. */
+export function hasUnambiguousBranch(status: VaultSyncStatus | null | undefined): boolean {
+  return status != null && UNAMBIGUOUS_SYNC_STATUSES.has(status);
+}
 
 export interface VaultSyncState {
   status: VaultSyncStatus;
@@ -993,10 +1015,20 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
   }
 
   async function encryptCandidate(
-    document: VaultDocument,
+    input: VaultDocument,
     vaultVersion: number,
     baseHeader: VaultEnvelopeHeader,
   ): Promise<VaultSyncCandidate> {
+    // Single funnel for every document this engine commits or publishes — plain
+    // mutation, CAS merge and remote promotion alike. §7.1 fork provenance may
+    // only name rows the document still keeps live, so pruning here means a local
+    // deletion can never leave behind an alias the server would later refuse
+    // (which would block disabling paranoid mode). Absent stays absent.
+    const carried = carriedForkProvenance(input);
+    const document: VaultDocument =
+      carried === undefined || carried === input.mirrorProvenance
+        ? input
+        : { ...input, mirrorProvenance: carried };
     const encrypted = await encryptVaultDocument({
       document,
       vaultKey: options.vaultKey,

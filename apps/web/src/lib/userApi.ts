@@ -5,6 +5,9 @@ import {
   inviteValidationResponseSchema,
   loginResponseSchema,
   meResponseSchema,
+  paranoidDisableResponseSchema,
+  paranoidEnableResponseSchema,
+  paranoidForkProvenanceResponseSchema,
   paranoidMediaStateResponseSchema,
   paranoidMediaTransitionResponseSchema,
   paranoidServerCandidateMetadataSchema,
@@ -51,6 +54,11 @@ import {
   type PasskeyRegisterVerifyRequest,
   type PasswordResetComplete,
   type PasswordResetRequest,
+  type ParanoidDisableRequest,
+  type ParanoidDisableResponse,
+  type ParanoidEnableRequest,
+  type ParanoidEnableResponse,
+  type ParanoidForkProvenanceResponse,
   type ParanoidMediaStateResponse,
   type ParanoidMediaTransitionRequest,
   type ParanoidMediaTransitionResponse,
@@ -133,12 +141,46 @@ export async function getMe(signal?: AbortSignal): Promise<MeResponse> {
   return meResponseSchema.parse(data);
 }
 
+/**
+ * The §7.1 capture read the enable wizard runs BEFORE enabling, while the
+ * server's `mirror_rows` identity map still exists. It returns the caller's own
+ * severed-fork map only — no co-member identity and no active chain.
+ */
+export async function getParanoidForkProvenance(
+  signal?: AbortSignal,
+): Promise<ParanoidForkProvenanceResponse> {
+  const data = await apiRequest<unknown>('/account/paranoid/fork-provenance', { signal });
+  return paranoidForkProvenanceResponseSchema.parse(data);
+}
+
+/** Commit the destructive normal → paranoid transition after every medium verified its blob. */
+export async function enableParanoidMode(
+  body: ParanoidEnableRequest,
+): Promise<ParanoidEnableResponse> {
+  const data = await apiRequest<unknown>('/account/paranoid/enable', {
+    method: 'POST',
+    body,
+  });
+  return paranoidEnableResponseSchema.parse(data);
+}
+
 /** Portfolio-free paranoid media state; no Drive capability crosses this API. */
 export async function getParanoidMediaState(
   signal?: AbortSignal,
 ): Promise<ParanoidMediaStateResponse> {
   const data = await apiRequest<unknown>('/vault/media', { signal });
   return paranoidMediaStateResponseSchema.parse(data);
+}
+
+/** Atomically rehydrate an unlocked strict vault document and return to normal mode. */
+export async function disableParanoidMode(
+  body: ParanoidDisableRequest,
+): Promise<ParanoidDisableResponse> {
+  const data = await apiRequest<unknown>('/account/paranoid/disable', {
+    method: 'POST',
+    body,
+  });
+  return paranoidDisableResponseSchema.parse(data);
 }
 
 /** Persist one verified migrate-then-drop media edge. */

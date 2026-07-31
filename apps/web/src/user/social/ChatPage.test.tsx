@@ -111,6 +111,20 @@ describe('ChatPage — conversation list', () => {
     renderAt('/social/chat');
     await waitFor(() => expect(screen.getByText('No messages yet')).toBeInTheDocument());
   });
+
+  test('retries a failed conversation-list read in place', async () => {
+    vi.mocked(listConversations)
+      .mockRejectedValueOnce(new ApiError(503, 'UNAVAILABLE', 'offline'))
+      .mockResolvedValueOnce({ conversations: [], unreadTotal: 0 });
+    const user = userEvent.setup();
+    renderAt('/social/chat');
+
+    expect(await screen.findByText(/couldn't load your chats/i)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Try again' }));
+
+    expect(await screen.findByText('No messages yet')).toBeInTheDocument();
+    expect(listConversations).toHaveBeenCalledTimes(2);
+  });
 });
 
 describe('ChatPage — thread + share chip enforcement', () => {
@@ -182,16 +196,66 @@ describe('ChatPage — thread + share chip enforcement', () => {
   });
 
   test('a non-friend chat shows a calm "not connected" state, never data', async () => {
-    vi.mocked(openConversation).mockRejectedValue(new Error('not found'));
+    vi.mocked(openConversation).mockRejectedValue(new ApiError(404, 'NOT_FOUND', 'not found'));
     renderAt('/social/chat/u2');
     await waitFor(() => expect(screen.getByText("You're not connected")).toBeInTheDocument());
+    expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
   });
 
-  test('a failing thread load shows an error, not the "say hi" empty state', async () => {
-    vi.mocked(getThread).mockRejectedValue(new Error('boom'));
+  test('retries an outage while resolving a conversation without calling it private', async () => {
+    vi.mocked(openConversation)
+      .mockRejectedValueOnce(new ApiError(500, 'UNAVAILABLE', 'offline'))
+      .mockResolvedValueOnce({
+        id: 'c1',
+        user: { id: 'u2', username: 'bob' },
+        unreadCount: 0,
+        lastMessage: null,
+        lastMessageAt: null,
+      });
+    vi.mocked(getThread).mockResolvedValue({
+      conversation: {
+        id: 'c1',
+        user: { id: 'u2', username: 'bob' },
+        unreadCount: 0,
+        lastMessage: null,
+        lastMessageAt: null,
+      },
+      nextCursor: null,
+      messages: [],
+    });
+    const user = userEvent.setup();
+    renderAt('/social/chat/u2');
+
+    expect(await screen.findByText(/couldn't load your chats/i)).toBeInTheDocument();
+    expect(screen.queryByText("You're not connected")).not.toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Try again' }));
+
+    expect(await screen.findByText('Say hi to bob')).toBeInTheDocument();
+    expect(openConversation).toHaveBeenCalledTimes(2);
+  });
+
+  test('a failing thread load stays distinct from empty and retries in place', async () => {
+    vi.mocked(getThread)
+      .mockRejectedValueOnce(new ApiError(503, 'UNAVAILABLE', 'boom'))
+      .mockResolvedValueOnce({
+        conversation: {
+          id: 'c1',
+          user: { id: 'u2', username: 'bob' },
+          unreadCount: 0,
+          lastMessage: null,
+          lastMessageAt: null,
+        },
+        nextCursor: null,
+        messages: [],
+      });
+    const user = userEvent.setup();
     renderAt('/social/chat/u2');
     await waitFor(() => expect(screen.getByText(/couldn't load your chats/i)).toBeInTheDocument());
     expect(screen.queryByText(/say hi/i)).toBeNull();
+
+    await user.click(screen.getByRole('button', { name: 'Try again' }));
+    expect(await screen.findByText('Say hi to bob')).toBeInTheDocument();
+    expect(getThread).toHaveBeenCalledTimes(2);
   });
 });
 

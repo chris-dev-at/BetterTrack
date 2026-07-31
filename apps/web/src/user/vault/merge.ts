@@ -13,6 +13,12 @@ import {
 } from '@bettertrack/contracts';
 
 import { VaultCryptoError } from './errors';
+import {
+  carriedForkProvenance,
+  forkProvenanceDominates,
+  mergeForkProvenance,
+  pruneForkProvenance,
+} from './mirrorProvenance';
 
 export const VAULT_MERGE_LOG_LIMIT = 20;
 
@@ -88,9 +94,16 @@ export function mergeVaultDocuments(input: MergeVaultDocumentsInput): MergedVaul
     deviceId: input.deviceId,
   });
   const clientSecurity = mergedClientSecurity(left, right);
+  const union = mergeForkProvenance(left.mirrorProvenance, right.mirrorProvenance);
   const common = {
     entities,
     mergeLog: appendMergeRecord(left.mergeLog, right.mergeLog, record),
+    // §7.1 severed-fork provenance is content-addressed, not entity-atomic: the
+    // union keyed by logical identity is what every replica converges on, and a
+    // merge must never be the step that loses an identity map. It is pruned
+    // against the MERGED entities, so a row one side deleted takes its provenance
+    // with it instead of the union resurrecting an alias the server would reject.
+    mirrorProvenance: pruneForkProvenance(union, entities),
   };
   const document: VaultDocument =
     clientSecurity == null
@@ -145,6 +158,14 @@ export function documentDominates(left: VaultDocument, right: VaultDocument): bo
 }
 
 function documentDominatesParsed(left: VaultDocument, right: VaultDocument): boolean {
+  // A linear successor must already carry the loser's fork provenance; otherwise
+  // taking it verbatim would silently drop an identity the other replica captured.
+  // Both sides are pruned against their OWN entities first: an entry whose row the
+  // loser itself deleted is not an identity to preserve, and treating it as one
+  // would force a divergent merge on every reconcile without ever converging.
+  if (!forkProvenanceDominates(carriedForkProvenance(left), carriedForkProvenance(right))) {
+    return false;
+  }
   const leftSecurity = clientSecurityOf(left);
   const rightSecurity = clientSecurityOf(right);
   if (rightSecurity != null && leftSecurity == null) return false;

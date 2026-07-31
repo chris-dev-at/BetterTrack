@@ -826,6 +826,10 @@ export type PortfolioHistoryResponse = z.infer<typeof portfolioHistoryResponseSc
  * flow). `dividend` / `tax_withholding` / `tax_refund` (V3-P4) are the tax
  * engine's postings — dividend income and its KESt/manual settlements — all
  * internal too, so performance reads net of taxes and inclusive of income.
+ * `fee` (V5, §16 2026-07-30) is a standing custody / account / platform fee: a
+ * cost of **holding**, so it is internal and DRAGS the return, unlike the
+ * `withdrawal` it previously had to be entered as (which is divided back out of
+ * the curve). Always negative.
  * Mirrors `domain/cashLedger.CASH_MOVEMENT_KINDS`.
  */
 export const cashMovementKindSchema = z.enum([
@@ -838,6 +842,7 @@ export const cashMovementKindSchema = z.enum([
   'dividend',
   'tax_withholding',
   'tax_refund',
+  'fee',
 ]);
 export type CashMovementKind = z.infer<typeof cashMovementKindSchema>;
 
@@ -1000,10 +1005,10 @@ export const cashMovementsQuerySchema = z
 export type CashMovementsQuery = z.infer<typeof cashMovementsQuerySchema>;
 
 /**
- * `POST /portfolios/:id/cash/deposit` and `.../withdraw` body — a positive EUR
- * **magnitude**; the service assigns the sign by kind. `executedAt` defaults to
- * now (server-side) when omitted. `sourceId` picks the cash source (V3-P3) and
- * defaults to the portfolio's Main source when omitted.
+ * `POST /portfolios/:id/cash/deposit`, `.../withdraw` and `.../fee` body — a
+ * positive EUR **magnitude**; the service assigns the sign by kind. `executedAt`
+ * defaults to now (server-side) when omitted. `sourceId` picks the cash source
+ * (V3-P3) and defaults to the portfolio's Main source when omitted.
  */
 export const cashEntryRequestSchema = z
   .object({
@@ -1016,8 +1021,8 @@ export const cashEntryRequestSchema = z
 export type CashEntryRequest = z.infer<typeof cashEntryRequestSchema>;
 
 /**
- * `POST /portfolios/:id/cash/deposit|withdraw` response — the new movement, the
- * affected source's balance, and the portfolio's rolled-up balance.
+ * `POST /portfolios/:id/cash/deposit|withdraw|fee` response — the new movement,
+ * the affected source's balance, and the portfolio's rolled-up balance.
  */
 export const cashMovementResponseSchema = z
   .object({
@@ -1310,6 +1315,16 @@ export const taxYearSellSchema = z
     realizedPnlEur: z.number(),
     taxMode: taxModeSchema.nullable(),
     taxAmountEur: z.number().nullable(),
+    /**
+     * The rest of the frozen tax facts (V3-P4 / V5-P4c): the country a
+     * `country_specific` row was taxed under and the parameter snapshot a
+     * `custom` row was taxed under, exactly as recorded — `null` in every other
+     * mode. Mode switches never rewrite them, so a client reconstructing a
+     * row's tax basis (the PD8 paranoid migration) must read THESE, never the
+     * portfolio's current tax settings.
+     */
+    taxCountry: taxCountrySchema.nullable(),
+    taxParams: customTaxParamsSchema.nullable(),
   })
   .strict();
 export type TaxYearSell = z.infer<typeof taxYearSellSchema>;
@@ -1322,6 +1337,9 @@ export const taxYearDividendSchema = z
     grossAmountEur: z.number(),
     taxMode: taxModeSchema,
     taxAmountEur: z.number().nullable(),
+    /** Frozen country / parameter snapshot, as on {@link taxYearSellSchema}. */
+    taxCountry: taxCountrySchema.nullable(),
+    taxParams: customTaxParamsSchema.nullable(),
   })
   .strict();
 export type TaxYearDividend = z.infer<typeof taxYearDividendSchema>;

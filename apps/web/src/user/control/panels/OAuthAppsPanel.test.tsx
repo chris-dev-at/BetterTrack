@@ -14,6 +14,7 @@ vi.mock('../../../lib/oauthApi', () => ({
 }));
 
 import { createOAuthClient, listOAuthClients } from '../../../lib/oauthApi';
+import { ResolvedPrivacyModeProvider } from '../../vault/usePrivacyMode';
 import { OAuthAppsPanel } from './OAuthAppsPanel';
 
 const NO_CLIENTS: OAuthClientListResponse = { clients: [] };
@@ -50,6 +51,19 @@ beforeEach(() => {
 });
 
 describe('OAuthAppsPanel', () => {
+  test('retries a failed app-list read in place', async () => {
+    vi.mocked(listOAuthClients)
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce(NO_CLIENTS);
+    const user = userEvent.setup();
+    renderPanel();
+
+    await user.click(await screen.findByRole('button', { name: 'Try again' }));
+
+    expect(await screen.findByText(/no oauth apps yet/i)).toBeInTheDocument();
+    expect(listOAuthClients).toHaveBeenCalledTimes(2);
+  });
+
   test('registers an OAuth app and shows the one-time client secret', async () => {
     vi.mocked(createOAuthClient).mockResolvedValue(CREATED_CLIENT);
     const user = userEvent.setup();
@@ -125,5 +139,27 @@ describe('OAuthAppsPanel', () => {
     detailsElements.forEach((d) => expect(d.open).toBe(false));
     // Header still shows a "None selected" affordance in the collapsed picker.
     expect(screen.getAllByText(/none selected/i).length).toBeGreaterThanOrEqual(1);
+  });
+
+  test('Paranoid mode marks a registered scope instead of hiding it, and stops offering it', async () => {
+    vi.mocked(listOAuthClients).mockResolvedValue({ clients: [CREATED_CLIENT.client] });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 0 } } });
+    render(
+      <QueryClientProvider client={client}>
+        <ResolvedPrivacyModeProvider mode="paranoid">
+          <OAuthAppsPanel />
+        </ResolvedPrivacyModeProvider>
+      </QueryClientProvider>,
+    );
+
+    // The client really is registered with the scope — hiding the chip would
+    // understate what it may ask for at the consent screen.
+    expect(await screen.findByText('portfolio:read')).toBeInTheDocument();
+    expect(screen.getByText(/inactive in Paranoid mode/i)).toBeInTheDocument();
+    // And a NEW app can no longer be registered with the refused module.
+    const registerForm = screen.getByRole('button', { name: 'Register app' }).closest('form')!;
+    expect(
+      within(registerForm).queryByRole('checkbox', { name: /portfolio · read/i }),
+    ).not.toBeInTheDocument();
   });
 });

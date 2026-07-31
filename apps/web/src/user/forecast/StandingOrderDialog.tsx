@@ -12,14 +12,11 @@ import {
 
 import { useT } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
-import {
-  STANDING_ORDERS_QUERY_KEY,
-  createStandingOrder,
-  updateStandingOrder,
-} from '../../lib/standingOrdersApi';
+import { STANDING_ORDERS_QUERY_KEY } from '../../lib/standingOrdersApi';
 import { AssetSearchBox } from '../components/AssetSearchBox';
 import { Dialog } from '../components/Dialog';
 import { Alert, Button, cx } from '../components/ui';
+import { usePortfolioStore } from '../portfolio/PortfolioStoreProvider';
 
 const inputClass = cx('bt-input w-full', '', '');
 
@@ -58,6 +55,7 @@ export interface StandingOrderDialogProps {
  */
 export function StandingOrderDialog({ portfolios, existing, onClose }: StandingOrderDialogProps) {
   const t = useT();
+  const store = usePortfolioStore();
   const queryClient = useQueryClient();
   const isEdit = !!existing;
 
@@ -96,12 +94,12 @@ export function StandingOrderDialog({ portfolios, existing, onClose }: StandingO
           label: label.trim() === '' ? null : label.trim(),
           endDate: endDate.trim() === '' ? null : endDate.trim(),
         };
-        return updateStandingOrder(existing.id, patch);
+        return store.updateStandingOrder(existing.id, patch);
       }
       const trimmedLabel = label.trim();
       const trimmedStart = startDate.trim();
       const trimmedEnd = endDate.trim();
-      return createStandingOrder({
+      return store.createStandingOrder({
         portfolioId,
         kind,
         assetId: kind === 'buy-asset' ? asset!.id : undefined,

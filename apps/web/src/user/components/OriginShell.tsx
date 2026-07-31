@@ -16,7 +16,11 @@ import { Button, Icon, type IconName } from '../../ui/origin';
 import { cx } from '../../lib/cx';
 import { legalUrl, type LegalPage } from '../legal';
 import { useAuth } from '../AuthContext';
+import { useCompactShell } from '../hooks/useCompactShell';
 import { PortfolioSwitcher } from '../portfolio/PortfolioSwitcher';
+import { useResolvedPrivacyMode, useResolvedPrivacyModeState } from '../vault/usePrivacyMode';
+import { useVaultRuntime } from '../vault/VaultRuntimeProvider';
+import { VaultSyncChip } from '../vault/ui/VaultSyncChip';
 import { Avatar } from './Avatar';
 import {
   ASK_DOCK_ID,
@@ -304,9 +308,30 @@ function RailBrand() {
   );
 }
 
-function AccountMenu({ collapsed }: { collapsed: boolean }) {
+/**
+ * The account / organization switcher — a PERSISTENT utility (see
+ * docs/redesign/PRODUCT_BLUEPRINT.md §4), i.e. reachable at every width like
+ * Create and Notifications. It renders at the foot of the rail on desktop
+ * (`placement="rail"`, the documented lower-left position) and, once the rail is
+ * hidden, as a compact avatar trigger in the topbar (`placement="topbar"`).
+ * Exactly ONE instance is ever mounted — the shell picks the placement from
+ * {@link useCompactShell} rather than rendering both and hiding one in CSS, so
+ * "Account menu" stays a single, unambiguous accessible control.
+ *
+ * Exported for OriginShell.account.test.tsx only — nothing else may mount it.
+ */
+export function AccountMenu({
+  collapsed,
+  placement = 'rail',
+}: {
+  collapsed: boolean;
+  placement?: 'rail' | 'topbar';
+}) {
+  const inTopbar = placement === 'topbar';
   const { t } = useI18n();
   const { user, logout, toggleDiscreetMode } = useAuth();
+  const privacyMode = useResolvedPrivacyMode();
+  const vault = useVaultRuntime();
   const [open, setOpen] = useState(false);
   const [discreetError, setDiscreetError] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -346,7 +371,7 @@ function AccountMenu({ collapsed }: { collapsed: boolean }) {
         aria-expanded={open}
         aria-haspopup="menu"
         aria-label={t('nav.accountMenu')}
-        className="bt-rail__account"
+        className={inTopbar ? 'bt-topbar__account' : 'bt-rail__account'}
         onClick={() => setOpen((value) => !value)}
         type="button"
       >
@@ -354,8 +379,14 @@ function AccountMenu({ collapsed }: { collapsed: boolean }) {
             the same curated avatar every social surface shows, so the rail and
             the profile can never disagree. */}
         <Avatar iconId={user?.profileIcon} name={name} size="sm" />
-        <span className="bt-rail__account-name">{name}</span>
-        <Icon className="bt-rail__account-more" name="more" size={15} />
+        {/* The topbar trigger is the avatar alone — a phone topbar has no room
+            for the name, and the menu itself repeats it in the header row. */}
+        {inTopbar ? null : (
+          <>
+            <span className="bt-rail__account-name">{name}</span>
+            <Icon className="bt-rail__account-more" name="more" size={15} />
+          </>
+        )}
       </button>
 
       {open ? (
@@ -365,7 +396,13 @@ function AccountMenu({ collapsed }: { collapsed: boolean }) {
           className="bt-popover"
           onKeyDown={onMenuKeyDown}
           role="menu"
-          style={{ bottom: 'calc(100% + 6px)', left: 0, right: collapsed ? 'auto' : 0 }}
+          // The rail sits at the foot of the viewport, so its menu rises; the
+          // topbar's hangs down from the trigger and is right-anchored.
+          style={
+            inTopbar
+              ? { top: 'calc(100% + 6px)', right: 0 }
+              : { bottom: 'calc(100% + 6px)', left: 0, right: collapsed ? 'auto' : 0 }
+          }
         >
           {user ? (
             <div style={{ padding: '7px 9px 9px' }}>
@@ -378,15 +415,17 @@ function AccountMenu({ collapsed }: { collapsed: boolean }) {
             </div>
           ) : null}
           <div className="bt-menu-rule" />
-          <Link
-            className="bt-menu-item"
-            onClick={closeAndRestoreFocus}
-            role="menuitem"
-            to="/people/profile"
-          >
-            <Icon name="user" size={15} />
-            {t('nav.myProfile')}
-          </Link>
+          {privacyMode !== 'paranoid' ? (
+            <Link
+              className="bt-menu-item"
+              onClick={closeAndRestoreFocus}
+              role="menuitem"
+              to="/people/profile"
+            >
+              <Icon name="user" size={15} />
+              {t('nav.myProfile')}
+            </Link>
+          ) : null}
           <Link
             className="bt-menu-item"
             onClick={closeAndRestoreFocus}
@@ -418,6 +457,20 @@ function AccountMenu({ collapsed }: { collapsed: boolean }) {
             <p className="bt-field__error" role="alert" style={{ padding: '2px 9px 6px' }}>
               {t('nav.discreetModeError')}
             </p>
+          ) : null}
+          {privacyMode === 'paranoid' ? (
+            <button
+              className="bt-menu-item"
+              onClick={() => {
+                closeAndRestoreFocus();
+                void vault.lock();
+              }}
+              role="menuitem"
+              type="button"
+            >
+              <Icon name="lock" size={15} />
+              {t('vault.lock.action')}
+            </button>
           ) : null}
           <div className="bt-menu-rule" />
           <button
@@ -471,9 +524,11 @@ function CreateMenu() {
 
   const items: ReadonlyArray<{ to: string; icon: IconName; labelKey: string }> = [
     { to: '/portfolio/activity?create=trade', icon: 'assets', labelKey: 'create.trade' },
-    { to: '/portfolio/cash-flow?create=transaction', icon: 'cash', labelKey: 'create.cashFlow' },
+    // See commands.ts: no create-a-movement flow exists post cash-fusion, so
+    // this jumps straight to the tagged ledger instead of a dead `?create=`.
+    { to: '/portfolio/cash/movements', icon: 'cash', labelKey: 'create.cashFlow' },
     {
-      to: '/portfolio/cash-flow/accounts?create=transfer',
+      to: '/portfolio/cash/accounts?create=transfer',
       icon: 'wallet',
       labelKey: 'create.transfer',
     },
@@ -526,9 +581,13 @@ function CreateMenu() {
 
 export function OriginShell() {
   const { t, locale } = useI18n();
+  const privacy = useResolvedPrivacyModeState();
   const location = useLocation();
   const { pathname } = location;
   const [paletteOpen, setPaletteOpen] = useState(false);
+  // The rail is display:none at this width, so anything that lives only inside
+  // it has to be rendered elsewhere (see the topbar's AccountMenu).
+  const compactShell = useCompactShell();
   // The shell root — also the palette's mount parent, which is why the ⌘K guard
   // below asks whether *this* branch is inert.
   const shellRef = useRef<HTMLDivElement>(null);
@@ -671,8 +730,13 @@ export function OriginShell() {
           >
             <Icon name="collapse" size={17} />
           </button>
-          <div className="bt-rail__rule" />
-          <AccountMenu collapsed={collapsed} />
+          {/* Rail-hidden widths render this in the topbar instead — see below. */}
+          {compactShell ? null : (
+            <>
+              <div className="bt-rail__rule" />
+              <AccountMenu collapsed={collapsed} />
+            </>
+          )}
         </aside>
 
         <div className="bt-main">
@@ -705,8 +769,18 @@ export function OriginShell() {
               size="sm"
               variant="quiet"
             />
-            <CreateMenu />
-            <NotificationBell />
+            <div className="bt-topbar__actions">
+              {privacy.privacyMode === 'paranoid' && privacy.mediaState != null ? (
+                <VaultSyncChip media={privacy.mediaState} />
+              ) : null}
+              <CreateMenu />
+              <NotificationBell />
+              {/* Below the rail's breakpoint the rail — and with it My profile,
+                  Settings, Discreet mode and Logout — is display:none, which left
+                  a phone with no way to reach any of them, not even to sign out.
+                  The account menu moves here instead so it stays persistent. */}
+              {compactShell ? <AccountMenu collapsed={false} placement="topbar" /> : null}
+            </div>
           </header>
 
           <main id="main-content" className="bt-canvas" tabIndex={-1}>
@@ -726,10 +800,10 @@ export function OriginShell() {
               >
                 {LEGAL_LINKS.map((link) => (
                   <a
+                    className="bt-footer-link"
                     href={legalUrl(link.page, locale)}
                     key={link.page}
                     rel="noreferrer"
-                    style={{ color: 'var(--bt-faint)', textDecoration: 'none' }}
                     target="_blank"
                   >
                     {t(link.labelKey)}

@@ -80,6 +80,10 @@ import {
   createAccountSettingsService,
   type AccountSettingsService,
 } from '../services/account/accountSettingsService';
+import {
+  createHomeLayoutService,
+  type HomeLayoutService,
+} from '../services/account/homeLayoutService';
 import { createExportService, type ExportService } from '../services/export';
 import { createExportRepository } from '../data/repositories/exportRepository';
 import { createAlertService, type AlertService } from '../services/alerts/alertService';
@@ -167,6 +171,15 @@ import {
   createExpenseBudgetService,
   type ExpenseBudgetService,
 } from '../services/expenses/budgetService';
+import { createCashTagRepository } from '../data/repositories/cashTagRepository';
+import { createCashBudgetRepository } from '../data/repositories/cashBudgetRepository';
+import { createCashRuleRepository } from '../data/repositories/cashRuleRepository';
+import { createCashSummaryRepository } from '../data/repositories/cashSummaryRepository';
+import { createCashTagService, type CashTagService } from '../services/cash/cashTagService';
+import {
+  createCashBudgetService,
+  type CashBudgetService,
+} from '../services/cash/cashBudgetService';
 import {
   createWebhookSubscriptionRepository,
   createWebhookDeliveryRepository,
@@ -191,6 +204,7 @@ import {
   createParanoidVaultService,
   type ParanoidVaultService,
 } from '../services/account/paranoidVaultService';
+import { createParanoidDiscardReauth } from '../services/account/paranoidDiscardReauth';
 import { createParanoidRehydrationService } from '../services/account/paranoidRehydrationService';
 import {
   createParanoidTransitionService,
@@ -358,6 +372,10 @@ export interface AppContext {
   expenseImports: ExpenseImportService;
   /** Expense dashboards + per-category budgets with matrix-routed alerts (§13.5 V5-P9, issue 3/3). */
   expenseBudgets: ExpenseBudgetService;
+  /** Cash-flow tags + auto-tagging rules on the portfolio cash ledger (V5 cash fusion). */
+  cashTags: CashTagService;
+  /** Cash-flow budgets per (portfolio, tag, month), plus the monthly summary and trends. */
+  cashBudgets: CashBudgetService;
   /**
    * Paranoid vault — the blind server blob store for a paranoid account's
    * client-encrypted vault (§13.5 V5-P13 arc b): opaque GET/PUT with ETag CAS,
@@ -395,6 +413,8 @@ export interface AppContext {
   discordSetup: DiscordSetupService;
   /** Per-user account defaults — Settings → Account default portfolio visibility (§6.9, V2-P9). */
   accountSettings: AccountSettingsService;
+  /** The per-account Home widget board (R2 home-widgets) — stored verbatim. */
+  homeLayout: HomeLayoutService;
   /** Self-service account deletion — re-auth-gated hard delete (§13.4 V4-P2c, #362). */
   accountDeletion: AccountDeletionService;
   /**
@@ -646,6 +666,10 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // Shared by auth/admin (default-portfolio provisioning at account creation,
   // §5.5) and the portfolio service below.
   const portfolioRepo = createPortfolioRepository(db);
+  // Created here rather than beside the other cash-fusion repositories below: the
+  // portfolio service takes it (read-only) so the cash ledger DTO can carry each
+  // movement's tags, and that service is constructed well before them.
+  const cashTagRepo = createCashTagRepository(db);
   // Per-portfolio setting overrides (issue #636): the override layer feeding the
   // tax service's scoping cascade.
   const portfolioSettingsRepo = createPortfolioSettingsRepository(db);
@@ -1264,6 +1288,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     transactionRepo,
     cashMovementRepo,
     cashSourceRepo,
+    cashTagRepo,
     marketData,
     currencyService: currency,
     referenceBackfill,
@@ -1463,6 +1488,25 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     paranoid: paranoidGuard,
   });
 
+  // V5 cash fusion: the classification layer ON the portfolio cash ledger, which
+  // supersedes the expense island above. Tags are per user, budgets per
+  // (portfolio, tag, month), rules per user. `cashAutoTag` is what stamps a
+  // freshly-booked movement with its app-owned system tag — see `cashAutoTag.ts`
+  // for the kind → tag table and what an edited trade does to a manual tag.
+  const cashRuleRepo = createCashRuleRepository(db);
+  const cashBudgetRepo = createCashBudgetRepository(db);
+  const cashSummaryRepo = createCashSummaryRepository(db);
+  const cashTags = createCashTagService({ tags: cashTagRepo, rules: cashRuleRepo });
+  const cashBudgets = createCashBudgetService({
+    budgets: cashBudgetRepo,
+    summaries: cashSummaryRepo,
+    tags: cashTagRepo,
+    portfolios: portfolioRepo,
+    notify,
+    now: deps.budgetNow,
+    logger,
+  });
+
   // Friend requests + friendships (§6.9): no-enumeration request creation,
   // accept/decline/cancel/remove, all authorization enforced at query time.
   // Emits friend.request / friend.accepted through the notification center.
@@ -1565,6 +1609,10 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // Account defaults (§6.9, V2-P9): Settings → Account default portfolio
   // visibility, applied by the portfolio service at create time.
   const accountSettings = createAccountSettingsService({ userRepo });
+
+  // The Home widget board (R2 home-widgets): per account, so the layout follows
+  // the user to every browser they sign in from.
+  const homeLayout = createHomeLayoutService({ userRepo });
 
   // Self-service account deletion (§13.4 V4-P2c, #362): re-auth + typed
   // confirmation, then a hard delete the FK graph fans out — with the chat
@@ -1803,6 +1851,15 @@ export function buildContext(deps: BuildContextDeps): AppContext {
 
   const paranoidTransitions = createParanoidTransitionService({
     db,
+    // The §3 destruction exit re-authenticates like `DELETE /account`.
+    discardReauth: createParanoidDiscardReauth({
+      config,
+      redis,
+      userRepo,
+      passwordHasher,
+      twoFactor,
+      audit,
+    }),
     // Admin metadata locks on the dedicated pool and reads on the main one, the
     // same split every other privacy-lock call site uses.
     lockDb: privacyLockDb,
@@ -1873,6 +1930,9 @@ export function buildContext(deps: BuildContextDeps): AppContext {
       standingOrders,
       webhookBridge,
       alerts,
+      cashTags,
+      cashBudgets,
+      homeLayout,
     },
     paranoidGuard,
     paranoidSubjects,
@@ -1909,6 +1969,8 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     expenses: guarded.expenses,
     expenseImports: guarded.expenseImports,
     expenseBudgets: guarded.expenseBudgets,
+    cashTags: guarded.cashTags,
+    cashBudgets: guarded.cashBudgets,
     paranoidVault,
     paranoidTransitions,
     paranoidGuard,
@@ -1923,6 +1985,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     telegramSetup,
     discordSetup,
     accountSettings,
+    homeLayout: guarded.homeLayout,
     accountDeletion,
     dataExport,
     alerts: guarded.alerts,

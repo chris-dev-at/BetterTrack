@@ -29,14 +29,14 @@ test('chat: a direct message reaches the recipient', async ({ browser }) => {
   await newChat.getByRole('button', { name: recipient.username }).click();
   await sender.page.getByPlaceholder('Message').fill(body);
   await sender.page.getByRole('button', { name: 'Send' }).click();
-  await expect(sender.page.getByText(body)).toBeVisible({ timeout: 15_000 });
+  await expect(sender.page.getByText(body, { exact: true })).toBeVisible({ timeout: 15_000 });
 
   // Recipient opens their chat list, selects the conversation, and sees the DM.
   await recipient.page.goto('/people/chat');
   const conversation = recipient.page.getByRole('button').filter({ hasText: sender.username });
   await expect(conversation).toBeVisible({ timeout: 20_000 });
   await conversation.click();
-  await expect(recipient.page.getByText(body)).toBeVisible({ timeout: 15_000 });
+  await expect(recipient.page.getByText(body, { exact: true })).toBeVisible({ timeout: 15_000 });
 
   await sender.context.close();
   await recipient.context.close();

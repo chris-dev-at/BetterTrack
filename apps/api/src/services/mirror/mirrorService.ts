@@ -429,6 +429,16 @@ export interface MirrorService {
     portfolioId: string,
     input: CashEntryRequest,
   ): Promise<CashMovementResponse>;
+  /**
+   * Record a standing custody/account fee (V5, §16 2026-07-30). Replicated like a
+   * deposit/withdrawal — it is origin data a member typed — but as its own
+   * `cash.fee` op, so every copy books a `fee` and lets it drag its own curve.
+   */
+  submitCashFee(
+    userId: string,
+    portfolioId: string,
+    input: CashEntryRequest,
+  ): Promise<CashMovementResponse>;
   submitCashTransfer(
     userId: string,
     portfolioId: string,
@@ -854,7 +864,8 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
       }
 
       case 'cash.deposit':
-      case 'cash.withdraw': {
+      case 'cash.withdraw':
+      case 'cash.fee': {
         if (await repo.findMirrorRow('cash_movement', payload.mirrorId, portfolioId)) {
           return { applied: false };
         }
@@ -865,10 +876,21 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
           executedAt: payload.executedAt,
           note: payload.note,
         };
+        // A `fee` books through its own service method so the replica stores kind
+        // `fee` (V5, §16 2026-07-30) — reusing `withdrawCash` here would make the
+        // fee external to THIS copy's TWR and diverge its curve from the origin's.
         const res =
           payload.kind === 'cash.deposit'
             ? await portfolio.depositCash(userId, portfolioId, entry, { source: syncTag })
-            : await portfolio.withdrawCash(userId, portfolioId, entry, { source: syncTag, force });
+            : payload.kind === 'cash.fee'
+              ? await portfolio.chargeCashFee(userId, portfolioId, entry, {
+                  source: syncTag,
+                  force,
+                })
+              : await portfolio.withdrawCash(userId, portfolioId, entry, {
+                  source: syncTag,
+                  force,
+                });
         await repo.insertMirrorRow({
           chainId: member.chainId,
           kind: 'cash_movement',
@@ -1913,6 +1935,8 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
         return `${actor} deposited cash`;
       case 'cash.withdraw':
         return `${actor} withdrew cash`;
+      case 'cash.fee':
+        return `${actor} recorded a cash fee`;
       case 'cash.transfer':
         return `${actor} transferred cash`;
       case 'cash.setBalance':
@@ -2216,12 +2240,25 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
         links.push({ kind: 'dividend', id: d.id });
       }
 
-      // External movements (design §1): hand-entered deposits/withdrawals and
+      // Hand-entered movements (design §1): deposits/withdrawals/fees and
       // transfers. Derived rows — buy/sell legs, dividend inflows, tax
       // settlements — are copy-scoped and re-derived per copy, never replicated.
+      //
+      // `fee` belongs here (V5, §16 2026-07-30) for the SAME reason as the other
+      // two: a member typed it, so it is origin data. Note this predicate is
+      // "hand-entered", NOT `domain/cashLedger`'s "external flow for TWR" — a fee
+      // is the row where those two notions differ, so omitting it here would drop
+      // every recorded fee out of a portfolio the moment it became a group
+      // portfolio, silently lifting the shared copy's return.
+      const HAND_ENTERED_KINDS = ['deposit', 'withdrawal', 'fee'] as const;
+      const OP_KIND_BY_MOVEMENT_KIND = {
+        deposit: 'cash.deposit',
+        withdrawal: 'cash.withdraw',
+        fee: 'cash.fee',
+      } as const;
       const external = movements.filter(
-        (m) =>
-          (m.kind === 'deposit' || m.kind === 'withdrawal') &&
+        (m): m is typeof m & { kind: (typeof HAND_ENTERED_KINDS)[number] } =>
+          (HAND_ENTERED_KINDS as readonly string[]).includes(m.kind) &&
           !m.transactionId &&
           !m.dividendId &&
           m.taxYear === null &&
@@ -2234,12 +2271,12 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
         id: m.id,
         linkIds: [m.id],
         op: {
-          kind: m.kind === 'deposit' ? 'cash.deposit' : 'cash.withdraw',
+          kind: OP_KIND_BY_MOVEMENT_KIND[m.kind],
           mirrorId: m.id,
           ...actor,
           payload: {
             opVersion: MIRROR_OP_VERSION,
-            kind: m.kind === 'deposit' ? 'cash.deposit' : 'cash.withdraw',
+            kind: OP_KIND_BY_MOVEMENT_KIND[m.kind],
             mirrorId: m.id,
             sourceMirrorId: m.sourceId,
             amountEur: Math.abs(m.amountEur),
@@ -3632,6 +3669,10 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
       return submitCashEntry(userId, portfolioId, input, 'cash.withdraw');
     },
 
+    async submitCashFee(userId, portfolioId, input) {
+      return submitCashEntry(userId, portfolioId, input, 'cash.fee');
+    },
+
     async submitCashTransfer(userId, portfolioId, input) {
       await assertMirrorAllowed(userId);
       const membership = await membershipForWrite(userId, portfolioId);
@@ -3834,25 +3875,42 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
     },
   };
 
-  /** Shared deposit/withdraw submit (they differ only in kind + service call). */
+  /**
+   * Shared deposit/withdraw/fee submit (they differ only in kind + service call).
+   *
+   * `cash.fee` (V5, §16 2026-07-30) rides this path because a fee is ORIGIN data
+   * — a member typed it — exactly like a deposit or a withdrawal, and is not
+   * re-derived per copy the way a buy's cash leg or a tax settlement is. It must
+   * replicate as its OWN kind: a copy that booked it as a withdrawal would divide
+   * it back out of that copy's performance curve, silently restoring the very
+   * misreport the kind exists to fix on every copy except the origin.
+   */
+  const cashEntryServiceCall = {
+    'cash.deposit': portfolio.depositCash,
+    'cash.withdraw': portfolio.withdrawCash,
+    'cash.fee': portfolio.chargeCashFee,
+  } as const;
+
   async function submitCashEntry(
     userId: string,
     portfolioId: string,
     input: CashEntryRequest,
-    kind: 'cash.deposit' | 'cash.withdraw',
+    kind: 'cash.deposit' | 'cash.withdraw' | 'cash.fee',
   ): Promise<CashMovementResponse> {
+    // Bound to `portfolio` so the table above stays a plain kind → method map;
+    // adding a kind cannot forget a branch the way an if/else chain could.
+    const record = (): Promise<CashMovementResponse> =>
+      cashEntryServiceCall[kind].call(portfolio, userId, portfolioId, input);
     const membership = await membershipForWrite(userId, portfolioId);
-    if (!membership) {
-      return kind === 'cash.deposit'
-        ? portfolio.depositCash(userId, portfolioId, input)
-        : portfolio.withdrawCash(userId, portfolioId, input);
-    }
+    if (!membership) return record();
     const username = await usernameOf(userId);
+    // main's principal guards (they replaced the bare chain lock + catch-up),
+    // wrapping THIS branch's kind map rather than main's two-way if/else — the
+    // inline ternary only knew deposit and withdraw, so keeping it would have
+    // silently booked every `cash.fee` as a withdrawal on the origin and undone
+    // the whole point of the kind (§16 2026-07-30).
     const res = await withSubmitPrincipalGuards(userId, membership, async (member) => {
-      const created =
-        kind === 'cash.deposit'
-          ? await portfolio.depositCash(userId, portfolioId, input)
-          : await portfolio.withdrawCash(userId, portfolioId, input);
+      const created = await record();
       await repo.insertMirrorRow({
         chainId: member.chainId,
         kind: 'cash_movement',

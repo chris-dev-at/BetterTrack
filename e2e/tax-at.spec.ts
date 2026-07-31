@@ -21,7 +21,11 @@ import { provisionUser } from './support/users';
 async function enableAustriaTaxMode(page: Page): Promise<void> {
   await page.goto('/settings/taxes');
   const austria = page.getByRole('radio', { name: /Austria \(KESt\)/i });
-  await austria.check();
+  // `click()`, not `check()`: the mode radio is CONTROLLED by server state and
+  // only flips once the settings PATCH returns, which `check()`'s same-tick
+  // verification can never observe (it re-clicks instead). `toBeChecked()` below
+  // is the auto-retrying wait — the assertion is unchanged.
+  await austria.click();
   await expect(austria).toBeChecked();
   // The per-year report signpost only renders once a mode is active — a live proof
   // that the choice was saved before we start recording taxable trades.
@@ -33,13 +37,27 @@ async function enableAustriaTaxMode(page: Page): Promise<void> {
  * Driven from the Cash-sources page (its per-row Deposit works on a brand-new,
  * empty portfolio — unlike the overview button, which the empty state hides).
  */
-async function depositToMain(page: Page, amount: string): Promise<void> {
-  await page.goto('/portfolio/cash-flow/accounts');
+/**
+ * `on` MUST predate every trade below, and the deposit dialog therefore has to
+ * be given an explicit date rather than defaulting to today.
+ *
+ * Solvency is replayed CHRONOLOGICALLY per source: a deposit dated after a
+ * withdrawal cannot fund it, by design — money you have in July was not
+ * available in March. While this dialog defaulted to "now", the spec funded
+ * Main *after* its own backdated trades, so the first sell's KESt withholding
+ * had a €0 balance to settle against and the server correctly refused it with
+ * INSUFFICIENT_CASH. That made the whole spec a time bomb: it could only pass
+ * while the wall clock still sat before February 2026. Every date in this file
+ * is now absolute, so it behaves the same in any year it is run.
+ */
+async function depositToMain(page: Page, amount: string, on: string): Promise<void> {
+  await page.goto('/portfolio/cash/accounts');
   const rows = page.locator('table[aria-label="Cash sources"] tbody tr');
   // sortSourcesMainFirst: Main is row 0 on a fresh account.
   await rows.nth(0).getByRole('button', { name: 'Deposit' }).click();
   const dialog = page.getByRole('dialog', { name: 'Cash balance' });
   await dialog.getByLabel('Amount', { exact: true }).fill(amount);
+  await dialog.getByLabel('Date', { exact: true }).fill(on);
   await dialog.getByRole('button', { name: 'Deposit cash' }).click();
   await expect(dialog).toBeHidden();
   await expect(rows.nth(0)).toContainText(/1[.,]000/);
@@ -58,8 +76,10 @@ test('AT tax mode: an intra-year loss sell refunds tax in the per-year report', 
   const page = owner.page;
 
   await enableAustriaTaxMode(page);
-  // Fund Main so the −123.75 € KESt withholding has cash to settle against.
-  await depositToMain(page, '1000');
+  // Fund Main so the −123.75 € KESt withholding has cash to settle against —
+  // dated BEFORE the first trade, or the chronological solvency replay sees a
+  // €0 balance on the day the withholding lands. See `depositToMain`.
+  await depositToMain(page, '1000', '2026-01-02');
 
   // Cycle 1 — realize +450 €: buy 10 @ 100, sell 10 @ 145 → 27.5 % × 450 = 123.75 withheld.
   await recordSapTrade(page, { side: 'buy', quantity: '10', price: '100', date: '2026-02-02' });

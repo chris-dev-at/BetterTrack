@@ -3,15 +3,18 @@ import { lstat, rename, rm } from 'node:fs/promises';
 import {
   paranoidDisableRequestSchema,
   paranoidEnableRequestSchema,
+  paranoidForkProvenanceResponseSchema,
   PARANOID_TRANSITION_ERROR_CODES,
   type ParanoidDisableRequest,
   type ParanoidDisableResponse,
   type ParanoidEnableRequest,
   type ParanoidEnableResponse,
+  type ParanoidForkProvenanceResponse,
   type ParanoidRehydrationPostCommitPlan,
 } from '@bettertrack/contracts';
 
 import type { Database } from '../../data/db';
+import { createParanoidForkProvenanceRepository } from '../../data/repositories/paranoidRehydrationRepository';
 import {
   createParanoidTransitionTransactionRepository,
   finalizeRetiredCleartextExports,
@@ -22,6 +25,7 @@ import {
 } from '../../data/repositories/paranoidTransitionRepository';
 import type { Logger } from '../../logger';
 import { AuditAction, type AuditService } from '../audit/auditService';
+import type { ParanoidDiscardReauth } from './paranoidDiscardReauth';
 import {
   ParanoidRehydrationError,
   type ParanoidRehydrationService,
@@ -57,6 +61,12 @@ export interface ParanoidTransitionServiceDeps {
    */
   lockDb?: Database;
   rehydration: ParanoidRehydrationService;
+  /**
+   * Gate for the irreversible `discard` disable. Required, not optional: a
+   * composition that omits it must fail to typecheck rather than silently ship
+   * an unauthenticated vault-destruction endpoint.
+   */
+  discardReauth: ParanoidDiscardReauth;
   audit: AuditService;
   /** Optional so unit harnesses can compose the service without a log sink. */
   logger?: Logger;
@@ -95,7 +105,21 @@ export interface PreparedExportFileRetirement {
 
 export interface ParanoidTransitionService {
   enable(userId: string, request: ParanoidEnableRequest): Promise<ParanoidEnableResponse>;
-  disable(userId: string, request: ParanoidDisableRequest): Promise<ParanoidDisableResponse>;
+  /**
+   * `options.ip` is audit/throttle context for the `discard` re-auth only; the
+   * restoring disable ignores it.
+   */
+  disable(
+    userId: string,
+    request: ParanoidDisableRequest,
+    options?: { ip?: string | null },
+  ): Promise<ParanoidDisableResponse>;
+  /**
+   * The enable wizard's §7.1 capture read: the caller's own severed-fork identity
+   * map, while `mirror_rows` still exists. Read-only and lock-free — it takes no
+   * transition lock precisely so it can run before the wizard commits to enabling.
+   */
+  forkProvenance(userId: string): Promise<ParanoidForkProvenanceResponse>;
   /** Non-sensitive admin-only mode/media/blob metadata; never returns blob bytes. */
   adminMetadata(userId: string): Promise<ParanoidAdminMetadata | null>;
   /**
@@ -198,6 +222,13 @@ export function createParanoidTransitionService(
     async adminMetadata(userId) {
       const metadata = await getParanoidAdminMetadata(deps.db, lockDb, [userId]);
       return metadata.get(userId) ?? null;
+    },
+
+    async forkProvenance(userId) {
+      const provenance = await createParanoidForkProvenanceRepository(
+        deps.db,
+      ).listRetainedForkProvenance(userId);
+      return paranoidForkProvenanceResponseSchema.parse({ provenance });
     },
 
     async enable(userId, request) {
@@ -461,7 +492,7 @@ export function createParanoidTransitionService(
       return result;
     },
 
-    async disable(userId, request) {
+    async disable(userId, request, options) {
       const parsed = paranoidDisableRequestSchema.safeParse(request);
       if (!parsed.success) {
         throw new ParanoidTransitionError(
@@ -469,7 +500,18 @@ export function createParanoidTransitionService(
           'The paranoid rehydration request is malformed.',
         );
       }
-      const { confirm: _confirm, ...rehydration } = parsed.data;
+      // Re-auth fields are gate material, never restore material.
+      const {
+        confirm: _confirm,
+        confirmUsername: _confirmUsername,
+        password: _password,
+        code: _code,
+        recoveryCode: _recoveryCode,
+        ...rehydration
+      } = parsed.data;
+      if (rehydration.discard === true) {
+        await deps.discardReauth.verify({ userId, body: parsed.data, ip: options?.ip });
+      }
       let restored;
       try {
         restored = await deps.rehydration.rehydrate(userId, rehydration);
@@ -489,6 +531,7 @@ export function createParanoidTransitionService(
         meta: {
           rehydrationId: result.rehydrationId,
           idempotent: result.idempotent,
+          ...(rehydration.discard === true ? { discard: true } : {}),
         },
       });
       return result;

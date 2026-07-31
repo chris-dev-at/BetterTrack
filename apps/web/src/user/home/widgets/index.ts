@@ -4,6 +4,7 @@ import { AllocationWidget } from './AllocationWidget';
 import { AssetSpotlightSettings, AssetSpotlightWidget } from './AssetSpotlightWidget';
 import { AttentionWidget } from './AttentionWidget';
 import { CashBalancesWidget } from './CashBalancesWidget';
+import { QuickCashWidget } from './QuickCashWidget';
 import { CASHFLOW_MONTHS, CashflowChartWidget } from './CashflowChartWidget';
 import { ConcentrationWidget } from './ConcentrationWidget';
 import { DividendsWidget } from './DividendsWidget';
@@ -149,9 +150,10 @@ export const WIDGET_REGISTRY = {
     descriptionKey: 'home.widgets.cashflowChart.description',
     group: 'charts',
     allowedSizes: WIDGET_SIZE_RULES['cashflow-chart'].allowed,
-    defaultSettings: { range: '6M' },
-    // The expense ledger has no portfolio dimension — see CashflowChartWidget.
-    supportsScope: false,
+    defaultSettings: { scope: 'all', range: '6M' },
+    // V5 cash fusion: cash now lives IN a portfolio, so this fans out and sums
+    // over its scope exactly like net-worth-history / performance-chart.
+    supportsScope: true,
     rangeOptions: Object.keys(CASHFLOW_MONTHS).map((range) => ({
       value: range,
       labelKey: `home.widgets.range.${range}`,
@@ -256,6 +258,19 @@ export const WIDGET_REGISTRY = {
     defaultSettings: { scope: 'all' },
     supportsScope: true,
     Component: CashBalancesWidget,
+  },
+  'quick-cash': {
+    type: 'quick-cash',
+    icon: 'cash',
+    labelKey: 'home.widgets.quickCash.title',
+    descriptionKey: 'home.widgets.quickCash.description',
+    group: 'lists',
+    allowedSizes: WIDGET_SIZE_RULES['quick-cash'].allowed,
+    // Scoped by default, unlike every other cash widget: a movement has to land
+    // in ONE portfolio, so "all" is not a meaningful setting here.
+    defaultSettings: { scope: 'all' },
+    supportsScope: true,
+    Component: QuickCashWidget,
   },
   watchlist: {
     type: 'watchlist',

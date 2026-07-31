@@ -21,7 +21,7 @@ import {
   type ShareKind,
 } from '@bettertrack/contracts';
 
-import { ApiError } from '../../lib/apiClient';
+import { ApiError, isConfirmedApiOutcome } from '../../lib/apiClient';
 
 import {
   getThread,
@@ -43,6 +43,8 @@ import { useAuth } from '../AuthContext';
 import { Avatar } from '../components/Avatar';
 import { Dialog } from '../components/Dialog';
 import { Alert, cx } from '../components/ui';
+import { NormalModeOnly } from '../vault/ui/ParanoidSurfaceGate';
+import { useResolvedPrivacyMode } from '../vault/usePrivacyMode';
 
 /**
  * The friend-chat surface (PROJECTPLAN.md §13.3 V3-P8) as reusable parts.
@@ -335,10 +337,12 @@ function MessageBubble({
           padding: '8px 11px',
         }}
       >
-        {message.chip ? <ShareChipView chip={message.chip} /> : null}
-        {mine && message.chip && recipient ? (
-          <ChipShareShortcut chip={message.chip} recipient={recipient} />
-        ) : null}
+        <NormalModeOnly>
+          {message.chip ? <ShareChipView chip={message.chip} /> : null}
+          {mine && message.chip && recipient ? (
+            <ChipShareShortcut chip={message.chip} recipient={recipient} />
+          ) : null}
+        </NormalModeOnly>
         {message.body ? <p className="whitespace-pre-wrap break-words">{message.body}</p> : null}
         <span className={cx('bt-meta', mine ? 'text-right' : 'text-left')} style={{ fontSize: 11 }}>
           {formatDateTime(message.createdAt)}
@@ -499,7 +503,7 @@ export function ConversationListPane({
   const { user } = useAuth();
   const [newOpen, setNewOpen] = useState(false);
 
-  const { data, isLoading, isError } = useQuery({
+  const { data, isLoading, isError, refetch } = useQuery({
     queryKey: CONVERSATIONS_KEY,
     queryFn: ({ signal }) => listConversations(signal),
     refetchInterval: LIST_POLL_MS,
@@ -523,8 +527,11 @@ export function ConversationListPane({
           <SkeletonBlock height={48} />
         </div>
       ) : isError ? (
-        <div style={{ padding: 14 }}>
+        <div className="flex flex-col items-start gap-2" style={{ padding: 14 }}>
           <Alert tone="error">{t('social.chat.error')}</Alert>
+          <Button onClick={() => void refetch()} size="sm">
+            {t('common.retry')}
+          </Button>
         </div>
       ) : !data || data.conversations.length === 0 ? (
         <EmptyState
@@ -661,6 +668,7 @@ function MessageComposer({
   disabled: boolean;
 }) {
   const t = useT();
+  const sharingAllowed = useResolvedPrivacyMode() === 'normal';
   const [text, setText] = useState('');
   const [shareOpen, setShareOpen] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -696,27 +704,29 @@ function MessageComposer({
 
   return (
     <form onSubmit={submit} className="bt-t-rule flex items-end gap-2" style={{ padding: 12 }}>
-      <button
-        type="button"
-        onClick={() => setShareOpen(true)}
-        disabled={disabled}
-        title={t('social.chat.attach')}
-        aria-label={t('social.chat.attach')}
-        className="bt-btn bt-btn--quiet bt-btn--icon"
-      >
-        <svg
-          className="h-5 w-5"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth={1.6}
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          aria-hidden="true"
+      {sharingAllowed ? (
+        <button
+          type="button"
+          onClick={() => setShareOpen(true)}
+          disabled={disabled}
+          title={t('social.chat.attach')}
+          aria-label={t('social.chat.attach')}
+          className="bt-btn bt-btn--quiet bt-btn--icon"
         >
-          <path d="M21 12.5l-8.5 8.5a5 5 0 01-7-7l9-9a3.5 3.5 0 015 5l-9 9a2 2 0 01-3-3l8.5-8.5" />
-        </svg>
-      </button>
+          <svg
+            className="h-5 w-5"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={1.6}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M21 12.5l-8.5 8.5a5 5 0 01-7-7l9-9a3.5 3.5 0 015 5l-9 9a2 2 0 01-3-3l8.5-8.5" />
+          </svg>
+        </button>
+      ) : null}
       {/* Native element (not the `Textarea` primitive) because the composer owns
           a ref for the focus dance; the Origin class carries the same visuals. */}
       <textarea
@@ -749,7 +759,7 @@ function MessageComposer({
       >
         {t('social.chat.send')}
       </Button>
-      {shareOpen ? (
+      {shareOpen && sharingAllowed ? (
         <SharePickerDialog
           onClose={() => setShareOpen(false)}
           onPick={(item) => {
@@ -889,8 +899,9 @@ export function ChatThreadPane({
     );
   }
 
-  if (convoQuery.isError) {
-    // A non-friend / unknown user — the API 404s and we show a calm state, no data.
+  if (convoQuery.isError && isConfirmedApiOutcome(convoQuery.error)) {
+    // A confirmed non-friend / unknown user stays privacy-indistinguishable and
+    // calm. Transport/5xx failures below must never manufacture this outcome.
     return (
       <div className="flex h-full items-center justify-center p-6">
         <EmptyState
@@ -898,6 +909,17 @@ export function ChatThreadPane({
           title={t('social.chat.notFriend.title')}
           description={t('social.chat.notFriend.body')}
         />
+      </div>
+    );
+  }
+
+  if (convoQuery.isError) {
+    return (
+      <div className="flex h-full items-center justify-center p-6">
+        <div className="flex flex-col items-start gap-3">
+          <Alert tone="error">{t('social.chat.error')}</Alert>
+          <Button onClick={() => void convoQuery.refetch()}>{t('common.retry')}</Button>
+        </div>
       </div>
     );
   }
@@ -964,7 +986,12 @@ export function ChatThreadPane({
               <SkeletonBlock height={48} />
             </div>
           ) : threadQuery.isError ? (
-            <Alert tone="error">{t('social.chat.error')}</Alert>
+            <div className="flex flex-col items-start gap-2">
+              <Alert tone="error">{t('social.chat.error')}</Alert>
+              <Button onClick={() => void threadQuery.refetch()} size="sm">
+                {t('common.retry')}
+              </Button>
+            </div>
           ) : messages.length === 0 ? (
             <div className="flex flex-1 flex-col items-center justify-center gap-3 text-center">
               <Avatar name={otherName} iconId={other?.profileIcon ?? null} size="lg" />

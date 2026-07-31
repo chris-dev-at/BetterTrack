@@ -1,0 +1,946 @@
+/*
+ * BetterTrack Design Lab
+ *
+ * Six visual systems share the same information architecture and behavior. The
+ * differences below deliberately reach beyond color: navigation geometry, density,
+ * typography, elevation, edge language, and desktop composition all change.
+ */
+
+.demo-menu {
+  max-height: 94vh;
+  max-width: 960px;
+  overflow-y: auto;
+}
+
+.demo-direction-lab {
+  border-bottom: 1px solid var(--border);
+  padding: 15px 14px 14px;
+}
+
+.demo-direction-lab > div:first-child,
+.demo-surface-label {
+  align-items: flex-end;
+  display: flex;
+  justify-content: space-between;
+  padding: 0 5px 11px;
+}
+
+.demo-direction-lab > div:first-child > span,
+.demo-surface-label {
+  gap: 3px;
+}
+
+.demo-direction-lab > div:first-child > span,
+.demo-surface-label {
+  display: grid;
+}
+
+.demo-direction-lab > div:first-child strong,
+.demo-surface-label strong {
+  color: var(--text-soft);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.demo-direction-lab > div:first-child small,
+.demo-surface-label small {
+  color: var(--faint);
+  font-size: 7px;
+}
+
+.demo-direction-lab > div:first-child > em {
+  color: var(--accent);
+  font-size: 7px;
+  font-style: normal;
+}
+
+.demo-direction-grid {
+  display: grid;
+  gap: 7px;
+  grid-template-columns: repeat(3, 1fr);
+}
+
+.demo-direction-grid > button {
+  background: var(--surface-soft);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text-soft);
+  cursor: pointer;
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 8px;
+  text-align: left;
+}
+
+.demo-direction-grid > button:hover,
+.demo-direction-grid > button.is-active {
+  background: var(--surface-hover);
+  border-color: var(--border-accent);
+}
+
+.demo-direction-grid > button.is-active {
+  box-shadow: inset 0 0 0 1px var(--border-accent);
+}
+
+.demo-direction-grid > button > strong {
+  font-size: 9px;
+}
+
+.demo-direction-grid > button > small {
+  color: var(--muted);
+  font-size: 7px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.demo-direction-grid > button > em {
+  color: var(--faint);
+  font-size: 5.5px;
+  font-style: normal;
+  font-weight: 720;
+  letter-spacing: 0.08em;
+}
+
+.direction-preview {
+  background: #0c0e0c;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  display: grid;
+  gap: 3px;
+  grid-template-columns: 18px 1fr 1fr;
+  grid-template-rows: 8px 1fr;
+  height: 42px;
+  margin-bottom: 3px;
+  overflow: hidden;
+  padding: 4px;
+  width: 100%;
+}
+
+.direction-preview i {
+  background: #20241f;
+  border-radius: 2px;
+  display: block;
+}
+
+.direction-preview i:first-child {
+  background: #d9b778;
+  grid-column: 1;
+  grid-row: 1 / span 2;
+}
+
+.direction-preview i:nth-child(2) {
+  grid-column: 2 / span 2;
+}
+
+.direction-preview i:nth-child(3),
+.direction-preview i:nth-child(4) {
+  background: #171a17;
+}
+
+.direction-preview--ledger {
+  background: #f2efe5;
+  gap: 2px;
+  grid-template-columns: 1fr 1fr 1fr;
+  grid-template-rows: 9px 1fr;
+}
+
+.direction-preview--ledger i:first-child {
+  background: #20362d;
+  grid-column: 1 / span 3;
+  grid-row: 1;
+}
+
+.direction-preview--ledger i:nth-child(2),
+.direction-preview--ledger i:nth-child(3),
+.direction-preview--ledger i:nth-child(4) {
+  background: #fffdf7;
+  border: 1px solid #d8d3c8;
+  grid-column: auto;
+}
+
+.direction-preview--signal {
+  background: #080b0e;
+  border-radius: 2px;
+  grid-template-columns: 8px 1fr 1fr;
+}
+
+.direction-preview--signal i:first-child {
+  background: #142328;
+}
+
+.direction-preview--signal i:nth-child(2) {
+  background: #62d5c5;
+}
+
+.direction-preview--signal i:nth-child(3),
+.direction-preview--signal i:nth-child(4) {
+  background: #11181d;
+  border: 1px solid #253239;
+  border-radius: 0;
+}
+
+.direction-preview--atelier {
+  background: #e9dfcf;
+  border-color: #c8bbab;
+  border-radius: 10px;
+  gap: 4px;
+  padding: 5px;
+}
+
+.direction-preview--atelier i:first-child {
+  background: #493841;
+  border-radius: 5px;
+}
+
+.direction-preview--atelier i:nth-child(2) {
+  background: #986751;
+}
+
+.direction-preview--atelier i:nth-child(3),
+.direction-preview--atelier i:nth-child(4) {
+  background: #fffaf1;
+  border-radius: 5px;
+}
+
+.direction-preview--prism {
+  background: #08101e;
+  border-color: #25345c;
+  grid-template-columns: 1fr 1fr;
+  grid-template-rows: 8px 1fr 1fr;
+}
+
+.direction-preview--prism i:first-child {
+  background: #6e8dff;
+  grid-column: 1 / span 2;
+  grid-row: 1;
+}
+
+.direction-preview--prism i:nth-child(2) {
+  background: #162342;
+  grid-column: 1;
+  grid-row: 2 / span 2;
+}
+
+.direction-preview--prism i:nth-child(3) {
+  background: #182b32;
+}
+
+.direction-preview--prism i:nth-child(4) {
+  background: #211c3c;
+}
+
+.demo-surface-label {
+  padding: 14px 19px 0;
+}
+
+/* Direction 2 — Ledger: an editorial, daylight wealth book. */
+
+:root[data-direction='ledger'] {
+  color-scheme: light;
+  --bg: #f0eee7;
+  --bg-raised: #f8f6ef;
+  --sidebar: #20352d;
+  --surface: #faf8f2;
+  --surface-soft: #f4f1e9;
+  --surface-strong: #fffdf8;
+  --surface-hover: #ebe8de;
+  --surface-glass: rgba(250, 248, 242, 0.92);
+  --border: rgba(35, 46, 40, 0.12);
+  --border-strong: rgba(35, 46, 40, 0.2);
+  --border-accent: rgba(51, 104, 80, 0.32);
+  --text: #1d2823;
+  --text-soft: #46524c;
+  --muted: #737c76;
+  --faint: #9ba19c;
+  --accent: #366c52;
+  --accent-bright: #285b43;
+  --accent-ink: #f8fff9;
+  --accent-soft: rgba(54, 108, 82, 0.1);
+  --positive: #287853;
+  --positive-soft: rgba(40, 120, 83, 0.1);
+  --negative: #b75842;
+  --negative-soft: rgba(183, 88, 66, 0.1);
+  --blue: #526d8c;
+  --blue-soft: rgba(82, 109, 140, 0.1);
+  --rose: #986a75;
+  --chart-neutral: #386d53;
+  --shadow-sm: 0 1px 0 rgba(25, 40, 32, 0.04);
+  --shadow-lg: 0 24px 70px rgba(51, 48, 38, 0.16);
+}
+
+:root[data-direction='ledger'] body {
+  background: linear-gradient(rgba(43, 65, 53, 0.025) 1px, transparent 1px), var(--bg);
+  background-size: 100% 38px;
+}
+
+:root[data-direction='ledger'] h1,
+:root[data-direction='ledger'] .page-intro h1,
+:root[data-direction='ledger'] .portfolio-header h1,
+:root[data-direction='ledger'] .auth-story__copy h1,
+:root[data-direction='ledger'] .onboarding-step > h1,
+:root[data-direction='ledger'] .public-hero h1 {
+  font-family:
+    Iowan Old Style,
+    Baskerville,
+    'Times New Roman',
+    serif;
+  font-weight: 500;
+  letter-spacing: -0.045em;
+}
+
+:root[data-direction='ledger'] .card,
+:root[data-direction='ledger'] .admin-card,
+:root[data-direction='ledger'] .advisor-card {
+  background: var(--surface);
+  box-shadow: none;
+}
+
+:root[data-direction='ledger'] .eyebrow,
+:root[data-direction='ledger'] .metric-label,
+:root[data-direction='ledger'] .surface-kicker {
+  color: var(--accent);
+  letter-spacing: 0.14em;
+}
+
+/* Direction 3 — Signal: a compact, high-clarity operating console. */
+
+:root[data-direction='signal'] {
+  color-scheme: dark;
+  --bg: #080b0e;
+  --bg-raised: #0b1013;
+  --sidebar: #06090b;
+  --surface: #0e1418;
+  --surface-soft: #11191e;
+  --surface-strong: #162127;
+  --surface-hover: #19262c;
+  --surface-glass: rgba(11, 16, 19, 0.94);
+  --border: rgba(170, 212, 216, 0.11);
+  --border-strong: rgba(170, 212, 216, 0.19);
+  --border-accent: rgba(98, 213, 197, 0.34);
+  --text: #e8f0ef;
+  --text-soft: #bcc9c9;
+  --muted: #7e9092;
+  --faint: #526166;
+  --accent: #62d5c5;
+  --accent-bright: #87eadc;
+  --accent-ink: #071210;
+  --accent-soft: rgba(98, 213, 197, 0.11);
+  --positive: #75d9a5;
+  --positive-soft: rgba(117, 217, 165, 0.1);
+  --negative: #ff7e79;
+  --negative-soft: rgba(255, 126, 121, 0.1);
+  --blue: #7eaff2;
+  --blue-soft: rgba(126, 175, 242, 0.1);
+  --rose: #c08faf;
+  --chart-neutral: #62d5c5;
+  --shadow-sm: none;
+  --shadow-lg: 0 28px 90px rgba(0, 0, 0, 0.58);
+  --sidebar-width: 92px;
+  --topbar-height: 64px;
+  --page-pad: 24px;
+  --card-pad: 18px;
+}
+
+:root[data-direction='signal'] body {
+  background:
+    linear-gradient(rgba(98, 213, 197, 0.018) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(98, 213, 197, 0.018) 1px, transparent 1px), var(--bg);
+  background-size: 32px 32px;
+}
+
+:root[data-direction='signal'] .card,
+:root[data-direction='signal'] .button,
+:root[data-direction='signal'] .scope-button,
+:root[data-direction='signal'] .command-search,
+:root[data-direction='signal'] .admin-card,
+:root[data-direction='signal'] .advisor-card {
+  border-radius: 4px;
+}
+
+:root[data-direction='signal'] .card {
+  background: var(--surface);
+}
+
+:root[data-direction='signal'] .eyebrow,
+:root[data-direction='signal'] .metric-label,
+:root[data-direction='signal'] .surface-kicker,
+:root[data-direction='signal'] .portfolio-tabs button,
+:root[data-direction='signal'] .workbench-tabs button,
+:root[data-direction='signal'] .asset-tabs button,
+:root[data-direction='signal'] .people-tabs button {
+  font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', monospace;
+  letter-spacing: 0.08em;
+}
+
+/* Direction 4 — Atelier: a warm, spacious private-wealth office. */
+
+:root[data-direction='atelier'] {
+  color-scheme: light;
+  --bg: #eae2d6;
+  --bg-raised: #f4ede3;
+  --sidebar: #44343d;
+  --surface: #f9f3e9;
+  --surface-soft: #f2e9dc;
+  --surface-strong: #fffaf2;
+  --surface-hover: #ebe0d2;
+  --surface-glass: rgba(249, 243, 233, 0.9);
+  --border: rgba(83, 62, 67, 0.1);
+  --border-strong: rgba(83, 62, 67, 0.18);
+  --border-accent: rgba(144, 91, 71, 0.3);
+  --text: #342a2d;
+  --text-soft: #5b4d50;
+  --muted: #837578;
+  --faint: #a89c9a;
+  --accent: #95614d;
+  --accent-bright: #7d4937;
+  --accent-ink: #fffaf3;
+  --accent-soft: rgba(149, 97, 77, 0.11);
+  --positive: #3b7d60;
+  --positive-soft: rgba(59, 125, 96, 0.1);
+  --negative: #b35656;
+  --negative-soft: rgba(179, 86, 86, 0.1);
+  --blue: #667b9c;
+  --blue-soft: rgba(102, 123, 156, 0.1);
+  --rose: #a86f87;
+  --chart-neutral: #95614d;
+  --shadow-sm: 0 7px 28px rgba(78, 56, 45, 0.06);
+  --shadow-lg: 0 30px 90px rgba(70, 48, 42, 0.2);
+  --sidebar-width: 296px;
+  --topbar-height: 68px;
+  --page-pad: 42px;
+  --card-pad: 25px;
+}
+
+:root[data-direction='atelier'] body {
+  background:
+    radial-gradient(circle at 75% -10%, rgba(149, 97, 77, 0.1), transparent 32rem), var(--bg);
+}
+
+:root[data-direction='atelier'] h1,
+:root[data-direction='atelier'] .page-intro h1,
+:root[data-direction='atelier'] .portfolio-header h1,
+:root[data-direction='atelier'] .auth-story__copy h1,
+:root[data-direction='atelier'] .onboarding-step > h1,
+:root[data-direction='atelier'] .public-hero h1 {
+  font-family:
+    Iowan Old Style,
+    Baskerville,
+    Georgia,
+    serif;
+  font-weight: 500;
+  letter-spacing: -0.045em;
+}
+
+:root[data-direction='atelier'] .card,
+:root[data-direction='atelier'] .admin-card,
+:root[data-direction='atelier'] .advisor-card {
+  background: var(--surface);
+  border-radius: 20px;
+}
+
+:root[data-direction='atelier'] .button,
+:root[data-direction='atelier'] .scope-button,
+:root[data-direction='atelier'] .command-search {
+  border-radius: 999px;
+}
+
+/* Direction 5 — Prism: a bold, modular analytical canvas. */
+
+:root[data-direction='prism'] {
+  color-scheme: dark;
+  --bg: #080e1b;
+  --bg-raised: #0c1425;
+  --sidebar: #070c17;
+  --surface: #101a2d;
+  --surface-soft: #131f35;
+  --surface-strong: #182641;
+  --surface-hover: #1d2d4b;
+  --surface-glass: rgba(12, 20, 37, 0.92);
+  --border: rgba(157, 181, 241, 0.12);
+  --border-strong: rgba(157, 181, 241, 0.22);
+  --border-accent: rgba(116, 143, 255, 0.4);
+  --text: #f0f3ff;
+  --text-soft: #c6cee8;
+  --muted: #8d98ba;
+  --faint: #5d6888;
+  --accent: #7894ff;
+  --accent-bright: #a0b2ff;
+  --accent-ink: #08102b;
+  --accent-soft: rgba(120, 148, 255, 0.13);
+  --positive: #5fd5ae;
+  --positive-soft: rgba(95, 213, 174, 0.11);
+  --negative: #ff7f91;
+  --negative-soft: rgba(255, 127, 145, 0.11);
+  --blue: #72b6f4;
+  --blue-soft: rgba(114, 182, 244, 0.11);
+  --rose: #c697d8;
+  --chart-neutral: #8ea5ff;
+  --shadow-sm: 0 1px 0 rgba(255, 255, 255, 0.025);
+  --shadow-lg: 0 32px 100px rgba(0, 0, 0, 0.56);
+  --sidebar-width: 216px;
+  --topbar-height: 72px;
+  --page-pad: 28px;
+  --card-pad: 20px;
+}
+
+:root[data-direction='prism'] body {
+  background:
+    radial-gradient(circle at 68% -10%, rgba(120, 148, 255, 0.13), transparent 36rem),
+    radial-gradient(circle at 100% 65%, rgba(95, 213, 174, 0.05), transparent 28rem), var(--bg);
+}
+
+:root[data-direction='prism'] .card,
+:root[data-direction='prism'] .admin-card,
+:root[data-direction='prism'] .advisor-card {
+  background: linear-gradient(145deg, rgba(120, 148, 255, 0.035), transparent 45%), var(--surface);
+  box-shadow:
+    inset 0 1px rgba(142, 165, 255, 0.1),
+    var(--shadow-sm);
+}
+
+:root[data-direction='prism'] .page-intro h1,
+:root[data-direction='prism'] .portfolio-header h1 {
+  font-weight: 690;
+}
+
+/* Desktop composition is intentionally different for each direction. */
+
+@media (min-width: 901px) {
+  :root[data-direction='ledger'] {
+    --sidebar-width: 0px;
+    --topbar-height: 64px;
+    --page-pad: 38px;
+    --card-pad: 21px;
+  }
+
+  :root[data-direction='ledger'] .sidebar {
+    align-items: center;
+    background: #20352d;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    border-right: 0;
+    flex-direction: row;
+    height: 76px;
+    padding: 0 28px;
+    width: 100%;
+  }
+
+  :root[data-direction='ledger'] .sidebar__top {
+    flex: 0 0 auto;
+    height: auto;
+    margin: 0 28px 0 0;
+  }
+
+  :root[data-direction='ledger'] .sidebar .brand-name {
+    color: #fffdf8;
+  }
+
+  :root[data-direction='ledger'] .sidebar .brand-name span,
+  :root[data-direction='ledger'] .sidebar .concept-badge {
+    color: #dcbf85;
+  }
+
+  :root[data-direction='ledger'] .sidebar .concept-badge {
+    border-color: rgba(220, 191, 133, 0.32);
+  }
+
+  :root[data-direction='ledger'] .suite-nav {
+    display: flex;
+    gap: 2px;
+  }
+
+  :root[data-direction='ledger'] .suite-nav__item {
+    color: rgba(255, 255, 255, 0.62);
+    gap: 7px;
+    grid-template-columns: 17px auto;
+    height: 46px;
+    padding: 0 10px;
+    width: auto;
+  }
+
+  :root[data-direction='ledger'] .suite-nav__item small {
+    display: none;
+  }
+
+  :root[data-direction='ledger'] .suite-nav__item.is-active {
+    background: rgba(255, 255, 255, 0.09);
+    border-color: rgba(255, 255, 255, 0.1);
+    color: #fff7e8;
+  }
+
+  :root[data-direction='ledger'] .suite-nav__item.is-active::before {
+    bottom: -15px;
+    height: 3px;
+    left: 10px;
+    right: 10px;
+    top: auto;
+    width: auto;
+  }
+
+  :root[data-direction='ledger'] .sidebar__rule,
+  :root[data-direction='ledger'] .assistant-callout,
+  :root[data-direction='ledger'] .privacy-button {
+    display: none;
+  }
+
+  :root[data-direction='ledger'] .sidebar__utilities {
+    display: flex;
+    gap: 2px;
+    margin-left: auto;
+  }
+
+  :root[data-direction='ledger'] .sidebar__utilities > button {
+    color: rgba(255, 255, 255, 0.65);
+    grid-template-columns: 18px;
+    padding: 9px;
+    width: auto;
+  }
+
+  :root[data-direction='ledger'] .sidebar__utilities > button > span,
+  :root[data-direction='ledger'] .sidebar__utilities kbd,
+  :root[data-direction='ledger'] .sidebar__utilities em,
+  :root[data-direction='ledger'] .sidebar__utilities .status-dot {
+    display: none;
+  }
+
+  :root[data-direction='ledger'] .sidebar__bottom {
+    border: 0;
+    margin: 0 0 0 8px;
+    padding: 0;
+  }
+
+  :root[data-direction='ledger'] .account-button {
+    grid-template-columns: 32px;
+    padding: 5px;
+    width: auto;
+  }
+
+  :root[data-direction='ledger'] .account-button > span:nth-child(2),
+  :root[data-direction='ledger'] .account-button > svg {
+    display: none;
+  }
+
+  :root[data-direction='ledger'] .main-shell {
+    margin-left: 0;
+    padding-top: 76px;
+  }
+
+  :root[data-direction='ledger'] .topbar {
+    top: 76px;
+  }
+
+  :root[data-direction='ledger'] .page {
+    max-width: 1420px;
+    padding-top: 44px;
+  }
+
+  :root[data-direction='ledger'] .home-hero-grid {
+    grid-template-columns: minmax(0, 1.55fr) minmax(330px, 0.85fr);
+  }
+
+  :root[data-direction='signal'] .sidebar {
+    align-items: center;
+    padding: 14px 8px 10px;
+  }
+
+  :root[data-direction='signal'] .sidebar__top {
+    justify-content: center;
+    margin: 0 0 24px;
+  }
+
+  :root[data-direction='signal'] .sidebar .brand-name,
+  :root[data-direction='signal'] .concept-badge,
+  :root[data-direction='signal'] .suite-nav__item small,
+  :root[data-direction='signal'] .sidebar__utilities > button > span,
+  :root[data-direction='signal'] .sidebar__utilities kbd,
+  :root[data-direction='signal'] .sidebar__utilities em,
+  :root[data-direction='signal'] .sidebar__utilities .status-dot,
+  :root[data-direction='signal'] .assistant-callout,
+  :root[data-direction='signal'] .privacy-button > span,
+  :root[data-direction='signal'] .account-button > span:nth-child(2),
+  :root[data-direction='signal'] .account-button > svg {
+    display: none;
+  }
+
+  :root[data-direction='signal'] .suite-nav {
+    gap: 5px;
+    width: 100%;
+  }
+
+  :root[data-direction='signal'] .suite-nav__item {
+    gap: 5px;
+    grid-template-columns: 1fr;
+    height: 61px;
+    justify-items: center;
+    padding: 8px 2px;
+    text-align: center;
+  }
+
+  :root[data-direction='signal'] .suite-nav__item strong {
+    font-family: 'SFMono-Regular', Consolas, monospace;
+    font-size: 8px;
+    font-weight: 600;
+  }
+
+  :root[data-direction='signal'] .suite-nav__item.is-active::before {
+    height: 34px;
+    left: -9px;
+  }
+
+  :root[data-direction='signal'] .sidebar__rule {
+    margin: 11px 4px 8px;
+    width: calc(100% - 8px);
+  }
+
+  :root[data-direction='signal'] .sidebar__utilities {
+    display: flex;
+  }
+
+  :root[data-direction='signal'] .sidebar__utilities > button,
+  :root[data-direction='signal'] .privacy-button {
+    display: flex;
+    justify-content: center;
+    padding: 9px;
+  }
+
+  :root[data-direction='signal'] .sidebar__bottom {
+    align-items: center;
+    width: 100%;
+  }
+
+  :root[data-direction='signal'] .account-button {
+    display: flex;
+    justify-content: center;
+    padding: 6px;
+  }
+
+  :root[data-direction='signal'] .page {
+    max-width: 1780px;
+  }
+
+  :root[data-direction='signal'] .home-hero-grid {
+    gap: 10px;
+    grid-template-columns: minmax(0, 1.72fr) minmax(285px, 0.72fr);
+  }
+
+  :root[data-direction='signal'] .home-middle-grid,
+  :root[data-direction='signal'] .home-bottom-grid {
+    gap: 10px;
+  }
+
+  :root[data-direction='atelier'] .sidebar {
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 22px;
+    height: calc(100vh - 28px);
+    left: 14px;
+    padding: 23px 17px 18px;
+    top: 14px;
+    width: 268px;
+  }
+
+  :root[data-direction='atelier'] .sidebar .brand-name {
+    color: #fffaf2;
+  }
+
+  :root[data-direction='atelier'] .sidebar .brand-name span,
+  :root[data-direction='atelier'] .sidebar .concept-badge {
+    color: #e1bb85;
+  }
+
+  :root[data-direction='atelier'] .sidebar .concept-badge {
+    border-color: rgba(225, 187, 133, 0.28);
+  }
+
+  :root[data-direction='atelier'] .suite-nav__item,
+  :root[data-direction='atelier'] .sidebar__utilities > button,
+  :root[data-direction='atelier'] .privacy-button,
+  :root[data-direction='atelier'] .account-button {
+    color: rgba(255, 250, 242, 0.62);
+  }
+
+  :root[data-direction='atelier'] .suite-nav__item:hover,
+  :root[data-direction='atelier'] .sidebar__utilities > button:hover,
+  :root[data-direction='atelier'] .privacy-button:hover,
+  :root[data-direction='atelier'] .account-button:hover {
+    background: rgba(255, 255, 255, 0.07);
+    color: #fffaf2;
+  }
+
+  :root[data-direction='atelier'] .suite-nav__item.is-active {
+    background: rgba(255, 255, 255, 0.1);
+    border-color: rgba(255, 255, 255, 0.08);
+    color: #f5d3a3;
+  }
+
+  :root[data-direction='atelier'] .suite-nav__item.is-active::before {
+    display: none;
+  }
+
+  :root[data-direction='atelier'] .sidebar__rule,
+  :root[data-direction='atelier'] .sidebar__bottom {
+    border-color: rgba(255, 255, 255, 0.1);
+  }
+
+  :root[data-direction='atelier'] .assistant-callout {
+    background: rgba(255, 255, 255, 0.06);
+    border-color: rgba(255, 255, 255, 0.09);
+    color: rgba(255, 250, 242, 0.72);
+  }
+
+  :root[data-direction='atelier'] .assistant-callout small {
+    color: #e1bb85;
+  }
+
+  :root[data-direction='atelier'] .avatar-stack .avatar,
+  :root[data-direction='atelier'] .mini-avatar-stack .avatar {
+    border-color: var(--surface);
+  }
+
+  :root[data-direction='atelier'] .main-shell {
+    margin-left: 296px;
+  }
+
+  :root[data-direction='atelier'] .topbar {
+    border: 1px solid var(--border);
+    border-radius: 18px;
+    margin: 14px 18px 0;
+    top: 14px;
+  }
+
+  :root[data-direction='atelier'] .page {
+    max-width: 1500px;
+    padding-top: 51px;
+  }
+
+  :root[data-direction='atelier'] .home-hero-grid {
+    gap: 20px;
+    grid-template-columns: minmax(0, 1.65fr) minmax(330px, 0.75fr);
+  }
+
+  :root[data-direction='prism'] .sidebar {
+    padding: 18px 12px 14px;
+  }
+
+  :root[data-direction='prism'] .sidebar__top {
+    margin-bottom: 20px;
+  }
+
+  :root[data-direction='prism'] .concept-badge {
+    display: none;
+  }
+
+  :root[data-direction='prism'] .suite-nav {
+    gap: 7px;
+    grid-template-columns: 1fr 1fr;
+  }
+
+  :root[data-direction='prism'] .suite-nav__item {
+    gap: 8px;
+    grid-template-columns: 1fr;
+    height: 70px;
+    justify-items: start;
+    padding: 10px;
+  }
+
+  :root[data-direction='prism'] .suite-nav__item:first-child {
+    grid-column: 1 / span 2;
+    height: 58px;
+    grid-template-columns: 20px 1fr;
+  }
+
+  :root[data-direction='prism'] .suite-nav__item small {
+    display: none;
+  }
+
+  :root[data-direction='prism'] .suite-nav__item.is-active::before {
+    display: none;
+  }
+
+  :root[data-direction='prism'] .suite-nav__item.is-active {
+    background: linear-gradient(135deg, rgba(120, 148, 255, 0.17), transparent), var(--surface);
+    border-color: var(--border-accent);
+  }
+
+  :root[data-direction='prism'] .sidebar__utilities {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  :root[data-direction='prism'] .sidebar__utilities > button {
+    display: flex;
+    justify-content: center;
+  }
+
+  :root[data-direction='prism'] .sidebar__utilities > button > span,
+  :root[data-direction='prism'] .sidebar__utilities kbd,
+  :root[data-direction='prism'] .sidebar__utilities em,
+  :root[data-direction='prism'] .sidebar__utilities .status-dot {
+    display: none;
+  }
+
+  :root[data-direction='prism'] .assistant-callout {
+    padding: 10px;
+  }
+
+  :root[data-direction='prism'] .assistant-callout > span:nth-child(2) strong {
+    font-size: 9px;
+  }
+
+  :root[data-direction='prism'] .page {
+    max-width: 1700px;
+  }
+
+  :root[data-direction='prism'] .home-hero-grid {
+    grid-template-columns: minmax(0, 1.45fr) minmax(330px, 0.9fr);
+  }
+
+  :root[data-direction='prism'] .home-middle-grid {
+    grid-template-columns: minmax(0, 1.15fr) minmax(300px, 0.85fr);
+  }
+}
+
+@media (max-width: 900px) {
+  .demo-direction-grid {
+    grid-auto-columns: minmax(145px, 42vw);
+    grid-auto-flow: column;
+    grid-template-columns: none;
+    overflow-x: auto;
+    padding-bottom: 4px;
+    scroll-snap-type: x mandatory;
+  }
+
+  .demo-direction-grid > button {
+    scroll-snap-align: start;
+  }
+
+  :root[data-direction='ledger'] .mobile-nav {
+    background: rgba(248, 246, 239, 0.95);
+  }
+
+  :root[data-direction='atelier'] .mobile-nav {
+    background: rgba(249, 243, 233, 0.95);
+    border-radius: 18px 18px 0 0;
+  }
+
+  :root[data-direction='signal'] .mobile-nav {
+    border-top-color: var(--border-strong);
+  }
+}
+
+@media (max-width: 700px) {
+  .demo-menu {
+    max-height: 94vh;
+  }
+
+  .demo-direction-lab {
+    padding-left: 10px;
+    padding-right: 10px;
+  }
+
+  .demo-surface-label {
+    padding-left: 15px;
+    padding-right: 15px;
+  }
+}

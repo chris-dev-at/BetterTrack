@@ -4,6 +4,8 @@ import { useT } from '../../i18n';
 import { cx } from '../../lib/cx';
 import { Button, Empty, PageHead } from '../../ui/origin';
 import { useAuth } from '../AuthContext';
+import { PortfolioPage } from '../portfolio/PortfolioPage';
+import { useResolvedPrivacyMode } from '../vault/usePrivacyMode';
 import { AddWidgetDrawer } from './AddWidgetDrawer';
 import {
   addWidget,
@@ -11,15 +13,14 @@ import {
   moveWidget,
   moveWidgetToSlot,
   placementSlots,
-  readHomeConfig,
   removeWidget,
   setWidgetSettings,
   setWidgetSize,
-  writeHomeConfig,
-  type HomeConfig,
   type WidgetType,
 } from './config';
 import { resolveWidgetScope, usePortfoliosQuery, type ResolvedScope } from './homeData';
+import { useHomeBoard } from './homeSync';
+import { usePrivacyMode } from '../vault/usePrivacyMode';
 import { WidgetFrame, type PlacementAxis, type ScopeTag } from './WidgetFrame';
 import { widgetDefinition } from './widgets';
 
@@ -27,10 +28,11 @@ import { widgetDefinition } from './widgets';
  * Home — a widget board the user composes (R2 home-widgets workstream).
  *
  * The screen is a minimal greeting plus widgets: which ones, in which order, how
- * wide, in which display form and scoped to what is entirely the user's choice,
- * persisted client-side under `bt.home.v1` (see `config.ts`). A user who never
- * opens the builder gets {@link defaultLayout} — the command center Home has
- * always shown.
+ * wide, in which display form and scoped to what is entirely the user's choice.
+ * The board belongs to the ACCOUNT (`homeSync.ts`), so the one composed at home
+ * is the one that opens at work; a local cache in front of it means the page
+ * still paints instantly. A user who never opens the builder gets
+ * {@link defaultLayout} — the command center Home has always shown.
  *
  * Composition rules the board enforces:
  *  - **one focal point.** The net-worth hero is the only loud element; every
@@ -100,11 +102,35 @@ function sameAxes(a: readonly PlacementAxis[], b: readonly PlacementAxis[]): boo
   return a.length === b.length && a.every((axis, index) => axis === b[index]);
 }
 
+/**
+ * The widget board, except on a paranoid account: its widgets read
+ * `portfolioApi` directly instead of the store seam, so they would mix server
+ * reads into an encrypted account. `/` then renders the portfolio page and the
+ * saved board (localStorage — never vault or server data) comes back untouched
+ * on disable. Recorded as kill-list item 13 in docs/paranoid-design.md §8 and
+ * in PROJECTPLAN §16 (2026-07-31, issue #729).
+ */
 export function HomePage() {
+  const privacyMode = useResolvedPrivacyMode();
+  if (privacyMode === 'paranoid') return <PortfolioPage />;
+  return <HomeBoard />;
+}
+
+function HomeBoard() {
   const t = useT();
   const { user } = useAuth();
 
-  const [config, setConfig] = useState<HomeConfig>(() => readHomeConfig());
+  /**
+   * The board, and the one way to change it. Every edit writes straight through
+   * — the builder has no Save/Cancel affordance, so eager persistence is what
+   * direct manipulation implies, and closing the tab mid-edit never discards it.
+   */
+  // Paranoid accounts keep a device-local board (owner decision, §16): the
+  // layout names portfolio ids and tickers, which is the inference that mode is
+  // bought to prevent. Fails closed — only a mode that has RESOLVED to normal
+  // enables the sync.
+  const { privacyMode } = usePrivacyMode();
+  const { config, update } = useHomeBoard(user?.id, { sync: privacyMode === 'normal' });
   const [editing, setEditing] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
   /**
@@ -120,17 +146,6 @@ export function HomePage() {
   const portfoliosQuery = usePortfoliosQuery();
   const portfolios = portfoliosQuery.data?.portfolios ?? [];
 
-  /**
-   * Every board edit writes straight through to storage. The builder has no
-   * Save/Cancel affordance, so an eagerly-persisted board is what the user
-   * expects from direct manipulation — and it means closing the tab mid-edit
-   * never silently discards the layout.
-   */
-  const update = useCallback((next: HomeConfig) => {
-    setConfig(next);
-    writeHomeConfig(next);
-  }, []);
-
   const disarm = useCallback(() => setArmedId(null), []);
 
   const stopEditing = useCallback(() => {
@@ -138,8 +153,7 @@ export function HomePage() {
     setAddOpen(false);
     setAddSlot(null);
     setArmedId(null);
-    writeHomeConfig(config);
-  }, [config]);
+  }, []);
 
   // Escape is the universal way out of a picked-up widget, matching the settings
   // popover's own dismissal. Bound only while something is armed.

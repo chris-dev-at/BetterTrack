@@ -5,6 +5,7 @@ import type { BacktestPreviewPosition } from '@bettertrack/contracts';
 
 import { getResolvedConglomerate } from '../../lib/conglomerateApi';
 import { getIdea } from '../../lib/ideasApi';
+import { isConfirmedApiOutcome } from '../../lib/apiClient';
 import { useT } from '../../i18n';
 import { Skeleton } from '../../ui';
 import { Button } from '../../ui/origin';
@@ -113,8 +114,15 @@ export function IdeaWorkboardPage() {
         </h2>
         {source.kind === 'conglomerate' && conglomerateQuery.isLoading ? (
           <Skeleton height="h-40" />
-        ) : source.kind === 'conglomerate' && conglomerateQuery.isError ? (
+        ) : source.kind === 'conglomerate' &&
+          conglomerateQuery.isError &&
+          isConfirmedApiOutcome(conglomerateQuery.error) ? (
           <Alert tone="info">{t('workboard.ideas.open.conglomerateGone')}</Alert>
+        ) : source.kind === 'conglomerate' && conglomerateQuery.isError ? (
+          <div className="flex flex-col items-start gap-3">
+            <Alert tone="error">{t('workboard.ideas.open.conglomerateLoadError')}</Alert>
+            <Button onClick={() => void conglomerateQuery.refetch()}>{t('common.retry')}</Button>
+          </div>
         ) : positions ? (
           <BacktestPanel positions={positions} source={source} initialParams={initialParams} />
         ) : null}

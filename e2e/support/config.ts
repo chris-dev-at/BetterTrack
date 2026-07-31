@@ -4,11 +4,76 @@
  * duplicating them.
  */
 
-export const WEB_BASE_URL = process.env.E2E_WEB_BASE_URL ?? 'http://localhost:5173';
-export const API_BASE_URL = process.env.E2E_API_BASE_URL ?? 'http://localhost:3000';
+/**
+ * PORTS OF THEIR OWN, off the dev stack's 3000/5173 on purpose.
+ *
+ * Playwright's `webServer.reuseExistingServer` adopts anything already
+ * answering the readiness URL. While these defaulted to the dev ports, a
+ * developer's running `pnpm dev` API owned 3000, so every local run silently
+ * adopted it, skipped the e2e boot's migrate+seed entirely, and pointed all 51
+ * specs at the *dev* database — `E2E_DATABASE_URL` never got a chance to apply,
+ * because the e2e API was never the process under test (2026-07-30). Moving the
+ * defaults here means the two stacks cannot collide by accident; the paired
+ * half of the fix is `reuseExistingServer: false` in playwright.config.ts, so a
+ * leftover on THESE ports fails the run loudly instead of being adopted.
+ */
+export const WEB_BASE_URL = process.env.E2E_WEB_BASE_URL ?? 'http://localhost:5273';
+export const API_BASE_URL = process.env.E2E_API_BASE_URL ?? 'http://localhost:3200';
+
+/**
+ * The ADMIN console's own origin.
+ *
+ * The console is the same SPA in admin mode, and the mode is a RUNTIME fact
+ * read from `window.__BT__` — which nginx sets per server block in production
+ * and `vite.admin.config.mts` sets per origin in dev. So it needs an origin of
+ * its own here too: the user dev server answers `/admin/*` with the USER app,
+ * which has no such route and falls through to the sign-in page. The
+ * approval-mode spec had been failing on exactly that, with no admin origin in
+ * the boot to talk to (2026-07-30).
+ */
+export const ADMIN_BASE_URL = process.env.E2E_ADMIN_BASE_URL ?? 'http://localhost:5373';
+
+/**
+ * The ports the two dev servers must actually LISTEN on, derived from the URLs
+ * above so an `E2E_API_BASE_URL`/`E2E_WEB_BASE_URL` override moves the servers
+ * with the specs. Before this, both overrides only redirected the *client* side:
+ * the API kept listening on `PORT`'s 3000 default and Vite on its hardcoded
+ * 5173, so pointing the suite elsewhere silently tested whatever already owned
+ * those ports — including a developer's running dev stack and its database.
+ */
+export const API_PORT = new URL(API_BASE_URL).port || '3200';
+export const WEB_PORT = new URL(WEB_BASE_URL).port || '5273';
+export const ADMIN_PORT = new URL(ADMIN_BASE_URL).port || '5373';
+
+/**
+ * The API's Prometheus listener (§13.5 V5-P2). Pinned here so the e2e API never
+ * silently contends for the 9464 default with another BetterTrack process on the
+ * same host (a dev stack's API binds it) — which means the value must NOT be
+ * 9464 itself, as it was until 2026-07-30. The worker's listener stays OFF —
+ * see `playwright.config.ts`.
+ */
+export const METRICS_PORT = process.env.E2E_METRICS_PORT ?? '9564';
+
+/**
+ * A DEDICATED database, never the dev one. The default deliberately does NOT
+ * match `pnpm dev:infra`'s `bettertrack`: the e2e boot migrates AND seeds
+ * whatever this points at, and every spec mints accounts in it, so aiming it at
+ * a working dev database corrupts real local data. `bettertrack_e2e` is the same
+ * name CI uses (`.github/workflows/e2e-nightly.yml`). Create it once against a
+ * dev Postgres with:
+ *   `docker exec bettertrack-dev-db-1 createdb -U bt bettertrack_e2e`
+ */
 export const DATABASE_URL =
-  process.env.E2E_DATABASE_URL ?? 'postgres://bt:bt@localhost:5432/bettertrack';
-export const REDIS_URL = process.env.E2E_REDIS_URL ?? 'redis://localhost:6379';
+  process.env.E2E_DATABASE_URL ?? 'postgres://bt:bt@localhost:5432/bettertrack_e2e';
+/**
+ * Its own logical Redis DB (`/1`), for the same reason the database is its own:
+ * a dev stack's BullMQ worker sits on db0 consuming the very same queue names,
+ * so a shared Redis lets the DEV worker pick up an e2e alert job and evaluate
+ * it against the DEV database — the spec then waits forever for a notification
+ * that was delivered somewhere else. Sessions and rate-limit counters share the
+ * keyspace too. ioredis reads the `/N` path as the SELECT index.
+ */
+export const REDIS_URL = process.env.E2E_REDIS_URL ?? 'redis://localhost:6379/1';
 export const SESSION_SECRET =
   process.env.E2E_SESSION_SECRET ?? 'e2e-local-session-secret-not-for-production-0000000000';
 export const ADMIN_EMAIL = process.env.E2E_ADMIN_EMAIL ?? 'e2e-admin@bettertrack.local';

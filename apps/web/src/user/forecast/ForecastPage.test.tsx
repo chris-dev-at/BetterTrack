@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, expect, test, vi } from 'vitest';
@@ -8,6 +8,7 @@ import { cloneElement, isValidElement } from 'react';
 
 import type {
   AnalyticsSeriesResponse,
+  PortfolioHistoryResponse,
   PortfolioListResponse,
   PortfolioResponse,
 } from '@bettertrack/contracts';
@@ -31,6 +32,7 @@ vi.mock('recharts', async (importOriginal) => {
 vi.mock('../../lib/portfolioApi', () => ({
   listPortfolios: vi.fn(),
   getPortfolio: vi.fn(),
+  getPortfolioHistory: vi.fn(),
 }));
 
 vi.mock('../../lib/analyticsApi', () => ({
@@ -50,8 +52,9 @@ vi.mock('../../lib/marketIntelApi', async (importOriginal) => ({
 
 import { getAnalyticsSeries } from '../../lib/analyticsApi';
 import { getPortfolioDividendProjection } from '../../lib/marketIntelApi';
-import { getPortfolio, listPortfolios } from '../../lib/portfolioApi';
+import { getPortfolio, getPortfolioHistory, listPortfolios } from '../../lib/portfolioApi';
 import { listStandingOrders } from '../../lib/standingOrdersApi';
+import { ResolvedPrivacyModeProvider } from '../vault/usePrivacyMode';
 import { ForecastPage } from './ForecastPage';
 
 const PORTFOLIO_ID = '11111111-1111-1111-1111-111111111111';
@@ -85,6 +88,21 @@ const PORTFOLIO: PortfolioResponse = {
   },
 };
 
+// Net worth (holdings + cash): 100 → 150.073035 over six years is a 7,00 %/yr
+// CAGR. Only a paranoid account samples this curve.
+const HISTORY: PortfolioHistoryResponse = {
+  range: 'MAX',
+  baseCurrency: 'EUR',
+  points: [
+    { date: '2020-01-01', valueEur: 100 },
+    { date: '2026-01-01', valueEur: 150.073035 },
+  ],
+  performance: [],
+};
+
+// The server's holdings-only analytics series — what a NORMAL account prefills.
+// Deliberately a different number from the net-worth CAGR above, so a surface
+// reading the wrong source is visible in the assertion.
 const ANALYTICS: AnalyticsSeriesResponse = {
   portfolioId: PORTFOLIO_ID,
   baseCurrency: 'EUR',
@@ -98,8 +116,8 @@ const ANALYTICS: AnalyticsSeriesResponse = {
     label: 'Main',
     points: [],
     stats: {
-      totalReturnPct: 40,
-      cagrPct: 7,
+      totalReturnPct: 60,
+      cagrPct: 9.5,
       maxDrawdownPct: -10,
       bestDay: null,
       worstDay: null,
@@ -113,11 +131,21 @@ function makeQueryClient() {
   return new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 0 } } });
 }
 
-function renderForecast() {
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((next) => {
+    resolve = next;
+  });
+  return { promise, resolve };
+}
+
+function renderForecast(mode: 'normal' | 'paranoid' = 'normal') {
   return render(
     <QueryClientProvider client={makeQueryClient()}>
       <MemoryRouter>
-        <ForecastPage />
+        <ResolvedPrivacyModeProvider mode={mode}>
+          <ForecastPage />
+        </ResolvedPrivacyModeProvider>
       </MemoryRouter>
     </QueryClientProvider>,
   );
@@ -127,6 +155,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(listPortfolios).mockResolvedValue(PORTFOLIO_LIST);
   vi.mocked(getPortfolio).mockResolvedValue(PORTFOLIO);
+  vi.mocked(getPortfolioHistory).mockResolvedValue(HISTORY);
   vi.mocked(getAnalyticsSeries).mockResolvedValue(ANALYTICS);
   vi.mocked(listStandingOrders).mockResolvedValue({ orders: [] });
   vi.mocked(getPortfolioDividendProjection).mockResolvedValue({
@@ -136,6 +165,134 @@ beforeEach(() => {
     yearlyTotalEur: 0,
     holdings: [],
   });
+});
+
+test('shows prefill progress without hiding the standalone calculators', async () => {
+  const read = deferred<PortfolioListResponse>();
+  vi.mocked(listPortfolios).mockReturnValue(read.promise);
+  renderForecast();
+
+  expect(await screen.findByText('Loading portfolio data for forecasts…')).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: /Compound interest/i })).toBeInTheDocument();
+  expect(screen.queryByText(/Add or open a portfolio to enable prefill/i)).not.toBeInTheDocument();
+
+  await act(async () => {
+    read.resolve(PORTFOLIO_LIST);
+  });
+
+  expect(await screen.findByRole('heading', { name: 'Net-worth projection' })).toBeInTheDocument();
+});
+
+test('retries a failed portfolio-list prefill read while calculators remain usable', async () => {
+  vi.mocked(listPortfolios)
+    .mockRejectedValueOnce(new Error('offline'))
+    .mockResolvedValueOnce(PORTFOLIO_LIST);
+  const user = userEvent.setup();
+  renderForecast();
+
+  expect(
+    await screen.findByText(
+      'Could not load the portfolio data used by forecasts. Please try again.',
+    ),
+  ).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: /Compound interest/i })).toBeInTheDocument();
+
+  await user.click(screen.getByRole('button', { name: 'Try again' }));
+
+  expect(await screen.findByRole('heading', { name: 'Net-worth projection' })).toBeInTheDocument();
+  expect(listPortfolios).toHaveBeenCalledTimes(2);
+});
+
+test('retries failed portfolio-detail and analytics prefill reads together', async () => {
+  vi.mocked(getPortfolio)
+    .mockRejectedValueOnce(new Error('portfolio offline'))
+    .mockResolvedValueOnce(PORTFOLIO);
+  vi.mocked(getAnalyticsSeries)
+    .mockRejectedValueOnce(new Error('analytics offline'))
+    .mockResolvedValueOnce(ANALYTICS);
+  const user = userEvent.setup();
+  renderForecast();
+
+  expect(
+    await screen.findByText(
+      'Could not load the portfolio data used by forecasts. Please try again.',
+    ),
+  ).toBeInTheDocument();
+  await waitFor(() => {
+    expect(getPortfolio).toHaveBeenCalledTimes(1);
+    expect(
+      vi.mocked(getAnalyticsSeries).mock.calls.filter(([, params]) => params?.mode === 'perf'),
+    ).toHaveLength(1);
+  });
+  expect(screen.getByRole('heading', { name: 'Net-worth projection' })).toBeInTheDocument();
+  expect(screen.getByRole('heading', { name: 'Standing orders' })).toBeInTheDocument();
+
+  await user.click(screen.getByRole('button', { name: 'Try again' }));
+
+  await waitFor(() => {
+    expect(getPortfolio).toHaveBeenCalledTimes(2);
+    expect(
+      vi.mocked(getAnalyticsSeries).mock.calls.filter(([, params]) => params?.mode === 'perf'),
+    ).toHaveLength(2);
+  });
+  expect(
+    screen.queryByText('Could not load the portfolio data used by forecasts. Please try again.'),
+  ).not.toBeInTheDocument();
+});
+
+test('an analytics-only prefill outage keeps projections and standing orders available', async () => {
+  let perfReads = 0;
+  vi.mocked(getAnalyticsSeries).mockImplementation((_portfolioId, params) => {
+    if (params?.mode === 'perf' && perfReads++ === 0) {
+      return Promise.reject(new Error('analytics offline'));
+    }
+    return Promise.resolve(ANALYTICS);
+  });
+  const user = userEvent.setup();
+  renderForecast();
+
+  expect(
+    await screen.findByText(
+      'Could not load the portfolio data used by forecasts. Please try again.',
+    ),
+  ).toBeInTheDocument();
+  expect(screen.getByRole('heading', { name: 'Net-worth projection' })).toBeInTheDocument();
+  expect(screen.getByRole('heading', { name: 'Standing orders' })).toBeInTheDocument();
+  expect(await screen.findByText('No standing orders yet')).toBeInTheDocument();
+
+  await user.click(screen.getByRole('button', { name: 'Try again' }));
+
+  await waitFor(() =>
+    expect(
+      screen.queryByText('Could not load the portfolio data used by forecasts. Please try again.'),
+    ).not.toBeInTheDocument(),
+  );
+  expect(perfReads).toBe(2);
+});
+
+test('retries the encrypted-history prefill read in paranoid mode', async () => {
+  let maxReads = 0;
+  vi.mocked(getPortfolioHistory).mockImplementation((_portfolioId, range) => {
+    if (range === 'MAX' && maxReads++ === 0) {
+      return Promise.reject(new Error('history offline'));
+    }
+    return Promise.resolve(HISTORY);
+  });
+  const user = userEvent.setup();
+  renderForecast('paranoid');
+
+  expect(
+    await screen.findByText(
+      'Could not load the portfolio data used by forecasts. Please try again.',
+    ),
+  ).toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: 'Try again' }));
+
+  expect(await screen.findByRole('heading', { name: 'Net-worth projection' })).toBeInTheDocument();
+  expect(
+    vi.mocked(getPortfolioHistory).mock.calls.filter(([, range]) => range === 'MAX'),
+  ).toHaveLength(2);
+  expect(maxReads).toBe(2);
 });
 
 test('the projection engine fills the net-worth projection slot', async () => {
@@ -202,12 +359,44 @@ test('prefill from portfolio fills current value + historical average return', a
   expect(principal.value).not.toBe('50000');
   await user.click(screen.getAllByRole('button', { name: 'Prefill from my portfolio' })[0]!);
   expect(principal.value).toBe('50000');
+  // The server's holdings-only CAGR, NOT the net-worth curve's 7 %.
+  expect(rate.value).toBe('9.5');
+});
+
+test('a normal account never samples the net-worth history for its return prefill', async () => {
+  renderForecast();
+
+  await waitFor(() => expect(getAnalyticsSeries).toHaveBeenCalled());
+  // `getPortfolioHistory` is the holdings+cash series; sampling it here would
+  // silently dilute every existing account's prefilled return with idle cash.
+  expect(getPortfolioHistory).not.toHaveBeenCalledWith(
+    PORTFOLIO_ID,
+    'MAX',
+    false,
+    expect.anything(),
+  );
+});
+
+test('a paranoid account prefills from its own decrypted net-worth curve', async () => {
+  const user = userEvent.setup();
+  renderForecast('paranoid');
+
+  await waitFor(() =>
+    expect(getPortfolioHistory).toHaveBeenCalledWith(PORTFOLIO_ID, 'MAX', false, expect.anything()),
+  );
+  // The analytics endpoint does not exist for an encrypted account.
+  expect(getAnalyticsSeries).not.toHaveBeenCalled();
+
+  await user.click(screen.getByRole('button', { name: /Compound interest/i }));
+  const rate = screen.getByLabelText('Annual return (%)') as HTMLInputElement;
+  await user.click(screen.getAllByRole('button', { name: 'Prefill from my portfolio' })[0]!);
   expect(rate.value).toBe('7');
 });
 
 test('when the portfolio prefill has no data available, cards fall back to standalone', async () => {
   vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [] });
   vi.mocked(getPortfolio).mockRejectedValue(new Error('no portfolio'));
+  vi.mocked(getPortfolioHistory).mockRejectedValue(new Error('no history'));
   vi.mocked(getAnalyticsSeries).mockRejectedValue(new Error('no analytics'));
 
   const user = userEvent.setup();

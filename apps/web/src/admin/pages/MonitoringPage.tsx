@@ -35,7 +35,7 @@ function ReachBadge({ reachable, detail }: { reachable: boolean; detail: string 
           : t('admin.monitoring.status.unreachable')}
       </Badge>
       {!reachable && detail ? (
-        <span className="font-mono text-xs text-neutral-500">{detail}</span>
+        <span className="font-mono text-xs text-neutral-400">{detail}</span>
       ) : null}
     </span>
   );
@@ -152,7 +152,7 @@ function MonitoringBody({
           </span>
           <ReachBadge reachable={prometheus.reachable} detail={prometheus.detail} />
         </div>
-        <p className="text-xs text-neutral-500">{t('admin.monitoring.prometheusNote')}</p>
+        <p className="text-xs text-neutral-400">{t('admin.monitoring.prometheusNote')}</p>
       </div>
 
       {/* External access posture + runtime kill-switch */}
@@ -167,7 +167,7 @@ function MonitoringBody({
               : t('admin.monitoring.access.effectiveOff')}
           </Badge>
         </div>
-        <p className="text-xs text-neutral-500">{t('admin.monitoring.access.description')}</p>
+        <p className="text-xs text-neutral-400">{t('admin.monitoring.access.description')}</p>
 
         <div className="flex flex-col">
           <ConditionRow
@@ -186,7 +186,7 @@ function MonitoringBody({
 
         {canToggle ? (
           <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
-            <span className="text-xs text-neutral-500">
+            <span className="text-xs text-neutral-400">
               {externalAccess.updatedAt
                 ? `${t('admin.monitoring.access.lastChanged')}: ${formatDateTime(externalAccess.updatedAt)}`
                 : t('admin.monitoring.access.never')}

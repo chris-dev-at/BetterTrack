@@ -1,41 +1,110 @@
 #!/usr/bin/env bash
-# BetterTrack offsite backup step (PROJECTPLAN.md §13.4 V4-P6 arc-b).
+# BetterTrack offsite backup utility.
 #
-# Runs inside the `backup-offsite` sidecar (infra/docker-compose.offsite.yml)
-# AFTER `backup.sh` has produced the daily gzip'd pg_dump into the shared
-# `pgbackups` volume. Enumerates every eligible local dump newest-first and
-# encrypts/uploads each artifact absent from the configured remote. The age
-# recipient is encrypt-only on the box — the decryption key stays offline with
-# the owner. Rclone works with Google Drive in production and any supported
-# backend (including a `local` remote for CI/demo), then prunes remote objects
-# older than BT_BACKUP_REMOTE_RETENTION_DAYS (default 30).
-#
-# Env-gated: if the recipient file or the rclone remote is not configured,
-# the step logs a single "offsite skipped" line and exits 0 — today's local
-# behavior is untouched. A configured but unreadable recipient, failed remote
-# listing, encryption, upload, or prune exits non-zero so host cron surfaces
-# the failure. Encrypted temp files are discarded and local .sql.gz dumps stay
-# intact for the next retry. See docs/ops.md for the full runbook.
-#
-# NO shell tracing (`set -x`) anywhere. The rclone config file mounted at
-# $RCLONE_CONFIG holds Drive OAuth tokens; the age recipient file holds
-# public-key material only, but we still keep both out of logs.
+# Upload mode encrypts and copies every missing local dump. It never calls a
+# delete operation, so its rclone credential can be append-only/delete-less.
+# Retention mode is a separate, explicitly enabled invocation with a distinct
+# rclone configuration. Both modes update the shared machine-readable status.
 set -euo pipefail
 
 BACKUP_DIR="${BT_BACKUP_SOURCE_DIR:-/backups}"
+MODE="${BT_BACKUP_OFFSITE_MODE:-upload}"
 RECIPIENT_FILE="${BT_BACKUP_AGE_RECIPIENT_FILE:-}"
-RCLONE_REMOTE="${BT_BACKUP_RCLONE_REMOTE:-}"
+UPLOAD_CONFIG="${BT_BACKUP_UPLOAD_RCLONE_CONFIG:-${RCLONE_CONFIG:-}}"
+UPLOAD_REMOTE="${BT_BACKUP_RCLONE_REMOTE:-}"
+RETENTION_ENABLED="${BT_BACKUP_REMOTE_RETENTION_ENABLED:-false}"
+RETENTION_CONFIG="${BT_BACKUP_RETENTION_RCLONE_CONFIG:-}"
+RETENTION_REMOTE="${BT_BACKUP_RETENTION_RCLONE_REMOTE:-}"
 RETENTION_DAYS="${BT_BACKUP_REMOTE_RETENTION_DAYS:-30}"
+
+# shellcheck source=infra/backup/status.sh
+source "$(dirname "${BASH_SOURCE[0]}")/status.sh"
+
+attempt_epoch="$(date -u +%s)"
+outcome='failed'
+uploaded=0
 
 log() {
     echo "bettertrack-offsite: $*"
 }
 
-# ─── env gate ────────────────────────────────────────────────────────────────
+record_status() {
+    local exit_code="${1:-$?}"
+    local status_code
+    status_code=0
+    trap - EXIT
+
+    if [ "${MODE}" = 'retention' ]; then
+        bt_status_update \
+            "offsite_retention_last_attempt_epoch=${attempt_epoch}" \
+            "offsite_retention_outcome=${outcome}" ||
+            status_code=$?
+    else
+        bt_status_update \
+            "offsite_last_attempt_epoch=${attempt_epoch}" \
+            "offsite_outcome=${outcome}" \
+            "offsite_uploaded_count=${uploaded}" \
+            'offsite_retention=manual_or_provider' ||
+            status_code=$?
+    fi
+    [ "${status_code}" -eq 0 ] || exit_code=8
+    exit "${exit_code}"
+}
+trap record_status EXIT
+
+rclone_upload() {
+    if [ -n "${UPLOAD_CONFIG}" ]; then
+        rclone --config "${UPLOAD_CONFIG}" "$@"
+    else
+        rclone "$@"
+    fi
+}
+
+run_retention() {
+    if [ "${RETENTION_ENABLED}" != 'true' ]; then
+        outcome='disabled'
+        log "remote retention disabled; use provider-side/versioned retention or the separately credentialed retention service"
+        return 0
+    fi
+    if [ -z "${RETENTION_CONFIG}" ] || [ -z "${RETENTION_REMOTE}" ]; then
+        log "ERROR: retention is enabled but its separate config or remote is unset"
+        exit 7
+    fi
+    if [ ! -r "${RETENTION_CONFIG}" ]; then
+        log "ERROR: retention rclone config is not readable"
+        exit 7
+    fi
+    if [[ ! "${RETENTION_DAYS}" =~ ^[1-9][0-9]*$ ]]; then
+        log "ERROR: BT_BACKUP_REMOTE_RETENTION_DAYS must be a positive integer"
+        exit 7
+    fi
+
+    log "pruning remote artifacts older than ${RETENTION_DAYS}d with the retention-only credential"
+    if ! rclone --config "${RETENTION_CONFIG}" delete "${RETENTION_REMOTE}" \
+        --min-age "${RETENTION_DAYS}d" \
+        --include 'bettertrack-*.sql.gz.age'; then
+        log "ERROR: remote prune failed"
+        exit 7
+    fi
+    outcome='success'
+    log "remote retention done"
+}
+
+if [ "${MODE}" = 'retention' ]; then
+    run_retention
+    exit 0
+fi
+if [ "${MODE}" != 'upload' ]; then
+    log "ERROR: BT_BACKUP_OFFSITE_MODE must be upload or retention"
+    exit 2
+fi
+
+# ─── upload env gate ─────────────────────────────────────────────────────────
 missing=()
 [ -n "${RECIPIENT_FILE}" ] || missing+=('BT_BACKUP_AGE_RECIPIENT_FILE')
-[ -n "${RCLONE_REMOTE}" ] || missing+=('BT_BACKUP_RCLONE_REMOTE')
+[ -n "${UPLOAD_REMOTE}" ] || missing+=('BT_BACKUP_RCLONE_REMOTE')
 if [ ${#missing[@]} -gt 0 ]; then
+    outcome='skipped_unconfigured'
     log "offsite skipped (unset: ${missing[*]})"
     exit 0
 fi
@@ -44,46 +113,46 @@ if [ ! -r "${RECIPIENT_FILE}" ]; then
     log "ERROR: recipient file not readable at expected in-container path — check the bind mount"
     exit 2
 fi
-
-# ─── find eligible local dumps ───────────────────────────────────────────────
-# Filenames are UTC timestamps, so reverse lexical order is newest-first even
-# if a restore or copy has changed the files' mtimes. The sidecar includes GNU
-# find/sort specifically for the NUL-safe enumeration below.
+if [ -n "${UPLOAD_CONFIG}" ] && [ ! -r "${UPLOAD_CONFIG}" ]; then
+    log "ERROR: upload rclone config is not readable"
+    exit 2
+fi
 if [ ! -d "${BACKUP_DIR}" ] || [ ! -r "${BACKUP_DIR}" ] || [ ! -x "${BACKUP_DIR}" ]; then
     log "ERROR: backup source directory is not readable at ${BACKUP_DIR}"
     exit 3
 fi
 
 work_dir="$(mktemp -d)"
-trap 'rm -rf -- "${work_dir}"' EXIT
+cleanup_and_record() {
+    local exit_code=$?
+    rm -rf -- "${work_dir}"
+    record_status "${exit_code}"
+}
+trap cleanup_and_record EXIT
 
+# Filenames contain UTC timestamps, so reverse lexical order is newest-first.
 local_listing="${work_dir}/local-dumps"
-if ! find "${BACKUP_DIR}" -maxdepth 1 -type f -name 'bettertrack-*.sql.gz' -print0 \
-    | LC_ALL=C sort -zr > "${local_listing}"; then
+if ! find "${BACKUP_DIR}" -maxdepth 1 -type f -name 'bettertrack-*.sql.gz' -print0 |
+    LC_ALL=C sort -zr > "${local_listing}"; then
     log "ERROR: could not enumerate local dumps in ${BACKUP_DIR}"
     exit 3
 fi
 mapfile -d '' -t local_dumps < "${local_listing}"
 
 if [ ${#local_dumps[@]} -eq 0 ]; then
+    outcome='success_no_artifacts'
     log "no local dump found in ${BACKUP_DIR} — nothing to upload"
     exit 0
 fi
 
-# ─── find remote artifacts already uploaded ──────────────────────────────────
-# Ensure a freshly configured destination is usable before listing it: `rclone
-# lsf` alone treats a missing directory as an error even though `copy` creates
-# it on first upload.
-log "ensuring remote backup directory exists: ${RCLONE_REMOTE}"
-if ! rclone mkdir "${RCLONE_REMOTE}"; then
+log "ensuring remote backup directory exists: ${UPLOAD_REMOTE}"
+if ! rclone_upload mkdir "${UPLOAD_REMOTE}"; then
     log "ERROR: rclone could not create or access the remote backup directory"
     exit 4
 fi
 
-# `rclone lsf` lists the direct contents of the configured backup folder. The
-# local script writes there too, so each remote path is the encrypted basename.
 remote_listing="${work_dir}/remote-artifacts"
-if ! rclone lsf "${RCLONE_REMOTE}" \
+if ! rclone_upload lsf "${UPLOAD_REMOTE}" \
     --files-only \
     --format p \
     --include 'bettertrack-*.sql.gz.age' > "${remote_listing}"; then
@@ -91,8 +160,6 @@ if ! rclone lsf "${RCLONE_REMOTE}" \
     exit 4
 fi
 
-# ─── encrypt and upload every missing artifact ───────────────────────────────
-uploaded=0
 for local_dump in "${local_dumps[@]}"; do
     base="$(basename "${local_dump}")"
     artifact="${base}.age"
@@ -108,12 +175,9 @@ for local_dump in "${local_dumps[@]}"; do
         log "ERROR: age encryption failed for ${base}; local dump preserved"
         exit 5
     fi
-    log "encrypted ${artifact} ($(du -h "${encrypted}" | cut -f1))"
 
-    # --no-traverse avoids an extra per-file destination listing; the complete
-    # remote listing above is the authoritative missing-artifact check.
-    log "uploading ${artifact} -> ${RCLONE_REMOTE}"
-    if ! rclone copy "${encrypted}" "${RCLONE_REMOTE}" --no-traverse; then
+    log "uploading ${artifact} -> ${UPLOAD_REMOTE}"
+    if ! rclone_upload copy "${encrypted}" "${UPLOAD_REMOTE}" --no-traverse; then
         log "ERROR: rclone upload failed; local dump preserved for next run"
         exit 6
     fi
@@ -126,13 +190,5 @@ if [ "${uploaded}" -eq 0 ]; then
     log "all eligible local dumps are already present remotely"
 fi
 
-# ─── prune remote per retention window ───────────────────────────────────────
-log "pruning remote artifacts older than ${RETENTION_DAYS}d in ${RCLONE_REMOTE}"
-if ! rclone delete "${RCLONE_REMOTE}" \
-    --min-age "${RETENTION_DAYS}d" \
-    --include 'bettertrack-*.sql.gz.age'; then
-    log "ERROR: remote prune failed; next run will retry"
-    exit 7
-fi
-
-log "offsite backup done"
+outcome='success'
+log "upload complete; remote retention is manual/provider-side unless the separate retention service is enabled"

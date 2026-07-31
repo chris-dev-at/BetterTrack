@@ -1,6 +1,11 @@
-import { VAULT_DOCUMENT_VERSION, type VaultDocument } from '@bettertrack/contracts';
+import {
+  VAULT_DOCUMENT_VERSION,
+  type VaultDocument,
+  type VaultMirrorProvenance,
+} from '@bettertrack/contracts';
 
 import {
+  getParanoidForkProvenance,
   getParanoidMediaState,
   purgeRetiredParanoidServer,
   readParanoidServerCandidate,
@@ -17,11 +22,18 @@ import {
   type GoogleDriveTokenClient,
 } from '../drive';
 import { createLocalDataHome } from '../localDataHome';
+import { captureForkProvenanceIntoVault } from '../mirrorProvenance';
 import { createIndexedDbVaultQuarantineStore } from '../quarantine';
 import { createServerBlobDataHome } from '../serverBlobDataHome';
-import { createVaultSyncEngine, type VaultSyncEngine, type VaultSyncState } from '../sync';
+import {
+  createVaultSyncEngine,
+  hasUnambiguousBranch,
+  type VaultSyncEngine,
+  type VaultSyncState,
+} from '../sync';
 import { reconcilePortfolioDocument } from '../vaultPortfolioStore';
 import { VaultCryptoError } from '../errors';
+import { equalBytes } from '../bytes';
 import { createDriveConnectionController, type DriveConnectionController } from './driveConnection';
 import { createVaultMediaSwitcher, type VaultMediaApi } from './mediaSwitcher';
 import {
@@ -50,6 +62,8 @@ export interface UnlockedVaultDriveRuntimeOptions {
   api?: VaultMediaApi;
   sync?: VaultDriveSyncCoordinator;
   retirementProof?: VaultRetirementProofManager;
+  /** §7.1 capture read; defaults to `GET /account/paranoid/fork-provenance`. */
+  forkProvenance?: () => Promise<readonly VaultMirrorProvenance[]>;
 }
 
 export interface UnlockedVaultDriveRuntime {
@@ -58,6 +72,12 @@ export interface UnlockedVaultDriveRuntime {
   readonly sync: VaultDriveSyncCoordinator;
   readonly ready: Promise<void>;
   readonly syncState: VaultSyncState;
+  /**
+   * Publish a PD4-produced replacement envelope to the same verified replica
+   * set. The caller locks immediately afterward so a rotated key can be
+   * installed only through the normal authenticated unlock path.
+   */
+  replaceEnvelope?(envelope: Uint8Array): Promise<void>;
   reconnect(): Promise<VaultSyncState>;
   dispose(): void;
 }
@@ -102,16 +122,18 @@ export function createUnlockedVaultDriveRuntime(
     authenticate,
     retirementProof,
   });
-  const sync =
-    options.sync ??
-    createDefaultSyncCoordinator({
-      userId: options.userId,
-      vaultKey,
-      keyId,
-      api,
-      server,
-      drive,
-    });
+  const defaultSync =
+    options.sync == null
+      ? createDefaultSyncCoordinator({
+          userId: options.userId,
+          vaultKey,
+          keyId,
+          api,
+          server,
+          drive,
+        })
+      : null;
+  const sync = options.sync ?? defaultSync!.coordinator;
 
   let disposed = false;
   let readyPromise: Promise<void> | null = null;
@@ -150,8 +172,8 @@ export function createUnlockedVaultDriveRuntime(
     requireActive();
     const state = await sync.reconnect();
     requireActive();
-    if (state.status !== 'synced' || state.active == null || state.pending != null) {
-      throw new Error('Every selected vault medium must be reconciled before storage changes.');
+    if (state.active == null || !hasUnambiguousBranch(state.status)) {
+      throw new Error('No unambiguous readable vault is available on this device.');
     }
     const ensured = await retirementProof.ensure(state.active.document);
     requireActive();
@@ -168,6 +190,37 @@ export function createUnlockedVaultDriveRuntime(
       if (confirmed.changed) {
         throw new Error('Committed vault retirement proof material could not be confirmed.');
       }
+    }
+    await captureForkProvenance();
+  }
+
+  /**
+   * §7.1: fold the account's severed-fork identity map into the document on every
+   * unlocked session. This is what puts the map inside the ciphertext BEFORE the
+   * enable wizard's `enable()` purges `mirror_rows` — the map only exists while
+   * the fork's copy does, and after enable the read is empty and this no-ops.
+   *
+   * An unreachable capture read must not block unlocking an already-encrypted
+   * vault (Drive-only can be readable while the API is not), so a failed READ is
+   * skipped and retried on the next unlock. A read that succeeded and produced new
+   * provenance must land durably, exactly like the proof material above: a fork
+   * whose identities never reached the ciphertext could not be restored later.
+   */
+  async function captureForkProvenance(): Promise<void> {
+    const read =
+      options.forkProvenance ?? (async () => (await getParanoidForkProvenance()).provenance);
+    let captured: readonly VaultMirrorProvenance[];
+    try {
+      captured = await read();
+    } catch {
+      return;
+    }
+    requireActive();
+    const committed = await captureForkProvenanceIntoVault(sync, async () => captured);
+    if (committed == null) return;
+    requireActive();
+    if (committed.status !== 'synced' || committed.active == null || committed.pending != null) {
+      throw new Error('Severed-fork MIRRORCHAIN provenance was not durably synchronized.');
     }
   }
 
@@ -199,6 +252,56 @@ export function createUnlockedVaultDriveRuntime(
     },
     get syncState() {
       return sync.state;
+    },
+    async replaceEnvelope(envelope) {
+      requireActive();
+      await ready();
+      requireActive();
+      const active = sync.state.active;
+      if (
+        defaultSync == null ||
+        sync.state.status !== 'synced' ||
+        active == null ||
+        sync.state.pending != null
+      ) {
+        throw new VaultCryptoError(
+          'storage-failed',
+          'Every selected vault medium must be synchronized before changing vault keys.',
+        );
+      }
+      const expectedVersion = active.header.vaultVersion;
+      const remoteWrite = await defaultSync.primary.write(envelope, {
+        ifVersion: expectedVersion,
+      });
+      if (remoteWrite.status !== 'ok') {
+        throw new VaultCryptoError(
+          'storage-failed',
+          'The replacement vault could not be written to every selected medium.',
+        );
+      }
+      const remoteRead = await defaultSync.primary.read();
+      if (remoteRead.status !== 'ok' || !equalBytes(remoteRead.envelope, envelope)) {
+        throw new VaultCryptoError(
+          'storage-failed',
+          'The replacement vault could not be verified on every selected medium.',
+        );
+      }
+      const localWrite = await defaultSync.local.write(envelope, {
+        ifVersion: expectedVersion,
+      });
+      if (localWrite.status !== 'ok') {
+        throw new VaultCryptoError(
+          'storage-failed',
+          'The replacement vault could not be saved to the encrypted local cache.',
+        );
+      }
+      const localRead = await defaultSync.local.read();
+      if (localRead.status !== 'ok' || !equalBytes(localRead.envelope, envelope)) {
+        throw new VaultCryptoError(
+          'storage-failed',
+          'The replacement encrypted local cache could not be verified.',
+        );
+      }
     },
     async reconnect() {
       requireActive();
@@ -253,11 +356,16 @@ function createDefaultSyncCoordinator(options: {
   api: VaultMediaApi;
   server: DataHome;
   drive: DriveDataHome;
-}): VaultDriveSyncCoordinator {
+}): {
+  coordinator: VaultDriveSyncCoordinator;
+  local: ReturnType<typeof createLocalDataHome>;
+  primary: ReturnType<typeof createReplicatedVaultDataHome>;
+} {
   const scope = `vault:${options.userId}:${options.keyId}`;
   const primary = createReplicatedVaultDataHome(options);
+  const local = createLocalDataHome({ scope });
   const engine = createVaultSyncEngine({
-    local: createLocalDataHome({ scope }),
+    local,
     primary,
     vaultKey: options.vaultKey,
     deviceId: browserVaultDeviceId(options.userId, options.keyId),
@@ -267,7 +375,7 @@ function createDefaultSyncCoordinator(options: {
     requiresCompleteMutationProvenance: true,
   });
   const replicaCoordinator = createReplicaReconcileCoordinator(engine, primary);
-  return {
+  const coordinator: VaultDriveSyncCoordinator = {
     deviceId: engine.deviceId,
     get state() {
       return replicaCoordinator.state;
@@ -275,6 +383,7 @@ function createDefaultSyncCoordinator(options: {
     reconnect: () => replicaCoordinator.reconnect(),
     mutate: (mutator) => replicaCoordinator.mutate(mutator),
   };
+  return { coordinator, local, primary };
 }
 
 function browserVaultDeviceId(userId: string, keyId: string): string {

@@ -47,6 +47,7 @@ import {
   createWebhookDeliverJob,
   createWebhookDeliveryCleanupJob,
   createApiKeyRequestLogCleanupJob,
+  createDataRetentionCleanupJob,
   createNotificationsDispatchJob,
   createDigestDailyJob,
   createDigestWeeklyJob,
@@ -121,6 +122,7 @@ import { createNotificationDispatcher } from '../services/notifications/notifica
 import { createDigestService } from '../services/notifications/digestService';
 import { createPresenceStore } from '../services/notifications/presence';
 import { createWebPushChannel } from '../services/notifications/webPush';
+import { createCashTagRepository } from '../data/repositories/cashTagRepository';
 import {
   createParanoidModeGuard,
   isParanoidOwnedSubjectBlocked,
@@ -372,6 +374,8 @@ const portfolioService = createPortfolioService({
   transactionRepo,
   cashMovementRepo,
   cashSourceRepo,
+  // Read-only: lets the cash ledger DTO carry each movement's tags (V5 cash fusion).
+  cashTagRepo: createCashTagRepository(db),
   marketData,
   currencyService,
   referenceBackfill: createReferenceBackfill({
@@ -577,6 +581,17 @@ const definitions = assembleRegisteredJobDefinitions({
   // bounded per-key request-log audit trail.
   createApiKeyRequestLogCleanupJob: createApiKeyRequestLogCleanupJob({
     requestLog: createApiKeyRequestLogRepository(db),
+  }),
+  // V5-P14 PL-01: bounded daily retention sweep over identifying operational
+  // trails. A zero-day config keeps that table forever and skips its branch;
+  // the remembered-device sweep runs regardless, since those bindings carry a
+  // fixed lifetime rather than an owner-configured window.
+  createDataRetentionCleanupJob: createDataRetentionCleanupJob({
+    audit: createAuditRepository(db),
+    emailLog: createEmailLogRepository(db),
+    users: workerUserRepo,
+    auditRetentionDays: config.retention.auditDays,
+    emailLogRetentionDays: config.retention.emailLogDays,
   }),
 });
 

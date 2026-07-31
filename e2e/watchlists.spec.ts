@@ -32,13 +32,19 @@ test('watchlists: add an asset to a second list via the caret menu', async ({ br
   // happens here, at add-time — the bookmark button alone would target General).
   await page.goto('/assets/search');
   await page.getByRole('searchbox', { name: 'Search assets' }).fill('Apple');
-  await expect(page.getByRole('button', { name: 'Add AAPL to watchlist' })).toBeVisible({
-    timeout: 15_000,
-  });
-  await page.getByRole('button', { name: 'Choose a watchlist for AAPL' }).click();
-  const listMenu = page.getByRole('menu', { name: 'Watchlists for AAPL' });
+  // `exact: true` throughout: accessible-name matching is a SUBSTRING match, and
+  // the seeded universe also carries AAPLC.BA — so "…for AAPL" silently matched
+  // two rows and the click became a strict-mode violation rather than a failure
+  // about watchlists. Every locator below names one asset exactly.
+  await expect(
+    page.getByRole('button', { name: 'Add AAPL to watchlist', exact: true }),
+  ).toBeVisible({ timeout: 15_000 });
+  await page.getByRole('button', { name: 'Choose a watchlist for AAPL', exact: true }).click();
+  const listMenu = page.getByRole('menu', { name: 'Watchlists for AAPL', exact: true });
   await listMenu.getByRole('menuitem', { name: 'Tech' }).click();
-  await expect(page.getByRole('button', { name: 'AAPL is on your watchlist' })).toBeVisible();
+  await expect(
+    page.getByRole('button', { name: 'AAPL is on your watchlist', exact: true }),
+  ).toBeVisible();
 
   // Verify per-list membership on the manage-lists surface: Tech has the item,
   // General stayed empty (proving the list choice was honoured).

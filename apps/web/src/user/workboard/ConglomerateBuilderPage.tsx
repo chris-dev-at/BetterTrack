@@ -424,7 +424,9 @@ function Builder({ initial }: { initial: BuilderInitial | null }) {
 // ─── Frame + header ──────────────────────────────────────────────────────────
 
 function BuilderFrame({ children }: { children: React.ReactNode }) {
-  return <div className="flex min-h-screen flex-col bg-[#0b0e14]">{children}</div>;
+  return (
+    <div className="flex min-h-[calc(100*var(--bt-vh))] flex-col bg-[#0b0e14]">{children}</div>
+  );
 }
 
 function BuilderHeader({
@@ -568,7 +570,7 @@ function NestConglomeratePanel({
   positions: BuilderPosition[];
 }) {
   const t = useT();
-  const { data, isLoading, isError } = useQuery({
+  const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ['conglomerates'],
     queryFn: ({ signal }) => listConglomerates(signal),
   });
@@ -586,7 +588,10 @@ function NestConglomeratePanel({
         {isLoading ? (
           <Spinner label={t('workboard.builder.loading')} />
         ) : isError ? (
-          <Alert tone="error">{t('workboard.builder.nestConglomerateLoadError')}</Alert>
+          <div className="flex flex-col items-start gap-2">
+            <Alert tone="error">{t('workboard.builder.nestConglomerateLoadError')}</Alert>
+            <Button onClick={() => void refetch()}>{t('common.retry')}</Button>
+          </div>
         ) : candidates.length === 0 ? (
           <p className="text-xs bt-muted">{t('workboard.builder.nestConglomerateEmpty')}</p>
         ) : (

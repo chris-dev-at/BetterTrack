@@ -34,6 +34,17 @@ function createUserQueries(db: Database) {
     },
 
     /**
+     * Batch lookup for sweeps that resolve many ids at once (§13.5 V5-P14): the
+     * remembered-device retention pass reads one page of bound accounts per
+     * Redis SCAN page instead of one round trip per key. Missing ids are simply
+     * absent from the result.
+     */
+    async listByIds(ids: string[]): Promise<UserRow[]> {
+      if (ids.length === 0) return [];
+      return db.select().from(users).where(inArray(users.id, ids));
+    },
+
+    /**
      * Re-read and lock one administrator-edit target inside the caller's
      * transaction. The active-administrator set is locked first by
      * `withSerializedAdminMutation`, so every admin mutation takes locks in the
@@ -277,6 +288,37 @@ function createUserQueries(db: Database) {
      */
     async setDiscreetMode(id: string, discreetMode: boolean): Promise<void> {
       await db.update(users).set({ discreetMode, updatedAt: new Date() }).where(eq(users.id, id));
+    },
+
+    /**
+     * The caller's stored Home widget board (R2 home-widgets). Selected by
+     * column rather than through `findById` so the board — up to 32 KB of
+     * user-controlled jsonb — is only read by the one endpoint that needs it,
+     * never as a side effect of a `select *`.
+     */
+    async findHomeLayout(id: string): Promise<{ layout: unknown; updatedAt: Date | null }> {
+      const [row] = await db
+        .select({ layout: users.homeLayout, updatedAt: users.homeLayoutUpdatedAt })
+        .from(users)
+        .where(eq(users.id, id))
+        .limit(1);
+      return { layout: row?.layout ?? null, updatedAt: row?.updatedAt ?? null };
+    },
+
+    /**
+     * Replace the caller's Home board; `null` clears it. The stamp is bumped on
+     * every write (a clear included) and returned from the same statement, so
+     * the revision the caller records is exactly the one that landed — a
+     * second read could pick up a newer write from another device.
+     */
+    async setHomeLayout(id: string, layout: unknown): Promise<Date | null> {
+      const now = new Date();
+      const [row] = await db
+        .update(users)
+        .set({ homeLayout: layout, homeLayoutUpdatedAt: now, updatedAt: now })
+        .where(eq(users.id, id))
+        .returning({ updatedAt: users.homeLayoutUpdatedAt });
+      return row?.updatedAt ?? null;
     },
 
     /**

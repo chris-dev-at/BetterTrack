@@ -11,7 +11,6 @@ import {
   replaceConglomeratePositions,
 } from '../../lib/conglomerateApi';
 import { cx } from '../../lib/cx';
-import { listPortfolios } from '../../lib/portfolioApi';
 import {
   WATCHLISTS_QUERY_KEY,
   addToWorkboard,
@@ -33,6 +32,7 @@ import { CapabilityTags } from '../assets/capabilityTags';
 import { TransactionDialog, type TransactionDialogAsset } from './TransactionDialog';
 import { restoreFocusTo } from './useFocusTrap';
 import { useMenuKeyboard } from './useMenuKeyboard';
+import { usePortfolioStore } from '../portfolio/PortfolioStoreProvider';
 
 /** Reused by the lazily-fetched supporting queries below (watchlists, portfolios). */
 const SEARCH_STALE_MS = 30_000;
@@ -87,6 +87,7 @@ export function AssetSearchBox({
   const inputRef = useRef<HTMLInputElement>(null);
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const store = usePortfolioStore();
 
   // Picker mode (the Builder, buy-dialog asset pick) never shows the direct
   // actions below, so it never needs their supporting data.
@@ -126,7 +127,7 @@ export function AssetSearchBox({
   // Resolved lazily: only fetched once a Portfolio action is actually used.
   const portfoliosQuery = useQuery({
     queryKey: ['portfolios'],
-    queryFn: ({ signal }) => listPortfolios(signal),
+    queryFn: ({ signal }) => store.listPortfolios(signal),
     enabled: withDirectActions && portfolioAsset !== null,
     staleTime: 60_000,
   });

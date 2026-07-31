@@ -334,3 +334,24 @@ describe('PortfolioWizard — focus', () => {
     expect(within(screen.getByRole('radiogroup')).getAllByRole('radio')).toHaveLength(5);
   });
 });
+
+describe('PortfolioWizard — dismissal after a successful create', () => {
+  test('closing the wizard still reports the portfolio it just made', async () => {
+    vi.mocked(createPortfolio).mockResolvedValue(CREATED);
+    const { onClose, onCreated } = renderWizard();
+
+    await walkToBook('Retirement');
+    await userEvent.click(screen.getByRole('radio', { name: /Just me/ }));
+    await userEvent.click(primary());
+    await waitFor(() => expect(createPortfolio).toHaveBeenCalled());
+
+    // Dismiss instead of pressing the terminal Continue. The portfolio EXISTS,
+    // so the app has to learn about it either way — before this, closing here
+    // left the user on their old portfolio with the new one absent from the
+    // switcher until a manual reload (owner, 2026-07-31).
+    await userEvent.click(screen.getAllByRole('button', { name: /Close/i })[0]!);
+
+    expect(onCreated).toHaveBeenCalledWith(CREATED);
+    expect(onClose).toHaveBeenCalled();
+  });
+});

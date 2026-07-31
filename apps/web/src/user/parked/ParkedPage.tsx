@@ -39,6 +39,14 @@ export const PARKED_PAGES = {
   },
   portfolioEvents: { key: 'portfolioEvents', pointCount: 3 },
   portfolioStructure: { key: 'portfolioStructure', pointCount: 3 },
+  cashImport: {
+    key: 'cashImport',
+    pointCount: 3,
+    links: [
+      { to: '/portfolio/cash/movements', labelKey: 'parked.links.cashMovements' },
+      { to: '/portfolio/cash/labels', labelKey: 'parked.links.cashRules' },
+    ],
+  },
   dataHealth: { key: 'dataHealth', pointCount: 4 },
   privateMarkets: { key: 'privateMarkets', pointCount: 3 },
   rebalance: {
@@ -79,11 +87,9 @@ export const PARKED_PAGES = {
     // the live broker/CSV import instead of a page that redirects back here.
     links: [{ to: '/portfolio/import', labelKey: 'parked.links.importsExports' }],
   },
-  paranoid: {
-    key: 'paranoid',
-    pointCount: 4,
-    links: [{ to: '/control/security', labelKey: 'parked.links.security' }],
-  },
+  // `paranoid` lived here until PD8 shipped the real experience (wizard, gate,
+  // day-to-day surfaces). Its copy is deleted with it — a parked page for a
+  // built feature is a promise the app already keeps.
   mcp: { key: 'mcp', pointCount: 3 },
   developerLogs: { key: 'developerLogs', pointCount: 3 },
   oauthApps: { key: 'oauthApps', pointCount: 3 },

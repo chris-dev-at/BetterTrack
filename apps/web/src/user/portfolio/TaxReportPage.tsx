@@ -14,15 +14,9 @@ import type {
 import { useI18n, useT } from '../../i18n';
 import type { TranslateFn } from '../../i18n';
 import { EM_DASH, formatDate, formatQuantity } from '../../lib/format';
-import {
-  getPortfolioTaxSettings,
-  getTaxYearReport,
-  getTaxYearReports,
-  listPortfolios,
-  taxYearReportCsvUrl,
-} from '../../lib/portfolioApi';
+import { getTaxYearReport, getTaxYearReports, taxYearReportCsvUrl } from '../../lib/portfolioApi';
 import { Disclaimer, EmptyState, MoneyText } from '../../ui';
-import { Badge, Icon, PageHead, Panel, SkeletonBlock } from '../../ui/origin';
+import { Badge, Button, Icon, PageHead, Panel, SkeletonBlock } from '../../ui/origin';
 import { Alert } from '../components/ui';
 import { vaultMoneyErrorKey } from '../vault/engine/errorCopy';
 import { asMoneyFailure, type VaultMoneyFailure } from '../vault/engine/errors';
@@ -35,13 +29,14 @@ import {
 import { deliverClientDownload, printClientDocument } from '../vault/export/deliver';
 import { createClientTaxCsv } from '../vault/export/taxCsv';
 import { createPrintableTaxReport } from '../vault/export/taxPrint';
-import { usePrivacyMode } from '../vault/usePrivacyMode';
+import { useResolvedPrivacyMode } from '../vault/usePrivacyMode';
 import { portfolioTaxSettingsKey, taxModeLabelKey } from './portfolioTax';
 import {
   ACTIVE_PORTFOLIO_PARAM,
   portfolioSearch,
   resolveActivePortfolio,
 } from './PortfolioSwitcher';
+import { usePortfolioStore } from './PortfolioStoreProvider';
 
 /** One sell inside a year's drill-down (#369 uncovered sells render their real basis). */
 function SellRow({ sell }: { sell: TaxYearSell }) {
@@ -234,8 +229,11 @@ function YearDetail({ portfolioId, year }: { portfolioId: string; year: number }
   }
   if (query.isError) {
     return (
-      <div className="p-3">
+      <div className="flex flex-col items-start gap-2 p-3">
         <Alert tone="error">{t('portfolio.taxReport.detailError')}</Alert>
+        <Button onClick={() => void query.refetch()} size="sm">
+          {t('common.retry')}
+        </Button>
       </div>
     );
   }
@@ -366,6 +364,7 @@ function YearRow({
  */
 export function TaxReportPage() {
   const t = useT();
+  const store = usePortfolioStore();
   const [searchParams] = useSearchParams();
   const [expandedYear, setExpandedYear] = useState<number | null>(null);
 
@@ -374,12 +373,12 @@ export function TaxReportPage() {
   // caches must not leak through either — a cached ['portfolios'] entry would
   // otherwise resolve an active id and start the settings/report reads while
   // privacy is still pending or already paranoid.
-  const privacy = usePrivacyMode();
-  const serverReadsEnabled = privacy.privacyMode === 'normal';
+  const privacyMode = useResolvedPrivacyMode();
+  const serverReadsEnabled = privacyMode === 'normal';
 
   const portfoliosQuery = useQuery({
     queryKey: ['portfolios'],
-    queryFn: ({ signal }) => listPortfolios(signal),
+    queryFn: ({ signal }) => store.listPortfolios(signal),
     staleTime: 60_000,
     enabled: serverReadsEnabled,
   });
@@ -390,7 +389,7 @@ export function TaxReportPage() {
 
   const settingsQuery = useQuery({
     queryKey: active ? portfolioTaxSettingsKey(active.id) : ['portfolio', 'taxSettings', 'none'],
-    queryFn: ({ signal }) => getPortfolioTaxSettings(active!.id, signal),
+    queryFn: ({ signal }) => store.getPortfolioTaxSettings(active!.id, signal),
     enabled: serverReadsEnabled && Boolean(active),
     staleTime: 30_000,
   });
@@ -411,28 +410,7 @@ export function TaxReportPage() {
     </PageHead>
   );
 
-  if (privacy.isPending) {
-    return (
-      <div>
-        {header}
-        <SkeletonBlock height={96} />
-      </div>
-    );
-  }
-
-  if (privacy.isError) {
-    return (
-      <div>
-        {header}
-        <EmptyState
-          description={t('settings.retryHint')}
-          title={t('portfolio.taxReport.loadError.title')}
-        />
-      </div>
-    );
-  }
-
-  if (privacy.privacyMode === 'paranoid') {
+  if (privacyMode === 'paranoid') {
     return <ParanoidTaxReport header={header} />;
   }
 
@@ -454,6 +432,7 @@ export function TaxReportPage() {
         <EmptyState
           description={t('settings.retryHint')}
           title={t('portfolio.taxReport.loadError.title')}
+          cta={<Button onClick={() => void portfoliosQuery.refetch()}>{t('common.retry')}</Button>}
         />
       </div>
     );
@@ -509,6 +488,7 @@ export function TaxReportPage() {
           <EmptyState
             description={t('settings.retryHint')}
             title={t('portfolio.taxReport.loadError.title')}
+            cta={<Button onClick={() => void settingsQuery.refetch()}>{t('common.retry')}</Button>}
           />
         ) : !taxActive ? (
           // The report is only meaningful with a tax mode active for THIS
@@ -524,6 +504,7 @@ export function TaxReportPage() {
           <EmptyState
             description={t('settings.retryHint')}
             title={t('portfolio.taxReport.loadError.title')}
+            cta={<Button onClick={() => void reportQuery.refetch()}>{t('common.retry')}</Button>}
           />
         ) : years.length === 0 ? (
           <EmptyState
@@ -586,6 +567,7 @@ function ParanoidTaxReport({ header }: { header: ReactNode }) {
   const [searchParams] = useSearchParams();
   const session = useVaultMoneySession();
   const param = searchParams.get(ACTIVE_PORTFOLIO_PARAM);
+  const [portfolioAttempt, setPortfolioAttempt] = useState(0);
   const [portfolios, setPortfolios] = useState<
     | { status: 'pending' }
     | { status: 'error'; failure: VaultMoneyFailure }
@@ -609,7 +591,7 @@ function ParanoidTaxReport({ header }: { header: ReactNode }) {
       },
     );
     return () => controller.abort();
-  }, [session]);
+  }, [portfolioAttempt, session]);
 
   if (session === null) {
     return (
@@ -638,6 +620,13 @@ function ParanoidTaxReport({ header }: { header: ReactNode }) {
       <div>
         {header}
         <EmptyState
+          cta={
+            portfolios.failure.retryable ? (
+              <Button onClick={() => setPortfolioAttempt((attempt) => attempt + 1)}>
+                {t('portfolio.taxReport.paranoid.retry')}
+              </Button>
+            ) : undefined
+          }
           description={t(vaultMoneyErrorKey(portfolios.failure))}
           title={t('portfolio.taxReport.loadError.title')}
         />

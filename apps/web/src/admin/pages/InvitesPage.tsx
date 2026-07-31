@@ -119,7 +119,7 @@ export function InvitesPage() {
       ) : (
         <div className="overflow-x-auto rounded-lg border border-neutral-800">
           <table className="w-full min-w-[40rem] text-left text-sm">
-            <thead className="bg-neutral-900 text-xs uppercase tracking-wide text-neutral-500">
+            <thead className="bg-neutral-900 text-xs uppercase tracking-wide text-neutral-400">
               <tr>
                 <th className="px-4 py-3 font-medium">Email</th>
                 <th className="px-4 py-3 font-medium">Status</th>
@@ -174,7 +174,7 @@ export function InvitesPage() {
                           </Button>
                         )
                       ) : (
-                        <span className="text-neutral-600">—</span>
+                        <span className="text-neutral-400">—</span>
                       )}
                     </div>
                   </td>

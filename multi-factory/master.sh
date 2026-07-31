@@ -1657,7 +1657,9 @@ mf_labels_boot
 notify "multi-factory master started (workers=$WORKERS, mode=$(cat "$CONTROL/mode"), dry=$MF_DRY_RUN)"
 # Claude capacity gates startup only while some difficulty actually routes to the
 # claude provider — a codex/gemini-only configuration must start during a claude outage.
-if [ "$MF_DRY_RUN" != 1 ] && mf_uses_claude; then wait_for_capacity "startup"; fi
+if [ "$MF_DRY_RUN" != 1 ] && mf_uses_claude; then
+  mf_wait_for_claude_capacity "startup"
+fi
 
 while true; do
   tick

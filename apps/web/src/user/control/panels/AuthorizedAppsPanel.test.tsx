@@ -14,6 +14,7 @@ vi.mock('../../../lib/oauthApi', () => ({
 }));
 
 import { listOAuthGrants, revokeOAuthGrant } from '../../../lib/oauthApi';
+import { ResolvedPrivacyModeProvider } from '../../vault/usePrivacyMode';
 import { AuthorizedAppsPanel } from './AuthorizedAppsPanel';
 
 const NO_GRANTS: OAuthGrantListResponse = { grants: [] };
@@ -47,6 +48,19 @@ beforeEach(() => {
 });
 
 describe('AuthorizedAppsPanel', () => {
+  test('retries a failed grant-list read in place', async () => {
+    vi.mocked(listOAuthGrants)
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce(NO_GRANTS);
+    const user = userEvent.setup();
+    renderPanel();
+
+    await user.click(await screen.findByRole('button', { name: 'Try again' }));
+
+    expect(await screen.findByText(/no authorized apps/i)).toBeInTheDocument();
+    expect(listOAuthGrants).toHaveBeenCalledTimes(2);
+  });
+
   test('lists an authorized app in plain language and revokes it after confirmation', async () => {
     vi.mocked(listOAuthGrants).mockResolvedValue(ONE_GRANT);
     vi.mocked(revokeOAuthGrant).mockResolvedValue(undefined);
@@ -63,5 +77,26 @@ describe('AuthorizedAppsPanel', () => {
     await user.click(screen.getByRole('button', { name: 'Confirm revoke' }));
 
     await waitFor(() => expect(revokeOAuthGrant).toHaveBeenCalledWith(ONE_GRANT.grants[0]!.id));
+  });
+
+  test('marks a scope Paranoid mode refuses instead of hiding it from the grant', async () => {
+    vi.mocked(listOAuthGrants).mockResolvedValue(ONE_GRANT);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 0 } } });
+    render(
+      <QueryClientProvider client={client}>
+        <ResolvedPrivacyModeProvider mode="paranoid">
+          <AuthorizedAppsPanel />
+        </ResolvedPrivacyModeProvider>
+      </QueryClientProvider>,
+    );
+
+    // The grant really carries the scope — it only stops resolving while the
+    // account is paranoid — so dropping the line would understate the access
+    // the user granted, exactly as `ApiKeysPanel` argues for its chips.
+    const grantRow = (await screen.findByText('Charting Buddy can:')).closest('li')!;
+    expect(
+      within(grantRow).getByText(/View your portfolios, holdings, transactions and cash balances/i),
+    ).toBeInTheDocument();
+    expect(within(grantRow).getByText(/inactive in Paranoid mode/i)).toBeInTheDocument();
   });
 });

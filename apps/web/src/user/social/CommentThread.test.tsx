@@ -13,6 +13,7 @@ vi.mock('../../lib/socialApi', () => ({
 
 import type { CommentThreadResponse, ItemComment } from '@bettertrack/contracts';
 
+import { ApiError } from '../../lib/apiClient';
 import {
   deleteComment,
   getCommentThread,
@@ -63,6 +64,14 @@ beforeEach(() => {
 });
 
 describe('CommentThread (§13.5 V5-P8)', () => {
+  test('shows loading instead of a false zero-comment count while the read is pending', () => {
+    vi.mocked(getCommentThread).mockReturnValue(new Promise(() => undefined));
+    renderThread();
+
+    expect(screen.getByRole('button', { name: /loading/i })).toBeDisabled();
+    expect(screen.queryByRole('button', { name: /0 comments/i })).not.toBeInTheDocument();
+  });
+
   test('collapses to a comment count until expanded (anti-bloat)', async () => {
     vi.mocked(getCommentThread).mockResolvedValue(thread({ comments: [oneComment] }));
     renderThread();
@@ -119,8 +128,22 @@ describe('CommentThread (§13.5 V5-P8)', () => {
   });
 
   test('renders nothing when the thread 404s (audience-excluded)', async () => {
-    vi.mocked(getCommentThread).mockRejectedValue(new Error('not found'));
+    vi.mocked(getCommentThread).mockRejectedValue(new ApiError(404, 'NOT_FOUND', 'not found'));
     const { container } = renderThread();
     await waitFor(() => expect(container).toBeEmptyDOMElement());
+  });
+
+  test('keeps transport failures visible and retryable', async () => {
+    vi.mocked(getCommentThread)
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce(thread({ comments: [] }));
+    const user = userEvent.setup();
+    renderThread();
+
+    expect(await screen.findByText(/couldn't load the comments/i)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Try again' }));
+
+    expect(await screen.findByRole('button', { name: /0 comments/i })).toBeInTheDocument();
+    expect(getCommentThread).toHaveBeenCalledTimes(2);
   });
 });

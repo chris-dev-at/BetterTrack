@@ -20,12 +20,18 @@ import { ProfilePanel } from './panels/ProfilePanel';
 import { SessionsPanel } from './panels/SessionsPanel';
 import { SignInPanel } from './panels/SignInPanel';
 import { WebhooksPanel } from './panels/WebhooksPanel';
+import { useResolvedPrivacyMode } from '../vault/usePrivacyMode';
 
 /**
  * The Control Center overlay (R2): the settings-absorbing popup that replaced
  * the old page of links and the standalone `/settings` shell. `/control` and
  * `/control/:panel` render one large modal over the (dimmed) app shell — left
  * pane a filterable, grouped panel nav, right pane the ACTIVE panel.
+ *
+ * It opens on top of the page the user was already on, which stays mounted and
+ * visible behind the scrim (owner: the popup must not blank the canvas). The
+ * shell owns that composition — it renders the page routes against the last
+ * non-popup location and this component beside them ({@link matchControlPanel}).
  *
  * The panels are no longer the old `/settings/*` PAGE components mounted in
  * place: they were built for a full canvas (page-sized title stacks, stacked
@@ -155,6 +161,34 @@ export const CONTROL_GROUPS: readonly ControlGroup[] = [
 ];
 
 /**
+ * `/control/<segment>`s that are NOT panels: real pages that keep their own
+ * canvas. While the popup was a route element a static `/control/data` route
+ * simply outranked the dynamic `:panel`; now that the shell matches the path
+ * itself (see {@link matchControlPanel}), the same precedence lives here.
+ */
+const CONTROL_PAGE_SEGMENTS: ReadonlySet<string> = new Set(['data']);
+
+/**
+ * Does this path open the Control Center popup, and on which panel?
+ *
+ * The shell asks this on every navigation instead of mounting the popup as a
+ * route element: a route element renders *instead of* the page, which left the
+ * canvas behind the popup blank. Matching here lets the shell keep the page the
+ * user was on and put the popup on top of it (see `UserApp`'s `UserShell`).
+ *
+ * Returns `null` for anything that is not the popup — including `/control/data`
+ * and any deeper path — and `{ panel }` otherwise, with `panel` undefined for a
+ * bare `/control` (which opens on the default panel).
+ */
+export function matchControlPanel(pathname: string): { panel: string | undefined } | null {
+  const match = /^\/control(?:\/([^/]+))?\/?$/.exec(pathname);
+  if (match === null) return null;
+  const panel = match[1];
+  if (panel !== undefined && CONTROL_PAGE_SEGMENTS.has(panel)) return null;
+  return { panel };
+}
+
+/**
  * Panel ids this restructure renamed. An unknown id falls back to the DEFAULT
  * panel, which would silently land an old deep link (or an old bookmark) on
  * Account — so retired ids resolve explicitly instead.
@@ -176,10 +210,13 @@ export const CONTROL_LINKS: readonly ControlLink[] = [
 /** Flat lookup; the first entry (Account) is what a bare `/control` opens on. */
 const PANELS: readonly ControlPanel[] = CONTROL_GROUPS.flatMap((group) => group.panels);
 
-function findPanel(id: string | undefined): ControlPanel {
+function findPanel(id: string | undefined, paranoid = false): ControlPanel {
   if (id === undefined) return PANELS[0]!;
   const resolved = PANEL_ALIASES[id] ?? id;
-  return PANELS.find((panel) => panel.id === resolved) ?? PANELS[0]!;
+  return (
+    PANELS.find((panel) => panel.id === resolved && (!paranoid || panel.id !== 'profile')) ??
+    PANELS[0]!
+  );
 }
 
 /** Elements the Tab trap cycles through — the panel itself is the fallback. */
@@ -207,22 +244,39 @@ function matches(t: TranslateFn, labelKey: string, needle: string): boolean {
   return needle === '' || t(labelKey).toLowerCase().includes(needle);
 }
 
-export function ControlCenterOverlay() {
+export interface ControlCenterOverlayProps {
+  /**
+   * Which panel to show. The shell passes it, because the popup is no longer a
+   * route element — it is rendered *beside* the page routes so the page stays on
+   * screen behind it. Falls back to the `:panel` route param, which keeps the
+   * component mountable at a route (its own test suite does exactly that).
+   */
+  panel?: string;
+  /**
+   * Where to land when the popup closes with NO history behind it — a bookmark,
+   * a pasted link, a fresh tab. The shell passes the page it drew behind the
+   * popup, so closing reveals that page instead of jumping somewhere else.
+   */
+  closeTo?: string;
+}
+
+export function ControlCenterOverlay({ panel, closeTo = '/' }: ControlCenterOverlayProps = {}) {
   const t = useT();
   const navigate = useNavigate();
   const params = useParams();
   const titleId = useId();
   const panelRef = useRef<HTMLDivElement>(null);
   const [filter, setFilter] = useState('');
+  const paranoid = useResolvedPrivacyMode() === 'paranoid';
 
-  const active = findPanel(params.panel);
+  const active = findPanel(panel ?? params.panel, paranoid);
 
-  /** Esc / ✕ / scrim: back where the user came from, else the Home canvas. */
+  /** Esc / ✕ / scrim: back where the user came from, else {@link closeTo}. */
   const close = useCallback(() => {
     const idx = (window.history.state as { idx?: number } | null)?.idx ?? 0;
     if (idx > 0) navigate(-1);
-    else navigate('/', { replace: true });
-  }, [navigate]);
+    else navigate(closeTo, { replace: true });
+  }, [closeTo, navigate]);
 
   // Focus into the dialog on open, restore it on close; body scroll is locked
   // while the popup owns the screen (mirrors ODialog's discipline).
@@ -275,9 +329,11 @@ export function ControlCenterOverlay() {
     () =>
       CONTROL_GROUPS.map((group) => ({
         titleKey: group.titleKey,
-        panels: group.panels.filter((panel) => matches(t, panel.labelKey, needle)),
+        panels: group.panels.filter(
+          (panel) => (!paranoid || panel.id !== 'profile') && matches(t, panel.labelKey, needle),
+        ),
       })).filter((group) => group.panels.length > 0),
-    [needle, t],
+    [needle, paranoid, t],
   );
   const links = CONTROL_LINKS.filter((link) => matches(t, link.labelKey, needle));
   const empty = groups.length === 0 && links.length === 0;

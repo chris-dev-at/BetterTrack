@@ -1,13 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useMutation } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 
 import type { PortfolioSummary } from '@bettertrack/contracts';
 
 import { useT } from '../../../i18n';
 import { ApiError } from '../../../lib/apiClient';
-import { createPortfolio } from '../../../lib/portfolioApi';
 import { Button, ODialog } from '../../../ui/origin';
 import { DEFAULT_PORTFOLIO_KIND, setPortfolioKind } from '../portfolioKinds';
+import { usePortfolioStore } from '../PortfolioStoreProvider';
 import { PORTFOLIO_WIZARD_STEPS } from './steps';
 import type { PortfolioDraft, PortfolioWizardStepReport } from './types';
 
@@ -37,10 +37,12 @@ import type { PortfolioDraft, PortfolioWizardStepReport } from './types';
  * dialogs, unchanged, through `onSharedBook` — see `PortfolioSwitcher`.
  */
 export function PortfolioWizard({
+  allowShared = true,
   onClose,
   onCreated,
   onSharedBook,
 }: {
+  allowShared?: boolean;
   onClose: () => void;
   /** A plain portfolio was created and the user is done: activate it. */
   onCreated: (portfolio: PortfolioSummary) => void;
@@ -51,6 +53,7 @@ export function PortfolioWizard({
   onSharedBook: (name: string) => void;
 }) {
   const t = useT();
+  const store = usePortfolioStore();
   const [index, setIndex] = useState(0);
   const [draft, setDraft] = useState<PortfolioDraft>({
     name: '',
@@ -60,13 +63,17 @@ export function PortfolioWizard({
   const [reported, setReported] = useState<PortfolioWizardStepReport>({ ready: false });
   const [created, setCreated] = useState<PortfolioSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
   const bodyRef = useRef<HTMLDivElement>(null);
   const formRef = useRef<HTMLFormElement>(null);
   /** Synchronous once-only latch for the POST — see the note above. */
   const creatingRef = useRef(false);
 
-  const step = PORTFOLIO_WIZARD_STEPS[index];
-  const total = PORTFOLIO_WIZARD_STEPS.length;
+  const steps = allowShared
+    ? PORTFOLIO_WIZARD_STEPS
+    : PORTFOLIO_WIZARD_STEPS.filter((entry) => entry.id !== 'book');
+  const step = steps[index];
+  const total = steps.length;
 
   // Stable identities: steps list both in effect deps (see types.ts).
   const patch = useCallback(
@@ -81,13 +88,20 @@ export function PortfolioWizard({
    */
   const commit = useMutation({
     mutationFn: async (): Promise<PortfolioSummary> => {
-      const portfolio = await createPortfolio(draft.name.trim());
+      const portfolio = await store.createPortfolio(draft.name.trim());
       setPortfolioKind(portfolio.id, draft.kind);
       return portfolio;
     },
     onSuccess: (portfolio) => {
       setError(null);
       setCreated(portfolio);
+      // The portfolio EXISTS now, so every list of portfolios is stale from this
+      // moment — not from whenever the user happens to finish the wizard. It used
+      // to be refreshed only by `onCreated`, which fires solely on the terminal
+      // step's Continue: closing the wizard any other way left the switcher
+      // showing a list without the portfolio you had just made, until a manual
+      // reload (owner, 2026-07-31).
+      void queryClient.invalidateQueries({ queryKey: ['portfolios'] });
       goTo(index + 1);
     },
     onError: (err) => {
@@ -103,6 +117,17 @@ export function PortfolioWizard({
       goTo(0);
     },
   });
+
+  /**
+   * Dismissing the wizard is not the same as abandoning the portfolio. If one was
+   * created, report it on the way out — otherwise pressing Escape on the final
+   * step left the user looking at their OLD portfolio with the new one nowhere
+   * in the switcher.
+   */
+  const handleClose = useCallback(() => {
+    if (created) onCreated(created);
+    onClose();
+  }, [created, onClose, onCreated]);
 
   function goTo(nextIndex: number) {
     setReported({ ready: false });
@@ -122,6 +147,12 @@ export function PortfolioWizard({
         onSharedBook(draft.name.trim());
         return;
       }
+      if (creatingRef.current || created !== null) return;
+      creatingRef.current = true;
+      commit.mutate();
+      return;
+    }
+    if (!allowShared && step.id === 'icon') {
       if (creatingRef.current || created !== null) return;
       creatingRef.current = true;
       commit.mutate();
@@ -174,7 +205,7 @@ export function PortfolioWizard({
   const busy = commit.isPending || Boolean(reported.busy);
 
   return (
-    <ODialog onClose={onClose} open size="wizard" title={t('portfolio.wizard.title')}>
+    <ODialog onClose={handleClose} open size="wizard" title={t('portfolio.wizard.title')}>
       <form
         className="bt-pfw"
         onSubmit={(event) => {
@@ -185,7 +216,7 @@ export function PortfolioWizard({
       >
         <div className="bt-pfw__stepper">
           <div aria-hidden="true" className="bt-pfw__dots">
-            {PORTFOLIO_WIZARD_STEPS.map((entry, position) => (
+            {steps.map((entry, position) => (
               <span
                 className="bt-pfw__dot"
                 data-state={position === index ? 'current' : position < index ? 'done' : 'upcoming'}

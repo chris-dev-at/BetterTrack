@@ -15,7 +15,11 @@ vi.mock('./user/UserApp', () => ({ UserApp: () => <div>USER_APP_MOUNTED</div> })
 import App from './App';
 
 function setRuntimeApp(app: 'user' | 'admin') {
-  vi.mocked(getRuntimeConfig).mockReturnValue({ app, apiOrigin: '' });
+  vi.mocked(getRuntimeConfig).mockReturnValue({
+    app,
+    apiOrigin: '',
+    productOrigin: 'https://bettertrack.at',
+  });
 }
 
 /** App uses a BrowserRouter, which reads window.location — drive it via history. */

@@ -72,7 +72,7 @@ export function MoneyText({
     <span className={cx('tabular-nums', colorClass, className)}>
       {display}
       {showConverted ? (
-        <span className="ml-1 text-neutral-500">({format(convertedAmount, base)})</span>
+        <span className="bt-muted ml-1">({format(convertedAmount, base)})</span>
       ) : null}
     </span>
   );

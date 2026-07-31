@@ -250,3 +250,49 @@ describe('worker entry registers the durable notification consumer + bridge (gua
     );
   });
 });
+
+describe('live legal pages consume the canonical landing tree (#984)', () => {
+  const updater = read('infra/live/updater.sh');
+  const liveEdge = read('infra/live/edge/bt-live-edge.conf');
+  const productBlock = liveEdge.slice(
+    liveEdge.indexOf('# ── Product page'),
+    liveEdge.indexOf('# ── Mobile placeholder'),
+  );
+
+  it('copies the four legal directories plus every remaining live overlay directory', () => {
+    expect(updater).toContain('_landing_src="$APP/apps/landing/site"');
+    expect(updater).toContain('for _name in terms privacy impressum cookies; do');
+    expect(updater).toContain('cp -R "$_dir" "${_dst}/"');
+    expect(updater).toContain('_overlay_src="$APP/infra/live/edge/html/product"');
+    expect(updater).toContain('for _dir in "$_overlay_src"/*/; do');
+    expect(updater).toContain('cp -R "${_overlay_src}/${_name}" "${_dst}/"');
+    expect(read('infra/live/edge/html/product/404/index.html')).toContain(
+      '<title>Page not found — BetterTrack</title>',
+    );
+  });
+
+  it('publishes every root script loaded by the legal documents without copying the landing root', () => {
+    expect(updater).toContain('for _name in env.js landing.js; do');
+    expect(updater).toContain('_file="${_landing_src}/${_name}"');
+    expect(updater).toContain('cp "$_file" "${_dst}/${_name}"');
+    expect(updater).not.toContain('cp -R "$_landing_src"');
+
+    for (const page of ['terms', 'privacy', 'impressum', 'cookies']) {
+      for (const localePath of ['index.html', 'de/index.html']) {
+        const document = read(`apps/landing/site/${page}/${localePath}`);
+        expect(document).toContain('<script src="/env.js"></script>');
+        expect(document).toContain('<script src="/landing.js"></script>');
+      }
+    }
+  });
+
+  it('keeps the live edge directory-route contract unchanged', () => {
+    expect(productBlock).toContain('root /usr/share/nginx/bt-live/product;');
+    expect(productBlock).toContain('index index.html;');
+    expect(productBlock).toContain('try_files $uri $uri/ =404;');
+    for (const page of ['terms', 'privacy', 'impressum', 'cookies']) {
+      expect(productBlock).toContain(`/${page}/`);
+      expect(productBlock).toContain(`/${page}/de/`);
+    }
+  });
+});

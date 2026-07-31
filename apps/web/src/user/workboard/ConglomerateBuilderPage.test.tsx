@@ -193,6 +193,25 @@ describe('ConglomerateBuilderPage', () => {
     );
   });
 
+  test('retries the nested-blueprint read instead of presenting a false empty list', async () => {
+    vi.mocked(listConglomerates)
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce({ conglomerates: [summary('c2', 'Tech Mix')] });
+    await renderEdit([{ id: 'a1', symbol: 'AAPL', weightPct: 60 }]);
+    const user = userEvent.setup();
+
+    await user.click(screen.getByText('Nest a blueprint'));
+    expect(await screen.findByText('Your blueprints could not be loaded.')).toBeInTheDocument();
+    expect(screen.queryByText('No other blueprints to nest yet.')).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Try again' }));
+
+    expect(
+      await screen.findByRole('button', { name: 'Add Tech Mix as a constituent' }),
+    ).toBeInTheDocument();
+    expect(listConglomerates).toHaveBeenCalledTimes(2);
+  });
+
   test('the slider and number input stay in sync', async () => {
     await renderEdit([{ id: 'a1', symbol: 'AAPL', weightPct: 20 }]);
     const numberInput = screen.getByLabelText('Weight for AAPL');

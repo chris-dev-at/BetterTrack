@@ -6,22 +6,15 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
-import type {
-  ParanoidMediaStateResponse,
-  PortfolioAsset,
-  TaxYearReportResponse,
-  TaxYearSummary,
-} from '@bettertrack/contracts';
+import type { PortfolioAsset, TaxYearReportResponse, TaxYearSummary } from '@bettertrack/contracts';
 
 vi.mock('../../lib/portfolioApi');
-vi.mock('../../lib/userApi');
 vi.mock('../vault/export/deliver', () => ({
   deliverClientDownload: vi.fn(),
   printClientDocument: vi.fn(),
 }));
 
 import * as portfolioApi from '../../lib/portfolioApi';
-import * as userApi from '../../lib/userApi';
 import {
   createClientMoneyMarket,
   createMutableTestSync,
@@ -30,6 +23,8 @@ import {
 } from '../vault/engine/clientMoney.testSupport';
 import { VaultMoneyEngineProvider } from '../vault/engine/VaultMoneyEngineProvider';
 import { deliverClientDownload, printClientDocument } from '../vault/export/deliver';
+import { ResolvedPrivacyModeProvider } from '../vault/usePrivacyMode';
+import { createVaultPortfolioStore, VaultPortfolioStoreError } from '../vault/vaultPortfolioStore';
 import { TaxReportPage } from './TaxReportPage';
 
 // This portfolio's effective tax view (issue #636): the report reads the mode
@@ -76,32 +71,21 @@ const APPLE: PortfolioAsset = {
   isCustom: false,
 };
 
-function renderPage() {
+function renderPage(mode: 'normal' | 'paranoid' = 'normal') {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={client}>
       <MemoryRouter>
-        <TaxReportPage />
+        <ResolvedPrivacyModeProvider mode={mode}>
+          <TaxReportPage />
+        </ResolvedPrivacyModeProvider>
       </MemoryRouter>
     </QueryClientProvider>,
   );
 }
 
-const PARANOID_MEDIA: ParanoidMediaStateResponse = {
-  privacyMode: 'paranoid',
-  mediaState: {
-    mediaSet: ['server'],
-    driveAttestedVersion: null,
-    server: { disposition: 'active', candidate: null, retired: null },
-  },
-};
-
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.mocked(userApi.getParanoidMediaState).mockResolvedValue({
-    privacyMode: 'normal',
-    mediaState: null,
-  });
   vi.mocked(portfolioApi.listPortfolios).mockResolvedValue(PORTFOLIO_LIST);
   vi.mocked(portfolioApi.getPortfolioTaxSettings).mockResolvedValue(AT_TAX_VIEW);
   vi.mocked(portfolioApi.getTaxYearReports).mockResolvedValue({ years: [YEAR_2026] });
@@ -149,6 +133,34 @@ describe('TaxReportPage', () => {
     expect(
       screen.getAllByText(/Estimates for your personal overview only/i).length,
     ).toBeGreaterThanOrEqual(2);
+  });
+
+  test('retries a failed lazy year-detail read', async () => {
+    vi.mocked(portfolioApi.getTaxYearReport)
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce({
+        year: 2026,
+        summary: YEAR_2026,
+        positions: [
+          {
+            asset: APPLE,
+            realizedPnlEur: 350,
+            dividendsGrossEur: 0,
+            taxEur: 96.25,
+            sells: [],
+            dividends: [],
+          },
+        ],
+      });
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole('button', { name: /Show 2026 details/i }));
+    const message = await screen.findByText(/Couldn’t load that year’s details/i);
+    await user.click(within(message.parentElement!).getByRole('button', { name: 'Try again' }));
+
+    expect(await screen.findByText('AAPL')).toBeInTheDocument();
+    expect(portfolioApi.getTaxYearReport).toHaveBeenCalledTimes(2);
   });
 
   test('a past year shows the "Passed" status (not "Locked")', async () => {
@@ -240,22 +252,37 @@ describe('TaxReportPage', () => {
   });
 
   test('load failure shows the error state', async () => {
-    vi.mocked(portfolioApi.getTaxYearReports).mockRejectedValue(new Error('boom'));
+    vi.mocked(portfolioApi.getTaxYearReports)
+      .mockRejectedValueOnce(new Error('boom'))
+      .mockResolvedValueOnce({ years: [YEAR_2026] });
+    const user = userEvent.setup();
     renderPage();
     expect(await screen.findByText(/Couldn’t load your tax report/i)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Try again' }));
+    expect(await screen.findByText('2026')).toBeInTheDocument();
+    expect(portfolioApi.getTaxYearReports).toHaveBeenCalledTimes(2);
   });
 
   test('a failing portfolio list shows the error state instead of an eternal skeleton', async () => {
-    vi.mocked(portfolioApi.listPortfolios).mockRejectedValue(new Error('boom'));
+    vi.mocked(portfolioApi.listPortfolios)
+      .mockRejectedValueOnce(new Error('boom'))
+      .mockResolvedValueOnce(PORTFOLIO_LIST);
+    const user = userEvent.setup();
     renderPage();
     expect(await screen.findByText(/Couldn’t load your tax report/i)).toBeInTheDocument();
     expect(portfolioApi.getTaxYearReports).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: 'Try again' }));
+    expect(await screen.findByText('2026')).toBeInTheDocument();
+    expect(portfolioApi.listPortfolios).toHaveBeenCalledTimes(2);
   });
 
   test('a failing tax-settings query shows the error state, not the "tax tracking off" state', async () => {
     // On a settings failure `mode` falls back to 'none'; the error must win over
     // the disabled gate so the user is not wrongly told tax is simply off.
-    vi.mocked(portfolioApi.getPortfolioTaxSettings).mockRejectedValue(new Error('boom'));
+    vi.mocked(portfolioApi.getPortfolioTaxSettings)
+      .mockRejectedValueOnce(new Error('boom'))
+      .mockResolvedValueOnce(AT_TAX_VIEW);
+    const user = userEvent.setup();
     renderPage();
 
     expect(await screen.findByText(/Couldn’t load your tax report/i)).toBeInTheDocument();
@@ -263,6 +290,9 @@ describe('TaxReportPage', () => {
     // …and the mode line claims nothing it could not resolve.
     expect(screen.queryByText(/Computed with tax mode/i)).not.toBeInTheDocument();
     expect(portfolioApi.getTaxYearReports).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: 'Try again' }));
+    expect(await screen.findByText(/Computed with tax mode: Austria/i)).toBeInTheDocument();
+    expect(portfolioApi.getPortfolioTaxSettings).toHaveBeenCalledTimes(2);
   });
 
   test('no portfolios at all shows the empty state instead of an eternal skeleton', async () => {
@@ -292,6 +322,8 @@ describe('TaxReportPage', () => {
               realizedPnlEur: 0, // …so realized is 0, NEVER a phantom 500 gain
               taxMode: 'country_specific',
               taxAmountEur: 0,
+              taxCountry: 'AT',
+              taxParams: null,
             },
           ],
           dividends: [],
@@ -431,7 +463,6 @@ describe('TaxReportPage', () => {
 describe('TaxReportPage — paranoid mode (PD7)', () => {
   beforeEach(() => {
     Object.defineProperty(globalThis, 'crypto', { configurable: true, value: webcrypto });
-    vi.mocked(userApi.getParanoidMediaState).mockResolvedValue(PARANOID_MEDIA);
   });
 
   async function renderParanoidUnlocked() {
@@ -442,11 +473,13 @@ describe('TaxReportPage — paranoid mode (PD7)', () => {
     render(
       <QueryClientProvider client={client}>
         <MemoryRouter>
-          <VaultMoneyEngineProvider
-            dependencies={{ sync, market: createClientMoneyMarket().market }}
-          >
-            <TaxReportPage />
-          </VaultMoneyEngineProvider>
+          <ResolvedPrivacyModeProvider mode="paranoid">
+            <VaultMoneyEngineProvider
+              dependencies={{ sync, market: createClientMoneyMarket().market }}
+            >
+              <TaxReportPage />
+            </VaultMoneyEngineProvider>
+          </ResolvedPrivacyModeProvider>
         </MemoryRouter>
       </QueryClientProvider>,
     );
@@ -462,6 +495,51 @@ describe('TaxReportPage — paranoid mode (PD7)', () => {
     expect(portfolioApi.getPortfolioTaxSettings).not.toHaveBeenCalled();
     expect(portfolioApi.getTaxYearReports).not.toHaveBeenCalled();
     expect(portfolioApi.getTaxYearReport).not.toHaveBeenCalled();
+  });
+
+  test('retries a retryable encrypted portfolio-list failure', async () => {
+    const fixture = await decryptClientMoneyFixture();
+    const document = withTaxSettings(fixture.document, 'country_specific', 'AT', null);
+    const sync = createMutableTestSync(document, fixture.header, fixture.envelope);
+    const market = createClientMoneyMarket().market;
+    let listAttempts = 0;
+    const createStore: typeof createVaultPortfolioStore = (engine, options) => {
+      const store = createVaultPortfolioStore(engine, options);
+      return {
+        ...store,
+        async listPortfolios(signal?: AbortSignal, includeArchived?: boolean) {
+          listAttempts += 1;
+          if (listAttempts === 1) {
+            throw new VaultPortfolioStoreError(
+              'VAULT_DATA_UNAVAILABLE',
+              'The encrypted portfolio list is temporarily unavailable.',
+            );
+          }
+          return store.listPortfolios(signal, includeArchived);
+        },
+      };
+    };
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const user = userEvent.setup();
+    render(
+      <QueryClientProvider client={client}>
+        <MemoryRouter>
+          <ResolvedPrivacyModeProvider mode="paranoid">
+            <VaultMoneyEngineProvider dependencies={{ sync, market, createStore }}>
+              <TaxReportPage />
+            </VaultMoneyEngineProvider>
+          </ResolvedPrivacyModeProvider>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByText(/Couldn’t load your tax report/i)).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Try again' }));
+
+    expect(await screen.findByRole('button', { name: /Show 2026 details/i })).toBeInTheDocument();
+    expect(listAttempts).toBe(2);
+    expect(portfolioApi.listPortfolios).not.toHaveBeenCalled();
+    expect(portfolioApi.getTaxYearReports).not.toHaveBeenCalled();
   });
 
   test('client CSV and printable document come from the same derived in-memory report', async () => {
@@ -517,7 +595,9 @@ describe('TaxReportPage — paranoid mode (PD7)', () => {
     render(
       <QueryClientProvider client={client}>
         <MemoryRouter>
-          <TaxReportPage />
+          <ResolvedPrivacyModeProvider mode="paranoid">
+            <TaxReportPage />
+          </ResolvedPrivacyModeProvider>
         </MemoryRouter>
       </QueryClientProvider>,
     );
@@ -529,32 +609,23 @@ describe('TaxReportPage — paranoid mode (PD7)', () => {
 
   // Regression: a cached ['portfolios'] entry (from an earlier normal-mode
   // session on this client) must not resolve an active id and start the tax
-  // settings/report reads while privacy is still pending or paranoid.
+  // settings/report reads after the account gate has resolved paranoid.
   test('pre-seeded portfolio and tax-settings caches never start server tax reads', async () => {
-    let resolvePrivacy!: (value: ParanoidMediaStateResponse) => void;
-    vi.mocked(userApi.getParanoidMediaState).mockImplementation(
-      () =>
-        new Promise<ParanoidMediaStateResponse>((resolve) => {
-          resolvePrivacy = resolve;
-        }),
-    );
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     client.setQueryData(['portfolios'], PORTFOLIO_LIST);
     client.setQueryData(['portfolio', 'taxSettings', 'p1'], AT_TAX_VIEW);
     render(
       <QueryClientProvider client={client}>
         <MemoryRouter>
-          <TaxReportPage />
+          <ResolvedPrivacyModeProvider mode="paranoid">
+            <TaxReportPage />
+          </ResolvedPrivacyModeProvider>
         </MemoryRouter>
       </QueryClientProvider>,
     );
 
-    // While privacy is unresolved, the seeded caches alone start nothing.
-    await waitFor(() => expect(userApi.getParanoidMediaState).toHaveBeenCalled());
     expect(portfolioApi.getPortfolioTaxSettings).not.toHaveBeenCalled();
     expect(portfolioApi.getTaxYearReports).not.toHaveBeenCalled();
-
-    resolvePrivacy(PARANOID_MEDIA);
 
     expect(await screen.findByText('Unlock your vault')).toBeInTheDocument();
     expect(portfolioApi.listPortfolios).not.toHaveBeenCalled();

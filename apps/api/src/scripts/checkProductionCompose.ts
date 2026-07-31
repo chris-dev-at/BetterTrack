@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { PRODUCTION_SUPPORTED_ENV_KEYS } from '../config/env';
 
@@ -13,21 +13,37 @@ interface ComposeInvocation {
   prefix: string[];
 }
 
+interface ProductionTopology {
+  label: string;
+  mode: DeploymentMode;
+  overlays: string[];
+  profiles?: string[];
+  interpolationEnvironment?: Record<string, string>;
+  webPortTargets: number[];
+}
+
 interface RenderedPort {
   target?: number | string;
 }
 
+interface RenderedLogging {
+  driver?: unknown;
+  options?: Record<string, unknown>;
+}
+
 interface RenderedService {
   environment?: Record<string, unknown>;
+  logging?: RenderedLogging;
   ports?: RenderedPort[];
 }
 
-interface RenderedCompose {
+export interface RenderedCompose {
   services?: Record<string, RenderedService>;
 }
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
 const baseCompose = resolve(repoRoot, 'infra/docker-compose.yml');
+const offsiteCompose = resolve(repoRoot, 'infra/docker-compose.offsite.yml');
 const productionExample = resolve(repoRoot, 'infra/.env.production.example');
 const expectedEnvironmentKeys: string[] = [...PRODUCTION_SUPPORTED_ENV_KEYS].sort();
 const productionExampleKeys = readFileSync(productionExample, 'utf8')
@@ -35,19 +51,42 @@ const productionExampleKeys = readFileSync(productionExample, 'utf8')
   .map((line) => /^([A-Z][A-Z0-9_]*)=/.exec(line)?.[1])
   .filter((key): key is string => key !== undefined);
 
-const topologies: ReadonlyArray<{
-  mode: DeploymentMode;
-  overlay: string;
-  webPortTargets: number[];
-}> = [
+const offsiteInterpolationEnvironment = {
+  BT_BACKUP_AGE_RECIPIENT_HOST_FILE: '/tmp/bettertrack-compose-check-age-recipient',
+  BT_BACKUP_RCLONE_CONFIG_HOST_FILE: '/tmp/bettertrack-compose-check-rclone.conf',
+  BT_BACKUP_RCLONE_REMOTE: 'check:bettertrack-backups',
+  BT_BACKUP_RETENTION_RCLONE_CONFIG_HOST_FILE:
+    '/tmp/bettertrack-compose-check-retention-rclone.conf',
+  BT_BACKUP_RETENTION_RCLONE_REMOTE: 'check-retention:bettertrack-backups',
+};
+
+const topologies: ReadonlyArray<ProductionTopology> = [
   {
+    label: 'subdomains',
     mode: 'subdomains',
-    overlay: resolve(repoRoot, 'infra/docker-compose.subdomains.yml'),
+    overlays: [resolve(repoRoot, 'infra/docker-compose.subdomains.yml')],
     webPortTargets: [80],
   },
   {
+    label: 'subdomains+offsite',
+    mode: 'subdomains',
+    overlays: [resolve(repoRoot, 'infra/docker-compose.subdomains.yml'), offsiteCompose],
+    profiles: ['offsite', 'offsite-retention'],
+    interpolationEnvironment: offsiteInterpolationEnvironment,
+    webPortTargets: [80],
+  },
+  {
+    label: 'ports',
     mode: 'ports',
-    overlay: resolve(repoRoot, 'infra/docker-compose.ports.yml'),
+    overlays: [resolve(repoRoot, 'infra/docker-compose.ports.yml')],
+    webPortTargets: [3000, 8080, 8081, 8082, 8083],
+  },
+  {
+    label: 'ports+offsite',
+    mode: 'ports',
+    overlays: [resolve(repoRoot, 'infra/docker-compose.ports.yml'), offsiteCompose],
+    profiles: ['offsite', 'offsite-retention'],
+    interpolationEnvironment: offsiteInterpolationEnvironment,
     webPortTargets: [3000, 8080, 8081, 8082, 8083],
   },
 ];
@@ -69,14 +108,14 @@ function findCompose(): ComposeInvocation {
   throw new Error('Docker Compose v2 is required to render the production deployment contract');
 }
 
-function renderTopology(
-  compose: ComposeInvocation,
-  mode: DeploymentMode,
-  overlay: string,
-): RenderedCompose {
+function renderTopology(compose: ComposeInvocation, topology: ProductionTopology): RenderedCompose {
   const interpolationEnvironment = { ...process.env };
   for (const key of productionExampleKeys) delete interpolationEnvironment[key];
-  interpolationEnvironment.BT_MODE = mode;
+  interpolationEnvironment.BT_MODE = topology.mode;
+  Object.assign(interpolationEnvironment, topology.interpolationEnvironment);
+
+  const composeFiles = [baseCompose, ...topology.overlays].flatMap((file) => ['-f', file]);
+  const profiles = (topology.profiles ?? []).flatMap((profile) => ['--profile', profile]);
 
   const result = spawnSync(
     compose.executable,
@@ -84,10 +123,8 @@ function renderTopology(
       ...compose.prefix,
       '--env-file',
       productionExample,
-      '-f',
-      baseCompose,
-      '-f',
-      overlay,
+      ...composeFiles,
+      ...profiles,
       'config',
       '--format',
       'json',
@@ -103,39 +140,35 @@ function renderTopology(
   if (result.error) throw result.error;
   if (result.status !== 0) {
     throw new Error(
-      `docker compose config failed for ${mode} (exit ${result.status ?? 'unknown'}):\n${result.stderr.trim()}`,
+      `docker compose config failed for ${topology.label} (exit ${result.status ?? 'unknown'}):\n${result.stderr.trim()}`,
     );
   }
 
   try {
     return JSON.parse(result.stdout) as RenderedCompose;
   } catch (error) {
-    throw new Error(`docker compose returned invalid JSON for ${mode}`, { cause: error });
+    throw new Error(`docker compose returned invalid JSON for ${topology.label}`, { cause: error });
   }
 }
 
-function renderedService(
-  config: RenderedCompose,
-  mode: DeploymentMode,
-  name: string,
-): RenderedService {
+function renderedService(config: RenderedCompose, topology: string, name: string): RenderedService {
   const service = config.services?.[name];
-  assert(service, `${mode}: rendered service "${name}" is missing`);
+  assert(service, `${topology}: rendered service "${name}" is missing`);
   return service;
 }
 
 function renderedEnvironment(
   config: RenderedCompose,
-  mode: DeploymentMode,
+  topology: string,
   serviceName: string,
 ): Record<string, string> {
-  const environment = renderedService(config, mode, serviceName).environment;
-  assert(environment, `${mode}: rendered service "${serviceName}" has no environment`);
+  const environment = renderedService(config, topology, serviceName).environment;
+  assert(environment, `${topology}: rendered service "${serviceName}" has no environment`);
 
   const normalized: Record<string, string> = {};
   for (const [key, value] of Object.entries(environment)) {
     if (typeof value !== 'string') {
-      throw new TypeError(`${mode}: ${serviceName}.${key} is not a string`);
+      throw new TypeError(`${topology}: ${serviceName}.${key} is not a string`);
     }
     normalized[key] = value;
   }
@@ -143,7 +176,7 @@ function renderedEnvironment(
 }
 
 function assertExactEnvironmentKeys(
-  mode: DeploymentMode,
+  topology: string,
   serviceName: string,
   environment: Record<string, string>,
 ): void {
@@ -153,48 +186,87 @@ function assertExactEnvironmentKeys(
   assert.equal(
     missing.length + extra.length,
     0,
-    `${mode}: ${serviceName} environment contract drift (missing: ${missing.join(', ') || 'none'}; extra: ${extra.join(', ') || 'none'})`,
+    `${topology}: ${serviceName} environment contract drift (missing: ${missing.join(', ') || 'none'}; extra: ${extra.join(', ') || 'none'})`,
   );
 }
 
-function webPortTargets(config: RenderedCompose, mode: DeploymentMode): number[] {
-  const ports = renderedService(config, mode, 'web').ports;
-  assert(ports, `${mode}: rendered web service has no published ports`);
+function webPortTargets(config: RenderedCompose, topology: string): number[] {
+  const ports = renderedService(config, topology, 'web').ports;
+  assert(ports, `${topology}: rendered web service has no published ports`);
   return ports.map((port) => Number(port.target)).sort((left, right) => left - right);
 }
 
-function validateTopology(
-  config: RenderedCompose,
-  mode: DeploymentMode,
-  expectedWebPortTargets: number[],
-): void {
-  const apiEnvironment = renderedEnvironment(config, mode, 'api');
-  const workerEnvironment = renderedEnvironment(config, mode, 'worker');
+export function assertServiceLoggingLimits(config: RenderedCompose, topology: string): void {
+  const services = config.services;
+  assert(services, `${topology}: rendered Compose config has no services`);
 
-  assertExactEnvironmentKeys(mode, 'api', apiEnvironment);
-  assertExactEnvironmentKeys(mode, 'worker', workerEnvironment);
+  const entries = Object.entries(services);
+  assert(entries.length > 0, `${topology}: rendered Compose config has no services`);
+
+  for (const [serviceName, service] of entries) {
+    const logging = service.logging;
+    assert.equal(
+      logging?.driver,
+      'local',
+      `${topology}: rendered service "${serviceName}" must use the bounded local log driver`,
+    );
+
+    const maxSize = String(logging.options?.['max-size'] ?? '');
+    const maxFile = String(logging.options?.['max-file'] ?? '');
+    assert.match(
+      maxSize,
+      /^[1-9]\d*[kmg]$/i,
+      `${topology}: rendered service "${serviceName}" must set a positive logging max-size`,
+    );
+    assert.match(
+      maxFile,
+      /^[1-9]\d*$/,
+      `${topology}: rendered service "${serviceName}" must set a positive logging max-file`,
+    );
+  }
+}
+
+function validateTopology(config: RenderedCompose, topology: ProductionTopology): void {
+  assertServiceLoggingLimits(config, topology.label);
+
+  const apiEnvironment = renderedEnvironment(config, topology.label, 'api');
+  const workerEnvironment = renderedEnvironment(config, topology.label, 'worker');
+
+  assertExactEnvironmentKeys(topology.label, 'api', apiEnvironment);
+  assertExactEnvironmentKeys(topology.label, 'worker', workerEnvironment);
   for (const key of expectedEnvironmentKeys) {
     assert.equal(
       apiEnvironment[key],
       workerEnvironment[key],
-      `${mode}: API and worker render different values for ${key}`,
+      `${topology.label}: API and worker render different values for ${key}`,
     );
   }
 
-  assert.equal(apiEnvironment.BT_MODE, mode, `${mode}: BT_MODE interpolation drifted`);
+  assert.equal(
+    apiEnvironment.BT_MODE,
+    topology.mode,
+    `${topology.label}: BT_MODE interpolation drifted`,
+  );
   assert.deepEqual(
-    webPortTargets(config, mode),
-    [...expectedWebPortTargets].sort((left, right) => left - right),
-    `${mode}: topology overlay published the wrong web ports`,
+    webPortTargets(config, topology.label),
+    [...topology.webPortTargets].sort((left, right) => left - right),
+    `${topology.label}: topology overlay published the wrong web ports`,
   );
 }
 
-const compose = findCompose();
-for (const topology of topologies) {
-  const rendered = renderTopology(compose, topology.mode, topology.overlay);
-  validateTopology(rendered, topology.mode, topology.webPortTargets);
-  process.stdout.write(
-    `Validated ${topology.mode} production Compose render: ` +
-      `${expectedEnvironmentKeys.length} identical API/worker variables.\n`,
-  );
+export function runProductionComposeCheck(): void {
+  const compose = findCompose();
+  for (const topology of topologies) {
+    const rendered = renderTopology(compose, topology);
+    validateTopology(rendered, topology);
+    process.stdout.write(
+      `Validated ${topology.label} production Compose render: ` +
+        `${Object.keys(rendered.services ?? {}).length} services with bounded logs; ` +
+        `${expectedEnvironmentKeys.length} identical API/worker variables.\n`,
+    );
+  }
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  runProductionComposeCheck();
 }

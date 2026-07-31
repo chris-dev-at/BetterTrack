@@ -120,7 +120,7 @@ export function MirrorAvatarStack({
       </span>
       <span className="flex flex-col leading-tight">
         <span className="font-medium text-neutral-100">{badge.chainName}</span>
-        <span className="text-xs text-neutral-500">
+        <span className="text-xs text-neutral-400">
           {badge.sync.synced
             ? t('mirrorchain.avatarStack.membersCount', { count: badge.memberCount })
             : t('mirrorchain.avatarStack.syncing', { percent: badge.sync.percent })}
@@ -141,7 +141,7 @@ export function MirrorAvatarStack({
 export function MirrorForkProvenanceLine({ fork }: { fork: PortfolioForkProvenance }) {
   const t = useT();
   return (
-    <p className="text-xs text-neutral-500">
+    <p className="text-xs text-neutral-400">
       {t('mirrorchain.fork.provenance', {
         chain: fork.chainName,
         date: formatDate(fork.endedAt),
@@ -213,7 +213,7 @@ export function MemberSheet({ chainId, onClose }: { chainId: string; onClose: ()
         onClose={onClose}
         widthClassName="max-w-2xl"
       >
-        <p className="text-sm text-neutral-500">{t('common.loading')}</p>
+        <p className="text-sm text-neutral-400">{t('common.loading')}</p>
       </Dialog>
     );
   }
@@ -243,7 +243,7 @@ export function MemberSheet({ chainId, onClose }: { chainId: string; onClose: ()
     >
       <div className="flex flex-col gap-6">
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="text-xs text-neutral-500">
+          <div className="text-xs text-neutral-400">
             {t('mirrorchain.memberSheet.roster', {
               count: data.members.length,
               max: data.memberCap,
@@ -279,7 +279,13 @@ export function MemberSheet({ chainId, onClose }: { chainId: string; onClose: ()
           </div>
         </div>
 
-        <ul className="divide-y divide-neutral-800 rounded-md border border-neutral-800">
+        {/* Named, like every other list in this sheet: three unlabelled lists in
+            one dialog are indistinguishable to a screen reader, and the member
+            rows and the activity feed both mention the same usernames. */}
+        <ul
+          aria-label={t('mirrorchain.membersListAria')}
+          className="divide-y divide-neutral-800 rounded-md border border-neutral-800"
+        >
           {data.members.map((member) => (
             <MemberRow
               key={member.userId ?? member.username}
@@ -369,12 +375,12 @@ function MemberRow({
           <span className="text-sm font-medium text-neutral-100">
             {member.username}
             {member.isSelf ? (
-              <span className="ml-2 text-xs text-neutral-500">
+              <span className="ml-2 text-xs text-neutral-400">
                 ({t('mirrorchain.memberRow.you')})
               </span>
             ) : null}
           </span>
-          <span className="text-xs text-neutral-500">
+          <span className="text-xs text-neutral-400">
             {t(`mirrorchain.role.${member.role}`)} ·{' '}
             {t('mirrorchain.memberRow.joined', {
               date: formatDate(member.joinedAt),
@@ -424,24 +430,27 @@ function ActivitySection({
   const t = useT();
   return (
     <section className="flex flex-col gap-2">
-      <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-500">
+      <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-400">
         {t('mirrorchain.activity.title')}
       </h3>
       {query.isLoading ? (
-        <p className="text-sm text-neutral-500">{t('common.loading')}</p>
+        <p className="text-sm text-neutral-400">{t('common.loading')}</p>
       ) : query.isError || !query.data ? (
         <Alert tone="error">{t('mirrorchain.activity.loadError')}</Alert>
       ) : query.data.entries.length === 0 ? (
-        <p className="text-sm text-neutral-500">{t('mirrorchain.activity.empty')}</p>
+        <p className="text-sm text-neutral-400">{t('mirrorchain.activity.empty')}</p>
       ) : (
-        <ul className="divide-y divide-neutral-800 rounded-md border border-neutral-800">
+        <ul
+          aria-label={t('mirrorchain.activityListAria')}
+          className="divide-y divide-neutral-800 rounded-md border border-neutral-800"
+        >
           {query.data.entries.slice(0, ACTIVITY_LIMIT).map((entry) => (
             <li
               key={entry.seq}
               className="flex flex-wrap items-baseline justify-between gap-2 px-3 py-2 text-sm"
             >
               <span className="text-neutral-200">{entry.summary}</span>
-              <span className="text-xs text-neutral-500">{formatDate(entry.createdAt)}</span>
+              <span className="text-xs text-neutral-400">{formatDate(entry.createdAt)}</span>
             </li>
           ))}
         </ul>
@@ -505,14 +514,17 @@ export function InviteDialog({
           value={query}
           onChange={(event) => setQuery(event.target.value)}
           placeholder={t('mirrorchain.invite.searchPlaceholder')}
-          className="w-full rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm text-neutral-100 placeholder-neutral-500 focus:border-sky-400 focus:outline-none"
+          className="w-full rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm text-neutral-100 placeholder-neutral-400 focus:border-sky-400 focus:outline-none"
         />
         {friendsQuery.isLoading ? (
-          <p className="text-sm text-neutral-500">{t('common.loading')}</p>
+          <p className="text-sm text-neutral-400">{t('common.loading')}</p>
         ) : friends.length === 0 ? (
-          <p className="text-sm text-neutral-500">{t('mirrorchain.invite.empty')}</p>
+          <p className="text-sm text-neutral-400">{t('mirrorchain.invite.empty')}</p>
         ) : (
-          <ul className="max-h-72 divide-y divide-neutral-800 overflow-y-auto rounded-md border border-neutral-800">
+          <ul
+            aria-label={t('mirrorchain.inviteListAria')}
+            className="max-h-72 divide-y divide-neutral-800 overflow-y-auto rounded-md border border-neutral-800"
+          >
             {friends.map((friendship) => (
               <li
                 key={friendship.user.id}
@@ -592,7 +604,7 @@ export function MirrorInviteStepDialog({
         restoreFocusRef={restoreFocusRef}
         widthClassName="max-w-md"
       >
-        <p className="text-sm text-neutral-500">{t('common.loading')}</p>
+        <p className="text-sm text-neutral-400">{t('common.loading')}</p>
       </Dialog>
     );
   }
@@ -719,11 +731,17 @@ function ConfirmActionDialog({
     },
     onSuccess: onDone,
   });
-  const title = t(`mirrorchain.confirm.${action.kind}.title`);
-  const body = t(`mirrorchain.confirm.${action.kind}.body`, {
+  // Four of the six titles carry `{{username}}` — "Remove {{username}}?",
+  // "Make {{username}} the owner?", both manage-rights ones — so the title needs
+  // the SAME parameters the body does. Without them the dialog header rendered
+  // the placeholder literally, which is what a user actually read before asking
+  // to delete somebody from their group portfolio.
+  const params = {
     chain: chainName,
     username: 'target' in action ? action.target.username : '',
-  });
+  };
+  const title = t(`mirrorchain.confirm.${action.kind}.title`, params);
+  const body = t(`mirrorchain.confirm.${action.kind}.body`, params);
   const confirmLabel = t(`mirrorchain.confirm.${action.kind}.confirm`);
   const danger = action.kind === 'dissolve' || action.kind === 'kick' || action.kind === 'leave';
   return (

@@ -44,6 +44,9 @@ import {
   type LocalDataHomeStorage,
   type LocalVaultRecord,
 } from './localDataHome';
+import { vaultStoreErrorKey } from './engine/errorCopy';
+import { openVaultSession } from './engine/session';
+import { toStrictRestoreDocument } from './paranoidDisable';
 import { createMemoryVaultQuarantineStore } from './quarantine';
 import { createVaultSyncEngine, type VaultSyncEngine, type VaultSyncState } from './sync';
 import {
@@ -183,6 +186,122 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
       { data: { amountEur: '0.1' } },
       { data: { amountEur: '0.2' } },
     ]);
+  });
+
+  it('floors every cash balance it reports back, not just the write responses', async () => {
+    const engine = createMutableEngine(initialDocument());
+    const store = createVaultPortfolioStore(engine, {
+      now: () => AT,
+      newId: idSequence(),
+    });
+
+    // 0.1 + 0.2 = 0.30000000000000004 in binary floating point. The server
+    // floors both the per-source and the total roll-up at its service boundary
+    // (`loadCashState`), so every read path here has to as well.
+    await store.depositCash(PORTFOLIO_ID, { amountEur: 0.1, sourceId: CASH_SOURCE_ID });
+    await store.depositCash(PORTFOLIO_ID, { amountEur: 0.2, sourceId: CASH_SOURCE_ID });
+
+    const movements = await store.getCashMovements(PORTFOLIO_ID);
+    expect(movements.balanceEur).toBe(0.3);
+    expect(movements.sources.map((source) => source.balanceEur)).toEqual([0.3]);
+    const sources = await store.listCashSources(PORTFOLIO_ID);
+    expect(sources.sources.map((source) => source.balanceEur)).toEqual([0.3]);
+  });
+
+  it('empties the vault by tombstoning every entity and keeps the merge log', async () => {
+    const document = initialDocument();
+    document.mergeLog = [
+      { mergedAt: AT, parents: [1, 2], into: 3, deviceId: REMOTE_DEVICE_ID },
+    ] as VaultDocument['mergeLog'];
+    const engine = createMutableEngine(document);
+    const store = createVaultPortfolioStore(engine, {
+      now: () => AT,
+      newId: idSequence(),
+    });
+    await store.depositCash(PORTFOLIO_ID, { amountEur: 100, sourceId: CASH_SOURCE_ID });
+
+    await store.discardAllData();
+
+    const wiped = engine.state.active!.document;
+    // Every bucket survives with its rows TOMBSTONED — an absent row carries no
+    // delete signal through the entity-union merge, so a second device holding
+    // the pre-wipe document would union its copy straight back in. The only
+    // live rows anywhere are the seeded replacement portfolio and its default
+    // tax setting.
+    for (const [kind, rows] of Object.entries(wiped.entities)) {
+      expect(rows.length, `${kind} rows must be kept as tombstones`).toBeGreaterThan(0);
+      for (const row of rows) {
+        if ((kind === 'portfolio' || kind === 'taxSetting') && row.deletedAt === null) continue;
+        expect(row.deletedAt, `${kind}/${row.id} must be tombstoned`).toBe(AT);
+        expect(row.rev).toBeGreaterThan(0);
+      }
+    }
+    expect(wiped.mergeLog).toHaveLength(1);
+    // §6.8: the account keeps exactly one active portfolio, the same guarantee
+    // `portfolioRepository.getOrCreateMain` gives a normal account — without it
+    // the emptied vault could neither create a portfolio nor be rehydrated.
+    const livePortfolios = (wiped.entities.portfolio ?? []).filter((row) => row.deletedAt === null);
+    const liveTaxSettings = (wiped.entities.taxSetting ?? []).filter(
+      (row) => row.deletedAt === null,
+    );
+    expect(
+      Object.values(wiped.entities)
+        .flat()
+        .filter((row) => row.deletedAt === null),
+    ).toHaveLength(2);
+    expect(livePortfolios[0]?.data).toMatchObject({
+      userId: USER_ID,
+      name: 'Main',
+      archivedAt: null,
+    });
+    // The owner id is readable from a LIVE row rather than only from a
+    // tombstone, so deleting the seeded portfolio later cannot orphan the vault.
+    expect(liveTaxSettings[0]?.data).toMatchObject({ userId: USER_ID, mode: 'none' });
+    await expect(store.listPortfolios()).resolves.toEqual({
+      portfolios: [
+        {
+          id: livePortfolios[0]!.id,
+          name: 'Main',
+          visibility: 'private',
+          sortOrder: 0,
+          isDefault: true,
+          defaultPayFromCash: false,
+          archivedAt: null,
+        },
+      ],
+    });
+    await expect(store.getTaxSettings()).resolves.toMatchObject({ mode: 'none', country: null });
+  });
+
+  it('keeps the emptied vault usable: a new portfolio, tax settings and disable all work', async () => {
+    const engine = createMutableEngine(initialDocument());
+    const store = createVaultPortfolioStore(engine, {
+      now: () => AT,
+      newId: idSequence(),
+    });
+    await store.depositCash(PORTFOLIO_ID, { amountEur: 100, sourceId: CASH_SOURCE_ID });
+
+    await store.discardAllData();
+
+    // The owner id survives the wipe, so every write that needs it still works.
+    await expect(store.createPortfolio('Second')).resolves.toMatchObject({
+      name: 'Second',
+      sortOrder: 1,
+    });
+    await expect(store.updateTaxSettings({ mode: 'none' })).resolves.toMatchObject({
+      mode: 'none',
+    });
+    await expect(store.listPortfolios()).resolves.toMatchObject({
+      portfolios: [{ name: 'Main' }, { name: 'Second' }],
+    });
+
+    // And the exit stays open: the restore document the disable call ships
+    // carries the active portfolio the server's rehydration graph demands.
+    const restore = toStrictRestoreDocument(engine.state.active!.document);
+    const activePortfolios = restore.entities.filter(
+      (entity) => entity.kind === 'portfolio' && entity.deletedAt === null,
+    );
+    expect(activePortfolios).toHaveLength(2);
   });
 
   it('provisions the Main cash source on first implicit cash touch like the server', async () => {
@@ -407,6 +526,7 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
       schemaVersion: 1,
       entities: [{ ...entity!, kind: 'transaction' }],
       mergeLog: [],
+      mirrorProvenance: [],
     });
     const strictTransaction = strict.entities[0];
     if (strictTransaction?.kind !== 'transaction') {
@@ -2113,7 +2233,518 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
     });
     await expect(store.listPortfolios()).resolves.toEqual({ portfolios: [portfolio] });
   });
+
+  it('keeps portfolio settings, custom values, cash sources, and standing orders inside the vault', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    vi.stubGlobal('fetch', fetch);
+    const engine = createMutableEngine(initialDocument());
+    const store = createVaultPortfolioStore(engine, {
+      now: () => AT,
+      newId: idSequence(),
+    });
+
+    const secondary = await store.createPortfolio('Secondary');
+    await expect(store.archivePortfolio(secondary.id)).resolves.toMatchObject({
+      archivedAt: AT,
+    });
+    await expect(store.listPortfolios()).resolves.toEqual({ portfolios: [portfolio] });
+    await expect(store.restorePortfolio(secondary.id)).resolves.toMatchObject({
+      archivedAt: null,
+    });
+
+    await expect(
+      store.setPortfolioTaxOverride(PORTFOLIO_ID, {
+        mode: 'manual_per_trade',
+        manualDefaultRatePct: 27.5,
+      }),
+    ).resolves.toMatchObject({
+      effective: { mode: 'manual_per_trade', manualDefaultRatePct: 27.5 },
+      source: 'portfolio',
+    });
+    await expect(store.clearPortfolioTaxOverride(PORTFOLIO_ID)).resolves.toMatchObject({
+      effective: { mode: 'none', country: null },
+      override: null,
+      source: 'system',
+    });
+    await expect(
+      store.updateTaxSettings({
+        mode: 'country_specific',
+        country: 'DE',
+      }),
+    ).resolves.toEqual({
+      mode: 'country_specific',
+      country: 'DE',
+    });
+    await expect(store.getTaxSettings()).resolves.toEqual({
+      mode: 'country_specific',
+      country: 'DE',
+    });
+    await expect(store.getPortfolioTaxSettings(PORTFOLIO_ID)).resolves.toMatchObject({
+      effective: { mode: 'country_specific', country: 'DE' },
+      source: 'user',
+    });
+
+    const createdAsset = await store.createCustomAsset({
+      name: 'Private Holding',
+      category: 'other',
+      currency: 'EUR',
+      smoothing: true,
+    });
+    // The manual-asset identity the server writes for its own custom assets and
+    // re-checks on every restored row (`validateCustomAssetFacts`): a reference
+    // that is anything but the entity id blocks the vault's only
+    // non-destructive exit.
+    expect(
+      engine.state.active?.document.entities.customAsset?.find(
+        (row) => row.id === createdAsset.asset.id,
+      )?.data,
+    ).toMatchObject({
+      providerId: 'manual',
+      providerRef: createdAsset.asset.id,
+      ownerId: USER_ID,
+    });
+    await expect(
+      store.putValuePoints(createdAsset.asset.id, [
+        { date: '2026-07-01', value: 1_000 },
+        { date: '2026-07-30', value: 1_100 },
+      ]),
+    ).resolves.toEqual({
+      points: [
+        { date: '2026-07-01', value: 1_000 },
+        { date: '2026-07-30', value: 1_100 },
+      ],
+    });
+    await expect(store.listCustomAssets()).resolves.toMatchObject({
+      assets: [
+        expect.objectContaining({
+          id: ASSET_ID,
+        }),
+        expect.objectContaining({
+          id: createdAsset.asset.id,
+          latestValue: { date: '2026-07-30', value: 1_100 },
+        }),
+      ],
+    });
+
+    const reserve = await store.createCashSource(PORTFOLIO_ID, {
+      name: 'Reserve',
+      type: 'bank',
+    });
+    await expect(store.archiveCashSource(PORTFOLIO_ID, reserve.id)).resolves.toMatchObject({
+      archivedAt: AT,
+    });
+    await expect(store.restoreCashSource(PORTFOLIO_ID, reserve.id)).resolves.toMatchObject({
+      archivedAt: null,
+    });
+
+    const order = await store.createStandingOrder({
+      portfolioId: PORTFOLIO_ID,
+      kind: 'cash-add',
+      amount: 500,
+      label: 'Salary',
+      cadence: 'monthly',
+      anchorDay: 25,
+      startDate: '2026-07-25',
+    });
+    await expect(store.pauseStandingOrder(order.id)).resolves.toMatchObject({
+      status: 'paused',
+    });
+    await expect(store.resumeStandingOrder(order.id)).resolves.toMatchObject({
+      status: 'active',
+    });
+    await store.deleteStandingOrder(order.id);
+    await expect(store.listStandingOrders(PORTFOLIO_ID)).resolves.toEqual({ orders: [] });
+
+    expect(fetch).not.toHaveBeenCalled();
+    expectPortfolioApiUnused();
+  });
+
+  it('snapshots a never-held market asset on first transaction reference, client-only', async () => {
+    const engine = createMutableEngine(initialDocument());
+    const resolveMarketAsset = vi.fn(async (assetId: string) => ({
+      id: assetId,
+      providerId: 'yahoo',
+      providerRef: 'ACME.DE',
+      symbol: 'ACME',
+      name: 'Acme',
+      exchange: 'XETRA',
+      currency: 'EUR',
+      type: 'stock' as const,
+      isCustom: false,
+    }));
+    const store = createVaultPortfolioStore(engine, {
+      now: () => AT,
+      newId: idSequence(),
+      resolveMarketAsset,
+    });
+
+    const [transaction] = await store.createTransactions(PORTFOLIO_ID, [
+      {
+        assetId: SECOND_ASSET_ID,
+        side: 'buy',
+        quantity: 2,
+        price: 10,
+        fee: 0,
+        executedAt: AT,
+        note: null,
+      },
+    ]);
+
+    expect(resolveMarketAsset).toHaveBeenCalledTimes(1);
+    expect(transaction).toMatchObject({
+      assetId: SECOND_ASSET_ID,
+      asset: { symbol: 'ACME', isCustom: false, currency: 'EUR' },
+    });
+    const document = engine.state.active!.document;
+    // The snapshot carries the catalog identity — never an owner claim.
+    expect(
+      document.entities.customAsset?.find((row) => row.id === SECOND_ASSET_ID)?.data,
+    ).toMatchObject({
+      providerId: 'yahoo',
+      providerRef: 'ACME.DE',
+      ownerId: null,
+      type: 'stock',
+    });
+    // The owned asset's identity rules stay intact next to it.
+    expect(document.entities.customAsset?.find((row) => row.id === ASSET_ID)?.data).toMatchObject({
+      ownerId: USER_ID,
+      providerId: 'manual',
+    });
+    // At the restore boundary the snapshot stops while the transaction crosses.
+    const restore = toStrictRestoreDocument(document);
+    expect(
+      restore.entities.some(
+        (entity) => entity.kind === 'customAsset' && entity.id === SECOND_ASSET_ID,
+      ),
+    ).toBe(false);
+    expect(
+      restore.entities.some(
+        (entity) => entity.kind === 'transaction' && entity.data.assetId === SECOND_ASSET_ID,
+      ),
+    ).toBe(true);
+    expectPortfolioApiUnused();
+  });
+
+  it('creates a buy-asset standing order against an asset the vault has never seen', async () => {
+    const engine = createMutableEngine(initialDocument());
+    const resolveMarketAsset = vi.fn(async (assetId: string) => ({
+      id: assetId,
+      providerId: 'yahoo',
+      providerRef: 'NVDA',
+      symbol: 'NVDA',
+      name: 'NVIDIA',
+      exchange: 'NASDAQ',
+      currency: 'USD',
+      type: 'stock' as const,
+      isCustom: false,
+    }));
+    const store = createVaultPortfolioStore(engine, {
+      now: () => AT,
+      newId: idSequence(),
+      resolveMarketAsset,
+    });
+
+    const order = await store.createStandingOrder({
+      portfolioId: PORTFOLIO_ID,
+      kind: 'buy-asset',
+      assetId: SECOND_ASSET_ID,
+      amount: 1,
+      cadence: 'monthly',
+      anchorDay: 1,
+      startDate: '2026-08-01',
+    });
+
+    // The order adopts the snapshotted asset's native currency.
+    expect(order).toMatchObject({
+      kind: 'buy-asset',
+      assetId: SECOND_ASSET_ID,
+      currency: 'USD',
+      assetSymbol: 'NVDA',
+    });
+    const document = engine.state.active!.document;
+    expect(
+      document.entities.customAsset?.find((row) => row.id === SECOND_ASSET_ID)?.data,
+    ).toMatchObject({ providerId: 'yahoo', providerRef: 'NVDA', ownerId: null });
+    const restore = toStrictRestoreDocument(document);
+    expect(
+      restore.entities.some(
+        (entity) => entity.kind === 'customAsset' && entity.id === SECOND_ASSET_ID,
+      ),
+    ).toBe(false);
+    expect(
+      restore.entities.some(
+        (entity) => entity.kind === 'standingOrder' && entity.data.assetId === SECOND_ASSET_ID,
+      ),
+    ).toBe(true);
+  });
+
+  it('fails closed with the typed unavailable code when no snapshot can be proven', async () => {
+    const engine = createMutableEngine(initialDocument());
+    const store = createVaultPortfolioStore(engine, {
+      now: () => AT,
+      newId: idSequence(),
+      resolveMarketAsset: async () => null,
+    });
+
+    const failure = await store
+      .createTransactions(PORTFOLIO_ID, [
+        {
+          assetId: SECOND_ASSET_ID,
+          side: 'buy',
+          quantity: 1,
+          price: 10,
+          fee: 0,
+          executedAt: AT,
+          note: null,
+        },
+      ])
+      .then(
+        () => null,
+        (error: unknown) => error,
+      );
+
+    expect(failure).toBeInstanceOf(VaultPortfolioStoreError);
+    expect(failure).toMatchObject({ code: 'VAULT_OPERATION_UNAVAILABLE' });
+    // Never a bare code in the UI: the copy map answers a real i18n key
+    // (registry.test.ts proves both locales carry it).
+    expect(vaultStoreErrorKey(failure as VaultPortfolioStoreError)).toBe(
+      'vaultMoney.error.operationUnavailable',
+    );
+    // Nothing was written into the vault.
+    expect(
+      engine.state.active!.document.entities.customAsset?.some((row) => row.id === SECOND_ASSET_ID),
+    ).toBe(false);
+  });
+
+  it('revives a tombstoned snapshot instead of duplicating its entity id', async () => {
+    // discardAllData tombstones every row — market snapshots included. Buying
+    // the same asset again must not append a second entity with the same id;
+    // `validateStrictEntities` would refuse the whole vault as corrupt.
+    const engine = createMutableEngine(initialDocument());
+    const resolveMarketAsset = vi.fn(async (assetId: string) => ({
+      id: assetId,
+      providerId: 'yahoo',
+      providerRef: 'ACME',
+      symbol: 'ACME',
+      name: 'Acme',
+      exchange: null,
+      currency: 'EUR',
+      type: 'stock' as const,
+      isCustom: false,
+    }));
+    const store = createVaultPortfolioStore(engine, {
+      now: () => AT,
+      newId: idSequence(),
+      resolveMarketAsset,
+    });
+    await store.createTransactions(PORTFOLIO_ID, [
+      { assetId: SECOND_ASSET_ID, side: 'buy', quantity: 1, price: 5, fee: 0, executedAt: AT },
+    ]);
+    await store.discardAllData();
+
+    await store.createTransactions(PORTFOLIO_ID2(engine), [
+      { assetId: SECOND_ASSET_ID, side: 'buy', quantity: 1, price: 5, fee: 0, executedAt: AT },
+    ]);
+
+    const rows = (engine.state.active!.document.entities.customAsset ?? []).filter(
+      (row) => row.id === SECOND_ASSET_ID,
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ deletedAt: null, rev: 2 });
+  });
+
+  it.each([
+    ['a vault-created portfolio', 'created'] as const,
+    ['the portfolio discardAllData seeds', 'discarded'] as const,
+  ])('provisions Main with the first sibling cash source on %s', async (_label, origin) => {
+    const engine = createMutableEngine(initialDocument());
+    const store = createVaultPortfolioStore(engine, {
+      now: () => AT,
+      newId: idSequence(),
+    });
+
+    // Both origins start with a portfolio that owns NO cash source at all.
+    let portfolioId: string;
+    if (origin === 'created') {
+      portfolioId = (await store.createPortfolio('Side')).id;
+    } else {
+      await store.discardAllData();
+      portfolioId = PORTFOLIO_ID2(engine);
+    }
+    expect(await store.listCashSources(portfolioId)).toEqual({ sources: [] });
+
+    const reserve = await store.createCashSource(portfolioId, { name: 'Reserve', type: 'bank' });
+
+    // Main is materialised first, in the same mutation as its sibling — the
+    // server's `getOrCreateMain`-before-`createSource` order.
+    await expect(store.listCashSources(portfolioId)).resolves.toMatchObject({
+      sources: [
+        { name: 'Main', isMain: true, archivedAt: null },
+        { id: reserve.id, name: 'Reserve', isMain: false },
+      ],
+    });
+    const document = engine.state.active!.document;
+    expect(() => openVaultSession(document)).not.toThrow();
+    // The client validators never enforced this; the SERVER's restore boundary
+    // does, and a vault that fails it opens but can never be disabled.
+    const restore = toStrictRestoreDocument(document);
+    expectExactlyOneActiveMainPerPortfolio(restore);
+    // Negative control — the pre-fix shape (a sibling, no Main) is exactly what
+    // that rule refuses, so the assertion above is not vacuous.
+    expect(() =>
+      expectExactlyOneActiveMainPerPortfolio({
+        ...restore,
+        entities: restore.entities.filter(
+          (entity) => !(entity.kind === 'cashSource' && entity.data.isMain),
+        ),
+      }),
+    ).toThrow();
+    expectPortfolioApiUnused();
+  });
+
+  it('refuses duplicate value-point dates before anything is written', async () => {
+    // The server rejects them outright (`DUPLICATE_VALUE_POINT`); it has to here
+    // too, because this producer writes one entity per row and two points for
+    // the same day would be durably encrypted under distinct ids — a duplicate
+    // (assetId, date) key `validateRelationships` refuses as VAULT_CORRUPT on
+    // the next unlock, with no way back out of the vault.
+    const engine = createMutableEngine(initialDocument());
+    const store = createVaultPortfolioStore(engine, {
+      now: () => AT,
+      newId: idSequence(),
+    });
+
+    const failure = await captureError(() =>
+      store.putValuePoints(ASSET_ID, [
+        { date: '2026-07-01', value: 1_000 },
+        { date: '2026-07-30', value: 1_050 },
+        { date: '2026-07-01', value: 1_100 },
+      ]),
+    );
+
+    expect(failure).toBeInstanceOf(VaultPortfolioStoreError);
+    expect(failure).toMatchObject({ code: 'VAULT_DATA_INVALID' });
+    expect(vaultStoreErrorKey(failure as VaultPortfolioStoreError)).toBe(
+      'vaultMoney.error.dataInvalid',
+    );
+    // No write at all: the mutation never opened, so not even the tombstoning
+    // of the previous points ran.
+    expect(engine.mutate).not.toHaveBeenCalled();
+    expect(engine.state.active!.document.entities.customAssetValue).toBeUndefined();
+    expect(() => openVaultSession(engine.state.active!.document)).not.toThrow();
+
+    // The same call without the duplicate still writes one row per day.
+    await expect(
+      store.putValuePoints(ASSET_ID, [
+        { date: '2026-07-01', value: 1_000 },
+        { date: '2026-07-30', value: 1_050 },
+      ]),
+    ).resolves.toEqual({
+      points: [
+        { date: '2026-07-01', value: 1_000 },
+        { date: '2026-07-30', value: 1_050 },
+      ],
+    });
+    expect(() => openVaultSession(engine.state.active!.document)).not.toThrow();
+  });
+
+  it('takes the standing-order currency from the snapshot that wins the race', async () => {
+    // Two first references to the same never-seen asset. The first order's
+    // catalog read is still in flight when the second one installs the asset
+    // snapshot, so `appendMarketSnapshots` keeps THAT row — and the late order
+    // has to adopt the winner's currency, not the one its own resolver returned.
+    // Disagreement is refused by `validatePersistedStandingOrder` on the next
+    // unlock ("the buy currency does not match its asset").
+    const engine = createMutableEngine(initialDocument());
+    let releaseFirstRead: (() => void) | null = null;
+    const firstRead = new Promise<void>((resolve) => {
+      releaseFirstRead = resolve;
+    });
+    let reads = 0;
+    const resolveMarketAsset = vi.fn(async (assetId: string) => {
+      reads += 1;
+      const stale = reads === 1;
+      if (stale) await firstRead;
+      return {
+        id: assetId,
+        providerId: 'yahoo',
+        providerRef: 'NVDA',
+        symbol: 'NVDA',
+        name: 'NVIDIA',
+        exchange: 'NASDAQ',
+        // The loser's catalog read disagrees with the winner's.
+        currency: stale ? 'USD' : 'EUR',
+        type: 'stock' as const,
+        isCustom: false,
+      };
+    });
+    const store = createVaultPortfolioStore(engine, {
+      now: () => AT,
+      newId: idSequence(),
+      resolveMarketAsset,
+    });
+    const order = {
+      portfolioId: PORTFOLIO_ID,
+      kind: 'buy-asset' as const,
+      assetId: SECOND_ASSET_ID,
+      amount: 1,
+      cadence: 'monthly' as const,
+      anchorDay: 1,
+      startDate: '2026-08-01',
+    };
+
+    const late = store.createStandingOrder({ ...order, label: 'Late' });
+    expect(reads).toBe(1);
+    const winner = await store.createStandingOrder({ ...order, label: 'Winner' });
+    releaseFirstRead!();
+    const loser = await late;
+
+    expect(resolveMarketAsset).toHaveBeenCalledTimes(2);
+    expect(winner).toMatchObject({ currency: 'EUR', assetSymbol: 'NVDA' });
+    // The late order agrees with the snapshot that is actually in the vault.
+    expect(loser).toMatchObject({ currency: 'EUR', assetSymbol: 'NVDA' });
+    const document = engine.state.active!.document;
+    expect(
+      document.entities.customAsset?.filter((row) => row.id === SECOND_ASSET_ID),
+    ).toMatchObject([{ deletedAt: null, data: { currency: 'EUR' } }]);
+    expect(() => openVaultSession(document)).not.toThrow();
+  });
 });
+
+/**
+ * The rule the SERVER applies at the restore boundary
+ * (`paranoidRehydrationService.validateGraph`: "portfolio <id> must have exactly
+ * one active main cash source"), over live rows only — the same set it builds
+ * the restore graph from. Neither `openVaultSession` nor
+ * `toStrictRestoreDocument` checks it, which is why a producer that breaks it
+ * yields a vault that opens and can never be left.
+ */
+function expectExactlyOneActiveMainPerPortfolio(
+  strict: ReturnType<typeof vaultStrictDocumentV1Schema.parse>,
+): void {
+  const byPortfolio = new Map<string, { isMain: boolean; archivedAt: string | null }[]>();
+  for (const entity of strict.entities) {
+    if (entity.kind !== 'cashSource' || entity.deletedAt !== null) continue;
+    const group = byPortfolio.get(entity.data.portfolioId) ?? [];
+    group.push({ isMain: entity.data.isMain, archivedAt: entity.data.archivedAt });
+    byPortfolio.set(entity.data.portfolioId, group);
+  }
+  for (const [portfolioId, sources] of byPortfolio) {
+    const mains = sources.filter((source) => source.isMain);
+    if (mains.length !== 1 || mains[0]!.archivedAt !== null) {
+      throw new Error(`portfolio ${portfolioId} must have exactly one active main cash source`);
+    }
+  }
+}
+
+/** The live replacement portfolio a discardAllData wipe seeds. */
+function PORTFOLIO_ID2(engine: VaultSyncEngine): string {
+  const live = (engine.state.active!.document.entities.portfolio ?? []).find(
+    (row) => row.deletedAt === null,
+  );
+  if (live == null) throw new Error('Expected a live portfolio after the wipe.');
+  return live.id;
+}
 
 function initialDocument(): VaultDocument {
   return {
@@ -2155,17 +2786,17 @@ function initialDocument(): VaultDocument {
       ],
     },
     mergeLog: [],
+    mirrorProvenance: [],
   };
 }
 
+/**
+ * The PRODUCTION disable carriage, not a test-local re-implementation: the same
+ * function the disable request is built from, so this round trip fails if the
+ * conversion (including §7.1 provenance carriage) ever drifts.
+ */
 function strictDocumentFrom(document: VaultDocument) {
-  return vaultStrictDocumentV1Schema.parse({
-    schemaVersion: document.schemaVersion,
-    entities: Object.entries(document.entities).flatMap(([kind, entities]) =>
-      entities.map((entity) => ({ ...entity, kind })),
-    ),
-    mergeLog: document.mergeLog,
-  });
+  return toStrictRestoreDocument(document);
 }
 
 function documentFromStrictDocument(
@@ -2176,7 +2807,12 @@ function documentFromStrictDocument(
     const { kind, ...entity } = strictEntity;
     entities[kind] = [...(entities[kind] ?? []), entity];
   }
-  return { schemaVersion: strict.schemaVersion, entities, mergeLog: strict.mergeLog };
+  return {
+    schemaVersion: strict.schemaVersion,
+    entities,
+    mergeLog: strict.mergeLog,
+    mirrorProvenance: strict.mirrorProvenance,
+  };
 }
 
 function vaultEntity(id: string, data: Record<string, unknown>): VaultEntity {

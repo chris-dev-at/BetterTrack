@@ -10,16 +10,7 @@ import type {
   Transaction,
 } from '@bettertrack/contracts';
 
-import {
-  deleteTransaction,
-  dismissRecategorization,
-  getPortfolio,
-  getPortfolioHistory,
-  getRecategorizationStatus,
-  listCashSources,
-  listPortfolios,
-  listTransactions,
-} from '../../lib/portfolioApi';
+import { dismissRecategorization, getRecategorizationStatus } from '../../lib/portfolioApi';
 import {
   PORTFOLIO_DIVIDEND_CALENDAR_QUERY_KEY,
   PORTFOLIO_DIVIDEND_PROJECTION_QUERY_KEY,
@@ -48,6 +39,8 @@ import { Alert } from '../components/ui';
 import { TransactionDialog, type TransactionDialogAsset } from '../components/TransactionDialog';
 import { SourceBadge, sourceTagLabel } from './SourceBadge';
 import { CashDialog } from './CashDialog';
+import { usePortfolioStore } from './PortfolioStoreProvider';
+import { NormalModeOnly } from '../vault/ui/ParanoidSurfaceGate';
 import { ValuePointEditor, type ValuePointEditorAsset } from './ValuePointEditor';
 import { CustomInvestmentDialog } from './CustomInvestmentDialog';
 import {
@@ -494,6 +487,12 @@ function RecentTransactionsSection({ transactions }: { transactions: Transaction
                       {txn.asset.symbol}
                     </Link>
                     <SourceBadge source={txn.source} />
+                    {/* Who added it, on a mirrored copy (design §2/§11). This is
+                        the only surface a replicated trade appears on today —
+                        `/portfolio/activity` is still a placeholder and the
+                        per-asset rows are collapsed — so without it a member's
+                        buy reads as the owner's own. */}
+                    {txn.mirror ? <MirrorAttributionChip attribution={txn.mirror.addedBy} /> : null}
                   </div>
                 </td>
                 <td>
@@ -1039,6 +1038,7 @@ function DividendIntelSection() {
 export function PortfolioPage() {
   const t = useT();
   const queryClient = useQueryClient();
+  const store = usePortfolioStore();
   const [range, setRange] = useState<PriceRange>('1M');
   // #125: absolute value curve (€) vs. cash-flow-neutralized performance (%).
   const [perfMode, setPerfMode] = useState(false);
@@ -1057,7 +1057,7 @@ export function PortfolioPage() {
   const [searchParams] = useSearchParams();
   const portfoliosQuery = useQuery({
     queryKey: ['portfolios'],
-    queryFn: ({ signal }) => listPortfolios(signal),
+    queryFn: ({ signal }) => store.listPortfolios(signal),
     staleTime: 60_000,
   });
 
@@ -1070,7 +1070,7 @@ export function PortfolioPage() {
 
   const portfolioQuery = useQuery({
     queryKey: ['portfolio', portfolioId],
-    queryFn: ({ signal }) => getPortfolio(portfolioId!, signal),
+    queryFn: ({ signal }) => store.getPortfolio(portfolioId!, signal),
     enabled: portfolioId !== null,
     staleTime: 60_000,
   });
@@ -1078,7 +1078,7 @@ export function PortfolioPage() {
   const historyQuery = useQuery({
     queryKey: ['portfolio', portfolioId, 'history', toHistoryRange(range)],
     queryFn: ({ signal }) =>
-      getPortfolioHistory(portfolioId!, toHistoryRange(range), false, signal),
+      store.getPortfolioHistory(portfolioId!, toHistoryRange(range), false, signal),
     enabled: portfolioId !== null,
     staleTime: HISTORY_STALE_MS,
   });
@@ -1086,7 +1086,7 @@ export function PortfolioPage() {
   // Recent ledger, grouped client-side so each holding's expansion shows its rows.
   const transactionsQuery = useQuery({
     queryKey: ['portfolio', portfolioId, 'transactions'],
-    queryFn: ({ signal }) => listTransactions(portfolioId!, { limit: 200 }, signal),
+    queryFn: ({ signal }) => store.listTransactions(portfolioId!, { limit: 200 }, signal),
     enabled: portfolioId !== null,
     staleTime: 60_000,
   });
@@ -1095,7 +1095,7 @@ export function PortfolioPage() {
   // source picker appears once a second source exists (defaulting to Main).
   const cashSourcesQuery = useQuery({
     queryKey: ['portfolio', portfolioId, 'cash-sources', false],
-    queryFn: ({ signal }) => listCashSources(portfolioId!, false, signal),
+    queryFn: ({ signal }) => store.listCashSources(portfolioId!, false, signal),
     enabled: portfolioId !== null,
     staleTime: 30_000,
   });
@@ -1103,7 +1103,7 @@ export function PortfolioPage() {
 
   const deleteMutation = useMutation({
     mutationFn: ({ id, baseSeq }: { id: string; baseSeq?: number }) =>
-      deleteTransaction(portfolioId!, id, { baseSeq }),
+      store.deleteTransaction(portfolioId!, id, { baseSeq }),
     onSuccess: () => {
       setActionError(null);
       void queryClient.invalidateQueries({ queryKey: ['portfolio'] });
@@ -1245,12 +1245,14 @@ export function PortfolioPage() {
         {customOpen ? (
           <CustomInvestmentDialog onClose={() => setCustomOpen(false)} onCreated={refetchAll} />
         ) : null}
-        {memberSheetOpen && portfolio?.mirror ? (
-          <MemberSheet
-            chainId={portfolio.mirror.chainId}
-            onClose={() => setMemberSheetOpen(false)}
-          />
-        ) : null}
+        <NormalModeOnly>
+          {memberSheetOpen && portfolio?.mirror ? (
+            <MemberSheet
+              chainId={portfolio.mirror.chainId}
+              onClose={() => setMemberSheetOpen(false)}
+            />
+          ) : null}
+        </NormalModeOnly>
       </>
     );
   }
@@ -1262,21 +1264,25 @@ export function PortfolioPage() {
         onNewCustom={() => setCustomOpen(true)}
       />
 
-      <RecategorizeBanner />
+      <NormalModeOnly>
+        <RecategorizeBanner />
+      </NormalModeOnly>
 
       {/* Above the empty/non-empty split on purpose: an invited member's copy is
           empty until the first ops replicate, and hiding the chain surface there
           left them with no way to see who is in it or whether it had synced. */}
-      {portfolio?.mirror ? (
-        <div style={{ marginBottom: 14 }}>
-          <MirrorAvatarStack badge={portfolio.mirror} onClick={() => setMemberSheetOpen(true)} />
-        </div>
-      ) : null}
-      {portfolio?.mirrorFork ? (
-        <div style={{ marginBottom: 14 }}>
-          <MirrorForkProvenanceLine fork={portfolio.mirrorFork} />
-        </div>
-      ) : null}
+      <NormalModeOnly>
+        {portfolio?.mirror ? (
+          <div style={{ marginBottom: 14 }}>
+            <MirrorAvatarStack badge={portfolio.mirror} onClick={() => setMemberSheetOpen(true)} />
+          </div>
+        ) : null}
+        {portfolio?.mirrorFork ? (
+          <div style={{ marginBottom: 14 }}>
+            <MirrorForkProvenanceLine fork={portfolio.mirrorFork} />
+          </div>
+        ) : null}
+      </NormalModeOnly>
 
       {isEmpty ? (
         <EmptyState
@@ -1384,7 +1390,9 @@ export function PortfolioPage() {
 
           <WinnersLosersSection holdings={holdings} />
 
-          <DividendIntelSection />
+          <NormalModeOnly>
+            <DividendIntelSection />
+          </NormalModeOnly>
 
           <RecentTransactionsSection transactions={transactionsQuery.data?.items ?? []} />
         </>

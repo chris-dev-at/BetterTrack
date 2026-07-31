@@ -1,13 +1,14 @@
 # PARANOID MODE — client-encrypted privacy mode design note (V5-P13, arc b)
 
-**Status:** binding design, §16-logged 2026-07-21 (issue #651). Per the §13.5
-design-note-first rule this note is merged BEFORE any paranoid feature code,
-and — stricter than mirrorchain — implementation is **not even composed** until
-the owner acks it (the spec says "§16-logged **and owner-acked** BEFORE any
-code"; the ack gate is a filed `awaiting-owner` issue). The implementation
-issues in §14 build against this text; every "planner-defined" point in the
-§13.5 spec row is decided here. Deviations found during implementation go back
-through §16.
+**Status:** binding design, §16-logged 2026-07-21 (issue #651). The
+implementation was **owner-approved before composition** under the 2026-07-24
+briefs, culminating in the owner-authored `v5-p13-pd9-20260724` brief on issue
+#733. That issue's 2026-07-28 owner audit also directs this note to adopt #896's
+retired-recovery semantics; the amendment is recorded in PROJECTPLAN §16. The
+older #654 gate is explicitly superseded and is not approval evidence. The
+implementation issues in §14 build against this text; every "planner-defined"
+point in the §13.5 spec row is decided here. Deviations found during
+implementation go back through §16.
 
 **The model in one paragraph.** A paranoid account's portfolio data lives in
 ONE client-side encrypted **vault**: the client (web/PWA) holds the cleartext
@@ -15,15 +16,17 @@ in memory after local decryption, does all money math itself with the **same
 audited domain code the server uses** (extracted to a shared package — never
 reimplemented), and persists only ciphertext — a single versioned **blob** —
 to the storage media the user picked: the BetterTrack server, the user's
-Google Drive, both, or **Drive-only** (zero portfolio bytes on our side). The
-server keeps running everything that never reads the portfolio — identity,
-auth, friends, chat, price alerts, notifications, market data — and for the
-vault it is a **blind blob store with compare-and-swap**, exactly as blind as
-Drive. The key never leaves the user's devices; there is no escrow, no reset,
-no support backdoor: **lost key ⇒ lost data, by design.** Day to day the app
-looks and feels like normal mode — same pages, same components — because every
-portfolio-touching client feature reads through one seam (`PortfolioStore`)
-with a vault-backed implementation behind it.
+Google Drive, both, or **Drive-only** (zero cleartext portfolio rows and no
+active server-medium copy). A retired encrypted recovery copy can remain until
+the separate signed purge in §5. The server keeps running everything that never
+reads the portfolio — identity, auth, friends, chat, price alerts,
+notifications, market data — and for the vault it is a **blind blob store with
+compare-and-swap**, exactly as blind as Drive. The key never leaves the user's
+devices; there is no escrow, no reset, no support backdoor: **lost key ⇒ lost
+data, by design.** Day to day the app looks and feels like normal mode — same
+pages, same components — because every portfolio-touching client feature reads
+through one seam (`PortfolioStore`) with a vault-backed implementation behind
+it.
 
 Glossary: _vault_ = the user's full portfolio dataset as one logical document;
 _blob_ / _envelope_ = one encrypted serialization of the vault (header +
@@ -94,6 +97,26 @@ source is cleared. Ordinary asset and account deletion still remove the identity
 and cascade all consumers through database lifecycle triggers. The identity
 table is explicitly server-classified and skipped by account export because it
 contains no asset content; the completeness tests bind both decisions.
+
+**The document's asset bucket is wider than the vault classification, and the
+restore boundary narrows it back.** A client that computes valuations locally
+(§10) must be able to name and price every asset a holding references, so the
+vault document's `customAsset` bucket doubles as the client's LOCAL ASSET
+TABLE: it also snapshots the market-catalog assets — under the same global
+UUID, with the catalog `providerId`/`providerRef` the §11 autonomy seam will
+need — because the client engine resolves every transaction, dividend and
+standing order through that bucket. Those snapshots are **not** vault data: the
+global `assets` row is `server`-classified, survives the enable purge untouched,
+and rehydration re-resolves it from the database. They are therefore dropped
+again on the way back (`toStrictRestoreDocument`), and the server refuses a
+restore document that carries one: every `customAsset` entity it receives —
+tombstones included — must be this account's own manual asset
+(`providerId: 'manual'`, `providerRef` = the entity id, `ownerId` = the
+account), which is also exactly the set the retained-identity check requires the
+document to account for. Binding: the two derivable identity fields are
+restated from the entity id at that boundary, never passed through, so a stale
+or third-party-written value cannot block the account's only non-destructive
+exit.
 
 The account itself gains `users.privacy_mode` enum `normal | paranoid`
 (default `normal`) plus the media-set record (§5) — account metadata, present
@@ -251,17 +274,27 @@ sequence for every switch:
    medium live.
 2. **Remove a medium:** allowed only while at least one OTHER medium holds a
    verified-fresh copy (same round-trip check, re-run now). Removing `server`
-   ⇒ the PATCH transaction **hard-deletes the blob + its entire bounded
-   history server-side** — this is the moment the Drive-only "zero portfolio
-   bytes server-side" state begins. Removing `drive` ⇒ the client best-effort
-   deletes the Drive file (and tells the user if it could not; the leftover is
-   their own ciphertext in their own Drive).
+   ⇒ the PATCH transaction atomically removes the blob + bounded history from
+   the **active server medium** and moves those ciphertext versions into the
+   **retired recovery set**. Drive-only begins immediately — active server blob
+   and history reads are empty — while the recoverable ciphertext stays behind
+   a separately authenticated signed purge gate for its seven-day minimum
+   retention window. Only that later gate (matching the retired version, a
+   fresh Drive readback, the server challenge, and client-held Ed25519 proof)
+   destroys the retired bytes; a media PATCH or client attestation alone never
+   does. Removing `drive` ⇒ the client best-effort deletes the Drive file (and
+   tells the user if it could not; the leftover is their own ciphertext in
+   their own Drive).
 3. The last medium can never be removed (media set non-empty; the server
    validates the PATCH, the UI never offers it).
 
-The §13.5 "media switching migrates the blob correctly" test follows this
-sequence literally: enable on server → add Drive (round trip verified) →
-remove server → probe zero vault bytes server-side → app fully functional.
+The §13.5 "media switching migrates the blob correctly" test follows the
+shipped #896 sequence literally: enable on Drive → add server through an
+inactive candidate (round trip verified) → force a Drive verification failure
+and prove the active server source is retained → retry removal → probe zero
+active/history server bytes plus the recoverable retired set → app fully
+functional. Total server ciphertext reaches zero only through the separate
+retention-qualified signed purge gate.
 
 ## 6. The Google Drive medium (end-user OAuth)
 
@@ -276,10 +309,12 @@ remove server → probe zero vault bytes server-side → app fully functional.
   and are **never sent to, stored by, or refreshable by the BetterTrack
   server. There is no server-side Drive integration at all — no tokens, no
   file ids, no proxy endpoints.** Consequence, and the binding Drive-only
-  guarantee: the server holds zero portfolio bytes AND zero _capability_ to
-  fetch them — it cannot read the ciphertext even if compelled to try.
-  Per-user consent is end-user OAuth (issue-confirmed: not owner setup); the
-  only owner-provided item is the SPA client id env var.
+  guarantee: the server holds zero cleartext portfolio rows and zero active
+  server-medium ciphertext, and has zero _capability_ to fetch the Drive copy.
+  A separately gated retired recovery set can remain as described in §5; it is
+  opaque ciphertext that only the client-held key can decrypt. Per-user consent
+  is end-user OAuth (issue-confirmed: not owner setup); the only owner-provided
+  item is the SPA client id env var.
 - **Connections hub (V5-P0c):** the Drive connection renders as a Connections
   card (status, connect, disconnect) — state is client-attested metadata (the
   server only knows `drive ∈ mediaSet`). Disconnect = remove the medium per
@@ -373,8 +408,9 @@ clear because they cannot exist yet. On an established account those rows are
 the §5 retirement recovery set, destroyable only through the signed purge gate
 (matching retired version + Ed25519 retirement proof + the minimum retention
 window); a replayed enable satisfies none of those checks, and an account that
-retired the server medium passes the retry's "no server ciphertext" test
-precisely because the ciphertext lives there.
+retired the server medium passes the retry's "no active server ciphertext"
+test precisely because its recovery ciphertext lives outside the active
+medium.
 
 Revocation of INBOUND shares is permanent and one-directional: the account's
 membership rows in other users' audiences and friend groups are deleted, and
@@ -382,6 +418,164 @@ disable restores none of them — each owner re-adds the account deliberately.
 Keeping a restore list would mean holding the very social graph the mode exists
 to remove, server-side, for the whole paranoid period. Logged as a plan
 deviation in PROJECTPLAN.md §16 (2026-07-30), owner ack pending.
+
+## 7.1 Severed-fork MIRRORCHAIN provenance (encrypted, versioned)
+
+**The problem.** Leaving a chain with a fork (mirrorchain design §6) keeps rows the
+chain force-applied to that copy. Replica apply deliberately waives the ordinary
+solvency gate (`force: true`), because copy-local tax movements skew a source, so
+a reachable fork ledger can carry a **negative prefix** no normal write path would
+accept. Rehydration must preserve exactly those rows — and only those.
+
+The identity that proves a row came from the chain lives in `mirror_rows`
+(logical `mirror_id` ↔ copy-local `local_id`), and that table dies with the copy:
+enable deletes the portfolio, so the map cascades away. The append-only oplog
+keeps only the LOGICAL id, while the encrypted document keeps only the LOCAL id.
+`local_id = mirror_id` holds at the origin _until_ a sanctioned financial
+correction (delete + re-create + repoint, mirrorchain §2) replaces the local row —
+after that the equality is false, and inferring the association from row values is
+ambiguous. So the map itself must be captured while it still exists.
+
+**Representation.** `vaultMirrorProvenanceSchema` (`packages/contracts/src/vault.ts`):
+`{ chainId, membershipId, kind, mirrorId, portfolioId, localId }`, carried as the
+additive `mirrorProvenance` array on vault document v1/v2 and on the strict restore
+document. `membershipId` is the caller's OWN ended `mirror_chain_members` row:
+**re-joining is a normal flow**, so one chain can hold two retained forks, each
+with its own copy of the same logical entity and its own (higher) watermark. The
+tombstone identity is the minimum needed to prove an older fork against the
+membership that actually kept it — and to keep the two copies' entries from
+colliding as a "duplicate logical identity". It is not a `mirror_rows` column, so
+it is declared in `VAULT_MIRROR_PROVENANCE_PROOF_FIELDS` and the completeness gate
+subtracts it before comparing columns. It is `.default([])`, so a document written before this section parses
+unchanged and means "no severed fork" — no already-written `schemaVersion` is
+reinterpreted, and an unsupported (higher) version still fails closed. The two
+`mirror_rows` attribution columns are deliberately dropped
+(`VAULT_MIRROR_PROVENANCE_DROPPED_COLUMNS`): they are a co-member's identity, the
+vault must not carry it, and restore-time validation never needs it. That is also
+why `mirror_rows` is NOT vault-classified and is never re-inserted on disable —
+restoring it would require exactly the identity we refuse to carry, and the fork
+is un-synced by definition.
+
+**Capture** — `GET /account/paranoid/fork-provenance`: the caller's own
+`mirror_rows`, joined to the ENDED membership that owns each copy
+(`(chain_id, portfolio_id)` selects exactly one membership per account, because a
+re-join mints a fresh copy rather than reviving the fork's). Active memberships
+never match — they block enable anyway and would be live chain data — and no other
+user's row is reachable, because the read is scoped by portfolio ownership.
+
+The client calls it from `captureForkProvenanceIntoVault`
+(`apps/web/src/user/vault/mirrorProvenance.ts`), and **every unlocked session runs
+that fold** (`media/runtime.ts`, beside the retirement-proof material). That is
+what guarantees the map is inside the ciphertext BEFORE `enable()` purges
+`mirror_rows`, without the wizard having to remember a step: the fold is a
+union-and-prune, so it is idempotent and a second session cannot duplicate or drop
+an identity. Once paranoid mode is on, the read is empty and the fold no-ops (no
+vault version is spent). A capture read that cannot be REACHED is skipped and
+retried on the next unlock — an unreachable API must not block unlocking an
+already-encrypted vault (Drive-only can be readable while the API is not) — but a
+read that succeeded and produced new provenance must land durably, or unlock
+fails: a fork whose identities never reached the ciphertext could not be restored.
+
+**Merge / migration.** Provenance is content-addressed, not entity-atomic: the
+CAS merge takes the deterministic UNION keyed by `(kind, membershipId, mirrorId)`,
+and dominance requires the winner to already contain every entry of the loser, so a
+merge can never silently drop it. Two entries claiming one logical identity with
+different `localId`s, or one `localId` under two logical identities, are a
+malformed document (fail closed) rather than a resolvable conflict.
+
+**Pruning is part of the document lifecycle, not a one-off step.** An entry may
+only name a row the document still keeps live; the server rejects one that names no
+restored row, which would otherwise leave the account unable to disable paranoid
+mode at all. So `pruneForkProvenance` runs in three places: inside the CAS merge
+(against the MERGED entities, so a row one side deleted takes its provenance with
+it instead of the union resurrecting it), in `encryptCandidate` — the single funnel
+every committed or published document passes through, so a plain local deletion
+prunes on the very next write — and in the disable carriage. Dominance prunes BOTH
+sides before comparing, so a stale entry the loser still carries cannot force a
+divergent merge on every reconcile. An ABSENT `mirrorProvenance` key stays absent
+throughout (absent and `[]` mean the same thing), so re-encrypting a fork-free
+vault keeps emitting byte-identical plaintext.
+
+**Purge.** Enable purges the copy; `mirror_rows` cascades with the portfolio and
+the account keeps ZERO cleartext alias rows — including Drive-only, which gains no
+new server-side table, fingerprint, or portfolio-derived metadata. What survives
+is chain-level and already retained by mirrorchain §2/§6: the append-only oplog
+and the membership tombstone (with its `applied_seq` watermark). Those are the
+proof surface; the user's own map is the encrypted half.
+
+**Disable-time validation** (all of it BEFORE the mutation transaction opens):
+
+1. Each entry resolves to a live document entity of the mapped kind and to that
+   entity's portfolio, and the entries are unique by logical identity AND by local
+   id — a duplicate is rejected, never merged.
+2. Entries are grouped by `membershipId`, and that membership must be one the
+   caller provably holds and that has ENDED — an unknown membership, another
+   account's, or a still-active one is rejected — and its `chain_id` must equal the
+   entry's. One membership names exactly one copy: a second `portfolioId` under one
+   membership, or two memberships claiming one copy, is rejected.
+3. The entity's authoritative op is the highest-seq op ≤ **that membership's**
+   `applied_seq` (never a later copy's). Absent (no op for the logical id),
+   beyond-watermark, wrong-kind (an op class that cannot produce that row kind) and
+   stale (the authoritative op is a delete) are all rejected. A `cash.transfer` op
+   speaks for BOTH minted leg ids, one of which is not its own `mirror_id` column.
+4. **The restored row must be the full-state result of that op** (mirrorchain §3:
+   the highest-seq op ≤ the watermark IS the entity's state), compared at the
+   persisted column's own scale so `2.9` and `2.90000000` agree:
+   - an external cash movement — append-only on every copy, so its state is the
+     op's for good — binds `kind`, source, **`amountEur` through the write path's
+     own `floorCents`**, `executedAt`, the transfer counterpart source, and the
+     absence of a transaction/dividend/tax link. A genuine withdrawal therefore
+     cannot authenticate a larger one;
+   - a dividend (no in-place update surface exists) binds asset, gross amount,
+     `executedAt` and cash source;
+   - a transaction that carries a linked movement binds side, quantity, price, fee,
+     `executedAt`, the uncovered pair and (from its create op) the asset. That is
+     sound precisely because such a row refuses an in-place financial edit
+     (`TRANSACTION_CASH_LINKED` / `TRANSACTION_TAXED`) and the sanctioned correction
+     re-creates it under a NEW local id — so a row whose financials diverged can no
+     longer be the row the entry names. A chain transaction with NO linked movement
+     needs no waiver and stays locally editable, so nothing is bound and nothing is
+     authenticated for it. Notes stay unbound (editable, and they cannot change a
+     ledger outcome), as do a `cash_source`'s own columns (rename/archive/restore
+     remain available locally after the fork).
+   - **Derived legs keep the frozen-amount rule.** A buy/sell cash leg's amount and
+     a tax movement's amount are copy-derived, not op fields: the leg is the write
+     path's `floorCents` of the (now op-bound) cost/proceeds through that moment's
+     FX, and a tax movement is this copy's own regime output. Re-deriving them would
+     require an FX history the server no longer has, so `validateGraph` binds each to
+     the row it belongs to (frozen tax amount, dividend gross, transfer pairing)
+     exactly as it does outside a fork.
+5. **Cash intent is bound to the op, never to a client tag.** A `buy` leg requires
+   a buy op with `payFromCash: true`; a `sell_proceeds` leg requires a sell op with
+   `addProceedsToCash: true`; the movement's source must equal the local source the
+   op's `cashSourceMirrorId` resolves to (a `cash_source` entry of the SAME copy, or
+   the copy's Main when null); and the row's write-path tag must be
+   `sync:mirrorchain` or the entity's create-op `originSource` (a correction keeps
+   the corrected row's tag). Errors name the exact field and value.
+6. Only then is the solvency waiver granted, and it follows the authenticated
+   MOVEMENTS — never their source. Replica apply force-applied exactly the chain's
+   own writes, so an OUTFLOW may leave its source negative only when it is one of
+   them: its own proven `cash_movement`, or a leg of a proven transaction/dividend.
+   An inflow is never gated by any write path, so it may leave an already-negative
+   source negative — that is the reachable recovery prefix — while every
+   unauthenticated outflow stays exact, including one that follows a genuine chain
+   movement on the same source (the normal `withdrawCash` rule refuses it whatever
+   the prefix already is). The former `source === 'sync:mirrorchain'` test is gone:
+   it was a client-authored string that waived overdraw for a whole source on
+   request.
+
+Reading the chain tables outside the restore transaction is sound: the oplog is
+append-only, ops ≤ the watermark are immutable, and an ended membership cannot
+reactivate without leaving paranoid mode first (re-joining is a normal-mode write).
+
+**Successful rehydration and cleanup.** The provenance is proof material only: no
+row is derived from it, `mirror_rows` is not re-created, and the restored fork
+stays un-synced exactly as it was before enable. The document — provenance
+included — is discarded with the vault once disable commits; the decrypted disable
+request lives only for the already-approved request lifetime. The strict payload it
+travels in is produced by `strictVaultDocumentForDisable`
+(`apps/web/src/user/vault/paranoidDisable.ts`), which is also where the last prune
+runs.
 
 ## 8. The feature-kill list (exact, binding)
 
@@ -433,6 +627,47 @@ Killed for paranoid accounts:
     jobs, dividend/earnings scans keyed to holdings, etc. skip paranoid
     accounts (their input tables are empty by §7); the V4 offsite backup
     carries only ciphertext for them.
+11. **The expense-tracking SURFACES (V5-P9) — absent for now, and this is a
+    recorded deviation, not a design intent.** Every `/expenses/*` route is
+    already refused under the `portfolioServer` capability (the enforcement
+    registry, PD3b), so the pages that read them are hidden rather than left to
+    401 into an empty shell: `/portfolio/cash-flow` and its transactions,
+    budgets, categories and rules tabs are killed paths for a paranoid account.
+    The DATA is not killed — §1 classifies the expense tables as `vault` and
+    the enable migration carries every category, transaction, rule and budget
+    into the blob, so the whole area returns intact on disable. What is missing
+    is the client-side re-derivation of those five pages against the vault
+    store; it is v6 follow-up work and is logged in PROJECTPLAN §16
+    (2026-07-31) alongside the home board (item 13) and the contribution
+    column (item 12).
+12. **Series that need per-asset history — answered with the portfolio's own
+    NET-WORTH curve, and labelled as such.** The client engine derives one
+    value series per portfolio (holdings + cash, `netWorthSeries`); it has no
+    equivalent of the server's `getAssetValueSeries`, which is what the
+    analytics endpoint sums over the _visible_ assets (holdings only). Two
+    surfaces read that quantity, and each answers with the client curve rather
+    than with a relabelled approximation of the server's:
+    - **Analytics** — the primary curve and its stats are the net-worth series.
+      The per-asset/group visibility filters are NOT offered here, so the
+      difference cannot show up as a filter that silently does nothing; the
+      period-contribution column is dropped for the same reason (item 11's
+      §16 row).
+    - **Forecast** — the prefilled "historical average return" samples the same
+      curve, so idle cash damps it relative to a normal account's figure. It is
+      an editable starting point, and the projection's starting value is a
+      net-worth figure too, so the two agree with each other.
+      Normal accounts are untouched by both: they keep reading
+      `analytics/…/series`, unchanged.
+13. **The Home widget board — replaced by the portfolio page, and this is a
+    recorded deviation too.** Every widget under
+    `apps/web/src/user/home/widgets/` reads `portfolioApi` directly instead of
+    the `PortfolioStore` seam (§10), so a paranoid board would mix server reads
+    into an encrypted account. `/` therefore renders `<PortfolioPage />` while the mode is
+    paranoid. The board's saved configuration is not touched — it lives in
+    `localStorage`, never in the vault or on the server — so it comes back
+    exactly as it was on disable. Porting the widgets to the store seam is the
+    v6 follow-up; it is logged in PROJECTPLAN §16 (2026-07-31) with items 11
+    and 12.
 
 Kept, unchanged (the "fully functional" half): the full auth stack (password,
 2FA, passkeys, PIN, sessions, admin-independent), friendships + chat +
@@ -443,6 +678,20 @@ calculators (client-side already), Forecast (client-side already —
 `apps/web/src/user/forecast/` is the precedent), discreet mode (composes:
 discreet hides amounts the client just computed), i18n, announcements,
 account export + deletion (§12).
+
+**Kept ≠ reachable while LOCKED.** The unlock gate replaces the whole
+authenticated subtree — exactly like the PIN gate it is modelled on — so every
+kept surface above is reachable only _after_ the vault opens on that device.
+That is deliberate (a gate that let arbitrary routes through would have to
+reason about which of them can touch the store) and it costs one real
+affordance: **`/oauth/authorize`**. A paranoid account with a locked vault must
+unlock before it can grant an app even a scope §8 keeps, such as
+`market:read`; once mounted, the consent page's own `portfolioScopeBlocked`
+refusal still applies to the portfolio-scoped half. The single exception is
+**`/account/delete`**, served directly from the locked branch (§12 names it
+kept, it is the stable public URL the store listing points at, and it reads no
+money data), so the gate is never a dead end. PD9 asserts both halves: consent
+behind the gate, deletion in front of it.
 
 ## 9. Server-side price alerts with zero portfolio exposure
 
@@ -555,11 +804,12 @@ them.
   your encrypted data lives — default **server** ("encrypted on BetterTrack;
   only you can read it" — the simplest mental model), "also keep a copy in my
   Google Drive" as a checkbox, **Drive-only behind one "advanced" disclosure**
-  ("nothing on BetterTrack servers — not even encrypted"); (3) passphrase +
-  forced recovery-kit download + the strong-rung acknowledgment: "If I lose
-  my vault passphrase and my recovery kit, my data is gone forever.
-  BetterTrack cannot recover it."; (4) migration progress → done. Three
-  clicks on the main path; no expert corner.
+  ("no active BetterTrack copy; an encrypted recovery copy stays retained until
+  I explicitly delete it after the safety window"); (3) passphrase + forced
+  recovery-kit download + the strong-rung acknowledgment: "If I lose my vault
+  passphrase and my recovery kit, my data is gone forever. BetterTrack cannot
+  recover it."; (4) migration progress → done. Three clicks on the main path;
+  no expert corner.
 - **Unlock:** a vault gate visually analogous to the PIN gate (passphrase
   field, "keep unlocked on this device", lock action in the profile menu;
   auto-lock per §3). After unlock the app IS the normal app — same pages,
@@ -609,8 +859,8 @@ issue).
    tests (offline-fork worked cases).
 6. **PD6 — Drive data home + Connections card + media switching**
    (`diff:hard`): GIS token client, appdata adapter, §5 migrate-then-drop,
-   Drive-only PATCH semantics (server blob hard-delete), sync-chip Drive
-   states.
+   Drive-only PATCH semantics (active-copy retirement + signed purge gate),
+   sync-chip Drive states.
 7. **PD7 — Client valuation/stats/tax engine + client exports** (`diff:max`,
    money): the §10 engine on the shared domain, client tax reports +
    CSV/PDF, client cleartext export, standing-order client materialization
@@ -620,7 +870,9 @@ issue).
    EN + DE strings.
 9. **PD9 — e2e + gate** (`diff:intermediate`): the §15 scenarios as
    Playwright specs (Drive mocked at the data-home boundary; the Drive-only
-   round trip is the headline spec), joining the V5-P14 suite.
+   round trip is the headline spec), joining the V5-P14 suite. Include the §8
+   locked-reachability pair: `/oauth/authorize` sits behind the unlock gate,
+   `/account/delete` in front of it.
 
 Order: PD1 ∥ PD2 first; PD3 after PD2; PD4 → PD5 after PD2; PD6/PD7 after
 PD5; PD8 after PD5 (PD3's server enforcement can land in parallel with
@@ -630,7 +882,7 @@ PD4–PD7); PD9 last.
 
 | §13.5 "done when" criterion                                                                       | Decided by                                                  |
 | ------------------------------------------------------------------------------------------------- | ----------------------------------------------------------- |
-| Design note §16-logged + owner-acked BEFORE code                                                  | This note's status block + the `awaiting-owner` gate        |
+| Design note §16-logged + owner-acked BEFORE code                                                  | Status + PROJECTPLAN §16 + owner-approved #733 brief        |
 | Mode on ⇒ server stores no cleartext portfolio data (schema/probe test)                           | §1 (classification), §7 (purge sweep), §8 (enforcement)     |
 | Drive-only round trip: zero portfolio rows server-side and the app remains fully functional (e2e) | §5 (removal semantics), §6 (guarantee), §8 (kept list), §10 |
 | Media switching migrates the blob correctly (test)                                                | §5 (migrate-then-drop, verbatim sequence)                   |

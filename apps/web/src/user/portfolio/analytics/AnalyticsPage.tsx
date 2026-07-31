@@ -8,18 +8,21 @@ import {
   type AnalyticsInflationMode,
   type AnalyticsInflationPreset,
   type AnalyticsMode,
+  type AnalyticsSeriesResponse,
   type PortfolioAsset,
+  type PortfolioHistoryResponse,
   type PortfolioHistoryRange,
+  type PortfolioResponse,
 } from '@bettertrack/contracts';
+import { computeSeriesStats } from '@bettertrack/domain/seriesStats';
 
 import { useT } from '../../../i18n';
 import type { TranslateFn } from '../../../i18n';
 import { getAnalyticsSeries, type AnalyticsSeriesParams } from '../../../lib/analyticsApi';
-import { getPortfolio, getPortfolioHistory, listPortfolios } from '../../../lib/portfolioApi';
 import { cx } from '../../../lib/cx';
 import { EM_DASH, formatDate, formatPercent, formatSignedPercent } from '../../../lib/format';
 import { EmptyState, Skeleton } from '../../../ui';
-import { PageHead, Stat, StatStrip } from '../../../ui/origin';
+import { Button, PageHead, Stat, StatStrip } from '../../../ui/origin';
 import { PriceChart } from '../../../ui/charts';
 import type { BenchmarkSeries, ChartPoint } from '../../../ui/charts';
 import { Alert } from '../../components/ui';
@@ -27,6 +30,10 @@ import { ACTIVE_PORTFOLIO_PARAM, resolveActivePortfolio } from '../PortfolioSwit
 import { AiInsightsPanel } from './AiInsightsPanel';
 import { CompareControl, type CompareTarget } from './CompareControl';
 import { ContributionTable } from './ContributionTable';
+import { usePortfolioStore } from '../PortfolioStoreProvider';
+import { trimZeroValueEdges } from '../../vault/engine/clientSeries';
+import { useResolvedPrivacyMode } from '../../vault/usePrivacyMode';
+import { NormalModeOnly } from '../../vault/ui/ParanoidSurfaceGate';
 
 // ─── Range presets ────────────────────────────────────────────────────────────
 
@@ -71,6 +78,99 @@ function overlayHistoryRange(preset: RangePreset): PortfolioHistoryRange {
   return '1Y';
 }
 
+function analyticsHistoryRange(preset: RangePreset): PortfolioHistoryRange {
+  if (preset === 'm1') return '1M';
+  if (preset === 'm3' || preset === 'm6') return '6M';
+  if (preset === 'y1' || preset === 'ytd') return '1Y';
+  return 'MAX';
+}
+
+/**
+ * The paranoid substitute for the `analytics/.../series` endpoint, built from
+ * the two client-derived reads a decrypted vault can produce. Where the server's
+ * quantity is reproducible it is reproduced exactly; where it is not, the field
+ * is dropped rather than relabelled:
+ *
+ * - The primary curve is the vault's own NET-WORTH series (holdings + cash) —
+ *   the only value curve the client engine derives. The server's `primary` is
+ *   `getAssetValueSeries` summed over the VISIBLE assets (holdings only), which
+ *   needs per-asset history the engine has no equivalent of. The difference is
+ *   not observable as a filter here: the per-asset/group visibility controls are
+ *   not offered in paranoid mode (see `VisibilityFilters` below), so `hide` /
+ *   `hideGroups` are always empty and the curve is the whole portfolio either
+ *   way. It is a genuinely different series from the normal-account one, and it
+ *   is stated in docs/paranoid-design.md §8 alongside the dropped column.
+ * - Zero edges are trimmed first, like the server, so the window's `from`/`to`,
+ *   stats and perf rebase all anchor to the first day the portfolio held value.
+ * - `perf` mode rebases the window's values exactly like the server's
+ *   `toPerformanceSeries` (value-normalized), NOT the TWR curve the history
+ *   response also carries; those are two different curves.
+ * - `contributionPct` is `null`: measuring an asset's share of the window's
+ *   change needs the same per-asset history. The table drops the column
+ *   instead (docs/paranoid-design.md §8 item 12; PROJECTPLAN §16 2026-07-31,
+ *   issue #729).
+ */
+function clientAnalyticsResponse(
+  portfolioId: string,
+  label: string,
+  portfolio: PortfolioResponse,
+  history: PortfolioHistoryResponse,
+  params: AnalyticsSeriesParams,
+): AnalyticsSeriesResponse {
+  const inWindow = trimZeroValueEdges(
+    history.points.filter(
+      (point) =>
+        (params.from == null || point.date >= params.from) &&
+        (params.to == null || point.date <= params.to),
+    ),
+  );
+  const first = inWindow[0]?.valueEur ?? 0;
+  const visible = portfolio.holdings.filter(
+    (holding) =>
+      !(params.hide ?? []).includes(holding.asset.id) &&
+      !(params.hideGroups ?? []).includes(groupKeyOf(holding.asset)),
+  );
+  const totalValue = visible.reduce((sum, holding) => sum + (holding.marketValueEur ?? 0), 0);
+  const today = isoDay(new Date());
+  const from = inWindow[0]?.date ?? params.from ?? today;
+  const to = inWindow.at(-1)?.date ?? params.to ?? from;
+
+  return {
+    portfolioId,
+    baseCurrency: portfolio.baseCurrency,
+    mode: params.mode ?? 'value',
+    from,
+    to,
+    inflation: null,
+    inflationPresets: [],
+    primary: {
+      kind: 'portfolio',
+      label,
+      points: inWindow.map((point) => ({
+        date: point.date,
+        value:
+          params.mode === 'perf'
+            ? first > 0
+              ? (point.valueEur / first - 1) * 100
+              : 0
+            : point.valueEur,
+      })),
+      stats: computeSeriesStats(
+        inWindow.map((point) => ({ date: point.date, value: point.valueEur })),
+      ),
+    },
+    compare: null,
+    contributions: visible.map((holding) => ({
+      asset: holding.asset,
+      value: holding.marketValueEur ?? 0,
+      cost: holding.costBasisEur ?? 0,
+      pnl: holding.unrealizedPnlEur ?? 0,
+      weight: totalValue === 0 ? 0 : (holding.marketValueEur ?? 0) / totalValue,
+      contributionPct: null,
+    })),
+  };
+}
+
 /** The bucket an asset filters by: market assets by `type`, custom assets by `category`. */
 function groupKeyOf(asset: PortfolioAsset): string {
   return asset.isCustom ? (asset.category ?? 'other') : asset.type;
@@ -92,6 +192,8 @@ function groupKeyOf(asset: PortfolioAsset): string {
  */
 export function AnalyticsPage() {
   const t = useT();
+  const store = usePortfolioStore();
+  const paranoid = useResolvedPrivacyMode() === 'paranoid';
   const [searchParams] = useSearchParams();
 
   const [mode, setMode] = useState<AnalyticsMode>('value');
@@ -107,7 +209,7 @@ export function AnalyticsPage() {
 
   const portfoliosQuery = useQuery({
     queryKey: ['portfolios'],
-    queryFn: ({ signal }) => listPortfolios(signal),
+    queryFn: ({ signal }) => store.listPortfolios(signal),
     staleTime: 60_000,
   });
   const activeParam = searchParams.get(ACTIVE_PORTFOLIO_PARAM);
@@ -128,7 +230,7 @@ export function AnalyticsPage() {
   // The asset universe for the visibility toggles + group chips (current holdings).
   const portfolioQuery = useQuery({
     queryKey: ['portfolio', portfolioId],
-    queryFn: ({ signal }) => getPortfolio(portfolioId!, signal),
+    queryFn: ({ signal }) => store.getPortfolio(portfolioId!, signal),
     enabled: portfolioId !== null,
     staleTime: 60_000,
   });
@@ -157,7 +259,20 @@ export function AnalyticsPage() {
 
   const analyticsQuery = useQuery({
     queryKey: ['analytics', portfolioId, analyticsParams],
-    queryFn: ({ signal }) => getAnalyticsSeries(portfolioId!, analyticsParams, signal),
+    queryFn: async ({ signal }) => {
+      if (!paranoid) return getAnalyticsSeries(portfolioId!, analyticsParams, signal);
+      const [portfolioView, history] = await Promise.all([
+        store.getPortfolio(portfolioId!, signal),
+        store.getPortfolioHistory(portfolioId!, analyticsHistoryRange(preset), false, signal),
+      ]);
+      return clientAnalyticsResponse(
+        portfolioId!,
+        portfolio?.name ?? '',
+        portfolioView,
+        history,
+        analyticsParams,
+      );
+    },
     enabled: portfolioId !== null,
     placeholderData: keepPreviousData,
     staleTime: 60_000,
@@ -168,8 +283,8 @@ export function AnalyticsPage() {
   const overlayHistory = useQuery({
     queryKey: ['portfolio', portfolioId, 'history', overlayHistoryRange(preset), true],
     queryFn: ({ signal }) =>
-      getPortfolioHistory(portfolioId!, overlayHistoryRange(preset), true, signal),
-    enabled: portfolioId !== null && overlayAssets,
+      store.getPortfolioHistory(portfolioId!, overlayHistoryRange(preset), true, signal),
+    enabled: portfolioId !== null && overlayAssets && !paranoid,
     staleTime: HISTORY_STALE_MS,
   });
 
@@ -266,11 +381,39 @@ export function AnalyticsPage() {
     );
   }
 
-  if (portfoliosQuery.isError || portfolioId === null || portfolioQuery.isError) {
+  if (portfoliosQuery.isError || (portfolioId !== null && portfolioQuery.isError)) {
     return (
       <div className="flex flex-col gap-4">
         <PageHeader t={t} />
         <Alert tone="error">{t('portfolio.analytics.loadError')}</Alert>
+        <div>
+          <Button
+            onClick={() => {
+              void portfoliosQuery.refetch();
+              if (portfolioId !== null) void portfolioQuery.refetch();
+            }}
+          >
+            {t('common.retry')}
+          </Button>
+        </div>
+      </div>
+    );
+  }
+
+  if (portfolioId === null) {
+    return (
+      <div className="flex flex-col gap-6">
+        <PageHeader t={t} />
+        <EmptyState
+          icon="📊"
+          title={t('portfolio.analytics.noPortfolio.title')}
+          description={t('portfolio.analytics.noPortfolio.description')}
+          cta={
+            <Link className="bt-btn bt-btn--primary" to="/portfolios?create=1">
+              {t('create.portfolio')}
+            </Link>
+          }
+        />
       </div>
     );
   }
@@ -295,7 +438,16 @@ export function AnalyticsPage() {
       <PageHeader t={t} />
 
       {analyticsQuery.isError ? (
-        <Alert tone="error">{t('portfolio.analytics.loadError')}</Alert>
+        <div className="flex flex-col items-start gap-2">
+          <Alert tone="error">{t('portfolio.analytics.loadError')}</Alert>
+          <Button onClick={() => void analyticsQuery.refetch()}>{t('common.retry')}</Button>
+        </div>
+      ) : null}
+      {overlayAssets && overlayHistory.isError ? (
+        <div className="flex flex-col items-start gap-2">
+          <Alert tone="error">{t('portfolio.analytics.loadError')}</Alert>
+          <Button onClick={() => void overlayHistory.refetch()}>{t('common.retry')}</Button>
+        </div>
       ) : null}
 
       {/* Top controls: display mode, range presets + custom window, inflation. */}
@@ -303,14 +455,16 @@ export function AnalyticsPage() {
         <div className="flex flex-wrap items-end justify-between gap-4">
           <div className="flex flex-wrap items-center gap-2">
             <ModeToggle t={t} mode={mode} onChange={setMode} />
-            <InflationControl
-              t={t}
-              inflation={inflation}
-              onInflationChange={setInflation}
-              rate={inflationRate}
-              onRateChange={setInflationRate}
-              presets={data?.inflationPresets ?? []}
-            />
+            {!paranoid ? (
+              <InflationControl
+                t={t}
+                inflation={inflation}
+                onInflationChange={setInflation}
+                rate={inflationRate}
+                onRateChange={setInflationRate}
+                presets={data?.inflationPresets ?? []}
+              />
+            ) : null}
           </div>
         </div>
 
@@ -327,7 +481,9 @@ export function AnalyticsPage() {
         />
       </section>
 
-      <CompareControl value={compare} onChange={setCompare} currentPortfolioId={portfolioId} />
+      {!paranoid ? (
+        <CompareControl value={compare} onChange={setCompare} currentPortfolioId={portfolioId} />
+      ) : null}
 
       {/* Main graph. */}
       <section
@@ -379,17 +535,19 @@ export function AnalyticsPage() {
       ) : null}
 
       {/* Visibility & overlay filters. */}
-      <VisibilityFilters
-        t={t}
-        assets={assets}
-        hidden={hidden}
-        onToggleAsset={toggleHidden}
-        presentGroups={presentGroups}
-        excludedGroups={excludedGroups}
-        onToggleGroup={toggleGroup}
-        overlayAssets={overlayAssets}
-        onToggleOverlay={() => setOverlayAssets((v) => !v)}
-      />
+      {!paranoid ? (
+        <VisibilityFilters
+          t={t}
+          assets={assets}
+          hidden={hidden}
+          onToggleAsset={toggleHidden}
+          presentGroups={presentGroups}
+          excludedGroups={excludedGroups}
+          onToggleGroup={toggleGroup}
+          overlayAssets={overlayAssets}
+          onToggleOverlay={() => setOverlayAssets((v) => !v)}
+        />
+      ) : null}
 
       {/* Per-asset contribution table (visible set). */}
       <section className="flex flex-col gap-3">
@@ -402,7 +560,9 @@ export function AnalyticsPage() {
 
       {/* AI insights (§13.5 V5-P12) — hidden entirely unless the capability read
           says AI is available; compact and fold-away (anti-bloat). */}
-      <AiInsightsPanel portfolioId={portfolioId} hasHoldings={assets.length > 0} />
+      <NormalModeOnly>
+        <AiInsightsPanel portfolioId={portfolioId} hasHoldings={assets.length > 0} />
+      </NormalModeOnly>
     </div>
   );
 }

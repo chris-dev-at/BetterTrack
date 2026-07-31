@@ -16,7 +16,8 @@ vi.mock('../../../lib/webhooksApi', () => ({
   listWebhookDeliveries: vi.fn(),
 }));
 
-import { createWebhook, listWebhooks } from '../../../lib/webhooksApi';
+import { createWebhook, listWebhookDeliveries, listWebhooks } from '../../../lib/webhooksApi';
+import { ResolvedPrivacyModeProvider } from '../../vault/usePrivacyMode';
 import { WebhooksPanel } from './WebhooksPanel';
 
 const EMPTY: WebhookSubscriptionListResponse = { subscriptions: [] };
@@ -83,6 +84,34 @@ describe('WebhooksPanel', () => {
     expect(listWebhooks).toHaveBeenCalledTimes(1);
   });
 
+  test('retries a failed subscription-list read in place', async () => {
+    vi.mocked(listWebhooks)
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce(EMPTY);
+    const user = userEvent.setup();
+    renderPanel();
+
+    await user.click(await screen.findByRole('button', { name: 'Try again' }));
+
+    expect(await screen.findByText(/no webhooks yet/i)).toBeInTheDocument();
+    expect(listWebhooks).toHaveBeenCalledTimes(2);
+  });
+
+  test('retries a failed on-demand delivery read', async () => {
+    vi.mocked(listWebhooks).mockResolvedValue(ONE);
+    vi.mocked(listWebhookDeliveries)
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce({ deliveries: [] });
+    const user = userEvent.setup();
+    renderPanel();
+
+    await user.click(await screen.findByRole('button', { name: 'Deliveries' }));
+    await user.click(await screen.findByRole('button', { name: 'Try again' }));
+
+    expect(await screen.findByText(/no deliveries recorded yet/i)).toBeInTheDocument();
+    expect(listWebhookDeliveries).toHaveBeenCalledTimes(2);
+  });
+
   test('creates a webhook and shows the signing secret exactly once', async () => {
     vi.mocked(createWebhook).mockResolvedValue(CREATED);
     const user = userEvent.setup();
@@ -132,5 +161,32 @@ describe('WebhooksPanel', () => {
 
     expect(await screen.findByText('https://receiver.test/hook')).toBeInTheDocument();
     expect(screen.getByText('Active')).toBeInTheDocument();
+  });
+
+  test('Paranoid mode marks a subscribed event it never fires instead of hiding it', async () => {
+    vi.mocked(listWebhooks).mockResolvedValue({
+      subscriptions: [
+        { ...ONE.subscriptions[0]!, eventTypes: ['alert.triggered', 'mirror.invite'] },
+      ],
+    });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 0 } } });
+    render(
+      <QueryClientProvider client={client}>
+        <ResolvedPrivacyModeProvider mode="paranoid">
+          <WebhooksPanel />
+        </ResolvedPrivacyModeProvider>
+      </QueryClientProvider>,
+    );
+
+    // The subscription really carries the event and starts delivering again as
+    // soon as paranoid mode is off, so the row states it — struck through.
+    expect(await screen.findByText('mirror.invite')).toBeInTheDocument();
+    expect(screen.getByText(/inactive in Paranoid mode/i)).toBeInTheDocument();
+    expect(screen.getByText('alert.triggered')).toBeInTheDocument();
+    // And the create form still refuses to offer the killed event.
+    const createForm = screen.getByRole('button', { name: 'Add webhook' }).closest('form')!;
+    expect(
+      within(createForm).queryByRole('checkbox', { name: /group portfolio invite/i }),
+    ).not.toBeInTheDocument();
   });
 });

@@ -453,9 +453,20 @@ export const PARANOID_TABLE_CLASSIFICATION: Record<string, ParanoidClassificatio
   chat_messages: 'server',
   telegram_links: 'server',
   discord_webhooks: 'server',
-  // MIRRORCHAIN link/attribution tables — mutually exclusive with paranoid, so
-  // empty for these accounts anyway (§7 precondition, §8 item 5); a member's
-  // actual copy is real portfolios/transactions (vault-classified above).
+  // MIRRORCHAIN link/attribution tables. An ACTIVE membership is mutually
+  // exclusive with paranoid (§7 precondition, §8 item 5), but a member who left
+  // with a fork keeps its rows until enable purges the copy — and the chain-level
+  // tables stay populated forever by design. They are all `server` deliberately:
+  //  - `mirror_chains` / `mirror_chain_ops` / `mirror_chain_members` are
+  //    chain-level and shared; the oplog + the ended membership's watermark are
+  //    exactly the retained proof surface disable-time provenance validation
+  //    checks against (docs/paranoid-design.md §7.1).
+  //  - `mirror_rows` is the fork's logical↔local identity map. It DIES with the
+  //    copy at enable (portfolio_id cascade), leaving zero cleartext alias rows,
+  //    and it can never become `vault`-classified: its attribution columns are a
+  //    co-member's identity, which the encrypted document must not carry. Its
+  //    logical half rides the vault as `mirrorProvenance` instead, and is proof
+  //    material only — no row is ever restored from it.
   mirror_chains: 'server',
   mirror_chain_members: 'server',
   mirror_chain_invites: 'server',
@@ -502,26 +513,22 @@ export const PARANOID_REHYDRATION_POLICY: Record<string, ParanoidRehydrationPoli
   portfolio_daily_snapshots: purgeOnly(),
   portfolio_snapshot_state: purgeOnly(),
   expense_budget_fires: purgeOnly(),
-  // V5 cash fusion (migration 0075) — PURGE-ONLY *for now*, and that is a
-  // deliberate, bounded statement of today's truth rather than a preference:
-  // phase 1 ships only the schema + the backfill, so no service writes these
-  // tables and the client's vault document emits none of these entity kinds. A
-  // `restore` policy would claim coverage the client cannot deliver — exactly
-  // what this file's header forbids ("a classification can never claim coverage
-  // the collector doesn't deliver") — and would ship six dead insertion branches.
-  //
-  // THE PHASE THAT GIVES THESE TABLES A WRITER MUST FLIP THEM TO `restore`,
-  // otherwise disabling paranoid mode silently drops a user's tags, budgets and
-  // rules. The strict payload schemas already exist (`VAULT_ENTITY_ROW_SCHEMAS`),
-  // so the flip is policy + handler + insert branch. `paranoidClassification`'s
-  // "cash-flow tables" test fails the moment a cash repository appears, so the
-  // requirement cannot be forgotten rather than merely being written down here.
-  cash_tags: purgeOnly(),
-  cash_movement_tags: purgeOnly(),
-  cash_budgets: purgeOnly(),
+  // V5 cash fusion — FLIPPED TO `restore` in phase 2, which is the phase that
+  // gave these tables their writers (`/api/v1/cash`, `cashTagRepository`,
+  // `cashBudgetRepository`, `cashRuleRepository`, and the auto-tagging stamp on
+  // every movement INSERT). Phase 1 left them `purge-only` because nothing wrote
+  // them; leaving them so now would mean a paranoid user disabling the mode
+  // silently loses every tag, budget and rule they have.
+  cash_tags: restore('cashTag'),
+  cash_movement_tags: restore('cashMovementTag'),
+  cash_budgets: restore('cashBudget'),
+  cash_rules: restore('cashRule'),
+  cash_rule_tags: restore('cashRuleTag'),
+  // The per-period fired marker stays derived: it is exactly-once ALERT
+  // bookkeeping, not user data. Restoring it from a client-held document would
+  // let an edited vault suppress a real alert forever, and rebuilding it costs
+  // at most one re-alert of a month that is genuinely over budget.
   cash_budget_fires: purgeOnly(),
-  cash_rules: purgeOnly(),
-  cash_rule_tags: purgeOnly(),
 };
 
 /**
@@ -545,6 +552,11 @@ export const PARANOID_REHYDRATION_HANDLERS = [
   'expenseTransaction',
   'expenseRule',
   'expenseBudget',
+  'cashTag',
+  'cashMovementTag',
+  'cashBudget',
+  'cashRule',
+  'cashRuleTag',
 ] as const satisfies readonly VaultEntityKind[];
 
 /** The `vault`-classified table names (purge/probe/rehydration iterate these). */

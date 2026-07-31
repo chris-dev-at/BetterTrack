@@ -3,6 +3,8 @@ import type { FeatureFlagKey } from '@bettertrack/contracts';
 import { useT } from '../../i18n';
 import { useFeatureFlags } from '../../lib/featureFlags';
 import { ACTIVE_PORTFOLIO_PARAM } from '../portfolio/PortfolioSwitcher';
+import { isParanoidKilledPath } from '../vault/ui/ParanoidSurfaceGate';
+import { useResolvedPrivacyMode } from '../vault/usePrivacyMode';
 import type { LocalNavItem } from './LocalNav';
 
 /**
@@ -59,7 +61,7 @@ export const SECTION_NAV: Readonly<Record<SectionKey, SectionNav>> = {
     children: [
       { to: '/portfolio', labelKey: 'portfolio.tabs.overview', end: true, rail: true },
       { to: '/portfolio/activity', labelKey: 'portfolio.tabs.activity', rail: true },
-      { to: '/portfolio/cash-flow', labelKey: 'portfolio.tabs.cashFlow', rail: true },
+      { to: '/portfolio/cash', labelKey: 'portfolio.tabs.cashFlow', rail: true },
       { to: '/portfolio/analysis', labelKey: 'portfolio.tabs.analysis' },
       { to: '/portfolio/tax', labelKey: 'portfolio.tabs.tax' },
       { to: '/portfolio/import', labelKey: 'portfolio.tabs.import', flag: 'imports' },
@@ -117,9 +119,18 @@ export const SECTION_NAV: Readonly<Record<SectionKey, SectionNav>> = {
 /** The children a section shows right now (kill-switched entries dropped). */
 export function useSectionNavChildren(section: SectionKey): readonly SectionNavChild[] {
   const flags = useFeatureFlags();
-  return SECTION_NAV[section].children.filter(
-    (child) => child.flag === undefined || flags[child.flag],
-  );
+  const privacyMode = useResolvedPrivacyMode();
+  return SECTION_NAV[section].children.flatMap((child) => {
+    if (child.flag !== undefined && !flags[child.flag]) return [];
+    if (privacyMode !== 'paranoid') return [child];
+    // Expense tracking is server-killed, but cash accounts remain local-vault
+    // data. Point the shared Cash flow tab straight at that kept child so no
+    // visible link targets a route the paranoid gate must redirect.
+    if (child.to === '/portfolio/cash-flow') {
+      return [{ ...child, to: '/portfolio/cash-flow/accounts' }];
+    }
+    return isParanoidKilledPath(child.to) ? [] : [child];
+  });
 }
 
 /** The curated subset the rail tree renders — vital pages only. */

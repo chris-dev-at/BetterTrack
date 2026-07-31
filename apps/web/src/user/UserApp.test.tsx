@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { beforeEach, expect, test, vi } from 'vitest';
@@ -72,8 +72,29 @@ function renderAtWithLocation(path: string) {
 const anonymous = () =>
   vi.mocked(api.getMe).mockRejectedValue(new ApiError(401, 'UNAUTHENTICATED', 'Not signed in.'));
 
+/**
+ * Budget for the first assertion after a sign-in. Landing authenticated is the
+ * longest chain in this file — the login mutation flips the auth gate, the
+ * legacy path redirects into its Origin destination, the shell and the
+ * destination mount, and only then does that page's own query paint the text
+ * being asserted on.
+ *
+ * Idle, that chain settles in well under 100ms; it is also the part of these
+ * tests most sensitive to CPU contention, measured repeatedly past 2s on a
+ * loaded machine while the sign-in-page waits around it stayed in the tens of
+ * milliseconds. So on a saturated CI runner it is Testing Library's 1s default
+ * that expires, not the app failing to render. These waits are still bounded
+ * and still fail on a genuine regression — just not on runner load.
+ * `AppShell.test.tsx` budgets the same shell surfaces the same way.
+ */
+const SIGNED_IN_RENDER = { timeout: 5_000 } as const;
+
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(api.getParanoidMediaState).mockResolvedValue({
+    privacyMode: 'normal',
+    mediaState: null,
+  });
   // WorkboardPage fetches the watchlist on mount; return an empty list so the
   // page renders without errors in tests that exercise the workboard route.
   vi.mocked(listWorkboard).mockResolvedValue({ items: [] });
@@ -88,6 +109,24 @@ test('an unauthenticated visit to a user route redirects to /login', async () =>
   expect(
     screen.queryByText('Your watched assets, alerts and blueprints at a glance.'),
   ).not.toBeInTheDocument();
+});
+
+test('an unauthenticated visit to an unknown route still redirects to /login', async () => {
+  anonymous();
+
+  renderAtWithLocation('/not-a-real-route');
+
+  expect(await screen.findByText('Sign in to your account')).toBeInTheDocument();
+  expect(screen.getByTestId('location')).toHaveTextContent('/login');
+});
+
+test('the retired /people/following deep link redirects to the Friends tab', async () => {
+  vi.mocked(api.getMe).mockResolvedValue(member);
+  vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [] });
+
+  renderAtWithLocation('/people/following');
+
+  await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('/people'));
 });
 
 test('after signing in, the user returns to the originally requested route', async () => {
@@ -105,7 +144,11 @@ test('after signing in, the user returns to the originally requested route', asy
   // Landed on the intended route (the legacy /workboard path redirects into
   // the Workbench destination), not the Home command center.
   expect(
-    await screen.findByText('Your watched assets, alerts and blueprints at a glance.'),
+    await screen.findByText(
+      'Your watched assets, alerts and blueprints at a glance.',
+      {},
+      SIGNED_IN_RENDER,
+    ),
   ).toBeInTheDocument();
   expect(screen.queryByRole('heading', { name: /Welcome back/ })).not.toBeInTheDocument();
   expect(api.login).toHaveBeenCalledWith({
@@ -326,7 +369,9 @@ test('logout then login as a different user shows no stale account data (#253)',
   await user.type(screen.getByLabelText('Password'), 'correct horse');
   await user.click(screen.getByRole('button', { name: 'Sign in' }));
 
-  expect(await screen.findByText('jane@bettertrack.test')).toBeInTheDocument();
+  expect(
+    await screen.findByText('jane@bettertrack.test', {}, SIGNED_IN_RENDER),
+  ).toBeInTheDocument();
 
   await user.click(screen.getByRole('button', { name: 'Account menu' }));
   await user.click(screen.getByRole('menuitem', { name: 'Logout' }));
@@ -345,7 +390,13 @@ test('logout then login as a different user shows no stale account data (#253)',
   await user.type(screen.getByLabelText('Password'), 'another correct horse');
   await user.click(screen.getByRole('button', { name: 'Sign in' }));
 
-  expect(await screen.findByText('bob@bettertrack.test')).toBeInTheDocument();
+  // Signing out closed the Control Center with the session that opened it, so
+  // the identity has to be asked for again — which is the point: the second
+  // read must come from bob's account, not from jane's cached `['auth','me']`.
+  const utilities = await screen.findByRole('navigation', { name: 'Utilities' });
+  await user.click(within(utilities).getByRole('link', { name: 'Control Center' }));
+
+  expect(await screen.findByText('bob@bettertrack.test', {}, SIGNED_IN_RENDER)).toBeInTheDocument();
   expect(screen.queryByText('jane@bettertrack.test')).not.toBeInTheDocument();
 });
 
@@ -361,21 +412,19 @@ test('invite accept: an invalid token is rejected with a clear message and no fo
   expect(screen.queryByLabelText('Username')).not.toBeInTheDocument();
 });
 
-test('an unknown path lands on the Home command center in one hop, without appending segments', async () => {
-  // The user catch-all already redirects to the absolute `/` (never a relative
-  // target), so it cannot loop the way the admin one did. This locks that in:
-  // an unknown deep path resolves straight to the home route, not /blabla/….
+test('an unknown authenticated user path renders a not-found state without navigating away', async () => {
   vi.mocked(api.getMe).mockResolvedValue(member);
   vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [] });
 
   renderAtWithLocation('/blabla');
 
-  // Reached the authenticated shell (Home, the redesign's `/`), not a loop.
+  expect(await screen.findByText('Page not found')).toBeInTheDocument();
+  expect(screen.getByText('/blabla', { selector: 'code' })).toBeInTheDocument();
   expect(await screen.findByRole('button', { name: 'Account menu' })).toBeInTheDocument();
+  expect(screen.getByRole('link', { name: 'Back to start' })).toHaveAttribute('href', '/');
+  expect(screen.getByRole('button', { name: 'Back to previous page' })).toBeInTheDocument();
 
-  // Settled exactly on the absolute home — no 'blabla', no duplicated segments.
-  await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('/'));
+  await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('/blabla'));
   const pathname = screen.getByTestId('location').textContent;
-  expect(pathname).toBe('/');
-  expect(pathname).not.toContain('blabla');
+  expect(pathname).toBe('/blabla');
 });

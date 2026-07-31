@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import { MAX_PASSWORD_LENGTH } from './auth';
 import { cashRuleMatchTypeSchema } from './cash';
 import { expenseDirectionSchema, expenseRuleMatchTypeSchema } from './expenses';
 import {
@@ -9,6 +10,7 @@ import {
   importRowResultSchema,
 } from './imports';
 import { currencyCodeSchema } from './market';
+import { mirrorRowKindSchema } from './mirrorchain';
 import {
   cashMovementKindSchema,
   cashSourceTypeSchema,
@@ -1124,6 +1126,83 @@ export const vaultStrictEntitySchema = z.discriminatedUnion('kind', [
 ]);
 export type VaultStrictEntity = z.infer<typeof vaultStrictEntitySchema>;
 
+// ── Severed-fork MIRRORCHAIN provenance (additive within v1) ─────────────────
+
+/**
+ * One retained logical identity for a row the account keeps after leaving a
+ * MIRRORCHAIN with a fork (`docs/paranoid-design.md` §7.1).
+ *
+ * `mirror_rows` is the server's logical↔local identity map, and it dies with the
+ * copy: paranoid enable deletes the portfolio, so the map cascades away while the
+ * append-only oplog keeps only the LOGICAL id. A sanctioned financial correction
+ * (delete + re-create + repoint, mirrorchain design §2) means the surviving local
+ * id is a REPLACEMENT — `localId = mirrorId` is false — so restore-time validation
+ * has no sound way to associate a restored row with its origin op unless the map
+ * itself is captured while it still exists.
+ *
+ * It therefore rides the encrypted document: privacy-wise this is the user's own
+ * fork, and Drive-only accounts gain no new cleartext server-side alias table.
+ * The two attribution columns of `mirror_rows` (`createdBy`,
+ * `createdByUsername`) are deliberately NOT carried — they are a co-member's
+ * identity, see {@link VAULT_MIRROR_PROVENANCE_DROPPED_COLUMNS}.
+ */
+export const vaultMirrorProvenanceSchema = z
+  .object({
+    /** The chain whose append-only oplog authenticates this identity. */
+    chainId: uuidSchema,
+    /**
+     * The caller's OWN ended `mirror_chain_members` row for this copy — the
+     * tombstone whose `applied_seq` bounds which ops may authenticate the row.
+     * Re-joining a chain is a normal flow and mints a SECOND membership with its
+     * own copy and its own (higher) watermark, so a chain id alone cannot select
+     * the right one: an earlier retained fork must be proved against ITS
+     * membership. It is the user's own membership row, never a co-member's.
+     */
+    membershipId: uuidSchema,
+    /** `mirror_rows.kind` — which local table the logical entity landed in. */
+    kind: mirrorRowKindSchema,
+    /** The chain-wide logical entity id (stable across every copy). */
+    mirrorId: uuidSchema,
+    /** The forked copy the retained row belongs to. */
+    portfolioId: uuidSchema,
+    /** The CURRENT local row id — a replacement id after a correction. */
+    localId: uuidSchema,
+  })
+  .strict();
+export type VaultMirrorProvenance = z.infer<typeof vaultMirrorProvenanceSchema>;
+
+/**
+ * The `mirror_rows` columns the provenance record deliberately drops, with the
+ * binding reason. The API's completeness gate compares
+ * `columns(mirror_rows) === (keys(vaultMirrorProvenanceSchema) ∖
+ * keys(VAULT_MIRROR_PROVENANCE_PROOF_FIELDS)) ∪ keys(this)`, so a future column
+ * cannot silently enter or escape the encrypted carriage.
+ */
+export const VAULT_MIRROR_PROVENANCE_DROPPED_COLUMNS = {
+  createdBy:
+    'another member’s user id — restore-time validation never needs it and the vault must not carry a co-member identity',
+  createdByUsername:
+    'another member’s denormalized display name — attribution is chain-side rendering, not fork provenance',
+} as const;
+
+/**
+ * Carried fields that are NOT `mirror_rows` columns, with the binding reason.
+ * They exist so restore-time validation can select the exact membership the row
+ * belongs to; the completeness gate subtracts them before comparing columns.
+ */
+export const VAULT_MIRROR_PROVENANCE_PROOF_FIELDS = {
+  membershipId:
+    'the caller’s own ended membership row — a re-joined chain has several, each with its own copy and watermark, so the tombstone identity is the minimum needed to pick the right one',
+} as const;
+
+/** Vault entity kind each `mirror_rows.kind` resolves to inside the document. */
+export const VAULT_MIRROR_PROVENANCE_ENTITY_KINDS = {
+  transaction: 'transaction',
+  dividend: 'dividend',
+  cash_movement: 'cashMovement',
+  cash_source: 'cashSource',
+} as const satisfies Record<z.infer<typeof mirrorRowKindSchema>, VaultEntityKind>;
+
 /** A merge diagnostic record (`§4`); the payload keeps the last 20. */
 export const vaultMergeRecordSchema = z.object({
   mergedAt: z.string().datetime(),
@@ -1133,12 +1212,21 @@ export const vaultMergeRecordSchema = z.object({
 });
 export type VaultMergeRecord = z.infer<typeof vaultMergeRecordSchema>;
 
-/** Strict v1 restore payload; newer versions are rejected without coercion. */
+/**
+ * Strict v1 restore payload; newer versions are rejected without coercion.
+ *
+ * `mirrorProvenance` is ADDITIVE within v1 and `.default([])`: a document written
+ * before §7.1 has no such key, and the absent key means exactly what `[]` means —
+ * this account kept no severed MIRRORCHAIN fork. Defaulting keeps older supported
+ * documents deterministic instead of bumping a schema version that is already
+ * encrypted on users' media (the same reasoning as `cashMovement.dedupHash`).
+ */
 export const vaultStrictDocumentV1Schema = z
   .object({
     schemaVersion: z.literal(VAULT_DOCUMENT_V1_VERSION),
     entities: z.array(vaultStrictEntitySchema),
     mergeLog: z.array(vaultMergeRecordSchema).max(20).default([]),
+    mirrorProvenance: z.array(vaultMirrorProvenanceSchema).default([]),
   })
   .strict();
 export type VaultStrictDocumentV1 = z.infer<typeof vaultStrictDocumentV1Schema>;
@@ -1152,6 +1240,15 @@ export const vaultDocumentV1Schema = z.object({
   schemaVersion: z.literal(VAULT_DOCUMENT_V1_VERSION),
   entities: z.record(vaultEntityKindSchema, z.array(vaultEntitySchema)),
   mergeLog: z.array(vaultMergeRecordSchema).max(20).default([]),
+  /**
+   * §7.1 severed-fork identity map. OPTIONAL rather than defaulted, unlike its
+   * strict-document counterpart: a document written before §7.1 has no such key,
+   * and defaulting one in would make re-encrypting it emit `"mirrorProvenance":[]`
+   * — changing the plaintext, and therefore the published envelope bytes, of every
+   * fork-free vault in existence. Absent and empty mean the same thing (no
+   * severed fork), so the carriage helpers normalize with `?? []`.
+   */
+  mirrorProvenance: z.array(vaultMirrorProvenanceSchema).optional(),
 });
 export type VaultDocumentV1 = z.infer<typeof vaultDocumentV1Schema>;
 
@@ -1165,6 +1262,8 @@ export const vaultDocumentV2Schema = z.object({
   schemaVersion: z.literal(VAULT_DOCUMENT_VERSION),
   entities: z.record(vaultEntityKindSchema, z.array(vaultEntitySchema)),
   mergeLog: z.array(vaultMergeRecordSchema).max(20).default([]),
+  /** §7.1 severed-fork identity map; optional exactly as in v1 above. */
+  mirrorProvenance: z.array(vaultMirrorProvenanceSchema).optional(),
   /**
    * Browser-only proof material. The unlocked client provisions it before
    * activating or retiring server media. It is deliberately absent from the
@@ -1205,6 +1304,16 @@ export const paranoidDisableRehydrationRequestSchema = z
   .object({
     rehydrationId: z.string().uuid(),
     document: vaultStrictDocumentV1Schema,
+    /**
+     * The `§3` destruction exit ("lost key ⇒ lost data … the only server-side
+     * recovery is destruction"): the caller cannot decrypt its vault and is
+     * therefore restoring NOTHING. `document.entities` MUST then be empty — the
+     * flag is explicit rather than inferred from an empty graph so that a
+     * client bug which loses its rows still fails the ordinary restore
+     * invariants instead of silently wiping the account. Retained custom-asset
+     * identity claims are all retired, since no document can account for them.
+     */
+    discard: z.literal(true).optional(),
   })
   .strict();
 export type ParanoidDisableRehydrationRequest = z.infer<
@@ -1300,11 +1409,62 @@ export type ParanoidEnableResponse = z.infer<typeof paranoidEnableResponseSchema
  * `POST /account/paranoid/disable`. `rehydrationId` is the durable idempotency
  * key from PD3a; the literal confirmation prevents an unlocked document alone
  * from authorizing the destructive mode transition.
+ *
+ * The ordinary disable RESTORES the vault's rows, so `confirm` plus the
+ * decrypted document is the whole gate. `discard: true` does the opposite — it
+ * destroys a vault its owner can no longer decrypt — so it carries the SAME two
+ * gates as `DELETE /account` ({@link deleteAccountRequestSchema}): the typed
+ * `confirmUsername`, and a server-verified credential (current password, or a
+ * fresh TOTP `code` / unused `recoveryCode` on a 2FA account). Both are
+ * verified server-side; a client-only confirmation would be skipped by anyone
+ * POSTing the endpoint directly from a live session.
  */
 export const paranoidDisableRequestSchema = paranoidDisableRehydrationRequestSchema
-  .extend({ confirm: z.literal(true) })
-  .strict();
+  .extend({
+    confirm: z.literal(true),
+    /** Required for `discard`: must match the account's username (case-insensitive). */
+    confirmUsername: z.string().trim().min(1).max(40).optional(),
+    password: z.string().min(1).max(MAX_PASSWORD_LENGTH).optional(),
+    /** A fresh 6-digit authenticator (TOTP) code — 2FA-enrolled accounts only. */
+    code: z.string().trim().min(4).max(16).optional(),
+    /** An unused recovery code — consumed on success AND on a failed match. */
+    recoveryCode: z.string().trim().min(4).max(64).optional(),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.discard !== true) return;
+    if (value.confirmUsername === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['confirmUsername'],
+        message: 'Discarding the vault requires the typed username confirmation.',
+      });
+    }
+    if (
+      value.password === undefined &&
+      value.code === undefined &&
+      value.recoveryCode === undefined
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['password'],
+        message: 'Re-authentication is required: send your password or a two-factor code.',
+      });
+    }
+  });
 export type ParanoidDisableRequest = z.infer<typeof paranoidDisableRequestSchema>;
+
+/**
+ * `GET /account/paranoid/fork-provenance`. The capture read the enable wizard
+ * runs while `mirror_rows` still exists (`docs/paranoid-design.md` §7.1): the
+ * caller's own severed-fork identity map, and nothing else. Ended memberships
+ * only — an ACTIVE membership blocks enable anyway, and exposing it here would
+ * leak live chain data. No co-member identity, chain name, or member list.
+ */
+export const paranoidForkProvenanceResponseSchema = z
+  .object({ provenance: z.array(vaultMirrorProvenanceSchema) })
+  .strict();
+export type ParanoidForkProvenanceResponse = z.infer<typeof paranoidForkProvenanceResponseSchema>;
 
 /** Public disable receipt; still contains no restored-row counts or cleartext metadata. */
 export const paranoidDisableResponseSchema = paranoidDisableRehydrationResultSchema

@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, test, vi, beforeEach } from 'vitest';
 
@@ -20,6 +20,7 @@ vi.mock('../../lib/socialApi', () => ({
   addGroupMember: vi.fn(),
   removeGroupMember: vi.fn(),
 }));
+vi.mock('../../lib/mirrorApi');
 
 import { MemoryRouter } from 'react-router-dom';
 
@@ -35,31 +36,36 @@ import {
   sendFriendRequest,
   setActivityAlert,
 } from '../../lib/socialApi';
+import { ApiError } from '../../lib/apiClient';
+import { listMirrorInvites } from '../../lib/mirrorApi';
 import { FriendsPage } from './FriendsPage';
 
 function makeQueryClient() {
   return new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 0 } } });
 }
 
-function renderPage() {
-  return render(
-    <QueryClientProvider client={makeQueryClient()}>
+function renderPage(client = makeQueryClient()) {
+  const view = render(
+    <QueryClientProvider client={client}>
       <MemoryRouter>
         <FriendsPage />
       </MemoryRouter>
     </QueryClientProvider>,
   );
+  return { ...view, client };
 }
 
 const EMPTY_REQUESTS = { incoming: [], outgoing: [] };
 const EMPTY_FRIENDS = { friends: [] };
 const EMPTY_SHARED = { portfolios: [], conglomerates: [], watchlists: [], ideas: [] };
+const EMPTY_MIRROR_INVITES = { incoming: [], outgoing: [] };
 
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(listFriendRequests).mockResolvedValue(EMPTY_REQUESTS);
   vi.mocked(listFriends).mockResolvedValue(EMPTY_FRIENDS);
   vi.mocked(listSharedWithMe).mockResolvedValue(EMPTY_SHARED);
+  vi.mocked(listMirrorInvites).mockResolvedValue(EMPTY_MIRROR_INVITES);
   vi.mocked(listGroups).mockResolvedValue({ groups: [] });
 });
 
@@ -109,24 +115,145 @@ describe('FriendsPage', () => {
   });
 
   test('shows an error affordance when requests fail to load', async () => {
-    vi.mocked(listFriendRequests).mockRejectedValue(new Error('nope'));
+    vi.mocked(listFriendRequests)
+      .mockRejectedValueOnce(new Error('nope'))
+      .mockResolvedValueOnce(EMPTY_REQUESTS);
+    const user = userEvent.setup();
     renderPage();
 
     await waitFor(() =>
       expect(screen.getByText(/Could not load your friend requests/i)).toBeInTheDocument(),
     );
+    const error = screen.getByText(/Could not load your friend requests/i).parentElement!;
+    await user.click(within(error).getByRole('button', { name: 'Try again' }));
+    expect(await screen.findByText('Incoming requests')).toBeInTheDocument();
+    expect(listFriendRequests).toHaveBeenCalledTimes(2);
   });
 
   test('shows an error affordance when friends fail to load', async () => {
-    vi.mocked(listFriends).mockRejectedValue(new Error('nope'));
+    vi.mocked(listFriends)
+      .mockRejectedValueOnce(new Error('nope'))
+      .mockResolvedValueOnce(EMPTY_FRIENDS);
+    const user = userEvent.setup();
     renderPage();
 
     await waitFor(() =>
       expect(screen.getByText(/Could not load your friends/i)).toBeInTheDocument(),
     );
+    const error = screen.getByText(/Could not load your friends/i).parentElement!;
+    await user.click(within(error).getByRole('button', { name: 'Try again' }));
+    expect(await screen.findByText('No friends yet')).toBeInTheDocument();
+    expect(listFriends).toHaveBeenCalledTimes(2);
   });
 
-  test('accepts an incoming request and refreshes the lists', async () => {
+  test('shows a loading state for group-portfolio invites instead of silently omitting them', async () => {
+    let resolveInvites!: (value: typeof EMPTY_MIRROR_INVITES) => void;
+    vi.mocked(listMirrorInvites).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveInvites = resolve;
+        }),
+    );
+    const { container } = renderPage();
+
+    await screen.findByText('Incoming requests');
+    const requests = container.querySelector<HTMLElement>('#requests');
+    expect(requests).not.toBeNull();
+    expect(within(requests!).getByRole('status', { name: 'Loading' })).toBeInTheDocument();
+
+    await act(async () => resolveInvites(EMPTY_MIRROR_INVITES));
+    await waitFor(() =>
+      expect(within(requests!).queryByRole('status', { name: 'Loading' })).not.toBeInTheDocument(),
+    );
+  });
+
+  test('retries a failed group-portfolio invite read', async () => {
+    vi.mocked(listMirrorInvites)
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce(EMPTY_MIRROR_INVITES);
+    const user = userEvent.setup();
+    renderPage();
+
+    const message = await screen.findByText(/Could not load your group portfolio invites/i);
+    await user.click(within(message.parentElement!).getByRole('button', { name: 'Try again' }));
+
+    await waitFor(() => expect(message).not.toBeInTheDocument());
+    expect(listMirrorInvites).toHaveBeenCalledTimes(2);
+  });
+
+  test('keeps shared-item loading distinct from a genuine empty result', async () => {
+    let resolveShared!: (value: typeof EMPTY_SHARED) => void;
+    vi.mocked(listFriends).mockResolvedValue({
+      friends: [
+        { user: { id: 'u-loading', username: 'hannah' }, createdAt: '2026-01-01T00:00:00.000Z' },
+      ],
+    });
+    vi.mocked(listSharedWithMe).mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          resolveShared = resolve;
+        }),
+    );
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole('button', { name: 'hannah' }));
+    const friendsSection = screen
+      .getByRole('heading', { level: 2, name: 'Friends' })
+      .closest('section');
+    expect(friendsSection).not.toBeNull();
+    expect(within(friendsSection!).getByRole('status', { name: 'Loading' })).toBeInTheDocument();
+    expect(screen.queryByText(/hannah isn't sharing anything/i)).not.toBeInTheDocument();
+
+    await act(async () => resolveShared(EMPTY_SHARED));
+    expect(await screen.findByText(/hannah isn't sharing anything/i)).toBeInTheDocument();
+  });
+
+  test('hides retained shared-item data after a confirmed rejection and recovers on retry', async () => {
+    const friendId = 'u-revoked';
+    const sharedPortfolioId = '00000000-0000-0000-0000-000000000123';
+    vi.mocked(listFriends).mockResolvedValue({
+      friends: [
+        { user: { id: friendId, username: 'iris' }, createdAt: '2026-01-01T00:00:00.000Z' },
+      ],
+    });
+    vi.mocked(listSharedWithMe)
+      .mockResolvedValueOnce({
+        portfolios: [
+          {
+            portfolioId: sharedPortfolioId,
+            name: 'Revoked portfolio',
+            owner: { id: friendId, username: 'iris' },
+            totalValueEur: 1_000,
+            activityAlertsEnabled: false,
+          },
+        ],
+        conglomerates: [],
+        watchlists: [],
+        ideas: [],
+      })
+      .mockRejectedValueOnce(new ApiError(404, 'NOT_FOUND', 'Not found'))
+      .mockResolvedValueOnce(EMPTY_SHARED);
+    const user = userEvent.setup();
+    const { client } = renderPage();
+
+    await user.click(await screen.findByRole('button', { name: 'iris' }));
+    expect(await screen.findByText('Revoked portfolio')).toBeInTheDocument();
+
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ['social', 'shared-with-me'], type: 'active' });
+    });
+
+    const message = await screen.findByText(/Could not load this shared item/i);
+    expect(screen.queryByText('Revoked portfolio')).not.toBeInTheDocument();
+    expect(screen.queryByText(/iris isn't sharing anything/i)).not.toBeInTheDocument();
+
+    await user.click(within(message.parentElement!).getByRole('button', { name: 'Try again' }));
+    expect(await screen.findByText(/iris isn't sharing anything/i)).toBeInTheDocument();
+    expect(listSharedWithMe).toHaveBeenCalledTimes(3);
+  });
+
+  test('accepts an incoming request and refreshes every friendship-dependent list', async () => {
     vi.mocked(listFriendRequests).mockResolvedValue({
       incoming: [
         {
@@ -150,6 +277,7 @@ describe('FriendsPage', () => {
     expect(acceptFriendRequest).toHaveBeenCalledWith('req-1');
     await waitFor(() => expect(listFriendRequests).toHaveBeenCalledTimes(2));
     expect(listFriends).toHaveBeenCalledTimes(2);
+    expect(listSharedWithMe).toHaveBeenCalledTimes(2);
   });
 
   test('declines an incoming request', async () => {

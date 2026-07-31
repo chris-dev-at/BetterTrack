@@ -144,7 +144,7 @@ describe('PortfolioSettingsPage — general', () => {
     mockLists([MAIN, TRADING]);
     renderSettings('p2');
 
-    expect(await screen.findByLabelText('Name')).toHaveValue('Trading');
+    await waitFor(() => expect(screen.getByLabelText('Name')).toHaveValue('Trading'));
   });
 
   test('save stays disabled until the name actually changes', async () => {
@@ -336,12 +336,18 @@ describe('PortfolioSettingsPage — tax', () => {
 
   test('a failing tax query degrades to its own error, not a broken page', async () => {
     mockLists([MAIN, TRADING]);
-    vi.mocked(getPortfolioTaxSettings).mockRejectedValue(new Error('boom'));
+    vi.mocked(getPortfolioTaxSettings)
+      .mockRejectedValueOnce(new Error('boom'))
+      .mockResolvedValueOnce(INHERITED_AT);
+    const user = userEvent.setup();
     renderSettings('p2');
 
     expect(await screen.findByText(/Couldn’t load this portfolio’s tax mode/i)).toBeInTheDocument();
     // The rest of the page still works.
     expect(screen.getByLabelText('Name')).toHaveValue('Trading');
+    await user.click(screen.getByRole('button', { name: 'Try again' }));
+    expect(await screen.findByText('Account default')).toBeInTheDocument();
+    expect(getPortfolioTaxSettings).toHaveBeenCalledTimes(2);
   });
 });
 

@@ -14,6 +14,8 @@ import {
 import { useAssetSearch } from './useAssetSearch';
 import { useOverlayEscape } from './overlayStack';
 import { useFocusTrap } from './useFocusTrap';
+import { useResolvedPrivacyMode } from '../vault/usePrivacyMode';
+import { isParanoidKilledPath } from '../vault/ui/ParanoidSurfaceGate';
 
 interface CmdKPaletteProps {
   isOpen: boolean;
@@ -97,6 +99,7 @@ interface PaletteSection {
  */
 export function CmdKPalette({ isOpen, onClose }: CmdKPaletteProps) {
   const t = useT();
+  const paranoid = useResolvedPrivacyMode() === 'paranoid';
   const navigate = useNavigate();
   const inputRef = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState('');
@@ -126,7 +129,13 @@ export function CmdKPalette({ isOpen, onClose }: CmdKPaletteProps) {
 
   const trimmed = query.trim();
   const assets = useAssetSearch(query, { enabled: isOpen });
-  const commands = useMemo(() => filterCommands(trimmed, t), [trimmed, t]);
+  const commands = useMemo(
+    () =>
+      filterCommands(trimmed, t).filter(
+        (command) => !paranoid || !isParanoidKilledPath(command.to),
+      ),
+    [paranoid, trimmed, t],
+  );
 
   const sections = useMemo<PaletteSection[]>(() => {
     if (trimmed.length === 0) {
@@ -134,7 +143,9 @@ export function CmdKPalette({ isOpen, onClose }: CmdKPaletteProps) {
         {
           key: 'suggested',
           labelKey: 'palette.group.suggested',
-          rows: SUGGESTED_COMMANDS.map((entry, i) => commandRow(entry, `s${i}`, t)),
+          rows: SUGGESTED_COMMANDS.filter(
+            (entry) => !paranoid || !isParanoidKilledPath(entry.to),
+          ).map((entry, i) => commandRow(entry, `s${i}`, t)),
         },
       ];
     }
@@ -176,7 +187,16 @@ export function CmdKPalette({ isOpen, onClose }: CmdKPaletteProps) {
       ...commandSections,
       { key: 'assets', labelKey: 'palette.group.assets', rows: assetRows, note: assetNote },
     ];
-  }, [assets.isEnriching, assets.isError, assets.isFetching, assets.results, commands, t, trimmed]);
+  }, [
+    assets.isEnriching,
+    assets.isError,
+    assets.isFetching,
+    assets.results,
+    commands,
+    paranoid,
+    t,
+    trimmed,
+  ]);
 
   /** Every row in visual order — what ↑/↓ walk. Group headers are not rows. */
   const rows = useMemo(() => sections.flatMap((section) => section.rows), [sections]);

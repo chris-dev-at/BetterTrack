@@ -132,7 +132,6 @@ test.describe('mirrorchain lifecycle UI gate', () => {
       await expect(owner.page.getByRole('button', { name: successor.username })).toBeVisible({
         timeout: 20_000,
       });
-
       const chainName = `E2E lifecycle ${Date.now().toString(36)}`;
 
       // Owner creates the group portfolio and sends the FIRST friend invite
@@ -153,8 +152,9 @@ test.describe('mirrorchain lifecycle UI gate', () => {
       await wizard.getByRole('radio', { name: /Shared with people/ }).click();
       await wizard.getByRole('button', { name: 'Continue' }).click();
       const createDialog = owner.page.getByRole('dialog', { name: 'New group portfolio' });
-      await createDialog.getByPlaceholder('Group portfolio name').fill(chainName);
-      await createDialog.getByRole('button', { name: 'Create', exact: true }).click();
+      const chainNameInput = createDialog.getByPlaceholder('Group portfolio name');
+      await chainNameInput.fill(chainName);
+      await chainNameInput.press('Enter');
 
       const firstInviteDialog = owner.page.getByRole('dialog', { name: 'Invite a friend' });
       const firstFriendRow = firstInviteDialog
@@ -189,7 +189,14 @@ test.describe('mirrorchain lifecycle UI gate', () => {
       );
       expect(replicated.mirror?.addedBy.username).toBe(member.username);
       await owner.page.goto(`/portfolio?portfolio=${ownerChain.portfolioId}`);
-      await expect(owner.page.getByTitle(`Added by ${member.username}`)).toBeVisible({
+      await owner.page.getByRole('button', { name: 'Expand SAP.DE transactions' }).click();
+      // Scoped to Holdings: attribution renders in BOTH the expanded holding
+      // and Recent transactions since the second merge wave restored it on
+      // each surface (this branch's overview fix + main's transactions one),
+      // so the bare title lookup is a strict-mode violation.
+      await expect(
+        owner.page.getByLabel('Holdings').getByTitle(`Added by ${member.username}`),
+      ).toBeVisible({
         timeout: 20_000,
       });
       await expect(member.page.getByRole('button', { name: /Open member sheet/ })).toBeVisible({
@@ -201,11 +208,23 @@ test.describe('mirrorchain lifecycle UI gate', () => {
       const ownerMemberSheet = owner.page.getByRole('button', { name: /Open member sheet/ });
       await ownerMemberSheet.click();
       const memberSheet = owner.page.getByRole('dialog', { name: chainName });
-      const memberRow = memberSheet.getByRole('listitem').filter({ hasText: member.username });
+      // Scoped to the MEMBERS list: the sheet also renders an activity feed
+      // whose entries name the same person ("… joined", "… added a
+      // transaction"), so an unscoped listitem matched three rows.
+      const memberRow = memberSheet
+        .getByRole('list', { name: 'Members' })
+        .getByRole('listitem')
+        .filter({ hasText: member.username });
       await expect(memberRow).toBeVisible({ timeout: 20_000 });
       await memberRow.getByRole('button', { name: 'Remove', exact: true }).click();
       const removeDialog = owner.page.getByRole('dialog', { name: `Remove ${member.username}?` });
-      await removeDialog.getByRole('button', { name: 'Remove', exact: true }).click();
+      // Asserted before the click, and every click below carries a timeout: an
+      // action with no timeout waits FOREVER, so a dialog that never opened
+      // turned a 20s failure into a 300s test timeout with nothing to read.
+      await expect(removeDialog).toBeVisible({ timeout: 20_000 });
+      await removeDialog
+        .getByRole('button', { name: 'Remove', exact: true })
+        .click({ timeout: 20_000 });
       await expect(removeDialog).toBeHidden({ timeout: 20_000 });
       await expect
         .poll(async () => isChainMember(member!, ownerChain.chainId), {
@@ -213,7 +232,6 @@ test.describe('mirrorchain lifecycle UI gate', () => {
           intervals: [500, 1000, 2000],
         })
         .toBe(false);
-
       await member.page.goto(`/portfolio?portfolio=${memberChain.portfolioId}`);
       await expect(member.page.getByText(/Forked from/)).toBeVisible({ timeout: 20_000 });
       expect(
@@ -248,7 +266,6 @@ test.describe('mirrorchain lifecycle UI gate', () => {
         waitChainSynced(owner, ownerChain.chainId),
         waitChainSynced(successor, ownerChain.chainId),
       ]);
-
       await recordSapBuyOnCopyUi(owner.page, ownerChain.portfolioId, {
         quantity: '7',
         price: '100',
@@ -259,7 +276,6 @@ test.describe('mirrorchain lifecycle UI gate', () => {
         waitChainSynced(owner, ownerChain.chainId),
         waitChainSynced(successor, ownerChain.chainId),
       ]);
-
       const [ownerTransactions, successorTransactions, forkTransactions] = await Promise.all([
         listTransactions(owner, ownerChain.portfolioId),
         listTransactions(successor, successorChain.portfolioId),
@@ -289,7 +305,6 @@ test.describe('mirrorchain lifecycle UI gate', () => {
         forkTransactions.some((tx) => tx.quantity === 3),
         'the fork stays usable',
       ).toBe(true);
-
       // The successor was already the live watermark witness above, so transfer
       // ownership through the current owner's member sheet.
       expect(
@@ -301,6 +316,7 @@ test.describe('mirrorchain lifecycle UI gate', () => {
       await owner.page.getByRole('button', { name: /Open member sheet/ }).click();
       const transferSheet = owner.page.getByRole('dialog', { name: chainName });
       const successorRow = transferSheet
+        .getByRole('list', { name: 'Members' })
         .getByRole('listitem')
         .filter({ hasText: successor.username });
       await expect(successorRow).toBeVisible({ timeout: 20_000 });
@@ -331,7 +347,10 @@ test.describe('mirrorchain lifecycle UI gate', () => {
       await expect(
         successorSheet.getByRole('button', { name: 'Dissolve group', exact: true }),
       ).toBeVisible({ timeout: 20_000 });
-      const oldOwnerRow = successorSheet.getByRole('listitem').filter({ hasText: owner.username });
+      const oldOwnerRow = successorSheet
+        .getByRole('list', { name: 'Members' })
+        .getByRole('listitem')
+        .filter({ hasText: owner.username });
       await expect(
         oldOwnerRow.getByRole('button', { name: 'Make owner', exact: true }),
       ).toBeVisible({
@@ -389,8 +408,14 @@ test('mirrorchain: a member buy propagates to every copy, attributed', async ({ 
   expect(propagated.mirror?.addedBy.username).toBe(member.username);
 
   // …and the owner SEES it, with the attribution chip, in the rendered UI (§11).
+  // Scoped to Holdings — the chip also renders in Recent transactions now
+  // (both surfaces regained attribution in the second merge wave), and the
+  // bare title lookup is a strict-mode violation against the pair.
   await owner.page.goto(`/portfolio?portfolio=${ownerCopy}`);
-  await expect(owner.page.getByTitle(`Added by ${member.username}`)).toBeVisible({
+  await owner.page.getByRole('button', { name: 'Expand SAP.DE transactions' }).click();
+  await expect(
+    owner.page.getByLabel('Holdings').getByTitle(`Added by ${member.username}`),
+  ).toBeVisible({
     timeout: 20_000,
   });
 
@@ -419,8 +444,21 @@ test('mirrorchain: concurrent edits converge with exactly one MIRROR_CONFLICT', 
   // Transaction T exists everywhere at one version: qty 5, price 100 (§3).
   const assetId = await assetIdFor(alice, 'SAP', 'SAP.DE');
   await recordBuy(alice, aliceCopy, { assetId, quantity: 5, price: 100 });
-  const aliceTx = await waitForTransaction(alice, aliceCopy, (tx) => tx.quantity === 5);
-  const bobTx = await waitForTransaction(bob, bobCopy, (tx) => tx.quantity === 5);
+  // The predicate REQUIRES `mirror` as well as the quantity: a replicated row can
+  // land a beat before its mirror metadata does, and waiting only on the quantity
+  // returned a row whose `mirror` was still undefined — the next line then threw
+  // "Cannot read properties of undefined" and read as a replication bug rather
+  // than as this spec asking too early.
+  const aliceTx = await waitForTransaction(
+    alice,
+    aliceCopy,
+    (tx) => tx.quantity === 5 && tx.mirror != null,
+  );
+  const bobTx = await waitForTransaction(
+    bob,
+    bobCopy,
+    (tx) => tx.quantity === 5 && tx.mirror != null,
+  );
   const baseSeq = aliceTx.mirror!.version;
   expect(bobTx.mirror!.version, 'both copies agree on the base version').toBe(baseSeq);
   expect(bobTx.mirror!.mirrorId).toBe(aliceTx.mirror!.mirrorId);

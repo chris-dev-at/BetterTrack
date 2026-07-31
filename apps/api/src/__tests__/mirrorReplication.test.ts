@@ -758,6 +758,73 @@ describe('mirrorchain M2 — replication core', () => {
     expect(aliceMoves.filter((m) => m.kind === 'deposit' && m.amountEur === 10)).toHaveLength(1);
   });
 
+  it('a cash `fee` replicates AS A FEE to every copy, never as a withdrawal (§16 2026-07-30)', async () => {
+    // A fee is TWR-INTERNAL but ORIGIN-entered: a member typed it, so it must
+    // replicate like a deposit/withdrawal — and it must arrive as kind `fee`. If a
+    // replica booked it as a withdrawal, that copy would divide the fee back out of
+    // its own performance curve and silently diverge from the origin's, restoring
+    // the exact misreport the kind exists to fix on every copy but one.
+    const { alice, bob, aPid, bPid, chain } = await setupChain();
+    await harness.ctx.mirror.submitCashDeposit(alice.id, aPid, { amountEur: 1000 });
+    const charged = await harness.ctx.mirror.submitCashFee(alice.id, aPid, {
+      amountEur: 25,
+      note: 'Custody fee',
+    });
+    expect(charged.movement.kind).toBe('fee');
+    await harness.ctx.mirror.replicateChain(chain.id);
+
+    // Bob's copy carries a `fee`, not a `withdrawal`, with the same amount.
+    const bCash = await harness.ctx.portfolio.getCashMovements(bob.id, bPid);
+    expect(bCash.movements.map((m) => m.kind).sort()).toEqual(['deposit', 'fee']);
+    const bFee = bCash.movements.find((m) => m.kind === 'fee')!;
+    expect(bFee.amountEur).toBe(-25);
+    expect(bCash.balanceEur).toBe(975);
+    // Replica rows are sync-tagged and attributed to the member who typed it.
+    expect(bFee.source).toBe(SOURCE_TAG_SYNC_MIRRORCHAIN);
+    const link = await mirrorRepo.findMirrorRowByLocal('cash_movement', bFee.id);
+    expect(link?.mirrorId).toBe(charged.movement.id);
+    expect(link?.createdByUsername).toBe('alice');
+
+    // The op itself is a `cash.fee`, so the oplog stays self-describing forever.
+    const ops = await mirrorRepo.listOpsSince(chain.id, 0);
+    const feeOp = ops.find((op) => op.kind === 'cash.fee');
+    expect(feeOp).toBeTruthy();
+    expect((feeOp!.payload as MirrorOpPayload).kind).toBe('cash.fee');
+
+    // Replay is idempotent: a second pass adds no second fee.
+    await harness.ctx.mirror.replicateChain(chain.id);
+    expect(
+      (await harness.ctx.portfolio.getCashMovements(bob.id, bPid)).movements.filter(
+        (m) => m.kind === 'fee',
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('converting a portfolio that already has fees carries them into the chain (§1 genesis)', async () => {
+    // The genesis bootstrap replicates HAND-ENTERED movements, a predicate that is
+    // deliberately NOT `EXTERNAL_CASH_MOVEMENT_KINDS` — a fee is hand-entered but
+    // TWR-internal, so it is exactly the row where the two notions differ. Omitting
+    // it would drop every recorded fee the moment a portfolio became shared,
+    // silently LIFTING the shared copy's reported return.
+    const alice = await harness.seedUser({ email: 'ann@bettertrack.test', username: 'ann' });
+    const carol = await harness.seedUser({ email: 'carol@bettertrack.test', username: 'carol' });
+    const aPid = await harness.ctx.portfolio.getDefaultPortfolioId(alice.id);
+    // Pre-existing private history, fees included, BEFORE the portfolio is shared.
+    await harness.ctx.portfolio.depositCash(alice.id, aPid, { amountEur: 500 });
+    await harness.ctx.portfolio.chargeCashFee(alice.id, aPid, { amountEur: 30 });
+
+    const { chain } = await harness.ctx.mirror.convertToChain(alice.id, aPid, { name: 'Shared' });
+    const { portfolioId: cPid } = await harness.ctx.mirror.attachMemberCopy(chain.id, carol.id);
+    await harness.ctx.mirror.replicateChain(chain.id);
+
+    const cCash = await harness.ctx.portfolio.getCashMovements(carol.id, cPid);
+    expect(cCash.movements.map((m) => m.kind).sort()).toEqual(['deposit', 'fee']);
+    expect(cCash.movements.find((m) => m.kind === 'fee')!.amountEur).toBe(-30);
+    // Balances reconcile to the cent across copies — the fee is not lost or doubled.
+    expect(cCash.balanceEur).toBe(470);
+    expect((await harness.ctx.portfolio.getCashMovements(alice.id, aPid)).balanceEur).toBe(470);
+  });
+
   it('does not rename a chain when a non-actor member transition wins first', async () => {
     const { alice, bob, chain } = await setupChain();
     const opCountBefore = (await mirrorRepo.listActivity(chain.id, { limit: 100 })).length;

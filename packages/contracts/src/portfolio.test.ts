@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   MAX_CASH_AMOUNT_EUR,
   cashEntryRequestSchema,
+  cashMovementKindSchema,
   cashPreviewRequestSchema,
   importSourceTag,
   sourceTagSchema,
@@ -42,6 +43,38 @@ describe('cash amount validation (§14 hardening)', () => {
       cashPreviewRequestSchema.safeParse({ kind: 'deposit', amountEur: Infinity }).success,
     ).toBe(false);
     expect(cashPreviewRequestSchema.safeParse({ kind: 'deposit', amountEur: 1e300 }).success).toBe(
+      false,
+    );
+  });
+});
+
+describe('cash movement kinds (§16 2026-07-30 — the `fee` kind)', () => {
+  it('pins the wire enum, `fee` included', () => {
+    // `packages/contracts` depends on zod alone (never on `@bettertrack/domain`),
+    // so it cannot assert agreement with `CASH_MOVEMENT_KINDS` here — the real
+    // three-way cross-check against the domain list AND the Postgres enum lives
+    // in apps/api/src/__tests__/cashFee.test.ts, where all three are in scope.
+    // This is the change detector for the wire shape itself.
+    expect([...cashMovementKindSchema.options].sort()).toEqual(
+      [
+        'buy',
+        'deposit',
+        'dividend',
+        'fee',
+        'sell_proceeds',
+        'tax_refund',
+        'tax_withholding',
+        'transfer_in',
+        'transfer_out',
+        'withdrawal',
+      ].sort(),
+    );
+  });
+
+  it('lets the preview endpoint size a proposed fee like any other outflow', () => {
+    expect(cashPreviewRequestSchema.safeParse({ kind: 'fee', amountEur: 12.5 }).success).toBe(true);
+    // Still a positive MAGNITUDE on the wire — the service assigns the sign.
+    expect(cashPreviewRequestSchema.safeParse({ kind: 'fee', amountEur: -12.5 }).success).toBe(
       false,
     );
   });

@@ -91,6 +91,10 @@ beforeEach(() => {
   localStorage.clear();
   // Anonymous to start: the bootstrap /auth/me rejects, so the app shows /login.
   vi.mocked(api.getMe).mockRejectedValue(new ApiError(401, 'UNAUTHENTICATED', 'nope'));
+  vi.mocked(api.getParanoidMediaState).mockResolvedValue({
+    privacyMode: 'normal',
+    mediaState: null,
+  });
   vi.mocked(listWorkboard).mockResolvedValue({ items: [] });
   // The login screen reads the active registration mode to decide whether to
   // offer a "create an account" link (§13.4 V4-P4a) — default to closed.

@@ -9,6 +9,7 @@ import { createClientTaxEngine } from './taxEngine';
 import type { VaultMoneyEngine } from './types';
 
 export * from './cache';
+export * from './clientSeries';
 export * from './errorCopy';
 export * from './errors';
 export * from './portfolioEngine';

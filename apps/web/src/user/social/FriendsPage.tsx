@@ -20,6 +20,7 @@ import { Button, Field, Icon, Input, PageHead, SkeletonBlock } from '../../ui/or
 import { Alert } from '../components/ui';
 import { Avatar } from '../components/Avatar';
 import { Dialog } from '../components/Dialog';
+import { useResolvedPrivacyMode } from '../vault/usePrivacyMode';
 import { AlertFollowToggle, AutoFollowToggle, FollowButton } from './FollowButton';
 import { FriendGroupsSection } from './FriendGroupsSection';
 import {
@@ -182,7 +183,24 @@ function MirrorInvitesSection() {
   const revoke = useRevokeMirrorInvite();
   const [acceptTarget, setAcceptTarget] = useState<MirrorInvite | null>(null);
 
-  if (invitesQuery.isLoading || !invitesQuery.data) return null;
+  if (invitesQuery.isLoading) {
+    return (
+      <div aria-label={t('common.loadingLabel')} className="flex flex-col gap-2" role="status">
+        <SkeletonBlock height={14} width={144} />
+        <SkeletonBlock height={48} />
+      </div>
+    );
+  }
+  if (invitesQuery.isError || !invitesQuery.data) {
+    return (
+      <div className="flex flex-col items-start gap-2">
+        <Alert tone="error">{t('mirrorchain.invites.loadError')}</Alert>
+        <Button onClick={() => void invitesQuery.refetch()} size="sm">
+          {t('common.retry')}
+        </Button>
+      </div>
+    );
+  }
   const { incoming, outgoing } = invitesQuery.data;
   if (incoming.length === 0 && outgoing.length === 0) return null;
 
@@ -260,11 +278,11 @@ function MirrorInvitesSection() {
   );
 }
 
-function RequestsSection() {
+function RequestsSection({ sharingAllowed }: { sharingAllowed: boolean }) {
   const t = useT();
   const queryClient = useQueryClient();
 
-  const { data, isLoading, isError } = useQuery({
+  const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ['social', 'requests'],
     queryFn: ({ signal }) => listFriendRequests(signal),
     staleTime: REQUESTS_STALE_MS,
@@ -273,8 +291,18 @@ function RequestsSection() {
   function invalidate() {
     void queryClient.invalidateQueries({ queryKey: ['social', 'requests'] });
     void queryClient.invalidateQueries({ queryKey: ['social', 'friends'] });
+    // Becoming friends CHANGES WHAT IS SHARED WITH YOU: anything the other
+    // person had already shared to "all friends" becomes visible the moment the
+    // request is accepted. Without this the new friend's row read "nothing
+    // shared yet" until a manual reload — the share was there, the cache was
+    // not. The same pair is invalidated together on the un-friend path below.
+    void queryClient.invalidateQueries({ queryKey: ['social', 'shared-with-me'] });
   }
 
+  // `invalidate()` already refreshes shared-with-me: `all_friends` audiences
+  // admit this user the moment the friendship forms, and the shared pair is
+  // covered there for accept and un-friend alike (both sides of the second
+  // merge wave had added this fix — once each).
   const acceptMutation = useMutation({
     mutationFn: (id: string) => acceptFriendRequest(id),
     onSuccess: invalidate,
@@ -300,13 +328,20 @@ function RequestsSection() {
   }
 
   if (isError || !data) {
-    return <Alert tone="error">{t('social.friends.requestsLoadError')}</Alert>;
+    return (
+      <div className="flex flex-col items-start gap-2">
+        <Alert tone="error">{t('social.friends.requestsLoadError')}</Alert>
+        <Button onClick={() => void refetch()} size="sm">
+          {t('common.retry')}
+        </Button>
+      </div>
+    );
   }
 
   return (
     // `#requests` is the deep-link anchor for friend.request notifications (V4-P0c).
     <div id="requests" className="flex flex-col gap-8 scroll-mt-20">
-      <MirrorInvitesSection />
+      {sharingAllowed ? <MirrorInvitesSection /> : null}
       <section className="flex flex-col gap-3">
         <h2 className="bt-label">{t('social.friends.incomingTitle')}</h2>
         {actionFailed ? <Alert tone="error">{t('social.friends.actionError')}</Alert> : null}
@@ -499,17 +534,22 @@ function FriendCard({
   friendship,
   person,
   onRequestRemove,
+  sharingAllowed,
+  sharesReady,
 }: {
   friendship: Friendship;
   person: SharedPerson | undefined;
   onRequestRemove: () => void;
+  sharingAllowed: boolean;
+  sharesReady: boolean;
 }) {
   const t = useT();
   const [open, setOpen] = useState(false);
   const { user } = friendship;
   const panelId = `friend-${user.id}`;
   const chatHref = `/people/chat/${user.id}`;
-  const countLine = person && person.total > 0 ? kindCountSummary(person, t) : null;
+  const countLine =
+    sharingAllowed && person && person.total > 0 ? kindCountSummary(person, t) : null;
 
   return (
     <li className="bt-panel overflow-hidden">
@@ -562,30 +602,34 @@ function FriendCard({
             </Link>
           </div>
 
-          <div className="flex flex-col gap-2">
-            <h3 className="bt-label">{t('social.friend.sharesHeading')}</h3>
-            <FriendShares person={person} username={user.username} />
-          </div>
+          {sharingAllowed && sharesReady ? (
+            <div className="flex flex-col gap-2">
+              <h3 className="bt-label">{t('social.friend.sharesHeading')}</h3>
+              <FriendShares person={person} username={user.username} />
+            </div>
+          ) : null}
 
           {/* Following-in-place (V4-P0b): a friend is followable straight from
               their row — no public profile needed. The auto-follow switch and
               the single "Follow their alerts" toggle (the latter only when this
               friend shares their alert activity) appear once you follow them. */}
-          <div className="bt-t-rule flex flex-col gap-3" style={{ paddingTop: 14 }}>
-            <div className="flex items-center justify-between gap-3">
-              <div className="min-w-0">
-                <h3 className="bt-label">{t('social.friend.followHeading')}</h3>
-                <p className="bt-meta" style={{ marginTop: 2 }}>
-                  {t('social.friend.followHint')}
-                </p>
+          {sharingAllowed ? (
+            <div className="bt-t-rule flex flex-col gap-3" style={{ paddingTop: 14 }}>
+              <div className="flex items-center justify-between gap-3">
+                <div className="min-w-0">
+                  <h3 className="bt-label">{t('social.friend.followHeading')}</h3>
+                  <p className="bt-meta" style={{ marginTop: 2 }}>
+                    {t('social.friend.followHint')}
+                  </p>
+                </div>
+                <FollowButton userId={user.id} username={user.username} />
               </div>
-              <FollowButton userId={user.id} username={user.username} />
+              <div className="flex flex-wrap items-center gap-x-5 gap-y-2 empty:hidden">
+                <AutoFollowToggle userId={user.id} username={user.username} />
+                <AlertFollowToggle userId={user.id} username={user.username} />
+              </div>
             </div>
-            <div className="flex flex-wrap items-center gap-x-5 gap-y-2 empty:hidden">
-              <AutoFollowToggle userId={user.id} username={user.username} />
-              <AlertFollowToggle userId={user.id} username={user.username} />
-            </div>
-          </div>
+          ) : null}
 
           <div className="bt-t-rule flex items-center justify-end gap-3" style={{ paddingTop: 14 }}>
             <Button onClick={onRequestRemove} size="sm" variant="danger">
@@ -598,12 +642,12 @@ function FriendCard({
   );
 }
 
-function FriendsListSection() {
+function FriendsListSection({ sharingAllowed }: { sharingAllowed: boolean }) {
   const t = useT();
   const queryClient = useQueryClient();
   const [removeTarget, setRemoveTarget] = useState<Friendship | null>(null);
 
-  const { data, isLoading, isError } = useQuery({
+  const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ['social', 'friends'],
     queryFn: ({ signal }) => listFriends(signal),
     staleTime: FRIENDS_STALE_MS,
@@ -615,6 +659,7 @@ function FriendsListSection() {
     queryKey: ['social', 'shared-with-me'],
     queryFn: ({ signal }) => listSharedWithMe(signal),
     staleTime: FRIENDS_STALE_MS,
+    enabled: sharingAllowed,
   });
 
   const removeMutation = useMutation({
@@ -636,12 +681,32 @@ function FriendsListSection() {
   }
 
   if (isError || !data) {
-    return <Alert tone="error">{t('social.friends.friendsLoadError')}</Alert>;
+    return (
+      <div className="flex flex-col items-start gap-2">
+        <Alert tone="error">{t('social.friends.friendsLoadError')}</Alert>
+        <Button onClick={() => void refetch()} size="sm">
+          {t('common.retry')}
+        </Button>
+      </div>
+    );
   }
 
   return (
     <section className="flex flex-col gap-3">
       <h2 className="bt-h2">{t('common.friends')}</h2>
+      {sharedQuery.isLoading ? (
+        <div aria-label={t('common.loadingLabel')} className="flex flex-col gap-2" role="status">
+          <SkeletonBlock height={14} width={144} />
+          <SkeletonBlock height={48} />
+        </div>
+      ) : sharedQuery.isError ? (
+        <div className="flex flex-col items-start gap-2">
+          <Alert tone="error">{t('social.shared.loadError')}</Alert>
+          <Button onClick={() => void sharedQuery.refetch()} size="sm">
+            {t('common.retry')}
+          </Button>
+        </div>
+      ) : null}
       {data.friends.length === 0 ? (
         <EmptyState
           icon="🫂"
@@ -654,8 +719,12 @@ function FriendsListSection() {
             <FriendCard
               key={friendship.user.id}
               friendship={friendship}
-              person={personFor(sharedQuery.data, friendship.user.id)}
+              person={
+                sharedQuery.isSuccess ? personFor(sharedQuery.data, friendship.user.id) : undefined
+              }
               onRequestRemove={() => setRemoveTarget(friendship)}
+              sharingAllowed={sharingAllowed}
+              sharesReady={sharedQuery.isSuccess}
             />
           ))}
         </ul>
@@ -682,6 +751,7 @@ function FriendsListSection() {
  */
 export function FriendsPage() {
   const t = useT();
+  const sharingAllowed = useResolvedPrivacyMode() === 'normal';
   return (
     <div className="flex flex-col">
       <PageHead sub={t('social.friends.subtitle')} title={t('common.friends')} />
@@ -689,9 +759,9 @@ export function FriendsPage() {
           section stack starts here rather than inheriting the page gap. */}
       <div className="flex flex-col gap-8">
         <AddFriendForm />
-        <FriendsListSection />
-        <FriendGroupsSection />
-        <RequestsSection />
+        <FriendsListSection sharingAllowed={sharingAllowed} />
+        {sharingAllowed ? <FriendGroupsSection /> : null}
+        <RequestsSection sharingAllowed={sharingAllowed} />
       </div>
     </div>
   );

@@ -14,14 +14,25 @@ pages render instantly.
 | `de.html`        | Product landing — German                    |
 | `mobile.html`    | Mobile placeholder — English                |
 | `mobile.de.html` | Mobile placeholder — German                 |
+| `{page}/`        | EN/DE legal pages (`index.html`, `de/`)     |
 | `styles.css`     | Shared styles (app dark aesthetic)          |
+| `style.css`      | Live-compatible legal-page style mapping    |
 | `landing.js`     | CSP-safe runtime link + registration wiring |
+| `BT_AppIcon.png` | Legal-page icon expected by the live chrome |
 | `screens/*.svg`  | Feature screenshots                         |
 | `env.js`         | Runtime origin config (regenerated at boot) |
 
 Language is a visible EN/DE switch that links between the sibling files — the
 SPA's runtime i18n layer does not apply to this separate static site. A human DE
 pass is part of V3-P13.
+
+`site/{terms,privacy,impressum,cookies}/` is the repository's single canonical
+legal-document source. The generic landing image serves those directories
+directly; `infra/live/updater.sh` overlays the same four directories onto the
+bespoke `bettertrack.at` product mount after each successful deploy.
+The image also maps the live-only `/features/`, `/security/`, and `/roadmap/`
+chrome links onto the one-page landing content so canonical pages never expose
+dead navigation on a generic deployment.
 
 > **Screenshots.** The `screens/*.svg` assets are faithful, framework-free
 > reproductions of the real app surfaces (portfolio, Conglomerate builder,
@@ -31,9 +42,10 @@ pass is part of V3-P13.
 
 ## Runtime origins
 
-The "Open the web app" links resolve at runtime from `window.__BT_LANDING__.webOrigin`,
-and the registration-mode probe reads `window.__BT_LANDING__.apiOrigin`. In the
-container, `env.js` is regenerated from `env.js.template` by
+The web-app links resolve at runtime from `window.__BT_LANDING__.webOrigin`,
+preserving declared paths such as `/account/delete`, and the registration-mode
+probe reads `window.__BT_LANDING__.apiOrigin`. In the container, `env.js` is
+regenerated from `env.js.template` by
 `docker-entrypoint.sh` (an nginx `/docker-entrypoint.d` hook). The hook parses
 each configured origin with `new URL()`, accepts `https:` origins plus loopback
 `http:` only for local development, and writes the values with `JSON.stringify`.

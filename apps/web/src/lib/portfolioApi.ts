@@ -6,7 +6,9 @@ import {
   cashSourceResponseSchema,
   cashTransferResponseSchema,
   createCustomAssetResponseSchema,
+  customAssetListResponseSchema,
   customAssetSchema,
+  dividendListResponseSchema,
   portfolioHistoryResponseSchema,
   portfolioListResponseSchema,
   portfolioMutationResponseSchema,
@@ -33,6 +35,8 @@ import {
   type CreateCustomAssetRequest,
   type CreateCustomAssetResponse,
   type CustomAsset,
+  type CustomAssetListResponse,
+  type DividendListResponse,
   type PortfolioHistoryRange,
   type PortfolioHistoryResponse,
   type PortfolioListResponse,
@@ -235,6 +239,22 @@ export async function deleteTransaction(
   );
 }
 
+/** `GET /portfolios/:id/dividends` — recorded dividends, newest first. */
+export async function listDividends(
+  portfolioId: string,
+  source?: string,
+  signal?: AbortSignal,
+): Promise<DividendListResponse> {
+  const data = await apiRequest<unknown>(
+    `/portfolios/${encodeURIComponent(portfolioId)}/dividends`,
+    {
+      query: { source },
+      signal,
+    },
+  );
+  return dividendListResponseSchema.parse(data);
+}
+
 // --- Per-year tax report (V3-P4) ---------------------------------------------
 
 /**
@@ -360,6 +380,24 @@ export async function withdrawCash(
 ): Promise<CashMovementResponse> {
   const data = await apiRequest<unknown>(
     `/portfolios/${encodeURIComponent(portfolioId)}/cash/withdraw`,
+    { method: 'POST', body },
+  );
+  return cashMovementResponseSchema.parse(data);
+}
+
+/**
+ * `POST /portfolios/:id/cash/fee` — record a standing custody / account /
+ * platform fee; rejects an overdraw exactly like a withdrawal (V5, §16
+ * 2026-07-30). Same body as deposit/withdraw. The difference is what it means to
+ * the return: a fee is a cost of HOLDING, so it drags the performance curve,
+ * whereas a withdrawal is an external flow that is divided back out of it.
+ */
+export async function chargeCashFee(
+  portfolioId: string,
+  body: CashEntryRequest,
+): Promise<CashMovementResponse> {
+  const data = await apiRequest<unknown>(
+    `/portfolios/${encodeURIComponent(portfolioId)}/cash/fee`,
     { method: 'POST', body },
   );
   return cashMovementResponseSchema.parse(data);
@@ -498,6 +536,12 @@ export async function setCashBalance(
 }
 
 // --- Custom assets ---------------------------------------------------------
+
+/** `GET /custom-assets` — every owner-created asset, including unheld assets. */
+export async function listCustomAssets(signal?: AbortSignal): Promise<CustomAssetListResponse> {
+  const data = await apiRequest<unknown>('/custom-assets', { signal });
+  return customAssetListResponseSchema.parse(data);
+}
 
 /** `POST /custom-assets` — create a custom investment, optional initial BUY (§6.9). */
 export async function createCustomAsset(

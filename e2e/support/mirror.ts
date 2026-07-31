@@ -121,9 +121,13 @@ export async function errorCode(res: APIResponse): Promise<string | undefined> {
 
 /** The invitee's user id, resolved from the inviter's real friends list. */
 export async function friendUserId(user: E2EUser, username: string): Promise<string> {
+  // `/social/**` is the API mount; `/people` is only the WEB route that replaced
+  // the old `/social` page in the Origin redesign. The rename swept this call
+  // along with it, and `/api/v1/people` has never existed — so every chain setup
+  // that resolves a friend id died on Express's HTML 404.
   const { friends } = await apiGet<{ friends: Array<{ user: { id: string; username: string } }> }>(
     user,
-    '/people',
+    '/social/friends',
   );
   const match = friends.find((f) => f.user.username === username);
   if (!match) throw new Error(`${username} is not in ${user.username}'s friends list`);

@@ -246,6 +246,161 @@ export const updateAccountSettingsRequestSchema = z
   );
 export type UpdateAccountSettingsRequest = z.infer<typeof updateAccountSettingsRequestSchema>;
 
+// --- Home widget board (R2 home-widgets) -----------------------------------
+
+/**
+ * The user's Home widget board, stored per ACCOUNT so the layout composed on one
+ * device is the layout every other device gets (owner request; it used to live
+ * only in one device-wide `localStorage` key).
+ *
+ * **These schemas validate SHAPE and SIZE. They must never validate the widget
+ * vocabulary.** The board's types, sizes and settings keys are owned by the SPA
+ * and change with every web deploy; the API is a verbatim store. A client one
+ * deploy ahead of the server WILL send widget types and settings keys this build
+ * has never heard of, and the server has to persist them and hand them back
+ * untouched — an "unknown type" rejection (or a silent drop) would delete a
+ * widget the user arranged on their updated device the moment they opened an
+ * older one. So `type` and `size` are bounded strings, not enums, and `settings`
+ * is an open record.
+ *
+ * The caps below are an **abuse boundary**, not a vocabulary one: this document
+ * is user-controlled JSON that lands in a `users` column read on every
+ * authenticated request, so it has to stay small and shallow. Anything past a
+ * cap is a 400 — never a silent truncation, which would hand the user back a
+ * board they did not build.
+ *
+ * Two extension rules follow from the object being `.strict()`:
+ *  - a new **per-widget attribute** goes in `settings`, which is open; the
+ *    widget frame (`id`/`type`/`size`/`settings`) is fixed;
+ *  - a new **document-level** field needs a contract change and therefore a
+ *    server deploy before any client may send it.
+ * A `settings` value stays flat (primitive, or an array of primitives) for the
+ * same reason the caps exist — a nested-object setting would need this contract
+ * widened first.
+ */
+
+/** Widgets one board may hold. Far past any usable board; a fan-out bound only. */
+export const HOME_LAYOUT_MAX_WIDGETS = 48;
+/** Per-instance id length — a client-generated React key, not an identifier we mint. */
+export const HOME_LAYOUT_MAX_ID_CHARS = 64;
+/** Widget type token length (`net-worth`, `performance-chart`, …). */
+export const HOME_LAYOUT_MAX_TYPE_CHARS = 64;
+/** Size token length (`s`/`m`/`l` today — a token, not an enum, on purpose). */
+export const HOME_LAYOUT_MAX_SIZE_CHARS = 16;
+/** Settings keys one widget may carry. */
+export const HOME_LAYOUT_MAX_SETTING_KEYS = 24;
+export const HOME_LAYOUT_MAX_SETTING_KEY_CHARS = 64;
+/** Cap on one string setting (portfolio ids, labels, range/variant tokens). */
+export const HOME_LAYOUT_MAX_SETTING_STRING_CHARS = 256;
+/** Cap on an array setting (`scopeIds` is the only one today, itself capped at 24). */
+export const HOME_LAYOUT_MAX_SETTING_ARRAY_ITEMS = 64;
+/** Schema version ceiling — the SPA owns the number; this only bounds it. */
+export const HOME_LAYOUT_MAX_VERSION = 1_000_000;
+/** Whole-document cap, measured on the serialised UTF-8 bytes. */
+export const HOME_LAYOUT_MAX_BYTES = 32 * 1024;
+
+const homeLayoutSettingScalarSchema = z.union([
+  z.string().max(HOME_LAYOUT_MAX_SETTING_STRING_CHARS),
+  z.number().finite(),
+  z.boolean(),
+]);
+
+const homeLayoutSettingValueSchema = z.union([
+  homeLayoutSettingScalarSchema,
+  z.null(),
+  z.array(homeLayoutSettingScalarSchema).max(HOME_LAYOUT_MAX_SETTING_ARRAY_ITEMS),
+]);
+
+/** One widget's settings: an open, flat map — keys and meanings belong to the SPA. */
+export const homeLayoutSettingsSchema = z
+  .record(z.string().min(1).max(HOME_LAYOUT_MAX_SETTING_KEY_CHARS), homeLayoutSettingValueSchema)
+  .refine((settings) => Object.keys(settings).length <= HOME_LAYOUT_MAX_SETTING_KEYS, {
+    message: `A widget may carry at most ${HOME_LAYOUT_MAX_SETTING_KEYS} settings.`,
+  });
+
+/** One placed widget. `type`/`size` are opaque tokens — see the block comment. */
+export const homeLayoutWidgetSchema = z
+  .object({
+    id: z.string().min(1).max(HOME_LAYOUT_MAX_ID_CHARS),
+    type: z.string().min(1).max(HOME_LAYOUT_MAX_TYPE_CHARS),
+    size: z.string().min(1).max(HOME_LAYOUT_MAX_SIZE_CHARS),
+    settings: homeLayoutSettingsSchema,
+  })
+  .strict();
+export type HomeLayoutWidget = z.infer<typeof homeLayoutWidgetSchema>;
+
+/**
+ * The whole board. `version` is the SPA's own schema version, stored verbatim:
+ * a document from a version this build does not know is still a document it must
+ * keep, and the *client* decides whether it can read it (see the SPA's
+ * `parseHomeConfig`, which falls back to its defaults rather than guessing).
+ */
+export const homeLayoutSchema = z
+  .object({
+    version: z.number().int().nonnegative().max(HOME_LAYOUT_MAX_VERSION),
+    widgets: z.array(homeLayoutWidgetSchema).max(HOME_LAYOUT_MAX_WIDGETS),
+  })
+  .strict()
+  .superRefine((layout, ctx) => {
+    // Checked on the serialised form because that is what gets stored, and the
+    // per-field caps alone still allow 48 × 24 × 256 characters of settings.
+    if (new TextEncoder().encode(JSON.stringify(layout)).length > HOME_LAYOUT_MAX_BYTES) {
+      ctx.addIssue({
+        code: 'custom',
+        message: `The board must serialise to at most ${HOME_LAYOUT_MAX_BYTES} bytes.`,
+      });
+    }
+  });
+export type HomeLayout = z.infer<typeof homeLayoutSchema>;
+
+/**
+ * `GET/PUT /settings/home` response. `layout: null` with `updatedAt: null` means
+ * the account has never saved a board; `layout: null` with an `updatedAt` means
+ * it was explicitly cleared, which is what stops another device from pushing the
+ * cleared board straight back up.
+ */
+export const homeLayoutResponseSchema = z
+  .object({
+    layout: homeLayoutSchema.nullable(),
+    updatedAt: z.string().datetime().nullable(),
+  })
+  .strict();
+export type HomeLayoutResponse = z.infer<typeof homeLayoutResponseSchema>;
+
+/**
+ * The **reader's** view of that same response, for the SPA.
+ *
+ * The client deliberately does NOT parse the response with
+ * {@link homeLayoutResponseSchema}: a board saved by a newer build could exceed
+ * a cap this build still enforces (more widgets, a longer token), and rejecting
+ * the whole response would blank Home instead of degrading it. The layout is
+ * therefore handed through as `unknown` and run past the SPA's own forward-safe
+ * board parser, which keeps what it understands and drops what it does not
+ * WITHOUT rewriting storage. `updatedAt` stays strict — it is the sync
+ * revision, and a malformed one would break reconciliation silently.
+ */
+export const homeLayoutEnvelopeSchema = z
+  .object({
+    layout: z.unknown(),
+    updatedAt: z.string().datetime().nullable(),
+  })
+  .strip();
+export type HomeLayoutEnvelope = z.infer<typeof homeLayoutEnvelopeSchema>;
+
+/**
+ * `PUT /settings/home` body — the whole board, replaced outright. There is no
+ * partial update: the document is small, the client always holds all of it, and
+ * a merge would need a conflict model the board does not have.
+ *
+ * `layout: null` clears the stored board (and still bumps `updatedAt`), so a user
+ * who wipes their Home on one device does not have it resurrected by the next
+ * one they open.
+ */
+export const updateHomeLayoutRequestSchema = z
+  .object({ layout: homeLayoutSchema.nullable() })
+  .strict();
+export type UpdateHomeLayoutRequest = z.infer<typeof updateHomeLayoutRequestSchema>;
+
 // --- Account data export (§13.4 V4-P6a, #494) ------------------------------
 
 /**

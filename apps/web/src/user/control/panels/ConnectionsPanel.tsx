@@ -21,7 +21,7 @@ import type {
   DriveConnectionController,
   VaultRetiredPurgeResult,
 } from '../../vault/media';
-import { VAULT_MEDIA_QUERY_KEY } from '../../vault/usePrivacyMode';
+import { useResolvedPrivacyModeState, vaultMediaQueryKey } from '../../vault/usePrivacyMode';
 import {
   useOptionalVaultRuntime,
   type VaultDriveUnlockOptions,
@@ -38,10 +38,6 @@ import {
 } from './panelKit';
 
 const GOOGLE_KEY = ['auth', 'google', 'link-status'] as const;
-// One shared key so this page's fetch also serves `usePrivacyMode` (and vice
-// versa) — kept as a single definition so the two can never drift apart.
-const VAULT_MEDIA_KEY = VAULT_MEDIA_QUERY_KEY;
-
 /**
  * Map a Settings-connect failure the callback bounced back as `?error=google_*`
  * to a friendly message (owner order 2026-07-16). The headline case is
@@ -139,6 +135,7 @@ function GoogleSection() {
       <PanelGroup label={t('settings.security.google.title')}>
         <Row stack>
           <PanelNote>{t('settings.security.google.loadError')}</PanelNote>
+          <Button onClick={() => void query.refetch()}>{t('common.retry')}</Button>
         </Row>
       </PanelGroup>
     );
@@ -285,10 +282,12 @@ function useDriveAuthorization(connection: DriveConnectionController | null) {
  * verified-copy semantics, same messages, same `['vault','media']` refresh.
  */
 function DriveVaultSection({
+  accountId,
   connection,
   configured,
   unlock,
 }: {
+  accountId: string | null;
   connection: DriveConnectionController | null;
   configured: boolean;
   unlock:
@@ -305,8 +304,9 @@ function DriveVaultSection({
   const [unlockAction, setUnlockAction] = useState<DriveCardAction | null>(null);
   const [passphrase, setPassphrase] = useState('');
   const authorization = useDriveAuthorization(connection);
+  const mediaQueryKey = vaultMediaQueryKey(accountId);
   const query = useQuery({
-    queryKey: VAULT_MEDIA_KEY,
+    queryKey: mediaQueryKey,
     queryFn: ({ signal }) => getParanoidMediaState(signal),
     retry: false,
     staleTime: 15_000,
@@ -317,6 +317,7 @@ function DriveVaultSection({
       <PanelGroup label={t('settings.connections.drive.title')}>
         <Row stack>
           <PanelNote>{t('settings.connections.drive.loadError')}</PanelNote>
+          <Button onClick={() => void query.refetch()}>{t('common.retry')}</Button>
         </Row>
       </PanelGroup>
     );
@@ -353,7 +354,7 @@ function DriveVaultSection({
   const purgeReady = retired != null && Date.now() >= Date.parse(retired.purgeAfter);
 
   async function refresh(): Promise<void> {
-    await queryClient.invalidateQueries({ queryKey: VAULT_MEDIA_KEY });
+    await queryClient.invalidateQueries({ queryKey: mediaQueryKey, exact: true });
   }
 
   function requireUnlocked(action: DriveCardAction): boolean {
@@ -724,6 +725,7 @@ export function ConnectionsPanel({
 } = {}) {
   const t = useT();
   const runtime = useOptionalVaultRuntime();
+  const privacy = useResolvedPrivacyModeState();
   const resolvedDriveConnection =
     driveConnection === undefined ? (runtime?.connection ?? null) : driveConnection;
   const resolvedDriveUnlock =
@@ -735,6 +737,7 @@ export function ConnectionsPanel({
       <GoogleSection />
 
       <DriveVaultSection
+        accountId={privacy.accountId}
         configured={driveConfigured}
         connection={resolvedDriveConnection}
         unlock={resolvedDriveUnlock}

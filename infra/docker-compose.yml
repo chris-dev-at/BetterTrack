@@ -13,6 +13,12 @@ name: bettertrack
 # The API and BullMQ worker load the same envSchema and may both execute feature
 # code. Keep their complete production environment in this ONE anchor so a new
 # key cannot reach one process while silently disappearing from the other.
+x-bounded-logging: &bounded-logging
+  driver: local
+  options:
+    max-size: '10m'
+    max-file: '3'
+
 x-api-worker-environment: &api-worker-environment
   # Process invariants. These stay fixed because the proxy, healthcheck, and
   # durable export-volume target depend on the exact in-container values.
@@ -61,6 +67,8 @@ x-api-worker-environment: &api-worker-environment
   ADMIN_EMAIL: '${ADMIN_EMAIL:-}'
   ADMIN_PASSWORD: '${ADMIN_PASSWORD:-}'
   ADMIN_SESSION_LIFETIME_HOURS: '${ADMIN_SESSION_LIFETIME_HOURS:-12}'
+  BT_AUDIT_RETENTION_DAYS: '${BT_AUDIT_RETENTION_DAYS:-400}'
+  BT_EMAIL_LOG_RETENTION_DAYS: '${BT_EMAIL_LOG_RETENTION_DAYS:-180}'
 
   # Provider, request-budget, and feature rollout controls.
   PROVIDER_MAX_CONCURRENCY: '${PROVIDER_MAX_CONCURRENCY:-4}'
@@ -70,6 +78,10 @@ x-api-worker-environment: &api-worker-environment
   REALTIME_ENABLED: '${REALTIME_ENABLED:-}'
   RATE_LIMIT_BURST_WINDOW_SEC: '${RATE_LIMIT_BURST_WINDOW_SEC:-10}'
   RATE_LIMIT_BURST_LIMIT: '${RATE_LIMIT_BURST_LIMIT:-60}'
+  # Per-IP login limiter (§16 2026-07-30). Defaults mirror the schema's
+  # production values; the e2e raise lives only in playwright.config.ts.
+  RATE_LIMIT_LOGIN_IP_WINDOW_SEC: '${RATE_LIMIT_LOGIN_IP_WINDOW_SEC:-60}'
+  RATE_LIMIT_LOGIN_IP_LIMIT: '${RATE_LIMIT_LOGIN_IP_LIMIT:-25}'
 
   # Optional authentication, notification, and push integrations.
   BT_GOOGLE_CLIENT_ID: '${BT_GOOGLE_CLIENT_ID:-}'
@@ -118,6 +130,7 @@ services:
         # No secret or Drive token is passed to the API/container runtime.
         VITE_GOOGLE_DRIVE_CLIENT_ID: '${VITE_GOOGLE_DRIVE_CLIENT_ID:-}'
     restart: unless-stopped
+    logging: *bounded-logging
     environment:
       # Topology (§11) — the same scheme the api derives its origins from.
       BT_MODE: '${BT_MODE:-subdomains}'
@@ -133,6 +146,7 @@ services:
       BT_PORT_PRODUCT: '${BT_PORT_PRODUCT:-8082}'
       BT_PORT_MOBILE: '${BT_PORT_MOBILE:-8083}'
       BT_API_ORIGIN: '${BT_API_ORIGIN:-}'
+      BT_PRODUCT_ORIGIN: '${BT_PRODUCT_ORIGIN:-}'
       # Same value the api reads (below). The front proxy renders the static CSP
       # at start, and the admin Diagnostics panel embeds this URL in an iframe on
       # the auth-gated-subdomain path — so frame-src must carry exactly this
@@ -165,6 +179,7 @@ services:
       context: ..
       dockerfile: apps/landing/Dockerfile
     restart: unless-stopped
+    logging: *bounded-logging
     environment:
       # Keep runtime env.js on the exact topology used by the front proxy. The
       # explicit origin overrides win; otherwise the landing entrypoint derives
@@ -189,6 +204,7 @@ services:
         GIT_SHA: '${GIT_SHA:-unknown}'
         GIT_BUILD_TIME: '${GIT_BUILD_TIME:-unknown}'
     restart: unless-stopped
+    logging: *bounded-logging
     environment:
       # No API-only keys: both processes consume the complete shared contract.
       <<: *api-worker-environment
@@ -216,6 +232,7 @@ services:
       dockerfile: apps/api/Dockerfile
     command: ['node', 'dist/scripts/worker.js']
     restart: unless-stopped
+    logging: *bounded-logging
     environment:
       # No worker-only keys: both processes consume the complete shared contract.
       <<: *api-worker-environment
@@ -235,20 +252,55 @@ services:
       # first proof, bounded so a loop that never starts becomes unhealthy.
       start_period: 3m
 
+  # Scheduled local recovery points are deployment code: the service takes one
+  # dump plus a safe restore drill on first start, then follows both configured
+  # schedules without a host crontab. Health is derived only from the
+  # machine-readable status in the dedicated status volume.
+  backup-scheduler:
+    build:
+      context: ./backup
+      dockerfile: Dockerfile
+    image: bettertrack-backup:local
+    entrypoint: ['/bin/bash', '/opt/bettertrack/scheduler.sh']
+    restart: unless-stopped
+    logging: *bounded-logging
+    environment:
+      POSTGRES_HOST: 'db'
+      POSTGRES_PORT: '5432'
+      POSTGRES_USER: '${POSTGRES_USER:-bt}'
+      POSTGRES_DB: '${POSTGRES_DB:-bettertrack}'
+      PGPASSWORD: '${POSTGRES_PASSWORD}'
+      BACKUP_DIR: '/backups'
+      BACKUP_RETENTION_DAYS: '${BACKUP_RETENTION_DAYS:-14}'
+      BT_BACKUP_CRON: '${BT_BACKUP_CRON:-0 3 * * *}'
+      BT_BACKUP_RESTORE_CRON: '${BT_BACKUP_RESTORE_CRON:-0 4 1 * *}'
+      BT_BACKUP_FRESHNESS_MAX_HOURS: '${BT_BACKUP_FRESHNESS_MAX_HOURS:-26}'
+      BT_BACKUP_RESTORE_MAX_AGE_DAYS: '${BT_BACKUP_RESTORE_MAX_AGE_DAYS:-35}'
+      BT_BACKUP_STATUS_FILE: '/status/backup-status.env'
+    volumes:
+      - pgbackups:/backups
+      - backupstatus:/status
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', '/opt/bettertrack/healthcheck.sh']
+      interval: 1m
+      timeout: 10s
+      retries: 3
+      start_period: 5m
+
   db:
     image: postgres:17
     restart: unless-stopped
+    logging: *bounded-logging
     environment:
       POSTGRES_USER: '${POSTGRES_USER:-bt}'
       POSTGRES_PASSWORD: '${POSTGRES_PASSWORD}'
       POSTGRES_DB: '${POSTGRES_DB:-bettertrack}'
-      # Nightly backup rotation window (§10) — consumed by backup.sh, triggered
-      # via host cron (see README.md "Backups & restore"), not a 6th service.
-      BACKUP_RETENTION_DAYS: '${BACKUP_RETENTION_DAYS:-14}'
     volumes:
       - pgdata:/var/lib/postgresql/data
       - pgbackups:/backups
-      - ./backup/backup.sh:/opt/bettertrack/backup.sh:ro
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-bt} -d ${POSTGRES_DB:-bettertrack}']
       interval: 10s
@@ -258,6 +310,7 @@ services:
   redis:
     image: redis:7
     restart: unless-stopped
+    logging: *bounded-logging
     command: ['redis-server', '--appendonly', 'yes']
     volumes:
       - redisdata:/data
@@ -278,6 +331,7 @@ services:
   prometheus:
     image: prom/prometheus:v2.53.3
     restart: unless-stopped
+    logging: *bounded-logging
     command:
       - '--config.file=/etc/prometheus/prometheus.yml'
       - '--storage.tsdb.path=/prometheus'
@@ -296,6 +350,7 @@ services:
   grafana:
     image: grafana/grafana-oss:11.3.1
     restart: unless-stopped
+    logging: *bounded-logging
     environment:
       # Local-admin bootstrap. Change the default before first boot; the owner
       # only ever reaches this over localhost/LAN, and sign-up is disabled.
@@ -342,6 +397,7 @@ services:
   node-exporter:
     image: prom/node-exporter:v1.8.2
     restart: unless-stopped
+    logging: *bounded-logging
     command:
       - '--path.procfs=/host/proc'
       - '--path.sysfs=/host/sys'
@@ -357,6 +413,7 @@ services:
   cadvisor:
     image: gcr.io/cadvisor/cadvisor:v0.49.1
     restart: unless-stopped
+    logging: *bounded-logging
     privileged: true
     volumes:
       - /:/rootfs:ro
@@ -371,6 +428,7 @@ services:
   postgres-exporter:
     image: prometheuscommunity/postgres-exporter:v0.16.0
     restart: unless-stopped
+    logging: *bounded-logging
     environment:
       DATA_SOURCE_NAME: 'postgresql://${POSTGRES_USER:-bt}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-bettertrack}?sslmode=disable'
     depends_on:
@@ -381,6 +439,7 @@ services:
   redis-exporter:
     image: oliver006/redis_exporter:v1.62.0
     restart: unless-stopped
+    logging: *bounded-logging
     environment:
       REDIS_ADDR: 'redis://redis:6379'
     depends_on:
@@ -392,5 +451,6 @@ volumes:
   redisdata:
   exportdata:
   pgbackups:
+  backupstatus:
   promdata:
   grafanadata:

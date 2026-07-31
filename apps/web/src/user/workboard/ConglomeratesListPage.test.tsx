@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { describe, expect, test, vi, beforeEach } from 'vitest';
 import { MemoryRouter } from 'react-router-dom';
 
@@ -107,11 +108,17 @@ describe('ConglomeratesListPage', () => {
   });
 
   test('shows an error message when the list fails to load', async () => {
-    vi.mocked(listConglomerates).mockRejectedValue(new Error('nope'));
+    vi.mocked(listConglomerates)
+      .mockRejectedValueOnce(new Error('nope'))
+      .mockResolvedValueOnce({ conglomerates: [] });
+    const user = userEvent.setup();
     renderPage();
 
     await waitFor(() =>
       expect(screen.getByText(/Could not load your Blueprints/i)).toBeInTheDocument(),
     );
+    await user.click(screen.getByRole('button', { name: 'Try again' }));
+    expect(await screen.findByText('No Blueprints yet')).toBeInTheDocument();
+    expect(listConglomerates).toHaveBeenCalledTimes(2);
   });
 });

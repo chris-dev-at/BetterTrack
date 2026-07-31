@@ -3,6 +3,8 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { beforeEach, expect, test, vi } from 'vitest';
 
+import { I18nProvider, LOCALES, localizedMessage } from '../../i18n';
+
 vi.mock('../AuthContext', () => ({
   useAuth: () => ({
     status: 'authenticated',
@@ -13,20 +15,51 @@ vi.mock('../AuthContext', () => ({
 
 import { AdminLayout } from './AdminLayout';
 
+const ADMIN_NAV_KEYS = [
+  'admin.nav.users',
+  'admin.nav.invites',
+  'admin.nav.settings',
+  'admin.nav.featureFlags',
+  'admin.nav.ai',
+  'admin.nav.accountDefaults',
+  'admin.nav.announcements',
+  'admin.nav.oauthApps',
+  'admin.nav.apiKeys',
+  'admin.nav.health',
+  'admin.nav.problems',
+  'admin.nav.monitoring',
+  'admin.nav.usageAnalytics',
+  'admin.nav.email',
+  'admin.nav.audit',
+  'admin.nav.security',
+] as const;
+
+const ADMIN_SHELL_KEYS = [
+  'admin.nav.console',
+  'admin.nav.loading',
+  'admin.nav.language',
+  'admin.nav.sections.people',
+  'admin.nav.sections.configuration',
+  'admin.nav.sections.diagnostics',
+  ...ADMIN_NAV_KEYS,
+] as const;
+
 function Bomb(): never {
   throw new Error('kaboom');
 }
 
-function renderAdmin(initialPath: string) {
+function renderAdmin(initialPath: string, initialLocale = 'en') {
   return render(
-    <MemoryRouter initialEntries={[initialPath]}>
-      <Routes>
-        <Route element={<AdminLayout />}>
-          <Route path="/admin/users" element={<Bomb />} />
-          <Route path="/admin/invites" element={<p>Invites page</p>} />
-        </Route>
-      </Routes>
-    </MemoryRouter>,
+    <I18nProvider initialLocale={initialLocale}>
+      <MemoryRouter initialEntries={[initialPath]}>
+        <Routes>
+          <Route element={<AdminLayout />}>
+            <Route path="/admin/users" element={<Bomb />} />
+            <Route path="/admin/invites" element={<p>Invites page</p>} />
+          </Route>
+        </Routes>
+      </MemoryRouter>
+    </I18nProvider>,
   );
 }
 
@@ -76,13 +109,54 @@ test('navigating to a different route clears a stuck error boundary', async () =
 test('the admin nav is a vertical sidebar — no horizontal scroll, no wrap', () => {
   renderAdmin('/admin/invites');
 
-  const nav = screen.getByRole('navigation', { name: 'Admin' });
+  const nav = screen.getByRole('navigation', { name: 'Admin console' });
   expect(nav.className).not.toContain('overflow-x-auto');
   expect(nav.className).not.toContain('flex-wrap');
   expect(nav.className).toContain('flex-col');
 
   const link = screen.getByRole('link', { name: 'Invites' });
   expect(link.className).toContain('min-h-[40px]');
+});
+
+test('every admin shell key is available in every supported locale', () => {
+  for (const locale of Object.values(LOCALES)) {
+    for (const key of ADMIN_SHELL_KEYS) {
+      expect(localizedMessage(locale.code, key)).not.toBe(key);
+    }
+  }
+});
+
+test.each(['en', 'de'] as const)('every navigation entry resolves through %s', (locale) => {
+  renderAdmin('/admin/invites', locale);
+
+  for (const key of ADMIN_NAV_KEYS) {
+    expect(screen.getByRole('link', { name: localizedMessage(locale, key) })).toBeInTheDocument();
+  }
+  for (const key of [
+    'admin.nav.sections.people',
+    'admin.nav.sections.configuration',
+    'admin.nav.sections.diagnostics',
+  ]) {
+    expect(
+      screen.getByRole('heading', { name: localizedMessage(locale, key) }),
+    ).toBeInTheDocument();
+  }
+});
+
+test('the compact language control re-renders the admin shell immediately', async () => {
+  const user = userEvent.setup();
+  renderAdmin('/admin/invites');
+
+  const language = screen.getByRole('combobox', { name: 'Console language' });
+  expect(language).toHaveValue('en');
+
+  await user.selectOptions(language, 'de');
+
+  expect(screen.getByRole('combobox', { name: 'Sprache der Konsole' })).toHaveValue('de');
+  expect(screen.getByRole('navigation', { name: 'Admin-Konsole' })).toBeInTheDocument();
+  expect(screen.getByRole('heading', { name: 'Konfiguration' })).toBeInTheDocument();
+  expect(screen.getByRole('link', { name: 'Nutzer' })).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Abmelden' })).toBeInTheDocument();
 });
 
 test('the burger button opens the mobile drawer with an i18n aria-label and closes on Escape', async () => {

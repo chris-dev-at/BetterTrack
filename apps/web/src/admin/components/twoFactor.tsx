@@ -155,11 +155,11 @@ export function TotpEnrollForm({
           {t('admin.twoFactor.totp.manualEntryToggle')}
         </summary>
         <div className="mt-3 flex flex-col gap-1.5">
-          <span className="text-xs font-medium text-neutral-500">
+          <span className="text-xs font-medium text-neutral-400">
             {t('admin.twoFactor.totp.setupKeyLabel')}
           </span>
           <code className="break-all text-sm text-neutral-100">{enroll.secret}</code>
-          <span className="mt-2 text-xs font-medium text-neutral-500">
+          <span className="mt-2 text-xs font-medium text-neutral-400">
             {t('admin.twoFactor.totp.otpauthUriLabel')}
           </span>
           <code className="break-all text-xs text-neutral-400">{enroll.otpauthUri}</code>

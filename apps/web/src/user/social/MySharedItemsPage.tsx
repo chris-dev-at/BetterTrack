@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 
@@ -20,7 +20,7 @@ import {
 } from '../../ui/origin';
 import { AudiencePicker } from '../components/AudiencePicker';
 import { Dialog } from '../components/Dialog';
-import { Alert } from '../components/ui';
+import { Alert, Spinner } from '../components/ui';
 
 const MY_SHARED_STALE_MS = 30_000;
 const MY_SHARED_KEY = ['social', 'my-shared'] as const;
@@ -29,11 +29,6 @@ interface PickerTarget {
   kind: ShareKind;
   subjectId: string;
   label: string;
-  /**
-   * V5-P7 M5 MIRRORCHAIN §10: true when the target is a synced-copy portfolio
-   * of an active chain — the picker renders the co-member-visibility notice.
-   */
-  mirrorSyncedCopy?: boolean;
 }
 
 /**
@@ -65,9 +60,18 @@ interface SharedRowProps {
   detail?: string;
   onShare: () => void;
   shareLabel: string;
+  shareDisabled?: boolean;
 }
 
-function SharedRow({ name, audience, friendCount, detail, onShare, shareLabel }: SharedRowProps) {
+function SharedRow({
+  name,
+  audience,
+  friendCount,
+  detail,
+  onShare,
+  shareLabel,
+  shareDisabled = false,
+}: SharedRowProps) {
   return (
     <li className="flex items-center justify-between gap-3 py-3">
       <div className="flex min-w-0 flex-col gap-1">
@@ -77,7 +81,7 @@ function SharedRow({ name, audience, friendCount, detail, onShare, shareLabel }:
           {detail ? <span className="bt-meta">{detail}</span> : null}
         </div>
       </div>
-      <Button onClick={onShare} size="sm">
+      <Button disabled={shareDisabled} onClick={onShare} size="sm">
         {shareLabel}
       </Button>
     </li>
@@ -178,7 +182,7 @@ export function MySharedItemsPage() {
   const queryClient = useQueryClient();
   const [picker, setPicker] = useState<PickerTarget | null>(null);
 
-  const { data, isLoading, isError } = useQuery({
+  const { data, isLoading, isError, refetch } = useQuery({
     queryKey: MY_SHARED_KEY,
     queryFn: ({ signal }) => listMyShared(signal),
     staleTime: MY_SHARED_STALE_MS,
@@ -189,15 +193,25 @@ export function MySharedItemsPage() {
   const portfoliosQuery = useQuery({
     queryKey: ['portfolios'],
     queryFn: ({ signal }) => listPortfolios(signal),
+    enabled: (data?.portfolios.length ?? 0) > 0,
     staleTime: 60_000,
   });
+  const portfolioMetadataReady = portfoliosQuery.isSuccess && !portfoliosQuery.isFetching;
   const mirrorSyncedPortfolios = useMemo(() => {
     const set = new Set<string>();
+    if (!portfolioMetadataReady) return set;
     for (const p of portfoliosQuery.data?.portfolios ?? []) {
       if (p.mirror) set.add(p.id);
     }
     return set;
-  }, [portfoliosQuery.data]);
+  }, [portfolioMetadataReady, portfoliosQuery.data]);
+
+  // A background rejection invalidates the metadata that justified an open
+  // portfolio picker. Close it instead of letting a stale false flag remove the
+  // MIRRORCHAIN co-member disclosure from an already-open dialog.
+  useEffect(() => {
+    if (picker?.kind === 'portfolio' && !portfolioMetadataReady) setPicker(null);
+  }, [picker?.kind, portfolioMetadataReady]);
 
   const onChanged = () => {
     void queryClient.invalidateQueries({ queryKey: MY_SHARED_KEY });
@@ -213,7 +227,12 @@ export function MySharedItemsPage() {
   }
 
   if (isError || !data) {
-    return <Alert tone="error">{t('social.myShared.error')}</Alert>;
+    return (
+      <div className="flex flex-col items-start gap-3">
+        <Alert tone="error">{t('social.myShared.error')}</Alert>
+        <Button onClick={() => void refetch()}>{t('common.retry')}</Button>
+      </div>
+    );
   }
 
   const nothing =
@@ -227,6 +246,18 @@ export function MySharedItemsPage() {
   return (
     <div className="flex flex-col">
       <PageHead sub={t('social.myShared.subtitle')} title={t('social.myShared.title')} />
+      {data.portfolios.length > 0 && !portfolioMetadataReady && !portfoliosQuery.isError ? (
+        <div className="mb-4" data-testid="portfolio-share-metadata-loading">
+          <Spinner label={t('social.myShared.portfolioMetadataLoading')} />
+        </div>
+      ) : data.portfolios.length > 0 && portfoliosQuery.isError ? (
+        <div className="mb-4 flex flex-col items-start gap-2">
+          <Alert tone="error">{t('social.myShared.portfolioMetadataError')}</Alert>
+          <Button onClick={() => void portfoliosQuery.refetch()} size="sm">
+            {t('common.retry')}
+          </Button>
+        </div>
+      ) : null}
       {nothing ? (
         <EmptyState
           title={t('social.myShared.emptyTitle')}
@@ -248,10 +279,10 @@ export function MySharedItemsPage() {
                     kind: 'portfolio',
                     subjectId: p.portfolioId,
                     label: p.name,
-                    mirrorSyncedCopy: mirrorSyncedPortfolios.has(p.portfolioId),
                   })
                 }
                 shareLabel={shareLabel}
+                shareDisabled={!portfolioMetadataReady}
               />
             ))}
           </ul>
@@ -328,12 +359,14 @@ export function MySharedItemsPage() {
         </Link>
       </div>
 
-      {picker ? (
+      {picker && (picker.kind !== 'portfolio' || portfolioMetadataReady) ? (
         <AudiencePicker
           kind={picker.kind}
           subjectId={picker.subjectId}
           subjectLabel={picker.label}
-          mirrorSyncedCopy={picker.mirrorSyncedCopy}
+          mirrorSyncedCopy={
+            picker.kind === 'portfolio' && mirrorSyncedPortfolios.has(picker.subjectId)
+          }
           onClose={() => setPicker(null)}
           onChanged={onChanged}
         />

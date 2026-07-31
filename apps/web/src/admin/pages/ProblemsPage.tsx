@@ -71,7 +71,7 @@ export function ProblemsPage() {
 
       <div className="flex flex-wrap items-end gap-4">
         <label className="flex flex-col gap-1 text-xs text-neutral-400">
-          <span className="uppercase tracking-wide text-neutral-500">
+          <span className="uppercase tracking-wide text-neutral-400">
             {t('admin.problems.filters.kind')}
           </span>
           <select
@@ -86,7 +86,7 @@ export function ProblemsPage() {
           </select>
         </label>
         <label className="flex flex-col gap-1 text-xs text-neutral-400">
-          <span className="uppercase tracking-wide text-neutral-500">
+          <span className="uppercase tracking-wide text-neutral-400">
             {t('admin.problems.filters.status')}
           </span>
           <select
@@ -176,25 +176,25 @@ function ProblemRow({
 
       <dl className="grid grid-cols-2 gap-2 text-xs text-neutral-400 sm:grid-cols-4">
         <div className="flex flex-col">
-          <dt className="uppercase tracking-wide text-neutral-500">
+          <dt className="uppercase tracking-wide text-neutral-400">
             {t('admin.problems.occurrencesLabel')}
           </dt>
           <dd className="text-neutral-200">{problem.occurrenceCount}</dd>
         </div>
         <div className="flex flex-col">
-          <dt className="uppercase tracking-wide text-neutral-500">
+          <dt className="uppercase tracking-wide text-neutral-400">
             {t('admin.problems.firstSeen')}
           </dt>
           <dd className="text-neutral-200">{new Date(problem.firstSeenAt).toLocaleString()}</dd>
         </div>
         <div className="flex flex-col">
-          <dt className="uppercase tracking-wide text-neutral-500">
+          <dt className="uppercase tracking-wide text-neutral-400">
             {t('admin.problems.lastSeen')}
           </dt>
           <dd className="text-neutral-200">{new Date(problem.lastSeenAt).toLocaleString()}</dd>
         </div>
         <div className="flex flex-col">
-          <dt className="uppercase tracking-wide text-neutral-500">
+          <dt className="uppercase tracking-wide text-neutral-400">
             {t('admin.problems.fingerprint')}
           </dt>
           <dd className="truncate font-mono text-neutral-300">{problem.fingerprint}</dd>

@@ -6,6 +6,7 @@ import type { Application } from 'express';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
+  PARANOID_KILLED_WEBHOOK_EVENT_TYPES,
   WEBHOOK_AUTO_DISABLE_THRESHOLD,
   WEBHOOK_DELIVERY_HEADER,
   WEBHOOK_EVENT_HEADER,
@@ -26,6 +27,7 @@ import {
 import type {
   AlertTriggeredEvent,
   DividendEventNotice,
+  DomainEvent,
   FollowAlertCreatedEvent,
   FollowAlertFiredEvent,
   MirrorNotificationEvent,
@@ -38,6 +40,7 @@ import {
   createWebhookDeliveryCleanupJob,
   type JobDefinition,
 } from '../jobs';
+import { isParanoidKilledWebhookEvent } from '../services/account/paranoidEnforcement';
 import type { AuditService } from '../services/audit/auditService';
 import { decryptSecret, encryptSecret } from '../services/crypto/secretBox';
 import { DISPATCHABLE_EVENT_TYPES } from '../services/notifications/notificationDispatcher';
@@ -862,5 +865,19 @@ describe('subscribable catalog', () => {
     }
     // …and every dispatchable event is subscribable — the sets are identical.
     expect([...WEBHOOK_EVENT_TYPES].sort()).toEqual([...DISPATCHABLE_EVENT_TYPES].sort());
+  });
+
+  it("the contracts paranoid kill list is exactly the registry's subscribable half", () => {
+    // The SPA's create form hides these, and it reads the contracts constant
+    // rather than restating the list. Bind it to the PD3b enforcement registry
+    // here so a newly kill-listed event cannot stay offerable in that form.
+    const killedByRegistry = WEBHOOK_EVENT_TYPES.filter((type) =>
+      isParanoidKilledWebhookEvent({ type } as DomainEvent),
+    );
+    expect([...PARANOID_KILLED_WEBHOOK_EVENT_TYPES].sort()).toEqual([...killedByRegistry].sort());
+    // `portfolio.changed` is killed by the registry but is not subscribable, so
+    // the contracts list is a strict subset of the registry union by design.
+    expect(isParanoidKilledWebhookEvent({ type: 'portfolio.changed' } as DomainEvent)).toBe(true);
+    expect(WEBHOOK_EVENT_TYPES as readonly string[]).not.toContain('portfolio.changed');
   });
 });

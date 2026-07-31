@@ -32,7 +32,7 @@ export function ProfilePanel() {
   const t = useT();
   const queryClient = useQueryClient();
 
-  const { data, isLoading, isError } = useQuery({
+  const { data, isLoading, isError, refetch } = useQuery({
     queryKey: PROFILE_KEY,
     queryFn: ({ signal }) => getProfileSettings(signal),
   });
@@ -87,6 +87,9 @@ export function ProfilePanel() {
       <div className="bt-cc-panel">
         <PanelHead title={t('control.profile')} />
         <Alert tone="error">{t('profile.error')}</Alert>
+        <Button onClick={() => void refetch()} size="sm">
+          {t('common.retry')}
+        </Button>
       </div>
     );
   }

@@ -1,5 +1,6 @@
+import type { MirrorMemberStatus, VaultMirrorProvenance } from '@bettertrack/contracts';
 import type { VaultStrictDocumentV1 } from '@bettertrack/contracts';
-import { and, eq, inArray, isNull } from 'drizzle-orm';
+import { and, eq, inArray, isNull, lte, ne, or, sql } from 'drizzle-orm';
 
 import type { Database } from '../db';
 
@@ -7,10 +8,18 @@ import {
   assetIdentities,
   assets,
   dividends,
+  cashBudgets,
+  cashMovementTags,
+  cashRuleTags,
+  cashRules,
+  cashTags,
   expenseBudgets,
   expenseCategories,
   expenseRules,
   expenseTransactions,
+  mirrorChainMembers,
+  mirrorChainOps,
+  mirrorRows,
   portfolioCashMovements,
   portfolioCashSources,
   portfolios,
@@ -59,6 +68,14 @@ export interface ParanoidRehydrationSourceRepository {
   restoreExpenseTransactions(rows: readonly EntityOf<'expenseTransaction'>[]): Promise<void>;
   restoreExpenseRules(rows: readonly EntityOf<'expenseRule'>[]): Promise<void>;
   restoreExpenseBudgets(rows: readonly EntityOf<'expenseBudget'>[]): Promise<void>;
+  // V5 cash fusion: the classification layer on the portfolio cash ledger. It
+  // has writers as of phase 2, so a paranoid disable that could not restore it
+  // would silently drop every tag, budget and rule the user has.
+  restoreCashTags(rows: readonly EntityOf<'cashTag'>[]): Promise<void>;
+  restoreCashRules(rows: readonly EntityOf<'cashRule'>[]): Promise<void>;
+  restoreCashRuleTags(rows: readonly EntityOf<'cashRuleTag'>[]): Promise<void>;
+  restoreCashBudgets(rows: readonly EntityOf<'cashBudget'>[]): Promise<void>;
+  restoreCashMovementTags(rows: readonly EntityOf<'cashMovementTag'>[]): Promise<void>;
 }
 
 const REHYDRATION_INSERT_CHUNK_SIZE = 1_000;
@@ -422,6 +439,222 @@ export function createParanoidRehydrationSourceRepository(
           })),
         );
       });
+    },
+
+    // ── V5 cash fusion ───────────────────────────────────────────────────────
+    // Ordering is the caller's job and it matters: tags before the rules,
+    // budgets and movement links that reference them, and movement links after
+    // the movements themselves. `validateGraph` proves the references first, so
+    // these are plain inserts with no conflict handling — a duplicate here means
+    // a malformed vault, which must fail loudly rather than be absorbed.
+
+    async restoreCashTags(rows) {
+      await forEachChunk(rows, async (chunk) => {
+        await tx.insert(cashTags).values(
+          chunk.map((entity) => ({
+            id: entity.id,
+            userId: entity.data.userId,
+            name: entity.data.name,
+            color: entity.data.color,
+            system: entity.data.system,
+            systemKey: entity.data.systemKey,
+            createdAt: new Date(entity.data.createdAt),
+            updatedAt: new Date(entity.data.updatedAt),
+          })),
+        );
+      });
+    },
+
+    async restoreCashRules(rows) {
+      await forEachChunk(rows, async (chunk) => {
+        await tx.insert(cashRules).values(
+          chunk.map((entity) => ({
+            id: entity.id,
+            userId: entity.data.userId,
+            matchType: entity.data.matchType,
+            pattern: entity.data.pattern,
+            priority: entity.data.priority,
+            enabled: entity.data.enabled,
+            createdAt: new Date(entity.data.createdAt),
+            updatedAt: new Date(entity.data.updatedAt),
+          })),
+        );
+      });
+    },
+
+    async restoreCashRuleTags(rows) {
+      await forEachChunk(rows, async (chunk) => {
+        await tx.insert(cashRuleTags).values(
+          chunk.map((entity) => ({
+            id: entity.id,
+            ruleId: entity.data.ruleId,
+            tagId: entity.data.tagId,
+            createdAt: new Date(entity.data.createdAt),
+          })),
+        );
+      });
+    },
+
+    async restoreCashBudgets(rows) {
+      await forEachChunk(rows, async (chunk) => {
+        await tx.insert(cashBudgets).values(
+          chunk.map((entity) => ({
+            id: entity.id,
+            portfolioId: entity.data.portfolioId,
+            tagId: entity.data.tagId,
+            periodKey: entity.data.periodKey,
+            amount: entity.data.amount,
+            currency: entity.data.currency,
+            createdAt: new Date(entity.data.createdAt),
+            updatedAt: new Date(entity.data.updatedAt),
+          })),
+        );
+      });
+    },
+
+    async restoreCashMovementTags(rows) {
+      await forEachChunk(rows, async (chunk) => {
+        await tx.insert(cashMovementTags).values(
+          chunk.map((entity) => ({
+            id: entity.id,
+            movementId: entity.data.movementId,
+            tagId: entity.data.tagId,
+            createdAt: new Date(entity.data.createdAt),
+          })),
+        );
+      });
+    },
+  };
+}
+
+/**
+ * Severed-fork MIRRORCHAIN provenance reads (`docs/paranoid-design.md` §7.1).
+ *
+ * Two callers, both non-destructive: the enable wizard's capture read (while
+ * `mirror_rows` still exists) and disable-time validation (after it has cascaded
+ * away, proving the encrypted map against the append-only oplog). Reads only —
+ * they are deliberately usable outside the restore transaction so an invalid
+ * document is refused before any mutation transaction opens.
+ */
+
+/**
+ * One ENDED membership tombstone: its own identity, the chain, and the watermark
+ * its copy stopped at. `id` is what the encrypted provenance names — a re-joined
+ * account holds several tombstones per chain, each with its own copy and its own
+ * (higher) watermark, and an older retained fork must be proved against ITS row.
+ */
+export interface ParanoidForkMembership {
+  id: string;
+  chainId: string;
+  status: MirrorMemberStatus;
+  appliedSeq: number;
+}
+
+/** One oplog row, still un-parsed: the service validates the payload contract. */
+export interface ParanoidForkChainOp {
+  mirrorId: string | null;
+  seq: number;
+  kind: string;
+  actorUserId: string | null;
+  payload: unknown;
+}
+
+export interface ParanoidForkProvenanceRepository {
+  /** The caller's ended memberships; an active one is deliberately excluded. */
+  listEndedMemberships(userId: string): Promise<readonly ParanoidForkMembership[]>;
+  /**
+   * Every op of `chainId` at or below `maxSeq` that speaks for one of
+   * `logicalIds` — either through its own `mirror_id`, or as the `cash.transfer`
+   * op that minted a second leg id which never appears in that column.
+   */
+  listChainOpsForLogicalIds(
+    chainId: string,
+    logicalIds: readonly string[],
+    maxSeq: number,
+  ): Promise<readonly ParanoidForkChainOp[]>;
+  /** Capture read: the caller's own retained fork identity map. */
+  listRetainedForkProvenance(userId: string): Promise<readonly VaultMirrorProvenance[]>;
+}
+
+export function createParanoidForkProvenanceRepository(
+  db: Database,
+): ParanoidForkProvenanceRepository {
+  return {
+    async listEndedMemberships(userId) {
+      return db
+        .select({
+          id: mirrorChainMembers.id,
+          chainId: mirrorChainMembers.chainId,
+          status: mirrorChainMembers.status,
+          appliedSeq: mirrorChainMembers.appliedSeq,
+        })
+        .from(mirrorChainMembers)
+        .where(and(eq(mirrorChainMembers.userId, userId), ne(mirrorChainMembers.status, 'active')));
+    },
+
+    async listChainOpsForLogicalIds(chainId, logicalIds, maxSeq) {
+      if (!logicalIds.length) return [];
+      const found: ParanoidForkChainOp[] = [];
+      await forEachChunk(logicalIds, async (chunk) => {
+        const ids = [...chunk];
+        found.push(
+          ...(await db
+            .select({
+              mirrorId: mirrorChainOps.mirrorId,
+              seq: mirrorChainOps.seq,
+              kind: mirrorChainOps.kind,
+              actorUserId: mirrorChainOps.actorUserId,
+              payload: mirrorChainOps.payload,
+            })
+            .from(mirrorChainOps)
+            .where(
+              and(
+                eq(mirrorChainOps.chainId, chainId),
+                lte(mirrorChainOps.seq, maxSeq),
+                or(
+                  inArray(mirrorChainOps.mirrorId, ids),
+                  and(
+                    eq(mirrorChainOps.kind, 'cash.transfer'),
+                    inArray(sql`${mirrorChainOps.payload} ->> 'inMirrorId'`, ids),
+                  ),
+                ),
+              ),
+            )),
+        );
+      });
+      return found;
+    },
+
+    /**
+     * The membership join is what makes the record self-selecting later: each
+     * retained row is attributed to the ENDED tombstone that owns its copy —
+     * `(chain_id, portfolio_id)` identifies exactly one membership per account,
+     * because re-joining mints a fresh copy rather than reviving the fork's one.
+     * A still-ACTIVE membership never matches, so a live chain's rows (and any
+     * co-member's row) stay out of the response by construction.
+     */
+    async listRetainedForkProvenance(userId) {
+      return db
+        .select({
+          chainId: mirrorRows.chainId,
+          membershipId: mirrorChainMembers.id,
+          kind: mirrorRows.kind,
+          mirrorId: mirrorRows.mirrorId,
+          portfolioId: mirrorRows.portfolioId,
+          localId: mirrorRows.localId,
+        })
+        .from(mirrorRows)
+        .innerJoin(portfolios, eq(portfolios.id, mirrorRows.portfolioId))
+        .innerJoin(
+          mirrorChainMembers,
+          and(
+            eq(mirrorChainMembers.chainId, mirrorRows.chainId),
+            eq(mirrorChainMembers.portfolioId, mirrorRows.portfolioId),
+            eq(mirrorChainMembers.userId, userId),
+            ne(mirrorChainMembers.status, 'active'),
+          ),
+        )
+        .where(eq(portfolios.userId, userId));
     },
   };
 }

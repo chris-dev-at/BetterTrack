@@ -28,12 +28,12 @@ packages/
   contracts/  # Shared zod schemas + types (the API/client keystone)
   config/     # Shared tsconfig, ESLint, Prettier
 infra/
-  docker-compose.yml            # Production: web + api + worker + landing + db + redis (§4.6)
+  docker-compose.yml            # Production app/data stack + scheduled local backups
   docker-compose.subdomains.yml # Port overlay for BT_MODE=subdomains — layer via -f or override.yml
   docker-compose.ports.yml      # Port overlay for BT_MODE=ports — layer via -f or override.yml
   docker-compose.dev.yml        # Dev: Postgres 17 + Redis 7 only
   nginx/                     # nginx front-proxy: mode templates (subdomains|ports) + entrypoint (§11)
-  backup/                    # backup.sh — nightly pg_dump + rotation, run inside `db` via host cron (§10)
+  backup/                    # Scheduled pg_dump, status/health, offsite, and restore-drill scripts
   .env.example               # Dev env template
   .env.production.example    # Production env template
 factory/      # autonomous build factory (runner + prompts)
@@ -123,6 +123,11 @@ One env scheme drives **five public origins** — `api` / `web` / `admin` plus t
 The single `web` front proxy routes all five (by `server_name` in subdomains mode, by
 `listen` port in ports mode) and reverse-proxies the product/mobile origins to the `landing`
 container; the api/web/admin behavior is unchanged from the earlier three-origin layout.
+The EN/DE legal documents are canonical under
+`apps/landing/site/{terms,privacy,impressum,cookies}/`, so every generic landing
+image serves the same eight legal URLs. The bespoke live updater copies those
+same directories into its existing product mount; do not add a second legal
+tree under `infra/live/`.
 
 ### Prerequisites
 
@@ -290,9 +295,10 @@ local TLS terminator, e.g. Caddy, and set `BT_TLS` accordingly). Cloudflare's
 proxy is still the only public edge; keep the router forward scoped to it.
 
 Either path: run **First-time setup** (build → migrate → seed → `up -d`) with
-`docker-compose.subdomains.yml` as the override, then schedule nightly backups per
-**Backups & restore** below. Apply updates and re-run migrations exactly as in
-**Day-to-day commands** — the deploy path is identical; only the public edge differs.
+`docker-compose.subdomains.yml` as the override. The in-stack backup scheduler
+starts with the deployment; verify it per **Backups & restore** below. Apply
+updates and re-run migrations exactly as in **Day-to-day commands** — the deploy
+path is identical; only the public edge differs.
 
 ### Day-to-day commands
 
@@ -326,8 +332,9 @@ Copy it to `infra/.env`; do not maintain a second variable table here.
 > each of the five services on its own port of a single host. The API validates &
 > derives the origins in `apps/api/src/config/env.ts`; the one web image renders the
 > matching nginx layout from `infra/nginx/templates/` and injects a per-origin
-> `window.__BT__` (`config.js`) at container start. The static product/mobile pages
-> take no credentials, so they are **never** added to the CORS allowlist. See
+> `window.__BT__` (`config.js`) at container start, including the derived product
+> origin used by the SPA's legal links. The static product/mobile pages take no
+> credentials, so they are **never** added to the CORS allowlist. See
 > `infra/.env.production.example` for the canonical, fully commented template.
 
 ### Worker (BullMQ)
@@ -342,27 +349,36 @@ enrichment), and `notifications.dispatch` (friend request/accept/share email + n
 
 ### Backups & restore
 
-The `db` service mounts a dedicated `pgbackups` volume at `/backups` and
-`infra/backup/backup.sh` is bind-mounted read-only into that same container at
-`/opt/bettertrack/backup.sh`. Nothing runs it automatically — wire it to your
-host's cron (kept out of the compose topology so the stack stays at five
-services, §4.6):
+The `backup-scheduler` service takes a local dump and runs a safe restore drill
+immediately on first start. It then follows `BT_BACKUP_CRON` (default
+`0 3 * * *`, UTC) for dumps and `BT_BACKUP_RESTORE_CRON` (default
+`0 4 1 * *`, UTC) for monthly drills. No host scheduler is required. Each dump
+writes a verified, timestamped gzip to the shared `pgbackups` volume, updates
+`/status/backup-status.env` in a separate status volume, and deletes dumps older
+than `BACKUP_RETENTION_DAYS` (default 14).
 
-```bash
-# Host crontab (crontab -e) — nightly at 03:00 server time:
-0 3 * * * cd /path/to/bettertrack/infra && docker compose exec -T db bash /opt/bettertrack/backup.sh >> /var/log/bettertrack-backup.log 2>&1
-```
-
-Each run writes a gzip'd, timestamped dump (`bettertrack-YYYYmmdd-HHMMSS.sql.gz`)
-into the `pgbackups` volume, verifies the archive (`gzip -t`), then deletes
-dumps older than `BACKUP_RETENTION_DAYS` (default 14). Take a manual backup the
-same way, on demand:
+`docker compose ps` marks the scheduler unhealthy if the last successful dump
+is older than `BT_BACKUP_FRESHNESS_MAX_HOURS` (default 26), or the last passing
+restore drill is older than `BT_BACKUP_RESTORE_MAX_AGE_DAYS` (default 35).
+Run a local backup or the safe scratch restore drill on demand:
 
 ```bash
 cd infra
-docker compose exec -T db bash /opt/bettertrack/backup.sh
+docker compose exec -T backup-scheduler /opt/bettertrack/backup.sh
+docker compose exec -T backup-scheduler /opt/bettertrack/restore-drill.sh
+docker compose ps backup-scheduler
 docker compose exec db ls -la /backups
 ```
+
+The drill restores only into a disposable `bettertrack_restore_drill` database,
+runs connectivity and schema probes, drops that database, appends evidence to
+`/backups/restore-attestations.jsonl`, and updates the status file. It runs
+automatically at least monthly and never targets `POSTGRES_DB`.
+
+Deployments upgrading from the former host-cron runbook should remove the old
+`docker compose exec -T db bash /opt/bettertrack/backup.sh` crontab entry. The
+script is no longer mounted into `db`; the in-stack scheduler replaces that local
+job.
 
 **Restore from a dump:**
 
@@ -372,23 +388,29 @@ cd infra
 # 1. Pick a dump (lists everything currently retained).
 docker compose exec db ls -la /backups
 
-# 2. Stop the api and worker so nothing writes during restore.
-docker compose stop api worker
+# 2. Stop all application writes and the backup scheduler so it cannot capture
+#    a partially restored schema.
+docker compose stop api worker backup-scheduler
 
 # 3. Restore — the dump was taken with --clean --if-exists, so it drops and
 #    recreates every object itself; safe to run against the existing database.
 docker compose exec -T db bash -c \
   'gunzip -c /backups/bettertrack-20260704-030000.sql.gz | psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
 
-# 4. Bring the api and worker back up.
+# 4. After the restore completes, bring application traffic back, then restart
+#    the scheduler. Its startup run creates and drills a fresh recovery point.
 docker compose start api worker
+docker compose start backup-scheduler
+docker compose ps backup-scheduler
 ```
 
 **Offsite backup (optional).** An age-encrypted copy of each daily dump can be
 uploaded to Google Drive (or any rclone remote) via the `backup-offsite`
-sidecar in `infra/docker-compose.offsite.yml`. Full runbook — age keypair
-generation, rclone Drive setup, host-cron wiring, retention contract, and the
-end-to-end restore drill — lives in `docs/ops.md`.
+sidecar in `infra/docker-compose.offsite.yml`. Upload works with a delete-less
+credential. Remote pruning is a separate profile, disabled by default, with its
+own credential; provider-side versioning or immutable retention is preferred.
+The full setup, status, retention, drill, and provider-history recovery runbook
+lives in `docs/ops.md`.
 
 ## Quality gates
 
@@ -446,6 +468,7 @@ that is absent.
 ```bash
 pnpm exec playwright install --with-deps chromium   # one-time browser install
 pnpm dev:infra                                       # Postgres + Redis
+docker exec bettertrack-dev-db-1 createdb -U bt bettertrack_e2e   # one-time, see below
 pnpm test:e2e
 ```
 
@@ -459,8 +482,26 @@ page (appearing on the watchlist with no manual reload), a cash-funded buy
 switching to a second portfolio, and sharing a watchlist to a friend who sees
 it read-only under Shared With Me. `playwright.config.ts` boots the real
 api + web dev servers (migrating and seeding the api's database first)
-against whatever `E2E_DATABASE_URL`/`E2E_REDIS_URL` point at (defaults match
-`pnpm dev:infra`). It runs against two Playwright projects — `chromium`
+against whatever `E2E_DATABASE_URL`/`E2E_REDIS_URL` point at.
+
+> **The e2e stack is never the dev stack.** `E2E_DATABASE_URL` defaults to
+> `…/bettertrack_e2e` — the same name CI uses — precisely because the boot
+> migrates AND seeds it and every spec mints accounts in it. Pointing it at
+> `pnpm dev:infra`'s `bettertrack` corrupts real local data, so create the
+> dedicated database once (command above). `E2E_API_BASE_URL` /
+> `E2E_WEB_BASE_URL` move the servers as well as the specs, so a second stack
+> can run alongside a dev stack without either one proxying into the other.
+>
+> The isolation is by **port**, not only by URL: the suite listens on 3200 /
+> 5273 / 9564 and uses Redis logical DB 1, all deliberately clear of a dev
+> stack's 3000 / 5173 / 9464 / db0. It has to be, because `webServer` used to
+> reuse whatever already answered the readiness URL — a running dev API on 3000
+> was adopted as the system under test, which skipped the migrate+seed and threw
+> away every env var above, `DATABASE_URL` first among them. `reuseExistingServer`
+> is now `false` everywhere: a server the run did not start is never trusted, so
+> a leaked process fails the run instead of quietly answering for it.
+
+It runs against two Playwright projects — `chromium`
 (`Desktop Chrome`) and `mobile-chromium` (`Pixel 7`, 412×839) — so the happy
 path is proven on a phone-width viewport as well as desktop. This is **not**
 part of `pnpm test` or the per-commit CI gate — it runs nightly via

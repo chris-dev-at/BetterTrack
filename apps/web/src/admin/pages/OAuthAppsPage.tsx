@@ -9,6 +9,7 @@ import {
 } from '@bettertrack/contracts';
 
 import { useT } from '../../i18n';
+import type { TranslateFn } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
 import * as api from '../../lib/adminApi';
 import { ScopePicker } from '../../ui';
@@ -26,8 +27,8 @@ import {
   TextField,
 } from '../components/ui';
 
-function errorMessage(err: unknown): string {
-  return err instanceof ApiError ? err.message : 'Something went wrong. Please try again.';
+function errorMessage(err: unknown, t: TranslateFn): string {
+  return err instanceof ApiError ? err.message : t('common.genericError');
 }
 
 /**
@@ -57,7 +58,7 @@ export function OAuthAppsPage() {
     e.preventDefault();
     setFormError(null);
     if (scopes.size === 0) {
-      setFormError('Select at least one scope.');
+      setFormError(t('admin.oauthApps.scopeRequired'));
       return;
     }
     setSubmitting(true);
@@ -75,7 +76,7 @@ export function OAuthAppsPage() {
       setCreated(result);
       apps.reload();
     } catch (err) {
-      setFormError(errorMessage(err));
+      setFormError(errorMessage(err, t));
     } finally {
       setSubmitting(false);
     }
@@ -90,7 +91,7 @@ export function OAuthAppsPage() {
       apps.reload();
       setDeleting(null);
     } catch (err) {
-      setRowError(errorMessage(err));
+      setRowError(errorMessage(err, t));
     } finally {
       setBusyId(null);
     }
@@ -98,10 +99,7 @@ export function OAuthAppsPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      <PageHeader
-        title="OAuth apps"
-        description="Register the official first-party BetterTrack apps. They're trusted — users see BetterTrack branding and skip the consent screen when signing in."
-      />
+      <PageHeader title={t('admin.oauthApps.title')} description={t('admin.oauthApps.subtitle')} />
 
       <form
         onSubmit={onCreate}
@@ -109,18 +107,18 @@ export function OAuthAppsPage() {
       >
         <div className="grid gap-4 sm:grid-cols-2">
           <TextField
-            label="App name"
+            label={t('admin.oauthApps.appNameLabel')}
             name="oauth-name"
-            placeholder="BetterTrack Mobile"
+            placeholder={t('admin.oauthApps.appNamePlaceholder')}
             value={name}
             onChange={(e) => setName(e.target.value)}
             required
           />
           <TextField
-            label="Redirect URI"
+            label={t('admin.oauthApps.redirectLabel')}
             name="oauth-redirect"
-            placeholder="https://app.bettertrack.io/callback"
-            hint="Where users return after login. https, http-loopback, or a custom scheme."
+            placeholder={t('admin.oauthApps.redirectPlaceholder')}
+            hint={t('admin.oauthApps.redirectHint')}
             value={redirectUri}
             onChange={(e) => setRedirectUri(e.target.value)}
             required
@@ -128,7 +126,9 @@ export function OAuthAppsPage() {
         </div>
 
         <fieldset className="flex flex-col gap-2">
-          <legend className="text-sm font-medium text-neutral-300">Scopes</legend>
+          <legend className="text-sm font-medium text-neutral-300">
+            {t('admin.oauthApps.scopes')}
+          </legend>
           <ScopePicker scopes={scopes} onChange={setScopes} collapsible />
         </fieldset>
 
@@ -140,18 +140,15 @@ export function OAuthAppsPage() {
             onChange={(e) => setIsPublic(e.target.checked)}
           />
           <span>
-            <span className="font-medium">Public client (PKCE)</span>
+            <span className="font-medium">{t('admin.oauthApps.publicClient')}</span>
             <br />
-            <span className="text-neutral-500">
-              Mobile / SPA apps that can&apos;t keep a secret. Uncheck for a backend that can hold a
-              client secret.
-            </span>
+            <span className="text-neutral-400">{t('admin.oauthApps.publicClientHint')}</span>
           </span>
         </label>
 
         <div>
           <Button type="submit" disabled={submitting}>
-            {submitting ? 'Registering…' : 'Register app'}
+            {submitting ? t('admin.oauthApps.registering') : t('admin.oauthApps.register')}
           </Button>
         </div>
         {formError ? <Alert tone="error">{formError}</Alert> : null}
@@ -160,16 +157,16 @@ export function OAuthAppsPage() {
       {rowError ? <Alert tone="error">{rowError}</Alert> : null}
 
       {apps.loading ? (
-        <Spinner label="Loading apps…" />
+        <Spinner label={t('admin.oauthApps.loading')} />
       ) : apps.error ? (
         <Alert tone="error">
           {apps.error}{' '}
           <button className="underline" onClick={apps.reload}>
-            Retry
+            {t('common.retry')}
           </button>
         </Alert>
       ) : !apps.data || apps.data.clients.length === 0 ? (
-        <EmptyState>No first-party apps yet. Register one above.</EmptyState>
+        <EmptyState>{t('admin.oauthApps.empty')}</EmptyState>
       ) : (
         <div className="flex flex-col gap-3">
           {apps.data.clients.map((app) => (
@@ -181,12 +178,14 @@ export function OAuthAppsPage() {
                 <div className="min-w-0">
                   <div className="flex items-center gap-2">
                     <span className="font-semibold text-neutral-100">{app.name}</span>
-                    <Badge tone="green">first-party</Badge>
+                    <Badge tone="green">{t('admin.oauthApps.firstParty')}</Badge>
                     <Badge tone={app.public ? 'neutral' : 'amber'}>
-                      {app.public ? 'public / PKCE' : 'confidential'}
+                      {app.public
+                        ? t('admin.oauthApps.publicPkce')
+                        : t('admin.oauthApps.confidential')}
                     </Badge>
                   </div>
-                  <div className="mt-1 font-mono text-xs text-neutral-500">{app.clientId}</div>
+                  <div className="mt-1 font-mono text-xs text-neutral-400">{app.clientId}</div>
                 </div>
                 <div className="flex shrink-0 gap-2">
                   <Button
@@ -197,7 +196,7 @@ export function OAuthAppsPage() {
                       setEditing(app);
                     }}
                   >
-                    Edit
+                    {t('admin.oauthApps.edit')}
                   </Button>
                   <Button
                     variant="danger"
@@ -221,8 +220,11 @@ export function OAuthAppsPage() {
                   </span>
                 ))}
               </div>
-              <div className="text-xs text-neutral-500">
-                Redirect: {app.redirectUris.join(', ')} · Created {formatDateTime(app.createdAt)}
+              <div className="text-xs text-neutral-400">
+                {t('admin.oauthApps.redirectCreated', {
+                  redirects: app.redirectUris.join(', '),
+                  date: formatDateTime(app.createdAt),
+                })}
               </div>
             </div>
           ))}
@@ -366,6 +368,7 @@ function EditOAuthAppModal({
   onClose: () => void;
   onSaved: () => void;
 }) {
+  const t = useT();
   const [name, setName] = useState(app.name);
   const [redirectText, setRedirectText] = useState(app.redirectUris.join('\n'));
   const [scopes, setScopes] = useState<Set<ApiKeyScope>>(new Set(app.scopes));
@@ -380,11 +383,11 @@ function EditOAuthAppModal({
       .map((line) => line.trim())
       .filter(Boolean);
     if (redirectUris.length === 0) {
-      setError('Add at least one redirect URI.');
+      setError(t('admin.oauthApps.redirectRequired'));
       return;
     }
     if (scopes.size === 0) {
-      setError('Select at least one scope.');
+      setError(t('admin.oauthApps.scopeRequired'));
       return;
     }
     setSaving(true);
@@ -396,22 +399,22 @@ function EditOAuthAppModal({
       });
       onSaved();
     } catch (err) {
-      setError(errorMessage(err));
+      setError(errorMessage(err, t));
     } finally {
       setSaving(false);
     }
   }
 
   return (
-    <Modal title={`Edit ${app.name}`} onClose={onClose}>
+    <Modal title={t('admin.oauthApps.editTitle', { name: app.name })} onClose={onClose}>
       <form onSubmit={onSubmit} className="flex flex-col gap-4">
         <div className="rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2">
-          <div className="text-xs text-neutral-500">Client ID (immutable)</div>
+          <div className="text-xs text-neutral-400">{t('admin.oauthApps.clientIdImmutable')}</div>
           <div className="font-mono text-xs text-neutral-300">{app.clientId}</div>
         </div>
 
         <TextField
-          label="App name"
+          label={t('admin.oauthApps.appNameLabel')}
           name="edit-oauth-name"
           value={name}
           onChange={(e) => setName(e.target.value)}
@@ -419,10 +422,8 @@ function EditOAuthAppModal({
         />
 
         <label className="flex flex-col gap-1 text-sm">
-          <span className="font-medium text-neutral-300">Redirect URIs</span>
-          <span className="text-xs text-neutral-500">
-            One per line. https, http-loopback, or a custom-scheme deep link.
-          </span>
+          <span className="font-medium text-neutral-300">{t('admin.oauthApps.redirectUris')}</span>
+          <span className="text-xs text-neutral-400">{t('admin.oauthApps.redirectUrisHint')}</span>
           <textarea
             name="edit-oauth-redirects"
             rows={3}
@@ -433,11 +434,10 @@ function EditOAuthAppModal({
         </label>
 
         <fieldset className="flex flex-col gap-2">
-          <legend className="text-sm font-medium text-neutral-300">Scopes</legend>
-          <p className="text-xs text-neutral-500">
-            Adding a scope does not grant it to users already signed in — they must re-consent.
-            Removing a scope takes effect immediately.
-          </p>
+          <legend className="text-sm font-medium text-neutral-300">
+            {t('admin.oauthApps.scopes')}
+          </legend>
+          <p className="text-xs text-neutral-400">{t('admin.oauthApps.scopeChangeHint')}</p>
           <ScopePicker scopes={scopes} onChange={setScopes} collapsible />
         </fieldset>
 
@@ -445,10 +445,10 @@ function EditOAuthAppModal({
 
         <div className="flex gap-2">
           <Button type="submit" disabled={saving}>
-            {saving ? 'Saving…' : 'Save changes'}
+            {saving ? t('common.saving') : t('admin.oauthApps.saveChanges')}
           </Button>
           <Button type="button" variant="secondary" onClick={onClose} disabled={saving}>
-            Cancel
+            {t('common.cancel')}
           </Button>
         </div>
       </form>

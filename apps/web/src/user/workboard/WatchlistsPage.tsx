@@ -17,6 +17,7 @@ import { Badge, Button, Field, Input, PageHead } from '../../ui/origin';
 import { AudiencePicker } from '../components/AudiencePicker';
 import { Dialog } from '../components/Dialog';
 import { Alert } from '../components/ui';
+import { useResolvedPrivacyMode } from '../vault/usePrivacyMode';
 
 /**
  * Named watchlists (PROJECTPLAN.md §13.3 V3-P5): create / rename / delete lists,
@@ -25,13 +26,14 @@ import { Alert } from '../components/ui';
  */
 export function WatchlistsPage() {
   const t = useT();
+  const paranoid = useResolvedPrivacyMode() === 'paranoid';
   const queryClient = useQueryClient();
   const [name, setName] = useState('');
   const [nameError, setNameError] = useState<string | null>(null);
   const [renaming, setRenaming] = useState<WatchlistSummary | null>(null);
   const [sharing, setSharing] = useState<WatchlistSummary | null>(null);
 
-  const { data, isLoading, isError } = useQuery({
+  const { data, isLoading, isError, refetch } = useQuery({
     queryKey: WATCHLISTS_QUERY_KEY,
     queryFn: ({ signal }) => listWatchlists(signal),
   });
@@ -68,7 +70,12 @@ export function WatchlistsPage() {
     );
   }
   if (isError || !data) {
-    return <Alert tone="error">{t('watchlists.loadError')}</Alert>;
+    return (
+      <div className="flex flex-col items-start gap-3">
+        <Alert tone="error">{t('watchlists.loadError')}</Alert>
+        <Button onClick={() => void refetch()}>{t('common.retry')}</Button>
+      </div>
+    );
   }
 
   return (
@@ -120,9 +127,11 @@ export function WatchlistsPage() {
                 </span>
               </div>
               <div className="flex items-center gap-2">
-                <Button onClick={() => setSharing(w)} size="sm">
-                  {t('sharing.shareButton')}
-                </Button>
+                {!paranoid ? (
+                  <Button onClick={() => setSharing(w)} size="sm">
+                    {t('sharing.shareButton')}
+                  </Button>
+                ) : null}
                 {!w.isDefault ? (
                   <>
                     <Button onClick={() => setRenaming(w)} size="sm">
@@ -156,7 +165,7 @@ export function WatchlistsPage() {
         />
       ) : null}
 
-      {sharing ? (
+      {sharing && !paranoid ? (
         <AudiencePicker
           kind="watchlist"
           subjectId={sharing.id}

@@ -5,7 +5,6 @@ import { useQuery, useQueryClient } from '@tanstack/react-query';
 import type { PortfolioSummary } from '@bettertrack/contracts';
 
 import { useT } from '../../i18n';
-import { listPortfolios } from '../../lib/portfolioApi';
 import { Icon } from '../../ui/origin';
 import { useOverlayEscape } from '../components/overlayStack';
 import { cx } from '../components/ui';
@@ -20,6 +19,8 @@ import {
   usePortfolioKinds,
 } from './portfolioKinds';
 import { PortfolioWizard } from './wizard/PortfolioWizard';
+import { usePortfolioStore } from './PortfolioStoreProvider';
+import { useResolvedPrivacyMode } from '../vault/usePrivacyMode';
 
 /**
  * Portfolio switcher (PROJECTPLAN.md §6.8, §13.2 V2-P8). A **selector, not a
@@ -142,6 +143,8 @@ export function portfolioSearch(portfolioId: string | null | undefined): string 
 export function PortfolioSwitcher() {
   const t = useT();
   const queryClient = useQueryClient();
+  const store = usePortfolioStore();
+  const privacyMode = useResolvedPrivacyMode();
   const [searchParams, setSearchParams] = useSearchParams();
   const [open, setOpen] = useState(false);
   // The footer's one create action: the wizard owns the name, the icon and the
@@ -161,6 +164,17 @@ export function PortfolioSwitcher() {
   // the group-create dialog and the invite step that replaces it. Focus comes
   // back here however that chain ends.
   const triggerRef = useRef<HTMLButtonElement>(null);
+
+  // Global create links (command palette, shell and empty states) converge on
+  // this query flag. Consume it once so browser Back does not reopen the
+  // wizard after the user closes it.
+  useEffect(() => {
+    if (searchParams.get('create') !== '1') return;
+    setWizardOpen(true);
+    const next = new URLSearchParams(searchParams);
+    next.delete('create');
+    setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams]);
 
   // Every close path — Escape, an outside click, picking a portfolio, opening
   // the wizard — hands focus back deliberately instead of dropping it on the
@@ -184,7 +198,7 @@ export function PortfolioSwitcher() {
 
   const activeQuery = useQuery({
     queryKey: ['portfolios'],
-    queryFn: ({ signal }) => listPortfolios(signal),
+    queryFn: ({ signal }) => store.listPortfolios(signal),
     staleTime: 60_000,
   });
   const portfolios = useMemo(() => activeQuery.data?.portfolios ?? [], [activeQuery.data]);
@@ -245,7 +259,7 @@ export function PortfolioSwitcher() {
   const activeKind = active ? (kinds[active.id] ?? DEFAULT_PORTFOLIO_KIND) : null;
 
   return (
-    <div ref={rootRef} className="relative inline-block">
+    <div ref={rootRef} className="bt-portfolio-switcher relative inline-block">
       <button
         ref={triggerRef}
         type="button"
@@ -363,6 +377,7 @@ export function PortfolioSwitcher() {
 
       {wizardOpen ? (
         <PortfolioWizard
+          allowShared={privacyMode !== 'paranoid'}
           onClose={() => setWizardOpen(false)}
           onCreated={(portfolio) => {
             refetchLists();

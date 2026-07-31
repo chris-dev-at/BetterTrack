@@ -1,6 +1,8 @@
 import { useState } from 'react';
 import type { ButtonHTMLAttributes, InputHTMLAttributes, ReactNode } from 'react';
 
+import { useT } from '../../i18n';
+
 /** Tiny class-name joiner — avoids pulling in a dependency for one helper. */
 export function cx(...parts: Array<string | false | null | undefined>): string {
   return parts.filter(Boolean).join(' ');
@@ -64,7 +66,7 @@ export function TextField({ label, hint, error, id, className, ...rest }: TextFi
         id={inputId}
         className={cx(
           'rounded-md bg-neutral-950 px-3 py-2 text-sm text-neutral-100',
-          'ring-1 ring-inset ring-neutral-700 placeholder:text-neutral-600',
+          'ring-1 ring-inset ring-neutral-700 placeholder:text-neutral-400',
           'focus:outline-none focus:ring-2 focus:ring-sky-500',
           className,
         )}
@@ -73,7 +75,7 @@ export function TextField({ label, hint, error, id, className, ...rest }: TextFi
         aria-invalid={hasError || undefined}
       />
       {hint ? (
-        <p id={hintId} className="text-xs text-neutral-500">
+        <p id={hintId} className="text-xs text-neutral-400">
           {hint}
         </p>
       ) : null}
@@ -102,14 +104,15 @@ export function Alert({ tone, children }: { tone: AlertTone; children: ReactNode
   );
 }
 
-export function Spinner({ label = 'Loading…' }: { label?: string }) {
+export function Spinner({ label }: { label?: string }) {
+  const t = useT();
   return (
     <div className="flex items-center gap-3 text-sm text-neutral-400" role="status">
       <span
         className="h-4 w-4 animate-spin rounded-full border-2 border-neutral-600 border-t-sky-400"
         aria-hidden="true"
       />
-      <span>{label}</span>
+      <span>{label ?? t('common.loading')}</span>
     </div>
   );
 }
@@ -147,6 +150,7 @@ export function CopyField({
   label: string;
   onCopied?: () => void;
 }) {
+  const t = useT();
   const [copied, setCopied] = useState(false);
   const copy = async () => {
     try {
@@ -159,13 +163,13 @@ export function CopyField({
   };
   return (
     <div className="flex flex-col gap-1.5">
-      <span className="text-xs font-medium uppercase tracking-wide text-neutral-500">{label}</span>
+      <span className="text-xs font-medium uppercase tracking-wide text-neutral-400">{label}</span>
       <div className="flex items-stretch gap-2">
         <code className="flex-1 overflow-x-auto rounded-md bg-neutral-950 px-3 py-2 font-mono text-sm text-neutral-100 ring-1 ring-inset ring-neutral-700">
           {value}
         </code>
         <Button variant="secondary" onClick={copy}>
-          {copied ? 'Copied' : 'Copy'}
+          {copied ? t('common.copied') : t('common.copy')}
         </Button>
       </div>
     </div>
@@ -184,7 +188,7 @@ export function PageHeader({ title, description }: { title: string; description?
 
 export function EmptyState({ children }: { children: ReactNode }) {
   return (
-    <div className="rounded-md border border-dashed border-neutral-800 px-6 py-10 text-center text-sm text-neutral-500">
+    <div className="rounded-md border border-dashed border-neutral-800 px-6 py-10 text-center text-sm text-neutral-400">
       {children}
     </div>
   );

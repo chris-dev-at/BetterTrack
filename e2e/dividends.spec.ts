@@ -30,7 +30,13 @@ const CSRF_HEADERS = { 'X-Requested-With': 'BetterTrack' };
 async function enableAustriaTaxMode(page: Page): Promise<void> {
   await page.goto('/settings/taxes');
   const austria = page.getByRole('radio', { name: /Austria \(KESt\)/i });
-  await austria.check();
+  // `click()`, not `check()`: this radio is CONTROLLED by server state — it only
+  // flips once `PATCH /settings/account` returns. `check()` asserts the new state
+  // in the same tick as its click and re-clicks when it does not see it, so a
+  // round-tripping control can never satisfy it ("Clicking the checkbox did not
+  // change its state"). The auto-retrying `toBeChecked()` below is the wait, and
+  // asserts exactly as much as before.
+  await austria.click();
   await expect(austria).toBeChecked();
   // The per-year report signpost only renders once a mode is active — a live proof
   // the choice saved before we record the dividend against it.
@@ -93,7 +99,7 @@ test('dividends: an AT-mode dividend lands net of withholding in cash, no auto-r
   expect(recorded.movements.map((m) => m.kind).sort()).toEqual(['dividend', 'tax_withholding']);
 
   // The net figure surfaces on the real Cash-sources page: Main (row 0) reads €72.50.
-  await page.goto('/portfolio/cash-flow/accounts');
+  await page.goto('/portfolio/cash/accounts');
   const mainRow = page.locator('table[aria-label="Cash sources"] tbody tr').nth(0);
   // Decimal separator is locale-dependent (de-AT `,` / en-GB `.`) — accept either.
   await expect(mainRow).toContainText(/72[.,]50/, { timeout: 15_000 });

@@ -3,9 +3,9 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
-import type { APIRequestContext, Browser, BrowserContext } from '@playwright/test';
+import type { APIRequestContext, APIResponse, Browser, BrowserContext } from '@playwright/test';
 
-import { ADMIN_EMAIL, ADMIN_PASSWORD, API_BASE_URL, WEB_BASE_URL } from './config';
+import { ADMIN_BASE_URL, ADMIN_EMAIL, ADMIN_PASSWORD, API_BASE_URL } from './config';
 
 /** Every mutating request needs this header or the API's CSRF guard 403s it. */
 const CSRF_HEADERS = { 'X-Requested-With': 'BetterTrack' };
@@ -29,6 +29,35 @@ const ADMIN_TOTP_SECRET_FILE =
 
 /** In-process mirror of the persisted secret; primed lazily from disk on first read. */
 let cachedAdminTotpSecret: string | null = null;
+
+/**
+ * A shard can legitimately cross the production-shaped 25/minute login-IP
+ * allowance while provisioning many independent scenarios. Honor the
+ * limiter's first, short cooldown once instead of turning one 429 into a run of
+ * immediate retry failures. The progressive limiter clears its window when it
+ * arms that cooldown, so one server-directed wait is sufficient.
+ */
+async function postAdminAuth(
+  request: APIRequestContext,
+  path: string,
+  data: () => unknown,
+): Promise<APIResponse> {
+  let response = await request.post(`${API_BASE_URL}${path}`, {
+    headers: CSRF_HEADERS,
+    data: data(),
+  });
+  if (response.status() !== 429) return response;
+
+  const retryAfter = Number(response.headers()['retry-after']);
+  if (!Number.isFinite(retryAfter) || retryAfter < 1 || retryAfter > 60) return response;
+
+  await new Promise((resolve) => setTimeout(resolve, retryAfter * 1000 + 250));
+  response = await request.post(`${API_BASE_URL}${path}`, {
+    headers: CSRF_HEADERS,
+    data: data(),
+  });
+  return response;
+}
 
 function readAdminTotpSecret(): string | null {
   if (cachedAdminTotpSecret) return cachedAdminTotpSecret;
@@ -92,19 +121,18 @@ function generateTotpCode(secret: string, nowMs: number = Date.now()): string {
 }
 
 /**
- * Logs the given request context in as the seeded admin, transparently
- * handling the mandatory admin-2FA gate (§6.12, #400) so callers only see
- * "authenticated as admin". On a fresh admin the setup-gate-exempt
- * `/admin/security/2fa/totp/*` endpoints enroll a TOTP method and cache the
- * secret; on subsequent logins in the same process the cached secret completes
- * the login 2FA challenge. Test setup only — the happy path itself never
- * touches the admin app.
+ * One sign-in attempt. Resolves to `'assured'` when the context now holds a
+ * fully assured admin session, or `'enrolled'` when this attempt had to perform
+ * the first-boot TOTP enrollment — which deliberately ends the session it ran
+ * on, so the caller must attempt again. See {@link loginAsAdmin}.
  */
-export async function loginAsAdmin(request: APIRequestContext): Promise<void> {
-  const loginRes = await request.post(`${API_BASE_URL}/api/v1/auth/login`, {
-    headers: CSRF_HEADERS,
-    data: { identifier: ADMIN_EMAIL, password: ADMIN_PASSWORD },
-  });
+async function signInAsAdminOnce(request: APIRequestContext): Promise<'assured' | 'enrolled'> {
+  // Through the 429-honoring wrapper: a shard's provisioning burst can cross
+  // the login-IP allowance, and one server-directed wait beats a hard failure.
+  const loginRes = await postAdminAuth(request, '/api/v1/auth/login', () => ({
+    identifier: ADMIN_EMAIL,
+    password: ADMIN_PASSWORD,
+  }));
   if (!loginRes.ok()) {
     throw new Error(`Admin login failed: ${loginRes.status()} ${await loginRes.text()}`);
   }
@@ -123,17 +151,14 @@ export async function loginAsAdmin(request: APIRequestContext): Promise<void> {
           `${ADMIN_EMAIL}\`) so the fresh-boot enrollment path can run again.`,
       );
     }
-    const verifyRes = await request.post(`${API_BASE_URL}/api/v1/auth/2fa/verify`, {
-      headers: CSRF_HEADERS,
-      data: {
-        pendingToken: body.pendingToken,
-        code: generateTotpCode(secret),
-      },
-    });
+    const verifyRes = await postAdminAuth(request, '/api/v1/auth/2fa/verify', () => ({
+      pendingToken: body.pendingToken,
+      code: generateTotpCode(secret),
+    }));
     if (!verifyRes.ok()) {
       throw new Error(`Admin 2FA verify failed: ${verifyRes.status()} ${await verifyRes.text()}`);
     }
-    return;
+    return 'assured';
   }
 
   // Password login succeeded → the session lives in the setup-required state,
@@ -169,6 +194,38 @@ export async function loginAsAdmin(request: APIRequestContext): Promise<void> {
   if (!confirmRes.ok()) {
     throw new Error(`Admin TOTP confirm failed: ${confirmRes.status()} ${await confirmRes.text()}`);
   }
+  return 'enrolled';
+}
+
+/**
+ * Logs the given request context in as the seeded admin, transparently
+ * handling the mandatory admin-2FA gate (§6.12, #400) so callers only see
+ * "authenticated as admin". On a fresh admin the setup-gate-exempt
+ * `/admin/security/2fa/totp/*` endpoints enroll a TOTP method and cache the
+ * secret; on subsequent logins in the same process the cached secret completes
+ * the login 2FA challenge. Test setup only — the happy path itself never
+ * touches the admin app.
+ *
+ * Two attempts, because confirming the FIRST admin factor is a security
+ * transition: the API bumps the admin's durable security generation and clears
+ * the session cookie on the confirm response (#891), so the password-only
+ * session that ran the enrollment is dead by the time it returns. A single
+ * attempt therefore handed callers a signed-OUT context, and the next admin
+ * call hit `requireAdmin`'s deliberate 404 (`NOT_FOUND`) — which is what broke
+ * every spec that provisions accounts via {@link createInvite}. The second
+ * attempt signs in again through the now-armed TOTP challenge and comes back
+ * assured.
+ */
+export async function loginAsAdmin(request: APIRequestContext): Promise<void> {
+  if ((await signInAsAdminOnce(request)) === 'assured') return;
+  if ((await signInAsAdminOnce(request)) === 'assured') return;
+  // The second attempt can only report 'enrolled' if the admin's confirmed
+  // factor vanished between the two — never in a healthy stack. Fail loudly
+  // rather than return an unauthenticated context that 404s later.
+  throw new Error(
+    'Admin 2FA enrollment repeated on the second sign-in — the confirmed factor did not ' +
+      `stick. Reset via \`pnpm --filter @bettertrack/api admin:break-glass ${ADMIN_EMAIL}\`.`,
+  );
 }
 
 /**
@@ -190,7 +247,13 @@ export async function newAdminBrowserContext(
       'No bt_sid cookie in the admin API context — did you await loginAsAdmin() first?',
     );
   }
-  const context = await browser.newContext({ baseURL: WEB_BASE_URL });
+  // The ADMIN console's origin, not the user app's: the console is the same SPA
+  // in admin mode, and the mode comes from `window.__BT__` — which only the
+  // admin origin serves. Against the user origin, `/admin/*` has no route and
+  // falls through to the sign-in page. Cookies ignore the port, so the session
+  // minted against the API carries over unchanged. (This e2e stack boots a real
+  // admin origin, so no config.js stubbing is needed here.)
+  const context = await browser.newContext({ baseURL: ADMIN_BASE_URL });
   await context.addCookies(sessionCookies);
   return context;
 }
