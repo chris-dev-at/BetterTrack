@@ -492,7 +492,7 @@ function calculatePlan(
   const targetCash = portfolio.value * (targetBySleeve.cash / 100);
   const floorCash = portfolio.value * (config.cashFloorPercent / 100);
   const reserveCash = Math.max(targetCash, floorCash);
-  let spendableCash = Math.max(0, cashHolding.currentValue - reserveCash);
+  const spendableCash = Math.max(0, cashHolding.currentValue - reserveCash);
 
   type DraftTrade = {
     holding: OriginRebalanceHolding;

@@ -1220,7 +1220,7 @@ test('private-market commitments persist and capital calls join the shared Revie
   await expect(workspace).toContainText('TVPI');
 
   await workspace.getByTestId('private-markets-add').click();
-  let creator = workspace.getByTestId('private-markets-create-dialog');
+  const creator = workspace.getByTestId('private-markets-create-dialog');
   await creator.getByLabel('Display name').fill('Danube Growth Partnership');
   await creator.getByLabel('Legal entity name').fill('Danube Growth Partnership SCSp');
   await creator.getByRole('button', { name: 'Continue' }).click();

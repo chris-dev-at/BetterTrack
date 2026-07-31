@@ -1018,7 +1018,7 @@ export function OriginPortfolioStructure({
     const currentIndex = buttons.findIndex((button) => button === document.activeElement);
     if (currentIndex < 0) return;
     event.preventDefault();
-    let nextIndex =
+    const nextIndex =
       event.key === 'Home'
         ? 0
         : event.key === 'End'
