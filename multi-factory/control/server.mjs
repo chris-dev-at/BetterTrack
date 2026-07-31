@@ -58,6 +58,12 @@ import {
   CLAUDE_FACTORY_ENV_PROFILE,
   createClaudeCredentialStore,
 } from './claude-credentials.mjs';
+import {
+  bindingsFile as usageBindingsFile,
+  createHostUsageSource,
+  readBindings as readUsageBindings,
+  writeBindings as writeUsageBindings,
+} from './claude-usage-source.mjs';
 import { createClaudeLoginManager, scrubClaudeLoginEnv } from './claude-login.mjs';
 import {
   isAllowedRequestHost,
@@ -84,6 +90,10 @@ const SF_PROJECT = 'bettertrack-factory';
 const inflight = new Map(); // operation name → started_at
 const mfExclusive = createExclusiveOperation();
 const claudeCredentials = createClaudeCredentialStore({ authRoot: AUTH_ROOT });
+// Quota telemetry rides on the interactive login, not on the factory's
+// inference-only setup tokens — see claude-usage-source.mjs for why.
+const hostUsage = createHostUsageSource();
+const USAGE_BINDINGS_FILE = usageBindingsFile(AUTH_ROOT);
 const claudeLogin = createClaudeLoginManager({
   store: claudeCredentials,
   cwd: MF_DIR,
@@ -653,6 +663,23 @@ function usageRetryMs(res) {
   return Math.min(Math.max(header * 1000 + 5000, 60000), 3600000);
 }
 
+// Why an account has no readable quota, in the owner's terms. Never a bare
+// status code: every one of these has a different fix.
+const USAGE_BLOCK_REASON = {
+  unbound: 'Not linked to this Mac’s Claude login',
+  absent: 'No Claude login on this machine',
+  unscoped: 'The signed-in login lacks the user:profile scope',
+  expired: 'The signed-in login has expired — open Claude Code once to refresh it',
+  'identity-unknown': 'Cannot confirm which account is signed in',
+};
+
+async function usageTelemetryToken(profileId) {
+  const bindings = await readUsageBindings(USAGE_BINDINGS_FILE);
+  const bound = bindings[profileId]?.email || null;
+  const result = await hostUsage.tokenFor(bound);
+  return { ...result, boundTo: bound };
+}
+
 async function usageForCredential(credential, scope) {
   const cacheKey = credential.profileId;
   const cached = usageCaches.get(cacheKey);
@@ -664,12 +691,30 @@ async function usageForCredential(credential, scope) {
   // fresh reading; a second account is a "how much is left over there" glance
   // and does not justify spending the same rate on it.
   let ttl = scope === 'master' ? USAGE_TTL : Math.max(USAGE_TTL * 3, 900000);
-  const token = credential.token;
+  // Deliberately NOT credential.token: the factory's setup token is inference-only
+  // and /api/oauth/usage answers it 403. Sending it anyway would spend the shared
+  // rate budget on a call that cannot succeed.
+  const telemetry = await usageTelemetryToken(cacheKey);
+  const token = telemetry.token;
   const account = {
     profileId: credential.profileId,
     name: credential.name,
     scope,
   };
+  if (!token) {
+    // Blocked before any request. Short TTL so linking an account shows up on
+    // the next poll rather than after the full quota window.
+    data = {
+      error:
+        telemetry.reason === 'other-account'
+          ? `This Mac is signed in as ${telemetry.signedInAs}`
+          : USAGE_BLOCK_REASON[telemetry.reason] || 'Quota telemetry is unavailable',
+      telemetry: { reason: telemetry.reason, boundTo: telemetry.boundTo || null },
+      account,
+    };
+    usageCaches.set(cacheKey, { at: Date.now(), ttl: 30000, data });
+    return data;
+  }
   if (token) {
     try {
       const res = await fetch('https://api.anthropic.com/api/oauth/usage', {
@@ -1031,6 +1076,13 @@ async function snapshot() {
   // After usage() above, so the master account's poll is a cache hit here
   // rather than a second call into a rate-limited endpoint.
   const accountUsage = await usageAccounts().catch(() => []);
+  // The signed-in login is what makes quota readable at all; the panel needs to
+  // name it so "why is this blank" has an answer on screen.
+  const usageHost = await hostUsage
+    .state()
+    .then(async (state) => ({ state, signedInAs: (await hostUsage.identity())?.email || null }))
+    .catch(() => ({ state: 'absent', signedInAs: null }));
+  const usageBindings = await readUsageBindings(USAGE_BINDINGS_FILE).catch(() => ({}));
   return {
     now: new Date().toISOString(),
     protocol: { ...protocol, masterActivity },
@@ -1051,6 +1103,8 @@ async function snapshot() {
         claude: {
           ...claudeCredentialState,
           accountUsage,
+          usageHost,
+          usageBindings,
           legacyConfigured: !!(await factoryEnvOauthToken()),
           login: claudeLogin.publicState(),
         },
@@ -1169,6 +1223,42 @@ async function doAction(action, payload = {}) {
       } catch {
         return { ok: false, message: 'Claude account assignment is invalid.' };
       }
+    }
+    case 'claude-usage-link': {
+      // Binds one saved account to whichever Claude login this Mac is signed in
+      // as, so its quota becomes readable. Stores the identity only — the token
+      // is re-read from the Keychain on every poll and never copied into the vault.
+      const profileId = String(payload.profileId || '');
+      const state = await publicClaudeCredentialState();
+      if (!state.profiles?.some((profile) => profile.id === profileId))
+        return { ok: false, message: 'Unknown Claude account.' };
+      const who = await hostUsage.identity();
+      if (!who?.email) {
+        const reason = await hostUsage.state();
+        return {
+          ok: false,
+          message:
+            USAGE_BLOCK_REASON[reason] ||
+            'This Mac has no Claude login that can read usage. Sign in with Claude Code first.',
+        };
+      }
+      const bindings = await readUsageBindings(USAGE_BINDINGS_FILE);
+      bindings[profileId] = { email: who.email, linkedAt: new Date().toISOString() };
+      await writeUsageBindings(USAGE_BINDINGS_FILE, bindings);
+      usageCaches.delete(profileId);
+      const name = state.profiles.find((profile) => profile.id === profileId)?.name || 'account';
+      await clog(`Claude usage telemetry linked: ${name} → ${who.email}`);
+      return { ok: true, message: `${name} usage now reads from the ${who.email} login.` };
+    }
+    case 'claude-usage-unlink': {
+      const profileId = String(payload.profileId || '');
+      const bindings = await readUsageBindings(USAGE_BINDINGS_FILE);
+      if (!bindings[profileId]) return { ok: false, message: 'That account is not linked.' };
+      delete bindings[profileId];
+      await writeUsageBindings(USAGE_BINDINGS_FILE, bindings);
+      usageCaches.delete(profileId);
+      await clog(`Claude usage telemetry unlinked for ${profileId}`);
+      return { ok: true, message: 'Usage telemetry unlinked.' };
     }
     case 'claude-profile-remove': {
       try {
@@ -1735,6 +1825,8 @@ const CREDENTIAL_ACTIONS = new Set([
   'claude-profile-assign',
   'claude-profile-remove',
   'claude-profile-test',
+  'claude-usage-link',
+  'claude-usage-unlink',
 ]);
 const handleRequest = async (req, res) => {
   if (!isPrivateSource(req.socket.remoteAddress)) {

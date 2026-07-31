@@ -2013,6 +2013,26 @@
       .credential-usage-meter .meter {
         width: 54px;
       }
+      .routing-accounts {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 7px 14px;
+        margin: 0 0 11px;
+      }
+      .routing-account {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 4px 8px;
+        align-items: center;
+        border: 1px solid var(--border);
+        border-radius: 9px;
+        padding: 6px 10px;
+      }
+      .routing-account-name {
+        color: var(--ink);
+        font-size: 11px;
+        font-weight: 600;
+      }
       .credential-login-state {
         margin-top: 10px;
         border: 1px solid var(--border);
@@ -3054,6 +3074,10 @@
             Difficulty → model routing
             <span class="hint">saves apply from the NEXT agent run — no restart needed</span>
           </h2>
+          <!-- Which Claude subscription every claude-provider route below actually
+               draws on, and how much of it is left. Routing decides the model;
+               this decides whether the model can run at all. -->
+          <div id="routing-accounts" class="routing-accounts"></div>
           <div class="route-table" role="table" aria-label="Difficulty routing">
             <div class="route-head" role="row">
               <span role="columnheader">Difficulty</span>
@@ -3827,6 +3851,15 @@
           ...(route?.effort ? { effort: route.effort } : {}),
         });
       }
+      // Quota is readable only through a profile-scoped login. This binds one
+      // saved account to the Claude login this Mac is signed in as; the token is
+      // read from the Keychain per poll, never copied into the factory vault.
+      function claudeUsageLink(profileId, button) {
+        return act('claude-usage-link', button, false, { profileId });
+      }
+      function claudeUsageUnlink(profileId, button) {
+        return act('claude-usage-unlink', button, false, { profileId });
+      }
       function claudeAssignmentOptions(state, target, selected) {
         const assignments = state.assignments || {};
         const defaultId = assignments.default || 'factory-env';
@@ -3994,7 +4027,13 @@
             const why = throttled
               ? 'Anthropic is rate-limiting usage reads'
               : u.error || 'no reading yet';
-            return `<div class="credential-usage">${lanesHtml}<span class="hint">${esc(why)}${retry}</span></div>`;
+            // Quota needs a profile-scoped login; the factory's own setup token
+            // cannot read it. Offer the one-click fix right where it is missing.
+            const link =
+              u.telemetry && u.telemetry.reason !== 'ready'
+                ? `<button class="small" onclick="claudeUsageLink('${esc(profileId)}',this)"${controlsAvailable ? '' : ' disabled'}>Use this Mac’s login</button>`
+                : '';
+            return `<div class="credential-usage">${lanesHtml}<span class="hint">${esc(why)}${retry}</span>${link}</div>`;
           }
           const scoped = (u.scoped || [])
             .filter((meter) => usagePct(meter.pct) != null)
@@ -4375,6 +4414,44 @@
               `<option value="${esc(v)}"${v === sel ? ' selected' : ''}>${esc(labels?.[v] || v)}</option>`,
           )
           .join('');
+      // The Claude accounts backing the routing table, with live quota. Rendered
+      // from the same accountUsage payload the accounts card uses, so the two
+      // views can never disagree about how much is left.
+      function mRenderRoutingAccounts(s) {
+        const node = $('routing-accounts');
+        if (!node) return;
+        const claude = s?.credentials?.providers?.claude || {};
+        const accounts = claude.accountUsage || [];
+        const usesClaude = mAllRoutes(s?.models).some((entry) => entry.provider === 'claude');
+        if (!usesClaude || !accounts.length) {
+          node.innerHTML = '';
+          return;
+        }
+        const pct = (v) =>
+          typeof v === 'number' && Number.isFinite(v) ? Math.max(0, Math.min(100, Math.round(v))) : null;
+        const bar = (label, n) =>
+          n == null
+            ? ''
+            : `<span class="credential-usage-meter"><b>${label}</b><span class="meter"><i class="${n >= 90 ? 'crit' : n >= 75 ? 'warn' : ''}" style="width:${n}%"></i></span><em>${n}%</em></span>`;
+        node.innerHTML = accounts
+          .map((entry) => {
+            const u = entry.usage || {};
+            const five = pct(u.fiveHour?.pct);
+            const seven = pct(u.sevenDay?.pct);
+            const lanes = (entry.lanes || []).length
+              ? (entry.lanes || [])
+                  .map((l) => (l === 'default' ? 'default' : l === 'master' ? 'master' : l.replace('worker-', 'w')))
+                  .join(' · ')
+              : 'no lanes';
+            const meters =
+              five == null && seven == null
+                ? `<span class="hint">${esc(u.error || 'no reading')}</span>`
+                : `${bar('5h', five)}${bar('7d', seven)}${u.stale ? '<span class="hint">cached</span>' : ''}`;
+            return `<div class="routing-account"><span class="routing-account-name">${esc(entry.name)}</span><span class="credential-usage-lanes">${esc(lanes)}</span>${meters}</div>`;
+          })
+          .join('');
+      }
+
       function mRenderRows(m) {
         const df = m.difficulties || {};
         const defs = providerMap();
@@ -4610,6 +4687,10 @@
             })
             .join('');
         }
+        // Ahead of every early return below: quota moves independently of the
+        // routing config, so gating it on a models-JSON change would freeze the
+        // numbers whenever routing is untouched — which is almost always.
+        mRenderRoutingAccounts(s);
         const providerCapabilitiesChanged = renderedProviderRevision !== providerRevision;
         if (mDirty && !providerCapabilitiesChanged) return; // never clobber unsaved edits
         if (mDirty && providerCapabilitiesChanged) {

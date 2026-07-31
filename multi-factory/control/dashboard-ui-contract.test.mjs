@@ -600,3 +600,26 @@ test('each saved Claude account shows its own quota, not only the master lane', 
   // The panel re-renders when the numbers move, not only when profiles change.
   assert.match(script, /accountUsage: \(state\.accountUsage \|\| \[\]\)\.map/);
 });
+
+test('the routing view names the Claude account behind its routes and its quota', () => {
+  // Routing picks the model; the account decides whether that model can run at
+  // all. Seeing one without the other is what made the limit invisible.
+  assert.match(html, /id="routing-accounts"/);
+  assert.match(script, /function mRenderRoutingAccounts\(s\)/);
+  assert.match(script, /mRenderRoutingAccounts\(s\);/);
+  assert.match(html, /\.routing-account\s*\{/);
+});
+
+test('quota telemetry is offered where it is missing, and never from the inference token', async () => {
+  assert.match(script, /claudeUsageLink/);
+  assert.match(script, /claude-usage-link/);
+  const server = await readFile(new URL('./server.mjs', import.meta.url), 'utf8');
+  // The factory's setup token is inference-only: /api/oauth/usage answers it 403.
+  // Sending it anyway would spend a shared rate budget on a call that cannot work.
+  assert.match(server, /const telemetry = await usageTelemetryToken\(cacheKey\)/);
+  assert.match(server, /const token = telemetry\.token;/);
+  assert.doesNotMatch(server, /const token = credential\.token;/);
+  // Binding stores an identity, never a credential.
+  assert.match(server, /bindings\[profileId\] = \{ email: who\.email/);
+  assert.doesNotMatch(server, /bindings\[profileId\] = \{[^}]*accessToken/);
+});
