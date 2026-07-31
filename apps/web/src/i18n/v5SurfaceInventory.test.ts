@@ -34,6 +34,7 @@ import {
   type V5AsyncReadExemption,
   type V5AsyncReadState,
   type V5AsyncStateDebt,
+  type V5SurfaceReview,
 } from './v5SurfaceInventory';
 import { matchControlPanel } from '../user/control/ControlCenterOverlay';
 
@@ -345,10 +346,13 @@ function parseTsx(relativePath: string, sourceText?: string): ts.SourceFile {
 }
 
 const ASYNC_READ_HOOKS = new Set([
+  'useActivePortfolio',
+  'useAiCapability',
   'useInfiniteQuery',
   'usePortfoliosQuery',
   'useQuery',
   'useResource',
+  'useWatchlistMembership',
 ]);
 
 const ASYNC_STATE_PROPERTIES: Record<V5AsyncReadState, ReadonlySet<string>> = {
@@ -582,59 +586,63 @@ function bindingIsRendered(
 
 function propertyStateObservations(raw: RawAsyncRead): ReadonlySet<V5AsyncReadState> {
   const observed = new Set<V5AsyncReadState>();
+
+  const observePropertiesOf = (resultName: string) => {
+    const recordProperty = (property: string, reference: ts.Node) => {
+      const state = stateForProperty(property);
+      if (state && stateReferenceIsRendered(reference, raw.scope, new Set())) observed.add(state);
+    };
+    const visit = (node: ts.Node): void => {
+      if (
+        ts.isPropertyAccessExpression(node) &&
+        ts.isIdentifier(node.expression) &&
+        node.expression.text === resultName
+      ) {
+        recordProperty(node.name.text, node);
+      }
+      if (
+        ts.isElementAccessExpression(node) &&
+        ts.isIdentifier(node.expression) &&
+        node.expression.text === resultName &&
+        node.argumentExpression &&
+        ts.isStringLiteral(node.argumentExpression)
+      ) {
+        recordProperty(node.argumentExpression.text, node);
+      }
+      if (
+        ts.isVariableDeclaration(node) &&
+        node.initializer &&
+        ts.isIdentifier(node.initializer) &&
+        node.initializer.text === resultName &&
+        ts.isObjectBindingPattern(node.name)
+      ) {
+        for (const element of node.name.elements) {
+          if (
+            bindingIsRendered(
+              raw.scope,
+              ts.isIdentifier(element.name) ? element.name.text : null,
+              element.name.getStart(),
+            )
+          ) {
+            const state = stateForProperty((element.propertyName ?? element.name).getText());
+            if (state) observed.add(state);
+          }
+        }
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(raw.scope);
+  };
+
   for (const property of raw.binding.directProperties) {
     const state = stateForProperty(property.property);
     if (state && bindingIsRendered(raw.scope, property.localName, property.localStart)) {
       observed.add(state);
     }
+    if (property.localName) observePropertiesOf(property.localName);
   }
   if (!raw.binding.resultName) return observed;
-
-  const resultName = raw.binding.resultName;
-  const recordProperty = (property: string, reference: ts.Node) => {
-    const state = stateForProperty(property);
-    if (state && stateReferenceIsRendered(reference, raw.scope, new Set())) observed.add(state);
-  };
-  const visit = (node: ts.Node): void => {
-    if (
-      ts.isPropertyAccessExpression(node) &&
-      ts.isIdentifier(node.expression) &&
-      node.expression.text === resultName
-    ) {
-      recordProperty(node.name.text, node);
-    }
-    if (
-      ts.isElementAccessExpression(node) &&
-      ts.isIdentifier(node.expression) &&
-      node.expression.text === resultName &&
-      node.argumentExpression &&
-      ts.isStringLiteral(node.argumentExpression)
-    ) {
-      recordProperty(node.argumentExpression.text, node);
-    }
-    if (
-      ts.isVariableDeclaration(node) &&
-      node.initializer &&
-      ts.isIdentifier(node.initializer) &&
-      node.initializer.text === resultName &&
-      ts.isObjectBindingPattern(node.name)
-    ) {
-      for (const element of node.name.elements) {
-        if (
-          bindingIsRendered(
-            raw.scope,
-            ts.isIdentifier(element.name) ? element.name.text : null,
-            element.name.getStart(),
-          )
-        ) {
-          const state = stateForProperty((element.propertyName ?? element.name).getText());
-          if (state) observed.add(state);
-        }
-      }
-    }
-    ts.forEachChild(node, visit);
-  };
-  visit(raw.scope);
+  observePropertiesOf(raw.binding.resultName);
   return observed;
 }
 
@@ -762,17 +770,13 @@ function analyzeAsyncReadStates(
 function debtRows(offenders: readonly AsyncReadOffender[]): V5AsyncStateDebt[] {
   return offenders
     .map(({ component, read, states }) => ({ component, read, states }))
-    .sort((left, right) =>
-      `${left.component}\0${left.read}`.localeCompare(`${right.component}\0${right.read}`),
-    );
+    .sort(compareComponentRead);
 }
 
 function formatAsyncReadOffenders(offenders: readonly AsyncReadOffender[]): string {
   if (offenders.length === 0) return '(none)';
   return [...offenders]
-    .sort((left, right) =>
-      `${left.component}\0${left.read}`.localeCompare(`${right.component}\0${right.read}`),
-    )
+    .sort(compareComponentRead)
     .map(
       (offender) =>
         `${offender.component}:${offender.line} ${offender.read} (${offender.hook}) missing ${offender.states.join(' + ')}`,
@@ -780,15 +784,99 @@ function formatAsyncReadOffenders(offenders: readonly AsyncReadOffender[]): stri
     .join('\n');
 }
 
-function hasEmptyStateSignal(relativePath: string): boolean {
-  const sourceFile = parseTsx(relativePath);
+function compareComponentRead(
+  left: Pick<AsyncReadSite, 'component' | 'read'>,
+  right: Pick<AsyncReadSite, 'component' | 'read'>,
+): number {
+  if (left.component !== right.component) return left.component < right.component ? -1 : 1;
+  if (left.read === right.read) return 0;
+  return left.read < right.read ? -1 : 1;
+}
+
+function conditionBindingControlsRenderedJsx(
+  scope: ts.Node,
+  localName: string,
+  localStart: number,
+  seenBindings: Set<string>,
+): boolean {
+  let rendered = false;
+  const visit = (node: ts.Node): void => {
+    if (rendered) return;
+    if (
+      ts.isIdentifier(node) &&
+      node.text === localName &&
+      node.getStart() !== localStart &&
+      isIdentifierUse(node) &&
+      conditionControlsRenderedJsx(node, scope, seenBindings)
+    ) {
+      rendered = true;
+      return;
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(scope);
+  return rendered;
+}
+
+function conditionControlsRenderedJsx(
+  node: ts.Node,
+  scope: ts.Node,
+  seenBindings = new Set<string>(),
+): boolean {
+  let current = node;
+  while (current !== scope && current.parent) {
+    const parent = current.parent;
+    if (ts.isJsxExpression(parent)) return false;
+    if (ts.isIfStatement(parent) && parent.expression === current) {
+      return containsJsx(parent.thenStatement) || containsJsx(parent.elseStatement);
+    }
+    if (ts.isConditionalExpression(parent) && parent.condition === current) {
+      return containsJsx(parent.whenTrue) || containsJsx(parent.whenFalse);
+    }
+    if (
+      ts.isBinaryExpression(parent) &&
+      parent.left === current &&
+      (parent.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken ||
+        parent.operatorToken.kind === ts.SyntaxKind.BarBarToken) &&
+      containsJsx(parent)
+    ) {
+      return true;
+    }
+    if (ts.isVariableDeclaration(parent) && parent.initializer === current) {
+      if (!ts.isIdentifier(parent.name)) return false;
+      const key = `${parent.name.text}\0${parent.name.getStart()}`;
+      if (seenBindings.has(key)) return false;
+      seenBindings.add(key);
+      return conditionBindingControlsRenderedJsx(
+        scope,
+        parent.name.text,
+        parent.name.getStart(),
+        seenBindings,
+      );
+    }
+    if (isFunctionScope(parent) && parent !== scope) return false;
+    current = parent;
+  }
+  return false;
+}
+
+function hasEmptyStateSignal(relativePath: string, sourceText?: string): boolean {
+  const sourceFile = parseTsx(relativePath, sourceText);
   let found = false;
   const isLength = (node: ts.Node) =>
     ts.isPropertyAccessExpression(node) && node.name.text === 'length';
   const isZero = (node: ts.Node) => ts.isNumericLiteral(node) && Number(node.text) === 0;
+  const reachesRenderedJsx = (node: ts.Node) =>
+    stateReferenceIsRendered(node, readScope(node, sourceFile).node, new Set());
+  const controlsRenderedJsx = (node: ts.Node) =>
+    conditionControlsRenderedJsx(node, readScope(node, sourceFile).node);
   const visit = (node: ts.Node): void => {
     if (found) return;
-    if (ts.isJsxOpeningLikeElement(node) && /(?:Empty|NoData)$/.test(node.tagName.getText())) {
+    if (
+      ts.isJsxOpeningLikeElement(node) &&
+      /(?:Empty|NoData)$/.test(node.tagName.getText()) &&
+      reachesRenderedJsx(node)
+    ) {
       found = true;
       return;
     }
@@ -796,20 +884,23 @@ function hasEmptyStateSignal(relativePath: string): boolean {
       ts.isCallExpression(node) &&
       node.arguments[0] &&
       ts.isStringLiteral(node.arguments[0]) &&
-      /(?:^|\.)(?:empty|noData|noItems|noResults|none)(?:\.|$)/i.test(node.arguments[0].text)
+      /(?:^|\.)(?:empty|noData|noItems|noResults|none)(?:\.|$)/i.test(node.arguments[0].text) &&
+      reachesRenderedJsx(node)
     ) {
       found = true;
       return;
     }
     if (
       ts.isBinaryExpression(node) &&
-      ((isLength(node.left) && isZero(node.right)) || (isZero(node.left) && isLength(node.right)))
+      ((isLength(node.left) && isZero(node.right)) ||
+        (isZero(node.left) && isLength(node.right))) &&
+      controlsRenderedJsx(node)
     ) {
       found = true;
       return;
     }
     if (ts.isPrefixUnaryExpression(node) && node.operator === ts.SyntaxKind.ExclamationToken) {
-      if (isLength(node.operand)) {
+      if (isLength(node.operand) && controlsRenderedJsx(node)) {
         found = true;
         return;
       }
@@ -818,6 +909,48 @@ function hasEmptyStateSignal(relativePath: string): boolean {
   };
   visit(sourceFile);
   return found;
+}
+
+function coveredStateClaimFindings(
+  surface: Pick<V5SurfaceReview, 'id' | 'components' | 'states'>,
+  result: AsyncReadGateResult,
+  emptyStateSignal: (component: string) => boolean = hasEmptyStateSignal,
+): string[] {
+  const findings: string[] = [];
+  const surfaceComponents = new Set(surface.components);
+  const surfaceReads = result.reads.filter((read) => surfaceComponents.has(read.component));
+
+  for (const state of ASYNC_READ_STATES) {
+    if (surface.states[state].status !== 'covered') continue;
+    if (surfaceReads.length === 0) {
+      findings.push(`${surface.id}: ${state} cannot claim covered without a located async read`);
+      continue;
+    }
+    const uncovered = result.offenders.filter(
+      (offender) => surfaceComponents.has(offender.component) && offender.states.includes(state),
+    );
+    if (uncovered.length > 0) {
+      findings.push(
+        `${surface.id}: ${state} claims covered, but these reads do not observe it:\n${formatAsyncReadOffenders(uncovered)}`,
+      );
+    }
+  }
+
+  if (surface.states.empty.status !== 'covered') return findings;
+  const asyncComponents = [...new Set(surfaceReads.map((read) => read.component))];
+  if (asyncComponents.length > 0) {
+    const withoutEmptySignal = asyncComponents.filter((component) => !emptyStateSignal(component));
+    if (withoutEmptySignal.length > 0) {
+      findings.push(
+        `${surface.id}: empty claims covered, but these async components have no AST-visible empty branch:\n${withoutEmptySignal.join('\n')}`,
+      );
+    }
+  } else if (!surface.components.some((component) => emptyStateSignal(component))) {
+    findings.push(
+      `${surface.id}: empty claims covered, but its synchronous components have no AST-visible empty branch`,
+    );
+  }
+  return findings;
 }
 
 const USER_FACING_ATTRIBUTES = new Set([
@@ -1077,6 +1210,109 @@ describe('V5 async-read state gate', () => {
     });
   });
 
+  test('locates established wrappers and observes a nested query result', () => {
+    const result = analyzeAsyncReadStates([fixturePath], [], {
+      [fixturePath]: `
+        function ActiveProbe() {
+          const { portfoliosQuery } = useActivePortfolio();
+          if (portfoliosQuery.isLoading) return <Spinner />;
+          if (portfoliosQuery.isError) return <Retry />;
+          return <p>{portfoliosQuery.data?.portfolios.length}</p>;
+        }
+        function AiProbe() {
+          const capability = useAiCapability();
+          return <p>{capability.data?.available}</p>;
+        }
+        function WatchlistProbe() {
+          const { watchedIds } = useWatchlistMembership();
+          return <p>{watchedIds.size}</p>;
+        }
+      `,
+    });
+
+    expect(result.reads.map(({ hook, read }) => ({ hook, read }))).toEqual([
+      { hook: 'useActivePortfolio', read: 'ActiveProbe.$destructured' },
+      { hook: 'useAiCapability', read: 'AiProbe.capability' },
+      { hook: 'useWatchlistMembership', read: 'WatchlistProbe.$destructured' },
+    ]);
+    expect(result.offenders.map(({ hook }) => hook)).toEqual([
+      'useAiCapability',
+      'useWatchlistMembership',
+    ]);
+  });
+
+  test('binds covered loading and error claims to analyzed reads', () => {
+    const coveredSurface = {
+      id: 'synthetic-covered-surface',
+      components: [fixturePath],
+      states: {
+        loading: { status: 'covered', evidence: 'Fixture renders pending state.' },
+        empty: { status: 'not-applicable', evidence: 'Fixture has no collection.' },
+        error: { status: 'covered', evidence: 'Fixture renders error state.' },
+      },
+    } satisfies Pick<V5SurfaceReview, 'id' | 'components' | 'states'>;
+    const coveredResult = analyzeAsyncReadStates([fixturePath], [], {
+      [fixturePath]: `
+        function Probe() {
+          const query = useQuery({ queryKey: ['probe'], queryFn: loadProbe });
+          if (query.isPending) return <Spinner />;
+          if (query.isError) return <Retry />;
+          return <p>{query.data}</p>;
+        }
+      `,
+    });
+    expect(coveredStateClaimFindings(coveredSurface, coveredResult)).toEqual([]);
+
+    const missingError = analyzeAsyncReadStates([fixturePath], [], {
+      [fixturePath]: `
+        function Probe() {
+          const query = useQuery({ queryKey: ['probe'], queryFn: loadProbe });
+          if (query.isPending) return <Spinner />;
+          return <p>{query.data}</p>;
+        }
+      `,
+    });
+    expect(coveredStateClaimFindings(coveredSurface, missingError)).toEqual([
+      expect.stringContaining('error claims covered'),
+    ]);
+  });
+
+  test('requires an empty predicate to control JSX and supports synchronous surfaces', () => {
+    const detachedSignal = `
+      function Probe({ items }) {
+        recordMetric('probe.empty');
+        return <Rows items={items} data-empty={items.length === 0} />;
+      }
+    `;
+    expect(hasEmptyStateSignal(fixturePath, detachedSignal)).toBe(false);
+
+    const renderedSignal = `
+      function Probe({ items }) {
+        const empty = items.length === 0;
+        return empty ? <p>No rows</p> : <Rows items={items} />;
+      }
+    `;
+    expect(hasEmptyStateSignal(fixturePath, renderedSignal)).toBe(true);
+
+    const synchronousSurface = {
+      id: 'synthetic-synchronous-surface',
+      components: [fixturePath],
+      states: {
+        loading: { status: 'not-applicable', evidence: 'No async read.' },
+        empty: { status: 'covered', evidence: 'The local collection renders an empty branch.' },
+        error: { status: 'not-applicable', evidence: 'No async read.' },
+      },
+    } satisfies Pick<V5SurfaceReview, 'id' | 'components' | 'states'>;
+    const synchronousResult = analyzeAsyncReadStates([fixturePath], [], {
+      [fixturePath]: renderedSignal,
+    });
+    expect(
+      coveredStateClaimFindings(synchronousSurface, synchronousResult, (component) =>
+        hasEmptyStateSignal(component, renderedSignal),
+      ),
+    ).toEqual([]);
+  });
+
   test('accepts a per-read exemption only when it records a reason', () => {
     const source = `
       function Probe() {
@@ -1279,9 +1515,7 @@ describe('V5-P14 surface traceability inventory', () => {
       .flatMap(([component, reads]) =>
         Object.entries(reads).map(([read, states]) => ({ component, read, states })),
       )
-      .sort((left, right) =>
-        `${left.component}\0${left.read}`.localeCompare(`${right.component}\0${right.read}`),
-      );
+      .sort(compareComponentRead);
     expect(
       {
         readSites: expectedDebt.length,
@@ -1308,40 +1542,14 @@ describe('V5-P14 surface traceability inventory', () => {
       `ProjectionSection must remain visible in the worklist until all five read errors are handled.\n${report}`,
     ).toHaveLength(5);
 
-    for (const surface of V5_SURFACE_INVENTORY) {
-      const surfaceComponents = new Set<string>(surface.components);
-      const surfaceReads = result.reads.filter((read) => surfaceComponents.has(read.component));
-      for (const state of ASYNC_READ_STATES) {
-        if ((surface.states[state].status as string) !== 'covered') continue;
-        expect(
-          surfaceReads.length,
-          `${surface.id}: ${state} cannot claim covered without a statically located async read`,
-        ).toBeGreaterThan(0);
-        const uncovered = result.offenders.filter(
-          (offender) =>
-            surfaceComponents.has(offender.component) && offender.states.includes(state),
-        );
-        expect(
-          uncovered,
-          `${surface.id}: ${state} claims covered, but these reads do not observe it:\n${formatAsyncReadOffenders(uncovered)}`,
-        ).toEqual([]);
-      }
-
-      if ((surface.states.empty.status as string) === 'covered') {
-        const asyncComponents = [...new Set(surfaceReads.map((read) => read.component))];
-        expect(
-          asyncComponents.length,
-          `${surface.id}: empty cannot claim covered without a statically located async read`,
-        ).toBeGreaterThan(0);
-        const withoutEmptySignal = asyncComponents.filter(
-          (component) => !hasEmptyStateSignal(component),
-        );
-        expect(
-          withoutEmptySignal,
-          `${surface.id}: empty claims covered, but these async components have no AST-visible empty branch:\n${withoutEmptySignal.join('\n')}`,
-        ).toEqual([]);
-      }
-    }
+    const reviewedSurfaces: readonly V5SurfaceReview[] = V5_SURFACE_INVENTORY;
+    const coveredClaimFindings = reviewedSurfaces.flatMap((surface) =>
+      coveredStateClaimFindings(surface, result),
+    );
+    expect(
+      coveredClaimFindings,
+      `Mechanically covered state claims do not match component code:\n${coveredClaimFindings.join('\n')}`,
+    ).toEqual([]);
   });
 
   test('contains no literal user-facing copy outside the frozen legacy debt', () => {

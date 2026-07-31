@@ -87,6 +87,8 @@ const notAsync = (evidence: string): V5StateReview => ({
   evidence,
 });
 
+const covered = (evidence: string): V5StateReview => ({ status: 'covered', evidence });
+
 const unverified = (evidence: string): V5StateReview => ({ status: 'unverified', evidence });
 
 const hidden = (evidence: string): V5StateReview => ({
@@ -311,11 +313,11 @@ export const V5_SURFACE_INVENTORY = [
     copyRoots: ['admin.monitoring', 'admin.problems', 'admin.usageAnalytics', 'admin.featureFlags'],
     copyReview: 'Zero-setup monitoring, Problems, analytics, and kill-switch copy reviewed.',
     states: {
-      loading: unverified('Each admin resource renders Spinner while no prior payload exists.'),
+      loading: covered('Each admin resource renders Spinner while no prior payload exists.'),
       empty: unverified(
         'Problems and analytics have explicit no-data states; fixed flag rows are not collection-empty.',
       ),
-      error: unverified('Refresh controls remain visible and failed initial reads expose retry.'),
+      error: covered('Refresh controls remain visible and failed initial reads expose retry.'),
     },
     tests: [
       'admin/pages/MonitoringPage.test.tsx',
@@ -1443,6 +1445,20 @@ export const V5_ASYNC_READ_EXEMPTIONS = [
       'usePortfolioPrefill selects this paranoid-mode read as modeQuery and returns its flags to ForecastPage.',
     delegatedTo: 'ForecastPage',
   },
+  {
+    component: 'user/portfolio/analytics/AiInsightsPanel.tsx',
+    read: 'AiInsightsPanel.capability',
+    states: ['loading', 'error'],
+    reason:
+      'The binding P12 capability gate deliberately renders no AI surface until availability is confirmed; loading and failure are therefore indistinguishable from disabled AI.',
+  },
+  {
+    component: 'user/workboard/NlBuilderPanel.tsx',
+    read: 'NlBuilderPanel.capability',
+    states: ['loading', 'error'],
+    reason:
+      'The binding P12 capability gate deliberately renders no AI surface until availability is confirmed; loading and failure are therefore indistinguishable from disabled AI.',
+  },
 ] as const satisfies readonly V5AsyncReadExemption[];
 
 /**
@@ -1461,7 +1477,7 @@ export type V5AsyncStateDebtLedger = Readonly<
 >;
 
 /** Ratchet this downward whenever #739 removes a read site or missing state. */
-export const V5_ASYNC_STATE_DEBT_CEILING = { readSites: 63, stateGaps: 110 } as const;
+export const V5_ASYNC_STATE_DEBT_CEILING = { readSites: 64, stateGaps: 112 } as const;
 
 export const V5_ASYNC_STATE_DEBT = {
   'admin/pages/UsersPage.tsx': {
@@ -1474,6 +1490,7 @@ export const V5_ASYNC_STATE_DEBT = {
     'EarningsSection.data': ['loading', 'error'],
     'NewsSection.data': ['loading', 'error'],
     'SplitsSection.data': ['loading', 'error'],
+    'WatchlistIconButton.$destructured': ['loading', 'error'],
     'WatchlistIconButton.listsQuery': ['error'],
   },
   'user/components/AssetSearchBox.tsx': {
