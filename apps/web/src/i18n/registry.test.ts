@@ -1,5 +1,7 @@
 import { describe, expect, test } from 'vitest';
 
+import { vaultStoreErrorKey } from '../user/vault/engine/errorCopy';
+import { VAULT_PORTFOLIO_STORE_ERROR_CODES } from '../user/vault/vaultPortfolioStore';
 import { LOCALES, localizedMessage, type MessageNode } from './registry';
 
 /**
@@ -41,6 +43,18 @@ test('registers every not-found string in EN and DE', () => {
 
   for (const locale of Object.values(LOCALES)) {
     for (const key of keys) {
+      expect(localizedMessage(locale.code, key)).not.toBe(key);
+    }
+  }
+});
+
+test('registers copy for every vault portfolio-store error code in EN and DE', () => {
+  // The paranoid store fails closed by design; what it must never do is
+  // surface a bare code like VAULT_OPERATION_UNAVAILABLE (#1016). Every code
+  // maps to a key and every locale carries that key.
+  for (const code of VAULT_PORTFOLIO_STORE_ERROR_CODES) {
+    const key = vaultStoreErrorKey({ code });
+    for (const locale of Object.values(LOCALES)) {
       expect(localizedMessage(locale.code, key)).not.toBe(key);
     }
   }

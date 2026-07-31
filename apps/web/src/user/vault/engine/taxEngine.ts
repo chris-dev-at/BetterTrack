@@ -563,6 +563,8 @@ function positionsForYear(
           realizedPnlEur: realization.realizedPnlEur,
           taxMode: entry.row.taxMode,
           taxAmountEur: entry.row.taxAmountEur,
+          taxCountry: entry.row.taxCountry,
+          taxParams: frozenContractParams(entry.row.taxParams),
         };
       });
     const dividendRows = dividends
@@ -578,6 +580,8 @@ function positionsForYear(
         grossAmountEur: entry.row.grossAmountEur,
         taxMode: entry.row.taxMode,
         taxAmountEur: entry.row.taxAmountEur,
+        taxCountry: entry.row.taxCountry,
+        taxParams: frozenContractParams(entry.row.taxParams),
       }));
     positions.push({
       asset: asset.dto,
@@ -811,6 +815,15 @@ function parseCustom(raw: unknown): CustomTaxParams {
 
 function contractToDomainCustom(params: ContractCustomTaxParams): CustomTaxParams {
   return { ...params };
+}
+
+/**
+ * A row's frozen custom parameter snapshot in the contract shape, for the
+ * report rows the server also carries them on. Null on every non-custom row.
+ */
+function frozenContractParams(raw: unknown): ContractCustomTaxParams | null {
+  const parsed = customTaxParamsSchema.safeParse(raw);
+  return parsed.success ? parsed.data : null;
 }
 
 function realizationMap(rows: readonly SellRealizationEur[]): Map<string, SellRealizationEur> {
