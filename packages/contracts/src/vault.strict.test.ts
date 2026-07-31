@@ -7,10 +7,14 @@ import {
   paranoidDisableResponseSchema,
   paranoidEnableRequestSchema,
   paranoidEnableResponseSchema,
+  paranoidForkProvenanceResponseSchema,
   VAULT_DOCUMENT_V1_VERSION,
   VAULT_ENTITY_KINDS,
+  VAULT_MIRROR_PROVENANCE_DROPPED_COLUMNS,
   type VaultStrictEntity,
+  vaultDocumentV1Schema,
   vaultMediaStateSchema,
+  vaultMirrorProvenanceSchema,
   vaultStrictDocumentV1Schema,
   vaultStrictEntitySchema,
 } from './vault';
@@ -34,6 +38,7 @@ describe('public paranoid transitions', () => {
     schemaVersion: VAULT_DOCUMENT_V1_VERSION,
     entities: [],
     mergeLog: [],
+    mirrorProvenance: [],
   };
 
   it('ties selected media evidence to one exact supported vault version', () => {
@@ -517,6 +522,7 @@ describe('strict vault document v1', () => {
         schemaVersion: VAULT_DOCUMENT_V1_VERSION,
         entities: [fixture],
         mergeLog: [],
+        mirrorProvenance: [],
       });
       const parsed = vaultStrictDocumentV1Schema.parse(JSON.parse(payload));
       expect(JSON.stringify(parsed)).toBe(payload);
@@ -570,6 +576,7 @@ describe('strict vault document v1', () => {
         schemaVersion: VAULT_DOCUMENT_V1_VERSION,
         entities: fixtures,
         mergeLog: [],
+        mirrorProvenance: [],
       },
     };
     expect(paranoidDisableRehydrationRequestSchema.parse(request)).toEqual(request);
@@ -580,6 +587,7 @@ describe('strict vault document v1', () => {
           schemaVersion: VAULT_DOCUMENT_V1_VERSION,
           entities: { portfolio: [] },
           mergeLog: [],
+          mirrorProvenance: [],
         },
       }).success,
     ).toBe(false);
@@ -598,6 +606,157 @@ describe('strict vault document v1', () => {
     expect(
       paranoidDisableRehydrationResultSchema.safeParse({ ...result, restoredRows: fixtures.length })
         .success,
+    ).toBe(false);
+  });
+});
+
+describe('severed-fork MIRRORCHAIN provenance', () => {
+  const CHAIN_ID = uuid(200);
+  const MIRROR_ID = uuid(201);
+  const LOCAL_ID = uuid(202);
+  const MEMBERSHIP_ID = uuid(205);
+  const entry = {
+    chainId: CHAIN_ID,
+    membershipId: MEMBERSHIP_ID,
+    kind: 'transaction',
+    mirrorId: MIRROR_ID,
+    portfolioId: PORTFOLIO_ID,
+    localId: LOCAL_ID,
+  };
+
+  it('round-trips the identity map byte-for-byte inside the strict document', () => {
+    const payload = JSON.stringify({
+      schemaVersion: VAULT_DOCUMENT_V1_VERSION,
+      entities: [],
+      mergeLog: [],
+      mirrorProvenance: [entry],
+    });
+    expect(JSON.stringify(vaultStrictDocumentV1Schema.parse(JSON.parse(payload)))).toBe(payload);
+  });
+
+  it('carries the logical id and the CURRENT local id as separate fields', () => {
+    // The whole point of §7.1: a sanctioned correction replaces the local row, so
+    // `localId = mirrorId` cannot be assumed by restore-time validation.
+    const parsed = vaultMirrorProvenanceSchema.parse(entry);
+    expect(parsed.localId).not.toBe(parsed.mirrorId);
+    expect(Object.keys(parsed).sort()).toEqual([
+      'chainId',
+      'kind',
+      'localId',
+      'membershipId',
+      'mirrorId',
+      'portfolioId',
+    ]);
+  });
+
+  it('carries the ended-membership identity, because a re-join mints a second one', () => {
+    // Two retained forks of ONE chain each keep the same logical entity under
+    // their own local id. Without the tombstone identity they collide, and the
+    // older fork would be proved against the newer copy's higher watermark.
+    const rejoined = { ...entry, membershipId: uuid(206), localId: uuid(207) };
+    const parsed = [entry, rejoined].map((row) => vaultMirrorProvenanceSchema.parse(row));
+    expect(new Set(parsed.map((row) => row.membershipId)).size).toBe(2);
+    expect(new Set(parsed.map((row) => row.mirrorId)).size).toBe(1);
+    expect(vaultMirrorProvenanceSchema.safeParse({ ...entry, membershipId: 'nope' }).success).toBe(
+      false,
+    );
+    expect(
+      vaultMirrorProvenanceSchema.safeParse((({ membershipId: _omitted, ...rest }) => rest)(entry))
+        .success,
+    ).toBe(false);
+  });
+
+  it('never carries a co-member identity', () => {
+    for (const forbidden of Object.keys(VAULT_MIRROR_PROVENANCE_DROPPED_COLUMNS)) {
+      expect(
+        vaultMirrorProvenanceSchema.safeParse({ ...entry, [forbidden]: uuid(203) }).success,
+        forbidden,
+      ).toBe(false);
+    }
+  });
+
+  it('rejects a malformed entry instead of coercing it', () => {
+    for (const invalid of [
+      { ...entry, kind: 'portfolio' },
+      { ...entry, kind: 'cashMovement' },
+      { ...entry, localId: 'not-a-uuid' },
+      { ...entry, chainId: null },
+      (({ portfolioId: _omitted, ...rest }) => rest)(entry),
+    ]) {
+      expect(vaultMirrorProvenanceSchema.safeParse(invalid).success).toBe(false);
+    }
+  });
+
+  it('reads an older supported document deterministically as "no severed fork"', () => {
+    // A document written before §7.1 simply has no key. It must keep opening —
+    // and mean exactly the same thing every time — instead of failing closed as
+    // corrupt or being reinterpreted under a bumped schema version.
+    const older = {
+      schemaVersion: VAULT_DOCUMENT_V1_VERSION,
+      entities: [fixtures[0]!],
+      mergeLog: [],
+    };
+    const first = vaultStrictDocumentV1Schema.parse(JSON.parse(JSON.stringify(older)));
+    const second = vaultStrictDocumentV1Schema.parse(JSON.parse(JSON.stringify(older)));
+    expect(first.schemaVersion).toBe(VAULT_DOCUMENT_V1_VERSION);
+    expect(first.mirrorProvenance).toEqual([]);
+    expect(JSON.stringify(first)).toBe(JSON.stringify(second));
+
+    // The CLIENT document leaves the key ABSENT instead of defaulting it in: a
+    // re-encrypted fork-free vault must keep emitting byte-identical plaintext,
+    // so absent stays absent and means exactly what `[]` means.
+    const clientPayload = JSON.stringify({
+      schemaVersion: VAULT_DOCUMENT_V1_VERSION,
+      entities: {},
+      mergeLog: [],
+    });
+    const clientDocument = vaultDocumentV1Schema.parse(JSON.parse(clientPayload));
+    expect(clientDocument.mirrorProvenance).toBeUndefined();
+    expect(JSON.stringify(clientDocument)).toBe(clientPayload);
+    expect(
+      vaultDocumentV1Schema.parse({
+        schemaVersion: VAULT_DOCUMENT_V1_VERSION,
+        entities: {},
+        mergeLog: [],
+        mirrorProvenance: [entry],
+      }).mirrorProvenance,
+    ).toEqual([entry]);
+  });
+
+  it('fails closed for an unsupported version or an unknown sibling key', () => {
+    expect(
+      vaultStrictDocumentV1Schema.safeParse({
+        schemaVersion: VAULT_DOCUMENT_V1_VERSION + 1,
+        entities: [],
+        mergeLog: [],
+        mirrorProvenance: [entry],
+      }).success,
+    ).toBe(false);
+    expect(
+      vaultStrictDocumentV1Schema.safeParse({
+        schemaVersion: VAULT_DOCUMENT_V1_VERSION,
+        entities: [],
+        mergeLog: [],
+        mirrorProvenance: [entry],
+        mirrorAttribution: [{ userId: uuid(204) }],
+      }).success,
+    ).toBe(false);
+  });
+
+  it('keeps the capture read to the identity map and nothing else', () => {
+    expect(paranoidForkProvenanceResponseSchema.parse({ provenance: [entry] })).toEqual({
+      provenance: [entry],
+    });
+    expect(
+      paranoidForkProvenanceResponseSchema.safeParse({
+        provenance: [entry],
+        chainName: 'Family',
+      }).success,
+    ).toBe(false);
+    expect(
+      paranoidForkProvenanceResponseSchema.safeParse({
+        provenance: [{ ...entry, createdByUsername: 'alice' }],
+      }).success,
     ).toBe(false);
   });
 });

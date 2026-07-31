@@ -81,6 +81,7 @@ const componentSchemas = {
   ParanoidEnableRequest: contracts.paranoidEnableRequestSchema,
   ParanoidEnableResponse: contracts.paranoidEnableResponseSchema,
   ParanoidDisableRequest: contracts.paranoidDisableRequestSchema,
+  ParanoidForkProvenanceResponse: contracts.paranoidForkProvenanceResponseSchema,
   ParanoidDisableResponse: contracts.paranoidDisableResponseSchema,
   RetiredServerPurgeChallengeRequest: contracts.retiredServerPurgeChallengeRequestSchema,
   RetiredServerPurgeChallengeResponse: contracts.retiredServerPurgeChallengeResponseSchema,
@@ -741,6 +742,15 @@ const endpoints: EndpointDef[] = [
     body: R.ParanoidDisableRequest,
     status: 200,
     response: R.ParanoidDisableResponse,
+  },
+  {
+    method: 'get',
+    path: '/account/paranoid/fork-provenance',
+    tag: 'Account',
+    summary:
+      'The caller’s own severed-MIRRORCHAIN-fork identity map, captured into the encrypted vault before enable purges it. No active membership, co-member identity, or chain metadata.',
+    status: 200,
+    response: R.ParanoidForkProvenanceResponse,
   },
   {
     method: 'get',

@@ -10,6 +10,7 @@ import type { DataHome, DataHomeReadResult, DataHomeWriteResult } from './dataHo
 import { VaultCryptoError } from './errors';
 import type { LocalDataHome } from './localDataHome';
 import { mergeVaultDocuments } from './merge';
+import { carriedForkProvenance } from './mirrorProvenance';
 import type { VaultQuarantineStore } from './quarantine';
 
 const MAX_CAS_RECONCILIATIONS = 16;
@@ -993,10 +994,20 @@ export function createVaultSyncEngine(options: VaultSyncEngineOptions): VaultSyn
   }
 
   async function encryptCandidate(
-    document: VaultDocument,
+    input: VaultDocument,
     vaultVersion: number,
     baseHeader: VaultEnvelopeHeader,
   ): Promise<VaultSyncCandidate> {
+    // Single funnel for every document this engine commits or publishes — plain
+    // mutation, CAS merge and remote promotion alike. §7.1 fork provenance may
+    // only name rows the document still keeps live, so pruning here means a local
+    // deletion can never leave behind an alias the server would later refuse
+    // (which would block disabling paranoid mode). Absent stays absent.
+    const carried = carriedForkProvenance(input);
+    const document: VaultDocument =
+      carried === undefined || carried === input.mirrorProvenance
+        ? input
+        : { ...input, mirrorProvenance: carried };
     const encrypted = await encryptVaultDocument({
       document,
       vaultKey: options.vaultKey,

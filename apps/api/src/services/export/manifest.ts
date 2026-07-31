@@ -453,9 +453,20 @@ export const PARANOID_TABLE_CLASSIFICATION: Record<string, ParanoidClassificatio
   chat_messages: 'server',
   telegram_links: 'server',
   discord_webhooks: 'server',
-  // MIRRORCHAIN link/attribution tables — mutually exclusive with paranoid, so
-  // empty for these accounts anyway (§7 precondition, §8 item 5); a member's
-  // actual copy is real portfolios/transactions (vault-classified above).
+  // MIRRORCHAIN link/attribution tables. An ACTIVE membership is mutually
+  // exclusive with paranoid (§7 precondition, §8 item 5), but a member who left
+  // with a fork keeps its rows until enable purges the copy — and the chain-level
+  // tables stay populated forever by design. They are all `server` deliberately:
+  //  - `mirror_chains` / `mirror_chain_ops` / `mirror_chain_members` are
+  //    chain-level and shared; the oplog + the ended membership's watermark are
+  //    exactly the retained proof surface disable-time provenance validation
+  //    checks against (docs/paranoid-design.md §7.1).
+  //  - `mirror_rows` is the fork's logical↔local identity map. It DIES with the
+  //    copy at enable (portfolio_id cascade), leaving zero cleartext alias rows,
+  //    and it can never become `vault`-classified: its attribution columns are a
+  //    co-member's identity, which the encrypted document must not carry. Its
+  //    logical half rides the vault as `mirrorProvenance` instead, and is proof
+  //    material only — no row is ever restored from it.
   mirror_chains: 'server',
   mirror_chain_members: 'server',
   mirror_chain_invites: 'server',

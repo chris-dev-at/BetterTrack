@@ -1,5 +1,6 @@
+import type { MirrorMemberStatus, VaultMirrorProvenance } from '@bettertrack/contracts';
 import type { VaultStrictDocumentV1 } from '@bettertrack/contracts';
-import { and, eq, inArray, isNull } from 'drizzle-orm';
+import { and, eq, inArray, isNull, lte, ne, or, sql } from 'drizzle-orm';
 
 import type { Database } from '../db';
 
@@ -11,6 +12,9 @@ import {
   expenseCategories,
   expenseRules,
   expenseTransactions,
+  mirrorChainMembers,
+  mirrorChainOps,
+  mirrorRows,
   portfolioCashMovements,
   portfolioCashSources,
   portfolios,
@@ -422,6 +426,138 @@ export function createParanoidRehydrationSourceRepository(
           })),
         );
       });
+    },
+  };
+}
+
+/**
+ * Severed-fork MIRRORCHAIN provenance reads (`docs/paranoid-design.md` §7.1).
+ *
+ * Two callers, both non-destructive: the enable wizard's capture read (while
+ * `mirror_rows` still exists) and disable-time validation (after it has cascaded
+ * away, proving the encrypted map against the append-only oplog). Reads only —
+ * they are deliberately usable outside the restore transaction so an invalid
+ * document is refused before any mutation transaction opens.
+ */
+
+/**
+ * One ENDED membership tombstone: its own identity, the chain, and the watermark
+ * its copy stopped at. `id` is what the encrypted provenance names — a re-joined
+ * account holds several tombstones per chain, each with its own copy and its own
+ * (higher) watermark, and an older retained fork must be proved against ITS row.
+ */
+export interface ParanoidForkMembership {
+  id: string;
+  chainId: string;
+  status: MirrorMemberStatus;
+  appliedSeq: number;
+}
+
+/** One oplog row, still un-parsed: the service validates the payload contract. */
+export interface ParanoidForkChainOp {
+  mirrorId: string | null;
+  seq: number;
+  kind: string;
+  actorUserId: string | null;
+  payload: unknown;
+}
+
+export interface ParanoidForkProvenanceRepository {
+  /** The caller's ended memberships; an active one is deliberately excluded. */
+  listEndedMemberships(userId: string): Promise<readonly ParanoidForkMembership[]>;
+  /**
+   * Every op of `chainId` at or below `maxSeq` that speaks for one of
+   * `logicalIds` — either through its own `mirror_id`, or as the `cash.transfer`
+   * op that minted a second leg id which never appears in that column.
+   */
+  listChainOpsForLogicalIds(
+    chainId: string,
+    logicalIds: readonly string[],
+    maxSeq: number,
+  ): Promise<readonly ParanoidForkChainOp[]>;
+  /** Capture read: the caller's own retained fork identity map. */
+  listRetainedForkProvenance(userId: string): Promise<readonly VaultMirrorProvenance[]>;
+}
+
+export function createParanoidForkProvenanceRepository(
+  db: Database,
+): ParanoidForkProvenanceRepository {
+  return {
+    async listEndedMemberships(userId) {
+      return db
+        .select({
+          id: mirrorChainMembers.id,
+          chainId: mirrorChainMembers.chainId,
+          status: mirrorChainMembers.status,
+          appliedSeq: mirrorChainMembers.appliedSeq,
+        })
+        .from(mirrorChainMembers)
+        .where(and(eq(mirrorChainMembers.userId, userId), ne(mirrorChainMembers.status, 'active')));
+    },
+
+    async listChainOpsForLogicalIds(chainId, logicalIds, maxSeq) {
+      if (!logicalIds.length) return [];
+      const found: ParanoidForkChainOp[] = [];
+      await forEachChunk(logicalIds, async (chunk) => {
+        const ids = [...chunk];
+        found.push(
+          ...(await db
+            .select({
+              mirrorId: mirrorChainOps.mirrorId,
+              seq: mirrorChainOps.seq,
+              kind: mirrorChainOps.kind,
+              actorUserId: mirrorChainOps.actorUserId,
+              payload: mirrorChainOps.payload,
+            })
+            .from(mirrorChainOps)
+            .where(
+              and(
+                eq(mirrorChainOps.chainId, chainId),
+                lte(mirrorChainOps.seq, maxSeq),
+                or(
+                  inArray(mirrorChainOps.mirrorId, ids),
+                  and(
+                    eq(mirrorChainOps.kind, 'cash.transfer'),
+                    inArray(sql`${mirrorChainOps.payload} ->> 'inMirrorId'`, ids),
+                  ),
+                ),
+              ),
+            )),
+        );
+      });
+      return found;
+    },
+
+    /**
+     * The membership join is what makes the record self-selecting later: each
+     * retained row is attributed to the ENDED tombstone that owns its copy —
+     * `(chain_id, portfolio_id)` identifies exactly one membership per account,
+     * because re-joining mints a fresh copy rather than reviving the fork's one.
+     * A still-ACTIVE membership never matches, so a live chain's rows (and any
+     * co-member's row) stay out of the response by construction.
+     */
+    async listRetainedForkProvenance(userId) {
+      return db
+        .select({
+          chainId: mirrorRows.chainId,
+          membershipId: mirrorChainMembers.id,
+          kind: mirrorRows.kind,
+          mirrorId: mirrorRows.mirrorId,
+          portfolioId: mirrorRows.portfolioId,
+          localId: mirrorRows.localId,
+        })
+        .from(mirrorRows)
+        .innerJoin(portfolios, eq(portfolios.id, mirrorRows.portfolioId))
+        .innerJoin(
+          mirrorChainMembers,
+          and(
+            eq(mirrorChainMembers.chainId, mirrorRows.chainId),
+            eq(mirrorChainMembers.portfolioId, mirrorRows.portfolioId),
+            eq(mirrorChainMembers.userId, userId),
+            ne(mirrorChainMembers.status, 'active'),
+          ),
+        )
+        .where(eq(portfolios.userId, userId));
     },
   };
 }
