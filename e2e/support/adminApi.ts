@@ -169,6 +169,10 @@ export async function loginAsAdmin(request: APIRequestContext): Promise<void> {
   if (!confirmRes.ok()) {
     throw new Error(`Admin TOTP confirm failed: ${confirmRes.status()} ${await confirmRes.text()}`);
   }
+  // Confirming TOTP deliberately destroys every admin session, including this
+  // setup-required one. Sign in once more and complete the now-normal TOTP
+  // challenge so callers never receive an already-invalidated cookie jar.
+  await loginAsAdmin(request);
 }
 
 /**
@@ -191,6 +195,15 @@ export async function newAdminBrowserContext(
     );
   }
   const context = await browser.newContext({ baseURL: WEB_BASE_URL });
+  // Production serves one runtime config per origin. The e2e Vite server has
+  // the user config on disk, so give this isolated admin context the equivalent
+  // admin-origin response without changing what user contexts receive.
+  await context.route('**/config.js', async (route) => {
+    await route.fulfill({
+      contentType: 'application/javascript',
+      body: "window.__BT__ = { app: 'admin', apiOrigin: '' };",
+    });
+  });
   await context.addCookies(sessionCookies);
   return context;
 }

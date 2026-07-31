@@ -21,7 +21,7 @@ import { provisionUser } from './support/users';
 async function enableAustriaTaxMode(page: Page): Promise<void> {
   await page.goto('/settings/taxes');
   const austria = page.getByRole('radio', { name: /Austria \(KESt\)/i });
-  await austria.check();
+  await austria.click();
   await expect(austria).toBeChecked();
   // The per-year report signpost only renders once a mode is active — a live proof
   // that the choice was saved before we start recording taxable trades.

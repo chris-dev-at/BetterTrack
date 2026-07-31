@@ -10,12 +10,25 @@ import { expect, type Page } from '@playwright/test';
  * always-available quiet exit.
  *
  * Deliberately strict: if the redirect ever breaks, this fails here with a clear
- * message instead of leaving a later "Account menu" assertion to time out.
+ * message instead of leaving a later shell assertion to time out.
  */
 export async function dismissFirstRun(page: Page): Promise<void> {
   await expect(page).toHaveURL(/\/welcome$/, { timeout: 30_000 });
   // Lazy route — wait for the wizard itself, not just the URL.
   await page.getByRole('button', { name: 'Do this later' }).click({ timeout: 20_000 });
+}
+
+/**
+ * Wait until the authenticated Origin shell has mounted at any viewport.
+ *
+ * The account menu lives in the desktop rail and is intentionally hidden on
+ * phone widths. The top-bar Create control is the stable, user-shell-only
+ * landmark shared by desktop and mobile.
+ */
+export async function expectUserShellReady(page: Page): Promise<void> {
+  await expect(
+    page.getByRole('banner').getByRole('button', { name: 'Create', exact: true }),
+  ).toBeVisible({ timeout: 20_000 });
 }
 
 /** Drives the real /invite/:token page to provision a brand-new account. */
@@ -32,9 +45,7 @@ export async function acceptInvite(
   // A new account opens on first-run setup; skipping it lands the Home command
   // center (`/`) exactly as before.
   await dismissFirstRun(page);
-  await expect(page.getByRole('button', { name: 'Account menu' })).toBeVisible({
-    timeout: 20_000,
-  });
+  await expectUserShellReady(page);
 }
 
 /** Searches the local catalog and watches the first matching asset's symbol from the results row. */

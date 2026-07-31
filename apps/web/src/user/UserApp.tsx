@@ -265,6 +265,7 @@ function UserShell() {
               <Route path="shared/watchlists/:watchlistId" element={<SharedWatchlistPage />} />
               <Route path="shared/ideas/:ideaId" element={<SharedIdeaPage />} />
               <Route path="shared/:portfolioId" element={<SharedPortfolioPage />} />
+              <Route path="following" element={<LegacyRedirect to="/people" />} />
               {/* Public-profile SETTINGS live in the Control Center panel now
                   (the account menu, this rail tab and ⌘K all point here); the
                   public profile VIEW is still `/u/:username`. */}

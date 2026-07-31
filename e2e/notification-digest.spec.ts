@@ -137,7 +137,7 @@ test('quiet hours: a non-urgent notification defers and releases once at window 
   await expect(quietSummary).toBeVisible({ timeout: 15_000 });
   await quietSummary.click();
   const enable = page.getByRole('switch', { name: 'Enable quiet hours' });
-  await enable.check();
+  await enable.click();
   await expect(enable).toBeChecked();
   // Exact: `getByLabel` matches substrings, and the routing matrix on the same
   // panel labels cells "… New from people you follow via …".

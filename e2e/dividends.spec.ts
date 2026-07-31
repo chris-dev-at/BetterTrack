@@ -30,7 +30,7 @@ const CSRF_HEADERS = { 'X-Requested-With': 'BetterTrack' };
 async function enableAustriaTaxMode(page: Page): Promise<void> {
   await page.goto('/settings/taxes');
   const austria = page.getByRole('radio', { name: /Austria \(KESt\)/i });
-  await austria.check();
+  await austria.click();
   await expect(austria).toBeChecked();
   // The per-year report signpost only renders once a mode is active — a live proof
   // the choice saved before we record the dividend against it.

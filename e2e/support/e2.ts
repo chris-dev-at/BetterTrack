@@ -153,7 +153,7 @@ export async function ownerThreadComments(
   request: APIRequestContext,
   portfolioId: string,
 ): Promise<ThreadComment[]> {
-  const res = await request.get(apiV1(`/people/items/portfolio/${portfolioId}/thread`));
+  const res = await request.get(apiV1(`/social/items/portfolio/${portfolioId}/thread`));
   if (!res.ok()) throw new Error(`E2: owner thread read ${res.status()}: ${await res.text()}`);
   const body = (await res.json()) as { comments: ThreadComment[] };
   return body.comments;
@@ -164,7 +164,7 @@ export async function ownerDeleteComment(
   request: APIRequestContext,
   commentId: string,
 ): Promise<void> {
-  const res = await request.delete(apiV1(`/people/comments/${commentId}`), {
+  const res = await request.delete(apiV1(`/social/comments/${commentId}`), {
     headers: CSRF_HEADERS,
   });
   if (!res.ok()) throw new Error(`E2: owner delete ${res.status()}: ${await res.text()}`);

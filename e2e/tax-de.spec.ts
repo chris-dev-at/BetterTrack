@@ -38,7 +38,7 @@ const CSRF_HEADERS = { 'X-Requested-With': 'BetterTrack' };
 async function enableGermanyTaxMode(page: Page): Promise<void> {
   await page.goto('/settings/taxes');
   const germany = page.getByRole('radio', { name: /Germany \(Abgeltungsteuer\)/i });
-  await germany.check();
+  await germany.click();
   await expect(germany).toBeChecked();
   // The per-year report signpost only renders once a mode is active — a live proof
   // the choice saved before we start recording taxable trades against it.
