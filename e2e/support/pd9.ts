@@ -574,10 +574,16 @@ export function createPd9Harness(): Pd9Harness {
         cashBySource: {},
         assetValues: { [assetId]: 1000 },
       });
-      await db.insert(schema.portfolioSnapshotState).values({
-        portfolioId,
-        computedThrough: snapshotDate,
-      });
+      await db
+        .insert(schema.portfolioSnapshotState)
+        .values({
+          portfolioId,
+          computedThrough: snapshotDate,
+        })
+        .onConflictDoUpdate({
+          target: schema.portfolioSnapshotState.portfolioId,
+          set: { computedThrough: snapshotDate },
+        });
 
       const [budget] = await db
         .select({ id: schema.expenseBudgets.id })

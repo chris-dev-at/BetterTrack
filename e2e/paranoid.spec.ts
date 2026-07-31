@@ -166,6 +166,9 @@ test.describe('PD9 paranoid-mode end-to-end gate', () => {
 
       await test.step('seeded vault-classification coverage', async () => {
         const before = await harness.probeCleartext(scope);
+        // The transaction-triggered recompute worker persists only through
+        // yesterday. This fixture's portfolio history starts today, so the
+        // intentionally seeded 2001 row remains the sole daily snapshot.
         expect(before).toMatchObject({
           portfolios: 1,
           transactions: 1,
