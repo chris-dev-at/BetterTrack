@@ -178,7 +178,7 @@ export function AdminLayout() {
             {index > 0 ? (
               <span aria-hidden="true" className="mb-1 h-px w-full bg-neutral-800" />
             ) : null}
-            <h2 className="px-3 pb-1 text-xs font-semibold uppercase tracking-wide text-neutral-500">
+            <h2 className="px-3 pb-1 text-xs font-semibold uppercase tracking-wide text-neutral-400">
               {t(section.labelKey)}
             </h2>
             {section.items.map((item) => (

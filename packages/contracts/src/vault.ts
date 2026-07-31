@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import { MAX_PASSWORD_LENGTH } from './auth';
 import { cashRuleMatchTypeSchema } from './cash';
 import { expenseDirectionSchema, expenseRuleMatchTypeSchema } from './expenses';
 import {
@@ -1303,6 +1304,16 @@ export const paranoidDisableRehydrationRequestSchema = z
   .object({
     rehydrationId: z.string().uuid(),
     document: vaultStrictDocumentV1Schema,
+    /**
+     * The `§3` destruction exit ("lost key ⇒ lost data … the only server-side
+     * recovery is destruction"): the caller cannot decrypt its vault and is
+     * therefore restoring NOTHING. `document.entities` MUST then be empty — the
+     * flag is explicit rather than inferred from an empty graph so that a
+     * client bug which loses its rows still fails the ordinary restore
+     * invariants instead of silently wiping the account. Retained custom-asset
+     * identity claims are all retired, since no document can account for them.
+     */
+    discard: z.literal(true).optional(),
   })
   .strict();
 export type ParanoidDisableRehydrationRequest = z.infer<
@@ -1398,10 +1409,49 @@ export type ParanoidEnableResponse = z.infer<typeof paranoidEnableResponseSchema
  * `POST /account/paranoid/disable`. `rehydrationId` is the durable idempotency
  * key from PD3a; the literal confirmation prevents an unlocked document alone
  * from authorizing the destructive mode transition.
+ *
+ * The ordinary disable RESTORES the vault's rows, so `confirm` plus the
+ * decrypted document is the whole gate. `discard: true` does the opposite — it
+ * destroys a vault its owner can no longer decrypt — so it carries the SAME two
+ * gates as `DELETE /account` ({@link deleteAccountRequestSchema}): the typed
+ * `confirmUsername`, and a server-verified credential (current password, or a
+ * fresh TOTP `code` / unused `recoveryCode` on a 2FA account). Both are
+ * verified server-side; a client-only confirmation would be skipped by anyone
+ * POSTing the endpoint directly from a live session.
  */
 export const paranoidDisableRequestSchema = paranoidDisableRehydrationRequestSchema
-  .extend({ confirm: z.literal(true) })
-  .strict();
+  .extend({
+    confirm: z.literal(true),
+    /** Required for `discard`: must match the account's username (case-insensitive). */
+    confirmUsername: z.string().trim().min(1).max(40).optional(),
+    password: z.string().min(1).max(MAX_PASSWORD_LENGTH).optional(),
+    /** A fresh 6-digit authenticator (TOTP) code — 2FA-enrolled accounts only. */
+    code: z.string().trim().min(4).max(16).optional(),
+    /** An unused recovery code — consumed on success AND on a failed match. */
+    recoveryCode: z.string().trim().min(4).max(64).optional(),
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    if (value.discard !== true) return;
+    if (value.confirmUsername === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['confirmUsername'],
+        message: 'Discarding the vault requires the typed username confirmation.',
+      });
+    }
+    if (
+      value.password === undefined &&
+      value.code === undefined &&
+      value.recoveryCode === undefined
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['password'],
+        message: 'Re-authentication is required: send your password or a two-factor code.',
+      });
+    }
+  });
 export type ParanoidDisableRequest = z.infer<typeof paranoidDisableRequestSchema>;
 
 /**

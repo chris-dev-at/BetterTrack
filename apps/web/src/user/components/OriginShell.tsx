@@ -18,6 +18,9 @@ import { legalUrl, type LegalPage } from '../legal';
 import { useAuth } from '../AuthContext';
 import { useCompactShell } from '../hooks/useCompactShell';
 import { PortfolioSwitcher } from '../portfolio/PortfolioSwitcher';
+import { useResolvedPrivacyMode, useResolvedPrivacyModeState } from '../vault/usePrivacyMode';
+import { useVaultRuntime } from '../vault/VaultRuntimeProvider';
+import { VaultSyncChip } from '../vault/ui/VaultSyncChip';
 import { Avatar } from './Avatar';
 import {
   ASK_DOCK_ID,
@@ -314,8 +317,10 @@ function RailBrand() {
  * Exactly ONE instance is ever mounted — the shell picks the placement from
  * {@link useCompactShell} rather than rendering both and hiding one in CSS, so
  * "Account menu" stays a single, unambiguous accessible control.
+ *
+ * Exported for OriginShell.account.test.tsx only — nothing else may mount it.
  */
-function AccountMenu({
+export function AccountMenu({
   collapsed,
   placement = 'rail',
 }: {
@@ -325,6 +330,8 @@ function AccountMenu({
   const inTopbar = placement === 'topbar';
   const { t } = useI18n();
   const { user, logout, toggleDiscreetMode } = useAuth();
+  const privacyMode = useResolvedPrivacyMode();
+  const vault = useVaultRuntime();
   const [open, setOpen] = useState(false);
   const [discreetError, setDiscreetError] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -408,15 +415,17 @@ function AccountMenu({
             </div>
           ) : null}
           <div className="bt-menu-rule" />
-          <Link
-            className="bt-menu-item"
-            onClick={closeAndRestoreFocus}
-            role="menuitem"
-            to="/people/profile"
-          >
-            <Icon name="user" size={15} />
-            {t('nav.myProfile')}
-          </Link>
+          {privacyMode !== 'paranoid' ? (
+            <Link
+              className="bt-menu-item"
+              onClick={closeAndRestoreFocus}
+              role="menuitem"
+              to="/people/profile"
+            >
+              <Icon name="user" size={15} />
+              {t('nav.myProfile')}
+            </Link>
+          ) : null}
           <Link
             className="bt-menu-item"
             onClick={closeAndRestoreFocus}
@@ -448,6 +457,20 @@ function AccountMenu({
             <p className="bt-field__error" role="alert" style={{ padding: '2px 9px 6px' }}>
               {t('nav.discreetModeError')}
             </p>
+          ) : null}
+          {privacyMode === 'paranoid' ? (
+            <button
+              className="bt-menu-item"
+              onClick={() => {
+                closeAndRestoreFocus();
+                void vault.lock();
+              }}
+              role="menuitem"
+              type="button"
+            >
+              <Icon name="lock" size={15} />
+              {t('vault.lock.action')}
+            </button>
           ) : null}
           <div className="bt-menu-rule" />
           <button
@@ -558,6 +581,7 @@ function CreateMenu() {
 
 export function OriginShell() {
   const { t, locale } = useI18n();
+  const privacy = useResolvedPrivacyModeState();
   const location = useLocation();
   const { pathname } = location;
   const [paletteOpen, setPaletteOpen] = useState(false);
@@ -745,13 +769,18 @@ export function OriginShell() {
               size="sm"
               variant="quiet"
             />
-            <CreateMenu />
-            <NotificationBell />
-            {/* Below the rail's breakpoint the rail — and with it My profile,
-                Settings, Discreet mode and Logout — is display:none, which left
-                a phone with no way to reach any of them, not even to sign out.
-                The account menu moves here instead so it stays persistent. */}
-            {compactShell ? <AccountMenu collapsed={false} placement="topbar" /> : null}
+            <div className="bt-topbar__actions">
+              {privacy.privacyMode === 'paranoid' && privacy.mediaState != null ? (
+                <VaultSyncChip media={privacy.mediaState} />
+              ) : null}
+              <CreateMenu />
+              <NotificationBell />
+              {/* Below the rail's breakpoint the rail — and with it My profile,
+                  Settings, Discreet mode and Logout — is display:none, which left
+                  a phone with no way to reach any of them, not even to sign out.
+                  The account menu moves here instead so it stays persistent. */}
+              {compactShell ? <AccountMenu collapsed={false} placement="topbar" /> : null}
+            </div>
           </header>
 
           <main id="main-content" className="bt-canvas" tabIndex={-1}>
@@ -771,10 +800,10 @@ export function OriginShell() {
               >
                 {LEGAL_LINKS.map((link) => (
                   <a
+                    className="bt-footer-link"
                     href={legalUrl(link.page, locale)}
                     key={link.page}
                     rel="noreferrer"
-                    style={{ color: 'var(--bt-faint)', textDecoration: 'none' }}
                     target="_blank"
                   >
                     {t(link.labelKey)}

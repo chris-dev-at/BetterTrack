@@ -8,8 +8,10 @@ import { useT } from '../../../i18n';
 import { formatDate } from '../../../lib/format';
 import { listOAuthGrants, revokeOAuthGrant } from '../../../lib/oauthApi';
 import { Skeleton } from '../../../ui';
+import { isParanoidBlockedScope } from '../../../ui/ScopePicker';
 import { Button } from '../../../ui/origin';
 import { Alert } from '../../components/ui';
+import { useResolvedPrivacyMode } from '../../vault/usePrivacyMode';
 import { PanelGroup, PanelHead, PanelList, PanelListItem, PanelNote, Row } from './panelKit';
 
 const OAUTH_GRANTS_KEY = ['settings', 'oauth-grants'] as const;
@@ -17,6 +19,7 @@ const OAUTH_GRANTS_KEY = ['settings', 'oauth-grants'] as const;
 /** One authorized app (grant) with a two-step confirm before revoking access. */
 function OAuthGrantRow({ grant }: { grant: OAuthGrantSummary }) {
   const t = useT();
+  const paranoid = useResolvedPrivacyMode() === 'paranoid';
   const queryClient = useQueryClient();
   const [confirming, setConfirming] = useState(false);
   const [error, setError] = useState(false);
@@ -66,13 +69,24 @@ function OAuthGrantRow({ grant }: { grant: OAuthGrantSummary }) {
             {t('settings.api.grants.canAccess', { appName: grant.appName })}
           </span>
           {/* The plain-language scope descriptions, not the raw scope strings —
-              this is a privacy control, so it reads in the user's words. */}
+              this is a privacy control, so it reads in the user's words. A
+              scope this privacy mode refuses is MARKED, never dropped (the
+              `ApiKeysPanel.ScopeChip` rule): the grant really does carry it and
+              it goes live again the moment paranoid mode is disabled, so a
+              shortened list would understate what the app was allowed. */}
           <ul className="flex flex-col">
-            {grant.scopes.map((scope) => (
-              <li className="bt-cc-row__hint" key={scope}>
-                · {OAUTH_SCOPE_LABELS[scope]}
-              </li>
-            ))}
+            {grant.scopes.map((scope) => {
+              const inactive = paranoid && isParanoidBlockedScope(scope);
+              return (
+                <li className="bt-cc-row__hint" key={scope}>
+                  ·{' '}
+                  <span className={inactive ? 'line-through opacity-70' : undefined}>
+                    {OAUTH_SCOPE_LABELS[scope]}
+                  </span>
+                  {inactive ? <span> ({t('settings.api.keys.scopeInactive')})</span> : null}
+                </li>
+              );
+            })}
           </ul>
           <span className="bt-cc-row__hint">
             {grant.lastUsedAt

@@ -14,6 +14,7 @@ vi.mock('../../../lib/oauthApi', () => ({
 }));
 
 import { listOAuthGrants, revokeOAuthGrant } from '../../../lib/oauthApi';
+import { ResolvedPrivacyModeProvider } from '../../vault/usePrivacyMode';
 import { AuthorizedAppsPanel } from './AuthorizedAppsPanel';
 
 const NO_GRANTS: OAuthGrantListResponse = { grants: [] };
@@ -63,5 +64,26 @@ describe('AuthorizedAppsPanel', () => {
     await user.click(screen.getByRole('button', { name: 'Confirm revoke' }));
 
     await waitFor(() => expect(revokeOAuthGrant).toHaveBeenCalledWith(ONE_GRANT.grants[0]!.id));
+  });
+
+  test('marks a scope Paranoid mode refuses instead of hiding it from the grant', async () => {
+    vi.mocked(listOAuthGrants).mockResolvedValue(ONE_GRANT);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 0 } } });
+    render(
+      <QueryClientProvider client={client}>
+        <ResolvedPrivacyModeProvider mode="paranoid">
+          <AuthorizedAppsPanel />
+        </ResolvedPrivacyModeProvider>
+      </QueryClientProvider>,
+    );
+
+    // The grant really carries the scope — it only stops resolving while the
+    // account is paranoid — so dropping the line would understate the access
+    // the user granted, exactly as `ApiKeysPanel` argues for its chips.
+    const grantRow = (await screen.findByText('Charting Buddy can:')).closest('li')!;
+    expect(
+      within(grantRow).getByText(/View your portfolios, holdings, transactions and cash balances/i),
+    ).toBeInTheDocument();
+    expect(within(grantRow).getByText(/inactive in Paranoid mode/i)).toBeInTheDocument();
   });
 });

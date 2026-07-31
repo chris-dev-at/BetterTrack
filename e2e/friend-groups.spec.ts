@@ -40,15 +40,13 @@ test('friend groups: a portfolio shared to a group is visible to members only', 
 
   // Expand the freshly-created group card, then add `member` from the candidates.
   await owner.page.getByRole('button', { name: 'Inner Circle' }).click();
-  // `hasNot` a nested listitem pins this to the LEAF candidate row: the group
-  // card is itself an <li> that contains the candidate list, so it matches the
-  // username + "Add" filters too and an unqualified lookup is a strict-mode
-  // violation against the card and the row at once.
-  const memberCandidate = owner.page
+  const groupCard = owner.page
     .getByRole('listitem')
-    .filter({ hasText: member.username })
-    .filter({ has: owner.page.getByRole('button', { name: 'Add', exact: true }) })
-    .filter({ hasNot: owner.page.getByRole('listitem') });
+    .filter({ has: owner.page.getByRole('button', { name: /^Inner Circle 0 members$/ }) });
+  const candidates = groupCard
+    .getByRole('heading', { name: 'Add a friend', level: 4 })
+    .locator('xpath=following-sibling::ul');
+  const memberCandidate = candidates.getByRole('listitem').filter({ hasText: member.username });
   await expect(memberCandidate).toBeVisible({ timeout: 15_000 });
   await memberCandidate.getByRole('button', { name: 'Add', exact: true }).click();
   // Once added, `member` moves out of the candidate list (Add gone for that row).

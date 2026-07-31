@@ -4,6 +4,8 @@ import { useT } from '../../i18n';
 import { cx } from '../../lib/cx';
 import { Button, Empty, PageHead } from '../../ui/origin';
 import { useAuth } from '../AuthContext';
+import { PortfolioPage } from '../portfolio/PortfolioPage';
+import { useResolvedPrivacyMode } from '../vault/usePrivacyMode';
 import { AddWidgetDrawer } from './AddWidgetDrawer';
 import {
   addWidget,
@@ -100,7 +102,21 @@ function sameAxes(a: readonly PlacementAxis[], b: readonly PlacementAxis[]): boo
   return a.length === b.length && a.every((axis, index) => axis === b[index]);
 }
 
+/**
+ * The widget board, except on a paranoid account: its widgets read
+ * `portfolioApi` directly instead of the store seam, so they would mix server
+ * reads into an encrypted account. `/` then renders the portfolio page and the
+ * saved board (localStorage — never vault or server data) comes back untouched
+ * on disable. Recorded as kill-list item 13 in docs/paranoid-design.md §8 and
+ * in PROJECTPLAN §16 (2026-07-31, issue #729).
+ */
 export function HomePage() {
+  const privacyMode = useResolvedPrivacyMode();
+  if (privacyMode === 'paranoid') return <PortfolioPage />;
+  return <HomeBoard />;
+}
+
+function HomeBoard() {
   const t = useT();
   const { user } = useAuth();
 

@@ -89,6 +89,10 @@ beforeEach(() => {
   vi.clearAllMocks();
   localStorage.clear();
   vi.mocked(api.getMe).mockResolvedValue(member);
+  vi.mocked(api.getParanoidMediaState).mockResolvedValue({
+    privacyMode: 'normal',
+    mediaState: null,
+  });
   vi.mocked(listWorkboard).mockResolvedValue({ items: [] });
   vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [] });
   vi.mocked(listNotifications).mockResolvedValue({ items: [], nextCursor: null, unreadCount: 0 });
@@ -403,6 +407,14 @@ test('the header exposes a live, enabled notification bell', async () => {
 
   const bell = await screen.findByRole('button', { name: 'Notifications' });
   expect(bell).not.toBeDisabled();
+  const actions = bell.closest('.bt-topbar__actions');
+  expect(actions).not.toBeNull();
+  expect(
+    within(actions as HTMLElement).getByRole('button', { name: 'Create' }),
+  ).toBeInTheDocument();
+  expect(
+    screen.getByRole('button', { name: 'Switch portfolio' }).closest('.bt-portfolio-switcher'),
+  ).not.toBeNull();
 });
 
 test('the footer shows the passion tagline on every page', async () => {
@@ -716,7 +728,6 @@ test.each([
   ['/people/teams', 'Teams'],
   ['/people/approvals', 'Approvals'],
   ['/control/data', 'Data management'],
-  ['/control/privacy', 'Paranoid mode'],
   ['/developer/mcp', 'MCP'],
   ['/developer/logs', 'Request logs'],
   ['/review', 'Review inbox'],

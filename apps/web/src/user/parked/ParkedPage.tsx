@@ -87,11 +87,9 @@ export const PARKED_PAGES = {
     // the live broker/CSV import instead of a page that redirects back here.
     links: [{ to: '/portfolio/import', labelKey: 'parked.links.importsExports' }],
   },
-  paranoid: {
-    key: 'paranoid',
-    pointCount: 4,
-    links: [{ to: '/control/security', labelKey: 'parked.links.security' }],
-  },
+  // `paranoid` lived here until PD8 shipped the real experience (wizard, gate,
+  // day-to-day surfaces). Its copy is deleted with it — a parked page for a
+  // built feature is a promise the app already keeps.
   mcp: { key: 'mcp', pointCount: 3 },
   developerLogs: { key: 'developerLogs', pointCount: 3 },
   oauthApps: { key: 'oauthApps', pointCount: 3 },

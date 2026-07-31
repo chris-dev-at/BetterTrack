@@ -3,7 +3,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
-import type { APIRequestContext, Browser, BrowserContext } from '@playwright/test';
+import type { APIRequestContext, APIResponse, Browser, BrowserContext } from '@playwright/test';
 
 import { ADMIN_BASE_URL, ADMIN_EMAIL, ADMIN_PASSWORD, API_BASE_URL } from './config';
 
@@ -29,6 +29,35 @@ const ADMIN_TOTP_SECRET_FILE =
 
 /** In-process mirror of the persisted secret; primed lazily from disk on first read. */
 let cachedAdminTotpSecret: string | null = null;
+
+/**
+ * A shard can legitimately cross the production-shaped 25/minute login-IP
+ * allowance while provisioning many independent scenarios. Honor the
+ * limiter's first, short cooldown once instead of turning one 429 into a run of
+ * immediate retry failures. The progressive limiter clears its window when it
+ * arms that cooldown, so one server-directed wait is sufficient.
+ */
+async function postAdminAuth(
+  request: APIRequestContext,
+  path: string,
+  data: () => unknown,
+): Promise<APIResponse> {
+  let response = await request.post(`${API_BASE_URL}${path}`, {
+    headers: CSRF_HEADERS,
+    data: data(),
+  });
+  if (response.status() !== 429) return response;
+
+  const retryAfter = Number(response.headers()['retry-after']);
+  if (!Number.isFinite(retryAfter) || retryAfter < 1 || retryAfter > 60) return response;
+
+  await new Promise((resolve) => setTimeout(resolve, retryAfter * 1000 + 250));
+  response = await request.post(`${API_BASE_URL}${path}`, {
+    headers: CSRF_HEADERS,
+    data: data(),
+  });
+  return response;
+}
 
 function readAdminTotpSecret(): string | null {
   if (cachedAdminTotpSecret) return cachedAdminTotpSecret;
@@ -98,10 +127,12 @@ function generateTotpCode(secret: string, nowMs: number = Date.now()): string {
  * on, so the caller must attempt again. See {@link loginAsAdmin}.
  */
 async function signInAsAdminOnce(request: APIRequestContext): Promise<'assured' | 'enrolled'> {
-  const loginRes = await request.post(`${API_BASE_URL}/api/v1/auth/login`, {
-    headers: CSRF_HEADERS,
-    data: { identifier: ADMIN_EMAIL, password: ADMIN_PASSWORD },
-  });
+  // Through the 429-honoring wrapper: a shard's provisioning burst can cross
+  // the login-IP allowance, and one server-directed wait beats a hard failure.
+  const loginRes = await postAdminAuth(request, '/api/v1/auth/login', () => ({
+    identifier: ADMIN_EMAIL,
+    password: ADMIN_PASSWORD,
+  }));
   if (!loginRes.ok()) {
     throw new Error(`Admin login failed: ${loginRes.status()} ${await loginRes.text()}`);
   }
@@ -120,13 +151,10 @@ async function signInAsAdminOnce(request: APIRequestContext): Promise<'assured' 
           `${ADMIN_EMAIL}\`) so the fresh-boot enrollment path can run again.`,
       );
     }
-    const verifyRes = await request.post(`${API_BASE_URL}/api/v1/auth/2fa/verify`, {
-      headers: CSRF_HEADERS,
-      data: {
-        pendingToken: body.pendingToken,
-        code: generateTotpCode(secret),
-      },
-    });
+    const verifyRes = await postAdminAuth(request, '/api/v1/auth/2fa/verify', () => ({
+      pendingToken: body.pendingToken,
+      code: generateTotpCode(secret),
+    }));
     if (!verifyRes.ok()) {
       throw new Error(`Admin 2FA verify failed: ${verifyRes.status()} ${await verifyRes.text()}`);
     }
@@ -223,7 +251,8 @@ export async function newAdminBrowserContext(
   // in admin mode, and the mode comes from `window.__BT__` — which only the
   // admin origin serves. Against the user origin, `/admin/*` has no route and
   // falls through to the sign-in page. Cookies ignore the port, so the session
-  // minted against the API carries over unchanged.
+  // minted against the API carries over unchanged. (This e2e stack boots a real
+  // admin origin, so no config.js stubbing is needed here.)
   const context = await browser.newContext({ baseURL: ADMIN_BASE_URL });
   await context.addCookies(sessionCookies);
   return context;

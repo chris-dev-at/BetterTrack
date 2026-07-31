@@ -25,6 +25,7 @@ import {
 } from '../../data/repositories/paranoidTransitionRepository';
 import type { Logger } from '../../logger';
 import { AuditAction, type AuditService } from '../audit/auditService';
+import type { ParanoidDiscardReauth } from './paranoidDiscardReauth';
 import {
   ParanoidRehydrationError,
   type ParanoidRehydrationService,
@@ -60,6 +61,12 @@ export interface ParanoidTransitionServiceDeps {
    */
   lockDb?: Database;
   rehydration: ParanoidRehydrationService;
+  /**
+   * Gate for the irreversible `discard` disable. Required, not optional: a
+   * composition that omits it must fail to typecheck rather than silently ship
+   * an unauthenticated vault-destruction endpoint.
+   */
+  discardReauth: ParanoidDiscardReauth;
   audit: AuditService;
   /** Optional so unit harnesses can compose the service without a log sink. */
   logger?: Logger;
@@ -98,7 +105,15 @@ export interface PreparedExportFileRetirement {
 
 export interface ParanoidTransitionService {
   enable(userId: string, request: ParanoidEnableRequest): Promise<ParanoidEnableResponse>;
-  disable(userId: string, request: ParanoidDisableRequest): Promise<ParanoidDisableResponse>;
+  /**
+   * `options.ip` is audit/throttle context for the `discard` re-auth only; the
+   * restoring disable ignores it.
+   */
+  disable(
+    userId: string,
+    request: ParanoidDisableRequest,
+    options?: { ip?: string | null },
+  ): Promise<ParanoidDisableResponse>;
   /**
    * The enable wizard's §7.1 capture read: the caller's own severed-fork identity
    * map, while `mirror_rows` still exists. Read-only and lock-free — it takes no
@@ -477,7 +492,7 @@ export function createParanoidTransitionService(
       return result;
     },
 
-    async disable(userId, request) {
+    async disable(userId, request, options) {
       const parsed = paranoidDisableRequestSchema.safeParse(request);
       if (!parsed.success) {
         throw new ParanoidTransitionError(
@@ -485,7 +500,18 @@ export function createParanoidTransitionService(
           'The paranoid rehydration request is malformed.',
         );
       }
-      const { confirm: _confirm, ...rehydration } = parsed.data;
+      // Re-auth fields are gate material, never restore material.
+      const {
+        confirm: _confirm,
+        confirmUsername: _confirmUsername,
+        password: _password,
+        code: _code,
+        recoveryCode: _recoveryCode,
+        ...rehydration
+      } = parsed.data;
+      if (rehydration.discard === true) {
+        await deps.discardReauth.verify({ userId, body: parsed.data, ip: options?.ip });
+      }
       let restored;
       try {
         restored = await deps.rehydration.rehydrate(userId, rehydration);
@@ -505,6 +531,7 @@ export function createParanoidTransitionService(
         meta: {
           rehydrationId: result.rehydrationId,
           idempotent: result.idempotent,
+          ...(rehydration.discard === true ? { discard: true } : {}),
         },
       });
       return result;

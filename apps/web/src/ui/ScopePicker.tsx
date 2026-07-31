@@ -10,6 +10,10 @@ import {
 import { cx } from '../lib/cx';
 import { useT } from '../i18n';
 
+export function isParanoidBlockedScope(scope: ApiKeyScope): boolean {
+  return scope === 'portfolio:read' || scope === 'portfolio:write';
+}
+
 /**
  * V5-P0b — the shared scope picker. Replaces the wall of per-scope rows with
  * ONE row per module (Portfolio, Social, …) exposing read/write marks and a
@@ -119,6 +123,12 @@ export interface ScopePickerProps {
   defaultOpen?: boolean;
   /** Overrides the fieldset legend (defaults to `ui.scopePicker.legend`). */
   legend?: string;
+  /**
+   * Paranoid accounts cannot grant portfolio-scoped access (§8), so that module
+   * is not offered. Passed in rather than read from a hook: `ui/` also serves
+   * the admin app and must stay app-agnostic.
+   */
+  paranoid?: boolean;
 }
 
 /** One module row: label + info-point + read/write (or combined) toggles. */
@@ -217,7 +227,7 @@ function ScopeRow({
       </div>
 
       {infoOpen ? (
-        <p className="mt-2 text-xs text-neutral-500" role="note">
+        <p className="mt-2 text-xs text-neutral-400" role="note">
           {description}
         </p>
       ) : null}
@@ -231,13 +241,25 @@ export function ScopePicker({
   collapsible = false,
   defaultOpen = false,
   legend,
+  paranoid = false,
 }: ScopePickerProps) {
   const t = useT();
+  const modules = paranoid
+    ? SCOPE_MODULES.filter(
+        (module) =>
+          ![module.read, module.write, module.combined].some(
+            (scope) => scope != null && isParanoidBlockedScope(scope),
+          ),
+      )
+    : SCOPE_MODULES;
+  const visibleScopes = paranoid
+    ? new Set([...scopes].filter((scope) => !isParanoidBlockedScope(scope)))
+    : scopes;
 
   const rows = (
     <div className="flex flex-col gap-1.5">
-      {SCOPE_MODULES.map((module) => (
-        <ScopeRow key={module.key} module={module} scopes={scopes} onChange={onChange} />
+      {modules.map((module) => (
+        <ScopeRow key={module.key} module={module} scopes={visibleScopes} onChange={onChange} />
       ))}
     </div>
   );
@@ -246,7 +268,7 @@ export function ScopePicker({
     return rows;
   }
 
-  const count = scopes.size;
+  const count = visibleScopes.size;
   const summaryText =
     count === 0
       ? t('ui.scopePicker.selectedNone')
@@ -259,7 +281,7 @@ export function ScopePicker({
     <details className="rounded-md border border-neutral-800 bg-neutral-900" open={defaultOpen}>
       <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2 text-sm font-medium text-neutral-200 marker:hidden [&::-webkit-details-marker]:hidden">
         <span>{summaryLabel}</span>
-        <span className="text-xs text-neutral-500">{summaryText}</span>
+        <span className="text-xs text-neutral-400">{summaryText}</span>
       </summary>
       <div className="border-t border-neutral-800 p-3">{rows}</div>
     </details>
@@ -281,6 +303,10 @@ type ScopeGroup = { module: ScopeModule; claims: ScopeClaim[] };
 
 export function ScopeSummary({ items }: ScopeSummaryProps) {
   const t = useT();
+  // Every requested claim is shown, always: a consent screen that shortened its
+  // own list would understate what the caller is about to hold. A paranoid
+  // account never reaches this render with a portfolio scope in `items` —
+  // ConsentPage refuses the whole authorization first (§8).
   const grouped: ScopeGroup[] = [];
   for (const module of SCOPE_MODULES) {
     const claims = items.filter((item) => moduleForScope(item.scope)?.key === module.key);

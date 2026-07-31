@@ -69,8 +69,9 @@ test.skip('expenses: bank import → categorize → dashboard → single budget 
   await page.getByRole('button', { name: 'New rule' }).click();
   const ruleDialog = page.getByRole('dialog');
   await ruleDialog.getByRole('combobox').first().selectOption({ label: 'Groceries' });
-  await ruleDialog.getByRole('textbox').fill('spar');
-  await ruleDialog.getByRole('button', { name: 'Save' }).click();
+  const rulePattern = ruleDialog.getByRole('textbox');
+  await rulePattern.fill('spar');
+  await rulePattern.press('Enter');
   await expect(ruleDialog).toBeHidden();
 
   // ── A €200 monthly Groceries budget (no spend yet, so no alert fires now). ──
@@ -78,8 +79,9 @@ test.skip('expenses: bank import → categorize → dashboard → single budget 
   await page.getByRole('button', { name: 'New budget' }).click();
   const budgetDialog = page.getByRole('dialog');
   await budgetDialog.getByRole('combobox').selectOption({ label: 'Groceries' });
-  await budgetDialog.getByRole('spinbutton').fill(String(stmt.budgetTarget));
-  await budgetDialog.getByRole('button', { name: 'Save' }).click();
+  const budgetAmount = budgetDialog.getByRole('spinbutton');
+  await budgetAmount.fill(String(stmt.budgetTarget));
+  await budgetAmount.press('Enter');
   await expect(budgetDialog).toBeHidden();
 
   // ── Import the statement: it autodetects as Revolut and stages 4 new rows. ──

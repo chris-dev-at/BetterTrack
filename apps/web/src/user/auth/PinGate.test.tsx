@@ -50,6 +50,10 @@ beforeEach(() => {
   // A fresh open must not inherit a prior unlock window.
   sessionStorage.clear();
   localStorage.clear();
+  vi.mocked(api.getParanoidMediaState).mockResolvedValue({
+    privacyMode: 'normal',
+    mediaState: null,
+  });
   vi.mocked(listWorkboard).mockResolvedValue({ items: [] });
 });
 

@@ -12,6 +12,7 @@ import { Badge, Button, PageHead, type BadgeTone } from '../../ui/origin';
 import { AudiencePicker } from '../components/AudiencePicker';
 import { Dialog } from '../components/Dialog';
 import { Alert } from '../components/ui';
+import { useResolvedPrivacyMode } from '../vault/usePrivacyMode';
 
 const IDEAS_KEY = ['ideas'] as const;
 const MY_SHARED_KEY = ['social', 'my-shared'] as const;
@@ -72,12 +73,14 @@ function IdeaRow({
   friendCount,
   onShare,
   onDelete,
+  sharingAllowed,
 }: {
   idea: Idea;
   audience: ShareAudience;
   friendCount: number;
   onShare: () => void;
   onDelete: () => void;
+  sharingAllowed: boolean;
 }) {
   const t = useT();
   return (
@@ -85,17 +88,21 @@ function IdeaRow({
       <div className="flex min-w-0 flex-col gap-1">
         <span className="bt-row-title truncate">{idea.name}</span>
         <p className="bt-row-sub truncate">{idea.thesis ?? t('workboard.ideas.list.thesisNone')}</p>
-        <div className="flex flex-wrap items-center gap-2 pt-0.5">
-          <AudienceBadge audience={audience} friendCount={friendCount} />
-        </div>
+        {sharingAllowed ? (
+          <div className="flex flex-wrap items-center gap-2 pt-0.5">
+            <AudienceBadge audience={audience} friendCount={friendCount} />
+          </div>
+        ) : null}
       </div>
       <div className="flex shrink-0 items-center gap-2">
         <Link to={`/workbench/ideas/${idea.id}`}>
           <Button size="sm">{t('workboard.ideas.list.open')}</Button>
         </Link>
-        <Button onClick={onShare} size="sm">
-          {t('workboard.ideas.list.share')}
-        </Button>
+        {sharingAllowed ? (
+          <Button onClick={onShare} size="sm">
+            {t('workboard.ideas.list.share')}
+          </Button>
+        ) : null}
         <Button onClick={onDelete} size="sm" variant="danger">
           {t('common.delete')}
         </Button>
@@ -113,6 +120,7 @@ function IdeaRow({
  */
 export function IdeasListPage() {
   const t = useT();
+  const paranoid = useResolvedPrivacyMode() === 'paranoid';
   const queryClient = useQueryClient();
   const [picker, setPicker] = useState<{ id: string; name: string } | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<Idea | null>(null);
@@ -125,6 +133,7 @@ export function IdeasListPage() {
     queryKey: MY_SHARED_KEY,
     queryFn: ({ signal }) => listMyShared(signal),
     staleTime: 30_000,
+    enabled: !paranoid,
   });
 
   const deleteMutation = useMutation({
@@ -181,6 +190,7 @@ export function IdeasListPage() {
                 idea={idea}
                 audience={shared?.audience ?? 'private'}
                 friendCount={shared?.friendCount ?? 0}
+                sharingAllowed={!paranoid}
                 onShare={() => setPicker({ id: idea.id, name: idea.name })}
                 onDelete={() => setDeleteTarget(idea)}
               />
@@ -189,7 +199,7 @@ export function IdeasListPage() {
         </ul>
       )}
 
-      {picker ? (
+      {picker && !paranoid ? (
         <AudiencePicker
           kind="idea"
           subjectId={picker.id}

@@ -6,6 +6,7 @@ import { beforeEach, expect, test, vi } from 'vitest';
 
 import type {
   AnalyticsSeriesResponse,
+  PortfolioHistoryResponse,
   PortfolioResponse,
   PortfolioSummary,
   ProjectedDividendIncomeResponse,
@@ -28,18 +29,25 @@ vi.mock('recharts', async (importOriginal) => {
   };
 });
 
-vi.mock('../../lib/portfolioApi', () => ({ getPortfolio: vi.fn() }));
+vi.mock('../../lib/portfolioApi', () => ({
+  getPortfolio: vi.fn(),
+  getPortfolioHistory: vi.fn(),
+}));
 vi.mock('../../lib/analyticsApi', () => ({ getAnalyticsSeries: vi.fn() }));
 vi.mock('../../lib/standingOrdersApi', () => ({ listStandingOrders: vi.fn() }));
 vi.mock('../../lib/marketIntelApi', () => ({ getPortfolioDividendProjection: vi.fn() }));
 
 import { getAnalyticsSeries } from '../../lib/analyticsApi';
 import { getPortfolioDividendProjection } from '../../lib/marketIntelApi';
-import { getPortfolio } from '../../lib/portfolioApi';
+import { getPortfolio, getPortfolioHistory } from '../../lib/portfolioApi';
 import { listStandingOrders } from '../../lib/standingOrdersApi';
+import { ResolvedPrivacyModeProvider } from '../vault/usePrivacyMode';
 import { ProjectionSection } from './ProjectionSection';
 
 const PORTFOLIO_ID = '11111111-1111-1111-1111-111111111111';
+const HISTORY_END = new Date();
+const HISTORY_START = new Date(HISTORY_END);
+HISTORY_START.setUTCFullYear(HISTORY_START.getUTCFullYear() - 5);
 
 const PORTFOLIOS: PortfolioSummary[] = [
   {
@@ -68,23 +76,44 @@ const PORTFOLIO: PortfolioResponse = {
   },
 };
 
-const ANALYTICS: AnalyticsSeriesResponse = {
-  portfolioId: PORTFOLIO_ID,
+// Net worth (holdings + cash) — the curve only a paranoid account samples;
+// 100 → 127.628 over five years is 5,00 %/yr.
+const HISTORY: PortfolioHistoryResponse = {
+  range: '5Y',
   baseCurrency: 'EUR',
-  mode: 'value',
-  from: '2021-01-01',
-  to: '2026-01-01',
-  inflation: null,
-  inflationPresets: [],
-  primary: {
-    kind: 'portfolio',
-    label: 'Main',
-    points: [],
-    stats: { totalReturnPct: 30, cagrPct: 5, maxDrawdownPct: -8, bestDay: null, worstDay: null },
-  },
-  compare: null,
-  contributions: [],
+  points: [
+    { date: HISTORY_START.toISOString().slice(0, 10), valueEur: 100 },
+    { date: HISTORY_END.toISOString().slice(0, 10), valueEur: 127.628 },
+  ],
+  performance: [],
 };
+
+/** The server's holdings-only window — what a NORMAL account samples. */
+function analytics(cagrPct: number): AnalyticsSeriesResponse {
+  return {
+    portfolioId: PORTFOLIO_ID,
+    baseCurrency: 'EUR',
+    mode: 'value',
+    from: HISTORY_START.toISOString().slice(0, 10),
+    to: HISTORY_END.toISOString().slice(0, 10),
+    inflation: null,
+    inflationPresets: [],
+    primary: {
+      kind: 'portfolio',
+      label: 'Main',
+      points: [],
+      stats: {
+        totalReturnPct: 30,
+        cagrPct,
+        maxDrawdownPct: -8,
+        bestDay: null,
+        worstDay: null,
+      },
+    },
+    compare: null,
+    contributions: [],
+  };
+}
 
 const DIVIDENDS_OFF: ProjectedDividendIncomeResponse = {
   available: false,
@@ -119,13 +148,15 @@ function makeOrder(over: Partial<StandingOrder>): StandingOrder {
   };
 }
 
-function renderSection(portfolios = PORTFOLIOS) {
+function renderSection(portfolios = PORTFOLIOS, mode: 'normal' | 'paranoid' = 'normal') {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: 0 } },
   });
   return render(
     <QueryClientProvider client={client}>
-      <ProjectionSection portfolios={portfolios} />
+      <ResolvedPrivacyModeProvider mode={mode}>
+        <ProjectionSection portfolios={portfolios} />
+      </ResolvedPrivacyModeProvider>
     </QueryClientProvider>,
   );
 }
@@ -133,7 +164,8 @@ function renderSection(portfolios = PORTFOLIOS) {
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(getPortfolio).mockResolvedValue(PORTFOLIO);
-  vi.mocked(getAnalyticsSeries).mockResolvedValue(ANALYTICS);
+  vi.mocked(getPortfolioHistory).mockResolvedValue(HISTORY);
+  vi.mocked(getAnalyticsSeries).mockResolvedValue(analytics(5));
   vi.mocked(listStandingOrders).mockResolvedValue({ orders: [] } as StandingOrderListResponse);
   vi.mocked(getPortfolioDividendProjection).mockResolvedValue(DIVIDENDS_OFF);
 });
@@ -146,6 +178,33 @@ test('renders the base projection series and headline stats', async () => {
   await waitFor(() =>
     expect((screen.getByLabelText('Return rate (%)') as HTMLInputElement).value).toBe('5'),
   );
+});
+
+test('a normal account samples the holdings-only analytics window, not net worth', async () => {
+  // 9,5 % on the server's series vs 5 % on the net-worth curve: the field must
+  // show the former, and the net-worth read must not happen at all.
+  vi.mocked(getAnalyticsSeries).mockResolvedValue(analytics(9.5));
+  renderSection();
+
+  await waitFor(() =>
+    expect((screen.getByLabelText('Return rate (%)') as HTMLInputElement).value).toBe('9.5'),
+  );
+  expect(getAnalyticsSeries).toHaveBeenCalledWith(
+    PORTFOLIO_ID,
+    expect.objectContaining({ mode: 'value' }),
+    expect.anything(),
+  );
+  expect(getPortfolioHistory).not.toHaveBeenCalled();
+});
+
+test('a paranoid account samples its decrypted net-worth curve instead', async () => {
+  renderSection(PORTFOLIOS, 'paranoid');
+
+  await waitFor(() =>
+    expect((screen.getByLabelText('Return rate (%)') as HTMLInputElement).value).toBe('5'),
+  );
+  expect(getPortfolioHistory).toHaveBeenCalledWith(PORTFOLIO_ID, '5Y', false, expect.anything());
+  expect(getAnalyticsSeries).not.toHaveBeenCalled();
 });
 
 test('renders an empty state when there is no portfolio to project', () => {

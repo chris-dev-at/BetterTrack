@@ -24,13 +24,16 @@ import { ScopePicker, ScopeSummary } from './ScopePicker';
 function PickerHarness({
   initial,
   onLastValue,
+  paranoid = false,
 }: {
   initial?: readonly ApiKeyScope[];
   onLastValue?: (scopes: ApiKeyScope[]) => void;
+  paranoid?: boolean;
 }) {
   const [scopes, setScopes] = useState<Set<ApiKeyScope>>(new Set(initial ?? []));
   return (
     <ScopePicker
+      paranoid={paranoid}
       scopes={scopes}
       onChange={(next) => {
         setScopes(next);
@@ -143,6 +146,16 @@ describe('ScopePicker', () => {
     expect(
       screen.getByRole('checkbox', { name: /account security · access/i }),
     ).toBeInTheDocument();
+  });
+
+  test('removes portfolio-scoped grants entirely for a paranoid account', () => {
+    render(
+      <PickerHarness paranoid initial={['portfolio:read', 'portfolio:write', 'market:read']} />,
+    );
+
+    expect(screen.queryByText('Portfolio')).not.toBeInTheDocument();
+    expect(screen.queryByRole('checkbox', { name: /portfolio · read/i })).not.toBeInTheDocument();
+    expect(screen.getByRole('checkbox', { name: /market · read/i })).toBeInTheDocument();
   });
 
   test('info-point reveals the module description on demand — not by default', async () => {

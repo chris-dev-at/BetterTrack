@@ -1315,6 +1315,16 @@ export const taxYearSellSchema = z
     realizedPnlEur: z.number(),
     taxMode: taxModeSchema.nullable(),
     taxAmountEur: z.number().nullable(),
+    /**
+     * The rest of the frozen tax facts (V3-P4 / V5-P4c): the country a
+     * `country_specific` row was taxed under and the parameter snapshot a
+     * `custom` row was taxed under, exactly as recorded — `null` in every other
+     * mode. Mode switches never rewrite them, so a client reconstructing a
+     * row's tax basis (the PD8 paranoid migration) must read THESE, never the
+     * portfolio's current tax settings.
+     */
+    taxCountry: taxCountrySchema.nullable(),
+    taxParams: customTaxParamsSchema.nullable(),
   })
   .strict();
 export type TaxYearSell = z.infer<typeof taxYearSellSchema>;
@@ -1327,6 +1337,9 @@ export const taxYearDividendSchema = z
     grossAmountEur: z.number(),
     taxMode: taxModeSchema,
     taxAmountEur: z.number().nullable(),
+    /** Frozen country / parameter snapshot, as on {@link taxYearSellSchema}. */
+    taxCountry: taxCountrySchema.nullable(),
+    taxParams: customTaxParamsSchema.nullable(),
   })
   .strict();
 export type TaxYearDividend = z.infer<typeof taxYearDividendSchema>;

@@ -50,13 +50,16 @@ async function enableGermanyTaxMode(page: Page): Promise<void> {
 }
 
 /** Deposit EUR into Main so the dividend's withholding never trips the overdraw gate. */
-async function depositToMain(page: Page, amount: string): Promise<void> {
+// Dated explicitly: solvency is replayed chronologically per source, so the
+// funding deposit must predate the backdated trades it settles (see tax-at).
+async function depositToMain(page: Page, amount: string, date: string): Promise<void> {
   await page.goto('/portfolio/cash/accounts');
   const rows = page.locator('table[aria-label="Cash sources"] tbody tr');
   // sortSourcesMainFirst: Main is row 0 on a fresh account.
   await rows.nth(0).getByRole('button', { name: 'Deposit' }).click();
   const dialog = page.getByRole('dialog', { name: 'Cash balance' });
   await dialog.getByLabel('Amount', { exact: true }).fill(amount);
+  await dialog.getByLabel('Date').fill(date);
   await dialog.getByRole('button', { name: 'Deposit cash' }).click();
   await expect(dialog).toBeHidden();
   await expect(rows.nth(0)).toContainText(/50[.,]000/);
@@ -87,15 +90,21 @@ async function recordTrade(page: Page, trade: Trade): Promise<void> {
   await dialog.getByRole('searchbox', { name: 'Search assets' }).fill(trade.query);
   await dialog.getByRole('button', { name: `Select ${trade.symbol}`, exact: true }).click();
 
-  await dialog
-    .getByRole('button', { name: 'Unlink date and price' })
-    .click({ timeout: 20_000 })
-    .catch(() => {});
+  const unlink = dialog.getByRole('button', { name: 'Unlink date and price' });
+  await unlink.waitFor({ state: 'visible', timeout: 20_000 }).catch(() => {});
+  if (await unlink.isVisible()) {
+    await unlink.click();
+    await expect(dialog.getByRole('button', { name: 'Link date and price' })).toHaveAttribute(
+      'aria-pressed',
+      'false',
+    );
+  }
 
   if (trade.side === 'sell') await dialog.getByRole('button', { name: 'Sell' }).click();
   await dialog.getByLabel(`Date for ${trade.symbol}`).fill(trade.date);
   await dialog.getByLabel(`Quantity for ${trade.symbol}`).fill(trade.quantity);
   await dialog.getByLabel(`Price for ${trade.symbol}`).fill(trade.price);
+  await expect(dialog.getByLabel(`Date for ${trade.symbol}`)).toHaveValue(trade.date);
   await dialog
     .getByRole('button', { name: trade.side === 'sell' ? 'Record sell' : 'Record buy' })
     .click();
@@ -159,7 +168,7 @@ test('DE tax mode: FIFO, Sparer-Pauschbetrag exhaustion, both loss pots, and rep
 
   await enableGermanyTaxMode(page);
   // Fund Main generously so the 2025 dividend's withholding never overdraws it.
-  await depositToMain(page, '50000');
+  await depositToMain(page, '50000', '2024-01-02');
 
   for (const trade of TRADES) await recordTrade(page, trade);
 
@@ -207,12 +216,13 @@ test('DE tax mode: FIFO, Sparer-Pauschbetrag exhaustion, both loss pots, and rep
   await expect(deStatValue(page, /Share-loss pot/)).toContainText(/800/);
   await expect(deStatValue(page, /Other-loss pot/)).toContainText(/300/);
   // FIFO: the 2025 sell realizes +€2,000 (oldest 5 @ €100 lot), never the +€1,500
-  // a moving-average basis (½·(€100+€300)) would have produced. The per-sell
-  // table is nested INSIDE the expanded year row's table, so filtering on the
-  // "Cost basis" column alone matches both — the outer table contains the inner
-  // one's text. `:not(:has(table))` takes the innermost, which is the per-sell
-  // one by construction.
-  const sellsTable = page.locator('table:not(:has(table))').filter({ hasText: 'Cost basis' });
+  // a moving-average basis (½·(€100+€300)) would have produced. Resolve the
+  // nearest table for the detail column: the year summary wraps the expanded
+  // detail row and therefore also contains the same descendant text, so anchor
+  // on the "Cost basis" columnheader and take its own table.
+  const sellsTable = page
+    .getByRole('columnheader', { name: 'Cost basis' })
+    .locator('xpath=ancestor::table[1]');
   await expect(sellsTable).toContainText(/2[.,]000/);
   await expect(sellsTable).not.toContainText(/1[.,]500/);
 

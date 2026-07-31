@@ -9,7 +9,7 @@ import {
 import { getRegistrationMode, loginAsAdmin, setRegistrationMode } from './support/adminApi';
 import { passwordSignIn as submitPasswordSignIn } from './support/auth';
 import { ACCOUNT_PASSWORD, API_BASE_URL, FAKE_GOOGLE_URL } from './support/config';
-import { dismissFirstRun } from './support/flows';
+import { dismissFirstRun, expectUserShellReady } from './support/flows';
 import { provisionUser } from './support/users';
 
 /**
@@ -58,11 +58,11 @@ async function clickContinueWithGoogle(page: Page): Promise<void> {
   await page.getByRole('link', { name: 'Continue with Google' }).click();
 }
 
-/** Password sign-in through the real login form; asserts it lands on /portfolio. */
+/** Password sign-in through the real login form; asserts the Origin shell mounts. */
 async function passwordSignIn(page: Page, identifier: string): Promise<void> {
   await page.goto('/login');
   await submitPasswordSignIn(page, identifier, ACCOUNT_PASSWORD);
-  await expect(page.getByRole('button', { name: 'Account menu' })).toBeVisible({ timeout: 20_000 });
+  await expectUserShellReady(page);
 }
 
 test('google identity block lives under Settings → Connections and is gone from Security (V5-P0c)', async ({
@@ -83,14 +83,14 @@ test('google identity block lives under Settings → Connections and is gone fro
       timeout: 20_000,
     });
     await expect(page.getByRole('link', { name: 'Connect Google' })).toBeVisible();
-    // NOT asserted here: the "Google Drive app data" section. It is the paranoid
-    // VAULT's storage medium and `DriveVaultSection` returns null unless the
-    // account's `privacyMode` is 'paranoid' — correctly, since Drive-as-a-vault
-    // -medium is meaningless for a normal account. This spec's user is a normal
-    // one, so the section can never appear for it; the assertion that used to be
-    // here was read off `ConnectionsPanel.test.tsx`, which mocks a paranoid
-    // media state. Covering it end-to-end means enabling paranoid mode, which is
-    // its own arc (§13.5 PD6) and not what a Google-identity spec is for.
+    // Drive is the paranoid VAULT's storage medium — `DriveVaultSection`
+    // returns null unless the account's `privacyMode` is 'paranoid', correctly,
+    // since Drive-as-a-vault-medium is meaningless for a normal account. So for
+    // this spec's normal user the section must stay absent: Connections must
+    // not make an unavailable integration look configurable. Covering its
+    // presence end-to-end means enabling paranoid mode, which is its own arc
+    // (§13.5 PD6) and not what a Google-identity spec is for.
+    await expect(page.getByRole('heading', { name: 'Google Drive app data' })).toHaveCount(0);
 
     // The old home no longer shows it (only relocated, never duplicated). The
     // former Security page is the Sign-in panel now (credentials); devices and
@@ -133,9 +133,7 @@ test('google login: verified-email match links an existing account; Google and p
       name: 'Link Tester',
     });
     await clickContinueWithGoogle(page);
-    await expect(page.getByRole('button', { name: 'Account menu' })).toBeVisible({
-      timeout: 30_000,
-    });
+    await expectUserShellReady(page);
 
     // (2) A second Google sign-in with the same sub now hits the linked identity
     // directly (resolution step 1) — proof the first sign-in persisted the link.
@@ -144,9 +142,7 @@ test('google login: verified-email match links an existing account; Google and p
     await repeatPage.goto('/login');
     await primeGoogleIdentity(idp, { sub, email: user.email, email_verified: true });
     await clickContinueWithGoogle(repeatPage);
-    await expect(repeatPage.getByRole('button', { name: 'Account menu' })).toBeVisible({
-      timeout: 30_000,
-    });
+    await expectUserShellReady(repeatPage);
 
     // (3) Password login for the same account still works — linking never
     // disables the existing credential.
@@ -194,9 +190,7 @@ test('google login: open mode registers a brand-new verified identity', async ({
     // Open mode signs the freshly-registered account straight in — a brand-new
     // account, so it opens on first-run setup before the app.
     await dismissFirstRun(page);
-    await expect(page.getByRole('button', { name: 'Account menu' })).toBeVisible({
-      timeout: 30_000,
-    });
+    await expectUserShellReady(page);
   } finally {
     await setRegistrationMode(apiRequest, priorMode);
     await idp.dispose();

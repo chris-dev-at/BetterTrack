@@ -161,7 +161,7 @@ export function AiSettingsPage() {
             <Badge tone={settings?.configured ? 'green' : 'neutral'}>
               {settings?.configured ? t('admin.ai.configured') : t('admin.ai.notConfigured')}
             </Badge>
-            <span className="ml-auto text-xs text-neutral-500">
+            <span className="ml-auto text-xs text-neutral-400">
               {settings?.updatedAt
                 ? `${t('admin.ai.lastChanged')}: ${formatDateTime(settings.updatedAt)}`
                 : t('admin.ai.neverChanged')}
@@ -173,7 +173,7 @@ export function AiSettingsPage() {
 
           {/* Provider config */}
           <div className="flex flex-col gap-4 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
-            <p className="text-xs text-neutral-500">{t('admin.ai.localOnlyNote')}</p>
+            <p className="text-xs text-neutral-400">{t('admin.ai.localOnlyNote')}</p>
 
             <TextField
               label={t('admin.ai.endpointLabel')}
@@ -259,7 +259,7 @@ export function AiSettingsPage() {
               <h2 className="text-sm font-semibold text-neutral-200">
                 {t('admin.ai.testRequestTitle')}
               </h2>
-              <p className="text-xs text-neutral-500">{t('admin.ai.testRequestHint')}</p>
+              <p className="text-xs text-neutral-400">{t('admin.ai.testRequestHint')}</p>
             </div>
 
             <TextField
@@ -279,7 +279,7 @@ export function AiSettingsPage() {
                 {sending ? t('admin.ai.testRequestSending') : t('admin.ai.testRequestButton')}
               </Button>
               {sending ? (
-                <span className="text-xs text-neutral-500">{t('admin.ai.testRequestWait')}</span>
+                <span className="text-xs text-neutral-400">{t('admin.ai.testRequestWait')}</span>
               ) : null}
             </div>
 

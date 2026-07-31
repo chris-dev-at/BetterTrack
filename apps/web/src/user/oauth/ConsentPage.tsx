@@ -14,8 +14,10 @@ import {
   type OAuthAuthorizeParams,
 } from '../../lib/oauthApi';
 import { ScopeSummary } from '../../ui';
+import { isParanoidBlockedScope } from '../../ui/ScopePicker';
 import { useAuth } from '../AuthContext';
 import { Alert, Button, Spinner } from '../components/ui';
+import { useResolvedPrivacyMode } from '../vault/usePrivacyMode';
 
 /**
  * OAuth consent screen (PROJECTPLAN.md §6.13 part 2, V4-P2b). A third-party app
@@ -150,6 +152,7 @@ function AppIdentity({
 
 export function ConsentPage() {
   const t = useT();
+  const paranoid = useResolvedPrivacyMode() === 'paranoid';
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const location = useLocation();
@@ -266,6 +269,39 @@ export function ConsentPage() {
   // fallback keeps TypeScript happy without leaking anything if it ever wasn't.
   const username = user?.username ?? '';
   const signedInAs = t('auth.oauthConsent.signedInAs', { username });
+  const portfolioScopeBlocked =
+    paranoid && details.scopes.some(({ scope }) => isParanoidBlockedScope(scope));
+
+  if (portfolioScopeBlocked) {
+    return (
+      <ConsentShell>
+        <div className="flex flex-col gap-5">
+          <AppIdentity
+            name={details.client.name}
+            logoPath={details.client.firstParty ? null : details.client.logoPath}
+            firstParty={details.client.firstParty}
+          />
+          <Alert tone="error">{t('vault.scopes.unavailable')}</Alert>
+          <div className="flex flex-col gap-2 sm:flex-row-reverse">
+            <Button
+              disabled={deny.isPending || switching}
+              onClick={() => deny.mutate()}
+              variant="secondary"
+            >
+              {t('common.cancel')}
+            </Button>
+            <Button
+              disabled={deny.isPending || switching}
+              onClick={() => void handleUseAnotherAccount()}
+              variant="ghost"
+            >
+              {t('auth.oauthConsent.useAnotherAccount')}
+            </Button>
+          </div>
+        </div>
+      </ConsentShell>
+    );
+  }
 
   // ── First-party (official) app: trusted, no scope prompt — but the account
   // confirmation is still interposed (V4-P2b, owner 2026-07-07). ──

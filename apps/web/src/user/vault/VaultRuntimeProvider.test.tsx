@@ -13,6 +13,7 @@ import type {
   UnlockedVaultDriveRuntime,
   VaultDriveSyncCoordinator,
 } from './media';
+import type { VaultSyncState } from './sync';
 import {
   useVaultRuntime,
   VaultRuntimeProvider,
@@ -30,13 +31,23 @@ const envelope = base64ToBytes(fixture.initial.envelopeBase64, 'envelope-invalid
 // per-test ceiling backing it lives in vite.config.ts.
 const UNLOCK_WAIT = { timeout: 15_000 } as const;
 
-function testSyncCoordinator(): VaultDriveSyncCoordinator {
+/**
+ * Mirrors `createReplicaReconcileCoordinator`: `state` is a GETTER that hands
+ * out a fresh `{ ...state }` snapshot on every read. That is what makes the
+ * provider's 1 Hz poll a re-render trap, so the test double has to reproduce
+ * it rather than return one frozen object.
+ */
+function testSyncCoordinator(onStateRead: () => void = () => undefined) {
+  const state: VaultSyncState = { status: 'synced', active: null, pending: null };
   return {
     deviceId: 'test-device',
-    state: { status: 'synced', active: null, pending: null },
-    reconnect: async () => ({ status: 'synced' as const, active: null, pending: null }),
-    mutate: async () => ({ status: 'synced' as const, active: null, pending: null }),
-  };
+    get state() {
+      onStateRead();
+      return { ...state };
+    },
+    reconnect: async () => ({ ...state }),
+    mutate: async () => ({ ...state }),
+  } satisfies VaultDriveSyncCoordinator;
 }
 
 beforeEach(() => {
@@ -44,7 +55,7 @@ beforeEach(() => {
 });
 
 describe('VaultRuntimeProvider Drive bootstrap', () => {
-  it('authorizes and reads Drive before unlocking a fresh Drive-only device', async () => {
+  it('authorizes Drive-only before unlock and obeys a same-account second-tab lock', async () => {
     const events: string[] = [];
     let authorization: GoogleDriveTokenClient['state'] = 'consent-required';
     const tokens: GoogleDriveTokenClient = {
@@ -144,6 +155,15 @@ describe('VaultRuntimeProvider Drive bootstrap', () => {
     expect(serverRead).not.toHaveBeenCalled();
     expect(createRuntime).toHaveBeenCalledTimes(1);
 
+    globalThis.dispatchEvent(
+      new StorageEvent('storage', {
+        key: 'bettertrack:vault-lock:018f0000-0000-7000-8000-000000000099',
+        newValue: 'remote-lock',
+      }),
+    );
+    await waitFor(() => expect(screen.getByText('no connection')).toBeInTheDocument(), UNLOCK_WAIT);
+    expect(dispose).toHaveBeenCalledTimes(1);
+
     rendered.unmount();
     await waitFor(() => expect(dispose).toHaveBeenCalledTimes(1), UNLOCK_WAIT);
     expect(tokens.clear).toHaveBeenCalled();
@@ -213,6 +233,76 @@ describe('VaultRuntimeProvider Drive bootstrap', () => {
     expect(runtimeOwners).toEqual([firstUser, secondUser]);
     expect(driveHomes).toHaveLength(2);
     expect(driveHomes[1]).not.toBe(driveHomes[0]);
+  });
+
+  it('leaves consumers untouched while the polled sync snapshot is unchanged', async () => {
+    const okToken: DriveAccessTokenResult = {
+      status: 'ok',
+      accessToken: 'memory-only',
+      expiresAt: Date.now() + 60_000,
+    };
+    const tokens: GoogleDriveTokenClient = {
+      state: 'connected',
+      getAccessToken: vi.fn(() => okToken),
+      subscribe: vi.fn(() => () => undefined),
+      authorize: vi.fn(async () => okToken),
+      clear: vi.fn(),
+      markExpired: vi.fn(),
+    };
+    let reads = 0;
+    const createRuntime: NonNullable<VaultRuntimeProviderDependencies['createRuntime']> = vi.fn(
+      (): UnlockedVaultDriveRuntime => {
+        const sync = testSyncCoordinator(() => {
+          reads += 1;
+        });
+        return {
+          controller: connection(),
+          sync,
+          ready: Promise.resolve(),
+          get syncState() {
+            return sync.state;
+          },
+          reconnect: vi.fn(async () => sync.state),
+          dispose: vi.fn(),
+        };
+      },
+    );
+    let renders = 0;
+    render(
+      <VaultRuntimeProvider
+        authenticated
+        userId="018f0000-0000-7000-8000-0000000000c3"
+        dependencies={{
+          clientId: 'browser-client-id',
+          tokens,
+          readEnvelope: vi.fn(async () => envelope),
+          createRuntime,
+        }}
+      >
+        <UnlockHarness driveOnly={false} />
+        <RuntimeConsumer
+          onRender={() => {
+            renders += 1;
+          }}
+        />
+      </VaultRuntimeProvider>,
+    );
+
+    await userEvent.setup().click(screen.getByRole('button', { name: 'unlock' }));
+    expect(
+      await screen.findByText('connection installed', undefined, UNLOCK_WAIT),
+    ).toBeInTheDocument();
+
+    // One poll tick lets every unlock-driven update flush, then two more prove
+    // the interval is running while the consumer stays put. Before the bailout
+    // the fresh `{ ...state }` snapshot rebuilt the memoised context value on
+    // every tick, re-rendering every `useVaultRuntime()` consumer at 1 Hz for
+    // as long as the vault stayed unlocked.
+    await pollTicks(() => reads, 1);
+    const settled = renders;
+    await pollTicks(() => reads, 2);
+
+    expect(renders).toBe(settled);
   });
 
   it.each(['authorization', 'envelope read', 'runtime readiness'] as const)(
@@ -322,6 +412,19 @@ function UnlockHarness({ driveOnly = true }: { driveOnly?: boolean }) {
       <span>{runtime.connection ? 'connection installed' : 'no connection'}</span>
     </>
   );
+}
+
+/** Renders once per context value, so its count IS the consumer re-render count. */
+function RuntimeConsumer({ onRender }: { onRender(): void }) {
+  useVaultRuntime();
+  onRender();
+  return null;
+}
+
+/** Wait until the provider's poll has read the coordinator `count` more times. */
+async function pollTicks(reads: () => number, count: number): Promise<void> {
+  const from = reads();
+  await waitFor(() => expect(reads()).toBeGreaterThanOrEqual(from + count), { timeout: 10_000 });
 }
 
 function connection(): DriveConnectionController {

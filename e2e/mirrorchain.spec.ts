@@ -152,8 +152,9 @@ test.describe('mirrorchain lifecycle UI gate', () => {
       await wizard.getByRole('radio', { name: /Shared with people/ }).click();
       await wizard.getByRole('button', { name: 'Continue' }).click();
       const createDialog = owner.page.getByRole('dialog', { name: 'New group portfolio' });
-      await createDialog.getByPlaceholder('Group portfolio name').fill(chainName);
-      await createDialog.getByRole('button', { name: 'Create', exact: true }).click();
+      const chainNameInput = createDialog.getByPlaceholder('Group portfolio name');
+      await chainNameInput.fill(chainName);
+      await chainNameInput.press('Enter');
 
       const firstInviteDialog = owner.page.getByRole('dialog', { name: 'Invite a friend' });
       const firstFriendRow = firstInviteDialog
@@ -188,6 +189,7 @@ test.describe('mirrorchain lifecycle UI gate', () => {
       );
       expect(replicated.mirror?.addedBy.username).toBe(member.username);
       await owner.page.goto(`/portfolio?portfolio=${ownerChain.portfolioId}`);
+      await owner.page.getByRole('button', { name: 'Expand SAP.DE transactions' }).click();
       await expect(owner.page.getByTitle(`Added by ${member.username}`)).toBeVisible({
         timeout: 20_000,
       });
@@ -401,6 +403,7 @@ test('mirrorchain: a member buy propagates to every copy, attributed', async ({ 
 
   // …and the owner SEES it, with the attribution chip, in the rendered UI (§11).
   await owner.page.goto(`/portfolio?portfolio=${ownerCopy}`);
+  await owner.page.getByRole('button', { name: 'Expand SAP.DE transactions' }).click();
   await expect(owner.page.getByTitle(`Added by ${member.username}`)).toBeVisible({
     timeout: 20_000,
   });

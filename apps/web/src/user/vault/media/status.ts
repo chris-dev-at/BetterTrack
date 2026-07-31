@@ -3,12 +3,24 @@ import type { ParanoidVaultMediaState, VaultMedium } from '@bettertrack/contract
 import type { DriveAuthorizationState } from '../drive';
 import type { VaultSyncStatus } from '../sync';
 
-export type VaultMediumSyncState =
-  | 'disconnected'
-  | 'synced'
-  | 'syncing'
-  | 'offline'
-  | 'needs-attention';
+/**
+ * Every sync state the chip can render, as a value — the union below is derived
+ * from it, so the two cannot drift. `VaultSyncChip` builds
+ * `vault.sync.status.<state>` as a template-literal key (for the button label,
+ * its aria-label and each medium row), which the EN⇄DE parity test cannot see:
+ * a key absent from *both* catalogs is parity-clean and still paints the raw
+ * dot-path. `i18n/registry.test.ts` iterates this tuple instead — the same
+ * drift-guard shape as `VAULT_ENABLE_STAGES`.
+ */
+export const VAULT_MEDIUM_SYNC_STATES = [
+  'disconnected',
+  'synced',
+  'syncing',
+  'offline',
+  'needs-attention',
+] as const;
+
+export type VaultMediumSyncState = (typeof VAULT_MEDIUM_SYNC_STATES)[number];
 
 export interface VaultMediaSyncProjection {
   overall: Exclude<VaultMediumSyncState, 'disconnected'>;

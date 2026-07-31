@@ -254,7 +254,7 @@ export function AnnouncementsPage() {
               </label>
               <textarea
                 id="bodyEn"
-                className="min-h-[7rem] rounded-md bg-neutral-950 px-3 py-2 text-sm text-neutral-100 ring-1 ring-inset ring-neutral-700 placeholder:text-neutral-600 focus:outline-none focus:ring-2 focus:ring-sky-500"
+                className="min-h-[7rem] rounded-md bg-neutral-950 px-3 py-2 text-sm text-neutral-100 ring-1 ring-inset ring-neutral-700 placeholder:text-neutral-400 focus:outline-none focus:ring-2 focus:ring-sky-500"
                 value={composer.bodyEn}
                 onChange={(e) => setComposer({ ...composer, bodyEn: e.target.value })}
                 maxLength={2000}
@@ -277,7 +277,7 @@ export function AnnouncementsPage() {
               </label>
               <textarea
                 id="bodyDe"
-                className="min-h-[7rem] rounded-md bg-neutral-950 px-3 py-2 text-sm text-neutral-100 ring-1 ring-inset ring-neutral-700 placeholder:text-neutral-600 focus:outline-none focus:ring-2 focus:ring-sky-500"
+                className="min-h-[7rem] rounded-md bg-neutral-950 px-3 py-2 text-sm text-neutral-100 ring-1 ring-inset ring-neutral-700 placeholder:text-neutral-400 focus:outline-none focus:ring-2 focus:ring-sky-500"
                 value={composer.bodyDe}
                 onChange={(e) => setComposer({ ...composer, bodyDe: e.target.value })}
                 maxLength={2000}
@@ -299,7 +299,7 @@ export function AnnouncementsPage() {
               value={composer.startsAt}
               onChange={(e) => setComposer({ ...composer, startsAt: e.target.value })}
             />
-            <p className="text-xs text-neutral-500">Empty = start immediately (once active).</p>
+            <p className="text-xs text-neutral-400">Empty = start immediately (once active).</p>
           </div>
           <div className="flex flex-col gap-1.5">
             <label className="text-sm font-medium text-neutral-300" htmlFor="endsAt">
@@ -312,7 +312,7 @@ export function AnnouncementsPage() {
               value={composer.endsAt}
               onChange={(e) => setComposer({ ...composer, endsAt: e.target.value })}
             />
-            <p className="text-xs text-neutral-500">Empty = no auto-off.</p>
+            <p className="text-xs text-neutral-400">Empty = no auto-off.</p>
           </div>
         </div>
 
@@ -353,7 +353,7 @@ export function AnnouncementsPage() {
       ) : (
         <div className="overflow-x-auto rounded-lg border border-neutral-800">
           <table className="w-full min-w-[50rem] text-left text-sm">
-            <thead className="bg-neutral-900 text-xs uppercase tracking-wide text-neutral-500">
+            <thead className="bg-neutral-900 text-xs uppercase tracking-wide text-neutral-400">
               <tr>
                 <th className="px-4 py-3 font-medium">Severity</th>
                 <th className="px-4 py-3 font-medium">Title (EN)</th>
@@ -387,11 +387,11 @@ export function AnnouncementsPage() {
                         {row.active ? 'active' : 'inactive'}
                       </Badge>
                       {row.publishedAt ? (
-                        <span className="text-xs text-neutral-500">
+                        <span className="text-xs text-neutral-400">
                           Published {formatDateTime(row.publishedAt)}
                         </span>
                       ) : (
-                        <span className="text-xs text-neutral-500">Never published</span>
+                        <span className="text-xs text-neutral-400">Never published</span>
                       )}
                     </div>
                   </td>

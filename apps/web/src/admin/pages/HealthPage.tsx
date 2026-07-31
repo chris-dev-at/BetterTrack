@@ -115,17 +115,17 @@ function HealthBody({ data }: { data: AdminHealthResponse }) {
         </div>
         <dl className="grid grid-cols-2 gap-3 text-xs text-neutral-400 sm:grid-cols-3">
           <div className="flex flex-col">
-            <dt className="uppercase tracking-wide text-neutral-500">
+            <dt className="uppercase tracking-wide text-neutral-400">
               {t('admin.health.version')}
             </dt>
             <dd className="font-mono text-neutral-200">{data.version}</dd>
           </div>
           <div className="flex flex-col">
-            <dt className="uppercase tracking-wide text-neutral-500">{t('admin.health.uptime')}</dt>
+            <dt className="uppercase tracking-wide text-neutral-400">{t('admin.health.uptime')}</dt>
             <dd className="text-neutral-200">{formatUptime(data.uptimeSeconds)}</dd>
           </div>
           <div className="flex flex-col">
-            <dt className="uppercase tracking-wide text-neutral-500">
+            <dt className="uppercase tracking-wide text-neutral-400">
               {t('admin.health.checkedAt')}
             </dt>
             <dd className="text-neutral-200">{new Date(data.checkedAt).toLocaleTimeString()}</dd>
@@ -257,7 +257,7 @@ function FailoverPanel({
       ) : null}
 
       <div className="flex flex-col gap-1 text-xs text-neutral-400">
-        <span className="uppercase tracking-wide text-neutral-500">
+        <span className="uppercase tracking-wide text-neutral-400">
           {t('admin.health.failover.switchesTitle')}
         </span>
         {switches.length === 0 ? (

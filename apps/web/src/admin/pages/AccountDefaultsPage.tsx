@@ -131,7 +131,7 @@ export function AccountDefaultsPage() {
             >
               <span className="flex flex-col gap-1">
                 <span className="text-sm font-medium text-neutral-100">Chat enabled</span>
-                <span className="text-sm text-neutral-500">
+                <span className="text-sm text-neutral-400">
                   When off, new accounts start unable to send direct messages (they can still read).
                 </span>
               </span>
@@ -186,7 +186,7 @@ export function AccountDefaultsPage() {
                   Developer status
                   <Badge tone="neutral">Inert</Badge>
                 </span>
-                <span className="text-sm text-neutral-500">
+                <span className="text-sm text-neutral-400">
                   Stored on new accounts but has no effect yet — consumed only when developer status
                   ships (V6-9).
                 </span>
@@ -209,7 +209,7 @@ export function AccountDefaultsPage() {
               <h2 className="text-sm font-semibold uppercase tracking-wide text-neutral-400">
                 Notification defaults
               </h2>
-              <p className="text-sm text-neutral-500">
+              <p className="text-sm text-neutral-400">
                 The per-type × channel matrix a new account starts with. Pre-filled with the lean
                 email default (email on only for account &amp; security). Users can change theirs
                 afterwards.
@@ -218,7 +218,7 @@ export function AccountDefaultsPage() {
 
             <div className="overflow-x-auto rounded-md border border-neutral-800">
               <table className="w-full min-w-[36rem] text-left text-sm">
-                <thead className="bg-neutral-950 text-xs uppercase tracking-wide text-neutral-500">
+                <thead className="bg-neutral-950 text-xs uppercase tracking-wide text-neutral-400">
                   <tr>
                     <th className="px-4 py-2 font-medium">Type</th>
                     {visibleChannels.map((channel) => (

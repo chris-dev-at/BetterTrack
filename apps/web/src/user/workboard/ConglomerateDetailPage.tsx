@@ -25,6 +25,7 @@ import { Dialog } from '../components/Dialog';
 import { BacktestPanel } from './BacktestPanel';
 import { BudgetCalculator } from './BudgetCalculator';
 import { NestedBadge, StatusBadge } from './ConglomeratesListPage';
+import { useResolvedPrivacyMode } from '../vault/usePrivacyMode';
 
 // ─── Positions table ────────────────────────────────────────────────────────
 
@@ -169,6 +170,7 @@ function DeleteConfirmDialog({
  */
 export function ConglomerateDetailPage() {
   const t = useT();
+  const paranoid = useResolvedPrivacyMode() === 'paranoid';
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -289,18 +291,20 @@ export function ConglomerateDetailPage() {
             <StatusBadge status={data.status} />
           </div>
           <div className="flex gap-2">
-            <Button
-              variant="secondary"
-              onClick={() =>
-                shareMutation.mutate(data.visibility === 'friends' ? 'private' : 'friends')
-              }
-              disabled={shareMutation.isPending}
-              aria-pressed={data.visibility === 'friends'}
-            >
-              {data.visibility === 'friends'
-                ? t('workboard.detail.sharedButton')
-                : t('workboard.detail.shareButton')}
-            </Button>
+            {!paranoid ? (
+              <Button
+                variant="secondary"
+                onClick={() =>
+                  shareMutation.mutate(data.visibility === 'friends' ? 'private' : 'friends')
+                }
+                disabled={shareMutation.isPending}
+                aria-pressed={data.visibility === 'friends'}
+              >
+                {data.visibility === 'friends'
+                  ? t('workboard.detail.sharedButton')
+                  : t('workboard.detail.shareButton')}
+              </Button>
+            ) : null}
             <Link to={`/workbench/blueprints/${id}/edit`}>
               <Button variant="secondary">{t('common.edit')}</Button>
             </Link>
@@ -311,7 +315,9 @@ export function ConglomerateDetailPage() {
         </div>
         <p className="text-sm bt-muted">{positionCountText}</p>
         {data.description ? <p className="text-sm bt-muted">{data.description}</p> : null}
-        {shareError ? <Alert tone="error">{t('workboard.detail.shareError')}</Alert> : null}
+        {shareError && !paranoid ? (
+          <Alert tone="error">{t('workboard.detail.shareError')}</Alert>
+        ) : null}
       </div>
 
       {/* Positions + allocation */}

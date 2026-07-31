@@ -6,9 +6,9 @@ import { Link } from 'react-router-dom';
 import type { TaxSettingsResponse, UpdateTaxSettingsRequest } from '@bettertrack/contracts';
 
 import { useT } from '../../../i18n';
-import { getTaxSettings, updateTaxSettings } from '../../../lib/settingsApi';
 import { Disclaimer, Skeleton } from '../../../ui';
 import { Alert } from '../../components/ui';
+import { usePortfolioStore } from '../../portfolio/PortfolioStoreProvider';
 import { PanelGroup, PanelHead, PanelNote, Row } from './panelKit';
 import { TaxModeList } from './taxModeList';
 
@@ -32,16 +32,17 @@ const TAX_SETTINGS_KEY = ['settings', 'taxes'] as const;
 export function DefaultsPanel() {
   const t = useT();
   const queryClient = useQueryClient();
+  const store = usePortfolioStore();
   const [error, setError] = useState(false);
 
   const query = useQuery({
     queryKey: TAX_SETTINGS_KEY,
-    queryFn: ({ signal }) => getTaxSettings(signal),
+    queryFn: ({ signal }) => store.getTaxSettings(signal),
     staleTime: 30_000,
   });
 
   const mutation = useMutation({
-    mutationFn: (body: UpdateTaxSettingsRequest) => updateTaxSettings(body),
+    mutationFn: (body: UpdateTaxSettingsRequest) => store.updateTaxSettings(body),
     onSuccess: (res: TaxSettingsResponse) => {
       queryClient.setQueryData(TAX_SETTINGS_KEY, res);
       // Portfolios that inherit this default resolve it live (link semantics,

@@ -204,6 +204,7 @@ import {
   createParanoidVaultService,
   type ParanoidVaultService,
 } from '../services/account/paranoidVaultService';
+import { createParanoidDiscardReauth } from '../services/account/paranoidDiscardReauth';
 import { createParanoidRehydrationService } from '../services/account/paranoidRehydrationService';
 import {
   createParanoidTransitionService,
@@ -1850,6 +1851,15 @@ export function buildContext(deps: BuildContextDeps): AppContext {
 
   const paranoidTransitions = createParanoidTransitionService({
     db,
+    // The §3 destruction exit re-authenticates like `DELETE /account`.
+    discardReauth: createParanoidDiscardReauth({
+      config,
+      redis,
+      userRepo,
+      passwordHasher,
+      twoFactor,
+      audit,
+    }),
     // Admin metadata locks on the dedicated pool and reads on the main one, the
     // same split every other privacy-lock call site uses.
     lockDb: privacyLockDb,

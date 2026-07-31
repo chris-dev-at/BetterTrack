@@ -4,9 +4,9 @@ import { CASH_SOURCE_TYPES, type CashSource, type CashSourceType } from '@better
 
 import { useT } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
-import { createCashSource, updateCashSource } from '../../lib/portfolioApi';
 import { Dialog } from '../components/Dialog';
 import { Alert, Button } from '../components/ui';
+import { usePortfolioStore } from './PortfolioStoreProvider';
 
 export interface CashSourceDialogProps {
   portfolioId: string;
@@ -25,6 +25,7 @@ export interface CashSourceDialogProps {
  */
 export function CashSourceDialog({ portfolioId, source, onClose, onSaved }: CashSourceDialogProps) {
   const t = useT();
+  const store = usePortfolioStore();
   const isEdit = !!source;
   const [name, setName] = useState(source?.name ?? '');
   const [type, setType] = useState<CashSourceType>(source?.type ?? 'bank');
@@ -47,13 +48,13 @@ export function CashSourceDialog({ portfolioId, source, onClose, onSaved }: Cash
         // `409 MIRROR_CONFLICT` if another member renamed it in the meantime.
         // Non-chain sources omit the field (source.mirror is undefined) and the
         // mirror seam skips the guard.
-        await updateCashSource(portfolioId, source.id, {
+        await store.updateCashSource(portfolioId, source.id, {
           name: trimmed,
           type,
           baseSeq: source.mirror?.version,
         });
       } else {
-        await createCashSource(portfolioId, { name: trimmed, type });
+        await store.createCashSource(portfolioId, { name: trimmed, type });
       }
       onSaved();
       onClose();

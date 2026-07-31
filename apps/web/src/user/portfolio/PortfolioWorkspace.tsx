@@ -4,6 +4,8 @@ import { useT } from '../../i18n';
 import { LocalNav, usePreservedSearch } from '../components/LocalNav';
 import { SECTION_NAV, useSectionNavItems } from '../components/sectionNav';
 import { SubTabLink } from '../../ui/origin';
+import { isParanoidKilledPath } from '../vault/ui/ParanoidSurfaceGate';
+import { useResolvedPrivacyMode } from '../vault/usePrivacyMode';
 import { ACTIVE_PORTFOLIO_PARAM } from './PortfolioSwitcher';
 
 /**
@@ -63,6 +65,7 @@ export function CashLayout() {
   const t = useT();
   const location = useLocation();
   const search = usePreservedSearch([ACTIVE_PORTFOLIO_PARAM]);
+  const paranoid = useResolvedPrivacyMode() === 'paranoid';
 
   const subtabs = [
     { to: '/portfolio/cash', label: t('cashflow.tabs.overview'), end: true },
@@ -73,15 +76,17 @@ export function CashLayout() {
   return (
     <div>
       <nav aria-label={t('cashflow.aria')} className="bt-subtabs" style={{ marginBottom: 20 }}>
-        {subtabs.map((tab) => (
-          <SubTabLink
-            end={tab.end}
-            key={tab.to}
-            to={search ? { pathname: tab.to, search } : tab.to}
-          >
-            {tab.label}
-          </SubTabLink>
-        ))}
+        {subtabs
+          .filter((tab) => !paranoid || !isParanoidKilledPath(tab.to))
+          .map((tab) => (
+            <SubTabLink
+              end={tab.end}
+              key={tab.to}
+              to={search ? { pathname: tab.to, search } : tab.to}
+            >
+              {tab.label}
+            </SubTabLink>
+          ))}
       </nav>
       <Outlet key={location.pathname} />
     </div>

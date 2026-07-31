@@ -49,7 +49,7 @@ server {
     # Empty in the default HTTP layout; populated only when BT_TLS=true.
     include /etc/nginx/bt-includes/static-hsts.conf;
 
-    # Per-origin runtime config (§7.1): app kind + cross-origin API origin.
+    # Per-origin runtime config (§7.1): app kind + API and product origins.
     location = /config.js {
         default_type application/javascript;
         # Cache-Control is also an add_header, so repeat the shared policy here
@@ -57,7 +57,7 @@ server {
         include /etc/nginx/bt-includes/static-security-headers.conf;
         include /etc/nginx/bt-includes/static-hsts.conf;
         add_header Cache-Control "no-store";
-        return 200 'window.__BT__ = { app: "user", apiOrigin: "${API_ORIGIN}" };';
+        return 200 'window.__BT__ = { app: "user", apiOrigin: "${API_ORIGIN}", productOrigin: "${PRODUCT_ORIGIN}" };';
     }
 
     location ~* \.(js|css|woff2?|ttf|eot|png|jpg|jpeg|gif|svg|ico|webp)$ {
@@ -88,7 +88,7 @@ server {
         include /etc/nginx/bt-includes/static-security-headers.conf;
         include /etc/nginx/bt-includes/static-hsts.conf;
         add_header Cache-Control "no-store";
-        return 200 'window.__BT__ = { app: "admin", apiOrigin: "${API_ORIGIN}" };';
+        return 200 'window.__BT__ = { app: "admin", apiOrigin: "${API_ORIGIN}", productOrigin: "${PRODUCT_ORIGIN}" };';
     }
 
     location ~* \.(js|css|woff2?|ttf|eot|png|jpg|jpeg|gif|svg|ico|webp)$ {

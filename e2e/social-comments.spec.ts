@@ -100,21 +100,17 @@ test('comments: audience-scoped thread, reactions, delete-own and owner moderati
   // Expand the (initially collapsed, count 0) thread and post two comments.
   await member.page.getByRole('button', { name: '0 comments' }).click();
   const composer = member.page.getByRole('textbox', { name: /Add a comment/ });
+  const post = member.page.getByRole('button', { name: 'Post', exact: true });
   await composer.fill('delete-own probe comment');
-  await member.page.getByRole('button', { name: 'Post' }).click();
+  await post.click();
   await expect(member.page.getByText('delete-own probe comment')).toBeVisible({ timeout: 15_000 });
-  // Wait for the POST to have landed in the thread before typing again. Posting
-  // clears the draft and invalidates the thread query, and the refetch re-renders
-  // the composer — a `fill` racing that re-render writes into a textarea React is
-  // about to replace, so the draft is lost and `Post` stays (correctly) disabled
-  // on an empty draft. The comment count is the honest "the refetch has landed"
-  // signal; the assertion on the body text above only proves the list has the row.
-  await expect(member.page.getByRole('button', { name: /1 comments/ })).toBeVisible({
-    timeout: 15_000,
-  });
+  // The thread can refetch the inserted row just before the POST mutation settles.
+  // Wait for onSuccess to clear the first draft before typing the second, or that
+  // late clear can erase it while the substring locator still matches "Posting…".
+  await expect(composer).toHaveValue('', { timeout: 15_000 });
   await composer.fill('owner-moderation probe comment');
-  await expect(member.page.getByRole('button', { name: 'Post' })).toBeEnabled();
-  await member.page.getByRole('button', { name: 'Post' }).click();
+  await expect(post).toBeEnabled();
+  await post.click();
   await expect(member.page.getByText('owner-moderation probe comment')).toBeVisible({
     timeout: 15_000,
   });

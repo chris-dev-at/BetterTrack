@@ -571,6 +571,12 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
       ? country
       : null;
 
+  /** A row's frozen custom parameter snapshot narrowed to the contract shape (null when absent). */
+  const toContractCustomParams = (params: unknown): CustomTaxParams | null => {
+    const parsed = customTaxParamsSchema.safeParse(params);
+    return parsed.success ? parsed.data : null;
+  };
+
   /** The first OPEN Vienna year (#635): the current year at `now`. Years before it are closed. */
   const openFromYearNow = (): number => viennaYearOf(new Date(now()).toISOString());
 
@@ -2895,8 +2901,13 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
             proceedsEur: realization.proceedsEur,
             costBasisEur: realization.costBasisEur,
             realizedPnlEur: realization.realizedPnlEur,
+            // The row's frozen facts, never the portfolio's current settings —
+            // the only lawful source for a client that has to reconstruct this
+            // sell's tax basis (PD8 paranoid migration).
             taxMode: t.taxMode,
             taxAmountEur: t.taxAmountEur,
+            taxCountry: toContractCountry(t.taxCountry),
+            taxParams: toContractCustomParams(t.taxParams),
           };
         });
       let dividendsGrossEur = 0;
@@ -2911,6 +2922,8 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
             grossAmountEur: d.grossAmountEur,
             taxMode: d.taxMode,
             taxAmountEur: d.taxAmountEur,
+            taxCountry: toContractCountry(d.taxCountry),
+            taxParams: toContractCustomParams(d.taxParams),
           };
         });
       positions.push({

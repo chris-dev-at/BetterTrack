@@ -47,6 +47,7 @@ import { createTestApp, type SeededUser, type TestHarness } from '../../../testi
 import { hashToken } from '../../crypto/tokens';
 import { liveRingKey } from '../../liveMode/ringBuffer';
 import type { AuditService } from '../../audit/auditService';
+import type { ParanoidDiscardReauth } from '../paranoidDiscardReauth';
 import type { ParanoidRehydrationService } from '../paranoidRehydrationService';
 import {
   createParanoidTransitionService,
@@ -67,6 +68,19 @@ beforeEach(async () => {
 });
 
 type Agent = ReturnType<typeof request.agent>;
+
+/**
+ * These harnesses drive enable / admin metadata only. The discard gate is a
+ * REQUIRED dependency (a composition that forgets it must not typecheck), so
+ * they supply one that fails loudly if a path ever reaches it unexpectedly.
+ */
+function neverReachedDiscardReauth(): ParanoidDiscardReauth {
+  return {
+    verify: async () => {
+      throw new Error('these tests never take the discard exit');
+    },
+  };
+}
 
 async function login(user: SeededUser): Promise<Agent> {
   const agent = request.agent(harness.app);
@@ -213,6 +227,14 @@ function disableRequest(userId: string, rehydrationId = REHYDRATION_ID): Paranoi
       mirrorProvenance: [],
     },
   };
+}
+
+/**
+ * The account-deletion rung the `discard` exit carries: typed username + a
+ * server-verified credential. Spread into the request body.
+ */
+function discardCredential(user: SeededUser) {
+  return { confirmUsername: user.username, password: user.password };
 }
 
 async function accountState(userId: string) {
@@ -755,6 +777,151 @@ describe('paranoid public transitions', () => {
     );
   });
 
+  it('discards an unrecoverable vault into an empty normal account, but only when asked explicitly', async () => {
+    // docs/paranoid-design.md §3 — "lost key ⇒ lost data … the only
+    // server-side recovery is destruction". The unlock gate's Start-fresh is
+    // the entry point: a client that cannot decrypt restores nothing and says
+    // so with an explicit flag.
+    const user = await harness.seedUser();
+    const { watchlistId } = await seedNormalGraph(user);
+    const agent = await login(user);
+    await expect(
+      harness.ctx.paranoidTransitions.enable(user.id, serverEnable()),
+    ).resolves.toMatchObject({ mode: 'paranoid' });
+    const emptyDocument = { schemaVersion: 1, entities: [], mergeLog: [] };
+
+    // A client that merely LOST its rows still fails the ordinary restore
+    // invariants — an empty graph is never read as consent to destroy.
+    const silent = await agent
+      .post('/api/v1/account/paranoid/disable')
+      .set(...XRW)
+      .send({ confirm: true, rehydrationId: REHYDRATION_ID, document: emptyDocument });
+    expect(silent.status).toBe(400);
+    expect(silent.body.error.code).toBe('PARANOID_REHYDRATION_INVALID');
+    expect((await accountState(user.id))?.privacyMode).toBe('paranoid');
+
+    // …and a discard may not smuggle rows back in.
+    const mixed = await agent
+      .post('/api/v1/account/paranoid/disable')
+      .set(...XRW)
+      .send({
+        ...discardCredential(user),
+        confirm: true,
+        discard: true,
+        rehydrationId: REHYDRATION_ID,
+        document: disableRequest(user.id).document,
+      });
+    expect(mixed.status).toBe(400);
+    expect(mixed.body.error.code).toBe('PARANOID_REHYDRATION_INVALID');
+    expect((await accountState(user.id))?.privacyMode).toBe('paranoid');
+
+    const response = await agent
+      .post('/api/v1/account/paranoid/disable')
+      .set(...XRW)
+      .send({
+        ...discardCredential(user),
+        confirm: true,
+        discard: true,
+        rehydrationId: REHYDRATION_ID,
+        document: emptyDocument,
+      });
+
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(paranoidDisableResponseSchema.parse(response.body)).toMatchObject({
+      mode: 'normal',
+      idempotent: false,
+    });
+    expect((await accountState(user.id))?.privacyMode).toBe('normal');
+    // The vault and every row it held are gone; the retained identity claim
+    // that no document could account for is retired with it.
+    expect(
+      await harness.db.select().from(paranoidVaults).where(eq(paranoidVaults.userId, user.id)),
+    ).toEqual([]);
+    expect(
+      await harness.db.select().from(portfolios).where(eq(portfolios.userId, user.id)),
+    ).toEqual([]);
+    expect(
+      await harness.db.select().from(assetIdentities).where(eq(assetIdentities.id, ASSET_ID)),
+    ).toEqual([]);
+    // … while everything that was never in the vault survives untouched.
+    expect(
+      await harness.db.select().from(watchlists).where(eq(watchlists.id, watchlistId)),
+    ).toHaveLength(1);
+    const [audit] = await harness.db
+      .select()
+      .from(auditLog)
+      .where(eq(auditLog.action, 'account.paranoid_disabled'));
+    expect(audit?.meta).toEqual({
+      rehydrationId: REHYDRATION_ID,
+      idempotent: false,
+      discard: true,
+    });
+  });
+
+  it('re-authenticates the irreversible discard server-side, exactly like account deletion', async () => {
+    // A live session is NOT authorization to destroy an unrecoverable vault:
+    // the typed username and the credential are both verified here, so a
+    // hijacked session cannot wipe the account with one POST past the client
+    // form. The restoring disable is unaffected — it hands the rows back.
+    const user = await harness.seedUser();
+    await seedNormalGraph(user);
+    const agent = await login(user);
+    await expect(
+      harness.ctx.paranoidTransitions.enable(user.id, serverEnable()),
+    ).resolves.toMatchObject({ mode: 'paranoid' });
+    const emptyDocument = { schemaVersion: 1, entities: [], mergeLog: [] };
+    const discard = (extra: Record<string, unknown>) =>
+      agent
+        .post('/api/v1/account/paranoid/disable')
+        .set(...XRW)
+        .send({
+          confirm: true,
+          discard: true,
+          rehydrationId: REHYDRATION_ID,
+          document: emptyDocument,
+          ...extra,
+        });
+
+    // No credential at all — refused by the contract before any work.
+    const bare = await discard({});
+    expect(bare.status).toBe(400);
+    expect(bare.body.error.code).toBe('VALIDATION_ERROR');
+
+    // Username typed, credential missing.
+    const noCredential = await discard({ confirmUsername: user.username });
+    expect(noCredential.status).toBe(400);
+    expect(noCredential.body.error.code).toBe('VALIDATION_ERROR');
+
+    // Wrong username, correct password.
+    const wrongName = await discard({ confirmUsername: 'someone-else', password: user.password });
+    expect(wrongName.status).toBe(400);
+    expect(wrongName.body.error.code).toBe('CONFIRMATION_MISMATCH');
+
+    // Correct username, wrong password.
+    const wrongPassword = await discard({
+      confirmUsername: user.username,
+      password: 'not-the-password',
+    });
+    expect(wrongPassword.status).toBe(401);
+    expect(wrongPassword.body.error.code).toBe('INVALID_CREDENTIALS');
+
+    // Nothing was destroyed by any of the four attempts.
+    expect((await accountState(user.id))?.privacyMode).toBe('paranoid');
+    expect(
+      await harness.db.select().from(paranoidVaults).where(eq(paranoidVaults.userId, user.id)),
+    ).toHaveLength(1);
+    const failures = await harness.db
+      .select()
+      .from(auditLog)
+      .where(eq(auditLog.action, 'account.paranoid_discard_fail'));
+    expect(failures).toHaveLength(1);
+
+    // The full rung passes.
+    const accepted = await discard(discardCredential(user));
+    expect(accepted.status, JSON.stringify(accepted.body)).toBe(200);
+    expect((await accountState(user.id))?.privacyMode).toBe('normal');
+  });
+
   it('serializes simultaneous equivalent enables into one commit and one idempotent retry', async () => {
     const user = await harness.seedUser();
     await seedNormalGraph(user);
@@ -871,6 +1038,7 @@ describe('admin metadata batching', () => {
         },
       } satisfies ParanoidRehydrationService,
       audit: { record: async () => undefined } as unknown as AuditService,
+      discardReauth: neverReachedDiscardReauth(),
     });
 
     // The list path must take ONE privacy lock and a fixed set of queries. A
@@ -909,6 +1077,7 @@ describe.each<ParanoidEnableStage>(['locked', 'sharingRevoked', 'vaultPurged', '
         audit: {
           record: async () => undefined,
         } as unknown as AuditService,
+        discardReauth: neverReachedDiscardReauth(),
         afterEnableStage(stage) {
           if (stage === failureStage) throw new Error(`injected ${stage}`);
         },
@@ -964,6 +1133,7 @@ describe('enable rollback at an outcome-ambiguous commit', () => {
         },
       } satisfies ParanoidRehydrationService,
       audit: { record: async () => undefined } as unknown as AuditService,
+      discardReauth: neverReachedDiscardReauth(),
       prepareExportFile: async (artifact: { id: string; filePath: string }) => {
         retirement.push(`prepare:${artifact.id}`);
         return {

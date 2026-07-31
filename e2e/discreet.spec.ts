@@ -1,13 +1,46 @@
-import { expect, request as newRequestContext, test } from '@playwright/test';
+import { expect, request as newRequestContext, test, type Page } from '@playwright/test';
 
 import { loginAsAdmin } from './support/adminApi';
 import { API_BASE_URL } from './support/config';
 import { provisionUser } from './support/users';
 
 /**
+ * Flip the same discreet setting through the compact surface available at the
+ * current viewport: the desktop rail menu or the phone-sized Control Center.
+ */
+async function flipDiscreetMode(page: Page, enabled: boolean): Promise<void> {
+  const accountMenu = page.getByRole('button', { name: /Account menu/i });
+  if (await accountMenu.isVisible()) {
+    await accountMenu.click();
+    const toggle = page.getByRole('menuitemcheckbox', { name: /Discreet mode/i });
+    await expect(toggle).toBeVisible();
+    await expect(toggle).toHaveAttribute('aria-checked', String(!enabled));
+    await toggle.click();
+    await expect(toggle).toHaveAttribute('aria-checked', String(enabled));
+    await page.keyboard.press('Escape');
+    return;
+  }
+
+  await page.goto('/control/privacy');
+  const toggle = page.getByRole('switch', { name: /Discreet mode/i });
+  await expect(toggle).toBeVisible();
+  if (enabled) {
+    await expect(toggle).not.toBeChecked();
+  } else {
+    await expect(toggle).toBeChecked();
+  }
+  await toggle.click();
+  if (enabled) {
+    await expect(toggle).toBeChecked();
+  } else {
+    await expect(toggle).not.toBeChecked();
+  }
+}
+
+/**
  * V5-P13 arc (a) — discreet mode (#682). One user, one profile-menu quick
- * toggle. The user provisions a portfolio, seeds a manual cash movement so a
- * real absolute amount renders on the portfolio surface, flips discreet mode
+ * toggle. The user provisions a portfolio, seeds a manual cash movement and
+ * holding so real absolute amounts render on the portfolio surface, flips discreet mode
  * ON via the profile menu, and asserts EVERY euro symbol has left the
  * portfolio page (the sweep the acceptance criteria call for) — the masked
  * placeholder `•••` appears in its place. Toggling discreet mode back OFF
@@ -29,7 +62,9 @@ test('discreet mode masks every absolute amount on the portfolio surface and tog
   // find). Driven with the exact labels cash-sources.spec.ts uses: the previous
   // fuzzy `Add cash movement|Add movement|Add cash` alternation matched NO
   // button this app has ever rendered, so this step could only ever time out —
-  // the spec had never once reached its discreet-mode assertions.
+  // the spec had never once reached its discreet-mode assertions. The sweep
+  // stays on the accounts surface (below), so no holding is needed: the
+  // redesigned Overview reports an empty portfolio when only cash exists.
   await user.page.goto('/portfolio/cash/accounts');
   const mainRow = user.page.locator('table[aria-label="Cash sources"] tbody tr').first();
   await mainRow.getByRole('button', { name: 'Deposit' }).click();
@@ -53,15 +88,7 @@ test('discreet mode masks every absolute amount on the portfolio surface and tog
 
   // Flip discreet mode ON from the profile menu (≤2 clicks per the anti-bloat
   // rule): open the account menu, toggle "Discreet mode".
-  await user.page.getByRole('button', { name: /Account menu/i }).click();
-  const toggle = user.page.getByRole('menuitemcheckbox', { name: /Discreet mode/i });
-  await expect(toggle).toBeVisible();
-  await expect(toggle).toHaveAttribute('aria-checked', 'false');
-  await toggle.click();
-  await expect(toggle).toHaveAttribute('aria-checked', 'true');
-
-  // Close the menu and let the tree re-render with the masked seam.
-  await user.page.keyboard.press('Escape');
+  await flipDiscreetMode(user.page, true);
 
   // Sweep-style check: NO euro symbol and no trace of the seeded figure anywhere
   // on the surface, and the mask placeholder shows up in at least one place.
@@ -73,19 +100,9 @@ test('discreet mode masks every absolute amount on the portfolio surface and tog
   // Persists across a hard reload — the setting rides `/auth/me`.
   await user.page.reload();
   await expect(user.page.locator('body')).not.toContainText('€');
-  await user.page.getByRole('button', { name: /Account menu/i }).click();
-  await expect(user.page.getByRole('menuitemcheckbox', { name: /Discreet mode/i })).toHaveAttribute(
-    'aria-checked',
-    'true',
-  );
 
   // Toggle back OFF — the surface restores to the exact original amount.
-  await user.page.getByRole('menuitemcheckbox', { name: /Discreet mode/i }).click();
-  await expect(user.page.getByRole('menuitemcheckbox', { name: /Discreet mode/i })).toHaveAttribute(
-    'aria-checked',
-    'false',
-  );
-  await user.page.keyboard.press('Escape');
+  await flipDiscreetMode(user.page, false);
   await user.page.goto(SURFACE);
   await expect(user.page.locator('body')).toContainText('€', { timeout: 15_000 });
   await expect(user.page.locator('body')).toContainText(SEEDED);

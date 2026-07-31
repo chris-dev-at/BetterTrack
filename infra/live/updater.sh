@@ -195,22 +195,60 @@ reclaim_docker_storage() {
 # kind, compose.override.yml, and all non-product control-dir content —
 # secrets and machine-local config stay control-dir-only.
 
-# Overlay-copy every subdirectory of the repo's product html into the served
-# mount. Non-destructive: control-dir-only pages and files are never deleted;
-# on conflicts the repo copy wins. nginx serves the mount live, so adopted
-# pages are public immediately — no reload needed.
+# Overlay-copy the two shared runtime scripts and canonical legal directories
+# from the generic landing tree, then any remaining live-only product
+# directories from the live overlay tree, into the bespoke live edge's served
+# product mount. Non-destructive: unrelated control-dir-only pages and files are
+# never deleted or overwritten; on explicitly adopted paths the repo copy wins.
+# nginx serves the mount live, so adopted assets are public immediately — no
+# reload needed.
 sync_product_html() {
-  _src="$APP/infra/live/edge/html/product"
+  _landing_src="$APP/apps/landing/site"
+  _overlay_src="$APP/infra/live/edge/html/product"
   _dst="$CONTROL/edge/html/product"
-  [ -d "$_src" ] || return 0
   [ -d "$_dst" ] || { log "edge-sync: SKIP — ${_dst} missing on this box"; return 0; }
-  for _dir in "$_src"/*/; do
-    [ -d "$_dir" ] || continue
-    _name="$(basename "$_dir")"
-    if cp -R "${_src}/${_name}" "${_dst}/" 2>>"$LOG"; then
+
+  # Every canonical legal document requests these root assets. Copy only the
+  # shared scripts instead of the whole landing root so machine-local live
+  # styles, images, and product pages remain untouched.
+  for _name in env.js landing.js; do
+    _file="${_landing_src}/${_name}"
+    if [ ! -f "$_file" ]; then
+      log "edge-sync: FAILED — shared landing asset ${_file} is missing"
+      continue
+    fi
+    if cp "$_file" "${_dst}/${_name}" 2>>"$LOG"; then
+      log "edge-sync: adopted product/${_name} from repo"
+    else
+      log "edge-sync: FAILED to adopt product/${_name} (see output above)"
+    fi
+  done
+
+  for _name in terms privacy impressum cookies; do
+    _dir="${_landing_src}/${_name}"
+    if [ ! -d "$_dir" ]; then
+      log "edge-sync: FAILED — canonical landing directory ${_dir} is missing"
+      continue
+    fi
+    if cp -R "$_dir" "${_dst}/" 2>>"$LOG"; then
       log "edge-sync: adopted product/${_name}/ from repo"
     else
       log "edge-sync: FAILED to adopt product/${_name}/ (see output above)"
+    fi
+  done
+
+  # The legal move must not orphan other repo-managed live pages. At present
+  # this adopts product/404/, which remains wired through error_page in the live
+  # edge config; future live-only directories automatically retain the same
+  # deploy path.
+  [ -d "$_overlay_src" ] || return 0
+  for _dir in "$_overlay_src"/*/; do
+    [ -d "$_dir" ] || continue
+    _name="$(basename "$_dir")"
+    if cp -R "${_overlay_src}/${_name}" "${_dst}/" 2>>"$LOG"; then
+      log "edge-sync: adopted product/${_name}/ from live overlay"
+    else
+      log "edge-sync: FAILED to adopt product/${_name}/ from live overlay (see output above)"
     fi
   done
 }

@@ -188,6 +188,15 @@ export function createAccountRouter(ctx: AppContext, limiters: RateLimiters): Ro
     });
   };
 
+  // Two shapes on one route. The restoring disable hands the decrypted rows
+  // back, so `confirm` + the document is its whole gate. `discard: true`
+  // destroys a vault nobody can decrypt any more, so the service re-runs the
+  // account-deletion rung server-side (typed username + password/TOTP/recovery
+  // behind a per-account progressive throttle) — the client-side confirmation
+  // in the locked gate's fold is a UX affordance, never the gate. The route
+  // keeps the per-account vault schedule; the credential counter is the
+  // service's own, so a wrong password here can never buy attempts anywhere
+  // else (and the restoring disable's budget is unchanged).
   router.post(
     '/paranoid/disable',
     requireUser,
@@ -197,7 +206,11 @@ export function createAccountRouter(ctx: AppContext, limiters: RateLimiters): Ro
     validateBody(paranoidDisableRequestSchema),
     async (req, res) => {
       const body = req.valid?.body as ParanoidDisableRequest;
-      res.json(await runTransition(() => ctx.paranoidTransitions.disable(req.authUser!.id, body)));
+      res.json(
+        await runTransition(() =>
+          ctx.paranoidTransitions.disable(req.authUser!.id, body, { ip: req.ip }),
+        ),
+      );
     },
   );
 

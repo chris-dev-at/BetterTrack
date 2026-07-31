@@ -607,8 +607,22 @@ describe('switching AT→DE mid-year re-derives the open year live under DE', ()
     // refund correction backed its withholding out.
     const report = await yearReport(agent, pid, 2026);
     const sells = report.positions[0]!.sells;
-    expect(sells[0]).toMatchObject({ taxAmountEur: 123.75, realizedPnlEur: 450 }); // AT, Feb
-    expect(sells[1]).toMatchObject({ taxAmountEur: 619.81, realizedPnlEur: 2900 }); // DE, Apr (FIFO)
+    // The report exposes the WHOLE frozen fact set per row — mode, amount and
+    // the country it was taxed under. A client reconstructing a row's tax basis
+    // (the paranoid migration) must not have to infer it from the portfolio's
+    // current settings, which now say DE for both rows.
+    expect(sells[0]).toMatchObject({
+      taxAmountEur: 123.75,
+      realizedPnlEur: 450,
+      taxCountry: 'AT', // Feb: recorded under AT and never rewritten
+      taxParams: null,
+    });
+    expect(sells[1]).toMatchObject({
+      taxAmountEur: 619.81,
+      realizedPnlEur: 2900,
+      taxCountry: 'DE', // Apr (FIFO): recorded after the switch
+      taxParams: null,
+    });
 
     // One open year, ONE live regime: net = the DE target over all rows.
     const years = await yearSummaries(agent, pid);

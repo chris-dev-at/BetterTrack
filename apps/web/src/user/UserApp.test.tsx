@@ -91,6 +91,10 @@ const SIGNED_IN_RENDER = { timeout: 5_000 } as const;
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.mocked(api.getParanoidMediaState).mockResolvedValue({
+    privacyMode: 'normal',
+    mediaState: null,
+  });
   // WorkboardPage fetches the watchlist on mount; return an empty list so the
   // page renders without errors in tests that exercise the workboard route.
   vi.mocked(listWorkboard).mockResolvedValue({ items: [] });
@@ -114,6 +118,15 @@ test('an unauthenticated visit to an unknown route still redirects to /login', a
 
   expect(await screen.findByText('Sign in to your account')).toBeInTheDocument();
   expect(screen.getByTestId('location')).toHaveTextContent('/login');
+});
+
+test('the retired /people/following deep link redirects to the Friends tab', async () => {
+  vi.mocked(api.getMe).mockResolvedValue(member);
+  vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [] });
+
+  renderAtWithLocation('/people/following');
+
+  await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('/people'));
 });
 
 test('after signing in, the user returns to the originally requested route', async () => {

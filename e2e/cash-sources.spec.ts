@@ -47,8 +47,11 @@ test('cash sources: create, deposit and transfer between two sources', async ({ 
   await page.getByRole('button', { name: 'Transfer' }).click();
   const transferDialog = page.getByRole('dialog', { name: 'Transfer between sources' });
   await transferDialog.getByLabel('To').selectOption({ label: 'Savings' });
-  await transferDialog.getByLabel('Amount (EUR)').fill('400');
-  await transferDialog.getByRole('button', { name: 'Transfer' }).click();
+  const transferAmount = transferDialog.getByLabel('Amount (EUR)');
+  await transferAmount.fill('400');
+  // Submit through the form's native keyboard path. This is also the phone path
+  // when the amount field has focus and avoids visual-viewport scroll retargeting.
+  await transferAmount.press('Enter');
   await expect(transferDialog).toBeHidden();
 
   // Both balances reflect the atomic pair: Main 600, Savings 400. Locale-agnostic.

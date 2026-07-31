@@ -579,3 +579,24 @@ export function ensureVaultCacheStores(db: IDBDatabase): void {
     db.createObjectStore(VAULT_CACHE_QUARANTINE_STORE, { keyPath: 'id' });
   }
 }
+
+/** Remove one account/key cache without disturbing another signed-in account. */
+export async function clearLocalVaultScope(scope: string): Promise<void> {
+  const db = await openDb();
+  try {
+    const transaction = db.transaction(
+      [VAULT_CACHE_VAULTS_STORE, VAULT_CACHE_QUARANTINE_STORE],
+      'readwrite',
+    );
+    const completion = transactionCompletion(transaction);
+    transaction.objectStore(VAULT_CACHE_VAULTS_STORE).delete(scope);
+    const quarantine = transaction.objectStore(VAULT_CACHE_QUARANTINE_STORE);
+    const candidates = await request<Array<{ id: string; scope?: string }>>(quarantine.getAll());
+    for (const candidate of candidates) {
+      if (candidate.scope === scope) quarantine.delete(candidate.id);
+    }
+    await completion;
+  } finally {
+    db.close();
+  }
+}

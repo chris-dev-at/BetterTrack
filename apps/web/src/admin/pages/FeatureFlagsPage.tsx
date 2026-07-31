@@ -75,7 +75,7 @@ export function FeatureFlagsPage() {
       ) : rows ? (
         <div className="overflow-x-auto rounded-md border border-neutral-800">
           <table className="w-full min-w-[36rem] text-left text-sm">
-            <thead className="bg-neutral-950 text-xs uppercase tracking-wide text-neutral-500">
+            <thead className="bg-neutral-950 text-xs uppercase tracking-wide text-neutral-400">
               <tr>
                 <th className="px-4 py-2 font-medium">{t('admin.featureFlags.featureColumn')}</th>
                 <th className="px-3 py-2 font-medium">{t('admin.featureFlags.stateColumn')}</th>
@@ -93,7 +93,7 @@ export function FeatureFlagsPage() {
                       <span className="text-sm font-medium text-neutral-100">
                         {t(`admin.featureFlags.flag.${flag.key}.name`)}
                       </span>
-                      <span className="text-sm text-neutral-500">
+                      <span className="text-sm text-neutral-400">
                         {t(`admin.featureFlags.flag.${flag.key}.description`)}
                       </span>
                     </div>

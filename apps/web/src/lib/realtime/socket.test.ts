@@ -21,7 +21,11 @@ describe('createRealtimeSocket', () => {
   it.each(['user', 'admin'] as const)(
     'starts the same-origin %s client with WebSocket so the browser sends Origin',
     (app) => {
-      vi.mocked(getRuntimeConfig).mockReturnValue({ app, apiOrigin: '' });
+      vi.mocked(getRuntimeConfig).mockReturnValue({
+        app,
+        apiOrigin: '',
+        productOrigin: 'https://bettertrack.at',
+      });
 
       expect(createRealtimeSocket()).toBe(fakeSocket);
       expect(io).toHaveBeenCalledWith({
@@ -37,6 +41,7 @@ describe('createRealtimeSocket', () => {
     vi.mocked(getRuntimeConfig).mockReturnValue({
       app: 'user',
       apiOrigin: 'https://api.example.test',
+      productOrigin: 'https://bettertrack.at',
     });
 
     expect(createRealtimeSocket()).toBe(fakeSocket);

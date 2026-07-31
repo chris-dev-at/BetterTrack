@@ -123,6 +123,11 @@ One env scheme drives **five public origins** — `api` / `web` / `admin` plus t
 The single `web` front proxy routes all five (by `server_name` in subdomains mode, by
 `listen` port in ports mode) and reverse-proxies the product/mobile origins to the `landing`
 container; the api/web/admin behavior is unchanged from the earlier three-origin layout.
+The EN/DE legal documents are canonical under
+`apps/landing/site/{terms,privacy,impressum,cookies}/`, so every generic landing
+image serves the same eight legal URLs. The bespoke live updater copies those
+same directories into its existing product mount; do not add a second legal
+tree under `infra/live/`.
 
 ### Prerequisites
 
@@ -327,8 +332,9 @@ Copy it to `infra/.env`; do not maintain a second variable table here.
 > each of the five services on its own port of a single host. The API validates &
 > derives the origins in `apps/api/src/config/env.ts`; the one web image renders the
 > matching nginx layout from `infra/nginx/templates/` and injects a per-origin
-> `window.__BT__` (`config.js`) at container start. The static product/mobile pages
-> take no credentials, so they are **never** added to the CORS allowlist. See
+> `window.__BT__` (`config.js`) at container start, including the derived product
+> origin used by the SPA's legal links. The static product/mobile pages take no
+> credentials, so they are **never** added to the CORS allowlist. See
 > `infra/.env.production.example` for the canonical, fully commented template.
 
 ### Worker (BullMQ)

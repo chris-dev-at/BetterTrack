@@ -27,6 +27,47 @@ export interface ValidatedVaultSnapshot {
   ownerUserId: string;
 }
 
+export interface VaultDocumentSession {
+  document: VaultDocument;
+  ownerUserId: string;
+}
+
+/**
+ * Open one raw decrypted document through the exact validation path every
+ * unlock takes: strict entity schemas, frozen tax facts, persisted tax
+ * settings, and the full relationship graph. This is the client-side validator
+ * of record — {@link validatedVaultSnapshot} delegates here, and the enable
+ * flow proves a freshly built document against it BEFORE the first medium
+ * write, while "your normal account is unchanged" is still true. A document
+ * this function accepts is a document the unlock gate will accept; one it
+ * rejects would have been `VAULT_CORRUPT` after the irreversible purge.
+ */
+export function openVaultSession(raw: unknown): VaultDocumentSession {
+  if (
+    typeof raw === 'object' &&
+    raw !== null &&
+    'schemaVersion' in raw &&
+    (raw as { schemaVersion: unknown }).schemaVersion !== VAULT_DOCUMENT_V1_VERSION &&
+    (raw as { schemaVersion: unknown }).schemaVersion !== VAULT_DOCUMENT_VERSION
+  ) {
+    throw moneyFailure(
+      'VAULT_UNSUPPORTED_VERSION',
+      `Vault document version ${String((raw as { schemaVersion: unknown }).schemaVersion)} is not supported.`,
+    );
+  }
+  const parsed = vaultDocumentSchema.safeParse(raw);
+  if (!parsed.success) {
+    throw moneyFailure('VAULT_CORRUPT', 'The decrypted vault document is malformed.', {
+      details: { issues: parsed.error.issues.map((issue) => issue.path.join('.')) },
+    });
+  }
+  validateStrictEntities(parsed.data);
+  validatePersistedTaxFacts(parsed.data);
+  validatePersistedTaxSettings(parsed.data);
+  const ownerUserId = validateRelationships(parsed.data);
+  return { document: parsed.data, ownerUserId };
+}
+
 /** Obtain one authenticated, strict snapshot of the decrypted in-memory vault. */
 export function validatedVaultSnapshot(engine: VaultSyncEngine): ValidatedVaultSnapshot {
   const state = engine.state;
@@ -48,41 +89,19 @@ export function validatedVaultSnapshot(engine: VaultSyncEngine): ValidatedVaultS
       `Vault envelope schema version ${candidate.header.schemaVersion} is not supported.`,
     );
   }
-  const raw = candidate.document as unknown;
-  if (
-    typeof raw === 'object' &&
-    raw !== null &&
-    'schemaVersion' in raw &&
-    (raw as { schemaVersion: unknown }).schemaVersion !== VAULT_DOCUMENT_V1_VERSION &&
-    (raw as { schemaVersion: unknown }).schemaVersion !== VAULT_DOCUMENT_VERSION
-  ) {
-    throw moneyFailure(
-      'VAULT_UNSUPPORTED_VERSION',
-      `Vault document version ${String((raw as { schemaVersion: unknown }).schemaVersion)} is not supported.`,
-    );
-  }
-  const parsed = vaultDocumentSchema.safeParse(raw);
-  if (!parsed.success) {
-    throw moneyFailure('VAULT_CORRUPT', 'The decrypted vault document is malformed.', {
-      details: { issues: parsed.error.issues.map((issue) => issue.path.join('.')) },
-    });
-  }
-  if (parsed.data.schemaVersion !== candidate.header.schemaVersion) {
+  const session = openVaultSession(candidate.document as unknown);
+  if (session.document.schemaVersion !== candidate.header.schemaVersion) {
     throw moneyFailure(
       'VAULT_UNSUPPORTED_VERSION',
       'The vault document does not match its authenticated envelope schema version.',
     );
   }
-  validateStrictEntities(parsed.data);
-  validatePersistedTaxFacts(parsed.data);
-  validatePersistedTaxSettings(parsed.data);
-  const ownerUserId = validateRelationships(parsed.data);
   return {
-    document: parsed.data,
+    document: session.document,
     vaultVersion: candidate.header.vaultVersion,
     vaultKeyId: candidate.header.keyId,
     writeId: candidate.header.writeId,
-    ownerUserId,
+    ownerUserId: session.ownerUserId,
   };
 }
 

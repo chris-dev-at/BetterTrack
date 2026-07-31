@@ -28,8 +28,8 @@
   /* Type */
   --bt-text: #f4f6f8;
   --bt-text-soft: #c7cdd5;
-  --bt-muted: #8b949f;
-  --bt-faint: #77818d;
+  --bt-muted: #8b949f; /* min 5.16:1 against --bt-surface-hover (#1b232d) */
+  --bt-faint: #828c96; /* min 4.63:1 against --bt-surface-hover (#1b232d) */
   /* Brand + semantics */
   --bt-gold: #f6b82e;
   --bt-gold-bright: #ffd26b;
@@ -90,8 +90,8 @@
   --bt-border-accent: rgba(174, 119, 0, 0.3);
   --bt-text: #131820;
   --bt-text-soft: #3e4650;
-  --bt-muted: #56616d;
-  --bt-faint: #66707b;
+  --bt-muted: #56616d; /* min 5.23:1 against --bt-surface-hover (#e8eaec) */
+  --bt-faint: #5d6773; /* min 4.77:1 against --bt-surface-hover (#e8eaec) */
   --bt-gold-bright: #d89400;
   --bt-gold-soft: rgba(213, 148, 0, 0.1);
   --bt-pos: #168861;
@@ -439,6 +439,13 @@
 
 .bt-topbar__account:hover {
   background: var(--bt-surface-soft);
+}
+
+.bt-topbar__actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 10px;
 }
 
 /* Main working canvas */
@@ -1511,15 +1518,30 @@
 
 .bt-link {
   color: var(--bt-blue);
-  text-decoration: none;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
 }
 
 .bt-link:hover {
-  text-decoration: underline;
+  text-decoration-thickness: 2px;
 }
 
 .bt-link--gold {
   color: var(--bt-gold);
+}
+
+.bt-footer-link {
+  color: var(--bt-faint);
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+
+.bt-footer-link:hover,
+.bt-link:focus-visible,
+.bt-footer-link:focus-visible {
+  text-decoration-thickness: 2px;
 }
 
 /* ── Motion ──────────────────────────────────────────────────────────────── */
@@ -1614,6 +1636,45 @@
   }
 
   .bt-rail {
+    display: none;
+  }
+
+  .bt-topbar {
+    gap: 7px;
+    padding-inline: 10px;
+  }
+
+  .bt-topbar .bt-rail__brand {
+    min-height: 34px;
+    padding: 0;
+  }
+
+  .bt-topbar .bt-rail__brand-full {
+    display: none;
+  }
+
+  .bt-topbar .bt-rail__brand-mini {
+    display: inline-flex;
+  }
+
+  .bt-topbar__actions {
+    gap: 4px;
+  }
+
+  .bt-portfolio-switcher {
+    display: block;
+    flex: 0 1 200px;
+    min-width: 0;
+  }
+
+  .bt-topbar .bt-portfolio-trigger {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+    gap: 6px;
+  }
+
+  .bt-topbar .bt-portfolio-trigger .bt-portfolio-default {
     display: none;
   }
 

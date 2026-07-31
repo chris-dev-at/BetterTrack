@@ -142,7 +142,7 @@ export function OAuthAppsPage() {
           <span>
             <span className="font-medium">Public client (PKCE)</span>
             <br />
-            <span className="text-neutral-500">
+            <span className="text-neutral-400">
               Mobile / SPA apps that can&apos;t keep a secret. Uncheck for a backend that can hold a
               client secret.
             </span>
@@ -186,7 +186,7 @@ export function OAuthAppsPage() {
                       {app.public ? 'public / PKCE' : 'confidential'}
                     </Badge>
                   </div>
-                  <div className="mt-1 font-mono text-xs text-neutral-500">{app.clientId}</div>
+                  <div className="mt-1 font-mono text-xs text-neutral-400">{app.clientId}</div>
                 </div>
                 <div className="flex shrink-0 gap-2">
                   <Button
@@ -221,7 +221,7 @@ export function OAuthAppsPage() {
                   </span>
                 ))}
               </div>
-              <div className="text-xs text-neutral-500">
+              <div className="text-xs text-neutral-400">
                 Redirect: {app.redirectUris.join(', ')} · Created {formatDateTime(app.createdAt)}
               </div>
             </div>
@@ -406,7 +406,7 @@ function EditOAuthAppModal({
     <Modal title={`Edit ${app.name}`} onClose={onClose}>
       <form onSubmit={onSubmit} className="flex flex-col gap-4">
         <div className="rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2">
-          <div className="text-xs text-neutral-500">Client ID (immutable)</div>
+          <div className="text-xs text-neutral-400">Client ID (immutable)</div>
           <div className="font-mono text-xs text-neutral-300">{app.clientId}</div>
         </div>
 
@@ -420,7 +420,7 @@ function EditOAuthAppModal({
 
         <label className="flex flex-col gap-1 text-sm">
           <span className="font-medium text-neutral-300">Redirect URIs</span>
-          <span className="text-xs text-neutral-500">
+          <span className="text-xs text-neutral-400">
             One per line. https, http-loopback, or a custom-scheme deep link.
           </span>
           <textarea
@@ -434,7 +434,7 @@ function EditOAuthAppModal({
 
         <fieldset className="flex flex-col gap-2">
           <legend className="text-sm font-medium text-neutral-300">Scopes</legend>
-          <p className="text-xs text-neutral-500">
+          <p className="text-xs text-neutral-400">
             Adding a scope does not grant it to users already signed in — they must re-consent.
             Removing a scope takes effect immediately.
           </p>

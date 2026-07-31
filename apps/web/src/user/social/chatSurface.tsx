@@ -43,6 +43,8 @@ import { useAuth } from '../AuthContext';
 import { Avatar } from '../components/Avatar';
 import { Dialog } from '../components/Dialog';
 import { Alert, cx } from '../components/ui';
+import { NormalModeOnly } from '../vault/ui/ParanoidSurfaceGate';
+import { useResolvedPrivacyMode } from '../vault/usePrivacyMode';
 
 /**
  * The friend-chat surface (PROJECTPLAN.md §13.3 V3-P8) as reusable parts.
@@ -335,10 +337,12 @@ function MessageBubble({
           padding: '8px 11px',
         }}
       >
-        {message.chip ? <ShareChipView chip={message.chip} /> : null}
-        {mine && message.chip && recipient ? (
-          <ChipShareShortcut chip={message.chip} recipient={recipient} />
-        ) : null}
+        <NormalModeOnly>
+          {message.chip ? <ShareChipView chip={message.chip} /> : null}
+          {mine && message.chip && recipient ? (
+            <ChipShareShortcut chip={message.chip} recipient={recipient} />
+          ) : null}
+        </NormalModeOnly>
         {message.body ? <p className="whitespace-pre-wrap break-words">{message.body}</p> : null}
         <span className={cx('bt-meta', mine ? 'text-right' : 'text-left')} style={{ fontSize: 11 }}>
           {formatDateTime(message.createdAt)}
@@ -661,6 +665,7 @@ function MessageComposer({
   disabled: boolean;
 }) {
   const t = useT();
+  const sharingAllowed = useResolvedPrivacyMode() === 'normal';
   const [text, setText] = useState('');
   const [shareOpen, setShareOpen] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -696,27 +701,29 @@ function MessageComposer({
 
   return (
     <form onSubmit={submit} className="bt-t-rule flex items-end gap-2" style={{ padding: 12 }}>
-      <button
-        type="button"
-        onClick={() => setShareOpen(true)}
-        disabled={disabled}
-        title={t('social.chat.attach')}
-        aria-label={t('social.chat.attach')}
-        className="bt-btn bt-btn--quiet bt-btn--icon"
-      >
-        <svg
-          className="h-5 w-5"
-          viewBox="0 0 24 24"
-          fill="none"
-          stroke="currentColor"
-          strokeWidth={1.6}
-          strokeLinecap="round"
-          strokeLinejoin="round"
-          aria-hidden="true"
+      {sharingAllowed ? (
+        <button
+          type="button"
+          onClick={() => setShareOpen(true)}
+          disabled={disabled}
+          title={t('social.chat.attach')}
+          aria-label={t('social.chat.attach')}
+          className="bt-btn bt-btn--quiet bt-btn--icon"
         >
-          <path d="M21 12.5l-8.5 8.5a5 5 0 01-7-7l9-9a3.5 3.5 0 015 5l-9 9a2 2 0 01-3-3l8.5-8.5" />
-        </svg>
-      </button>
+          <svg
+            className="h-5 w-5"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={1.6}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M21 12.5l-8.5 8.5a5 5 0 01-7-7l9-9a3.5 3.5 0 015 5l-9 9a2 2 0 01-3-3l8.5-8.5" />
+          </svg>
+        </button>
+      ) : null}
       {/* Native element (not the `Textarea` primitive) because the composer owns
           a ref for the focus dance; the Origin class carries the same visuals. */}
       <textarea
@@ -749,7 +756,7 @@ function MessageComposer({
       >
         {t('social.chat.send')}
       </Button>
-      {shareOpen ? (
+      {shareOpen && sharingAllowed ? (
         <SharePickerDialog
           onClose={() => setShareOpen(false)}
           onPick={(item) => {

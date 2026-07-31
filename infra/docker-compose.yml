@@ -146,6 +146,7 @@ services:
       BT_PORT_PRODUCT: '${BT_PORT_PRODUCT:-8082}'
       BT_PORT_MOBILE: '${BT_PORT_MOBILE:-8083}'
       BT_API_ORIGIN: '${BT_API_ORIGIN:-}'
+      BT_PRODUCT_ORIGIN: '${BT_PRODUCT_ORIGIN:-}'
       # Same value the api reads (below). The front proxy renders the static CSP
       # at start, and the admin Diagnostics panel embeds this URL in an iframe on
       # the auth-gated-subdomain path — so frame-src must carry exactly this
