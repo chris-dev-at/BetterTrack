@@ -1671,6 +1671,8 @@ function RowFields({
   taxDefaultActive?: boolean;
 }) {
   const symbol = row.asset.symbol;
+  const quantityInputId = useId();
+  const priceInputId = useId();
   const isAmountMode = row.entryMode === 'amount';
   const derived =
     isAmountMode && row.price.trim() !== '' && row.amount.trim() !== ''
@@ -1751,12 +1753,15 @@ function RowFields({
 
       {/* Quantity | Price row. */}
       <div className="grid grid-cols-2 gap-3">
-        <label className="group flex flex-col gap-1.5">
+        <div className="group flex flex-col gap-1.5">
           <span className="flex min-h-5 items-center justify-between gap-2">
-            <FieldLabel>{amountLabel}</FieldLabel>
+            <label htmlFor={quantityInputId}>
+              <FieldLabel>{amountLabel}</FieldLabel>
+            </label>
             {onFillMax ? <MaxChip symbol={symbol} t={t} onClick={onFillMax} /> : null}
           </span>
           <input
+            id={quantityInputId}
             type="number"
             inputMode="decimal"
             step="any"
@@ -1770,17 +1775,20 @@ function RowFields({
             }
             className={inputClass}
           />
-        </label>
+        </div>
 
-        <label className="group flex flex-col gap-1.5">
+        <div className="group flex flex-col gap-1.5">
           <span className="flex min-h-5 items-center">
-            <FieldLabel>
-              {t('portfolio.transaction.priceLabel')}
-              {link?.priceAuto ? <AutoHint /> : null}
-            </FieldLabel>
+            <label htmlFor={priceInputId}>
+              <FieldLabel>
+                {t('portfolio.transaction.priceLabel')}
+                {link?.priceAuto ? <AutoHint /> : null}
+              </FieldLabel>
+            </label>
           </span>
           <span className="relative">
             <input
+              id={priceInputId}
               type="number"
               inputMode="decimal"
               step="any"
@@ -1816,7 +1824,7 @@ function RowFields({
               ) : null}
             </span>
           </span>
-        </label>
+        </div>
       </div>
 
       {link?.note ? (

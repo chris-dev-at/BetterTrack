@@ -75,7 +75,7 @@ async function createWebhookViaSettings(page: Page, receiver: CaptureReceiver): 
   // bare dialog locator matches two elements.
   const dialog = page.getByRole('dialog', { name: 'Your webhook signing secret' });
   await expect(dialog).toBeVisible({ timeout: 15_000 });
-  await dialog.getByRole('button', { name: 'Done' }).click();
+  await dialog.getByRole('button', { name: "I've saved this" }).click();
   await expect(dialog).toBeHidden();
 }
 

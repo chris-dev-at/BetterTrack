@@ -403,6 +403,14 @@ test('the header exposes a live, enabled notification bell', async () => {
 
   const bell = await screen.findByRole('button', { name: 'Notifications' });
   expect(bell).not.toBeDisabled();
+  const actions = bell.closest('.bt-topbar__actions');
+  expect(actions).not.toBeNull();
+  expect(
+    within(actions as HTMLElement).getByRole('button', { name: 'Create' }),
+  ).toBeInTheDocument();
+  expect(
+    screen.getByRole('button', { name: 'Switch portfolio' }).closest('.bt-portfolio-switcher'),
+  ).not.toBeNull();
 });
 
 test('the footer shows the passion tagline on every page', async () => {

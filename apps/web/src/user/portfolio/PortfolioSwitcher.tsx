@@ -245,7 +245,7 @@ export function PortfolioSwitcher() {
   const activeKind = active ? (kinds[active.id] ?? DEFAULT_PORTFOLIO_KIND) : null;
 
   return (
-    <div ref={rootRef} className="relative inline-block">
+    <div ref={rootRef} className="bt-portfolio-switcher relative inline-block">
       <button
         ref={triggerRef}
         type="button"

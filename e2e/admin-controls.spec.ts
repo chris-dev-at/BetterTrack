@@ -42,8 +42,10 @@ test('admin chat ban: a banned user sees the neutral notice and cannot send', as
   // A fresh attempt to send is refused; the neutral notice replaces the composer,
   // and the already-sent message stays readable.
   await sender.page.reload();
-  const conversation = sender.page.getByRole('button').filter({ hasText: recipient.username });
-  await conversation.first().click();
+  // Selecting the conversation put its friend id in the URL. Reload therefore
+  // reopens the thread directly; on phones the conversation list is deliberately
+  // hidden while a thread is selected, so there is no row to click again.
+  await expect(sender.page.getByText(first, { exact: true })).toBeVisible({ timeout: 15_000 });
   await sender.page.getByPlaceholder('Message').fill('should not send');
   await sender.page.getByRole('button', { name: 'Send' }).click();
 

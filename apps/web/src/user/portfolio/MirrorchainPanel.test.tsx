@@ -1,12 +1,21 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test, vi } from 'vitest';
+
+vi.mock('../../lib/mirrorApi', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../lib/mirrorApi')>()),
+  getMirrorActivity: vi.fn(),
+  getMirrorMembers: vi.fn(),
+}));
 
 import type { PortfolioForkProvenance, PortfolioMirrorBadge } from '@bettertrack/contracts';
 
 import { I18nProvider } from '../../i18n';
+import { getMirrorActivity, getMirrorMembers } from '../../lib/mirrorApi';
 import {
+  MemberSheet,
   MirrorAttributionChip,
   MirrorAvatarStack,
   MirrorForkProvenanceLine,
@@ -100,5 +109,50 @@ describe('MirrorchainPanel — attribution chip (design §10)', () => {
       />,
     );
     expect(screen.getByText('Group member')).toBeInTheDocument();
+  });
+});
+
+describe('MirrorchainPanel — member actions', () => {
+  test('interpolates the target username in the confirmation title and body', async () => {
+    vi.mocked(getMirrorMembers).mockResolvedValue({
+      chainId: '00000000-0000-4000-8000-000000000020',
+      name: 'Household',
+      status: 'active',
+      role: 'owner',
+      memberCap: 16,
+      members: [
+        {
+          userId: '00000000-0000-4000-8000-000000000021',
+          username: 'owner',
+          profileIcon: null,
+          role: 'owner',
+          joinedAt: '2026-07-30T00:00:00.000Z',
+          isSelf: true,
+          sync: { appliedSeq: 4, lastSeq: 4, percent: 100, synced: true },
+        },
+        {
+          userId: '00000000-0000-4000-8000-000000000022',
+          username: 'alice',
+          profileIcon: null,
+          role: 'member',
+          joinedAt: '2026-07-30T00:00:00.000Z',
+          isSelf: false,
+          sync: { appliedSeq: 4, lastSeq: 4, percent: 100, synced: true },
+        },
+      ],
+    });
+    vi.mocked(getMirrorActivity).mockResolvedValue({ entries: [], nextCursor: null });
+    const user = userEvent.setup();
+
+    wrap(<MemberSheet chainId="00000000-0000-4000-8000-000000000020" onClose={() => {}} />);
+
+    const alice = await screen.findByText('alice');
+    const row = alice.closest('li');
+    expect(row).not.toBeNull();
+    await user.click(within(row!).getByRole('button', { name: 'Remove' }));
+
+    const confirmation = await screen.findByRole('dialog', { name: 'Remove alice?' });
+    expect(confirmation).toHaveTextContent('alice keeps their copy; it just stops syncing.');
+    expect(confirmation).not.toHaveTextContent('{{username}}');
   });
 });
