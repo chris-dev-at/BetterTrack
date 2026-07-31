@@ -16,11 +16,13 @@
  *      removes a reviewed surface.
  *
  * Everything else in the universe is a non-V5 surface and belongs in
- * NON_V5_SURFACES with the reason it is out of scope. Out of scope means one
- * thing only: #739 requires non-V5 surfaces to be left as they are, so no copy
- * or state work happens on them here. It does NOT mean unguarded — the
- * accompanying test scans the WHOLE universe for literal user-facing copy, and
- * the pre-V5 English-only admin pages carry a frozen debt that may only shrink.
+ * NON_V5_SURFACES with the reason it is out of scope. That classification means
+ * its async-state coverage is not claimed as part of a V5 deliverable; it does
+ * not promise the source file is byte-identical when Q1 localizes shared
+ * primitives used by inventoried surfaces. It also does NOT mean unguarded —
+ * the accompanying test scans the WHOLE universe for literal user-facing copy,
+ * and the pre-V5 English-only admin pages carry a frozen debt that may only
+ * shrink.
  *
  * ── Why an omission cannot hide ───────────────────────────────────────────
  *
@@ -177,32 +179,44 @@ export const V5_SURFACE_INVENTORY = [
     routes: [
       '/control/connections',
       '/portfolio/activity',
+      '/portfolio/import',
       '/portfolio/cash-flow/accounts',
       '/assets/:id',
     ],
     components: [
       'user/control/panels/ConnectionsPanel.tsx',
+      'user/control/panels/SignInPanel.tsx',
       'user/portfolio/SourceBadge.tsx',
       'user/components/TransactionDialog.tsx',
+      'user/portfolio/ImportPage.tsx',
       'user/portfolio/CashSourcesPage.tsx',
       'user/assets/capabilityTags.tsx',
     ],
     copyRoots: [
+      'control.signIn',
       'settings.connections',
+      'settings.password',
+      'settings.security',
+      'portfolio.import',
       'portfolio.sourceTag',
       'portfolio.cashSources',
       'assets.capability',
     ],
-    copyReview: 'Google/Drive rows, source labels/filters, and capability tags reviewed.',
+    copyReview:
+      'Moved Google identity, broker-import source tags, source filters, and capability tags reviewed.',
     states: {
-      loading: covered('Connection and cash-source reads render compact skeletons.'),
-      empty: covered(
-        'Cash sources have a creation empty state; unsupported capability tags stay absent.',
+      loading: covered(
+        'Connection, sign-in, import, and cash-source reads render progress states.',
       ),
-      error: covered('Google/Drive and cash-source reads expose localized retry actions.'),
+      empty: covered(
+        'Passkeys, import previews, and cash sources distinguish genuine empty outcomes.',
+      ),
+      error: covered('Identity, import, and cash-source failures expose localized recovery.'),
     },
     tests: [
       'user/control/panels/ConnectionsPanel.test.tsx',
+      'user/control/panels/SignInPanel.test.tsx',
+      'user/portfolio/ImportPage.test.tsx',
       'user/portfolio/SourceBadge.test.tsx',
       'user/portfolio/CashSourcesPage.test.tsx',
     ],
@@ -239,10 +253,10 @@ export const V5_SURFACE_INVENTORY = [
         'Portfolio, analytics, asset, watchlist, and health reads all render skeleton/spinner states.',
       ),
       empty: covered(
-        'Holdings/chart/watchlist/provider absence uses compact shared empty states or neutral rows.',
+        'No-portfolio analytics offers creation; holdings/chart/watchlist/provider absence uses compact shared empty states or neutral rows.',
       ),
       error: covered(
-        'Primary reads offer retry/refresh; optional provider blocks keep their established capability behavior.',
+        'Portfolio and analytics reads retry without conflating a successful empty portfolio list with failure.',
       ),
     },
     tests: [
@@ -414,11 +428,15 @@ export const V5_SURFACE_INVENTORY = [
     copyReview:
       'N-way comparison and nested Blueprint copy reviewed; malformed German singulars corrected.',
     states: {
-      loading: covered('All routed reads use Skeleton/loading frames.'),
+      loading: covered(
+        'Blueprint lists, nested picks, and comparison execution use loading frames.',
+      ),
       empty: covered(
         'Insufficient selections, no Blueprints/ideas, and no positions are explicit.',
       ),
-      error: covered('List/detail/idea errors expose retry; comparison offers parameter recovery.'),
+      error: covered(
+        'Blueprint-list, nested-list, and comparison-execution failures are distinct and retry in place.',
+      ),
     },
     tests: [
       'user/workboard/ComparisonPage.test.tsx',
@@ -443,10 +461,12 @@ export const V5_SURFACE_INVENTORY = [
     copyReview:
       'Projection factors, order schedules, and all calculator labels reviewed in informal DE.',
     states: {
-      loading: covered('Prefill/order reads show disabled progress or Skeleton rows.'),
+      loading: covered(
+        'Forecast prefill reads show compact progress while standalone calculators remain usable.',
+      ),
       empty: covered('No portfolio, no orders, and no calculator positions have compact guidance.'),
       error: covered(
-        'Standing-order load now retries; optional projection factors degrade to editable local inputs.',
+        'Portfolio/detail/history prefill and standing-order failures expose retry; calculators stay standalone.',
       ),
     },
     tests: [
@@ -516,11 +536,11 @@ export const V5_SURFACE_INVENTORY = [
       'Groups, audience ladder, threads/reactions, shared titles, and chat copy reviewed.',
     states: {
       loading: covered(
-        'Lists, profiles, shared pages, chat, and comment count expose skeleton/loading states.',
+        'Audience, MIRRORCHAIN metadata, lists, profiles, shared pages, chat, and comments expose loading states.',
       ),
       empty: covered('Every collection has a contextual EmptyState or compact no-comments row.'),
       error: covered(
-        'Recoverable reads now retry; confirmed 401/403/404 outcomes remain privacy-indistinguishable.',
+        'Audience and co-member metadata gate sharing until retry succeeds; confirmed 401/403/404 outcomes remain privacy-indistinguishable.',
       ),
     },
     tests: [
@@ -755,8 +775,9 @@ export interface V5SurfaceExemption {
  * here; the test enumerates the universe from disk and fails on anything that
  * appears in neither list, in both, or nowhere on disk.
  *
- * Listing a module here means it stays as it is for #739 — no copy work, no
- * state work. It does not exempt it from the literal-copy scan.
+ * Listing a module here means Q1 does not claim its async states as V5 coverage.
+ * Shared microcopy may still be localized for inventoried consumers. No module
+ * is exempt from the literal-copy scan.
  */
 export const NON_V5_SURFACES = [
   {
@@ -782,7 +803,7 @@ export const NON_V5_SURFACES = [
   {
     path: 'admin/components/ui.tsx',
     reason: 'no-v5-deliverable',
-    note: 'V1 admin control kit (#11).',
+    note: 'V1 admin control kit (#11); Q1 localized shared Spinner/CopyField defaults only.',
   },
   {
     path: 'admin/pages/AnnouncementsPage.tsx',
@@ -983,11 +1004,6 @@ export const NON_V5_SURFACES = [
     note: 'V2 session list, re-housed by the R2 Control Center.',
   },
   {
-    path: 'user/control/panels/SignInPanel.tsx',
-    reason: 'no-v5-deliverable',
-    note: 'V2/V4 credentials, passkeys and 2FA, re-housed by the R2 Control Center.',
-  },
-  {
     path: 'user/control/panels/panelKit.tsx',
     reason: 'no-user-copy',
     note: 'R2 Control Center panel primitives; every string is caller-supplied.',
@@ -1161,11 +1177,6 @@ export const NON_V5_SURFACES = [
     path: 'user/people/PeopleLayout.tsx',
     reason: 'no-v5-deliverable',
     note: 'Origin-redesign people workspace chrome (#935).',
-  },
-  {
-    path: 'user/portfolio/ImportPage.tsx',
-    reason: 'no-v5-deliverable',
-    note: 'V4-P8 broker CSV import.',
   },
   {
     path: 'user/portfolio/PortfolioIconChip.tsx',
@@ -1345,7 +1356,6 @@ export const NON_V5_ROUTES = [
     reason: 'inventoried-component',
     note: 'Deep link into the inventoried ChatPage (P8).',
   },
-  { path: '/portfolio/import', reason: 'no-v5-deliverable', note: 'V4-P8 broker CSV import.' },
   { path: '/reset/:token', reason: 'no-v5-deliverable', note: 'V2 password reset.' },
   {
     path: '/review',

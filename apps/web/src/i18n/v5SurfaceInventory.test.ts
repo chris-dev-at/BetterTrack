@@ -94,6 +94,7 @@ user/control/panels/NotificationsPanel.tsx
 user/control/panels/OAuthAppsPanel.tsx
 user/control/panels/PrivacyPanel.tsx
 user/control/panels/ProfilePanel.tsx
+user/control/panels/SignInPanel.tsx
 user/control/panels/WebhooksPanel.tsx
 user/control/panels/taxModeList.tsx
 user/expenses/BudgetDialog.tsx
@@ -117,6 +118,7 @@ user/portfolio/CashDialog.tsx
 user/portfolio/CashSourceDialog.tsx
 user/portfolio/CashSourcesPage.tsx
 user/portfolio/CustomInvestmentDialog.tsx
+user/portfolio/ImportPage.tsx
 user/portfolio/MirrorchainPanel.tsx
 user/portfolio/PortfolioPage.tsx
 user/portfolio/PortfolioSection.tsx
@@ -215,6 +217,7 @@ const EXPECTED_V5_ROUTES = baseline(`
 /portfolio/cash-flow/import
 /portfolio/cash-flow/rules
 /portfolio/cash-flow/transactions
+/portfolio/import
 /portfolio/settings
 /portfolio/tax
 /portfolio/tax/print

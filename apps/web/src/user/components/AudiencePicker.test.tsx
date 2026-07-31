@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
@@ -14,6 +14,14 @@ import { getAudience, listFriends, listGroups, setAudience } from '../../lib/soc
 import { AudiencePicker } from './AudiencePicker';
 
 const SUBJECT = '00000000-0000-0000-0000-000000000001';
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((next) => {
+    resolve = next;
+  });
+  return { promise, resolve };
+}
 
 function renderPicker(onClose = vi.fn()) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -36,6 +44,88 @@ beforeEach(() => {
   });
   vi.mocked(listFriends).mockResolvedValue({ friends: [] });
   vi.mocked(listGroups).mockResolvedValue({ groups: [] });
+});
+
+describe('AudiencePicker — authoritative reads', () => {
+  test('does not expose a save action before the current audience is known', async () => {
+    const audienceRead = deferred<Awaited<ReturnType<typeof getAudience>>>();
+    vi.mocked(getAudience).mockReturnValue(audienceRead.promise);
+    renderPicker();
+
+    expect(await screen.findByText('Loading sharing settings…')).toBeInTheDocument();
+    expect(screen.queryByRole('radio')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^save$/i })).not.toBeInTheDocument();
+    expect(setAudience).not.toHaveBeenCalled();
+
+    await act(async () => {
+      audienceRead.resolve({
+        kind: 'portfolio',
+        subjectId: SUBJECT,
+        audience: 'all_friends',
+        friendIds: [],
+        groupId: null,
+        link: { active: false, createdAt: null },
+      });
+    });
+
+    expect(await screen.findByRole('radio', { name: /all friends/i })).toBeChecked();
+    expect(setAudience).not.toHaveBeenCalled();
+  });
+
+  test('a failed current-audience read retries without defaulting or overwriting it', async () => {
+    vi.mocked(getAudience)
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce({
+        kind: 'portfolio',
+        subjectId: SUBJECT,
+        audience: 'all_friends',
+        friendIds: [],
+        groupId: null,
+        link: { active: false, createdAt: null },
+      });
+    const user = userEvent.setup();
+    renderPicker();
+
+    expect(
+      await screen.findByText('Could not load the current sharing settings. Please try again.'),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('radio')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^save$/i })).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Try again' }));
+
+    expect(await screen.findByRole('radio', { name: /all friends/i })).toBeChecked();
+    expect(getAudience).toHaveBeenCalledTimes(2);
+    expect(setAudience).not.toHaveBeenCalled();
+  });
+
+  test.each(['friends', 'groups'] as const)(
+    'a failed %s roster stays distinct from a genuine empty roster and can retry',
+    async (read) => {
+      if (read === 'friends') {
+        vi.mocked(listFriends)
+          .mockRejectedValueOnce(new Error('offline'))
+          .mockResolvedValueOnce({ friends: [] });
+      } else {
+        vi.mocked(listGroups)
+          .mockRejectedValueOnce(new Error('offline'))
+          .mockResolvedValueOnce({ groups: [] });
+      }
+      const user = userEvent.setup();
+      renderPicker();
+
+      expect(
+        await screen.findByText('Could not load the current sharing settings. Please try again.'),
+      ).toBeInTheDocument();
+      expect(screen.queryByText(/You have no (friends|groups) yet/i)).not.toBeInTheDocument();
+
+      await user.click(screen.getByRole('button', { name: 'Try again' }));
+
+      expect(await screen.findByRole('radio', { name: /only me/i })).toBeChecked();
+      expect(read === 'friends' ? listFriends : listGroups).toHaveBeenCalledTimes(2);
+      expect(setAudience).not.toHaveBeenCalled();
+    },
+  );
 });
 
 describe('AudiencePicker — friction ladder (§16)', () => {

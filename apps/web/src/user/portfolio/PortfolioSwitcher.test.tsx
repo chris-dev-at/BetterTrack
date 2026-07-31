@@ -128,10 +128,10 @@ function ActiveProbe() {
   return <div data-testid="active-param">{params.get(ACTIVE_PORTFOLIO_PARAM) ?? ''}</div>;
 }
 
-function renderSwitcher() {
+function renderSwitcher(initialPath = '/portfolio') {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
-    <MemoryRouter initialEntries={['/portfolio']}>
+    <MemoryRouter initialEntries={[initialPath]}>
       <QueryClientProvider client={client}>
         <PortfolioSwitcher />
         <ActiveProbe />
@@ -171,6 +171,13 @@ describe('resolveActivePortfolio session stickiness', () => {
 });
 
 describe('PortfolioSwitcher', () => {
+  test('the shared create query opens the portfolio wizard directly', async () => {
+    vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [] });
+    renderSwitcher('/portfolio?create=1');
+
+    expect(await screen.findByLabelText('Portfolio name')).toBeInTheDocument();
+  });
+
   test('shows the active default and lists active portfolios', async () => {
     vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [MAIN, TRADING] });
     renderSwitcher();

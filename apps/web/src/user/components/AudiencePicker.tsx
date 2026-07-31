@@ -8,7 +8,7 @@ import { useT } from '../../i18n';
 import { Button, Icon, Input } from '../../ui/origin';
 import { Avatar } from './Avatar';
 import { Dialog } from './Dialog';
-import { Alert } from './ui';
+import { Alert, Spinner } from './ui';
 
 /**
  * The ONE reusable sharing control (PROJECTPLAN.md §13.3 V3-P5/P6, §16), used by
@@ -234,7 +234,12 @@ export function AudiencePicker({
   }
 
   const groups = groupsQuery.data?.groups ?? [];
+  const readsPending = audienceQuery.isPending || friendsQuery.isPending || groupsQuery.isPending;
+  const readsFailed = audienceQuery.isError || friendsQuery.isError || groupsQuery.isError;
   const canSubmit =
+    audienceQuery.isSuccess &&
+    friendsQuery.isSuccess &&
+    groupsQuery.isSuccess &&
     !mutation.isPending &&
     !(audience === 'public_link' && !acknowledged) &&
     // The group tier's friction: a group must actually be chosen to share.
@@ -260,6 +265,53 @@ export function AudiencePicker({
           <div className="flex justify-end">
             <Button onClick={onClose} variant="quiet">
               {t('common.close')}
+            </Button>
+          </div>
+        </div>
+      </Dialog>
+    );
+  }
+
+  if (readsPending && !readsFailed) {
+    return (
+      <Dialog
+        title={t('sharing.title', { name: subjectLabel })}
+        description={t('sharing.subtitle')}
+        onClose={onClose}
+      >
+        <div className="flex flex-col gap-4">
+          <Spinner label={t('sharing.loading')} />
+          <div className="flex justify-end">
+            <Button onClick={onClose} variant="quiet">
+              {t('sharing.cancel')}
+            </Button>
+          </div>
+        </div>
+      </Dialog>
+    );
+  }
+
+  if (readsFailed) {
+    return (
+      <Dialog
+        title={t('sharing.title', { name: subjectLabel })}
+        description={t('sharing.subtitle')}
+        onClose={onClose}
+      >
+        <div className="flex flex-col gap-4">
+          <Alert tone="error">{t('sharing.loadError')}</Alert>
+          <div className="flex justify-end gap-2">
+            <Button onClick={onClose} variant="quiet">
+              {t('sharing.cancel')}
+            </Button>
+            <Button
+              onClick={() => {
+                void audienceQuery.refetch();
+                void friendsQuery.refetch();
+                void groupsQuery.refetch();
+              }}
+            >
+              {t('common.retry')}
             </Button>
           </div>
         </div>

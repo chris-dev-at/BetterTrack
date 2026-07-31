@@ -381,7 +381,7 @@ export function AnalyticsPage() {
     );
   }
 
-  if (portfoliosQuery.isError || portfolioId === null || portfolioQuery.isError) {
+  if (portfoliosQuery.isError || (portfolioId !== null && portfolioQuery.isError)) {
     return (
       <div className="flex flex-col gap-4">
         <PageHeader t={t} />
@@ -396,6 +396,24 @@ export function AnalyticsPage() {
             {t('common.retry')}
           </Button>
         </div>
+      </div>
+    );
+  }
+
+  if (portfolioId === null) {
+    return (
+      <div className="flex flex-col gap-6">
+        <PageHeader t={t} />
+        <EmptyState
+          icon="📊"
+          title={t('portfolio.analytics.noPortfolio.title')}
+          description={t('portfolio.analytics.noPortfolio.description')}
+          cta={
+            <Link className="bt-btn bt-btn--primary" to="/portfolios?create=1">
+              {t('create.portfolio')}
+            </Link>
+          }
+        />
       </div>
     );
   }

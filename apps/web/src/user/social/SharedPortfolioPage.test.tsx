@@ -205,7 +205,7 @@ describe('SharedPortfolioPage', () => {
       await queryClient.refetchQueries({ queryKey: ['social', 'shared', PORTFOLIO_ID] });
     });
 
-    expect(await screen.findByText(/Could not load this shared portfolio/i)).toBeInTheDocument();
+    expect(await screen.findByText("This portfolio isn't available")).toBeInTheDocument();
     expect(screen.queryByText("Jane's Main")).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
     expect(getSharedPortfolio).toHaveBeenCalledTimes(2);

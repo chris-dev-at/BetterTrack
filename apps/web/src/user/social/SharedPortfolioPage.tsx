@@ -215,7 +215,17 @@ export function SharedPortfolioPage() {
   }
 
   if (query.isError && isConfirmedApiOutcome(query.error)) {
-    return <Alert tone="error">{t('social.shared.portfolioLoadError')}</Alert>;
+    return (
+      <div className="flex flex-col gap-4">
+        <Link className="bt-link self-start" to="/people">
+          {t('social.shared.backToFriends')}
+        </Link>
+        <EmptyState
+          title={t('social.shared.portfolioUnavailableTitle')}
+          description={t('social.shared.unavailableDescription')}
+        />
+      </div>
+    );
   }
 
   if (query.isError) {

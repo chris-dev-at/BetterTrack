@@ -142,6 +142,50 @@ beforeEach(() => {
 });
 
 describe('ComparisonPage', () => {
+  test('keeps a failed blueprint list distinct from the not-enough empty state and retries it', async () => {
+    vi.mocked(listConglomerates)
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce({
+        conglomerates: [cong('c1', 'Alpha', 3), cong('c2', 'Beta', 4)],
+      });
+    const user = userEvent.setup();
+    renderPage();
+
+    expect(
+      await screen.findByText('Could not load your blueprints. Please try again.'),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('Not enough blueprints yet')).not.toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Try again' }));
+
+    expect(await screen.findByRole('checkbox', { name: /Alpha/ })).toBeInTheDocument();
+    expect(listConglomerates).toHaveBeenCalledTimes(2);
+  });
+
+  test('retries a failed comparison execution without discarding the selections', async () => {
+    vi.mocked(listConglomerates).mockResolvedValue({
+      conglomerates: [cong('c1', 'Alpha', 3), cong('c2', 'Beta', 4)],
+    });
+    vi.mocked(compareConglomerates)
+      .mockRejectedValueOnce(new Error('offline'))
+      .mockResolvedValueOnce(buildResponse(['c1', 'c2'], 'c1'));
+    const user = userEvent.setup();
+    renderPage();
+
+    await screen.findByRole('checkbox', { name: /Alpha/ });
+    await selectConglomerates(user, ['Alpha', 'Beta']);
+    expect(
+      await screen.findByText('The comparison could not be computed. Please try again.'),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: 'Try again' }));
+
+    expect(
+      await screen.findByRole('table', { name: 'Blueprint comparison statistics' }),
+    ).toBeInTheDocument();
+    expect(compareConglomerates).toHaveBeenCalledTimes(2);
+  });
+
   test('three blueprints compare on one chart with a full stats grid (snapshot)', async () => {
     vi.mocked(listConglomerates).mockResolvedValue({
       conglomerates: [cong('c1', 'Alpha', 3), cong('c2', 'Beta', 4), cong('c3', 'Gamma', 2)],

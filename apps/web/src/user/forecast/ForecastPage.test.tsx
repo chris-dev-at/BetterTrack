@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, expect, test, vi } from 'vitest';
@@ -131,6 +131,14 @@ function makeQueryClient() {
   return new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 0 } } });
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((next) => {
+    resolve = next;
+  });
+  return { promise, resolve };
+}
+
 function renderForecast(mode: 'normal' | 'paranoid' = 'normal') {
   return render(
     <QueryClientProvider client={makeQueryClient()}>
@@ -157,6 +165,91 @@ beforeEach(() => {
     yearlyTotalEur: 0,
     holdings: [],
   });
+});
+
+test('shows prefill progress without hiding the standalone calculators', async () => {
+  const read = deferred<PortfolioListResponse>();
+  vi.mocked(listPortfolios).mockReturnValue(read.promise);
+  renderForecast();
+
+  expect(await screen.findByText('Loading portfolio data for forecasts…')).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: /Compound interest/i })).toBeInTheDocument();
+  expect(screen.queryByText(/Add or open a portfolio to enable prefill/i)).not.toBeInTheDocument();
+
+  await act(async () => {
+    read.resolve(PORTFOLIO_LIST);
+  });
+
+  expect(await screen.findByRole('heading', { name: 'Net-worth projection' })).toBeInTheDocument();
+});
+
+test('retries a failed portfolio-list prefill read while calculators remain usable', async () => {
+  vi.mocked(listPortfolios)
+    .mockRejectedValueOnce(new Error('offline'))
+    .mockResolvedValueOnce(PORTFOLIO_LIST);
+  const user = userEvent.setup();
+  renderForecast();
+
+  expect(
+    await screen.findByText(
+      'Could not load the portfolio data used by forecasts. Please try again.',
+    ),
+  ).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: /Compound interest/i })).toBeInTheDocument();
+
+  await user.click(screen.getByRole('button', { name: 'Try again' }));
+
+  expect(await screen.findByRole('heading', { name: 'Net-worth projection' })).toBeInTheDocument();
+  expect(listPortfolios).toHaveBeenCalledTimes(2);
+});
+
+test('retries failed portfolio-detail and analytics prefill reads together', async () => {
+  vi.mocked(getPortfolio)
+    .mockRejectedValueOnce(new Error('portfolio offline'))
+    .mockResolvedValueOnce(PORTFOLIO);
+  vi.mocked(getAnalyticsSeries)
+    .mockRejectedValueOnce(new Error('analytics offline'))
+    .mockResolvedValueOnce(ANALYTICS);
+  const user = userEvent.setup();
+  renderForecast();
+
+  expect(
+    await screen.findByText(
+      'Could not load the portfolio data used by forecasts. Please try again.',
+    ),
+  ).toBeInTheDocument();
+  await waitFor(() => {
+    expect(getPortfolio).toHaveBeenCalledTimes(1);
+    expect(getAnalyticsSeries).toHaveBeenCalledTimes(1);
+  });
+
+  await user.click(screen.getByRole('button', { name: 'Try again' }));
+
+  expect(await screen.findByRole('heading', { name: 'Net-worth projection' })).toBeInTheDocument();
+  expect(getPortfolio).toHaveBeenCalledTimes(2);
+  expect(
+    vi.mocked(getAnalyticsSeries).mock.calls.filter(([, params]) => params?.mode === 'perf'),
+  ).toHaveLength(2);
+});
+
+test('retries the encrypted-history prefill read in paranoid mode', async () => {
+  vi.mocked(getPortfolioHistory)
+    .mockRejectedValueOnce(new Error('history offline'))
+    .mockResolvedValueOnce(HISTORY);
+  const user = userEvent.setup();
+  renderForecast('paranoid');
+
+  expect(
+    await screen.findByText(
+      'Could not load the portfolio data used by forecasts. Please try again.',
+    ),
+  ).toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: 'Try again' }));
+
+  expect(await screen.findByRole('heading', { name: 'Net-worth projection' })).toBeInTheDocument();
+  expect(
+    vi.mocked(getPortfolioHistory).mock.calls.filter(([, range]) => range === 'MAX'),
+  ).toHaveLength(2);
 });
 
 test('the projection engine fills the net-worth projection slot', async () => {

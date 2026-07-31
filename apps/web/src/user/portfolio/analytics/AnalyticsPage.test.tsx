@@ -295,6 +295,22 @@ describe('AnalyticsPage — main graph, stats & contribution table', () => {
     expect(listPortfolios).toHaveBeenCalledTimes(2);
   });
 
+  test('shows a create-portfolio empty state when the portfolio list succeeds empty', async () => {
+    vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [] });
+    renderPage();
+
+    expect(await screen.findByText('No portfolio to analyze yet')).toBeInTheDocument();
+    expect(
+      screen.queryByText("Couldn't load analytics for this portfolio."),
+    ).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'New portfolio' })).toHaveAttribute(
+      'href',
+      '/portfolios?create=1',
+    );
+    expect(getPortfolio).not.toHaveBeenCalled();
+  });
+
   test('renders the primary curve, per-series stats, contribution rows and the locale-formatted window', async () => {
     renderPage();
 

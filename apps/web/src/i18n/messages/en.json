@@ -1635,6 +1635,10 @@
         "title": "Nothing to analyze yet",
         "description": "Add a holding to your portfolio to see the analytics deep-dive."
       },
+      "noPortfolio": {
+        "title": "No portfolio to analyze yet",
+        "description": "Create a portfolio first, then its performance and risk analysis will appear here."
+      },
       "range": {
         "heading": "Date range",
         "m1": "1M",
@@ -2639,6 +2643,7 @@
       "emptyPositions": "No positions",
       "noConglomerates": "Not enough blueprints yet",
       "noConglomeratesHint": "Build at least two blueprints with positions to compare them here.",
+      "listError": "Could not load your blueprints. Please try again.",
       "needTwo": "Select at least {{min}} blueprints to compare.",
       "error": "The comparison could not be computed. Please try again.",
       "windowError": "One of the selected blueprints has too little price history to cover the comparison window. Try a shorter range or deselect it.",
@@ -2656,6 +2661,10 @@
     "title": "Forecast",
     "subtitle": "Project your portfolio forward and run the number quickly.",
     "prefillFromPortfolio": "Prefill from my portfolio",
+    "prefill": {
+      "loading": "Loading portfolio data for forecasts…",
+      "error": "Could not load the portfolio data used by forecasts. Please try again."
+    },
     "projection": {
       "title": "Net-worth projection",
       "description": "Project your net worth forward from your portfolio value, its historical return and your standing orders — then overlay what-if plans.",
@@ -3000,6 +3009,8 @@
     "save": "Save",
     "saving": "Saving…",
     "cancel": "Cancel",
+    "loading": "Loading sharing settings…",
+    "loadError": "Could not load the current sharing settings. Please try again.",
     "error": "Could not update sharing. Please try again.",
     "stopSharing": "Stop sharing",
     "shareButton": "Share",
@@ -3093,6 +3104,8 @@
       "emptyTitle": "You don't own anything yet",
       "emptyBody": "Create a portfolio, blueprint or watchlist and it appears here to manage its sharing.",
       "error": "Could not load your items. Please refresh the page.",
+      "portfolioMetadataLoading": "Checking group-portfolio privacy…",
+      "portfolioMetadataError": "Could not verify this portfolio's group-sharing notice. Try again before sharing it.",
       "publicProfileLink": "Manage your public profile"
     },
     "alertSharing": {
@@ -3263,6 +3276,7 @@
       "portfolioEmptyTitle": "Nothing to show yet",
       "portfolioEmptyDescription": "{{username}} hasn't recorded any holdings in this portfolio.",
       "portfolioChartAria": "Shared portfolio value over time",
+      "portfolioUnavailableTitle": "This portfolio isn't available",
       "conglomerateUnavailableTitle": "This blueprint isn't available",
       "watchlistUnavailableTitle": "This watchlist isn't available",
       "watchlistTitle": "{{owner}}’s {{name}}",
