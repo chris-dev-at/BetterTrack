@@ -77,7 +77,16 @@ const REPO_ROOT = resolve(MF_DIR, '..');
 const STATE = join(MF_DIR, 'state');
 const CONTROL = join(STATE, 'control');
 const AUTH_ROOT_PATH = join(MF_DIR, 'auth');
-const AUTH_ROOT = existsSync(AUTH_ROOT_PATH) ? realpathSync(AUTH_ROOT_PATH) : AUTH_ROOT_PATH;
+// Resolve through the deploy worktree's auth symlink, but never let a failed
+// resolution decide the auth root by omission: fall back to the literal path so
+// the store still finds the vault, and let the store handle the link itself.
+const AUTH_ROOT = (() => {
+  try {
+    return realpathSync(AUTH_ROOT_PATH);
+  } catch {
+    return AUTH_ROOT_PATH;
+  }
+})();
 const LEDGER = join(REPO_ROOT, 'factory', 'usage', 'ledger.jsonl');
 const CONTROL_LOG = join(STATE, 'logs', 'control.log');
 const PROVIDER_TESTS_FILE = join(CONTROL, 'provider-tests.json');
@@ -578,10 +587,23 @@ function unavailableClaudeCredentialState() {
   };
 }
 
+// A credential store that cannot be read empties the accounts panel and drops
+// every lane back to the legacy .env account. That is far too quiet a failure to
+// swallow: it stayed invisible for hours once. Report each distinct reason once
+// so the log says what broke, without one bad read spamming every poll.
+let loggedCredentialFailure = null;
+
 async function publicClaudeCredentialState() {
   try {
-    return await claudeCredentials.list();
-  } catch {
+    const state = await claudeCredentials.list();
+    loggedCredentialFailure = null;
+    return state;
+  } catch (error) {
+    const reason = `${error?.code || 'UNKNOWN'}: ${error?.message || 'unreadable'}`;
+    if (loggedCredentialFailure !== reason) {
+      loggedCredentialFailure = reason;
+      void clog(`claude credential store unreadable at ${AUTH_ROOT} — ${reason}`);
+    }
     return unavailableClaudeCredentialState();
   }
 }
