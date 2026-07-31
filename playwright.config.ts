@@ -128,7 +128,18 @@ export default defineConfig({
       // URL would leave `/api` pointing at whatever owns 3000 (§4.6 same-origin
       // dev topology). `--strictPort` makes a busy port a loud failure instead
       // of Vite silently serving the suite from the next free one.
-      env: { ...process.env, BT_WEB_DEV_PROXY_TARGET: API_BASE_URL },
+      //
+      // VITE_GOOGLE_DRIVE_CLIENT_ID: the ConnectionsPanel gates its Drive
+      // app-data controls (PD8's "Add server copy" among them) on this build
+      // var being non-empty; without it PD9-A4 finds the button permanently
+      // disabled behind "not configured on this deployment". The fake id
+      // mirrors the fake-IdP pattern — it is only ever read as a boolean here,
+      // and the Drive boundary itself is doubled by e2e/support/pd9Drive.
+      env: {
+        ...process.env,
+        BT_WEB_DEV_PROXY_TARGET: API_BASE_URL,
+        VITE_GOOGLE_DRIVE_CLIENT_ID: GOOGLE_CLIENT_ID,
+      },
       reuseExistingServer: false,
       timeout: 60_000,
     },

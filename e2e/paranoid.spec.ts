@@ -19,6 +19,7 @@ import {
   assertPd9DesignPrecondition,
   createPd9Harness,
   PD9_TRACEABILITY,
+  type Pd9Harness,
   type Pd9VaultStorageProbe,
 } from './support/pd9';
 import {
@@ -47,12 +48,20 @@ const KILLED_ROUTE_MATRIX = [
   ['/control/profile', '/control/account'],
   ['/settings/profile', '/portfolio'],
   ['/portfolio/import', '/portfolio'],
-  ['/portfolio/cash-flow', '/portfolio/cash-flow/accounts'],
-  ['/portfolio/cash-flow/transactions', '/portfolio/cash-flow/accounts'],
-  ['/portfolio/cash-flow/budgets', '/portfolio/cash-flow/accounts'],
-  ['/portfolio/cash-flow/categories', '/portfolio/cash-flow/accounts'],
-  ['/portfolio/cash-flow/rules', '/portfolio/cash-flow/accounts'],
-  ['/portfolio/cash-flow/import', '/portfolio/cash-flow/accounts'],
+  // Both vocabularies of the cash area land on the CANONICAL accounts page:
+  // the area was renamed /portfolio/cash (V5 cash fusion phase 2) and the
+  // legacy /portfolio/cash-flow names only survive as router aliases.
+  ['/portfolio/cash-flow', '/portfolio/cash/accounts'],
+  ['/portfolio/cash-flow/transactions', '/portfolio/cash/accounts'],
+  ['/portfolio/cash-flow/budgets', '/portfolio/cash/accounts'],
+  ['/portfolio/cash-flow/categories', '/portfolio/cash/accounts'],
+  ['/portfolio/cash-flow/rules', '/portfolio/cash/accounts'],
+  ['/portfolio/cash-flow/import', '/portfolio/cash/accounts'],
+  ['/portfolio/cash', '/portfolio/cash/accounts'],
+  ['/portfolio/cash/movements', '/portfolio/cash/accounts'],
+  ['/portfolio/cash/budgets', '/portfolio/cash/accounts'],
+  ['/portfolio/cash/labels', '/portfolio/cash/accounts'],
+  ['/portfolio/cash/import', '/portfolio/cash/accounts'],
   ['/portfolio/people', '/portfolio'],
   ['/portfolio/tax/print', '/portfolio/tax'],
   ['/assets/news', '/assets'],
@@ -150,7 +159,7 @@ test.describe('PD9 paranoid-mode end-to-end gate', () => {
       const { page } = owner;
       await assertPd9DriveInstalled(page);
       collectSanitizedDiagnostics(page, diagnostics);
-      const fixture = await createMoneyFixture(owner);
+      const fixture = await createMoneyFixture(owner, harness);
       // The decrypted-content canary joins the scan set for the whole flow. It
       // cannot false-positive on the pre-enable seed traffic: that traffic runs
       // through the context-level APIRequestContext (no page events at all),
@@ -228,7 +237,9 @@ test.describe('PD9 paranoid-mode end-to-end gate', () => {
           await expectRedirect(page, from, to);
         }
         await navigateInApp(page, '/people');
-        await expect(page.getByRole('heading', { name: 'Friends' })).toBeVisible();
+        // Level-pinned: the People page renders the "Friends" h1 AND a
+        // same-named section heading, and role-name matching is substring.
+        await expect(page.getByRole('heading', { name: 'Friends', level: 1 })).toBeVisible();
       });
 
       await test.step('[PD9-A7] real evaluator and notification dispatcher', async () => {
@@ -247,8 +258,12 @@ test.describe('PD9 paranoid-mode end-to-end gate', () => {
         await navigateInApp(page, '/workbench/alerts');
         const alertRow = page.getByRole('listitem').filter({ hasText: alert.symbol });
         await expect(alertRow).toContainText('Triggered');
+        // The harness delivers the fire through its own in-process dispatcher,
+        // so no realtime push reaches THIS browser — the bell learns of the
+        // inbox row through its 30-second poll (the product's designed
+        // fallback). The wait must cover a full poll cycle.
         const bell = page.getByRole('button', { name: /Notifications \(\d+ unread\)/ });
-        await expect(bell).toBeVisible();
+        await expect(bell).toBeVisible({ timeout: 45_000 });
         await bell.click();
         await expect(
           page
@@ -365,15 +380,33 @@ test.describe('PD9 paranoid-mode end-to-end gate', () => {
         // intentionally purge-only. The current-period budget marker is not
         // restored, so one post-disable evaluation may re-fire the breach; its
         // newly-created marker then restores ordinary once-per-period behavior.
-        expect(await harness.purgeOnlyCounts(purgeOnly)).toEqual({
+        const purged = await harness.purgeOnlyCounts(purgeOnly);
+        expect(purged).toMatchObject({
           importBatch: 0,
           importRow: 0,
           portfolioDailySnapshot: 0,
-          portfolioSnapshotState: 0,
           expenseBudgetFire: 0,
         });
+        // The snapshot-state marker is purge-only but SELF-HEALING: restoring
+        // the transactions enqueues the recompute worker, which re-derives its
+        // `computedThrough` successor (PD3's doctrine — purge-only artifacts
+        // are re-derived after rehydration, never restored), and the probe
+        // keys by portfolio id so a successor is indistinguishable from a
+        // restore. 0 = the worker has not run yet, 1 = the successor landed;
+        // anything more would mean duplicated markers.
+        expect(purged.portfolioSnapshotState).toBeLessThanOrEqual(1);
         expect(await harness.vaultStorage(owner!.email)).toEqual(emptyVaultStorage());
-        expect(await pd9DriveState(page)).toMatchObject({ present: false });
+        // Polled, not sampled once: the server's disable commit (which the
+        // probes above observe) precedes the client's `cleanupAfterDisable`,
+        // and the Drive delete inside it is deliberately best-effort and
+        // asynchronous. The copy must GO — a timeout here still fails — but
+        // it goes a beat after the mode flip.
+        await expect
+          .poll(async () => (await pd9DriveState(page)).present, {
+            timeout: 15_000,
+            intervals: [250, 500, 1_000],
+          })
+          .toBe(false);
 
         const restoredScope = await harness.captureCleartextScope(owner!.email);
         const restored = await harness.probeCleartext(restoredScope);
@@ -416,7 +449,7 @@ test.describe('PD9 paranoid-mode end-to-end gate', () => {
   });
 });
 
-async function createMoneyFixture(owner: E2EUser): Promise<MoneyFixture> {
+async function createMoneyFixture(owner: E2EUser, harness: Pd9Harness): Promise<MoneyFixture> {
   const api = owner.context.request;
   const portfolios = await json<{ portfolios: Array<{ id: string; name: string }> }>(
     await api.get(apiV1('/portfolios')),
@@ -462,30 +495,22 @@ async function createMoneyFixture(owner: E2EUser): Promise<MoneyFixture> {
   // final scan instead of proving anything.
   const contentSentinel = `PD9-CONTENT-${randomUUID().replace(/-/g, '')}`;
 
+  // The categories READ stays on HTTP — it is the seed-on-first-use gate for
+  // the default set (and reads survive the island's retirement). The budget
+  // and transaction WRITES go through the harness: V5 cash fusion retired the
+  // island's HTTP writes (410 EXPENSE_AREA_RETIRED), but a pre-fusion account
+  // still carries these rows, and carrying them through enable → purge →
+  // disable → restore is precisely what PD9 gates.
   const categories = await json<{ categories: Array<{ id: string; name: string }> }>(
     await api.get(apiV1('/expenses/categories')),
   );
   const groceries = categories.categories.find((category) => category.name === 'Groceries');
   expect(groceries, 'default Groceries category exists').toBeTruthy();
-  await ok(
-    await api.post(apiV1('/expenses/budgets'), {
-      headers: CSRF_HEADERS,
-      data: { categoryId: groceries!.id, amount: 200, currency: 'EUR' },
-    }),
-  );
-  await ok(
-    await api.post(apiV1('/expenses/transactions'), {
-      headers: CSRF_HEADERS,
-      data: {
-        categoryId: groceries!.id,
-        direction: 'expense',
-        amount: 300,
-        currency: 'EUR',
-        bookedOn: today,
-        description: `PD9 current-period groceries ${contentSentinel}`,
-      },
-    }),
-  );
+  await harness.seedLegacyExpenseFixture({
+    email: owner.email,
+    bookedOn: today,
+    description: `PD9 current-period groceries ${contentSentinel}`,
+  });
 
   return { portfolioId: portfolioId!, asset, contentSentinel };
 }
@@ -499,7 +524,9 @@ async function createKeptAlert(owner: E2EUser): Promise<AlertFixture> {
     (result) => result.symbol === 'AAPL' && result.ownerId == null,
   );
   expect(globalAsset, 'local catalog returns global AAPL').toBeTruthy();
-  const alertBody = await json<{ alert: { id: string } }>(
+  // POST /alerts returns the alert DIRECTLY (alertSchema — see
+  // alerts.test.ts), not wrapped in an { alert } envelope.
+  const alertBody = await json<{ id: string }>(
     await api.post(apiV1('/alerts'), {
       headers: CSRF_HEADERS,
       data: {
@@ -511,7 +538,7 @@ async function createKeptAlert(owner: E2EUser): Promise<AlertFixture> {
     }),
   );
 
-  return { id: alertBody.alert.id, symbol: 'AAPL' };
+  return { id: alertBody.id, symbol: 'AAPL' };
 }
 
 async function enableDriveOnly(page: Page, sensitive: Pd9SensitiveCanary[]): Promise<void> {
@@ -537,7 +564,13 @@ async function enableDriveOnly(page: Page, sensitive: Pd9SensitiveCanary[]): Pro
     )
     .check();
   await page.getByRole('button', { name: 'Enable Paranoid mode' }).click();
-  await expect(page.getByRole('button', { name: 'Account menu' })).toBeVisible({
+  // Wait for the wizard's ACTUAL completion notice. The old signal — the
+  // account-menu button becoming visible — only meant "the app shell is back",
+  // and the Origin redesign renders the Control Center as a popup OVER the
+  // shell, so the button is visible the whole time and the wait passed before
+  // enable had written anything (the A3 ordering assertions then sampled an
+  // empty monitor).
+  await expect(page.getByText('Paranoid mode is on. Your encrypted vault is ready.')).toBeVisible({
     timeout: 60_000,
   });
 }
@@ -566,7 +599,10 @@ async function assertKnownMoney(page: Page, fixture: MoneyFixture): Promise<void
   const row = holdings.getByRole('row').filter({ hasText: fixture.asset.symbol });
   await expect(row).toBeVisible({ timeout: 30_000 });
   await expect(row).toContainText(fixture.asset.name);
-  await expect(row).toContainText(/\b2\b/);
+  // The quantity as its OWN cell: the redesigned holdings table's concatenated
+  // row text glues quantity into the price ("…Gold2400.00 €"), so a \b-anchored
+  // regex over the row cannot see the 2 — the cell can.
+  await expect(row.getByRole('cell', { name: '2', exact: true })).toBeVisible();
   await expect(row).toContainText(/400[.,]00/);
   await expect(row).toContainText(/500[.,]00/);
   await expect(row).toContainText(/1[.,]000[.,]00/);
