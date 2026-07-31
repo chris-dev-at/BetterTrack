@@ -247,6 +247,44 @@ services:
       # first proof, bounded so a loop that never starts becomes unhealthy.
       start_period: 3m
 
+  # Scheduled local recovery points are deployment code: the service takes one
+  # dump plus a safe restore drill on first start, then follows both configured
+  # schedules without a host crontab. Health is derived only from the
+  # machine-readable status in the dedicated status volume.
+  backup-scheduler:
+    build:
+      context: ./backup
+      dockerfile: Dockerfile
+    image: bettertrack-backup:local
+    entrypoint: ['/bin/bash', '/opt/bettertrack/scheduler.sh']
+    restart: unless-stopped
+    logging: *bounded-logging
+    environment:
+      POSTGRES_HOST: 'db'
+      POSTGRES_PORT: '5432'
+      POSTGRES_USER: '${POSTGRES_USER:-bt}'
+      POSTGRES_DB: '${POSTGRES_DB:-bettertrack}'
+      PGPASSWORD: '${POSTGRES_PASSWORD}'
+      BACKUP_DIR: '/backups'
+      BACKUP_RETENTION_DAYS: '${BACKUP_RETENTION_DAYS:-14}'
+      BT_BACKUP_CRON: '${BT_BACKUP_CRON:-0 3 * * *}'
+      BT_BACKUP_RESTORE_CRON: '${BT_BACKUP_RESTORE_CRON:-0 4 1 * *}'
+      BT_BACKUP_FRESHNESS_MAX_HOURS: '${BT_BACKUP_FRESHNESS_MAX_HOURS:-26}'
+      BT_BACKUP_RESTORE_MAX_AGE_DAYS: '${BT_BACKUP_RESTORE_MAX_AGE_DAYS:-35}'
+      BT_BACKUP_STATUS_FILE: '/status/backup-status.env'
+    volumes:
+      - pgbackups:/backups
+      - backupstatus:/status
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ['CMD', '/opt/bettertrack/healthcheck.sh']
+      interval: 1m
+      timeout: 10s
+      retries: 3
+      start_period: 5m
+
   db:
     image: postgres:17
     restart: unless-stopped
@@ -255,13 +293,9 @@ services:
       POSTGRES_USER: '${POSTGRES_USER:-bt}'
       POSTGRES_PASSWORD: '${POSTGRES_PASSWORD}'
       POSTGRES_DB: '${POSTGRES_DB:-bettertrack}'
-      # Nightly backup rotation window (§10) — consumed by backup.sh, triggered
-      # via host cron (see README.md "Backups & restore"), not a 6th service.
-      BACKUP_RETENTION_DAYS: '${BACKUP_RETENTION_DAYS:-14}'
     volumes:
       - pgdata:/var/lib/postgresql/data
       - pgbackups:/backups
-      - ./backup/backup.sh:/opt/bettertrack/backup.sh:ro
     healthcheck:
       test: ['CMD-SHELL', 'pg_isready -U ${POSTGRES_USER:-bt} -d ${POSTGRES_DB:-bettertrack}']
       interval: 10s
@@ -412,5 +446,6 @@ volumes:
   redisdata:
   exportdata:
   pgbackups:
+  backupstatus:
   promdata:
   grafanadata:

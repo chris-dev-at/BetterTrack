@@ -28,12 +28,12 @@ packages/
   contracts/  # Shared zod schemas + types (the API/client keystone)
   config/     # Shared tsconfig, ESLint, Prettier
 infra/
-  docker-compose.yml            # Production: web + api + worker + landing + db + redis (§4.6)
+  docker-compose.yml            # Production app/data stack + scheduled local backups
   docker-compose.subdomains.yml # Port overlay for BT_MODE=subdomains — layer via -f or override.yml
   docker-compose.ports.yml      # Port overlay for BT_MODE=ports — layer via -f or override.yml
   docker-compose.dev.yml        # Dev: Postgres 17 + Redis 7 only
   nginx/                     # nginx front-proxy: mode templates (subdomains|ports) + entrypoint (§11)
-  backup/                    # backup.sh — nightly pg_dump + rotation, run inside `db` via host cron (§10)
+  backup/                    # Scheduled pg_dump, status/health, offsite, and restore-drill scripts
   .env.example               # Dev env template
   .env.production.example    # Production env template
 factory/      # autonomous build factory (runner + prompts)
@@ -290,9 +290,10 @@ local TLS terminator, e.g. Caddy, and set `BT_TLS` accordingly). Cloudflare's
 proxy is still the only public edge; keep the router forward scoped to it.
 
 Either path: run **First-time setup** (build → migrate → seed → `up -d`) with
-`docker-compose.subdomains.yml` as the override, then schedule nightly backups per
-**Backups & restore** below. Apply updates and re-run migrations exactly as in
-**Day-to-day commands** — the deploy path is identical; only the public edge differs.
+`docker-compose.subdomains.yml` as the override. The in-stack backup scheduler
+starts with the deployment; verify it per **Backups & restore** below. Apply
+updates and re-run migrations exactly as in **Day-to-day commands** — the deploy
+path is identical; only the public edge differs.
 
 ### Day-to-day commands
 
@@ -342,27 +343,36 @@ enrichment), and `notifications.dispatch` (friend request/accept/share email + n
 
 ### Backups & restore
 
-The `db` service mounts a dedicated `pgbackups` volume at `/backups` and
-`infra/backup/backup.sh` is bind-mounted read-only into that same container at
-`/opt/bettertrack/backup.sh`. Nothing runs it automatically — wire it to your
-host's cron (kept out of the compose topology so the stack stays at five
-services, §4.6):
+The `backup-scheduler` service takes a local dump and runs a safe restore drill
+immediately on first start. It then follows `BT_BACKUP_CRON` (default
+`0 3 * * *`, UTC) for dumps and `BT_BACKUP_RESTORE_CRON` (default
+`0 4 1 * *`, UTC) for monthly drills. No host scheduler is required. Each dump
+writes a verified, timestamped gzip to the shared `pgbackups` volume, updates
+`/status/backup-status.env` in a separate status volume, and deletes dumps older
+than `BACKUP_RETENTION_DAYS` (default 14).
 
-```bash
-# Host crontab (crontab -e) — nightly at 03:00 server time:
-0 3 * * * cd /path/to/bettertrack/infra && docker compose exec -T db bash /opt/bettertrack/backup.sh >> /var/log/bettertrack-backup.log 2>&1
-```
-
-Each run writes a gzip'd, timestamped dump (`bettertrack-YYYYmmdd-HHMMSS.sql.gz`)
-into the `pgbackups` volume, verifies the archive (`gzip -t`), then deletes
-dumps older than `BACKUP_RETENTION_DAYS` (default 14). Take a manual backup the
-same way, on demand:
+`docker compose ps` marks the scheduler unhealthy if the last successful dump
+is older than `BT_BACKUP_FRESHNESS_MAX_HOURS` (default 26), or the last passing
+restore drill is older than `BT_BACKUP_RESTORE_MAX_AGE_DAYS` (default 35).
+Run a local backup or the safe scratch restore drill on demand:
 
 ```bash
 cd infra
-docker compose exec -T db bash /opt/bettertrack/backup.sh
+docker compose exec -T backup-scheduler /opt/bettertrack/backup.sh
+docker compose exec -T backup-scheduler /opt/bettertrack/restore-drill.sh
+docker compose ps backup-scheduler
 docker compose exec db ls -la /backups
 ```
+
+The drill restores only into a disposable `bettertrack_restore_drill` database,
+runs connectivity and schema probes, drops that database, appends evidence to
+`/backups/restore-attestations.jsonl`, and updates the status file. It runs
+automatically at least monthly and never targets `POSTGRES_DB`.
+
+Deployments upgrading from the former host-cron runbook should remove the old
+`docker compose exec -T db bash /opt/bettertrack/backup.sh` crontab entry. The
+script is no longer mounted into `db`; the in-stack scheduler replaces that local
+job.
 
 **Restore from a dump:**
 
@@ -372,23 +382,29 @@ cd infra
 # 1. Pick a dump (lists everything currently retained).
 docker compose exec db ls -la /backups
 
-# 2. Stop the api and worker so nothing writes during restore.
-docker compose stop api worker
+# 2. Stop all application writes and the backup scheduler so it cannot capture
+#    a partially restored schema.
+docker compose stop api worker backup-scheduler
 
 # 3. Restore — the dump was taken with --clean --if-exists, so it drops and
 #    recreates every object itself; safe to run against the existing database.
 docker compose exec -T db bash -c \
   'gunzip -c /backups/bettertrack-20260704-030000.sql.gz | psql -U "$POSTGRES_USER" -d "$POSTGRES_DB"'
 
-# 4. Bring the api and worker back up.
+# 4. After the restore completes, bring application traffic back, then restart
+#    the scheduler. Its startup run creates and drills a fresh recovery point.
 docker compose start api worker
+docker compose start backup-scheduler
+docker compose ps backup-scheduler
 ```
 
 **Offsite backup (optional).** An age-encrypted copy of each daily dump can be
 uploaded to Google Drive (or any rclone remote) via the `backup-offsite`
-sidecar in `infra/docker-compose.offsite.yml`. Full runbook — age keypair
-generation, rclone Drive setup, host-cron wiring, retention contract, and the
-end-to-end restore drill — lives in `docs/ops.md`.
+sidecar in `infra/docker-compose.offsite.yml`. Upload works with a delete-less
+credential. Remote pruning is a separate profile, disabled by default, with its
+own credential; provider-side versioning or immutable retention is preferred.
+The full setup, status, retention, drill, and provider-history recovery runbook
+lives in `docs/ops.md`.
 
 ## Quality gates
 

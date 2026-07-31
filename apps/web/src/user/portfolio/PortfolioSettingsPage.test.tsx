@@ -144,7 +144,7 @@ describe('PortfolioSettingsPage — general', () => {
     mockLists([MAIN, TRADING]);
     renderSettings('p2');
 
-    expect(await screen.findByLabelText('Name')).toHaveValue('Trading');
+    await waitFor(() => expect(screen.getByLabelText('Name')).toHaveValue('Trading'));
   });
 
   test('save stays disabled until the name actually changes', async () => {
