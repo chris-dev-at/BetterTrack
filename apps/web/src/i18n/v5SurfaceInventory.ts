@@ -1,6 +1,50 @@
 /**
  * V5-P14 Q1 traceability inventory.
  *
+ * ── What makes a module a V5 surface ──────────────────────────────────────
+ *
+ * The universe is every non-test `.tsx` module under `src/user/`, `src/admin/`
+ * and `src/ui/` (SURFACE_UNIVERSE_ROOTS). A module in that universe is a V5
+ * surface — and belongs in V5_SURFACE_INVENTORY — when BOTH of these hold:
+ *
+ *   1. V5 provenance. A PROJECTPLAN §13.5 deliverable (phases P0…P13c) created
+ *      it, or changed what a user sees or can reach on it. A rename, an import
+ *      fix, a formatting pass, or the V5-P14 sweep itself is not such a change.
+ *   2. User-visible surface. It renders user-visible copy, or it decides which
+ *      user-visible copy is reached — route registries, navigation, shells,
+ *      gates and mode providers qualify, because a regression there silently
+ *      removes a reviewed surface.
+ *
+ * Everything else in the universe is a non-V5 surface and belongs in
+ * NON_V5_SURFACES with the reason it is out of scope. Out of scope means one
+ * thing only: #739 requires non-V5 surfaces to be left as they are, so no copy
+ * or state work happens on them here. It does NOT mean unguarded — the
+ * accompanying test scans the WHOLE universe for literal user-facing copy, and
+ * the pre-V5 English-only admin pages carry a frozen debt that may only shrink.
+ *
+ * ── Why an omission cannot hide ───────────────────────────────────────────
+ *
+ * The two sets are a partition, enforced against disk rather than against a
+ * second hand-written list: the test enumerates the universe itself and fails,
+ * naming the path, on any module that is in neither set or in both. A file that
+ * nobody remembered — new or pre-existing — is therefore an explicit failure
+ * instead of a silent gap. Routes get the same treatment: the test parses the
+ * `<Route>` trees out of `user/UserApp.tsx` and `admin/AdminApp.tsx`, and every
+ * registered path must be inventoried, exempted in NON_V5_ROUTES, or rendered
+ * by a NON_SURFACE_ROUTE_ELEMENT.
+ *
+ * The borderline cases the predicate is meant to settle, worked through:
+ *   • `ui/charts/PriceChart.tsx`, `ui/MarketStateBadge.tsx` — shared primitives,
+ *     but P1's intraday/live behavior lives in them ⇒ clause 1 ⇒ inventoried.
+ *   • `admin/AdminApp.tsx`, `admin/components/AdminLayout.tsx` — pre-date V5,
+ *     but P2/P10/P12/P13c added their routes and nav entries ⇒ inventoried.
+ *   • `user/home/widgets/**` — render copy, reached from an inventoried surface,
+ *     but no §13.5 deliverable changed them ⇒ clause 1 fails ⇒ exempt.
+ *   • `user/auth/GoogleButton.tsx` — P0 changed where LoginPage places it, not
+ *     the button; the moved layout is reviewed on LoginPage ⇒ exempt.
+ *
+ * ── Reading an inventory row ──────────────────────────────────────────────
+ *
  * A surface is listed once, even when it serves more than one V5 phase. The
  * accompanying test locks the component and route sets, verifies every catalog
  * root in EN and DE, and scans the listed TSX files for literal UI copy. State
@@ -9,6 +53,9 @@
  * records a binding privacy/capability decision rather than silently omitting a
  * state.
  */
+
+/** Directories under `apps/web/src` that hold user-facing TSX modules. */
+export const SURFACE_UNIVERSE_ROOTS = ['user', 'admin', 'ui'] as const;
 
 export type V5ReviewStatus = 'covered' | 'not-applicable' | 'hidden-by-design';
 
@@ -206,6 +253,30 @@ export const V5_SURFACE_INVENTORY = [
       'user/assets/AssetDetailPage.test.tsx',
       'admin/pages/HealthPage.test.tsx',
     ],
+  },
+  {
+    id: 'v5-admin-shell',
+    phases: ['P0', 'P2', 'P10', 'P12', 'P13c'],
+    // The shell owns no route of its own: AdminApp *is* the `/admin/*` registry
+    // and AdminLayout wraps every page inside it, so each concrete route is
+    // claimed by the phase surface that ships it.
+    routes: [],
+    components: ['admin/AdminApp.tsx', 'admin/components/AdminLayout.tsx'],
+    copyRoots: ['admin.nav'],
+    copyReview:
+      'Console chrome every V5 admin surface is reached through: the section nav entries added by P0 (Account defaults), P2 (Problems, Monitoring, Usage analytics, Feature flags), P10 (API keys), P12 (AI) and P13c (Security), plus the console title, language switch, and burger-drawer labels.',
+    states: {
+      loading: covered(
+        'AdminLayout renders the localized admin.nav.loading spinner until the session resolves.',
+      ),
+      empty: notAsync(
+        'Navigation is a fixed section list and the route table is static; neither is a collection that can come back empty.',
+      ),
+      error: covered(
+        'AdminApp traps session-unavailable above routing with a localized retry; an anonymous session redirects to the admin login.',
+      ),
+    },
+    tests: ['admin/AdminApp.test.tsx', 'admin/components/AdminLayout.test.tsx'],
   },
   {
     id: 'p2-admin-operations',
@@ -655,3 +726,656 @@ export const V5_SURFACE_INVENTORY = [
     tests: ['admin/pages/SecuritySettingsPage.test.tsx'],
   },
 ] as const satisfies readonly V5SurfaceReview[];
+
+/**
+ * Why a module in the universe is NOT a V5 surface.
+ *
+ * - `no-v5-deliverable` — clause 1 of the predicate fails: the module is a
+ *   V1–V4 surface, an Origin-redesign (#935 / R2) shell piece, or a V5-P14
+ *   sweep artifact, and no §13.5 P0–P13c deliverable changed what a user sees
+ *   on it. This is the arguable reason: the note names the milestone that
+ *   shipped it, so a reviewer who disagrees has something concrete to argue
+ *   with instead of an unwritten boundary.
+ * - `no-user-copy` — clause 2 of the predicate fails: the module renders no
+ *   user-visible copy of its own; its strings are caller props. The test proves
+ *   this mechanically (no translation call, no literal copy), so these rows are
+ *   claims the suite verifies rather than claims the author makes.
+ */
+export type V5ExemptionReason = 'no-v5-deliverable' | 'no-user-copy';
+
+export interface V5SurfaceExemption {
+  path: string;
+  reason: V5ExemptionReason;
+  note: string;
+}
+
+/**
+ * The other half of the partition. Every non-test TSX module under
+ * SURFACE_UNIVERSE_ROOTS that is not in V5_SURFACE_INVENTORY must be listed
+ * here; the test enumerates the universe from disk and fails on anything that
+ * appears in neither list, in both, or nowhere on disk.
+ *
+ * Listing a module here means it stays as it is for #739 — no copy work, no
+ * state work. It does not exempt it from the literal-copy scan.
+ */
+export const NON_V5_SURFACES = [
+  {
+    path: 'admin/AuthContext.tsx',
+    reason: 'no-user-copy',
+    note: 'V1 admin session provider; holds state, renders nothing.',
+  },
+  {
+    path: 'admin/components/EmailLogTable.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'V2 email-log table (#187).',
+  },
+  {
+    path: 'admin/components/Modal.tsx',
+    reason: 'no-user-copy',
+    note: 'V1 admin modal frame; heading and body are caller props.',
+  },
+  {
+    path: 'admin/components/twoFactor.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'V4 admin-2FA form parts (#450).',
+  },
+  {
+    path: 'admin/components/ui.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'V1 admin control kit (#11).',
+  },
+  {
+    path: 'admin/pages/AnnouncementsPage.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'V4-P5 announcement composer (#519); still English-only.',
+  },
+  {
+    path: 'admin/pages/AuditPage.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'V1 admin audit log (#11); still English-only.',
+  },
+  {
+    path: 'admin/pages/EmailPage.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'V1 SMTP diagnostics (#81); still English-only.',
+  },
+  {
+    path: 'admin/pages/ForcedPasswordChangePage.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'V2 forced admin password change (#272); still English-only.',
+  },
+  {
+    path: 'admin/pages/InvitesPage.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'V1 invite management (#11); still English-only.',
+  },
+  {
+    path: 'admin/pages/LoginPage.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'V1 admin login (#11); still English-only.',
+  },
+  {
+    path: 'admin/pages/SettingsPage.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'V4 registration modes and app-wide toggles (#204); still English-only.',
+  },
+  {
+    path: 'admin/pages/TwoFactorChallengePage.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'V4 admin-2FA login challenge (#450).',
+  },
+  {
+    path: 'admin/pages/TwoFactorSetupPage.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'V4 mandatory admin-2FA enrolment (#450).',
+  },
+  {
+    path: 'admin/pages/UserDetailPage.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'V2 admin user detail (#265); still English-only.',
+  },
+  {
+    path: 'admin/pages/UsersPage.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'V1 admin user list (#11); still English-only.',
+  },
+  {
+    path: 'ui/ComingSoon.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'V2 Coming-Soon placeholder frame.',
+  },
+  {
+    path: 'ui/Disclaimer.tsx',
+    reason: 'no-user-copy',
+    note: 'V3 disclaimer frame; the notice itself is a caller prop.',
+  },
+  {
+    path: 'ui/EmptyState.tsx',
+    reason: 'no-user-copy',
+    note: 'V1 empty-state frame; title, body and action are caller props.',
+  },
+  {
+    path: 'ui/ErrorBoundary.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'V2 route-level error boundary (#207).',
+  },
+  {
+    path: 'ui/NotFoundState.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'Shared not-found state created by the V5-P14 sweep itself (#1013), not by a P0-P13c deliverable.',
+  },
+  {
+    path: 'ui/Skeleton.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'V1 skeleton and spinner primitives (#64).',
+  },
+  {
+    path: 'ui/StatCard.tsx',
+    reason: 'no-user-copy',
+    note: 'V1 stat tile; label and value are caller props.',
+  },
+  {
+    path: 'ui/charts/Sparkline.tsx',
+    reason: 'no-user-copy',
+    note: 'V1 sparkline renderer (#20); axis-free, no copy.',
+  },
+  {
+    path: 'ui/origin/components.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'Origin-redesign shell primitives (#935); the redesign is not a §13.5 phase.',
+  },
+  {
+    path: 'ui/origin/icons.tsx',
+    reason: 'no-user-copy',
+    note: 'Origin-redesign icon set (#935); SVG paths only.',
+  },
+  {
+    path: 'user/RequireUser.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'V1 authenticated-route guard.',
+  },
+  {
+    path: 'user/assets/AssetsWorkspace.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'Origin-redesign assets workspace chrome (#935).',
+  },
+  {
+    path: 'user/assets/SearchPage.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'V1 §6.2 search page (#71).',
+  },
+  {
+    path: 'user/auth/ForcedPasswordChangePage.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'V1 forced password change.',
+  },
+  {
+    path: 'user/auth/ForgotPasswordPage.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'V2 password-reset request (#282).',
+  },
+  {
+    path: 'user/auth/GoogleButton.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'V4-P4 Google sign-in button (#513); V5-P0 moved where LoginPage places it, not the button.',
+  },
+  { path: 'user/auth/InvitePage.tsx', reason: 'no-v5-deliverable', note: 'V1 invite acceptance.' },
+  {
+    path: 'user/auth/OAuthAccountChooser.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'V4 OAuth account memory and PIN re-auth chooser.',
+  },
+  { path: 'user/auth/PinGate.tsx', reason: 'no-v5-deliverable', note: 'V2 PIN gate (#111).' },
+  {
+    path: 'user/auth/ResetPasswordPage.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'V2 password reset (#282).',
+  },
+  {
+    path: 'user/components/AlertDialog.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'V3-P10b alert editor (#345).',
+  },
+  {
+    path: 'user/components/AlertList.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'V3-P10b alert list (#345).',
+  },
+  {
+    path: 'user/components/AnnouncementBanner.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'V4-P5 announcement banner (#519).',
+  },
+  {
+    path: 'user/components/AuthFigures.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'Origin-redesign R2 auth artwork.',
+  },
+  {
+    path: 'user/components/Dialog.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'V1 dialog frame (#77).',
+  },
+  {
+    path: 'user/components/LocalNav.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'Origin-redesign local nav strip (#935).',
+  },
+  {
+    path: 'user/components/PinInput.tsx',
+    reason: 'no-user-copy',
+    note: 'V2 segmented PIN inputs (#287); labels come from callers.',
+  },
+  {
+    path: 'user/components/askdock/AskDock.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'Origin-redesign R2 ask dock.',
+  },
+  { path: 'user/components/ui.tsx', reason: 'no-v5-deliverable', note: 'V1 user control kit.' },
+  {
+    path: 'user/control/panels/DeleteAccountPanel.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'V4-P2c account deletion, re-housed by the R2 Control Center.',
+  },
+  {
+    path: 'user/control/panels/SessionsPanel.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'V2 session list, re-housed by the R2 Control Center.',
+  },
+  {
+    path: 'user/control/panels/SignInPanel.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'V2/V4 credentials, passkeys and 2FA, re-housed by the R2 Control Center.',
+  },
+  {
+    path: 'user/control/panels/panelKit.tsx',
+    reason: 'no-user-copy',
+    note: 'R2 Control Center panel primitives; every string is caller-supplied.',
+  },
+  {
+    path: 'user/firstrun/FirstRunFigures.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'Origin-redesign R2 first-run artwork.',
+  },
+  {
+    path: 'user/firstrun/FirstRunGate.tsx',
+    reason: 'no-user-copy',
+    note: 'V4 first-run routing gate; decides where to land, renders no copy.',
+  },
+  {
+    path: 'user/firstrun/WelcomePage.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'V4 first-run wizard, rebuilt by R2.',
+  },
+  {
+    path: 'user/firstrun/steps/DoneStep.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'V4 first-run step (done).',
+  },
+  {
+    path: 'user/firstrun/steps/PreferencesStep.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'V4 first-run step (preferences).',
+  },
+  {
+    path: 'user/firstrun/steps/ProfileStep.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'V4 first-run step (profile).',
+  },
+  {
+    path: 'user/firstrun/steps/PublicProfileStep.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'V4 first-run step (public profile).',
+  },
+  {
+    path: 'user/firstrun/steps/SecurityStep.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'V4 first-run step (security).',
+  },
+  {
+    path: 'user/firstrun/steps/TaxStep.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'V4 first-run step (tax residency).',
+  },
+  {
+    path: 'user/firstrun/steps/VerifyEmailStep.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'V4 first-run step (email verification).',
+  },
+  {
+    path: 'user/home/AddWidgetDrawer.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'Origin-redesign R2 widget picker.',
+  },
+  {
+    path: 'user/home/WidgetFrame.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'Origin-redesign R2 widget frame.',
+  },
+  {
+    path: 'user/home/widgets/AlertsWidget.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'Origin-redesign R2 home-board widget (alerts).',
+  },
+  {
+    path: 'user/home/widgets/AllocationWidget.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'Origin-redesign R2 home-board widget (allocation).',
+  },
+  {
+    path: 'user/home/widgets/AssetSpotlightWidget.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'Origin-redesign R2 home-board widget (asset spotlight).',
+  },
+  {
+    path: 'user/home/widgets/AttentionWidget.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'Origin-redesign R2 home-board widget (attention).',
+  },
+  {
+    path: 'user/home/widgets/CashBalancesWidget.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'Origin-redesign R2 home-board widget (cash balances).',
+  },
+  {
+    path: 'user/home/widgets/CashflowChartWidget.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'Origin-redesign R2 home-board widget (cash-flow chart).',
+  },
+  {
+    path: 'user/home/widgets/ConcentrationWidget.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'Origin-redesign R2 home-board widget (concentration).',
+  },
+  {
+    path: 'user/home/widgets/DividendsWidget.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'Origin-redesign R2 home-board widget (dividends).',
+  },
+  {
+    path: 'user/home/widgets/LiquidityWidget.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'Origin-redesign R2 home-board widget (liquidity).',
+  },
+  {
+    path: 'user/home/widgets/NetWorthHistoryWidget.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'Origin-redesign R2 home-board widget (net-worth history).',
+  },
+  {
+    path: 'user/home/widgets/NetWorthWidget.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'Origin-redesign R2 home-board widget (net worth).',
+  },
+  {
+    path: 'user/home/widgets/NewsWidget.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'Origin-redesign R2 home-board widget (news).',
+  },
+  {
+    path: 'user/home/widgets/PerformanceChartWidget.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'Origin-redesign R2 home-board widget (performance chart).',
+  },
+  {
+    path: 'user/home/widgets/PortfolioCardsWidget.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'Origin-redesign R2 home-board widget (portfolio cards).',
+  },
+  {
+    path: 'user/home/widgets/RecentTransactionsWidget.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'Origin-redesign R2 home-board widget (recent transactions).',
+  },
+  {
+    path: 'user/home/widgets/ShortcutsWidget.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'Origin-redesign R2 home-board widget (shortcuts).',
+  },
+  {
+    path: 'user/home/widgets/TodayChangeWidget.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'Origin-redesign R2 home-board widget (today change).',
+  },
+  {
+    path: 'user/home/widgets/TopMoversWidget.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'Origin-redesign R2 home-board widget (top movers).',
+  },
+  {
+    path: 'user/home/widgets/UpcomingWidget.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'Origin-redesign R2 home-board widget (upcoming).',
+  },
+  {
+    path: 'user/home/widgets/WatchlistWidget.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'Origin-redesign R2 home-board widget (watchlist).',
+  },
+  {
+    path: 'user/hub/HubPages.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'Origin-redesign hub pages — Ask, Review, Developer platform (#935).',
+  },
+  {
+    path: 'user/people/PeopleLayout.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'Origin-redesign people workspace chrome (#935).',
+  },
+  {
+    path: 'user/portfolio/ImportPage.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'V4-P8 broker CSV import.',
+  },
+  {
+    path: 'user/portfolio/PortfolioIconChip.tsx',
+    reason: 'no-user-copy',
+    note: 'R2 portfolio icon chip; glyph only.',
+  },
+  {
+    path: 'user/portfolio/wizard/ParkedRow.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'R2 portfolio-wizard parked row.',
+  },
+  {
+    path: 'user/portfolio/wizard/steps/BookStep.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'R2 portfolio-wizard step (book).',
+  },
+  {
+    path: 'user/portfolio/wizard/steps/DoneStep.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'R2 portfolio-wizard step (done).',
+  },
+  {
+    path: 'user/portfolio/wizard/steps/IconStep.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'R2 portfolio-wizard step (icon).',
+  },
+  {
+    path: 'user/portfolio/wizard/steps/NameStep.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'R2 portfolio-wizard step (name).',
+  },
+  {
+    path: 'user/settings/DeleteAccountPage.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'V4-P2c self-service account deletion.',
+  },
+  {
+    path: 'user/social/ChatPopoutButton.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'R2 chat pop-out control.',
+  },
+  {
+    path: 'user/social/ChatWindowPage.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'R2 popped-out chat window; it runs the inventoried chatSurface panes.',
+  },
+  {
+    path: 'user/social/FollowButton.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'V3 person-follow control.',
+  },
+  {
+    path: 'user/social/ItemFollowButton.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'V3 item-follow control.',
+  },
+  {
+    path: 'user/social/SharedPeople.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'V3 shared-with list.',
+  },
+  {
+    path: 'user/workbench/WorkbenchLayout.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'Origin-redesign workbench chrome (#935).',
+  },
+  {
+    path: 'user/workboard/AlertsPage.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'V3-P10b alerts page (#345).',
+  },
+  {
+    path: 'user/workboard/BacktestPanel.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'V1 backtest panel.',
+  },
+  {
+    path: 'user/workboard/SaveIdeaDialog.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'V4-P9 save-idea dialog (#530).',
+  },
+] as const satisfies readonly V5SurfaceExemption[];
+
+/**
+ * Route elements that are not surfaces of their own, so the routes rendering
+ * them need no inventory row. Each is a mechanical class rather than a
+ * judgement: redirects render no copy at all, and the two placeholder elements
+ * are themselves classified modules whose copy is reviewed where they live.
+ */
+export const NON_SURFACE_ROUTE_ELEMENTS: Readonly<Record<string, string>> = {
+  LegacyRedirect: 'Forwards an old path to its current one; renders no copy.',
+  Navigate: 'react-router redirect; renders no copy.',
+  ParkedPage: 'Coming-Soon placeholder; the component is inventoried under the shared V5 shell.',
+  NotFoundState: 'Shared not-found state, exempted in NON_V5_SURFACES with its own focused test.',
+};
+
+/** Why a registered route needs no inventory row of its own. */
+export type V5RouteExemptionReason = 'no-v5-deliverable' | 'inventoried-component';
+
+export interface V5RouteExemption {
+  path: string;
+  reason: V5RouteExemptionReason;
+  note: string;
+}
+
+/**
+ * Registered routes that are not V5 surfaces. `inventoried-component` means the
+ * route renders a component that IS in the inventory — a second entry point or
+ * deep link into a reviewed surface — so its copy and states are covered there.
+ */
+export const NON_V5_ROUTES = [
+  {
+    path: '/account/delete',
+    reason: 'no-v5-deliverable',
+    note: 'V4-P2c self-service account deletion.',
+  },
+  {
+    path: '/admin/announcements',
+    reason: 'no-v5-deliverable',
+    note: 'V4-P5 announcement composer.',
+  },
+  { path: '/admin/audit', reason: 'no-v5-deliverable', note: 'V1 admin audit log.' },
+  { path: '/admin/email', reason: 'no-v5-deliverable', note: 'V1 SMTP diagnostics.' },
+  { path: '/admin/invites', reason: 'no-v5-deliverable', note: 'V1 invite management.' },
+  {
+    path: '/admin/login',
+    reason: 'no-v5-deliverable',
+    note: 'V1 admin login; V4 added its 2FA challenge.',
+  },
+  {
+    path: '/admin/settings',
+    reason: 'no-v5-deliverable',
+    note: 'V4 registration modes and app-wide toggles.',
+  },
+  { path: '/admin/users', reason: 'no-v5-deliverable', note: 'V1 admin user list.' },
+  { path: '/admin/users/:userId', reason: 'no-v5-deliverable', note: 'V2 admin user detail.' },
+  {
+    path: '/ask',
+    reason: 'no-v5-deliverable',
+    note: 'Origin-redesign Ask hub; a parked workspace.',
+  },
+  {
+    path: '/assets',
+    reason: 'inventoried-component',
+    note: 'AssetsOverviewPage lives in the inventoried user/assets/AssetsSection.tsx (P5).',
+  },
+  { path: '/assets/search', reason: 'no-v5-deliverable', note: 'V1 §6.2 search page.' },
+  {
+    path: '/chat-window',
+    reason: 'no-v5-deliverable',
+    note: 'R2 popped-out chat window over the inventoried chatSurface panes.',
+  },
+  {
+    path: '/chat-window/:userId',
+    reason: 'no-v5-deliverable',
+    note: 'R2 popped-out chat, deep-linked to a partner.',
+  },
+  {
+    path: '/chat-window/c/:conversationId',
+    reason: 'no-v5-deliverable',
+    note: 'R2 popped-out chat, deep-linked to a conversation.',
+  },
+  {
+    path: '/developer',
+    reason: 'no-v5-deliverable',
+    note: 'Origin-redesign developer hub (#935).',
+  },
+  { path: '/forgot-password', reason: 'no-v5-deliverable', note: 'V2 password-reset request.' },
+  { path: '/invite/:token', reason: 'no-v5-deliverable', note: 'V1 invite acceptance.' },
+  {
+    path: '/people/chat/:userId',
+    reason: 'inventoried-component',
+    note: 'Deep link into the inventoried ChatPage (P8).',
+  },
+  {
+    path: '/people/chat/c/:conversationId',
+    reason: 'inventoried-component',
+    note: 'Deep link into the inventoried ChatPage (P8).',
+  },
+  { path: '/portfolio/import', reason: 'no-v5-deliverable', note: 'V4-P8 broker CSV import.' },
+  { path: '/reset/:token', reason: 'no-v5-deliverable', note: 'V2 password reset.' },
+  {
+    path: '/review',
+    reason: 'no-v5-deliverable',
+    note: 'Origin-redesign Review hub; a parked workspace.',
+  },
+  { path: '/welcome', reason: 'no-v5-deliverable', note: 'V4 first-run wizard.' },
+  { path: '/workbench/alerts', reason: 'no-v5-deliverable', note: 'V3-P10b alerts page.' },
+  {
+    path: '/workbench/backtests',
+    reason: 'inventoried-component',
+    note: 'BacktestsPage lives in the inventoried user/workboard/WorkboardSection.tsx (P6).',
+  },
+] as const satisfies readonly V5RouteExemption[];
+
+/**
+ * Frozen literal-copy debt, by file. These pre-V5 admin pages were never
+ * localized; #739 requires non-V5 surfaces to be preserved, so the debt is
+ * recorded rather than paid here. The test asserts each file stays at or below
+ * its budget and that no other file may join the map — so the debt can only
+ * shrink, and new hardcoded copy anywhere in the universe fails.
+ */
+export const LEGACY_LITERAL_COPY: Readonly<Record<string, number>> = {
+  'admin/pages/AnnouncementsPage.tsx': 28,
+  'admin/pages/AuditPage.tsx': 10,
+  'admin/pages/EmailPage.tsx': 19,
+  'admin/pages/ForcedPasswordChangePage.tsx': 4,
+  'admin/pages/InvitesPage.tsx': 12,
+  'admin/pages/LoginPage.tsx': 3,
+  'admin/pages/SettingsPage.tsx': 32,
+  'admin/pages/UserDetailPage.tsx': 32,
+  'admin/pages/UsersPage.tsx': 17,
+};

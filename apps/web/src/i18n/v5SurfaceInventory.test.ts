@@ -1,30 +1,56 @@
 /**
- * This manually curated baseline detects later inventory shrinkage; it cannot
- * prove that the initial V5 inventory included every surface. The initial set
- * was assembled from the P0-P13 phase history and audited separately.
+ * Completeness here is derived, not asserted.
+ *
+ * The suite enumerates the universe itself — every non-test `.tsx` module under
+ * `src/user/`, `src/admin/` and `src/ui/` read from disk, and every path in the
+ * two `<Route>` registries parsed out of their TSX — and then requires each one
+ * to be classified: inventoried as a V5 surface, or exempted with a reason in
+ * `v5SurfaceInventory.ts`. A module or route nobody remembered is a named
+ * failure rather than a silent gap, which is what a second hand-written list
+ * could never deliver. The predicate deciding which side a module falls on is
+ * written down in that file's header.
+ *
+ * EXPECTED_V5_COMPONENTS / EXPECTED_V5_ROUTES below are no longer the
+ * completeness device; they survive only as anti-shrinkage baselines, so that
+ * deleting a reviewed row fails loudly instead of quietly narrowing the audit.
  */
-import { existsSync, readFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
+import { join, relative, resolve, sep } from 'node:path';
 
 import ts from 'typescript';
 import { describe, expect, test } from 'vitest';
 
 import { LOCALES, localizedMessage, type MessageNode } from './registry';
-import { V5_SURFACE_INVENTORY } from './v5SurfaceInventory';
+import {
+  LEGACY_LITERAL_COPY,
+  NON_SURFACE_ROUTE_ELEMENTS,
+  NON_V5_ROUTES,
+  NON_V5_SURFACES,
+  SURFACE_UNIVERSE_ROOTS,
+  V5_SURFACE_INVENTORY,
+} from './v5SurfaceInventory';
 
 const SRC_ROOT = resolve(process.cwd(), 'src');
+
+/** The two route registries, with the base path each one is mounted at. */
+const ROUTE_REGISTRIES = [
+  { path: 'user/UserApp.tsx', base: '' },
+  { path: 'admin/AdminApp.tsx', base: '/admin' },
+] as const;
 
 function baseline(value: string): string[] {
   return value.trim().split('\n').sort();
 }
 
 /**
- * Frozen V5 component baseline, assembled from the P0–P13 phase history and
- * the shared shell surfaces those changes pass through. Keeping this separate
- * from the inventory is deliberate: deleting a row from the inventory must
- * fail loudly instead of quietly narrowing the audit.
+ * Anti-shrinkage baseline for the reviewed component set. This is deliberately
+ * NOT the completeness check — that is `classifies every user-facing module`
+ * below, which reads the universe off disk. Keeping this list separate means
+ * dropping a row from the inventory fails here as well.
  */
 const EXPECTED_V5_COMPONENTS = baseline(`
+admin/AdminApp.tsx
+admin/components/AdminLayout.tsx
 admin/pages/AccountDefaultsPage.tsx
 admin/pages/AiSettingsPage.tsx
 admin/pages/ApiKeysPage.tsx
@@ -227,6 +253,14 @@ const EXPECTED_V5_PHASES = [
   'P13c',
 ].sort();
 
+/**
+ * The Control Center is one route (`/control/:panel?`) whose panels are
+ * addressable deep links; the inventory names the panels, the registry names
+ * the parameterized route.
+ */
+const CONTROL_PANEL_ROUTE = '/control/:panel?';
+const CONTROL_PANEL_DEEP_LINK = /^\/control\/[a-z-]+$/;
+
 function messageNode(root: MessageNode, path: string): string | MessageNode | undefined {
   let value: string | MessageNode | undefined = root;
   for (const segment of path.split('.')) {
@@ -251,7 +285,259 @@ function flattenStrings(
   return output;
 }
 
+/** Every non-test TSX module under the universe roots, as `src`-relative paths. */
+function universeModules(): string[] {
+  const found: string[] = [];
+  const walk = (directory: string) => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const absolute = join(directory, entry.name);
+      if (entry.isDirectory()) {
+        walk(absolute);
+      } else if (entry.name.endsWith('.tsx') && !entry.name.endsWith('.test.tsx')) {
+        found.push(relative(SRC_ROOT, absolute).split(sep).join('/'));
+      }
+    }
+  };
+  for (const root of SURFACE_UNIVERSE_ROOTS) walk(resolve(SRC_ROOT, root));
+  return found.sort();
+}
+
+function parseTsx(relativePath: string): ts.SourceFile {
+  const absolutePath = resolve(SRC_ROOT, relativePath);
+  return ts.createSourceFile(
+    absolutePath,
+    readFileSync(absolutePath, 'utf8'),
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TSX,
+  );
+}
+
+const USER_FACING_ATTRIBUTES = new Set([
+  'alt',
+  'aria-label',
+  'ariaLabel',
+  'description',
+  'label',
+  'placeholder',
+  'subtitle',
+  'title',
+]);
+const ALLOWED_TECHNICAL_VALUES = new Set(['http://localhost:11434', 'llama3.1:8b']);
+
+/** Literal user-facing strings rendered by a TSX module, as `path:line "text"`. */
+function literalCopy(relativePath: string): string[] {
+  const sourceFile = parseTsx(relativePath);
+  const findings: string[] = [];
+
+  const record = (node: ts.Node, value: string) => {
+    const normalized = value.replace(/\s+/g, ' ').trim();
+    if (
+      !/[A-Za-zÄÖÜäöüß]{2}/.test(normalized) ||
+      /^&[a-z]+;$/.test(normalized) ||
+      ALLOWED_TECHNICAL_VALUES.has(normalized)
+    ) {
+      return;
+    }
+    const line = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1;
+    findings.push(`${relativePath}:${line} ${JSON.stringify(normalized)}`);
+  };
+
+  const visit = (node: ts.Node) => {
+    if (ts.isJsxText(node)) record(node, node.getText(sourceFile));
+    if (
+      ts.isJsxAttribute(node) &&
+      USER_FACING_ATTRIBUTES.has(node.name.getText(sourceFile)) &&
+      node.initializer &&
+      ts.isStringLiteral(node.initializer)
+    ) {
+      record(node, node.initializer.text);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return findings;
+}
+
+interface RegisteredRoute {
+  path: string;
+  element: string | null;
+  source: string;
+  line: number;
+}
+
+/**
+ * Resolves the full path of every `<Route>` in a registry by accumulating
+ * parent segments, and records the component each one renders. Layout routes
+ * (no `path`) contribute nothing of their own; `index` routes take the parent's
+ * path, which is how `/portfolio` and `/assets` are registered.
+ */
+function registeredRoutes(relativePath: string, base: string): RegisteredRoute[] {
+  const sourceFile = parseTsx(relativePath);
+  const routes: RegisteredRoute[] = [];
+
+  const openingOf = (node: ts.Node) =>
+    ts.isJsxElement(node)
+      ? node.openingElement
+      : ts.isJsxSelfClosingElement(node)
+        ? node
+        : undefined;
+
+  const attribute = (opening: ts.JsxOpeningLikeElement, name: string) =>
+    opening.attributes.properties.find(
+      (property): property is ts.JsxAttribute =>
+        ts.isJsxAttribute(property) && property.name.getText(sourceFile) === name,
+    );
+
+  const renderedComponent = (opening: ts.JsxOpeningLikeElement): string | null => {
+    const element = attribute(opening, 'element');
+    if (!element?.initializer || !ts.isJsxExpression(element.initializer)) return null;
+    const expression = element.initializer.expression;
+    if (!expression) return null;
+    let name: string | null = null;
+    const find = (node: ts.Node) => {
+      if (name) return;
+      const opened = openingOf(node);
+      if (opened) {
+        name = opened.tagName.getText(sourceFile);
+        return;
+      }
+      ts.forEachChild(node, find);
+    };
+    find(expression);
+    return name;
+  };
+
+  const visit = (node: ts.Node, prefix: string) => {
+    let childPrefix = prefix;
+    const opening = openingOf(node);
+    if (opening && opening.tagName.getText(sourceFile) === 'Route') {
+      const pathAttribute = attribute(opening, 'path');
+      const segment =
+        pathAttribute?.initializer && ts.isStringLiteral(pathAttribute.initializer)
+          ? pathAttribute.initializer.text
+          : undefined;
+      const line = sourceFile.getLineAndCharacterOfPosition(opening.getStart(sourceFile)).line + 1;
+      if (segment !== undefined) {
+        childPrefix = `${prefix}/${segment}`.replace(/\/+/g, '/');
+        routes.push({
+          path: childPrefix,
+          element: renderedComponent(opening),
+          source: relativePath,
+          line,
+        });
+      } else if (attribute(opening, 'index')) {
+        routes.push({
+          path: prefix || '/',
+          element: renderedComponent(opening),
+          source: relativePath,
+          line,
+        });
+      }
+    }
+    ts.forEachChild(node, (child) => visit(child, childPrefix));
+  };
+
+  visit(sourceFile, base);
+  return routes;
+}
+
 describe('V5-P14 surface traceability inventory', () => {
+  test('classifies every user-facing module as a V5 surface or a reasoned exemption', () => {
+    const universe = universeModules();
+    const inventoried = new Set<string>(
+      V5_SURFACE_INVENTORY.flatMap((surface) => surface.components),
+    );
+    const exempt = new Set<string>(NON_V5_SURFACES.map((exemption) => exemption.path));
+
+    // The universe is big enough that an empty walk would pass everything.
+    expect(universe.length).toBeGreaterThan(150);
+    expect(NON_V5_SURFACES).toHaveLength(exempt.size);
+
+    const unclassified = universe.filter((path) => !inventoried.has(path) && !exempt.has(path));
+    expect(
+      unclassified,
+      `Unclassified user-facing modules. Apply the predicate in v5SurfaceInventory.ts: add each to V5_SURFACE_INVENTORY, or to NON_V5_SURFACES with its reason.\n${unclassified.join('\n')}`,
+    ).toEqual([]);
+
+    const bothSides = universe.filter((path) => inventoried.has(path) && exempt.has(path));
+    expect(
+      bothSides,
+      `Classified as both a V5 surface and an exemption:\n${bothSides.join('\n')}`,
+    ).toEqual([]);
+
+    const onDisk = new Set(universe);
+    const stale = [...inventoried, ...exempt].filter((path) => !onDisk.has(path)).sort();
+    expect(stale, `Classified but no longer on disk:\n${stale.join('\n')}`).toEqual([]);
+
+    const unreasoned = NON_V5_SURFACES.filter((exemption) => exemption.note.trim().length === 0);
+    expect(unreasoned, 'Every exemption must carry a reason.').toEqual([]);
+  });
+
+  test('proves every no-user-copy exemption renders no copy of its own', () => {
+    const offenders: string[] = [];
+    for (const exemption of NON_V5_SURFACES) {
+      if (exemption.reason !== 'no-user-copy') continue;
+      const source = readFileSync(resolve(SRC_ROOT, exemption.path), 'utf8');
+      if (/\buseT\b|\buseI18n\b|\blocalizedMessage\b/.test(source)) {
+        offenders.push(`${exemption.path} resolves translations, so it does render copy`);
+      }
+      offenders.push(...literalCopy(exemption.path));
+    }
+    expect(
+      offenders,
+      `no-user-copy exemptions that do render copy:\n${offenders.join('\n')}`,
+    ).toEqual([]);
+  });
+
+  test('classifies every registered route as a V5 route or a reasoned exemption', () => {
+    const registered = ROUTE_REGISTRIES.flatMap((registry) =>
+      registeredRoutes(registry.path, registry.base),
+    );
+    // Guards against a parser change silently reducing the registry to nothing.
+    expect(registered.length).toBeGreaterThan(100);
+
+    const inventoried = new Set<string>(V5_SURFACE_INVENTORY.flatMap((surface) => surface.routes));
+    const exempt = new Set<string>(NON_V5_ROUTES.map((exemption) => exemption.path));
+    expect(NON_V5_ROUTES).toHaveLength(exempt.size);
+
+    const unclassified = [
+      ...new Set(
+        registered
+          .filter(
+            (route) => !(route.element && Object.hasOwn(NON_SURFACE_ROUTE_ELEMENTS, route.element)),
+          )
+          .filter((route) => !inventoried.has(route.path) && !exempt.has(route.path))
+          .map((route) => `${route.source}:${route.line} ${route.path}`),
+      ),
+    ].sort();
+    expect(
+      unclassified,
+      `Registered routes that are in neither the inventory nor NON_V5_ROUTES:\n${unclassified.join('\n')}`,
+    ).toEqual([]);
+
+    const registeredPaths = new Set(registered.map((route) => route.path));
+    const staleExemptions = NON_V5_ROUTES.map((exemption) => exemption.path)
+      .filter((path) => !registeredPaths.has(path))
+      .sort();
+    expect(
+      staleExemptions,
+      `Exempted routes that are no longer registered:\n${staleExemptions.join('\n')}`,
+    ).toEqual([]);
+
+    const unregistered = [...inventoried]
+      .filter(
+        (path) =>
+          !registeredPaths.has(path) &&
+          !(registeredPaths.has(CONTROL_PANEL_ROUTE) && CONTROL_PANEL_DEEP_LINK.test(path)),
+      )
+      .sort();
+    expect(
+      unregistered,
+      `Inventoried routes that no registry declares (a removed surface?):\n${unregistered.join('\n')}`,
+    ).toEqual([]);
+  });
+
   test('locks every V5 phase, route, and component into the reviewed inventory', () => {
     const components = V5_SURFACE_INVENTORY.flatMap((surface) => surface.components);
     const routes = [...new Set(V5_SURFACE_INVENTORY.flatMap((surface) => surface.routes))].sort();
@@ -294,60 +580,37 @@ describe('V5-P14 surface traceability inventory', () => {
     }
   });
 
-  test('contains no literal user-facing copy in an inventoried TSX surface', () => {
-    const userFacingAttributes = new Set([
-      'alt',
-      'aria-label',
-      'ariaLabel',
-      'description',
-      'label',
-      'placeholder',
-      'subtitle',
-      'title',
-    ]);
-    const allowedTechnicalValues = new Set(['http://localhost:11434', 'llama3.1:8b']);
-    const findings: string[] = [];
+  test('contains no literal user-facing copy outside the frozen legacy debt', () => {
+    const universe = universeModules();
+    const introduced: string[] = [];
+    const overBudget: string[] = [];
 
-    for (const relativePath of EXPECTED_V5_COMPONENTS) {
-      const absolutePath = resolve(SRC_ROOT, relativePath);
-      const source = readFileSync(absolutePath, 'utf8');
-      const sourceFile = ts.createSourceFile(
-        absolutePath,
-        source,
-        ts.ScriptTarget.Latest,
-        true,
-        ts.ScriptKind.TSX,
-      );
-
-      const record = (node: ts.Node, value: string) => {
-        const normalized = value.replace(/\s+/g, ' ').trim();
-        if (
-          !/[A-Za-zÄÖÜäöüß]{2}/.test(normalized) ||
-          /^&[a-z]+;$/.test(normalized) ||
-          allowedTechnicalValues.has(normalized)
-        ) {
-          return;
-        }
-        const line = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile)).line + 1;
-        findings.push(`${relativePath}:${line} ${JSON.stringify(normalized)}`);
-      };
-
-      const visit = (node: ts.Node) => {
-        if (ts.isJsxText(node)) record(node, node.getText(sourceFile));
-        if (
-          ts.isJsxAttribute(node) &&
-          userFacingAttributes.has(node.name.getText(sourceFile)) &&
-          node.initializer &&
-          ts.isStringLiteral(node.initializer)
-        ) {
-          record(node, node.initializer.text);
-        }
-        ts.forEachChild(node, visit);
-      };
-      visit(sourceFile);
+    for (const relativePath of universe) {
+      const findings = literalCopy(relativePath);
+      const budget = LEGACY_LITERAL_COPY[relativePath] ?? 0;
+      if (findings.length <= budget) continue;
+      const report = `${relativePath}: ${findings.length} literal(s), budget ${budget}\n${findings.join('\n')}`;
+      if (relativePath in LEGACY_LITERAL_COPY) overBudget.push(report);
+      else introduced.push(report);
     }
 
-    expect(findings, `literal UI copy:\n${findings.join('\n')}`).toEqual([]);
+    expect(
+      introduced,
+      `Hardcoded user-facing copy. Localize it, or — only for a pre-V5 surface #739 must leave alone — record it in LEGACY_LITERAL_COPY.\n${introduced.join('\n')}`,
+    ).toEqual([]);
+    expect(
+      overBudget,
+      `Legacy literal-copy debt grew; the budget may only shrink.\n${overBudget.join('\n')}`,
+    ).toEqual([]);
+
+    const onDisk = new Set(universe);
+    const staleDebt = Object.keys(LEGACY_LITERAL_COPY)
+      .filter((path) => !onDisk.has(path))
+      .sort();
+    expect(
+      staleDebt,
+      `Legacy debt recorded for a module that no longer exists:\n${staleDebt.join('\n')}`,
+    ).toEqual([]);
   });
 });
 
