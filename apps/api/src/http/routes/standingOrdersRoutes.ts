@@ -39,6 +39,15 @@ export function createStandingOrdersRouter(ctx: AppContext): Router {
     res.json(result);
   });
 
+  // GET /standing-orders/runs — the caller's raw exactly-once run ledger.
+  // Mounted BEFORE `/:id` so the literal segment cannot be read as an order id.
+  // Read by the paranoid enable capture: an order's `lastPeriodKey` watermark
+  // cannot express a claimed-but-unbooked period, and losing such a claim on the
+  // enable→disable round trip lets the scheduler re-book (double-book) it.
+  router.get('/runs', async (req, res) => {
+    res.json(await ctx.standingOrders.listRuns(req.authUser!.id));
+  });
+
   // POST /standing-orders — create a recurring buy / cash-add / cash-deduct.
   router.post('/', validateBody(createStandingOrderRequestSchema), async (req, res) => {
     const body = req.valid?.body as CreateStandingOrderRequest;

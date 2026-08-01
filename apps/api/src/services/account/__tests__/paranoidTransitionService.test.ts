@@ -5,6 +5,7 @@ import request from 'supertest';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  paranoidDisableRequestSchema,
   paranoidDisableResponseSchema,
   paranoidEnableResponseSchema,
   type ParanoidDisableRequest,
@@ -59,6 +60,7 @@ const ASSET_ID = '018f0000-0000-7000-8000-000000000501';
 const RESTORED_PORTFOLIO_ID = '018f0000-0000-7000-8000-000000000502';
 const REHYDRATION_ID = '018f0000-0000-7000-8000-000000000503';
 const OTHER_REHYDRATION_ID = '018f0000-0000-7000-8000-000000000504';
+const RESTORED_SOURCE_ID = '018f0000-0000-7000-8000-000000000505';
 const EDITED_AT = '2026-07-24T10:00:00.000Z';
 
 let harness: TestHarness;
@@ -173,11 +175,32 @@ async function seedNormalGraph(
   return { portfolioId: portfolio.id, watchlistId: watchlist.id };
 }
 
-const serverEnable = (vaultVersion = 1): ParanoidEnableRequest => ({
-  mediaSet: ['server'],
-  vaultVersion,
-  driveAttestation: null,
-});
+/**
+ * A server-medium enable body carrying a FRESH capture token. Real callers read
+ * it before the migration; a test that seeds rows and then enables has to read
+ * it after seeding for the same reason — the token is a compare-and-swap over
+ * exactly the rows the purge destroys.
+ */
+async function serverEnable(userId: string, vaultVersion = 1): Promise<ParanoidEnableRequest> {
+  const { revision } = await harness.ctx.paranoidTransitions.normalDataRevision(userId);
+  return {
+    mediaSet: ['server'],
+    vaultVersion,
+    driveAttestation: null,
+    normalDataRevision: revision,
+  };
+}
+
+/** Drive-only evidence with a fresh capture token. */
+async function driveEnable(userId: string, vaultVersion: number): Promise<ParanoidEnableRequest> {
+  const { revision } = await harness.ctx.paranoidTransitions.normalDataRevision(userId);
+  return {
+    mediaSet: ['drive'],
+    vaultVersion,
+    driveAttestation: { verifiedRoundTrip: true, vaultVersion },
+    normalDataRevision: revision,
+  };
+}
 
 function disableRequest(userId: string, rehydrationId = REHYDRATION_ID): ParanoidDisableRequest {
   return {
@@ -230,6 +253,85 @@ function disableRequest(userId: string, rehydrationId = REHYDRATION_ID): Paranoi
 }
 
 /**
+ * A restore document that carries a cash ledger: portfolio + its single active
+ * main source + one deposit, keyed by the ids the capture would have read. Used
+ * to prove that a row which survived a refused enable makes it back out through
+ * disable, under its own identity.
+ */
+function cashRestoreRequest(userId: string, movementId: string): ParanoidDisableRequest {
+  // Parsed through the strict contract rather than cast: a mis-shaped entity
+  // fails here instead of as an opaque 400.
+  const entity = (id: string, kind: string, data: Record<string, unknown>) => ({
+    id,
+    kind,
+    rev: 0,
+    editedAt: EDITED_AT,
+    editedBy: userId,
+    deletedAt: null,
+    data,
+  });
+  return paranoidDisableRequestSchema.parse({
+    confirm: true,
+    rehydrationId: REHYDRATION_ID,
+    document: {
+      schemaVersion: 1,
+      entities: [
+        entity(RESTORED_PORTFOLIO_ID, 'portfolio', {
+          userId,
+          name: 'Restored',
+          visibility: 'private',
+          sortOrder: 0,
+          defaultPayFromCash: false,
+          archivedAt: null,
+        }),
+        // The seeded custom asset's opaque identity survives the purge, so the
+        // restore has to account for it (live row or tombstone) like any real
+        // capture would.
+        entity(ASSET_ID, 'customAsset', {
+          providerId: 'manual',
+          providerRef: ASSET_ID,
+          ownerId: userId,
+          type: 'custom',
+          symbol: 'HOME',
+          name: 'House',
+          exchange: null,
+          currency: 'EUR',
+          meta: { category: 'other', smoothing: false, recategorize: false },
+          searchText: "'home':1 'house':2",
+        }),
+        entity(RESTORED_SOURCE_ID, 'cashSource', {
+          portfolioId: RESTORED_PORTFOLIO_ID,
+          name: 'Main',
+          type: 'cash',
+          isMain: true,
+          archivedAt: null,
+          createdAt: EDITED_AT,
+        }),
+        entity(movementId, 'cashMovement', {
+          portfolioId: RESTORED_PORTFOLIO_ID,
+          sourceId: RESTORED_SOURCE_ID,
+          kind: 'deposit',
+          amountEur: '750',
+          transactionId: null,
+          transferId: null,
+          counterpartSourceId: null,
+          dividendId: null,
+          taxYear: null,
+          executedAt: '2026-07-31T09:00:00.000Z',
+          note: 'salary booked during media verification',
+          source: 'standing-order',
+          dedupHash: null,
+          originalCurrency: null,
+          createdAt: EDITED_AT,
+        }),
+      ],
+      mergeLog: [],
+      mirrorProvenance: [],
+    },
+  });
+}
+
+/**
  * The account-deletion rung the `discard` exit carries: typed username + a
  * server-verified credential. Spread into the request body.
  */
@@ -251,6 +353,88 @@ async function accountState(userId: string) {
 }
 
 describe('paranoid public transitions', () => {
+  it('refuses the enable when a money row lands after the capture, and never loses it', async () => {
+    /*
+     * The window the capture↔commit CAS closes. The wizard reads the whole
+     * account, encrypts it, writes both media and READ-VERIFIES them — all
+     * lock-free, seconds to minutes — before it reaches the enable transaction.
+     * A write inside that window (a second session, or the daily standing-order
+     * worker booking a period) is absent from the encrypted document, and the
+     * purge below hard-deletes it while disable restores from that document
+     * ALONE. Here the write is injected exactly where a media verification would
+     * be: after the capture, before the commit.
+     */
+    const user = await harness.seedUser();
+    const { portfolioId } = await seedNormalGraph(user);
+    const agent = await login(user);
+    const captured = await serverEnable(user.id);
+
+    const [source] = await harness.db
+      .select()
+      .from(portfolioCashSources)
+      .where(eq(portfolioCashSources.portfolioId, portfolioId));
+    const [injected] = await harness.db
+      .insert(portfolioCashMovements)
+      .values({
+        portfolioId,
+        sourceId: source!.id,
+        kind: 'deposit',
+        amountEur: '750',
+        executedAt: new Date('2026-07-31T09:00:00.000Z'),
+        note: 'salary booked during media verification',
+        source: 'standing-order',
+      })
+      .returning();
+
+    const refused = await agent
+      .post('/api/v1/account/paranoid/enable')
+      .set(...XRW)
+      .send(captured);
+    expect(refused.status, JSON.stringify(refused.body)).toBe(409);
+    expect(refused.body.error.code).toBe('PARANOID_NORMAL_DATA_CHANGED');
+
+    // Nothing was destroyed: the account is still normal and every row —
+    // including the injected one — is exactly where it was.
+    expect((await accountState(user.id))?.privacyMode).toBe('normal');
+    expect(
+      await harness.db
+        .select()
+        .from(portfolioCashMovements)
+        .where(eq(portfolioCashMovements.portfolioId, portfolioId)),
+    ).toHaveLength(2);
+    expect(
+      await harness.db.select().from(portfolios).where(eq(portfolios.userId, user.id)),
+    ).toHaveLength(1);
+
+    // Re-capturing (what the wizard does on retry) now includes the injected
+    // row, so the same enable commits — and the row survives the round trip out
+    // the other side, which is the property the refusal protects.
+    const recaptured = await agent
+      .post('/api/v1/account/paranoid/enable')
+      .set(...XRW)
+      .send(await serverEnable(user.id));
+    expect(recaptured.status, JSON.stringify(recaptured.body)).toBe(200);
+    expect(
+      await harness.db
+        .select()
+        .from(portfolioCashMovements)
+        .where(eq(portfolioCashMovements.portfolioId, portfolioId)),
+    ).toEqual([]);
+
+    const restored = await agent
+      .post('/api/v1/account/paranoid/disable')
+      .set(...XRW)
+      .send(cashRestoreRequest(user.id, injected!.id));
+    expect(restored.status, JSON.stringify(restored.body)).toBe(200);
+    const movements = await harness.db
+      .select()
+      .from(portfolioCashMovements)
+      .where(eq(portfolioCashMovements.id, injected!.id));
+    expect(movements).toMatchObject([
+      { amountEur: '750.000000', note: 'salary booked during media verification' },
+    ]);
+  });
+
   it('enables atomically, purges cleartext/caches, and preserves kept identity rows', async () => {
     const user = await harness.seedUser();
     const { portfolioId, watchlistId } = await seedNormalGraph(user);
@@ -272,7 +456,7 @@ describe('paranoid public transitions', () => {
     const response = await agent
       .post('/api/v1/account/paranoid/enable')
       .set(...XRW)
-      .send(serverEnable());
+      .send(await serverEnable(user.id));
     expect(response.status).toBe(200);
     expect(paranoidEnableResponseSchema.parse(response.body)).toMatchObject({
       mode: 'paranoid',
@@ -343,20 +527,22 @@ describe('paranoid public transitions', () => {
     await seedNormalGraph(user);
     const agent = await login(user);
 
-    const noCsrf = await agent.post('/api/v1/account/paranoid/enable').send(serverEnable());
+    const noCsrf = await agent
+      .post('/api/v1/account/paranoid/enable')
+      .send(await serverEnable(user.id));
     expect(noCsrf.status).toBe(403);
     expect((await accountState(user.id))?.privacyMode).toBe('normal');
 
     const unknownField = await agent
       .post('/api/v1/account/paranoid/enable')
       .set(...XRW)
-      .send({ ...serverEnable(), unsupported: true });
+      .send({ ...(await serverEnable(user.id)), unsupported: true });
     expect(unknownField.status).toBe(400);
 
     const stale = await agent
       .post('/api/v1/account/paranoid/enable')
       .set(...XRW)
-      .send(serverEnable(2));
+      .send(await serverEnable(user.id, 2));
     expect(stale.status).toBe(409);
     expect(stale.body.error.code).toBe('PARANOID_MEDIA_NOT_READY');
 
@@ -364,8 +550,7 @@ describe('paranoid public transitions', () => {
       .post('/api/v1/account/paranoid/enable')
       .set(...XRW)
       .send({
-        mediaSet: ['drive'],
-        vaultVersion: 1,
+        ...(await driveEnable(user.id, 1)),
         driveAttestation: { verifiedRoundTrip: true, vaultVersion: 2 },
       });
     expect(malformedDrive.status).toBe(400);
@@ -408,11 +593,10 @@ describe('paranoid public transitions', () => {
       rehydrationId: OTHER_REHYDRATION_ID,
     });
 
-    const response = await harness.ctx.paranoidTransitions.enable(user.id, {
-      mediaSet: ['drive'],
-      vaultVersion: 2,
-      driveAttestation: { verifiedRoundTrip: true, vaultVersion: 2 },
-    });
+    const response = await harness.ctx.paranoidTransitions.enable(
+      user.id,
+      await driveEnable(user.id, 2),
+    );
     expect(response).toMatchObject({ mode: 'paranoid', mediaSet: ['drive'] });
     expect(await accountState(user.id)).toMatchObject({
       privacyMode: 'paranoid',
@@ -460,11 +644,7 @@ describe('paranoid public transitions', () => {
   it('keeps the gated retired-server recovery set across an idempotent enable retry', async () => {
     const user = await harness.seedUser();
     await seedNormalGraph(user, { vaultVersion: 2 });
-    const driveOnly: ParanoidEnableRequest = {
-      mediaSet: ['drive'],
-      vaultVersion: 2,
-      driveAttestation: { verifiedRoundTrip: true, vaultVersion: 2 },
-    };
+    const driveOnly: ParanoidEnableRequest = await driveEnable(user.id, 2);
     const first = await harness.ctx.paranoidTransitions.enable(user.id, driveOnly);
     expect(first.idempotent).toBe(false);
 
@@ -532,7 +712,7 @@ describe('paranoid public transitions', () => {
       const response = await agent
         .post('/api/v1/account/paranoid/enable')
         .set(...XRW)
-        .send(serverEnable());
+        .send(await serverEnable(user.id));
       expect(response.status).toBe(409);
       expect(response.body.error.code).toBe(code);
       expect((await accountState(user.id))?.privacyMode).toBe('normal');
@@ -649,7 +829,7 @@ describe('paranoid public transitions', () => {
       },
     ]);
 
-    await harness.ctx.paranoidTransitions.enable(user.id, serverEnable());
+    await harness.ctx.paranoidTransitions.enable(user.id, await serverEnable(user.id));
 
     expect(
       await harness.db.select().from(friendships).where(eq(friendships.userA, userA!)),
@@ -708,7 +888,7 @@ describe('paranoid public transitions', () => {
     // Paranoid: the same body is buffered, and the answer comes from the strict
     // contract instead of the parser — the restore path is never 413-trapped.
     await expect(
-      harness.ctx.paranoidTransitions.enable(user.id, serverEnable()),
+      harness.ctx.paranoidTransitions.enable(user.id, await serverEnable(user.id)),
     ).resolves.toMatchObject({ mode: 'paranoid' });
     const buffered = await agent
       .post('/api/v1/account/paranoid/disable')
@@ -723,7 +903,7 @@ describe('paranoid public transitions', () => {
     await seedNormalGraph(user);
     const agent = await login(user);
     await expect(
-      harness.ctx.paranoidTransitions.enable(user.id, serverEnable()),
+      harness.ctx.paranoidTransitions.enable(user.id, await serverEnable(user.id)),
     ).resolves.toMatchObject({ mode: 'paranoid' });
     const body = disableRequest(user.id);
 
@@ -786,7 +966,7 @@ describe('paranoid public transitions', () => {
     const { watchlistId } = await seedNormalGraph(user);
     const agent = await login(user);
     await expect(
-      harness.ctx.paranoidTransitions.enable(user.id, serverEnable()),
+      harness.ctx.paranoidTransitions.enable(user.id, await serverEnable(user.id)),
     ).resolves.toMatchObject({ mode: 'paranoid' });
     const emptyDocument = { schemaVersion: 1, entities: [], mergeLog: [] };
 
@@ -867,7 +1047,7 @@ describe('paranoid public transitions', () => {
     await seedNormalGraph(user);
     const agent = await login(user);
     await expect(
-      harness.ctx.paranoidTransitions.enable(user.id, serverEnable()),
+      harness.ctx.paranoidTransitions.enable(user.id, await serverEnable(user.id)),
     ).resolves.toMatchObject({ mode: 'paranoid' });
     const emptyDocument = { schemaVersion: 1, entities: [], mergeLog: [] };
     const discard = (extra: Record<string, unknown>) =>
@@ -925,9 +1105,12 @@ describe('paranoid public transitions', () => {
   it('serializes simultaneous equivalent enables into one commit and one idempotent retry', async () => {
     const user = await harness.seedUser();
     await seedNormalGraph(user);
+    // ONE body for both callers: they race the same capture token, exactly like
+    // two tabs finishing the same wizard.
+    const body = await serverEnable(user.id);
     const results = await Promise.all([
-      harness.ctx.paranoidTransitions.enable(user.id, serverEnable()),
-      harness.ctx.paranoidTransitions.enable(user.id, serverEnable()),
+      harness.ctx.paranoidTransitions.enable(user.id, body),
+      harness.ctx.paranoidTransitions.enable(user.id, body),
     ]);
     expect(results.map((result) => result.idempotent).sort()).toEqual([false, true]);
     expect((await accountState(user.id))?.privacyMode).toBe('paranoid');
@@ -939,7 +1122,7 @@ describe('paranoid public transitions', () => {
   it('serializes simultaneous equivalent disables into one restore and one idempotent retry', async () => {
     const user = await harness.seedUser();
     await seedNormalGraph(user);
-    await harness.ctx.paranoidTransitions.enable(user.id, serverEnable());
+    await harness.ctx.paranoidTransitions.enable(user.id, await serverEnable(user.id));
     const body = disableRequest(user.id);
 
     const results = await Promise.all([
@@ -1083,7 +1266,7 @@ describe.each<ParanoidEnableStage>(['locked', 'sharingRevoked', 'vaultPurged', '
         },
       });
 
-      await expect(service.enable(user.id, serverEnable())).rejects.toThrow(
+      await expect(service.enable(user.id, await serverEnable(user.id))).rejects.toThrow(
         `injected ${failureStage}`,
       );
       expect((await accountState(user.id))?.privacyMode).toBe('normal');
@@ -1151,7 +1334,7 @@ describe('enable rollback at an outcome-ambiguous commit', () => {
         }),
     });
 
-    await expect(failing.enable(user.id, serverEnable())).rejects.toThrow(
+    await expect(failing.enable(user.id, await serverEnable(user.id))).rejects.toThrow(
       'injected commit failure',
     );
 
@@ -1184,7 +1367,10 @@ describe('enable rollback at an outcome-ambiguous commit', () => {
     // And a retry of the same enable — same evidence, a healthy transaction this
     // time — still completes: the staged name is deterministic, so re-preparing an
     // artifact whose file is already gone is a no-op rather than a hard conflict.
-    const retried = await createParanoidTransitionService(base).enable(user.id, serverEnable());
+    const retried = await createParanoidTransitionService(base).enable(
+      user.id,
+      await serverEnable(user.id),
+    );
     expect(retried.mode).toBe('paranoid');
     expect(retried.idempotent).toBe(false);
     expect(retirement).toEqual([

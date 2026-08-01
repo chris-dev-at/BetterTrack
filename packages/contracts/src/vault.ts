@@ -1336,6 +1336,24 @@ export type ParanoidDisableRehydrationResult = z.infer<
 // ── Public enable / disable transition DTOs ──────────────────────────────────
 
 /**
+ * `GET /account/paranoid/normal-revision` — an opaque digest over every
+ * `vault`-classified table the enable purge destroys, scoped to the caller.
+ * It carries no portfolio content (a one-way hash of row bytes), exists only
+ * to be handed back to enable, and changes on ANY normal-account write.
+ */
+const normalDataRevisionSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(128)
+  .regex(/^[A-Za-z0-9_-]+$/);
+
+export const paranoidNormalRevisionResponseSchema = z
+  .object({ revision: normalDataRevisionSchema })
+  .strict();
+export type ParanoidNormalRevisionResponse = z.infer<typeof paranoidNormalRevisionResponseSchema>;
+
+/**
  * Client proof that the selected Drive medium completed the §5 write/read
  * round-trip immediately before enable. The server deliberately persists only
  * the attested version — never a Drive id, token, path, document hash, or
@@ -1362,6 +1380,18 @@ export const paranoidEnableRequestSchema = z
     mediaSet: vaultMediaSetSchema,
     vaultVersion: vaultVersionSchema,
     driveAttestation: paranoidDriveReadinessAttestationSchema.nullable().default(null),
+    /**
+     * The compare-and-swap token that binds the client's CAPTURE to this
+     * destructive commit ({@link paranoidNormalRevisionResponseSchema}). It is
+     * read before the migration's first row read and re-derived server-side
+     * under the account lock immediately before the purge: any normal-account
+     * write in between — another session, or a due standing-order worker —
+     * changes it, and the enable is refused instead of hard-deleting rows the
+     * encrypted document never captured. Required, never optional: an omitted
+     * token would simply skip the guard on the one transition that cannot be
+     * undone.
+     */
+    normalDataRevision: normalDataRevisionSchema,
   })
   .strict()
   .superRefine((value, ctx) => {
@@ -1480,6 +1510,12 @@ export const PARANOID_TRANSITION_ERROR_CODES = {
   importInFlight: 'PARANOID_IMPORT_IN_FLIGHT',
   exportInFlight: 'PARANOID_EXPORT_IN_FLIGHT',
   transitionConflict: 'PARANOID_TRANSITION_CONFLICT',
+  /**
+   * The account was written to between the client's capture and this commit, so
+   * the encrypted copy is not a complete snapshot any more. Nothing was
+   * deleted; the wizard re-captures and retries.
+   */
+  normalDataChanged: 'PARANOID_NORMAL_DATA_CHANGED',
   invalidRehydration: 'PARANOID_REHYDRATION_INVALID',
 } as const;
 export type ParanoidTransitionErrorCode =

@@ -162,6 +162,18 @@ export function createAccountRouter(ctx: AppContext, limiters: RateLimiters): Ro
     },
   );
 
+  // The other half of the capture: the CAS token the wizard reads BEFORE its
+  // first row read and hands back to enable, which re-derives it under the
+  // account lock. Opaque row hashes only — never portfolio content.
+  router.get(
+    '/paranoid/normal-revision',
+    requireUser,
+    requireOwnerBrowserSession,
+    async (req, res) => {
+      res.json(await ctx.paranoidTransitions.normalDataRevision(req.authUser!.id));
+    },
+  );
+
   // The widened bound is spent ONLY on an account that can legitimately restore.
   // `app.ts` defers the global parser for this one path before any auth runs, so
   // the choice has to be made here — this handler sits after `requireUser`, which

@@ -24,6 +24,8 @@ import {
 } from '../../../lib/expensesApi';
 import { getTaxYearReport, getTaxYearReports, listDividends } from '../../../lib/portfolioApi';
 import { apiPortfolioStore, type PortfolioStore } from '../../../lib/portfolioStore';
+import { listStandingOrderRuns } from '../../../lib/standingOrdersApi';
+import { getParanoidNormalRevision } from '../../../lib/userApi';
 import { assetSnapshotRow } from '../assetSnapshot';
 import { emptyVaultDocument } from './enable';
 
@@ -37,17 +39,38 @@ export interface NormalVaultMigrationOptions {
 }
 
 /**
- * Read the complete currently-restorable normal-account graph before enable.
+ * A capture is the document AND the token that binds it to the commit. They
+ * travel together deliberately: an enable that shipped the document alone would
+ * be exactly the unguarded read-then-destroy this type exists to prevent.
+ */
+export interface NormalVaultCapture {
+  document: VaultDocument;
+  /** `GET /account/paranoid/normal-revision`, read before the FIRST row read. */
+  normalDataRevision: string;
+}
+
+/**
+ * Read the complete currently-restorable normal-account graph before enable,
+ * bound to the server revision it was read at.
+ *
+ * Ordering is load-bearing: the revision is read FIRST, so the compare-and-swap
+ * the server performs under the account lock covers the entire capture window,
+ * not just the part after it. A write that lands mid-capture — another session,
+ * or the daily standing-order worker — therefore refuses the enable instead of
+ * being silently purged out of existence.
+ *
  * Derived snapshots/import staging/fire ledgers are deliberately omitted: PD3
  * marks them purge-only and re-derives their successors after rehydration.
- *
- * One documented gap inside a restorable kind: only a standing order's LAST run
- * (`lastPeriodKey` + `lastRunAt`) is migrated, because that is all the standing
- * orders endpoint exposes. Earlier `standing_order_runs` rows are purged at
- * enable and do not come back on disable. Dueness is unaffected — the scheduler
- * reads `lastPeriodKey`, and the client materializer derives the same
- * deterministic occurrence ids — so the loss is historical run bookkeeping only.
  */
+export async function captureNormalVault(
+  options: NormalVaultMigrationOptions,
+): Promise<NormalVaultCapture> {
+  const revision = await getParanoidNormalRevision(options.signal);
+  const document = await buildNormalVaultDocument(options);
+  return { document, normalDataRevision: revision.revision };
+}
+
+/** The row-reading half of {@link captureNormalVault}; exported for tests. */
 export async function buildNormalVaultDocument(
   options: NormalVaultMigrationOptions,
 ): Promise<VaultDocument> {
@@ -287,7 +310,46 @@ export async function buildNormalVaultDocument(
   const userTax = await store.getTaxSettings(signal);
   append('taxSetting', id(), taxSettingRow(options.userId, userTax, now()));
 
+  // The authoritative exactly-once ledger, read RAW — not reconstructed from the
+  // order's `lastPeriodKey`/`lastRunAt` watermark. The engine claims a period
+  // BEFORE it books and deliberately leaves the claim behind as an un-retried
+  // tombstone when booking (or `markBooked`) fails afterwards, so a claim can
+  // legally exist that no watermark mentions. Synthesizing runs from the
+  // watermark dropped exactly those rows — and since enable hard-purges
+  // `standing_order_runs` and disable restores it from this document alone, the
+  // scheduler would afterwards re-book a period that was intentionally closed:
+  // a duplicate money booking. Every row rides, under its real id.
+  const runLedger = await listStandingOrderRuns(signal);
+  const orderIds = new Set(standingOrders.orders.map((order) => order.id));
+  const capturedRuns = new Set<string>();
+  for (const run of runLedger.runs) {
+    if (!orderIds.has(run.standingOrderId)) {
+      // The ledger is scoped to the caller's own orders server-side, so this can
+      // only mean the two reads raced an order deletion. Refuse rather than
+      // migrate a dangling claim the restore boundary would reject after the
+      // purge.
+      throw new Error(
+        `Vault migration read a standing-order run for unknown order ${run.standingOrderId}.`,
+      );
+    }
+    append('standingOrderRun', run.id, {
+      standingOrderId: run.standingOrderId,
+      periodKey: run.periodKey,
+      bookedAt: run.bookedAt,
+    });
+    capturedRuns.add(runKey(run.standingOrderId, run.periodKey));
+  }
+
   for (const order of standingOrders.orders) {
+    // The invariant the RESTORE enforces ("a standing-order run watermark
+    // requires its authoritative run row") — checked here, before the purge,
+    // because the server only checks it at disable, when the cleartext rows are
+    // already gone and refusing means the account cannot leave paranoid mode.
+    if (order.lastPeriodKey != null && !capturedRuns.has(runKey(order.id, order.lastPeriodKey))) {
+      throw new Error(
+        `Vault migration read no run row for the booked period ${order.lastPeriodKey} of standing order ${order.id}.`,
+      );
+    }
     append(
       'standingOrder',
       order.id,
@@ -311,13 +373,6 @@ export async function buildNormalVaultDocument(
       },
       order.updatedAt,
     );
-    if (order.lastPeriodKey != null && order.lastRunAt != null) {
-      append('standingOrderRun', id(), {
-        standingOrderId: order.id,
-        periodKey: order.lastPeriodKey,
-        bookedAt: order.lastRunAt,
-      });
-    }
   }
 
   const [categories, expenseTransactions, rules, budgets] = await Promise.all([
@@ -469,6 +524,11 @@ export async function buildNormalVaultDocument(
     entities: Object.fromEntries(buckets),
     mergeLog: [],
   };
+}
+
+/** The (order, period) pair the run ledger and the order watermark share. */
+function runKey(standingOrderId: string, periodKey: string): string {
+  return `${standingOrderId} ${periodKey}`;
 }
 
 async function listAllTransactions(

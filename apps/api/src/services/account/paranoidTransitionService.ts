@@ -4,18 +4,21 @@ import {
   paranoidDisableRequestSchema,
   paranoidEnableRequestSchema,
   paranoidForkProvenanceResponseSchema,
+  paranoidNormalRevisionResponseSchema,
   PARANOID_TRANSITION_ERROR_CODES,
   type ParanoidDisableRequest,
   type ParanoidDisableResponse,
   type ParanoidEnableRequest,
   type ParanoidEnableResponse,
   type ParanoidForkProvenanceResponse,
+  type ParanoidNormalRevisionResponse,
   type ParanoidRehydrationPostCommitPlan,
 } from '@bettertrack/contracts';
 
 import type { Database } from '../../data/db';
 import { createParanoidForkProvenanceRepository } from '../../data/repositories/paranoidRehydrationRepository';
 import {
+  computeNormalDataRevision,
   createParanoidTransitionTransactionRepository,
   finalizeRetiredCleartextExports,
   getParanoidAdminMetadata,
@@ -43,6 +46,7 @@ export class ParanoidTransitionError extends Error {
       | 'IMPORT_IN_FLIGHT'
       | 'EXPORT_IN_FLIGHT'
       | 'TRANSITION_CONFLICT'
+      | 'NORMAL_DATA_CHANGED'
       | 'INVALID_REHYDRATION',
     message: string,
   ) {
@@ -120,6 +124,13 @@ export interface ParanoidTransitionService {
    * transition lock precisely so it can run before the wizard commits to enabling.
    */
   forkProvenance(userId: string): Promise<ParanoidForkProvenanceResponse>;
+  /**
+   * The capture↔commit CAS token, read BEFORE the wizard's first row read and
+   * handed back to {@link ParanoidTransitionService.enable}. Lock-free for the
+   * same reason as {@link ParanoidTransitionService.forkProvenance}: it runs
+   * long before the account commits to anything.
+   */
+  normalDataRevision(userId: string): Promise<ParanoidNormalRevisionResponse>;
   /** Non-sensitive admin-only mode/media/blob metadata; never returns blob bytes. */
   adminMetadata(userId: string): Promise<ParanoidAdminMetadata | null>;
   /**
@@ -163,6 +174,7 @@ export const PARANOID_TRANSITION_HTTP_ERRORS = {
   IMPORT_IN_FLIGHT: { status: 409, code: PARANOID_TRANSITION_ERROR_CODES.importInFlight },
   EXPORT_IN_FLIGHT: { status: 409, code: PARANOID_TRANSITION_ERROR_CODES.exportInFlight },
   TRANSITION_CONFLICT: { status: 409, code: PARANOID_TRANSITION_ERROR_CODES.transitionConflict },
+  NORMAL_DATA_CHANGED: { status: 409, code: PARANOID_TRANSITION_ERROR_CODES.normalDataChanged },
   INVALID_REHYDRATION: {
     status: 400,
     code: PARANOID_TRANSITION_ERROR_CODES.invalidRehydration,
@@ -229,6 +241,12 @@ export function createParanoidTransitionService(
         deps.db,
       ).listRetainedForkProvenance(userId);
       return paranoidForkProvenanceResponseSchema.parse({ provenance });
+    },
+
+    async normalDataRevision(userId) {
+      return paranoidNormalRevisionResponseSchema.parse({
+        revision: await computeNormalDataRevision(deps.db, userId),
+      });
     },
 
     async enable(userId, request) {
@@ -324,6 +342,13 @@ export function createParanoidTransitionService(
               ? serverVaultMatches(state, input.vaultVersion)
               : state.currentServerVault === null && state.serverVaultHistoryCount === 0;
             if (sameMedia(state.mediaSet, input.mediaSet) && matchingDrive && matchingServer) {
+              // No capture CAS on this branch, deliberately. The account is
+              // ALREADY paranoid: its vault rows are gone, so the token the
+              // original capture carried can never match again and there is
+              // nothing left for a stale one to destroy. Checking it here would
+              // turn every idempotent retry — the whole point of this branch —
+              // into a permanent 409.
+              //
               // Finish any prior fail-closed export cleanup before acknowledging
               // an idempotent retry.
               restoreRetirementsOnFailure = false;
@@ -400,6 +425,30 @@ export function createParanoidTransitionService(
             throw new ParanoidTransitionError(
               'MEDIA_NOT_READY',
               'The server vault does not contain the attested version.',
+            );
+          }
+
+          /*
+           * The capture↔commit CAS. `lockState` holds the account row FOR
+           * UPDATE, so from here to commit no guarded normal-mode write can land
+           * (`withLockedPrivacyModes` takes KEY SHARE on the same row). Re-derive
+           * the revision INSIDE that window and compare it with the one the
+           * client's capture started from: everything it read is provably
+           * unchanged, or the transition is refused with nothing destroyed.
+           *
+           * Without this the wizard's read → encrypt → write → verify window —
+           * seconds to minutes, all of it lock-free — silently swallows any
+           * concurrent write: a second session's transaction, or the daily
+           * standing-order worker booking a period. Those rows are absent from
+           * the encrypted document and hard-deleted below, and disable restores
+           * from the document ALONE. A refused enable costs a retry; the
+           * alternative costs money rows with no surviving copy.
+           */
+          const observedRevision = await computeNormalDataRevision(tx, userId);
+          if (observedRevision !== input.normalDataRevision) {
+            throw new ParanoidTransitionError(
+              'NORMAL_DATA_CHANGED',
+              'The account changed after the encrypted copy was prepared; nothing was deleted.',
             );
           }
 

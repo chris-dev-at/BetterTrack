@@ -24,7 +24,7 @@ import {
   type PreparedVaultMaterial,
   type VaultEnableStage,
 } from './enable';
-import { buildNormalVaultDocument } from './migration';
+import { captureNormalVault } from './migration';
 
 const KILL_LIST_KEYS = [
   'sharing',
@@ -126,7 +126,7 @@ export function ParanoidEnableWizard({
           server: createServerBlobDataHome(),
           drive,
           migrate: (signal) =>
-            buildNormalVaultDocument({
+            captureNormalVault({
               userId: user.id,
               store: apiPortfolioStore,
               signal,
@@ -366,6 +366,8 @@ function enableErrorKey(cause: unknown): string {
         return 'vault.enable.errors.mediaNotReady';
       case PARANOID_TRANSITION_ERROR_CODES.transitionConflict:
         return 'vault.enable.errors.transitionConflict';
+      case PARANOID_TRANSITION_ERROR_CODES.normalDataChanged:
+        return 'vault.enable.errors.normalDataChanged';
     }
   }
   return `vault.enable.errors.${cause.stage}`;

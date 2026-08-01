@@ -1,4 +1,7 @@
+import { createHash } from 'node:crypto';
+
 import { and, count, eq, inArray, ne, or, sql } from 'drizzle-orm';
+import type { PgTable } from 'drizzle-orm/pg-core';
 
 import { VAULT_FORMAT_VERSION, type VaultMediaSet } from '@bettertrack/contracts';
 
@@ -55,7 +58,10 @@ import {
   userTaxSettings,
   watchlists,
 } from '../schema';
-import { PARANOID_VAULT_TABLE_NAMES } from '../../services/export/manifest';
+import {
+  PARANOID_RESTORABLE_TABLE_NAMES,
+  PARANOID_VAULT_TABLE_NAMES,
+} from '../../services/export/manifest';
 import {
   withExclusiveParanoidTransitionTestLock,
   withFreshLockedPrivacyModes,
@@ -136,6 +142,29 @@ interface PurgeScope {
 
 type PurgeHandler = (scope: PurgeScope) => PromiseLike<unknown> | Promise<void>;
 type ProbeHandler = (scope: PurgeScope) => Promise<number>;
+type DigestHandler = (scope: PurgeScope) => Promise<string>;
+
+/** The digest of an empty scope — an absent id list and an empty table agree. */
+const EMPTY_DIGEST = '-';
+
+/**
+ * A whole-table content hash for the rows the surrounding query selects. The
+ * per-row `md5(row::text)` covers EVERY column (no hand-listed column set can
+ * silently miss one), and ordering the aggregate by that same hash makes the
+ * result independent of the physical scan order.
+ */
+const rowsDigest = (table: PgTable) =>
+  sql<string>`coalesce(md5(string_agg(md5(${table}::text), ',' order by md5(${table}::text))), ${EMPTY_DIGEST})`;
+
+const digest = async (query: PromiseLike<Array<{ value: string | null }>>): Promise<string> => {
+  const [row] = await query;
+  return row?.value ?? EMPTY_DIGEST;
+};
+
+const digestIds = async (
+  ids: readonly string[],
+  run: (ids: string[]) => PromiseLike<Array<{ value: string | null }>>,
+): Promise<string> => (ids.length === 0 ? EMPTY_DIGEST : digest(run([...ids])));
 
 const ifIds = async (ids: readonly string[], run: (ids: string[]) => Promise<unknown>) => {
   if (ids.length > 0) await run([...ids]);
@@ -412,8 +441,160 @@ const PROBE_HANDLERS: Record<string, ProbeHandler> = {
     ),
 };
 
+/**
+ * One content digest per RESTORABLE vault table — the capture↔commit CAS
+ * material (`computeNormalDataRevision`). Each row is hashed whole
+ * (`md5(row::text)`), so any insert, delete or column edit moves the table's
+ * digest; the aggregate is ordered by the row hash so it never depends on scan
+ * order. Purge-only tables are deliberately absent: see
+ * {@link PARANOID_RESTORABLE_TABLE_NAMES}.
+ */
+const REVISION_HANDLERS: Record<string, DigestHandler> = {
+  assets: ({ userId, tx }) =>
+    digest(
+      tx
+        .select({ value: rowsDigest(assets) })
+        .from(assets)
+        .where(eq(assets.ownerId, userId)),
+    ),
+  cash_budgets: ({ portfolioIds, tx }) =>
+    digestIds(portfolioIds, (ids) =>
+      tx
+        .select({ value: rowsDigest(cashBudgets) })
+        .from(cashBudgets)
+        .where(inArray(cashBudgets.portfolioId, ids)),
+    ),
+  cash_movement_tags: ({ cashMovementIds, tx }) =>
+    digestIds(cashMovementIds, (ids) =>
+      tx
+        .select({ value: rowsDigest(cashMovementTags) })
+        .from(cashMovementTags)
+        .where(inArray(cashMovementTags.movementId, ids)),
+    ),
+  cash_rule_tags: ({ cashRuleIds, tx }) =>
+    digestIds(cashRuleIds, (ids) =>
+      tx
+        .select({ value: rowsDigest(cashRuleTags) })
+        .from(cashRuleTags)
+        .where(inArray(cashRuleTags.ruleId, ids)),
+    ),
+  cash_rules: ({ userId, tx }) =>
+    digest(
+      tx
+        .select({ value: rowsDigest(cashRules) })
+        .from(cashRules)
+        .where(eq(cashRules.userId, userId)),
+    ),
+  cash_tags: ({ userId, tx }) =>
+    digest(
+      tx
+        .select({ value: rowsDigest(cashTags) })
+        .from(cashTags)
+        .where(eq(cashTags.userId, userId)),
+    ),
+  dividends: ({ portfolioIds, tx }) =>
+    digestIds(portfolioIds, (ids) =>
+      tx
+        .select({ value: rowsDigest(dividends) })
+        .from(dividends)
+        .where(inArray(dividends.portfolioId, ids)),
+    ),
+  expense_budgets: ({ userId, tx }) =>
+    digest(
+      tx
+        .select({ value: rowsDigest(expenseBudgets) })
+        .from(expenseBudgets)
+        .where(eq(expenseBudgets.userId, userId)),
+    ),
+  expense_categories: ({ userId, tx }) =>
+    digest(
+      tx
+        .select({ value: rowsDigest(expenseCategories) })
+        .from(expenseCategories)
+        .where(eq(expenseCategories.userId, userId)),
+    ),
+  expense_rules: ({ userId, tx }) =>
+    digest(
+      tx
+        .select({ value: rowsDigest(expenseRules) })
+        .from(expenseRules)
+        .where(eq(expenseRules.userId, userId)),
+    ),
+  expense_transactions: ({ userId, tx }) =>
+    digest(
+      tx
+        .select({ value: rowsDigest(expenseTransactions) })
+        .from(expenseTransactions)
+        .where(eq(expenseTransactions.userId, userId)),
+    ),
+  portfolio_cash_movements: ({ portfolioIds, tx }) =>
+    digestIds(portfolioIds, (ids) =>
+      tx
+        .select({ value: rowsDigest(portfolioCashMovements) })
+        .from(portfolioCashMovements)
+        .where(inArray(portfolioCashMovements.portfolioId, ids)),
+    ),
+  portfolio_cash_sources: ({ portfolioIds, tx }) =>
+    digestIds(portfolioIds, (ids) =>
+      tx
+        .select({ value: rowsDigest(portfolioCashSources) })
+        .from(portfolioCashSources)
+        .where(inArray(portfolioCashSources.portfolioId, ids)),
+    ),
+  portfolio_settings: ({ portfolioIds, tx }) =>
+    digestIds(portfolioIds, (ids) =>
+      tx
+        .select({ value: rowsDigest(portfolioSettings) })
+        .from(portfolioSettings)
+        .where(inArray(portfolioSettings.portfolioId, ids)),
+    ),
+  portfolios: ({ userId, tx }) =>
+    digest(
+      tx
+        .select({ value: rowsDigest(portfolios) })
+        .from(portfolios)
+        .where(eq(portfolios.userId, userId)),
+    ),
+  price_history: ({ customAssetIds, tx }) =>
+    digestIds(customAssetIds, (ids) =>
+      tx
+        .select({ value: rowsDigest(priceHistory) })
+        .from(priceHistory)
+        .where(inArray(priceHistory.assetId, ids)),
+    ),
+  standing_order_runs: ({ standingOrderIds, tx }) =>
+    digestIds(standingOrderIds, (ids) =>
+      tx
+        .select({ value: rowsDigest(standingOrderRuns) })
+        .from(standingOrderRuns)
+        .where(inArray(standingOrderRuns.standingOrderId, ids)),
+    ),
+  standing_orders: ({ userId, tx }) =>
+    digest(
+      tx
+        .select({ value: rowsDigest(standingOrders) })
+        .from(standingOrders)
+        .where(eq(standingOrders.userId, userId)),
+    ),
+  transactions: ({ portfolioIds, tx }) =>
+    digestIds(portfolioIds, (ids) =>
+      tx
+        .select({ value: rowsDigest(transactions) })
+        .from(transactions)
+        .where(inArray(transactions.portfolioId, ids)),
+    ),
+  user_tax_settings: ({ userId, tx }) =>
+    digest(
+      tx
+        .select({ value: rowsDigest(userTaxSettings) })
+        .from(userTaxSettings)
+        .where(eq(userTaxSettings.userId, userId)),
+    ),
+};
+
 export const PARANOID_PURGE_HANDLER_NAMES = Object.keys(PURGE_HANDLERS).sort();
 export const PARANOID_PROBE_HANDLER_NAMES = Object.keys(PROBE_HANDLERS).sort();
+export const PARANOID_REVISION_HANDLER_NAMES = Object.keys(REVISION_HANDLERS).sort();
 
 function assertPurgeCompleteness(): void {
   const expected = [...PARANOID_VAULT_TABLE_NAMES];
@@ -433,6 +614,22 @@ function assertPurgeCompleteness(): void {
       `paranoid purge/manifest drift: ${label} [${actual.join(', ')}] vs vault tables [${expected.join(', ')}]`,
     );
   }
+  assertRevisionCompleteness();
+}
+
+/**
+ * A restorable table with no revision handler would be silently exempt from the
+ * capture↔commit CAS — the exact "a new table joins the sweep un-enrolled"
+ * failure the purge/probe gates already refuse. Checked before every purge and
+ * on every revision read, so neither side can drift alone.
+ */
+function assertRevisionCompleteness(): void {
+  const expected = [...PARANOID_RESTORABLE_TABLE_NAMES];
+  const actual = PARANOID_REVISION_HANDLER_NAMES;
+  if (expected.length === actual.length && expected.every((name, i) => name === actual[i])) return;
+  throw new Error(
+    `paranoid revision/manifest drift: revision handlers [${actual.join(', ')}] vs restorable tables [${expected.join(', ')}]`,
+  );
 }
 
 async function idsFor<T extends { id: string }>(query: PromiseLike<T[]>): Promise<string[]> {
@@ -722,67 +919,7 @@ export function createParanoidTransitionTransactionRepository(
 
     async purgeVaultRows(userId) {
       assertPurgeCompleteness();
-      // Read the owner's portfolio ids once: the two portfolio-scoped id sets
-      // below derive from this list instead of re-selecting it per branch.
-      const portfolioIds = await portfolioIdsForUser(tx, userId);
-      const [
-        customAssetIds,
-        standingOrderIds,
-        importBatchIds,
-        expenseBudgetIds,
-        cashMovementIds,
-        cashBudgetIds,
-        cashRuleIds,
-      ] = await Promise.all([
-        idsFor(tx.select({ id: assets.id }).from(assets).where(eq(assets.ownerId, userId))),
-        idsFor(
-          tx
-            .select({ id: standingOrders.id })
-            .from(standingOrders)
-            .where(eq(standingOrders.userId, userId)),
-        ),
-        idsFor(
-          tx
-            .select({ id: importBatches.id })
-            .from(importBatches)
-            .where(eq(importBatches.ownerId, userId)),
-        ),
-        idsFor(
-          tx
-            .select({ id: expenseBudgets.id })
-            .from(expenseBudgets)
-            .where(eq(expenseBudgets.userId, userId)),
-        ),
-        portfolioIds.length === 0
-          ? []
-          : idsFor(
-              tx
-                .select({ id: portfolioCashMovements.id })
-                .from(portfolioCashMovements)
-                .where(inArray(portfolioCashMovements.portfolioId, portfolioIds)),
-            ),
-        portfolioIds.length === 0
-          ? []
-          : idsFor(
-              tx
-                .select({ id: cashBudgets.id })
-                .from(cashBudgets)
-                .where(inArray(cashBudgets.portfolioId, portfolioIds)),
-            ),
-        idsFor(tx.select({ id: cashRules.id }).from(cashRules).where(eq(cashRules.userId, userId))),
-      ]);
-      const scope: PurgeScope = {
-        tx,
-        userId,
-        portfolioIds,
-        customAssetIds,
-        standingOrderIds,
-        importBatchIds,
-        expenseBudgetIds,
-        cashMovementIds,
-        cashBudgetIds,
-        cashRuleIds,
-      };
+      const scope = await collectPurgeScope(tx, userId);
       for (const tableName of PARANOID_PURGE_ORDER) {
         await PURGE_HANDLERS[tableName]!(scope);
       }
@@ -839,6 +976,112 @@ async function portfolioIdsForUser(db: Database, userId: string): Promise<string
   return idsFor(
     db.select({ id: portfolios.id }).from(portfolios).where(eq(portfolios.userId, userId)),
   );
+}
+
+/**
+ * The owner-scoped id sets every table branch (purge, probe, revision) reads
+ * its rows through. One collection, shared by all three, so the revision can
+ * never hash a wider or narrower scope than the purge destroys.
+ */
+async function collectPurgeScope(tx: Database, userId: string): Promise<PurgeScope> {
+  // Read the owner's portfolio ids once: the portfolio-scoped id sets below
+  // derive from this list instead of re-selecting it per branch.
+  const portfolioIds = await portfolioIdsForUser(tx, userId);
+  const [
+    customAssetIds,
+    standingOrderIds,
+    importBatchIds,
+    expenseBudgetIds,
+    cashMovementIds,
+    cashBudgetIds,
+    cashRuleIds,
+  ] = await Promise.all([
+    idsFor(tx.select({ id: assets.id }).from(assets).where(eq(assets.ownerId, userId))),
+    idsFor(
+      tx
+        .select({ id: standingOrders.id })
+        .from(standingOrders)
+        .where(eq(standingOrders.userId, userId)),
+    ),
+    idsFor(
+      tx
+        .select({ id: importBatches.id })
+        .from(importBatches)
+        .where(eq(importBatches.ownerId, userId)),
+    ),
+    idsFor(
+      tx
+        .select({ id: expenseBudgets.id })
+        .from(expenseBudgets)
+        .where(eq(expenseBudgets.userId, userId)),
+    ),
+    portfolioIds.length === 0
+      ? []
+      : idsFor(
+          tx
+            .select({ id: portfolioCashMovements.id })
+            .from(portfolioCashMovements)
+            .where(inArray(portfolioCashMovements.portfolioId, portfolioIds)),
+        ),
+    portfolioIds.length === 0
+      ? []
+      : idsFor(
+          tx
+            .select({ id: cashBudgets.id })
+            .from(cashBudgets)
+            .where(inArray(cashBudgets.portfolioId, portfolioIds)),
+        ),
+    idsFor(tx.select({ id: cashRules.id }).from(cashRules).where(eq(cashRules.userId, userId))),
+  ]);
+  return {
+    tx,
+    userId,
+    portfolioIds,
+    customAssetIds,
+    standingOrderIds,
+    importBatchIds,
+    expenseBudgetIds,
+    cashMovementIds,
+    cashBudgetIds,
+    cashRuleIds,
+  };
+}
+
+/**
+ * The compare-and-swap token that binds a client CAPTURE to the destructive
+ * enable commit (`docs/paranoid-design.md` §7): an opaque digest over every
+ * restorable vault table this account owns.
+ *
+ * Why this exists. The wizard reads the whole normal account over many HTTP
+ * calls, encrypts it, writes it to each medium and read-verifies them — seconds
+ * to minutes — and only THEN reaches the enable transaction, which is the first
+ * moment the account row lock exists. A write that lands inside that window (a
+ * second session, or the daily standing-order worker booking a period) is absent
+ * from the encrypted document and is nonetheless hard-deleted by the purge:
+ * irreversible loss. Enable therefore re-derives this token under the lock,
+ * immediately before the first destructive statement, and refuses the whole
+ * transition when it disagrees with the one the capture started from.
+ *
+ * It is intentionally content-derived rather than a stored counter: no writer
+ * anywhere has to remember to bump anything, and a table that joins the vault
+ * axis without a handler fails {@link assertRevisionCompleteness} loudly.
+ * It carries no portfolio content — one-way row hashes only — but it is still
+ * only ever handed to its own account.
+ *
+ * Cost and failure direction. One aggregate per restorable table, bounded by a
+ * single account's rows, twice per enable (once for the wizard's read, once
+ * under the lock) — paid on a once-in-an-account-lifetime transition. Any
+ * disagreement, including one this function itself caused, refuses the enable:
+ * the failure direction is a retry, never a purge.
+ */
+export async function computeNormalDataRevision(db: Database, userId: string): Promise<string> {
+  assertRevisionCompleteness();
+  const scope = await collectPurgeScope(db, userId);
+  const parts: string[] = [];
+  for (const tableName of PARANOID_RESTORABLE_TABLE_NAMES) {
+    parts.push(`${tableName}=${await REVISION_HANDLERS[tableName]!(scope)}`);
+  }
+  return createHash('sha256').update(parts.join('\n')).digest('base64url');
 }
 
 /**

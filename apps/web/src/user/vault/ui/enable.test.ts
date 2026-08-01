@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { VaultDocument, VaultWrappedKey } from '@bettertrack/contracts';
 
 import type { DataHome, DataHomeMedium, DataHomeReadResult } from '../dataHome';
+import type { NormalVaultCapture } from './migration';
 import {
   emptyVaultDocument,
   enablePreparedVault,
@@ -20,6 +21,7 @@ const PORTFOLIO_ID = '018f0000-0000-7000-8000-000000000005';
 const ORDER_ID = '018f0000-0000-7000-8000-000000000006';
 const MISSING_ASSET_ID = '018f0000-0000-7000-8000-000000000007';
 const AT = '2026-07-30T09:00:00.000Z';
+const REVISION = 'r3v1s10n-token';
 
 /** The smallest document the unlock validator accepts: one live portfolio. */
 function migratedDocument(): VaultDocument {
@@ -123,7 +125,7 @@ describe('paranoid enable ordering', () => {
         {
           server,
           drive,
-          migrate: async () => migratedDocument(),
+          migrate: async () => capture(migratedDocument()),
           commit,
           now: () => '2026-07-30T10:00:00.000Z',
           id: idSequence(DEVICE_ID, WRITE_ID),
@@ -144,6 +146,11 @@ describe('paranoid enable ordering', () => {
     expect(commit).toHaveBeenCalledOnce();
     expect(server.readCount()).toBe(2);
     expect(drive.readCount()).toBe(2);
+    // The commit carries the token the CAPTURE was read at, not a fresh one.
+    // The server re-derives it under the account lock, so a write that landed
+    // anywhere in the (long, lock-free) window above refuses the transition
+    // instead of purging rows this document never saw.
+    expect(commit).toHaveBeenCalledWith(expect.objectContaining({ normalDataRevision: REVISION }));
   });
 
   it('never commits or claims success when a selected medium fails read-back verification', async () => {
@@ -159,7 +166,7 @@ describe('paranoid enable ordering', () => {
         {
           server: memoryHome('server'),
           drive,
-          migrate: async () => migratedDocument(),
+          migrate: async () => capture(migratedDocument()),
           commit,
           now: () => '2026-07-30T10:00:00.000Z',
           id: idSequence(DEVICE_ID, WRITE_ID),
@@ -188,7 +195,7 @@ describe('paranoid enable ordering', () => {
         {
           server,
           drive,
-          migrate: async () => documentWithDanglingOrderAsset(),
+          migrate: async () => capture(documentWithDanglingOrderAsset()),
           commit,
           now: () => '2026-07-30T10:00:00.000Z',
           id: idSequence(DEVICE_ID, WRITE_ID),
@@ -221,7 +228,7 @@ describe('paranoid enable ordering', () => {
         { mediaSet: ['server'], material: material() },
         {
           server,
-          migrate: async () => emptyVaultDocument(),
+          migrate: async () => capture(emptyVaultDocument()),
           commit,
           now: () => '2026-07-30T10:00:00.000Z',
           id: idSequence(DEVICE_ID, WRITE_ID),
@@ -235,6 +242,11 @@ describe('paranoid enable ordering', () => {
     expect(commit).not.toHaveBeenCalled();
   });
 });
+
+/** A capture as `captureNormalVault` produces it: document + its CAS token. */
+function capture(document: VaultDocument): NormalVaultCapture {
+  return { document, normalDataRevision: REVISION };
+}
 
 function material(): PreparedVaultMaterial {
   return {

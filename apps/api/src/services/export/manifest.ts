@@ -568,6 +568,23 @@ export const PARANOID_VAULT_TABLE_NAMES: readonly string[] = Object.entries(
   .sort();
 
 /**
+ * The subset whose rows the enable purge destroys IRREVERSIBLY — everything the
+ * encrypted document is the only surviving copy of. The capture↔commit revision
+ * (`computeNormalDataRevision`) hashes exactly these: a write to a `purge-only`
+ * table (a snapshot reroll, a fired-marker, import staging) loses nothing on the
+ * round trip, so including it would only manufacture spurious enable conflicts
+ * from background jobs.
+ */
+export const PARANOID_RESTORABLE_TABLE_NAMES: readonly string[] = Object.entries(
+  PARANOID_REHYDRATION_POLICY,
+)
+  .filter(
+    ([table, policy]) => policy.kind === 'restore' && PARANOID_VAULT_TABLE_NAMES.includes(table),
+  )
+  .map(([table]) => table)
+  .sort();
+
+/**
  * Normal account-export entities that remain safe as cleartext for a paranoid
  * account. Deriving this from both compulsory table classifications means a new
  * exported money table cannot silently enter the paranoid archive.

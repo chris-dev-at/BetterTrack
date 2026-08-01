@@ -972,6 +972,7 @@ describe('#730 paranoid transitions are session-only, like /vault/* (the surface
     mediaSet: ['drive'],
     vaultVersion: 1,
     driveAttestation: { verifiedRoundTrip: true, vaultVersion: 1 },
+    normalDataRevision: 'capture-token',
   };
 
   const call = (token: string, row: (typeof SESSION_ONLY)[number]) => {

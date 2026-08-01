@@ -22,6 +22,7 @@ import { openVaultSession } from '../engine/session';
 import { VaultCryptoError } from '../errors';
 import { toStrictRestoreDocument } from '../paranoidDisable';
 import { serializeRecoveryKit, type RecoveryKitDownload } from '../recovery';
+import type { NormalVaultCapture } from './migration';
 
 /**
  * Every stage the wizard can report, as a value — the union below is derived
@@ -68,7 +69,12 @@ export interface PreparedVaultMaterial {
 export interface EnableVaultDependencies {
   server: DataHome;
   drive?: DataHome;
-  migrate(signal?: AbortSignal): Promise<VaultDocument>;
+  /**
+   * The capture: the document AND the server revision it was read at. Never
+   * narrow this back to a bare document — the revision is what makes the commit
+   * below a compare-and-swap instead of an unguarded destroy.
+   */
+  migrate(signal?: AbortSignal): Promise<NormalVaultCapture>;
   commit?(body: ParanoidEnableRequest): Promise<ParanoidEnableResponse>;
   now?: () => string;
   id?: () => string;
@@ -126,6 +132,13 @@ export async function prepareVaultMaterial(
 /**
  * Migrate → encrypt → write/read-verify each selected medium → commit the
  * destructive server transaction. Nothing clears normal data before commit.
+ *
+ * Every step between the capture and the commit is lock-free and can take
+ * minutes, so the capture's revision token rides along to the commit: the server
+ * re-derives it under the account lock and refuses the purge if the account was
+ * written to meanwhile. "Nothing clears normal data before commit" is the local
+ * half of the guarantee; that token is the half this function cannot enforce
+ * itself.
  */
 export async function enablePreparedVault(
   input: EnableVaultInput,
@@ -137,14 +150,15 @@ export async function enablePreparedVault(
   const homes = selectedHomes(input.mediaSet, dependencies);
 
   input.onStage?.('migrate');
-  let document: VaultDocument;
+  let capture: NormalVaultCapture;
   try {
     input.signal?.throwIfAborted();
-    document = await dependencies.migrate(input.signal);
+    capture = await dependencies.migrate(input.signal);
     input.signal?.throwIfAborted();
   } catch (cause) {
     throw stageError('migrate', 'Your existing data could not be prepared safely.', cause);
   }
+  const document = capture.document;
 
   /*
    * The pre-commit proof. Enable is one-way and destructive: after the commit
@@ -258,6 +272,11 @@ export async function enablePreparedVault(
         driveAttestation: driveSelected
           ? { verifiedRoundTrip: true, vaultVersion: nextVersion }
           : null,
+        // The token the capture started from. Everything between that read and
+        // this commit — the row reads, the encryption, both medium writes and
+        // both read-verifications — is inside the window the server re-checks
+        // under the account lock before it deletes anything.
+        normalDataRevision: capture.normalDataRevision,
       });
       return { envelope, version: nextVersion, receipt };
     } catch (cause) {

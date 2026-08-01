@@ -30,7 +30,7 @@ vi.mock('../serverBlobDataHome', () => ({
   createServerBlobDataHome: () => ({ medium: 'server' }),
 }));
 vi.mock('./migration', () => ({
-  buildNormalVaultDocument: mocks.migrate,
+  captureNormalVault: mocks.migrate,
 }));
 vi.mock('./enable', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./enable')>();

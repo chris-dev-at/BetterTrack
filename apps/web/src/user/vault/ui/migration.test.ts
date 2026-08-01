@@ -34,6 +34,14 @@ vi.mock('../../../lib/cashApi', async (importOriginal) => {
     listAllCashBudgets: vi.fn(),
   };
 });
+vi.mock('../../../lib/standingOrdersApi', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../lib/standingOrdersApi')>();
+  return { ...actual, listStandingOrderRuns: vi.fn() };
+});
+vi.mock('../../../lib/userApi', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../lib/userApi')>();
+  return { ...actual, getParanoidNormalRevision: vi.fn() };
+});
 
 import { getAssetDetail } from '../../../lib/assetApi';
 import { listAllCashBudgets, listCashRules, listCashTags } from '../../../lib/cashApi';
@@ -45,9 +53,11 @@ import {
 } from '../../../lib/expensesApi';
 import { getTaxYearReport, getTaxYearReports, listDividends } from '../../../lib/portfolioApi';
 import { apiPortfolioStore } from '../../../lib/portfolioStore';
+import { listStandingOrderRuns } from '../../../lib/standingOrdersApi';
+import { getParanoidNormalRevision } from '../../../lib/userApi';
 import { openVaultSession } from '../engine/session';
 import { toStrictRestoreDocument } from '../paranoidDisable';
-import { buildNormalVaultDocument } from './migration';
+import { buildNormalVaultDocument, captureNormalVault } from './migration';
 
 const USER_ID = '018f0000-0000-7000-8000-000000000001';
 const PORTFOLIO_ID = '018f0000-0000-7000-8000-000000000010';
@@ -59,6 +69,9 @@ const NEXT_CURSOR = '018f0000-0000-7000-8000-000000000040';
 const ORDER_ID = '018f0000-0000-7000-8000-000000000050';
 const ORDER_ASSET_ID = '018f0000-0000-7000-8000-000000000051';
 const NOW = '2026-07-30T10:00:00.000Z';
+const RUN_ID = '018f0000-0000-7000-8000-000000000060';
+const CLAIM_ID = '018f0000-0000-7000-8000-000000000061';
+const REVISION = 'FAKE-normal-data-revision_0';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -73,6 +86,8 @@ beforeEach(() => {
   vi.mocked(listCashTags).mockResolvedValue({ tags: [] });
   vi.mocked(listCashRules).mockResolvedValue({ rules: [] });
   vi.mocked(listAllCashBudgets).mockResolvedValue({ budgets: [] });
+  vi.mocked(listStandingOrderRuns).mockResolvedValue({ runs: [] });
+  vi.mocked(getParanoidNormalRevision).mockResolvedValue({ revision: REVISION });
 });
 
 const ASSET = {
@@ -464,6 +479,193 @@ describe('buildNormalVaultDocument', () => {
         .map((entity) => `${entity.id}:${entity.data.periodKey}:${entity.data.amount}`)
         .sort(),
     ).toEqual([`${RECURRING_BUDGET_ID}:null:500`, `${MONTH_BUDGET_ID}:2026-12:250`].sort());
+  });
+
+  it('carries every run-ledger row, including a claim no watermark mentions', async () => {
+    // The engine CLAIMS a period before it books and leaves the claim as an
+    // un-retried tombstone when booking (or `markBooked`) fails afterwards — so
+    // `standing_order_runs` legitimately holds rows the order's
+    // `lastPeriodKey`/`lastRunAt` watermark says nothing about. Synthesizing
+    // runs from the watermark dropped exactly those, and since enable purges the
+    // table and disable restores it from this document alone, the scheduler
+    // would re-book a period that was intentionally closed: a double booking of
+    // real money.
+    const store: PortfolioStore = {
+      ...apiPortfolioStore,
+      listPortfolios: vi.fn(async () => ({ portfolios: [] })),
+      listCustomAssets: vi.fn(async () => ({ assets: [] })),
+      getTaxSettings: vi.fn(async () => ({ mode: 'none' as const, country: null })),
+      listStandingOrders: vi.fn(async () => ({
+        orders: [
+          {
+            id: ORDER_ID,
+            portfolioId: PORTFOLIO_ID,
+            kind: 'cash-add' as const,
+            assetId: null,
+            assetSymbol: null,
+            assetName: null,
+            amount: 100,
+            currency: 'EUR',
+            label: 'Salary',
+            cadence: 'monthly' as const,
+            anchorDay: 1,
+            startDate: '2026-05-01',
+            endDate: null,
+            status: 'active' as const,
+            // The watermark stopped at June: July was claimed, then its booking
+            // failed. That claim exists ONLY in the ledger.
+            lastRunAt: '2026-06-01T04:00:00.000Z',
+            lastPeriodKey: '2026-06-01',
+            nextRunDate: '2026-08-01',
+            createdAt: NOW,
+            updatedAt: NOW,
+          },
+        ],
+      })),
+    };
+    vi.mocked(listStandingOrderRuns).mockResolvedValue({
+      runs: [
+        {
+          id: RUN_ID,
+          standingOrderId: ORDER_ID,
+          periodKey: '2026-06-01',
+          bookedAt: '2026-06-01T04:00:00.000Z',
+        },
+        {
+          id: CLAIM_ID,
+          standingOrderId: ORDER_ID,
+          periodKey: '2026-07-01',
+          bookedAt: '2026-07-01T04:00:00.000Z',
+        },
+      ],
+    });
+
+    const document = await buildNormalVaultDocument({
+      userId: USER_ID,
+      deviceId: DEVICE_ID,
+      store,
+      now: () => NOW,
+    });
+
+    // Both rows ride, under their REAL ledger ids — the identity the restore
+    // writes back and the client's occurrence lookup matches semantically.
+    expect(
+      (document.entities.standingOrderRun ?? []).map(
+        (entity) => `${entity.id}:${entity.data.periodKey}`,
+      ),
+    ).toEqual([`${RUN_ID}:2026-06-01`, `${CLAIM_ID}:2026-07-01`]);
+    // And the restore boundary ships them: the claim is what stops the
+    // post-disable scheduler from re-booking July.
+    const restore = toStrictRestoreDocument(document);
+    expect(
+      restore.entities
+        .filter((entity) => entity.kind === 'standingOrderRun')
+        .map((entity) => entity.data.periodKey),
+    ).toEqual(['2026-06-01', '2026-07-01']);
+  });
+
+  it('refuses a booked watermark whose authoritative run row is missing', async () => {
+    // The server checks this invariant only at DISABLE — by then the cleartext
+    // rows are gone and a refusal traps the account in paranoid mode. So the
+    // capture proves it while the normal account is still intact.
+    const store: PortfolioStore = {
+      ...apiPortfolioStore,
+      listPortfolios: vi.fn(async () => ({ portfolios: [] })),
+      listCustomAssets: vi.fn(async () => ({ assets: [] })),
+      getTaxSettings: vi.fn(async () => ({ mode: 'none' as const, country: null })),
+      listStandingOrders: vi.fn(async () => ({
+        orders: [
+          {
+            id: ORDER_ID,
+            portfolioId: PORTFOLIO_ID,
+            kind: 'cash-add' as const,
+            assetId: null,
+            assetSymbol: null,
+            assetName: null,
+            amount: 100,
+            currency: 'EUR',
+            label: 'Salary',
+            cadence: 'monthly' as const,
+            anchorDay: 1,
+            startDate: '2026-05-01',
+            endDate: null,
+            status: 'active' as const,
+            lastRunAt: '2026-06-01T04:00:00.000Z',
+            lastPeriodKey: '2026-06-01',
+            nextRunDate: '2026-08-01',
+            createdAt: NOW,
+            updatedAt: NOW,
+          },
+        ],
+      })),
+    };
+    vi.mocked(listStandingOrderRuns).mockResolvedValue({ runs: [] });
+
+    await expect(
+      buildNormalVaultDocument({ userId: USER_ID, deviceId: DEVICE_ID, store, now: () => NOW }),
+    ).rejects.toThrow(/no run row for the booked period/);
+  });
+
+  it('refuses a run whose standing order the capture never saw', async () => {
+    // The ledger read and the order read are two round trips; an order deleted
+    // between them would leave a dangling claim that the server's restore
+    // validation rejects — AFTER the irreversible purge. Refuse before enable.
+    const store: PortfolioStore = {
+      ...apiPortfolioStore,
+      listPortfolios: vi.fn(async () => ({ portfolios: [] })),
+      listCustomAssets: vi.fn(async () => ({ assets: [] })),
+      getTaxSettings: vi.fn(async () => ({ mode: 'none' as const, country: null })),
+      listStandingOrders: vi.fn(async () => ({ orders: [] })),
+    };
+    vi.mocked(listStandingOrderRuns).mockResolvedValue({
+      runs: [
+        {
+          id: CLAIM_ID,
+          standingOrderId: ORDER_ID,
+          periodKey: '2026-07-01',
+          bookedAt: '2026-07-01T04:00:00.000Z',
+        },
+      ],
+    });
+
+    await expect(
+      buildNormalVaultDocument({ userId: USER_ID, deviceId: DEVICE_ID, store, now: () => NOW }),
+    ).rejects.toThrow(/run for unknown order/);
+  });
+
+  it('reads the CAS revision before the first row read and binds it to the capture', async () => {
+    // The window this closes: the wizard reads the whole account, encrypts it,
+    // writes both media and verifies them — all lock-free — and only then
+    // commits the purge. Reading the revision FIRST makes the server's
+    // compare-and-swap cover the entire capture, so a write that lands mid-read
+    // (another session, the standing-order worker) refuses the enable instead of
+    // being purged out of existence.
+    const order: string[] = [];
+    vi.mocked(getParanoidNormalRevision).mockImplementation(async () => {
+      order.push('revision');
+      return { revision: REVISION };
+    });
+    const store: PortfolioStore = {
+      ...apiPortfolioStore,
+      listPortfolios: vi.fn(async () => {
+        order.push('portfolios');
+        return { portfolios: [] };
+      }),
+      listCustomAssets: vi.fn(async () => ({ assets: [] })),
+      getTaxSettings: vi.fn(async () => ({ mode: 'none' as const, country: null })),
+      listStandingOrders: vi.fn(async () => ({ orders: [] })),
+    };
+
+    const capture = await captureNormalVault({
+      userId: USER_ID,
+      deviceId: DEVICE_ID,
+      store,
+      now: () => NOW,
+    });
+
+    expect(order).toEqual(['revision', 'portfolios']);
+    expect(capture.normalDataRevision).toBe(REVISION);
+    expect(capture.document.schemaVersion).toBe(1);
   });
 
   it('emits a restorable custom-asset identity and keeps market snapshots client-only', async () => {

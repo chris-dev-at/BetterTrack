@@ -3511,6 +3511,7 @@
         "exportInFlight": "Wait for the account export to finish, then enable Paranoid mode.",
         "mediaNotReady": "The selected encrypted copy was not ready for the final switch. Verify the storage locations and retry.",
         "transitionConflict": "Another privacy transition is still finishing. Wait a moment and retry.",
+        "normalDataChanged": "Your account changed while the encrypted copy was being prepared, so BetterTrack stopped before deleting anything. Nothing was lost — start the switch again to include the newest data.",
         "unknown": "Paranoid mode could not be enabled. Your normal account is unchanged."
       }
     },
