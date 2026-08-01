@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
@@ -61,6 +61,7 @@ vi.mock('lightweight-charts', () => ({
 }));
 
 import { getAssetDetail, getAssetHistory, getAssetQuote } from '../../lib/assetApi';
+import { ApiError } from '../../lib/apiClient';
 import {
   getAssetDividends,
   getAssetEarnings,
@@ -122,9 +123,9 @@ function makeQueryClient() {
   });
 }
 
-function renderPage(assetId = ASSET_ID) {
-  return render(
-    <QueryClientProvider client={makeQueryClient()}>
+function renderPage(assetId = ASSET_ID, client = makeQueryClient()) {
+  const view = render(
+    <QueryClientProvider client={client}>
       <MemoryRouter initialEntries={[`/assets/${assetId}`]}>
         <Routes>
           <Route path="/assets/:id" element={<AssetDetailPage />} />
@@ -132,6 +133,7 @@ function renderPage(assetId = ASSET_ID) {
       </MemoryRouter>
     </QueryClientProvider>,
   );
+  return { ...view, client };
 }
 
 // ─── Watchlist hook mocks (shared with search results, #256) ─────────────────
@@ -330,6 +332,19 @@ describe('AssetDetailPage — dividends block (V5-P5)', () => {
 });
 
 describe('AssetDetailPage — header rendering', () => {
+  test('renders a quote read failure without hiding the asset detail', async () => {
+    vi.mocked(getAssetQuote).mockRejectedValue(
+      new ApiError(503, 'UNAVAILABLE', 'quote unavailable'),
+    );
+    renderPage();
+
+    expect(
+      await screen.findByText("The latest quote couldn't be loaded. Please try again."),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/Could not load asset details/i)).not.toBeInTheDocument();
+    expect(screen.getByText('Bayer AG')).toBeInTheDocument();
+  });
+
   test('shows asset name, symbol and exchange', async () => {
     renderPage();
     await waitFor(() => expect(screen.getByText('Bayer AG')).toBeInTheDocument());
@@ -402,6 +417,38 @@ describe('AssetDetailPage — header rendering', () => {
 });
 
 describe('AssetDetailPage — range switching', () => {
+  test('keeps range choices available when price history is temporarily unavailable', async () => {
+    vi.mocked(getAssetHistory).mockRejectedValue(
+      new ApiError(503, 'UNAVAILABLE', 'history unavailable'),
+    );
+    renderPage();
+
+    expect(
+      await screen.findByText("Price history couldn't be loaded. Please try again."),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: '3M' })).toBeInTheDocument();
+    expect(screen.queryByText(/Could not load asset details/i)).not.toBeInTheDocument();
+  });
+
+  test('keeps cached price history visible after a failed background refetch', async () => {
+    const { client } = renderPage();
+
+    expect(await screen.findByRole('img', { name: 'Price chart for BAYN.DE' })).toBeInTheDocument();
+
+    vi.mocked(getAssetHistory).mockRejectedValue(
+      new ApiError(503, 'UNAVAILABLE', 'history offline'),
+    );
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ['asset', ASSET_ID, 'history'], type: 'active' });
+    });
+
+    expect(screen.getByRole('img', { name: 'Price chart for BAYN.DE' })).toBeInTheDocument();
+    expect(
+      screen.getByText("Price history couldn't be loaded. Please try again."),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Try again' })).toBeInTheDocument();
+  });
+
   test('renders all six range buttons', async () => {
     renderPage();
     await waitFor(() => expect(screen.getByText('Bayer AG')).toBeInTheDocument());
@@ -715,6 +762,22 @@ describe('AssetDetailPage — quick actions (§13.2)', () => {
 
     expect(screen.queryByRole('menu', { name: 'Watchlists for BAYN.DE' })).not.toBeInTheDocument();
     expect(trigger).toHaveFocus();
+  });
+
+  test('keeps watchlist read recovery outside the menu semantics', async () => {
+    vi.mocked(listWatchlists).mockRejectedValue(
+      new ApiError(503, 'UNAVAILABLE', 'watchlists unavailable'),
+    );
+    const user = userEvent.setup();
+    renderPage();
+    await waitFor(() => expect(screen.getByText('Bayer AG')).toBeInTheDocument());
+
+    await user.click(screen.getByRole('button', { name: 'Choose a watchlist for BAYN.DE' }));
+    const menu = await screen.findByRole('menu', { name: 'Watchlists for BAYN.DE' });
+    const retry = await screen.findByRole('button', { name: 'Try again' });
+
+    expect(within(menu).queryByRole('alert')).not.toBeInTheDocument();
+    expect(menu.contains(retry)).toBe(false);
   });
 
   test('restores focus after choosing a named watchlist', async () => {

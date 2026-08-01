@@ -188,6 +188,13 @@ beforeEach(() => {
 });
 
 describe('AssetSearchBox', () => {
+  test('renders the supporting workboard read failure', async () => {
+    vi.mocked(workboardApi.listWorkboard).mockRejectedValue(new Error('workboard unavailable'));
+    renderSearchBox();
+
+    expect(await screen.findByText("This information isn't available.")).toBeInTheDocument();
+  });
+
   test('renders the search input', () => {
     renderSearchBox();
     expect(screen.getByRole('searchbox', { name: /search assets/i })).toBeInTheDocument();
@@ -444,6 +451,27 @@ describe('AssetSearchBox', () => {
       expect(await screen.findByRole('dialog', { name: /new transaction/i })).toBeInTheDocument();
       // The asset is locked, not re-searched: no second search box appears.
       expect(screen.getAllByRole('searchbox')).toHaveLength(1);
+    });
+
+    test('offers portfolio creation when there is nowhere to record the buy', async () => {
+      vi.mocked(searchApi.searchAssets).mockResolvedValue(makeSearchResponse([NVDA]));
+      vi.mocked(portfolioApi.listPortfolios).mockResolvedValue({ portfolios: [] });
+      const user = userEvent.setup();
+      renderSearchBox();
+
+      await user.type(screen.getByRole('searchbox'), 'NV');
+      await screen.findByText('NVDA');
+      await user.click(screen.getByRole('button', { name: /record a buy for nvda/i }));
+
+      expect(await screen.findByText('Create a portfolio first')).toBeInTheDocument();
+      expect(
+        screen.getByText('You need a portfolio before you can record a buy for this asset.'),
+      ).toBeInTheDocument();
+      expect(screen.getByRole('link', { name: 'New portfolio' })).toHaveAttribute(
+        'href',
+        '/portfolios?create=1',
+      );
+      expect(screen.queryByText(/project/i)).not.toBeInTheDocument();
     });
   });
 

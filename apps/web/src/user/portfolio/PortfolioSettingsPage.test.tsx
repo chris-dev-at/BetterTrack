@@ -378,6 +378,18 @@ describe('PortfolioSettingsPage — group portfolio', () => {
 });
 
 describe('PortfolioSettingsPage — archived', () => {
+  test('renders an archived-list read failure without hiding active settings', async () => {
+    vi.mocked(listPortfolios).mockImplementation((_signal, includeArchived) =>
+      includeArchived
+        ? Promise.reject(new Error('archive unavailable'))
+        : Promise.resolve({ portfolios: [MAIN, TRADING] }),
+    );
+    renderSettings('p2');
+
+    expect(await screen.findByText("This information isn't available.")).toBeInTheDocument();
+    expect(screen.getByLabelText('Name')).toHaveValue('Trading');
+  });
+
   test('lists archived portfolios and restores one', async () => {
     mockLists([MAIN, TRADING], [OLD]);
     vi.mocked(restorePortfolio).mockResolvedValue({ ...OLD, archivedAt: null });

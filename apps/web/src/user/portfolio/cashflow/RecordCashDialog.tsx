@@ -24,6 +24,7 @@ import {
   withdrawCash,
 } from '../../../lib/portfolioApi';
 import { Dialog } from '../../components/Dialog';
+import { AsyncReadState } from '../../components/AsyncReadState';
 import { Alert } from '../../components/ui';
 import { MoneyText } from '../../../ui';
 import { activeSources, sortSourcesMainFirst } from '../cashSourceUtils';
@@ -195,7 +196,14 @@ export function RecordCashDialog({
     () => sortSourcesMainFirst(activeSources(sourcesQuery.data?.sources ?? [])),
     [sourcesQuery.data],
   );
-  const target = sources.find((candidate) => candidate.id === source) ?? sources[0] ?? null;
+  const target = source
+    ? (sources.find((candidate) => candidate.id === source) ?? null)
+    : (sources[0] ?? null);
+  // A source-card quick action is already scoped before this metadata read
+  // starts. Keep that explicit id authoritative while the source list is
+  // pending or unavailable; omitting it would make the API silently book the
+  // movement against Main instead.
+  const targetSourceId = source ?? target?.id;
   const tagsById = useMemo(
     () => new Map<string, CashTag>((tagsQuery.data?.tags ?? []).map((tag) => [tag.id, tag])),
     [tagsQuery.data],
@@ -244,15 +252,15 @@ export function RecordCashDialog({
       direction,
       countsToPerformance,
       parsedAmount,
-      target?.id,
+      targetSourceId,
     ],
     queryFn: ({ signal }) =>
       previewCash(
         portfolioId,
-        { kind, amountEur: parsedAmount, ...(target ? { sourceId: target.id } : {}) },
+        { kind, amountEur: parsedAmount, ...(targetSourceId ? { sourceId: targetSourceId } : {}) },
         signal,
       ),
-    enabled: editing === null && amountValid && target !== null,
+    enabled: editing === null && amountValid && targetSourceId !== undefined,
     staleTime: 0,
   });
 
@@ -263,7 +271,7 @@ export function RecordCashDialog({
         const result = await updateCashMovement(portfolioId, editing.id, {
           kind,
           amountEur: parsedAmount,
-          ...(target ? { sourceId: target.id } : {}),
+          ...(targetSourceId ? { sourceId: targetSourceId } : {}),
           executedAt,
           // `null` clears the note; omitting it would leave the old one in place.
           note: note.trim() === '' ? null : note.trim(),
@@ -273,7 +281,7 @@ export function RecordCashDialog({
       }
       const body = {
         amountEur: parsedAmount,
-        ...(target ? { sourceId: target.id } : {}),
+        ...(targetSourceId ? { sourceId: targetSourceId } : {}),
         ...(date === today() ? {} : { executedAt }),
         ...(note.trim() === '' ? {} : { note: note.trim() }),
       };
@@ -367,6 +375,17 @@ export function RecordCashDialog({
       widthClassName="max-w-md"
     >
       <form className="flex flex-col gap-4" onSubmit={handleSubmit}>
+        {/* Sources and tags fail independently; each keeps (or is denied) its own
+            Retry rather than borrowing the other read's classification. */}
+        <AsyncReadState
+          loading={sourcesQuery.isLoading || tagsQuery.isLoading}
+          reads={[
+            { error: sourcesQuery.error, refetch: () => sourcesQuery.refetch() },
+            { error: tagsQuery.error, refetch: () => tagsQuery.refetch() },
+          ]}
+          errorLabel={t('common.genericError')}
+        />
+
         {/* Direction — armed state is legible by colour alone. */}
         <div aria-label={t('cashflow.record.directionAria')} className="bt-seg w-full" role="group">
           <button
@@ -570,6 +589,23 @@ export function RecordCashDialog({
             </span>
           </div>
         ) : null}
+
+        {/*
+          The preview query keys on the parsed amount with no debounce and
+          staleTime 0, so every digit typed is a fresh key with no cached data
+          and `isLoading` flips true. A visible spinner row here sits directly
+          above the insufficient-funds alert and the Record button, so typing
+          "125" inserted and removed a ~28px row three times and walked the
+          submit target of a money dialog down and back under the pointer.
+          Announce the load instead of laying it out; the error branch below
+          still renders normally.
+        */}
+        <AsyncReadState
+          loading={previewQuery.isLoading}
+          loadingPresentation="sr-only"
+          error={previewQuery.error}
+          onRetry={() => void previewQuery.refetch()}
+        />
 
         {previewQuery.data && !previewQuery.data.sufficient ? (
           <Alert tone="error">{t('portfolio.cash.blockedError')}</Alert>

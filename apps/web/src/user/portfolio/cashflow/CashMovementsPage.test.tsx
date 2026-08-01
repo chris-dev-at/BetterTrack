@@ -116,6 +116,14 @@ beforeEach(() => {
 });
 
 describe('CashMovementsPage', () => {
+  test('renders a tag read failure without hiding the movement ledger', async () => {
+    vi.mocked(listCashTags).mockRejectedValue(new Error('tags unavailable'));
+    renderPage();
+
+    expect(await screen.findByText("This information isn't available.")).toBeInTheDocument();
+    expect(screen.getByText('REWE')).toBeInTheDocument();
+  });
+
   test('renders a movement’s tags as chips', async () => {
     renderPage();
 

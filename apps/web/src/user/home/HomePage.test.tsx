@@ -409,6 +409,14 @@ function boardOrder(): string[] {
     .filter((label) => label !== '');
 }
 
+test('renders the portfolio-list read failure above the still-usable board', async () => {
+  vi.mocked(listPortfolios).mockRejectedValue(new Error('portfolios unavailable'));
+  renderHome();
+
+  expect(await screen.findByText("This information isn't available.")).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Customize' })).toBeInTheDocument();
+});
+
 /** The board as the account's local cache now holds it. */
 function persisted(): HomeConfig {
   const raw = localStorage.getItem(homeCacheKey(ACCOUNT));

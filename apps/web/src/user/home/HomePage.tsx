@@ -4,6 +4,7 @@ import { useT } from '../../i18n';
 import { cx } from '../../lib/cx';
 import { Button, Empty, PageHead } from '../../ui/origin';
 import { useAuth } from '../AuthContext';
+import { AsyncReadState } from '../components/AsyncReadState';
 import { PortfolioPage } from '../portfolio/PortfolioPage';
 import { useResolvedPrivacyMode } from '../vault/usePrivacyMode';
 import { AddWidgetDrawer } from './AddWidgetDrawer';
@@ -298,6 +299,12 @@ function HomeBoard() {
           )
         }
         title={greeting}
+      />
+
+      <AsyncReadState
+        loading={false}
+        error={portfoliosQuery.error}
+        onRetry={() => void portfoliosQuery.refetch()}
       />
 
       {config.widgets.length === 0 ? (

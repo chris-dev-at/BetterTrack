@@ -30,7 +30,7 @@ import {
   sendChatMessage,
 } from '../../lib/chatApi';
 import { ApiError } from '../../lib/apiClient';
-import { getAudience, setAudience } from '../../lib/socialApi';
+import { getAudience, listFriends, setAudience } from '../../lib/socialApi';
 import { listConglomerates } from '../../lib/conglomerateApi';
 import { listPortfolios } from '../../lib/portfolioApi';
 import { listIdeas } from '../../lib/ideasApi';
@@ -80,6 +80,16 @@ beforeEach(() => {
 });
 
 describe('ChatPage — conversation list', () => {
+  test('renders a friend-list read failure inside the new-message dialog', async () => {
+    vi.mocked(listConversations).mockResolvedValue({ conversations: [], unreadTotal: 0 });
+    vi.mocked(listFriends).mockRejectedValue(new Error('friends unavailable'));
+    const user = userEvent.setup();
+    renderAt('/social/chat');
+
+    await user.click(screen.getByRole('button', { name: 'New message' }));
+    expect(await screen.findByText("This information isn't available.")).toBeInTheDocument();
+  });
+
   test('renders conversations with an unread badge', async () => {
     vi.mocked(listConversations).mockResolvedValue({
       conversations: [
@@ -745,6 +755,77 @@ describe('ChatPage — idea chips (V4-P9)', () => {
     expect(screen.getByText('Idea')).toBeInTheDocument();
     expect(screen.queryByText('View')).not.toBeInTheDocument();
   });
+
+  test('renders an attachable-item read failure inside the share picker', async () => {
+    vi.mocked(getThread).mockResolvedValue({
+      conversation: {
+        id: 'c1',
+        user: { id: 'u2', username: 'bob' },
+        unreadCount: 0,
+        lastMessage: null,
+        lastMessageAt: null,
+      },
+      nextCursor: null,
+      messages: [],
+    });
+    vi.mocked(listIdeas).mockRejectedValue(new Error('ideas unavailable'));
+    const user = userEvent.setup();
+    renderAt('/social/chat/u2');
+
+    await user.click(await screen.findByRole('button', { name: 'Share an item' }));
+    expect(await screen.findByText("This information isn't available.")).toBeInTheDocument();
+  });
+
+  // The picker's three sources are classified individually. A `??` collapse let
+  // whichever error was declared first decide the class for all three, so both
+  // orders are pinned here.
+  test.each([
+    {
+      order: 'outage first',
+      portfolios: new ApiError(503, 'UNAVAILABLE', 'down'),
+      ideas: new ApiError(403, 'FORBIDDEN', 'secret'),
+      recovered: listPortfolios,
+      untouched: listIdeas,
+    },
+    {
+      order: 'confirmed rejection first',
+      portfolios: new ApiError(403, 'FORBIDDEN', 'secret'),
+      ideas: new ApiError(503, 'UNAVAILABLE', 'down'),
+      recovered: listIdeas,
+      untouched: listPortfolios,
+    },
+  ])(
+    'retries only the recoverable share-picker read ($order)',
+    async ({ portfolios, ideas, recovered, untouched }) => {
+      vi.mocked(getThread).mockResolvedValue({
+        conversation: {
+          id: 'c1',
+          user: { id: 'u2', username: 'bob' },
+          unreadCount: 0,
+          lastMessage: null,
+          lastMessageAt: null,
+        },
+        nextCursor: null,
+        messages: [],
+      });
+      vi.mocked(listPortfolios).mockRejectedValue(portfolios);
+      vi.mocked(listIdeas).mockRejectedValue(ideas);
+      const user = userEvent.setup();
+      renderAt('/social/chat/u2');
+
+      await user.click(await screen.findByRole('button', { name: 'Share an item' }));
+      const retry = await screen.findByRole('button', { name: 'Try again' });
+      const recoveredBefore = vi.mocked(recovered).mock.calls.length;
+      const untouchedBefore = vi.mocked(untouched).mock.calls.length;
+
+      await user.click(retry);
+
+      await waitFor(() => expect(vi.mocked(recovered).mock.calls.length).toBe(recoveredBefore + 1));
+      // The confirmed rejection is never re-run on the outage's behalf.
+      expect(vi.mocked(untouched).mock.calls.length).toBe(untouchedBefore);
+      expect(screen.queryByText('secret')).not.toBeInTheDocument();
+    },
+  );
 
   test('attaches an idea chip from the share picker (never widens access)', async () => {
     vi.mocked(getThread).mockResolvedValue({

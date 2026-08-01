@@ -104,6 +104,14 @@ beforeEach(() => {
 });
 
 describe('CashBudgetsPage', () => {
+  test('renders a tag read failure without hiding the budget workspace', async () => {
+    vi.mocked(listCashTags).mockRejectedValue(new Error('tags unavailable'));
+    renderPage();
+
+    expect(await screen.findByText("This information isn't available.")).toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Budgets' })).toBeInTheDocument();
+  });
+
   test('renders the exceeded state distinctly from an on-track budget', async () => {
     vi.mocked(listCashBudgets).mockResolvedValue({
       period: '2026-07',

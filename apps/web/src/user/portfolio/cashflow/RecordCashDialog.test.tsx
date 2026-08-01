@@ -13,6 +13,7 @@ vi.mock('../../../lib/cashApi', () => ({
   setCashMovementTags: vi.fn(),
 }));
 
+import { ApiError } from '../../../lib/apiClient';
 import { listCashTags, previewCashRules, setCashMovementTags } from '../../../lib/cashApi';
 import {
   chargeCashFee,
@@ -53,11 +54,11 @@ const MAIN = {
   updatedAt: '2026-01-01T00:00:00.000Z',
 };
 
-function renderDialog() {
+function renderDialog(props: Partial<React.ComponentProps<typeof RecordCashDialog>> = {}) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={client}>
-      <RecordCashDialog onClose={vi.fn()} portfolioId="p1" />
+      <RecordCashDialog onClose={vi.fn()} portfolioId="p1" {...props} />
     </QueryClientProvider>,
   );
 }
@@ -75,6 +76,65 @@ beforeEach(() => {
     sufficient: true,
     shortfallEur: 0,
   } as unknown as Awaited<ReturnType<typeof previewCash>>);
+});
+
+test('renders a source read failure without hiding the cash-entry form', async () => {
+  vi.mocked(listCashSources).mockRejectedValue(new Error('sources unavailable'));
+  renderDialog();
+
+  expect(await screen.findByText("This information isn't available.")).toBeInTheDocument();
+  expect(screen.getByLabelText('Amount')).toBeInTheDocument();
+});
+
+// Sources and tags are two independent reads. Collapsing them with `??` let
+// declaration order classify both at once, so each order is pinned: the
+// recoverable read keeps its Retry and the confirmed one is never re-run.
+test('retries only the source read when it is the outage', async () => {
+  vi.mocked(listCashSources).mockRejectedValue(new ApiError(503, 'UNAVAILABLE', 'down'));
+  vi.mocked(listCashTags).mockRejectedValue(new ApiError(403, 'FORBIDDEN', 'secret'));
+  const user = userEvent.setup();
+  renderDialog();
+
+  await user.click(await screen.findByRole('button', { name: 'Try again' }));
+
+  await waitFor(() => expect(listCashSources).toHaveBeenCalledTimes(2));
+  expect(listCashTags).toHaveBeenCalledTimes(1);
+  expect(screen.queryByText('secret')).not.toBeInTheDocument();
+});
+
+test('keeps recovery for a tag outage behind a confirmed source rejection', async () => {
+  vi.mocked(listCashSources).mockRejectedValue(new ApiError(403, 'FORBIDDEN', 'secret'));
+  vi.mocked(listCashTags).mockRejectedValue(new ApiError(503, 'UNAVAILABLE', 'down'));
+  const user = userEvent.setup();
+  renderDialog();
+
+  await user.click(await screen.findByRole('button', { name: 'Try again' }));
+
+  await waitFor(() => expect(listCashTags).toHaveBeenCalledTimes(2));
+  expect(listCashSources).toHaveBeenCalledTimes(1);
+  expect(screen.queryByText('secret')).not.toBeInTheDocument();
+});
+
+test.each([
+  ['pending', () => new Promise<never>(() => undefined)],
+  ['failed', () => Promise.reject(new Error('sources unavailable'))],
+])('keeps a quick action scoped to its source while the source read is %s', async (_, read) => {
+  vi.mocked(listCashSources).mockReturnValue(read());
+  vi.mocked(withdrawCash).mockResolvedValue({
+    movement: { id: 'm-scoped', tags: [] },
+  } as unknown as Awaited<ReturnType<typeof withdrawCash>>);
+  const user = userEvent.setup();
+  renderDialog({ sourceId: 's-savings' });
+
+  await user.type(screen.getByLabelText('Amount'), '25');
+  await user.click(screen.getByRole('button', { name: 'Record' }));
+
+  await waitFor(() =>
+    expect(withdrawCash).toHaveBeenCalledWith('p1', {
+      amountEur: 25,
+      sourceId: 's-savings',
+    }),
+  );
 });
 
 test('a spend is two fields — amount, what for, record', async () => {
@@ -184,4 +244,22 @@ test('an empty amount never reaches the server', async () => {
 
   expect(await screen.findByRole('alert')).toHaveTextContent('Enter an amount greater than 0.');
   expect(withdrawCash).not.toHaveBeenCalled();
+});
+
+// The preview query keys on the parsed amount with no debounce and staleTime 0,
+// so every digit typed is a fresh key with no cached data and `isLoading` flips
+// true. A laid-out spinner row here sits directly above the insufficient-funds
+// alert and the Record button, so typing an amount walked the submit target of a
+// money dialog down and back under the pointer. Announce it, do not lay it out.
+test('typing an amount never displaces the Record button with a spinner row', async () => {
+  vi.mocked(previewCash).mockReturnValue(new Promise<never>(() => undefined));
+  const user = userEvent.setup();
+  renderDialog();
+
+  await user.type(await screen.findByLabelText('Amount'), '125');
+  await waitFor(() => expect(previewCash).toHaveBeenCalled());
+
+  expect(document.querySelector('.animate-spin')).toBeNull();
+  expect(document.querySelector('[role="status"].sr-only')).not.toBeNull();
+  expect(screen.getByRole('button', { name: 'Record' })).toBeInTheDocument();
 });

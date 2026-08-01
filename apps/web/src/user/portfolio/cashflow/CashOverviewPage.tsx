@@ -14,8 +14,9 @@ import {
 import { getCashMovements, listCashSources } from '../../../lib/portfolioApi';
 import { EM_DASH, formatDate, formatMoney } from '../../../lib/format';
 import { Alert } from '../../components/ui';
+import { AsyncReadState } from '../../components/AsyncReadState';
 import { EmptyState, MoneyText, Skeleton } from '../../../ui';
-import { Button, Icon, PageHead } from '../../../ui/origin';
+import { Icon, PageHead } from '../../../ui/origin';
 import { AllocationDonut } from '../../../ui/charts';
 import { CashflowChart } from './CashflowChart';
 import { MonthPicker } from './MonthPicker';
@@ -180,13 +181,24 @@ export function CashOverviewPage() {
 
       {/* ── The balance, and what it is made of ── */}
       <section aria-label={t('cashflow.overview.total')} className="flex flex-col gap-4">
+        <AsyncReadState
+          loading={sourcesQuery.isLoading}
+          error={sourcesQuery.error}
+          errorLabel={t('cashflow.overview.loadError')}
+          onRetry={() => void sourcesQuery.refetch()}
+        />
+
         <div className="flex flex-wrap items-end justify-between gap-x-8 gap-y-3">
           <div>
-            <p className="bt-label">{t('cashflow.overview.total')}</p>
-            <p className="bt-hero-value" style={{ marginTop: 4 }}>
-              <MoneyText amount={totalCash} currency="EUR" />
-            </p>
-            <p className="bt-meta" style={{ marginTop: 5 }}>
+            {sourcesQuery.data ? (
+              <>
+                <p className="bt-label">{t('cashflow.overview.total')}</p>
+                <p className="bt-hero-value" style={{ marginTop: 4 }}>
+                  <MoneyText amount={totalCash} currency="EUR" />
+                </p>
+              </>
+            ) : null}
+            <p className="bt-meta" style={{ marginTop: sourcesQuery.data ? 5 : 0 }}>
               {t('cashflow.overview.thisMonthChange', {
                 amount: formatMoney(summary.net),
               })}
@@ -194,56 +206,61 @@ export function CashOverviewPage() {
           </div>
         </div>
 
-        {sources.length === 0 ? (
-          <p className="bt-meta">{t('cashflow.overview.noAccounts')}</p>
-        ) : (
-          <ul
-            aria-label={t('cashflow.overview.accountsHeading')}
-            className="bt-acctgrid"
-            role="list"
-          >
-            {sources.map((source) => (
-              <li className="bt-acctcard" key={source.id}>
-                <span className="bt-acctcard__name" title={source.name}>
-                  {source.name}
-                </span>
-                <span className="bt-acctcard__value bt-num">
-                  <MoneyText amount={source.balanceEur} currency="EUR" />
-                </span>
-                {/* The footer IS the card's bottom edge — no inset, no rounding
-                    of its own, so the two halves meet the card's own corners. */}
-                <span className="bt-acctcard__actions">
-                  <button
-                    aria-label={t('cashflow.overview.quickDeposit', { source: source.name })}
-                    className="bt-acctcard__action bt-acctcard__action--in"
-                    onClick={() => setQuick({ sourceId: source.id, direction: 'in' })}
-                    title={t('cashflow.overview.quickDeposit', { source: source.name })}
-                    type="button"
-                  >
-                    <Icon name="plus" />
-                  </button>
-                  <button
-                    aria-label={t('cashflow.overview.quickWithdraw', { source: source.name })}
-                    className="bt-acctcard__action bt-acctcard__action--out"
-                    onClick={() => setQuick({ sourceId: source.id, direction: 'out' })}
-                    title={t('cashflow.overview.quickWithdraw', { source: source.name })}
-                    type="button"
-                  >
-                    <Icon name="minus" />
-                  </button>
-                </span>
+        {/* Only claim "no accounts" once the read actually answered — a failed
+            or pending sources read must not read as an empty cash book. Cached
+            data still renders beside a refetch error. */}
+        {sourcesQuery.data ? (
+          sources.length === 0 ? (
+            <p className="bt-meta">{t('cashflow.overview.noAccounts')}</p>
+          ) : (
+            <ul
+              aria-label={t('cashflow.overview.accountsHeading')}
+              className="bt-acctgrid"
+              role="list"
+            >
+              {sources.map((source) => (
+                <li className="bt-acctcard" key={source.id}>
+                  <span className="bt-acctcard__name" title={source.name}>
+                    {source.name}
+                  </span>
+                  <span className="bt-acctcard__value bt-num">
+                    <MoneyText amount={source.balanceEur} currency="EUR" />
+                  </span>
+                  {/* The footer IS the card's bottom edge — no inset, no rounding
+                      of its own, so the two halves meet the card's own corners. */}
+                  <span className="bt-acctcard__actions">
+                    <button
+                      aria-label={t('cashflow.overview.quickDeposit', { source: source.name })}
+                      className="bt-acctcard__action bt-acctcard__action--in"
+                      onClick={() => setQuick({ sourceId: source.id, direction: 'in' })}
+                      title={t('cashflow.overview.quickDeposit', { source: source.name })}
+                      type="button"
+                    >
+                      <Icon name="plus" />
+                    </button>
+                    <button
+                      aria-label={t('cashflow.overview.quickWithdraw', { source: source.name })}
+                      className="bt-acctcard__action bt-acctcard__action--out"
+                      onClick={() => setQuick({ sourceId: source.id, direction: 'out' })}
+                      title={t('cashflow.overview.quickWithdraw', { source: source.name })}
+                      type="button"
+                    >
+                      <Icon name="minus" />
+                    </button>
+                  </span>
+                </li>
+              ))}
+              {/* The list's own way into managing them — the header icon is for
+                  people who already know it is there. */}
+              <li className="bt-acctcard bt-acctcard--manage">
+                <Link className="bt-acctcard__manage" to={to('/portfolio/cash/accounts')}>
+                  <Icon name="sliders" />
+                  {t('cashflow.overview.manageAccounts')}
+                </Link>
               </li>
-            ))}
-            {/* The list's own way into managing them — the header icon is for
-                people who already know it is there. */}
-            <li className="bt-acctcard bt-acctcard--manage">
-              <Link className="bt-acctcard__manage" to={to('/portfolio/cash/accounts')}>
-                <Icon name="sliders" />
-                {t('cashflow.overview.manageAccounts')}
-              </Link>
-            </li>
-          </ul>
-        )}
+            </ul>
+          )
+        ) : null}
       </section>
 
       {/* ── The month ── */}
@@ -333,24 +350,29 @@ export function CashOverviewPage() {
         </div>
         {trendsQuery.isLoading ? (
           <Skeleton height="h-32" />
-        ) : trendsQuery.isError ? (
-          <div className="flex flex-col gap-3">
-            <Alert tone="error">{t('cashflow.overview.loadError')}</Alert>
-            <div>
-              <Button onClick={() => void trendsQuery.refetch()}>{t('common.retry')}</Button>
-            </div>
-          </div>
-        ) : trendEmpty ? (
-          <EmptyState
-            description={t('cashflow.overview.emptyDescription')}
-            icon="📊"
-            title={t('cashflow.overview.emptyTitle')}
-          />
         ) : (
-          <CashflowChart
-            monthLabel={(month) => shortMonthLabel(month, locale)}
-            points={trendPoints}
-          />
+          <>
+            <AsyncReadState
+              loading={false}
+              error={trendsQuery.error}
+              errorLabel={t('cashflow.overview.loadError')}
+              onRetry={() => void trendsQuery.refetch()}
+            />
+            {trendsQuery.data ? (
+              trendEmpty ? (
+                <EmptyState
+                  description={t('cashflow.overview.emptyDescription')}
+                  icon="📊"
+                  title={t('cashflow.overview.emptyTitle')}
+                />
+              ) : (
+                <CashflowChart
+                  monthLabel={(month) => shortMonthLabel(month, locale)}
+                  points={trendPoints}
+                />
+              )
+            ) : null}
+          </>
         )}
       </section>
       {/* ── Recent movements: enough to recognise, not the ledger ── */}
@@ -361,26 +383,34 @@ export function CashOverviewPage() {
             {t('cashflow.overview.allMovements')} →
           </Link>
         </div>
-        {recent.length === 0 ? (
-          <p className="bt-meta">{t('cashflow.movements.emptyDescription')}</p>
-        ) : (
-          <ul
-            className="bt-band flex flex-col"
-            style={{ borderBlock: '1px solid var(--bt-border)' }}
-          >
-            {recent.map((movement) => (
-              <li className="bt-band__row flex flex-wrap items-center gap-3" key={movement.id}>
-                <span className="bt-muted shrink-0 whitespace-nowrap" style={{ fontSize: 12 }}>
-                  {formatDate(movement.executedAt)}
-                </span>
-                <span className="min-w-0 flex-1 truncate">{movement.note ?? EM_DASH}</span>
-                <span className="shrink-0 bt-num">
-                  <MoneyText amount={movement.amountEur} currency="EUR" signed />
-                </span>
-              </li>
-            ))}
-          </ul>
-        )}
+        <AsyncReadState
+          loading={movementsQuery.isLoading}
+          error={movementsQuery.error}
+          errorLabel={t('cashflow.overview.loadError')}
+          onRetry={() => void movementsQuery.refetch()}
+        />
+        {movementsQuery.data ? (
+          recent.length === 0 ? (
+            <p className="bt-meta">{t('cashflow.movements.emptyDescription')}</p>
+          ) : (
+            <ul
+              className="bt-band flex flex-col"
+              style={{ borderBlock: '1px solid var(--bt-border)' }}
+            >
+              {recent.map((movement) => (
+                <li className="bt-band__row flex flex-wrap items-center gap-3" key={movement.id}>
+                  <span className="bt-muted shrink-0 whitespace-nowrap" style={{ fontSize: 12 }}>
+                    {formatDate(movement.executedAt)}
+                  </span>
+                  <span className="min-w-0 flex-1 truncate">{movement.note ?? EM_DASH}</span>
+                  <span className="shrink-0 bt-num">
+                    <MoneyText amount={movement.amountEur} currency="EUR" signed />
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )
+        ) : null}
       </section>
     </div>
   );

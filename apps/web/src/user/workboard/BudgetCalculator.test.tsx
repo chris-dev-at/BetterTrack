@@ -113,6 +113,14 @@ beforeEach(() => {
 });
 
 describe('BudgetCalculator', () => {
+  test('renders a portfolio read failure without hiding the calculator', async () => {
+    vi.mocked(listPortfolios).mockRejectedValue(new Error('portfolios unavailable'));
+    renderCalculator();
+
+    expect(await screen.findByText("This information isn't available.")).toBeInTheDocument();
+    expect(screen.getByLabelText('Budget in EUR')).toBeInTheDocument();
+  });
+
   test('whole-shares mode hides the fractional step-precision selector, and steps by whole euros (#363)', async () => {
     const user = userEvent.setup();
     renderCalculator();

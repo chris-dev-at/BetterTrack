@@ -117,6 +117,41 @@ export function Spinner({ label }: { label?: string }) {
   );
 }
 
+interface AsyncReadStateProps {
+  loading: boolean;
+  error: string | null;
+  retryable: boolean;
+  onRetry: () => void;
+  loadingLabel?: string;
+}
+
+/** Admin counterpart to the user async-read state, fed by `useResource`. */
+export function AsyncReadState({
+  loading,
+  error,
+  retryable,
+  onRetry,
+  loadingLabel,
+}: AsyncReadStateProps) {
+  const t = useT();
+
+  if (loading) return <Spinner label={loadingLabel} />;
+  if (error === null) return null;
+
+  return (
+    <Alert tone={retryable ? 'error' : 'info'}>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span>{retryable ? error : t('common.unavailable')}</span>
+        {retryable ? (
+          <Button variant="secondary" onClick={onRetry}>
+            {t('common.retry')}
+          </Button>
+        ) : null}
+      </div>
+    </Alert>
+  );
+}
+
 type BadgeTone = 'green' | 'amber' | 'red' | 'neutral' | 'sky';
 
 const BADGE_TONES: Record<BadgeTone, string> = {

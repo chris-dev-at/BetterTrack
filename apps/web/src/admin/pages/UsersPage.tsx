@@ -10,12 +10,12 @@ import { useResource } from '../useResource';
 import { Modal } from '../components/Modal';
 import {
   Alert,
+  AsyncReadState,
   Badge,
   Button,
   CopyField,
   EmptyState,
   PageHeader,
-  Spinner,
   TextField,
 } from '../components/ui';
 
@@ -119,7 +119,17 @@ export function UsersPage() {
         <Button onClick={() => setDialog({ type: 'create' })}>{t('admin.users.create')}</Button>
       </div>
 
-      <StatsStrip data={stats.data} />
+      {stats.loading || stats.error ? (
+        <AsyncReadState
+          error={stats.error}
+          loading={stats.loading}
+          loadingLabel={t('admin.users.loading')}
+          onRetry={stats.reload}
+          retryable={stats.retryable}
+        />
+      ) : (
+        <StatsStrip data={stats.data} />
+      )}
 
       <TextField
         label={t('admin.users.searchLabel')}
@@ -156,15 +166,14 @@ export function UsersPage() {
         </div>
       ) : null}
 
-      {users.loading ? (
-        <Spinner label={t('admin.users.loading')} />
-      ) : users.error ? (
-        <Alert tone="error">
-          {users.error}{' '}
-          <button className="underline" onClick={users.reload}>
-            {t('common.retry')}
-          </button>
-        </Alert>
+      {users.loading || users.error ? (
+        <AsyncReadState
+          error={users.error}
+          loading={users.loading}
+          loadingLabel={t('admin.users.loading')}
+          onRetry={users.reload}
+          retryable={users.retryable}
+        />
       ) : rows.length === 0 ? (
         <EmptyState>{search ? t('admin.users.emptySearch') : t('admin.users.empty')}</EmptyState>
       ) : (

@@ -43,6 +43,7 @@ import {
 import { EmptyState, Skeleton } from '../../../ui';
 import { Badge, Button, Field, Input, Select } from '../../../ui/origin';
 import { Alert } from '../../components/ui';
+import { AsyncReadState } from '../../components/AsyncReadState';
 import { PanelFold, PanelForm, PanelGroup, PanelHead, PanelNote, Row } from './panelKit';
 
 /**
@@ -649,6 +650,11 @@ function TelegramRows({ initial }: { initial: TelegramSettingsResponse }) {
 
   return (
     <>
+      <AsyncReadState
+        loading={query.isLoading}
+        error={query.error}
+        onRetry={() => void query.refetch()}
+      />
       <Row label={t('settings.notifications.telegram.title')}>
         {settings.linked && settings.chatIdMasked ? (
           <span className="bt-pos" style={{ fontSize: 12 }}>
@@ -779,6 +785,11 @@ function DiscordRows({ initial }: { initial: DiscordSettingsResponse }) {
 
   return (
     <>
+      <AsyncReadState
+        loading={query.isLoading}
+        error={query.error}
+        onRetry={() => void query.refetch()}
+      />
       <Row
         hint={t('settings.notifications.discord.description')}
         label={t('settings.notifications.discord.title')}
@@ -880,11 +891,22 @@ function readErrorCode(err: unknown): string | null {
  * probes `/settings/telegram` and the setup endpoints stay 404-only.
  */
 function TelegramSetup() {
+  const t = useT();
   const query = useQuery({
     queryKey: TELEGRAM_KEY,
     queryFn: ({ signal }) => getTelegramSettings(signal),
     staleTime: 15_000,
   });
+  if (query.isLoading || query.error) {
+    return (
+      <AsyncReadState
+        loading={query.isLoading}
+        error={query.error}
+        loadingLabel={t('common.loading')}
+        onRetry={() => void query.refetch()}
+      />
+    );
+  }
   if (!query.data || !query.data.available) return null;
   return <TelegramRows initial={query.data} />;
 }
@@ -895,11 +917,22 @@ function TelegramSetup() {
  * setup row never probes `/settings/discord` while the flag is off.
  */
 function DiscordSetup() {
+  const t = useT();
   const query = useQuery({
     queryKey: DISCORD_KEY,
     queryFn: ({ signal }) => getDiscordSettings(signal),
     staleTime: 15_000,
   });
+  if (query.isLoading || query.error) {
+    return (
+      <AsyncReadState
+        loading={query.isLoading}
+        error={query.error}
+        loadingLabel={t('common.loading')}
+        onRetry={() => void query.refetch()}
+      />
+    );
+  }
   if (!query.data) return null;
   return <DiscordRows initial={query.data} />;
 }
