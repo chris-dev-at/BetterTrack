@@ -25,8 +25,18 @@ vi.mock('../../../lib/assetApi', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../lib/assetApi')>();
   return { ...actual, getAssetDetail: vi.fn() };
 });
+vi.mock('../../../lib/cashApi', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../lib/cashApi')>();
+  return {
+    ...actual,
+    listCashTags: vi.fn(),
+    listCashRules: vi.fn(),
+    listAllCashBudgets: vi.fn(),
+  };
+});
 
 import { getAssetDetail } from '../../../lib/assetApi';
+import { listAllCashBudgets, listCashRules, listCashTags } from '../../../lib/cashApi';
 import {
   listExpenseBudgets,
   listExpenseCategories,
@@ -60,6 +70,9 @@ beforeEach(() => {
   vi.mocked(listExpenseTransactions).mockResolvedValue({ transactions: [] });
   vi.mocked(listExpenseRules).mockResolvedValue({ rules: [] });
   vi.mocked(listExpenseBudgets).mockResolvedValue({ budgets: [], period: '2026-07' });
+  vi.mocked(listCashTags).mockResolvedValue({ tags: [] });
+  vi.mocked(listCashRules).mockResolvedValue({ rules: [] });
+  vi.mocked(listAllCashBudgets).mockResolvedValue({ budgets: [] });
 });
 
 const ASSET = {
@@ -275,6 +288,182 @@ describe('buildNormalVaultDocument', () => {
         ],
       },
     });
+  });
+
+  it('carries the cash-fusion tags, movement links, rules and budgets into the vault', async () => {
+    // Regression for the one-way enable purge: every cash-fusion table is
+    // `vault`-classified, so enable hard-deletes it server-side and disable
+    // restores it from the document ALONE. A row this migration fails to capture
+    // is lost for good on the round trip. The killer case is a month-SPECIFIC
+    // budget for a month other than "now": the per-month progress list can never
+    // surface it, so only the raw `/cash/budgets/all` read carries it.
+    const SOURCE_ID = '018f0000-0000-7000-8000-0000000000c1';
+    const MOVEMENT_ID = '018f0000-0000-7000-8000-0000000000c2';
+    const USER_TAG_ID = '018f0000-0000-7000-8000-0000000000c3';
+    const SYSTEM_TAG_ID = '018f0000-0000-7000-8000-0000000000c4';
+    const RULE_ID = '018f0000-0000-7000-8000-0000000000c5';
+    const RECURRING_BUDGET_ID = '018f0000-0000-7000-8000-0000000000c6';
+    const MONTH_BUDGET_ID = '018f0000-0000-7000-8000-0000000000c7';
+
+    const store: PortfolioStore = {
+      ...apiPortfolioStore,
+      listPortfolios: vi.fn(async () => ({
+        portfolios: [
+          {
+            id: PORTFOLIO_ID,
+            name: 'Main',
+            visibility: 'private' as const,
+            sortOrder: 0,
+            isDefault: true,
+            defaultPayFromCash: false,
+            archivedAt: null,
+          },
+        ],
+      })),
+      listTransactions: vi.fn(async () => ({ items: [], nextCursor: null })),
+      getCashMovements: vi.fn(async () => ({
+        balanceEur: 100,
+        sources: [
+          {
+            id: SOURCE_ID,
+            name: 'Main',
+            type: 'cash' as const,
+            isMain: true,
+            archivedAt: null,
+            balanceEur: 100,
+            createdAt: NOW,
+          },
+        ],
+        movements: [
+          {
+            id: MOVEMENT_ID,
+            kind: 'deposit' as const,
+            amountEur: 100,
+            sourceId: SOURCE_ID,
+            transactionId: null,
+            transferId: null,
+            counterpartSourceId: null,
+            dividendId: null,
+            taxYear: null,
+            executedAt: '2026-07-15T09:00:00.000Z',
+            note: 'Salary',
+            source: 'manual' as const,
+            createdAt: '2026-07-15T09:00:00.000Z',
+            tags: [SYSTEM_TAG_ID, USER_TAG_ID],
+          },
+        ],
+      })),
+      getPortfolioTaxSettings: vi.fn(async () => ({
+        effective: { mode: 'none' as const, country: null },
+        override: null,
+        userDefault: { mode: 'none' as const, country: null },
+        source: 'system' as const,
+      })),
+      getTaxSettings: vi.fn(async () => ({ mode: 'none' as const, country: null })),
+      listCustomAssets: vi.fn(async () => ({ assets: [] })),
+      listStandingOrders: vi.fn(async () => ({ orders: [] })),
+    };
+
+    vi.mocked(listCashTags).mockResolvedValue({
+      tags: [
+        {
+          id: SYSTEM_TAG_ID,
+          name: 'Deposits',
+          color: '#123456',
+          system: true,
+          systemKey: 'deposit',
+          createdAt: NOW,
+          updatedAt: NOW,
+        },
+        {
+          id: USER_TAG_ID,
+          name: 'Salary',
+          color: '#abcdef',
+          system: false,
+          systemKey: null,
+          createdAt: NOW,
+          updatedAt: NOW,
+        },
+      ],
+    });
+    vi.mocked(listCashRules).mockResolvedValue({
+      rules: [
+        {
+          id: RULE_ID,
+          tagIds: [USER_TAG_ID],
+          matchType: 'contains' as const,
+          pattern: 'salary',
+          priority: 0,
+          enabled: true,
+          createdAt: NOW,
+          updatedAt: NOW,
+        },
+      ],
+    });
+    vi.mocked(listAllCashBudgets).mockResolvedValue({
+      budgets: [
+        {
+          id: RECURRING_BUDGET_ID,
+          portfolioId: PORTFOLIO_ID,
+          tagId: USER_TAG_ID,
+          period: null,
+          amount: 500,
+          currency: 'EUR',
+          createdAt: NOW,
+          updatedAt: NOW,
+        },
+        {
+          id: MONTH_BUDGET_ID,
+          portfolioId: PORTFOLIO_ID,
+          tagId: USER_TAG_ID,
+          // A future month the current-month progress list could never surface.
+          period: '2026-12',
+          amount: 250,
+          currency: 'EUR',
+          createdAt: NOW,
+          updatedAt: NOW,
+        },
+      ],
+    });
+
+    let idSequence = 0;
+    const document = await buildNormalVaultDocument({
+      userId: USER_ID,
+      deviceId: DEVICE_ID,
+      store,
+      now: () => NOW,
+      id: () => `018f0000-0000-7000-8000-e${String(++idSequence).padStart(11, '0')}`,
+    });
+
+    expect(listAllCashBudgets).toHaveBeenCalledWith(undefined);
+    expect((document.entities.cashTag ?? []).map((entity) => entity.id).sort()).toEqual(
+      [SYSTEM_TAG_ID, USER_TAG_ID].sort(),
+    );
+    expect(
+      document.entities.cashTag?.find((entity) => entity.id === USER_TAG_ID)?.data,
+    ).toMatchObject({ userId: USER_ID, name: 'Salary', system: false, systemKey: null });
+    // Both of the movement's tag links ride into the vault, keyed by
+    // (movementId, tagId) under synthesized join ids.
+    expect(
+      (document.entities.cashMovementTag ?? [])
+        .map((entity) => `${entity.data.movementId}:${entity.data.tagId}`)
+        .sort(),
+    ).toEqual([`${MOVEMENT_ID}:${SYSTEM_TAG_ID}`, `${MOVEMENT_ID}:${USER_TAG_ID}`].sort());
+    expect(document.entities.cashRule).toHaveLength(1);
+    expect(document.entities.cashRule?.[0]?.data).toMatchObject({
+      userId: USER_ID,
+      pattern: 'salary',
+    });
+    expect(document.entities.cashRuleTag?.map((entity) => entity.data.tagId)).toEqual([
+      USER_TAG_ID,
+    ]);
+    // The recurring AND the month-specific budget both survive — the raw read is
+    // the only path that carries the December row.
+    expect(
+      (document.entities.cashBudget ?? [])
+        .map((entity) => `${entity.id}:${entity.data.periodKey}:${entity.data.amount}`)
+        .sort(),
+    ).toEqual([`${RECURRING_BUDGET_ID}:null:500`, `${MONTH_BUDGET_ID}:2026-12:250`].sort());
   });
 
   it('emits a restorable custom-asset identity and keeps market snapshots client-only', async () => {

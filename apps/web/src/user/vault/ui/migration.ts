@@ -15,6 +15,7 @@ import {
 } from '@bettertrack/contracts';
 
 import { getAssetDetail } from '../../../lib/assetApi';
+import { listAllCashBudgets, listCashRules, listCashTags } from '../../../lib/cashApi';
 import {
   listExpenseBudgets,
   listExpenseCategories,
@@ -189,6 +190,17 @@ export async function buildNormalVaultDocument(
         },
         movement.createdAt,
       );
+      // The movement's tag links (V5 cash fusion) — system tags stamped at book
+      // time plus any user tags. The ledger DTO carries only the tag ids, so
+      // synthesize a join-row id; the (movementId, tagId) pair is the identity
+      // the restore actually keys on. Absent when a surface has not served tags.
+      for (const tagId of movement.tags ?? []) {
+        append('cashMovementTag', id(), {
+          movementId: movement.id,
+          tagId,
+          createdAt: movement.createdAt,
+        });
+      }
     }
     for (const dividend of fact.dividends.dividends) {
       assets.set(dividend.asset.id, dividend.asset);
@@ -380,6 +392,75 @@ export async function buildNormalVaultDocument(
         updatedAt: migratedAt,
       },
       migratedAt,
+    );
+  }
+
+  // V5 cash fusion — the tag / rule / budget layer on the cash ledger. Every one
+  // of these tables is `vault`-classified: enable hard-purges them server-side
+  // and disable restores them from the document ALONE, so a row that never
+  // reaches the vault is lost for good on the one-way round trip. Tags are
+  // account-scoped (system tags stamped at book time plus user tags); rules and
+  // their tag links likewise; budgets are per portfolio and read RAW (all
+  // periods) because the per-month progress list cannot enumerate other months'
+  // month-specific rows.
+  const [cashTags, cashRules, cashBudgets] = await Promise.all([
+    listCashTags(signal),
+    listCashRules(signal),
+    listAllCashBudgets(signal),
+  ]);
+  for (const tag of cashTags.tags) {
+    append(
+      'cashTag',
+      tag.id,
+      {
+        userId: options.userId,
+        name: tag.name,
+        color: tag.color,
+        system: tag.system,
+        systemKey: tag.systemKey,
+        createdAt: tag.createdAt,
+        updatedAt: tag.updatedAt,
+      },
+      tag.updatedAt,
+    );
+  }
+  for (const rule of cashRules.rules) {
+    append(
+      'cashRule',
+      rule.id,
+      {
+        userId: options.userId,
+        matchType: rule.matchType,
+        pattern: rule.pattern,
+        priority: rule.priority,
+        enabled: rule.enabled,
+        createdAt: rule.createdAt,
+        updatedAt: rule.updatedAt,
+      },
+      rule.updatedAt,
+    );
+    for (const tagId of rule.tagIds) {
+      append('cashRuleTag', id(), {
+        ruleId: rule.id,
+        tagId,
+        createdAt: rule.createdAt,
+      });
+    }
+  }
+  for (const budget of cashBudgets.budgets) {
+    append(
+      'cashBudget',
+      budget.id,
+      {
+        portfolioId: budget.portfolioId,
+        tagId: budget.tagId,
+        periodKey: budget.period,
+        amount: decimal(budget.amount),
+        currency: budget.currency,
+        createdAt: budget.createdAt,
+        updatedAt: budget.updatedAt,
+      },
+      budget.updatedAt,
     );
   }
 
