@@ -351,6 +351,7 @@ export const PARANOID_SERVICE_BINDINGS: readonly ParanoidServiceBinding[] = [
   serviceBinding('imports', 'expenseImports', 'userIdFirst', ['preview', 'apply']),
   serviceBinding('standingOrderExecution', 'standingOrders', 'userIdFirst', [
     'list',
+    'listRuns',
     'get',
     'create',
     'update',

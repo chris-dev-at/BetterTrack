@@ -42,38 +42,54 @@ describe('public paranoid transitions', () => {
   };
 
   it('ties selected media evidence to one exact supported vault version', () => {
+    const REVISION = 'aXf9_capture-token';
     expect(
       paranoidEnableRequestSchema.parse({
         mediaSet: ['server'],
         vaultVersion: 1,
+        normalDataRevision: REVISION,
       }),
-    ).toEqual({ mediaSet: ['server'], vaultVersion: 1, driveAttestation: null });
+    ).toEqual({
+      mediaSet: ['server'],
+      vaultVersion: 1,
+      driveAttestation: null,
+      normalDataRevision: REVISION,
+    });
     expect(
       paranoidEnableRequestSchema.parse({
         mediaSet: ['drive'],
         vaultVersion: 7,
         driveAttestation: { verifiedRoundTrip: true, vaultVersion: 7 },
+        normalDataRevision: REVISION,
       }),
     ).toEqual({
       mediaSet: ['drive'],
       vaultVersion: 7,
       driveAttestation: { verifiedRoundTrip: true, vaultVersion: 7 },
+      normalDataRevision: REVISION,
     });
 
     for (const invalid of [
-      { mediaSet: ['drive'], vaultVersion: 7 },
+      { mediaSet: ['drive'], vaultVersion: 7, normalDataRevision: REVISION },
       {
         mediaSet: ['drive'],
         vaultVersion: 7,
         driveAttestation: { verifiedRoundTrip: true, vaultVersion: 6 },
+        normalDataRevision: REVISION,
       },
       {
         mediaSet: ['server'],
         vaultVersion: 7,
         driveAttestation: { verifiedRoundTrip: true, vaultVersion: 7 },
+        normalDataRevision: REVISION,
       },
-      { mediaSet: ['server'], vaultVersion: 0 },
-      { mediaSet: ['server'], vaultVersion: 1, plaintextHash: 'forbidden' },
+      { mediaSet: ['server'], vaultVersion: 0, normalDataRevision: REVISION },
+      { mediaSet: ['server'], vaultVersion: 1, normalDataRevision: REVISION, plaintextHash: 'x' },
+      // The capture token is NOT optional: an enable without it would skip the
+      // compare-and-swap on the one transition that cannot be undone.
+      { mediaSet: ['server'], vaultVersion: 1 },
+      { mediaSet: ['server'], vaultVersion: 1, normalDataRevision: '' },
+      { mediaSet: ['server'], vaultVersion: 1, normalDataRevision: 'not a token' },
     ]) {
       expect(paranoidEnableRequestSchema.safeParse(invalid).success).toBe(false);
     }

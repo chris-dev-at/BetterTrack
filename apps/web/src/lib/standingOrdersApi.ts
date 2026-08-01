@@ -1,9 +1,11 @@
 import {
   standingOrderListResponseSchema,
+  standingOrderRunListResponseSchema,
   standingOrderSchema,
   type CreateStandingOrderRequest,
   type StandingOrder,
   type StandingOrderListResponse,
+  type StandingOrderRunListResponse,
   type UpdateStandingOrderRequest,
 } from '@bettertrack/contracts';
 
@@ -30,6 +32,21 @@ export async function listStandingOrders(
     signal,
   });
   return standingOrderListResponseSchema.parse(data);
+}
+
+/**
+ * `GET /standing-orders/runs` — the raw exactly-once run ledger.
+ *
+ * Deliberately not part of the management UI: an order's `lastPeriodKey`
+ * watermark is what a human reads. This is for the paranoid enable capture,
+ * which must carry the ledger itself — a period claimed but never booked has no
+ * watermark, and losing that claim on the round trip re-opens it for booking.
+ */
+export async function listStandingOrderRuns(
+  signal?: AbortSignal,
+): Promise<StandingOrderRunListResponse> {
+  const data = await apiRequest<unknown>('/standing-orders/runs', { signal });
+  return standingOrderRunListResponseSchema.parse(data);
 }
 
 /** `POST /standing-orders` — create a recurring buy / cash-add / cash-deduct. */

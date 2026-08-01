@@ -3,6 +3,7 @@ import {
   type CashBudget,
   type CashBudgetListResponse,
   type CashBudgetProgress,
+  type CashBudgetRawListResponse,
   type CashBudgetResponse,
   type CashMonthlySummaryResponse,
   type CashTagSummary,
@@ -116,6 +117,12 @@ export interface CashBudgetServiceDeps {
 
 export interface CashBudgetService {
   listBudgets(userId: string, portfolioId: string, month?: string): Promise<CashBudgetListResponse>;
+  /**
+   * Every raw budget row this owner holds, across all portfolios and periods —
+   * the faithful capture the paranoid enable migration needs (the per-month
+   * progress list cannot enumerate other months' month-specific budgets).
+   */
+  listAllBudgets(userId: string): Promise<CashBudgetRawListResponse>;
   createBudget(userId: string, input: CreateCashBudgetRequest): Promise<CashBudgetResponse>;
   updateBudget(
     userId: string,
@@ -180,6 +187,13 @@ export function createCashBudgetService(deps: CashBudgetServiceDeps): CashBudget
       await requireOwnedPortfolio(userId, portfolioId);
       const period = month ?? periodKeyFor(now());
       return { period, budgets: await progressFor(portfolioId, period) };
+    },
+
+    async listAllBudgets(userId): Promise<CashBudgetRawListResponse> {
+      // `listForOwner` is joined through `portfolios.user_id`, so it can never
+      // pick up a foreign ledger. `toBudgetDto` drops the joined tag columns.
+      const records = await budgets.listForOwner(userId);
+      return { budgets: records.map(toBudgetDto) };
     },
 
     async createBudget(userId, input): Promise<CashBudgetResponse> {

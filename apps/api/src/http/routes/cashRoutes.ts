@@ -113,6 +113,14 @@ export function createCashRouter(ctx: AppContext): Router {
 
   // ── Budgets ────────────────────────────────────────────────────────────────
 
+  // GET /cash/budgets/all — every raw budget row (all portfolios, all periods),
+  // with no month evaluation. Read by the paranoid enable migration, which
+  // cannot use the per-month progress list without silently losing month-specific
+  // budgets for other months. Mounted before the parametric budget routes.
+  router.get('/budgets/all', async (req, res) => {
+    res.json(await ctx.cashBudgets.listAllBudgets(req.authUser!.id));
+  });
+
   // GET /cash/budgets?portfolioId=&month= — the portfolio's budgets with progress.
   router.get('/budgets', validateQuery(cashBudgetListQuerySchema), async (req, res) => {
     const query = req.valid?.query as CashBudgetListQuery;

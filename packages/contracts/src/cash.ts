@@ -274,6 +274,23 @@ export const cashBudgetListResponseSchema = z
 export type CashBudgetListResponse = z.infer<typeof cashBudgetListResponseSchema>;
 
 /**
+ * `GET /cash/budgets/all` response — every RAW budget row the account holds
+ * across all portfolios and all periods (recurring `period: null` rows and
+ * month-specific `YYYY-MM` rows alike), with no month evaluation.
+ *
+ * This exists for the paranoid-mode enable migration: the per-month progress
+ * list ({@link cashBudgetListResponseSchema}) can only surface the budgets that
+ * apply to ONE queried month and collapses a recurring row onto that month, so
+ * it cannot enumerate month-specific budgets for other months. Carrying budgets
+ * into the encrypted vault from it would silently drop those rows, which the
+ * one-way enable purge then hard-deletes for good.
+ */
+export const cashBudgetRawListResponseSchema = z
+  .object({ budgets: z.array(cashBudgetSchema) })
+  .strict();
+export type CashBudgetRawListResponse = z.infer<typeof cashBudgetRawListResponseSchema>;
+
+/**
  * `POST /cash/budgets` body. One budget per (portfolio, tag, period) — a second
  * create for the same triple is a 409. `period` omitted / `null` creates the
  * recurring monthly target.

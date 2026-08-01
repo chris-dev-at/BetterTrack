@@ -335,10 +335,13 @@ retention-qualified signed purge gate.
 
 1. Client-side: review the §8 kill list; choose media; create the passphrase;
    download the recovery kit; give the §3 lost-key acknowledgment.
-2. Client pulls the account's full portfolio dataset through the existing
-   read APIs, builds vault document v1, encrypts, writes the blob to every
-   chosen medium, and runs the §5 verified round trip on each.
-3. `POST /api/v1/account/paranoid/enable { mediaSet, vaultVersion }` — the
+2. Client reads the **capture revision token** (below), pulls the account's
+   full portfolio dataset through the existing read APIs, re-reads the token
+   and accepts the pair only if it did not move (below); then encrypts, writes
+   the blob to every chosen medium, and runs the §5 verified round trip on
+   each.
+3. `POST /api/v1/account/paranoid/enable` — body
+   `{ mediaSet, vaultVersion, normalDataRevision }`; the
    server, in one transaction: re-verifies preconditions, flips
    `privacy_mode`, runs the **purge sweep** (hard-deletes every
    `vault`-classified row keyed to the user — mechanically the V4-P2c
@@ -358,6 +361,52 @@ accepted (it is the user's own data, their own attestation, seconds after
 they wrote it — and the wizard's round trip already proved the read path).
 Enable is one-way destructive on the server by design; the vault holds
 everything from step 2.
+
+**The capture↔commit CAS (PROJECTPLAN.md §16, 2026-08-01).** Step 2 is
+entirely lock-free and takes seconds to minutes, while the account lock does
+not exist until step 3 — so a write landing in between (a second session, or
+the daily standing-order worker booking a period) is absent from the encrypted
+document and is nonetheless hard-deleted by the purge, and disable restores
+from the document ALONE. The capture therefore opens with
+`GET /api/v1/account/paranoid/normal-revision`, **before its first row read**:
+an opaque content digest over exactly the restore-classified §1 tables of this
+account, derived from the same scope the purge and the zero-cleartext probe
+use. Enable re-derives it inside the locked transaction, after the
+preconditions and before the first destructive statement, and refuses the whole
+transition with `409 NORMAL_DATA_CHANGED` — nothing deleted — when it
+disagrees. The field is required, not optional: an absent token would silently
+skip the guard on the one transition that cannot be undone. It is skipped only
+on the idempotent-retry branch of §7's "never destroys gated state" rule, where
+the vault rows are already gone and the original token could never match again.
+
+**The capture validates before it accepts — because its own reads write.**
+Reading the token first is necessary but not sufficient. Several of step 2's
+GETs mutate tables the token hashes: `/portfolios` materializes "Main",
+`…/cash` materializes its main source, `/expenses/categories` seeds the default
+categories, `/cash/tags` seeds the app-owned system tags, and the tax-report
+reads run the #635 self-heal, which **inserts the open years' correction cash
+movements**. The last one is not merely noisy: the ledger read happens
+concurrently with the tax-year list and strictly before the per-year reports,
+so a correction posted by those reads is missing from the document's own `cash`
+array. A single-pass capture is therefore not just revision-stale, it is
+**incomplete** — and the purge would hard-delete a money row no copy carries.
+So the capture reads the token, builds the document, re-reads the token, and
+accepts the pair only when the two agree; on a mismatch it discards the
+document whole and rebuilds once. That converges, because every write it
+provokes is one-shot (the seeds insert only into an empty table, and the
+reconciler posts nothing once the year's correction delta is zero). If the
+second pass also moves, the capture fails with its own error rather than
+shipping a document it cannot vouch for — never the newest token with an older
+document, which is exactly the "CAS passes, rows missing" outcome the token
+exists to prevent.
+
+**What step 2 must read (beyond the user-visible surfaces).** The document also
+carries the `standing_order_runs` ledger under its real row ids. That ledger —
+not an order's `last_period_key` watermark — is the authoritative exactly-once
+record: a claim is written before booking and deliberately left behind when
+booking fails, so the watermark cannot express a claimed-but-unbooked period.
+Losing such a claim across enable→disable lets the scheduler re-book a period
+that was intentionally tombstoned, i.e. book the same money twice.
 
 **New accounts:** the same wizard minus step 2's migration (empty vault) —
 the fast path; paranoid can be enabled any time from Settings → Privacy, not

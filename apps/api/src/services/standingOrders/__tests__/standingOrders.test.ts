@@ -3,7 +3,10 @@ import request from 'supertest';
 import type { Application } from 'express';
 import { beforeEach, describe, expect, it } from 'vitest';
 
-import { SOURCE_TAG_STANDING_ORDER } from '@bettertrack/contracts';
+import {
+  SOURCE_TAG_STANDING_ORDER,
+  standingOrderRunListResponseSchema,
+} from '@bettertrack/contracts';
 
 import * as schema from '../../../data/schema';
 import { createStubMarketData } from '../../../testing/marketDataStubs';
@@ -190,6 +193,34 @@ describe('standing orders — CRUD + validation (HTTP)', () => {
         })
       ).status,
     ).toBe(400);
+  });
+
+  it('scopes the raw run ledger to the owner', async () => {
+    // `/runs` is the paranoid capture's read of the authoritative exactly-once
+    // ledger, so it enumerates rows rather than taking an id — the ownership
+    // join is the whole access control. A stranger seeing these rows would read
+    // another account's booking history, and restoring them through disable
+    // would tombstone periods that were never theirs.
+    const { agent, pid } = await setup();
+    await createOrder(agent, {
+      portfolioId: pid,
+      kind: 'cash-add',
+      amount: 100,
+      label: 'salary',
+      cadence: 'daily',
+      startDate: '2026-04-01',
+    });
+    expect((await run('2026-04-01T12:00:00Z')).booked).toBe(1);
+
+    const owned = await agent.get('/api/v1/standing-orders/runs');
+    expect(owned.status).toBe(200);
+    expect(standingOrderRunListResponseSchema.parse(owned.body).runs).toHaveLength(1);
+
+    const other = await harness.seedUser({ email: 'runs@bettertrack.test', username: 'runsbob' });
+    const otherAgent = await loginAgent(harness.app, other.email, other.password);
+    const strangerView = await otherAgent.get('/api/v1/standing-orders/runs');
+    expect(strangerView.status).toBe(200);
+    expect(standingOrderRunListResponseSchema.parse(strangerView.body).runs).toEqual([]);
   });
 });
 

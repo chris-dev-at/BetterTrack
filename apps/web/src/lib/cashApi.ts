@@ -1,5 +1,6 @@
 import {
   cashBudgetListResponseSchema,
+  cashBudgetRawListResponseSchema,
   cashBudgetResponseSchema,
   cashMonthlySummaryResponseSchema,
   cashMovementTagsResponseSchema,
@@ -11,6 +12,7 @@ import {
   cashTagResponseSchema,
   cashTrendResponseSchema,
   type CashBudgetListResponse,
+  type CashBudgetRawListResponse,
   type CashBudgetResponse,
   type CashMonthlySummaryResponse,
   type CashMovementTagsResponse,
@@ -122,6 +124,16 @@ export async function listCashBudgets(
     signal,
   });
   return cashBudgetListResponseSchema.parse(data);
+}
+
+/**
+ * `GET /cash/budgets/all` — every raw budget row the account holds (all
+ * portfolios, all periods), with no month evaluation. Used by the paranoid
+ * enable migration to carry budgets into the encrypted vault without loss.
+ */
+export async function listAllCashBudgets(signal?: AbortSignal): Promise<CashBudgetRawListResponse> {
+  const data = await apiRequest<unknown>('/cash/budgets/all', { signal });
+  return cashBudgetRawListResponseSchema.parse(data);
 }
 
 export async function createCashBudget(body: CreateCashBudgetRequest): Promise<CashBudgetResponse> {

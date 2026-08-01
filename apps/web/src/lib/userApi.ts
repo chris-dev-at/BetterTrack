@@ -8,6 +8,7 @@ import {
   paranoidDisableResponseSchema,
   paranoidEnableResponseSchema,
   paranoidForkProvenanceResponseSchema,
+  paranoidNormalRevisionResponseSchema,
   paranoidMediaStateResponseSchema,
   paranoidMediaTransitionResponseSchema,
   paranoidServerCandidateMetadataSchema,
@@ -59,6 +60,7 @@ import {
   type ParanoidEnableRequest,
   type ParanoidEnableResponse,
   type ParanoidForkProvenanceResponse,
+  type ParanoidNormalRevisionResponse,
   type ParanoidMediaStateResponse,
   type ParanoidMediaTransitionRequest,
   type ParanoidMediaTransitionResponse,
@@ -151,6 +153,20 @@ export async function getParanoidForkProvenance(
 ): Promise<ParanoidForkProvenanceResponse> {
   const data = await apiRequest<unknown>('/account/paranoid/fork-provenance', { signal });
   return paranoidForkProvenanceResponseSchema.parse(data);
+}
+
+/**
+ * The capture↔commit CAS token (`docs/paranoid-design.md` §7). Read BEFORE the
+ * migration's first row read and handed back to {@link enableParanoidMode},
+ * which re-derives it under the account lock: a normal-account write inside the
+ * capture/encrypt/verify window refuses the enable instead of destroying rows
+ * the encrypted copy never captured.
+ */
+export async function getParanoidNormalRevision(
+  signal?: AbortSignal,
+): Promise<ParanoidNormalRevisionResponse> {
+  const data = await apiRequest<unknown>('/account/paranoid/normal-revision', { signal });
+  return paranoidNormalRevisionResponseSchema.parse(data);
 }
 
 /** Commit the destructive normal → paranoid transition after every medium verified its blob. */
