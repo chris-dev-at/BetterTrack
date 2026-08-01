@@ -272,10 +272,12 @@ export async function enablePreparedVault(
         driveAttestation: driveSelected
           ? { verifiedRoundTrip: true, vaultVersion: nextVersion }
           : null,
-        // The token the capture started from. Everything between that read and
-        // this commit — the row reads, the encryption, both medium writes and
-        // both read-verifications — is inside the window the server re-checks
-        // under the account lock before it deletes anything.
+        // The token the capture agreed on — read before its first row read and
+        // unchanged when re-read after its last, so it describes exactly the
+        // document below. Everything from that window to this commit — the
+        // encryption, both medium writes and both read-verifications — is
+        // inside what the server re-checks under the account lock before it
+        // deletes anything.
         normalDataRevision: capture.normalDataRevision,
       });
       return { envelope, version: nextVersion, receipt };

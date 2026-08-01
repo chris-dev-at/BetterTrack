@@ -57,7 +57,12 @@ import { listStandingOrderRuns } from '../../../lib/standingOrdersApi';
 import { getParanoidNormalRevision } from '../../../lib/userApi';
 import { openVaultSession } from '../engine/session';
 import { toStrictRestoreDocument } from '../paranoidDisable';
-import { buildNormalVaultDocument, captureNormalVault } from './migration';
+import {
+  buildNormalVaultDocument,
+  captureNormalVault,
+  CAPTURE_STABILITY_ATTEMPTS,
+  VaultCaptureUnstableError,
+} from './migration';
 
 const USER_ID = '018f0000-0000-7000-8000-000000000001';
 const PORTFOLIO_ID = '018f0000-0000-7000-8000-000000000010';
@@ -633,13 +638,14 @@ describe('buildNormalVaultDocument', () => {
     ).rejects.toThrow(/run for unknown order/);
   });
 
-  it('reads the CAS revision before the first row read and binds it to the capture', async () => {
+  it('brackets the row reads with the CAS revision and binds the agreed token to the capture', async () => {
     // The window this closes: the wizard reads the whole account, encrypts it,
     // writes both media and verifies them — all lock-free — and only then
-    // commits the purge. Reading the revision FIRST makes the server's
-    // compare-and-swap cover the entire capture, so a write that lands mid-read
-    // (another session, the standing-order worker) refuses the enable instead of
-    // being purged out of existence.
+    // commits the purge. Reading the revision before the first row read AND
+    // again after the last makes the server's compare-and-swap cover the entire
+    // capture, so a write that lands mid-read (another session, the
+    // standing-order worker, or — see below — the capture's own GETs) refuses
+    // the enable instead of being purged out of existence.
     const order: string[] = [];
     vi.mocked(getParanoidNormalRevision).mockImplementation(async () => {
       order.push('revision');
@@ -663,9 +669,191 @@ describe('buildNormalVaultDocument', () => {
       now: () => NOW,
     });
 
-    expect(order).toEqual(['revision', 'portfolios']);
+    // A quiet account settles on the first pass: one build, bracketed.
+    expect(order).toEqual(['revision', 'portfolios', 'revision']);
     expect(capture.normalDataRevision).toBe(REVISION);
     expect(capture.document.schemaVersion).toBe(1);
+  });
+
+  it('re-captures when its own reads wrote, and ships the rows those writes created', async () => {
+    /*
+     * The defect this pins. The capture's reads are NOT side-effect-free:
+     * `GET …/reports/tax-years` runs the #635 self-heal and INSERTS the open
+     * year's correction cash movement, while `store.getCashMovements` sits in
+     * the same `Promise.all` and has already snapshotted the ledger without it.
+     * `GET /expenses/categories` likewise seeds this account's default
+     * categories on first read. A single-pass capture therefore shipped a
+     * document MISSING money rows — and enable hard-deletes them, with disable
+     * restoring from the document alone.
+     *
+     * The fake reproduces that ordering exactly: the ledger snapshot happens
+     * first, then the tax read appends the correction and moves the revision.
+     * The assertion that matters is not "the capture succeeded" — it is that the
+     * ACCEPTED document contains the correction. A fix that merely re-read the
+     * token after the build would pass a 200-only assertion while still losing
+     * the row.
+     */
+    const SOURCE_ID = '018f0000-0000-7000-8000-0000000000f1';
+    const DEPOSIT_ID = '018f0000-0000-7000-8000-0000000000f2';
+    const CORRECTION_ID = '018f0000-0000-7000-8000-0000000000f3';
+    const CATEGORY_ID = '018f0000-0000-7000-8000-0000000000f4';
+
+    const movement = (id: string, kind: 'deposit' | 'tax_refund', amountEur: number) => ({
+      id,
+      kind,
+      amountEur,
+      sourceId: SOURCE_ID,
+      transactionId: null,
+      transferId: null,
+      counterpartSourceId: null,
+      dividendId: null,
+      taxYear: kind === 'deposit' ? null : 2026,
+      executedAt: '2026-07-01T09:00:00.000Z',
+      note: null,
+      source: 'manual' as const,
+      createdAt: '2026-07-01T09:00:00.000Z',
+      tags: [],
+    });
+
+    // The server's state, as the capture's own reads leave it.
+    let version = 0;
+    const ledger = [movement(DEPOSIT_ID, 'deposit', 100)];
+    const categories: Array<{
+      id: string;
+      name: string;
+      direction: 'expense';
+      color: string;
+      createdAt: string;
+      updatedAt: string;
+    }> = [];
+
+    vi.mocked(getParanoidNormalRevision).mockImplementation(async () => ({
+      revision: `${REVISION}-${version}`,
+    }));
+    vi.mocked(getTaxYearReports).mockImplementation(async () => {
+      // `reconcileOpenYears`: posts the pending correction once, then converges
+      // (the year's correction delta is zero afterwards).
+      if (!ledger.some((row) => row.id === CORRECTION_ID)) {
+        ledger.push(movement(CORRECTION_ID, 'tax_refund', 247.5));
+        version += 1;
+      }
+      return { years: [] };
+    });
+    vi.mocked(listExpenseCategories).mockImplementation(async () => {
+      // The lazy default seed: one-shot, and self-covering — the read that
+      // seeds also returns what it seeded.
+      if (categories.length === 0) {
+        categories.push({
+          id: CATEGORY_ID,
+          name: 'Groceries',
+          direction: 'expense',
+          color: '#445566',
+          createdAt: NOW,
+          updatedAt: NOW,
+        });
+        version += 1;
+      }
+      return { categories: [...categories] };
+    });
+
+    const store: PortfolioStore = {
+      ...apiPortfolioStore,
+      listPortfolios: vi.fn(async () => ({
+        portfolios: [
+          {
+            id: PORTFOLIO_ID,
+            name: 'Main',
+            visibility: 'private' as const,
+            sortOrder: 0,
+            isDefault: true,
+            defaultPayFromCash: false,
+            archivedAt: null,
+          },
+        ],
+      })),
+      listTransactions: vi.fn(async () => ({ items: [], nextCursor: null })),
+      // Snapshots the ledger at call time — before the tax read appends to it,
+      // which is the whole point.
+      getCashMovements: vi.fn(async () => ({
+        balanceEur: 100,
+        sources: [
+          {
+            id: SOURCE_ID,
+            name: 'Main',
+            type: 'cash' as const,
+            isMain: true,
+            archivedAt: null,
+            balanceEur: 100,
+            createdAt: NOW,
+          },
+        ],
+        movements: [...ledger],
+      })),
+      getPortfolioTaxSettings: vi.fn(async () => ({
+        effective: { mode: 'none' as const, country: null },
+        override: null,
+        userDefault: { mode: 'none' as const, country: null },
+        source: 'system' as const,
+      })),
+      getTaxSettings: vi.fn(async () => ({ mode: 'none' as const, country: null })),
+      listCustomAssets: vi.fn(async () => ({ assets: [] })),
+      listStandingOrders: vi.fn(async () => ({ orders: [] })),
+    };
+
+    let idSequence = 0;
+    const capture = await captureNormalVault({
+      userId: USER_ID,
+      deviceId: DEVICE_ID,
+      store,
+      now: () => NOW,
+      id: () => `018f0000-0000-7000-8000-f${String(++idSequence).padStart(11, '0')}`,
+    });
+
+    // Completeness first, because it is the assertion a green enable cannot
+    // make: the correction the capture's own tax read posted rides in the
+    // shipped document.
+    expect(
+      (capture.document.entities.cashMovement ?? []).map((entity) => entity.id).sort(),
+    ).toEqual([CORRECTION_ID, DEPOSIT_ID].sort());
+    expect(
+      (capture.document.entities.cashMovement ?? []).find((e) => e.id === CORRECTION_ID)?.data,
+    ).toMatchObject({ kind: 'tax_refund', amountEur: '247.5', taxYear: 2026 });
+    expect((capture.document.entities.expenseCategory ?? []).map((entity) => entity.id)).toEqual([
+      CATEGORY_ID,
+    ]);
+    // The token handed to the commit is the settled one, and it is the one the
+    // accepted document was built under — not the pre-seed token.
+    expect(capture.normalDataRevision).toBe(`${REVISION}-2`);
+    // Exactly two passes: the second reads state its own first pass settled.
+    expect(vi.mocked(getTaxYearReports)).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(getParanoidNormalRevision)).toHaveBeenCalledTimes(3);
+  });
+
+  it('refuses to hand over a document when the account never settles', async () => {
+    // An account something else keeps writing to. The capture must not ship the
+    // stale document with the newer token (the CAS would pass over rows the
+    // document never carried) nor the newer document with the older token (the
+    // server refuses, after the user redid the whole encrypt/write/verify pass).
+    // It gives up, with its own error type so the wizard can name the cause.
+    let version = 0;
+    vi.mocked(getParanoidNormalRevision).mockImplementation(async () => ({
+      revision: `${REVISION}-${version++}`,
+    }));
+    const store: PortfolioStore = {
+      ...apiPortfolioStore,
+      listPortfolios: vi.fn(async () => ({ portfolios: [] })),
+      listCustomAssets: vi.fn(async () => ({ assets: [] })),
+      getTaxSettings: vi.fn(async () => ({ mode: 'none' as const, country: null })),
+      listStandingOrders: vi.fn(async () => ({ orders: [] })),
+    };
+
+    await expect(
+      captureNormalVault({ userId: USER_ID, deviceId: DEVICE_ID, store, now: () => NOW }),
+    ).rejects.toBeInstanceOf(VaultCaptureUnstableError);
+    // Bounded: it does not spin forever against a busy account.
+    expect(vi.mocked(getParanoidNormalRevision)).toHaveBeenCalledTimes(
+      CAPTURE_STABILITY_ATTEMPTS + 1,
+    );
   });
 
   it('emits a restorable custom-asset identity and keeps market snapshots client-only', async () => {

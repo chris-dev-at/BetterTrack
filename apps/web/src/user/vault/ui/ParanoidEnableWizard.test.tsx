@@ -29,9 +29,12 @@ vi.mock('../export/deliver', () => ({
 vi.mock('../serverBlobDataHome', () => ({
   createServerBlobDataHome: () => ({ medium: 'server' }),
 }));
-vi.mock('./migration', () => ({
-  captureNormalVault: mocks.migrate,
-}));
+// Only the capture call is stubbed: `VaultCaptureUnstableError` stays REAL, so
+// the wizard's `instanceof` mapping is exercised rather than mocked away.
+vi.mock('./migration', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('./migration')>();
+  return { ...actual, captureNormalVault: mocks.migrate };
+});
 vi.mock('./enable', async (importOriginal) => {
   const actual = await importOriginal<typeof import('./enable')>();
   return {
@@ -44,6 +47,7 @@ vi.mock('./enable', async (importOriginal) => {
 import { ParanoidEnableWizard } from './ParanoidEnableWizard';
 import { ApiError } from '../../../lib/apiClient';
 import { VaultEnableError } from './enable';
+import { VaultCaptureUnstableError } from './migration';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -160,5 +164,36 @@ describe('ParanoidEnableWizard', () => {
     await user.click(screen.getByRole('button', { name: 'Enable Paranoid mode' }));
 
     expect(await screen.findByRole('alert')).toHaveTextContent(expected);
+  });
+
+  it('names the real cause when the capture could not hold the account still', async () => {
+    // A capture that gave up must not read as "your connection dropped, retry" —
+    // that advice sends the user straight back into the same loop. The dedicated
+    // error type earns dedicated copy: close the other writer, then start again.
+    mocks.enable.mockRejectedValue(
+      new VaultEnableError('migrate', 'Your existing data could not be prepared safely.', {
+        cause: new VaultCaptureUnstableError(2),
+      }),
+    );
+    const user = userEvent.setup();
+    render(<ParanoidEnableWizard onCancel={() => {}} onEnabled={() => {}} />);
+
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
+    await user.type(screen.getByLabelText('Vault passphrase'), 'correct horse battery staple 729');
+    await user.type(
+      screen.getByLabelText('Confirm vault passphrase'),
+      'correct horse battery staple 729',
+    );
+    await user.click(screen.getByRole('button', { name: 'Download recovery kit' }));
+    await user.click(
+      screen.getByRole('checkbox', { name: 'I have stored my recovery kit safely.' }),
+    );
+    await user.click(screen.getByRole('checkbox', { name: /my data is gone forever/i }));
+    await user.click(screen.getByRole('button', { name: 'Enable Paranoid mode' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      /kept changing while BetterTrack was collecting it/i,
+    );
   });
 });

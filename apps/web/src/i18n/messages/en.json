@@ -3512,6 +3512,7 @@
         "mediaNotReady": "The selected encrypted copy was not ready for the final switch. Verify the storage locations and retry.",
         "transitionConflict": "Another privacy transition is still finishing. Wait a moment and retry.",
         "normalDataChanged": "Your account changed while the encrypted copy was being prepared, so BetterTrack stopped before deleting anything. Nothing was lost — start the switch again to include the newest data.",
+        "captureUnstable": "Your account kept changing while BetterTrack was collecting it, so no complete copy could be taken and nothing was changed. Close BetterTrack in other tabs and on other devices, then start the switch again.",
         "unknown": "Paranoid mode could not be enabled. Your normal account is unchanged."
       }
     },

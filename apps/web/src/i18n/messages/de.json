@@ -3512,6 +3512,7 @@
         "mediaNotReady": "Die gewählte verschlüsselte Kopie war für den letzten Wechsel nicht bereit. Prüfe die Speicherorte und versuche es erneut.",
         "transitionConflict": "Ein anderer Datenschutzwechsel wird noch abgeschlossen. Warte kurz und versuche es erneut.",
         "normalDataChanged": "Dein Konto hat sich geändert, während die verschlüsselte Kopie vorbereitet wurde, deshalb hat BetterTrack vor dem Löschen abgebrochen. Es ging nichts verloren — starte den Wechsel erneut, damit die neuesten Daten enthalten sind.",
+        "captureUnstable": "Dein Konto hat sich während des Sammelns immer wieder geändert, deshalb konnte keine vollständige Kopie erstellt werden und es wurde nichts geändert. Schließe BetterTrack in anderen Tabs und auf anderen Geräten und starte den Wechsel dann erneut.",
         "unknown": "Der paranoide Modus konnte nicht aktiviert werden. Dein normales Konto ist unverändert."
       }
     },

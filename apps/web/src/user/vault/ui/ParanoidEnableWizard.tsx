@@ -24,7 +24,7 @@ import {
   type PreparedVaultMaterial,
   type VaultEnableStage,
 } from './enable';
-import { captureNormalVault } from './migration';
+import { captureNormalVault, VaultCaptureUnstableError } from './migration';
 
 const KILL_LIST_KEYS = [
   'sharing',
@@ -354,6 +354,12 @@ export function ParanoidEnableWizard({
 
 function enableErrorKey(cause: unknown): string {
   if (!(cause instanceof VaultEnableError)) return 'vault.enable.errors.unknown';
+  // The capture gave up because the account kept moving under it. Generic
+  // "collection failed, retry when the connection recovers" copy would send the
+  // user straight back into the same loop; name the other writer instead.
+  if (cause.cause instanceof VaultCaptureUnstableError) {
+    return 'vault.enable.errors.captureUnstable';
+  }
   if (cause.stage === 'commit' && cause.cause instanceof ApiError) {
     switch (cause.cause.code) {
       case PARANOID_TRANSITION_ERROR_CODES.mirrorchainActive:

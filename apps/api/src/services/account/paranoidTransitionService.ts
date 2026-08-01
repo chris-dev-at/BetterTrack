@@ -244,8 +244,25 @@ export function createParanoidTransitionService(
     },
 
     async normalDataRevision(userId) {
+      /*
+       * Derived under one snapshot, so the capture side and the enable side are
+       * symmetric. The enable-side derivation runs inside the destructive
+       * transaction, behind the account row's FOR UPDATE lock — nothing it hashes
+       * can move between its ~20 per-table aggregates. This side takes no lock by
+       * design (it runs long before the account commits to anything), so a
+       * concurrent write could otherwise tear the token across tables: counted in
+       * one, missing from the next. REPEATABLE READ pins one snapshot for all of
+       * them at a cost that is irrelevant on a once-per-transition read.
+       *
+       * A torn token could only ever have produced a spurious refusal, never a
+       * purge — but a spurious refusal on THIS flow costs the user the whole
+       * capture/encrypt/write/verify pass, so it is worth not manufacturing.
+       */
       return paranoidNormalRevisionResponseSchema.parse({
-        revision: await computeNormalDataRevision(deps.db, userId),
+        revision: await deps.db.transaction(
+          (tx) => computeNormalDataRevision(tx as unknown as Database, userId),
+          { isolationLevel: 'repeatable read', accessMode: 'read only' },
+        ),
       });
     },
 

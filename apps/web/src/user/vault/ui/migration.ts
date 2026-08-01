@@ -45,19 +45,81 @@ export interface NormalVaultMigrationOptions {
  */
 export interface NormalVaultCapture {
   document: VaultDocument;
-  /** `GET /account/paranoid/normal-revision`, read before the FIRST row read. */
+  /**
+   * `GET /account/paranoid/normal-revision`, read before the FIRST row read of
+   * the accepted pass AND unchanged when re-read after its last — so this token
+   * covers the whole build, not just its opening instant.
+   */
   normalDataRevision: string;
+}
+
+/**
+ * How many times a capture will rebuild its document trying to land on a server
+ * state that did not move underneath it. Two, because every write the capture
+ * itself provokes is one-shot: the lazy seeds below insert only when their table
+ * is empty for this account, and the tax reconciler posts nothing once the open
+ * year's correction delta is zero. A settled read is therefore always reached on
+ * the second pass; a third would only paper over an account something else is
+ * actively writing, which has to fail loudly instead.
+ */
+export const CAPTURE_STABILITY_ATTEMPTS = 2;
+
+/**
+ * The account would not hold still: the revision moved across the document build
+ * on every attempt, so no document this client built provably matches the state
+ * the enable commit would purge.
+ *
+ * Deliberately its own type, and deliberately fatal. Shipping the newest token
+ * with the older document — or the older token, hoping the server disagrees
+ * politely — is precisely the "CAS passes, rows missing" outcome the token
+ * exists to prevent. The wizard maps this to copy that names the real cause
+ * (something else is writing to the account) instead of the generic
+ * "collection failed" retry advice.
+ */
+export class VaultCaptureUnstableError extends Error {
+  constructor(readonly attempts: number) {
+    super(
+      `The normal account changed during ${attempts} consecutive capture attempts; no stable copy could be taken.`,
+    );
+    this.name = 'VaultCaptureUnstableError';
+  }
 }
 
 /**
  * Read the complete currently-restorable normal-account graph before enable,
  * bound to the server revision it was read at.
  *
- * Ordering is load-bearing: the revision is read FIRST, so the compare-and-swap
- * the server performs under the account lock covers the entire capture window,
- * not just the part after it. A write that lands mid-capture — another session,
- * or the daily standing-order worker — therefore refuses the enable instead of
- * being silently purged out of existence.
+ * Protocol: read the token, build the document, read the token AGAIN, and accept
+ * the pair only when the two agree — validate-then-accept, not read-then-hope.
+ * The accepted token's window therefore provably contains the whole document
+ * build, which is the property the server's compare-and-swap (re-derived under
+ * the account lock, immediately before the first destructive statement) needs in
+ * order to mean anything.
+ *
+ * The second read is not extra caution about other sessions. THE CAPTURE'S OWN
+ * READS WRITE. Six of them seed or self-heal rows in tables the revision hashes:
+ *
+ * - `GET /portfolios` materializes "Main" (`portfolios`);
+ * - `GET /portfolios/:id/cash` materializes its main source
+ *   (`portfolio_cash_sources`);
+ * - `GET …/reports/tax-years` and `…/tax-years/:year` run the #635 self-heal,
+ *   posting each open year's pending tax correction (`portfolio_cash_movements`,
+ *   and through the auto-tagger `cash_movement_tags` / `cash_tags`);
+ * - `GET /expenses/categories` seeds the default categories
+ *   (`expense_categories`);
+ * - `GET /cash/tags` seeds the app-owned system tags (`cash_tags`).
+ *
+ * Four of those are self-covering — the read that seeds also returns what it
+ * seeded. The tax reconciler is not: it inserts CASH MOVEMENTS, while
+ * `getCashMovements` sits in the same `Promise.all` as the year list and runs
+ * strictly before the per-year reports. Those corrections are missing from the
+ * very `cash` array the document ships. A single-pass capture is therefore not
+ * merely stale, it is INCOMPLETE — and enable hard-deletes the rows it missed
+ * while disable restores from the document alone.
+ *
+ * So the mismatch is discarded whole and the document rebuilt; the second pass
+ * reads state its own first pass already settled, and its `cash` array contains
+ * the corrections the first pass provoked.
  *
  * Derived snapshots/import staging/fire ledgers are deliberately omitted: PD3
  * marks them purge-only and re-derives their successors after rehydration.
@@ -65,9 +127,18 @@ export interface NormalVaultCapture {
 export async function captureNormalVault(
   options: NormalVaultMigrationOptions,
 ): Promise<NormalVaultCapture> {
-  const revision = await getParanoidNormalRevision(options.signal);
-  const document = await buildNormalVaultDocument(options);
-  return { document, normalDataRevision: revision.revision };
+  let revision = (await getParanoidNormalRevision(options.signal)).revision;
+  for (let attempt = 1; attempt <= CAPTURE_STABILITY_ATTEMPTS; attempt += 1) {
+    const document = await buildNormalVaultDocument(options);
+    const settled = (await getParanoidNormalRevision(options.signal)).revision;
+    if (settled === revision) return { document, normalDataRevision: revision };
+    // Carry the closing token into the next attempt as its opening one: nothing
+    // runs between the two, so the window the next document is judged against is
+    // at worst slightly wider than that build. Wider can only refuse a capture
+    // that was fine — never accept one that was not.
+    revision = settled;
+  }
+  throw new VaultCaptureUnstableError(CAPTURE_STABILITY_ATTEMPTS);
 }
 
 /** The row-reading half of {@link captureNormalVault}; exported for tests. */
@@ -528,7 +599,7 @@ export async function buildNormalVaultDocument(
 
 /** The (order, period) pair the run ledger and the order watermark share. */
 function runKey(standingOrderId: string, periodKey: string): string {
-  return `${standingOrderId} ${periodKey}`;
+  return `${standingOrderId}\u0000${periodKey}`;
 }
 
 async function listAllTransactions(
