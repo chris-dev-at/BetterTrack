@@ -152,6 +152,14 @@ const EMPTY_DIGEST = '-';
  * per-row `md5(row::text)` covers EVERY column (no hand-listed column set can
  * silently miss one), and ordering the aggregate by that same hash makes the
  * result independent of the physical scan order.
+ *
+ * The one assumption, stated so a future change cannot break enable quietly:
+ * `row::text` renders through the session's `DateStyle` / `TimeZone` /
+ * `extra_float_digits`, so the capture's read and enable's in-transaction
+ * re-derivation must run against the SAME configuration. Today both go through
+ * `deps.db`, one pool, so they agree by construction. Serving the read from a
+ * replica or a differently-configured pool would make every enable disagree
+ * with itself — a permanent 409, never a purge, but a permanent one.
  */
 const rowsDigest = (table: PgTable) =>
   sql<string>`coalesce(md5(string_agg(md5(${table}::text), ',' order by md5(${table}::text))), ${EMPTY_DIGEST})`;

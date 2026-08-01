@@ -165,10 +165,15 @@ export function createAccountRouter(ctx: AppContext, limiters: RateLimiters): Ro
   // The other half of the capture: the CAS token the wizard reads BEFORE its
   // first row read and hands back to enable, which re-derives it under the
   // account lock. Opaque row hashes only — never portfolio content.
+  // It shares `enable`'s vault budget because it costs what a write costs: one
+  // aggregate per restorable table over the caller's whole dataset. The wizard
+  // spends exactly one per attempt, so the 60/min steady state is invisible to
+  // it and still bounds a loop that hammers the fan-out at nothing.
   router.get(
     '/paranoid/normal-revision',
     requireUser,
     requireOwnerBrowserSession,
+    limiters.vault,
     async (req, res) => {
       res.json(await ctx.paranoidTransitions.normalDataRevision(req.authUser!.id));
     },
