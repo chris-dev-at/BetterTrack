@@ -245,3 +245,21 @@ test('an empty amount never reaches the server', async () => {
   expect(await screen.findByRole('alert')).toHaveTextContent('Enter an amount greater than 0.');
   expect(withdrawCash).not.toHaveBeenCalled();
 });
+
+// The preview query keys on the parsed amount with no debounce and staleTime 0,
+// so every digit typed is a fresh key with no cached data and `isLoading` flips
+// true. A laid-out spinner row here sits directly above the insufficient-funds
+// alert and the Record button, so typing an amount walked the submit target of a
+// money dialog down and back under the pointer. Announce it, do not lay it out.
+test('typing an amount never displaces the Record button with a spinner row', async () => {
+  vi.mocked(previewCash).mockReturnValue(new Promise<never>(() => undefined));
+  const user = userEvent.setup();
+  renderDialog();
+
+  await user.type(await screen.findByLabelText('Amount'), '125');
+  await waitFor(() => expect(previewCash).toHaveBeenCalled());
+
+  expect(document.querySelector('.animate-spin')).toBeNull();
+  expect(document.querySelector('[role="status"].sr-only')).not.toBeNull();
+  expect(screen.getByRole('button', { name: 'Record' })).toBeInTheDocument();
+});

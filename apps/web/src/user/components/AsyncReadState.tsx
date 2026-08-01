@@ -99,6 +99,19 @@ export function AsyncReadState(props: AsyncReadStateProps) {
         </span>
       );
     }
+    // `compact` exists so an auxiliary read cannot erase or displace usable
+    // sibling content, and the error branch below honours it. Loading used to
+    // fall straight through to the full Spinner, so a compact read still
+    // inserted and removed a spinner row on every visit — growing and shrinking
+    // the layout it was supposed to leave alone. Mirror the error branch's
+    // inline shape instead of introducing a second one.
+    if (compact) {
+      return (
+        <span className="inline-flex items-center gap-1 text-xs bt-muted" role="status">
+          {loadingLabel ?? t('common.loading')}
+        </span>
+      );
+    }
     return <Spinner label={loadingLabel} />;
   }
   if (error == null) return null;

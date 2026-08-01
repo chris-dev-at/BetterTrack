@@ -32,6 +32,25 @@ describe('AsyncReadState', () => {
     expect(screen.getByRole('status')).toHaveTextContent('Checking categories…');
   });
 
+  test('a compact read stays inline while loading instead of inserting a spinner row', () => {
+    // `compact` promises not to erase or displace usable sibling content. The
+    // error branch honoured that while loading fell through to the full
+    // Spinner, so an auxiliary read still grew and shrank the layout around it
+    // on every visit.
+    const { container } = renderState({ loading: true, error: null, compact: true });
+
+    const status = screen.getByRole('status');
+    expect(status.tagName).toBe('SPAN');
+    expect(status).toHaveTextContent('Loading…');
+    expect(container.querySelector('.animate-spin')).toBeNull();
+  });
+
+  test('a non-compact read still gets the full spinner', () => {
+    const { container } = renderState({ loading: true, error: null });
+
+    expect(container.querySelector('.animate-spin')).not.toBeNull();
+  });
+
   test('offers retry for a transport or server outage', () => {
     const onRetry = vi.fn();
     renderState({ loading: false, error: new ApiError(503, 'UNAVAILABLE', 'down'), onRetry });

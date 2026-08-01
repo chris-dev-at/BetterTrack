@@ -590,8 +590,19 @@ export function RecordCashDialog({
           </div>
         ) : null}
 
+        {/*
+          The preview query keys on the parsed amount with no debounce and
+          staleTime 0, so every digit typed is a fresh key with no cached data
+          and `isLoading` flips true. A visible spinner row here sits directly
+          above the insufficient-funds alert and the Record button, so typing
+          "125" inserted and removed a ~28px row three times and walked the
+          submit target of a money dialog down and back under the pointer.
+          Announce the load instead of laying it out; the error branch below
+          still renders normally.
+        */}
         <AsyncReadState
           loading={previewQuery.isLoading}
+          loadingPresentation="sr-only"
           error={previewQuery.error}
           onRetry={() => void previewQuery.refetch()}
         />
