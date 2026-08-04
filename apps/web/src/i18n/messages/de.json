@@ -203,6 +203,7 @@
       "signedInAs": "Angemeldet als {{username}}",
       "continue": "Weiter",
       "useAnotherAccount": "Anderes Konto verwenden",
+      "paranoidScopesDropped": "Portfoliozugriff ist im paranoiden Modus nicht verfügbar. Falls angefordert, werden die Tresorsynchronisierung und andere verfügbare Berechtigungen weiterhin gewährt.",
       "wantsAccess": "möchte Zugriff auf dein BetterTrack-Konto. Wenn du zustimmst, kann die App:",
       "returnedTo": "Du wirst zurückgeleitet zu",
       "revokeHint": ". Du kannst diesen Zugriff jederzeit unter Einstellungen → API-Zugang widerrufen.",

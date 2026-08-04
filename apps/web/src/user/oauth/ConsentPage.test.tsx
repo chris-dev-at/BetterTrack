@@ -4,11 +4,13 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 
-import type {
-  MeResponse,
-  OAuthApproveResponse,
-  OAuthAuthorizationDetailsResponse,
-  OAuthDenyResponse,
+import {
+  API_KEY_SCOPES,
+  type ApiKeyScope,
+  type MeResponse,
+  type OAuthApproveResponse,
+  type OAuthAuthorizationDetailsResponse,
+  type OAuthDenyResponse,
 } from '@bettertrack/contracts';
 
 vi.mock('../../lib/oauthApi', () => ({
@@ -51,6 +53,7 @@ import {
 import * as userApi from '../../lib/userApi';
 import { AuthProvider } from '../AuthContext';
 import { UserApp } from '../UserApp';
+import { ResolvedPrivacyModeProvider } from '../vault/usePrivacyMode';
 import { ConsentPage } from './ConsentPage';
 
 // A realistic authorization-code + PKCE request as it arrives on the URL.
@@ -139,19 +142,27 @@ afterEach(() => {
  * by V4-P2b for the "Signed in as X" line and the "Use another account" logout)
  * behaves like it does in the app. The bootstrap `/auth/me` is mocked above.
  */
-function renderConsent() {
+function renderConsent({
+  path = AUTHORIZE_PATH,
+  privacyMode = 'normal',
+}: {
+  path?: string;
+  privacyMode?: 'normal' | 'paranoid';
+} = {}) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
-      <MemoryRouter initialEntries={[AUTHORIZE_PATH]}>
-        <AuthProvider>
-          <Routes>
-            <Route path="/oauth/authorize" element={<ConsentPage />} />
-            <Route path="/" element={<div>Home</div>} />
-            <Route path="/login" element={<div>Login page stub</div>} />
-          </Routes>
-        </AuthProvider>
-      </MemoryRouter>
+      <ResolvedPrivacyModeProvider mode={privacyMode} accountId={meUser.id}>
+        <MemoryRouter initialEntries={[path]}>
+          <AuthProvider>
+            <Routes>
+              <Route path="/oauth/authorize" element={<ConsentPage />} />
+              <Route path="/" element={<div>Home</div>} />
+              <Route path="/login" element={<div>Login page stub</div>} />
+            </Routes>
+          </AuthProvider>
+        </MemoryRouter>
+      </ResolvedPrivacyModeProvider>
     </QueryClientProvider>,
   );
 }
@@ -246,7 +257,84 @@ test('first-party client interposes an account chooser — never auto-approves b
 
   await user.click(screen.getByRole('button', { name: 'Continue' }));
   await waitFor(() => expect(approveAuthorization).toHaveBeenCalledTimes(1));
+  expect(approveAuthorization).toHaveBeenCalledWith(
+    expect.objectContaining({ scope: 'portfolio:read market:read' }),
+  );
   await waitFor(() => expect(window.location.href).toBe(APPROVED.redirectTo));
+});
+
+test('paranoid first-party authorization drops portfolio scopes and grants the mobile ceiling remainder', async () => {
+  const mobileScopes = [...API_KEY_SCOPES];
+  const allowedScopes = mobileScopes.filter(
+    (scope): scope is ApiKeyScope => scope !== 'portfolio:read' && scope !== 'portfolio:write',
+  );
+  const mobileQuery = new URLSearchParams(AUTHORIZE_QUERY);
+  mobileQuery.set('scope', mobileScopes.join(' '));
+  vi.mocked(getAuthorizationDetails).mockResolvedValue({
+    ...DETAILS,
+    client: { ...DETAILS.client, name: 'BetterTrack Mobile', firstParty: true },
+    scopes: mobileScopes.map((scope) => ({ scope, label: scope })),
+  });
+  vi.mocked(approveAuthorization).mockResolvedValue(APPROVED);
+  const user = userEvent.setup();
+
+  renderConsent({
+    path: `/oauth/authorize?${mobileQuery.toString()}`,
+    privacyMode: 'paranoid',
+  });
+
+  expect(await screen.findByText('Official BetterTrack app')).toBeInTheDocument();
+  expect(
+    screen.getByText(
+      'Portfolio access is unavailable while Paranoid mode is on. If requested, vault sync and other available permissions will still be granted.',
+    ),
+  ).toBeInTheDocument();
+
+  await user.click(screen.getByRole('button', { name: 'Continue' }));
+
+  await waitFor(() => expect(approveAuthorization).toHaveBeenCalledTimes(1));
+  expect(approveAuthorization).toHaveBeenCalledWith(
+    expect.objectContaining({
+      scope: allowedScopes.join(' '),
+      state: 'opaque-state-xyz',
+      code_challenge: 'a-pkce-code-challenge',
+      code_challenge_method: 'S256',
+    }),
+  );
+  const approvedParams = vi.mocked(approveAuthorization).mock.calls[0]?.[0];
+  expect(approvedParams?.scope.split(' ')).toContain('vault:sync');
+  expect(approvedParams?.scope.split(' ')).not.toContain('portfolio:read');
+  expect(approvedParams?.scope.split(' ')).not.toContain('portfolio:write');
+  await waitFor(() => expect(window.location.href).toBe(APPROVED.redirectTo));
+});
+
+test('paranoid first-party authorization still refuses when no grantable scopes remain', async () => {
+  const portfolioOnlyQuery = new URLSearchParams(AUTHORIZE_QUERY);
+  portfolioOnlyQuery.set('scope', 'portfolio:read');
+  vi.mocked(getAuthorizationDetails).mockResolvedValue({
+    ...DETAILS,
+    client: { ...DETAILS.client, name: 'BetterTrack Mobile', firstParty: true },
+    scopes: DETAILS.scopes.filter(({ scope }) => scope === 'portfolio:read'),
+  });
+
+  renderConsent({
+    path: `/oauth/authorize?${portfolioOnlyQuery.toString()}`,
+    privacyMode: 'paranoid',
+  });
+
+  expect(await screen.findByText(/portfolio access.*unavailable/i)).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Continue' })).not.toBeInTheDocument();
+  expect(approveAuthorization).not.toHaveBeenCalled();
+});
+
+test('paranoid third-party authorization keeps the existing refusal policy', async () => {
+  vi.mocked(getAuthorizationDetails).mockResolvedValue(DETAILS);
+
+  renderConsent({ privacyMode: 'paranoid' });
+
+  expect(await screen.findByText(/portfolio access.*unavailable/i)).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Approve' })).not.toBeInTheDocument();
+  expect(approveAuthorization).not.toHaveBeenCalled();
 });
 
 test('Use another account signs the current session out and lands on the login screen carrying the untouched authorize URL', async () => {
