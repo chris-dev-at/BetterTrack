@@ -38,6 +38,7 @@ interface ScopeModule {
     | 'notifications'
     | 'chat'
     | 'alerts'
+    | 'cash'
     | 'accountSecurity';
   /** The `:read` scope for this module, or null when no read-half exists. */
   read: ApiKeyScope | null;
@@ -64,6 +65,7 @@ const SCOPE_MODULES: readonly ScopeModule[] = [
   },
   { key: 'chat', read: 'chat:read', write: 'chat:write', combined: null },
   { key: 'alerts', read: 'alerts:read', write: 'alerts:write', combined: null },
+  { key: 'cash', read: 'cash:read', write: 'cash:write', combined: null },
   { key: 'accountSecurity', read: null, write: null, combined: 'account:security' },
 ];
 

@@ -49,9 +49,9 @@ import type { AppContext } from '../context';
  * `tags`. Only the classification is a separate resource, because tags, rules and
  * budgets outlive any one movement.
  *
- * Session-only, like the expense area it replaces: `requireUser` and no bearer
- * scope, so an API key or OAuth token cannot reach it. A personal-API surface for
- * cash flow can be added deliberately later.
+ * `requireUser` preserves the existing cookie-session path. Bearer admission is
+ * centralized in `bearerAuth.ts`: cash:read covers reads (including the
+ * read-only POST preview), while cash:write covers mutations.
  */
 export function createCashRouter(ctx: AppContext): Router {
   const router = Router();

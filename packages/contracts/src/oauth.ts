@@ -56,6 +56,9 @@ export const OAUTH_SCOPE_LABELS: Record<ApiKeyScope, string> = {
   // #405 — plain-language consent copy for the price-alerts scopes.
   'alerts:read': 'View your price alerts',
   'alerts:write': 'Create, edit, re-arm and delete your price alerts',
+  // #1041 — plain-language consent copy for the cash-classification scopes.
+  'cash:read': 'View your cash tags, budgets, rules, summaries and trends',
+  'cash:write': 'Create and edit your cash tags, budgets and rules',
 };
 
 // ── Redirect URI validation ─────────────────────────────────────────────────

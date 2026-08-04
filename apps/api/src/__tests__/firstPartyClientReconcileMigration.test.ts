@@ -25,6 +25,8 @@ import { FIRST_PARTY_CLIENTS, seedFirstPartyClients } from '../services/oauth/fi
  *   - 0030 (`0030_first_party_client_alerts_scopes`) unions the two #405 alerts
  *     scopes on top, because PR #423 added them to the code ceiling but the prod
  *     migrate-only updater would otherwise never carry them (seed re-copy pending).
+ *   - 0079 (`0079_first_party_client_cash_scopes`) does the same for #1041's
+ *     cash:read / cash:write pair.
  *
  * The shared harness only ever replays migrations onto an empty DB (and truncates),
  * so — exactly like the 0019 / 0024 data-migration suites — this boots a throwaway
@@ -35,6 +37,7 @@ import { FIRST_PARTY_CLIENTS, seedFirstPartyClients } from '../services/oauth/fi
 const drizzleDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '../../drizzle');
 const TARGET_0029 = '0029_first_party_client_reconcile';
 const TARGET_0030 = '0030_first_party_client_alerts_scopes';
+const TARGET_0079 = '0079_first_party_client_cash_scopes';
 const OAUTH_LOGO_CACHE_MIGRATION = '0074_oauth_client_logo_cache';
 
 const MOBILE = FIRST_PARTY_CLIENTS.find((c) => c.clientId === 'btc_IbT1mzw_7kBiPHPkGfaE0Q')!;
@@ -44,13 +47,11 @@ const CANONICAL_URI = MOBILE.redirectUris[0]!;
 
 /**
  * The exact scope payload migration 0029 hard-codes — the canonical ceiling as of
- * #398, frozen in SQL. Scopes appended to the definition AFTER 0029 (alerts:read /
- * alerts:write, #405) are deliberately NOT carried by this historical migration:
- * migration 0030 carries them through the same migrate-only deploy channel (see
- * {@link ALERTS_SCOPES}). So 0029 converges a row to THIS set and 0030 does the last
- * mile — the two together reach the full live {@link CEILING} without ever fighting,
- * and the idempotent boot-seed is then a no-op. Kept as a literal (not derived from
- * the live definition) precisely so it stays pinned to what 0029 wrote.
+ * #398, frozen in SQL. Scopes appended to the definition AFTER 0029 are
+ * deliberately NOT carried by this historical migration: 0030 adds alerts and
+ * 0079 adds cash through the same migrate-only deploy channel. Kept as a literal
+ * (not derived from the live definition) precisely so it stays pinned to what
+ * 0029 wrote.
  */
 const RECONCILE_SCOPES = [
   'portfolio:read',
@@ -70,10 +71,13 @@ const RECONCILE_SCOPES = [
 /**
  * The exact scopes migration 0030 unions on top of 0029's payload — the two #405
  * price-alerts scopes, frozen in SQL. Pinned as a literal (not derived) so the test
- * asserts what 0030 actually writes; the {@link CEILING} canary below proves the
- * migration chain (0029 ∪ 0030) still equals the full live definition.
+ * asserts what 0030 actually writes.
  */
 const ALERTS_SCOPES = ['alerts:read', 'alerts:write'];
+const ALERTS_ERA_CEILING = [...RECONCILE_SCOPES, ...ALERTS_SCOPES];
+
+/** The exact pair 0079 appends for #1041, pinned to the migration payload. */
+const CASH_SCOPES = ['cash:read', 'cash:write'];
 
 interface JournalEntry {
   idx: number;
@@ -238,7 +242,7 @@ describe(`migration ${TARGET_0030} — first-party client alerts scopes (union-o
     client = await bootUpTo(TARGET_0030);
   });
 
-  it('unions exactly the two #405 alerts scopes onto the 0029 row, reaching the canonical ceiling', async () => {
+  it('unions exactly the two #405 alerts scopes onto the 0029 row', async () => {
     const before = (await readClient(client, CLIENT_ID))!;
     expect(before.scopes).toEqual(RECONCILE_SCOPES); // 0029 left it at the frozen 12
 
@@ -246,9 +250,7 @@ describe(`migration ${TARGET_0030} — first-party client alerts scopes (union-o
 
     const row = (await readClient(client, CLIENT_ID))!;
     // Exactly the two alerts scopes were appended, in canonical order…
-    expect(row.scopes).toEqual([...RECONCILE_SCOPES, ...ALERTS_SCOPES]);
-    // …which is precisely the full live FIRST_PARTY_CLIENTS ceiling.
-    expect(row.scopes).toEqual(CEILING);
+    expect(row.scopes).toEqual(ALERTS_ERA_CEILING);
     expect(row.scopes.length).toBe(RECONCILE_SCOPES.length + ALERTS_SCOPES.length);
     // Nothing else widened: redirect URIs and identity/immutable fields untouched.
     expect(row.redirect_uris).toEqual([CANONICAL_URI]);
@@ -287,9 +289,9 @@ describe(`migration ${TARGET_0030} — first-party client alerts scopes (union-o
   });
 
   it('is a true no-op when the row already holds both alerts scopes (idempotent re-run)', async () => {
-    await applyMigration(client, TARGET_0030); // adds alerts → full ceiling
+    await applyMigration(client, TARGET_0030); // adds alerts → frozen 0030 ceiling
     const first = (await readClient(client, CLIENT_ID))!;
-    expect(first.scopes).toEqual(CEILING);
+    expect(first.scopes).toEqual(ALERTS_ERA_CEILING);
 
     await applyMigration(client, TARGET_0030); // must change nothing
     const second = (await readClient(client, CLIENT_ID))!;
@@ -307,34 +309,79 @@ describe(`migration ${TARGET_0030} — first-party client alerts scopes (union-o
     expect(count.rows[0]!.n).toBe(1);
   });
 
-  it('migrate-only AND migrate+seed both converge to the canonical ceiling; the seed is a no-op after 0030', async () => {
-    // The migration chain now carries alerts itself: 0029 (frozen 12) ∪ 0030 (the
-    // two alerts scopes) reaches the full live ceiling with NO seed. This is the
-    // prod reality — the live updater runs migrate.js only (seed re-copy pending),
-    // so 0030 is what unblocks mobile alerts OAuth there. Canary: any scope appended
-    // to the definition after 0030 must extend the migration chain, not lean on seed.
-    expect(CEILING).toEqual([...RECONCILE_SCOPES, ...ALERTS_SCOPES]);
+  it('pins the alerts-era ceiling while the current seed widens it to the live definition', async () => {
+    expect(ALERTS_ERA_CEILING).toEqual([...RECONCILE_SCOPES, ...ALERTS_SCOPES]);
 
     await applyMigration(client, TARGET_0030);
 
-    // migrate-only install → already at the canonical ceiling.
+    // At this historical point migrate-only reached the complete alerts-era ceiling.
     const migrateOnly = (await readClient(client, CLIENT_ID))!;
-    expect(migrateOnly.scopes).toEqual(CEILING);
+    expect(migrateOnly.scopes).toEqual(ALERTS_ERA_CEILING);
 
-    // migrate+seed install → the seed finds nothing to do (a true no-op) and the
-    // row stays at the exact same ceiling. Bring this deliberately historical
+    // The current seed appends later scopes. Bring this deliberately historical
     // fixture up to the current oauth_clients shape before exercising the
     // current repository; 0074 only adds nullable logo-cache columns and cannot
     // alter the 0030 scope result under test.
     await applyMigration(client, OAUTH_LOGO_CACHE_MIGRATION);
     const repo = createOAuthRepository(drizzlePglite(client, { schema }) as unknown as Database);
     const seeded = (await seedFirstPartyClients(repo)).find((r) => r.clientId === CLIENT_ID)!;
-    expect(seeded.action).toBe('unchanged');
+    expect(seeded.action).toBe('converged');
     const afterSeed = (await readClient(client, CLIENT_ID))!;
     expect(afterSeed.scopes).toEqual(CEILING);
 
     // A re-run stays a no-op — steady state on every subsequent deploy.
     const seededAgain = (await seedFirstPartyClients(repo)).find((r) => r.clientId === CLIENT_ID)!;
     expect(seededAgain.action).toBe('unchanged');
+  });
+});
+
+describe(`migration ${TARGET_0079} — first-party client cash scopes (union-only)`, () => {
+  let client: PGlite;
+
+  beforeEach(async () => {
+    // Replay the complete chain through 0078. The first-party client therefore
+    // starts at the frozen alerts-era ceiling immediately before 0079 runs.
+    client = await bootUpTo(TARGET_0079);
+  });
+
+  it('reaches the live ceiling additively, idempotently and without narrowing extras', async () => {
+    const before = (await readClient(client, CLIENT_ID))!;
+    expect(before.scopes).toEqual(ALERTS_ERA_CEILING);
+
+    await applyMigration(client, TARGET_0079);
+
+    const row = (await readClient(client, CLIENT_ID))!;
+    expect(row.scopes).toEqual([...ALERTS_ERA_CEILING, ...CASH_SCOPES]);
+    expect(row.scopes).toEqual(CEILING);
+    expect(row.redirect_uris).toEqual([CANONICAL_URI]);
+    expect(row.id).toBe(before.id);
+    expect(row.created_at).toEqual(before.created_at);
+
+    // Re-running the migration is a true no-op, and migrate-only has already
+    // converged far enough that the code seed also has nothing to do.
+    await applyMigration(client, TARGET_0079);
+    expect(await readClient(client, CLIENT_ID)).toEqual(row);
+    const repo = createOAuthRepository(drizzlePglite(client, { schema }) as unknown as Database);
+    const seeded = (await seedFirstPartyClients(repo)).find((r) => r.clientId === CLIENT_ID)!;
+    expect(seeded.action).toBe('unchanged');
+
+    // A partially granted, admin-customized row keeps its order and extra; only
+    // the missing half of the pair is appended.
+    await client.exec(`
+      UPDATE "oauth_clients"
+      SET "scopes" = ARRAY['portfolio:read','cash:read','experimental:beta']::text[]
+      WHERE "client_id" = '${CLIENT_ID}';
+    `);
+
+    await applyMigration(client, TARGET_0079);
+
+    const partialRow = (await readClient(client, CLIENT_ID))!;
+    expect(partialRow.scopes).toEqual([
+      'portfolio:read',
+      'cash:read',
+      'experimental:beta',
+      'cash:write',
+    ]);
+    expect(new Set(partialRow.scopes).size).toBe(partialRow.scopes.length);
   });
 });

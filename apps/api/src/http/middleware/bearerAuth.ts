@@ -135,6 +135,10 @@ const MODULE_POLICIES: readonly { prefix: string; read: string; write: string }[
   // mobile app could never reach alerts. Cookie sessions bypass this map, which
   // is why web alerts worked and only bearer clients hit it.
   { prefix: '/alerts', read: 'alerts:read', write: 'alerts:write' },
+  // #1041: cash classification (tags, budgets, rules, summaries and trends)
+  // is a distinct mobile module. Movement/source ledger CRUD remains under the
+  // existing /portfolios policy; this row admits only the /cash/* surface.
+  { prefix: '/cash', read: 'cash:read', write: 'cash:write' },
   { prefix: '/settings', read: 'social:read', write: 'social:write' },
 ];
 
@@ -233,6 +237,13 @@ function resolvePolicy(requestPath: string): PathPolicy {
   // personal API key or delegated OAuth bearer never gets to stage, retire,
   // recover, or purge opaque vault bytes — even with account:security.
   if (path === '/vault' || path.startsWith('/vault/')) return { kind: 'session-only' };
+  // Rule preview is intentionally a read despite using POST: it evaluates a
+  // caller-supplied note without writing anything. Resolve it before the /cash
+  // module row so cash:read can use the preview while every other POST/PATCH/
+  // PUT/DELETE under /cash continues to require cash:write.
+  if (path === '/cash/rules/preview' || path === '/cash/rules/preview/') {
+    return { kind: 'scope', read: 'cash:read', write: 'cash:read' };
+  }
   // Notification preferences live under /settings but belong to the notifications
   // scope (#361), checked before the coarse `/settings` → social catch-all.
   if (path === '/settings/notifications' || path.startsWith('/settings/notifications/')) {

@@ -140,6 +140,23 @@ describe('OpenAPI document', () => {
     const notifications = (paths['/notifications'] as JsonObject).get as JsonObject;
     expect(notifications.security).toEqual([{ sessionCookie: [] }, { apiKeyBearer: [] }]);
 
+    // #1041: every documented cash-classification operation derives bearer
+    // admission from the /cash module policy. No endpoint-specific OpenAPI
+    // override is allowed to drift from the middleware table.
+    const cashPaths = Object.entries(paths).filter(([path]) => path.startsWith('/cash/'));
+    const cashMethods = ['get', 'post', 'put', 'patch', 'delete'];
+    expect(cashPaths.length).toBeGreaterThan(0);
+    for (const [path, itemRaw] of cashPaths) {
+      const item = itemRaw as JsonObject;
+      for (const method of cashMethods.filter((candidate) => item[candidate])) {
+        const operation = item[method] as JsonObject;
+        expect(operation.security, `security for ${method.toUpperCase()} ${path}`).toEqual([
+          { sessionCookie: [] },
+          { apiKeyBearer: [] },
+        ]);
+      }
+    }
+
     // Paranoid transitions (§13.5 V5-P13) are session-only in the middleware, so
     // the derived spec must NOT advertise a bearer for either direction — a
     // client-generated SDK that offered it would only ever get 403s, and the
