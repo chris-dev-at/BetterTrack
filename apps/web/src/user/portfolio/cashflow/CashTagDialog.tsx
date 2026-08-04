@@ -69,6 +69,7 @@ export function CashTagDialog({ existing, onClose }: CashTagDialogProps) {
   return (
     <Dialog
       onClose={onClose}
+      phoneSheet
       title={isEdit ? t('cashflow.tags.dialog.editTitle') : t('cashflow.tags.dialog.newTitle')}
     >
       <form className="flex flex-col gap-4" onSubmit={handleSubmit}>

@@ -45,6 +45,7 @@ export function TransferDialog({
       <Dialog
         title={t('portfolio.cashSources.transfer.title')}
         onClose={onClose}
+        phoneSheet
         widthClassName="max-w-md"
       >
         <p className="text-sm bt-muted">{t('portfolio.cashSources.transfer.needTwoSources')}</p>
@@ -94,10 +95,11 @@ export function TransferDialog({
     <Dialog
       title={t('portfolio.cashSources.transfer.title')}
       onClose={onClose}
+      phoneSheet
       widthClassName="max-w-md"
     >
       <form onSubmit={handleSubmit} className="flex flex-col gap-4">
-        <div className="grid grid-cols-2 gap-3">
+        <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           <div className="bt-field">
             <label>{t('portfolio.cashSources.transfer.fromLabel')}</label>
             <select

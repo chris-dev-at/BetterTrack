@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, render, screen, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
@@ -11,6 +12,7 @@ import type {
 
 vi.mock('../../../lib/portfolioApi');
 vi.mock('../../../lib/cashApi', () => ({
+  CASH_TAGS_QUERY_KEY: ['cash', 'tags'],
   cashSummaryQueryKey: (portfolioId: string, month?: string) => [
     'cash',
     'summary',
@@ -25,13 +27,22 @@ vi.mock('../../../lib/cashApi', () => ({
   ],
   getCashSummary: vi.fn(),
   getCashTrends: vi.fn(),
+  listCashTags: vi.fn(),
+  previewCashRules: vi.fn(),
+  setCashMovementTags: vi.fn(),
 }));
 
 import { getCashMovements, listCashSources, listPortfolios } from '../../../lib/portfolioApi';
-import { getCashSummary, getCashTrends } from '../../../lib/cashApi';
+import {
+  getCashSummary,
+  getCashTrends,
+  listCashTags,
+  previewCashRules,
+} from '../../../lib/cashApi';
 import { ApiError } from '../../../lib/apiClient';
 
 import { CashOverviewPage } from './CashOverviewPage';
+import { setViewportWidth } from '../../../test/viewport';
 
 const PORTFOLIOS: PortfolioListResponse = {
   portfolios: [
@@ -78,6 +89,8 @@ beforeEach(() => {
   vi.mocked(listPortfolios).mockResolvedValue(PORTFOLIOS);
   vi.mocked(getCashTrends).mockResolvedValue(EMPTY_TRENDS);
   vi.mocked(getCashSummary).mockResolvedValue(summary());
+  vi.mocked(listCashTags).mockResolvedValue({ tags: [] });
+  vi.mocked(previewCashRules).mockResolvedValue({ tagIds: [] });
   // The overview now also opens on the BALANCE, so it reads the portfolio's
   // cash sources and its ledger. Both are auto-mocked by `vi.mock` above; give
   // them empty-but-valid shapes so a case that does not care about them still
@@ -91,6 +104,38 @@ beforeEach(() => {
 });
 
 describe('CashOverviewPage', () => {
+  test('390px keeps account actions touchable and opens the cash sheet', async () => {
+    setViewportWidth(390);
+    vi.mocked(listCashSources).mockResolvedValue({
+      sources: [
+        {
+          id: 'source-savings',
+          name: 'Savings',
+          type: 'bank',
+          isMain: true,
+          archivedAt: null,
+          createdAt: '2026-01-01T00:00:00.000Z',
+          balanceEur: 500,
+        },
+      ],
+    });
+    const user = userEvent.setup();
+    renderPage();
+
+    const heading = await screen.findByRole('heading', { name: 'Cash' });
+    expect(heading.closest('.bt-money-surface')).not.toBeNull();
+    const deposit = screen.getByRole('button', { name: 'Add to Savings' });
+    expect(deposit).toHaveClass('bt-acctcard__action');
+
+    await user.click(deposit);
+    const dialog = screen.getByRole('dialog', { name: 'Record transaction' });
+    expect(dialog).toHaveClass('bt-dialog__panel--phone-sheet');
+    expect(within(dialog).getByRole('button', { name: 'Money in' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+  });
+
   test('renders balance-ledger read failures without hiding the monthly summary', async () => {
     vi.mocked(getCashSummary).mockResolvedValue(summary({ net: 3_200 }));
     vi.mocked(listCashSources).mockRejectedValue(new Error('sources unavailable'));

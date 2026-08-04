@@ -28,6 +28,7 @@ import {
   updatePortfolio,
 } from '../../lib/portfolioApi';
 import { PortfolioSettingsPage } from './PortfolioSettingsPage';
+import { setViewportWidth } from '../../test/viewport';
 import { ACTIVE_PORTFOLIO_PARAM } from './PortfolioSwitcher';
 import { getPortfolioKind, resetPortfolioKindCache, setPortfolioKind } from './portfolioKinds';
 
@@ -140,6 +141,19 @@ beforeEach(() => {
 });
 
 describe('PortfolioSettingsPage — general', () => {
+  test('390px contains settings and opens destructive confirmation as a sheet', async () => {
+    setViewportWidth(390);
+    mockLists([MAIN, TRADING]);
+    renderSettings('p2');
+
+    const name = await screen.findByLabelText('Name');
+    expect(name.closest('.bt-money-surface')).not.toBeNull();
+    await userEvent.click(screen.getByRole('button', { name: 'Delete this portfolio' }));
+    expect(screen.getByRole('dialog', { name: 'Delete portfolio' })).toHaveClass(
+      'bt-dialog__panel--phone-sheet',
+    );
+  });
+
   test('resolves the portfolio from the routing param and seeds the name field', async () => {
     mockLists([MAIN, TRADING]);
     renderSettings('p2');

@@ -13,6 +13,7 @@ import { ApiError } from '../../../lib/apiClient';
 import { createPortfolio, updatePortfolio } from '../../../lib/portfolioApi';
 import { getPortfolioKind, resetPortfolioKindCache } from '../portfolioKinds';
 import { PortfolioWizard } from './PortfolioWizard';
+import { setViewportWidth } from '../../../test/viewport';
 
 /**
  * ONE SCREEN (owner, 2026-07-31). This file used to walk four steps; the wizard
@@ -79,6 +80,20 @@ beforeEach(() => {
 });
 
 describe('PortfolioWizard — one screen', () => {
+  test('390px stays a full-height one-screen sheet through portfolio creation', async () => {
+    setViewportWidth(390);
+    vi.mocked(createPortfolio).mockResolvedValue(CREATED);
+    const { onCreated } = renderWizard();
+
+    const dialog = screen.getByRole('dialog');
+    expect(dialog).toHaveClass('bt-dialog__panel--phone-sheet');
+    expect(dialog.querySelector('.bt-money-surface')).not.toBeNull();
+
+    await userEvent.type(screen.getByLabelText('Portfolio name'), 'Retirement');
+    await userEvent.click(screen.getByRole('button', { name: 'Create portfolio' }));
+    await waitFor(() => expect(onCreated).toHaveBeenCalledWith(CREATED));
+  });
+
   test('asks name, icon and book together, with no stepper to walk', async () => {
     renderWizard();
 

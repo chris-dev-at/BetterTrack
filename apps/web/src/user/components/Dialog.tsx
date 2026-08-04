@@ -25,6 +25,7 @@ export function Dialog({
   children,
   footer,
   widthClassName = 'max-w-lg',
+  phoneSheet = false,
   dismissable = true,
   restoreFocusRef,
 }: {
@@ -41,6 +42,8 @@ export function Dialog({
   footer?: ReactNode;
   /** Tailwind max-width for the panel. Defaults to `max-w-lg`. */
   widthClassName?: string;
+  /** Fill the phone viewport while preserving the centred desktop dialog. */
+  phoneSheet?: boolean;
   /** Disable every incidental close affordance until a one-time value is acknowledged. */
   dismissable?: boolean;
   /**
@@ -118,7 +121,10 @@ export function Dialog({
     <div className="bt-app bt-dialog-root">
       <div className="bt-scrim" aria-hidden="true" />
       <div
-        className="fixed inset-0 z-[71] flex items-start justify-center overflow-y-auto p-4 sm:items-center"
+        className={cx(
+          'bt-dialog-layer fixed inset-0 z-[71] flex items-start justify-center overflow-y-auto p-4 sm:items-center',
+          phoneSheet && 'bt-dialog-layer--phone-sheet',
+        )}
         onMouseDown={() => {
           if (dismissable) onClose();
         }}
@@ -131,6 +137,7 @@ export function Dialog({
           tabIndex={-1}
           className={cx(
             'bt-dialog__panel w-full',
+            phoneSheet && 'bt-dialog__panel--phone-sheet',
             footer === undefined && 'mt-12 sm:mt-0',
             widthClassName,
           )}
@@ -141,7 +148,7 @@ export function Dialog({
           {head}
           <div className={cx('bt-dialog__body', footer !== undefined && 'flex-1')}>{children}</div>
           {footer !== undefined ? (
-            <div className="bt-t-rule shrink-0 px-5 py-3.5">{footer}</div>
+            <div className="bt-dialog__pinned-foot bt-t-rule shrink-0 px-5 py-3.5">{footer}</div>
           ) : null}
         </div>
       </div>

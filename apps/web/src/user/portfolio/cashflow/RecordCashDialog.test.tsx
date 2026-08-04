@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, expect, test, vi } from 'vitest';
 
@@ -23,6 +23,7 @@ import {
 } from '../../../lib/portfolioApi';
 
 import { RecordCashDialog } from './RecordCashDialog';
+import { setViewportWidth } from '../../../test/viewport';
 
 /**
  * The fast entry path. What matters here is not that a form submits — it is the
@@ -76,6 +77,27 @@ beforeEach(() => {
     sufficient: true,
     shortfallEur: 0,
   } as unknown as Awaited<ReturnType<typeof previewCash>>);
+});
+
+test('390px uses a full-height sheet with every cash-entry action reachable', async () => {
+  setViewportWidth(390);
+  vi.mocked(withdrawCash).mockResolvedValue({
+    movement: { id: 'm-phone', tags: [] },
+  } as unknown as Awaited<ReturnType<typeof withdrawCash>>);
+  const user = userEvent.setup();
+  renderDialog();
+
+  const dialog = screen.getByRole('dialog', { name: 'Record transaction' });
+  expect(dialog).toHaveClass('bt-dialog__panel--phone-sheet');
+  expect(document.querySelector('.bt-dialog-layer--phone-sheet')).not.toBeNull();
+  await user.type(within(dialog).getByLabelText('Amount'), '12');
+
+  await user.click(within(dialog).getByRole('button', { name: 'Details' }));
+  await user.click(await within(dialog).findByRole('button', { name: 'Groceries' }));
+  await user.click(within(dialog).getByRole('button', { name: 'Record' }));
+
+  await waitFor(() => expect(withdrawCash).toHaveBeenCalledOnce());
+  expect(setCashMovementTags).toHaveBeenCalledWith('m-phone', [GROCERIES.id]);
 });
 
 test('renders a source read failure without hiding the cash-entry form', async () => {

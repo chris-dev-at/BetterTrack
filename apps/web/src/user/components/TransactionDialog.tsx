@@ -1017,6 +1017,7 @@ export function TransactionDialog(props: TransactionDialogProps) {
       description={props.portfolioName}
       onClose={onClose}
       footer={footer}
+      phoneSheet
       widthClassName="max-w-lg"
     >
       <form onSubmit={handleSubmit} id={headingId} className="flex flex-col gap-5">
@@ -1774,7 +1775,7 @@ function RowFields({
       </div>
 
       {/* Quantity | Price row. */}
-      <div className="grid grid-cols-2 gap-3">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
         <div className="group flex flex-col gap-1.5">
           <span className="flex min-h-5 items-center justify-between gap-2">
             <label htmlFor={quantityInputId}>
