@@ -263,10 +263,27 @@ test('first-party client interposes an account chooser — never auto-approves b
   await waitFor(() => expect(window.location.href).toBe(APPROVED.redirectTo));
 });
 
-test('paranoid first-party authorization drops portfolio scopes and grants the mobile ceiling remainder', async () => {
+// The bearer scopes paranoid mode kills (#1063), pinned literally rather than
+// derived from `isParanoidBlockedScope` so this stays a real assertion about the
+// grant and not a restatement of the implementation. Mirrors the API's
+// authoritative `portfolioApiScope` kill-registry entry
+// (`apps/api/src/services/account/paranoidEnforcement.ts`) intersected with
+// `API_KEY_SCOPES` — `tax:*`/`import:*` live in the registry but are not
+// grantable scopes. `vault:sync` is deliberately absent: opaque ciphertext sync
+// is the one capability that survives paranoid mode (#1043).
+const PARANOID_UNAVAILABLE_SCOPES: readonly ApiKeyScope[] = [
+  'portfolio:read',
+  'portfolio:write',
+  'cash:read',
+  'cash:write',
+  'mirrorchain:read',
+  'mirrorchain:write',
+];
+
+test('paranoid first-party authorization drops the unavailable scopes and grants the mobile ceiling remainder', async () => {
   const mobileScopes = [...API_KEY_SCOPES];
   const allowedScopes = mobileScopes.filter(
-    (scope): scope is ApiKeyScope => scope !== 'portfolio:read' && scope !== 'portfolio:write',
+    (scope) => !PARANOID_UNAVAILABLE_SCOPES.includes(scope),
   );
   const mobileQuery = new URLSearchParams(AUTHORIZE_QUERY);
   mobileQuery.set('scope', mobileScopes.join(' '));
@@ -302,9 +319,14 @@ test('paranoid first-party authorization drops portfolio scopes and grants the m
     }),
   );
   const approvedParams = vi.mocked(approveAuthorization).mock.calls[0]?.[0];
-  expect(approvedParams?.scope.split(' ')).toContain('vault:sync');
-  expect(approvedParams?.scope.split(' ')).not.toContain('portfolio:read');
-  expect(approvedParams?.scope.split(' ')).not.toContain('portfolio:write');
+  const grantedScopes = approvedParams?.scope.split(' ') ?? [];
+  // The ciphertext-sync exception survives; every killed scope is gone. Asserted
+  // per-scope so a registry addition that the consent screen forgets to drop
+  // fails here by name rather than as an opaque joined-string diff.
+  expect(grantedScopes).toContain('vault:sync');
+  for (const scope of PARANOID_UNAVAILABLE_SCOPES) {
+    expect(grantedScopes, scope).not.toContain(scope);
+  }
   await waitFor(() => expect(window.location.href).toBe(APPROVED.redirectTo));
 });
 
