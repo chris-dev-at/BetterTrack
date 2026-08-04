@@ -288,11 +288,14 @@ describe('reducePosition', () => {
       }
     });
 
-    it('rejects an oversell of one stored quantity unit (1e-8) — just past the tolerance', () => {
+    it('rejects an oversell of one stored quantity unit past the storage-drift envelope', () => {
+      // Two contributing stored rows allow two quanta of numeric(20,8)
+      // rounding drift (#917/#1094); one quantum beyond that cannot be a
+      // persistence artifact and is a genuine oversell.
       expect(() =>
         reducePosition([
           tx({ side: 'buy', quantity: 5, price: 10, executedAt: '2026-01-01T00:00:00Z' }),
-          tx({ side: 'sell', quantity: 5 + 1e-8, price: 10, executedAt: '2026-01-02T00:00:00Z' }),
+          tx({ side: 'sell', quantity: 5 + 3e-8, price: 10, executedAt: '2026-01-02T00:00:00Z' }),
         ]),
       ).toThrow(OversellError);
     });
@@ -409,6 +412,140 @@ describe('reducePosition', () => {
           }),
         ]),
       ).toThrow(/uncovered entry price/i);
+    });
+  });
+
+  describe('storage-quantum shortfall waiver (#917 envelope, extended by #1094)', () => {
+    // numeric(20,8) storage oracle: raw quantities pass the write path's 1e-9
+    // epsilon, then persist independently rounded to scale 8 — the stored rows
+    // every later replay sees. F1 (issue #1094): 4 raw buys of 0.1000000049
+    // persist as 0.10000000 each; their exact-sum sell 0.4000000196 persists as
+    // 0.40000002 — a two-quantum shortfall across 5 contributing rows.
+    const F1 = [
+      tx({ side: 'buy', quantity: 0.1, price: 50, executedAt: '2026-01-01T10:00:00Z' }),
+      tx({ side: 'buy', quantity: 0.1, price: 50, executedAt: '2026-01-02T10:00:00Z' }),
+      tx({ side: 'buy', quantity: 0.1, price: 50, executedAt: '2026-01-03T10:00:00Z' }),
+      tx({ side: 'buy', quantity: 0.1, price: 50, executedAt: '2026-01-04T10:00:00Z' }),
+    ];
+    const f1WithSell = (sellQuantity: number) => [
+      ...F1,
+      tx({ side: 'sell', quantity: sellQuantity, price: 60, executedAt: '2026-01-05T10:00:00Z' }),
+    ];
+
+    it('derives the F1 fixture cleanly: position exactly 0, drift dust realizes 0 gain', () => {
+      const pos = reducePosition(f1WithSell(0.40000002));
+      expect(pos.quantity).toBe(0);
+      expect(pos.avgCost).toBe(0);
+      // The held 0.4 realizes 0.4·(60−50) = 4; the waived dust takes the sale
+      // price → contributes exactly 0.
+      expect(pos.realizedPnl).toBeCloseTo(4, 9);
+      expect(pos.realizations).toHaveLength(1);
+      expect(pos.realizations[0]!.realizedPnl).toBeCloseTo(4, 9);
+    });
+
+    it('waives a same-batch one-quantum shortfall on a single pair', () => {
+      const pos = reducePosition([
+        tx({ side: 'buy', quantity: 1, price: 100, executedAt: '2026-01-01T10:00:00Z' }),
+        tx({ side: 'sell', quantity: 1.00000001, price: 110, executedAt: '2026-01-02T10:00:00Z' }),
+      ]);
+      expect(pos.quantity).toBe(0);
+      expect(pos.realizedPnl).toBeCloseTo(10, 6);
+    });
+
+    it('fails closed beyond the per-row envelope — never a blanket loosening', () => {
+      // 5 contributing rows allow 5 quanta; a 6-quantum shortfall cannot be
+      // numeric(20,8) rounding drift.
+      expect(() => reducePosition(f1WithSell(0.40000006))).toThrow(OversellError);
+      // Two rows (buy + the sell itself) allow two quanta; three is real.
+      expect(() =>
+        reducePosition([
+          tx({ side: 'buy', quantity: 1, price: 100, executedAt: '2026-01-01T10:00:00Z' }),
+          tx({
+            side: 'sell',
+            quantity: 1.00000003,
+            price: 110,
+            executedAt: '2026-01-02T10:00:00Z',
+          }),
+        ]),
+      ).toThrow(OversellError);
+    });
+
+    it('resets the envelope when a position closes exactly', () => {
+      // The first, cleanly closed round trip must not widen the second's envelope.
+      expect(() =>
+        reducePosition([
+          tx({ side: 'buy', quantity: 1, price: 100, executedAt: '2026-01-01T10:00:00Z' }),
+          tx({ side: 'sell', quantity: 1, price: 110, executedAt: '2026-01-02T10:00:00Z' }),
+          tx({ side: 'buy', quantity: 1, price: 100, executedAt: '2026-02-01T10:00:00Z' }),
+          tx({
+            side: 'sell',
+            quantity: 1.00000003,
+            price: 110,
+            executedAt: '2026-02-02T10:00:00Z',
+          }),
+        ]),
+      ).toThrow(OversellError);
+    });
+
+    it('a real oversell still throws regardless of the row count', () => {
+      const buys = Array.from({ length: 100 }, (_, i) =>
+        tx({
+          side: 'buy',
+          quantity: 1,
+          price: 100,
+          executedAt: `2026-01-01T10:00:${String(i % 60).padStart(2, '0')}Z`,
+        }),
+      );
+      expect(() =>
+        reducePosition([
+          ...buys,
+          tx({ side: 'sell', quantity: 101, price: 110, executedAt: '2026-01-02T10:00:00Z' }),
+        ]),
+      ).toThrow(OversellError);
+    });
+
+    it('closes the position so a later round trip realizes against a clean average', () => {
+      const pos = reducePosition([
+        ...f1WithSell(0.40000002),
+        tx({ side: 'buy', quantity: 2, price: 30, executedAt: '2026-02-01T10:00:00Z' }),
+        tx({ side: 'sell', quantity: 2, price: 40, executedAt: '2026-03-01T10:00:00Z' }),
+      ]);
+      expect(pos.quantity).toBe(0);
+      // Second round trip sees avg 30 rebuilt from 0: 2·(40−30) = 20.
+      expect(pos.realizations[1]!.realizedPnl).toBeCloseTo(20, 9);
+    });
+
+    it('an acknowledged uncovered sell keeps its supplied entry basis (no waiver hijack)', () => {
+      // A drift-sized shortfall WITH allowUncovered stays an uncovered sell
+      // (#369): the dust realizes against the supplied entry price, not the
+      // waiver's sale-price basis.
+      const pos = reducePosition([
+        tx({ side: 'buy', quantity: 1, price: 100, executedAt: '2026-01-01T10:00:00Z' }),
+        tx({
+          side: 'sell',
+          quantity: 1.00000001,
+          price: 110,
+          allowUncovered: true,
+          uncoveredEntryPrice: 50,
+          executedAt: '2026-01-02T10:00:00Z',
+        }),
+      ]);
+      // covered 1·(110−100) = 10; uncovered 1e-8·(110−50) = 6e-7.
+      expect(pos.realizedPnl).toBeCloseTo(10 + 6e-7, 7);
+      expect(pos.quantity).toBe(0);
+    });
+
+    it('derives F1 through deriveHoldings (the portfolio-overview path) without a throw', async () => {
+      const holdings = await deriveHoldings(
+        f1WithSell(0.40000002),
+        [{ assetId: 'A', currency: 'EUR', quote: { price: 65 } }],
+        stubConverter(),
+      );
+      expect(holdings).toHaveLength(1);
+      expect(holdings[0]!.quantity).toBe(0);
+      expect(holdings[0]!.realizedPnl).toBeCloseTo(4, 9);
+      // Flat position: nothing held to value.
+      expect(holdings[0]!.marketValueEur).toBeNull();
     });
   });
 

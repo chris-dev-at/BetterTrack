@@ -799,6 +799,140 @@ describe('POST /api/v1/portfolios/:id/transactions', () => {
   });
 });
 
+describe('storage-drift envelope on stored rows (#1094)', () => {
+  // F1 (issue #1094): 4 raw buys of 0.1000000049 pass the write path's 1e-9
+  // epsilon, then numeric(20,8) persists them as 0.10000000 each; the sell of
+  // their exact raw sum 0.4000000196 persists as 0.40000002. Every later
+  // replay sees the stored rows — a 2e-8 shortfall across 5 contributing rows
+  // that is rounding drift, not an oversell.
+  const F1_RAW_BUY = 0.1000000049;
+  const F1_RAW_SELL = 0.4000000196;
+
+  async function seedF1(
+    agent: Awaited<ReturnType<typeof loginAgent>>,
+    pid: string,
+    assetId: string,
+  ): Promise<{ buyIds: string[]; sellId: string }> {
+    const buyIds: string[] = [];
+    for (let i = 0; i < 4; i += 1) {
+      const res = await agent
+        .post(`/api/v1/portfolios/${pid}/transactions`)
+        .set(...XRW)
+        .send({
+          assetId,
+          side: 'buy',
+          quantity: F1_RAW_BUY,
+          price: 50,
+          executedAt: tsOffset(-6 + i),
+        });
+      expect(res.status).toBe(201);
+      buyIds.push(res.body.transactions[0].id as string);
+    }
+    const sell = await agent
+      .post(`/api/v1/portfolios/${pid}/transactions`)
+      .set(...XRW)
+      .send({ assetId, side: 'sell', quantity: F1_RAW_SELL, price: 60, executedAt: tsOffset(-1) });
+    expect(sell.status).toBe(201);
+    return { buyIds, sellId: sell.body.transactions[0].id as string };
+  }
+
+  it('accepts the F1 sell and serves a 200 overview with the position exactly flat', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
+    const asset = await seedAsset(harness);
+    await seedF1(agent, pid, asset.id);
+
+    // The stored rows replay through deriveHoldings on every overview read —
+    // before #1094 this threw OversellError and the page 500ed permanently.
+    const res = await agent.get(`/api/v1/portfolios/${pid}`);
+    expect(res.status).toBe(200);
+    expect(portfolioResponseSchema.safeParse(res.body).success).toBe(true);
+    const holding = res.body.holdings.find(
+      (h: { asset: { id: string } }) => h.asset.id === asset.id,
+    );
+    expect(holding).toBeTruthy();
+    expect(holding.quantity).toBe(0);
+    expect(holding.realizedPnl).toBeCloseTo(4, 6);
+  });
+
+  it('no longer 400s sibling edits and deletes over within-envelope drift', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
+    const asset = await seedAsset(harness);
+    const { buyIds, sellId } = await seedF1(agent, pid, asset.id);
+
+    // Any edit replays the whole stored timeline through assertNoOversell —
+    // before #1094 even a note-only patch 400ed OVERSELL on the drift.
+    const patch = await agent
+      .patch(`/api/v1/portfolios/${pid}/transactions/${buyIds[0]}`)
+      .set(...XRW)
+      .send({ note: 'still editable' });
+    expect(patch.status).toBe(200);
+
+    // Deleting the sell replays only the buys — always coverable — and frees
+    // the user from the drift state entirely.
+    const del = await agent.delete(`/api/v1/portfolios/${pid}/transactions/${sellId}`).set(...XRW);
+    expect(del.status).toBe(204);
+  });
+
+  it('still 400s genuine oversells beyond the envelope', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
+    const asset = await seedAsset(harness);
+    const { buyIds, sellId } = await seedF1(agent, pid, asset.id);
+
+    // Raising the sell past the 5-row envelope is a real oversell.
+    const patch = await agent
+      .patch(`/api/v1/portfolios/${pid}/transactions/${sellId}`)
+      .set(...XRW)
+      .send({ quantity: 0.40000006 });
+    expect(patch.status).toBe(400);
+    expect(patch.body.error.code).toBe('OVERSELL');
+
+    // Removing a buy leaves the sell genuinely uncovered (0.3 held vs ~0.4).
+    const del = await agent
+      .delete(`/api/v1/portfolios/${pid}/transactions/${buyIds[0]}`)
+      .set(...XRW);
+    expect(del.status).toBe(400);
+    expect(del.body.error.code).toBe('OVERSELL');
+  });
+
+  it('rejects a beyond-envelope sell at create time', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
+    const asset = await seedAsset(harness);
+    for (let i = 0; i < 4; i += 1) {
+      const res = await agent
+        .post(`/api/v1/portfolios/${pid}/transactions`)
+        .set(...XRW)
+        .send({
+          assetId: asset.id,
+          side: 'buy',
+          quantity: F1_RAW_BUY,
+          price: 50,
+          executedAt: tsOffset(-6 + i),
+        });
+      expect(res.status).toBe(201);
+    }
+    const res = await agent
+      .post(`/api/v1/portfolios/${pid}/transactions`)
+      .set(...XRW)
+      .send({
+        assetId: asset.id,
+        side: 'sell',
+        quantity: 0.40000006,
+        price: 60,
+        executedAt: tsOffset(-1),
+      });
+    expect(res.status).toBe(400);
+    expect(res.body.error.code).toBe('OVERSELL');
+  });
+});
+
 describe('GET /api/v1/portfolios/:id/transactions (pagination)', () => {
   it('paginates newest-first with a cursor', async () => {
     const user = await harness.seedUser();

@@ -706,6 +706,71 @@ describe('paranoid client money engine', () => {
     expect(market.calls.history).toEqual([]);
   });
 
+  it('inherits the storage-drift envelope: F1 derives flat, beyond-envelope fails closed (#1094)', async () => {
+    const fixture = await decryptClientMoneyFixture();
+    const market = createClientMoneyMarket();
+    const template = fixture.document.entities.transaction!.find(
+      (entity) => entity.data.assetId === CLIENT_MONEY_IDS.eurAsset && entity.data.side === 'buy',
+    )!;
+    // Stored F1 (#1094): 4 raw buys of 0.1000000049 + their exact-sum sell
+    // 0.4000000196 passed raw write-path validation, then numeric(20,8)
+    // rounded each row independently (buys → 0.10000000, sell → 0.40000002).
+    // The vault engine replays the same stored values through the same shared
+    // package as the server path, so the waiver must hold here too.
+    const f1Document = (sellQuantity: string) => {
+      const document = structuredClone(fixture.document);
+      const rows = [
+        { side: 'buy', quantity: '0.10000000', day: 21 },
+        { side: 'buy', quantity: '0.10000000', day: 22 },
+        { side: 'buy', quantity: '0.10000000', day: 23 },
+        { side: 'buy', quantity: '0.10000000', day: 24 },
+        { side: 'sell', quantity: sellQuantity, day: 25 },
+      ];
+      document.entities.transaction = rows.map((row, index) => {
+        const entity = structuredClone(template);
+        const executedAt = `2026-07-${row.day}T10:00:00.000Z`;
+        entity.id = `018f0000-0000-7000-8000-00000000119${index}`;
+        entity.editedAt = executedAt;
+        entity.data = {
+          ...structuredClone(template.data),
+          side: row.side,
+          quantity: row.quantity,
+          price: row.side === 'buy' ? '50' : '60',
+          fee: '0',
+          executedAt,
+        };
+        return entity;
+      });
+      return document;
+    };
+
+    const waived = await createVaultMoneyEngine(
+      createMutableTestSync(f1Document('0.40000002'), fixture.header),
+      market.market,
+      { now: () => NOW },
+    ).derivePortfolio(CLIENT_MONEY_IDS.portfolio, 'MAX');
+    expect(waived.ok, waived.ok ? undefined : JSON.stringify(waived.error)).toBe(true);
+    if (!waived.ok) return;
+    const holding = waived.value.holdings.find(
+      (candidate) => candidate.assetId === CLIENT_MONEY_IDS.eurAsset,
+    );
+    // Position exactly 0 (the drift dust is waived, not shorted); the held 0.4
+    // realized 0.4·(60−50) = 4, the dust 0 gain.
+    expect(holding).toBeDefined();
+    expect(holding!.quantity).toBe(0);
+    expect(holding!.realizedPnl).toBeCloseTo(4, 9);
+
+    // A genuinely oversold sell beyond the 5-row envelope still fails closed.
+    const oversold = await createVaultMoneyEngine(
+      createMutableTestSync(f1Document('0.40000006'), fixture.header),
+      market.market,
+      { now: () => NOW },
+    ).derivePortfolio(CLIENT_MONEY_IDS.portfolio, 'MAX');
+    expect(oversold.ok).toBe(false);
+    if (oversold.ok) return;
+    expect(oversold.error.code).toBe('VAULT_CORRUPT');
+  });
+
   it('caches derived work by vault version, market watermark, and range in memory only', async () => {
     const fixture = await decryptClientMoneyFixture();
     const sync = createMutableTestSync(fixture.document, fixture.header);

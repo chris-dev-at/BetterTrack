@@ -1,0 +1,132 @@
+{
+  "version": 1,
+  "issues": ["#917", "#1094"],
+  "description": "Conformance vectors for the numeric(20,8) storage-drift envelope shared by the holdings replay (reducePosition, #1094) and the tax replay (realizedSellsEur, #917). Quantities are the STORED scale-8 values a replay actually sees. F1 provenance: 4 raw buys of 0.1000000049 whose exact-sum sell of 0.4000000196 passed raw write-path validation, then numeric(20,8) rounded each row independently (buys -> 0.10000000, sell -> 0.40000002). Ports (e.g. the mobile Kotlin port) re-pin these on their next vector sync. Arithmetic is IEEE-754 double; asserted values carry the stated absolute tolerance; a shortfall is waived iff sellQuantity - held <= contributingRows * quantum + epsilon, where contributingRows counts every stored row of the open position including the sell itself and resets to 0 whenever the position closes.",
+  "quantum": 1e-8,
+  "epsilon": 1e-9,
+  "vectors": [
+    {
+      "id": "f1-storage-drift-within-envelope",
+      "summary": "Stored F1: shortfall 2e-8 across 5 contributing rows is waived in BOTH replays; the position closes at exactly 0, the dust realizes at the sale price (0 gain) and is not reported as uncovered.",
+      "transactions": [
+        {
+          "id": "b1",
+          "assetId": "F1",
+          "side": "buy",
+          "quantity": 0.1,
+          "price": 50,
+          "fee": 0,
+          "executedAt": "2026-01-01T10:00:00Z"
+        },
+        {
+          "id": "b2",
+          "assetId": "F1",
+          "side": "buy",
+          "quantity": 0.1,
+          "price": 50,
+          "fee": 0,
+          "executedAt": "2026-01-02T10:00:00Z"
+        },
+        {
+          "id": "b3",
+          "assetId": "F1",
+          "side": "buy",
+          "quantity": 0.1,
+          "price": 50,
+          "fee": 0,
+          "executedAt": "2026-01-03T10:00:00Z"
+        },
+        {
+          "id": "b4",
+          "assetId": "F1",
+          "side": "buy",
+          "quantity": 0.1,
+          "price": 50,
+          "fee": 0,
+          "executedAt": "2026-01-04T10:00:00Z"
+        },
+        {
+          "id": "s1",
+          "assetId": "F1",
+          "side": "sell",
+          "quantity": 0.40000002,
+          "price": 60,
+          "fee": 0,
+          "executedAt": "2026-01-05T10:00:00Z"
+        }
+      ],
+      "expected": {
+        "holdings": {
+          "quantity": 0,
+          "avgCost": 0,
+          "realizedPnl": 4,
+          "tolerance": 1e-9
+        },
+        "tax": {
+          "realizedPnlEur": 4,
+          "uncoveredQuantity": 0,
+          "tolerance": 1e-9
+        }
+      }
+    },
+    {
+      "id": "f1-genuine-oversell-beyond-envelope",
+      "summary": "The same stored rows with the sell at 0.40000006: a 6e-8 shortfall exceeds the 5-row envelope (5e-8 + epsilon) and must throw in BOTH replays.",
+      "transactions": [
+        {
+          "id": "b1",
+          "assetId": "F1",
+          "side": "buy",
+          "quantity": 0.1,
+          "price": 50,
+          "fee": 0,
+          "executedAt": "2026-01-01T10:00:00Z"
+        },
+        {
+          "id": "b2",
+          "assetId": "F1",
+          "side": "buy",
+          "quantity": 0.1,
+          "price": 50,
+          "fee": 0,
+          "executedAt": "2026-01-02T10:00:00Z"
+        },
+        {
+          "id": "b3",
+          "assetId": "F1",
+          "side": "buy",
+          "quantity": 0.1,
+          "price": 50,
+          "fee": 0,
+          "executedAt": "2026-01-03T10:00:00Z"
+        },
+        {
+          "id": "b4",
+          "assetId": "F1",
+          "side": "buy",
+          "quantity": 0.1,
+          "price": 50,
+          "fee": 0,
+          "executedAt": "2026-01-04T10:00:00Z"
+        },
+        {
+          "id": "s1",
+          "assetId": "F1",
+          "side": "sell",
+          "quantity": 0.40000006,
+          "price": 60,
+          "fee": 0,
+          "executedAt": "2026-01-05T10:00:00Z"
+        }
+      ],
+      "expected": {
+        "holdings": {
+          "throws": "OversellError"
+        },
+        "tax": {
+          "throws": "TaxComputationError"
+        }
+      }
+    }
+  ]
+}

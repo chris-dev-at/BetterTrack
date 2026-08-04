@@ -50,6 +50,19 @@
  */
 export const QTY_EPSILON = 1e-9;
 
+/**
+ * One scale-8 storage quantum (#917, extended to holdings by #1094; mirrors
+ * `tax.QTY_STORAGE_QUANTUM` — this module stays import-free). Quantities
+ * persist as `numeric(20,8)`: the write path epsilon-validates the raw client
+ * values, then PostgreSQL rounds each row independently to scale 8, so every
+ * stored row can sit up to one quantum away from the raw value that was
+ * validated. A replayed position can therefore show a spurious shortfall
+ * bounded by one quantum per contributing stored row — {@link reducePosition}
+ * waives exactly that envelope; anything beyond it fails closed as a genuine
+ * oversell.
+ */
+export const QTY_STORAGE_QUANTUM = 1e-8;
+
 // ---------------------------------------------------------------------------
 // Injected dependencies
 // ---------------------------------------------------------------------------
@@ -186,7 +199,16 @@ function executedAtToMs(executedAt: string): number {
  *    the fee is capitalised into the cost basis.
  *  - **SELL** realizes `qty·(price − avg) − fee` and reduces the quantity; the
  *    average cost is unchanged. A SELL exceeding the held quantity (beyond
- *    {@link QTY_EPSILON}) throws {@link OversellError}.
+ *    {@link QTY_EPSILON}) throws {@link OversellError}. One exception (#1094,
+ *    extending #917's tax-replay waiver): a shortfall within one
+ *    {@link QTY_STORAGE_QUANTUM} per contributing stored row is `numeric(20,8)`
+ *    rounding drift, not an oversell — the write path validated the raw values
+ *    before PostgreSQL rounded the rows apart. Such a sell closes the position
+ *    like an exact one: the held shares realize against the running average,
+ *    the dust remainder takes the sale price (0 gain). The envelope is
+ *    per-row, never a blanket loosening — a shortfall beyond it still throws,
+ *    and it resets when the position closes so a clean round trip never widens
+ *    the next envelope.
  *
  * The input may contain transactions for a single asset; mixing assets is a
  * programming error and throws.
@@ -207,6 +229,10 @@ export function reducePosition(transactions: readonly Transaction[]): PositionSt
   let held = 0;
   let avg = 0;
   let realizedPnl = 0;
+  // Stored rows feeding the open position — each bounded to one
+  // {@link QTY_STORAGE_QUANTUM} of rounding drift (#917/#1094); resets when the
+  // position closes so a clean round trip never widens the next envelope.
+  let driftRows = 0;
   const realizations: SellRealization[] = [];
 
   for (const { t, index } of ordered) {
@@ -224,6 +250,10 @@ export function reducePosition(transactions: readonly Transaction[]): PositionSt
     assertFiniteNonNegative(t.price, 'Transaction price');
     assertFiniteNonNegative(t.fee, 'Transaction fee');
 
+    // Every stored row of the open position — the current one included — can
+    // carry up to one quantum of numeric(20,8) rounding drift (#917/#1094).
+    driftRows += 1;
+
     if (t.side === 'buy') {
       const newHeld = held + t.quantity;
       // newHeld > 0 always (held ≥ 0, quantity > 0), so the division is safe.
@@ -231,22 +261,31 @@ export function reducePosition(transactions: readonly Transaction[]): PositionSt
       held = newHeld;
     } else {
       if (t.quantity > held + QTY_EPSILON) {
-        // Over-selling the held quantity: rejected unless the caller explicitly
-        // acknowledged an uncovered sell (issue #369).
-        if (!t.allowUncovered) {
+        // Storage-rounding drift (#1094, extending #917's tax-replay waiver):
+        // the write path validated the raw values, then numeric(20,8) rounded
+        // each row independently — a shortfall within one quantum per
+        // contributing stored row is a persistence artifact, not an oversell.
+        // Beyond the envelope it is a genuine oversell and fails closed.
+        const storageDrift =
+          !t.allowUncovered && t.quantity - held <= driftRows * QTY_STORAGE_QUANTUM + QTY_EPSILON;
+        if (!storageDrift && !t.allowUncovered) {
+          // Over-selling the held quantity: rejected unless the caller
+          // explicitly acknowledged an uncovered sell (issue #369).
           throw new OversellError(t.quantity, held, assetId);
         }
-        // Uncovered sell: the covered shares (the whole held position, ≥ 0)
-        // realize against the running average; the uncovered remainder realizes
-        // against its supplied entry price, or the sale price when none is given
-        // (→ 0 on that portion). The fee applies once to the whole sell. No
-        // shorts — the position closes at exactly 0.
+        // The covered shares (the whole held position, ≥ 0) realize against the
+        // running average; the remainder realizes against its basis — waived
+        // drift always takes the sale price (0 gain: it is rounding residue of
+        // covered shares, not a phantom acquisition, #917), an acknowledged
+        // uncovered sell (#369) takes its supplied entry price, or the sale
+        // price when none is given (→ 0 on that portion). The fee applies once
+        // to the whole sell. No shorts — the position closes at exactly 0.
         const covered = held;
         const uncovered = t.quantity - covered;
-        const uncoveredBasis = t.uncoveredEntryPrice ?? t.price;
         if (t.uncoveredEntryPrice != null) {
           assertFiniteNonNegative(t.uncoveredEntryPrice, 'Transaction uncovered entry price');
         }
+        const uncoveredBasis = storageDrift ? t.price : (t.uncoveredEntryPrice ?? t.price);
         const pnl = covered * (t.price - avg) + uncovered * (t.price - uncoveredBasis) - t.fee;
         realizedPnl += pnl;
         realizations.push({ index, realizedPnl: pnl });
@@ -263,6 +302,9 @@ export function reducePosition(transactions: readonly Transaction[]): PositionSt
           avg = 0;
         }
       }
+      // A closed position starts the next round trip clean — including its
+      // storage-drift envelope (#917/#1094).
+      if (held === 0) driftRows = 0;
     }
   }
 
