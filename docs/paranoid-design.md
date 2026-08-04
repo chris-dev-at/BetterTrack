@@ -237,6 +237,34 @@ a medium (it syncs, it is not chosen).
   exclusively the same user's own devices and §4's merge repairs any race.
   Drive's native revisions are the history net on that medium.
 
+### 4.1 Native-client bearer sync exception (owner mandate 2026-08-04)
+
+The native mobile client may carry the single combined OAuth/API-key scope
+**`vault:sync`**. Sync is inherently read-write, so this is deliberately not a
+synthetic read/write pair. Its bearer surface is exact and default-closed:
+
+- `GET /api/v1/vault` and `PUT /api/v1/vault` (the existing ETag/
+  `If-Match`/`If-None-Match` CAS contract);
+- `GET /api/v1/vault/media` (state metadata only, never blob bytes); and
+- `GET /api/v1/vault/history` plus
+  `GET /api/v1/vault/history/:version` for conflict/restore UX.
+
+The exception changes authentication reachability, not the storage protocol.
+Bearer PUT uses the same per-user vault limiter and byte cap as the browser
+session path. The server still reads only the cleartext `BTVAULT1` header needed
+to validate the envelope/version; ciphertext remains opaque and is returned
+byte-identically.
+
+Everything that changes privacy mode or storage disposition remains owning-
+browser-session-only even when a token carries `vault:sync`: all
+`/account/paranoid/*` endpoints (enable, disable, fork provenance and normal-
+revision capture), `PATCH /vault/media`, server-candidate staging/read-back, and
+retired-server purge/challenge. Native clients need the encrypted bytes to keep
+a paranoid account usable; they do not need authority to perform destructive or
+recovery-media transitions. The paranoid bearer kill rail therefore explicitly
+keeps `vault:sync` while continuing to refuse portfolio/tax/import scopes with
+`PARANOID_MODE`.
+
 **Write path:** local commit (optimistic UI) → encrypt full vault (version =
 last seen + 1) → CAS-push to the **primary** medium → replicate the identical
 bytes to the secondary. **Primary = server whenever the media set contains
@@ -665,6 +693,8 @@ Killed for paranoid accounts:
    engine is a v6 candidate (§16 non-goals), not silently promised.
 8. **Portfolio-scoped API access** — bearer/OAuth scopes touching portfolio,
    tax or import data refuse with `PARANOID_MODE`; other scopes work.
+   The combined `vault:sync` scope is the deliberate exception described in
+   §4.1: it moves only opaque ciphertext and exposes no portfolio cleartext.
    Webhooks (V5-P10) never fire portfolio-content events for these accounts
    (there are none server-side to fire).
 9. **Standing-order server execution** — definitions move into the vault; the
@@ -948,7 +978,8 @@ PD4–PD7); PD9 last.
   server-visible oplog (that would leak structure); entity granularity exists
   only inside the encrypted payload for §4 merges.
 - **No client-side broker/bank import in v5** (§8 item 7) — a v6 candidate,
-  not a silent promise. No native apps (the PWA is the mobile story, P13b).
+  not a silent promise. Native-app product work remains outside this v5 design;
+  §4.1 provides only the owner-mandated sync seam the mobile client requires.
 - **Yahoo-direct client market data is interface-only in v5** (§11); the
   local (fully server-less) data home likewise arrives through the `DataHome`
   seam later — v5 ships server/Drive/local-cache.

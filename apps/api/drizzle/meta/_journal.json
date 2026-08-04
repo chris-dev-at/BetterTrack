@@ -568,6 +568,13 @@
       "when": 1785974700000,
       "tag": "0080_first_party_client_mirrorchain_scopes",
       "breakpoints": true
+    },
+    {
+      "idx": 81,
+      "version": "7",
+      "when": 1785974800000,
+      "tag": "0081_first_party_client_vault_sync_scope",
+      "breakpoints": true
     }
   ]
 }

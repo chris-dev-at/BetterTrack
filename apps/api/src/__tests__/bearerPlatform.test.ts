@@ -1143,7 +1143,7 @@ describe('#1041 bearer /cash coverage — cash classification for mobile', () =>
   });
 });
 
-describe('#730 paranoid transitions are session-only, like /vault/* (the surface they purge)', () => {
+describe('#730/#1043 paranoid transitions stay session-only beside bearer vault sync', () => {
   // Both directions of the privacy-mode transition and the vault media they act
   // on. Enable hard-deletes every cleartext row and revokes every share with no
   // undo; disable writes a caller-authored document back into the account. The
@@ -1151,14 +1151,14 @@ describe('#730 paranoid transitions are session-only, like /vault/* (the surface
   // a scope a third-party OAuth app can plausibly hold for a sessions/2FA
   // integration — so both were reachable by a bearer, without CSRF, on nothing
   // but the caller's own Drive attestation.
-  const SESSION_ONLY: { name: string; method: 'get' | 'post' | 'put'; path: string }[] = [
+  const SESSION_ONLY: { name: string; method: 'get' | 'post' | 'put' | 'patch'; path: string }[] = [
     { name: 'paranoid enable', method: 'post', path: '/account/paranoid/enable' },
     { name: 'paranoid disable', method: 'post', path: '/account/paranoid/disable' },
-    // The sibling rule this one mirrors, previously unasserted here: opaque vault
-    // bytes are never staged, read, retired or purged through a bearer either.
-    { name: 'vault read', method: 'get', path: '/vault' },
-    { name: 'vault stage', method: 'put', path: '/vault' },
-    { name: 'vault media state', method: 'get', path: '/vault/media' },
+    { name: 'fork provenance', method: 'get', path: '/account/paranoid/fork-provenance' },
+    { name: 'normal revision', method: 'get', path: '/account/paranoid/normal-revision' },
+    // #1043 admits opaque sync only. Media changes and recovery-media lifecycle
+    // still belong exclusively to the owning browser session.
+    { name: 'vault media transition', method: 'patch', path: '/vault/media' },
     { name: 'retired vault purge', method: 'post', path: '/vault/media/retired/purge' },
   ];
 
@@ -1173,14 +1173,20 @@ describe('#730 paranoid transitions are session-only, like /vault/* (the surface
     const url = `/api/v1${row.path}`;
     const base = request(harness.app);
     const started =
-      row.method === 'get' ? base.get(url) : row.method === 'put' ? base.put(url) : base.post(url);
+      row.method === 'get'
+        ? base.get(url)
+        : row.method === 'put'
+          ? base.put(url)
+          : row.method === 'patch'
+            ? base.patch(url)
+            : base.post(url);
     return started.set(bearer(token)).send(ENABLE_BODY);
   };
 
   it.each(SESSION_ONLY)(
     'a personal key holding account:security gets 403 API_KEY_FORBIDDEN: $name',
     async (row) => {
-      const { token } = await mintKey(['account:security']);
+      const { token } = await mintKey(['account:security', 'vault:sync']);
       const res = await call(token, row);
       expect(res.status, `${row.method} ${row.path} → ${JSON.stringify(res.body)}`).toBe(403);
       expect(res.body.error.code).toBe('API_KEY_FORBIDDEN');
@@ -1190,7 +1196,7 @@ describe('#730 paranoid transitions are session-only, like /vault/* (the surface
   it.each(SESSION_ONLY)(
     'a delegated OAuth token holding account:security gets 403 API_KEY_FORBIDDEN: $name',
     async (row) => {
-      const { token } = await mintOAuthToken(['account:security']);
+      const { token } = await mintOAuthToken(['account:security', 'vault:sync']);
       const res = await call(token, row);
       expect(res.status, `${row.method} ${row.path} → ${JSON.stringify(res.body)}`).toBe(403);
       expect(res.body.error.code).toBe('API_KEY_FORBIDDEN');
@@ -1202,7 +1208,7 @@ describe('#730 paranoid transitions are session-only, like /vault/* (the surface
     // reaches the identical handler. A policy table that compared the raw path
     // would fall through this carve-out onto the coarse `/account/` scope row and
     // hand the destructive route right back to the bearer.
-    const { token } = await mintKey(['account:security']);
+    const { token } = await mintKey(['account:security', 'vault:sync']);
     for (const path of [
       '/api/v1/Account/Paranoid/enable',
       '/api/v1/account/PARANOID/disable',
@@ -1220,20 +1226,23 @@ describe('#730 paranoid transitions are session-only, like /vault/* (the surface
     // `requireOwnerBrowserSession` in accountRoutes. Pinning the table directly
     // means a regression there is still caught even though the local guard would
     // keep the end-to-end 403s above green.
-    for (const path of [
-      '/account/paranoid',
-      '/account/paranoid/enable',
-      '/account/paranoid/disable',
-      '/Account/Paranoid/enable',
-      '/vault',
-      '/vault/media',
-    ]) {
-      expect(pathAcceptsBearer(path), `pathAcceptsBearer(${path})`).toBe(false);
+    for (const [method, path] of [
+      ['POST', '/account/paranoid/enable'],
+      ['POST', '/account/paranoid/disable'],
+      ['GET', '/account/paranoid/fork-provenance'],
+      ['GET', '/account/paranoid/normal-revision'],
+      ['PATCH', '/vault/media'],
+      ['POST', '/vault/media/retired/purge'],
+    ] as const) {
+      expect(pathAcceptsBearer(path, method), `${method} ${path}`).toBe(false);
     }
-    // …while the coarse account-security surface it sits inside is untouched.
+    // …while the coarse account-security surface and exact sync exception are untouched.
     for (const path of ['/account', '/account/export', '/auth/sessions', '/auth/2fa/status']) {
       expect(pathAcceptsBearer(path), `pathAcceptsBearer(${path})`).toBe(true);
     }
+    expect(pathAcceptsBearer('/vault', 'GET')).toBe(true);
+    expect(pathAcceptsBearer('/vault', 'PUT')).toBe(true);
+    expect(pathAcceptsBearer('/vault/media', 'GET')).toBe(true);
   });
 
   it('the carve-out is surgical: the rest of the account-security surface stays bearer-callable', async () => {

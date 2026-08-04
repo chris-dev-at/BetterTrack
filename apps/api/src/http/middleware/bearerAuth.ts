@@ -14,6 +14,20 @@ const BEARER_PREFIX = 'Bearer ';
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
 /**
+ * The sync-only bearer exception for the opaque paranoid vault (#1043).
+ * `vault:sync` is inherently read-write, but the route surface remains
+ * method-aware and default-closed: storage/media transitions and account-mode
+ * transitions are deliberately absent from this list.
+ */
+export const VAULT_SYNC_BEARER_ROUTE_ALLOWLIST = [
+  { method: 'GET', path: '/vault' },
+  { method: 'PUT', path: '/vault' },
+  { method: 'GET', path: '/vault/media' },
+  { method: 'GET', path: '/vault/history' },
+  { method: 'GET', path: '/vault/history/{version}' },
+] as const;
+
+/**
  * The deliberately narrow mobile-participation surface for MIRRORCHAIN (#1042).
  * This list is method-aware because `GET /chains` participates while
  * `POST /chains` administers, and both operations share one path. Anything
@@ -36,6 +50,7 @@ function normalizedRouteSegments(path: string): string[] {
 }
 
 const UUID_ROUTE_SEGMENT = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const POSITIVE_INTEGER_ROUTE_SEGMENT = /^[1-9][0-9]*$/;
 
 function matchesRouteTemplate(path: string, template: string): boolean {
   const actual = normalizedRouteSegments(path);
@@ -45,16 +60,27 @@ function matchesRouteTemplate(path: string, template: string): boolean {
     expected.every((segment, index) => {
       const actualSegment = actual[index]!;
       if (segment.startsWith('{') && segment.endsWith('}')) {
-        // OpenAPI calls this predicate with `{param}` templates; live requests
-        // must carry a UUID. Refusing arbitrary static words keeps a future
-        // same-depth admin route from accidentally matching an id placeholder.
+        // OpenAPI calls this predicate with `{param}` templates. Live UUID ids
+        // stay UUID-only; the vault history version is a positive integer.
+        // Refusing arbitrary static words keeps a future same-depth admin route
+        // from accidentally matching a parameter placeholder.
         return (
           (actualSegment.startsWith('{') && actualSegment.endsWith('}')) ||
-          UUID_ROUTE_SEGMENT.test(actualSegment)
+          (segment === '{version}'
+            ? POSITIVE_INTEGER_ROUTE_SEGMENT.test(actualSegment)
+            : UUID_ROUTE_SEGMENT.test(actualSegment))
         );
       }
       return segment === actualSegment;
     })
+  );
+}
+
+/** Whether one exact method + path is in the paranoid-vault sync allowlist. */
+export function vaultSyncRouteAcceptsBearer(method: string, path: string): boolean {
+  const normalizedMethod = method.toUpperCase();
+  return VAULT_SYNC_BEARER_ROUTE_ALLOWLIST.some(
+    (route) => route.method === normalizedMethod && matchesRouteTemplate(path, route.path),
   );
 }
 
@@ -307,10 +333,16 @@ function resolvePolicy(requestPath: string, requestMethod = 'GET'): PathPolicy {
   if (path === '/settings/webhooks' || path.startsWith('/settings/webhooks/')) {
     return { kind: 'session-only' };
   }
-  // Client-encrypted vault media is strictly browser-cookie-session only. A
-  // personal API key or delegated OAuth bearer never gets to stage, retire,
-  // recover, or purge opaque vault bytes — even with account:security.
-  if (path === '/vault' || path.startsWith('/vault/')) return { kind: 'session-only' };
+  // #1043: native clients may synchronize the already-encrypted vault with the
+  // single inherently read-write vault:sync scope. The exact method-aware
+  // allowlist admits the live blob, media-state read and conflict-history reads
+  // only. Staging, media transitions, retirement and purge stay browser-session
+  // work, and any future /vault route defaults closed.
+  if (path === '/vault' || path.startsWith('/vault/')) {
+    return vaultSyncRouteAcceptsBearer(requestMethod, path)
+      ? { kind: 'scope', read: 'vault:sync', write: 'vault:sync' }
+      : { kind: 'session-only' };
+  }
   // MIRRORCHAIN is participation-over-administration for bearer clients
   // (#1042). Resolve the method-aware allowlist BEFORE MODULE_POLICIES: an
   // unlisted route defaults closed instead of inheriting mirrorchain:write.

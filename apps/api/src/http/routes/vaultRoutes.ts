@@ -38,6 +38,7 @@ import {
 import { ApiError, forbidden, notFound } from '../../errors';
 
 import type { AppContext } from '../context';
+import { vaultSyncRouteAcceptsBearer } from '../middleware/bearerAuth';
 import type { RateLimiters } from '../middleware/rateLimit';
 import { requireUser } from '../middleware/session';
 import { validateBody, validateParams, validateQuery } from '../middleware/validate';
@@ -67,22 +68,29 @@ const malformed = (message: string): ApiError =>
   new ApiError(400, VAULT_ERROR_CODES.malformed, message);
 
 /**
- * The global bearer policy also marks `/vault` session-only. Keeping this local
- * guard makes the ownership boundary explicit for direct-router use and future
- * route additions: a personal key or delegated OAuth principal never counts as
- * the browser session needed to manipulate encrypted recovery media.
+ * Local defense-in-depth for #1043's sync-only bearer exception. A bearer may
+ * reach only the exact opaque sync reads/writes listed by the global policy;
+ * every media/storage transition and every future route still requires the
+ * owning cookie session. Direct-router use therefore cannot silently widen the
+ * exception if the mount or global policy changes later.
  */
-const requireCookieSession: RequestHandler = (req, _res, next) => {
-  if (req.apiKey || !req.sessionId) {
-    next(
-      forbidden(
-        'Vault media is available only to the owning browser session.',
-        'API_KEY_FORBIDDEN',
-      ),
+export const requireCookieSessionOrVaultSync: RequestHandler = (req, _res, next) => {
+  const bearerSyncAllowed =
+    req.apiKey !== undefined &&
+    vaultSyncRouteAcceptsBearer(
+      req.method,
+      `/vault${req.path === '/' || req.path === '' ? '' : req.path}`,
     );
+  if ((!req.apiKey && req.sessionId) || bearerSyncAllowed) {
+    next();
     return;
   }
-  next();
+  next(
+    forbidden(
+      'This vault endpoint is available only to the owning browser session.',
+      'API_KEY_FORBIDDEN',
+    ),
+  );
 };
 
 const requireParanoidHistory: RequestHandler = (req, _res, next) => {
@@ -155,7 +163,7 @@ export function createVaultRouter(ctx: AppContext, limiters: RateLimiters): Rout
   const router = Router();
   const parseRawEnvelope = rawVaultBody(ctx);
 
-  router.use(requireUser, requireCookieSession);
+  router.use(requireUser, requireCookieSessionOrVaultSync);
   router.use('/history', requireParanoidHistory);
 
   router.get('/history', validateQuery(vaultHistoryListQuerySchema), async (req, res) => {
