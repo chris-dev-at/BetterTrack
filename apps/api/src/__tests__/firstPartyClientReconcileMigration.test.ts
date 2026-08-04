@@ -27,6 +27,8 @@ import { FIRST_PARTY_CLIENTS, seedFirstPartyClients } from '../services/oauth/fi
  *     migrate-only updater would otherwise never carry them (seed re-copy pending).
  *   - 0079 (`0079_first_party_client_cash_scopes`) does the same for #1041's
  *     cash:read / cash:write pair.
+ *   - 0080 (`0080_first_party_client_mirrorchain_scopes`) does the same for
+ *     #1042's mirrorchain:read / mirrorchain:write pair.
  *
  * The shared harness only ever replays migrations onto an empty DB (and truncates),
  * so — exactly like the 0019 / 0024 data-migration suites — this boots a throwaway
@@ -38,6 +40,7 @@ const drizzleDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '../.
 const TARGET_0029 = '0029_first_party_client_reconcile';
 const TARGET_0030 = '0030_first_party_client_alerts_scopes';
 const TARGET_0079 = '0079_first_party_client_cash_scopes';
+const TARGET_0080 = '0080_first_party_client_mirrorchain_scopes';
 const OAUTH_LOGO_CACHE_MIGRATION = '0074_oauth_client_logo_cache';
 
 const MOBILE = FIRST_PARTY_CLIENTS.find((c) => c.clientId === 'btc_IbT1mzw_7kBiPHPkGfaE0Q')!;
@@ -78,6 +81,10 @@ const ALERTS_ERA_CEILING = [...RECONCILE_SCOPES, ...ALERTS_SCOPES];
 
 /** The exact pair 0079 appends for #1041, pinned to the migration payload. */
 const CASH_SCOPES = ['cash:read', 'cash:write'];
+const CASH_ERA_CEILING = [...ALERTS_ERA_CEILING, ...CASH_SCOPES];
+
+/** The exact pair 0080 appends for #1042, pinned to the migration payload. */
+const MIRRORCHAIN_SCOPES = ['mirrorchain:read', 'mirrorchain:write'];
 
 interface JournalEntry {
   idx: number;
@@ -344,26 +351,26 @@ describe(`migration ${TARGET_0079} — first-party client cash scopes (union-onl
     client = await bootUpTo(TARGET_0079);
   });
 
-  it('reaches the live ceiling additively, idempotently and without narrowing extras', async () => {
+  it('reaches the cash-era ceiling additively, idempotently and without narrowing extras', async () => {
     const before = (await readClient(client, CLIENT_ID))!;
     expect(before.scopes).toEqual(ALERTS_ERA_CEILING);
 
     await applyMigration(client, TARGET_0079);
 
     const row = (await readClient(client, CLIENT_ID))!;
-    expect(row.scopes).toEqual([...ALERTS_ERA_CEILING, ...CASH_SCOPES]);
-    expect(row.scopes).toEqual(CEILING);
+    expect(row.scopes).toEqual(CASH_ERA_CEILING);
     expect(row.redirect_uris).toEqual([CANONICAL_URI]);
     expect(row.id).toBe(before.id);
     expect(row.created_at).toEqual(before.created_at);
 
-    // Re-running the migration is a true no-op, and migrate-only has already
-    // converged far enough that the code seed also has nothing to do.
+    // Re-running the historical migration is a true no-op. The current seed
+    // then appends scopes introduced after 0079.
     await applyMigration(client, TARGET_0079);
     expect(await readClient(client, CLIENT_ID)).toEqual(row);
     const repo = createOAuthRepository(drizzlePglite(client, { schema }) as unknown as Database);
     const seeded = (await seedFirstPartyClients(repo)).find((r) => r.clientId === CLIENT_ID)!;
-    expect(seeded.action).toBe('unchanged');
+    expect(seeded.action).toBe('converged');
+    expect((await readClient(client, CLIENT_ID))!.scopes).toEqual(CEILING);
 
     // A partially granted, admin-customized row keeps its order and extra; only
     // the missing half of the pair is appended.
@@ -381,6 +388,57 @@ describe(`migration ${TARGET_0079} — first-party client cash scopes (union-onl
       'cash:read',
       'experimental:beta',
       'cash:write',
+    ]);
+    expect(new Set(partialRow.scopes).size).toBe(partialRow.scopes.length);
+  });
+});
+
+describe(`migration ${TARGET_0080} — first-party client mirrorchain scopes (union-only)`, () => {
+  let client: PGlite;
+
+  beforeEach(async () => {
+    // Replay the complete chain through 0079. The first-party client therefore
+    // starts at the frozen cash-era ceiling immediately before 0080 runs.
+    client = await bootUpTo(TARGET_0080);
+  });
+
+  it('reaches the live ceiling additively, idempotently and without narrowing extras', async () => {
+    const before = (await readClient(client, CLIENT_ID))!;
+    expect(before.scopes).toEqual(CASH_ERA_CEILING);
+
+    await applyMigration(client, TARGET_0080);
+
+    const row = (await readClient(client, CLIENT_ID))!;
+    expect(row.scopes).toEqual([...CASH_ERA_CEILING, ...MIRRORCHAIN_SCOPES]);
+    expect(row.scopes).toEqual(CEILING);
+    expect(row.redirect_uris).toEqual([CANONICAL_URI]);
+    expect(row.id).toBe(before.id);
+    expect(row.created_at).toEqual(before.created_at);
+
+    // Re-running the migration is a true no-op, and migrate-only has already
+    // converged far enough that the code seed also has nothing to do.
+    await applyMigration(client, TARGET_0080);
+    expect(await readClient(client, CLIENT_ID)).toEqual(row);
+    const repo = createOAuthRepository(drizzlePglite(client, { schema }) as unknown as Database);
+    const seeded = (await seedFirstPartyClients(repo)).find((r) => r.clientId === CLIENT_ID)!;
+    expect(seeded.action).toBe('unchanged');
+
+    // A partially granted, admin-customized row keeps its order and extra; only
+    // the missing half of the pair is appended.
+    await client.exec(`
+      UPDATE "oauth_clients"
+      SET "scopes" = ARRAY['portfolio:read','mirrorchain:read','experimental:beta']::text[]
+      WHERE "client_id" = '${CLIENT_ID}';
+    `);
+
+    await applyMigration(client, TARGET_0080);
+
+    const partialRow = (await readClient(client, CLIENT_ID))!;
+    expect(partialRow.scopes).toEqual([
+      'portfolio:read',
+      'mirrorchain:read',
+      'experimental:beta',
+      'mirrorchain:write',
     ]);
     expect(new Set(partialRow.scopes).size).toBe(partialRow.scopes.length);
   });

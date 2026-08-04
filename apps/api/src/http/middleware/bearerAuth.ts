@@ -14,6 +14,76 @@ const BEARER_PREFIX = 'Bearer ';
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
 /**
+ * The deliberately narrow mobile-participation surface for MIRRORCHAIN (#1042).
+ * This list is method-aware because `GET /chains` participates while
+ * `POST /chains` administers, and both operations share one path. Anything
+ * under `/mirrorchain` that is not listed here remains cookie-session-only even
+ * though the module has a coarse scope-policy row below.
+ */
+export const MIRRORCHAIN_BEARER_ROUTE_ALLOWLIST = [
+  { method: 'GET', path: '/mirrorchain/chains' },
+  { method: 'GET', path: '/mirrorchain/chains/{chainId}/members' },
+  { method: 'GET', path: '/mirrorchain/chains/{chainId}/activity' },
+  { method: 'GET', path: '/mirrorchain/invites' },
+  { method: 'POST', path: '/mirrorchain/invites/{inviteId}/accept' },
+  { method: 'POST', path: '/mirrorchain/invites/{inviteId}/decline' },
+  { method: 'POST', path: '/mirrorchain/chains/{chainId}/leave' },
+] as const;
+
+function normalizedRouteSegments(path: string): string[] {
+  const pathname = path.split('?', 1)[0]!.replace(/\/+$/, '').toLowerCase();
+  return pathname.split('/').filter(Boolean);
+}
+
+const UUID_ROUTE_SEGMENT = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
+function matchesRouteTemplate(path: string, template: string): boolean {
+  const actual = normalizedRouteSegments(path);
+  const expected = normalizedRouteSegments(template);
+  return (
+    actual.length === expected.length &&
+    expected.every((segment, index) => {
+      const actualSegment = actual[index]!;
+      if (segment.startsWith('{') && segment.endsWith('}')) {
+        // OpenAPI calls this predicate with `{param}` templates; live requests
+        // must carry a UUID. Refusing arbitrary static words keeps a future
+        // same-depth admin route from accidentally matching an id placeholder.
+        return (
+          (actualSegment.startsWith('{') && actualSegment.endsWith('}')) ||
+          UUID_ROUTE_SEGMENT.test(actualSegment)
+        );
+      }
+      return segment === actualSegment;
+    })
+  );
+}
+
+/** Whether one exact method + path is in the MIRRORCHAIN bearer allowlist. */
+export function mirrorchainRouteAcceptsBearer(method: string, path: string): boolean {
+  const normalizedMethod = method.toUpperCase();
+  return MIRRORCHAIN_BEARER_ROUTE_ALLOWLIST.some(
+    (route) => route.method === normalizedMethod && matchesRouteTemplate(path, route.path),
+  );
+}
+
+/**
+ * Local defense-in-depth for the mirrorchain router. The global policy makes
+ * the same decision before routing, but keeping this default-deny allowlist on
+ * the router means a remount or policy-table reshuffle cannot expose a new
+ * administrative route to a bearer by accident.
+ */
+export const enforceMirrorchainBearerAllowlist: RequestHandler = (req, _res, next) => {
+  if (
+    !req.apiKey ||
+    mirrorchainRouteAcceptsBearer(req.method, `/mirrorchain${req.path === '/' ? '' : req.path}`)
+  ) {
+    next();
+    return;
+  }
+  next(forbidden('This endpoint is not accessible with an API key.', 'API_KEY_FORBIDDEN'));
+};
+
+/**
  * Bearer auth for personal API keys AND delegated OAuth access tokens
  * (PROJECTPLAN.md §6.13, §14, V2-P12). Mounted first in the `/api/v1` chain:
  * when the request carries an `Authorization: Bearer …` header it resolves the
@@ -139,6 +209,10 @@ const MODULE_POLICIES: readonly { prefix: string; read: string; write: string }[
   // is a distinct mobile module. Movement/source ledger CRUD remains under the
   // existing /portfolios policy; this row admits only the /cash/* surface.
   { prefix: '/cash', read: 'cash:read', write: 'cash:write' },
+  // #1042: group-portfolio participation has its own scope pair. The explicit
+  // method + route allowlist in resolvePolicy keeps lifecycle administration
+  // session-only even though the module itself is now scope-addressable.
+  { prefix: '/mirrorchain', read: 'mirrorchain:read', write: 'mirrorchain:write' },
   { prefix: '/settings', read: 'social:read', write: 'social:write' },
 ];
 
@@ -180,7 +254,7 @@ function resolveAuthPolicy(path: string): PathPolicy | null {
   return null;
 }
 
-function resolvePolicy(requestPath: string): PathPolicy {
+function resolvePolicy(requestPath: string, requestMethod = 'GET'): PathPolicy {
   // Express routes case-insensitively by default, so `/Account/Paranoid/enable`
   // reaches the very same handler as the lowercase spelling. Match the same way,
   // or a variant-cased request silently resolves to a DIFFERENT policy than the
@@ -237,6 +311,15 @@ function resolvePolicy(requestPath: string): PathPolicy {
   // personal API key or delegated OAuth bearer never gets to stage, retire,
   // recover, or purge opaque vault bytes — even with account:security.
   if (path === '/vault' || path.startsWith('/vault/')) return { kind: 'session-only' };
+  // MIRRORCHAIN is participation-over-administration for bearer clients
+  // (#1042). Resolve the method-aware allowlist BEFORE MODULE_POLICIES: an
+  // unlisted route defaults closed instead of inheriting mirrorchain:write.
+  if (
+    (path === '/mirrorchain' || path.startsWith('/mirrorchain/')) &&
+    !mirrorchainRouteAcceptsBearer(requestMethod, path)
+  ) {
+    return { kind: 'session-only' };
+  }
   // Rule preview is intentionally a read despite using POST: it evaluates a
   // caller-supplied note without writing anything. Resolve it before the /cash
   // module row so cash:read can use the preview while every other POST/PATCH/
@@ -267,12 +350,13 @@ function resolvePolicy(requestPath: string): PathPolicy {
  * that is `allow` (identity/logout/health) or scope-gated. Session-only and
  * admin paths do not. The OpenAPI document derives each route's `security`
  * requirement from this so the spec can never drift from the real middleware
- * policy (#361, fixes the doc's blanket sessionCookie-only claim). Method-
- * independent: a scope path accepts a bearer for both reads and writes (the
- * required scope differs, but acceptance does not).
+ * policy (#361, fixes the doc's blanket sessionCookie-only claim). Usually the
+ * method only changes the required read/write half; the MIRRORCHAIN participation
+ * allowlist is intentionally method-aware because reads and administration can
+ * share a path.
  */
-export function pathAcceptsBearer(path: string): boolean {
-  const kind = resolvePolicy(path).kind;
+export function pathAcceptsBearer(path: string, method = 'GET'): boolean {
+  const kind = resolvePolicy(path, method).kind;
   return kind === 'allow' || kind === 'scope';
 }
 
@@ -289,7 +373,7 @@ export function enforceApiKeyScope(ctx: AppContext): RequestHandler {
       next();
       return;
     }
-    const policy = resolvePolicy(req.path);
+    const policy = resolvePolicy(req.path, req.method);
     if (policy.kind === 'admin') {
       next(notFound());
       return;

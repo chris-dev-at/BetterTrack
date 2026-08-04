@@ -46,12 +46,12 @@ export const FIRST_PARTY_CLIENTS: readonly FirstPartyClientDefinition[] = [
     name: 'BetterTrackMobile',
     redirectUris: ['bettertrack://oauth/callback'],
     public: true,
-    // Full platform ceiling (all 16 scopes today) — mobile is the trusted
+    // Full platform ceiling (all 18 scopes today) — mobile is the trusted
     // first-party surface. Listed in the canonical API_KEY_SCOPES order; adding a
     // new scope here is a deliberate widening a future seed will reassert. The
     // seed unions (never narrows) and re-runs on every deploy, so appending the
-    // #1041 cash scopes here keeps fresh installs aligned with the additive
-    // migration that widens existing mobile clients.
+    // #1042 mirrorchain scopes here keeps fresh installs aligned with the
+    // additive migration that widens existing mobile clients.
     scopeCeiling: [
       'portfolio:read',
       'portfolio:write',
@@ -69,6 +69,8 @@ export const FIRST_PARTY_CLIENTS: readonly FirstPartyClientDefinition[] = [
       'alerts:write',
       'cash:read',
       'cash:write',
+      'mirrorchain:read',
+      'mirrorchain:write',
     ],
   },
 ];

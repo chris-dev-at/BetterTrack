@@ -4339,7 +4339,7 @@ for (const ep of endpoints) {
   // fixing the prior blanket "sessionCookie only" claim on every route.
   const security: Record<string, string[]>[] = ep.public
     ? []
-    : pathAcceptsBearer(ep.path)
+    : pathAcceptsBearer(ep.path, ep.method)
       ? [{ [SESSION_SECURITY]: [] }, { [BEARER_SECURITY]: [] }]
       : [{ [SESSION_SECURITY]: [] }];
 
