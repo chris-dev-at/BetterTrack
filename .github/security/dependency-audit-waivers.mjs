@@ -66,30 +66,6 @@ export const dependencyAuditWaivers = {
     reason:
       'The vulnerable Hono server is transitive through the market-data SDK and needs an upstream compatibility update.',
   },
-  'GHSA-v2hh-gcrm-f6hx': {
-    expires: '2026-08-22',
-    moduleName: 'fast-uri',
-    reason:
-      'Fast-uri is transitive through the market-data SDK; remediate with its reviewed upstream dependency update.',
-  },
-  'GHSA-4c8g-83qw-93j6': {
-    expires: '2026-08-22',
-    moduleName: 'fast-uri',
-    reason:
-      'Fast-uri is transitive through the market-data SDK; remediate with its reviewed upstream dependency update.',
-  },
-  'GHSA-3jxr-9vmj-r5cp': {
-    expires: '2026-08-24',
-    moduleName: 'brace-expansion',
-    reason:
-      'Brace-expansion is transitive through the lint toolchain and needs a coordinated ESLint update.',
-  },
-  'GHSA-mh99-v99m-4gvg': {
-    expires: '2026-08-24',
-    moduleName: 'brace-expansion',
-    reason:
-      'Brace-expansion is transitive through the lint toolchain and needs a coordinated ESLint update.',
-  },
   'GHSA-52cp-r559-cp3m': {
     expires: '2026-08-30',
     moduleName: 'js-yaml',
