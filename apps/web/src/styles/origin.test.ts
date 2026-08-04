@@ -92,6 +92,16 @@ describe('Origin phone chrome', () => {
     return originCss.slice(start, end);
   }
 
+  /** The later phone block dedicated to the portalled Control Center. */
+  function controlPhoneBlock(): string {
+    const controlStart = originCss.indexOf('/* ===== R2: control center ===== */');
+    const start = originCss.indexOf(`@media (max-width: ${PHONE_SHELL_MAX_WIDTH}px)`, controlStart);
+    if (start === -1) throw new Error('Missing the Control Center phone media block');
+    const end = originCss.indexOf('/* ── Popup-native panel content', start);
+    if (end === -1) throw new Error('Unterminated Control Center phone media block');
+    return originCss.slice(start, end);
+  }
+
   it('uses the gold edge only on the active mobile destination', () => {
     const activeEdge = tokenBlock('.bt-bottombar a.is-active::before');
 
@@ -146,6 +156,15 @@ describe('Origin phone chrome', () => {
     expect(phoneCss).toContain('overflow-x: hidden');
     expect(phoneCss).toContain('overscroll-behavior: contain');
     expect(phoneCss).toContain('env(safe-area-inset-bottom, 0px)');
+  });
+
+  it('keeps Control Center header actions inside the phone sheet', () => {
+    const phoneCss = controlPhoneBlock();
+
+    expect(phoneCss).toMatch(/\.bt-cc-panel__head \{[^}]*flex-wrap: wrap[^}]*\}/);
+    expect(phoneCss).toMatch(
+      /\.bt-cc-panel__head \.bt-cc-row__control \{[^}]*width: auto[^}]*margin-left: auto[^}]*\}/,
+    );
   });
 
   it('prevents iOS field zoom and contains dense money data at 390px', () => {

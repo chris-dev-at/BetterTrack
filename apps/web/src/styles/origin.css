@@ -4691,7 +4691,11 @@
     min-width: 44px;
   }
 
-  .bt-cc-panel__head,
+  .bt-cc-panel__head {
+    align-items: stretch;
+    flex-wrap: wrap;
+  }
+
   .bt-cc-row {
     align-items: stretch;
   }
@@ -4703,6 +4707,13 @@
   .bt-cc-row__control {
     width: 100%;
     justify-content: flex-end;
+  }
+
+  /* Header actions share the row-control primitive, but must not take 100%
+     beside the title — that sum clipped actions off the phone sheet. */
+  .bt-cc-panel__head .bt-cc-row__control {
+    width: auto;
+    margin-left: auto;
   }
 
   .bt-cc-row__control :is(.bt-input, .bt-select),
