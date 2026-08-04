@@ -550,15 +550,6 @@ test('mobile overflow gate fits every core route', async ({ context }) => {
     await test.step(route, async () => {
       const target = concreteRoute(route, fixtures);
       await settleRoute(owner.page, route, target);
-      if (route === '/control') {
-        await owner.page.locator('.bt-cc__content').evaluate((content) => {
-          const probe = document.createElement('div');
-          probe.style.width = '600px';
-          probe.style.minWidth = '600px';
-          probe.textContent = 'Temporary Control Center overflow red probe';
-          content.prepend(probe);
-        });
-      }
       await expectNoPageOverflow(owner.page, route);
     });
   }
