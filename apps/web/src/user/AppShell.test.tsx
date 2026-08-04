@@ -33,6 +33,7 @@ import { listPortfolios } from '../lib/portfolioApi';
 import { listWorkboard } from '../lib/workboardApi';
 import { UserApp } from './UserApp';
 import { Dialog } from './components/Dialog';
+import { COMPACT_SHELL_MAX_WIDTH, PHONE_SHELL_MAX_WIDTH } from './hooks/useCompactShell';
 
 const member: MeResponse = {
   id: 'user-1',
@@ -66,6 +67,11 @@ function LocationProbe() {
   return <div data-testid="location">{`${location.pathname}${location.search}`}</div>;
 }
 
+function setViewportWidth(width: number) {
+  Object.defineProperty(window, 'innerWidth', { configurable: true, value: width });
+  window.dispatchEvent(new Event('resize'));
+}
+
 /** The desktop navigation rail (the mobile bottom bar shares the label). */
 async function findRail(): Promise<HTMLElement> {
   const navs = await screen.findAllByRole('navigation', { name: 'Primary' });
@@ -85,9 +91,30 @@ function suiteRows(rail: HTMLElement): HTMLElement[] {
     .filter((link) => link.closest('.bt-rail-group__children') === null);
 }
 
+/** The live topbar. */
+function topbar(): HTMLElement {
+  const header = document.querySelector<HTMLElement>('.bt-topbar');
+  expect(header).not.toBeNull();
+  return header!;
+}
+
+/**
+ * Every focusable control in the topbar, in DOM order — which IS the sequential
+ * focus order the browser walks with Tab. CSS cannot change it (flex `order`
+ * moves boxes, not tab stops), so this list is the whole contract.
+ */
+function topbarFocusOrder(): HTMLElement[] {
+  return Array.from(
+    topbar().querySelectorAll<HTMLElement>(
+      'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled])',
+    ),
+  );
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   localStorage.clear();
+  setViewportWidth(1024);
   vi.mocked(api.getMe).mockResolvedValue(member);
   vi.mocked(api.getParanoidMediaState).mockResolvedValue({
     privacyMode: 'normal',
@@ -132,6 +159,91 @@ test('the rail shows exactly the five suite destinations', async () => {
   for (const gone of ['Forecast', 'Expenses', 'Social', 'Workboard', 'Dashboard']) {
     expect(within(rail).queryByRole('link', { name: gone })).not.toBeInTheDocument();
   }
+});
+
+test('390px exposes the mobile nav while 1024px keeps the desktop rail', async () => {
+  expect(COMPACT_SHELL_MAX_WIDTH).toBe(760);
+
+  setViewportWidth(390);
+  const phone = renderAt('/assets/search');
+
+  const mobileNav = await screen.findByRole('navigation', { name: 'Primary' });
+  expect(mobileNav).toHaveClass('bt-bottombar');
+  expect(document.querySelector('.bt-rail')).not.toBeVisible();
+  expect(
+    within(mobileNav)
+      .getAllByRole('link')
+      .map((link) => link.textContent),
+  ).toEqual(['Home', 'Portfolio', 'Workbench', 'Assets', 'People']);
+  const mobileActive = mobileNav.querySelectorAll(':scope > a.is-active');
+  expect(mobileActive).toHaveLength(1);
+  expect(mobileActive[0]).toHaveAttribute('aria-current', 'page');
+  expect(mobileActive[0]).toHaveTextContent('Assets');
+
+  phone.unmount();
+  setViewportWidth(1024);
+  renderAt('/assets/search');
+
+  const desktopNav = await screen.findByRole('navigation', { name: 'Primary' });
+  expect(desktopNav).toHaveClass('bt-rail__group--suite');
+  expect(document.querySelector('.bt-bottombar')).not.toBeVisible();
+  const desktopActive = desktopNav.querySelectorAll('.bt-rail-item.is-active');
+  expect(desktopActive).toHaveLength(1);
+  expect(desktopActive[0]).toHaveTextContent('Assets');
+});
+
+/**
+ * The phone header wraps onto two rows and the portfolio switcher takes the
+ * second one. It is MOVED there in the DOM, not reordered in CSS: flex `order`
+ * is visual-only, so an `order`-based second row left Tab jumping from the
+ * switcher back UP to the first row's search and utilities (WCAG 1.3.2 /
+ * 2.4.3). This test is the load-bearing proof — the browser suite pins the
+ * pixels, but it does not run on PRs.
+ */
+test('the phone topbar puts the wrapped switcher last in focus order, not just in pixels', async () => {
+  // Lockstep with the `@media (max-width: 480px)` block in origin.css, which
+  // styles/origin.test.ts pins against this same constant.
+  expect(PHONE_SHELL_MAX_WIDTH).toBe(480);
+
+  setViewportWidth(390);
+  const phone = renderAt('/portfolio');
+
+  const phoneSwitcher = await screen.findByRole('button', { name: 'Switch portfolio' });
+  // Exactly ONE switcher is mounted — a per-placement copy would duplicate the
+  // control in the a11y tree, which is the mistake the CSS approach avoided.
+  expect(document.querySelectorAll('.bt-portfolio-switcher')).toHaveLength(1);
+  expect(phoneSwitcher.closest('.bt-topbar')).not.toBeNull();
+
+  const phoneHeader = topbar();
+  const phoneBrand = phoneHeader.querySelector<HTMLElement>('.bt-rail__brand');
+  const phoneSearch = within(phoneHeader).getAllByRole('button', { name: 'Open search (⌘K)' });
+  expect(topbarFocusOrder()).toEqual([
+    phoneBrand,
+    ...phoneSearch,
+    within(phoneHeader).getByRole('button', { name: 'Create' }),
+    within(phoneHeader).getByRole('button', { name: 'Notifications' }),
+    within(phoneHeader).getByRole('button', { name: 'Account menu' }),
+    // Visually the second row, and therefore the LAST tab stop as well.
+    phoneSwitcher,
+  ]);
+
+  phone.unmount();
+  setViewportWidth(1024);
+  renderAt('/portfolio');
+
+  // Above the breakpoint the header is a single row and the switcher sits back
+  // beside the brand, before the search — again in DOM order, not by `order`.
+  const wideSwitcher = await screen.findByRole('button', { name: 'Switch portfolio' });
+  const wideHeader = topbar();
+  expect(document.querySelectorAll('.bt-portfolio-switcher')).toHaveLength(1);
+  expect(topbarFocusOrder()).toEqual([
+    wideHeader.querySelector<HTMLElement>('.bt-rail__brand'),
+    wideSwitcher,
+    ...within(wideHeader).getAllByRole('button', { name: 'Open search (⌘K)' }),
+    within(wideHeader).getByRole('button', { name: 'Create' }),
+    within(wideHeader).getByRole('button', { name: 'Notifications' }),
+    // The account menu lives in the rail at this width, not the header.
+  ]);
 });
 
 // ─── R2 rail: expandable section groups ───────────────────────────────────────
