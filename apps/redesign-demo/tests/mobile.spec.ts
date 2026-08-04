@@ -48,6 +48,40 @@ test('mobile suite remains usable without horizontal page overflow', async ({ pa
   await page.getByRole('dialog', { name: 'Create' }).getByRole('button', { name: 'Close' }).click();
 });
 
+test('cash workspace and expense flow stay contained on a phone', async ({ page }) => {
+  await page
+    .getByRole('button', { name: /all wealth/i })
+    .first()
+    .click();
+  await page
+    .locator('.scope-popover')
+    .getByRole('button', { name: /personal wealth/i })
+    .click();
+  await page
+    .getByRole('navigation', { name: 'Mobile navigation' })
+    .getByRole('button', { name: 'Portfolios' })
+    .click();
+  await page.locator('.portfolio-tabs').getByRole('button', { name: 'Cash flow' }).click();
+
+  await expect(page.getByText('Total available cash', { exact: true })).toBeVisible();
+  await expect(page.getByText('Cash accounts', { exact: true })).toBeVisible();
+  await expect(page.getByText('This month', { exact: true })).toBeVisible();
+  await expect(page.getByText('Upcoming 14 days', { exact: true })).toBeVisible();
+  await expect(page.getByText('Recent activity', { exact: true })).toBeVisible();
+  await expectNoHorizontalOverflow(page);
+
+  const expenseAction = page.getByRole('button', { name: 'Expense', exact: true }).first();
+  await expenseAction.scrollIntoViewIfNeeded();
+  await expect(expenseAction).toBeVisible();
+  await expenseAction.click();
+
+  const expense = page.getByRole('dialog', { name: 'Record expense' });
+  await expect(expense).toBeVisible();
+  await expect(expense.getByLabel('Expense amount')).toBeVisible();
+  await expectNoHorizontalOverflow(page);
+  await expense.getByRole('button', { name: 'Close' }).click();
+});
+
 test('secondary surfaces adapt to a phone viewport', async ({ page }) => {
   const openModes = async () => {
     await page.getByLabel('Open demo preview modes').click();
