@@ -20,10 +20,12 @@ import {
 import { createOAuthRepository } from '../data/repositories/oauthRepository';
 import { paranoidVaults, users } from '../data/schema';
 import {
+  VAULT_SESSION_ONLY_ROUTE_ALLOWLIST,
   VAULT_SYNC_BEARER_ROUTE_ALLOWLIST,
   pathAcceptsBearer,
   vaultSyncRouteAcceptsBearer,
 } from '../http/middleware/bearerAuth';
+import { buildRouteTable } from '../scripts/checkOpenapiCoverage';
 import { requireCookieSessionOrVaultSync } from '../http/routes/vaultRoutes';
 import {
   isParanoidKilledScope,
@@ -206,11 +208,7 @@ describe('#1043 vault bearer policy', () => {
   ] as const;
 
   const SESSION_ONLY = [
-    { method: 'PATCH', path: '/vault/media' },
-    { method: 'PUT', path: '/vault/media/server-candidate' },
-    { method: 'GET', path: `/vault/media/server-candidate/${MISSING_ID}` },
-    { method: 'POST', path: '/vault/media/retired/purge/challenge' },
-    { method: 'POST', path: '/vault/media/retired/purge' },
+    ...VAULT_SESSION_ONLY_ROUTE_ALLOWLIST,
     { method: 'POST', path: '/account/paranoid/enable' },
     { method: 'POST', path: '/account/paranoid/disable' },
     { method: 'GET', path: '/account/paranoid/fork-provenance' },
@@ -230,6 +228,28 @@ describe('#1043 vault bearer policy', () => {
     }
     expect(pathAcceptsBearer('/vault/future-transition', 'GET')).toBe(false);
     expect(pathAcceptsBearer('/vault/history/admin', 'GET')).toBe(false);
+  });
+
+  it('classifies every real mounted vault route as sync or session-only', () => {
+    const mounted = buildRouteTable().flatMap((route) =>
+      route.kind === 'route' && route.path.startsWith('/api/v1/vault')
+        ? [{ method: route.method, path: route.path.slice('/api/v1'.length) }]
+        : [],
+    );
+    const classified = [
+      ...VAULT_SYNC_BEARER_ROUTE_ALLOWLIST,
+      ...VAULT_SESSION_ONLY_ROUTE_ALLOWLIST,
+    ].map(({ method, path }) => ({ method, path }));
+    const sortRoutes = (routes: Array<{ method: string; path: string }>) =>
+      routes.sort(
+        (left, right) =>
+          left.path.localeCompare(right.path) || left.method.localeCompare(right.method),
+      );
+
+    expect(new Set(classified.map((route) => `${route.method} ${route.path}`)).size).toBe(
+      classified.length,
+    );
+    expect(sortRoutes(mounted)).toEqual(sortRoutes(classified));
   });
 
   it('keeps the router-local guard default-closed independently of global scope policy', () => {
