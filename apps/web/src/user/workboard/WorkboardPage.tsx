@@ -522,8 +522,15 @@ function UpcomingEarningsZone() {
   );
 }
 
-// ─── Zone 2: Alerts (placeholder) ────────────────────────────────────────────
+// ─── Zone 2: Alerts (summary panel not built yet — signposts the real tab) ────
 
+/**
+ * The overview's alerts panel is still a stub, but ALERTS THEMSELVES SHIP —
+ * `/workbench/alerts` is a full CRUD page one tab away. The copy therefore says
+ * that the *panel* is unbuilt and points at the feature, instead of the old
+ * "Alerts panel coming soon", which told a user holding twelve live alerts that
+ * the feature did not exist yet.
+ */
 function AlertsZone() {
   const t = useT();
   return (
@@ -536,13 +543,18 @@ function AlertsZone() {
           icon="🔔"
           title={t('workboard.overview.alerts.emptyTitle')}
           description={t('workboard.overview.alerts.emptyDescription')}
+          cta={
+            <Link to="/workbench/alerts" className="rounded text-sm bt-link">
+              {t('workboard.overview.alerts.emptyCta')}
+            </Link>
+          }
         />
       </div>
     </section>
   );
 }
 
-// ─── Zone 3: My Conglomerates (placeholder) ───────────────────────────────────
+// ─── Zone 3: My Blueprints (same stub-vs-shipped split as AlertsZone) ─────────
 
 function ConglomeratesZone() {
   const t = useT();
@@ -556,6 +568,11 @@ function ConglomeratesZone() {
           icon="📊"
           title={t('workboard.overview.conglomerates.emptyTitle')}
           description={t('workboard.overview.conglomerates.emptyDescription')}
+          cta={
+            <Link to="/workbench/blueprints" className="rounded text-sm bt-link">
+              {t('workboard.overview.conglomerates.emptyCta')}
+            </Link>
+          }
         />
       </div>
     </section>
