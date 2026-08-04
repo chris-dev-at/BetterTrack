@@ -137,4 +137,23 @@ describe('Origin phone chrome', () => {
     expect(phoneCss).toContain('min-height: 44px');
     expect(phoneCss).toContain('.bt-topbar .bt-popover :is(a, button, input, select, textarea)');
   });
+
+  it('turns opted-in money dialogs into one-axis full-height phone sheets', () => {
+    const phoneCss = phoneBlock();
+
+    expect(phoneCss).toContain('.bt-dialog__panel.bt-dialog__panel--phone-sheet');
+    expect(phoneCss).toContain('height: calc(100 * var(--bt-dvh))');
+    expect(phoneCss).toContain('overflow-x: hidden');
+    expect(phoneCss).toContain('overscroll-behavior: contain');
+    expect(phoneCss).toContain('env(safe-area-inset-bottom, 0px)');
+  });
+
+  it('prevents iOS field zoom and contains dense money data at 390px', () => {
+    const phoneCss = phoneBlock();
+
+    expect(phoneCss).toContain('.bt-money-surface :is(input, select, textarea)');
+    expect(phoneCss).toContain('font-size: 16px !important');
+    expect(phoneCss).toContain('.bt-phone-scroll-table .bt-phone-scroll-table__lead');
+    expect(phoneCss).toContain('position: sticky');
+  });
 });

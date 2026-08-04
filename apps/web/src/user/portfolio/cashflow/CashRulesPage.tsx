@@ -108,7 +108,7 @@ export function CashRulesPage({ embedded = false }: { embedded?: boolean } = {})
   }
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="bt-money-surface flex flex-col gap-6">
       <SectionHead
         action={
           <>
@@ -185,7 +185,7 @@ export function CashRulesPage({ embedded = false }: { embedded?: boolean } = {})
                   </p>
                 </div>
                 {confirmDeleteId === rule.id ? (
-                  <span className="flex shrink-0 items-center gap-1">
+                  <span className="bt-row-actions flex shrink-0 items-center gap-1">
                     <Button
                       disabled={remove.isPending}
                       onClick={() => remove.mutate(rule.id)}
@@ -199,7 +199,7 @@ export function CashRulesPage({ embedded = false }: { embedded?: boolean } = {})
                     </Button>
                   </span>
                 ) : (
-                  <span className="flex shrink-0 items-center gap-1">
+                  <span className="bt-row-actions flex shrink-0 items-center gap-1">
                     <Button onClick={() => setEditing(rule)} size="sm" variant="quiet">
                       {t('common.edit')}
                     </Button>

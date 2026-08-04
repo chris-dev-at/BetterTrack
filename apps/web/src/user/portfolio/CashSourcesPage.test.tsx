@@ -8,6 +8,7 @@ vi.mock('../../lib/portfolioApi');
 import * as portfolioApi from '../../lib/portfolioApi';
 
 import { CashSourcesPage } from './CashSourcesPage';
+import { setViewportWidth } from '../../test/viewport';
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -128,6 +129,21 @@ beforeEach(() => {
 });
 
 describe('CashSourcesPage', () => {
+  test('390px uses source and history cards and opens a full-height source sheet', async () => {
+    setViewportWidth(390);
+    const user = userEvent.setup();
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText('6.000,00 €')).toBeInTheDocument());
+    expect(document.querySelectorAll('.bt-phone-card-list')).toHaveLength(2);
+    expect(document.querySelector('.bt-money-surface table')).toBeNull();
+
+    await user.click(screen.getByRole('button', { name: 'Add source' }));
+    expect(screen.getByRole('dialog', { name: 'Add cash source' })).toHaveClass(
+      'bt-dialog__panel--phone-sheet',
+    );
+  });
+
   test('renders a cash-history read failure without hiding the source ledger', async () => {
     vi.mocked(portfolioApi.getCashMovements).mockRejectedValue(new Error('history unavailable'));
     renderPage();

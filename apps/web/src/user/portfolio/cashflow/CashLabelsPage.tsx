@@ -30,7 +30,7 @@ export function CashLabelsPage() {
     : '/portfolio/cash/movements';
 
   return (
-    <div className="flex flex-col gap-8">
+    <div className="bt-money-surface flex flex-col gap-8">
       <PageHead
         actions={
           <Link className="bt-btn" to={movements}>

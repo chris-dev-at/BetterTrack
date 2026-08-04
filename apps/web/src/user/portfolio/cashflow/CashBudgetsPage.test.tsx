@@ -38,6 +38,7 @@ import {
 import { ApiError } from '../../../lib/apiClient';
 
 import { CashBudgetsPage } from './CashBudgetsPage';
+import { setViewportWidth } from '../../../test/viewport';
 
 const PORTFOLIOS: PortfolioListResponse = {
   portfolios: [
@@ -104,6 +105,26 @@ beforeEach(() => {
 });
 
 describe('CashBudgetsPage', () => {
+  test('390px keeps the month, budget actions and edit sheet inside the money surface', async () => {
+    setViewportWidth(390);
+    vi.mocked(listCashBudgets).mockResolvedValue({
+      period: '2026-07',
+      budgets: [budget()],
+    });
+    const user = userEvent.setup();
+    renderPage();
+
+    const food = await screen.findByText('Food');
+    const surface = food.closest<HTMLElement>('.bt-money-surface');
+    expect(surface).not.toBeNull();
+    expect(within(surface!).getByLabelText('Month')).toBeInTheDocument();
+
+    await user.click(within(surface!).getByRole('button', { name: 'Edit' }));
+    expect(screen.getByRole('dialog', { name: 'Edit budget' })).toHaveClass(
+      'bt-dialog__panel--phone-sheet',
+    );
+  });
+
   test('renders a tag read failure without hiding the budget workspace', async () => {
     vi.mocked(listCashTags).mockRejectedValue(new Error('tags unavailable'));
     renderPage();

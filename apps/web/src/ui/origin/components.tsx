@@ -401,6 +401,7 @@ export function ODialog({
   foot,
   wide = false,
   size = 'default',
+  phoneSheet = false,
 }: {
   open: boolean;
   onClose: () => void;
@@ -408,6 +409,8 @@ export function ODialog({
   children: ReactNode;
   foot?: ReactNode;
   wide?: boolean;
+  /** Fill the phone viewport while preserving the centred desktop dialog. */
+  phoneSheet?: boolean;
   /**
    * `'wizard'` gives the panel the Control Center's geometry — a big centred
    * popup with room for a stepper — instead of the default form-sized panel.
@@ -446,11 +449,15 @@ export function ODialog({
   return createPortal(
     <div className="bt-app bt-dialog-root">
       <button aria-label={t('common.close')} className="bt-scrim" onClick={onClose} type="button" />
-      <div className="bt-dialog">
+      <div className={cx('bt-dialog', phoneSheet && 'bt-dialog--phone-sheet')}>
         <div
           aria-labelledby={titleId}
           aria-modal="true"
-          className={cx('bt-dialog__panel', size === 'wizard' && 'bt-dialog__panel--wizard')}
+          className={cx(
+            'bt-dialog__panel',
+            size === 'wizard' && 'bt-dialog__panel--wizard',
+            phoneSheet && 'bt-dialog__panel--phone-sheet',
+          )}
           ref={panelRef}
           role="dialog"
           style={wide ? { width: 'min(760px, 100%)' } : undefined}

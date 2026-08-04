@@ -192,7 +192,7 @@ export function PortfolioSettingsPage() {
   const onlyOneActive = portfolios.length <= 1;
 
   return (
-    <div className="flex flex-col">
+    <div className="bt-money-surface flex flex-col">
       <PageHead title={t('portfolio.settings.title')} />
 
       {/* ── General ─────────────────────────────────────────────────────── */}
@@ -381,6 +381,7 @@ export function PortfolioSettingsPage() {
             setConfirmArchive(null);
             setActionError(null);
           }}
+          phoneSheet
           title={t('portfolio.switcher.archiveDialogTitle')}
           widthClassName="max-w-md"
         >
@@ -492,6 +493,7 @@ function DeletePortfolioDialog({
     <Dialog
       description={t('portfolio.switcher.deleteDialogDescription', { name: portfolio.name })}
       onClose={onClose}
+      phoneSheet
       title={t('portfolio.switcher.deleteDialogTitle')}
       widthClassName="max-w-md"
     >

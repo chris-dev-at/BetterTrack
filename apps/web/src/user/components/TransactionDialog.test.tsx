@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
@@ -13,6 +13,7 @@ import type { DailyClosesResponse, PricePoint } from '@bettertrack/contracts';
 import { ApiError } from '../../lib/apiClient';
 import * as assetApi from '../../lib/assetApi';
 import * as portfolioApi from '../../lib/portfolioApi';
+import { setViewportWidth } from '../../test/viewport';
 import {
   DERIVED_QUANTITY_DECIMALS,
   deriveQuantityFromAmount,
@@ -786,6 +787,20 @@ describe('TransactionDialog — pay from cash / add proceeds to cash', () => {
 // --- Dialog: redesign — segmented side, header, Max chip (#378 Part B) -------
 
 describe('TransactionDialog — redesigned form (#378 Part B)', () => {
+  test('390px opens as a full-height sheet with single-column amount fields', async () => {
+    setViewportWidth(390);
+    const user = userEvent.setup();
+    renderDialog();
+
+    const dialog = screen.getByRole('dialog', { name: 'New transaction' });
+    expect(dialog).toHaveClass('bt-dialog__panel--phone-sheet');
+    expect(document.querySelector('.bt-dialog-layer--phone-sheet')).not.toBeNull();
+    expect(dialog.querySelector('.grid.grid-cols-1')).not.toBeNull();
+
+    await user.click(within(dialog).getByRole('button', { name: 'Sell' }));
+    expect(within(dialog).getByRole('button', { name: 'Record sell' })).toBeInTheDocument();
+  });
+
   test('shows the "New transaction" title and the portfolio name subtitle', () => {
     renderDialog({ portfolioName: 'Main' });
     expect(screen.getByText('New transaction')).toBeInTheDocument();

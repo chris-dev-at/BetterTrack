@@ -30,6 +30,7 @@ import {
 import { listCashTags, setCashMovementTags } from '../../../lib/cashApi';
 
 import { CashMovementsPage } from './CashMovementsPage';
+import { setViewportWidth } from '../../../test/viewport';
 
 const PORTFOLIOS: PortfolioListResponse = {
   portfolios: [
@@ -116,6 +117,35 @@ beforeEach(() => {
 });
 
 describe('CashMovementsPage', () => {
+  test('390px renders movement cards with the edit sheet reachable in place', async () => {
+    setViewportWidth(390);
+    vi.mocked(listCashSources).mockResolvedValue({
+      sources: [
+        {
+          id: 'src-1',
+          name: 'Main',
+          type: 'bank',
+          isMain: true,
+          balanceEur: 1_000,
+          archivedAt: null,
+          createdAt: '2026-01-01T00:00:00.000Z',
+        },
+      ],
+    });
+    const user = userEvent.setup();
+    renderPage();
+
+    const note = await screen.findByText('Landlord');
+    const card = note.closest<HTMLElement>('.bt-phone-card');
+    expect(card).not.toBeNull();
+    expect(document.querySelector('.bt-money-surface table')).toBeNull();
+
+    await user.click(within(card!).getByRole('button', { name: 'Edit' }));
+    expect(await screen.findByRole('dialog', { name: 'Edit transaction' })).toHaveClass(
+      'bt-dialog__panel--phone-sheet',
+    );
+  });
+
   test('renders a tag read failure without hiding the movement ledger', async () => {
     vi.mocked(listCashTags).mockRejectedValue(new Error('tags unavailable'));
     renderPage();

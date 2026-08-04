@@ -149,7 +149,7 @@ export function CashOverviewPage() {
   const tagMax = Math.max(1, ...summary.tags.map((tag) => tag.outflow));
 
   return (
-    <div className="flex flex-col gap-8">
+    <div className="bt-money-surface flex flex-col gap-8">
       <PageHead
         actions={
           <>

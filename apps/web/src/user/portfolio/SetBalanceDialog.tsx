@@ -72,6 +72,7 @@ export function SetBalanceDialog({
       title={t('portfolio.cashSources.setBalance.title')}
       description={source.name}
       onClose={onClose}
+      phoneSheet
       widthClassName="max-w-md"
     >
       <form onSubmit={handleSubmit} className="flex flex-col gap-4">

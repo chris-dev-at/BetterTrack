@@ -93,6 +93,7 @@ import {
   withdrawCash,
 } from '../../lib/portfolioApi';
 import { PortfolioPage } from './PortfolioPage';
+import { setViewportWidth } from '../../test/viewport';
 
 /** The single auto-created default portfolio (§6.8) resolved before any scoped call. */
 const DEFAULT_PORTFOLIO_ID = 'p1';
@@ -694,6 +695,30 @@ describe('PortfolioPage — expandable rows', () => {
     const editButton = screen.getByRole('button', { name: /Edit transaction from/i });
     expect(editButton).toBeInTheDocument();
     expect(within(editButton.closest('tr')!).getByText('Buy')).toBeInTheDocument();
+  });
+
+  test('390px uses action-complete cards for holdings and transaction ledgers', async () => {
+    setViewportWidth(390);
+    const user = userEvent.setup();
+    renderPage();
+
+    const holdings = await screen.findByRole('region', { name: 'Holdings' });
+    await waitFor(() => expect(within(holdings).getByRole('link', { name: 'AAPL' })).toBeVisible());
+    expect(within(holdings).queryByRole('table')).not.toBeInTheDocument();
+    expect(holdings.querySelector('.bt-phone-card-list')).not.toBeNull();
+
+    await user.click(within(holdings).getByRole('button', { name: /Expand AAPL transactions/i }));
+    const edit = within(holdings).getByRole('button', { name: /Edit transaction from/i });
+    expect(edit.closest('li')).not.toBeNull();
+
+    await user.click(edit);
+    expect(screen.getByRole('dialog', { name: 'Edit transaction' })).toHaveClass(
+      'bt-dialog__panel--phone-sheet',
+    );
+
+    const recent = screen.getByRole('region', { name: 'Recent transactions' });
+    expect(within(recent).queryByRole('table')).not.toBeInTheDocument();
+    expect(recent.querySelector('.bt-phone-card-list')).not.toBeNull();
   });
 
   test('deletes a transaction through the inline confirm', async () => {

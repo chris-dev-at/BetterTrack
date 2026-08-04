@@ -371,6 +371,7 @@ export function RecordCashDialog({
   return (
     <Dialog
       onClose={onClose}
+      phoneSheet
       title={editing ? t('cashflow.record.editTitle') : t('cashflow.record.title')}
       widthClassName="max-w-md"
     >

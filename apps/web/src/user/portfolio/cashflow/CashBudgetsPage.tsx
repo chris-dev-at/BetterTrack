@@ -98,7 +98,7 @@ export function CashBudgetsPage() {
   const canCreate = tags.some((tag) => !budgetedTagIds.has(tag.id));
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="bt-money-surface flex flex-col gap-6">
       <PageHead
         actions={
           <>
@@ -156,7 +156,7 @@ export function CashBudgetsPage() {
                   <span className="shrink-0 bt-num bt-soft ml-auto">
                     {formatMoney(b.spent, b.currency)} / {formatMoney(b.amount, b.currency)}
                   </span>
-                  <span className="flex shrink-0 items-center gap-1">
+                  <span className="bt-row-actions flex shrink-0 items-center gap-1">
                     <Button onClick={() => setEditing(b)} size="sm" variant="quiet">
                       {t('common.edit')}
                     </Button>

@@ -33,7 +33,9 @@ export function SectionHead({ title, sub, action, embedded = false }: SectionHea
           {sub}
         </p>
       </div>
-      {action ? <div className="flex shrink-0 items-center gap-2">{action}</div> : null}
+      {action ? (
+        <div className="bt-row-actions flex shrink-0 items-center gap-2">{action}</div>
+      ) : null}
     </div>
   );
 }

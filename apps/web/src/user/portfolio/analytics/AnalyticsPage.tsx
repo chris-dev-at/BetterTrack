@@ -434,7 +434,7 @@ export function AnalyticsPage() {
   const chartLoading = analyticsQuery.isLoading || (overlayAssets && overlayHistory.isLoading);
 
   return (
-    <div className="flex flex-col gap-8">
+    <div className="bt-money-surface flex flex-col gap-8">
       <PageHeader t={t} />
 
       {analyticsQuery.isError ? (
@@ -646,7 +646,7 @@ function InflationControl({
     });
   };
   return (
-    <div className="flex items-center gap-2">
+    <div className="flex flex-wrap items-center gap-2">
       <select
         aria-label={t('portfolio.analytics.inflation.label')}
         value={inflation}

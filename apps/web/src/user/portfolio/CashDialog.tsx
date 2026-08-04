@@ -164,7 +164,12 @@ export function CashDialog({
   }
 
   return (
-    <Dialog title={t('portfolio.cash.title')} onClose={onClose} widthClassName="max-w-md">
+    <Dialog
+      title={t('portfolio.cash.title')}
+      onClose={onClose}
+      phoneSheet
+      widthClassName="max-w-md"
+    >
       <form onSubmit={handleSubmit} className="flex flex-col gap-4" aria-labelledby={headingId}>
         <span id={headingId} className="sr-only">
           {t('portfolio.cash.title')}
