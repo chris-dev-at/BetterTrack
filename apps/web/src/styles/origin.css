@@ -107,6 +107,9 @@
 /* ── Base canvas ─────────────────────────────────────────────────────────── */
 
 .bt-app {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
   min-height: calc(100 * var(--bt-vh));
   background:
     radial-gradient(circle at 40% -16%, rgba(56, 189, 248, 0.05), transparent 30rem),
@@ -172,6 +175,9 @@
 .bt-shell {
   display: grid;
   grid-template-columns: var(--bt-rail-w) minmax(0, 1fr);
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
   min-height: calc(100 * var(--bt-vh));
   transition: grid-template-columns var(--bt-t-panel);
 }
@@ -477,10 +483,12 @@
   background: color-mix(in srgb, var(--bt-nav) 92%, transparent);
   backdrop-filter: blur(12px);
   border-top: 1px solid var(--bt-border);
-  padding: 4px 6px calc(6px + env(safe-area-inset-bottom, 0px));
+  padding: 4px calc(6px + env(safe-area-inset-right, 0px))
+    calc(6px + env(safe-area-inset-bottom, 0px)) calc(6px + env(safe-area-inset-left, 0px));
 }
 
 .bt-bottombar a {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -495,7 +503,34 @@
 }
 
 .bt-bottombar a.is-active {
+  color: var(--bt-text);
+}
+
+/* The same active-edge language as the desktop rail, rotated onto the top
+   edge of the phone bar. Only a top-level main destination can receive it. */
+.bt-bottombar a.is-active::before {
+  content: '';
+  position: absolute;
+  top: -5px;
+  left: 50%;
+  translate: -50% 0;
+  width: 24px;
+  height: 3px;
+  border-radius: 0 0 2px 2px;
+  background: var(--bt-gold);
+}
+
+.bt-bottombar a.is-active > svg {
   color: var(--bt-gold);
+}
+
+.bt-bottombar__label {
+  display: block;
+  width: 100%;
+  overflow: hidden;
+  text-align: center;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ── Typography ──────────────────────────────────────────────────────────── */
@@ -1747,6 +1782,68 @@
   .bt-drawer {
     width: calc(100 * var(--bt-vw));
     border-left: 0;
+  }
+}
+
+/* Phone chrome: keep the persistent actions on the first row and give the
+   portfolio scope its own full-width row. This makes every control a 44px
+   target without asking a 390px viewport to hold six controls plus the
+   switcher side-by-side. Side/top insets pair with the bottom bar's inset. */
+@media (max-width: 480px) {
+  .bt-topbar {
+    flex-wrap: wrap;
+    gap: 4px;
+    max-width: 100%;
+    padding: env(safe-area-inset-top, 0px) calc(8px + env(safe-area-inset-right, 0px)) 8px
+      calc(8px + env(safe-area-inset-left, 0px));
+  }
+
+  .bt-topbar__brand-slot {
+    order: 1;
+    flex: none;
+  }
+
+  .bt-topbar__spacer {
+    order: 2;
+  }
+
+  .bt-topbar__search {
+    order: 3;
+  }
+
+  .bt-topbar__actions {
+    order: 4;
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .bt-topbar > .bt-portfolio-switcher {
+    order: 5;
+    flex: 0 0 100%;
+    width: 100%;
+    max-width: 100%;
+  }
+
+  .bt-topbar .bt-rail__brand,
+  .bt-topbar .bt-btn,
+  .bt-topbar__actions button,
+  .bt-topbar .bt-portfolio-trigger {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .bt-topbar .bt-rail__brand {
+    justify-content: center;
+    padding: 0;
+  }
+
+  .bt-topbar .bt-btn--icon {
+    width: 44px;
+  }
+
+  .bt-topbar .bt-portfolio-trigger {
+    width: 100%;
+    max-width: 100%;
   }
 }
 

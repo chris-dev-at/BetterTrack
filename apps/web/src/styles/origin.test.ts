@@ -4,6 +4,7 @@ import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 const originCss = readFileSync(resolve(process.cwd(), 'src/styles/origin.css'), 'utf8');
+const indexHtml = readFileSync(resolve(process.cwd(), 'index.html'), 'utf8');
 
 const OPAQUE_SURFACES = [
   '--bt-bg',
@@ -77,4 +78,28 @@ describe('Origin informational text contrast', () => {
       });
     }
   }
+});
+
+describe('Origin phone chrome', () => {
+  it('uses the gold edge only on the active mobile destination', () => {
+    const activeEdge = tokenBlock('.bt-bottombar a.is-active::before');
+
+    expect(activeEdge).toContain("content: ''");
+    expect(activeEdge).toContain('background: var(--bt-gold)');
+    expect(originCss).not.toContain('.bt-bottombar a::before {');
+  });
+
+  it('reserves safe areas and 44px targets at the phone breakpoint', () => {
+    const phoneStart = originCss.indexOf('@media (max-width: 480px)');
+    const phoneEnd = originCss.indexOf('/* One-pixel rule helpers', phoneStart);
+    const phoneCss = originCss.slice(phoneStart, phoneEnd);
+
+    expect(phoneStart).toBeGreaterThan(-1);
+    expect(indexHtml).toContain('viewport-fit=cover');
+    for (const inset of ['top', 'right', 'bottom', 'left']) {
+      expect(originCss).toContain(`env(safe-area-inset-${inset}, 0px)`);
+    }
+    expect(phoneCss).toContain('min-width: 44px');
+    expect(phoneCss).toContain('min-height: 44px');
+  });
 });

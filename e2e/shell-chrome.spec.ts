@@ -2,7 +2,7 @@ import { expect, request as newRequestContext, test } from '@playwright/test';
 
 import { loginAsAdmin } from './support/adminApi';
 import { API_BASE_URL } from './support/config';
-import { provisionUser } from './support/users';
+import { provisionUserInContext } from './support/users';
 
 /**
  * The shell's chrome must fit the viewport it is given, and its persistent
@@ -36,15 +36,19 @@ const PRIMARY_DESTINATIONS = [
   '/people',
 ] as const;
 
-test('shell chrome fits the viewport and keeps the account menu reachable', async ({ browser }) => {
+test('shell chrome fits the viewport and keeps every main area reachable', async ({
+  context,
+}, testInfo) => {
   test.setTimeout(180_000);
 
   const apiRequest = await newRequestContext.newContext({ baseURL: API_BASE_URL });
   await loginAsAdmin(apiRequest);
-  const user = await provisionUser(browser, apiRequest, 'chrome');
+  const mobile = testInfo.project.name === 'mobile-chromium';
+  const user = await provisionUserInContext(context, apiRequest, `chrome-${testInfo.project.name}`);
   await apiRequest.dispose();
 
   const { page } = user;
+  if (mobile) await page.setViewportSize({ width: 390, height: 844 });
 
   for (const route of PRIMARY_DESTINATIONS) {
     await page.goto(route);
@@ -56,6 +60,26 @@ test('shell chrome fits the viewport and keeps the account menu reachable', asyn
       timeout: 20_000,
     });
 
+    const mobileNav = page.locator('.bt-bottombar');
+    const desktopRail = page.locator('.bt-rail');
+    if (mobile) {
+      await expect(mobileNav).toBeVisible();
+      await expect(desktopRail).toBeHidden();
+      await expect(mobileNav.getByRole('link')).toHaveCount(5);
+    } else {
+      await expect(desktopRail).toBeVisible();
+      await expect(mobileNav).toBeHidden();
+    }
+
+    const activeMainItems = page.locator(
+      '.bt-bottombar > a.is-active, .bt-rail__group--suite > .bt-rail-item.is-active, .bt-rail__group--suite > .bt-rail-group > .bt-rail-item.is-active',
+    );
+    await expect(activeMainItems).toHaveCount(1);
+    const activeEdge = await activeMainItems.evaluateAll((items) =>
+      items.map((item) => getComputedStyle(item, '::before').content),
+    );
+    expect(activeEdge).toEqual(expect.arrayContaining([expect.not.stringMatching(/^none$/)]));
+
     const layout = await page.evaluate(() => ({
       scrollWidth: document.documentElement.scrollWidth,
       clientWidth: document.documentElement.clientWidth,
@@ -66,6 +90,27 @@ test('shell chrome fits the viewport and keeps the account menu reachable', asyn
       layout.scrollWidth,
       `${route} scrolls horizontally: ${layout.scrollWidth}px of content in a ${layout.clientWidth}px viewport`,
     ).toBeLessThanOrEqual(layout.clientWidth + 1);
+
+    if (mobile) {
+      const undersizedTargets = await page
+        .locator('.bt-topbar a, .bt-topbar button, .bt-bottombar a')
+        .evaluateAll((targets) =>
+          targets
+            .filter((target) => {
+              const style = getComputedStyle(target);
+              return style.display !== 'none' && style.visibility !== 'hidden';
+            })
+            .map((target) => {
+              const box = target.getBoundingClientRect();
+              return {
+                label: target.getAttribute('aria-label') ?? target.textContent,
+                ...box.toJSON(),
+              };
+            })
+            .filter((target) => target.width < 44 || target.height < 44),
+        );
+      expect(undersizedTargets, `${route} has undersized chrome targets`).toEqual([]);
+    }
   }
 
   // The menu must actually open and offer the way out, not merely exist.

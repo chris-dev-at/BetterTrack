@@ -33,6 +33,7 @@ import { listPortfolios } from '../lib/portfolioApi';
 import { listWorkboard } from '../lib/workboardApi';
 import { UserApp } from './UserApp';
 import { Dialog } from './components/Dialog';
+import { COMPACT_SHELL_MAX_WIDTH } from './hooks/useCompactShell';
 
 const member: MeResponse = {
   id: 'user-1',
@@ -66,6 +67,11 @@ function LocationProbe() {
   return <div data-testid="location">{`${location.pathname}${location.search}`}</div>;
 }
 
+function setViewportWidth(width: number) {
+  Object.defineProperty(window, 'innerWidth', { configurable: true, value: width });
+  window.dispatchEvent(new Event('resize'));
+}
+
 /** The desktop navigation rail (the mobile bottom bar shares the label). */
 async function findRail(): Promise<HTMLElement> {
   const navs = await screen.findAllByRole('navigation', { name: 'Primary' });
@@ -88,6 +94,7 @@ function suiteRows(rail: HTMLElement): HTMLElement[] {
 beforeEach(() => {
   vi.clearAllMocks();
   localStorage.clear();
+  setViewportWidth(1024);
   vi.mocked(api.getMe).mockResolvedValue(member);
   vi.mocked(api.getParanoidMediaState).mockResolvedValue({
     privacyMode: 'normal',
@@ -132,6 +139,37 @@ test('the rail shows exactly the five suite destinations', async () => {
   for (const gone of ['Forecast', 'Expenses', 'Social', 'Workboard', 'Dashboard']) {
     expect(within(rail).queryByRole('link', { name: gone })).not.toBeInTheDocument();
   }
+});
+
+test('390px exposes the mobile nav while 1024px keeps the desktop rail', async () => {
+  expect(COMPACT_SHELL_MAX_WIDTH).toBe(760);
+
+  setViewportWidth(390);
+  const phone = renderAt('/assets/search');
+
+  const mobileNav = await screen.findByRole('navigation', { name: 'Primary' });
+  expect(mobileNav).toHaveClass('bt-bottombar');
+  expect(document.querySelector('.bt-rail')).not.toBeVisible();
+  expect(
+    within(mobileNav)
+      .getAllByRole('link')
+      .map((link) => link.textContent),
+  ).toEqual(['Home', 'Portfolio', 'Workbench', 'Assets', 'People']);
+  const mobileActive = mobileNav.querySelectorAll(':scope > a.is-active');
+  expect(mobileActive).toHaveLength(1);
+  expect(mobileActive[0]).toHaveAttribute('aria-current', 'page');
+  expect(mobileActive[0]).toHaveTextContent('Assets');
+
+  phone.unmount();
+  setViewportWidth(1024);
+  renderAt('/assets/search');
+
+  const desktopNav = await screen.findByRole('navigation', { name: 'Primary' });
+  expect(desktopNav).toHaveClass('bt-rail__group--suite');
+  expect(document.querySelector('.bt-bottombar')).not.toBeVisible();
+  const desktopActive = desktopNav.querySelectorAll('.bt-rail-item.is-active');
+  expect(desktopActive).toHaveLength(1);
+  expect(desktopActive[0]).toHaveTextContent('Assets');
 });
 
 // ─── R2 rail: expandable section groups ───────────────────────────────────────

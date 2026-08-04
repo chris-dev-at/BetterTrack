@@ -672,7 +672,7 @@ export function OriginShell() {
         {t('accessibility.skipToContent')}
       </a>
       <div className="bt-shell" data-rail={collapsed ? 'collapsed' : 'expanded'}>
-        <aside className="bt-rail">
+        <aside className="bt-rail" hidden={compactShell}>
           <RailBrand />
           {/* The suite section scrolls on its own when an open tree outgrows
               the viewport — it may push the utilities down only until the
@@ -741,7 +741,7 @@ export function OriginShell() {
 
         <div className="bt-main">
           <header className="bt-topbar">
-            <span className="bt-hide-above-md">
+            <span className="bt-topbar__brand-slot bt-hide-above-md">
               <RailBrand />
             </span>
             {portfolioScoped ? <PortfolioSwitcher /> : null}
@@ -752,7 +752,7 @@ export function OriginShell() {
             <button
               aria-keyshortcuts="Meta+K Control+K"
               aria-label={t('nav.openSearch')}
-              className="bt-searchfield bt-hide-below-sm"
+              className="bt-searchfield bt-topbar__search bt-hide-below-sm"
               onClick={openPalette}
               type="button"
             >
@@ -762,7 +762,7 @@ export function OriginShell() {
             </button>
             <Button
               aria-label={t('nav.openSearch')}
-              className="bt-hide-above-sm"
+              className="bt-topbar__search bt-hide-above-sm"
               icon="search"
               iconOnly
               onClick={openPalette}
@@ -817,7 +817,7 @@ export function OriginShell() {
 
       {/* Mobile primary nav — CSS-hidden on desktop (display:none removes it
           from the a11y tree there), so the duplicate landmark name is fine. */}
-      <nav aria-label={t('nav.primary')} className="bt-bottombar">
+      <nav aria-label={t('nav.primary')} className="bt-bottombar" hidden={!compactShell}>
         {SUITE_ITEMS.map((item) => {
           const active = isDestinationActive(item, pathname);
           return (
@@ -828,7 +828,7 @@ export function OriginShell() {
               to={item.to}
             >
               <Icon name={item.icon} size={19} />
-              {t(item.labelKey)}
+              <span className="bt-bottombar__label">{t(item.labelKey)}</span>
             </NavLink>
           );
         })}
