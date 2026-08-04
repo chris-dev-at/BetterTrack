@@ -157,6 +157,7 @@ export function AlertDialog({ onClose, asset, referencePrice, existing }: AlertD
 
   return (
     <Dialog
+      phoneSheet
       title={
         editing ? t('workboard.alerts.dialog.editTitle') : t('workboard.alerts.dialog.createTitle')
       }
@@ -277,7 +278,7 @@ export function AlertDialog({ onClose, asset, referencePrice, existing }: AlertD
 
         {errorMessage ? <AlertBanner tone="error">{errorMessage}</AlertBanner> : null}
 
-        <div className="flex justify-end gap-2">
+        <div className="flex flex-wrap justify-end gap-2">
           <Button disabled={mutation.isPending} onClick={onClose}>
             {t('common.cancel')}
           </Button>

@@ -127,12 +127,12 @@ function IncomingRequestRow({
   const t = useT();
   const busy = pendingAction !== null;
   return (
-    <li className="bt-band__row flex items-center justify-between gap-3">
+    <li className="bt-band__row bt-friend-request-row flex flex-col items-stretch justify-between gap-3 sm:flex-row sm:items-center">
       <span className="flex min-w-0 items-center gap-3">
         <Avatar name={request.user.username} iconId={request.user.profileIcon} size="sm" />
         <span className="bt-row-title truncate">{request.user.username}</span>
       </span>
-      <span className="flex gap-2">
+      <span className="bt-friend-request-row__actions flex flex-wrap gap-2">
         {/* Accepting is the one action this block exists for — it carries the
             gold; everything beside it stays quiet (Origin: one primary). */}
         <Button disabled={busy} onClick={onAccept} size="sm" variant="primary">
@@ -159,7 +159,7 @@ function OutgoingRequestRow({
 }) {
   const t = useT();
   return (
-    <li className="bt-band__row flex items-center justify-between gap-3">
+    <li className="bt-band__row bt-friend-request-row flex flex-col items-stretch justify-between gap-3 sm:flex-row sm:items-center">
       <span className="flex min-w-0 items-center gap-3">
         <Avatar name={request.user.username} iconId={request.user.profileIcon} size="sm" />
         <span className="bt-row-title truncate">{request.user.username}</span>
@@ -415,13 +415,13 @@ function RemoveFriendDialog({
 }) {
   const t = useT();
   return (
-    <Dialog title={t('social.friends.removeTitle')} onClose={onClose}>
+    <Dialog phoneSheet title={t('social.friends.removeTitle')} onClose={onClose}>
       <div className="flex flex-col gap-4">
         <p className="bt-soft">
           <span className="bt-row-title">{username}</span> {t('social.friends.removeBody')}
         </p>
         {error ? <Alert tone="error">{t('social.friends.removeError')}</Alert> : null}
-        <div className="flex justify-end gap-2">
+        <div className="flex flex-wrap justify-end gap-2">
           <Button disabled={pending} onClick={onClose} variant="quiet">
             {t('common.cancel')}
           </Button>
@@ -553,7 +553,7 @@ function FriendCard({
     sharingAllowed && person && person.total > 0 ? kindCountSummary(person, t) : null;
 
   return (
-    <li className="bt-panel overflow-hidden">
+    <li className="bt-panel bt-friend-card overflow-hidden">
       <div className="flex items-center gap-2 pr-3">
         <button
           type="button"
@@ -589,7 +589,7 @@ function FriendCard({
 
       {open ? (
         <div id={panelId} className="bt-t-rule flex flex-col gap-4" style={{ padding: 16 }}>
-          <div className="flex items-center gap-3">
+          <div className="bt-friend-card__identity flex flex-wrap items-center gap-3">
             <Avatar name={user.username} iconId={user.profileIcon} size="lg" />
             <div className="min-w-0 flex-1">
               <p className="bt-h2 truncate">{user.username}</p>
@@ -754,7 +754,7 @@ export function FriendsPage() {
   const t = useT();
   const sharingAllowed = useResolvedPrivacyMode() === 'normal';
   return (
-    <div className="flex flex-col">
+    <div className="bt-phone-surface bt-friends-page flex flex-col">
       <PageHead title={t('common.friends')} />
       {/* PageHead already carries its own 22px rhythm below the title, so the
           section stack starts here rather than inheriting the page gap. */}

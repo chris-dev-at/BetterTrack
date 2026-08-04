@@ -455,7 +455,7 @@ function NewChatDialog({
   });
   const friends = query.data?.friends ?? [];
   return (
-    <Dialog title={t('social.chat.new')} onClose={onClose}>
+    <Dialog phoneSheet title={t('social.chat.new')} onClose={onClose}>
       <div className="flex flex-col gap-3">
         <p className="bt-soft">{t('social.chat.newPrompt')}</p>
         <AsyncReadState
@@ -644,7 +644,7 @@ function SharePickerDialog({
   }
 
   return (
-    <Dialog title={t('social.chat.share.title')} onClose={onClose}>
+    <Dialog phoneSheet title={t('social.chat.share.title')} onClose={onClose}>
       <div className="flex flex-col gap-3">
         <p className="bt-meta">{t('social.chat.share.disclaimer')}</p>
         <AsyncReadState
@@ -723,7 +723,11 @@ function MessageComposer({
   }
 
   return (
-    <form onSubmit={submit} className="bt-t-rule flex items-end gap-2" style={{ padding: 12 }}>
+    <form
+      onSubmit={submit}
+      className="bt-chat-composer bt-t-rule flex items-end gap-2"
+      style={{ padding: 12 }}
+    >
       {sharingAllowed ? (
         <button
           type="button"
@@ -948,7 +952,7 @@ export function ChatThreadPane({
   const otherName = other?.username ?? t('social.chat.deletedUser');
 
   return (
-    <div className="bt-panel flex h-full flex-col overflow-hidden">
+    <div className="bt-chat-thread bt-panel flex h-full flex-col overflow-hidden">
       <div className="bt-b-rule flex items-center gap-3" style={{ padding: '10px 14px' }}>
         {onBack ? (
           <button
@@ -984,7 +988,7 @@ export function ChatThreadPane({
           aria-label={t('social.chat.logLabel', { username: otherName })}
           aria-live="polite"
           aria-relevant="additions text"
-          className="flex flex-1 flex-col gap-2 overflow-y-auto"
+          className="bt-chat-log flex flex-1 flex-col gap-2 overflow-y-auto"
           onScroll={handleThreadScroll}
           style={{ padding: 16 }}
         >

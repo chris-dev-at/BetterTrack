@@ -13,7 +13,8 @@ vi.mock('../../lib/workboardApi', () => ({
 }));
 vi.mock('../components/AudiencePicker', () => ({ AudiencePicker: () => null }));
 
-import { listWatchlists } from '../../lib/workboardApi';
+import { createWatchlist, listWatchlists } from '../../lib/workboardApi';
+import { setViewportWidth } from '../../test/viewport';
 import { WatchlistsPage } from './WatchlistsPage';
 
 function renderPage() {
@@ -44,5 +45,25 @@ describe('WatchlistsPage recovery', () => {
 
     expect(await screen.findByText('No watchlists yet.')).toBeInTheDocument();
     expect(listWatchlists).toHaveBeenCalledTimes(2);
+  });
+
+  test('at 390 px creates a named watchlist without a horizontal action row', async () => {
+    setViewportWidth(390);
+    vi.mocked(createWatchlist).mockResolvedValue({
+      id: 'wl-tech',
+      name: 'Tech',
+      isDefault: false,
+      itemCount: 0,
+      audience: 'private',
+    });
+    const user = userEvent.setup();
+    const { container } = renderPage();
+
+    await screen.findByText('No watchlists yet.');
+    await user.type(screen.getByLabelText('New watchlist'), 'Tech');
+    await user.click(screen.getByRole('button', { name: 'New watchlist' }));
+
+    expect(createWatchlist).toHaveBeenCalledWith('Tech');
+    expect(container.querySelector('.bt-watchlists-page')).toBeInTheDocument();
   });
 });

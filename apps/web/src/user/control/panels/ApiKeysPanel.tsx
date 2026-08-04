@@ -73,20 +73,21 @@ function TokenModal({ result, onClose }: { result: CreateApiKeyResponse; onClose
 
   return (
     <Dialog
+      phoneSheet
       title={t('settings.api.keys.tokenModal.title')}
       description={t('settings.api.keys.tokenModal.description')}
       onClose={onClose}
       dismissable={acknowledged}
     >
       <div className="flex flex-col gap-4">
-        <div className="flex items-center gap-2">
+        <div className="flex flex-col items-stretch gap-2 sm:flex-row sm:items-center">
           <code
-            className="bt-panel bt-panel--soft bt-cc-mono flex-1"
+            className="bt-panel bt-panel--soft bt-cc-mono flex-1 break-all"
             style={{ padding: '8px 11px', color: 'var(--bt-pos)' }}
           >
             {result.token}
           </code>
-          <Button onClick={copy} size="sm">
+          <Button className="w-full sm:w-auto" onClick={copy} size="sm">
             {copied ? t('settings.api.copied') : t('settings.api.copy')}
           </Button>
         </div>

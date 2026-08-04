@@ -23,6 +23,7 @@ import {
   listMyShared,
   setAudience,
 } from '../../lib/socialApi';
+import { setViewportWidth } from '../../test/viewport';
 import { IdeasListPage } from './IdeasListPage';
 
 const IDEA_ID = '00000000-0000-0000-0000-0000000000a1';
@@ -175,5 +176,18 @@ describe('IdeasListPage', () => {
     const dialog = await screen.findByRole('dialog');
     await userEvent.click(within(dialog).getByRole('button', { name: 'Delete' }));
     await waitFor(() => expect(deleteIdea).toHaveBeenCalledWith(IDEA_ID));
+  });
+
+  test('at 390 px idea actions remain available and destructive confirmation is a sheet', async () => {
+    setViewportWidth(390);
+    vi.mocked(listIdeas).mockResolvedValue({ ideas: [idea()] });
+    renderPage();
+    await screen.findByText('Momentum basket');
+
+    expect(screen.getByRole('link', { name: 'Open' })).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    expect(await screen.findByRole('dialog', { name: 'Delete idea' })).toHaveClass(
+      'bt-dialog__panel--phone-sheet',
+    );
   });
 });

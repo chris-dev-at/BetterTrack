@@ -114,6 +114,7 @@ import {
   type WidgetType,
 } from './config';
 import { homeCacheKey } from './homeSync';
+import { setViewportWidth } from '../../test/viewport';
 import { HomePage } from './HomePage';
 
 /**
@@ -1918,4 +1919,20 @@ test('a set whose every portfolio is gone falls back to all rather than blanking
   // 10 000 + 4 000 + 2 000 across all three.
   expect(await within(widget).findByText('16,000.00 €')).toBeInTheDocument();
   expect(within(widget).queryByText(/portfolios$/)).not.toBeInTheDocument();
+});
+
+test('at 390 px the home builder opens its catalog and keeps widget settings usable', async () => {
+  setViewportWidth(390);
+  const user = editMode();
+  const { container } = renderHome();
+  await screen.findByRole('region', { name: 'Net worth' });
+
+  await user.click(screen.getByRole('button', { name: 'Customize' }));
+  await user.click(screen.getByRole('button', { name: 'Add widget' }));
+  expect(screen.getByRole('complementary', { name: 'Add a widget' })).toBeInTheDocument();
+  await user.keyboard('{Escape}');
+  await user.click(screen.getByRole('button', { name: 'Net worth settings' }));
+
+  expect(screen.getByLabelText('Portfolio')).toBeInTheDocument();
+  expect(container.querySelector('.bt-home-page')).toBeInTheDocument();
 });

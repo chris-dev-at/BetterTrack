@@ -69,6 +69,7 @@ import {
   getAssetSplits,
 } from '../../lib/marketIntelApi';
 import { listWatchlists, useAddToWatchlist, useWatchlistMembership } from '../../lib/workboardApi';
+import { setViewportWidth } from '../../test/viewport';
 import { AssetDetailPage } from './AssetDetailPage';
 
 const UNAVAILABLE_EARNINGS = { available: false as const, next: null, recent: [] };
@@ -815,5 +816,32 @@ describe('AssetDetailPage — quick actions (§13.2)', () => {
     await waitFor(() => expect(screen.getByText('Bayer AG')).toBeInTheDocument());
     expect(screen.getByRole('button', { name: '+ Portfolio' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: '+ Blueprint' })).toBeInTheDocument();
+  });
+
+  test('at 390 px adds the asset to a named watchlist without leaving the detail surface', async () => {
+    setViewportWidth(390);
+    vi.mocked(listWatchlists).mockResolvedValue({
+      watchlists: [
+        {
+          id: 'wl-phone',
+          name: 'Phone research',
+          isDefault: false,
+          itemCount: 0,
+          audience: 'private',
+        },
+      ],
+    });
+    const user = userEvent.setup();
+    const { container } = renderPage();
+    await screen.findByText('Bayer AG');
+
+    await user.click(screen.getByRole('button', { name: 'Choose a watchlist for BAYN.DE' }));
+    await user.click(await screen.findByRole('menuitem', { name: 'Phone research' }));
+
+    expect(addToWatchlistMutate).toHaveBeenCalledWith({
+      assetId: ASSET_ID,
+      watchlistId: 'wl-phone',
+    });
+    expect(container.querySelector('.bt-asset-detail')).toBeInTheDocument();
   });
 });

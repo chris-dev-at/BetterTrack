@@ -16,7 +16,7 @@ export function AssetsWorkspace() {
   const items = useSectionNavItems('assets');
 
   return (
-    <div>
+    <div className="bt-phone-surface bt-assets-workspace">
       <LocalNav ariaLabel={t(SECTION_NAV.assets.ariaLabelKey)} items={items} />
       <Outlet />
     </div>

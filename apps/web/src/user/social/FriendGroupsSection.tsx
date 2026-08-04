@@ -49,11 +49,15 @@ function DeleteGroupDialog({
 }) {
   const t = useT();
   return (
-    <Dialog title={t('social.groups.deleteTitle', { name: group.name })} onClose={onClose}>
+    <Dialog
+      phoneSheet
+      title={t('social.groups.deleteTitle', { name: group.name })}
+      onClose={onClose}
+    >
       <div className="flex flex-col gap-4">
         <p className="bt-soft">{t('social.groups.deleteWarning')}</p>
         {error ? <Alert tone="error">{t('social.groups.deleteError')}</Alert> : null}
-        <div className="flex justify-end gap-2">
+        <div className="flex flex-wrap justify-end gap-2">
           <Button disabled={pending} onClick={onClose} variant="quiet">
             {t('common.cancel')}
           </Button>
@@ -148,7 +152,7 @@ function GroupCard({ group }: { group: FriendGroup }) {
         <div className="bt-t-rule flex flex-col gap-4" style={{ padding: 16 }}>
           {/* Rename */}
           <form
-            className="flex items-end gap-2"
+            className="flex flex-col items-stretch gap-2 sm:flex-row sm:items-end"
             onSubmit={(e: FormEvent) => {
               e.preventDefault();
               if (canRename) renameMutation.mutate(trimmed);
@@ -289,7 +293,10 @@ export function FriendGroupsSection() {
         </p>
       </div>
 
-      <form onSubmit={handleCreate} className="flex items-end gap-2">
+      <form
+        onSubmit={handleCreate}
+        className="flex flex-col items-stretch gap-2 sm:flex-row sm:items-end"
+      >
         <Field className="flex-1" htmlFor="newGroupName" label={t('social.groups.newLabel')}>
           <Input
             id="newGroupName"

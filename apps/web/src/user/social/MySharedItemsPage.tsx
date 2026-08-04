@@ -74,7 +74,7 @@ function SharedRow({
   shareDisabled = false,
 }: SharedRowProps) {
   return (
-    <li className="flex items-center justify-between gap-3 py-3">
+    <li className="bt-shared-item-row flex flex-col items-stretch justify-between gap-3 py-3 sm:flex-row sm:items-center">
       <div className="flex min-w-0 flex-col gap-1">
         <span className="bt-row-title truncate">{name}</span>
         <div className="flex flex-wrap items-center gap-2">
@@ -156,10 +156,14 @@ function AlertSharingControl() {
         {mutation.isError ? <Alert tone="error">{t('social.alertSharing.error')}</Alert> : null}
       </div>
       {confirming ? (
-        <Dialog title={t('social.alertSharing.confirmTitle')} onClose={() => setConfirming(false)}>
+        <Dialog
+          phoneSheet
+          title={t('social.alertSharing.confirmTitle')}
+          onClose={() => setConfirming(false)}
+        >
           <div className="flex flex-col gap-4">
             <p className="bt-gold">{t('social.alertSharing.confirmWarning')}</p>
-            <div className="flex justify-end gap-2">
+            <div className="flex flex-wrap justify-end gap-2">
               <Button onClick={() => setConfirming(false)} variant="quiet">
                 {t('social.alertSharing.confirmCancel')}
               </Button>
@@ -231,7 +235,7 @@ export function MySharedItemsPage() {
 
   if (isLoading) {
     return (
-      <section className="flex flex-col gap-4">
+      <section className="bt-phone-surface bt-my-shared-page flex flex-col gap-4">
         <SkeletonBlock height={28} width={210} />
         <SkeletonBlock height={92} />
       </section>
@@ -240,7 +244,7 @@ export function MySharedItemsPage() {
 
   if (isError || !data) {
     return (
-      <div className="flex flex-col items-start gap-3">
+      <div className="bt-phone-surface bt-my-shared-page flex flex-col items-start gap-3">
         <Alert tone="error">{t('social.myShared.error')}</Alert>
         <Button onClick={() => void refetch()}>{t('common.retry')}</Button>
       </div>
@@ -256,7 +260,7 @@ export function MySharedItemsPage() {
   const shareLabel = t('sharing.shareButton');
 
   return (
-    <div className="flex flex-col">
+    <div className="bt-phone-surface bt-my-shared-page flex flex-col">
       <PageHead sub={t('social.myShared.subtitle')} title={t('social.myShared.title')} />
       {data.portfolios.length > 0 && !portfolioMetadataReady && !portfoliosQuery.isError ? (
         <div className="mb-4" data-testid="portfolio-share-metadata-loading">

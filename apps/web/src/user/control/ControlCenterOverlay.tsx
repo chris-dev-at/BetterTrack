@@ -20,6 +20,7 @@ import { ProfilePanel } from './panels/ProfilePanel';
 import { SessionsPanel } from './panels/SessionsPanel';
 import { SignInPanel } from './panels/SignInPanel';
 import { WebhooksPanel } from './panels/WebhooksPanel';
+import { usePhoneShell } from '../hooks/useCompactShell';
 import { useResolvedPrivacyMode } from '../vault/usePrivacyMode';
 
 /**
@@ -267,6 +268,7 @@ export function ControlCenterOverlay({ panel, closeTo = '/' }: ControlCenterOver
   const titleId = useId();
   const panelRef = useRef<HTMLDivElement>(null);
   const [filter, setFilter] = useState('');
+  const phone = usePhoneShell();
   const paranoid = useResolvedPrivacyMode() === 'paranoid';
 
   const active = findPanel(panel ?? params.panel, paranoid);
@@ -372,77 +374,123 @@ export function ControlCenterOverlay({ panel, closeTo = '/' }: ControlCenterOver
           </div>
 
           <div className="bt-cc__body">
-            <nav aria-label={t('control.navAria')} className="bt-cc__nav">
-              <div className="bt-cc__filter">
-                <Input
-                  aria-label={t('control.filterAria')}
-                  onChange={(event) => setFilter(event.target.value)}
-                  placeholder={t('control.filterPlaceholder')}
-                  type="search"
-                  value={filter}
-                />
-              </div>
-
-              {groups.map((group) => (
-                <div className="bt-cc__group" key={group.titleKey}>
-                  <p className="bt-label bt-cc__group-title">{t(group.titleKey)}</p>
-                  {group.panels.map((panel) => {
-                    const current = panel.id === active.id;
-                    return (
+            {phone ? (
+              <nav aria-label={t('control.navAria')} className="bt-cc__phone-nav">
+                <select
+                  aria-label={t('control.navAria')}
+                  className="bt-select"
+                  onChange={(event) =>
+                    navigate(`/control/${event.target.value}`, { replace: true })
+                  }
+                  value={active.id}
+                >
+                  {groups.map((group) => (
+                    <optgroup key={group.titleKey} label={t(group.titleKey)}>
+                      {group.panels.map((panel) => (
+                        <option key={panel.id} value={panel.id}>
+                          {t(panel.labelKey)}
+                        </option>
+                      ))}
+                    </optgroup>
+                  ))}
+                </select>
+                {links.length > 0 ? (
+                  <div className="bt-cc__phone-links">
+                    {links.map((link) => (
                       <Link
-                        aria-current={current ? 'page' : undefined}
-                        className={cx(
-                          'bt-cc__item',
-                          current && 'is-active',
-                          panel.danger && 'is-danger',
-                        )}
-                        key={panel.id}
-                        // `replace`: the whole overlay session occupies ONE
-                        // history entry — closing (Esc, scrim, ✕, browser Back)
-                        // leaves in a single step no matter how many panels
-                        // were visited, instead of unwinding them one by one.
-                        replace
-                        to={`/control/${panel.id}`}
+                        className="bt-cc__phone-link"
+                        key={link.to}
+                        title={t('control.leavesPopup')}
+                        to={link.to}
                       >
-                        <Icon name={panel.icon} size={16} />
-                        <span className="bt-cc__item-label">{t(panel.labelKey)}</span>
-                      </Link>
-                    );
-                  })}
-                </div>
-              ))}
-
-              {links.length > 0 ? (
-                <div className="bt-cc__group">
-                  <p className="bt-label bt-cc__group-title">{t('control.groups.links')}</p>
-                  {links.map((link) => (
-                    <Link
-                      className="bt-cc__item bt-cc__item--link"
-                      key={link.to}
-                      title={t('control.leavesPopup')}
-                      to={link.to}
-                    >
-                      <Icon name={link.icon} size={16} />
-                      <span className="bt-cc__item-label">
-                        {t(link.labelKey)}
+                        <Icon name={link.icon} size={15} />
+                        <span>{t(link.labelKey)}</span>
                         {link.parked ? (
                           <span
                             aria-label={t('common.parked')}
                             className="bt-dot bt-dot--gold"
                             role="img"
-                            style={{ display: 'inline-block', marginLeft: 8 }}
                             title={t('common.parked')}
                           />
                         ) : null}
-                      </span>
-                      <Icon className="bt-cc__item-out" name="arrow-up-right" size={14} />
-                    </Link>
-                  ))}
+                      </Link>
+                    ))}
+                  </div>
+                ) : null}
+              </nav>
+            ) : (
+              <nav aria-label={t('control.navAria')} className="bt-cc__nav">
+                <div className="bt-cc__filter">
+                  <Input
+                    aria-label={t('control.filterAria')}
+                    onChange={(event) => setFilter(event.target.value)}
+                    placeholder={t('control.filterPlaceholder')}
+                    type="search"
+                    value={filter}
+                  />
                 </div>
-              ) : null}
 
-              {empty ? <p className="bt-cc__empty">{t('control.noMatches')}</p> : null}
-            </nav>
+                {groups.map((group) => (
+                  <div className="bt-cc__group" key={group.titleKey}>
+                    <p className="bt-label bt-cc__group-title">{t(group.titleKey)}</p>
+                    {group.panels.map((panel) => {
+                      const current = panel.id === active.id;
+                      return (
+                        <Link
+                          aria-current={current ? 'page' : undefined}
+                          className={cx(
+                            'bt-cc__item',
+                            current && 'is-active',
+                            panel.danger && 'is-danger',
+                          )}
+                          key={panel.id}
+                          // `replace`: the whole overlay session occupies ONE
+                          // history entry — closing (Esc, scrim, ✕, browser Back)
+                          // leaves in a single step no matter how many panels
+                          // were visited, instead of unwinding them one by one.
+                          replace
+                          to={`/control/${panel.id}`}
+                        >
+                          <Icon name={panel.icon} size={16} />
+                          <span className="bt-cc__item-label">{t(panel.labelKey)}</span>
+                        </Link>
+                      );
+                    })}
+                  </div>
+                ))}
+
+                {links.length > 0 ? (
+                  <div className="bt-cc__group">
+                    <p className="bt-label bt-cc__group-title">{t('control.groups.links')}</p>
+                    {links.map((link) => (
+                      <Link
+                        className="bt-cc__item bt-cc__item--link"
+                        key={link.to}
+                        title={t('control.leavesPopup')}
+                        to={link.to}
+                      >
+                        <Icon name={link.icon} size={16} />
+                        <span className="bt-cc__item-label">
+                          {t(link.labelKey)}
+                          {link.parked ? (
+                            <span
+                              aria-label={t('common.parked')}
+                              className="bt-dot bt-dot--gold"
+                              role="img"
+                              style={{ display: 'inline-block', marginLeft: 8 }}
+                              title={t('common.parked')}
+                            />
+                          ) : null}
+                        </span>
+                        <Icon className="bt-cc__item-out" name="arrow-up-right" size={14} />
+                      </Link>
+                    ))}
+                  </div>
+                ) : null}
+
+                {empty ? <p className="bt-cc__empty">{t('control.noMatches')}</p> : null}
+              </nav>
+            )}
 
             <div className="bt-cc__content" key={active.id}>
               <Active />

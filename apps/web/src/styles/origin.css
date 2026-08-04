@@ -4611,6 +4611,191 @@
   }
 }
 
+@media (max-width: 480px) {
+  .bt-cc__head {
+    padding-top: calc(12px + env(safe-area-inset-top, 0px));
+    padding-right: calc(12px + env(safe-area-inset-right, 0px));
+    padding-left: calc(16px + env(safe-area-inset-left, 0px));
+  }
+
+  .bt-cc__head .bt-btn--icon {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .bt-cc__body {
+    grid-template-rows: auto minmax(0, 1fr);
+  }
+
+  /* The desktop's grouped rail would consume almost two fifths of a phone.
+     One native grouped picker keeps every panel reachable in a single control;
+     the few links that leave the popup remain a locally scrolling utility row. */
+  .bt-cc__phone-nav {
+    min-width: 0;
+    padding: 10px calc(12px + env(safe-area-inset-right, 0px)) 10px
+      calc(12px + env(safe-area-inset-left, 0px));
+    border-bottom: 1px solid var(--bt-border);
+    background: var(--bt-bg);
+  }
+
+  .bt-cc__phone-nav > .bt-select {
+    width: 100%;
+    min-height: 44px;
+    font-size: 16px;
+  }
+
+  .bt-cc__phone-links {
+    display: flex;
+    gap: 6px;
+    min-width: 0;
+    margin-top: 8px;
+    overflow-x: auto;
+    overscroll-behavior-inline: contain;
+    scrollbar-width: none;
+  }
+
+  .bt-cc__phone-links::-webkit-scrollbar {
+    display: none;
+  }
+
+  .bt-cc__phone-link {
+    display: inline-flex;
+    flex: none;
+    align-items: center;
+    gap: 7px;
+    min-height: 44px;
+    padding: 7px 10px;
+    border: 1px solid var(--bt-border);
+    border-radius: 6px;
+    color: var(--bt-muted);
+    font-size: 12.5px;
+    text-decoration: none;
+  }
+
+  .bt-cc__content {
+    min-width: 0;
+    padding: 16px calc(16px + env(safe-area-inset-right, 0px))
+      calc(28px + env(safe-area-inset-bottom, 0px)) calc(16px + env(safe-area-inset-left, 0px));
+    overflow-x: hidden;
+  }
+
+  .bt-cc-panel :is(input, select, textarea) {
+    font-size: 16px !important;
+  }
+
+  .bt-cc-panel :is(button, .bt-btn, a.bt-btn, summary) {
+    min-height: 44px;
+  }
+
+  .bt-cc-panel :is(.bt-btn--icon, .bt-iconbtn) {
+    min-width: 44px;
+  }
+
+  .bt-cc-panel__head,
+  .bt-cc-row {
+    align-items: stretch;
+  }
+
+  .bt-cc-row__text {
+    flex: 1 1 100%;
+  }
+
+  .bt-cc-row__control {
+    width: 100%;
+    justify-content: flex-end;
+  }
+
+  .bt-cc-row__control :is(.bt-input, .bt-select),
+  .bt-cc-form,
+  .bt-cc-form :is(.bt-input, .bt-select, .bt-textarea) {
+    width: 100%;
+    max-width: none;
+  }
+
+  .bt-cc-list__actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+
+  /* Six delivery channels become labelled two-column toggle tiles per type.
+     Nothing scrolls sideways and no channel is hidden behind a disclosure. */
+  .bt-notification-matrix {
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    min-width: 0;
+    border: 1px solid var(--bt-border);
+    border-radius: 8px;
+    background: var(--bt-surface);
+    overflow: hidden;
+  }
+
+  .bt-notification-matrix__category + .bt-notification-matrix__category {
+    border-top: 1px solid var(--bt-border-strong);
+  }
+
+  .bt-notification-matrix__master {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    min-height: 44px;
+    padding: 8px 11px;
+    background: var(--bt-surface-soft);
+    cursor: pointer;
+  }
+
+  .bt-notification-matrix__master > input,
+  .bt-notification-matrix__channel > input {
+    flex: none;
+    width: 18px;
+    height: 18px;
+  }
+
+  .bt-notification-matrix__rows {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .bt-notification-matrix__row {
+    display: flex;
+    flex-direction: column;
+    gap: 9px;
+    min-width: 0;
+    padding: 11px;
+  }
+
+  .bt-notification-matrix__row + .bt-notification-matrix__row {
+    border-top: 1px solid var(--bt-border);
+  }
+
+  .bt-notification-matrix__channels {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 6px;
+    min-width: 0;
+  }
+
+  .bt-notification-matrix__channel {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 7px;
+    min-width: 0;
+    min-height: 44px;
+    padding: 7px 9px;
+    border: 1px solid var(--bt-border);
+    border-radius: 6px;
+    color: var(--bt-muted);
+    font-size: 11.5px;
+    cursor: pointer;
+  }
+
+  .bt-notification-matrix__channel > span {
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+}
+
 /* ── Popup-native panel content ───────────────────────────────────────────────
  *
  * The panels are no longer full-canvas pages mounted in a popup: each one is
@@ -4918,6 +5103,255 @@
 
   .bt-cc-mode__hint {
     grid-column: 2;
+  }
+}
+
+/* MW4 phone surfaces: controls that live directly on a page (rather than in a
+   full-height sheet) keep iOS from zooming the canvas and remain finger-sized.
+   The class is deliberately opt-in so desktop and unrelated workspaces keep
+   their established density. */
+@media (max-width: 480px) {
+  .bt-phone-surface {
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .bt-phone-surface :is(input, select, textarea) {
+    font-size: 16px !important;
+  }
+
+  .bt-phone-surface :is(.bt-btn, .bt-iconbtn, .bt-menu-item, .bt-tab),
+  .bt-phone-surface button,
+  .bt-phone-surface a.bt-btn {
+    min-height: 44px;
+  }
+
+  .bt-phone-surface :is(.bt-btn--icon, .bt-iconbtn) {
+    min-width: 44px;
+  }
+
+  .bt-idea-row__actions,
+  .bt-watchlist-row__actions {
+    width: 100%;
+  }
+
+  .bt-idea-row__actions > a,
+  .bt-idea-row__actions > :is(button, .bt-btn),
+  .bt-watchlist-row__actions > :is(button, .bt-btn) {
+    flex: 1 1 auto;
+  }
+
+  .bt-idea-row__actions > a > .bt-btn {
+    width: 100%;
+  }
+
+  .bt-backtest > div:first-child {
+    align-items: stretch;
+  }
+
+  .bt-backtest .bt-seg {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(64px, 1fr));
+    width: 100%;
+    max-width: none;
+  }
+
+  .bt-backtest .bt-seg > button {
+    min-width: 0;
+    min-height: 44px;
+    white-space: normal;
+  }
+
+  .bt-friend-request-row,
+  .bt-friend-card__identity,
+  .bt-comment-composer {
+    min-width: 0;
+  }
+
+  .bt-friend-request-row__actions,
+  .bt-friend-card__actions {
+    width: 100%;
+  }
+
+  .bt-friend-request-row__actions > .bt-btn,
+  .bt-friend-card__actions > .bt-btn {
+    flex: 1 1 auto;
+  }
+
+  .bt-comment-reactions {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    width: 100%;
+  }
+
+  .bt-comment-reactions > button {
+    min-width: 0;
+    justify-content: center;
+  }
+
+  .bt-comment-composer {
+    align-items: stretch;
+  }
+
+  .bt-comment-composer > .bt-btn {
+    width: 100%;
+  }
+
+  .bt-comment-composer > div {
+    flex-wrap: wrap;
+    width: 100%;
+  }
+
+  .bt-comment-composer > div > .bt-btn {
+    width: 100%;
+  }
+
+  .bt-chat-page__surface {
+    height: calc(
+      var(--bt-chat-viewport-height, calc(100 * var(--bt-dvh))) - var(--bt-chat-top, 0px) - 72px -
+        env(safe-area-inset-bottom)
+    );
+    min-height: 0;
+    gap: 0;
+  }
+
+  .bt-chat-page__surface > aside,
+  .bt-chat-page__surface > section,
+  .bt-chat-thread,
+  .bt-chat-log {
+    min-height: 0;
+  }
+
+  .bt-chat-log {
+    overscroll-behavior: contain;
+  }
+
+  .bt-chat-composer {
+    flex: 0 0 auto;
+    padding-bottom: calc(12px + env(safe-area-inset-bottom)) !important;
+    background: var(--bt-surface);
+  }
+
+  .bt-chat-composer textarea {
+    min-width: 0;
+    min-height: 44px !important;
+  }
+
+  .bt-chatwindow {
+    min-height: calc(100 * var(--bt-dvh));
+  }
+
+  .bt-asset-result__actions {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    width: 100%;
+  }
+
+  .bt-asset-result__actions > *,
+  .bt-asset-result__actions button {
+    min-width: 0;
+  }
+
+  .bt-asset-result__actions > :first-child {
+    justify-self: stretch;
+    justify-content: center;
+  }
+
+  .bt-asset-watchlist__menu {
+    right: auto !important;
+    left: 0;
+  }
+
+  .bt-asset-blueprint,
+  .bt-asset-watchlist__menu,
+  .bt-asset-detail__watchlist-menu,
+  .bt-home-w__popover {
+    width: min(256px, calc(calc(100 * var(--bt-vw)) - 32px));
+    max-width: calc(calc(100 * var(--bt-vw)) - 32px);
+  }
+
+  .bt-asset-detail__hero > * {
+    width: 100%;
+  }
+
+  .bt-asset-detail__hero > .text-right {
+    text-align: left;
+  }
+
+  .bt-asset-detail__actions > div,
+  .bt-asset-detail__actions > div > div:first-child,
+  .bt-asset-detail__actions .bt-btn {
+    width: 100%;
+  }
+
+  .bt-asset-detail__actions > div > div:first-child {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .bt-asset-detail__watchlist {
+    align-items: stretch;
+  }
+
+  .bt-asset-detail__watchlist > .bt-seg {
+    display: grid;
+    grid-template-columns: 1fr auto;
+  }
+
+  .bt-asset-detail__watchlist-menu {
+    right: auto !important;
+    left: 0;
+  }
+
+  .bt-asset-detail .bt-seg {
+    max-width: 100%;
+    overflow-x: auto;
+  }
+
+  .bt-home-page .bt-page-head__actions {
+    width: 100%;
+  }
+
+  .bt-home-page .bt-page-head__actions > .bt-btn {
+    flex: 1 1 auto;
+  }
+
+  .bt-home-w__head {
+    align-items: flex-start;
+    flex-wrap: wrap;
+  }
+
+  .bt-home-w__chrome {
+    width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .bt-home-w__popover {
+    right: 0;
+  }
+
+  .bt-home-quickcash__row {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .bt-home-quickcash__row .bt-btn {
+    width: 100%;
+  }
+
+  .bt-home-catalog__item,
+  .bt-hub-page .bt-band__row {
+    min-height: 48px;
+  }
+
+  .bt-friend-card__identity > .bt-btn,
+  .bt-friend-card [id^='friend-'] > .bt-t-rule:last-child .bt-btn {
+    width: 100%;
+  }
+
+  .bt-shared-item-row > .bt-btn {
+    width: 100%;
   }
 }
 
@@ -5328,6 +5762,13 @@
   background: none;
   border: 0;
   border-radius: 0;
+}
+
+@media (max-width: 480px) {
+  .bt-chatwindow {
+    height: calc(100 * var(--bt-dvh));
+    min-height: 0;
+  }
 }
 
 /* Desktop-only luxury: below this the rail's Ask row stays a plain link to

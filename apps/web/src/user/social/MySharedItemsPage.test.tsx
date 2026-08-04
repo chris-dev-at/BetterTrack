@@ -27,6 +27,7 @@ vi.mock('../../lib/portfolioApi', () => ({
 import { getAudience, listFriends, listGroups, listMyShared } from '../../lib/socialApi';
 import { getAlertSharing, updateAlertSharing } from '../../lib/alertsApi';
 import { listPortfolios } from '../../lib/portfolioApi';
+import { setViewportWidth } from '../../test/viewport';
 import { MySharedItemsPage } from './MySharedItemsPage';
 
 const PORTFOLIO_ID = '00000000-0000-0000-0000-000000000001';
@@ -400,4 +401,38 @@ describe('MySharedItemsPage — alert sharing (relocated from Settings)', () => 
       expect(updateAlertSharing).toHaveBeenCalledWith({ visibleToFollowers: false }),
     );
   });
+});
+
+test('at 390 px shared-item actions remain reachable and open a phone sheet', async () => {
+  setViewportWidth(390);
+  vi.mocked(listMyShared).mockResolvedValue({
+    portfolios: [],
+    conglomerates: [],
+    watchlists: [],
+    ideas: [
+      {
+        ideaId: '00000000-0000-0000-0000-0000000000a1',
+        name: 'Phone idea',
+        hasThesis: false,
+        audience: 'private',
+        friendCount: 0,
+      },
+    ],
+  });
+  vi.mocked(getAudience).mockResolvedValue({
+    kind: 'idea',
+    subjectId: '00000000-0000-0000-0000-0000000000a1',
+    audience: 'private',
+    friendIds: [],
+    groupId: null,
+    link: { active: false, createdAt: null },
+  });
+  const user = userEvent.setup();
+  const { container } = renderPage();
+
+  await user.click(await screen.findByRole('button', { name: 'Share' }));
+  expect(await screen.findByRole('dialog', { name: /share.*phone idea/i })).toHaveClass(
+    'bt-dialog__panel--phone-sheet',
+  );
+  expect(container.querySelector('.bt-my-shared-page')).toBeInTheDocument();
 });

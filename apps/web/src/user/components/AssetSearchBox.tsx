@@ -462,7 +462,7 @@ function ResultRow({
   }
 
   return (
-    <li className="bt-panel bt-panel--soft group relative flex flex-col gap-2 px-3 py-2.5 sm:flex-row sm:items-center">
+    <li className="bt-asset-result bt-panel bt-panel--soft group relative flex flex-col gap-2 px-3 py-2.5 sm:flex-row sm:items-center">
       <button
         type="button"
         onClick={onOpen}
@@ -483,7 +483,7 @@ function ResultRow({
         </span>
       </button>
 
-      <div className="flex shrink-0 items-center gap-1.5">
+      <div className="bt-asset-result__actions flex shrink-0 items-center gap-1.5">
         <WatchlistControl item={item} status={wbStatus} onAdd={onWorkboard} />
 
         <div className="relative" ref={conglomerateRef}>
@@ -590,7 +590,7 @@ function WatchlistControl({
   usePopoverDismiss(listPickerOpen, closeAndRestoreFocus, containerRef);
 
   return (
-    <div className="relative flex items-center" ref={containerRef}>
+    <div className="bt-asset-watchlist relative flex items-center" ref={containerRef}>
       <button
         type="button"
         onClick={() => onAdd()}
@@ -634,7 +634,7 @@ function WatchlistControl({
           ref={menuRef}
           role="menu"
           aria-label={t('assets.searchBox.watchlistsMenuAria', { symbol: item.symbol })}
-          className="bt-popover w-48 p-2 text-xs"
+          className="bt-asset-watchlist__menu bt-popover w-48 p-2 text-xs"
           style={{ right: 0, top: 'calc(100% + 4px)' }}
           onKeyDown={onMenuKeyDown}
         >
@@ -717,7 +717,7 @@ function ConglomeratePicker({
       ref={menuRef}
       role="menu"
       aria-label={t('assets.searchBox.pickerMenuAria', { symbol: item.symbol })}
-      className="bt-popover relative w-64 p-2"
+      className="bt-asset-blueprint bt-popover relative w-64 p-2"
       style={{ right: 0, top: 'calc(100% + 4px)' }}
       onKeyDown={onMenuKeyDown}
     >

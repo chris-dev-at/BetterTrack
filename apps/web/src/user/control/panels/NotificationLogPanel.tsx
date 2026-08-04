@@ -184,13 +184,14 @@ function BulkDeleteDialog({
   const base = scope === 'archived' ? 'confirmDeleteArchived' : 'confirmDeleteAll';
   return (
     <Dialog
+      phoneSheet
       title={t(`settings.notifications.${base}.title`)}
       onClose={onClose}
       widthClassName="max-w-md"
     >
       <div className="flex flex-col gap-4">
         <Alert tone="error">{t(`settings.notifications.${base}.description`)}</Alert>
-        <div className="flex justify-end gap-2">
+        <div className="flex flex-wrap justify-end gap-2">
           <Button type="button" variant="quiet" onClick={onClose} disabled={busy}>
             {t('common.cancel')}
           </Button>

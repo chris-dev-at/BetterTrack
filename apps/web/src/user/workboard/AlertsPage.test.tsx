@@ -16,6 +16,7 @@ vi.mock('../../lib/alertsApi', () => ({
 }));
 
 import { deleteAlert, listAlerts, rearmAlert } from '../../lib/alertsApi';
+import { setViewportWidth } from '../../test/viewport';
 import { AlertsPage } from './AlertsPage';
 
 function asset(overrides: Partial<Alert['asset']> = {}): Alert['asset'] {
@@ -135,5 +136,17 @@ describe('AlertsPage', () => {
     await waitFor(() => expect(screen.getByText('Delete')).toBeInTheDocument());
     await user.click(screen.getByText('Delete'));
     expect(deleteAlert).toHaveBeenCalledWith('al1');
+  });
+
+  test('at 390 px opens alert creation as a bottom sheet', async () => {
+    setViewportWidth(390);
+    vi.mocked(listAlerts).mockResolvedValue({ items: [] });
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole('button', { name: '+ New alert' }));
+    expect(screen.getByRole('dialog', { name: 'New price alert' })).toHaveClass(
+      'bt-dialog__panel--phone-sheet',
+    );
   });
 });

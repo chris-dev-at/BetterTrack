@@ -268,7 +268,7 @@ export function AudiencePicker({
     const canNativeShare =
       typeof navigator !== 'undefined' && typeof navigator.share === 'function';
     return (
-      <Dialog title={t('sharing.title', { name: subjectLabel })} onClose={onClose}>
+      <Dialog phoneSheet title={t('sharing.title', { name: subjectLabel })} onClose={onClose}>
         <div className="flex flex-col gap-3">
           <Alert tone="success">{t('sharing.publicLinkReady')}</Alert>
           <div className="flex items-center gap-2">
@@ -293,6 +293,7 @@ export function AudiencePicker({
   if (readsPending && !readsFailed) {
     return (
       <Dialog
+        phoneSheet
         title={t('sharing.title', { name: subjectLabel })}
         description={t('sharing.subtitle')}
         onClose={onClose}
@@ -312,6 +313,7 @@ export function AudiencePicker({
   if (readsFailed) {
     return (
       <Dialog
+        phoneSheet
         title={t('sharing.title', { name: subjectLabel })}
         description={t('sharing.subtitle')}
         onClose={onClose}
@@ -341,6 +343,7 @@ export function AudiencePicker({
 
   return (
     <Dialog
+      phoneSheet
       title={t('sharing.title', { name: subjectLabel })}
       description={t('sharing.subtitle')}
       onClose={onClose}

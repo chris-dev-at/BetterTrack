@@ -52,12 +52,12 @@ export function SaveIdeaDialog({
 
   if (saved) {
     return (
-      <Dialog title={t('workboard.ideas.save.title')} onClose={onClose}>
+      <Dialog phoneSheet title={t('workboard.ideas.save.title')} onClose={onClose}>
         <div className="flex flex-col gap-4">
           <Alert tone="success">
             {t('workboard.ideas.save.successBody', { name: saved.name })}
           </Alert>
-          <div className="flex justify-end gap-2">
+          <div className="flex flex-wrap justify-end gap-2">
             <Link to="/workbench/ideas">
               <Button>{t('workboard.ideas.save.viewIdeas')}</Button>
             </Link>
@@ -71,7 +71,7 @@ export function SaveIdeaDialog({
   }
 
   return (
-    <Dialog title={t('workboard.ideas.save.title')} onClose={onClose}>
+    <Dialog phoneSheet title={t('workboard.ideas.save.title')} onClose={onClose}>
       <form className="flex flex-col gap-4" onSubmit={submit}>
         <Field htmlFor="idea-name" label={t('workboard.ideas.save.nameLabel')}>
           <Input
@@ -98,7 +98,7 @@ export function SaveIdeaDialog({
           />
         </Field>
         {mutation.isError ? <Alert tone="error">{t('workboard.ideas.save.error')}</Alert> : null}
-        <div className="flex justify-end gap-2">
+        <div className="flex flex-wrap justify-end gap-2">
           <Button disabled={mutation.isPending} onClick={onClose} type="button">
             {t('common.cancel')}
           </Button>

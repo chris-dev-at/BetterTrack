@@ -53,6 +53,7 @@ vi.mock('lightweight-charts', () => ({
 import { previewBacktest } from '../../lib/backtestApi';
 import { listConglomerates } from '../../lib/conglomerateApi';
 import { searchAssets } from '../../lib/searchApi';
+import { setViewportWidth } from '../../test/viewport';
 import { BacktestPanel } from './BacktestPanel';
 
 const POSITIONS = [
@@ -451,5 +452,29 @@ describe('BacktestPanel', () => {
     const notice = await screen.findByText(/split equally among the already-listed constituents/i);
     expect(notice.textContent).toMatch(/SPACEX/);
     expect(screen.queryByText('Avg. uninvested')).not.toBeInTheDocument();
+  });
+
+  test('at 390 px keeps every backtest control and Save-as-idea sheet reachable', async () => {
+    setViewportWidth(390);
+    vi.mocked(previewBacktest).mockResolvedValue(RESPONSE);
+    const source = {
+      kind: 'adhoc' as const,
+      positions: POSITIONS,
+    };
+    render(
+      <MemoryRouter>
+        <QueryClientProvider client={makeQueryClient()}>
+          <BacktestPanel positions={POSITIONS} source={source} />
+        </QueryClientProvider>
+      </MemoryRouter>,
+    );
+    const user = userEvent.setup();
+
+    await waitFor(() => expect(previewBacktest).toHaveBeenCalled());
+    expect(screen.getByRole('group', { name: 'Select backtest range' })).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Save as idea' }));
+    expect(screen.getByRole('dialog', { name: 'Save as idea' })).toHaveClass(
+      'bt-dialog__panel--phone-sheet',
+    );
   });
 });

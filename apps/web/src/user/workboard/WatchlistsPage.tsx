@@ -63,7 +63,7 @@ export function WatchlistsPage() {
 
   if (isLoading) {
     return (
-      <section className="flex flex-col gap-3">
+      <section className="bt-phone-surface bt-watchlists-page flex flex-col gap-3">
         <Skeleton height="h-8" width="w-48" />
         <Skeleton height="h-24" />
       </section>
@@ -71,7 +71,7 @@ export function WatchlistsPage() {
   }
   if (isError || !data) {
     return (
-      <div className="flex flex-col items-start gap-3">
+      <div className="bt-phone-surface bt-watchlists-page flex flex-col items-start gap-3">
         <Alert tone="error">{t('watchlists.loadError')}</Alert>
         <Button onClick={() => void refetch()}>{t('common.retry')}</Button>
       </div>
@@ -79,11 +79,11 @@ export function WatchlistsPage() {
   }
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="bt-phone-surface bt-watchlists-page flex flex-col gap-6">
       <PageHead title={t('watchlists.title')} />
 
       <form
-        className="flex items-end gap-2"
+        className="flex flex-col items-stretch gap-2 sm:flex-row sm:items-end"
         onSubmit={(e) => {
           e.preventDefault();
           const trimmed = name.trim();
@@ -116,8 +116,11 @@ export function WatchlistsPage() {
       ) : (
         <ul className="bt-panel bt-band">
           {data.watchlists.map((w) => (
-            <li className="bt-band__row flex items-center justify-between gap-3" key={w.id}>
-              <div className="flex items-center gap-2">
+            <li
+              className="bt-band__row bt-watchlist-row flex flex-col items-stretch justify-between gap-3 sm:flex-row sm:items-center"
+              key={w.id}
+            >
+              <div className="flex flex-wrap items-center gap-2">
                 <span className="bt-row-title">{w.name}</span>
                 {w.isDefault ? <Badge>{t('watchlists.defaultBadge')}</Badge> : null}
                 <span className="bt-meta">
@@ -126,7 +129,7 @@ export function WatchlistsPage() {
                     : t('watchlists.itemsOther', { count: w.itemCount })}
                 </span>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="bt-watchlist-row__actions flex flex-wrap items-center gap-2">
                 {!paranoid ? (
                   <Button onClick={() => setSharing(w)} size="sm">
                     {t('sharing.shareButton')}
@@ -201,7 +204,7 @@ function RenameDialog({
       ),
   });
   return (
-    <Dialog title={t('watchlists.renameTitle')} onClose={onClose}>
+    <Dialog phoneSheet title={t('watchlists.renameTitle')} onClose={onClose}>
       <form
         className="flex flex-col gap-3"
         onSubmit={(e) => {
@@ -221,7 +224,7 @@ function RenameDialog({
           />
         </Field>
         {error ? <Alert tone="error">{error}</Alert> : null}
-        <div className="flex justify-end gap-2">
+        <div className="flex flex-wrap justify-end gap-2">
           <Button onClick={onClose}>{t('sharing.cancel')}</Button>
           <Button
             disabled={rename.isPending || name.trim().length === 0}

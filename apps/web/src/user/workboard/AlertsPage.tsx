@@ -36,7 +36,7 @@ export function AlertsPage() {
   const alerts = data?.items ?? [];
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="bt-phone-surface bt-alerts-page flex flex-col gap-6">
       <PageHead
         actions={
           <Button onClick={() => setCreating(true)} variant="primary">

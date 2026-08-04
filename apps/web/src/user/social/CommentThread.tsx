@@ -52,7 +52,11 @@ function ReactionChips({
 }) {
   const byEmoji = new Map(reactions.map((r) => [r.emoji, r]));
   return (
-    <div className="flex flex-wrap items-center gap-1" role="group" aria-label={ariaLabel}>
+    <div
+      className="bt-comment-reactions flex flex-wrap items-center gap-1"
+      role="group"
+      aria-label={ariaLabel}
+    >
       {REACTION_EMOJIS.map((emoji) => {
         const r = byEmoji.get(emoji);
         const reacted = r?.reacted ?? false;
@@ -123,7 +127,10 @@ export function CommentThread({ kind, subjectId }: { kind: ShareKind; subjectId:
   if (isError && isConfirmedApiOutcome(error)) return null;
   if (isError) {
     return (
-      <section className="bt-t-rule flex flex-col items-start gap-2" style={{ paddingTop: 18 }}>
+      <section
+        className="bt-phone-surface bt-comment-thread bt-t-rule flex flex-col items-start gap-2"
+        style={{ paddingTop: 18 }}
+      >
         <Alert tone="error">{t('social.comments.loadError')}</Alert>
         <Button onClick={() => void refetch()} size="sm" variant="quiet">
           {t('common.retry')}
@@ -136,7 +143,10 @@ export function CommentThread({ kind, subjectId }: { kind: ShareKind; subjectId:
   const trimmed = draft.trim();
 
   return (
-    <section className="bt-t-rule flex flex-col gap-3" style={{ paddingTop: 18 }}>
+    <section
+      className="bt-phone-surface bt-comment-thread bt-t-rule flex flex-col gap-3"
+      style={{ paddingTop: 18 }}
+    >
       <div className="flex flex-wrap items-center justify-between gap-3">
         <Button
           onClick={() => setExpanded((v) => !v)}
@@ -170,7 +180,7 @@ export function CommentThread({ kind, subjectId }: { kind: ShareKind; subjectId:
           ) : (
             <ul className="bt-band flex flex-col">
               {data?.comments.map((comment) => (
-                <li key={comment.id} className="flex gap-3 py-3">
+                <li key={comment.id} className="bt-comment-row flex gap-3 py-3">
                   <Avatar
                     name={comment.author.username}
                     iconId={comment.author.profileIcon}
@@ -208,7 +218,7 @@ export function CommentThread({ kind, subjectId }: { kind: ShareKind; subjectId:
           )}
 
           <form
-            className="flex flex-col gap-2"
+            className="bt-comment-composer flex flex-col gap-2"
             onSubmit={(e) => {
               e.preventDefault();
               if (trimmed.length > 0) postMutation.mutate(trimmed);

@@ -2503,6 +2503,13 @@
         "successBody": "„{{name}}“ wurde zu deinen Ideen hinzugefügt.",
         "viewIdeas": "In Ideen ansehen"
       },
+      "edit": {
+        "action": "Bearbeiten",
+        "title": "Idee bearbeiten",
+        "submit": "Änderungen speichern",
+        "saving": "Wird gespeichert…",
+        "error": "Die Idee konnte nicht aktualisiert werden."
+      },
       "open": {
         "backLink": "← Ideen",
         "loadError": "Diese Idee konnte nicht geladen werden.",
