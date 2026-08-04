@@ -8,6 +8,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   alertListResponseSchema,
   alertSchema,
+  cashBudgetResponseSchema,
+  cashMonthlySummaryResponseSchema,
+  cashRuleApplyResponseSchema,
+  cashRulePreviewResponseSchema,
+  cashRuleResponseSchema,
+  cashTagResponseSchema,
+  cashTrendResponseSchema,
   chatConversationListResponseSchema,
   conversationResponseSchema,
   createApiKeyResponseSchema,
@@ -19,11 +26,13 @@ import {
   sendChatMessageResponseSchema,
 } from '@bettertrack/contracts';
 
+import { createOAuthRepository } from '../data/repositories/oauthRepository';
 import { createTwoFactorRepository } from '../data/repositories/twoFactorRepository';
 import { createUserRepository } from '../data/repositories/userRepository';
 import * as schema from '../data/schema';
 import { pathAcceptsBearer } from '../http/middleware/bearerAuth';
 import { generateTotpCode } from '../services/auth/totp';
+import { FIRST_PARTY_CLIENTS, seedFirstPartyClients } from '../services/oauth/firstPartyClients';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 /**
@@ -946,6 +955,191 @@ describe('#405 bearer /alerts coverage — the mobile alerts 403 root cause', ()
     const list = await request(harness.app).get('/api/v1/alerts').set(bearer(token));
     expect(list.status, JSON.stringify(list.body)).toBe(200);
     expect(alertListResponseSchema.safeParse(list.body).success).toBe(true);
+  });
+});
+
+describe('#1041 bearer /cash coverage — cash classification for mobile', () => {
+  it('an OAuth bearer with cash:write walks tag, budget and rule CRUD plus reporting', async () => {
+    // portfolio:read is setup-only: listing lazily creates this fresh account's
+    // default portfolio. Movement/source CRUD already has bearer coverage.
+    const { token } = await mintOAuthToken(['portfolio:read', 'cash:write']);
+    const portfolios = await request(harness.app).get('/api/v1/portfolios').set(bearer(token));
+    expect(portfolios.status, JSON.stringify(portfolios.body)).toBe(200);
+    const portfolioId = (portfolios.body.portfolios as { id: string; isDefault: boolean }[]).find(
+      (portfolio) => portfolio.isDefault,
+    )!.id;
+
+    const createdTag = await request(harness.app)
+      .post('/api/v1/cash/tags')
+      .set(bearer(token))
+      .send({ name: 'Mobile dining', color: '#4477aa' });
+    expect(createdTag.status, JSON.stringify(createdTag.body)).toBe(201);
+    const tag = cashTagResponseSchema.parse(createdTag.body).tag;
+
+    const tags = await request(harness.app).get('/api/v1/cash/tags').set(bearer(token));
+    expect(tags.status, JSON.stringify(tags.body)).toBe(200);
+    expect((tags.body.tags as { id: string }[]).some((row) => row.id === tag.id)).toBe(true);
+
+    const patchedTag = await request(harness.app)
+      .patch(`/api/v1/cash/tags/${tag.id}`)
+      .set(bearer(token))
+      .send({ name: 'Mobile cafés' });
+    expect(cashTagResponseSchema.parse(patchedTag.body).tag.name).toBe('Mobile cafés');
+
+    const createdBudget = await request(harness.app)
+      .post('/api/v1/cash/budgets')
+      .set(bearer(token))
+      .send({ portfolioId, tagId: tag.id, amount: 100 });
+    expect(createdBudget.status, JSON.stringify(createdBudget.body)).toBe(201);
+    const budget = cashBudgetResponseSchema.parse(createdBudget.body).budget;
+
+    const budgets = await request(harness.app)
+      .get('/api/v1/cash/budgets')
+      .query({ portfolioId })
+      .set(bearer(token));
+    expect(budgets.status, JSON.stringify(budgets.body)).toBe(200);
+    expect((budgets.body.budgets as { id: string }[]).some((row) => row.id === budget.id)).toBe(
+      true,
+    );
+
+    const patchedBudget = await request(harness.app)
+      .patch(`/api/v1/cash/budgets/${budget.id}`)
+      .set(bearer(token))
+      .send({ amount: 125 });
+    expect(cashBudgetResponseSchema.parse(patchedBudget.body).budget.amount).toBe(125);
+
+    const createdRule = await request(harness.app)
+      .post('/api/v1/cash/rules')
+      .set(bearer(token))
+      .send({ tagIds: [tag.id], matchType: 'contains', pattern: 'MOBILE CAFE' });
+    expect(createdRule.status, JSON.stringify(createdRule.body)).toBe(201);
+    const rule = cashRuleResponseSchema.parse(createdRule.body).rule;
+
+    const rules = await request(harness.app).get('/api/v1/cash/rules').set(bearer(token));
+    expect(rules.status, JSON.stringify(rules.body)).toBe(200);
+    expect((rules.body.rules as { id: string }[]).some((row) => row.id === rule.id)).toBe(true);
+
+    const patchedRule = await request(harness.app)
+      .patch(`/api/v1/cash/rules/${rule.id}`)
+      .set(bearer(token))
+      .send({ tagIds: [tag.id], priority: 10 });
+    expect(cashRuleResponseSchema.parse(patchedRule.body).rule.priority).toBe(10);
+
+    const preview = await request(harness.app)
+      .post('/api/v1/cash/rules/preview')
+      .set(bearer(token))
+      .send({ note: 'MOBILE CAFE VIENNA' });
+    expect(preview.status, JSON.stringify(preview.body)).toBe(200);
+    expect(cashRulePreviewResponseSchema.parse(preview.body).tagIds).toEqual([tag.id]);
+
+    const applied = await request(harness.app).post('/api/v1/cash/rules/apply').set(bearer(token));
+    expect(applied.status, JSON.stringify(applied.body)).toBe(200);
+    expect(cashRuleApplyResponseSchema.parse(applied.body).movementsTagged).toBe(0);
+
+    const summary = await request(harness.app)
+      .get('/api/v1/cash/summary')
+      .query({ portfolioId })
+      .set(bearer(token));
+    expect(summary.status, JSON.stringify(summary.body)).toBe(200);
+    expect(cashMonthlySummaryResponseSchema.parse(summary.body).portfolioId).toBe(portfolioId);
+
+    const trends = await request(harness.app)
+      .get('/api/v1/cash/trends')
+      .query({ portfolioId, months: 2 })
+      .set(bearer(token));
+    expect(trends.status, JSON.stringify(trends.body)).toBe(200);
+    expect(cashTrendResponseSchema.parse(trends.body).portfolioId).toBe(portfolioId);
+
+    await request(harness.app)
+      .delete(`/api/v1/cash/rules/${rule.id}`)
+      .set(bearer(token))
+      .expect(204);
+    await request(harness.app)
+      .delete(`/api/v1/cash/budgets/${budget.id}`)
+      .set(bearer(token))
+      .expect(204);
+    await request(harness.app).delete(`/api/v1/cash/tags/${tag.id}`).set(bearer(token)).expect(204);
+  });
+
+  it('cash:read reaches reads and preview but rejects every mutation class', async () => {
+    const { token } = await mintKey(['cash:read']);
+
+    await request(harness.app).get('/api/v1/cash/tags').set(bearer(token)).expect(200);
+    await request(harness.app)
+      .post('/api/v1/cash/rules/preview')
+      .set(bearer(token))
+      .send({ note: 'read-only preview' })
+      .expect(200);
+
+    const denied = [
+      await request(harness.app)
+        .post('/api/v1/cash/tags')
+        .set(bearer(token))
+        .send({ name: 'No write' }),
+      await request(harness.app)
+        .patch(`/api/v1/cash/budgets/${MISSING_ID}`)
+        .set(bearer(token))
+        .send({ amount: 10 }),
+      await request(harness.app).delete(`/api/v1/cash/rules/${MISSING_ID}`).set(bearer(token)),
+      await request(harness.app).post('/api/v1/cash/rules/apply').set(bearer(token)),
+    ];
+    for (const res of denied) {
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(res.body.error.code).toBe('INSUFFICIENT_SCOPE');
+      expect(res.body.error.message).toContain('cash:write');
+    }
+  });
+
+  it('a bearer without cash scopes gets scope-evaluation 403, not API_KEY_FORBIDDEN', async () => {
+    const { token } = await mintKey(['market:read']);
+    const res = await request(harness.app).get('/api/v1/cash/tags').set(bearer(token));
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe('INSUFFICIENT_SCOPE');
+    expect(res.body.error.message).toContain('cash:read');
+  });
+
+  it('the seeded first-party mobile client authorizes and uses both cash scopes', async () => {
+    const mobile = FIRST_PARTY_CLIENTS.find(
+      (client) => client.clientId === 'btc_IbT1mzw_7kBiPHPkGfaE0Q',
+    )!;
+    expect(mobile.scopeCeiling).toEqual(expect.arrayContaining(['cash:read', 'cash:write']));
+    await seedFirstPartyClients(createOAuthRepository(harness.db));
+
+    const user = await seedFreshUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const { verifier, challenge } = pkce();
+    const authorize = {
+      client_id: mobile.clientId,
+      redirect_uri: mobile.redirectUris[0],
+      scope: 'cash:read cash:write',
+      code_challenge: challenge,
+      code_challenge_method: 'S256',
+    };
+
+    const detailsRes = await agent.get('/api/v1/oauth/authorization-details').query(authorize);
+    expect(detailsRes.status, JSON.stringify(detailsRes.body)).toBe(200);
+    const details = oauthAuthorizationDetailsResponseSchema.parse(detailsRes.body);
+    expect(details.client.firstParty).toBe(true);
+    expect(details.scopes.map((scope) => scope.scope)).toEqual(['cash:read', 'cash:write']);
+
+    const approval = await agent
+      .post('/api/v1/oauth/authorize')
+      .set(...XRW)
+      .send(authorize);
+    expect(approval.status, JSON.stringify(approval.body)).toBe(200);
+    const code = new URL(approval.body.redirectTo as string).searchParams.get('code');
+    expect(code).toBeTruthy();
+
+    const tokenRes = await request(harness.app).post('/api/v1/oauth/token').send({
+      grant_type: 'authorization_code',
+      code,
+      redirect_uri: mobile.redirectUris[0],
+      client_id: mobile.clientId,
+      code_verifier: verifier,
+    });
+    expect(tokenRes.status, JSON.stringify(tokenRes.body)).toBe(200);
+    const mobileToken = oauthTokenResponseSchema.parse(tokenRes.body).access_token;
+    await request(harness.app).get('/api/v1/cash/tags').set(bearer(mobileToken)).expect(200);
   });
 });
 

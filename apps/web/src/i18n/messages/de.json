@@ -347,6 +347,10 @@
           "label": "Preisalarme",
           "description": "Deine Preisalarme lesen oder erstellen, bearbeiten, neu aktivieren und löschen."
         },
+        "cash": {
+          "label": "Cash",
+          "description": "Deine Cash-Tags, Budgets, Regeln, Zusammenfassungen und Trends lesen oder verwalten."
+        },
         "accountSecurity": {
           "label": "Kontosicherheit",
           "description": "Sitzungen, Zwei-Faktor-Authentifizierung, Passwort und die App-PIN verwalten."
