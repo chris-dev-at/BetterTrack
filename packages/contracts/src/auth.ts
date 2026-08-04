@@ -304,6 +304,12 @@ export const meResponseSchema = z.object({
    * fixtures still parse; the server always emits it (see `toMeResponse`).
    */
   discreetMode: z.boolean().optional(),
+  /**
+   * Account privacy mode (§13.5 V5-P13): `paranoid` means the account uses the
+   * client-encrypted vault. Optional so older server responses remain readable;
+   * the current server always emits it (see `toMeResponse`).
+   */
+  privacyMode: z.enum(['normal', 'paranoid']).optional(),
   lastLoginAt: z.string().datetime().nullable(),
   /**
    * When the account finished (or dismissed) first-run setup; `null` means it
