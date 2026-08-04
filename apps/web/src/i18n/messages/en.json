@@ -203,6 +203,7 @@
       "signedInAs": "Signed in as {{username}}",
       "continue": "Continue",
       "useAnotherAccount": "Use another account",
+      "paranoidScopesDropped": "Portfolio access is unavailable while Paranoid mode is on. If requested, vault sync and other available permissions will still be granted.",
       "wantsAccess": "wants access to your BetterTrack account. If you approve, it will be able to:",
       "returnedTo": "You'll be returned to",
       "revokeHint": ". You can revoke this access anytime in Settings → API Access.",
