@@ -71,6 +71,20 @@ function readParams(sp: URLSearchParams): OAuthAuthorizeParams | null {
   return params;
 }
 
+/** Preserve the authorize request verbatim apart from explicitly blocked scopes. */
+function withoutBlockedScopes(
+  params: OAuthAuthorizeParams,
+  blockedScopes: ReadonlySet<string>,
+): OAuthAuthorizeParams | null {
+  if (blockedScopes.size === 0) return params;
+
+  const scope = params.scope
+    .split(/\s+/)
+    .filter((candidate) => candidate && !blockedScopes.has(candidate))
+    .join(' ');
+  return scope ? { ...params, scope } : null;
+}
+
 /**
  * Centered, standalone card scaffold (this screen sits outside the app chrome),
  * built on the Origin gate. Widened past the 400px auth default because consent
@@ -174,7 +188,7 @@ export function ConsentPage() {
   });
 
   const approve = useMutation({
-    mutationFn: () => approveAuthorization(params as OAuthAuthorizeParams),
+    mutationFn: (approvedParams: OAuthAuthorizeParams) => approveAuthorization(approvedParams),
     onSuccess: (result) => {
       // Works for https and custom-scheme deep links (myapp://callback). The
       // service validated and signed this destination — never a raw redirect_uri.
@@ -269,10 +283,19 @@ export function ConsentPage() {
   // fallback keeps TypeScript happy without leaking anything if it ever wasn't.
   const username = user?.username ?? '';
   const signedInAs = t('auth.oauthConsent.signedInAs', { username });
-  const portfolioScopeBlocked =
-    paranoid && details.scopes.some(({ scope }) => isParanoidBlockedScope(scope));
+  const blockedScopes = new Set<string>(
+    paranoid
+      ? details.scopes
+          .filter(({ scope }) => isParanoidBlockedScope(scope))
+          .map(({ scope }) => scope)
+      : [],
+  );
+  const portfolioScopeBlocked = blockedScopes.size > 0;
+  const firstPartyApproveParams = withoutBlockedScopes(params, blockedScopes);
 
-  if (portfolioScopeBlocked) {
+  // Third-party consent keeps the existing fail-closed policy. A trusted app
+  // may continue with a reduced grant, unless filtering leaves nothing useful.
+  if (portfolioScopeBlocked && (!details.client.firstParty || firstPartyApproveParams == null)) {
     return (
       <ConsentShell>
         <div className="flex flex-col gap-5">
@@ -312,13 +335,16 @@ export function ConsentPage() {
           {approveError ? <Alert tone="error">{approveError}</Alert> : null}
           <AppIdentity name={details.client.name} logoPath={null} firstParty />
           <p className="bt-muted text-sm">{signedInAs}</p>
+          {portfolioScopeBlocked ? (
+            <Alert tone="info">{t('auth.oauthConsent.paranoidScopesDropped')}</Alert>
+          ) : null}
           <div className="flex flex-col gap-2 sm:flex-row-reverse">
             <Button
               className="sm:flex-1"
               disabled={approve.isPending || switching}
               onClick={() => {
                 setApproveError(null);
-                approve.mutate();
+                approve.mutate(firstPartyApproveParams ?? params);
               }}
             >
               {approve.isPending
@@ -373,7 +399,7 @@ export function ConsentPage() {
             disabled={approve.isPending || deny.isPending || switching}
             onClick={() => {
               setApproveError(null);
-              approve.mutate();
+              approve.mutate(params);
             }}
           >
             {approve.isPending

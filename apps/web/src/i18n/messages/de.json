@@ -203,6 +203,7 @@
       "signedInAs": "Angemeldet als {{username}}",
       "continue": "Weiter",
       "useAnotherAccount": "Anderes Konto verwenden",
+      "paranoidScopesDropped": "Portfoliozugriff ist im paranoiden Modus nicht verfügbar. Falls angefordert, werden die Tresorsynchronisierung und andere verfügbare Berechtigungen weiterhin gewährt.",
       "wantsAccess": "möchte Zugriff auf dein BetterTrack-Konto. Wenn du zustimmst, kann die App:",
       "returnedTo": "Du wirst zurückgeleitet zu",
       "revokeHint": ". Du kannst diesen Zugriff jederzeit unter Einstellungen → API-Zugang widerrufen.",
@@ -1476,7 +1477,7 @@
         "actionsAriaLabel": "Aktionen"
       },
       "transaction": {
-        "deleteConfirm": "Löschen?",
+        "deleteConfirm": "Diese Transaktion löschen? Ihre Cash-Buchung wird ebenfalls zurückgenommen.",
         "editAriaLabel": "Transaktion vom {{date}} bearbeiten",
         "deleteAriaLabel": "Transaktion vom {{date}} löschen"
       },
@@ -1846,7 +1847,7 @@
       "renameAction": "Umbenennen",
       "archiveAction": "Archivieren",
       "restoreAction": "Wiederherstellen",
-      "archiveConfirm": "Archivieren?",
+      "archiveConfirm": "Dieses Konto archivieren? Die Bewegungen bleiben in der Historie; du kannst es jederzeit wiederherstellen.",
       "actionError": "Die Quelle konnte nicht aktualisiert werden. Bitte versuche es erneut.",
       "mirrorConflict": "Ein anderes Mitglied hat diese Quelle inzwischen geändert. Aktualisiere die Liste und versuche es noch einmal.",
       "mirrorRowDeleted": "Ein anderes Mitglied hat diese Quelle entfernt. Aktualisiere die Liste, um den aktuellen Stand zu sehen.",
@@ -2159,7 +2160,7 @@
         "removeError": "Entfernen fehlgeschlagen. Bitte versuche es erneut.",
         "reorderError": "Neue Reihenfolge konnte nicht gespeichert werden. Bitte versuche es erneut.",
         "emptyTitle": "Deine Watchlist ist leer",
-        "emptyDescription": "Finde eine Anlage und füge sie deinem Workbench hinzu, um sie zu beobachten.",
+        "emptyDescription": "Finde eine Anlage und füge sie einer Watchlist hinzu, um sie zu beobachten.",
         "emptySearchLink": "Nach einer Anlage suchen →",
         "trendHeader": "Trend",
         "assetHeader": "Anlage",
@@ -2167,7 +2168,7 @@
         "dayHeader": "Tag",
         "alertsHeader": "Alarme",
         "actionsAriaLabel": "Aktionen",
-        "alertsComingSoonTitle": "Alarme kommen in einer späteren Phase",
+        "alertsComingSoonTitle": "Alarm-Zähler folgen in einer späteren Version — deine Alarme findest du im Tab „Alarme“",
         "removeAriaLabel": "{{symbol}} von der Watchlist entfernen",
         "sparklineAriaLabel": "1-Monats-Trend für {{symbol}}"
       },
@@ -2184,13 +2185,15 @@
       },
       "alerts": {
         "heading": "Alarme",
-        "emptyTitle": "Alarm-Panel folgt in Kürze",
-        "emptyDescription": "Deine aktiven Alarme für alle beobachteten Anlagen erscheinen hier."
+        "emptyTitle": "Deine Alarme findest du im Tab „Alarme“",
+        "emptyDescription": "Kurs- und Prozent-Alarme kannst du bereits nutzen — dieses Übersichts-Panel fasst sie in einer späteren Version zusammen.",
+        "emptyCta": "Alarme öffnen →"
       },
       "conglomerates": {
         "heading": "Meine Blueprints",
-        "emptyTitle": "Blueprints folgen in Kürze",
-        "emptyDescription": "Deine individuellen ETF-Körbe erscheinen hier."
+        "emptyTitle": "Deine Blueprints findest du im Tab „Blueprints“",
+        "emptyDescription": "Individuelle ETF-Körbe erstellen, testen und gewichten kannst du bereits — dieses Übersichts-Panel fasst sie in einer späteren Version zusammen.",
+        "emptyCta": "Blueprints öffnen →"
       }
     },
     "calculator": {
@@ -2358,6 +2361,7 @@
         "rearming": "Wird scharf gestellt…",
         "rearm": "Wieder scharf stellen",
         "deleting": "Wird gelöscht…",
+        "deleteConfirm": "Diesen Alarm löschen? Er wird nicht mehr ausgewertet und lässt sich nicht wiederherstellen.",
         "updateError": "Der Alarm konnte nicht aktualisiert werden. Bitte versuche es erneut."
       }
     },
@@ -2387,7 +2391,7 @@
       "assetHeader": "Anlage",
       "weightHeader": "Gewicht",
       "deleteDialogTitle": "Blueprint löschen?",
-      "deleteDialogBody": "Dies löscht {{name}} und alle seine Positionen dauerhaft. Dies kann nicht rückgängig gemacht werden.",
+      "deleteDialogBody": "Dies löscht {{name}} und alle seine Positionen dauerhaft. Daraus gespeicherte Ideen lassen sich nicht mehr öffnen, und wer den Blueprint geteilt bekommen hat, verliert den Zugriff. Deine Portfolios und Transaktionen bleiben unverändert. Das kann nicht rückgängig gemacht werden.",
       "deleteError": "Dieser Blueprint konnte nicht gelöscht werden. Bitte versuche es erneut.",
       "deleting": "Wird gelöscht…",
       "backToConglomeratesError": "← Zurück zu Blueprints",
@@ -2459,8 +2463,8 @@
       "statPositions": "Positionen",
       "statTotalWeight": "Gesamtgewicht",
       "statLargest": "Größte",
-      "backtestPreviewAriaLabel": "Backtest-Vorschau (folgt in Kürze)",
-      "backtestPreviewText": "Backtest-Vorschau — folgt mit dem Backtest-Panel.",
+      "backtestPreviewAriaLabel": "Backtest-Vorschau (noch nicht gebaut)",
+      "backtestPreviewText": "Eine Backtest-Vorschau folgt hier in einer späteren Version. Speichere diesen Blueprint, um ihn auf seiner Detailseite zu testen.",
       "nestConglomerateHeading": "Blueprint verschachteln",
       "nestConglomerateHint": "Füge einen deiner eigenen Blueprints als gewichteten Anteil hinzu — seine Gewichte werden bei Backtest und Aufteilung rekursiv aufgelöst.",
       "nestConglomerateEmpty": "Noch keine anderen Blueprints zum Verschachteln.",
@@ -2481,13 +2485,14 @@
       "list": {
         "title": "Ideen",
         "emptyTitle": "Noch keine gespeicherten Ideen",
-        "emptyBody": "Speichere einen Korb samt Backtest aus einem Blueprint oder dem Builder, um später darauf zurückzukommen.",
+        "emptyBody": "Ideen entstehen aus dem Backtest zu einem Blueprint — öffne einen Blueprint, führe seinen Backtest aus und wähle dann „Als Idee speichern“.",
+        "emptyCta": "Blueprints öffnen →",
         "open": "Öffnen",
         "share": "Teilen",
         "thesisNone": "Keine These",
         "loadError": "Deine Ideen konnten nicht geladen werden.",
-        "deleteTitle": "Idee löschen",
-        "deleteBody": "„{{name}}“ löschen? Das kann nicht rückgängig gemacht werden.",
+        "deleteTitle": "Idee löschen?",
+        "deleteBody": "„{{name}}“ löschen? Die These und die gespeicherten Backtest-Einstellungen verschwinden mit, und wer sie geteilt bekommen hat, verliert den Zugriff. Der zugrunde liegende Blueprint bleibt unverändert. Das kann nicht rückgängig gemacht werden.",
         "deleteError": "Die Idee konnte nicht gelöscht werden."
       },
       "save": {
@@ -2679,7 +2684,7 @@
         "pausing": "Pausiere…",
         "resume": "Fortsetzen",
         "resuming": "Setze fort…",
-        "deleteConfirm": "Löschen?",
+        "deleteConfirm": "Diesen Dauerauftrag löschen? Er legt dann keine weiteren Einträge mehr an.",
         "updateError": "Der Auftrag konnte nicht aktualisiert werden. Bitte erneut versuchen."
       },
       "dialog": {
@@ -2927,7 +2932,8 @@
     "renameTitle": "Watchlist umbenennen",
     "delete": "Löschen",
     "defaultBadge": "Standard",
-    "deleteConfirm": "Diese Watchlist und ihren gesamten Inhalt löschen?",
+    "deleteConfirm": "Die Watchlist „{{name}}“ löschen? Ihre Einträge verschwinden mit. Die Anlagen bleiben in deinen anderen Listen und in deinen Portfolios. Das kann nicht rückgängig gemacht werden.",
+    "subtitle": "Benenne oben eine Liste, um die Anlagen zu gruppieren, denen du folgst. Jede Liste kann einzeln geteilt werden.",
     "nameTaken": "Eine Watchlist mit diesem Namen existiert bereits.",
     "addTo": "Zur Watchlist hinzufügen",
     "pickList": "Liste wählen",
@@ -3148,7 +3154,7 @@
       "decline": "Ablehnen",
       "cancelling": "Wird zurückgezogen…",
       "removeTitle": "Freund:in entfernen?",
-      "removeBody": "ist dann nicht mehr mit dir befreundet und wird nicht benachrichtigt.",
+      "removeBody": "ist dann nicht mehr mit dir befreundet. Die Person verliert den Zugriff auf alles, was du mit Freund:innen teilst, und du auf ihre Freigaben. Euer Chatverlauf bleibt erhalten. Sie wird nicht benachrichtigt, und ihr könnt später erneut eine Anfrage senden.",
       "removeError": "Konnte nicht entfernt werden. Bitte versuche es erneut.",
       "removing": "Wird entfernt…",
       "friendsLoadError": "Deine Freunde konnten nicht geladen werden. Bitte lade die Seite neu.",
@@ -3337,7 +3343,7 @@
       "title": "Freund:in einladen",
       "body": "Nur Freund:innen können eingeladen werden. Die eingeladene Person sieht eine einseitige Bestätigung und tritt mit einer frischen Kopie bei, die automatisch synchronisiert wird.",
       "searchPlaceholder": "Freund:innen nach Benutzername suchen",
-      "empty": "Keine Freund:innen zum Einladen. Füge zuerst welche unter Social hinzu.",
+      "empty": "Keine Freund:innen zum Einladen. Füge zuerst welche unter „Personen“ hinzu.",
       "sending": "Einladung wird gesendet…",
       "errorNotFriends": "Du kannst nur Freund:innen zu einem Gruppenportfolio einladen.",
       "errorCapReached": "Diese Gruppe ist voll (max. {{max}} Mitglieder).",
@@ -4775,7 +4781,7 @@
       "originalCurrency": "urspr. {{currency}}",
       "tagDialog": {
         "title": "Tags bearbeiten",
-        "noTags": "Du hast noch keine Tags — leg zuerst eines im Tab „Tags“ an.",
+        "noTags": "Du hast noch keine Tags — leg zuerst eines auf der Seite „Labels & Regeln“ an.",
         "saveError": "Tags konnten nicht aktualisiert werden. Bitte versuche es erneut."
       },
       "manageLabels": "Labels & Regeln"
