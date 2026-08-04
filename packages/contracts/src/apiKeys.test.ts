@@ -68,11 +68,13 @@ describe('write-implies-read scope model (#371)', () => {
       expect(scopeSatisfies(['portfolio:write'], 'portfolio:read')).toBe(true);
       expect(scopeSatisfies(['chat:write'], 'chat:read')).toBe(true);
       expect(scopeSatisfies(['cash:write'], 'cash:read')).toBe(true);
+      expect(scopeSatisfies(['mirrorchain:write'], 'mirrorchain:read')).toBe(true);
     });
 
     it('does NOT let a :read satisfy a :write requirement', () => {
       expect(scopeSatisfies(['portfolio:read'], 'portfolio:write')).toBe(false);
       expect(scopeSatisfies(['cash:read'], 'cash:write')).toBe(false);
+      expect(scopeSatisfies(['mirrorchain:read'], 'mirrorchain:write')).toBe(false);
     });
 
     it('a direct scope match still satisfies', () => {

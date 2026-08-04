@@ -157,6 +157,45 @@ describe('OpenAPI document', () => {
       }
     }
 
+    // #1042: mirrorchain is intentionally split by exact method + route. The
+    // seven participation operations advertise bearer access, while lifecycle
+    // administration stays marked as an owning browser session even when it
+    // shares a path with an allowed read (GET vs POST /chains).
+    const mirrorchainBearerOperations = [
+      ['get', '/mirrorchain/chains'],
+      ['get', '/mirrorchain/chains/{chainId}/members'],
+      ['get', '/mirrorchain/chains/{chainId}/activity'],
+      ['get', '/mirrorchain/invites'],
+      ['post', '/mirrorchain/invites/{inviteId}/accept'],
+      ['post', '/mirrorchain/invites/{inviteId}/decline'],
+      ['post', '/mirrorchain/chains/{chainId}/leave'],
+    ] as const;
+    for (const [method, path] of mirrorchainBearerOperations) {
+      const operation = (paths[path] as JsonObject)[method] as JsonObject;
+      expect(operation.security, `security for ${method.toUpperCase()} ${path}`).toEqual([
+        { sessionCookie: [] },
+        { apiKeyBearer: [] },
+      ]);
+    }
+
+    const mirrorchainSessionOperations = [
+      ['post', '/mirrorchain/chains'],
+      ['post', '/mirrorchain/chains/convert'],
+      ['post', '/mirrorchain/invites/{inviteId}/revoke'],
+      ['post', '/mirrorchain/chains/{chainId}/invites'],
+      ['patch', '/mirrorchain/chains/{chainId}'],
+      ['post', '/mirrorchain/chains/{chainId}/transfer'],
+      ['delete', '/mirrorchain/chains/{chainId}'],
+      ['patch', '/mirrorchain/chains/{chainId}/members/{userId}/role'],
+      ['delete', '/mirrorchain/chains/{chainId}/members/{userId}'],
+    ] as const;
+    for (const [method, path] of mirrorchainSessionOperations) {
+      const operation = (paths[path] as JsonObject)[method] as JsonObject;
+      expect(operation.security, `security for ${method.toUpperCase()} ${path}`).toEqual([
+        { sessionCookie: [] },
+      ]);
+    }
+
     // Paranoid transitions (§13.5 V5-P13) are session-only in the middleware, so
     // the derived spec must NOT advertise a bearer for either direction — a
     // client-generated SDK that offered it would only ever get 403s, and the

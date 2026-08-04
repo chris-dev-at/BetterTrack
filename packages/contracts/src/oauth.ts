@@ -59,6 +59,9 @@ export const OAUTH_SCOPE_LABELS: Record<ApiKeyScope, string> = {
   // #1041 — plain-language consent copy for the cash-classification scopes.
   'cash:read': 'View your cash tags, budgets, rules, summaries and trends',
   'cash:write': 'Create and edit your cash tags, budgets and rules',
+  // #1042 — participation only; group administration remains browser-session-only.
+  'mirrorchain:read': 'View your group portfolios, members, activity and invitations',
+  'mirrorchain:write': 'Accept or decline group invitations and leave group portfolios',
 };
 
 // ── Redirect URI validation ─────────────────────────────────────────────────
