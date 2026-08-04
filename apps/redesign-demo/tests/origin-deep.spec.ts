@@ -86,6 +86,53 @@ test('command search supports real keyboard navigation and restores its trigger'
   await expect(trigger).toBeFocused();
 });
 
+test('cash workspace brings balances, planning, and cash actions into one view', async ({
+  page,
+}) => {
+  await page
+    .getByRole('button', { name: /all wealth/i })
+    .first()
+    .click();
+  await page
+    .locator('.scope-popover')
+    .getByRole('button', { name: /personal wealth/i })
+    .click();
+  await page
+    .locator('.suite-nav')
+    .getByRole('button', { name: /portfolios/i })
+    .click();
+  await page.locator('.portfolio-tabs').getByRole('button', { name: 'Cash flow' }).click();
+
+  await expect(page.getByText('Total available cash', { exact: true })).toBeVisible();
+  await expect(page.getByText('€35,492.87', { exact: true })).toBeVisible();
+
+  const cashAccountsLabel = page.getByText('Cash accounts', { exact: true });
+  await expect(cashAccountsLabel).toBeVisible();
+  const cashAccounts = cashAccountsLabel.locator('xpath=ancestor::section[1]');
+  for (const account of ['Cash · Personal wealth', 'Sparkasse •• 1842', 'Trade Republic cash']) {
+    await expect(cashAccounts.getByText(account, { exact: true })).toBeVisible();
+  }
+  await expect(cashAccounts.getByText(/^€[\d,]+\.\d{2}$/).first()).toBeVisible();
+
+  for (const section of ['This month', 'Upcoming 14 days', 'Recent activity']) {
+    await expect(page.getByText(section, { exact: true })).toBeVisible();
+  }
+
+  for (const action of ['Deposit', 'Expense', 'Transfer']) {
+    await expect(page.getByRole('button', { name: action, exact: true }).first()).toBeVisible();
+  }
+
+  await page.getByRole('button', { name: 'Expense', exact: true }).first().click();
+  const expense = page.getByRole('dialog', { name: 'Record expense' });
+  await expect(expense).toBeVisible();
+  await expect(expense.getByLabel('Expense amount')).toBeVisible();
+  for (const kind of ['Expense', 'Income', 'Transfer']) {
+    await expect(expense.getByRole('button', { name: new RegExp(`^${kind}`) })).toBeVisible();
+  }
+  await expense.getByRole('button', { name: 'Close' }).click();
+  await expect(expense).toHaveCount(0);
+});
+
 test('an internal transfer records a paired zero-net movement without creating wealth', async ({
   page,
 }) => {
@@ -294,12 +341,16 @@ test('a nested portfolio and its recurring cash flow remain connected after relo
   await expect(
     page.locator('.portfolio-tabs').getByRole('button', { name: 'Cash flow' }),
   ).toHaveAttribute('aria-current', 'page');
-  await expect(page.getByText('Quarterly insurance', { exact: true })).toBeVisible();
+  await expect(
+    page.locator('.cash-recent').getByText('Quarterly insurance', { exact: true }),
+  ).toBeVisible();
 
   await page.reload();
   await expect(page.locator('.scope-button')).toContainText('Family Opportunity');
   await page.locator('.portfolio-tabs').getByRole('button', { name: 'Cash flow' }).click();
-  await expect(page.getByText('Quarterly insurance', { exact: true })).toBeVisible();
+  await expect(
+    page.locator('.cash-recent').getByText('Quarterly insurance', { exact: true }),
+  ).toBeVisible();
 });
 
 test('staged import produces a receipt and Review records both approval and rejection', async ({
@@ -1220,7 +1271,7 @@ test('private-market commitments persist and capital calls join the shared Revie
   await expect(workspace).toContainText('TVPI');
 
   await workspace.getByTestId('private-markets-add').click();
-  const creator = workspace.getByTestId('private-markets-create-dialog');
+  let creator = workspace.getByTestId('private-markets-create-dialog');
   await creator.getByLabel('Display name').fill('Danube Growth Partnership');
   await creator.getByLabel('Legal entity name').fill('Danube Growth Partnership SCSp');
   await creator.getByRole('button', { name: 'Continue' }).click();

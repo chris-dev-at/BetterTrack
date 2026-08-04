@@ -2856,20 +2856,157 @@ function HoldingsTab({
   );
 }
 
+type CashAccountId = 'personal-cash' | 'sparkasse' | 'trade-republic';
+
+type CashWorkspaceActivity = {
+  id: string;
+  title: string;
+  detail: string;
+  date: string;
+  account: string;
+  amount: number;
+  icon: IconName;
+};
+
+const cashTrendSeed = [
+  { label: 'Feb 25', inflow: 6640, outflow: 5120 },
+  { label: 'Mar 25', inflow: 7210, outflow: 4870 },
+  { label: 'Apr 25', inflow: 6890, outflow: 5350 },
+  { label: 'May 25', inflow: 7460, outflow: 4620 },
+  { label: 'Jun 25', inflow: 7120, outflow: 4980 },
+  { label: 'Jul 25', inflow: 7810, outflow: 5420 },
+  { label: 'Aug 25', inflow: 6960, outflow: 4710 },
+  { label: 'Sep 25', inflow: 7340, outflow: 5190 },
+  { label: 'Oct 25', inflow: 7680, outflow: 5560 },
+  { label: 'Nov 25', inflow: 7050, outflow: 4920 },
+  { label: 'Dec 25', inflow: 8420, outflow: 6310 },
+  { label: 'Jan 26', inflow: 7140, outflow: 4580 },
+  { label: 'Feb 26', inflow: 6860, outflow: 4770 },
+  { label: 'Mar 26', inflow: 7530, outflow: 5060 },
+  { label: 'Apr 26', inflow: 7180, outflow: 4690 },
+  { label: 'May 26', inflow: 7720, outflow: 5210 },
+  { label: 'Jun 26', inflow: 7030, outflow: 4860 },
+] as const;
+
+const cashActivitySeed: CashWorkspaceActivity[] = [
+  {
+    id: 'cash-seed-salary',
+    title: 'Salary',
+    detail: 'Income · Salary & compensation',
+    date: 'Today, 08:12',
+    account: 'Cash · Personal wealth',
+    amount: 4280,
+    icon: 'arrow-down',
+  },
+  {
+    id: 'cash-seed-groceries',
+    title: 'BILLA Plus',
+    detail: 'Expense · Food & household',
+    date: 'Yesterday',
+    account: 'Sparkasse •• 1842',
+    amount: -142.8,
+    icon: 'arrow-up',
+  },
+  {
+    id: 'cash-seed-savings',
+    title: 'VWCE savings plan',
+    detail: 'Expense · Investing',
+    date: '29 Jul',
+    account: 'Trade Republic cash',
+    amount: -500,
+    icon: 'repeat',
+  },
+  {
+    id: 'cash-seed-rent',
+    title: 'Rent & utilities',
+    detail: 'Expense · Housing & workspace',
+    date: '27 Jul',
+    account: 'Cash · Personal wealth',
+    amount: -1430,
+    icon: 'house',
+  },
+  {
+    id: 'cash-seed-dividend',
+    title: 'Microsoft dividend',
+    detail: 'Income · Investment income',
+    date: '25 Jul',
+    account: 'Trade Republic cash',
+    amount: 67.84,
+    icon: 'calendar',
+  },
+];
+
+const scheduledCashSeed = [
+  {
+    id: 'scheduled-rent',
+    date: '01 Aug',
+    title: 'Rent & utilities',
+    account: 'Cash · Personal wealth',
+    amount: -1430,
+    icon: 'house' as IconName,
+  },
+  {
+    id: 'scheduled-vwce',
+    date: '03 Aug',
+    title: 'VWCE savings plan',
+    account: 'Trade Republic cash',
+    amount: -500,
+    icon: 'repeat' as IconName,
+  },
+  {
+    id: 'scheduled-dividend',
+    date: '05 Aug',
+    title: 'Microsoft dividend',
+    account: 'Trade Republic cash',
+    amount: 67.84,
+    icon: 'calendar' as IconName,
+  },
+  {
+    id: 'scheduled-utilities',
+    date: '08 Aug',
+    title: 'Energy & internet',
+    account: 'Sparkasse •• 1842',
+    amount: -188.4,
+    icon: 'activity' as IconName,
+  },
+  {
+    id: 'scheduled-retainer',
+    date: '12 Aug',
+    title: 'Consulting retainer',
+    account: 'Cash · Personal wealth',
+    amount: 2400,
+    icon: 'arrow-down' as IconName,
+  },
+];
+
+const cashCategorySeed = [
+  { name: 'Housing & workspace', amount: 1760, color: '#8b96ac' },
+  { name: 'Investing', amount: 1200, color: '#c6aa77' },
+  { name: 'Food & household', amount: 984, color: '#7d9c90' },
+  { name: 'Travel', amount: 621, color: '#a98b9d' },
+  { name: 'Other', amount: 416, color: '#716d65' },
+];
+
 function CashFlowTab({
   privateMode,
+  availableCash,
   onCreate,
   onReview,
+  onOpenActivity,
   onOpenRecurring,
   customCashFlows,
 }: {
   privateMode: boolean;
-  onCreate: () => void;
+  availableCash: number;
+  onCreate: (kind: OriginCashFlowResult['kind']) => void;
   onReview: () => void;
+  onOpenActivity: (title: string) => void;
   onOpenRecurring: (title: string) => void;
   customCashFlows: OriginCashFlowResult[];
 }) {
   const [range, setRange] = useState<'3M' | '1Y' | 'ALL'>('1Y');
+  const [selectedAccount, setSelectedAccount] = useState<'all' | CashAccountId>('all');
+
   const addedIncome = customCashFlows
     .filter((item) => item.kind === 'Income')
     .reduce((sum, item) => sum + item.amount, 0);
@@ -2879,170 +3016,515 @@ function CashFlowTab({
   const income = 7240 + addedIncome;
   const spending = 4981 + addedSpending;
   const saved = income - spending;
+  const savingsRate = income > 0 ? (saved / income) * 100 : 0;
+  const reserveTarget = 12_000;
+  const spendableAfterReserve = Math.max(0, availableCash - reserveTarget);
+  const runwayMonths = spending > 0 ? Math.max(0, availableCash / spending) : 0;
+
+  // The account band is a view over the existing single persisted cash truth.
+  // Deriving in cents and assigning the final remainder to the broker account
+  // guarantees the three displayed source balances reconcile exactly.
+  const totalCents = Math.round(availableCash * 100);
+  const personalCents = Math.round(totalCents * 0.55);
+  const sparkasseCents = Math.round(totalCents * 0.285);
+  const accountRows: Array<{
+    id: CashAccountId;
+    name: string;
+    detail: string;
+    balance: number;
+    icon: IconName;
+    status: string;
+  }> = [
+    {
+      id: 'personal-cash',
+      name: 'Cash · Personal wealth',
+      detail: 'Primary reserve',
+      balance: personalCents / 100,
+      icon: 'wallet',
+      status: 'Manual · current',
+    },
+    {
+      id: 'sparkasse',
+      name: 'Sparkasse •• 1842',
+      detail: 'Everyday spending',
+      balance: sparkasseCents / 100,
+      icon: 'bank',
+      status: 'Synced 8 min ago',
+    },
+    {
+      id: 'trade-republic',
+      name: 'Trade Republic cash',
+      detail: 'Broker liquidity',
+      balance: (totalCents - personalCents - sparkasseCents) / 100,
+      icon: 'assets',
+      status: 'Synced 21 min ago',
+    },
+  ];
+  const selectedAccountName =
+    selectedAccount === 'all'
+      ? null
+      : (accountRows.find((account) => account.id === selectedAccount)?.name ?? null);
+
+  const customActivity: CashWorkspaceActivity[] = customCashFlows.map((item) => ({
+    id: item.id,
+    title: item.title,
+    detail: `${item.kind} · ${item.category}`,
+    date: item.createdAt,
+    account: item.account,
+    amount: item.cashImpact,
+    icon: item.kind === 'Income' ? 'arrow-down' : item.kind === 'Expense' ? 'arrow-up' : 'repeat',
+  }));
+  const visibleActivity = [...customActivity, ...cashActivitySeed]
+    .filter((item) => selectedAccountName === null || item.account === selectedAccountName)
+    .slice(0, 7);
+
+  const categoryTotals = new Map(
+    cashCategorySeed.map((category) => [
+      category.name,
+      { amount: category.amount, color: category.color },
+    ]),
+  );
+  customCashFlows
+    .filter((item) => item.kind === 'Expense')
+    .forEach((item, index) => {
+      const current = categoryTotals.get(item.category);
+      categoryTotals.set(item.category, {
+        amount: (current?.amount ?? 0) + item.amount,
+        color: current?.color ?? ['#6f91a7', '#a5846f', '#7e8f70', '#957b9c'][index % 4]!,
+      });
+    });
+  const categories = [...categoryTotals.entries()]
+    .map(([name, value]) => ({ name, ...value }))
+    .sort((left, right) => right.amount - left.amount);
+  const categoryMax = Math.max(1, ...categories.map((category) => category.amount));
+
+  const trend = [...cashTrendSeed, { label: 'Jul 26', inflow: income, outflow: spending }];
+  const visibleTrend = range === '3M' ? trend.slice(-3) : range === '1Y' ? trend.slice(-12) : trend;
+  const trendMax = Math.max(1, ...visibleTrend.flatMap((point) => [point.inflow, point.outflow]));
+
+  const customScheduled = customCashFlows
+    .filter((item) => item.recurring)
+    .map((item, index) => ({
+      id: `scheduled-${item.id}`,
+      date: index === 0 ? 'Next due' : 'Next cycle',
+      title: item.title,
+      account: item.account,
+      amount: item.cashImpact,
+      icon:
+        item.kind === 'Income'
+          ? ('arrow-down' as IconName)
+          : item.kind === 'Expense'
+            ? ('arrow-up' as IconName)
+            : ('repeat' as IconName),
+    }));
+  const scheduledItems = [...scheduledCashSeed, ...customScheduled].slice(0, 7);
+  const scheduledNet = scheduledItems.reduce((sum, item) => sum + item.amount, 0);
+  const projectedBalance = availableCash + scheduledNet;
+
+  const recurringItems = [
+    ...customCashFlows
+      .filter((item) => item.recurring)
+      .map((item) => ({
+        id: item.id,
+        title: item.title,
+        schedule: item.schedule ?? 'Recurring',
+        amount: item.cashImpact,
+        category: item.category,
+        icon:
+          item.kind === 'Income'
+            ? ('arrow-down' as IconName)
+            : item.kind === 'Expense'
+              ? ('arrow-up' as IconName)
+              : ('repeat' as IconName),
+      })),
+    {
+      id: 'recurring-vwce',
+      title: 'VWCE savings plan',
+      schedule: 'Monthly · next 03 Aug',
+      amount: -500,
+      category: 'Investing',
+      icon: 'repeat' as IconName,
+    },
+    {
+      id: 'recurring-salary',
+      title: 'Salary',
+      schedule: 'Monthly · last business day',
+      amount: 4280,
+      category: 'Income',
+      icon: 'arrow-down' as IconName,
+    },
+    {
+      id: 'recurring-rent',
+      title: 'Rent & utilities',
+      schedule: 'Monthly · next 01 Aug',
+      amount: -1430,
+      category: 'Housing',
+      icon: 'house' as IconName,
+    },
+  ].slice(0, 5);
+
   return (
-    <div className="tab-page">
-      <div className="tab-page__intro">
+    <div className="tab-page cash-workspace">
+      <div className="tab-page__intro cash-workspace__intro">
         <div>
-          <h2>Cash flow</h2>
-          <p>Income, spending, budgets, and recurring plans live with the portfolio they affect.</p>
+          <h2>Cash</h2>
+          <p>Balances, movement, spending, and what is coming next—one connected portfolio view.</p>
         </div>
-        <Button variant="primary" icon="plus" onClick={onCreate}>
-          Add cash activity
-        </Button>
+        <span className="cash-workspace__asof">
+          <StatusDot tone="green" />3 sources reconciled · just now
+        </span>
       </div>
-      <div className="cashflow-page-grid">
-        <section className="card cashflow-main">
-          <SectionHeading
-            title={
-              range === '3M'
-                ? 'Quarter cash flow'
-                : range === '1Y'
-                  ? 'Year cash flow'
-                  : 'All cash flow'
-            }
-            description={`${range} view · actual through 27 July · projected periods are marked`}
-            action={
-              <div className="range-switcher">
-                {(['3M', '1Y', 'ALL'] as const).map((item) => (
-                  <button
-                    className={range === item ? 'is-active' : ''}
-                    key={item}
-                    onClick={() => setRange(item)}
-                    type="button"
-                  >
-                    {item}
-                  </button>
-                ))}
-              </div>
-            }
-          />
-          <div className="cashflow-large-summary">
+
+      <section aria-labelledby="cash-position-title" className="cash-position">
+        <div className="cash-position__primary">
+          <span className="cash-section-kicker">Total available cash</span>
+          <h3 id="cash-position-title">
+            <Money value={availableCash} privateMode={privateMode} />
+          </h3>
+          <p>
+            <span className={saved >= 0 ? 'positive' : 'negative'}>
+              <Money value={saved} privateMode={privateMode} showPlus />
+            </span>{' '}
+            net this month · {runwayMonths.toFixed(1)} months at the current spend
+          </p>
+        </div>
+        <dl className="cash-position__metrics">
+          <div>
+            <dt>This month net</dt>
+            <dd className={saved >= 0 ? 'positive' : undefined}>
+              <Money value={saved} privateMode={privateMode} showPlus />
+            </dd>
+            <small>{savingsRate.toFixed(1)}% savings rate</small>
+          </div>
+          <div>
+            <dt>Spendable after reserve</dt>
+            <dd>
+              <Money value={spendableAfterReserve} privateMode={privateMode} />
+            </dd>
+            <small>
+              <Money value={reserveTarget} privateMode={privateMode} /> protected
+            </small>
+          </div>
+          <div>
+            <dt>Projected in 14 days</dt>
+            <dd>
+              <Money value={projectedBalance} privateMode={privateMode} />
+            </dd>
+            <small>
+              <Money value={scheduledNet} privateMode={privateMode} showPlus /> scheduled
+            </small>
+          </div>
+        </dl>
+        <div aria-label="Cash actions" className="cash-position__actions" role="group">
+          <button aria-label="Deposit" onClick={() => onCreate('Income')} type="button">
             <span>
-              <small>Income</small>
-              <strong className="positive">
-                <Money value={income} privateMode={privateMode} />
-              </strong>
+              <Icon name="arrow-down" />
             </span>
+            <strong>Deposit</strong>
+            <small>Deposit cash or record income</small>
+          </button>
+          <button aria-label="Expense" onClick={() => onCreate('Expense')} type="button">
             <span>
-              <small>Spending</small>
-              <strong>
+              <Icon name="arrow-up" />
+            </span>
+            <strong>Expense</strong>
+            <small>Spending, fees, or bills</small>
+          </button>
+          <button aria-label="Transfer" onClick={() => onCreate('Transfer')} type="button">
+            <span>
+              <Icon name="repeat" />
+            </span>
+            <strong>Transfer</strong>
+            <small>Move cash without changing wealth</small>
+          </button>
+        </div>
+      </section>
+
+      <section aria-labelledby="cash-accounts-title" className="cash-account-band">
+        <div className="cash-account-band__head">
+          <div>
+            <span className="cash-section-kicker">CONNECTED SOURCES</span>
+            <h3 id="cash-accounts-title">Cash accounts</h3>
+          </div>
+          <button
+            aria-pressed={selectedAccount === 'all'}
+            className={selectedAccount === 'all' ? 'is-active' : undefined}
+            onClick={() => setSelectedAccount('all')}
+            type="button"
+          >
+            All activity
+          </button>
+        </div>
+        <div
+          aria-label="Filter cash activity by account"
+          className="cash-account-list"
+          role="group"
+        >
+          {accountRows.map((account) => (
+            <button
+              aria-pressed={selectedAccount === account.id}
+              className={selectedAccount === account.id ? 'is-active' : undefined}
+              key={account.id}
+              onClick={() => setSelectedAccount(account.id)}
+              type="button"
+            >
+              <span className="cash-account-list__icon">
+                <Icon name={account.icon} />
+              </span>
+              <span>
+                <strong>{account.name}</strong>
+                <small>{account.detail}</small>
+              </span>
+              <span>
+                <strong>
+                  <Money value={account.balance} privateMode={privateMode} />
+                </strong>
+                <small>{account.status}</small>
+              </span>
+              <Icon name="chevron-right" size={13} />
+            </button>
+          ))}
+        </div>
+      </section>
+
+      <div className="cashflow-page-grid cash-month-grid">
+        <section aria-labelledby="cash-month-title" className="cashflow-main cash-month">
+          <div className="cash-section-head">
+            <div>
+              <span className="cash-section-kicker">FLOW</span>
+              <h3 id="cash-month-title">This month</h3>
+              <p>
+                Actual through 31 July ·{' '}
+                {range === '3M' ? 'three-month' : range === '1Y' ? 'one-year' : 'full-history'}{' '}
+                trend
+              </p>
+            </div>
+            <div aria-label="Cash flow range" className="range-switcher" role="group">
+              {(['3M', '1Y', 'ALL'] as const).map((item) => (
+                <button
+                  aria-pressed={range === item}
+                  className={range === item ? 'is-active' : ''}
+                  key={item}
+                  onClick={() => setRange(item)}
+                  type="button"
+                >
+                  {item}
+                </button>
+              ))}
+            </div>
+          </div>
+          <dl className="cashflow-large-summary cash-month-summary">
+            <div>
+              <dt>Income</dt>
+              <dd className="positive">
+                <Money value={income} privateMode={privateMode} showPlus />
+              </dd>
+            </div>
+            <div>
+              <dt>Outflow</dt>
+              <dd>
                 <Money value={-spending} privateMode={privateMode} />
-              </strong>
-            </span>
-            <span>
-              <small>Saved</small>
-              <strong>
+              </dd>
+            </div>
+            <div>
+              <dt>Net</dt>
+              <dd className={saved >= 0 ? 'positive' : 'negative'}>
                 <Money value={saved} privateMode={privateMode} showPlus />
-              </strong>
+              </dd>
+            </div>
+            <div>
+              <dt>Savings rate</dt>
+              <dd>{savingsRate.toFixed(1)}%</dd>
+            </div>
+          </dl>
+          <div className="cash-trend-legend" aria-hidden="true">
+            <span>
+              <i className="is-income" /> Income
             </span>
             <span>
-              <small>Savings rate</small>
-              <strong>{income ? ((saved / income) * 100).toFixed(1) : '0.0'}%</strong>
+              <i className="is-outflow" /> Outflow
             </span>
           </div>
-          <div className="cashflow-chart-large">
-            {[62, 74, 55, 82, 67, 92, 73, 86, 65, 79, 70, 88].map((height, index) => (
-              <div key={height + index}>
-                <span style={{ height: `${height}%` }} />
-                <i style={{ height: `${Math.max(24, height - (index % 3) * 8 - 22)}%` }} />
+          <ol aria-label="Monthly income and outflow" className="cashflow-chart-large cash-trend">
+            {visibleTrend.map((point, index) => (
+              <li
+                aria-label={`${point.label}: ${moneyFormatter.format(point.inflow)} income, ${moneyFormatter.format(point.outflow)} outflow`}
+                key={point.label}
+              >
+                <span className="cash-trend__bars">
+                  <i
+                    className="is-income"
+                    style={{ height: `${Math.max(3, (point.inflow / trendMax) * 100)}%` }}
+                  />
+                  <i
+                    className="is-outflow"
+                    style={{ height: `${Math.max(3, (point.outflow / trendMax) * 100)}%` }}
+                  />
+                </span>
                 <small>
-                  {['Aug', '', 'Oct', '', 'Dec', '', 'Feb', '', 'Apr', '', 'Jun', 'Jul'][index]}
+                  {range !== 'ALL' || index % 3 === 0 || index === visibleTrend.length - 1
+                    ? point.label.split(' ')[0]
+                    : ''}
                 </small>
-              </div>
+              </li>
             ))}
-          </div>
+          </ol>
         </section>
-        <section className="card spending-card">
-          <SectionHeading title="Where money went" description="€4,981 total outflow" />
-          <div className="category-list">
-            {[
-              ['Housing', '€1,760', 35, '#8b96ac'],
-              ['Investing', '€1,200', 24, '#c6aa77'],
-              ['Living', '€984', 20, '#7d9c90'],
-              ['Travel', '€621', 13, '#a98b9d'],
-              ['Other', '€416', 8, '#716d65'],
-            ].map(([label, value, width, color]) => (
-              <div key={label}>
+
+        <section aria-labelledby="cash-spending-title" className="spending-card cash-spending">
+          <div className="cash-section-head">
+            <div>
+              <span className="cash-section-kicker">SPENDING</span>
+              <h3 id="cash-spending-title">Where money went</h3>
+              <p>
+                <Money value={spending} privateMode={privateMode} /> total outflow this month
+              </p>
+            </div>
+          </div>
+          <div className="category-list cash-category-list">
+            {categories.map((category) => (
+              <div key={category.name}>
                 <span>
-                  <i style={{ background: color }} />
-                  {label}
+                  <i style={{ background: category.color }} />
+                  {category.name}
                 </span>
                 <em>
-                  <i style={{ width: `${Number(width) * 2.2}%`, background: color }} />
+                  <i
+                    style={{
+                      width: `${(category.amount / categoryMax) * 100}%`,
+                      background: category.color,
+                    }}
+                  />
                 </em>
-                <strong>{privateMode ? '•••' : value}</strong>
+                <strong>
+                  <Money value={category.amount} privateMode={privateMode} />
+                </strong>
+                <small>{spending > 0 ? ((category.amount / spending) * 100).toFixed(0) : 0}%</small>
               </div>
             ))}
           </div>
-          <button className="card-footer-link" onClick={onReview} type="button">
-            Review categories
-            <span>3 activities need attention</span>
+          <button className="cash-review-link" onClick={onReview} type="button">
+            <span>
+              <strong>Review categories</strong>
+              <small>3 activities need attention</small>
+            </span>
             <Icon name="arrow-right" size={14} />
           </button>
         </section>
       </div>
-      <section className="card recurring-section">
-        <SectionHeading
-          title="Recurring and planned"
-          description="Automations, subscriptions, contributions, and expected income"
-          action={
-            <Button variant="secondary" icon="plus" onClick={onCreate}>
-              New recurring item
-            </Button>
-          }
-        />
-        <div className="recurring-grid">
-          {customCashFlows
-            .filter((item) => item.recurring)
-            .map((item) => (
+
+      <div className="cash-detail-grid">
+        <section aria-labelledby="cash-upcoming-title" className="cash-upcoming">
+          <div className="cash-section-head">
+            <div>
+              <span className="cash-section-kicker">NEXT 14 DAYS</span>
+              <h3 id="cash-upcoming-title">Upcoming 14 days</h3>
+              <p>
+                Projected balance{' '}
+                <strong>
+                  <Money value={projectedBalance} privateMode={privateMode} />
+                </strong>
+              </p>
+            </div>
+          </div>
+          <div className="cash-upcoming-list">
+            {scheduledItems.map((item) => (
               <button key={item.id} onClick={() => onOpenRecurring(item.title)} type="button">
+                <time>{item.date}</time>
                 <span>
-                  <Icon
-                    name={
-                      item.kind === 'Income'
-                        ? 'arrow-down'
-                        : item.kind === 'Expense'
-                          ? 'arrow-up'
-                          : 'repeat'
-                    }
-                  />
+                  <Icon name={item.icon} />
                 </span>
                 <span>
                   <strong>{item.title}</strong>
-                  <small>{item.schedule}</small>
+                  <small>{item.account}</small>
                 </span>
-                <span>
-                  <strong className={item.cashImpact > 0 ? 'positive' : ''}>
-                    <Money
-                      value={item.cashImpact}
-                      privateMode={privateMode}
-                      showPlus={item.cashImpact > 0}
-                    />
-                  </strong>
-                  <small>{item.category}</small>
-                </span>
-                <Icon name="chevron-right" size={14} />
+                <strong className={item.amount > 0 ? 'positive' : undefined}>
+                  <Money value={item.amount} privateMode={privateMode} showPlus={item.amount > 0} />
+                </strong>
+                <Icon name="chevron-right" size={13} />
               </button>
             ))}
-          {[
-            ['VWCE savings plan', '29 Jul · monthly', '−€500', 'Investing', 'repeat'],
-            ['Salary', '31 Jul · monthly', '+€4,280', 'Income', 'arrow-down'],
-            ['Rent & utilities', '01 Aug · monthly', '−€1,430', 'Housing', 'house'],
-            ['Microsoft dividend', '05 Aug · quarterly', '+€67.84', 'Dividend', 'calendar'],
-          ].map(([title, date, amount, category, icon]) => (
-            <button key={title} onClick={() => onOpenRecurring(String(title))} type="button">
+          </div>
+          <footer>
+            <span>Scheduled net</span>
+            <strong className={scheduledNet >= 0 ? 'positive' : undefined}>
+              <Money value={scheduledNet} privateMode={privateMode} showPlus />
+            </strong>
+          </footer>
+        </section>
+
+        <section aria-labelledby="cash-recent-title" className="cash-recent">
+          <div className="cash-section-head">
+            <div>
+              <span className="cash-section-kicker">LEDGER</span>
+              <h3 id="cash-recent-title">Recent activity</h3>
+              <p>{selectedAccountName ?? 'All connected accounts'}</p>
+            </div>
+            {selectedAccount !== 'all' ? (
+              <button
+                className="cash-clear-filter"
+                onClick={() => setSelectedAccount('all')}
+                type="button"
+              >
+                Clear filter
+              </button>
+            ) : null}
+          </div>
+          <div className="cash-recent-list">
+            {visibleActivity.map((item) => (
+              <button key={item.id} onClick={() => onOpenActivity(item.title)} type="button">
+                <span>
+                  <Icon name={item.icon} />
+                </span>
+                <span>
+                  <strong>{item.title}</strong>
+                  <small>
+                    {item.detail} · {item.account}
+                  </small>
+                </span>
+                <span>
+                  <strong className={item.amount > 0 ? 'positive' : undefined}>
+                    <Money
+                      value={item.amount}
+                      privateMode={privateMode}
+                      showPlus={item.amount > 0}
+                    />
+                  </strong>
+                  <small>{item.date}</small>
+                </span>
+                <Icon name="chevron-right" size={13} />
+              </button>
+            ))}
+          </div>
+        </section>
+      </div>
+
+      <section aria-labelledby="cash-recurring-title" className="recurring-section cash-recurring">
+        <div className="cash-section-head">
+          <div>
+            <span className="cash-section-kicker">PLANS</span>
+            <h3 id="cash-recurring-title">Recurring and planned</h3>
+            <p>Expected activity feeds this cash outlook and the portfolio plan.</p>
+          </div>
+          <Button variant="secondary" icon="plus" onClick={() => onCreate('Expense')}>
+            Add recurring
+          </Button>
+        </div>
+        <div className="recurring-grid cash-recurring-list">
+          {recurringItems.map((item) => (
+            <button key={item.id} onClick={() => onOpenRecurring(item.title)} type="button">
               <span>
-                <Icon name={icon as IconName} />
+                <Icon name={item.icon} />
               </span>
               <span>
-                <strong>{title}</strong>
-                <small>{date}</small>
+                <strong>{item.title}</strong>
+                <small>{item.schedule}</small>
               </span>
               <span>
-                <strong className={String(amount).startsWith('+') ? 'positive' : ''}>
-                  {privateMode ? '••••' : amount}
+                <strong className={item.amount > 0 ? 'positive' : undefined}>
+                  <Money value={item.amount} privateMode={privateMode} showPlus={item.amount > 0} />
                 </strong>
-                <small>{category}</small>
+                <small>{item.category}</small>
               </span>
               <Icon name="chevron-right" size={14} />
             </button>
@@ -3701,6 +4183,7 @@ function PortfolioDetail({
   onOverlay,
   onDataHealth,
   onSecurity,
+  onOpenCashFlow,
   availableCash,
   latestTrade,
   cashFlows,
@@ -3723,6 +4206,7 @@ function PortfolioDetail({
   onOverlay: (overlay: Overlay) => void;
   onDataHealth: () => void;
   onSecurity: () => void;
+  onOpenCashFlow: (kind: OriginCashFlowResult['kind']) => void;
   availableCash: number;
   latestTrade?: OriginTradeResult;
   cashFlows: OriginCashFlowResult[];
@@ -3762,9 +4246,11 @@ function PortfolioDetail({
     case 'cash-flow':
       content = (
         <CashFlowTab
+          availableCash={availableCash}
           customCashFlows={cashFlows}
           privateMode={privateMode}
-          onCreate={() => onOverlay('cashflow')}
+          onCreate={onOpenCashFlow}
+          onOpenActivity={(title) => onToast(`${title} cash activity opened`)}
           onOpenRecurring={(title) => onToast(`${title} recurring rule opened`)}
           onReview={() => onOverlay('review')}
         />
@@ -6650,7 +7136,10 @@ function QuickCreateModal({
     grossAmount: number;
     destination?: string;
   }) => void;
-  onDeepCreate: (kind: 'trade' | 'portfolio' | 'import' | 'cashflow') => void;
+  onDeepCreate: (
+    kind: 'trade' | 'portfolio' | 'import' | 'cashflow',
+    cashKind?: OriginCashFlowResult['kind'],
+  ) => void;
 }) {
   const [kind, setKind] = useState<CreateKind>('expense');
   const [title, setTitle] = useState('Grocery store');
@@ -6820,7 +7309,12 @@ function QuickCreateModal({
           {kind === 'expense' || kind === 'income' || kind === 'transfer' ? (
             <button
               className="create-advanced-link"
-              onClick={() => onDeepCreate('cashflow')}
+              onClick={() =>
+                onDeepCreate(
+                  'cashflow',
+                  kind === 'income' ? 'Income' : kind === 'transfer' ? 'Transfer' : 'Expense',
+                )
+              }
               type="button"
             >
               <Icon name="sliders" size={15} />
@@ -8071,6 +8565,8 @@ export function App() {
     ['home', 'portfolios', 'workbench', 'assets'],
   );
   const [overlay, setOverlay] = useState<Overlay>(null);
+  const [cashFlowInitialKind, setCashFlowInitialKind] =
+    useState<OriginCashFlowResult['kind']>('Expense');
   const [reviewFocusId, setReviewFocusId] = useState<string | null>(null);
   const [connections, setConnections] = usePersistentState<Record<string, boolean>>(
     'bt-demo-connections',
@@ -8283,6 +8779,11 @@ export function App() {
       setPortfolioTab('overview');
     }
     window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  function openCashFlow(kind: OriginCashFlowResult['kind']) {
+    setCashFlowInitialKind(kind);
+    setOverlay('cashflow');
   }
 
   function toggleConnection(id: string, name: string) {
@@ -9258,6 +9759,7 @@ export function App() {
             onOverlay={setOverlay}
             onDataHealth={() => setOverlay('data-health')}
             onSecurity={() => selectSurface('settings')}
+            onOpenCashFlow={openCashFlow}
             availableCash={availableCash}
             latestTrade={trades.find((trade) => trade.portfolio === scope.name)}
             cashFlows={cashFlows.filter((item) => item.portfolio === scope.name)}
@@ -9409,16 +9911,14 @@ export function App() {
           scope={scope.id === 'all' ? scopes[1]! : scope}
           onClose={() => setOverlay(null)}
           onSave={saveActivity}
-          onDeepCreate={(kind) => {
+          onDeepCreate={(kind, cashKind) => {
             if (kind === 'trade') setTradeAsset(originAssetFromRow(assetRows[0]!));
+            if (kind === 'cashflow') {
+              openCashFlow(cashKind ?? 'Expense');
+              return;
+            }
             setOverlay(
-              kind === 'trade'
-                ? 'trade'
-                : kind === 'portfolio'
-                  ? 'portfolio-create'
-                  : kind === 'cashflow'
-                    ? 'cashflow'
-                    : 'import',
+              kind === 'trade' ? 'trade' : kind === 'portfolio' ? 'portfolio-create' : 'import',
             );
           }}
         />
@@ -9441,6 +9941,7 @@ export function App() {
       {overlay === 'cashflow' ? (
         <OriginCashFlowFlow
           availableCash={availableCash}
+          initialKind={cashFlowInitialKind}
           onClose={() => setOverlay(null)}
           onComplete={completeCashFlow}
           portfolio={scope.id === 'all' ? 'Personal wealth' : scope.name}

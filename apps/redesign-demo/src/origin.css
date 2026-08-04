@@ -6270,6 +6270,137 @@
   font-size: 13px;
 }
 
+/* Cash: one continuous liquidity workspace rather than a dashboard-card pile. */
+
+:root[data-direction='origin'] .app-shell .cash-workspace__intro {
+  padding-bottom: 22px;
+}
+
+:root[data-direction='origin'] .app-shell .cash-workspace__intro h2 {
+  font-size: 25px;
+}
+
+:root[data-direction='origin'] .app-shell .cash-workspace__intro p,
+:root[data-direction='origin'] .app-shell .cash-workspace__asof {
+  font-size: 12.5px;
+}
+
+:root[data-direction='origin'] .app-shell .cash-section-kicker {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+:root[data-direction='origin'] .app-shell .cash-position {
+  background:
+    linear-gradient(105deg, rgba(246, 184, 46, 0.045), transparent 42%),
+    color-mix(in srgb, var(--surface) 38%, transparent);
+}
+
+:root[data-direction='origin'] .app-shell .cash-position__primary {
+  min-height: 190px;
+  padding-left: 0;
+}
+
+:root[data-direction='origin'] .app-shell .cash-position__primary h3 {
+  font-size: clamp(39px, 4.4vw, 52px);
+}
+
+:root[data-direction='origin'] .app-shell .cash-position__primary p,
+:root[data-direction='origin'] .app-shell .cash-position__metrics dt,
+:root[data-direction='origin'] .app-shell .cash-position__metrics small,
+:root[data-direction='origin'] .app-shell .cash-position__actions small {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+:root[data-direction='origin'] .app-shell .cash-position__metrics dd {
+  font-size: 19px;
+}
+
+:root[data-direction='origin'] .app-shell .cash-position__actions strong {
+  font-size: 13px;
+}
+
+:root[data-direction='origin'] .app-shell .cash-account-band__head h3,
+:root[data-direction='origin'] .app-shell .cash-section-head h3 {
+  font-size: 17px;
+}
+
+:root[data-direction='origin'] .app-shell .cash-section-head p,
+:root[data-direction='origin'] .app-shell .cash-account-band__head > button,
+:root[data-direction='origin'] .app-shell .cash-clear-filter {
+  color: var(--muted);
+  font-size: 12px;
+}
+
+:root[data-direction='origin'] .app-shell .cash-account-list > button {
+  min-height: 82px;
+}
+
+:root[data-direction='origin'] .app-shell .cash-account-list strong,
+:root[data-direction='origin'] .app-shell .cash-category-list > div > span,
+:root[data-direction='origin'] .app-shell .cash-category-list > div > strong {
+  font-size: 13px;
+}
+
+:root[data-direction='origin'] .app-shell .cash-account-list small,
+:root[data-direction='origin'] .app-shell .cash-month-summary dt,
+:root[data-direction='origin'] .app-shell .cash-trend-legend,
+:root[data-direction='origin'] .app-shell .cash-upcoming-list small,
+:root[data-direction='origin'] .app-shell .cash-recent-list small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+:root[data-direction='origin'] .app-shell .cash-month-summary dd {
+  font-size: 17px;
+}
+
+:root[data-direction='origin'] .app-shell .cashflow-chart-large.cash-trend {
+  height: 230px;
+}
+
+:root[data-direction='origin'] .app-shell .cash-trend > li small {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+:root[data-direction='origin'] .app-shell .cash-upcoming-list strong,
+:root[data-direction='origin'] .app-shell .cash-recent-list strong,
+:root[data-direction='origin'] .app-shell .cash-review-link strong {
+  font-size: 12.5px;
+}
+
+:root[data-direction='origin'] .app-shell .cash-recurring {
+  margin-top: 0;
+  padding-top: 34px;
+}
+
+:root[data-direction='origin'] .app-shell .cash-recurring-list {
+  gap: 0;
+}
+
+:root[data-direction='origin'] .app-shell .cash-recurring-list > button {
+  background: transparent;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
+  min-height: 68px;
+}
+
+:root[data-direction='origin'] .app-shell .cash-recurring-list strong {
+  font-size: 12.5px;
+}
+
+:root[data-direction='origin'] .app-shell .cash-recurring-list small {
+  font-size: 11px;
+}
+
+@media (max-width: 760px) {
+  :root[data-direction='origin'] .app-shell .cash-month-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 /* Workbench: one result surface, fewer duplicate controls. */
 
 :root[data-direction='origin'] .app-shell .studio-grid {
