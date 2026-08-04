@@ -186,7 +186,7 @@ describe('IdeasListPage', () => {
 
     expect(screen.getByRole('link', { name: 'Open' })).toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: 'Delete' }));
-    expect(await screen.findByRole('dialog', { name: 'Delete idea' })).toHaveClass(
+    expect(await screen.findByRole('dialog', { name: 'Delete idea?' })).toHaveClass(
       'bt-dialog__panel--phone-sheet',
     );
   });

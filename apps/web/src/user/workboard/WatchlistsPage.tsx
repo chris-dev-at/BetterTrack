@@ -142,7 +142,11 @@ export function WatchlistsPage() {
                     </Button>
                     <Button
                       onClick={() => {
-                        if (window.confirm(t('watchlists.deleteConfirm'))) remove.mutate(w.id);
+                        // Name the list in the prompt: the browser dialog carries
+                        // no context of its own, so "Delete this watchlist?" next
+                        // to a row of similar rows is a coin flip.
+                        if (window.confirm(t('watchlists.deleteConfirm', { name: w.name })))
+                          remove.mutate(w.id);
                       }}
                       size="sm"
                       variant="danger"

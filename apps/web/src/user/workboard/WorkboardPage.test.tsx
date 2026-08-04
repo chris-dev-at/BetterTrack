@@ -179,7 +179,9 @@ describe('WorkboardPage — upcoming earnings panel', () => {
     vi.mocked(listWorkboard).mockResolvedValue({ items: [] });
     vi.mocked(getEarningsCalendar).mockResolvedValue({ available: false, entries: [] });
     renderPage();
-    await waitFor(() => expect(screen.getByText('Alerts panel coming soon')).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByText('Your alerts live on the Alerts tab')).toBeInTheDocument(),
+    );
     expect(screen.queryByText('Upcoming earnings')).not.toBeInTheDocument();
   });
 
@@ -187,7 +189,9 @@ describe('WorkboardPage — upcoming earnings panel', () => {
     vi.mocked(listWorkboard).mockResolvedValue({ items: [] });
     vi.mocked(getEarningsCalendar).mockResolvedValue({ available: true, entries: [] });
     renderPage();
-    await waitFor(() => expect(screen.getByText('Alerts panel coming soon')).toBeInTheDocument());
+    await waitFor(() =>
+      expect(screen.getByText('Your alerts live on the Alerts tab')).toBeInTheDocument(),
+    );
     expect(screen.queryByText('Upcoming earnings')).not.toBeInTheDocument();
   });
 });
@@ -317,18 +321,30 @@ describe('WorkboardPage — refetch on mount', () => {
 // ─── Zone placeholders ────────────────────────────────────────────────────────
 
 describe('WorkboardPage — zone placeholders', () => {
-  test('renders Alerts zone with placeholder', async () => {
+  // The zones are still stubs, but ALERTS AND BLUEPRINTS SHIP — so the copy must
+  // say the panel is unbuilt and route to the working tab, never that the
+  // feature is "coming soon" (which it stopped being two phases ago).
+  test('the Alerts zone points at the shipped Alerts tab instead of claiming it is unbuilt', async () => {
     vi.mocked(listWorkboard).mockResolvedValue({ items: [] });
     renderPage();
     await waitFor(() => expect(screen.getByText('Alerts')).toBeInTheDocument());
-    expect(screen.getByText(/Alerts panel coming soon/i)).toBeInTheDocument();
+    expect(screen.getByText('Your alerts live on the Alerts tab')).toBeInTheDocument();
+    expect(screen.queryByText(/coming soon/i)).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Open Alerts →' })).toHaveAttribute(
+      'href',
+      '/workbench/alerts',
+    );
   });
 
-  test('renders My Blueprints zone with placeholder', async () => {
+  test('the Blueprints zone points at the shipped Blueprints tab', async () => {
     vi.mocked(listWorkboard).mockResolvedValue({ items: [] });
     renderPage();
     await waitFor(() => expect(screen.getByText('My Blueprints')).toBeInTheDocument());
-    expect(screen.getByText(/Blueprints coming soon/i)).toBeInTheDocument();
+    expect(screen.getByText('Your Blueprints live on the Blueprints tab')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Open Blueprints →' })).toHaveAttribute(
+      'href',
+      '/workbench/blueprints',
+    );
   });
 
   test('placeholder zones do not throw when watchlist has items', async () => {

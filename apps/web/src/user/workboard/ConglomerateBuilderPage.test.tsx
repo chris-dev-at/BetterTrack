@@ -138,8 +138,11 @@ describe('ConglomerateBuilderPage', () => {
     expect(screen.getByRole('heading', { name: /add assets/i })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: /^positions$/i })).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: /live preview/i })).toBeInTheDocument();
-    // A labelled placeholder stands in for the backtest chart (deferred).
-    expect(screen.getByText(/backtest preview — coming/i)).toBeInTheDocument();
+    // A labelled placeholder stands in for the backtest chart (deferred). It
+    // names the working alternative rather than implying backtests do not exist.
+    expect(
+      screen.getByText(/a backtest preview appears here in a later update/i),
+    ).toBeInTheDocument();
   });
 
   test('searching and clicking a result adds a position at weight 0', async () => {
