@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 
 import App from './App';
 import './index.css';
+import { registerAppServiceWorker } from './lib/appServiceWorker';
 import { getRuntimeConfig } from './lib/runtimeConfig';
 import { createRootErrorOptions } from './rootErrorHandling';
 import { bootUiScale } from './user/uiScale';
@@ -22,3 +23,7 @@ createRoot(rootElement, createRootErrorOptions(import.meta.env.DEV)).render(
     <App />
   </StrictMode>,
 );
+
+// Registration happens after the first render and is shared with web-push, so
+// desktop boot never creates competing workers or an unhandled async failure.
+void registerAppServiceWorker().catch(() => undefined);

@@ -1,0 +1,25 @@
+{
+  "name": "BetterTrack Wealth Workspace",
+  "short_name": "BetterTrack",
+  "description": "A connected workspace for tracking, shaping, and sharing wealth.",
+  "id": "/",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#090c10",
+  "theme_color": "#090c10",
+  "icons": [
+    {
+      "src": "/icons/bettertrack-maskable-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/icons/bettertrack-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}
