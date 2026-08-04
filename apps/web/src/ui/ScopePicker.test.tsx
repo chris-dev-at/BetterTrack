@@ -55,6 +55,8 @@ describe('ScopePicker', () => {
       'Notifications',
       'Chat',
       'Alerts',
+      'Cash',
+      'Group portfolios',
       'Account security',
     ]) {
       expect(screen.getAllByText(label)).toHaveLength(1);
@@ -62,10 +64,10 @@ describe('ScopePicker', () => {
     // The read/write column labels appear as visible text.
     expect(screen.getAllByText('Read').length).toBeGreaterThan(0);
     expect(screen.getAllByText('Write').length).toBeGreaterThan(0);
-    // 6 modules with read+write (12) + market (read only, 1) + account
-    // security (single Access toggle, 1) = 14. Verbose descriptions are gone
+    // 8 modules with read+write (16) + market (read only, 1) + account
+    // security (single Access toggle, 1) = 18. Verbose descriptions are gone
     // — the row IS the module now.
-    expect(screen.getAllByRole('checkbox').length).toBe(14);
+    expect(screen.getAllByRole('checkbox').length).toBe(18);
   });
 
   test('ticking Write auto-ticks and locks Read (#371 — write implies read)', async () => {
@@ -119,6 +121,8 @@ describe('ScopePicker', () => {
       /notifications · write/i,
       /chat · write/i,
       /alerts · write/i,
+      /cash · write/i,
+      /group portfolios · write/i,
     ];
     for (const rx of writes) {
       await user.click(screen.getByRole('checkbox', { name: rx }));
@@ -196,7 +200,7 @@ describe('ScopePicker', () => {
     );
     const details = container.querySelector('details');
     expect(details?.open).toBe(true);
-    expect(screen.getAllByRole('checkbox').length).toBe(14);
+    expect(screen.getAllByRole('checkbox').length).toBe(18);
   });
 });
 

@@ -1248,6 +1248,16 @@ export const PARANOID_KEPT_ROUTE_RULES: readonly ParanoidExemptRouteRule[] = [
     ],
   ),
   ...keptRoutes(
+    'This exact opaque mount is the MIRRORCHAIN bearer participation allowlist; it only refuses unlisted bearer routes, while concrete mirrorchain operations remain classified separately.',
+    [
+      productionOpaqueRoute({
+        mountedPath: '/api/v1/mirrorchain',
+        normalizedPath: '/mirrorchain',
+        handler: 'enforceMirrorchainBearerAllowlist',
+      }),
+    ],
+  ),
+  ...keptRoutes(
     'This exact opaque mount is the production chat feature gate; concrete chat operations are classified separately.',
     [
       productionOpaqueRoute({

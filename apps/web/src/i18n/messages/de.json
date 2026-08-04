@@ -347,6 +347,14 @@
           "label": "Preisalarme",
           "description": "Deine Preisalarme lesen oder erstellen, bearbeiten, neu aktivieren und löschen."
         },
+        "cash": {
+          "label": "Cash",
+          "description": "Deine Cash-Tags, Budgets, Regeln, Zusammenfassungen und Trends lesen oder verwalten."
+        },
+        "mirrorchain": {
+          "label": "Gruppenportfolios",
+          "description": "Deine Gruppenportfolios, Mitglieder, Aktivitäten und Einladungen lesen oder Einladungen annehmen und ablehnen sowie Gruppenportfolios verlassen."
+        },
         "accountSecurity": {
           "label": "Kontosicherheit",
           "description": "Sitzungen, Zwei-Faktor-Authentifizierung, Passwort und die App-PIN verwalten."

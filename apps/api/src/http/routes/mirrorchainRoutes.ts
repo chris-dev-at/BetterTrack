@@ -24,6 +24,7 @@ import {
 } from '@bettertrack/contracts';
 
 import type { RateLimiters } from '../middleware/rateLimit';
+import { enforceMirrorchainBearerAllowlist } from '../middleware/bearerAuth';
 import { requireUser } from '../middleware/session';
 import { validateBody, validateParams, validateQuery } from '../middleware/validate';
 import type { AppContext } from '../context';
@@ -32,16 +33,19 @@ import type { AppContext } from '../context';
  * MIRRORCHAIN group-portfolio membership API (§13.5 V5-P7 M3;
  * `docs/mirrorchain-design.md` §§4–7, §11). Thin handlers — every rule (the §5
  * authority matrix, friends-only invites, the member cap, kick/leave → fork, the
- * §7 owner-refusal stopgap) lives in `mirrorService`. Session-only (cookie auth
- * via `requireUser`); no bearer scope. The eight `mirror.*` notifications and the
- * per-copy content writes are wired elsewhere (the dispatcher + the §1 seam);
- * this router is the chain-lifecycle surface only.
+ * §7 owner-refusal stopgap) lives in `mirrorService`. Cookie sessions can use the
+ * full lifecycle surface; the explicit bearer allowlist admits participation
+ * reads plus accept/decline/leave and defaults every administrative route closed.
+ * The eight `mirror.*` notifications and the per-copy content writes are wired
+ * elsewhere (the dispatcher + the §1 seam); this router is the chain-lifecycle
+ * surface only.
  */
 const DEFAULT_ACTIVITY_LIMIT = 30;
 
 export function createMirrorchainRouter(ctx: AppContext, limiters: RateLimiters): Router {
   const router = Router();
   router.use(requireUser);
+  router.use(enforceMirrorchainBearerAllowlist);
 
   // GET /mirrorchain/chains — the caller's active group-portfolio summaries
   // (the portfolio switcher's group rows, with per-copy sync state).

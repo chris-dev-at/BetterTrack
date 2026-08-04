@@ -347,6 +347,14 @@
           "label": "Alerts",
           "description": "Read your price alerts, or create, edit, re-arm and delete them."
         },
+        "cash": {
+          "label": "Cash",
+          "description": "Read or manage your cash tags, budgets, rules, summaries and trends."
+        },
+        "mirrorchain": {
+          "label": "Group portfolios",
+          "description": "View your group portfolios, members, activity and invitations, or accept and decline invitations and leave group portfolios."
+        },
         "accountSecurity": {
           "label": "Account security",
           "description": "Manage sign-in sessions, two-factor authentication, password and the app PIN."
