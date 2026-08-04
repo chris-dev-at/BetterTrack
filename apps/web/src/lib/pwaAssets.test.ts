@@ -50,10 +50,10 @@ describe('installable PWA assets', () => {
     }
   });
 
-  it('wires the manifest, light/dark browser chrome, and iOS standalone metadata', () => {
+  it('keeps shared browser chrome metadata without advertising the user manifest', () => {
     const index = readFileSync(resolve(process.cwd(), 'index.html'), 'utf8');
 
-    expect(index).toContain('rel="manifest" href="/manifest.webmanifest"');
+    expect(index).not.toContain('rel="manifest"');
     expect(index).toContain('media="(prefers-color-scheme: dark)"');
     expect(index).toContain('media="(prefers-color-scheme: light)"');
     expect(index).toContain('name="apple-mobile-web-app-capable" content="yes"');

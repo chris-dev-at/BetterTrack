@@ -5,17 +5,24 @@
  */
 
 const CACHE_PREFIX = 'bettertrack-pwa-';
-const CACHE_NAME = `${CACHE_PREFIX}v1`;
+// Vite replaces this token with a fingerprint of the complete build output.
+// That changes the worker bytes and its cache name on every content change.
+const BUILD_HASH = '__BETTERTRACK_BUILD_HASH__';
+const CACHE_NAME = `${CACHE_PREFIX}${BUILD_HASH}`;
 const OFFLINE_URL = '/offline.html';
 const HASHED_ASSET_PATH = /^\/assets\/.+-[A-Za-z0-9_-]{8,}\.[A-Za-z0-9]+$/;
 
+async function cacheOfflineShell() {
+  const cache = await caches.open(CACHE_NAME);
+  // Do not let the browser's HTTP cache carry an old fallback into a new
+  // worker installation. The build fingerprint changes when offline.html does.
+  const response = await fetch(OFFLINE_URL, { cache: 'reload' });
+  if (!response.ok) throw new Error(`Unable to cache offline shell (${response.status})`);
+  await cache.put(OFFLINE_URL, response);
+}
+
 self.addEventListener('install', (event) => {
-  event.waitUntil(
-    Promise.all([
-      caches.open(CACHE_NAME).then((cache) => cache.add(OFFLINE_URL)),
-      self.skipWaiting(),
-    ]),
-  );
+  event.waitUntil(Promise.all([cacheOfflineShell(), self.skipWaiting()]));
 });
 
 self.addEventListener('activate', (event) => {
