@@ -3,6 +3,7 @@ import {
   type CreateStandingOrderRequest,
   type StandingOrder,
   type StandingOrderListResponse,
+  type StandingOrderRunListResponse,
   type UpdateStandingOrderRequest,
 } from '@bettertrack/contracts';
 
@@ -93,6 +94,14 @@ export interface ProcessDueResult {
 
 export interface StandingOrderService {
   list(userId: string, opts?: { portfolioId?: string }): Promise<StandingOrderListResponse>;
+  /**
+   * The caller's raw run ledger. Exposed because the order DTO's
+   * `lastPeriodKey`/`lastRunAt` watermark cannot express a claimed-but-unbooked
+   * period, and a consumer that has to reproduce this account's exactly-once
+   * state (the paranoid-mode capture) would otherwise re-book a period that was
+   * deliberately tombstoned.
+   */
+  listRuns(userId: string): Promise<StandingOrderRunListResponse>;
   get(userId: string, id: string): Promise<StandingOrder>;
   create(userId: string, input: CreateStandingOrderRequest): Promise<StandingOrder>;
   update(userId: string, id: string, patch: UpdateStandingOrderRequest): Promise<StandingOrder>;
@@ -191,6 +200,19 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
       const today = calendarDayInTimezone(now(), timezone);
       const records = await repo.listForUser(userId, { portfolioId: opts?.portfolioId });
       return { orders: records.map((r) => toDto(r, today)) };
+    },
+
+    async listRuns(userId) {
+      await deps.paranoid?.assertAllowed(userId, 'standingOrderExecution');
+      const records = await repo.listRunsForUser(userId);
+      return {
+        runs: records.map((run) => ({
+          id: run.id,
+          standingOrderId: run.standingOrderId,
+          periodKey: run.periodKey,
+          bookedAt: run.bookedAt.toISOString(),
+        })),
+      };
     },
 
     async get(userId, id) {

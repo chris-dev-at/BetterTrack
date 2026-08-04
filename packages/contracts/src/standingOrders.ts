@@ -156,6 +156,35 @@ export const standingOrderListResponseSchema = z
   .strict();
 export type StandingOrderListResponse = z.infer<typeof standingOrderListResponseSchema>;
 
+/**
+ * One row of the authoritative exactly-once run ledger (`standing_order_runs`),
+ * as returned by `GET /standing-orders/runs`.
+ *
+ * The engine CLAIMS a period (a row here) before it books, so a claim can
+ * legitimately exist without the order's `lastPeriodKey` watermark ever
+ * catching up — booking or `markBooked` may fail after the claim, and the
+ * period is then deliberately tombstoned rather than retried. That makes this
+ * ledger, not the order's watermark, the thing a paranoid-mode capture has to
+ * carry: an unwatermarked claim lost on the enable→disable round trip lets the
+ * scheduler re-book a period that was intentionally never retried.
+ */
+export const standingOrderRunSchema = z
+  .object({
+    id: z.string().uuid(),
+    standingOrderId: z.string().uuid(),
+    /** The claimed occurrence day (ISO `YYYY-MM-DD`). */
+    periodKey: isoDaySchema,
+    /** When the claim row was written (ISO-8601) — not when booking finished. */
+    bookedAt: z.string().datetime(),
+  })
+  .strict();
+export type StandingOrderRun = z.infer<typeof standingOrderRunSchema>;
+
+export const standingOrderRunListResponseSchema = z
+  .object({ runs: z.array(standingOrderRunSchema) })
+  .strict();
+export type StandingOrderRunListResponse = z.infer<typeof standingOrderRunListResponseSchema>;
+
 /** Optional `?portfolioId=` filter for the list endpoint. */
 export const standingOrderListQuerySchema = z
   .object({ portfolioId: z.string().uuid().optional() })

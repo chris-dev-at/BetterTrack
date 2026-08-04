@@ -485,10 +485,12 @@ describe('account data export', () => {
       .send({ password: user.password })
       .then((response) => response);
     await reached;
+    const { revision } = await harness.ctx.paranoidTransitions.normalDataRevision(user.id);
     const enablePromise = harness.ctx.paranoidTransitions.enable(user.id, {
       mediaSet: ['server'],
       vaultVersion: 1,
       driveAttestation: null,
+      normalDataRevision: revision,
     });
     releaseCollection();
     const [exportResponse, enabled] = await Promise.all([exportPromise, enablePromise]);

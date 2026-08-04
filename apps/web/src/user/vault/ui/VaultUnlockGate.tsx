@@ -7,6 +7,7 @@ import { useT } from '../../../i18n';
 import { getTwoFactorStatus } from '../../../lib/twoFactorApi';
 import { Button as OriginButton } from '../../../ui/origin';
 import { useAuth } from '../../AuthContext';
+import { AsyncReadState } from '../../components/AsyncReadState';
 import { Alert, AuthCard, Button, CHECKBOX_STYLE, TextField } from '../../components/ui';
 import { VaultCryptoError } from '../errors';
 import { useVaultRuntime } from '../VaultRuntimeProvider';
@@ -242,6 +243,11 @@ function StuckFold({
         {driveSelected ? (
           <p className="bt-muted text-xs">{t('vault.unlock.stuck.driveLeftover')}</p>
         ) : null}
+        <AsyncReadState
+          loading={twoFactor.isLoading}
+          error={twoFactor.error}
+          onRetry={() => void twoFactor.refetch()}
+        />
         <TextField
           autoComplete="off"
           disabled={working}

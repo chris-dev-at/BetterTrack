@@ -82,6 +82,7 @@ const componentSchemas = {
   ParanoidEnableResponse: contracts.paranoidEnableResponseSchema,
   ParanoidDisableRequest: contracts.paranoidDisableRequestSchema,
   ParanoidForkProvenanceResponse: contracts.paranoidForkProvenanceResponseSchema,
+  ParanoidNormalRevisionResponse: contracts.paranoidNormalRevisionResponseSchema,
   ParanoidDisableResponse: contracts.paranoidDisableResponseSchema,
   RetiredServerPurgeChallengeRequest: contracts.retiredServerPurgeChallengeRequestSchema,
   RetiredServerPurgeChallengeResponse: contracts.retiredServerPurgeChallengeResponseSchema,
@@ -321,6 +322,7 @@ const componentSchemas = {
   // Standing orders (§13.5 V5-P6b)
   StandingOrder: contracts.standingOrderSchema,
   StandingOrderListResponse: contracts.standingOrderListResponseSchema,
+  StandingOrderRunListResponse: contracts.standingOrderRunListResponseSchema,
   CreateStandingOrderRequest: contracts.createStandingOrderRequestSchema,
   UpdateStandingOrderRequest: contracts.updateStandingOrderRequestSchema,
 
@@ -332,6 +334,7 @@ const componentSchemas = {
   SetCashMovementTagsRequest: contracts.setCashMovementTagsRequestSchema,
   CashMovementTagsResponse: contracts.cashMovementTagsResponseSchema,
   CashBudgetListResponse: contracts.cashBudgetListResponseSchema,
+  CashBudgetRawListResponse: contracts.cashBudgetRawListResponseSchema,
   CashBudgetResponse: contracts.cashBudgetResponseSchema,
   CreateCashBudgetRequest: contracts.createCashBudgetRequestSchema,
   UpdateCashBudgetRequest: contracts.updateCashBudgetRequestSchema,
@@ -776,6 +779,15 @@ const endpoints: EndpointDef[] = [
       'The caller’s own severed-MIRRORCHAIN-fork identity map, captured into the encrypted vault before enable purges it. No active membership, co-member identity, or chain metadata.',
     status: 200,
     response: R.ParanoidForkProvenanceResponse,
+  },
+  {
+    method: 'get',
+    path: '/account/paranoid/normal-revision',
+    tag: 'Account',
+    summary:
+      'The capture↔commit CAS token: an opaque digest of the caller’s purgeable rows, read before the enable capture and re-derived under the account lock at commit. No portfolio content.',
+    status: 200,
+    response: R.ParanoidNormalRevisionResponse,
   },
   {
     method: 'get',
@@ -2574,6 +2586,15 @@ const endpoints: EndpointDef[] = [
     response: R.StandingOrderListResponse,
   },
   {
+    method: 'get',
+    path: '/standing-orders/runs',
+    tag: 'Standing orders',
+    summary:
+      'The caller’s raw exactly-once run ledger, including periods claimed but never booked (which no order watermark can express).',
+    status: 200,
+    response: R.StandingOrderRunListResponse,
+  },
+  {
     method: 'post',
     path: '/standing-orders',
     tag: 'Standing orders',
@@ -2674,6 +2695,15 @@ const endpoints: EndpointDef[] = [
     body: R.SetCashMovementTagsRequest,
     status: 200,
     response: R.CashMovementTagsResponse,
+  },
+  {
+    method: 'get',
+    path: '/cash/budgets/all',
+    tag: 'Cash flow',
+    summary:
+      'Every raw budget row (all portfolios, all periods, no month evaluation) — the faithful read the paranoid capture needs.',
+    status: 200,
+    response: R.CashBudgetRawListResponse,
   },
   {
     method: 'get',

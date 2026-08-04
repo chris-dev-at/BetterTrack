@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act, render, screen } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 
@@ -52,10 +52,16 @@ function renderProvider() {
 }
 
 beforeEach(() => {
-  vi.clearAllMocks();
+  vi.resetAllMocks();
   localStorage.clear();
   sessionStorage.clear();
 });
+
+async function expectStatus(status: string) {
+  await waitFor(() => {
+    expect(screen.getByTestId('status')).toHaveTextContent(status);
+  });
+}
 
 afterEach(() => {
   vi.useRealTimers();
@@ -73,12 +79,12 @@ test.each([0, 500])(
 
     renderProvider();
 
-    expect(await screen.findByTestId('status')).toHaveTextContent('session-unavailable');
+    await expectStatus('session-unavailable');
     expect(screen.getByTestId('status')).not.toHaveTextContent('anonymous');
 
     await user.click(screen.getByRole('button', { name: 'Retry session' }));
 
-    expect(await screen.findByTestId('status')).toHaveTextContent('authenticated');
+    await expectStatus('authenticated');
     expect(screen.getByTestId('user')).toHaveTextContent('jane');
   },
 );
@@ -90,11 +96,11 @@ test('an outage during a recheck preserves the already resolved user', async () 
   const user = userEvent.setup();
 
   renderProvider();
-  expect(await screen.findByTestId('status')).toHaveTextContent('authenticated');
+  await expectStatus('authenticated');
 
   await user.click(screen.getByRole('button', { name: 'Retry session' }));
 
-  expect(await screen.findByTestId('status')).toHaveTextContent('session-unavailable');
+  await expectStatus('session-unavailable');
   expect(screen.getByTestId('user')).toHaveTextContent('jane');
 });
 
@@ -105,7 +111,7 @@ test('a confirmed 401 keeps the existing anonymous transition', async () => {
 
   renderProvider();
 
-  expect(await screen.findByTestId('status')).toHaveTextContent('anonymous');
+  await expectStatus('anonymous');
   expect(screen.getByTestId('user')).toHaveTextContent('none');
 });
 
@@ -123,7 +129,7 @@ test('the existing PIN idle deadline also revokes the unlocked vault immediately
 
   try {
     renderProvider();
-    expect(await screen.findByTestId('status')).toHaveTextContent('authenticated');
+    await expectStatus('authenticated');
 
     await act(async () => {
       await vi.advanceTimersByTimeAsync(60_001);

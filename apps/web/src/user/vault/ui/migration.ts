@@ -15,6 +15,7 @@ import {
 } from '@bettertrack/contracts';
 
 import { getAssetDetail } from '../../../lib/assetApi';
+import { listAllCashBudgets, listCashRules, listCashTags } from '../../../lib/cashApi';
 import {
   listExpenseBudgets,
   listExpenseCategories,
@@ -23,6 +24,8 @@ import {
 } from '../../../lib/expensesApi';
 import { getTaxYearReport, getTaxYearReports, listDividends } from '../../../lib/portfolioApi';
 import { apiPortfolioStore, type PortfolioStore } from '../../../lib/portfolioStore';
+import { listStandingOrderRuns } from '../../../lib/standingOrdersApi';
+import { getParanoidNormalRevision } from '../../../lib/userApi';
 import { assetSnapshotRow } from '../assetSnapshot';
 import { emptyVaultDocument } from './enable';
 
@@ -36,17 +39,109 @@ export interface NormalVaultMigrationOptions {
 }
 
 /**
- * Read the complete currently-restorable normal-account graph before enable.
+ * A capture is the document AND the token that binds it to the commit. They
+ * travel together deliberately: an enable that shipped the document alone would
+ * be exactly the unguarded read-then-destroy this type exists to prevent.
+ */
+export interface NormalVaultCapture {
+  document: VaultDocument;
+  /**
+   * `GET /account/paranoid/normal-revision`, read before the FIRST row read of
+   * the accepted pass AND unchanged when re-read after its last — so this token
+   * covers the whole build, not just its opening instant.
+   */
+  normalDataRevision: string;
+}
+
+/**
+ * How many times a capture will rebuild its document trying to land on a server
+ * state that did not move underneath it. Two, because every write the capture
+ * itself provokes is one-shot: the lazy seeds below insert only when their table
+ * is empty for this account, and the tax reconciler posts nothing once the open
+ * year's correction delta is zero. A settled read is therefore always reached on
+ * the second pass; a third would only paper over an account something else is
+ * actively writing, which has to fail loudly instead.
+ */
+export const CAPTURE_STABILITY_ATTEMPTS = 2;
+
+/**
+ * The account would not hold still: the revision moved across the document build
+ * on every attempt, so no document this client built provably matches the state
+ * the enable commit would purge.
+ *
+ * Deliberately its own type, and deliberately fatal. Shipping the newest token
+ * with the older document — or the older token, hoping the server disagrees
+ * politely — is precisely the "CAS passes, rows missing" outcome the token
+ * exists to prevent. The wizard maps this to copy that names the real cause
+ * (something else is writing to the account) instead of the generic
+ * "collection failed" retry advice.
+ */
+export class VaultCaptureUnstableError extends Error {
+  constructor(readonly attempts: number) {
+    super(
+      `The normal account changed during ${attempts} consecutive capture attempts; no stable copy could be taken.`,
+    );
+    this.name = 'VaultCaptureUnstableError';
+  }
+}
+
+/**
+ * Read the complete currently-restorable normal-account graph before enable,
+ * bound to the server revision it was read at.
+ *
+ * Protocol: read the token, build the document, read the token AGAIN, and accept
+ * the pair only when the two agree — validate-then-accept, not read-then-hope.
+ * The accepted token's window therefore provably contains the whole document
+ * build, which is the property the server's compare-and-swap (re-derived under
+ * the account lock, immediately before the first destructive statement) needs in
+ * order to mean anything.
+ *
+ * The second read is not extra caution about other sessions. THE CAPTURE'S OWN
+ * READS WRITE. Six of them seed or self-heal rows in tables the revision hashes:
+ *
+ * - `GET /portfolios` materializes "Main" (`portfolios`);
+ * - `GET /portfolios/:id/cash` materializes its main source
+ *   (`portfolio_cash_sources`);
+ * - `GET …/reports/tax-years` and `…/tax-years/:year` run the #635 self-heal,
+ *   posting each open year's pending tax correction (`portfolio_cash_movements`,
+ *   and through the auto-tagger `cash_movement_tags` / `cash_tags`);
+ * - `GET /expenses/categories` seeds the default categories
+ *   (`expense_categories`);
+ * - `GET /cash/tags` seeds the app-owned system tags (`cash_tags`).
+ *
+ * Four of those are self-covering — the read that seeds also returns what it
+ * seeded. The tax reconciler is not: it inserts CASH MOVEMENTS, while
+ * `getCashMovements` sits in the same `Promise.all` as the year list and runs
+ * strictly before the per-year reports. Those corrections are missing from the
+ * very `cash` array the document ships. A single-pass capture is therefore not
+ * merely stale, it is INCOMPLETE — and enable hard-deletes the rows it missed
+ * while disable restores from the document alone.
+ *
+ * So the mismatch is discarded whole and the document rebuilt; the second pass
+ * reads state its own first pass already settled, and its `cash` array contains
+ * the corrections the first pass provoked.
+ *
  * Derived snapshots/import staging/fire ledgers are deliberately omitted: PD3
  * marks them purge-only and re-derives their successors after rehydration.
- *
- * One documented gap inside a restorable kind: only a standing order's LAST run
- * (`lastPeriodKey` + `lastRunAt`) is migrated, because that is all the standing
- * orders endpoint exposes. Earlier `standing_order_runs` rows are purged at
- * enable and do not come back on disable. Dueness is unaffected — the scheduler
- * reads `lastPeriodKey`, and the client materializer derives the same
- * deterministic occurrence ids — so the loss is historical run bookkeeping only.
  */
+export async function captureNormalVault(
+  options: NormalVaultMigrationOptions,
+): Promise<NormalVaultCapture> {
+  let revision = (await getParanoidNormalRevision(options.signal)).revision;
+  for (let attempt = 1; attempt <= CAPTURE_STABILITY_ATTEMPTS; attempt += 1) {
+    const document = await buildNormalVaultDocument(options);
+    const settled = (await getParanoidNormalRevision(options.signal)).revision;
+    if (settled === revision) return { document, normalDataRevision: revision };
+    // Carry the closing token into the next attempt as its opening one: nothing
+    // runs between the two, so the window the next document is judged against is
+    // at worst slightly wider than that build. Wider can only refuse a capture
+    // that was fine — never accept one that was not.
+    revision = settled;
+  }
+  throw new VaultCaptureUnstableError(CAPTURE_STABILITY_ATTEMPTS);
+}
+
+/** The row-reading half of {@link captureNormalVault}; exported for tests. */
 export async function buildNormalVaultDocument(
   options: NormalVaultMigrationOptions,
 ): Promise<VaultDocument> {
@@ -189,6 +284,17 @@ export async function buildNormalVaultDocument(
         },
         movement.createdAt,
       );
+      // The movement's tag links (V5 cash fusion) — system tags stamped at book
+      // time plus any user tags. The ledger DTO carries only the tag ids, so
+      // synthesize a join-row id; the (movementId, tagId) pair is the identity
+      // the restore actually keys on. Absent when a surface has not served tags.
+      for (const tagId of movement.tags ?? []) {
+        append('cashMovementTag', id(), {
+          movementId: movement.id,
+          tagId,
+          createdAt: movement.createdAt,
+        });
+      }
     }
     for (const dividend of fact.dividends.dividends) {
       assets.set(dividend.asset.id, dividend.asset);
@@ -275,7 +381,46 @@ export async function buildNormalVaultDocument(
   const userTax = await store.getTaxSettings(signal);
   append('taxSetting', id(), taxSettingRow(options.userId, userTax, now()));
 
+  // The authoritative exactly-once ledger, read RAW — not reconstructed from the
+  // order's `lastPeriodKey`/`lastRunAt` watermark. The engine claims a period
+  // BEFORE it books and deliberately leaves the claim behind as an un-retried
+  // tombstone when booking (or `markBooked`) fails afterwards, so a claim can
+  // legally exist that no watermark mentions. Synthesizing runs from the
+  // watermark dropped exactly those rows — and since enable hard-purges
+  // `standing_order_runs` and disable restores it from this document alone, the
+  // scheduler would afterwards re-book a period that was intentionally closed:
+  // a duplicate money booking. Every row rides, under its real id.
+  const runLedger = await listStandingOrderRuns(signal);
+  const orderIds = new Set(standingOrders.orders.map((order) => order.id));
+  const capturedRuns = new Set<string>();
+  for (const run of runLedger.runs) {
+    if (!orderIds.has(run.standingOrderId)) {
+      // The ledger is scoped to the caller's own orders server-side, so this can
+      // only mean the two reads raced an order deletion. Refuse rather than
+      // migrate a dangling claim the restore boundary would reject after the
+      // purge.
+      throw new Error(
+        `Vault migration read a standing-order run for unknown order ${run.standingOrderId}.`,
+      );
+    }
+    append('standingOrderRun', run.id, {
+      standingOrderId: run.standingOrderId,
+      periodKey: run.periodKey,
+      bookedAt: run.bookedAt,
+    });
+    capturedRuns.add(runKey(run.standingOrderId, run.periodKey));
+  }
+
   for (const order of standingOrders.orders) {
+    // The invariant the RESTORE enforces ("a standing-order run watermark
+    // requires its authoritative run row") — checked here, before the purge,
+    // because the server only checks it at disable, when the cleartext rows are
+    // already gone and refusing means the account cannot leave paranoid mode.
+    if (order.lastPeriodKey != null && !capturedRuns.has(runKey(order.id, order.lastPeriodKey))) {
+      throw new Error(
+        `Vault migration read no run row for the booked period ${order.lastPeriodKey} of standing order ${order.id}.`,
+      );
+    }
     append(
       'standingOrder',
       order.id,
@@ -299,13 +444,6 @@ export async function buildNormalVaultDocument(
       },
       order.updatedAt,
     );
-    if (order.lastPeriodKey != null && order.lastRunAt != null) {
-      append('standingOrderRun', id(), {
-        standingOrderId: order.id,
-        periodKey: order.lastPeriodKey,
-        bookedAt: order.lastRunAt,
-      });
-    }
   }
 
   const [categories, expenseTransactions, rules, budgets] = await Promise.all([
@@ -383,11 +521,85 @@ export async function buildNormalVaultDocument(
     );
   }
 
+  // V5 cash fusion — the tag / rule / budget layer on the cash ledger. Every one
+  // of these tables is `vault`-classified: enable hard-purges them server-side
+  // and disable restores them from the document ALONE, so a row that never
+  // reaches the vault is lost for good on the one-way round trip. Tags are
+  // account-scoped (system tags stamped at book time plus user tags); rules and
+  // their tag links likewise; budgets are per portfolio and read RAW (all
+  // periods) because the per-month progress list cannot enumerate other months'
+  // month-specific rows.
+  const [cashTags, cashRules, cashBudgets] = await Promise.all([
+    listCashTags(signal),
+    listCashRules(signal),
+    listAllCashBudgets(signal),
+  ]);
+  for (const tag of cashTags.tags) {
+    append(
+      'cashTag',
+      tag.id,
+      {
+        userId: options.userId,
+        name: tag.name,
+        color: tag.color,
+        system: tag.system,
+        systemKey: tag.systemKey,
+        createdAt: tag.createdAt,
+        updatedAt: tag.updatedAt,
+      },
+      tag.updatedAt,
+    );
+  }
+  for (const rule of cashRules.rules) {
+    append(
+      'cashRule',
+      rule.id,
+      {
+        userId: options.userId,
+        matchType: rule.matchType,
+        pattern: rule.pattern,
+        priority: rule.priority,
+        enabled: rule.enabled,
+        createdAt: rule.createdAt,
+        updatedAt: rule.updatedAt,
+      },
+      rule.updatedAt,
+    );
+    for (const tagId of rule.tagIds) {
+      append('cashRuleTag', id(), {
+        ruleId: rule.id,
+        tagId,
+        createdAt: rule.createdAt,
+      });
+    }
+  }
+  for (const budget of cashBudgets.budgets) {
+    append(
+      'cashBudget',
+      budget.id,
+      {
+        portfolioId: budget.portfolioId,
+        tagId: budget.tagId,
+        periodKey: budget.period,
+        amount: decimal(budget.amount),
+        currency: budget.currency,
+        createdAt: budget.createdAt,
+        updatedAt: budget.updatedAt,
+      },
+      budget.updatedAt,
+    );
+  }
+
   return {
     schemaVersion: VAULT_DOCUMENT_V1_VERSION,
     entities: Object.fromEntries(buckets),
     mergeLog: [],
   };
+}
+
+/** The (order, period) pair the run ledger and the order watermark share. */
+function runKey(standingOrderId: string, periodKey: string): string {
+  return `${standingOrderId}\u0000${periodKey}`;
 }
 
 async function listAllTransactions(

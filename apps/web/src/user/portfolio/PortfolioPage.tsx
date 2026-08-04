@@ -18,7 +18,7 @@ import {
   getPortfolioDividendProjection,
 } from '../../lib/marketIntelApi';
 import { useT } from '../../i18n';
-import { ApiError } from '../../lib/apiClient';
+import { ApiError, classifyApiError } from '../../lib/apiClient';
 import { cx } from '../../lib/cx';
 import { assetTypeLabels } from './assetTypeLabels';
 import { ACTIVE_PORTFOLIO_PARAM, resolveActivePortfolio } from './PortfolioSwitcher';
@@ -36,6 +36,7 @@ import { AllocationDonut, PriceChart } from '../../ui/charts';
 import { MAIN_SERIES, POSITIVE } from '../../ui/charts/palette';
 import type { AllocationSegment, PriceRange } from '../../ui/charts';
 import { Alert } from '../components/ui';
+import { AsyncReadState } from '../components/AsyncReadState';
 import { TransactionDialog, type TransactionDialogAsset } from '../components/TransactionDialog';
 import { SourceBadge, sourceTagLabel } from './SourceBadge';
 import { CashDialog } from './CashDialog';
@@ -889,6 +890,24 @@ function RecategorizeBanner() {
       queryClient.invalidateQueries({ queryKey: ['custom-assets', 'recategorization'] }),
   });
 
+  // This is a normally invisible background probe. Keep arrival status
+  // available to assistive tech without adding visual noise, and keep
+  // confirmed/unknown terminal outcomes silent; only a real outage is
+  // actionable enough to interrupt the portfolio surface.
+  if (statusQuery.error && classifyApiError(statusQuery.error) !== 'outage') return null;
+  if (statusQuery.isLoading || statusQuery.error) {
+    return (
+      <AsyncReadState
+        loading={statusQuery.isLoading}
+        error={statusQuery.error}
+        errorLabel={t('portfolio.recategorize.loadError')}
+        loadingLabel={t('portfolio.recategorize.loading')}
+        loadingPresentation="sr-only"
+        onRetry={() => void statusQuery.refetch()}
+      />
+    );
+  }
+
   if (!statusQuery.data || statusQuery.data.pending <= 0) return null;
 
   return (
@@ -1264,6 +1283,17 @@ export function PortfolioPage() {
         onNewCustom={() => setCustomOpen(true)}
       />
 
+      {/* Both supporting reads are classified separately: whichever of them is a
+          recoverable outage keeps its Retry, and that Retry re-runs only it. */}
+      <AsyncReadState
+        loading={transactionsQuery.isLoading || cashSourcesQuery.isLoading}
+        reads={[
+          { error: transactionsQuery.error, refetch: () => transactionsQuery.refetch() },
+          { error: cashSourcesQuery.error, refetch: () => cashSourcesQuery.refetch() },
+        ]}
+        errorLabel={t('portfolio.overview.detailsLoadError')}
+      />
+
       <NormalModeOnly>
         <RecategorizeBanner />
       </NormalModeOnly>
@@ -1346,23 +1376,41 @@ export function PortfolioPage() {
                 {t('portfolio.overview.chart.perfHint')}
               </p>
             ) : null}
-            <div className="bt-chart">
-              <PriceChart
-                series={chartPoints}
-                mode={perfMode ? 'baseline' : 'area'}
-                percentValues={perfMode}
-                valueCurrency={historyQuery.data?.baseCurrency ?? portfolioQuery.data?.baseCurrency}
-                range={range}
-                ranges={PORTFOLIO_RANGES}
-                onRangeChange={setRange}
-                loading={historyQuery.isLoading || historyQuery.isFetching}
-                height={340}
-                ariaLabel={
-                  perfMode
-                    ? t('portfolio.overview.chart.ariaLabelPerformance')
-                    : t('portfolio.overview.chart.ariaLabelValue')
-                }
+            <AsyncReadState
+              loading={false}
+              error={historyQuery.error}
+              errorLabel={t('portfolio.overview.chart.loadError')}
+              onRetry={() => void historyQuery.refetch()}
+            />
+            {historyQuery.error && !historyQuery.data ? (
+              <Seg
+                ariaLabel={t('common.charts.selectRange')}
+                onChange={setRange}
+                options={PORTFOLIO_RANGES.map((value) => ({ value, label: value }))}
+                value={range}
               />
+            ) : null}
+            <div className="bt-chart">
+              {!historyQuery.error || historyQuery.data ? (
+                <PriceChart
+                  series={chartPoints}
+                  mode={perfMode ? 'baseline' : 'area'}
+                  percentValues={perfMode}
+                  valueCurrency={
+                    historyQuery.data?.baseCurrency ?? portfolioQuery.data?.baseCurrency
+                  }
+                  range={range}
+                  ranges={PORTFOLIO_RANGES}
+                  onRangeChange={setRange}
+                  loading={historyQuery.isLoading || historyQuery.isFetching}
+                  height={340}
+                  ariaLabel={
+                    perfMode
+                      ? t('portfolio.overview.chart.ariaLabelPerformance')
+                      : t('portfolio.overview.chart.ariaLabelValue')
+                  }
+                />
+              ) : null}
             </div>
           </section>
 

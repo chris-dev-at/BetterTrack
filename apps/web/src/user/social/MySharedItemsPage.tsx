@@ -19,6 +19,7 @@ import {
   type BadgeTone,
 } from '../../ui/origin';
 import { AudiencePicker } from '../components/AudiencePicker';
+import { AsyncReadState } from '../components/AsyncReadState';
 import { Dialog } from '../components/Dialog';
 import { Alert, Spinner } from '../components/ui';
 
@@ -102,11 +103,12 @@ function AlertSharingControl() {
   const queryClient = useQueryClient();
   const [confirming, setConfirming] = useState(false);
 
-  const { data } = useQuery({
+  const query = useQuery({
     queryKey: ALERT_SHARING_QUERY_KEY,
     queryFn: ({ signal }) => getAlertSharing(signal),
     staleTime: 30_000,
   });
+  const data = query.data;
   const mutation = useMutation({
     mutationFn: (body: UpdateAlertSharingRequest) => updateAlertSharing(body),
     onSuccess: (result) => {
@@ -115,6 +117,16 @@ function AlertSharingControl() {
     },
   });
 
+  if (query.isLoading || query.error) {
+    return (
+      <AsyncReadState
+        loading={query.isLoading}
+        error={query.error}
+        errorLabel={t('social.myShared.error')}
+        onRetry={() => void query.refetch()}
+      />
+    );
+  }
   if (!data) return null;
   const on = data.visibleToFollowers;
 

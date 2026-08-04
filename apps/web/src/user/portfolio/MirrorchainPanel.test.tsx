@@ -9,12 +9,18 @@ vi.mock('../../lib/mirrorApi', async (importOriginal) => ({
   getMirrorActivity: vi.fn(),
   getMirrorMembers: vi.fn(),
 }));
+vi.mock('../../lib/socialApi', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../lib/socialApi')>()),
+  listFriends: vi.fn(),
+}));
 
 import type { PortfolioForkProvenance, PortfolioMirrorBadge } from '@bettertrack/contracts';
 
 import { I18nProvider } from '../../i18n';
 import { getMirrorActivity, getMirrorMembers } from '../../lib/mirrorApi';
+import { listFriends } from '../../lib/socialApi';
 import {
+  InviteDialog,
   MemberSheet,
   MirrorAttributionChip,
   MirrorAvatarStack,
@@ -113,6 +119,21 @@ describe('MirrorchainPanel — attribution chip (design §10)', () => {
 });
 
 describe('MirrorchainPanel — member actions', () => {
+  test('renders a friend-roster read failure inside the invite dialog', async () => {
+    vi.mocked(listFriends).mockRejectedValue(new Error('friends unavailable'));
+
+    wrap(
+      <InviteDialog
+        chainId="00000000-0000-4000-8000-000000000020"
+        existingMemberUserIds={new Set()}
+        onClose={() => {}}
+        onDone={() => {}}
+      />,
+    );
+
+    expect(await screen.findByText("This information isn't available.")).toBeInTheDocument();
+  });
+
   test('interpolates the target username in the confirmation title and body', async () => {
     vi.mocked(getMirrorMembers).mockResolvedValue({
       chainId: '00000000-0000-4000-8000-000000000020',

@@ -24,7 +24,7 @@ import {
   type PreparedVaultMaterial,
   type VaultEnableStage,
 } from './enable';
-import { buildNormalVaultDocument } from './migration';
+import { captureNormalVault, VaultCaptureUnstableError } from './migration';
 
 const KILL_LIST_KEYS = [
   'sharing',
@@ -126,7 +126,7 @@ export function ParanoidEnableWizard({
           server: createServerBlobDataHome(),
           drive,
           migrate: (signal) =>
-            buildNormalVaultDocument({
+            captureNormalVault({
               userId: user.id,
               store: apiPortfolioStore,
               signal,
@@ -354,6 +354,12 @@ export function ParanoidEnableWizard({
 
 function enableErrorKey(cause: unknown): string {
   if (!(cause instanceof VaultEnableError)) return 'vault.enable.errors.unknown';
+  // The capture gave up because the account kept moving under it. Generic
+  // "collection failed, retry when the connection recovers" copy would send the
+  // user straight back into the same loop; name the other writer instead.
+  if (cause.cause instanceof VaultCaptureUnstableError) {
+    return 'vault.enable.errors.captureUnstable';
+  }
   if (cause.stage === 'commit' && cause.cause instanceof ApiError) {
     switch (cause.cause.code) {
       case PARANOID_TRANSITION_ERROR_CODES.mirrorchainActive:
@@ -366,6 +372,8 @@ function enableErrorKey(cause: unknown): string {
         return 'vault.enable.errors.mediaNotReady';
       case PARANOID_TRANSITION_ERROR_CODES.transitionConflict:
         return 'vault.enable.errors.transitionConflict';
+      case PARANOID_TRANSITION_ERROR_CODES.normalDataChanged:
+        return 'vault.enable.errors.normalDataChanged';
     }
   }
   return `vault.enable.errors.${cause.stage}`;

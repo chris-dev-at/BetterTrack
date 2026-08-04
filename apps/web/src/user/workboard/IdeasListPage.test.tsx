@@ -79,6 +79,15 @@ beforeEach(() => {
 });
 
 describe('IdeasListPage', () => {
+  test('renders a sharing-metadata read failure without hiding saved ideas', async () => {
+    vi.mocked(listIdeas).mockResolvedValue({ ideas: [idea()] });
+    vi.mocked(listMyShared).mockRejectedValue(new Error('sharing unavailable'));
+    renderPage();
+
+    expect(await screen.findByText("This information isn't available.")).toBeInTheDocument();
+    expect(screen.getByText('Momentum basket')).toBeInTheDocument();
+  });
+
   test('shows an empty state when there are no saved ideas', async () => {
     vi.mocked(listIdeas).mockResolvedValue({ ideas: [] });
     renderPage();

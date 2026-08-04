@@ -19,6 +19,7 @@ import { EmptyState, MoneyText } from '../../ui';
 import { Button, Field, Icon, Input, PageHead, SkeletonBlock } from '../../ui/origin';
 import { Alert } from '../components/ui';
 import { Avatar } from '../components/Avatar';
+import { AsyncReadState } from '../components/AsyncReadState';
 import { Dialog } from '../components/Dialog';
 import { useResolvedPrivacyMode } from '../vault/usePrivacyMode';
 import { AlertFollowToggle, AutoFollowToggle, FollowButton } from './FollowButton';
@@ -193,12 +194,12 @@ function MirrorInvitesSection() {
   }
   if (invitesQuery.isError || !invitesQuery.data) {
     return (
-      <div className="flex flex-col items-start gap-2">
-        <Alert tone="error">{t('mirrorchain.invites.loadError')}</Alert>
-        <Button onClick={() => void invitesQuery.refetch()} size="sm">
-          {t('common.retry')}
-        </Button>
-      </div>
+      <AsyncReadState
+        loading={false}
+        error={invitesQuery.error ?? new Error('Mirror invites returned no data')}
+        errorLabel={t('mirrorchain.invites.loadError')}
+        onRetry={() => void invitesQuery.refetch()}
+      />
     );
   }
   const { incoming, outgoing } = invitesQuery.data;

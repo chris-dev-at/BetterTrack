@@ -25,8 +25,26 @@ vi.mock('../../../lib/assetApi', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../lib/assetApi')>();
   return { ...actual, getAssetDetail: vi.fn() };
 });
+vi.mock('../../../lib/cashApi', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../lib/cashApi')>();
+  return {
+    ...actual,
+    listCashTags: vi.fn(),
+    listCashRules: vi.fn(),
+    listAllCashBudgets: vi.fn(),
+  };
+});
+vi.mock('../../../lib/standingOrdersApi', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../lib/standingOrdersApi')>();
+  return { ...actual, listStandingOrderRuns: vi.fn() };
+});
+vi.mock('../../../lib/userApi', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../lib/userApi')>();
+  return { ...actual, getParanoidNormalRevision: vi.fn() };
+});
 
 import { getAssetDetail } from '../../../lib/assetApi';
+import { listAllCashBudgets, listCashRules, listCashTags } from '../../../lib/cashApi';
 import {
   listExpenseBudgets,
   listExpenseCategories,
@@ -35,9 +53,16 @@ import {
 } from '../../../lib/expensesApi';
 import { getTaxYearReport, getTaxYearReports, listDividends } from '../../../lib/portfolioApi';
 import { apiPortfolioStore } from '../../../lib/portfolioStore';
+import { listStandingOrderRuns } from '../../../lib/standingOrdersApi';
+import { getParanoidNormalRevision } from '../../../lib/userApi';
 import { openVaultSession } from '../engine/session';
 import { toStrictRestoreDocument } from '../paranoidDisable';
-import { buildNormalVaultDocument } from './migration';
+import {
+  buildNormalVaultDocument,
+  captureNormalVault,
+  CAPTURE_STABILITY_ATTEMPTS,
+  VaultCaptureUnstableError,
+} from './migration';
 
 const USER_ID = '018f0000-0000-7000-8000-000000000001';
 const PORTFOLIO_ID = '018f0000-0000-7000-8000-000000000010';
@@ -49,6 +74,9 @@ const NEXT_CURSOR = '018f0000-0000-7000-8000-000000000040';
 const ORDER_ID = '018f0000-0000-7000-8000-000000000050';
 const ORDER_ASSET_ID = '018f0000-0000-7000-8000-000000000051';
 const NOW = '2026-07-30T10:00:00.000Z';
+const RUN_ID = '018f0000-0000-7000-8000-000000000060';
+const CLAIM_ID = '018f0000-0000-7000-8000-000000000061';
+const REVISION = 'FAKE-normal-data-revision_0';
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -60,6 +88,11 @@ beforeEach(() => {
   vi.mocked(listExpenseTransactions).mockResolvedValue({ transactions: [] });
   vi.mocked(listExpenseRules).mockResolvedValue({ rules: [] });
   vi.mocked(listExpenseBudgets).mockResolvedValue({ budgets: [], period: '2026-07' });
+  vi.mocked(listCashTags).mockResolvedValue({ tags: [] });
+  vi.mocked(listCashRules).mockResolvedValue({ rules: [] });
+  vi.mocked(listAllCashBudgets).mockResolvedValue({ budgets: [] });
+  vi.mocked(listStandingOrderRuns).mockResolvedValue({ runs: [] });
+  vi.mocked(getParanoidNormalRevision).mockResolvedValue({ revision: REVISION });
 });
 
 const ASSET = {
@@ -275,6 +308,552 @@ describe('buildNormalVaultDocument', () => {
         ],
       },
     });
+  });
+
+  it('carries the cash-fusion tags, movement links, rules and budgets into the vault', async () => {
+    // Regression for the one-way enable purge: every cash-fusion table is
+    // `vault`-classified, so enable hard-deletes it server-side and disable
+    // restores it from the document ALONE. A row this migration fails to capture
+    // is lost for good on the round trip. The killer case is a month-SPECIFIC
+    // budget for a month other than "now": the per-month progress list can never
+    // surface it, so only the raw `/cash/budgets/all` read carries it.
+    const SOURCE_ID = '018f0000-0000-7000-8000-0000000000c1';
+    const MOVEMENT_ID = '018f0000-0000-7000-8000-0000000000c2';
+    const USER_TAG_ID = '018f0000-0000-7000-8000-0000000000c3';
+    const SYSTEM_TAG_ID = '018f0000-0000-7000-8000-0000000000c4';
+    const RULE_ID = '018f0000-0000-7000-8000-0000000000c5';
+    const RECURRING_BUDGET_ID = '018f0000-0000-7000-8000-0000000000c6';
+    const MONTH_BUDGET_ID = '018f0000-0000-7000-8000-0000000000c7';
+
+    const store: PortfolioStore = {
+      ...apiPortfolioStore,
+      listPortfolios: vi.fn(async () => ({
+        portfolios: [
+          {
+            id: PORTFOLIO_ID,
+            name: 'Main',
+            visibility: 'private' as const,
+            sortOrder: 0,
+            isDefault: true,
+            defaultPayFromCash: false,
+            archivedAt: null,
+          },
+        ],
+      })),
+      listTransactions: vi.fn(async () => ({ items: [], nextCursor: null })),
+      getCashMovements: vi.fn(async () => ({
+        balanceEur: 100,
+        sources: [
+          {
+            id: SOURCE_ID,
+            name: 'Main',
+            type: 'cash' as const,
+            isMain: true,
+            archivedAt: null,
+            balanceEur: 100,
+            createdAt: NOW,
+          },
+        ],
+        movements: [
+          {
+            id: MOVEMENT_ID,
+            kind: 'deposit' as const,
+            amountEur: 100,
+            sourceId: SOURCE_ID,
+            transactionId: null,
+            transferId: null,
+            counterpartSourceId: null,
+            dividendId: null,
+            taxYear: null,
+            executedAt: '2026-07-15T09:00:00.000Z',
+            note: 'Salary',
+            source: 'manual' as const,
+            createdAt: '2026-07-15T09:00:00.000Z',
+            tags: [SYSTEM_TAG_ID, USER_TAG_ID],
+          },
+        ],
+      })),
+      getPortfolioTaxSettings: vi.fn(async () => ({
+        effective: { mode: 'none' as const, country: null },
+        override: null,
+        userDefault: { mode: 'none' as const, country: null },
+        source: 'system' as const,
+      })),
+      getTaxSettings: vi.fn(async () => ({ mode: 'none' as const, country: null })),
+      listCustomAssets: vi.fn(async () => ({ assets: [] })),
+      listStandingOrders: vi.fn(async () => ({ orders: [] })),
+    };
+
+    vi.mocked(listCashTags).mockResolvedValue({
+      tags: [
+        {
+          id: SYSTEM_TAG_ID,
+          name: 'Deposits',
+          color: '#123456',
+          system: true,
+          systemKey: 'deposit',
+          createdAt: NOW,
+          updatedAt: NOW,
+        },
+        {
+          id: USER_TAG_ID,
+          name: 'Salary',
+          color: '#abcdef',
+          system: false,
+          systemKey: null,
+          createdAt: NOW,
+          updatedAt: NOW,
+        },
+      ],
+    });
+    vi.mocked(listCashRules).mockResolvedValue({
+      rules: [
+        {
+          id: RULE_ID,
+          tagIds: [USER_TAG_ID],
+          matchType: 'contains' as const,
+          pattern: 'salary',
+          priority: 0,
+          enabled: true,
+          createdAt: NOW,
+          updatedAt: NOW,
+        },
+      ],
+    });
+    vi.mocked(listAllCashBudgets).mockResolvedValue({
+      budgets: [
+        {
+          id: RECURRING_BUDGET_ID,
+          portfolioId: PORTFOLIO_ID,
+          tagId: USER_TAG_ID,
+          period: null,
+          amount: 500,
+          currency: 'EUR',
+          createdAt: NOW,
+          updatedAt: NOW,
+        },
+        {
+          id: MONTH_BUDGET_ID,
+          portfolioId: PORTFOLIO_ID,
+          tagId: USER_TAG_ID,
+          // A future month the current-month progress list could never surface.
+          period: '2026-12',
+          amount: 250,
+          currency: 'EUR',
+          createdAt: NOW,
+          updatedAt: NOW,
+        },
+      ],
+    });
+
+    let idSequence = 0;
+    const document = await buildNormalVaultDocument({
+      userId: USER_ID,
+      deviceId: DEVICE_ID,
+      store,
+      now: () => NOW,
+      id: () => `018f0000-0000-7000-8000-e${String(++idSequence).padStart(11, '0')}`,
+    });
+
+    expect(listAllCashBudgets).toHaveBeenCalledWith(undefined);
+    expect((document.entities.cashTag ?? []).map((entity) => entity.id).sort()).toEqual(
+      [SYSTEM_TAG_ID, USER_TAG_ID].sort(),
+    );
+    expect(
+      document.entities.cashTag?.find((entity) => entity.id === USER_TAG_ID)?.data,
+    ).toMatchObject({ userId: USER_ID, name: 'Salary', system: false, systemKey: null });
+    // Both of the movement's tag links ride into the vault, keyed by
+    // (movementId, tagId) under synthesized join ids.
+    expect(
+      (document.entities.cashMovementTag ?? [])
+        .map((entity) => `${entity.data.movementId}:${entity.data.tagId}`)
+        .sort(),
+    ).toEqual([`${MOVEMENT_ID}:${SYSTEM_TAG_ID}`, `${MOVEMENT_ID}:${USER_TAG_ID}`].sort());
+    expect(document.entities.cashRule).toHaveLength(1);
+    expect(document.entities.cashRule?.[0]?.data).toMatchObject({
+      userId: USER_ID,
+      pattern: 'salary',
+    });
+    expect(document.entities.cashRuleTag?.map((entity) => entity.data.tagId)).toEqual([
+      USER_TAG_ID,
+    ]);
+    // The recurring AND the month-specific budget both survive — the raw read is
+    // the only path that carries the December row.
+    expect(
+      (document.entities.cashBudget ?? [])
+        .map((entity) => `${entity.id}:${entity.data.periodKey}:${entity.data.amount}`)
+        .sort(),
+    ).toEqual([`${RECURRING_BUDGET_ID}:null:500`, `${MONTH_BUDGET_ID}:2026-12:250`].sort());
+  });
+
+  it('carries every run-ledger row, including a claim no watermark mentions', async () => {
+    // The engine CLAIMS a period before it books and leaves the claim as an
+    // un-retried tombstone when booking (or `markBooked`) fails afterwards — so
+    // `standing_order_runs` legitimately holds rows the order's
+    // `lastPeriodKey`/`lastRunAt` watermark says nothing about. Synthesizing
+    // runs from the watermark dropped exactly those, and since enable purges the
+    // table and disable restores it from this document alone, the scheduler
+    // would re-book a period that was intentionally closed: a double booking of
+    // real money.
+    const store: PortfolioStore = {
+      ...apiPortfolioStore,
+      listPortfolios: vi.fn(async () => ({ portfolios: [] })),
+      listCustomAssets: vi.fn(async () => ({ assets: [] })),
+      getTaxSettings: vi.fn(async () => ({ mode: 'none' as const, country: null })),
+      listStandingOrders: vi.fn(async () => ({
+        orders: [
+          {
+            id: ORDER_ID,
+            portfolioId: PORTFOLIO_ID,
+            kind: 'cash-add' as const,
+            assetId: null,
+            assetSymbol: null,
+            assetName: null,
+            amount: 100,
+            currency: 'EUR',
+            label: 'Salary',
+            cadence: 'monthly' as const,
+            anchorDay: 1,
+            startDate: '2026-05-01',
+            endDate: null,
+            status: 'active' as const,
+            // The watermark stopped at June: July was claimed, then its booking
+            // failed. That claim exists ONLY in the ledger.
+            lastRunAt: '2026-06-01T04:00:00.000Z',
+            lastPeriodKey: '2026-06-01',
+            nextRunDate: '2026-08-01',
+            createdAt: NOW,
+            updatedAt: NOW,
+          },
+        ],
+      })),
+    };
+    vi.mocked(listStandingOrderRuns).mockResolvedValue({
+      runs: [
+        {
+          id: RUN_ID,
+          standingOrderId: ORDER_ID,
+          periodKey: '2026-06-01',
+          bookedAt: '2026-06-01T04:00:00.000Z',
+        },
+        {
+          id: CLAIM_ID,
+          standingOrderId: ORDER_ID,
+          periodKey: '2026-07-01',
+          bookedAt: '2026-07-01T04:00:00.000Z',
+        },
+      ],
+    });
+
+    const document = await buildNormalVaultDocument({
+      userId: USER_ID,
+      deviceId: DEVICE_ID,
+      store,
+      now: () => NOW,
+    });
+
+    // Both rows ride, under their REAL ledger ids — the identity the restore
+    // writes back and the client's occurrence lookup matches semantically.
+    expect(
+      (document.entities.standingOrderRun ?? []).map(
+        (entity) => `${entity.id}:${entity.data.periodKey}`,
+      ),
+    ).toEqual([`${RUN_ID}:2026-06-01`, `${CLAIM_ID}:2026-07-01`]);
+    // And the restore boundary ships them: the claim is what stops the
+    // post-disable scheduler from re-booking July.
+    const restore = toStrictRestoreDocument(document);
+    expect(
+      restore.entities
+        .filter((entity) => entity.kind === 'standingOrderRun')
+        .map((entity) => entity.data.periodKey),
+    ).toEqual(['2026-06-01', '2026-07-01']);
+  });
+
+  it('refuses a booked watermark whose authoritative run row is missing', async () => {
+    // The server checks this invariant only at DISABLE — by then the cleartext
+    // rows are gone and a refusal traps the account in paranoid mode. So the
+    // capture proves it while the normal account is still intact.
+    const store: PortfolioStore = {
+      ...apiPortfolioStore,
+      listPortfolios: vi.fn(async () => ({ portfolios: [] })),
+      listCustomAssets: vi.fn(async () => ({ assets: [] })),
+      getTaxSettings: vi.fn(async () => ({ mode: 'none' as const, country: null })),
+      listStandingOrders: vi.fn(async () => ({
+        orders: [
+          {
+            id: ORDER_ID,
+            portfolioId: PORTFOLIO_ID,
+            kind: 'cash-add' as const,
+            assetId: null,
+            assetSymbol: null,
+            assetName: null,
+            amount: 100,
+            currency: 'EUR',
+            label: 'Salary',
+            cadence: 'monthly' as const,
+            anchorDay: 1,
+            startDate: '2026-05-01',
+            endDate: null,
+            status: 'active' as const,
+            lastRunAt: '2026-06-01T04:00:00.000Z',
+            lastPeriodKey: '2026-06-01',
+            nextRunDate: '2026-08-01',
+            createdAt: NOW,
+            updatedAt: NOW,
+          },
+        ],
+      })),
+    };
+    vi.mocked(listStandingOrderRuns).mockResolvedValue({ runs: [] });
+
+    await expect(
+      buildNormalVaultDocument({ userId: USER_ID, deviceId: DEVICE_ID, store, now: () => NOW }),
+    ).rejects.toThrow(/no run row for the booked period/);
+  });
+
+  it('refuses a run whose standing order the capture never saw', async () => {
+    // The ledger read and the order read are two round trips; an order deleted
+    // between them would leave a dangling claim that the server's restore
+    // validation rejects — AFTER the irreversible purge. Refuse before enable.
+    const store: PortfolioStore = {
+      ...apiPortfolioStore,
+      listPortfolios: vi.fn(async () => ({ portfolios: [] })),
+      listCustomAssets: vi.fn(async () => ({ assets: [] })),
+      getTaxSettings: vi.fn(async () => ({ mode: 'none' as const, country: null })),
+      listStandingOrders: vi.fn(async () => ({ orders: [] })),
+    };
+    vi.mocked(listStandingOrderRuns).mockResolvedValue({
+      runs: [
+        {
+          id: CLAIM_ID,
+          standingOrderId: ORDER_ID,
+          periodKey: '2026-07-01',
+          bookedAt: '2026-07-01T04:00:00.000Z',
+        },
+      ],
+    });
+
+    await expect(
+      buildNormalVaultDocument({ userId: USER_ID, deviceId: DEVICE_ID, store, now: () => NOW }),
+    ).rejects.toThrow(/run for unknown order/);
+  });
+
+  it('brackets the row reads with the CAS revision and binds the agreed token to the capture', async () => {
+    // The window this closes: the wizard reads the whole account, encrypts it,
+    // writes both media and verifies them — all lock-free — and only then
+    // commits the purge. Reading the revision before the first row read AND
+    // again after the last makes the server's compare-and-swap cover the entire
+    // capture, so a write that lands mid-read (another session, the
+    // standing-order worker, or — see below — the capture's own GETs) refuses
+    // the enable instead of being purged out of existence.
+    const order: string[] = [];
+    vi.mocked(getParanoidNormalRevision).mockImplementation(async () => {
+      order.push('revision');
+      return { revision: REVISION };
+    });
+    const store: PortfolioStore = {
+      ...apiPortfolioStore,
+      listPortfolios: vi.fn(async () => {
+        order.push('portfolios');
+        return { portfolios: [] };
+      }),
+      listCustomAssets: vi.fn(async () => ({ assets: [] })),
+      getTaxSettings: vi.fn(async () => ({ mode: 'none' as const, country: null })),
+      listStandingOrders: vi.fn(async () => ({ orders: [] })),
+    };
+
+    const capture = await captureNormalVault({
+      userId: USER_ID,
+      deviceId: DEVICE_ID,
+      store,
+      now: () => NOW,
+    });
+
+    // A quiet account settles on the first pass: one build, bracketed.
+    expect(order).toEqual(['revision', 'portfolios', 'revision']);
+    expect(capture.normalDataRevision).toBe(REVISION);
+    expect(capture.document.schemaVersion).toBe(1);
+  });
+
+  it('re-captures when its own reads wrote, and ships the rows those writes created', async () => {
+    /*
+     * The defect this pins. The capture's reads are NOT side-effect-free:
+     * `GET …/reports/tax-years` runs the #635 self-heal and INSERTS the open
+     * year's correction cash movement, while `store.getCashMovements` sits in
+     * the same `Promise.all` and has already snapshotted the ledger without it.
+     * `GET /expenses/categories` likewise seeds this account's default
+     * categories on first read. A single-pass capture therefore shipped a
+     * document MISSING money rows — and enable hard-deletes them, with disable
+     * restoring from the document alone.
+     *
+     * The fake reproduces that ordering exactly: the ledger snapshot happens
+     * first, then the tax read appends the correction and moves the revision.
+     * The assertion that matters is not "the capture succeeded" — it is that the
+     * ACCEPTED document contains the correction. A fix that merely re-read the
+     * token after the build would pass a 200-only assertion while still losing
+     * the row.
+     */
+    const SOURCE_ID = '018f0000-0000-7000-8000-0000000000f1';
+    const DEPOSIT_ID = '018f0000-0000-7000-8000-0000000000f2';
+    const CORRECTION_ID = '018f0000-0000-7000-8000-0000000000f3';
+    const CATEGORY_ID = '018f0000-0000-7000-8000-0000000000f4';
+
+    const movement = (id: string, kind: 'deposit' | 'tax_refund', amountEur: number) => ({
+      id,
+      kind,
+      amountEur,
+      sourceId: SOURCE_ID,
+      transactionId: null,
+      transferId: null,
+      counterpartSourceId: null,
+      dividendId: null,
+      taxYear: kind === 'deposit' ? null : 2026,
+      executedAt: '2026-07-01T09:00:00.000Z',
+      note: null,
+      source: 'manual' as const,
+      createdAt: '2026-07-01T09:00:00.000Z',
+      tags: [],
+    });
+
+    // The server's state, as the capture's own reads leave it.
+    let version = 0;
+    const ledger = [movement(DEPOSIT_ID, 'deposit', 100)];
+    const categories: Array<{
+      id: string;
+      name: string;
+      direction: 'expense';
+      color: string;
+      createdAt: string;
+      updatedAt: string;
+    }> = [];
+
+    vi.mocked(getParanoidNormalRevision).mockImplementation(async () => ({
+      revision: `${REVISION}-${version}`,
+    }));
+    vi.mocked(getTaxYearReports).mockImplementation(async () => {
+      // `reconcileOpenYears`: posts the pending correction once, then converges
+      // (the year's correction delta is zero afterwards).
+      if (!ledger.some((row) => row.id === CORRECTION_ID)) {
+        ledger.push(movement(CORRECTION_ID, 'tax_refund', 247.5));
+        version += 1;
+      }
+      return { years: [] };
+    });
+    vi.mocked(listExpenseCategories).mockImplementation(async () => {
+      // The lazy default seed: one-shot, and self-covering — the read that
+      // seeds also returns what it seeded.
+      if (categories.length === 0) {
+        categories.push({
+          id: CATEGORY_ID,
+          name: 'Groceries',
+          direction: 'expense',
+          color: '#445566',
+          createdAt: NOW,
+          updatedAt: NOW,
+        });
+        version += 1;
+      }
+      return { categories: [...categories] };
+    });
+
+    const store: PortfolioStore = {
+      ...apiPortfolioStore,
+      listPortfolios: vi.fn(async () => ({
+        portfolios: [
+          {
+            id: PORTFOLIO_ID,
+            name: 'Main',
+            visibility: 'private' as const,
+            sortOrder: 0,
+            isDefault: true,
+            defaultPayFromCash: false,
+            archivedAt: null,
+          },
+        ],
+      })),
+      listTransactions: vi.fn(async () => ({ items: [], nextCursor: null })),
+      // Snapshots the ledger at call time — before the tax read appends to it,
+      // which is the whole point.
+      getCashMovements: vi.fn(async () => ({
+        balanceEur: 100,
+        sources: [
+          {
+            id: SOURCE_ID,
+            name: 'Main',
+            type: 'cash' as const,
+            isMain: true,
+            archivedAt: null,
+            balanceEur: 100,
+            createdAt: NOW,
+          },
+        ],
+        movements: [...ledger],
+      })),
+      getPortfolioTaxSettings: vi.fn(async () => ({
+        effective: { mode: 'none' as const, country: null },
+        override: null,
+        userDefault: { mode: 'none' as const, country: null },
+        source: 'system' as const,
+      })),
+      getTaxSettings: vi.fn(async () => ({ mode: 'none' as const, country: null })),
+      listCustomAssets: vi.fn(async () => ({ assets: [] })),
+      listStandingOrders: vi.fn(async () => ({ orders: [] })),
+    };
+
+    let idSequence = 0;
+    const capture = await captureNormalVault({
+      userId: USER_ID,
+      deviceId: DEVICE_ID,
+      store,
+      now: () => NOW,
+      id: () => `018f0000-0000-7000-8000-f${String(++idSequence).padStart(11, '0')}`,
+    });
+
+    // Completeness first, because it is the assertion a green enable cannot
+    // make: the correction the capture's own tax read posted rides in the
+    // shipped document.
+    expect(
+      (capture.document.entities.cashMovement ?? []).map((entity) => entity.id).sort(),
+    ).toEqual([CORRECTION_ID, DEPOSIT_ID].sort());
+    expect(
+      (capture.document.entities.cashMovement ?? []).find((e) => e.id === CORRECTION_ID)?.data,
+    ).toMatchObject({ kind: 'tax_refund', amountEur: '247.5', taxYear: 2026 });
+    expect((capture.document.entities.expenseCategory ?? []).map((entity) => entity.id)).toEqual([
+      CATEGORY_ID,
+    ]);
+    // The token handed to the commit is the settled one, and it is the one the
+    // accepted document was built under — not the pre-seed token.
+    expect(capture.normalDataRevision).toBe(`${REVISION}-2`);
+    // Exactly two passes: the second reads state its own first pass settled.
+    expect(vi.mocked(getTaxYearReports)).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(getParanoidNormalRevision)).toHaveBeenCalledTimes(3);
+  });
+
+  it('refuses to hand over a document when the account never settles', async () => {
+    // An account something else keeps writing to. The capture must not ship the
+    // stale document with the newer token (the CAS would pass over rows the
+    // document never carried) nor the newer document with the older token (the
+    // server refuses, after the user redid the whole encrypt/write/verify pass).
+    // It gives up, with its own error type so the wizard can name the cause.
+    let version = 0;
+    vi.mocked(getParanoidNormalRevision).mockImplementation(async () => ({
+      revision: `${REVISION}-${version++}`,
+    }));
+    const store: PortfolioStore = {
+      ...apiPortfolioStore,
+      listPortfolios: vi.fn(async () => ({ portfolios: [] })),
+      listCustomAssets: vi.fn(async () => ({ assets: [] })),
+      getTaxSettings: vi.fn(async () => ({ mode: 'none' as const, country: null })),
+      listStandingOrders: vi.fn(async () => ({ orders: [] })),
+    };
+
+    await expect(
+      captureNormalVault({ userId: USER_ID, deviceId: DEVICE_ID, store, now: () => NOW }),
+    ).rejects.toBeInstanceOf(VaultCaptureUnstableError);
+    // Bounded: it does not spin forever against a busy account.
+    expect(vi.mocked(getParanoidNormalRevision)).toHaveBeenCalledTimes(
+      CAPTURE_STABILITY_ATTEMPTS + 1,
+    );
   });
 
   it('emits a restorable custom-asset identity and keeps market snapshots client-only', async () => {

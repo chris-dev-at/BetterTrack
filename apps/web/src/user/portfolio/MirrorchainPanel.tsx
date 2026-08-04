@@ -34,6 +34,7 @@ import {
 import { listFriends } from '../../lib/socialApi';
 import { useAuth } from '../AuthContext';
 import { Avatar } from '../components/Avatar';
+import { AsyncReadState } from '../components/AsyncReadState';
 import { Dialog } from '../components/Dialog';
 import { Alert, Button, cx } from '../components/ui';
 import { formatDate } from '../../lib/format';
@@ -516,11 +517,15 @@ export function InviteDialog({
           placeholder={t('mirrorchain.invite.searchPlaceholder')}
           className="w-full rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm text-neutral-100 placeholder-neutral-400 focus:border-sky-400 focus:outline-none"
         />
-        {friendsQuery.isLoading ? (
-          <p className="text-sm text-neutral-400">{t('common.loading')}</p>
-        ) : friends.length === 0 ? (
+        <AsyncReadState
+          loading={friendsQuery.isLoading}
+          error={friendsQuery.error}
+          errorLabel={t('mirrorchain.invites.loadError')}
+          onRetry={() => void friendsQuery.refetch()}
+        />
+        {!friendsQuery.isLoading && !friendsQuery.error && friends.length === 0 ? (
           <p className="text-sm text-neutral-400">{t('mirrorchain.invite.empty')}</p>
-        ) : (
+        ) : !friendsQuery.isLoading && !friendsQuery.error ? (
           <ul
             aria-label={t('mirrorchain.inviteListAria')}
             className="max-h-72 divide-y divide-neutral-800 overflow-y-auto rounded-md border border-neutral-800"
@@ -550,7 +555,7 @@ export function InviteDialog({
               </li>
             ))}
           </ul>
-        )}
+        ) : null}
         {invite.isError ? <Alert tone="error">{inviteErrorMessage(invite.error, t)}</Alert> : null}
       </div>
     </Dialog>

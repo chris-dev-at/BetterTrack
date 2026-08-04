@@ -1,5 +1,5 @@
 import { randomUUID as nodeRandomUUID } from 'node:crypto';
-import { chmod, lstat, mkdir, open, readFile, rename, rm, unlink } from 'node:fs/promises';
+import { chmod, lstat, mkdir, open, readFile, rename, rm, stat, unlink } from 'node:fs/promises';
 import { isAbsolute, relative, resolve } from 'node:path';
 
 export const CLAUDE_FACTORY_ENV_PROFILE = 'factory-env';
@@ -91,6 +91,30 @@ function privateChild(root, ...segments) {
   if (!rel || rel === '..' || rel.startsWith('../') || isAbsolute(rel))
     throw storeError('INVALID_PATH', 'The credential storage path is invalid.');
   return candidate;
+}
+
+// The configured auth root is operator configuration, not attacker-controlled
+// content, and the deploy worktree deliberately reaches the vault through a
+// symlink into the repo. Condemning that symlink took the whole credential
+// subsystem dark — every profile vanished from the dashboard and every named
+// account fell back to unusable — for a link the operator put there on purpose.
+// Resolve the root instead. The no-symlink guard still covers the vault and
+// profile directories underneath, which is where a swapped target would
+// actually redirect credential material.
+async function ensureRootDirectory(path) {
+  try {
+    const existing = await stat(path);
+    if (!existing.isDirectory())
+      throw storeError('UNSAFE_STORAGE', 'The credential storage directory is unsafe.');
+  } catch (error) {
+    if (error instanceof ClaudeCredentialStoreError) throw error;
+    if (error?.code !== 'ENOENT') throw error;
+    await mkdir(path, { recursive: true, mode: 0o700 });
+    const created = await stat(path);
+    if (!created.isDirectory())
+      throw storeError('UNSAFE_STORAGE', 'The credential storage directory is unsafe.');
+  }
+  await chmod(path, 0o700);
 }
 
 async function ensurePrivateDirectory(path) {
@@ -478,7 +502,7 @@ export function createClaudeCredentialStore(options = {}) {
   }
 
   async function initialize() {
-    await ensurePrivateDirectory(root);
+    await ensureRootDirectory(root);
     await ensurePrivateDirectory(vaultRoot);
     await ensurePrivateDirectory(profilesRoot);
   }

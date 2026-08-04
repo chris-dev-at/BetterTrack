@@ -38,6 +38,7 @@ import { getAudience, listFriends, setAudience } from '../../lib/socialApi';
 import { formatDateTime } from '../../lib/format';
 import { useT, type TranslateFn } from '../../i18n';
 import { EmptyState } from '../../ui';
+import { AsyncReadState, type AsyncRead } from '../components/AsyncReadState';
 import { Badge, Button, SkeletonBlock } from '../../ui/origin';
 import { useAuth } from '../AuthContext';
 import { Avatar } from '../components/Avatar';
@@ -448,20 +449,24 @@ function NewChatDialog({
   onClose: () => void;
 }) {
   const t = useT();
-  const { data, isLoading } = useQuery({
+  const query = useQuery({
     queryKey: ['social', 'friends'],
     queryFn: ({ signal }) => listFriends(signal),
   });
-  const friends = data?.friends ?? [];
+  const friends = query.data?.friends ?? [];
   return (
     <Dialog title={t('social.chat.new')} onClose={onClose}>
       <div className="flex flex-col gap-3">
         <p className="bt-soft">{t('social.chat.newPrompt')}</p>
-        {isLoading ? (
-          <SkeletonBlock height={64} />
-        ) : friends.length === 0 ? (
+        <AsyncReadState
+          loading={query.isLoading}
+          error={query.error}
+          errorLabel={t('social.chat.error')}
+          onRetry={() => void query.refetch()}
+        />
+        {!query.isLoading && !query.error && friends.length === 0 ? (
           <p className="bt-meta">{t('social.chat.noFriends')}</p>
-        ) : (
+        ) : !query.isLoading && !query.error ? (
           <ul className="flex max-h-80 flex-col gap-1 overflow-y-auto">
             {friends.map((f) => (
               <li key={f.user.id}>
@@ -480,7 +485,7 @@ function NewChatDialog({
               </li>
             ))}
           </ul>
-        )}
+        ) : null}
       </div>
     </Dialog>
   );
@@ -602,6 +607,18 @@ function SharePickerDialog({
   const conglomerates = conglomeratesQuery.data?.conglomerates ?? [];
   const ideas = ideasQuery.data?.ideas ?? [];
   const empty = portfolios.length === 0 && conglomerates.length === 0 && ideas.length === 0;
+  const loading = portfoliosQuery.isLoading || conglomeratesQuery.isLoading || ideasQuery.isLoading;
+  // The three attachable sources fail independently: each is classified on its
+  // own, so a recoverable 5xx keeps its Retry even next to a confirmed
+  // rejection, and Retry re-runs only the reads that can actually recover.
+  const attachableReads: AsyncRead[] = [
+    { error: portfoliosQuery.error, refetch: () => portfoliosQuery.refetch() },
+    { error: conglomeratesQuery.error, refetch: () => conglomeratesQuery.refetch() },
+    { error: ideasQuery.error, refetch: () => ideasQuery.refetch() },
+  ];
+  // Any failure at all still suppresses the list: a partial set would read as
+  // "this is everything you can attach" when it is not.
+  const failed = attachableReads.some((read) => read.error != null);
 
   function row(item: Attachable) {
     return (
@@ -630,17 +647,20 @@ function SharePickerDialog({
     <Dialog title={t('social.chat.share.title')} onClose={onClose}>
       <div className="flex flex-col gap-3">
         <p className="bt-meta">{t('social.chat.share.disclaimer')}</p>
-        {portfoliosQuery.isLoading || conglomeratesQuery.isLoading || ideasQuery.isLoading ? (
-          <SkeletonBlock height={64} />
-        ) : empty ? (
+        <AsyncReadState
+          loading={loading}
+          reads={attachableReads}
+          errorLabel={t('social.chat.error')}
+        />
+        {!loading && !failed && empty ? (
           <p className="bt-meta">{t('social.chat.share.empty')}</p>
-        ) : (
+        ) : !loading && !failed ? (
           <ul className="flex max-h-80 flex-col overflow-y-auto">
             {portfolios.map((p) => row({ kind: 'portfolio', subjectId: p.id, name: p.name }))}
             {conglomerates.map((c) => row({ kind: 'conglomerate', subjectId: c.id, name: c.name }))}
             {ideas.map((i) => row({ kind: 'idea', subjectId: i.id, name: i.name }))}
           </ul>
-        )}
+        ) : null}
       </div>
     </Dialog>
   );

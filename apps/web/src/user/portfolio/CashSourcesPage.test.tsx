@@ -128,6 +128,14 @@ beforeEach(() => {
 });
 
 describe('CashSourcesPage', () => {
+  test('renders a cash-history read failure without hiding the source ledger', async () => {
+    vi.mocked(portfolioApi.getCashMovements).mockRejectedValue(new Error('history unavailable'));
+    renderPage();
+
+    expect(await screen.findByText("This information isn't available.")).toBeInTheDocument();
+    expect(screen.getAllByText('Main').length).toBeGreaterThan(0);
+  });
+
   test('lists every source with balance, type label and liquidity share', async () => {
     renderPage();
     // Roll-up sums all active sources (5000 + 1000).

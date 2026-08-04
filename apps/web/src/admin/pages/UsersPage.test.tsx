@@ -100,6 +100,25 @@ test('renders the slimmed users table with essential columns and stats', async (
   expect(await screen.findByText('Pending invites')).toBeInTheDocument();
 });
 
+test('renders stats read failure with recovery without hiding the users table', async () => {
+  vi.mocked(api.getStats).mockRejectedValue(new ApiError(503, 'UNAVAILABLE', 'stats unavailable'));
+  renderPage();
+
+  expect(await screen.findByText('Something went wrong. Please try again.')).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Try again' })).toBeInTheDocument();
+  expect(await screen.findByText('jane@bettertrack.test')).toBeInTheDocument();
+});
+
+test('renders a forbidden stats read as unavailable without retry', async () => {
+  vi.mocked(api.getStats).mockRejectedValue(new ApiError(403, 'FORBIDDEN', 'secret'));
+  renderPage();
+
+  expect(await screen.findByText("This information isn't available.")).toBeInTheDocument();
+  expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
+  expect(screen.queryByText('secret')).not.toBeInTheDocument();
+  expect(await screen.findByText('jane@bettertrack.test')).toBeInTheDocument();
+});
+
 test('the user link is keyboard-operable without changing the selection', async () => {
   const user = userEvent.setup();
   renderPersistentPage();

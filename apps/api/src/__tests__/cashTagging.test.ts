@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import {
   CASH_SYSTEM_TAGS,
   cashBudgetListResponseSchema,
+  cashBudgetRawListResponseSchema,
   cashBudgetResponseSchema,
   cashMonthlySummaryResponseSchema,
   cashMovementTagsResponseSchema,
@@ -603,6 +604,53 @@ describe('cash budgets', () => {
     // budgets migrated into.
     expect(row.recurring).toBe(true);
     expect(row.remaining).toBe(-20);
+  });
+
+  it('lists every raw budget across periods for the paranoid enable capture', async () => {
+    // The per-month progress list can only surface the budgets that apply to the
+    // queried month; `/cash/budgets/all` is the raw enumeration the enable
+    // migration reads so a month-specific budget for another month is carried
+    // into the vault instead of being purged with no restore path (§1/§7).
+    const agent = await newUserAgent('rawbud@bettertrack.test', 'rawbuduser');
+    const portfolioId = await defaultPortfolioId(agent);
+    const food = await createTag(agent, 'Food');
+
+    const recurring = await agent
+      .post('/api/v1/cash/budgets')
+      .set(...XRW)
+      .send({ portfolioId, tagId: food.id, amount: 100 });
+    expect(recurring.status).toBe(201);
+    const december = await agent
+      .post('/api/v1/cash/budgets')
+      .set(...XRW)
+      .send({ portfolioId, tagId: food.id, period: '2026-12', amount: 250 });
+    expect(december.status).toBe(201);
+
+    // The current-month progress endpoint cannot see the December row at all.
+    const monthList = await agent.get(`/api/v1/cash/budgets?portfolioId=${portfolioId}`);
+    expect(cashBudgetListResponseSchema.parse(monthList.body).budgets).toHaveLength(1);
+
+    const all = await agent.get('/api/v1/cash/budgets/all');
+    expect(all.status).toBe(200);
+    const parsed = cashBudgetRawListResponseSchema.parse(all.body);
+    expect(parsed.budgets.map((budget) => `${budget.period}:${budget.amount}`).sort()).toEqual(
+      ['2026-12:250', 'null:100'].sort(),
+    );
+  });
+
+  it('scopes the raw budgets list to the owner', async () => {
+    const owner = await newUserAgent('rawown@bettertrack.test', 'rawownuser');
+    const stranger = await newUserAgent('rawstr@bettertrack.test', 'rawstruser');
+    const portfolioId = await defaultPortfolioId(owner);
+    const food = await createTag(owner, 'Food');
+    await owner
+      .post('/api/v1/cash/budgets')
+      .set(...XRW)
+      .send({ portfolioId, tagId: food.id, amount: 100 });
+
+    const strangerView = await stranger.get('/api/v1/cash/budgets/all');
+    expect(strangerView.status).toBe(200);
+    expect(cashBudgetRawListResponseSchema.parse(strangerView.body).budgets).toEqual([]);
   });
 
   it('counts only outflows, so a refund carrying the tag creates no headroom', async () => {

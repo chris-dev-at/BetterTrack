@@ -1,13 +1,14 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { localizedMessage, useI18n } from '../i18n';
-import { ApiError } from '../lib/apiClient';
+import { ApiError, classifyApiError } from '../lib/apiClient';
 import { isAdminTwoFactorSetupRequired, useAuth } from './AuthContext';
 
 interface ResourceState<T> {
   data: T | null;
   loading: boolean;
   error: string | null;
+  retryable: boolean;
 }
 
 interface Resource<T> extends ResourceState<T> {
@@ -34,6 +35,7 @@ export function useResource<T>(
     data: null,
     loading: true,
     error: null,
+    retryable: false,
   });
   const [nonce, setNonce] = useState(0);
 
@@ -45,11 +47,13 @@ export function useResource<T>(
 
   useEffect(() => {
     const controller = new AbortController();
-    setState((s) => ({ ...s, loading: true, error: null }));
+    setState((s) => ({ ...s, loading: true, error: null, retryable: false }));
     void (async () => {
       try {
         const data = await fetcher(controller.signal);
-        if (!controller.signal.aborted) setState({ data, loading: false, error: null });
+        if (!controller.signal.aborted) {
+          setState({ data, loading: false, error: null, retryable: false });
+        }
       } catch (err) {
         if (controller.signal.aborted) return;
         if (err instanceof DOMException && err.name === 'AbortError') return;
@@ -66,7 +70,12 @@ export function useResource<T>(
         // every displayable failure uses catalog copy so DE never leaks an
         // English transport or 5xx message.
         const message = localizedMessage(localeRef.current, 'common.genericError');
-        setState({ data: null, loading: false, error: message });
+        setState({
+          data: null,
+          loading: false,
+          error: message,
+          retryable: classifyApiError(err) === 'outage',
+        });
       }
     })();
     return () => controller.abort();

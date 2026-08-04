@@ -265,6 +265,7 @@
     "friends": "Freunde",
     "comingSoon": "Demnächst",
     "genericError": "Etwas ist schiefgelaufen. Bitte versuche es erneut.",
+    "unavailable": "Diese Information ist nicht verfügbar.",
     "continue": "Weiter",
     "dismiss": "Schließen",
     "errorTitle": "Etwas ist schiefgelaufen.",
@@ -1378,6 +1379,7 @@
       "newCustomButton": "+ Individuelle Anlage",
       "recordButton": "+ Transaktion",
       "loadError": "Dein Portfolio konnte nicht geladen werden. Bitte lade die Seite neu.",
+      "detailsLoadError": "Einige Portfolio-Details konnten nicht geladen werden. Bitte versuche es erneut.",
       "emptyState": {
         "title": "Dein Portfolio ist leer",
         "description": "Erfasse deine erste Transaktion oder füge eine individuelle Anlage hinzu, um zu verfolgen, was du besitzt.",
@@ -1473,6 +1475,7 @@
         "performanceMode": "Performance %",
         "analyticsLink": "Analyse →",
         "perfHint": "Ein- und Auszahlungen werden neutralisiert (zeitgewichtete Rendite) — die Kurve bewegt sich nur, wenn sich deine Bestände bewegen.",
+        "loadError": "Der Portfolio-Verlauf konnte nicht geladen werden. Bitte versuche es erneut.",
         "ariaLabelPerformance": "Portfolio-Performance im Zeitverlauf",
         "ariaLabelValue": "Portfolio-Wert im Zeitverlauf"
       }
@@ -1961,7 +1964,9 @@
     },
     "recategorize": {
       "message": "Einige individuelle Anlagen brauchen eine Kategorie. Wir haben sie auf „Sonstiges“ verschoben — öffne eine und wähle eine passende Kategorie, damit sie korrekt gruppiert wird.",
-      "dismiss": "Ausblenden"
+      "dismiss": "Ausblenden",
+      "loading": "Kategorien individueller Anlagen werden geprüft…",
+      "loadError": "Der Kategoriestatus individueller Anlagen konnte nicht geprüft werden. Bitte versuche es erneut."
     },
     "dividends": {
       "ariaLabel": "Dividendeneinkommen und Kalender",
@@ -1988,6 +1993,7 @@
       "uploadCta": "Vorschau erstellen",
       "uploading": "Wird hochgeladen…",
       "uploadFailed": "Upload fehlgeschlagen.",
+      "referenceDataLoadError": "Die für den Import benötigten Auswahlmöglichkeiten konnten nicht geladen werden. Bitte versuche es erneut.",
       "tooManyInstruments": "Diese Datei enthält mehr als {{max}} verschiedene Instrumente — teile sie in Dateien mit höchstens {{max}} Instrumenten auf.",
       "previewTitle": "Vorschau: {{filename}}",
       "previewEmptyTitle": "Keine importierbaren Zeilen",
@@ -2738,6 +2744,8 @@
       "backToSearch": "← Zurück zur Suche",
       "backShort": "← Suche",
       "loadError": "Die Anlagedetails konnten nicht geladen werden. Die Anlage existiert möglicherweise nicht oder der Server ist vorübergehend nicht erreichbar.",
+      "quoteLoadError": "Der aktuelle Kurs konnte nicht geladen werden. Bitte versuche es erneut.",
+      "chartLoadError": "Der Kursverlauf konnte nicht geladen werden. Bitte versuche es erneut.",
       "disclaimer": "Marktdaten stammen aus einer inoffiziellen Quelle und können verzögert oder ungenau sein."
     },
     "live": {
@@ -2796,6 +2804,8 @@
       "failed": "Die Suche ist fehlgeschlagen. Bitte versuche es erneut.",
       "noResultsTitle": "Keine Treffer",
       "noResultsDescription": "Nichts passt zu „{{query}}“. Versuche ein anderes Symbol oder einen anderen Namen.",
+      "noPortfolioTitle": "Erstelle zuerst ein Portfolio",
+      "noPortfolioDescription": "Du brauchst ein Portfolio, bevor du einen Kauf für diese Anlage erfassen kannst.",
       "searchingMore": "Der Markt wird nach weiteren Ergebnissen durchsucht…",
       "resultsAria": "Suchergebnisse",
       "openAria": "{{symbol}} öffnen — {{name}}",
@@ -3501,6 +3511,8 @@
         "exportInFlight": "Warte, bis der Kontoexport abgeschlossen ist, und aktiviere dann den paranoiden Modus.",
         "mediaNotReady": "Die gewählte verschlüsselte Kopie war für den letzten Wechsel nicht bereit. Prüfe die Speicherorte und versuche es erneut.",
         "transitionConflict": "Ein anderer Datenschutzwechsel wird noch abgeschlossen. Warte kurz und versuche es erneut.",
+        "normalDataChanged": "Dein Konto hat sich geändert, während die verschlüsselte Kopie vorbereitet wurde, deshalb hat BetterTrack vor dem Löschen abgebrochen. Es ging nichts verloren — starte den Wechsel erneut, damit die neuesten Daten enthalten sind.",
+        "captureUnstable": "Dein Konto hat sich während des Sammelns immer wieder geändert, deshalb konnte keine vollständige Kopie erstellt werden und es wurde nichts geändert. Schließe BetterTrack in anderen Tabs und auf anderen Geräten und starte den Wechsel dann erneut.",
         "unknown": "Der paranoide Modus konnte nicht aktiviert werden. Dein normales Konto ist unverändert."
       }
     },

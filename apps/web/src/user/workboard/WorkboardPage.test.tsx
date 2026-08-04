@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
@@ -34,6 +34,7 @@ import {
   updateWatchlistSharing,
 } from '../../lib/workboardApi';
 import { getAssetHistory, getAssetQuote } from '../../lib/assetApi';
+import { ApiError } from '../../lib/apiClient';
 import { getEarningsCalendar } from '../../lib/marketIntelApi';
 import { WorkboardPage } from './WorkboardPage';
 
@@ -104,14 +105,15 @@ function makeQueryClient() {
   });
 }
 
-function renderPage() {
-  return render(
-    <QueryClientProvider client={makeQueryClient()}>
+function renderPage(client = makeQueryClient()) {
+  const view = render(
+    <QueryClientProvider client={client}>
       <MemoryRouter>
         <WorkboardPage />
       </MemoryRouter>
     </QueryClientProvider>,
   );
+  return { ...view, client };
 }
 
 // ─── Setup ────────────────────────────────────────────────────────────────────
@@ -204,6 +206,46 @@ describe('WorkboardPage — empty state', () => {
 // ─── Item rendering ───────────────────────────────────────────────────────────
 
 describe('WorkboardPage — item rendering', () => {
+  test('renders terminal failures without retry and offers retry only for an outage', async () => {
+    vi.mocked(listWorkboard).mockResolvedValue({ items: [ITEM_A] });
+    vi.mocked(getAssetQuote).mockRejectedValue(new ApiError(503, 'UNAVAILABLE', 'offline'));
+    vi.mocked(getAssetHistory).mockRejectedValue(new ApiError(404, 'NOT_FOUND', 'missing'));
+    vi.mocked(getWatchlistSharing).mockRejectedValue(new ApiError(403, 'FORBIDDEN', 'forbidden'));
+    renderPage();
+
+    await waitFor(() =>
+      expect(screen.getAllByText("This information isn't available.")).toHaveLength(2),
+    );
+    expect(screen.getByText('Something went wrong. Please try again.')).toBeInTheDocument();
+    expect(screen.getAllByRole('button', { name: 'Try again' })).toHaveLength(1);
+  });
+
+  test('keeps cached quote and sparkline visible after a failed background refetch', async () => {
+    vi.mocked(listWorkboard).mockResolvedValue({ items: [ITEM_A] });
+    const { client } = renderPage();
+
+    const row = (await screen.findByText('AAPL')).closest('tr');
+    expect(row).not.toBeNull();
+    expect(
+      await within(row!).findByRole('img', { name: '1-month trend for AAPL' }),
+    ).toBeInTheDocument();
+    expect(await within(row!).findByText(/150/)).toBeInTheDocument();
+
+    vi.mocked(getAssetQuote).mockRejectedValue(new ApiError(503, 'UNAVAILABLE', 'quote offline'));
+    vi.mocked(getAssetHistory).mockRejectedValue(
+      new ApiError(503, 'UNAVAILABLE', 'history offline'),
+    );
+    await act(async () => {
+      await client.refetchQueries({ queryKey: ['asset', ITEM_A.assetId], type: 'active' });
+    });
+
+    expect(
+      await within(row!).findByRole('img', { name: '1-month trend for AAPL' }),
+    ).toBeInTheDocument();
+    expect(within(row!).getByText(/150/)).toBeInTheDocument();
+    expect(await within(row!).findAllByRole('button', { name: 'Try again' })).toHaveLength(2);
+  });
+
   test('shows asset symbols and names for all items', async () => {
     vi.mocked(listWorkboard).mockResolvedValue({ items: [ITEM_A, ITEM_B] });
     renderPage();

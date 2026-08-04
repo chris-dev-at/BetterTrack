@@ -25,6 +25,7 @@ import {
 import { Skeleton } from '../../../ui';
 import { Button, Field, Icon, Input, Select } from '../../../ui/origin';
 import { Avatar } from '../../components/Avatar';
+import { AsyncReadState } from '../../components/AsyncReadState';
 import { ProfileIconSvg } from '../../components/profileIcons';
 import { Alert } from '../../components/ui';
 import { vaultMoneyErrorKey } from '../../vault/engine/errorCopy';
@@ -179,9 +180,12 @@ function BaseCurrencyRow() {
 
   return (
     <Row hint={t('settings.baseCurrency.hint')} label={t('settings.baseCurrency.title')}>
-      {query.isPending ? (
-        <Skeleton height="h-7" width="w-32" />
-      ) : (
+      <AsyncReadState
+        loading={query.isPending}
+        error={query.error}
+        onRetry={() => void query.refetch()}
+      />
+      {!query.isPending && !query.error ? (
         <Select
           aria-label={t('settings.baseCurrency.label')}
           disabled={mutation.isPending}
@@ -195,7 +199,7 @@ function BaseCurrencyRow() {
             </option>
           ))}
         </Select>
-      )}
+      ) : null}
       {error ? (
         <span className="bt-field__error">{t('settings.baseCurrency.saveError')}</span>
       ) : null}
@@ -324,6 +328,12 @@ function ExportRow() {
   return (
     <Row hint={t('settings.export.hint')} label={t('settings.export.title')} stack>
       {error ? <Alert tone="error">{error}</Alert> : null}
+
+      <AsyncReadState
+        loading={status.isLoading}
+        error={status.error}
+        onRetry={() => void status.refetch()}
+      />
 
       {isReady && tokenForJob ? (
         <div className="flex flex-wrap items-center gap-3">

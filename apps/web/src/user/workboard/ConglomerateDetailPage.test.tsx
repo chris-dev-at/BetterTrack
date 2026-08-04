@@ -339,7 +339,7 @@ describe('ConglomerateDetailPage', () => {
   test('retries a failed resolved-weight read in place', async () => {
     vi.mocked(getConglomerate).mockResolvedValue(NESTED_DETAIL);
     vi.mocked(getResolvedConglomerate)
-      .mockRejectedValueOnce(new Error('offline'))
+      .mockRejectedValueOnce(new ApiError(503, 'UNAVAILABLE', 'offline'))
       .mockResolvedValueOnce(NESTED_RESOLVED);
     const user = userEvent.setup();
     renderPage();

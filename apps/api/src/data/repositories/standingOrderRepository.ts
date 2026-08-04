@@ -69,6 +69,14 @@ export interface NewStandingOrderInput {
   endDate: string | null;
 }
 
+/** One row of the exactly-once run ledger (`standing_order_runs`). */
+export interface StandingOrderRunRecord {
+  id: string;
+  standingOrderId: string;
+  periodKey: string;
+  bookedAt: Date;
+}
+
 /** The mutable fields a PATCH may touch (`undefined` = leave unchanged). */
 export interface StandingOrderPatch {
   amount?: number;
@@ -240,6 +248,31 @@ export function createStandingOrderRepository(db: Database) {
         .where(and(eq(standingOrders.id, id), eq(standingOrders.userId, userId)))
         .returning({ id: standingOrders.id });
       return rows.length > 0;
+    },
+
+    /**
+     * Every run-ledger row of the caller's orders, oldest first.
+     *
+     * The ledger — not the order's `lastPeriodKey` watermark — is the
+     * authoritative exactly-once record: {@link claimPeriod} writes a row BEFORE
+     * booking, and a booking (or `markBooked`) failure afterwards deliberately
+     * leaves that claim behind as an un-retried tombstone. Anything that has to
+     * reproduce this account's exactly-once state elsewhere — the paranoid-mode
+     * capture — must read these rows, because the watermark cannot express them.
+     */
+    async listRunsForUser(userId: string): Promise<StandingOrderRunRecord[]> {
+      const rows = await db
+        .select({
+          id: standingOrderRuns.id,
+          standingOrderId: standingOrderRuns.standingOrderId,
+          periodKey: standingOrderRuns.periodKey,
+          bookedAt: standingOrderRuns.bookedAt,
+        })
+        .from(standingOrderRuns)
+        .innerJoin(standingOrders, eq(standingOrders.id, standingOrderRuns.standingOrderId))
+        .where(eq(standingOrders.userId, userId))
+        .orderBy(asc(standingOrderRuns.bookedAt), asc(standingOrderRuns.id));
+      return rows;
     },
 
     /**

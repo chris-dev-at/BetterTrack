@@ -360,6 +360,17 @@ describe('NotificationsPanel', () => {
 });
 
 describe('NotificationsPanel — Telegram & Discord channels (V4-P10)', () => {
+  test('renders channel setup read failures when the global switch exposes them', async () => {
+    vi.mocked(getNotificationSettings).mockResolvedValue(
+      makeSettings({ channelsConfigurable: { telegram: true, discord: true } }),
+    );
+    vi.mocked(getTelegramSettings).mockRejectedValue(new Error('telegram unavailable'));
+    vi.mocked(getDiscordSettings).mockRejectedValue(new Error('discord unavailable'));
+    renderPanel();
+
+    expect(await screen.findByText("This information isn't available.")).toBeInTheDocument();
+  });
+
   test('matrix columns absent when both channels are unconfigured', async () => {
     // channels.telegram: false and channels.discord: false (the default fixture)
     renderPanel();

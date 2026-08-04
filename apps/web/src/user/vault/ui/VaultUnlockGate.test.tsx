@@ -54,6 +54,14 @@ beforeEach(() => {
 });
 
 describe('VaultUnlockGate', () => {
+  it('renders a 2FA-status read failure without hiding the password fallback', async () => {
+    vi.mocked(getTwoFactorStatus).mockRejectedValue(new Error('status unavailable'));
+    renderGate({ mediaSet: ['server'], onStartFresh: vi.fn(async () => undefined) });
+
+    expect(await screen.findByText("This information isn't available.")).toBeInTheDocument();
+    expect(screen.getByLabelText('Current account password')).toBeInTheDocument();
+  });
+
   it('tries trusted-device custody once, then authenticates Drive-only with the explicit choice', async () => {
     const user = userEvent.setup();
     renderGate({ mediaSet: ['drive'] });

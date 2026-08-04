@@ -1089,10 +1089,12 @@ describe('paranoid rehydration severed-fork provenance', () => {
 
     // A real Drive-only enable: no server ciphertext, and the identity map dies
     // with the copy. Nothing portfolio-derived is left behind to replace it.
+    const { revision } = await harness.ctx.paranoidTransitions.normalDataRevision(memberId);
     await harness.ctx.paranoidTransitions.enable(memberId, {
       mediaSet: ['drive'],
       vaultVersion: 1,
       driveAttestation: { verifiedRoundTrip: true, vaultVersion: 1 },
+      normalDataRevision: revision,
     });
     expect(
       await harness.db.select().from(mirrorRows).where(eq(mirrorRows.portfolioId, forkPortfolioId)),
