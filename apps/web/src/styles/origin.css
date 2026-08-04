@@ -1832,6 +1832,21 @@
     min-height: 44px;
   }
 
+  /* The menus belong to the persistent header chrome too. Keep every link,
+     button and field touchable after its popover opens; the element selector
+     also gives this enough specificity to beat the switcher's later row rules. */
+  .bt-topbar .bt-popover :is(a, button, input, select, textarea) {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  /* Inline links ignore min dimensions; notification-menu footer links use
+     this compact treatment instead of the flex-based menu-item rows above. */
+  .bt-topbar .bt-popover a.bt-link {
+    display: inline-flex;
+    align-items: center;
+  }
+
   .bt-topbar .bt-rail__brand {
     justify-content: center;
     padding: 0;

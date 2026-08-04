@@ -1,4 +1,4 @@
-import { expect, request as newRequestContext, test } from '@playwright/test';
+import { expect, request as newRequestContext, test, type Locator } from '@playwright/test';
 
 import { loginAsAdmin } from './support/adminApi';
 import { API_BASE_URL } from './support/config';
@@ -35,6 +35,25 @@ const PRIMARY_DESTINATIONS = [
   '/assets',
   '/people',
 ] as const;
+
+const INTERACTIVE_TARGETS =
+  'a:visible, button:visible, input:visible, select:visible, textarea:visible';
+
+async function expectTouchTargetFloor(targets: Locator, context: string) {
+  const undersizedTargets = await targets.evaluateAll((elements) =>
+    elements
+      .map((element) => {
+        const box = element.getBoundingClientRect();
+        return {
+          label: element.getAttribute('aria-label') ?? element.textContent,
+          ...box.toJSON(),
+        };
+      })
+      .filter((target) => target.width < 44 || target.height < 44),
+  );
+
+  expect(undersizedTargets, `${context} has undersized chrome targets`).toEqual([]);
+}
 
 test('shell chrome fits the viewport and keeps every main area reachable', async ({
   context,
@@ -109,20 +128,60 @@ test('shell chrome fits the viewport and keeps every main area reachable', async
     ).toBeLessThanOrEqual(layout.clientWidth + 1);
 
     if (mobile) {
-      const undersizedTargets = await page
-        .locator('.bt-topbar a:visible, .bt-topbar button:visible, .bt-bottombar a:visible')
-        .evaluateAll((targets) =>
-          targets
-            .map((target) => {
-              const box = target.getBoundingClientRect();
-              return {
-                label: target.getAttribute('aria-label') ?? target.textContent,
-                ...box.toJSON(),
-              };
-            })
-            .filter((target) => target.width < 44 || target.height < 44),
-        );
-      expect(undersizedTargets, `${route} has undersized chrome targets`).toEqual([]);
+      await expectTouchTargetFloor(
+        page.locator(
+          '.bt-topbar a:visible, .bt-topbar button:visible, .bt-topbar input:visible, .bt-topbar select:visible, .bt-topbar textarea:visible, .bt-bottombar a:visible',
+        ),
+        route,
+      );
+    }
+  }
+
+  if (mobile) {
+    // Closed-popover audits only prove the persistent triggers. Open every
+    // shell-owned popover at phone width so their destinations, options and
+    // footer actions are held to the same 44px floor.
+    await page.goto('/portfolio');
+    await expect(page.getByRole('button', { name: 'Account menu' })).toBeVisible({
+      timeout: 20_000,
+    });
+
+    const portfolioTrigger = page.getByRole('button', { name: 'Switch portfolio' });
+    await portfolioTrigger.click();
+    const portfolioSwitcher = page.locator('.bt-portfolio-menu');
+    await expect(portfolioSwitcher).toBeVisible();
+    await expect(portfolioSwitcher.locator('.bt-portfolio-option').first()).toBeVisible();
+    await expectTouchTargetFloor(
+      portfolioSwitcher.locator(INTERACTIVE_TARGETS),
+      'portfolio switcher',
+    );
+    await page.keyboard.press('Escape');
+    await expect(portfolioSwitcher).toHaveCount(0);
+
+    const popovers = [
+      {
+        label: 'Create menu',
+        trigger: page.getByRole('button', { name: 'Create', exact: true }),
+        panel: page.getByRole('menu', { name: 'Create' }),
+      },
+      {
+        label: 'notifications popover',
+        trigger: page.getByRole('button', { name: /^Notifications/ }),
+        panel: page.getByRole('group', { name: 'Notifications' }),
+      },
+      {
+        label: 'account menu',
+        trigger: page.getByRole('button', { name: 'Account menu' }),
+        panel: page.getByRole('menu', { name: 'Account' }),
+      },
+    ];
+
+    for (const popover of popovers) {
+      await popover.trigger.click();
+      await expect(popover.panel).toBeVisible();
+      await expectTouchTargetFloor(popover.panel.locator(INTERACTIVE_TARGETS), popover.label);
+      await page.keyboard.press('Escape');
+      await expect(popover.panel).toHaveCount(0);
     }
   }
 

@@ -101,5 +101,6 @@ describe('Origin phone chrome', () => {
     }
     expect(phoneCss).toContain('min-width: 44px');
     expect(phoneCss).toContain('min-height: 44px');
+    expect(phoneCss).toContain('.bt-topbar .bt-popover :is(a, button, input, select, textarea)');
   });
 });
