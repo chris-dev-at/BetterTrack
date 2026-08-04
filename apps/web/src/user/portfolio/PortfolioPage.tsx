@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { Time } from 'lightweight-charts';
@@ -1405,7 +1405,19 @@ export function PortfolioPage() {
   // thread its id through every scoped read/write. The active one is named by
   // the `?portfolio=` routing param the switcher sets (§13.2 V2-P8), falling
   // back to the default — so switching in the topbar re-scopes this whole page.
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  // Global create actions land on the overview because this is the surface
+  // that owns the transaction dialog. Consume the intent once so closing the
+  // dialog and pressing Back cannot immediately reopen it.
+  useEffect(() => {
+    if (searchParams.get('create') !== 'trade') return;
+    setTxnDialog({ kind: 'create' });
+    const next = new URLSearchParams(searchParams);
+    next.delete('create');
+    setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams]);
+
   const portfoliosQuery = useQuery({
     queryKey: ['portfolios'],
     queryFn: ({ signal }) => store.listPortfolios(signal),

@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
@@ -389,11 +389,21 @@ export function CashSourcesPage() {
   const phone = usePhoneShell();
   const store = usePortfolioStore();
   const queryClient = useQueryClient();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [showArchived, setShowArchived] = useState(false);
   const [dialog, setDialog] = useState<DialogState | null>(null);
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+
+  // The shell and command palette both advertise this destination as a create
+  // action. Open the real transfer flow, then consume the one-shot intent.
+  useEffect(() => {
+    if (searchParams.get('create') !== 'transfer') return;
+    setDialog({ kind: 'transfer' });
+    const next = new URLSearchParams(searchParams);
+    next.delete('create');
+    setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams]);
 
   const portfoliosQuery = useQuery({
     queryKey: ['portfolios'],

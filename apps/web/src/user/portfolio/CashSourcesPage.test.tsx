@@ -94,11 +94,11 @@ const TRANSFER_IN = movement({
 });
 const DEPOSIT = movement({ id: 'm-dep', kind: 'deposit', amountEur: 300, sourceId: 'src-main' });
 
-function renderPage() {
+function renderPage(initialPath = '/portfolio/cash/accounts') {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={client}>
-      <MemoryRouter>
+      <MemoryRouter initialEntries={[initialPath]}>
         <CashSourcesPage />
       </MemoryRouter>
     </QueryClientProvider>,
@@ -397,6 +397,14 @@ describe('CashSourcesPage', () => {
         }),
       ),
     );
+  });
+
+  test('honors the global transfer intent by opening the transfer dialog', async () => {
+    renderPage('/portfolio/cash/accounts?create=transfer');
+
+    expect(
+      await screen.findByRole('dialog', { name: 'Transfer between sources' }),
+    ).toBeInTheDocument();
   });
 
   test('set-balance shows the app-computed delta before recording the movement', async () => {

@@ -30,6 +30,23 @@ describe('COMMANDS registry', () => {
     );
     expect(wrong).toEqual([]);
   });
+
+  test('every advertised create command targets a working flow', () => {
+    expect(
+      COMMANDS.filter((command) => command.group === 'create').map((command) => [
+        command.labelKey,
+        command.to,
+      ]),
+    ).toEqual([
+      ['create.trade', '/portfolio?create=trade'],
+      ['create.transfer', '/portfolio/cash/accounts?create=transfer'],
+      ['create.blueprint', '/workbench/blueprints/new'],
+      ['create.watchlist', '/assets/watchlists?create=1'],
+      ['create.alert', '/workbench/alerts?create=1'],
+      ['create.idea', '/workbench/blueprints/new'],
+      ['create.portfolio', '/portfolios?create=1'],
+    ]);
+  });
 });
 
 describe('SUGGESTED_COMMANDS (the empty-query default state)', () => {

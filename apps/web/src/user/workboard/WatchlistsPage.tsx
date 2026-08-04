@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useSearchParams } from 'react-router-dom';
 
 import type { WatchlistSummary } from '@bettertrack/contracts';
 
@@ -26,8 +27,10 @@ import { useResolvedPrivacyMode } from '../vault/usePrivacyMode';
  */
 export function WatchlistsPage() {
   const t = useT();
+  const [searchParams, setSearchParams] = useSearchParams();
   const paranoid = useResolvedPrivacyMode() === 'paranoid';
   const queryClient = useQueryClient();
+  const createFormRef = useRef<HTMLFormElement>(null);
   const [name, setName] = useState('');
   const [nameError, setNameError] = useState<string | null>(null);
   const [renaming, setRenaming] = useState<WatchlistSummary | null>(null);
@@ -37,6 +40,17 @@ export function WatchlistsPage() {
     queryKey: WATCHLISTS_QUERY_KEY,
     queryFn: ({ signal }) => listWatchlists(signal),
   });
+
+  // Creation is intentionally an inline, immediately visible form on this
+  // compact page. The global intent starts that flow by moving focus to its
+  // name field after the list has loaded, then consumes the query flag.
+  useEffect(() => {
+    if (searchParams.get('create') !== '1' || !data) return;
+    createFormRef.current?.querySelector<HTMLInputElement>('#watchlist-name')?.focus();
+    const next = new URLSearchParams(searchParams);
+    next.delete('create');
+    setSearchParams(next, { replace: true });
+  }, [data, searchParams, setSearchParams]);
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: WATCHLISTS_QUERY_KEY });
 
@@ -83,6 +97,7 @@ export function WatchlistsPage() {
       <PageHead title={t('watchlists.title')} />
 
       <form
+        ref={createFormRef}
         className="flex flex-col items-stretch gap-2 sm:flex-row sm:items-end"
         onSubmit={(e) => {
           e.preventDefault();

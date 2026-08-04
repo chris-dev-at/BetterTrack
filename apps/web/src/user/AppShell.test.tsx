@@ -597,12 +597,25 @@ test('the live Create menu supports roving focus and restores its trigger on Esc
   await user.click(trigger);
   const menu = screen.getByRole('menu', { name: 'Create' });
   const trade = within(menu).getByRole('menuitem', { name: 'Buy or sell' });
-  const cashFlow = within(menu).getByRole('menuitem', { name: 'Income or expense' });
+  const transfer = within(menu).getByRole('menuitem', { name: 'Transfer' });
+  const blueprint = within(menu).getByRole('menuitem', { name: 'New Blueprint' });
+  const watchlist = within(menu).getByRole('menuitem', { name: 'New watchlist' });
+  const alert = within(menu).getByRole('menuitem', { name: 'New alert' });
+  const idea = within(menu).getByRole('menuitem', { name: 'Build idea from Blueprint' });
   const portfolio = within(menu).getByRole('menuitem', { name: 'New portfolio' });
+
+  expect(within(menu).queryByRole('menuitem', { name: 'Income or expense' })).toBeNull();
+  expect(trade).toHaveAttribute('href', '/portfolio?create=trade');
+  expect(transfer).toHaveAttribute('href', '/portfolio/cash/accounts?create=transfer');
+  expect(blueprint).toHaveAttribute('href', '/workbench/blueprints/new');
+  expect(watchlist).toHaveAttribute('href', '/assets/watchlists?create=1');
+  expect(alert).toHaveAttribute('href', '/workbench/alerts?create=1');
+  expect(idea).toHaveAttribute('href', '/workbench/blueprints/new');
+  expect(portfolio).toHaveAttribute('href', '/portfolios?create=1');
 
   await waitFor(() => expect(trade).toHaveFocus());
   await user.keyboard('{ArrowDown}');
-  expect(cashFlow).toHaveFocus();
+  expect(transfer).toHaveFocus();
   await user.keyboard('{ArrowUp}');
   expect(trade).toHaveFocus();
   await user.keyboard('{End}');

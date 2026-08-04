@@ -35,7 +35,7 @@ function renderPalette(props: { isOpen: boolean; onClose?: () => void }) {
         <Routes>
           <Route path="/" element={<CmdKPalette isOpen={props.isOpen} onClose={onClose} />} />
           <Route path="/assets/:id" element={<div>Asset detail page</div>} />
-          <Route path="/portfolio/activity" element={<div>Activity page</div>} />
+          <Route path="/portfolio" element={<div>Portfolio page</div>} />
           <Route path="/portfolio/cash" element={<div>Cash page</div>} />
         </Routes>
       </MemoryRouter>
@@ -362,7 +362,7 @@ describe('keyboard', () => {
 
     await user.keyboard('{Enter}');
 
-    expect(await screen.findByText('Activity page')).toBeInTheDocument();
+    expect(await screen.findByText('Portfolio page')).toBeInTheDocument();
     expect(onClose).toHaveBeenCalledOnce();
   });
 

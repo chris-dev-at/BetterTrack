@@ -523,10 +523,7 @@ function CreateMenu() {
   }, [closeAndRestoreFocus, open]);
 
   const items: ReadonlyArray<{ to: string; icon: IconName; labelKey: string }> = [
-    { to: '/portfolio/activity?create=trade', icon: 'assets', labelKey: 'create.trade' },
-    // See commands.ts: no create-a-movement flow exists post cash-fusion, so
-    // this jumps straight to the tagged ledger instead of a dead `?create=`.
-    { to: '/portfolio/cash/movements', icon: 'cash', labelKey: 'create.cashFlow' },
+    { to: '/portfolio?create=trade', icon: 'assets', labelKey: 'create.trade' },
     {
       to: '/portfolio/cash/accounts?create=transfer',
       icon: 'wallet',
@@ -535,7 +532,7 @@ function CreateMenu() {
     { to: '/workbench/blueprints/new', icon: 'layers', labelKey: 'create.blueprint' },
     { to: '/assets/watchlists?create=1', icon: 'star', labelKey: 'create.watchlist' },
     { to: '/workbench/alerts?create=1', icon: 'bell', labelKey: 'create.alert' },
-    { to: '/workbench/ideas?create=1', icon: 'sparkles', labelKey: 'create.idea' },
+    { to: '/workbench/blueprints/new', icon: 'sparkles', labelKey: 'create.idea' },
     { to: '/portfolios?create=1', icon: 'portfolios', labelKey: 'create.portfolio' },
   ];
 
@@ -564,7 +561,7 @@ function CreateMenu() {
           {items.map((item) => (
             <Link
               className="bt-menu-item"
-              key={item.to}
+              key={item.labelKey}
               onClick={closeAndRestoreFocus}
               role="menuitem"
               to={item.to}

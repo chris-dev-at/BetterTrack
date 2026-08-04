@@ -1,5 +1,6 @@
 import { useQuery } from '@tanstack/react-query';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 
 import type { Alert } from '@bettertrack/contracts';
 
@@ -23,8 +24,17 @@ const ALERTS_POLL_INTERVAL_MS = 60_000;
  */
 export function AlertsPage() {
   const t = useT();
+  const [searchParams, setSearchParams] = useSearchParams();
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<Alert | null>(null);
+
+  useEffect(() => {
+    if (searchParams.get('create') !== '1') return;
+    setCreating(true);
+    const next = new URLSearchParams(searchParams);
+    next.delete('create');
+    setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams]);
 
   const { data, isLoading, isError } = useQuery({
     queryKey: ALERTS_QUERY_KEY,

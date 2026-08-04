@@ -257,22 +257,11 @@ export const COMMANDS: readonly CommandEntry[] = [
   // ── Create intents ──
   {
     labelKey: 'create.trade',
-    to: '/portfolio/activity?create=trade',
+    to: '/portfolio?create=trade',
     group: 'create',
     icon: 'assets',
     extra: ['buy', 'sell', 'kauf', 'verkauf', 'transaction'],
     suggested: 1,
-  },
-  {
-    // V5 cash fusion: there is no longer a standalone "record an income or
-    // expense" flow to open (deposits/withdrawals live on Cash accounts,
-    // trades on Activity) — this now jumps straight to the tagged ledger
-    // rather than carrying a `?create=` intent nothing reads.
-    labelKey: 'create.cashFlow',
-    to: '/portfolio/cash/movements',
-    group: 'create',
-    icon: 'cash',
-    extra: ['cash flow', 'cashflow', 'income', 'expense', 'einnahme', 'ausgabe'],
   },
   {
     labelKey: 'create.transfer',
@@ -294,7 +283,12 @@ export const COMMANDS: readonly CommandEntry[] = [
     icon: 'star',
   },
   { labelKey: 'create.alert', to: '/workbench/alerts?create=1', group: 'create', icon: 'bell' },
-  { labelKey: 'create.idea', to: '/workbench/ideas?create=1', group: 'create', icon: 'sparkles' },
+  {
+    labelKey: 'create.idea',
+    to: '/workbench/blueprints/new',
+    group: 'create',
+    icon: 'sparkles',
+  },
   { labelKey: 'create.portfolio', to: '/portfolios?create=1', group: 'create', icon: 'portfolios' },
 
   // ── Control Center / settings ──

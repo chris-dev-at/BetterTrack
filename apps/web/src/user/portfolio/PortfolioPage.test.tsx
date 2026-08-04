@@ -237,10 +237,11 @@ const HISTORY = {
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function renderPage(client = new QueryClient({ defaultOptions: { queries: { retry: false } } })) {
+function renderPage(initialPath = '/portfolio') {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
     <QueryClientProvider client={client}>
-      <MemoryRouter>
+      <MemoryRouter initialEntries={[initialPath]}>
         <PortfolioPage />
       </MemoryRouter>
     </QueryClientProvider>,
@@ -784,6 +785,12 @@ describe('PortfolioPage — dialogs', () => {
 
     await user.click(screen.getByRole('button', { name: '+ Transaction' }));
     expect(screen.getByRole('dialog', { name: /New transaction/i })).toBeInTheDocument();
+  });
+
+  test('honors the global trade intent by opening the transaction dialog', async () => {
+    renderPage('/portfolio?create=trade');
+
+    expect(await screen.findByRole('dialog', { name: /New transaction/i })).toBeInTheDocument();
   });
 
   test('opens the value-point editor for a custom holding', async () => {
