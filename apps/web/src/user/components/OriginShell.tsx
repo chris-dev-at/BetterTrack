@@ -16,7 +16,7 @@ import { Button, Icon, type IconName } from '../../ui/origin';
 import { cx } from '../../lib/cx';
 import { legalUrl, type LegalPage } from '../legal';
 import { useAuth } from '../AuthContext';
-import { useCompactShell } from '../hooks/useCompactShell';
+import { useCompactShell, usePhoneShell } from '../hooks/useCompactShell';
 import { PortfolioSwitcher } from '../portfolio/PortfolioSwitcher';
 import { useResolvedPrivacyMode, useResolvedPrivacyModeState } from '../vault/usePrivacyMode';
 import { useVaultRuntime } from '../vault/VaultRuntimeProvider';
@@ -588,6 +588,9 @@ export function OriginShell() {
   // The rail is display:none at this width, so anything that lives only inside
   // it has to be rendered elsewhere (see the topbar's AccountMenu).
   const compactShell = useCompactShell();
+  // Narrower still, the topbar wraps and the switcher owns the second row — so
+  // the shell MOVES it to the end of the header's children (see below).
+  const phoneShell = usePhoneShell();
   // The shell root — also the palette's mount parent, which is why the ⌘K guard
   // below asks whether *this* branch is inert.
   const shellRef = useRef<HTMLDivElement>(null);
@@ -661,6 +664,16 @@ export function OriginShell() {
 
   const portfolioScoped =
     pathname === '/portfolio' || pathname.startsWith('/portfolio/') || pathname === '/portfolios';
+  /**
+   * Rendered in exactly ONE topbar slot per width — never both, never reordered
+   * in CSS. Above {@link PHONE_SHELL_MAX_WIDTH} it sits beside the brand, on the
+   * one header row; at or below it the header wraps and the switcher takes the
+   * full second row, so it has to be the header's LAST child there too. Flex
+   * `order` moves pixels only: leaving the switcher first in the DOM sent Tab
+   * from the second row back up to the first (WCAG 1.3.2 / 2.4.3). Same
+   * JS-at-the-breakpoint move the AccountMenu makes at the rail's width.
+   */
+  const portfolioSwitcher = portfolioScoped ? <PortfolioSwitcher /> : null;
 
   return (
     <div className="bt-app" ref={shellRef}>
@@ -744,7 +757,7 @@ export function OriginShell() {
             <span className="bt-topbar__brand-slot bt-hide-above-md">
               <RailBrand />
             </span>
-            {portfolioScoped ? <PortfolioSwitcher /> : null}
+            {phoneShell ? null : portfolioSwitcher}
             <div className="bt-topbar__spacer" />
             {/* Reads as the search field it stands in for (owner: "looks like an
                 input instead of a button"). Semantically still a button —
@@ -781,6 +794,9 @@ export function OriginShell() {
                   The account menu moves here instead so it stays persistent. */}
               {compactShell ? <AccountMenu collapsed={false} placement="topbar" /> : null}
             </div>
+            {/* The wrapped second row — last in the DOM because it is last on
+                screen. See `portfolioSwitcher` above. */}
+            {phoneShell ? portfolioSwitcher : null}
           </header>
 
           <main id="main-content" className="bt-canvas" tabIndex={-1}>

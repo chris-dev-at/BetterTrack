@@ -1788,7 +1788,15 @@
 /* Phone chrome: keep the persistent actions on the first row and give the
    portfolio scope its own full-width row. This makes every control a 44px
    target without asking a 390px viewport to hold six controls plus the
-   switcher side-by-side. Side/top insets pair with the bottom bar's inset. */
+   switcher side-by-side. Side/top insets pair with the bottom bar's inset.
+
+   The second row comes from `flex-wrap` plus the switcher's `flex: 0 0 100%`
+   alone — deliberately NO `order` on any topbar child. `order` is visual-only
+   (CSS Flexbox §5.4: it changes painting and box order, never speech or
+   sequential navigation), so reordering here would leave Tab walking from the
+   wrapped switcher back up to row one. The shell renders the switcher last in
+   the DOM at this width instead — `usePhoneShell`, which must stay in lockstep
+   with the 480px literal below. */
 @media (max-width: 480px) {
   .bt-topbar {
     flex-wrap: wrap;
@@ -1799,26 +1807,18 @@
   }
 
   .bt-topbar__brand-slot {
-    order: 1;
     flex: none;
   }
 
-  .bt-topbar__spacer {
-    order: 2;
-  }
-
-  .bt-topbar__search {
-    order: 3;
-  }
-
   .bt-topbar__actions {
-    order: 4;
     min-width: 0;
     max-width: 100%;
   }
 
+  /* Full-width ⇒ it wraps onto a row of its own, wherever the spacer left the
+     first row. The shell already renders it last here, so this row is also the
+     last tab stop in the header. */
   .bt-topbar > .bt-portfolio-switcher {
-    order: 5;
     flex: 0 0 100%;
     width: 100%;
     max-width: 100%;

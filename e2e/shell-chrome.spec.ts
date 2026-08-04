@@ -146,6 +146,30 @@ test('shell chrome fits the viewport and keeps every main area reachable', async
       timeout: 20_000,
     });
 
+    // The header wraps here and the switcher takes the second row. DOM order is
+    // the tab order, so the switcher has to be the header's LAST focusable too —
+    // an `order`-only reflow reads correctly and tabs backwards up a row.
+    const wrappedHeader = await page.evaluate(() => {
+      const header = document.querySelector('.bt-topbar');
+      const trigger = header?.querySelector('.bt-portfolio-trigger');
+      const actions = header?.querySelector('.bt-topbar__actions');
+      if (!header || !trigger || !actions) return null;
+      const focusable = [
+        ...header.querySelectorAll<HTMLElement>(
+          'a[href], button:not([disabled]), input:not([disabled])',
+        ),
+      ].filter((element) => element.getBoundingClientRect().width > 0);
+      return {
+        switcherIsLast: focusable.at(-1) === trigger,
+        switcherTop: trigger.getBoundingClientRect().top,
+        actionsBottom: actions.getBoundingClientRect().bottom,
+      };
+    });
+    expect(wrappedHeader, 'phone topbar did not render the portfolio switcher').not.toBeNull();
+    expect(wrappedHeader!.switcherIsLast, 'switcher is not the last header tab stop').toBe(true);
+    // …and it really is on the row below, so document order = visual order.
+    expect(wrappedHeader!.switcherTop).toBeGreaterThanOrEqual(wrappedHeader!.actionsBottom);
+
     const portfolioTrigger = page.getByRole('button', { name: 'Switch portfolio' });
     await portfolioTrigger.click();
     const portfolioSwitcher = page.locator('.bt-portfolio-menu');

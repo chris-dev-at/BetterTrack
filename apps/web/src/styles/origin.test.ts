@@ -3,6 +3,8 @@ import { resolve } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
+import { PHONE_SHELL_MAX_WIDTH } from '../user/hooks/useCompactShell';
+
 const originCss = readFileSync(resolve(process.cwd(), 'src/styles/origin.css'), 'utf8');
 const indexHtml = readFileSync(resolve(process.cwd(), 'index.html'), 'utf8');
 
@@ -81,6 +83,15 @@ describe('Origin informational text contrast', () => {
 });
 
 describe('Origin phone chrome', () => {
+  /** The `@media (max-width: 480px)` block, sliced off at the next top-level rule. */
+  function phoneBlock(): string {
+    const start = originCss.indexOf(`@media (max-width: ${PHONE_SHELL_MAX_WIDTH}px)`);
+    if (start === -1) throw new Error('Missing the phone media block');
+    const end = originCss.indexOf('/* One-pixel rule helpers', start);
+    if (end === -1) throw new Error('Unterminated phone media block');
+    return originCss.slice(start, end);
+  }
+
   it('uses the gold edge only on the active mobile destination', () => {
     const activeEdge = tokenBlock('.bt-bottombar a.is-active::before');
 
@@ -89,12 +100,35 @@ describe('Origin phone chrome', () => {
     expect(originCss).not.toContain('.bt-bottombar a::before {');
   });
 
-  it('reserves safe areas and 44px targets at the phone breakpoint', () => {
-    const phoneStart = originCss.indexOf('@media (max-width: 480px)');
-    const phoneEnd = originCss.indexOf('/* One-pixel rule helpers', phoneStart);
-    const phoneCss = originCss.slice(phoneStart, phoneEnd);
+  /**
+   * The wrapped header row must come from wrapping alone. Flex `order` is
+   * visual-only (Flexbox §5.4 — it changes paint order, never speech or
+   * sequential navigation), so an `order`-reordered topbar sent Tab from the
+   * second row back up to the first. The shell renders the switcher last at
+   * this width instead (`usePhoneShell` / AppShell.test.tsx), and this keeps
+   * the CSS from quietly reintroducing the divergence.
+   */
+  it('wraps the phone header without reordering any topbar child', () => {
+    const phoneCss = phoneBlock();
 
-    expect(phoneStart).toBeGreaterThan(-1);
+    expect(phoneCss).toMatch(/\.bt-topbar > \.bt-portfolio-switcher \{[^}]*flex: 0 0 100%[^}]*\}/);
+    expect(phoneCss).toContain('flex-wrap: wrap');
+    expect(phoneCss).not.toMatch(/(^|[\s;{])order\s*:/);
+  });
+
+  /**
+   * One breakpoint, two languages: the JS that MOVES the switcher and the CSS
+   * that wraps it must flip at the same pixel, or the width band between them
+   * has the DOM saying row one while the layout says row two.
+   */
+  it('declares the phone breakpoint the shell measures in JS', () => {
+    expect(PHONE_SHELL_MAX_WIDTH).toBe(480);
+    expect(originCss).toContain(`@media (max-width: ${PHONE_SHELL_MAX_WIDTH}px)`);
+  });
+
+  it('reserves safe areas and 44px targets at the phone breakpoint', () => {
+    const phoneCss = phoneBlock();
+
     expect(indexHtml).toContain('viewport-fit=cover');
     for (const inset of ['top', 'right', 'bottom', 'left']) {
       expect(originCss).toContain(`env(safe-area-inset-${inset}, 0px)`);
