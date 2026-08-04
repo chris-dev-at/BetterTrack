@@ -613,6 +613,74 @@
   margin-bottom: 14px;
 }
 
+/* A money workspace is never allowed to make the page itself wider than the
+   canvas. Individual read-only tables may own a local horizontal scroller. */
+.bt-money-surface {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* Action-heavy ledgers render this compact definition-card grammar on phones.
+   The roomy path keeps its existing table byte-for-byte. */
+.bt-phone-card-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.bt-phone-card {
+  min-width: 0;
+  padding: 13px 14px;
+  border: 1px solid var(--bt-border);
+  border-radius: 8px;
+  background: var(--bt-surface);
+}
+
+.bt-phone-card__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px 12px;
+}
+
+.bt-phone-card__facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px 14px;
+  margin-top: 12px;
+}
+
+.bt-phone-card__facts > div {
+  min-width: 0;
+}
+
+.bt-phone-card__facts dt {
+  color: var(--bt-muted);
+  font-size: 11px;
+  font-weight: 590;
+}
+
+.bt-phone-card__facts dd {
+  margin-top: 2px;
+  color: var(--bt-text-soft);
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.bt-phone-card__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  width: 100%;
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--bt-border);
+}
+
 /* ── Rules, panels, cards ────────────────────────────────────────────────── */
 
 .bt-rule {
@@ -1859,6 +1927,155 @@
   .bt-topbar .bt-portfolio-trigger {
     width: 100%;
     max-width: 100%;
+  }
+
+  /* MW3 money surfaces: sheets own the viewport, while only their body scrolls.
+     Header, close and pinned commit actions therefore never clip off-screen. */
+  .bt-dialog--phone-sheet {
+    place-items: stretch;
+    padding: 0;
+  }
+
+  .bt-dialog-layer--phone-sheet {
+    align-items: stretch;
+    overflow: hidden;
+    padding: 0;
+  }
+
+  .bt-dialog__panel.bt-dialog__panel--phone-sheet {
+    display: flex !important;
+    width: 100% !important;
+    max-width: none !important;
+    height: calc(100 * var(--bt-dvh));
+    max-height: calc(100 * var(--bt-dvh)) !important;
+    margin: 0 !important;
+    border: 0;
+    border-radius: 0;
+  }
+
+  .bt-dialog__panel--phone-sheet > .bt-dialog__head {
+    padding-top: calc(15px + env(safe-area-inset-top, 0px));
+    padding-right: calc(16px + env(safe-area-inset-right, 0px));
+    padding-left: calc(16px + env(safe-area-inset-left, 0px));
+  }
+
+  .bt-dialog__panel--phone-sheet > .bt-dialog__body {
+    flex: 1 1 auto;
+    min-height: 0;
+    padding-right: calc(16px + env(safe-area-inset-right, 0px));
+    padding-left: calc(16px + env(safe-area-inset-left, 0px));
+    overflow-x: hidden;
+    overflow-y: auto;
+    overscroll-behavior: contain;
+  }
+
+  .bt-dialog__panel--phone-sheet > :is(.bt-dialog__foot, .bt-dialog__pinned-foot) {
+    padding-right: calc(16px + env(safe-area-inset-right, 0px));
+    padding-bottom: calc(14px + env(safe-area-inset-bottom, 0px));
+    padding-left: calc(16px + env(safe-area-inset-left, 0px));
+  }
+
+  /* Safari zooms a focused field whose computed font is below 16px. Inline
+     compact styles on filters are intentionally overridden at phone width. */
+  .bt-money-surface :is(input, select, textarea),
+  .bt-dialog__panel--phone-sheet :is(input, select, textarea) {
+    font-size: 16px !important;
+  }
+
+  .bt-money-surface .bt-page-head {
+    align-items: stretch;
+  }
+
+  .bt-money-surface .bt-page-head__titles,
+  .bt-money-surface .bt-page-head__actions {
+    flex: 1 1 100%;
+    width: 100%;
+  }
+
+  .bt-money-surface .bt-page-head__actions > :not(.bt-iconbtn) {
+    flex: 1 1 auto;
+  }
+
+  .bt-money-surface :is(.bt-btn, .bt-iconbtn, .bt-monthpick__arrow, .bt-kind-option),
+  .bt-dialog__panel--phone-sheet :is(.bt-btn, .bt-iconbtn, .bt-kind-option),
+  .bt-money-surface .bt-seg > button,
+  .bt-dialog__panel--phone-sheet .bt-seg > button {
+    min-height: 44px;
+  }
+
+  .bt-dialog__panel--phone-sheet button {
+    min-height: 44px;
+  }
+
+  .bt-money-surface :is(.bt-btn--icon, .bt-iconbtn, .bt-monthpick__arrow),
+  .bt-dialog__panel--phone-sheet :is(.bt-btn--icon, .bt-iconbtn) {
+    min-width: 44px;
+  }
+
+  .bt-money-surface .bt-seg,
+  .bt-dialog__panel--phone-sheet .bt-seg {
+    max-width: 100%;
+    flex-wrap: wrap;
+  }
+
+  .bt-money-surface .bt-panel--pad {
+    padding: 14px;
+  }
+
+  .bt-money-surface .bt-settings-row__field {
+    flex-basis: 100%;
+    max-width: none;
+  }
+
+  .bt-money-surface .bt-settings-row > .bt-btn {
+    width: 100%;
+  }
+
+  .bt-money-surface .bt-kind-option {
+    flex: 1 1 calc(50% - 4px);
+  }
+
+  .bt-money-surface .bt-bytag__chart {
+    margin-inline: auto;
+  }
+
+  .bt-money-surface .bt-bytag__bars {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .bt-money-surface .bt-acctcard__action {
+    min-height: 44px;
+  }
+
+  .bt-money-surface .bt-row-actions {
+    width: 100%;
+    margin-left: 0 !important;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+  }
+
+  /* Read-only dense data may scroll locally, never at page level. The asset
+     identity stays pinned so every number retains its subject. */
+  .bt-phone-scroll-table {
+    max-width: 100%;
+    margin-inline: 0;
+    overflow-x: auto;
+    overscroll-behavior-inline: contain;
+    padding-inline: 0;
+  }
+
+  .bt-phone-scroll-table > table {
+    width: max-content;
+    min-width: 100%;
+  }
+
+  .bt-phone-scroll-table .bt-phone-scroll-table__lead {
+    position: sticky;
+    left: 0;
+    z-index: 2;
+    background: var(--bt-bg-raised);
+    box-shadow: 1px 0 0 var(--bt-border);
   }
 }
 

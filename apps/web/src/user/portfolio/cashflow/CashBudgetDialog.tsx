@@ -121,6 +121,7 @@ export function CashBudgetDialog({
   return (
     <Dialog
       onClose={onClose}
+      phoneSheet
       title={
         isEdit ? t('cashflow.budgets.dialog.editTitle') : t('cashflow.budgets.dialog.newTitle')
       }

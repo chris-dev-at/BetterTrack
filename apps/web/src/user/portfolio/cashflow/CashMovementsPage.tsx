@@ -17,6 +17,7 @@ import { Button, PageHead } from '../../../ui/origin';
 import { SourceBadge } from '../SourceBadge';
 import { usePreservedSearch } from '../../components/LocalNav';
 import { ACTIVE_PORTFOLIO_PARAM } from '../PortfolioSwitcher';
+import { usePhoneShell } from '../../hooks/useCompactShell';
 import { CashMovementTagsDialog } from './CashMovementTagsDialog';
 import { RecordCashDialog } from './RecordCashDialog';
 import { TagChip } from './TagChip';
@@ -47,6 +48,7 @@ function isEditable(kind: CashMovement['kind']): boolean {
  */
 export function CashMovementsPage() {
   const t = useT();
+  const phone = usePhoneShell();
   const queryClient = useQueryClient();
   const { portfoliosQuery, portfolioId } = useActivePortfolio();
   const [tagFilter, setTagFilter] = useState<string>(ALL_FILTER);
@@ -113,7 +115,7 @@ export function CashMovementsPage() {
   }
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="bt-money-surface flex flex-col gap-6">
       {/* Labels live one click from here on purpose: this is where you are
           standing when you notice a movement is tagged wrong, or not at all. */}
       <PageHead
@@ -163,6 +165,69 @@ export function CashMovementsPage() {
           icon="💶"
           title={t('cashflow.movements.emptyTitle')}
         />
+      ) : phone ? (
+        <ul aria-label={t('cashflow.movements.listAriaLabel')} className="bt-phone-card-list">
+          {ordered.map((movement) => {
+            const movementTags = (movement.tags ?? [])
+              .map((id) => tagsById.get(id))
+              .filter((tag): tag is CashTag => tag !== undefined);
+            return (
+              <li className="bt-phone-card" key={movement.id}>
+                <div className="bt-phone-card__head">
+                  <div className="min-w-0">
+                    <p className="bt-row-title break-words">{movement.note ?? EM_DASH}</p>
+                    <p className="bt-row-sub flex flex-wrap items-center gap-1.5">
+                      <span>{kindLabel(t, movement.kind)}</span>
+                      <SourceBadge source={movement.source} />
+                    </p>
+                  </div>
+                  <span className="shrink-0 bt-num">
+                    <MoneyText amount={movement.amountEur} currency="EUR" signed />
+                  </span>
+                </div>
+                <dl className="bt-phone-card__facts">
+                  <div>
+                    <dt>{t('cashflow.movements.dateColumn')}</dt>
+                    <dd>{formatDate(movement.executedAt)}</dd>
+                  </div>
+                  <div>
+                    <dt>{t('cashflow.movements.tagsColumn')}</dt>
+                    <dd className="flex flex-wrap items-center gap-1">
+                      {movementTags.length === 0 ? (
+                        <span className="bt-muted">{t('cashflow.untagged')}</span>
+                      ) : (
+                        movementTags.map((tag) => (
+                          <TagChip color={tag.color} key={tag.id} name={tag.name} />
+                        ))
+                      )}
+                    </dd>
+                  </div>
+                  {movement.originalCurrency ? (
+                    <div>
+                      <dt>{t('cashflow.movements.amountColumn')}</dt>
+                      <dd>
+                        {t('cashflow.movements.originalCurrency', {
+                          currency: movement.originalCurrency,
+                        })}
+                      </dd>
+                    </div>
+                  ) : null}
+                </dl>
+                <div className="bt-phone-card__actions">
+                  {isEditable(movement.kind) ? (
+                    <Button onClick={() => setEditing(movement)} variant="quiet">
+                      {t('common.edit')}
+                    </Button>
+                  ) : (
+                    <Button onClick={() => setTagging(movement)} variant="quiet">
+                      {t('cashflow.movements.editTagsAction')}
+                    </Button>
+                  )}
+                </div>
+              </li>
+            );
+          })}
+        </ul>
       ) : (
         <div className="bt-table-wrap">
           <table aria-label={t('cashflow.movements.listAriaLabel')} className="bt-table">

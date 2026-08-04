@@ -152,6 +152,7 @@ export function ValuePointEditor({ asset, onClose, onSaved, today }: ValuePointE
       title={t('portfolio.valuePoint.title', { symbol: asset.symbol })}
       description={t('portfolio.valuePoint.description')}
       onClose={onClose}
+      phoneSheet
       widthClassName="max-w-lg"
     >
       {isLoading ? (

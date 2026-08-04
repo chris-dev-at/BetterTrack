@@ -40,12 +40,12 @@ export function ContributionTable({
   const showContribution = rows.some((row) => row.contributionPct !== null);
 
   return (
-    <div className="-mx-4 overflow-x-auto px-4 sm:mx-0 sm:px-0">
+    <div className="bt-phone-scroll-table -mx-4 overflow-x-auto px-4 sm:mx-0 sm:px-0">
       <table className="w-full min-w-[36rem] border-collapse text-sm">
         <caption className="sr-only">{t('portfolio.analytics.contribution.caption')}</caption>
         <thead>
           <tr className="bt-label text-left" style={{ borderBottom: '1px solid var(--bt-border)' }}>
-            <th scope="col" className="py-2 pr-3 font-medium">
+            <th scope="col" className="bt-phone-scroll-table__lead py-2 pr-3 font-medium">
               {t('portfolio.analytics.contribution.asset')}
             </th>
             <th scope="col" className="py-2 pr-3 text-right font-medium">
@@ -70,7 +70,7 @@ export function ContributionTable({
         <tbody>
           {rows.map((row) => (
             <tr key={row.asset.id} className="">
-              <td className="py-2 pr-3">
+              <td className="bt-phone-scroll-table__lead py-2 pr-3">
                 <span className="bt-row-title">{row.asset.symbol}</span>
                 <span className="bt-row-sub ml-2 truncate">{row.asset.name}</span>
               </td>

@@ -198,9 +198,15 @@ export function PortfolioWizard({
   const busy = commit.isPending || Boolean(reported.busy);
 
   return (
-    <ODialog onClose={handleClose} open size="wizard" title={t('portfolio.wizard.title')}>
+    <ODialog
+      onClose={handleClose}
+      open
+      phoneSheet
+      size="wizard"
+      title={t('portfolio.wizard.title')}
+    >
       <form
-        className="bt-pfw"
+        className="bt-money-surface bt-pfw"
         onSubmit={(event) => {
           event.preventDefault();
           advance();

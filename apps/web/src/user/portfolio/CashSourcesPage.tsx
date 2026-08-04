@@ -7,6 +7,7 @@ import type { CashMovement, CashSource } from '@bettertrack/contracts';
 import { useT } from '../../i18n';
 import type { TranslateFn } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
+import { cx } from '../../lib/cx';
 import { EM_DASH, formatDate, formatPercent } from '../../lib/format';
 import { Alert } from '../components/ui';
 import { AsyncReadState } from '../components/AsyncReadState';
@@ -21,6 +22,7 @@ import { SetBalanceDialog } from './SetBalanceDialog';
 import { SourceBadge, sourceTagLabel } from './SourceBadge';
 import { TransferDialog } from './TransferDialog';
 import { usePortfolioStore } from './PortfolioStoreProvider';
+import { usePhoneShell } from '../hooks/useCompactShell';
 
 /** Human label for a source's descriptive type (V3-P3). */
 function typeLabel(t: TranslateFn, source: CashSource): string {
@@ -112,6 +114,7 @@ function SourceRow({
   onArchive,
   onRestore,
   busy,
+  phone,
 }: {
   source: CashSource;
   totalActive: number;
@@ -122,12 +125,85 @@ function SourceRow({
   onArchive: () => void;
   onRestore: () => void;
   busy: boolean;
+  phone: boolean;
 }) {
   const t = useT();
   const [confirmArchive, setConfirmArchive] = useState(false);
   const archived = source.archivedAt !== null;
   const share = totalActive > 0 && !archived ? (source.balanceEur / totalActive) * 100 : null;
   const canArchive = !source.isMain && !archived && Math.abs(source.balanceEur) < 0.005;
+
+  const actions = archived ? (
+    <Button disabled={busy} onClick={onRestore} size="sm" variant="quiet">
+      {t('portfolio.cashSources.restoreAction')}
+    </Button>
+  ) : (
+    <div className="flex flex-wrap items-center justify-end gap-1">
+      <Button onClick={onDeposit} size="sm" variant="quiet">
+        <DepositIcon />
+        {t('portfolio.cashSources.depositButton')}
+      </Button>
+      <Button onClick={onWithdraw} size="sm" variant="quiet">
+        <WithdrawIcon />
+        {t('portfolio.cashSources.withdrawButton')}
+      </Button>
+      <Button onClick={onSetBalance} size="sm" variant="quiet">
+        <SetBalanceIcon />
+        {t('portfolio.cashSources.setBalanceAction')}
+      </Button>
+      {!source.isMain ? (
+        <Button onClick={onRename} size="sm" variant="quiet">
+          {t('portfolio.cashSources.renameAction')}
+        </Button>
+      ) : null}
+      {canArchive ? (
+        confirmArchive ? (
+          <span className="inline-flex flex-wrap items-center justify-end gap-1">
+            <span className="bt-muted">{t('portfolio.cashSources.archiveConfirm')}</span>
+            <Button disabled={busy} onClick={onArchive} size="sm" variant="danger">
+              {t('common.yes')}
+            </Button>
+            <Button onClick={() => setConfirmArchive(false)} size="sm" variant="quiet">
+              {t('common.no')}
+            </Button>
+          </span>
+        ) : (
+          <Button onClick={() => setConfirmArchive(true)} size="sm" variant="quiet">
+            {t('portfolio.cashSources.archiveAction')}
+          </Button>
+        )
+      ) : null}
+    </div>
+  );
+
+  if (phone) {
+    return (
+      <li className={cx('bt-phone-card', archived && 'opacity-60')}>
+        <div className="bt-phone-card__head">
+          <div className="flex min-w-0 flex-wrap items-center gap-2">
+            <span className="bt-row-title break-words">{source.name}</span>
+            {source.isMain ? <Badge>{t('portfolio.cashSources.mainBadge')}</Badge> : null}
+            {archived ? <Badge>{t('portfolio.cashSources.archivedBadge')}</Badge> : null}
+            {source.mirror ? <MirrorAttributionChip attribution={source.mirror.addedBy} /> : null}
+          </div>
+          <span className="shrink-0 bt-num">
+            <MoneyText amount={source.balanceEur} currency="EUR" />
+          </span>
+        </div>
+        <dl className="bt-phone-card__facts">
+          <div>
+            <dt>{t('portfolio.cashSources.typeColumn')}</dt>
+            <dd>{typeLabel(t, source)}</dd>
+          </div>
+          <div>
+            <dt>{t('portfolio.cashSources.shareLabel')}</dt>
+            <dd>{share !== null ? formatPercent(share) : EM_DASH}</dd>
+          </div>
+        </dl>
+        <div className="bt-phone-card__actions">{actions}</div>
+      </li>
+    );
+  }
 
   return (
     <tr className={archived ? 'opacity-60' : undefined}>
@@ -144,50 +220,7 @@ function SourceRow({
         <MoneyText amount={source.balanceEur} currency="EUR" />
       </td>
       <td className="is-num bt-muted">{share !== null ? formatPercent(share) : EM_DASH}</td>
-      <td className="is-num">
-        {archived ? (
-          <Button disabled={busy} onClick={onRestore} size="sm" variant="quiet">
-            {t('portfolio.cashSources.restoreAction')}
-          </Button>
-        ) : (
-          <div className="flex flex-wrap items-center justify-end gap-1">
-            <Button onClick={onDeposit} size="sm" variant="quiet">
-              <DepositIcon />
-              {t('portfolio.cashSources.depositButton')}
-            </Button>
-            <Button onClick={onWithdraw} size="sm" variant="quiet">
-              <WithdrawIcon />
-              {t('portfolio.cashSources.withdrawButton')}
-            </Button>
-            <Button onClick={onSetBalance} size="sm" variant="quiet">
-              <SetBalanceIcon />
-              {t('portfolio.cashSources.setBalanceAction')}
-            </Button>
-            {!source.isMain ? (
-              <Button onClick={onRename} size="sm" variant="quiet">
-                {t('portfolio.cashSources.renameAction')}
-              </Button>
-            ) : null}
-            {canArchive ? (
-              confirmArchive ? (
-                <span className="inline-flex items-center gap-1">
-                  <span className="bt-muted">{t('portfolio.cashSources.archiveConfirm')}</span>
-                  <Button disabled={busy} onClick={onArchive} size="sm" variant="danger">
-                    {t('common.yes')}
-                  </Button>
-                  <Button onClick={() => setConfirmArchive(false)} size="sm" variant="quiet">
-                    {t('common.no')}
-                  </Button>
-                </span>
-              ) : (
-                <Button onClick={() => setConfirmArchive(true)} size="sm" variant="quiet">
-                  {t('portfolio.cashSources.archiveAction')}
-                </Button>
-              )
-            ) : null}
-          </div>
-        )}
-      </td>
+      <td className="is-num">{actions}</td>
     </tr>
   );
 }
@@ -202,6 +235,7 @@ function HistorySection({
   sourceNames: Map<string, string>;
 }) {
   const t = useT();
+  const phone = usePhoneShell();
   // Source-tag filter (V5-P0c): folded into the history header, and only shown
   // when the ledger actually mixes sources (anti-bloat — a pure `manual` ledger
   // never sees it). Filtering is client-side over the already-loaded movements.
@@ -247,6 +281,50 @@ function HistorySection({
         <p className="bt-meta" style={{ padding: '10px 0' }}>
           {t('portfolio.cashSources.history.empty')}
         </p>
+      ) : phone ? (
+        <ul className="bt-phone-card-list">
+          {ordered.map((movement) => (
+            <li className="bt-phone-card" key={movement.id}>
+              <div className="bt-phone-card__head">
+                <div className="min-w-0">
+                  <p className="bt-row-title break-words">
+                    {sourceNames.get(movement.sourceId) ?? EM_DASH}
+                  </p>
+                  <p className="bt-row-sub flex flex-wrap items-center gap-1.5">
+                    <span>{kindLabel(t, movement.kind)}</span>
+                    <SourceBadge source={movement.source} />
+                    {movement.mirror ? (
+                      <MirrorAttributionChip attribution={movement.mirror.addedBy} />
+                    ) : null}
+                  </p>
+                </div>
+                <span className="shrink-0 bt-num">
+                  <MoneyText amount={movement.amountEur} currency="EUR" signed />
+                </span>
+              </div>
+              <dl className="bt-phone-card__facts">
+                <div>
+                  <dt>{t('portfolio.cashSources.history.dateColumn')}</dt>
+                  <dd>{formatDate(movement.executedAt)}</dd>
+                </div>
+                <div>
+                  <dt>{t('portfolio.cashSources.history.noteColumn')}</dt>
+                  <dd>{movement.note ?? EM_DASH}</dd>
+                </div>
+                {movement.counterpartSourceId ? (
+                  <div>
+                    <dt>{t('portfolio.cashSources.history.kindColumn')}</dt>
+                    <dd>
+                      {t('portfolio.cashSources.history.counterpart', {
+                        name: sourceNames.get(movement.counterpartSourceId) ?? EM_DASH,
+                      })}
+                    </dd>
+                  </div>
+                ) : null}
+              </dl>
+            </li>
+          ))}
+        </ul>
       ) : (
         <div className="bt-table-wrap">
           <table className="bt-table">
@@ -308,6 +386,7 @@ function HistorySection({
  */
 export function CashSourcesPage() {
   const t = useT();
+  const phone = usePhoneShell();
   const store = usePortfolioStore();
   const queryClient = useQueryClient();
   const [searchParams] = useSearchParams();
@@ -406,8 +485,38 @@ export function CashSourcesPage() {
   );
   const hasArchived = sources.some((s) => s.archivedAt !== null);
 
+  function renderSource(source: CashSource, phoneLayout: boolean) {
+    return (
+      <SourceRow
+        key={source.id}
+        source={source}
+        totalActive={totalActive}
+        busy={busy}
+        phone={phoneLayout}
+        onSetBalance={() => setDialog({ kind: 'setBalance', source })}
+        onRename={() => setDialog({ kind: 'rename', source })}
+        onDeposit={() => setDialog({ kind: 'deposit', sourceId: source.id })}
+        onWithdraw={() => setDialog({ kind: 'withdraw', sourceId: source.id })}
+        onArchive={() =>
+          void runAction(() =>
+            store.archiveCashSource(portfolioId!, source.id, {
+              baseSeq: source.mirror?.version,
+            }),
+          )
+        }
+        onRestore={() =>
+          void runAction(() =>
+            store.restoreCashSource(portfolioId!, source.id, {
+              baseSeq: source.mirror?.version,
+            }),
+          )
+        }
+      />
+    );
+  }
+
   return (
-    <div className="flex flex-col">
+    <div className="bt-money-surface flex flex-col">
       <PageHead
         actions={
           <>
@@ -436,6 +545,10 @@ export function CashSourcesPage() {
         {actionError ? <Alert tone="error">{actionError}</Alert> : null}
         {sources.length === 0 ? (
           <EmptyState icon="🏦" title={t('portfolio.cashSources.empty')} />
+        ) : phone ? (
+          <ul aria-label={t('portfolio.cashSources.listAriaLabel')} className="bt-phone-card-list">
+            {sources.map((source) => renderSource(source, true))}
+          </ul>
         ) : (
           <div className="bt-table-wrap">
             <table aria-label={t('portfolio.cashSources.listAriaLabel')} className="bt-table">
@@ -456,34 +569,7 @@ export function CashSourcesPage() {
                   />
                 </tr>
               </thead>
-              <tbody>
-                {sources.map((s) => (
-                  <SourceRow
-                    key={s.id}
-                    source={s}
-                    totalActive={totalActive}
-                    busy={busy}
-                    onSetBalance={() => setDialog({ kind: 'setBalance', source: s })}
-                    onRename={() => setDialog({ kind: 'rename', source: s })}
-                    onDeposit={() => setDialog({ kind: 'deposit', sourceId: s.id })}
-                    onWithdraw={() => setDialog({ kind: 'withdraw', sourceId: s.id })}
-                    onArchive={() =>
-                      void runAction(() =>
-                        store.archiveCashSource(portfolioId, s.id, {
-                          baseSeq: s.mirror?.version,
-                        }),
-                      )
-                    }
-                    onRestore={() =>
-                      void runAction(() =>
-                        store.restoreCashSource(portfolioId, s.id, {
-                          baseSeq: s.mirror?.version,
-                        }),
-                      )
-                    }
-                  />
-                ))}
-              </tbody>
+              <tbody>{sources.map((source) => renderSource(source, false))}</tbody>
             </table>
           </div>
         )}

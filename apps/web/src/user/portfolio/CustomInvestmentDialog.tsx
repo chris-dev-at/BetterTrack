@@ -116,6 +116,7 @@ export function CustomInvestmentDialog({ onClose, onCreated, today }: CustomInve
     <Dialog
       title={t('portfolio.customInvestment.title')}
       onClose={onClose}
+      phoneSheet
       widthClassName="max-w-lg"
     >
       <form onSubmit={handleSubmit} className="flex flex-col gap-4" aria-labelledby={headingId}>

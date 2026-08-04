@@ -74,6 +74,7 @@ import { formatDate } from '../../../lib/format';
 import { getPortfolio, getPortfolioHistory, listPortfolios } from '../../../lib/portfolioApi';
 import { ResolvedPrivacyModeProvider } from '../../vault/usePrivacyMode';
 import { AnalyticsPage } from './AnalyticsPage';
+import { setViewportWidth } from '../../../test/viewport';
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
@@ -269,6 +270,19 @@ beforeEach(() => {
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 describe('AnalyticsPage — main graph, stats & contribution table', () => {
+  test('390px contains controls and keeps the contribution identity column sticky', async () => {
+    setViewportWidth(390);
+    renderPage();
+
+    await screen.findAllByText('AAPL');
+    const surface = document.querySelector('.bt-money-surface');
+    expect(surface).not.toBeNull();
+    const scroller = surface!.querySelector('.bt-phone-scroll-table');
+    expect(scroller).not.toBeNull();
+    expect(scroller!.querySelectorAll('.bt-phone-scroll-table__lead')).not.toHaveLength(0);
+    expect(surface!.querySelector('input, select')).toBeInTheDocument();
+  });
+
   test('retries a failed analytics read without leaving the page', async () => {
     vi.mocked(getAnalyticsSeries)
       .mockRejectedValueOnce(new Error('offline'))

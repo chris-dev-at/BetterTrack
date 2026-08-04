@@ -64,7 +64,10 @@ export function CashTagsPage({ embedded = false }: { embedded?: boolean } = {}) 
       <li className="bt-band__row flex flex-wrap items-center gap-3" key={tag.id}>
         <TagChip color={tag.color} name={tag.name} />
         {tag.system ? <Badge>{t('cashflow.tags.systemBadge')}</Badge> : null}
-        <span className="flex shrink-0 items-center gap-1" style={{ marginLeft: 'auto' }}>
+        <span
+          className="bt-row-actions flex shrink-0 items-center gap-1"
+          style={{ marginLeft: 'auto' }}
+        >
           <Button onClick={() => setEditing(tag)} size="sm" variant="quiet">
             {t('common.edit')}
           </Button>
@@ -98,7 +101,7 @@ export function CashTagsPage({ embedded = false }: { embedded?: boolean } = {}) 
   }
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="bt-money-surface flex flex-col gap-6">
       <SectionHead
         action={
           <Button onClick={() => setCreating(true)} variant="primary">

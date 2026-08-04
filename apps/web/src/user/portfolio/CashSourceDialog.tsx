@@ -83,6 +83,7 @@ export function CashSourceDialog({ portfolioId, source, onClose, onSaved }: Cash
           : t('portfolio.cashSources.dialog.createTitle')
       }
       onClose={onClose}
+      phoneSheet
       widthClassName="max-w-md"
     >
       <form onSubmit={handleSubmit} className="flex flex-col gap-4">

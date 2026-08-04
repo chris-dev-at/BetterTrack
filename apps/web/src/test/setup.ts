@@ -17,4 +17,6 @@ if (typeof globalThis.ResizeObserver === 'undefined') {
 // leaks across cases.
 afterEach(() => {
   cleanup();
+  Object.defineProperty(window, 'innerWidth', { configurable: true, value: 1024 });
+  window.dispatchEvent(new Event('resize'));
 });

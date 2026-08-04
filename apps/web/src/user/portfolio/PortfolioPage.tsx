@@ -42,6 +42,7 @@ import { SourceBadge, sourceTagLabel } from './SourceBadge';
 import { CashDialog } from './CashDialog';
 import { usePortfolioStore } from './PortfolioStoreProvider';
 import { NormalModeOnly } from '../vault/ui/ParanoidSurfaceGate';
+import { usePhoneShell } from '../hooks/useCompactShell';
 import { ValuePointEditor, type ValuePointEditorAsset } from './ValuePointEditor';
 import { CustomInvestmentDialog } from './CustomInvestmentDialog';
 import {
@@ -416,6 +417,7 @@ const RECENT_TRANSACTIONS_LIMIT = 8;
 /** §6.8 recent transactions — flat, newest-first ledger across all holdings. */
 function RecentTransactionsSection({ transactions }: { transactions: Transaction[] }) {
   const t = useT();
+  const phone = usePhoneShell();
   // Source-tag filter (V5-P0c + V5-P6b): mirrors the cash-history chip on
   // CashSourcesPage. Only earns its place when the ledger actually mixes
   // sources (anti-bloat — a pure-manual ledger never sees it).
@@ -460,59 +462,110 @@ function RecentTransactionsSection({ transactions }: { transactions: Transaction
           </label>
         ) : null}
       </div>
-      <div className="bt-table-wrap">
-        <table className="bt-table">
-          <thead>
-            <tr>
-              <th scope="col">{t('portfolio.overview.field.asset')}</th>
-              <th scope="col">{t('portfolio.overview.field.side')}</th>
-              <th className="is-num" scope="col">
-                {t('portfolio.overview.field.qty')}
-              </th>
-              <th className="is-num" scope="col">
-                {t('portfolio.overview.field.price')}
-              </th>
-              <th scope="col">{t('portfolio.overview.field.date')}</th>
-            </tr>
-          </thead>
-          <tbody>
-            {recent.map((txn) => (
-              <tr key={txn.id}>
-                <td className="min-w-0">
-                  <div className="flex items-center gap-2">
-                    <Link
-                      className="bt-row-title"
-                      style={{ textDecoration: 'none' }}
-                      to={`/assets/${txn.assetId}`}
-                    >
-                      {txn.asset.symbol}
-                    </Link>
-                    <SourceBadge source={txn.source} />
-                    {/* Who added it, on a mirrored copy (design §2/§11). This is
+      {phone ? (
+        <ul className="bt-phone-card-list">
+          {recent.map((transaction) => (
+            <li className="bt-phone-card" key={transaction.id}>
+              <div className="bt-phone-card__head">
+                <div className="flex min-w-0 flex-wrap items-center gap-2">
+                  <Link
+                    className="bt-row-title"
+                    style={{ textDecoration: 'none' }}
+                    to={`/assets/${transaction.assetId}`}
+                  >
+                    {transaction.asset.symbol}
+                  </Link>
+                  <SourceBadge source={transaction.source} />
+                  {transaction.mirror ? (
+                    <MirrorAttributionChip attribution={transaction.mirror.addedBy} />
+                  ) : null}
+                </div>
+                <Badge tone={transaction.side === 'buy' ? 'pos' : 'gold'}>
+                  {transaction.side === 'buy'
+                    ? t('portfolio.overview.side.buy')
+                    : t('portfolio.overview.side.sell')}
+                </Badge>
+              </div>
+              <dl className="bt-phone-card__facts">
+                <div>
+                  <dt>{t('portfolio.overview.field.qty')}</dt>
+                  <dd className="bt-num">{formatQuantity(transaction.quantity)}</dd>
+                </div>
+                <div>
+                  <dt>{t('portfolio.overview.field.price')}</dt>
+                  <dd className="bt-num">
+                    <MoneyText
+                      amount={transaction.price}
+                      currency={transaction.asset.currency}
+                      unitPrice
+                    />
+                  </dd>
+                </div>
+                <div>
+                  <dt>{t('portfolio.overview.field.date')}</dt>
+                  <dd>{formatDate(transaction.executedAt)}</dd>
+                </div>
+              </dl>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <div className="bt-table-wrap">
+          <table className="bt-table">
+            <thead>
+              <tr>
+                <th scope="col">{t('portfolio.overview.field.asset')}</th>
+                <th scope="col">{t('portfolio.overview.field.side')}</th>
+                <th className="is-num" scope="col">
+                  {t('portfolio.overview.field.qty')}
+                </th>
+                <th className="is-num" scope="col">
+                  {t('portfolio.overview.field.price')}
+                </th>
+                <th scope="col">{t('portfolio.overview.field.date')}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {recent.map((txn) => (
+                <tr key={txn.id}>
+                  <td className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <Link
+                        className="bt-row-title"
+                        style={{ textDecoration: 'none' }}
+                        to={`/assets/${txn.assetId}`}
+                      >
+                        {txn.asset.symbol}
+                      </Link>
+                      <SourceBadge source={txn.source} />
+                      {/* Who added it, on a mirrored copy (design §2/§11). This is
                         the only surface a replicated trade appears on today —
                         `/portfolio/activity` is still a placeholder and the
                         per-asset rows are collapsed — so without it a member's
                         buy reads as the owner's own. */}
-                    {txn.mirror ? <MirrorAttributionChip attribution={txn.mirror.addedBy} /> : null}
-                  </div>
-                </td>
-                <td>
-                  <Badge tone={txn.side === 'buy' ? 'pos' : 'gold'}>
-                    {txn.side === 'buy'
-                      ? t('portfolio.overview.side.buy')
-                      : t('portfolio.overview.side.sell')}
-                  </Badge>
-                </td>
-                <td className="is-num">{formatQuantity(txn.quantity)}</td>
-                <td className="is-num">
-                  <MoneyText amount={txn.price} currency={txn.asset.currency} unitPrice />
-                </td>
-                <td className="bt-muted">{formatDate(txn.executedAt)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+                      {txn.mirror ? (
+                        <MirrorAttributionChip attribution={txn.mirror.addedBy} />
+                      ) : null}
+                    </div>
+                  </td>
+                  <td>
+                    <Badge tone={txn.side === 'buy' ? 'pos' : 'gold'}>
+                      {txn.side === 'buy'
+                        ? t('portfolio.overview.side.buy')
+                        : t('portfolio.overview.side.sell')}
+                    </Badge>
+                  </td>
+                  <td className="is-num">{formatQuantity(txn.quantity)}</td>
+                  <td className="is-num">
+                    <MoneyText amount={txn.price} currency={txn.asset.currency} unitPrice />
+                  </td>
+                  <td className="bt-muted">{formatDate(txn.executedAt)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
     </section>
   );
 }
@@ -543,6 +596,29 @@ function HoldingsTable({
   deletingId,
 }: HoldingsTableProps) {
   const t = useT();
+  const phone = usePhoneShell();
+
+  if (phone) {
+    return (
+      <ul aria-label={t('portfolio.overview.holdingsAriaLabel')} className="bt-phone-card-list">
+        {holdings.map((holding) => (
+          <HoldingCard
+            key={holding.asset.id}
+            holding={holding}
+            transactions={txnsByAsset.get(holding.asset.id) ?? []}
+            isExpanded={expanded.has(holding.asset.id)}
+            onToggle={() => onToggle(holding.asset.id)}
+            onRecord={onRecord}
+            onEditTxn={onEditTxn}
+            onDeleteTxn={onDeleteTxn}
+            onEditValuePoints={onEditValuePoints}
+            deletingId={deletingId}
+          />
+        ))}
+      </ul>
+    );
+  }
+
   return (
     <div className="bt-table-wrap">
       <table className="bt-table">
@@ -601,6 +677,155 @@ interface HoldingRowProps {
   onDeleteTxn: (txn: Transaction) => void;
   onEditValuePoints: (asset: ValuePointEditorAsset) => void;
   deletingId: string | null;
+}
+
+function HoldingCard({
+  holding,
+  transactions,
+  isExpanded,
+  onToggle,
+  onRecord,
+  onEditTxn,
+  onDeleteTxn,
+  onEditValuePoints,
+  deletingId,
+}: HoldingRowProps) {
+  const t = useT();
+  const { asset } = holding;
+  const dialogAsset: TransactionDialogAsset = {
+    id: asset.id,
+    symbol: asset.symbol,
+    name: asset.name,
+    currency: asset.currency,
+  };
+
+  return (
+    <li className="bt-phone-card">
+      <div className="bt-phone-card__head">
+        <div className="flex min-w-0 items-start gap-2">
+          <button
+            aria-expanded={isExpanded}
+            aria-label={
+              isExpanded
+                ? t('portfolio.overview.holdings.collapseRow', { symbol: asset.symbol })
+                : t('portfolio.overview.holdings.expandRow', { symbol: asset.symbol })
+            }
+            className="bt-btn bt-btn--quiet bt-btn--sm bt-btn--icon shrink-0"
+            onClick={onToggle}
+            type="button"
+          >
+            <span aria-hidden="true">{isExpanded ? '▾' : '▸'}</span>
+          </button>
+          <div className="min-w-0">
+            <Link
+              className="bt-row-title"
+              style={{ textDecoration: 'none' }}
+              to={`/assets/${asset.id}`}
+            >
+              {asset.symbol}
+            </Link>
+            <p className="bt-row-sub break-words">{asset.name}</p>
+          </div>
+        </div>
+        <span className="shrink-0 bt-num">
+          <MoneyText amount={holding.marketValueEur} />
+        </span>
+      </div>
+
+      <dl className="bt-phone-card__facts">
+        <div>
+          <dt>{t('portfolio.overview.field.qty')}</dt>
+          <dd className="bt-num">{formatQuantity(holding.quantity)}</dd>
+        </div>
+        <div>
+          <dt>{t('portfolio.overview.field.avgCost')}</dt>
+          <dd className="bt-num">
+            <MoneyText amount={holding.avgCost} currency={asset.currency} unitPrice />
+          </dd>
+        </div>
+        <div>
+          <dt>{t('portfolio.overview.field.price')}</dt>
+          <dd className="bt-num">
+            <MoneyText amount={holding.price} currency={asset.currency} unitPrice />
+          </dd>
+        </div>
+        <div>
+          <dt>{t('portfolio.overview.field.unrealizedPnl')}</dt>
+          <dd className="bt-num">
+            <MoneyText amount={holding.unrealizedPnlEur} signed />
+            {holding.unrealizedPnlPct != null ? (
+              <span className="ml-1">
+                <DeltaPct value={holding.unrealizedPnlPct} />
+              </span>
+            ) : null}
+          </dd>
+        </div>
+        <div>
+          <dt>{t('portfolio.overview.field.day')}</dt>
+          <dd className="bt-num">
+            <MoneyText amount={holding.dayChangeEur} signed />
+            {holding.dayChangePct != null ? (
+              <span className="ml-1">
+                <DeltaPct value={holding.dayChangePct} />
+              </span>
+            ) : null}
+          </dd>
+        </div>
+      </dl>
+
+      {isExpanded ? (
+        <div className="mt-4 border-t pt-4" style={{ borderColor: 'var(--bt-border)' }}>
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <h4 className="bt-label">{t('portfolio.overview.holdings.transactionsHeading')}</h4>
+            <div className="flex flex-wrap gap-2">
+              {asset.isCustom ? (
+                <Button
+                  onClick={() =>
+                    onEditValuePoints({
+                      id: asset.id,
+                      symbol: asset.symbol,
+                      name: asset.name,
+                      currency: asset.currency,
+                      category: asset.category ?? 'other',
+                      smoothing: asset.smoothing ?? false,
+                    })
+                  }
+                  size="sm"
+                >
+                  {t('portfolio.overview.holdings.editValuePoints')}
+                </Button>
+              ) : null}
+              <Button onClick={() => onRecord(dialogAsset)} size="sm">
+                {t('portfolio.overview.recordButton')}
+              </Button>
+            </div>
+          </div>
+          {holding.realizedPnl !== 0 ? (
+            <p className="bt-meta mt-3">
+              {t('portfolio.overview.holdings.realizedPnlLabel')}{' '}
+              <MoneyText amount={holding.realizedPnl} currency={asset.currency} signed />
+            </p>
+          ) : null}
+          {transactions.length === 0 ? (
+            <p className="bt-meta mt-3">{t('portfolio.overview.holdings.noTransactions')}</p>
+          ) : (
+            <ul className="mt-3 flex flex-col gap-2">
+              {transactions.map((transaction) => (
+                <TransactionCard
+                  key={transaction.id}
+                  currency={asset.currency}
+                  deleting={deletingId === transaction.id}
+                  onDelete={() => onDeleteTxn(transaction)}
+                  onEdit={() => onEditTxn(transaction)}
+                  txn={transaction}
+                />
+              ))}
+            </ul>
+          )}
+        </div>
+      ) : null}
+    </li>
+  );
 }
 
 function HoldingRow({
@@ -858,6 +1083,113 @@ function TransactionRow({
         )}
       </td>
     </tr>
+  );
+}
+
+function TransactionCard({
+  txn,
+  currency,
+  onEdit,
+  onDelete,
+  deleting,
+}: {
+  txn: Transaction;
+  currency: string;
+  onEdit: () => void;
+  onDelete: () => void;
+  deleting: boolean;
+}) {
+  const t = useT();
+  const [confirming, setConfirming] = useState(false);
+
+  return (
+    <li
+      className="rounded-md border p-3"
+      style={{ borderColor: 'var(--bt-border)', background: 'var(--bt-bg-raised)' }}
+    >
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <span className="inline-flex flex-wrap items-center gap-1.5">
+          <Badge tone={txn.side === 'buy' ? 'pos' : 'gold'}>
+            {txn.side === 'buy'
+              ? t('portfolio.overview.side.buy')
+              : t('portfolio.overview.side.sell')}
+          </Badge>
+          <SourceBadge source={txn.source} />
+          {txn.mirror ? <MirrorAttributionChip attribution={txn.mirror.addedBy} /> : null}
+        </span>
+        <span className="bt-meta">{formatDate(txn.executedAt)}</span>
+      </div>
+      <dl className="bt-phone-card__facts">
+        <div>
+          <dt>{t('portfolio.overview.field.qty')}</dt>
+          <dd className="bt-num">{formatQuantity(txn.quantity)}</dd>
+        </div>
+        <div>
+          <dt>{t('portfolio.overview.field.price')}</dt>
+          <dd className="bt-num">
+            <MoneyText amount={txn.price} currency={currency} unitPrice />
+          </dd>
+        </div>
+        <div>
+          <dt>{t('portfolio.overview.field.fee')}</dt>
+          <dd className="bt-num">
+            {txn.fee > 0 ? <MoneyText amount={txn.fee} currency={currency} /> : EM_DASH}
+          </dd>
+        </div>
+        <div>
+          <dt>{t('portfolio.overview.field.note')}</dt>
+          <dd>{txn.note ?? EM_DASH}</dd>
+        </div>
+      </dl>
+      <div className="bt-phone-card__actions">
+        {confirming ? (
+          <>
+            <span className="bt-muted self-center">
+              {t('portfolio.overview.transaction.deleteConfirm')}
+            </span>
+            <button
+              className="bt-btn bt-btn--danger bt-btn--sm"
+              disabled={deleting}
+              onClick={onDelete}
+              type="button"
+            >
+              {deleting ? '…' : t('common.yes')}
+            </button>
+            <button
+              className="bt-btn bt-btn--quiet bt-btn--sm"
+              disabled={deleting}
+              onClick={() => setConfirming(false)}
+              type="button"
+            >
+              {t('common.no')}
+            </button>
+          </>
+        ) : (
+          <>
+            <button
+              aria-label={t('portfolio.overview.transaction.editAriaLabel', {
+                date: formatDate(txn.executedAt),
+              })}
+              className="bt-btn bt-btn--quiet bt-btn--sm"
+              onClick={onEdit}
+              type="button"
+            >
+              {t('common.edit')}
+            </button>
+            <button
+              aria-label={t('portfolio.overview.transaction.deleteAriaLabel', {
+                date: formatDate(txn.executedAt),
+              })}
+              className="bt-btn bt-btn--quiet bt-btn--sm"
+              onClick={() => setConfirming(true)}
+              type="button"
+            >
+              ✕
+            </button>
+          </>
+        )}
+      </div>
+    </li>
   );
 }
 
@@ -1277,7 +1609,7 @@ export function PortfolioPage() {
   }
 
   return (
-    <div className="flex flex-col">
+    <div className="bt-money-surface flex flex-col">
       <PageHeader
         onRecord={() => setTxnDialog({ kind: 'create' })}
         onNewCustom={() => setCustomOpen(true)}

@@ -68,7 +68,7 @@ export function CashMovementTagsDialog({
   }
 
   return (
-    <Dialog onClose={onClose} title={t('cashflow.movements.tagDialog.title')}>
+    <Dialog onClose={onClose} phoneSheet title={t('cashflow.movements.tagDialog.title')}>
       <form className="flex flex-col gap-4" onSubmit={handleSubmit}>
         {tags.length === 0 ? (
           <p className="bt-meta">{t('cashflow.movements.tagDialog.noTags')}</p>
