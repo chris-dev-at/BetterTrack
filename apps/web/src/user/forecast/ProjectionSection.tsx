@@ -446,8 +446,8 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
 
       {/* ── What-if plans (local only) ──────────────────────────────────── */}
       <div className="flex flex-col gap-3">
-        <div className="flex items-center justify-between gap-3">
-          <div className="flex flex-col">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex min-w-0 flex-1 flex-col">
             <h3 className="text-sm font-semibold bt-soft">
               {t('forecast.projection.whatIf.title')}
             </h3>

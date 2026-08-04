@@ -553,6 +553,7 @@
   font-weight: 640;
   letter-spacing: -0.02em;
   line-height: 1.15;
+  overflow-wrap: anywhere;
 }
 
 .bt-page-sub {
@@ -1390,6 +1391,7 @@
   position: absolute;
   z-index: 72;
   min-width: 220px;
+  max-width: calc(100 * var(--bt-vw) - 16px);
   background: var(--bt-bg-raised);
   border: 1px solid var(--bt-border-strong);
   border-radius: 8px;
@@ -2092,6 +2094,25 @@
    utilities (`hidden`, `sm:flex`, …) lose the cascade against bt-* component
    display rules — bt-* markup uses these hide-only helpers instead. */
 @media (max-width: 639.98px) {
+  /* The donut + ranked bars need more than a phone-width row once their fixed
+     label/value columns are populated. Stack them throughout the narrow band;
+     waiting for the 480px phone-sheet breakpoint lets their min-content width
+     enlarge Chromium's layout viewport before that media query can match. */
+  .bt-money-surface .bt-bytag {
+    align-items: stretch;
+    flex-direction: column;
+    min-width: 0;
+  }
+
+  .bt-money-surface .bt-bytag__chart {
+    align-self: center;
+  }
+
+  .bt-money-surface .bt-bytag__bars {
+    width: 100%;
+    min-width: 0;
+  }
+
   .bt-hide-below-sm {
     display: none !important;
   }
@@ -4904,6 +4925,9 @@
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 
 /* Controls stay narrow: a popup is not a canvas. */
@@ -6966,6 +6990,8 @@
 .bt-tag-chip {
   display: inline-flex;
   align-items: center;
+  min-width: 0;
+  max-width: 100%;
   gap: 3px;
   padding: 2px 9px;
   border-radius: 999px;
@@ -6976,6 +7002,12 @@
   font-weight: 610;
   line-height: 1.6;
   white-space: nowrap;
+}
+
+.bt-tag-chip__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 :root[data-bt-theme='light'] .bt-tag-chip {

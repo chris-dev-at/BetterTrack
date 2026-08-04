@@ -294,7 +294,7 @@ export function ConglomerateDetailPage() {
             <h1 className="text-2xl font-semibold tracking-tight">{data.name}</h1>
             <StatusBadge status={data.status} />
           </div>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap gap-2">
             {!paranoid ? (
               <Button
                 variant="secondary"

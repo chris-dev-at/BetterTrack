@@ -26,7 +26,19 @@ const VIEWPORT_PROFILES = [
     deviceScaleFactor: 3,
   },
   {
+    label: 'DE phone 390px',
+    locale: 'de',
+    viewport: { width: 390, height: 844 },
+    deviceScaleFactor: 3,
+  },
+  {
     // #1047's previously ungated rail-hidden/topbar-not-wrapped breakpoint band.
+    label: 'EN mid-band 600px',
+    locale: 'en',
+    viewport: { width: 600, height: 900 },
+    deviceScaleFactor: 2,
+  },
+  {
     label: 'DE mid-band 600px',
     locale: 'de',
     viewport: { width: 600, height: 900 },
@@ -61,6 +73,10 @@ const LONG_WEBHOOK_DESCRIPTION =
 const LONG_WEBHOOK_URL = `https://example.com/mobile-overflow/${'deeply-nested-segment/'.repeat(
   20,
 )}delivery-endpoint`;
+// The exhaustive inventory generates hundreds of trace snapshots. Recycle the
+// renderer between bounded batches so a single page does not accumulate every
+// route's React/Vite state and crash before the later Control Center surfaces.
+const ROUTE_PAGE_BATCH_SIZE = 24;
 
 /** Public, non-token routes that are meaningful without a session. */
 const ANONYMOUS_CORE_ROUTES = ['/login', '/register', '/forgot-password'] as const;
@@ -666,9 +682,9 @@ const POPULATED_ROUTE_EXPECTATIONS: readonly PopulatedRouteExpectation[] = [
     justification: 'The portfolio overview must render the seeded holding.',
   },
   {
-    route: '/portfolio/activity',
+    route: '/portfolio',
     sentinel: () => LONG_TRANSACTION_NOTE,
-    justification: 'The activity ledger must render the long transaction annotation.',
+    justification: 'The expanded holding ledger must render the long transaction annotation.',
   },
   {
     route: '/portfolio/cash/movements',
@@ -755,7 +771,7 @@ const OVERLAY_SCENARIOS: readonly OverlayScenario[] = [
   {
     label: 'new-chat sheet',
     route: '/people/chat',
-    action: { kind: 'click', selector: '#main-content .bt-panel > .bt-b-rule .bt-btn' },
+    action: { kind: 'click', selector: '[data-testid="new-chat-trigger"]' },
     expectedSelector: '.bt-dialog__panel',
     sentinel: (fixtures) => fixtures.friendUsername,
     justification: 'Covers a social sheet populated with the long-username friend.',
@@ -765,8 +781,7 @@ const OVERLAY_SCENARIOS: readonly OverlayScenario[] = [
     route: '/control/notification-log',
     action: {
       kind: 'click',
-      selector: '.bt-cc-panel [role="tablist"] + div .bt-btn--danger',
-      position: 'last',
+      selector: '[data-testid="notification-delete-all-trigger"]',
     },
     expectedSelector: '.bt-dialog__panel',
     justification: 'Covers a Dialog portalled above the already-open Control Center dialog.',
@@ -776,8 +791,7 @@ const OVERLAY_SCENARIOS: readonly OverlayScenario[] = [
     route: '/portfolio',
     action: {
       kind: 'click',
-      selector: '.bt-topbar__actions button[aria-haspopup="menu"]',
-      position: 'first',
+      selector: '[data-testid="global-create-trigger"]',
     },
     expectedSelector: '.bt-topbar__actions .bt-popover[role="menu"]',
     justification: 'Covers the persistent create menu at both compact-shell widths.',
@@ -787,7 +801,7 @@ const OVERLAY_SCENARIOS: readonly OverlayScenario[] = [
     route: '/portfolio',
     action: {
       kind: 'click',
-      selector: '.bt-topbar__actions > .relative:nth-of-type(2) > button',
+      selector: '[data-testid="notification-bell-trigger"]',
     },
     expectedSelector: '#bt-notifications-popover',
     sentinel: (fixtures) => fixtures.friendUsername,
@@ -796,7 +810,7 @@ const OVERLAY_SCENARIOS: readonly OverlayScenario[] = [
   {
     label: 'account menu',
     route: '/portfolio',
-    action: { kind: 'click', selector: '.bt-topbar__account' },
+    action: { kind: 'click', selector: '[data-testid="topbar-account-trigger"]' },
     expectedSelector: '.bt-topbar__actions .bt-popover[role="menu"]',
     justification: 'Covers the long username/email inside the persistent account menu.',
   },
@@ -882,6 +896,12 @@ async function expectPopulatedRouteState(
   declaredRoute: string,
   fixtures: RouteFixtures,
 ): Promise<void> {
+  if (declaredRoute === '/portfolio') {
+    const holdingToggle = page.getByTestId(`holding-transactions-toggle-${fixtures.assetId}`);
+    await expect(holdingToggle).toBeVisible({ timeout: 20_000 });
+    if ((await holdingToggle.getAttribute('aria-expanded')) !== 'true') await holdingToggle.click();
+  }
+
   for (const expectation of POPULATED_ROUTE_EXPECTATIONS.filter(
     ({ route }) => route === declaredRoute,
   )) {
@@ -907,7 +927,30 @@ async function expectNoPageOverflow(
   viewportWidth: number,
   requireOverlay = isControlPanelRoute(declaredRoute),
 ): Promise<void> {
-  const layout = await page.evaluate((viewportWidth) => {
+  const layout = await page.evaluate((configuredViewportWidth) => {
+    // window.innerWidth and the configured emulation width can diverge from
+    // the document's layout viewport under mobile page scaling. Comparing the
+    // root's scrollWidth with its clientWidth is the browser's actual
+    // horizontal-scroll test.
+    const layoutViewportWidth = document.documentElement.clientWidth;
+    const rootStyle = getComputedStyle(document.documentElement);
+    const bottomBar = document.querySelector<HTMLElement>('.bt-bottombar');
+    const bottomBarStyle = bottomBar ? getComputedStyle(bottomBar) : null;
+    const wideContainers = [...document.body.querySelectorAll<HTMLElement>('*')]
+      .filter((element) => element.scrollWidth > layoutViewportWidth)
+      .slice(0, 12)
+      .map((element) => {
+        const style = getComputedStyle(element);
+        return {
+          element: `${element.tagName.toLowerCase()}${element.id ? `#${element.id}` : ''}${
+            element.classList.length > 0 ? `.${[...element.classList].slice(0, 2).join('.')}` : ''
+          }`,
+          clientWidth: element.clientWidth,
+          scrollWidth: element.scrollWidth,
+          overflowX: style.overflowX,
+          minWidth: style.minWidth,
+        };
+      });
     const suspects = [...document.body.querySelectorAll<HTMLElement>('*')]
       .map((element) => {
         const rect = element.getBoundingClientRect();
@@ -923,20 +966,40 @@ async function expectNoPageOverflow(
       })
       .filter(
         ({ left, right, width }) =>
-          width > 0 && left < viewportWidth && (right > viewportWidth || width > viewportWidth),
+          width > 0 &&
+          left < layoutViewportWidth &&
+          (right > layoutViewportWidth || width > layoutViewportWidth),
       )
       .slice(0, 8);
 
     return {
       scrollWidth: document.documentElement.scrollWidth,
+      layoutViewportWidth,
       suspects,
+      diagnostics: {
+        configuredViewportWidth,
+        innerWidth: window.innerWidth,
+        visualViewportWidth: window.visualViewport?.width ?? null,
+        visualViewportScale: window.visualViewport?.scale ?? null,
+        devicePixelRatio: window.devicePixelRatio,
+        rootZoom: rootStyle.zoom,
+        rootZoomVariable: rootStyle.getPropertyValue('--bt-zoom').trim(),
+        bottomBar: bottomBarStyle
+          ? {
+              width: bottomBarStyle.width,
+              maxWidth: bottomBarStyle.maxWidth,
+              gridAutoColumns: bottomBarStyle.gridAutoColumns,
+            }
+          : null,
+        wideContainers,
+      },
     };
   }, viewportWidth);
 
   expect(
     layout.scrollWidth,
-    `${declaredRoute} scrolls horizontally (${layout.scrollWidth}px > ${viewportWidth}px). Suspects: ${JSON.stringify(layout.suspects)}`,
-  ).toBeLessThanOrEqual(viewportWidth);
+    `${declaredRoute} scrolls horizontally (${layout.scrollWidth}px > ${layout.layoutViewportWidth}px layout viewport; ${viewportWidth}px configured). Suspects: ${JSON.stringify(layout.suspects)}. Diagnostics: ${JSON.stringify(layout.diagnostics)}`,
+  ).toBeLessThanOrEqual(layout.layoutViewportWidth);
 
   // Fixed/portalled overlays can be clipped by the viewport without increasing
   // document.scrollWidth. Measure every visible panel/menu plus its horizontal
@@ -1003,16 +1066,16 @@ async function expectNoPageOverflow(
     ).toBeLessThanOrEqual(measurement.clientWidth);
     expect(
       measurement.renderedWidth,
-      `${declaredRoute} ${measurement.region} is wider than the ${viewportWidth}px viewport`,
-    ).toBeLessThanOrEqual(viewportWidth + 1);
+      `${declaredRoute} ${measurement.region} is wider than the ${layout.layoutViewportWidth}px layout viewport (${viewportWidth}px configured)`,
+    ).toBeLessThanOrEqual(layout.layoutViewportWidth + 1);
     expect(
       measurement.left,
       `${declaredRoute} ${measurement.region} extends left of the viewport`,
     ).toBeGreaterThanOrEqual(-1);
     expect(
       measurement.right,
-      `${declaredRoute} ${measurement.region} extends right of the ${viewportWidth}px viewport`,
-    ).toBeLessThanOrEqual(viewportWidth + 1);
+      `${declaredRoute} ${measurement.region} extends right of the ${layout.layoutViewportWidth}px layout viewport (${viewportWidth}px configured)`,
+    ).toBeLessThanOrEqual(layout.layoutViewportWidth + 1);
   }
 }
 
@@ -1022,6 +1085,26 @@ async function setStoredLocale(page: Page, locale: GateLocale): Promise<void> {
     key: LOCALE_STORAGE_KEY,
     value: locale,
   });
+}
+
+async function setAuthenticatedLocale(
+  api: APIRequestContext,
+  page: Page,
+  locale: GateLocale,
+): Promise<void> {
+  await responseJson<Record<string, unknown>>(
+    await api.patch(`${API_BASE_URL}/api/v1/settings/account`, {
+      headers: { 'X-Requested-With': 'BetterTrack' },
+      data: { locale },
+    }),
+    `setting the populated account locale to ${locale}`,
+  );
+  // LocaleSync treats the account setting as authoritative after sign-in. Keep
+  // local storage aligned as well, then reload so both I18nProvider and /me
+  // start this matrix profile in the requested language.
+  await setStoredLocale(page, locale);
+  await page.reload();
+  await expect(page.locator('html')).toHaveAttribute('lang', locale, { timeout: 20_000 });
 }
 
 async function exerciseOverlayScenario(
@@ -1117,9 +1200,14 @@ for (const profile of VIEWPORT_PROFILES) {
       );
       await friend.context.close();
       await apiRequest.dispose();
-      await setStoredLocale(owner.page, profile.locale);
+      await setAuthenticatedLocale(owner.context.request, owner.page, profile.locale);
 
-      for (const route of [...AUTHENTICATED_CORE_ROUTES, ...CONTROL_CORE_ROUTES]) {
+      const populatedRoutes = [...AUTHENTICATED_CORE_ROUTES, ...CONTROL_CORE_ROUTES];
+      for (const [routeIndex, route] of populatedRoutes.entries()) {
+        if (routeIndex > 0 && routeIndex % ROUTE_PAGE_BATCH_SIZE === 0) {
+          await owner.page.close();
+          owner.page = await owner.context.newPage();
+        }
         await test.step(`populated ${route}`, async () => {
           const target = concreteRoute(route, fixtures);
           await settleRoute(owner.page, route, target);
@@ -1129,6 +1217,8 @@ for (const profile of VIEWPORT_PROFILES) {
         });
       }
 
+      await owner.page.close();
+      owner.page = await owner.context.newPage();
       for (const scenario of OVERLAY_SCENARIOS) {
         await test.step(`open overlay: ${scenario.label}`, async () => {
           await exerciseOverlayScenario(owner.page, scenario, fixtures, profile.viewport.width);

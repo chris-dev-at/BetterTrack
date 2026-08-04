@@ -37,6 +37,10 @@ function adminRuntimeConfig(): Plugin {
 }
 
 export default mergeConfig(base, {
+  // The e2e stack starts the user and admin Vite servers together. Their
+  // different plugin graphs must not race over one optimize-deps cache or the
+  // user app can receive 504 "Outdated Optimize Dep" modules mid-run.
+  cacheDir: 'node_modules/.vite-admin',
   plugins: [adminRuntimeConfig()],
   // `--port` on the command line still wins, which is how the e2e boot moves
   // this off a developer's own admin server.

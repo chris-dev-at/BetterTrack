@@ -54,10 +54,12 @@ export async function provisionUserInContext(
 ): Promise<E2EUser> {
   const uid = `${Date.now().toString(36)}${(seq++).toString(36)}`;
   const email = `e2e-${label}-${uid}@bettertrack.local`;
-  const username = `e2e${label}${uid}`
-    .replace(/[^a-z0-9]/gi, '')
-    .toLowerCase()
-    .slice(0, 40);
+  const usernameStem = `e2e${label}`.replace(/[^a-z0-9]/gi, '').toLowerCase();
+  // Preserve the uniqueness suffix even when a deliberately long fixture label
+  // exercises the 40-character username boundary. Truncating the combined value
+  // discarded `uid`, so a retry or a second viewport profile reused the exact
+  // same username and failed registration before its assertions could run.
+  const username = `${usernameStem.slice(0, 40 - uid.length)}${uid}`;
 
   const token = await createInvite(apiRequest, email);
   const page = await context.newPage();

@@ -140,12 +140,18 @@ export function CashMovementsPage() {
       />
 
       {tags.length > 1 ? (
-        <label className="bt-meta flex items-center gap-1.5">
+        <label className="bt-meta flex flex-wrap items-center gap-1.5">
           {t('cashflow.movements.filterLabel')}
           <select
             className="bt-select"
             onChange={(e) => setTagFilter(e.target.value)}
-            style={{ minHeight: 28, padding: '2px 26px 2px 8px', width: 'auto', fontSize: 12 }}
+            style={{
+              minHeight: 28,
+              maxWidth: '100%',
+              padding: '2px 26px 2px 8px',
+              width: 'auto',
+              fontSize: 12,
+            }}
             value={tagFilter}
           >
             <option value={ALL_FILTER}>{t('cashflow.movements.filterAll')}</option>
