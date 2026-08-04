@@ -199,6 +199,67 @@ describe('POST /api/v1/auth/logout', () => {
   });
 });
 
+describe('GET /api/v1/auth/me', () => {
+  it('returns privacyMode for normal and paranoid accounts over session and bearer auth', async () => {
+    const normal = await harness.seedUser();
+    const paranoid = await harness.seedUser({
+      email: 'paranoid@bettertrack.test',
+      username: 'paranoid',
+    });
+    await harness.db
+      .update(users)
+      .set({
+        privacyMode: 'paranoid',
+        paranoidMediaSet: ['server'],
+        paranoidDriveAttestedVersion: null,
+      })
+      .where(eq(users.id, paranoid.id));
+
+    const normalAgent = request.agent(harness.app);
+    const normalLogin = await normalAgent
+      .post('/api/v1/auth/login')
+      .set(...XRW)
+      .send({ identifier: normal.email, password: normal.password });
+    expect(normalLogin.status).toBe(200);
+
+    const paranoidAgent = request.agent(harness.app);
+    const paranoidLogin = await paranoidAgent
+      .post('/api/v1/auth/login')
+      .set(...XRW)
+      .send({ identifier: paranoid.email, password: paranoid.password });
+    expect(paranoidLogin.status).toBe(200);
+
+    const normalSession = await normalAgent.get('/api/v1/auth/me');
+    const paranoidSession = await paranoidAgent.get('/api/v1/auth/me');
+    expect(normalSession.status).toBe(200);
+    expect(paranoidSession.status).toBe(200);
+    expect(meResponseSchema.parse(normalSession.body).privacyMode).toBe('normal');
+    expect(meResponseSchema.parse(paranoidSession.body).privacyMode).toBe('paranoid');
+
+    const normalKey = await harness.ctx.apiKeys.create({
+      userId: normal.id,
+      name: 'normal identity',
+      scopes: ['portfolio:read'],
+    });
+    const paranoidKey = await harness.ctx.apiKeys.create({
+      userId: paranoid.id,
+      name: 'paranoid identity',
+      scopes: ['portfolio:read'],
+    });
+    const normalBearer = await request(harness.app)
+      .get('/api/v1/auth/me')
+      .set('Authorization', `Bearer ${normalKey.token}`);
+    const paranoidBearer = await request(harness.app)
+      .get('/api/v1/auth/me')
+      .set('Authorization', `Bearer ${paranoidKey.token}`);
+
+    expect(normalBearer.status).toBe(200);
+    expect(paranoidBearer.status).toBe(200);
+    expect(meResponseSchema.parse(normalBearer.body).privacyMode).toBe('normal');
+    expect(meResponseSchema.parse(paranoidBearer.body).privacyMode).toBe('paranoid');
+  });
+});
+
 // Pulls the raw `bt_sid=...` cookie pair out of a Set-Cookie header so an old
 // session id can be replayed after rotation.
 function sessionCookie(res: request.Response): string {

@@ -89,6 +89,7 @@ export function toMeResponse(user: AuthUser): MeResponse {
     locale: user.locale,
     profileIcon: user.profileIcon,
     discreetMode: user.discreetMode,
+    privacyMode: user.privacyMode,
     lastLoginAt: toIso(user.lastLoginAt),
     firstRunCompletedAt: toIso(user.firstRunCompletedAt),
     createdAt: toIsoRequired(user.createdAt),
