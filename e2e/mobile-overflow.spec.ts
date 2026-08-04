@@ -424,17 +424,14 @@ const SHELLLESS_AUTH_ROUTES = new Set([
   '/chat-window',
 ]);
 
+function isControlPanelRoute(route: string): boolean {
+  return route === '/control' || (route.startsWith('/control/') && route !== '/control/data');
+}
+
 async function settleRoute(page: Page, declaredRoute: string, target: string): Promise<void> {
   await page.goto(target);
-  expect(
-    new URL(page.url()).pathname,
-    `${declaredRoute} redirected instead of being measured`,
-  ).toBe(target);
 
-  if (
-    declaredRoute === '/control' ||
-    (declaredRoute.startsWith('/control/') && declaredRoute !== '/control/data')
-  ) {
+  if (isControlPanelRoute(declaredRoute)) {
     await expect(page.getByRole('dialog')).toBeVisible({ timeout: 20_000 });
   } else if (
     !ANONYMOUS_CORE_ROUTES.includes(declaredRoute as (typeof ANONYMOUS_CORE_ROUTES)[number]) &&
@@ -454,6 +451,11 @@ async function settleRoute(page: Page, declaredRoute: string, target: string): P
       requestAnimationFrame(() => requestAnimationFrame(() => resolveFrame())),
     );
   });
+
+  expect(
+    new URL(page.url()).pathname,
+    `${declaredRoute} redirected instead of being measured`,
+  ).toBe(target);
 }
 
 async function expectNoPageOverflow(page: Page, declaredRoute: string): Promise<void> {
@@ -487,6 +489,38 @@ async function expectNoPageOverflow(page: Page, declaredRoute: string): Promise<
     layout.scrollWidth,
     `${declaredRoute} scrolls horizontally (${layout.scrollWidth}px > ${VIEWPORT_WIDTH}px). Suspects: ${JSON.stringify(layout.suspects)}`,
   ).toBeLessThanOrEqual(VIEWPORT_WIDTH);
+
+  if (!isControlPanelRoute(declaredRoute)) return;
+
+  // The Control Center is fixed over Home, so its clipped overflow cannot
+  // increase the document scrollWidth. Measure both the popup and its own
+  // scroller so a wide panel child still turns this gate red.
+  const controlLayout = await page.locator('.bt-cc__panel').evaluate((panel) => {
+    const content = panel.querySelector<HTMLElement>('.bt-cc__content');
+    if (content === null) return null;
+
+    const measure = (element: HTMLElement) => ({
+      clientWidth: element.clientWidth,
+      renderedWidth: element.getBoundingClientRect().width,
+      scrollWidth: element.scrollWidth,
+    });
+
+    return { content: measure(content), panel: measure(panel as HTMLElement) };
+  });
+
+  expect(controlLayout, `${declaredRoute} did not render the Control Center layout`).not.toBeNull();
+  if (controlLayout === null) return;
+
+  for (const [region, measurement] of Object.entries(controlLayout)) {
+    expect(
+      measurement.scrollWidth,
+      `${declaredRoute} ${region} scrolls horizontally (${measurement.scrollWidth}px > ${measurement.clientWidth}px)`,
+    ).toBeLessThanOrEqual(measurement.clientWidth);
+    expect(
+      measurement.renderedWidth,
+      `${declaredRoute} ${region} is wider than the ${VIEWPORT_WIDTH}px viewport`,
+    ).toBeLessThanOrEqual(VIEWPORT_WIDTH);
+  }
 }
 
 test('mobile route inventory classifies every UserApp destination', () => {
@@ -516,6 +550,15 @@ test('mobile overflow gate fits every core route', async ({ context }) => {
     await test.step(route, async () => {
       const target = concreteRoute(route, fixtures);
       await settleRoute(owner.page, route, target);
+      if (route === '/control') {
+        await owner.page.locator('.bt-cc__content').evaluate((content) => {
+          const probe = document.createElement('div');
+          probe.style.width = '600px';
+          probe.style.minWidth = '600px';
+          probe.textContent = 'Temporary Control Center overflow red probe';
+          content.prepend(probe);
+        });
+      }
       await expectNoPageOverflow(owner.page, route);
     });
   }

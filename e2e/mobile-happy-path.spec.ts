@@ -27,6 +27,7 @@ test('mobile happy path: money, portfolio wizard, market, chat and settings', as
   const apiRequest = await newRequestContext.newContext({ baseURL: API_BASE_URL });
   await loginAsAdmin(apiRequest);
   const owner = await provisionUserInContext(context, apiRequest, 'mobile-owner');
+  // The friend only supplies chat state; the owner's context is the viewport under test.
   const friend = await provisionUser(browser, apiRequest, 'mobile-friend');
   await apiRequest.dispose();
 
