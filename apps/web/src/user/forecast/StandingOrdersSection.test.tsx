@@ -165,7 +165,9 @@ describe('StandingOrdersSection', () => {
 
     // A confirm prompt appears before any API call is made.
     expect(standingOrdersApi.deleteStandingOrder).not.toHaveBeenCalled();
-    expect(screen.getByText('Delete?')).toBeInTheDocument();
+    expect(
+      screen.getByText('Delete this standing order? It stops creating future entries.'),
+    ).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: 'VWCE.DE Yes' }));
 

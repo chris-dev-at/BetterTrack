@@ -1,4 +1,5 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
+import { useState } from 'react';
 import { Link } from 'react-router-dom';
 
 import type { Alert, AlertStatus } from '@bettertrack/contracts';
@@ -35,6 +36,14 @@ function AlertRow({
 }) {
   const t = useT();
   const queryClient = useQueryClient();
+  /**
+   * Delete used to fire on the first click, from a `size="sm"` danger button
+   * sitting directly beside Edit — one slip permanently removed a rule the user
+   * had built, with no undo and no confirmation. The two-step inline confirm is
+   * the idiom already used for cash sources, standing orders and transactions,
+   * so it costs no new component and reads the same way everywhere.
+   */
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
 
   const rearmMutation = useMutation({
     mutationFn: () => rearmAlert(alert.id),
@@ -85,9 +94,33 @@ function AlertRow({
         <Button disabled={busy} onClick={() => onEdit(alert)} size="sm" variant="quiet">
           {t('common.edit')}
         </Button>
-        <Button disabled={busy} onClick={() => deleteMutation.mutate()} size="sm" variant="danger">
-          {deleteMutation.isPending ? t('workboard.alerts.list.deleting') : t('common.delete')}
-        </Button>
+        {confirmingDelete ? (
+          <>
+            <span className="bt-muted self-center text-xs">
+              {t('workboard.alerts.list.deleteConfirm')}
+            </span>
+            <Button
+              disabled={busy}
+              onClick={() => deleteMutation.mutate()}
+              size="sm"
+              variant="danger"
+            >
+              {deleteMutation.isPending ? t('workboard.alerts.list.deleting') : t('common.delete')}
+            </Button>
+            <Button disabled={busy} onClick={() => setConfirmingDelete(false)} size="sm">
+              {t('common.cancel')}
+            </Button>
+          </>
+        ) : (
+          <Button
+            disabled={busy}
+            onClick={() => setConfirmingDelete(true)}
+            size="sm"
+            variant="danger"
+          >
+            {t('common.delete')}
+          </Button>
+        )}
       </div>
 
       {rearmMutation.isError || deleteMutation.isError ? (

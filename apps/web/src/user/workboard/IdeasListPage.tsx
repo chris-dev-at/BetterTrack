@@ -189,6 +189,11 @@ export function IdeasListPage() {
           icon="💡"
           title={t('workboard.ideas.list.emptyTitle')}
           description={t('workboard.ideas.list.emptyBody')}
+          cta={
+            <Link to="/workbench/blueprints" className="rounded text-sm bt-link">
+              {t('workboard.ideas.list.emptyCta')}
+            </Link>
+          }
         />
       ) : (
         <ul className="bt-panel bt-band">

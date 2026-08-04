@@ -127,7 +127,7 @@ describe('AlertsPage', () => {
     expect(rearmAlert).toHaveBeenCalledWith('al1');
   });
 
-  test('delete calls the API', async () => {
+  test('delete asks for confirmation before it calls the API', async () => {
     const user = userEvent.setup();
     vi.mocked(listAlerts).mockResolvedValue({ items: [alert()] });
     vi.mocked(deleteAlert).mockResolvedValue(undefined);
@@ -135,7 +135,29 @@ describe('AlertsPage', () => {
 
     await waitFor(() => expect(screen.getByText('Delete')).toBeInTheDocument());
     await user.click(screen.getByText('Delete'));
+
+    // First click only arms the confirm — an alert is not destroyed by one slip
+    // of a small danger button sitting next to Edit.
+    expect(deleteAlert).not.toHaveBeenCalled();
+    expect(
+      screen.getByText("Delete this alert? It stops being evaluated and can't be restored."),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByText('Delete'));
     expect(deleteAlert).toHaveBeenCalledWith('al1');
+  });
+
+  test('cancelling the delete confirm leaves the alert alone', async () => {
+    const user = userEvent.setup();
+    vi.mocked(listAlerts).mockResolvedValue({ items: [alert()] });
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText('Delete')).toBeInTheDocument());
+    await user.click(screen.getByText('Delete'));
+    await user.click(screen.getByText('Cancel'));
+
+    expect(deleteAlert).not.toHaveBeenCalled();
+    expect(screen.queryByText(/It stops being evaluated/)).not.toBeInTheDocument();
   });
 
   test('at 390 px opens alert creation as a bottom sheet', async () => {
