@@ -72,13 +72,30 @@ test('shell chrome fits the viewport and keeps every main area reachable', async
     }
 
     const activeMainItems = page.locator(
-      '.bt-bottombar > a.is-active, .bt-rail__group--suite > .bt-rail-item.is-active, .bt-rail__group--suite > .bt-rail-group > .bt-rail-item.is-active',
+      '.bt-bottombar:not([hidden]) > a.is-active, .bt-rail:not([hidden]) .bt-rail__group--suite > .bt-rail-item.is-active, .bt-rail:not([hidden]) .bt-rail__group--suite > .bt-rail-group > .bt-rail-item.is-active',
     );
     await expect(activeMainItems).toHaveCount(1);
-    const activeEdge = await activeMainItems.evaluateAll((items) =>
+    const activeEdge = await activeMainItems.evaluate((item) => {
+      const goldProbe = document.createElement('span');
+      goldProbe.style.backgroundColor = 'var(--bt-gold)';
+      item.append(goldProbe);
+      const gold = getComputedStyle(goldProbe).backgroundColor;
+      goldProbe.remove();
+
+      const edge = getComputedStyle(item, '::before');
+      return { backgroundColor: edge.backgroundColor, content: edge.content, gold };
+    });
+    expect(activeEdge.content).not.toBe('none');
+    expect(activeEdge.backgroundColor).toBe(activeEdge.gold);
+
+    const inactiveMainItems = page.locator(
+      '.bt-bottombar:not([hidden]) > a:not(.is-active), .bt-rail:not([hidden]) .bt-rail__group--suite > .bt-rail-item:not(.is-active), .bt-rail:not([hidden]) .bt-rail__group--suite > .bt-rail-group > .bt-rail-item:not(.is-active)',
+    );
+    const inactiveEdges = await inactiveMainItems.evaluateAll((items) =>
       items.map((item) => getComputedStyle(item, '::before').content),
     );
-    expect(activeEdge).toEqual(expect.arrayContaining([expect.not.stringMatching(/^none$/)]));
+    expect(inactiveEdges.length).toBeGreaterThan(0);
+    for (const edge of inactiveEdges) expect(edge).toBe('none');
 
     const layout = await page.evaluate(() => ({
       scrollWidth: document.documentElement.scrollWidth,
@@ -93,13 +110,9 @@ test('shell chrome fits the viewport and keeps every main area reachable', async
 
     if (mobile) {
       const undersizedTargets = await page
-        .locator('.bt-topbar a, .bt-topbar button, .bt-bottombar a')
+        .locator('.bt-topbar a:visible, .bt-topbar button:visible, .bt-bottombar a:visible')
         .evaluateAll((targets) =>
           targets
-            .filter((target) => {
-              const style = getComputedStyle(target);
-              return style.display !== 'none' && style.visibility !== 'hidden';
-            })
             .map((target) => {
               const box = target.getBoundingClientRect();
               return {
