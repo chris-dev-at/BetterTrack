@@ -237,34 +237,6 @@ a medium (it syncs, it is not chosen).
   exclusively the same user's own devices and §4's merge repairs any race.
   Drive's native revisions are the history net on that medium.
 
-### 4.1 Native-client bearer sync exception (owner mandate 2026-08-04)
-
-The native mobile client may carry the single combined OAuth/API-key scope
-**`vault:sync`**. Sync is inherently read-write, so this is deliberately not a
-synthetic read/write pair. Its bearer surface is exact and default-closed:
-
-- `GET /api/v1/vault` and `PUT /api/v1/vault` (the existing ETag/
-  `If-Match`/`If-None-Match` CAS contract);
-- `GET /api/v1/vault/media` (state metadata only, never blob bytes); and
-- `GET /api/v1/vault/history` plus
-  `GET /api/v1/vault/history/:version` for conflict/restore UX.
-
-The exception changes authentication reachability, not the storage protocol.
-Bearer PUT uses the same per-user vault limiter and byte cap as the browser
-session path. The server still reads only the cleartext `BTVAULT1` header needed
-to validate the envelope/version; ciphertext remains opaque and is returned
-byte-identically.
-
-Everything that changes privacy mode or storage disposition remains owning-
-browser-session-only even when a token carries `vault:sync`: all
-`/account/paranoid/*` endpoints (enable, disable, fork provenance and normal-
-revision capture), `PATCH /vault/media`, server-candidate staging/read-back, and
-retired-server purge/challenge. Native clients need the encrypted bytes to keep
-a paranoid account usable; they do not need authority to perform destructive or
-recovery-media transitions. The paranoid bearer kill rail therefore explicitly
-keeps `vault:sync` while continuing to refuse portfolio/tax/import scopes with
-`PARANOID_MODE`.
-
 **Write path:** local commit (optimistic UI) → encrypt full vault (version =
 last seen + 1) → CAS-push to the **primary** medium → replicate the identical
 bytes to the secondary. **Primary = server whenever the media set contains
@@ -290,6 +262,50 @@ mirrorchain §3 rationale verbatim):
 Whole-blob fallback (unreadable/corrupt candidate): the readable blob with
 the highest version wins; the corrupt bytes are kept locally for the restore
 picker, never silently discarded.
+
+### 4.1 Native-client bearer sync exception (owner mandate 2026-08-04)
+
+Everything above §4.1 — media, CAS, the binding conflict rule — is the storage
+protocol and applies identically to every writer. This subsection adds only who
+may authenticate to it.
+
+The native mobile client may carry the single combined OAuth/API-key scope
+**`vault:sync`**. Sync is inherently read-write, so this is deliberately not a
+synthetic read/write pair. Its bearer surface is exact and default-closed:
+
+- `GET /api/v1/vault` and `PUT /api/v1/vault` (the existing ETag/
+  `If-Match`/`If-None-Match` CAS contract);
+- `GET /api/v1/vault/media` (state metadata only, never blob bytes); and
+- `GET /api/v1/vault/history` plus
+  `GET /api/v1/vault/history/:version` for conflict/restore UX.
+
+The exception changes authentication reachability, not the storage protocol.
+Bearer PUT uses the same per-user vault limiter and byte cap as the browser
+session path. The server still reads only the cleartext `BTVAULT1` header needed
+to validate the envelope/version; ciphertext remains opaque and is returned
+byte-identically.
+
+**Binding — the retirement proof verifier is not part of sync.** The second
+cleartext header a session PUT may carry
+(`X-BetterTrack-Vault-Retirement-Proof-Public-Key`, §5/§7's immutable purge
+verifier) is **ignored on the bearer path**: a bearer write always resolves it to
+`null`, which neither pins a key when it creates the row nor enrols one on a
+keyless vault's next CAS write. Otherwise a `vault:sync` token — including one
+granted on an account that has not enabled paranoid mode, where a create is not
+short-circuited by `medium_inactive` — could pin a generated verifier the account
+owner does not hold and can never override, locking the owning browser out of
+enrolment (`proof_key_conflict`) and out of retired-server purge. Enrolling the
+verifier stays an owning-browser-session act on a vault a bearer created too.
+
+Everything that changes privacy mode or storage disposition remains owning-
+browser-session-only even when a token carries `vault:sync`: all
+`/account/paranoid/*` endpoints (enable, disable, fork provenance and normal-
+revision capture), `PATCH /vault/media`, server-candidate staging/read-back, and
+retired-server purge/challenge. Native clients need the encrypted bytes to keep
+a paranoid account usable; they do not need authority to perform destructive or
+recovery-media transitions. The paranoid bearer kill rail therefore explicitly
+keeps `vault:sync` while continuing to refuse portfolio/tax/import scopes with
+`PARANOID_MODE`.
 
 ## 5. Media-set switching + blob migration
 

@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash, generateKeyPairSync, randomBytes } from 'node:crypto';
 
 import { eq } from 'drizzle-orm';
 import type { Application, Request, Response } from 'express';
@@ -13,11 +13,12 @@ import {
   VAULT_HISTORY_CREATED_AT_HEADER,
   VAULT_HISTORY_MEDIUM_HEADER,
   VAULT_HISTORY_SIZE_BYTES_HEADER,
+  VAULT_RETIREMENT_PROOF_PUBLIC_KEY_HEADER,
   type ApiKeyScope,
 } from '@bettertrack/contracts';
 
 import { createOAuthRepository } from '../data/repositories/oauthRepository';
-import { users } from '../data/schema';
+import { paranoidVaults, users } from '../data/schema';
 import {
   VAULT_SYNC_BEARER_ROUTE_ALLOWLIST,
   pathAcceptsBearer,
@@ -104,6 +105,21 @@ async function mintPersonalToken(
   return { user, token: key.token };
 }
 
+/** A real Ed25519 SPKI verifier — the route parses it in Node before storing it. */
+function ed25519PublicKey(): string {
+  return generateKeyPairSync('ed25519')
+    .publicKey.export({ type: 'spki', format: 'der' })
+    .toString('base64url');
+}
+
+async function storedProofKey(userId: string): Promise<string | null> {
+  const [row] = await harness.db
+    .select({ key: paranoidVaults.retirementProofPublicKey })
+    .from(paranoidVaults)
+    .where(eq(paranoidVaults.userId, userId));
+  return row?.key ?? null;
+}
+
 /** Build a valid envelope whose ciphertext deliberately is not application data. */
 function envelope(vaultVersion: number, ciphertext: Uint8Array): Buffer {
   return Buffer.from(
@@ -184,7 +200,9 @@ describe('#1043 vault bearer policy', () => {
     { method: 'PUT', path: '/vault' },
     { method: 'GET', path: '/vault/media' },
     { method: 'GET', path: '/vault/history' },
-    { method: 'GET', path: '/vault/history/{version}' },
+    // The segment matcher is declared by the entry, not inferred from how the
+    // placeholder is spelled, so renaming `{version}` cannot widen matching.
+    { method: 'GET', path: '/vault/history/{version}', param: 'positive-integer' },
   ] as const;
 
   const SESSION_ONLY = [
@@ -215,33 +233,34 @@ describe('#1043 vault bearer policy', () => {
   });
 
   it('keeps the router-local guard default-closed independently of global scope policy', () => {
-    const rejected = vi.fn();
-    requireCookieSessionOrVaultSync(
-      {
-        apiKey: { id: 'key' },
-        method: 'PATCH',
-        path: '/media',
-      } as unknown as Request,
-      {} as Response,
-      rejected,
-    );
+    const guard = (apiKey: { id: string; scopes: string[] }, method: string, path: string) => {
+      const next = vi.fn();
+      requireCookieSessionOrVaultSync(
+        { apiKey, method, path } as unknown as Request,
+        {} as Response,
+        next,
+      );
+      return next;
+    };
+    const syncKey = { id: 'key', scopes: ['vault:sync'] };
+
+    // Unlisted route: refused even though the token holds the right scope.
+    const rejected = guard(syncKey, 'PATCH', '/media');
     expect(rejected).toHaveBeenCalledOnce();
     expect(rejected.mock.calls[0]![0]).toMatchObject({
       statusCode: 403,
       code: 'API_KEY_FORBIDDEN',
     });
 
-    const admitted = vi.fn();
-    requireCookieSessionOrVaultSync(
-      {
-        apiKey: { id: 'key' },
-        method: 'PUT',
-        path: '/',
-      } as unknown as Request,
-      {} as Response,
-      admitted,
-    );
-    expect(admitted).toHaveBeenCalledWith();
+    // Allowlisted route, wrong scope: the guard is scope-aware too, so a global
+    // policy-table regression alone cannot hand the vault to an unrelated token.
+    const wrongScope = guard({ id: 'key', scopes: ['market:read'] }, 'PUT', '/');
+    expect(wrongScope.mock.calls[0]![0]).toMatchObject({
+      statusCode: 403,
+      code: 'API_KEY_FORBIDDEN',
+    });
+
+    expect(guard(syncKey, 'PUT', '/')).toHaveBeenCalledWith();
   });
 });
 
@@ -384,6 +403,61 @@ describe('#1043 bearer vault synchronization', () => {
     expect(denied.status).toBe(403);
     expect(denied.body.error.code).toBe('INSUFFICIENT_SCOPE');
     expect(denied.body.error.message).toContain('vault:sync');
+  });
+
+  it('never lets a bearer pin the immutable retirement verifier, on a fresh or a keyless vault', async () => {
+    // The reviewer's attack: a `vault:sync` grant on an account that has NOT
+    // enabled paranoid mode, where `medium_inactive` does not short-circuit the
+    // create. Pinning a generated verifier there would lock the owning browser
+    // out of enrolment (409) and out of retired-server purge forever.
+    const { user, token } = await mintPersonalToken(['vault:sync'], 'proofkey');
+    const attackerKey = ed25519PublicKey();
+    const browserKey = ed25519PublicKey();
+    expect(attackerKey).not.toBe(browserKey);
+
+    const created = await request(harness.app)
+      .put('/api/v1/vault')
+      .set(bearer(token))
+      .set(...OCTET)
+      .set('If-None-Match', '*')
+      .set(VAULT_RETIREMENT_PROOF_PUBLIC_KEY_HEADER, attackerKey)
+      .send(envelope(1, new Uint8Array([1])));
+    expect(created.status, JSON.stringify(created.body)).toBe(204);
+    expect(await storedProofKey(user.id)).toBeNull();
+
+    // A bearer CAS write over the now-keyless vault must not enrol one either.
+    const replaced = await request(harness.app)
+      .put('/api/v1/vault')
+      .set(bearer(token))
+      .set(...OCTET)
+      .set('If-Match', '"1"')
+      .set(VAULT_RETIREMENT_PROOF_PUBLIC_KEY_HEADER, attackerKey)
+      .send(envelope(2, new Uint8Array([2])));
+    expect(replaced.status, JSON.stringify(replaced.body)).toBe(204);
+    expect(await storedProofKey(user.id)).toBeNull();
+
+    // The owning browser session still enrols its own verifier afterwards.
+    const agent = await loginAgent(harness.app, user);
+    const enrolled = await agent
+      .put('/api/v1/vault')
+      .set(...XRW)
+      .set(...OCTET)
+      .set('If-Match', '"2"')
+      .set(VAULT_RETIREMENT_PROOF_PUBLIC_KEY_HEADER, browserKey)
+      .send(envelope(3, new Uint8Array([3])));
+    expect(enrolled.status, JSON.stringify(enrolled.body)).toBe(204);
+    expect(await storedProofKey(user.id)).toBe(browserKey);
+
+    // And a later bearer write neither conflicts with nor overwrites it.
+    const afterEnrolment = await request(harness.app)
+      .put('/api/v1/vault')
+      .set(bearer(token))
+      .set(...OCTET)
+      .set('If-Match', '"3"')
+      .set(VAULT_RETIREMENT_PROOF_PUBLIC_KEY_HEADER, attackerKey)
+      .send(envelope(4, new Uint8Array([4])));
+    expect(afterEnrolment.status, JSON.stringify(afterEnrolment.body)).toBe(204);
+    expect(await storedProofKey(user.id)).toBe(browserKey);
   });
 
   it('uses the same exact byte cap for bearer PUTs as the session path', async () => {

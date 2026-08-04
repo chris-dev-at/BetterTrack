@@ -13,6 +13,7 @@ import {
   retiredServerPurgeChallengeResponseSchema,
   retiredServerPurgeRequestSchema,
   retiredServerPurgeResponseSchema,
+  scopeSatisfies,
   VAULT_CONTENT_TYPE,
   VAULT_ERROR_CODES,
   VAULT_HISTORY_CREATED_AT_HEADER,
@@ -38,7 +39,7 @@ import {
 import { ApiError, forbidden, notFound } from '../../errors';
 
 import type { AppContext } from '../context';
-import { vaultSyncRouteAcceptsBearer } from '../middleware/bearerAuth';
+import { VAULT_SYNC_SCOPE, vaultSyncRouteAcceptsBearer } from '../middleware/bearerAuth';
 import type { RateLimiters } from '../middleware/rateLimit';
 import { requireUser } from '../middleware/session';
 import { validateBody, validateParams, validateQuery } from '../middleware/validate';
@@ -77,6 +78,9 @@ const malformed = (message: string): ApiError =>
 export const requireCookieSessionOrVaultSync: RequestHandler = (req, _res, next) => {
   const bearerSyncAllowed =
     req.apiKey !== undefined &&
+    // Route-aware AND scope-aware: if the global policy table is what regresses,
+    // a token holding some unrelated scope must still not reach the vault.
+    scopeSatisfies(req.apiKey.scopes, VAULT_SYNC_SCOPE) &&
     vaultSyncRouteAcceptsBearer(
       req.method,
       `/vault${req.path === '/' || req.path === '' ? '' : req.path}`,
@@ -106,7 +110,21 @@ const requireParanoidHistory: RequestHandler = (req, _res, next) => {
   next();
 };
 
+/**
+ * The retirement proof verifier is a recovery-media authority, not part of the
+ * sync protocol: it is immutable once stored (a later CAS write supplying a
+ * different key is refused with `proof_key_conflict`), it is the only thing a
+ * retired-server purge can ever verify against, and it is *generated* client
+ * side rather than derived, so whoever writes it first pins a value nobody else
+ * can reproduce. #1043 grants a bearer opaque byte sync, explicitly not that
+ * authority, so this second cleartext header is not read at all on the bearer
+ * path — it resolves to `null`, which is inert in both CAS branches: the create
+ * branch stores no key and the update branch keeps whatever the row already has
+ * (`current.retirementProofPublicKey ?? …`). The owning browser session
+ * therefore remains the only enroller, on a vault a bearer created as well.
+ */
 function parseRetirementProofPublicKey(req: Parameters<RequestHandler>[0]): string | null {
+  if (req.apiKey) return null;
   const raw = req.get(VAULT_RETIREMENT_PROOF_PUBLIC_KEY_HEADER);
   if (!raw) return null;
   const parsed = vaultRetirementProofPublicKeySchema.safeParse(raw);
