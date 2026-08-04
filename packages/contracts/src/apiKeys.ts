@@ -27,9 +27,10 @@ export const API_KEY_TOKEN_PREFIX = 'btk_';
  * scopes granted but unusable by bearers). `alerts:*` gates the price-alerts
  * module (V3-P10) under `/alerts/*`, added for the same reason (#405 — alerts
  * shipped without a bearer scope, so mobile could never reach it). `cash:*`
- * gates the V5 cash-classification layer under `/cash/*` (#1041), and
+ * gates the V5 cash-classification layer under `/cash/*` (#1041),
  * `mirrorchain:*` gates the deliberately limited group-portfolio participation
- * surface (#1042).
+ * surface (#1042), and `vault:sync` is the single read-write capability for the
+ * deliberately narrow native-client paranoid-vault sync exception (#1043).
  */
 export const API_KEY_SCOPES = [
   'portfolio:read',
@@ -58,6 +59,9 @@ export const API_KEY_SCOPES = [
   // Administration remains session-only at the method-aware route allowlist.
   'mirrorchain:read',
   'mirrorchain:write',
+  // #1043 addition — opaque paranoid-vault sync is inherently read-write, so
+  // this is one combined scope rather than an artificial read/write pair.
+  'vault:sync',
 ] as const;
 
 export const apiKeyScopeSchema = z.enum(API_KEY_SCOPES);
@@ -68,8 +72,8 @@ export type ApiKeyScope = (typeof API_KEY_SCOPES)[number];
  * scope always confers its `<module>:read` — granting or holding the write can
  * never leave the read unreachable. The map is derived from the taxonomy itself:
  * each `:write` pairs with the `:read` of the same module when that read exists
- * in {@link API_KEY_SCOPES}. `account:security` is a single combined scope (no
- * read/write split) and therefore has no implied partner.
+ * in {@link API_KEY_SCOPES}. Combined scopes such as `account:security` and
+ * `vault:sync` have no read/write split and therefore no implied partner.
  */
 export const IMPLIED_READ_SCOPE: Readonly<Partial<Record<ApiKeyScope, ApiKeyScope>>> =
   Object.freeze(

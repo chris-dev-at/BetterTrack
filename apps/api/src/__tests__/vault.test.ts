@@ -179,7 +179,7 @@ async function mintDelegatedSecurityToken(): Promise<string> {
 }
 
 describe('vault blob store', () => {
-  it('requires an authenticated session', async () => {
+  it('requires an authenticated owner', async () => {
     const res = await request(harness.app).get('/api/v1/vault');
     expect(res.status).toBe(401);
   });
@@ -466,7 +466,7 @@ describe('vault blob store', () => {
 });
 
 describe('durable paranoid server-media lifecycle', () => {
-  it('rejects personal and delegated account-security bearers from every vault-media surface', async () => {
+  it('rejects personal and delegated account-security bearers from vault transitions', async () => {
     const user = await harness.seedUser({ email: 'key-vault@bt.test', username: 'keyvault' });
     const personal = await harness.ctx.apiKeys.create({
       userId: user.id,
@@ -474,8 +474,9 @@ describe('durable paranoid server-media lifecycle', () => {
       scopes: ['account:security'],
     });
     const personalResult = await request(harness.app)
-      .get('/api/v1/vault/media')
-      .set('Authorization', `Bearer ${personal.token}`);
+      .patch('/api/v1/vault/media')
+      .set('Authorization', `Bearer ${personal.token}`)
+      .send({ mediaSet: ['server'], expectedVaultVersion: 1 });
     expect(personalResult.status).toBe(403);
     expect(personalResult.body.error.code).toBe('API_KEY_FORBIDDEN');
 

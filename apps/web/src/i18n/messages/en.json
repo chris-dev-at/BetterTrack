@@ -355,6 +355,10 @@
           "label": "Group portfolios",
           "description": "View your group portfolios, members, activity and invitations, or accept and decline invitations and leave group portfolios."
         },
+        "vaultSync": {
+          "label": "Vault sync",
+          "description": "Synchronize your client-encrypted vault across your devices. Privacy-mode and storage transitions stay in your browser session."
+        },
         "accountSecurity": {
           "label": "Account security",
           "description": "Manage sign-in sessions, two-factor authentication, password and the app PIN."

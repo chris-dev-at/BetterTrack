@@ -62,6 +62,8 @@ export const OAUTH_SCOPE_LABELS: Record<ApiKeyScope, string> = {
   // #1042 — participation only; group administration remains browser-session-only.
   'mirrorchain:read': 'View your group portfolios, members, activity and invitations',
   'mirrorchain:write': 'Accept or decline group invitations and leave group portfolios',
+  // #1043 — one inherently read-write scope; transitions remain browser-session-only.
+  'vault:sync': 'Synchronize your client-encrypted vault across your devices',
 };
 
 // ── Redirect URI validation ─────────────────────────────────────────────────

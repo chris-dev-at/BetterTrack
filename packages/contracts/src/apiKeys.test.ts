@@ -20,14 +20,15 @@ describe('write-implies-read scope model (#371)', () => {
           expect(implied).toBe(read);
         }
       } else {
-        // Reads and the combined account:security scope imply nothing.
+        // Reads and combined scopes imply nothing.
         expect(implied).toBeUndefined();
       }
     }
   });
 
-  it('has no write partner for account:security (combined scope)', () => {
+  it('has no write partner for combined scopes', () => {
     expect(impliedReadScope('account:security')).toBeUndefined();
+    expect(impliedReadScope('vault:sync')).toBeUndefined();
     expect(writeScopeForRead('portfolio:read')).toBe('portfolio:write');
     expect(writeScopeForRead('market:read')).toBeUndefined();
     // The map is symmetric with writeScopeForRead.
@@ -80,6 +81,7 @@ describe('write-implies-read scope model (#371)', () => {
     it('a direct scope match still satisfies', () => {
       expect(scopeSatisfies(['notifications:read'], 'notifications:read')).toBe(true);
       expect(scopeSatisfies(['account:security'], 'account:security')).toBe(true);
+      expect(scopeSatisfies(['vault:sync'], 'vault:sync')).toBe(true);
     });
 
     it('never crosses modules', () => {

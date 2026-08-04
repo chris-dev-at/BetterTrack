@@ -493,6 +493,9 @@ describe('paranoid kill registry', () => {
       expect(isParanoidKilledScope(scope), scope).toBe(true);
     }
     expect(isParanoidKilledScope('market:read')).toBe(false);
+    // #1043's combined scope exists specifically so a paranoid native client
+    // can move opaque ciphertext; it must never join the portfolio-scope kill rail.
+    expect(isParanoidKilledScope('vault:sync')).toBe(false);
 
     const killedWebhookEvents = PARANOID_KILL_REGISTRY.flatMap((entry) => entry.webhookEventTypes);
     expect(Object.keys(PARANOID_WEBHOOK_SUBJECT_POLICIES).sort()).toEqual(

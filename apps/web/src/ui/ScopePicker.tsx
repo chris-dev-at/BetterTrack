@@ -40,6 +40,7 @@ interface ScopeModule {
     | 'alerts'
     | 'cash'
     | 'mirrorchain'
+    | 'vaultSync'
     | 'accountSecurity';
   /** The `:read` scope for this module, or null when no read-half exists. */
   read: ApiKeyScope | null;
@@ -73,6 +74,7 @@ const SCOPE_MODULES: readonly ScopeModule[] = [
     write: 'mirrorchain:write',
     combined: null,
   },
+  { key: 'vaultSync', read: null, write: null, combined: 'vault:sync' },
   { key: 'accountSecurity', read: null, write: null, combined: 'account:security' },
 ];
 

@@ -196,13 +196,52 @@ describe('OpenAPI document', () => {
       ]);
     }
 
+    // #1043: only opaque vault sync operations advertise bearer auth. Media
+    // transitions, candidate/retirement lifecycle and account transitions stay
+    // owning-browser-session operations in the generated contract too.
+    const vaultBearerOperations = [
+      ['get', '/vault'],
+      ['put', '/vault'],
+      ['get', '/vault/media'],
+      ['get', '/vault/history'],
+      ['get', '/vault/history/{version}'],
+    ] as const;
+    for (const [method, path] of vaultBearerOperations) {
+      const operation = (paths[path] as JsonObject)[method] as JsonObject;
+      expect(operation.security, `security for ${method.toUpperCase()} ${path}`).toEqual([
+        { sessionCookie: [] },
+        { apiKeyBearer: [] },
+      ]);
+    }
+
+    const vaultSessionOperations = [
+      ['patch', '/vault/media'],
+      ['put', '/vault/media/server-candidate'],
+      ['get', '/vault/media/server-candidate/{candidateId}'],
+      ['post', '/vault/media/retired/purge/challenge'],
+      ['post', '/vault/media/retired/purge'],
+    ] as const;
+    for (const [method, path] of vaultSessionOperations) {
+      const operation = (paths[path] as JsonObject)[method] as JsonObject;
+      expect(operation.security, `security for ${method.toUpperCase()} ${path}`).toEqual([
+        { sessionCookie: [] },
+      ]);
+    }
+
     // Paranoid transitions (§13.5 V5-P13) are session-only in the middleware, so
     // the derived spec must NOT advertise a bearer for either direction — a
     // client-generated SDK that offered it would only ever get 403s, and the
     // sibling `/account/*` routes stay bearer-callable, so this cannot be assumed.
-    for (const path of ['/account/paranoid/enable', '/account/paranoid/disable']) {
-      const operation = (paths[path] as JsonObject).post as JsonObject;
-      expect(operation.security, `security for POST ${path}`).toEqual([{ sessionCookie: [] }]);
+    for (const [method, path] of [
+      ['post', '/account/paranoid/enable'],
+      ['post', '/account/paranoid/disable'],
+      ['get', '/account/paranoid/fork-provenance'],
+      ['get', '/account/paranoid/normal-revision'],
+    ] as const) {
+      const operation = (paths[path] as JsonObject)[method] as JsonObject;
+      expect(operation.security, `security for ${method.toUpperCase()} ${path}`).toEqual([
+        { sessionCookie: [] },
+      ]);
     }
     expect(
       ((paths['/account'] as JsonObject).delete as JsonObject).security,

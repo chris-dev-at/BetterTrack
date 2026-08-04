@@ -355,6 +355,10 @@
           "label": "Gruppenportfolios",
           "description": "Deine Gruppenportfolios, Mitglieder, Aktivitäten und Einladungen lesen oder Einladungen annehmen und ablehnen sowie Gruppenportfolios verlassen."
         },
+        "vaultSync": {
+          "label": "Tresor-Synchronisierung",
+          "description": "Deinen clientseitig verschlüsselten Tresor zwischen deinen Geräten synchronisieren. Datenschutzmodus- und Speicherwechsel bleiben deiner Browser-Sitzung vorbehalten."
+        },
         "accountSecurity": {
           "label": "Kontosicherheit",
           "description": "Sitzungen, Zwei-Faktor-Authentifizierung, Passwort und die App-PIN verwalten."

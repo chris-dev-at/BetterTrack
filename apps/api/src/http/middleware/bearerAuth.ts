@@ -13,6 +13,38 @@ import type { AppContext } from '../context';
 const BEARER_PREFIX = 'Bearer ';
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
+/** The single inherently read-write scope gating the paranoid-vault sync surface. */
+export const VAULT_SYNC_SCOPE = 'vault:sync';
+
+/**
+ * How an allowlist entry's `{param}` placeholders match a live path segment.
+ * Declared per entry rather than inferred from the placeholder's spelling, so a
+ * later route whose id parameter happens to be named `{version}` cannot silently
+ * change matching semantics for a shared helper.
+ */
+type RouteParamKind = 'uuid' | 'positive-integer';
+
+/** One method + path template in a bearer allowlist. `param` defaults to `uuid`. */
+interface BearerRoute {
+  readonly method: string;
+  readonly path: string;
+  readonly param?: RouteParamKind;
+}
+
+/**
+ * The sync-only bearer exception for the opaque paranoid vault (#1043).
+ * `vault:sync` is inherently read-write, but the route surface remains
+ * method-aware and default-closed: storage/media transitions and account-mode
+ * transitions are deliberately absent from this list.
+ */
+export const VAULT_SYNC_BEARER_ROUTE_ALLOWLIST = [
+  { method: 'GET', path: '/vault' },
+  { method: 'PUT', path: '/vault' },
+  { method: 'GET', path: '/vault/media' },
+  { method: 'GET', path: '/vault/history' },
+  { method: 'GET', path: '/vault/history/{version}', param: 'positive-integer' },
+] as const satisfies readonly BearerRoute[];
+
 /**
  * The deliberately narrow mobile-participation surface for MIRRORCHAIN (#1042).
  * This list is method-aware because `GET /chains` participates while
@@ -28,7 +60,7 @@ export const MIRRORCHAIN_BEARER_ROUTE_ALLOWLIST = [
   { method: 'POST', path: '/mirrorchain/invites/{inviteId}/accept' },
   { method: 'POST', path: '/mirrorchain/invites/{inviteId}/decline' },
   { method: 'POST', path: '/mirrorchain/chains/{chainId}/leave' },
-] as const;
+] as const satisfies readonly BearerRoute[];
 
 function normalizedRouteSegments(path: string): string[] {
   const pathname = path.split('?', 1)[0]!.replace(/\/+$/, '').toLowerCase();
@@ -36,21 +68,30 @@ function normalizedRouteSegments(path: string): string[] {
 }
 
 const UUID_ROUTE_SEGMENT = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const POSITIVE_INTEGER_ROUTE_SEGMENT = /^[1-9][0-9]*$/;
 
-function matchesRouteTemplate(path: string, template: string): boolean {
+const ROUTE_PARAM_MATCHERS: Record<RouteParamKind, RegExp> = {
+  uuid: UUID_ROUTE_SEGMENT,
+  'positive-integer': POSITIVE_INTEGER_ROUTE_SEGMENT,
+};
+
+function matchesRoute(path: string, route: BearerRoute): boolean {
   const actual = normalizedRouteSegments(path);
-  const expected = normalizedRouteSegments(template);
+  const expected = normalizedRouteSegments(route.path);
+  // The matcher comes from the allowlist entry, never from how the placeholder
+  // happens to be spelled — renaming `{version}` cannot change what matches.
+  const paramMatcher = ROUTE_PARAM_MATCHERS[route.param ?? 'uuid'];
   return (
     actual.length === expected.length &&
     expected.every((segment, index) => {
       const actualSegment = actual[index]!;
       if (segment.startsWith('{') && segment.endsWith('}')) {
         // OpenAPI calls this predicate with `{param}` templates; live requests
-        // must carry a UUID. Refusing arbitrary static words keeps a future
-        // same-depth admin route from accidentally matching an id placeholder.
+        // carry real ids. Refusing arbitrary static words keeps a future
+        // same-depth admin route from matching a parameter placeholder.
         return (
           (actualSegment.startsWith('{') && actualSegment.endsWith('}')) ||
-          UUID_ROUTE_SEGMENT.test(actualSegment)
+          paramMatcher.test(actualSegment)
         );
       }
       return segment === actualSegment;
@@ -58,12 +99,23 @@ function matchesRouteTemplate(path: string, template: string): boolean {
   );
 }
 
+function routeAllowlistAccepts(
+  allowlist: readonly BearerRoute[],
+  method: string,
+  path: string,
+): boolean {
+  const normalizedMethod = method.toUpperCase();
+  return allowlist.some((route) => route.method === normalizedMethod && matchesRoute(path, route));
+}
+
+/** Whether one exact method + path is in the paranoid-vault sync allowlist. */
+export function vaultSyncRouteAcceptsBearer(method: string, path: string): boolean {
+  return routeAllowlistAccepts(VAULT_SYNC_BEARER_ROUTE_ALLOWLIST, method, path);
+}
+
 /** Whether one exact method + path is in the MIRRORCHAIN bearer allowlist. */
 export function mirrorchainRouteAcceptsBearer(method: string, path: string): boolean {
-  const normalizedMethod = method.toUpperCase();
-  return MIRRORCHAIN_BEARER_ROUTE_ALLOWLIST.some(
-    (route) => route.method === normalizedMethod && matchesRouteTemplate(path, route.path),
-  );
+  return routeAllowlistAccepts(MIRRORCHAIN_BEARER_ROUTE_ALLOWLIST, method, path);
 }
 
 /**
@@ -307,10 +359,16 @@ function resolvePolicy(requestPath: string, requestMethod = 'GET'): PathPolicy {
   if (path === '/settings/webhooks' || path.startsWith('/settings/webhooks/')) {
     return { kind: 'session-only' };
   }
-  // Client-encrypted vault media is strictly browser-cookie-session only. A
-  // personal API key or delegated OAuth bearer never gets to stage, retire,
-  // recover, or purge opaque vault bytes — even with account:security.
-  if (path === '/vault' || path.startsWith('/vault/')) return { kind: 'session-only' };
+  // #1043: native clients may synchronize the already-encrypted vault with the
+  // single inherently read-write vault:sync scope. The exact method-aware
+  // allowlist admits the live blob, media-state read and conflict-history reads
+  // only. Staging, media transitions, retirement and purge stay browser-session
+  // work, and any future /vault route defaults closed.
+  if (path === '/vault' || path.startsWith('/vault/')) {
+    return vaultSyncRouteAcceptsBearer(requestMethod, path)
+      ? { kind: 'scope', read: VAULT_SYNC_SCOPE, write: VAULT_SYNC_SCOPE }
+      : { kind: 'session-only' };
+  }
   // MIRRORCHAIN is participation-over-administration for bearer clients
   // (#1042). Resolve the method-aware allowlist BEFORE MODULE_POLICIES: an
   // unlisted route defaults closed instead of inheriting mirrorchain:write.

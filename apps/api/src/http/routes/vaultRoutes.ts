@@ -13,6 +13,7 @@ import {
   retiredServerPurgeChallengeResponseSchema,
   retiredServerPurgeRequestSchema,
   retiredServerPurgeResponseSchema,
+  scopeSatisfies,
   VAULT_CONTENT_TYPE,
   VAULT_ERROR_CODES,
   VAULT_HISTORY_CREATED_AT_HEADER,
@@ -38,6 +39,7 @@ import {
 import { ApiError, forbidden, notFound } from '../../errors';
 
 import type { AppContext } from '../context';
+import { VAULT_SYNC_SCOPE, vaultSyncRouteAcceptsBearer } from '../middleware/bearerAuth';
 import type { RateLimiters } from '../middleware/rateLimit';
 import { requireUser } from '../middleware/session';
 import { validateBody, validateParams, validateQuery } from '../middleware/validate';
@@ -67,22 +69,32 @@ const malformed = (message: string): ApiError =>
   new ApiError(400, VAULT_ERROR_CODES.malformed, message);
 
 /**
- * The global bearer policy also marks `/vault` session-only. Keeping this local
- * guard makes the ownership boundary explicit for direct-router use and future
- * route additions: a personal key or delegated OAuth principal never counts as
- * the browser session needed to manipulate encrypted recovery media.
+ * Local defense-in-depth for #1043's sync-only bearer exception. A bearer may
+ * reach only the exact opaque sync reads/writes listed by the global policy;
+ * every media/storage transition and every future route still requires the
+ * owning cookie session. Direct-router use therefore cannot silently widen the
+ * exception if the mount or global policy changes later.
  */
-const requireCookieSession: RequestHandler = (req, _res, next) => {
-  if (req.apiKey || !req.sessionId) {
-    next(
-      forbidden(
-        'Vault media is available only to the owning browser session.',
-        'API_KEY_FORBIDDEN',
-      ),
+export const requireCookieSessionOrVaultSync: RequestHandler = (req, _res, next) => {
+  const bearerSyncAllowed =
+    req.apiKey !== undefined &&
+    // Route-aware AND scope-aware: if the global policy table is what regresses,
+    // a token holding some unrelated scope must still not reach the vault.
+    scopeSatisfies(req.apiKey.scopes, VAULT_SYNC_SCOPE) &&
+    vaultSyncRouteAcceptsBearer(
+      req.method,
+      `/vault${req.path === '/' || req.path === '' ? '' : req.path}`,
     );
+  if ((!req.apiKey && req.sessionId) || bearerSyncAllowed) {
+    next();
     return;
   }
-  next();
+  next(
+    forbidden(
+      'This vault endpoint is available only to the owning browser session.',
+      'API_KEY_FORBIDDEN',
+    ),
+  );
 };
 
 const requireParanoidHistory: RequestHandler = (req, _res, next) => {
@@ -98,7 +110,21 @@ const requireParanoidHistory: RequestHandler = (req, _res, next) => {
   next();
 };
 
+/**
+ * The retirement proof verifier is a recovery-media authority, not part of the
+ * sync protocol: it is immutable once stored (a later CAS write supplying a
+ * different key is refused with `proof_key_conflict`), it is the only thing a
+ * retired-server purge can ever verify against, and it is *generated* client
+ * side rather than derived, so whoever writes it first pins a value nobody else
+ * can reproduce. #1043 grants a bearer opaque byte sync, explicitly not that
+ * authority, so this second cleartext header is not read at all on the bearer
+ * path — it resolves to `null`, which is inert in both CAS branches: the create
+ * branch stores no key and the update branch keeps whatever the row already has
+ * (`current.retirementProofPublicKey ?? …`). The owning browser session
+ * therefore remains the only enroller, on a vault a bearer created as well.
+ */
 function parseRetirementProofPublicKey(req: Parameters<RequestHandler>[0]): string | null {
+  if (req.apiKey) return null;
   const raw = req.get(VAULT_RETIREMENT_PROOF_PUBLIC_KEY_HEADER);
   if (!raw) return null;
   const parsed = vaultRetirementProofPublicKeySchema.safeParse(raw);
@@ -155,7 +181,7 @@ export function createVaultRouter(ctx: AppContext, limiters: RateLimiters): Rout
   const router = Router();
   const parseRawEnvelope = rawVaultBody(ctx);
 
-  router.use(requireUser, requireCookieSession);
+  router.use(requireUser, requireCookieSessionOrVaultSync);
   router.use('/history', requireParanoidHistory);
 
   router.get('/history', validateQuery(vaultHistoryListQuerySchema), async (req, res) => {

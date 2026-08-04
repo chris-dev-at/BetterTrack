@@ -57,6 +57,7 @@ describe('ScopePicker', () => {
       'Alerts',
       'Cash',
       'Group portfolios',
+      'Vault sync',
       'Account security',
     ]) {
       expect(screen.getAllByText(label)).toHaveLength(1);
@@ -64,10 +65,10 @@ describe('ScopePicker', () => {
     // The read/write column labels appear as visible text.
     expect(screen.getAllByText('Read').length).toBeGreaterThan(0);
     expect(screen.getAllByText('Write').length).toBeGreaterThan(0);
-    // 8 modules with read+write (16) + market (read only, 1) + account
-    // security (single Access toggle, 1) = 18. Verbose descriptions are gone
+    // 8 modules with read+write (16) + market (read only, 1) + vault sync and
+    // account security (one Access toggle each, 2) = 19. Verbose descriptions are gone
     // — the row IS the module now.
-    expect(screen.getAllByRole('checkbox').length).toBe(18);
+    expect(screen.getAllByRole('checkbox').length).toBe(19);
   });
 
   test('ticking Write auto-ticks and locks Read (#371 — write implies read)', async () => {
@@ -128,6 +129,7 @@ describe('ScopePicker', () => {
       await user.click(screen.getByRole('checkbox', { name: rx }));
     }
     await user.click(screen.getByRole('checkbox', { name: /market · read/i }));
+    await user.click(screen.getByRole('checkbox', { name: /vault sync · access/i }));
     await user.click(screen.getByRole('checkbox', { name: /account security · access/i }));
 
     const last = seen[seen.length - 1]!;
@@ -135,7 +137,7 @@ describe('ScopePicker', () => {
     expect(new Set(last)).toEqual(new Set(API_KEY_SCOPES));
   });
 
-  test('Market has no Write half and Account security is a single combined toggle', () => {
+  test('Market has no Write half and combined scopes use one Access toggle', () => {
     render(<PickerHarness />);
     // Market: read only, no write.
     expect(screen.queryByRole('checkbox', { name: /market · write/i })).not.toBeInTheDocument();
@@ -150,6 +152,7 @@ describe('ScopePicker', () => {
     expect(
       screen.getByRole('checkbox', { name: /account security · access/i }),
     ).toBeInTheDocument();
+    expect(screen.getByRole('checkbox', { name: /vault sync · access/i })).toBeInTheDocument();
   });
 
   test('removes portfolio-scoped grants entirely for a paranoid account', () => {
@@ -160,6 +163,7 @@ describe('ScopePicker', () => {
     expect(screen.queryByText('Portfolio')).not.toBeInTheDocument();
     expect(screen.queryByRole('checkbox', { name: /portfolio · read/i })).not.toBeInTheDocument();
     expect(screen.getByRole('checkbox', { name: /market · read/i })).toBeInTheDocument();
+    expect(screen.getByRole('checkbox', { name: /vault sync · access/i })).toBeInTheDocument();
   });
 
   test('info-point reveals the module description on demand — not by default', async () => {
@@ -200,7 +204,7 @@ describe('ScopePicker', () => {
     );
     const details = container.querySelector('details');
     expect(details?.open).toBe(true);
-    expect(screen.getAllByRole('checkbox').length).toBe(18);
+    expect(screen.getAllByRole('checkbox').length).toBe(19);
   });
 });
 
