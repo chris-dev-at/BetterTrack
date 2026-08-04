@@ -55,6 +55,18 @@ const BAYN: SearchResultItem = {
   isCustom: false,
 };
 
+const LONG_SUBTITLE_ASSET: SearchResultItem = {
+  id: 'asset-harvest-apple',
+  providerId: 'yahoo',
+  providerRef: 'APLY.TO',
+  symbol: 'APLY',
+  name: 'Harvest Apple Enhanced High Income Shares ETF Class A Units',
+  exchange: 'Toronto',
+  type: 'etf',
+  currency: 'CAD',
+  isCustom: false,
+};
+
 function makeSearchResponse(items: SearchResultItem[], enriching?: boolean): SearchResponse {
   return enriching === undefined ? { results: items } : { results: items, enriching };
 }
@@ -807,4 +819,22 @@ test('at 390 px adds a result to a named watchlist from the wrapped action row',
 
   expect(workboardApi.addToWorkboard).toHaveBeenCalledWith('asset-nvda', 'wl-tech');
   expect(container.querySelector('.bt-asset-result__actions')).toBeInTheDocument();
+});
+
+test('at 390 px constrains a long result subtitle without shrinking its actions', async () => {
+  setViewportWidth(390);
+  vi.mocked(searchApi.searchAssets).mockResolvedValue(makeSearchResponse([LONG_SUBTITLE_ASSET]));
+  const user = userEvent.setup();
+  const { container } = renderSearchBox();
+
+  await user.type(screen.getByRole('searchbox'), 'APLY');
+  const openResult = await screen.findByRole('button', { name: /open aply/i });
+  const subtitle = within(openResult).getByText(/Harvest Apple Enhanced High Income Shares/);
+
+  // ResultRow uses `items-start`; the subtitle therefore needs an explicit
+  // available width for `truncate` to contain long secondary text at phone widths.
+  expect(subtitle).toHaveClass('w-full', 'min-w-0', 'truncate');
+  expect(container.querySelector('.bt-asset-result__actions')).toHaveClass('shrink-0');
+  expect(screen.getByRole('button', { name: /add aply to watchlist/i })).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: /record a buy/i })).toBeInTheDocument();
 });

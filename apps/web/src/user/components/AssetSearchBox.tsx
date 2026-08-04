@@ -475,7 +475,7 @@ function ResultRow({
           <MarketStateBadge state={item.marketState} />
           <CapabilityTags type={item.type} />
         </div>
-        <span className="truncate text-xs bt-muted">
+        <span className="w-full min-w-0 truncate text-xs bt-muted">
           {item.name}
           {item.exchange ? <> · {item.exchange}</> : null}
           {' · '}
