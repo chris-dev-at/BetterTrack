@@ -205,7 +205,7 @@ export function createApp(ctx: AppContext) {
   // fusion) and now READ-ONLY, so the fused tables cannot diverge again.
   app.use('/api/v1/expenses', createExpensesRouter(ctx));
   // Cash flow (V5 cash fusion): tags, movement tagging, budgets and auto-tagging
-  // rules on the portfolio cash ledger. Session-only, no bearer scope mapped.
+  // rules on the portfolio cash ledger. Bearer reads/writes use cash:read/cash:write.
   app.use('/api/v1/cash', createCashRouter(ctx));
   // Runtime kill-switches (§13.5 V5-P2 arc (c)): `requireFeature` refuses the
   // whole router (clean 404) the moment an admin flips the flag OFF — evaluated

@@ -10,8 +10,17 @@ import {
 import { cx } from '../lib/cx';
 import { useT } from '../i18n';
 
+const PARANOID_BLOCKED_SCOPES: ReadonlySet<ApiKeyScope> = new Set([
+  'portfolio:read',
+  'portfolio:write',
+  'cash:read',
+  'cash:write',
+  'mirrorchain:read',
+  'mirrorchain:write',
+]);
+
 export function isParanoidBlockedScope(scope: ApiKeyScope): boolean {
-  return scope === 'portfolio:read' || scope === 'portfolio:write';
+  return PARANOID_BLOCKED_SCOPES.has(scope);
 }
 
 /**

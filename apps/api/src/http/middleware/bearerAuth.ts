@@ -448,7 +448,7 @@ export function enforceApiKeyScope(ctx: AppContext): RequestHandler {
     if (req.authUser?.privacyMode === 'paranoid' && isParanoidKilledScope(required)) {
       next(
         forbidden(
-          'Portfolio, tax, and import API scopes are unavailable while paranoid mode is active.',
+          'This API scope is unavailable while paranoid mode is active.',
           PARANOID_MODE_ERROR_CODE,
         ),
       );

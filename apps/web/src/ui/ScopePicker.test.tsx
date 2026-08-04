@@ -5,7 +5,7 @@ import { describe, expect, test } from 'vitest';
 
 import { API_KEY_SCOPES, type ApiKeyScope } from '@bettertrack/contracts';
 
-import { ScopePicker, ScopeSummary } from './ScopePicker';
+import { isParanoidBlockedScope, ScopePicker, ScopeSummary } from './ScopePicker';
 
 /**
  * V5-P0b — the shared scope picker must:
@@ -155,15 +155,47 @@ describe('ScopePicker', () => {
     expect(screen.getByRole('checkbox', { name: /vault sync · access/i })).toBeInTheDocument();
   });
 
-  test('removes portfolio-scoped grants entirely for a paranoid account', () => {
+  test('removes server-portfolio grants entirely for a paranoid account', () => {
     render(
-      <PickerHarness paranoid initial={['portfolio:read', 'portfolio:write', 'market:read']} />,
+      <PickerHarness
+        paranoid
+        initial={[
+          'portfolio:read',
+          'portfolio:write',
+          'cash:read',
+          'cash:write',
+          'mirrorchain:read',
+          'mirrorchain:write',
+          'market:read',
+          'vault:sync',
+        ]}
+      />,
     );
 
     expect(screen.queryByText('Portfolio')).not.toBeInTheDocument();
+    expect(screen.queryByText('Cash')).not.toBeInTheDocument();
+    expect(screen.queryByText('Group portfolios')).not.toBeInTheDocument();
     expect(screen.queryByRole('checkbox', { name: /portfolio · read/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole('checkbox', { name: /cash · read/i })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole('checkbox', { name: /group portfolios · read/i }),
+    ).not.toBeInTheDocument();
     expect(screen.getByRole('checkbox', { name: /market · read/i })).toBeInTheDocument();
-    expect(screen.getByRole('checkbox', { name: /vault sync · access/i })).toBeInTheDocument();
+    expect(screen.getByRole('checkbox', { name: /vault sync · access/i })).toBeChecked();
+  });
+
+  test('pins the paranoid blocked-scope set while preserving ciphertext sync', () => {
+    for (const scope of [
+      'portfolio:read',
+      'portfolio:write',
+      'cash:read',
+      'cash:write',
+      'mirrorchain:read',
+      'mirrorchain:write',
+    ] as const) {
+      expect(isParanoidBlockedScope(scope), scope).toBe(true);
+    }
+    expect(isParanoidBlockedScope('vault:sync')).toBe(false);
   });
 
   test('info-point reveals the module description on demand — not by default', async () => {

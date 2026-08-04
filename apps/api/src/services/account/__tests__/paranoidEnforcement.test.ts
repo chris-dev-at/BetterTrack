@@ -642,6 +642,7 @@ describe('paranoid kill registry', () => {
       { method: 'get', path: '/api/v1/portfolios' },
       { method: 'get', path: '/api/v1/imports/brokers' },
       { method: 'get', path: '/api/v1/expenses/categories' },
+      { method: 'get', path: '/api/v1/Cash/tags' },
       { method: 'get', path: '/api/v1/mirrorchain/chains' },
       { method: 'get', path: '/api/v1/standing-orders' },
       { method: 'get', path: '/api/v1/settings/taxes' },
