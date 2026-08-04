@@ -1,4 +1,5 @@
 import { apiRequest } from './apiClient';
+import { currentAppServiceWorkerRegistration, registerAppServiceWorker } from './appServiceWorker';
 
 /**
  * Browser-push client (#368/#350): registers the push service worker,
@@ -19,10 +20,9 @@ export function isWebPushSupported(): boolean {
 }
 
 async function pushRegistration(): Promise<ServiceWorkerRegistration> {
-  // The worker only handles push/notificationclick — no fetch interception, so
-  // registering it can never affect app loading (#350's PWA shell stays its
-  // own arc).
-  return navigator.serviceWorker.register('/push-sw.js');
+  const registration = await registerAppServiceWorker();
+  if (!registration) throw new Error('Service workers are unavailable');
+  return registration;
 }
 
 /** Standard VAPID key conversion: base64url → the BufferSource subscribe() wants. */
@@ -37,7 +37,7 @@ function applicationServerKey(base64url: string): Uint8Array {
 export async function webPushState(): Promise<WebPushState> {
   if (!isWebPushSupported()) return 'unsupported';
   if (Notification.permission === 'denied') return 'denied';
-  const registration = await navigator.serviceWorker.getRegistration('/push-sw.js');
+  const registration = await currentAppServiceWorkerRegistration();
   const subscription = await registration?.pushManager.getSubscription();
   return subscription ? 'enabled' : 'disabled';
 }
@@ -74,7 +74,7 @@ export async function enableWebPush(vapidPublicKey: string): Promise<WebPushStat
 /** Opt this browser out: drop the local subscription and the server row. */
 export async function disableWebPush(): Promise<WebPushState> {
   if (!isWebPushSupported()) return 'unsupported';
-  const registration = await navigator.serviceWorker.getRegistration('/push-sw.js');
+  const registration = await currentAppServiceWorkerRegistration();
   const subscription = await registration?.pushManager.getSubscription();
   if (subscription) {
     const endpoint = subscription.endpoint;

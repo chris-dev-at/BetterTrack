@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="dark light" />
+    <meta name="theme-color" content="#090c10" media="(prefers-color-scheme: dark)" />
+    <meta name="theme-color" content="#f1f2f3" media="(prefers-color-scheme: light)" />
+    <title>BetterTrack · Offline</title>
+    <style>
+      :root {
+        color-scheme: dark light;
+        font-family:
+          Inter,
+          -apple-system,
+          BlinkMacSystemFont,
+          'Segoe UI',
+          sans-serif;
+        background: #090c10;
+        color: #f4f6f8;
+      }
+
+      body {
+        min-height: 100dvh;
+        margin: 0;
+        display: grid;
+        place-items: center;
+        background:
+          radial-gradient(circle at 50% 15%, rgb(246 184 46 / 8%), transparent 22rem), #090c10;
+      }
+
+      main {
+        width: min(30rem, calc(100% - 3rem));
+        text-align: center;
+      }
+
+      .mark {
+        width: 4.5rem;
+        height: 4.5rem;
+        margin: 0 auto 1.5rem;
+        display: grid;
+        place-items: center;
+        border: 1px solid rgb(246 184 46 / 32%);
+        border-radius: 1.25rem;
+        background: #10151b;
+        color: #f6b82e;
+        font-size: 1.45rem;
+        font-weight: 750;
+        letter-spacing: -0.08em;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: clamp(1.7rem, 8vw, 2.5rem);
+        letter-spacing: -0.045em;
+      }
+
+      h1 span {
+        color: #f6b82e;
+      }
+
+      p {
+        margin: 0.8rem auto 0;
+        color: #8b949f;
+        line-height: 1.6;
+      }
+
+      a {
+        display: inline-block;
+        margin-top: 1.35rem;
+        padding: 0.65rem 1rem;
+        border: 1px solid rgb(246 184 46 / 32%);
+        border-radius: 0.5rem;
+        color: #f6b82e;
+        text-decoration: none;
+        font-weight: 650;
+      }
+
+      @media (prefers-color-scheme: light) {
+        :root {
+          background: #f1f2f3;
+          color: #131820;
+        }
+
+        body {
+          background:
+            radial-gradient(circle at 50% 15%, rgb(213 148 0 / 10%), transparent 22rem), #f1f2f3;
+        }
+
+        .mark {
+          background: #fff;
+          color: #d89400;
+        }
+
+        h1 span {
+          color: #d89400;
+        }
+
+        p {
+          color: #56616d;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="mark" aria-hidden="true">BT</div>
+      <h1>Better<span>Track</span></h1>
+      <p>
+        Reconnect to continue.<br />
+        <span lang="de">Verbinde dich erneut, um fortzufahren.</span>
+      </p>
+      <a href="/">Retry · Erneut versuchen</a>
+    </main>
+  </body>
+</html>
