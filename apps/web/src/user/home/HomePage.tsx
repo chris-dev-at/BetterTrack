@@ -277,7 +277,7 @@ function HomeBoard() {
   const greeting = user?.username ? `${t('home.greeting')}, ${user.username}` : t('home.greeting');
 
   return (
-    <div>
+    <div className="bt-phone-surface bt-home-page">
       <PageHead
         actions={
           editing ? (

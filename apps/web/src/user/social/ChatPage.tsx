@@ -1,3 +1,4 @@
+import { useLayoutEffect, useRef } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 
 import { useT } from '../../i18n';
@@ -31,8 +32,38 @@ export function ChatPage() {
   // opens a thread directly — the only path to one whose partner was deleted (#362).
   const { userId, conversationId } = useParams<{ userId?: string; conversationId?: string }>();
   const selected = userId ?? conversationId;
+  const surfaceRef = useRef<HTMLDivElement>(null);
 
   useChatRealtimeSync();
+
+  // `dvh` shrinks with the on-screen keyboard, but the chat starts below the
+  // shell + People tabs. Measure that real offset so the thread can fill only
+  // the remaining visual viewport; its composer then stays above the keyboard
+  // while the message log remains the sole scrolling region.
+  useLayoutEffect(() => {
+    const surface = surfaceRef.current;
+    if (!surface) return;
+    const measure = () => {
+      const visualViewport = window.visualViewport;
+      const viewportBottom = visualViewport
+        ? visualViewport.height + visualViewport.offsetTop
+        : window.innerHeight;
+      surface.style.setProperty(
+        '--bt-chat-top',
+        `${Math.max(0, surface.getBoundingClientRect().top)}px`,
+      );
+      surface.style.setProperty('--bt-chat-viewport-height', `${viewportBottom}px`);
+    };
+    measure();
+    window.addEventListener('resize', measure);
+    window.visualViewport?.addEventListener('resize', measure);
+    window.visualViewport?.addEventListener('scroll', measure);
+    return () => {
+      window.removeEventListener('resize', measure);
+      window.visualViewport?.removeEventListener('resize', measure);
+      window.visualViewport?.removeEventListener('scroll', measure);
+    };
+  }, []);
 
   // A deleted partner has no user id to route by — the thread deep-links by
   // conversation id instead (#362).
@@ -43,7 +74,7 @@ export function ChatPage() {
   }
 
   return (
-    <div className="flex flex-col">
+    <div className="bt-phone-surface bt-chat-page flex flex-col">
       <PageHead
         actions={
           <ChatPopoutButton
@@ -53,7 +84,7 @@ export function ChatPage() {
         title={t('social.chat.title')}
       />
 
-      <div className="flex h-[calc(70*var(--bt-vh))] gap-4">
+      <div className="bt-chat-page__surface flex h-[calc(70*var(--bt-vh))] gap-4" ref={surfaceRef}>
         <aside className={cx('w-full shrink-0 md:w-80', selected && 'hidden md:block')}>
           <ConversationListPane
             onSelect={openTarget}

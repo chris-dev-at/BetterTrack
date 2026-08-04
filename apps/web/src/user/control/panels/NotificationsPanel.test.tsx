@@ -37,6 +37,7 @@ import {
   unlinkTelegram,
   updateNotificationSettings,
 } from '../../../lib/settingsApi';
+import { setViewportWidth } from '../../../test/viewport';
 import { NotificationsPanel } from './NotificationsPanel';
 
 function makeQueryClient() {
@@ -485,5 +486,58 @@ describe('NotificationsPanel — Telegram & Discord channels (V4-P10)', () => {
     expect(await screen.findByRole('link', { name: 'Open Telegram bot' })).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: "I've started the bot" }));
     expect(confirmTelegramLink).toHaveBeenCalledTimes(1);
+  });
+
+  test('at 390 px all six channel toggles stay reachable and patch normally', async () => {
+    setViewportWidth(390);
+    vi.mocked(getNotificationSettings).mockResolvedValue(
+      makeSettings({
+        channels: {
+          inapp: true,
+          email: true,
+          telegram: true,
+          discord: true,
+          push: true,
+          webpush: true,
+        },
+      }),
+    );
+    vi.mocked(updateNotificationSettings).mockResolvedValue(
+      makeSettings({
+        channels: {
+          inapp: true,
+          email: true,
+          telegram: true,
+          discord: true,
+          push: true,
+          webpush: true,
+        },
+        matrix: makeMatrix({
+          'friend.request': { ...ALL_ON, webpush: false },
+        }),
+      }),
+    );
+    const user = userEvent.setup();
+    const { container } = renderPanel();
+
+    for (const channel of [
+      'In-app',
+      'Email',
+      'Telegram',
+      'Discord',
+      'Phone push',
+      'Browser push',
+    ]) {
+      expect(
+        await screen.findByRole('switch', { name: `Friend requests via ${channel}` }),
+      ).toBeInTheDocument();
+    }
+    expect(container.querySelector('.bt-notification-matrix')).toBeInTheDocument();
+    expect(container.querySelector('table')).toBeNull();
+
+    await user.click(screen.getByRole('switch', { name: 'Friend requests via Browser push' }));
+    expect(updateNotificationSettings).toHaveBeenCalledWith({
+      matrix: { 'friend.request': { ...ALL_ON, webpush: false } },
+    });
   });
 });

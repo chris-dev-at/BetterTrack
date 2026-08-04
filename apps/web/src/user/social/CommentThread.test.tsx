@@ -20,6 +20,7 @@ import {
   postComment,
   toggleItemReaction,
 } from '../../lib/socialApi';
+import { setViewportWidth } from '../../test/viewport';
 import { CommentThread } from './CommentThread';
 
 const SUBJECT = '00000000-0000-0000-0000-000000000001';
@@ -145,5 +146,22 @@ describe('CommentThread (§13.5 V5-P8)', () => {
 
     expect(await screen.findByRole('button', { name: /0 comments/i })).toBeInTheDocument();
     expect(getCommentThread).toHaveBeenCalledTimes(2);
+  });
+
+  test('at 390 px reacts to a shared item through the reachable chip grid', async () => {
+    setViewportWidth(390);
+    vi.mocked(getCommentThread).mockResolvedValue(thread({ comments: [] }));
+    vi.mocked(toggleItemReaction).mockResolvedValue({
+      reactions: [{ emoji: '❤️', count: 1, reacted: true }],
+    });
+    const { container } = renderThread();
+
+    const group = await screen.findByRole('group', { name: /react to this item/i });
+    await userEvent.click(within(group).getByRole('button', { name: '❤️' }));
+
+    await waitFor(() =>
+      expect(toggleItemReaction).toHaveBeenCalledWith('portfolio', SUBJECT, '❤️'),
+    );
+    expect(container.querySelector('.bt-comment-thread')).toBeInTheDocument();
   });
 });

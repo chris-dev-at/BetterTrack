@@ -13,6 +13,7 @@ vi.mock('../../lib/alertsApi', () => ({
 }));
 
 import { createAlert, updateAlert } from '../../lib/alertsApi';
+import { setViewportWidth } from '../../test/viewport';
 import { AlertDialog, type AlertDialogAsset } from './AlertDialog';
 
 const ASSET: AlertDialogAsset = { id: 'a1', symbol: 'AAPL', name: 'Apple Inc.', currency: 'USD' };
@@ -120,6 +121,30 @@ describe('AlertDialog (edit)', () => {
 
     await waitFor(() =>
       expect(updateAlert).toHaveBeenCalledWith('al1', { threshold: 15, repeat: false }),
+    );
+  });
+
+  test('at 390 px keeps creation fully operable in the phone sheet', async () => {
+    setViewportWidth(390);
+    vi.mocked(createAlert).mockResolvedValue({} as Alert);
+    const user = userEvent.setup();
+    renderDialog({ asset: ASSET, referencePrice: 100 });
+
+    expect(screen.getByRole('dialog', { name: 'New price alert' })).toHaveClass(
+      'bt-dialog__panel--phone-sheet',
+    );
+    const threshold = screen.getByLabelText(/Threshold price/);
+    await user.clear(threshold);
+    await user.type(threshold, '110');
+    await user.click(screen.getByRole('button', { name: 'Create alert' }));
+
+    await waitFor(() =>
+      expect(createAlert).toHaveBeenCalledWith({
+        assetId: 'a1',
+        kind: 'price_above',
+        threshold: 110,
+        repeat: false,
+      }),
     );
   });
 });

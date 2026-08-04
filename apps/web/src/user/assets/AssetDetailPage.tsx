@@ -123,8 +123,8 @@ function AssetHeader({
   const isDown = dayChangePct != null && dayChangePct < 0;
 
   return (
-    <section aria-labelledby={headingId} className="flex flex-col gap-3">
-      <div className="flex flex-wrap items-start justify-between gap-2">
+    <section aria-labelledby={headingId} className="bt-asset-detail__header flex flex-col gap-3">
+      <div className="bt-asset-detail__hero flex flex-wrap items-start justify-between gap-2">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight" id={headingId}>
             {asset.name}
@@ -650,7 +650,10 @@ function WatchlistIconButton({ assetId, symbol }: { assetId: string; symbol: str
   }
 
   return (
-    <div className="relative flex flex-col items-end gap-1" ref={containerRef}>
+    <div
+      className="bt-asset-detail__watchlist relative flex flex-col items-end gap-1"
+      ref={containerRef}
+    >
       <div className="bt-seg flex items-center">
         <button
           type="button"
@@ -706,7 +709,7 @@ function WatchlistIconButton({ assetId, symbol }: { assetId: string; symbol: str
       {listPickerOpen ? (
         <div
           ref={menuRef}
-          className="bt-popover w-48 p-2 text-xs"
+          className="bt-asset-detail__watchlist-menu bt-popover w-48 p-2 text-xs"
           style={{ right: 0, top: 'calc(100% + 4px)' }}
           onKeyDown={onMenuKeyDown}
         >
@@ -841,7 +844,10 @@ function LiveControls({
 function ActionBar({ assetId, symbol }: { assetId: string; symbol: string }) {
   const t = useT();
   return (
-    <section aria-labelledby="actions-heading" className="flex flex-col gap-3">
+    <section
+      aria-labelledby="actions-heading"
+      className="bt-asset-detail__actions flex flex-col gap-3"
+    >
       <h2 id="actions-heading" className="sr-only">
         {t('assets.detail.quickActions')}
       </h2>
@@ -949,7 +955,7 @@ export function AssetDetailPage() {
   // Full-page loading state (first load only).
   if (detailQuery.isLoading) {
     return (
-      <div className="flex flex-col gap-6">
+      <div className="bt-phone-surface bt-asset-detail flex flex-col gap-6">
         <div className="flex flex-col gap-2">
           <Skeleton height="h-8" width="w-64" />
           <Skeleton height="h-4" width="w-40" />
@@ -961,7 +967,7 @@ export function AssetDetailPage() {
 
   if (detailQuery.isError) {
     return (
-      <div className="flex flex-col gap-4">
+      <div className="bt-phone-surface bt-asset-detail flex flex-col gap-4">
         <Link to="/assets/search" className="text-sm bt-link">
           {t('assets.detail.backToSearch')}
         </Link>
@@ -977,7 +983,7 @@ export function AssetDetailPage() {
     quoteQuery.data?.quote?.currency ?? detail.quote?.currency ?? asset.currency;
 
   return (
-    <div className="flex flex-col gap-8">
+    <div className="bt-phone-surface bt-asset-detail flex flex-col gap-8">
       <div className="flex items-center gap-3">
         <Link to="/assets/search" className="text-sm bt-muted hover:bt-soft">
           {t('assets.detail.backShort')}

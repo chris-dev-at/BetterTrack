@@ -34,6 +34,7 @@ import { getAudience, listFriends, setAudience } from '../../lib/socialApi';
 import { listConglomerates } from '../../lib/conglomerateApi';
 import { listPortfolios } from '../../lib/portfolioApi';
 import { listIdeas } from '../../lib/ideasApi';
+import { setViewportWidth } from '../../test/viewport';
 import { ChatPage } from './ChatPage';
 
 function makeQueryClient() {
@@ -550,6 +551,57 @@ describe('ChatPage — composer focus', () => {
     expect(screen.queryByPlaceholderText('Message')).not.toBeInTheDocument();
     // The generic send-error alert is NOT shown for a ban.
     expect(screen.queryByText(/couldn't send your message/i)).not.toBeInTheDocument();
+  });
+
+  test('at 390 px sends from a keyboard-sized thread while the log owns scrolling', async () => {
+    setViewportWidth(390);
+    const originalVisualViewport = window.visualViewport;
+    const visualViewport = new EventTarget();
+    Object.defineProperty(visualViewport, 'height', { value: 500 });
+    Object.defineProperty(visualViewport, 'offsetTop', { value: 0 });
+    Object.defineProperty(window, 'visualViewport', {
+      configurable: true,
+      value: visualViewport,
+    });
+    const pending = deferred<Awaited<ReturnType<typeof sendChatMessage>>>();
+    vi.mocked(sendChatMessage).mockReturnValue(pending.promise);
+    vi.mocked(listConversations).mockResolvedValue({
+      conversations: [convo],
+      unreadTotal: 0,
+    });
+    const user = userEvent.setup();
+    const { container } = renderAt('/social/chat/u2');
+
+    const input = await screen.findByRole('textbox', { name: 'Message' });
+    const surface = container.querySelector<HTMLElement>('.bt-chat-page__surface');
+    const log = screen.getByRole('log');
+    expect(surface).toHaveStyle({ '--bt-chat-viewport-height': '500px' });
+    expect(log).toHaveClass('bt-chat-log', 'overflow-y-auto');
+    expect(input.closest('form')).toHaveClass('bt-chat-composer');
+    expect(container.querySelector('aside ul')).toHaveClass('overflow-y-auto');
+
+    await user.type(input, 'hello from phone');
+    await user.click(screen.getByRole('button', { name: 'Send' }));
+    await waitFor(() =>
+      expect(sendChatMessage).toHaveBeenCalledWith('c1', { body: 'hello from phone' }),
+    );
+    await waitFor(() => expect(input).toBeDisabled());
+    await act(async () => {
+      pending.resolve({
+        id: 'm-phone',
+        conversationId: 'c1',
+        senderId: 'me',
+        body: 'hello from phone',
+        chip: null,
+        createdAt: '2026-08-04T00:00:00.000Z',
+      });
+    });
+    await waitFor(() => expect(input).toHaveFocus());
+    Object.defineProperty(window, 'visualViewport', {
+      configurable: true,
+      value: originalVisualViewport,
+    });
+    setViewportWidth(1024);
   });
 });
 

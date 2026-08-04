@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, test, vi } from 'vitest';
 
 import type { ConglomerateResolvedResponse, Idea, IdeaResponse } from '@bettertrack/contracts';
 
-vi.mock('../../lib/ideasApi', () => ({ getIdea: vi.fn() }));
+vi.mock('../../lib/ideasApi', () => ({ getIdea: vi.fn(), updateIdea: vi.fn() }));
 vi.mock('../../lib/conglomerateApi', () => ({ getResolvedConglomerate: vi.fn() }));
 
 // Capture what the panel is seeded with — the "exact reopen" is exactly these props.
@@ -19,7 +19,8 @@ vi.mock('./BacktestPanel', () => ({
 }));
 
 import { getResolvedConglomerate } from '../../lib/conglomerateApi';
-import { getIdea } from '../../lib/ideasApi';
+import { getIdea, updateIdea } from '../../lib/ideasApi';
+import { setViewportWidth } from '../../test/viewport';
 import { ApiError } from '../../lib/apiClient';
 import { IdeaWorkboardPage } from './IdeaWorkboardPage';
 
@@ -175,5 +176,30 @@ describe('IdeaWorkboardPage', () => {
 
     expect(await screen.findByText(/no longer available/i)).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
+  });
+
+  test('at 390 px edits an idea in a bottom sheet and refreshes its heading', async () => {
+    setViewportWidth(390);
+    const original = adhocIdea();
+    const updated = { ...original, name: 'Edited momentum' };
+    vi.mocked(getIdea).mockResolvedValue({ idea: original });
+    vi.mocked(updateIdea).mockResolvedValue({ idea: updated });
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole('button', { name: 'Edit' }));
+    expect(screen.getByRole('dialog', { name: 'Edit idea' })).toHaveClass(
+      'bt-dialog__panel--phone-sheet',
+    );
+    const name = screen.getByLabelText('Name');
+    await user.clear(name);
+    await user.type(name, 'Edited momentum');
+    await user.click(screen.getByRole('button', { name: 'Save changes' }));
+
+    expect(updateIdea).toHaveBeenCalledWith(IDEA_ID, {
+      name: 'Edited momentum',
+      thesis: 'Ride the trend.',
+    });
+    expect(await screen.findByRole('heading', { name: 'Edited momentum' })).toBeInTheDocument();
   });
 });

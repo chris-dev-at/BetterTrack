@@ -17,7 +17,7 @@ import { ParkedPage } from '../parked/ParkedPage';
 export function AskPage() {
   const t = useT();
   return (
-    <div>
+    <div className="bt-phone-surface bt-hub-page">
       <PageHead title={t('ask.title')} />
       <ParkedPage page="ask" />
     </div>
@@ -27,7 +27,7 @@ export function AskPage() {
 export function ReviewPage() {
   const t = useT();
   return (
-    <div>
+    <div className="bt-phone-surface bt-hub-page">
       <PageHead title={t('review.title')} />
       <ParkedPage page="review" />
     </div>
@@ -91,7 +91,7 @@ const DEVELOPER_ENTRIES: readonly DeveloperEntry[] = [
 export function DeveloperPlatformPage() {
   const t = useT();
   return (
-    <div>
+    <div className="bt-phone-surface bt-hub-page">
       <PageHead sub={t('control.developerSub')} title={t('control.groups.developer')} />
       <div className="bt-panel bt-band">
         {DEVELOPER_ENTRIES.map((entry) => (

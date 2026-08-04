@@ -28,6 +28,7 @@ import * as conglomerateApi from '../../lib/conglomerateApi';
 import * as portfolioApi from '../../lib/portfolioApi';
 import * as searchApi from '../../lib/searchApi';
 import * as workboardApi from '../../lib/workboardApi';
+import { setViewportWidth } from '../../test/viewport';
 import { AssetSearchBox } from './AssetSearchBox';
 
 const NVDA: SearchResultItem = {
@@ -786,4 +787,24 @@ describe('AssetSearchBox', () => {
       }
     });
   });
+});
+
+test('at 390 px adds a result to a named watchlist from the wrapped action row', async () => {
+  setViewportWidth(390);
+  vi.mocked(searchApi.searchAssets).mockResolvedValue(makeSearchResponse([NVDA]));
+  vi.mocked(workboardApi.listWatchlists).mockResolvedValue({
+    watchlists: [
+      { id: 'wl-tech', name: 'Tech', isDefault: false, itemCount: 2, audience: 'private' },
+    ],
+  });
+  vi.mocked(workboardApi.addToWorkboard).mockResolvedValue();
+  const user = userEvent.setup();
+  const { container } = renderSearchBox();
+
+  await user.type(screen.getByRole('searchbox'), 'NV');
+  await user.click(await screen.findByRole('button', { name: /choose a watchlist for nvda/i }));
+  await user.click(await screen.findByRole('menuitem', { name: 'Tech' }));
+
+  expect(workboardApi.addToWorkboard).toHaveBeenCalledWith('asset-nvda', 'wl-tech');
+  expect(container.querySelector('.bt-asset-result__actions')).toBeInTheDocument();
 });

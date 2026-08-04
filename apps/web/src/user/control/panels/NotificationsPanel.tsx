@@ -44,6 +44,7 @@ import { EmptyState, Skeleton } from '../../../ui';
 import { Badge, Button, Field, Input, Select } from '../../../ui/origin';
 import { Alert } from '../../components/ui';
 import { AsyncReadState } from '../../components/AsyncReadState';
+import { usePhoneShell } from '../../hooks/useCompactShell';
 import { PanelFold, PanelForm, PanelGroup, PanelHead, PanelNote, Row } from './panelKit';
 
 /**
@@ -273,6 +274,7 @@ function NotificationMatrixGrid({
   onUpdate: (patch: UpdateNotificationSettingsRequest) => void;
 }) {
   const t = useT();
+  const phone = usePhoneShell();
   const typeLabels = notificationTypeLabels(t);
   const chLabels = channelLabels(t);
   const catLabels = categoryLabels(t);
@@ -304,6 +306,121 @@ function NotificationMatrixGrid({
       matrix[type] = routing;
     }
     if (Object.keys(matrix).length > 0) onUpdate({ matrix });
+  }
+
+  function toggleMirrorChannel(
+    types: readonly NotificationType[],
+    channel: NotificationSettingChannel,
+    next: boolean,
+  ) {
+    const matrix: Partial<Record<NotificationType, NotificationTypeRouting>> = {};
+    for (const type of types) matrix[type] = { ...rowRouting(type), [channel]: next };
+    onUpdate({ matrix });
+  }
+
+  if (phone) {
+    return (
+      <div className="bt-notification-matrix" style={{ opacity: settings.muted ? 0.6 : undefined }}>
+        {NOTIFICATION_CATEGORIES.map((category) => {
+          const isMirrorchain = category.key === 'mirrorchain';
+          return (
+            <section className="bt-notification-matrix__category" key={category.key}>
+              <label className="bt-notification-matrix__master">
+                <input
+                  aria-label={t('settings.notifications.grid.categoryToggleAria', {
+                    category: catLabels[category.key],
+                  })}
+                  checked={categoryEnabled(category.types)}
+                  disabled={gridDisabled}
+                  onChange={(event) => toggleCategory(category.types, event.target.checked)}
+                  role="switch"
+                  style={{ accentColor: 'var(--bt-gold)' }}
+                  type="checkbox"
+                />
+                <span className="bt-label">{catLabels[category.key]}</span>
+              </label>
+
+              <div className="bt-notification-matrix__rows">
+                {isMirrorchain ? (
+                  <div className="bt-notification-matrix__row">
+                    <div>
+                      <span className="bt-row-title">
+                        {t('settings.notifications.mirrorchain.groupLabel')}
+                      </span>
+                      <span className="bt-row-sub block">
+                        {t('settings.notifications.mirrorchain.groupHint')}
+                      </span>
+                    </div>
+                    <div className="bt-notification-matrix__channels">
+                      {channels.map((channel) => {
+                        const flags = category.types.map((type) => rowRouting(type)[channel]);
+                        const state = flags.every(Boolean)
+                          ? 'on'
+                          : flags.every((value) => !value)
+                            ? 'off'
+                            : 'mixed';
+                        return (
+                          <label className="bt-notification-matrix__channel" key={channel}>
+                            <span>{chLabels[channel]}</span>
+                            <input
+                              aria-checked={state === 'mixed' ? 'mixed' : state === 'on'}
+                              aria-label={t('settings.notifications.mirrorchain.cellAria', {
+                                channel: chLabels[channel],
+                              })}
+                              checked={state === 'on'}
+                              disabled={gridDisabled}
+                              onChange={(event) =>
+                                toggleMirrorChannel(category.types, channel, event.target.checked)
+                              }
+                              ref={(node) => {
+                                if (node) node.indeterminate = state === 'mixed';
+                              }}
+                              role="switch"
+                              style={{ accentColor: 'var(--bt-gold)' }}
+                              type="checkbox"
+                            />
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ) : (
+                  category.types.map((type) => {
+                    const note = lockedRowNote(t, type);
+                    return (
+                      <div className="bt-notification-matrix__row" key={type}>
+                        <div>
+                          <span className="bt-row-title">{typeLabels[type]}</span>
+                          {note ? <span className="bt-row-sub block">{note}</span> : null}
+                        </div>
+                        <div className="bt-notification-matrix__channels">
+                          {channels.map((channel) => (
+                            <label className="bt-notification-matrix__channel" key={channel}>
+                              <span>{chLabels[channel]}</span>
+                              <MatrixCell
+                                ariaLabel={t('settings.notifications.grid.cellAria', {
+                                  type: typeLabels[type],
+                                  channel: chLabels[channel],
+                                })}
+                                channel={channel}
+                                checked={rowRouting(type)[channel]}
+                                disabled={gridDisabled}
+                                onToggle={(next) => toggleCell(type, channel, next)}
+                                type={type}
+                              />
+                            </label>
+                          ))}
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+            </section>
+          );
+        })}
+      </div>
+    );
   }
 
   return (
@@ -363,11 +480,7 @@ function NotificationMatrixGrid({
                   rowRouting={rowRouting}
                   gridDisabled={gridDisabled}
                   onToggleAll={(channel, next) => {
-                    const matrix: Partial<Record<NotificationType, NotificationTypeRouting>> = {};
-                    for (const type of category.types) {
-                      matrix[type] = { ...rowRouting(type), [channel]: next };
-                    }
-                    onUpdate({ matrix });
+                    toggleMirrorChannel(category.types, channel, next);
                   }}
                   t={t}
                   chLabels={chLabels}

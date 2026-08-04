@@ -51,11 +51,11 @@ function DeleteIdeaDialog({
 }) {
   const t = useT();
   return (
-    <Dialog title={t('workboard.ideas.list.deleteTitle')} onClose={onClose}>
+    <Dialog phoneSheet title={t('workboard.ideas.list.deleteTitle')} onClose={onClose}>
       <div className="flex flex-col gap-4">
         <p className="bt-soft">{t('workboard.ideas.list.deleteBody', { name })}</p>
         {error ? <Alert tone="error">{t('workboard.ideas.list.deleteError')}</Alert> : null}
-        <div className="flex justify-end gap-2">
+        <div className="flex flex-wrap justify-end gap-2">
           <Button disabled={pending} onClick={onClose}>
             {t('common.cancel')}
           </Button>
@@ -85,7 +85,7 @@ function IdeaRow({
 }) {
   const t = useT();
   return (
-    <li className="bt-band__row flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+    <li className="bt-band__row bt-idea-row flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
       <div className="flex min-w-0 flex-col gap-1">
         <span className="bt-row-title truncate">{idea.name}</span>
         <p className="bt-row-sub truncate">{idea.thesis ?? t('workboard.ideas.list.thesisNone')}</p>
@@ -95,7 +95,7 @@ function IdeaRow({
           </div>
         ) : null}
       </div>
-      <div className="flex shrink-0 items-center gap-2">
+      <div className="bt-idea-row__actions flex shrink-0 flex-wrap items-center gap-2">
         <Link to={`/workbench/ideas/${idea.id}`}>
           <Button size="sm">{t('workboard.ideas.list.open')}</Button>
         </Link>
@@ -148,7 +148,7 @@ export function IdeasListPage() {
 
   if (ideasQuery.isLoading) {
     return (
-      <section className="flex flex-col gap-3">
+      <section className="bt-phone-surface bt-ideas-page flex flex-col gap-3">
         <Skeleton height="h-6" width="w-48" />
         <Skeleton height="h-16" />
       </section>
@@ -157,7 +157,7 @@ export function IdeasListPage() {
 
   if (ideasQuery.isError || !ideasQuery.data) {
     return (
-      <div className="flex flex-col gap-3">
+      <div className="bt-phone-surface bt-ideas-page flex flex-col gap-3">
         <Alert tone="error">{t('workboard.ideas.list.loadError')}</Alert>
         <div>
           <Button onClick={() => void ideasQuery.refetch()}>{t('common.retry')}</Button>
@@ -172,7 +172,7 @@ export function IdeasListPage() {
   );
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="bt-phone-surface bt-ideas-page flex flex-col gap-6">
       <PageHead title={t('workboard.ideas.list.title')} />
 
       {!paranoid ? (

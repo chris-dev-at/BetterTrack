@@ -40,7 +40,7 @@ export function ChatWindowPage() {
   }
 
   return (
-    <div className="bt-app bt-chatwindow">
+    <div className="bt-app bt-phone-surface bt-chatwindow">
       <main aria-label={t('social.chat.title')} className="bt-chatwindow__frame">
         {selected ? (
           <ChatThreadPane

@@ -582,13 +582,17 @@ export function BacktestPanel({ positions, className, source, initialParams }: B
   const rebalNotice = data ? rebalanceNotice(t, data) : null;
 
   return (
-    <div className={cx('flex flex-col gap-4', className)}>
+    <div className={cx('bt-backtest flex flex-col gap-4', className)}>
       <div className="flex flex-wrap items-center gap-2">
         <RangeSelector active={range} onSelect={setRange} />
         <ModeSelector active={mode} onSelect={setMode} />
         <RebalanceSelector active={rebalance} onSelect={setRebalance} />
         {source ? (
-          <Button variant="secondary" className="ml-auto" onClick={() => setSaveOpen(true)}>
+          <Button
+            variant="secondary"
+            className="ml-0 w-full sm:ml-auto sm:w-auto"
+            onClick={() => setSaveOpen(true)}
+          >
             {t('workboard.ideas.save.action')}
           </Button>
         ) : null}

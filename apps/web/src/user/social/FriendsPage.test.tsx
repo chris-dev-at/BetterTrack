@@ -27,6 +27,7 @@ import { MemoryRouter } from 'react-router-dom';
 import {
   acceptFriendRequest,
   cancelFriendRequest,
+  createGroup,
   declineFriendRequest,
   listFriendRequests,
   listFriends,
@@ -38,6 +39,7 @@ import {
 } from '../../lib/socialApi';
 import { ApiError } from '../../lib/apiClient';
 import { listMirrorInvites } from '../../lib/mirrorApi';
+import { setViewportWidth } from '../../test/viewport';
 import { FriendsPage } from './FriendsPage';
 
 function makeQueryClient() {
@@ -376,6 +378,41 @@ describe('FriendsPage', () => {
       'href',
       '/people/chat/u5',
     );
+  });
+
+  test('at 390 px accepts a request and creates a friend group from stacked controls', async () => {
+    setViewportWidth(390);
+    vi.mocked(listFriendRequests).mockResolvedValue({
+      incoming: [
+        {
+          id: 'req-phone',
+          direction: 'incoming',
+          status: 'pending',
+          user: { id: 'u-phone', username: 'phia' },
+          createdAt: '2026-08-04T00:00:00.000Z',
+          respondedAt: null,
+        },
+      ],
+      outgoing: [],
+    });
+    vi.mocked(acceptFriendRequest).mockResolvedValue(undefined);
+    vi.mocked(createGroup).mockResolvedValue({
+      id: '00000000-0000-0000-0000-000000000099',
+      name: 'Family',
+      memberCount: 0,
+      members: [],
+    });
+    const user = userEvent.setup();
+    const { container } = renderPage();
+
+    await user.click(await screen.findByRole('button', { name: 'Accept' }));
+    expect(acceptFriendRequest).toHaveBeenCalledWith('req-phone');
+    await user.type(screen.getByLabelText('New group name'), 'Family');
+    await user.click(screen.getByRole('button', { name: 'Create' }));
+
+    expect(createGroup).toHaveBeenCalledWith('Family');
+    expect(container.querySelector('.bt-friends-page')).toBeInTheDocument();
+    setViewportWidth(1024);
   });
 
   test('the per-item activity toggle lives in the friend overview and persists (#384)', async () => {

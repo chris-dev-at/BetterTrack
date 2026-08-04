@@ -57,6 +57,7 @@ vi.mock('./panels/PrivacyPanel', () => ({
 }));
 
 import { I18nProvider } from '../../i18n';
+import { setViewportWidth } from '../../test/viewport';
 import { CONTROL_GROUPS, ControlCenterOverlay } from './ControlCenterOverlay';
 
 /** A shell-level control that stays mounted, so focus restore is observable. */
@@ -344,5 +345,23 @@ describe('ControlCenterOverlay', () => {
 
     view.unmount();
     expect(document.body.style.overflow).toBe('');
+  });
+
+  test('phone navigation keeps every settings panel reachable in one compact selector', async () => {
+    setViewportWidth(390);
+    const user = userEvent.setup();
+    renderAt('/control/account');
+
+    const selector = within(popup()).getByRole('combobox', {
+      name: 'Control Center panels',
+    });
+    expect(within(selector).getAllByRole('option')).toHaveLength(
+      CONTROL_GROUPS.flatMap((group) => group.panels).length,
+    );
+    expect(within(popup()).queryByRole('searchbox', { name: 'Filter panels' })).toBeNull();
+
+    await user.selectOptions(selector, 'notifications');
+    expect(await within(popup()).findByText('notifications-panel')).toBeInTheDocument();
+    expect(selector).toHaveValue('notifications');
   });
 });

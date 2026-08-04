@@ -1,16 +1,85 @@
-import { useQuery } from '@tanstack/react-query';
+import { useState, type FormEvent } from 'react';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link, useParams } from 'react-router-dom';
 
-import type { BacktestPreviewPosition } from '@bettertrack/contracts';
+import {
+  IDEA_NAME_MAX,
+  IDEA_THESIS_MAX,
+  type BacktestPreviewPosition,
+  type Idea,
+} from '@bettertrack/contracts';
 
 import { getResolvedConglomerate } from '../../lib/conglomerateApi';
-import { getIdea } from '../../lib/ideasApi';
+import { getIdea, updateIdea } from '../../lib/ideasApi';
 import { isConfirmedApiOutcome } from '../../lib/apiClient';
 import { useT } from '../../i18n';
 import { Skeleton } from '../../ui';
-import { Button } from '../../ui/origin';
+import { Button, Field, Input, Textarea } from '../../ui/origin';
+import { Dialog } from '../components/Dialog';
 import { Alert } from '../components/ui';
+import { usePhoneShell } from '../hooks/useCompactShell';
 import { BacktestPanel, type BacktestParams } from './BacktestPanel';
+
+function EditIdeaDialog({ idea, onClose }: { idea: Idea; onClose: () => void }) {
+  const t = useT();
+  const queryClient = useQueryClient();
+  const [name, setName] = useState(idea.name);
+  const [thesis, setThesis] = useState(idea.thesis ?? '');
+  const mutation = useMutation({
+    mutationFn: () =>
+      updateIdea(idea.id, {
+        name: name.trim(),
+        thesis: thesis.trim() || null,
+      }),
+    onSuccess: (response) => {
+      queryClient.setQueryData(['idea', idea.id], response);
+      void queryClient.invalidateQueries({ queryKey: ['ideas'] });
+      void queryClient.invalidateQueries({ queryKey: ['social', 'my-shared'] });
+      onClose();
+    },
+  });
+
+  function submit(event: FormEvent) {
+    event.preventDefault();
+    if (name.trim() && !mutation.isPending) mutation.mutate();
+  }
+
+  return (
+    <Dialog phoneSheet onClose={onClose} title={t('workboard.ideas.edit.title')}>
+      <form className="flex flex-col gap-4" onSubmit={submit}>
+        <Field htmlFor="edit-idea-name" label={t('workboard.ideas.save.nameLabel')}>
+          <Input
+            autoFocus
+            id="edit-idea-name"
+            maxLength={IDEA_NAME_MAX}
+            onChange={(event) => setName(event.target.value)}
+            value={name}
+          />
+        </Field>
+        <Field htmlFor="edit-idea-thesis" label={t('workboard.ideas.save.thesisLabel')}>
+          <Textarea
+            id="edit-idea-thesis"
+            maxLength={IDEA_THESIS_MAX}
+            onChange={(event) => setThesis(event.target.value)}
+            rows={4}
+            value={thesis}
+          />
+        </Field>
+        {mutation.isError ? <Alert tone="error">{t('workboard.ideas.edit.error')}</Alert> : null}
+        <div className="flex flex-wrap justify-end gap-2">
+          <Button disabled={mutation.isPending} onClick={onClose} type="button">
+            {t('common.cancel')}
+          </Button>
+          <Button disabled={!name.trim() || mutation.isPending} type="submit" variant="primary">
+            {mutation.isPending
+              ? t('workboard.ideas.edit.saving')
+              : t('workboard.ideas.edit.submit')}
+          </Button>
+        </div>
+      </form>
+    </Dialog>
+  );
+}
 
 /**
  * `/workbench/ideas/:ideaId` — reopen a saved idea in the Workboard EXACTLY as it
@@ -23,6 +92,8 @@ import { BacktestPanel, type BacktestParams } from './BacktestPanel';
 export function IdeaWorkboardPage() {
   const t = useT();
   const { ideaId } = useParams<{ ideaId: string }>();
+  const phone = usePhoneShell();
+  const [editing, setEditing] = useState(false);
 
   const ideaQuery = useQuery({
     queryKey: ['idea', ideaId],
@@ -54,7 +125,7 @@ export function IdeaWorkboardPage() {
 
   if (ideaQuery.isLoading) {
     return (
-      <div className="flex flex-col gap-6">
+      <div className="bt-phone-surface bt-idea-detail flex flex-col gap-6">
         <Skeleton height="h-8" width="w-64" />
         <Skeleton height="h-40" />
       </div>
@@ -63,7 +134,7 @@ export function IdeaWorkboardPage() {
 
   if (ideaQuery.isError || !idea || !source) {
     return (
-      <div className="flex flex-col gap-4">
+      <div className="bt-phone-surface bt-idea-detail flex flex-col gap-4">
         {backLink}
         <Alert tone="error">{t('workboard.ideas.open.loadError')}</Alert>
         <div>
@@ -91,11 +162,18 @@ export function IdeaWorkboardPage() {
   }
 
   return (
-    <div className="flex flex-col gap-6">
+    <div className="bt-phone-surface bt-idea-detail flex flex-col gap-6">
       {backLink}
 
       <div className="flex flex-col gap-2">
-        <h1 className="bt-page-title">{idea.name}</h1>
+        <div className="flex items-center justify-between gap-3">
+          <h1 className="bt-page-title">{idea.name}</h1>
+          {phone ? (
+            <Button onClick={() => setEditing(true)} size="sm" variant="neutral">
+              {t('workboard.ideas.edit.action')}
+            </Button>
+          ) : null}
+        </div>
         {idea.thesis ? (
           <div className="bt-panel bt-panel--pad">
             <h2 className="bt-label" style={{ marginBottom: 4 }}>
@@ -127,6 +205,8 @@ export function IdeaWorkboardPage() {
           <BacktestPanel positions={positions} source={source} initialParams={initialParams} />
         ) : null}
       </section>
+
+      {editing ? <EditIdeaDialog idea={idea} onClose={() => setEditing(false)} /> : null}
     </div>
   );
 }

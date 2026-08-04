@@ -16,7 +16,7 @@ export function PeopleLayout() {
   const items = useSectionNavItems('people');
 
   return (
-    <div>
+    <div className="bt-phone-surface bt-people-layout">
       <LocalNav ariaLabel={t(SECTION_NAV.people.ariaLabelKey)} items={items} />
       <Outlet />
     </div>

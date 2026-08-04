@@ -83,6 +83,7 @@ function OAuthCredentialsModal({
 
   return (
     <Dialog
+      phoneSheet
       title={t('settings.api.oauth.credentialsModal.title')}
       description={
         result.clientSecret
@@ -96,7 +97,7 @@ function OAuthCredentialsModal({
         <div className="flex flex-col gap-1.5">
           <span className="bt-label">{t('settings.api.oauth.clientIdLabel')}</span>
           <code
-            className="bt-panel bt-panel--soft bt-cc-mono"
+            className="bt-panel bt-panel--soft bt-cc-mono break-all"
             style={{ padding: '8px 11px', color: 'var(--bt-text-soft)' }}
           >
             {result.client.clientId}

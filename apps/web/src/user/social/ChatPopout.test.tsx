@@ -33,6 +33,7 @@ import {
 import { listConglomerates } from '../../lib/conglomerateApi';
 import { listIdeas } from '../../lib/ideasApi';
 import { listPortfolios } from '../../lib/portfolioApi';
+import { setViewportWidth } from '../../test/viewport';
 import { ChatPage } from './ChatPage';
 import { ChatWindowPage } from './ChatWindowPage';
 import { CHAT_WINDOW_NAME, chatWindowFeatures } from './chatWindow';
@@ -261,5 +262,15 @@ describe('ChatWindowPage — the standalone second-screen window', () => {
     const row = await screen.findByRole('button', { name: /bob/ });
     expect(within(row).getByText('hello there')).toBeInTheDocument();
     expect(await screen.findByPlaceholderText('Message')).toBeInTheDocument();
+  });
+
+  test('at 390 px the pop-out thread fills a keyboard-responsive phone frame', async () => {
+    setViewportWidth(390);
+    withConversation();
+    const { container } = renderAt('/chat-window/u2');
+
+    expect(await screen.findByPlaceholderText('Message')).toBeInTheDocument();
+    expect(container.querySelector('.bt-chatwindow')).toHaveClass('bt-phone-surface');
+    expect(container.querySelector('.bt-chat-thread')).toBeInTheDocument();
   });
 });

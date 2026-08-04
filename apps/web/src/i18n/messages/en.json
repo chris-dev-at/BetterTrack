@@ -2503,6 +2503,13 @@
         "successBody": "\"{{name}}\" is in your Ideas list.",
         "viewIdeas": "View in Ideas"
       },
+      "edit": {
+        "action": "Edit",
+        "title": "Edit idea",
+        "submit": "Save changes",
+        "saving": "Saving…",
+        "error": "Couldn't update the idea."
+      },
       "open": {
         "backLink": "← Ideas",
         "loadError": "Couldn't load this idea.",
