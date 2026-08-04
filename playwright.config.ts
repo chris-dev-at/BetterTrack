@@ -22,11 +22,10 @@ import {
 } from './e2e/support/config';
 
 /**
- * Root-level Playwright config for the single §12 nightly happy-path spec
- * (`e2e/**`). NOT wired into `pnpm test` / per-commit CI — run explicitly via
- * `pnpm test:e2e`, or by the scheduled `.github/workflows/e2e-nightly.yml`.
- * Boots the real api + web dev servers against Postgres/Redis (see README
- * "End-to-end (Playwright)").
+ * Root-level Playwright config for `e2e/**`. The full suite stays nightly; the
+ * two `mobile-*` regression specs also run as a bounded PR-CI slice. Boots the
+ * real api + web dev servers against Postgres/Redis (see README "End-to-end
+ * (Playwright)").
  */
 const apiEnv = {
   ...process.env,
@@ -100,7 +99,13 @@ export default defineConfig({
     trace: 'retain-on-failure',
   },
   projects: [
-    { name: 'chromium', use: { ...devices['Desktop Chrome'] } },
+    {
+      name: 'chromium',
+      // These files define their own exact 390×844 touch context and should run
+      // once, in the phone project, rather than duplicate identical work here.
+      testIgnore: /mobile-(?:happy-path|overflow)\.spec\.ts/,
+      use: { ...devices['Desktop Chrome'] },
+    },
     { name: 'mobile-chromium', use: { ...devices['Pixel 7'] } },
   ],
   webServer: [
