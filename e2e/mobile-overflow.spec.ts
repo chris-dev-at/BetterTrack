@@ -96,7 +96,10 @@ const AUTHENTICATED_CORE_ROUTES = [
   '/developer/oauth-apps',
 ] as const;
 
-/** Addressable settings overlays, source-checked against CONTROL_GROUPS. */
+/**
+ * Addressable settings overlays, source-checked against CONTROL_GROUPS and
+ * PANEL_ALIASES. Legacy aliases remain working URLs, so they are measured too.
+ */
 const CONTROL_CORE_ROUTES = [
   '/control',
   '/control/account',
@@ -113,6 +116,10 @@ const CONTROL_CORE_ROUTES = [
   '/control/authorized-apps',
   '/control/webhooks',
   '/control/delete-account',
+  '/control/security',
+  '/control/portfolio-defaults',
+  '/control/api-keys',
+  '/control/taxes',
 ] as const;
 
 interface RouteExclusion {
@@ -274,23 +281,20 @@ function registeredUserRoutes(): RegisteredRoute[] {
   return routes;
 }
 
-/** Discover every Control Center panel id from the exported source registry. */
+/** Discover every canonical and legacy Control Center URL from its registries. */
 function registeredControlRoutes(): string[] {
   const sourceFile = parseTsx(CONTROL_CENTER_SOURCE);
   let groups: ts.Expression | undefined;
+  let aliases: ts.Expression | undefined;
 
-  const findGroups = (node: ts.Node) => {
-    if (
-      ts.isVariableDeclaration(node) &&
-      ts.isIdentifier(node.name) &&
-      node.name.text === 'CONTROL_GROUPS'
-    ) {
-      groups = node.initializer;
-      return;
+  const findRegistries = (node: ts.Node) => {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)) {
+      if (node.name.text === 'CONTROL_GROUPS') groups = node.initializer;
+      if (node.name.text === 'PANEL_ALIASES') aliases = node.initializer;
     }
-    if (!groups) ts.forEachChild(node, findGroups);
+    if (!groups || !aliases) ts.forEachChild(node, findRegistries);
   };
-  findGroups(sourceFile);
+  findRegistries(sourceFile);
 
   const ids: string[] = [];
   const findIds = (node: ts.Node) => {
@@ -304,7 +308,23 @@ function registeredControlRoutes(): string[] {
     ts.forEachChild(node, findIds);
   };
   if (groups) findIds(groups);
-  return ['/control', ...ids.map((id) => `/control/${id}`)];
+
+  const aliasIds =
+    aliases && ts.isObjectLiteralExpression(aliases)
+      ? aliases.properties.flatMap((property) => {
+          if (!ts.isPropertyAssignment(property)) return [];
+          if (ts.isIdentifier(property.name) || ts.isStringLiteralLike(property.name)) {
+            return [property.name.text];
+          }
+          return [];
+        })
+      : [];
+
+  return [
+    '/control',
+    ...ids.map((id) => `/control/${id}`),
+    ...aliasIds.map((id) => `/control/${id}`),
+  ];
 }
 
 function unique(values: readonly string[]): string[] {
