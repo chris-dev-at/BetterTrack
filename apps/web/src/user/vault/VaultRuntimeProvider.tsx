@@ -1,7 +1,5 @@
 import {
-  createContext,
   useCallback,
-  useContext,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -23,7 +21,7 @@ import {
 import { VaultCryptoError } from './errors';
 import { createLocalDataHome } from './localDataHome';
 import { clearLocalVaultScope } from './localDataHome';
-import { VaultLockCore, type VaultLockState } from './lock';
+import { VaultLockCore } from './lock';
 import type { DriveConnectionController } from './media/driveConnection';
 import {
   createUnlockedVaultDriveRuntime,
@@ -42,53 +40,23 @@ import {
   rotateVaultKey as reencryptWithRotatedKey,
 } from './rekey';
 import { serializeRecoveryKit, type RecoveryKitDownload } from './recovery';
+import {
+  VaultRuntimeContext,
+  type VaultDriveUnlockOptions,
+  type VaultRuntime,
+} from './VaultRuntimeContext';
+
+export {
+  useOptionalVaultRuntime,
+  useVaultRuntime,
+  type VaultDriveUnlockOptions,
+  type VaultRuntime,
+} from './VaultRuntimeContext';
 
 const KEY_ID_STORAGE_PREFIX = 'bettertrack:vault-key:';
 const CUSTODY_DEVICE_STORAGE_PREFIX = 'bettertrack:vault-custody-device:';
 const LOCK_SIGNAL_STORAGE_PREFIX = 'bettertrack:vault-lock:';
 const DEVICE_LOCKED_STORAGE_PREFIX = 'bettertrack:vault-device-locked:';
-
-export interface VaultDriveUnlockOptions {
-  /** Mint/reuse a browser-memory Drive token during this user gesture. */
-  authorizeDrive: boolean;
-  /** A fresh Drive-only device must fetch its first unlock envelope from Drive. */
-  driveOnly: boolean;
-  /** Persist a non-extractable device key after this authenticated unlock. */
-  keepUnlocked?: boolean;
-}
-
-export interface VaultRuntime {
-  readonly core: VaultLockCore;
-  readonly connection: DriveConnectionController | null;
-  /** The unlocked session's PD5 sync seam — null while locked. */
-  readonly sync: VaultDriveSyncCoordinator | null;
-  readonly lockState: VaultLockState;
-  readonly phase: 'locked' | 'unlocking' | 'unlocked';
-  readonly driveAuthorization: DriveAuthorizationState;
-  readonly syncState: VaultSyncState | null;
-  unlockWithPassphrase(
-    passphrase: string,
-    options: VaultDriveUnlockOptions,
-  ): Promise<DriveConnectionController>;
-  unlockWithRecoveryKit(
-    recoveryKit: Uint8Array,
-    options: VaultDriveUnlockOptions,
-  ): Promise<DriveConnectionController>;
-  /** Try the optional non-extractable device key without prompting. */
-  unlockFromDevice(options: Omit<VaultDriveUnlockOptions, 'keepUnlocked'>): Promise<boolean>;
-  /** User-gesture GIS authorization used by the pre-enable media round trip. */
-  authorizeDriveStorage(): Promise<DataHome>;
-  reconnect(): Promise<VaultSyncState>;
-  downloadRecoveryKit(): Promise<RecoveryKitDownload>;
-  changePassphrase(currentPassphrase: string, nextPassphrase: string): Promise<void>;
-  rotateKey(
-    passphrase: string,
-    receiveRecoveryKit: (kit: RecoveryKitDownload) => Promise<void> | void,
-  ): Promise<void>;
-  /** Best-effort encrypted-copy cleanup after the server committed disable. */
-  cleanupAfterDisable(): Promise<void>;
-  lock(options?: { broadcast?: boolean }): Promise<void>;
-}
 
 export interface VaultRuntimeProviderDependencies {
   clientId?: string | null;
@@ -103,8 +71,6 @@ export interface VaultRuntimeProviderDependencies {
     options: UnlockedVaultDriveRuntimeOptions,
   ) => UnlockedVaultDriveRuntime;
 }
-
-const VaultRuntimeContext = createContext<VaultRuntime | null>(null);
 
 /**
  * Production owner for the unlocked vault-key lifecycle. A successful unlock
@@ -570,17 +536,6 @@ export function VaultRuntimeProvider({
   );
 
   return <VaultRuntimeContext.Provider value={value}>{children}</VaultRuntimeContext.Provider>;
-}
-
-export function useVaultRuntime(): VaultRuntime {
-  const runtime = useContext(VaultRuntimeContext);
-  if (!runtime) throw new Error('useVaultRuntime must be used within VaultRuntimeProvider.');
-  return runtime;
-}
-
-/** Optional form lets isolated pages/tests inject a controller without a provider. */
-export function useOptionalVaultRuntime(): VaultRuntime | null {
-  return useContext(VaultRuntimeContext);
 }
 
 async function readDriveEnvelope(

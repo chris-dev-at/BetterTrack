@@ -23,8 +23,8 @@ vi.mock('../AuthContext', () => ({
     toggleDiscreetMode: mocks.toggleDiscreetMode,
   }),
 }));
-vi.mock('../vault/VaultRuntimeProvider', () => ({
-  useVaultRuntime: () => ({ lock: mocks.lock }),
+vi.mock('../vault/VaultRuntimeContext', () => ({
+  useOptionalVaultRuntime: () => ({ lock: mocks.lock }),
 }));
 
 import { AccountMenu } from './OriginShell';

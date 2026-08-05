@@ -1,6 +1,8 @@
 // Aliased: the bare `MouseEvent` name is the DOM one the popover
 // document-listeners below are typed against.
 import {
+  lazy,
+  Suspense,
   useCallback,
   useEffect,
   useRef,
@@ -11,7 +13,7 @@ import { Link, NavLink, Outlet, useLocation, useSearchParams } from 'react-route
 
 import { useI18n } from '../../i18n';
 import { Brandmark, Wordmark } from '../../components/Wordmark';
-import { Disclaimer, ErrorBoundary, TAGLINE } from '../../ui';
+import { Disclaimer, ErrorBoundary, Skeleton, TAGLINE } from '../../ui';
 import { Button, Icon, type IconName } from '../../ui/origin';
 import { cx } from '../../lib/cx';
 import { legalUrl, type LegalPage } from '../legal';
@@ -20,8 +22,7 @@ import { useCompactShell, usePhoneShell } from '../hooks/useCompactShell';
 import { ACTIVE_PORTFOLIO_PARAM, PortfolioSwitcher } from '../portfolio/PortfolioSwitcher';
 import { useResolvedPrivacyMode, useResolvedPrivacyModeState } from '../vault/usePrivacyMode';
 import { isParanoidKilledPath } from '../vault/ui/ParanoidSurfaceGate';
-import { useVaultRuntime } from '../vault/VaultRuntimeProvider';
-import { VaultSyncChip } from '../vault/ui/VaultSyncChip';
+import { useOptionalVaultRuntime } from '../vault/VaultRuntimeContext';
 import { Avatar } from './Avatar';
 import {
   ASK_DOCK_ID,
@@ -36,6 +37,10 @@ import { usePreservedSearch } from './LocalNav';
 import { NotificationBell } from './NotificationBell';
 import { isChildActive, SECTION_NAV, useRailNavChildren, type SectionKey } from './sectionNav';
 import { useMenuKeyboard } from './useMenuKeyboard';
+
+const VaultSyncChip = lazy(() =>
+  import('../vault/ui/VaultSyncChip').then((module) => ({ default: module.VaultSyncChip })),
+);
 
 /**
  * Origin application frame (docs/redesign/REAL_APP_REDESIGN_PROMPT.md,
@@ -333,7 +338,7 @@ export function AccountMenu({
   const { t } = useI18n();
   const { user, logout, toggleDiscreetMode } = useAuth();
   const privacyMode = useResolvedPrivacyMode();
-  const vault = useVaultRuntime();
+  const vault = useOptionalVaultRuntime();
   const [open, setOpen] = useState(false);
   const [discreetError, setDiscreetError] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -465,7 +470,7 @@ export function AccountMenu({
               className="bt-menu-item"
               onClick={() => {
                 closeAndRestoreFocus();
-                void vault.lock();
+                void vault?.lock();
               }}
               role="menuitem"
               type="button"
@@ -585,6 +590,15 @@ export function CreateMenu() {
       ) : null}
     </div>
   );
+}
+
+/**
+ * The suite section a path belongs to — `/portfolio/cash/labels` → `portfolio`,
+ * `/` → `home`. Every route inside one section shares a mounted layout, so this
+ * is the granularity at which the shell's loading boundary is allowed to reset.
+ */
+function sectionKey(pathname: string): string {
+  return pathname.split('/')[1] || 'home';
 }
 
 export function OriginShell() {
@@ -798,7 +812,9 @@ export function OriginShell() {
             />
             <div className="bt-topbar__actions">
               {privacy.privacyMode === 'paranoid' && privacy.mediaState != null ? (
-                <VaultSyncChip media={privacy.mediaState} />
+                <Suspense fallback={null}>
+                  <VaultSyncChip media={privacy.mediaState} />
+                </Suspense>
               ) : null}
               <CreateMenu />
               <NotificationBell />
@@ -814,12 +830,29 @@ export function OriginShell() {
           </header>
 
           <main id="main-content" className="bt-canvas" tabIndex={-1}>
-            {/* resetKey, not key: keying by pathname remounted the whole page
-                tree on every navigation — replaying overlay entrance animations
-                and resetting page state. The boundary only needs navigation to
-                CLEAR a crash, never to remount healthy children. */}
+            {/* The error boundary only needs navigation to CLEAR a crash, never
+                to remount healthy children.
+
+                The Suspense boundary is keyed by SECTION, not by pathname.
+                react-router runs navigation inside `startTransition`, and a
+                transition into an already-mounted boundary keeps the old page
+                painted until the chunk lands — so ARRIVING in a section needs a
+                fresh boundary for the shell to commit its new navigation state
+                right away. Keying on the full pathname would do that too, and
+                would also remount the persistent section layout (its LocalNav,
+                its scroll, its state) on every step INSIDE the section, which
+                is the remount this key exists to avoid. Steps within a section
+                stay inside that layout's own boundary. */}
             <ErrorBoundary resetKey={pathname}>
-              <Outlet />
+              {/* A skeleton, not `null` (§7.1): arriving in a cold section is
+                  the one boundary with nothing else on screen to explain the
+                  wait, and `role="status"` announces it. */}
+              <Suspense
+                fallback={<Skeleton className="rounded-md" height="h-64" />}
+                key={sectionKey(pathname)}
+              >
+                <Outlet />
+              </Suspense>
             </ErrorBoundary>
             <footer style={{ marginTop: 56 }}>
               <Disclaimer>{TAGLINE}</Disclaimer>

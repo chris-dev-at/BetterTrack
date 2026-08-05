@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useEffect, useState } from 'react';
 import type { FormEvent } from 'react';
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
@@ -28,11 +28,6 @@ import { Avatar } from '../../components/Avatar';
 import { AsyncReadState } from '../../components/AsyncReadState';
 import { ProfileIconSvg } from '../../components/profileIcons';
 import { Alert } from '../../components/ui';
-import { vaultMoneyErrorKey } from '../../vault/engine/errorCopy';
-import type { VaultMoneyFailure } from '../../vault/engine/errors';
-import { useVaultMoneySession } from '../../vault/engine/VaultMoneyEngineProvider';
-import { createClientCleartextExport } from '../../vault/export/cleartext';
-import { deliverClientDownload } from '../../vault/export/deliver';
 import { useResolvedPrivacyMode } from '../../vault/usePrivacyMode';
 import { UI_SCALE_STEPS } from '../../uiScale';
 import { useEffectiveUiScale, useUiScaleSetting } from '../../useUiScale';
@@ -44,6 +39,12 @@ const ME_KEY = ['auth', 'me'] as const;
 const ACCOUNT_SETTINGS_KEY = ['settings', 'account'] as const;
 const EXPORT_STATUS_KEY = ['settings', 'export'] as const;
 const PROFILE_KEY = ['social', 'profile'] as const;
+
+const ParanoidAccountExport = lazy(() =>
+  import('./ParanoidAccountExport').then((module) => ({
+    default: module.ParanoidAccountExport,
+  })),
+);
 
 // #951 removes the old durable token cache. Clear it synchronously on mount so
 // upgrades cannot leave a previously persisted credential behind.
@@ -388,83 +389,15 @@ function ExportRow() {
   );
 }
 
-/**
- * Client-side cleartext export for paranoid accounts (PD7, paranoid design
- * §12): a JSON + CSV zip built entirely in browser memory from the unlocked
- * vault — the server never sees cleartext portfolio data, and nothing is
- * persisted beyond the transient download. Locked vaults cannot export.
- */
-function CleartextExportRow() {
-  const t = useT();
-  const { locale } = useI18n();
-  const session = useVaultMoneySession();
-  const [busy, setBusy] = useState(false);
-  const [failure, setFailure] = useState<VaultMoneyFailure | null>(null);
-  const abortRef = useRef<AbortController | null>(null);
-
-  // Locking drops `session` while this row stays mounted, and leaving the panel
-  // unmounts it — both must abort an in-flight generation before any bytes are
-  // handed over, so the cleanup is keyed on the session identity.
-  useEffect(
-    () => () => {
-      abortRef.current?.abort();
-    },
-    [session],
-  );
-
-  const exportLocale = locale === 'de' ? 'de' : 'en';
-
-  async function onExport() {
-    if (session === null || busy) return;
-    const controller = new AbortController();
-    abortRef.current = controller;
-    setBusy(true);
-    setFailure(null);
-    try {
-      const result = await createClientCleartextExport(session.sync, {
-        locale: exportLocale,
-        signal: controller.signal,
-      });
-      if (controller.signal.aborted) return;
-      if (!result.ok) {
-        setFailure(result.error);
-        return;
-      }
-      deliverClientDownload(result.value.bytes, result.value.mediaType, result.value.filename);
-    } finally {
-      if (abortRef.current === controller) abortRef.current = null;
-      setBusy(false);
-    }
-  }
-
-  return (
-    <Row
-      hint={t('settings.export.cleartext.description')}
-      label={t('settings.export.cleartext.title')}
-      stack
-    >
-      {failure ? <Alert tone="error">{t(vaultMoneyErrorKey(failure))}</Alert> : null}
-
-      {session === null ? (
-        <PanelNote>{t('settings.export.cleartext.locked')}</PanelNote>
-      ) : (
-        <div>
-          <Button disabled={busy} onClick={() => void onExport()} size="sm" type="button">
-            {busy
-              ? t('settings.export.cleartext.generating')
-              : t('settings.export.cleartext.button')}
-          </Button>
-        </div>
-      )}
-    </Row>
-  );
-}
-
 /** Paranoid-only: normal accounts keep exactly the single server export row. */
 function CleartextExportGate() {
   const privacyMode = useResolvedPrivacyMode();
   if (privacyMode !== 'paranoid') return null;
-  return <CleartextExportRow />;
+  return (
+    <Suspense fallback={null}>
+      <ParanoidAccountExport />
+    </Suspense>
+  );
 }
 
 function ParanoidProfileIconRow() {

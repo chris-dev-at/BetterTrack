@@ -125,7 +125,7 @@ describe('PublicSharePage (/s/:token)', () => {
 
     // The value/performance chart is wired in from the (already public_link-gated)
     // payload's history series.
-    expect(screen.getByRole('img', { name: /value over time/i })).toBeInTheDocument();
+    expect(await screen.findByRole('img', { name: /value over time/i })).toBeInTheDocument();
     expect(chartMocks.createChart).toHaveBeenCalled();
 
     // Holdings still render, and the resolve went through the token client.

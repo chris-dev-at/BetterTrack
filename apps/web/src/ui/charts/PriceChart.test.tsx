@@ -65,7 +65,8 @@ function chartOptions(call = 0) {
   };
 }
 
-import { overlayColor, PriceChart } from './PriceChart';
+import { categoricalColor } from './palette';
+import { PriceChart } from './PriceChart';
 import { sampleBenchmarkSeries, sampleOverlaySeries, samplePriceSeries } from './fixtures';
 
 beforeEach(() => {
@@ -138,7 +139,7 @@ describe('PriceChart', () => {
     expect(mocks.addSeries).toHaveBeenCalledTimes(1 + sampleOverlaySeries.length);
     sampleOverlaySeries.forEach((overlay, i) => {
       expect(mocks.addSeries.mock.calls[1 + i]?.[0]).toBe('LineSeries');
-      expect(mocks.addSeries.mock.calls[1 + i]?.[1]).toMatchObject({ color: overlayColor(i) });
+      expect(mocks.addSeries.mock.calls[1 + i]?.[1]).toMatchObject({ color: categoricalColor(i) });
       expect(screen.getByText(overlay.label)).toBeInTheDocument();
       expect(mocks.setData).toHaveBeenCalledWith(overlay.series);
     });

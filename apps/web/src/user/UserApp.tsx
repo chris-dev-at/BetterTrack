@@ -1,5 +1,5 @@
-import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/react-query';
-import { Suspense, lazy, useEffect, useLayoutEffect, useMemo, useRef } from 'react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
+import { Suspense, lazy, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Navigate, Route, Routes, useLocation, useParams, type Location } from 'react-router-dom';
 
@@ -12,79 +12,16 @@ import { RequireUser } from './RequireUser';
 import { FirstRunGate } from './firstrun/FirstRunGate';
 import { OriginShell } from './components/OriginShell';
 import { AnnouncementBanner } from './components/AnnouncementBanner';
-import { AuthCard, Button, Splash } from './components/ui';
-import { ForcedPasswordChangePage } from './auth/ForcedPasswordChangePage';
-import { ForgotPasswordPage } from './auth/ForgotPasswordPage';
-import { InvitePage } from './auth/InvitePage';
-import { LoginPage } from './auth/LoginPage';
-import { RegisterPage } from './auth/RegisterPage';
-import { ResetPasswordPage } from './auth/ResetPasswordPage';
-import { PinGate } from './auth/PinGate';
-import { VaultRuntimeProvider } from './vault/VaultRuntimeProvider';
-import {
-  VaultMoneyEngineProvider,
-  useVaultMoneySession,
-} from './vault/engine/VaultMoneyEngineProvider';
-import {
-  PortfolioStoreProvider,
-  createParanoidAppPortfolioStore,
-} from './portfolio/PortfolioStoreProvider';
+import { AuthCard, Button, Spinner, Splash } from './components/ui';
 import { apiPortfolioStore } from '../lib/portfolioStore';
-import { removePlaintextQueries } from './vault/plaintextQueries';
-import { MutationFeedbackProvider, useMutationFeedback } from './hooks/useMutationFeedback';
-import { ResolvedPrivacyModeProvider, usePrivacyMode } from './vault/usePrivacyMode';
-import { useVaultRuntime } from './vault/VaultRuntimeProvider';
-import { VaultUnlockGate } from './vault/ui/VaultUnlockGate';
-import { discardLockedVault } from './vault/ui/disable';
-import { ParanoidNavigationGate } from './vault/ui/ParanoidSurfaceGate';
-import { ForecastPage } from './forecast/ForecastPage';
-import { CashOverviewPage } from './portfolio/cashflow/CashOverviewPage';
-import { CashMovementsPage } from './portfolio/cashflow/CashMovementsPage';
-import { CashBudgetsPage } from './portfolio/cashflow/CashBudgetsPage';
-import { CashLabelsPage } from './portfolio/cashflow/CashLabelsPage';
-import { PortfolioPage } from './portfolio/PortfolioPage';
-import { PortfolioSettingsPage } from './portfolio/PortfolioSettingsPage';
-import { AnalyticsPage } from './portfolio/analytics/AnalyticsPage';
-import { CashSourcesPage } from './portfolio/CashSourcesPage';
-import { ImportPage } from './portfolio/ImportPage';
-import { TaxReportPage } from './portfolio/TaxReportPage';
-import { TaxReportPrintPage } from './portfolio/TaxReportPrintPage';
-import { CustomAssetsPage, TransactionsPage } from './portfolio/PortfolioSection';
+import { PortfolioStoreProvider } from './portfolio/PortfolioStoreProvider';
 import { CashLayout, PortfolioWorkspace } from './portfolio/PortfolioWorkspace';
 import { WorkbenchLayout } from './workbench/WorkbenchLayout';
-import { WorkboardPage } from './workboard/WorkboardPage';
-import { BacktestsPage, CalculatorsPage, WatchlistPage } from './workboard/WorkboardSection';
-import { WatchlistDetailPage } from './workboard/WatchlistDetailPage';
-import { ComparisonPage } from './workboard/ComparisonPage';
-import { AlertsPage } from './workboard/AlertsPage';
-import { ConglomeratesListPage } from './workboard/ConglomeratesListPage';
-import { ConglomerateDetailPage } from './workboard/ConglomerateDetailPage';
-import { ConglomerateBuilderPage } from './workboard/ConglomerateBuilderPage';
-import { IdeasListPage } from './workboard/IdeasListPage';
-import { IdeaWorkboardPage } from './workboard/IdeaWorkboardPage';
-import { ConsentPage } from './oauth/ConsentPage';
-import { DeleteAccountPage } from './settings/DeleteAccountPage';
-import { SearchPage } from './assets/SearchPage';
-import { AssetDetailPage } from './assets/AssetDetailPage';
-import { NewsDigestPage } from './assets/NewsDigestPage';
-import { AssetsOverviewPage } from './assets/AssetsSection';
 import { AssetsWorkspace } from './assets/AssetsWorkspace';
 import { PeopleLayout } from './people/PeopleLayout';
-import { FriendsPage } from './social/FriendsPage';
-import { FollowingPage } from './social/FollowingPage';
-import { SharedPortfolioPage } from './social/SharedPortfolioPage';
-import { SharedConglomeratePage } from './social/SharedConglomeratePage';
-import { SharedWatchlistPage } from './social/SharedWatchlistPage';
-import { MySharedItemsPage } from './social/MySharedItemsPage';
-import { SharedIdeaPage } from './social/SharedIdeaPage';
-import { PublicSharePage } from './social/PublicSharePage';
-import { PublicProfileViewPage } from './social/PublicProfileViewPage';
-import { ChatPage } from './social/ChatPage';
-import { ChatWindowPage } from './social/ChatWindowPage';
-import { HomePage } from './home/HomePage';
-import { AskPage, DeveloperPlatformPage, ReviewPage } from './hub/HubPages';
-import { ControlCenterOverlay, matchControlPanel } from './control/ControlCenterOverlay';
-import { ParkedPage } from './parked/ParkedPage';
+import { MutationFeedbackProvider, useMutationFeedback } from './hooks/useMutationFeedback';
+import { ResolvedPrivacyModeProvider, usePrivacyMode } from './vault/usePrivacyMode';
+import { matchControlPanel, matchesVaultEnableRequest } from './control/matchControlPanel';
 import { useUiScaleWatcher } from './useUiScale';
 
 /**
@@ -95,12 +32,173 @@ import { useUiScaleWatcher } from './useUiScale';
  */
 export const queryClient = new QueryClient();
 
-/**
- * First-run setup (`/welcome`). Lazy: a wizard that most sessions never open
- * has no business in the main bundle, and it pulls in the QR renderer.
- */
+const ForcedPasswordChangePage = lazy(() =>
+  import('./auth/ForcedPasswordChangePage').then((m) => ({ default: m.ForcedPasswordChangePage })),
+);
+const ControlCenterOverlay = lazy(() =>
+  import('./control/ControlCenterOverlay').then((m) => ({ default: m.ControlCenterOverlay })),
+);
+const ForgotPasswordPage = lazy(() =>
+  import('./auth/ForgotPasswordPage').then((m) => ({ default: m.ForgotPasswordPage })),
+);
+const InvitePage = lazy(() => import('./auth/InvitePage').then((m) => ({ default: m.InvitePage })));
+const LoginPage = lazy(() => import('./auth/LoginPage').then((m) => ({ default: m.LoginPage })));
+const RegisterPage = lazy(() =>
+  import('./auth/RegisterPage').then((m) => ({ default: m.RegisterPage })),
+);
+const ResetPasswordPage = lazy(() =>
+  import('./auth/ResetPasswordPage').then((m) => ({ default: m.ResetPasswordPage })),
+);
+const PinGate = lazy(() => import('./auth/PinGate').then((m) => ({ default: m.PinGate })));
 const WelcomePage = lazy(() =>
   import('./firstrun/WelcomePage').then((m) => ({ default: m.WelcomePage })),
+);
+const ForecastPage = lazy(() =>
+  import('./forecast/ForecastPage').then((m) => ({ default: m.ForecastPage })),
+);
+const CashOverviewPage = lazy(() =>
+  import('./portfolio/cashflow/CashOverviewPage').then((m) => ({ default: m.CashOverviewPage })),
+);
+const CashMovementsPage = lazy(() =>
+  import('./portfolio/cashflow/CashMovementsPage').then((m) => ({
+    default: m.CashMovementsPage,
+  })),
+);
+const CashBudgetsPage = lazy(() =>
+  import('./portfolio/cashflow/CashBudgetsPage').then((m) => ({ default: m.CashBudgetsPage })),
+);
+const CashLabelsPage = lazy(() =>
+  import('./portfolio/cashflow/CashLabelsPage').then((m) => ({ default: m.CashLabelsPage })),
+);
+const PortfolioPage = lazy(() =>
+  import('./portfolio/PortfolioPage').then((m) => ({ default: m.PortfolioPage })),
+);
+const PortfolioSettingsPage = lazy(() =>
+  import('./portfolio/PortfolioSettingsPage').then((m) => ({ default: m.PortfolioSettingsPage })),
+);
+const AnalyticsPage = lazy(() =>
+  import('./portfolio/analytics/AnalyticsPage').then((m) => ({ default: m.AnalyticsPage })),
+);
+const CashSourcesPage = lazy(() =>
+  import('./portfolio/CashSourcesPage').then((m) => ({ default: m.CashSourcesPage })),
+);
+const ImportPage = lazy(() =>
+  import('./portfolio/ImportPage').then((m) => ({ default: m.ImportPage })),
+);
+const TaxReportPage = lazy(() =>
+  import('./portfolio/TaxReportPage').then((m) => ({ default: m.TaxReportPage })),
+);
+const TaxReportPrintPage = lazy(() =>
+  import('./portfolio/TaxReportPrintPage').then((m) => ({ default: m.TaxReportPrintPage })),
+);
+const CustomAssetsPage = lazy(() =>
+  import('./portfolio/PortfolioSection').then((m) => ({ default: m.CustomAssetsPage })),
+);
+const TransactionsPage = lazy(() =>
+  import('./portfolio/PortfolioSection').then((m) => ({ default: m.TransactionsPage })),
+);
+const WorkboardPage = lazy(() =>
+  import('./workboard/WorkboardPage').then((m) => ({ default: m.WorkboardPage })),
+);
+const BacktestsPage = lazy(() =>
+  import('./workboard/WorkboardSection').then((m) => ({ default: m.BacktestsPage })),
+);
+const CalculatorsPage = lazy(() =>
+  import('./workboard/WorkboardSection').then((m) => ({ default: m.CalculatorsPage })),
+);
+const WatchlistPage = lazy(() =>
+  import('./workboard/WorkboardSection').then((m) => ({ default: m.WatchlistPage })),
+);
+const WatchlistDetailPage = lazy(() =>
+  import('./workboard/WatchlistDetailPage').then((m) => ({ default: m.WatchlistDetailPage })),
+);
+const ComparisonPage = lazy(() =>
+  import('./workboard/ComparisonPage').then((m) => ({ default: m.ComparisonPage })),
+);
+const AlertsPage = lazy(() =>
+  import('./workboard/AlertsPage').then((m) => ({ default: m.AlertsPage })),
+);
+const ConglomeratesListPage = lazy(() =>
+  import('./workboard/ConglomeratesListPage').then((m) => ({
+    default: m.ConglomeratesListPage,
+  })),
+);
+const ConglomerateDetailPage = lazy(() =>
+  import('./workboard/ConglomerateDetailPage').then((m) => ({
+    default: m.ConglomerateDetailPage,
+  })),
+);
+const ConglomerateBuilderPage = lazy(() =>
+  import('./workboard/ConglomerateBuilderPage').then((m) => ({
+    default: m.ConglomerateBuilderPage,
+  })),
+);
+const IdeasListPage = lazy(() =>
+  import('./workboard/IdeasListPage').then((m) => ({ default: m.IdeasListPage })),
+);
+const IdeaWorkboardPage = lazy(() =>
+  import('./workboard/IdeaWorkboardPage').then((m) => ({ default: m.IdeaWorkboardPage })),
+);
+const ConsentPage = lazy(() =>
+  import('./oauth/ConsentPage').then((m) => ({ default: m.ConsentPage })),
+);
+const DeleteAccountPage = lazy(() =>
+  import('./settings/DeleteAccountPage').then((m) => ({ default: m.DeleteAccountPage })),
+);
+const SearchPage = lazy(() =>
+  import('./assets/SearchPage').then((m) => ({ default: m.SearchPage })),
+);
+const AssetDetailPage = lazy(() =>
+  import('./assets/AssetDetailPage').then((m) => ({ default: m.AssetDetailPage })),
+);
+const NewsDigestPage = lazy(() =>
+  import('./assets/NewsDigestPage').then((m) => ({ default: m.NewsDigestPage })),
+);
+const AssetsOverviewPage = lazy(() =>
+  import('./assets/AssetsSection').then((m) => ({ default: m.AssetsOverviewPage })),
+);
+const FriendsPage = lazy(() =>
+  import('./social/FriendsPage').then((m) => ({ default: m.FriendsPage })),
+);
+const FollowingPage = lazy(() =>
+  import('./social/FollowingPage').then((m) => ({ default: m.FollowingPage })),
+);
+const SharedPortfolioPage = lazy(() =>
+  import('./social/SharedPortfolioPage').then((m) => ({ default: m.SharedPortfolioPage })),
+);
+const SharedConglomeratePage = lazy(() =>
+  import('./social/SharedConglomeratePage').then((m) => ({ default: m.SharedConglomeratePage })),
+);
+const SharedWatchlistPage = lazy(() =>
+  import('./social/SharedWatchlistPage').then((m) => ({ default: m.SharedWatchlistPage })),
+);
+const MySharedItemsPage = lazy(() =>
+  import('./social/MySharedItemsPage').then((m) => ({ default: m.MySharedItemsPage })),
+);
+const SharedIdeaPage = lazy(() =>
+  import('./social/SharedIdeaPage').then((m) => ({ default: m.SharedIdeaPage })),
+);
+const PublicSharePage = lazy(() =>
+  import('./social/PublicSharePage').then((m) => ({ default: m.PublicSharePage })),
+);
+const PublicProfileViewPage = lazy(() =>
+  import('./social/PublicProfileViewPage').then((m) => ({ default: m.PublicProfileViewPage })),
+);
+const ChatPage = lazy(() => import('./social/ChatPage').then((m) => ({ default: m.ChatPage })));
+const ChatWindowPage = lazy(() =>
+  import('./social/ChatWindowPage').then((m) => ({ default: m.ChatWindowPage })),
+);
+const HomePage = lazy(() => import('./home/HomePage').then((m) => ({ default: m.HomePage })));
+const AskPage = lazy(() => import('./hub/HubPages').then((m) => ({ default: m.AskPage })));
+const DeveloperPlatformPage = lazy(() =>
+  import('./hub/HubPages').then((m) => ({ default: m.DeveloperPlatformPage })),
+);
+const ReviewPage = lazy(() => import('./hub/HubPages').then((m) => ({ default: m.ReviewPage })));
+const ParkedPage = lazy(() =>
+  import('./parked/ParkedPage').then((m) => ({ default: m.ParkedPage })),
+);
+const VaultAccountRoot = lazy(() =>
+  import('./vault/VaultAccountRoot').then((m) => ({ default: m.VaultAccountRoot })),
 );
 
 /**
@@ -238,10 +336,32 @@ function UserShell() {
           settings. First run is handled by its own gate inside the tree, which
           navigates to /welcome and closes the popup with it. */}
       {control !== null && status === 'authenticated' ? (
-        <ControlCenterOverlay closeTo={href(background.current)} panel={control.panel} />
+        // The page behind stays painted while the overlay's chunk arrives, so a
+        // null fallback would read as "the click did nothing". `bt-cc` is the
+        // popup's own centering layer (fixed, click-through), which puts the
+        // spinner exactly where the panel is about to appear.
+        <Suspense
+          fallback={
+            <div className="bt-cc">
+              <Spinner />
+            </div>
+          }
+        >
+          <ControlCenterOverlay closeTo={href(background.current)} panel={control.panel} />
+        </Suspense>
       ) : null}
     </>
   );
+}
+
+/**
+ * A chrome-free route's own loading boundary. These pages render OUTSIDE
+ * `OriginShell`, so without one a cold chunk would suspend all the way up to
+ * the app-level boundary and flash the whole tree — providers included — to
+ * `Splash`. Contained here, only the route area waits.
+ */
+function FullScreenRoute({ page }: { page: ReactNode }) {
+  return <Suspense fallback={<Splash />}>{page}</Suspense>;
 }
 
 /** The authenticated route tree, rendered at `location` (see {@link UserShell}). */
@@ -264,30 +384,38 @@ function UserRoutes({ location }: { location: Location }) {
             self-exempts /welcome and the OAuth authorize flow. */}
         <Route element={<FirstRunGate />}>
           {/* OAuth consent (§6.13 part 2) — standalone card outside the shell. */}
-          <Route path="oauth/authorize" element={<ConsentPage />} />
+          <Route path="oauth/authorize" element={<FullScreenRoute page={<ConsentPage />} />} />
           {/* Self-service account deletion (§13.4 V4-P2c, #362). */}
-          <Route path="account/delete" element={<DeleteAccountPage />} />
+          <Route path="account/delete" element={<FullScreenRoute page={<DeleteAccountPage />} />} />
           {/* First-run setup — a full-screen gate canvas outside the shell chrome.
             Registration lands here; ⌘K "Run setup again" re-opens it any time. */}
-          <Route
-            path="welcome"
-            element={
-              <Suspense fallback={<Splash />}>
-                <WelcomePage />
-              </Suspense>
-            }
-          />
+          <Route path="welcome" element={<FullScreenRoute page={<WelcomePage />} />} />
           {/* The Blueprint Builder is a full-screen surface (§6.5) outside the
             shell chrome; legacy Conglomerate paths redirect here. */}
-          <Route path="workbench/blueprints/new" element={<ConglomerateBuilderPage />} />
-          <Route path="workbench/blueprints/:id/edit" element={<ConglomerateBuilderPage />} />
+          <Route
+            path="workbench/blueprints/new"
+            element={<FullScreenRoute page={<ConglomerateBuilderPage />} />}
+          />
+          <Route
+            path="workbench/blueprints/:id/edit"
+            element={<FullScreenRoute page={<ConglomerateBuilderPage />} />}
+          />
           {/* Print-to-PDF tax report (§13.5 V5-P4b) — chrome-free document. */}
-          <Route path="portfolio/tax/print" element={<TaxReportPrintPage />} />
+          <Route
+            path="portfolio/tax/print"
+            element={<FullScreenRoute page={<TaxReportPrintPage />} />}
+          />
           {/* Popped-out friend chat (R2) — a chrome-free second-screen window.
             Deep-linkable and refresh-safe: the open thread is in the URL. */}
-          <Route path="chat-window" element={<ChatWindowPage />} />
-          <Route path="chat-window/c/:conversationId" element={<ChatWindowPage />} />
-          <Route path="chat-window/:userId" element={<ChatWindowPage />} />
+          <Route path="chat-window" element={<FullScreenRoute page={<ChatWindowPage />} />} />
+          <Route
+            path="chat-window/c/:conversationId"
+            element={<FullScreenRoute page={<ChatWindowPage />} />}
+          />
+          <Route
+            path="chat-window/:userId"
+            element={<FullScreenRoute page={<ChatWindowPage />} />}
+          />
           <Route element={<OriginShell />}>
             {/* ── Home: the scoped command center ── */}
             <Route index element={<HomePage />} />
@@ -520,28 +648,29 @@ function RealtimeRoot({ children }: { children: ReactNode }) {
   return <RealtimeProvider enabled={status === 'authenticated'}>{children}</RealtimeProvider>;
 }
 
-function VaultRuntimeRoot({ children }: { children: ReactNode }) {
-  const { status, user } = useAuth();
-  return (
-    <VaultRuntimeProvider
-      authenticated={status === 'authenticated'}
-      userId={status === 'authenticated' ? user?.id : null}
-    >
-      <VaultMoneyEngineProvider>{children}</VaultMoneyEngineProvider>
-    </VaultRuntimeProvider>
-  );
-}
-
 /**
- * Resolve the account mode before any money route mounts. Normal accounts keep
- * today's API adapter; paranoid accounts receive the decrypted PD5/PD7 seam
- * only after unlock. A lock replaces this whole subtree in the same render.
- */
-/**
- * The account-mode gate: it decides, for the whole authenticated subtree, which
- * portfolio store backs it and whether a locked vault replaces it outright.
- * Exported for `AccountModeRoot.test.tsx`, which drives the privacy/phase
- * matrix directly — every other consumer should mount `UserApp`.
+ * Resolve the account mode before any money route mounts. The default normal
+ * branch contains only the API adapter; the heavy vault module loads when the
+ * account IS paranoid, or when a normal account explicitly asks to set the
+ * vault up (`/control/privacy?enable=1` — {@link matchesVaultEnableRequest}).
+ *
+ * Swapping branches replaces the whole authenticated subtree, so the trigger
+ * list is deliberately that short. Merely OPENING Control Center → Privacy is
+ * not on it: the panel reads the runtime optionally and loads its own chunk
+ * behind the overlay's boundary, so a normal session keeps its shell, its
+ * socket, its query cache and the page behind the popup.
+ *
+ * The enable request is the one case that must swap, and it has to: the
+ * wizard commits, flips the cached mode and then finishes its automatic first
+ * unlock on the runtime it captured, while THIS gate has already replaced the
+ * wizard with `VaultUnlockGate` (see the hand-off note there). That only works
+ * while the runtime lives above the swap — a panel-local provider would be
+ * unmounted (and locked) by its own success, and the user would be asked for
+ * the passphrase they had just created. Requesting it through the URL is what
+ * lets the request survive the swap it causes.
+ *
+ * Once loaded the vault root stays mounted for this login, so a disable (mode
+ * flips back to normal) cannot pull the runtime out midway through it either.
  */
 export function AccountModeRoot({ children }: { children: ReactNode }) {
   const t = useT();
@@ -551,54 +680,16 @@ export function AccountModeRoot({ children }: { children: ReactNode }) {
     status === 'authenticated',
     status === 'authenticated' ? (user?.id ?? null) : null,
   );
-  const runtime = useVaultRuntime();
-  const moneySession = useVaultMoneySession();
-  const cache = useQueryClient();
-  const paranoidStore = useMemo(
-    () => (moneySession == null ? null : createParanoidAppPortfolioStore(moneySession)),
-    [moneySession],
-  );
-
-  // Evict every plaintext money query the moment no decrypted session backs it.
-  // Scoped to vaults: a normal account sits at phase 'locked' for its whole
-  // life, so running this on every normal login would drop those queries just
-  // as their pages mount — refetch churn on a path that must stay
-  // byte-identical to today. `sawDecryptedSession` keeps the purge for the
-  // disable hand-off, where the mode may already read 'normal' by the time the
-  // runtime reports the lock.
-  const sawDecryptedSession = useRef(false);
-  useLayoutEffect(() => {
-    if (runtime.phase === 'unlocked') {
-      sawDecryptedSession.current = true;
-      return;
-    }
-    if (runtime.phase !== 'locked') return;
-    if (privacy.privacyMode !== 'paranoid' && !sawDecryptedSession.current) return;
-    sawDecryptedSession.current = false;
-    removePlaintextQueries(cache);
-  }, [cache, privacy.privacyMode, runtime.phase]);
-
-  useLayoutEffect(() => {
-    if (
-      status === 'authenticated' &&
-      privacy.privacyMode === 'normal' &&
-      runtime.phase === 'unlocked'
-    ) {
-      // A disable completed in another tab/device. Revoke the old decrypted
-      // session before the normal API-backed subtree is allowed to continue.
-      void runtime.lock({ broadcast: false });
-    }
-    // 'unlocking', deliberately NOT included: an unlock IN FLIGHT is owned by
-    // whoever started it, and locking here would cancel it (`lock` bumps the
-    // runtime's operation generation). The enable wizard hits exactly that —
-    // it flips the account mode from the receipt and starts the first unlock in
-    // the same turn, but the mode flip arrives one macrotask later than the
-    // phase change (TanStack's notify scheduler is a `setTimeout(0)`, React's
-    // is a microtask), so for one render this reads 'normal' + 'unlocking' and
-    // used to kill the unlock the user had already authenticated. Nothing is
-    // lost by waiting: the effect re-runs when the phase settles, so a real
-    // cross-device disable still locks the moment it reaches 'unlocked'.
-  }, [privacy.privacyMode, runtime, status]);
+  // State, not a ref: a render React throws away (StrictMode, an interrupted
+  // concurrent render) must not leave the vault chunk latched for a session
+  // that never asked for it.
+  const [vaultLoaded, setVaultLoaded] = useState(false);
+  const wantsVault =
+    status === 'authenticated' &&
+    (privacy.privacyMode === 'paranoid' ||
+      matchesVaultEnableRequest(location.pathname, location.search));
+  if (wantsVault && !vaultLoaded) setVaultLoaded(true);
+  if (status !== 'authenticated' && vaultLoaded) setVaultLoaded(false);
 
   if (status !== 'authenticated') {
     return (
@@ -618,59 +709,12 @@ export function AccountModeRoot({ children }: { children: ReactNode }) {
       </AuthCard>
     );
   }
-  if (privacy.privacyMode === 'normal') {
-    // A mode change received from another device must destroy the decrypted
-    // runtime before any normal API-backed money screen can mount.
-    if (runtime.phase !== 'locked') return <Splash />;
-    return (
-      <ResolvedPrivacyModeProvider accountId={user?.id ?? null} mode="normal">
-        <PortfolioStoreProvider store={apiPortfolioStore}>{children}</PortfolioStoreProvider>
-      </ResolvedPrivacyModeProvider>
-    );
-  }
-  if (privacy.mediaState == null) {
-    return (
-      <AuthCard subtitle={t('vault.gate.unavailableTitle')}>
-        <p className="bt-soft text-sm">{t('vault.gate.invalidMedia')}</p>
-      </AuthCard>
-    );
-  }
-  if (runtime.phase !== 'unlocked' || paranoidStore == null) {
-    // Account deletion is on §8's KEPT list (§12) and it is also the stable
-    // public URL the store listing points at, so a locked vault must not make
-    // it unreachable. The page reads no money data at all — typed username plus
-    // one credential, both verified server-side — so it is served directly here
-    // rather than through `children`, which would mount the shell and its
-    // portfolio store behind the gate.
-    if (location.pathname === '/account/delete') return <DeleteAccountPage />;
-    // The gate owns the whole authenticated subtree, so the §3 recovery exit
-    // has to live ON it: /control/privacy (Start fresh, Disable) is exactly
-    // what a user who cannot unlock can no longer reach.
-    return (
-      <VaultUnlockGate
-        mediaSet={privacy.mediaState.mediaSet}
-        onStartFresh={
-          user?.id == null
-            ? undefined
-            : async (credential) => {
-                await discardLockedVault(user.id, credential);
-                await runtime.cleanupAfterDisable();
-                privacy.acceptNormal();
-                void privacy.refetch();
-              }
-        }
-      />
-    );
+  if (wantsVault || vaultLoaded) {
+    return <VaultAccountRoot privacy={privacy}>{children}</VaultAccountRoot>;
   }
   return (
-    <ResolvedPrivacyModeProvider
-      accountId={user?.id ?? null}
-      mediaState={privacy.mediaState}
-      mode="paranoid"
-    >
-      <PortfolioStoreProvider store={paranoidStore}>
-        <ParanoidNavigationGate>{children}</ParanoidNavigationGate>
-      </PortfolioStoreProvider>
+    <ResolvedPrivacyModeProvider accountId={user?.id ?? null} mode="normal">
+      <PortfolioStoreProvider store={apiPortfolioStore}>{children}</PortfolioStoreProvider>
     </ResolvedPrivacyModeProvider>
   );
 }
@@ -737,17 +781,17 @@ export function UserApp() {
       <QueryClientProvider client={queryClient}>
         <MutationFeedbackProvider>
           <AuthProvider>
-            <VaultRuntimeRoot>
-              <UiScaleWatcher />
-              <LocaleSync />
-              <RateLimitToastBridge />
+            <UiScaleWatcher />
+            <LocaleSync />
+            <RateLimitToastBridge />
+            <Suspense fallback={<Splash />}>
               <AccountModeRoot>
                 <RealtimeRoot>
                   <AnnouncementBannerRoot />
                   <UserShell />
                 </RealtimeRoot>
               </AccountModeRoot>
-            </VaultRuntimeRoot>
+            </Suspense>
           </AuthProvider>
         </MutationFeedbackProvider>
       </QueryClientProvider>

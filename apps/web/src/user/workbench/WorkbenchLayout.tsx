@@ -1,6 +1,8 @@
+import { Suspense } from 'react';
 import { Outlet } from 'react-router-dom';
 
 import { useT } from '../../i18n';
+import { Skeleton } from '../../ui';
 import { LocalNav } from '../components/LocalNav';
 import { SECTION_NAV, useSectionNavItems } from '../components/sectionNav';
 
@@ -18,7 +20,11 @@ export function WorkbenchLayout() {
   return (
     <div>
       <LocalNav ariaLabel={t(SECTION_NAV.workbench.ariaLabelKey)} items={items} />
-      <Outlet />
+      {/* Skeleton, not `null` (§7.1): the layout and its LocalNav stay put and
+          only the page area waits, so a cold page still says it is loading. */}
+      <Suspense fallback={<Skeleton className="rounded-md" height="h-64" />}>
+        <Outlet />
+      </Suspense>
     </div>
   );
 }

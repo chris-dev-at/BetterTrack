@@ -24,8 +24,8 @@ const privacy = vi.hoisted(() => ({
   acceptNormal: vi.fn(),
 }));
 
-vi.mock('./vault/VaultRuntimeProvider', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('./vault/VaultRuntimeProvider')>()),
+vi.mock('./vault/VaultRuntimeContext', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./vault/VaultRuntimeContext')>()),
   useVaultRuntime: () => runtime,
 }));
 
@@ -34,8 +34,8 @@ vi.mock('./vault/usePrivacyMode', async (importOriginal) => ({
   usePrivacyMode: () => privacy,
 }));
 
-vi.mock('./vault/engine/VaultMoneyEngineProvider', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('./vault/engine/VaultMoneyEngineProvider')>()),
+vi.mock('./vault/engine/VaultMoneyEngineContext', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./vault/engine/VaultMoneyEngineContext')>()),
   useVaultMoneySession: () => null,
 }));
 
@@ -50,7 +50,7 @@ vi.mock('./AuthContext', async (importOriginal) => ({
 
 vi.mock('../lib/twoFactorApi', () => ({ getTwoFactorStatus: vi.fn(async () => null) }));
 
-import { AccountModeRoot } from './UserApp';
+import { VaultModeRoot } from './vault/VaultAccountRoot';
 
 const SERVER_MEDIA: ParanoidVaultMediaState = {
   mediaSet: ['server'],
@@ -63,9 +63,9 @@ function renderRoot(path = '/portfolio') {
   return render(
     <MemoryRouter initialEntries={[path]}>
       <QueryClientProvider client={client}>
-        <AccountModeRoot>
+        <VaultModeRoot privacy={privacy}>
           <div>money surface</div>
-        </AccountModeRoot>
+        </VaultModeRoot>
       </QueryClientProvider>
     </MemoryRouter>,
   );
