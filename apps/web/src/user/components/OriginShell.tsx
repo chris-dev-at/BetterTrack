@@ -7,7 +7,7 @@ import {
   useState,
   type MouseEvent as ReactMouseEvent,
 } from 'react';
-import { Link, NavLink, Outlet, useLocation } from 'react-router-dom';
+import { Link, NavLink, Outlet, useLocation, useSearchParams } from 'react-router-dom';
 
 import { useI18n } from '../../i18n';
 import { Brandmark, Wordmark } from '../../components/Wordmark';
@@ -17,8 +17,9 @@ import { cx } from '../../lib/cx';
 import { legalUrl, type LegalPage } from '../legal';
 import { useAuth } from '../AuthContext';
 import { useCompactShell, usePhoneShell } from '../hooks/useCompactShell';
-import { PortfolioSwitcher } from '../portfolio/PortfolioSwitcher';
+import { ACTIVE_PORTFOLIO_PARAM, PortfolioSwitcher } from '../portfolio/PortfolioSwitcher';
 import { useResolvedPrivacyMode, useResolvedPrivacyModeState } from '../vault/usePrivacyMode';
+import { isParanoidKilledPath } from '../vault/ui/ParanoidSurfaceGate';
 import { useVaultRuntime } from '../vault/VaultRuntimeProvider';
 import { VaultSyncChip } from '../vault/ui/VaultSyncChip';
 import { Avatar } from './Avatar';
@@ -30,6 +31,7 @@ import {
   useAskDockState,
 } from './askdock';
 import { CmdKPalette } from './CmdKPalette';
+import { CREATE_COMMANDS, commandPath, withPortfolioScope } from './commands';
 import { usePreservedSearch } from './LocalNav';
 import { NotificationBell } from './NotificationBell';
 import { isChildActive, SECTION_NAV, useRailNavChildren, type SectionKey } from './sectionNav';
@@ -491,8 +493,16 @@ export function AccountMenu({
   );
 }
 
-function CreateMenu() {
+/**
+ * The global "+ Create" menu. Every entry here starts a real flow on its
+ * destination (#1071) — an entry whose destination cannot run the flow does not
+ * belong in the menu at all.
+ *
+ * Exported for OriginShell.create.test.tsx only — nothing else may mount it.
+ */
+export function CreateMenu() {
   const { t } = useI18n();
+  const paranoid = useResolvedPrivacyMode() === 'paranoid';
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -522,22 +532,20 @@ function CreateMenu() {
     };
   }, [closeAndRestoreFocus, open]);
 
-  const items: ReadonlyArray<{ to: string; icon: IconName; labelKey: string }> = [
-    { to: '/portfolio/activity?create=trade', icon: 'assets', labelKey: 'create.trade' },
-    // See commands.ts: no create-a-movement flow exists post cash-fusion, so
-    // this jumps straight to the tagged ledger instead of a dead `?create=`.
-    { to: '/portfolio/cash/movements', icon: 'cash', labelKey: 'create.cashFlow' },
-    {
-      to: '/portfolio/cash/accounts?create=transfer',
-      icon: 'wallet',
-      labelKey: 'create.transfer',
-    },
-    { to: '/workbench/blueprints/new', icon: 'layers', labelKey: 'create.blueprint' },
-    { to: '/assets/watchlists?create=1', icon: 'star', labelKey: 'create.watchlist' },
-    { to: '/workbench/alerts?create=1', icon: 'bell', labelKey: 'create.alert' },
-    { to: '/workbench/ideas?create=1', icon: 'sparkles', labelKey: 'create.idea' },
-    { to: '/portfolios?create=1', icon: 'portfolios', labelKey: 'create.portfolio' },
-  ];
+  // Portfolio-scoped create actions must open on the portfolio the user is
+  // looking at, not the default one (see `withPortfolioScope`) — the shell is
+  // the one surface these links leave from, so it is where the scope is added.
+  const [searchParams] = useSearchParams();
+  const activePortfolioId = searchParams.get(ACTIVE_PORTFOLIO_PARAM);
+
+  // ONE list, shared with the ⌘K palette (`CREATE_COMMANDS`): the menu keeping
+  // its own copy is how an entry could point at a destination that ran no flow
+  // (#1071). The cash ledger is a surface paranoid mode kills, so its entry
+  // would only bounce off `ParanoidNavigationGate` — dropped here exactly as
+  // the palette drops it.
+  const items = CREATE_COMMANDS.filter(
+    (item) => !paranoid || !isParanoidKilledPath(commandPath(item.to)),
+  );
 
   return (
     <div className="relative" ref={rootRef}>
@@ -564,10 +572,10 @@ function CreateMenu() {
           {items.map((item) => (
             <Link
               className="bt-menu-item"
-              key={item.to}
+              key={item.labelKey}
               onClick={closeAndRestoreFocus}
               role="menuitem"
-              to={item.to}
+              to={item.scoped ? withPortfolioScope(item.to, activePortfolioId) : item.to}
             >
               <Icon name={item.icon} size={15} />
               {t(item.labelKey)}

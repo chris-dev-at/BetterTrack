@@ -1,16 +1,19 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 
 import type { AssetType, SearchResultItem } from '@bettertrack/contracts';
 import { useT } from '../../i18n';
 import { Icon, type IconName } from '../../ui/origin';
 import {
   SUGGESTED_COMMANDS,
+  commandPath,
   filterCommands,
   sectionLabelKeyFor,
+  withPortfolioScope,
   type CommandEntry,
   type CommandGroup,
 } from './commands';
+import { ACTIVE_PORTFOLIO_PARAM } from '../routeParams';
 import { useAssetSearch } from './useAssetSearch';
 import { useOverlayEscape } from './overlayStack';
 import { useFocusTrap } from './useFocusTrap';
@@ -101,6 +104,10 @@ export function CmdKPalette({ isOpen, onClose }: CmdKPaletteProps) {
   const t = useT();
   const paranoid = useResolvedPrivacyMode() === 'paranoid';
   const navigate = useNavigate();
+  // The portfolio the palette was opened over, carried into the create rows
+  // that write into one portfolio (`withPortfolioScope`).
+  const [searchParams] = useSearchParams();
+  const activePortfolioId = searchParams.get(ACTIVE_PORTFOLIO_PARAM);
   const inputRef = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState('');
   const [activeIndex, setActiveIndex] = useState(0);
@@ -132,7 +139,7 @@ export function CmdKPalette({ isOpen, onClose }: CmdKPaletteProps) {
   const commands = useMemo(
     () =>
       filterCommands(trimmed, t).filter(
-        (command) => !paranoid || !isParanoidKilledPath(command.to),
+        (command) => !paranoid || !isParanoidKilledPath(commandPath(command.to)),
       ),
     [paranoid, trimmed, t],
   );
@@ -144,8 +151,8 @@ export function CmdKPalette({ isOpen, onClose }: CmdKPaletteProps) {
           key: 'suggested',
           labelKey: 'palette.group.suggested',
           rows: SUGGESTED_COMMANDS.filter(
-            (entry) => !paranoid || !isParanoidKilledPath(entry.to),
-          ).map((entry, i) => commandRow(entry, `s${i}`, t)),
+            (entry) => !paranoid || !isParanoidKilledPath(commandPath(entry.to)),
+          ).map((entry, i) => commandRow(entry, `s${i}`, t, activePortfolioId)),
         },
       ];
     }
@@ -162,7 +169,7 @@ export function CmdKPalette({ isOpen, onClose }: CmdKPaletteProps) {
       rows: byGroup
         .get(group)!
         .slice(0, PER_GROUP_LIMIT)
-        .map((entry, i) => commandRow(entry, `${group}${i}`, t)),
+        .map((entry, i) => commandRow(entry, `${group}${i}`, t, activePortfolioId)),
     }));
 
     // The asset section always declares itself while a query is running, so the
@@ -188,6 +195,7 @@ export function CmdKPalette({ isOpen, onClose }: CmdKPaletteProps) {
       { key: 'assets', labelKey: 'palette.group.assets', rows: assetRows, note: assetNote },
     ];
   }, [
+    activePortfolioId,
     assets.isEnriching,
     assets.isError,
     assets.isFetching,
@@ -400,11 +408,18 @@ function Row({
   );
 }
 
-function commandRow(entry: CommandEntry, suffix: string, t: (k: string) => string): PaletteRow {
+function commandRow(
+  entry: CommandEntry,
+  suffix: string,
+  t: (k: string) => string,
+  portfolioId: string | null,
+): PaletteRow {
   const sectionKey = sectionLabelKeyFor(entry.to);
   return {
     id: `bt-palette-row-c-${suffix}`,
-    to: entry.to,
+    // Same rule as the shell's create menu: a portfolio-scoped action opens on
+    // the portfolio the palette was called from, not the default one.
+    to: entry.scoped ? withPortfolioScope(entry.to, portfolioId) : entry.to,
     icon: entry.icon,
     label: t(entry.labelKey),
     meta: sectionKey === undefined ? undefined : t(sectionKey),

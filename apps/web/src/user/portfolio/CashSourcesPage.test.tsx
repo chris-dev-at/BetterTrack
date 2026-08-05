@@ -94,11 +94,11 @@ const TRANSFER_IN = movement({
 });
 const DEPOSIT = movement({ id: 'm-dep', kind: 'deposit', amountEur: 300, sourceId: 'src-main' });
 
-function renderPage() {
+function renderPage(initialPath = '/portfolio/cash/accounts') {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={client}>
-      <MemoryRouter>
+      <MemoryRouter initialEntries={[initialPath]}>
         <CashSourcesPage />
       </MemoryRouter>
     </QueryClientProvider>,
@@ -397,6 +397,17 @@ describe('CashSourcesPage', () => {
         }),
       ),
     );
+  });
+
+  test('honors the global transfer intent by opening the transfer dialog', async () => {
+    renderPage('/portfolio/cash/accounts?create=transfer');
+
+    // The From/To selects, not just the title: the dialog renders the same
+    // heading over its "you need two sources" fallback, so asserting the form
+    // fields is what pins the real transfer flow.
+    const dialog = await screen.findByRole('dialog', { name: 'Transfer between sources' });
+    expect(within(dialog).getByLabelText('From')).toBeInTheDocument();
+    expect(within(dialog).getByLabelText('To')).toBeInTheDocument();
   });
 
   test('set-balance shows the app-computed delta before recording the movement', async () => {

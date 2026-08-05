@@ -13,7 +13,9 @@ import { Alert } from '../components/ui';
 import { AsyncReadState } from '../components/AsyncReadState';
 import { EmptyState, MoneyText, Skeleton } from '../../ui';
 import { Badge, Button, PageHead } from '../../ui/origin';
-import { ACTIVE_PORTFOLIO_PARAM, resolveActivePortfolio } from './PortfolioSwitcher';
+import { resolveActivePortfolio } from './PortfolioSwitcher';
+import { useCreateIntent } from '../components/useCreateIntent';
+import { ACTIVE_PORTFOLIO_PARAM, CREATE_INTENT } from '../routeParams';
 import { activeSources, sortSourcesMainFirst } from './cashSourceUtils';
 import { CashDialog } from './CashDialog';
 import { CashSourceDialog } from './CashSourceDialog';
@@ -394,6 +396,10 @@ export function CashSourcesPage() {
   const [dialog, setDialog] = useState<DialogState | null>(null);
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+
+  // The shell and command palette both advertise this destination as a create
+  // action; this opens the real transfer flow when they do.
+  useCreateIntent(CREATE_INTENT.transfer, () => setDialog({ kind: 'transfer' }));
 
   const portfoliosQuery = useQuery({
     queryKey: ['portfolios'],

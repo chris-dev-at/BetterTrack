@@ -21,7 +21,9 @@ import { useT } from '../../i18n';
 import { ApiError, classifyApiError } from '../../lib/apiClient';
 import { cx } from '../../lib/cx';
 import { assetTypeLabels } from './assetTypeLabels';
-import { ACTIVE_PORTFOLIO_PARAM, resolveActivePortfolio } from './PortfolioSwitcher';
+import { resolveActivePortfolio } from './PortfolioSwitcher';
+import { useCreateIntent } from '../components/useCreateIntent';
+import { ACTIVE_PORTFOLIO_PARAM, CREATE_INTENT } from '../routeParams';
 import {
   EM_DASH,
   formatDate,
@@ -1406,6 +1408,11 @@ export function PortfolioPage() {
   // the `?portfolio=` routing param the switcher sets (§13.2 V2-P8), falling
   // back to the default — so switching in the topbar re-scopes this whole page.
   const [searchParams] = useSearchParams();
+
+  // Global create actions land on the overview because this is the surface
+  // that owns the transaction dialog.
+  useCreateIntent(CREATE_INTENT.trade, () => setTxnDialog({ kind: 'create' }));
+
   const portfoliosQuery = useQuery({
     queryKey: ['portfolios'],
     queryFn: ({ signal }) => store.listPortfolios(signal),

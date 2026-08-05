@@ -16,7 +16,8 @@ import { EmptyState, MoneyText, Skeleton } from '../../../ui';
 import { Button, PageHead } from '../../../ui/origin';
 import { SourceBadge } from '../SourceBadge';
 import { usePreservedSearch } from '../../components/LocalNav';
-import { ACTIVE_PORTFOLIO_PARAM } from '../PortfolioSwitcher';
+import { useCreateIntent } from '../../components/useCreateIntent';
+import { ACTIVE_PORTFOLIO_PARAM, CREATE_INTENT } from '../../routeParams';
 import { usePhoneShell } from '../../hooks/useCompactShell';
 import { CashMovementTagsDialog } from './CashMovementTagsDialog';
 import { RecordCashDialog } from './RecordCashDialog';
@@ -59,6 +60,13 @@ export function CashMovementsPage() {
   const labelsTo = search
     ? { pathname: '/portfolio/cash/labels', search }
     : '/portfolio/cash/labels';
+
+  // This page owns the standalone record-an-income-or-expense flow, so the
+  // shell's and the palette's "Income or expense" action lands here with the
+  // intent flag and opens the same dialog its primary button opens. It needs a
+  // value of its own: the portfolio switcher in the topbar above this page
+  // claims the bare `?create=1` for the new-portfolio wizard.
+  useCreateIntent(CREATE_INTENT.movement, () => setRecording(true));
 
   const movementsQuery = useQuery({
     queryKey: ['portfolio', portfolioId, 'cash'],
