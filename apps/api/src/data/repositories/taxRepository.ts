@@ -4,7 +4,11 @@ import type { Database } from '../db';
 import { newId } from '../ids';
 import { dividends, portfolioCashMovements, userTaxSettings } from '../schema';
 import type { CashMovementRow, DividendRow, UserTaxSettingsRow } from '../schema';
-import type { NewCashMovement } from './cashMovementRepository';
+import {
+  insertCashMovementsInTransaction,
+  lockPortfolioCashLedgerInTransaction,
+  type NewCashMovement,
+} from './cashMovementRepository';
 import { stampMovementTags } from './cashSystemTagStamp';
 
 /**
@@ -222,15 +226,26 @@ export function createTaxRepository(db: Database) {
     },
 
     /**
-     * Delete a dividend (its movements cascade via `dividend_id`). The caller
-     * has already authorised the portfolio and re-checked ledger solvency.
+     * Delete a dividend (its linked movements cascade via `dividend_id`) and
+     * append every resulting tax correction in one advisory-locked database
+     * transaction. The lock is acquired before the delete, matching the
+     * reconciliation path and keeping its lock order deadlock-safe.
      */
-    async deleteForPortfolio(portfolioId: string, id: string): Promise<boolean> {
-      const rows = await db
-        .delete(dividends)
-        .where(and(eq(dividends.id, id), eq(dividends.portfolioId, portfolioId)))
-        .returning({ id: dividends.id });
-      return rows.length > 0;
+    async deleteForPortfolioWithCorrections(
+      portfolioId: string,
+      id: string,
+      corrections: readonly NewCashMovement[],
+    ): Promise<boolean> {
+      return db.transaction(async (tx) => {
+        await lockPortfolioCashLedgerInTransaction(tx, portfolioId);
+        const rows = await tx
+          .delete(dividends)
+          .where(and(eq(dividends.id, id), eq(dividends.portfolioId, portfolioId)))
+          .returning({ id: dividends.id });
+        if (rows.length === 0) return false;
+        await insertCashMovementsInTransaction(tx, portfolioId, corrections);
+        return true;
+      });
     },
   };
 }

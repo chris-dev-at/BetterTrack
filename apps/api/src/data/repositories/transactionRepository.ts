@@ -3,6 +3,11 @@ import { and, asc, desc, eq, inArray, lt } from 'drizzle-orm';
 import type { Database } from '../db';
 import { assets, portfolioCashMovements, portfolios, transactions } from '../schema';
 import type { AssetRow, TransactionRow } from '../schema';
+import {
+  insertCashMovementsInTransaction,
+  lockPortfolioCashLedgerInTransaction,
+  type NewCashMovement,
+} from './cashMovementRepository';
 import { stampMovementTags } from './cashSystemTagStamp';
 
 /**
@@ -444,18 +449,45 @@ export function createTransactionRepository(db: Database) {
       return row ? toRecord(row) : null;
     },
 
-    /** Delete a transaction scoped to the caller. Returns false when not theirs. */
-    async deleteForUser(userId: string, id: string): Promise<boolean> {
-      // Resolve ownership first (DELETE..USING + RETURNING is awkward across drivers).
-      const owned = await db
-        .select({ id: transactions.id })
-        .from(transactions)
-        .innerJoin(portfolios, eq(transactions.portfolioId, portfolios.id))
-        .where(and(eq(transactions.id, id), eq(portfolios.userId, userId)))
-        .limit(1);
-      if (!owned[0]) return false;
-      await db.delete(transactions).where(eq(transactions.id, id));
-      return true;
+    /**
+     * Delete a transaction and append its tax corrections as one unit. The
+     * cash-ledger advisory lock comes first, matching open-year reconciliation;
+     * a failure after the parent delete therefore rolls the cascade and every
+     * correction back without introducing a lock-order inversion.
+     */
+    async deleteForUserWithCorrections(
+      userId: string,
+      portfolioId: string,
+      id: string,
+      corrections: readonly NewCashMovement[],
+    ): Promise<boolean> {
+      return db.transaction(async (tx) => {
+        await lockPortfolioCashLedgerInTransaction(tx, portfolioId);
+
+        // Resolve ownership inside the same transaction (DELETE..USING +
+        // RETURNING is awkward across drivers). Restating portfolio scope also
+        // prevents corrections ever landing beside a row from another owned
+        // portfolio when a stale/mismatched scoped URL reaches this seam.
+        const owned = await tx
+          .select({ id: transactions.id })
+          .from(transactions)
+          .innerJoin(portfolios, eq(transactions.portfolioId, portfolios.id))
+          .where(
+            and(
+              eq(transactions.id, id),
+              eq(transactions.portfolioId, portfolioId),
+              eq(portfolios.userId, userId),
+            ),
+          )
+          .limit(1);
+        if (!owned[0]) return false;
+
+        await tx
+          .delete(transactions)
+          .where(and(eq(transactions.id, id), eq(transactions.portfolioId, portfolioId)));
+        await insertCashMovementsInTransaction(tx, portfolioId, corrections);
+        return true;
+      });
     },
   };
 }
