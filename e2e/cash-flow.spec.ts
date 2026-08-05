@@ -223,8 +223,16 @@ test('cash flow: a rule tags a real entry, the ledger shows it, and a budget blo
     await expect(movementRow(page, 'BILLA DANKT 77')).not.toContainText('Groceries');
 
     await openCashLabels(page);
+    // Re-running rules over the back catalogue is destructive enough to ask first
+    // (#1115): the button arms an inline confirm, the confirm runs it.
     await page.getByRole('button', { name: 'Apply to existing' }).click();
-    await expect(page.getByRole('alert')).toContainText(/Tagged 1 movement/, { timeout: 20_000 });
+    await page.getByRole('button', { name: 'Confirm', exact: true }).click();
+    // Success notices announce politely (`role="status"`, #1122) while errors keep
+    // `role="alert"`; the filter keeps this immune to the loading `role="status"`
+    // regions the same page renders while the ledger refetches.
+    await expect(page.getByRole('status').filter({ hasText: /Tagged 1 movement/ })).toBeVisible({
+      timeout: 20_000,
+    });
 
     await openCashTab(page, 'Transactions');
     await expect(movementRow(page, 'BILLA DANKT 77')).toContainText('Groceries', {
