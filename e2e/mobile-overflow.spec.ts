@@ -76,6 +76,7 @@ const AUTHENTICATED_CORE_ROUTES = [
   '/assets',
   '/assets/search',
   '/assets/watchlists',
+  '/assets/watchlists/:watchlistId',
   '/assets/custom-assets',
   '/assets/news',
   '/assets/discover',
@@ -379,6 +380,7 @@ interface RouteFixtures {
   assetId: string;
   conglomerateId: string;
   ideaId: string;
+  watchlistId: string;
 }
 
 async function responseJson<T>(response: APIResponse, context: string): Promise<T> {
@@ -403,6 +405,20 @@ async function createRouteFixtures(api: APIRequestContext): Promise<RouteFixture
     }),
     'creating the mobile route conglomerate',
   );
+  const watchlist = await responseJson<{ id: string }>(
+    await api.post(`${API_BASE_URL}/api/v1/workboard/watchlists`, {
+      headers,
+      data: { name: `Mobile route watchlist ${Date.now().toString(36)}` },
+    }),
+    'creating the mobile route watchlist',
+  );
+  await responseJson<unknown>(
+    await api.post(`${API_BASE_URL}/api/v1/workboard`, {
+      headers,
+      data: { assetId: apple!.id, watchlistId: watchlist.id },
+    }),
+    'populating the mobile route watchlist',
+  );
   const idea = await responseJson<{ idea: { id: string } }>(
     await api.post(`${API_BASE_URL}/api/v1/ideas`, {
       headers,
@@ -421,11 +437,19 @@ async function createRouteFixtures(api: APIRequestContext): Promise<RouteFixture
     'creating the mobile route idea',
   );
 
-  return { assetId: apple!.id, conglomerateId: conglomerate.id, ideaId: idea.idea.id };
+  return {
+    assetId: apple!.id,
+    conglomerateId: conglomerate.id,
+    ideaId: idea.idea.id,
+    watchlistId: watchlist.id,
+  };
 }
 
 function concreteRoute(route: string, fixtures: RouteFixtures): string {
   if (route === '/assets/:id') return `/assets/${fixtures.assetId}`;
+  if (route === '/assets/watchlists/:watchlistId') {
+    return `/assets/watchlists/${fixtures.watchlistId}`;
+  }
   if (route === '/workbench/blueprints/:id') {
     return `/workbench/blueprints/${fixtures.conglomerateId}`;
   }

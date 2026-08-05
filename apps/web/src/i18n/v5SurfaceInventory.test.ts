@@ -190,6 +190,7 @@ user/workboard/ConglomeratesListPage.tsx
 user/workboard/IdeaWorkboardPage.tsx
 user/workboard/IdeasListPage.tsx
 user/workboard/NlBuilderPanel.tsx
+user/workboard/WatchlistDetailPage.tsx
 user/workboard/WatchlistsPage.tsx
 user/workboard/WorkboardPage.tsx
 user/workboard/WorkboardSection.tsx
@@ -214,6 +215,7 @@ const EXPECTED_V5_ROUTES = baseline(`
 /assets/custom-assets
 /assets/news
 /assets/watchlists
+/assets/watchlists/:watchlistId
 /control/:panel?
 /control/account
 /control/api
