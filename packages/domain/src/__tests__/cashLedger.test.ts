@@ -1224,11 +1224,27 @@ describe('spendableAsOf', () => {
     expect(gateAccepts(movements, 150, '2026-01-01T00:00:00.000Z')).toBe(false);
   });
 
-  it('counts a same-instant deposit as available to that instant (credits before debits)', () => {
-    // A funding deposit sharing the buy day's timestamp funds that day's buy.
+  it('counts an existing same-instant deposit before the appended buy', () => {
+    // A funding deposit already in the ledger precedes the proposed buy at the
+    // same timestamp because the gate breaks ties by input order.
     const movements = [mv('deposit', 400, '2025-06-01T00:00:00.000Z')];
     expect(spendableAsOf(movements, '2025-06-01T00:00:00.000Z')).toBe(400);
     expect(gateAccepts(movements, 400, '2025-06-01T00:00:00.000Z')).toBe(true);
+  });
+
+  it('matches the gate on the withdrawal-then-deposit tie conformance vector', () => {
+    const movements = [
+      mv('deposit', 100, '2026-01-01T00:00:00.000Z'),
+      mv('withdrawal', -100, '2026-01-05T00:00:00.000Z'),
+      mv('deposit', 100, '2026-01-05T00:00:00.000Z'),
+    ];
+    const buyAt = '2026-01-03T00:00:00.000Z';
+
+    // The accepted ledger reaches 0 before the tied deposit restores it. A
+    // backdated €100 buy would therefore overdraw at that withdrawal.
+    expect(() => projectCashLedger(movements)).not.toThrow();
+    expect(spendableAsOf(movements, buyAt)).toBe(0);
+    expect(gateAccepts(movements, 100, buyAt)).toBe(false);
   });
 
   it('a buy dated at/after the newest movement yields the current balance (today path unchanged)', () => {
