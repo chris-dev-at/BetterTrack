@@ -690,7 +690,12 @@ test('following a Create entry starts that flow and nothing else', async () => {
       },
     ],
   });
-  vi.mocked(getCashMovements).mockResolvedValue({ balanceEur: 0, movements: [], sources: [] });
+  vi.mocked(getCashMovements).mockResolvedValue({
+    balanceEur: 0,
+    movements: [],
+    sources: [],
+    nextCursor: null,
+  });
   vi.mocked(listCashSources).mockResolvedValue({ sources: [] });
   const user = userEvent.setup();
   renderAt('/portfolio');

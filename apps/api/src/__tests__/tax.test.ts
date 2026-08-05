@@ -103,14 +103,19 @@ async function trade(
 }
 
 async function cashState(agent: Agent, pid: string) {
-  const res = await agent.get(`/api/v1/portfolios/${pid}/cash`);
+  const res = await agent.get(`/api/v1/portfolios/${pid}/cash?limit=200`);
   expect(res.status).toBe(200);
   expect(cashMovementsResponseSchema.safeParse(res.body).success).toBe(true);
-  return res.body as {
+  const state = res.body as {
     balanceEur: number;
     movements: CashMovement[];
     sources: { id: string; isMain: boolean; balanceEur: number }[];
   };
+  state.movements.sort(
+    (left, right) =>
+      left.executedAt.localeCompare(right.executedAt) || left.id.localeCompare(right.id),
+  );
+  return state;
 }
 
 async function yearSummaries(agent: Agent, pid: string): Promise<TaxYearSummary[]> {

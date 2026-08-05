@@ -1,8 +1,15 @@
 import { useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  keepPreviousData,
+  useInfiniteQuery,
+  useQuery,
+  useQueryClient,
+  type InfiniteData,
+} from '@tanstack/react-query';
 
-import type { CashMovement, CashSource } from '@bettertrack/contracts';
+import { CASH_MOVEMENTS_DEFAULT_LIMIT } from '@bettertrack/contracts';
+import type { CashMovement, CashMovementsResponse, CashSource } from '@bettertrack/contracts';
 
 import { useT } from '../../i18n';
 import type { TranslateFn } from '../../i18n';
@@ -230,31 +237,32 @@ function SourceRow({
 // ─── Movement history ─────────────────────────────────────────────────────────
 
 function HistorySection({
+  hasNextPage,
+  isFetchingNextPage,
   movements,
+  onLoadMore,
+  onSourceFilterChange,
+  sourceFilter,
   sourceNames,
+  sourceTags,
 }: {
+  hasNextPage: boolean;
+  isFetchingNextPage: boolean;
   movements: CashMovement[];
+  onLoadMore: () => void;
+  onSourceFilterChange: (source: string) => void;
+  sourceFilter: string;
   sourceNames: Map<string, string>;
+  sourceTags: string[];
 }) {
   const t = useT();
   const phone = usePhoneShell();
   // Source-tag filter (V5-P0c): folded into the history header, and only shown
-  // when the ledger actually mixes sources (anti-bloat — a pure `manual` ledger
-  // never sees it). Filtering is client-side over the already-loaded movements.
-  const [sourceFilter, setSourceFilter] = useState<string>('all');
-  const sourceTags = useMemo(() => {
-    const tags = new Set<string>();
-    for (const m of movements) tags.add(m.source);
-    return [...tags].sort();
-  }, [movements]);
-  const ordered = useMemo(
-    () =>
-      [...movements]
-        .filter((m) => sourceFilter === 'all' || m.source === sourceFilter)
-        .sort((a, b) => new Date(b.executedAt).getTime() - new Date(a.executedAt).getTime()),
-    [movements, sourceFilter],
-  );
-  const showFilter = sourceTags.length > 1;
+  // when the loaded ledger has revealed mixed sources (anti-bloat — a pure
+  // `manual` ledger never sees it). An active filter always keeps the control
+  // mounted so the user can return to the full ledger. The API applies the
+  // filter before paging.
+  const showFilter = sourceFilter !== 'all' || sourceTags.length > 1;
 
   return (
     <section aria-label={t('portfolio.cashSources.history.heading')} className="bt-section">
@@ -265,7 +273,7 @@ function HistorySection({
             {t('portfolio.sourceTag.filterLabel')}
             <select
               className="bt-select"
-              onChange={(e) => setSourceFilter(e.target.value)}
+              onChange={(e) => onSourceFilterChange(e.target.value)}
               style={{ minHeight: 28, padding: '2px 26px 2px 8px', width: 'auto', fontSize: 12 }}
               value={sourceFilter}
             >
@@ -279,13 +287,13 @@ function HistorySection({
           </label>
         ) : null}
       </div>
-      {ordered.length === 0 ? (
+      {movements.length === 0 ? (
         <p className="bt-meta" style={{ padding: '10px 0' }}>
           {t('portfolio.cashSources.history.empty')}
         </p>
       ) : phone ? (
         <ul className="bt-phone-card-list">
-          {ordered.map((movement) => (
+          {movements.map((movement) => (
             <li className="bt-phone-card" key={movement.id}>
               <div className="bt-phone-card__head">
                 <div className="min-w-0">
@@ -342,7 +350,7 @@ function HistorySection({
               </tr>
             </thead>
             <tbody>
-              {ordered.map((m) => (
+              {movements.map((m) => (
                 <tr key={m.id}>
                   <td className="bt-soft">{sourceNames.get(m.sourceId) ?? EM_DASH}</td>
                   <td className="bt-muted">
@@ -372,6 +380,17 @@ function HistorySection({
           </table>
         </div>
       )}
+      {hasNextPage ? (
+        <Button
+          className="self-center"
+          disabled={isFetchingNextPage}
+          onClick={onLoadMore}
+          size="sm"
+          variant="quiet"
+        >
+          {isFetchingNextPage ? t('common.loading') : t('cashflow.movements.loadMore')}
+        </Button>
+      ) : null}
     </section>
   );
 }
@@ -393,6 +412,10 @@ export function CashSourcesPage() {
   const queryClient = useQueryClient();
   const [searchParams] = useSearchParams();
   const [showArchived, setShowArchived] = useState(false);
+  const [historyFilter, setHistoryFilter] = useState<{
+    portfolioId: string | null;
+    source: string;
+  }>({ portfolioId: null, source: 'all' });
   const [dialog, setDialog] = useState<DialogState | null>(null);
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
@@ -413,6 +436,8 @@ export function CashSourcesPage() {
     [portfoliosQuery.data, activeParam],
   );
   const portfolioId = portfolio?.id ?? null;
+  const historySourceFilter =
+    historyFilter.portfolioId === portfolioId ? historyFilter.source : 'all';
 
   const sourcesQuery = useQuery({
     queryKey: ['portfolio', portfolioId, 'cash-sources', showArchived],
@@ -421,10 +446,22 @@ export function CashSourcesPage() {
     staleTime: 30_000,
   });
 
-  const cashQuery = useQuery({
-    queryKey: ['portfolio', portfolioId, 'cash'],
-    queryFn: ({ signal }) => store.getCashMovements(portfolioId!, signal),
+  const cashQuery = useInfiniteQuery({
+    queryKey: ['portfolio', portfolioId, 'cash', 'history', historySourceFilter],
+    queryFn: ({ pageParam, signal }: { pageParam: string | undefined; signal: AbortSignal }) =>
+      store.getCashMovements(
+        portfolioId!,
+        {
+          cursor: pageParam,
+          limit: CASH_MOVEMENTS_DEFAULT_LIMIT,
+          source: historySourceFilter === 'all' ? undefined : historySourceFilter,
+        },
+        signal,
+      ),
     enabled: portfolioId !== null,
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
+    placeholderData: keepPreviousData,
     staleTime: 30_000,
   });
 
@@ -483,11 +520,32 @@ export function CashSourcesPage() {
   const sources = sortSourcesMainFirst(sourcesQuery.data.sources);
   const active = activeSources(sources);
   const totalActive = active.reduce((sum, s) => sum + s.balanceEur, 0);
-  const movements = cashQuery.data?.movements ?? [];
+  const movements = cashQuery.data?.pages.flatMap((page) => page.movements) ?? [];
+  const allHistoryData =
+    historySourceFilter === 'all'
+      ? cashQuery.data
+      : queryClient.getQueryData<InfiniteData<CashMovementsResponse>>([
+          'portfolio',
+          portfolioId,
+          'cash',
+          'history',
+          'all',
+        ]);
+  const sourceTags = (() => {
+    const tags = new Set<string>();
+    if (historySourceFilter !== 'all') tags.add(historySourceFilter);
+    for (const page of allHistoryData?.pages ?? []) {
+      for (const movement of page.movements) tags.add(movement.source);
+    }
+    for (const page of cashQuery.data?.pages ?? []) {
+      for (const movement of page.movements) tags.add(movement.source);
+    }
+    return [...tags].sort();
+  })();
   // Names come from the movements payload's source list (archived included) so a
   // historical leg always resolves, even for a source hidden from the active list.
   const sourceNames = new Map<string, string>(
-    (cashQuery.data?.sources ?? sources).map((s) => [s.id, s.name]),
+    (cashQuery.data?.pages[0]?.sources ?? sources).map((s) => [s.id, s.name]),
   );
   const hasArchived = sources.some((s) => s.archivedAt !== null);
 
@@ -600,8 +658,17 @@ export function CashSourcesPage() {
         errorLabel={t('portfolio.cashSources.loadError')}
         onRetry={() => void cashQuery.refetch()}
       />
-      {!cashQuery.isLoading && !cashQuery.error ? (
-        <HistorySection movements={movements} sourceNames={sourceNames} />
+      {cashQuery.data ? (
+        <HistorySection
+          hasNextPage={cashQuery.hasNextPage}
+          isFetchingNextPage={cashQuery.isFetchingNextPage}
+          movements={movements}
+          onLoadMore={() => void cashQuery.fetchNextPage()}
+          onSourceFilterChange={(source) => setHistoryFilter({ portfolioId, source })}
+          sourceFilter={historySourceFilter}
+          sourceNames={sourceNames}
+          sourceTags={sourceTags}
+        />
       ) : null}
 
       {dialog?.kind === 'create' ? (
