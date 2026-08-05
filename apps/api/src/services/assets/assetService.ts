@@ -35,9 +35,13 @@ export interface AssetService {
   ): Promise<AssetDetailResponse>;
   /** Latest quote with stale/asOf markers (§6.3). */
   getQuote(userId: string, id: string): Promise<QuoteResponse>;
-  /** Many latest quotes in one owner-scoped read. */
+  /**
+   * Many latest quotes in one owner-scoped read. Per-row isolated: ids the
+   * caller cannot see and rows the provider cannot price are omitted, never
+   * escalated into a failure for the whole set.
+   */
   getQuotes(userId: string, ids: readonly string[]): Promise<AssetQuotesResponse>;
-  /** Compact one-month daily series for many workboard rows. */
+  /** Compact one-month daily series for many workboard rows; per-row isolated. */
   getSparklines(userId: string, ids: readonly string[]): Promise<AssetSparklinesResponse>;
   /** Price history for a range; interval follows the §5.3 table. */
   getHistory(userId: string, id: string, range: HistoryRange): Promise<HistoryResponse>;
@@ -110,6 +114,14 @@ export function createAssetService(deps: AssetServiceDeps): AssetService {
   /**
    * Resolve an aggregate id set with one SQL read while preserving the exact
    * access and transition-lock semantics of {@link withVisibleAsset}.
+   *
+   * Aggregate reads are per-row isolated. An id the caller cannot see — another
+   * user's custom asset, a row a winning paranoid transition already purged, an
+   * asset deleted between the list read and this one — is simply ABSENT from
+   * the response instead of 404ing the whole set: one vanished asset must not
+   * blank every other row of a watchlist. The singular endpoints keep their 404
+   * (there the missing row *is* the answer), and absence stays indistinguishable
+   * from a foreign custom asset, so nothing leaks (§10).
    */
   async function withVisibleAssets<T>(
     userId: string,
@@ -118,10 +130,9 @@ export function createAssetService(deps: AssetServiceDeps): AssetService {
   ): Promise<T> {
     const orderRows = (rows: AssetRow[]): AssetRow[] => {
       const byId = new Map(rows.map((row) => [row.id, row]));
-      return ids.map((id) => {
+      return ids.flatMap((id) => {
         const row = byId.get(id);
-        if (!row) throw assetNotFound();
-        return row;
+        return row ? [row] : [];
       });
     };
 
@@ -152,6 +163,23 @@ export function createAssetService(deps: AssetServiceDeps): AssetService {
     } catch {
       throw badGateway();
     }
+  }
+
+  /**
+   * Per-row isolation for the aggregate market reads. `Promise.all` rejects the
+   * whole batch on the first failure, so a single unpriceable asset — a custom
+   * asset whose value points were all deleted, a delisted ticker parked on a
+   * negative cache entry for the whole negative TTL — would take down price,
+   * day ±% and every sparkline for all N rows at once. A failed entry is
+   * omitted instead; the client already renders a missing id as the same gap it
+   * renders before the first load resolves.
+   */
+  async function perRow<T>(
+    rows: readonly AssetRow[],
+    read: (row: AssetRow) => Promise<T>,
+  ): Promise<T[]> {
+    const settled = await Promise.allSettled(rows.map((row) => read(row)));
+    return settled.flatMap((entry) => (entry.status === 'fulfilled' ? [entry.value] : []));
   }
 
   async function historyForRow(
@@ -231,32 +259,29 @@ export function createAssetService(deps: AssetServiceDeps): AssetService {
 
     async getQuotes(userId, ids) {
       return withVisibleAssets(userId, ids, async (rows) => ({
-        quotes: await Promise.all(
-          rows.map(
-            async (row): Promise<AssetBatchQuote> => ({
-              assetId: row.id,
-              ...(await quoteForRow(row)),
-            }),
-          ),
+        quotes: await perRow(
+          rows,
+          async (row): Promise<AssetBatchQuote> => ({
+            assetId: row.id,
+            ...(await quoteForRow(row)),
+          }),
         ),
       }));
     },
 
     async getSparklines(userId, ids) {
       return withVisibleAssets(userId, ids, async (rows) => ({
-        sparklines: await Promise.all(
-          rows.map(async (row) => {
-            // Explicit daily granularity avoids the 1M endpoint's dense 30m
-            // candles; the final slice keeps every provider bounded to 30 rows.
-            const history = await historyForRow(row, '1M', '1d');
-            return {
-              assetId: row.id,
-              points: history.points.slice(-WORKBOARD_SPARKLINE_MAX_POINTS),
-              stale: history.stale,
-              asOf: history.asOf,
-            };
-          }),
-        ),
+        sparklines: await perRow(rows, async (row) => {
+          // Explicit daily granularity avoids the 1M endpoint's dense 30m
+          // candles; the final slice keeps every provider bounded to 30 rows.
+          const history = await historyForRow(row, '1M', '1d');
+          return {
+            assetId: row.id,
+            points: history.points.slice(-WORKBOARD_SPARKLINE_MAX_POINTS),
+            stale: history.stale,
+            asOf: history.asOf,
+          };
+        }),
       }));
     },
 

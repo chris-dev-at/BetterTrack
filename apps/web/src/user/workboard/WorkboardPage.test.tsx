@@ -248,11 +248,25 @@ describe('WorkboardPage — item rendering', () => {
     vi.mocked(listWatchlists).mockRejectedValue(new ApiError(403, 'FORBIDDEN', 'forbidden'));
     renderPage();
 
+    // The 403 sharing read stays terminal and retry-less; the shared market
+    // read presents ONE outage state with ONE retry, not one per row.
     await waitFor(() =>
-      expect(screen.getAllByText("This information isn't available.")).toHaveLength(2),
+      expect(screen.getByText('Something went wrong. Please try again.')).toBeInTheDocument(),
     );
-    expect(screen.getByText('Something went wrong. Please try again.')).toBeInTheDocument();
+    expect(screen.getByText("This information isn't available.")).toBeInTheDocument();
     expect(screen.getAllByRole('button', { name: 'Try again' })).toHaveLength(1);
+  });
+
+  test('a terminal market read shows one zone-level unavailable state, no retry', async () => {
+    vi.mocked(listWorkboard).mockResolvedValue({ items: [ITEM_A, ITEM_B] });
+    vi.mocked(getAssetQuotes).mockRejectedValue(new ApiError(404, 'NOT_FOUND', 'missing'));
+    vi.mocked(getAssetSparklines).mockRejectedValue(new ApiError(404, 'NOT_FOUND', 'missing'));
+    renderPage();
+
+    await waitFor(() =>
+      expect(screen.getByText("This information isn't available.")).toBeInTheDocument(),
+    );
+    expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
   });
 
   test('keeps cached quote and sparkline visible after a failed background refetch', async () => {
@@ -278,7 +292,38 @@ describe('WorkboardPage — item rendering', () => {
       await within(row!).findByRole('img', { name: '1-month trend for AAPL' }),
     ).toBeInTheDocument();
     expect(within(row!).getByText(/150/)).toBeInTheDocument();
-    expect(await within(row!).findAllByRole('button', { name: 'Try again' })).toHaveLength(2);
+    // One retry for the shared read, offered outside the table rather than
+    // stamped into every row.
+    expect(await screen.findAllByRole('button', { name: 'Try again' })).toHaveLength(1);
+    expect(within(row!).queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
+  });
+
+  test('keeps surviving rows rendered while a removal remints the batch key', async () => {
+    vi.mocked(listWorkboard).mockResolvedValue({ items: [ITEM_A, ITEM_B] });
+    renderPage();
+
+    expect(await screen.findByRole('img', { name: '1-month trend for AAPL' })).toBeInTheDocument();
+
+    // Removing MSFT changes the id set, so both aggregate queries get a brand
+    // new cache key. `keepPreviousData` must keep AAPL's row rendered instead
+    // of dropping every survivor back to a skeleton.
+    vi.mocked(listWorkboard).mockResolvedValue({ items: [ITEM_A] });
+    let resolveQuotes: (() => void) | undefined;
+    vi.mocked(getAssetQuotes).mockImplementation(
+      (ids) =>
+        new Promise((resolve) => {
+          resolveQuotes = () =>
+            resolve({ quotes: ids.map((assetId) => ({ assetId, ...BASE_QUOTE })) });
+        }),
+    );
+    await userEvent.click(screen.getByRole('button', { name: 'Remove MSFT from watchlist' }));
+
+    await waitFor(() => expect(screen.queryByText('MSFT')).not.toBeInTheDocument());
+    expect(screen.getByRole('img', { name: '1-month trend for AAPL' })).toBeInTheDocument();
+    expect(screen.getByText(/150/)).toBeInTheDocument();
+    await act(async () => {
+      resolveQuotes?.();
+    });
   });
 
   test('shows asset symbols and names for all items', async () => {

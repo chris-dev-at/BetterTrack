@@ -273,6 +273,36 @@ describe('GET /api/v1/assets/quotes', () => {
     expect(parsed.quotes.map((entry) => entry.quote.price)).toEqual([187.5, 420]);
     expect(marketData.calls.quote).toBe(2);
   });
+
+  it('isolates rows: an unpriceable asset and an invisible id never fail the batch', async () => {
+    const marketData = createStubMarketData({
+      quote: (ref) => {
+        // Stands in for an emptied custom asset (MANUAL_ASSET_EMPTY) or a
+        // delisted ticker parked on a negative cache entry.
+        if (ref.providerRef === 'MSFT') throw new Error('no quote available');
+        return cachedQuote();
+      },
+    });
+    const h = await createTestApp({ marketData });
+    const user = await h.seedUser();
+    const apple = await seedGlobalAsset(h);
+    const microsoft = await seedGlobalAsset(h, {
+      providerRef: 'MSFT',
+      symbol: 'MSFT',
+      name: 'Microsoft Corporation',
+    });
+    const agent = await loginAgent(h.app, user.email, user.password);
+    const missingId = '00000000-0000-4000-8000-0000000000ff';
+
+    const res = await agent.get(
+      `/api/v1/assets/quotes?ids=${apple.id},${microsoft.id},${missingId}`,
+    );
+
+    expect(res.status).toBe(200);
+    const parsed = assetQuotesResponseSchema.parse(res.body);
+    expect(parsed.quotes.map((entry) => entry.assetId)).toEqual([apple.id]);
+    expect(parsed.quotes[0]?.quote.price).toBe(187.5);
+  });
 });
 
 describe('GET /api/v1/assets/sparklines', () => {
@@ -301,6 +331,31 @@ describe('GET /api/v1/assets/sparklines', () => {
     expect(parsed.sparklines[0]?.points).toHaveLength(30);
     expect(parsed.sparklines[0]?.points[0]?.close).toBe(105);
     expect(parsed.sparklines[0]?.points.at(-1)?.close).toBe(134);
+  });
+
+  it('omits an asset with no series instead of blanking every other sparkline', async () => {
+    const marketData = createStubMarketData({
+      history: (ref) => {
+        if (ref.providerRef === 'MSFT') throw new Error('no history available');
+        return cachedHistory();
+      },
+    });
+    const h = await createTestApp({ marketData });
+    const user = await h.seedUser();
+    const apple = await seedGlobalAsset(h);
+    const microsoft = await seedGlobalAsset(h, {
+      providerRef: 'MSFT',
+      symbol: 'MSFT',
+      name: 'Microsoft Corporation',
+    });
+    const agent = await loginAgent(h.app, user.email, user.password);
+
+    const res = await agent.get(`/api/v1/assets/sparklines?ids=${apple.id},${microsoft.id}`);
+
+    expect(res.status).toBe(200);
+    const parsed = assetSparklinesResponseSchema.parse(res.body);
+    expect(parsed.sparklines.map((entry) => entry.assetId)).toEqual([apple.id]);
+    expect(parsed.sparklines[0]?.points).toHaveLength(2);
   });
 });
 

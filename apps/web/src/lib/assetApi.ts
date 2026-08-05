@@ -1,4 +1,5 @@
 import {
+  ASSET_BATCH_MAX_IDS,
   assetDetailResponseSchema,
   assetQuotesResponseSchema,
   assetSparklinesResponseSchema,
@@ -16,8 +17,21 @@ import {
 
 import { apiRequest } from './apiClient';
 
-/** Stable URLs keep aggregate GETs reusable across reorder-only renders. */
-const canonicalAssetIds = (ids: readonly string[]): string => [...new Set(ids)].sort().join(',');
+/**
+ * Canonical, cache-friendly id pages for the aggregate reads. Sorting and
+ * de-duplicating keeps the URL stable across reorder-only renders; the chunk
+ * respects the server's hard `ASSET_BATCH_MAX_IDS` cap, which a long watchlist
+ * would otherwise hit as a permanent 400 on every aggregate read. Realistic
+ * lists still resolve in a single request.
+ */
+const assetIdPages = (ids: readonly string[]): string[] => {
+  const canonical = [...new Set(ids)].sort();
+  const pages: string[] = [];
+  for (let start = 0; start < canonical.length; start += ASSET_BATCH_MAX_IDS) {
+    pages.push(canonical.slice(start, start + ASSET_BATCH_MAX_IDS).join(','));
+  }
+  return pages;
+};
 
 /** `GET /assets/:id` — meta + latest quote with EUR conversion (§6.3). */
 export async function getAssetDetail(
@@ -39,11 +53,13 @@ export async function getAssetQuotes(
   ids: readonly string[],
   signal?: AbortSignal,
 ): Promise<AssetQuotesResponse> {
-  const data = await apiRequest<unknown>('/assets/quotes', {
-    query: { ids: canonicalAssetIds(ids) },
-    signal,
-  });
-  return assetQuotesResponseSchema.parse(data);
+  const pages = await Promise.all(
+    assetIdPages(ids).map(async (page) => {
+      const data = await apiRequest<unknown>('/assets/quotes', { query: { ids: page }, signal });
+      return assetQuotesResponseSchema.parse(data);
+    }),
+  );
+  return { quotes: pages.flatMap((page) => page.quotes) };
 }
 
 /** `GET /assets/sparklines?ids=` — compact daily one-month workboard series. */
@@ -51,11 +67,16 @@ export async function getAssetSparklines(
   ids: readonly string[],
   signal?: AbortSignal,
 ): Promise<AssetSparklinesResponse> {
-  const data = await apiRequest<unknown>('/assets/sparklines', {
-    query: { ids: canonicalAssetIds(ids) },
-    signal,
-  });
-  return assetSparklinesResponseSchema.parse(data);
+  const pages = await Promise.all(
+    assetIdPages(ids).map(async (page) => {
+      const data = await apiRequest<unknown>('/assets/sparklines', {
+        query: { ids: page },
+        signal,
+      });
+      return assetSparklinesResponseSchema.parse(data);
+    }),
+  );
+  return { sparklines: pages.flatMap((page) => page.sparklines) };
 }
 
 /**
