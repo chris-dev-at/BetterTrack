@@ -528,8 +528,8 @@ describe('standing orders — catch-up after downtime', () => {
     });
 
     // Three old periods exist, but each scan emits one aggregate. A retry later
-    // that same day must reproduce the exact event bytes: webhook delivery ids
-    // hash the complete event, while the inbox keys order+period+outcome.
+    // that same day reproduces the same logical event; both inbox and webhook
+    // delivery key it by order+period+outcome.
     expect(
       (await service.processDueOrders({ now: Date.parse('2026-04-04T12:00:00Z') })).deferred,
     ).toBe(1);
@@ -614,7 +614,7 @@ describe('standing orders — cash-deduct never overdraws', () => {
 });
 
 describe('standing orders — post-claim booking tombstone', () => {
-  it('notifies after a booking failure while leaving the claimed period tombstoned', async () => {
+  it('does not reclassify a booking-failure tombstone as dropped at the next anchor', async () => {
     const { user, agent, pid } = await setup();
     const created = await createOrder(agent, {
       portfolioId: pid,
@@ -663,5 +663,71 @@ describe('standing orders — post-claim booking tombstone', () => {
         occurredAt: '2026-04-01T00:00:00.000Z',
       },
     ]);
+
+    emitted.length = 0;
+    const nextAnchor = await service.processDueOrders({
+      now: Date.parse('2026-04-02T12:00:00Z'),
+    });
+
+    expect(nextAnchor).toMatchObject({ booked: 0, deferred: 0 });
+    expect((await runPeriodKeys()).map((row) => row.key).sort()).toEqual([
+      '2026-04-01',
+      '2026-04-02',
+    ]);
+    expect(emitted).toEqual([
+      expect.objectContaining({
+        periodKey: '2026-04-02',
+        outcome: 'booking_failed',
+      }),
+    ]);
+  });
+
+  it('does not report a committed row as dropped when markBooked leaves a stale watermark', async () => {
+    const { agent, pid } = await setup();
+    await createOrder(agent, {
+      portfolioId: pid,
+      kind: 'cash-add',
+      amount: 100,
+      label: 'Salary',
+      cadence: 'daily',
+      startDate: '2026-04-01',
+    });
+    const emitted: DispatchableEvent[] = [];
+    const repo = createStandingOrderRepository(harness.db);
+    const service = createStandingOrderService({
+      repo: {
+        ...repo,
+        async markBooked() {
+          throw new Error('injected watermark failure');
+        },
+      },
+      portfolioRepo: createPortfolioRepository(harness.db),
+      assetRepo: createAssetRepository(harness.db),
+      transactionRepo: createTransactionRepository(harness.db),
+      cashMovementRepo: createCashMovementRepository(harness.db),
+      cashSourceRepo: createCashSourceRepository(harness.db),
+      marketData: createStubMarketData(),
+      snapshots: { async invalidate() {} },
+      notify: {
+        async emit(event) {
+          emitted.push(event);
+          return true;
+        },
+      },
+    });
+
+    expect(
+      (await service.processDueOrders({ now: Date.parse('2026-04-01T12:00:00Z') })).booked,
+    ).toBe(1);
+    expect(
+      (await service.processDueOrders({ now: Date.parse('2026-04-02T12:00:00Z') })).booked,
+    ).toBe(1);
+
+    expect(await cashRows(pid, SOURCE_TAG_STANDING_ORDER)).toHaveLength(2);
+    expect((await runPeriodKeys()).map((row) => row.key).sort()).toEqual([
+      '2026-04-01',
+      '2026-04-02',
+    ]);
+    expect(emitted).toEqual([]);
   });
 });

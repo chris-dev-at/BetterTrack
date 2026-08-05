@@ -334,7 +334,17 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
           // quote fetch on the common already-booked case.
           if (order.lastPeriodKey !== null && order.lastPeriodKey >= due) return;
 
-          const droppedPeriods = skippedPeriods(specOf(order), order.lastPeriodKey, due);
+          const candidateDroppedPeriods = skippedPeriods(specOf(order), order.lastPeriodKey, due);
+          // `lastPeriodKey` is only a display watermark. A post-claim booking
+          // failure deliberately leaves it stale, and markBooked can fail after
+          // the money row committed. The run ledger is the authoritative claim
+          // state, so neither case may be reported later as an unrecorded drop.
+          const claimedPeriodKeys = new Set(
+            await repo.listClaimedPeriodKeys(order.id, [...candidateDroppedPeriods, due]),
+          );
+          const droppedPeriods = candidateDroppedPeriods.filter(
+            (periodKey) => !claimedPeriodKeys.has(periodKey),
+          );
           if (droppedPeriods.length > 0) {
             logger?.info(
               {
@@ -347,6 +357,15 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
             );
             const newestDroppedPeriod = droppedPeriods.at(-1)!;
             await notifyFailure(order, newestDroppedPeriod, 'dropped', droppedPeriods.length);
+          }
+
+          // A stale watermark can also expose the currently due period after a
+          // claim. Skip it before any retriable pre-check can falsely call that
+          // already-final occurrence deferred; claimPeriod remains the atomic
+          // concurrency guard for a genuinely unclaimed due period.
+          if (claimedPeriodKeys.has(due)) {
+            result.skippedDuplicate += 1;
+            return;
           }
 
           // Retriable pre-checks BEFORE claiming, so a failure never claims the
@@ -435,9 +454,9 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
       outcome,
       ...(droppedCount === undefined ? {} : { droppedCount }),
       orderLabel: order.label?.trim() || order.assetSymbol,
-      // This is the scheduled occurrence identity, not the scan time. Repeated
-      // observations must be byte-identical because webhook delivery ids hash
-      // the complete event payload.
+      // This is the scheduled occurrence identity, not the scan time. The
+      // webhook bridge keys retries by order + period + outcome, independent of
+      // mutable display copy such as `orderLabel`.
       occurredAt: `${periodKey}T00:00:00.000Z`,
     });
   }

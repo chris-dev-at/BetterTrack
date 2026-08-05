@@ -367,8 +367,9 @@ export type StandingOrderSkipOutcome = 'deferred' | 'dropped' | 'booking_failed'
  * remains as an at-most-once tombstone. Catch-up drops are aggregated into one
  * event keyed by the newest dropped period; `droppedCount` says how many periods
  * that event represents. The producer stamps the scheduled period (rather than
- * the scan clock) into `occurredAt`, so replaying the same logical notice is
- * byte-identical for both inbox and webhook dedupe.
+ * the scan clock) into `occurredAt`; inbox and webhook delivery both dedupe on
+ * recipient + standing order + period + outcome, so mutable display copy does
+ * not create a second logical notice.
  */
 export interface StandingOrderSkippedEvent {
   type: 'standing_order.skipped';
