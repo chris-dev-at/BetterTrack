@@ -649,7 +649,7 @@ function PositionsPanel({
   const t = useT();
   return (
     <section aria-labelledby="positions-heading" className="flex min-w-0 flex-col gap-3">
-      <div className="flex items-center justify-between gap-2">
+      <div className="flex flex-wrap items-center justify-between gap-2">
         <h2
           id="positions-heading"
           className="text-sm font-semibold uppercase tracking-wide bt-muted"
