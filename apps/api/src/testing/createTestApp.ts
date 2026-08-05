@@ -227,6 +227,8 @@ export interface CreateTestAppOptions {
    * boundary derives from it, so tests can advance it across a rollover.
    */
   taxNow?: () => number;
+  /** Controlled portfolio-service clock for archive/restore transition tests. */
+  portfolioNow?: () => number;
   /**
    * Controlled clock for the expense budget/dashboard engine (§13.5 V5-P9) — the
    * current evaluation period + a dashboard's default month derive from it, so a
@@ -299,6 +301,7 @@ export async function createTestApp(options: CreateTestAppOptions = {}): Promise
     exportAfterCollect: options.exportAfterCollect,
     notificationNow: options.notificationNow,
     taxNow: options.taxNow,
+    portfolioNow: options.portfolioNow,
     budgetNow: options.budgetNow,
     webhookTransport: options.webhookTransport,
     aiFetch: options.aiFetch,

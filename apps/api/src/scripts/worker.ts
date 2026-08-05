@@ -369,6 +369,24 @@ const taxService = createTaxService({
   logger,
   paranoid: paranoidGuard,
 });
+// V5-P6b standing orders (#593): the worker owns the engine that the daily
+// `standingOrders.process` job drives. Build it before the portfolio service so
+// archive restores can durably close elapsed periods before the scan sees the
+// portfolio as active again.
+const standingOrders = createStandingOrderService({
+  repo: createStandingOrderRepository(db),
+  portfolioRepo,
+  assetRepo,
+  transactionRepo,
+  cashMovementRepo,
+  cashSourceRepo,
+  marketData,
+  snapshots,
+  paranoid: paranoidGuard,
+  isParanoidForProcessing: standingOrderParanoidFilter,
+  runIfAllowedForProcessing: standingOrderParanoidFilter.runAllowed,
+  logger,
+});
 const portfolioService = createPortfolioService({
   portfolioRepo,
   transactionRepo,
@@ -385,6 +403,7 @@ const portfolioService = createPortfolioService({
   }),
   snapshots,
   taxService,
+  standingOrders,
   friendshipRepo,
   audience,
   profile: profileRepo,
@@ -417,26 +436,6 @@ const mirror = createMirrorService({
   enqueueReplicate: enqueueMirrorReplicate,
   logger,
   paranoid: paranoidGuard,
-});
-
-// V5-P6b standing orders (#593): the worker owns the engine that the daily
-// `standingOrders.process` job drives. It books recurring buys / cash movements
-// through the same transaction/cash repositories the API uses, tagged
-// `standing-order`, exactly once per period via its own runs ledger; a per-order
-// provider failure or insufficient cash defers that period, never aborting.
-const standingOrders = createStandingOrderService({
-  repo: createStandingOrderRepository(db),
-  portfolioRepo: createPortfolioRepository(db),
-  assetRepo: createAssetRepository(db),
-  transactionRepo: createTransactionRepository(db),
-  cashMovementRepo: createCashMovementRepository(db),
-  cashSourceRepo: createCashSourceRepository(db),
-  marketData,
-  snapshots,
-  paranoid: paranoidGuard,
-  isParanoidForProcessing: standingOrderParanoidFilter,
-  runIfAllowedForProcessing: standingOrderParanoidFilter.runAllowed,
-  logger,
 });
 
 // V5-P2 usage analytics (#567): the worker owns a rollup-only instance (no

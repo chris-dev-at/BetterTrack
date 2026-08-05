@@ -182,6 +182,107 @@ describe('paranoid standing-order materialization', () => {
     expect(order(sync.state.active!.document, PAUSED_ID).data.lastPeriodKey).toBe('2026-07-27');
   });
 
+  it('skips archived vault portfolios and tombstones their elapsed restore period', async () => {
+    const fixture = await decryptClientMoneyFixture();
+    let now = '2026-04-01T12:00:00.000Z';
+    const sync = createMutableTestSync(fixture.document, fixture.header);
+    const store = createVaultPortfolioStore(sync, { now: () => now });
+    const market = createClientMoneyMarket();
+    const retired = await store.createPortfolio('Retired');
+    const created = await store.createStandingOrder({
+      portfolioId: retired.id,
+      kind: 'cash-add',
+      amount: 100,
+      cadence: 'monthly',
+      anchorDay: 1,
+      startDate: '2026-04-01',
+    });
+
+    const april = await materializeDueStandingOrders(sync, store, market.market, {
+      now: () => new Date(now),
+      timezone: 'Europe/Vienna',
+    });
+    expect(april).toMatchObject({
+      ok: true,
+      value: { booked: [{ orderId: created.id, dueDate: '2026-04-01' }], deferred: [] },
+    });
+    const cashCountBeforeArchive = (sync.state.active!.document.entities.cashMovement ?? []).filter(
+      (entity) => entity.deletedAt === null,
+    ).length;
+
+    now = '2026-04-02T12:00:00.000Z';
+    await expect(store.archivePortfolio(retired.id)).resolves.toMatchObject({
+      archivedAt: now,
+    });
+    await expect(store.listStandingOrders(retired.id)).resolves.toMatchObject({
+      orders: [
+        expect.objectContaining({
+          id: created.id,
+          status: 'active',
+          suspendedByArchive: true,
+          nextRunDate: null,
+        }),
+      ],
+    });
+
+    now = '2026-05-01T12:00:00.000Z';
+    const whileArchived = await materializeDueStandingOrders(sync, store, market.market, {
+      now: () => new Date(now),
+      timezone: 'Europe/Vienna',
+    });
+    expect(whileArchived).toMatchObject({ ok: true, value: { booked: [], deferred: [] } });
+    expect(
+      (sync.state.active!.document.entities.cashMovement ?? []).filter(
+        (entity) => entity.deletedAt === null,
+      ),
+    ).toHaveLength(cashCountBeforeArchive);
+
+    now = '2026-05-15T12:00:00.000Z';
+    await expect(store.restorePortfolio(retired.id)).resolves.toMatchObject({ archivedAt: null });
+    await expect(store.listStandingOrders(retired.id)).resolves.toMatchObject({
+      orders: [
+        expect.objectContaining({
+          id: created.id,
+          status: 'active',
+          suspendedByArchive: false,
+          lastPeriodKey: '2026-05-01',
+          nextRunDate: '2026-06-01',
+        }),
+      ],
+    });
+    expect(
+      sync.state.active!.document.entities.standingOrderRun?.some(
+        (run) => run.data.standingOrderId === created.id && run.data.periodKey === '2026-05-01',
+      ),
+    ).toBe(true);
+
+    const afterRestore = await materializeDueStandingOrders(sync, store, market.market, {
+      now: () => new Date(now),
+      timezone: 'Europe/Vienna',
+    });
+    expect(afterRestore).toMatchObject({ ok: true, value: { booked: [], deferred: [] } });
+    expect(
+      (sync.state.active!.document.entities.cashMovement ?? []).filter(
+        (entity) => entity.deletedAt === null,
+      ),
+    ).toHaveLength(cashCountBeforeArchive);
+
+    now = '2026-06-01T12:00:00.000Z';
+    const june = await materializeDueStandingOrders(sync, store, market.market, {
+      now: () => new Date(now),
+      timezone: 'Europe/Vienna',
+    });
+    expect(june).toMatchObject({
+      ok: true,
+      value: { booked: [{ orderId: created.id, dueDate: '2026-06-01' }], deferred: [] },
+    });
+    expect(
+      (sync.state.active!.document.entities.cashMovement ?? []).filter(
+        (entity) => entity.deletedAt === null,
+      ),
+    ).toHaveLength(cashCountBeforeArchive + 1);
+  });
+
   it.each(['watermark without rows', 'run without ledger'] as const)(
     'fails closed on an interrupted occurrence with a %s',
     async (partialState) => {

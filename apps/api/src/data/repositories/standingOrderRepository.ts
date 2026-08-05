@@ -1,4 +1,4 @@
-import { and, asc, eq } from 'drizzle-orm';
+import { and, asc, eq, isNull, lt, or, sql } from 'drizzle-orm';
 
 import type {
   StandingOrderCadence,
@@ -7,7 +7,9 @@ import type {
 } from '@bettertrack/contracts';
 
 import type { Database } from '../db';
-import { assets, standingOrderRuns, standingOrders } from '../schema';
+import { newId } from '../ids';
+import { lockPortfolioMutationInTransaction } from './cashMovementRepository';
+import { assets, portfolios, standingOrderRuns, standingOrders } from '../schema';
 
 /**
  * Standing-order persistence (issue #593). Owns two tables — `standing_orders`
@@ -52,6 +54,8 @@ export interface StandingOrderWithAsset extends StandingOrderRecord {
   assetProviderId: string | null;
   assetProviderRef: string | null;
   assetCurrency: string | null;
+  /** Non-null while the owning portfolio is soft-archived. */
+  portfolioArchivedAt: Date | null;
 }
 
 /** Fields for a create; `amount` arrives as a `number`. */
@@ -117,6 +121,9 @@ interface JoinedRow {
     providerRef: string | null;
     currency: string | null;
   } | null;
+  portfolio: {
+    archivedAt: Date | null;
+  };
 }
 
 function toWithAsset(row: JoinedRow): StandingOrderWithAsset {
@@ -127,6 +134,7 @@ function toWithAsset(row: JoinedRow): StandingOrderWithAsset {
     assetProviderId: row.asset?.providerId ?? null,
     assetProviderRef: row.asset?.providerRef ?? null,
     assetCurrency: row.asset?.currency ?? null,
+    portfolioArchivedAt: row.portfolio.archivedAt ?? null,
   };
 }
 
@@ -142,8 +150,12 @@ export function createStandingOrderRepository(db: Database) {
           providerRef: assets.providerRef,
           currency: assets.currency,
         },
+        portfolio: {
+          archivedAt: portfolios.archivedAt,
+        },
       })
       .from(standingOrders)
+      .innerJoin(portfolios, eq(portfolios.id, standingOrders.portfolioId))
       .leftJoin(assets, eq(assets.id, standingOrders.assetId));
 
   return {
@@ -202,9 +214,79 @@ export function createStandingOrderRepository(db: Database) {
      */
     async listActive(): Promise<StandingOrderWithAsset[]> {
       const rows = await joinedSelect()
-        .where(eq(standingOrders.status, 'active'))
+        .where(and(eq(standingOrders.status, 'active'), isNull(portfolios.archivedAt)))
         .orderBy(asc(standingOrders.createdAt));
       return rows.map(toWithAsset);
+    },
+
+    /**
+     * Active orders for one owned portfolio, including a currently archived
+     * portfolio. The restore boundary claims its elapsed period before the
+     * portfolio is made visible to the global scanner again.
+     */
+    async listActiveForPortfolio(
+      userId: string,
+      portfolioId: string,
+    ): Promise<StandingOrderWithAsset[]> {
+      const rows = await joinedSelect()
+        .where(
+          and(
+            eq(standingOrders.userId, userId),
+            eq(standingOrders.portfolioId, portfolioId),
+            eq(standingOrders.status, 'active'),
+          ),
+        )
+        .orderBy(asc(standingOrders.createdAt));
+      return rows.map(toWithAsset);
+    },
+
+    /**
+     * Serialize a standing-order money write with this portfolio's archive
+     * transition. The active check belongs *inside* the shared xact lock: a
+     * worker may have read an active order before an archive request commits,
+     * but cannot claim or write money once that transition won the lock.
+     *
+     * The order check is deliberately in this critical section too. Restore can
+     * advance its watermark while an old worker is awaiting a quote; merely
+     * rechecking the portfolio would let that worker claim a period behind the
+     * restored watermark after the portfolio becomes active again.
+     */
+    async withActivePortfolioLock<T>(
+      portfolioId: string,
+      standingOrderId: string,
+      periodKey: string,
+      action: (transaction: Database) => Promise<T>,
+    ): Promise<T | null> {
+      return db.transaction(async (tx) => {
+        await lockPortfolioMutationInTransaction(tx, portfolioId);
+        const active = await tx
+          .select({ id: portfolios.id })
+          .from(portfolios)
+          .where(and(eq(portfolios.id, portfolioId), isNull(portfolios.archivedAt)))
+          .limit(1);
+        if (active.length === 0) return null;
+
+        // `FOR UPDATE` serializes this validation with pause/resume and the
+        // restore-side watermark update. PostgreSQL rechecks the predicate when
+        // it waits on a concurrent updater, so a later acknowledged period can
+        // never be claimed by this stale worker.
+        const current = await tx
+          .select({ id: standingOrders.id })
+          .from(standingOrders)
+          .where(
+            and(
+              eq(standingOrders.id, standingOrderId),
+              eq(standingOrders.portfolioId, portfolioId),
+              eq(standingOrders.status, 'active'),
+              or(isNull(standingOrders.lastPeriodKey), lt(standingOrders.lastPeriodKey, periodKey)),
+            ),
+          )
+          .limit(1)
+          .for('update');
+        if (current.length === 0) return null;
+
+        return action(tx as unknown as Database);
+      });
     },
 
     /** Patch mutable fields; scoped to the owner. Returns the updated record or null. */
@@ -277,24 +359,129 @@ export function createStandingOrderRepository(db: Database) {
 
     /**
      * Atomically claim one period for an order via the UNIQUE(order, period)
-     * index. Returns true iff THIS call created the claim (so it must book);
-     * false means the period was already claimed (skip — the double-run guard).
+     * index. The CTE locks and rechecks the current scheduler watermark before
+     * inserting, so an old worker cannot claim a period that a newer restore or
+     * worker has already acknowledged. Returns true iff THIS call created the
+     * claim (so it must book); false means the period was already handled or
+     * claimed (skip — the double-run guard).
      */
-    async claimPeriod(standingOrderId: string, periodKey: string): Promise<boolean> {
-      const rows = await db
-        .insert(standingOrderRuns)
-        .values({ standingOrderId, periodKey })
-        .onConflictDoNothing()
-        .returning({ id: standingOrderRuns.id });
+    async claimPeriod(
+      standingOrderId: string,
+      periodKey: string,
+      executor: Database = db,
+    ): Promise<boolean> {
+      const inserted = await executor.execute(sql`
+        WITH eligible_order AS (
+          SELECT ${standingOrders.id}
+          FROM ${standingOrders}
+          WHERE ${standingOrders.id} = ${standingOrderId}::uuid
+            AND (
+              ${standingOrders.lastPeriodKey} IS NULL
+              OR ${standingOrders.lastPeriodKey} < ${periodKey}::date
+            )
+          FOR UPDATE
+        )
+        INSERT INTO ${standingOrderRuns} ("id", "standing_order_id", "period_key")
+        SELECT ${newId()}::uuid, eligible_order."id", ${periodKey}::date
+        FROM eligible_order
+        ON CONFLICT ("standing_order_id", "period_key") DO NOTHING
+        RETURNING "id"
+      `);
+      const rows = (inserted as { rows?: unknown[] }).rows ?? (inserted as unknown[]);
       return rows.length > 0;
     },
 
-    /** Record that a period booked: bump the order's display bookkeeping. */
+    /**
+     * Atomically record a period that was deliberately skipped while the owning
+     * portfolio was archived, and advance its scheduler watermark through that
+     * period. Unlike {@link markBooked}, this creates no money row; `lastRunAt`
+     * records when the scheduler acknowledged the skipped period so the
+     * watermark remains a complete pair for paranoid-vault capture/restore.
+     *
+     * Returns true only when this call created the durable run claim. A prior
+     * claim is still reflected in the watermark, which repairs a legacy
+     * claim-only tombstone without creating a duplicate run.
+     */
+    async claimSkippedPeriod(
+      standingOrderId: string,
+      periodKey: string,
+      skippedAt: Date,
+    ): Promise<boolean> {
+      return db.transaction(async (tx) => {
+        const transaction = tx as unknown as Database;
+        const rows = await transaction
+          .insert(standingOrderRuns)
+          .values({ standingOrderId, periodKey })
+          .onConflictDoNothing()
+          .returning({ id: standingOrderRuns.id });
+
+        await transaction
+          .update(standingOrders)
+          .set({ lastPeriodKey: periodKey, lastRunAt: skippedAt, updatedAt: skippedAt })
+          .where(
+            and(
+              eq(standingOrders.id, standingOrderId),
+              or(isNull(standingOrders.lastPeriodKey), lt(standingOrders.lastPeriodKey, periodKey)),
+            ),
+          );
+        return rows.length > 0;
+      });
+    },
+
+    /**
+     * Compensate a newly-created archive/restore claim if the portfolio never
+     * became active. The conditional watermark reset cannot clobber a later
+     * scheduler acknowledgement.
+     */
+    async rollbackSkippedPeriod(
+      standingOrderId: string,
+      periodKey: string,
+      previous: { lastPeriodKey: string | null; lastRunAt: Date | null },
+    ): Promise<void> {
+      await db.transaction(async (tx) => {
+        const transaction = tx as unknown as Database;
+        const removed = await transaction
+          .delete(standingOrderRuns)
+          .where(
+            and(
+              eq(standingOrderRuns.standingOrderId, standingOrderId),
+              eq(standingOrderRuns.periodKey, periodKey),
+            ),
+          )
+          .returning({ id: standingOrderRuns.id });
+        if (removed.length === 0) return;
+
+        await transaction
+          .update(standingOrders)
+          .set({
+            lastPeriodKey: previous.lastPeriodKey,
+            lastRunAt: previous.lastRunAt,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(standingOrders.id, standingOrderId),
+              eq(standingOrders.lastPeriodKey, periodKey),
+            ),
+          );
+      });
+    },
+
+    /**
+     * Record that a period booked: bump the order's display bookkeeping without
+     * ever walking its watermark backward. A slow worker may finish after a
+     * later restore or scan has already acknowledged a newer period.
+     */
     async markBooked(standingOrderId: string, periodKey: string, bookedAt: Date): Promise<void> {
       await db
         .update(standingOrders)
         .set({ lastPeriodKey: periodKey, lastRunAt: bookedAt, updatedAt: new Date() })
-        .where(eq(standingOrders.id, standingOrderId));
+        .where(
+          and(
+            eq(standingOrders.id, standingOrderId),
+            or(isNull(standingOrders.lastPeriodKey), lt(standingOrders.lastPeriodKey, periodKey)),
+          ),
+        );
     },
   };
 }

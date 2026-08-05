@@ -112,6 +112,9 @@ function toInsertValues(portfolioId: string, movement: NewCashMovement) {
 
 export type CashMovementTransactionExecutor = Pick<Database, 'execute' | 'select' | 'insert'>;
 
+/** A transaction that can participate in the portfolio-wide mutation lock. */
+export type PortfolioMutationTransactionExecutor = Pick<Database, 'execute'>;
+
 type CashMovementUpdatePatch = {
   sourceId: string;
   kind: Kind;
@@ -121,25 +124,40 @@ type CashMovementUpdatePatch = {
 };
 
 /**
- * Serialize every cash-ledger mutation that must coordinate with the solvency
- * gate and open-year tax reconciler.
+ * Serialize per-portfolio mutations whose correctness depends on one coherent
+ * active ledger/portfolio boundary. Cash-ledger mutations use it for the
+ * solvency gate and open-year tax reconciler; archive transitions use it to
+ * close that same boundary against standing-order writes.
  *
  * Keying is deliberately per portfolio: PostgreSQL's one-int advisory-lock
  * namespace receives `hashtext(portfolioId)`. The same UUID therefore always
- * shares one lock across cash writes, transaction/dividend deletes and tax
- * reconciliation. A rare 32-bit hash collision only serializes two unrelated
- * portfolios; it cannot weaken correctness. Because this is an xact lock,
- * PostgreSQL releases it automatically on commit/rollback.
+ * shares one lock across cash writes, transaction/dividend deletes, tax
+ * reconciliation, archive transitions and standing-order execution. A rare
+ * 32-bit hash collision only serializes two unrelated portfolios; it cannot
+ * weaken correctness. Because this is an xact lock, PostgreSQL releases it
+ * automatically on commit/rollback.
  *
  * Every participating path takes this lock before reading or mutating ledger
  * rows. Keeping that advisory-lock-first order avoids a cycle with parent-row
  * deletes, whose cash movements cascade while the same transaction holds it.
  */
+export async function lockPortfolioMutationInTransaction(
+  tx: PortfolioMutationTransactionExecutor,
+  portfolioId: string,
+): Promise<void> {
+  await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${portfolioId}))`);
+}
+
+/**
+ * Cash-ledger callers use the portfolio mutation lock too. Archive transitions
+ * participate in the same lock, so a portfolio cannot become archived between
+ * a standing order's active check and its money write.
+ */
 export async function lockPortfolioCashLedgerInTransaction(
   tx: CashMovementTransactionExecutor,
   portfolioId: string,
 ): Promise<void> {
-  await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${portfolioId}))`);
+  await lockPortfolioMutationInTransaction(tx, portfolioId);
 }
 
 /** Read one portfolio's ledger through the caller's current transaction. */
@@ -193,13 +211,17 @@ export async function insertReconciledCashMovementsInTransaction(
 export function createCashMovementRepository(db: Database) {
   return {
     /** Record a single cash movement (deposit/withdrawal — external, unlinked). */
-    async insert(portfolioId: string, movement: NewCashMovement): Promise<CashMovementRecord> {
-      const [row] = await db
+    async insert(
+      portfolioId: string,
+      movement: NewCashMovement,
+      executor: Database = db,
+    ): Promise<CashMovementRecord> {
+      const [row] = await executor
         .insert(portfolioCashMovements)
         .values(toInsertValues(portfolioId, movement))
         .returning();
       if (!row) throw new Error('Cash movement insert returned no row');
-      await stampMovementTags(db, portfolioId, [row]);
+      await stampMovementTags(executor, portfolioId, [row]);
       return toRecord(row);
     },
 
@@ -273,8 +295,11 @@ export function createCashMovementRepository(db: Database) {
      * `domain/cashLedger` a ready-to-replay history; the balance is the sum of
      * `amountEur` regardless of order.
      */
-    async listForPortfolio(portfolioId: string): Promise<CashMovementRecord[]> {
-      return listPortfolioCashMovementsInTransaction(db, portfolioId);
+    async listForPortfolio(
+      portfolioId: string,
+      executor: Pick<Database, 'select'> = db,
+    ): Promise<CashMovementRecord[]> {
+      return listPortfolioCashMovementsInTransaction(executor, portfolioId);
     },
 
     /**
