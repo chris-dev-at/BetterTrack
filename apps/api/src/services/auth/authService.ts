@@ -1,4 +1,5 @@
 import { randomBytes, randomInt } from 'node:crypto';
+import { setTimeout as delay } from 'node:timers/promises';
 
 import type { Redis } from 'ioredis';
 
@@ -358,6 +359,11 @@ export interface AuthService {
 
 // Self-service reset links are short-lived (§6.1, §14): valid for one hour.
 const RESET_TOKEN_TTL_MS = 60 * 60 * 1000;
+
+// Known-account requests do durable token + audit writes that an unknown address
+// cannot safely mirror. Both paths therefore wait on the same deadline, masking
+// that bounded work while preserving the generic acknowledgement.
+export const PASSWORD_RESET_RESPONSE_FLOOR_MS = 250;
 
 // The login 2FA challenge window (§6.1, §13.2 V2-P5): the pending state — and any
 // emailed code minted under it — live at most this long before the user must
@@ -1157,39 +1163,44 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
     },
 
     async requestPasswordReset({ email: address }, ip) {
-      const user = await userRepo.findByEmail(address);
-      // Only active, user-kind accounts get a self-service link. Admin recovery
-      // is the admin temp-password path (#268); disabled accounts stay closed.
-      // Everything below is skipped for a non-match, but the caller always sees
-      // the same generic acknowledgement — no user enumeration (§6.1).
-      if (user && user.role === 'user' && user.status === 'active') {
-        const { token, tokenHash } = generateToken();
-        // The repository serializes concurrent issues around the owning user,
-        // replacing any prior token in the same transaction.
-        await passwordResetRepo.issue({
-          userId: user.id,
-          tokenHash,
-          expiresAt: new Date(Date.now() + RESET_TOKEN_TTL_MS),
-        });
-        await audit.record({
-          action: AuditAction.PasswordResetRequested,
-          targetType: 'user',
-          targetId: user.id,
-          ip,
-        });
-        // Best-effort send after the token is committed. SMTP latency must never
-        // become an account-existence oracle; the detached send still owns the
-        // normal email_log and failure-audit semantics (§6.10/§6.11).
-        const resetUrl = `${config.appOrigin}/reset/${token}`;
-        void email
-          .sendPasswordReset({
-            to: user.email,
-            resetUrl,
-            audit: { actorId: user.id, targetType: 'user', targetId: user.id, ip },
-          })
-          .catch((err) => {
-            logger?.warn({ err, userId: user.id }, 'detached password-reset email failed');
+      const responseFloor = delay(PASSWORD_RESET_RESPONSE_FLOOR_MS);
+      try {
+        const user = await userRepo.findByEmail(address);
+        // Only active, user-kind accounts get a self-service link. Admin recovery
+        // is the admin temp-password path (#268); disabled accounts stay closed.
+        // The caller always sees the same generic acknowledgement, and the shared
+        // response deadline below masks the known-account writes (§6.1).
+        if (user && user.role === 'user' && user.status === 'active') {
+          const { token, tokenHash } = generateToken();
+          // The repository serializes concurrent issues around the owning user,
+          // replacing any prior token in the same transaction.
+          await passwordResetRepo.issue({
+            userId: user.id,
+            tokenHash,
+            expiresAt: new Date(Date.now() + RESET_TOKEN_TTL_MS),
           });
+          await audit.record({
+            action: AuditAction.PasswordResetRequested,
+            targetType: 'user',
+            targetId: user.id,
+            ip,
+          });
+          // Best-effort send after the token is committed. SMTP latency must never
+          // become an account-existence oracle; the detached send still owns the
+          // normal email_log and failure-audit semantics (§6.10/§6.11).
+          const resetUrl = `${config.appOrigin}/reset/${token}`;
+          void email
+            .sendPasswordReset({
+              to: user.email,
+              resetUrl,
+              audit: { actorId: user.id, targetType: 'user', targetId: user.id, ip },
+            })
+            .catch((err) => {
+              logger?.warn({ err, userId: user.id }, 'detached password-reset email failed');
+            });
+        }
+      } finally {
+        await responseFloor;
       }
     },
 

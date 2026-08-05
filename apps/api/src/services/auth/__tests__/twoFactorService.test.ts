@@ -15,7 +15,7 @@ import {
 import { createSessionService } from '../../sessions/sessionService';
 import { encryptSecret } from '../../crypto/secretBox';
 import { hashToken } from '../../crypto/tokens';
-import { generateTotpCode, normalizeRecoveryCode } from '../totp';
+import { generateTotpCode, normalizeRecoveryCode, TOTP_STEP_SECONDS } from '../totp';
 
 // SMTP env that flips config.email.enabled on (host + from are the deciders).
 const SMTP_ENV = {
@@ -243,6 +243,30 @@ describe('twoFactorService — authenticator (TOTP) method (§6.1, §13.2 V2-P5)
     expect(await recoveryCodeCount()).toBe(0);
   });
 
+  it('locks TOTP disable before repeated wrong codes can be brute-forced', async () => {
+    const { secret } = await h.ctx.twoFactor.enrollTotp(userId);
+    await h.ctx.twoFactor.confirmTotp(userId, generateTotpCode(secret));
+    const validCode = generateTotpCode(secret);
+    const wrongCode = validCode === '000000' ? '111111' : '000000';
+
+    // The shared account schedule permits 10 mistakes; the 11th arms the
+    // cooldown, and peek-before-verify then blocks even a correct code.
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      await expect(h.ctx.twoFactor.disableTotp(userId, wrongCode)).rejects.toMatchObject({
+        code: 'TWO_FACTOR_INVALID_CODE',
+      });
+    }
+    await expect(h.ctx.twoFactor.disableTotp(userId, wrongCode)).rejects.toMatchObject({
+      statusCode: 429,
+      code: 'RATE_LIMITED',
+    });
+    await expect(h.ctx.twoFactor.disableTotp(userId, validCode)).rejects.toMatchObject({
+      statusCode: 429,
+      code: 'RATE_LIMITED',
+    });
+    expect((await readUserTwoFactor()).enabled).toBe(true);
+  });
+
   it('regenerates recovery codes, voiding the previous set', async () => {
     const { secret } = await h.ctx.twoFactor.enrollTotp(userId);
     const first = (await h.ctx.twoFactor.confirmTotp(userId, generateTotpCode(secret))).response
@@ -341,7 +365,10 @@ describe('twoFactorService — authenticator (TOTP) method (§6.1, §13.2 V2-P5)
     }).recordEncryption;
 
     expect(await h.ctx.twoFactor.verifyTotpCode(userId, generateTotpCode(secret))).toBe(true);
-    await h.ctx.twoFactor.disableTotp(userId, generateTotpCode(secret));
+    await h.ctx.twoFactor.disableTotp(
+      userId,
+      generateTotpCode(secret, Date.now() + TOTP_STEP_SECONDS * 1000),
+    );
 
     await h.ctx.twoFactor.enrollTotp(userId);
     expect((await readUserTwoFactor()).secret).toMatch(/^v2\.new_2026\./);

@@ -14,7 +14,7 @@ import {
 import { auditLog, users } from '../data/schema';
 import { createTwoFactorRepository } from '../data/repositories/twoFactorRepository';
 import { createUserRepository } from '../data/repositories/userRepository';
-import { generateTotpCode } from '../services/auth/totp';
+import { generateTotpCode, TOTP_STEP_SECONDS } from '../services/auth/totp';
 import {
   parseIdentifier,
   resetAdminTwoFactorEnrollment,
@@ -97,7 +97,12 @@ async function loginAdminAgent(harness: TestHarness, admin: SeededAdmin, staySig
 }
 
 /** Perform the fresh password + TOTP login required after an admin transition. */
-async function loginAdminWithTotp(harness: TestHarness, admin: SeededAdmin, secret: string) {
+async function loginAdminWithTotp(
+  harness: TestHarness,
+  admin: SeededAdmin,
+  secret: string,
+  nowMs: number = Date.now(),
+) {
   const agent = request.agent(harness.app);
   const challenge = twoFactorChallengeResponseSchema.parse(
     (
@@ -110,7 +115,30 @@ async function loginAdminWithTotp(harness: TestHarness, admin: SeededAdmin, secr
   const verified = await agent
     .post('/api/v1/auth/2fa/verify')
     .set(...XRW)
-    .send({ pendingToken: challenge.pendingToken, code: generateTotpCode(secret) });
+    .send({ pendingToken: challenge.pendingToken, code: generateTotpCode(secret, nowMs) });
+  expect(verified.status).toBe(200);
+  return agent;
+}
+
+/** Use one recovery code for a fresh login when a test needs later TOTP proofs. */
+async function loginAdminWithRecovery(
+  harness: TestHarness,
+  admin: SeededAdmin,
+  recoveryCode: string,
+) {
+  const agent = request.agent(harness.app);
+  const challenge = twoFactorChallengeResponseSchema.parse(
+    (
+      await agent
+        .post('/api/v1/auth/login')
+        .set(...XRW)
+        .send({ identifier: admin.email, password: admin.password })
+    ).body,
+  );
+  const verified = await agent
+    .post('/api/v1/auth/2fa/verify')
+    .set(...XRW)
+    .send({ pendingToken: challenge.pendingToken, recoveryCode });
   expect(verified.status).toBe(200);
   return agent;
 }
@@ -130,6 +158,15 @@ async function loginAdminWithEmail(
         .send({ identifier: admin.email, password: admin.password })
     ).body,
   );
+  // Mixed TOTP + email accounts do not auto-send; ask for the selected email
+  // channel explicitly. Email-only accounts already receive one at login.
+  if (challenge.channels.includes('totp')) {
+    await agent
+      .post('/api/v1/auth/2fa/email-code')
+      .set(...XRW)
+      .send({ pendingToken: challenge.pendingToken })
+      .expect(200);
+  }
   const verified = await agent
     .post('/api/v1/auth/2fa/verify')
     .set(...XRW)
@@ -381,7 +418,10 @@ describe('mandatory admin-login 2FA — setup gate (§6.12, #400)', () => {
     const staleStart = agent
       .post('/api/v1/admin/security/2fa/email/start')
       .set(...XRW)
-      .send({ email: 'stale@ops.test', proof: generateTotpCode(secret) })
+      .send({
+        email: 'stale@ops.test',
+        proof: generateTotpCode(secret, Date.now() + TOTP_STEP_SECONDS * 1000),
+      })
       .then((response) => response);
     await proofChecked.promise;
     expect(await resetAdminTwoFactorEnrollment(harness.db, admin.email)).not.toBeNull();
@@ -511,7 +551,12 @@ describe('mandatory admin-login 2FA — login challenge (§6.12, #400)', () => {
     const beforeSecond = new Set(
       (await sessionRecordsFor(harness, admin.id)).map((record) => record.sessionId),
     );
-    const unassured = await loginAdminWithTotp(harness, admin, secret);
+    const unassured = await loginAdminWithTotp(
+      harness,
+      admin,
+      secret,
+      Date.now() + TOTP_STEP_SECONDS * 1000,
+    );
     const secondRecord = (await sessionRecordsFor(harness, admin.id)).find(
       (record) => !beforeSecond.has(record.sessionId),
     );
@@ -635,9 +680,11 @@ describe('mandatory admin-login 2FA — 2FA email change needs a fresh proof (§
       .post('/api/v1/admin/security/2fa/totp/confirm')
       .set(...XRW)
       .send({ code: generateTotpCode(secret) });
+    const { recoveryCodes } = twoFactorMethodEnabledResponseSchema.parse(totpConfirm.body);
     expect(clearsSessionCookie(totpConfirm)).toBe(true);
     expect(setsSessionCookie(totpConfirm)).toBe(false);
-    let agent = await loginAdminWithTotp(harness, admin, secret);
+    expect(recoveryCodes).not.toBeNull();
+    let agent = await loginAdminWithRecovery(harness, admin, recoveryCodes![0]!);
 
     // Setting the 2FA email while already enrolled requires a fresh proof.
     const noProof = await agent
@@ -662,7 +709,7 @@ describe('mandatory admin-login 2FA — 2FA email change needs a fresh proof (§
     expect(clearsSessionCookie(confirm)).toBe(true);
     expect(setsSessionCookie(confirm)).toBe(false);
 
-    agent = await loginAdminWithTotp(harness, admin, secret);
+    agent = await loginAdminWithEmail(harness, admin, transport);
     const firstStatus = adminTwoFactorStatusResponseSchema.parse(
       (await agent.get('/api/v1/admin/security/2fa/status')).body,
     );
@@ -689,7 +736,10 @@ describe('mandatory admin-login 2FA — 2FA email change needs a fresh proof (§
     const change = await agent
       .post('/api/v1/admin/security/2fa/email/start')
       .set(...XRW)
-      .send({ email: 'changed@ops.test', proof: generateTotpCode(secret) });
+      .send({
+        email: 'changed@ops.test',
+        proof: generateTotpCode(secret, Date.now() + TOTP_STEP_SECONDS * 1000),
+      });
     expect(change.status).toBe(204);
     expect(transport.sent.at(-1)!.to).toBe('changed@ops.test');
 
@@ -701,7 +751,7 @@ describe('mandatory admin-login 2FA — 2FA email change needs a fresh proof (§
     expect(clearsSessionCookie(changeConfirm)).toBe(true);
     expect(setsSessionCookie(changeConfirm)).toBe(false);
 
-    agent = await loginAdminWithTotp(harness, admin, secret);
+    agent = await loginAdminWithEmail(harness, admin, transport);
     const changedStatus = adminTwoFactorStatusResponseSchema.parse(
       (await agent.get('/api/v1/admin/security/2fa/status')).body,
     );
