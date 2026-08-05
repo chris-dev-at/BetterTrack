@@ -52,6 +52,19 @@ test('registers every not-found string in EN and DE', () => {
   }
 });
 
+test('uses one label for the Analysis and shared-items top-level surfaces in EN and DE', () => {
+  for (const locale of ['en', 'de']) {
+    const analysis = localizedMessage(locale, 'portfolio.tabs.analysis');
+    expect(localizedMessage(locale, 'portfolio.analytics.title')).toBe(analysis);
+    expect(localizedMessage(locale, 'portfolio.overview.chart.analyticsLink')).toBe(
+      `${analysis} →`,
+    );
+    expect(localizedMessage(locale, 'social.myShared.title')).toBe(
+      localizedMessage(locale, 'people.tabs.shared'),
+    );
+  }
+});
+
 test('registers copy for every vault portfolio-store error code in EN and DE', () => {
   // The paranoid store fails closed by design; what it must never do is
   // surface a bare code like VAULT_OPERATION_UNAVAILABLE (#1016). Every code

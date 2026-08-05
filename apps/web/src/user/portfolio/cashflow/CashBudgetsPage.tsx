@@ -18,6 +18,7 @@ import { AsyncReadState } from '../../components/AsyncReadState';
 import { EmptyState, Skeleton } from '../../../ui';
 import { Badge, Button, PageHead } from '../../../ui/origin';
 import { CashBudgetDialog } from './CashBudgetDialog';
+import { DisabledActionHint } from './DisabledActionHint';
 import { TagChip } from './TagChip';
 import { useActivePortfolio } from './useActivePortfolio';
 
@@ -91,11 +92,18 @@ export function CashBudgetsPage() {
     return <Alert tone="error">{t('cashflow.budgets.loadError')}</Alert>;
   }
 
-  // Coarse convenience gate only — matches every tag having SOME row this
-  // month, not necessarily both a recurring AND a this-month slot filled; the
-  // dialog's own options list (and the server's 409) are the real enforcement.
-  const budgetedTagIds = new Set(budgets.map((b) => b.tagId));
+  // The progress endpoint supplies one effective target per tag/month, not the
+  // raw recurring and month-only rows needed to determine both creation slots.
+  // Keep the existing coarse gate; the server remains the final duplicate guard.
+  const budgetedTagIds = new Set(budgets.map((budget) => budget.tagId));
+  const tagsKnown = tagsQuery.data !== undefined;
   const canCreate = tags.some((tag) => !budgetedTagIds.has(tag.id));
+  const createDisabled = !tagsKnown || !canCreate;
+  const showCreateHint = tagsKnown && !canCreate;
+  const createHint =
+    tags.length === 0
+      ? t('cashflow.movements.tagDialog.noTags')
+      : t('cashflow.budgets.dialog.noTags');
 
   return (
     <div className="bt-money-surface flex flex-col gap-6">
@@ -113,9 +121,11 @@ export function CashBudgetsPage() {
                 value={month}
               />
             </label>
-            <Button disabled={!canCreate} onClick={() => setCreating(true)} variant="primary">
-              {t('cashflow.budgets.new')}
-            </Button>
+            <DisabledActionHint disabled={showCreateHint} hint={createHint}>
+              <Button disabled={createDisabled} onClick={() => setCreating(true)} variant="primary">
+                {t('cashflow.budgets.new')}
+              </Button>
+            </DisabledActionHint>
           </>
         }
         title={t('cashflow.tabs.budgets')}
@@ -131,9 +141,11 @@ export function CashBudgetsPage() {
       {budgets.length === 0 ? (
         <EmptyState
           cta={
-            <Button disabled={!canCreate} onClick={() => setCreating(true)} variant="quiet">
-              {t('cashflow.budgets.emptyCta')}
-            </Button>
+            <DisabledActionHint disabled={showCreateHint} hint={createHint}>
+              <Button disabled={createDisabled} onClick={() => setCreating(true)} variant="quiet">
+                {t('cashflow.budgets.emptyCta')}
+              </Button>
+            </DisabledActionHint>
           }
           description={t('cashflow.budgets.emptyDescription')}
           icon="🎯"
