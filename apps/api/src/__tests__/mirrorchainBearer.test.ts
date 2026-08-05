@@ -21,13 +21,21 @@ import { createOAuthRepository } from '../data/repositories/oauthRepository';
 import * as schema from '../data/schema';
 import {
   MIRRORCHAIN_BEARER_ROUTE_ALLOWLIST,
+  MIRRORCHAIN_SESSION_ONLY_ROUTE_ALLOWLIST,
   enforceMirrorchainBearerAllowlist,
   mirrorchainRouteAcceptsBearer,
   openApiPathTemplateAcceptsBearer,
   pathAcceptsBearer,
 } from '../http/middleware/bearerAuth';
+import { buildRouteTable, type MountedSurface } from '../scripts/checkOpenapiCoverage';
 import { FIRST_PARTY_CLIENTS, seedFirstPartyClients } from '../services/oauth/firstPartyClients';
 import { createTestApp, type SeededUser, type TestHarness } from '../testing/createTestApp';
+
+import {
+  BEARER_ALL_METHODS_ROUTE_METHOD,
+  BEARER_OPAQUE_MOUNT_METHOD,
+  mountedBearerRouteInventory,
+} from './bearerRouteInventory';
 
 /**
  * #1042 — participation-over-administration bearer access for MIRRORCHAIN.
@@ -148,19 +156,15 @@ describe('#1042 MIRRORCHAIN bearer route allowlist', () => {
     { method: 'POST', path: '/mirrorchain/chains/{chainId}/leave' },
   ] as const;
 
-  const ADMIN_ROUTES = [
-    { method: 'POST', path: '/mirrorchain/chains' },
-    { method: 'POST', path: '/mirrorchain/chains/convert' },
-    { method: 'POST', path: `/mirrorchain/invites/${MISSING_ID}/revoke` },
-    { method: 'POST', path: `/mirrorchain/chains/${MISSING_ID}/invites` },
-    { method: 'PATCH', path: `/mirrorchain/chains/${MISSING_ID}` },
-    { method: 'POST', path: `/mirrorchain/chains/${MISSING_ID}/transfer` },
-    { method: 'DELETE', path: `/mirrorchain/chains/${MISSING_ID}` },
+  const EXPECTED_ROUTER_GUARDS = [
     {
-      method: 'PATCH',
-      path: `/mirrorchain/chains/${MISSING_ID}/members/${MISSING_ID}/role`,
+      method: `${BEARER_OPAQUE_MOUNT_METHOD}:requireUser[1]`,
+      path: '/mirrorchain',
     },
-    { method: 'DELETE', path: `/mirrorchain/chains/${MISSING_ID}/members/${MISSING_ID}` },
+    {
+      method: `${BEARER_OPAQUE_MOUNT_METHOD}:enforceMirrorchainBearerAllowlist[1]`,
+      path: '/mirrorchain',
+    },
   ] as const;
 
   const livePath = (path: string): string => path.replace(/\{(?:chainId|inviteId)\}/g, MISSING_ID);
@@ -173,9 +177,11 @@ describe('#1042 MIRRORCHAIN bearer route allowlist', () => {
       expect(pathAcceptsBearer(path, route.method)).toBe(true);
       expect(openApiPathTemplateAcceptsBearer(route.path, route.method)).toBe(true);
     }
-    for (const route of ADMIN_ROUTES) {
-      expect(mirrorchainRouteAcceptsBearer(route.method, route.path)).toBe(false);
-      expect(pathAcceptsBearer(route.path, route.method)).toBe(false);
+    for (const route of MIRRORCHAIN_SESSION_ONLY_ROUTE_ALLOWLIST) {
+      const path = livePath(route.path);
+      expect(mirrorchainRouteAcceptsBearer(route.method, path)).toBe(false);
+      expect(pathAcceptsBearer(path, route.method)).toBe(false);
+      expect(openApiPathTemplateAcceptsBearer(route.path, route.method)).toBe(false);
     }
 
     // Canary for future routes: the coarse /mirrorchain MODULE_POLICIES row
@@ -183,6 +189,51 @@ describe('#1042 MIRRORCHAIN bearer route allowlist', () => {
     expect(pathAcceptsBearer('/mirrorchain/chains/future-admin', 'POST')).toBe(false);
     expect(pathAcceptsBearer('/mirrorchain/future-read', 'GET')).toBe(false);
     expect(pathAcceptsBearer('/mirrorchain/chains/settings/members', 'GET')).toBe(false);
+  });
+
+  it('classifies every real mounted route as participation or session-only administration', () => {
+    const mounted = mountedBearerRouteInventory(buildRouteTable(), '/mirrorchain');
+    const classified = [
+      ...MIRRORCHAIN_BEARER_ROUTE_ALLOWLIST,
+      ...MIRRORCHAIN_SESSION_ONLY_ROUTE_ALLOWLIST,
+      ...EXPECTED_ROUTER_GUARDS,
+    ].map(({ method, path }) => ({ method, path }));
+    const sortRoutes = (routes: Array<{ method: string; path: string }>) =>
+      routes.sort(
+        (left, right) =>
+          left.path.localeCompare(right.path) || left.method.localeCompare(right.method),
+      );
+
+    expect(new Set(classified.map((route) => `${route.method} ${route.path}`)).size).toBe(
+      classified.length,
+    );
+    expect(sortRoutes(mounted)).toEqual(sortRoutes(classified));
+  });
+
+  it('keeps router.all and opaque router.use leaves in the completeness inventory', () => {
+    const futureSurfaces: MountedSurface[] = [
+      {
+        kind: 'all-methods-route',
+        path: '/api/v1/mirrorchain/future-all',
+      },
+      {
+        kind: 'opaque-mount',
+        path: '/api/v1/mirrorchain/future-leaf',
+        handler: 'futureMirrorchainLeaf',
+        occurrence: 1,
+      },
+    ];
+
+    expect(mountedBearerRouteInventory(futureSurfaces, '/mirrorchain')).toEqual([
+      {
+        method: BEARER_ALL_METHODS_ROUTE_METHOD,
+        path: '/mirrorchain/future-all',
+      },
+      {
+        method: `${BEARER_OPAQUE_MOUNT_METHOD}:futureMirrorchainLeaf[1]`,
+        path: '/mirrorchain/future-leaf',
+      },
+    ]);
   });
 
   it('maps HEAD to allowlisted GET routes while leaving templates and closed paths unavailable', () => {

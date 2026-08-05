@@ -255,6 +255,7 @@ export function NotificationBell() {
             : t('settings.notifications.bellAria')
         }
         className="relative grid h-9 w-9 place-items-center rounded-full bt-muted transition-colors hover:bt-soft"
+        data-testid="notification-bell-trigger"
       >
         <svg
           aria-hidden="true"

@@ -31,9 +31,11 @@ const apiEnv = {
   ...process.env,
   NODE_ENV: 'development',
   // Compressed multi-navigation specs pass through the Home command center's
-  // roll-up on every auth landing (Origin redesign), so the human-scale burst
-  // window needs e2e headroom; the steady-state limit stays enforced.
-  RATE_LIMIT_BURST_LIMIT: '240',
+  // roll-up on every auth landing. The exhaustive mobile overflow gate reloads
+  // every route and overlay in four locale/width profiles, which is intentionally
+  // far beyond a human burst; keep the steady-state limit enforced while giving
+  // this throwaway e2e stack enough short-window headroom to measure the UI.
+  RATE_LIMIT_BURST_LIMIT: '10000',
   // Make the API listen where the specs look (see config.ts API_PORT) instead of
   // inheriting `PORT`'s 3000 default, and pin the Prometheus port so a dev
   // stack's API on the same host cannot cause an EADDRINUSE crash at boot.

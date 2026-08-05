@@ -14,19 +14,70 @@ import ts from 'typescript';
 import { loginAsAdmin } from './support/adminApi';
 import { API_BASE_URL } from './support/config';
 import { expectUserShellReady } from './support/flows';
-import { provisionUserInContext } from './support/users';
+import { provisionUser, provisionUserInContext } from './support/users';
 
-test.use({
-  viewport: { width: 390, height: 844 },
-  deviceScaleFactor: 3,
-  hasTouch: true,
-  isMobile: true,
-});
+type GateLocale = 'en' | 'de';
 
-const VIEWPORT_WIDTH = 390;
+const VIEWPORT_PROFILES = [
+  {
+    label: 'EN phone 390px',
+    locale: 'en',
+    viewport: { width: 390, height: 844 },
+    deviceScaleFactor: 3,
+  },
+  {
+    label: 'DE phone 390px',
+    locale: 'de',
+    viewport: { width: 390, height: 844 },
+    deviceScaleFactor: 3,
+  },
+  {
+    // #1047's previously ungated rail-hidden/topbar-not-wrapped breakpoint band.
+    label: 'EN mid-band 600px',
+    locale: 'en',
+    viewport: { width: 600, height: 900 },
+    deviceScaleFactor: 2,
+  },
+  {
+    label: 'DE mid-band 600px',
+    locale: 'de',
+    viewport: { width: 600, height: 900 },
+    deviceScaleFactor: 2,
+  },
+] as const satisfies readonly {
+  label: string;
+  locale: GateLocale;
+  viewport: { width: number; height: number };
+  deviceScaleFactor: number;
+}[];
+
+const LOCALE_STORAGE_KEY = 'bettertrack.locale';
 const USER_APP_SOURCE = 'apps/web/src/user/UserApp.tsx';
 const CONTROL_CENTER_SOURCE = 'apps/web/src/user/control/ControlCenterOverlay.tsx';
 const CONTROL_PANEL_MATCHER_SOURCE = 'apps/web/src/user/control/matchControlPanel.ts';
+
+const LONG_TRANSACTION_NOTE =
+  'Populated mobile overflow holding row with a deliberately long transaction annotation';
+const LONG_CASH_NOTE =
+  'Populated mobile overflow cash movement with a deliberately long merchant and reference label';
+const LONG_TAG_NAME = 'Long mobile overflow classification label for household spending'.slice(
+  0,
+  60,
+);
+const LONG_API_KEY_NAME =
+  'Mobile overflow API key with a deliberately long governance label for responsive rows'.slice(
+    0,
+    80,
+  );
+const LONG_WEBHOOK_DESCRIPTION =
+  'Mobile overflow webhook with a deliberately long descriptive label that must remain contained in every responsive settings row';
+const LONG_WEBHOOK_URL = `https://example.com/mobile-overflow/${'deeply-nested-segment/'.repeat(
+  20,
+)}delivery-endpoint`;
+// The exhaustive inventory generates hundreds of trace snapshots. Recycle the
+// renderer between bounded batches so a single page does not accumulate every
+// route's React/Vite state and crash before the later Control Center surfaces.
+const ROUTE_PAGE_BATCH_SIZE = 24;
 
 /** Public, non-token routes that are meaningful without a session. */
 const ANONYMOUS_CORE_ROUTES = ['/login', '/register', '/forgot-password'] as const;
@@ -390,7 +441,7 @@ function assertCompleteRouteInventory(): void {
     .map(({ path, line }) => `${USER_APP_SOURCE}:${line} ${path}`);
   expect(
     unique(unclassified),
-    'New UserApp routes must be covered at 390px or explicitly excluded with a justification.',
+    'New UserApp routes must be covered by the mobile viewport matrix or explicitly excluded with a justification.',
   ).toEqual([]);
 
   const registeredSet = new Set(registeredPaths);
@@ -404,12 +455,35 @@ function assertCompleteRouteInventory(): void {
   ).toEqual([]);
 
   expect(unique(registeredControlRoutes()).sort()).toEqual([...CONTROL_CORE_ROUTES].sort());
+
+  const coreRoutes = new Set<string>([...AUTHENTICATED_CORE_ROUTES, ...CONTROL_CORE_ROUTES]);
+  expect(
+    POPULATED_ROUTE_EXPECTATIONS.filter(
+      ({ route, justification }) => !coreRoutes.has(route) || justification.trim() === '',
+    ),
+    'Every populated-state sentinel must name a covered route and explain the state it proves.',
+  ).toEqual([]);
+  expect(
+    OVERLAY_SCENARIOS.filter(
+      ({ route, justification }) => !coreRoutes.has(route) || justification.trim() === '',
+    ),
+    'Every overlay scenario must name a covered route and explain the layout family it proves.',
+  ).toEqual([]);
+  expect(new Set(OVERLAY_SCENARIOS.map(({ label }) => label)).size).toBe(OVERLAY_SCENARIOS.length);
+  expect(
+    OVERLAY_EXCLUSIONS.filter(
+      ({ path, justification }) => path.trim() === '' || justification.trim() === '',
+    ),
+    'Every omitted overlay family needs a one-line justification.',
+  ).toEqual([]);
 }
 
 interface RouteFixtures {
   assetId: string;
   conglomerateId: string;
+  friendUsername: string;
   ideaId: string;
+  portfolioId: string;
   watchlistId: string;
 }
 
@@ -419,7 +493,12 @@ async function responseJson<T>(response: APIResponse, context: string): Promise<
   return JSON.parse(text) as T;
 }
 
-async function createRouteFixtures(api: APIRequestContext): Promise<RouteFixtures> {
+async function createRouteFixtures(
+  api: APIRequestContext,
+  senderApi: APIRequestContext,
+  ownerUsername: string,
+  friendUsername: string,
+): Promise<RouteFixtures> {
   const search = await responseJson<{ results: Array<{ id: string; symbol: string }> }>(
     await api.get(`${API_BASE_URL}/api/v1/search`, { params: { q: 'Apple' } }),
     'searching for the mobile route asset',
@@ -428,6 +507,116 @@ async function createRouteFixtures(api: APIRequestContext): Promise<RouteFixture
   expect(apple, 'The seeded catalog must contain AAPL.').toBeTruthy();
 
   const headers = { 'X-Requested-With': 'BetterTrack' };
+  const portfolios = await responseJson<{ portfolios: Array<{ id: string }> }>(
+    await api.get(`${API_BASE_URL}/api/v1/portfolios`),
+    'reading the populated mobile route portfolio',
+  );
+  const portfolioId = portfolios.portfolios[0]?.id;
+  expect(portfolioId, 'A provisioned account must have a default portfolio.').toBeTruthy();
+
+  await responseJson<Record<string, unknown>>(
+    await api.post(`${API_BASE_URL}/api/v1/portfolios/${portfolioId!}/transactions`, {
+      headers,
+      data: {
+        assetId: apple!.id,
+        side: 'buy',
+        quantity: 8,
+        price: 125.5,
+        fee: 4.95,
+        executedAt: new Date(Date.now() - 86_400_000).toISOString(),
+        note: LONG_TRANSACTION_NOTE,
+      },
+    }),
+    'creating the populated holding row',
+  );
+  await responseJson<Record<string, unknown>>(
+    await api.post(`${API_BASE_URL}/api/v1/portfolios/${portfolioId!}/cash/deposit`, {
+      headers,
+      data: { amountEur: 8_500, note: LONG_CASH_NOTE },
+    }),
+    'creating the populated cash deposit',
+  );
+  await responseJson<Record<string, unknown>>(
+    await api.post(`${API_BASE_URL}/api/v1/portfolios/${portfolioId!}/cash/withdraw`, {
+      headers,
+      data: {
+        amountEur: 312.45,
+        note: `${LONG_CASH_NOTE} — second populated ledger row`,
+      },
+    }),
+    'creating the populated cash withdrawal',
+  );
+  await responseJson<Record<string, unknown>>(
+    await api.post(`${API_BASE_URL}/api/v1/cash/tags`, {
+      headers,
+      data: { name: LONG_TAG_NAME, color: '#7c3aed' },
+    }),
+    'creating the long cash label',
+  );
+  await responseJson<Record<string, unknown>>(
+    await api.post(`${API_BASE_URL}/api/v1/settings/api-keys`, {
+      headers,
+      data: { name: LONG_API_KEY_NAME, scopes: ['market:read'] },
+    }),
+    'creating the long API-key row',
+  );
+  await responseJson<Record<string, unknown>>(
+    await api.post(`${API_BASE_URL}/api/v1/settings/webhooks`, {
+      headers,
+      data: {
+        url: LONG_WEBHOOK_URL,
+        description: LONG_WEBHOOK_DESCRIPTION,
+        // This subscription exists only to paint a long responsive row. The
+        // fixture never requests an account export, so the worker cannot turn
+        // its public display URL into an outbound delivery or retry chain.
+        eventTypes: ['account.data_export'],
+      },
+    }),
+    'creating the long webhook row',
+  );
+
+  // A real friend request gives the owner both a long-username social row and
+  // an actual notification row. Accept it after observing the incoming request
+  // so the same account also has a populated chat friend picker.
+  await responseJson<Record<string, unknown>>(
+    await senderApi.post(`${API_BASE_URL}/api/v1/social/requests`, {
+      headers,
+      data: { identifier: ownerUsername },
+    }),
+    'creating the populated friend request notification',
+  );
+  const requests = await responseJson<{
+    incoming: Array<{ id: string; user: { username: string } }>;
+  }>(
+    await api.get(`${API_BASE_URL}/api/v1/social/requests`),
+    'reading the populated incoming friend request',
+  );
+  const incoming = requests.incoming.find((request) => request.user.username === friendUsername);
+  expect(incoming, 'The long-username friend request must be visible to the owner.').toBeTruthy();
+
+  await expect
+    .poll(
+      async () => {
+        const response = await api.get(`${API_BASE_URL}/api/v1/notifications`, {
+          params: { view: 'active', limit: 50 },
+        });
+        if (!response.ok()) return false;
+        const body = (await response.json()) as {
+          items: Array<{ title: string; body: string }>;
+        };
+        return body.items.some((item) => `${item.title} ${item.body}`.includes(friendUsername));
+      },
+      {
+        message: 'the populated account should receive its friend-request notification row',
+        timeout: 30_000,
+      },
+    )
+    .toBe(true);
+  await responseJson<Record<string, unknown>>(
+    await api.post(`${API_BASE_URL}/api/v1/social/requests/${incoming!.id}/accept`, { headers }),
+    'accepting the populated friend row',
+  );
+
   const conglomerate = await responseJson<{ id: string }>(
     await api.post(`${API_BASE_URL}/api/v1/conglomerates`, {
       headers,
@@ -467,10 +656,47 @@ async function createRouteFixtures(api: APIRequestContext): Promise<RouteFixture
     'creating the mobile route idea',
   );
 
+  // Test-integrity assertions: this fixture is intentionally not a fresh/empty
+  // account. These API reads fail before the viewport sweep if any seed seam
+  // drifts, instead of silently turning the route assertions into empty states.
+  const [portfolio, cash, tags, webhooks, notifications] = await Promise.all([
+    responseJson<{ holdings: Array<{ asset: { id: string } }> }>(
+      await api.get(`${API_BASE_URL}/api/v1/portfolios/${portfolioId!}`),
+      'checking the populated holding state',
+    ),
+    responseJson<{ movements: unknown[] }>(
+      await api.get(`${API_BASE_URL}/api/v1/portfolios/${portfolioId!}/cash`),
+      'checking the populated cash state',
+    ),
+    responseJson<{ tags: Array<{ name: string }> }>(
+      await api.get(`${API_BASE_URL}/api/v1/cash/tags`),
+      'checking the populated tag state',
+    ),
+    responseJson<{ subscriptions: Array<{ url: string }> }>(
+      await api.get(`${API_BASE_URL}/api/v1/settings/webhooks`),
+      'checking the populated webhook state',
+    ),
+    responseJson<{ items: unknown[] }>(
+      await api.get(`${API_BASE_URL}/api/v1/notifications`, {
+        params: { view: 'active', limit: 50 },
+      }),
+      'checking the populated notification state',
+    ),
+  ]);
+  expect(portfolio.holdings.some((holding) => holding.asset.id === apple!.id)).toBe(true);
+  expect(cash.movements.length).toBeGreaterThanOrEqual(2);
+  expect(tags.tags.some((tag) => tag.name === LONG_TAG_NAME)).toBe(true);
+  expect(webhooks.subscriptions.some((subscription) => subscription.url === LONG_WEBHOOK_URL)).toBe(
+    true,
+  );
+  expect(notifications.items.length).toBeGreaterThan(0);
+
   return {
     assetId: apple!.id,
     conglomerateId: conglomerate.id,
+    friendUsername,
     ideaId: idea.idea.id,
+    portfolioId: portfolioId!,
     watchlistId: watchlist.id,
   };
 }
@@ -489,6 +715,208 @@ function concreteRoute(route: string, fixtures: RouteFixtures): string {
   if (route === '/workbench/ideas/:ideaId') return `/workbench/ideas/${fixtures.ideaId}`;
   return route;
 }
+
+interface PopulatedRouteExpectation {
+  route: string;
+  sentinel: (fixtures: RouteFixtures) => string;
+  justification: string;
+}
+
+/**
+ * The populated-state proof is intentionally tied to the routes where each
+ * long/row-shaped fixture should paint. Other routes still run against this
+ * same account; these sentinels prevent their key data surfaces from quietly
+ * falling back to an empty state.
+ */
+const POPULATED_ROUTE_EXPECTATIONS: readonly PopulatedRouteExpectation[] = [
+  {
+    route: '/portfolio',
+    sentinel: () => 'AAPL',
+    justification: 'The portfolio overview must render the seeded holding.',
+  },
+  {
+    route: '/portfolio',
+    sentinel: () => LONG_TRANSACTION_NOTE,
+    justification: 'The expanded holding ledger must render the long transaction annotation.',
+  },
+  {
+    route: '/portfolio/cash/movements',
+    sentinel: () => LONG_CASH_NOTE,
+    justification: 'The cash ledger must render populated movement rows and their long note.',
+  },
+  {
+    route: '/portfolio/cash/labels',
+    sentinel: () => LONG_TAG_NAME,
+    justification: 'The labels setup surface must render the maximum-length user tag.',
+  },
+  {
+    route: '/assets/watchlists/:watchlistId',
+    sentinel: () => 'AAPL',
+    justification: 'The watchlist detail must render its seeded asset row.',
+  },
+  {
+    route: '/people',
+    sentinel: (fixtures) => fixtures.friendUsername,
+    justification: 'The people surface must render the accepted long-username friend row.',
+  },
+  {
+    route: '/control/notification-log',
+    sentinel: (fixtures) => fixtures.friendUsername,
+    justification: 'The notification log must render the real friend-request row.',
+  },
+  {
+    route: '/control/api-keys',
+    sentinel: () => LONG_API_KEY_NAME,
+    justification: 'The API-key panel must render a populated long-name governance row.',
+  },
+  {
+    route: '/control/webhooks',
+    sentinel: () => LONG_WEBHOOK_URL,
+    justification: 'The webhook panel must render the deliberately long payload URL.',
+  },
+];
+
+type OverlayAction =
+  | { kind: 'preopened' }
+  | { kind: 'keyboard'; shortcut: string }
+  | { kind: 'click'; selector: string; position?: 'first' | 'last' }
+  | { kind: 'click-sequence'; selectors: readonly string[] };
+
+interface OverlayScenario {
+  label: string;
+  route: string;
+  query?: string;
+  action: OverlayAction;
+  expectedSelector: string;
+  sentinel?: (fixtures: RouteFixtures) => string;
+  justification: string;
+}
+
+/**
+ * Overlay-family inventory. The shell menus/popover, custom command dialog,
+ * standard phone sheets, the Home drawer, a data-backed chat sheet, an asset
+ * menu, and a nested Control Center confirmation all get opened and measured
+ * in every locale/width profile.
+ */
+const OVERLAY_SCENARIOS: readonly OverlayScenario[] = [
+  {
+    label: 'global command dialog',
+    route: '/',
+    action: { kind: 'keyboard', shortcut: 'Control+k' },
+    expectedSelector: '.bt-palette',
+    justification: 'Covers the custom command-palette dialog rather than the shared Dialog shell.',
+  },
+  {
+    label: 'Home widget drawer',
+    route: '/',
+    action: {
+      kind: 'click-sequence',
+      selectors: [
+        '#main-content .bt-page-head__actions .bt-btn',
+        '#main-content .bt-page-head__actions .bt-btn',
+      ],
+    },
+    expectedSelector: '.bt-drawer',
+    justification: 'Covers the fixed Home drawer and its independently scrolling catalog body.',
+  },
+  {
+    label: 'portfolio wizard sheet',
+    route: '/portfolio',
+    query: '?create=1',
+    action: { kind: 'preopened' },
+    expectedSelector: '.bt-dialog__panel',
+    justification: 'Covers a query-opened wizard in the shared phone-sheet shell.',
+  },
+  {
+    label: 'record-cash sheet',
+    route: '/portfolio/cash',
+    action: { kind: 'click', selector: '#main-content .bt-recordpair__half--in' },
+    expectedSelector: '.bt-dialog__panel',
+    justification: 'Covers the primary populated money-entry sheet.',
+  },
+  {
+    label: 'price-alert sheet',
+    route: '/workbench/alerts',
+    action: { kind: 'click', selector: '#main-content .bt-alerts-page .bt-btn--primary' },
+    expectedSelector: '.bt-dialog__panel',
+    justification: 'Covers a Workbench sheet with an embedded asset picker.',
+  },
+  {
+    label: 'new-chat sheet',
+    route: '/people/chat',
+    action: { kind: 'click', selector: '[data-testid="new-chat-trigger"]' },
+    expectedSelector: '.bt-dialog__panel',
+    sentinel: (fixtures) => fixtures.friendUsername,
+    justification: 'Covers a social sheet populated with the long-username friend.',
+  },
+  {
+    label: 'nested Control Center confirmation',
+    route: '/control/notification-log',
+    action: {
+      kind: 'click',
+      selector: '[data-testid="notification-delete-all-trigger"]',
+    },
+    expectedSelector: '.bt-dialog__panel',
+    justification: 'Covers a Dialog portalled above the already-open Control Center dialog.',
+  },
+  {
+    label: 'global create menu',
+    route: '/portfolio',
+    action: {
+      kind: 'click',
+      selector: '[data-testid="global-create-trigger"]',
+    },
+    expectedSelector: '.bt-topbar__actions .bt-popover[role="menu"]',
+    justification: 'Covers the persistent create menu at both compact-shell widths.',
+  },
+  {
+    label: 'notification popover',
+    route: '/portfolio',
+    action: {
+      kind: 'click',
+      selector: '[data-testid="notification-bell-trigger"]',
+    },
+    expectedSelector: '#bt-notifications-popover',
+    sentinel: (fixtures) => fixtures.friendUsername,
+    justification: 'Covers a populated shell popover whose trigger deliberately has no menu role.',
+  },
+  {
+    label: 'account menu',
+    route: '/portfolio',
+    action: { kind: 'click', selector: '[data-testid="topbar-account-trigger"]' },
+    expectedSelector: '.bt-topbar__actions .bt-popover[role="menu"]',
+    justification: 'Covers the long username/email inside the persistent account menu.',
+  },
+  {
+    label: 'asset watchlist menu',
+    route: '/assets/:id',
+    action: {
+      kind: 'click',
+      selector: '#main-content button[aria-haspopup="menu"]',
+      position: 'first',
+    },
+    expectedSelector: '#main-content [role="menu"]',
+    justification: 'Covers a content-owned menu rather than only repeated shell chrome.',
+  },
+];
+
+const OVERLAY_EXCLUSIONS: readonly RouteExclusion[] = [
+  {
+    path: 'destructive and edit variants of shared dialogs',
+    justification:
+      'They reuse the measured bt-dialog panel; opening every row action would mutate the shared populated fixture without adding a layout family.',
+  },
+  {
+    path: 'API key, OAuth app and webhook one-time-secret dialogs',
+    justification:
+      'Their shared nested Dialog shell is covered by the notification confirmation; dedicated e2e flows own secret creation and acknowledgement.',
+  },
+  {
+    path: 'audience and MIRRORCHAIN member dialogs',
+    justification:
+      'They need item-audience or chain membership state and reuse the measured phone-sheet shell; privacy/lifecycle behavior stays in dedicated e2e specs.',
+  },
+];
 
 const SHELLLESS_AUTH_ROUTES = new Set([
   '/account/delete',
@@ -516,8 +944,17 @@ async function settleRoute(page: Page, declaredRoute: string, target: string): P
     await expect(page.locator('#root')).not.toBeEmpty({ timeout: 20_000 });
   }
 
-  // Measure the resolved page rather than its initial placeholders. Fonts and
-  // two paint frames close the remaining layout gap without a timing sleep.
+  await waitForSettledPaint(page);
+
+  const expectedPath = new URL(target, page.url()).pathname;
+  expect(
+    new URL(page.url()).pathname,
+    `${declaredRoute} redirected instead of being measured`,
+  ).toBe(expectedPath);
+}
+
+/** Measure resolved content rather than initial placeholders or font fallback. */
+async function waitForSettledPaint(page: Page): Promise<void> {
   await expect(page.locator('.bt-skeleton')).toHaveCount(0, { timeout: 30_000 });
   await page.evaluate(async () => {
     await document.fonts.ready;
@@ -525,15 +962,71 @@ async function settleRoute(page: Page, declaredRoute: string, target: string): P
       requestAnimationFrame(() => requestAnimationFrame(() => resolveFrame())),
     );
   });
-
-  expect(
-    new URL(page.url()).pathname,
-    `${declaredRoute} redirected instead of being measured`,
-  ).toBe(target);
 }
 
-async function expectNoPageOverflow(page: Page, declaredRoute: string): Promise<void> {
-  const layout = await page.evaluate((viewportWidth) => {
+async function expectPopulatedRouteState(
+  page: Page,
+  declaredRoute: string,
+  fixtures: RouteFixtures,
+): Promise<void> {
+  if (declaredRoute === '/portfolio') {
+    const holdingToggle = page.getByTestId(`holding-transactions-toggle-${fixtures.assetId}`);
+    await expect(holdingToggle).toBeVisible({ timeout: 20_000 });
+    if ((await holdingToggle.getAttribute('aria-expanded')) !== 'true') await holdingToggle.click();
+  }
+
+  for (const expectation of POPULATED_ROUTE_EXPECTATIONS.filter(
+    ({ route }) => route === declaredRoute,
+  )) {
+    await expect(
+      page.locator('body'),
+      `${declaredRoute} did not paint its populated-state sentinel: ${expectation.justification}`,
+    ).toContainText(expectation.sentinel(fixtures), { timeout: 20_000 });
+  }
+}
+
+const OVERLAY_REGION_SELECTOR = [
+  '.bt-cc__panel',
+  '.bt-dialog-layer',
+  '.bt-dialog',
+  '.bt-dialog__panel',
+  '.bt-drawer',
+  '.bt-palette',
+  '.bt-popover',
+  '[role="menu"]',
+  '[role="listbox"]',
+].join(', ');
+
+async function expectNoPageOverflow(
+  page: Page,
+  declaredRoute: string,
+  viewportWidth: number,
+  requireOverlay = isControlPanelRoute(declaredRoute),
+): Promise<void> {
+  const layout = await page.evaluate((configuredViewportWidth) => {
+    // window.innerWidth and the configured emulation width can diverge from
+    // the document's layout viewport under mobile page scaling. Comparing the
+    // root's scrollWidth with its clientWidth is the browser's actual
+    // horizontal-scroll test.
+    const layoutViewportWidth = document.documentElement.clientWidth;
+    const rootStyle = getComputedStyle(document.documentElement);
+    const bottomBar = document.querySelector<HTMLElement>('.bt-bottombar');
+    const bottomBarStyle = bottomBar ? getComputedStyle(bottomBar) : null;
+    const wideContainers = [...document.body.querySelectorAll<HTMLElement>('*')]
+      .filter((element) => element.scrollWidth > layoutViewportWidth)
+      .slice(0, 12)
+      .map((element) => {
+        const style = getComputedStyle(element);
+        return {
+          element: `${element.tagName.toLowerCase()}${element.id ? `#${element.id}` : ''}${
+            element.classList.length > 0 ? `.${[...element.classList].slice(0, 2).join('.')}` : ''
+          }`,
+          clientWidth: element.clientWidth,
+          scrollWidth: element.scrollWidth,
+          overflowX: style.overflowX,
+          minWidth: style.minWidth,
+        };
+      });
     const suspects = [...document.body.querySelectorAll<HTMLElement>('*')]
       .map((element) => {
         const rect = element.getBoundingClientRect();
@@ -549,82 +1042,272 @@ async function expectNoPageOverflow(page: Page, declaredRoute: string): Promise<
       })
       .filter(
         ({ left, right, width }) =>
-          width > 0 && left < viewportWidth && (right > viewportWidth || width > viewportWidth),
+          width > 0 &&
+          left < layoutViewportWidth &&
+          (right > layoutViewportWidth || width > layoutViewportWidth),
       )
       .slice(0, 8);
 
     return {
       scrollWidth: document.documentElement.scrollWidth,
+      layoutViewportWidth,
       suspects,
+      diagnostics: {
+        configuredViewportWidth,
+        innerWidth: window.innerWidth,
+        visualViewportWidth: window.visualViewport?.width ?? null,
+        visualViewportScale: window.visualViewport?.scale ?? null,
+        devicePixelRatio: window.devicePixelRatio,
+        rootZoom: rootStyle.zoom,
+        rootZoomVariable: rootStyle.getPropertyValue('--bt-zoom').trim(),
+        bottomBar: bottomBarStyle
+          ? {
+              width: bottomBarStyle.width,
+              maxWidth: bottomBarStyle.maxWidth,
+              gridAutoColumns: bottomBarStyle.gridAutoColumns,
+            }
+          : null,
+        wideContainers,
+      },
     };
-  }, VIEWPORT_WIDTH);
+  }, viewportWidth);
 
   expect(
     layout.scrollWidth,
-    `${declaredRoute} scrolls horizontally (${layout.scrollWidth}px > ${VIEWPORT_WIDTH}px). Suspects: ${JSON.stringify(layout.suspects)}`,
-  ).toBeLessThanOrEqual(VIEWPORT_WIDTH);
+    `${declaredRoute} scrolls horizontally (${layout.scrollWidth}px > ${layout.layoutViewportWidth}px layout viewport; ${viewportWidth}px configured). Suspects: ${JSON.stringify(layout.suspects)}. Diagnostics: ${JSON.stringify(layout.diagnostics)}`,
+  ).toBeLessThanOrEqual(layout.layoutViewportWidth);
 
-  if (!isControlPanelRoute(declaredRoute)) return;
+  // Fixed/portalled overlays can be clipped by the viewport without increasing
+  // document.scrollWidth. Measure every visible panel/menu plus its horizontal
+  // content scrollers against its OWN clientWidth. This is what catches an
+  // unwrapped 600px child inside a 390px dialog.
+  const overlayLayout = await page.locator(OVERLAY_REGION_SELECTOR).evaluateAll((elements) => {
+    const visible = (element: HTMLElement) => {
+      const rect = element.getBoundingClientRect();
+      const style = getComputedStyle(element);
+      return (
+        rect.width > 0 &&
+        rect.height > 0 &&
+        style.display !== 'none' &&
+        style.visibility !== 'hidden'
+      );
+    };
+    const describe = (element: HTMLElement) => {
+      const role = element.getAttribute('role');
+      const label = element.getAttribute('aria-label');
+      return `${element.tagName.toLowerCase()}${element.id ? `#${element.id}` : ''}${
+        role ? `[role=${role}]` : ''
+      }${label ? `[aria-label=${label.slice(0, 40)}]` : ''}${
+        element.classList.length > 0 ? `.${[...element.classList].slice(0, 2).join('.')}` : ''
+      }`;
+    };
+    const measure = (element: HTMLElement, suffix = '') => {
+      const rect = element.getBoundingClientRect();
+      return {
+        region: `${describe(element)}${suffix}`,
+        clientWidth: element.clientWidth,
+        left: Math.round(rect.left),
+        renderedWidth: Math.round(rect.width),
+        right: Math.round(rect.right),
+        scrollWidth: element.scrollWidth,
+      };
+    };
 
-  // The Control Center is fixed over Home, so its clipped overflow cannot
-  // increase the document scrollWidth. Measure both the popup and its own
-  // scroller so a wide panel child still turns this gate red.
-  const controlLayout = await page.locator('.bt-cc__panel').evaluate((panel) => {
-    const content = panel.querySelector<HTMLElement>('.bt-cc__content');
-    if (content === null) return null;
-
-    const measure = (element: HTMLElement) => ({
-      clientWidth: element.clientWidth,
-      renderedWidth: element.getBoundingClientRect().width,
-      scrollWidth: element.scrollWidth,
+    return elements.flatMap((candidate) => {
+      const element = candidate as HTMLElement;
+      if (!visible(element)) return [];
+      const childScrollers = [
+        ...element.querySelectorAll<HTMLElement>(
+          '.bt-cc__content, .bt-dialog__body, .bt-drawer__body, .bt-palette__body',
+        ),
+      ].filter(visible);
+      return [
+        measure(element),
+        ...childScrollers.map((child, index) => measure(child, ` child-scroller-${index + 1}`)),
+      ];
     });
-
-    return { content: measure(content), panel: measure(panel as HTMLElement) };
   });
 
-  expect(controlLayout, `${declaredRoute} did not render the Control Center layout`).not.toBeNull();
-  if (controlLayout === null) return;
+  if (requireOverlay) {
+    expect(
+      overlayLayout.length,
+      `${declaredRoute} was expected to render an open overlay region`,
+    ).toBeGreaterThan(0);
+  }
 
-  for (const [region, measurement] of Object.entries(controlLayout)) {
+  for (const measurement of overlayLayout) {
     expect(
       measurement.scrollWidth,
-      `${declaredRoute} ${region} scrolls horizontally (${measurement.scrollWidth}px > ${measurement.clientWidth}px)`,
+      `${declaredRoute} ${measurement.region} scrolls internally (${measurement.scrollWidth}px > ${measurement.clientWidth}px)`,
     ).toBeLessThanOrEqual(measurement.clientWidth);
     expect(
       measurement.renderedWidth,
-      `${declaredRoute} ${region} is wider than the ${VIEWPORT_WIDTH}px viewport`,
-    ).toBeLessThanOrEqual(VIEWPORT_WIDTH);
+      `${declaredRoute} ${measurement.region} is wider than the ${layout.layoutViewportWidth}px layout viewport (${viewportWidth}px configured)`,
+    ).toBeLessThanOrEqual(layout.layoutViewportWidth + 1);
+    expect(
+      measurement.left,
+      `${declaredRoute} ${measurement.region} extends left of the viewport`,
+    ).toBeGreaterThanOrEqual(-1);
+    expect(
+      measurement.right,
+      `${declaredRoute} ${measurement.region} extends right of the ${layout.layoutViewportWidth}px layout viewport (${viewportWidth}px configured)`,
+    ).toBeLessThanOrEqual(layout.layoutViewportWidth + 1);
   }
+}
+
+async function setStoredLocale(page: Page, locale: GateLocale): Promise<void> {
+  if (!page.url().startsWith('http')) await page.goto('/login');
+  await page.evaluate(({ key, value }) => localStorage.setItem(key, value), {
+    key: LOCALE_STORAGE_KEY,
+    value: locale,
+  });
+}
+
+async function setAuthenticatedLocale(
+  api: APIRequestContext,
+  page: Page,
+  locale: GateLocale,
+): Promise<void> {
+  await responseJson<Record<string, unknown>>(
+    await api.patch(`${API_BASE_URL}/api/v1/settings/account`, {
+      headers: { 'X-Requested-With': 'BetterTrack' },
+      data: { locale },
+    }),
+    `setting the populated account locale to ${locale}`,
+  );
+  // LocaleSync treats the account setting as authoritative after sign-in. Keep
+  // local storage aligned as well, then reload so both I18nProvider and /me
+  // start this matrix profile in the requested language.
+  await setStoredLocale(page, locale);
+  await page.reload();
+  await expect(page.locator('html')).toHaveAttribute('lang', locale, { timeout: 20_000 });
+}
+
+async function exerciseOverlayScenario(
+  page: Page,
+  scenario: OverlayScenario,
+  fixtures: RouteFixtures,
+  viewportWidth: number,
+): Promise<void> {
+  const target = `${concreteRoute(scenario.route, fixtures)}${scenario.query ?? ''}`;
+  await settleRoute(page, scenario.route, target);
+
+  if (scenario.action.kind === 'keyboard') {
+    await page.keyboard.press(scenario.action.shortcut);
+  } else if (scenario.action.kind === 'click') {
+    const matches = page.locator(scenario.action.selector);
+    const trigger = scenario.action.position === 'last' ? matches.last() : matches.first();
+    await expect(
+      trigger,
+      `${scenario.label} trigger not found: ${scenario.action.selector}`,
+    ).toBeVisible({ timeout: 20_000 });
+    await trigger.click();
+  } else if (scenario.action.kind === 'click-sequence') {
+    for (const selector of scenario.action.selectors) {
+      const trigger = page.locator(selector).first();
+      await expect(trigger, `${scenario.label} trigger not found: ${selector}`).toBeVisible({
+        timeout: 20_000,
+      });
+      await trigger.click();
+    }
+  }
+
+  const overlay = page.locator(scenario.expectedSelector).last();
+  await expect(overlay, `${scenario.label} did not open`).toBeVisible({ timeout: 20_000 });
+  if (scenario.sentinel) {
+    await expect(
+      overlay,
+      `${scenario.label} did not render its populated-state sentinel`,
+    ).toContainText(scenario.sentinel(fixtures), { timeout: 20_000 });
+  }
+  await waitForSettledPaint(page);
+  await expectNoPageOverflow(page, `${scenario.route} — ${scenario.label}`, viewportWidth, true);
+  await page.keyboard.press('Escape');
+  await expect(overlay, `${scenario.label} did not close with Escape`).toBeHidden({
+    timeout: 10_000,
+  });
 }
 
 test('mobile route inventory classifies every UserApp destination', () => {
   assertCompleteRouteInventory();
 });
 
-test('mobile overflow gate fits every core route', async ({ context }) => {
-  test.setTimeout(600_000);
-
-  const anonymousPage = await context.newPage();
-  expect(anonymousPage.viewportSize()).toEqual({ width: VIEWPORT_WIDTH, height: 844 });
-  for (const route of ANONYMOUS_CORE_ROUTES) {
-    await test.step(route, async () => {
-      await settleRoute(anonymousPage, route, route);
-      await expectNoPageOverflow(anonymousPage, route);
+for (const profile of VIEWPORT_PROFILES) {
+  test.describe(profile.label, () => {
+    test.use({
+      viewport: profile.viewport,
+      deviceScaleFactor: profile.deviceScaleFactor,
+      hasTouch: true,
+      isMobile: true,
     });
-  }
-  await anonymousPage.close();
 
-  const apiRequest = await newRequestContext.newContext({ baseURL: API_BASE_URL });
-  await loginAsAdmin(apiRequest);
-  const owner = await provisionUserInContext(context, apiRequest, 'mobile-routes');
-  await apiRequest.dispose();
-  const fixtures = await createRouteFixtures(owner.context.request);
+    test('mobile overflow gate fits every core route and open overlay', async ({
+      browser,
+      context,
+    }) => {
+      test.setTimeout(900_000);
 
-  for (const route of [...AUTHENTICATED_CORE_ROUTES, ...CONTROL_CORE_ROUTES]) {
-    await test.step(route, async () => {
-      const target = concreteRoute(route, fixtures);
-      await settleRoute(owner.page, route, target);
-      await expectNoPageOverflow(owner.page, route);
+      const anonymousPage = await context.newPage();
+      expect(anonymousPage.viewportSize()).toEqual(profile.viewport);
+      await setStoredLocale(anonymousPage, profile.locale);
+      for (const route of ANONYMOUS_CORE_ROUTES) {
+        await test.step(`anonymous ${route}`, async () => {
+          await settleRoute(anonymousPage, route, route);
+          expect(await anonymousPage.locator('html').getAttribute('lang')).toBe(profile.locale);
+          await expectNoPageOverflow(anonymousPage, route, profile.viewport.width);
+        });
+      }
+      // Invite acceptance uses stable English accessible names. Restore EN for
+      // provisioning, then switch the authenticated app to this profile below.
+      await setStoredLocale(anonymousPage, 'en');
+      await anonymousPage.close();
+
+      const apiRequest = await newRequestContext.newContext({ baseURL: API_BASE_URL });
+      await loginAsAdmin(apiRequest);
+      const owner = await provisionUserInContext(
+        context,
+        apiRequest,
+        'mobile-overflow-populated-account-with-long-username',
+      );
+      const friend = await provisionUser(
+        browser,
+        apiRequest,
+        'mobile-overflow-notification-sender-with-long-username',
+      );
+      expect(owner.username).toHaveLength(40);
+      expect(friend.username).toHaveLength(40);
+      const fixtures = await createRouteFixtures(
+        owner.context.request,
+        friend.context.request,
+        owner.username,
+        friend.username,
+      );
+      await friend.context.close();
+      await apiRequest.dispose();
+      await setAuthenticatedLocale(owner.context.request, owner.page, profile.locale);
+
+      const populatedRoutes = [...AUTHENTICATED_CORE_ROUTES, ...CONTROL_CORE_ROUTES];
+      for (const [routeIndex, route] of populatedRoutes.entries()) {
+        if (routeIndex > 0 && routeIndex % ROUTE_PAGE_BATCH_SIZE === 0) {
+          await owner.page.close();
+          owner.page = await owner.context.newPage();
+        }
+        await test.step(`populated ${route}`, async () => {
+          const target = concreteRoute(route, fixtures);
+          await settleRoute(owner.page, route, target);
+          expect(await owner.page.locator('html').getAttribute('lang')).toBe(profile.locale);
+          await expectPopulatedRouteState(owner.page, route, fixtures);
+          await expectNoPageOverflow(owner.page, route, profile.viewport.width);
+        });
+      }
+
+      await owner.page.close();
+      owner.page = await owner.context.newPage();
+      for (const scenario of OVERLAY_SCENARIOS) {
+        await test.step(`open overlay: ${scenario.label}`, async () => {
+          await exerciseOverlayScenario(owner.page, scenario, fixtures, profile.viewport.width);
+        });
+      }
     });
-  }
-});
+  });
+}

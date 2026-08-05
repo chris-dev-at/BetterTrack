@@ -713,6 +713,7 @@ function HoldingCard({
                 : t('portfolio.overview.holdings.expandRow', { symbol: asset.symbol })
             }
             className="bt-btn bt-btn--quiet bt-btn--sm bt-btn--icon shrink-0"
+            data-testid={`holding-transactions-toggle-${asset.id}`}
             onClick={onToggle}
             type="button"
           >
@@ -864,6 +865,7 @@ function HoldingRow({
                 : t('portfolio.overview.holdings.expandRow', { symbol: asset.symbol })
             }
             className="bt-btn bt-btn--quiet bt-btn--sm bt-btn--icon"
+            data-testid={`holding-transactions-toggle-${asset.id}`}
           >
             <span aria-hidden="true">{isExpanded ? '▾' : '▸'}</span>
           </button>
