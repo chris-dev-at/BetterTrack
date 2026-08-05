@@ -229,7 +229,7 @@ describe('ConglomerateDetailPage', () => {
     expect(within(table).getByText('60,00 %')).toBeInTheDocument();
     expect(within(table).getByText('40,00 %')).toBeInTheDocument();
 
-    const donut = screen.getByRole('img', { name: /blueprint allocation/i });
+    const donut = await screen.findByRole('img', { name: /blueprint allocation/i });
     expect(donut).toBeInTheDocument();
   });
 

@@ -159,14 +159,10 @@ describe('SharedPortfolioPage', () => {
 
     // The custom "stock" merges into the market Stocks group; there is no
     // separate "Custom" slice anywhere on the page (acceptance criterion).
-    expect(screen.getByLabelText(/Allocation by type/i)).toHaveAttribute(
-      'aria-label',
-      expect.stringContaining('Stocks'),
-    );
+    const allocationByType = await screen.findByLabelText(/Allocation by type/i);
+    expect(allocationByType).toHaveAttribute('aria-label', expect.stringContaining('Stocks'));
     expect(screen.queryByText('Custom')).not.toBeInTheDocument();
-    expect(
-      screen.queryByLabelText(/Allocation by type/i)?.getAttribute('aria-label'),
-    ).not.toContain('Custom');
+    expect(allocationByType.getAttribute('aria-label')).not.toContain('Custom');
   });
 
   test('shows an empty state when the shared portfolio has no holdings', async () => {

@@ -1,3 +1,4 @@
+import { Suspense } from 'react';
 import { Outlet } from 'react-router-dom';
 
 import { useT } from '../../i18n';
@@ -18,7 +19,9 @@ export function WorkbenchLayout() {
   return (
     <div>
       <LocalNav ariaLabel={t(SECTION_NAV.workbench.ariaLabelKey)} items={items} />
-      <Outlet />
+      <Suspense fallback={null}>
+        <Outlet />
+      </Suspense>
     </div>
   );
 }

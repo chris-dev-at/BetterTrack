@@ -8,7 +8,7 @@ import { formatDateTime } from '../../../lib/format';
 import { Icon } from '../../../ui/origin';
 import { cx } from '../../components/ui';
 import { projectVaultMediaSyncStatus } from '../media/status';
-import { useVaultRuntime } from '../VaultRuntimeProvider';
+import { useVaultRuntime } from '../VaultRuntimeContext';
 
 export function VaultSyncChip({ media }: { media: ParanoidVaultMediaState }) {
   const t = useT();

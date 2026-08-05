@@ -1,3 +1,4 @@
+import { Suspense } from 'react';
 import { Outlet } from 'react-router-dom';
 
 import { useT } from '../../i18n';
@@ -18,7 +19,9 @@ export function AssetsWorkspace() {
   return (
     <div className="bt-phone-surface bt-assets-workspace">
       <LocalNav ariaLabel={t(SECTION_NAV.assets.ariaLabelKey)} items={items} />
-      <Outlet />
+      <Suspense fallback={null}>
+        <Outlet />
+      </Suspense>
     </div>
   );
 }

@@ -1,3 +1,4 @@
+import { Suspense } from 'react';
 import { Outlet, useLocation } from 'react-router-dom';
 
 import { useT } from '../../i18n';
@@ -30,7 +31,9 @@ export function PortfolioWorkspace() {
         items={items}
         preserveParams={SECTION_NAV.portfolio.preserveParams}
       />
-      <Outlet />
+      <Suspense fallback={null}>
+        <Outlet />
+      </Suspense>
     </div>
   );
 }
@@ -88,7 +91,9 @@ export function CashLayout() {
             </SubTabLink>
           ))}
       </nav>
-      <Outlet key={location.pathname} />
+      <Suspense fallback={null}>
+        <Outlet key={location.pathname} />
+      </Suspense>
     </div>
   );
 }

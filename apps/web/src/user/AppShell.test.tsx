@@ -329,12 +329,14 @@ test('the chevron toggles without navigating; leaving the section closes the tre
 
   // Navigating OUT of the section (Home) closes the open tree again.
   await user.click(within(await findRail()).getByRole('link', { name: 'Home' }));
-  for (const section of ['Portfolio', 'Workbench', 'Assets', 'People']) {
-    expect(screen.getByRole('button', { name: `Expand ${section}` })).toHaveAttribute(
-      'aria-expanded',
-      'false',
-    );
-  }
+  await waitFor(() => {
+    for (const section of ['Portfolio', 'Workbench', 'Assets', 'People']) {
+      expect(screen.getByRole('button', { name: `Expand ${section}` })).toHaveAttribute(
+        'aria-expanded',
+        'false',
+      );
+    }
+  });
 });
 
 test('a freshly selected section starts closed; re-clicks toggle open and shut', async () => {

@@ -6,8 +6,8 @@ import { expect, test, vi } from 'vitest';
 import { ResolvedPrivacyModeProvider } from '../vault/usePrivacyMode';
 import type { PrivacyMode } from '@bettertrack/contracts';
 
-vi.mock('../vault/VaultRuntimeProvider', () => ({
-  useVaultRuntime: () => ({ lock: vi.fn() }),
+vi.mock('../vault/VaultRuntimeContext', () => ({
+  useOptionalVaultRuntime: () => ({ lock: vi.fn() }),
 }));
 
 import { CreateMenu } from './OriginShell';

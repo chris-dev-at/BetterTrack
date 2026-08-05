@@ -230,6 +230,7 @@ export const V5_SURFACE_INVENTORY = [
     routes: ['/portfolio', '/portfolio/analysis', '/workbench', '/assets/:id', '/admin/health'],
     components: [
       'ui/MarketStateBadge.tsx',
+      'ui/charts/LazyPriceChart.tsx',
       'ui/charts/PriceChart.tsx',
       'user/portfolio/PortfolioPage.tsx',
       'user/portfolio/analytics/AnalyticsPage.tsx',
@@ -463,6 +464,7 @@ export const V5_SURFACE_INVENTORY = [
     routes: ['/workbench/forecasts', '/workbench/calculators'],
     components: [
       'user/forecast/ForecastPage.tsx',
+      'user/forecast/ProjectionChart.tsx',
       'user/forecast/ProjectionSection.tsx',
       'user/forecast/StandingOrdersSection.tsx',
       'user/forecast/StandingOrderDialog.tsx',
@@ -720,7 +722,9 @@ export const V5_SURFACE_INVENTORY = [
     routes: ['/control/privacy'],
     components: [
       'user/UserApp.tsx',
+      'user/control/panels/ParanoidAccountExport.tsx',
       'user/control/panels/PrivacyPanel.tsx',
+      'user/vault/VaultAccountRoot.tsx',
       'user/vault/VaultRuntimeProvider.tsx',
       'user/vault/engine/VaultMoneyEngineProvider.tsx',
       'user/vault/ui/ParanoidEnableWizard.tsx',
@@ -729,6 +733,7 @@ export const V5_SURFACE_INVENTORY = [
       'user/vault/ui/VaultUnlockGate.tsx',
       'ui/MoneyText.tsx',
       'ui/charts/AllocationDonut.tsx',
+      'ui/charts/LazyAllocationDonut.tsx',
     ],
     copyRoots: ['privacy', 'vault', 'vaultMoney', 'vaultExports', 'common.charts'],
     copyReview:

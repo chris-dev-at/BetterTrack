@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import type { ComponentType } from 'react';
 import { createPortal } from 'react-dom';
 import { Link, useNavigate, useParams } from 'react-router-dom';
@@ -16,13 +16,24 @@ import { DeleteAccountPanel } from './panels/DeleteAccountPanel';
 import { NotificationLogPanel } from './panels/NotificationLogPanel';
 import { NotificationsPanel } from './panels/NotificationsPanel';
 import { OAuthAppsPanel } from './panels/OAuthAppsPanel';
-import { PrivacyPanel } from './panels/PrivacyPanel';
 import { ProfilePanel } from './panels/ProfilePanel';
 import { SessionsPanel } from './panels/SessionsPanel';
 import { SignInPanel } from './panels/SignInPanel';
 import { WebhooksPanel } from './panels/WebhooksPanel';
 import { usePhoneShell } from '../hooks/useCompactShell';
 import { useResolvedPrivacyMode } from '../vault/usePrivacyMode';
+
+const LazyPrivacyPanel = lazy(() =>
+  import('./panels/PrivacyPanel').then((module) => ({ default: module.PrivacyPanel })),
+);
+
+function PrivacyPanelBoundary() {
+  return (
+    <Suspense fallback={null}>
+      <LazyPrivacyPanel />
+    </Suspense>
+  );
+}
 
 /**
  * The Control Center overlay (R2): the settings-absorbing popup that replaced
@@ -179,7 +190,7 @@ export const CONTROL_GROUPS: readonly ControlGroup[] = [
           'vault.settings.recoveryKit',
         ],
         icon: 'lock',
-        Component: PrivacyPanel,
+        Component: PrivacyPanelBoundary,
       },
     ],
   },
@@ -255,34 +266,6 @@ export const CONTROL_GROUPS: readonly ControlGroup[] = [
     ],
   },
 ];
-
-/**
- * `/control/<segment>`s that are NOT panels: real pages that keep their own
- * canvas. While the popup was a route element a static `/control/data` route
- * simply outranked the dynamic `:panel`; now that the shell matches the path
- * itself (see {@link matchControlPanel}), the same precedence lives here.
- */
-const CONTROL_PAGE_SEGMENTS: ReadonlySet<string> = new Set(['data']);
-
-/**
- * Does this path open the Control Center popup, and on which panel?
- *
- * The shell asks this on every navigation instead of mounting the popup as a
- * route element: a route element renders *instead of* the page, which left the
- * canvas behind the popup blank. Matching here lets the shell keep the page the
- * user was on and put the popup on top of it (see `UserApp`'s `UserShell`).
- *
- * Returns `null` for anything that is not the popup — including `/control/data`
- * and any deeper path — and `{ panel }` otherwise, with `panel` undefined for a
- * bare `/control` (which opens on the default panel).
- */
-export function matchControlPanel(pathname: string): { panel: string | undefined } | null {
-  const match = /^\/control(?:\/([^/]+))?\/?$/.exec(pathname);
-  if (match === null) return null;
-  const panel = match[1];
-  if (panel !== undefined && CONTROL_PAGE_SEGMENTS.has(panel)) return null;
-  return { panel };
-}
 
 /**
  * Panel ids this restructure renamed. An unknown id falls back to the DEFAULT

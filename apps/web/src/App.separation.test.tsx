@@ -65,21 +65,21 @@ test('user origin: root mounts the user app', () => {
   expect(screen.queryByText('ADMIN_APP_MOUNTED')).not.toBeInTheDocument();
 });
 
-test('admin origin: /admin/* mounts only the admin app', () => {
+test('admin origin: /admin/* mounts only the admin app', async () => {
   setRuntimeApp('admin');
   navigate('/admin/users');
   render(<App />);
 
-  expect(screen.getByText('ADMIN_APP_MOUNTED')).toBeInTheDocument();
+  expect(await screen.findByText('ADMIN_APP_MOUNTED')).toBeInTheDocument();
   expect(screen.queryByText('USER_APP_MOUNTED')).not.toBeInTheDocument();
 });
 
-test('admin origin: the user app is never reachable — root redirects into /admin', () => {
+test('admin origin: the user app is never reachable — root redirects into /admin', async () => {
   setRuntimeApp('admin');
   navigate('/portfolio');
   render(<App />);
 
   // Any non-admin path redirects to /admin; the user app must not render.
-  expect(screen.getByText('ADMIN_APP_MOUNTED')).toBeInTheDocument();
+  expect(await screen.findByText('ADMIN_APP_MOUNTED')).toBeInTheDocument();
   expect(screen.queryByText('USER_APP_MOUNTED')).not.toBeInTheDocument();
 });

@@ -1,6 +1,8 @@
 // Aliased: the bare `MouseEvent` name is the DOM one the popover
 // document-listeners below are typed against.
 import {
+  lazy,
+  Suspense,
   useCallback,
   useEffect,
   useRef,
@@ -20,8 +22,7 @@ import { useCompactShell, usePhoneShell } from '../hooks/useCompactShell';
 import { ACTIVE_PORTFOLIO_PARAM, PortfolioSwitcher } from '../portfolio/PortfolioSwitcher';
 import { useResolvedPrivacyMode, useResolvedPrivacyModeState } from '../vault/usePrivacyMode';
 import { isParanoidKilledPath } from '../vault/ui/ParanoidSurfaceGate';
-import { useVaultRuntime } from '../vault/VaultRuntimeProvider';
-import { VaultSyncChip } from '../vault/ui/VaultSyncChip';
+import { useOptionalVaultRuntime } from '../vault/VaultRuntimeContext';
 import { Avatar } from './Avatar';
 import {
   ASK_DOCK_ID,
@@ -36,6 +37,10 @@ import { usePreservedSearch } from './LocalNav';
 import { NotificationBell } from './NotificationBell';
 import { isChildActive, SECTION_NAV, useRailNavChildren, type SectionKey } from './sectionNav';
 import { useMenuKeyboard } from './useMenuKeyboard';
+
+const VaultSyncChip = lazy(() =>
+  import('../vault/ui/VaultSyncChip').then((module) => ({ default: module.VaultSyncChip })),
+);
 
 /**
  * Origin application frame (docs/redesign/REAL_APP_REDESIGN_PROMPT.md,
@@ -333,7 +338,7 @@ export function AccountMenu({
   const { t } = useI18n();
   const { user, logout, toggleDiscreetMode } = useAuth();
   const privacyMode = useResolvedPrivacyMode();
-  const vault = useVaultRuntime();
+  const vault = useOptionalVaultRuntime();
   const [open, setOpen] = useState(false);
   const [discreetError, setDiscreetError] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
@@ -465,7 +470,7 @@ export function AccountMenu({
               className="bt-menu-item"
               onClick={() => {
                 closeAndRestoreFocus();
-                void vault.lock();
+                void vault?.lock();
               }}
               role="menuitem"
               type="button"
@@ -798,7 +803,9 @@ export function OriginShell() {
             />
             <div className="bt-topbar__actions">
               {privacy.privacyMode === 'paranoid' && privacy.mediaState != null ? (
-                <VaultSyncChip media={privacy.mediaState} />
+                <Suspense fallback={null}>
+                  <VaultSyncChip media={privacy.mediaState} />
+                </Suspense>
               ) : null}
               <CreateMenu />
               <NotificationBell />
@@ -814,12 +821,14 @@ export function OriginShell() {
           </header>
 
           <main id="main-content" className="bt-canvas" tabIndex={-1}>
-            {/* resetKey, not key: keying by pathname remounted the whole page
-                tree on every navigation — replaying overlay entrance animations
-                and resetting page state. The boundary only needs navigation to
-                CLEAR a crash, never to remount healthy children. */}
+            {/* The error boundary only needs navigation to CLEAR a crash. The
+                nested Suspense boundary is keyed separately so the shell can
+                commit its new active navigation state while a cold route chunk
+                loads; query-only navigation still preserves the mounted page. */}
             <ErrorBoundary resetKey={pathname}>
-              <Outlet />
+              <Suspense fallback={null} key={pathname}>
+                <Outlet />
+              </Suspense>
             </ErrorBoundary>
             <footer style={{ marginTop: 56 }}>
               <Disclaimer>{TAGLINE}</Disclaimer>

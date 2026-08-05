@@ -4,6 +4,18 @@ import { beforeEach, expect, test, vi } from 'vitest';
 
 import type { MeResponse, ParanoidMediaStateResponse } from '@bettertrack/contracts';
 
+const vaultRuntimeMocks = vi.hoisted(() => ({
+  createServerBlobDataHome: vi.fn(() => ({
+    read: vi.fn(async () => {
+      throw new Error('no envelope in tests');
+    }),
+    write: vi.fn(async () => {
+      throw new Error('no envelope in tests');
+    }),
+    remove: vi.fn(async () => undefined),
+  })),
+}));
+
 vi.mock('../lib/userApi');
 vi.mock('../lib/portfolioApi');
 vi.mock('../lib/workboardApi', () => ({
@@ -20,15 +32,7 @@ vi.mock('../lib/workboardApi', () => ({
 // phase 'locked' without a real request (`unlockFromDevice` swallows the error
 // by contract), which is exactly the state under test.
 vi.mock('./vault/serverBlobDataHome', () => ({
-  createServerBlobDataHome: () => ({
-    read: vi.fn(async () => {
-      throw new Error('no envelope in tests');
-    }),
-    write: vi.fn(async () => {
-      throw new Error('no envelope in tests');
-    }),
-    remove: vi.fn(async () => undefined),
-  }),
+  createServerBlobDataHome: vaultRuntimeMocks.createServerBlobDataHome,
   serverBlobDataHome: () => {
     throw new Error('unused');
   },
@@ -99,7 +103,10 @@ test('paranoid + locked replaces the whole authenticated subtree with the unlock
 
   renderAt('/portfolio');
 
-  expect(await screen.findByText('Unlock your vault')).toBeInTheDocument();
+  expect(await screen.findByText('Unlock your vault', {}, { timeout: 5_000 })).toBeInTheDocument();
+  // The mode gate requested and initialized the real lazy vault runtime before
+  // showing an unlock UI; a paranoid boot cannot defer this until first use.
+  expect(vaultRuntimeMocks.createServerBlobDataHome).toHaveBeenCalled();
   // No app chrome either — the gate replaces the shell, not just the page.
   expect(screen.queryByRole('button', { name: 'Account menu' })).not.toBeInTheDocument();
   expect(listPortfolios).not.toHaveBeenCalled();
@@ -110,7 +117,7 @@ test('a money deep link on a locked vault still lands on the gate, with no serve
 
   renderAt('/portfolio/tax');
 
-  expect(await screen.findByText('Unlock your vault')).toBeInTheDocument();
+  expect(await screen.findByText('Unlock your vault', {}, { timeout: 5_000 })).toBeInTheDocument();
   // Give the route a turn to settle before claiming nothing was fetched.
   await waitFor(() => expect(listPortfolios).not.toHaveBeenCalled());
 });
@@ -125,8 +132,9 @@ test('the gate never appears for a normal account, which keeps reading the serve
 
   // The control for the two cases above: the same route on a normal account
   // does mount a money surface and does call `apiPortfolioStore`.
-  await waitFor(() => expect(listPortfolios).toHaveBeenCalled());
+  await waitFor(() => expect(listPortfolios).toHaveBeenCalled(), { timeout: 5_000 });
   expect(screen.queryByText('Unlock your vault')).not.toBeInTheDocument();
+  expect(vaultRuntimeMocks.createServerBlobDataHome).not.toHaveBeenCalled();
 });
 
 test('the mode read failing closed shows the retry card, never a money page', async () => {

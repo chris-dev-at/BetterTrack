@@ -41,7 +41,7 @@ import {
   type V5AsyncStateDebt,
   type V5SurfaceReview,
 } from './v5SurfaceInventory';
-import { matchControlPanel } from '../user/control/ControlCenterOverlay';
+import { matchControlPanel } from '../user/control/matchControlPanel';
 
 const SRC_ROOT = resolve(process.cwd(), 'src');
 
@@ -84,6 +84,8 @@ ui/MoneyText.tsx
 ui/ScopePicker.tsx
 ui/MarketStateBadge.tsx
 ui/charts/AllocationDonut.tsx
+ui/charts/LazyAllocationDonut.tsx
+ui/charts/LazyPriceChart.tsx
 ui/charts/PriceChart.tsx
 user/AuthContext.tsx
 user/UserApp.tsx
@@ -111,12 +113,14 @@ user/control/panels/DefaultsPanel.tsx
 user/control/panels/NotificationLogPanel.tsx
 user/control/panels/NotificationsPanel.tsx
 user/control/panels/OAuthAppsPanel.tsx
+user/control/panels/ParanoidAccountExport.tsx
 user/control/panels/PrivacyPanel.tsx
 user/control/panels/ProfilePanel.tsx
 user/control/panels/SignInPanel.tsx
 user/control/panels/WebhooksPanel.tsx
 user/control/panels/taxModeList.tsx
 user/forecast/ForecastPage.tsx
+user/forecast/ProjectionChart.tsx
 user/forecast/ProjectionSection.tsx
 user/forecast/StandingOrderDialog.tsx
 user/forecast/StandingOrdersSection.tsx
@@ -177,6 +181,7 @@ user/social/SharedIdeaPage.tsx
 user/social/SharedPortfolioPage.tsx
 user/social/SharedWatchlistPage.tsx
 user/social/chatSurface.tsx
+user/vault/VaultAccountRoot.tsx
 user/vault/VaultRuntimeProvider.tsx
 user/vault/engine/VaultMoneyEngineProvider.tsx
 user/vault/ui/ParanoidEnableWizard.tsx
