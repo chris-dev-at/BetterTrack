@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
@@ -100,12 +100,31 @@ describe('CashDialog', () => {
     await waitFor(() =>
       expect(portfolioApi.depositCash).toHaveBeenCalledWith(
         'p1',
-        expect.objectContaining({ amountEur: 500, executedAt: '2026-07-02T00:00:00.000Z' }),
+        expect.objectContaining({ amountEur: 500, executedAt: '2026-07-02T12:00:00.000Z' }),
       ),
     );
     expect(onSubmitted).toHaveBeenCalledOnce();
     expect(onClose).toHaveBeenCalledOnce();
     expect(screen.getByText('Deposit recorded.')).toBeInTheDocument();
+  });
+
+  test('stamps backdated cash at noon UTC, after same-day trades', async () => {
+    vi.mocked(portfolioApi.depositCash).mockResolvedValue({
+      movement: { id: 'm-backdated' },
+    } as Awaited<ReturnType<typeof portfolioApi.depositCash>>);
+    const user = userEvent.setup();
+    renderDialog();
+
+    await user.type(screen.getByLabelText('Amount'), '500');
+    fireEvent.change(screen.getByLabelText('Date'), { target: { value: '2020-01-02' } });
+    await user.click(screen.getByRole('button', { name: 'Deposit cash' }));
+
+    await waitFor(() =>
+      expect(portfolioApi.depositCash).toHaveBeenCalledWith(
+        'p1',
+        expect.objectContaining({ amountEur: 500, executedAt: '2020-01-02T12:00:00.000Z' }),
+      ),
+    );
   });
 
   test('blocks a withdrawal beyond the available balance via the live preview', async () => {
@@ -214,7 +233,7 @@ describe('CashDialog', () => {
     await waitFor(() =>
       expect(portfolioApi.chargeCashFee).toHaveBeenCalledWith(
         'p1',
-        expect.objectContaining({ amountEur: 12.5, executedAt: '2026-07-02T00:00:00.000Z' }),
+        expect.objectContaining({ amountEur: 12.5, executedAt: '2026-07-02T12:00:00.000Z' }),
       ),
     );
     expect(portfolioApi.withdrawCash).not.toHaveBeenCalled();
