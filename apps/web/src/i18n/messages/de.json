@@ -4895,6 +4895,7 @@
     "rules": {
       "subtitle": "Regeln taggen Importe und manuelle Einträge automatisch, anhand ihrer Notiz. Die erste Übereinstimmung gewinnt.",
       "applyToExisting": "Auf Bestehende anwenden",
+      "applyConfirm": "Diese Regeln auf bestehende Bewegungen anwenden? Das kann Tags erneut setzen, die du bei Bewegungen manuell geändert oder entfernt hast.",
       "applying": "Wird angewendet…",
       "applyTagged": "{{count}} Bewegungen markiert.",
       "applyNoneTagged": "Nichts Neues zu markieren — jede passende Bewegung trägt ihre Tags bereits.",
