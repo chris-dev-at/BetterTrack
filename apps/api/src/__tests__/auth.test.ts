@@ -1,3 +1,5 @@
+import { performance } from 'node:perf_hooks';
+
 import { and, eq, gt, isNull } from 'drizzle-orm';
 import request from 'supertest';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -10,6 +12,7 @@ import {
 
 import { createUserRepository } from '../data/repositories/userRepository';
 import { emailLog, passwordResetTokens, users } from '../data/schema';
+import { PASSWORD_RESET_RESPONSE_FLOOR_MS } from '../services/auth/authService';
 import type { MailTransport, OutgoingMail } from '../services/email/transport';
 import { createPasswordHasher, type PasswordHasher } from '../services/password/passwordHasher';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
@@ -416,6 +419,29 @@ describe('self-service password-reset concurrency', () => {
     ).toHaveLength(1);
   });
 
+  it('normalizes reset-request timing for known and unknown email addresses', async () => {
+    const user = await harness.seedUser();
+    const timedRequest = async (email: string) => {
+      const startedAt = performance.now();
+      const response = await requestPasswordReset(harness, email);
+      return { response, elapsedMs: performance.now() - startedAt };
+    };
+
+    const [known, unknown] = await Promise.all([
+      timedRequest(user.email),
+      timedRequest('nobody-here@test.dev'),
+    ]);
+
+    expect(known.response.status).toBe(200);
+    expect(unknown.response.status).toBe(200);
+    expect(known.response.body).toEqual({ ok: true });
+    expect(unknown.response.body).toEqual(known.response.body);
+    expect(Math.min(known.elapsedMs, unknown.elapsedMs)).toBeGreaterThanOrEqual(
+      PASSWORD_RESET_RESPONSE_FLOOR_MS - 25,
+    );
+    expect(Math.abs(known.elapsedMs - unknown.elapsedMs)).toBeLessThan(75);
+  });
+
   it('returns the uniform acknowledgement without waiting for a slow email transport', async () => {
     let signalSendStarted!: () => void;
     let releaseSend!: () => void;
@@ -440,7 +466,7 @@ describe('self-service password-reset concurrency', () => {
     const first = await Promise.race([
       knownRequest.then(() => 'response' as const),
       new Promise<'timeout'>((resolve) => {
-        timeout = setTimeout(() => resolve('timeout'), 250);
+        timeout = setTimeout(() => resolve('timeout'), PASSWORD_RESET_RESPONSE_FLOOR_MS + 250);
       }),
     ]);
     if (timeout) clearTimeout(timeout);

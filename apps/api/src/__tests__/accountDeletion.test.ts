@@ -17,7 +17,7 @@ import {
   rememberedDeviceKey,
   rememberedDevicesForUserKey,
 } from '../services/auth/loginThrottle';
-import { generateTotpCode } from '../services/auth/totp';
+import { generateTotpCode, TOTP_STEP_SECONDS } from '../services/auth/totp';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 /**
@@ -452,7 +452,7 @@ describe('DELETE /account — hard delete (acceptance sweep)', () => {
 
     const res = await deleteAccount(user.agent, {
       confirmUsername: user.username,
-      code: generateTotpCode(secret),
+      code: generateTotpCode(secret, Date.now() + TOTP_STEP_SECONDS * 1000),
     });
     expect(res.status, JSON.stringify(res.body)).toBe(200);
 

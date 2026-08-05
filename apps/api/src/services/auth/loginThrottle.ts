@@ -14,11 +14,12 @@ import { resetProgressiveLimiter } from '../security/progressiveLimiter';
 export const LOGIN_ACCOUNT_NAMESPACE = 'login_account';
 
 /**
- * Per-account wrong-second-factor throttle for the login 2FA challenge (§6.1,
- * §10, §13.2 V2-P5). Independent of the password-failure counter above and of the
- * per-IP request limiter the HTTP middleware keeps: a correct password that lands
- * on the 2FA step still gates code brute-forcing per account. Drives the same
- * {@link createProgressiveLimiter} with the `loginAccount` schedule.
+ * Per-account wrong-second-factor throttle for login and session-authenticated
+ * TOTP re-auth (§6.1, §10, §13.2 V2-P5). Independent of the password-failure
+ * counter above and of the per-IP request limiter the HTTP middleware keeps: a
+ * correct password or hijacked session still gates code brute-forcing per
+ * account. Drives the same {@link createProgressiveLimiter} with the
+ * `loginAccount` schedule.
  */
 export const TWO_FACTOR_ACCOUNT_NAMESPACE = 'two_factor_account';
 
