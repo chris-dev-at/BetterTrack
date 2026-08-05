@@ -36,28 +36,38 @@ describe('TOTP (RFC 6238)', () => {
   const now = 1_700_000_000_000; // fixed instant
 
   it('verifies the code generated for the same instant', () => {
-    expect(verifyTotp(secret, generateTotpCode(secret, now), now)).toBe(true);
+    expect(verifyTotp(secret, generateTotpCode(secret, now), now)).toEqual({
+      step: Math.floor(now / 1000 / TOTP_STEP_SECONDS),
+    });
   });
 
   it('accepts a code from the adjacent step (±30 s clock skew)', () => {
     const prev = generateTotpCode(secret, now - TOTP_STEP_SECONDS * 1000);
     const next = generateTotpCode(secret, now + TOTP_STEP_SECONDS * 1000);
-    expect(verifyTotp(secret, prev, now)).toBe(true);
-    expect(verifyTotp(secret, next, now)).toBe(true);
+    expect(verifyTotp(secret, prev, now)).not.toBeNull();
+    expect(verifyTotp(secret, next, now)).not.toBeNull();
   });
 
   it('rejects a code two steps away (outside the skew window)', () => {
     const stale = generateTotpCode(secret, now - 2 * TOTP_STEP_SECONDS * 1000);
-    expect(verifyTotp(secret, stale, now)).toBe(false);
+    expect(verifyTotp(secret, stale, now)).toBeNull();
   });
 
   it('rejects a wrong or malformed code', () => {
     const right = generateTotpCode(secret, now);
     const wrong = right === '000000' ? '111111' : '000000';
-    expect(verifyTotp(secret, wrong, now)).toBe(false);
-    expect(verifyTotp(secret, '12345', now)).toBe(false); // too short
-    expect(verifyTotp(secret, 'abcdef', now)).toBe(false); // non-numeric
-    expect(verifyTotp(secret, '', now)).toBe(false);
+    expect(verifyTotp(secret, wrong, now)).toBeNull();
+    expect(verifyTotp(secret, '12345', now)).toBeNull(); // too short
+    expect(verifyTotp(secret, 'abcdef', now)).toBeNull(); // non-numeric
+    expect(verifyTotp(secret, '', now)).toBeNull();
+  });
+
+  it('rejects a matching step after the verifier has already accepted it', () => {
+    const code = generateTotpCode(secret, now);
+    const first = verifyTotp(secret, code, now);
+    expect(first).not.toBeNull();
+
+    expect(verifyTotp(secret, code, now, first!.step)).toBeNull();
   });
 
   it('builds an otpauth URI carrying the secret + issuer', () => {

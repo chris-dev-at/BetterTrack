@@ -11,7 +11,7 @@ import {
 
 import * as schema from '../data/schema';
 import type { PasskeyWebAuthnEngine } from '../services/auth/passkeyService';
-import { generateTotpCode } from '../services/auth/totp';
+import { generateTotpCode, TOTP_STEP_SECONDS } from '../services/auth/totp';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 /**
@@ -341,7 +341,7 @@ describe('passkeys — re-auth gating on add + delete', () => {
     const ok = await factorAgent
       .delete(`/api/v1/auth/passkeys/${created.body.id}`)
       .set(...XRW)
-      .send({ code: generateTotpCode(secret) });
+      .send({ code: generateTotpCode(secret, Date.now() + TOTP_STEP_SECONDS * 1000) });
     expect(ok.status).toBe(200);
     expect((await factorAgent.get('/api/v1/auth/passkeys')).body.passkeys).toHaveLength(0);
   });

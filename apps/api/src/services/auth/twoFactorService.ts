@@ -1,4 +1,4 @@
-import { randomInt } from 'node:crypto';
+import { createHash, randomInt } from 'node:crypto';
 
 import type { Redis } from 'ioredis';
 
@@ -15,17 +15,21 @@ import type {
   TwoFactorState,
 } from '../../data/repositories/twoFactorRepository';
 import type { UserRepository } from '../../data/repositories/userRepository';
-import { badRequest, conflict, notFound, unauthorized } from '../../errors';
+import { badRequest, conflict, notFound, tooManyRequests, unauthorized } from '../../errors';
 import { AuditAction, type AuditService } from '../audit/auditService';
 import { decryptSecret, encryptSecret } from '../crypto/secretBox';
 import { hashToken } from '../crypto/tokens';
 import type { EmailService } from '../email/emailService';
+import { createProgressiveLimiter } from '../security/progressiveLimiter';
 import type { SecurityMutationContext, SessionService } from '../sessions/sessionService';
+import { TWO_FACTOR_ACCOUNT_NAMESPACE } from './loginThrottle';
 import {
   buildOtpauthUri,
   generateRecoveryCodes,
   generateTotpSecret,
   normalizeRecoveryCode,
+  TOTP_SKEW_STEPS,
+  TOTP_STEP_SECONDS,
   verifyTotp,
 } from './totp';
 
@@ -179,6 +183,25 @@ export interface TwoFactorService {
 const EMAIL_SETUP_CODE_TTL_MINUTES = 10;
 const emailSetupKey = (userId: string) => `2fa_email_setup:${userId}`;
 
+// Keep an accepted step for longer than the complete ±1 acceptance window. The
+// secret fingerprint makes a re-enrollment start clean without storing secret
+// material in a Redis key or needing a best-effort cleanup during rotation.
+const TOTP_REPLAY_TTL_SECONDS = TOTP_STEP_SECONDS * (TOTP_SKEW_STEPS * 2 + 2);
+const totpReplayKey = (userId: string, secret: string) =>
+  `2fa_totp_step:${userId}:${createHash('sha256').update(secret).digest('base64url')}`;
+
+// Compare-and-set the verifier counter atomically across API replicas. A plain
+// GET followed by SET would let two independent challenges accept the same step.
+const CLAIM_TOTP_STEP_SCRIPT = `
+local candidate = tonumber(ARGV[1])
+local last = tonumber(redis.call('GET', KEYS[1]) or '')
+if last and candidate <= last then
+  return 0
+end
+redis.call('SET', KEYS[1], ARGV[1], 'EX', ARGV[2])
+return 1
+`;
+
 interface EmailSetupState {
   codeHash: string;
   securityGeneration: number;
@@ -186,6 +209,11 @@ interface EmailSetupState {
 
 export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorService {
   const { config, userRepo, twoFactorRepo, audit, redis, email, sessions } = deps;
+  const twoFactorThrottle = createProgressiveLimiter(
+    redis,
+    TWO_FACTOR_ACCOUNT_NAMESPACE,
+    config.rateLimits.loginAccount,
+  );
 
   const alreadyEnabled = () =>
     badRequest(
@@ -246,6 +274,25 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
       : null;
   }
 
+  /** Verify and atomically consume one TOTP step for a real authentication challenge. */
+  async function consumeTotpStep(userId: string, secret: string, code: string): Promise<boolean> {
+    const key = totpReplayKey(userId, secret);
+    const storedStep = await redis.get(key);
+    const parsedStep = storedStep === null ? Number.NaN : Number(storedStep);
+    const lastAcceptedStep = Number.isSafeInteger(parsedStep) ? parsedStep : null;
+    const verification = verifyTotp(secret, code, Date.now(), lastAcceptedStep);
+    if (!verification) return false;
+
+    const claimed = await redis.eval(
+      CLAIM_TOTP_STEP_SCRIPT,
+      1,
+      key,
+      verification.step,
+      TOTP_REPLAY_TTL_SECONDS,
+    );
+    return Number(claimed) === 1;
+  }
+
   /**
    * True when `code` is a valid second factor for the account: a TOTP code
    * verified against the decrypted secret (TOTP method on), or an unused recovery
@@ -264,7 +311,7 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
       } catch {
         return false;
       }
-      return verifyTotp(secret, trimmed);
+      return consumeTotpStep(userId, secret, trimmed);
     }
     const hash = hashToken(normalizeRecoveryCode(trimmed));
     return twoFactorRepo.consumeRecoveryCode(userId, hash, new Date());
@@ -395,8 +442,20 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
       const state = await twoFactorRepo.getState(userId);
       if (!state?.enabled || !state.secret) throw notEnabled();
 
+      const cooling = await twoFactorThrottle.peek(userId);
+      if (cooling > 0) {
+        throw tooManyRequests(cooling, 'Too many incorrect codes. Please wait and try again.');
+      }
+
       const ok = await verifyFactor(userId, state, code);
       if (!ok) {
+        const decision = await twoFactorThrottle.consume(userId);
+        if (!decision.allowed) {
+          throw tooManyRequests(
+            decision.retryAfterSec,
+            'Too many incorrect codes. Please wait and try again.',
+          );
+        }
         throw unauthorized('That two-factor code is incorrect.', 'TWO_FACTOR_INVALID_CODE');
       }
 
@@ -406,6 +465,7 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
         security?.securityGeneration ?? state.securityGeneration,
       );
       if (securityGeneration === null) throw unauthorized();
+      await twoFactorThrottle.reset(userId);
       await audit.record({
         actorId: userId,
         action: AuditAction.TwoFactorDisabled,
@@ -604,7 +664,7 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
       } catch {
         return false;
       }
-      return verifyTotp(secret, code);
+      return consumeTotpStep(userId, secret, code);
     },
 
     async consumeRecoveryCode(userId, code) {
