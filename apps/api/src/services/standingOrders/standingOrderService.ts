@@ -92,6 +92,14 @@ export interface ProcessDueResult {
   deferred: number;
 }
 
+/** A newly-created archive/restore tombstone, retained only for compensation. */
+export interface StandingOrderRestoreSkip {
+  orderId: string;
+  periodKey: string;
+  previousLastPeriodKey: string | null;
+  previousLastRunAt: Date | null;
+}
+
 export interface StandingOrderService {
   list(userId: string, opts?: { portfolioId?: string }): Promise<StandingOrderListResponse>;
   /**
@@ -116,6 +124,11 @@ export interface StandingOrderService {
     userId: string,
     portfolioId: string,
     opts?: { now?: number },
+  ): Promise<StandingOrderRestoreSkip[]>;
+  /** Remove newly-created restore tombstones when the portfolio never reopens. */
+  rollbackSkippedPeriodsForPortfolioRestore(
+    userId: string,
+    claims: readonly StandingOrderRestoreSkip[],
   ): Promise<void>;
   /** The daily job body: book every active order's newest due occurrence once. */
   processDueOrders(opts?: { now?: number }): Promise<ProcessDueResult>;
@@ -318,21 +331,41 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
     async skipDuePeriodsForPortfolioRestore(userId, portfolioId, opts) {
       const restoreNow = opts?.now ?? now();
       const today = calendarDayInTimezone(restoreNow, timezone);
+      const skippedAt = new Date(restoreNow);
       const orders = await repo.listActiveForPortfolio(userId, portfolioId);
-      let claimed = 0;
+      const claims: StandingOrderRestoreSkip[] = [];
 
       for (const order of orders) {
         const due = dueOccurrence(specOf(order), today);
         if (due === null || (order.lastPeriodKey !== null && order.lastPeriodKey >= due)) continue;
-        if (await repo.claimPeriod(order.id, due)) claimed += 1;
+        if (await repo.claimSkippedPeriod(order.id, due, skippedAt)) {
+          claims.push({
+            orderId: order.id,
+            periodKey: due,
+            previousLastPeriodKey: order.lastPeriodKey,
+            previousLastRunAt: order.lastRunAt,
+          });
+        }
       }
 
-      if (claimed > 0) {
+      if (claims.length > 0) {
         logger?.info(
-          { portfolioId, userId, through: today, claimed },
+          { portfolioId, userId, through: today, claimed: claims.length },
           'standing orders: claimed elapsed periods before archived portfolio restore',
         );
       }
+      return claims;
+    },
+
+    async rollbackSkippedPeriodsForPortfolioRestore(_userId, claims) {
+      await Promise.all(
+        claims.map((claim) =>
+          repo.rollbackSkippedPeriod(claim.orderId, claim.periodKey, {
+            lastPeriodKey: claim.previousLastPeriodKey,
+            lastRunAt: claim.previousLastRunAt,
+          }),
+        ),
+      );
     },
 
     async processDueOrders(opts) {

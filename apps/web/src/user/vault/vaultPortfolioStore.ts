@@ -418,11 +418,7 @@ export function createVaultPortfolioStore(
     },
 
     async restorePortfolio(portfolioId) {
-      const entity = await updateEntity(context, 'portfolio', portfolioId, (data) => ({
-        ...data,
-        archivedAt: null,
-      }));
-      return portfolioSummaryForId(requireDocument(engine), entity.id);
+      return restorePortfolioWithSkippedStandingOrderPeriods(context, portfolioId);
     },
 
     async deletePortfolio(portfolioId) {
@@ -1110,6 +1106,127 @@ async function updateEntity(
     throw storeError('VAULT_DATA_UNAVAILABLE', 'The updated vault entity is not readable.');
   }
   return committed;
+}
+
+/**
+ * Restore a portfolio and acknowledge its newest elapsed standing-order period
+ * in the same vault mutation. The random-id run has no ledger row on purpose:
+ * it is the durable no-money tombstone equivalent to the server's archive
+ * boundary claim, while the paired watermark keeps the next-run display and
+ * subsequent materializer scan past that already-skipped period.
+ */
+async function restorePortfolioWithSkippedStandingOrderPeriods(
+  context: StoreContext,
+  portfolioId: string,
+): Promise<PortfolioSummary> {
+  requireDocument(context.engine);
+  let expectedPortfolio: VaultEntity | null = null;
+  const mutationState = await context.engine.mutate(({ document }) => {
+    const portfolio = requirePortfolio(document, portfolioId);
+    const portfolioRow = parseVaultData(
+      () => VAULT_ENTITY_ROW_SCHEMAS.portfolio.parse(portfolio.data),
+      'A vault portfolio does not match the strict restore contract.',
+    );
+    if (portfolioRow.archivedAt === null) {
+      throw storeError('VAULT_OPERATION_UNAVAILABLE', 'Portfolio is not archived.');
+    }
+
+    const timestamp = context.now();
+    const today = calendarDayInTimezone(new Date(timestamp), 'Europe/Vienna');
+    const skippedRuns: VaultEntity[] = [];
+    let next = document;
+
+    for (const order of liveEntities(document, 'standingOrder')) {
+      const orderRow = strictStandingOrderData(order.data);
+      if (
+        stringField(orderRow, 'portfolioId') !== portfolioId ||
+        stringField(orderRow, 'status') !== 'active'
+      ) {
+        continue;
+      }
+
+      const lastPeriodKey = nullableStringField(orderRow, 'lastPeriodKey');
+      const dueDate = dueStandingOrderOccurrence(
+        {
+          cadence: stringField(orderRow, 'cadence') as 'daily' | 'monthly',
+          anchorDay: nullableNumberField(orderRow, 'anchorDay'),
+          startDate: stringField(orderRow, 'startDate'),
+          endDate: nullableStringField(orderRow, 'endDate'),
+        },
+        today,
+      );
+      if (dueDate === null || (lastPeriodKey !== null && lastPeriodKey >= dueDate)) continue;
+
+      const matchingRuns = liveEntities(next, 'standingOrderRun').filter((run) => {
+        const row = VAULT_ENTITY_ROW_SCHEMAS.standingOrderRun.parse(run.data);
+        return row.standingOrderId === order.id && row.periodKey === dueDate;
+      });
+      if (matchingRuns.length > 1) {
+        throw storeError(
+          'VAULT_DATA_INVALID',
+          'A standing-order period has more than one durable claim.',
+        );
+      }
+      if (matchingRuns.length === 0) {
+        const runId = safeNewId(context);
+        if (
+          findEntity(next, 'standingOrderRun', runId) !== undefined ||
+          skippedRuns.some((run) => run.id === runId)
+        ) {
+          throw storeError('VAULT_DATA_INVALID', 'A standing-order run id already exists.');
+        }
+        skippedRuns.push(
+          entityRecord(
+            runId,
+            context.engine.deviceId,
+            timestamp,
+            parseVaultData(
+              () =>
+                VAULT_ENTITY_ROW_SCHEMAS.standingOrderRun.parse({
+                  standingOrderId: order.id,
+                  periodKey: dueDate,
+                  bookedAt: timestamp,
+                }),
+              'A standing-order run does not match the strict restore contract.',
+            ),
+          ),
+        );
+      }
+
+      next = replaceEntity(next, 'standingOrder', {
+        ...order,
+        rev: order.rev + 1,
+        editedAt: timestamp,
+        editedBy: context.engine.deviceId,
+        data: strictStandingOrderData({
+          ...orderRow,
+          lastRunAt: timestamp,
+          lastPeriodKey: dueDate,
+          updatedAt: timestamp,
+        }),
+      });
+    }
+
+    if (skippedRuns.length > 0) {
+      next = appendEntities(next, 'standingOrderRun', skippedRuns);
+    }
+    expectedPortfolio = {
+      ...portfolio,
+      rev: portfolio.rev + 1,
+      editedAt: timestamp,
+      editedBy: context.engine.deviceId,
+      data: strictPortfolioData({ ...portfolioRow, archivedAt: null }),
+    };
+    return replaceEntity(next, 'portfolio', expectedPortfolio);
+  });
+
+  const committed = requireCommittedMutationEntity(
+    mutationState,
+    'portfolio',
+    portfolioId,
+    expectedPortfolio,
+  );
+  return portfolioSummaryForId(committed.document, portfolioId);
 }
 
 async function deletePortfolioTree(context: StoreContext, portfolioId: string): Promise<void> {
@@ -2158,9 +2275,10 @@ export function existingStandingOrderOccurrence(
    * Cleartext server execution predates deterministic client ids. Its
    * `(standingOrderId, periodKey)` run row is the at-most-once claim, while the
    * booked ledger row has a separate random id. A claim can intentionally have
-   * no ledger row when server booking failed after the claim. Preserve either
-   * legacy shape as an existing occurrence; only deterministic client claims
-   * promise the atomic run + ledger + watermark aggregate validated below.
+   * no ledger row when server booking failed after the claim, or when archive
+   * restore deliberately skips an elapsed period. Preserve either legacy shape
+   * as an existing occurrence; only deterministic client claims promise the
+   * atomic run + ledger + watermark aggregate validated below.
    */
   if (run != null && run.id !== input.occurrenceId) {
     if (order == null || ledgerRows.length !== 0) {

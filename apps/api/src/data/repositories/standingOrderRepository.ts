@@ -1,4 +1,4 @@
-import { and, asc, eq, isNull } from 'drizzle-orm';
+import { and, asc, eq, isNull, lt, or } from 'drizzle-orm';
 
 import type {
   StandingOrderCadence,
@@ -318,6 +318,82 @@ export function createStandingOrderRepository(db: Database) {
         .onConflictDoNothing()
         .returning({ id: standingOrderRuns.id });
       return rows.length > 0;
+    },
+
+    /**
+     * Atomically record a period that was deliberately skipped while the owning
+     * portfolio was archived, and advance its scheduler watermark through that
+     * period. Unlike {@link markBooked}, this creates no money row; `lastRunAt`
+     * records when the scheduler acknowledged the skipped period so the
+     * watermark remains a complete pair for paranoid-vault capture/restore.
+     *
+     * Returns true only when this call created the durable run claim. A prior
+     * claim is still reflected in the watermark, which repairs a legacy
+     * claim-only tombstone without creating a duplicate run.
+     */
+    async claimSkippedPeriod(
+      standingOrderId: string,
+      periodKey: string,
+      skippedAt: Date,
+    ): Promise<boolean> {
+      return db.transaction(async (tx) => {
+        const transaction = tx as unknown as Database;
+        const rows = await transaction
+          .insert(standingOrderRuns)
+          .values({ standingOrderId, periodKey })
+          .onConflictDoNothing()
+          .returning({ id: standingOrderRuns.id });
+
+        await transaction
+          .update(standingOrders)
+          .set({ lastPeriodKey: periodKey, lastRunAt: skippedAt, updatedAt: skippedAt })
+          .where(
+            and(
+              eq(standingOrders.id, standingOrderId),
+              or(isNull(standingOrders.lastPeriodKey), lt(standingOrders.lastPeriodKey, periodKey)),
+            ),
+          );
+        return rows.length > 0;
+      });
+    },
+
+    /**
+     * Compensate a newly-created archive/restore claim if the portfolio never
+     * became active. The conditional watermark reset cannot clobber a later
+     * scheduler acknowledgement.
+     */
+    async rollbackSkippedPeriod(
+      standingOrderId: string,
+      periodKey: string,
+      previous: { lastPeriodKey: string | null; lastRunAt: Date | null },
+    ): Promise<void> {
+      await db.transaction(async (tx) => {
+        const transaction = tx as unknown as Database;
+        const removed = await transaction
+          .delete(standingOrderRuns)
+          .where(
+            and(
+              eq(standingOrderRuns.standingOrderId, standingOrderId),
+              eq(standingOrderRuns.periodKey, periodKey),
+            ),
+          )
+          .returning({ id: standingOrderRuns.id });
+        if (removed.length === 0) return;
+
+        await transaction
+          .update(standingOrders)
+          .set({
+            lastPeriodKey: previous.lastPeriodKey,
+            lastRunAt: previous.lastRunAt,
+            updatedAt: new Date(),
+          })
+          .where(
+            and(
+              eq(standingOrders.id, standingOrderId),
+              eq(standingOrders.lastPeriodKey, periodKey),
+            ),
+          );
+      });
     },
 
     /** Record that a period booked: bump the order's display bookkeeping. */

@@ -359,6 +359,7 @@ export const PARANOID_SERVICE_BINDINGS: readonly ParanoidServiceBinding[] = [
     'resume',
     'remove',
     'skipDuePeriodsForPortfolioRestore',
+    'rollbackSkippedPeriodsForPortfolioRestore',
   ]),
   serviceBinding(
     'portfolioWebhooks',

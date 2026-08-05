@@ -1292,6 +1292,9 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     snapshots,
     logger,
     paranoid: paranoidGuard,
+    // Keep archive/restore and standing-order DTOs on the same injected clock
+    // under test; production leaves this undefined and both use Date.now().
+    now: deps.portfolioNow,
   });
   // A read-only view onto the Live-Mode per-asset ring buffer (§6.3): the same
   // `live:ring:*` Redis keys the poll loop writes. The intraday 1D/1W series

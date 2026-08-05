@@ -118,10 +118,13 @@ function txnRows(pid: string, source = SOURCE_TAG_STANDING_ORDER) {
     .where(and(eq(schema.transactions.portfolioId, pid), eq(schema.transactions.source, source)));
 }
 
-function runPeriodKeys() {
-  return harness.db
+function runPeriodKeys(standingOrderId?: string) {
+  const query = harness.db
     .select({ key: schema.standingOrderRuns.periodKey })
     .from(schema.standingOrderRuns);
+  return standingOrderId === undefined
+    ? query
+    : query.where(eq(schema.standingOrderRuns.standingOrderId, standingOrderId));
 }
 
 async function depositCash(agent: Agent, pid: string, amountEur: number) {
@@ -323,7 +326,7 @@ describe('standing orders — pause / resume', () => {
 
 describe('standing orders — archived portfolios', () => {
   it('suspends archived orders and resumes only at the first later anchor', async () => {
-    const { agent } = await setup();
+    const { agent, pid: activePid } = await setup();
     const portfolio = await agent
       .post('/api/v1/portfolios')
       .set(...XRW)
@@ -331,11 +334,119 @@ describe('standing orders — archived portfolios', () => {
     expect(portfolio.status).toBe(201);
     const pid = portfolio.body.portfolio.id as string;
 
-    await createOrder(agent, {
+    const retiredOrder = await createOrder(agent, {
       portfolioId: pid,
       kind: 'cash-add',
       amount: 100,
       label: 'salary',
+      cadence: 'monthly',
+      anchorDay: 1,
+      startDate: '2026-04-01',
+    });
+    const pausedOrder = await createOrder(agent, {
+      portfolioId: pid,
+      kind: 'cash-add',
+      amount: 10,
+      label: 'paused',
+      cadence: 'daily',
+      startDate: '2026-04-01',
+    });
+    expect(pausedOrder.status).toBe(201);
+    expect(
+      (
+        await agent
+          .post(`/api/v1/standing-orders/${pausedOrder.body.id as string}/pause`)
+          .set(...XRW)
+      ).status,
+    ).toBe(200);
+    await createOrder(agent, {
+      portfolioId: activePid,
+      kind: 'cash-add',
+      amount: 10,
+      label: 'still active',
+      cadence: 'monthly',
+      anchorDay: 1,
+      startDate: '2026-04-01',
+    });
+    expect((await run('2026-04-01T12:00:00Z')).booked).toBe(2);
+
+    portfolioNow = Date.parse('2026-04-02T12:00:00Z');
+    expect((await agent.post(`/api/v1/portfolios/${pid}/archive`).set(...XRW)).status).toBe(200);
+
+    const suspended = await agent.get(`/api/v1/standing-orders?portfolioId=${pid}`);
+    expect(suspended.status).toBe(200);
+    const suspendedOrders = standingOrderListResponseSchema.parse(suspended.body).orders;
+    expect(suspendedOrders).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: retiredOrder.body.id,
+          status: 'active',
+          suspendedByArchive: true,
+          nextRunDate: null,
+        }),
+        expect.objectContaining({
+          id: pausedOrder.body.id,
+          status: 'paused',
+          suspendedByArchive: true,
+          nextRunDate: null,
+        }),
+      ]),
+    );
+
+    // The scanner never sees the archived portfolio, while a second active
+    // portfolio remains scannable through the same global listActive query.
+    expect(await run('2026-05-01T12:00:00Z')).toEqual({
+      scanned: 1,
+      booked: 1,
+      skippedDuplicate: 0,
+      deferred: 0,
+    });
+    expect(await cashRows(pid, SOURCE_TAG_STANDING_ORDER)).toHaveLength(1);
+    expect(await cashRows(activePid, SOURCE_TAG_STANDING_ORDER)).toHaveLength(2);
+
+    // May's anchor elapsed while archived. Restore claims it as a no-money
+    // tombstone before reopening the portfolio, so the next eligible anchor
+    // is June 1 rather than a catch-up booking for May 1.
+    portfolioNow = Date.parse('2026-05-15T12:00:00Z');
+    expect((await agent.post(`/api/v1/portfolios/${pid}/restore`).set(...XRW)).status).toBe(200);
+
+    const restored = await agent.get(`/api/v1/standing-orders?portfolioId=${pid}`);
+    const restoredOrder = standingOrderListResponseSchema
+      .parse(restored.body)
+      .orders.find((order) => order.id === retiredOrder.body.id);
+    expect(restoredOrder).toBeDefined();
+    expect(restoredOrder).toMatchObject({
+      status: 'active',
+      suspendedByArchive: false,
+      nextRunDate: '2026-06-01',
+    });
+
+    expect((await run('2026-05-15T12:00:00Z')).booked).toBe(0);
+    expect(await cashRows(pid, SOURCE_TAG_STANDING_ORDER)).toHaveLength(1);
+    expect((await run('2026-06-01T12:00:00Z')).booked).toBe(2);
+    expect(await cashRows(pid, SOURCE_TAG_STANDING_ORDER)).toHaveLength(2);
+
+    // May's run is a durable no-booking claim; only April and June made money.
+    expect(
+      (await runPeriodKeys(retiredOrder.body.id as string)).map((row) => row.key).sort(),
+    ).toEqual(['2026-04-01', '2026-05-01', '2026-06-01']);
+  });
+
+  it('tombstones an archived buy before the post-restore quote pre-check', async () => {
+    const { agent } = await setup();
+    const portfolio = await agent
+      .post('/api/v1/portfolios')
+      .set(...XRW)
+      .send({ name: 'Archived buy' });
+    expect(portfolio.status).toBe(201);
+    const pid = portfolio.body.portfolio.id as string;
+    const assetId = await seedAsset('ARCH');
+
+    await createOrder(agent, {
+      portfolioId: pid,
+      kind: 'buy-asset',
+      assetId,
+      amount: 1,
       cadence: 'monthly',
       anchorDay: 1,
       startDate: '2026-04-01',
@@ -345,46 +456,23 @@ describe('standing orders — archived portfolios', () => {
     portfolioNow = Date.parse('2026-04-02T12:00:00Z');
     expect((await agent.post(`/api/v1/portfolios/${pid}/archive`).set(...XRW)).status).toBe(200);
 
-    const suspended = await agent.get(`/api/v1/standing-orders?portfolioId=${pid}`);
-    expect(suspended.status).toBe(200);
-    const [suspendedOrder] = standingOrderListResponseSchema.parse(suspended.body).orders;
-    expect(suspendedOrder).toMatchObject({
-      status: 'active',
-      suspendedByArchive: true,
-      nextRunDate: null,
-    });
+    portfolioNow = Date.parse('2026-05-15T12:00:00Z');
+    expect((await agent.post(`/api/v1/portfolios/${pid}/restore`).set(...XRW)).status).toBe(200);
 
-    // The scanner never sees this portfolio while it is archived.
-    expect(await run('2026-05-01T12:00:00Z')).toEqual({
-      scanned: 0,
+    // May is already watermark-tombstoned, so this scan must not attempt a
+    // quote (which would otherwise defer the archived period).
+    quote.mode = 'fail';
+    expect(await run('2026-05-15T12:00:00Z')).toEqual({
+      scanned: 1,
       booked: 0,
       skippedDuplicate: 0,
       deferred: 0,
     });
-    expect(await cashRows(pid, SOURCE_TAG_STANDING_ORDER)).toHaveLength(1);
+    expect(await txnRows(pid)).toHaveLength(1);
 
-    // May's anchor elapsed while archived. Restore claims it as a no-money
-    // tombstone before reopening the portfolio, so the next eligible anchor
-    // is June 1 rather than a catch-up booking for May 1.
-    portfolioNow = Date.parse('2026-05-15T12:00:00Z');
-    expect((await agent.post(`/api/v1/portfolios/${pid}/restore`).set(...XRW)).status).toBe(200);
-
-    const restored = await agent.get(`/api/v1/standing-orders?portfolioId=${pid}`);
-    const [restoredOrder] = standingOrderListResponseSchema.parse(restored.body).orders;
-    expect(restoredOrder).toBeDefined();
-    expect(restoredOrder!.suspendedByArchive).toBe(false);
-
-    expect((await run('2026-05-15T12:00:00Z')).booked).toBe(0);
-    expect(await cashRows(pid, SOURCE_TAG_STANDING_ORDER)).toHaveLength(1);
+    quote.mode = 'ok';
     expect((await run('2026-06-01T12:00:00Z')).booked).toBe(1);
-    expect(await cashRows(pid, SOURCE_TAG_STANDING_ORDER)).toHaveLength(2);
-
-    // May's run is a durable no-booking claim; only April and June made money.
-    expect((await runPeriodKeys()).map((row) => row.key).sort()).toEqual([
-      '2026-04-01',
-      '2026-05-01',
-      '2026-06-01',
-    ]);
+    expect(await txnRows(pid)).toHaveLength(2);
   });
 });
 

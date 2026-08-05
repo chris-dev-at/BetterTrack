@@ -156,7 +156,10 @@ export interface PortfolioServiceDeps {
    */
   taxService: TaxService;
   /** Archives suspend recurring booking; restore claims elapsed periods before reopening the portfolio. */
-  standingOrders: Pick<StandingOrderService, 'skipDuePeriodsForPortfolioRestore'>;
+  standingOrders: Pick<
+    StandingOrderService,
+    'skipDuePeriodsForPortfolioRestore' | 'rollbackSkippedPeriodsForPortfolioRestore'
+  >;
   /** Social graph — used to resolve the owner's friends when a portfolio is shared (§6.10). */
   friendshipRepo: FriendshipRepository;
   /**
@@ -1405,9 +1408,31 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       // This must happen while `archived_at` is still set: the global standing
       // order scan excludes archived portfolios, so its elapsed occurrence is
       // durably tombstoned before this portfolio becomes scannable again.
-      await standingOrders.skipDuePeriodsForPortfolioRestore(userId, portfolioId, { now: now() });
-      const restored = await portfolioRepo.restorePortfolio(userId, portfolioId);
-      if (!restored) throw notFound('Portfolio not found.', 'PORTFOLIO_NOT_FOUND');
+      const restoreAt = now();
+      const skippedClaims = await standingOrders.skipDuePeriodsForPortfolioRestore(
+        userId,
+        portfolioId,
+        { now: restoreAt },
+      );
+      const rollbackRestoreClaims = async (): Promise<void> => {
+        // A concurrent successful restore owns these claims now. Otherwise, the
+        // portfolio is still archived (or was deleted), so remove only the
+        // tombstones this request created before surfacing the failed restore.
+        const current = await portfolioRepo.findByIdForUser(userId, portfolioId);
+        if (current?.archivedAt === null) return;
+        await standingOrders.rollbackSkippedPeriodsForPortfolioRestore(userId, skippedClaims);
+      };
+      let restored;
+      try {
+        restored = await portfolioRepo.restorePortfolio(userId, portfolioId);
+      } catch (error) {
+        await rollbackRestoreClaims();
+        throw error;
+      }
+      if (!restored) {
+        await rollbackRestoreClaims();
+        throw notFound('Portfolio not found.', 'PORTFOLIO_NOT_FOUND');
+      }
       return restored;
     },
 
