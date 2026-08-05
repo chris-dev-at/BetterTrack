@@ -31,7 +31,7 @@ import {
   useAskDockState,
 } from './askdock';
 import { CmdKPalette } from './CmdKPalette';
-import { commandPath, withPortfolioScope } from './commands';
+import { CREATE_COMMANDS, commandPath, withPortfolioScope } from './commands';
 import { usePreservedSearch } from './LocalNav';
 import { NotificationBell } from './NotificationBell';
 import { isChildActive, SECTION_NAV, useRailNavChildren, type SectionKey } from './sectionNav';
@@ -538,36 +538,14 @@ export function CreateMenu() {
   const [searchParams] = useSearchParams();
   const activePortfolioId = searchParams.get(ACTIVE_PORTFOLIO_PARAM);
 
-  const allItems: ReadonlyArray<{
-    to: string;
-    icon: IconName;
-    labelKey: string;
-    scoped?: boolean;
-  }> = [
-    { to: '/portfolio?create=trade', icon: 'assets', labelKey: 'create.trade', scoped: true },
-    {
-      to: '/portfolio/cash/movements?create=1',
-      icon: 'cash',
-      labelKey: 'create.cashFlow',
-      scoped: true,
-    },
-    {
-      to: '/portfolio/cash/accounts?create=transfer',
-      icon: 'wallet',
-      labelKey: 'create.transfer',
-      scoped: true,
-    },
-    { to: '/workbench/blueprints/new', icon: 'layers', labelKey: 'create.blueprint' },
-    { to: '/assets/watchlists?create=1', icon: 'star', labelKey: 'create.watchlist' },
-    { to: '/workbench/alerts?create=1', icon: 'bell', labelKey: 'create.alert' },
-    { to: '/workbench/blueprints/new', icon: 'sparkles', labelKey: 'create.idea' },
-    { to: '/portfolios?create=1', icon: 'portfolios', labelKey: 'create.portfolio' },
-  ];
-
-  // The cash ledger is one of the surfaces paranoid mode kills, so its create
-  // entry would only bounce off `ParanoidNavigationGate` — the palette drops
-  // killed destinations the same way.
-  const items = allItems.filter((item) => !paranoid || !isParanoidKilledPath(commandPath(item.to)));
+  // ONE list, shared with the ⌘K palette (`CREATE_COMMANDS`): the menu keeping
+  // its own copy is how an entry could point at a destination that ran no flow
+  // (#1071). The cash ledger is a surface paranoid mode kills, so its entry
+  // would only bounce off `ParanoidNavigationGate` — dropped here exactly as
+  // the palette drops it.
+  const items = CREATE_COMMANDS.filter(
+    (item) => !paranoid || !isParanoidKilledPath(commandPath(item.to)),
+  );
 
   return (
     <div className="relative" ref={rootRef}>

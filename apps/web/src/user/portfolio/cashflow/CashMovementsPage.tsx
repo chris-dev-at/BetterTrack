@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useMemo, useState } from 'react';
-import { Link, useSearchParams } from 'react-router-dom';
+import { useMemo, useState } from 'react';
+import { Link } from 'react-router-dom';
 
 import { EDITABLE_CASH_MOVEMENT_KINDS } from '@bettertrack/contracts';
 import type { CashMovement, CashTag } from '@bettertrack/contracts';
@@ -16,7 +16,8 @@ import { EmptyState, MoneyText, Skeleton } from '../../../ui';
 import { Button, PageHead } from '../../../ui/origin';
 import { SourceBadge } from '../SourceBadge';
 import { usePreservedSearch } from '../../components/LocalNav';
-import { ACTIVE_PORTFOLIO_PARAM } from '../PortfolioSwitcher';
+import { useCreateIntent } from '../../components/useCreateIntent';
+import { ACTIVE_PORTFOLIO_PARAM, CREATE_INTENT } from '../../routeParams';
 import { usePhoneShell } from '../../hooks/useCompactShell';
 import { CashMovementTagsDialog } from './CashMovementTagsDialog';
 import { RecordCashDialog } from './RecordCashDialog';
@@ -55,7 +56,6 @@ export function CashMovementsPage() {
   const [editing, setEditing] = useState<CashMovement | null>(null);
   const [tagging, setTagging] = useState<CashMovement | null>(null);
   const [recording, setRecording] = useState(false);
-  const [searchParams, setSearchParams] = useSearchParams();
   const search = usePreservedSearch([ACTIVE_PORTFOLIO_PARAM]);
   const labelsTo = search
     ? { pathname: '/portfolio/cash/labels', search }
@@ -63,15 +63,10 @@ export function CashMovementsPage() {
 
   // This page owns the standalone record-an-income-or-expense flow, so the
   // shell's and the palette's "Income or expense" action lands here with the
-  // intent flag. Open the same dialog its primary button opens, then consume
-  // the flag so closing it — or pressing Back — cannot reopen it.
-  useEffect(() => {
-    if (searchParams.get('create') !== '1') return;
-    setRecording(true);
-    const next = new URLSearchParams(searchParams);
-    next.delete('create');
-    setSearchParams(next, { replace: true });
-  }, [searchParams, setSearchParams]);
+  // intent flag and opens the same dialog its primary button opens. It needs a
+  // value of its own: the portfolio switcher in the topbar above this page
+  // claims the bare `?create=1` for the new-portfolio wizard.
+  useCreateIntent(CREATE_INTENT.movement, () => setRecording(true));
 
   const movementsQuery = useQuery({
     queryKey: ['portfolio', portfolioId, 'cash'],

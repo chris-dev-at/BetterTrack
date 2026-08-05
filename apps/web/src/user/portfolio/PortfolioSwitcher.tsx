@@ -10,6 +10,8 @@ import { AsyncReadState } from '../components/AsyncReadState';
 import { useOverlayEscape } from '../components/overlayStack';
 import { cx } from '../components/ui';
 import { restoreFocusTo } from '../components/useFocusTrap';
+import { useCreateIntent } from '../components/useCreateIntent';
+import { ACTIVE_PORTFOLIO_PARAM, CREATE_INTENT } from '../routeParams';
 import { CreateChainDialog, MirrorInviteStepDialog } from './MirrorchainPanel';
 import { PortfolioIconChip } from './PortfolioIconChip';
 import {
@@ -63,8 +65,13 @@ import { useResolvedPrivacyMode } from '../vault/usePrivacyMode';
  * the portfolio the user was on instead of snapping back to the default.
  */
 
-/** The `?portfolio=<id>` search-param key that names the active portfolio. */
-export const ACTIVE_PORTFOLIO_PARAM = 'portfolio';
+/**
+ * The `?portfolio=<id>` search-param key that names the active portfolio. It
+ * lives in the leaf `routeParams.ts` (so the command registry can read it
+ * without pulling this component's wizard into its module graph) and is
+ * re-exported here, where every existing importer already looks for it.
+ */
+export { ACTIVE_PORTFOLIO_PARAM };
 
 /**
  * Above this many portfolios the dropdown's search field takes focus on open.
@@ -167,15 +174,10 @@ export function PortfolioSwitcher() {
   const triggerRef = useRef<HTMLButtonElement>(null);
 
   // Global create links (command palette, shell and empty states) converge on
-  // this query flag. Consume it once so browser Back does not reopen the
-  // wizard after the user closes it.
-  useEffect(() => {
-    if (searchParams.get('create') !== '1') return;
-    setWizardOpen(true);
-    const next = new URLSearchParams(searchParams);
-    next.delete('create');
-    setSearchParams(next, { replace: true });
-  }, [searchParams, setSearchParams]);
+  // this query flag. Note this component is mounted on EVERY `/portfolio*`
+  // surface, so the value it claims is off-limits to the pages below it — see
+  // the namespace table in `routeParams.ts`.
+  useCreateIntent(CREATE_INTENT.portfolio, () => setWizardOpen(true));
 
   // Every close path — Escape, an outside click, picking a portfolio, opening
   // the wizard — hands focus back deliberately instead of dropping it on the

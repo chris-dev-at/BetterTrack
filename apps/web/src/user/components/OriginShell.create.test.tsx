@@ -30,7 +30,7 @@ test('a normal account gets the cash-flow create entry, pinned to the open portf
 
   expect(within(menu).getByRole('menuitem', { name: 'Income or expense' })).toHaveAttribute(
     'href',
-    '/portfolio/cash/movements?create=1&portfolio=p-second',
+    '/portfolio/cash/movements?create=movement&portfolio=p-second',
   );
 });
 

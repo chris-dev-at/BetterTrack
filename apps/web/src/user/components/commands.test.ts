@@ -3,8 +3,10 @@ import { describe, expect, test } from 'vitest';
 import { EN_MESSAGES } from '../../i18n/registry';
 import type { MessageNode } from '../../i18n/registry';
 import { isParanoidKilledPath } from '../vault/ui/ParanoidSurfaceGate';
+import { CREATE_INTENT, CREATE_INTENT_PARAM } from '../routeParams';
 import {
   COMMANDS,
+  CREATE_COMMANDS,
   SUGGESTED_COMMANDS,
   commandPath,
   filterCommands,
@@ -39,15 +41,14 @@ describe('COMMANDS registry', () => {
     expect(wrong).toEqual([]);
   });
 
+  test('CREATE_COMMANDS is the create group itself — the menu shares this list', () => {
+    expect(CREATE_COMMANDS).toEqual(COMMANDS.filter((command) => command.group === 'create'));
+  });
+
   test('every advertised create command targets a working flow', () => {
-    expect(
-      COMMANDS.filter((command) => command.group === 'create').map((command) => [
-        command.labelKey,
-        command.to,
-      ]),
-    ).toEqual([
+    expect(CREATE_COMMANDS.map((command) => [command.labelKey, command.to])).toEqual([
       ['create.trade', '/portfolio?create=trade'],
-      ['create.cashFlow', '/portfolio/cash/movements?create=1'],
+      ['create.cashFlow', '/portfolio/cash/movements?create=movement'],
       ['create.transfer', '/portfolio/cash/accounts?create=transfer'],
       ['create.blueprint', '/workbench/blueprints/new'],
       ['create.watchlist', '/assets/watchlists?create=1'],
@@ -55,6 +56,20 @@ describe('COMMANDS registry', () => {
       ['create.idea', '/workbench/blueprints/new'],
       ['create.portfolio', '/portfolios?create=1'],
     ]);
+  });
+
+  test('no create intent under /portfolio* reuses the new-portfolio wizard flag', () => {
+    // `PortfolioSwitcher` is mounted in the topbar of EVERY `/portfolio*`
+    // surface and consumes `?create=1` for its wizard, so a page under that
+    // prefix claiming the same value fires two consumers off one link: the
+    // wizard opens on top of the flow the user actually asked for.
+    const clashing = CREATE_COMMANDS.filter((command) => {
+      const path = commandPath(command.to);
+      const underSwitcher = path === '/portfolio' || path.startsWith('/portfolio/');
+      const intent = new URLSearchParams(command.to.split('?')[1] ?? '').get(CREATE_INTENT_PARAM);
+      return underSwitcher && intent === CREATE_INTENT.portfolio;
+    });
+    expect(clashing.map((command) => command.labelKey)).toEqual([]);
   });
 
   test('exactly the portfolio-writing create intents are scoped', () => {
@@ -69,8 +84,8 @@ describe('withPortfolioScope', () => {
     expect(withPortfolioScope('/portfolio?create=trade', 'p-2')).toBe(
       '/portfolio?create=trade&portfolio=p-2',
     );
-    expect(withPortfolioScope('/portfolio/cash/movements?create=1', 'p-2')).toBe(
-      '/portfolio/cash/movements?create=1&portfolio=p-2',
+    expect(withPortfolioScope('/portfolio/cash/movements?create=movement', 'p-2')).toBe(
+      '/portfolio/cash/movements?create=movement&portfolio=p-2',
     );
   });
 
@@ -87,13 +102,15 @@ describe('withPortfolioScope', () => {
 
 describe('commandPath', () => {
   test('drops the intent flag so route-matrix checks see a real pathname', () => {
-    expect(commandPath('/portfolio/cash/movements?create=1')).toBe('/portfolio/cash/movements');
+    expect(commandPath('/portfolio/cash/movements?create=movement')).toBe(
+      '/portfolio/cash/movements',
+    );
     expect(commandPath('/workbench/blueprints/new')).toBe('/workbench/blueprints/new');
   });
 
   test('every create destination resolves to a path the paranoid matrix can judge', () => {
     // The kill list keys off exact pathnames: pass the whole link and
-    // `/portfolio/cash/movements?create=1` slips through as "not killed".
+    // `/portfolio/cash/movements?create=movement` slips through as "not killed".
     const killed = COMMANDS.filter((command) => command.group === 'create')
       .filter((command) => isParanoidKilledPath(commandPath(command.to)))
       .map((command) => command.labelKey);
@@ -175,5 +192,14 @@ describe('sectionLabelKeyFor', () => {
     expect(sectionLabelKeyFor('/')).toBeUndefined();
     expect(sectionLabelKeyFor('/portfolio')).toBeUndefined();
     expect(sectionLabelKeyFor('/control')).toBeUndefined();
+  });
+
+  test('keeps the section on an action that targets the section root', () => {
+    // "Buy or sell" is an action INSIDE Portfolios, not the Portfolios
+    // destination — its own label says neither, so the meta has to. Matching
+    // the raw link would lose it twice over: `'?'` is not `'/'`.
+    expect(sectionLabelKeyFor('/portfolio?create=trade')).toBe('nav.portfolios');
+    expect(sectionLabelKeyFor('/portfolio/cash/movements?create=movement')).toBe('nav.portfolios');
+    expect(sectionLabelKeyFor('/portfolios?create=1')).toBe('nav.portfolios');
   });
 });

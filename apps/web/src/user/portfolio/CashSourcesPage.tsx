@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 
@@ -13,7 +13,9 @@ import { Alert } from '../components/ui';
 import { AsyncReadState } from '../components/AsyncReadState';
 import { EmptyState, MoneyText, Skeleton } from '../../ui';
 import { Badge, Button, PageHead } from '../../ui/origin';
-import { ACTIVE_PORTFOLIO_PARAM, resolveActivePortfolio } from './PortfolioSwitcher';
+import { resolveActivePortfolio } from './PortfolioSwitcher';
+import { useCreateIntent } from '../components/useCreateIntent';
+import { ACTIVE_PORTFOLIO_PARAM, CREATE_INTENT } from '../routeParams';
 import { activeSources, sortSourcesMainFirst } from './cashSourceUtils';
 import { CashDialog } from './CashDialog';
 import { CashSourceDialog } from './CashSourceDialog';
@@ -389,21 +391,15 @@ export function CashSourcesPage() {
   const phone = usePhoneShell();
   const store = usePortfolioStore();
   const queryClient = useQueryClient();
-  const [searchParams, setSearchParams] = useSearchParams();
+  const [searchParams] = useSearchParams();
   const [showArchived, setShowArchived] = useState(false);
   const [dialog, setDialog] = useState<DialogState | null>(null);
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
 
   // The shell and command palette both advertise this destination as a create
-  // action. Open the real transfer flow, then consume the one-shot intent.
-  useEffect(() => {
-    if (searchParams.get('create') !== 'transfer') return;
-    setDialog({ kind: 'transfer' });
-    const next = new URLSearchParams(searchParams);
-    next.delete('create');
-    setSearchParams(next, { replace: true });
-  }, [searchParams, setSearchParams]);
+  // action; this opens the real transfer flow when they do.
+  useCreateIntent(CREATE_INTENT.transfer, () => setDialog({ kind: 'transfer' }));
 
   const portfoliosQuery = useQuery({
     queryKey: ['portfolios'],

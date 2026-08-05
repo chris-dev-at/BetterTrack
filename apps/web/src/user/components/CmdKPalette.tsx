@@ -13,7 +13,7 @@ import {
   type CommandEntry,
   type CommandGroup,
 } from './commands';
-import { ACTIVE_PORTFOLIO_PARAM } from '../portfolio/PortfolioSwitcher';
+import { ACTIVE_PORTFOLIO_PARAM } from '../routeParams';
 import { useAssetSearch } from './useAssetSearch';
 import { useOverlayEscape } from './overlayStack';
 import { useFocusTrap } from './useFocusTrap';

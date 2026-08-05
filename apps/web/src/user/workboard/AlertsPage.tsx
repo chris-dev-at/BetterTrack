@@ -1,6 +1,5 @@
 import { useQuery } from '@tanstack/react-query';
-import { useEffect, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { useState } from 'react';
 
 import type { Alert } from '@bettertrack/contracts';
 
@@ -11,6 +10,8 @@ import { Button, PageHead } from '../../ui/origin';
 import { AlertDialog } from '../components/AlertDialog';
 import { AlertList } from '../components/AlertList';
 import { Alert as AlertBanner } from '../components/ui';
+import { useCreateIntent } from '../components/useCreateIntent';
+import { CREATE_INTENT } from '../routeParams';
 
 /** TanStack Query polls the list so a fired alert flips to `triggered` without
  * a manual refresh (the socket bell push is V3-P7 — this is the fallback). */
@@ -24,17 +25,11 @@ const ALERTS_POLL_INTERVAL_MS = 60_000;
  */
 export function AlertsPage() {
   const t = useT();
-  const [searchParams, setSearchParams] = useSearchParams();
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<Alert | null>(null);
 
-  useEffect(() => {
-    if (searchParams.get('create') !== '1') return;
-    setCreating(true);
-    const next = new URLSearchParams(searchParams);
-    next.delete('create');
-    setSearchParams(next, { replace: true });
-  }, [searchParams, setSearchParams]);
+  // The shell's and the palette's "New alert" land here (#1071).
+  useCreateIntent(CREATE_INTENT.alert, () => setCreating(true));
 
   const { data, isLoading, isError } = useQuery({
     queryKey: ALERTS_QUERY_KEY,

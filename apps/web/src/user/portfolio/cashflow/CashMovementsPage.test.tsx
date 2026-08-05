@@ -160,10 +160,12 @@ describe('CashMovementsPage', () => {
         },
       ],
     });
-    renderPage('/portfolio/cash/movements?create=1');
+    renderPage('/portfolio/cash/movements?create=movement');
 
     // The same dialog this page's own "Record transaction" button opens — the
-    // shell's "Income or expense" entry starts the real flow (#1071).
+    // shell's "Income or expense" entry starts the real flow (#1071). The value
+    // is this page's own: `?create=1` belongs to the portfolio wizard in the
+    // topbar above it (see `routeParams.ts`).
     const dialog = await screen.findByRole('dialog', { name: 'Record transaction' });
     expect(within(dialog).getByLabelText('What for')).toBeInTheDocument();
   });

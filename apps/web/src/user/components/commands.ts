@@ -1,5 +1,10 @@
 import type { IconName } from '../../ui/origin';
-import { ACTIVE_PORTFOLIO_PARAM } from '../portfolio/PortfolioSwitcher';
+import {
+  ACTIVE_PORTFOLIO_PARAM,
+  CREATE_INTENT,
+  CREATE_INTENT_PARAM,
+  type CreateIntent,
+} from '../routeParams';
 
 /**
  * Pin a link onto the portfolio the user is currently looking at. A global
@@ -24,6 +29,11 @@ export function withPortfolioScope(to: string, portfolioId: string | null | unde
  */
 export function commandPath(to: string): string {
   return to.split('?')[0] ?? to;
+}
+
+/** A create link: the destination, plus the one-shot intent flag it reads. */
+function createTo(path: string, intent: CreateIntent): string {
+  return `${path}?${CREATE_INTENT_PARAM}=${intent}`;
 }
 
 /**
@@ -286,9 +296,12 @@ export const COMMANDS: readonly CommandEntry[] = [
   },
 
   // ── Create intents ──
+  // Every entry starts a REAL flow on its destination (#1071), through the
+  // one-shot flag `useCreateIntent` consumes there. The values come from the
+  // one namespace table so two consumers on the same route cannot collide.
   {
     labelKey: 'create.trade',
-    to: '/portfolio?create=trade',
+    to: createTo('/portfolio', CREATE_INTENT.trade),
     group: 'create',
     icon: 'assets',
     extra: ['buy', 'sell', 'kauf', 'verkauf', 'transaction'],
@@ -300,7 +313,7 @@ export const COMMANDS: readonly CommandEntry[] = [
     // owned by the tagged ledger — the same dialog its own primary button and
     // the cash overview open. The intent flag starts it there.
     labelKey: 'create.cashFlow',
-    to: '/portfolio/cash/movements?create=1',
+    to: createTo('/portfolio/cash/movements', CREATE_INTENT.movement),
     group: 'create',
     icon: 'cash',
     extra: ['cash flow', 'cashflow', 'income', 'expense', 'einnahme', 'ausgabe'],
@@ -308,7 +321,7 @@ export const COMMANDS: readonly CommandEntry[] = [
   },
   {
     labelKey: 'create.transfer',
-    to: '/portfolio/cash/accounts?create=transfer',
+    to: createTo('/portfolio/cash/accounts', CREATE_INTENT.transfer),
     group: 'create',
     icon: 'wallet',
     extra: ['cash transfer', 'umbuchung', 'überweisung'],
@@ -322,18 +335,28 @@ export const COMMANDS: readonly CommandEntry[] = [
   },
   {
     labelKey: 'create.watchlist',
-    to: '/assets/watchlists?create=1',
+    to: createTo('/assets/watchlists', CREATE_INTENT.watchlist),
     group: 'create',
     icon: 'star',
   },
-  { labelKey: 'create.alert', to: '/workbench/alerts?create=1', group: 'create', icon: 'bell' },
+  {
+    labelKey: 'create.alert',
+    to: createTo('/workbench/alerts', CREATE_INTENT.alert),
+    group: 'create',
+    icon: 'bell',
+  },
   {
     labelKey: 'create.idea',
     to: '/workbench/blueprints/new',
     group: 'create',
     icon: 'sparkles',
   },
-  { labelKey: 'create.portfolio', to: '/portfolios?create=1', group: 'create', icon: 'portfolios' },
+  {
+    labelKey: 'create.portfolio',
+    to: createTo('/portfolios', CREATE_INTENT.portfolio),
+    group: 'create',
+    icon: 'portfolios',
+  },
 
   // ── Control Center / settings ──
   // Every settings surface is a Control Center panel (R2): `/control/<panel>`
@@ -445,6 +468,16 @@ export const COMMANDS: readonly CommandEntry[] = [
 ] as const;
 
 /**
+ * The create actions, in menu order — the single source for BOTH surfaces that
+ * offer them (the shell's "+ Create" menu and the palette's Create group). The
+ * shell used to keep its own copy of this list, which is how an entry could
+ * point at a destination that ran no flow at all (#1071).
+ */
+export const CREATE_COMMANDS: readonly CommandEntry[] = COMMANDS.filter(
+  (command) => command.group === 'create',
+);
+
+/**
  * The curated default state of an empty ⌘K: the {@link CommandEntry.suggested}
  * entries in rank order. An empty palette showing nothing was the old behaviour
  * and read as a broken void — a universal search must offer a starting point.
@@ -470,7 +503,13 @@ const SECTION_LABEL_KEY: readonly (readonly [prefix: string, labelKey: string])[
 
 /** i18n key of the parent section for `to`, or `undefined` for a top-level route. */
 export function sectionLabelKeyFor(to: string): string | undefined {
-  return SECTION_LABEL_KEY.find(([prefix]) => to.startsWith(prefix))?.[1];
+  const path = commandPath(to);
+  // An intent link is an ACTION inside a section, never the section root: bare
+  // `/portfolio` is the Portfolios destination and drops the meta its own label
+  // already carries, while `/portfolio?create=trade` ("Buy or sell") keeps it.
+  // Matching the raw link would also lose it — `'?'` is not `'/'`.
+  const route = path === to ? path : `${path}/`;
+  return SECTION_LABEL_KEY.find(([prefix]) => route.startsWith(prefix))?.[1];
 }
 
 /**
