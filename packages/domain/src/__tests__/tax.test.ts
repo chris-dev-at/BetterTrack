@@ -19,6 +19,7 @@ import {
   viennaYearOf,
   type TaxableTransaction,
 } from '../tax';
+import { F1_BEYOND_ENVELOPE_VECTOR, F1_STORED_DRIFT_VECTOR } from './storageDriftVectors';
 
 /**
  * V3-P4 domain core (issue #331): EUR moving-average cost basis, per-sell
@@ -328,6 +329,24 @@ describe('realizedSellsEur', () => {
       expect(() =>
         realizedSellsEur([...buys, T('s1', 'sell', 101, 110, '2026-01-02T10:00:00Z')]),
       ).toThrow(TaxComputationError);
+    });
+
+    it('replays the #1094 F1 conformance vector byte-identically (regression pin)', () => {
+      // The holdings replay adopted this exact envelope in #1094; the tax
+      // replay's #917 behavior on the shared vector must not move.
+      const rows = F1_STORED_DRIFT_VECTOR.rows.map((row) =>
+        T(row.id, row.side, row.quantity, row.price, row.executedAt, row.fee),
+      );
+      for (const strategy of ['moving-average', 'fifo'] as const) {
+        const [r] = realizedSellsEur(rows, strategy);
+        expect(r!.realizedPnlEur).toBeCloseTo(F1_STORED_DRIFT_VECTOR.expected.realizedPnl!, 6);
+        expect(r!.uncoveredQuantity).toBe(0);
+      }
+      const beyond = F1_BEYOND_ENVELOPE_VECTOR.rows.map((row) =>
+        T(row.id, row.side, row.quantity, row.price, row.executedAt, row.fee),
+      );
+      expect(() => realizedSellsEur(beyond)).toThrow(TaxComputationError);
+      expect(() => realizedSellsEur(beyond, 'fifo')).toThrow(TaxComputationError);
     });
   });
 });

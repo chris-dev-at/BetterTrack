@@ -15,6 +15,11 @@ import {
   type Transaction,
   type ValueOverTimeAsset,
 } from '../holdings';
+import {
+  F1_BEYOND_ENVELOPE_VECTOR,
+  F1_STORED_DRIFT_VECTOR,
+  type StorageDriftVector,
+} from './storageDriftVectors';
 
 // --- Helpers ---------------------------------------------------------------
 
@@ -288,11 +293,14 @@ describe('reducePosition', () => {
       }
     });
 
-    it('rejects an oversell of one stored quantity unit (1e-8) — just past the tolerance', () => {
+    it('rejects an oversell just past the storage-drift envelope (#1094)', () => {
+      // Two contributing rows grant a 2e-8 waiver (#917/#1094 — a 1e-8
+      // shortfall is stored-rounding drift, no longer rejected); one more
+      // quantum can never be numeric(20,8) drift and still throws.
       expect(() =>
         reducePosition([
           tx({ side: 'buy', quantity: 5, price: 10, executedAt: '2026-01-01T00:00:00Z' }),
-          tx({ side: 'sell', quantity: 5 + 1e-8, price: 10, executedAt: '2026-01-02T00:00:00Z' }),
+          tx({ side: 'sell', quantity: 5 + 3e-8, price: 10, executedAt: '2026-01-02T00:00:00Z' }),
         ]),
       ).toThrow(OversellError);
     });
@@ -409,6 +417,129 @@ describe('reducePosition', () => {
           }),
         ]),
       ).toThrow(/uncovered entry price/i);
+    });
+  });
+
+  describe('storage-quantum shortfall waiver (#1094, extends #917)', () => {
+    const vectorTxns = (vector: StorageDriftVector): Transaction[] =>
+      vector.rows.map((row) =>
+        tx({
+          side: row.side,
+          quantity: row.quantity,
+          price: row.price,
+          fee: row.fee,
+          executedAt: row.executedAt,
+        }),
+      );
+
+    // numeric(20,8) storage oracle: raw quantities 1.0000000046 / 1.0000000051
+    // pass the write path's 1e-9 epsilon, then persist one quantum apart as
+    // 1.00000000 / 1.00000001 — the stored rows every later replay sees.
+    const quantumPair = (sellQuantity: number): Transaction[] => [
+      tx({ side: 'buy', quantity: 1.0, price: 100, executedAt: '2026-01-01T10:00:00Z' }),
+      tx({ side: 'sell', quantity: sellQuantity, price: 110, executedAt: '2026-01-02T10:00:00Z' }),
+    ];
+
+    it('derives the F1 conformance vector cleanly — position exactly 0, no throw', () => {
+      const pos = reducePosition(vectorTxns(F1_STORED_DRIFT_VECTOR));
+      const expected = F1_STORED_DRIFT_VECTOR.expected;
+      expect(pos.quantity).toBe(expected.quantity);
+      expect(pos.avgCost).toBe(0);
+      // The vector's realizedPnlTolerance is 1e-6 → 6 close-to digits.
+      expect(expected.realizedPnlTolerance).toBe(1e-6);
+      expect(pos.realizedPnl).toBeCloseTo(expected.realizedPnl!, 6);
+      expect(pos.realizations).toHaveLength(1);
+    });
+
+    it('still throws on the beyond-envelope F1 vector — never a blanket loosening', () => {
+      expect(F1_BEYOND_ENVELOPE_VECTOR.expected.throws).toBe(true);
+      expect(() => reducePosition(vectorTxns(F1_BEYOND_ENVELOPE_VECTOR))).toThrow(OversellError);
+    });
+
+    it('waives a same-batch one-quantum shortfall and closes the position', () => {
+      const pos = reducePosition(quantumPair(1.00000001));
+      expect(pos.quantity).toBe(0);
+      expect(pos.avgCost).toBe(0);
+      // The held share realizes its full 10 against the average; the quantum
+      // of drift takes the sale price → contributes exactly 0.
+      expect(pos.realizedPnl).toBeCloseTo(10, 6);
+    });
+
+    it('fails closed beyond the per-row envelope', () => {
+      // Two contributing rows (buy + the sell itself) allow two quanta; a
+      // three-quantum shortfall cannot be numeric(20,8) rounding drift.
+      expect(() => reducePosition(quantumPair(1.00000003))).toThrow(OversellError);
+    });
+
+    it('resets the envelope when a position closes exactly', () => {
+      // The first, cleanly closed round trip must not widen the second's envelope.
+      expect(() =>
+        reducePosition([
+          tx({ side: 'buy', quantity: 1, price: 100, executedAt: '2026-01-01T10:00:00Z' }),
+          tx({ side: 'sell', quantity: 1, price: 110, executedAt: '2026-01-02T10:00:00Z' }),
+          tx({ side: 'buy', quantity: 1, price: 100, executedAt: '2026-02-01T10:00:00Z' }),
+          tx({
+            side: 'sell',
+            quantity: 1.00000003,
+            price: 110,
+            executedAt: '2026-02-02T10:00:00Z',
+          }),
+        ]),
+      ).toThrow(OversellError);
+    });
+
+    it('a later buy after a waived close rebuilds a clean average', () => {
+      const pos = reducePosition([
+        ...quantumPair(1.00000001),
+        tx({ side: 'buy', quantity: 1, price: 50, executedAt: '2026-02-01T10:00:00Z' }),
+        tx({ side: 'sell', quantity: 1, price: 70, executedAt: '2026-03-01T10:00:00Z' }),
+      ]);
+      expect(pos.quantity).toBe(0);
+      expect(pos.realizations[1]!.realizedPnl).toBe(20);
+    });
+
+    it('a real oversell still throws regardless of the row count', () => {
+      const buys = Array.from({ length: 100 }, () =>
+        tx({ side: 'buy', quantity: 1, price: 100, executedAt: '2026-01-01T10:00:00Z' }),
+      );
+      expect(() =>
+        reducePosition([
+          ...buys,
+          tx({ side: 'sell', quantity: 101, price: 110, executedAt: '2026-01-02T10:00:00Z' }),
+        ]),
+      ).toThrow(OversellError);
+    });
+
+    it('an acknowledged uncovered sell keeps its own basis semantics, not the waiver', () => {
+      // allowUncovered within drift range still routes through the #369 path:
+      // the remainder realizes against the supplied entry price, never the
+      // waiver's sale-price zero-gain rule.
+      const pos = reducePosition([
+        tx({ side: 'buy', quantity: 1, price: 100, executedAt: '2026-01-01T10:00:00Z' }),
+        tx({
+          side: 'sell',
+          quantity: 1.00000001,
+          price: 110,
+          executedAt: '2026-01-02T10:00:00Z',
+          allowUncovered: true,
+          uncoveredEntryPrice: 10_000_000_000,
+        }),
+      ]);
+      // covered 1×(110−100) = 10; uncovered 1e-8×(110−1e10) ≈ −100.
+      expect(pos.realizedPnl).toBeCloseTo(10 - 99.9999989, 4);
+    });
+
+    it('derives holdings for the F1 vector (the portfolio-overview path)', async () => {
+      const holdings = await deriveHoldings(
+        vectorTxns(F1_STORED_DRIFT_VECTOR),
+        [{ assetId: 'A', currency: 'EUR', quote: { price: 60 } }],
+        stubConverter(),
+      );
+      expect(holdings).toHaveLength(1);
+      expect(holdings[0]!.quantity).toBe(0);
+      expect(holdings[0]!.realizedPnl).toBeCloseTo(4, 6);
+      // Flat position: nothing held to value.
+      expect(holdings[0]!.marketValueEur).toBeNull();
     });
   });
 
