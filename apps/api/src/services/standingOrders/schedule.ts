@@ -171,16 +171,34 @@ export function skippedPeriodCount(
   throughInclusive: string,
   cap = 400,
 ): number {
+  return skippedPeriods(spec, afterExclusive, throughInclusive, cap).length;
+}
+
+/**
+ * The concrete occurrence keys counted by {@link skippedPeriodCount}. The
+ * execution engine uses these identities only to report which periods its
+ * existing newest-only catch-up rule dropped; returning them does not change
+ * which occurrence is selected or booked.
+ */
+export function skippedPeriods(
+  spec: ScheduleSpec,
+  afterExclusive: string | null,
+  throughInclusive: string,
+  cap = 400,
+): string[] {
   const lower = afterExclusive !== null && afterExclusive >= spec.startDate ? afterExclusive : null;
-  let cursor = lower === null ? prevDay(spec.startDate) : lower;
-  let count = 0;
-  while (count < cap) {
-    const next = firstAfter(spec, cursor);
-    if (next >= throughInclusive) break;
-    cursor = next;
-    count += 1;
+  let cursor = throughInclusive;
+  const newestFirst: string[] = [];
+  while (newestFirst.length < cap) {
+    const previous = mostRecentOnOrBefore(spec, prevDay(cursor));
+    if (previous < spec.startDate || (lower !== null && previous <= lower)) break;
+    cursor = previous;
+    newestFirst.push(previous);
   }
-  return count;
+  // Keep the bounded window nearest the current due period. Besides making the
+  // aggregation useful for pathological old start dates, this guarantees the
+  // final element is always the newest dropped occurrence.
+  return newestFirst.reverse();
 }
 
 /**

@@ -567,6 +567,9 @@
         "budgetExceeded": {
           "label": "Budget-Warnungen"
         },
+        "standingOrderSkipped": {
+          "label": "Probleme mit Daueraufträgen"
+        },
         "mirrorInvite": {
           "label": "Einladungen zu Gruppen-Portfolios"
         },
@@ -977,6 +980,7 @@
           "chatMessage": "Neue Chat-Nachricht",
           "dividendEvent": "Bevorstehende Dividende",
           "budgetExceeded": "Budget überschritten",
+          "standingOrderSkipped": "Dauerauftrags-Ausführung nicht gebucht",
           "mirrorInvite": "Einladung zum Gruppen-Portfolio",
           "mirrorMemberJoined": "Mitglied im Gruppen-Portfolio beigetreten",
           "mirrorMemberLeft": "Mitglied hat Gruppen-Portfolio verlassen",
@@ -4045,6 +4049,7 @@
         "followAlertFired": "Ausgelöste Alarme von gefolgten Personen",
         "dividendEvent": "Dividendenerinnerungen",
         "budgetExceeded": "Budgetalarme",
+        "standingOrderSkipped": "Probleme mit Daueraufträgen",
         "mirrorInvite": "Einladungen zu Gruppenportfolios",
         "mirrorMemberJoined": "Mitglied beigetreten",
         "mirrorMemberLeft": "Mitglied ausgetreten",

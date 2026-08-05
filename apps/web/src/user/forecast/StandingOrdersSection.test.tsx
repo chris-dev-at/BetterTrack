@@ -57,11 +57,11 @@ function makeOrder(over: Partial<StandingOrder> = {}): StandingOrder {
   };
 }
 
-function renderSection() {
+function renderSection(initialEntry = '/') {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={client}>
-      <MemoryRouter>
+      <MemoryRouter initialEntries={[initialEntry]}>
         <StandingOrdersSection portfolios={PORTFOLIOS} />
       </MemoryRouter>
     </QueryClientProvider>,
@@ -102,6 +102,10 @@ describe('StandingOrdersSection', () => {
     renderSection();
 
     expect(await screen.findByText('VWCE.DE')).toBeInTheDocument();
+    expect(screen.getByText('VWCE.DE').closest('li')).toHaveAttribute(
+      'id',
+      'standing-order-so-buy',
+    );
     // The row's compact description bundles amount + cadence in one line;
     // match on a substring so the ` · ` separator between them is ignored.
     expect(screen.getByText(/Buy 3 × VWCE\.DE/)).toBeInTheDocument();
@@ -110,6 +114,26 @@ describe('StandingOrdersSection', () => {
 
     expect(screen.getByText('salary')).toBeInTheDocument();
     expect(screen.getByText(/Add 2\.500,00 €/)).toBeInTheDocument();
+  });
+
+  test('scrolls to a notification-linked row after the async list loads', async () => {
+    const scrollIntoView = vi.fn();
+    Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {
+      configurable: true,
+      value: scrollIntoView,
+    });
+    vi.mocked(standingOrdersApi.listStandingOrders).mockResolvedValue({
+      orders: [makeOrder()],
+    });
+
+    renderSection('/workbench/forecasts#standing-order-so1');
+
+    expect(await screen.findByText('VWCE.DE')).toBeInTheDocument();
+    await waitFor(() =>
+      expect(scrollIntoView).toHaveBeenCalledWith({
+        block: 'center',
+      }),
+    );
   });
 
   test('pauses an active order and reflects the resume affordance after refetch', async () => {

@@ -87,6 +87,7 @@ function notificationTypeLabels(t: TranslateFn): Record<NotificationType, string
     'chat.message': t('settings.notifications.types.chatMessage.label'),
     'dividend.event': t('settings.notifications.types.dividendEvent.label'),
     'budget.exceeded': t('settings.notifications.types.budgetExceeded.label'),
+    'standing_order.skipped': t('settings.notifications.types.standingOrderSkipped.label'),
     'mirror.invite': t('settings.notifications.types.mirrorInvite.label'),
     'mirror.member_joined': t('settings.notifications.types.mirrorMemberJoined.label'),
     'mirror.member_left': t('settings.notifications.types.mirrorMemberLeft.label'),

@@ -54,6 +54,19 @@ export interface NotificationEmailCopy {
   followPublished: { subject: string; heading: string; button: string };
   /** Dividend-event body sentence is supplied by the caller (same as the bell, V5-P5). */
   dividendEvent: { subject: string; heading: string; button: string };
+  /**
+   * Standing-order execution failures (#1118). Fully localized from the
+   * outcome; `{order}` and `{period}` are filled by the template.
+   */
+  standingOrderSkipped: {
+    heading: string;
+    button: string;
+    orderFallback: string;
+    deferred: { subject: string; body: string };
+    dropped: { subject: string; body: string };
+    droppedMany: { subject: string; body: string };
+    bookingFailed: { subject: string; body: string };
+  };
   /** Alert-follow bodies are supplied by the caller (same as the bell, #455). */
   followAlertCreated: { subject: string; heading: string; button: string };
   followAlertFired: { subject: string; heading: string; button: string };
@@ -164,6 +177,27 @@ export const NOTIFICATION_EMAIL_COPY: Record<EmailLocale, NotificationEmailCopy>
       subject: 'Upcoming dividend on BetterTrack',
       heading: 'Upcoming dividend',
       button: 'Open BetterTrack',
+    },
+    standingOrderSkipped: {
+      heading: 'Standing order problem',
+      button: 'Open standing order',
+      orderFallback: 'this standing order',
+      deferred: {
+        subject: 'A standing order was deferred',
+        body: 'The {period} occurrence for {order} could not be booked. BetterTrack will retry it.',
+      },
+      dropped: {
+        subject: 'A standing order period was skipped',
+        body: 'The {period} occurrence for {order} was not recorded before the next period became due.',
+      },
+      droppedMany: {
+        subject: '{count} standing order periods were skipped',
+        body: '{count} scheduled occurrences for {order}, through {period}, were not recorded before the newest period became due.',
+      },
+      bookingFailed: {
+        subject: 'A standing order booking failed',
+        body: 'The {period} occurrence for {order} could not be recorded and will not be retried.',
+      },
     },
     followAlertCreated: {
       subject: 'New price alert from someone you follow',
@@ -301,6 +335,27 @@ export const NOTIFICATION_EMAIL_COPY: Record<EmailLocale, NotificationEmailCopy>
       subject: 'Bevorstehende Dividende auf BetterTrack',
       heading: 'Bevorstehende Dividende',
       button: 'BetterTrack öffnen',
+    },
+    standingOrderSkipped: {
+      heading: 'Problem mit einem Dauerauftrag',
+      button: 'Dauerauftrag öffnen',
+      orderFallback: 'diesen Dauerauftrag',
+      deferred: {
+        subject: 'Ein Dauerauftrag wurde zurückgestellt',
+        body: 'Die Ausführung von {order} am {period} konnte nicht gebucht werden. BetterTrack versucht es erneut.',
+      },
+      dropped: {
+        subject: 'Eine Dauerauftrags-Ausführung wurde übersprungen',
+        body: 'Die Ausführung von {order} am {period} wurde nicht erfasst, bevor der nächste Termin fällig wurde.',
+      },
+      droppedMany: {
+        subject: '{count} Dauerauftrags-Ausführungen wurden übersprungen',
+        body: '{count} geplante Ausführungen von {order} bis einschließlich {period} wurden nicht erfasst, bevor der neueste Termin fällig wurde.',
+      },
+      bookingFailed: {
+        subject: 'Die Buchung eines Dauerauftrags ist fehlgeschlagen',
+        body: 'Die Ausführung von {order} am {period} konnte nicht erfasst werden und wird nicht erneut versucht.',
+      },
     },
     followAlertCreated: {
       subject: 'Neuer Preisalarm von jemandem, dem du folgst',

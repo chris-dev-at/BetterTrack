@@ -1,4 +1,4 @@
-import { and, asc, eq } from 'drizzle-orm';
+import { and, asc, eq, inArray } from 'drizzle-orm';
 
 import type {
   StandingOrderCadence,
@@ -273,6 +273,30 @@ export function createStandingOrderRepository(db: Database) {
         .where(eq(standingOrders.userId, userId))
         .orderBy(asc(standingOrderRuns.bookedAt), asc(standingOrderRuns.id));
       return rows;
+    },
+
+    /**
+     * Which of the supplied periods already have an exactly-once claim for one
+     * order. The execution engine uses this bounded lookup when a stale
+     * `lastPeriodKey` watermark would otherwise misclassify a tombstone (or a
+     * successfully booked row whose watermark update failed) as dropped.
+     */
+    async listClaimedPeriodKeys(
+      standingOrderId: string,
+      periodKeys: readonly string[],
+    ): Promise<string[]> {
+      if (periodKeys.length === 0) return [];
+      const rows = await db
+        .select({ periodKey: standingOrderRuns.periodKey })
+        .from(standingOrderRuns)
+        .where(
+          and(
+            eq(standingOrderRuns.standingOrderId, standingOrderId),
+            inArray(standingOrderRuns.periodKey, [...periodKeys]),
+          ),
+        )
+        .orderBy(asc(standingOrderRuns.periodKey));
+      return rows.map((row) => row.periodKey);
     },
 
     /**
