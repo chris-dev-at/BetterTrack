@@ -181,7 +181,7 @@ test('a spend is two fields — amount, what for, record', async () => {
   );
 });
 
-test('stamps backdated cash at noon UTC, after same-day trades', async () => {
+test('stamps backdated cash at midnight UTC, aligned with same-day trades', async () => {
   vi.mocked(withdrawCash).mockResolvedValue({
     movement: { id: 'm-backdated', tags: [] },
   } as unknown as Awaited<ReturnType<typeof withdrawCash>>);
@@ -196,7 +196,7 @@ test('stamps backdated cash at noon UTC, after same-day trades', async () => {
     expect(withdrawCash).toHaveBeenCalledWith('p1', {
       amountEur: 300,
       sourceId: 's1',
-      executedAt: '2020-01-02T12:00:00.000Z',
+      executedAt: '2020-01-02T00:00:00.000Z',
     }),
   );
 });

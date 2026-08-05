@@ -145,8 +145,8 @@ export function CashDialog({
       const body = {
         amountEur: parsedAmount,
         sourceId: scopedSourceId,
-        // Cash movements use 12:00 UTC, after same-day midnight trades.
-        executedAt: `${date}T12:00:00.000Z`,
+        // Cash movements share the midnight UTC anchor used by same-day trades.
+        executedAt: `${date}T00:00:00.000Z`,
         note: note.trim() === '' ? null : note.trim(),
       };
       // Through the store seam (PD8): a paranoid account's cash lives in the
