@@ -26,9 +26,15 @@ import {
   mirrorchainRouteAcceptsBearer,
   pathAcceptsBearer,
 } from '../http/middleware/bearerAuth';
-import { buildRouteTable } from '../scripts/checkOpenapiCoverage';
+import { buildRouteTable, type MountedSurface } from '../scripts/checkOpenapiCoverage';
 import { FIRST_PARTY_CLIENTS, seedFirstPartyClients } from '../services/oauth/firstPartyClients';
 import { createTestApp, type SeededUser, type TestHarness } from '../testing/createTestApp';
+
+import {
+  BEARER_ALL_METHODS_ROUTE_METHOD,
+  BEARER_OPAQUE_MOUNT_METHOD,
+  mountedBearerRouteInventory,
+} from './bearerRouteInventory';
 
 /**
  * #1042 — participation-over-administration bearer access for MIRRORCHAIN.
@@ -149,6 +155,17 @@ describe('#1042 MIRRORCHAIN bearer route allowlist', () => {
     { method: 'POST', path: '/mirrorchain/chains/{chainId}/leave' },
   ] as const;
 
+  const EXPECTED_ROUTER_GUARDS = [
+    {
+      method: `${BEARER_OPAQUE_MOUNT_METHOD}:requireUser[1]`,
+      path: '/mirrorchain',
+    },
+    {
+      method: `${BEARER_OPAQUE_MOUNT_METHOD}:enforceMirrorchainBearerAllowlist[1]`,
+      path: '/mirrorchain',
+    },
+  ] as const;
+
   it('pins the seven exact method + path templates and defaults every other route closed', () => {
     expect(MIRRORCHAIN_BEARER_ROUTE_ALLOWLIST).toEqual(EXPECTED_ALLOWLIST);
     for (const route of EXPECTED_ALLOWLIST) {
@@ -168,14 +185,11 @@ describe('#1042 MIRRORCHAIN bearer route allowlist', () => {
   });
 
   it('classifies every real mounted route as participation or session-only administration', () => {
-    const mounted = buildRouteTable().flatMap((route) =>
-      route.kind === 'route' && route.path.startsWith('/api/v1/mirrorchain')
-        ? [{ method: route.method, path: route.path.slice('/api/v1'.length) }]
-        : [],
-    );
+    const mounted = mountedBearerRouteInventory(buildRouteTable(), '/mirrorchain');
     const classified = [
       ...MIRRORCHAIN_BEARER_ROUTE_ALLOWLIST,
       ...MIRRORCHAIN_SESSION_ONLY_ROUTE_ALLOWLIST,
+      ...EXPECTED_ROUTER_GUARDS,
     ].map(({ method, path }) => ({ method, path }));
     const sortRoutes = (routes: Array<{ method: string; path: string }>) =>
       routes.sort(
@@ -187,6 +201,32 @@ describe('#1042 MIRRORCHAIN bearer route allowlist', () => {
       classified.length,
     );
     expect(sortRoutes(mounted)).toEqual(sortRoutes(classified));
+  });
+
+  it('keeps router.all and opaque router.use leaves in the completeness inventory', () => {
+    const futureSurfaces: MountedSurface[] = [
+      {
+        kind: 'all-methods-route',
+        path: '/api/v1/mirrorchain/future-all',
+      },
+      {
+        kind: 'opaque-mount',
+        path: '/api/v1/mirrorchain/future-leaf',
+        handler: 'futureMirrorchainLeaf',
+        occurrence: 1,
+      },
+    ];
+
+    expect(mountedBearerRouteInventory(futureSurfaces, '/mirrorchain')).toEqual([
+      {
+        method: BEARER_ALL_METHODS_ROUTE_METHOD,
+        path: '/mirrorchain/future-all',
+      },
+      {
+        method: `${BEARER_OPAQUE_MOUNT_METHOD}:futureMirrorchainLeaf[1]`,
+        path: '/mirrorchain/future-leaf',
+      },
+    ]);
   });
 
   it('keeps the router-local guard default-deny independently of the global policy table', () => {

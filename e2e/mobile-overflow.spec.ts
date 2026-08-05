@@ -534,7 +534,10 @@ async function createRouteFixtures(
       data: {
         url: LONG_WEBHOOK_URL,
         description: LONG_WEBHOOK_DESCRIPTION,
-        eventTypes: ['friend.request'],
+        // This subscription exists only to paint a long responsive row. The
+        // fixture never requests an account export, so the worker cannot turn
+        // its public display URL into an outbound delivery or retry chain.
+        eventTypes: ['account.data_export'],
       },
     }),
     'creating the long webhook row',

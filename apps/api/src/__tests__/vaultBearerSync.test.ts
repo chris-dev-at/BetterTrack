@@ -25,7 +25,7 @@ import {
   pathAcceptsBearer,
   vaultSyncRouteAcceptsBearer,
 } from '../http/middleware/bearerAuth';
-import { buildRouteTable } from '../scripts/checkOpenapiCoverage';
+import { buildRouteTable, type MountedSurface } from '../scripts/checkOpenapiCoverage';
 import { requireCookieSessionOrVaultSync } from '../http/routes/vaultRoutes';
 import {
   isParanoidKilledScope,
@@ -33,6 +33,12 @@ import {
 } from '../services/account/paranoidEnforcement';
 import { FIRST_PARTY_CLIENTS, seedFirstPartyClients } from '../services/oauth/firstPartyClients';
 import { createTestApp, type SeededUser, type TestHarness } from '../testing/createTestApp';
+
+import {
+  BEARER_ALL_METHODS_ROUTE_METHOD,
+  BEARER_OPAQUE_MOUNT_METHOD,
+  mountedBearerRouteInventory,
+} from './bearerRouteInventory';
 
 /**
  * #1043 — the deliberate bearer exception for paranoid-vault synchronization.
@@ -215,6 +221,21 @@ describe('#1043 vault bearer policy', () => {
     { method: 'GET', path: '/account/paranoid/normal-revision' },
   ] as const;
 
+  const EXPECTED_ROUTER_GUARDS = [
+    {
+      method: `${BEARER_OPAQUE_MOUNT_METHOD}:requireUser[1]`,
+      path: '/vault',
+    },
+    {
+      method: `${BEARER_OPAQUE_MOUNT_METHOD}:requireCookieSessionOrVaultSync[1]`,
+      path: '/vault',
+    },
+    {
+      method: `${BEARER_OPAQUE_MOUNT_METHOD}:requireParanoidHistory[1]`,
+      path: '/vault/history',
+    },
+  ] as const;
+
   it('pins the exact sync routes and defaults transitions and future routes closed', () => {
     expect(VAULT_SYNC_BEARER_ROUTE_ALLOWLIST).toEqual(EXPECTED_ALLOWLIST);
     for (const route of EXPECTED_ALLOWLIST) {
@@ -231,14 +252,11 @@ describe('#1043 vault bearer policy', () => {
   });
 
   it('classifies every real mounted vault route as sync or session-only', () => {
-    const mounted = buildRouteTable().flatMap((route) =>
-      route.kind === 'route' && route.path.startsWith('/api/v1/vault')
-        ? [{ method: route.method, path: route.path.slice('/api/v1'.length) }]
-        : [],
-    );
+    const mounted = mountedBearerRouteInventory(buildRouteTable(), '/vault');
     const classified = [
       ...VAULT_SYNC_BEARER_ROUTE_ALLOWLIST,
       ...VAULT_SESSION_ONLY_ROUTE_ALLOWLIST,
+      ...EXPECTED_ROUTER_GUARDS,
     ].map(({ method, path }) => ({ method, path }));
     const sortRoutes = (routes: Array<{ method: string; path: string }>) =>
       routes.sort(
@@ -250,6 +268,32 @@ describe('#1043 vault bearer policy', () => {
       classified.length,
     );
     expect(sortRoutes(mounted)).toEqual(sortRoutes(classified));
+  });
+
+  it('keeps router.all and opaque router.use leaves in the completeness inventory', () => {
+    const futureSurfaces: MountedSurface[] = [
+      {
+        kind: 'all-methods-route',
+        path: '/api/v1/vault/future-all',
+      },
+      {
+        kind: 'opaque-mount',
+        path: '/api/v1/vault/future-leaf',
+        handler: 'futureVaultLeaf',
+        occurrence: 1,
+      },
+    ];
+
+    expect(mountedBearerRouteInventory(futureSurfaces, '/vault')).toEqual([
+      {
+        method: BEARER_ALL_METHODS_ROUTE_METHOD,
+        path: '/vault/future-all',
+      },
+      {
+        method: `${BEARER_OPAQUE_MOUNT_METHOD}:futureVaultLeaf[1]`,
+        path: '/vault/future-leaf',
+      },
+    ]);
   });
 
   it('keeps the router-local guard default-closed independently of global scope policy', () => {
