@@ -58,6 +58,8 @@ interface ControlPanel {
   /** URL segment: `/control/<id>`. */
   id: string;
   labelKey: string;
+  /** Localized setting/action names that make this panel discoverable. */
+  keywordKeys: readonly [string, ...string[]];
   icon: IconName;
   Component: ComponentType;
   /** Destructive destination — rendered in negative ink, never in gold. */
@@ -81,17 +83,52 @@ export const CONTROL_GROUPS: readonly ControlGroup[] = [
   {
     titleKey: 'control.groups.account',
     panels: [
-      { id: 'account', labelKey: 'control.account', icon: 'user', Component: AccountPanel },
-      { id: 'profile', labelKey: 'control.profile', icon: 'globe', Component: ProfilePanel },
+      {
+        id: 'account',
+        labelKey: 'control.account',
+        keywordKeys: [
+          'settings.account.identity',
+          'language.title',
+          'settings.baseCurrency.title',
+          'settings.uiScale.title',
+          'profile.icon.title',
+          'settings.export.title',
+        ],
+        icon: 'user',
+        Component: AccountPanel,
+      },
+      {
+        id: 'profile',
+        labelKey: 'control.profile',
+        keywordKeys: ['profile.groups.page', 'profile.bioLabel', 'profile.toggleLabel'],
+        icon: 'globe',
+        Component: ProfilePanel,
+      },
     ],
   },
   {
     titleKey: 'control.groups.security',
     panels: [
-      { id: 'sign-in', labelKey: 'control.signIn', icon: 'shield', Component: SignInPanel },
+      {
+        id: 'sign-in',
+        labelKey: 'control.signIn',
+        keywordKeys: [
+          'settings.password.title',
+          'control.searchTerms.twoFactor',
+          'settings.security.twoFactor.title',
+          'settings.security.passkeys.title',
+          'settings.security.pin.title',
+        ],
+        icon: 'shield',
+        Component: SignInPanel,
+      },
       {
         id: 'sessions',
         labelKey: 'control.sessions',
+        keywordKeys: [
+          'settings.security.sessions.title',
+          'settings.security.sessions.logOutAllOthers',
+        ],
         icon: 'user-lock',
         Component: SessionsPanel,
       },
@@ -103,22 +140,46 @@ export const CONTROL_GROUPS: readonly ControlGroup[] = [
       {
         id: 'defaults',
         labelKey: 'control.portfolioDefaults',
+        keywordKeys: ['settings.taxes.title', 'settings.taxes.reportLink'],
         icon: 'percent',
         Component: DefaultsPanel,
       },
       {
         id: 'notifications',
         labelKey: 'control.notifications',
+        keywordKeys: [
+          'settings.notifications.groups.channels',
+          'settings.notifications.digest.title',
+          'settings.notifications.quietHours.title',
+          'settings.notifications.mute.label',
+          'settings.notifications.webPush.title',
+        ],
         icon: 'bell',
         Component: NotificationsPanel,
       },
       {
         id: 'notification-log',
         labelKey: 'control.notificationLog',
+        keywordKeys: [
+          'settings.notifications.views.archived',
+          'settings.notifications.markAllRead',
+          'settings.notifications.deleteArchived',
+        ],
         icon: 'inbox',
         Component: NotificationLogPanel,
       },
-      { id: 'privacy', labelKey: 'control.privacy', icon: 'lock', Component: PrivacyPanel },
+      {
+        id: 'privacy',
+        labelKey: 'control.privacy',
+        keywordKeys: [
+          'privacy.discreet.title',
+          'vault.settings.title',
+          'vault.settings.changePassphrase',
+          'vault.settings.recoveryKit',
+        ],
+        icon: 'lock',
+        Component: PrivacyPanel,
+      },
     ],
   },
   {
@@ -127,23 +188,55 @@ export const CONTROL_GROUPS: readonly ControlGroup[] = [
       {
         id: 'connections',
         labelKey: 'control.connections',
+        keywordKeys: [
+          'settings.security.google.title',
+          'settings.connections.drive.title',
+          'settings.connections.slotsTitle',
+        ],
         icon: 'link',
         Component: ConnectionsPanel,
       },
-      { id: 'api', labelKey: 'control.apiKeys', icon: 'key', Component: ApiKeysPanel },
+      {
+        id: 'api',
+        labelKey: 'control.apiKeys',
+        keywordKeys: [
+          'settings.api.keys.sectionTitle',
+          'settings.api.keys.createTitle',
+          'settings.api.scopesLegend',
+        ],
+        icon: 'key',
+        Component: ApiKeysPanel,
+      },
       {
         id: 'oauth-apps',
         labelKey: 'control.oauthApps',
+        keywordKeys: [
+          'settings.api.oauth.yourApps',
+          'settings.api.oauth.registerTitle',
+          'settings.api.oauth.redirectUrisLegend',
+        ],
         icon: 'terminal',
         Component: OAuthAppsPanel,
       },
       {
         id: 'authorized-apps',
         labelKey: 'control.authorizedApps',
+        keywordKeys: ['settings.api.grants.sectionDescription', 'settings.api.grants.revokeAccess'],
         icon: 'share',
         Component: AuthorizedAppsPanel,
       },
-      { id: 'webhooks', labelKey: 'control.webhooks', icon: 'webhook', Component: WebhooksPanel },
+      {
+        id: 'webhooks',
+        labelKey: 'control.webhooks',
+        keywordKeys: [
+          'settings.api.webhooks.createTitle',
+          'settings.api.webhooks.eventsLegend',
+          'settings.api.webhooks.viewDeliveries',
+          'settings.api.webhooks.pause',
+        ],
+        icon: 'webhook',
+        Component: WebhooksPanel,
+      },
     ],
   },
   {
@@ -153,6 +246,7 @@ export const CONTROL_GROUPS: readonly ControlGroup[] = [
       {
         id: 'delete-account',
         labelKey: 'control.deleteAccount',
+        keywordKeys: ['settings.dangerZone.link'],
         icon: 'trash',
         Component: DeleteAccountPanel,
         danger: true,
@@ -241,8 +335,15 @@ function hasNestedDialog(panel: HTMLElement | null): boolean {
   );
 }
 
-function matches(t: TranslateFn, labelKey: string, needle: string): boolean {
-  return needle === '' || t(labelKey).toLowerCase().includes(needle);
+function matches(
+  t: TranslateFn,
+  labelKey: string,
+  needle: string,
+  keywordKeys: readonly string[] = [],
+): boolean {
+  return (
+    needle === '' || [labelKey, ...keywordKeys].some((key) => t(key).toLowerCase().includes(needle))
+  );
 }
 
 export interface ControlCenterOverlayProps {
@@ -332,7 +433,9 @@ export function ControlCenterOverlay({ panel, closeTo = '/' }: ControlCenterOver
       CONTROL_GROUPS.map((group) => ({
         titleKey: group.titleKey,
         panels: group.panels.filter(
-          (panel) => (!paranoid || panel.id !== 'profile') && matches(t, panel.labelKey, needle),
+          (panel) =>
+            (!paranoid || panel.id !== 'profile') &&
+            matches(t, panel.labelKey, needle, panel.keywordKeys),
         ),
       })).filter((group) => group.panels.length > 0),
     [needle, paranoid, t],
