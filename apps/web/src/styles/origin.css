@@ -864,6 +864,15 @@
   font-weight: 570;
 }
 
+/* Native `required` remains the programmatic source of truth; the marker makes
+   that constraint visible before submit across both Origin and legacy forms. */
+.bt-field:has(:is(input, select, textarea):required) > label::after,
+label:has(+ :is(input, select, textarea):required)::after,
+label:has(> :is(input, select, textarea):required)::after {
+  content: ' *';
+  color: var(--bt-neg);
+}
+
 .bt-field__hint {
   color: var(--bt-muted);
   font-size: 11.5px;
@@ -1684,6 +1693,15 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+
   .bt-shell,
   .bt-scrim,
   .bt-dialog__panel,
@@ -1867,6 +1885,18 @@
    the DOM at this width instead — `usePhoneShell`, which must stay in lockstep
    with the 480px literal below. */
 @media (max-width: 480px) {
+  /* iOS zooms the viewport when any focused native field computes below 16px.
+     Keep this global: auth and portalled surfaces sit outside the app shell. */
+  :is(input, select, textarea) {
+    font-size: 16px !important;
+  }
+
+  .bt-btn--sm.bt-btn--icon,
+  .bt-tab {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
   .bt-topbar {
     flex-wrap: wrap;
     gap: 4px;
