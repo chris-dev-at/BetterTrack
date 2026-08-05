@@ -1704,7 +1704,8 @@
         "import": "Import"
       },
       "transactionsComingSoon": {
-        "description": "Das vollständige Transaktionsjournal — jeder Kauf und Verkauf, bearbeitbar, mit realisiertem G/V — kommt mit der Portfolio-Phase."
+        "description": "Du kannst Transaktionen schon heute ansehen und bearbeiten, indem du eine Position in der Übersicht aufklappst. Das eigene Transaktionsjournal folgt noch.",
+        "cta": "Portfolioübersicht öffnen"
       },
       "customAssetsComingSoon": {
         "description": "Verfolge Immobilien, Fahrzeuge, Sammlerstücke und andere nicht notierte Bestände mit einem Wertpunkte-Editor."

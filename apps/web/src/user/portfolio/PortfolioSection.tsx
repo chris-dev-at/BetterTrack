@@ -1,3 +1,5 @@
+import { Link, useLocation } from 'react-router-dom';
+
 import { useT } from '../../i18n';
 import { ComingSoon } from '../../ui';
 
@@ -9,10 +11,16 @@ import { ComingSoon } from '../../ui';
  */
 export function TransactionsPage() {
   const t = useT();
+  const { search } = useLocation();
   return (
     <ComingSoon
       title={t('portfolio.section.subnav.transactions')}
       description={t('portfolio.section.transactionsComingSoon.description')}
+      cta={
+        <Link className="bt-btn bt-btn--primary" to={{ pathname: '/portfolio', search }}>
+          {t('portfolio.section.transactionsComingSoon.cta')}
+        </Link>
+      }
     />
   );
 }
