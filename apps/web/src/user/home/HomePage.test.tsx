@@ -583,7 +583,7 @@ test('the add-widget drawer groups the catalog and appends what is chosen', asyn
   await user.click(screen.getByRole('button', { name: 'Customize' }));
   await user.click(screen.getByRole('button', { name: 'Add widget' }));
 
-  const drawer = screen.getByRole('complementary', { name: 'Add a widget' });
+  const drawer = screen.getByRole('dialog', { name: 'Add a widget' });
   expect(within(drawer).getByText('Charts')).toBeInTheDocument();
   expect(within(drawer).getByText('Headlines on the assets you hold')).toBeInTheDocument();
 
@@ -1093,7 +1093,7 @@ test('every widget in the catalog is offered in the drawer and renders when adde
     // An empty board shows "Add widget" twice (header + empty state); the header
     // one is first in DOM order and survives the first add.
     await user.click(screen.getAllByRole('button', { name: 'Add widget' })[0]!);
-    const drawer = screen.getByRole('complementary', { name: 'Add a widget' });
+    const drawer = screen.getByRole('dialog', { name: 'Add a widget' });
     await user.click(within(drawer).getByRole('button', { name }));
   }
 
@@ -1646,7 +1646,7 @@ test('the ⊕ on a line inserts the chosen widget at exactly that position', asy
   await user.click(screen.getByRole('button', { name: 'Customize' }));
 
   await user.click(screen.getByRole('button', { name: 'Add a widget before Needs attention' }));
-  const drawer = screen.getByRole('complementary', { name: 'Add a widget' });
+  const drawer = screen.getByRole('dialog', { name: 'Add a widget' });
   await user.click(within(drawer).getByRole('button', { name: /^Alerts/ }));
 
   // Third position, not appended — the persisted layout is the claim.
@@ -1677,10 +1677,10 @@ test('the header’s Add button still appends, ignoring any earlier ⊕', async 
   // Open from a line, dismiss it, then use the header button: the pending slot
   // must not survive into an add the user started somewhere else.
   await user.click(screen.getByRole('button', { name: 'Add a widget before Net worth' }));
-  const pending = screen.getByRole('complementary', { name: 'Add a widget' });
+  const pending = screen.getByRole('dialog', { name: 'Add a widget' });
   await user.click(within(pending).getByRole('button', { name: 'Close' }));
   await user.click(screen.getByRole('button', { name: 'Add widget' }));
-  const drawer = screen.getByRole('complementary', { name: 'Add a widget' });
+  const drawer = screen.getByRole('dialog', { name: 'Add a widget' });
   await user.click(within(drawer).getByRole('button', { name: /^Alerts/ }));
 
   expect(persisted().widgets.at(-1)?.type).toBe('alerts');
@@ -1929,7 +1929,7 @@ test('at 390 px the home builder opens its catalog and keeps widget settings usa
 
   await user.click(screen.getByRole('button', { name: 'Customize' }));
   await user.click(screen.getByRole('button', { name: 'Add widget' }));
-  expect(screen.getByRole('complementary', { name: 'Add a widget' })).toBeInTheDocument();
+  expect(screen.getByRole('dialog', { name: 'Add a widget' })).toBeInTheDocument();
   await user.keyboard('{Escape}');
   await user.click(screen.getByRole('button', { name: 'Net worth settings' }));
 

@@ -731,26 +731,32 @@ test('the command shortcut cannot mount a palette inside an inert modal backgrou
   expect(modal.contains(document.activeElement)).toBe(true);
 });
 
-test('the command shortcut still opens over the Control Center, which is modal but not inert', async () => {
-  // The settings hub every `/settings/*` route redirects onto. It is
-  // `aria-modal`, so a guard keyed on "any modal exists" would kill ⌘K across
-  // the entire hub — but it portals to <body> without inerting the shell, and
-  // the palette layers above it (z-index 76 vs 71), so the shortcut must work.
+test('the command shortcut still opens over the inert-backed Control Center', async () => {
+  // The settings hub is modal and now correctly inerts the shell. The palette
+  // deliberately portals above it (z-index 76 vs 71), so the shortcut remains
+  // available without putting the palette inside an inert DOM branch.
   renderAt('/control/profile');
-  await screen.findByRole('dialog', { name: 'Control Center' });
-  expect(document.querySelector('[inert]')).toBeNull();
+  const controlCenter = await screen.findByRole('dialog', { name: 'Control Center' });
+  const shell = document.querySelector<HTMLElement>('.bt-shell')!;
+  expect(shell.closest('[inert]')).not.toBeNull();
+  expect(controlCenter.closest('[inert]')).toBeNull();
 
   fireEvent.keyDown(document, { key: 'k', ctrlKey: true });
 
   const palette = await screen.findByRole('dialog', { name: 'Quick search' });
   expect(palette).toHaveClass('bt-palette-overlay');
-  // Its own trap inerts the Control Center portal on the way in, and the
-  // shortcut still closes it from there.
+  expect(palette.closest('[inert]')).toBeNull();
+  expect(controlCenter.closest('[inert]')).not.toBeNull();
+  // The shortcut closes the palette and releases only its inert hold: Control
+  // Center becomes active again while its background remains inert.
   await waitFor(() => expect(palette.contains(document.activeElement)).toBe(true));
 
   fireEvent.keyDown(document, { key: 'k', ctrlKey: true });
   await waitFor(() => expect(document.querySelector('.bt-palette-overlay')).toBeNull());
   expect(screen.getByRole('dialog', { name: 'Control Center' })).toBeInTheDocument();
+  expect(controlCenter.closest('[inert]')).toBeNull();
+  expect(shell.closest('[inert]')).not.toBeNull();
+  expect(controlCenter).toContainElement(document.activeElement as HTMLElement);
 });
 
 // ─── Destinations & redirects ─────────────────────────────────────────────────

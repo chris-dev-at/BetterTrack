@@ -599,8 +599,8 @@ export function OriginShell() {
   // Narrower still, the topbar wraps and the switcher owns the second row — so
   // the shell MOVES it to the end of the header's children (see below).
   const phoneShell = usePhoneShell();
-  // The shell root — also the palette's mount parent, which is why the ⌘K guard
-  // below asks whether *this* branch is inert.
+  // The shell root lets the ⌘K guard distinguish an ordinary blocking modal
+  // from the Control Center, above which the body-portalled palette may open.
   const shellRef = useRef<HTMLDivElement>(null);
   const [collapsed, setCollapsed] = useState(() => {
     try {
@@ -640,17 +640,23 @@ export function OriginShell() {
     function handleKey(event: KeyboardEvent) {
       if (event.key === 'k' && (event.metaKey || event.ctrlKey)) {
         event.preventDefault();
-        // The palette mounts inside this shell, so the one thing that can make
-        // it unreachable is this branch being inert — which is exactly what a
-        // portalled modal's background inerting does. Test that precondition and
-        // nothing broader: "any `aria-modal` node exists" also matched the
-        // Control Center (`control/ControlCenterOverlay.tsx`), which portals to
-        // <body> and never inerts the shell, so it silently killed the shortcut
-        // on every `/control*` route — i.e. the whole settings hub — where the
-        // palette layers above it and works fine. An open palette can always be
-        // closed, inert or not.
+        // A regular modal makes the shell inert and owns the shortcut. Control
+        // Center now does the same for accessibility, but the palette is an
+        // intentional layer above that hub. Permit that one live body-level
+        // overlay; a nested modal makes the Control Center inert too and keeps
+        // the shortcut blocked. An open palette can always be closed.
         const shell = shellRef.current;
-        if (!paletteOpen && shell !== null && shell.closest('[inert]') !== null) return;
+        const controlCenter = document.querySelector<HTMLElement>('.bt-cc-root');
+        const liveControlCenter =
+          controlCenter !== null && controlCenter.closest('[inert]') === null;
+        if (
+          !paletteOpen &&
+          shell !== null &&
+          shell.closest('[inert]') !== null &&
+          !liveControlCenter
+        ) {
+          return;
+        }
         setPaletteOpen((open) => !open);
       }
     }
