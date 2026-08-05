@@ -48,6 +48,7 @@ function routeOnlyApp(): Application {
   });
   app.use('/api/v1', createParanoidRouteGuard());
   app.get('/api/v1/cash/tags', (_req, res) => res.sendStatus(204));
+  app.get('/api/v1/settings/taxes', (_req, res) => res.sendStatus(204));
   installErrorResponse(app);
   return app;
 }
@@ -80,6 +81,12 @@ describe('paranoid bearer and route guards', () => {
 
   it('normalizes a variant-cased path before the paranoid route lookup', async () => {
     const denied = await request(routeOnlyApp()).get('/api/v1/Cash/tags');
+    expect(denied.status).toBe(403);
+    expect(denied.body.code).toBe(PARANOID_MODE_ERROR_CODE);
+  });
+
+  it('normalizes a trailing slash before matching an exact paranoid kill rule', async () => {
+    const denied = await request(routeOnlyApp()).get('/api/v1/Settings/Taxes/');
     expect(denied.status).toBe(403);
     expect(denied.body.code).toBe(PARANOID_MODE_ERROR_CODE);
   });
