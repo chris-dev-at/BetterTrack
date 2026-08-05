@@ -126,12 +126,28 @@ describe('CashBudgetsPage', () => {
     );
   });
 
-  test('renders a tag read failure without hiding the budget workspace', async () => {
+  test('does not present a missing-tags prerequisite while tag data is unavailable', async () => {
     vi.mocked(listCashTags).mockRejectedValue(new Error('tags unavailable'));
+    const user = userEvent.setup();
     renderPage();
 
     expect(await screen.findByText("This information isn't available.")).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Budgets' })).toBeInTheDocument();
+
+    const newBudget = screen.getByRole('button', { name: 'New budget' });
+    const addBudget = screen.getByRole('button', { name: 'Add a budget' });
+    expect(newBudget).toBeDisabled();
+    expect(addBudget).toBeDisabled();
+    expect(newBudget.closest('[aria-describedby]')).toBeNull();
+    expect(addBudget.closest('[aria-describedby]')).toBeNull();
+
+    await user.hover(newBudget);
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(
+        "You don't have any tags yet — create one on the “Labels & rules” page first.",
+      ),
+    ).not.toBeInTheDocument();
   });
 
   test('renders the exceeded state distinctly from an on-track budget', async () => {
@@ -263,9 +279,15 @@ describe('CashBudgetsPage', () => {
     expect(deleteCashBudget).toHaveBeenCalledWith('b1');
   });
 
-  test('explains the available-tag prerequisite on hover and focus, then enables creation when a tag is available', async () => {
+  test('explains the unavailable-slot prerequisite on hover and focus, then enables creation when a tag is available', async () => {
     vi.mocked(listCashTags).mockResolvedValue({ tags: [FOOD] });
-    vi.mocked(listCashBudgets).mockResolvedValue({ period: '2026-07', budgets: [budget()] });
+    vi.mocked(listCashBudgets).mockResolvedValue({
+      period: '2026-07',
+      budgets: [
+        budget({ id: 'b-recurring', recurring: true }),
+        budget({ id: 'b-month', recurring: false }),
+      ],
+    });
     const client = renderPage();
     const user = userEvent.setup();
 
@@ -292,6 +314,40 @@ describe('CashBudgetsPage', () => {
     await waitFor(() => {
       expect(screen.getByRole('button', { name: 'New budget' })).toBeEnabled();
     });
+  });
+
+  test('keeps creation available when a tag only has one budget period', async () => {
+    vi.mocked(listCashTags).mockResolvedValue({ tags: [FOOD] });
+    vi.mocked(listCashBudgets).mockResolvedValue({
+      period: '2026-07',
+      budgets: [budget({ recurring: true })],
+    });
+    renderPage();
+
+    expect(await screen.findByRole('button', { name: 'New budget' })).toBeEnabled();
+  });
+
+  test('does not present a missing-tags prerequisite while tags are loading', async () => {
+    let resolveTags: (value: { tags: CashTag[] }) => void = () => undefined;
+    const tagsPromise = new Promise<{ tags: CashTag[] }>((resolve) => {
+      resolveTags = resolve;
+    });
+    vi.mocked(listCashTags).mockReturnValue(tagsPromise);
+    const user = userEvent.setup();
+    renderPage();
+
+    const newBudget = await screen.findByRole('button', { name: 'New budget' });
+    const addBudget = screen.getByRole('button', { name: 'Add a budget' });
+    expect(newBudget).toBeDisabled();
+    expect(addBudget).toBeDisabled();
+    expect(newBudget.closest('[aria-describedby]')).toBeNull();
+    expect(addBudget.closest('[aria-describedby]')).toBeNull();
+
+    await user.hover(newBudget);
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
+
+    resolveTags({ tags: [FOOD] });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'New budget' })).toBeEnabled());
   });
 
   test('renders the empty state with a create CTA when nothing is budgeted', async () => {

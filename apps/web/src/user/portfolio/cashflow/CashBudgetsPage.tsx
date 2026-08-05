@@ -92,11 +92,21 @@ export function CashBudgetsPage() {
     return <Alert tone="error">{t('cashflow.budgets.loadError')}</Alert>;
   }
 
-  // Coarse convenience gate only — matches every tag having SOME row this
-  // month, not necessarily both a recurring AND a this-month slot filled; the
-  // dialog's own options list (and the server's 409) are the real enforcement.
-  const budgetedTagIds = new Set(budgets.map((b) => b.tagId));
-  const canCreate = tags.some((tag) => !budgetedTagIds.has(tag.id));
+  // A tag can have both a recurring and a one-month target. Keep creation
+  // available until every tag has filled both slots; the dialog enforces the
+  // selected slot again and the server remains the final duplicate guard.
+  const recurringBudgetedTagIds = new Set(
+    budgets.filter((budget) => budget.recurring).map((budget) => budget.tagId),
+  );
+  const monthBudgetedTagIds = new Set(
+    budgets.filter((budget) => !budget.recurring).map((budget) => budget.tagId),
+  );
+  const tagsKnown = tagsQuery.data !== undefined;
+  const hasAvailableBudgetSlot = tags.some(
+    (tag) => !recurringBudgetedTagIds.has(tag.id) || !monthBudgetedTagIds.has(tag.id),
+  );
+  const createDisabled = !tagsKnown || !hasAvailableBudgetSlot;
+  const showCreateHint = tagsKnown && !hasAvailableBudgetSlot;
   const createHint =
     tags.length === 0
       ? t('cashflow.movements.tagDialog.noTags')
@@ -118,8 +128,8 @@ export function CashBudgetsPage() {
                 value={month}
               />
             </label>
-            <DisabledActionHint disabled={!canCreate} hint={createHint}>
-              <Button disabled={!canCreate} onClick={() => setCreating(true)} variant="primary">
+            <DisabledActionHint disabled={showCreateHint} hint={createHint}>
+              <Button disabled={createDisabled} onClick={() => setCreating(true)} variant="primary">
                 {t('cashflow.budgets.new')}
               </Button>
             </DisabledActionHint>
@@ -138,8 +148,8 @@ export function CashBudgetsPage() {
       {budgets.length === 0 ? (
         <EmptyState
           cta={
-            <DisabledActionHint disabled={!canCreate} hint={createHint}>
-              <Button disabled={!canCreate} onClick={() => setCreating(true)} variant="quiet">
+            <DisabledActionHint disabled={showCreateHint} hint={createHint}>
+              <Button disabled={createDisabled} onClick={() => setCreating(true)} variant="quiet">
                 {t('cashflow.budgets.emptyCta')}
               </Button>
             </DisabledActionHint>
