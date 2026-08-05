@@ -94,6 +94,8 @@ import type { AudienceService } from '../social/audienceService';
 import { isEngineTaxed } from '../tax/closedSettlement';
 import type { TaxService } from '../tax/taxService';
 import {
+  anchorlessAssetDays,
+  assetDayKey,
   buildIntradayEurValuePoints,
   downsampledIndices,
   intradayFetchRange,
@@ -1292,12 +1294,13 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
     // Same-day steps (#1120/I1): trades and cash movements applied at their
     // actual instants, so the curve before a 14:00 buy shows the pre-trade
     // holdings instead of retro-applying the day's EOD units+cash from the
-    // first bucket. The ledgers are the exact ones the snapshot engine reads.
+    // first bucket. The ledgers come back from `getSeries` — the exact rows the
+    // snapshot engine computed this series from, so the two never disagree and
+    // this hot read issues no second pair of unbounded queries (#1120 review).
     const seriesAssetIds = new Set(series.assets.map((a) => a.assetId));
-    const [txnRecords, cashRecords] = await Promise.all([
-      transactionRepo.listForPortfolio(portfolioId),
-      cashMovementRepo.listForPortfolio(portfolioId),
-    ]);
+    const txnRecords = series.transactions;
+    const cashRecords = series.cashMovements;
+    const txnRecordById = new Map(txnRecords.map((t) => [t.id, t]));
 
     const tradesByAsset = new Map<string, { atMs: number; unitsDelta: number }[]>();
     for (const t of txnRecords) {
@@ -1316,10 +1319,20 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       if (timeline !== undefined) unitsByAsset.set(assetId, timeline);
     }
 
+    // Asset-days whose position cannot be priced at any bucket (#1120 review):
+    // a same-day round trip has no EUR anchor on either side, so stepping its
+    // cash legs or booking its flows at their instants would fabricate a dip
+    // the size of the position. Those days stay day-anchored, as before #1120.
+    const anchorless = anchorlessAssetDays({ dailyValueEurByDay, perAssetEurByDay, unitsByAsset });
+
     const cashEvents: IntradayCashEvent[] = [];
     for (const m of cashRecords) {
       const atMs = m.executedAt.getTime();
-      if (atMs >= cutoffMs) cashEvents.push({ atMs, amountEur: m.amountEur });
+      if (atMs < cutoffMs) continue;
+      // Linked legs carry their transaction's asset so the builder can leave an
+      // unpriceable position's cash inside the day's EOD figure.
+      const linked = m.transactionId !== null ? txnRecordById.get(m.transactionId) : undefined;
+      cashEvents.push({ atMs, amountEur: m.amountEur, assetId: linked?.assetId });
     }
 
     // External-flow instants for the intraday % curve (#1120) — the same three
@@ -1341,34 +1354,63 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       (t) =>
         t.executedAt.getTime() >= cutoffMs &&
         seriesAssetIds.has(t.assetId) &&
-        !cashSettledIds.has(t.id),
+        assetsById.has(t.assetId) &&
+        !cashSettledIds.has(t.id) &&
+        // A same-day round trip never materialises on the value curve, so
+        // booking its flow at the trade instant would inflate the denominator
+        // for the hours it was held — a phantom drawdown that then recovers.
+        // Leave the pair day-anchored, where it nets out (#1120 review).
+        !anchorless.has(assetDayKey(t.assetId, t.executedAt.toISOString().slice(0, 10))),
     );
+    // One conversion per distinct trade INSTANT rather than per transaction,
+    // all issued concurrently (#1120 review): trades sharing an instant
+    // coalesce per (day, currency) inside `netFlowsOverTime` exactly as the
+    // engine coalesces them, and N serialized FX round trips become one batch.
+    const unlinkedCurrencyByAsset = new Map<string, string>();
+    const unlinkedByInstant = new Map<number, TransactionRecord[]>();
     for (const t of windowUnlinkedTxns) {
-      const asset = assetsById.get(t.assetId);
-      if (!asset) continue;
-      try {
-        const converted = await netFlowsOverTime({
-          transactions: [recordToDomain(t)],
-          currencyByAsset: new Map([[t.assetId, asset.currency]]),
-          converter: currencyService,
-        });
-        const flow = converted[0];
-        if (flow !== undefined) {
-          flowEventsEur.push({ atMs: t.executedAt.getTime(), flowEur: flow.flowEur });
-        }
-      } catch {
-        // FX gap: leave this flow day-anchored (the daily total still has it).
-      }
+      unlinkedCurrencyByAsset.set(t.assetId, assetsById.get(t.assetId)!.currency);
+      const atMs = t.executedAt.getTime();
+      const list = unlinkedByInstant.get(atMs);
+      if (list) list.push(t);
+      else unlinkedByInstant.set(atMs, [t]);
     }
-    const txnRecordById = new Map(txnRecords.map((t) => [t.id, t]));
+    const convertedInstants = await Promise.all(
+      [...unlinkedByInstant].map(async ([atMs, txns]) => {
+        try {
+          const flows = await netFlowsOverTime({
+            transactions: txns.map(recordToDomain),
+            currencyByAsset: unlinkedCurrencyByAsset,
+            converter: currencyService,
+          });
+          let flowEur = 0;
+          for (const f of flows) flowEur += f.flowEur;
+          return { atMs, flowEur };
+        } catch {
+          // FX gap: leave this flow day-anchored (the daily total still has it).
+          return null;
+        }
+      }),
+    );
+    for (const event of convertedInstants) {
+      if (event !== null && event.flowEur !== 0) flowEventsEur.push(event);
+    }
     for (const m of cashRecords) {
       if (m.kind !== 'buy' || m.transactionId === null) continue;
       const txn = txnRecordById.get(m.transactionId);
       if (!txn || !seriesAssetIds.has(txn.assetId)) continue;
       const buyDay = txn.executedAt.toISOString().slice(0, 10);
-      const settleDay = m.executedAt.toISOString().slice(0, 10);
-      if (buyDay === settleDay) continue;
-      // #378 compensator pair, each leg at its own instant.
+      // The position this pays for is unplottable that day: its cash leg is
+      // already left un-stepped, so the % curve must stay day-anchored too.
+      if (anchorless.has(assetDayKey(txn.assetId, buyDay))) continue;
+      // #378 compensator pair, each leg at its own instant. Emitted for
+      // SAME-day settlements as well (#1120 review): when
+      // `settleCashAsOfToday` stamps the movement later than the trade, the
+      // pair neutralises the interval in which the stepped value curve shows
+      // the position with its cash not yet deducted. Both legs land in one
+      // bucket in the ordinary case and cancel exactly, and the pair always
+      // sums to 0 within the day — the day's closing flow is untouched.
+      if (m.executedAt.getTime() < txn.executedAt.getTime()) continue;
       if (txn.executedAt.getTime() >= cutoffMs) {
         flowEventsEur.push({ atMs: txn.executedAt.getTime(), flowEur: -m.amountEur });
       }

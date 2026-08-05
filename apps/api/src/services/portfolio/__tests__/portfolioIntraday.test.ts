@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import type { FlowPoint, ValuePoint } from '../../../domain/holdings';
 import {
+  anchorlessAssetDays,
+  assetDayKey,
   buildIntradayEurValuePoints,
   downsampledIndices,
   intradayFetchRange,
@@ -722,6 +724,206 @@ describe('buildIntradayEurValuePoints — #1120 prior-close anchoring + same-day
       [Y, 1100],
       [T, 1210],
     ]);
+  });
+
+  it('leaves a same-day ROUND TRIP un-stepped: no dip, no marks, the day stays flat', () => {
+    // 1000 cash yesterday; today buys 10 @110 (paid from cash) at 10:00 and
+    // sells all 10 @112 at 15:00 ⇒ V_a(T) = 0, EOD cash 1020. The position has
+    // no EUR anchor on either side (no units at the close, none the day
+    // before), so it can never be priced at a bucket — stepping its cash legs
+    // alone would show the 1100 leave with nothing bought for it (the #1120
+    // review's −1100 plunge-and-recover). The day is left day-anchored.
+    const candles = candlesForDay(T, 9, 60 * MIN, () => 112); // 09:00 … 17:00
+    const points = buildIntradayEurValuePoints({
+      range: '1D',
+      cutoffDay: Y,
+      nowMs: NOW_MS,
+      dailyValueEurByDay: new Map([
+        [Y, 1000],
+        [T, 1020],
+      ]),
+      perAssetEurByDay: new Map([['a', new Map([[T, 0]])]]),
+      candlesByAsset: new Map([['a', candles]]),
+      unitsByAsset: new Map([
+        [
+          'a',
+          {
+            initialUnits: 0,
+            steps: [
+              { atMs: at(T, '10:00'), units: 10 },
+              { atMs: at(T, '15:00'), units: 0 },
+            ],
+          },
+        ],
+      ]),
+      cashEvents: [
+        { atMs: at(T, '10:00'), amountEur: -1100, assetId: 'a' },
+        { atMs: at(T, '15:00'), amountEur: 1120, assetId: 'a' },
+      ],
+    });
+
+    const todayPoints = points.filter((p) => p.date === T);
+    // Only the 9 candle marks: a suppressed event contributes no grid mark, so
+    // the 09:45 / 14:45 leading edges of the two trades are absent.
+    expect(todayPoints.map((p) => p.timeMs)).toEqual(
+      candles.map((c) => Math.floor(c.atMs / (15 * MIN)) * (15 * MIN)),
+    );
+    // Flat at the day's EOD figure end to end — the round trip's +€20 shows as
+    // the day's step, exactly as it did before #1120. Nothing dips.
+    for (const p of todayPoints) expect(p.valueEur).toBeCloseTo(1020, 9);
+    expect(points[0]!.valueEur).toBeCloseTo(1000, 9); // yesterday's daily point
+    expect(Math.min(...points.map((p) => p.valueEur))).toBeCloseTo(1000, 9);
+  });
+
+  it('still steps a PARTIAL same-day exit — the anchored case keeps its buckets', () => {
+    // 2000 cash yesterday; buy 10 @110 at 10:00 (cash 900), sell 6 @112 at
+    // 15:00 (cash 1572), 4 units left at the 112 close ⇒ V_a(T) = 448. Units
+    // survive to the close, so the day HAS an anchor and must keep stepping —
+    // the round-trip suppression must not spill onto it.
+    const candles = candlesForDay(T, 9, 60 * MIN, () => 112); // 09:00 … 17:00
+    const points = buildIntradayEurValuePoints({
+      range: '1D',
+      cutoffDay: Y,
+      nowMs: NOW_MS,
+      dailyValueEurByDay: new Map([
+        [Y, 2000],
+        [T, 2020],
+      ]),
+      perAssetEurByDay: new Map([['a', new Map([[T, 448]])]]),
+      candlesByAsset: new Map([['a', candles]]),
+      unitsByAsset: new Map([
+        [
+          'a',
+          {
+            initialUnits: 0,
+            steps: [
+              { atMs: at(T, '10:00'), units: 10 },
+              { atMs: at(T, '15:00'), units: 4 },
+            ],
+          },
+        ],
+      ]),
+      cashEvents: [
+        { atMs: at(T, '10:00'), amountEur: -1100, assetId: 'a' },
+        { atMs: at(T, '15:00'), amountEur: 672, assetId: 'a' },
+      ],
+    });
+
+    const todayPoints = points.filter((p) => p.date === T);
+    // 9 candle marks + both trades' leading edges (09:45, 14:45).
+    expect(todayPoints.length).toBe(11);
+    expect(todayPoints.some((p) => p.timeMs === at(T, '09:45'))).toBe(true);
+    expect(todayPoints.some((p) => p.timeMs === at(T, '14:45'))).toBe(true);
+    // Pre-trade: the untouched 2000 cash. From the buy on: 10 units at 112
+    // (1120) + 900 cash, then 4 units (448) + 1572 cash — 2020 either way.
+    for (const p of todayPoints) {
+      expect(p.valueEur).toBeCloseTo(p.timeMs < at(T, '10:00') ? 2000 : 2020, 9);
+    }
+    // Closing seam exact.
+    expect(points[points.length - 1]!.valueEur).toBeCloseTo(2020, 9);
+  });
+
+  it('leaves a cash leg for an asset outside the daily per-asset series un-stepped', () => {
+    // An FX-unconvertible asset never appears on the value curve, so its linked
+    // cash leg has no counterpart either — step it and the curve dips.
+    const candles = candlesForDay(T, 9, 60 * MIN, () => 100); // 09:00 … 17:00
+    const points = buildIntradayEurValuePoints({
+      range: '1D',
+      cutoffDay: T,
+      nowMs: NOW_MS,
+      dailyValueEurByDay: new Map([[T, 1500]]), // 1000 asset m + 500 EOD cash
+      perAssetEurByDay: new Map([['m', new Map([[T, 1000]])]]),
+      candlesByAsset: new Map([['m', candles]]),
+      cashEvents: [{ atMs: at(T, '12:00'), amountEur: -400, assetId: 'ghost' }],
+    });
+
+    for (const p of points) expect(p.valueEur).toBeCloseTo(1500, 9);
+  });
+});
+
+describe('anchorlessAssetDays — the asset-days that cannot be stepped (#1120 review)', () => {
+  const stepsAt = (
+    hm: string,
+    units: number,
+    initialUnits = 0,
+  ): { initialUnits: number; steps: { atMs: number; units: number }[] } => ({
+    initialUnits,
+    steps: [{ atMs: Date.parse(`${T}T${hm}:00.000Z`), units }],
+  });
+
+  it('flags a position opened AND fully closed inside one day', () => {
+    const keys = anchorlessAssetDays({
+      dailyValueEurByDay: new Map([
+        [Y, 1000],
+        [T, 1020],
+      ]),
+      perAssetEurByDay: new Map([['a', new Map([[T, 0]])]]),
+      unitsByAsset: new Map([
+        [
+          'a',
+          {
+            initialUnits: 0,
+            steps: [
+              { atMs: Date.parse(`${T}T10:00:00.000Z`), units: 10 },
+              { atMs: Date.parse(`${T}T15:00:00.000Z`), units: 0 },
+            ],
+          },
+        ],
+      ]),
+      // The condition is "opened and closed in one day", NOT "the series' first
+      // day": T here is the window's SECOND day and is flagged all the same.
+    });
+    expect([...keys]).toEqual([assetDayKey('a', T)]);
+  });
+
+  it('does not flag a day whose units survive to the close (the day-close anchor)', () => {
+    const keys = anchorlessAssetDays({
+      dailyValueEurByDay: new Map([[T, 1150]]),
+      perAssetEurByDay: new Map([['a', new Map([[T, 1150]])]]),
+      unitsByAsset: new Map([['a', stepsAt('14:00', 10)]]),
+    });
+    expect(keys.size).toBe(0);
+  });
+
+  it('does not flag a position sold out mid-day that was held the day before (prior-day anchor)', () => {
+    const keys = anchorlessAssetDays({
+      dailyValueEurByDay: new Map([
+        [Y, 2000],
+        [T, 1020],
+      ]),
+      perAssetEurByDay: new Map([
+        [
+          'a',
+          new Map([
+            [Y, 1000],
+            [T, 0],
+          ]),
+        ],
+      ]),
+      unitsByAsset: new Map([['a', stepsAt('15:00', 0, 10)]]),
+    });
+    expect(keys.size).toBe(0);
+  });
+
+  it('flags every step-day of an asset missing from the per-asset series, and nothing without steps', () => {
+    expect([
+      ...anchorlessAssetDays({
+        dailyValueEurByDay: new Map([[T, 1000]]),
+        perAssetEurByDay: new Map(),
+        unitsByAsset: new Map([['ghost', stepsAt('14:00', 10)]]),
+      }),
+    ]).toEqual([assetDayKey('ghost', T)]);
+
+    expect(
+      anchorlessAssetDays({
+        dailyValueEurByDay: new Map([[T, 1000]]),
+        perAssetEurByDay: new Map([['a', new Map([[T, 1000]])]]),
+      }).size,
+    ).toBe(0);
+  });
+
+  it('keys are stable `assetId|day` pairs', () => {
+    expect(assetDayKey('asset-1', T)).toBe(`asset-1|${T}`);
   });
 });
 

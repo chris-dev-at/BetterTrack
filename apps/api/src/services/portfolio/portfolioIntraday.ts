@@ -94,12 +94,28 @@ import { buildIntradayBucketPrices } from './intradayBucketPrices';
  *    or "now" for today) is its closing value, so its event buckets all carry
  *    progressive state.
  *
- * Known, deliberate limitation: an asset bought AND fully sold on the series'
- * very first day has no EUR anchor (`V_a(D) = 0`, no prior day) — it
- * contributes 0 between its buy and sell while its linked cash steps still
- * apply, a small dip in place of an untraceable position. A position sold out
- * mid-window prices its pre-sale buckets at the prior-day per-unit value
- * (flat), not at intraday candles — never fabricated movement, just coarser.
+ * Known, deliberate limitation — **a same-day round trip is not stepped**
+ * (#1120 review). A position opened AND fully closed inside ONE day has no EUR
+ * anchor on either side (`V_a(D) = 0` at that close, no units the day before),
+ * so no bucket between its buy and its sell can price it. Stepping its cash
+ * legs alone would show the money leaving while the position it bought stays
+ * invisible — a fabricated dip the size of the whole position. Such an
+ * asset-day is therefore detected up front ({@link anchorlessAssetDays}) and
+ * left un-stepped: its trades contribute no grid marks, its linked cash legs
+ * stay folded into the day's EOD figure, and the day reads exactly as it did
+ * pre-#1120 (flat, the round trip's P/L landing at the day's close). The
+ * service drops the matching per-instant TWR flows for those trades too, so
+ * the % curve keeps its day-anchored (flat) shape as well. A position sold out
+ * mid-window — held the day before, so anchored — keeps its steps: its
+ * pre-sale buckets price at the prior-day per-unit value (flat) rather than at
+ * intraday candles, never fabricated movement, just coarser.
+ *
+ * A *today*-dated pay-from-cash buy that was short of cash at its own instant
+ * is a second, pre-existing coarseness: `settleCashAsOfToday` stamps the linked
+ * movement "now" while the trade keeps its earlier instant, so between the two
+ * the stepped curve carries the position with its cash not yet deducted. The
+ * % curve is neutral across it (the service emits the #378 compensator pair for
+ * same-day settlements too); the value curve shows the transient.
  *
  * An asset with **no intraday candles on `D`** (custom/manual assets always; a
  * market asset on a day the provider missed) contributes its prior-day value
@@ -261,6 +277,14 @@ export interface IntradayCashEvent {
   atMs: number;
   /** Signed as stored: inflows positive, outflows negative. */
   amountEur: number;
+  /**
+   * The asset whose trade this movement settles, for a linked leg (#1120
+   * review). A leg settling a position with no EUR anchor that day — a same-day
+   * round trip, or an asset absent from the daily per-asset series — is left
+   * un-stepped: the position it pays for can never appear, so stepping the cash
+   * alone would fabricate a dip. External movements pass nothing.
+   */
+  assetId?: string;
 }
 
 /** One external TWR flow at its instant, in the caller's base currency. */
@@ -303,6 +327,71 @@ function unitsAt(info: IntradayAssetUnits, atMs: number): number {
     units = step.units;
   }
   return units;
+}
+
+/** Key of one `(assetId, day)` pair — the {@link anchorlessAssetDays} members. */
+export function assetDayKey(assetId: string, day: string): string {
+  return `${assetId}|${day}`;
+}
+
+/**
+ * The `(assetId, day)` pairs whose same-day trades have **no EUR anchor** and
+ * therefore cannot be stepped (#1120 review).
+ *
+ * An intraday bucket prices a held position from one of two EUR anchors: the
+ * day's own per-asset value `V_a(D)` (usable only when units survive to the
+ * close, so the `u / eod` ratio exists) or the previous series day's value
+ * `V_a(D−1)` (usable only when units were held entering the day). A position
+ * opened AND fully closed inside one day has neither — `V_a(D) = 0` with
+ * `eod = 0`, and no units the day before — as does any asset missing from the
+ * daily per-asset series entirely. Its intraday value is 0 at every bucket
+ * while its linked cash legs would keep stepping, so the curve would show the
+ * cash leave with nothing bought for it: a dip the size of the position, which
+ * is precisely the fabrication class #1120 exists to remove.
+ *
+ * Callers drop the day's steps, its linked cash legs (value curve) and its
+ * per-instant TWR flows (% curve) for these pairs, which restores the
+ * pre-#1120 day-anchored treatment for exactly that day.
+ *
+ * Only days carrying an in-window step are considered — a day the asset merely
+ * carries through has no event to suppress.
+ */
+export function anchorlessAssetDays(input: {
+  /** Net-worth EUR per calendar day — the day ordering for the prior-day anchor. */
+  dailyValueEurByDay: ReadonlyMap<string, number>;
+  /** Per-asset EUR value per calendar day (the daily snapshot per-asset series). */
+  perAssetEurByDay: ReadonlyMap<string, ReadonlyMap<string, number>>;
+  /** Same-day trade steps per asset; absent ⇒ nothing is stepped at all. */
+  unitsByAsset?: ReadonlyMap<string, IntradayAssetUnits>;
+}): ReadonlySet<string> {
+  const keys = new Set<string>();
+  if (input.unitsByAsset === undefined) return keys;
+
+  const orderedDays = [...input.dailyValueEurByDay.keys()].sort();
+  const prevDayOf = new Map<string, string | undefined>();
+  for (let i = 0; i < orderedDays.length; i += 1) {
+    prevDayOf.set(orderedDays[i]!, i > 0 ? orderedDays[i - 1] : undefined);
+  }
+
+  for (const [assetId, info] of input.unitsByAsset) {
+    // An asset outside the per-asset series has no anchor on any day.
+    const perDay = input.perAssetEurByDay.get(assetId) ?? new Map<string, number>();
+    const stepDays = new Set<string>();
+    for (const step of info.steps) {
+      if (Number.isFinite(step.atMs)) stepDays.add(dayOfMs(step.atMs));
+    }
+    for (const day of stepDays) {
+      const dayStart = dayStartMs(day);
+      // Anchor 1: the day's own close, scalable only with units at the close.
+      if (perDay.get(day) !== undefined && unitsAt(info, dayStart + DAY_MS - 1) > 0) continue;
+      // Anchor 2: the prior series day's value, per unit held entering the day.
+      const prevDay = prevDayOf.get(day);
+      const vPrev = prevDay !== undefined ? perDay.get(prevDay) : undefined;
+      if (vPrev !== undefined && unitsAt(info, dayStart - 1) > 0) continue;
+      keys.add(assetDayKey(assetId, day));
+    }
+  }
+  return keys;
 }
 
 /** One point on the assembled intraday value curve (EUR before re-denomination). */
@@ -426,6 +515,19 @@ export function buildIntradayEurValuePoints(input: BuildIntradayEurInput): Intra
     openBucketByAssetDay.set(assetId, opens);
   }
 
+  // Asset-days whose position cannot be priced at ANY bucket (same-day round
+  // trips; assets outside the daily per-asset series). Their steps, their
+  // linked cash legs and their grid marks are all suppressed, so the day keeps
+  // its pre-#1120 day-anchored shape instead of stepping cash against an
+  // invisible position (#1120 review).
+  const anchorlessDays = anchorlessAssetDays({
+    dailyValueEurByDay,
+    perAssetEurByDay,
+    unitsByAsset,
+  });
+  const stepSuppressed = (assetId: string, day: string): boolean =>
+    !perAssetEurByDay.has(assetId) || anchorlessDays.has(assetDayKey(assetId, day));
+
   // Grid marks contributed by the step inputs themselves (#1120 review): the
   // event's own quantized bucket plus the bucket before it (the step's leading
   // edge), so a trade or movement between two candles — or on a day with none —
@@ -434,10 +536,13 @@ export function buildIntradayEurValuePoints(input: BuildIntradayEurInput): Intra
   // grid step that does not divide the day can never leak a mark into its
   // neighbour, and events already covered by a candle mark add nothing.
   const eventBuckets = new Set<number>();
-  const addEventBuckets = (atMs: number): void => {
+  const addEventBuckets = (atMs: number, assetId?: string): void => {
     if (!Number.isFinite(atMs) || atMs < cutoffMs || atMs > nowMs) return;
     const day = dayOfMs(atMs);
     if (!windowDaySet.has(day)) return;
+    // A suppressed event never steps, so a mark for it would be a duplicate
+    // point with nothing behind it.
+    if (assetId !== undefined && stepSuppressed(assetId, day)) return;
     const bucket = bucketMs(atMs, stepMs);
     if (dayOfMs(bucket) !== day) return;
     eventBuckets.add(bucket);
@@ -445,12 +550,9 @@ export function buildIntradayEurValuePoints(input: BuildIntradayEurInput): Intra
     if (leadingEdge >= cutoffMs && dayOfMs(leadingEdge) === day) eventBuckets.add(leadingEdge);
   };
   for (const [assetId, info] of unitsByAsset ?? []) {
-    // Assets outside the daily per-asset series never contribute value, so a
-    // mark for them would be a point with nothing behind it.
-    if (!perAssetEurByDay.has(assetId)) continue;
-    for (const step of info.steps) addEventBuckets(step.atMs);
+    for (const step of info.steps) addEventBuckets(step.atMs, assetId);
   }
-  for (const event of cashEvents ?? []) addEventBuckets(event.atMs);
+  for (const event of cashEvents ?? []) addEventBuckets(event.atMs, event.assetId);
 
   const sortedBuckets = [...new Set([...candleBuckets, ...eventBuckets])].sort((a, b) => a - b);
   const bucketsByDay = new Map<string, number[]>();
@@ -513,6 +615,9 @@ export function buildIntradayEurValuePoints(input: BuildIntradayEurInput): Intra
       if (!Number.isFinite(event.atMs) || !Number.isFinite(event.amountEur)) continue;
       const day = dayOfMs(event.atMs);
       if (!windowDaySet.has(day)) continue;
+      // A leg settling an unpriceable position stays inside the day's EOD cash
+      // figure — stepping it would move cash with nothing on the other side.
+      if (event.assetId !== undefined && stepSuppressed(event.assetId, day)) continue;
       const list = eventsByDay.get(day);
       if (list) list.push(event);
       else eventsByDay.set(day, [event]);
@@ -568,7 +673,11 @@ export function buildIntradayEurValuePoints(input: BuildIntradayEurInput): Intra
     seam: boolean,
   ): number => {
     const vday = perDay.get(day);
-    const info = unitsByAsset?.get(assetId);
+    // An anchorless day is left un-stepped (its cash legs are too), so it takes
+    // the constant-units path below and reproduces the pre-#1120 value exactly.
+    const info = anchorlessDays.has(assetDayKey(assetId, day))
+      ? undefined
+      : unitsByAsset?.get(assetId);
     if (vday === undefined && info === undefined) return 0; // asset not held on this day
 
     const ref = refCloseByAssetDay.get(assetId)?.get(day);
@@ -623,8 +732,11 @@ export function buildIntradayEurValuePoints(input: BuildIntradayEurInput): Intra
       const scaled = closeScaled();
       return u === eod ? scaled : scaled * (u / eod);
     }
-    // Bought AND fully sold on the series' first day: no EUR anchor exists —
-    // contribute 0 (see the module header's limitation note).
+    // No EUR anchor at all: a day the asset is held through but the daily
+    // per-asset series has no value for (an FX gap on both this day and the
+    // previous one). Contribute 0 rather than guess a price. Same-day round
+    // trips — the other shape with no anchor — never reach here: they are
+    // detected up front and left un-stepped ({@link anchorlessAssetDays}).
     return 0;
   };
 
