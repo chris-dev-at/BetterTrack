@@ -268,6 +268,7 @@ export function RecordCashDialog({
 
   const submit = useMutation({
     mutationFn: async () => {
+      // Cash movements use 12:00 UTC, after same-day midnight trades.
       const executedAt = new Date(`${date}T12:00:00Z`).toISOString();
       if (editing) {
         const result = await updateCashMovement(portfolioId, editing.id, {

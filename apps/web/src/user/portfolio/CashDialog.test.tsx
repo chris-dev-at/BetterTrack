@@ -100,7 +100,7 @@ describe('CashDialog', () => {
     await waitFor(() =>
       expect(portfolioApi.depositCash).toHaveBeenCalledWith(
         'p1',
-        expect.objectContaining({ amountEur: 500, executedAt: '2026-07-02T00:00:00.000Z' }),
+        expect.objectContaining({ amountEur: 500, executedAt: '2026-07-02T12:00:00.000Z' }),
       ),
     );
     expect(onSubmitted).toHaveBeenCalledOnce();
@@ -214,7 +214,7 @@ describe('CashDialog', () => {
     await waitFor(() =>
       expect(portfolioApi.chargeCashFee).toHaveBeenCalledWith(
         'p1',
-        expect.objectContaining({ amountEur: 12.5, executedAt: '2026-07-02T00:00:00.000Z' }),
+        expect.objectContaining({ amountEur: 12.5, executedAt: '2026-07-02T12:00:00.000Z' }),
       ),
     );
     expect(portfolioApi.withdrawCash).not.toHaveBeenCalled();
