@@ -11,6 +11,7 @@ import {
   isDownsampledRange,
   isIntradayRange,
   TARGET_POINTS,
+  unitsTimelineFromTrades,
   type IntradayCandle,
   type IntradayValuePoint,
 } from '../portfolioIntraday';
@@ -416,6 +417,234 @@ describe('buildIntradayEurValuePoints — density & anchoring', () => {
   });
 });
 
+describe('buildIntradayEurValuePoints — #1120 prior-close anchoring + same-day steps', () => {
+  const at = (day: string, hm: string): number => Date.parse(`${day}T${hm}:00.000Z`);
+
+  it('I1: a 14:00 buy applies at its bucket — pre-trade value before 14:00, the true +€50 move, no phantom dip', () => {
+    // Fresh position: 1100 cash all morning, buy 10 @ 110 at 14:00 (paid from
+    // cash), close 115 ⇒ V_a(T) = 1150, EOD cash 0. The pre-#1120 curve
+    // retro-applied the EOD units+cash from 09:00: 0 cash + 1150·108/115 =
+    // 1080 at the open — a −2 % dip that never happened.
+    const prices = [108, 109, 108, 110, 109, 110, 112, 113, 114, 114, 115, 115];
+    const candles = candlesForDay(T, 12, 60 * MIN, (i) => prices[i]!); // 09:00 … 20:00
+    const points = buildIntradayEurValuePoints({
+      range: '1D',
+      cutoffDay: T,
+      nowMs: NOW_MS,
+      dailyValueEurByDay: new Map([[T, 1150]]),
+      perAssetEurByDay: new Map([['a', new Map([[T, 1150]])]]),
+      candlesByAsset: new Map([['a', candles]]),
+      unitsByAsset: new Map([
+        ['a', { initialUnits: 0, steps: [{ atMs: at(T, '14:00'), units: 10 }] }],
+      ]),
+      cashEvents: [{ atMs: at(T, '14:00'), amountEur: -1100 }],
+    });
+
+    expect(points.length).toBe(12);
+    // Before the trade the portfolio is its 1100 cash — flat, pinned exactly.
+    for (const p of points.filter((p) => p.timeMs < at(T, '14:00'))) {
+      expect(p.valueEur).toBeCloseTo(1100, 9);
+    }
+    // The trade bucket is continuous: cash −1100, position +10·110·(V/close
+    // scale) = 1150·110/115 = 1100 — no jump for an internal conversion.
+    const tradeBucket = points.find((p) => p.timeMs === at(T, '14:00'))!;
+    expect(tradeBucket.valueEur).toBeCloseTo(1100, 9);
+    // No phantom dip anywhere: the curve never drops below the pre-trade cash.
+    for (const p of points) expect(p.valueEur).toBeGreaterThanOrEqual(1100 - 1e-9);
+    // Close stitches to the daily value exactly: the true move is +€50.
+    const last = points[points.length - 1]!;
+    expect(last.valueEur).toBeCloseTo(1150, 9);
+    expect(last.valueEur - points[0]!.valueEur).toBeCloseTo(50, 9);
+  });
+
+  it('I2: pre-open buckets value a US leg at its PRIOR close; the opening gap appears AT the US open bucket', () => {
+    // EU asset e trades 08:00–16:00 (flat 200); US asset u opens 14:30 with an
+    // overnight gap: V_u(Y) = 1000, V_u(T) = 1100 (refClose 110), first candle
+    // 108. Pre-#1120 the 08:00 bucket already showed the gap (backfilled first
+    // candle: 1100·108/110 = 1080).
+    const euBase = at(T, '08:00');
+    const eu = Array.from({ length: 9 }, (_, i) => ({ atMs: euBase + i * 60 * MIN, price: 200 }));
+    const usBase = at(T, '14:30');
+    const usPrices = [108, 108.5, 109, 109, 109.5, 109.5, 110, 110, 110, 110, 110, 110];
+    const us = Array.from({ length: 12 }, (_, i) => ({
+      atMs: usBase + i * 30 * MIN,
+      price: usPrices[i]!,
+    }));
+    const points = buildIntradayEurValuePoints({
+      range: '1D',
+      cutoffDay: Y,
+      nowMs: NOW_MS,
+      dailyValueEurByDay: new Map([
+        [Y, 3000],
+        [T, 3100],
+      ]),
+      perAssetEurByDay: new Map([
+        [
+          'e',
+          new Map([
+            [Y, 2000],
+            [T, 2000],
+          ]),
+        ],
+        [
+          'u',
+          new Map([
+            [Y, 1000],
+            [T, 1100],
+          ]),
+        ],
+      ]),
+      candlesByAsset: new Map([
+        ['e', eu],
+        ['u', us],
+      ]),
+    });
+
+    // Before the US open every bucket carries the US leg at its prior close:
+    // 2000 (EU, flat) + 1000 (US prior-day value) — pinned, NOT 3080.
+    const preOpen = points.filter((p) => p.date === T && p.timeMs < at(T, '14:30'));
+    expect(preOpen.length).toBeGreaterThan(0);
+    for (const p of preOpen) expect(p.valueEur).toBeCloseTo(3000, 9);
+    // The overnight gap materialises AT the US open bucket: 2000 + 1100·108/110.
+    const openBucket = points.find((p) => p.timeMs === at(T, '14:30'))!;
+    expect(openBucket.valueEur).toBeCloseTo(2000 + (1100 * 108) / 110, 9);
+    // Closing seam unchanged: the day's last bucket equals the daily value.
+    const last = points[points.length - 1]!;
+    expect(last.valueEur).toBeCloseTo(3100, 9);
+    // Yesterday keeps its single daily point.
+    expect(points[0]!.date).toBe(Y);
+    expect(points[0]!.valueEur).toBeCloseTo(3000, 9);
+  });
+
+  it('I3: a candle-less asset flat-lines at its prior-close value; its day move lands at the closing seam', () => {
+    // Market asset m provides the grid (flat 100); candle-less asset c closed
+    // +10 % today (500 → 550). Pre-#1120 every bucket showed the post-gain 550.
+    const candles = candlesForDay(T, 9, 60 * MIN, () => 100); // 09:00 … 17:00, refClose 100
+    const points = buildIntradayEurValuePoints({
+      range: '1D',
+      cutoffDay: Y,
+      nowMs: NOW_MS,
+      dailyValueEurByDay: new Map([
+        [Y, 1500],
+        [T, 1550],
+      ]),
+      perAssetEurByDay: new Map([
+        [
+          'm',
+          new Map([
+            [Y, 1000],
+            [T, 1000],
+          ]),
+        ],
+        [
+          'c',
+          new Map([
+            [Y, 500],
+            [T, 550],
+          ]),
+        ],
+      ]),
+      candlesByAsset: new Map([['m', candles]]),
+    });
+
+    const todayPoints = points.filter((p) => p.date === T);
+    expect(todayPoints.length).toBe(9);
+    // Every bucket before the seam: m at 1000 + c at its PRIOR close 500.
+    for (const p of todayPoints.slice(0, -1)) expect(p.valueEur).toBeCloseTo(1500, 9);
+    // The +10 % lands at the closing seam, which equals the daily value exactly.
+    expect(todayPoints[todayPoints.length - 1]!.valueEur).toBeCloseTo(1550, 9);
+  });
+
+  it('steps the derived cash at a movement’s bucket, keeping the closing seam exact', () => {
+    const candles = candlesForDay(T, 9, 60 * MIN, () => 100); // 09:00 … 17:00
+    const points = buildIntradayEurValuePoints({
+      range: '1D',
+      cutoffDay: T,
+      nowMs: NOW_MS,
+      dailyValueEurByDay: new Map([[T, 1500]]), // 1000 asset + 500 EOD cash
+      perAssetEurByDay: new Map([['a', new Map([[T, 1000]])]]),
+      candlesByAsset: new Map([['a', candles]]),
+      cashEvents: [{ atMs: at(T, '12:00'), amountEur: 500 }],
+    });
+
+    for (const p of points) {
+      if (p.timeMs < at(T, '12:00')) expect(p.valueEur).toBeCloseTo(1000, 9);
+      else expect(p.valueEur).toBeCloseTo(1500, 9);
+    }
+    expect(points[points.length - 1]!.valueEur).toBeCloseTo(1500, 9);
+  });
+
+  it('still degrades to the exact daily slice with step inputs supplied but no candles', () => {
+    const points = buildIntradayEurValuePoints({
+      range: '1D',
+      cutoffDay: Y,
+      nowMs: NOW_MS,
+      dailyValueEurByDay: new Map([
+        [Y, 1000],
+        [T, 1080],
+      ]),
+      perAssetEurByDay: new Map([
+        [
+          'a',
+          new Map([
+            [Y, 1000],
+            [T, 1080],
+          ]),
+        ],
+      ]),
+      candlesByAsset: new Map(),
+      unitsByAsset: new Map([
+        ['a', { initialUnits: 5, steps: [{ atMs: at(T, '14:00'), units: 6 }] }],
+      ]),
+      cashEvents: [{ atMs: at(T, '11:00'), amountEur: -100 }],
+    });
+    expect(points.map((p) => [p.date, p.valueEur])).toEqual([
+      [Y, 1000],
+      [T, 1080],
+    ]);
+  });
+});
+
+describe('unitsTimelineFromTrades', () => {
+  const T14 = Date.parse(`${T}T14:00:00.000Z`);
+  const T15 = Date.parse(`${T}T15:00:00.000Z`);
+  const cutoff = Date.parse(`${T}T00:00:00.000Z`);
+
+  it('folds pre-cutoff deltas into initialUnits and windows the rest into steps', () => {
+    const timeline = unitsTimelineFromTrades(
+      [
+        { atMs: cutoff - 86_400_000, unitsDelta: 5 },
+        { atMs: T14, unitsDelta: 5 },
+        { atMs: T15, unitsDelta: -10 },
+      ],
+      cutoff,
+    );
+    expect(timeline).toEqual({
+      initialUnits: 5,
+      steps: [
+        { atMs: T14, units: 10 },
+        { atMs: T15, units: 0 },
+      ],
+    });
+  });
+
+  it('clamps at zero (no shorts, mirroring the uncovered-sell close-at-zero)', () => {
+    const timeline = unitsTimelineFromTrades(
+      [
+        { atMs: T14, unitsDelta: 3 },
+        { atMs: T15, unitsDelta: -10 },
+      ],
+      cutoff,
+    )!;
+    expect(timeline.steps[1]!.units).toBe(0);
+  });
+
+  it('returns undefined when no in-window trade exists (constant units)', () => {
+    expect(unitsTimelineFromTrades([{ atMs: cutoff - 1, unitsDelta: 5 }], cutoff)).toBeUndefined();
+    expect(unitsTimelineFromTrades([], cutoff)).toBeUndefined();
+  });
+});
+
 describe('intradayPerformancePoints — daily-TWR anchored', () => {
   const dailyBase: ValuePoint[] = [
     { date: Y, valueEur: 1000 },
@@ -461,5 +690,41 @@ describe('intradayPerformancePoints — daily-TWR anchored', () => {
     expect(
       intradayPerformancePoints({ intradayPoints: [], dailyBasePoints: dailyBase, flowsBase: [] }),
     ).toEqual([]);
+  });
+
+  it('applies flow instants progressively (#1120): a 14:00 deposit on a STEPPED value curve stays flat 0 %', () => {
+    // With the value curve now stepping at the deposit instant (1000 before
+    // 14:00, 1500 after), day-boundary flow anchoring would fabricate a dip/
+    // jump; flow instants neutralise each point against the flows actually
+    // applied by then.
+    const daily: ValuePoint[] = [
+      { date: Y, valueEur: 1000 },
+      { date: T, valueEur: 1500 },
+    ];
+    const flows: FlowPoint[] = [{ date: T, flowEur: 500 }];
+    const stepped: IntradayValuePoint[] = [
+      { date: T, timeMs: Date.parse(`${T}T10:00:00Z`), valueEur: 1000 },
+      { date: T, timeMs: Date.parse(`${T}T14:00:00Z`), valueEur: 1500 },
+      { date: T, timeMs: Date.parse(`${T}T18:00:00Z`), valueEur: 1500 },
+    ];
+    const withEvents = intradayPerformancePoints({
+      intradayPoints: stepped,
+      dailyBasePoints: daily,
+      flowsBase: flows,
+      flowEvents: [{ atMs: Date.parse(`${T}T14:00:00Z`), flowEur: 500 }],
+      stepMs: 15 * MIN,
+    });
+    for (const p of withEvents) expect(p.pct).toBeCloseTo(0, 9);
+    // The close still telescopes to the daily TWR (0 % — holdings never moved).
+    expect(withEvents[withEvents.length - 1]!.pct).toBeCloseTo(0, 9);
+
+    // Contrast: WITHOUT flow instants the same stepped values read as a
+    // phantom +50 % swing after re-basing — the pre-#1120 fabrication.
+    const withoutEvents = intradayPerformancePoints({
+      intradayPoints: stepped,
+      dailyBasePoints: daily,
+      flowsBase: flows,
+    });
+    expect(withoutEvents[1]!.pct).toBeGreaterThan(40);
   });
 });

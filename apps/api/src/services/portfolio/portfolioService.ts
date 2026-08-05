@@ -62,6 +62,7 @@ import {
   cashBalancesBySource,
   CashLedgerError,
   InsufficientCashError,
+  isExternalCashMovement,
   pairedTransferMovements,
   projectCashLedgerBySource,
   floorCents,
@@ -72,6 +73,7 @@ import {
 } from '../../domain/cashLedger';
 import {
   deriveHoldings,
+  netFlowsOverTime,
   OversellError,
   rebasePerformance,
   reducePosition,
@@ -97,10 +99,15 @@ import {
   intradayFetchRange,
   intradayIntervalFor,
   intradayPerformancePoints,
+  intradayStepMs,
   isDownsampledRange,
   isIntradayRange,
   TARGET_POINTS,
+  unitsTimelineFromTrades,
+  type IntradayAssetUnits,
   type IntradayCandle,
+  type IntradayCashEvent,
+  type IntradayFlowEvent,
   type IntradayPortfolioRange,
   type IntradayValuePoint,
 } from './portfolioIntraday';
@@ -1282,6 +1289,94 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       }),
     );
 
+    // Same-day steps (#1120/I1): trades and cash movements applied at their
+    // actual instants, so the curve before a 14:00 buy shows the pre-trade
+    // holdings instead of retro-applying the day's EOD units+cash from the
+    // first bucket. The ledgers are the exact ones the snapshot engine reads.
+    const seriesAssetIds = new Set(series.assets.map((a) => a.assetId));
+    const [txnRecords, cashRecords] = await Promise.all([
+      transactionRepo.listForPortfolio(portfolioId),
+      cashMovementRepo.listForPortfolio(portfolioId),
+    ]);
+
+    const tradesByAsset = new Map<string, { atMs: number; unitsDelta: number }[]>();
+    for (const t of txnRecords) {
+      if (!seriesAssetIds.has(t.assetId)) continue; // FX-unconvertible: not in the series
+      const trade = {
+        atMs: t.executedAt.getTime(),
+        unitsDelta: t.side === 'buy' ? t.quantity : -t.quantity,
+      };
+      const list = tradesByAsset.get(t.assetId);
+      if (list) list.push(trade);
+      else tradesByAsset.set(t.assetId, [trade]);
+    }
+    const unitsByAsset = new Map<string, IntradayAssetUnits>();
+    for (const [assetId, trades] of tradesByAsset) {
+      const timeline = unitsTimelineFromTrades(trades, cutoffMs);
+      if (timeline !== undefined) unitsByAsset.set(assetId, timeline);
+    }
+
+    const cashEvents: IntradayCashEvent[] = [];
+    for (const m of cashRecords) {
+      const atMs = m.executedAt.getTime();
+      if (atMs >= cutoffMs) cashEvents.push({ atMs, amountEur: m.amountEur });
+    }
+
+    // External-flow instants for the intraday % curve (#1120) — the same three
+    // legs the snapshot engine books per day (external ledger movements,
+    // unlinked transactions, #378 split-buy compensators), kept at their
+    // timestamps. EUR here; re-denominated with the points below.
+    const flowEventsEur: IntradayFlowEvent[] = [];
+    const cashSettledIds = new Set<string>();
+    for (const m of cashRecords) {
+      const atMs = m.executedAt.getTime();
+      if (atMs >= cutoffMs && isExternalCashMovement(m.kind)) {
+        flowEventsEur.push({ atMs, flowEur: m.amountEur });
+      }
+      if (m.transactionId !== null && (m.kind === 'buy' || m.kind === 'sell_proceeds')) {
+        cashSettledIds.add(m.transactionId);
+      }
+    }
+    const windowUnlinkedTxns = txnRecords.filter(
+      (t) =>
+        t.executedAt.getTime() >= cutoffMs &&
+        seriesAssetIds.has(t.assetId) &&
+        !cashSettledIds.has(t.id),
+    );
+    for (const t of windowUnlinkedTxns) {
+      const asset = assetsById.get(t.assetId);
+      if (!asset) continue;
+      try {
+        const converted = await netFlowsOverTime({
+          transactions: [recordToDomain(t)],
+          currencyByAsset: new Map([[t.assetId, asset.currency]]),
+          converter: currencyService,
+        });
+        const flow = converted[0];
+        if (flow !== undefined) {
+          flowEventsEur.push({ atMs: t.executedAt.getTime(), flowEur: flow.flowEur });
+        }
+      } catch {
+        // FX gap: leave this flow day-anchored (the daily total still has it).
+      }
+    }
+    const txnRecordById = new Map(txnRecords.map((t) => [t.id, t]));
+    for (const m of cashRecords) {
+      if (m.kind !== 'buy' || m.transactionId === null) continue;
+      const txn = txnRecordById.get(m.transactionId);
+      if (!txn || !seriesAssetIds.has(txn.assetId)) continue;
+      const buyDay = txn.executedAt.toISOString().slice(0, 10);
+      const settleDay = m.executedAt.toISOString().slice(0, 10);
+      if (buyDay === settleDay) continue;
+      // #378 compensator pair, each leg at its own instant.
+      if (txn.executedAt.getTime() >= cutoffMs) {
+        flowEventsEur.push({ atMs: txn.executedAt.getTime(), flowEur: -m.amountEur });
+      }
+      if (m.executedAt.getTime() >= cutoffMs) {
+        flowEventsEur.push({ atMs: m.executedAt.getTime(), flowEur: m.amountEur });
+      }
+    }
+
     const eurPoints = buildIntradayEurValuePoints({
       range,
       cutoffDay,
@@ -1289,6 +1384,8 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       dailyValueEurByDay,
       perAssetEurByDay,
       candlesByAsset,
+      unitsByAsset,
+      cashEvents,
     });
     if (eurPoints.length === 0) return null;
 
@@ -1297,6 +1394,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
     // curve, so 1D/1W stay currency-consistent with 1M+. Days whose FX is
     // unavailable in the requested base drop, exactly as they do daily.
     const points: PortfolioHistoryPoint[] = [];
+    let flowEventsBase: IntradayFlowEvent[] = flowEventsEur;
     if (fx.baseCurrency === baseCurrency) {
       for (const p of eurPoints) {
         points.push({ date: p.date, time: new Date(p.timeMs).toISOString(), valueEur: p.valueEur });
@@ -1320,6 +1418,13 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
           valueEur: p.valueEur * rate,
         });
       }
+      // Flow instants re-denominate with the same per-day rates (§5.4); a
+      // dropped day's events drop with its points.
+      flowEventsBase = [];
+      for (const e of flowEventsEur) {
+        const rate = rateByDay.get(new Date(e.atMs).toISOString().slice(0, 10));
+        if (rate !== undefined) flowEventsBase.push({ atMs: e.atMs, flowEur: e.flowEur * rate });
+      }
     }
     if (points.length === 0) return null;
 
@@ -1335,6 +1440,8 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       intradayPoints: baseIntraday,
       dailyBasePoints: baseDaily.points,
       flowsBase: baseDaily.flows,
+      flowEvents: flowEventsBase,
+      stepMs: intradayStepMs(range),
     }).map((p) => ({ date: p.date, time: new Date(p.timeMs).toISOString(), pct: p.pct }));
 
     return { points, performance };

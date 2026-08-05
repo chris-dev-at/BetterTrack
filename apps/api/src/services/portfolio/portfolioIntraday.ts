@@ -59,11 +59,50 @@ import { buildIntradayBucketPrices } from './intradayBucketPrices';
  *     always-fresh snapshot "today" point — the curve stitches with no gap and
  *     no double-count.
  *
+ * ## Prior-close anchoring + same-day steps (issue #1120)
+ *
+ * The identity above carries ONE end-of-day units+cash figure per day, which
+ * fabricated movement in three ways the #1120 audit pinned: a same-day trade
+ * was retro-applied from the day's first bucket (I1), an asset's pre-open
+ * buckets were backfilled with its FIRST candle so overnight gaps appeared at
+ * the wrong instant (I2), and a candle-less asset flat-lined at its CURRENT
+ * day value instead of its prior close (I3). Three rules repair that without
+ * touching the closing seam or the FX discipline:
+ *
+ *  - **Pre-open buckets** (before an asset's first candle of the day) and
+ *    **candle-less days** anchor to the PREVIOUS series day's value
+ *    `V_a(D−1)` — the daily series is the authority for "prior close in EUR",
+ *    so no extra price or FX lookup is needed. When no prior-day value exists
+ *    (the series' first day), the legacy behaviour — first-candle backfill /
+ *    flat `V_a(D)` — is the fallback.
+ *  - **Same-day trades** ({@link BuildIntradayEurInput.unitsByAsset}) apply as
+ *    a step function at their actual bucket: an intraday bucket scales by
+ *    `units(t) / units_a(D,EOD)` (and pre-open/candle-less buckets by the
+ *    prior-day per-unit value), so the curve before a 14:00 buy reflects the
+ *    pre-trade holdings. Cash movements
+ *    ({@link BuildIntradayEurInput.cashEvents}) step the derived cash figure
+ *    the same way. Both inputs are optional — absent, a day keeps its constant
+ *    EOD units/cash exactly as before.
+ *  - **The day's LAST grid bucket is the closing seam** and always carries the
+ *    exact EOD state (EOD units, EOD cash, candle-less assets at `V_a(D)`), so
+ *    the last intraday point still coincides with the daily value precisely.
+ *    A day's own move for a candle-less asset therefore lands AT its close
+ *    rather than being spread backward over hours it never covered.
+ *
+ * Known, deliberate limitation: an asset bought AND fully sold on the series'
+ * very first day has no EUR anchor (`V_a(D) = 0`, no prior day) — it
+ * contributes 0 between its buy and sell while its linked cash steps still
+ * apply, a small dip in place of an untraceable position. A position sold out
+ * mid-window prices its pre-sale buckets at the prior-day per-unit value
+ * (flat), not at intraday candles — never fabricated movement, just coarser.
+ *
  * An asset with **no intraday candles on `D`** (custom/manual assets always; a
- * market asset on a day the provider missed) contributes its flat `V_a(D)` — it
- * carries forward and the curve never breaks or drops it. With zero candles for
- * the whole window the output degrades precisely to the daily slice (one point
- * per in-window day), i.e. the pre-#556 behaviour.
+ * market asset on a day the provider missed) contributes its prior-day value
+ * until the day's last bucket snaps it to `V_a(D)` (legacy flat `V_a(D)` when
+ * no prior day exists) — it carries forward and the curve never breaks or
+ * drops it. With zero candles for the whole window the output degrades
+ * precisely to the daily slice (one point per in-window day), i.e. the
+ * pre-#556 behaviour.
  *
  * ## Grid granularity
  *
@@ -182,6 +221,74 @@ export interface IntradayCandle {
   price: number;
 }
 
+/** One step of an asset's cumulative units — the state AFTER a trade (#1120). */
+export interface IntradayUnitsStep {
+  /** Trade instant (epoch-ms). */
+  atMs: number;
+  /** Cumulative units held immediately after this trade; never negative. */
+  units: number;
+}
+
+/**
+ * An asset's units step function across the window (#1120/I1): the units held
+ * entering the window plus each in-window trade's resulting cumulative units.
+ */
+export interface IntradayAssetUnits {
+  /** Units held entering the window (before the first step). */
+  initialUnits: number;
+  /** Ascending by `atMs`; at least one step (constant assets pass nothing). */
+  steps: readonly IntradayUnitsStep[];
+}
+
+/** One cash-ledger movement at its instant: signed EUR amount (#1120/I1). */
+export interface IntradayCashEvent {
+  atMs: number;
+  /** Signed as stored: inflows positive, outflows negative. */
+  amountEur: number;
+}
+
+/** One external TWR flow at its instant, in the caller's base currency. */
+export interface IntradayFlowEvent {
+  atMs: number;
+  flowEur: number;
+}
+
+/**
+ * Fold signed unit deltas (buy +qty / sell −qty, chronological) into the
+ * {@link IntradayAssetUnits} step function for the window starting at
+ * `cutoffMs`: deltas before the cutoff collapse into `initialUnits`, deltas at
+ * or after it become steps. The running total clamps at 0 — mirroring
+ * `domain/holdings`' no-shorts invariant, where an uncovered sell closes the
+ * position at exactly zero. Returns `undefined` when no in-window delta
+ * exists: constant units need no stepping, and skipping them keeps their
+ * assembly path bit-identical to the pre-#1120 one.
+ */
+export function unitsTimelineFromTrades(
+  trades: readonly { atMs: number; unitsDelta: number }[],
+  cutoffMs: number,
+): IntradayAssetUnits | undefined {
+  let cumulative = 0;
+  let initialUnits = 0;
+  const steps: IntradayUnitsStep[] = [];
+  for (const trade of trades) {
+    if (!Number.isFinite(trade.atMs) || !Number.isFinite(trade.unitsDelta)) continue;
+    cumulative = Math.max(0, cumulative + trade.unitsDelta);
+    if (trade.atMs < cutoffMs) initialUnits = cumulative;
+    else steps.push({ atMs: trade.atMs, units: cumulative });
+  }
+  return steps.length > 0 ? { initialUnits, steps } : undefined;
+}
+
+/** Units held as of `atMs` per the step function (last step at or before it). */
+function unitsAt(info: IntradayAssetUnits, atMs: number): number {
+  let units = info.initialUnits;
+  for (const step of info.steps) {
+    if (step.atMs > atMs) break;
+    units = step.units;
+  }
+  return units;
+}
+
 /** One point on the assembled intraday value curve (EUR before re-denomination). */
 export interface IntradayValuePoint {
   /** The calendar day (ISO `YYYY-MM-DD`, UTC) the point falls on. */
@@ -204,6 +311,17 @@ export interface BuildIntradayEurInput {
   perAssetEurByDay: ReadonlyMap<string, ReadonlyMap<string, number>>;
   /** Native intraday candles per asset; missing/empty ⇒ that asset carries forward. */
   candlesByAsset: ReadonlyMap<string, readonly IntradayCandle[]>;
+  /**
+   * Same-day trade steps per asset (#1120/I1) — only assets with an in-window
+   * trade. Absent (or an asset missing here) ⇒ constant EOD units per day, the
+   * pre-#1120 behaviour.
+   */
+  unitsByAsset?: ReadonlyMap<string, IntradayAssetUnits>;
+  /**
+   * In-window cash-ledger movements at their instants (#1120/I1). Absent ⇒
+   * each day's derived cash stays constant at its EOD figure.
+   */
+  cashEvents?: readonly IntradayCashEvent[];
 }
 
 /** UTC calendar day of an epoch-ms instant. */
@@ -228,7 +346,15 @@ function bucketMs(atMs: number, stepMs: number): number {
  * performance curve are layered on top by the service.
  */
 export function buildIntradayEurValuePoints(input: BuildIntradayEurInput): IntradayValuePoint[] {
-  const { cutoffDay, nowMs, dailyValueEurByDay, perAssetEurByDay, candlesByAsset } = input;
+  const {
+    cutoffDay,
+    nowMs,
+    dailyValueEurByDay,
+    perAssetEurByDay,
+    candlesByAsset,
+    unitsByAsset,
+    cashEvents,
+  } = input;
   const stepMs = RANGE_CONFIG[input.range].stepMs;
 
   // In-window days come straight from the daily series (one point per calendar
@@ -251,9 +377,12 @@ export function buildIntradayEurValuePoints(input: BuildIntradayEurInput): Intra
   }
 
   // Per-asset, per-day candles (window-clamped, ascending) + each day's
-  // reference close (its last candle). Only held assets carry candles.
+  // reference close (its last candle) and open bucket (its first candle's grid
+  // mark — buckets before it are pre-open, #1120/I2). Only held assets carry
+  // candles.
   const dayCandles = new Map<string, Map<string, IntradayCandle[]>>();
   const refCloseByAssetDay = new Map<string, Map<string, number>>();
+  const openBucketByAssetDay = new Map<string, Map<string, number>>();
   const bucketSet = new Set<number>();
   for (const [assetId, candles] of candlesByAsset) {
     if (candles.length === 0) continue;
@@ -270,12 +399,15 @@ export function buildIntradayEurValuePoints(input: BuildIntradayEurInput): Intra
     }
     if (byDay.size === 0) continue;
     const refs = new Map<string, number>();
+    const opens = new Map<string, number>();
     for (const [day, list] of byDay) {
       list.sort((a, b) => a.atMs - b.atMs);
       refs.set(day, list[list.length - 1]!.price);
+      opens.set(day, bucketMs(list[0]!.atMs, stepMs));
     }
     dayCandles.set(assetId, byDay);
     refCloseByAssetDay.set(assetId, refs);
+    openBucketByAssetDay.set(assetId, opens);
   }
 
   const sortedBuckets = [...bucketSet].sort((a, b) => a - b);
@@ -302,19 +434,154 @@ export function buildIntradayEurValuePoints(input: BuildIntradayEurInput): Intra
     if (pricesByDay.size > 0) bucketPricesByAssetDay.set(assetId, pricesByDay);
   }
 
+  // Previous SERIES day per window day — the prior-close anchor (#1120/I2+I3).
+  // The predecessor comes from ALL daily-series days, so the window's first
+  // day still anchors to the day just before the window.
+  const orderedSeriesDays = [...dailyValueEurByDay.keys()].sort();
+  const prevSeriesDayOf = new Map<string, string | undefined>();
+  for (let i = 0; i < orderedSeriesDays.length; i += 1) {
+    prevSeriesDayOf.set(orderedSeriesDays[i]!, i > 0 ? orderedSeriesDays[i - 1] : undefined);
+  }
+
+  // Each day's last grid bucket: the closing seam, always carrying EOD state.
+  const seamBucketByDay = new Map<string, number>();
+  for (const [day, buckets] of bucketsByDay) {
+    seamBucketByDay.set(day, buckets[buckets.length - 1]!);
+  }
+
+  // Cash steps (#1120/I1): per non-seam bucket, the signed sum of the day's
+  // movements NOT yet applied by the bucket's end — subtracted from the EOD
+  // figure, so the curve before a movement shows the pre-movement balance.
+  const cashUnappliedByBucket = new Map<number, number>();
+  if (cashEvents !== undefined && cashEvents.length > 0) {
+    const eventsByDay = new Map<string, IntradayCashEvent[]>();
+    for (const event of cashEvents) {
+      if (!Number.isFinite(event.atMs) || !Number.isFinite(event.amountEur)) continue;
+      const day = dayOfMs(event.atMs);
+      if (!windowDaySet.has(day)) continue;
+      const list = eventsByDay.get(day);
+      if (list) list.push(event);
+      else eventsByDay.set(day, [event]);
+    }
+    for (const [day, events] of eventsByDay) {
+      // Days without a grid keep their single EOD daily point — nothing to step.
+      const buckets = bucketsByDay.get(day);
+      if (!buckets) continue;
+      events.sort((a, b) => a.atMs - b.atMs);
+      const seamBucket = seamBucketByDay.get(day);
+      let total = 0;
+      for (const event of events) total += event.amountEur;
+      let applied = 0;
+      let index = 0;
+      for (const bucket of buckets) {
+        if (bucket === seamBucket) break;
+        const cutoff = bucket + stepMs;
+        while (index < events.length && events[index]!.atMs < cutoff) {
+          applied += events[index]!.amountEur;
+          index += 1;
+        }
+        const unapplied = total - applied;
+        if (unapplied !== 0) cashUnappliedByBucket.set(bucket, unapplied);
+      }
+    }
+  }
+
+  // Per asset+day EOD units under the step function (memoised per day).
+  const unitsEodCache = new Map<string, number>();
+  const eodUnits = (assetId: string, info: IntradayAssetUnits, day: string): number => {
+    const key = `${assetId}|${day}`;
+    let units = unitsEodCache.get(key);
+    if (units === undefined) {
+      units = unitsAt(info, dayStartMs(day) + DAY_MS - 1);
+      unitsEodCache.set(key, units);
+    }
+    return units;
+  };
+
+  /**
+   * One asset's EUR contribution at a bucket. `seam` marks the day's last grid
+   * bucket, which always carries the exact EOD state — the closing seam. Every
+   * path with neither same-day trades nor a prior-day value reduces to the
+   * pre-#1120 expression bit-for-bit.
+   */
+  const assetValueAt = (
+    assetId: string,
+    perDay: ReadonlyMap<string, number>,
+    day: string,
+    bucket: number,
+    seam: boolean,
+  ): number => {
+    const vday = perDay.get(day);
+    const info = unitsByAsset?.get(assetId);
+    if (vday === undefined && info === undefined) return 0; // asset not held on this day
+
+    const ref = refCloseByAssetDay.get(assetId)?.get(day);
+    const price = bucketPricesByAssetDay.get(assetId)?.get(day)?.get(bucket);
+    // The day-close identity value: V_a(D)·price/refClose, flat V_a(D) with
+    // no candles — exactly the legacy expression.
+    const closeScaled = (): number =>
+      ref !== undefined && ref !== 0 && price !== undefined ? (vday! * price) / ref : vday!;
+
+    if (seam) return vday === undefined ? 0 : closeScaled();
+
+    // Genuinely priced by the day's own candles: at/after the asset's first
+    // candle (earlier buckets only carry the first-candle backfill).
+    const openBucket = openBucketByAssetDay.get(assetId)?.get(day);
+    const priced =
+      openBucket !== undefined &&
+      bucket >= openBucket &&
+      ref !== undefined &&
+      ref !== 0 &&
+      price !== undefined;
+
+    const prevDay = prevSeriesDayOf.get(day);
+    const vPrev = prevDay !== undefined ? perDay.get(prevDay) : undefined;
+
+    if (info === undefined) {
+      // Constant units across the day. Pre-open and candle-less buckets anchor
+      // to the prior series day's value (#1120/I2+I3); without one (the
+      // series' first day), the legacy backfill/flat fallback applies.
+      if (!priced && vPrev !== undefined) return vPrev;
+      return closeScaled();
+    }
+
+    const u = unitsAt(info, bucket + stepMs - 1);
+    if (u <= 0) return 0;
+    const eod = eodUnits(assetId, info, day);
+    const prevEod = unitsAt(info, dayStartMs(day) - 1);
+
+    if (priced && vday !== undefined && eod > 0) {
+      // Normal intraday pricing, stepped by the units ratio (#1120/I1) —
+      // ratio 1 keeps the legacy value bit-for-bit.
+      const scaled = (vday * price) / ref;
+      return u === eod ? scaled : scaled * (u / eod);
+    }
+    // Pre-open / candle-less before any same-day trade: exactly the prior close.
+    if (vPrev !== undefined && u === prevEod) return vPrev;
+    // Prior-day per-unit anchor: pre-open/candle-less after a same-day trade,
+    // or a day whose own close cannot scale (position sold out to zero EOD).
+    if (vPrev !== undefined && prevEod > 0) return u * (vPrev / prevEod);
+    // First series day the asset appears: no prior anchor — the day's own
+    // close scale, stepped by the units ratio (the legacy value when u = EOD).
+    if (vday !== undefined && eod > 0) {
+      const scaled = closeScaled();
+      return u === eod ? scaled : scaled * (u / eod);
+    }
+    // Bought AND fully sold on the series' first day: no EUR anchor exists —
+    // contribute 0 (see the module header's limitation note).
+    return 0;
+  };
+
   const points: IntradayValuePoint[] = [];
   const gridDays = new Set<string>();
   for (const bucket of sortedBuckets) {
     const day = dayOfMs(bucket);
     if (!windowDaySet.has(day)) continue;
     gridDays.add(day);
-    let value = cashByDay.get(day) ?? 0;
+    const seam = bucket === seamBucketByDay.get(day);
+    let value = (cashByDay.get(day) ?? 0) - (seam ? 0 : (cashUnappliedByBucket.get(bucket) ?? 0));
     for (const [assetId, perDay] of perAssetEurByDay) {
-      const vday = perDay.get(day);
-      if (vday === undefined) continue; // asset not held on this day
-      const ref = refCloseByAssetDay.get(assetId)?.get(day);
-      const price = bucketPricesByAssetDay.get(assetId)?.get(day)?.get(bucket);
-      value += ref !== undefined && ref !== 0 && price !== undefined ? (vday * price) / ref : vday;
+      value += assetValueAt(assetId, perDay, day, bucket, seam);
     }
     points.push({ date: day, timeMs: bucket, valueEur: value });
   }
@@ -347,6 +614,19 @@ export interface IntradayPerformanceInput {
   dailyBasePoints: readonly ValuePoint[];
   /** The base-currency external TWR flows (any day). */
   flowsBase: readonly FlowPoint[];
+  /**
+   * In-window external-flow instants, base currency (#1120). With these, a
+   * day's flow is neutralised progressively: each point neutralises only the
+   * flows applied by its bucket's end (with the value curve stepping at the
+   * same instants, a deposit no longer reads as a pre-deposit dip), any
+   * event↔day-total residual anchors at the day start, and each day's LAST
+   * point neutralises the full day flow — the close still telescopes to the
+   * daily TWR exactly. Absent ⇒ the whole day's flow anchors at the day
+   * boundary (the pre-#1120 behaviour).
+   */
+  flowEvents?: readonly IntradayFlowEvent[];
+  /** Grid step for bucket-inclusive event application; defaults to 0. */
+  stepMs?: number;
 }
 
 /**
@@ -388,11 +668,37 @@ export function intradayPerformancePoints(
     prevDayOf.set(orderedDays[i]!, i > 0 ? orderedDays[i - 1] : undefined);
   }
 
+  // #1120: flow instants per day + each day's last point (its closing seam,
+  // which always neutralises the full day flow).
+  const eventsByDay = new Map<string, IntradayFlowEvent[]>();
+  for (const event of input.flowEvents ?? []) {
+    if (!Number.isFinite(event.atMs) || !Number.isFinite(event.flowEur)) continue;
+    const day = new Date(event.atMs).toISOString().slice(0, 10);
+    const list = eventsByDay.get(day);
+    if (list) list.push(event);
+    else eventsByDay.set(day, [event]);
+  }
+  const lastTimeByDay = new Map<string, number>();
+  for (const pt of intradayPoints) lastTimeByDay.set(pt.date, pt.timeMs);
+  const stepMs = input.stepMs ?? 0;
+
   const raw: IntradayPerformancePoint[] = intradayPoints.map((pt) => {
     const prevDay = prevDayOf.get(pt.date);
     const prevIndex = prevDay !== undefined ? (indexByDay.get(prevDay) ?? 1) : 1;
     const prevValue = prevDay !== undefined ? (valueByDay.get(prevDay) ?? 0) : 0;
-    const flow = flowByDay.get(pt.date) ?? 0;
+    const dayFlow = flowByDay.get(pt.date) ?? 0;
+    let flow = dayFlow;
+    const events = eventsByDay.get(pt.date);
+    if (events !== undefined && pt.timeMs !== lastTimeByDay.get(pt.date)) {
+      // Progressive application: subtract the flows not yet applied by this
+      // bucket's end; any residual (FX dust, un-instanted flows) stays at the
+      // day start, exactly where the day-boundary convention put everything.
+      let unapplied = 0;
+      for (const event of events) {
+        if (event.atMs >= pt.timeMs + stepMs) unapplied += event.flowEur;
+      }
+      flow = dayFlow - unapplied;
+    }
     const numerator = pt.valueEur - Math.min(flow, 0);
     const denominator = prevValue + Math.max(flow, 0);
     const r =
