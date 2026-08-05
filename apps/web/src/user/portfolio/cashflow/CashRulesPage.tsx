@@ -146,7 +146,6 @@ export function CashRulesPage({ embedded = false }: { embedded?: boolean } = {})
             <DisabledActionHint
               disabled={tags.length === 0}
               hint={t('cashflow.rules.dialog.noTags')}
-              label={t('cashflow.rules.new')}
             >
               <Button
                 disabled={tags.length === 0}

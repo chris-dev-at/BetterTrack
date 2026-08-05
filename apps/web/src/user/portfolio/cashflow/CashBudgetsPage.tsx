@@ -97,6 +97,10 @@ export function CashBudgetsPage() {
   // dialog's own options list (and the server's 409) are the real enforcement.
   const budgetedTagIds = new Set(budgets.map((b) => b.tagId));
   const canCreate = tags.some((tag) => !budgetedTagIds.has(tag.id));
+  const createHint =
+    tags.length === 0
+      ? t('cashflow.movements.tagDialog.noTags')
+      : t('cashflow.budgets.dialog.noTags');
 
   return (
     <div className="bt-money-surface flex flex-col gap-6">
@@ -114,11 +118,7 @@ export function CashBudgetsPage() {
                 value={month}
               />
             </label>
-            <DisabledActionHint
-              disabled={!canCreate}
-              hint={t('cashflow.budgets.dialog.noTags')}
-              label={t('cashflow.budgets.new')}
-            >
+            <DisabledActionHint disabled={!canCreate} hint={createHint}>
               <Button disabled={!canCreate} onClick={() => setCreating(true)} variant="primary">
                 {t('cashflow.budgets.new')}
               </Button>
@@ -138,11 +138,7 @@ export function CashBudgetsPage() {
       {budgets.length === 0 ? (
         <EmptyState
           cta={
-            <DisabledActionHint
-              disabled={!canCreate}
-              hint={t('cashflow.budgets.dialog.noTags')}
-              label={t('cashflow.budgets.emptyCta')}
-            >
+            <DisabledActionHint disabled={!canCreate} hint={createHint}>
               <Button disabled={!canCreate} onClick={() => setCreating(true)} variant="quiet">
                 {t('cashflow.budgets.emptyCta')}
               </Button>

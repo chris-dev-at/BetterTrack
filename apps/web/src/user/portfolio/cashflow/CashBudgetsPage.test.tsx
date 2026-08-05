@@ -278,13 +278,13 @@ describe('CashBudgetsPage', () => {
     );
 
     await user.unhover(newBudget);
-    const hint = screen.getByRole('group', { name: 'New budget' });
+    const hint = screen.getByRole('group');
     hint.focus();
     expect(hint).toHaveFocus();
     await waitFor(() => {
-      expect(screen.getByRole('tooltip')).toHaveTextContent(
-        'Every tag already has a budget for this period.',
-      );
+      const tooltip = screen.getByRole('tooltip');
+      expect(tooltip).toHaveTextContent('Every tag already has a budget for this period.');
+      expect(hint).toHaveAttribute('aria-describedby', tooltip.id);
     });
 
     client.setQueryData(CASH_TAGS_QUERY_KEY, { tags: [FOOD, RENT] });
@@ -299,5 +299,27 @@ describe('CashBudgetsPage', () => {
 
     expect(await screen.findByText('No budgets yet')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Add a budget' })).toBeInTheDocument();
+  });
+
+  test('names missing tags when empty-state budget actions are disabled', async () => {
+    vi.mocked(listCashTags).mockResolvedValue({ tags: [] });
+    const user = userEvent.setup();
+    renderPage();
+
+    const newBudget = await screen.findByRole('button', { name: 'New budget' });
+    const addBudget = screen.getByRole('button', { name: 'Add a budget' });
+    expect(newBudget).toBeDisabled();
+    expect(addBudget).toBeDisabled();
+
+    await user.hover(newBudget);
+    expect(screen.getByRole('tooltip')).toHaveTextContent(
+      "You don't have any tags yet — create one on the “Labels & rules” page first.",
+    );
+
+    await user.unhover(newBudget);
+    await user.hover(addBudget);
+    expect(screen.getByRole('tooltip')).toHaveTextContent(
+      "You don't have any tags yet — create one on the “Labels & rules” page first.",
+    );
   });
 });

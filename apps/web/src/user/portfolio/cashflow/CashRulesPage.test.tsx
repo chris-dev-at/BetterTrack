@@ -128,13 +128,13 @@ describe('CashRulesPage', () => {
     );
 
     await user.unhover(newRule);
-    const hint = screen.getByRole('group', { name: 'New rule' });
+    const hint = screen.getByRole('group');
     hint.focus();
     expect(hint).toHaveFocus();
     await waitFor(() => {
-      expect(screen.getByRole('tooltip')).toHaveTextContent(
-        'Create a tag first — a rule needs at least one to apply.',
-      );
+      const tooltip = screen.getByRole('tooltip');
+      expect(tooltip).toHaveTextContent('Create a tag first — a rule needs at least one to apply.');
+      expect(hint).toHaveAttribute('aria-describedby', tooltip.id);
     });
 
     client.setQueryData(CASH_TAGS_QUERY_KEY, { tags: [FOOD] });

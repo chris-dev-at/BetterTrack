@@ -3,7 +3,6 @@ import { useId, useState, type ReactNode } from 'react';
 interface DisabledActionHintProps {
   disabled: boolean;
   hint: string;
-  label: string;
   children: ReactNode;
 }
 
@@ -12,7 +11,7 @@ interface DisabledActionHintProps {
  * focus. Native disabled buttons cannot receive focus, so their wrapper owns
  * the description and exposes the visible helper when focused.
  */
-export function DisabledActionHint({ children, disabled, hint, label }: DisabledActionHintProps) {
+export function DisabledActionHint({ children, disabled, hint }: DisabledActionHintProps) {
   const descriptionId = useId();
   const [focused, setFocused] = useState(false);
   const [hovered, setHovered] = useState(false);
@@ -24,8 +23,7 @@ export function DisabledActionHint({ children, disabled, hint, label }: Disabled
   return (
     <span
       aria-describedby={descriptionId}
-      aria-label={label}
-      className="inline-flex flex-col items-end gap-1"
+      className="relative inline-flex"
       onBlur={() => setFocused(false)}
       onFocus={() => setFocused(true)}
       onMouseEnter={() => setHovered(true)}
@@ -34,14 +32,19 @@ export function DisabledActionHint({ children, disabled, hint, label }: Disabled
       tabIndex={0}
     >
       {children}
-      <span className="sr-only" id={descriptionId}>
-        {hint}
-      </span>
       {open ? (
-        <span className="bt-meta max-w-64 text-right" role="tooltip">
+        <span
+          className="bt-meta absolute top-full right-0 z-10 mt-1 max-w-64 text-right"
+          id={descriptionId}
+          role="tooltip"
+        >
           {hint}
         </span>
-      ) : null}
+      ) : (
+        <span className="sr-only" id={descriptionId}>
+          {hint}
+        </span>
+      )}
     </span>
   );
 }
