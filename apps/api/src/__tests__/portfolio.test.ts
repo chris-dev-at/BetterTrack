@@ -935,6 +935,118 @@ describe('PATCH/DELETE /api/v1/portfolios/:id/transactions/:txId', () => {
   });
 });
 
+describe('storage-drift envelope on the holdings replay (#1094, extends #917)', () => {
+  // The F1 fixture through the real numeric(20,8) storage oracle: four raw
+  // buys of 0.1000000049 + a sell of their exact raw sum 0.4000000196 pass
+  // create-time validation on the RAW values, then Postgres rounds each row
+  // independently — buys store 0.10000000, the sell 0.40000002, a 2e-8 stored
+  // shortfall every later replay sees (`storageDriftVectors.ts` pins the
+  // stored shape in the domain package).
+  const F1_RAW_BUY = 0.1000000049;
+  const F1_RAW_SELL = 0.4000000196;
+
+  async function seedF1State() {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
+    const asset = await seedAsset(harness);
+
+    const created = await agent
+      .post(`/api/v1/portfolios/${pid}/transactions`)
+      .set(...XRW)
+      .send({
+        transactions: [
+          {
+            assetId: asset.id,
+            side: 'buy',
+            quantity: F1_RAW_BUY,
+            price: 50,
+            executedAt: tsOffset(-6),
+          },
+          {
+            assetId: asset.id,
+            side: 'buy',
+            quantity: F1_RAW_BUY,
+            price: 50,
+            executedAt: tsOffset(-5),
+          },
+          {
+            assetId: asset.id,
+            side: 'buy',
+            quantity: F1_RAW_BUY,
+            price: 50,
+            executedAt: tsOffset(-4),
+          },
+          {
+            assetId: asset.id,
+            side: 'buy',
+            quantity: F1_RAW_BUY,
+            price: 50,
+            executedAt: tsOffset(-3),
+          },
+          {
+            assetId: asset.id,
+            side: 'sell',
+            quantity: F1_RAW_SELL,
+            price: 60,
+            executedAt: tsOffset(-2),
+          },
+        ],
+      });
+    expect(created.status).toBe(201);
+    return { agent, pid, asset };
+  }
+
+  it('the portfolio overview of an affected row set returns 200 with a flat position', async () => {
+    const { agent, pid } = await seedF1State();
+
+    // Prove the stored-drift state actually exists: the rows read back
+    // rounded apart (otherwise this whole test would be vacuous).
+    const list = await agent.get(`/api/v1/portfolios/${pid}/transactions`);
+    expect(list.status).toBe(200);
+    const sell = list.body.items.find((t: { side: string }) => t.side === 'sell');
+    expect(sell.quantity).toBe(0.40000002);
+    expect(
+      list.body.items
+        .filter((t: { side: string }) => t.side === 'buy')
+        .map((t: { quantity: number }) => t.quantity),
+    ).toEqual([0.1, 0.1, 0.1, 0.1]);
+
+    const res = await agent.get(`/api/v1/portfolios/${pid}`);
+    expect(res.status).toBe(200);
+    expect(portfolioResponseSchema.safeParse(res.body).success).toBe(true);
+    expect(res.body.holdings).toHaveLength(1);
+    expect(res.body.holdings[0].quantity).toBe(0);
+  });
+
+  it('sibling edits no longer 400 on within-envelope drift', async () => {
+    const { agent, pid } = await seedF1State();
+    const list = await agent.get(`/api/v1/portfolios/${pid}/transactions`);
+    const sell = list.body.items.find((t: { side: string }) => t.side === 'sell');
+
+    const res = await agent
+      .patch(`/api/v1/portfolios/${pid}/transactions/${sell.id}`)
+      .set(...XRW)
+      .send({ note: 'annotated through the drift state' });
+    expect(res.status).toBe(200);
+    expect(res.body.transaction.note).toBe('annotated through the drift state');
+  });
+
+  it('a genuine oversell still 400s: deleting a contributing buy stays blocked', async () => {
+    const { agent, pid } = await seedF1State();
+    const list = await agent.get(`/api/v1/portfolios/${pid}/transactions`);
+    const buy = list.body.items.find((t: { side: string }) => t.side === 'buy');
+
+    // Without one 0.1 buy the sell of 0.40000002 is short a real unit — far
+    // beyond any storage-rounding envelope.
+    const blocked = await agent
+      .delete(`/api/v1/portfolios/${pid}/transactions/${buy.id}`)
+      .set(...XRW);
+    expect(blocked.status).toBe(400);
+    expect(blocked.body.error.code).toBe('OVERSELL');
+  });
+});
+
 describe('GET /api/v1/portfolios/:id (holdings + totals)', () => {
   it('derives holdings + totals from the transaction log and a live quote', async () => {
     // Deterministic EUR quote with a prior close, so day change is exercised too.
