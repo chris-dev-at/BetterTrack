@@ -337,6 +337,18 @@ function assertValidMovement(movement: CashMovement, at?: number): void {
   occurredAtToMs(movement.occurredAt);
 }
 
+/**
+ * Chronological replay order shared by every cash derivation: oldest first,
+ * with same-instant movements retaining their input order.
+ */
+function orderCashMovements<T extends CashMovement>(
+  movements: readonly T[],
+): Array<{ movement: T; index: number; ms: number }> {
+  return movements
+    .map((movement, index) => ({ movement, index, ms: occurredAtToMs(movement.occurredAt) }))
+    .sort((a, b) => a.ms - b.ms || a.index - b.index);
+}
+
 // ---------------------------------------------------------------------------
 // Balance & projection
 // ---------------------------------------------------------------------------
@@ -392,9 +404,7 @@ export function applyCashMovement(balanceEur: number, movement: CashMovement): n
  */
 export function projectCashLedger(movements: readonly CashMovement[]): CashLedgerEntry[] {
   movements.forEach((movement, i) => assertValidMovement(movement, i));
-  const ordered = movements
-    .map((movement, index) => ({ movement, index, ms: occurredAtToMs(movement.occurredAt) }))
-    .sort((a, b) => a.ms - b.ms || a.index - b.index);
+  const ordered = orderCashMovements(movements);
 
   const entries: CashLedgerEntry[] = [];
   let balanceEur = 0;
@@ -428,22 +438,19 @@ export function projectCashLedger(movements: readonly CashMovement[]): CashLedge
 export function spendableAsOf(movements: readonly CashMovement[], occurredAt: string): number {
   movements.forEach((movement, i) => assertValidMovement(movement, i));
   const eMs = occurredAtToMs(occurredAt);
-  // Ascending by time; ties settle credits (positive) before debits (negative),
-  // mirroring `projectCashLedger`'s replay order for same-instant movements.
-  const ordered = movements
-    .map((movement) => ({ ms: occurredAtToMs(movement.occurredAt), amountEur: movement.amountEur }))
-    .sort((a, b) => a.ms - b.ms || b.amountEur - a.amountEur);
+  // Use the gate's exact replay order, including input-order timestamp ties.
+  const ordered = orderCashMovements(movements);
 
   // Floor: the balance at and before `e` (the buy applies after all of these).
   let floor = 0;
-  for (const m of ordered) if (m.ms <= eMs) floor += m.amountEur;
+  for (const { movement, ms } of ordered) if (ms <= eMs) floor += movement.amountEur;
   // Then the lowest the balance dips at strictly-later instants — the spend,
   // which shifts every one of them down by its cost, must clear the minimum.
   let running = floor;
   let minFromE = floor;
-  for (const m of ordered) {
-    if (m.ms > eMs) {
-      running += m.amountEur;
+  for (const { movement, ms } of ordered) {
+    if (ms > eMs) {
+      running += movement.amountEur;
       if (running < minFromE) minFromE = running;
     }
   }
@@ -580,9 +587,7 @@ export function cashBySourceOverTime(
   });
 
   const endMs = isoDayToMs(endDay);
-  const ordered = movements
-    .map((movement, index) => ({ movement, index, ms: occurredAtToMs(movement.occurredAt) }))
-    .sort((a, b) => a.ms - b.ms || a.index - b.index)
+  const ordered = orderCashMovements(movements)
     // Movements dated after the grid end never enter (netWorthSeries's rule).
     .filter(({ movement }) => isoDayToMs(dayOf(movement.occurredAt)) <= endMs);
   const first = ordered[0];
@@ -812,9 +817,7 @@ export function netWorthSeries(input: NetWorthSeriesInput): ValuePoint[] {
   // Sparse end-of-day balances: chronological replay (ties by input order,
   // mirroring projectCashLedger), plain running sum — see docstring for why
   // the insufficient-cash gate deliberately does not apply here.
-  const ordered = movements
-    .map((movement, index) => ({ movement, index, ms: occurredAtToMs(movement.occurredAt) }))
-    .sort((a, b) => a.ms - b.ms || a.index - b.index);
+  const ordered = orderCashMovements(movements);
   const eodBalances: Array<{ dayMs: number; balanceEur: number }> = [];
   let balanceEur = 0;
   for (const { movement } of ordered) {
