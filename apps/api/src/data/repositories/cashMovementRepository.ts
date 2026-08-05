@@ -112,17 +112,47 @@ function toInsertValues(portfolioId: string, movement: NewCashMovement) {
 
 export type CashMovementTransactionExecutor = Pick<Database, 'execute' | 'select' | 'insert'>;
 
+type CashMovementUpdatePatch = {
+  sourceId: string;
+  kind: Kind;
+  amountEur: number;
+  executedAt: Date;
+  note: string | null;
+};
+
 /**
- * Serialize every cash-ledger mutation that must coordinate with the open-year
- * tax reconciler. Callers acquire this before deleting a parent row, then keep
- * it through any replacement/correction inserts so every path uses the same
- * advisory-lock-first order.
+ * Serialize every cash-ledger mutation that must coordinate with the solvency
+ * gate and open-year tax reconciler.
+ *
+ * Keying is deliberately per portfolio: PostgreSQL's one-int advisory-lock
+ * namespace receives `hashtext(portfolioId)`. The same UUID therefore always
+ * shares one lock across cash writes, transaction/dividend deletes and tax
+ * reconciliation. A rare 32-bit hash collision only serializes two unrelated
+ * portfolios; it cannot weaken correctness. Because this is an xact lock,
+ * PostgreSQL releases it automatically on commit/rollback.
+ *
+ * Every participating path takes this lock before reading or mutating ledger
+ * rows. Keeping that advisory-lock-first order avoids a cycle with parent-row
+ * deletes, whose cash movements cascade while the same transaction holds it.
  */
 export async function lockPortfolioCashLedgerInTransaction(
   tx: CashMovementTransactionExecutor,
   portfolioId: string,
 ): Promise<void> {
   await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${portfolioId}))`);
+}
+
+/** Read one portfolio's ledger through the caller's current transaction. */
+export async function listPortfolioCashMovementsInTransaction(
+  tx: Pick<Database, 'select'>,
+  portfolioId: string,
+): Promise<CashMovementRecord[]> {
+  const rows = await tx
+    .select()
+    .from(portfolioCashMovements)
+    .where(eq(portfolioCashMovements.portfolioId, portfolioId))
+    .orderBy(asc(portfolioCashMovements.executedAt), asc(portfolioCashMovements.id));
+  return rows.map(toRecord);
 }
 
 /** Insert and auto-tag cash movements inside a transaction the caller owns. */
@@ -153,12 +183,8 @@ export async function insertReconciledCashMovementsInTransaction(
   plan: (fresh: CashMovementRecord[]) => NewCashMovement[],
 ): Promise<CashMovementRecord[]> {
   await lockPortfolioCashLedgerInTransaction(tx, portfolioId);
-  const fresh = await tx
-    .select()
-    .from(portfolioCashMovements)
-    .where(eq(portfolioCashMovements.portfolioId, portfolioId))
-    .orderBy(asc(portfolioCashMovements.executedAt), asc(portfolioCashMovements.id));
-  const movements = plan(fresh.map(toRecord));
+  const fresh = await listPortfolioCashMovementsInTransaction(tx, portfolioId);
+  const movements = plan(fresh);
   // Auto-tagging rides inside the caller's transaction, so a rolled-back
   // reconciliation takes its labels with it (V5 cash fusion).
   return insertCashMovementsInTransaction(tx, portfolioId, movements);
@@ -175,6 +201,26 @@ export function createCashMovementRepository(db: Database) {
       if (!row) throw new Error('Cash movement insert returned no row');
       await stampMovementTags(db, portfolioId, [row]);
       return toRecord(row);
+    },
+
+    /**
+     * Lock, re-read and validate immediately before inserting one movement.
+     * Ownership/source resolution stays in the service; this transaction is
+     * intentionally only the solvency-check + money-write critical section.
+     */
+    async insertWithCashLedgerLock(
+      portfolioId: string,
+      movement: NewCashMovement,
+      validate: (fresh: readonly CashMovementRecord[]) => void,
+    ): Promise<CashMovementRecord> {
+      return db.transaction(async (tx) => {
+        await lockPortfolioCashLedgerInTransaction(tx, portfolioId);
+        const fresh = await listPortfolioCashMovementsInTransaction(tx, portfolioId);
+        validate(fresh);
+        const [inserted] = await insertCashMovementsInTransaction(tx, portfolioId, [movement]);
+        if (!inserted) throw new Error('Cash movement insert returned no row');
+        return inserted;
+      });
     },
 
     /**
@@ -228,12 +274,7 @@ export function createCashMovementRepository(db: Database) {
      * `amountEur` regardless of order.
      */
     async listForPortfolio(portfolioId: string): Promise<CashMovementRecord[]> {
-      const rows = await db
-        .select()
-        .from(portfolioCashMovements)
-        .where(eq(portfolioCashMovements.portfolioId, portfolioId))
-        .orderBy(asc(portfolioCashMovements.executedAt), asc(portfolioCashMovements.id));
-      return rows.map(toRecord);
+      return listPortfolioCashMovementsInTransaction(db, portfolioId);
     },
 
     /**
@@ -255,13 +296,7 @@ export function createCashMovementRepository(db: Database) {
       portfolioId: string,
       id: string,
       previousKind: Kind,
-      patch: {
-        sourceId: string;
-        kind: Kind;
-        amountEur: number;
-        executedAt: Date;
-        note: string | null;
-      },
+      patch: CashMovementUpdatePatch,
     ): Promise<CashMovementRecord | null> {
       const [row] = await db
         .update(portfolioCashMovements)
@@ -287,6 +322,50 @@ export function createCashMovementRepository(db: Database) {
     },
 
     /**
+     * Correct a movement under the portfolio cash-ledger lock. `plan` sees the
+     * post-lock ledger and current row, so replay validation and the UPDATE use
+     * one database snapshot and transaction.
+     */
+    async updateForPortfolioWithCashLedgerLock(
+      portfolioId: string,
+      id: string,
+      plan: (
+        fresh: readonly CashMovementRecord[],
+        current: CashMovementRecord,
+      ) => CashMovementUpdatePatch,
+    ): Promise<{
+      movement: CashMovementRecord;
+      previous: CashMovementRecord;
+    } | null> {
+      return db.transaction(async (tx) => {
+        await lockPortfolioCashLedgerInTransaction(tx, portfolioId);
+        const fresh = await listPortfolioCashMovementsInTransaction(tx, portfolioId);
+        const current = fresh.find((movement) => movement.id === id);
+        if (!current) return null;
+        const patch = plan(fresh, current);
+        const [row] = await tx
+          .update(portfolioCashMovements)
+          .set({
+            sourceId: patch.sourceId,
+            kind: patch.kind,
+            amountEur: String(patch.amountEur),
+            executedAt: patch.executedAt,
+            note: patch.note,
+          })
+          .where(
+            and(
+              eq(portfolioCashMovements.id, id),
+              eq(portfolioCashMovements.portfolioId, portfolioId),
+            ),
+          )
+          .returning();
+        if (!row) return null;
+        await restampMovementTags(tx, portfolioId, row, current.kind);
+        return { movement: toRecord(row), previous: current };
+      });
+    },
+
+    /**
      * Remove a hand-entered movement. `cash_movement_tags` cascades on
      * `movement_id`, so the labels go with it and no orphan link survives.
      * Returns whether a row was actually removed, so a repeat delete is a 404
@@ -303,6 +382,31 @@ export function createCashMovementRepository(db: Database) {
         )
         .returning({ id: portfolioCashMovements.id });
       return rows.length > 0;
+    },
+
+    /** Validate and delete one movement inside the shared ledger lock. */
+    async deleteForPortfolioWithCashLedgerLock(
+      portfolioId: string,
+      id: string,
+      validate: (fresh: readonly CashMovementRecord[], current: CashMovementRecord) => void,
+    ): Promise<CashMovementRecord | null> {
+      return db.transaction(async (tx) => {
+        await lockPortfolioCashLedgerInTransaction(tx, portfolioId);
+        const fresh = await listPortfolioCashMovementsInTransaction(tx, portfolioId);
+        const current = fresh.find((movement) => movement.id === id);
+        if (!current) return null;
+        validate(fresh, current);
+        const rows = await tx
+          .delete(portfolioCashMovements)
+          .where(
+            and(
+              eq(portfolioCashMovements.id, id),
+              eq(portfolioCashMovements.portfolioId, portfolioId),
+            ),
+          )
+          .returning({ id: portfolioCashMovements.id });
+        return rows.length > 0 ? current : null;
+      });
     },
 
     /** A single movement scoped to its portfolio, else null (defense-in-depth). */

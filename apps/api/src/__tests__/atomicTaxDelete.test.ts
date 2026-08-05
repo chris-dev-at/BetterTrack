@@ -1,4 +1,5 @@
 import postgres from 'postgres';
+import { drizzle as drizzlePostgres } from 'drizzle-orm/postgres-js';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import * as schema from '../data/schema';
@@ -182,11 +183,12 @@ async function waitForDatabaseLock(
 /**
  * PGlite has one connection, so this runs in the real-Postgres CI slice. A
  * trigger pauses DELETE after the mutation has taken its portfolio advisory
- * lock. The reconciler must then wait on that same lock rather than forming a
- * reverse-order cycle; releasing the trigger lets both operations complete.
+ * lock. A guarded cash write and the reconciler must then wait on that same
+ * lock rather than forming a reverse-order cycle; releasing the trigger lets
+ * all three operations complete.
  */
 it.skipIf(!REAL_DATABASE_URL)(
-  'serializes a transaction delete with advisory-locked tax reconciliation without deadlock',
+  'serializes a transaction delete, guarded cash write and tax reconciliation without deadlock',
   async () => {
     const { user, portfolioId, asset, source } = await seedLedgerFixture('ATOMIC-LOCK');
     const transactions = createTransactionRepository(harness.db);
@@ -206,9 +208,14 @@ it.skipIf(!REAL_DATABASE_URL)(
 
     const controller = postgres(REAL_DATABASE_URL!, { max: 1 });
     const observer = postgres(REAL_DATABASE_URL!, { max: 1 });
+    const guardedClient = postgres(REAL_DATABASE_URL!, { max: 1 });
+    const guardedMovements = createCashMovementRepository(
+      drizzlePostgres(guardedClient, { schema }),
+    );
     const lockReady = deferred();
     const releaseLock = deferred();
     let deletion: Promise<boolean> | undefined;
+    let cashWrite: Promise<unknown> | undefined;
     let reconciliation: Promise<unknown[]> | undefined;
 
     await observer.unsafe(`
@@ -256,6 +263,20 @@ it.skipIf(!REAL_DATABASE_URL)(
         'the transaction delete to pause inside its trigger',
       );
 
+      cashWrite = guardedMovements.insertWithCashLedgerLock(
+        portfolioId,
+        validCorrection(source.id, 'Guarded cash write'),
+        () => undefined,
+      );
+      const cashWriteWait = await waitForDatabaseLock(
+        observer,
+        (row) =>
+          row.pid !== deleteWait.pid &&
+          row.waitEvent === 'advisory' &&
+          /pg_advisory_xact_lock/iu.test(row.query),
+        'the guarded cash write to wait behind the transaction delete',
+      );
+
       reconciliation = movements.insertReconciled(portfolioId, () => [
         validCorrection(source.id, 'Reconciled correction'),
       ]);
@@ -263,6 +284,7 @@ it.skipIf(!REAL_DATABASE_URL)(
         observer,
         (row) =>
           row.pid !== deleteWait.pid &&
+          row.pid !== cashWriteWait.pid &&
           row.waitEvent === 'advisory' &&
           /pg_advisory_xact_lock/iu.test(row.query),
         'tax reconciliation to wait behind the delete portfolio lock',
@@ -271,15 +293,21 @@ it.skipIf(!REAL_DATABASE_URL)(
 
       releaseLock.resolve();
       await lockOwner;
-      const [deleted, reconciled] = await Promise.all([deletion, reconciliation]);
+      const [deleted, written, reconciled] = await Promise.all([
+        deletion,
+        cashWrite,
+        reconciliation,
+      ]);
       expect(deleted).toBe(true);
+      expect(written).toBeTruthy();
       expect(reconciled).toHaveLength(1);
       expect(await transactions.findByIdForUser(user.id, transaction.id)).toBeNull();
-      expect(await movements.listForPortfolio(portfolioId)).toHaveLength(2);
+      expect(await movements.listForPortfolio(portfolioId)).toHaveLength(3);
     } finally {
       releaseLock.resolve();
       await lockOwner.catch(() => {});
       await deletion?.catch(() => {});
+      await cashWrite?.catch(() => {});
       await reconciliation?.catch(() => {});
       await observer.unsafe(
         'DROP TRIGGER IF EXISTS bt_test_pause_atomic_transaction_delete ON transactions',
@@ -287,6 +315,7 @@ it.skipIf(!REAL_DATABASE_URL)(
       await observer.unsafe('DROP FUNCTION IF EXISTS bt_test_pause_atomic_transaction_delete()');
       await controller.end();
       await observer.end();
+      await guardedClient.end();
     }
   },
   15_000,
