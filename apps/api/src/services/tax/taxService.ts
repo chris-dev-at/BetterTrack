@@ -2483,11 +2483,12 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
       }
     }
 
-    const deleted = await taxRepo.deleteForPortfolio(portfolioId, dividendId);
+    const deleted = await taxRepo.deleteForPortfolioWithCorrections(
+      portfolioId,
+      dividendId,
+      corrections,
+    );
     if (!deleted) throw notFound('Dividend not found.', 'DIVIDEND_NOT_FOUND');
-    for (const correction of corrections) {
-      await cashMovementRepo.insert(portfolioId, correction);
-    }
     // The removed dividend's day, or an earlier-dated correction (§16 rule 6).
     const affectedFrom = [
       dayOfDate(dividend.executedAt),
