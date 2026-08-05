@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 
 import type { AssetType, SearchResultItem } from '@bettertrack/contracts';
@@ -258,11 +259,14 @@ export function CmdKPalette({ isOpen, onClose }: CmdKPaletteProps) {
 
   const noResults = trimmed.length > 0 && sections.length === 0;
 
-  return (
+  // The palette can open above the portalled Control Center. Mounting it in the
+  // shell would leave it inside the Control Center's inert background, so give
+  // it an independent body-level layer just like the other modal primitives.
+  return createPortal(
     <div
       aria-label={t('common.quickSearchAria')}
       aria-modal="true"
-      className="bt-palette-overlay"
+      className="bt-app bt-palette-overlay"
       onClick={handleBackdrop}
       onKeyDown={onTrapKeyDown}
       ref={containerRef}
@@ -357,7 +361,8 @@ export function CmdKPalette({ isOpen, onClose }: CmdKPaletteProps) {
           </span>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 

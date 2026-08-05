@@ -164,35 +164,6 @@ export function PortfolioWizard({
     target?.focus();
   }, [index]);
 
-  // Keep Tab inside the dialog. ODialog restores focus on close and closes on
-  // Escape; the cycle is owned here rather than bolted onto a primitive every
-  // other surface shares.
-  useEffect(() => {
-    function onKeyDown(event: KeyboardEvent) {
-      if (event.key !== 'Tab') return;
-      const panel = formRef.current?.closest('[role="dialog"]');
-      if (!panel) return;
-      const nodes = [
-        ...panel.querySelectorAll<HTMLElement>(
-          'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
-        ),
-      ].filter((node) => !node.hasAttribute('disabled'));
-      const first = nodes[0];
-      const last = nodes[nodes.length - 1];
-      if (!first || !last) return;
-      const inside = panel.contains(document.activeElement);
-      if (event.shiftKey && (document.activeElement === first || !inside)) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && (document.activeElement === last || !inside)) {
-        event.preventDefault();
-        first.focus();
-      }
-    }
-    document.addEventListener('keydown', onKeyDown);
-    return () => document.removeEventListener('keydown', onKeyDown);
-  }, []);
-
   if (!step) return null;
   const { Component } = step;
   const busy = commit.isPending || Boolean(reported.busy);

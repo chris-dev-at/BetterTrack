@@ -1,7 +1,6 @@
 import {
   useEffect,
   useId,
-  useRef,
   type ButtonHTMLAttributes,
   type HTMLAttributes,
   type InputHTMLAttributes,
@@ -15,6 +14,7 @@ import { NavLink, type NavLinkProps } from 'react-router-dom';
 
 import { useT } from '../../i18n';
 import { cx } from '../../lib/cx';
+import { useFocusTrap } from '../../user/components/useFocusTrap';
 import { Icon, type IconName } from './icons';
 
 /*
@@ -419,25 +419,18 @@ export function ODialog({
 }) {
   const t = useT();
   const titleId = useId();
-  const panelRef = useRef<HTMLDivElement>(null);
+  const { containerRef: rootRef, onKeyDown } = useFocusTrap<HTMLDivElement>({
+    active: open,
+    inertBackground: true,
+  });
 
   useEffect(() => {
     if (!open) return;
-    const previous = document.activeElement as HTMLElement | null;
-    // Move focus into the dialog; restore it on close.
-    const panel = panelRef.current;
-    const focusable = panel?.querySelector<HTMLElement>(
-      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])',
-    );
-    (focusable ?? panel)?.focus();
     function onKey(event: KeyboardEvent) {
       if (event.key === 'Escape') onClose();
     }
     document.addEventListener('keydown', onKey);
-    return () => {
-      document.removeEventListener('keydown', onKey);
-      previous?.focus?.();
-    };
+    return () => document.removeEventListener('keydown', onKey);
   }, [open, onClose]);
 
   if (!open) return null;
@@ -447,8 +440,14 @@ export function ODialog({
   // portfolio switcher laid itself out inside that 56px strip. The portal root
   // carries `bt-app`, which is where the ink, type scale and focus ring live.
   return createPortal(
-    <div className="bt-app bt-dialog-root">
-      <button aria-label={t('common.close')} className="bt-scrim" onClick={onClose} type="button" />
+    <div className="bt-app bt-dialog-root" onKeyDown={onKeyDown} ref={rootRef} tabIndex={-1}>
+      <button
+        aria-label={t('common.close')}
+        className="bt-scrim"
+        onClick={onClose}
+        tabIndex={-1}
+        type="button"
+      />
       <div className={cx('bt-dialog', phoneSheet && 'bt-dialog--phone-sheet')}>
         <div
           aria-labelledby={titleId}
@@ -458,7 +457,6 @@ export function ODialog({
             size === 'wizard' && 'bt-dialog__panel--wizard',
             phoneSheet && 'bt-dialog__panel--phone-sheet',
           )}
-          ref={panelRef}
           role="dialog"
           style={wide ? { width: 'min(760px, 100%)' } : undefined}
           tabIndex={-1}
@@ -498,6 +496,12 @@ export function Drawer({
   children: ReactNode;
 }) {
   const t = useT();
+  const titleId = useId();
+  const { containerRef: rootRef, onKeyDown } = useFocusTrap<HTMLDivElement>({
+    active: open,
+    inertBackground: true,
+  });
+
   useEffect(() => {
     if (!open) return;
     function onKey(event: KeyboardEvent) {
@@ -509,11 +513,25 @@ export function Drawer({
 
   if (!open) return null;
   return (
-    <>
-      <button aria-label={t('common.close')} className="bt-scrim" onClick={onClose} type="button" />
-      <aside aria-label={typeof title === 'string' ? title : undefined} className="bt-drawer">
+    <div onKeyDown={onKeyDown} ref={rootRef} tabIndex={-1}>
+      <button
+        aria-label={t('common.close')}
+        className="bt-scrim"
+        onClick={onClose}
+        tabIndex={-1}
+        type="button"
+      />
+      <aside
+        aria-labelledby={titleId}
+        aria-modal="true"
+        className="bt-drawer"
+        role="dialog"
+        tabIndex={-1}
+      >
         <div className="bt-drawer__head">
-          <h2 className="bt-dialog__title">{title}</h2>
+          <h2 className="bt-dialog__title" id={titleId}>
+            {title}
+          </h2>
           <Button
             aria-label={t('common.close')}
             icon="x"
@@ -525,7 +543,7 @@ export function Drawer({
         </div>
         <div className="bt-drawer__body">{children}</div>
       </aside>
-    </>
+    </div>
   );
 }
 

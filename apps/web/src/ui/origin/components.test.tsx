@@ -1,0 +1,95 @@
+import { useState } from 'react';
+import { render, screen, waitFor, within } from '@testing-library/react';
+import userEvent from '@testing-library/user-event';
+import { expect, test } from 'vitest';
+
+import { Drawer, ODialog } from './components';
+
+function DialogFixture() {
+  const [open, setOpen] = useState(false);
+  return (
+    <div>
+      <button onClick={() => setOpen(true)} type="button">
+        Open editor
+      </button>
+      <button type="button">Behind dialog</button>
+      <ODialog onClose={() => setOpen(false)} open={open} title="Edit portfolio">
+        <button type="button">Cancel</button>
+        <button type="button">Save</button>
+      </ODialog>
+    </div>
+  );
+}
+
+test('ODialog inerts the background, traps focus, and restores its opener', async () => {
+  const user = userEvent.setup();
+  render(<DialogFixture />);
+
+  const opener = screen.getByRole('button', { name: 'Open editor' });
+  const behind = screen.getByRole('button', { name: 'Behind dialog' });
+  await user.click(opener);
+
+  const dialog = screen.getByRole('dialog', { name: 'Edit portfolio' });
+  const close = within(dialog).getByRole('button', { name: 'Close' });
+  const save = within(dialog).getByRole('button', { name: 'Save' });
+  expect(close).toHaveFocus();
+  expect(opener.closest('[inert]')).not.toBeNull();
+  expect(behind.closest('[inert]')).not.toBeNull();
+  expect(dialog.closest('[inert]')).toBeNull();
+
+  save.focus();
+  await user.tab();
+  expect(close).toHaveFocus();
+  await user.tab({ shift: true });
+  expect(save).toHaveFocus();
+
+  await user.click(close);
+  await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+  expect(opener).toHaveFocus();
+  expect(opener.closest('[inert]')).toBeNull();
+});
+
+function DrawerFixture() {
+  const [open, setOpen] = useState(false);
+  return (
+    <div>
+      <button onClick={() => setOpen(true)} type="button">
+        Add widget
+      </button>
+      <button type="button">Behind drawer</button>
+      <Drawer onClose={() => setOpen(false)} open={open} title="Widget catalog">
+        <button type="button">First widget</button>
+        <button type="button">Last widget</button>
+      </Drawer>
+    </div>
+  );
+}
+
+test('Drawer is a modal dialog with inert background, trapped focus, and restoration', async () => {
+  const user = userEvent.setup();
+  render(<DrawerFixture />);
+
+  const opener = screen.getByRole('button', { name: 'Add widget' });
+  const behind = screen.getByRole('button', { name: 'Behind drawer' });
+  await user.click(opener);
+
+  const drawer = screen.getByRole('dialog', { name: 'Widget catalog' });
+  const close = within(drawer).getByRole('button', { name: 'Close' });
+  const last = within(drawer).getByRole('button', { name: 'Last widget' });
+  expect(drawer).toHaveAttribute('aria-modal', 'true');
+  expect(close).toHaveFocus();
+  expect(opener.closest('[inert]')).not.toBeNull();
+  expect(behind.closest('[inert]')).not.toBeNull();
+  expect(drawer.closest('[inert]')).toBeNull();
+
+  last.focus();
+  await user.tab();
+  expect(close).toHaveFocus();
+  await user.tab({ shift: true });
+  expect(last).toHaveFocus();
+
+  await user.click(close);
+  await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
+  expect(opener).toHaveFocus();
+  expect(opener.closest('[inert]')).toBeNull();
+});

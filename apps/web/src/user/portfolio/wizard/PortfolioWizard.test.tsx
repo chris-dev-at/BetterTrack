@@ -52,7 +52,7 @@ function renderWizard(props: { allowShared?: boolean } = {}) {
   const onCreated = vi.fn();
   const onSharedBook = vi.fn();
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  render(
+  const view = render(
     <MemoryRouter>
       <QueryClientProvider client={client}>
         <PortfolioWizard
@@ -64,7 +64,7 @@ function renderWizard(props: { allowShared?: boolean } = {}) {
       </QueryClientProvider>
     </MemoryRouter>,
   );
-  return { onClose, onCreated, onSharedBook };
+  return { ...view, onClose, onCreated, onSharedBook };
 }
 
 const primary = () => screen.getByRole('button', { name: 'Create portfolio' });
@@ -298,6 +298,27 @@ describe('PortfolioWizard — creation', () => {
 });
 
 describe('PortfolioWizard — focus', () => {
+  test('the open wizard inerts the background and restores its opener on close', () => {
+    const opener = document.createElement('button');
+    opener.textContent = 'Open portfolio wizard';
+    document.body.append(opener);
+    opener.focus();
+
+    const view = renderWizard();
+    try {
+      const dialog = screen.getByRole('dialog', { name: 'Add portfolio' });
+      expect(opener).toHaveAttribute('inert');
+      expect(dialog.closest('[inert]')).toBeNull();
+
+      view.unmount();
+
+      expect(opener).not.toHaveAttribute('inert');
+      expect(opener).toHaveFocus();
+    } finally {
+      opener.remove();
+    }
+  });
+
   test('Tab stays inside the dialog', async () => {
     renderWizard();
     const dialog = await screen.findByRole('dialog', { name: 'Add portfolio' });
