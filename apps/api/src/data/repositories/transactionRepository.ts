@@ -320,7 +320,8 @@ export function createTransactionRepository(db: Database) {
       const rows = await db
         .select()
         .from(transactions)
-        .where(and(eq(transactions.portfolioId, portfolioId), eq(transactions.assetId, assetId)));
+        .where(and(eq(transactions.portfolioId, portfolioId), eq(transactions.assetId, assetId)))
+        .orderBy(asc(transactions.executedAt), asc(transactions.id));
       return rows.map(toRecord);
     },
 
