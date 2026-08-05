@@ -769,12 +769,11 @@ export function buildIntradayEurValuePoints(input: BuildIntradayEurInput): Intra
       return closeScaled();
     }
 
-    // Units applied by the bucket's END — but never past the day's own end: a
-    // grid step that does not divide the day (1M's ~2.5 h, #1121) can start
-    // late on D and finish on D+1, and `vday`/`eod` below are day-scoped, so an
-    // unclamped read would scale THIS day's close by TOMORROW's units (#1120
-    // review). Candle-covered days are already safe (their straddling bucket is
-    // the seam); a candle-less day carrying event buckets is not.
+    // Units apply at the bucket's END, never past the day's own end. Every
+    // current range step divides a UTC day (#1121), so ordinary buckets cannot
+    // straddle midnight; retain the clamp as a defensive guard for any future
+    // non-dividing grid, because `vday`/`eod` below are day-scoped and an
+    // unclamped read could scale THIS day's close by TOMORROW's units.
     const u = unitsAt(info, Math.min(bucket + stepMs - 1, dayStartMs(day) + DAY_MS - 1));
     if (u <= QTY_EPSILON) return 0;
     const eod = eodUnits(assetId, info, day);
