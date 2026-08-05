@@ -10,7 +10,13 @@ vi.mock('../../lib/conglomerateApi', () => ({
   getResolvedConglomerate: vi.fn(),
   deleteConglomerate: vi.fn(),
   allocateConglomerate: vi.fn(),
-  updateConglomerate: vi.fn(),
+}));
+
+vi.mock('../../lib/socialApi', () => ({
+  getAudience: vi.fn(),
+  listFriends: vi.fn(),
+  listGroups: vi.fn(),
+  setAudience: vi.fn(),
 }));
 
 vi.mock('../../lib/backtestApi', () => ({
@@ -60,9 +66,9 @@ import {
   deleteConglomerate,
   getConglomerate,
   getResolvedConglomerate,
-  updateConglomerate,
 } from '../../lib/conglomerateApi';
 import { listPortfolios } from '../../lib/portfolioApi';
+import { getAudience, listFriends, listGroups, setAudience } from '../../lib/socialApi';
 import { ConglomerateDetailPage } from './ConglomerateDetailPage';
 
 const CONGLOMERATE_ID = 'c1';
@@ -159,6 +165,16 @@ function renderPage(id = CONGLOMERATE_ID) {
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(getResolvedConglomerate).mockResolvedValue(RESOLVED);
+  vi.mocked(getAudience).mockResolvedValue({
+    kind: 'conglomerate',
+    subjectId: CONGLOMERATE_ID,
+    audience: 'private',
+    friendIds: [],
+    groupId: null,
+    link: { active: false, createdAt: null },
+  });
+  vi.mocked(listFriends).mockResolvedValue({ friends: [] });
+  vi.mocked(listGroups).mockResolvedValue({ groups: [] });
   vi.mocked(listPortfolios).mockResolvedValue({
     portfolios: [
       {
@@ -351,15 +367,50 @@ describe('ConglomerateDetailPage', () => {
     expect(screen.queryByText(/resolved view could not be loaded/i)).not.toBeInTheDocument();
   });
 
-  test('shows an inline error when toggling sharing fails', async () => {
+  test('requires the shared audience confirmation before replacing a narrower audience', async () => {
     vi.mocked(getConglomerate).mockResolvedValue(DETAIL);
-    vi.mocked(updateConglomerate).mockRejectedValue(new Error('server error'));
+    vi.mocked(getAudience).mockResolvedValue({
+      kind: 'conglomerate',
+      subjectId: CONGLOMERATE_ID,
+      audience: 'specific_friends',
+      friendIds: [],
+      groupId: null,
+      link: { active: false, createdAt: null },
+    });
+    vi.mocked(setAudience).mockResolvedValue({
+      state: {
+        kind: 'conglomerate',
+        subjectId: CONGLOMERATE_ID,
+        audience: 'all_friends',
+        friendIds: [],
+        groupId: null,
+        link: { active: false, createdAt: null },
+      },
+    });
     const user = userEvent.setup();
     renderPage();
 
     await waitFor(() => expect(screen.getByText('Core Growth')).toBeInTheDocument());
     await user.click(screen.getByRole('button', { name: 'Share with friends' }));
+    await user.click(await screen.findByRole('radio', { name: /all friends/i }));
+    expect(
+      screen.getByText(/change access from specific friends to all friends/i),
+    ).toBeInTheDocument();
+    expect(setAudience).not.toHaveBeenCalled();
 
-    await waitFor(() => expect(screen.getByText(/Could not update sharing/i)).toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: /^cancel$/i }));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(setAudience).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole('button', { name: 'Share with friends' }));
+    await user.click(await screen.findByRole('radio', { name: /all friends/i }));
+    await user.click(screen.getByRole('button', { name: /^save$/i }));
+
+    await waitFor(() => expect(setAudience).toHaveBeenCalledTimes(1));
+    expect(setAudience).toHaveBeenCalledWith('conglomerate', CONGLOMERATE_ID, {
+      audience: 'all_friends',
+      friendIds: undefined,
+      acknowledgePublic: undefined,
+    });
   });
 });

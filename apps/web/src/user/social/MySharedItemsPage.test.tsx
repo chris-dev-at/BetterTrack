@@ -24,7 +24,13 @@ vi.mock('../../lib/portfolioApi', () => ({
   listPortfolios: vi.fn(),
 }));
 
-import { getAudience, listFriends, listGroups, listMyShared } from '../../lib/socialApi';
+import {
+  getAudience,
+  listFriends,
+  listGroups,
+  listMyShared,
+  setAudience,
+} from '../../lib/socialApi';
 import { getAlertSharing, updateAlertSharing } from '../../lib/alertsApi';
 import { listPortfolios } from '../../lib/portfolioApi';
 import { setViewportWidth } from '../../test/viewport';
@@ -209,6 +215,43 @@ describe('MySharedItemsPage', () => {
     await waitFor(() => expect(screen.getByRole('dialog')).toBeInTheDocument());
     // The reusable AudiencePicker renders the audience ladder.
     expect(screen.getByRole('radio', { name: /all friends/i })).toBeInTheDocument();
+  });
+
+  test('uses the same named audience transition and cancel gate as item views', async () => {
+    vi.mocked(listMyShared).mockResolvedValue({
+      portfolios: [],
+      conglomerates: [
+        {
+          conglomerateId: CONGLOMERATE_ID,
+          name: 'Tech basket',
+          positionCount: 3,
+          audience: 'specific_friends',
+          friendCount: 1,
+        },
+      ],
+      watchlists: [],
+      ideas: [],
+    });
+    vi.mocked(getAudience).mockResolvedValue({
+      kind: 'conglomerate',
+      subjectId: CONGLOMERATE_ID,
+      audience: 'specific_friends',
+      friendIds: [],
+      groupId: null,
+      link: { active: false, createdAt: null },
+    });
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole('button', { name: 'Share' }));
+    await user.click(await screen.findByRole('radio', { name: /all friends/i }));
+    expect(
+      screen.getByText(/change access from specific friends to all friends/i),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole('button', { name: /^cancel$/i }));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(setAudience).not.toHaveBeenCalled();
   });
 
   test('lists all three kinds including a never-shared blueprint + watchlist, each settable (#384)', async () => {

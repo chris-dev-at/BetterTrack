@@ -2894,6 +2894,7 @@
     "friendsNone": "Du hast noch keine Freunde. Füge Freunde hinzu, um gezielt zu teilen.",
     "friendsSelect": "Freunde auswählen",
     "allFriendsConfirm": "Dies teilt eine schreibgeschützte Ansicht mit allen deinen Freunden.",
+    "audienceChangeConfirm": "Zugriff von {{from}} auf {{to}} ändern. Dies teilt eine schreibgeschützte Ansicht mit allen deinen Freunden. Speichere, um zu bestätigen.",
     "publicWarning": "Dies erstellt einen öffentlichen Link — jeder mit dem Link sieht deine Bestände und dein Nettovermögen.",
     "publicAcknowledge": "Mir ist bewusst, dass jeder mit dem Link dies sehen kann.",
     "publicActive": "Ein öffentlicher Link ist aktiv. Aus Sicherheitsgründen wird die URL nur einmal bei der Erstellung angezeigt.",

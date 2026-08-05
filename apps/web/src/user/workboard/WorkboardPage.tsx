@@ -16,18 +16,18 @@ import { formatDate, formatSignedPercent } from '../../lib/format';
 import { EARNINGS_CALENDAR_QUERY_KEY, getEarningsCalendar } from '../../lib/marketIntelApi';
 import { useT } from '../../i18n';
 import {
-  WATCHLIST_SHARING_QUERY_KEY,
+  WATCHLISTS_QUERY_KEY,
   WORKBOARD_QUERY_KEY,
-  getWatchlistSharing,
+  listWatchlists,
   listWorkboard,
   removeFromWorkboard,
   reorderWorkboard,
-  updateWatchlistSharing,
 } from '../../lib/workboardApi';
 import { EmptyState, MarketStateBadge, MoneyText, Skeleton } from '../../ui';
 import { Sparkline } from '../../ui/charts';
 import { Alert, Button } from '../components/ui';
 import { AsyncReadState } from '../components/AsyncReadState';
+import { AudiencePicker } from '../components/AudiencePicker';
 import { NormalModeOnly } from '../vault/ui/ParanoidSurfaceGate';
 
 // ─── Watchlist row ────────────────────────────────────────────────────────────
@@ -201,33 +201,24 @@ function WatchlistRow({
   );
 }
 
-// ─── Watchlist friend-sharing toggle (§6.9, V2-P9) ───────────────────────────
+// ─── Watchlist audience control (§6.9, V3-P5) ────────────────────────────────
 
 /**
- * Whole-watchlist friend-sharing toggle (§6.9, V2-P9): mirrors the portfolio
- * private↔friends model. Sharing exposes a read-only copy of the watchlist to
- * the owner's friends via their Friends overview; revoking closes access immediately.
+ * Opens the same authoritative audience picker used by My items. In particular,
+ * this must never route through the legacy private↔friends endpoint: that path
+ * can overwrite a specific-friends, group, or public-link audience.
  */
-function WatchlistSharingToggle() {
+function WatchlistSharingControl() {
   const t = useT();
   const queryClient = useQueryClient();
-  const [error, setError] = useState(false);
+  const [sharingOpen, setSharingOpen] = useState(false);
   const query = useQuery({
-    queryKey: WATCHLIST_SHARING_QUERY_KEY,
-    queryFn: ({ signal }) => getWatchlistSharing(signal),
+    queryKey: WATCHLISTS_QUERY_KEY,
+    queryFn: ({ signal }) => listWatchlists(signal),
     staleTime: 30_000,
   });
-  const data = query.data;
-  const mutation = useMutation({
-    mutationFn: (visibility: 'private' | 'friends') => updateWatchlistSharing(visibility),
-    onSuccess: (res) => {
-      setError(false);
-      queryClient.setQueryData(WATCHLIST_SHARING_QUERY_KEY, res);
-      void queryClient.invalidateQueries({ queryKey: ['social', 'my-shared'] });
-    },
-    onError: () => setError(true),
-  });
-  const shared = data?.visibility === 'friends';
+  const watchlist = query.data?.watchlists.find((item) => item.isDefault);
+  const shared = watchlist?.audience === 'all_friends';
   return (
     <div className="flex flex-col items-end gap-1.5">
       <AsyncReadState
@@ -237,15 +228,23 @@ function WatchlistSharingToggle() {
       />
       <Button
         variant="secondary"
-        onClick={() => mutation.mutate(shared ? 'private' : 'friends')}
-        disabled={mutation.isPending || data === undefined}
-        aria-pressed={shared}
+        onClick={() => setSharingOpen(true)}
+        disabled={watchlist === undefined}
+        aria-haspopup="dialog"
       >
         {shared
           ? t('workboard.overview.watchlist.sharedButton')
           : t('workboard.overview.watchlist.shareButton')}
       </Button>
-      {error ? <Alert tone="error">{t('workboard.overview.watchlist.shareError')}</Alert> : null}
+      {sharingOpen && watchlist ? (
+        <AudiencePicker
+          kind="watchlist"
+          subjectId={watchlist.id}
+          subjectLabel={watchlist.name}
+          onClose={() => setSharingOpen(false)}
+          onChanged={() => void queryClient.invalidateQueries({ queryKey: WATCHLISTS_QUERY_KEY })}
+        />
+      ) : null}
     </div>
   );
 }
@@ -363,7 +362,7 @@ function WatchlistZone() {
           {t('workboard.overview.watchlist.heading')}
         </h2>
         <NormalModeOnly>
-          <WatchlistSharingToggle />
+          <WatchlistSharingControl />
         </NormalModeOnly>
       </div>
 

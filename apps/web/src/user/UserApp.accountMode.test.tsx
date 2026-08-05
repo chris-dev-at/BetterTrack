@@ -8,8 +8,10 @@ vi.mock('../lib/userApi');
 vi.mock('../lib/portfolioApi');
 vi.mock('../lib/workboardApi', () => ({
   WORKBOARD_QUERY_KEY: ['workboard'],
+  WATCHLISTS_QUERY_KEY: ['workboard', 'watchlists'],
   WATCHLIST_SHARING_QUERY_KEY: ['workboard', 'sharing'],
   listWorkboard: vi.fn(async () => ({ items: [] })),
+  listWatchlists: vi.fn(async () => ({ watchlists: [] })),
   addToWorkboard: vi.fn(),
   removeFromWorkboard: vi.fn(),
   reorderWorkboard: vi.fn(),

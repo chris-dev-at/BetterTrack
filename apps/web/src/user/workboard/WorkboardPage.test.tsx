@@ -8,12 +8,11 @@ import { beforeEach, describe, expect, test, vi } from 'vitest';
 
 vi.mock('../../lib/workboardApi', () => ({
   WORKBOARD_QUERY_KEY: ['workboard'],
-  WATCHLIST_SHARING_QUERY_KEY: ['workboard', 'sharing'],
+  WATCHLISTS_QUERY_KEY: ['workboard', 'watchlists'],
   listWorkboard: vi.fn(),
+  listWatchlists: vi.fn(),
   removeFromWorkboard: vi.fn(),
   reorderWorkboard: vi.fn(),
-  getWatchlistSharing: vi.fn(),
-  updateWatchlistSharing: vi.fn(),
 }));
 
 vi.mock('../../lib/assetApi', () => ({
@@ -26,25 +25,33 @@ vi.mock('../../lib/marketIntelApi', () => ({
   getEarningsCalendar: vi.fn(),
 }));
 
+vi.mock('../../lib/socialApi', () => ({
+  getAudience: vi.fn(),
+  listFriends: vi.fn(),
+  listGroups: vi.fn(),
+  setAudience: vi.fn(),
+}));
+
 import {
-  getWatchlistSharing,
+  listWatchlists,
   listWorkboard,
   removeFromWorkboard,
   reorderWorkboard,
-  updateWatchlistSharing,
 } from '../../lib/workboardApi';
 import { getAssetHistory, getAssetQuote } from '../../lib/assetApi';
 import { ApiError } from '../../lib/apiClient';
 import { getEarningsCalendar } from '../../lib/marketIntelApi';
+import { getAudience, listFriends, listGroups, setAudience } from '../../lib/socialApi';
 import { WorkboardPage } from './WorkboardPage';
 
 const EMPTY_EARNINGS_CALENDAR = { available: false as const, entries: [] };
+const DEFAULT_WATCHLIST_ID = 'c0000000-0000-0000-0000-0000000000c1';
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
 const ITEM_A = {
   id: '00000000-0000-0000-0000-000000000001',
-  watchlistId: 'c0000000-0000-0000-0000-0000000000c1',
+  watchlistId: DEFAULT_WATCHLIST_ID,
   assetId: 'aa000000-0000-0000-0000-000000000001',
   sortOrder: 0,
   note: null,
@@ -124,7 +131,27 @@ beforeEach(() => {
   vi.mocked(getAssetHistory).mockResolvedValue(BASE_HISTORY);
   vi.mocked(removeFromWorkboard).mockResolvedValue(undefined);
   vi.mocked(reorderWorkboard).mockResolvedValue(undefined);
-  vi.mocked(getWatchlistSharing).mockResolvedValue({ visibility: 'private' });
+  vi.mocked(listWatchlists).mockResolvedValue({
+    watchlists: [
+      {
+        id: DEFAULT_WATCHLIST_ID,
+        name: 'General',
+        isDefault: true,
+        itemCount: 2,
+        audience: 'private',
+      },
+    ],
+  });
+  vi.mocked(getAudience).mockResolvedValue({
+    kind: 'watchlist',
+    subjectId: DEFAULT_WATCHLIST_ID,
+    audience: 'private',
+    friendIds: [],
+    groupId: null,
+    link: { active: false, createdAt: null },
+  });
+  vi.mocked(listFriends).mockResolvedValue({ friends: [] });
+  vi.mocked(listGroups).mockResolvedValue({ groups: [] });
   // Earnings panel hidden by default (unconfigured); opt-in tests override.
   vi.mocked(getEarningsCalendar).mockResolvedValue(EMPTY_EARNINGS_CALENDAR);
 });
@@ -214,7 +241,7 @@ describe('WorkboardPage — item rendering', () => {
     vi.mocked(listWorkboard).mockResolvedValue({ items: [ITEM_A] });
     vi.mocked(getAssetQuote).mockRejectedValue(new ApiError(503, 'UNAVAILABLE', 'offline'));
     vi.mocked(getAssetHistory).mockRejectedValue(new ApiError(404, 'NOT_FOUND', 'missing'));
-    vi.mocked(getWatchlistSharing).mockRejectedValue(new ApiError(403, 'FORBIDDEN', 'forbidden'));
+    vi.mocked(listWatchlists).mockRejectedValue(new ApiError(403, 'FORBIDDEN', 'forbidden'));
     renderPage();
 
     await waitFor(() =>
@@ -360,16 +387,62 @@ describe('WorkboardPage — zone placeholders', () => {
 // ─── Watchlist sharing ────────────────────────────────────────────────────────
 
 describe('WorkboardPage — watchlist sharing', () => {
-  test('shows an inline error when toggling sharing fails', async () => {
+  test('requires the shared audience confirmation before replacing a narrower audience', async () => {
     vi.mocked(listWorkboard).mockResolvedValue({ items: [ITEM_A] });
-    vi.mocked(updateWatchlistSharing).mockRejectedValue(new Error('server error'));
+    vi.mocked(listWatchlists).mockResolvedValue({
+      watchlists: [
+        {
+          id: DEFAULT_WATCHLIST_ID,
+          name: 'General',
+          isDefault: true,
+          itemCount: 1,
+          audience: 'specific_friends',
+        },
+      ],
+    });
+    vi.mocked(getAudience).mockResolvedValue({
+      kind: 'watchlist',
+      subjectId: DEFAULT_WATCHLIST_ID,
+      audience: 'specific_friends',
+      friendIds: [],
+      groupId: null,
+      link: { active: false, createdAt: null },
+    });
+    vi.mocked(setAudience).mockResolvedValue({
+      state: {
+        kind: 'watchlist',
+        subjectId: DEFAULT_WATCHLIST_ID,
+        audience: 'all_friends',
+        friendIds: [],
+        groupId: null,
+        link: { active: false, createdAt: null },
+      },
+    });
     const user = userEvent.setup();
     renderPage();
     await waitFor(() => expect(screen.getByText('AAPL')).toBeInTheDocument());
 
     await user.click(screen.getByRole('button', { name: 'Share with friends' }));
+    await user.click(await screen.findByRole('radio', { name: /all friends/i }));
+    expect(
+      screen.getByText(/change access from specific friends to all friends/i),
+    ).toBeInTheDocument();
+    expect(setAudience).not.toHaveBeenCalled();
 
-    await waitFor(() => expect(screen.getByText(/Could not update sharing/i)).toBeInTheDocument());
+    await user.click(screen.getByRole('button', { name: /^cancel$/i }));
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(setAudience).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole('button', { name: 'Share with friends' }));
+    await user.click(await screen.findByRole('radio', { name: /all friends/i }));
+    await user.click(screen.getByRole('button', { name: /^save$/i }));
+
+    await waitFor(() => expect(setAudience).toHaveBeenCalledTimes(1));
+    expect(setAudience).toHaveBeenCalledWith('watchlist', DEFAULT_WATCHLIST_ID, {
+      audience: 'all_friends',
+      friendIds: undefined,
+      acknowledgePublic: undefined,
+    });
   });
 });
 
