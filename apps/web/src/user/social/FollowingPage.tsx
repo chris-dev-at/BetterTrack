@@ -123,7 +123,11 @@ function FollowedItemRow({ item }: { item: FollowedItem }) {
         <div className="flex min-w-0 flex-1 items-center gap-3">{identity}</div>
       )}
       <Button
-        aria-label={t('social.itemFollow.unfollowAria')}
+        aria-label={
+          available === null
+            ? t('social.itemFollow.unfollowAria')
+            : t('social.itemFollow.unfollowNamedAria', { name: available.name })
+        }
         disabled={unfollowMutation.isPending}
         onClick={() => unfollowMutation.mutate()}
         size="sm"
@@ -131,6 +135,9 @@ function FollowedItemRow({ item }: { item: FollowedItem }) {
       >
         {t('social.itemFollow.unfollow')}
       </Button>
+      {unfollowMutation.isError ? (
+        <Alert tone="error">{t('social.itemFollow.unfollowError')}</Alert>
+      ) : null}
     </li>
   );
 }
@@ -150,7 +157,7 @@ export function FollowingPage() {
   });
 
   return (
-    <div className="bt-phone-surface bt-following-page flex flex-col">
+    <div className="bt-phone-surface flex flex-col">
       <PageHead sub={t('social.follow.listSubtitle')} title={t('social.follow.listTitle')} />
 
       <div className="flex flex-col gap-8">

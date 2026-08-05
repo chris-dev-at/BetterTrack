@@ -110,8 +110,11 @@ describe('FollowingPage', () => {
     );
     expect(screen.getByText('No longer available')).toBeInTheDocument();
 
-    const itemButtons = screen.getAllByRole('button', { name: 'Unfollow this item' });
-    await user.click(itemButtons[2]!);
+    expect(screen.getByRole('button', { name: 'Unfollow Growth' })).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: 'Unfollow Durable compounders' }),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Unfollow this item' }));
     await waitFor(() =>
       expect(unfollowItem).toHaveBeenCalledWith(
         'watchlist',
@@ -147,5 +150,18 @@ describe('FollowingPage', () => {
       screen.getByText("Couldn't load your followed items. Please refresh the page."),
     ).toBeInTheDocument();
     expect(screen.getAllByRole('button', { name: 'Try again' })).toHaveLength(2);
+  });
+
+  test('reports an item unfollow failure without removing the row', async () => {
+    vi.mocked(unfollowItem).mockRejectedValue(new Error('unfollow failed'));
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole('button', { name: 'Unfollow Growth' }));
+
+    expect(
+      await screen.findByText("Couldn't unfollow this item. Please try again."),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: /Growth/ })).toBeInTheDocument();
   });
 });

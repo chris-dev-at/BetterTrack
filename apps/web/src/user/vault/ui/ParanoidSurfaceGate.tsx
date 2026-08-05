@@ -45,6 +45,7 @@ const KILLED_PREFIXES = [
  * router. `/portfolio/cash/accounts` stays live exactly like its legacy alias.
  */
 const KILLED_EXACT_PATHS = new Set([
+  '/people/following',
   '/portfolio/cash-flow',
   '/portfolio/cash-flow/transactions',
   '/portfolio/cash-flow/budgets',
