@@ -21,6 +21,7 @@ import { createOAuthRepository } from '../data/repositories/oauthRepository';
 import { paranoidVaults, users } from '../data/schema';
 import {
   VAULT_SYNC_BEARER_ROUTE_ALLOWLIST,
+  openApiPathTemplateAcceptsBearer,
   pathAcceptsBearer,
   vaultSyncRouteAcceptsBearer,
 } from '../http/middleware/bearerAuth';
@@ -217,11 +218,15 @@ describe('#1043 vault bearer policy', () => {
     { method: 'GET', path: '/account/paranoid/normal-revision' },
   ] as const;
 
+  const livePath = (path: string): string => path.replace('{version}', '12');
+
   it('pins the exact sync routes and defaults transitions and future routes closed', () => {
     expect(VAULT_SYNC_BEARER_ROUTE_ALLOWLIST).toEqual(EXPECTED_ALLOWLIST);
     for (const route of EXPECTED_ALLOWLIST) {
-      expect(vaultSyncRouteAcceptsBearer(route.method, route.path)).toBe(true);
-      expect(pathAcceptsBearer(route.path, route.method)).toBe(true);
+      const path = livePath(route.path);
+      expect(vaultSyncRouteAcceptsBearer(route.method, path)).toBe(true);
+      expect(pathAcceptsBearer(path, route.method)).toBe(true);
+      expect(openApiPathTemplateAcceptsBearer(route.path, route.method)).toBe(true);
     }
     expect(vaultSyncRouteAcceptsBearer('GET', '/vault/history/12')).toBe(true);
 
@@ -230,6 +235,18 @@ describe('#1043 vault bearer policy', () => {
     }
     expect(pathAcceptsBearer('/vault/future-transition', 'GET')).toBe(false);
     expect(pathAcceptsBearer('/vault/history/admin', 'GET')).toBe(false);
+  });
+
+  it('maps HEAD to allowlisted GET routes but keeps session-only vault routes closed', () => {
+    for (const route of EXPECTED_ALLOWLIST.filter((candidate) => candidate.method === 'GET')) {
+      const path = livePath(route.path);
+      expect(vaultSyncRouteAcceptsBearer('HEAD', path)).toBe(true);
+      expect(pathAcceptsBearer(path, 'HEAD')).toBe(true);
+    }
+
+    expect(vaultSyncRouteAcceptsBearer('GET', '/vault/history/{version}')).toBe(false);
+    expect(pathAcceptsBearer('/vault/history/{version}', 'GET')).toBe(false);
+    expect(pathAcceptsBearer('/vault/media/server-candidate/12', 'HEAD')).toBe(false);
   });
 
   it('keeps the router-local guard default-closed independently of global scope policy', () => {
@@ -265,6 +282,72 @@ describe('#1043 vault bearer policy', () => {
 });
 
 describe('#1043 bearer vault synchronization', () => {
+  it('refuses normal-mode bearer writes without disturbing the session enable window', async () => {
+    const { user, token } = await mintPersonalToken(['vault:sync'], 'writestate');
+    const v1 = envelope(1, new Uint8Array([1, 6, 4]));
+    const v2 = envelope(2, new Uint8Array([2, 6, 4]));
+
+    const refusedCreate = await request(harness.app)
+      .put('/api/v1/vault')
+      .set(bearer(token))
+      .set(...OCTET)
+      .set('If-None-Match', '*')
+      .send(v1);
+    expect(refusedCreate.status, JSON.stringify(refusedCreate.body)).toBe(409);
+    expect(refusedCreate.body.error).toMatchObject({
+      code: 'VAULT_SERVER_MEDIUM_INACTIVE',
+      message: expect.stringContaining('paranoid mode'),
+    });
+    expect(
+      await harness.db.select().from(paranoidVaults).where(eq(paranoidVaults.userId, user.id)),
+    ).toEqual([]);
+
+    // The browser wizard reads its normal-data CAS token, stages the encrypted
+    // server copy through its cookie session, then commits the mode transition.
+    const agent = await loginAgent(harness.app, user);
+    const revision = await agent.get('/api/v1/account/paranoid/normal-revision');
+    expect(revision.status, JSON.stringify(revision.body)).toBe(200);
+    const staged = await agent
+      .put('/api/v1/vault')
+      .set(...XRW)
+      .set(...OCTET)
+      .set('If-None-Match', '*')
+      .send(v1);
+    expect(staged.status, JSON.stringify(staged.body)).toBe(204);
+
+    // A bearer cannot replace those staged bytes during the read/verify window.
+    const refusedReplace = await request(harness.app)
+      .put('/api/v1/vault')
+      .set(bearer(token))
+      .set(...OCTET)
+      .set('If-Match', '"1"')
+      .send(v2);
+    expect(refusedReplace.status, JSON.stringify(refusedReplace.body)).toBe(409);
+    expect(refusedReplace.body.error.code).toBe('VAULT_SERVER_MEDIUM_INACTIVE');
+
+    const enabled = await agent
+      .post('/api/v1/account/paranoid/enable')
+      .set(...XRW)
+      .send({
+        mediaSet: ['server'],
+        vaultVersion: 1,
+        driveAttestation: null,
+        normalDataRevision: revision.body.revision,
+      });
+    expect(enabled.status, JSON.stringify(enabled.body)).toBe(200);
+    expect(enabled.body).toMatchObject({ mode: 'paranoid', mediaSet: ['server'], vaultVersion: 1 });
+
+    // The same bearer becomes a valid sync writer only after that transition.
+    const synced = await request(harness.app)
+      .put('/api/v1/vault')
+      .set(bearer(token))
+      .set(...OCTET)
+      .set('If-Match', '"1"')
+      .send(v2);
+    expect(synced.status, JSON.stringify(synced.body)).toBe(204);
+    expect(synced.headers.etag).toBe('"2"');
+  });
+
   it('runs a byte-opaque CAS round trip through the first-party mobile OAuth grant', async () => {
     const { user, token } = await mintFirstPartyVaultToken();
     await setParanoidServer(user.id);
@@ -319,6 +402,10 @@ describe('#1043 bearer vault synchronization', () => {
     expect(read.headers.etag).toBe('"3"');
     expect(read.headers['content-type']).toContain('application/octet-stream');
     expect((read.body as Buffer).equals(v3)).toBe(true);
+
+    const head = await request(harness.app).head('/api/v1/vault').set(bearer(token));
+    expect(head.status, JSON.stringify(head.body)).toBe(200);
+    expect(head.headers.etag).toBe('"3"');
 
     const media = await request(harness.app).get('/api/v1/vault/media').set(bearer(token));
     expect(media.status, JSON.stringify(media.body)).toBe(200);
@@ -406,11 +493,8 @@ describe('#1043 bearer vault synchronization', () => {
   });
 
   it('never lets a bearer pin the immutable retirement verifier, on a fresh or a keyless vault', async () => {
-    // The reviewer's attack: a `vault:sync` grant on an account that has NOT
-    // enabled paranoid mode, where `medium_inactive` does not short-circuit the
-    // create. Pinning a generated verifier there would lock the owning browser
-    // out of enrolment (409) and out of retired-server purge forever.
     const { user, token } = await mintPersonalToken(['vault:sync'], 'proofkey');
+    await setParanoidServer(user.id);
     const attackerKey = ed25519PublicKey();
     const browserKey = ed25519PublicKey();
     expect(attackerKey).not.toBe(browserKey);

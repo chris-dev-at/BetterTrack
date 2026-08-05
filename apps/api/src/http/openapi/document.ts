@@ -8,7 +8,7 @@ import * as contracts from '@bettertrack/contracts';
 import { z } from 'zod';
 
 import { API_VERSION } from '../../version';
-import { pathAcceptsBearer } from '../middleware/bearerAuth';
+import { openApiPathTemplateAcceptsBearer } from '../middleware/bearerAuth';
 
 // zod-to-openapi augments the shared zod prototype with `.openapi()`, which the
 // registry uses to attach `$ref` ids. There is a single zod instance in the
@@ -4335,11 +4335,12 @@ for (const ep of endpoints) {
   // route accepts the session cookie, and those the bearer middleware admits
   // (identity, logout, scope-gated modules + the account-security surface) ALSO
   // accept `Authorization: Bearer …`. Derived from the real middleware policy
-  // (`pathAcceptsBearer`) so the spec cannot drift from what the API enforces —
+  // (`openApiPathTemplateAcceptsBearer`) so the spec cannot drift from what the
+  // API enforces —
   // fixing the prior blanket "sessionCookie only" claim on every route.
   const security: Record<string, string[]>[] = ep.public
     ? []
-    : pathAcceptsBearer(ep.path, ep.method)
+    : openApiPathTemplateAcceptsBearer(ep.path, ep.method)
       ? [{ [SESSION_SECURITY]: [] }, { [BEARER_SECURITY]: [] }]
       : [{ [SESSION_SECURITY]: [] }];
 

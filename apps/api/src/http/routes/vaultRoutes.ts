@@ -68,6 +68,9 @@ const payloadTooLarge = (): ApiError =>
 const malformed = (message: string): ApiError =>
   new ApiError(400, VAULT_ERROR_CODES.malformed, message);
 
+const serverMediumInactive = (message: string): ApiError =>
+  new ApiError(409, VAULT_ERROR_CODES.serverMediumInactive, message);
+
 /**
  * Local defense-in-depth for #1043's sync-only bearer exception. A bearer may
  * reach only the exact opaque sync reads/writes listed by the global policy;
@@ -95,6 +98,24 @@ export const requireCookieSessionOrVaultSync: RequestHandler = (req, _res, next)
       'API_KEY_FORBIDDEN',
     ),
   );
+};
+
+/**
+ * Vault write state machine: an owning cookie session may write while the
+ * account is normal so the enable wizard can stage its encrypted server copy,
+ * and may keep writing after the transition. A `vault:sync` bearer cannot own
+ * that transition, so it may write only after privacyMode is paranoid. Once
+ * paranoid, the repository additionally requires `server` to be an active
+ * medium under the same account lock as the CAS.
+ */
+const requireBearerVaultWriteState: RequestHandler = (req, _res, next) => {
+  if (req.apiKey && req.authUser?.privacyMode !== 'paranoid') {
+    next(
+      serverMediumInactive('Bearer vault writes are available only while paranoid mode is active.'),
+    );
+    return;
+  }
+  next();
 };
 
 const requireParanoidHistory: RequestHandler = (req, _res, next) => {
@@ -433,52 +454,57 @@ export function createVaultRouter(ctx: AppContext, limiters: RateLimiters): Rout
     res.status(200).send(row.blob);
   });
 
-  router.put('/', limiters.vault, parseRawEnvelope, async (req, res) => {
-    const blob = requireRawEnvelope(req);
-    const ifNoneMatch = (req.headers['if-none-match'] as string | undefined)?.trim();
-    const ifMatch = req.headers['if-match'] as string | undefined;
-    let expectedVersion: number | null;
-    if (ifNoneMatch === '*') {
-      expectedVersion = null;
-    } else if (ifMatch !== undefined) {
-      const parsed = parseVaultEtag(ifMatch);
-      if (parsed === null || parsed < 1) throw preconditionFailed();
-      expectedVersion = parsed;
-    } else {
-      throw preconditionRequired();
-    }
-    const result = await ctx.paranoidVault.put({
-      userId: req.authUser!.id,
-      expectedVersion,
-      blob,
-      retirementProofPublicKey: parseRetirementProofPublicKey(req),
-    });
-    switch (result.status) {
-      case 'ok':
-        res.setHeader('ETag', vaultEtag(result.version));
-        res.status(204).end();
-        return;
-      case 'precondition_failed':
-        if (result.currentVersion !== null) res.setHeader('ETag', vaultEtag(result.currentVersion));
-        throw preconditionFailed();
-      case 'too_large':
-        throw payloadTooLarge();
-      case 'malformed':
-        throw malformed(result.reason);
-      case 'medium_inactive':
-        throw new ApiError(
-          409,
-          VAULT_ERROR_CODES.serverMediumInactive,
-          'The server vault medium is inactive; stage and promote a candidate instead.',
-        );
-      case 'proof_key_conflict':
-        throw new ApiError(
-          409,
-          VAULT_ERROR_CODES.retirementConflict,
-          'The retirement proof key is immutable once server bytes are active.',
-        );
-    }
-  });
+  router.put(
+    '/',
+    limiters.vault,
+    requireBearerVaultWriteState,
+    parseRawEnvelope,
+    async (req, res) => {
+      const blob = requireRawEnvelope(req);
+      const ifNoneMatch = (req.headers['if-none-match'] as string | undefined)?.trim();
+      const ifMatch = req.headers['if-match'] as string | undefined;
+      let expectedVersion: number | null;
+      if (ifNoneMatch === '*') {
+        expectedVersion = null;
+      } else if (ifMatch !== undefined) {
+        const parsed = parseVaultEtag(ifMatch);
+        if (parsed === null || parsed < 1) throw preconditionFailed();
+        expectedVersion = parsed;
+      } else {
+        throw preconditionRequired();
+      }
+      const result = await ctx.paranoidVault.put({
+        userId: req.authUser!.id,
+        expectedVersion,
+        blob,
+        retirementProofPublicKey: parseRetirementProofPublicKey(req),
+      });
+      switch (result.status) {
+        case 'ok':
+          res.setHeader('ETag', vaultEtag(result.version));
+          res.status(204).end();
+          return;
+        case 'precondition_failed':
+          if (result.currentVersion !== null)
+            res.setHeader('ETag', vaultEtag(result.currentVersion));
+          throw preconditionFailed();
+        case 'too_large':
+          throw payloadTooLarge();
+        case 'malformed':
+          throw malformed(result.reason);
+        case 'medium_inactive':
+          throw serverMediumInactive(
+            'The server vault medium is inactive; stage and promote a candidate instead.',
+          );
+        case 'proof_key_conflict':
+          throw new ApiError(
+            409,
+            VAULT_ERROR_CODES.retirementConflict,
+            'The retirement proof key is immutable once server bytes are active.',
+          );
+      }
+    },
+  );
 
   return router;
 }

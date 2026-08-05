@@ -1061,6 +1061,10 @@ export const PARANOID_KILL_REGISTRY: readonly ParanoidKillRegistryEntry[] = [
       'tax:write',
       'import:read',
       'import:write',
+      'cash:read',
+      'cash:write',
+      'mirrorchain:read',
+      'mirrorchain:write',
     ],
     jobs: jobsFor('portfolioApiScope'),
     webhookEventTypes: [],
@@ -2009,7 +2013,10 @@ export function createParanoidRouteGuard(): RequestHandler {
       next();
       return;
     }
-    const capability = paranoidCapabilityForRoute(req.method, req.path);
+    // Express routes case-insensitively by default. Fold the live path exactly
+    // like the bearer policy resolver so both guards classify the handler that
+    // Express actually selected.
+    const capability = paranoidCapabilityForRoute(req.method, req.path.toLowerCase());
     if (!capability) {
       next();
       return;
