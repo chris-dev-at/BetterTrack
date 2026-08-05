@@ -26,6 +26,7 @@ import { createTestApp, type TestHarness } from '../testing/createTestApp';
  */
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
+const REAL_DATABASE_URL = process.env.TEST_DATABASE_URL;
 
 /** ISO day `offset` days before today (UTC). */
 function dayOffset(offset: number): string {
@@ -582,6 +583,39 @@ describe('set balance to X (§16 2026-07-07)', () => {
 // ─── Source-scoped flows: deposit / withdraw / preview / buy / sell ──────────
 
 describe('source-scoped cash flows', () => {
+  it.skipIf(!REAL_DATABASE_URL)(
+    'serializes simultaneous outflows so one 400s and the ledger stays solvent',
+    async () => {
+      const user = await harness.seedUser();
+      const agent = await loginAgent(harness.app, user.email, user.password);
+      const pid = await defaultPortfolioId(agent);
+      const main = await mainSource(agent, pid);
+      await deposit(agent, pid, 100, { executedAt: tsOffset(-1) });
+
+      const withdraw = () =>
+        agent
+          .post(`/api/v1/portfolios/${pid}/cash/withdraw`)
+          .set(...XRW)
+          .send({ amountEur: 75, executedAt: tsOffset(0) });
+      const responses = await Promise.all([withdraw(), withdraw()]);
+
+      expect(responses.map((response) => response.status).sort()).toEqual([201, 400]);
+      const rejected = responses.find((response) => response.status === 400);
+      expect(rejected?.body.error.code).toBe('INSUFFICIENT_CASH');
+
+      const state = await cashState(agent, pid);
+      expect(state.balanceEur).toBe(25);
+      expect(state.movements.filter((movement) => movement.kind === 'withdrawal')).toHaveLength(1);
+
+      const ledger = await createCashMovementRepository(harness.db).listForPortfolio(pid);
+      let runningBalance = 0;
+      for (const movement of ledger.filter((row) => row.sourceId === main.id)) {
+        runningBalance += movement.amountEur;
+        expect(runningBalance).toBeGreaterThanOrEqual(0);
+      }
+    },
+  );
+
   it('deposits default to Main; an explicit sourceId lands the movement there', async () => {
     const user = await harness.seedUser();
     const agent = await loginAgent(harness.app, user.email, user.password);

@@ -946,12 +946,9 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
    * editing the parent; it is a way to make the ledger disagree with the books,
    * so it is a 409 with the parent named rather than a silent partial success.
    */
-  async function requireEditableMovement(
-    portfolioId: string,
-    movementId: string,
-  ): Promise<CashMovementRecord & { kind: EditableCashMovementKind }> {
-    const movement = await cashMovementRepo.findByIdForPortfolio(portfolioId, movementId);
-    if (!movement) throw notFound('Cash movement not found.', 'CASH_MOVEMENT_NOT_FOUND');
+  function asEditableMovement(
+    movement: CashMovementRecord,
+  ): CashMovementRecord & { kind: EditableCashMovementKind } {
     const editable = editableCashMovementKindSchema.safeParse(movement.kind);
     if (!editable.success) {
       throw conflict(
@@ -966,6 +963,15 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       );
     }
     return { ...movement, kind: editable.data };
+  }
+
+  async function requireEditableMovement(
+    portfolioId: string,
+    movementId: string,
+  ): Promise<CashMovementRecord & { kind: EditableCashMovementKind }> {
+    const movement = await cashMovementRepo.findByIdForPortfolio(portfolioId, movementId);
+    if (!movement) throw notFound('Cash movement not found.', 'CASH_MOVEMENT_NOT_FOUND');
+    return asEditableMovement(movement);
   }
 
   /**
@@ -998,22 +1004,17 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
     // so a withdraw-all (the cent-exact reported balance) cancels the ledger
     // to exactly €0.00 rather than stranding sub-cent residue.
     const amountEur = floorCents(input.amountEur);
-    const existing = await cashMovementRepo.listForPortfolio(portfolioId);
     // Guard against an overdraw of THIS source at *any* point once this
     // (possibly back-dated) outflow is replayed — no silent negatives.
     // Waived in MIRRORCHAIN force mode (design §2/§8): a tax-skewed replica
     // renders its negative balance honestly rather than diverging.
-    if (!opts?.force) {
-      assertCashSolvent(existing, [
-        {
-          kind,
-          amountEur: -amountEur,
-          occurredAt: executedAt.toISOString(),
-          sourceId: source.id,
-        },
-      ]);
-    }
-    const movement = await cashMovementRepo.insert(portfolioId, {
+    const proposed = {
+      kind,
+      amountEur: -amountEur,
+      occurredAt: executedAt.toISOString(),
+      sourceId: source.id,
+    } satisfies SourcedCashMovement;
+    const newMovement = {
       sourceId: source.id,
       kind,
       amountEur: -amountEur,
@@ -1027,7 +1028,12 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       // the `cash_movement_tags` write path are cash-fusion phase 2 — so this is
       // deliberately left unwired rather than half-built here. The tag rows and
       // their seed already exist, so phase 2 backfills existing fees by kind.
-    });
+    };
+    const movement = opts?.force
+      ? await cashMovementRepo.insert(portfolioId, newMovement)
+      : await cashMovementRepo.insertWithCashLedgerLock(portfolioId, newMovement, (fresh) =>
+          assertCashSolvent(fresh, [proposed]),
+        );
     // Cash is part of the net-worth curve (#311): a (possibly back-dated)
     // outflow reshapes it from its own day on (§16 rule 4).
     await invalidateHistory(portfolioId, dayOf(executedAt));
@@ -1591,85 +1597,116 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
         resolveSourceId: (explicitId) => flowSource(explicitId).then((s) => s.id),
       });
 
-      // Decide each cash leg's date (#378). A pay-from-cash BUY whose cash was
-      // insufficient AS OF the buy date and flagged `settleCashAsOfToday` settles
-      // its cash-withdrawal leg **as of today**: the asset acquisition still
-      // records on its past `executedAt` (cost basis / P&L / AT tax anchored
-      // there), but the linked `buy` movement is dated today so the historical
-      // ledger never dips negative. Every other leg — a buy with cash available at
-      // its date, a sell, a tax settlement — keeps its transaction date.
-      // `spendableAsOf` per source is exactly what the solvency gate below
-      // enforces, so a leg moves only when genuinely short; the gate then still
-      // rejects (INSUFFICIENT_CASH) a buy that cannot be covered even today.
-      const existingCash = await cashMovementRepo.listForPortfolio(portfolioId);
-      const existingBySource = new Map<string, SourcedCashMovement[]>();
-      for (const record of existingCash) {
-        const movement = toDomainMovement(record);
-        const list = existingBySource.get(movement.sourceId);
-        if (list) list.push(movement);
-        else existingBySource.set(movement.sourceId, [movement]);
-      }
-      const nowIso = new Date(now()).toISOString();
-      const proposed: SourcedCashMovement[] = cashLinks
-        .map((link, i): SourcedCashMovement | null => {
-          if (!link) return null;
-          const naturalIso = new Date(inputs[i]!.executedAt).toISOString();
-          let occurredAt = naturalIso;
-          if (link.kind === 'buy' && inputs[i]!.settleCashAsOfToday) {
-            const available = spendableAsOf(existingBySource.get(link.sourceId) ?? [], naturalIso);
-            const costEur = -link.amountEur; // buy amounts are strictly negative
-            if (costEur > available + CASH_EPSILON) {
-              occurredAt = nowIso;
-              // Persist the moved date onto the stored leg too, so the recorded
-              // movement matches the solvency-checked one.
-              cashLinks[i] = { ...link, occurredAt: new Date(nowIso) };
-            }
-          }
-          return {
-            kind: link.kind,
-            amountEur: link.amountEur,
-            sourceId: link.sourceId,
-            occurredAt,
-          };
-        })
-        .filter((m): m is SourcedCashMovement => m !== null)
-        .concat(taxPlan.proposed);
-      // Force mode (MIRRORCHAIN replica apply, design §2): the overdraw gate is
-      // origin-authoritative; a replica follows the chain's total order even
-      // where its copy-local tax skew leaves the source short (§8).
-      if (proposed.length > 0 && !opts?.force) {
-        assertCashSolvent(existingCash, proposed);
-      }
+      /**
+       * Finish the cash portion from the ledger snapshot that will be validated.
+       * In the guarded path this runs synchronously after the advisory lock and
+       * fresh read, immediately before the repository writes the returned rows.
+       */
+      const buildCashBatch = (
+        existingCash: readonly CashMovementRecord[],
+        validateCash: boolean,
+      ) => {
+        const existingBySource = new Map<string, SourcedCashMovement[]>();
+        for (const record of existingCash) {
+          const movement = toDomainMovement(record);
+          const list = existingBySource.get(movement.sourceId);
+          if (list) list.push(movement);
+          else existingBySource.set(movement.sourceId, [movement]);
+        }
 
-      const inserted = await transactionRepo.insertMany(
-        portfolioId,
-        inputs.map((i, idx): NewTransaction => {
-          const rowPlan = taxPlan.rows[idx];
+        // Decide each cash leg's date (#378). A pay-from-cash BUY whose cash was
+        // insufficient AS OF the buy date and flagged `settleCashAsOfToday`
+        // settles today; every other leg keeps its transaction date.
+        const adjustedCashLinks = cashLinks.map((link) => (link ? { ...link } : null));
+        const nowIso = new Date(now()).toISOString();
+        const proposed: SourcedCashMovement[] = adjustedCashLinks
+          .map((link, index): SourcedCashMovement | null => {
+            if (!link) return null;
+            const naturalIso = new Date(inputs[index]!.executedAt).toISOString();
+            let occurredAt = naturalIso;
+            if (link.kind === 'buy' && inputs[index]!.settleCashAsOfToday) {
+              const available = spendableAsOf(
+                existingBySource.get(link.sourceId) ?? [],
+                naturalIso,
+              );
+              const costEur = -link.amountEur;
+              if (costEur > available + CASH_EPSILON) {
+                occurredAt = nowIso;
+                adjustedCashLinks[index] = { ...link, occurredAt: new Date(nowIso) };
+              }
+            }
+            return {
+              kind: link.kind,
+              amountEur: link.amountEur,
+              sourceId: link.sourceId,
+              occurredAt,
+            };
+          })
+          .filter((movement): movement is SourcedCashMovement => movement !== null)
+          .concat(taxPlan.proposed);
+
+        if (validateCash && proposed.length > 0) {
+          assertCashSolvent(existingCash, proposed);
+        }
+
+        const rows = inputs.map((input, index): NewTransaction => {
+          const rowPlan = taxPlan.rows[index];
           const cashMovements = [
-            ...(cashLinks[idx] ? [cashLinks[idx]!] : []),
+            ...(adjustedCashLinks[index] ? [adjustedCashLinks[index]!] : []),
             ...(rowPlan?.movement ? [rowPlan.movement] : []),
           ];
           return {
-            assetId: i.assetId,
-            side: i.side,
-            quantity: i.quantity,
-            price: i.price,
-            fee: i.fee,
-            executedAt: new Date(i.executedAt),
-            note: i.note ?? null,
+            assetId: input.assetId,
+            side: input.side,
+            quantity: input.quantity,
+            price: input.price,
+            fee: input.fee,
+            executedAt: new Date(input.executedAt),
+            note: input.note ?? null,
             tax: rowPlan?.tax ?? null,
             // Persist the uncovered-sell acknowledgment + supplied basis (#369);
             // the entry price is only meaningful on an acknowledged sell.
-            allowUncovered: i.side === 'sell' ? (i.allowUncovered ?? false) : false,
+            allowUncovered: input.side === 'sell' ? (input.allowUncovered ?? false) : false,
             uncoveredEntryPrice:
-              i.side === 'sell' && i.allowUncovered ? (i.uncoveredEntryPrice ?? null) : null,
+              input.side === 'sell' && input.allowUncovered
+                ? (input.uncoveredEntryPrice ?? null)
+                : null,
             source,
             cashMovements,
           };
-        }),
-        // Batch year-correction legs carry the same source as the batch (V5-P0c).
-        taxPlan.extras.map((extra) => ({ ...extra, source })),
-      );
+        });
+        return {
+          rows,
+          // Batch year-correction legs carry the same source as the batch (V5-P0c).
+          extraMovements: taxPlan.extras.map((extra) => ({ ...extra, source })),
+          proposed,
+        };
+      };
+
+      const hasCashWrites =
+        cashLinks.some((link) => link !== null) ||
+        taxPlan.rows.some((row) => row.movement !== null) ||
+        taxPlan.extras.length > 0;
+      let proposed: SourcedCashMovement[] = [];
+      let inserted: TransactionRecord[];
+      if (!hasCashWrites) {
+        // Preserve the one-statement fast path for ordinary non-cash trades.
+        const batch = buildCashBatch([], false);
+        proposed = batch.proposed;
+        inserted = await transactionRepo.insertMany(portfolioId, batch.rows, batch.extraMovements);
+      } else if (opts?.force) {
+        // MIRRORCHAIN replicas intentionally waive the origin-authoritative cash
+        // gate and therefore do not pay for serialization they cannot use.
+        const batch = buildCashBatch(await cashMovementRepo.listForPortfolio(portfolioId), false);
+        proposed = batch.proposed;
+        inserted = await transactionRepo.insertMany(portfolioId, batch.rows, batch.extraMovements);
+      } else {
+        inserted = await transactionRepo.insertManyWithCashLedgerLock(portfolioId, (fresh) => {
+          const batch = buildCashBatch(fresh, true);
+          proposed = batch.proposed;
+          return batch;
+        });
+      }
 
       // Earliest affected day (§16 rule 1): the batch's earliest transaction
       // day or cash/tax leg — a settle-as-of-today leg lands later, a tax
@@ -2266,9 +2303,6 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       await requireOwnedPortfolio(userId, portfolioId);
       const existing = await requireEditableMovement(portfolioId, movementId);
 
-      // Merge onto the stored row — an omitted field keeps its value, and only
-      // `note` distinguishes "left alone" (undefined) from "cleared" (null).
-      const kind = patch.kind ?? existing.kind;
       // Staying put is always allowed; MOVING onto an archived source is not.
       // A row that has always lived on a since-archived source would otherwise
       // be uncorrectable — the archive is about where NEW money goes.
@@ -2276,50 +2310,78 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
         patch.sourceId === undefined || patch.sourceId === existing.sourceId
           ? await requireSource(portfolioId, existing.sourceId)
           : await resolveFlowSource(portfolioId, patch.sourceId);
-      const executedAt = patch.executedAt ? new Date(patch.executedAt) : existing.executedAt;
-      const note = patch.note === undefined ? existing.note : (patch.note ?? null);
-      // The request carries a positive MAGNITUDE, exactly as create does; the
-      // sign comes from the resulting kind, so flipping a deposit into a
-      // withdrawal can never leave a row the CHECK constraint would reject.
-      const magnitude = floorCents(patch.amountEur ?? Math.abs(existing.amountEur));
-      const amountEur = magnitude * CASH_MOVEMENT_SIGN[kind];
 
-      // Validate by REPLAY, with the pre-edit row taken out of the history. The
-      // gate is not "does today's balance cover it" — a raised withdrawal has to
-      // be affordable on every day from its own date onward, and moving a row
-      // EARLIER can strand outflows that used to sit safely after it.
-      const all = await cashMovementRepo.listForPortfolio(portfolioId);
-      if (!opts?.force && replaysClean(all)) {
-        assertCashSolvent(
-          all.filter((m) => m.id !== movementId),
-          [
-            {
-              kind,
-              amountEur,
-              occurredAt: executedAt.toISOString(),
-              sourceId: source.id,
-            },
-          ],
+      const buildUpdate = (currentRecord: CashMovementRecord) => {
+        const current = asEditableMovement(currentRecord);
+        // Merge onto the post-lock row — an omitted field keeps its value, and
+        // only `note` distinguishes "left alone" from "cleared".
+        const kind = patch.kind ?? current.kind;
+        const executedAt = patch.executedAt ? new Date(patch.executedAt) : current.executedAt;
+        const note = patch.note === undefined ? current.note : (patch.note ?? null);
+        // The request carries a positive MAGNITUDE, exactly as create does; the
+        // resulting kind supplies the sign.
+        const magnitude = floorCents(patch.amountEur ?? Math.abs(current.amountEur));
+        return {
+          sourceId: patch.sourceId === undefined ? current.sourceId : source.id,
+          kind,
+          amountEur: magnitude * CASH_MOVEMENT_SIGN[kind],
+          executedAt,
+          note,
+        };
+      };
+
+      let updated: CashMovementRecord;
+      let previous: CashMovementRecord;
+      if (opts?.force) {
+        const planned = buildUpdate(existing);
+        const forceUpdated = await cashMovementRepo.updateForPortfolio(
+          portfolioId,
+          movementId,
+          existing.kind,
+          planned,
         );
+        if (!forceUpdated) throw notFound('Cash movement not found.', 'CASH_MOVEMENT_NOT_FOUND');
+        updated = forceUpdated;
+        previous = existing;
+      } else {
+        const result = await cashMovementRepo.updateForPortfolioWithCashLedgerLock(
+          portfolioId,
+          movementId,
+          (fresh, current) => {
+            const planned = buildUpdate(current);
+            // Validate by REPLAY, with the pre-edit row taken out. A raised or
+            // back-dated outflow must remain affordable at every later point.
+            if (replaysClean(fresh)) {
+              assertCashSolvent(
+                fresh.filter((movement) => movement.id !== movementId),
+                [
+                  {
+                    kind: planned.kind,
+                    amountEur: planned.amountEur,
+                    occurredAt: planned.executedAt.toISOString(),
+                    sourceId: planned.sourceId,
+                  },
+                ],
+              );
+            }
+            return planned;
+          },
+        );
+        if (!result) throw notFound('Cash movement not found.', 'CASH_MOVEMENT_NOT_FOUND');
+        updated = result.movement;
+        previous = result.previous;
       }
-
-      const updated = await cashMovementRepo.updateForPortfolio(
-        portfolioId,
-        movementId,
-        existing.kind,
-        { sourceId: source.id, kind, amountEur, executedAt, note },
-      );
-      if (!updated) throw notFound('Cash movement not found.', 'CASH_MOVEMENT_NOT_FOUND');
       // The curve is wrong from the EARLIER of the two dates: moving a movement
       // back in time reshapes history the old date never touched, and moving it
       // forward leaves the old date's point stale. Recomputing from the earlier
       // one covers both without a second pass (§16 rule 4).
-      const from = executedAt < existing.executedAt ? executedAt : existing.executedAt;
+      const from =
+        updated.executedAt < previous.executedAt ? updated.executedAt : previous.executedAt;
       await invalidateHistory(portfolioId, dayOf(from));
       const { balanceBySource, totalEur } = await loadCashState(portfolioId);
       return {
         movement: movementToDto(updated),
-        sourceBalanceEur: balanceBySource.get(source.id) ?? 0,
+        sourceBalanceEur: balanceBySource.get(updated.sourceId) ?? 0,
         balanceEur: totalEur,
       };
     },
@@ -2330,20 +2392,35 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       // Removing an INFLOW is the dangerous direction: the deposit that funded
       // three later withdrawals cannot simply vanish. Replaying what is left
       // catches exactly that, and costs nothing when the row is an outflow.
-      const all = await cashMovementRepo.listForPortfolio(portfolioId);
-      if (!opts?.force && replaysClean(all)) {
-        assertCashSolvent(
-          all.filter((m) => m.id !== movementId),
-          [],
+      let removed: CashMovementRecord;
+      if (opts?.force) {
+        const forceRemoved = await cashMovementRepo.deleteForPortfolio(portfolioId, movementId);
+        if (!forceRemoved) throw notFound('Cash movement not found.', 'CASH_MOVEMENT_NOT_FOUND');
+        removed = existing;
+      } else {
+        const lockedRemoved = await cashMovementRepo.deleteForPortfolioWithCashLedgerLock(
+          portfolioId,
+          movementId,
+          (fresh, current) => {
+            asEditableMovement(current);
+            if (replaysClean(fresh)) {
+              assertCashSolvent(
+                fresh.filter((movement) => movement.id !== movementId),
+                [],
+              );
+            }
+          },
         );
+        if (!lockedRemoved) {
+          throw notFound('Cash movement not found.', 'CASH_MOVEMENT_NOT_FOUND');
+        }
+        removed = lockedRemoved;
       }
-      const removed = await cashMovementRepo.deleteForPortfolio(portfolioId, movementId);
-      if (!removed) throw notFound('Cash movement not found.', 'CASH_MOVEMENT_NOT_FOUND');
-      await invalidateHistory(portfolioId, dayOf(existing.executedAt));
+      await invalidateHistory(portfolioId, dayOf(removed.executedAt));
       const { balanceBySource, totalEur } = await loadCashState(portfolioId);
       return {
-        sourceId: existing.sourceId,
-        sourceBalanceEur: balanceBySource.get(existing.sourceId) ?? 0,
+        sourceId: removed.sourceId,
+        sourceBalanceEur: balanceBySource.get(removed.sourceId) ?? 0,
         balanceEur: totalEur,
       };
     },

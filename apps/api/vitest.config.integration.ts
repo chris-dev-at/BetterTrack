@@ -31,6 +31,9 @@ export default defineConfig({
       // #1096: parent delete + tax-correction rollback and the real two-session
       // advisory-lock ordering against open-year reconciliation.
       'src/__tests__/atomicTaxDelete.test.ts',
+      // #1097: two truly concurrent cash outflows must serialize around the
+      // post-lock solvency replay; PGlite intentionally has only one session.
+      'src/__tests__/cashSources.test.ts',
       // …and the journal-ordering invariant that was the actual root cause (a
       // misordered `when` makes drizzle skip a migration on any database that
       // already applied a later-stamped one).

@@ -5,7 +5,9 @@ import { assets, portfolioCashMovements, portfolios, transactions } from '../sch
 import type { AssetRow, TransactionRow } from '../schema';
 import {
   insertCashMovementsInTransaction,
+  listPortfolioCashMovementsInTransaction,
   lockPortfolioCashLedgerInTransaction,
+  type CashMovementRecord,
   type NewCashMovement,
 } from './cashMovementRepository';
 import { stampMovementTags } from './cashSystemTagStamp';
@@ -176,6 +178,93 @@ function toRecord(row: typeof transactions.$inferSelect): TransactionRecord {
   };
 }
 
+export interface CashLedgerTransactionBatch {
+  rows: readonly NewTransaction[];
+  extraMovements?: readonly BatchCashMovement[];
+}
+
+async function insertManyWithExecutor(
+  executor: Database,
+  portfolioId: string,
+  rows: readonly NewTransaction[],
+  extraMovements: readonly BatchCashMovement[],
+): Promise<TransactionRecord[]> {
+  if (rows.length === 0) return [];
+
+  const inserted = await executor
+    .insert(transactions)
+    .values(
+      rows.map((row) => ({
+        portfolioId,
+        assetId: row.assetId,
+        side: row.side,
+        quantity: String(row.quantity),
+        price: String(row.price),
+        fee: String(row.fee),
+        executedAt: row.executedAt,
+        note: row.note,
+        taxMode: row.tax?.mode ?? null,
+        taxCountry: row.tax?.country ?? null,
+        taxAmountEur:
+          row.tax?.amountEur === undefined || row.tax?.amountEur === null
+            ? null
+            : String(row.tax.amountEur),
+        taxParams: row.tax?.params ?? null,
+        allowUncovered: row.allowUncovered ?? false,
+        uncoveredEntryPrice:
+          row.uncoveredEntryPrice === undefined || row.uncoveredEntryPrice === null
+            ? null
+            : String(row.uncoveredEntryPrice),
+        source: row.source ?? 'manual',
+      })),
+    )
+    .returning();
+
+  const cashRows = inserted.flatMap((row, index) =>
+    (rows[index]?.cashMovements ?? []).map((link) => ({
+      portfolioId,
+      sourceId: link.sourceId,
+      kind: link.kind,
+      amountEur: String(link.amountEur),
+      transactionId: row.id,
+      taxYear: link.taxYear ?? null,
+      // A cash leg dated apart from its transaction (#378 settle-as-of-today)
+      // carries its own date; every other leg inherits the row's.
+      executedAt: link.occurredAt ?? row.executedAt,
+      note: link.note,
+      // A linked cash leg carries its parent transaction's source (V5-P0c).
+      source: rows[index]?.source ?? 'manual',
+    })),
+  );
+  const extraRows = extraMovements.map((extra) => ({
+    portfolioId,
+    sourceId: extra.sourceId,
+    kind: extra.kind,
+    amountEur: String(extra.amountEur),
+    taxYear: extra.taxYear,
+    executedAt: extra.executedAt,
+    note: extra.note,
+    source: extra.source ?? 'manual',
+  }));
+  if (cashRows.length > 0 || extraRows.length > 0) {
+    const booked = await executor
+      .insert(portfolioCashMovements)
+      .values([...cashRows, ...extraRows])
+      .returning({
+        id: portfolioCashMovements.id,
+        kind: portfolioCashMovements.kind,
+        // The note comes back because auto-tagging runs the owner's rules
+        // over it as well as stamping the kind's app-owned tag.
+        note: portfolioCashMovements.note,
+      });
+    // Auto-tagging (V5 cash fusion), inside the same transaction as the
+    // trade: a buy becomes `investment`, a sell leg `sale_proceeds`, a tax
+    // settlement `tax`. Rolled back with the trade if the trade rolls back.
+    await stampMovementTags(executor, portfolioId, booked);
+  }
+  return inserted.map(toRecord);
+}
+
 export function createTransactionRepository(db: Database) {
   return {
     /**
@@ -194,88 +283,35 @@ export function createTransactionRepository(db: Database) {
       extraMovements: readonly BatchCashMovement[] = [],
     ): Promise<TransactionRecord[]> {
       if (rows.length === 0) return [];
-
-      const insertTxns = (executor: Database) =>
-        executor
-          .insert(transactions)
-          .values(
-            rows.map((r) => ({
-              portfolioId,
-              assetId: r.assetId,
-              side: r.side,
-              quantity: String(r.quantity),
-              price: String(r.price),
-              fee: String(r.fee),
-              executedAt: r.executedAt,
-              note: r.note,
-              taxMode: r.tax?.mode ?? null,
-              taxCountry: r.tax?.country ?? null,
-              taxAmountEur:
-                r.tax?.amountEur === undefined || r.tax?.amountEur === null
-                  ? null
-                  : String(r.tax.amountEur),
-              taxParams: r.tax?.params ?? null,
-              allowUncovered: r.allowUncovered ?? false,
-              uncoveredEntryPrice:
-                r.uncoveredEntryPrice === undefined || r.uncoveredEntryPrice === null
-                  ? null
-                  : String(r.uncoveredEntryPrice),
-              source: r.source ?? 'manual',
-            })),
-          )
-          .returning();
-
       const hasCashLink = rows.some((r) => (r.cashMovements?.length ?? 0) > 0);
       if (!hasCashLink && extraMovements.length === 0) {
-        const inserted = await insertTxns(db);
-        return inserted.map(toRecord);
+        return insertManyWithExecutor(db, portfolioId, rows, extraMovements);
       }
 
+      return db.transaction((tx) =>
+        insertManyWithExecutor(tx as unknown as Database, portfolioId, rows, extraMovements),
+      );
+    },
+
+    /**
+     * Cash-linked bulk insert with the shared advisory-lock-first order. The
+     * synchronous planner receives a post-lock ledger snapshot and returns the
+     * already-validated rows to write; no provider/tax I/O belongs inside it.
+     */
+    async insertManyWithCashLedgerLock(
+      portfolioId: string,
+      plan: (fresh: readonly CashMovementRecord[]) => CashLedgerTransactionBatch,
+    ): Promise<TransactionRecord[]> {
       return db.transaction(async (tx) => {
-        const inserted = await insertTxns(tx as unknown as Database);
-        const cashRows = inserted.flatMap((row, i) =>
-          (rows[i]?.cashMovements ?? []).map((link) => ({
-            portfolioId,
-            sourceId: link.sourceId,
-            kind: link.kind,
-            amountEur: String(link.amountEur),
-            transactionId: row.id,
-            taxYear: link.taxYear ?? null,
-            // A cash leg dated apart from its transaction (#378 settle-as-of-today)
-            // carries its own date; every other leg inherits the row's.
-            executedAt: link.occurredAt ?? row.executedAt,
-            note: link.note,
-            // A linked cash leg carries its parent transaction's source (V5-P0c).
-            source: rows[i]?.source ?? 'manual',
-          })),
-        );
-        const extraRows = extraMovements.map((extra) => ({
+        await lockPortfolioCashLedgerInTransaction(tx, portfolioId);
+        const fresh = await listPortfolioCashMovementsInTransaction(tx, portfolioId);
+        const batch = plan(fresh);
+        return insertManyWithExecutor(
+          tx as unknown as Database,
           portfolioId,
-          sourceId: extra.sourceId,
-          kind: extra.kind,
-          amountEur: String(extra.amountEur),
-          taxYear: extra.taxYear,
-          executedAt: extra.executedAt,
-          note: extra.note,
-          source: extra.source ?? 'manual',
-        }));
-        if (cashRows.length > 0 || extraRows.length > 0) {
-          const booked = await tx
-            .insert(portfolioCashMovements)
-            .values([...cashRows, ...extraRows])
-            .returning({
-              id: portfolioCashMovements.id,
-              kind: portfolioCashMovements.kind,
-              // The note comes back because auto-tagging runs the owner's rules
-              // over it as well as stamping the kind's app-owned tag.
-              note: portfolioCashMovements.note,
-            });
-          // Auto-tagging (V5 cash fusion), inside the same transaction as the
-          // trade: a buy becomes `investment`, a sell leg `sale_proceeds`, a tax
-          // settlement `tax`. Rolled back with the trade if the trade rolls back.
-          await stampMovementTags(tx, portfolioId, booked);
-        }
-        return inserted.map(toRecord);
+          batch.rows,
+          batch.extraMovements ?? [],
+        );
       });
     },
 
