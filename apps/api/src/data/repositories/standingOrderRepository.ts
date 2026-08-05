@@ -1,4 +1,4 @@
-import { and, asc, eq } from 'drizzle-orm';
+import { and, asc, eq, isNull } from 'drizzle-orm';
 
 import type {
   StandingOrderCadence,
@@ -7,7 +7,7 @@ import type {
 } from '@bettertrack/contracts';
 
 import type { Database } from '../db';
-import { assets, standingOrderRuns, standingOrders } from '../schema';
+import { assets, portfolios, standingOrderRuns, standingOrders } from '../schema';
 
 /**
  * Standing-order persistence (issue #593). Owns two tables — `standing_orders`
@@ -52,6 +52,8 @@ export interface StandingOrderWithAsset extends StandingOrderRecord {
   assetProviderId: string | null;
   assetProviderRef: string | null;
   assetCurrency: string | null;
+  /** Non-null while the owning portfolio is soft-archived. */
+  portfolioArchivedAt: Date | null;
 }
 
 /** Fields for a create; `amount` arrives as a `number`. */
@@ -117,6 +119,9 @@ interface JoinedRow {
     providerRef: string | null;
     currency: string | null;
   } | null;
+  portfolio: {
+    archivedAt: Date | null;
+  };
 }
 
 function toWithAsset(row: JoinedRow): StandingOrderWithAsset {
@@ -127,6 +132,7 @@ function toWithAsset(row: JoinedRow): StandingOrderWithAsset {
     assetProviderId: row.asset?.providerId ?? null,
     assetProviderRef: row.asset?.providerRef ?? null,
     assetCurrency: row.asset?.currency ?? null,
+    portfolioArchivedAt: row.portfolio.archivedAt ?? null,
   };
 }
 
@@ -142,8 +148,12 @@ export function createStandingOrderRepository(db: Database) {
           providerRef: assets.providerRef,
           currency: assets.currency,
         },
+        portfolio: {
+          archivedAt: portfolios.archivedAt,
+        },
       })
       .from(standingOrders)
+      .innerJoin(portfolios, eq(portfolios.id, standingOrders.portfolioId))
       .leftJoin(assets, eq(assets.id, standingOrders.assetId));
 
   return {
@@ -202,7 +212,28 @@ export function createStandingOrderRepository(db: Database) {
      */
     async listActive(): Promise<StandingOrderWithAsset[]> {
       const rows = await joinedSelect()
-        .where(eq(standingOrders.status, 'active'))
+        .where(and(eq(standingOrders.status, 'active'), isNull(portfolios.archivedAt)))
+        .orderBy(asc(standingOrders.createdAt));
+      return rows.map(toWithAsset);
+    },
+
+    /**
+     * Active orders for one owned portfolio, including a currently archived
+     * portfolio. The restore boundary claims its elapsed period before the
+     * portfolio is made visible to the global scanner again.
+     */
+    async listActiveForPortfolio(
+      userId: string,
+      portfolioId: string,
+    ): Promise<StandingOrderWithAsset[]> {
+      const rows = await joinedSelect()
+        .where(
+          and(
+            eq(standingOrders.userId, userId),
+            eq(standingOrders.portfolioId, portfolioId),
+            eq(standingOrders.status, 'active'),
+          ),
+        )
         .orderBy(asc(standingOrders.createdAt));
       return rows.map(toWithAsset);
     },

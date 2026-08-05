@@ -3487,6 +3487,11 @@ function standingOrderFromEntity(
   entity: VaultEntity,
   now: string,
 ): StandingOrder {
+  const portfolioId = stringField(entity.data, 'portfolioId');
+  const portfolio = VAULT_ENTITY_ROW_SCHEMAS.portfolio.parse(
+    requirePortfolio(document, portfolioId).data,
+  );
+  const suspendedByArchive = portfolio.archivedAt !== null;
   const kind = stringField(entity.data, 'kind');
   const assetId = nullableStringField(entity.data, 'assetId');
   const asset =
@@ -3502,7 +3507,7 @@ function standingOrderFromEntity(
     () =>
       standingOrderSchema.parse({
         id: entity.id,
-        portfolioId: stringField(entity.data, 'portfolioId'),
+        portfolioId,
         kind,
         assetId,
         assetSymbol: asset?.symbol ?? null,
@@ -3515,6 +3520,7 @@ function standingOrderFromEntity(
         startDate,
         endDate,
         status,
+        suspendedByArchive,
         lastRunAt: nullableStringField(entity.data, 'lastRunAt'),
         lastPeriodKey,
         nextRunDate: nextStandingOrderRunDate(
@@ -3526,7 +3532,7 @@ function standingOrderFromEntity(
           },
           today,
           lastPeriodKey,
-          status === 'active',
+          status === 'active' && !suspendedByArchive,
         ),
         createdAt: stringField(entity.data, 'createdAt', entity.editedAt),
         updatedAt: stringField(entity.data, 'updatedAt', entity.editedAt),

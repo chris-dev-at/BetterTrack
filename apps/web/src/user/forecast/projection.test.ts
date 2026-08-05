@@ -326,6 +326,7 @@ describe('normalizeStandingOrders', () => {
       startDate: '2026-01-01',
       endDate: null,
       status: 'active',
+      suspendedByArchive: false,
       lastRunAt: null,
       lastPeriodKey: null,
       nextRunDate: '2026-02-01',

@@ -139,6 +139,8 @@ export const standingOrderSchema = z
     startDate: isoDaySchema,
     endDate: isoDaySchema.nullable(),
     status: standingOrderStatusSchema,
+    /** True when the owning portfolio is archived, regardless of manual pause state. */
+    suspendedByArchive: z.boolean(),
     /** When the job last booked a period for this order (ISO-8601), or null. */
     lastRunAt: z.string().datetime().nullable(),
     /** The occurrence day last booked (ISO `YYYY-MM-DD`), or null. */

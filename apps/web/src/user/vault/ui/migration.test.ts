@@ -517,6 +517,7 @@ describe('buildNormalVaultDocument', () => {
             startDate: '2026-05-01',
             endDate: null,
             status: 'active' as const,
+            suspendedByArchive: false,
             // The watermark stopped at June: July was claimed, then its booking
             // failed. That claim exists ONLY in the ledger.
             lastRunAt: '2026-06-01T04:00:00.000Z',
@@ -595,6 +596,7 @@ describe('buildNormalVaultDocument', () => {
             startDate: '2026-05-01',
             endDate: null,
             status: 'active' as const,
+            suspendedByArchive: false,
             lastRunAt: '2026-06-01T04:00:00.000Z',
             lastPeriodKey: '2026-06-01',
             nextRunDate: '2026-08-01',
@@ -1078,6 +1080,7 @@ describe('buildNormalVaultDocument', () => {
             startDate: '2026-08-01',
             endDate: null,
             status: 'active' as const,
+            suspendedByArchive: false,
             lastRunAt: null,
             lastPeriodKey: null,
             nextRunDate: '2026-08-01',
@@ -1165,6 +1168,7 @@ describe('buildNormalVaultDocument', () => {
             startDate: '2026-08-01',
             endDate: null,
             status: 'active' as const,
+            suspendedByArchive: false,
             lastRunAt: null,
             lastPeriodKey: null,
             nextRunDate: '2026-08-01',

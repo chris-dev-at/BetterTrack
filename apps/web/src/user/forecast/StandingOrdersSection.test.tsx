@@ -48,6 +48,7 @@ function makeOrder(over: Partial<StandingOrder> = {}): StandingOrder {
     startDate: '2026-07-01',
     endDate: null,
     status: 'active',
+    suspendedByArchive: false,
     lastRunAt: null,
     lastPeriodKey: null,
     nextRunDate: '2026-08-01',

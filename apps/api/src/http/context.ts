@@ -607,6 +607,8 @@ export interface BuildContextDeps {
    * a controlled clock across Jan 1. Defaults to the real time.
    */
   taxNow?: () => number;
+  /** Test seam: the portfolio service's clock (archive/restore transitions). */
+  portfolioNow?: () => number;
   /**
    * Test seam (§13.5 V5-P9): the expense budget/dashboard clock — the current
    * evaluation period + the dashboards' default month derive from it, so a
@@ -1275,6 +1277,22 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     now: deps.taxNow,
     paranoid: paranoidGuard,
   });
+  // Standing orders (§13.5 V5-P6b arc a, #593): scheduled recurring buys / cash
+  // movements auto-recorded by the daily `standingOrders.process` job. Built
+  // before the portfolio service so archive restore can close elapsed periods
+  // before a portfolio re-enters the scanner.
+  const standingOrders = createStandingOrderService({
+    repo: createStandingOrderRepository(db),
+    portfolioRepo,
+    assetRepo,
+    transactionRepo,
+    cashMovementRepo,
+    cashSourceRepo,
+    marketData,
+    snapshots,
+    logger,
+    paranoid: paranoidGuard,
+  });
   // A read-only view onto the Live-Mode per-asset ring buffer (§6.3): the same
   // `live:ring:*` Redis keys the poll loop writes. The intraday 1D/1W series
   // (issue #556) prefers these already-recorded ticks over new provider calls;
@@ -1294,12 +1312,14 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     referenceBackfill,
     snapshots,
     taxService: tax,
+    standingOrders,
     friendshipRepo,
     audience,
     profile: profileRepo,
     notify,
     liveRing,
     logger,
+    now: deps.portfolioNow,
   });
   const customAssetRepo = createCustomAssetRepository(db);
   const customAssets = createCustomAssetService({
@@ -1427,24 +1447,6 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     portfolio,
     tax,
     mappers: ALL_MAPPERS,
-    logger,
-    paranoid: paranoidGuard,
-  });
-
-  // Standing orders (§13.5 V5-P6b arc a, #593): scheduled recurring buys / cash
-  // movements auto-recorded by the daily `standingOrders.process` job. Books
-  // through the transaction/cash repositories tagged `standing-order`, exactly
-  // once per period via its own runs ledger; the API here drives CRUD +
-  // pause/resume and can also run the scan in-process under test.
-  const standingOrders = createStandingOrderService({
-    repo: createStandingOrderRepository(db),
-    portfolioRepo,
-    assetRepo,
-    transactionRepo,
-    cashMovementRepo,
-    cashSourceRepo,
-    marketData,
-    snapshots,
     logger,
     paranoid: paranoidGuard,
   });

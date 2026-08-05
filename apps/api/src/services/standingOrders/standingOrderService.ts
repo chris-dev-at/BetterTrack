@@ -108,6 +108,15 @@ export interface StandingOrderService {
   pause(userId: string, id: string): Promise<StandingOrder>;
   resume(userId: string, id: string): Promise<StandingOrder>;
   remove(userId: string, id: string): Promise<void>;
+  /**
+   * Claim the active orders' elapsed period while their portfolio is still
+   * archived, so restoring it resumes only at a later scheduled anchor.
+   */
+  skipDuePeriodsForPortfolioRestore(
+    userId: string,
+    portfolioId: string,
+    opts?: { now?: number },
+  ): Promise<void>;
   /** The daily job body: book every active order's newest due occurrence once. */
   processDueOrders(opts?: { now?: number }): Promise<ProcessDueResult>;
 }
@@ -160,6 +169,7 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
       : undefined);
 
   function toDto(record: StandingOrderWithAsset, today: string): StandingOrder {
+    const suspendedByArchive = record.portfolioArchivedAt !== null;
     return {
       id: record.id,
       portfolioId: record.portfolioId,
@@ -175,13 +185,14 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
       startDate: record.startDate,
       endDate: record.endDate,
       status: record.status,
+      suspendedByArchive,
       lastRunAt: record.lastRunAt ? record.lastRunAt.toISOString() : null,
       lastPeriodKey: record.lastPeriodKey,
       nextRunDate: nextRunDate(
         specOf(record),
         today,
         record.lastPeriodKey,
-        record.status === 'active',
+        record.status === 'active' && !suspendedByArchive,
       ),
       createdAt: record.createdAt.toISOString(),
       updatedAt: record.updatedAt.toISOString(),
@@ -302,6 +313,26 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
       await deps.paranoid?.assertAllowed(userId, 'standingOrderExecution');
       const removed = await repo.remove(userId, id);
       if (!removed) throw ORDER_NOT_FOUND();
+    },
+
+    async skipDuePeriodsForPortfolioRestore(userId, portfolioId, opts) {
+      const restoreNow = opts?.now ?? now();
+      const today = calendarDayInTimezone(restoreNow, timezone);
+      const orders = await repo.listActiveForPortfolio(userId, portfolioId);
+      let claimed = 0;
+
+      for (const order of orders) {
+        const due = dueOccurrence(specOf(order), today);
+        if (due === null || (order.lastPeriodKey !== null && order.lastPeriodKey >= due)) continue;
+        if (await repo.claimPeriod(order.id, due)) claimed += 1;
+      }
+
+      if (claimed > 0) {
+        logger?.info(
+          { portfolioId, userId, through: today, claimed },
+          'standing orders: claimed elapsed periods before archived portfolio restore',
+        );
+      }
     },
 
     async processDueOrders(opts) {
