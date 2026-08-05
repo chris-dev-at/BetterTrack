@@ -13,7 +13,6 @@ vi.mock('../lib/conglomerateApi');
 vi.mock('../lib/workboardApi', () => ({
   WORKBOARD_QUERY_KEY: ['workboard'],
   WATCHLISTS_QUERY_KEY: ['workboard', 'watchlists'],
-  WATCHLIST_SHARING_QUERY_KEY: ['workboard', 'sharing'],
   CONGLOMERATE_COMPARE_QUERY_KEY: ['workboard', 'compare'],
   listWorkboard: vi.fn(),
   listWatchlists: vi.fn(async () => ({ watchlists: [] })),
@@ -21,8 +20,6 @@ vi.mock('../lib/workboardApi', () => ({
   removeFromWorkboard: vi.fn(),
   reorderWorkboard: vi.fn(),
   compareConglomerates: vi.fn(),
-  getWatchlistSharing: vi.fn(async () => ({ visibility: 'private' })),
-  updateWatchlistSharing: vi.fn(),
 }));
 vi.mock('../lib/notificationsApi', () => ({
   listNotifications: vi.fn(),

@@ -218,7 +218,10 @@ function WatchlistSharingControl() {
     staleTime: 30_000,
   });
   const watchlist = query.data?.watchlists.find((item) => item.isDefault);
-  const shared = watchlist?.audience === 'all_friends';
+  // Any non-private audience is a live share (specific friends, a group, or an
+  // active public link) and must read as shared — narrowing this to all_friends
+  // would tell a user with a public link that the list is not shared.
+  const shared = watchlist !== undefined && watchlist.audience !== 'private';
   return (
     <div className="flex flex-col items-end gap-1.5">
       <AsyncReadState

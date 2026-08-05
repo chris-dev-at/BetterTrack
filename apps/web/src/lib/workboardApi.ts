@@ -4,15 +4,12 @@ import { useMemo } from 'react';
 import {
   backtestComparisonResponseSchema,
   watchlistListResponseSchema,
-  watchlistSharingResponseSchema,
   watchlistSummarySchema,
   workboardListResponseSchema,
   type BacktestComparisonRequest,
   type BacktestComparisonResponse,
   type WatchlistListResponse,
-  type WatchlistSharingResponse,
   type WatchlistSummary,
-  type WatchlistVisibility,
   type WorkboardListResponse,
 } from '@bettertrack/contracts';
 
@@ -73,25 +70,10 @@ export async function deleteWatchlist(id: string): Promise<void> {
   });
 }
 
-/** Query key for the watchlist friend-sharing state (§6.9, V2-P9). */
-export const WATCHLIST_SHARING_QUERY_KEY = ['workboard', 'sharing'] as const;
-
-/** `GET /workboard/sharing` — the caller's watchlist friend-sharing state (§6.9, V2-P9). */
-export async function getWatchlistSharing(signal?: AbortSignal): Promise<WatchlistSharingResponse> {
-  const data = await apiRequest<unknown>('/workboard/sharing', { signal });
-  return watchlistSharingResponseSchema.parse(data);
-}
-
-/** `PATCH /workboard/sharing` — turn watchlist friend-sharing on/off (§6.9, V2-P9). */
-export async function updateWatchlistSharing(
-  visibility: WatchlistVisibility,
-): Promise<WatchlistSharingResponse> {
-  const data = await apiRequest<unknown>('/workboard/sharing', {
-    method: 'PATCH',
-    body: { visibility },
-  });
-  return watchlistSharingResponseSchema.parse(data);
-}
+// The legacy `GET|PATCH /workboard/sharing` client wrappers are gone (#1075):
+// the one-click private↔friends toggle they served could overwrite a narrower
+// audience, so every surface now edits sharing through `AudiencePicker` /
+// `socialApi`. The endpoints themselves stay for older clients.
 
 /** `GET /workboard[?watchlistId=]` — all items, or one named list's items (§6.4, §8). */
 export async function listWorkboard(

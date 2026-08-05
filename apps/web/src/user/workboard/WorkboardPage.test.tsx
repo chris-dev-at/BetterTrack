@@ -422,7 +422,7 @@ describe('WorkboardPage — watchlist sharing', () => {
     renderPage();
     await waitFor(() => expect(screen.getByText('AAPL')).toBeInTheDocument());
 
-    await user.click(screen.getByRole('button', { name: 'Share with friends' }));
+    await user.click(screen.getByRole('button', { name: 'Shared with friends' }));
     await user.click(await screen.findByRole('radio', { name: /all friends/i }));
     expect(
       screen.getByText(/change access from specific friends to all friends/i),
@@ -433,7 +433,7 @@ describe('WorkboardPage — watchlist sharing', () => {
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     expect(setAudience).not.toHaveBeenCalled();
 
-    await user.click(screen.getByRole('button', { name: 'Share with friends' }));
+    await user.click(screen.getByRole('button', { name: 'Shared with friends' }));
     await user.click(await screen.findByRole('radio', { name: /all friends/i }));
     await user.click(screen.getByRole('button', { name: /^save$/i }));
 
@@ -443,6 +443,34 @@ describe('WorkboardPage — watchlist sharing', () => {
       friendIds: undefined,
       acknowledgePublic: undefined,
     });
+  });
+
+  // The legacy read this control replaced mapped EVERY non-private audience to
+  // "shared", and the server mirrors the same rule into the conglomerate
+  // visibility column. Reading only `all_friends` as shared would tell a user
+  // with a live public link that their General list is private (§6.9).
+  test.each([
+    ['private', 'Share with friends'],
+    ['all_friends', 'Shared with friends'],
+    ['specific_friends', 'Shared with friends'],
+    ['group', 'Shared with friends'],
+    ['public_link', 'Shared with friends'],
+  ] as const)('labels a %s watchlist as "%s"', async (audience, label) => {
+    vi.mocked(listWorkboard).mockResolvedValue({ items: [ITEM_A] });
+    vi.mocked(listWatchlists).mockResolvedValue({
+      watchlists: [
+        {
+          id: DEFAULT_WATCHLIST_ID,
+          name: 'General',
+          isDefault: true,
+          itemCount: 1,
+          audience,
+        },
+      ],
+    });
+    renderPage();
+
+    expect(await screen.findByRole('button', { name: label })).toBeInTheDocument();
   });
 });
 

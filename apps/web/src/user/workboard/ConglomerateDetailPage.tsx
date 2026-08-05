@@ -389,6 +389,9 @@ export function ConglomerateDetailPage() {
           subjectId={id}
           subjectLabel={data.name}
           onClose={() => setSharingOpen(false)}
+          // The picker only invalidates ['social'] and ['workboard']; this
+          // page's own key carries the visibility the header button labels.
+          onChanged={() => void queryClient.invalidateQueries({ queryKey: ['conglomerate', id] })}
         />
       ) : null}
 
