@@ -4975,6 +4975,9 @@
     "navAria": "Control Center panels",
     "filterAria": "Filter panels",
     "filterPlaceholder": "Filter…",
+    "searchTerms": {
+      "twoFactor": "2FA"
+    },
     "noMatches": "No panel matches.",
     "leavesPopup": "Opens as its own page",
     "signIn": "Sign-in",

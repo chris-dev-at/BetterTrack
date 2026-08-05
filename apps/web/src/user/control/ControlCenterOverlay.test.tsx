@@ -70,9 +70,9 @@ function Opener() {
   );
 }
 
-function renderAt(path: string, { entries }: { entries?: string[] } = {}) {
+function renderAt(path: string, { entries, locale }: { entries?: string[]; locale?: string } = {}) {
   return render(
-    <I18nProvider>
+    <I18nProvider initialLocale={locale}>
       <MemoryRouter initialEntries={entries ?? [path]} initialIndex={(entries?.length ?? 1) - 1}>
         <Opener />
         <Routes>
@@ -194,6 +194,36 @@ describe('ControlCenterOverlay', () => {
     expect(within(popup()).queryByRole('link', { name: 'Account' })).not.toBeInTheDocument();
     // Filtering never unmounts the active panel — only the nav narrows.
     expect(within(popup()).getByText('account-panel')).toBeInTheDocument();
+  });
+
+  test.each([
+    ['password', 'Sign-in', '/control/sign-in'],
+    ['2FA', 'Sign-in', '/control/sign-in'],
+    ['export', 'Account', '/control/account'],
+    ['PIN', 'Sign-in', '/control/sign-in'],
+  ])('the %s setting keyword surfaces its owning panel', async (query, panelLabel, href) => {
+    const user = userEvent.setup();
+    renderAt('/control/account');
+
+    await user.type(within(popup()).getByRole('searchbox', { name: 'Filter panels' }), query);
+
+    expect(within(popup()).getByRole('link', { name: panelLabel })).toHaveAttribute('href', href);
+  });
+
+  test('setting keywords are matched in the active locale', async () => {
+    const user = userEvent.setup();
+    renderAt('/control/account', { locale: 'de' });
+    const dialog = screen.getByRole('dialog', { name: 'Kontrollzentrum' });
+
+    await user.type(
+      within(dialog).getByRole('searchbox', { name: 'Bereiche filtern' }),
+      'Passwort',
+    );
+
+    expect(within(dialog).getByRole('link', { name: 'Anmeldung' })).toHaveAttribute(
+      'href',
+      '/control/sign-in',
+    );
   });
 
   test('a filter that matches nothing says so', async () => {

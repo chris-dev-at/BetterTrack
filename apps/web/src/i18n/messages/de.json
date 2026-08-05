@@ -4975,6 +4975,9 @@
     "navAria": "Kontrollzentrum-Bereiche",
     "filterAria": "Bereiche filtern",
     "filterPlaceholder": "Filtern…",
+    "searchTerms": {
+      "twoFactor": "2FA"
+    },
     "noMatches": "Kein Bereich passt.",
     "leavesPopup": "Öffnet sich als eigene Seite",
     "signIn": "Anmeldung",
