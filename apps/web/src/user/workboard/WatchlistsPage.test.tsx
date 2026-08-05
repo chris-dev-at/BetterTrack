@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
@@ -17,11 +17,11 @@ import { createWatchlist, listWatchlists } from '../../lib/workboardApi';
 import { setViewportWidth } from '../../test/viewport';
 import { WatchlistsPage } from './WatchlistsPage';
 
-function renderPage() {
+function renderPage(initialPath = '/assets/watchlists') {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={queryClient}>
-      <MemoryRouter>
+      <MemoryRouter initialEntries={[initialPath]}>
         <WatchlistsPage />
       </MemoryRouter>
     </QueryClientProvider>,
@@ -65,5 +65,12 @@ describe('WatchlistsPage recovery', () => {
 
     expect(createWatchlist).toHaveBeenCalledWith('Tech');
     expect(container.querySelector('.bt-watchlists-page')).toBeInTheDocument();
+  });
+
+  test('honors the global create intent by focusing the inline create flow', async () => {
+    renderPage('/assets/watchlists?create=1');
+
+    const name = await screen.findByLabelText('New watchlist');
+    await waitFor(() => expect(name).toHaveFocus());
   });
 });

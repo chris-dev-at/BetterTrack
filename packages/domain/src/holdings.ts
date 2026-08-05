@@ -29,7 +29,9 @@
  *    the display layer, never here.
  *  - **Quantity comparisons use a tolerance** ({@link QTY_EPSILON}) so that
  *    selling exactly the held quantity is allowed despite floating-point dust,
- *    while a genuine over-sell is rejected.
+ *    while a genuine over-sell is rejected. Stored-rounding drift within the
+ *    per-contributing-row {@link QTY_STORAGE_QUANTUM} envelope (#917/#1094) is
+ *    likewise not an over-sell.
  */
 
 // ---------------------------------------------------------------------------
@@ -49,6 +51,19 @@
  *    fully-closed position reports exactly `0`, not float dust.
  */
 export const QTY_EPSILON = 1e-9;
+
+/**
+ * One scale-8 storage quantum (#917, extended to holdings by #1094; mirrors
+ * `tax.QTY_STORAGE_QUANTUM` — see the module header on imports). Quantities
+ * persist as `numeric(20,8)`: the write path epsilon-validates the raw client
+ * values, then PostgreSQL rounds each row independently to scale 8, so every
+ * stored row can sit up to one quantum away from the raw value that was
+ * validated. A replayed position can therefore show a spurious shortfall
+ * bounded by one quantum per contributing stored row — {@link reducePosition}
+ * waives exactly that envelope; anything beyond it fails closed as a genuine
+ * oversell.
+ */
+export const QTY_STORAGE_QUANTUM = 1e-8;
 
 // ---------------------------------------------------------------------------
 // Injected dependencies
@@ -186,7 +201,14 @@ function executedAtToMs(executedAt: string): number {
  *    the fee is capitalised into the cost basis.
  *  - **SELL** realizes `qty·(price − avg) − fee` and reduces the quantity; the
  *    average cost is unchanged. A SELL exceeding the held quantity (beyond
- *    {@link QTY_EPSILON}) throws {@link OversellError}.
+ *    {@link QTY_EPSILON}) throws {@link OversellError}. One exception
+ *    (#917/#1094): a shortfall within one {@link QTY_STORAGE_QUANTUM} per
+ *    contributing stored row is `numeric(20,8)` rounding drift, not an
+ *    oversell — the write path validated the raw values before PostgreSQL
+ *    rounded the rows apart. Such a sell closes the position like an exact
+ *    one: the held shares realize against the running average, the dust
+ *    remainder takes the sale price (0 gain). The envelope is per-row, never
+ *    a blanket loosening — a shortfall beyond it still fails closed.
  *
  * The input may contain transactions for a single asset; mixing assets is a
  * programming error and throws.
@@ -207,6 +229,7 @@ export function reducePosition(transactions: readonly Transaction[]): PositionSt
   let held = 0;
   let avg = 0;
   let realizedPnl = 0;
+  let driftRows = 0;
   const realizations: SellRealization[] = [];
 
   for (const { t, index } of ordered) {
@@ -224,13 +247,36 @@ export function reducePosition(transactions: readonly Transaction[]): PositionSt
     assertFiniteNonNegative(t.price, 'Transaction price');
     assertFiniteNonNegative(t.fee, 'Transaction fee');
 
+    // Every stored row of the open position — the current one included — can
+    // carry up to one quantum of numeric(20,8) rounding drift (#917/#1094).
+    driftRows += 1;
+
     if (t.side === 'buy') {
       const newHeld = held + t.quantity;
       // newHeld > 0 always (held ≥ 0, quantity > 0), so the division is safe.
       avg = (held * avg + t.quantity * t.price + t.fee) / newHeld;
       held = newHeld;
     } else {
-      if (t.quantity > held + QTY_EPSILON) {
+      const oversell = t.quantity > held + QTY_EPSILON;
+      // Storage-rounding drift (#917, extended here by #1094): the write path
+      // validated the raw values, then numeric(20,8) rounded each row
+      // independently — a shortfall within one quantum per contributing stored
+      // row is a persistence artifact. It closes the position like an exact
+      // sell; beyond the envelope it is a genuine oversell and fails closed.
+      const storageDrift =
+        oversell &&
+        !t.allowUncovered &&
+        t.quantity - held <= driftRows * QTY_STORAGE_QUANTUM + QTY_EPSILON;
+      if (storageDrift) {
+        // The held shares realize against the running average; the dust
+        // remainder takes the sale price (0 gain) — it is rounding residue of
+        // covered shares, not a phantom acquisition. The fee applies once.
+        const pnl = held * (t.price - avg) - t.fee;
+        realizedPnl += pnl;
+        realizations.push({ index, realizedPnl: pnl });
+        held = 0;
+        avg = 0;
+      } else if (oversell) {
         // Over-selling the held quantity: rejected unless the caller explicitly
         // acknowledged an uncovered sell (issue #369).
         if (!t.allowUncovered) {
@@ -262,6 +308,11 @@ export function reducePosition(transactions: readonly Transaction[]): PositionSt
           held = 0;
           avg = 0;
         }
+      }
+      // A closed position starts the next round trip clean — including its
+      // storage-drift envelope (#917/#1094).
+      if (held === 0) {
+        driftRows = 0;
       }
     }
   }
