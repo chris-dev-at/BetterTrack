@@ -39,6 +39,14 @@ describe('paranoid route and surface matrix', () => {
     expect(isParanoidKilledPath(path)).toBe(true);
   });
 
+  it.each(['/people/following/', '/PEOPLE/FOLLOWING', '/PeOpLe/FoLlOwInG/'])(
+    'normalizes router-equivalent killed path %s',
+    (path) => {
+      expect(isParanoidKilledPath(path)).toBe(true);
+      expect(safeDestination(path)).toBe('/people');
+    },
+  );
+
   it.each([
     '/',
     '/portfolio',
