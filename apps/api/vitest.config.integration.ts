@@ -28,6 +28,9 @@ export default defineConfig({
       // semantics proven against real postgres + postgres-js (migration 0034 was
       // silently skipped on prod while every fresh-database run stayed green).
       'src/__tests__/idempotency.test.ts',
+      // #1096: parent delete + tax-correction rollback and the real two-session
+      // advisory-lock ordering against open-year reconciliation.
+      'src/__tests__/atomicTaxDelete.test.ts',
       // …and the journal-ordering invariant that was the actual root cause (a
       // misordered `when` makes drizzle skip a migration on any database that
       // already applied a later-stamped one).

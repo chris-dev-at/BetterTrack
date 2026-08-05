@@ -1880,13 +1880,13 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
         }
       }
 
-      const deleted = await transactionRepo.deleteForUser(userId, id);
+      const deleted = await transactionRepo.deleteForUserWithCorrections(
+        userId,
+        portfolioId,
+        id,
+        taxCorrections,
+      );
       if (!deleted) throw notFound('Transaction not found.', 'TRANSACTION_NOT_FOUND');
-
-      // Post the year corrections the delete necessitated (append-only §16).
-      for (const correction of taxCorrections) {
-        await cashMovementRepo.insert(portfolioId, correction);
-      }
 
       // The removed row's day, or an earlier-dated tax correction (§16 rule 3).
       await invalidateHistory(

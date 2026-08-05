@@ -110,7 +110,35 @@ function toInsertValues(portfolioId: string, movement: NewCashMovement) {
   };
 }
 
-type CashMovementTransactionExecutor = Pick<Database, 'execute' | 'select' | 'insert'>;
+export type CashMovementTransactionExecutor = Pick<Database, 'execute' | 'select' | 'insert'>;
+
+/**
+ * Serialize every cash-ledger mutation that must coordinate with the open-year
+ * tax reconciler. Callers acquire this before deleting a parent row, then keep
+ * it through any replacement/correction inserts so every path uses the same
+ * advisory-lock-first order.
+ */
+export async function lockPortfolioCashLedgerInTransaction(
+  tx: CashMovementTransactionExecutor,
+  portfolioId: string,
+): Promise<void> {
+  await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${portfolioId}))`);
+}
+
+/** Insert and auto-tag cash movements inside a transaction the caller owns. */
+export async function insertCashMovementsInTransaction(
+  tx: CashMovementTransactionExecutor,
+  portfolioId: string,
+  movements: readonly NewCashMovement[],
+): Promise<CashMovementRecord[]> {
+  if (movements.length === 0) return [];
+  const rows = await tx
+    .insert(portfolioCashMovements)
+    .values(movements.map((movement) => toInsertValues(portfolioId, movement)))
+    .returning();
+  await stampMovementTags(tx, portfolioId, rows);
+  return rows.map(toRecord);
+}
 
 /**
  * Reconcile movements inside a transaction the caller already owns.
@@ -124,22 +152,16 @@ export async function insertReconciledCashMovementsInTransaction(
   portfolioId: string,
   plan: (fresh: CashMovementRecord[]) => NewCashMovement[],
 ): Promise<CashMovementRecord[]> {
-  await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${portfolioId}))`);
+  await lockPortfolioCashLedgerInTransaction(tx, portfolioId);
   const fresh = await tx
     .select()
     .from(portfolioCashMovements)
     .where(eq(portfolioCashMovements.portfolioId, portfolioId))
     .orderBy(asc(portfolioCashMovements.executedAt), asc(portfolioCashMovements.id));
   const movements = plan(fresh.map(toRecord));
-  if (movements.length === 0) return [];
-  const rows = await tx
-    .insert(portfolioCashMovements)
-    .values(movements.map((movement) => toInsertValues(portfolioId, movement)))
-    .returning();
   // Auto-tagging rides inside the caller's transaction, so a rolled-back
   // reconciliation takes its labels with it (V5 cash fusion).
-  await stampMovementTags(tx, portfolioId, rows);
-  return rows.map(toRecord);
+  return insertCashMovementsInTransaction(tx, portfolioId, movements);
 }
 
 export function createCashMovementRepository(db: Database) {
