@@ -104,8 +104,9 @@ Registering or deleting a device token counts as a **write** (mutation), so the
 bearer needs `notifications:write`. `notifications:write` also implies
 `notifications:read` — a write-scoped token can call the read endpoints as
 well (write-implies-read, enforced centrally in
-`apps/api/src/http/middleware/bearerAuth.ts:227–232`). Policy map for
-`/notifications`: `bearerAuth.ts:94`. Plain-language consent labels the OAuth
+`apps/api/src/http/middleware/bearerAuth.ts` by `enforceApiKeyScope` via
+`scopeSatisfies`). Policy map for `/notifications`: `MODULE_POLICIES` in
+`bearerAuth.ts`. Plain-language consent labels the OAuth
 authorize screen shows: `packages/contracts/src/oauth.ts:50–51`.
 
 Cookie sessions bypass the scope map (full access) so the web app is
@@ -114,10 +115,11 @@ unaffected.
 Common failure modes for a bearer request:
 
 - `401 API_KEY_INVALID` — the header was malformed or the token is unknown/
-  revoked (`bearerAuth.ts:49`).
+  revoked (`bearerAuth.ts`, `loadBearerAuth`'s `API_KEY_INVALID` branch).
 - `403 INSUFFICIENT_SCOPE` — the token authenticates but lacks
-  `notifications:write` (or `:read` on GETs) (`bearerAuth.ts:238–241`; the
-  denial is audited on the personal-key or OAuth-grant record).
+  `notifications:write` (or `:read` on GETs) (`bearerAuth.ts`,
+  `enforceApiKeyScope`'s `INSUFFICIENT_SCOPE` denial; the denial is audited on
+  the personal-key or OAuth-grant record).
 
 ---
 
