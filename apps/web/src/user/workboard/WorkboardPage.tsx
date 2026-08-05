@@ -284,6 +284,19 @@ function WatchlistZone() {
     [sparklineQuery.data],
   );
 
+  // A row the provider could not price comes back as a 200 with the id in
+  // `failed`, so neither query is in an error state and the row would silently
+  // render "—" forever (the sparkline read has a 15-minute stale window and no
+  // poll). Report the partial outage once for the zone, with one retry that
+  // re-runs only the reads that actually lost rows.
+  const failedQuoteIds = quoteQuery.data?.failed ?? [];
+  const failedSparklineIds = sparklineQuery.data?.failed ?? [];
+  const failedAssetCount = new Set([...failedQuoteIds, ...failedSparklineIds]).size;
+  const retryFailedReads = () => {
+    if (failedQuoteIds.length > 0) void quoteQuery.refetch();
+    if (failedSparklineIds.length > 0) void sparklineQuery.refetch();
+  };
+
   // Mirror server order; resets on every successful fetch (including post-remove refetch).
   useEffect(() => {
     if (data) setOrderedItems(data.items);
@@ -391,6 +404,24 @@ function WatchlistZone() {
           { error: sparklineQuery.error, refetch: () => void sparklineQuery.refetch() },
         ]}
       />
+
+      {failedAssetCount > 0 ? (
+        <Alert tone="error">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span>
+              {t(
+                `workboard.overview.watchlist.partialMarketError.${
+                  failedAssetCount === 1 ? 'one' : 'other'
+                }`,
+                { count: failedAssetCount },
+              )}
+            </span>
+            <Button variant="secondary" onClick={retryFailedReads}>
+              {t('common.retry')}
+            </Button>
+          </div>
+        </Alert>
+      ) : null}
 
       {orderedItems.length === 0 ? (
         <EmptyState

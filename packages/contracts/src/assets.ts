@@ -157,6 +157,18 @@ const assetBatchIdsSchema = z
 export const assetBatchQuerySchema = z.object({ ids: assetBatchIdsSchema }).strict();
 export type AssetBatchQuery = z.infer<typeof assetBatchQuerySchema>;
 
+/**
+ * Ids whose market read FAILED, reported alongside the rows that resolved.
+ *
+ * Aggregate reads are per-row isolated — one unpriceable asset must never blank
+ * a whole watchlist — but an omitted row must not be *silent*: without this the
+ * client cannot tell "the provider could not price this" from "this asset has
+ * no data", so a partial outage renders as a permanent, retry-less gap. Ids the
+ * caller cannot see are deliberately NOT listed here: those are absent from the
+ * response entirely, indistinguishable from a foreign custom asset (§10).
+ */
+const failedAssetIdsSchema = z.array(z.string().uuid());
+
 /** One quote in the aggregate `GET /assets/quotes` response. */
 export const assetBatchQuoteSchema = quoteResponseSchema
   .extend({ assetId: z.string().uuid() })
@@ -164,15 +176,18 @@ export const assetBatchQuoteSchema = quoteResponseSchema
 export type AssetBatchQuote = z.infer<typeof assetBatchQuoteSchema>;
 
 export const assetQuotesResponseSchema = z
-  .object({ quotes: z.array(assetBatchQuoteSchema) })
+  .object({ quotes: z.array(assetBatchQuoteSchema), failed: failedAssetIdsSchema })
   .strict();
 export type AssetQuotesResponse = z.infer<typeof assetQuotesResponseSchema>;
+
+/** Hard payload bound for the workboard's compact one-month chart. */
+export const ASSET_SPARKLINE_MAX_POINTS = 30;
 
 /** One compact one-month daily series in `GET /assets/sparklines`. */
 export const assetSparklineSchema = z
   .object({
     assetId: z.string().uuid(),
-    points: z.array(pricePointSchema).max(30),
+    points: z.array(pricePointSchema).max(ASSET_SPARKLINE_MAX_POINTS),
     stale: z.boolean(),
     asOf: z.string().datetime(),
   })
@@ -180,7 +195,7 @@ export const assetSparklineSchema = z
 export type AssetSparkline = z.infer<typeof assetSparklineSchema>;
 
 export const assetSparklinesResponseSchema = z
-  .object({ sparklines: z.array(assetSparklineSchema) })
+  .object({ sparklines: z.array(assetSparklineSchema), failed: failedAssetIdsSchema })
   .strict();
 export type AssetSparklinesResponse = z.infer<typeof assetSparklinesResponseSchema>;
 

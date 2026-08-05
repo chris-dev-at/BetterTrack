@@ -342,7 +342,7 @@ export function createMarketDataService(deps: CreateMarketDataServiceDeps): Mark
       }
       return cache.getOrLoad<PricePoint[]>({
         key: cacheKey(ref.providerId, ref.providerRef, 'history', `${range}@${chosenInterval}`),
-        ttlSeconds: historyTtlSeconds(range),
+        ttlSeconds: historyTtlSeconds(range, chosenInterval),
         staleTtlSeconds,
         negativeTtlSeconds,
         isNotFound: isNotFoundError,

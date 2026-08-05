@@ -59,7 +59,12 @@ export async function getAssetQuotes(
       return assetQuotesResponseSchema.parse(data);
     }),
   );
-  return { quotes: pages.flatMap((page) => page.quotes) };
+  // `failed` merges like the payload: a chunked read must not lose the fact
+  // that some rows could not be priced.
+  return {
+    quotes: pages.flatMap((page) => page.quotes),
+    failed: pages.flatMap((page) => page.failed),
+  };
 }
 
 /** `GET /assets/sparklines?ids=` — compact daily one-month workboard series. */
@@ -76,7 +81,10 @@ export async function getAssetSparklines(
       return assetSparklinesResponseSchema.parse(data);
     }),
   );
-  return { sparklines: pages.flatMap((page) => page.sparklines) };
+  return {
+    sparklines: pages.flatMap((page) => page.sparklines),
+    failed: pages.flatMap((page) => page.failed),
+  };
 }
 
 /**

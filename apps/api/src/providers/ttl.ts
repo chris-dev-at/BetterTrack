@@ -1,4 +1,4 @@
-import type { HistoryRange } from '@bettertrack/contracts';
+import type { HistoryInterval, HistoryRange } from '@bettertrack/contracts';
 
 /**
  * Cache TTLs from PROJECTPLAN.md §5.3. These are the *freshness* windows: how
@@ -25,8 +25,28 @@ const HISTORY_TTL_BY_RANGE: Record<HistoryRange, number> = {
   MAX: 6 * 60 * 60, // monthly candles
 };
 
-export function historyTtlSeconds(range: HistoryRange): number {
-  return HISTORY_TTL_BY_RANGE[range];
+/**
+ * Freshness floor for daily-or-coarser candles, whatever range asked for them —
+ * the value §5.3 already gives the daily ranges (3M/6M/1Y).
+ */
+const DAILY_CANDLE_TTL_SECONDS = 60 * 60;
+const DAILY_OR_COARSER: ReadonlySet<HistoryInterval> = new Set(['1d', '1wk', '1mo']);
+
+/**
+ * The range table above assumes each range's *default* interval. A caller that
+ * overrides the interval changes how fast the series can actually move: the
+ * workboard sparkline reads `1M` at an explicit `1d`, which cannot change more
+ * than once a day, yet would inherit 1M's 15-minute window (sized for its
+ * 30-minute candles) and re-fetch every watched asset four times an hour — the
+ * opposite of what batching the read is for. Explicit daily-or-coarser
+ * intervals therefore take the daily freshness floor; ranges that are already
+ * slower (5Y/MAX) keep their longer window.
+ */
+export function historyTtlSeconds(range: HistoryRange, interval?: HistoryInterval): number {
+  const byRange = HISTORY_TTL_BY_RANGE[range];
+  return interval !== undefined && DAILY_OR_COARSER.has(interval)
+    ? Math.max(byRange, DAILY_CANDLE_TTL_SECONDS)
+    : byRange;
 }
 
 /**

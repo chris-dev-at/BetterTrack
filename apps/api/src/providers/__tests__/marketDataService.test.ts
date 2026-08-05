@@ -259,6 +259,35 @@ describe('MarketDataService — negative caching (§5.3)', () => {
   });
 });
 
+describe('MarketDataService — history freshness follows the candle interval (§5.3)', () => {
+  it('gives an explicit daily interval the daily window, not its range default', async () => {
+    const { service } = serviceWith();
+
+    // 1M's 15-minute window is sized for 1M's default 30-minute candles. The
+    // workboard sparkline asks for 1M at 1d, which cannot move more than once a
+    // day — inheriting 15 minutes would re-fetch every watched asset 4×/hour.
+    await service.getHistory(REF, '1M', '1d');
+    const dailyTtl = await redis.ttl(freshCacheKey(cacheKey('fake', 'ACME', 'history', '1M@1d')));
+    expect(dailyTtl).toBeGreaterThan(15 * 60);
+    expect(dailyTtl).toBeLessThanOrEqual(60 * 60);
+
+    // The dense default keeps its own short window — same range, own cache key.
+    await service.getHistory(REF, '1M');
+    const denseTtl = await redis.ttl(freshCacheKey(cacheKey('fake', 'ACME', 'history', '1M@30m')));
+    expect(denseTtl).toBeGreaterThan(0);
+    expect(denseTtl).toBeLessThanOrEqual(15 * 60);
+  });
+
+  it('never shortens a range whose own window is already longer', async () => {
+    const { service } = serviceWith();
+
+    await service.getHistory(REF, 'MAX', '1d');
+    const ttl = await redis.ttl(freshCacheKey(cacheKey('fake', 'ACME', 'history', 'MAX@1d')));
+    expect(ttl).toBeGreaterThan(60 * 60);
+    expect(ttl).toBeLessThanOrEqual(6 * 60 * 60);
+  });
+});
+
 describe('MarketDataService — local providers', () => {
   it('bypasses the TTL cache so a manual asset edit is visible immediately', async () => {
     let price = 100;

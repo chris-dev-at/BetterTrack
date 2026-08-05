@@ -129,9 +129,11 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(getAssetQuotes).mockImplementation(async (ids) => ({
     quotes: ids.map((assetId) => ({ assetId, ...BASE_QUOTE })),
+    failed: [],
   }));
   vi.mocked(getAssetSparklines).mockImplementation(async (ids) => ({
     sparklines: ids.map((assetId) => ({ assetId, ...BASE_SPARKLINE })),
+    failed: [],
   }));
   vi.mocked(removeFromWorkboard).mockResolvedValue(undefined);
   vi.mocked(reorderWorkboard).mockResolvedValue(undefined);
@@ -313,7 +315,7 @@ describe('WorkboardPage — item rendering', () => {
       (ids) =>
         new Promise((resolve) => {
           resolveQuotes = () =>
-            resolve({ quotes: ids.map((assetId) => ({ assetId, ...BASE_QUOTE })) });
+            resolve({ quotes: ids.map((assetId) => ({ assetId, ...BASE_QUOTE })), failed: [] });
         }),
     );
     await userEvent.click(screen.getByRole('button', { name: 'Remove MSFT from watchlist' }));
@@ -324,6 +326,52 @@ describe('WorkboardPage — item rendering', () => {
     await act(async () => {
       resolveQuotes?.();
     });
+  });
+
+  test('reports rows the provider could not price, with one retry for the zone', async () => {
+    // A partial provider failure comes back as a 200 with the id in `failed`,
+    // so neither query is in an error state. Without this the row would show
+    // "—" forever and nothing would re-run it (the sparkline read has a
+    // 15-minute stale window and no poll).
+    vi.mocked(listWorkboard).mockResolvedValue({ items: [ITEM_A, ITEM_B] });
+    vi.mocked(getAssetQuotes).mockImplementation(async (ids) => ({
+      quotes: ids
+        .filter((assetId) => assetId !== ITEM_B.assetId)
+        .map((assetId) => ({ assetId, ...BASE_QUOTE })),
+      failed: [ITEM_B.assetId],
+    }));
+    renderPage();
+
+    expect(
+      await screen.findByText("Market data for 1 asset couldn't be loaded."),
+    ).toBeInTheDocument();
+    // The healthy row is untouched — isolation, not an all-or-nothing failure.
+    expect(screen.getByText(/150/)).toBeInTheDocument();
+
+    const quoteCalls = vi.mocked(getAssetQuotes).mock.calls.length;
+    await userEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    await waitFor(() =>
+      expect(vi.mocked(getAssetQuotes).mock.calls.length).toBeGreaterThan(quoteCalls),
+    );
+    // Only the read that lost rows re-runs; the healthy sparkline read does not.
+    expect(vi.mocked(getAssetSparklines)).toHaveBeenCalledTimes(1);
+  });
+
+  test('counts each failed asset once across both aggregate reads', async () => {
+    vi.mocked(listWorkboard).mockResolvedValue({ items: [ITEM_A, ITEM_B] });
+    vi.mocked(getAssetQuotes).mockImplementation(async () => ({
+      quotes: [],
+      failed: [ITEM_A.assetId, ITEM_B.assetId],
+    }));
+    vi.mocked(getAssetSparklines).mockImplementation(async () => ({
+      sparklines: [],
+      failed: [ITEM_B.assetId],
+    }));
+    renderPage();
+
+    expect(
+      await screen.findByText("Market data for 2 assets couldn't be loaded."),
+    ).toBeInTheDocument();
   });
 
   test('shows asset symbols and names for all items', async () => {

@@ -1,3 +1,4 @@
+import { ASSET_SPARKLINE_MAX_POINTS } from '@bettertrack/contracts';
 import type {
   AssetBatchQuote,
   AssetDetailResponse,
@@ -38,7 +39,9 @@ export interface AssetService {
   /**
    * Many latest quotes in one owner-scoped read. Per-row isolated: ids the
    * caller cannot see and rows the provider cannot price are omitted, never
-   * escalated into a failure for the whole set.
+   * escalated into a failure for the whole set. A row the provider *failed* on
+   * is reported in `failed` so the caller can present the outage — omission
+   * alone would make it silent and unretryable.
    */
   getQuotes(userId: string, ids: readonly string[]): Promise<AssetQuotesResponse>;
   /** Compact one-month daily series for many workboard rows; per-row isolated. */
@@ -65,8 +68,20 @@ export interface AssetServiceDeps {
 /** Epoch-ms (the cache's `asOf`) → ISO-8601 for the wire. */
 const asOfIso = (asOf: number): string => new Date(asOf).toISOString();
 
-/** Hard payload bound for the workboard's lightweight one-month chart. */
-const WORKBOARD_SPARKLINE_MAX_POINTS = 30;
+/**
+ * Simultaneous upstream reads one aggregate request may have in flight.
+ *
+ * The provider queue (§5.2) starts ~4 calls/second, and the service timeout
+ * runs *around* that queue wait, so dispatching a cold 100-id batch at once
+ * both monopolises the shared politeness queue for every other caller and times
+ * out its own tail. Feeding rows through a small pool keeps this request's
+ * footprint in that queue bounded and keeps each call's wait inside the
+ * timeout; total upstream volume is unchanged.
+ */
+export const MAX_INFLIGHT_ROW_READS = 6;
+
+/** Marks a row whose own read rejected, so it can be reported, not just dropped. */
+const ROW_FAILED = Symbol('rowFailed');
 
 const toSummary = (row: AssetRow): AssetSummary => ({
   id: row.id,
@@ -170,16 +185,44 @@ export function createAssetService(deps: AssetServiceDeps): AssetService {
    * whole batch on the first failure, so a single unpriceable asset — a custom
    * asset whose value points were all deleted, a delisted ticker parked on a
    * negative cache entry for the whole negative TTL — would take down price,
-   * day ±% and every sparkline for all N rows at once. A failed entry is
-   * omitted instead; the client already renders a missing id as the same gap it
-   * renders before the first load resolves.
+   * day ±% and every sparkline for all N rows at once.
+   *
+   * A failed row is dropped from the payload but its id is REPORTED: silently
+   * shortening the array makes a provider failure indistinguishable from an
+   * asset that simply has no data, so the query resolves as a success and the
+   * gap never re-runs (the sparkline read has a 15-minute stale window and no
+   * poll — it would sit blank for that long with nothing to press).
+   *
+   * Input order is preserved, and reads run through a small pool
+   * ({@link MAX_INFLIGHT_ROW_READS}) rather than all at once.
    */
   async function perRow<T>(
     rows: readonly AssetRow[],
     read: (row: AssetRow) => Promise<T>,
-  ): Promise<T[]> {
-    const settled = await Promise.allSettled(rows.map((row) => read(row)));
-    return settled.flatMap((entry) => (entry.status === 'fulfilled' ? [entry.value] : []));
+  ): Promise<{ values: T[]; failed: string[] }> {
+    const outcomes = new Array<T | typeof ROW_FAILED>(rows.length);
+    let next = 0;
+    const worker = async (): Promise<void> => {
+      // `next++` is claimed synchronously, so two workers never take one row.
+      for (let index = next++; index < rows.length; index = next++) {
+        try {
+          outcomes[index] = await read(rows[index]!);
+        } catch {
+          outcomes[index] = ROW_FAILED;
+        }
+      }
+    };
+    await Promise.all(
+      Array.from({ length: Math.min(MAX_INFLIGHT_ROW_READS, rows.length) }, () => worker()),
+    );
+
+    const values: T[] = [];
+    const failed: string[] = [];
+    outcomes.forEach((outcome, index) => {
+      if (outcome === ROW_FAILED) failed.push(rows[index]!.id);
+      else values.push(outcome);
+    });
+    return { values, failed };
   }
 
   async function historyForRow(
@@ -258,31 +301,34 @@ export function createAssetService(deps: AssetServiceDeps): AssetService {
     },
 
     async getQuotes(userId, ids) {
-      return withVisibleAssets(userId, ids, async (rows) => ({
-        quotes: await perRow(
+      return withVisibleAssets(userId, ids, async (rows) => {
+        const { values, failed } = await perRow(
           rows,
           async (row): Promise<AssetBatchQuote> => ({
             assetId: row.id,
             ...(await quoteForRow(row)),
           }),
-        ),
-      }));
+        );
+        return { quotes: values, failed };
+      });
     },
 
     async getSparklines(userId, ids) {
-      return withVisibleAssets(userId, ids, async (rows) => ({
-        sparklines: await perRow(rows, async (row) => {
+      return withVisibleAssets(userId, ids, async (rows) => {
+        const { values, failed } = await perRow(rows, async (row) => {
           // Explicit daily granularity avoids the 1M endpoint's dense 30m
-          // candles; the final slice keeps every provider bounded to 30 rows.
+          // candles; the final slice keeps every provider inside the contract's
+          // own payload bound, which is why it comes from contracts.
           const history = await historyForRow(row, '1M', '1d');
           return {
             assetId: row.id,
-            points: history.points.slice(-WORKBOARD_SPARKLINE_MAX_POINTS),
+            points: history.points.slice(-ASSET_SPARKLINE_MAX_POINTS),
             stale: history.stale,
             asOf: history.asOf,
           };
-        }),
-      }));
+        });
+        return { sparklines: values, failed };
+      });
     },
 
     async getHistory(userId, id, range) {

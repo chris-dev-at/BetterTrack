@@ -24,6 +24,7 @@ describe('aggregate asset reads', () => {
   test('sends one canonical request for a list inside the server cap', async () => {
     vi.mocked(apiRequest).mockResolvedValue({
       quotes: [{ assetId: assetId(1), quote, stale: false, asOf: quote.asOf }],
+      failed: [],
     });
 
     const result = await getAssetQuotes([assetId(2), assetId(1), assetId(2)]);
@@ -42,6 +43,7 @@ describe('aggregate asset reads', () => {
       quotes: (options?.query?.ids as string)
         .split(',')
         .map((id) => ({ assetId: id, quote, stale: false, asOf: quote.asOf })),
+      failed: [],
     }));
 
     const result = await getAssetQuotes(ids);
@@ -65,11 +67,32 @@ describe('aggregate asset reads', () => {
         stale: false,
         asOf: quote.asOf,
       })),
+      failed: [],
     }));
 
     const result = await getAssetSparklines(ids);
 
     expect(apiRequest).toHaveBeenCalledTimes(2);
     expect(result.sparklines).toHaveLength(ids.length);
+    expect(result.failed).toEqual([]);
+  });
+
+  test('merges the failed ids of every page, not just the first', async () => {
+    const ids = Array.from({ length: ASSET_BATCH_MAX_IDS + 2 }, (_, index) => assetId(index));
+    // One unpriceable row per page: chunking must not swallow the second page's
+    // failure, or the client silently under-reports the outage.
+    vi.mocked(apiRequest).mockImplementation(async (_path, options) => {
+      const page = (options?.query?.ids as string).split(',');
+      return {
+        quotes: page.slice(1).map((id) => ({ assetId: id, quote, stale: false, asOf: quote.asOf })),
+        failed: [page[0]],
+      };
+    });
+
+    const result = await getAssetQuotes(ids);
+
+    expect(apiRequest).toHaveBeenCalledTimes(2);
+    expect(result.failed).toEqual([assetId(0), assetId(ASSET_BATCH_MAX_IDS)]);
+    expect(result.quotes).toHaveLength(ids.length - 2);
   });
 });

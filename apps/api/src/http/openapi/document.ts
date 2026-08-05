@@ -1881,7 +1881,7 @@ const endpoints: EndpointDef[] = [
     path: '/assets/quotes',
     tag: 'Assets',
     summary:
-      'Latest quotes for an aggregate asset id set; ids the caller cannot see or the provider cannot price are omitted.',
+      'Latest quotes for an aggregate asset id set; ids the caller cannot see are omitted, ids the provider could not price are listed in `failed`.',
     query: contracts.assetBatchQuerySchema,
     status: 200,
     response: R.AssetQuotesResponse,
@@ -1891,7 +1891,7 @@ const endpoints: EndpointDef[] = [
     path: '/assets/sparklines',
     tag: 'Assets',
     summary:
-      'Compact one-month daily sparklines for an aggregate asset id set; ids without a resolvable series are omitted.',
+      'Compact one-month daily sparklines for an aggregate asset id set; invisible ids are omitted, ids whose series could not be read are listed in `failed`.',
     query: contracts.assetBatchQuerySchema,
     status: 200,
     response: R.AssetSparklinesResponse,

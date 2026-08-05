@@ -92,22 +92,13 @@ export function createAssetRepository(db: Database) {
      * quote/sparkline request, with the identical global-or-owned boundary.
      * Ordering is intentionally unspecified; the service restores input order.
      */
-    async findByIdsForUser(
-      ids: readonly string[],
-      userId: string,
-      options?: { includeCustomAssets?: boolean },
-    ): Promise<AssetRow[]> {
+    async findByIdsForUser(ids: readonly string[], userId: string): Promise<AssetRow[]> {
       if (ids.length === 0) return [];
       return db
         .select()
         .from(assets)
         .where(
-          and(
-            inArray(assets.id, [...ids]),
-            options?.includeCustomAssets === false
-              ? isNull(assets.ownerId)
-              : or(isNull(assets.ownerId), eq(assets.ownerId, userId)),
-          ),
+          and(inArray(assets.id, [...ids]), or(isNull(assets.ownerId), eq(assets.ownerId, userId))),
         );
     },
 

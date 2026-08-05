@@ -17,6 +17,7 @@ import {
 } from '@bettertrack/contracts';
 
 import * as schema from '../data/schema';
+import { MAX_INFLIGHT_ROW_READS } from '../services/assets/assetService';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 import { createStubMarketData } from '../testing/marketDataStubs';
 
@@ -274,6 +275,50 @@ describe('GET /api/v1/assets/quotes', () => {
     expect(marketData.calls.quote).toBe(2);
   });
 
+  it('keeps upstream fan-out bounded and still answers in request order', async () => {
+    // One request must not dump 100 calls into the shared per-provider queue
+    // (§5.2): every other caller on the box would queue behind them, and this
+    // request's own tail would age out of the service timeout while waiting.
+    let inFlight = 0;
+    let peakInFlight = 0;
+    const marketData = createStubMarketData({
+      quote: async (ref) => {
+        inFlight += 1;
+        peakInFlight = Math.max(peakInFlight, inFlight);
+        await new Promise((resolve) => setImmediate(resolve));
+        inFlight -= 1;
+        return cachedQuote({
+          value: sampleQuote({ price: Number(ref.providerRef.replace('SYM', '')) }),
+        });
+      },
+    });
+    const h = await createTestApp({ marketData });
+    const user = await h.seedUser();
+    const rows = [];
+    for (let index = 0; index < MAX_INFLIGHT_ROW_READS * 2; index += 1) {
+      rows.push(
+        await seedGlobalAsset(h, {
+          providerRef: `SYM${index}`,
+          symbol: `SYM${index}`,
+          name: `Sym ${index}`,
+        }),
+      );
+    }
+    const agent = await loginAgent(h.app, user.email, user.password);
+    // Reversed, so "request order" cannot be satisfied by insertion order.
+    const ids = [...rows].reverse().map((row) => row.id);
+
+    const res = await agent.get(`/api/v1/assets/quotes?ids=${ids.join(',')}`);
+
+    expect(res.status).toBe(200);
+    const parsed = assetQuotesResponseSchema.parse(res.body);
+    expect(parsed.quotes.map((entry) => entry.assetId)).toEqual(ids);
+    expect(marketData.calls.quote).toBe(rows.length);
+    expect(peakInFlight).toBeLessThanOrEqual(MAX_INFLIGHT_ROW_READS);
+    // Still concurrent — the pool bounds the fan-out, it does not serialize it.
+    expect(peakInFlight).toBeGreaterThan(1);
+  });
+
   it('isolates rows: an unpriceable asset and an invisible id never fail the batch', async () => {
     const marketData = createStubMarketData({
       quote: (ref) => {
@@ -302,6 +347,9 @@ describe('GET /api/v1/assets/quotes', () => {
     const parsed = assetQuotesResponseSchema.parse(res.body);
     expect(parsed.quotes.map((entry) => entry.assetId)).toEqual([apple.id]);
     expect(parsed.quotes[0]?.quote.price).toBe(187.5);
+    // The unpriceable row is REPORTED so the client can offer a retry; the id
+    // the caller cannot see stays absent, indistinguishable from foreign (§10).
+    expect(parsed.failed).toEqual([microsoft.id]);
   });
 });
 
@@ -356,6 +404,33 @@ describe('GET /api/v1/assets/sparklines', () => {
     const parsed = assetSparklinesResponseSchema.parse(res.body);
     expect(parsed.sparklines.map((entry) => entry.assetId)).toEqual([apple.id]);
     expect(parsed.sparklines[0]?.points).toHaveLength(2);
+    expect(parsed.failed).toEqual([microsoft.id]);
+  });
+
+  it('keeps a full batch of unreadable rows a 200 with every id reported', async () => {
+    // The total-outage case: nothing resolves, but the response still has to
+    // say WHICH ids failed, or the client shows an empty table with no error.
+    const marketData = createStubMarketData({
+      history: () => {
+        throw new Error('provider down');
+      },
+    });
+    const h = await createTestApp({ marketData });
+    const user = await h.seedUser();
+    const apple = await seedGlobalAsset(h);
+    const microsoft = await seedGlobalAsset(h, {
+      providerRef: 'MSFT',
+      symbol: 'MSFT',
+      name: 'Microsoft Corporation',
+    });
+    const agent = await loginAgent(h.app, user.email, user.password);
+
+    const res = await agent.get(`/api/v1/assets/sparklines?ids=${apple.id},${microsoft.id}`);
+
+    expect(res.status).toBe(200);
+    const parsed = assetSparklinesResponseSchema.parse(res.body);
+    expect(parsed.sparklines).toEqual([]);
+    expect(parsed.failed).toEqual([apple.id, microsoft.id]);
   });
 });
 
