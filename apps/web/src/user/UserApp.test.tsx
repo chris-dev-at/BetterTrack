@@ -32,7 +32,7 @@ import * as api from '../lib/userApi';
 import { listPortfolios } from '../lib/portfolioApi';
 import { listFollowing, listItemFollows } from '../lib/socialApi';
 import { listWorkboard } from '../lib/workboardApi';
-import { UserApp } from './UserApp';
+import { queryClient, UserApp } from './UserApp';
 
 const member: MeResponse = {
   id: 'user-1',
@@ -115,6 +115,23 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+});
+
+test('the app query client supplies sane defaults without overriding an explicit query policy', () => {
+  const inherited = queryClient.defaultQueryOptions({ queryKey: ['perf4', 'inherited'] });
+  expect(inherited.staleTime).toBe(30_000);
+  expect(inherited.refetchOnWindowFocus).toBe(false);
+  expect(inherited.retry).toBe(1);
+
+  const explicit = queryClient.defaultQueryOptions({
+    queryKey: ['perf4', 'explicit'],
+    staleTime: 60_000,
+    refetchOnWindowFocus: true,
+    retry: 0,
+  });
+  expect(explicit.staleTime).toBe(60_000);
+  expect(explicit.refetchOnWindowFocus).toBe(true);
+  expect(explicit.retry).toBe(0);
 });
 
 test('an unauthenticated visit to a user route redirects to /login', async () => {

@@ -93,7 +93,7 @@ export function createPortfolioRouter(ctx: AppContext): Router {
   // the MIRRORCHAIN badge / fork provenance (V5-P7 M5, design §11/§6) so the
   // switcher can render the avatar stack + "Syncing…" state / "Forked from ⟨X⟩"
   // line without a second round-trip.
-  router.get('/', validateQuery(portfolioListQuerySchema), async (req, res) => {
+  router.get('/', validateQuery(portfolioListQuerySchema), conditionalGet(), async (req, res) => {
     const { includeArchived } = req.valid?.query as PortfolioListQuery;
     const list = await ctx.portfolio.listPortfolios(req.authUser!.id, { includeArchived });
     const portfolios = await ctx.mirror.enrichPortfolioSummaries(req.authUser!.id, list.portfolios);

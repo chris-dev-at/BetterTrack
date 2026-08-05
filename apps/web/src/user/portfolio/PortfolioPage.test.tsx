@@ -282,6 +282,14 @@ beforeEach(() => {
   });
 });
 
+test('requests only the recent transactions rendered by the overview', async () => {
+  vi.mocked(getPortfolio).mockResolvedValue(PORTFOLIO);
+  renderPage();
+
+  await waitFor(() => expect(vi.mocked(listTransactions)).toHaveBeenCalled());
+  expect(vi.mocked(listTransactions).mock.calls[0]?.[1]).toEqual({ limit: 8 });
+});
+
 // ─── Empty / error ──────────────────────────────────────────────────────────
 
 describe('PortfolioPage — empty & error states', () => {

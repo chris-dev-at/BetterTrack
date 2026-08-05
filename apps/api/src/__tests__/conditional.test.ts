@@ -95,6 +95,31 @@ async function buyInto(
   return res.body.transactions[0].id as string;
 }
 
+describe('conditional reads — portfolio list (GET /api/v1/portfolios)', () => {
+  let harness: TestHarness;
+
+  beforeEach(async () => {
+    harness = await createTestApp({ marketData: createStubMarketData() });
+  });
+
+  it('serves a 304 when the unchanged list is revalidated', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+
+    const first = await agent.get('/api/v1/portfolios');
+    expect(first.status).toBe(200);
+    expect(first.headers.etag).toMatch(/^W\/"/);
+    expect(first.headers['cache-control']).toBe('private, no-cache');
+
+    const revalidate = await agent
+      .get('/api/v1/portfolios')
+      .set('If-None-Match', first.headers.etag as string);
+    expect(revalidate.status).toBe(304);
+    expect(revalidate.text).toBe('');
+    expect(revalidate.headers.etag).toBe(first.headers.etag);
+  });
+});
+
 describe('conditional reads — portfolio summary (GET /api/v1/portfolios/:id)', () => {
   let harness: TestHarness;
   const priceRef = { price: 120 };

@@ -30,7 +30,17 @@ import { useUiScaleWatcher } from './useUiScale';
  * so without that a `staleTime`d response from one case is still served to the
  * next one.
  */
-export const queryClient = new QueryClient();
+export const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      // Individual reads continue to declare their own freshness policy; these
+      // defaults protect newly added queries from focus-refetching immediately.
+      staleTime: 30_000,
+      refetchOnWindowFocus: false,
+      retry: 1,
+    },
+  },
+});
 
 const ForcedPasswordChangePage = lazy(() =>
   import('./auth/ForcedPasswordChangePage').then((m) => ({ default: m.ForcedPasswordChangePage })),

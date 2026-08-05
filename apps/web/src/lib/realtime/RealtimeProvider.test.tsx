@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act, render, screen } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
 vi.mock('./socket', () => ({ createRealtimeSocket: vi.fn() }));
@@ -118,17 +118,29 @@ describe('RealtimeProvider', () => {
     expect(received).toEqual([push]);
   });
 
-  test('quote.updated / portfolio.changed pushes invalidate the matching query caches', () => {
+  test('quote.updated invalidates the live quote without invalidating asset history', async () => {
     const invalidate = vi.spyOn(queryClient, 'invalidateQueries');
+    const assetId = 'asset-1';
+    const quoteKey = ['asset', assetId, 'quote'] as const;
+    const historyKey = ['asset', assetId, 'history', '1Y'] as const;
+    queryClient.setQueryData(quoteKey, { price: 100 });
+    queryClient.setQueryData(historyKey, { points: [] });
     renderProvider(true);
 
     act(() =>
       fakeSocket.fire(REALTIME_SERVER_EVENTS.quoteUpdated, {
-        assetId: 'asset-1',
+        assetId,
         occurredAt: 'now',
       }),
     );
-    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['asset', 'asset-1'] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: quoteKey });
+    await waitFor(() => expect(queryClient.getQueryState(quoteKey)?.isInvalidated).toBe(true));
+    expect(queryClient.getQueryState(historyKey)?.isInvalidated).toBe(false);
+  });
+
+  test('portfolio.changed invalidates the matching portfolio and portfolio list', () => {
+    const invalidate = vi.spyOn(queryClient, 'invalidateQueries');
+    renderProvider(true);
 
     const portfolioId = '018f6f00-0000-7000-8000-000000000002';
     act(() =>

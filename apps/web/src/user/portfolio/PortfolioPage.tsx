@@ -1444,7 +1444,8 @@ export function PortfolioPage() {
   // Recent ledger, grouped client-side so each holding's expansion shows its rows.
   const transactionsQuery = useQuery({
     queryKey: ['portfolio', portfolioId, 'transactions'],
-    queryFn: ({ signal }) => store.listTransactions(portfolioId!, { limit: 200 }, signal),
+    queryFn: ({ signal }) =>
+      store.listTransactions(portfolioId!, { limit: RECENT_TRANSACTIONS_LIMIT }, signal),
     enabled: portfolioId !== null,
     staleTime: 60_000,
   });
