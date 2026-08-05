@@ -2897,6 +2897,7 @@
     "publicWarning": "This creates a public link — anyone with the link sees your holdings and net worth.",
     "publicAcknowledge": "I understand that anyone with the link can see this.",
     "publicActive": "A public link is active. For security the URL is shown only once, when it is created.",
+    "publicLinkKept": "Saved. Your existing public link remains active; its URL cannot be shown again.",
     "publicLinkReady": "Public link created. Copy it now — it will not be shown again.",
     "copy": "Copy link",
     "copied": "Copied!",

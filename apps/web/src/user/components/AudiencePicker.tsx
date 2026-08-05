@@ -165,6 +165,7 @@ export function AudiencePicker({
   const [groupId, setGroupId] = useState<string | null>(null);
   const [acknowledged, setAcknowledged] = useState(false);
   const [mintedUrl, setMintedUrl] = useState<string | null>(null);
+  const [publicLinkKept, setPublicLinkKept] = useState(false);
   const [copied, setCopied] = useState(false);
   const [search, setSearch] = useState('');
   const [snapshotKey, setSnapshotKey] = useState<string | null>(null);
@@ -192,6 +193,7 @@ export function AudiencePicker({
 
   const snapshotReady = authoritativeKey !== null && snapshotKey === authoritativeKey;
   const audience: ShareAudience = selected ?? 'private';
+  const hasActivePublicLink = audienceQuery.data?.link.active === true;
 
   const mutation = useMutation({
     mutationFn: () =>
@@ -201,12 +203,19 @@ export function AudiencePicker({
         groupId: audience === 'group' ? (groupId ?? undefined) : undefined,
         acknowledgePublic: audience === 'public_link' ? acknowledged : undefined,
       }),
+    onMutate: () => setPublicLinkKept(false),
     onSuccess: (result) => {
       void queryClient.invalidateQueries({ queryKey: ['social'] });
       void queryClient.invalidateQueries({ queryKey: ['workboard'] });
       onChanged?.(result.state.audience);
       if (result.link) {
         setMintedUrl(`${window.location.origin}/s/${result.link.token}`);
+      } else if (result.state.audience === 'public_link' && result.state.link.active) {
+        // The server stores only the token hash, so saving an already-active
+        // public audience cannot reveal the URL again. Keep the sheet open and
+        // make that successful no-change outcome explicit instead of silently
+        // closing it.
+        setPublicLinkKept(true);
       } else {
         onClose();
       }
@@ -350,6 +359,7 @@ export function AudiencePicker({
     >
       <div className="flex flex-col gap-4">
         {mirrorSyncedCopy ? <Alert tone="info">{t('mirrorchain.share.syncedNotice')}</Alert> : null}
+        {hasActivePublicLink ? <Alert tone="info">{t('sharing.publicActive')}</Alert> : null}
         <fieldset className="flex flex-col gap-2">
           <legend className="bt-label" style={{ marginBottom: 4 }}>
             {t('sharing.audienceLabel')}
@@ -370,6 +380,7 @@ export function AudiencePicker({
                   checked={active}
                   onChange={() => {
                     setSelected(value);
+                    setPublicLinkKept(false);
                     if (value !== 'public_link') setAcknowledged(false);
                   }}
                 />
@@ -518,6 +529,9 @@ export function AudiencePicker({
           </div>
         ) : null}
 
+        {publicLinkKept && audience === 'public_link' ? (
+          <Alert tone="success">{t('sharing.publicLinkKept')}</Alert>
+        ) : null}
         {mutation.isError ? <Alert tone="error">{t('sharing.error')}</Alert> : null}
 
         <div className="flex justify-end gap-2">
