@@ -2863,6 +2863,37 @@
       "screener": "Screener"
     }
   },
+  "mutationFeedback": {
+    "watchlistReordered": "Watchlist-Reihenfolge gespeichert.",
+    "alertRearmed": "Alarm wieder scharf gestellt.",
+    "alertDeleted": "Alarm gelöscht.",
+    "sharingSaved": "Freigabe aktualisiert.",
+    "alertSharingEnabled": "Alarmfreigabe aktiviert.",
+    "alertSharingDisabled": "Alarmfreigabe deaktiviert.",
+    "activityAlertsEnabled": "Aktivitätsalarme aktiviert.",
+    "activityAlertsDisabled": "Aktivitätsalarme deaktiviert.",
+    "activityAlertUpdateError": "Die Aktivitätsalarme konnten nicht aktualisiert werden. Bitte versuche es erneut.",
+    "sharedWithFriend": "Mit {{username}} geteilt.",
+    "cash": {
+      "depositSaved": "Einzahlung erfasst.",
+      "withdrawalSaved": "Abhebung erfasst.",
+      "feeSaved": "Gebühr erfasst.",
+      "balanceSet": "Bargeldbestand aktualisiert.",
+      "transferSaved": "Umbuchung erfasst.",
+      "sourceCreated": "Geldquelle erstellt.",
+      "sourceUpdated": "Geldquelle aktualisiert.",
+      "transactionCreated": "Transaktion erfasst.",
+      "transactionUpdated": "Transaktion aktualisiert.",
+      "transactionDeleted": "Transaktion gelöscht.",
+      "tagsUpdated": "Transaktions-Tags aktualisiert.",
+      "budgetCreated": "Budget erstellt.",
+      "budgetUpdated": "Budget aktualisiert.",
+      "tagCreated": "Tag erstellt.",
+      "tagUpdated": "Tag aktualisiert.",
+      "ruleCreated": "Regel erstellt.",
+      "ruleUpdated": "Regel aktualisiert."
+    }
+  },
   "sharing": {
     "title": "„{{name}}“ teilen",
     "subtitle": "Wähle, wer dies sehen kann.",

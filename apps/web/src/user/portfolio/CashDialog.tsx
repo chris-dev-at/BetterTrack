@@ -5,6 +5,7 @@ import type { CashMovementKind, CashPreviewResponse, CashSource } from '@bettert
 import { useT } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
 import { useDebounce } from '../hooks/useDebounce';
+import { useMutationFeedback } from '../hooks/useMutationFeedback';
 import { Dialog } from '../components/Dialog';
 import { Alert, Button, cx } from '../components/ui';
 import { MoneyText } from '../../ui';
@@ -63,6 +64,7 @@ export function CashDialog({
 }: CashDialogProps) {
   const t = useT();
   const store = usePortfolioStore();
+  const feedback = useMutationFeedback();
   const headingId = useId();
   const [kind, setKind] = useState<CashDialogKind>(initialKind);
   const [amount, setAmount] = useState('');
@@ -151,6 +153,15 @@ export function CashDialog({
       if (kind === 'deposit') await store.depositCash(portfolioId, body);
       else if (kind === 'fee') await store.chargeCashFee(portfolioId, body);
       else await store.withdrawCash(portfolioId, body);
+      feedback.success(
+        t(
+          kind === 'deposit'
+            ? 'mutationFeedback.cash.depositSaved'
+            : kind === 'fee'
+              ? 'mutationFeedback.cash.feeSaved'
+              : 'mutationFeedback.cash.withdrawalSaved',
+        ),
+      );
       onSubmitted();
       onClose();
     } catch (err) {

@@ -9,6 +9,7 @@ import { ApiError } from '../../../lib/apiClient';
 import { cashBudgetsQueryKey, createCashBudget, updateCashBudget } from '../../../lib/cashApi';
 import { Dialog } from '../../components/Dialog';
 import { Alert } from '../../components/ui';
+import { useMutationFeedback } from '../../hooks/useMutationFeedback';
 import { Button, Field, Seg } from '../../../ui/origin';
 
 const RECURRING = 'recurring';
@@ -46,6 +47,7 @@ export function CashBudgetDialog({
 }: CashBudgetDialogProps) {
   const t = useT();
   const queryClient = useQueryClient();
+  const feedback = useMutationFeedback();
   const isEdit = !!existing;
   const tagFieldId = useId();
   const amountFieldId = useId();
@@ -90,6 +92,9 @@ export function CashBudgetDialog({
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: cashBudgetsQueryKey(portfolioId) });
+      feedback.success(
+        t(isEdit ? 'mutationFeedback.cash.budgetUpdated' : 'mutationFeedback.cash.budgetCreated'),
+      );
       onClose();
     },
     onError: (err) => {

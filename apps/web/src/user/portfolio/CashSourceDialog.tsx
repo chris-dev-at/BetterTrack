@@ -6,6 +6,7 @@ import { useT } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
 import { Dialog } from '../components/Dialog';
 import { Alert, Button } from '../components/ui';
+import { useMutationFeedback } from '../hooks/useMutationFeedback';
 import { usePortfolioStore } from './PortfolioStoreProvider';
 
 export interface CashSourceDialogProps {
@@ -26,6 +27,7 @@ export interface CashSourceDialogProps {
 export function CashSourceDialog({ portfolioId, source, onClose, onSaved }: CashSourceDialogProps) {
   const t = useT();
   const store = usePortfolioStore();
+  const feedback = useMutationFeedback();
   const isEdit = !!source;
   const [name, setName] = useState(source?.name ?? '');
   const [type, setType] = useState<CashSourceType>(source?.type ?? 'bank');
@@ -56,6 +58,9 @@ export function CashSourceDialog({ portfolioId, source, onClose, onSaved }: Cash
       } else {
         await store.createCashSource(portfolioId, { name: trimmed, type });
       }
+      feedback.success(
+        t(isEdit ? 'mutationFeedback.cash.sourceUpdated' : 'mutationFeedback.cash.sourceCreated'),
+      );
       onSaved();
       onClose();
     } catch (err) {

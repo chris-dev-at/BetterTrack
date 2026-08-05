@@ -7,6 +7,7 @@ import { formatMoney } from '../../lib/format';
 import { MoneyText } from '../../ui';
 import { Dialog } from '../components/Dialog';
 import { Alert, Button } from '../components/ui';
+import { useMutationFeedback } from '../hooks/useMutationFeedback';
 import { usePortfolioStore } from './PortfolioStoreProvider';
 
 /** Cents-quantized delta between a target and the current balance (matches the server). */
@@ -37,6 +38,7 @@ export function SetBalanceDialog({
 }: SetBalanceDialogProps) {
   const t = useT();
   const store = usePortfolioStore();
+  const feedback = useMutationFeedback();
   const [target, setTarget] = useState('');
   const [note, setNote] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -59,6 +61,7 @@ export function SetBalanceDialog({
         balanceEur: parsed,
         note: note.trim() === '' ? null : note.trim(),
       });
+      feedback.success(t('mutationFeedback.cash.balanceSet'));
       onSubmitted();
       onClose();
     } catch {

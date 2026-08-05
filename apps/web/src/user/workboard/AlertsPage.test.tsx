@@ -17,6 +17,7 @@ vi.mock('../../lib/alertsApi', () => ({
 
 import { deleteAlert, listAlerts, rearmAlert } from '../../lib/alertsApi';
 import { setViewportWidth } from '../../test/viewport';
+import { MutationFeedbackProvider } from '../hooks/useMutationFeedback';
 import { AlertsPage } from './AlertsPage';
 
 function asset(overrides: Partial<Alert['asset']> = {}): Alert['asset'] {
@@ -48,9 +49,11 @@ function renderPage(initialPath = '/workbench/alerts') {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 0 } } });
   return render(
     <QueryClientProvider client={client}>
-      <MemoryRouter initialEntries={[initialPath]}>
-        <AlertsPage />
-      </MemoryRouter>
+      <MutationFeedbackProvider>
+        <MemoryRouter initialEntries={[initialPath]}>
+          <AlertsPage />
+        </MemoryRouter>
+      </MutationFeedbackProvider>
     </QueryClientProvider>,
   );
 }
@@ -132,6 +135,7 @@ describe('AlertsPage', () => {
     await waitFor(() => expect(screen.getByText('Re-arm')).toBeInTheDocument());
     await user.click(screen.getByText('Re-arm'));
     expect(rearmAlert).toHaveBeenCalledWith('al1');
+    expect(await screen.findByText('Alert re-armed.')).toBeInTheDocument();
   });
 
   test('delete asks for confirmation before it calls the API', async () => {
@@ -152,6 +156,21 @@ describe('AlertsPage', () => {
 
     await user.click(screen.getByText('Delete'));
     expect(deleteAlert).toHaveBeenCalledWith('al1');
+    expect(await screen.findByText('Alert deleted.')).toBeInTheDocument();
+  });
+
+  test('surfaces a failed re-arm through the shared feedback toast', async () => {
+    const user = userEvent.setup();
+    vi.mocked(listAlerts).mockResolvedValue({ items: [alert({ status: 'triggered' })] });
+    vi.mocked(rearmAlert).mockRejectedValue(new Error('offline'));
+    renderPage();
+
+    await user.click(await screen.findByRole('button', { name: 'Re-arm' }));
+
+    expect(
+      await screen.findByText("Couldn't update that alert. Please try again."),
+    ).toBeInTheDocument();
+    expect(screen.getAllByRole('alert')).toHaveLength(1);
   });
 
   test('cancelling the delete confirm leaves the alert alone', async () => {

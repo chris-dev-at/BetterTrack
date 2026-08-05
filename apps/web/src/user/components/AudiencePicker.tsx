@@ -6,6 +6,7 @@ import { SHARE_AUDIENCES, type ShareAudience, type ShareKind } from '@bettertrac
 import { getAudience, listFriends, listGroups, setAudience } from '../../lib/socialApi';
 import { useT } from '../../i18n';
 import { Button, Icon, Input } from '../../ui/origin';
+import { useMutationFeedback } from '../hooks/useMutationFeedback';
 import { Avatar } from './Avatar';
 import { Dialog } from './Dialog';
 import { Alert, Spinner } from './ui';
@@ -146,6 +147,7 @@ export function AudiencePicker({
 }: AudiencePickerProps) {
   const t = useT();
   const queryClient = useQueryClient();
+  const feedback = useMutationFeedback();
 
   const audienceQuery = useQuery({
     queryKey: ['social', 'audience', kind, subjectId],
@@ -218,9 +220,11 @@ export function AudiencePicker({
         // closing it.
         setPublicLinkKept(true);
       } else {
+        feedback.success(t('mutationFeedback.sharingSaved'));
         onClose();
       }
     },
+    onError: () => feedback.error(t('sharing.error')),
   });
 
   const friends = friendsQuery.data?.friends ?? [];
@@ -540,8 +544,6 @@ export function AudiencePicker({
         {publicLinkKept && audience === 'public_link' ? (
           <Alert tone="success">{t('sharing.publicLinkKept')}</Alert>
         ) : null}
-        {mutation.isError ? <Alert tone="error">{t('sharing.error')}</Alert> : null}
-
         <div className="flex justify-end gap-2">
           <Button onClick={onClose} variant="quiet">
             {t('sharing.cancel')}

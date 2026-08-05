@@ -26,6 +26,7 @@ import {
 import { Dialog } from '../../components/Dialog';
 import { AsyncReadState } from '../../components/AsyncReadState';
 import { Alert } from '../../components/ui';
+import { useMutationFeedback } from '../../hooks/useMutationFeedback';
 import { MoneyText } from '../../../ui';
 import { activeSources, sortSourcesMainFirst } from '../cashSourceUtils';
 import { TagChip } from './TagChip';
@@ -157,6 +158,7 @@ export function RecordCashDialog({
 }: RecordCashDialogProps) {
   const t = useT();
   const queryClient = useQueryClient();
+  const feedback = useMutationFeedback();
   const amountId = useId();
   const noteId = useId();
   const dateId = useId();
@@ -303,6 +305,13 @@ export function RecordCashDialog({
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['portfolio'] });
       void queryClient.invalidateQueries({ queryKey: ['cash'] });
+      feedback.success(
+        t(
+          editing
+            ? 'mutationFeedback.cash.transactionUpdated'
+            : 'mutationFeedback.cash.transactionCreated',
+        ),
+      );
       onClose();
     },
     onError: (err) => {
@@ -320,6 +329,7 @@ export function RecordCashDialog({
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: ['portfolio'] });
       void queryClient.invalidateQueries({ queryKey: ['cash'] });
+      feedback.success(t('mutationFeedback.cash.transactionDeleted'));
       onClose();
     },
     onError: (err) => {

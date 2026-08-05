@@ -44,6 +44,7 @@ import { useAuth } from '../AuthContext';
 import { Avatar } from '../components/Avatar';
 import { Dialog } from '../components/Dialog';
 import { Alert, cx } from '../components/ui';
+import { useMutationFeedback } from '../hooks/useMutationFeedback';
 import { NormalModeOnly } from '../vault/ui/ParanoidSurfaceGate';
 import { useResolvedPrivacyMode } from '../vault/usePrivacyMode';
 
@@ -255,6 +256,7 @@ const isShareKind = (kind: ChatChip['kind']): kind is ShareKind =>
 function ChipShareShortcut({ chip, recipient }: { chip: ChatChip; recipient: ChipRecipient }) {
   const t = useT();
   const queryClient = useQueryClient();
+  const feedback = useMutationFeedback();
   const shareKind = isShareKind(chip.kind) ? chip.kind : null;
 
   const audienceQuery = useQuery({
@@ -276,7 +278,9 @@ function ChipShareShortcut({ chip, recipient }: { chip: ChatChip; recipient: Chi
       // admitted) and refresh the sharing surfaces the picker also feeds.
       void queryClient.invalidateQueries({ queryKey: ['social'] });
       void queryClient.invalidateQueries({ queryKey: ['workboard'] });
+      feedback.success(t('mutationFeedback.sharedWithFriend', { username: recipient.username }));
     },
+    onError: () => feedback.error(t('social.chat.chip.shortcut.error')),
   });
 
   if (shareKind === null) return null;
@@ -302,11 +306,6 @@ function ChipShareShortcut({ chip, recipient }: { chip: ChatChip; recipient: Chi
           ? t('social.chat.chip.shortcut.sharing')
           : t('social.chat.chip.shortcut.action')}
       </Button>
-      {mutation.isError ? (
-        <p className="bt-neg" style={{ fontSize: 12 }}>
-          {t('social.chat.chip.shortcut.error')}
-        </p>
-      ) : null}
     </div>
   );
 }

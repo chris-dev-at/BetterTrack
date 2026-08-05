@@ -14,6 +14,7 @@ import { ApiError } from '../../../lib/apiClient';
 import { CASH_RULES_QUERY_KEY, createCashRule, updateCashRule } from '../../../lib/cashApi';
 import { Dialog } from '../../components/Dialog';
 import { Alert } from '../../components/ui';
+import { useMutationFeedback } from '../../hooks/useMutationFeedback';
 import { Button, Field, Switch } from '../../../ui/origin';
 import { TagChip } from './TagChip';
 
@@ -36,6 +37,7 @@ export interface CashRuleDialogProps {
 export function CashRuleDialog({ existing, tags, onClose }: CashRuleDialogProps) {
   const t = useT();
   const queryClient = useQueryClient();
+  const feedback = useMutationFeedback();
   const isEdit = !!existing;
   const matchTypeFieldId = useId();
   const patternFieldId = useId();
@@ -62,6 +64,9 @@ export function CashRuleDialog({ existing, tags, onClose }: CashRuleDialogProps)
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: CASH_RULES_QUERY_KEY });
+      feedback.success(
+        t(isEdit ? 'mutationFeedback.cash.ruleUpdated' : 'mutationFeedback.cash.ruleCreated'),
+      );
       onClose();
     },
     onError: (err) => {

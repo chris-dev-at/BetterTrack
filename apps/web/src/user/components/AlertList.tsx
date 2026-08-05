@@ -8,8 +8,8 @@ import { useT } from '../../i18n';
 import { ALERTS_QUERY_KEY, deleteAlert, rearmAlert } from '../../lib/alertsApi';
 import { formatDateTime } from '../../lib/format';
 import { Badge, Button, type BadgeTone } from '../../ui/origin';
+import { useMutationFeedback } from '../hooks/useMutationFeedback';
 import { ALERT_STATUS_META, describeAlertRule } from './alertMeta';
-import { Alert as AlertBanner } from './ui';
 
 /** §14 status → Badge tone: active reads positive, triggered draws the eye
  * (gold), disabled/paused stays neutral. */
@@ -36,6 +36,7 @@ function AlertRow({
 }) {
   const t = useT();
   const queryClient = useQueryClient();
+  const feedback = useMutationFeedback();
   /**
    * Delete used to fire on the first click, from a `size="sm"` danger button
    * sitting directly beside Edit — one slip permanently removed a rule the user
@@ -47,11 +48,19 @@ function AlertRow({
 
   const rearmMutation = useMutation({
     mutationFn: () => rearmAlert(alert.id),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ALERTS_QUERY_KEY }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ALERTS_QUERY_KEY });
+      feedback.success(t('mutationFeedback.alertRearmed'));
+    },
+    onError: () => feedback.error(t('workboard.alerts.list.updateError')),
   });
   const deleteMutation = useMutation({
     mutationFn: () => deleteAlert(alert.id),
-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ALERTS_QUERY_KEY }),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ALERTS_QUERY_KEY });
+      feedback.success(t('mutationFeedback.alertDeleted'));
+    },
+    onError: () => feedback.error(t('workboard.alerts.list.updateError')),
   });
 
   const busy = rearmMutation.isPending || deleteMutation.isPending;
@@ -122,10 +131,6 @@ function AlertRow({
           </Button>
         )}
       </div>
-
-      {rearmMutation.isError || deleteMutation.isError ? (
-        <AlertBanner tone="error">{t('workboard.alerts.list.updateError')}</AlertBanner>
-      ) : null}
     </li>
   );
 }

@@ -31,6 +31,7 @@ import {
 } from './portfolio/PortfolioStoreProvider';
 import { apiPortfolioStore } from '../lib/portfolioStore';
 import { removePlaintextQueries } from './vault/plaintextQueries';
+import { MutationFeedbackProvider } from './hooks/useMutationFeedback';
 import { ResolvedPrivacyModeProvider, usePrivacyMode } from './vault/usePrivacyMode';
 import { useVaultRuntime } from './vault/VaultRuntimeProvider';
 import { VaultUnlockGate } from './vault/ui/VaultUnlockGate';
@@ -715,19 +716,21 @@ export function UserApp() {
   return (
     <I18nProvider>
       <QueryClientProvider client={queryClient}>
-        <AuthProvider>
-          <VaultRuntimeRoot>
-            <UiScaleWatcher />
-            <LocaleSync />
-            <RateLimitToastPortal />
-            <AccountModeRoot>
-              <RealtimeRoot>
-                <AnnouncementBannerRoot />
-                <UserShell />
-              </RealtimeRoot>
-            </AccountModeRoot>
-          </VaultRuntimeRoot>
-        </AuthProvider>
+        <MutationFeedbackProvider>
+          <AuthProvider>
+            <VaultRuntimeRoot>
+              <UiScaleWatcher />
+              <LocaleSync />
+              <RateLimitToastPortal />
+              <AccountModeRoot>
+                <RealtimeRoot>
+                  <AnnouncementBannerRoot />
+                  <UserShell />
+                </RealtimeRoot>
+              </AccountModeRoot>
+            </VaultRuntimeRoot>
+          </AuthProvider>
+        </MutationFeedbackProvider>
       </QueryClientProvider>
     </I18nProvider>
   );

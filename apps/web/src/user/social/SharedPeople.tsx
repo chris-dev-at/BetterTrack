@@ -7,6 +7,7 @@ import type { FriendUser, ShareKind, SharedWithMeResponse } from '@bettertrack/c
 import { setActivityAlert } from '../../lib/socialApi';
 import { useT, type TranslateFn } from '../../i18n';
 import { Switch } from '../../ui/origin';
+import { useMutationFeedback } from '../hooks/useMutationFeedback';
 
 /**
  * Shared building blocks for the person-centric social surfaces (V3-P6, #384):
@@ -221,13 +222,24 @@ export function ActivityAlertToggle({
 }) {
   const t = useT();
   const queryClient = useQueryClient();
+  const feedback = useMutationFeedback();
   const [on, setOn] = useState(enabled);
 
   const mutation = useMutation({
     mutationFn: (next: boolean) => setActivityAlert(kind, subjectId, next),
-    onError: () => setOn((v) => !v), // revert the optimistic flip
-    onSuccess: () => {
+    onError: (_error, next) => {
+      setOn(!next); // revert the optimistic flip
+      feedback.error(t('mutationFeedback.activityAlertUpdateError'));
+    },
+    onSuccess: (_result, next) => {
       void queryClient.invalidateQueries({ queryKey: ['social', 'shared-with-me'] });
+      feedback.success(
+        t(
+          next
+            ? 'mutationFeedback.activityAlertsEnabled'
+            : 'mutationFeedback.activityAlertsDisabled',
+        ),
+      );
     },
   });
 
@@ -252,6 +264,7 @@ export function ActivityAlertToggle({
       <Switch
         aria-label={label}
         checked={on}
+        disabled={mutation.isPending}
         onChange={toggle}
         title={on ? t('social.activity.on') : t('social.activity.off')}
       />
