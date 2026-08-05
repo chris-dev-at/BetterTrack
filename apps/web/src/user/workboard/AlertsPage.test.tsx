@@ -44,11 +44,11 @@ function alert(overrides: Partial<Alert> = {}): Alert {
   };
 }
 
-function renderPage() {
+function renderPage(initialPath = '/workbench/alerts') {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 0 } } });
   return render(
     <QueryClientProvider client={client}>
-      <MemoryRouter>
+      <MemoryRouter initialEntries={[initialPath]}>
         <AlertsPage />
       </MemoryRouter>
     </QueryClientProvider>,
@@ -112,6 +112,13 @@ describe('AlertsPage', () => {
     ]) {
       expect(screen.getByRole('option', { name: label })).toBeInTheDocument();
     }
+  });
+
+  test('honors the global create intent by opening the alert dialog', async () => {
+    vi.mocked(listAlerts).mockResolvedValue({ items: [] });
+    renderPage('/workbench/alerts?create=1');
+
+    expect(await screen.findByRole('dialog', { name: 'New price alert' })).toBeInTheDocument();
   });
 
   test('re-arm on a triggered one-shot calls the API', async () => {

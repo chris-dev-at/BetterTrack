@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type { WatchlistSummary } from '@bettertrack/contracts';
@@ -17,6 +17,8 @@ import { Badge, Button, Field, Input, PageHead } from '../../ui/origin';
 import { AudiencePicker } from '../components/AudiencePicker';
 import { Dialog } from '../components/Dialog';
 import { Alert } from '../components/ui';
+import { useCreateIntent } from '../components/useCreateIntent';
+import { CREATE_INTENT } from '../routeParams';
 import { useResolvedPrivacyMode } from '../vault/usePrivacyMode';
 
 /**
@@ -28,6 +30,7 @@ export function WatchlistsPage() {
   const t = useT();
   const paranoid = useResolvedPrivacyMode() === 'paranoid';
   const queryClient = useQueryClient();
+  const createFormRef = useRef<HTMLFormElement>(null);
   const [name, setName] = useState('');
   const [nameError, setNameError] = useState<string | null>(null);
   const [renaming, setRenaming] = useState<WatchlistSummary | null>(null);
@@ -37,6 +40,16 @@ export function WatchlistsPage() {
     queryKey: WATCHLISTS_QUERY_KEY,
     queryFn: ({ signal }) => listWatchlists(signal),
   });
+
+  // Creation is intentionally an inline, immediately visible form on this
+  // compact page, so the global intent starts that flow by moving focus to its
+  // name field — held until the list has loaded, because the form is not
+  // mounted before that.
+  useCreateIntent(
+    CREATE_INTENT.watchlist,
+    () => createFormRef.current?.querySelector<HTMLInputElement>('#watchlist-name')?.focus(),
+    data !== undefined,
+  );
 
   const invalidate = () => queryClient.invalidateQueries({ queryKey: WATCHLISTS_QUERY_KEY });
 
@@ -83,6 +96,7 @@ export function WatchlistsPage() {
       <PageHead title={t('watchlists.title')} />
 
       <form
+        ref={createFormRef}
         className="flex flex-col items-stretch gap-2 sm:flex-row sm:items-end"
         onSubmit={(e) => {
           e.preventDefault();

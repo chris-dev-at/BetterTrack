@@ -29,9 +29,9 @@ vi.mock('../lib/notificationsApi', () => ({
 
 import * as api from '../lib/userApi';
 import { listNotifications } from '../lib/notificationsApi';
-import { listPortfolios } from '../lib/portfolioApi';
+import { getCashMovements, listCashSources, listPortfolios } from '../lib/portfolioApi';
 import { listWorkboard } from '../lib/workboardApi';
-import { UserApp } from './UserApp';
+import { UserApp, queryClient } from './UserApp';
 import { Dialog } from './components/Dialog';
 import { COMPACT_SHELL_MAX_WIDTH, PHONE_SHELL_MAX_WIDTH } from './hooks/useCompactShell';
 
@@ -598,7 +598,23 @@ test('the live Create menu supports roving focus and restores its trigger on Esc
   const menu = screen.getByRole('menu', { name: 'Create' });
   const trade = within(menu).getByRole('menuitem', { name: 'Buy or sell' });
   const cashFlow = within(menu).getByRole('menuitem', { name: 'Income or expense' });
+  const transfer = within(menu).getByRole('menuitem', { name: 'Transfer' });
+  const blueprint = within(menu).getByRole('menuitem', { name: 'New Blueprint' });
+  const watchlist = within(menu).getByRole('menuitem', { name: 'New watchlist' });
+  const alert = within(menu).getByRole('menuitem', { name: 'New alert' });
+  const idea = within(menu).getByRole('menuitem', { name: 'Build idea from Blueprint' });
   const portfolio = within(menu).getByRole('menuitem', { name: 'New portfolio' });
+
+  // Every entry carries the intent its destination reads — nothing here is a
+  // link into a page that then does nothing (#1071).
+  expect(trade).toHaveAttribute('href', '/portfolio?create=trade');
+  expect(cashFlow).toHaveAttribute('href', '/portfolio/cash/movements?create=movement');
+  expect(transfer).toHaveAttribute('href', '/portfolio/cash/accounts?create=transfer');
+  expect(blueprint).toHaveAttribute('href', '/workbench/blueprints/new');
+  expect(watchlist).toHaveAttribute('href', '/assets/watchlists?create=1');
+  expect(alert).toHaveAttribute('href', '/workbench/alerts?create=1');
+  expect(idea).toHaveAttribute('href', '/workbench/blueprints/new');
+  expect(portfolio).toHaveAttribute('href', '/portfolios?create=1');
 
   await waitFor(() => expect(trade).toHaveFocus());
   await user.keyboard('{ArrowDown}');
@@ -623,6 +639,72 @@ test('the live Create menu supports roving focus and restores its trigger on Esc
 
   expect(screen.queryByRole('menu', { name: 'Create' })).not.toBeInTheDocument();
   expect(trigger).toHaveFocus();
+});
+
+test('Create entries that write into one portfolio keep the active portfolio scope', async () => {
+  const user = userEvent.setup();
+  renderAt('/portfolio?portfolio=p-second');
+
+  await user.click(await screen.findByRole('button', { name: 'Create' }));
+  const menu = screen.getByRole('menu', { name: 'Create' });
+
+  // Without the scope these three would open a write dialog on the DEFAULT
+  // portfolio while the user is looking at another one.
+  expect(within(menu).getByRole('menuitem', { name: 'Buy or sell' })).toHaveAttribute(
+    'href',
+    '/portfolio?create=trade&portfolio=p-second',
+  );
+  expect(within(menu).getByRole('menuitem', { name: 'Income or expense' })).toHaveAttribute(
+    'href',
+    '/portfolio/cash/movements?create=movement&portfolio=p-second',
+  );
+  expect(within(menu).getByRole('menuitem', { name: 'Transfer' })).toHaveAttribute(
+    'href',
+    '/portfolio/cash/accounts?create=transfer&portfolio=p-second',
+  );
+  // Account-wide destinations stay unscoped.
+  expect(within(menu).getByRole('menuitem', { name: 'New portfolio' })).toHaveAttribute(
+    'href',
+    '/portfolios?create=1',
+  );
+});
+
+test('following a Create entry starts that flow and nothing else', async () => {
+  // The one check the per-page tests structurally cannot make: they mount the
+  // page without the shell. `PortfolioSwitcher` rides in the topbar of every
+  // `/portfolio*` surface and consumes `?create=1` for its wizard, so a page
+  // under that prefix reusing that value would answer the same link twice and
+  // stack the wizard on top of the flow the user asked for.
+  queryClient.clear();
+  vi.mocked(listPortfolios).mockResolvedValue({
+    portfolios: [
+      {
+        id: 'p1',
+        name: 'Main',
+        visibility: 'private',
+        sortOrder: 0,
+        isDefault: true,
+        defaultPayFromCash: false,
+        archivedAt: null,
+      },
+    ],
+  });
+  vi.mocked(getCashMovements).mockResolvedValue({ balanceEur: 0, movements: [], sources: [] });
+  vi.mocked(listCashSources).mockResolvedValue({ sources: [] });
+  const user = userEvent.setup();
+  renderAt('/portfolio');
+
+  await user.click(await screen.findByRole('button', { name: 'Create' }));
+  await user.click(
+    within(screen.getByRole('menu', { name: 'Create' })).getByRole('menuitem', {
+      name: 'Income or expense',
+    }),
+  );
+
+  expect(await screen.findByRole('dialog', { name: 'Record transaction' })).toBeInTheDocument();
+  expect(screen.queryByRole('dialog', { name: 'Add portfolio' })).not.toBeInTheDocument();
+  // Name-independent guard for the whole flag namespace: one link, one dialog.
+  expect(screen.getAllByRole('dialog')).toHaveLength(1);
 });
 
 test('the command shortcut cannot mount a palette inside an inert modal background', async () => {
