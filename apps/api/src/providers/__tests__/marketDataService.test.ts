@@ -259,32 +259,28 @@ describe('MarketDataService — negative caching (§5.3)', () => {
   });
 });
 
-describe('MarketDataService — history freshness follows the candle interval (§5.3)', () => {
-  it('gives an explicit daily interval the daily window, not its range default', async () => {
+describe('MarketDataService — history freshness is a function of range alone (§5.3)', () => {
+  // The interval picks the cache *key* (each candle density gets its own entry);
+  // it must never move the *window*. Overriding the interval is not a
+  // workboard-only concern: `portfolioSnapshots` and `marketDataFxSource` both
+  // ask for an explicit `1d` at ranges starting at `1M`, so widening the window
+  // for daily candles would silently stale the portfolio value series and every
+  // non-EUR conversion. Pinned here so it cannot be re-widened incidentally.
+  it.each([
+    ['1M', '1d', 15 * 60],
+    ['1M', '30m', 15 * 60],
+    ['1W', '1d', 5 * 60],
+    ['MAX', '1d', 6 * 60 * 60],
+  ] as const)('keeps %s@%s on its range window of %d s', async (range, interval, expected) => {
     const { service } = serviceWith();
 
-    // 1M's 15-minute window is sized for 1M's default 30-minute candles. The
-    // workboard sparkline asks for 1M at 1d, which cannot move more than once a
-    // day — inheriting 15 minutes would re-fetch every watched asset 4×/hour.
-    await service.getHistory(REF, '1M', '1d');
-    const dailyTtl = await redis.ttl(freshCacheKey(cacheKey('fake', 'ACME', 'history', '1M@1d')));
-    expect(dailyTtl).toBeGreaterThan(15 * 60);
-    expect(dailyTtl).toBeLessThanOrEqual(60 * 60);
+    await service.getHistory(REF, range, interval);
 
-    // The dense default keeps its own short window — same range, own cache key.
-    await service.getHistory(REF, '1M');
-    const denseTtl = await redis.ttl(freshCacheKey(cacheKey('fake', 'ACME', 'history', '1M@30m')));
-    expect(denseTtl).toBeGreaterThan(0);
-    expect(denseTtl).toBeLessThanOrEqual(15 * 60);
-  });
-
-  it('never shortens a range whose own window is already longer', async () => {
-    const { service } = serviceWith();
-
-    await service.getHistory(REF, 'MAX', '1d');
-    const ttl = await redis.ttl(freshCacheKey(cacheKey('fake', 'ACME', 'history', 'MAX@1d')));
-    expect(ttl).toBeGreaterThan(60 * 60);
-    expect(ttl).toBeLessThanOrEqual(6 * 60 * 60);
+    const ttl = await redis.ttl(
+      freshCacheKey(cacheKey('fake', 'ACME', 'history', `${range}@${interval}`)),
+    );
+    expect(ttl).toBeGreaterThan(expected - 10);
+    expect(ttl).toBeLessThanOrEqual(expected);
   });
 });
 

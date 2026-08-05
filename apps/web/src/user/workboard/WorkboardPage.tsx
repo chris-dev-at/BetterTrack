@@ -10,7 +10,12 @@ import { Link } from 'react-router-dom';
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { AssetBatchQuote, AssetSparkline, WorkboardItem } from '@bettertrack/contracts';
 
-import { getAssetQuotes, getAssetSparklines } from '../../lib/assetApi';
+import {
+  getAssetQuotes,
+  getAssetSparklines,
+  workboardQuotesQueryKey,
+  workboardSparklinesQueryKey,
+} from '../../lib/assetApi';
 import { cx } from '../../lib/cx';
 import { formatDate, formatSignedPercent } from '../../lib/format';
 import { EARNINGS_CALENDAR_QUERY_KEY, getEarningsCalendar } from '../../lib/marketIntelApi';
@@ -258,7 +263,7 @@ function WatchlistZone() {
   // removing one row mints a new entry, and without it every surviving row
   // would drop back to a skeleton and re-render from scratch.
   const quoteQuery = useQuery({
-    queryKey: ['assets', 'workboard', 'quotes', assetIds] as const,
+    queryKey: workboardQuotesQueryKey(assetIds),
     queryFn: ({ signal }) => getAssetQuotes(assetIds, signal),
     enabled: assetIds.length > 0,
     staleTime: 60_000,
@@ -266,7 +271,7 @@ function WatchlistZone() {
     placeholderData: keepPreviousData,
   });
   const sparklineQuery = useQuery({
-    queryKey: ['assets', 'workboard', 'sparklines', assetIds] as const,
+    queryKey: workboardSparklinesQueryKey(assetIds),
     queryFn: ({ signal }) => getAssetSparklines(assetIds, signal),
     enabled: assetIds.length > 0,
     staleTime: 900_000,
@@ -291,9 +296,24 @@ function WatchlistZone() {
   // re-runs only the reads that actually lost rows.
   const failedQuoteIds = quoteQuery.data?.failed ?? [];
   const failedSparklineIds = sparklineQuery.data?.failed ?? [];
-  const failedAssetCount = new Set([...failedQuoteIds, ...failedSparklineIds]).size;
-  const retryFailedReads = () => {
-    if (failedQuoteIds.length > 0) void quoteQuery.refetch();
+  // An id that resolves to no *visible* row is in neither `quotes` nor `failed`:
+  // the server keeps invisible ids absent so they stay indistinguishable from a
+  // foreign custom asset (§10), which leaves the client to notice. Without this
+  // the row an asset deletion stranded between the list read and the aggregate
+  // read renders "—" with nothing to press. Skipped while `placeholderData`
+  // still shows the previous id set's answer, which legitimately lacks a
+  // just-added row.
+  const unresolvedQuoteIds =
+    quoteQuery.data && !quoteQuery.isPlaceholderData
+      ? assetIds.filter((id) => !quotesByAssetId.has(id) && !failedQuoteIds.includes(id))
+      : [];
+  const unresolvedAssetCount = new Set([
+    ...failedQuoteIds,
+    ...failedSparklineIds,
+    ...unresolvedQuoteIds,
+  ]).size;
+  const retryUnresolvedReads = () => {
+    if (failedQuoteIds.length > 0 || unresolvedQuoteIds.length > 0) void quoteQuery.refetch();
     if (failedSparklineIds.length > 0) void sparklineQuery.refetch();
   };
 
@@ -405,18 +425,18 @@ function WatchlistZone() {
         ]}
       />
 
-      {failedAssetCount > 0 ? (
+      {unresolvedAssetCount > 0 ? (
         <Alert tone="error">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <span>
               {t(
                 `workboard.overview.watchlist.partialMarketError.${
-                  failedAssetCount === 1 ? 'one' : 'other'
+                  unresolvedAssetCount === 1 ? 'one' : 'other'
                 }`,
-                { count: failedAssetCount },
+                { count: unresolvedAssetCount },
               )}
             </span>
-            <Button variant="secondary" onClick={retryFailedReads}>
+            <Button variant="secondary" onClick={retryUnresolvedReads}>
               {t('common.retry')}
             </Button>
           </div>

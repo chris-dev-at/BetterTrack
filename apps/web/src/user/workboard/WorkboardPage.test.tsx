@@ -18,6 +18,13 @@ vi.mock('../../lib/workboardApi', () => ({
 vi.mock('../../lib/assetApi', () => ({
   getAssetQuotes: vi.fn(),
   getAssetSparklines: vi.fn(),
+  workboardQuotesQueryKey: (ids: readonly string[]) => ['assets', 'workboard', 'quotes', ids],
+  workboardSparklinesQueryKey: (ids: readonly string[]) => [
+    'assets',
+    'workboard',
+    'sparklines',
+    ids,
+  ],
 }));
 
 vi.mock('../../lib/marketIntelApi', () => ({
@@ -33,6 +40,7 @@ vi.mock('../../lib/socialApi', () => ({
 }));
 
 import {
+  WORKBOARD_QUERY_KEY,
   listWatchlists,
   listWorkboard,
   removeFromWorkboard,
@@ -372,6 +380,59 @@ describe('WorkboardPage — item rendering', () => {
     expect(
       await screen.findByText("Market data for 2 assets couldn't be loaded."),
     ).toBeInTheDocument();
+  });
+
+  test('reports a row the server omitted entirely, not only the ones it called failed', async () => {
+    // An id the caller can no longer see is absent from BOTH `quotes` and
+    // `failed` — the server keeps invisible ids indistinguishable from a foreign
+    // custom asset (§10) — so only the client can notice the gap. Otherwise the
+    // stranded row shows "—" forever with nothing to press.
+    vi.mocked(listWorkboard).mockResolvedValue({ items: [ITEM_A, ITEM_B] });
+    vi.mocked(getAssetQuotes).mockImplementation(async (ids) => ({
+      quotes: ids
+        .filter((assetId) => assetId !== ITEM_B.assetId)
+        .map((assetId) => ({ assetId, ...BASE_QUOTE })),
+      failed: [],
+    }));
+    renderPage();
+
+    expect(
+      await screen.findByText("Market data for 1 asset couldn't be loaded."),
+    ).toBeInTheDocument();
+    // Folded into the same zone alert, not a second one.
+    expect(screen.getAllByRole('button', { name: 'Try again' })).toHaveLength(1);
+    expect(screen.getByText(/150/)).toBeInTheDocument();
+  });
+
+  test('does not accuse a just-added row while the previous batch is still shown', async () => {
+    // Adding a row remints the batch key, and `keepPreviousData` keeps showing
+    // the previous id set's answer — which legitimately has no entry for the new
+    // asset. That placeholder window must not read as "the server omitted it".
+    vi.mocked(listWorkboard).mockResolvedValue({ items: [ITEM_A] });
+    const { client } = renderPage();
+    expect(await screen.findByText('AAPL')).toBeInTheDocument();
+
+    vi.mocked(listWorkboard).mockResolvedValue({ items: [ITEM_A, ITEM_B] });
+    let resolveQuotes: (() => void) | undefined;
+    vi.mocked(getAssetQuotes).mockImplementation(
+      (ids) =>
+        new Promise((resolve) => {
+          resolveQuotes = () =>
+            resolve({ quotes: ids.map((assetId) => ({ assetId, ...BASE_QUOTE })), failed: [] });
+        }),
+    );
+    await act(async () => {
+      await client.invalidateQueries({ queryKey: WORKBOARD_QUERY_KEY });
+    });
+
+    await waitFor(() => expect(screen.getByText('MSFT')).toBeInTheDocument());
+    expect(screen.queryByText(/couldn't be loaded/)).not.toBeInTheDocument();
+
+    await act(async () => {
+      resolveQuotes?.();
+    });
+    await waitFor(() => expect(screen.getAllByText(/150/).length).toBeGreaterThan(1));
+    expect(screen.queryByText(/couldn't be loaded/)).not.toBeInTheDocument();
   });
 
   test('shows asset symbols and names for all items', async () => {

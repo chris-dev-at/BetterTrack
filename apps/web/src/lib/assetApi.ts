@@ -48,6 +48,41 @@ export async function getAssetQuote(id: string, signal?: AbortSignal): Promise<Q
   return quoteResponseSchema.parse(data);
 }
 
+/**
+ * Query keys for the aggregate watchlist reads. The id set is part of the key,
+ * so every distinct watchlist is its own cache entry — which also means the
+ * asset-scoped `['asset', id]` prefix the realtime `quote.updated` push
+ * invalidates cannot reach them. {@link matchesWorkboardQuotesForAsset} closes
+ * that gap without widening the push: it matches only the batches that actually
+ * contain the moved asset, exactly as narrow as when every row held its own
+ * `['asset', id, 'quote']` entry.
+ */
+export const workboardQuotesQueryKey = (assetIds: readonly string[]) =>
+  ['assets', 'workboard', 'quotes', assetIds] as const;
+
+/** Companion of {@link workboardQuotesQueryKey} for the compact daily series. */
+export const workboardSparklinesQueryKey = (assetIds: readonly string[]) =>
+  ['assets', 'workboard', 'sparklines', assetIds] as const;
+
+/**
+ * Does `queryKey` address a watchlist **quote** batch containing `assetId`?
+ * Deliberately quotes-only: a quote push says the price moved, which tells us
+ * nothing new about the daily sparkline candles.
+ */
+export function matchesWorkboardQuotesForAsset(
+  queryKey: readonly unknown[],
+  assetId: string,
+): boolean {
+  const [scope, surface, read, ids] = queryKey;
+  return (
+    scope === 'assets' &&
+    surface === 'workboard' &&
+    read === 'quotes' &&
+    Array.isArray(ids) &&
+    ids.includes(assetId)
+  );
+}
+
 /** `GET /assets/quotes?ids=` — one quote read/poll for a whole watchlist. */
 export async function getAssetQuotes(
   ids: readonly string[],
