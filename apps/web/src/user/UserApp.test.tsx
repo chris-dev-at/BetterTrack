@@ -318,6 +318,108 @@ test('a rate-limited mutation shows only the global 429 notice', async () => {
   expect(screen.getAllByRole('alert')).toHaveLength(1);
 });
 
+/** The alert the rate-limit scenarios below act on; re-armable, so it keeps its button. */
+const triggeredAlertFixture: Alert = {
+  id: 'al1',
+  kind: 'price_above',
+  threshold: 200,
+  refPrice: null,
+  repeat: false,
+  status: 'triggered',
+  lastTriggeredAt: '2026-08-05T06:00:00.000Z',
+  asset: {
+    id: 'asset-1',
+    symbol: 'AAPL',
+    name: 'Apple Inc.',
+    currency: 'USD',
+    type: 'stock',
+  },
+};
+
+/** Every `/alerts/al1/rearm` call answers 429 with `Retry-After: 30`. */
+function stubRateLimitedRearm() {
+  vi.stubGlobal(
+    'fetch',
+    vi.fn<typeof globalThis.fetch>(async (input) => {
+      if (!String(input).endsWith('/alerts/al1/rearm')) {
+        throw new TypeError(`Unexpected test request: ${String(input)}`);
+      }
+      return {
+        ok: false,
+        status: 429,
+        json: async () => ({
+          error: { code: 'RATE_LIMITED', message: 'Too many requests.' },
+        }),
+        headers: {
+          get: (name: string) => (name.toLowerCase() === 'retry-after' ? '30' : null),
+        },
+      } as Response;
+    }),
+  );
+}
+
+const RATE_LIMIT_NOTICE = "You're doing that too fast. Please wait 30 seconds and try again.";
+
+test('a 429 takes over the toast slot from a success notice that is still showing', async () => {
+  // Regression: the rate-limit notice and mutation feedback used to render two
+  // independent toasts into the same fixed slot. Suppressing the *generic* 429
+  // error was not enough — a success toast from seconds earlier stayed mounted
+  // and, being later in DOM order, covered the rate-limit error the user needs.
+  vi.mocked(api.getMe).mockResolvedValue(member);
+  vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [] });
+  vi.mocked(listAlerts).mockResolvedValue({ items: [triggeredAlertFixture] });
+  let attempt = 0;
+  vi.mocked(rearmAlert).mockImplementation(() => {
+    attempt += 1;
+    // First re-arm succeeds and mounts the success toast; the second is
+    // rate-limited well inside that toast's lifetime.
+    if (attempt === 1) return Promise.resolve({ ...triggeredAlertFixture, status: 'active' });
+    return apiRequest<Alert>('/alerts/al1/rearm', { method: 'POST' });
+  });
+  stubRateLimitedRearm();
+
+  const user = userEvent.setup();
+  renderAt('/workbench/alerts');
+
+  await user.click(await screen.findByRole('button', { name: 'Re-arm' }));
+  expect(await screen.findByText('Alert re-armed.')).toBeInTheDocument();
+
+  await user.click(await screen.findByRole('button', { name: 'Re-arm' }));
+
+  expect(await screen.findByText(RATE_LIMIT_NOTICE)).toBeInTheDocument();
+  expect(screen.queryByText('Alert re-armed.')).not.toBeInTheDocument();
+  const alerts = screen.getAllByRole('alert');
+  expect(alerts).toHaveLength(1);
+  expect(alerts[0]).toHaveTextContent(RATE_LIMIT_NOTICE);
+});
+
+test('an identical repeat 429 surfaces again after the notice was dismissed', async () => {
+  // Guards the handoff: the banner source is a plain string, so if it were only
+  // cleared on dismissal of a toast it no longer owns, the identical second 429
+  // would not be a state change and the user would see nothing at all.
+  vi.mocked(api.getMe).mockResolvedValue(member);
+  vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [] });
+  vi.mocked(listAlerts).mockResolvedValue({ items: [triggeredAlertFixture] });
+  vi.mocked(rearmAlert).mockImplementation(() =>
+    apiRequest<Alert>('/alerts/al1/rearm', { method: 'POST' }),
+  );
+  stubRateLimitedRearm();
+
+  const user = userEvent.setup();
+  renderAt('/workbench/alerts');
+
+  await user.click(await screen.findByRole('button', { name: 'Re-arm' }));
+  expect(await screen.findByText(RATE_LIMIT_NOTICE)).toBeInTheDocument();
+
+  await user.click(screen.getByRole('button', { name: 'Dismiss' }));
+  await waitFor(() => expect(screen.queryByRole('alert')).not.toBeInTheDocument());
+
+  await user.click(screen.getByRole('button', { name: 'Re-arm' }));
+
+  expect(await screen.findByText(RATE_LIMIT_NOTICE)).toBeInTheDocument();
+  expect(screen.getAllByRole('alert')).toHaveLength(1);
+});
+
 test.each([0, 500])(
   'a status %i bootstrap outage offers retry without prompting for credentials',
   async (status) => {
