@@ -6,6 +6,7 @@ import { useT } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
 import { Dialog } from '../components/Dialog';
 import { Alert, Button } from '../components/ui';
+import { useMutationFeedback } from '../hooks/useMutationFeedback';
 import { activeSources } from './cashSourceUtils';
 import { usePortfolioStore } from './PortfolioStoreProvider';
 
@@ -32,6 +33,7 @@ export function TransferDialog({
 }: TransferDialogProps) {
   const t = useT();
   const store = usePortfolioStore();
+  const feedback = useMutationFeedback();
   const active = activeSources(sources);
   const [fromSourceId, setFromSourceId] = useState(active[0]?.id ?? '');
   const [toSourceId, setToSourceId] = useState(active[1]?.id ?? '');
@@ -78,6 +80,7 @@ export function TransferDialog({
         amountEur: parsed,
         note: note.trim() === '' ? null : note.trim(),
       });
+      feedback.success(t('mutationFeedback.cash.transferSaved'));
       onSubmitted();
       onClose();
     } catch (err) {

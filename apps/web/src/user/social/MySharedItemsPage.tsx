@@ -22,6 +22,7 @@ import { AudiencePicker } from '../components/AudiencePicker';
 import { AsyncReadState } from '../components/AsyncReadState';
 import { Dialog } from '../components/Dialog';
 import { Alert, Spinner } from '../components/ui';
+import { useMutationFeedback } from '../hooks/useMutationFeedback';
 
 const MY_SHARED_STALE_MS = 30_000;
 const MY_SHARED_KEY = ['social', 'my-shared'] as const;
@@ -101,6 +102,7 @@ function SharedRow({
 function AlertSharingControl() {
   const t = useT();
   const queryClient = useQueryClient();
+  const feedback = useMutationFeedback();
   const [confirming, setConfirming] = useState(false);
 
   const query = useQuery({
@@ -114,8 +116,23 @@ function AlertSharingControl() {
     onSuccess: (result) => {
       queryClient.setQueryData(ALERT_SHARING_QUERY_KEY, result);
       setConfirming(false);
+      feedback.success(
+        t(
+          result.visibleToFollowers
+            ? 'mutationFeedback.alertSharingEnabled'
+            : 'mutationFeedback.alertSharingDisabled',
+        ),
+      );
+    },
+    onError: (error, input) => {
+      if (!input.visibleToFollowers) feedback.error(t('social.alertSharing.error'), error);
     },
   });
+
+  const closeConfirm = () => {
+    setConfirming(false);
+    mutation.reset();
+  };
 
   if (query.isLoading || query.error) {
     return (
@@ -153,18 +170,14 @@ function AlertSharingControl() {
             }
           />
         </div>
-        {mutation.isError ? <Alert tone="error">{t('social.alertSharing.error')}</Alert> : null}
       </div>
       {confirming ? (
-        <Dialog
-          phoneSheet
-          title={t('social.alertSharing.confirmTitle')}
-          onClose={() => setConfirming(false)}
-        >
+        <Dialog phoneSheet title={t('social.alertSharing.confirmTitle')} onClose={closeConfirm}>
           <div className="flex flex-col gap-4">
             <p className="bt-gold">{t('social.alertSharing.confirmWarning')}</p>
+            {mutation.isError ? <Alert tone="error">{t('social.alertSharing.error')}</Alert> : null}
             <div className="flex flex-wrap justify-end gap-2">
-              <Button onClick={() => setConfirming(false)} variant="quiet">
+              <Button onClick={closeConfirm} variant="quiet">
                 {t('social.alertSharing.confirmCancel')}
               </Button>
               <Button

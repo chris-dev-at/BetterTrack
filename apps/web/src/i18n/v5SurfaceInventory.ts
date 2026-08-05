@@ -1214,6 +1214,11 @@ export const NON_V5_SURFACES = [
     note: 'Origin-redesign hub pages — Ask, Review, Developer platform (#935).',
   },
   {
+    path: 'user/hooks/useMutationFeedback.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'Shared toast channel created by the post-V5 UX audit (#1077); callers own its localized copy.',
+  },
+  {
     path: 'user/people/PeopleLayout.tsx',
     reason: 'no-v5-deliverable',
     note: 'Origin-redesign people workspace chrome (#935).',

@@ -12,7 +12,7 @@ import { RequireUser } from './RequireUser';
 import { FirstRunGate } from './firstrun/FirstRunGate';
 import { OriginShell } from './components/OriginShell';
 import { AnnouncementBanner } from './components/AnnouncementBanner';
-import { AuthCard, Button, Splash, Toast } from './components/ui';
+import { AuthCard, Button, Splash } from './components/ui';
 import { ForcedPasswordChangePage } from './auth/ForcedPasswordChangePage';
 import { ForgotPasswordPage } from './auth/ForgotPasswordPage';
 import { InvitePage } from './auth/InvitePage';
@@ -31,6 +31,7 @@ import {
 } from './portfolio/PortfolioStoreProvider';
 import { apiPortfolioStore } from '../lib/portfolioStore';
 import { removePlaintextQueries } from './vault/plaintextQueries';
+import { MutationFeedbackProvider, useMutationFeedback } from './hooks/useMutationFeedback';
 import { ResolvedPrivacyModeProvider, usePrivacyMode } from './vault/usePrivacyMode';
 import { useVaultRuntime } from './vault/VaultRuntimeProvider';
 import { VaultUnlockGate } from './vault/ui/VaultUnlockGate';
@@ -674,11 +675,30 @@ export function AccountModeRoot({ children }: { children: ReactNode }) {
   );
 }
 
-/** Renders the global 429 toast while it's active (§7.4). Fixed-position overlay — no layout impact. */
-function RateLimitToastPortal() {
+/**
+ * Hands the global 429 notice (§7.4) to the shared feedback channel, which is
+ * the single owner of the app's one toast slot. Renders nothing itself.
+ *
+ * This used to render its own `Toast`. Two independent renderers of the same
+ * fixed, non-stacking `.bt-toast` position meant a rate-limited action taken
+ * while a mutation notice was still up left two `role="alert"` nodes, with the
+ * later-mounted mutation toast covering the rate-limit error. Routing through
+ * `MutationFeedbackProvider` makes "one notice at a time" structural.
+ *
+ * The banner is released as soon as it has been handed over: the notice's
+ * lifetime now belongs to the channel, and clearing here keeps an identical
+ * repeat 429 a real state change — otherwise the second one would set the same
+ * string, skip this effect, and silently show nothing.
+ */
+function RateLimitToastBridge() {
   const { rateLimitBanner, clearRateLimitBanner } = useAuth();
-  if (!rateLimitBanner) return null;
-  return <Toast onDismiss={clearRateLimitBanner}>{rateLimitBanner}</Toast>;
+  const feedback = useMutationFeedback();
+  useEffect(() => {
+    if (!rateLimitBanner) return;
+    feedback.rateLimit(rateLimitBanner);
+    clearRateLimitBanner();
+  }, [rateLimitBanner, clearRateLimitBanner, feedback]);
+  return null;
 }
 
 /**
@@ -715,19 +735,21 @@ export function UserApp() {
   return (
     <I18nProvider>
       <QueryClientProvider client={queryClient}>
-        <AuthProvider>
-          <VaultRuntimeRoot>
-            <UiScaleWatcher />
-            <LocaleSync />
-            <RateLimitToastPortal />
-            <AccountModeRoot>
-              <RealtimeRoot>
-                <AnnouncementBannerRoot />
-                <UserShell />
-              </RealtimeRoot>
-            </AccountModeRoot>
-          </VaultRuntimeRoot>
-        </AuthProvider>
+        <MutationFeedbackProvider>
+          <AuthProvider>
+            <VaultRuntimeRoot>
+              <UiScaleWatcher />
+              <LocaleSync />
+              <RateLimitToastBridge />
+              <AccountModeRoot>
+                <RealtimeRoot>
+                  <AnnouncementBannerRoot />
+                  <UserShell />
+                </RealtimeRoot>
+              </AccountModeRoot>
+            </VaultRuntimeRoot>
+          </AuthProvider>
+        </MutationFeedbackProvider>
       </QueryClientProvider>
     </I18nProvider>
   );

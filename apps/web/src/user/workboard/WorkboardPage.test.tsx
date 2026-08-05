@@ -42,6 +42,7 @@ import { getAssetHistory, getAssetQuote } from '../../lib/assetApi';
 import { ApiError } from '../../lib/apiClient';
 import { getEarningsCalendar } from '../../lib/marketIntelApi';
 import { getAudience, listFriends, listGroups, setAudience } from '../../lib/socialApi';
+import { MutationFeedbackProvider } from '../hooks/useMutationFeedback';
 import { WorkboardPage } from './WorkboardPage';
 
 const EMPTY_EARNINGS_CALENDAR = { available: false as const, entries: [] };
@@ -115,9 +116,11 @@ function makeQueryClient() {
 function renderPage(client = makeQueryClient()) {
   const view = render(
     <QueryClientProvider client={client}>
-      <MemoryRouter>
-        <WorkboardPage />
-      </MemoryRouter>
+      <MutationFeedbackProvider>
+        <MemoryRouter>
+          <WorkboardPage />
+        </MemoryRouter>
+      </MutationFeedbackProvider>
     </QueryClientProvider>,
   );
   return { ...view, client };
@@ -518,6 +521,7 @@ describe('WorkboardPage — reorder', () => {
     await waitFor(() =>
       expect(vi.mocked(reorderWorkboard)).toHaveBeenCalledWith([ITEM_B.id, ITEM_A.id]),
     );
+    expect(await screen.findByText('Watchlist order saved.')).toBeInTheDocument();
   });
 
   test('reorders items optimistically — MSFT appears before AAPL after drop', async () => {

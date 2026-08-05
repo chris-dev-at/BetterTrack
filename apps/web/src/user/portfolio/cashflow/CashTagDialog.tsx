@@ -9,6 +9,7 @@ import { ApiError } from '../../../lib/apiClient';
 import { CASH_TAGS_QUERY_KEY, createCashTag, updateCashTag } from '../../../lib/cashApi';
 import { Dialog } from '../../components/Dialog';
 import { Alert } from '../../components/ui';
+import { useMutationFeedback } from '../../hooks/useMutationFeedback';
 import { Button, Field } from '../../../ui/origin';
 
 const DEFAULT_COLOR = '#64748b';
@@ -30,6 +31,7 @@ export interface CashTagDialogProps {
 export function CashTagDialog({ existing, onClose }: CashTagDialogProps) {
   const t = useT();
   const queryClient = useQueryClient();
+  const feedback = useMutationFeedback();
   const isEdit = !!existing;
   const nameFieldId = useId();
   const colorFieldId = useId();
@@ -45,6 +47,9 @@ export function CashTagDialog({ existing, onClose }: CashTagDialogProps) {
     },
     onSuccess: () => {
       void queryClient.invalidateQueries({ queryKey: CASH_TAGS_QUERY_KEY });
+      feedback.success(
+        t(isEdit ? 'mutationFeedback.cash.tagUpdated' : 'mutationFeedback.cash.tagCreated'),
+      );
       onClose();
     },
     onError: (err) => {

@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
@@ -11,6 +11,7 @@ vi.mock('../../lib/socialApi', () => ({
 }));
 
 import { getAudience, listFriends, listGroups, setAudience } from '../../lib/socialApi';
+import { MutationFeedbackProvider } from '../hooks/useMutationFeedback';
 import { AudiencePicker } from './AudiencePicker';
 
 const SUBJECT = '00000000-0000-0000-0000-000000000001';
@@ -29,7 +30,14 @@ function renderPicker(
 ) {
   return render(
     <QueryClientProvider client={queryClient}>
-      <AudiencePicker kind="portfolio" subjectId={SUBJECT} subjectLabel="Main" onClose={onClose} />
+      <MutationFeedbackProvider>
+        <AudiencePicker
+          kind="portfolio"
+          subjectId={SUBJECT}
+          subjectLabel="Main"
+          onClose={onClose}
+        />
+      </MutationFeedbackProvider>
     </QueryClientProvider>,
   );
 }
@@ -46,6 +54,46 @@ beforeEach(() => {
   });
   vi.mocked(listFriends).mockResolvedValue({ friends: [] });
   vi.mocked(listGroups).mockResolvedValue({ groups: [] });
+});
+
+describe('AudiencePicker — mutation feedback', () => {
+  test('confirms a saved non-public audience without stacking notices', async () => {
+    const onClose = vi.fn();
+    const user = userEvent.setup();
+    vi.mocked(setAudience).mockResolvedValue({
+      state: {
+        kind: 'portfolio',
+        subjectId: SUBJECT,
+        audience: 'private',
+        friendIds: [],
+        groupId: null,
+        link: { active: false, createdAt: null },
+      },
+    });
+    renderPicker(onClose);
+
+    await user.click(await screen.findByRole('button', { name: /^save$/i }));
+
+    expect(await screen.findByText('Sharing updated.')).toBeInTheDocument();
+    expect(screen.getAllByRole('alert')).toHaveLength(1);
+    expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  test('surfaces a failed audience save and keeps the picker open', async () => {
+    const onClose = vi.fn();
+    const user = userEvent.setup();
+    vi.mocked(setAudience).mockRejectedValue(new Error('offline'));
+    renderPicker(onClose);
+
+    await user.click(await screen.findByRole('button', { name: /^save$/i }));
+
+    const dialog = screen.getByRole('dialog');
+    expect(
+      await within(dialog).findByText('Could not update sharing. Please try again.'),
+    ).toHaveAttribute('role', 'alert');
+    expect(screen.getAllByRole('alert')).toHaveLength(1);
+    expect(onClose).not.toHaveBeenCalled();
+  });
 });
 
 describe('AudiencePicker — authoritative reads', () => {

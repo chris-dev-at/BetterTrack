@@ -28,6 +28,7 @@ import { Sparkline } from '../../ui/charts';
 import { Alert, Button } from '../components/ui';
 import { AsyncReadState } from '../components/AsyncReadState';
 import { AudiencePicker } from '../components/AudiencePicker';
+import { useMutationFeedback } from '../hooks/useMutationFeedback';
 import { NormalModeOnly } from '../vault/ui/ParanoidSurfaceGate';
 
 // ─── Watchlist row ────────────────────────────────────────────────────────────
@@ -257,11 +258,11 @@ function WatchlistSharingControl() {
 function WatchlistZone() {
   const t = useT();
   const queryClient = useQueryClient();
+  const feedback = useMutationFeedback();
   const [orderedItems, setOrderedItems] = useState<WorkboardItem[]>([]);
   const [draggedId, setDraggedId] = useState<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
   const [removeError, setRemoveError] = useState<string | null>(null);
-  const [reorderError, setReorderError] = useState<string | null>(null);
 
   // Always refetches on mount (§13.2) — landing on the watchlist right after an
   // icon-add elsewhere in the app must never require a manual reload.
@@ -289,19 +290,18 @@ function WatchlistZone() {
   const reorderMutation = useMutation({
     mutationFn: (itemIds: string[]) => reorderWorkboard(itemIds),
     onSuccess: () => {
-      setReorderError(null);
       void queryClient.invalidateQueries({ queryKey: WORKBOARD_QUERY_KEY });
+      feedback.success(t('mutationFeedback.watchlistReordered'));
     },
-    onError: () => {
+    onError: (error) => {
       // Revert optimistic order to last known server state.
       if (data) setOrderedItems(data.items);
-      setReorderError(t('workboard.overview.watchlist.reorderError'));
+      feedback.error(t('workboard.overview.watchlist.reorderError'), error);
     },
   });
 
   const handleDragStart = (id: string) => {
     setDraggedId(id);
-    setReorderError(null);
   };
 
   const handleDragOver = (id: string) => {
@@ -370,7 +370,6 @@ function WatchlistZone() {
       </div>
 
       {removeError ? <Alert tone="error">{removeError}</Alert> : null}
-      {reorderError ? <Alert tone="error">{reorderError}</Alert> : null}
 
       {orderedItems.length === 0 ? (
         <EmptyState

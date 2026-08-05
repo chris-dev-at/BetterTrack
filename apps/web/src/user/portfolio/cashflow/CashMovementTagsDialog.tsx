@@ -8,6 +8,7 @@ import { useT } from '../../../i18n';
 import { setCashMovementTags } from '../../../lib/cashApi';
 import { Dialog } from '../../components/Dialog';
 import { Alert } from '../../components/ui';
+import { useMutationFeedback } from '../../hooks/useMutationFeedback';
 import { Button } from '../../../ui/origin';
 import { TagChip } from './TagChip';
 
@@ -37,6 +38,7 @@ export function CashMovementTagsDialog({
 }: CashMovementTagsDialogProps) {
   const t = useT();
   const queryClient = useQueryClient();
+  const feedback = useMutationFeedback();
   const [selected, setSelected] = useState<Set<string>>(new Set(selectedTagIds));
   const [error, setError] = useState<string | null>(null);
 
@@ -46,6 +48,7 @@ export function CashMovementTagsDialog({
       // Tag changes can shift every downstream number (summary/trends/budget
       // spend), so invalidate the whole cash-flow prefix, not just the ledger.
       void queryClient.invalidateQueries({ queryKey: ['cash'] });
+      feedback.success(t('mutationFeedback.cash.tagsUpdated'));
       onSaved();
       onClose();
     },

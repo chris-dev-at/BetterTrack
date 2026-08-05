@@ -8,6 +8,7 @@ vi.mock('../../lib/portfolioApi');
 import * as portfolioApi from '../../lib/portfolioApi';
 
 import { CashDialog } from './CashDialog';
+import { MutationFeedbackProvider } from '../hooks/useMutationFeedback';
 
 import type { CashSource } from '@bettertrack/contracts';
 
@@ -34,14 +35,16 @@ function renderDialog(
   const onClose = vi.fn();
   const onSubmitted = vi.fn();
   render(
-    <CashDialog
-      portfolioId="p1"
-      initialKind={initialKind}
-      onClose={onClose}
-      onSubmitted={onSubmitted}
-      today="2026-07-02"
-      {...extra}
-    />,
+    <MutationFeedbackProvider>
+      <CashDialog
+        portfolioId="p1"
+        initialKind={initialKind}
+        onClose={onClose}
+        onSubmitted={onSubmitted}
+        today="2026-07-02"
+        {...extra}
+      />
+    </MutationFeedbackProvider>,
   );
   return { onClose, onSubmitted };
 }
@@ -102,6 +105,7 @@ describe('CashDialog', () => {
     );
     expect(onSubmitted).toHaveBeenCalledOnce();
     expect(onClose).toHaveBeenCalledOnce();
+    expect(screen.getByText('Deposit recorded.')).toBeInTheDocument();
   });
 
   test('blocks a withdrawal beyond the available balance via the live preview', async () => {

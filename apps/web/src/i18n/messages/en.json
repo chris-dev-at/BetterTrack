@@ -2863,6 +2863,37 @@
       "screener": "Screener"
     }
   },
+  "mutationFeedback": {
+    "watchlistReordered": "Watchlist order saved.",
+    "alertRearmed": "Alert re-armed.",
+    "alertDeleted": "Alert deleted.",
+    "sharingSaved": "Sharing updated.",
+    "alertSharingEnabled": "Alert sharing turned on.",
+    "alertSharingDisabled": "Alert sharing turned off.",
+    "activityAlertsEnabled": "Activity alerts turned on.",
+    "activityAlertsDisabled": "Activity alerts turned off.",
+    "activityAlertUpdateError": "Could not update activity alerts. Please try again.",
+    "sharedWithFriend": "Shared with {{username}}.",
+    "cash": {
+      "depositSaved": "Deposit recorded.",
+      "withdrawalSaved": "Withdrawal recorded.",
+      "feeSaved": "Fee recorded.",
+      "balanceSet": "Cash balance updated.",
+      "transferSaved": "Transfer recorded.",
+      "sourceCreated": "Cash source created.",
+      "sourceUpdated": "Cash source updated.",
+      "transactionCreated": "Transaction recorded.",
+      "transactionUpdated": "Transaction updated.",
+      "transactionDeleted": "Transaction deleted.",
+      "tagsUpdated": "Transaction tags updated.",
+      "budgetCreated": "Budget created.",
+      "budgetUpdated": "Budget updated.",
+      "tagCreated": "Tag created.",
+      "tagUpdated": "Tag updated.",
+      "ruleCreated": "Rule created.",
+      "ruleUpdated": "Rule updated."
+    }
+  },
   "sharing": {
     "title": "Share “{{name}}”",
     "subtitle": "Choose who can see this.",
