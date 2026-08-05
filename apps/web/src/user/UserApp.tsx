@@ -679,7 +679,11 @@ export function AccountModeRoot({ children }: { children: ReactNode }) {
 function RateLimitToastPortal() {
   const { rateLimitBanner, clearRateLimitBanner } = useAuth();
   if (!rateLimitBanner) return null;
-  return <Toast onDismiss={clearRateLimitBanner}>{rateLimitBanner}</Toast>;
+  return (
+    <Toast onDismiss={clearRateLimitBanner} tone="error">
+      {rateLimitBanner}
+    </Toast>
+  );
 }
 
 /**

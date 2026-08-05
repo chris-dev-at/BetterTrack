@@ -18,6 +18,11 @@ interface MutationFeedback {
   error: (message: string) => void;
 }
 
+interface MutationNotice {
+  message: string;
+  tone: 'success' | 'error';
+}
+
 const NO_FEEDBACK: MutationFeedback = {
   success: () => {},
   error: () => {},
@@ -34,7 +39,7 @@ const MutationFeedbackContext = createContext<MutationFeedback>(NO_FEEDBACK);
  * the representative surface with it as well.
  */
 export function MutationFeedbackProvider({ children }: { children: ReactNode }) {
-  const [message, setMessage] = useState<string | null>(null);
+  const [notice, setNotice] = useState<MutationNotice | null>(null);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const clearTimer = useCallback(() => {
@@ -46,16 +51,16 @@ export function MutationFeedbackProvider({ children }: { children: ReactNode }) 
 
   const dismiss = useCallback(() => {
     clearTimer();
-    setMessage(null);
+    setNotice(null);
   }, [clearTimer]);
 
   const show = useCallback(
-    (nextMessage: string) => {
+    (nextNotice: MutationNotice) => {
       clearTimer();
-      setMessage(nextMessage);
+      setNotice(nextNotice);
       timeoutRef.current = setTimeout(() => {
         timeoutRef.current = null;
-        setMessage(null);
+        setNotice(null);
       }, MUTATION_FEEDBACK_DURATION_MS);
     },
     [clearTimer],
@@ -63,12 +68,22 @@ export function MutationFeedbackProvider({ children }: { children: ReactNode }) 
 
   useEffect(() => clearTimer, [clearTimer]);
 
-  const value = useMemo<MutationFeedback>(() => ({ success: show, error: show }), [show]);
+  const value = useMemo<MutationFeedback>(
+    () => ({
+      success: (message) => show({ message, tone: 'success' }),
+      error: (message) => show({ message, tone: 'error' }),
+    }),
+    [show],
+  );
 
   return (
     <MutationFeedbackContext.Provider value={value}>
       {children}
-      {message ? <Toast onDismiss={dismiss}>{message}</Toast> : null}
+      {notice ? (
+        <Toast onDismiss={dismiss} tone={notice.tone}>
+          {notice.message}
+        </Toast>
+      ) : null}
     </MutationFeedbackContext.Provider>
   );
 }

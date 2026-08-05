@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
@@ -34,6 +34,7 @@ import {
 import { getAlertSharing, updateAlertSharing } from '../../lib/alertsApi';
 import { listPortfolios } from '../../lib/portfolioApi';
 import { setViewportWidth } from '../../test/viewport';
+import { MutationFeedbackProvider } from '../hooks/useMutationFeedback';
 import { MySharedItemsPage } from './MySharedItemsPage';
 
 const PORTFOLIO_ID = '00000000-0000-0000-0000-000000000001';
@@ -91,7 +92,9 @@ function renderPage() {
   return render(
     <QueryClientProvider client={queryClient}>
       <MemoryRouter>
-        <MySharedItemsPage />
+        <MutationFeedbackProvider>
+          <MySharedItemsPage />
+        </MutationFeedbackProvider>
       </MemoryRouter>
     </QueryClientProvider>,
   );
@@ -430,6 +433,25 @@ describe('MySharedItemsPage — alert sharing (relocated from Settings)', () => 
     );
   });
 
+  test('keeps a failed enable message inside the confirmation dialog', async () => {
+    vi.mocked(listMyShared).mockResolvedValue(EMPTY);
+    vi.mocked(updateAlertSharing).mockRejectedValue(new Error('offline'));
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole('switch', { name: 'Share my alerts with followers' }));
+    const dialog = screen.getByRole('dialog');
+    await user.click(
+      within(dialog).getByRole('button', { name: 'I understand — share my alerts' }),
+    );
+
+    expect(
+      await within(dialog).findByText('Could not update alert sharing. Please try again.'),
+    ).toHaveAttribute('role', 'alert');
+    expect(screen.getAllByRole('alert')).toHaveLength(1);
+    expect(screen.getByRole('dialog')).toBeInTheDocument();
+  });
+
   test('disabling needs no confirmation (#455)', async () => {
     vi.mocked(listMyShared).mockResolvedValue(EMPTY);
     vi.mocked(getAlertSharing).mockResolvedValue({ visibleToFollowers: true });
@@ -443,6 +465,20 @@ describe('MySharedItemsPage — alert sharing (relocated from Settings)', () => 
     await waitFor(() =>
       expect(updateAlertSharing).toHaveBeenCalledWith({ visibleToFollowers: false }),
     );
+  });
+
+  test('uses the global error toast when an immediate disable fails', async () => {
+    vi.mocked(listMyShared).mockResolvedValue(EMPTY);
+    vi.mocked(getAlertSharing).mockResolvedValue({ visibleToFollowers: true });
+    vi.mocked(updateAlertSharing).mockRejectedValue(new Error('offline'));
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole('switch', { name: 'Share my alerts with followers' }));
+
+    await screen.findByText('Could not update alert sharing. Please try again.');
+    expect(screen.getByRole('alert')).toHaveAttribute('data-tone', 'error');
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 });
 

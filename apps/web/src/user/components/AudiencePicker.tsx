@@ -224,7 +224,6 @@ export function AudiencePicker({
         onClose();
       }
     },
-    onError: () => feedback.error(t('sharing.error')),
   });
 
   const friends = friendsQuery.data?.friends ?? [];
@@ -544,6 +543,8 @@ export function AudiencePicker({
         {publicLinkKept && audience === 'public_link' ? (
           <Alert tone="success">{t('sharing.publicLinkKept')}</Alert>
         ) : null}
+        {mutation.isError ? <Alert tone="error">{t('sharing.error')}</Alert> : null}
+
         <div className="flex justify-end gap-2">
           <Button onClick={onClose} variant="quiet">
             {t('sharing.cancel')}

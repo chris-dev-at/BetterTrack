@@ -169,18 +169,28 @@ export function Splash({ label }: { label?: string }) {
 
 /**
  * Non-blocking overlay toast. Rendered at a fixed position so it never
- * shifts layout. Provide an `onDismiss` handler to let the user close it.
+ * shifts layout. Its semantic tone controls both the accent rail and whether
+ * assistive technology announces the notice politely or assertively.
  */
-export function Toast({ children, onDismiss }: { children: ReactNode; onDismiss: () => void }) {
+export function Toast({
+  children,
+  onDismiss,
+  tone = 'info',
+}: {
+  children: ReactNode;
+  onDismiss: () => void;
+  tone?: AlertTone;
+}) {
   const t = useT();
+  const rail =
+    tone === 'error' ? 'var(--bt-neg)' : tone === 'success' ? 'var(--bt-pos)' : 'var(--bt-gold)';
   return (
     <div
       role="alert"
-      aria-live="polite"
+      aria-live={tone === 'error' ? 'assertive' : 'polite'}
+      data-tone={tone}
       className="bt-toast"
-      // The gold inset rule marks it as an attention notice without importing a
-      // second surface color — the same accent idiom the active rail item uses.
-      style={{ boxShadow: 'inset 2px 0 0 var(--bt-gold), var(--bt-shadow-menu)' }}
+      style={{ boxShadow: `inset 2px 0 0 ${rail}, var(--bt-shadow-menu)` }}
     >
       <span className="flex-1">{children}</span>
       <button

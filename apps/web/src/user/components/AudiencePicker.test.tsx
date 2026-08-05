@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { act, render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
@@ -87,10 +87,11 @@ describe('AudiencePicker — mutation feedback', () => {
 
     await user.click(await screen.findByRole('button', { name: /^save$/i }));
 
+    const dialog = screen.getByRole('dialog');
     expect(
-      await screen.findByText('Could not update sharing. Please try again.'),
-    ).toBeInTheDocument();
-    expect(screen.getByRole('dialog')).toBeInTheDocument();
+      await within(dialog).findByText('Could not update sharing. Please try again.'),
+    ).toHaveAttribute('role', 'alert');
+    expect(screen.getAllByRole('alert')).toHaveLength(1);
     expect(onClose).not.toHaveBeenCalled();
   });
 });

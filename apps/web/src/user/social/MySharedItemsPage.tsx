@@ -124,8 +124,15 @@ function AlertSharingControl() {
         ),
       );
     },
-    onError: () => feedback.error(t('social.alertSharing.error')),
+    onError: (_error, input) => {
+      if (!input.visibleToFollowers) feedback.error(t('social.alertSharing.error'));
+    },
   });
+
+  const closeConfirm = () => {
+    setConfirming(false);
+    mutation.reset();
+  };
 
   if (query.isLoading || query.error) {
     return (
@@ -165,15 +172,12 @@ function AlertSharingControl() {
         </div>
       </div>
       {confirming ? (
-        <Dialog
-          phoneSheet
-          title={t('social.alertSharing.confirmTitle')}
-          onClose={() => setConfirming(false)}
-        >
+        <Dialog phoneSheet title={t('social.alertSharing.confirmTitle')} onClose={closeConfirm}>
           <div className="flex flex-col gap-4">
             <p className="bt-gold">{t('social.alertSharing.confirmWarning')}</p>
+            {mutation.isError ? <Alert tone="error">{t('social.alertSharing.error')}</Alert> : null}
             <div className="flex flex-wrap justify-end gap-2">
-              <Button onClick={() => setConfirming(false)} variant="quiet">
+              <Button onClick={closeConfirm} variant="quiet">
                 {t('social.alertSharing.confirmCancel')}
               </Button>
               <Button
