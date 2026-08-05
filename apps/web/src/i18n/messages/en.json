@@ -1486,7 +1486,7 @@
         "displayModeAriaLabel": "Chart display mode",
         "valueMode": "Value €",
         "performanceMode": "Performance %",
-        "analyticsLink": "Analytics →",
+        "analyticsLink": "Analysis →",
         "perfHint": "Deposits and withdrawals are neutralized (time-weighted return) — the curve only moves when your holdings move.",
         "loadError": "Portfolio history couldn't be loaded. Please try again.",
         "ariaLabelPerformance": "Portfolio performance over time",
@@ -1494,7 +1494,7 @@
       }
     },
     "analytics": {
-      "title": "Analytics",
+      "title": "Analysis",
       "backToOverview": "← Back to overview",
       "loadError": "Couldn't load analytics for this portfolio.",
       "displayModeAriaLabel": "Chart display mode",
@@ -3030,7 +3030,7 @@
       "ideas": "Ideas"
     },
     "myShared": {
-      "title": "My items",
+      "title": "Shared items",
       "subtitle": "Everything stays private until you share it.",
       "emptyTitle": "You don't own anything yet",
       "emptyBody": "Create a portfolio, blueprint or watchlist and it appears here to manage its sharing.",
@@ -3054,7 +3054,6 @@
     "nav": {
       "friends": "Friends",
       "following": "Following",
-      "myItems": "My items",
       "messages": "Messages"
     },
     "follow": {

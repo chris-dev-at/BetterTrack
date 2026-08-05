@@ -120,6 +120,13 @@ beforeEach(() => {
 });
 
 describe('MySharedItemsPage', () => {
+  test('uses Shared items as the page heading', async () => {
+    vi.mocked(listMyShared).mockResolvedValue(EMPTY);
+    renderPage();
+
+    expect(await screen.findByRole('heading', { name: 'Shared items' })).toBeInTheDocument();
+  });
+
   test('keeps portfolio sharing disabled while MIRRORCHAIN metadata is pending', async () => {
     const read = deferred<Awaited<ReturnType<typeof listPortfolios>>>();
     vi.mocked(listMyShared).mockResolvedValue(WITH_PORTFOLIO);

@@ -8,7 +8,7 @@ import { provisionUser } from './support/users';
 /**
  * V3-P9 analytics compare — the missing v3 golden flow (issue #446, extends
  * PROJECTPLAN §13.3). Seed one real holding through the transaction dialog
- * (SAP.DE, the tax-at spec's EUR-native workhorse), open Portfolio → Analytics,
+ * (SAP.DE, the tax-at spec's EUR-native workhorse), open Portfolio → Analysis,
  * pick an asset/index benchmark (AAPL) in the Compare control, and prove the
  * side-by-side stats render — the Comparison block joins the Portfolio block,
  * doubling the Total return / CAGR / Max drawdown stat cards — plus the
@@ -42,7 +42,7 @@ test('analytics: compare vs an index/asset shows side-by-side stats and the cont
   await recordSapTrade(page, { side: 'buy', quantity: '5', price: '100', date: isoDaysAgo(200) });
 
   await page.goto('/portfolio/analysis');
-  await expect(page.getByRole('heading', { name: 'Analytics' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'Analysis' })).toBeVisible();
 
   // The portfolio stats block proves the analytics series endpoint answered.
   await expect(page.getByText('Total return', { exact: true })).toBeVisible({ timeout: 30_000 });
