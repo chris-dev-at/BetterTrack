@@ -267,6 +267,62 @@ describe('AudiencePicker — friction ladder (§16)', () => {
   });
 });
 
+describe('AudiencePicker — active public-link lifecycle', () => {
+  const createdAt = '2026-08-01T12:00:00.000Z';
+
+  beforeEach(() => {
+    vi.mocked(getAudience).mockResolvedValue({
+      kind: 'portfolio',
+      subjectId: SUBJECT,
+      audience: 'public_link',
+      friendIds: [],
+      groupId: null,
+      link: { active: true, createdAt },
+    });
+  });
+
+  test('renders the persistent active-link explanation after the creation moment', async () => {
+    renderPicker();
+
+    expect(
+      await screen.findByText(/a public link is active.*url is shown only once/i),
+    ).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: /public link/i })).toBeChecked();
+  });
+
+  test('keeps the dialog open and reports the truthful outcome when the active link is re-saved', async () => {
+    vi.mocked(setAudience).mockResolvedValue({
+      state: {
+        kind: 'portfolio',
+        subjectId: SUBJECT,
+        audience: 'public_link',
+        friendIds: [],
+        groupId: null,
+        link: { active: true, createdAt },
+      },
+    });
+    const onClose = vi.fn();
+    const user = userEvent.setup();
+    renderPicker(onClose);
+
+    await screen.findByText(/a public link is active.*url is shown only once/i);
+    await user.click(
+      screen.getByRole('checkbox', { name: /i understand that anyone with the link/i }),
+    );
+    await user.click(screen.getByRole('button', { name: /^save$/i }));
+
+    expect(
+      await screen.findByText(/saved.*existing public link remains active.*cannot be shown again/i),
+    ).toBeInTheDocument();
+    expect(onClose).not.toHaveBeenCalled();
+    expect(setAudience).toHaveBeenCalledWith('portfolio', SUBJECT, {
+      audience: 'public_link',
+      friendIds: undefined,
+      acknowledgePublic: true,
+    });
+  });
+});
+
 describe('AudiencePicker — friend groups (V5-P8)', () => {
   const GROUP = '00000000-0000-0000-0000-0000000000f1';
 
