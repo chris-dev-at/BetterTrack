@@ -1,7 +1,7 @@
 import type { ButtonHTMLAttributes, CSSProperties, InputHTMLAttributes, ReactNode } from 'react';
 
 import { useT } from '../../i18n';
-import { Wordmark } from '../../components/Wordmark';
+import { Wordmark, type WordmarkEdition } from '../../components/Wordmark';
 import { TAGLINE } from '../../ui/Disclaimer';
 import { AuthFigures } from './AuthFigures';
 
@@ -155,12 +155,16 @@ export function Spinner({ label }: { label?: string }) {
   );
 }
 
-/** Full-screen branded splash, shown while the session bootstraps. */
-export function Splash({ label }: { label?: string }) {
+/**
+ * Full-screen branded splash, shown while the session bootstraps — and, on the
+ * admin origin, while the admin chunk that IS its first paint arrives, which is
+ * the only reason the edition is a prop.
+ */
+export function Splash({ edition = 'Web', label }: { edition?: WordmarkEdition; label?: string }) {
   return (
     <div className="bt-app grid place-items-center">
       <div className="flex flex-col items-center gap-4 text-center">
-        <Wordmark edition="Web" className="text-2xl" />
+        <Wordmark edition={edition} className="text-2xl" />
         <Spinner label={label} />
       </div>
     </div>

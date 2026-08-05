@@ -9,7 +9,7 @@ import type { PortfolioStore } from '../../../lib/portfolioStore';
 import { VaultMoneyEngineError } from './errors';
 import { readPortfolioModel } from './model';
 import type { ClientPortfolioDerivation, VaultMoneyEngine } from './types';
-import type { VaultMoneySession } from './VaultMoneyEngineProvider';
+import type { VaultMoneySession } from './VaultMoneyEngineContext';
 
 /**
  * Compose PD5's decrypted mutation store with PD7's client derivation engine.

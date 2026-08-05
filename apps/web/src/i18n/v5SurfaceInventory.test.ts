@@ -115,6 +115,7 @@ user/control/panels/NotificationsPanel.tsx
 user/control/panels/OAuthAppsPanel.tsx
 user/control/panels/ParanoidAccountExport.tsx
 user/control/panels/PrivacyPanel.tsx
+user/control/panels/PrivacyVaultSection.tsx
 user/control/panels/ProfilePanel.tsx
 user/control/panels/SignInPanel.tsx
 user/control/panels/WebhooksPanel.tsx
@@ -133,6 +134,7 @@ user/portfolio/CashSourcesPage.tsx
 user/portfolio/CustomInvestmentDialog.tsx
 user/portfolio/ImportPage.tsx
 user/portfolio/MirrorchainPanel.tsx
+user/portfolio/ParanoidTaxReport.tsx
 user/portfolio/PortfolioPage.tsx
 user/portfolio/PortfolioSection.tsx
 user/portfolio/PortfolioSettingsPage.tsx
@@ -167,6 +169,7 @@ user/portfolio/cashflow/RecordCashButton.tsx
 user/portfolio/cashflow/RecordCashDialog.tsx
 user/portfolio/cashflow/SectionHead.tsx
 user/portfolio/cashflow/TagChip.tsx
+user/portfolio/taxReportRows.tsx
 user/portfolio/wizard/PortfolioWizard.tsx
 user/settings/taxModePicker.tsx
 user/social/ChatPage.tsx

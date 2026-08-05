@@ -5,7 +5,7 @@ import { Button } from '../../../ui/origin';
 import { Alert } from '../../components/ui';
 import { vaultMoneyErrorKey } from '../../vault/engine/errorCopy';
 import type { VaultMoneyFailure } from '../../vault/engine/errors';
-import { useVaultMoneySession } from '../../vault/engine/VaultMoneyEngineProvider';
+import { useVaultMoneySession } from '../../vault/engine/VaultMoneyEngineContext';
 import { createClientCleartextExport } from '../../vault/export/cleartext';
 import { deliverClientDownload } from '../../vault/export/deliver';
 import { PanelNote, Row } from './panelKit';

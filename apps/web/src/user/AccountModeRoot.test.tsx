@@ -34,8 +34,8 @@ vi.mock('./vault/usePrivacyMode', async (importOriginal) => ({
   usePrivacyMode: () => privacy,
 }));
 
-vi.mock('./vault/engine/VaultMoneyEngineProvider', async (importOriginal) => ({
-  ...(await importOriginal<typeof import('./vault/engine/VaultMoneyEngineProvider')>()),
+vi.mock('./vault/engine/VaultMoneyEngineContext', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./vault/engine/VaultMoneyEngineContext')>()),
   useVaultMoneySession: () => null,
 }));
 

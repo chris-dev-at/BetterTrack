@@ -1,3 +1,5 @@
+import type { ReactNode } from 'react';
+
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
@@ -40,7 +42,7 @@ vi.mock('../../vault/VaultRuntimeContext', async (importOriginal) => ({
 let syncStatus: string | null = null;
 const syncMutate = vi.fn(async () => undefined);
 const discardAllData = vi.fn(async () => undefined);
-vi.mock('../../vault/engine/VaultMoneyEngineProvider', () => ({
+vi.mock('../../vault/engine/VaultMoneyEngineContext', () => ({
   useVaultMoneySession: () =>
     syncStatus === null
       ? null
@@ -56,6 +58,32 @@ vi.mock('../../vault/engine/VaultMoneyEngineProvider', () => ({
           store: { discardAllData },
         },
 }));
+
+/**
+ * The wizard renders for real by default (the killed-surface review below is
+ * the live component crossing its own lazy boundary). A test that needs the
+ * post-enable bookkeeping installs a stub instead, because reaching `onEnabled`
+ * for real means running the whole key ceremony — which the wizard's own suite
+ * already covers.
+ */
+type ParanoidEnableWizardProps = Parameters<
+  typeof import('../../vault/ui/ParanoidEnableWizard').ParanoidEnableWizard
+>[0];
+let enableStub: ((props: ParanoidEnableWizardProps) => ReactNode) | null = null;
+vi.mock('../../vault/ui/ParanoidEnableWizard', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../vault/ui/ParanoidEnableWizard')>();
+  return {
+    ParanoidEnableWizard: (props: ParanoidEnableWizardProps) =>
+      enableStub ? enableStub(props) : <actual.ParanoidEnableWizard {...props} />,
+  };
+});
+const RECEIPT: Parameters<ParanoidEnableWizardProps['onEnabled']>[0] = {
+  mode: 'paranoid',
+  mediaSet: ['server'],
+  vaultVersion: 1,
+  completedAt: '2026-08-05T10:00:00.000Z',
+  idempotent: false,
+};
 
 import { PrivacyPanel } from './PrivacyPanel';
 
@@ -79,6 +107,7 @@ function renderPanel(entry = '/control/privacy') {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  enableStub = null;
   privacyMode = 'normal';
   mediaState = null;
   syncStatus = null;
@@ -151,13 +180,45 @@ describe('PrivacyPanel (§13.5 V5-P13)', () => {
     expect(screen.getByRole('heading', { name: /Paranoid mode/i })).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Set up' }));
 
-    expect(screen.getByRole('heading', { name: 'What changes' })).toBeInTheDocument();
+    // The wizard is its own chunk (#1089), so it arrives a tick later.
+    expect(await screen.findByRole('heading', { name: 'What changes' })).toBeInTheDocument();
     expect(screen.getByText(/Sharing, shared items, comments/i)).toBeInTheDocument();
     expect(screen.getByText(/Server portfolio analytics/i)).toBeInTheDocument();
     expect(screen.queryByText(/coming soon/i)).not.toBeInTheDocument();
   });
 
-  test('keeps paranoid management compact while exposing storage, security, and destructive flows', () => {
+  test('the setup entry reads as pending while its chunk is still on the way', async () => {
+    // `?enable=1` is set but the vault providers are not mounted yet: the row
+    // must not offer the same click again as if nothing had happened.
+    vaultRuntime = null;
+    renderPanel('/control/privacy?enable=1');
+
+    const entry = screen.getByRole('button', { name: 'Loading…' });
+    expect(entry).toBeDisabled();
+    expect(entry).toHaveAttribute('aria-busy', 'true');
+  });
+
+  test('a succeeded setup request leaves the URL, so a later disable lands on the entry row', async () => {
+    // Enable → disable inside ONE overlay session: with `?enable=1` still in
+    // the URL the panel would re-open the setup wizard instead of the row. The
+    // real key ceremony is driven by the wizard's own suite; reaching
+    // `onEnabled` is all this assertion needs.
+    enableStub = ({ onEnabled }) => (
+      <button onClick={() => onEnabled(RECEIPT)} type="button">
+        finish
+      </button>
+    );
+    const user = userEvent.setup();
+    renderPanel('/control/privacy?enable=1');
+
+    await user.click(await screen.findByRole('button', { name: 'finish' }));
+
+    expect(acceptEnabled).toHaveBeenCalledWith(RECEIPT);
+    await waitFor(() => expect(screen.getByTestId('url')).toHaveTextContent('/control/privacy'));
+    expect(screen.getByTestId('url')).not.toHaveTextContent('enable=1');
+  });
+
+  test('keeps paranoid management compact while exposing storage, security, and destructive flows', async () => {
     privacyMode = 'paranoid';
     mediaState = {
       mediaSet: ['server', 'drive'],
@@ -167,7 +228,8 @@ describe('PrivacyPanel (§13.5 V5-P13)', () => {
 
     renderPanel();
 
-    expect(screen.getByText('BetterTrack + Google Drive')).toBeInTheDocument();
+    // The management section is its own chunk (#1089) — it arrives a tick later.
+    expect(await screen.findByText('BetterTrack + Google Drive')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Manage storage' })).toHaveAttribute(
       'href',
       '/control/connections',
@@ -192,7 +254,7 @@ describe('PrivacyPanel (§13.5 V5-P13)', () => {
     const user = userEvent.setup();
     renderPanel();
 
-    await user.click(screen.getByRole('checkbox', { name: /disable Paranoid mode/i }));
+    await user.click(await screen.findByRole('checkbox', { name: /disable Paranoid mode/i }));
 
     expect(screen.getByText(/unsynced changes on more than one device/i)).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Restore normal mode' })).toBeDisabled();
@@ -209,7 +271,7 @@ describe('PrivacyPanel (§13.5 V5-P13)', () => {
     const user = userEvent.setup();
     renderPanel();
 
-    await user.click(screen.getByRole('checkbox', { name: /permanently replaced/i }));
+    await user.click(await screen.findByRole('checkbox', { name: /permanently replaced/i }));
     await user.click(screen.getByRole('button', { name: 'Replace with an empty portfolio' }));
 
     // The store tombstones every entity; a raw `sync.mutate` wipe would leave a
@@ -232,7 +294,7 @@ describe('PrivacyPanel (§13.5 V5-P13)', () => {
     const user = userEvent.setup();
     renderPanel();
 
-    await user.click(screen.getByRole('checkbox', { name: /disable Paranoid mode/i }));
+    await user.click(await screen.findByRole('checkbox', { name: /disable Paranoid mode/i }));
 
     expect(screen.queryByText(/unsynced changes on more than one device/i)).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Restore normal mode' })).toBeEnabled();

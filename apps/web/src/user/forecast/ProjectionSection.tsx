@@ -42,7 +42,10 @@ const ProjectionChart = lazy(() =>
  * surface only resolves inputs and renders — compact per the anti-bloat rule.
  */
 
-/** Base line colour — matches PriceChart's main sky line. */
+/**
+ * Base line colour — matches PriceChart's main sky line. Single owner: the
+ * legend chip below and the lazily-loaded renderer both read it from here.
+ */
 const BASE_LINE = '#38bdf8';
 
 /** Historical-return sampling windows offered to the user (default 5 years). */
@@ -364,6 +367,7 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
         >
           <Suspense fallback={<Skeleton className="rounded-md" height="h-full" />}>
             <ProjectionChart
+              baseColor={BASE_LINE}
               baseLabel={t('forecast.projection.baseLabel')}
               data={chartData}
               overlays={result.overlays.map((overlay, index) => ({

@@ -13,7 +13,7 @@ import { Link, NavLink, Outlet, useLocation, useSearchParams } from 'react-route
 
 import { useI18n } from '../../i18n';
 import { Brandmark, Wordmark } from '../../components/Wordmark';
-import { Disclaimer, ErrorBoundary, TAGLINE } from '../../ui';
+import { Disclaimer, ErrorBoundary, Skeleton, TAGLINE } from '../../ui';
 import { Button, Icon, type IconName } from '../../ui/origin';
 import { cx } from '../../lib/cx';
 import { legalUrl, type LegalPage } from '../legal';
@@ -844,7 +844,13 @@ export function OriginShell() {
                 is the remount this key exists to avoid. Steps within a section
                 stay inside that layout's own boundary. */}
             <ErrorBoundary resetKey={pathname}>
-              <Suspense fallback={null} key={sectionKey(pathname)}>
+              {/* A skeleton, not `null` (§7.1): arriving in a cold section is
+                  the one boundary with nothing else on screen to explain the
+                  wait, and `role="status"` announces it. */}
+              <Suspense
+                fallback={<Skeleton className="rounded-md" height="h-64" />}
+                key={sectionKey(pathname)}
+              >
                 <Outlet />
               </Suspense>
             </ErrorBoundary>

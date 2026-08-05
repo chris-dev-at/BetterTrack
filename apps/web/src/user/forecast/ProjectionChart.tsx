@@ -18,10 +18,13 @@ export interface ProjectionChartSeries {
 
 /** Recharts-only renderer, dynamically loaded by the forecast surface. */
 export function ProjectionChart({
+  baseColor,
   baseLabel,
   data,
   overlays,
 }: {
+  /** Owned by the caller, which paints the same colour on the legend chip. */
+  baseColor: string;
   baseLabel: string;
   data: Array<Record<string, number | string>>;
   overlays: ProjectionChartSeries[];
@@ -51,7 +54,7 @@ export function ProjectionChart({
           type="monotone"
           dataKey="base"
           name={baseLabel}
-          stroke="#38bdf8"
+          stroke={baseColor}
           strokeWidth={2}
           dot={false}
           isAnimationActive={false}

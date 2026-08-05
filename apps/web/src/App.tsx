@@ -2,6 +2,7 @@ import { lazy, Suspense } from 'react';
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 
 import { getRuntimeConfig } from './lib/runtimeConfig';
+import { Splash } from './user/components/ui';
 import { UserApp } from './user/UserApp';
 
 const AdminApp = lazy(() =>
@@ -32,7 +33,10 @@ export default function App() {
           <Route
             path="/admin/*"
             element={
-              <Suspense fallback={null}>
+              // The admin origin's ENTIRE first paint is this chunk, so a null
+              // fallback is a blank page until it lands — the branded splash the
+              // user app shows while it bootstraps is the right stand-in.
+              <Suspense fallback={<Splash edition="Admin" />}>
                 <AdminApp />
               </Suspense>
             }

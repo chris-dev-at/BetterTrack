@@ -12,7 +12,7 @@ import { RequireUser } from './RequireUser';
 import { FirstRunGate } from './firstrun/FirstRunGate';
 import { OriginShell } from './components/OriginShell';
 import { AnnouncementBanner } from './components/AnnouncementBanner';
-import { AuthCard, Button, Splash } from './components/ui';
+import { AuthCard, Button, Spinner, Splash } from './components/ui';
 import { apiPortfolioStore } from '../lib/portfolioStore';
 import { PortfolioStoreProvider } from './portfolio/PortfolioStoreProvider';
 import { CashLayout, PortfolioWorkspace } from './portfolio/PortfolioWorkspace';
@@ -336,7 +336,17 @@ function UserShell() {
           settings. First run is handled by its own gate inside the tree, which
           navigates to /welcome and closes the popup with it. */}
       {control !== null && status === 'authenticated' ? (
-        <Suspense fallback={null}>
+        // The page behind stays painted while the overlay's chunk arrives, so a
+        // null fallback would read as "the click did nothing". `bt-cc` is the
+        // popup's own centering layer (fixed, click-through), which puts the
+        // spinner exactly where the panel is about to appear.
+        <Suspense
+          fallback={
+            <div className="bt-cc">
+              <Spinner />
+            </div>
+          }
+        >
           <ControlCenterOverlay closeTo={href(background.current)} panel={control.panel} />
         </Suspense>
       ) : null}

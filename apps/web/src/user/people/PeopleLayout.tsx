@@ -2,6 +2,7 @@ import { Suspense } from 'react';
 import { Outlet } from 'react-router-dom';
 
 import { useT } from '../../i18n';
+import { Skeleton } from '../../ui';
 import { LocalNav } from '../components/LocalNav';
 import { SECTION_NAV, useSectionNavItems } from '../components/sectionNav';
 
@@ -19,7 +20,9 @@ export function PeopleLayout() {
   return (
     <div className="bt-phone-surface bt-people-layout">
       <LocalNav ariaLabel={t(SECTION_NAV.people.ariaLabelKey)} items={items} />
-      <Suspense fallback={null}>
+      {/* Skeleton, not `null` (§7.1): the layout and its LocalNav stay put and
+          only the page area waits, so a cold page still says it is loading. */}
+      <Suspense fallback={<Skeleton className="rounded-md" height="h-64" />}>
         <Outlet />
       </Suspense>
     </div>
