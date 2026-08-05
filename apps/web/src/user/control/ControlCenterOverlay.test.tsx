@@ -324,12 +324,15 @@ describe('ControlCenterOverlay', () => {
     const opener = screen.getByRole('button', { name: 'opener' });
     await user.click(opener);
 
-    expect(document.activeElement).toBe(popup());
+    expect(popup()).toContainElement(document.activeElement as HTMLElement);
+    expect(opener.closest('[inert]')).not.toBeNull();
+    expect(popup().closest('[inert]')).toBeNull();
 
     await user.keyboard('{Escape}');
 
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
     expect(document.activeElement).toBe(opener);
+    expect(opener.closest('[inert]')).toBeNull();
   });
 
   test('Tab is trapped inside the popup in both directions', async () => {
