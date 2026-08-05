@@ -117,11 +117,11 @@ export function isDownsampledRange(
 /**
  * 1M keeps sub-daily candles (it is inside the provider's ~60-day intraday
  * window) but coarsens to the point budget instead of the 30-minute fetch
- * granularity: the grid step is the 1-month span divided by {@link TARGET_POINTS}
- * (~2.5 h). A "nice month curve", not an every-30-minutes wall.
+ * granularity. Its 144-minute step is the closest UTC-day divisor to the
+ * ~2.5-hour point-budget target, so flooring a candle can never move it across
+ * a UTC midnight. A "nice month curve", not an every-30-minutes wall.
  */
-const INTRADAY_MONTH_STEP_MS =
-  Math.max(1, Math.round((31 * DAY_MS) / TARGET_POINTS / MINUTE_MS)) * MINUTE_MS;
+const INTRADAY_MONTH_STEP_MS = 144 * MINUTE_MS;
 
 /**
  * Per-range candle `fetchRange` + provider `interval` + grid `stepMs` for the
@@ -194,7 +194,10 @@ export interface IntradayValuePoint {
 
 export interface BuildIntradayEurInput {
   range: IntradayPortfolioRange;
-  /** Inclusive window start day (ISO), i.e. `rangeCutoffIso(range, today)`. */
+  /**
+   * Inclusive daily window start (ISO), i.e. `rangeCutoffIso(range, today)`.
+   * For 1D this is the prior-close anchor; its intraday grid begins today.
+   */
   cutoffDay: string;
   /** Current wall-clock (epoch-ms) — bounds the "today" fallback stamp. */
   nowMs: number;
@@ -236,7 +239,11 @@ export function buildIntradayEurValuePoints(input: BuildIntradayEurInput): Intra
   const windowDays = [...dailyValueEurByDay.keys()].filter((d) => d >= cutoffDay).sort();
   if (windowDays.length === 0) return [];
   const windowDaySet = new Set(windowDays);
-  const cutoffMs = dayStartMs(cutoffDay);
+  // 1D is yesterday's close followed by today's intraday curve. Providers can
+  // return trailing candles from yesterday for a 1D request; accepting those
+  // would turn the visual into two full calendar days and re-base at the wrong
+  // point. The prior day's daily fallback below remains the close anchor.
+  const candleStartMs = input.range === '1D' ? dayStartMs(dayOfMs(nowMs)) : dayStartMs(cutoffDay);
 
   // Cash per day = net worth − Σ held-asset value (holdings, #311). Derived so
   // the intraday sum reproduces the daily net worth exactly at each close.
@@ -260,7 +267,7 @@ export function buildIntradayEurValuePoints(input: BuildIntradayEurInput): Intra
     const byDay = new Map<string, IntradayCandle[]>();
     for (const candle of candles) {
       if (!Number.isFinite(candle.atMs) || !Number.isFinite(candle.price)) continue;
-      if (candle.atMs < cutoffMs || candle.atMs > nowMs) continue;
+      if (candle.atMs < candleStartMs || candle.atMs > nowMs) continue;
       const day = dayOfMs(candle.atMs);
       if (!windowDaySet.has(day)) continue;
       const list = byDay.get(day);

@@ -8,6 +8,7 @@ import {
   intradayIntervalFor,
   intradayPerformancePoints,
   intradayStepMs,
+  INTRADAY_PORTFOLIO_RANGES,
   isDownsampledRange,
   isIntradayRange,
   TARGET_POINTS,
@@ -27,6 +28,7 @@ const Y = '2026-06-15'; // yesterday
 const T = '2026-06-16'; // today
 const NOW_MS = Date.parse(`${T}T20:00:00.000Z`);
 const MIN = 60_000;
+const DAY = 24 * 60 * MIN;
 
 /** `count` candles on `day` from 09:00 UTC at `stepMs` spacing, priced by `price(i)`. */
 function candlesForDay(
@@ -113,12 +115,17 @@ describe('point-budget range routing + config', () => {
     // (a few hours) — NOT the 30-minute fetch granularity.
     expect(intradayIntervalFor('1M')).toBe('30m');
     expect(intradayFetchRange('1M')).toBe('1M');
-    const expected1MStep = Math.round((31 * 24 * 60) / TARGET_POINTS) * MIN;
-    expect(intradayStepMs('1M')).toBe(expected1MStep);
+    expect(intradayStepMs('1M')).toBe(144 * MIN);
     // Coarser than the hourly 1W grid and the 30-minute fetch, finer than a day.
     expect(intradayStepMs('1M')).toBeGreaterThan(intradayStepMs('1W'));
     expect(intradayStepMs('1M')).toBeGreaterThan(30 * MIN);
     expect(intradayStepMs('1M')).toBeLessThan(24 * 60 * MIN);
+  });
+
+  it.each(INTRADAY_PORTFOLIO_RANGES)('uses a UTC-day-aligned grid step for %s', (range) => {
+    // Unix epoch starts at UTC midnight. A divisor of 1440 minutes therefore
+    // keeps every floored bucket inside the candle's calendar day.
+    expect(DAY % intradayStepMs(range)).toBe(0);
   });
 });
 
@@ -145,6 +152,85 @@ describe('downsampledIndices — daily thinning to the point budget', () => {
 });
 
 describe('buildIntradayEurValuePoints — density & anchoring', () => {
+  it('files a 00:10Z 1M candle under its own UTC day with grid coverage', () => {
+    const earlyToday = Date.parse(`${T}T00:10:00.000Z`);
+    const points = buildIntradayEurValuePoints({
+      range: '1M',
+      cutoffDay: Y,
+      nowMs: Date.parse(`${T}T01:00:00.000Z`),
+      dailyValueEurByDay: new Map([
+        [Y, 90],
+        [T, 100],
+      ]),
+      perAssetEurByDay: new Map([
+        [
+          'a',
+          new Map([
+            [Y, 90],
+            [T, 100],
+          ]),
+        ],
+      ]),
+      candlesByAsset: new Map([['a', [{ atMs: earlyToday, price: 100 }]]]),
+    });
+
+    // The prior day supplies only its daily close; the 00:10 candle creates a
+    // real grid point on T at midnight. The old 149-minute step put it on Y.
+    expect(points).toEqual([
+      { date: Y, timeMs: Date.parse(`${Y}T23:59:59.999Z`), valueEur: 90 },
+      { date: T, timeMs: Date.parse(`${T}T00:00:00.000Z`), valueEur: 100 },
+    ]);
+  });
+
+  it('uses yesterday close plus today buckets for 1D and re-bases at that close', () => {
+    const points = buildIntradayEurValuePoints({
+      range: '1D',
+      cutoffDay: Y,
+      nowMs: Date.parse(`${T}T17:00:00.000Z`),
+      dailyValueEurByDay: new Map([
+        [Y, 100],
+        [T, 108],
+      ]),
+      perAssetEurByDay: new Map([
+        [
+          'a',
+          new Map([
+            [Y, 100],
+            [T, 108],
+          ]),
+        ],
+      ]),
+      candlesByAsset: new Map([
+        [
+          'a',
+          [
+            { atMs: Date.parse(`${Y}T10:00:00.000Z`), price: 95 },
+            { atMs: Date.parse(`${T}T09:00:00.000Z`), price: 100 },
+            { atMs: Date.parse(`${T}T15:00:00.000Z`), price: 108 },
+          ],
+        ],
+      ]),
+    });
+
+    expect(points).toEqual([
+      { date: Y, timeMs: Date.parse(`${Y}T23:59:59.999Z`), valueEur: 100 },
+      { date: T, timeMs: Date.parse(`${T}T09:00:00.000Z`), valueEur: 100 },
+      { date: T, timeMs: Date.parse(`${T}T15:00:00.000Z`), valueEur: 108 },
+    ]);
+
+    const performance = intradayPerformancePoints({
+      intradayPoints: points,
+      dailyBasePoints: [
+        { date: Y, valueEur: 100 },
+        { date: T, valueEur: 108 },
+      ],
+      flowsBase: [],
+    });
+    expect(performance.map((point) => Number(point.pct.toFixed(6)))).toEqual([0, 0, 8]);
+    // The final 1D percentage is the daily day-change, not a two-day rebase.
+    expect(performance.at(-1)!.pct).toBeCloseTo(8, 9);
+  });
+
   it('renders a dense (≥20) 1D curve whose last point equals the fresh daily value', () => {
     // One EUR asset worth 1080 today (scale 10 = units·fx, native refClose 108).
     const candles = candlesForDay(T, 26, 15 * MIN, (i) => 100 + i * 0.32); // 100 → 108
