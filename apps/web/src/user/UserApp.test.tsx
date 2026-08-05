@@ -20,10 +20,12 @@ vi.mock('../lib/workboardApi', () => ({
 // on the Portfolio page. Auto-mock its data module so it settles without a real
 // network call; these tests only assert we reached the authenticated shell.
 vi.mock('../lib/portfolioApi');
+vi.mock('../lib/socialApi');
 
 import { ApiError } from '../lib/apiClient';
 import * as api from '../lib/userApi';
 import { listPortfolios } from '../lib/portfolioApi';
+import { listFollowing, listItemFollows } from '../lib/socialApi';
 import { listWorkboard } from '../lib/workboardApi';
 import { UserApp } from './UserApp';
 
@@ -98,6 +100,12 @@ beforeEach(() => {
   // WorkboardPage fetches the watchlist on mount; return an empty list so the
   // page renders without errors in tests that exercise the workboard route.
   vi.mocked(listWorkboard).mockResolvedValue({ items: [] });
+  vi.mocked(listFollowing).mockResolvedValue({
+    following: [],
+    followingCount: 0,
+    followerCount: 0,
+  });
+  vi.mocked(listItemFollows).mockResolvedValue({ items: [] });
 });
 
 test('an unauthenticated visit to a user route redirects to /login', async () => {
@@ -120,13 +128,18 @@ test('an unauthenticated visit to an unknown route still redirects to /login', a
   expect(screen.getByTestId('location')).toHaveTextContent('/login');
 });
 
-test('the retired /people/following deep link redirects to the Friends tab', async () => {
+test('/people/following renders and is reachable from People navigation', async () => {
   vi.mocked(api.getMe).mockResolvedValue(member);
   vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [] });
 
   renderAtWithLocation('/people/following');
 
-  await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('/people'));
+  expect(await screen.findByRole('heading', { name: 'Following' })).toBeInTheDocument();
+  expect(screen.getByTestId('location')).toHaveTextContent('/people/following');
+  expect(screen.getAllByRole('link', { name: 'Following' })[0]).toHaveAttribute(
+    'href',
+    '/people/following',
+  );
 });
 
 test('after signing in, the user returns to the originally requested route', async () => {

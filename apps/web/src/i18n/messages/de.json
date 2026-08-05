@@ -3033,7 +3033,7 @@
       "unfollowAria": "{{username}} entfolgen",
       "loginToFollow": "Zum Folgen anmelden",
       "listTitle": "Folge ich",
-      "listSubtitle": "Personen, denen du folgst. Du erhältst eine Benachrichtigung, wenn sie ein Portfolio, eine Watchlist oder einen Blueprint öffentlich machen.",
+      "listSubtitle": "Personen und Elemente, denen du folgst – gesammelt an einem Ort.",
       "empty": "Du folgst noch niemandem.",
       "emptyHint": "Öffne das öffentliche Profil einer Person, um ihr zu folgen.",
       "error": "Deine gefolgten Personen konnten nicht geladen werden. Bitte lade die Seite neu.",
@@ -3131,7 +3131,22 @@
       "follow": "Element folgen",
       "following": "Gefolgt",
       "followAria": "Diesem Element folgen",
-      "unfollowAria": "Diesem Element entfolgen"
+      "unfollowAria": "Diesem Element entfolgen",
+      "unfollow": "Entfolgen",
+      "sectionTitle": "Gefolgte Elemente",
+      "sectionSubtitle": "Portfolios, Watchlists, Blueprints und Ideen, denen du folgst.",
+      "empty": "Du folgst noch keinen Elementen.",
+      "emptyHint": "Folge einem geteilten oder öffentlichen Element, um es hier zu behalten.",
+      "gone": "Nicht mehr verfügbar",
+      "goneHint": "Die Freigabe wurde beendet oder das Element vom Besitzer gelöscht.",
+      "by": "von @{{username}}",
+      "error": "Deine gefolgten Elemente konnten nicht geladen werden. Bitte lade die Seite neu.",
+      "kind": {
+        "portfolio": "Portfolio",
+        "conglomerate": "Blueprint",
+        "watchlist": "Watchlist",
+        "idea": "Idee"
+      }
     },
     "ideas": {
       "title": "Ideen",

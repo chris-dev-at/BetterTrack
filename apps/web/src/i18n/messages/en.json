@@ -3033,7 +3033,7 @@
       "unfollowAria": "Unfollow {{username}}",
       "loginToFollow": "Log in to follow",
       "listTitle": "Following",
-      "listSubtitle": "People you follow. You get a notification when they make a new portfolio, watchlist or blueprint public.",
+      "listSubtitle": "People and items you follow, together in one place.",
       "empty": "You're not following anyone yet.",
       "emptyHint": "Open someone's public profile to follow them.",
       "error": "Couldn't load who you follow. Please refresh the page.",
@@ -3131,7 +3131,22 @@
       "follow": "Follow item",
       "following": "Following",
       "followAria": "Follow this item",
-      "unfollowAria": "Unfollow this item"
+      "unfollowAria": "Unfollow this item",
+      "unfollow": "Unfollow",
+      "sectionTitle": "Followed items",
+      "sectionSubtitle": "Portfolios, watchlists, blueprints and ideas you follow.",
+      "empty": "You're not following any items yet.",
+      "emptyHint": "Follow a shared or public item to keep it here.",
+      "gone": "No longer available",
+      "goneHint": "This item was unshared or deleted by its owner.",
+      "by": "by @{{username}}",
+      "error": "Couldn't load your followed items. Please refresh the page.",
+      "kind": {
+        "portfolio": "Portfolio",
+        "conglomerate": "Blueprint",
+        "watchlist": "Watchlist",
+        "idea": "Idea"
+      }
     },
     "ideas": {
       "title": "Ideas",
