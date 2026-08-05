@@ -97,7 +97,14 @@ export interface ProcessDueResult {
   skippedDuplicate: number;
   /** Periods left unbooked by a pre-check (provider failure / insufficient cash). */
   deferred: number;
-  /** Orders whose unexpected processing error was isolated from the rest of the sweep. */
+  /**
+   * Orders whose unexpected processing error was isolated from the rest of the
+   * sweep. Isolation keeps the remaining orders booking; the caller is expected
+   * to surface a non-zero tally as a failed run (the job handler throws on it)
+   * so the retry → dead-letter path still covers a poisoned order. Only
+   * pre-claim/unexpected errors count here — a post-claim booking failure is a
+   * deliberate at-most-once tombstone and must never provoke a retry.
+   */
   failed: number;
 }
 
