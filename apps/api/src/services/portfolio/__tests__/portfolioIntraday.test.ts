@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { FlowPoint, ValuePoint } from '../../../domain/holdings';
+import { QTY_EPSILON, type FlowPoint, type ValuePoint } from '../../../domain/holdings';
 import {
   anchorlessAssetDays,
   assetDayKey,
@@ -823,6 +823,137 @@ describe('buildIntradayEurValuePoints — #1120 prior-close anchoring + same-day
     expect(points[points.length - 1]!.valueEur).toBeCloseTo(2020, 9);
   });
 
+  it('leaves a FRACTIONAL same-day round trip un-stepped — dust cannot defeat the guard', () => {
+    // Same shape as the whole-unit round trip, but the position is built from
+    // two fractional lots and closed with the STORED total: 0.1 + 0.2 folds to
+    // 0.30000000000000004, so selling 0.3 leaves ~5.6e-17 units unless the
+    // fold clamps at QTY_EPSILON. Dust ⇒ the day looks anchored ⇒ the cash legs
+    // step against a position that prices at 0 at every bucket ⇒ the −€300
+    // plunge-and-recover is back (#1120 review).
+    //
+    // 1000 cash yesterday; buy 0.1 @1000 (−100) at 10:00, buy 0.2 @1000 (−200)
+    // at 11:00, sell 0.3 @1100 (+330) at 15:00 ⇒ V_a(T) = 0, EOD cash 1030.
+    const cutoffMs = Date.parse(`${T}T00:00:00.000Z`);
+    const units = unitsTimelineFromTrades(
+      [
+        { atMs: at(T, '10:00'), unitsDelta: 0.1 },
+        { atMs: at(T, '11:00'), unitsDelta: 0.2 },
+        { atMs: at(T, '15:00'), unitsDelta: -0.3 },
+      ],
+      cutoffMs,
+    )!;
+    const candles = candlesForDay(T, 9, 60 * MIN, () => 1100); // 09:00 … 17:00
+    const points = buildIntradayEurValuePoints({
+      range: '1D',
+      cutoffDay: Y,
+      nowMs: NOW_MS,
+      dailyValueEurByDay: new Map([
+        [Y, 1000],
+        [T, 1030],
+      ]),
+      perAssetEurByDay: new Map([['a', new Map([[T, 0]])]]),
+      candlesByAsset: new Map([['a', candles]]),
+      unitsByAsset: new Map([['a', units]]),
+      cashEvents: [
+        { atMs: at(T, '10:00'), amountEur: -100, assetId: 'a' },
+        { atMs: at(T, '11:00'), amountEur: -200, assetId: 'a' },
+        { atMs: at(T, '15:00'), amountEur: 330, assetId: 'a' },
+      ],
+    });
+
+    const todayPoints = points.filter((p) => p.date === T);
+    // Suppressed: only the 9 candle marks, no trade leading edges.
+    expect(todayPoints.map((p) => p.timeMs)).toEqual(
+      candles.map((c) => Math.floor(c.atMs / (15 * MIN)) * (15 * MIN)),
+    );
+    // Flat at the day's EOD figure end to end; the +€30 lands at the close.
+    for (const p of todayPoints) expect(p.valueEur).toBeCloseTo(1030, 9);
+    expect(Math.min(...points.map((p) => p.valueEur))).toBeCloseTo(1000, 9);
+  });
+
+  it('never reads the NEXT day’s units into a bucket that straddles midnight', () => {
+    // The 1M grid step (~149 min) does not divide the day (#1121), so one
+    // bucket per day starts before midnight and ends after it. `vday`/`eod` are
+    // day-scoped, so reading units at the bucket's raw end would scale
+    // yesterday's close by today's units (#1120 review). Candle days are safe
+    // (their straddling bucket is the seam); this candle-less day is not.
+    const step = intradayStepMs('1M');
+    const straddling = Math.floor(Date.parse(`${T}T00:00:00.000Z`) / step) * step;
+    expect(new Date(straddling).toISOString().slice(0, 10)).toBe(Y); // starts on Y…
+    expect(straddling + step - 1).toBeGreaterThan(Date.parse(`${T}T00:00:00.000Z`)); // …ends on T
+
+    const points = buildIntradayEurValuePoints({
+      range: '1M',
+      cutoffDay: Y,
+      nowMs: NOW_MS,
+      // 10 units bought late on Y at €100 (1000), 10 more just after midnight.
+      dailyValueEurByDay: new Map([
+        [Y, 1000],
+        [T, 2000],
+      ]),
+      perAssetEurByDay: new Map([
+        [
+          'a',
+          new Map([
+            [Y, 1000],
+            [T, 2000],
+          ]),
+        ],
+      ]),
+      candlesByAsset: new Map(),
+      unitsByAsset: new Map([
+        [
+          'a',
+          {
+            initialUnits: 0,
+            steps: [
+              { atMs: at(Y, '23:00'), units: 10 },
+              { atMs: at(T, '00:30'), units: 20 },
+            ],
+          },
+        ],
+      ]),
+    });
+
+    // Yesterday's straddling bucket carries YESTERDAY's 10 units (its close,
+    // 1000) — not 10 × the day-T units ratio (2000).
+    const point = points.find((p) => p.timeMs === straddling)!;
+    expect(point.date).toBe(Y);
+    expect(point.valueEur).toBeCloseTo(1000, 9);
+    // The pre-buy bucket is still empty, and each day still closes exactly.
+    expect(points.find((p) => p.timeMs === straddling - step)!.valueEur).toBeCloseTo(0, 9);
+    expect(points.filter((p) => p.date === Y).pop()!.valueEur).toBeCloseTo(1000, 9);
+    expect(points[points.length - 1]!.valueEur).toBeCloseTo(2000, 9);
+  });
+
+  it('honours a caller-supplied anchorless set (the service’s, so both curves agree)', () => {
+    // The service computes the set once for its flow suppression and hands it
+    // in, so the value curve cannot disagree with the % curve about which
+    // asset-days are stepped (#1120 review).
+    const candles = candlesForDay(T, 9, 60 * MIN, () => 112); // 09:00 … 17:00
+    const build = (anchorlessDays?: ReadonlySet<string>) =>
+      buildIntradayEurValuePoints({
+        range: '1D',
+        cutoffDay: T,
+        nowMs: NOW_MS,
+        dailyValueEurByDay: new Map([[T, 2020]]),
+        perAssetEurByDay: new Map([['a', new Map([[T, 448]])]]),
+        candlesByAsset: new Map([['a', candles]]),
+        unitsByAsset: new Map([
+          ['a', { initialUnits: 0, steps: [{ atMs: at(T, '10:00'), units: 4 }] }],
+        ]),
+        cashEvents: [{ atMs: at(T, '10:00'), amountEur: -448, assetId: 'a' }],
+        anchorlessDays,
+      });
+
+    // Anchored on its own terms: the 10:00 buy steps (leading edge at 09:45).
+    expect(build().some((p) => p.timeMs === at(T, '09:45'))).toBe(true);
+    // Suppressed by the caller's set: no mark, no step, flat at the EOD figure.
+    const suppressed = build(new Set([assetDayKey('a', T)]));
+    expect(suppressed.some((p) => p.timeMs === at(T, '09:45'))).toBe(false);
+    for (const p of suppressed) expect(p.valueEur).toBeCloseTo(2020, 9);
+  });
+
   it('leaves a cash leg for an asset outside the daily per-asset series un-stepped', () => {
     // An FX-unconvertible asset never appears on the value curve, so its linked
     // cash leg has no counterpart either — step it and the curve dips.
@@ -922,6 +1053,49 @@ describe('anchorlessAssetDays — the asset-days that cannot be stepped (#1120 r
     ).toBe(0);
   });
 
+  it('flags a FRACTIONAL round trip whose "sell all" leaves float dust', () => {
+    // The step function comes from the real fold, so this pins the guard and
+    // the clamp together: dust units at the close would read as an anchor that
+    // the daily series (V_a(T) = 0) does not have (#1120 review).
+    const units = unitsTimelineFromTrades(
+      [
+        { atMs: Date.parse(`${T}T10:00:00.000Z`), unitsDelta: 0.1 },
+        { atMs: Date.parse(`${T}T11:00:00.000Z`), unitsDelta: 0.2 },
+        { atMs: Date.parse(`${T}T15:00:00.000Z`), unitsDelta: -0.3 },
+      ],
+      Date.parse(`${T}T00:00:00.000Z`),
+    )!;
+    const keys = anchorlessAssetDays({
+      dailyValueEurByDay: new Map([
+        [Y, 1000],
+        [T, 1030],
+      ]),
+      perAssetEurByDay: new Map([['a', new Map([[T, 0]])]]),
+      unitsByAsset: new Map([['a', units]]),
+    });
+    expect([...keys]).toEqual([assetDayKey('a', T)]);
+  });
+
+  it('ignores dust in a hand-built step function (the input is public)', () => {
+    const keys = anchorlessAssetDays({
+      dailyValueEurByDay: new Map([[T, 1000]]),
+      perAssetEurByDay: new Map([['a', new Map([[T, 0]])]]),
+      unitsByAsset: new Map([
+        [
+          'a',
+          {
+            initialUnits: 0,
+            steps: [
+              { atMs: Date.parse(`${T}T10:00:00.000Z`), units: 10 },
+              { atMs: Date.parse(`${T}T15:00:00.000Z`), units: QTY_EPSILON / 2 },
+            ],
+          },
+        ],
+      ]),
+    });
+    expect([...keys]).toEqual([assetDayKey('a', T)]);
+  });
+
   it('keys are stable `assetId|day` pairs', () => {
     expect(assetDayKey('asset-1', T)).toBe(`asset-1|${T}`);
   });
@@ -959,6 +1133,29 @@ describe('unitsTimelineFromTrades', () => {
       cutoff,
     )!;
     expect(timeline.steps[1]!.units).toBe(0);
+  });
+
+  it('folds away sell-everything float dust exactly like the valuation engine', () => {
+    // 0.1 + 0.2 = 0.30000000000000004 held; the UI offers the STORED 0.3 for
+    // "sell all", so the fold ends at 5.55e-17 unless it clamps at
+    // QTY_EPSILON. `deriveHoldings` clamps, publishing V_a(D) = 0 — leaving
+    // dust here would make this the one place that still calls the position
+    // held, which is what defeats the anchorless guard (#1120 review).
+    const T13 = Date.parse(`${T}T13:00:00.000Z`);
+    const timeline = unitsTimelineFromTrades(
+      [
+        { atMs: T13, unitsDelta: 0.1 },
+        { atMs: T14, unitsDelta: 0.2 },
+        { atMs: T15, unitsDelta: -0.3 },
+      ],
+      cutoff,
+    )!;
+    expect(0.1 + 0.2 - 0.3).not.toBe(0); // the dust is real, not hypothetical
+    expect(timeline.steps[2]!.units).toBe(0);
+    expect(timeline.steps[2]!.units).toBeLessThan(QTY_EPSILON);
+    // The clamp is a floor at zero, not a rounding of every quantity: a real
+    // fractional holding survives untouched.
+    expect(timeline.steps[1]!.units).toBe(0.1 + 0.2);
   });
 
   it('returns undefined when no in-window trade exists (constant units)', () => {

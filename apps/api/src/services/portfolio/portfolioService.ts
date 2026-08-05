@@ -1392,8 +1392,12 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
           let flowEur = 0;
           for (const f of flows) flowEur += f.flowEur;
           return { atMs, flowEur };
-        } catch {
+        } catch (err) {
           // FX gap: leave this flow day-anchored (the daily total still has it).
+          // Only that degrade is intentional — a genuine converter fault must
+          // surface, exactly as the two neighbouring FX sites treat it (#1120
+          // review), instead of silently coarsening the curve.
+          if (!(err instanceof FxRateUnavailableError)) throw err;
           return null;
         }
       }),
@@ -1416,6 +1420,14 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       // the position with its cash not yet deducted. Both legs land in one
       // bucket in the ordinary case and cancel exactly, and the pair always
       // sums to 0 within the day — the day's closing flow is untouched.
+      //
+      // A movement stamped BEFORE its trade is left day-anchored instead: the
+      // pair would have to be emitted inverted (+ at the movement, − at the
+      // trade) to neutralise that interval, and `settleCashAsOfToday` — the
+      // only writer that can separate the two instants — always stamps "now",
+      // i.e. at or after the trade. Day-anchoring is the safe fallback, so the
+      // asymmetry with `deriveSplitCashBuys` (which is order-agnostic because
+      // it works in whole days) costs nothing today (#1120 review).
       if (m.executedAt.getTime() < txn.executedAt.getTime()) continue;
       if (txn.executedAt.getTime() >= cutoffMs) {
         flowEventsEur.push({ atMs: txn.executedAt.getTime(), flowEur: -m.amountEur });
@@ -1434,6 +1446,9 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       candlesByAsset,
       unitsByAsset,
       cashEvents,
+      // The set computed above, so the value curve and the % curve suppress
+      // exactly the same asset-days by construction (#1120 review).
+      anchorlessDays: anchorless,
     });
     if (eurPoints.length === 0) return null;
 
