@@ -3,6 +3,8 @@ import type { Application } from 'express';
 import request from 'supertest';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { API_KEY_SCOPES } from '@bettertrack/contracts';
+
 import {
   createParanoidEnforcementRepository,
   withExclusiveParanoidTransitionTestLock,
@@ -53,6 +55,7 @@ import {
   isParanoidOwnedSubjectBlocked,
   paranoidClassificationsForRoute,
   paranoidCapabilityForRoute,
+  PARANOID_API_SCOPE_CLASSIFICATIONS,
   PARANOID_JOB_POLICIES,
   PARANOID_KILL_REGISTRY,
   PARANOID_MODE_ERROR_CODE,
@@ -313,6 +316,26 @@ describe('paranoid kill registry', () => {
     }
   });
 
+  it('explicitly classifies every API key scope and matches the runtime kill decision', () => {
+    expect(Object.keys(PARANOID_API_SCOPE_CLASSIFICATIONS).sort()).toEqual(
+      [...API_KEY_SCOPES].sort(),
+    );
+
+    for (const scope of API_KEY_SCOPES) {
+      const classification = PARANOID_API_SCOPE_CLASSIFICATIONS[scope];
+      expect(
+        classification,
+        `${scope} needs an explicit paranoid-mode classification`,
+      ).toBeDefined();
+      if (!classification) continue;
+      expect(classification.reason.trim(), `${scope} needs a rationale`).not.toBe('');
+      expect(classification.reason, `${scope} rationale must stay on one line`).not.toMatch(
+        /[\r\n]/,
+      );
+      expect(isParanoidKilledScope(scope), scope).toBe(classification.disposition === 'killed');
+    }
+  });
+
   it('resolves, invokes, and exhaustively classifies every registered service method', async () => {
     const { user } = await paranoidAccount();
     const [portfolio] = await harness.db
@@ -488,14 +511,6 @@ describe('paranoid kill registry', () => {
         expect(serialized.includes(secret), `${rail} leaked ${secret}`).toBe(false);
       }
     }
-
-    for (const scope of PARANOID_KILL_REGISTRY.flatMap((entry) => entry.scopes)) {
-      expect(isParanoidKilledScope(scope), scope).toBe(true);
-    }
-    expect(isParanoidKilledScope('market:read')).toBe(false);
-    // #1043's combined scope exists specifically so a paranoid native client
-    // can move opaque ciphertext; it must never join the portfolio-scope kill rail.
-    expect(isParanoidKilledScope('vault:sync')).toBe(false);
 
     const killedWebhookEvents = PARANOID_KILL_REGISTRY.flatMap((entry) => entry.webhookEventTypes);
     expect(Object.keys(PARANOID_WEBHOOK_SUBJECT_POLICIES).sort()).toEqual(

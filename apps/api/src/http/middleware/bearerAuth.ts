@@ -7,6 +7,7 @@ import {
   isParanoidKilledScope,
   PARANOID_MODE_ERROR_CODE,
 } from '../../services/account/paranoidEnforcement';
+import { normalizeRoutePath } from '../../services/security/routePath';
 import { toAuthUser } from '../serializers';
 import type { AppContext } from '../context';
 
@@ -63,8 +64,7 @@ export const MIRRORCHAIN_BEARER_ROUTE_ALLOWLIST = [
 ] as const satisfies readonly BearerRoute[];
 
 function normalizedRouteSegments(path: string): string[] {
-  const pathname = path.split('?', 1)[0]!.replace(/\/+$/, '').toLowerCase();
-  return pathname.split('/').filter(Boolean);
+  return normalizeRoutePath(path).split('/').filter(Boolean);
 }
 
 const UUID_ROUTE_SEGMENT = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;

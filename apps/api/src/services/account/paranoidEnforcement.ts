@@ -5,15 +5,18 @@
  * The inventory half is still the single source of truth: the completeness
  * harness proves every mounted route, callable context method and registered
  * job carries exactly one policy, and the composition half below consumes those
- * same arrays — there is no second hand-maintained kill list. Imports stay
- * limited to the error helpers, the Express handler type and the domain-event
- * type so the data remains readable without dragging in a service graph.
+ * same arrays — there is no second hand-maintained kill list. Dependencies stay
+ * limited to the contract taxonomy, narrow enforcement helpers and types so the
+ * data remains readable without dragging in a service graph.
  */
 
 import type { RequestHandler } from 'express';
 
+import type { ApiKeyScope } from '@bettertrack/contracts';
+
 import type { DomainEvent } from '../../events';
 import { ApiError, forbidden, notFound } from '../../errors';
+import { normalizeRoutePath } from '../security/routePath';
 
 /** Stable error code for every server-side surface killed in paranoid mode. */
 export const PARANOID_MODE_ERROR_CODE = 'PARANOID_MODE' as const;
@@ -180,6 +183,11 @@ export interface ParanoidKillRegistryEntry {
   readonly scopes: readonly string[];
   readonly jobs: readonly string[];
   readonly webhookEventTypes: readonly string[];
+}
+
+export interface ParanoidApiScopeClassification {
+  readonly disposition: 'killed' | 'allowed';
+  readonly reason: string;
 }
 
 export const PARANOID_ROUTE_TABLE_SOURCE: ParanoidSurfaceSource = {
@@ -1550,6 +1558,93 @@ export function isParanoidSurfaceClassified(surface: ParanoidSurface): boolean {
 }
 
 const KILLED_SCOPES = new Set(PARANOID_KILL_REGISTRY.flatMap((entry) => entry.scopes));
+
+/**
+ * Explicit paranoid-mode policy for every public API-key scope. This remains a
+ * Partial record deliberately: adding a contract scope must compile far enough
+ * for the completeness test to report the missing policy decision.
+ */
+export const PARANOID_API_SCOPE_CLASSIFICATIONS: Readonly<
+  Partial<Record<ApiKeyScope, ParanoidApiScopeClassification>>
+> = {
+  'portfolio:read': {
+    disposition: 'killed',
+    reason: 'Server-held portfolio data is unavailable in paranoid mode.',
+  },
+  'portfolio:write': {
+    disposition: 'killed',
+    reason: 'Server-held portfolio data is unavailable in paranoid mode.',
+  },
+  'workboard:read': {
+    disposition: 'allowed',
+    reason: 'Private workboard configuration remains available; sharing is killed separately.',
+  },
+  'workboard:write': {
+    disposition: 'allowed',
+    reason: 'Private workboard configuration remains available; sharing is killed separately.',
+  },
+  'market:read': {
+    disposition: 'allowed',
+    reason: 'Global market data does not expose account-owned portfolio bytes.',
+  },
+  'social:read': {
+    disposition: 'allowed',
+    reason: 'Friendship and profile settings remain available; sharing is killed separately.',
+  },
+  'social:write': {
+    disposition: 'allowed',
+    reason: 'Friendship and profile settings remain available; sharing is killed separately.',
+  },
+  'notifications:read': {
+    disposition: 'allowed',
+    reason: 'Notification inbox and preferences remain available for server alert delivery.',
+  },
+  'notifications:write': {
+    disposition: 'allowed',
+    reason: 'Notification inbox and preferences remain available for server alert delivery.',
+  },
+  'chat:read': {
+    disposition: 'allowed',
+    reason: 'Private chat remains separate from server-side portfolio content.',
+  },
+  'chat:write': {
+    disposition: 'allowed',
+    reason: 'Private chat remains separate from server-side portfolio content.',
+  },
+  'account:security': {
+    disposition: 'allowed',
+    reason: 'Credential and session security operations do not expose portfolio content.',
+  },
+  'alerts:read': {
+    disposition: 'allowed',
+    reason: 'Alert CRUD is provenance-filtered; alert sharing is killed separately.',
+  },
+  'alerts:write': {
+    disposition: 'allowed',
+    reason: 'Alert CRUD is provenance-filtered; alert sharing is killed separately.',
+  },
+  'cash:read': {
+    disposition: 'killed',
+    reason: 'Cash records are encrypted portfolio data and unavailable server-side.',
+  },
+  'cash:write': {
+    disposition: 'killed',
+    reason: 'Cash records are encrypted portfolio data and unavailable server-side.',
+  },
+  'mirrorchain:read': {
+    disposition: 'killed',
+    reason: 'Group-portfolio participation is unavailable because sharing is disabled.',
+  },
+  'mirrorchain:write': {
+    disposition: 'killed',
+    reason: 'Group-portfolio participation is unavailable because sharing is disabled.',
+  },
+  'vault:sync': {
+    disposition: 'allowed',
+    reason: 'Vault sync transports only opaque ciphertext for paranoid clients.',
+  },
+};
+
 const PARANOID_WEBHOOK_EVENTS = new Set(
   PARANOID_KILL_REGISTRY.flatMap((entry) => entry.webhookEventTypes),
 );
@@ -1593,7 +1688,7 @@ const requestSurface = (method: string, path: string): ParanoidRouteSurface => (
   kind: 'route',
   source: PARANOID_ROUTE_TABLE_SOURCE,
   method,
-  path,
+  path: normalizeRoutePath(path),
 });
 
 export function paranoidCapabilityForRoute(
@@ -2017,10 +2112,7 @@ export function createParanoidRouteGuard(): RequestHandler {
       next();
       return;
     }
-    // Express routes case-insensitively by default. Fold the live path exactly
-    // like the bearer policy resolver so both guards classify the handler that
-    // Express actually selected.
-    const capability = paranoidCapabilityForRoute(req.method, req.path.toLowerCase());
+    const capability = paranoidCapabilityForRoute(req.method, req.path);
     if (!capability) {
       next();
       return;
