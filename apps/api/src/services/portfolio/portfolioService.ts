@@ -541,9 +541,14 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
   // replaces this — it is applied at read time via `fxFor`/`seriesInBase`.
   const baseCurrency = currencyService.baseCurrency;
 
+  /** UTC calendar day for an already-captured instant. */
+  function isoDayAt(asOfMs: number): string {
+    return new Date(asOfMs).toISOString().slice(0, 10);
+  }
+
   /** Today's UTC calendar day, the last point of the value series. */
   function todayIso(): string {
-    return new Date(now()).toISOString().slice(0, 10);
+    return isoDayAt(now());
   }
 
   /** Map a stored record / input into the pure-domain transaction shape. */
@@ -1210,7 +1215,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
   async function loadIntradayCandles(
     asset: { id: string; providerId: string; providerRef: string },
     range: IntradayPortfolioRange,
-    cutoffMs: number,
+    candleStartMs: number,
   ): Promise<IntradayCandle[]> {
     const ref = { providerId: asset.providerId, providerRef: asset.providerRef };
     const byMs = new Map<number, number>();
@@ -1223,17 +1228,21 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       );
       for (const point of history.value) {
         const atMs = Date.parse(point.time);
-        if (!Number.isNaN(atMs) && Number.isFinite(point.close)) byMs.set(atMs, point.close);
+        if (!Number.isNaN(atMs) && atMs >= candleStartMs && Number.isFinite(point.close)) {
+          byMs.set(atMs, point.close);
+        }
       }
     } catch {
       // Provider outage past the stale window — the ring (if any) still seeds it.
     }
     if (liveRing) {
       try {
-        for (const frame of await liveRing.readSince(asset.id, cutoffMs)) {
+        for (const frame of await liveRing.readSince(asset.id, candleStartMs)) {
           const atMs = Date.parse(frame.at);
           // Ring ticks win at their instant — the freshest observed native price.
-          if (!Number.isNaN(atMs) && Number.isFinite(frame.price)) byMs.set(atMs, frame.price);
+          if (!Number.isNaN(atMs) && atMs >= candleStartMs && Number.isFinite(frame.price)) {
+            byMs.set(atMs, frame.price);
+          }
         }
       } catch {
         // The ring is a best-effort accelerator; ignore a Redis hiccup.
@@ -1255,14 +1264,16 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
     portfolioId: string,
     range: IntradayPortfolioRange,
     fx: CurrencyService,
-    today: string,
+    asOf: { day: string; nowMs: number },
   ): Promise<{ points: PortfolioHistoryPoint[]; performance: PortfolioPerformancePoint[] } | null> {
     const series = await snapshots.getSeries(portfolioId);
     if (series.points.length === 0) return null;
 
-    const cutoffDay = rangeCutoffIso(range, today);
+    const cutoffDay = rangeCutoffIso(range, asOf.day);
     const cutoffMs = Date.parse(`${cutoffDay}T00:00:00.000Z`);
-    const nowMs = now();
+    // A 1D curve starts at the captured request day. Its previous daily point
+    // is the close anchor, so the live ring never needs yesterday's ticks.
+    const candleStartMs = range === '1D' ? Date.parse(`${asOf.day}T00:00:00.000Z`) : cutoffMs;
 
     const dailyValueEurByDay = new Map(series.points.map((p) => [p.date, p.valueEur]));
     const perAssetEurByDay = new Map<string, Map<string, number>>();
@@ -1273,7 +1284,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
     // Fetch candles only for assets actually held during the window; manual /
     // custom assets have no intraday history and always carry forward.
     const heldAssetIds = series.assets
-      .filter((a) => a.points.some((p) => p.date >= cutoffDay))
+      .filter((a) => a.points.some((p) => p.date >= cutoffDay && p.date <= asOf.day))
       .map((a) => a.assetId);
     const assetsById = new Map(
       (await portfolioRepo.assetsByIds(heldAssetIds)).map((r) => [r.id, r]),
@@ -1283,7 +1294,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       heldAssetIds.map(async (assetId) => {
         const asset = assetsById.get(assetId);
         if (!asset || asset.providerId === 'manual') return;
-        const candles = await loadIntradayCandles(asset, range, cutoffMs);
+        const candles = await loadIntradayCandles(asset, range, candleStartMs);
         if (candles.length > 0) candlesByAsset.set(assetId, candles);
       }),
     );
@@ -1291,7 +1302,8 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
     const eurPoints = buildIntradayEurValuePoints({
       range,
       cutoffDay,
-      nowMs,
+      asOfDay: asOf.day,
+      nowMs: asOf.nowMs,
       dailyValueEurByDay,
       perAssetEurByDay,
       candlesByAsset,
@@ -2486,7 +2498,11 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       const overlay = opts?.overlay ?? false;
       const fx = fxFor(opts?.baseCurrency);
 
-      const today = todayIso();
+      // A series request must have one as-of instant: deriving the cutoff day
+      // before async snapshot/candle work and the 1D candle day afterwards can
+      // otherwise straddle UTC midnight and combine two different windows.
+      const asOfMs = now();
+      const today = isoDayAt(asOfMs);
 
       // Short ranges (1D/1W/1M) render a sub-daily intraday curve rather than a
       // ~2-point daily slice (V5-P1 arc d, issue #556; 2026-07-20 point-budget
@@ -2496,7 +2512,10 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       // downsample it to the point budget; MAX keeps its full since-inception
       // daily curve.
       if (isIntradayRange(range)) {
-        const intraday = await buildIntradayHistory(portfolioId, range, fx, today);
+        const intraday = await buildIntradayHistory(portfolioId, range, fx, {
+          day: today,
+          nowMs: asOfMs,
+        });
         if (intraday) {
           if (!overlay) {
             return {

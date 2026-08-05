@@ -116,6 +116,7 @@ describe('point-budget range routing + config', () => {
     expect(intradayIntervalFor('1M')).toBe('30m');
     expect(intradayFetchRange('1M')).toBe('1M');
     expect(intradayStepMs('1M')).toBe(144 * MIN);
+    expect((31 * DAY) / intradayStepMs('1M')).toBeLessThan(350);
     // Coarser than the hourly 1W grid and the 30-minute fetch, finer than a day.
     expect(intradayStepMs('1M')).toBeGreaterThan(intradayStepMs('1W'));
     expect(intradayStepMs('1M')).toBeGreaterThan(30 * MIN);
@@ -157,6 +158,7 @@ describe('buildIntradayEurValuePoints — density & anchoring', () => {
     const points = buildIntradayEurValuePoints({
       range: '1M',
       cutoffDay: Y,
+      asOfDay: T,
       nowMs: Date.parse(`${T}T01:00:00.000Z`),
       dailyValueEurByDay: new Map([
         [Y, 90],
@@ -186,6 +188,7 @@ describe('buildIntradayEurValuePoints — density & anchoring', () => {
     const points = buildIntradayEurValuePoints({
       range: '1D',
       cutoffDay: Y,
+      asOfDay: T,
       nowMs: Date.parse(`${T}T17:00:00.000Z`),
       dailyValueEurByDay: new Map([
         [Y, 100],
@@ -237,6 +240,7 @@ describe('buildIntradayEurValuePoints — density & anchoring', () => {
     const points = buildIntradayEurValuePoints({
       range: '1D',
       cutoffDay: Y,
+      asOfDay: T,
       nowMs: NOW_MS,
       dailyValueEurByDay: new Map([
         [Y, 1000],
@@ -281,6 +285,7 @@ describe('buildIntradayEurValuePoints — density & anchoring', () => {
     const points = buildIntradayEurValuePoints({
       range: '1D',
       cutoffDay: T, // window = today only, keep the case tight
+      asOfDay: T,
       nowMs: NOW_MS,
       dailyValueEurByDay: new Map([[T, 1500]]),
       perAssetEurByDay: new Map([
@@ -302,6 +307,7 @@ describe('buildIntradayEurValuePoints — density & anchoring', () => {
     const points = buildIntradayEurValuePoints({
       range: '1D',
       cutoffDay: Y,
+      asOfDay: T,
       nowMs: NOW_MS,
       dailyValueEurByDay: new Map([
         [Y, 1000],
@@ -336,6 +342,7 @@ describe('buildIntradayEurValuePoints — density & anchoring', () => {
     const points = buildIntradayEurValuePoints({
       range: '1M',
       cutoffDay: D1,
+      asOfDay: T,
       nowMs: NOW_MS,
       dailyValueEurByDay: new Map([
         [D1, 100],
@@ -383,6 +390,7 @@ describe('buildIntradayEurValuePoints — density & anchoring', () => {
     const points = buildIntradayEurValuePoints({
       range: '1W',
       cutoffDay: T,
+      asOfDay: T,
       nowMs: NOW_MS,
       dailyValueEurByDay: new Map([[T, 104]]),
       perAssetEurByDay: new Map([['a', new Map([[T, 104]])]]), // scale 1 (units·fx = 1)
@@ -437,6 +445,7 @@ describe('buildIntradayEurValuePoints — density & anchoring', () => {
       const points = buildIntradayEurValuePoints({
         range,
         cutoffDay: T,
+        asOfDay: T,
         nowMs: NOW_MS,
         dailyValueEurByDay: new Map([[T, dailyValue]]),
         perAssetEurByDay: new Map([
@@ -489,6 +498,7 @@ describe('buildIntradayEurValuePoints — density & anchoring', () => {
     const points = buildIntradayEurValuePoints({
       range: '1D',
       cutoffDay: T,
+      asOfDay: T,
       nowMs: NOW_MS,
       dailyValueEurByDay: new Map([[T, dailyValue]]),
       perAssetEurByDay,

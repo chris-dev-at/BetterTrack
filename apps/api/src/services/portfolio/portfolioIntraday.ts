@@ -70,9 +70,9 @@ import { buildIntradayBucketPrices } from './intradayBucketPrices';
  * Provider candles are quantized onto a fixed per-range step so every asset
  * lands on the same grid marks (aligned, never jagged) while grid points exist
  * only where intraday data does (no dead overnight/weekend flats). 1D keeps a
- * 15-minute grid and 1W an hourly one; 1M coarsens to ~`span / TARGET_POINTS`
- * (a few hours) so a 24/7 asset lands near the budget and an equity — trading
- * only market hours — comfortably below it.
+ * 15-minute grid, 1W an hourly one, and 1M a UTC-day-aligned 144-minute grid.
+ * That leaves a 24/7 asset near the point budget and an equity — trading only
+ * market hours — comfortably below it.
  */
 
 /**
@@ -199,6 +199,8 @@ export interface BuildIntradayEurInput {
    * For 1D this is the prior-close anchor; its intraday grid begins today.
    */
   cutoffDay: string;
+  /** Captured request-as-of UTC day; daily data after it is outside the window. */
+  asOfDay: string;
   /** Current wall-clock (epoch-ms) — bounds the "today" fallback stamp. */
   nowMs: number;
   /** Net-worth EUR per calendar day (the daily snapshot points, full series). */
@@ -225,25 +227,27 @@ function bucketMs(atMs: number, stepMs: number): number {
 }
 
 /**
- * Assemble the EUR intraday value curve for `[cutoffDay, today]`. Pure and
+ * Assemble the EUR intraday value curve for `[cutoffDay, asOfDay]`. Pure and
  * deterministic — the caller supplies the daily snapshot ingredients and the
  * already-fetched candles; re-denomination into a non-EUR base and the
  * performance curve are layered on top by the service.
  */
 export function buildIntradayEurValuePoints(input: BuildIntradayEurInput): IntradayValuePoint[] {
-  const { cutoffDay, nowMs, dailyValueEurByDay, perAssetEurByDay, candlesByAsset } = input;
+  const { cutoffDay, asOfDay, nowMs, dailyValueEurByDay, perAssetEurByDay, candlesByAsset } = input;
   const stepMs = RANGE_CONFIG[input.range].stepMs;
 
   // In-window days come straight from the daily series (one point per calendar
   // day), so weekends/holidays are already present via carry-forward.
-  const windowDays = [...dailyValueEurByDay.keys()].filter((d) => d >= cutoffDay).sort();
+  const windowDays = [...dailyValueEurByDay.keys()]
+    .filter((d) => d >= cutoffDay && d <= asOfDay)
+    .sort();
   if (windowDays.length === 0) return [];
   const windowDaySet = new Set(windowDays);
   // 1D is yesterday's close followed by today's intraday curve. Providers can
   // return trailing candles from yesterday for a 1D request; accepting those
   // would turn the visual into two full calendar days and re-base at the wrong
   // point. The prior day's daily fallback below remains the close anchor.
-  const candleStartMs = input.range === '1D' ? dayStartMs(dayOfMs(nowMs)) : dayStartMs(cutoffDay);
+  const candleStartMs = input.range === '1D' ? dayStartMs(asOfDay) : dayStartMs(cutoffDay);
 
   // Cash per day = net worth − Σ held-asset value (holdings, #311). Derived so
   // the intraday sum reproduces the daily net worth exactly at each close.

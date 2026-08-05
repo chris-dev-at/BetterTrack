@@ -560,6 +560,8 @@ export interface BuildContextDeps {
   emailTransport?: MailTransport | null;
   /** Test seam: inject a stubbed market-data service instead of the live providers. */
   marketData?: MarketDataService;
+  /** Test seam: controlled portfolio-service clock for UTC-window boundary tests. */
+  portfolioNow?: () => number;
   /** Test seam: inject a backfill scheduler (e.g. a recording fake). */
   backfill?: BackfillScheduler;
   /** Test seam: a down-tuned hasher — §10's parameters are pure overhead in tests. */
@@ -1300,6 +1302,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     notify,
     liveRing,
     logger,
+    now: deps.portfolioNow,
   });
   const customAssetRepo = createCustomAssetRepository(db);
   const customAssets = createCustomAssetService({
