@@ -6,18 +6,16 @@ import { befriend, provisionUser } from './support/users';
 
 /**
  * Follows smoke (#438 person follows / #439 item follows), reworked for the V4
- * Social rework (#532): the standalone Following page is retired and the
- * aggregated Followed-items list is gone, so following lives entirely in the
- * Friends tab as notification subscriptions. The owner shares the default "Main"
- * portfolio with one specific friend. That friend follows the owner as a person
- * straight from the friend-card expansion (no public profile needed), sees the
- * per-person auto-follow switch there, opens the shared portfolio and bookmarks
- * it (the item-follow toggle round-trips). When the owner opts into alert
- * sharing — now from the Social "My items" area, not Settings — a single
- * "Follow their alerts" toggle appears in the same row expansion; and the
- * retired `/following` path redirects to the Friends tab.
+ * Social rework (#532) and the restored Following page (#1073). The owner shares
+ * the default "Main" portfolio with one specific friend. That friend follows the
+ * owner as a person straight from the friend-card expansion (no public profile
+ * needed), sees the per-person auto-follow switch there, opens the shared
+ * portfolio and bookmarks it (the item-follow toggle round-trips). When the
+ * owner opts into alert sharing — now from the Social "My items" area, not
+ * Settings — a single "Follow their alerts" toggle appears in the same row
+ * expansion; and the legacy `/following` path opens the restored aggregate.
  */
-test('follows: follow + bookmark from the Friends tab, alert toggle, /following redirect', async ({
+test('follows: follow + bookmark, alert toggle, and restored /following page', async ({
   browser,
 }) => {
   // The spec walks through two provisioned accounts and six /social navigations —
@@ -108,13 +106,14 @@ test('follows: follow + bookmark from the Friends tab, alert toggle, /following 
     }),
   ).toHaveAttribute('aria-checked', 'true', { timeout: 15_000 });
 
-  // The retired Following page redirects to the Friends tab. The path is the
-  // top-level `/following` the app actually keeps a LegacyRedirect for; the
-  // redesign's `/social` → `/people` sweep had rewritten this to
-  // `/people/following`, which no route matches, so it fell through the
-  // catch-all to `/` and never exercised the redirect at all.
+  // The legacy top-level path redirects to the restored aggregate and renders
+  // both the route and its page content, rather than merely landing in People.
   await follower.page.goto('/following');
-  await expect(follower.page).toHaveURL(/\/people$/);
+  await expect(follower.page).toHaveURL(/\/people\/following$/);
+  await expect(follower.page.getByRole('heading', { name: 'Following' })).toBeVisible({
+    timeout: 15_000,
+  });
+  await expect(follower.page.getByRole('link', { name: /Main/ })).toBeVisible();
 
   await owner.context.close();
   await follower.context.close();
