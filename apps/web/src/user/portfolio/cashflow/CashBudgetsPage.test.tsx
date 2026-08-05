@@ -316,15 +316,39 @@ describe('CashBudgetsPage', () => {
     });
   });
 
-  test('keeps creation available when a tag only has one budget period', async () => {
+  test('creates a this-month budget when a tag only has a recurring budget', async () => {
     vi.mocked(listCashTags).mockResolvedValue({ tags: [FOOD] });
     vi.mocked(listCashBudgets).mockResolvedValue({
       period: '2026-07',
       budgets: [budget({ recurring: true })],
     });
+    vi.mocked(createCashBudget).mockResolvedValue({
+      budget: { ...budget(), id: 'b-month', recurring: false } as never,
+    });
+    const user = userEvent.setup();
     renderPage();
 
-    expect(await screen.findByRole('button', { name: 'New budget' })).toBeEnabled();
+    await user.click(await screen.findByRole('button', { name: 'New budget' }));
+    const dialog = screen.getByRole('dialog', { name: 'New budget' });
+    const tag = within(dialog).getByLabelText('Tag');
+    expect(tag).toBeDisabled();
+
+    await user.click(within(dialog).getByRole('button', { name: 'This month only' }));
+    expect(tag).toBeEnabled();
+    expect(tag).toHaveValue(FOOD.id);
+
+    await user.type(within(dialog).getByLabelText('Monthly target'), '150');
+    await user.click(within(dialog).getByRole('button', { name: 'Save' }));
+
+    await waitFor(() => {
+      expect(createCashBudget).toHaveBeenCalledWith({
+        portfolioId: 'p1',
+        tagId: FOOD.id,
+        period: new Date().toISOString().slice(0, 7),
+        amount: 150,
+        currency: 'EUR',
+      });
+    });
   });
 
   test('does not present a missing-tags prerequisite while tags are loading', async () => {

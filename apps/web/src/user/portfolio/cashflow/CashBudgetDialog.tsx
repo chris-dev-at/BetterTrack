@@ -75,6 +75,16 @@ export function CashBudgetDialog({
   const [amount, setAmount] = useState(existing ? String(existing.amount) : '');
   const [formError, setFormError] = useState<string | null>(null);
 
+  function handlePeriodModeChange(nextPeriodMode: PeriodMode) {
+    setPeriodMode(nextPeriodMode);
+
+    const nextTaken = nextPeriodMode === RECURRING ? recurringTaken : thisMonthTaken;
+    setTagId((currentTagId) => {
+      if (currentTagId !== '' && !nextTaken.has(currentTagId)) return currentTagId;
+      return tags.find((tag) => !nextTaken.has(tag.id))?.id ?? '';
+    });
+  }
+
   const mutation = useMutation({
     mutationFn: async () => {
       const value = Number(amount);
@@ -161,7 +171,7 @@ export function CashBudgetDialog({
         {!isEdit ? (
           <Seg
             ariaLabel={t('cashflow.budgets.dialog.period')}
-            onChange={setPeriodMode}
+            onChange={handlePeriodModeChange}
             options={[
               { value: RECURRING, label: t('cashflow.budgets.dialog.periodRecurring') },
               { value: THIS_MONTH, label: t('cashflow.budgets.dialog.periodThisMonth') },
