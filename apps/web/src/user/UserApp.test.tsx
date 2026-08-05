@@ -80,11 +80,11 @@ const anonymous = () =>
   vi.mocked(api.getMe).mockRejectedValue(new ApiError(401, 'UNAUTHENTICATED', 'Not signed in.'));
 
 /**
- * Budget for the first assertion after a sign-in. Landing authenticated is the
- * longest chain in this file — the login mutation flips the auth gate, the
- * legacy path redirects into its Origin destination, the shell and the
- * destination mount, and only then does that page's own query paint the text
- * being asserted on.
+ * Budget for the first assertion on an authenticated destination. Landing
+ * authenticated is the longest chain in this file — the login mutation flips
+ * the auth gate, the legacy path redirects into its Origin destination, the
+ * shell and the destination mount, and only then does that page's own query
+ * paint the text or action being asserted on.
  *
  * Idle, that chain settles in well under 100ms; it is also the part of these
  * tests most sensitive to CPU contention, measured repeatedly past 2s on a
@@ -95,6 +95,11 @@ const anonymous = () =>
  * `AppShell.test.tsx` budgets the same shell surfaces the same way.
  */
 const SIGNED_IN_RENDER = { timeout: 5_000 } as const;
+
+/** The alerts action arrives after the same authenticated route/query chain. */
+function findRearmButton() {
+  return screen.findByRole('button', { name: 'Re-arm' }, SIGNED_IN_RENDER);
+}
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -307,7 +312,7 @@ test('a rate-limited mutation shows only the global 429 notice', async () => {
   const user = userEvent.setup();
   renderAt('/workbench/alerts');
 
-  await user.click(await screen.findByRole('button', { name: 'Re-arm' }));
+  await user.click(await findRearmButton());
 
   expect(
     await screen.findByText("You're doing that too fast. Please wait 30 seconds and try again."),
@@ -381,7 +386,7 @@ test('a 429 takes over the toast slot from a success notice that is still showin
   const user = userEvent.setup();
   renderAt('/workbench/alerts');
 
-  await user.click(await screen.findByRole('button', { name: 'Re-arm' }));
+  await user.click(await findRearmButton());
   expect(await screen.findByText('Alert re-armed.')).toBeInTheDocument();
 
   await user.click(await screen.findByRole('button', { name: 'Re-arm' }));
@@ -408,7 +413,7 @@ test('an identical repeat 429 surfaces again after the notice was dismissed', as
   const user = userEvent.setup();
   renderAt('/workbench/alerts');
 
-  await user.click(await screen.findByRole('button', { name: 'Re-arm' }));
+  await user.click(await findRearmButton());
   expect(await screen.findByText(RATE_LIMIT_NOTICE)).toBeInTheDocument();
 
   await user.click(screen.getByRole('button', { name: 'Dismiss' }));
