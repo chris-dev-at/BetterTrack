@@ -26,6 +26,7 @@ test.use({
 const VIEWPORT_WIDTH = 390;
 const USER_APP_SOURCE = 'apps/web/src/user/UserApp.tsx';
 const CONTROL_CENTER_SOURCE = 'apps/web/src/user/control/ControlCenterOverlay.tsx';
+const CONTROL_PANEL_MATCHER_SOURCE = 'apps/web/src/user/control/matchControlPanel.ts';
 
 /** Public, non-token routes that are meaningful without a session. */
 const ANONYMOUS_CORE_ROUTES = ['/login', '/register', '/forgot-password'] as const;
@@ -232,8 +233,23 @@ function parseTsx(relativePath: string): ts.SourceFile {
     readFileSync(absolutePath, 'utf8'),
     ts.ScriptTarget.Latest,
     true,
-    ts.ScriptKind.TSX,
+    // A plain `.ts` registry must not be parsed as TSX: there, `<T>(x) => x`
+    // reads as JSX and silently truncates the declarations after it.
+    relativePath.endsWith('.tsx') ? ts.ScriptKind.TSX : ts.ScriptKind.TS,
   );
+}
+
+/** Find a top-level `const <name> = …` initializer in a parsed source file. */
+function findRegistry(sourceFile: ts.SourceFile, name: string): ts.Expression | undefined {
+  let found: ts.Expression | undefined;
+  const visit = (node: ts.Node) => {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.name.text === name) {
+      found = node.initializer;
+    }
+    if (found === undefined) ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return found;
 }
 
 /**
@@ -282,26 +298,35 @@ function registeredUserRoutes(): RegisteredRoute[] {
   return routes;
 }
 
-/** Discover every canonical and legacy Control Center URL from its registries. */
+/**
+ * Discover every canonical and legacy Control Center URL from its registries.
+ *
+ * The two registries deliberately live in different modules: `CONTROL_GROUPS`
+ * ships inside the lazy overlay chunk, while `PANEL_ALIASES` sits beside the
+ * matcher so the shell can resolve a panel id before that chunk exists. Each is
+ * parsed where it actually lives, and a registry that goes missing fails loudly
+ * here instead of quietly shrinking the inventory into a green run.
+ */
 function registeredControlRoutes(): string[] {
-  const sourceFile = parseTsx(CONTROL_CENTER_SOURCE);
-  let groups: ts.Expression | undefined;
-  let aliases: ts.Expression | undefined;
+  const overlaySource = parseTsx(CONTROL_CENTER_SOURCE);
+  const matcherSource = parseTsx(CONTROL_PANEL_MATCHER_SOURCE);
+  const groups = findRegistry(overlaySource, 'CONTROL_GROUPS');
+  const aliases = findRegistry(matcherSource, 'PANEL_ALIASES');
 
-  const findRegistries = (node: ts.Node) => {
-    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name)) {
-      if (node.name.text === 'CONTROL_GROUPS') groups = node.initializer;
-      if (node.name.text === 'PANEL_ALIASES') aliases = node.initializer;
-    }
-    if (!groups || !aliases) ts.forEachChild(node, findRegistries);
-  };
-  findRegistries(sourceFile);
+  expect(
+    groups !== undefined,
+    `CONTROL_GROUPS must stay parseable in ${CONTROL_CENTER_SOURCE}.`,
+  ).toBeTruthy();
+  expect(
+    aliases !== undefined && ts.isObjectLiteralExpression(aliases),
+    `PANEL_ALIASES must stay a parseable object literal in ${CONTROL_PANEL_MATCHER_SOURCE}.`,
+  ).toBeTruthy();
 
   const ids: string[] = [];
   const findIds = (node: ts.Node) => {
     if (
       ts.isPropertyAssignment(node) &&
-      node.name.getText(sourceFile) === 'id' &&
+      node.name.getText(overlaySource) === 'id' &&
       ts.isStringLiteral(node.initializer)
     ) {
       ids.push(node.initializer.text);
@@ -320,6 +345,11 @@ function registeredControlRoutes(): string[] {
           return [];
         })
       : [];
+
+  // Anti-shrinkage: an empty parse of either registry must not read as "no
+  // routes to classify".
+  expect(ids.length, 'The Control Center group registry must not parse empty.').toBeGreaterThan(0);
+  expect(aliasIds.length, 'The panel alias registry must not parse empty.').toBeGreaterThan(0);
 
   return [
     '/control',

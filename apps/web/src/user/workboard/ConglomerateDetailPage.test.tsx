@@ -229,7 +229,15 @@ describe('ConglomerateDetailPage', () => {
     expect(within(table).getByText('60,00 %')).toBeInTheDocument();
     expect(within(table).getByText('40,00 %')).toBeInTheDocument();
 
-    const donut = await screen.findByRole('img', { name: /blueprint allocation/i });
+    // Cold lazy boundary: this is the first mount of the donut chunk, and its
+    // `recharts` mock pulls the real module through `importOriginal`. Vitest
+    // transforms that on first use, which outruns the default 1 s wait on a
+    // loaded CI worker (see the note in `src/test/setup.ts`).
+    const donut = await screen.findByRole(
+      'img',
+      { name: /blueprint allocation/i },
+      { timeout: 10_000 },
+    );
     expect(donut).toBeInTheDocument();
   });
 
