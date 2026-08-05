@@ -1,12 +1,14 @@
 import { useMemo, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
+  keepPreviousData,
   useInfiniteQuery,
   useQuery,
   useQueryClient,
   type InfiniteData,
 } from '@tanstack/react-query';
 
+import { CASH_MOVEMENTS_DEFAULT_LIMIT } from '@bettertrack/contracts';
 import type { CashMovement, CashMovementsResponse, CashSource } from '@bettertrack/contracts';
 
 import { useT } from '../../i18n';
@@ -257,8 +259,10 @@ function HistorySection({
   const phone = usePhoneShell();
   // Source-tag filter (V5-P0c): folded into the history header, and only shown
   // when the loaded ledger has revealed mixed sources (anti-bloat — a pure
-  // `manual` ledger never sees it). The API applies the filter before paging.
-  const showFilter = sourceTags.length > 1;
+  // `manual` ledger never sees it). An active filter always keeps the control
+  // mounted so the user can return to the full ledger. The API applies the
+  // filter before paging.
+  const showFilter = sourceFilter !== 'all' || sourceTags.length > 1;
 
   return (
     <section aria-label={t('portfolio.cashSources.history.heading')} className="bt-section">
@@ -449,7 +453,7 @@ export function CashSourcesPage() {
         portfolioId!,
         {
           cursor: pageParam,
-          limit: 50,
+          limit: CASH_MOVEMENTS_DEFAULT_LIMIT,
           source: historySourceFilter === 'all' ? undefined : historySourceFilter,
         },
         signal,
@@ -457,6 +461,7 @@ export function CashSourcesPage() {
     enabled: portfolioId !== null,
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
+    placeholderData: keepPreviousData,
     staleTime: 30_000,
   });
 
@@ -528,7 +533,11 @@ export function CashSourcesPage() {
         ]);
   const sourceTags = (() => {
     const tags = new Set<string>();
+    if (historySourceFilter !== 'all') tags.add(historySourceFilter);
     for (const page of allHistoryData?.pages ?? []) {
+      for (const movement of page.movements) tags.add(movement.source);
+    }
+    for (const page of cashQuery.data?.pages ?? []) {
       for (const movement of page.movements) tags.add(movement.source);
     }
     return [...tags].sort();

@@ -1,8 +1,14 @@
-import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  keepPreviousData,
+  useInfiniteQuery,
+  useQuery,
+  useQueryClient,
+} from '@tanstack/react-query';
 import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 
 import {
+  CASH_MOVEMENTS_DEFAULT_LIMIT,
   CASH_MOVEMENT_UNTAGGED_FILTER,
   EDITABLE_CASH_MOVEMENT_KINDS,
 } from '@bettertrack/contracts';
@@ -29,7 +35,6 @@ import { useActivePortfolio } from './useActivePortfolio';
 
 const UNTAGGED_FILTER = CASH_MOVEMENT_UNTAGGED_FILTER;
 const ALL_FILTER = 'all';
-const MOVEMENTS_PAGE_SIZE = 50;
 
 function kindLabel(t: TranslateFn, kind: CashMovement['kind']): string {
   return t(`portfolio.cashSources.kind.${kind}`);
@@ -79,7 +84,7 @@ export function CashMovementsPage() {
         portfolioId!,
         {
           cursor: pageParam,
-          limit: MOVEMENTS_PAGE_SIZE,
+          limit: CASH_MOVEMENTS_DEFAULT_LIMIT,
           tag: tagFilter === ALL_FILTER ? undefined : tagFilter,
         },
         signal,
@@ -87,6 +92,7 @@ export function CashMovementsPage() {
     enabled: portfolioId !== null,
     initialPageParam: undefined as string | undefined,
     getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
+    placeholderData: keepPreviousData,
     staleTime: 30_000,
   });
   const tagsQuery = useQuery({

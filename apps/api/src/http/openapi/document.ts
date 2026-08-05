@@ -562,6 +562,8 @@ interface EndpointDef {
   path: string;
   tag: string;
   summary: string;
+  /** Additional wire semantics that are too important to hide in schema fields. */
+  description?: string;
   /** Public (`P`) routes need no session; everything else is session-guarded. */
   public?: boolean;
   params?: z.AnyZodObject;
@@ -2070,6 +2072,10 @@ const endpoints: EndpointDef[] = [
     path: '/portfolios/{portfolioId}/cash',
     tag: 'Portfolios',
     summary: 'Paged cash movements + current balance.',
+    description:
+      `Returns cash movements newest first (executedAt descending, then id ascending). ` +
+      `Requests without limit return at most ${contracts.CASH_MOVEMENTS_DEFAULT_LIMIT} rows; ` +
+      'follow nextCursor to retrieve older rows.',
     params: contracts.portfolioIdParamSchema,
     query: contracts.cashMovementsQuerySchema,
     status: 200,
@@ -4350,6 +4356,7 @@ for (const ep of endpoints) {
     path: ep.path,
     tags: [ep.tag],
     summary: ep.summary,
+    ...(ep.description ? { description: ep.description } : {}),
     security,
     request: {
       ...(ep.params ? { params: ep.params } : {}),

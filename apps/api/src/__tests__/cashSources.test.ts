@@ -93,7 +93,7 @@ async function createSource(
 
 /** GET /cash — the full ledger state (movements + sources + roll-up). */
 async function cashState(agent: Agent, pid: string) {
-  const res = await agent.get(`/api/v1/portfolios/${pid}/cash`);
+  const res = await agent.get(`/api/v1/portfolios/${pid}/cash?limit=200`);
   expect(res.status).toBe(200);
   expect(cashMovementsResponseSchema.safeParse(res.body).success).toBe(true);
   const state = res.body as {

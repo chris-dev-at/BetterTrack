@@ -4,6 +4,8 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
+import type { CashMovementsResponse } from '@bettertrack/contracts';
+
 vi.mock('../../lib/portfolioApi');
 import * as portfolioApi from '../../lib/portfolioApi';
 
@@ -94,8 +96,10 @@ const TRANSFER_IN = movement({
 });
 const DEPOSIT = movement({ id: 'm-dep', kind: 'deposit', amountEur: 300, sourceId: 'src-main' });
 
-function renderPage(initialPath = '/portfolio/cash/accounts') {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+function renderPage(
+  initialPath = '/portfolio/cash/accounts',
+  client = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
+) {
   render(
     <QueryClientProvider client={client}>
       <MemoryRouter initialEntries={[initialPath]}>
@@ -103,6 +107,7 @@ function renderPage(initialPath = '/portfolio/cash/accounts') {
       </MemoryRouter>
     </QueryClientProvider>,
   );
+  return client;
 }
 
 /**
@@ -188,6 +193,54 @@ describe('CashSourcesPage', () => {
       { cursor: 'older-cursor', limit: 50, source: undefined },
       expect.anything(),
     );
+  });
+
+  test('keeps an active source filter mounted while fetching and after the all-source cache expires', async () => {
+    const imported = movement({
+      id: 'm-imported',
+      note: 'Imported movement',
+      source: 'import:george',
+    });
+    let resolveFiltered!: (value: CashMovementsResponse) => void;
+    const filtered = new Promise<CashMovementsResponse>((resolve) => {
+      resolveFiltered = resolve;
+    });
+    vi.mocked(portfolioApi.getCashMovements).mockImplementation(async (_portfolioId, params) => {
+      if (params?.source === 'import:george') return filtered;
+      return {
+        balanceEur: 6000,
+        movements: [DEPOSIT, imported],
+        sources: [MAIN, BANK, SAVINGS],
+        nextCursor: null,
+      };
+    });
+    const client = new QueryClient({
+      defaultOptions: { queries: { gcTime: 0, retry: false } },
+    });
+    const user = userEvent.setup();
+    renderPage('/portfolio/cash/accounts', client);
+
+    const filter = await screen.findByLabelText('Source');
+    await user.selectOptions(filter, 'import:george');
+
+    // The previous page is placeholder data while the filtered request is in
+    // flight, so neither the picker nor the history vanishes under the pointer.
+    expect(screen.getByLabelText('Source')).toHaveValue('import:george');
+    expect(screen.getByText('Imported movement')).toBeInTheDocument();
+    await waitFor(() =>
+      expect(client.getQueryData(['portfolio', 'p1', 'cash', 'history', 'all'])).toBeUndefined(),
+    );
+
+    resolveFiltered({
+      balanceEur: 6000,
+      movements: [imported],
+      sources: [MAIN, BANK, SAVINGS],
+      nextCursor: null,
+    });
+
+    await waitFor(() => expect(screen.queryByText(/\+300,00\s*€/)).not.toBeInTheDocument());
+    expect(screen.getByLabelText('Source')).toHaveValue('import:george');
+    expect(screen.getByRole('option', { name: 'All sources' })).toBeInTheDocument();
   });
 
   test('lists every source with balance, type label and liquidity share', async () => {

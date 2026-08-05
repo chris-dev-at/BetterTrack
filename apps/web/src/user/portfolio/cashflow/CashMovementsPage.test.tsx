@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, within } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
@@ -222,6 +222,28 @@ describe('CashMovementsPage', () => {
       expect.objectContaining({ cursor: undefined, limit: 50, tag: FOOD.id }),
       expect.anything(),
     );
+  });
+
+  test('keeps the page and tag picker mounted while a new filter is loading', async () => {
+    let resolveFiltered!: (value: CashMovementsResponse) => void;
+    const filtered = new Promise<CashMovementsResponse>((resolve) => {
+      resolveFiltered = resolve;
+    });
+    vi.mocked(getCashMovements).mockImplementation(async (_portfolioId, params) =>
+      params?.tag === FOOD.id ? filtered : LEDGER,
+    );
+    const user = userEvent.setup();
+    renderPage();
+
+    await screen.findByText('Landlord');
+    await user.selectOptions(screen.getByLabelText('Tag'), FOOD.id);
+
+    expect(screen.getByLabelText('Tag')).toHaveValue(FOOD.id);
+    expect(screen.getByText('Landlord')).toBeInTheDocument();
+
+    resolveFiltered({ ...LEDGER, movements: [TAGGED] });
+    await waitFor(() => expect(screen.queryByText('Landlord')).not.toBeInTheDocument());
+    expect(screen.getByLabelText('Tag')).toHaveValue(FOOD.id);
   });
 
   test('loads a bounded first page and fetches the cursor page on demand', async () => {

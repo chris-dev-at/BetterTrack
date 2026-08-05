@@ -997,6 +997,8 @@ export const cashMovementsResponseSchema = z
   .strict();
 export type CashMovementsResponse = z.infer<typeof cashMovementsResponseSchema>;
 
+/** Default page size for `GET /portfolios/:id/cash`. */
+export const CASH_MOVEMENTS_DEFAULT_LIMIT = 50 as const;
 export const CASH_MOVEMENT_UNTAGGED_FILTER = 'untagged' as const;
 
 /**

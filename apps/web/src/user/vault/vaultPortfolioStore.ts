@@ -1,4 +1,6 @@
 import {
+  CASH_MOVEMENTS_DEFAULT_LIMIT,
+  CASH_MOVEMENT_UNTAGGED_FILTER,
   cashEntryRequestSchema,
   cashMovementsQuerySchema,
   cashMovementsResponseSchema,
@@ -892,7 +894,7 @@ export function createVaultPortfolioStore(
           if (parsedParams.source != null && movement.source !== parsedParams.source) return false;
           if (parsedParams.tag == null) return true;
           const tags = movement.tags ?? [];
-          return parsedParams.tag === 'untagged'
+          return parsedParams.tag === CASH_MOVEMENT_UNTAGGED_FILTER
             ? tags.length === 0
             : tags.includes(parsedParams.tag);
         })
@@ -906,7 +908,7 @@ export function createVaultPortfolioStore(
           : all.findIndex((movement) => movement.id === parsedParams.cursor);
       const start =
         parsedParams.cursor == null ? 0 : cursorIndex < 0 ? all.length : cursorIndex + 1;
-      const limit = parsedParams.limit ?? 50;
+      const limit = parsedParams.limit ?? CASH_MOVEMENTS_DEFAULT_LIMIT;
       const page = all.slice(start, start + limit);
       const balances = cashBalancesBySource(domainCashMovements(document, portfolioId));
       const sources = liveEntities(document, 'cashSource')

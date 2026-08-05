@@ -34,7 +34,11 @@ import type {
   UpdatePortfolioRequest,
   UpdateTransactionRequest,
 } from '@bettertrack/contracts';
-import { customAssetCategorySchema, editableCashMovementKindSchema } from '@bettertrack/contracts';
+import {
+  CASH_MOVEMENTS_DEFAULT_LIMIT,
+  customAssetCategorySchema,
+  editableCashMovementKindSchema,
+} from '@bettertrack/contracts';
 
 import type { AssetRow } from '../../data/schema';
 import { newId } from '../../data/ids';
@@ -2017,7 +2021,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       const [page, balances, sources] = await Promise.all([
         cashMovementRepo.listPageForPortfolio(portfolioId, {
           cursor: opts?.cursor,
-          limit: opts?.limit ?? DEFAULT_LIMIT,
+          limit: opts?.limit ?? CASH_MOVEMENTS_DEFAULT_LIMIT,
           source: opts?.source,
           tag: opts?.tag,
         }),
