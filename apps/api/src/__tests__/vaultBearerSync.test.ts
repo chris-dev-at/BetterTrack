@@ -21,6 +21,7 @@ import { createOAuthRepository } from '../data/repositories/oauthRepository';
 import { paranoidVaults, users } from '../data/schema';
 import {
   VAULT_SYNC_BEARER_ROUTE_ALLOWLIST,
+  openApiPathTemplateAcceptsBearer,
   pathAcceptsBearer,
   vaultSyncRouteAcceptsBearer,
 } from '../http/middleware/bearerAuth';
@@ -217,11 +218,15 @@ describe('#1043 vault bearer policy', () => {
     { method: 'GET', path: '/account/paranoid/normal-revision' },
   ] as const;
 
+  const livePath = (path: string): string => path.replace('{version}', '12');
+
   it('pins the exact sync routes and defaults transitions and future routes closed', () => {
     expect(VAULT_SYNC_BEARER_ROUTE_ALLOWLIST).toEqual(EXPECTED_ALLOWLIST);
     for (const route of EXPECTED_ALLOWLIST) {
-      expect(vaultSyncRouteAcceptsBearer(route.method, route.path)).toBe(true);
-      expect(pathAcceptsBearer(route.path, route.method)).toBe(true);
+      const path = livePath(route.path);
+      expect(vaultSyncRouteAcceptsBearer(route.method, path)).toBe(true);
+      expect(pathAcceptsBearer(path, route.method)).toBe(true);
+      expect(openApiPathTemplateAcceptsBearer(route.path, route.method)).toBe(true);
     }
     expect(vaultSyncRouteAcceptsBearer('GET', '/vault/history/12')).toBe(true);
 
@@ -230,6 +235,18 @@ describe('#1043 vault bearer policy', () => {
     }
     expect(pathAcceptsBearer('/vault/future-transition', 'GET')).toBe(false);
     expect(pathAcceptsBearer('/vault/history/admin', 'GET')).toBe(false);
+  });
+
+  it('maps HEAD to allowlisted GET routes but keeps session-only vault routes closed', () => {
+    for (const route of EXPECTED_ALLOWLIST.filter((candidate) => candidate.method === 'GET')) {
+      const path = livePath(route.path);
+      expect(vaultSyncRouteAcceptsBearer('HEAD', path)).toBe(true);
+      expect(pathAcceptsBearer(path, 'HEAD')).toBe(true);
+    }
+
+    expect(vaultSyncRouteAcceptsBearer('GET', '/vault/history/{version}')).toBe(false);
+    expect(pathAcceptsBearer('/vault/history/{version}', 'GET')).toBe(false);
+    expect(pathAcceptsBearer('/vault/media/server-candidate/12', 'HEAD')).toBe(false);
   });
 
   it('keeps the router-local guard default-closed independently of global scope policy', () => {
@@ -385,6 +402,10 @@ describe('#1043 bearer vault synchronization', () => {
     expect(read.headers.etag).toBe('"3"');
     expect(read.headers['content-type']).toContain('application/octet-stream');
     expect((read.body as Buffer).equals(v3)).toBe(true);
+
+    const head = await request(harness.app).head('/api/v1/vault').set(bearer(token));
+    expect(head.status, JSON.stringify(head.body)).toBe(200);
+    expect(head.headers.etag).toBe('"3"');
 
     const media = await request(harness.app).get('/api/v1/vault/media').set(bearer(token));
     expect(media.status, JSON.stringify(media.body)).toBe(200);
