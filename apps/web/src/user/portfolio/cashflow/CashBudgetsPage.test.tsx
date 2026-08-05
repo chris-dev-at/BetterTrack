@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, within } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
@@ -29,6 +29,7 @@ vi.mock('../../../lib/cashApi', () => ({
 
 import { listPortfolios } from '../../../lib/portfolioApi';
 import {
+  CASH_TAGS_QUERY_KEY,
   createCashBudget,
   deleteCashBudget,
   listCashBudgets,
@@ -260,6 +261,37 @@ describe('CashBudgetsPage', () => {
     await user.click(screen.getByRole('button', { name: 'Confirm' }));
 
     expect(deleteCashBudget).toHaveBeenCalledWith('b1');
+  });
+
+  test('explains the available-tag prerequisite on hover and focus, then enables creation when a tag is available', async () => {
+    vi.mocked(listCashTags).mockResolvedValue({ tags: [FOOD] });
+    vi.mocked(listCashBudgets).mockResolvedValue({ period: '2026-07', budgets: [budget()] });
+    const client = renderPage();
+    const user = userEvent.setup();
+
+    const newBudget = await screen.findByRole('button', { name: 'New budget' });
+    expect(newBudget).toBeDisabled();
+
+    await user.hover(newBudget);
+    expect(screen.getByRole('tooltip')).toHaveTextContent(
+      'Every tag already has a budget for this period.',
+    );
+
+    await user.unhover(newBudget);
+    const hint = screen.getByRole('group', { name: 'New budget' });
+    hint.focus();
+    expect(hint).toHaveFocus();
+    await waitFor(() => {
+      expect(screen.getByRole('tooltip')).toHaveTextContent(
+        'Every tag already has a budget for this period.',
+      );
+    });
+
+    client.setQueryData(CASH_TAGS_QUERY_KEY, { tags: [FOOD, RENT] });
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'New budget' })).toBeEnabled();
+    });
   });
 
   test('renders the empty state with a create CTA when nothing is budgeted', async () => {

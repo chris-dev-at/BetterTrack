@@ -18,6 +18,7 @@ import { AsyncReadState } from '../../components/AsyncReadState';
 import { EmptyState, Skeleton } from '../../../ui';
 import { Badge, Button, PageHead } from '../../../ui/origin';
 import { CashBudgetDialog } from './CashBudgetDialog';
+import { DisabledActionHint } from './DisabledActionHint';
 import { TagChip } from './TagChip';
 import { useActivePortfolio } from './useActivePortfolio';
 
@@ -113,9 +114,15 @@ export function CashBudgetsPage() {
                 value={month}
               />
             </label>
-            <Button disabled={!canCreate} onClick={() => setCreating(true)} variant="primary">
-              {t('cashflow.budgets.new')}
-            </Button>
+            <DisabledActionHint
+              disabled={!canCreate}
+              hint={t('cashflow.budgets.dialog.noTags')}
+              label={t('cashflow.budgets.new')}
+            >
+              <Button disabled={!canCreate} onClick={() => setCreating(true)} variant="primary">
+                {t('cashflow.budgets.new')}
+              </Button>
+            </DisabledActionHint>
           </>
         }
         title={t('cashflow.tabs.budgets')}
@@ -131,9 +138,15 @@ export function CashBudgetsPage() {
       {budgets.length === 0 ? (
         <EmptyState
           cta={
-            <Button disabled={!canCreate} onClick={() => setCreating(true)} variant="quiet">
-              {t('cashflow.budgets.emptyCta')}
-            </Button>
+            <DisabledActionHint
+              disabled={!canCreate}
+              hint={t('cashflow.budgets.dialog.noTags')}
+              label={t('cashflow.budgets.emptyCta')}
+            >
+              <Button disabled={!canCreate} onClick={() => setCreating(true)} variant="quiet">
+                {t('cashflow.budgets.emptyCta')}
+              </Button>
+            </DisabledActionHint>
           }
           description={t('cashflow.budgets.emptyDescription')}
           icon="🎯"

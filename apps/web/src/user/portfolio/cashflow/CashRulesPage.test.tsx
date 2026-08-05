@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, within } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
@@ -18,6 +18,7 @@ vi.mock('../../../lib/cashApi', () => ({
 
 import {
   applyCashRules,
+  CASH_TAGS_QUERY_KEY,
   createCashRule,
   deleteCashRule,
   listCashRules,
@@ -59,6 +60,7 @@ function renderPage() {
       <CashRulesPage />
     </QueryClientProvider>,
   );
+  return client;
 }
 
 beforeEach(() => {
@@ -112,11 +114,34 @@ describe('CashRulesPage', () => {
     expect(createCashRule).not.toHaveBeenCalled();
   });
 
-  test('disables creation until at least one tag exists', async () => {
+  test('explains the tag prerequisite on hover and focus, then enables creation when a tag exists', async () => {
     vi.mocked(listCashTags).mockResolvedValue({ tags: [] });
-    renderPage();
+    const client = renderPage();
+    const user = userEvent.setup();
 
-    expect(await screen.findByRole('button', { name: 'New rule' })).toBeDisabled();
+    const newRule = await screen.findByRole('button', { name: 'New rule' });
+    expect(newRule).toBeDisabled();
+
+    await user.hover(newRule);
+    expect(screen.getByRole('tooltip')).toHaveTextContent(
+      'Create a tag first — a rule needs at least one to apply.',
+    );
+
+    await user.unhover(newRule);
+    const hint = screen.getByRole('group', { name: 'New rule' });
+    hint.focus();
+    expect(hint).toHaveFocus();
+    await waitFor(() => {
+      expect(screen.getByRole('tooltip')).toHaveTextContent(
+        'Create a tag first — a rule needs at least one to apply.',
+      );
+    });
+
+    client.setQueryData(CASH_TAGS_QUERY_KEY, { tags: [FOOD] });
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'New rule' })).toBeEnabled();
+    });
   });
 
   test('surfaces the unsupported-regex 400 inline', async () => {

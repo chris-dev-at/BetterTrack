@@ -17,6 +17,7 @@ import { EmptyState, Skeleton } from '../../../ui';
 import { Badge, Button } from '../../../ui/origin';
 import { SectionHead } from './SectionHead';
 import { CashRuleDialog } from './CashRuleDialog';
+import { DisabledActionHint } from './DisabledActionHint';
 import { TagChip } from './TagChip';
 
 /**
@@ -142,13 +143,19 @@ export function CashRulesPage({ embedded = false }: { embedded?: boolean } = {})
                 </Button>
               )
             ) : null}
-            <Button
+            <DisabledActionHint
               disabled={tags.length === 0}
-              onClick={() => setCreating(true)}
-              variant="primary"
+              hint={t('cashflow.rules.dialog.noTags')}
+              label={t('cashflow.rules.new')}
             >
-              {t('cashflow.rules.new')}
-            </Button>
+              <Button
+                disabled={tags.length === 0}
+                onClick={() => setCreating(true)}
+                variant="primary"
+              >
+                {t('cashflow.rules.new')}
+              </Button>
+            </DisabledActionHint>
           </>
         }
         embedded={embedded}
