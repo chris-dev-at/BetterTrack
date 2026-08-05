@@ -5,7 +5,7 @@ what shipped, where the mobile app got to, **what needs a decision from you**, t
 gate that must not be missed before an app release, and the state of the machine.
 
 **Day 1 (§1–§5) was written against `main` @ `b29f19b5`. Day 2 (§6–§8) is written
-against `main` @ `bf160734` (2026-08-05 ~10:35Z) and is the current record.**
+against `main` @ `67dfdc01` (2026-08-05 ~10:40Z) and is the current record.**
 
 > **Read this first if you are short on time**
 >
@@ -205,7 +205,7 @@ installed. Nothing was installed over the app build and no logout happened, but
 want it.
 
 > **Day-2 delta to this section: see §6.4.** The dev-stack commit (`aee03a6c`) and both
-> worktree paths below are still accurate as of 2026-08-05 ~10:35Z (re-verified); the
+> worktree paths below are still accurate as of 2026-08-05 ~10:40Z (re-verified); the
 > factory did **not** stay drained — it ran all night. The phone is **off USB** and has
 > been since 2026-08-04.
 
@@ -216,7 +216,7 @@ want it.
 Day 2 was: four review streams filing work over the merged mobile wave, and the factory
 draining most of it overnight. Everything in this section is verified against `git log`,
 `gh issue`/`gh pr` and the BetterTrackMobile board at the time of writing
-(2026-08-05 ~10:35Z, `main` @ `bf160734`).
+(2026-08-05 ~10:40Z, `main` @ `67dfdc01`).
 
 ### 6.1 What the four review streams filed
 
@@ -224,16 +224,16 @@ draining most of it overnight. Everything in this section is verified against `g
 2026-08-04 20:12–22:10).** Not 24: the count below includes `HARD1`, which is easy to
 miss because it is a batch rather than a numbered family.
 
-| Family       | Issues                     | Status now                                                    |
-| ------------ | -------------------------- | ------------------------------------------------------------- |
-| SEC1–SEC3    | #1063, #1064, #1065        | **all merged**                                                |
-| QA1          | #1066                      | **open** — see the note below                                 |
-| PWA2         | #1067                      | merged                                                        |
-| HARD1        | #1068                      | merged                                                        |
-| UXB1–UXB11   | #1071–#1081                | UXB1–UXB10 merged; **UXB11 (#1081) open**, PR #1132 in flight |
-| AUD1, AUD2   | #1084, #1085               | **both merged**                                               |
-| A11Y1, A11Y2 | #1087, #1088               | **both open**, no PR in flight                                |
-| PERF1–PERF4  | #1089, #1090, #1091, #1093 | **all four open**, no PR in flight                            |
+| Family       | Issues                     | Status now                         |
+| ------------ | -------------------------- | ---------------------------------- |
+| SEC1–SEC3    | #1063, #1064, #1065        | **all merged**                     |
+| QA1          | #1066                      | **open** — see the note below      |
+| PWA2         | #1067                      | merged                             |
+| HARD1        | #1068                      | merged                             |
+| UXB1–UXB11   | #1071–#1081                | **all eleven merged**              |
+| AUD1, AUD2   | #1084, #1085               | **both merged**                    |
+| A11Y1, A11Y2 | #1087, #1088               | **both open**, no PR in flight     |
+| PERF1–PERF4  | #1089, #1090, #1091, #1093 | **all four open**, no PR in flight |
 
 **The QA1 exception is worth knowing about.** PR **#1082** (`task/1066`) was the QA1
 implementation and it was **closed unmerged** on 2026-08-05 00:46Z. Its own populated
@@ -307,7 +307,7 @@ of UXB5 (#1075), which fixed only the client. §8 treats them as the gating pair
 
 ### 6.2 What the factory merged overnight
 
-**23 PRs merged between 2026-08-04T21:19Z and 2026-08-05T10:00Z**; **18** of them inside
+**24 PRs merged between 2026-08-04T21:19Z and 2026-08-05T10:35Z**; **18** of them inside
 the 22:00Z→08:20Z window specifically. (The mobile board's 10:35 CEST tick says "16" —
 that was posted mid-flight and undercounts; the enumerated set below is authoritative.)
 
@@ -336,9 +336,11 @@ that was posted mid-flight and undercounts; the enumerated set below is authorit
 | 08-05 08:32  | #1115 | `fc970e8a` | **UXB9** — cash rules "Apply to existing" fired without confirm                          |
 | 08-05 09:20  | #1130 | `871de0a5` | **DOC2** — §16 truth-up                                                                  |
 | 08-05 10:00  | #1123 | `bf160734` | **UXB10** — disabled "New rule"/"New budget" reason                                      |
+| 08-05 10:35  | #1132 | `67dfdc01` | **UXB11** — Analysis/Analytics and /people/shared naming consistency                     |
 
 **Still in flight at the time of writing:** PR **#1131** (SO2, archived-portfolio
-booking) and PR **#1132** (UXB11, naming consistency). Both open, neither merged.
+booking) — open, not merged. It is the only one left; **the UX backlog UXB1–UXB11 is now
+fully merged.**
 
 ### 6.3 Mobile app — day 2
 
@@ -491,7 +493,7 @@ overnight wave itself. This section puts every verdict in one place so #1034 is 
 rather than an investigation. It is deliberately not a victory lap: the open risk is
 enumerated in §8.5 with issue numbers you can check live.
 
-Written against `main` @ `bf160734`.
+Written against `main` @ `67dfdc01`.
 
 ### 8.1 Auth core — NO exploitable bypass found
 
@@ -554,7 +556,7 @@ Independent corroboration: the mobile Kotlin port re-pinned its 622 vectors agai
 `main`, its harness flagged 5 on its own including the F1 repro, and the literal port of
 the envelope closed them at **exact `0.0`**.
 
-`packages/domain` at `bf160734`:
+`packages/domain` at `67dfdc01`:
 
 ```
 Test Files  9 passed (9)
@@ -591,7 +593,7 @@ small batch). See §7.10.
 
 ### 8.5 Remaining open risk — verified live at time of writing
 
-Everything below is **open** as of 2026-08-05 ~10:35Z. Re-check with
+Everything below is **open** as of 2026-08-05 ~10:40Z. Re-check with
 `gh issue list --state open` before you decide; the factory was still merging.
 
 **Security-relevant (the sign-off gate):**
@@ -617,7 +619,6 @@ Everything below is **open** as of 2026-08-05 ~10:35Z. Re-check with
 | ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | **PAR1 #1122**                      | The paranoid-enable wizard rate-limits itself. The §7 capture fires ~46 requests in one 10s window against a 60 req/10s burst limit on a _tiny_ account, and scales with portfolios × tax years — so a realistic account **fails its first enable attempt on a one-way destructive transition**, sees a generic "you're doing that too fast" banner, and each retry is punished harder by the escalation ladder. |
 | **QA1 #1066 + QA1a #1101**          | The hardened mobile overflow gate is not on `main` (PR #1082 closed unmerged, §6.1).                                                                                                                                                                                                                                                                                                                             |
-| **UXB11 #1081**                     | Naming consistency — PR #1132 in flight.                                                                                                                                                                                                                                                                                                                                                                         |
 | **A11Y1 #1087, A11Y2 #1088**        | §8.3.                                                                                                                                                                                                                                                                                                                                                                                                            |
 | **PERF1–4 #1089/#1090/#1091/#1093** | §8.4 and §7.10.                                                                                                                                                                                                                                                                                                                                                                                                  |
 
