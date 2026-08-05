@@ -2,7 +2,15 @@ import { describe, expect, test } from 'vitest';
 
 import { EN_MESSAGES } from '../../i18n/registry';
 import type { MessageNode } from '../../i18n/registry';
-import { COMMANDS, SUGGESTED_COMMANDS, filterCommands, sectionLabelKeyFor } from './commands';
+import { isParanoidKilledPath } from '../vault/ui/ParanoidSurfaceGate';
+import {
+  COMMANDS,
+  SUGGESTED_COMMANDS,
+  commandPath,
+  filterCommands,
+  sectionLabelKeyFor,
+  withPortfolioScope,
+} from './commands';
 
 /** The palette's own translator: EN source strings, key on a miss. */
 function t(key: string): string {
@@ -39,6 +47,7 @@ describe('COMMANDS registry', () => {
       ]),
     ).toEqual([
       ['create.trade', '/portfolio?create=trade'],
+      ['create.cashFlow', '/portfolio/cash/movements?create=1'],
       ['create.transfer', '/portfolio/cash/accounts?create=transfer'],
       ['create.blueprint', '/workbench/blueprints/new'],
       ['create.watchlist', '/assets/watchlists?create=1'],
@@ -46,6 +55,49 @@ describe('COMMANDS registry', () => {
       ['create.idea', '/workbench/blueprints/new'],
       ['create.portfolio', '/portfolios?create=1'],
     ]);
+  });
+
+  test('exactly the portfolio-writing create intents are scoped', () => {
+    expect(COMMANDS.filter((command) => command.scoped).map((command) => command.labelKey)).toEqual(
+      ['create.trade', 'create.cashFlow', 'create.transfer'],
+    );
+  });
+});
+
+describe('withPortfolioScope', () => {
+  test('adds the active portfolio without dropping the intent flag', () => {
+    expect(withPortfolioScope('/portfolio?create=trade', 'p-2')).toBe(
+      '/portfolio?create=trade&portfolio=p-2',
+    );
+    expect(withPortfolioScope('/portfolio/cash/movements?create=1', 'p-2')).toBe(
+      '/portfolio/cash/movements?create=1&portfolio=p-2',
+    );
+  });
+
+  test('leaves the link alone when no portfolio is pinned', () => {
+    expect(withPortfolioScope('/portfolio?create=trade', null)).toBe('/portfolio?create=trade');
+  });
+
+  test('escapes an id that would otherwise break the query string', () => {
+    expect(withPortfolioScope('/portfolio?create=trade', 'a&b=c')).toBe(
+      '/portfolio?create=trade&portfolio=a%26b%3Dc',
+    );
+  });
+});
+
+describe('commandPath', () => {
+  test('drops the intent flag so route-matrix checks see a real pathname', () => {
+    expect(commandPath('/portfolio/cash/movements?create=1')).toBe('/portfolio/cash/movements');
+    expect(commandPath('/workbench/blueprints/new')).toBe('/workbench/blueprints/new');
+  });
+
+  test('every create destination resolves to a path the paranoid matrix can judge', () => {
+    // The kill list keys off exact pathnames: pass the whole link and
+    // `/portfolio/cash/movements?create=1` slips through as "not killed".
+    const killed = COMMANDS.filter((command) => command.group === 'create')
+      .filter((command) => isParanoidKilledPath(commandPath(command.to)))
+      .map((command) => command.labelKey);
+    expect(killed).toEqual(['create.cashFlow']);
   });
 });
 

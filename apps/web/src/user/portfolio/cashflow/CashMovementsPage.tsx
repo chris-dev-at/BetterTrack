@@ -1,6 +1,6 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query';
-import { useMemo, useState } from 'react';
-import { Link } from 'react-router-dom';
+import { useEffect, useMemo, useState } from 'react';
+import { Link, useSearchParams } from 'react-router-dom';
 
 import { EDITABLE_CASH_MOVEMENT_KINDS } from '@bettertrack/contracts';
 import type { CashMovement, CashTag } from '@bettertrack/contracts';
@@ -55,10 +55,23 @@ export function CashMovementsPage() {
   const [editing, setEditing] = useState<CashMovement | null>(null);
   const [tagging, setTagging] = useState<CashMovement | null>(null);
   const [recording, setRecording] = useState(false);
+  const [searchParams, setSearchParams] = useSearchParams();
   const search = usePreservedSearch([ACTIVE_PORTFOLIO_PARAM]);
   const labelsTo = search
     ? { pathname: '/portfolio/cash/labels', search }
     : '/portfolio/cash/labels';
+
+  // This page owns the standalone record-an-income-or-expense flow, so the
+  // shell's and the palette's "Income or expense" action lands here with the
+  // intent flag. Open the same dialog its primary button opens, then consume
+  // the flag so closing it — or pressing Back — cannot reopen it.
+  useEffect(() => {
+    if (searchParams.get('create') !== '1') return;
+    setRecording(true);
+    const next = new URLSearchParams(searchParams);
+    next.delete('create');
+    setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams]);
 
   const movementsQuery = useQuery({
     queryKey: ['portfolio', portfolioId, 'cash'],

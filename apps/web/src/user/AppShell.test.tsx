@@ -597,6 +597,7 @@ test('the live Create menu supports roving focus and restores its trigger on Esc
   await user.click(trigger);
   const menu = screen.getByRole('menu', { name: 'Create' });
   const trade = within(menu).getByRole('menuitem', { name: 'Buy or sell' });
+  const cashFlow = within(menu).getByRole('menuitem', { name: 'Income or expense' });
   const transfer = within(menu).getByRole('menuitem', { name: 'Transfer' });
   const blueprint = within(menu).getByRole('menuitem', { name: 'New Blueprint' });
   const watchlist = within(menu).getByRole('menuitem', { name: 'New watchlist' });
@@ -604,8 +605,10 @@ test('the live Create menu supports roving focus and restores its trigger on Esc
   const idea = within(menu).getByRole('menuitem', { name: 'Build idea from Blueprint' });
   const portfolio = within(menu).getByRole('menuitem', { name: 'New portfolio' });
 
-  expect(within(menu).queryByRole('menuitem', { name: 'Income or expense' })).toBeNull();
+  // Every entry carries the intent its destination reads — nothing here is a
+  // link into a page that then does nothing (#1071).
   expect(trade).toHaveAttribute('href', '/portfolio?create=trade');
+  expect(cashFlow).toHaveAttribute('href', '/portfolio/cash/movements?create=1');
   expect(transfer).toHaveAttribute('href', '/portfolio/cash/accounts?create=transfer');
   expect(blueprint).toHaveAttribute('href', '/workbench/blueprints/new');
   expect(watchlist).toHaveAttribute('href', '/assets/watchlists?create=1');
@@ -615,7 +618,7 @@ test('the live Create menu supports roving focus and restores its trigger on Esc
 
   await waitFor(() => expect(trade).toHaveFocus());
   await user.keyboard('{ArrowDown}');
-  expect(transfer).toHaveFocus();
+  expect(cashFlow).toHaveFocus();
   await user.keyboard('{ArrowUp}');
   expect(trade).toHaveFocus();
   await user.keyboard('{End}');
@@ -636,6 +639,34 @@ test('the live Create menu supports roving focus and restores its trigger on Esc
 
   expect(screen.queryByRole('menu', { name: 'Create' })).not.toBeInTheDocument();
   expect(trigger).toHaveFocus();
+});
+
+test('Create entries that write into one portfolio keep the active portfolio scope', async () => {
+  const user = userEvent.setup();
+  renderAt('/portfolio?portfolio=p-second');
+
+  await user.click(await screen.findByRole('button', { name: 'Create' }));
+  const menu = screen.getByRole('menu', { name: 'Create' });
+
+  // Without the scope these three would open a write dialog on the DEFAULT
+  // portfolio while the user is looking at another one.
+  expect(within(menu).getByRole('menuitem', { name: 'Buy or sell' })).toHaveAttribute(
+    'href',
+    '/portfolio?create=trade&portfolio=p-second',
+  );
+  expect(within(menu).getByRole('menuitem', { name: 'Income or expense' })).toHaveAttribute(
+    'href',
+    '/portfolio/cash/movements?create=1&portfolio=p-second',
+  );
+  expect(within(menu).getByRole('menuitem', { name: 'Transfer' })).toHaveAttribute(
+    'href',
+    '/portfolio/cash/accounts?create=transfer&portfolio=p-second',
+  );
+  // Account-wide destinations stay unscoped.
+  expect(within(menu).getByRole('menuitem', { name: 'New portfolio' })).toHaveAttribute(
+    'href',
+    '/portfolios?create=1',
+  );
 });
 
 test('the command shortcut cannot mount a palette inside an inert modal background', async () => {

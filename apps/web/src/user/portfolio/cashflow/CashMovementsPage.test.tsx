@@ -97,11 +97,11 @@ const LEDGER: CashMovementsResponse = {
   sources: [],
 };
 
-function renderPage() {
+function renderPage(initialPath = '/portfolio/cash/movements') {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   render(
     <QueryClientProvider client={client}>
-      <MemoryRouter>
+      <MemoryRouter initialEntries={[initialPath]}>
         <CashMovementsPage />
       </MemoryRouter>
     </QueryClientProvider>,
@@ -144,6 +144,28 @@ describe('CashMovementsPage', () => {
     expect(await screen.findByRole('dialog', { name: 'Edit transaction' })).toHaveClass(
       'bt-dialog__panel--phone-sheet',
     );
+  });
+
+  test('honors the global create intent by opening the record dialog', async () => {
+    vi.mocked(listCashSources).mockResolvedValue({
+      sources: [
+        {
+          id: 'src-1',
+          name: 'Main',
+          type: 'bank',
+          isMain: true,
+          balanceEur: 1_000,
+          archivedAt: null,
+          createdAt: '2026-01-01T00:00:00.000Z',
+        },
+      ],
+    });
+    renderPage('/portfolio/cash/movements?create=1');
+
+    // The same dialog this page's own "Record transaction" button opens — the
+    // shell's "Income or expense" entry starts the real flow (#1071).
+    const dialog = await screen.findByRole('dialog', { name: 'Record transaction' });
+    expect(within(dialog).getByLabelText('What for')).toBeInTheDocument();
   });
 
   test('renders a tag read failure without hiding the movement ledger', async () => {

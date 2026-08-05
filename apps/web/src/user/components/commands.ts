@@ -1,4 +1,30 @@
 import type { IconName } from '../../ui/origin';
+import { ACTIVE_PORTFOLIO_PARAM } from '../portfolio/PortfolioSwitcher';
+
+/**
+ * Pin a link onto the portfolio the user is currently looking at. A global
+ * create action leaves the surface that carries `?portfolio=<id>`, so without
+ * this it lands on the DEFAULT portfolio — with a write dialog already open.
+ * Section navigation preserves the same param (`LocalNav`'s `preserveParams`,
+ * #322); this is that rule applied to the shell's create entries.
+ */
+export function withPortfolioScope(to: string, portfolioId: string | null | undefined): string {
+  if (!portfolioId) return to;
+  const params = new URLSearchParams(to.split('?')[1] ?? '');
+  params.set(ACTIVE_PORTFOLIO_PARAM, portfolioId);
+  return `${commandPath(to)}?${params.toString()}`;
+}
+
+/**
+ * The route part of a command target. Create entries carry an intent flag
+ * (`?create=…`), and the route matrix — the paranoid kill list above all — keys
+ * off pathnames, so every such check has to go through here: passing the whole
+ * link would silently miss `/portfolio/cash/movements` and surface a row that
+ * only redirects away.
+ */
+export function commandPath(to: string): string {
+  return to.split('?')[0] ?? to;
+}
 
 /**
  * The universal ⌘K command registry (PRODUCT_BLUEPRINT.md §4 "Global search /
@@ -20,6 +46,11 @@ export interface CommandEntry {
   extra?: readonly string[];
   /** Present in the structure, build lands later — rendered with the gold dot. */
   parked?: boolean;
+  /**
+   * The destination writes into ONE portfolio, so the link has to carry the
+   * active portfolio scope — see `withPortfolioScope`.
+   */
+  scoped?: boolean;
   /**
    * Rank (1 = first) in the palette's curated **Suggested** default state — the
    * handful of high-value entries an empty ⌘K offers before anything is typed.
@@ -261,7 +292,19 @@ export const COMMANDS: readonly CommandEntry[] = [
     group: 'create',
     icon: 'assets',
     extra: ['buy', 'sell', 'kauf', 'verkauf', 'transaction'],
+    scoped: true,
     suggested: 1,
+  },
+  {
+    // The standalone "record an income or expense" flow is `RecordCashDialog`,
+    // owned by the tagged ledger — the same dialog its own primary button and
+    // the cash overview open. The intent flag starts it there.
+    labelKey: 'create.cashFlow',
+    to: '/portfolio/cash/movements?create=1',
+    group: 'create',
+    icon: 'cash',
+    extra: ['cash flow', 'cashflow', 'income', 'expense', 'einnahme', 'ausgabe'],
+    scoped: true,
   },
   {
     labelKey: 'create.transfer',
@@ -269,6 +312,7 @@ export const COMMANDS: readonly CommandEntry[] = [
     group: 'create',
     icon: 'wallet',
     extra: ['cash transfer', 'umbuchung', 'überweisung'],
+    scoped: true,
   },
   {
     labelKey: 'create.blueprint',

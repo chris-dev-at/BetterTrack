@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
-import { Route, Routes } from 'react-router-dom';
+import { Route, Routes, useLocation } from 'react-router-dom';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
@@ -26,12 +26,19 @@ const NVDA: SearchResultItem = {
   isCustom: false,
 };
 
-function renderPalette(props: { isOpen: boolean; onClose?: () => void }) {
+/** Mirrors the live URL (path + search) so navigation tests can assert on it. */
+function LocationProbe() {
+  const location = useLocation();
+  return <div data-testid="location">{`${location.pathname}${location.search}`}</div>;
+}
+
+function renderPalette(props: { isOpen: boolean; onClose?: () => void }, initialPath = '/') {
   const qc = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const onClose = props.onClose ?? vi.fn();
   const utils = render(
     <QueryClientProvider client={qc}>
-      <MemoryRouter initialEntries={['/']}>
+      <MemoryRouter initialEntries={[initialPath]}>
+        <LocationProbe />
         <Routes>
           <Route path="/" element={<CmdKPalette isOpen={props.isOpen} onClose={onClose} />} />
           <Route path="/assets/:id" element={<div>Asset detail page</div>} />
@@ -364,6 +371,20 @@ describe('keyboard', () => {
 
     expect(await screen.findByText('Portfolio page')).toBeInTheDocument();
     expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  test('a portfolio-scoped create row keeps the portfolio the palette was opened over', async () => {
+    const user = userEvent.setup();
+    // The first suggested row is "Buy or sell" — a write into ONE portfolio.
+    renderPalette({ isOpen: true }, '/?portfolio=p-second');
+
+    await user.keyboard('{Enter}');
+
+    await waitFor(() =>
+      expect(screen.getByTestId('location')).toHaveTextContent(
+        '/portfolio?create=trade&portfolio=p-second',
+      ),
+    );
   });
 
   test('arrow keys walk every row in visual order and wrap', async () => {

@@ -7,7 +7,7 @@ import {
   useState,
   type MouseEvent as ReactMouseEvent,
 } from 'react';
-import { Link, NavLink, Outlet, useLocation } from 'react-router-dom';
+import { Link, NavLink, Outlet, useLocation, useSearchParams } from 'react-router-dom';
 
 import { useI18n } from '../../i18n';
 import { Brandmark, Wordmark } from '../../components/Wordmark';
@@ -17,8 +17,9 @@ import { cx } from '../../lib/cx';
 import { legalUrl, type LegalPage } from '../legal';
 import { useAuth } from '../AuthContext';
 import { useCompactShell, usePhoneShell } from '../hooks/useCompactShell';
-import { PortfolioSwitcher } from '../portfolio/PortfolioSwitcher';
+import { ACTIVE_PORTFOLIO_PARAM, PortfolioSwitcher } from '../portfolio/PortfolioSwitcher';
 import { useResolvedPrivacyMode, useResolvedPrivacyModeState } from '../vault/usePrivacyMode';
+import { isParanoidKilledPath } from '../vault/ui/ParanoidSurfaceGate';
 import { useVaultRuntime } from '../vault/VaultRuntimeProvider';
 import { VaultSyncChip } from '../vault/ui/VaultSyncChip';
 import { Avatar } from './Avatar';
@@ -30,6 +31,7 @@ import {
   useAskDockState,
 } from './askdock';
 import { CmdKPalette } from './CmdKPalette';
+import { commandPath, withPortfolioScope } from './commands';
 import { usePreservedSearch } from './LocalNav';
 import { NotificationBell } from './NotificationBell';
 import { isChildActive, SECTION_NAV, useRailNavChildren, type SectionKey } from './sectionNav';
@@ -491,8 +493,16 @@ export function AccountMenu({
   );
 }
 
-function CreateMenu() {
+/**
+ * The global "+ Create" menu. Every entry here starts a real flow on its
+ * destination (#1071) — an entry whose destination cannot run the flow does not
+ * belong in the menu at all.
+ *
+ * Exported for OriginShell.create.test.tsx only — nothing else may mount it.
+ */
+export function CreateMenu() {
   const { t } = useI18n();
+  const paranoid = useResolvedPrivacyMode() === 'paranoid';
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
@@ -522,12 +532,30 @@ function CreateMenu() {
     };
   }, [closeAndRestoreFocus, open]);
 
-  const items: ReadonlyArray<{ to: string; icon: IconName; labelKey: string }> = [
-    { to: '/portfolio?create=trade', icon: 'assets', labelKey: 'create.trade' },
+  // Portfolio-scoped create actions must open on the portfolio the user is
+  // looking at, not the default one (see `withPortfolioScope`) — the shell is
+  // the one surface these links leave from, so it is where the scope is added.
+  const [searchParams] = useSearchParams();
+  const activePortfolioId = searchParams.get(ACTIVE_PORTFOLIO_PARAM);
+
+  const allItems: ReadonlyArray<{
+    to: string;
+    icon: IconName;
+    labelKey: string;
+    scoped?: boolean;
+  }> = [
+    { to: '/portfolio?create=trade', icon: 'assets', labelKey: 'create.trade', scoped: true },
+    {
+      to: '/portfolio/cash/movements?create=1',
+      icon: 'cash',
+      labelKey: 'create.cashFlow',
+      scoped: true,
+    },
     {
       to: '/portfolio/cash/accounts?create=transfer',
       icon: 'wallet',
       labelKey: 'create.transfer',
+      scoped: true,
     },
     { to: '/workbench/blueprints/new', icon: 'layers', labelKey: 'create.blueprint' },
     { to: '/assets/watchlists?create=1', icon: 'star', labelKey: 'create.watchlist' },
@@ -535,6 +563,11 @@ function CreateMenu() {
     { to: '/workbench/blueprints/new', icon: 'sparkles', labelKey: 'create.idea' },
     { to: '/portfolios?create=1', icon: 'portfolios', labelKey: 'create.portfolio' },
   ];
+
+  // The cash ledger is one of the surfaces paranoid mode kills, so its create
+  // entry would only bounce off `ParanoidNavigationGate` — the palette drops
+  // killed destinations the same way.
+  const items = allItems.filter((item) => !paranoid || !isParanoidKilledPath(commandPath(item.to)));
 
   return (
     <div className="relative" ref={rootRef}>
@@ -564,7 +597,7 @@ function CreateMenu() {
               key={item.labelKey}
               onClick={closeAndRestoreFocus}
               role="menuitem"
-              to={item.to}
+              to={item.scoped ? withPortfolioScope(item.to, activePortfolioId) : item.to}
             >
               <Icon name={item.icon} size={15} />
               {t(item.labelKey)}

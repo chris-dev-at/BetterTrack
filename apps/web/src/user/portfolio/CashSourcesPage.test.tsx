@@ -402,9 +402,12 @@ describe('CashSourcesPage', () => {
   test('honors the global transfer intent by opening the transfer dialog', async () => {
     renderPage('/portfolio/cash/accounts?create=transfer');
 
-    expect(
-      await screen.findByRole('dialog', { name: 'Transfer between sources' }),
-    ).toBeInTheDocument();
+    // The From/To selects, not just the title: the dialog renders the same
+    // heading over its "you need two sources" fallback, so asserting the form
+    // fields is what pins the real transfer flow.
+    const dialog = await screen.findByRole('dialog', { name: 'Transfer between sources' });
+    expect(within(dialog).getByLabelText('From')).toBeInTheDocument();
+    expect(within(dialog).getByLabelText('To')).toBeInTheDocument();
   });
 
   test('set-balance shows the app-computed delta before recording the movement', async () => {
