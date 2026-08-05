@@ -1075,7 +1075,10 @@ export const PARANOID_KILL_REGISTRY: readonly ParanoidKillRegistryEntry[] = [
     services: servicesFor('standingOrderExecution'),
     scopes: [],
     jobs: jobsFor('standingOrderExecution'),
-    webhookEventTypes: [],
+    // Server standing-order execution is disabled in paranoid mode, and a
+    // queued failure event carries an order id/label/period. Kill that webhook
+    // under the same capability so the transition lock cannot leak it later.
+    webhookEventTypes: ['standing_order.skipped'],
   },
   {
     capability: 'portfolioJobs',
@@ -1575,6 +1578,7 @@ export const PARANOID_WEBHOOK_SUBJECT_POLICIES = {
   'portfolio.changed': 'recipient',
   'dividend.event': 'recipient',
   'budget.exceeded': 'recipient',
+  'standing_order.skipped': 'recipient',
 } as const satisfies Partial<
   Record<DomainEvent['type'], 'recipient' | 'recipientAndActor' | 'mirrorPrincipals'>
 >;

@@ -21,12 +21,14 @@ import { badRequest, notFound } from '../../errors';
 import type { Logger } from '../../logger';
 import { ParanoidModeError, type ParanoidModeGuard } from '../account/paranoidEnforcement';
 import type { MarketDataService } from '../../providers';
+import type { StandingOrderSkipOutcome } from '../../events';
+import type { NotificationCenter } from '../notifications/notificationCenter';
 import type { PortfolioSnapshotService } from '../portfolio/portfolioSnapshots';
 import {
   calendarDayInTimezone,
   dueOccurrence,
   nextRunDate,
-  skippedPeriodCount,
+  skippedPeriods,
   type ScheduleSpec,
 } from './schedule';
 
@@ -70,6 +72,8 @@ export interface StandingOrderServiceDeps {
   cashSourceRepo: Pick<CashSourceRepository, 'getOrCreateMain'>;
   marketData: Pick<MarketDataService, 'getQuote'>;
   snapshots: Pick<PortfolioSnapshotService, 'invalidate'>;
+  /** Standard durable notification entry point for deferred/dropped periods. */
+  notify: NotificationCenter;
   /** Injectable clock (tests); defaults to the wall clock. */
   now?: () => number;
   /** Timezone for calendar-day resolution; defaults to {@link STANDING_ORDERS_SCAN_TZ}. */
@@ -138,6 +142,7 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
     cashSourceRepo,
     marketData,
     snapshots,
+    notify,
     logger,
   } = deps;
   const now = deps.now ?? Date.now;
@@ -329,12 +334,20 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
           // quote fetch on the common already-booked case.
           if (order.lastPeriodKey !== null && order.lastPeriodKey >= due) return;
 
-          const skipped = skippedPeriodCount(specOf(order), order.lastPeriodKey, due);
-          if (skipped > 0) {
+          const droppedPeriods = skippedPeriods(specOf(order), order.lastPeriodKey, due);
+          if (droppedPeriods.length > 0) {
             logger?.info(
-              { orderId: order.id, from: order.lastPeriodKey, due, skipped },
+              {
+                orderId: order.id,
+                from: order.lastPeriodKey,
+                due,
+                skipped: droppedPeriods.length,
+              },
               'standing order: catching up — booking newest period only, skipping older',
             );
+            for (const periodKey of droppedPeriods) {
+              await notifyFailure(order, periodKey, 'dropped', executedAt);
+            }
           }
 
           // Retriable pre-checks BEFORE claiming, so a failure never claims the
@@ -352,6 +365,7 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
               { orderId: order.id, kind: order.kind, due, err },
               'standing order: period deferred (provider failure / insufficient cash), will retry',
             );
+            await notifyFailure(order, due, 'deferred', executedAt);
             return;
           }
 
@@ -370,6 +384,7 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
               { orderId: order.id, kind: order.kind, due, err },
               'standing order: booking failed AFTER claim; period will not retry',
             );
+            await notifyFailure(order, due, 'booking_failed', executedAt);
             return;
           }
 
@@ -401,6 +416,24 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
       return result;
     },
   };
+
+  /** Emit one idempotent, matrix-routed notice without affecting booking semantics. */
+  async function notifyFailure(
+    order: StandingOrderWithAsset,
+    periodKey: string,
+    outcome: StandingOrderSkipOutcome,
+    occurredAt: Date,
+  ): Promise<void> {
+    await notify.emit({
+      type: 'standing_order.skipped',
+      userId: order.userId,
+      standingOrderId: order.id,
+      periodKey,
+      outcome,
+      orderLabel: order.label?.trim() || order.assetSymbol,
+      occurredAt: occurredAt.toISOString(),
+    });
+  }
 
   /** Fetch the current native-currency quote price for a buy (throws on failure). */
   async function resolveQuotePrice(order: StandingOrderWithAsset): Promise<number> {

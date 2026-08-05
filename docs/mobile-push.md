@@ -162,39 +162,40 @@ channels (`apps/api/src/services/notifications/notificationDispatcher.ts:584–5
 
 ### 3.1. Canonical notification types and FCM `data` keys
 
-`packages/contracts/src/notifications.ts` defines the 25-member
+`packages/contracts/src/notifications.ts` defines the 26-member
 `NOTIFICATION_TYPES` taxonomy. The dispatcher’s `render(...)` function is the
 sole author of the per-type keys; `fcm.ts` then adds `type` to every sent
 payload. The table is therefore the complete **pre-merge** data contract
 (`apps/api/src/services/notifications/notificationDispatcher.ts:439–723`).
 
-| `type`                         | Trigger                                                 | FCM `data` keys before `type` is merged                    |
-| ------------------------------ | ------------------------------------------------------- | ---------------------------------------------------------- |
-| `friend.request`               | Someone sent the user a friend request                  | `requestId`                                                |
-| `friend.accepted`              | A friend request the user sent was accepted             | `requestId`                                                |
-| `portfolio.shared`             | A friend shared a portfolio with the user               | `portfolioId`                                              |
-| `watchlist.shared`             | A friend shared a watchlist with the user               | `watchlistId`                                              |
-| `conglomerate.shared`          | A friend shared a conglomerate with the user            | `conglomerateId`                                           |
-| `friend.activity`              | A friend's activity (buy/sell/watchlist add)            | `itemKind`, `itemId`, `username` (the actor's public slug) |
-| `follow.published`             | A followed user newly published an item                 | `itemKind`, `itemId`, `username` (the actor's public slug) |
-| `follow.alert.created`         | A followed user created a price alert                   | `alertId`, `assetId`                                       |
-| `follow.alert.fired`           | A followed user's alert fired                           | `alertId`, `assetId`                                       |
-| `account.invite`               | Account invitation                                      | _(not dispatcher/FCM-dispatched; email-only)_              |
-| `account.temp_password`        | An admin reset the user's password                      | _(none)_                                                   |
-| `account.data_export`          | A requested account-data export is ready                | _(none)_                                                   |
-| `alert.triggered`              | The user's own price alert fired                        | `alertId`, `assetId`                                       |
-| `earnings.reminder`            | A held asset's earnings date is approaching             | `assetId`                                                  |
-| `chat.message`                 | New chat message                                        | `conversationId`, `messageId`                              |
-| `dividend.event`               | A held asset's upcoming ex-date                         | `assetId`                                                  |
-| `budget.exceeded`              | A category budget exceeded its monthly target           | `categoryId`, `period`                                     |
-| `mirror.invite`                | Invitation to a MIRRORCHAIN group portfolio             | `chainId`, `inviteId`                                      |
-| `mirror.member_joined`         | A member joined a MIRRORCHAIN group portfolio           | `chainId`                                                  |
-| `mirror.member_left`           | A member left a MIRRORCHAIN group portfolio             | `chainId`                                                  |
-| `mirror.member_removed`        | A member was removed from a MIRRORCHAIN group portfolio | `chainId`                                                  |
-| `mirror.removed`               | The recipient was removed from a MIRRORCHAIN            | `chainId`                                                  |
-| `mirror.ownership_transferred` | MIRRORCHAIN ownership changed                           | `chainId`                                                  |
-| `mirror.chain_dissolved`       | A MIRRORCHAIN group portfolio was dissolved             | `chainId`                                                  |
-| `mirror.sync_stalled`          | A MIRRORCHAIN copy needs a manual retry                 | `chainId`                                                  |
+| `type`                         | Trigger                                                  | FCM `data` keys before `type` is merged                    |
+| ------------------------------ | -------------------------------------------------------- | ---------------------------------------------------------- |
+| `friend.request`               | Someone sent the user a friend request                   | `requestId`                                                |
+| `friend.accepted`              | A friend request the user sent was accepted              | `requestId`                                                |
+| `portfolio.shared`             | A friend shared a portfolio with the user                | `portfolioId`                                              |
+| `watchlist.shared`             | A friend shared a watchlist with the user                | `watchlistId`                                              |
+| `conglomerate.shared`          | A friend shared a conglomerate with the user             | `conglomerateId`                                           |
+| `friend.activity`              | A friend's activity (buy/sell/watchlist add)             | `itemKind`, `itemId`, `username` (the actor's public slug) |
+| `follow.published`             | A followed user newly published an item                  | `itemKind`, `itemId`, `username` (the actor's public slug) |
+| `follow.alert.created`         | A followed user created a price alert                    | `alertId`, `assetId`                                       |
+| `follow.alert.fired`           | A followed user's alert fired                            | `alertId`, `assetId`                                       |
+| `account.invite`               | Account invitation                                       | _(not dispatcher/FCM-dispatched; email-only)_              |
+| `account.temp_password`        | An admin reset the user's password                       | _(none)_                                                   |
+| `account.data_export`          | A requested account-data export is ready                 | _(none)_                                                   |
+| `alert.triggered`              | The user's own price alert fired                         | `alertId`, `assetId`                                       |
+| `earnings.reminder`            | A held asset's earnings date is approaching              | `assetId`                                                  |
+| `chat.message`                 | New chat message                                         | `conversationId`, `messageId`                              |
+| `dividend.event`               | A held asset's upcoming ex-date                          | `assetId`                                                  |
+| `budget.exceeded`              | A category budget exceeded its monthly target            | `categoryId`, `period`                                     |
+| `mirror.invite`                | Invitation to a MIRRORCHAIN group portfolio              | `chainId`, `inviteId`                                      |
+| `mirror.member_joined`         | A member joined a MIRRORCHAIN group portfolio            | `chainId`                                                  |
+| `mirror.member_left`           | A member left a MIRRORCHAIN group portfolio              | `chainId`                                                  |
+| `mirror.member_removed`        | A member was removed from a MIRRORCHAIN group portfolio  | `chainId`                                                  |
+| `mirror.removed`               | The recipient was removed from a MIRRORCHAIN             | `chainId`                                                  |
+| `mirror.ownership_transferred` | MIRRORCHAIN ownership changed                            | `chainId`                                                  |
+| `mirror.chain_dissolved`       | A MIRRORCHAIN group portfolio was dissolved              | `chainId`                                                  |
+| `mirror.sync_stalled`          | A MIRRORCHAIN copy needs a manual retry                  | `chainId`                                                  |
+| `standing_order.skipped`       | A standing-order period was deferred, dropped, or failed | `standingOrderId`, `periodKey`, `outcome`                  |
 
 ### 3.2. `data` encoding
 
@@ -254,34 +255,35 @@ leave the user in) the notification inbox rather than manufacture a route from
 insufficient keys. In particular, `chainId` identifies a MIRRORCHAIN but is not
 a portfolio id.
 
-| `type`                         | Target / route                                              | Route key(s)                      | Fallback when a key cannot resolve |
-| ------------------------------ | ----------------------------------------------------------- | --------------------------------- | ---------------------------------- |
-| `alert.triggered`              | Asset detail: `/assets/{assetId}`                           | `assetId`                         | `/workbench/alerts`                |
-| `follow.alert.created`         | Asset detail: `/assets/{assetId}`                           | `assetId`                         | `/workbench/alerts`                |
-| `follow.alert.fired`           | Asset detail: `/assets/{assetId}`                           | `assetId`                         | `/workbench/alerts`                |
-| `friend.request`               | Friend requests: `/people#requests`                         | _(none)_                          | `/people`                          |
-| `friend.accepted`              | Friends: `/people`                                          | _(none)_                          | `/people`                          |
-| `portfolio.shared`             | Shared portfolio: `/people/shared/{portfolioId}`            | `portfolioId`                     | `/people`                          |
-| `watchlist.shared`             | Shared watchlist: `/people/shared/watchlists/{watchlistId}` | `watchlistId`                     | `/people`                          |
-| `conglomerate.shared`          | Shared conglomerate: `/people/shared/conglomerates/{id}`    | `conglomerateId`                  | `/people`                          |
-| `friend.activity`              | Actor profile: `/u/{username}`                              | `username` (`itemKind`, `itemId`) | `/people`                          |
-| `follow.published`             | Actor profile: `/u/{username}`                              | `username` (`itemKind`, `itemId`) | `/people`                          |
-| `chat.message`                 | DM thread: `/people/chat/c/{conversationId}`                | `conversationId`, `messageId`     | `/people/chat`                     |
-| `account.invite`               | Account settings: `/settings/account` (email-only)          | _(none)_                          | `/settings/account`                |
-| `account.temp_password`        | Security settings: `/settings/security`                     | _(none)_                          | `/settings/security`               |
-| `account.data_export`          | Account export block: `/settings/account`                   | _(none)_                          | `/settings/account`                |
-| `earnings.reminder`            | Asset detail: `/assets/{assetId}`                           | `assetId`                         | Notification inbox                 |
-| `dividend.event`               | Asset detail: `/assets/{assetId}`                           | `assetId`                         | Notification inbox                 |
-| `budget.exceeded`              | Notification inbox; never construct an expense URL          | `categoryId`, `period`            | Notification inbox                 |
-| `mirror.invite`                | Social MIRRORCHAIN invitation                               | `chainId`, `inviteId`             | Notification inbox                 |
-| `mirror.member_joined`         | Notification inbox / Social group context from `chainId`    | `chainId`                         | Notification inbox                 |
-| `mirror.member_left`           | Notification inbox / Social group context from `chainId`    | `chainId`                         | Notification inbox                 |
-| `mirror.member_removed`        | Notification inbox / Social group context from `chainId`    | `chainId`                         | Notification inbox                 |
-| `mirror.removed`               | Notification inbox                                          | `chainId`                         | Notification inbox                 |
-| `mirror.ownership_transferred` | Notification inbox / Social group context from `chainId`    | `chainId`                         | Notification inbox                 |
-| `mirror.chain_dissolved`       | Notification inbox                                          | `chainId`                         | Notification inbox                 |
-| `mirror.sync_stalled`          | Notification inbox / Social group context from `chainId`    | `chainId`                         | Notification inbox                 |
-| `notifications.digest`         | Notification inbox; it has no individual-item route         | `cadence`                         | Notification inbox                 |
+| `type`                         | Target / route                                                          | Route key(s)                              | Fallback when a key cannot resolve                      |
+| ------------------------------ | ----------------------------------------------------------------------- | ----------------------------------------- | ------------------------------------------------------- |
+| `alert.triggered`              | Asset detail: `/assets/{assetId}`                                       | `assetId`                                 | `/workbench/alerts`                                     |
+| `follow.alert.created`         | Asset detail: `/assets/{assetId}`                                       | `assetId`                                 | `/workbench/alerts`                                     |
+| `follow.alert.fired`           | Asset detail: `/assets/{assetId}`                                       | `assetId`                                 | `/workbench/alerts`                                     |
+| `friend.request`               | Friend requests: `/people#requests`                                     | _(none)_                                  | `/people`                                               |
+| `friend.accepted`              | Friends: `/people`                                                      | _(none)_                                  | `/people`                                               |
+| `portfolio.shared`             | Shared portfolio: `/people/shared/{portfolioId}`                        | `portfolioId`                             | `/people`                                               |
+| `watchlist.shared`             | Shared watchlist: `/people/shared/watchlists/{watchlistId}`             | `watchlistId`                             | `/people`                                               |
+| `conglomerate.shared`          | Shared conglomerate: `/people/shared/conglomerates/{id}`                | `conglomerateId`                          | `/people`                                               |
+| `friend.activity`              | Actor profile: `/u/{username}`                                          | `username` (`itemKind`, `itemId`)         | `/people`                                               |
+| `follow.published`             | Actor profile: `/u/{username}`                                          | `username` (`itemKind`, `itemId`)         | `/people`                                               |
+| `chat.message`                 | DM thread: `/people/chat/c/{conversationId}`                            | `conversationId`, `messageId`             | `/people/chat`                                          |
+| `account.invite`               | Account settings: `/settings/account` (email-only)                      | _(none)_                                  | `/settings/account`                                     |
+| `account.temp_password`        | Security settings: `/settings/security`                                 | _(none)_                                  | `/settings/security`                                    |
+| `account.data_export`          | Account export block: `/settings/account`                               | _(none)_                                  | `/settings/account`                                     |
+| `earnings.reminder`            | Asset detail: `/assets/{assetId}`                                       | `assetId`                                 | Notification inbox                                      |
+| `dividend.event`               | Asset detail: `/assets/{assetId}`                                       | `assetId`                                 | Notification inbox                                      |
+| `budget.exceeded`              | Notification inbox; never construct an expense URL                      | `categoryId`, `period`                    | Notification inbox                                      |
+| `mirror.invite`                | Social MIRRORCHAIN invitation                                           | `chainId`, `inviteId`                     | Notification inbox                                      |
+| `mirror.member_joined`         | Notification inbox / Social group context from `chainId`                | `chainId`                                 | Notification inbox                                      |
+| `mirror.member_left`           | Notification inbox / Social group context from `chainId`                | `chainId`                                 | Notification inbox                                      |
+| `mirror.member_removed`        | Notification inbox / Social group context from `chainId`                | `chainId`                                 | Notification inbox                                      |
+| `mirror.removed`               | Notification inbox                                                      | `chainId`                                 | Notification inbox                                      |
+| `mirror.ownership_transferred` | Notification inbox / Social group context from `chainId`                | `chainId`                                 | Notification inbox                                      |
+| `mirror.chain_dissolved`       | Notification inbox                                                      | `chainId`                                 | Notification inbox                                      |
+| `mirror.sync_stalled`          | Notification inbox / Social group context from `chainId`                | `chainId`                                 | Notification inbox                                      |
+| `standing_order.skipped`       | Standing order: `/workbench/forecasts#standing-order-{standingOrderId}` | `standingOrderId`, `periodKey`, `outcome` | `/workbench/forecasts#forecast-standing-orders-heading` |
+| `notifications.digest`         | Notification inbox; it has no individual-item route                     | `cadence`                                 | Notification inbox                                      |
 
 Mobile clients SHOULD preserve the listed no-dead-tap fallbacks. The inbox-first
 rows deliberately do not invent a URL from the dispatcher keys.

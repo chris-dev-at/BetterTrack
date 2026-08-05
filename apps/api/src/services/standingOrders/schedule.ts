@@ -171,16 +171,31 @@ export function skippedPeriodCount(
   throughInclusive: string,
   cap = 400,
 ): number {
+  return skippedPeriods(spec, afterExclusive, throughInclusive, cap).length;
+}
+
+/**
+ * The concrete occurrence keys counted by {@link skippedPeriodCount}. The
+ * execution engine uses these identities only to report which periods its
+ * existing newest-only catch-up rule dropped; returning them does not change
+ * which occurrence is selected or booked.
+ */
+export function skippedPeriods(
+  spec: ScheduleSpec,
+  afterExclusive: string | null,
+  throughInclusive: string,
+  cap = 400,
+): string[] {
   const lower = afterExclusive !== null && afterExclusive >= spec.startDate ? afterExclusive : null;
   let cursor = lower === null ? prevDay(spec.startDate) : lower;
-  let count = 0;
-  while (count < cap) {
+  const periods: string[] = [];
+  while (periods.length < cap) {
     const next = firstAfter(spec, cursor);
     if (next >= throughInclusive) break;
     cursor = next;
-    count += 1;
+    periods.push(next);
   }
-  return count;
+  return periods;
 }
 
 /**

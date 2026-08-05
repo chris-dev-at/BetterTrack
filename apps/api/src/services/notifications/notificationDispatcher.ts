@@ -22,6 +22,7 @@ import type {
   FriendRequestEvent,
   MirrorNotificationEvent,
   PortfolioSharedEvent,
+  StandingOrderSkippedEvent,
   WatchlistSharedEvent,
 } from '../../events';
 import type {
@@ -98,6 +99,7 @@ export type DispatchableEvent =
   | ChatMessageEvent
   | DividendEventNotice
   | BudgetExceededEvent
+  | StandingOrderSkippedEvent
   | MirrorNotificationEvent;
 
 /** The `type` strings the dispatcher accepts (guards the job payload). */
@@ -126,6 +128,7 @@ export const DISPATCHABLE_EVENT_TYPES = [
   'mirror.ownership_transferred',
   'mirror.chain_dissolved',
   'mirror.sync_stalled',
+  'standing_order.skipped',
 ] as const satisfies ReadonlyArray<DispatchableEvent['type']>;
 
 export function isDispatchableEvent(event: { type: string }): event is DispatchableEvent {
@@ -216,6 +219,11 @@ function eventKeyFor(event: DispatchableEvent): string {
       // at the dispatch layer so a redelivered/duplicated emit no-ops — exactly
       // one alert per budget per month.
       return `budget.exceeded:${event.budgetId}:${event.period}`;
+    case 'standing_order.skipped':
+      // A retriable defer may be observed by every daily retry, while the same
+      // period can later be permanently dropped. Fold the outcome into the key
+      // so retries dedupe without swallowing that later state transition.
+      return `standing_order.skipped:${event.standingOrderId}:${event.periodKey}:${event.outcome}`;
     case 'mirror.invite':
     case 'mirror.member_joined':
     case 'mirror.member_left':
@@ -345,6 +353,32 @@ function friendActivityBody(event: FriendActivityEvent): string {
       return `${event.actorUsername} sold ${event.assetSymbol}.`;
     case 'watchlist_add':
       return `${event.actorUsername} added ${event.assetSymbol} to a shared watchlist.`;
+  }
+}
+
+/** Standing-order failure copy (EN — inbox strings are stored rendered). */
+function standingOrderSkippedCopy(event: StandingOrderSkippedEvent): {
+  title: string;
+  body: string;
+} {
+  const order = event.orderLabel ? `“${event.orderLabel}”` : 'this standing order';
+  const occurrence = `The ${event.periodKey} occurrence for ${order}`;
+  switch (event.outcome) {
+    case 'deferred':
+      return {
+        title: 'Standing order deferred',
+        body: `${occurrence} could not be booked. BetterTrack will retry it.`,
+      };
+    case 'dropped':
+      return {
+        title: 'Standing order period skipped',
+        body: `${occurrence} was skipped when the next period became due.`,
+      };
+    case 'booking_failed':
+      return {
+        title: 'Standing order booking failed',
+        body: `${occurrence} could not be recorded and will not be retried.`,
+      };
   }
 }
 
@@ -692,6 +726,27 @@ export function createNotificationDispatcher(
           data: { categoryId: event.categoryId, period: event.period },
         };
       }
+      case 'standing_order.skipped': {
+        const { title, body } = standingOrderSkippedCopy(event);
+        return {
+          eventKey,
+          title,
+          body,
+          payload: {
+            eventKey,
+            standingOrderId: event.standingOrderId,
+            periodKey: event.periodKey,
+            outcome: event.outcome,
+          },
+          // The order id lands on the exact Forecast row; period/outcome let a
+          // native client preserve context when it opens that order.
+          data: {
+            standingOrderId: event.standingOrderId,
+            periodKey: event.periodKey,
+            outcome: event.outcome,
+          },
+        };
+      }
       case 'mirror.invite':
       case 'mirror.member_joined':
       case 'mirror.member_left':
@@ -822,6 +877,17 @@ export function createNotificationDispatcher(
         // In-app / push only (its email cell is locked in the settings grid): a
         // budget alert is a lightweight nudge and the dashboards are the system
         // of record — no localized budget email template ships (V5-P9, issue 3/3).
+        return;
+      case 'standing_order.skipped':
+        await email.sendStandingOrderSkipped({
+          to,
+          userId,
+          standingOrderId: event.standingOrderId,
+          orderLabel: event.orderLabel,
+          periodKey: event.periodKey,
+          outcome: event.outcome,
+          locale,
+        });
         return;
       case 'mirror.invite':
       case 'mirror.member_joined':

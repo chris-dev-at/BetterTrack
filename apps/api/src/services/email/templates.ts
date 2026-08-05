@@ -10,6 +10,7 @@
  */
 
 import { notificationCopy, resolveEmailLocale } from './emailI18n';
+import type { StandingOrderSkipOutcome } from '../../events';
 
 export interface EmailContent {
   subject: string;
@@ -511,6 +512,45 @@ export function dividendEventEmail(params: {
       { lang: loc, footer: copy.footer },
     ),
     text: [body, '', `${c.button}: ${appUrl}`].join('\n'),
+  };
+}
+
+/** Localized standing-order defer/drop/tombstone notice (#1118). */
+export function standingOrderSkippedEmail(params: {
+  standingOrderId: string;
+  orderLabel: string | null;
+  periodKey: string;
+  outcome: StandingOrderSkipOutcome;
+  appUrl: string;
+  locale?: string;
+}): EmailContent {
+  const { standingOrderId, orderLabel, periodKey, outcome, appUrl, locale } = params;
+  const loc = resolveEmailLocale(locale);
+  const copy = notificationCopy(loc);
+  const standingOrder = copy.standingOrderSkipped;
+  const byOutcome: Record<StandingOrderSkipOutcome, { subject: string; body: string }> = {
+    deferred: standingOrder.deferred,
+    dropped: standingOrder.dropped,
+    booking_failed: standingOrder.bookingFailed,
+  };
+  const c = byOutcome[outcome];
+  const values = {
+    order: orderLabel?.trim() || standingOrder.orderFallback,
+    period: periodKey,
+  };
+  const baseUrl = appUrl.replace(/\/$/, '');
+  const orderUrl = `${baseUrl}/workbench/forecasts#standing-order-${encodeURIComponent(standingOrderId)}`;
+  return {
+    subject: fillText(c.subject, values),
+    html: layout(
+      standingOrder.heading,
+      [
+        `<p>${fillHtml(c.body, values)}</p>`,
+        `<p style="padding:8px 0 0;">${button(orderUrl, standingOrder.button)}</p>`,
+      ].join(''),
+      { lang: loc, footer: copy.footer },
+    ),
+    text: [fillText(c.body, values), '', `${standingOrder.button}: ${orderUrl}`].join('\n'),
   };
 }
 

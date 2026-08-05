@@ -5,6 +5,7 @@ import {
   friendAcceptedEmail,
   friendRequestEmail,
   portfolioSharedEmail,
+  standingOrderSkippedEmail,
 } from '../templates';
 
 const APP_URL = 'https://bt.example.test';
@@ -39,6 +40,22 @@ describe('notification email templates (§6.10)', () => {
     const email = friendRequestEmail({ actorUsername: '<script>x</script>', appUrl: APP_URL });
     expect(email.html).not.toContain('<script>');
     expect(email.html).toContain('&lt;script&gt;');
+  });
+
+  it('standingOrderSkippedEmail localizes the outcome and deep-links to the exact order', () => {
+    const email = standingOrderSkippedEmail({
+      standingOrderId: 'so-1',
+      orderLabel: 'Netflix <bill>',
+      periodKey: '2026-04-01',
+      outcome: 'dropped',
+      appUrl: APP_URL,
+      locale: 'de',
+    });
+    expect(email.subject).toBe('Eine Dauerauftrags-Ausführung wurde übersprungen');
+    expect(email.html).toContain('<html lang="de">');
+    expect(email.html).toContain('Netflix &lt;bill&gt;');
+    expect(email.html).toContain(`${APP_URL}/workbench/forecasts#standing-order-so-1`);
+    expect(email.text).toContain('2026-04-01');
   });
 });
 

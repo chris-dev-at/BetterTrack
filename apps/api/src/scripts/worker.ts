@@ -433,6 +433,7 @@ const standingOrders = createStandingOrderService({
   cashSourceRepo: createCashSourceRepository(db),
   marketData,
   snapshots,
+  notify,
   paranoid: paranoidGuard,
   isParanoidForProcessing: standingOrderParanoidFilter,
   runIfAllowedForProcessing: standingOrderParanoidFilter.runAllowed,

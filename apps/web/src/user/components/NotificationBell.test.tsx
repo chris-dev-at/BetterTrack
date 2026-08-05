@@ -403,6 +403,11 @@ describe('NotificationBell', () => {
     },
     { type: 'account.temp_password', payload: {}, href: '/settings/security' },
     { type: 'account.invite', payload: {}, href: '/settings/account' },
+    {
+      type: 'standing_order.skipped',
+      payload: { standingOrderId: 'so-1', periodKey: '2026-04-01', outcome: 'dropped' },
+      href: '/workbench/forecasts#standing-order-so-1',
+    },
     { type: 'account.notice', payload: {}, href: '/settings/notifications' },
   ];
 

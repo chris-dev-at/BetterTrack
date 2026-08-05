@@ -4,11 +4,20 @@ import type { Application } from 'express';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import {
+  notificationListResponseSchema,
   SOURCE_TAG_STANDING_ORDER,
   standingOrderRunListResponseSchema,
 } from '@bettertrack/contracts';
 
 import * as schema from '../../../data/schema';
+import { createAssetRepository } from '../../../data/repositories/assetRepository';
+import { createCashMovementRepository } from '../../../data/repositories/cashMovementRepository';
+import { createCashSourceRepository } from '../../../data/repositories/cashSourceRepository';
+import { createPortfolioRepository } from '../../../data/repositories/portfolioRepository';
+import { createStandingOrderRepository } from '../../../data/repositories/standingOrderRepository';
+import { createTransactionRepository } from '../../../data/repositories/transactionRepository';
+import type { DispatchableEvent } from '../../notifications/notificationDispatcher';
+import { createStandingOrderService } from '../standingOrderService';
 import { createStubMarketData } from '../../../testing/marketDataStubs';
 import { createTestApp, type TestHarness } from '../../../testing/createTestApp';
 
@@ -119,6 +128,14 @@ function runPeriodKeys() {
   return harness.db
     .select({ key: schema.standingOrderRuns.periodKey })
     .from(schema.standingOrderRuns);
+}
+
+async function standingOrderNotifications(agent: Agent) {
+  const res = await agent.get('/api/v1/notifications');
+  expect(res.status).toBe(200);
+  return notificationListResponseSchema
+    .parse(res.body)
+    .items.filter((item) => item.type === 'standing_order.skipped');
 }
 
 async function depositCash(agent: Agent, pid: string, amountEur: number) {
@@ -423,7 +440,7 @@ describe('standing orders — provider failure on a buy', () => {
   it('books nothing on quote failure, then retries the period exactly once', async () => {
     const { agent, pid } = await setup();
     const assetId = await seedAsset('BBB');
-    await createOrder(agent, {
+    const created = await createOrder(agent, {
       portfolioId: pid,
       kind: 'buy-asset',
       assetId,
@@ -438,6 +455,16 @@ describe('standing orders — provider failure on a buy', () => {
     expect(failed.deferred).toBe(1);
     expect(await txnRows(pid)).toHaveLength(0);
     expect(await runPeriodKeys()).toHaveLength(0); // no claim was made
+    expect(await standingOrderNotifications(agent)).toEqual([
+      expect.objectContaining({
+        type: 'standing_order.skipped',
+        payload: expect.objectContaining({
+          standingOrderId: created.body.id,
+          periodKey: '2026-04-01',
+          outcome: 'deferred',
+        }),
+      }),
+    ]);
 
     quote.mode = 'ok';
     expect((await run('2026-04-01T12:00:00Z')).booked).toBe(1);
@@ -489,5 +516,94 @@ describe('standing orders — cash-deduct never overdraws', () => {
     const [m] = await cashRows(pid, SOURCE_TAG_STANDING_ORDER);
     expect(m!.kind).toBe('withdrawal');
     expect(Number(m!.amountEur)).toBe(-20);
+  });
+
+  it("notifies when April's deferred period drops at the May anchor, then books May", async () => {
+    const { agent, pid } = await setup();
+    const created = await createOrder(agent, {
+      portfolioId: pid,
+      kind: 'cash-deduct',
+      amount: 20,
+      label: 'Netflix',
+      cadence: 'monthly',
+      anchorDay: 1,
+      startDate: '2026-04-01',
+    });
+
+    // April defers. At the May anchor, newest-only catch-up permanently drops
+    // April and May itself remains deferred until cash arrives on May 3.
+    expect((await run('2026-04-01T12:00:00Z')).deferred).toBe(1);
+    expect((await run('2026-05-01T12:00:00Z')).deferred).toBe(1);
+    await depositCash(agent, pid, 100);
+    expect((await run('2026-05-03T12:00:00Z')).booked).toBe(1);
+
+    const dropped = (await standingOrderNotifications(agent)).filter(
+      (item) =>
+        (item.payload as { outcome?: unknown } | undefined)?.outcome === 'dropped' &&
+        (item.payload as { periodKey?: unknown } | undefined)?.periodKey === '2026-04-01',
+    );
+    expect(dropped).toHaveLength(1);
+    expect(dropped[0]).toMatchObject({
+      type: 'standing_order.skipped',
+      payload: {
+        standingOrderId: created.body.id,
+        periodKey: '2026-04-01',
+        outcome: 'dropped',
+      },
+    });
+    expect((await runPeriodKeys()).map((row) => row.key)).toEqual(['2026-05-01']);
+  });
+});
+
+describe('standing orders — post-claim booking tombstone', () => {
+  it('notifies after a booking failure while leaving the claimed period tombstoned', async () => {
+    const { user, agent, pid } = await setup();
+    const created = await createOrder(agent, {
+      portfolioId: pid,
+      kind: 'cash-add',
+      amount: 100,
+      label: 'Salary',
+      cadence: 'daily',
+      startDate: '2026-04-01',
+    });
+    const emitted: DispatchableEvent[] = [];
+    const cashMovementRepo = createCashMovementRepository(harness.db);
+    const service = createStandingOrderService({
+      repo: createStandingOrderRepository(harness.db),
+      portfolioRepo: createPortfolioRepository(harness.db),
+      assetRepo: createAssetRepository(harness.db),
+      transactionRepo: createTransactionRepository(harness.db),
+      cashMovementRepo: {
+        ...cashMovementRepo,
+        async insert() {
+          throw new Error('injected booking failure');
+        },
+      },
+      cashSourceRepo: createCashSourceRepository(harness.db),
+      marketData: createStubMarketData(),
+      snapshots: { async invalidate() {} },
+      notify: {
+        async emit(event) {
+          emitted.push(event);
+          return true;
+        },
+      },
+    });
+
+    const result = await service.processDueOrders({ now: Date.parse('2026-04-01T12:00:00Z') });
+
+    expect(result).toMatchObject({ booked: 0, deferred: 0 });
+    expect((await runPeriodKeys()).map((row) => row.key)).toEqual(['2026-04-01']);
+    expect(emitted).toEqual([
+      {
+        type: 'standing_order.skipped',
+        userId: user.id,
+        standingOrderId: created.body.id,
+        periodKey: '2026-04-01',
+        outcome: 'booking_failed',
+        orderLabel: 'Salary',
+        occurredAt: '2026-04-01T12:00:00.000Z',
+      },
+    ]);
   });
 });

@@ -139,7 +139,7 @@ function StandingOrderRow({
   const paused = order.status === 'paused';
 
   return (
-    <li className="flex flex-col gap-2 bt-panel p-3">
+    <li id={`standing-order-${order.id}`} className="flex flex-col gap-2 bt-panel p-3">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0 flex flex-col gap-0.5">
           <span className="flex flex-wrap items-center gap-2">

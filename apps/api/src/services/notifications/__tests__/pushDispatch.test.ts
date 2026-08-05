@@ -90,6 +90,32 @@ describe('push channels through the matrix (#368)', () => {
     expect(webSent).toHaveLength(1);
   });
 
+  it('carries the standing-order route keys and outcome in both push channels', async () => {
+    const user = await harness.seedUser({ email: 'orders@bt.test', username: 'orders' });
+    await dispatcher.dispatch({
+      type: 'standing_order.skipped',
+      userId: user.id,
+      standingOrderId: '00000000-0000-7000-8000-00000000a111',
+      periodKey: '2026-04-01',
+      outcome: 'dropped',
+      orderLabel: 'Netflix',
+      occurredAt: '2026-05-01T10:00:00.000Z',
+    });
+
+    const expected = {
+      type: 'standing_order.skipped',
+      data: {
+        standingOrderId: '00000000-0000-7000-8000-00000000a111',
+        periodKey: '2026-04-01',
+        outcome: 'dropped',
+      },
+    };
+    expect(fcmSent).toHaveLength(1);
+    expect(fcmSent[0]!.message).toMatchObject(expected);
+    expect(webSent).toHaveLength(1);
+    expect(webSent[0]!.message).toMatchObject(expected);
+  });
+
   it('routes push and webpush independently via the matrix', async () => {
     const user = await harness.seedUser({ email: 'p@bt.test', username: 'pushee' });
     await db.insert(notificationSettings).values([

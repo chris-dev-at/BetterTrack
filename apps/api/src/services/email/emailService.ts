@@ -1,4 +1,5 @@
 import type { AppConfig } from '../../config/env';
+import type { StandingOrderSkipOutcome } from '../../events';
 import type { EmailLogRepository } from '../../data/repositories/emailLogRepository';
 import type { Logger } from '../../logger';
 import { AuditAction, type AuditService } from '../audit/auditService';
@@ -22,6 +23,7 @@ import {
   portfolioSharedEmail,
   registrationApprovedEmail,
   registrationRejectedEmail,
+  standingOrderSkippedEmail,
   tempPasswordEmail,
   testEmail,
   twoFactorCodeEmail,
@@ -170,6 +172,16 @@ export interface EmailService {
     body: string;
     locale?: string;
   }): Promise<EmailSendResult>;
+  /** Notification email: a standing-order period deferred, dropped, or tombstoned (#1118). */
+  sendStandingOrderSkipped(params: {
+    to: string;
+    userId: string;
+    standingOrderId: string;
+    orderLabel: string | null;
+    periodKey: string;
+    outcome: StandingOrderSkipOutcome;
+    locale?: string;
+  }): Promise<EmailSendResult>;
   /** Notification email: someone `userId` follows created a price alert (#455). */
   sendFollowAlertCreated(params: {
     to: string;
@@ -276,6 +288,7 @@ type EmailTemplateKind =
   | 'friend_activity'
   | 'follow_published'
   | 'dividend_event'
+  | 'standing_order_skipped'
   | 'follow_alert_created'
   | 'follow_alert_fired'
   | 'alert_triggered'
@@ -488,6 +501,29 @@ export function createEmailService(deps: EmailServiceDeps): EmailService {
         'dividend_event',
         to,
         dividendEventEmail({ body, appUrl: config.appOrigin, locale }),
+        { userId },
+      ),
+
+    sendStandingOrderSkipped: ({
+      to,
+      userId,
+      standingOrderId,
+      orderLabel,
+      periodKey,
+      outcome,
+      locale,
+    }) =>
+      deliver(
+        'standing_order_skipped',
+        to,
+        standingOrderSkippedEmail({
+          standingOrderId,
+          orderLabel,
+          periodKey,
+          outcome,
+          appUrl: config.appOrigin,
+          locale,
+        }),
         { userId },
       ),
 

@@ -567,6 +567,9 @@
         "budgetExceeded": {
           "label": "Budget alerts"
         },
+        "standingOrderSkipped": {
+          "label": "Standing order problems"
+        },
         "mirrorInvite": {
           "label": "Group portfolio invites"
         },
@@ -977,6 +980,7 @@
           "chatMessage": "New chat message",
           "dividendEvent": "Upcoming dividend",
           "budgetExceeded": "Budget exceeded",
+          "standingOrderSkipped": "Standing order period not booked",
           "mirrorInvite": "Group portfolio invite",
           "mirrorMemberJoined": "Group portfolio member joined",
           "mirrorMemberLeft": "Group portfolio member left",
@@ -4045,6 +4049,7 @@
         "followAlertFired": "follow.alert.fired",
         "dividendEvent": "dividend.event",
         "budgetExceeded": "budget.exceeded",
+        "standingOrderSkipped": "standing_order.skipped",
         "mirrorInvite": "mirror.invite",
         "mirrorMemberJoined": "mirror.member_joined",
         "mirrorMemberLeft": "mirror.member_left",

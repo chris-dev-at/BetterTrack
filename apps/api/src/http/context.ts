@@ -1445,6 +1445,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     cashSourceRepo,
     marketData,
     snapshots,
+    notify,
     logger,
     paranoid: paranoidGuard,
   });

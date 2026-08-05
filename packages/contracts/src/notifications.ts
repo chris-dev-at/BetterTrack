@@ -55,6 +55,11 @@ export const NOTIFICATION_TYPES = [
   'mirror.ownership_transferred',
   'mirror.chain_dissolved',
   'mirror.sync_stalled',
+  // Standing-order execution failures (#1118): one family covers a retriable
+  // defer, a period dropped when the next anchor arrives, and an at-most-once
+  // booking tombstone. A normal (non-opt-in) type with the standard matrix
+  // defaults; the event payload identifies the order + affected period.
+  'standing_order.skipped',
 ] as const;
 export type NotificationType = (typeof NOTIFICATION_TYPES)[number];
 export const notificationTypeSchema = z.enum(NOTIFICATION_TYPES);
@@ -101,7 +106,7 @@ export const NOTIFICATION_CATEGORIES = [
     ],
   },
   { key: 'chat', types: ['chat.message'] },
-  { key: 'alerts', types: ['alert.triggered'] },
+  { key: 'alerts', types: ['alert.triggered', 'standing_order.skipped'] },
   // Expense budgets (§13.5 V5-P9): a per-category monthly target was exceeded.
   // Its own compact category so the setting sits beside the expense area's other
   // controls rather than muddling the price-alert row.

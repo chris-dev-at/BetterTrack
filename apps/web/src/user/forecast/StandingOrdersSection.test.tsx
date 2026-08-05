@@ -102,6 +102,10 @@ describe('StandingOrdersSection', () => {
     renderSection();
 
     expect(await screen.findByText('VWCE.DE')).toBeInTheDocument();
+    expect(screen.getByText('VWCE.DE').closest('li')).toHaveAttribute(
+      'id',
+      'standing-order-so-buy',
+    );
     // The row's compact description bundles amount + cadence in one line;
     // match on a substring so the ` · ` separator between them is ignored.
     expect(screen.getByText(/Buy 3 × VWCE\.DE/)).toBeInTheDocument();

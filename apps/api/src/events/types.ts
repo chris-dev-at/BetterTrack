@@ -356,6 +356,31 @@ export interface BudgetExceededEvent {
   occurredAt: string;
 }
 
+/** Why one scheduled standing-order occurrence did not become a ledger row. */
+export type StandingOrderSkipOutcome = 'deferred' | 'dropped' | 'booking_failed';
+
+/**
+ * `standing_order.skipped` → a scheduled occurrence could not be recorded
+ * (#1118). One type covers the three points at which the engine can make that
+ * decision: a retriable pre-claim defer, the previous occurrence being dropped
+ * when a newer anchor becomes due, and a post-claim booking failure whose claim
+ * remains as an at-most-once tombstone. The dispatcher dedupes per
+ * (recipient, order, period, outcome), so daily retries surface once while a
+ * later permanent drop remains a distinct notice.
+ */
+export interface StandingOrderSkippedEvent {
+  type: 'standing_order.skipped';
+  /** Recipient — the standing order's owner. */
+  userId: string;
+  standingOrderId: string;
+  /** Scheduled occurrence (`YYYY-MM-DD`) affected by this notice. */
+  periodKey: string;
+  outcome: StandingOrderSkipOutcome;
+  /** User label or asset symbol for copy; null falls back to "this standing order". */
+  orderLabel: string | null;
+  occurredAt: string;
+}
+
 /**
  * Ephemeral realtime-credential invalidation. Credential services publish this
  * after a session, personal key, OAuth grant, or whole account is invalidated;
@@ -440,6 +465,7 @@ export type DomainEvent =
   | ChatMessageEvent
   | DividendEventNotice
   | BudgetExceededEvent
+  | StandingOrderSkippedEvent
   | RealtimePrincipalInvalidatedEvent
   | MirrorNotificationEvent;
 
@@ -480,4 +506,5 @@ export const DOMAIN_EVENT_TYPES = [
   'mirror.ownership_transferred',
   'mirror.chain_dissolved',
   'mirror.sync_stalled',
+  'standing_order.skipped',
 ] as const satisfies readonly DomainEventType[];

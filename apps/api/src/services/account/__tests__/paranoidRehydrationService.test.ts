@@ -958,6 +958,11 @@ async function captureAmbiguousStandingOrderWindow(window: AmbiguousStandingOrde
     cashSourceRepo: createCashSourceRepository(harness.db),
     marketData: createStubMarketData(),
     snapshots: { async invalidate() {} },
+    notify: {
+      async emit() {
+        return true;
+      },
+    },
   });
 
   const result = await service.processDueOrders({ now: Date.parse(editedAt) });
