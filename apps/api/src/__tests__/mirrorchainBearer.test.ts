@@ -23,6 +23,7 @@ import {
   MIRRORCHAIN_BEARER_ROUTE_ALLOWLIST,
   enforceMirrorchainBearerAllowlist,
   mirrorchainRouteAcceptsBearer,
+  openApiPathTemplateAcceptsBearer,
   pathAcceptsBearer,
 } from '../http/middleware/bearerAuth';
 import { FIRST_PARTY_CLIENTS, seedFirstPartyClients } from '../services/oauth/firstPartyClients';
@@ -162,11 +163,15 @@ describe('#1042 MIRRORCHAIN bearer route allowlist', () => {
     { method: 'DELETE', path: `/mirrorchain/chains/${MISSING_ID}/members/${MISSING_ID}` },
   ] as const;
 
+  const livePath = (path: string): string => path.replace(/\{(?:chainId|inviteId)\}/g, MISSING_ID);
+
   it('pins the seven exact method + path templates and defaults every other route closed', () => {
     expect(MIRRORCHAIN_BEARER_ROUTE_ALLOWLIST).toEqual(EXPECTED_ALLOWLIST);
     for (const route of EXPECTED_ALLOWLIST) {
-      expect(mirrorchainRouteAcceptsBearer(route.method, route.path)).toBe(true);
-      expect(pathAcceptsBearer(route.path, route.method)).toBe(true);
+      const path = livePath(route.path);
+      expect(mirrorchainRouteAcceptsBearer(route.method, path)).toBe(true);
+      expect(pathAcceptsBearer(path, route.method)).toBe(true);
+      expect(openApiPathTemplateAcceptsBearer(route.path, route.method)).toBe(true);
     }
     for (const route of ADMIN_ROUTES) {
       expect(mirrorchainRouteAcceptsBearer(route.method, route.path)).toBe(false);
@@ -178,6 +183,20 @@ describe('#1042 MIRRORCHAIN bearer route allowlist', () => {
     expect(pathAcceptsBearer('/mirrorchain/chains/future-admin', 'POST')).toBe(false);
     expect(pathAcceptsBearer('/mirrorchain/future-read', 'GET')).toBe(false);
     expect(pathAcceptsBearer('/mirrorchain/chains/settings/members', 'GET')).toBe(false);
+  });
+
+  it('maps HEAD to allowlisted GET routes while leaving templates and closed paths unavailable', () => {
+    for (const route of EXPECTED_ALLOWLIST.filter((candidate) => candidate.method === 'GET')) {
+      const path = livePath(route.path);
+      expect(mirrorchainRouteAcceptsBearer('HEAD', path)).toBe(true);
+      expect(pathAcceptsBearer(path, 'HEAD')).toBe(true);
+    }
+
+    expect(mirrorchainRouteAcceptsBearer('POST', '/mirrorchain/invites/{x}/accept')).toBe(false);
+    expect(pathAcceptsBearer('/mirrorchain/invites/{x}/accept', 'POST')).toBe(false);
+    expect(openApiPathTemplateAcceptsBearer('/mirrorchain/invites/{x}/accept', 'POST')).toBe(false);
+    expect(pathAcceptsBearer('/admin/problems', 'HEAD')).toBe(false);
+    expect(pathAcceptsBearer('/auth/login', 'HEAD')).toBe(false);
   });
 
   it('keeps the router-local guard default-deny independently of the global policy table', () => {

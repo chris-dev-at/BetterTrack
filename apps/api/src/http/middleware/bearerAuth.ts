@@ -75,7 +75,7 @@ const ROUTE_PARAM_MATCHERS: Record<RouteParamKind, RegExp> = {
   'positive-integer': POSITIVE_INTEGER_ROUTE_SEGMENT,
 };
 
-function matchesRoute(path: string, route: BearerRoute): boolean {
+function matchesRoute(path: string, route: BearerRoute, allowPathTemplate = false): boolean {
   const actual = normalizedRouteSegments(path);
   const expected = normalizedRouteSegments(route.path);
   // The matcher comes from the allowlist entry, never from how the placeholder
@@ -86,13 +86,11 @@ function matchesRoute(path: string, route: BearerRoute): boolean {
     expected.every((segment, index) => {
       const actualSegment = actual[index]!;
       if (segment.startsWith('{') && segment.endsWith('}')) {
-        // OpenAPI calls this predicate with `{param}` templates; live requests
-        // carry real ids. Refusing arbitrary static words keeps a future
-        // same-depth admin route from matching a parameter placeholder.
-        return (
-          (actualSegment.startsWith('{') && actualSegment.endsWith('}')) ||
-          paramMatcher.test(actualSegment)
-        );
+        // Only the OpenAPI generator provides route templates. Live requests
+        // carry real ids, so a literal `{param}` must never enter an allowlist.
+        // Refusing arbitrary static words keeps a future same-depth admin route
+        // from matching a parameter placeholder.
+        return (allowPathTemplate && actualSegment === segment) || paramMatcher.test(actualSegment);
       }
       return segment === actualSegment;
     })
@@ -103,9 +101,15 @@ function routeAllowlistAccepts(
   allowlist: readonly BearerRoute[],
   method: string,
   path: string,
+  allowPathTemplate = false,
 ): boolean {
   const normalizedMethod = method.toUpperCase();
-  return allowlist.some((route) => route.method === normalizedMethod && matchesRoute(path, route));
+  return allowlist.some(
+    (route) =>
+      (route.method === normalizedMethod ||
+        (normalizedMethod === 'HEAD' && route.method === 'GET')) &&
+      matchesRoute(path, route, allowPathTemplate),
+  );
 }
 
 /** Whether one exact method + path is in the paranoid-vault sync allowlist. */
@@ -306,7 +310,11 @@ function resolveAuthPolicy(path: string): PathPolicy | null {
   return null;
 }
 
-function resolvePolicy(requestPath: string, requestMethod = 'GET'): PathPolicy {
+function resolvePolicy(
+  requestPath: string,
+  requestMethod = 'GET',
+  allowPathTemplate = false,
+): PathPolicy {
   // Express routes case-insensitively by default, so `/Account/Paranoid/enable`
   // reaches the very same handler as the lowercase spelling. Match the same way,
   // or a variant-cased request silently resolves to a DIFFERENT policy than the
@@ -365,7 +373,12 @@ function resolvePolicy(requestPath: string, requestMethod = 'GET'): PathPolicy {
   // only. Staging, media transitions, retirement and purge stay browser-session
   // work, and any future /vault route defaults closed.
   if (path === '/vault' || path.startsWith('/vault/')) {
-    return vaultSyncRouteAcceptsBearer(requestMethod, path)
+    return routeAllowlistAccepts(
+      VAULT_SYNC_BEARER_ROUTE_ALLOWLIST,
+      requestMethod,
+      path,
+      allowPathTemplate,
+    )
       ? { kind: 'scope', read: VAULT_SYNC_SCOPE, write: VAULT_SYNC_SCOPE }
       : { kind: 'session-only' };
   }
@@ -374,7 +387,12 @@ function resolvePolicy(requestPath: string, requestMethod = 'GET'): PathPolicy {
   // unlisted route defaults closed instead of inheriting mirrorchain:write.
   if (
     (path === '/mirrorchain' || path.startsWith('/mirrorchain/')) &&
-    !mirrorchainRouteAcceptsBearer(requestMethod, path)
+    !routeAllowlistAccepts(
+      MIRRORCHAIN_BEARER_ROUTE_ALLOWLIST,
+      requestMethod,
+      path,
+      allowPathTemplate,
+    )
   ) {
     return { kind: 'session-only' };
   }
@@ -415,6 +433,16 @@ function resolvePolicy(requestPath: string, requestMethod = 'GET'): PathPolicy {
  */
 export function pathAcceptsBearer(path: string, method = 'GET'): boolean {
   const kind = resolvePolicy(path, method).kind;
+  return kind === 'allow' || kind === 'scope';
+}
+
+/**
+ * Template-aware bearer-policy lookup reserved for the OpenAPI generator.
+ * Live request paths must use {@link pathAcceptsBearer}, which rejects literal
+ * `{param}` segments rather than treating them as an allowlisted resource id.
+ */
+export function openApiPathTemplateAcceptsBearer(path: string, method = 'GET'): boolean {
+  const kind = resolvePolicy(path, method, true).kind;
   return kind === 'allow' || kind === 'scope';
 }
 
