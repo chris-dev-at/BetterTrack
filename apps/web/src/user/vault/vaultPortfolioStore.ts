@@ -224,7 +224,7 @@ export interface VaultPortfolioStore {
   putValuePoints(id: string, points: ValuePoint[]): Promise<ValuePointsResponse>;
   listTransactions(
     portfolioId: string,
-    params?: { cursor?: string; limit?: number; source?: string },
+    params?: { cursor?: string; limit?: number; source?: string; assetId?: string },
     signal?: AbortSignal,
   ): Promise<TransactionListResponse>;
   createTransactions(portfolioId: string, inputs: TransactionInput[]): Promise<Transaction[]>;
@@ -603,7 +603,8 @@ export function createVaultPortfolioStore(
         .map((entity) => ({ entity, transaction: transactionFromEntity(document, entity) }))
         .filter(
           ({ transaction }) =>
-            parsedParams.source == null || transaction.source === parsedParams.source,
+            (parsedParams.source == null || transaction.source === parsedParams.source) &&
+            (parsedParams.assetId == null || transaction.assetId === parsedParams.assetId),
         )
         .sort(
           (left, right) =>

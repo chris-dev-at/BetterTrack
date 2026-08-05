@@ -254,7 +254,12 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(listPortfolios).mockResolvedValue(PORTFOLIO_LIST);
   vi.mocked(getPortfolioHistory).mockResolvedValue(HISTORY);
-  vi.mocked(listTransactions).mockResolvedValue(TXNS);
+  vi.mocked(listTransactions).mockImplementation(async (_portfolioId, params = {}) => ({
+    items: TXNS.items
+      .filter((transaction) => params.assetId == null || transaction.assetId === params.assetId)
+      .slice(0, params.limit),
+    nextCursor: null,
+  }));
   vi.mocked(deleteTransaction).mockResolvedValue(undefined);
   vi.mocked(getValuePoints).mockResolvedValue({ points: [] });
   // No pending re-categorization by default → the banner stays hidden.
@@ -283,7 +288,7 @@ beforeEach(() => {
   });
 });
 
-test('keeps transactions for an expanded holding beyond the recent card', async () => {
+test('loads an expanded holding ledger on demand beyond the recent card', async () => {
   vi.mocked(getPortfolio).mockResolvedValue(PORTFOLIO);
   const aaplTransaction = TXNS.items[0]! as Transaction;
   const houseTransaction = TXNS.items[1]! as Transaction;
@@ -302,7 +307,9 @@ test('keeps transactions for an expanded holding beyond the recent card', async 
   };
   const ledger = [...recentAaplTransactions, olderHouseTransaction];
   vi.mocked(listTransactions).mockImplementation(async (_portfolioId, params = {}) => ({
-    items: ledger.slice(0, params.limit),
+    items: ledger
+      .filter((transaction) => params.assetId == null || transaction.assetId === params.assetId)
+      .slice(0, params.limit),
     nextCursor: null,
   }));
 
@@ -310,10 +317,18 @@ test('keeps transactions for an expanded holding beyond the recent card', async 
   renderPage();
 
   await waitFor(() => expect(vi.mocked(listTransactions)).toHaveBeenCalled());
-  expect(vi.mocked(listTransactions).mock.calls[0]?.[1]).toEqual({ limit: 200 });
+  expect(vi.mocked(listTransactions).mock.calls[0]?.[1]).toEqual({ limit: 8 });
+  expect(screen.queryByText('Down payment')).not.toBeInTheDocument();
 
   const holdings = await screen.findByRole('region', { name: 'Holdings' });
   await user.click(within(holdings).getByRole('button', { name: /Expand HOUSE transactions/i }));
+  await waitFor(() =>
+    expect(vi.mocked(listTransactions)).toHaveBeenCalledWith(
+      DEFAULT_PORTFOLIO_ID,
+      { assetId: HOUSE.asset.id, limit: 200 },
+      expect.anything(),
+    ),
+  );
   expect(await within(holdings).findByText('Down payment')).toBeInTheDocument();
 });
 

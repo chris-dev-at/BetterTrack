@@ -737,6 +737,55 @@ describe('POST /api/v1/portfolios/:id/transactions', () => {
     expect(list.body.items).toHaveLength(3);
   });
 
+  it('pages transaction details for one asset without reading other holdings', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
+    const target = await seedAsset(harness, {
+      providerRef: 'TARGET.DE',
+      symbol: 'TARGET.DE',
+      name: 'Target holding',
+    });
+    const other = await seedAsset(harness, {
+      providerRef: 'OTHER.DE',
+      symbol: 'OTHER.DE',
+      name: 'Other holding',
+    });
+
+    for (const [assetId, offset] of [
+      [target.id, -3],
+      [other.id, -2],
+      [target.id, -1],
+    ] as const) {
+      const created = await agent
+        .post(`/api/v1/portfolios/${pid}/transactions`)
+        .set(...XRW)
+        .send({ assetId, side: 'buy', quantity: 1, price: 50, executedAt: tsOffset(offset) });
+      expect(created.status).toBe(201);
+    }
+
+    const first = await agent.get(
+      `/api/v1/portfolios/${pid}/transactions?assetId=${target.id}&limit=1`,
+    );
+    expect(first.status).toBe(200);
+    expect(first.body.items).toHaveLength(1);
+    expect(first.body.items[0].assetId).toBe(target.id);
+    expect(first.body.nextCursor).toBe(first.body.items[0].id);
+
+    const second = await agent.get(
+      `/api/v1/portfolios/${pid}/transactions?assetId=${target.id}&limit=1&cursor=${first.body.nextCursor}`,
+    );
+    expect(second.status).toBe(200);
+    expect(second.body.items).toHaveLength(1);
+    expect(second.body.items[0].assetId).toBe(target.id);
+    expect(second.body.nextCursor).toBeNull();
+
+    const malformed = await agent.get(
+      `/api/v1/portfolios/${pid}/transactions?assetId=not-an-asset-id`,
+    );
+    expect(malformed.status).toBe(400);
+  });
+
   it('rejects a SELL that would make the held quantity negative', async () => {
     const user = await harness.seedUser();
     const agent = await loginAgent(harness.app, user.email, user.password);

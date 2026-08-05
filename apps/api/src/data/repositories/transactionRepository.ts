@@ -346,7 +346,7 @@ export function createTransactionRepository(db: Database) {
      */
     async listByPortfolio(
       portfolioId: string,
-      params: { limit: number; cursor?: string; source?: string },
+      params: { limit: number; cursor?: string; source?: string; assetId?: string },
     ): Promise<{ items: TransactionWithAsset[]; nextCursor: string | null }> {
       const rows = await db
         .select({
@@ -380,6 +380,8 @@ export function createTransactionRepository(db: Database) {
             eq(transactions.portfolioId, portfolioId),
             // Source-tag filter (V5-P0c): return only rows carrying this exact tag.
             params.source ? eq(transactions.source, params.source) : undefined,
+            // Holding expansions fetch only their asset's rows on demand.
+            params.assetId ? eq(transactions.assetId, params.assetId) : undefined,
             params.cursor ? lt(transactions.id, params.cursor) : undefined,
           ),
         )

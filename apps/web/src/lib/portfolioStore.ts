@@ -47,6 +47,7 @@ export interface PortfolioTransactionListParams {
   cursor?: string;
   limit?: number;
   source?: string;
+  assetId?: string;
 }
 
 /**

@@ -234,7 +234,7 @@ export interface PortfolioService {
   listTransactions(
     userId: string,
     portfolioId: string,
-    params: { cursor?: string; limit?: number; source?: string },
+    params: { cursor?: string; limit?: number; source?: string; assetId?: string },
   ): Promise<TransactionListResponse>;
   /**
    * Record one or more transactions. `opts.source` is the V5-P0c source tag the
@@ -1498,6 +1498,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
         limit,
         cursor: params.cursor,
         source: params.source,
+        assetId: params.assetId,
       });
       return {
         items: items.map((row) => ({

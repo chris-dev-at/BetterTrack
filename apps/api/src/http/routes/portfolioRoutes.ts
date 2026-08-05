@@ -632,11 +632,12 @@ export function createPortfolioRouter(ctx: AppContext): Router {
     validateQuery(transactionListQuerySchema),
     async (req, res) => {
       const { portfolioId } = req.valid?.params as { portfolioId: string };
-      const { cursor, limit, source } = req.valid?.query as TransactionListQuery;
+      const { cursor, limit, source, assetId } = req.valid?.query as TransactionListQuery;
       const page = await ctx.portfolio.listTransactions(req.authUser!.id, portfolioId, {
         cursor,
         limit,
         source,
+        assetId,
       });
       const overlay = await ctx.mirror.overlayForPortfolio(portfolioId);
       const items = page.items.map((tx) => {

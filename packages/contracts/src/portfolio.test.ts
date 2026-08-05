@@ -8,6 +8,7 @@ import {
   cashPreviewRequestSchema,
   importSourceTag,
   sourceTagSchema,
+  transactionListQuerySchema,
 } from './portfolio';
 
 describe('cash amount validation (§14 hardening)', () => {
@@ -134,5 +135,23 @@ describe('cash movement pagination', () => {
     expect(cashMovementsQuerySchema.safeParse({ cursor: 'not-a-cursor' }).success).toBe(false);
     expect(cashMovementsQuerySchema.safeParse({ tag: 'food' }).success).toBe(false);
     expect(cashMovementsQuerySchema.safeParse({ limit: 201 }).success).toBe(false);
+  });
+});
+
+describe('transaction pagination filters', () => {
+  it('accepts a bounded per-asset holding query', () => {
+    const cursor = '11111111-1111-7111-8111-111111111111';
+    const assetId = '22222222-2222-7222-8222-222222222222';
+    expect(transactionListQuerySchema.parse({ cursor, limit: '8', assetId })).toEqual({
+      cursor,
+      limit: 8,
+      assetId,
+    });
+  });
+
+  it('rejects malformed holding asset filters', () => {
+    expect(transactionListQuerySchema.safeParse({ assetId: 'not-an-asset-id' }).success).toBe(
+      false,
+    );
   });
 });

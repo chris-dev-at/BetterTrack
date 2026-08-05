@@ -499,6 +499,58 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
     expect(new Set(pagedIds).size).toBe(created.length);
   });
 
+  it('filters a vault transaction page to one holding', async () => {
+    const document = initialDocument();
+    document.entities.customAsset = [
+      ...(document.entities.customAsset ?? []),
+      vaultEntity(SECOND_ASSET_ID, {
+        providerId: 'manual',
+        providerRef: 'SECOND',
+        ownerId: USER_ID,
+        type: 'stock',
+        symbol: 'SECOND',
+        name: 'Second local asset',
+        exchange: null,
+        currency: 'EUR',
+        meta: { category: 'stock', smoothing: false },
+        searchText: 'SECOND Second local asset',
+      }),
+    ];
+    document.entities.transaction = [
+      transactionEntity(GENERATED_IDS[0], {
+        assetId: ASSET_ID,
+        executedAt: '2026-07-25T10:00:00.000Z',
+      }),
+      transactionEntity(GENERATED_IDS[1], {
+        assetId: SECOND_ASSET_ID,
+        executedAt: '2026-07-25T10:01:00.000Z',
+      }),
+      transactionEntity(GENERATED_IDS[2], {
+        assetId: ASSET_ID,
+        executedAt: '2026-07-25T10:02:00.000Z',
+      }),
+    ];
+    const store = createVaultPortfolioStore(createMutableEngine(document), {
+      now: () => AT,
+      newId: idSequence(),
+    });
+
+    const first = await store.listTransactions(PORTFOLIO_ID, { assetId: ASSET_ID, limit: 1 });
+    const second = await store.listTransactions(PORTFOLIO_ID, {
+      assetId: ASSET_ID,
+      limit: 1,
+      cursor: first.nextCursor ?? undefined,
+    });
+
+    expect(first.items).toHaveLength(1);
+    expect(second.items).toHaveLength(1);
+    expect([...first.items, ...second.items].map((transaction) => transaction.assetId)).toEqual([
+      ASSET_ID,
+      ASSET_ID,
+    ]);
+    expect(second.nextCursor).toBeNull();
+  });
+
   it('persists a supported transaction in strict restore form and reads it back unchanged', async () => {
     const engine = createMutableEngine(initialDocument());
     const store = createVaultPortfolioStore(engine, {

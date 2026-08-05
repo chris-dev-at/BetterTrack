@@ -15,15 +15,13 @@ import type { WidgetProps, WidgetSettingsExtraProps } from './types';
  * The latest trades, newest first — across every portfolio or just the scoped
  * one.
  *
- * **Query-key deviation, deliberate.** The portfolio page holds its ledger under
- * the bare `['portfolio', id, 'transactions']` key with `limit: 200`, and that
- * entry is the page's *paginated* cache (it grows as the user pages through).
- * Writing this widget's short `limit: N` response into that key would truncate
- * the page's ledger the next time it mounted from cache. So this widget keys on
- * `['portfolio', id, 'transactions', 'recent', N]` — a sibling entry, one per
- * requested length, that no other surface reads or invalidates narrowly. The
- * page's broad `invalidateQueries({ queryKey: ['portfolio'] })` after a mutation
- * still covers it, so an added or deleted trade refreshes this widget too.
+ * **Query-key deviation, deliberate.** The portfolio page owns its eight-row
+ * recent ledger under `['portfolio', id, 'transactions', 'recent']` and uses
+ * separate per-asset keys for expanded holdings. This widget still needs a
+ * distinct entry per requested length, so it uses
+ * `['portfolio', id, 'transactions', 'recent', N]`. The page's broad
+ * `invalidateQueries({ queryKey: ['portfolio'] })` after a mutation still covers
+ * it, so an added or deleted trade refreshes this widget too.
  */
 
 /** Row counts the picker offers. A stored count outside this set is still honored. */

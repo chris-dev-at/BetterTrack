@@ -629,13 +629,15 @@ export const transactionListResponseSchema = z
   .strict();
 export type TransactionListResponse = z.infer<typeof transactionListResponseSchema>;
 
-/** Cursor pagination query for the transaction ledger, with an optional source filter (V5-P0c). */
+/** Cursor pagination query for the transaction ledger, with optional source and asset filters. */
 export const transactionListQuerySchema = z
   .object({
     cursor: z.string().uuid().optional(),
     limit: z.coerce.number().int().min(1).max(200).optional(),
     /** Return only rows carrying this exact source tag (V5-P0c). */
     source: sourceTagSchema.optional(),
+    /** Return only rows for this asset (for an on-demand holding expansion). */
+    assetId: z.string().uuid().optional(),
   })
   .strict();
 export type TransactionListQuery = z.infer<typeof transactionListQuerySchema>;
