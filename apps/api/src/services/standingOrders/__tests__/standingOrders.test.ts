@@ -39,6 +39,7 @@ import { createTestApp, type TestHarness } from '../../../testing/createTestApp'
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
 
 let harness: TestHarness;
+let marketData: ReturnType<typeof createStubMarketData>;
 const quote = {
   mode: 'ok' as 'ok' | 'fail',
   price: 100,
@@ -51,7 +52,7 @@ beforeEach(async () => {
   quote.price = 100;
   quote.stale = false;
   quote.asOf = '2026-04-01T00:00:00.000Z';
-  const marketData = createStubMarketData({
+  marketData = createStubMarketData({
     quote: () => {
       if (quote.mode === 'fail') throw new Error('provider down');
       return {
@@ -541,7 +542,7 @@ describe('standing orders — provider failure on a buy', () => {
     expect(await txnRows(pid)).toHaveLength(1);
   });
 
-  it('books a recent serve-stale cache result and preserves its market timestamp', async () => {
+  it('defers a stale direct-poll result without claiming, then books a fresh quote', async () => {
     const { agent, pid } = await setup();
     const assetId = await seedAsset('STALE');
     const created = await createOrder(agent, {
@@ -554,12 +555,19 @@ describe('standing orders — provider failure on a buy', () => {
     });
     const id = created.body.id as string;
     quote.asOf = '2026-03-31T20:00:00.000Z';
-    // This mirrors the real cache's normal expired-but-retained response: the
-    // 60-second fresh key is gone, but the retained quote is still from the
-    // prior market session and is being refreshed in the background.
     quote.stale = true;
 
     expect(await run('2026-04-01T12:00:00Z')).toMatchObject({
+      booked: 0,
+      deferred: 1,
+      failed: 0,
+    });
+    expect(await txnRows(pid)).toEqual([]);
+    expect(await runPeriodKeys()).toEqual([]);
+    expect(marketData.calls).toMatchObject({ quote: 0, poll: 1 });
+
+    quote.stale = false;
+    expect(await run('2026-04-01T12:05:00Z')).toMatchObject({
       booked: 1,
       deferred: 0,
       failed: 0,
@@ -570,11 +578,12 @@ describe('standing orders — provider failure on a buy', () => {
     const order = await agent.get(`/api/v1/standing-orders/${id}`);
     expect(order.status).toBe(200);
     expect(order.body.lastRunAt).toBe(quote.asOf);
+    expect(marketData.calls).toMatchObject({ quote: 0, poll: 2 });
   });
 
-  it('defers a retained quote whose market timestamp is actually old', async () => {
+  it('books a fresh provider response after an extended market closure', async () => {
     const { agent, pid } = await setup();
-    const assetId = await seedAsset('OLD');
+    const assetId = await seedAsset('CLOSED');
     await createOrder(agent, {
       portfolioId: pid,
       kind: 'buy-asset',
@@ -584,19 +593,8 @@ describe('standing orders — provider failure on a buy', () => {
       startDate: '2026-04-01',
     });
     quote.asOf = '2026-03-27T12:00:00.000Z';
-    quote.stale = true;
 
     expect(await run('2026-04-01T12:00:00Z')).toMatchObject({
-      booked: 0,
-      deferred: 1,
-      failed: 0,
-    });
-    expect(await txnRows(pid)).toEqual([]);
-    expect(await runPeriodKeys()).toEqual([]);
-
-    quote.asOf = '2026-03-31T20:00:00.000Z';
-    quote.stale = false;
-    expect(await run('2026-04-01T12:05:00Z')).toMatchObject({
       booked: 1,
       deferred: 0,
       failed: 0,

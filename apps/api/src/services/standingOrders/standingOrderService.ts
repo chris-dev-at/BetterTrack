@@ -55,11 +55,12 @@ import {
  *
  * **No negative balances.** A `cash-deduct` that would overdraw is deferred (and
  * retried) rather than forced negative — the app's cash invariant holds. Buys
- * never touch cash (they book only the BUY transaction at a bounded-age quote).
- * An upstream buy is dated at the provider quote's actual `asOf` time; a local
- * custom-asset buy and cash rows use the scan instant. The scheduled period
- * identity lives in the run's `period_key`; its `booked_at` is the claim's
- * wall-clock time, not the money row's execution timestamp.
+ * never touch cash (they book only the BUY transaction after synchronously
+ * refreshing its quote). An upstream buy is dated at the provider quote's
+ * actual `asOf` time; a local custom-asset buy and cash rows use the scan
+ * instant. The scheduled period identity lives in the run's `period_key`; its
+ * `booked_at` is the claim's wall-clock time, not the money row's execution
+ * timestamp.
  */
 
 /** Timezone the daily scan reads "today" in — the deploy tz, matching the crons. */
@@ -72,7 +73,7 @@ export interface StandingOrderServiceDeps {
   transactionRepo: Pick<TransactionRepository, 'insertMany'>;
   cashMovementRepo: Pick<CashMovementRepository, 'insert' | 'listForPortfolio'>;
   cashSourceRepo: Pick<CashSourceRepository, 'getOrCreateMain'>;
-  marketData: Pick<MarketDataService, 'getQuote' | 'isLocalProvider'>;
+  marketData: Pick<MarketDataService, 'pollQuote' | 'isLocalProvider'>;
   snapshots: Pick<PortfolioSnapshotService, 'invalidate'>;
   /** Standard durable notification entry point for deferred/dropped periods. */
   notify: NotificationCenter;
@@ -99,13 +100,6 @@ export interface ProcessDueResult {
   /** Orders whose unexpected processing error was isolated from the rest of the sweep. */
   failed: number;
 }
-
-/**
- * Oldest upstream market timestamp accepted for an automatic buy. Four days
- * covers a weekend plus a one-day exchange closure while rejecting the
- * five-day-old retained outage quote called out by issue #1119.
- */
-export const STANDING_ORDER_MAX_QUOTE_AGE_MS = 4 * 24 * 60 * 60 * 1_000;
 
 interface BookQuote {
   price: number;
@@ -494,7 +488,7 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
     });
   }
 
-  /** Fetch one usable native-currency quote and derive its bounded booking timestamp. */
+  /** Fetch one fresh native-currency quote and derive its booking timestamp. */
   async function resolveBookQuote(order: StandingOrderWithAsset, scanAt: Date): Promise<BookQuote> {
     if (!order.assetProviderId || !order.assetProviderRef) {
       throw new Error(`standing order ${order.id}: buy has no asset ref`);
@@ -504,7 +498,17 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
       providerRef: order.assetProviderRef,
     };
     const local = marketData.isLocalProvider(ref);
-    const quote = await marketData.getQuote(ref);
+    // The regular quote read may serve a 60-second-expired cache entry while it
+    // revalidates in the background. Automatic buys need a definitive pre-claim
+    // answer, so bypass that freshness window and synchronously ask the provider
+    // through the same timeout / retry / breaker / failover chain. A failed
+    // refresh throws and leaves the period unclaimed for the next scan.
+    const quote = await marketData.pollQuote(ref);
+    if (quote.stale) {
+      // `pollQuote` never returns stale in production, but keep the business
+      // boundary explicit and safe for alternate MarketDataService adapters.
+      throw new Error(`standing order ${order.id}: quote is stale`);
+    }
     const providerAsOf = new Date(quote.value.asOf);
     const providerAsOfMs = providerAsOf.getTime();
     if (!Number.isFinite(providerAsOfMs)) {
@@ -518,15 +522,11 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
       return { price: quote.value.price, asOf: new Date(scanAt.getTime()) };
     }
 
-    // `CachedResult.stale` means only that the 60-second Redis freshness key
-    // expired; it is the normal serve-stale-while-revalidate result at a daily
-    // scan. Judge the market timestamp itself so a recent retained quote books
-    // while an actually old outage quote defers. Future provider clocks are
-    // clamped to the scan instant so no transaction is dated in the future.
+    // A direct provider response can legitimately carry an older session close
+    // across weekends or longer exchange closures. Its freshness comes from the
+    // synchronous poll above, not an arbitrary timestamp-age cutoff. Only clamp
+    // future provider clocks so no transaction is dated after this scan.
     const bookedAtMs = Math.min(providerAsOfMs, scanAt.getTime());
-    if (scanAt.getTime() - bookedAtMs > STANDING_ORDER_MAX_QUOTE_AGE_MS) {
-      throw new Error(`standing order ${order.id}: quote market timestamp is too old`);
-    }
     return { price: quote.value.price, asOf: new Date(bookedAtMs) };
   }
 
