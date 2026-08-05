@@ -54,6 +54,19 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * Signals whose 429 response is owned by the calling surface rather than the
+ * app-wide "too fast" toast. The signal keeps this opt-out request-scoped: a
+ * concurrent request that is not part of that operation still follows the
+ * global policy.
+ */
+const LOCALLY_HANDLED_RATE_LIMIT_SIGNALS = new WeakSet<AbortSignal>();
+
+export function markRateLimitHandledLocally(signal: AbortSignal): AbortSignal {
+  LOCALLY_HANDLED_RATE_LIMIT_SIGNALS.add(signal);
+  return signal;
+}
+
 export type ApiFailureClassification = 'outage' | 'confirmed-domain-outcome' | 'unknown';
 
 const CONFIRMED_DOMAIN_STATUSES = new Set([401, 403, 404]);
@@ -224,7 +237,11 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
           retryAfterSeconds,
         )
       : new ApiError(response.status, 'UNKNOWN', 'Request failed.', undefined, retryAfterSeconds);
-    if (!options.suppressAuthRedirect) notifyAuthPolicy(error);
+    const rateLimitHandledLocally =
+      error.status === 429 &&
+      options.signal != null &&
+      LOCALLY_HANDLED_RATE_LIMIT_SIGNALS.has(options.signal);
+    if (!options.suppressAuthRedirect && !rateLimitHandledLocally) notifyAuthPolicy(error);
     throw error;
   }
 

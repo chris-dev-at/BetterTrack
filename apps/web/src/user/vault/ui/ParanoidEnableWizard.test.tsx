@@ -196,4 +196,80 @@ describe('ParanoidEnableWizard', () => {
       /kept changing while BetterTrack was collecting it/i,
     );
   });
+
+  it('shows capture progress while the request-budget queue advances', async () => {
+    mocks.migrate.mockImplementation(
+      async (options: { onProgress?: (progress: { completedRequests: number }) => void }) => {
+        options.onProgress?.({ completedRequests: 23 });
+        return {
+          document: { schemaVersion: 1, entities: {}, mergeLog: [] },
+          normalDataRevision: 'r1',
+        };
+      },
+    );
+    mocks.enable.mockImplementation(
+      async (
+        input: { onStage?: (stage: string) => void },
+        dependencies: { migrate(): Promise<unknown> },
+      ) => {
+        input.onStage?.('migrate');
+        await dependencies.migrate();
+        return {
+          envelope: new Uint8Array([9]),
+          version: 1,
+          receipt: {
+            mode: 'paranoid',
+            mediaSet: ['server'],
+            vaultVersion: 1,
+            completedAt: '2026-07-30T10:00:00.000Z',
+            idempotent: false,
+          },
+        };
+      },
+    );
+    const user = userEvent.setup();
+    render(<ParanoidEnableWizard onCancel={() => {}} onEnabled={() => {}} />);
+
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
+    await user.type(screen.getByLabelText('Vault passphrase'), 'correct horse battery staple 729');
+    await user.type(
+      screen.getByLabelText('Confirm vault passphrase'),
+      'correct horse battery staple 729',
+    );
+    await user.click(screen.getByRole('button', { name: 'Download recovery kit' }));
+    await user.click(
+      screen.getByRole('checkbox', { name: 'I have stored my recovery kit safely.' }),
+    );
+    await user.click(screen.getByRole('checkbox', { name: /my data is gone forever/i }));
+    await user.click(screen.getByRole('button', { name: 'Enable Paranoid mode' }));
+
+    expect(await screen.findByText('23 data sections collected safely.')).toBeInTheDocument();
+  });
+
+  it('names the capture stage and server wait when rate limiting still occurs', async () => {
+    mocks.enable.mockRejectedValue(
+      new VaultEnableError('migrate', 'Your existing data could not be prepared safely.', {
+        cause: new ApiError(429, 'RATE_LIMITED', 'Too many requests.', undefined, 37),
+      }),
+    );
+    const user = userEvent.setup();
+    render(<ParanoidEnableWizard onCancel={() => {}} onEnabled={() => {}} />);
+
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
+    await user.type(screen.getByLabelText('Vault passphrase'), 'correct horse battery staple 729');
+    await user.type(
+      screen.getByLabelText('Confirm vault passphrase'),
+      'correct horse battery staple 729',
+    );
+    await user.click(screen.getByRole('button', { name: 'Download recovery kit' }));
+    await user.click(
+      screen.getByRole('checkbox', { name: 'I have stored my recovery kit safely.' }),
+    );
+    await user.click(screen.getByRole('checkbox', { name: /my data is gone forever/i }));
+    await user.click(screen.getByRole('button', { name: 'Enable Paranoid mode' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/Data collection.*37 seconds/i);
+  });
 });

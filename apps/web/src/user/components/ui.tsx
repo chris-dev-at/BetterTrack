@@ -135,7 +135,11 @@ const ALERT_TONES: Record<AlertTone, CSSProperties> = {
 
 export function Alert({ tone, children }: { tone: AlertTone; children: ReactNode }) {
   return (
-    <div role="alert" className="rounded-md border px-3 py-2 text-sm" style={ALERT_TONES[tone]}>
+    <div
+      role={tone === 'success' ? 'status' : 'alert'}
+      className="rounded-md border px-3 py-2 text-sm"
+      style={ALERT_TONES[tone]}
+    >
       {children}
     </div>
   );

@@ -34,6 +34,11 @@ const KILL_LIST_KEYS = [
   'publicProfile',
 ] as const;
 
+interface EnableErrorCopy {
+  key: string;
+  vars?: Record<string, string | number>;
+}
+
 export function ParanoidEnableWizard({
   onCancel,
   onEnabled,
@@ -55,7 +60,8 @@ export function ParanoidEnableWizard({
   const [kitStored, setKitStored] = useState(false);
   const [lostKeyAcknowledged, setLostKeyAcknowledged] = useState(false);
   const [stage, setStage] = useState<VaultEnableStage | null>(null);
-  const [errorKey, setErrorKey] = useState<string | null>(null);
+  const [captureCompletedRequests, setCaptureCompletedRequests] = useState(0);
+  const [error, setError] = useState<EnableErrorCopy | null>(null);
 
   const mediaSet = useMemo<VaultMediaSet>(
     () =>
@@ -83,9 +89,9 @@ export function ParanoidEnableWizard({
   }
 
   async function downloadRecoveryKit() {
-    setErrorKey(null);
+    setError(null);
     if (!passphraseValid) {
-      setErrorKey('vault.enable.passphraseMismatch');
+      setError({ key: 'vault.enable.passphraseMismatch' });
       return;
     }
     try {
@@ -98,7 +104,7 @@ export function ParanoidEnableWizard({
       );
       setKitDownloaded(true);
     } catch {
-      setErrorKey('vault.enable.errors.encrypt');
+      setError({ key: 'vault.enable.errors.encrypt' });
     }
   }
 
@@ -107,7 +113,8 @@ export function ParanoidEnableWizard({
       return;
     }
     setStep(4);
-    setErrorKey(null);
+    setError(null);
+    setCaptureCompletedRequests(0);
     let result: Awaited<ReturnType<typeof enablePreparedVault>>;
     try {
       // GIS must start synchronously from this final wizard gesture.
@@ -130,11 +137,12 @@ export function ParanoidEnableWizard({
               userId: user.id,
               store: apiPortfolioStore,
               signal,
+              onProgress: ({ completedRequests }) => setCaptureCompletedRequests(completedRequests),
             }),
         },
       );
     } catch (cause) {
-      setErrorKey(enableErrorKey(cause));
+      setError(enableErrorCopy(cause));
       return;
     }
 
@@ -303,12 +311,19 @@ export function ParanoidEnableWizard({
               ? t('vault.enable.progress.preparing')
               : t(`vault.enable.progress.${stage}`)}
           </p>
+          {stage === 'migrate' && captureCompletedRequests > 0 ? (
+            <p className="bt-muted text-xs">
+              {t('vault.enable.progress.captureRequests', {
+                count: captureCompletedRequests,
+              })}
+            </p>
+          ) : null}
         </div>
       ) : null}
 
-      {errorKey ? (
+      {error ? (
         <p className="bt-field__error" role="alert">
-          {t(errorKey)}
+          {t(error.key, error.vars)}
         </p>
       ) : null}
 
@@ -335,11 +350,12 @@ export function ParanoidEnableWizard({
             {t('vault.enable.action')}
           </Button>
         ) : null}
-        {step === 4 && errorKey ? (
+        {step === 4 && error ? (
           <Button
             onClick={() => {
-              setErrorKey(null);
+              setError(null);
               setStage(null);
+              setCaptureCompletedRequests(0);
               setStep(3);
             }}
             variant="secondary"
@@ -352,31 +368,39 @@ export function ParanoidEnableWizard({
   );
 }
 
-function enableErrorKey(cause: unknown): string {
-  if (!(cause instanceof VaultEnableError)) return 'vault.enable.errors.unknown';
+function enableErrorCopy(cause: unknown): EnableErrorCopy {
+  if (!(cause instanceof VaultEnableError)) return { key: 'vault.enable.errors.unknown' };
+  if (cause.stage === 'migrate' && cause.cause instanceof ApiError && cause.cause.status === 429) {
+    return cause.cause.retryAfterSeconds == null
+      ? { key: 'vault.enable.errors.captureRateLimitedUnknown' }
+      : {
+          key: 'vault.enable.errors.captureRateLimited',
+          vars: { seconds: cause.cause.retryAfterSeconds },
+        };
+  }
   // The capture gave up because the account kept moving under it. Generic
   // "collection failed, retry when the connection recovers" copy would send the
   // user straight back into the same loop; name the other writer instead.
   if (cause.cause instanceof VaultCaptureUnstableError) {
-    return 'vault.enable.errors.captureUnstable';
+    return { key: 'vault.enable.errors.captureUnstable' };
   }
   if (cause.stage === 'commit' && cause.cause instanceof ApiError) {
     switch (cause.cause.code) {
       case PARANOID_TRANSITION_ERROR_CODES.mirrorchainActive:
-        return 'vault.enable.errors.mirrorchainActive';
+        return { key: 'vault.enable.errors.mirrorchainActive' };
       case PARANOID_TRANSITION_ERROR_CODES.importInFlight:
-        return 'vault.enable.errors.importInFlight';
+        return { key: 'vault.enable.errors.importInFlight' };
       case PARANOID_TRANSITION_ERROR_CODES.exportInFlight:
-        return 'vault.enable.errors.exportInFlight';
+        return { key: 'vault.enable.errors.exportInFlight' };
       case PARANOID_TRANSITION_ERROR_CODES.mediaNotReady:
-        return 'vault.enable.errors.mediaNotReady';
+        return { key: 'vault.enable.errors.mediaNotReady' };
       case PARANOID_TRANSITION_ERROR_CODES.transitionConflict:
-        return 'vault.enable.errors.transitionConflict';
+        return { key: 'vault.enable.errors.transitionConflict' };
       case PARANOID_TRANSITION_ERROR_CODES.normalDataChanged:
-        return 'vault.enable.errors.normalDataChanged';
+        return { key: 'vault.enable.errors.normalDataChanged' };
     }
   }
-  return `vault.enable.errors.${cause.stage}`;
+  return { key: `vault.enable.errors.${cause.stage}` };
 }
 
 function progressForStage(stage: VaultEnableStage | null): number {

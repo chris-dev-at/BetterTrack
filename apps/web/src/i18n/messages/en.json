@@ -3571,6 +3571,7 @@
       "progress": {
         "preparing": "Preparing the protected migration…",
         "migrate": "Collecting your complete portfolio data on this device…",
+        "captureRequests": "{{count}} data sections collected safely.",
         "validate": "Checking that the prepared vault opens and restores…",
         "encrypt": "Encrypting your vault on this device…",
         "write-server": "Saving the encrypted BetterTrack copy…",
@@ -3595,6 +3596,8 @@
         "transitionConflict": "Another privacy transition is still finishing. Wait a moment and retry.",
         "normalDataChanged": "Your account changed while the encrypted copy was being prepared, so BetterTrack stopped before deleting anything. Nothing was lost — start the switch again to include the newest data.",
         "captureUnstable": "Your account kept changing while BetterTrack was collecting it, so no complete copy could be taken and nothing was changed. Close BetterTrack in other tabs and on other devices, then start the switch again.",
+        "captureRateLimited": "Data collection reached BetterTrack’s request limit. Nothing was changed. Wait {{seconds}} seconds, then retry the switch.",
+        "captureRateLimitedUnknown": "Data collection reached BetterTrack’s request limit. Nothing was changed. Wait for the request window to reset, then retry the switch.",
         "unknown": "Paranoid mode could not be enabled. Your normal account is unchanged."
       }
     },
