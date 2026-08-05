@@ -21,7 +21,9 @@ export function TagChip({ name, color, className, onRemove }: TagChipProps) {
   const t = useT();
   return (
     <span className={cx('bt-tag-chip', className)} style={tagChipStyle(color)}>
-      {name}
+      <span className="bt-tag-chip__label" title={name}>
+        {name}
+      </span>
       {onRemove ? (
         <button
           aria-label={t('cashflow.tags.removeFromMovement', { name })}
