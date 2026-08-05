@@ -334,20 +334,24 @@ export function createImportService(deps: ImportServiceDeps): ImportService {
         }),
       );
     }
-    const cash = await portfolio.getCashMovements(userId, portfolioId);
-    for (const m of cash.movements) {
-      if (m.kind !== 'deposit' && m.kind !== 'withdrawal') continue;
-      hashes.add(
-        contentHash({
-          kind: m.kind,
-          executedAt: new Date(m.executedAt),
-          instrument: null,
-          quantity: null,
-          price: null,
-          amountEur: Math.abs(m.amountEur),
-        }),
-      );
-    }
+    let cursor: string | undefined;
+    do {
+      const cash = await portfolio.getCashMovements(userId, portfolioId, { cursor, limit: 200 });
+      for (const m of cash.movements) {
+        if (m.kind !== 'deposit' && m.kind !== 'withdrawal') continue;
+        hashes.add(
+          contentHash({
+            kind: m.kind,
+            executedAt: new Date(m.executedAt),
+            instrument: null,
+            quantity: null,
+            price: null,
+            amountEur: Math.abs(m.amountEur),
+          }),
+        );
+      }
+      cursor = cash.nextCursor ?? undefined;
+    } while (cursor != null);
     return hashes;
   }
 

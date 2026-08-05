@@ -4,6 +4,7 @@ import {
   MAX_CASH_AMOUNT_EUR,
   cashEntryRequestSchema,
   cashMovementKindSchema,
+  cashMovementsQuerySchema,
   cashPreviewRequestSchema,
   importSourceTag,
   sourceTagSchema,
@@ -115,5 +116,23 @@ describe('source tag validation (V5-P0c)', () => {
   it('builds a valid import tag from a broker id', () => {
     expect(importSourceTag('trade_republic')).toBe('import:trade_republic');
     expect(sourceTagSchema.safeParse(importSourceTag('george')).success).toBe(true);
+  });
+});
+
+describe('cash movement pagination', () => {
+  it('coerces a bounded limit and accepts UUID or untagged filters', () => {
+    const cursor = '11111111-1111-7111-8111-111111111111';
+    expect(cashMovementsQuerySchema.parse({ cursor, limit: '20', tag: cursor })).toEqual({
+      cursor,
+      limit: 20,
+      tag: cursor,
+    });
+    expect(cashMovementsQuerySchema.safeParse({ tag: 'untagged' }).success).toBe(true);
+  });
+
+  it('rejects malformed cursors, tags, and out-of-range limits', () => {
+    expect(cashMovementsQuerySchema.safeParse({ cursor: 'not-a-cursor' }).success).toBe(false);
+    expect(cashMovementsQuerySchema.safeParse({ tag: 'food' }).success).toBe(false);
+    expect(cashMovementsQuerySchema.safeParse({ limit: 201 }).success).toBe(false);
   });
 });

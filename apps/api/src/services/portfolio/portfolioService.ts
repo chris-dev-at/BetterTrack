@@ -3,6 +3,7 @@ import type {
   CashEntryRequest,
   CashMovement as CashMovementDto,
   CashMovementResponse,
+  CashMovementsQuery,
   CashMovementsResponse,
   EditableCashMovementKind,
   UpdateCashMovementRequest,
@@ -33,7 +34,11 @@ import type {
   UpdatePortfolioRequest,
   UpdateTransactionRequest,
 } from '@bettertrack/contracts';
-import { customAssetCategorySchema, editableCashMovementKindSchema } from '@bettertrack/contracts';
+import {
+  CASH_MOVEMENTS_DEFAULT_LIMIT,
+  customAssetCategorySchema,
+  editableCashMovementKindSchema,
+} from '@bettertrack/contracts';
 
 import type { AssetRow } from '../../data/schema';
 import { newId } from '../../data/ids';
@@ -277,13 +282,14 @@ export interface PortfolioService {
     opts?: { baseCurrency?: string },
   ): Promise<PortfolioResponse>;
   /**
-   * The portfolio's cash movements (all sources) + rolled-up balance + the
-   * sources with per-source balances — the liquidity split (§14, #220, V3-P3).
+   * One newest-first page of the portfolio's cash movements + rolled-up balance
+   * + sources with per-source balances — the liquidity split (§14, #220,
+   * V3-P3).
    */
   getCashMovements(
     userId: string,
     portfolioId: string,
-    opts?: { source?: string },
+    opts?: CashMovementsQuery,
   ): Promise<CashMovementsResponse>;
   /** The portfolio's cash sources with balances, Main first (V3-P3). */
   listCashSources(
@@ -2012,27 +2018,34 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       // Materialise Main so even an untouched portfolio answers with its
       // default source (V3-P3) — mirrors listPortfolios' behavior.
       await cashSourceRepo.getOrCreateMain(portfolioId);
-      const [{ records, balanceBySource, totalEur }, sources] = await Promise.all([
-        loadCashState(portfolioId),
+      const [page, balances, sources] = await Promise.all([
+        cashMovementRepo.listPageForPortfolio(portfolioId, {
+          cursor: opts?.cursor,
+          limit: opts?.limit ?? CASH_MOVEMENTS_DEFAULT_LIMIT,
+          source: opts?.source,
+          tag: opts?.tag,
+        }),
+        cashMovementRepo.balancesForPortfolio(portfolioId),
         // Archived sources are included here so every historical movement can
         // resolve its source's name; active listings use listCashSources.
         cashSourceRepo.listForPortfolio(portfolioId, { includeArchived: true }),
       ]);
-      // Source-tag filter (V5-P0c): the returned movements are narrowed to the
-      // requested tag, but balances still roll up the FULL ledger — a filter is
-      // a view, never a re-computation of net worth.
-      const visible = opts?.source ? records.filter((r) => r.source === opts.source) : records;
+      const balanceBySource = new Map(
+        balances.map((row) => [row.sourceId, floorCents(row.balanceEur)]),
+      );
+      const totalEur = floorCents(balances.reduce((sum, row) => sum + row.balanceEur, 0));
       // One extra query for the whole page's labels (V5 cash fusion) — the
       // tagged ledger is what the Cash flow tab renders, so resolving them per
       // movement would be N+1 on the busiest read in the area.
       const tagsByMovement = await cashTagRepo.tagIdsForMovements(
         portfolioId,
-        visible.map((r) => r.id),
+        page.items.map((r) => r.id),
       );
       return {
         balanceEur: totalEur,
-        movements: visible.map((r) => movementToDto(r, tagsByMovement.get(r.id) ?? [])),
+        movements: page.items.map((r) => movementToDto(r, tagsByMovement.get(r.id) ?? [])),
         sources: sources.map((s) => sourceToDto(s, balanceBySource.get(s.id) ?? 0)),
+        nextCursor: page.nextCursor,
       };
     },
 

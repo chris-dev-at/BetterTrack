@@ -981,25 +981,37 @@ export const cashMovementSchema = z
 export type CashMovement = z.infer<typeof cashMovementSchema>;
 
 /**
- * `GET /portfolios/:id/cash` response — every movement (all sources,
- * chronological), the portfolio's rolled-up balance across all sources, and the
- * sources themselves (archived ones included, so historical movements can
- * always resolve their source's name) with per-source balances — the liquidity
- * split (V3-P3).
+ * `GET /portfolios/:id/cash?cursor=` response — one newest-first movement page,
+ * the portfolio's rolled-up balance across all sources, and the sources
+ * themselves (archived ones included, so historical movements can always
+ * resolve their source's name) with per-source balances — the liquidity split
+ * (V3-P3).
  */
 export const cashMovementsResponseSchema = z
   .object({
     balanceEur: z.number(),
     movements: z.array(cashMovementSchema),
     sources: z.array(cashSourceSchema),
+    nextCursor: z.string().uuid().nullable(),
   })
   .strict();
 export type CashMovementsResponse = z.infer<typeof cashMovementsResponseSchema>;
 
-/** `GET /portfolios/:id/cash?source=` query — optional source-tag filter (V5-P0c). */
+/** Default page size for `GET /portfolios/:id/cash`. */
+export const CASH_MOVEMENTS_DEFAULT_LIMIT = 50 as const;
+export const CASH_MOVEMENT_UNTAGGED_FILTER = 'untagged' as const;
+
+/**
+ * Cursor pagination for the cash ledger. `tag` is a cash-flow label id; the
+ * sentinel selects rows with no labels. `source` remains the provenance filter
+ * added in V5-P0c.
+ */
 export const cashMovementsQuerySchema = z
   .object({
+    cursor: z.string().uuid().optional(),
+    limit: z.coerce.number().int().min(1).max(200).optional(),
     source: sourceTagSchema.optional(),
+    tag: z.union([z.string().uuid(), z.literal(CASH_MOVEMENT_UNTAGGED_FILTER)]).optional(),
   })
   .strict();
 export type CashMovementsQuery = z.infer<typeof cashMovementsQuerySchema>;

@@ -1,4 +1,4 @@
-import { keepPreviousData, useQuery } from '@tanstack/react-query';
+import { keepPreviousData, useInfiniteQuery, useQuery } from '@tanstack/react-query';
 import { useState } from 'react';
 import { Link } from 'react-router-dom';
 
@@ -104,10 +104,13 @@ export function CashOverviewPage() {
     enabled: portfolioId !== null,
     staleTime: 30_000,
   });
-  const movementsQuery = useQuery({
-    queryKey: ['portfolio', portfolioId, 'cash'],
-    queryFn: ({ signal }) => getCashMovements(portfolioId!, signal),
+  const movementsQuery = useInfiniteQuery({
+    queryKey: ['portfolio', portfolioId, 'cash', 'recent', RECENT_LIMIT],
+    queryFn: ({ pageParam, signal }: { pageParam: string | undefined; signal: AbortSignal }) =>
+      getCashMovements(portfolioId!, { cursor: pageParam, limit: RECENT_LIMIT }, signal),
     enabled: portfolioId !== null,
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
     staleTime: 30_000,
   });
 
@@ -140,9 +143,8 @@ export function CashOverviewPage() {
   const sources = sortSourcesMainFirst(activeSources(sourcesQuery.data?.sources ?? []));
   const totalCash = sources.reduce((sum, source) => sum + source.balanceEur, 0);
 
-  const recent: CashMovement[] = [...(movementsQuery.data?.movements ?? [])]
-    .sort((a, b) => new Date(b.executedAt).getTime() - new Date(a.executedAt).getTime())
-    .slice(0, RECENT_LIMIT);
+  const recent: CashMovement[] =
+    movementsQuery.data?.pages.flatMap((page) => page.movements).slice(0, RECENT_LIMIT) ?? [];
 
   // Scaled to the largest tag — see the note at the top of the file on why NOT
   // to the month's total.

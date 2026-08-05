@@ -1,5 +1,8 @@
 import {
+  CASH_MOVEMENTS_DEFAULT_LIMIT,
+  CASH_MOVEMENT_UNTAGGED_FILTER,
   cashEntryRequestSchema,
+  cashMovementsQuerySchema,
   cashMovementsResponseSchema,
   cashMovementResponseSchema,
   cashMovementSchema,
@@ -41,6 +44,7 @@ import {
   VAULT_ENTITY_KINDS,
   VAULT_ENTITY_ROW_SCHEMAS,
   type CashEntryRequest,
+  type CashMovementsQuery,
   type CashMovementsResponse,
   type CashMovementResponse,
   type CashPreviewRequest,
@@ -255,7 +259,11 @@ export interface VaultPortfolioStore {
     sourceId: string,
     options?: { baseSeq?: number },
   ): Promise<CashSource>;
-  getCashMovements(portfolioId: string, signal?: AbortSignal): Promise<CashMovementsResponse>;
+  getCashMovements(
+    portfolioId: string,
+    params?: CashMovementsQuery,
+    signal?: AbortSignal,
+  ): Promise<CashMovementsResponse>;
   previewCash(
     portfolioId: string,
     body: CashPreviewRequest,
@@ -874,17 +882,34 @@ export function createVaultPortfolioStore(
       return currentCashSource(requireDocument(engine), entity);
     },
 
-    async getCashMovements(portfolioId, signal) {
+    async getCashMovements(portfolioId, params = {}, signal) {
       signal?.throwIfAborted();
       const document = requireDocument(engine);
       requirePortfolio(document, portfolioId);
+      const parsedParams = cashMovementsQuerySchema.parse(params);
       const all = liveEntities(document, 'cashMovement')
         .filter((entity) => stringField(entity.data, 'portfolioId') === portfolioId)
         .map(cashMovementFromEntity)
+        .filter((movement) => {
+          if (parsedParams.source != null && movement.source !== parsedParams.source) return false;
+          if (parsedParams.tag == null) return true;
+          const tags = movement.tags ?? [];
+          return parsedParams.tag === CASH_MOVEMENT_UNTAGGED_FILTER
+            ? tags.length === 0
+            : tags.includes(parsedParams.tag);
+        })
         .sort(
           (left, right) =>
-            left.executedAt.localeCompare(right.executedAt) || left.id.localeCompare(right.id),
+            right.executedAt.localeCompare(left.executedAt) || left.id.localeCompare(right.id),
         );
+      const cursorIndex =
+        parsedParams.cursor == null
+          ? -1
+          : all.findIndex((movement) => movement.id === parsedParams.cursor);
+      const start =
+        parsedParams.cursor == null ? 0 : cursorIndex < 0 ? all.length : cursorIndex + 1;
+      const limit = parsedParams.limit ?? CASH_MOVEMENTS_DEFAULT_LIMIT;
+      const page = all.slice(start, start + limit);
       const balances = cashBalancesBySource(domainCashMovements(document, portfolioId));
       const sources = liveEntities(document, 'cashSource')
         .filter((entity) => stringField(entity.data, 'portfolioId') === portfolioId)
@@ -895,8 +920,9 @@ export function createVaultPortfolioStore(
         // (`transferCash`, `setCashBalance`, `previewCash`) and like the
         // server's `loadCashState().totalEur`.
         balanceEur: floorCents([...balances.values()].reduce((sum, value) => sum + value, 0)),
-        movements: all,
+        movements: page,
         sources,
+        nextCursor: start + page.length < all.length ? (page.at(-1)?.id ?? null) : null,
       });
     },
 

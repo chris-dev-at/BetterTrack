@@ -100,10 +100,45 @@ beforeEach(() => {
     balanceEur: 0,
     movements: [],
     sources: [],
+    nextCursor: null,
   } as unknown as Awaited<ReturnType<typeof getCashMovements>>);
 });
 
 describe('CashOverviewPage', () => {
+  test('requests only the bounded recent movement page', async () => {
+    vi.mocked(getCashMovements).mockResolvedValue({
+      balanceEur: 25,
+      movements: [
+        {
+          id: 'movement-recent',
+          sourceId: 'source-main',
+          kind: 'deposit',
+          amountEur: 25,
+          transactionId: null,
+          transferId: null,
+          counterpartSourceId: null,
+          dividendId: null,
+          taxYear: null,
+          executedAt: '2026-07-15T10:00:00.000Z',
+          note: 'Recent deposit',
+          source: 'manual',
+          createdAt: '2026-07-15T10:00:00.000Z',
+        },
+      ],
+      sources: [],
+      nextCursor: 'older-cursor',
+    } as Awaited<ReturnType<typeof getCashMovements>>);
+    renderPage();
+
+    expect(await screen.findByText('Recent deposit')).toBeInTheDocument();
+    expect(getCashMovements).toHaveBeenCalledWith(
+      'p1',
+      { cursor: undefined, limit: 5 },
+      expect.anything(),
+    );
+    expect(getCashMovements).toHaveBeenCalledTimes(1);
+  });
+
   test('390px keeps account actions touchable and opens the cash sheet', async () => {
     setViewportWidth(390);
     vi.mocked(listCashSources).mockResolvedValue({

@@ -1,5 +1,6 @@
 import type {
   CashEntryRequest,
+  CashMovementsQuery,
   CashMovementsResponse,
   CashMovementResponse,
   CashPreviewRequest,
@@ -122,7 +123,11 @@ export interface PortfolioStore {
     sourceId: string,
     options?: { baseSeq?: number },
   ): Promise<CashSource>;
-  getCashMovements(portfolioId: string, signal?: AbortSignal): Promise<CashMovementsResponse>;
+  getCashMovements(
+    portfolioId: string,
+    params?: CashMovementsQuery,
+    signal?: AbortSignal,
+  ): Promise<CashMovementsResponse>;
   previewCash(
     portfolioId: string,
     body: CashPreviewRequest,

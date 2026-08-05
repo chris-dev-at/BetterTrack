@@ -159,6 +159,37 @@ describe('cash tags', () => {
     expect((await listTags(agent)).some((t) => t.id === tag.id)).toBe(false);
   });
 
+  it('filters cash pages by one tag or by the untagged sentinel', async () => {
+    const agent = await newUserAgent('filter@bettertrack.test', 'filteruser');
+    const portfolioId = await defaultPortfolioId(agent);
+    const food = await createTag(agent, 'Food');
+    const tagged = await deposit(agent, portfolioId, 25, '2026-07-02T10:00:00.000Z');
+    const untagged = await deposit(agent, portfolioId, 10, '2026-07-01T10:00:00.000Z');
+    expect((await setTags(agent, tagged.id, [food.id])).status).toBe(200);
+    // Deposits are auto-stamped with their system tag; remove it to exercise
+    // the explicit untagged view.
+    expect((await setTags(agent, untagged.id, [])).status).toBe(200);
+
+    const foodPage = await agent.get(
+      `/api/v1/portfolios/${portfolioId}/cash?tag=${food.id}&limit=1`,
+    );
+    expect(foodPage.status).toBe(200);
+    expect(foodPage.body.movements.map((movement: CashMovement) => movement.id)).toEqual([
+      tagged.id,
+    ]);
+    expect(foodPage.body.nextCursor).toBeNull();
+
+    const untaggedPage = await agent.get(
+      `/api/v1/portfolios/${portfolioId}/cash?tag=untagged&limit=1`,
+    );
+    expect(untaggedPage.status).toBe(200);
+    expect(untaggedPage.body.movements.map((movement: CashMovement) => movement.id)).toEqual([
+      untagged.id,
+    ]);
+    // Filtering is a view: both pages retain the full portfolio balance.
+    expect(untaggedPage.body.balanceEur).toBe(35);
+  });
+
   it('refuses a name that differs only in case', async () => {
     const agent = await newUserAgent('dupe@bettertrack.test', 'dupeuser');
     await createTag(agent, 'Food');

@@ -156,7 +156,12 @@ function storeWithSell(current: {
       ],
       nextCursor: null,
     })),
-    getCashMovements: vi.fn(async () => ({ balanceEur: 0, movements: [], sources: [] })),
+    getCashMovements: vi.fn(async () => ({
+      balanceEur: 0,
+      movements: [],
+      sources: [],
+      nextCursor: null,
+    })),
     getPortfolioTaxSettings: vi.fn(async () => ({
       effective: current,
       override: current,
@@ -223,6 +228,7 @@ describe('buildNormalVaultDocument', () => {
         balanceEur: 0,
         movements: [],
         sources: [],
+        nextCursor: null,
       })),
       getPortfolioTaxSettings: vi.fn(async () => ({
         effective: { mode: 'none' as const, country: null },
@@ -372,6 +378,7 @@ describe('buildNormalVaultDocument', () => {
             tags: [SYSTEM_TAG_ID, USER_TAG_ID],
           },
         ],
+        nextCursor: null,
       })),
       getPortfolioTaxSettings: vi.fn(async () => ({
         effective: { mode: 'none' as const, country: null },
@@ -788,6 +795,7 @@ describe('buildNormalVaultDocument', () => {
           },
         ],
         movements: [...ledger],
+        nextCursor: null,
       })),
       getPortfolioTaxSettings: vi.fn(async () => ({
         effective: { mode: 'none' as const, country: null },
@@ -897,7 +905,12 @@ describe('buildNormalVaultDocument', () => {
         ],
         nextCursor: null,
       })),
-      getCashMovements: vi.fn(async () => ({ balanceEur: 0, movements: [], sources: [] })),
+      getCashMovements: vi.fn(async () => ({
+        balanceEur: 0,
+        movements: [],
+        sources: [],
+        nextCursor: null,
+      })),
       getPortfolioTaxSettings: vi.fn(async () => ({
         effective: { mode: 'none' as const, country: null },
         override: null,
@@ -1052,7 +1065,12 @@ describe('buildNormalVaultDocument', () => {
         ],
       })),
       listTransactions: vi.fn(async () => ({ items: [], nextCursor: null })),
-      getCashMovements: vi.fn(async () => ({ balanceEur: 0, movements: [], sources: [] })),
+      getCashMovements: vi.fn(async () => ({
+        balanceEur: 0,
+        movements: [],
+        sources: [],
+        nextCursor: null,
+      })),
       getPortfolioTaxSettings: vi.fn(async () => ({
         effective: { mode: 'none' as const, country: null },
         override: null,

@@ -140,6 +140,15 @@ describe('OpenAPI document', () => {
     const notifications = (paths['/notifications'] as JsonObject).get as JsonObject;
     expect(notifications.security).toEqual([{ sessionCookie: [] }, { apiKeyBearer: [] }]);
 
+    // The cash endpoint changed from an unbounded chronological ledger to a
+    // bounded newest-first page. External clients must see both semantics in
+    // the generated reference instead of discovering truncation implicitly.
+    const cashMovements = (paths['/portfolios/{portfolioId}/cash'] as JsonObject).get as JsonObject;
+    expect(cashMovements.description).toContain('newest first');
+    expect(cashMovements.description).toContain(
+      `at most ${contracts.CASH_MOVEMENTS_DEFAULT_LIMIT} rows`,
+    );
+
     // #1041: every documented cash-classification operation derives bearer
     // admission from the /cash module policy. No endpoint-specific OpenAPI
     // override is allowed to drift from the middleware table.

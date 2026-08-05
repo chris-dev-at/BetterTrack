@@ -1,7 +1,7 @@
-import { and, asc, eq, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, exists, gt, lt, notExists, or, sql } from 'drizzle-orm';
 
 import type { Database } from '../db';
-import { portfolioCashMovements } from '../schema';
+import { cashMovementTags, portfolioCashMovements } from '../schema';
 import type { CashMovementRow } from '../schema';
 import { restampMovementTags, stampMovementTags } from './cashSystemTagStamp';
 
@@ -275,6 +275,86 @@ export function createCashMovementRepository(db: Database) {
      */
     async listForPortfolio(portfolioId: string): Promise<CashMovementRecord[]> {
       return listPortfolioCashMovementsInTransaction(db, portfolioId);
+    },
+
+    /**
+     * Newest-first display page, ordered by execution time and then id. The
+     * UUID cursor resolves its execution time server-side so backdated rows and
+     * equal timestamps cannot create gaps or duplicates across page boundaries.
+     */
+    async listPageForPortfolio(
+      portfolioId: string,
+      params: { limit: number; cursor?: string; source?: string; tag?: string },
+    ): Promise<{ items: CashMovementRecord[]; nextCursor: string | null }> {
+      const [cursorRow] = params.cursor
+        ? await db
+            .select({
+              id: portfolioCashMovements.id,
+              executedAt: portfolioCashMovements.executedAt,
+            })
+            .from(portfolioCashMovements)
+            .where(
+              and(
+                eq(portfolioCashMovements.portfolioId, portfolioId),
+                eq(portfolioCashMovements.id, params.cursor),
+              ),
+            )
+            .limit(1)
+        : [];
+      if (params.cursor && !cursorRow) return { items: [], nextCursor: null };
+
+      const tagged = db
+        .select({ id: cashMovementTags.id })
+        .from(cashMovementTags)
+        .where(
+          and(
+            eq(cashMovementTags.movementId, portfolioCashMovements.id),
+            params.tag && params.tag !== 'untagged'
+              ? eq(cashMovementTags.tagId, params.tag)
+              : undefined,
+          ),
+        );
+      const rows = await db
+        .select()
+        .from(portfolioCashMovements)
+        .where(
+          and(
+            eq(portfolioCashMovements.portfolioId, portfolioId),
+            params.source ? eq(portfolioCashMovements.source, params.source) : undefined,
+            params.tag === 'untagged' ? notExists(tagged) : params.tag ? exists(tagged) : undefined,
+            cursorRow
+              ? or(
+                  lt(portfolioCashMovements.executedAt, cursorRow.executedAt),
+                  and(
+                    eq(portfolioCashMovements.executedAt, cursorRow.executedAt),
+                    gt(portfolioCashMovements.id, cursorRow.id),
+                  ),
+                )
+              : undefined,
+          ),
+        )
+        .orderBy(desc(portfolioCashMovements.executedAt), asc(portfolioCashMovements.id))
+        .limit(params.limit + 1);
+
+      const hasMore = rows.length > params.limit;
+      const page = hasMore ? rows.slice(0, params.limit) : rows;
+      const items = page.map(toRecord);
+      return { items, nextCursor: hasMore ? (items.at(-1)?.id ?? null) : null };
+    },
+
+    /** Per-source cash totals without materialising the movement ledger. */
+    async balancesForPortfolio(
+      portfolioId: string,
+    ): Promise<Array<{ sourceId: string; balanceEur: number }>> {
+      const rows = await db
+        .select({
+          sourceId: portfolioCashMovements.sourceId,
+          balanceEur: sql<string>`coalesce(sum(${portfolioCashMovements.amountEur}), 0)`,
+        })
+        .from(portfolioCashMovements)
+        .where(eq(portfolioCashMovements.portfolioId, portfolioId))
+        .groupBy(portfolioCashMovements.sourceId);
+      return rows.map((row) => ({ sourceId: row.sourceId, balanceEur: Number(row.balanceEur) }));
     },
 
     /**

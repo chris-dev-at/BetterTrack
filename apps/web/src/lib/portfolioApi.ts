@@ -26,6 +26,7 @@ import {
   type CashDeletionResponse,
   type CashEntryRequest,
   type CashMovementResponse,
+  type CashMovementsQuery,
   type CashMovementsResponse,
   type CashPreviewRequest,
   type CashPreviewResponse,
@@ -353,12 +354,14 @@ export async function clearPortfolioTaxOverride(
 
 // --- Cash ledger ("Bargeld") -------------------------------------------------
 
-/** `GET /portfolios/:id/cash` — cash movements + current balance (§14, #220). */
+/** `GET /portfolios/:id/cash?cursor=` — newest-first cash movement page + balance. */
 export async function getCashMovements(
   portfolioId: string,
+  params: CashMovementsQuery = {},
   signal?: AbortSignal,
 ): Promise<CashMovementsResponse> {
   const data = await apiRequest<unknown>(`/portfolios/${encodeURIComponent(portfolioId)}/cash`, {
+    query: params,
     signal,
   });
   return cashMovementsResponseSchema.parse(data);

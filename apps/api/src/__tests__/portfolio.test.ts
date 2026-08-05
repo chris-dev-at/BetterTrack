@@ -1981,6 +1981,53 @@ describe('Portfolio cash ledger', () => {
     expect(res.status).toBe(401);
   });
 
+  it('paginates newest-first without gaps at equal execution timestamps', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
+    const inputs = [
+      { note: 'oldest', executedAt: '2026-01-01T10:00:00.000Z' },
+      { note: 'same first', executedAt: '2026-01-02T10:00:00.000Z' },
+      { note: 'same second', executedAt: '2026-01-02T10:00:00.000Z' },
+      { note: 'newest', executedAt: '2026-01-03T10:00:00.000Z' },
+    ];
+    const created: Array<{ id: string; executedAt: string }> = [];
+    for (const input of inputs) {
+      const response = await agent
+        .post(`/api/v1/portfolios/${pid}/cash/deposit`)
+        .set(...XRW)
+        .send({ amountEur: 10, ...input });
+      expect(response.status).toBe(201);
+      created.push(response.body.movement);
+    }
+    const expectedIds = [...created]
+      .sort(
+        (left, right) =>
+          right.executedAt.localeCompare(left.executedAt) || left.id.localeCompare(right.id),
+      )
+      .map((movement) => movement.id);
+
+    const first = await agent.get(`/api/v1/portfolios/${pid}/cash?limit=2`);
+    expect(first.status).toBe(200);
+    expect(cashMovementsResponseSchema.safeParse(first.body).success).toBe(true);
+    expect(first.body.movements.map((movement: { id: string }) => movement.id)).toEqual(
+      expectedIds.slice(0, 2),
+    );
+    expect(first.body.nextCursor).toBe(expectedIds[1]);
+    expect(first.body.balanceEur).toBe(40);
+
+    const second = await agent.get(
+      `/api/v1/portfolios/${pid}/cash?limit=2&cursor=${first.body.nextCursor}`,
+    );
+    expect(second.status).toBe(200);
+    expect(cashMovementsResponseSchema.safeParse(second.body).success).toBe(true);
+    expect(second.body.movements.map((movement: { id: string }) => movement.id)).toEqual(
+      expectedIds.slice(2),
+    );
+    expect(second.body.nextCursor).toBeNull();
+    expect([...first.body.movements, ...second.body.movements]).toHaveLength(4);
+  });
+
   it('classic movements carry the V3-P4 linkage fields as nulls (wire-shape stability)', async () => {
     const user = await harness.seedUser();
     const agent = await loginAgent(harness.app, user.email, user.password);
