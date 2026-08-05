@@ -67,6 +67,11 @@ export function markRateLimitHandledLocally(signal: AbortSignal): AbortSignal {
   return signal;
 }
 
+/** The read half of {@link markRateLimitHandledLocally}. */
+export function isRateLimitHandledLocally(signal: AbortSignal | null | undefined): boolean {
+  return signal != null && LOCALLY_HANDLED_RATE_LIMIT_SIGNALS.has(signal);
+}
+
 export type ApiFailureClassification = 'outage' | 'confirmed-domain-outcome' | 'unknown';
 
 const CONFIRMED_DOMAIN_STATUSES = new Set([401, 403, 404]);
@@ -238,9 +243,7 @@ export async function apiRequest<T>(path: string, options: RequestOptions = {}):
         )
       : new ApiError(response.status, 'UNKNOWN', 'Request failed.', undefined, retryAfterSeconds);
     const rateLimitHandledLocally =
-      error.status === 429 &&
-      options.signal != null &&
-      LOCALLY_HANDLED_RATE_LIMIT_SIGNALS.has(options.signal);
+      error.status === 429 && isRateLimitHandledLocally(options.signal);
     if (!options.suppressAuthRedirect && !rateLimitHandledLocally) notifyAuthPolicy(error);
     throw error;
   }

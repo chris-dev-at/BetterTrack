@@ -3571,7 +3571,10 @@
       "progress": {
         "preparing": "Geschützte Übertragung wird vorbereitet…",
         "migrate": "Vollständige Portfoliodaten werden auf diesem Gerät gesammelt…",
-        "captureRequests": "{{count}} Datenbereiche wurden sicher gesammelt.",
+        "captureRequests": {
+          "one": "1 Datenbereich wurde sicher gesammelt.",
+          "other": "{{count}} Datenbereiche wurden sicher gesammelt."
+        },
         "validate": "Es wird geprüft, ob sich der vorbereitete Tresor öffnen und zurückholen lässt…",
         "encrypt": "Der Tresor wird auf diesem Gerät verschlüsselt…",
         "write-server": "Die verschlüsselte BetterTrack-Kopie wird gespeichert…",
@@ -3596,8 +3599,8 @@
         "transitionConflict": "Ein anderer Datenschutzwechsel wird noch abgeschlossen. Warte kurz und versuche es erneut.",
         "normalDataChanged": "Dein Konto hat sich geändert, während die verschlüsselte Kopie vorbereitet wurde, deshalb hat BetterTrack vor dem Löschen abgebrochen. Es ging nichts verloren — starte den Wechsel erneut, damit die neuesten Daten enthalten sind.",
         "captureUnstable": "Dein Konto hat sich während des Sammelns immer wieder geändert, deshalb konnte keine vollständige Kopie erstellt werden und es wurde nichts geändert. Schließe BetterTrack in anderen Tabs und auf anderen Geräten und starte den Wechsel dann erneut.",
-        "captureRateLimited": "Beim Sammeln der Daten wurde das BetterTrack-Anfragelimit erreicht. Es wurde nichts geändert. Warte {{seconds}} Sekunden und starte den Wechsel dann erneut.",
-        "captureRateLimitedUnknown": "Beim Sammeln der Daten wurde das BetterTrack-Anfragelimit erreicht. Es wurde nichts geändert. Warte, bis das Anfragefenster zurückgesetzt wurde, und starte den Wechsel dann erneut.",
+        "rateLimited": "Beim Wechsel wurde das BetterTrack-Anfragelimit erreicht, bevor etwas geändert wurde. Warte {{seconds}} Sekunden und starte den Wechsel dann erneut.",
+        "rateLimitedUnknown": "Beim Wechsel wurde das BetterTrack-Anfragelimit erreicht, bevor etwas geändert wurde. Warte, bis das Anfragefenster zurückgesetzt wurde, und starte den Wechsel dann erneut.",
         "unknown": "Der paranoide Modus konnte nicht aktiviert werden. Dein normales Konto ist unverändert."
       }
     },

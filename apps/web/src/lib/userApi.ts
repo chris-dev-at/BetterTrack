@@ -169,13 +169,24 @@ export async function getParanoidNormalRevision(
   return paranoidNormalRevisionResponseSchema.parse(data);
 }
 
-/** Commit the destructive normal → paranoid transition after every medium verified its blob. */
+/**
+ * Commit the destructive normal → paranoid transition after every medium
+ * verified its blob.
+ *
+ * The optional signal is NOT a cancel handle — the wizard has no cancel
+ * affordance past this point. It carries the wizard's
+ * `markRateLimitHandledLocally` tag, so a 429 on the commit is reported
+ * by the wizard's own stage copy instead of the app-wide "you're doing that too
+ * fast" banner.
+ */
 export async function enableParanoidMode(
   body: ParanoidEnableRequest,
+  signal?: AbortSignal,
 ): Promise<ParanoidEnableResponse> {
   const data = await apiRequest<unknown>('/account/paranoid/enable', {
     method: 'POST',
     body,
+    signal,
   });
   return paranoidEnableResponseSchema.parse(data);
 }

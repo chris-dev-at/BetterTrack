@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   enable: vi.fn(),
   deliver: vi.fn(),
   migrate: vi.fn(),
+  commitApi: vi.fn(),
   authorizeDriveStorage: vi.fn(),
   unlockWithPassphrase: vi.fn(),
 }));
@@ -43,9 +44,15 @@ vi.mock('./enable', async (importOriginal) => {
     enablePreparedVault: mocks.enable,
   };
 });
+// Only the commit endpoint is stubbed; every other user API stays real so the
+// modules under test keep their genuine imports.
+vi.mock('../../../lib/userApi', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../lib/userApi')>();
+  return { ...actual, enableParanoidMode: mocks.commitApi };
+});
 
 import { ParanoidEnableWizard } from './ParanoidEnableWizard';
-import { ApiError } from '../../../lib/apiClient';
+import { ApiError, isRateLimitHandledLocally } from '../../../lib/apiClient';
 import { VaultEnableError } from './enable';
 import { VaultCaptureUnstableError } from './migration';
 
@@ -197,10 +204,13 @@ describe('ParanoidEnableWizard', () => {
     );
   });
 
-  it('shows capture progress while the request-budget queue advances', async () => {
+  it.each([
+    [1, '1 data section collected safely.'],
+    [23, '23 data sections collected safely.'],
+  ])('shows capture progress for %i completed reads', async (completedRequests, expected) => {
     mocks.migrate.mockImplementation(
       async (options: { onProgress?: (progress: { completedRequests: number }) => void }) => {
-        options.onProgress?.({ completedRequests: 23 });
+        options.onProgress?.({ completedRequests });
         return {
           document: { schemaVersion: 1, entities: {}, mergeLog: [] },
           normalDataRevision: 'r1',
@@ -244,13 +254,98 @@ describe('ParanoidEnableWizard', () => {
     await user.click(screen.getByRole('checkbox', { name: /my data is gone forever/i }));
     await user.click(screen.getByRole('button', { name: 'Enable Paranoid mode' }));
 
-    expect(await screen.findByText('23 data sections collected safely.')).toBeInTheDocument();
+    expect(await screen.findByText(expected)).toBeInTheDocument();
   });
 
-  it('names the capture stage and server wait when rate limiting still occurs', async () => {
+  // Rate limiting is not a capture-only hazard: the commit is a request too, and
+  // its 429 is equally invisible to the global banner (the wizard opts every one
+  // of its calls out of it), so every stage has to reach the same named-wait copy.
+  it.each(['migrate', 'commit'] as const)(
+    'names the server wait when rate limiting hits the %s stage',
+    async (stage) => {
+      mocks.enable.mockRejectedValue(
+        new VaultEnableError(stage, 'stage failed', {
+          cause: new ApiError(429, 'RATE_LIMITED', 'Too many requests.', undefined, 37),
+        }),
+      );
+      const user = userEvent.setup();
+      render(<ParanoidEnableWizard onCancel={() => {}} onEnabled={() => {}} />);
+
+      await user.click(screen.getByRole('button', { name: 'Continue' }));
+      await user.click(screen.getByRole('button', { name: 'Continue' }));
+      await user.type(
+        screen.getByLabelText('Vault passphrase'),
+        'correct horse battery staple 729',
+      );
+      await user.type(
+        screen.getByLabelText('Confirm vault passphrase'),
+        'correct horse battery staple 729',
+      );
+      await user.click(screen.getByRole('button', { name: 'Download recovery kit' }));
+      await user.click(
+        screen.getByRole('checkbox', { name: 'I have stored my recovery kit safely.' }),
+      );
+      await user.click(screen.getByRole('checkbox', { name: /my data is gone forever/i }));
+      await user.click(screen.getByRole('button', { name: 'Enable Paranoid mode' }));
+
+      expect(await screen.findByRole('alert')).toHaveTextContent(/request limit.*37 seconds/i);
+    },
+  );
+
+  it('opts the commit request out of the app-wide rate-limit banner', async () => {
+    // The capture tags its own reads; the commit is the only other request the
+    // transition puts through `apiRequest`, so it must carry the same tag — or a
+    // commit 429 would fire the global "too fast" banner mid-transition.
+    mocks.commitApi.mockResolvedValue({
+      mode: 'paranoid',
+      mediaSet: ['server'],
+      vaultVersion: 1,
+      completedAt: '2026-07-30T10:00:00.000Z',
+      idempotent: false,
+    });
+    mocks.enable.mockImplementation(
+      async (
+        input: { onStage?: (stage: string) => void },
+        dependencies: { commit(body: unknown): Promise<unknown> },
+      ) => {
+        input.onStage?.('commit');
+        const receipt = await dependencies.commit({
+          mediaSet: ['server'],
+          vaultVersion: 1,
+          driveAttestation: null,
+          normalDataRevision: 'r1',
+        });
+        return { envelope: new Uint8Array([9]), version: 1, receipt };
+      },
+    );
+    const user = userEvent.setup();
+    render(<ParanoidEnableWizard onCancel={() => {}} onEnabled={() => {}} />);
+
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
+    await user.type(screen.getByLabelText('Vault passphrase'), 'correct horse battery staple 729');
+    await user.type(
+      screen.getByLabelText('Confirm vault passphrase'),
+      'correct horse battery staple 729',
+    );
+    await user.click(screen.getByRole('button', { name: 'Download recovery kit' }));
+    await user.click(
+      screen.getByRole('checkbox', { name: 'I have stored my recovery kit safely.' }),
+    );
+    await user.click(screen.getByRole('checkbox', { name: /my data is gone forever/i }));
+    await user.click(screen.getByRole('button', { name: 'Enable Paranoid mode' }));
+
+    expect(mocks.commitApi).toHaveBeenCalledOnce();
+    const [, signal] = mocks.commitApi.mock.calls[0] as [unknown, AbortSignal | undefined];
+    expect(isRateLimitHandledLocally(signal)).toBe(true);
+    // A tag, not a cancel handle: nothing in the wizard can abort it.
+    expect(signal?.aborted).toBe(false);
+  });
+
+  it('leaves non-429 failures on their stage copy', async () => {
     mocks.enable.mockRejectedValue(
       new VaultEnableError('migrate', 'Your existing data could not be prepared safely.', {
-        cause: new ApiError(429, 'RATE_LIMITED', 'Too many requests.', undefined, 37),
+        cause: new ApiError(503, 'UNAVAILABLE', 'Service unavailable.'),
       }),
     );
     const user = userEvent.setup();
@@ -270,6 +365,8 @@ describe('ParanoidEnableWizard', () => {
     await user.click(screen.getByRole('checkbox', { name: /my data is gone forever/i }));
     await user.click(screen.getByRole('button', { name: 'Enable Paranoid mode' }));
 
-    expect(await screen.findByRole('alert')).toHaveTextContent(/Data collection.*37 seconds/i);
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      /Your current data could not be collected completely/i,
+    );
   });
 });

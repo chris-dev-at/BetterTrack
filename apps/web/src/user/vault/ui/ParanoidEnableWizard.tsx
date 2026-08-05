@@ -10,8 +10,9 @@ import {
 } from '@bettertrack/contracts';
 
 import { useT } from '../../../i18n';
-import { ApiError } from '../../../lib/apiClient';
+import { ApiError, markRateLimitHandledLocally } from '../../../lib/apiClient';
 import { apiPortfolioStore } from '../../../lib/portfolioStore';
+import { enableParanoidMode } from '../../../lib/userApi';
 import { Button, CHECKBOX_STYLE, TextField } from '../../components/ui';
 import { useAuth } from '../../AuthContext';
 import { deliverClientDownload } from '../export/deliver';
@@ -115,6 +116,15 @@ export function ParanoidEnableWizard({
     setStep(4);
     setError(null);
     setCaptureCompletedRequests(0);
+    // NOT a cancel handle — nothing can abort this signal, matching the note
+    // below. It exists only to tag the transition's own API calls so a 429 they
+    // hit is answered by this wizard's stage copy instead of the app-wide
+    // "you're doing that too fast" banner. The capture tags its own reads the
+    // same way (`linkedCaptureSignal`); the commit is the only other request
+    // this flow puts through `apiRequest` (both medium writes go out on raw
+    // `fetch`), so between the two every stage that CAN be rate-limited is
+    // covered.
+    const rateLimitScope = markRateLimitHandledLocally(new AbortController().signal);
     let result: Awaited<ReturnType<typeof enablePreparedVault>>;
     try {
       // GIS must start synchronously from this final wizard gesture.
@@ -139,6 +149,7 @@ export function ParanoidEnableWizard({
               signal,
               onProgress: ({ completedRequests }) => setCaptureCompletedRequests(completedRequests),
             }),
+          commit: (body) => enableParanoidMode(body, rateLimitScope),
         },
       );
     } catch (cause) {
@@ -313,9 +324,12 @@ export function ParanoidEnableWizard({
           </p>
           {stage === 'migrate' && captureCompletedRequests > 0 ? (
             <p className="bt-muted text-xs">
-              {t('vault.enable.progress.captureRequests', {
-                count: captureCompletedRequests,
-              })}
+              {t(
+                captureCompletedRequests === 1
+                  ? 'vault.enable.progress.captureRequests.one'
+                  : 'vault.enable.progress.captureRequests.other',
+                { count: captureCompletedRequests },
+              )}
             </p>
           ) : null}
         </div>
@@ -370,11 +384,16 @@ export function ParanoidEnableWizard({
 
 function enableErrorCopy(cause: unknown): EnableErrorCopy {
   if (!(cause instanceof VaultEnableError)) return { key: 'vault.enable.errors.unknown' };
-  if (cause.stage === 'migrate' && cause.cause instanceof ApiError && cause.cause.status === 429) {
+  // A 429 at ANY stage, not just the capture: the limiter answers before the
+  // route runs, so the account is untouched wherever it fires — and because
+  // every request this transition makes is tagged as locally handled, the
+  // app-wide banner stayed silent. This copy is then the ONLY thing that names
+  // the wait, so it must not be reachable only from `migrate`.
+  if (cause.cause instanceof ApiError && cause.cause.status === 429) {
     return cause.cause.retryAfterSeconds == null
-      ? { key: 'vault.enable.errors.captureRateLimitedUnknown' }
+      ? { key: 'vault.enable.errors.rateLimitedUnknown' }
       : {
-          key: 'vault.enable.errors.captureRateLimited',
+          key: 'vault.enable.errors.rateLimited',
           vars: { seconds: cause.cause.retryAfterSeconds },
         };
   }
