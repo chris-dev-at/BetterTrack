@@ -11,7 +11,7 @@ import {
 
 import { auditLog } from '../data/schema';
 import type { MailTransport, OutgoingMail } from '../services/email/transport';
-import { generateTotpCode } from '../services/auth/totp';
+import { generateTotpCode, TOTP_STEP_SECONDS } from '../services/auth/totp';
 import {
   createTestApp,
   type CreateTestAppOptions,
@@ -159,7 +159,7 @@ describe('2FA endpoints — authenticator method (§6.1, §13.2 V2-P5)', () => {
     const disable = await enrolledAgent
       .post('/api/v1/auth/2fa/disable')
       .set(...XRW)
-      .send({ code: generateTotpCode(secret) });
+      .send({ code: generateTotpCode(secret, Date.now() + TOTP_STEP_SECONDS * 1000) });
     expect(disable.status).toBe(200);
 
     expect((await enrolledAgent.get('/api/v1/auth/2fa/status')).status).toBe(401);

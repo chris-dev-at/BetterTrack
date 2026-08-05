@@ -100,23 +100,41 @@ export function generateTotpCode(secret: string, nowMs: number = Date.now()): st
   return hotp(base32Decode(secret), counter, TOTP_DIGITS);
 }
 
+/** The accepted RFC 6238 time-step, persisted by the caller to reject replays. */
+export interface TotpVerification {
+  step: number;
+}
+
 /**
  * Verify a user-supplied code against the secret, accepting ±{@link TOTP_SKEW_STEPS}
- * time steps. Constant-time per candidate; a non-numeric / wrong-length code is
- * rejected outright.
+ * time steps. When `lastAcceptedStep` is supplied, an equal or older matching
+ * step is rejected so a persisted verifier counter cannot be replayed. Constant-
+ * time per candidate; a non-numeric / wrong-length code is rejected outright.
  */
-export function verifyTotp(secret: string, code: string, nowMs: number = Date.now()): boolean {
+export function verifyTotp(
+  secret: string,
+  code: string,
+  nowMs: number = Date.now(),
+  lastAcceptedStep: number | null = null,
+): TotpVerification | null {
   const trimmed = code.trim();
-  if (!new RegExp(`^\\d{${TOTP_DIGITS}}$`).test(trimmed)) return false;
+  if (!new RegExp(`^\\d{${TOTP_DIGITS}}$`).test(trimmed)) return null;
   const key = base32Decode(secret);
   const counter = Math.floor(nowMs / 1000 / TOTP_STEP_SECONDS);
   for (let offset = -TOTP_SKEW_STEPS; offset <= TOTP_SKEW_STEPS; offset += 1) {
-    const candidate = hotp(key, counter + offset, TOTP_DIGITS);
+    const step = counter + offset;
+    const candidate = hotp(key, step, TOTP_DIGITS);
     const a = Buffer.from(candidate);
     const b = Buffer.from(trimmed);
-    if (a.length === b.length && timingSafeEqual(a, b)) return true;
+    if (
+      a.length === b.length &&
+      timingSafeEqual(a, b) &&
+      (lastAcceptedStep === null || step > lastAcceptedStep)
+    ) {
+      return { step };
+    }
   }
-  return false;
+  return null;
 }
 
 // ── Recovery codes ──────────────────────────────────────────────────────────

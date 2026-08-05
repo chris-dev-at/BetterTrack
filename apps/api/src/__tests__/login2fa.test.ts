@@ -12,7 +12,7 @@ import {
 
 import { auditLog, emailLog, type EmailLogRow } from '../data/schema';
 import type { MailTransport, OutgoingMail } from '../services/email/transport';
-import { generateTotpCode } from '../services/auth/totp';
+import { generateTotpCode, TOTP_STEP_SECONDS } from '../services/auth/totp';
 import {
   createTestApp,
   type CreateTestAppOptions,
@@ -153,15 +153,40 @@ describe('login 2FA challenge (§6.1, §13.2 V2-P5)', () => {
     expect(await auditCount(harness, user.id, 'login.success')).toBeGreaterThanOrEqual(1);
   });
 
+  it('rejects one live TOTP code when a second login challenge reuses its step', async () => {
+    const { user, secret } = await setup();
+    const first = twoFactorChallengeResponseSchema.parse(
+      (await login(harness.app, user.email, user.password)).body,
+    );
+    const second = twoFactorChallengeResponseSchema.parse(
+      (await login(harness.app, user.email, user.password)).body,
+    );
+    const code = generateTotpCode(secret);
+
+    const accepted = await request(harness.app)
+      .post('/api/v1/auth/2fa/verify')
+      .set(...XRW)
+      .send({ pendingToken: first.pendingToken, code });
+    expect(accepted.status).toBe(200);
+
+    const replay = await request(harness.app)
+      .post('/api/v1/auth/2fa/verify')
+      .set(...XRW)
+      .send({ pendingToken: second.pendingToken, code });
+    expect(replay.status).toBe(401);
+    expect(replay.body.error.code).toBe('TWO_FACTOR_INVALID_CODE');
+    expect(setsSessionCookie(replay)).toBe(false);
+  });
+
   it('atomically rejects a concurrent replay of one valid pending challenge', async () => {
     const { user, secret } = await setup();
     const challenge = twoFactorChallengeResponseSchema.parse(
       (await login(harness.app, user.email, user.password)).body,
     );
 
-    // Hold both requests at factor verification so they have both loaded the
-    // pending state. Before the atomic claim, this deterministically let both
-    // requests mint separate sessions from one password + TOTP proof.
+    // Hold both requests after factor verification so they have both loaded the
+    // pending state. The TOTP step claim now rejects one before the pending-token
+    // claim; either way only one request can mint a session.
     const verifyTotp = harness.ctx.twoFactor.verifyTotpCode.bind(harness.ctx.twoFactor);
     let arrived = 0;
     let release!: () => void;
@@ -187,7 +212,7 @@ describe('login 2FA challenge (§6.1, §13.2 V2-P5)', () => {
     const rejected = responses.filter((response) => response.status === 401);
     expect(accepted).toHaveLength(1);
     expect(rejected).toHaveLength(1);
-    expect(rejected[0]!.body.error.code).toBe('TWO_FACTOR_PENDING_INVALID');
+    expect(rejected[0]!.body.error.code).toBe('TWO_FACTOR_INVALID_CODE');
     expect(responses.filter(setsSessionCookie)).toHaveLength(1);
   });
 
@@ -328,7 +353,7 @@ describe('login 2FA challenge (§6.1, §13.2 V2-P5)', () => {
     const disabled = await agent
       .post('/api/v1/auth/2fa/disable')
       .set(...XRW)
-      .send({ code: generateTotpCode(secret) });
+      .send({ code: generateTotpCode(secret, Date.now() + TOTP_STEP_SECONDS * 1000) });
     expect(disabled.status).toBe(200);
 
     // Verifying the now-orphaned challenge bounces cleanly instead of stranding
