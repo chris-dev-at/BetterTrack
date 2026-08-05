@@ -7,6 +7,7 @@ import {
   test,
   type APIRequestContext,
   type APIResponse,
+  type Locator,
   type Page,
 } from '@playwright/test';
 import ts from 'typescript';
@@ -964,6 +965,27 @@ async function waitForSettledPaint(page: Page): Promise<void> {
   });
 }
 
+/**
+ * Wait for the measured overlay's entrance motion to reach its final box.
+ *
+ * Two animation frames settle layout and fonts, but they do not finish the
+ * 320ms drawer animation. Measuring that drawer while its `translate` is still
+ * active reports the intentionally off-canvas intermediate position as page
+ * overflow. Limit the wait to the overlay itself: other page animations may be
+ * long-running and are unrelated to the region whose bounds we assert below.
+ */
+async function waitForSettledOverlay(overlay: Locator): Promise<void> {
+  await overlay.evaluate(async (element) => {
+    const finiteAnimations = element.getAnimations().filter((animation) => {
+      const iterations = animation.effect?.getTiming().iterations;
+      return iterations === undefined || Number.isFinite(iterations);
+    });
+    await Promise.all(
+      finiteAnimations.map((animation) => animation.finished.catch(() => undefined)),
+    );
+  });
+}
+
 async function expectPopulatedRouteState(
   page: Page,
   declaredRoute: string,
@@ -1220,6 +1242,7 @@ async function exerciseOverlayScenario(
       `${scenario.label} did not render its populated-state sentinel`,
     ).toContainText(scenario.sentinel(fixtures), { timeout: 20_000 });
   }
+  await waitForSettledOverlay(overlay);
   await waitForSettledPaint(page);
   await expectNoPageOverflow(page, `${scenario.route} — ${scenario.label}`, viewportWidth, true);
   await page.keyboard.press('Escape');
