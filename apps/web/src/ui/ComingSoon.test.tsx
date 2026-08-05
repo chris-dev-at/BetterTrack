@@ -17,3 +17,14 @@ test('description is optional', () => {
   expect(screen.getByRole('heading', { name: 'Backups' })).toBeInTheDocument();
   expect(screen.getByText(/coming soon/i)).toBeInTheDocument();
 });
+
+test('renders the CTA slot when provided', () => {
+  render(
+    <ComingSoon title="Transactions" cta={<a href="/portfolio">Open portfolio overview</a>} />,
+  );
+
+  expect(screen.getByRole('link', { name: 'Open portfolio overview' })).toHaveAttribute(
+    'href',
+    '/portfolio',
+  );
+});

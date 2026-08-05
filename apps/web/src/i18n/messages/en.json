@@ -1704,7 +1704,8 @@
         "import": "Import"
       },
       "transactionsComingSoon": {
-        "description": "The full transaction ledger — every buy and sell, editable, with realized P/L — lands with the Portfolio phase."
+        "description": "View and edit transactions today by expanding a holding on the Overview. The dedicated transaction ledger is still on its way.",
+        "cta": "Open portfolio overview"
       },
       "customAssetsComingSoon": {
         "description": "Track real estate, vehicles, collectibles and other unlisted holdings with a value-points editor."

@@ -10,6 +10,8 @@ export interface ComingSoonProps {
   description?: string;
   /** Optional decorative glyph (emoji or icon node). */
   icon?: ReactNode;
+  /** Optional call-to-action, such as a link or a button. */
+  cta?: ReactNode;
   className?: string;
 }
 
@@ -23,7 +25,7 @@ export interface ComingSoonProps {
  * a dashed-bordered panel with a faint gold wash and a gold flag — present in
  * the IA, honest about waiting on its build. Same props, same copy, same keys.
  */
-export function ComingSoon({ title, description, icon = '🚧', className }: ComingSoonProps) {
+export function ComingSoon({ title, description, icon = '🚧', cta, className }: ComingSoonProps) {
   const t = useT();
   return (
     <section className={cx('bt-parked', className)}>
@@ -33,6 +35,7 @@ export function ComingSoon({ title, description, icon = '🚧', className }: Com
       <span className="bt-parked__flag">{t('common.comingSoon')}</span>
       <h1 className="bt-parked__title">{title}</h1>
       {description ? <p className="bt-parked__body">{description}</p> : null}
+      {cta != null ? <div className="mt-4">{cta}</div> : null}
     </section>
   );
 }
