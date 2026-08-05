@@ -270,6 +270,12 @@ beforeEach(() => {
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 describe('AnalyticsPage — main graph, stats & contribution table', () => {
+  test('uses Analysis as the page heading', async () => {
+    renderPage();
+
+    expect(await screen.findByRole('heading', { name: 'Analysis' })).toBeInTheDocument();
+  });
+
   test('390px contains controls and keeps the contribution identity column sticky', async () => {
     setViewportWidth(390);
     renderPage();

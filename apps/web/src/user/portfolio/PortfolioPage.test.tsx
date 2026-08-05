@@ -597,17 +597,17 @@ describe('PortfolioPage — value chart range toggle', () => {
   });
 });
 
-// ─── Overlay relocated to Analytics (V3-P9, #425) ─────────────────────────────
+// ─── Overlay relocated to Analysis (V3-P9, #425) ──────────────────────────────
 
-describe('PortfolioPage — overlay relocated to Analytics', () => {
+describe('PortfolioPage — overlay relocated to Analysis', () => {
   beforeEach(() => vi.mocked(getPortfolio).mockResolvedValue(PORTFOLIO));
 
-  test('the overview has no overlay toggle and links to the Analytics deep-dive', async () => {
+  test('the overview has no overlay toggle and links to the Analysis deep-dive', async () => {
     renderPage();
     // The value curve loads without the per-asset overlay (§13.3: the overview
     // keeps only the simple curve; the overlay mode moved to Analytics).
-    const link = await screen.findByRole('link', { name: /Analytics/ });
-    // The redesign renames the tab to Analysis (legacy /portfolio/analytics redirects).
+    const link = await screen.findByRole('link', { name: 'Analysis →' });
+    // The route and tab use Analysis (legacy /portfolio/analytics redirects).
     expect(link).toHaveAttribute('href', '/portfolio/analysis');
     // No overlay toggle remains on the overview.
     expect(screen.queryByRole('button', { name: 'Overlay assets' })).not.toBeInTheDocument();
