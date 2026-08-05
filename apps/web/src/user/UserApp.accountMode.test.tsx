@@ -117,9 +117,13 @@ test('paranoid + locked replaces the whole authenticated subtree with the unlock
   renderAt('/portfolio');
 
   expect(await screen.findByText('Unlock your vault', {}, { timeout: 5_000 })).toBeInTheDocument();
-  // The mode gate requested and initialized the real lazy vault runtime before
-  // showing an unlock UI; a paranoid boot cannot defer this until first use.
-  expect(vaultRuntimeMocks.createServerBlobDataHome).toHaveBeenCalled();
+  // The real lazy vault runtime is mounted and reaching for custody, rather than
+  // deferred until something first needs it: the gate's own mount effect starts
+  // the trusted-device unlock, which is what reads the envelope through this seam.
+  // That effect is passive, so React flushes it *after* the commit that painted
+  // the card above — the call is not yet on the books at the moment the heading
+  // becomes findable. Wait for it instead of reading it off that commit.
+  await waitFor(() => expect(vaultRuntimeMocks.createServerBlobDataHome).toHaveBeenCalled());
   // No app chrome either — the gate replaces the shell, not just the page.
   expect(screen.queryByRole('button', { name: 'Account menu' })).not.toBeInTheDocument();
   expect(listPortfolios).not.toHaveBeenCalled();

@@ -108,6 +108,14 @@ export interface PortfolioSeries {
   assets: PortfolioSeriesAsset[];
   /** True when historical days were served from snapshot rows (probe/tests). */
   fromSnapshots: boolean;
+  /**
+   * The two ledgers this series was computed from, as read (#1120 review).
+   * Handed back so the intraday path can place trades and cash movements at
+   * their instants without issuing the same two unbounded queries a second
+   * time on the hottest read in V5-P1.
+   */
+  transactions: readonly TransactionRecord[];
+  cashMovements: readonly CashMovementRecord[];
 }
 
 export interface RecomputeOptions {
@@ -242,12 +250,27 @@ type AssetRecord = Awaited<ReturnType<PortfolioRepository['assetsByIds']>>[numbe
 /** Everything one engine run produces — the writer persists, the fallback serves. */
 interface EngineArtifacts {
   today: string;
+  /** The ledgers the run read, handed to the caller (see {@link PortfolioSeries}). */
+  txns: TransactionRecord[];
+  cashRecords: CashMovementRecord[];
   points: ValuePoint[];
   flows: FlowPoint[];
   perAsset: PortfolioSeriesAsset[];
   holdingsByDate: Map<string, number>;
   costBasisByDate: Map<string, number>;
   cashByDate: Map<string, ReadonlyMap<string, number>>;
+}
+
+/** The no-history payload: empty curves and empty ledgers. */
+function emptySeries(): PortfolioSeries {
+  return {
+    points: [],
+    flows: [],
+    assets: [],
+    fromSnapshots: false,
+    transactions: [],
+    cashMovements: [],
+  };
 }
 
 export function createPortfolioSnapshotService(
@@ -521,6 +544,8 @@ export function createPortfolioSnapshotService(
 
     return {
       today,
+      txns,
+      cashRecords,
       points,
       flows: allFlows,
       perAsset,
@@ -749,7 +774,14 @@ export function createPortfolioSnapshotService(
       return { assetId, points: assetPoints };
     });
 
-    return { points, flows, assets, fromSnapshots: true };
+    return {
+      points,
+      flows,
+      assets,
+      fromSnapshots: true,
+      transactions: txns,
+      cashMovements: cashRecords,
+    };
   }
 
   async function invalidate(portfolioId: string, fromDay: string): Promise<void> {
@@ -805,7 +837,7 @@ export function createPortfolioSnapshotService(
   return {
     async getSeries(portfolioId) {
       if (await deps.isParanoidPortfolio?.(portfolioId)) {
-        return { points: [], flows: [], assets: [], fromSnapshots: false };
+        return emptySeries();
       }
       // State FIRST: everything computed after this read is at least as fresh,
       // so the persist CAS can reject any computation an invalidation raced.
@@ -819,7 +851,7 @@ export function createPortfolioSnapshotService(
           // Stale leftovers from a fully-emptied history — best-effort sweep.
           await snapshotRepo.clear(portfolioId).catch(() => undefined);
         }
-        return { points: [], flows: [], assets: [], fromSnapshots: false };
+        return emptySeries();
       }
 
       const today = todayIso();
@@ -849,7 +881,7 @@ export function createPortfolioSnapshotService(
       // so the next read hits the snapshot path. A failed persist never fails
       // the read.
       const artifacts = await computeArtifacts(portfolioId);
-      if (artifacts === null) return { points: [], flows: [], assets: [], fromSnapshots: false };
+      if (artifacts === null) return emptySeries();
       try {
         await persist(
           portfolioId,
@@ -865,6 +897,8 @@ export function createPortfolioSnapshotService(
         flows: artifacts.flows,
         assets: artifacts.perAsset,
         fromSnapshots: false,
+        transactions: artifacts.txns,
+        cashMovements: artifacts.cashRecords,
       };
     },
 
