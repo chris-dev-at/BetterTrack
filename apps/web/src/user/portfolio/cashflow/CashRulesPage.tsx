@@ -31,6 +31,7 @@ export function CashRulesPage({ embedded = false }: { embedded?: boolean } = {})
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<CashRule | null>(null);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [confirmingApply, setConfirmingApply] = useState(false);
 
   const rulesQuery = useQuery({
     queryKey: CASH_RULES_QUERY_KEY,
@@ -59,13 +60,13 @@ export function CashRulesPage({ embedded = false }: { embedded?: boolean } = {})
 
   /**
    * Rules only tag movements booked AFTER they exist, and a rule is usually
-   * written after the movements it describes. This is the catch-up: additive,
-   * so it can never remove a tag set by hand, which is why it is a button
-   * rather than something that happens on save.
+   * written after the movements it describes. This catch-up can re-apply tags
+   * a user changed or removed by hand, so it always needs an explicit confirm.
    */
   const applyToExisting = useMutation({
     mutationFn: () => applyCashRules(),
     onSuccess: () => {
+      setConfirmingApply(false);
       // Every movement list and every tag-derived total may have moved.
       void queryClient.invalidateQueries({ queryKey: ['portfolio'] });
       void queryClient.invalidateQueries({ queryKey: ['cash'] });
@@ -113,15 +114,33 @@ export function CashRulesPage({ embedded = false }: { embedded?: boolean } = {})
         action={
           <>
             {rules.length > 0 ? (
-              <Button
-                disabled={applyToExisting.isPending}
-                onClick={() => applyToExisting.mutate()}
-                variant="quiet"
-              >
-                {applyToExisting.isPending
-                  ? t('cashflow.rules.applying')
-                  : t('cashflow.rules.applyToExisting')}
-              </Button>
+              confirmingApply ? (
+                <>
+                  <span className="bt-muted" style={{ fontSize: 12 }}>
+                    {t('cashflow.rules.applyConfirm')}
+                  </span>
+                  <Button
+                    disabled={applyToExisting.isPending}
+                    onClick={() => applyToExisting.mutate()}
+                    size="sm"
+                    variant="danger"
+                  >
+                    {applyToExisting.isPending ? t('cashflow.rules.applying') : t('common.confirm')}
+                  </Button>
+                  <Button
+                    disabled={applyToExisting.isPending}
+                    onClick={() => setConfirmingApply(false)}
+                    size="sm"
+                    variant="quiet"
+                  >
+                    {t('common.cancel')}
+                  </Button>
+                </>
+              ) : (
+                <Button onClick={() => setConfirmingApply(true)} variant="quiet">
+                  {t('cashflow.rules.applyToExisting')}
+                </Button>
+              )
             ) : null}
             <Button
               disabled={tags.length === 0}

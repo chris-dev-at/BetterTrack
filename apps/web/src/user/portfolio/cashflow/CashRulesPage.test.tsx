@@ -164,13 +164,35 @@ describe('CashRulesPage', () => {
     expect(await screen.findByText('No rules yet')).toBeInTheDocument();
   });
 
-  test('applies rules to existing movements and reports how many were tagged', async () => {
+  test('does nothing when applying rules to existing movements is cancelled', async () => {
+    vi.mocked(listCashRules).mockResolvedValue({ rules: [rule()] });
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole('button', { name: 'Apply to existing' }));
+
+    expect(
+      await screen.findByText(
+        'Apply these rules to existing movements? This may re-apply tags to movements you manually retagged or untagged.',
+      ),
+    ).toBeInTheDocument();
+    expect(applyCashRules).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole('button', { name: 'Cancel' }));
+
+    expect(applyCashRules).not.toHaveBeenCalled();
+    expect(screen.queryByRole('button', { name: 'Confirm' })).not.toBeInTheDocument();
+  });
+
+  test('applies rules to existing movements only after confirmation and reports how many were tagged', async () => {
     vi.mocked(listCashRules).mockResolvedValue({ rules: [rule()] });
     vi.mocked(applyCashRules).mockResolvedValue({ movementsTagged: 3 });
     const user = userEvent.setup();
     renderPage();
 
     await user.click(await screen.findByRole('button', { name: 'Apply to existing' }));
+    expect(applyCashRules).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: 'Confirm' }));
 
     expect(applyCashRules).toHaveBeenCalledTimes(1);
     expect(await screen.findByText('Tagged 3 movements.')).toBeInTheDocument();
@@ -183,6 +205,7 @@ describe('CashRulesPage', () => {
     renderPage();
 
     await user.click(await screen.findByRole('button', { name: 'Apply to existing' }));
+    await user.click(screen.getByRole('button', { name: 'Confirm' }));
 
     expect(
       await screen.findByText(/every matching movement already carries its tags/i),
