@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
-import type { ComponentType, KeyboardEvent as ReactKeyboardEvent } from 'react';
+import type { ComponentType } from 'react';
 import { createPortal } from 'react-dom';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 
 import { useT, type TranslateFn } from '../../i18n';
 import { cx } from '../../lib/cx';
 import { Button, Icon, Input, type IconName } from '../../ui/origin';
+import { useFocusTrap } from '../components/useFocusTrap';
 import { AccountPanel } from './panels/AccountPanel';
 import { ApiKeysPanel } from './panels/ApiKeysPanel';
 import { AuthorizedAppsPanel } from './panels/AuthorizedAppsPanel';
@@ -314,16 +315,6 @@ function findPanel(id: string | undefined, paranoid = false): ControlPanel {
   );
 }
 
-/** Elements the Tab trap cycles through — the panel itself is the fallback. */
-const FOCUSABLE =
-  'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), summary, [tabindex]:not([tabindex="-1"])';
-
-function focusableIn(panel: HTMLElement): HTMLElement[] {
-  return [...panel.querySelectorAll<HTMLElement>(FOCUSABLE)].filter(
-    (el) => !el.hasAttribute('disabled') && el.getAttribute('aria-hidden') !== 'true',
-  );
-}
-
 /**
  * Is a nested modal (a delete confirm, the one-time token modal…) open above
  * us? Then Escape belongs to IT — the inner dialog closes itself first and the
@@ -368,6 +359,9 @@ export function ControlCenterOverlay({ panel, closeTo = '/' }: ControlCenterOver
   const params = useParams();
   const titleId = useId();
   const panelRef = useRef<HTMLDivElement>(null);
+  const { containerRef: rootRef, onKeyDown } = useFocusTrap<HTMLDivElement>({
+    inertBackground: true,
+  });
   const [filter, setFilter] = useState('');
   const phone = usePhoneShell();
   const paranoid = useResolvedPrivacyMode() === 'paranoid';
@@ -381,16 +375,13 @@ export function ControlCenterOverlay({ panel, closeTo = '/' }: ControlCenterOver
     else navigate(closeTo, { replace: true });
   }, [closeTo, navigate]);
 
-  // Focus into the dialog on open, restore it on close; body scroll is locked
-  // while the popup owns the screen (mirrors ODialog's discipline).
+  // The shared trap owns initial focus, background inerting and restoration;
+  // body scroll stays locked while the popup owns the screen.
   useEffect(() => {
-    const previous = document.activeElement as HTMLElement | null;
-    panelRef.current?.focus();
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
     return () => {
       document.body.style.overflow = previousOverflow;
-      previous?.focus?.();
     };
   }, []);
 
@@ -403,29 +394,6 @@ export function ControlCenterOverlay({ panel, closeTo = '/' }: ControlCenterOver
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
   }, [close]);
-
-  /** Focus trap: Tab cycles inside the panel, never back into the shell. */
-  function onKeyDown(event: ReactKeyboardEvent<HTMLDivElement>) {
-    if (event.key !== 'Tab') return;
-    const panel = panelRef.current;
-    if (!panel) return;
-    const stops = focusableIn(panel);
-    if (stops.length === 0) {
-      event.preventDefault();
-      panel.focus();
-      return;
-    }
-    const first = stops[0]!;
-    const last = stops[stops.length - 1]!;
-    const current = document.activeElement;
-    if (event.shiftKey && (current === first || current === panel)) {
-      event.preventDefault();
-      last.focus();
-    } else if (!event.shiftKey && current === last) {
-      event.preventDefault();
-      first.focus();
-    }
-  }
 
   const needle = filter.trim().toLowerCase();
   const groups = useMemo(
@@ -450,14 +418,19 @@ export function ControlCenterOverlay({ panel, closeTo = '/' }: ControlCenterOver
     // where the app's ink, type scale, gold focus ring and scrollbar styling
     // live. The root carries `bt-app` itself and `bt-cc-root` neutralises its
     // page paint (this is an overlay, not a canvas).
-    <div className="bt-app bt-cc-root">
-      <button aria-label={t('common.close')} className="bt-scrim" onClick={close} type="button" />
+    <div className="bt-app bt-cc-root" onKeyDown={onKeyDown} ref={rootRef} tabIndex={-1}>
+      <button
+        aria-label={t('common.close')}
+        className="bt-scrim"
+        onClick={close}
+        tabIndex={-1}
+        type="button"
+      />
       <div className="bt-cc">
         <div
           aria-labelledby={titleId}
           aria-modal="true"
           className="bt-cc__panel"
-          onKeyDown={onKeyDown}
           ref={panelRef}
           role="dialog"
           tabIndex={-1}
