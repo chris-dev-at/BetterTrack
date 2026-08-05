@@ -1,9 +1,13 @@
 import {
   assetDetailResponseSchema,
+  assetQuotesResponseSchema,
+  assetSparklinesResponseSchema,
   dailyClosesResponseSchema,
   historyResponseSchema,
   quoteResponseSchema,
   type AssetDetailResponse,
+  type AssetQuotesResponse,
+  type AssetSparklinesResponse,
   type DailyClosesResponse,
   type HistoryRange,
   type HistoryResponse,
@@ -11,6 +15,9 @@ import {
 } from '@bettertrack/contracts';
 
 import { apiRequest } from './apiClient';
+
+/** Stable URLs keep aggregate GETs reusable across reorder-only renders. */
+const canonicalAssetIds = (ids: readonly string[]): string => [...new Set(ids)].sort().join(',');
 
 /** `GET /assets/:id` — meta + latest quote with EUR conversion (§6.3). */
 export async function getAssetDetail(
@@ -25,6 +32,30 @@ export async function getAssetDetail(
 export async function getAssetQuote(id: string, signal?: AbortSignal): Promise<QuoteResponse> {
   const data = await apiRequest<unknown>(`/assets/${encodeURIComponent(id)}/quote`, { signal });
   return quoteResponseSchema.parse(data);
+}
+
+/** `GET /assets/quotes?ids=` — one quote read/poll for a whole watchlist. */
+export async function getAssetQuotes(
+  ids: readonly string[],
+  signal?: AbortSignal,
+): Promise<AssetQuotesResponse> {
+  const data = await apiRequest<unknown>('/assets/quotes', {
+    query: { ids: canonicalAssetIds(ids) },
+    signal,
+  });
+  return assetQuotesResponseSchema.parse(data);
+}
+
+/** `GET /assets/sparklines?ids=` — compact daily one-month workboard series. */
+export async function getAssetSparklines(
+  ids: readonly string[],
+  signal?: AbortSignal,
+): Promise<AssetSparklinesResponse> {
+  const data = await apiRequest<unknown>('/assets/sparklines', {
+    query: { ids: canonicalAssetIds(ids) },
+    signal,
+  });
+  return assetSparklinesResponseSchema.parse(data);
 }
 
 /**

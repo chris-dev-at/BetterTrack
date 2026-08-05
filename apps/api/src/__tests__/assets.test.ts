@@ -3,7 +3,10 @@ import type { Application } from 'express';
 import { describe, expect, it } from 'vitest';
 
 import {
+  assetQuotesResponseSchema,
+  assetSparklinesResponseSchema,
   assetDetailResponseSchema,
+  createApiKeyResponseSchema,
   dailyClosesResponseSchema,
   historyResponseSchema,
   quoteResponseSchema,
@@ -59,6 +62,15 @@ async function loginAgent(app: Application, identifier: string, password: string
     .send({ identifier, password });
   expect(res.status).toBe(200);
   return agent;
+}
+
+async function mintKey(agent: Awaited<ReturnType<typeof loginAgent>>, scopes: string[]) {
+  const res = await agent
+    .post('/api/v1/settings/api-keys')
+    .set(...XRW)
+    .send({ name: `assets ${scopes.join(' ')}`, scopes });
+  expect(res.status).toBe(201);
+  return createApiKeyResponseSchema.parse(res.body).token;
 }
 
 async function seedGlobalAsset(
@@ -225,6 +237,70 @@ describe('GET /api/v1/assets/:id/quote', () => {
     const res = await agent.get(`/api/v1/assets/${asset.id}/quote`);
     expect(res.status).toBe(502);
     expect(res.body.error.code).toBe('UPSTREAM_UNAVAILABLE');
+  });
+});
+
+describe('GET /api/v1/assets/quotes', () => {
+  it('batches quotes and requires the market:read bearer scope', async () => {
+    const marketData = createStubMarketData({
+      quote: (ref) =>
+        cachedQuote({
+          value: sampleQuote({ price: ref.providerRef === 'MSFT' ? 420 : 187.5 }),
+        }),
+    });
+    const h = await createTestApp({ marketData });
+    const user = await h.seedUser();
+    const apple = await seedGlobalAsset(h);
+    const microsoft = await seedGlobalAsset(h, {
+      providerRef: 'MSFT',
+      symbol: 'MSFT',
+      name: 'Microsoft Corporation',
+    });
+    const agent = await loginAgent(h.app, user.email, user.password);
+    const wrongScopeToken = await mintKey(agent, ['workboard:read']);
+    const marketToken = await mintKey(agent, ['market:read']);
+    const path = `/api/v1/assets/quotes?ids=${apple.id},${microsoft.id}`;
+
+    const denied = await request(h.app).get(path).set('Authorization', `Bearer ${wrongScopeToken}`);
+    expect(denied.status).toBe(403);
+    expect(denied.body.error.code).toBe('INSUFFICIENT_SCOPE');
+    expect(marketData.calls.quote).toBe(0);
+
+    const res = await request(h.app).get(path).set('Authorization', `Bearer ${marketToken}`);
+    expect(res.status).toBe(200);
+    const parsed = assetQuotesResponseSchema.parse(res.body);
+    expect(parsed.quotes.map((entry) => entry.assetId)).toEqual([apple.id, microsoft.id]);
+    expect(parsed.quotes.map((entry) => entry.quote.price)).toEqual([187.5, 420]);
+    expect(marketData.calls.quote).toBe(2);
+  });
+});
+
+describe('GET /api/v1/assets/sparklines', () => {
+  it('requests daily 1M history and bounds each compact series to 30 points', async () => {
+    const seen: Array<{ range: HistoryRange; interval: string | undefined }> = [];
+    const denseDaily = Array.from({ length: 35 }, (_, index) => ({
+      time: new Date(Date.UTC(2026, 4, index + 1)).toISOString(),
+      close: 100 + index,
+    }));
+    const marketData = createStubMarketData({
+      history: (_ref, range, interval) => {
+        seen.push({ range, interval });
+        return cachedHistory({ value: denseDaily });
+      },
+    });
+    const h = await createTestApp({ marketData });
+    const user = await h.seedUser();
+    const asset = await seedGlobalAsset(h);
+    const agent = await loginAgent(h.app, user.email, user.password);
+
+    const res = await agent.get(`/api/v1/assets/sparklines?ids=${asset.id}`);
+
+    expect(res.status).toBe(200);
+    const parsed = assetSparklinesResponseSchema.parse(res.body);
+    expect(seen).toEqual([{ range: '1M', interval: '1d' }]);
+    expect(parsed.sparklines[0]?.points).toHaveLength(30);
+    expect(parsed.sparklines[0]?.points[0]?.close).toBe(105);
+    expect(parsed.sparklines[0]?.points.at(-1)?.close).toBe(134);
   });
 });
 

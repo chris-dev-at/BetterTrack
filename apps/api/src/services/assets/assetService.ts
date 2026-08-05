@@ -1,7 +1,11 @@
 import type {
+  AssetBatchQuote,
   AssetDetailResponse,
+  AssetQuotesResponse,
+  AssetSparklinesResponse,
   AssetSummary,
   DailyClosesResponse,
+  HistoryInterval,
   HistoryRange,
   HistoryResponse,
   QuoteResponse,
@@ -31,6 +35,10 @@ export interface AssetService {
   ): Promise<AssetDetailResponse>;
   /** Latest quote with stale/asOf markers (§6.3). */
   getQuote(userId: string, id: string): Promise<QuoteResponse>;
+  /** Many latest quotes in one owner-scoped read. */
+  getQuotes(userId: string, ids: readonly string[]): Promise<AssetQuotesResponse>;
+  /** Compact one-month daily series for many workboard rows. */
+  getSparklines(userId: string, ids: readonly string[]): Promise<AssetSparklinesResponse>;
   /** Price history for a range; interval follows the §5.3 table. */
   getHistory(userId: string, id: string, range: HistoryRange): Promise<HistoryResponse>;
   /**
@@ -52,6 +60,9 @@ export interface AssetServiceDeps {
 
 /** Epoch-ms (the cache's `asOf`) → ISO-8601 for the wire. */
 const asOfIso = (asOf: number): string => new Date(asOf).toISOString();
+
+/** Hard payload bound for the workboard's lightweight one-month chart. */
+const WORKBOARD_SPARKLINE_MAX_POINTS = 30;
 
 const toSummary = (row: AssetRow): AssetSummary => ({
   id: row.id,
@@ -93,6 +104,77 @@ export function createAssetService(deps: AssetServiceDeps): AssetService {
     } catch (error) {
       if (error instanceof ParanoidModeError) throw assetNotFound();
       throw error;
+    }
+  }
+
+  /**
+   * Resolve an aggregate id set with one SQL read while preserving the exact
+   * access and transition-lock semantics of {@link withVisibleAsset}.
+   */
+  async function withVisibleAssets<T>(
+    userId: string,
+    ids: readonly string[],
+    read: (rows: AssetRow[]) => Promise<T>,
+  ): Promise<T> {
+    const orderRows = (rows: AssetRow[]): AssetRow[] => {
+      const byId = new Map(rows.map((row) => [row.id, row]));
+      return ids.map((id) => {
+        const row = byId.get(id);
+        if (!row) throw assetNotFound();
+        return row;
+      });
+    };
+
+    const candidates = orderRows(await assetRepo.findByIdsForUser(ids, userId));
+    const customOwnerId = candidates.find((row) => row.ownerId !== null)?.ownerId ?? null;
+    if (customOwnerId === null || !paranoid) return read(candidates);
+
+    try {
+      return await paranoid.runAllowed(customOwnerId, 'portfolioServer', async () => {
+        // Re-read after acquiring the transition lock, just like the singular
+        // path: a winning transition may have purged an owned custom row.
+        const current = orderRows(await assetRepo.findByIdsForUser(ids, userId));
+        return read(current);
+      });
+    } catch (error) {
+      if (error instanceof ParanoidModeError) throw assetNotFound();
+      throw error;
+    }
+  }
+
+  async function quoteForRow(row: AssetRow): Promise<QuoteResponse> {
+    try {
+      const cached = await marketData.getQuote({
+        providerId: row.providerId,
+        providerRef: row.providerRef,
+      });
+      return { quote: cached.value, stale: cached.stale, asOf: asOfIso(cached.asOf) };
+    } catch {
+      throw badGateway();
+    }
+  }
+
+  async function historyForRow(
+    row: AssetRow,
+    range: HistoryRange,
+    interval: HistoryInterval = defaultIntervalForRange(range),
+  ): Promise<HistoryResponse> {
+    try {
+      const cached = await marketData.getHistory(
+        { providerId: row.providerId, providerRef: row.providerRef },
+        range,
+        interval,
+      );
+      return {
+        range,
+        interval,
+        currency: row.currency,
+        points: cached.value,
+        stale: cached.stale,
+        asOf: asOfIso(cached.asOf),
+      };
+    } catch {
+      throw badGateway();
     }
   }
 
@@ -144,39 +226,42 @@ export function createAssetService(deps: AssetServiceDeps): AssetService {
     },
 
     async getQuote(userId, id) {
-      return withVisibleAsset(userId, id, async (row) => {
-        try {
-          const cached = await marketData.getQuote({
-            providerId: row.providerId,
-            providerRef: row.providerRef,
-          });
-          return { quote: cached.value, stale: cached.stale, asOf: asOfIso(cached.asOf) };
-        } catch {
-          throw badGateway();
-        }
-      });
+      return withVisibleAsset(userId, id, quoteForRow);
+    },
+
+    async getQuotes(userId, ids) {
+      return withVisibleAssets(userId, ids, async (rows) => ({
+        quotes: await Promise.all(
+          rows.map(
+            async (row): Promise<AssetBatchQuote> => ({
+              assetId: row.id,
+              ...(await quoteForRow(row)),
+            }),
+          ),
+        ),
+      }));
+    },
+
+    async getSparklines(userId, ids) {
+      return withVisibleAssets(userId, ids, async (rows) => ({
+        sparklines: await Promise.all(
+          rows.map(async (row) => {
+            // Explicit daily granularity avoids the 1M endpoint's dense 30m
+            // candles; the final slice keeps every provider bounded to 30 rows.
+            const history = await historyForRow(row, '1M', '1d');
+            return {
+              assetId: row.id,
+              points: history.points.slice(-WORKBOARD_SPARKLINE_MAX_POINTS),
+              stale: history.stale,
+              asOf: history.asOf,
+            };
+          }),
+        ),
+      }));
     },
 
     async getHistory(userId, id, range) {
-      return withVisibleAsset(userId, id, async (row) => {
-        const interval = defaultIntervalForRange(range);
-        try {
-          const cached = await marketData.getHistory(
-            { providerId: row.providerId, providerRef: row.providerRef },
-            range,
-          );
-          return {
-            range,
-            interval,
-            currency: row.currency,
-            points: cached.value,
-            stale: cached.stale,
-            asOf: asOfIso(cached.asOf),
-          };
-        } catch {
-          throw badGateway();
-        }
-      });
+      return withVisibleAsset(userId, id, (row) => historyForRow(row, range));
     },
 
     async getDailyCloses(userId, id) {

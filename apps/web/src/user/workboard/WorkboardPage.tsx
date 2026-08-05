@@ -5,12 +5,12 @@
  *  3. My Conglomerates — placeholder (P3)
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { WorkboardItem } from '@bettertrack/contracts';
+import type { AssetBatchQuote, AssetSparkline, WorkboardItem } from '@bettertrack/contracts';
 
-import { getAssetHistory, getAssetQuote } from '../../lib/assetApi';
+import { getAssetQuotes, getAssetSparklines } from '../../lib/assetApi';
 import { cx } from '../../lib/cx';
 import { formatDate, formatSignedPercent } from '../../lib/format';
 import { EARNINGS_CALENDAR_QUERY_KEY, getEarningsCalendar } from '../../lib/marketIntelApi';
@@ -35,6 +35,14 @@ import { NormalModeOnly } from '../vault/ui/ParanoidSurfaceGate';
 
 interface WatchlistRowProps {
   item: WorkboardItem;
+  quoteResult: AssetBatchQuote | undefined;
+  sparkline: AssetSparkline | undefined;
+  quoteLoading: boolean;
+  sparklineLoading: boolean;
+  quoteError: unknown;
+  sparklineError: unknown;
+  onRetryQuote: () => void;
+  onRetrySparkline: () => void;
   isDragging: boolean;
   isDragOver: boolean;
   onDragStart: () => void;
@@ -47,6 +55,14 @@ interface WatchlistRowProps {
 
 function WatchlistRow({
   item,
+  quoteResult,
+  sparkline,
+  quoteLoading,
+  sparklineLoading,
+  quoteError,
+  sparklineError,
+  onRetryQuote,
+  onRetrySparkline,
   isDragging,
   isDragOver,
   onDragStart,
@@ -57,21 +73,8 @@ function WatchlistRow({
   removeDisabled,
 }: WatchlistRowProps) {
   const t = useT();
-  const quoteQuery = useQuery({
-    queryKey: ['asset', item.assetId, 'quote'],
-    queryFn: ({ signal }) => getAssetQuote(item.assetId, signal),
-    staleTime: 60_000,
-    refetchInterval: 60_000,
-  });
-
-  const sparklineQuery = useQuery({
-    queryKey: ['asset', item.assetId, 'history', '1M'],
-    queryFn: ({ signal }) => getAssetHistory(item.assetId, '1M', signal),
-    staleTime: 900_000,
-  });
-
-  const quote = quoteQuery.data?.quote;
-  const sparkData = sparklineQuery.data?.points.map((p) => p.close) ?? [];
+  const quote = quoteResult?.quote;
+  const sparkData = sparkline?.points.map((point) => point.close) ?? [];
   const dayPct = quote?.dayChangePct;
 
   return (
@@ -100,11 +103,11 @@ function WatchlistRow({
 
       {/* Sparkline (1M) */}
       <td className="px-2 py-3">
-        {sparklineQuery.isLoading ? (
+        {sparklineLoading ? (
           <Skeleton width="w-24" height="h-7" />
         ) : (
           <div className="flex flex-col items-start gap-1">
-            {sparklineQuery.data ? (
+            {sparkline ? (
               <Sparkline
                 data={sparkData}
                 ariaLabel={t('workboard.overview.watchlist.sparklineAriaLabel', {
@@ -115,8 +118,8 @@ function WatchlistRow({
             <AsyncReadState
               compact
               loading={false}
-              error={sparklineQuery.error}
-              onRetry={() => void sparklineQuery.refetch()}
+              error={sparklineError}
+              onRetry={onRetrySparkline}
             />
           </div>
         )}
@@ -142,28 +145,23 @@ function WatchlistRow({
 
       {/* Price */}
       <td className="px-3 py-3 text-right text-sm">
-        {quoteQuery.isLoading ? (
+        {quoteLoading ? (
           <Skeleton variant="line" width="w-20" className="ml-auto" />
         ) : (
           <div className="flex flex-col items-end gap-1">
             {quote ? (
               <MoneyText amount={quote.price} currency={quote.currency} unitPrice />
-            ) : quoteQuery.error ? null : (
+            ) : quoteError ? null : (
               <span className="bt-muted">—</span>
             )}
-            <AsyncReadState
-              compact
-              loading={false}
-              error={quoteQuery.error}
-              onRetry={() => void quoteQuery.refetch()}
-            />
+            <AsyncReadState compact loading={false} error={quoteError} onRetry={onRetryQuote} />
           </div>
         )}
       </td>
 
       {/* Day ±% */}
       <td className="px-3 py-3 text-right text-sm tabular-nums">
-        {quoteQuery.isLoading ? (
+        {quoteLoading ? (
           <Skeleton variant="line" width="w-14" className="ml-auto" />
         ) : dayPct != null ? (
           <span className={dayPct > 0 ? 'bt-pos' : dayPct < 0 ? 'bt-neg' : 'bt-muted'}>
@@ -272,6 +270,37 @@ function WatchlistZone() {
     staleTime: 30_000,
     refetchOnMount: 'always',
   });
+
+  // Aggregate market reads: ordering is canonical so a drag-only reorder keeps
+  // the same cache entry. One quote observer owns the single 60-second poll.
+  const assetIds = useMemo(
+    () => [...new Set(orderedItems.map((item) => item.assetId))].sort(),
+    [orderedItems],
+  );
+  const quoteQuery = useQuery({
+    queryKey: ['assets', 'workboard', 'quotes', assetIds] as const,
+    queryFn: ({ signal }) => getAssetQuotes(assetIds, signal),
+    enabled: assetIds.length > 0,
+    staleTime: 60_000,
+    refetchInterval: 60_000,
+  });
+  const sparklineQuery = useQuery({
+    queryKey: ['assets', 'workboard', 'sparklines', assetIds] as const,
+    queryFn: ({ signal }) => getAssetSparklines(assetIds, signal),
+    enabled: assetIds.length > 0,
+    staleTime: 900_000,
+  });
+  const quotesByAssetId = useMemo(
+    () => new Map(quoteQuery.data?.quotes.map((quote) => [quote.assetId, quote]) ?? []),
+    [quoteQuery.data],
+  );
+  const sparklinesByAssetId = useMemo(
+    () =>
+      new Map(
+        sparklineQuery.data?.sparklines.map((sparkline) => [sparkline.assetId, sparkline]) ?? [],
+      ),
+    [sparklineQuery.data],
+  );
 
   // Mirror server order; resets on every successful fetch (including post-remove refetch).
   useEffect(() => {
@@ -415,6 +444,14 @@ function WatchlistZone() {
                 <WatchlistRow
                   key={item.id}
                   item={item}
+                  quoteResult={quotesByAssetId.get(item.assetId)}
+                  sparkline={sparklinesByAssetId.get(item.assetId)}
+                  quoteLoading={quoteQuery.isLoading}
+                  sparklineLoading={sparklineQuery.isLoading}
+                  quoteError={quoteQuery.error}
+                  sparklineError={sparklineQuery.error}
+                  onRetryQuote={() => void quoteQuery.refetch()}
+                  onRetrySparkline={() => void sparklineQuery.refetch()}
                   isDragging={draggedId === item.id}
                   isDragOver={dragOverId === item.id}
                   onDragStart={() => handleDragStart(item.id)}
