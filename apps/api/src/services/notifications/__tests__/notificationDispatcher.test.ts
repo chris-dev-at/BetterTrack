@@ -153,6 +153,7 @@ describe('notificationDispatcher.dispatch', () => {
       standingOrderId: '00000000-0000-7000-8000-00000000a111',
       periodKey: '2026-04-01',
       outcome: 'dropped',
+      droppedCount: 3,
       orderLabel: 'Netflix',
       occurredAt: '2026-05-01T10:00:00.000Z',
     });
@@ -160,12 +161,13 @@ describe('notificationDispatcher.dispatch', () => {
     const [row] = await visibleRowsFor(recipient.id, 'standing_order.skipped');
     expect(row).toMatchObject({
       type: 'standing_order.skipped',
-      title: 'Standing order period skipped',
-      body: 'The 2026-04-01 occurrence for “Netflix” was skipped when the next period became due.',
+      title: '3 standing order periods skipped',
+      body: '3 scheduled occurrences for “Netflix”, through 2026-04-01, were not recorded before the newest period became due.',
       payload: {
         standingOrderId: '00000000-0000-7000-8000-00000000a111',
         periodKey: '2026-04-01',
         outcome: 'dropped',
+        droppedCount: 3,
       },
     });
   });

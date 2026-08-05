@@ -164,6 +164,7 @@ describe('notification email dispatch (PROJECTPLAN.md §6.10)', () => {
       standingOrderId: '00000000-0000-7000-8000-00000000a111',
       periodKey: '2026-04-01',
       outcome: 'dropped',
+      droppedCount: 3,
       orderLabel: 'Netflix',
       occurredAt: OCCURRED_AT,
     });

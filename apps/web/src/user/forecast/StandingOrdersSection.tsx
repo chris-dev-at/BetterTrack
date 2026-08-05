@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useId, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
+import { useLocation } from 'react-router-dom';
 
 import type { PortfolioSummary, StandingOrder } from '@bettertrack/contracts';
 
@@ -25,6 +26,7 @@ const EM_DASH = '—';
 export function StandingOrdersSection({ portfolios }: { portfolios: PortfolioSummary[] }) {
   const t = useT();
   const store = usePortfolioStore();
+  const location = useLocation();
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<StandingOrder | null>(null);
 
@@ -35,6 +37,14 @@ export function StandingOrdersSection({ portfolios }: { portfolios: PortfolioSum
   });
 
   const orders = query.data?.orders ?? [];
+
+  // The notification route resolves before this async list does, so the
+  // browser's one-shot native fragment scroll cannot see the target row. Retry
+  // after query data commits the rows to the DOM.
+  useEffect(() => {
+    if (!location.hash.startsWith('#standing-order-') || query.data === undefined) return;
+    document.getElementById(location.hash.slice(1))?.scrollIntoView({ block: 'center' });
+  }, [location.hash, query.data]);
 
   const disableCreate = portfolios.length === 0;
 

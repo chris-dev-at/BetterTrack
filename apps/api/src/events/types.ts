@@ -362,11 +362,13 @@ export type StandingOrderSkipOutcome = 'deferred' | 'dropped' | 'booking_failed'
 /**
  * `standing_order.skipped` → a scheduled occurrence could not be recorded
  * (#1118). One type covers the three points at which the engine can make that
- * decision: a retriable pre-claim defer, the previous occurrence being dropped
+ * decision: a retriable pre-claim defer, previous occurrences being dropped
  * when a newer anchor becomes due, and a post-claim booking failure whose claim
- * remains as an at-most-once tombstone. The dispatcher dedupes per
- * (recipient, order, period, outcome), so daily retries surface once while a
- * later permanent drop remains a distinct notice.
+ * remains as an at-most-once tombstone. Catch-up drops are aggregated into one
+ * event keyed by the newest dropped period; `droppedCount` says how many periods
+ * that event represents. The producer stamps the scheduled period (rather than
+ * the scan clock) into `occurredAt`, so replaying the same logical notice is
+ * byte-identical for both inbox and webhook dedupe.
  */
 export interface StandingOrderSkippedEvent {
   type: 'standing_order.skipped';
@@ -376,6 +378,8 @@ export interface StandingOrderSkippedEvent {
   /** Scheduled occurrence (`YYYY-MM-DD`) affected by this notice. */
   periodKey: string;
   outcome: StandingOrderSkipOutcome;
+  /** Number of periods represented by an aggregated `dropped` notice. */
+  droppedCount?: number;
   /** User label or asset symbol for copy; null falls back to "this standing order". */
   orderLabel: string | null;
   occurredAt: string;

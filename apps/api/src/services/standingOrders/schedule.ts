@@ -187,15 +187,18 @@ export function skippedPeriods(
   cap = 400,
 ): string[] {
   const lower = afterExclusive !== null && afterExclusive >= spec.startDate ? afterExclusive : null;
-  let cursor = lower === null ? prevDay(spec.startDate) : lower;
-  const periods: string[] = [];
-  while (periods.length < cap) {
-    const next = firstAfter(spec, cursor);
-    if (next >= throughInclusive) break;
-    cursor = next;
-    periods.push(next);
+  let cursor = throughInclusive;
+  const newestFirst: string[] = [];
+  while (newestFirst.length < cap) {
+    const previous = mostRecentOnOrBefore(spec, prevDay(cursor));
+    if (previous < spec.startDate || (lower !== null && previous <= lower)) break;
+    cursor = previous;
+    newestFirst.push(previous);
   }
-  return periods;
+  // Keep the bounded window nearest the current due period. Besides making the
+  // aggregation useful for pathological old start dates, this guarantees the
+  // final element is always the newest dropped occurrence.
+  return newestFirst.reverse();
 }
 
 /**

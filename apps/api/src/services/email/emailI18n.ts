@@ -64,6 +64,7 @@ export interface NotificationEmailCopy {
     orderFallback: string;
     deferred: { subject: string; body: string };
     dropped: { subject: string; body: string };
+    droppedMany: { subject: string; body: string };
     bookingFailed: { subject: string; body: string };
   };
   /** Alert-follow bodies are supplied by the caller (same as the bell, #455). */
@@ -187,7 +188,11 @@ export const NOTIFICATION_EMAIL_COPY: Record<EmailLocale, NotificationEmailCopy>
       },
       dropped: {
         subject: 'A standing order period was skipped',
-        body: 'The {period} occurrence for {order} was skipped when the next period became due.',
+        body: 'The {period} occurrence for {order} was not recorded before the next period became due.',
+      },
+      droppedMany: {
+        subject: '{count} standing order periods were skipped',
+        body: '{count} scheduled occurrences for {order}, through {period}, were not recorded before the newest period became due.',
       },
       bookingFailed: {
         subject: 'A standing order booking failed',
@@ -341,7 +346,11 @@ export const NOTIFICATION_EMAIL_COPY: Record<EmailLocale, NotificationEmailCopy>
       },
       dropped: {
         subject: 'Eine Dauerauftrags-Ausführung wurde übersprungen',
-        body: 'Die Ausführung von {order} am {period} wurde übersprungen, als der nächste Termin fällig wurde.',
+        body: 'Die Ausführung von {order} am {period} wurde nicht erfasst, bevor der nächste Termin fällig wurde.',
+      },
+      droppedMany: {
+        subject: '{count} Dauerauftrags-Ausführungen wurden übersprungen',
+        body: '{count} geplante Ausführungen von {order} bis einschließlich {period} wurden nicht erfasst, bevor der neueste Termin fällig wurde.',
       },
       bookingFailed: {
         subject: 'Die Buchung eines Dauerauftrags ist fehlgeschlagen',

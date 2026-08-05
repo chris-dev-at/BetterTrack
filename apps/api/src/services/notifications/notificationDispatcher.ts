@@ -370,9 +370,15 @@ function standingOrderSkippedCopy(event: StandingOrderSkippedEvent): {
         body: `${occurrence} could not be booked. BetterTrack will retry it.`,
       };
     case 'dropped':
+      if ((event.droppedCount ?? 1) > 1) {
+        return {
+          title: `${event.droppedCount} standing order periods skipped`,
+          body: `${event.droppedCount} scheduled occurrences for ${order}, through ${event.periodKey}, were not recorded before the newest period became due.`,
+        };
+      }
       return {
         title: 'Standing order period skipped',
-        body: `${occurrence} was skipped when the next period became due.`,
+        body: `${occurrence} was not recorded before the next period became due.`,
       };
     case 'booking_failed':
       return {
@@ -737,6 +743,7 @@ export function createNotificationDispatcher(
             standingOrderId: event.standingOrderId,
             periodKey: event.periodKey,
             outcome: event.outcome,
+            ...(event.droppedCount === undefined ? {} : { droppedCount: event.droppedCount }),
           },
           // The order id lands on the exact Forecast row; period/outcome let a
           // native client preserve context when it opens that order.
@@ -744,6 +751,9 @@ export function createNotificationDispatcher(
             standingOrderId: event.standingOrderId,
             periodKey: event.periodKey,
             outcome: event.outcome,
+            ...(event.droppedCount === undefined
+              ? {}
+              : { droppedCount: String(event.droppedCount) }),
           },
         };
       }
@@ -886,6 +896,7 @@ export function createNotificationDispatcher(
           orderLabel: event.orderLabel,
           periodKey: event.periodKey,
           outcome: event.outcome,
+          droppedCount: event.droppedCount,
           locale,
         });
         return;

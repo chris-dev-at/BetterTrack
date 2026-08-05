@@ -48,10 +48,11 @@ describe('notification email templates (§6.10)', () => {
       orderLabel: 'Netflix <bill>',
       periodKey: '2026-04-01',
       outcome: 'dropped',
+      droppedCount: 3,
       appUrl: APP_URL,
       locale: 'de',
     });
-    expect(email.subject).toBe('Eine Dauerauftrags-Ausführung wurde übersprungen');
+    expect(email.subject).toBe('3 Dauerauftrags-Ausführungen wurden übersprungen');
     expect(email.html).toContain('<html lang="de">');
     expect(email.html).toContain('Netflix &lt;bill&gt;');
     expect(email.html).toContain(`${APP_URL}/workbench/forecasts#standing-order-so-1`);

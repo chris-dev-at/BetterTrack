@@ -180,6 +180,7 @@ export interface EmailService {
     orderLabel: string | null;
     periodKey: string;
     outcome: StandingOrderSkipOutcome;
+    droppedCount?: number;
     locale?: string;
   }): Promise<EmailSendResult>;
   /** Notification email: someone `userId` follows created a price alert (#455). */
@@ -511,6 +512,7 @@ export function createEmailService(deps: EmailServiceDeps): EmailService {
       orderLabel,
       periodKey,
       outcome,
+      droppedCount,
       locale,
     }) =>
       deliver(
@@ -521,6 +523,7 @@ export function createEmailService(deps: EmailServiceDeps): EmailService {
           orderLabel,
           periodKey,
           outcome,
+          droppedCount,
           appUrl: config.appOrigin,
           locale,
         }),

@@ -98,6 +98,7 @@ describe('push channels through the matrix (#368)', () => {
       standingOrderId: '00000000-0000-7000-8000-00000000a111',
       periodKey: '2026-04-01',
       outcome: 'dropped',
+      droppedCount: 3,
       orderLabel: 'Netflix',
       occurredAt: '2026-05-01T10:00:00.000Z',
     });
@@ -108,6 +109,7 @@ describe('push channels through the matrix (#368)', () => {
         standingOrderId: '00000000-0000-7000-8000-00000000a111',
         periodKey: '2026-04-01',
         outcome: 'dropped',
+        droppedCount: '3',
       },
     };
     expect(fcmSent).toHaveLength(1);

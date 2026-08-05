@@ -133,6 +133,11 @@ describe('standing-order schedule: skippedPeriodCount', () => {
   it('caps long daily and monthly spans at the supplied limit', () => {
     expect(skippedPeriodCount(daily('2026-01-01'), null, '2026-01-05', 3)).toBe(3);
     expect(skippedPeriodCount(monthly(1, '2026-01-01'), null, '2026-06-01', 3)).toBe(3);
+    expect(skippedPeriods(daily('2026-01-01'), null, '2026-01-05', 3)).toEqual([
+      '2026-01-02',
+      '2026-01-03',
+      '2026-01-04',
+    ]);
   });
 
   it('returns zero immediately when the cap is zero', () => {

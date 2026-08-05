@@ -437,7 +437,7 @@ describe('standing orders — source tag round-trips through the P0c filter', ()
 });
 
 describe('standing orders — provider failure on a buy', () => {
-  it('books nothing on quote failure, then retries the period exactly once', async () => {
+  it('notifies only after a quote failure remains deferred past its anchor', async () => {
     const { agent, pid } = await setup();
     const assetId = await seedAsset('BBB');
     const created = await createOrder(agent, {
@@ -445,7 +445,8 @@ describe('standing orders — provider failure on a buy', () => {
       kind: 'buy-asset',
       assetId,
       amount: 2,
-      cadence: 'daily',
+      cadence: 'monthly',
+      anchorDay: 1,
       startDate: '2026-04-01',
     });
 
@@ -455,6 +456,11 @@ describe('standing orders — provider failure on a buy', () => {
     expect(failed.deferred).toBe(1);
     expect(await txnRows(pid)).toHaveLength(0);
     expect(await runPeriodKeys()).toHaveLength(0); // no claim was made
+    expect(await standingOrderNotifications(agent)).toEqual([]);
+
+    // Still unbooked on Apr 2: it is now past the Apr 1 anchor, so one stable
+    // deferred notice lands. Repeated later-day failures dedupe by period.
+    expect((await run('2026-04-02T12:00:00Z')).deferred).toBe(1);
     expect(await standingOrderNotifications(agent)).toEqual([
       expect.objectContaining({
         type: 'standing_order.skipped',
@@ -467,10 +473,10 @@ describe('standing orders — provider failure on a buy', () => {
     ]);
 
     quote.mode = 'ok';
-    expect((await run('2026-04-01T12:00:00Z')).booked).toBe(1);
+    expect((await run('2026-04-02T12:00:00Z')).booked).toBe(1);
     expect(await txnRows(pid)).toHaveLength(1);
     // A further run does not double-book the recovered period.
-    expect((await run('2026-04-01T12:00:00Z')).booked).toBe(0);
+    expect((await run('2026-04-02T12:00:00Z')).booked).toBe(0);
     expect(await txnRows(pid)).toHaveLength(1);
   });
 });
@@ -491,6 +497,57 @@ describe('standing orders — catch-up after downtime', () => {
     expect(result.booked).toBe(1);
     expect(await cashRows(pid, SOURCE_TAG_STANDING_ORDER)).toHaveLength(1);
     expect((await runPeriodKeys()).map((r) => r.key)).toEqual(['2026-04-04']);
+  });
+
+  it('aggregates a backlog and re-emits a byte-identical notice on retry', async () => {
+    const { user, agent, pid } = await setup();
+    const created = await createOrder(agent, {
+      portfolioId: pid,
+      kind: 'cash-deduct',
+      amount: 20,
+      label: 'Daily bill',
+      cadence: 'daily',
+      startDate: '2026-04-01',
+    });
+    const emitted: DispatchableEvent[] = [];
+    const service = createStandingOrderService({
+      repo: createStandingOrderRepository(harness.db),
+      portfolioRepo: createPortfolioRepository(harness.db),
+      assetRepo: createAssetRepository(harness.db),
+      transactionRepo: createTransactionRepository(harness.db),
+      cashMovementRepo: createCashMovementRepository(harness.db),
+      cashSourceRepo: createCashSourceRepository(harness.db),
+      marketData: createStubMarketData(),
+      snapshots: { async invalidate() {} },
+      notify: {
+        async emit(event) {
+          emitted.push(event);
+          return true;
+        },
+      },
+    });
+
+    // Three old periods exist, but each scan emits one aggregate. A retry later
+    // that same day must reproduce the exact event bytes: webhook delivery ids
+    // hash the complete event, while the inbox keys order+period+outcome.
+    expect(
+      (await service.processDueOrders({ now: Date.parse('2026-04-04T12:00:00Z') })).deferred,
+    ).toBe(1);
+    expect(
+      (await service.processDueOrders({ now: Date.parse('2026-04-04T18:00:00Z') })).deferred,
+    ).toBe(1);
+
+    const aggregate = {
+      type: 'standing_order.skipped',
+      userId: user.id,
+      standingOrderId: created.body.id,
+      periodKey: '2026-04-03',
+      outcome: 'dropped',
+      droppedCount: 3,
+      orderLabel: 'Daily bill',
+      occurredAt: '2026-04-03T00:00:00.000Z',
+    } as const;
+    expect(emitted).toEqual([aggregate, aggregate]);
   });
 });
 
@@ -549,6 +606,7 @@ describe('standing orders — cash-deduct never overdraws', () => {
         standingOrderId: created.body.id,
         periodKey: '2026-04-01',
         outcome: 'dropped',
+        droppedCount: 1,
       },
     });
     expect((await runPeriodKeys()).map((row) => row.key)).toEqual(['2026-05-01']);
@@ -602,7 +660,7 @@ describe('standing orders — post-claim booking tombstone', () => {
         periodKey: '2026-04-01',
         outcome: 'booking_failed',
         orderLabel: 'Salary',
-        occurredAt: '2026-04-01T12:00:00.000Z',
+        occurredAt: '2026-04-01T00:00:00.000Z',
       },
     ]);
   });

@@ -195,14 +195,16 @@ payload. The table is therefore the complete **pre-merge** data contract
 | `mirror.ownership_transferred` | MIRRORCHAIN ownership changed                            | `chainId`                                                  |
 | `mirror.chain_dissolved`       | A MIRRORCHAIN group portfolio was dissolved              | `chainId`                                                  |
 | `mirror.sync_stalled`          | A MIRRORCHAIN copy needs a manual retry                  | `chainId`                                                  |
-| `standing_order.skipped`       | A standing-order period was deferred, dropped, or failed | `standingOrderId`, `periodKey`, `outcome`                  |
+| `standing_order.skipped`       | Standing-order periods were deferred, dropped, or failed | `standingOrderId`, `periodKey`, `outcome`, `droppedCount`  |
 
 ### 3.2. `data` encoding
 
 After the FCM merge every dispatched payload also carries `data.type`. The
 `username` key above intentionally mirrors the in-app payload's
 `actorUsername`, because FCM data uses the public-profile slug. All values are
-strings, including `period` and the ids.
+strings, including `period` and the ids. `standing_order.skipped.droppedCount`
+is present only for `outcome: "dropped"`; it is the number of old occurrences
+represented by that one aggregate notice.
 
 ### 3.3. Synthetic `notifications.digest` push
 
@@ -255,35 +257,35 @@ leave the user in) the notification inbox rather than manufacture a route from
 insufficient keys. In particular, `chainId` identifies a MIRRORCHAIN but is not
 a portfolio id.
 
-| `type`                         | Target / route                                                          | Route key(s)                              | Fallback when a key cannot resolve                      |
-| ------------------------------ | ----------------------------------------------------------------------- | ----------------------------------------- | ------------------------------------------------------- |
-| `alert.triggered`              | Asset detail: `/assets/{assetId}`                                       | `assetId`                                 | `/workbench/alerts`                                     |
-| `follow.alert.created`         | Asset detail: `/assets/{assetId}`                                       | `assetId`                                 | `/workbench/alerts`                                     |
-| `follow.alert.fired`           | Asset detail: `/assets/{assetId}`                                       | `assetId`                                 | `/workbench/alerts`                                     |
-| `friend.request`               | Friend requests: `/people#requests`                                     | _(none)_                                  | `/people`                                               |
-| `friend.accepted`              | Friends: `/people`                                                      | _(none)_                                  | `/people`                                               |
-| `portfolio.shared`             | Shared portfolio: `/people/shared/{portfolioId}`                        | `portfolioId`                             | `/people`                                               |
-| `watchlist.shared`             | Shared watchlist: `/people/shared/watchlists/{watchlistId}`             | `watchlistId`                             | `/people`                                               |
-| `conglomerate.shared`          | Shared conglomerate: `/people/shared/conglomerates/{id}`                | `conglomerateId`                          | `/people`                                               |
-| `friend.activity`              | Actor profile: `/u/{username}`                                          | `username` (`itemKind`, `itemId`)         | `/people`                                               |
-| `follow.published`             | Actor profile: `/u/{username}`                                          | `username` (`itemKind`, `itemId`)         | `/people`                                               |
-| `chat.message`                 | DM thread: `/people/chat/c/{conversationId}`                            | `conversationId`, `messageId`             | `/people/chat`                                          |
-| `account.invite`               | Account settings: `/settings/account` (email-only)                      | _(none)_                                  | `/settings/account`                                     |
-| `account.temp_password`        | Security settings: `/settings/security`                                 | _(none)_                                  | `/settings/security`                                    |
-| `account.data_export`          | Account export block: `/settings/account`                               | _(none)_                                  | `/settings/account`                                     |
-| `earnings.reminder`            | Asset detail: `/assets/{assetId}`                                       | `assetId`                                 | Notification inbox                                      |
-| `dividend.event`               | Asset detail: `/assets/{assetId}`                                       | `assetId`                                 | Notification inbox                                      |
-| `budget.exceeded`              | Notification inbox; never construct an expense URL                      | `categoryId`, `period`                    | Notification inbox                                      |
-| `mirror.invite`                | Social MIRRORCHAIN invitation                                           | `chainId`, `inviteId`                     | Notification inbox                                      |
-| `mirror.member_joined`         | Notification inbox / Social group context from `chainId`                | `chainId`                                 | Notification inbox                                      |
-| `mirror.member_left`           | Notification inbox / Social group context from `chainId`                | `chainId`                                 | Notification inbox                                      |
-| `mirror.member_removed`        | Notification inbox / Social group context from `chainId`                | `chainId`                                 | Notification inbox                                      |
-| `mirror.removed`               | Notification inbox                                                      | `chainId`                                 | Notification inbox                                      |
-| `mirror.ownership_transferred` | Notification inbox / Social group context from `chainId`                | `chainId`                                 | Notification inbox                                      |
-| `mirror.chain_dissolved`       | Notification inbox                                                      | `chainId`                                 | Notification inbox                                      |
-| `mirror.sync_stalled`          | Notification inbox / Social group context from `chainId`                | `chainId`                                 | Notification inbox                                      |
-| `standing_order.skipped`       | Standing order: `/workbench/forecasts#standing-order-{standingOrderId}` | `standingOrderId`, `periodKey`, `outcome` | `/workbench/forecasts#forecast-standing-orders-heading` |
-| `notifications.digest`         | Notification inbox; it has no individual-item route                     | `cadence`                                 | Notification inbox                                      |
+| `type`                         | Target / route                                                          | Route key(s)                                              | Fallback when a key cannot resolve                      |
+| ------------------------------ | ----------------------------------------------------------------------- | --------------------------------------------------------- | ------------------------------------------------------- |
+| `alert.triggered`              | Asset detail: `/assets/{assetId}`                                       | `assetId`                                                 | `/workbench/alerts`                                     |
+| `follow.alert.created`         | Asset detail: `/assets/{assetId}`                                       | `assetId`                                                 | `/workbench/alerts`                                     |
+| `follow.alert.fired`           | Asset detail: `/assets/{assetId}`                                       | `assetId`                                                 | `/workbench/alerts`                                     |
+| `friend.request`               | Friend requests: `/people#requests`                                     | _(none)_                                                  | `/people`                                               |
+| `friend.accepted`              | Friends: `/people`                                                      | _(none)_                                                  | `/people`                                               |
+| `portfolio.shared`             | Shared portfolio: `/people/shared/{portfolioId}`                        | `portfolioId`                                             | `/people`                                               |
+| `watchlist.shared`             | Shared watchlist: `/people/shared/watchlists/{watchlistId}`             | `watchlistId`                                             | `/people`                                               |
+| `conglomerate.shared`          | Shared conglomerate: `/people/shared/conglomerates/{id}`                | `conglomerateId`                                          | `/people`                                               |
+| `friend.activity`              | Actor profile: `/u/{username}`                                          | `username` (`itemKind`, `itemId`)                         | `/people`                                               |
+| `follow.published`             | Actor profile: `/u/{username}`                                          | `username` (`itemKind`, `itemId`)                         | `/people`                                               |
+| `chat.message`                 | DM thread: `/people/chat/c/{conversationId}`                            | `conversationId`, `messageId`                             | `/people/chat`                                          |
+| `account.invite`               | Account settings: `/settings/account` (email-only)                      | _(none)_                                                  | `/settings/account`                                     |
+| `account.temp_password`        | Security settings: `/settings/security`                                 | _(none)_                                                  | `/settings/security`                                    |
+| `account.data_export`          | Account export block: `/settings/account`                               | _(none)_                                                  | `/settings/account`                                     |
+| `earnings.reminder`            | Asset detail: `/assets/{assetId}`                                       | `assetId`                                                 | Notification inbox                                      |
+| `dividend.event`               | Asset detail: `/assets/{assetId}`                                       | `assetId`                                                 | Notification inbox                                      |
+| `budget.exceeded`              | Notification inbox; never construct an expense URL                      | `categoryId`, `period`                                    | Notification inbox                                      |
+| `mirror.invite`                | Social MIRRORCHAIN invitation                                           | `chainId`, `inviteId`                                     | Notification inbox                                      |
+| `mirror.member_joined`         | Notification inbox / Social group context from `chainId`                | `chainId`                                                 | Notification inbox                                      |
+| `mirror.member_left`           | Notification inbox / Social group context from `chainId`                | `chainId`                                                 | Notification inbox                                      |
+| `mirror.member_removed`        | Notification inbox / Social group context from `chainId`                | `chainId`                                                 | Notification inbox                                      |
+| `mirror.removed`               | Notification inbox                                                      | `chainId`                                                 | Notification inbox                                      |
+| `mirror.ownership_transferred` | Notification inbox / Social group context from `chainId`                | `chainId`                                                 | Notification inbox                                      |
+| `mirror.chain_dissolved`       | Notification inbox                                                      | `chainId`                                                 | Notification inbox                                      |
+| `mirror.sync_stalled`          | Notification inbox / Social group context from `chainId`                | `chainId`                                                 | Notification inbox                                      |
+| `standing_order.skipped`       | Standing order: `/workbench/forecasts#standing-order-{standingOrderId}` | `standingOrderId`, `periodKey`, `outcome`, `droppedCount` | `/workbench/forecasts#forecast-standing-orders-heading` |
+| `notifications.digest`         | Notification inbox; it has no individual-item route                     | `cadence`                                                 | Notification inbox                                      |
 
 Mobile clients SHOULD preserve the listed no-dead-tap fallbacks. The inbox-first
 rows deliberately do not invent a URL from the dispatcher keys.

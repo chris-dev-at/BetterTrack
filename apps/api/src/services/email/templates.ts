@@ -521,10 +521,11 @@ export function standingOrderSkippedEmail(params: {
   orderLabel: string | null;
   periodKey: string;
   outcome: StandingOrderSkipOutcome;
+  droppedCount?: number;
   appUrl: string;
   locale?: string;
 }): EmailContent {
-  const { standingOrderId, orderLabel, periodKey, outcome, appUrl, locale } = params;
+  const { standingOrderId, orderLabel, periodKey, outcome, droppedCount, appUrl, locale } = params;
   const loc = resolveEmailLocale(locale);
   const copy = notificationCopy(loc);
   const standingOrder = copy.standingOrderSkipped;
@@ -533,10 +534,14 @@ export function standingOrderSkippedEmail(params: {
     dropped: standingOrder.dropped,
     booking_failed: standingOrder.bookingFailed,
   };
-  const c = byOutcome[outcome];
+  const c =
+    outcome === 'dropped' && (droppedCount ?? 1) > 1
+      ? standingOrder.droppedMany
+      : byOutcome[outcome];
   const values = {
     order: orderLabel?.trim() || standingOrder.orderFallback,
     period: periodKey,
+    count: String(droppedCount ?? 1),
   };
   const baseUrl = appUrl.replace(/\/$/, '');
   const orderUrl = `${baseUrl}/workbench/forecasts#standing-order-${encodeURIComponent(standingOrderId)}`;

@@ -345,9 +345,8 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
               },
               'standing order: catching up — booking newest period only, skipping older',
             );
-            for (const periodKey of droppedPeriods) {
-              await notifyFailure(order, periodKey, 'dropped', executedAt);
-            }
+            const newestDroppedPeriod = droppedPeriods.at(-1)!;
+            await notifyFailure(order, newestDroppedPeriod, 'dropped', droppedPeriods.length);
           }
 
           // Retriable pre-checks BEFORE claiming, so a failure never claims the
@@ -365,7 +364,11 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
               { orderId: order.id, kind: order.kind, due, err },
               'standing order: period deferred (provider failure / insufficient cash), will retry',
             );
-            await notifyFailure(order, due, 'deferred', executedAt);
+            // A same-day transient is not yet "deferred past its anchor". If it
+            // remains unbooked, a later scan emits one stable notice for this
+            // period; daily schedules instead surface the old period as dropped
+            // when tomorrow's occurrence becomes due.
+            if (due < today) await notifyFailure(order, due, 'deferred');
             return;
           }
 
@@ -384,7 +387,7 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
               { orderId: order.id, kind: order.kind, due, err },
               'standing order: booking failed AFTER claim; period will not retry',
             );
-            await notifyFailure(order, due, 'booking_failed', executedAt);
+            await notifyFailure(order, due, 'booking_failed');
             return;
           }
 
@@ -422,7 +425,7 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
     order: StandingOrderWithAsset,
     periodKey: string,
     outcome: StandingOrderSkipOutcome,
-    occurredAt: Date,
+    droppedCount?: number,
   ): Promise<void> {
     await notify.emit({
       type: 'standing_order.skipped',
@@ -430,8 +433,12 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
       standingOrderId: order.id,
       periodKey,
       outcome,
+      ...(droppedCount === undefined ? {} : { droppedCount }),
       orderLabel: order.label?.trim() || order.assetSymbol,
-      occurredAt: occurredAt.toISOString(),
+      // This is the scheduled occurrence identity, not the scan time. Repeated
+      // observations must be byte-identical because webhook delivery ids hash
+      // the complete event payload.
+      occurredAt: `${periodKey}T00:00:00.000Z`,
     });
   }
 
