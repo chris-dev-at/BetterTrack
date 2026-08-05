@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { cloneElement, isValidElement } from 'react';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
+import type { Transaction } from '@bettertrack/contracts';
 
 // ─── Mocks ────────────────────────────────────────────────────────────────────
 
@@ -282,12 +283,38 @@ beforeEach(() => {
   });
 });
 
-test('requests only the recent transactions rendered by the overview', async () => {
+test('keeps transactions for an expanded holding beyond the recent card', async () => {
   vi.mocked(getPortfolio).mockResolvedValue(PORTFOLIO);
+  const aaplTransaction = TXNS.items[0]! as Transaction;
+  const houseTransaction = TXNS.items[1]! as Transaction;
+  const recentAaplTransactions = Array.from(
+    { length: 8 },
+    (_, index): Transaction => ({
+      ...aaplTransaction,
+      id: `t-recent-${index}`,
+      executedAt: `2024-03-${String(20 - index).padStart(2, '0')}T00:00:00.000Z`,
+    }),
+  );
+  const olderHouseTransaction: Transaction = {
+    ...houseTransaction,
+    id: 't-house-older',
+    executedAt: '2024-01-01T00:00:00.000Z',
+  };
+  const ledger = [...recentAaplTransactions, olderHouseTransaction];
+  vi.mocked(listTransactions).mockImplementation(async (_portfolioId, params = {}) => ({
+    items: ledger.slice(0, params.limit),
+    nextCursor: null,
+  }));
+
+  const user = userEvent.setup();
   renderPage();
 
   await waitFor(() => expect(vi.mocked(listTransactions)).toHaveBeenCalled());
-  expect(vi.mocked(listTransactions).mock.calls[0]?.[1]).toEqual({ limit: 8 });
+  expect(vi.mocked(listTransactions).mock.calls[0]?.[1]).toEqual({ limit: 200 });
+
+  const holdings = await screen.findByRole('region', { name: 'Holdings' });
+  await user.click(within(holdings).getByRole('button', { name: /Expand HOUSE transactions/i }));
+  expect(await within(holdings).findByText('Down payment')).toBeInTheDocument();
 });
 
 // ─── Empty / error ──────────────────────────────────────────────────────────

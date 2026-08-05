@@ -415,6 +415,10 @@ function WinnersLosersSection({ holdings }: { holdings: Holding[] }) {
 // ─── Recent transactions ────────────────────────────────────────────────────
 
 const RECENT_TRANSACTIONS_LIMIT = 8;
+// The shared ledger feeds both the eight-row recent card and each holding's
+// expandable transaction list. Keep the established bounded window so a
+// holding with no transaction among the eight newest rows remains editable.
+const OVERVIEW_TRANSACTIONS_LIMIT = 200;
 
 /** §6.8 recent transactions — flat, newest-first ledger across all holdings. */
 function RecentTransactionsSection({ transactions }: { transactions: Transaction[] }) {
@@ -1441,11 +1445,11 @@ export function PortfolioPage() {
     staleTime: HISTORY_STALE_MS,
   });
 
-  // Recent ledger, grouped client-side so each holding's expansion shows its rows.
+  // Shared ledger for the recent card and grouped holding expansions.
   const transactionsQuery = useQuery({
     queryKey: ['portfolio', portfolioId, 'transactions'],
     queryFn: ({ signal }) =>
-      store.listTransactions(portfolioId!, { limit: RECENT_TRANSACTIONS_LIMIT }, signal),
+      store.listTransactions(portfolioId!, { limit: OVERVIEW_TRANSACTIONS_LIMIT }, signal),
     enabled: portfolioId !== null,
     staleTime: 60_000,
   });
