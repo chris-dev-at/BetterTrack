@@ -45,6 +45,7 @@ const KILLED_PREFIXES = [
  * router. `/portfolio/cash/accounts` stays live exactly like its legacy alias.
  */
 const KILLED_EXACT_PATHS = new Set([
+  '/people/following',
   '/portfolio/cash-flow',
   '/portfolio/cash-flow/transactions',
   '/portfolio/cash-flow/budgets',
@@ -60,11 +61,21 @@ const KILLED_EXACT_PATHS = new Set([
   '/portfolio/cash/categories',
 ]);
 
+function normalizePathname(pathname: string): string {
+  // React Router treats route literals case-insensitively and ignores trailing
+  // separators. Apply the same equivalence before consulting the kill matrix so
+  // alternate spellings cannot mount a server-disabled paranoid surface.
+  return pathname.toLowerCase().replace(/\/+$/, '') || '/';
+}
+
 /** Pure route-matrix predicate shared by routing and focused tests. */
 export function isParanoidKilledPath(pathname: string): boolean {
+  const normalizedPathname = normalizePathname(pathname);
   return (
-    KILLED_EXACT_PATHS.has(pathname) ||
-    KILLED_PREFIXES.some((prefix) => pathname === prefix || pathname.startsWith(`${prefix}/`))
+    KILLED_EXACT_PATHS.has(normalizedPathname) ||
+    KILLED_PREFIXES.some(
+      (prefix) => normalizedPathname === prefix || normalizedPathname.startsWith(`${prefix}/`),
+    )
   );
 }
 
@@ -101,17 +112,23 @@ export function surfaceAllowed(mode: PrivacyMode, surface: 'kept' | 'killed'): b
 
 /** Where a killed path lands. Exported so the route matrix is testable whole. */
 export function safeDestination(pathname: string): string {
+  const normalizedPathname = normalizePathname(pathname);
   // The Control Center is an OVERLAY: sending a killed `/control/*` deep link
   // to `/portfolio` would close the popup the user just opened, so it lands on
   // the neighbouring panel instead.
-  if (pathname.startsWith('/control')) return '/control/account';
-  if (pathname.startsWith('/people') || pathname.startsWith('/social')) return '/people';
-  if (pathname.startsWith('/assets')) return '/assets';
+  if (normalizedPathname.startsWith('/control')) return '/control/account';
+  if (normalizedPathname.startsWith('/people') || normalizedPathname.startsWith('/social')) {
+    return '/people';
+  }
+  if (normalizedPathname.startsWith('/assets')) return '/assets';
   // Both vocabularies land on the CANONICAL accounts page — the legacy alias
   // would only bounce through the router's LegacyRedirect to the same place.
-  if (pathname.startsWith('/portfolio/cash-flow') || pathname.startsWith('/portfolio/cash')) {
+  if (
+    normalizedPathname.startsWith('/portfolio/cash-flow') ||
+    normalizedPathname.startsWith('/portfolio/cash')
+  ) {
     return '/portfolio/cash/accounts';
   }
-  if (pathname.includes('/tax/print')) return '/portfolio/tax';
+  if (normalizedPathname.includes('/tax/print')) return '/portfolio/tax';
   return '/portfolio';
 }

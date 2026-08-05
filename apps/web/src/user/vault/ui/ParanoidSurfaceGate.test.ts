@@ -9,6 +9,7 @@ describe('paranoid route and surface matrix', () => {
     '/people/shared',
     '/people/shared/portfolio-id',
     '/people/profile',
+    '/people/following',
     '/control/profile',
     '/portfolio/import',
     '/portfolio/cash-flow',
@@ -37,6 +38,14 @@ describe('paranoid route and surface matrix', () => {
   ])('removes killed path %s', (path) => {
     expect(isParanoidKilledPath(path)).toBe(true);
   });
+
+  it.each(['/people/following/', '/PEOPLE/FOLLOWING', '/PeOpLe/FoLlOwInG/'])(
+    'normalizes router-equivalent killed path %s',
+    (path) => {
+      expect(isParanoidKilledPath(path)).toBe(true);
+      expect(safeDestination(path)).toBe('/people');
+    },
+  );
 
   it.each([
     '/',
@@ -67,6 +76,7 @@ describe('paranoid route and surface matrix', () => {
     // panel, not on /portfolio, which would close the popup outright.
     ['/control/profile', '/control/account'],
     ['/people/profile', '/people'],
+    ['/people/following', '/people'],
     ['/social/my-shared', '/people'],
     ['/assets/news', '/assets'],
     ['/portfolio/cash-flow/budgets', '/portfolio/cash/accounts'],

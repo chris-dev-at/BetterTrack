@@ -107,6 +107,7 @@ export const SECTION_NAV: Readonly<Record<SectionKey, SectionNav>> = {
     ariaLabelKey: 'people.aria',
     children: [
       { to: '/people', labelKey: 'people.tabs.friends', end: true, rail: true },
+      { to: '/people/following', labelKey: 'social.nav.following', rail: true },
       { to: '/people/chat', labelKey: 'people.tabs.chat', rail: true },
       { to: '/people/shared', labelKey: 'people.tabs.shared', rail: true },
       { to: '/people/profile', labelKey: 'people.tabs.profile', rail: true },

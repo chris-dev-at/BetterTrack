@@ -70,6 +70,7 @@ import { AssetsOverviewPage } from './assets/AssetsSection';
 import { AssetsWorkspace } from './assets/AssetsWorkspace';
 import { PeopleLayout } from './people/PeopleLayout';
 import { FriendsPage } from './social/FriendsPage';
+import { FollowingPage } from './social/FollowingPage';
 import { SharedPortfolioPage } from './social/SharedPortfolioPage';
 import { SharedConglomeratePage } from './social/SharedConglomeratePage';
 import { SharedWatchlistPage } from './social/SharedWatchlistPage';
@@ -391,6 +392,7 @@ function UserRoutes({ location }: { location: Location }) {
             {/* ── People (collaboration) ── */}
             <Route path="people" element={<PeopleLayout />}>
               <Route index element={<FriendsPage />} />
+              <Route path="following" element={<FollowingPage />} />
               <Route path="chat" element={<ChatPage />} />
               {/* Deep-link by conversation id — declared before :userId (#362). */}
               <Route path="chat/c/:conversationId" element={<ChatPage />} />
@@ -400,7 +402,6 @@ function UserRoutes({ location }: { location: Location }) {
               <Route path="shared/watchlists/:watchlistId" element={<SharedWatchlistPage />} />
               <Route path="shared/ideas/:ideaId" element={<SharedIdeaPage />} />
               <Route path="shared/:portfolioId" element={<SharedPortfolioPage />} />
-              <Route path="following" element={<LegacyRedirect to="/people" />} />
               {/* Public-profile SETTINGS live in the Control Center panel now
                   (the account menu, this rail tab and ⌘K all point here); the
                   public profile VIEW is still `/u/:username`. */}
@@ -497,7 +498,7 @@ function UserRoutes({ location }: { location: Location }) {
             />
             <Route path="social/ideas" element={<LegacyRedirect to="/workbench/ideas" />} />
             <Route path="social/profile" element={<LegacyRedirect to="/people/profile" />} />
-            <Route path="following" element={<LegacyRedirect to="/people" />} />
+            <Route path="following" element={<LegacyRedirect to="/people/following" />} />
             {/* This stays beneath the existing authenticated/onboarding gates,
                 so signed-out visitors still resolve through RequireUser. */}
             <Route path="*" element={<NotFoundState homeTo="/" />} />

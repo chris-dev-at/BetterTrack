@@ -1254,6 +1254,11 @@ export const NON_V5_SURFACES = [
     note: 'V3 person-follow control.',
   },
   {
+    path: 'user/social/FollowingPage.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'V3 person/item follow collection restored by the post-V5 UX audit (#1073).',
+  },
+  {
     path: 'user/social/ItemFollowButton.tsx',
     reason: 'no-v5-deliverable',
     note: 'V3 item-follow control.',
@@ -1369,6 +1374,11 @@ export const NON_V5_ROUTES = [
     path: '/people/chat/c/:conversationId',
     reason: 'inventoried-component',
     note: 'Deep link into the inventoried ChatPage (P8).',
+  },
+  {
+    path: '/people/following',
+    reason: 'no-v5-deliverable',
+    note: 'V3 person/item follow collection restored by the post-V5 UX audit (#1073).',
   },
   { path: '/reset/:token', reason: 'no-v5-deliverable', note: 'V2 password reset.' },
   {
@@ -1682,7 +1692,7 @@ export const V5_ASYNC_STATE_DEBT: V5AsyncStateDebtLedger = {};
  * offenders disappear from the review record. The reason each component is
  * outside the V5 deliverable lives beside it in NON_V5_SURFACES.
  */
-export const DEFERRED_NON_V5_ASYNC_READ_SITE_BASELINE = 53;
+export const DEFERRED_NON_V5_ASYNC_READ_SITE_BASELINE = 55;
 
 export const DEFERRED_NON_V5_ASYNC_STATE_DEBT_CEILING = {
   readSites: 42,
