@@ -209,8 +209,8 @@ export function createPortfolioRouter(ctx: AppContext): Router {
     },
   );
 
-  // GET /portfolios/:portfolioId/cash?source= — cash movements + current balance
-  // (§14, #220), optionally narrowed to one source tag (V5-P0c). On a synced
+  // GET /portfolios/:portfolioId/cash?cursor=&limit= — paged cash movements +
+  // current balance (§14, #220), optionally narrowed by source/tag. On a synced
   // copy, each replicated movement / source carries the M5 `mirror` overlay
   // (design §3/§11).
   router.get(
@@ -219,8 +219,13 @@ export function createPortfolioRouter(ctx: AppContext): Router {
     validateQuery(cashMovementsQuerySchema),
     async (req, res) => {
       const { portfolioId } = req.valid?.params as { portfolioId: string };
-      const { source } = req.valid?.query as CashMovementsQuery;
-      const cash = await ctx.portfolio.getCashMovements(req.authUser!.id, portfolioId, { source });
+      const { cursor, limit, source, tag } = req.valid?.query as CashMovementsQuery;
+      const cash = await ctx.portfolio.getCashMovements(req.authUser!.id, portfolioId, {
+        cursor,
+        limit,
+        source,
+        tag,
+      });
       const overlay = await ctx.mirror.overlayForPortfolio(portfolioId);
       const movements = cash.movements.map((m) => {
         const mirror = overlay.cashMovements.get(m.id);

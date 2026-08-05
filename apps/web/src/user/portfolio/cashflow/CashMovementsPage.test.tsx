@@ -95,6 +95,7 @@ const LEDGER: CashMovementsResponse = {
   balanceEur: 1_000,
   movements: [TAGGED, PLAIN, DERIVED],
   sources: [],
+  nextCursor: null,
 };
 
 function renderPage(initialPath = '/portfolio/cash/movements') {
@@ -204,14 +205,50 @@ describe('CashMovementsPage', () => {
   });
 
   test('filters the ledger down to one tag', async () => {
+    vi.mocked(getCashMovements).mockImplementation(async (_portfolioId, params) =>
+      params?.tag === FOOD.id ? { ...LEDGER, movements: [TAGGED] } : LEDGER,
+    );
     const user = userEvent.setup();
     renderPage();
     await screen.findByText('REWE');
     expect(screen.getAllByRole('row')).toHaveLength(4); // header + 3 movements
 
     await user.selectOptions(screen.getByLabelText('Tag'), FOOD.id);
-    expect(screen.getAllByRole('row')).toHaveLength(2); // header + the one Food-tagged movement
+    await screen.findByText('REWE');
+    expect(screen.getAllByRole('row')).toHaveLength(2); // header + the server-filtered movement
     expect(screen.queryByText('Landlord')).not.toBeInTheDocument();
+    expect(getCashMovements).toHaveBeenLastCalledWith(
+      'p1',
+      expect.objectContaining({ cursor: undefined, limit: 50, tag: FOOD.id }),
+      expect.anything(),
+    );
+  });
+
+  test('loads a bounded first page and fetches the cursor page on demand', async () => {
+    vi.mocked(getCashMovements).mockImplementation(async (_portfolioId, params) =>
+      params?.cursor
+        ? { ...LEDGER, movements: [PLAIN], nextCursor: null }
+        : { ...LEDGER, movements: [TAGGED], nextCursor: 'cursor-1' },
+    );
+    const user = userEvent.setup();
+    renderPage();
+
+    expect(await screen.findByText('REWE')).toBeInTheDocument();
+    expect(screen.queryByText('Landlord')).not.toBeInTheDocument();
+    expect(getCashMovements).toHaveBeenCalledWith(
+      'p1',
+      { cursor: undefined, limit: 50, tag: undefined },
+      expect.anything(),
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Load more' }));
+    expect(await screen.findByText('Landlord')).toBeInTheDocument();
+    expect(getCashMovements).toHaveBeenLastCalledWith(
+      'p1',
+      { cursor: 'cursor-1', limit: 50, tag: undefined },
+      expect.anything(),
+    );
+    expect(screen.queryByRole('button', { name: 'Load more' })).not.toBeInTheDocument();
   });
 
   test('the tag editor PUTs the full selected set and invalidates the ledger', async () => {
@@ -325,7 +362,12 @@ describe('CashMovementsPage', () => {
   });
 
   test('renders the designed empty state with no movements', async () => {
-    vi.mocked(getCashMovements).mockResolvedValue({ balanceEur: 0, movements: [], sources: [] });
+    vi.mocked(getCashMovements).mockResolvedValue({
+      balanceEur: 0,
+      movements: [],
+      sources: [],
+      nextCursor: null,
+    });
     renderPage();
 
     expect(await screen.findByText('No cash movements yet')).toBeInTheDocument();

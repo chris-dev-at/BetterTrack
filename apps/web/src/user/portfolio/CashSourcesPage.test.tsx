@@ -125,6 +125,7 @@ beforeEach(() => {
     balanceEur: 6000,
     movements: [TRANSFER_OUT, TRANSFER_IN, DEPOSIT],
     sources: [MAIN, BANK, SAVINGS],
+    nextCursor: null,
   });
 });
 
@@ -150,6 +151,43 @@ describe('CashSourcesPage', () => {
 
     expect(await screen.findByText("This information isn't available.")).toBeInTheDocument();
     expect(screen.getAllByText('Main').length).toBeGreaterThan(0);
+  });
+
+  test('pages the account history on demand', async () => {
+    const older = movement({ id: 'm-older', note: 'Older movement' });
+    vi.mocked(portfolioApi.getCashMovements).mockImplementation(async (_portfolioId, params) =>
+      params?.cursor
+        ? {
+            balanceEur: 6000,
+            movements: [older],
+            sources: [MAIN, BANK, SAVINGS],
+            nextCursor: null,
+          }
+        : {
+            balanceEur: 6000,
+            movements: [DEPOSIT],
+            sources: [MAIN, BANK, SAVINGS],
+            nextCursor: 'older-cursor',
+          },
+    );
+    const user = userEvent.setup();
+    renderPage();
+
+    expect(await screen.findByRole('button', { name: 'Load more' })).toBeInTheDocument();
+    expect(screen.queryByText('Older movement')).not.toBeInTheDocument();
+    expect(portfolioApi.getCashMovements).toHaveBeenCalledWith(
+      'p1',
+      { cursor: undefined, limit: 50, source: undefined },
+      expect.anything(),
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Load more' }));
+    expect(await screen.findByText('Older movement')).toBeInTheDocument();
+    expect(portfolioApi.getCashMovements).toHaveBeenLastCalledWith(
+      'p1',
+      { cursor: 'older-cursor', limit: 50, source: undefined },
+      expect.anything(),
+    );
   });
 
   test('lists every source with balance, type label and liquidity share', async () => {
@@ -219,6 +257,7 @@ describe('CashSourcesPage', () => {
       balanceEur: 6125,
       movements: [CHAINED_DEPOSIT, DEPOSIT],
       sources: [MAIN, BANK, SAVINGS],
+      nextCursor: null,
     });
 
     renderPage();

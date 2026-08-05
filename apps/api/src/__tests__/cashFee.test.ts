@@ -128,7 +128,18 @@ async function cashState(agent: Agent, pid: string) {
   const res = await agent.get(`/api/v1/portfolios/${pid}/cash`);
   expect(res.status).toBe(200);
   expect(cashMovementsResponseSchema.safeParse(res.body).success).toBe(true);
-  return res.body as { balanceEur: number; movements: CashMovement[]; sources: CashSource[] };
+  const state = res.body as {
+    balanceEur: number;
+    movements: CashMovement[];
+    sources: CashSource[];
+  };
+  // Business assertions below replay the ledger chronologically; wire ordering
+  // is pinned separately by the cash pagination API test.
+  state.movements.sort(
+    (left, right) =>
+      left.executedAt.localeCompare(right.executedAt) || left.id.localeCompare(right.id),
+  );
+  return state;
 }
 
 /** The `performance[]` percentages of `GET /history?range=MAX`, steady-state read. */

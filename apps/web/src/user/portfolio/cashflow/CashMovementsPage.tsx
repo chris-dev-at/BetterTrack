@@ -1,8 +1,11 @@
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useInfiniteQuery, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 
-import { EDITABLE_CASH_MOVEMENT_KINDS } from '@bettertrack/contracts';
+import {
+  CASH_MOVEMENT_UNTAGGED_FILTER,
+  EDITABLE_CASH_MOVEMENT_KINDS,
+} from '@bettertrack/contracts';
 import type { CashMovement, CashTag } from '@bettertrack/contracts';
 
 import { useT } from '../../../i18n';
@@ -24,8 +27,9 @@ import { RecordCashDialog } from './RecordCashDialog';
 import { TagChip } from './TagChip';
 import { useActivePortfolio } from './useActivePortfolio';
 
-const UNTAGGED_FILTER = 'untagged';
+const UNTAGGED_FILTER = CASH_MOVEMENT_UNTAGGED_FILTER;
 const ALL_FILTER = 'all';
+const MOVEMENTS_PAGE_SIZE = 50;
 
 function kindLabel(t: TranslateFn, kind: CashMovement['kind']): string {
   return t(`portfolio.cashSources.kind.${kind}`);
@@ -44,8 +48,8 @@ function isEditable(kind: CashMovement['kind']): boolean {
 /**
  * The tagged cash ledger (V5 cash fusion): every movement in this portfolio,
  * newest first, with its tags as chips and inline tag editing. Reads through
- * the existing `GET /portfolios/:id/cash` (no new ledger endpoint — only
- * `movements[].tags` is new) and joins to `GET /cash/tags` client-side.
+ * the existing paged `GET /portfolios/:id/cash` and joins the page's tag ids to
+ * `GET /cash/tags` client-side.
  */
 export function CashMovementsPage() {
   const t = useT();
@@ -68,10 +72,21 @@ export function CashMovementsPage() {
   // claims the bare `?create=1` for the new-portfolio wizard.
   useCreateIntent(CREATE_INTENT.movement, () => setRecording(true));
 
-  const movementsQuery = useQuery({
-    queryKey: ['portfolio', portfolioId, 'cash'],
-    queryFn: ({ signal }) => getCashMovements(portfolioId!, signal),
+  const movementsQuery = useInfiniteQuery({
+    queryKey: ['portfolio', portfolioId, 'cash', 'movements', tagFilter],
+    queryFn: ({ pageParam, signal }: { pageParam: string | undefined; signal: AbortSignal }) =>
+      getCashMovements(
+        portfolioId!,
+        {
+          cursor: pageParam,
+          limit: MOVEMENTS_PAGE_SIZE,
+          tag: tagFilter === ALL_FILTER ? undefined : tagFilter,
+        },
+        signal,
+      ),
     enabled: portfolioId !== null,
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (lastPage) => lastPage.nextCursor ?? undefined,
     staleTime: 30_000,
   });
   const tagsQuery = useQuery({
@@ -86,19 +101,7 @@ export function CashMovementsPage() {
     [tags],
   );
 
-  const movements = movementsQuery.data?.movements ?? [];
-  const ordered = useMemo(
-    () =>
-      [...movements]
-        .filter((m) => {
-          if (tagFilter === ALL_FILTER) return true;
-          const movementTags = m.tags ?? [];
-          if (tagFilter === UNTAGGED_FILTER) return movementTags.length === 0;
-          return movementTags.includes(tagFilter);
-        })
-        .sort((a, b) => new Date(b.executedAt).getTime() - new Date(a.executedAt).getTime()),
-    [movements, tagFilter],
-  );
+  const movements = movementsQuery.data?.pages.flatMap((page) => page.movements) ?? [];
 
   function refetchAll() {
     void queryClient.invalidateQueries({ queryKey: ['portfolio', portfolioId, 'cash'] });
@@ -113,12 +116,7 @@ export function CashMovementsPage() {
     );
   }
 
-  if (
-    portfoliosQuery.isError ||
-    portfolioId === null ||
-    movementsQuery.isError ||
-    !movementsQuery.data
-  ) {
+  if (portfoliosQuery.isError || portfolioId === null || !movementsQuery.data) {
     return <Alert tone="error">{t('cashflow.movements.loadError')}</Alert>;
   }
 
@@ -146,6 +144,12 @@ export function CashMovementsPage() {
         errorLabel={t('cashflow.movements.loadError')}
         onRetry={() => void tagsQuery.refetch()}
       />
+      <AsyncReadState
+        loading={false}
+        error={movementsQuery.error}
+        errorLabel={t('cashflow.movements.loadError')}
+        onRetry={() => void movementsQuery.refetch()}
+      />
 
       {tags.length > 1 ? (
         <label className="bt-meta flex items-center gap-1.5">
@@ -167,7 +171,7 @@ export function CashMovementsPage() {
         </label>
       ) : null}
 
-      {ordered.length === 0 ? (
+      {movements.length === 0 ? (
         <EmptyState
           description={t('cashflow.movements.emptyDescription')}
           icon="💶"
@@ -175,7 +179,7 @@ export function CashMovementsPage() {
         />
       ) : phone ? (
         <ul aria-label={t('cashflow.movements.listAriaLabel')} className="bt-phone-card-list">
-          {ordered.map((movement) => {
+          {movements.map((movement) => {
             const movementTags = (movement.tags ?? [])
               .map((id) => tagsById.get(id))
               .filter((tag): tag is CashTag => tag !== undefined);
@@ -256,7 +260,7 @@ export function CashMovementsPage() {
               </tr>
             </thead>
             <tbody>
-              {ordered.map((m) => {
+              {movements.map((m) => {
                 const movementTags = (m.tags ?? [])
                   .map((id) => tagsById.get(id))
                   .filter((tag): tag is CashTag => tag !== undefined);
@@ -316,6 +320,20 @@ export function CashMovementsPage() {
           </table>
         </div>
       )}
+
+      {movementsQuery.hasNextPage ? (
+        <Button
+          className="self-center"
+          disabled={movementsQuery.isFetchingNextPage}
+          onClick={() => void movementsQuery.fetchNextPage()}
+          size="sm"
+          variant="quiet"
+        >
+          {movementsQuery.isFetchingNextPage
+            ? t('common.loading')
+            : t('cashflow.movements.loadMore')}
+        </Button>
+      ) : null}
 
       {recording ? (
         <RecordCashDialog onClose={() => setRecording(false)} portfolioId={portfolioId} />

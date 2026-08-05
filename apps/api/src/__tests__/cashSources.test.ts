@@ -96,11 +96,16 @@ async function cashState(agent: Agent, pid: string) {
   const res = await agent.get(`/api/v1/portfolios/${pid}/cash`);
   expect(res.status).toBe(200);
   expect(cashMovementsResponseSchema.safeParse(res.body).success).toBe(true);
-  return res.body as {
+  const state = res.body as {
     balanceEur: number;
     movements: CashMovement[];
     sources: CashSource[];
   };
+  state.movements.sort(
+    (left, right) =>
+      left.executedAt.localeCompare(right.executedAt) || left.id.localeCompare(right.id),
+  );
+  return state;
 }
 
 async function deposit(

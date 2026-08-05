@@ -2,6 +2,8 @@ import {
   VAULT_DOCUMENT_V1_VERSION,
   VAULT_ENTITY_ROW_SCHEMAS,
   type CustomTaxParams,
+  type CashMovement,
+  type CashMovementsResponse,
   type Dividend,
   type ExpenseTransaction,
   type PortfolioAsset,
@@ -187,7 +189,7 @@ export async function buildNormalVaultDocument(
       signal?.throwIfAborted();
       const [transactions, cash, dividends, tax, taxYears] = await Promise.all([
         listAllTransactions(store, portfolio.id, signal),
-        store.getCashMovements(portfolio.id, signal),
+        listAllCashMovements(store, portfolio.id, signal),
         listDividends(portfolio.id, undefined, signal),
         store.getPortfolioTaxSettings(portfolio.id, signal),
         getTaxYearReports(portfolio.id, signal),
@@ -615,6 +617,25 @@ async function listAllTransactions(
     cursor = page.nextCursor ?? undefined;
   } while (cursor != null);
   return rows;
+}
+
+/** Drain the paged cash ledger: migration must capture every row before purge. */
+async function listAllCashMovements(
+  store: PortfolioStore,
+  portfolioId: string,
+  signal?: AbortSignal,
+): Promise<CashMovementsResponse> {
+  const movements: CashMovement[] = [];
+  let firstPage: CashMovementsResponse | undefined;
+  let cursor: string | undefined;
+  do {
+    const page = await store.getCashMovements(portfolioId, { cursor, limit: 200 }, signal);
+    firstPage ??= page;
+    movements.push(...page.movements);
+    cursor = page.nextCursor ?? undefined;
+  } while (cursor != null);
+  if (!firstPage) throw new Error('Cash ledger pagination returned no first page.');
+  return { ...firstPage, movements, nextCursor: null };
 }
 
 /**
