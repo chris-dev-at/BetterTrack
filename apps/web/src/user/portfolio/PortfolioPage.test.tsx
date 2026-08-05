@@ -947,15 +947,17 @@ describe('PortfolioPage — intraday 1D/1W dense curve (#556)', () => {
   const INTRADAY_HISTORY = {
     range: '1D' as const,
     baseCurrency: 'EUR' as const,
-    // The intraday points share a `date` and are disambiguated by `time` — the
-    // server-side dense curve (arc d). Three points stand in for the ≥20 the API
-    // emits; the unit here is the client's time mapping.
+    // A 1D curve starts with the prior daily close and then uses today's exact
+    // intraday instants. Four points stand in for the ≥20 the API emits; the
+    // unit here is the client's time mapping.
     points: [
+      { date: '2024-06-15', time: '2024-06-15T23:59:59.999Z', valueEur: 326000 },
       { date: '2024-06-16', time: '2024-06-16T09:00:00.000Z', valueEur: 326000 },
       { date: '2024-06-16', time: '2024-06-16T09:15:00.000Z', valueEur: 326100 },
       { date: '2024-06-16', time: '2024-06-16T09:30:00.000Z', valueEur: 326350 },
     ],
     performance: [
+      { date: '2024-06-15', time: '2024-06-15T23:59:59.999Z', pct: 0 },
       { date: '2024-06-16', time: '2024-06-16T09:00:00.000Z', pct: 0 },
       { date: '2024-06-16', time: '2024-06-16T09:15:00.000Z', pct: 0.03 },
       { date: '2024-06-16', time: '2024-06-16T09:30:00.000Z', pct: 0.11 },
@@ -971,10 +973,11 @@ describe('PortfolioPage — intraday 1D/1W dense curve (#556)', () => {
     await user.click(await screen.findByRole('button', { name: '1D' }));
 
     // Each point is plotted at its exact instant (a numeric UNIX-second `Time`),
-    // so the three same-day points render as a real curve rather than collapsing
-    // onto one business-day mark.
+    // preserving the prior-close anchor and today's real curve rather than
+    // collapsing the same-day points onto one business-day mark.
     await waitFor(() =>
       expect(chartMocks.setData).toHaveBeenCalledWith([
+        { time: sec('2024-06-15T23:59:59.999Z'), value: 326000 },
         { time: sec('2024-06-16T09:00:00.000Z'), value: 326000 },
         { time: sec('2024-06-16T09:15:00.000Z'), value: 326100 },
         { time: sec('2024-06-16T09:30:00.000Z'), value: 326350 },

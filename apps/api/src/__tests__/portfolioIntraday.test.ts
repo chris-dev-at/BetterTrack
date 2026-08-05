@@ -141,10 +141,13 @@ function buildStub(refNow: number) {
 }
 
 describe('intraday portfolio series (#556)', () => {
-  async function setup() {
-    const refNow = Date.now();
+  async function setup(options: { refNow?: number; portfolioNow?: () => number } = {}) {
+    const refNow = options.refNow ?? Date.now();
     const stub = buildStub(refNow);
-    const h = await createTestApp({ marketData: stub.marketData });
+    const h = await createTestApp({
+      marketData: stub.marketData,
+      portfolioNow: options.portfolioNow,
+    });
     const user = await h.seedUser();
     const agent = await loginAgent(h.app, user.email, user.password);
     const pid = await defaultPortfolioId(agent);
@@ -216,6 +219,37 @@ describe('intraday portfolio series (#556)', () => {
     const intradayFetches = stub.calls.filter((c) => c.interval === '15m');
     expect(intradayFetches.length).toBe(2);
     expect(intradayFetches.map((c) => c.ref).sort()).toEqual(['AAPL', 'BAYN.DE']);
+  });
+
+  it('keeps a 1D request on one captured pre-midnight UTC day', async () => {
+    const asOfDay = new Date().toISOString().slice(0, 10);
+    const dayStartMs = Date.parse(`${asOfDay}T00:00:00.000Z`);
+    const beforeMidnightMs = dayStartMs + 24 * 60 * MIN - 1;
+    const afterMidnightMs = beforeMidnightMs + 1;
+    let exerciseBoundaryClock = false;
+    let boundaryClockCalls = 0;
+    const portfolioNow = () => {
+      if (!exerciseBoundaryClock) return Date.now();
+      boundaryClockCalls += 1;
+      return boundaryClockCalls === 1 ? beforeMidnightMs : afterMidnightMs;
+    };
+
+    const { agent, pid } = await setup({ refNow: beforeMidnightMs, portfolioNow });
+    exerciseBoundaryClock = true;
+
+    const res = await agent.get(`/api/v1/portfolios/${pid}/history?range=1D`);
+    expect(res.status).toBe(200);
+    // `getHistory` must not read a new clock after its async snapshot/candle
+    // work. A second call returns tomorrow here and used to remove every
+    // requested-day candle from the 1D curve.
+    expect(boundaryClockCalls).toBe(1);
+
+    const points = res.body.points as Array<{ date: string; time?: string }>;
+    const previousDay = new Date(dayStartMs - 24 * 60 * MIN).toISOString().slice(0, 10);
+    expect([...new Set(points.map((point) => point.date))]).toEqual([previousDay, asOfDay]);
+    // The captured request day retains its intraday curve rather than degrading
+    // to its one daily fallback point after the simulated rollover.
+    expect(points.filter((point) => point.date === asOfDay)).toHaveLength(30);
   });
 
   it('honours conditional requests on the intraday series (304 round-trip)', async () => {

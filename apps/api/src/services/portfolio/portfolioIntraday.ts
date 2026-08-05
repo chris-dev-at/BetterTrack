@@ -131,9 +131,9 @@ import { buildIntradayBucketPrices } from './intradayBucketPrices';
  * Provider candles are quantized onto a fixed per-range step so every asset
  * lands on the same grid marks (aligned, never jagged) while grid points exist
  * only where intraday data does (no dead overnight/weekend flats). 1D keeps a
- * 15-minute grid and 1W an hourly one; 1M coarsens to ~`span / TARGET_POINTS`
- * (a few hours) so a 24/7 asset lands near the budget and an equity — trading
- * only market hours — comfortably below it.
+ * 15-minute grid, 1W an hourly one, and 1M a UTC-day-aligned 144-minute grid.
+ * That leaves a 24/7 asset near the point budget and an equity — trading only
+ * market hours — comfortably below it.
  *
  * **Step inputs add grid marks of their own** (#1120 review): candle marks
  * alone cannot represent an event that falls between two candles — sparse
@@ -197,11 +197,11 @@ export function isDownsampledRange(
 /**
  * 1M keeps sub-daily candles (it is inside the provider's ~60-day intraday
  * window) but coarsens to the point budget instead of the 30-minute fetch
- * granularity: the grid step is the 1-month span divided by {@link TARGET_POINTS}
- * (~2.5 h). A "nice month curve", not an every-30-minutes wall.
+ * granularity. Its 144-minute step is the closest UTC-day divisor to the
+ * ~2.5-hour point-budget target, so flooring a candle can never move it across
+ * a UTC midnight. A "nice month curve", not an every-30-minutes wall.
  */
-const INTRADAY_MONTH_STEP_MS =
-  Math.max(1, Math.round((31 * DAY_MS) / TARGET_POINTS / MINUTE_MS)) * MINUTE_MS;
+const INTRADAY_MONTH_STEP_MS = 144 * MINUTE_MS;
 
 /**
  * Per-range candle `fetchRange` + provider `interval` + grid `stepMs` for the
@@ -440,8 +440,13 @@ export interface IntradayValuePoint {
 
 export interface BuildIntradayEurInput {
   range: IntradayPortfolioRange;
-  /** Inclusive window start day (ISO), i.e. `rangeCutoffIso(range, today)`. */
+  /**
+   * Inclusive daily window start (ISO), i.e. `rangeCutoffIso(range, today)`.
+   * For 1D this is the prior-close anchor; its intraday grid begins today.
+   */
   cutoffDay: string;
+  /** Captured request-as-of UTC day; daily data after it is outside the window. */
+  asOfDay: string;
   /** Current wall-clock (epoch-ms) — bounds the "today" fallback stamp. */
   nowMs: number;
   /** Net-worth EUR per calendar day (the daily snapshot points, full series). */
@@ -487,7 +492,7 @@ function bucketMs(atMs: number, stepMs: number): number {
 }
 
 /**
- * Assemble the EUR intraday value curve for `[cutoffDay, today]`. Pure and
+ * Assemble the EUR intraday value curve for `[cutoffDay, asOfDay]`. Pure and
  * deterministic — the caller supplies the daily snapshot ingredients and the
  * already-fetched candles; re-denomination into a non-EUR base and the
  * performance curve are layered on top by the service.
@@ -495,6 +500,7 @@ function bucketMs(atMs: number, stepMs: number): number {
 export function buildIntradayEurValuePoints(input: BuildIntradayEurInput): IntradayValuePoint[] {
   const {
     cutoffDay,
+    asOfDay,
     nowMs,
     dailyValueEurByDay,
     perAssetEurByDay,
@@ -506,10 +512,17 @@ export function buildIntradayEurValuePoints(input: BuildIntradayEurInput): Intra
 
   // In-window days come straight from the daily series (one point per calendar
   // day), so weekends/holidays are already present via carry-forward.
-  const windowDays = [...dailyValueEurByDay.keys()].filter((d) => d >= cutoffDay).sort();
+  const windowDays = [...dailyValueEurByDay.keys()]
+    .filter((d) => d >= cutoffDay && d <= asOfDay)
+    .sort();
   if (windowDays.length === 0) return [];
   const windowDaySet = new Set(windowDays);
   const cutoffMs = dayStartMs(cutoffDay);
+  // 1D is yesterday's close followed by today's intraday curve. Providers can
+  // return trailing candles from yesterday for a 1D request; accepting those
+  // would turn the visual into two full calendar days and re-base at the wrong
+  // point. The prior day's daily fallback below remains the close anchor.
+  const candleStartMs = input.range === '1D' ? dayStartMs(asOfDay) : cutoffMs;
 
   // Cash per day = net worth − Σ held-asset value (holdings, #311). Derived so
   // the intraday sum reproduces the daily net worth exactly at each close.
@@ -536,7 +549,7 @@ export function buildIntradayEurValuePoints(input: BuildIntradayEurInput): Intra
     const byDay = new Map<string, IntradayCandle[]>();
     for (const candle of candles) {
       if (!Number.isFinite(candle.atMs) || !Number.isFinite(candle.price)) continue;
-      if (candle.atMs < cutoffMs || candle.atMs > nowMs) continue;
+      if (candle.atMs < candleStartMs || candle.atMs > nowMs) continue;
       const day = dayOfMs(candle.atMs);
       if (!windowDaySet.has(day)) continue;
       const list = byDay.get(day);
@@ -581,7 +594,7 @@ export function buildIntradayEurValuePoints(input: BuildIntradayEurInput): Intra
   // neighbour, and events already covered by a candle mark add nothing.
   const eventBuckets = new Set<number>();
   const addEventBuckets = (atMs: number, assetId?: string): void => {
-    if (!Number.isFinite(atMs) || atMs < cutoffMs || atMs > nowMs) return;
+    if (!Number.isFinite(atMs) || atMs < candleStartMs || atMs > nowMs) return;
     const day = dayOfMs(atMs);
     if (!windowDaySet.has(day)) return;
     // A suppressed event never steps, so a mark for it would be a duplicate
@@ -591,7 +604,9 @@ export function buildIntradayEurValuePoints(input: BuildIntradayEurInput): Intra
     if (dayOfMs(bucket) !== day) return;
     eventBuckets.add(bucket);
     const leadingEdge = bucket - stepMs;
-    if (leadingEdge >= cutoffMs && dayOfMs(leadingEdge) === day) eventBuckets.add(leadingEdge);
+    if (leadingEdge >= candleStartMs && dayOfMs(leadingEdge) === day) {
+      eventBuckets.add(leadingEdge);
+    }
   };
   for (const [assetId, info] of unitsByAsset ?? []) {
     for (const step of info.steps) addEventBuckets(step.atMs, assetId);
@@ -754,12 +769,11 @@ export function buildIntradayEurValuePoints(input: BuildIntradayEurInput): Intra
       return closeScaled();
     }
 
-    // Units applied by the bucket's END — but never past the day's own end: a
-    // grid step that does not divide the day (1M's ~2.5 h, #1121) can start
-    // late on D and finish on D+1, and `vday`/`eod` below are day-scoped, so an
-    // unclamped read would scale THIS day's close by TOMORROW's units (#1120
-    // review). Candle-covered days are already safe (their straddling bucket is
-    // the seam); a candle-less day carrying event buckets is not.
+    // Units apply at the bucket's END, never past the day's own end. Every
+    // current range step divides a UTC day (#1121), so ordinary buckets cannot
+    // straddle midnight; retain the clamp as a defensive guard for any future
+    // non-dividing grid, because `vday`/`eod` below are day-scoped and an
+    // unclamped read could scale THIS day's close by TOMORROW's units.
     const u = unitsAt(info, Math.min(bucket + stepMs - 1, dayStartMs(day) + DAY_MS - 1));
     if (u <= QTY_EPSILON) return 0;
     const eod = eodUnits(assetId, info, day);
