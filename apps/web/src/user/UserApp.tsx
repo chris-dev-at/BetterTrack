@@ -52,7 +52,12 @@ import { CustomAssetsPage, TransactionsPage } from './portfolio/PortfolioSection
 import { CashLayout, PortfolioWorkspace } from './portfolio/PortfolioWorkspace';
 import { WorkbenchLayout } from './workbench/WorkbenchLayout';
 import { WorkboardPage } from './workboard/WorkboardPage';
-import { BacktestsPage, CalculatorsPage, WatchlistPage } from './workboard/WorkboardSection';
+import {
+  BacktestsPage,
+  CalculatorsPage,
+  WatchlistDetailPage,
+  WatchlistPage,
+} from './workboard/WorkboardSection';
 import { ComparisonPage } from './workboard/ComparisonPage';
 import { AlertsPage } from './workboard/AlertsPage';
 import { ConglomeratesListPage } from './workboard/ConglomeratesListPage';
@@ -372,6 +377,7 @@ function UserRoutes({ location }: { location: Location }) {
               <Route index element={<AssetsOverviewPage />} />
               <Route path="search" element={<SearchPage />} />
               <Route path="watchlists" element={<WatchlistPage />} />
+              <Route path="watchlists/:watchlistId" element={<WatchlistDetailPage />} />
               <Route path="custom-assets" element={<CustomAssetsPage />} />
               <Route path="news" element={<NewsDigestPage />} />
               <Route path="discover" element={<ParkedPage page="discover" />} />

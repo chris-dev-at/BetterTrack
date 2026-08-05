@@ -1,5 +1,6 @@
 import { useT } from '../../i18n';
 import { ComingSoon } from '../../ui';
+import { WatchlistDetailPage as WatchlistDetail } from './WatchlistDetailPage';
 import { WatchlistsPage } from './WatchlistsPage';
 
 /**
@@ -12,6 +13,11 @@ import { WatchlistsPage } from './WatchlistsPage';
 /** Named watchlists — create/rename/delete + per-list audience (§13.3 V3-P5). */
 export function WatchlistPage() {
   return <WatchlistsPage />;
+}
+
+/** One named watchlist with list-scoped add/remove management. */
+export function WatchlistDetailPage() {
+  return <WatchlistDetail />;
 }
 
 export function BacktestsPage() {

@@ -407,6 +407,7 @@ export const V5_SURFACE_INVENTORY = [
     id: 'p6-workboard-endgame',
     phases: ['P6'],
     routes: [
+      '/assets/watchlists/:watchlistId',
       '/workbench/compare',
       '/workbench/blueprints',
       '/workbench/blueprints/:id',
@@ -422,6 +423,7 @@ export const V5_SURFACE_INVENTORY = [
       'user/workboard/ConglomerateBuilderPage.tsx',
       'user/workboard/IdeaWorkboardPage.tsx',
       'user/workboard/IdeasListPage.tsx',
+      'user/workboard/WatchlistDetailPage.tsx',
       'user/workboard/WatchlistsPage.tsx',
       'user/workboard/WorkboardSection.tsx',
     ],
@@ -431,18 +433,19 @@ export const V5_SURFACE_INVENTORY = [
       'workboard.detail',
       'workboard.builder',
       'workboard.ideas',
+      'watchlists',
     ],
     copyReview:
-      'N-way comparison and nested Blueprint copy reviewed; malformed German singulars corrected.',
+      'N-way comparison, nested Blueprint, and owned-watchlist management copy reviewed; malformed German singulars corrected.',
     states: {
       loading: covered(
-        'Blueprint lists, nested picks, and comparison execution use loading frames.',
+        'Blueprint lists, nested picks, comparison execution, and watchlist detail use loading frames.',
       ),
       empty: unverified(
-        'Insufficient selections, no Blueprints/ideas, and no positions are explicit.',
+        'Insufficient selections, no Blueprints/ideas, no positions, and empty watchlists are explicit.',
       ),
       error: covered(
-        'Blueprint-list, nested-list, comparison-execution, and idea-resolution outages are distinct and retry in place; confirmed missing references stay terminal.',
+        'Blueprint-list, nested-list, comparison-execution, idea-resolution, and watchlist-detail outages retry in place; confirmed missing references stay terminal.',
       ),
     },
     tests: [
@@ -1666,7 +1669,7 @@ export type V5AsyncStateDebtLedger = Readonly<
 >;
 
 /** Exact anti-shrinkage baseline for the source-derived asynchronous read universe. */
-export const V5_ASYNC_READ_SITE_BASELINE = 179;
+export const V5_ASYNC_READ_SITE_BASELINE = 181;
 
 /** Ratchet this downward whenever #739 removes a read site or missing state. */
 export const V5_ASYNC_STATE_DEBT_CEILING = { readSites: 0, stateGaps: 0 } as const;

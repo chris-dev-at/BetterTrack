@@ -1,4 +1,5 @@
 import { useRef, useState } from 'react';
+import { Link } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import type { WatchlistSummary } from '@bettertrack/contracts';
@@ -134,14 +135,26 @@ export function WatchlistsPage() {
               className="bt-band__row bt-watchlist-row flex flex-col items-stretch justify-between gap-3 sm:flex-row sm:items-center"
               key={w.id}
             >
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="bt-row-title">{w.name}</span>
-                {w.isDefault ? <Badge>{t('watchlists.defaultBadge')}</Badge> : null}
-                <span className="bt-meta">
-                  {w.itemCount === 1
-                    ? t('watchlists.itemsOne')
-                    : t('watchlists.itemsOther', { count: w.itemCount })}
-                </span>
+              <div className="flex min-w-0 flex-1 flex-col gap-1">
+                <div className="flex min-w-0 flex-wrap items-center gap-2">
+                  <Link
+                    className="bt-row-title bt-link min-w-0 break-words"
+                    to={`/assets/watchlists/${w.id}`}
+                  >
+                    {w.name}
+                  </Link>
+                  {w.isDefault ? <Badge>{t('watchlists.defaultBadge')}</Badge> : null}
+                  <span className="bt-meta">
+                    {w.itemCount === 1
+                      ? t('watchlists.itemsOne')
+                      : t('watchlists.itemsOther', { count: w.itemCount })}
+                  </span>
+                </div>
+                {w.isDefault ? (
+                  <span className="bt-meta" id={`watchlist-default-reason-${w.id}`}>
+                    {t('watchlists.defaultLockedReason')}
+                  </span>
+                ) : null}
               </div>
               <div className="bt-watchlist-row__actions flex flex-wrap items-center gap-2">
                 {!paranoid ? (
@@ -149,7 +162,25 @@ export function WatchlistsPage() {
                     {t('sharing.shareButton')}
                   </Button>
                 ) : null}
-                {!w.isDefault ? (
+                {w.isDefault ? (
+                  <>
+                    <Button
+                      aria-describedby={`watchlist-default-reason-${w.id}`}
+                      disabled
+                      size="sm"
+                    >
+                      {t('watchlists.rename')}
+                    </Button>
+                    <Button
+                      aria-describedby={`watchlist-default-reason-${w.id}`}
+                      disabled
+                      size="sm"
+                      variant="danger"
+                    >
+                      {t('watchlists.delete')}
+                    </Button>
+                  </>
+                ) : (
                   <>
                     <Button onClick={() => setRenaming(w)} size="sm">
                       {t('watchlists.rename')}
@@ -168,7 +199,7 @@ export function WatchlistsPage() {
                       {t('watchlists.delete')}
                     </Button>
                   </>
-                ) : null}
+                )}
               </div>
             </li>
           ))}
