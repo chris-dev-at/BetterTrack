@@ -1,4 +1,4 @@
-import { and, asc, eq, isNull, lt, or } from 'drizzle-orm';
+import { and, asc, eq, isNull, lt, or, sql } from 'drizzle-orm';
 
 import type {
   StandingOrderCadence,
@@ -7,6 +7,7 @@ import type {
 } from '@bettertrack/contracts';
 
 import type { Database } from '../db';
+import { newId } from '../ids';
 import { lockPortfolioMutationInTransaction } from './cashMovementRepository';
 import { assets, portfolios, standingOrderRuns, standingOrders } from '../schema';
 
@@ -244,9 +245,16 @@ export function createStandingOrderRepository(db: Database) {
      * transition. The active check belongs *inside* the shared xact lock: a
      * worker may have read an active order before an archive request commits,
      * but cannot claim or write money once that transition won the lock.
+     *
+     * The order check is deliberately in this critical section too. Restore can
+     * advance its watermark while an old worker is awaiting a quote; merely
+     * rechecking the portfolio would let that worker claim a period behind the
+     * restored watermark after the portfolio becomes active again.
      */
     async withActivePortfolioLock<T>(
       portfolioId: string,
+      standingOrderId: string,
+      periodKey: string,
       action: (transaction: Database) => Promise<T>,
     ): Promise<T | null> {
       return db.transaction(async (tx) => {
@@ -257,6 +265,26 @@ export function createStandingOrderRepository(db: Database) {
           .where(and(eq(portfolios.id, portfolioId), isNull(portfolios.archivedAt)))
           .limit(1);
         if (active.length === 0) return null;
+
+        // `FOR UPDATE` serializes this validation with pause/resume and the
+        // restore-side watermark update. PostgreSQL rechecks the predicate when
+        // it waits on a concurrent updater, so a later acknowledged period can
+        // never be claimed by this stale worker.
+        const current = await tx
+          .select({ id: standingOrders.id })
+          .from(standingOrders)
+          .where(
+            and(
+              eq(standingOrders.id, standingOrderId),
+              eq(standingOrders.portfolioId, portfolioId),
+              eq(standingOrders.status, 'active'),
+              or(isNull(standingOrders.lastPeriodKey), lt(standingOrders.lastPeriodKey, periodKey)),
+            ),
+          )
+          .limit(1)
+          .for('update');
+        if (current.length === 0) return null;
+
         return action(tx as unknown as Database);
       });
     },
@@ -331,19 +359,35 @@ export function createStandingOrderRepository(db: Database) {
 
     /**
      * Atomically claim one period for an order via the UNIQUE(order, period)
-     * index. Returns true iff THIS call created the claim (so it must book);
-     * false means the period was already claimed (skip — the double-run guard).
+     * index. The CTE locks and rechecks the current scheduler watermark before
+     * inserting, so an old worker cannot claim a period that a newer restore or
+     * worker has already acknowledged. Returns true iff THIS call created the
+     * claim (so it must book); false means the period was already handled or
+     * claimed (skip — the double-run guard).
      */
     async claimPeriod(
       standingOrderId: string,
       periodKey: string,
       executor: Database = db,
     ): Promise<boolean> {
-      const rows = await executor
-        .insert(standingOrderRuns)
-        .values({ standingOrderId, periodKey })
-        .onConflictDoNothing()
-        .returning({ id: standingOrderRuns.id });
+      const inserted = await executor.execute(sql`
+        WITH eligible_order AS (
+          SELECT ${standingOrders.id}
+          FROM ${standingOrders}
+          WHERE ${standingOrders.id} = ${standingOrderId}::uuid
+            AND (
+              ${standingOrders.lastPeriodKey} IS NULL
+              OR ${standingOrders.lastPeriodKey} < ${periodKey}::date
+            )
+          FOR UPDATE
+        )
+        INSERT INTO ${standingOrderRuns} ("id", "standing_order_id", "period_key")
+        SELECT ${newId()}::uuid, eligible_order."id", ${periodKey}::date
+        FROM eligible_order
+        ON CONFLICT ("standing_order_id", "period_key") DO NOTHING
+        RETURNING "id"
+      `);
+      const rows = (inserted as { rows?: unknown[] }).rows ?? (inserted as unknown[]);
       return rows.length > 0;
     },
 
@@ -423,12 +467,21 @@ export function createStandingOrderRepository(db: Database) {
       });
     },
 
-    /** Record that a period booked: bump the order's display bookkeeping. */
+    /**
+     * Record that a period booked: bump the order's display bookkeeping without
+     * ever walking its watermark backward. A slow worker may finish after a
+     * later restore or scan has already acknowledged a newer period.
+     */
     async markBooked(standingOrderId: string, periodKey: string, bookedAt: Date): Promise<void> {
       await db
         .update(standingOrders)
         .set({ lastPeriodKey: periodKey, lastRunAt: bookedAt, updatedAt: new Date() })
-        .where(eq(standingOrders.id, standingOrderId));
+        .where(
+          and(
+            eq(standingOrders.id, standingOrderId),
+            or(isNull(standingOrders.lastPeriodKey), lt(standingOrders.lastPeriodKey, periodKey)),
+          ),
+        );
     },
   };
 }

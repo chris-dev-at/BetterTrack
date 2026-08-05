@@ -429,38 +429,43 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
           // the final active check, claim and money write share one portfolio
           // mutation lock. An archive that wins that lock makes this a no-op;
           // an execution that wins finishes while the portfolio is still active.
-          const outcome = await repo.withActivePortfolioLock(order.portfolioId, async (tx) => {
-            if (order.kind === 'cash-deduct') {
-              const movements = await cashMovementRepo.listForPortfolio(order.portfolioId, tx);
-              if (!cashCovers(order, cashSourceId!, movements)) return 'deferred' as const;
-            }
+          const outcome = await repo.withActivePortfolioLock(
+            order.portfolioId,
+            order.id,
+            due,
+            async (tx) => {
+              if (order.kind === 'cash-deduct') {
+                const movements = await cashMovementRepo.listForPortfolio(order.portfolioId, tx);
+                if (!cashCovers(order, cashSourceId!, movements)) return 'deferred' as const;
+              }
 
-            const claimed = await repo.claimPeriod(order.id, due, tx);
-            if (!claimed) return 'duplicate' as const;
+              const claimed = await repo.claimPeriod(order.id, due, tx);
+              if (!claimed) return 'duplicate' as const;
 
-            try {
-              // A failed money write must leave its run claim as the existing
-              // no-retry tombstone. A nested transaction is a savepoint, so the
-              // failed write rolls back without releasing the outer portfolio
-              // lock or rolling back the durable claim.
-              await tx.transaction(async (savepoint) => {
-                await bookRow(
-                  order,
-                  bookPrice,
-                  executedAt,
-                  cashSourceId,
-                  savepoint as unknown as Database,
+              try {
+                // A failed money write must leave its run claim as the existing
+                // no-retry tombstone. A nested transaction is a savepoint, so the
+                // failed write rolls back without releasing the outer portfolio
+                // lock or rolling back the durable claim.
+                await tx.transaction(async (savepoint) => {
+                  await bookRow(
+                    order,
+                    bookPrice,
+                    executedAt,
+                    cashSourceId,
+                    savepoint as unknown as Database,
+                  );
+                });
+              } catch (err) {
+                logger?.error(
+                  { orderId: order.id, kind: order.kind, due, err },
+                  'standing order: booking failed AFTER claim; period will not retry',
                 );
-              });
-            } catch (err) {
-              logger?.error(
-                { orderId: order.id, kind: order.kind, due, err },
-                'standing order: booking failed AFTER claim; period will not retry',
-              );
-              return 'booking-failed' as const;
-            }
-            return 'booked' as const;
-          });
+                return 'booking-failed' as const;
+              }
+              return 'booked' as const;
+            },
+          );
 
           if (outcome === null) return;
           if (outcome === 'deferred') {

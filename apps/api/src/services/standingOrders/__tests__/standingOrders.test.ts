@@ -537,6 +537,81 @@ describe('standing orders — archived portfolios', () => {
     expect(await txnRows(pid)).toHaveLength(0);
     expect(await runPeriodKeys(created.body.id as string)).toEqual([]);
   });
+
+  it('does not let a delayed pre-midnight scan book behind a restored watermark', async () => {
+    let quoteStarted!: () => void;
+    let releaseQuote!: () => void;
+    const quoteIsInFlight = new Promise<void>((resolve) => {
+      quoteStarted = resolve;
+    });
+    const delayedMarketData = createStubMarketData({
+      quote: async () => {
+        quoteStarted();
+        await new Promise<void>((resolve) => {
+          releaseQuote = resolve;
+        });
+        return {
+          value: { price: 100, currency: 'EUR', asOf: '2026-04-01T00:00:00.000Z' },
+          stale: false,
+          asOf: 0,
+        };
+      },
+    });
+    harness = await createTestApp({
+      marketData: delayedMarketData,
+      portfolioNow: () => portfolioNow ?? Date.now(),
+    });
+    const { agent } = await setup();
+    const portfolio = await agent
+      .post('/api/v1/portfolios')
+      .set(...XRW)
+      .send({ name: 'Restore boundary race' });
+    expect(portfolio.status).toBe(201);
+    const pid = portfolio.body.portfolio.id as string;
+    const assetId = await seedAsset('BOUNDARY');
+    const created = await createOrder(agent, {
+      portfolioId: pid,
+      kind: 'buy-asset',
+      assetId,
+      amount: 1,
+      cadence: 'daily',
+      startDate: '2026-04-01',
+    });
+    expect(created.status).toBe(201);
+
+    // Europe/Vienna is UTC+2 here. The scan sees Apr 1 just before Vienna
+    // midnight; archive + restore cross to Apr 2 while its quote is in flight.
+    const processing = run('2026-04-01T21:59:00Z');
+    await quoteIsInFlight;
+
+    portfolioNow = Date.parse('2026-04-01T21:59:30Z');
+    expect((await agent.post(`/api/v1/portfolios/${pid}/archive`).set(...XRW)).status).toBe(200);
+
+    portfolioNow = Date.parse('2026-04-01T22:00:30Z');
+    expect((await agent.post(`/api/v1/portfolios/${pid}/restore`).set(...XRW)).status).toBe(200);
+    releaseQuote();
+
+    expect(await processing).toEqual({
+      scanned: 1,
+      booked: 0,
+      skippedDuplicate: 0,
+      deferred: 0,
+    });
+    expect(await txnRows(pid)).toHaveLength(0);
+    expect(await cashRows(pid, SOURCE_TAG_STANDING_ORDER)).toHaveLength(0);
+    expect((await runPeriodKeys(created.body.id as string)).map((row) => row.key)).toEqual([
+      '2026-04-02',
+    ]);
+
+    const restored = await agent.get(`/api/v1/standing-orders?portfolioId=${pid}`);
+    const restoredOrder = standingOrderListResponseSchema
+      .parse(restored.body)
+      .orders.find((order) => order.id === created.body.id);
+    expect(restoredOrder).toMatchObject({
+      lastPeriodKey: '2026-04-02',
+      nextRunDate: '2026-04-03',
+    });
+  });
 });
 
 describe('standing orders — end date', () => {
