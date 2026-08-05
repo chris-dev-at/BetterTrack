@@ -155,6 +155,29 @@ describe('notification email dispatch (PROJECTPLAN.md §6.10)', () => {
     expect(templates).toEqual(['friend_accepted', 'portfolio_shared']);
   });
 
+  it('sends a standing-order failure email when the user opts into that type', async () => {
+    const recipient = await harness.seedUser({ email: 'orders@bt.test', username: 'orders' });
+    await enableEmailFor(recipient.id, 'standing_order.skipped');
+    await dispatcher.dispatch({
+      type: 'standing_order.skipped',
+      userId: recipient.id,
+      standingOrderId: '00000000-0000-7000-8000-00000000a111',
+      periodKey: '2026-04-01',
+      outcome: 'dropped',
+      droppedCount: 3,
+      orderLabel: 'Netflix',
+      occurredAt: OCCURRED_AT,
+    });
+
+    const rows = await logFor(recipient.email);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      status: 'sent',
+      template: 'standing_order_skipped',
+      userId: recipient.id,
+    });
+  });
+
   it('does not email when the recipient disabled the email channel', async () => {
     const recipient = await harness.seedUser({ email: 'quiet@bt.test', username: 'quiet' });
     await db

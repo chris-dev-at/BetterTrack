@@ -54,6 +54,7 @@ describe('notification taxonomy (#368)', () => {
       'mirror.ownership_transferred',
       'mirror.chain_dissolved',
       'mirror.sync_stalled',
+      'standing_order.skipped',
     ]);
     expect(NOTIFICATION_SETTING_CHANNELS).toEqual([
       'inapp',

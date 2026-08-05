@@ -32,6 +32,7 @@ import type {
   FollowAlertFiredEvent,
   MirrorNotificationEvent,
   PortfolioSharedEvent,
+  StandingOrderSkippedEvent,
   WatchlistSharedEvent,
 } from '../events';
 import {
@@ -673,6 +674,44 @@ describe('signed delivery', () => {
       expect(deliveries).toHaveLength(2);
       expect(deliveries[0]!.deliveryId).toBe(deliveries[1]!.deliveryId);
     }
+  });
+
+  it('preserves a standing-order skip delivery id after its display label is edited', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const created = await agent
+      .post('/api/v1/settings/webhooks')
+      .set(...XRW)
+      .send({
+        url: 'https://receiver.test/standing-order',
+        eventTypes: ['standing_order.skipped'],
+      });
+    expect(created.status).toBe(201);
+
+    const enqueued: WebhookDeliveryJob[] = [];
+    const bridge = createWebhookBridge({
+      subscriptions: createWebhookSubscriptionRepository(harness.db),
+      enqueue: async (job) => {
+        enqueued.push(job);
+      },
+      logger: harness.ctx.logger,
+    });
+    const event: StandingOrderSkippedEvent = {
+      type: 'standing_order.skipped',
+      userId: user.id,
+      standingOrderId: '00000000-0000-7000-8000-000000000111',
+      periodKey: '2026-08-01',
+      outcome: 'deferred',
+      orderLabel: 'Old label',
+      occurredAt: '2026-08-01T00:00:00.000Z',
+    };
+
+    await bridge.handleEvent(event);
+    await bridge.handleEvent({ ...event, orderLabel: 'Edited label' });
+
+    expect(enqueued).toHaveLength(2);
+    expect(enqueued[0]!.event).not.toEqual(enqueued[1]!.event);
+    expect(enqueued[0]!.deliveryId).toBe(enqueued[1]!.deliveryId);
   });
 
   /** Read the delivery log for a subscription through its owner. */

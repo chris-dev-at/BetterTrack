@@ -21,12 +21,14 @@ import { badRequest, notFound } from '../../errors';
 import type { Logger } from '../../logger';
 import { ParanoidModeError, type ParanoidModeGuard } from '../account/paranoidEnforcement';
 import type { MarketDataService } from '../../providers';
+import type { StandingOrderSkipOutcome } from '../../events';
+import type { NotificationCenter } from '../notifications/notificationCenter';
 import type { PortfolioSnapshotService } from '../portfolio/portfolioSnapshots';
 import {
   calendarDayInTimezone,
   dueOccurrence,
   nextRunDate,
-  skippedPeriodCount,
+  skippedPeriods,
   type ScheduleSpec,
 } from './schedule';
 
@@ -70,6 +72,8 @@ export interface StandingOrderServiceDeps {
   cashSourceRepo: Pick<CashSourceRepository, 'getOrCreateMain'>;
   marketData: Pick<MarketDataService, 'getQuote'>;
   snapshots: Pick<PortfolioSnapshotService, 'invalidate'>;
+  /** Standard durable notification entry point for deferred/dropped periods. */
+  notify: NotificationCenter;
   /** Injectable clock (tests); defaults to the wall clock. */
   now?: () => number;
   /** Timezone for calendar-day resolution; defaults to {@link STANDING_ORDERS_SCAN_TZ}. */
@@ -138,6 +142,7 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
     cashSourceRepo,
     marketData,
     snapshots,
+    notify,
     logger,
   } = deps;
   const now = deps.now ?? Date.now;
@@ -329,12 +334,38 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
           // quote fetch on the common already-booked case.
           if (order.lastPeriodKey !== null && order.lastPeriodKey >= due) return;
 
-          const skipped = skippedPeriodCount(specOf(order), order.lastPeriodKey, due);
-          if (skipped > 0) {
+          const candidateDroppedPeriods = skippedPeriods(specOf(order), order.lastPeriodKey, due);
+          // `lastPeriodKey` is only a display watermark. A post-claim booking
+          // failure deliberately leaves it stale, and markBooked can fail after
+          // the money row committed. The run ledger is the authoritative claim
+          // state, so neither case may be reported later as an unrecorded drop.
+          const claimedPeriodKeys = new Set(
+            await repo.listClaimedPeriodKeys(order.id, [...candidateDroppedPeriods, due]),
+          );
+          const droppedPeriods = candidateDroppedPeriods.filter(
+            (periodKey) => !claimedPeriodKeys.has(periodKey),
+          );
+          if (droppedPeriods.length > 0) {
             logger?.info(
-              { orderId: order.id, from: order.lastPeriodKey, due, skipped },
+              {
+                orderId: order.id,
+                from: order.lastPeriodKey,
+                due,
+                skipped: droppedPeriods.length,
+              },
               'standing order: catching up — booking newest period only, skipping older',
             );
+            const newestDroppedPeriod = droppedPeriods.at(-1)!;
+            await notifyFailure(order, newestDroppedPeriod, 'dropped', droppedPeriods.length);
+          }
+
+          // A stale watermark can also expose the currently due period after a
+          // claim. Skip it before any retriable pre-check can falsely call that
+          // already-final occurrence deferred; claimPeriod remains the atomic
+          // concurrency guard for a genuinely unclaimed due period.
+          if (claimedPeriodKeys.has(due)) {
+            result.skippedDuplicate += 1;
+            return;
           }
 
           // Retriable pre-checks BEFORE claiming, so a failure never claims the
@@ -352,6 +383,11 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
               { orderId: order.id, kind: order.kind, due, err },
               'standing order: period deferred (provider failure / insufficient cash), will retry',
             );
+            // A same-day transient is not yet "deferred past its anchor". If it
+            // remains unbooked, a later scan emits one stable notice for this
+            // period; daily schedules instead surface the old period as dropped
+            // when tomorrow's occurrence becomes due.
+            if (due < today) await notifyFailure(order, due, 'deferred');
             return;
           }
 
@@ -370,6 +406,7 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
               { orderId: order.id, kind: order.kind, due, err },
               'standing order: booking failed AFTER claim; period will not retry',
             );
+            await notifyFailure(order, due, 'booking_failed');
             return;
           }
 
@@ -401,6 +438,28 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
       return result;
     },
   };
+
+  /** Emit one idempotent, matrix-routed notice without affecting booking semantics. */
+  async function notifyFailure(
+    order: StandingOrderWithAsset,
+    periodKey: string,
+    outcome: StandingOrderSkipOutcome,
+    droppedCount?: number,
+  ): Promise<void> {
+    await notify.emit({
+      type: 'standing_order.skipped',
+      userId: order.userId,
+      standingOrderId: order.id,
+      periodKey,
+      outcome,
+      ...(droppedCount === undefined ? {} : { droppedCount }),
+      orderLabel: order.label?.trim() || order.assetSymbol,
+      // This is the scheduled occurrence identity, not the scan time. The
+      // webhook bridge keys retries by order + period + outcome, independent of
+      // mutable display copy such as `orderLabel`.
+      occurredAt: `${periodKey}T00:00:00.000Z`,
+    });
+  }
 
   /** Fetch the current native-currency quote price for a buy (throws on failure). */
   async function resolveQuotePrice(order: StandingOrderWithAsset): Promise<number> {

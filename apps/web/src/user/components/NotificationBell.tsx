@@ -81,6 +81,13 @@ function notificationLink(notification: Notification): string | null {
     // Data export ready (V4-P6a) → the export block in Settings → Account.
     case 'account.data_export':
       return '/settings/account';
+    // Standing-order execution problems → the exact row in Forecasts (#1118).
+    case 'standing_order.skipped': {
+      const id = payloadString(p, 'standingOrderId');
+      return id
+        ? `/workbench/forecasts#standing-order-${enc(id)}`
+        : '/workbench/forecasts#forecast-standing-orders-heading';
+    }
     // The one-off lean-email-defaults notice (V4-P0c) → the matrix it explains.
     case 'account.notice':
       return '/settings/notifications';

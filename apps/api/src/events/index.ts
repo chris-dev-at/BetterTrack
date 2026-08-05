@@ -26,6 +26,8 @@ export type {
   ChatMessageEvent,
   DividendEventNotice,
   BudgetExceededEvent,
+  StandingOrderSkippedEvent,
+  StandingOrderSkipOutcome,
   RealtimePrincipalInvalidatedEvent,
   MirrorNotificationEvent,
 } from './types';

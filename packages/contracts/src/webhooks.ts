@@ -50,6 +50,7 @@ export const WEBHOOK_EVENT_TYPES = [
   'mirror.ownership_transferred',
   'mirror.chain_dissolved',
   'mirror.sync_stalled',
+  'standing_order.skipped',
 ] as const;
 
 export type WebhookEventType = (typeof WEBHOOK_EVENT_TYPES)[number];
@@ -84,6 +85,7 @@ export const PARANOID_KILLED_WEBHOOK_EVENT_TYPES = [
   'mirror.ownership_transferred',
   'mirror.chain_dissolved',
   'mirror.sync_stalled',
+  'standing_order.skipped',
 ] as const satisfies readonly WebhookEventType[];
 
 /** True when a paranoid account can never receive this subscribable event. */

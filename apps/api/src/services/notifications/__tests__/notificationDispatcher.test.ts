@@ -145,6 +145,33 @@ describe('notificationDispatcher.dispatch', () => {
     expect(byType.get('account.temp_password')?.title).toBe('Password was reset');
   });
 
+  it('renders a dropped standing-order period with its deep-link payload', async () => {
+    const recipient = await harness.seedUser({ email: 'orders@bt.test', username: 'orders' });
+    await dispatcher.dispatch({
+      type: 'standing_order.skipped',
+      userId: recipient.id,
+      standingOrderId: '00000000-0000-7000-8000-00000000a111',
+      periodKey: '2026-04-01',
+      outcome: 'dropped',
+      droppedCount: 3,
+      orderLabel: 'Netflix',
+      occurredAt: '2026-05-01T10:00:00.000Z',
+    });
+
+    const [row] = await visibleRowsFor(recipient.id, 'standing_order.skipped');
+    expect(row).toMatchObject({
+      type: 'standing_order.skipped',
+      title: '3 standing order periods skipped',
+      body: '3 scheduled occurrences for “Netflix”, through 2026-04-01, were not recorded before the newest period became due.',
+      payload: {
+        standingOrderId: '00000000-0000-7000-8000-00000000a111',
+        periodKey: '2026-04-01',
+        outcome: 'dropped',
+        droppedCount: 3,
+      },
+    });
+  });
+
   it('dedupes: re-dispatching the same event does not create a second row', async () => {
     const recipient = await harness.seedUser({ email: 'r@bt.test', username: 'rec' });
     const event = friendRequestEvent({ userId: recipient.id });

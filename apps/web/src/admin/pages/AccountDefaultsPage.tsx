@@ -52,6 +52,7 @@ function notificationTypeLabels(t: TranslateFn): Record<NotificationType, string
     'chat.message': t('admin.accountDefaults.types.chatMessage'),
     'dividend.event': t('admin.accountDefaults.types.dividendEvent'),
     'budget.exceeded': t('admin.accountDefaults.types.budgetExceeded'),
+    'standing_order.skipped': t('admin.accountDefaults.types.standingOrderSkipped'),
     'mirror.invite': t('admin.accountDefaults.types.mirrorInvite'),
     'mirror.member_joined': t('admin.accountDefaults.types.mirrorMemberJoined'),
     'mirror.member_left': t('admin.accountDefaults.types.mirrorMemberLeft'),

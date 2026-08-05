@@ -61,6 +61,7 @@ const EVENT_LABEL_KEY: Record<WebhookEventType, string> = {
   'chat.message': 'chatMessage',
   'dividend.event': 'dividendEvent',
   'budget.exceeded': 'budgetExceeded',
+  'standing_order.skipped': 'standingOrderSkipped',
   'mirror.invite': 'mirrorInvite',
   'mirror.member_joined': 'mirrorMemberJoined',
   'mirror.member_left': 'mirrorMemberLeft',
