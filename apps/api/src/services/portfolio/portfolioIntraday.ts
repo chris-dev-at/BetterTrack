@@ -82,12 +82,17 @@ import { buildIntradayBucketPrices } from './intradayBucketPrices';
  *    pre-trade holdings. Cash movements
  *    ({@link BuildIntradayEurInput.cashEvents}) step the derived cash figure
  *    the same way. Both inputs are optional — absent, a day keeps its constant
- *    EOD units/cash exactly as before.
+ *    EOD units/cash exactly as before. **Each event contributes its own grid
+ *    marks** so the step always exists where the event does, however sparse (or
+ *    absent) the day's candles are — see "Grid granularity" below.
  *  - **The day's LAST grid bucket is the closing seam** and always carries the
  *    exact EOD state (EOD units, EOD cash, candle-less assets at `V_a(D)`), so
  *    the last intraday point still coincides with the daily value precisely.
  *    A day's own move for a candle-less asset therefore lands AT its close
- *    rather than being spread backward over hours it never covered.
+ *    rather than being spread backward over hours it never covered. A day with
+ *    no candles at all has no seam: its daily point (stamped at the day's close,
+ *    or "now" for today) is its closing value, so its event buckets all carry
+ *    progressive state.
  *
  * Known, deliberate limitation: an asset bought AND fully sold on the series'
  * very first day has no EUR anchor (`V_a(D) = 0`, no prior day) — it
@@ -100,9 +105,9 @@ import { buildIntradayBucketPrices } from './intradayBucketPrices';
  * market asset on a day the provider missed) contributes its prior-day value
  * until the day's last bucket snaps it to `V_a(D)` (legacy flat `V_a(D)` when
  * no prior day exists) — it carries forward and the curve never breaks or
- * drops it. With zero candles for the whole window the output degrades
- * precisely to the daily slice (one point per in-window day), i.e. the
- * pre-#556 behaviour.
+ * drops it. With zero candles AND no step inputs for the whole window the
+ * output degrades precisely to the daily slice (one point per in-window day),
+ * i.e. the pre-#556 behaviour.
  *
  * ## Grid granularity
  *
@@ -112,6 +117,17 @@ import { buildIntradayBucketPrices } from './intradayBucketPrices';
  * 15-minute grid and 1W an hourly one; 1M coarsens to ~`span / TARGET_POINTS`
  * (a few hours) so a 24/7 asset lands near the budget and an equity — trading
  * only market hours — comfortably below it.
+ *
+ * **Step inputs add grid marks of their own** (#1120 review): candle marks
+ * alone cannot represent an event that falls between two candles — sparse
+ * provider coverage, an after-hours cash movement past the day's last candle,
+ * or a candle-less day. Without a mark of its own the state change would ramp
+ * across the surrounding candles, and past the day's last candle the seam would
+ * retro-apply it onto an earlier bucket. Each in-window trade/cash instant
+ * therefore contributes its quantized bucket plus the bucket before it (the
+ * step's leading edge), both clamped to the event's own day, so the change
+ * reads as ONE grid step at the event's instant. The marks are a set, so events
+ * sharing a bucket (and edges coinciding with candle marks) cost nothing.
  */
 
 /**
@@ -383,7 +399,7 @@ export function buildIntradayEurValuePoints(input: BuildIntradayEurInput): Intra
   const dayCandles = new Map<string, Map<string, IntradayCandle[]>>();
   const refCloseByAssetDay = new Map<string, Map<string, number>>();
   const openBucketByAssetDay = new Map<string, Map<string, number>>();
-  const bucketSet = new Set<number>();
+  const candleBuckets = new Set<number>();
   for (const [assetId, candles] of candlesByAsset) {
     if (candles.length === 0) continue;
     const byDay = new Map<string, IntradayCandle[]>();
@@ -395,7 +411,7 @@ export function buildIntradayEurValuePoints(input: BuildIntradayEurInput): Intra
       const list = byDay.get(day);
       if (list) list.push(candle);
       else byDay.set(day, [candle]);
-      bucketSet.add(bucketMs(candle.atMs, stepMs));
+      candleBuckets.add(bucketMs(candle.atMs, stepMs));
     }
     if (byDay.size === 0) continue;
     const refs = new Map<string, number>();
@@ -410,14 +426,44 @@ export function buildIntradayEurValuePoints(input: BuildIntradayEurInput): Intra
     openBucketByAssetDay.set(assetId, opens);
   }
 
-  const sortedBuckets = [...bucketSet].sort((a, b) => a - b);
+  // Grid marks contributed by the step inputs themselves (#1120 review): the
+  // event's own quantized bucket plus the bucket before it (the step's leading
+  // edge), so a trade or movement between two candles — or on a day with none —
+  // reads as one grid step AT its instant instead of ramping across the
+  // surrounding candles. Both marks stay on the event's own calendar day, so a
+  // grid step that does not divide the day can never leak a mark into its
+  // neighbour, and events already covered by a candle mark add nothing.
+  const eventBuckets = new Set<number>();
+  const addEventBuckets = (atMs: number): void => {
+    if (!Number.isFinite(atMs) || atMs < cutoffMs || atMs > nowMs) return;
+    const day = dayOfMs(atMs);
+    if (!windowDaySet.has(day)) return;
+    const bucket = bucketMs(atMs, stepMs);
+    if (dayOfMs(bucket) !== day) return;
+    eventBuckets.add(bucket);
+    const leadingEdge = bucket - stepMs;
+    if (leadingEdge >= cutoffMs && dayOfMs(leadingEdge) === day) eventBuckets.add(leadingEdge);
+  };
+  for (const [assetId, info] of unitsByAsset ?? []) {
+    // Assets outside the daily per-asset series never contribute value, so a
+    // mark for them would be a point with nothing behind it.
+    if (!perAssetEurByDay.has(assetId)) continue;
+    for (const step of info.steps) addEventBuckets(step.atMs);
+  }
+  for (const event of cashEvents ?? []) addEventBuckets(event.atMs);
+
+  const sortedBuckets = [...new Set([...candleBuckets, ...eventBuckets])].sort((a, b) => a - b);
   const bucketsByDay = new Map<string, number[]>();
+  // Days with real intraday candle coverage: only these own a closing seam and
+  // give up their daily point (see the emission loop below).
+  const candleDays = new Set<string>();
   for (const bucket of sortedBuckets) {
     const day = dayOfMs(bucket);
     if (!windowDaySet.has(day)) continue;
     const buckets = bucketsByDay.get(day);
     if (buckets) buckets.push(bucket);
     else bucketsByDay.set(day, [bucket]);
+    if (candleBuckets.has(bucket)) candleDays.add(day);
   }
 
   // Each asset/day candle list advances one cursor across that day's sorted
@@ -443,11 +489,19 @@ export function buildIntradayEurValuePoints(input: BuildIntradayEurInput): Intra
     prevSeriesDayOf.set(orderedSeriesDays[i]!, i > 0 ? orderedSeriesDays[i - 1] : undefined);
   }
 
-  // Each day's last grid bucket: the closing seam, always carrying EOD state.
+  // Each candle-covered day's last grid bucket: the closing seam, always
+  // carrying EOD state — including when an after-hours event bucket extends the
+  // grid past the day's last candle, which is precisely where the EOD state
+  // belongs. A day whose grid is made of event buckets alone has NO seam: its
+  // daily point below is its close, so every bucket there stays progressive.
   const seamBucketByDay = new Map<string, number>();
   for (const [day, buckets] of bucketsByDay) {
+    if (!candleDays.has(day)) continue;
     seamBucketByDay.set(day, buckets[buckets.length - 1]!);
   }
+
+  /** The daily↔intraday boundary stamp of a candle-less day: its close, or "now" for today. */
+  const dailyStampOf = (day: string): number => Math.min(dayStartMs(day) + DAY_MS - 1, nowMs);
 
   // Cash steps (#1120/I1): per non-seam bucket, the signed sum of the day's
   // movements NOT yet applied by the bucket's end — subtracted from the EOD
@@ -468,6 +522,8 @@ export function buildIntradayEurValuePoints(input: BuildIntradayEurInput): Intra
       const buckets = bucketsByDay.get(day);
       if (!buckets) continue;
       events.sort((a, b) => a.atMs - b.atMs);
+      // Undefined on a candle-less day (no seam): every bucket steps, and the
+      // day's daily point still lands on the exact EOD cash.
       const seamBucket = seamBucketByDay.get(day);
       let total = 0;
       for (const event of events) total += event.amountEur;
@@ -573,11 +629,12 @@ export function buildIntradayEurValuePoints(input: BuildIntradayEurInput): Intra
   };
 
   const points: IntradayValuePoint[] = [];
-  const gridDays = new Set<string>();
   for (const bucket of sortedBuckets) {
     const day = dayOfMs(bucket);
     if (!windowDaySet.has(day)) continue;
-    gridDays.add(day);
+    // A candle-less day's daily point carries its close; drop any event bucket
+    // at or past that stamp so the two never land on the same instant.
+    if (!candleDays.has(day) && bucket >= dailyStampOf(day)) continue;
     const seam = bucket === seamBucketByDay.get(day);
     let value = (cashByDay.get(day) ?? 0) - (seam ? 0 : (cashUnappliedByBucket.get(bucket) ?? 0));
     for (const [assetId, perDay] of perAssetEurByDay) {
@@ -586,14 +643,19 @@ export function buildIntradayEurValuePoints(input: BuildIntradayEurInput): Intra
     points.push({ date: day, timeMs: bucket, valueEur: value });
   }
 
-  // Any in-window day with no intraday coverage at all keeps its single daily
-  // point (the daily↔intraday boundary): stamped at the day's close, or "now"
-  // for today. This is what makes a zero-candle window degrade to the daily
-  // slice and lets a 1W span mix intraday-recent with daily-older days.
+  // Any in-window day with no intraday CANDLE coverage keeps its daily point
+  // (the daily↔intraday boundary): stamped at the day's close, or "now" for
+  // today. This is what makes a zero-candle window degrade to the daily slice
+  // and lets a 1W span mix intraday-recent with daily-older days. A candle-less
+  // day carrying event buckets keeps it too — those buckets step the pre-close
+  // state, and the daily point remains the day's exact closing value.
   for (const day of windowDays) {
-    if (gridDays.has(day)) continue;
-    const closeMs = Math.min(dayStartMs(day) + DAY_MS - 1, nowMs);
-    points.push({ date: day, timeMs: closeMs, valueEur: dailyValueEurByDay.get(day) ?? 0 });
+    if (candleDays.has(day)) continue;
+    points.push({
+      date: day,
+      timeMs: dailyStampOf(day),
+      valueEur: dailyValueEurByDay.get(day) ?? 0,
+    });
   }
 
   points.sort((a, b) => a.timeMs - b.timeMs);

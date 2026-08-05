@@ -440,7 +440,10 @@ describe('buildIntradayEurValuePoints — #1120 prior-close anchoring + same-day
       cashEvents: [{ atMs: at(T, '14:00'), amountEur: -1100 }],
     });
 
-    expect(points.length).toBe(12);
+    // 12 candle buckets + the trade's leading-edge mark at 13:45, so the buy
+    // reads as ONE grid step rather than a ramp off the previous candle.
+    expect(points.length).toBe(13);
+    expect(points.some((p) => p.timeMs === at(T, '13:45'))).toBe(true);
     // Before the trade the portfolio is its 1100 cash — flat, pinned exactly.
     for (const p of points.filter((p) => p.timeMs < at(T, '14:00'))) {
       expect(p.valueEur).toBeCloseTo(1100, 9);
@@ -574,33 +577,150 @@ describe('buildIntradayEurValuePoints — #1120 prior-close anchoring + same-day
     expect(points[points.length - 1]!.valueEur).toBeCloseTo(1500, 9);
   });
 
-  it('still degrades to the exact daily slice with step inputs supplied but no candles', () => {
+  it('steps a SPARSE-candle day at the trade bucket instead of ramping to the next candle', () => {
+    // Same story as I1, but the provider only served 09:00 / 13:00 / 20:00.
+    // Candle marks alone give the 14:00 buy no bucket, so the state change
+    // would smear across the 13:00 → 20:00 gap; the event's own marks fix it.
+    const candles: IntradayCandle[] = [
+      { atMs: at(T, '09:00'), price: 108 },
+      { atMs: at(T, '13:00'), price: 110 },
+      { atMs: at(T, '20:00'), price: 115 },
+    ];
+    const points = buildIntradayEurValuePoints({
+      range: '1D',
+      cutoffDay: T,
+      nowMs: NOW_MS,
+      dailyValueEurByDay: new Map([[T, 1150]]), // 10 units · 115 close, EOD cash 0
+      perAssetEurByDay: new Map([['a', new Map([[T, 1150]])]]),
+      candlesByAsset: new Map([['a', candles]]),
+      unitsByAsset: new Map([
+        ['a', { initialUnits: 0, steps: [{ atMs: at(T, '14:00'), units: 10 }] }],
+      ]),
+      cashEvents: [{ atMs: at(T, '14:00'), amountEur: -1100 }],
+    });
+
+    // The grid is the three candle marks plus the trade's own step (13:45/14:00).
+    expect(points.map((p) => p.timeMs)).toEqual([
+      at(T, '09:00'),
+      at(T, '13:00'),
+      at(T, '13:45'),
+      at(T, '14:00'),
+      at(T, '20:00'),
+    ]);
+    // Every pre-trade mark — including the 13:00 candle that used to carry the
+    // ramp — is exactly the untouched 1100 cash.
+    for (const p of points.filter((p) => p.timeMs < at(T, '14:00'))) {
+      expect(p.valueEur).toBeCloseTo(1100, 9);
+    }
+    // The buy lands at its own bucket, priced at the last print (110): 1150·110/115.
+    expect(points.find((p) => p.timeMs === at(T, '14:00'))!.valueEur).toBeCloseTo(1100, 9);
+    // Closing seam still exact.
+    expect(points[points.length - 1]!.valueEur).toBeCloseTo(1150, 9);
+  });
+
+  it('extends the grid past the day’s last candle for an after-hours cash movement', () => {
+    // Candles stop at 17:00; €500 lands at 19:30. Anchoring the seam to 17:00
+    // retro-applied that deposit two and a half hours before it happened.
+    const candles = candlesForDay(T, 9, 60 * MIN, () => 100); // 09:00 … 17:00
+    const points = buildIntradayEurValuePoints({
+      range: '1D',
+      cutoffDay: T,
+      nowMs: NOW_MS,
+      dailyValueEurByDay: new Map([[T, 1500]]), // 1000 asset + 500 EOD cash
+      perAssetEurByDay: new Map([['a', new Map([[T, 1000]])]]),
+      candlesByAsset: new Map([['a', candles]]),
+      cashEvents: [{ atMs: at(T, '19:30'), amountEur: 500 }],
+    });
+
+    const last = points[points.length - 1]!;
+    expect(last.timeMs).toBe(at(T, '19:30')); // the seam moved to the movement
+    expect(last.valueEur).toBeCloseTo(1500, 9); // and is still exactly the daily value
+    // Everything before it — the old seam at 17:00 included — is pre-deposit.
+    for (const p of points.slice(0, -1)) expect(p.valueEur).toBeCloseTo(1000, 9);
+    expect(points.find((p) => p.timeMs === at(T, '17:00'))!.valueEur).toBeCloseTo(1000, 9);
+    expect(points.some((p) => p.timeMs === at(T, '19:15'))).toBe(true);
+  });
+
+  it('extends the grid past the day’s last candle for an after-hours units step', () => {
+    // 10 units held; the day runs 100 → 110 on candles ending at 17:00; 5 more
+    // units transfer in at 18:00 (no cash leg). EOD: 15 units · 110 = 1650.
+    const candles = candlesForDay(T, 9, 60 * MIN, (i) => 100 + (i * 10) / 8); // 09:00 … 17:00
     const points = buildIntradayEurValuePoints({
       range: '1D',
       cutoffDay: Y,
       nowMs: NOW_MS,
       dailyValueEurByDay: new Map([
         [Y, 1000],
-        [T, 1080],
+        [T, 1650],
       ]),
       perAssetEurByDay: new Map([
         [
           'a',
           new Map([
             [Y, 1000],
-            [T, 1080],
+            [T, 1650],
           ]),
         ],
       ]),
-      candlesByAsset: new Map(),
+      candlesByAsset: new Map([['a', candles]]),
       unitsByAsset: new Map([
-        ['a', { initialUnits: 5, steps: [{ atMs: at(T, '14:00'), units: 6 }] }],
+        ['a', { initialUnits: 10, steps: [{ atMs: at(T, '18:00'), units: 15 }] }],
+      ]),
+    });
+
+    // Open: the 10 held units at yesterday's close — 1650·(100/110)·(10/15).
+    expect(points.find((p) => p.timeMs === at(T, '09:00'))!.valueEur).toBeCloseTo(1000, 9);
+    // The old seam now carries the day's real gain on the 10 held units only
+    // (1650·10/15 = 1100), not the not-yet-arrived 5 units.
+    expect(points.find((p) => p.timeMs === at(T, '17:00'))!.valueEur).toBeCloseTo(1100, 9);
+    expect(points.find((p) => p.timeMs === at(T, '17:45'))!.valueEur).toBeCloseTo(1100, 9);
+    // The transfer lands at its own bucket, which is the new exact seam.
+    const last = points[points.length - 1]!;
+    expect(last.timeMs).toBe(at(T, '18:00'));
+    expect(last.valueEur).toBeCloseTo(1650, 9);
+  });
+
+  it('steps a CANDLE-LESS day at its event buckets while its daily point stays the exact close', () => {
+    // 10 units @100 + 100 cash yesterday; +1 unit for 100 cash at 11:00 today;
+    // today closes at 110 ⇒ 11 · 110 = 1210. No candles anywhere (manual asset,
+    // or a day the provider missed entirely).
+    const inputs = {
+      range: '1D' as const,
+      cutoffDay: Y,
+      nowMs: NOW_MS,
+      dailyValueEurByDay: new Map([
+        [Y, 1100],
+        [T, 1210],
+      ]),
+      perAssetEurByDay: new Map([
+        [
+          'a',
+          new Map([
+            [Y, 1000],
+            [T, 1210],
+          ]),
+        ],
+      ]),
+      candlesByAsset: new Map<string, readonly IntradayCandle[]>(),
+    };
+    const points = buildIntradayEurValuePoints({
+      ...inputs,
+      unitsByAsset: new Map([
+        ['a', { initialUnits: 10, steps: [{ atMs: at(T, '11:00'), units: 11 }] }],
       ]),
       cashEvents: [{ atMs: at(T, '11:00'), amountEur: -100 }],
     });
-    expect(points.map((p) => [p.date, p.valueEur])).toEqual([
-      [Y, 1000],
-      [T, 1080],
+
+    expect(points.map((p) => [p.timeMs, Number(p.valueEur.toFixed(6))])).toEqual([
+      [Date.parse(`${Y}T23:59:59.999Z`), 1100], // yesterday's daily point
+      [at(T, '10:45'), 1100], // pre-trade: prior close + the 100 cash
+      [at(T, '11:00'), 1100], // post-trade: 11 units at the prior per-unit value
+      [NOW_MS, 1210], // the day's own move lands at its close (I3), exactly
+    ]);
+    // Without step inputs the same window is still the bare daily slice.
+    expect(buildIntradayEurValuePoints(inputs).map((p) => [p.date, p.valueEur])).toEqual([
+      [Y, 1100],
+      [T, 1210],
     ]);
   });
 });
