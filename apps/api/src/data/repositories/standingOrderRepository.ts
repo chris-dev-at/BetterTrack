@@ -7,6 +7,7 @@ import type {
 } from '@bettertrack/contracts';
 
 import type { Database } from '../db';
+import { lockPortfolioMutationInTransaction } from './cashMovementRepository';
 import { assets, portfolios, standingOrderRuns, standingOrders } from '../schema';
 
 /**
@@ -238,6 +239,28 @@ export function createStandingOrderRepository(db: Database) {
       return rows.map(toWithAsset);
     },
 
+    /**
+     * Serialize a standing-order money write with this portfolio's archive
+     * transition. The active check belongs *inside* the shared xact lock: a
+     * worker may have read an active order before an archive request commits,
+     * but cannot claim or write money once that transition won the lock.
+     */
+    async withActivePortfolioLock<T>(
+      portfolioId: string,
+      action: (transaction: Database) => Promise<T>,
+    ): Promise<T | null> {
+      return db.transaction(async (tx) => {
+        await lockPortfolioMutationInTransaction(tx, portfolioId);
+        const active = await tx
+          .select({ id: portfolios.id })
+          .from(portfolios)
+          .where(and(eq(portfolios.id, portfolioId), isNull(portfolios.archivedAt)))
+          .limit(1);
+        if (active.length === 0) return null;
+        return action(tx as unknown as Database);
+      });
+    },
+
     /** Patch mutable fields; scoped to the owner. Returns the updated record or null. */
     async update(
       userId: string,
@@ -311,8 +334,12 @@ export function createStandingOrderRepository(db: Database) {
      * index. Returns true iff THIS call created the claim (so it must book);
      * false means the period was already claimed (skip — the double-run guard).
      */
-    async claimPeriod(standingOrderId: string, periodKey: string): Promise<boolean> {
-      const rows = await db
+    async claimPeriod(
+      standingOrderId: string,
+      periodKey: string,
+      executor: Database = db,
+    ): Promise<boolean> {
+      const rows = await executor
         .insert(standingOrderRuns)
         .values({ standingOrderId, periodKey })
         .onConflictDoNothing()

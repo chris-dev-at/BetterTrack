@@ -8,8 +8,12 @@ import {
 } from '@bettertrack/contracts';
 
 import { floorCents } from '../../domain/cashLedger';
+import type { Database } from '../../data/db';
 import type { AssetRepository } from '../../data/repositories/assetRepository';
-import type { CashMovementRepository } from '../../data/repositories/cashMovementRepository';
+import type {
+  CashMovementRecord,
+  CashMovementRepository,
+} from '../../data/repositories/cashMovementRepository';
 import type { CashSourceRepository } from '../../data/repositories/cashSourceRepository';
 import type { PortfolioRepository } from '../../data/repositories/portfolioRepository';
 import type {
@@ -404,11 +408,12 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
           // Retriable pre-checks BEFORE claiming, so a failure never claims the
           // period and it retries cleanly next run (no double-book risk).
           let bookPrice: number | null = null;
+          let cashSourceId: string | null = null;
           try {
             if (order.kind === 'buy-asset') {
               bookPrice = await resolveQuotePrice(order);
-            } else if (order.kind === 'cash-deduct') {
-              await assertCashCovers(order);
+            } else {
+              cashSourceId = (await cashSourceRepo.getOrCreateMain(order.portfolioId)).id;
             }
           } catch (err) {
             result.deferred += 1;
@@ -419,23 +424,58 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
             return;
           }
 
-          const claimed = await repo.claimPeriod(order.id, due);
-          if (!claimed) {
-            result.skippedDuplicate += 1;
-            return;
-          }
+          // The scan's `listActive` result is intentionally only an optimistic
+          // candidate list. Archive can commit while a quote is in flight, so
+          // the final active check, claim and money write share one portfolio
+          // mutation lock. An archive that wins that lock makes this a no-op;
+          // an execution that wins finishes while the portfolio is still active.
+          const outcome = await repo.withActivePortfolioLock(order.portfolioId, async (tx) => {
+            if (order.kind === 'cash-deduct') {
+              const movements = await cashMovementRepo.listForPortfolio(order.portfolioId, tx);
+              if (!cashCovers(order, cashSourceId!, movements)) return 'deferred' as const;
+            }
 
-          try {
-            await bookRow(order, bookPrice, executedAt);
-          } catch (err) {
-            // The claim stays as a tombstone (not retried) — booking at-most-once
-            // is safer for money than risking a double-book on retry.
-            logger?.error(
-              { orderId: order.id, kind: order.kind, due, err },
-              'standing order: booking failed AFTER claim; period will not retry',
+            const claimed = await repo.claimPeriod(order.id, due, tx);
+            if (!claimed) return 'duplicate' as const;
+
+            try {
+              // A failed money write must leave its run claim as the existing
+              // no-retry tombstone. A nested transaction is a savepoint, so the
+              // failed write rolls back without releasing the outer portfolio
+              // lock or rolling back the durable claim.
+              await tx.transaction(async (savepoint) => {
+                await bookRow(
+                  order,
+                  bookPrice,
+                  executedAt,
+                  cashSourceId,
+                  savepoint as unknown as Database,
+                );
+              });
+            } catch (err) {
+              logger?.error(
+                { orderId: order.id, kind: order.kind, due, err },
+                'standing order: booking failed AFTER claim; period will not retry',
+              );
+              return 'booking-failed' as const;
+            }
+            return 'booked' as const;
+          });
+
+          if (outcome === null) return;
+          if (outcome === 'deferred') {
+            result.deferred += 1;
+            logger?.warn(
+              { orderId: order.id, kind: order.kind, due },
+              'standing order: period deferred (insufficient cash), will retry',
             );
             return;
           }
+          if (outcome === 'duplicate') {
+            result.skippedDuplicate += 1;
+            return;
+          }
+          if (outcome === 'booking-failed') return;
 
           // Bookkeeping + snapshot invalidation are best-effort — the ledger row is
           // already durable; a hiccup here self-heals (next run / nightly reroll).
@@ -478,26 +518,27 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
     return quote.value.price;
   }
 
-  /** Reject when the portfolio's Main cash can't cover a deduction (no negatives). */
-  async function assertCashCovers(order: StandingOrderWithAsset): Promise<void> {
-    const main = await cashSourceRepo.getOrCreateMain(order.portfolioId);
-    const movements = await cashMovementRepo.listForPortfolio(order.portfolioId);
+  /** Whether the portfolio's Main cash can cover a deduction (no negatives). */
+  function cashCovers(
+    order: StandingOrderWithAsset,
+    cashSourceId: string,
+    movements: readonly CashMovementRecord[],
+  ): boolean {
     const balance = floorCents(
-      movements.filter((m) => m.sourceId === main.id).reduce((sum, m) => sum + m.amountEur, 0),
+      movements
+        .filter((movement) => movement.sourceId === cashSourceId)
+        .reduce((sum, movement) => sum + movement.amountEur, 0),
     );
-    if (floorCents(order.amount) > balance) {
-      throw badRequest(
-        'Insufficient cash to cover the standing order.',
-        'STANDING_ORDER_INSUFFICIENT_CASH',
-      );
-    }
+    return floorCents(order.amount) <= balance;
   }
 
-  /** Book the ledger row for one due period, tagged `standing-order`. */
+  /** Book the ledger row for one due period, tagged `standing-order`, in `tx`. */
   async function bookRow(
     order: StandingOrderWithAsset,
     bookPrice: number | null,
     executedAt: Date,
+    cashSourceId: string | null,
+    tx: Database,
   ): Promise<void> {
     if (order.kind === 'buy-asset') {
       await transactionRepo.insertMany(
@@ -516,18 +557,25 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
           },
         ],
         [],
+        tx,
       );
       return;
     }
-    const main = await cashSourceRepo.getOrCreateMain(order.portfolioId);
+    if (cashSourceId === null) {
+      throw new Error(`standing order ${order.id}: cash order has no Main source`);
+    }
     const magnitude = floorCents(order.amount);
-    await cashMovementRepo.insert(order.portfolioId, {
-      sourceId: main.id,
-      kind: order.kind === 'cash-add' ? 'deposit' : 'withdrawal',
-      amountEur: order.kind === 'cash-add' ? magnitude : -magnitude,
-      executedAt,
-      note: order.label,
-      source: SOURCE_TAG_STANDING_ORDER,
-    });
+    await cashMovementRepo.insert(
+      order.portfolioId,
+      {
+        sourceId: cashSourceId,
+        kind: order.kind === 'cash-add' ? 'deposit' : 'withdrawal',
+        amountEur: order.kind === 'cash-add' ? magnitude : -magnitude,
+        executedAt,
+        note: order.label,
+        source: SOURCE_TAG_STANDING_ORDER,
+      },
+      tx,
+    );
   }
 }

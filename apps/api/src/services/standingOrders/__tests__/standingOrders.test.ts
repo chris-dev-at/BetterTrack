@@ -474,6 +474,69 @@ describe('standing orders — archived portfolios', () => {
     expect((await run('2026-06-01T12:00:00Z')).booked).toBe(1);
     expect(await txnRows(pid)).toHaveLength(2);
   });
+
+  it('does not book an order scanned before its portfolio is archived', async () => {
+    let quoteStarted!: () => void;
+    let releaseQuote!: () => void;
+    const quoteIsInFlight = new Promise<void>((resolve) => {
+      quoteStarted = resolve;
+    });
+    const delayedMarketData = createStubMarketData({
+      quote: async () => {
+        quoteStarted();
+        await new Promise<void>((resolve) => {
+          releaseQuote = resolve;
+        });
+        return {
+          value: { price: 100, currency: 'EUR', asOf: '2026-04-01T00:00:00.000Z' },
+          stale: false,
+          asOf: 0,
+        };
+      },
+    });
+    // Rebuild this test's app around the delayed quote so the worker has a
+    // controlled gap after listActive() but before its final archive guard.
+    harness = await createTestApp({
+      marketData: delayedMarketData,
+      portfolioNow: () => portfolioNow ?? Date.now(),
+    });
+    const { agent } = await setup();
+    const portfolio = await agent
+      .post('/api/v1/portfolios')
+      .set(...XRW)
+      .send({ name: 'Archive race' });
+    expect(portfolio.status).toBe(201);
+    const pid = portfolio.body.portfolio.id as string;
+    const assetId = await seedAsset('RACE');
+    const created = await createOrder(agent, {
+      portfolioId: pid,
+      kind: 'buy-asset',
+      assetId,
+      amount: 1,
+      cadence: 'daily',
+      startDate: '2026-04-01',
+    });
+    expect(created.status).toBe(201);
+
+    const processing = run('2026-04-01T12:00:00Z');
+    await quoteIsInFlight;
+
+    // The archive wins while the worker is awaiting its provider response. The
+    // worker must repeat the active check under the shared portfolio lock before
+    // it claims or inserts the trade.
+    portfolioNow = Date.parse('2026-04-01T12:00:01Z');
+    expect((await agent.post(`/api/v1/portfolios/${pid}/archive`).set(...XRW)).status).toBe(200);
+    releaseQuote();
+
+    expect(await processing).toEqual({
+      scanned: 1,
+      booked: 0,
+      skippedDuplicate: 0,
+      deferred: 0,
+    });
+    expect(await txnRows(pid)).toHaveLength(0);
+    expect(await runPeriodKeys(created.body.id as string)).toEqual([]);
+  });
 });
 
 describe('standing orders — end date', () => {

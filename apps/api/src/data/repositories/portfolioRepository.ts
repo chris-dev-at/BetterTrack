@@ -1,6 +1,7 @@
 import { and, asc, count, desc, eq, inArray, isNotNull, isNull, ne } from 'drizzle-orm';
 
 import type { Database } from '../db';
+import { lockPortfolioMutationInTransaction } from './cashMovementRepository';
 import { assets, portfolios, priceHistory } from '../schema';
 import type { AssetRow } from '../schema';
 
@@ -236,21 +237,27 @@ export function createPortfolioRepository(db: Database) {
       portfolioId: string,
       archivedAt: Date,
     ): Promise<PortfolioSummaryRow | null> {
-      const rows = await db
-        .update(portfolios)
-        .set({ archivedAt })
-        .where(
-          and(
-            eq(portfolios.id, portfolioId),
-            eq(portfolios.userId, userId),
-            isNull(portfolios.archivedAt),
-          ),
-        )
-        .returning(summaryColumns);
-      const row = rows[0];
-      if (!row) return null;
-      // Archived → never the default.
-      return toSummary(row, false);
+      return db.transaction(async (tx) => {
+        // Standing-order execution takes this same lock across its final active
+        // check, claim and money write. Whichever transition acquires it first
+        // defines the boundary; no booking can commit after archival.
+        await lockPortfolioMutationInTransaction(tx, portfolioId);
+        const rows = await tx
+          .update(portfolios)
+          .set({ archivedAt })
+          .where(
+            and(
+              eq(portfolios.id, portfolioId),
+              eq(portfolios.userId, userId),
+              isNull(portfolios.archivedAt),
+            ),
+          )
+          .returning(summaryColumns);
+        const row = rows[0];
+        if (!row) return null;
+        // Archived → never the default.
+        return toSummary(row, false);
+      });
     },
 
     /**
