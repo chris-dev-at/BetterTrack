@@ -268,6 +268,7 @@ describe('MarketDataService — local providers', () => {
     };
     const { service } = serviceWith(provider);
 
+    expect(service.isLocalProvider(REF)).toBe(true);
     const first = await service.getQuote(REF);
     expect(first).toMatchObject({ stale: false, value: { price: 100 } });
 

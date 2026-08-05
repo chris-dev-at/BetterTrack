@@ -19,9 +19,12 @@ import { assets, standingOrderRuns, standingOrders } from '../schema';
  * plain ISO `YYYY-MM-DD` strings.
  *
  * The engine's idempotency primitive is {@link StandingOrderRepository.claimPeriod}:
- * a single-statement `INSERT … ON CONFLICT DO NOTHING` against the
- * UNIQUE(order, period) index, so a double-run of the daily job — or a
- * concurrent worker — claims a given period at most once.
+ * it locks the definition row, re-checks active status, then runs `INSERT … ON
+ * CONFLICT DO NOTHING` against the UNIQUE(order, period) index, so a double-run
+ * of the daily job — or a concurrent worker — claims a given period at most
+ * once. `standing_order_runs.booked_at` records that claim instant; the money
+ * row and the order's `last_run_at` separately carry the provider/scan
+ * timestamp.
  */
 
 /** A standing order with its money column parsed to `number`. */

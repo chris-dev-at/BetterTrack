@@ -55,9 +55,11 @@ import {
  *
  * **No negative balances.** A `cash-deduct` that would overdraw is deferred (and
  * retried) rather than forced negative — the app's cash invariant holds. Buys
- * never touch cash (they book only the BUY transaction at a fresh quote). A buy
- * is dated at the provider quote's actual `asOf` time; cash rows use the scan
- * instant. The scheduled period identity lives in the run's `period_key`.
+ * never touch cash (they book only the BUY transaction at a bounded-age quote).
+ * An upstream buy is dated at the provider quote's actual `asOf` time; a local
+ * custom-asset buy and cash rows use the scan instant. The scheduled period
+ * identity lives in the run's `period_key`; its `booked_at` is the claim's
+ * wall-clock time, not the money row's execution timestamp.
  */
 
 /** Timezone the daily scan reads "today" in — the deploy tz, matching the crons. */
@@ -70,7 +72,7 @@ export interface StandingOrderServiceDeps {
   transactionRepo: Pick<TransactionRepository, 'insertMany'>;
   cashMovementRepo: Pick<CashMovementRepository, 'insert' | 'listForPortfolio'>;
   cashSourceRepo: Pick<CashSourceRepository, 'getOrCreateMain'>;
-  marketData: Pick<MarketDataService, 'getQuote'>;
+  marketData: Pick<MarketDataService, 'getQuote' | 'isLocalProvider'>;
   snapshots: Pick<PortfolioSnapshotService, 'invalidate'>;
   /** Standard durable notification entry point for deferred/dropped periods. */
   notify: NotificationCenter;
@@ -97,6 +99,13 @@ export interface ProcessDueResult {
   /** Orders whose unexpected processing error was isolated from the rest of the sweep. */
   failed: number;
 }
+
+/**
+ * Oldest upstream market timestamp accepted for an automatic buy. Four days
+ * covers a weekend plus a one-day exchange closure while rejecting the
+ * five-day-old retained outage quote called out by issue #1119.
+ */
+export const STANDING_ORDER_MAX_QUOTE_AGE_MS = 4 * 24 * 60 * 60 * 1_000;
 
 interface BookQuote {
   price: number;
@@ -330,12 +339,6 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
       };
 
       for (const order of orders) {
-        let failureCounted = false;
-        const countFailure = () => {
-          if (failureCounted) return;
-          failureCounted = true;
-          result.failed += 1;
-        };
         try {
           // Definitions are vault-owned in paranoid mode. A row seen by a stale
           // worker around the enable transaction is skipped before quote, claim,
@@ -388,7 +391,7 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
             let bookQuote: BookQuote | null = null;
             try {
               if (order.kind === 'buy-asset') {
-                bookQuote = await resolveBookQuote(order);
+                bookQuote = await resolveBookQuote(order, executedAt);
               } else if (order.kind === 'cash-deduct') {
                 await assertCashCovers(order);
               }
@@ -407,7 +410,13 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
             }
 
             const claim = await repo.claimPeriod(order.id, due);
-            if (claim === 'inactive') return;
+            if (claim === 'inactive') {
+              logger?.debug(
+                { orderId: order.id, due },
+                'standing order: inactive at claim; skipping stale scan row',
+              );
+              return;
+            }
             if (claim === 'duplicate') {
               result.skippedDuplicate += 1;
               return;
@@ -417,7 +426,6 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
             try {
               await bookRow(order, bookQuote?.price ?? null, bookedAt);
             } catch (err) {
-              countFailure();
               // The claim stays as a tombstone (not retried) — booking at-most-once
               // is safer for money than risking a double-book on retry.
               logger?.error(
@@ -451,7 +459,7 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
             await processOrder();
           }
         } catch (err) {
-          countFailure();
+          result.failed += 1;
           logger?.error(
             { orderId: order.id, kind: order.kind, err },
             'standing order: order processing failed; continuing scan',
@@ -486,23 +494,40 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
     });
   }
 
-  /** Fetch one fresh native-currency quote and preserve its market timestamp. */
-  async function resolveBookQuote(order: StandingOrderWithAsset): Promise<BookQuote> {
+  /** Fetch one usable native-currency quote and derive its bounded booking timestamp. */
+  async function resolveBookQuote(order: StandingOrderWithAsset, scanAt: Date): Promise<BookQuote> {
     if (!order.assetProviderId || !order.assetProviderRef) {
       throw new Error(`standing order ${order.id}: buy has no asset ref`);
     }
-    const quote = await marketData.getQuote({
+    const ref = {
       providerId: order.assetProviderId,
       providerRef: order.assetProviderRef,
-    });
-    if (quote.stale) {
-      throw new Error(`standing order ${order.id}: quote is stale`);
-    }
-    const asOf = new Date(quote.value.asOf);
-    if (!Number.isFinite(asOf.getTime())) {
+    };
+    const local = marketData.isLocalProvider(ref);
+    const quote = await marketData.getQuote(ref);
+    const providerAsOf = new Date(quote.value.asOf);
+    const providerAsOfMs = providerAsOf.getTime();
+    if (!Number.isFinite(providerAsOfMs)) {
       throw new Error(`standing order ${order.id}: quote has an invalid asOf timestamp`);
     }
-    return { price: quote.value.price, asOf };
+
+    // A local quote's `asOf` is the owner's latest value-point day, which may be
+    // months old without indicating an outage. The recurring BUY is created by
+    // this scan, so date it now instead of rewriting an old tax year.
+    if (local) {
+      return { price: quote.value.price, asOf: new Date(scanAt.getTime()) };
+    }
+
+    // `CachedResult.stale` means only that the 60-second Redis freshness key
+    // expired; it is the normal serve-stale-while-revalidate result at a daily
+    // scan. Judge the market timestamp itself so a recent retained quote books
+    // while an actually old outage quote defers. Future provider clocks are
+    // clamped to the scan instant so no transaction is dated in the future.
+    const bookedAtMs = Math.min(providerAsOfMs, scanAt.getTime());
+    if (scanAt.getTime() - bookedAtMs > STANDING_ORDER_MAX_QUOTE_AGE_MS) {
+      throw new Error(`standing order ${order.id}: quote market timestamp is too old`);
+    }
+    return { price: quote.value.price, asOf: new Date(bookedAtMs) };
   }
 
   /** Reject when the portfolio's Main cash can't cover a deduction (no negatives). */
