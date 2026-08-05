@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { Suspense, lazy, useEffect, useRef } from 'react';
+import { Suspense, lazy, useEffect, useRef, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Navigate, Route, Routes, useLocation, useParams, type Location } from 'react-router-dom';
 
@@ -21,7 +21,7 @@ import { AssetsWorkspace } from './assets/AssetsWorkspace';
 import { PeopleLayout } from './people/PeopleLayout';
 import { MutationFeedbackProvider, useMutationFeedback } from './hooks/useMutationFeedback';
 import { ResolvedPrivacyModeProvider, usePrivacyMode } from './vault/usePrivacyMode';
-import { matchControlPanel } from './control/matchControlPanel';
+import { matchControlPanel, matchesVaultEnableRequest } from './control/matchControlPanel';
 import { useUiScaleWatcher } from './useUiScale';
 
 /**
@@ -344,6 +344,16 @@ function UserShell() {
   );
 }
 
+/**
+ * A chrome-free route's own loading boundary. These pages render OUTSIDE
+ * `OriginShell`, so without one a cold chunk would suspend all the way up to
+ * the app-level boundary and flash the whole tree — providers included — to
+ * `Splash`. Contained here, only the route area waits.
+ */
+function FullScreenRoute({ page }: { page: ReactNode }) {
+  return <Suspense fallback={<Splash />}>{page}</Suspense>;
+}
+
 /** The authenticated route tree, rendered at `location` (see {@link UserShell}). */
 function UserRoutes({ location }: { location: Location }) {
   return (
@@ -364,30 +374,38 @@ function UserRoutes({ location }: { location: Location }) {
             self-exempts /welcome and the OAuth authorize flow. */}
         <Route element={<FirstRunGate />}>
           {/* OAuth consent (§6.13 part 2) — standalone card outside the shell. */}
-          <Route path="oauth/authorize" element={<ConsentPage />} />
+          <Route path="oauth/authorize" element={<FullScreenRoute page={<ConsentPage />} />} />
           {/* Self-service account deletion (§13.4 V4-P2c, #362). */}
-          <Route path="account/delete" element={<DeleteAccountPage />} />
+          <Route path="account/delete" element={<FullScreenRoute page={<DeleteAccountPage />} />} />
           {/* First-run setup — a full-screen gate canvas outside the shell chrome.
             Registration lands here; ⌘K "Run setup again" re-opens it any time. */}
-          <Route
-            path="welcome"
-            element={
-              <Suspense fallback={<Splash />}>
-                <WelcomePage />
-              </Suspense>
-            }
-          />
+          <Route path="welcome" element={<FullScreenRoute page={<WelcomePage />} />} />
           {/* The Blueprint Builder is a full-screen surface (§6.5) outside the
             shell chrome; legacy Conglomerate paths redirect here. */}
-          <Route path="workbench/blueprints/new" element={<ConglomerateBuilderPage />} />
-          <Route path="workbench/blueprints/:id/edit" element={<ConglomerateBuilderPage />} />
+          <Route
+            path="workbench/blueprints/new"
+            element={<FullScreenRoute page={<ConglomerateBuilderPage />} />}
+          />
+          <Route
+            path="workbench/blueprints/:id/edit"
+            element={<FullScreenRoute page={<ConglomerateBuilderPage />} />}
+          />
           {/* Print-to-PDF tax report (§13.5 V5-P4b) — chrome-free document. */}
-          <Route path="portfolio/tax/print" element={<TaxReportPrintPage />} />
+          <Route
+            path="portfolio/tax/print"
+            element={<FullScreenRoute page={<TaxReportPrintPage />} />}
+          />
           {/* Popped-out friend chat (R2) — a chrome-free second-screen window.
             Deep-linkable and refresh-safe: the open thread is in the URL. */}
-          <Route path="chat-window" element={<ChatWindowPage />} />
-          <Route path="chat-window/c/:conversationId" element={<ChatWindowPage />} />
-          <Route path="chat-window/:userId" element={<ChatWindowPage />} />
+          <Route path="chat-window" element={<FullScreenRoute page={<ChatWindowPage />} />} />
+          <Route
+            path="chat-window/c/:conversationId"
+            element={<FullScreenRoute page={<ChatWindowPage />} />}
+          />
+          <Route
+            path="chat-window/:userId"
+            element={<FullScreenRoute page={<ChatWindowPage />} />}
+          />
           <Route element={<OriginShell />}>
             {/* ── Home: the scoped command center ── */}
             <Route index element={<HomePage />} />
@@ -622,10 +640,27 @@ function RealtimeRoot({ children }: { children: ReactNode }) {
 
 /**
  * Resolve the account mode before any money route mounts. The default normal
- * branch contains only the API adapter; the heavy vault module is requested
- * when the account is paranoid or when a normal user deliberately opens the
- * enable flow. Once requested it stays mounted for this login so an enable or
- * disable transition cannot replace the runtime midway through an unlock.
+ * branch contains only the API adapter; the heavy vault module loads when the
+ * account IS paranoid, or when a normal account explicitly asks to set the
+ * vault up (`/control/privacy?enable=1` — {@link matchesVaultEnableRequest}).
+ *
+ * Swapping branches replaces the whole authenticated subtree, so the trigger
+ * list is deliberately that short. Merely OPENING Control Center → Privacy is
+ * not on it: the panel reads the runtime optionally and loads its own chunk
+ * behind the overlay's boundary, so a normal session keeps its shell, its
+ * socket, its query cache and the page behind the popup.
+ *
+ * The enable request is the one case that must swap, and it has to: the
+ * wizard commits, flips the cached mode and then finishes its automatic first
+ * unlock on the runtime it captured, while THIS gate has already replaced the
+ * wizard with `VaultUnlockGate` (see the hand-off note there). That only works
+ * while the runtime lives above the swap — a panel-local provider would be
+ * unmounted (and locked) by its own success, and the user would be asked for
+ * the passphrase they had just created. Requesting it through the URL is what
+ * lets the request survive the swap it causes.
+ *
+ * Once loaded the vault root stays mounted for this login, so a disable (mode
+ * flips back to normal) cannot pull the runtime out midway through it either.
  */
 export function AccountModeRoot({ children }: { children: ReactNode }) {
   const t = useT();
@@ -635,10 +670,18 @@ export function AccountModeRoot({ children }: { children: ReactNode }) {
     status === 'authenticated',
     status === 'authenticated' ? (user?.id ?? null) : null,
   );
-  const vaultActivated = useRef(false);
+  // State, not a ref: a render React throws away (StrictMode, an interrupted
+  // concurrent render) must not leave the vault chunk latched for a session
+  // that never asked for it.
+  const [vaultLoaded, setVaultLoaded] = useState(false);
+  const wantsVault =
+    status === 'authenticated' &&
+    (privacy.privacyMode === 'paranoid' ||
+      matchesVaultEnableRequest(location.pathname, location.search));
+  if (wantsVault && !vaultLoaded) setVaultLoaded(true);
+  if (status !== 'authenticated' && vaultLoaded) setVaultLoaded(false);
 
   if (status !== 'authenticated') {
-    vaultActivated.current = false;
     return (
       <ResolvedPrivacyModeProvider mode="normal">
         <PortfolioStoreProvider store={apiPortfolioStore}>{children}</PortfolioStoreProvider>
@@ -656,14 +699,7 @@ export function AccountModeRoot({ children }: { children: ReactNode }) {
       </AuthCard>
     );
   }
-  if (
-    privacy.privacyMode === 'paranoid' ||
-    location.pathname === '/control/privacy' ||
-    location.pathname.startsWith('/control/privacy/')
-  ) {
-    vaultActivated.current = true;
-  }
-  if (vaultActivated.current) {
+  if (wantsVault || vaultLoaded) {
     return <VaultAccountRoot privacy={privacy}>{children}</VaultAccountRoot>;
   }
   return (

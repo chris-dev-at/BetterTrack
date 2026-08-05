@@ -175,11 +175,6 @@ const BASELINE_DOWN_LINE = palette.NEGATIVE;
 const BASELINE_DOWN_FILL_TOP = 'rgba(251, 113, 133, 0.02)';
 const BASELINE_DOWN_FILL_BOTTOM = 'rgba(251, 113, 133, 0.22)';
 
-/** Colour for the `i`-th overlay series (and its legend chip). */
-export function overlayColor(i: number): string {
-  return palette.categoricalColor(i);
-}
-
 // ─── Time-axis formatting (§13.5 V5-P1 Part C) ───────────────────────────────
 
 /**
@@ -652,7 +647,7 @@ export function PriceChart({
     // One thin line per overlay asset (#122); data flows in via the data effect.
     overlayRefs.current = Array.from({ length: overlayCount }, (_, i) =>
       chart.addSeries(LineSeries, {
-        color: overlayColor(i),
+        color: palette.categoricalColor(i),
         lineWidth: 1,
         priceLineVisible: false,
         lastValueVisible: false,
@@ -806,7 +801,7 @@ export function PriceChart({
             <span
               aria-hidden="true"
               className="inline-block h-0.5 w-4"
-              style={{ backgroundColor: overlayColor(i) }}
+              style={{ backgroundColor: palette.categoricalColor(i) }}
             />
             {overlay.label}
           </span>

@@ -1,7 +1,7 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, useLocation } from 'react-router-dom';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
 import type { ParanoidVaultMediaState, PrivacyMode } from '@bettertrack/contracts';
@@ -27,7 +27,16 @@ vi.mock('../../vault/usePrivacyMode', () => ({
     acceptNormal,
   }),
 }));
-vi.mock('../../vault/VaultRuntimeProvider', () => ({ useVaultRuntime: () => ({}) }));
+/** `null` = no vault providers above the panel, which is a normal account. */
+let vaultRuntime: object | null = {};
+vi.mock('../../vault/VaultRuntimeContext', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../vault/VaultRuntimeContext')>()),
+  useOptionalVaultRuntime: () => vaultRuntime,
+  useVaultRuntime: () => {
+    if (vaultRuntime == null) throw new Error('useVaultRuntime must be used within a provider.');
+    return vaultRuntime;
+  },
+}));
 let syncStatus: string | null = null;
 const syncMutate = vi.fn(async () => undefined);
 const discardAllData = vi.fn(async () => undefined);
@@ -50,12 +59,19 @@ vi.mock('../../vault/engine/VaultMoneyEngineProvider', () => ({
 
 import { PrivacyPanel } from './PrivacyPanel';
 
-function renderPanel() {
+/** Reads back the URL the panel navigates to (the setup request lives there). */
+function LocationProbe() {
+  const location = useLocation();
+  return <span data-testid="url">{`${location.pathname}${location.search}`}</span>;
+}
+
+function renderPanel(entry = '/control/privacy') {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   return render(
     <QueryClientProvider client={client}>
-      <MemoryRouter>
+      <MemoryRouter initialEntries={[entry]}>
         <PrivacyPanel />
+        <LocationProbe />
       </MemoryRouter>
     </QueryClientProvider>,
   );
@@ -66,6 +82,7 @@ beforeEach(() => {
   privacyMode = 'normal';
   mediaState = null;
   syncStatus = null;
+  vaultRuntime = {};
   auth.user = { id: USER_ID, username: 'jane', discreetMode: false };
   toggleDiscreetMode.mockImplementation(async () => undefined);
 });
@@ -101,6 +118,30 @@ describe('PrivacyPanel (§13.5 V5-P13)', () => {
     // The rejection never escapes as an unhandled rejection, and the switch
     // keeps rendering whatever auth state says (still off).
     expect(screen.getByRole('switch', { name: 'Discreet mode' })).not.toBeChecked();
+  });
+
+  test('renders for a normal account with no vault runtime above it', () => {
+    // What the panel looks like for every normal session now that opening it no
+    // longer mounts the vault stack: discreet mode works, and the setup entry
+    // is the only thing that asks for the encrypted runtime.
+    vaultRuntime = null;
+
+    renderPanel();
+
+    expect(screen.getByRole('switch', { name: 'Discreet mode' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Set up' })).toBeInTheDocument();
+  });
+
+  test('the setup request rides in the URL, so the gate above can act on it', async () => {
+    // `AccountModeRoot` mounts the vault providers from this param and replaces
+    // the subtree doing it — local `useState` would not survive that.
+    vaultRuntime = null;
+    const user = userEvent.setup();
+    renderPanel();
+
+    await user.click(screen.getByRole('button', { name: 'Set up' }));
+
+    expect(screen.getByTestId('url')).toHaveTextContent('/control/privacy?enable=1');
   });
 
   test('opens the live setup wizard with the compact killed-surface review', async () => {

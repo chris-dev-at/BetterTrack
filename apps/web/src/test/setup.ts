@@ -1,12 +1,12 @@
 import '@testing-library/jest-dom/vitest';
 
-import { cleanup, configure } from '@testing-library/react';
+import { cleanup } from '@testing-library/react';
 import { afterEach } from 'vitest';
 
-// Route and feature chunks resolve asynchronously in production and Vitest
-// transforms the same dynamic modules on first use. Keep DOM waits bounded but
-// give a loaded CI worker enough room to cross that real lazy boundary.
-configure({ asyncUtilTimeout: 5_000 });
+// The default 1 s `asyncUtilTimeout` stays: a failing wait must report fast on
+// a suite this size. The few cases that really do cross a cold lazy boundary
+// (a route/vault chunk Vitest transforms on first use) pass an explicit
+// `{ timeout }` at the call site instead.
 
 // jsdom has no ResizeObserver; chart components observe their container for
 // responsive resizing. A no-op stub is enough for unit tests.

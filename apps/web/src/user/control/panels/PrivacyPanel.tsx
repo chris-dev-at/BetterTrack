@@ -10,30 +10,53 @@ import { deliverClientDownload } from '../../vault/export/deliver';
 import { useVaultMoneySession } from '../../vault/engine/VaultMoneyEngineProvider';
 import { hasUnambiguousBranch, type VaultSyncStatus } from '../../vault/sync';
 import { usePrivacyMode } from '../../vault/usePrivacyMode';
-import { useVaultRuntime } from '../../vault/VaultRuntimeProvider';
+import { useOptionalVaultRuntime, type VaultRuntime } from '../../vault/VaultRuntimeContext';
 import { ParanoidEnableWizard } from '../../vault/ui/ParanoidEnableWizard';
 import { disableUnlockedVault } from '../../vault/ui/disable';
 import { Alert, CHECKBOX_STYLE } from '../../components/ui';
 import { Button, Field, Input, Switch } from '../../../ui/origin';
 import { useAuth } from '../../AuthContext';
+import { VAULT_ENABLE_PARAM } from '../matchControlPanel';
 import { PanelFold, PanelForm, PanelGroup, PanelHead, PanelNote, Row } from './panelKit';
 
 const OFF_KEYS = ['sharing', 'publicProfile', 'serverAnalytics', 'imports', 'automation'] as const;
 
 type Notice = { tone: 'error' | 'success' | 'info'; key: string } | null;
 
-/** Control Center → Privacy: the compact entry point for both privacy modes. */
+/**
+ * Control Center → Privacy: the compact entry point for both privacy modes.
+ *
+ * Discreet mode is a plain account preference, so the panel must render for a
+ * normal account with NO vault runtime above it — it reads the runtime
+ * optionally and every vault surface below is gated on it. `AccountModeRoot`
+ * mounts that runtime for a paranoid account, and for a normal account only
+ * once the user asks for the setup wizard (`?enable=1`), which is why the
+ * wizard's open/closed state lives in the URL rather than in `useState`.
+ */
 export function PrivacyPanel() {
   const t = useT();
   const { user, toggleDiscreetMode } = useAuth();
   const privacy = usePrivacyMode(true, user?.id ?? null);
-  const runtime = useVaultRuntime();
+  const runtime = useOptionalVaultRuntime();
   const money = useVaultMoneySession();
   const queryClient = useQueryClient();
-  const [searchParams] = useSearchParams();
-  const [wizard, setWizard] = useState(false);
+  const [searchParams, setSearchParams] = useSearchParams();
   const [notice, setNotice] = useState<Notice>(null);
   const discreet = user?.discreetMode === true;
+  const wizard = searchParams.get(VAULT_ENABLE_PARAM) === '1';
+
+  /** `replace`: the whole overlay session stays ONE history entry (R2). */
+  function setWizard(open: boolean) {
+    setSearchParams(
+      (params) => {
+        const next = new URLSearchParams(params);
+        if (open) next.set(VAULT_ENABLE_PARAM, '1');
+        else next.delete(VAULT_ENABLE_PARAM);
+        return next;
+      },
+      { replace: true },
+    );
+  }
 
   return (
     <div className="bt-cc-panel">
@@ -54,7 +77,9 @@ export function PrivacyPanel() {
       {notice ? <Alert tone={notice.tone}>{t(notice.key)}</Alert> : null}
 
       {privacy.privacyMode === 'normal' ? (
-        wizard ? (
+        // `runtime == null` while the enable request is still pulling the vault
+        // chunk in: the entry row keeps its place until the providers exist.
+        wizard && runtime != null ? (
           <ParanoidEnableWizard
             onCancel={() => setWizard(false)}
             onEnabled={(receipt) => {
@@ -74,7 +99,7 @@ export function PrivacyPanel() {
         )
       ) : null}
 
-      {privacy.privacyMode === 'paranoid' && privacy.mediaState != null ? (
+      {privacy.privacyMode === 'paranoid' && privacy.mediaState != null && runtime != null ? (
         <>
           <PanelGroup label={t('vault.settings.title')}>
             <Row
@@ -145,7 +170,7 @@ function VaultRestoreEntry({
   onNotice,
 }: {
   open: boolean;
-  runtime: ReturnType<typeof useVaultRuntime>;
+  runtime: VaultRuntime;
   onNotice(notice: Notice): void;
 }) {
   const t = useT();
@@ -186,7 +211,7 @@ function VaultSecurityActions({
   runtime,
   onNotice,
 }: {
-  runtime: ReturnType<typeof useVaultRuntime>;
+  runtime: VaultRuntime;
   onNotice(notice: Notice): void;
 }) {
   const t = useT();

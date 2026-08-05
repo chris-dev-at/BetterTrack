@@ -738,7 +738,13 @@ test('the command shortcut still opens over the inert-backed Control Center', as
   // deliberately portals above it (z-index 76 vs 71), so the shortcut remains
   // available without putting the palette inside an inert DOM branch.
   renderAt('/control/profile');
-  const controlCenter = await screen.findByRole('dialog', { name: 'Control Center' });
+  // Crosses a real lazy boundary (the overlay is its own chunk, and Vitest
+  // transforms it on first use), so this one wait outlasts the 1 s default.
+  const controlCenter = await screen.findByRole(
+    'dialog',
+    { name: 'Control Center' },
+    { timeout: 5_000 },
+  );
   const shell = document.querySelector<HTMLElement>('.bt-shell')!;
   expect(shell.closest('[inert]')).not.toBeNull();
   expect(controlCenter.closest('[inert]')).toBeNull();

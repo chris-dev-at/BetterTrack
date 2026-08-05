@@ -1,5 +1,5 @@
-import { render, screen, waitFor } from '@testing-library/react';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { act, render, screen, waitFor } from '@testing-library/react';
+import { MemoryRouter, Route, Routes, useNavigate } from 'react-router-dom';
 import { beforeEach, expect, test, vi } from 'vitest';
 
 import type { MeResponse, ParanoidMediaStateResponse } from '@bettertrack/contracts';
@@ -67,10 +67,22 @@ const paranoidOnServer: ParanoidMediaStateResponse = {
   },
 };
 
+/**
+ * Drives in-app navigation from a case, so a surface can be reached the way a
+ * user reaches it — mid-session — instead of only as a cold deep link.
+ */
+let navigateTo: ((to: string) => void) | null = null;
+
+function Navigator() {
+  navigateTo = useNavigate();
+  return null;
+}
+
 /** Mount the user app under a `/*` parent, exactly as App.tsx does. */
 function renderAt(path: string) {
   return render(
     <MemoryRouter initialEntries={[path]}>
+      <Navigator />
       <Routes>
         <Route path="/*" element={<UserApp />} />
       </Routes>
@@ -80,6 +92,7 @@ function renderAt(path: string) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  navigateTo = null;
   globalThis.localStorage?.clear();
   // `UserApp` owns a module-level QueryClient, so the resolved privacy mode of
   // one case would otherwise still be cached (and fresh) for the next one.
@@ -135,6 +148,58 @@ test('the gate never appears for a normal account, which keeps reading the serve
   await waitFor(() => expect(listPortfolios).toHaveBeenCalled(), { timeout: 5_000 });
   expect(screen.queryByText('Unlock your vault')).not.toBeInTheDocument();
   expect(vaultRuntimeMocks.createServerBlobDataHome).not.toHaveBeenCalled();
+});
+
+/**
+ * Control Center → Privacy is the one settings surface that reaches into the
+ * vault stack, and it is reachable from every normal session. Opening it must
+ * not swap the account-mode branch: that replaces the whole authenticated
+ * subtree — shell, socket, mounted page and the page the popup opens over — so
+ * the popup would end up floating over a freshly booted Home instead of the
+ * page it was opened from.
+ */
+test('opening Privacy mid-session keeps the whole authenticated subtree mounted', async () => {
+  vi.mocked(api.getParanoidMediaState).mockResolvedValue({
+    privacyMode: 'normal',
+    mediaState: null,
+  });
+
+  renderAt('/portfolio');
+
+  await screen.findByRole('button', { name: 'Account menu' }, { timeout: 5_000 });
+  const shellBefore = document.querySelector('#main-content');
+  expect(shellBefore).not.toBeNull();
+
+  await act(async () => {
+    navigateTo?.('/control/privacy');
+  });
+
+  // The panel renders — nothing above it threw for want of a vault provider…
+  expect(
+    await screen.findByRole('switch', { name: 'Discreet mode' }, { timeout: 5_000 }),
+  ).toBeInTheDocument();
+  // …the very same shell node is still on screen (a remount would replace it,
+  // taking the popup's background page with it)…
+  expect(document.querySelector('#main-content')).toBe(shellBefore);
+  // …and no vault runtime was mounted for a normal account just reading it.
+  expect(vaultRuntimeMocks.createServerBlobDataHome).not.toHaveBeenCalled();
+});
+
+test('the explicit setup request is what mounts the vault runtime for a normal account', async () => {
+  vi.mocked(api.getParanoidMediaState).mockResolvedValue({
+    privacyMode: 'normal',
+    mediaState: null,
+  });
+
+  renderAt('/control/privacy?enable=1');
+
+  // The wizard only renders with the providers above it (`useVaultRuntime`
+  // throws otherwise), so its heading IS the assertion that the gate swapped.
+  // The request rides in the URL precisely because that swap unmounts whoever
+  // asked for it.
+  expect(
+    await screen.findByRole('heading', { name: 'What changes' }, { timeout: 5_000 }),
+  ).toBeInTheDocument();
 });
 
 test('the mode read failing closed shows the retry card, never a money page', async () => {

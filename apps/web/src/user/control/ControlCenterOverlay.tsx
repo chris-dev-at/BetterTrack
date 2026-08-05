@@ -22,7 +22,13 @@ import { SignInPanel } from './panels/SignInPanel';
 import { WebhooksPanel } from './panels/WebhooksPanel';
 import { usePhoneShell } from '../hooks/useCompactShell';
 import { useResolvedPrivacyMode } from '../vault/usePrivacyMode';
+import { resolveControlPanelId } from './matchControlPanel';
 
+/**
+ * The privacy panel is the one panel that reaches into the vault stack, so it
+ * loads on demand behind the overlay's own boundary — the shell around it
+ * (and the page behind the popup) never unmounts for it.
+ */
 const LazyPrivacyPanel = lazy(() =>
   import('./panels/PrivacyPanel').then((module) => ({ default: module.PrivacyPanel })),
 );
@@ -267,18 +273,6 @@ export const CONTROL_GROUPS: readonly ControlGroup[] = [
   },
 ];
 
-/**
- * Panel ids this restructure renamed. An unknown id falls back to the DEFAULT
- * panel, which would silently land an old deep link (or an old bookmark) on
- * Account — so retired ids resolve explicitly instead.
- */
-const PANEL_ALIASES: Readonly<Record<string, string>> = {
-  security: 'sign-in',
-  'portfolio-defaults': 'defaults',
-  'api-keys': 'api',
-  taxes: 'defaults',
-};
-
 /** Rows that leave the popup for a full page (marked with the ↗ affordance). */
 export const CONTROL_LINKS: readonly ControlLink[] = [
   { to: '/developer', labelKey: 'control.developer', icon: 'code' },
@@ -291,7 +285,7 @@ const PANELS: readonly ControlPanel[] = CONTROL_GROUPS.flatMap((group) => group.
 
 function findPanel(id: string | undefined, paranoid = false): ControlPanel {
   if (id === undefined) return PANELS[0]!;
-  const resolved = PANEL_ALIASES[id] ?? id;
+  const resolved = resolveControlPanelId(id);
   return (
     PANELS.find((panel) => panel.id === resolved && (!paranoid || panel.id !== 'profile')) ??
     PANELS[0]!

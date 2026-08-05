@@ -592,6 +592,15 @@ export function CreateMenu() {
   );
 }
 
+/**
+ * The suite section a path belongs to — `/portfolio/cash/labels` → `portfolio`,
+ * `/` → `home`. Every route inside one section shares a mounted layout, so this
+ * is the granularity at which the shell's loading boundary is allowed to reset.
+ */
+function sectionKey(pathname: string): string {
+  return pathname.split('/')[1] || 'home';
+}
+
 export function OriginShell() {
   const { t, locale } = useI18n();
   const privacy = useResolvedPrivacyModeState();
@@ -821,12 +830,21 @@ export function OriginShell() {
           </header>
 
           <main id="main-content" className="bt-canvas" tabIndex={-1}>
-            {/* The error boundary only needs navigation to CLEAR a crash. The
-                nested Suspense boundary is keyed separately so the shell can
-                commit its new active navigation state while a cold route chunk
-                loads; query-only navigation still preserves the mounted page. */}
+            {/* The error boundary only needs navigation to CLEAR a crash, never
+                to remount healthy children.
+
+                The Suspense boundary is keyed by SECTION, not by pathname.
+                react-router runs navigation inside `startTransition`, and a
+                transition into an already-mounted boundary keeps the old page
+                painted until the chunk lands — so ARRIVING in a section needs a
+                fresh boundary for the shell to commit its new navigation state
+                right away. Keying on the full pathname would do that too, and
+                would also remount the persistent section layout (its LocalNav,
+                its scroll, its state) on every step INSIDE the section, which
+                is the remount this key exists to avoid. Steps within a section
+                stay inside that layout's own boundary. */}
             <ErrorBoundary resetKey={pathname}>
-              <Suspense fallback={null} key={pathname}>
+              <Suspense fallback={null} key={sectionKey(pathname)}>
                 <Outlet />
               </Suspense>
             </ErrorBoundary>
