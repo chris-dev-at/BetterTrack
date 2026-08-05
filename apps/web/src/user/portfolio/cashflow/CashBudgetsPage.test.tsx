@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, within } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
@@ -29,6 +29,7 @@ vi.mock('../../../lib/cashApi', () => ({
 
 import { listPortfolios } from '../../../lib/portfolioApi';
 import {
+  CASH_TAGS_QUERY_KEY,
   createCashBudget,
   deleteCashBudget,
   listCashBudgets,
@@ -125,12 +126,28 @@ describe('CashBudgetsPage', () => {
     );
   });
 
-  test('renders a tag read failure without hiding the budget workspace', async () => {
+  test('does not present a missing-tags prerequisite while tag data is unavailable', async () => {
     vi.mocked(listCashTags).mockRejectedValue(new Error('tags unavailable'));
+    const user = userEvent.setup();
     renderPage();
 
     expect(await screen.findByText("This information isn't available.")).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Budgets' })).toBeInTheDocument();
+
+    const newBudget = screen.getByRole('button', { name: 'New budget' });
+    const addBudget = screen.getByRole('button', { name: 'Add a budget' });
+    expect(newBudget).toBeDisabled();
+    expect(addBudget).toBeDisabled();
+    expect(newBudget.closest('[aria-describedby]')).toBeNull();
+    expect(addBudget.closest('[aria-describedby]')).toBeNull();
+
+    await user.hover(newBudget);
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(
+        "You don't have any tags yet — create one on the “Labels & rules” page first.",
+      ),
+    ).not.toBeInTheDocument();
   });
 
   test('renders the exceeded state distinctly from an on-track budget', async () => {
@@ -262,10 +279,91 @@ describe('CashBudgetsPage', () => {
     expect(deleteCashBudget).toHaveBeenCalledWith('b1');
   });
 
+  test('explains the budgeted-tag prerequisite on hover and focus, then enables creation when a tag is available', async () => {
+    vi.mocked(listCashTags).mockResolvedValue({ tags: [FOOD] });
+    vi.mocked(listCashBudgets).mockResolvedValue({
+      period: '2026-07',
+      // The progress endpoint returns the one effective target for this tag
+      // and month, including when it is a month-only override.
+      budgets: [budget({ id: 'b-month', recurring: false })],
+    });
+    const client = renderPage();
+    const user = userEvent.setup();
+
+    const newBudget = await screen.findByRole('button', { name: 'New budget' });
+    expect(newBudget).toBeDisabled();
+
+    await user.hover(newBudget);
+    expect(screen.getByRole('tooltip')).toHaveTextContent(
+      'Every tag already has a budget for this period.',
+    );
+
+    await user.unhover(newBudget);
+    const hint = screen.getByRole('group');
+    hint.focus();
+    expect(hint).toHaveFocus();
+    await waitFor(() => {
+      const tooltip = screen.getByRole('tooltip');
+      expect(tooltip).toHaveTextContent('Every tag already has a budget for this period.');
+      expect(hint).toHaveAttribute('aria-describedby', tooltip.id);
+    });
+
+    client.setQueryData(CASH_TAGS_QUERY_KEY, { tags: [FOOD, RENT] });
+
+    await waitFor(() => {
+      expect(screen.getByRole('button', { name: 'New budget' })).toBeEnabled();
+    });
+  });
+
+  test('does not present a missing-tags prerequisite while tags are loading', async () => {
+    let resolveTags: (value: { tags: CashTag[] }) => void = () => undefined;
+    const tagsPromise = new Promise<{ tags: CashTag[] }>((resolve) => {
+      resolveTags = resolve;
+    });
+    vi.mocked(listCashTags).mockReturnValue(tagsPromise);
+    const user = userEvent.setup();
+    renderPage();
+
+    const newBudget = await screen.findByRole('button', { name: 'New budget' });
+    const addBudget = screen.getByRole('button', { name: 'Add a budget' });
+    expect(newBudget).toBeDisabled();
+    expect(addBudget).toBeDisabled();
+    expect(newBudget.closest('[aria-describedby]')).toBeNull();
+    expect(addBudget.closest('[aria-describedby]')).toBeNull();
+
+    await user.hover(newBudget);
+    expect(screen.queryByRole('tooltip')).not.toBeInTheDocument();
+
+    resolveTags({ tags: [FOOD] });
+    await waitFor(() => expect(screen.getByRole('button', { name: 'New budget' })).toBeEnabled());
+  });
+
   test('renders the empty state with a create CTA when nothing is budgeted', async () => {
     renderPage();
 
     expect(await screen.findByText('No budgets yet')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Add a budget' })).toBeInTheDocument();
+  });
+
+  test('names missing tags when empty-state budget actions are disabled', async () => {
+    vi.mocked(listCashTags).mockResolvedValue({ tags: [] });
+    const user = userEvent.setup();
+    renderPage();
+
+    const newBudget = await screen.findByRole('button', { name: 'New budget' });
+    const addBudget = screen.getByRole('button', { name: 'Add a budget' });
+    expect(newBudget).toBeDisabled();
+    expect(addBudget).toBeDisabled();
+
+    await user.hover(newBudget);
+    expect(screen.getByRole('tooltip')).toHaveTextContent(
+      "You don't have any tags yet — create one on the “Labels & rules” page first.",
+    );
+
+    await user.unhover(newBudget);
+    await user.hover(addBudget);
+    expect(screen.getByRole('tooltip')).toHaveTextContent(
+      "You don't have any tags yet — create one on the “Labels & rules” page first.",
+    );
   });
 });

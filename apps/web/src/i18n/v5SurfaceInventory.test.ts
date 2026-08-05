@@ -156,6 +156,7 @@ user/portfolio/cashflow/CashRuleDialog.tsx
 user/portfolio/cashflow/CashRulesPage.tsx
 user/portfolio/cashflow/CashTagDialog.tsx
 user/portfolio/cashflow/CashTagsPage.tsx
+user/portfolio/cashflow/DisabledActionHint.tsx
 user/portfolio/cashflow/CashflowChart.tsx
 user/portfolio/cashflow/MonthPicker.tsx
 user/portfolio/cashflow/RecordCashButton.tsx
