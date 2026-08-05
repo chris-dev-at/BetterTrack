@@ -293,10 +293,10 @@ function WatchlistZone() {
       void queryClient.invalidateQueries({ queryKey: WORKBOARD_QUERY_KEY });
       feedback.success(t('mutationFeedback.watchlistReordered'));
     },
-    onError: () => {
+    onError: (error) => {
       // Revert optimistic order to last known server state.
       if (data) setOrderedItems(data.items);
-      feedback.error(t('workboard.overview.watchlist.reorderError'));
+      feedback.error(t('workboard.overview.watchlist.reorderError'), error);
     },
   });
 

@@ -280,7 +280,7 @@ function ChipShareShortcut({ chip, recipient }: { chip: ChatChip; recipient: Chi
       void queryClient.invalidateQueries({ queryKey: ['workboard'] });
       feedback.success(t('mutationFeedback.sharedWithFriend', { username: recipient.username }));
     },
-    onError: () => feedback.error(t('social.chat.chip.shortcut.error')),
+    onError: (error) => feedback.error(t('social.chat.chip.shortcut.error'), error),
   });
 
   if (shareKind === null) return null;

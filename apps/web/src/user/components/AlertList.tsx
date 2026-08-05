@@ -52,7 +52,7 @@ function AlertRow({
       void queryClient.invalidateQueries({ queryKey: ALERTS_QUERY_KEY });
       feedback.success(t('mutationFeedback.alertRearmed'));
     },
-    onError: () => feedback.error(t('workboard.alerts.list.updateError')),
+    onError: (error) => feedback.error(t('workboard.alerts.list.updateError'), error),
   });
   const deleteMutation = useMutation({
     mutationFn: () => deleteAlert(alert.id),
@@ -60,7 +60,7 @@ function AlertRow({
       void queryClient.invalidateQueries({ queryKey: ALERTS_QUERY_KEY });
       feedback.success(t('mutationFeedback.alertDeleted'));
     },
-    onError: () => feedback.error(t('workboard.alerts.list.updateError')),
+    onError: (error) => feedback.error(t('workboard.alerts.list.updateError'), error),
   });
 
   const busy = rearmMutation.isPending || deleteMutation.isPending;

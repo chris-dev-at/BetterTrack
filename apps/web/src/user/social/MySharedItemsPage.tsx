@@ -124,8 +124,8 @@ function AlertSharingControl() {
         ),
       );
     },
-    onError: (_error, input) => {
-      if (!input.visibleToFollowers) feedback.error(t('social.alertSharing.error'));
+    onError: (error, input) => {
+      if (!input.visibleToFollowers) feedback.error(t('social.alertSharing.error'), error);
     },
   });
 

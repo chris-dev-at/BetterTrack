@@ -9,13 +9,14 @@ import {
   type ReactNode,
 } from 'react';
 
+import { ApiError } from '../../lib/apiClient';
 import { Toast } from '../components/ui';
 
 export const MUTATION_FEEDBACK_DURATION_MS = 4_000;
 
 interface MutationFeedback {
   success: (message: string) => void;
-  error: (message: string) => void;
+  error: (message: string, cause?: unknown) => void;
 }
 
 interface MutationNotice {
@@ -71,7 +72,13 @@ export function MutationFeedbackProvider({ children }: { children: ReactNode }) 
   const value = useMemo<MutationFeedback>(
     () => ({
       success: (message) => show({ message, tone: 'success' }),
-      error: (message) => show({ message, tone: 'error' }),
+      error: (message, cause) => {
+        // apiRequest has already handed 429s to AuthContext's global rate-limit
+        // policy. Leave that single, specific notice in charge instead of
+        // stacking a second generic mutation failure at the same position.
+        if (cause instanceof ApiError && cause.status === 429) return;
+        show({ message, tone: 'error' });
+      },
     }),
     [show],
   );

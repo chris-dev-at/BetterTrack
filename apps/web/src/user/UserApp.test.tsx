@@ -1,9 +1,9 @@
 import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
-import { beforeEach, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 
-import type { MeResponse } from '@bettertrack/contracts';
+import type { Alert, MeResponse } from '@bettertrack/contracts';
 
 vi.mock('../lib/userApi');
 vi.mock('../lib/workboardApi', () => ({
@@ -20,8 +20,14 @@ vi.mock('../lib/workboardApi', () => ({
 // network call; these tests only assert we reached the authenticated shell.
 vi.mock('../lib/portfolioApi');
 vi.mock('../lib/socialApi');
+vi.mock('../lib/alertsApi', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/alertsApi')>()),
+  listAlerts: vi.fn(),
+  rearmAlert: vi.fn(),
+}));
 
-import { ApiError } from '../lib/apiClient';
+import { ApiError, apiRequest } from '../lib/apiClient';
+import { listAlerts, rearmAlert } from '../lib/alertsApi';
 import * as api from '../lib/userApi';
 import { listPortfolios } from '../lib/portfolioApi';
 import { listFollowing, listItemFollows } from '../lib/socialApi';
@@ -105,6 +111,10 @@ beforeEach(() => {
     followerCount: 0,
   });
   vi.mocked(listItemFollows).mockResolvedValue({ items: [] });
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
 });
 
 test('an unauthenticated visit to a user route redirects to /login', async () => {
@@ -250,6 +260,62 @@ test('a 429 on the bootstrap /auth/me holds the splash and retries — never mis
     await screen.findByRole('button', { name: 'Account menu' }, { timeout: 3_000 }),
   ).toBeInTheDocument();
   await waitFor(() => expect(api.getMe).toHaveBeenCalledTimes(2));
+});
+
+test('a rate-limited mutation shows only the global 429 notice', async () => {
+  const triggeredAlert: Alert = {
+    id: 'al1',
+    kind: 'price_above',
+    threshold: 200,
+    refPrice: null,
+    repeat: false,
+    status: 'triggered',
+    lastTriggeredAt: '2026-08-05T06:00:00.000Z',
+    asset: {
+      id: 'asset-1',
+      symbol: 'AAPL',
+      name: 'Apple Inc.',
+      currency: 'USD',
+      type: 'stock',
+    },
+  };
+  vi.mocked(api.getMe).mockResolvedValue(member);
+  vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [] });
+  vi.mocked(listAlerts).mockResolvedValue({ items: [triggeredAlert] });
+  vi.mocked(rearmAlert).mockImplementation(() =>
+    apiRequest<Alert>('/alerts/al1/rearm', { method: 'POST' }),
+  );
+  vi.stubGlobal(
+    'fetch',
+    vi.fn<typeof globalThis.fetch>(async (input) => {
+      if (!String(input).endsWith('/alerts/al1/rearm')) {
+        throw new TypeError(`Unexpected test request: ${String(input)}`);
+      }
+      return {
+        ok: false,
+        status: 429,
+        json: async () => ({
+          error: { code: 'RATE_LIMITED', message: 'Too many requests.' },
+        }),
+        headers: {
+          get: (name: string) => (name.toLowerCase() === 'retry-after' ? '30' : null),
+        },
+      } as Response;
+    }),
+  );
+
+  const user = userEvent.setup();
+  renderAt('/workbench/alerts');
+
+  await user.click(await screen.findByRole('button', { name: 'Re-arm' }));
+
+  expect(
+    await screen.findByText("You're doing that too fast. Please wait 30 seconds and try again."),
+  ).toBeInTheDocument();
+  expect(
+    screen.queryByText("Couldn't update that alert. Please try again."),
+  ).not.toBeInTheDocument();
+  expect(screen.getAllByRole('alert')).toHaveLength(1);
 });
 
 test.each([0, 500])(

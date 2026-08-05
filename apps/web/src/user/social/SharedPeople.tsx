@@ -227,9 +227,9 @@ export function ActivityAlertToggle({
 
   const mutation = useMutation({
     mutationFn: (next: boolean) => setActivityAlert(kind, subjectId, next),
-    onError: (_error, next) => {
+    onError: (error, next) => {
       setOn(!next); // revert the optimistic flip
-      feedback.error(t('mutationFeedback.activityAlertUpdateError'));
+      feedback.error(t('mutationFeedback.activityAlertUpdateError'), error);
     },
     onSuccess: (_result, next) => {
       void queryClient.invalidateQueries({ queryKey: ['social', 'shared-with-me'] });
