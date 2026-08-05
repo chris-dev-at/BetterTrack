@@ -84,6 +84,9 @@ export interface StandingOrderPatch {
   endDate?: string | null;
 }
 
+/** Result of atomically re-checking an order's status and claiming one period. */
+export type StandingOrderClaimResult = 'claimed' | 'duplicate' | 'inactive';
+
 type OrderRow = typeof standingOrders.$inferSelect;
 
 function toRecord(row: OrderRow): StandingOrderRecord {
@@ -300,17 +303,31 @@ export function createStandingOrderRepository(db: Database) {
     },
 
     /**
-     * Atomically claim one period for an order via the UNIQUE(order, period)
-     * index. Returns true iff THIS call created the claim (so it must book);
-     * false means the period was already claimed (skip — the double-run guard).
+     * Atomically re-read the order's status and claim one period. Locking the
+     * definition row gives pause and claim a single ordering point: a pause that
+     * commits first returns `inactive`, while a claim that locks first may book.
+     * The UNIQUE(order, period) index remains the concurrent/double-run guard.
      */
-    async claimPeriod(standingOrderId: string, periodKey: string): Promise<boolean> {
-      const rows = await db
-        .insert(standingOrderRuns)
-        .values({ standingOrderId, periodKey })
-        .onConflictDoNothing()
-        .returning({ id: standingOrderRuns.id });
-      return rows.length > 0;
+    async claimPeriod(
+      standingOrderId: string,
+      periodKey: string,
+    ): Promise<StandingOrderClaimResult> {
+      return db.transaction(async (tx) => {
+        const [order] = await tx
+          .select({ status: standingOrders.status })
+          .from(standingOrders)
+          .where(eq(standingOrders.id, standingOrderId))
+          .limit(1)
+          .for('update');
+        if (!order || order.status !== 'active') return 'inactive';
+
+        const rows = await tx
+          .insert(standingOrderRuns)
+          .values({ standingOrderId, periodKey })
+          .onConflictDoNothing()
+          .returning({ id: standingOrderRuns.id });
+        return rows.length > 0 ? 'claimed' : 'duplicate';
+      });
     },
 
     /** Record that a period booked: bump the order's display bookkeeping. */

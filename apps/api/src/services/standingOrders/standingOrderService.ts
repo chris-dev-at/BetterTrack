@@ -55,9 +55,9 @@ import {
  *
  * **No negative balances.** A `cash-deduct` that would overdraw is deferred (and
  * retried) rather than forced negative — the app's cash invariant holds. Buys
- * never touch cash (they book only the BUY transaction at the current quote).
- * Rows are dated at the execution instant; the scheduled period identity lives
- * in the run's `period_key`.
+ * never touch cash (they book only the BUY transaction at a fresh quote). A buy
+ * is dated at the provider quote's actual `asOf` time; cash rows use the scan
+ * instant. The scheduled period identity lives in the run's `period_key`.
  */
 
 /** Timezone the daily scan reads "today" in — the deploy tz, matching the crons. */
@@ -94,6 +94,13 @@ export interface ProcessDueResult {
   skippedDuplicate: number;
   /** Periods left unbooked by a pre-check (provider failure / insufficient cash). */
   deferred: number;
+  /** Orders whose unexpected processing error was isolated from the rest of the sweep. */
+  failed: number;
+}
+
+interface BookQuote {
+  price: number;
+  asOf: Date;
 }
 
 export interface StandingOrderService {
@@ -319,118 +326,136 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
         booked: 0,
         skippedDuplicate: 0,
         deferred: 0,
+        failed: 0,
       };
 
       for (const order of orders) {
-        // Definitions are vault-owned in paranoid mode. A row seen by a stale
-        // worker around the enable transaction is skipped before quote, claim,
-        // ledger write, or snapshot invalidation.
-        if (await isParanoidForProcessing?.(order.userId)) continue;
-        const processOrder = async () => {
-          const due = dueOccurrence(specOf(order), today);
-          if (due === null) return;
-          // Fast path: this exact period (or a later one) is already booked. The
-          // claim below is the authoritative guard; this just avoids a needless
-          // quote fetch on the common already-booked case.
-          if (order.lastPeriodKey !== null && order.lastPeriodKey >= due) return;
-
-          const candidateDroppedPeriods = skippedPeriods(specOf(order), order.lastPeriodKey, due);
-          // `lastPeriodKey` is only a display watermark. A post-claim booking
-          // failure deliberately leaves it stale, and markBooked can fail after
-          // the money row committed. The run ledger is the authoritative claim
-          // state, so neither case may be reported later as an unrecorded drop.
-          const claimedPeriodKeys = new Set(
-            await repo.listClaimedPeriodKeys(order.id, [...candidateDroppedPeriods, due]),
-          );
-          const droppedPeriods = candidateDroppedPeriods.filter(
-            (periodKey) => !claimedPeriodKeys.has(periodKey),
-          );
-          if (droppedPeriods.length > 0) {
-            logger?.info(
-              {
-                orderId: order.id,
-                from: order.lastPeriodKey,
-                due,
-                skipped: droppedPeriods.length,
-              },
-              'standing order: catching up — booking newest period only, skipping older',
-            );
-            const newestDroppedPeriod = droppedPeriods.at(-1)!;
-            await notifyFailure(order, newestDroppedPeriod, 'dropped', droppedPeriods.length);
-          }
-
-          // A stale watermark can also expose the currently due period after a
-          // claim. Skip it before any retriable pre-check can falsely call that
-          // already-final occurrence deferred; claimPeriod remains the atomic
-          // concurrency guard for a genuinely unclaimed due period.
-          if (claimedPeriodKeys.has(due)) {
-            result.skippedDuplicate += 1;
-            return;
-          }
-
-          // Retriable pre-checks BEFORE claiming, so a failure never claims the
-          // period and it retries cleanly next run (no double-book risk).
-          let bookPrice: number | null = null;
-          try {
-            if (order.kind === 'buy-asset') {
-              bookPrice = await resolveQuotePrice(order);
-            } else if (order.kind === 'cash-deduct') {
-              await assertCashCovers(order);
-            }
-          } catch (err) {
-            result.deferred += 1;
-            logger?.warn(
-              { orderId: order.id, kind: order.kind, due, err },
-              'standing order: period deferred (provider failure / insufficient cash), will retry',
-            );
-            // A same-day transient is not yet "deferred past its anchor". If it
-            // remains unbooked, a later scan emits one stable notice for this
-            // period; daily schedules instead surface the old period as dropped
-            // when tomorrow's occurrence becomes due.
-            if (due < today) await notifyFailure(order, due, 'deferred');
-            return;
-          }
-
-          const claimed = await repo.claimPeriod(order.id, due);
-          if (!claimed) {
-            result.skippedDuplicate += 1;
-            return;
-          }
-
-          try {
-            await bookRow(order, bookPrice, executedAt);
-          } catch (err) {
-            // The claim stays as a tombstone (not retried) — booking at-most-once
-            // is safer for money than risking a double-book on retry.
-            logger?.error(
-              { orderId: order.id, kind: order.kind, due, err },
-              'standing order: booking failed AFTER claim; period will not retry',
-            );
-            await notifyFailure(order, due, 'booking_failed');
-            return;
-          }
-
-          // Bookkeeping + snapshot invalidation are best-effort — the ledger row is
-          // already durable; a hiccup here self-heals (next run / nightly reroll).
-          try {
-            await repo.markBooked(order.id, due, executedAt);
-          } catch (err) {
-            logger?.warn({ orderId: order.id, due, err }, 'standing order: markBooked failed');
-          }
-          try {
-            await snapshots.invalidate(order.portfolioId, dayOf(executedAt));
-          } catch (err) {
-            logger?.warn(
-              { orderId: order.id, due, err },
-              'standing order: snapshot invalidation failed',
-            );
-          }
-          result.booked += 1;
+        let failureCounted = false;
+        const countFailure = () => {
+          if (failureCounted) return;
+          failureCounted = true;
+          result.failed += 1;
         };
-        if (runIfAllowedForProcessing) {
-          await runIfAllowedForProcessing(order.userId, processOrder);
-        } else {
-          await processOrder();
+        try {
+          // Definitions are vault-owned in paranoid mode. A row seen by a stale
+          // worker around the enable transaction is skipped before quote, claim,
+          // ledger write, or snapshot invalidation.
+          if (await isParanoidForProcessing?.(order.userId)) continue;
+          const processOrder = async () => {
+            const due = dueOccurrence(specOf(order), today);
+            if (due === null) return;
+            // Fast path: this exact period (or a later one) is already booked. The
+            // claim below is the authoritative guard; this just avoids a needless
+            // quote fetch on the common already-booked case.
+            if (order.lastPeriodKey !== null && order.lastPeriodKey >= due) return;
+
+            const candidateDroppedPeriods = skippedPeriods(specOf(order), order.lastPeriodKey, due);
+            // `lastPeriodKey` is only a display watermark. A post-claim booking
+            // failure deliberately leaves it stale, and markBooked can fail after
+            // the money row committed. The run ledger is the authoritative claim
+            // state, so neither case may be reported later as an unrecorded drop.
+            const claimedPeriodKeys = new Set(
+              await repo.listClaimedPeriodKeys(order.id, [...candidateDroppedPeriods, due]),
+            );
+            const droppedPeriods = candidateDroppedPeriods.filter(
+              (periodKey) => !claimedPeriodKeys.has(periodKey),
+            );
+            if (droppedPeriods.length > 0) {
+              logger?.info(
+                {
+                  orderId: order.id,
+                  from: order.lastPeriodKey,
+                  due,
+                  skipped: droppedPeriods.length,
+                },
+                'standing order: catching up — booking newest period only, skipping older',
+              );
+              const newestDroppedPeriod = droppedPeriods.at(-1)!;
+              await notifyFailure(order, newestDroppedPeriod, 'dropped', droppedPeriods.length);
+            }
+
+            // A stale watermark can also expose the currently due period after a
+            // claim. Skip it before any retriable pre-check can falsely call that
+            // already-final occurrence deferred; claimPeriod remains the atomic
+            // concurrency guard for a genuinely unclaimed due period.
+            if (claimedPeriodKeys.has(due)) {
+              result.skippedDuplicate += 1;
+              return;
+            }
+
+            // Retriable pre-checks BEFORE claiming, so a failure never claims the
+            // period and it retries cleanly next run (no double-book risk).
+            let bookQuote: BookQuote | null = null;
+            try {
+              if (order.kind === 'buy-asset') {
+                bookQuote = await resolveBookQuote(order);
+              } else if (order.kind === 'cash-deduct') {
+                await assertCashCovers(order);
+              }
+            } catch (err) {
+              result.deferred += 1;
+              logger?.warn(
+                { orderId: order.id, kind: order.kind, due, err },
+                'standing order: period deferred (provider failure / insufficient cash), will retry',
+              );
+              // A same-day transient is not yet "deferred past its anchor". If it
+              // remains unbooked, a later scan emits one stable notice for this
+              // period; daily schedules instead surface the old period as dropped
+              // when tomorrow's occurrence becomes due.
+              if (due < today) await notifyFailure(order, due, 'deferred');
+              return;
+            }
+
+            const claim = await repo.claimPeriod(order.id, due);
+            if (claim === 'inactive') return;
+            if (claim === 'duplicate') {
+              result.skippedDuplicate += 1;
+              return;
+            }
+
+            const bookedAt = bookQuote?.asOf ?? executedAt;
+            try {
+              await bookRow(order, bookQuote?.price ?? null, bookedAt);
+            } catch (err) {
+              countFailure();
+              // The claim stays as a tombstone (not retried) — booking at-most-once
+              // is safer for money than risking a double-book on retry.
+              logger?.error(
+                { orderId: order.id, kind: order.kind, due, err },
+                'standing order: booking failed AFTER claim; period will not retry',
+              );
+              await notifyFailure(order, due, 'booking_failed');
+              return;
+            }
+
+            // Bookkeeping + snapshot invalidation are best-effort — the ledger row is
+            // already durable; a hiccup here self-heals (next run / nightly reroll).
+            try {
+              await repo.markBooked(order.id, due, bookedAt);
+            } catch (err) {
+              logger?.warn({ orderId: order.id, due, err }, 'standing order: markBooked failed');
+            }
+            try {
+              await snapshots.invalidate(order.portfolioId, dayOf(bookedAt));
+            } catch (err) {
+              logger?.warn(
+                { orderId: order.id, due, err },
+                'standing order: snapshot invalidation failed',
+              );
+            }
+            result.booked += 1;
+          };
+          if (runIfAllowedForProcessing) {
+            await runIfAllowedForProcessing(order.userId, processOrder);
+          } else {
+            await processOrder();
+          }
+        } catch (err) {
+          countFailure();
+          logger?.error(
+            { orderId: order.id, kind: order.kind, err },
+            'standing order: order processing failed; continuing scan',
+          );
         }
       }
 
@@ -461,8 +486,8 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
     });
   }
 
-  /** Fetch the current native-currency quote price for a buy (throws on failure). */
-  async function resolveQuotePrice(order: StandingOrderWithAsset): Promise<number> {
+  /** Fetch one fresh native-currency quote and preserve its market timestamp. */
+  async function resolveBookQuote(order: StandingOrderWithAsset): Promise<BookQuote> {
     if (!order.assetProviderId || !order.assetProviderRef) {
       throw new Error(`standing order ${order.id}: buy has no asset ref`);
     }
@@ -470,7 +495,14 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
       providerId: order.assetProviderId,
       providerRef: order.assetProviderRef,
     });
-    return quote.value.price;
+    if (quote.stale) {
+      throw new Error(`standing order ${order.id}: quote is stale`);
+    }
+    const asOf = new Date(quote.value.asOf);
+    if (!Number.isFinite(asOf.getTime())) {
+      throw new Error(`standing order ${order.id}: quote has an invalid asOf timestamp`);
+    }
+    return { price: quote.value.price, asOf };
   }
 
   /** Reject when the portfolio's Main cash can't cover a deduction (no negatives). */
