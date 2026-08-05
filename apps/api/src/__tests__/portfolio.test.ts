@@ -2543,6 +2543,73 @@ describe('Backdated pay-from-cash settle-as-of-today (#378)', () => {
     expect(preview.body.asOfAvailableEur).toBeCloseTo(0, 6);
   });
 
+  it('preview and auto-settle follow withdrawal-before-deposit timestamp ties', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
+    const asset = await seedAsset(harness);
+
+    await agent
+      .post(`/api/v1/portfolios/${pid}/cash/deposit`)
+      .set(...XRW)
+      .send({ amountEur: 100, executedAt: tsOffset(-5) });
+    const withdrawal = await agent
+      .post(`/api/v1/portfolios/${pid}/cash/withdraw`)
+      .set(...XRW)
+      .send({ amountEur: 100, executedAt: tsOffset(-1) });
+    expect(withdrawal.status).toBe(201);
+    const tiedDeposit = await agent
+      .post(`/api/v1/portfolios/${pid}/cash/deposit`)
+      .set(...XRW)
+      .send({ amountEur: 100, executedAt: tsOffset(-1) });
+    expect(tiedDeposit.status).toBe(201);
+
+    // At the tie the withdrawal runs first, so no cash survives from the buy
+    // date through every later replay step even though today's balance is €100.
+    const preview = await agent
+      .post(`/api/v1/portfolios/${pid}/cash/preview`)
+      .set(...XRW)
+      .send({ kind: 'buy', amountEur: 100, asOfDate: dayOffset(-3) });
+    expect(preview.status).toBe(200);
+    expect(preview.body.sufficient).toBe(true);
+    expect(preview.body.asOfAvailableEur).toBe(0);
+    expect(preview.body.asOfSufficient).toBe(false);
+
+    const rejected = await agent
+      .post(`/api/v1/portfolios/${pid}/transactions`)
+      .set(...XRW)
+      .send({
+        assetId: asset.id,
+        side: 'buy',
+        quantity: 1,
+        price: 100,
+        executedAt: tsOffset(-3),
+        payFromCash: true,
+      });
+    expect(rejected.status).toBe(400);
+    expect(rejected.body.error.code).toBe('INSUFFICIENT_CASH');
+
+    const settled = await agent
+      .post(`/api/v1/portfolios/${pid}/transactions`)
+      .set(...XRW)
+      .send({
+        assetId: asset.id,
+        side: 'buy',
+        quantity: 1,
+        price: 100,
+        executedAt: tsOffset(-3),
+        payFromCash: true,
+        settleCashAsOfToday: true,
+      });
+    expect(settled.status).toBe(201);
+    expect(settled.body.transactions[0].executedAt.slice(0, 10)).toBe(dayOffset(-3));
+
+    const state = await cashMovements(agent, pid);
+    expect(state.balanceEur).toBe(0);
+    const buyLeg = state.movements.find((movement) => movement.kind === 'buy');
+    expect(buyLeg?.executedAt.slice(0, 10)).toBe(dayOffset(0));
+  });
+
   it('a buy with cash ALREADY sufficient at its date is unchanged even with the flag set', async () => {
     const user = await harness.seedUser();
     const agent = await loginAgent(harness.app, user.email, user.password);
