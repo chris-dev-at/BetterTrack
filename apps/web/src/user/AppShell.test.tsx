@@ -5,6 +5,8 @@ import { beforeEach, expect, test, vi } from 'vitest';
 
 import type { MeResponse } from '@bettertrack/contracts';
 
+import { waitForColdStart } from '../test/waitForColdStart';
+
 // The shell mounts pages that fetch; auto-mock their data modules so navigation
 // is instant and these tests exercise only the rail/topbar/parked shell.
 vi.mock('../lib/userApi');
@@ -745,10 +747,8 @@ test('the command shortcut still opens over the inert-backed Control Center', as
   renderAt('/control/profile');
   // Crosses a real lazy boundary (the overlay is its own chunk, and Vitest
   // transforms it on first use), so this one wait outlasts the 1 s default.
-  const controlCenter = await screen.findByRole(
-    'dialog',
-    { name: 'Control Center' },
-    { timeout: 5_000 },
+  const controlCenter = await waitForColdStart(() =>
+    screen.getByRole('dialog', { name: 'Control Center' }),
   );
   const shell = document.querySelector<HTMLElement>('.bt-shell')!;
   expect(shell.closest('[inert]')).not.toBeNull();
@@ -826,7 +826,9 @@ test('the Control Center opens over the page you were on, which stays on screen'
   const utilities = await screen.findByRole('navigation', { name: 'Utilities' });
   await user.click(within(utilities).getByRole('link', { name: 'Control Center' }));
 
-  const dialog = await screen.findByRole('dialog', { name: 'Control Center' });
+  const dialog = await waitForColdStart(() =>
+    screen.getByRole('dialog', { name: 'Control Center' }),
+  );
   expect(dialog).toBeInTheDocument();
   // The Assets workspace is still there — same element, so its state (and the
   // user's scroll position) survived opening the popup.
@@ -842,7 +844,9 @@ test('the Control Center opens over the page you were on, which stays on screen'
 test('a cold deep link opens the popup over Home rather than nothing', async () => {
   renderAt('/control/sessions');
 
-  const dialog = await screen.findByRole('dialog', { name: 'Control Center' });
+  const dialog = await waitForColdStart(() =>
+    screen.getByRole('dialog', { name: 'Control Center' }),
+  );
   expect(within(dialog).getByRole('link', { name: 'Sessions', current: 'page' })).toBeVisible();
   const rail = await findRail();
   expect(within(rail).getByRole('link', { name: 'Home' })).toHaveAttribute('aria-current', 'page');
@@ -870,7 +874,9 @@ test.each([
 ])('%s opens the Control Center on the %s panel', async (path, panel) => {
   renderAt(path);
 
-  const dialog = await screen.findByRole('dialog', { name: 'Control Center' });
+  const dialog = await waitForColdStart(() =>
+    screen.getByRole('dialog', { name: 'Control Center' }),
+  );
   expect(within(dialog).getByRole('link', { name: panel, current: 'page' })).toBeInTheDocument();
 });
 
@@ -899,7 +905,7 @@ test('the settings redirects carry the query string onto the panel', async () =>
   // Generous timeout: the overlay is a lazy route, and resolving its chunk
   // while the rest of this file's shell renders compete for the event loop can
   // exceed the 1s default.
-  await screen.findByRole('dialog', { name: 'Control Center' }, { timeout: 5000 });
+  await waitForColdStart(() => screen.getByRole('dialog', { name: 'Control Center' }));
   expect(screen.getByTestId('location')).toHaveTextContent('/control/api?google=linked');
 });
 

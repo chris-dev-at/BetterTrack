@@ -5,6 +5,8 @@ import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 
 import type { Alert, MeResponse } from '@bettertrack/contracts';
 
+import { waitForColdStart } from '../test/waitForColdStart';
+
 vi.mock('../lib/userApi');
 vi.mock('../lib/workboardApi', () => ({
   WORKBOARD_QUERY_KEY: ['workboard'],
@@ -79,25 +81,6 @@ function renderAtWithLocation(path: string) {
 const anonymous = () =>
   vi.mocked(api.getMe).mockRejectedValue(new ApiError(401, 'UNAUTHENTICATED', 'Not signed in.'));
 
-/**
- * Budget for the first wait that has to cross a cold signed-in boot: either
- * after a sign-in, or after rendering straight at an authenticated route, which
- * mounts the shell plus that route's lazy chunk before the page's own query
- * paints. Landing authenticated is the longest chain in this file — the login
- * mutation flips the auth gate, the legacy path redirects into its Origin
- * destination, the shell and the destination mount, and only then does that
- * page's own query paint the text being asserted on.
- *
- * Idle, that chain settles in well under 100ms; it is also the part of these
- * tests most sensitive to CPU contention, measured repeatedly past 2s on a
- * loaded machine while the sign-in-page waits around it stayed in the tens of
- * milliseconds. So on a saturated CI runner it is Testing Library's 1s default
- * that expires, not the app failing to render. These waits are still bounded
- * and still fail on a genuine regression — just not on runner load.
- * `AppShell.test.tsx` budgets the same shell surfaces the same way.
- */
-const SIGNED_IN_RENDER = { timeout: 5_000 } as const;
-
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(api.getParanoidMediaState).mockResolvedValue({
@@ -168,10 +151,8 @@ test('after signing in, the user returns to the originally requested route', asy
   // Landed on the intended route (the legacy /workboard path redirects into
   // the Workbench destination), not the Home command center.
   expect(
-    await screen.findByText(
-      'Your watched assets, alerts and blueprints at a glance.',
-      {},
-      SIGNED_IN_RENDER,
+    await waitForColdStart(() =>
+      screen.getByText('Your watched assets, alerts and blueprints at a glance.'),
     ),
   ).toBeInTheDocument();
   expect(screen.queryByRole('heading', { name: /Welcome back/ })).not.toBeInTheDocument();
@@ -259,7 +240,7 @@ test('a 429 on the bootstrap /auth/me holds the splash and retries — never mis
   expect(await screen.findByText(/You're doing that too fast/i)).toBeInTheDocument();
   // After the retry, the app admits the user — the shell renders (§7.4).
   expect(
-    await screen.findByRole('button', { name: 'Account menu' }, { timeout: 3_000 }),
+    await waitForColdStart(() => screen.getByRole('button', { name: 'Account menu' })),
   ).toBeInTheDocument();
   await waitFor(() => expect(api.getMe).toHaveBeenCalledTimes(2));
 });
@@ -309,7 +290,7 @@ test('a rate-limited mutation shows only the global 429 notice', async () => {
   const user = userEvent.setup();
   renderAt('/workbench/alerts');
 
-  await user.click(await screen.findByRole('button', { name: 'Re-arm' }, SIGNED_IN_RENDER));
+  await user.click(await waitForColdStart(() => screen.getByRole('button', { name: 'Re-arm' })));
 
   expect(
     await screen.findByText("You're doing that too fast. Please wait 30 seconds and try again."),
@@ -383,7 +364,7 @@ test('a 429 takes over the toast slot from a success notice that is still showin
   const user = userEvent.setup();
   renderAt('/workbench/alerts');
 
-  await user.click(await screen.findByRole('button', { name: 'Re-arm' }, SIGNED_IN_RENDER));
+  await user.click(await waitForColdStart(() => screen.getByRole('button', { name: 'Re-arm' })));
   expect(await screen.findByText('Alert re-armed.')).toBeInTheDocument();
 
   await user.click(await screen.findByRole('button', { name: 'Re-arm' }));
@@ -410,7 +391,7 @@ test('an identical repeat 429 surfaces again after the notice was dismissed', as
   const user = userEvent.setup();
   renderAt('/workbench/alerts');
 
-  await user.click(await screen.findByRole('button', { name: 'Re-arm' }, SIGNED_IN_RENDER));
+  await user.click(await waitForColdStart(() => screen.getByRole('button', { name: 'Re-arm' })));
   expect(await screen.findByText(RATE_LIMIT_NOTICE)).toBeInTheDocument();
 
   await user.click(screen.getByRole('button', { name: 'Dismiss' }));
@@ -552,7 +533,7 @@ test('logout then login as a different user shows no stale account data (#253)',
   await user.click(screen.getByRole('button', { name: 'Sign in' }));
 
   expect(
-    await screen.findByText('jane@bettertrack.test', {}, SIGNED_IN_RENDER),
+    await waitForColdStart(() => screen.getByText('jane@bettertrack.test')),
   ).toBeInTheDocument();
 
   await user.click(screen.getByRole('button', { name: 'Account menu' }));
@@ -578,7 +559,9 @@ test('logout then login as a different user shows no stale account data (#253)',
   const utilities = await screen.findByRole('navigation', { name: 'Utilities' });
   await user.click(within(utilities).getByRole('link', { name: 'Control Center' }));
 
-  expect(await screen.findByText('bob@bettertrack.test', {}, SIGNED_IN_RENDER)).toBeInTheDocument();
+  expect(
+    await waitForColdStart(() => screen.getByText('bob@bettertrack.test')),
+  ).toBeInTheDocument();
   expect(screen.queryByText('jane@bettertrack.test')).not.toBeInTheDocument();
 });
 

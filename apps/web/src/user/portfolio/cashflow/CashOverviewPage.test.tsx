@@ -40,6 +40,7 @@ import {
   previewCashRules,
 } from '../../../lib/cashApi';
 import { ApiError } from '../../../lib/apiClient';
+import { waitForColdStart } from '../../../test/waitForColdStart';
 
 import { CashOverviewPage } from './CashOverviewPage';
 import { setViewportWidth } from '../../../test/viewport';
@@ -82,6 +83,10 @@ function renderPage() {
     </QueryClientProvider>,
   );
   return { ...view, client };
+}
+
+function findTagBreakdown() {
+  return waitForColdStart(() => screen.getByRole('list', { name: 'Spending by tag' }));
 }
 
 beforeEach(() => {
@@ -263,7 +268,7 @@ describe('CashOverviewPage', () => {
     renderPage();
 
     // Scoped to the ranked bars: the donut beside them carries the same labels.
-    const bars = await screen.findByRole('list', { name: 'Spending by tag' });
+    const bars = await findTagBreakdown();
     expect(within(bars).getByText('Food')).toBeInTheDocument();
     expect(within(bars).getByText('Groceries')).toBeInTheDocument();
     // 300 + 300 ≠ 500 — the note explaining why must be on screen, not just implied.
@@ -293,7 +298,7 @@ describe('CashOverviewPage', () => {
     );
     renderPage();
 
-    const bars = await screen.findByRole('list', { name: 'Spending by tag' });
+    const bars = await findTagBreakdown();
     expect(within(bars).getByText('Untagged')).toBeInTheDocument();
   });
 

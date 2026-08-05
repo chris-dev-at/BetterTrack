@@ -4,6 +4,8 @@ import { beforeEach, expect, test, vi } from 'vitest';
 
 import type { MeResponse, ParanoidMediaStateResponse } from '@bettertrack/contracts';
 
+import { waitForColdStart } from '../test/waitForColdStart';
+
 const vaultRuntimeMocks = vi.hoisted(() => ({
   createServerBlobDataHome: vi.fn(() => ({
     read: vi.fn(async () => {
@@ -116,7 +118,7 @@ test('paranoid + locked replaces the whole authenticated subtree with the unlock
 
   renderAt('/portfolio');
 
-  expect(await screen.findByText('Unlock your vault', {}, { timeout: 5_000 })).toBeInTheDocument();
+  expect(await waitForColdStart(() => screen.getByText('Unlock your vault'))).toBeInTheDocument();
   // The real lazy vault runtime is mounted and reaching for custody, rather than
   // deferred until something first needs it: the gate's own mount effect starts
   // the trusted-device unlock, which is what reads the envelope through this seam.
@@ -134,7 +136,7 @@ test('a money deep link on a locked vault still lands on the gate, with no serve
 
   renderAt('/portfolio/tax');
 
-  expect(await screen.findByText('Unlock your vault', {}, { timeout: 5_000 })).toBeInTheDocument();
+  expect(await waitForColdStart(() => screen.getByText('Unlock your vault'))).toBeInTheDocument();
   // Give the route a turn to settle before claiming nothing was fetched.
   await waitFor(() => expect(listPortfolios).not.toHaveBeenCalled());
 });
@@ -149,7 +151,7 @@ test('the gate never appears for a normal account, which keeps reading the serve
 
   // The control for the two cases above: the same route on a normal account
   // does mount a money surface and does call `apiPortfolioStore`.
-  await waitFor(() => expect(listPortfolios).toHaveBeenCalled(), { timeout: 5_000 });
+  await waitForColdStart(() => expect(listPortfolios).toHaveBeenCalled());
   expect(screen.queryByText('Unlock your vault')).not.toBeInTheDocument();
   expect(vaultRuntimeMocks.createServerBlobDataHome).not.toHaveBeenCalled();
 });
@@ -170,7 +172,7 @@ test('opening Privacy mid-session keeps the whole authenticated subtree mounted'
 
   renderAt('/portfolio');
 
-  await screen.findByRole('button', { name: 'Account menu' }, { timeout: 5_000 });
+  await waitForColdStart(() => screen.getByRole('button', { name: 'Account menu' }));
   const shellBefore = document.querySelector('#main-content');
   expect(shellBefore).not.toBeNull();
 
@@ -180,7 +182,7 @@ test('opening Privacy mid-session keeps the whole authenticated subtree mounted'
 
   // The panel renders — nothing above it threw for want of a vault provider…
   expect(
-    await screen.findByRole('switch', { name: 'Discreet mode' }, { timeout: 5_000 }),
+    await waitForColdStart(() => screen.getByRole('switch', { name: 'Discreet mode' })),
   ).toBeInTheDocument();
   // …the very same shell node is still on screen (a remount would replace it,
   // taking the popup's background page with it)…
@@ -202,7 +204,7 @@ test('the explicit setup request is what mounts the vault runtime for a normal a
   // The request rides in the URL precisely because that swap unmounts whoever
   // asked for it.
   expect(
-    await screen.findByRole('heading', { name: 'What changes' }, { timeout: 5_000 }),
+    await waitForColdStart(() => screen.getByRole('heading', { name: 'What changes' })),
   ).toBeInTheDocument();
 });
 
