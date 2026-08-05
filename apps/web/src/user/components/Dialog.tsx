@@ -1,5 +1,5 @@
 import { createPortal } from 'react-dom';
-import { useEffect } from 'react';
+import { useEffect, useId } from 'react';
 import type { CSSProperties, ReactNode, RefObject } from 'react';
 
 import { useT } from '../../i18n';
@@ -54,6 +54,7 @@ export function Dialog({
   restoreFocusRef?: RefObject<HTMLElement | null>;
 }) {
   const t = useT();
+  const descriptionId = useId();
   const { containerRef, onKeyDown } = useFocusTrap<HTMLDivElement>({
     inertBackground: true,
     restoreFocusRef,
@@ -96,7 +97,11 @@ export function Dialog({
     <div className="bt-dialog__head shrink-0" style={{ alignItems: 'flex-start' }}>
       <div>
         <h2 className="bt-dialog__title">{title}</h2>
-        {description ? <p className="bt-meta mt-1">{description}</p> : null}
+        {description ? (
+          <p className="bt-meta mt-1" id={descriptionId}>
+            {description}
+          </p>
+        ) : null}
       </div>
       {dismissable ? (
         <button
@@ -134,6 +139,7 @@ export function Dialog({
           role="dialog"
           aria-modal="true"
           aria-label={title}
+          aria-describedby={description ? descriptionId : undefined}
           tabIndex={-1}
           className={cx(
             'bt-dialog__panel w-full',

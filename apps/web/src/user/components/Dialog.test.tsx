@@ -23,6 +23,24 @@ function DialogFixture() {
   );
 }
 
+test('associates its visible description with the dialog', () => {
+  render(
+    <Dialog
+      description="Changes apply to every portfolio member."
+      title="Edit portfolio"
+      onClose={() => undefined}
+    >
+      <button type="button">Save</button>
+    </Dialog>,
+  );
+
+  const dialog = screen.getByRole('dialog', { name: 'Edit portfolio' });
+  const description = screen.getByText('Changes apply to every portfolio member.');
+
+  expect(dialog).toHaveAttribute('aria-describedby', description.id);
+  expect(dialog).toHaveAccessibleDescription('Changes apply to every portfolio member.');
+});
+
 test('moves focus into the dialog and makes background controls inert', async () => {
   const user = userEvent.setup();
   render(<DialogFixture />);
