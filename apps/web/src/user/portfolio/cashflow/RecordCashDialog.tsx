@@ -268,8 +268,8 @@ export function RecordCashDialog({
 
   const submit = useMutation({
     mutationFn: async () => {
-      // Cash movements share the midnight UTC anchor used by same-day trades.
-      const executedAt = new Date(`${date}T00:00:00Z`).toISOString();
+      // Cash movements use noon UTC so they replay after same-day trades.
+      const executedAt = new Date(`${date}T12:00:00Z`).toISOString();
       if (editing) {
         const result = await updateCashMovement(portfolioId, editing.id, {
           kind,

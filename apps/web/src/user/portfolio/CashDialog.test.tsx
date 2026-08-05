@@ -100,7 +100,7 @@ describe('CashDialog', () => {
     await waitFor(() =>
       expect(portfolioApi.depositCash).toHaveBeenCalledWith(
         'p1',
-        expect.objectContaining({ amountEur: 500, executedAt: '2026-07-02T00:00:00.000Z' }),
+        expect.objectContaining({ amountEur: 500, executedAt: '2026-07-02T12:00:00.000Z' }),
       ),
     );
     expect(onSubmitted).toHaveBeenCalledOnce();
@@ -108,7 +108,7 @@ describe('CashDialog', () => {
     expect(screen.getByText('Deposit recorded.')).toBeInTheDocument();
   });
 
-  test('stamps backdated cash at midnight UTC, aligned with same-day trades', async () => {
+  test('stamps backdated cash at noon UTC, after same-day trades', async () => {
     vi.mocked(portfolioApi.depositCash).mockResolvedValue({
       movement: { id: 'm-backdated' },
     } as Awaited<ReturnType<typeof portfolioApi.depositCash>>);
@@ -122,7 +122,7 @@ describe('CashDialog', () => {
     await waitFor(() =>
       expect(portfolioApi.depositCash).toHaveBeenCalledWith(
         'p1',
-        expect.objectContaining({ amountEur: 500, executedAt: '2020-01-02T00:00:00.000Z' }),
+        expect.objectContaining({ amountEur: 500, executedAt: '2020-01-02T12:00:00.000Z' }),
       ),
     );
   });
@@ -233,7 +233,7 @@ describe('CashDialog', () => {
     await waitFor(() =>
       expect(portfolioApi.chargeCashFee).toHaveBeenCalledWith(
         'p1',
-        expect.objectContaining({ amountEur: 12.5, executedAt: '2026-07-02T00:00:00.000Z' }),
+        expect.objectContaining({ amountEur: 12.5, executedAt: '2026-07-02T12:00:00.000Z' }),
       ),
     );
     expect(portfolioApi.withdrawCash).not.toHaveBeenCalled();
