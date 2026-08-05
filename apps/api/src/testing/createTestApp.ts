@@ -189,6 +189,8 @@ export interface CreateTestAppOptions {
   passwordHasher?: PasswordHasher;
   /** Stubbed market-data service, in place of the live Yahoo/manual providers. */
   marketData?: MarketDataService;
+  /** Controlled portfolio-service clock for UTC-window boundary tests. */
+  portfolioNow?: () => number;
   /** Backfill scheduler (e.g. a recording fake) to assert first-touch enqueues. */
   backfill?: BackfillScheduler;
   /**
@@ -288,6 +290,7 @@ export async function createTestApp(options: CreateTestAppOptions = {}): Promise
     logger,
     emailTransport: options.emailTransport,
     marketData: options.marketData,
+    portfolioNow: options.portfolioNow,
     backfill: options.backfill,
     googleVerifier: options.googleVerifier,
     passwordHasher: options.passwordHasher ?? testPasswordHasher,
