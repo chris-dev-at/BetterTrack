@@ -2932,6 +2932,7 @@
     "renameTitle": "Rename watchlist",
     "delete": "Delete",
     "defaultBadge": "Default",
+    "defaultLockedReason": "The default watchlist can't be renamed or deleted.",
     "deleteConfirm": "Delete the watchlist “{{name}}”? Its entries go with it. The assets stay in your other lists and in your portfolios. This can't be undone.",
     "subtitle": "Name a list above to group the assets you follow. Each list can be shared on its own.",
     "nameTaken": "A watchlist with this name already exists.",
@@ -2941,6 +2942,10 @@
     "itemsOther": "{{count}} items",
     "empty": "No watchlists yet.",
     "manage": "Manage watchlists",
+    "backToAll": "Back to watchlists",
+    "unavailableTitle": "This watchlist isn't available",
+    "alreadyAdded": "This asset is already on this watchlist.",
+    "addError": "Could not add this asset. Please try again.",
     "loadError": "Could not load your watchlists. Please try again."
   },
   "publicShare": {

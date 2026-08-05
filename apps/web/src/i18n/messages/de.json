@@ -2932,6 +2932,7 @@
     "renameTitle": "Watchlist umbenennen",
     "delete": "Löschen",
     "defaultBadge": "Standard",
+    "defaultLockedReason": "Die Standard-Watchlist kann nicht umbenannt oder gelöscht werden.",
     "deleteConfirm": "Die Watchlist „{{name}}“ löschen? Ihre Einträge verschwinden mit. Die Anlagen bleiben in deinen anderen Listen und in deinen Portfolios. Das kann nicht rückgängig gemacht werden.",
     "subtitle": "Benenne oben eine Liste, um die Anlagen zu gruppieren, denen du folgst. Jede Liste kann einzeln geteilt werden.",
     "nameTaken": "Eine Watchlist mit diesem Namen existiert bereits.",
@@ -2941,6 +2942,10 @@
     "itemsOther": "{{count}} Einträge",
     "empty": "Noch keine Watchlists.",
     "manage": "Watchlists verwalten",
+    "backToAll": "Zurück zu den Watchlists",
+    "unavailableTitle": "Diese Watchlist ist nicht verfügbar",
+    "alreadyAdded": "Diese Anlage ist bereits auf dieser Watchlist.",
+    "addError": "Diese Anlage konnte nicht hinzugefügt werden. Bitte versuche es erneut.",
     "loadError": "Deine Watchlists konnten nicht geladen werden. Bitte versuche es erneut."
   },
   "publicShare": {
