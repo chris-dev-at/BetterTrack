@@ -137,6 +137,54 @@ describe('paranoid client money engine', () => {
     });
   });
 
+  it('derives the #1094 F1 stored-drift fixture cleanly through the client engine', async () => {
+    // The F1 conformance vector (packages/domain storageDriftVectors.ts) as a
+    // vault document: four stored buys of 0.10000000 against the sell of
+    // 0.40000002 that numeric(20,8) rounded apart on the server before the
+    // rows reached the vault. The shared holdings replay waives the 2e-8
+    // shortfall (#917's envelope, extended by #1094) — the engine must derive
+    // a flat position instead of failing the whole portfolio.
+    const fixture = await decryptClientMoneyFixture();
+    const emptied = structuredClone(fixture.document);
+    emptied.entities.transaction = [];
+    const document = withF1DriftRows(emptied, '0.40000002');
+    const market = createClientMoneyMarket();
+
+    const result = await createVaultMoneyEngine(
+      createMutableTestSync(document, fixture.header),
+      market.market,
+      { now: () => NOW },
+    ).derivePortfolio(CLIENT_MONEY_IDS.portfolio, 'MAX');
+
+    expect(result.ok, result.ok ? undefined : JSON.stringify(result.error)).toBe(true);
+    if (!result.ok) return;
+    const holding = result.value.holdings.find(
+      (candidate) => candidate.assetId === CLIENT_MONEY_IDS.eurAsset,
+    );
+    expect(holding).toMatchObject({ quantity: 0, avgCost: 0 });
+    expect(holding!.realizedPnl).toBeCloseTo(4, 6);
+  });
+
+  it('still fails closed on a beyond-envelope oversell in the client engine', async () => {
+    // The same rows with a sell of 0.40000006: a 6e-8 shortfall exceeds the
+    // five contributing rows' envelope and can never be storage drift.
+    const fixture = await decryptClientMoneyFixture();
+    const emptied = structuredClone(fixture.document);
+    emptied.entities.transaction = [];
+    const document = withF1DriftRows(emptied, '0.40000006');
+
+    const result = await createVaultMoneyEngine(
+      createMutableTestSync(document, fixture.header),
+      createClientMoneyMarket().market,
+      { now: () => NOW },
+    ).derivePortfolio(CLIENT_MONEY_IDS.portfolio, 'MAX');
+
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.code).toBe('VAULT_CORRUPT');
+    expect(result.error.retryable).toBe(false);
+  });
+
   it('matches AT, DE, and custom settlements and rejects unsupported tax modes', async () => {
     const fixture = await decryptClientMoneyFixture();
     const market = createClientMoneyMarket();
@@ -1373,6 +1421,37 @@ function withAdditionalTransaction(
     },
   ];
   return next;
+}
+
+/**
+ * Append the #1094 F1 stored-drift rows on the EUR market asset: four stored
+ * buys of 0.10000000 @50 plus one sell of `sellQuantity` @60, all inside the
+ * test market's price window. The sell quantity selects the scenario —
+ * '0.40000002' sits within the per-row storage-drift envelope, '0.40000006'
+ * beyond it.
+ */
+function withF1DriftRows(
+  document: Awaited<ReturnType<typeof decryptClientMoneyFixture>>['document'],
+  sellQuantity: string,
+) {
+  const rows: Array<[string, 'buy' | 'sell', string, string, string]> = [
+    ['018f0000-0000-7000-8000-0000000001a2', 'buy', '0.10000000', '50', '2026-07-21T10:00:00.000Z'],
+    ['018f0000-0000-7000-8000-0000000001a3', 'buy', '0.10000000', '50', '2026-07-21T11:00:00.000Z'],
+    ['018f0000-0000-7000-8000-0000000001a4', 'buy', '0.10000000', '50', '2026-07-22T10:00:00.000Z'],
+    ['018f0000-0000-7000-8000-0000000001a5', 'buy', '0.10000000', '50', '2026-07-22T11:00:00.000Z'],
+    [
+      '018f0000-0000-7000-8000-0000000001a6',
+      'sell',
+      sellQuantity,
+      '60',
+      '2026-07-23T10:00:00.000Z',
+    ],
+  ];
+  return rows.reduce(
+    (doc, [id, side, quantity, price, executedAt]) =>
+      withAdditionalTransaction(doc, id, { side, quantity, price, fee: '0', executedAt }),
+    document,
+  );
 }
 
 function manualValue(id: string, assetId: string, date: string, close: string) {
