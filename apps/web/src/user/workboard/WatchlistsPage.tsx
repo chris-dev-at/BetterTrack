@@ -165,15 +165,17 @@ export function WatchlistsPage() {
                 {w.isDefault ? (
                   <>
                     <Button
+                      aria-disabled="true"
                       aria-describedby={`watchlist-default-reason-${w.id}`}
-                      disabled
+                      onClick={() => undefined}
                       size="sm"
                     >
                       {t('watchlists.rename')}
                     </Button>
                     <Button
+                      aria-disabled="true"
                       aria-describedby={`watchlist-default-reason-${w.id}`}
-                      disabled
+                      onClick={() => undefined}
                       size="sm"
                       variant="danger"
                     >

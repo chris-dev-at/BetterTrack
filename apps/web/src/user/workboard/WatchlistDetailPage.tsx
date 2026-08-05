@@ -71,7 +71,7 @@ export function WatchlistDetailPage() {
 
   if (watchlistsQuery.isLoading) {
     return (
-      <section className="bt-phone-surface flex min-w-0 flex-col gap-3">
+      <section className="flex min-w-0 flex-col gap-3">
         <Skeleton height="h-5" width="w-32" />
         <Skeleton height="h-8" width="w-64" />
         <Skeleton height="h-24" />
@@ -81,7 +81,7 @@ export function WatchlistDetailPage() {
 
   if (watchlistsQuery.isError) {
     return (
-      <div className="bt-phone-surface flex min-w-0 flex-col items-start gap-3">
+      <div className="flex min-w-0 flex-col items-start gap-3">
         <BackToWatchlists />
         <Alert tone="error">{t('watchlists.loadError')}</Alert>
         <Button onClick={() => void watchlistsQuery.refetch()}>{t('common.retry')}</Button>
@@ -91,7 +91,7 @@ export function WatchlistDetailPage() {
 
   if (!watchlist) {
     return (
-      <div className="bt-phone-surface flex min-w-0 flex-col gap-4">
+      <div className="flex min-w-0 flex-col gap-4">
         <BackToWatchlists />
         <EmptyState
           title={t('watchlists.unavailableTitle')}
@@ -105,7 +105,7 @@ export function WatchlistDetailPage() {
 
   if (itemsQuery.isLoading) {
     return (
-      <section className="bt-phone-surface flex min-w-0 flex-col gap-3">
+      <section className="flex min-w-0 flex-col gap-3">
         <BackToWatchlists />
         <PageHead title={watchlistTitle} />
         <Skeleton height="h-24" />
@@ -115,7 +115,7 @@ export function WatchlistDetailPage() {
 
   if (itemsQuery.isError || !itemsQuery.data) {
     return (
-      <div className="bt-phone-surface flex min-w-0 flex-col items-start gap-3">
+      <div className="flex min-w-0 flex-col items-start gap-3">
         <BackToWatchlists />
         <PageHead title={watchlistTitle} />
         <Alert tone="error">{t('workboard.overview.watchlist.loadError')}</Alert>
@@ -127,7 +127,7 @@ export function WatchlistDetailPage() {
   const itemCount = itemsQuery.data.items.length;
 
   return (
-    <div className="bt-phone-surface flex min-w-0 flex-col gap-6">
+    <div className="flex min-w-0 flex-col gap-6">
       <div className="flex min-w-0 flex-col">
         <BackToWatchlists />
         <PageHead

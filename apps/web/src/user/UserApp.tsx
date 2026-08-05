@@ -52,12 +52,8 @@ import { CustomAssetsPage, TransactionsPage } from './portfolio/PortfolioSection
 import { CashLayout, PortfolioWorkspace } from './portfolio/PortfolioWorkspace';
 import { WorkbenchLayout } from './workbench/WorkbenchLayout';
 import { WorkboardPage } from './workboard/WorkboardPage';
-import {
-  BacktestsPage,
-  CalculatorsPage,
-  WatchlistDetailPage,
-  WatchlistPage,
-} from './workboard/WorkboardSection';
+import { BacktestsPage, CalculatorsPage, WatchlistPage } from './workboard/WorkboardSection';
+import { WatchlistDetailPage } from './workboard/WatchlistDetailPage';
 import { ComparisonPage } from './workboard/ComparisonPage';
 import { AlertsPage } from './workboard/AlertsPage';
 import { ConglomeratesListPage } from './workboard/ConglomeratesListPage';

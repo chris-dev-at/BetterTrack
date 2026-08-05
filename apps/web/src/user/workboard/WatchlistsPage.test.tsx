@@ -137,14 +137,13 @@ describe('WatchlistsPage recovery', () => {
       ],
     });
     const user = userEvent.setup();
-    const { container } = renderPage();
+    renderPage();
 
     await user.click(await screen.findByRole('link', { name: 'Semiconductors' }));
 
     expect(await screen.findByRole('heading', { name: 'Semiconductors' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'NVDA · NVIDIA Corporation' })).toBeInTheDocument();
     expect(listWorkboard).toHaveBeenCalledWith(WATCHLIST_ID, expect.any(AbortSignal));
-    expect(container.querySelector('.bt-phone-surface')).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: 'Choose Apple' }));
     expect(addToWorkboard).toHaveBeenCalledWith(
@@ -156,7 +155,7 @@ describe('WatchlistsPage recovery', () => {
     expect(removeFromWorkboard).toHaveBeenCalledWith(ITEM_ID);
   });
 
-  test('explains the disabled actions on the default list', async () => {
+  test('keeps unavailable default-list actions focusable with their explanation', async () => {
     vi.mocked(listWatchlists).mockResolvedValue({
       watchlists: [
         {
@@ -173,7 +172,13 @@ describe('WatchlistsPage recovery', () => {
     expect(
       await screen.findByText("The default watchlist can't be renamed or deleted."),
     ).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Rename' })).toBeDisabled();
-    expect(screen.getByRole('button', { name: 'Delete' })).toBeDisabled();
+    const rename = screen.getByRole('button', { name: 'Rename' });
+    const remove = screen.getByRole('button', { name: 'Delete' });
+    expect(rename).toHaveAttribute('aria-disabled', 'true');
+    expect(remove).toHaveAttribute('aria-disabled', 'true');
+    expect(rename).toHaveAttribute('aria-describedby', `watchlist-default-reason-${WATCHLIST_ID}`);
+    expect(remove).toHaveAttribute('aria-describedby', `watchlist-default-reason-${WATCHLIST_ID}`);
+    expect(rename).not.toBeDisabled();
+    expect(remove).not.toBeDisabled();
   });
 });
