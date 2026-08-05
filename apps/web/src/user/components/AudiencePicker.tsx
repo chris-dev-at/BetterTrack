@@ -193,6 +193,7 @@ export function AudiencePicker({
 
   const snapshotReady = authoritativeKey !== null && snapshotKey === authoritativeKey;
   const audience: ShareAudience = selected ?? 'private';
+  const initialAudience = audienceQuery.data?.audience;
   const hasActivePublicLink = audienceQuery.data?.link.active === true;
 
   const mutation = useMutation({
@@ -498,7 +499,14 @@ export function AudiencePicker({
         ) : null}
 
         {audience === 'all_friends' ? (
-          <Alert tone="info">{t('sharing.allFriendsConfirm')}</Alert>
+          <Alert tone="info">
+            {initialAudience && initialAudience !== audience
+              ? t('sharing.audienceChangeConfirm', {
+                  from: t(`sharing.badge.${initialAudience}`),
+                  to: t('sharing.badge.all_friends'),
+                })
+              : t('sharing.allFriendsConfirm')}
+          </Alert>
         ) : null}
 
         {audience === 'public_link' ? (

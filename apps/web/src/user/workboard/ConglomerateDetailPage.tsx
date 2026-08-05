@@ -13,7 +13,6 @@ import {
   deleteConglomerate,
   getConglomerate,
   getResolvedConglomerate,
-  updateConglomerate,
 } from '../../lib/conglomerateApi';
 import { formatWeight } from '../../lib/format';
 import { useT } from '../../i18n';
@@ -21,6 +20,7 @@ import { cx } from '../../lib/cx';
 import { EmptyState, Skeleton } from '../../ui';
 import { AllocationDonut } from '../../ui/charts';
 import { AsyncReadState } from '../components/AsyncReadState';
+import { AudiencePicker } from '../components/AudiencePicker';
 import { Alert, Button } from '../components/ui';
 import { Dialog } from '../components/Dialog';
 import { BacktestPanel } from './BacktestPanel';
@@ -176,6 +176,7 @@ export function ConglomerateDetailPage() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [sharingOpen, setSharingOpen] = useState(false);
 
   const { data, isLoading, isError, refetch } = useQuery({
     queryKey: ['conglomerate', id],
@@ -218,18 +219,6 @@ export function ConglomerateDetailPage() {
         return t('workboard.detail.deleteError');
       })()
     : null;
-
-  // Friend-sharing toggle (§6.9, V2-P9): mirrors the portfolio private↔friends model.
-  const [shareError, setShareError] = useState(false);
-  const shareMutation = useMutation({
-    mutationFn: (visibility: 'private' | 'friends') => updateConglomerate(id!, { visibility }),
-    onSuccess: () => {
-      setShareError(false);
-      void queryClient.invalidateQueries({ queryKey: ['conglomerate', id] });
-      void queryClient.invalidateQueries({ queryKey: ['social', 'my-shared'] });
-    },
-    onError: () => setShareError(true),
-  });
 
   if (!id) return null;
 
@@ -298,11 +287,8 @@ export function ConglomerateDetailPage() {
             {!paranoid ? (
               <Button
                 variant="secondary"
-                onClick={() =>
-                  shareMutation.mutate(data.visibility === 'friends' ? 'private' : 'friends')
-                }
-                disabled={shareMutation.isPending}
-                aria-pressed={data.visibility === 'friends'}
+                onClick={() => setSharingOpen(true)}
+                aria-haspopup="dialog"
               >
                 {data.visibility === 'friends'
                   ? t('workboard.detail.sharedButton')
@@ -319,9 +305,6 @@ export function ConglomerateDetailPage() {
         </div>
         <p className="text-sm bt-muted">{positionCountText}</p>
         {data.description ? <p className="text-sm bt-muted">{data.description}</p> : null}
-        {shareError && !paranoid ? (
-          <Alert tone="error">{t('workboard.detail.shareError')}</Alert>
-        ) : null}
       </div>
 
       {/* Positions + allocation */}
@@ -399,6 +382,18 @@ export function ConglomerateDetailPage() {
         </h2>
         <BudgetCalculator conglomerateId={id} />
       </section>
+
+      {sharingOpen && !paranoid ? (
+        <AudiencePicker
+          kind="conglomerate"
+          subjectId={id}
+          subjectLabel={data.name}
+          onClose={() => setSharingOpen(false)}
+          // The picker only invalidates ['social'] and ['workboard']; this
+          // page's own key carries the visibility the header button labels.
+          onChanged={() => void queryClient.invalidateQueries({ queryKey: ['conglomerate', id] })}
+        />
+      ) : null}
 
       {confirmOpen ? (
         <DeleteConfirmDialog

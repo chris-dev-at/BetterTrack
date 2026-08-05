@@ -265,6 +265,72 @@ describe('AudiencePicker — friction ladder (§16)', () => {
     await user.click(screen.getByRole('radio', { name: /specific friends/i }));
     expect(screen.getByRole('button', { name: /^save$/i })).toBeEnabled();
   });
+
+  test.each([
+    ['specific_friends', 'Specific friends'],
+    ['public_link', 'Public link'],
+  ] as const)(
+    'names the %s → all-friends change and cancel leaves the audience untouched',
+    async (initialAudience, initialLabel) => {
+      vi.mocked(getAudience).mockResolvedValue({
+        kind: 'portfolio',
+        subjectId: SUBJECT,
+        audience: initialAudience,
+        friendIds: [],
+        groupId: null,
+        link: {
+          active: initialAudience === 'public_link',
+          createdAt: initialAudience === 'public_link' ? '2026-08-01T12:00:00.000Z' : null,
+        },
+      });
+      const onClose = vi.fn();
+      const user = userEvent.setup();
+      renderPicker(onClose);
+
+      await user.click(await screen.findByRole('radio', { name: /all friends/i }));
+      expect(
+        screen.getByText(new RegExp(`change access from ${initialLabel} to All friends`, 'i')),
+      ).toBeInTheDocument();
+
+      await user.click(screen.getByRole('button', { name: /^cancel$/i }));
+      expect(onClose).toHaveBeenCalledTimes(1);
+      expect(setAudience).not.toHaveBeenCalled();
+    },
+  );
+
+  test('saves a named specific-friends → all-friends change only after confirmation', async () => {
+    vi.mocked(getAudience).mockResolvedValue({
+      kind: 'portfolio',
+      subjectId: SUBJECT,
+      audience: 'specific_friends',
+      friendIds: [],
+      groupId: null,
+      link: { active: false, createdAt: null },
+    });
+    vi.mocked(setAudience).mockResolvedValue({
+      state: {
+        kind: 'portfolio',
+        subjectId: SUBJECT,
+        audience: 'all_friends',
+        friendIds: [],
+        groupId: null,
+        link: { active: false, createdAt: null },
+      },
+    });
+    const user = userEvent.setup();
+    renderPicker();
+
+    await user.click(await screen.findByRole('radio', { name: /all friends/i }));
+    expect(setAudience).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('button', { name: /^save$/i }));
+
+    await waitFor(() => expect(setAudience).toHaveBeenCalledTimes(1));
+    expect(setAudience).toHaveBeenCalledWith('portfolio', SUBJECT, {
+      audience: 'all_friends',
+      friendIds: undefined,
+      acknowledgePublic: undefined,
+    });
+  });
 });
 
 describe('AudiencePicker — active public-link lifecycle', () => {

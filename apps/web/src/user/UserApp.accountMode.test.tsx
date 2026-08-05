@@ -8,13 +8,12 @@ vi.mock('../lib/userApi');
 vi.mock('../lib/portfolioApi');
 vi.mock('../lib/workboardApi', () => ({
   WORKBOARD_QUERY_KEY: ['workboard'],
-  WATCHLIST_SHARING_QUERY_KEY: ['workboard', 'sharing'],
+  WATCHLISTS_QUERY_KEY: ['workboard', 'watchlists'],
   listWorkboard: vi.fn(async () => ({ items: [] })),
+  listWatchlists: vi.fn(async () => ({ watchlists: [] })),
   addToWorkboard: vi.fn(),
   removeFromWorkboard: vi.fn(),
   reorderWorkboard: vi.fn(),
-  getWatchlistSharing: vi.fn(async () => ({ visibility: 'private' })),
-  updateWatchlistSharing: vi.fn(),
 }));
 // The locked gate tries the trusted-device custody path once on mount. It reads
 // the encrypted envelope through this seam; failing it keeps the runtime at
