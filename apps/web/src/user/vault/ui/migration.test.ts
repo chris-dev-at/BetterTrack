@@ -60,7 +60,11 @@ import { toStrictRestoreDocument } from '../paranoidDisable';
 import {
   buildNormalVaultDocument,
   captureNormalVault,
+  CAPTURE_REQUEST_BUDGET,
+  CAPTURE_REQUEST_WINDOW_MS,
   CAPTURE_STABILITY_ATTEMPTS,
+  createCaptureRequestScheduler,
+  type CaptureRequestScheduler,
   VaultCaptureUnstableError,
 } from './migration';
 
@@ -77,6 +81,10 @@ const NOW = '2026-07-30T10:00:00.000Z';
 const RUN_ID = '018f0000-0000-7000-8000-000000000060';
 const CLAIM_ID = '018f0000-0000-7000-8000-000000000061';
 const REVISION = 'FAKE-normal-data-revision_0';
+
+const immediateRequestScheduler: CaptureRequestScheduler = {
+  run: <T>(request: () => Promise<T>) => request(),
+};
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -674,12 +682,90 @@ describe('buildNormalVaultDocument', () => {
       deviceId: DEVICE_ID,
       store,
       now: () => NOW,
+      requestScheduler: immediateRequestScheduler,
     });
 
     // A quiet account settles on the first pass: one build, bracketed.
     expect(order).toEqual(['revision', 'portfolios', 'revision']);
     expect(capture.normalDataRevision).toBe(REVISION);
     expect(capture.document.schemaVersion).toBe(1);
+  });
+
+  it('keeps a five-portfolio, three-tax-year capture inside its burst request budget', async () => {
+    const portfolioIds = Array.from(
+      { length: 5 },
+      (_, index) => `018f0000-0000-7000-8000-${String(index + 10).padStart(12, '0')}`,
+    );
+    vi.mocked(getTaxYearReports).mockResolvedValue({
+      years: [taxYear(2024), taxYear(2025), taxYear(2026)],
+    });
+    vi.mocked(getTaxYearReport).mockImplementation(async (_portfolioId, year) => ({
+      year,
+      summary: taxYear(year),
+      positions: [],
+    }));
+    const store: PortfolioStore = {
+      ...apiPortfolioStore,
+      listPortfolios: vi.fn(async () => ({
+        portfolios: portfolioIds.map((id, index) => ({
+          id,
+          name: `Portfolio ${index + 1}`,
+          visibility: 'private' as const,
+          sortOrder: index,
+          isDefault: index === 0,
+          defaultPayFromCash: false,
+          archivedAt: null,
+        })),
+      })),
+      listTransactions: vi.fn(async () => ({ items: [], nextCursor: null })),
+      getCashMovements: vi.fn(async () => ({
+        balanceEur: 0,
+        movements: [],
+        sources: [],
+        nextCursor: null,
+      })),
+      getPortfolioTaxSettings: vi.fn(async () => ({
+        effective: { mode: 'none' as const, country: null },
+        override: null,
+        userDefault: { mode: 'none' as const, country: null },
+        source: 'system' as const,
+      })),
+      getTaxSettings: vi.fn(async () => ({ mode: 'none' as const, country: null })),
+      listCustomAssets: vi.fn(async () => ({ assets: [] })),
+      listStandingOrders: vi.fn(async () => ({ orders: [] })),
+    };
+    let virtualNow = 0;
+    const requestStarts: number[] = [];
+    const progress = vi.fn();
+    const requestScheduler = createCaptureRequestScheduler({
+      signal: new AbortController().signal,
+      now: () => virtualNow,
+      wait: async (delayMs) => {
+        virtualNow += delayMs;
+      },
+      onRequestStart: (startedAt) => requestStarts.push(startedAt),
+    });
+
+    const capture = await captureNormalVault({
+      userId: USER_ID,
+      deviceId: DEVICE_ID,
+      store,
+      now: () => NOW,
+      requestScheduler,
+      onProgress: progress,
+    });
+
+    expect(capture.document.entities.portfolio).toHaveLength(5);
+    expect(getTaxYearReport).toHaveBeenCalledTimes(15);
+    expect(requestStarts.length).toBeGreaterThan(CAPTURE_REQUEST_BUDGET);
+    for (const windowStart of requestStarts) {
+      const requestsInWindow = requestStarts.filter(
+        (startedAt) =>
+          startedAt >= windowStart && startedAt <= windowStart + CAPTURE_REQUEST_WINDOW_MS,
+      );
+      expect(requestsInWindow.length).toBeLessThanOrEqual(CAPTURE_REQUEST_BUDGET);
+    }
+    expect(progress).toHaveBeenLastCalledWith({ completedRequests: requestStarts.length });
   });
 
   it('re-captures when its own reads wrote, and ships the rows those writes created', async () => {
@@ -815,6 +901,7 @@ describe('buildNormalVaultDocument', () => {
       store,
       now: () => NOW,
       id: () => `018f0000-0000-7000-8000-f${String(++idSequence).padStart(11, '0')}`,
+      requestScheduler: immediateRequestScheduler,
     });
 
     // Completeness first, because it is the assertion a green enable cannot
@@ -856,7 +943,13 @@ describe('buildNormalVaultDocument', () => {
     };
 
     await expect(
-      captureNormalVault({ userId: USER_ID, deviceId: DEVICE_ID, store, now: () => NOW }),
+      captureNormalVault({
+        userId: USER_ID,
+        deviceId: DEVICE_ID,
+        store,
+        now: () => NOW,
+        requestScheduler: immediateRequestScheduler,
+      }),
     ).rejects.toBeInstanceOf(VaultCaptureUnstableError);
     // Bounded: it does not spin forever against a busy account.
     expect(vi.mocked(getParanoidNormalRevision)).toHaveBeenCalledTimes(

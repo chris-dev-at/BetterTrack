@@ -216,6 +216,10 @@ describe('PrivacyPanel (§13.5 V5-P13)', () => {
     expect(acceptEnabled).toHaveBeenCalledWith(RECEIPT);
     await waitFor(() => expect(screen.getByTestId('url')).toHaveTextContent('/control/privacy'));
     expect(screen.getByTestId('url')).not.toHaveTextContent('enable=1');
+    expect(screen.getByRole('status')).toHaveTextContent(
+      'Paranoid mode is on. Your encrypted vault is ready.',
+    );
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument();
   });
 
   test('keeps paranoid management compact while exposing storage, security, and destructive flows', async () => {
