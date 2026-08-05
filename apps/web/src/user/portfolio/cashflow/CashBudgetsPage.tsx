@@ -92,21 +92,14 @@ export function CashBudgetsPage() {
     return <Alert tone="error">{t('cashflow.budgets.loadError')}</Alert>;
   }
 
-  // A tag can have both a recurring and a one-month target. Keep creation
-  // available until every tag has filled both slots; the dialog enforces the
-  // selected slot again and the server remains the final duplicate guard.
-  const recurringBudgetedTagIds = new Set(
-    budgets.filter((budget) => budget.recurring).map((budget) => budget.tagId),
-  );
-  const monthBudgetedTagIds = new Set(
-    budgets.filter((budget) => !budget.recurring).map((budget) => budget.tagId),
-  );
+  // The progress endpoint supplies one effective target per tag/month, not the
+  // raw recurring and month-only rows needed to determine both creation slots.
+  // Keep the existing coarse gate; the server remains the final duplicate guard.
+  const budgetedTagIds = new Set(budgets.map((budget) => budget.tagId));
   const tagsKnown = tagsQuery.data !== undefined;
-  const hasAvailableBudgetSlot = tags.some(
-    (tag) => !recurringBudgetedTagIds.has(tag.id) || !monthBudgetedTagIds.has(tag.id),
-  );
-  const createDisabled = !tagsKnown || !hasAvailableBudgetSlot;
-  const showCreateHint = tagsKnown && !hasAvailableBudgetSlot;
+  const canCreate = tags.some((tag) => !budgetedTagIds.has(tag.id));
+  const createDisabled = !tagsKnown || !canCreate;
+  const showCreateHint = tagsKnown && !canCreate;
   const createHint =
     tags.length === 0
       ? t('cashflow.movements.tagDialog.noTags')
