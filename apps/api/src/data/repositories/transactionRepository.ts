@@ -1,4 +1,10 @@
-import { and, asc, desc, eq, inArray, lt } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, lt, or } from 'drizzle-orm';
+
+import {
+  decodeTransactionExecutedAtCursor,
+  encodeTransactionExecutedAtCursor,
+  type TransactionListOrder,
+} from '@bettertrack/contracts';
 
 import type { Database } from '../db';
 import { assets, portfolioCashMovements, portfolios, transactions } from '../schema';
@@ -341,14 +347,42 @@ export function createTransactionRepository(db: Database) {
     },
 
     /**
-     * Newest-first ledger for one portfolio, keyset paginated by UUIDv7 id (§8).
+     * Newest-first ledger for one portfolio. The legacy/default walk remains
+     * keyset-paginated by UUIDv7 id (§8); display consumers may explicitly opt
+     * into executed-time ordering and its `(executedAt, id)` compound keyset.
      * The caller authorises portfolio ownership first; this only scopes rows to
      * the portfolio and enriches each with its asset for display.
      */
     async listByPortfolio(
       portfolioId: string,
-      params: { limit: number; cursor?: string; source?: string },
+      params: {
+        limit: number;
+        cursor?: string;
+        source?: string;
+        assetId?: string;
+        order?: TransactionListOrder;
+      },
     ): Promise<{ items: TransactionWithAsset[]; nextCursor: string | null }> {
+      const order = params.order ?? 'id';
+      const executedAtCursor =
+        order === 'executedAt' && params.cursor
+          ? decodeTransactionExecutedAtCursor(params.cursor)
+          : null;
+      if (order === 'executedAt' && params.cursor && executedAtCursor === null) {
+        throw new Error('Invalid executed-time transaction cursor reached the repository.');
+      }
+      const cursorFilter =
+        order === 'executedAt' && executedAtCursor
+          ? or(
+              lt(transactions.executedAt, new Date(executedAtCursor.executedAt)),
+              and(
+                eq(transactions.executedAt, new Date(executedAtCursor.executedAt)),
+                lt(transactions.id, executedAtCursor.id),
+              ),
+            )
+          : params.cursor
+            ? lt(transactions.id, params.cursor)
+            : undefined;
       const rows = await db
         .select({
           id: transactions.id,
@@ -381,10 +415,16 @@ export function createTransactionRepository(db: Database) {
             eq(transactions.portfolioId, portfolioId),
             // Source-tag filter (V5-P0c): return only rows carrying this exact tag.
             params.source ? eq(transactions.source, params.source) : undefined,
-            params.cursor ? lt(transactions.id, params.cursor) : undefined,
+            // Holding expansions fetch only their asset's rows on demand.
+            params.assetId ? eq(transactions.assetId, params.assetId) : undefined,
+            cursorFilter,
           ),
         )
-        .orderBy(desc(transactions.id))
+        .orderBy(
+          ...(order === 'executedAt'
+            ? [desc(transactions.executedAt), desc(transactions.id)]
+            : [desc(transactions.id)]),
+        )
         .limit(params.limit + 1);
 
       const hasMore = rows.length > params.limit;
@@ -417,7 +457,29 @@ export function createTransactionRepository(db: Database) {
           isCustom: row.assetOwnerId !== null,
         },
       }));
-      return { items, nextCursor: hasMore ? (items.at(-1)?.id ?? null) : null };
+      const tail = items.at(-1);
+      return {
+        items,
+        nextCursor:
+          hasMore && tail
+            ? order === 'executedAt'
+              ? encodeTransactionExecutedAtCursor({
+                  executedAt: tail.executedAt.toISOString(),
+                  id: tail.id,
+                })
+              : tail.id
+            : null,
+      };
+    },
+
+    /** Complete, sorted source facet for the portfolio ledger (independent of row filters). */
+    async listSourceTagsByPortfolio(portfolioId: string): Promise<string[]> {
+      const rows = await db
+        .selectDistinct({ source: transactions.source })
+        .from(transactions)
+        .where(eq(transactions.portfolioId, portfolioId))
+        .orderBy(asc(transactions.source));
+      return rows.map((row) => row.source);
     },
 
     /** A single transaction visible to the caller (via its portfolio), else null. */

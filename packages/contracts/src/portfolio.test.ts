@@ -6,8 +6,12 @@ import {
   cashMovementKindSchema,
   cashMovementsQuerySchema,
   cashPreviewRequestSchema,
+  decodeTransactionExecutedAtCursor,
+  encodeTransactionExecutedAtCursor,
   importSourceTag,
   sourceTagSchema,
+  transactionListQuerySchema,
+  transactionListResponseSchema,
 } from './portfolio';
 
 describe('cash amount validation (§14 hardening)', () => {
@@ -134,5 +138,56 @@ describe('cash movement pagination', () => {
     expect(cashMovementsQuerySchema.safeParse({ cursor: 'not-a-cursor' }).success).toBe(false);
     expect(cashMovementsQuerySchema.safeParse({ tag: 'food' }).success).toBe(false);
     expect(cashMovementsQuerySchema.safeParse({ limit: 201 }).success).toBe(false);
+  });
+});
+
+describe('transaction pagination modes and facets', () => {
+  const id = '11111111-1111-7111-8111-111111111111';
+  const assetId = '22222222-2222-7222-8222-222222222222';
+  const executedAt = '2026-08-05T12:34:56.000Z';
+
+  it('keeps the legacy UUID cursor as the default and accepts bounded asset filters', () => {
+    expect(transactionListQuerySchema.parse({ cursor: id, limit: '8', assetId })).toEqual({
+      cursor: id,
+      limit: 8,
+      assetId,
+      order: 'id',
+      includeSourceTags: false,
+    });
+    expect(transactionListQuerySchema.safeParse({ cursor: 'not-a-cursor' }).success).toBe(false);
+  });
+
+  it('round-trips the compound executed-time cursor only in its explicit ordering mode', () => {
+    const cursor = encodeTransactionExecutedAtCursor({ executedAt, id });
+    expect(decodeTransactionExecutedAtCursor(cursor)).toEqual({ executedAt, id });
+    expect(
+      transactionListQuerySchema.parse({
+        cursor,
+        order: 'executedAt',
+        includeSourceTags: 'true',
+      }),
+    ).toEqual({ cursor, order: 'executedAt', includeSourceTags: true });
+
+    expect(transactionListQuerySchema.safeParse({ cursor, order: 'id' }).success).toBe(false);
+    expect(transactionListQuerySchema.safeParse({ cursor: id, order: 'executedAt' }).success).toBe(
+      false,
+    );
+  });
+
+  it('validates the optional distinct-source response facet', () => {
+    expect(
+      transactionListResponseSchema.safeParse({
+        items: [],
+        nextCursor: null,
+        sourceTags: ['manual', 'standing-order', 'import:george'],
+      }).success,
+    ).toBe(true);
+    expect(
+      transactionListResponseSchema.safeParse({
+        items: [],
+        nextCursor: null,
+        sourceTags: ['forged:source'],
+      }).success,
+    ).toBe(false);
   });
 });

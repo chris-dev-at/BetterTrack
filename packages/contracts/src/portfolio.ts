@@ -627,19 +627,94 @@ export const transactionListResponseSchema = z
   .object({
     items: z.array(transactionSchema),
     nextCursor: z.string().nullable(),
+    /** Complete portfolio-wide source facet, returned only when explicitly requested. */
+    sourceTags: z.array(sourceTagSchema).optional(),
   })
   .strict();
 export type TransactionListResponse = z.infer<typeof transactionListResponseSchema>;
 
-/** Cursor pagination query for the transaction ledger, with an optional source filter (V5-P0c). */
+export const TRANSACTION_LIST_ORDERS = ['id', 'executedAt'] as const;
+export const transactionListOrderSchema = z.enum(TRANSACTION_LIST_ORDERS);
+export type TransactionListOrder = z.infer<typeof transactionListOrderSchema>;
+
+const TRANSACTION_EXECUTED_AT_CURSOR_SEPARATOR = '|';
+const transactionExecutedAtCursorPayloadSchema = z
+  .object({
+    executedAt: z.string().datetime(),
+    id: z.string().uuid(),
+  })
+  .strict();
+export type TransactionExecutedAtCursor = z.infer<typeof transactionExecutedAtCursorPayloadSchema>;
+
+/** Encode the `(executedAt, id)` keyset used only by the executed-time ordering mode. */
+export function encodeTransactionExecutedAtCursor(cursor: TransactionExecutedAtCursor): string {
+  const parsed = transactionExecutedAtCursorPayloadSchema.parse(cursor);
+  return `${parsed.executedAt}${TRANSACTION_EXECUTED_AT_CURSOR_SEPARATOR}${parsed.id}`;
+}
+
+/** Decode an executed-time cursor without weakening the legacy UUID cursor contract. */
+export function decodeTransactionExecutedAtCursor(
+  value: string,
+): TransactionExecutedAtCursor | null {
+  const separator = value.indexOf(TRANSACTION_EXECUTED_AT_CURSOR_SEPARATOR);
+  if (separator <= 0 || separator !== value.lastIndexOf(TRANSACTION_EXECUTED_AT_CURSOR_SEPARATOR)) {
+    return null;
+  }
+  const parsed = transactionExecutedAtCursorPayloadSchema.safeParse({
+    executedAt: value.slice(0, separator),
+    id: value.slice(separator + 1),
+  });
+  return parsed.success ? parsed.data : null;
+}
+
+export const transactionExecutedAtCursorSchema = z
+  .string()
+  .max(128)
+  .refine((value) => decodeTransactionExecutedAtCursor(value) !== null, {
+    message: 'Invalid executed-time transaction cursor.',
+  });
+
+const transactionQueryBooleanSchema = z
+  .union([z.boolean(), z.enum(['true', 'false'])])
+  .default(false)
+  .transform((value) => value === true || value === 'true');
+
+/**
+ * Cursor pagination query for the transaction ledger. The default `id` mode is
+ * the legacy UUIDv7 keyset used by full-ledger walks. `executedAt` is an opt-in
+ * display ordering with its own compound cursor, so the two walks cannot be
+ * silently mixed.
+ */
 export const transactionListQuerySchema = z
   .object({
-    cursor: z.string().uuid().optional(),
+    cursor: z.string().max(128).optional(),
     limit: z.coerce.number().int().min(1).max(200).optional(),
     /** Return only rows carrying this exact source tag (V5-P0c). */
     source: sourceTagSchema.optional(),
+    /** Return only rows for this asset (for an on-demand holding expansion). */
+    assetId: z.string().uuid().optional(),
+    order: transactionListOrderSchema.default('id'),
+    /** Add the complete portfolio-wide distinct-source facet to the response. */
+    includeSourceTags: transactionQueryBooleanSchema,
   })
-  .strict();
+  .strict()
+  .superRefine((query, ctx) => {
+    if (query.cursor === undefined) return;
+    const valid =
+      query.order === 'executedAt'
+        ? transactionExecutedAtCursorSchema.safeParse(query.cursor).success
+        : z.string().uuid().safeParse(query.cursor).success;
+    if (!valid) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['cursor'],
+        message:
+          query.order === 'executedAt'
+            ? 'Expected an executed-time transaction cursor.'
+            : 'Expected a UUID transaction cursor.',
+      });
+    }
+  });
 export type TransactionListQuery = z.infer<typeof transactionListQuerySchema>;
 
 // --- Holdings + totals (`GET /portfolios/:id`) ------------------------------

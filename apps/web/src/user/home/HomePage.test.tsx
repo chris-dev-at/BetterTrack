@@ -914,7 +914,11 @@ test('the row-count setting persists and re-asks the API for that many rows', as
 
   expect(persisted().widgets[0]?.settings.count).toBe(15);
   await vi.waitFor(() => {
-    expect(listTransactions).toHaveBeenCalledWith(MAIN.id, { limit: 15 }, expect.anything());
+    expect(listTransactions).toHaveBeenCalledWith(
+      MAIN.id,
+      { limit: 15, order: 'executedAt' },
+      expect.anything(),
+    );
   });
 });
 
