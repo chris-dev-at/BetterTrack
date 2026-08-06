@@ -173,20 +173,26 @@ describe('ConglomerateBuilderPage', () => {
     expect(screen.getByLabelText('Weight slider for AAPL')).toHaveValue('0');
   });
 
-  test('the New idea intent opens the real save flow once the ad-hoc basket is valid and consumes itself', async () => {
+  test('the New idea intent is consumed on arrival and waits for a complete allocation', async () => {
     vi.mocked(searchAssets).mockResolvedValue({ results: [AAPL_RESULT] });
     vi.mocked(createConglomerate).mockResolvedValue(detail([]));
     vi.mocked(replaceConglomeratePositions).mockResolvedValue(detail([]));
     const user = userEvent.setup();
     renderBuilder('/workbench/blueprints/new?create=idea&keep=1');
 
+    await waitFor(() => expect(screen.getByTestId('location-search')).toHaveTextContent('?keep=1'));
+    expect(screen.queryByRole('dialog', { name: 'Save as idea' })).not.toBeInTheDocument();
+
     await user.type(screen.getByRole('searchbox', { name: /search assets/i }), 'AAPL');
     await user.click(await screen.findByRole('button', { name: /select aapl/i }));
     await user.clear(await screen.findByLabelText('Weight for AAPL'));
+    await user.type(screen.getByLabelText('Weight for AAPL'), '50');
+    expect(screen.queryByRole('dialog', { name: 'Save as idea' })).not.toBeInTheDocument();
+
+    await user.clear(screen.getByLabelText('Weight for AAPL'));
     await user.type(screen.getByLabelText('Weight for AAPL'), '100');
 
     expect(await screen.findByRole('dialog', { name: 'Save as idea' })).toBeInTheDocument();
-    await waitFor(() => expect(screen.getByTestId('location-search')).toHaveTextContent('?keep=1'));
   });
 
   test('strips an unknown create intent without dropping unrelated query state', async () => {

@@ -33,9 +33,10 @@ export function createPasswordResetTokenRepository(db: Database) {
       serializationKey: string,
     ): Promise<PasswordResetTokenRow | null> {
       return db.transaction(async (tx) => {
-        // Both known and unknown addresses take the same per-address lock. The
-        // response floor hides ordinary write cost; this lock also makes a
-        // burst of concurrent probes queue identically on both branches.
+        // Both known and unknown addresses take the same per-address lock, so a
+        // burst of concurrent probes queues identically on both branches. The
+        // known branch still inserts/audits/sends; its residual write cost stays
+        // behind the service's response floor rather than this serialization.
         await tx.execute(
           sql`select pg_advisory_xact_lock(${PASSWORD_RESET_ISSUE_LOCK_CLASS}, hashtext(${serializationKey}))`,
         );

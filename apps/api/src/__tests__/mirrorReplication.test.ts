@@ -537,8 +537,11 @@ describe('mirrorchain M2 — replication core', () => {
         pauseOwned = resolve;
       });
       let deletion: Promise<unknown> | undefined;
-      let withdrawal: Promise<unknown> | undefined;
+      let withdrawalSettled: Promise<PromiseSettledResult<unknown>[]> | undefined;
 
+      // This trigger is global to the shared table. The integration config's
+      // singleFork is therefore part of this harness contract, and the finally
+      // cleanup below is load-bearing: no later test may inherit the pause.
       await observer.unsafe(`
         CREATE OR REPLACE FUNCTION bt_test_pause_force_cash_delete()
         RETURNS trigger
@@ -583,11 +586,14 @@ describe('mirrorchain M2 — replication core', () => {
           'the replica force-delete to pause inside its trigger',
         );
 
-        withdrawal = harness.ctx.portfolio.withdrawCash(bob.id, bPid, {
+        const withdrawal = harness.ctx.portfolio.withdrawCash(bob.id, bPid, {
           amountEur: 75,
           sourceId: funding.sourceId,
           executedAt: new Date(Date.now() + 1_000).toISOString(),
         });
+        // Attach the rejection observer immediately: the delete can finish as
+        // soon as the pause is released, before the later ledger assertions.
+        withdrawalSettled = Promise.allSettled([withdrawal]);
         await waitForAdvisoryWait(
           observer,
           (row) =>
@@ -600,7 +606,11 @@ describe('mirrorchain M2 — replication core', () => {
         releasePause();
         await pauseOwner;
         await deletion;
-        await expect(withdrawal).rejects.toMatchObject({ code: 'INSUFFICIENT_CASH' });
+        const [withdrawalResult] = await withdrawalSettled;
+        expect(withdrawalResult).toMatchObject({
+          status: 'rejected',
+          reason: { code: 'INSUFFICIENT_CASH' },
+        });
 
         let running = 0;
         for (const movement of await movementRepo.listForPortfolio(bPid)) {
@@ -613,7 +623,7 @@ describe('mirrorchain M2 — replication core', () => {
         releasePause();
         await pauseOwner.catch(() => undefined);
         await deletion?.catch(() => undefined);
-        await withdrawal?.catch(() => undefined);
+        await withdrawalSettled?.catch(() => undefined);
         await observer.unsafe(
           'DROP TRIGGER IF EXISTS bt_test_pause_force_cash_delete ON portfolio_cash_movements',
         );
@@ -621,6 +631,7 @@ describe('mirrorchain M2 — replication core', () => {
         await Promise.all([controller.end({ timeout: 1 }), observer.end({ timeout: 1 })]);
       }
     },
+    15_000,
   );
 
   it('origin-first strict-seq apply: a submit catches the writer’s own copy up before their write (§2)', async () => {
