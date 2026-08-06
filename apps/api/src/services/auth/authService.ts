@@ -1166,23 +1166,24 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       const responseFloor = delay(PASSWORD_RESET_RESPONSE_FLOOR_MS);
       try {
         const user = await userRepo.findByEmail(address);
+        const resetUser = user?.role === 'user' && user.status === 'active' ? user : null;
+        const { token, tokenHash } = generateToken();
+        const expiresAt = new Date(Date.now() + RESET_TOKEN_TTL_MS);
         // Only active, user-kind accounts get a self-service link. Admin recovery
         // is the admin temp-password path (#268); disabled accounts stay closed.
         // The caller always sees the same generic acknowledgement, and the shared
-        // response deadline below masks the known-account writes (§6.1).
-        if (user && user.role === 'user' && user.status === 'active') {
-          const { token, tokenHash } = generateToken();
-          // The repository serializes concurrent issues around the owning user,
-          // replacing any prior token in the same transaction.
-          await passwordResetRepo.issue({
-            userId: user.id,
-            tokenHash,
-            expiresAt: new Date(Date.now() + RESET_TOKEN_TTL_MS),
-          });
+        // response deadline below masks the known-account writes (§6.1). Both
+        // branches also take the repository's per-address issue lock, so a burst
+        // of concurrent requests cannot distinguish the row-locking branch.
+        await passwordResetRepo.issueOrEqualize(
+          resetUser ? { userId: resetUser.id, tokenHash, expiresAt } : null,
+          address.trim().toLowerCase(),
+        );
+        if (resetUser) {
           await audit.record({
             action: AuditAction.PasswordResetRequested,
             targetType: 'user',
-            targetId: user.id,
+            targetId: resetUser.id,
             ip,
           });
           // Best-effort send after the token is committed. SMTP latency must never
@@ -1191,12 +1192,17 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
           const resetUrl = `${config.appOrigin}/reset/${token}`;
           void email
             .sendPasswordReset({
-              to: user.email,
+              to: resetUser.email,
               resetUrl,
-              audit: { actorId: user.id, targetType: 'user', targetId: user.id, ip },
+              audit: {
+                actorId: resetUser.id,
+                targetType: 'user',
+                targetId: resetUser.id,
+                ip,
+              },
             })
             .catch((err) => {
-              logger?.warn({ err, userId: user.id }, 'detached password-reset email failed');
+              logger?.warn({ err, userId: resetUser.id }, 'detached password-reset email failed');
             });
         }
       } finally {

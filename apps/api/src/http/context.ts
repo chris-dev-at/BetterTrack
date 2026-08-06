@@ -930,8 +930,9 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // Paranoid vault (§13.5 V5-P13 arc b): the blind server blob store. The
   // service reads only the safe envelope header for CAS, enforces the size cap
   // and drives the repository's atomic compare-and-swap + bounded history.
+  const paranoidVaultRepository = createParanoidVaultRepository(db, privacyLockDb);
   const paranoidVault = createParanoidVaultService({
-    vaults: createParanoidVaultRepository(db),
+    vaults: paranoidVaultRepository,
     maxBytes: config.vault.maxBytes,
     retention: config.vault.history,
     // Short-lived candidate/purge transcripts are domain-separated inside the
@@ -1855,6 +1856,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
 
   const paranoidTransitions = createParanoidTransitionService({
     db,
+    vaults: paranoidVaultRepository,
     // The §3 destruction exit re-authenticates like `DELETE /account`.
     discardReauth: createParanoidDiscardReauth({
       config,

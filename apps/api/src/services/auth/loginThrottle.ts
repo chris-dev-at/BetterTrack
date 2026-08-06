@@ -24,6 +24,14 @@ export const LOGIN_ACCOUNT_NAMESPACE = 'login_account';
 export const TWO_FACTOR_ACCOUNT_NAMESPACE = 'two_factor_account';
 
 /**
+ * Per-account wrong-factor throttle for disabling TOTP from an authenticated
+ * session. This proof is deliberately isolated from login 2FA: somebody who
+ * holds a bearer with `account:security` must not be able to spend the victim's
+ * pending-login verification budget (or vice versa).
+ */
+export const TWO_FACTOR_DISABLE_ACCOUNT_NAMESPACE = 'two_factor_disable_account';
+
+/**
  * Per-account brute-force throttle for bearer PIN verification (#361, §6.1, §10).
  * The session PIN gate (below) protects the cookie flow by destroying the
  * session after {@link PIN_FALLBACK_THRESHOLD} wrong PINs; a bearer request has
@@ -374,13 +382,15 @@ export const clearPasswordThrottle = async (redis: Redis, userId: string): Promi
 };
 
 /**
- * Drop all per-account login-throttle state for a user — password-failure, PIN
- * fallback, AND the second-factor throttle — so they can authenticate
- * immediately. Called on a successful second-factor verify, admin password
- * reset, and re-enable. For a bare correct password (which still faces a 2FA
- * gate) use {@link clearPasswordThrottle} instead so the 2FA lock survives.
+ * Drop all per-account authentication-throttle state for a user — password
+ * failures, PIN fallback, login second-factor, and authenticated TOTP-disable —
+ * so they can authenticate and manage the factor immediately. Called on a
+ * successful second-factor verify, admin password reset, and re-enable. For a
+ * bare correct password (which still faces a 2FA gate) use
+ * {@link clearPasswordThrottle} instead so both factor locks survive.
  */
 export const clearLoginThrottle = async (redis: Redis, userId: string): Promise<void> => {
   await clearPasswordThrottle(redis, userId);
   await resetProgressiveLimiter(redis, TWO_FACTOR_ACCOUNT_NAMESPACE, userId);
+  await resetProgressiveLimiter(redis, TWO_FACTOR_DISABLE_ACCOUNT_NAMESPACE, userId);
 };

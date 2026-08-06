@@ -1262,6 +1262,16 @@ export const transactions = pgTable(
     source: text('source').notNull().default('manual'),
   },
   (t) => [
+    // Supports both the chronological money-math replay (forward scan) and the
+    // small recent-card read (backward scan with a deterministic id tiebreak).
+    index('transactions_portfolio_executed_id_idx').on(t.portfolioId, t.executedAt, t.id),
+    // Source-filtered recent reads and the distinct-source facet share this prefix.
+    index('transactions_portfolio_source_executed_id_idx').on(
+      t.portfolioId,
+      t.source,
+      t.executedAt,
+      t.id,
+    ),
     check('transactions_quantity_positive', sql`${t.quantity} > 0`),
     check('transactions_price_nonneg', sql`${t.price} >= 0`),
     // Uncovered fields are sell-only, and an entry price is meaningless without
@@ -3559,6 +3569,28 @@ export const paranoidVaults = pgTable('paranoid_vaults', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
+/**
+ * Short-lived owner-session authorization for the normal → paranoid enable
+ * wizard, refreshed by every capture-revision read. Opaque server bytes are
+ * readable/writable in normal mode only while this window is live; expiry
+ * abandons the attempt and makes its staged ciphertext eligible for physical
+ * deletion. Deliberately just a window: whether the enable itself may proceed
+ * is decided by the capture↔commit revision CAS under the account lock, not by
+ * anything recorded here.
+ */
+export const paranoidEnableTransitions = pgTable(
+  'paranoid_enable_transitions',
+  {
+    userId: uuid('user_id')
+      .primaryKey()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('paranoid_enable_transitions_expires_idx').on(t.expiresAt)],
+);
+
 // Bounded ciphertext history — the corruption/bad-write safety net (§4): each
 // superseded blob is archived here and pruned to the configured window (last N
 // versions / M days, env-tunable). Ciphertext + version metadata only, exactly
@@ -3767,6 +3799,7 @@ export const schema = {
   expenseBudgetFires,
   webhookSubscriptions,
   webhookDeliveries,
+  paranoidEnableTransitions,
   paranoidVaults,
   paranoidVaultHistory,
   paranoidVaultServerCandidates,

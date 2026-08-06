@@ -1,7 +1,12 @@
 import { useEffect, useMemo, useState, type CSSProperties } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
-import { SHARE_AUDIENCES, type ShareAudience, type ShareKind } from '@bettertrack/contracts';
+import {
+  SHARE_AUDIENCES,
+  audienceTransitionRequiresConfirmation,
+  type ShareAudience,
+  type ShareKind,
+} from '@bettertrack/contracts';
 
 import { getAudience, listFriends, listGroups, setAudience } from '../../lib/socialApi';
 import { useT } from '../../i18n';
@@ -15,16 +20,15 @@ import { Alert, Spinner } from './ui';
  * The ONE reusable sharing control (PROJECTPLAN.md §13.3 V3-P5/P6, §16), used by
  * every shareable kind — each portfolio, conglomerate and watchlist. V3-P6 lifts
  * it from a plain radio-list + checkbox roster toward the mobile app's audience
- * sheet: a four-tier picker of rich cards, a **searchable, avatar'd** multi-select
+ * sheet: a five-tier picker of rich cards, a **searchable, avatar'd** multi-select
  * for `specific_friends` (not a raw checkbox list), the light `all_friends`
- * confirm, and the strong `public_link` acknowledgment with a copy/share
+ * confirmation gate, and the strong `public_link` acknowledgment with a copy/share
  * affordance once the link is minted. It carries the §16 friction ladder:
  *
  *  - `public_link` → a STRONG explicit-acknowledgment warning; Save cannot submit
  *    until the acknowledgment is checked (mirrored server-side).
- *  - `all_friends` → a light confirm note.
- *  - `specific_friends` → the searchable friend multi-select, no confirm.
- *  - `private` → nothing.
+ *  - every genuine widening (including newly named recipients) → an explicit
+ *    confirmation; narrowing and exact re-saves stay friction-free.
  *
  * Backend authorization is a separate single enforcement layer; this component
  * only expresses intent through `PUT /social/audience/:kind/:subjectId`.
@@ -166,6 +170,7 @@ export function AudiencePicker({
   const [friendIds, setFriendIds] = useState<Set<string>>(new Set());
   const [groupId, setGroupId] = useState<string | null>(null);
   const [acknowledged, setAcknowledged] = useState(false);
+  const [widenConfirmed, setWidenConfirmed] = useState(false);
   const [mintedUrl, setMintedUrl] = useState<string | null>(null);
   const [publicLinkKept, setPublicLinkKept] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -190,6 +195,7 @@ export function AudiencePicker({
     setFriendIds(new Set(loaded.friendIds));
     setGroupId(loaded.groupId);
     setAcknowledged(false);
+    setWidenConfirmed(false);
     setSnapshotKey(authoritativeKey);
   }, [audienceQuery.data, authoritativeKey, snapshotKey]);
 
@@ -197,14 +203,25 @@ export function AudiencePicker({
   const audience: ShareAudience = selected ?? 'private';
   const initialAudience = audienceQuery.data?.audience;
   const hasActivePublicLink = audienceQuery.data?.link.active === true;
+  const nextSelection = {
+    audience,
+    friendIds: audience === 'specific_friends' ? [...friendIds] : undefined,
+    groupId: audience === 'group' ? groupId : null,
+  };
+  const requiresWidenConfirmation =
+    snapshotReady && audienceQuery.data
+      ? audienceTransitionRequiresConfirmation(audienceQuery.data, nextSelection)
+      : false;
+  const wideningConfirmed = audience === 'public_link' ? acknowledged : widenConfirmed;
 
   const mutation = useMutation({
     mutationFn: () =>
       setAudience(kind, subjectId, {
         audience,
-        friendIds: audience === 'specific_friends' ? [...friendIds] : undefined,
+        friendIds: nextSelection.friendIds,
         groupId: audience === 'group' ? (groupId ?? undefined) : undefined,
         acknowledgePublic: audience === 'public_link' ? acknowledged : undefined,
+        confirmWiden: requiresWidenConfirmation ? wideningConfirmed : undefined,
       }),
     onMutate: () => setPublicLinkKept(false),
     onSuccess: (result) => {
@@ -234,6 +251,7 @@ export function AudiencePicker({
   }, [friends, search]);
 
   function toggleFriend(id: string) {
+    setWidenConfirmed(false);
     setFriendIds((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
@@ -273,6 +291,7 @@ export function AudiencePicker({
     snapshotReady &&
     !mutation.isPending &&
     !(audience === 'public_link' && !acknowledged) &&
+    !(requiresWidenConfirmation && !wideningConfirmed) &&
     // The group tier's friction: a group must actually be chosen to share.
     !(audience === 'group' && !groupId);
 
@@ -385,6 +404,7 @@ export function AudiencePicker({
                   onChange={() => {
                     setSelected(value);
                     setPublicLinkKept(false);
+                    setWidenConfirmed(false);
                     if (value !== 'public_link') setAcknowledged(false);
                   }}
                 />
@@ -483,7 +503,10 @@ export function AudiencePicker({
                             name="group"
                             className="sr-only"
                             checked={checked}
-                            onChange={() => setGroupId(g.id)}
+                            onChange={() => {
+                              setGroupId(g.id);
+                              setWidenConfirmed(false);
+                            }}
                           />
                           <span className="bt-soft flex-1 truncate">{g.name}</span>
                           <span className="bt-meta shrink-0">
@@ -501,14 +524,26 @@ export function AudiencePicker({
           </div>
         ) : null}
 
-        {audience === 'all_friends' ? (
+        {requiresWidenConfirmation && audience !== 'public_link' && initialAudience ? (
           <Alert tone="info">
-            {initialAudience && initialAudience !== audience
-              ? t('sharing.audienceChangeConfirm', {
+            <div className="flex flex-col gap-2">
+              <p>
+                {t('sharing.audienceChangeConfirm', {
                   from: t(`sharing.badge.${initialAudience}`),
-                  to: t('sharing.badge.all_friends'),
-                })
-              : t('sharing.allFriendsConfirm')}
+                  to: t(`sharing.badge.${audience}`),
+                })}
+              </p>
+              <label className="bt-soft flex cursor-pointer items-start gap-2">
+                <input
+                  type="checkbox"
+                  className="mt-0.5"
+                  checked={widenConfirmed}
+                  onChange={(event) => setWidenConfirmed(event.target.checked)}
+                  style={{ accentColor: 'var(--bt-gold)' }}
+                />
+                <span>{t('sharing.audienceWidenAcknowledge')}</span>
+              </label>
+            </div>
           </Alert>
         ) : null}
 

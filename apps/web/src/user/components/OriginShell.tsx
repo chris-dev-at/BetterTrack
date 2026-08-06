@@ -36,6 +36,7 @@ import { CREATE_COMMANDS, commandPath, withPortfolioScope } from './commands';
 import { usePreservedSearch } from './LocalNav';
 import { NotificationBell } from './NotificationBell';
 import { isChildActive, SECTION_NAV, useRailNavChildren, type SectionKey } from './sectionNav';
+import { useDiscardUnknownCreateIntent } from './useCreateIntent';
 import { useMenuKeyboard } from './useMenuKeyboard';
 
 const VaultSyncChip = lazy(() =>
@@ -603,6 +604,7 @@ function sectionKey(pathname: string): string {
 
 export function OriginShell() {
   const { t, locale } = useI18n();
+  useDiscardUnknownCreateIntent();
   const privacy = useResolvedPrivacyModeState();
   const location = useLocation();
   const { pathname } = location;

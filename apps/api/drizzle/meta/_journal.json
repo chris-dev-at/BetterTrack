@@ -575,6 +575,20 @@
       "when": 1785974800000,
       "tag": "0081_first_party_client_vault_sync_scope",
       "breakpoints": true
+    },
+    {
+      "idx": 82,
+      "version": "7",
+      "when": 1785974900000,
+      "tag": "0082_paranoid_enable_transitions",
+      "breakpoints": true
+    },
+    {
+      "idx": 83,
+      "version": "7",
+      "when": 1785997963533,
+      "tag": "0083_transaction_recent_indexes",
+      "breakpoints": true
     }
   ]
 }

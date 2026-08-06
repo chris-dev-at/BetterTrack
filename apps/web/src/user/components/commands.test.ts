@@ -53,7 +53,7 @@ describe('COMMANDS registry', () => {
       ['create.blueprint', '/workbench/blueprints/new'],
       ['create.watchlist', '/assets/watchlists?create=1'],
       ['create.alert', '/workbench/alerts?create=1'],
-      ['create.idea', '/workbench/blueprints/new'],
+      ['create.idea', '/workbench/blueprints/new?create=idea'],
       ['create.portfolio', '/portfolios?create=1'],
     ]);
   });
@@ -105,7 +105,7 @@ describe('commandPath', () => {
     expect(commandPath('/portfolio/cash/movements?create=movement')).toBe(
       '/portfolio/cash/movements',
     );
-    expect(commandPath('/workbench/blueprints/new')).toBe('/workbench/blueprints/new');
+    expect(commandPath('/workbench/blueprints/new?create=idea')).toBe('/workbench/blueprints/new');
   });
 
   test('every create destination resolves to a path the paranoid matrix can judge', () => {

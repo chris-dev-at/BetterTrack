@@ -86,6 +86,9 @@ function renderPage() {
 }
 
 function findTagBreakdown() {
+  // This page resolves the active portfolio before its summary query can
+  // start. The API and web suites run concurrently in CI, so give that
+  // two-stage render the shared bounded allowance used by routed page loads.
   return waitForColdStart(() => screen.getByRole('list', { name: 'Spending by tag' }));
 }
 

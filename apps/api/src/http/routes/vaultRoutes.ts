@@ -440,9 +440,31 @@ export function createVaultRouter(ctx: AppContext, limiters: RateLimiters): Rout
     },
   );
 
+  /*
+   * A safe method that can change state, so worth stating: for a NORMAL-mode
+   * account whose enable window has already expired, the repository read is
+   * also the sweep that physically deletes the abandoned ciphertext before
+   * answering `medium_inactive`. It only ever destroys bytes that were already
+   * unreachable, only for the authenticated caller's own account, and the same
+   * disposal runs from the retention job — so being CSRF-exempt (`csrf.ts`
+   * exempts safe methods) costs nothing: a forged cross-site GET can reach no
+   * state a plain expiry would not have reached anyway, and cannot read the
+   * opaque response.
+   */
   router.get('/', async (req, res) => {
-    const row = await ctx.paranoidVault.get(req.authUser!.id);
-    if (!row) throw notFound('No vault stored.', VAULT_ERROR_CODES.notFound);
+    const result = await ctx.paranoidVault.get(
+      req.authUser!.id,
+      req.apiKey ? 'sync-bearer' : 'owner-session',
+    );
+    if (result.status === 'medium_inactive') {
+      throw serverMediumInactive(
+        'The server vault is available only while paranoid mode or its owner enable window is active.',
+      );
+    }
+    if (result.status === 'not_found') {
+      throw notFound('No vault stored.', VAULT_ERROR_CODES.notFound);
+    }
+    const { row } = result;
     res.setHeader('ETag', vaultEtag(row.version));
     res.setHeader('Cache-Control', 'private, no-store');
     const ifNoneMatch = parseVaultEtag(req.headers['if-none-match'] as string | undefined);
@@ -475,6 +497,7 @@ export function createVaultRouter(ctx: AppContext, limiters: RateLimiters): Rout
       }
       const result = await ctx.paranoidVault.put({
         userId: req.authUser!.id,
+        access: req.apiKey ? 'sync-bearer' : 'owner-session',
         expectedVersion,
         blob,
         retirementProofPublicKey: parseRetirementProofPublicKey(req),
@@ -485,8 +508,6 @@ export function createVaultRouter(ctx: AppContext, limiters: RateLimiters): Rout
           res.status(204).end();
           return;
         case 'precondition_failed':
-          if (result.currentVersion !== null)
-            res.setHeader('ETag', vaultEtag(result.currentVersion));
           throw preconditionFailed();
         case 'too_large':
           throw payloadTooLarge();

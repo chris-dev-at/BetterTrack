@@ -66,6 +66,10 @@ export function createApp(ctx: AppContext) {
   const app = express();
   app.set('trust proxy', ctx.config.isProduction ? 1 : false);
   app.disable('x-powered-by');
+  // Conditional reads and vault CAS set their validators explicitly. Disable
+  // Express's body-derived default so error envelopes never become cacheable
+  // representations with a misleading ETag.
+  app.disable('etag');
 
   // HTTP instrumentation (§13.5 V5-P2): first in the chain so every request —
   // including CORS preflight and 404s — is counted and timed. It adds no route;

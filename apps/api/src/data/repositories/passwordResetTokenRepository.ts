@@ -1,4 +1,4 @@
-import { and, eq, gt, isNull } from 'drizzle-orm';
+import { and, eq, gt, isNull, sql } from 'drizzle-orm';
 
 import type { Database } from '../db';
 import { passwordResetTokens, users, type PasswordResetTokenRow } from '../schema';
@@ -15,23 +15,45 @@ export interface CreatePasswordResetTokenInput {
   expiresAt: Date;
 }
 
+// Two-key advisory locks occupy a namespace separate from the one-key
+// portfolio-ledger locks. The second key is hashtext(normalized email).
+const PASSWORD_RESET_ISSUE_LOCK_CLASS = 0x4254;
+const PASSWORD_RESET_PROBE_USER_ID = '00000000-0000-0000-0000-000000000000';
+
 export function createPasswordResetTokenRepository(db: Database) {
   return {
     /**
-     * Replace the user's outstanding reset token under a lock on the owning
-     * account. Locking the stable user row makes concurrent first-time issues
-     * serialize even when there is no prior token row to lock.
+     * Replace the user's outstanding reset token, or run the indistinguishable
+     * no-account branch. The per-address advisory lock equalizes concurrent
+     * probes; the stable user-row lock still coordinates a real issue with
+     * account mutations when no prior token row exists.
      */
-    async issue(input: CreatePasswordResetTokenInput): Promise<PasswordResetTokenRow> {
+    async issueOrEqualize(
+      input: CreatePasswordResetTokenInput | null,
+      serializationKey: string,
+    ): Promise<PasswordResetTokenRow | null> {
       return db.transaction(async (tx) => {
+        // Both known and unknown addresses take the same per-address lock, so a
+        // burst of concurrent probes queues identically on both branches. The
+        // known branch still inserts/audits/sends; its residual write cost stays
+        // behind the service's response floor rather than this serialization.
+        await tx.execute(
+          sql`select pg_advisory_xact_lock(${PASSWORD_RESET_ISSUE_LOCK_CLASS}, hashtext(${serializationKey}))`,
+        );
+
+        // Keep the probe branch on the same query path without touching a real
+        // account. The impossible UUID makes the SELECT + DELETE harmless no-ops.
+        const userId = input?.userId ?? PASSWORD_RESET_PROBE_USER_ID;
         const [owner] = await tx
           .select({ id: users.id })
           .from(users)
-          .where(eq(users.id, input.userId))
+          .where(eq(users.id, userId))
           .for('update');
+
+        await tx.delete(passwordResetTokens).where(eq(passwordResetTokens.userId, userId));
+        if (!input) return null;
         if (!owner) throw new Error('Cannot issue a password reset token for a missing user');
 
-        await tx.delete(passwordResetTokens).where(eq(passwordResetTokens.userId, input.userId));
         const [row] = await tx
           .insert(passwordResetTokens)
           .values({

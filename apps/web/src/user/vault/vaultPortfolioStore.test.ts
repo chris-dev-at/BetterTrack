@@ -499,6 +499,57 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
     expect(new Set(pagedIds).size).toBe(created.length);
   });
 
+  it('uses a compound cursor for executed-time pages and returns the requested source facet', async () => {
+    const engine = createMutableEngine(initialDocument());
+    const store = createVaultPortfolioStore(engine, {
+      now: () => AT,
+      newId: idSequence(),
+    });
+    const created = await store.createTransactions(PORTFOLIO_ID, [
+      {
+        assetId: ASSET_ID,
+        side: 'buy',
+        quantity: 1,
+        price: 10,
+        fee: 0,
+        executedAt: '2026-07-25T10:03:00.000Z',
+      },
+      {
+        assetId: ASSET_ID,
+        side: 'buy',
+        quantity: 2,
+        price: 10,
+        fee: 0,
+        executedAt: '2026-07-25T10:01:00.000Z',
+      },
+      {
+        assetId: ASSET_ID,
+        side: 'buy',
+        quantity: 3,
+        price: 10,
+        fee: 0,
+        executedAt: '2026-07-25T10:02:00.000Z',
+      },
+    ]);
+
+    const first = await store.listTransactions(PORTFOLIO_ID, {
+      limit: 2,
+      order: 'executedAt',
+      includeSourceTags: true,
+    });
+    const second = await store.listTransactions(PORTFOLIO_ID, {
+      limit: 2,
+      order: 'executedAt',
+      cursor: first.nextCursor ?? undefined,
+    });
+
+    expect(first.items.map((row) => row.id)).toEqual([created[0]?.id, created[2]?.id]);
+    expect(first.sourceTags).toEqual(['manual']);
+    expect(first.nextCursor).not.toBe(first.items.at(-1)?.id);
+    expect(second.items.map((row) => row.id)).toEqual([created[1]?.id]);
+    expect(second.nextCursor).toBeNull();
+  });
+
   it('persists a supported transaction in strict restore form and reads it back unchanged', async () => {
     const engine = createMutableEngine(initialDocument());
     const store = createVaultPortfolioStore(engine, {

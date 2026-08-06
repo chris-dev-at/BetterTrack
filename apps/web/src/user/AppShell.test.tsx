@@ -644,7 +644,7 @@ test('the live Create menu supports roving focus and restores its trigger on Esc
   expect(blueprint).toHaveAttribute('href', '/workbench/blueprints/new');
   expect(watchlist).toHaveAttribute('href', '/assets/watchlists?create=1');
   expect(alert).toHaveAttribute('href', '/workbench/alerts?create=1');
-  expect(idea).toHaveAttribute('href', '/workbench/blueprints/new');
+  expect(idea).toHaveAttribute('href', '/workbench/blueprints/new?create=idea');
   expect(portfolio).toHaveAttribute('href', '/portfolios?create=1');
 
   await waitFor(() => expect(trade).toHaveFocus());
@@ -948,6 +948,10 @@ test('the settings redirects carry the query string onto the panel', async () =>
 test('`/developer` is its own page, linked out of the Control Center', async () => {
   renderAt('/control');
 
+  // Both waits cross a cold `lazy()` boundary — the Control Center overlay and
+  // the Developer page are separate code-split chunks. Resolving those imports
+  // while this file's other shells compete for the event loop can overrun the
+  // normal 1 s default, so use the shared bounded allowance.
   const dialog = await waitForColdStart(() =>
     screen.getByRole('dialog', { name: 'Control Center' }),
   );

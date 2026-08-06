@@ -2,6 +2,7 @@ import {
   activeAnnouncementListResponseSchema,
   notificationListResponseSchema,
   okResponseSchema,
+  readNotificationPayload,
   type ActiveAnnouncementListResponse,
   type MarkReadRequest,
   type NotificationListResponse,
@@ -16,6 +17,30 @@ import { apiRequest } from './apiClient';
  */
 
 /**
+ * Degrade each row's payload before validating the response (#1138). A tab
+ * running an older build than the worker that wrote a row cannot read that
+ * row's `message` descriptor (`key` is a closed enum, the descriptor is
+ * `.strict()`); parsing as-is would reject the ENTIRE inbox over one row.
+ * `readNotificationPayload` drops only the unreadable field, so the row still
+ * renders from its persisted title/body and keeps `eventKey` plus every
+ * deep-link id. Rows with no payload (historical ones, `null`) pass through.
+ */
+function withReadablePayloads(data: unknown): unknown {
+  if (typeof data !== 'object' || data === null) return data;
+  const items = (data as { items?: unknown }).items;
+  if (!Array.isArray(items)) return data;
+  return {
+    ...(data as Record<string, unknown>),
+    items: items.map((item) => {
+      if (typeof item !== 'object' || item === null) return item;
+      const { payload } = item as { payload?: unknown };
+      if (payload === undefined || payload === null) return item;
+      return { ...(item as Record<string, unknown>), payload: readNotificationPayload(payload) };
+    }),
+  };
+}
+
+/**
  * `GET /notifications?view=&cursor=` — newest-first, keyset paginated, with
  * unreadCount (unread among ACTIVE only). `view` defaults server-side to
  * `active`, i.e. archived rows are hidden unless asked for (#437).
@@ -28,7 +53,7 @@ export async function listNotifications(
     query: { cursor: params.cursor, limit: params.limit, view: params.view },
     signal,
   });
-  return notificationListResponseSchema.parse(data);
+  return notificationListResponseSchema.parse(withReadablePayloads(data));
 }
 
 /** `POST /notifications/mark-read {ids|all}` — idempotent. */

@@ -61,9 +61,12 @@ let realRedisClient: Redis | undefined;
 
 async function acquireRealDb(): Promise<Database> {
   if (!pgClient) {
-    // Keep at least two independent sessions available: admin.test.ts proves
-    // the active-administrator row lock with genuinely overlapping transactions.
-    pgClient = postgres(realDbUrl!, { max: 2 });
+    // Keep independent sessions plus one spare available: admin.test.ts proves
+    // the active-administrator row lock with genuinely overlapping transactions,
+    // while mirrorReplication.test.ts pauses one writer and queues another.
+    // The spare keeps an incidental pooled read from turning either lock
+    // regression into connection-pool starvation.
+    pgClient = postgres(realDbUrl!, { max: 3 });
     pgDb = drizzlePostgres(pgClient, { schema });
   }
   if (!pgMigrated) {

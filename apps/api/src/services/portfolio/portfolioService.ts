@@ -29,6 +29,7 @@ import type {
   PortfolioSummary,
   PortfolioTotals,
   TransactionInput,
+  TransactionListOrder,
   TransactionListResponse,
   Transaction as TransactionDto,
   UpdatePortfolioRequest,
@@ -193,7 +194,7 @@ export interface PortfolioServiceDeps {
   now?: () => number;
 }
 
-type PortfolioMetadataPatch = Omit<UpdatePortfolioRequest, 'visibility'>;
+type PortfolioMetadataPatch = Omit<UpdatePortfolioRequest, 'visibility' | 'confirmWiden'>;
 
 export interface PortfolioService {
   /**
@@ -243,7 +244,14 @@ export interface PortfolioService {
   listTransactions(
     userId: string,
     portfolioId: string,
-    params: { cursor?: string; limit?: number; source?: string },
+    params: {
+      cursor?: string;
+      limit?: number;
+      source?: string;
+      assetId?: string;
+      order?: TransactionListOrder;
+      includeSourceTags?: boolean;
+    },
   ): Promise<TransactionListResponse>;
   /**
    * Record one or more transactions. `opts.source` is the V5-P0c source tag the
@@ -1638,7 +1646,10 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       // rejects here, leaving portfolio visibility, audience, and events intact.
       return audience.withVisibilityMutation(
         userId,
+        'portfolio',
+        portfolioId,
         patch.visibility,
+        patch.confirmWiden,
         async (lockedRecipientIds) => {
           const { portfolio, becameShared } = await updatePortfolioRecord(
             userId,
@@ -1650,6 +1661,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
             'portfolio',
             portfolioId,
             patch.visibility,
+            patch.confirmWiden,
             lockedRecipientIds,
           );
           // Emit only after both writes succeeded and only to the exact friend
@@ -1670,11 +1682,18 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
     async listTransactions(userId, portfolioId, params) {
       await requireOwnedPortfolio(userId, portfolioId);
       const limit = params.limit ?? DEFAULT_LIMIT;
-      const { items, nextCursor } = await transactionRepo.listByPortfolio(portfolioId, {
-        limit,
-        cursor: params.cursor,
-        source: params.source,
-      });
+      const [{ items, nextCursor }, sourceTags] = await Promise.all([
+        transactionRepo.listByPortfolio(portfolioId, {
+          limit,
+          cursor: params.cursor,
+          source: params.source,
+          assetId: params.assetId,
+          order: params.order,
+        }),
+        params.includeSourceTags
+          ? transactionRepo.listSourceTagsByPortfolio(portfolioId)
+          : Promise.resolve(undefined),
+      ]);
       return {
         items: items.map((row) => ({
           id: row.id,
@@ -1699,6 +1718,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
           },
         })),
         nextCursor,
+        ...(sourceTags === undefined ? {} : { sourceTags }),
       };
     },
 

@@ -2304,7 +2304,9 @@ const endpoints: EndpointDef[] = [
     tag: 'Portfolios',
     summary: 'Cursor-paged transaction ledger.',
     params: contracts.portfolioIdParamSchema,
-    query: contracts.transactionListQuerySchema,
+    // OpenAPI registers the query's object shape; the route still uses the
+    // outer refinement that rejects a cursor from the other ordering mode.
+    query: contracts.transactionListQuerySchema.innerType(),
     status: 200,
     response: R.TransactionListResponse,
   },
@@ -4206,7 +4208,7 @@ const endpoints: EndpointDef[] = [
     path: '/vault',
     tag: 'Vault',
     summary:
-      'Read the account’s opaque encrypted vault blob (application/octet-stream) with an ETag of its version. 404 when no vault exists; 304 when If-None-Match already holds the current version. The server never decrypts or parses the ciphertext.',
+      'Read the account’s opaque encrypted vault blob (application/octet-stream) with an ETag of its version. 404 when no vault exists; 304 when If-None-Match already holds the current version; 409 VAULT_SERVER_MEDIUM_INACTIVE for a normal-mode account outside a live owner enable window, and for any bearer while the account is not paranoid. The server never decrypts or parses the ciphertext.',
     status: 200,
     response: z.string().openapi({
       type: 'string',
