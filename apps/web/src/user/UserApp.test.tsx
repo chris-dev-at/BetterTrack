@@ -1,4 +1,4 @@
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
@@ -290,25 +290,30 @@ test('a rate-limited mutation shows only the global 429 notice', async () => {
   vi.mocked(api.getMe).mockResolvedValue(member);
   vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [] });
   vi.mocked(listAlerts).mockResolvedValue({ items: [triggeredAlert] });
-  vi.mocked(rearmAlert).mockImplementation(() =>
-    apiRequest<Alert>('/alerts/al1/rearm', { method: 'POST' }),
-  );
+  let releaseRateLimitedResponse!: (response: Response) => void;
+  const rateLimitedResponse = new Promise<Response>((resolve) => {
+    releaseRateLimitedResponse = resolve;
+  });
+  let markRearmSettled!: () => void;
+  const rearmSettled = new Promise<void>((resolve) => {
+    markRearmSettled = resolve;
+  });
+  vi.mocked(rearmAlert).mockImplementation(async () => {
+    try {
+      return await apiRequest<Alert>('/alerts/al1/rearm', { method: 'POST' });
+    } finally {
+      // The global policy receives the 429 before apiRequest rejects. Waiting
+      // for that handoff lets the assertion below keep its ordinary UI wait.
+      markRearmSettled();
+    }
+  });
   vi.stubGlobal(
     'fetch',
-    vi.fn<typeof globalThis.fetch>(async (input) => {
+    vi.fn<typeof globalThis.fetch>((input) => {
       if (!String(input).endsWith('/alerts/al1/rearm')) {
         throw new TypeError(`Unexpected test request: ${String(input)}`);
       }
-      return {
-        ok: false,
-        status: 429,
-        json: async () => ({
-          error: { code: 'RATE_LIMITED', message: 'Too many requests.' },
-        }),
-        headers: {
-          get: (name: string) => (name.toLowerCase() === 'retry-after' ? '30' : null),
-        },
-      } as Response;
+      return rateLimitedResponse;
     }),
   );
 
@@ -317,10 +322,23 @@ test('a rate-limited mutation shows only the global 429 notice', async () => {
 
   await user.click(await waitForColdStart(() => screen.getByRole('button', { name: 'Re-arm' })));
 
+  await waitFor(() => expect(rearmAlert).toHaveBeenCalledWith('al1'));
+  await act(async () => {
+    releaseRateLimitedResponse({
+      ok: false,
+      status: 429,
+      json: async () => ({
+        error: { code: 'RATE_LIMITED', message: 'Too many requests.' },
+      }),
+      headers: {
+        get: (name: string) => (name.toLowerCase() === 'retry-after' ? '30' : null),
+      },
+    } as Response);
+    await rearmSettled;
+  });
+
   expect(
-    await waitForColdStart(() =>
-      screen.getByText("You're doing that too fast. Please wait 30 seconds and try again."),
-    ),
+    await screen.findByText("You're doing that too fast. Please wait 30 seconds and try again."),
   ).toBeInTheDocument();
   expect(
     screen.queryByText("Couldn't update that alert. Please try again."),
