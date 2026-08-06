@@ -51,6 +51,7 @@ import {
   getAuthorizationDetails,
 } from '../../lib/oauthApi';
 import * as userApi from '../../lib/userApi';
+import { waitForColdStart } from '../../test/waitForColdStart';
 import { AuthProvider } from '../AuthContext';
 import { UserApp } from '../UserApp';
 import { ResolvedPrivacyModeProvider } from '../vault/usePrivacyMode';
@@ -448,7 +449,9 @@ test('an unauthenticated visit is redirected to login preserving the authorize q
   );
 
   // Not the consent screen — the login screen, because we were anonymous.
-  expect(await screen.findByText('Sign in to your account')).toBeInTheDocument();
+  expect(
+    await waitForColdStart(() => screen.getByText('Sign in to your account')),
+  ).toBeInTheDocument();
   expect(screen.queryByText('Third-party app')).not.toBeInTheDocument();
 
   // Signing in returns us to the consent screen with the request intact — proven
