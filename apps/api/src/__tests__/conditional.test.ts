@@ -104,6 +104,14 @@ describe('conditional reads — portfolio summary (GET /api/v1/portfolios/:id)',
     harness = await createTestApp({ marketData: deterministicMarketData(priceRef) });
   });
 
+  it('does not emit validators for non-vault errors', async () => {
+    const res = await request(harness.app).get('/api/v1/portfolios');
+
+    expect(res.status).toBe(401);
+    expect(res.headers.etag).toBeUndefined();
+    expect(res.headers['last-modified']).toBeUndefined();
+  });
+
   it('carries ETag + Last-Modified and serves a 304 on an unchanged summary', async () => {
     const user = await harness.seedUser();
     const agent = await loginAgent(harness.app, user.email, user.password);

@@ -508,8 +508,6 @@ export function createVaultRouter(ctx: AppContext, limiters: RateLimiters): Rout
           res.status(204).end();
           return;
         case 'precondition_failed':
-          if (result.currentVersion !== null)
-            res.setHeader('ETag', vaultEtag(result.currentVersion));
           throw preconditionFailed();
         case 'too_large':
           throw payloadTooLarge();
