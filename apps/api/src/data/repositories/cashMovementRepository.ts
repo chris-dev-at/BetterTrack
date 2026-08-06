@@ -378,27 +378,33 @@ export function createCashMovementRepository(db: Database) {
       previousKind: Kind,
       patch: CashMovementUpdatePatch,
     ): Promise<CashMovementRecord | null> {
-      const [row] = await db
-        .update(portfolioCashMovements)
-        .set({
-          sourceId: patch.sourceId,
-          kind: patch.kind,
-          amountEur: String(patch.amountEur),
-          executedAt: patch.executedAt,
-          note: patch.note,
-        })
-        .where(
-          and(
-            eq(portfolioCashMovements.id, id),
-            eq(portfolioCashMovements.portfolioId, portfolioId),
-          ),
-        )
-        .returning();
-      if (!row) return null;
-      // Re-labelling hangs off the write path for the same reason stamping does
-      // (see `cashSystemTagStamp`): a caller cannot forget it.
-      await restampMovementTags(db, portfolioId, row, previousKind);
-      return toRecord(row);
+      return db.transaction(async (tx) => {
+        // Replica apply deliberately waives solvency validation, not ledger
+        // serialization. A direct write that validates against this portfolio
+        // must observe this correction before it decides whether it is solvent.
+        await lockPortfolioCashLedgerInTransaction(tx, portfolioId);
+        const [row] = await tx
+          .update(portfolioCashMovements)
+          .set({
+            sourceId: patch.sourceId,
+            kind: patch.kind,
+            amountEur: String(patch.amountEur),
+            executedAt: patch.executedAt,
+            note: patch.note,
+          })
+          .where(
+            and(
+              eq(portfolioCashMovements.id, id),
+              eq(portfolioCashMovements.portfolioId, portfolioId),
+            ),
+          )
+          .returning();
+        if (!row) return null;
+        // Re-labelling hangs off the write path for the same reason stamping does
+        // (see `cashSystemTagStamp`): a caller cannot forget it.
+        await restampMovementTags(tx, portfolioId, row, previousKind);
+        return toRecord(row);
+      });
     },
 
     /**
@@ -452,16 +458,22 @@ export function createCashMovementRepository(db: Database) {
      * rather than a silent success.
      */
     async deleteForPortfolio(portfolioId: string, id: string): Promise<boolean> {
-      const rows = await db
-        .delete(portfolioCashMovements)
-        .where(
-          and(
-            eq(portfolioCashMovements.id, id),
-            eq(portfolioCashMovements.portfolioId, portfolioId),
-          ),
-        )
-        .returning({ id: portfolioCashMovements.id });
-      return rows.length > 0;
+      return db.transaction(async (tx) => {
+        // `force` skips the replay gate at the service boundary, but a replica
+        // delete still participates in the same critical section as guarded
+        // user withdrawals and tax reconciliation.
+        await lockPortfolioCashLedgerInTransaction(tx, portfolioId);
+        const rows = await tx
+          .delete(portfolioCashMovements)
+          .where(
+            and(
+              eq(portfolioCashMovements.id, id),
+              eq(portfolioCashMovements.portfolioId, portfolioId),
+            ),
+          )
+          .returning({ id: portfolioCashMovements.id });
+        return rows.length > 0;
+      });
     },
 
     /** Validate and delete one movement inside the shared ledger lock. */

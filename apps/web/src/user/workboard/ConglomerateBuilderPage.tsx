@@ -25,7 +25,9 @@ import { useT } from '../../i18n';
 import { AllocationDonut } from '../../ui/charts';
 import { AssetSearchBox } from '../components/AssetSearchBox';
 import { Alert, Button, Spinner } from '../components/ui';
+import { useCreateIntent } from '../components/useCreateIntent';
 import { useDebounce } from '../hooks/useDebounce';
+import { CREATE_INTENT } from '../routeParams';
 import { NestedBadge, StatusBadge } from './ConglomeratesListPage';
 import { SaveIdeaDialog } from './SaveIdeaDialog';
 import {
@@ -849,8 +851,20 @@ export function SumPill({ positions }: { positions: BuilderPosition[] }) {
 function LivePreviewPanel({ positions }: { positions: BuilderPosition[] }) {
   const t = useT();
   const [saveIdeaOpen, setSaveIdeaOpen] = useState(false);
+  const [ideaIntentArmed, setIdeaIntentArmed] = useState(false);
   const live = persistablePositions(positions);
   const hasNested = live.some((p) => p.kind === 'conglomerate');
+  const ideaReady = live.length > 0 && !hasNested && isSumValid(positions);
+  // Consume "New idea" on arrival so its URL flag cannot leak into later
+  // navigation. Keep the intent locally armed and open the real Save-as-idea
+  // flow only once the allocation reaches 100%, rather than interrupting the
+  // user as soon as their first non-zero position appears.
+  useCreateIntent(CREATE_INTENT.idea, () => setIdeaIntentArmed(true));
+  useEffect(() => {
+    if (!ideaIntentArmed || !ideaReady) return;
+    setIdeaIntentArmed(false);
+    setSaveIdeaOpen(true);
+  }, [ideaIntentArmed, ideaReady]);
   const donutData = live.map((p) => ({ label: p.symbol, value: p.weightPct }));
   const total = sumWeights(positions);
   const largest = live.reduce<BuilderPosition | null>(
@@ -900,7 +914,10 @@ function LivePreviewPanel({ positions }: { positions: BuilderPosition[] }) {
           itself instead. */}
       <Button
         variant="secondary"
-        onClick={() => setSaveIdeaOpen(true)}
+        onClick={() => {
+          setIdeaIntentArmed(false);
+          setSaveIdeaOpen(true);
+        }}
         disabled={live.length === 0 || hasNested}
         title={hasNested ? t('workboard.builder.saveIdeaNestedHint') : undefined}
       >

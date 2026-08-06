@@ -614,7 +614,7 @@ test('the live Create menu supports roving focus and restores its trigger on Esc
   expect(blueprint).toHaveAttribute('href', '/workbench/blueprints/new');
   expect(watchlist).toHaveAttribute('href', '/assets/watchlists?create=1');
   expect(alert).toHaveAttribute('href', '/workbench/alerts?create=1');
-  expect(idea).toHaveAttribute('href', '/workbench/blueprints/new');
+  expect(idea).toHaveAttribute('href', '/workbench/blueprints/new?create=idea');
   expect(portfolio).toHaveAttribute('href', '/portfolios?create=1');
 
   await waitFor(() => expect(trade).toHaveFocus());
