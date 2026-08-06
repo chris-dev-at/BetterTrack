@@ -198,6 +198,8 @@ async function ownedAssetProvenanceProbes(
   return {
     'assets.getDetail': () => ctx.assets.getDetail(userId, customAssetId),
     'assets.getQuote': () => ctx.assets.getQuote(userId, customAssetId),
+    'assets.getQuotes': () => ctx.assets.getQuotes(userId, [customAssetId]),
+    'assets.getSparklines': () => ctx.assets.getSparklines(userId, [customAssetId]),
     'assets.getHistory': () => ctx.assets.getHistory(userId, customAssetId, '1M'),
     'assets.getDailyCloses': () => ctx.assets.getDailyCloses(userId, customAssetId),
     'search.search': () => ctx.search.search(userId, 'PRIVATE'),

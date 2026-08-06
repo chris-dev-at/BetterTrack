@@ -25,6 +25,8 @@ import {
   type RealtimeRoom,
 } from '@bettertrack/contracts';
 
+import { matchesWorkboardQuotesForAsset } from '../assetApi';
+
 import { createRealtimeSocket } from './socket';
 
 /** The server pushes a consumer can subscribe to (contract event names). */
@@ -251,6 +253,13 @@ export function RealtimeProvider({ enabled, children }: { enabled: boolean; chil
       const parsed = realtimeQuoteUpdatedSchema.safeParse(payload);
       if (!parsed.success) return;
       void queryClient.invalidateQueries({ queryKey: ['asset', parsed.data.assetId] });
+      // The watchlist reads its quotes as one batch whose key carries the id
+      // list, so the asset-scoped prefix above cannot reach it. Match only the
+      // batches holding this asset — same blast radius as the per-row keys the
+      // batch replaced.
+      void queryClient.invalidateQueries({
+        predicate: (query) => matchesWorkboardQuotesForAsset(query.queryKey, parsed.data.assetId),
+      });
     });
     const offPortfolio = on(REALTIME_SERVER_EVENTS.portfolioChanged, (payload) => {
       const parsed = realtimePortfolioChangedSchema.safeParse(payload);
