@@ -92,8 +92,10 @@ export function createPortfolioRouter(ctx: AppContext): Router {
   // §6.8; archived rows included only when asked, §13.2 V2-P8). Enriched with
   // the MIRRORCHAIN badge / fork provenance (V5-P7 M5, design §11/§6) so the
   // switcher can render the avatar stack + "Syncing…" state / "Forked from ⟨X⟩"
-  // line without a second round-trip.
-  router.get('/', validateQuery(portfolioListQuerySchema), async (req, res) => {
+  // line without a second round-trip. The shared conditional layer derives a
+  // per-user ETag from the full enriched list; no list-wide freshness watermark
+  // exists, so it intentionally does not emit a Last-Modified validator.
+  router.get('/', validateQuery(portfolioListQuerySchema), conditionalGet(), async (req, res) => {
     const { includeArchived } = req.valid?.query as PortfolioListQuery;
     const list = await ctx.portfolio.listPortfolios(req.authUser!.id, { includeArchived });
     const portfolios = await ctx.mirror.enrichPortfolioSummaries(req.authUser!.id, list.portfolios);
