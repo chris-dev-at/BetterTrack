@@ -829,6 +829,147 @@ describe('GET /api/v1/portfolios/:id/transactions (pagination)', () => {
     expect(second.body.items).toHaveLength(1);
     expect(second.body.nextCursor).toBeNull();
   });
+
+  it('keeps the id walk stable while executed-time pages and source facets right-size the overview', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
+    const asset = await seedAsset(harness);
+    const transactionId = (index: number) =>
+      `018f6f00-0000-7000-8000-${String(index).padStart(12, '0')}`;
+
+    // ids 1–9 are the most recent executions, 10–17 are older standing orders,
+    // and id 18 is recorded last but backdated. The legacy id walk must put 18
+    // first; the overview must exclude it from its newest-eight execution page.
+    const rows = [
+      ...Array.from({ length: 9 }, (_, index) => ({
+        id: transactionId(index + 1),
+        executedAt: new Date(tsOffset(-(index + 1))),
+        source: 'manual',
+      })),
+      ...Array.from({ length: 8 }, (_, index) => ({
+        id: transactionId(index + 10),
+        executedAt: new Date(tsOffset(-(index + 10))),
+        source: 'standing-order',
+      })),
+      { id: transactionId(18), executedAt: new Date(tsOffset(-30)), source: 'manual' },
+    ];
+    await harness.db.insert(schema.transactions).values(
+      rows.map((row, index) => ({
+        ...row,
+        portfolioId: pid,
+        assetId: asset.id,
+        side: 'buy' as const,
+        quantity: '1',
+        price: String(100 + index),
+      })),
+    );
+
+    const idWalk: Array<{ id: string; executedAt: string; source: string }> = [];
+    let idCursor: string | null = null;
+    do {
+      const page = await agent
+        .get(`/api/v1/portfolios/${pid}/transactions`)
+        .query({ limit: 5, ...(idCursor ? { cursor: idCursor } : {}) });
+      expect(page.status).toBe(200);
+      idWalk.push(...page.body.items);
+      idCursor = page.body.nextCursor as string | null;
+    } while (idCursor !== null);
+
+    expect(idWalk.map((row) => row.id)).toEqual(rows.map((row) => row.id).reverse());
+    expect(new Set(idWalk.map((row) => row.id)).size).toBe(rows.length);
+    expect(idWalk[0]?.id).toBe(transactionId(18));
+
+    const fullLedgerComputation = [...idWalk].sort(
+      (left, right) =>
+        right.executedAt.localeCompare(left.executedAt) || right.id.localeCompare(left.id),
+    );
+    const recent = await agent
+      .get(`/api/v1/portfolios/${pid}/transactions`)
+      .query({ limit: 8, order: 'executedAt', includeSourceTags: 'true' });
+    expect(recent.status).toBe(200);
+    expect(recent.body.items.map((row: { id: string }) => row.id)).toEqual(
+      fullLedgerComputation.slice(0, 8).map((row) => row.id),
+    );
+    expect(recent.body.items.map((row: { id: string }) => row.id)).not.toContain(transactionId(18));
+    expect(recent.body.sourceTags).toEqual(['manual', 'standing-order']);
+
+    const standingExpected = fullLedgerComputation
+      .filter((row) => row.source === 'standing-order')
+      .slice(0, 8);
+    const standing = await agent
+      .get(`/api/v1/portfolios/${pid}/transactions`)
+      .query({ limit: 8, order: 'executedAt', source: 'standing-order' });
+    expect(standing.status).toBe(200);
+    expect(standing.body.items.map((row: { id: string }) => row.id)).toEqual(
+      standingExpected.map((row) => row.id),
+    );
+
+    // The alternate walk owns a compound cursor and remains gap/duplicate free.
+    const firstExecutedPage = await agent
+      .get(`/api/v1/portfolios/${pid}/transactions`)
+      .query({ limit: 5, order: 'executedAt' });
+    const secondExecutedPage = await agent.get(`/api/v1/portfolios/${pid}/transactions`).query({
+      limit: 5,
+      order: 'executedAt',
+      cursor: firstExecutedPage.body.nextCursor as string,
+    });
+    expect(firstExecutedPage.status).toBe(200);
+    expect(secondExecutedPage.status).toBe(200);
+    expect(
+      [...firstExecutedPage.body.items, ...secondExecutedPage.body.items].map(
+        (row: { id: string }) => row.id,
+      ),
+    ).toEqual(fullLedgerComputation.slice(0, 10).map((row) => row.id));
+  });
+
+  it('pages one holding asset without reading another asset and validates the filter', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
+    const target = await seedAsset(harness, {
+      providerRef: 'TARGET.DE',
+      symbol: 'TARGET.DE',
+      name: 'Target holding',
+    });
+    const other = await seedAsset(harness, {
+      providerRef: 'OTHER.DE',
+      symbol: 'OTHER.DE',
+      name: 'Other holding',
+    });
+
+    for (const [assetId, offset] of [
+      [target.id, -3],
+      [other.id, -2],
+      [target.id, -1],
+    ] as const) {
+      const created = await agent
+        .post(`/api/v1/portfolios/${pid}/transactions`)
+        .set(...XRW)
+        .send({ assetId, side: 'buy', quantity: 1, price: 50, executedAt: tsOffset(offset) });
+      expect(created.status).toBe(201);
+    }
+
+    const first = await agent
+      .get(`/api/v1/portfolios/${pid}/transactions`)
+      .query({ assetId: target.id, limit: 1 });
+    expect(first.status).toBe(200);
+    expect(first.body.items).toHaveLength(1);
+    expect(first.body.items[0].assetId).toBe(target.id);
+
+    const second = await agent
+      .get(`/api/v1/portfolios/${pid}/transactions`)
+      .query({ assetId: target.id, limit: 1, cursor: first.body.nextCursor as string });
+    expect(second.status).toBe(200);
+    expect(second.body.items).toHaveLength(1);
+    expect(second.body.items[0].assetId).toBe(target.id);
+    expect(second.body.nextCursor).toBeNull();
+
+    const malformed = await agent
+      .get(`/api/v1/portfolios/${pid}/transactions`)
+      .query({ assetId: 'not-an-asset-id' });
+    expect(malformed.status).toBe(400);
+  });
 });
 
 describe('PATCH/DELETE /api/v1/portfolios/:id/transactions/:txId', () => {

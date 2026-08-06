@@ -2304,7 +2304,9 @@ const endpoints: EndpointDef[] = [
     tag: 'Portfolios',
     summary: 'Cursor-paged transaction ledger.',
     params: contracts.portfolioIdParamSchema,
-    query: contracts.transactionListQuerySchema,
+    // OpenAPI registers the query's object shape; the route still uses the
+    // outer refinement that rejects a cursor from the other ordering mode.
+    query: contracts.transactionListQuerySchema.innerType(),
     status: 200,
     response: R.TransactionListResponse,
   },

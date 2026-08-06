@@ -1262,6 +1262,16 @@ export const transactions = pgTable(
     source: text('source').notNull().default('manual'),
   },
   (t) => [
+    // Supports both the chronological money-math replay (forward scan) and the
+    // small recent-card read (backward scan with a deterministic id tiebreak).
+    index('transactions_portfolio_executed_id_idx').on(t.portfolioId, t.executedAt, t.id),
+    // Source-filtered recent reads and the distinct-source facet share this prefix.
+    index('transactions_portfolio_source_executed_id_idx').on(
+      t.portfolioId,
+      t.source,
+      t.executedAt,
+      t.id,
+    ),
     check('transactions_quantity_positive', sql`${t.quantity} > 0`),
     check('transactions_price_nonneg', sql`${t.price} >= 0`),
     // Uncovered fields are sell-only, and an entry price is meaningless without

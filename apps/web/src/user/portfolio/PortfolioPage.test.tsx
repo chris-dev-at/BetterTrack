@@ -2,8 +2,10 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { cloneElement, isValidElement } from 'react';
-import { MemoryRouter } from 'react-router-dom';
+import { MemoryRouter, useNavigate } from 'react-router-dom';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
+
+import type { Transaction } from '@bettertrack/contracts';
 
 // ─── Mocks ────────────────────────────────────────────────────────────────────
 
@@ -249,11 +251,37 @@ function renderPage(initialPath = '/portfolio') {
   return { ...view, client };
 }
 
+function transactionPage(
+  transactions: readonly Transaction[],
+  params: Parameters<typeof listTransactions>[1] = {},
+) {
+  const sourceTags = [...new Set(transactions.map((transaction) => transaction.source))].sort();
+  const items = transactions
+    .filter(
+      (transaction) =>
+        (params.source == null || transaction.source === params.source) &&
+        (params.assetId == null || transaction.assetId === params.assetId),
+    )
+    .sort((left, right) =>
+      params.order === 'executedAt'
+        ? right.executedAt.localeCompare(left.executedAt) || right.id.localeCompare(left.id)
+        : right.id.localeCompare(left.id),
+    )
+    .slice(0, params.limit ?? transactions.length);
+  return {
+    items,
+    nextCursor: null,
+    ...(params.includeSourceTags ? { sourceTags } : {}),
+  };
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(listPortfolios).mockResolvedValue(PORTFOLIO_LIST);
   vi.mocked(getPortfolioHistory).mockResolvedValue(HISTORY);
-  vi.mocked(listTransactions).mockResolvedValue(TXNS);
+  vi.mocked(listTransactions).mockImplementation(async (_portfolioId, params = {}) =>
+    transactionPage(TXNS.items as Transaction[], params),
+  );
   vi.mocked(deleteTransaction).mockResolvedValue(undefined);
   vi.mocked(getValuePoints).mockResolvedValue({ points: [] });
   // No pending re-categorization by default → the banner stays hidden.
@@ -681,6 +709,128 @@ describe('PortfolioPage — performance-% display mode', () => {
 describe('PortfolioPage — expandable rows', () => {
   beforeEach(() => vi.mocked(getPortfolio).mockResolvedValue(PORTFOLIO));
 
+  test('loads an expanded holding ledger on demand beyond the eight-row recent card', async () => {
+    const aaplTransaction = TXNS.items[0]! as Transaction;
+    const houseTransaction = TXNS.items[1]! as Transaction;
+    const recentAaplTransactions = Array.from(
+      { length: 8 },
+      (_, index): Transaction => ({
+        ...aaplTransaction,
+        id: `t-recent-${index}`,
+        executedAt: `2024-03-${String(20 - index).padStart(2, '0')}T00:00:00.000Z`,
+      }),
+    );
+    const olderHouseTransaction: Transaction = {
+      ...houseTransaction,
+      id: 't-house-older',
+      executedAt: '2024-01-01T00:00:00.000Z',
+    };
+    const ledger = [...recentAaplTransactions, olderHouseTransaction];
+    vi.mocked(listTransactions).mockImplementation(async (_portfolioId, params = {}) =>
+      transactionPage(ledger, params),
+    );
+
+    const user = userEvent.setup();
+    renderPage();
+
+    await waitFor(() =>
+      expect(vi.mocked(listTransactions)).toHaveBeenCalledWith(
+        DEFAULT_PORTFOLIO_ID,
+        {
+          limit: 8,
+          order: 'executedAt',
+          source: undefined,
+          includeSourceTags: true,
+        },
+        expect.anything(),
+      ),
+    );
+    const holdings = await screen.findByRole('region', { name: 'Holdings' });
+    await user.click(within(holdings).getByRole('button', { name: /Expand HOUSE transactions/i }));
+
+    await waitFor(() =>
+      expect(vi.mocked(listTransactions)).toHaveBeenCalledWith(
+        DEFAULT_PORTFOLIO_ID,
+        { assetId: HOUSE.asset.id, limit: 200 },
+        expect.anything(),
+      ),
+    );
+    expect(await within(holdings).findByText('Down payment')).toBeInTheDocument();
+  });
+
+  test('does not request a stale expanded asset after the active portfolio switches', async () => {
+    const secondPortfolio = {
+      id: 'p2',
+      name: 'Second',
+      visibility: 'private' as const,
+      sortOrder: 1,
+      isDefault: false,
+      defaultPayFromCash: false,
+      archivedAt: null,
+    };
+    vi.mocked(listPortfolios).mockResolvedValue({
+      portfolios: [...PORTFOLIO_LIST.portfolios, secondPortfolio],
+    });
+    vi.mocked(getPortfolio).mockImplementation(async (portfolioId) =>
+      portfolioId === secondPortfolio.id
+        ? { ...PORTFOLIO, holdings: [HOUSE] }
+        : { ...PORTFOLIO, holdings: [STOCK] },
+    );
+
+    function SwitchHarness() {
+      const navigate = useNavigate();
+      return (
+        <>
+          <button type="button" onClick={() => navigate('/portfolio?portfolio=p2')}>
+            Switch portfolio
+          </button>
+          <PortfolioPage />
+        </>
+      );
+    }
+
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={client}>
+        <MemoryRouter initialEntries={['/portfolio']}>
+          <SwitchHarness />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    const user = userEvent.setup();
+    const holdings = await screen.findByRole('region', { name: 'Holdings' });
+    await user.click(within(holdings).getByRole('button', { name: /Expand AAPL transactions/i }));
+    await waitFor(() =>
+      expect(vi.mocked(listTransactions)).toHaveBeenCalledWith(
+        DEFAULT_PORTFOLIO_ID,
+        { assetId: STOCK.asset.id, limit: 200 },
+        expect.anything(),
+      ),
+    );
+
+    vi.mocked(listTransactions).mockClear();
+    await user.click(screen.getByRole('button', { name: 'Switch portfolio' }));
+    await waitFor(() =>
+      expect(vi.mocked(listTransactions)).toHaveBeenCalledWith(
+        secondPortfolio.id,
+        expect.objectContaining({ order: 'executedAt' }),
+        expect.anything(),
+      ),
+    );
+    const secondHoldings = await screen.findByRole('region', { name: 'Holdings' });
+    await waitFor(() =>
+      expect(within(secondHoldings).getByRole('link', { name: 'HOUSE' })).toBeInTheDocument(),
+    );
+    expect(
+      vi
+        .mocked(listTransactions)
+        .mock.calls.some(
+          ([portfolioId, params]) =>
+            portfolioId === secondPortfolio.id && params?.assetId === STOCK.asset.id,
+        ),
+    ).toBe(false);
+  });
+
   test('expands a holding to reveal its transactions', async () => {
     const user = userEvent.setup();
     renderPage();
@@ -1010,42 +1160,94 @@ describe('PortfolioPage — recent-transactions source filter', () => {
     expect(within(recent).queryByLabelText('Source')).not.toBeInTheDocument();
   });
 
-  test('surfaces the standing-order badge and filters rows by source when the ledger mixes tags', async () => {
-    const standingOrderTxn = {
-      id: 't-so',
-      assetId: 'a1',
-      side: 'buy' as const,
-      quantity: 1,
-      price: 175,
-      fee: 0,
-      executedAt: '2024-06-15T00:00:00.000Z',
-      note: null,
-      allowUncovered: false,
-      uncoveredEntryPrice: null,
-      source: 'standing-order',
-      asset: STOCK.asset,
-    };
-    vi.mocked(listTransactions).mockResolvedValue({
-      items: [...TXNS.items, standingOrderTxn],
-      nextCursor: null,
+  test('renders the full-ledger newest eight and refetches a selected source at the boundary', async () => {
+    const base = TXNS.items[0]! as Transaction;
+    const transaction = (
+      id: string,
+      symbol: string,
+      source: string,
+      executedAt: string,
+    ): Transaction => ({
+      ...base,
+      id,
+      assetId: `asset-${id}`,
+      source,
+      executedAt,
+      asset: { ...base.asset, id: `asset-${id}`, symbol, name: symbol },
     });
+    const ledger = [
+      ...Array.from({ length: 9 }, (_, index) =>
+        transaction(
+          `manual-${index}`,
+          `M${index}`,
+          'manual',
+          `2024-07-${String(20 - index).padStart(2, '0')}T00:00:00.000Z`,
+        ),
+      ),
+      ...Array.from({ length: 8 }, (_, index) =>
+        transaction(
+          `standing-${index}`,
+          `S${index}`,
+          'standing-order',
+          `2024-06-${String(20 - index).padStart(2, '0')}T00:00:00.000Z`,
+        ),
+      ),
+      // Created/newest id, deliberately backdated: an id-ordered limit would
+      // displace a genuinely recent execution with this row.
+      transaction('zz-backdated', 'BACKDATED', 'manual', '2024-01-01T00:00:00.000Z'),
+    ];
+    vi.mocked(listTransactions).mockImplementation(async (_portfolioId, params = {}) =>
+      transactionPage(ledger, params),
+    );
+    const fullLedgerComputation = [...ledger].sort(
+      (left, right) =>
+        right.executedAt.localeCompare(left.executedAt) || right.id.localeCompare(left.id),
+    );
     const user = userEvent.setup();
     renderPage();
 
     const recent = await screen.findByRole('region', { name: 'Recent transactions' });
-    // Both the badge (auto-rendered on the row) and the select option surface
-    // "Standing order" — the pair is proof both the badge and the filter chip
-    // are on-screen.
-    expect(within(recent).getAllByText('Standing order').length).toBeGreaterThanOrEqual(2);
     const filter = within(recent).getByLabelText('Source');
-
-    // Default "all sources" → both manual and standing-order rows visible.
-    expect(within(recent).getAllByText('AAPL')).toHaveLength(2);
+    expect(within(filter).getByRole('option', { name: 'All sources' })).toBeInTheDocument();
+    expect(within(filter).getByRole('option', { name: 'Manual entry' })).toBeInTheDocument();
+    expect(within(filter).getByRole('option', { name: 'Standing order' })).toBeInTheDocument();
+    expect(
+      within(recent)
+        .getAllByRole('link')
+        .map((link) => link.textContent),
+    ).toEqual(fullLedgerComputation.slice(0, 8).map((row) => row.asset.symbol));
+    expect(within(recent).queryByText('BACKDATED')).not.toBeInTheDocument();
+    expect(vi.mocked(listTransactions)).toHaveBeenCalledWith(
+      DEFAULT_PORTFOLIO_ID,
+      {
+        limit: 8,
+        order: 'executedAt',
+        source: undefined,
+        includeSourceTags: true,
+      },
+      expect.anything(),
+    );
 
     await user.selectOptions(filter, 'standing-order');
-    // Only the standing-order row remains → one AAPL row.
-    await waitFor(() => expect(within(recent).getAllByText('AAPL')).toHaveLength(1));
-    // The manual-only HOUSE row is gone.
-    expect(within(recent).queryByText('HOUSE')).not.toBeInTheDocument();
+    const standingExpected = fullLedgerComputation
+      .filter((row) => row.source === 'standing-order')
+      .slice(0, 8);
+    await waitFor(() =>
+      expect(
+        within(recent)
+          .getAllByRole('link')
+          .map((link) => link.textContent),
+      ).toEqual(standingExpected.map((row) => row.asset.symbol)),
+    );
+    expect(vi.mocked(listTransactions)).toHaveBeenCalledWith(
+      DEFAULT_PORTFOLIO_ID,
+      {
+        limit: 8,
+        order: 'executedAt',
+        source: 'standing-order',
+        includeSourceTags: true,
+      },
+      expect.anything(),
+    );
   });
 });
