@@ -70,7 +70,7 @@ export const MIRRORCHAIN_BEARER_ROUTE_ALLOWLIST = [
  * the participation + administration union, so a newly added route must make
  * an explicit access decision before CI can pass.
  */
-export const MIRRORCHAIN_SESSION_ONLY_ROUTE_ALLOWLIST = [
+export const MIRRORCHAIN_SESSION_ONLY_ROUTES = [
   { method: 'POST', path: '/mirrorchain/chains' },
   { method: 'POST', path: '/mirrorchain/chains/convert' },
   { method: 'POST', path: '/mirrorchain/invites/{inviteId}/revoke' },
@@ -90,7 +90,7 @@ export const MIRRORCHAIN_SESSION_ONLY_ROUTE_ALLOWLIST = [
  * synchronization. Kept beside the sync allowlist for the same mounted-route
  * completeness check used by MIRRORCHAIN.
  */
-export const VAULT_SESSION_ONLY_ROUTE_ALLOWLIST = [
+export const VAULT_SESSION_ONLY_ROUTES = [
   { method: 'PATCH', path: '/vault/media' },
   { method: 'PUT', path: '/vault/media/server-candidate' },
   { method: 'GET', path: '/vault/media/server-candidate/{candidateId}' },

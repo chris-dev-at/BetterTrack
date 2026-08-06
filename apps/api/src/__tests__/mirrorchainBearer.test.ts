@@ -21,7 +21,7 @@ import { createOAuthRepository } from '../data/repositories/oauthRepository';
 import * as schema from '../data/schema';
 import {
   MIRRORCHAIN_BEARER_ROUTE_ALLOWLIST,
-  MIRRORCHAIN_SESSION_ONLY_ROUTE_ALLOWLIST,
+  MIRRORCHAIN_SESSION_ONLY_ROUTES,
   enforceMirrorchainBearerAllowlist,
   mirrorchainRouteAcceptsBearer,
   openApiPathTemplateAcceptsBearer,
@@ -167,7 +167,8 @@ describe('#1042 MIRRORCHAIN bearer route allowlist', () => {
     },
   ] as const;
 
-  const livePath = (path: string): string => path.replace(/\{(?:chainId|inviteId)\}/g, MISSING_ID);
+  const livePath = (path: string): string =>
+    path.replace(/\{(?:chainId|inviteId|userId)\}/g, MISSING_ID);
 
   it('pins the seven exact method + path templates and defaults every other route closed', () => {
     expect(MIRRORCHAIN_BEARER_ROUTE_ALLOWLIST).toEqual(EXPECTED_ALLOWLIST);
@@ -177,7 +178,7 @@ describe('#1042 MIRRORCHAIN bearer route allowlist', () => {
       expect(pathAcceptsBearer(path, route.method)).toBe(true);
       expect(openApiPathTemplateAcceptsBearer(route.path, route.method)).toBe(true);
     }
-    for (const route of MIRRORCHAIN_SESSION_ONLY_ROUTE_ALLOWLIST) {
+    for (const route of MIRRORCHAIN_SESSION_ONLY_ROUTES) {
       const path = livePath(route.path);
       expect(mirrorchainRouteAcceptsBearer(route.method, path)).toBe(false);
       expect(pathAcceptsBearer(path, route.method)).toBe(false);
@@ -195,7 +196,7 @@ describe('#1042 MIRRORCHAIN bearer route allowlist', () => {
     const mounted = mountedBearerRouteInventory(buildRouteTable(), '/mirrorchain');
     const classified = [
       ...MIRRORCHAIN_BEARER_ROUTE_ALLOWLIST,
-      ...MIRRORCHAIN_SESSION_ONLY_ROUTE_ALLOWLIST,
+      ...MIRRORCHAIN_SESSION_ONLY_ROUTES,
       ...EXPECTED_ROUTER_GUARDS,
     ].map(({ method, path }) => ({ method, path }));
     const sortRoutes = (routes: Array<{ method: string; path: string }>) =>

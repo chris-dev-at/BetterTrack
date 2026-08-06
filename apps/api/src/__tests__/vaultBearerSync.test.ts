@@ -20,7 +20,7 @@ import {
 import { createOAuthRepository } from '../data/repositories/oauthRepository';
 import { paranoidEnableTransitions, paranoidVaults, users } from '../data/schema';
 import {
-  VAULT_SESSION_ONLY_ROUTE_ALLOWLIST,
+  VAULT_SESSION_ONLY_ROUTES,
   VAULT_SYNC_BEARER_ROUTE_ALLOWLIST,
   openApiPathTemplateAcceptsBearer,
   pathAcceptsBearer,
@@ -215,7 +215,7 @@ describe('#1043 vault bearer policy', () => {
   ] as const;
 
   const SESSION_ONLY = [
-    ...VAULT_SESSION_ONLY_ROUTE_ALLOWLIST,
+    ...VAULT_SESSION_ONLY_ROUTES,
     { method: 'POST', path: '/account/paranoid/enable' },
     { method: 'POST', path: '/account/paranoid/disable' },
     { method: 'GET', path: '/account/paranoid/fork-provenance' },
@@ -263,7 +263,7 @@ describe('#1043 vault bearer policy', () => {
     const mounted = mountedBearerRouteInventory(buildRouteTable(), '/vault');
     const classified = [
       ...VAULT_SYNC_BEARER_ROUTE_ALLOWLIST,
-      ...VAULT_SESSION_ONLY_ROUTE_ALLOWLIST,
+      ...VAULT_SESSION_ONLY_ROUTES,
       ...EXPECTED_ROUTER_GUARDS,
     ].map(({ method, path }) => ({ method, path }));
     const sortRoutes = (routes: Array<{ method: string; path: string }>) =>

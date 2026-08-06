@@ -122,7 +122,12 @@ export function CashBudgetsPage() {
               />
             </label>
             <DisabledActionHint disabled={showCreateHint} hint={createHint}>
-              <Button disabled={createDisabled} onClick={() => setCreating(true)} variant="primary">
+              <Button
+                data-testid="cash-budget-create-trigger"
+                disabled={createDisabled}
+                onClick={() => setCreating(true)}
+                variant="primary"
+              >
                 {t('cashflow.budgets.new')}
               </Button>
             </DisabledActionHint>
