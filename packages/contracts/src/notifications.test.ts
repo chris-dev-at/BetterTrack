@@ -15,6 +15,7 @@ import {
   notificationMessageSchema,
   notificationPayloadSchema,
   quietHoursSchema,
+  readNotificationPayload,
   registerDeviceRequestSchema,
   webPushSubscribeRequestSchema,
 } from './notifications';
@@ -108,21 +109,54 @@ describe('localizable notification message descriptor (#1138)', () => {
     // A key retired later, or a row written by a newer worker and read by an
     // older instance / a stale SPA tab: the row must degrade to its persisted
     // title/body, keeping `eventKey` (dedupe) and every deep-link id.
-    const parsed = notificationPayloadSchema.parse({
+    const degraded = readNotificationPayload({
       eventKey: 'friend.request:req-1',
       requestId: 'req-1',
       message: { key: 'keyFromANewerServer', params: { actor: 'anna' } },
     });
-    expect(parsed).toMatchObject({ eventKey: 'friend.request:req-1', requestId: 'req-1' });
-    expect(parsed.message).toBeUndefined();
+    expect(degraded).toMatchObject({ eventKey: 'friend.request:req-1', requestId: 'req-1' });
+    expect(degraded?.message).toBeUndefined();
 
     // Same for a descriptor that grew a field this client does not know.
+    const grown = readNotificationPayload({
+      assetId: 'a-1',
+      message: { key: 'friendRequest', params: {}, variant: 'compact' },
+    });
+    expect(grown).toEqual({ assetId: 'a-1' });
+
+    // …and the mirror case: a non-string `eventKey` costs the dedupe marker
+    // only — the readable descriptor and the deep-link id both survive.
+    const keptMessage = readNotificationPayload({
+      eventKey: 42,
+      requestId: 'req-2',
+      message: { key: 'friendRequest', params: { actor: 'anna' } },
+    });
+    expect(keptMessage).toMatchObject({
+      requestId: 'req-2',
+      message: { key: 'friendRequest', params: { actor: 'anna' } },
+    });
+    expect(keptMessage?.eventKey).toBeUndefined();
+  });
+
+  it('reads a well-formed envelope unchanged, and non-objects as no payload', () => {
+    const payload = { eventKey: 'friend.request:req-1', requestId: 'req-1' };
+    expect(readNotificationPayload(payload)).toEqual(payload);
+    expect(readNotificationPayload(null)).toBeUndefined();
+    expect(readNotificationPayload('not-an-envelope')).toBeUndefined();
+    expect(readNotificationPayload([{ eventKey: 'a' }])).toBeUndefined();
+  });
+
+  it('keeps the schema itself plain — the tolerance is the reader, not `.catch()`', () => {
+    // `ZodCatch` has no transformer in zod-to-openapi 7.3.x and this schema is
+    // reachable from NotificationListResponse, so a catch inside it makes
+    // `/openapi.json` and `/docs` 500 (guarded end-to-end by the API's
+    // openapi.test.ts). The strictness below is what makes the reader load-bearing.
     expect(
-      notificationPayloadSchema.parse({
-        assetId: 'a-1',
-        message: { key: 'friendRequest', params: {}, variant: 'compact' },
-      }),
-    ).toMatchObject({ assetId: 'a-1', message: undefined });
+      notificationPayloadSchema.safeParse({
+        eventKey: 'friend.request:req-1',
+        message: { key: 'keyFromANewerServer', params: {} },
+      }).success,
+    ).toBe(false);
   });
 });
 

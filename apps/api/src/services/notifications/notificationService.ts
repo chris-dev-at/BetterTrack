@@ -2,7 +2,7 @@ import {
   WEB_PUSH_ENDPOINT_UNSAFE,
   WEB_PUSH_MAX_SUBSCRIPTIONS,
   WEB_PUSH_SUBSCRIPTION_LIMIT_REACHED,
-  notificationPayloadSchema,
+  readNotificationPayload,
   type DevicePlatform,
   type MarkReadRequest,
   type Notification,
@@ -42,13 +42,14 @@ export interface NotificationServiceDeps {
 }
 
 function toNotification(record: NotificationRecord): Notification {
-  const payload = notificationPayloadSchema.safeParse(record.payload);
   return {
     id: record.id,
     type: record.type,
     title: record.title,
     body: record.body,
-    payload: payload.success ? payload.data : undefined,
+    // Per-field tolerance (#1138): an unreadable message descriptor costs only
+    // the localized copy — `eventKey` and the deep-link ids stay in the row.
+    payload: readNotificationPayload(record.payload),
     readAt: record.readAt ? record.readAt.toISOString() : null,
     archivedAt: record.archivedAt ? record.archivedAt.toISOString() : null,
     createdAt: record.createdAt.toISOString(),
