@@ -40,6 +40,15 @@ export const CREATE_INTENT = {
   watchlist: '1',
   /** New alert — `AlertsPage` (`/workbench/alerts`, no switcher there). */
   alert: '1',
+  /** Save an ad-hoc basket as an idea — `ConglomerateBuilderPage` (`/workbench/blueprints/new`). */
+  idea: 'idea',
 } as const;
 
 export type CreateIntent = (typeof CREATE_INTENT)[keyof typeof CREATE_INTENT];
+
+const CREATE_INTENT_VALUES = new Set<string>(Object.values(CREATE_INTENT));
+
+/** Whether a raw query value belongs to the global create-intent namespace. */
+export function isCreateIntent(value: string): value is CreateIntent {
+  return CREATE_INTENT_VALUES.has(value);
+}

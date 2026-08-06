@@ -1,4 +1,5 @@
 import { eq } from 'drizzle-orm';
+import postgres from 'postgres';
 import request from 'supertest';
 import type { Application } from 'express';
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -29,6 +30,39 @@ import { createTestApp, type TestHarness } from '../testing/createTestApp';
  */
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
+const REAL_DATABASE_URL = process.env.TEST_DATABASE_URL;
+const FORCE_DELETE_PAUSE_LOCK = [1128, 1] as const;
+
+interface DatabaseLockWait {
+  pid: number;
+  query: string;
+  waitEvent: string | null;
+}
+
+async function waitForAdvisoryWait(
+  observer: ReturnType<typeof postgres>,
+  predicate: (row: DatabaseLockWait) => boolean,
+  description: string,
+): Promise<DatabaseLockWait> {
+  const deadline = Date.now() + 5_000;
+  let observed: DatabaseLockWait[] = [];
+  while (Date.now() < deadline) {
+    observed = await observer<DatabaseLockWait[]>`
+      SELECT pid, query, wait_event AS "waitEvent"
+      FROM pg_stat_activity
+      WHERE datname = current_database()
+        AND wait_event_type = 'Lock'
+    `;
+    const match = observed.find(predicate);
+    if (match) return match;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(
+    `Timed out waiting for ${description}; observed ${JSON.stringify(
+      observed.map(({ pid, query, waitEvent }) => ({ pid, query, waitEvent })),
+    )}`,
+  );
+}
 
 async function loginAgent(app: Application, identifier: string, password: string) {
   const agent = request.agent(app);
@@ -478,6 +512,116 @@ describe('mirrorchain M2 — replication core', () => {
     expect((await sourceBalances(alice.id, aPid)).find((s) => s.isMain)!.balanceEur).toBe(0);
     expect((await sourceBalances(bob.id, bPid)).find((s) => s.isMain)!.balanceEur).toBe(-27.5);
   });
+
+  it.skipIf(!REAL_DATABASE_URL)(
+    'serializes replica force-delete against a direct withdrawal so the ledger never goes negative',
+    async () => {
+      const { alice, bob, aPid, bPid, chain } = await setupChain();
+      await harness.ctx.mirror.submitCashDeposit(alice.id, aPid, { amountEur: 100 });
+      await harness.ctx.mirror.replicateChain(chain.id);
+
+      const movementRepo = createCashMovementRepository(harness.db);
+      const funding = (await movementRepo.listForPortfolio(bPid)).find(
+        (movement) => movement.kind === 'deposit' && movement.amountEur === 100,
+      );
+      if (!funding) throw new Error('Replica funding movement was not applied');
+
+      const controller = postgres(REAL_DATABASE_URL!, { max: 1 });
+      const observer = postgres(REAL_DATABASE_URL!, { max: 1 });
+      let releasePause!: () => void;
+      let pauseOwned!: () => void;
+      const release = new Promise<void>((resolve) => {
+        releasePause = resolve;
+      });
+      const owned = new Promise<void>((resolve) => {
+        pauseOwned = resolve;
+      });
+      let deletion: Promise<unknown> | undefined;
+      let withdrawal: Promise<unknown> | undefined;
+
+      await observer.unsafe(`
+        CREATE OR REPLACE FUNCTION bt_test_pause_force_cash_delete()
+        RETURNS trigger
+        LANGUAGE plpgsql
+        AS $$
+        BEGIN
+          PERFORM pg_advisory_xact_lock(${FORCE_DELETE_PAUSE_LOCK[0]}, ${FORCE_DELETE_PAUSE_LOCK[1]});
+          RETURN OLD;
+        END;
+        $$
+      `);
+      await observer.unsafe(
+        'DROP TRIGGER IF EXISTS bt_test_pause_force_cash_delete ON portfolio_cash_movements',
+      );
+      await observer.unsafe(`
+        CREATE TRIGGER bt_test_pause_force_cash_delete
+        BEFORE DELETE ON portfolio_cash_movements
+        FOR EACH ROW
+        EXECUTE FUNCTION bt_test_pause_force_cash_delete()
+      `);
+
+      const pauseOwner = controller.begin(async (tx) => {
+        await tx`SELECT pg_advisory_xact_lock(${FORCE_DELETE_PAUSE_LOCK[0]}, ${FORCE_DELETE_PAUSE_LOCK[1]})`;
+        pauseOwned();
+        await release;
+      });
+
+      try {
+        await owned;
+        // This is the exact PortfolioService force call used by replica apply.
+        // The HTTP/mirror seam also admits member withdrawals; its chain mutex
+        // normally orders replay and submit, while this lower-level regression
+        // proves the cash boundary remains safe if those calls overlap.
+        deletion = harness.ctx.portfolio.deleteCashMovement(bob.id, bPid, funding.id, {
+          force: true,
+        });
+        const deleteWait = await waitForAdvisoryWait(
+          observer,
+          (row) =>
+            row.waitEvent === 'advisory' &&
+            /delete\s+from\s+"?portfolio_cash_movements"?/iu.test(row.query),
+          'the replica force-delete to pause inside its trigger',
+        );
+
+        withdrawal = harness.ctx.portfolio.withdrawCash(bob.id, bPid, {
+          amountEur: 75,
+          sourceId: funding.sourceId,
+          executedAt: new Date(Date.now() + 1_000).toISOString(),
+        });
+        await waitForAdvisoryWait(
+          observer,
+          (row) =>
+            row.pid !== deleteWait.pid &&
+            row.waitEvent === 'advisory' &&
+            /pg_advisory_xact_lock/iu.test(row.query),
+          'the direct withdrawal to wait behind the replica force-delete',
+        );
+
+        releasePause();
+        await pauseOwner;
+        await deletion;
+        await expect(withdrawal).rejects.toMatchObject({ code: 'INSUFFICIENT_CASH' });
+
+        let running = 0;
+        for (const movement of await movementRepo.listForPortfolio(bPid)) {
+          if (movement.sourceId !== funding.sourceId) continue;
+          running += movement.amountEur;
+          expect(running).toBeGreaterThanOrEqual(0);
+        }
+        expect(running).toBe(0);
+      } finally {
+        releasePause();
+        await pauseOwner.catch(() => undefined);
+        await deletion?.catch(() => undefined);
+        await withdrawal?.catch(() => undefined);
+        await observer.unsafe(
+          'DROP TRIGGER IF EXISTS bt_test_pause_force_cash_delete ON portfolio_cash_movements',
+        );
+        await observer.unsafe('DROP FUNCTION IF EXISTS bt_test_pause_force_cash_delete()');
+        await Promise.all([controller.end({ timeout: 1 }), observer.end({ timeout: 1 })]);
+      }
+    },
+  );
 
   it('origin-first strict-seq apply: a submit catches the writer’s own copy up before their write (§2)', async () => {
     const { alice, bob, aPid, bPid, chain } = await setupChain();

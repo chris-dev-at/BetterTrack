@@ -25,7 +25,9 @@ import { useT } from '../../i18n';
 import { AllocationDonut } from '../../ui/charts';
 import { AssetSearchBox } from '../components/AssetSearchBox';
 import { Alert, Button, Spinner } from '../components/ui';
+import { useCreateIntent } from '../components/useCreateIntent';
 import { useDebounce } from '../hooks/useDebounce';
+import { CREATE_INTENT } from '../routeParams';
 import { NestedBadge, StatusBadge } from './ConglomeratesListPage';
 import { SaveIdeaDialog } from './SaveIdeaDialog';
 import {
@@ -851,6 +853,10 @@ function LivePreviewPanel({ positions }: { positions: BuilderPosition[] }) {
   const [saveIdeaOpen, setSaveIdeaOpen] = useState(false);
   const live = persistablePositions(positions);
   const hasNested = live.some((p) => p.kind === 'conglomerate');
+  // "New idea" enters the real ad-hoc-basket flow. Hold its one-shot intent
+  // until the basket has something the idea contract can persist, then open the
+  // same Save-as-idea dialog as the explicit preview action.
+  useCreateIntent(CREATE_INTENT.idea, () => setSaveIdeaOpen(true), live.length > 0 && !hasNested);
   const donutData = live.map((p) => ({ label: p.symbol, value: p.weightPct }));
   const total = sumWeights(positions);
   const largest = live.reduce<BuilderPosition | null>(

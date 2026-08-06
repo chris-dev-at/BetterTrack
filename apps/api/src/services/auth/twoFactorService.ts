@@ -22,7 +22,7 @@ import { hashToken } from '../crypto/tokens';
 import type { EmailService } from '../email/emailService';
 import { createProgressiveLimiter } from '../security/progressiveLimiter';
 import type { SecurityMutationContext, SessionService } from '../sessions/sessionService';
-import { TWO_FACTOR_ACCOUNT_NAMESPACE } from './loginThrottle';
+import { TWO_FACTOR_DISABLE_ACCOUNT_NAMESPACE } from './loginThrottle';
 import {
   buildOtpauthUri,
   generateRecoveryCodes,
@@ -209,9 +209,9 @@ interface EmailSetupState {
 
 export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorService {
   const { config, userRepo, twoFactorRepo, audit, redis, email, sessions } = deps;
-  const twoFactorThrottle = createProgressiveLimiter(
+  const disableTotpThrottle = createProgressiveLimiter(
     redis,
-    TWO_FACTOR_ACCOUNT_NAMESPACE,
+    TWO_FACTOR_DISABLE_ACCOUNT_NAMESPACE,
     config.rateLimits.loginAccount,
   );
 
@@ -442,14 +442,14 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
       const state = await twoFactorRepo.getState(userId);
       if (!state?.enabled || !state.secret) throw notEnabled();
 
-      const cooling = await twoFactorThrottle.peek(userId);
+      const cooling = await disableTotpThrottle.peek(userId);
       if (cooling > 0) {
         throw tooManyRequests(cooling, 'Too many incorrect codes. Please wait and try again.');
       }
 
       const ok = await verifyFactor(userId, state, code);
       if (!ok) {
-        const decision = await twoFactorThrottle.consume(userId);
+        const decision = await disableTotpThrottle.consume(userId);
         if (!decision.allowed) {
           throw tooManyRequests(
             decision.retryAfterSec,
@@ -465,7 +465,7 @@ export function createTwoFactorService(deps: TwoFactorServiceDeps): TwoFactorSer
         security?.securityGeneration ?? state.securityGeneration,
       );
       if (securityGeneration === null) throw unauthorized();
-      await twoFactorThrottle.reset(userId);
+      await disableTotpThrottle.reset(userId);
       await audit.record({
         actorId: userId,
         action: AuditAction.TwoFactorDisabled,

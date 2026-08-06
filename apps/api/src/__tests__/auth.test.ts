@@ -419,27 +419,42 @@ describe('self-service password-reset concurrency', () => {
     ).toHaveLength(1);
   });
 
-  it('normalizes reset-request timing for known and unknown email addresses', async () => {
+  it('normalizes concurrent reset-request timing distributions for known and unknown addresses', async () => {
     const user = await harness.seedUser();
+    const transactionSpy = vi.spyOn(harness.db, 'transaction');
     const timedRequest = async (email: string) => {
       const startedAt = performance.now();
       const response = await requestPasswordReset(harness, email);
       return { response, elapsedMs: performance.now() - startedAt };
     };
+    const pairCount = 8;
 
-    const [known, unknown] = await Promise.all([
-      timedRequest(user.email),
-      timedRequest('nobody-here@test.dev'),
-    ]);
-
-    expect(known.response.status).toBe(200);
-    expect(unknown.response.status).toBe(200);
-    expect(known.response.body).toEqual({ ok: true });
-    expect(unknown.response.body).toEqual(known.response.body);
-    expect(Math.min(known.elapsedMs, unknown.elapsedMs)).toBeGreaterThanOrEqual(
-      PASSWORD_RESET_RESPONSE_FLOOR_MS - 25,
+    // Launch N pairs together against the same known and same unknown address.
+    // This exercises the per-address serialization distribution, not one quiet
+    // database request whose fixed 250 ms floor can hide the row-lock branch.
+    const pairs = await Promise.all(
+      Array.from({ length: pairCount }, () =>
+        Promise.all([timedRequest(user.email), timedRequest('nobody-here@test.dev')]),
+      ),
     );
-    expect(Math.abs(known.elapsedMs - unknown.elapsedMs)).toBeLessThan(75);
+    const known = pairs.map(([sample]) => sample);
+    const unknown = pairs.map(([, sample]) => sample);
+    const knownTimes = known.map(({ elapsedMs }) => elapsedMs).sort((a, b) => a - b);
+    const unknownTimes = unknown.map(({ elapsedMs }) => elapsedMs).sort((a, b) => a - b);
+    const percentile = (samples: readonly number[], fraction: number) =>
+      samples[Math.ceil(samples.length * fraction) - 1]!;
+
+    for (const sample of [...known, ...unknown]) {
+      expect(sample.response.status).toBe(200);
+      expect(sample.response.body).toEqual({ ok: true });
+      expect(sample.elapsedMs).toBeGreaterThanOrEqual(PASSWORD_RESET_RESPONSE_FLOOR_MS - 25);
+    }
+    // Both branches enter the repository transaction for every probe. This is
+    // the deterministic backstop behind the wall-clock distribution assertion.
+    expect(transactionSpy).toHaveBeenCalledTimes(pairCount * 2);
+    expect(Math.abs(percentile(knownTimes, 0.5) - percentile(unknownTimes, 0.5))).toBeLessThan(75);
+    expect(Math.abs(percentile(knownTimes, 0.9) - percentile(unknownTimes, 0.9))).toBeLessThan(100);
+    transactionSpy.mockRestore();
   });
 
   it('returns the uniform acknowledgement without waiting for a slow email transport', async () => {

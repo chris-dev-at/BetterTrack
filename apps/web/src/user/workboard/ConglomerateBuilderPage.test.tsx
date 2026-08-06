@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { cloneElement, isValidElement } from 'react';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
 vi.mock('../../lib/conglomerateApi', () => ({
@@ -101,13 +101,25 @@ function makeQueryClient() {
   return new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 0 } } });
 }
 
+function LocationProbe() {
+  return <output data-testid="location-search">{useLocation().search}</output>;
+}
+
 function renderBuilder(initialPath: string) {
   return render(
     <QueryClientProvider client={makeQueryClient()}>
       <MemoryRouter initialEntries={[initialPath]}>
         <Routes>
           <Route path="/workbench/blueprints" element={<div>Conglomerates list</div>} />
-          <Route path="/workbench/blueprints/new" element={<ConglomerateBuilderPage />} />
+          <Route
+            path="/workbench/blueprints/new"
+            element={
+              <>
+                <ConglomerateBuilderPage />
+                <LocationProbe />
+              </>
+            }
+          />
           <Route path="/workbench/blueprints/:id" element={<div>Detail view</div>} />
           <Route path="/workbench/blueprints/:id/edit" element={<ConglomerateBuilderPage />} />
         </Routes>
@@ -159,6 +171,29 @@ describe('ConglomerateBuilderPage', () => {
     const weightInput = await screen.findByLabelText('Weight for AAPL');
     expect(weightInput).toHaveValue(0);
     expect(screen.getByLabelText('Weight slider for AAPL')).toHaveValue('0');
+  });
+
+  test('the New idea intent opens the real save flow once the ad-hoc basket is valid and consumes itself', async () => {
+    vi.mocked(searchAssets).mockResolvedValue({ results: [AAPL_RESULT] });
+    vi.mocked(createConglomerate).mockResolvedValue(detail([]));
+    vi.mocked(replaceConglomeratePositions).mockResolvedValue(detail([]));
+    const user = userEvent.setup();
+    renderBuilder('/workbench/blueprints/new?create=idea&keep=1');
+
+    await user.type(screen.getByRole('searchbox', { name: /search assets/i }), 'AAPL');
+    await user.click(await screen.findByRole('button', { name: /select aapl/i }));
+    await user.clear(await screen.findByLabelText('Weight for AAPL'));
+    await user.type(screen.getByLabelText('Weight for AAPL'), '100');
+
+    expect(await screen.findByRole('dialog', { name: 'Save as idea' })).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByTestId('location-search')).toHaveTextContent('?keep=1'));
+  });
+
+  test('strips an unknown create intent without dropping unrelated query state', async () => {
+    renderBuilder('/workbench/blueprints/new?create=retired-flow&keep=1');
+
+    await waitFor(() => expect(screen.getByTestId('location-search')).toHaveTextContent('?keep=1'));
+    expect(screen.queryByRole('dialog', { name: 'Save as idea' })).not.toBeInTheDocument();
   });
 
   test('the nest picker lists other own blueprints (never itself) and adds one as a constituent (V5-P6)', async () => {
