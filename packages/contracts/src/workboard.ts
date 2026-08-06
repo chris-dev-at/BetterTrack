@@ -120,6 +120,10 @@ export type WatchlistSharingResponse = z.infer<typeof watchlistSharingResponseSc
 
 /** `PATCH /workboard/sharing` body — turn watchlist friend-sharing on/off. */
 export const updateWatchlistSharingRequestSchema = z
-  .object({ visibility: watchlistVisibilitySchema })
+  .object({
+    visibility: watchlistVisibilitySchema,
+    /** Required when the legacy toggle would widen the current audience. */
+    confirmWiden: z.boolean().optional(),
+  })
   .strict();
 export type UpdateWatchlistSharingRequest = z.infer<typeof updateWatchlistSharingRequestSchema>;

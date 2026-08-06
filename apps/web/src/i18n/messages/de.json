@@ -2928,7 +2928,8 @@
     "friendsNone": "Du hast noch keine Freunde. Füge Freunde hinzu, um gezielt zu teilen.",
     "friendsSelect": "Freunde auswählen",
     "allFriendsConfirm": "Dies teilt eine schreibgeschützte Ansicht mit allen deinen Freunden.",
-    "audienceChangeConfirm": "Zugriff von {{from}} auf {{to}} ändern. Dies teilt eine schreibgeschützte Ansicht mit allen deinen Freunden. Speichere, um zu bestätigen.",
+    "audienceChangeConfirm": "Zugriff von {{from}} auf {{to}} ändern. Dadurch könnten mehr Personen diesen Eintrag sehen.",
+    "audienceWidenAcknowledge": "Mir ist bewusst, dass diese Änderung den Zugriff erweitert.",
     "publicWarning": "Dies erstellt einen öffentlichen Link — jeder mit dem Link sieht deine Bestände und dein Nettovermögen.",
     "publicAcknowledge": "Mir ist bewusst, dass jeder mit dem Link dies sehen kann.",
     "publicActive": "Ein öffentlicher Link ist aktiv. Aus Sicherheitsgründen wird die URL nur einmal bei der Erstellung angezeigt.",
@@ -3148,6 +3149,8 @@
         "shortcut": {
           "prompt": "{{username}} kann das nicht sehen — es ist nicht mit dieser Person geteilt.",
           "action": "Nur mit dieser Person teilen",
+          "confirmWiden": "Mir ist bewusst, dass {{username}} dadurch Zugriff erhält.",
+          "confirmGroupReplace": "Mir ist bewusst, dass dies die aktuelle Freundesgruppe durch eine Freigabe ausschließlich für {{username}} ersetzt.",
           "sharing": "Wird geteilt…",
           "error": "Teilen fehlgeschlagen — bitte erneut versuchen."
         }

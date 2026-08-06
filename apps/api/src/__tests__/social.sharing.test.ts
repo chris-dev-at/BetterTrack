@@ -107,7 +107,7 @@ async function setVisibility(
   const res = await agent
     .patch(`/api/v1/portfolios/${portfolioId}`)
     .set(...XRW)
-    .send({ visibility });
+    .send({ visibility, confirmWiden: visibility === 'friends' ? true : undefined });
   expect(res.status).toBe(200);
 }
 
@@ -179,7 +179,7 @@ async function setConglomerateVisibility(
   const res = await agent
     .patch(`/api/v1/conglomerates/${id}`)
     .set(...XRW)
-    .send({ visibility });
+    .send({ visibility, confirmWiden: visibility === 'friends' ? true : undefined });
   expect(res.status).toBe(200);
   expect(res.body.visibility).toBe(visibility);
 }
@@ -200,7 +200,7 @@ async function setWatchlistVisibility(
   const res = await agent
     .patch('/api/v1/workboard/sharing')
     .set(...XRW)
-    .send({ visibility });
+    .send({ visibility, confirmWiden: visibility === 'friends' ? true : undefined });
   expect(res.status).toBe(200);
   expect(res.body.visibility).toBe(visibility);
 }
@@ -790,12 +790,27 @@ async function putAudience(
   agent: Agent,
   kind: 'portfolio' | 'conglomerate' | 'watchlist',
   subjectId: string,
-  body: { audience: string; friendIds?: string[]; acknowledgePublic?: boolean },
+  body: {
+    audience: string;
+    friendIds?: string[];
+    groupId?: string;
+    acknowledgePublic?: boolean;
+    confirmWiden?: boolean;
+  },
 ): Promise<request.Response> {
   return agent
     .put(`/api/v1/social/audience/${kind}/${subjectId}`)
     .set(...XRW)
-    .send(body);
+    .send({ confirmWiden: true, ...body });
+}
+
+function expectWidenConflict(res: request.Response, currentAudience: string): void {
+  expect(res.status).toBe(409);
+  expect(res.body.error).toMatchObject({
+    code: 'AUDIENCE_WIDEN_CONFIRMATION_REQUIRED',
+    details: { currentAudience },
+  });
+  expect(res.body.error.message).toContain(currentAudience);
 }
 
 /** Buy one 100-EUR share of `assetId` into `portfolioId` (worth 120 with the stub). */
@@ -812,6 +827,107 @@ async function buyOneShare(agent: Agent, portfolioId: string, assetId: string): 
     });
   expect(res.status).toBe(201);
 }
+
+describe('audience widening confirmation (#1127)', () => {
+  it('guards recipient additions on the unified endpoint while removals stay friction-free', async () => {
+    const { bob, carol, aliceAgent, carolAgent, pid } = await scenario();
+    await befriend(aliceAgent, carolAgent, 'carol');
+
+    // all_friends → a named subset is a genuine narrowing and needs no flag.
+    const narrowed = await aliceAgent
+      .put(`/api/v1/social/audience/portfolio/${pid}`)
+      .set(...XRW)
+      .send({ audience: 'specific_friends', friendIds: [bob.id] });
+    expect(narrowed.status).toBe(200);
+
+    // Adding another recipient at the same enum tier still widens access.
+    const stale = await aliceAgent
+      .put(`/api/v1/social/audience/portfolio/${pid}`)
+      .set(...XRW)
+      .send({ audience: 'specific_friends', friendIds: [bob.id, carol.id] });
+    expectWidenConflict(stale, 'specific_friends');
+
+    const confirmed = await aliceAgent
+      .put(`/api/v1/social/audience/portfolio/${pid}`)
+      .set(...XRW)
+      .send({
+        audience: 'specific_friends',
+        friendIds: [bob.id, carol.id],
+        confirmWiden: true,
+      });
+    expect(confirmed.status).toBe(200);
+
+    // Removing a recipient is still accepted from an older client.
+    const remove = await aliceAgent
+      .put(`/api/v1/social/audience/portfolio/${pid}`)
+      .set(...XRW)
+      .send({ audience: 'specific_friends', friendIds: [bob.id] });
+    expect(remove.status).toBe(200);
+  });
+
+  it('rejects stale widening writes on every legacy endpoint before mixed metadata changes', async () => {
+    const { bob, aliceAgent, pid, assetId } = await scenario();
+    const cid = await seedConglomerate(aliceAgent, assetId);
+    const wid = await defaultWatchlistId(aliceAgent);
+
+    await putAudience(aliceAgent, 'portfolio', pid, {
+      audience: 'specific_friends',
+      friendIds: [bob.id],
+    });
+    await putAudience(aliceAgent, 'conglomerate', cid, {
+      audience: 'specific_friends',
+      friendIds: [bob.id],
+    });
+    await putAudience(aliceAgent, 'watchlist', wid, {
+      audience: 'specific_friends',
+      friendIds: [bob.id],
+    });
+
+    const portfolio = await aliceAgent
+      .patch(`/api/v1/portfolios/${pid}`)
+      .set(...XRW)
+      .send({ name: 'Must stay Main', visibility: 'friends' });
+    expectWidenConflict(portfolio, 'specific_friends');
+
+    const conglomerate = await aliceAgent
+      .patch(`/api/v1/conglomerates/${cid}`)
+      .set(...XRW)
+      .send({ name: 'Must stay Tech basket', visibility: 'friends' });
+    expectWidenConflict(conglomerate, 'specific_friends');
+
+    const watchlist = await aliceAgent
+      .patch('/api/v1/workboard/sharing')
+      .set(...XRW)
+      .send({ visibility: 'friends' });
+    expectWidenConflict(watchlist, 'specific_friends');
+
+    const portfolios = await aliceAgent.get('/api/v1/portfolios');
+    expect(portfolios.body.portfolios.find((row: { id: string }) => row.id === pid).name).toBe(
+      'Main',
+    );
+    expect((await aliceAgent.get(`/api/v1/conglomerates/${cid}`)).body.name).toBe('Tech basket');
+    expect((await aliceAgent.get(`/api/v1/social/audience/watchlist/${wid}`)).body.audience).toBe(
+      'specific_friends',
+    );
+  });
+
+  it('does not mistake public-link → all-friends for widening on a legacy endpoint', async () => {
+    const { aliceAgent, pid } = await scenario();
+    await putAudience(aliceAgent, 'portfolio', pid, {
+      audience: 'public_link',
+      acknowledgePublic: true,
+    });
+
+    const narrowed = await aliceAgent
+      .patch(`/api/v1/portfolios/${pid}`)
+      .set(...XRW)
+      .send({ visibility: 'friends' });
+    expect(narrowed.status).toBe(200);
+    expect((await aliceAgent.get(`/api/v1/social/audience/portfolio/${pid}`)).body.audience).toBe(
+      'all_friends',
+    );
+  });
+});
 
 describe('audience model — specific friends (V3-P5)', () => {
   it('shares to exactly the named friend; an un-named friend and non-friends 404', async () => {

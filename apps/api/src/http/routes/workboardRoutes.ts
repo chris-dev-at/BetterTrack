@@ -73,8 +73,8 @@ export function createWorkboardRouter(ctx: AppContext): Router {
 
   // PATCH /workboard/sharing — legacy toggle on the General list.
   router.patch('/sharing', validateBody(updateWatchlistSharingRequestSchema), async (req, res) => {
-    const { visibility } = req.valid?.body as UpdateWatchlistSharingRequest;
-    const result = await ctx.workboard.setSharing(req.authUser!.id, visibility);
+    const { visibility, confirmWiden } = req.valid?.body as UpdateWatchlistSharingRequest;
+    const result = await ctx.workboard.setSharing(req.authUser!.id, visibility, confirmWiden);
     res.json(result);
   });
 

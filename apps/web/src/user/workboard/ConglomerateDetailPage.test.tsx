@@ -412,6 +412,7 @@ describe('ConglomerateDetailPage', () => {
 
     await user.click(screen.getByRole('button', { name: 'Share with friends' }));
     await user.click(await screen.findByRole('radio', { name: /all friends/i }));
+    await user.click(screen.getByRole('checkbox', { name: /this change widens access/i }));
     // The server mirrors any non-private audience into the visibility column.
     vi.mocked(getConglomerate).mockResolvedValue({ ...DETAIL, visibility: 'friends' });
     await user.click(screen.getByRole('button', { name: /^save$/i }));
@@ -421,6 +422,7 @@ describe('ConglomerateDetailPage', () => {
       audience: 'all_friends',
       friendIds: undefined,
       acknowledgePublic: undefined,
+      confirmWiden: true,
     });
     // The picker only invalidates ['social'] + ['workboard']; this page wires
     // its own key, so the header label must not stay stale after a save.

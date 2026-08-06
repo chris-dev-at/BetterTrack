@@ -109,7 +109,7 @@ function putIdeaAudience(
   return agent
     .put(`/api/v1/social/audience/idea/${ideaId}`)
     .set(...XRW)
-    .send(body);
+    .send({ confirmWiden: true, ...body });
 }
 
 describe('POST/GET /ideas — exact-state roundtrip (AC#1)', () => {
