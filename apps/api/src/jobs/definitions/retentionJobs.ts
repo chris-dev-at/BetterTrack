@@ -1,5 +1,6 @@
 import type { AuditRepository } from '../../data/repositories/auditRepository';
 import type { EmailLogRepository } from '../../data/repositories/emailLogRepository';
+import type { ParanoidVaultRepository } from '../../data/repositories/paranoidVaultRepository';
 import type { UserRepository } from '../../data/repositories/userRepository';
 import { sweepLegacyRememberedDeviceBindings } from '../../services/auth/loginThrottle';
 import { QUEUE_NAMES, type JobDefinition } from '../types';
@@ -49,6 +50,8 @@ async function deleteInBatches(
 export interface DataRetentionCleanupJobDeps {
   audit: Pick<AuditRepository, 'deleteOlderThan'>;
   emailLog: Pick<EmailLogRepository, 'deleteOlderThan'>;
+  /** Expired normal-mode enable windows and every opaque byte staged under them. */
+  vaultStaging: Pick<ParanoidVaultRepository, 'cleanupExpiredEnableStaging'>;
   /** Batched account lookup for the remembered-device sweep. */
   users: Pick<UserRepository, 'listByIds'>;
   /** Whole days; `0` explicitly means retain audit rows forever. */
@@ -105,16 +108,23 @@ export function createDataRetentionCleanupJob(
               batchSize,
               maxRowsPerRun,
             );
+      const vaultStaging = await deleteInBatches(
+        deps.vaultStaging.cleanupExpiredEnableStaging.bind(deps.vaultStaging),
+        new Date(runAt),
+        batchSize,
+        maxRowsPerRun,
+      );
       const devices = await sweepLegacyRememberedDeviceBindings(ctx.redis, deps.users);
 
-      if (audit.deleted > 0 || emailLog.deleted > 0) {
+      if (audit.deleted > 0 || emailLog.deleted > 0 || vaultStaging.deleted > 0) {
         ctx.logger.info(
           {
             auditPruned: audit.deleted,
             emailLogPruned: emailLog.deleted,
+            abandonedVaultStagesPruned: vaultStaging.deleted,
             // A capped run leaves eligible rows behind on purpose; the next
             // scheduled run continues, so this must be visible in the log.
-            deferredToNextRun: audit.capped || emailLog.capped,
+            deferredToNextRun: audit.capped || emailLog.capped || vaultStaging.capped,
           },
           'expired audit and email-log rows pruned',
         );

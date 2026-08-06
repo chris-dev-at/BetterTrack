@@ -441,8 +441,19 @@ export function createVaultRouter(ctx: AppContext, limiters: RateLimiters): Rout
   );
 
   router.get('/', async (req, res) => {
-    const row = await ctx.paranoidVault.get(req.authUser!.id);
-    if (!row) throw notFound('No vault stored.', VAULT_ERROR_CODES.notFound);
+    const result = await ctx.paranoidVault.get(
+      req.authUser!.id,
+      req.apiKey ? 'sync-bearer' : 'owner-session',
+    );
+    if (result.status === 'medium_inactive') {
+      throw serverMediumInactive(
+        'The server vault is available only while paranoid mode or its owner enable window is active.',
+      );
+    }
+    if (result.status === 'not_found') {
+      throw notFound('No vault stored.', VAULT_ERROR_CODES.notFound);
+    }
+    const { row } = result;
     res.setHeader('ETag', vaultEtag(row.version));
     res.setHeader('Cache-Control', 'private, no-store');
     const ifNoneMatch = parseVaultEtag(req.headers['if-none-match'] as string | undefined);
@@ -475,6 +486,7 @@ export function createVaultRouter(ctx: AppContext, limiters: RateLimiters): Rout
       }
       const result = await ctx.paranoidVault.put({
         userId: req.authUser!.id,
+        access: req.apiKey ? 'sync-bearer' : 'owner-session',
         expectedVersion,
         blob,
         retirementProofPublicKey: parseRetirementProofPublicKey(req),

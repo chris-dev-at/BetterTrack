@@ -19,6 +19,7 @@ import { createMarketIntelRepository } from '../data/repositories/marketIntelRep
 import { createNotificationRepository } from '../data/repositories/notificationRepository';
 import { createNotificationDigestRepository } from '../data/repositories/notificationDigestRepository';
 import { createPushSubscriptionRepository } from '../data/repositories/pushSubscriptionRepository';
+import { createParanoidVaultRepository } from '../data/repositories/paranoidVaultRepository';
 import {
   createParanoidEnforcementRepository,
   withFreshLockedPrivacyModes,
@@ -590,6 +591,7 @@ const definitions = assembleRegisteredJobDefinitions({
   createDataRetentionCleanupJob: createDataRetentionCleanupJob({
     audit: createAuditRepository(db),
     emailLog: createEmailLogRepository(db),
+    vaultStaging: createParanoidVaultRepository(db),
     users: workerUserRepo,
     auditRetentionDays: config.retention.auditDays,
     emailLogRetentionDays: config.retention.emailLogDays,

@@ -1,4 +1,4 @@
-import { and, desc, eq, lt, lte } from 'drizzle-orm';
+import { and, asc, desc, eq, lt, lte } from 'drizzle-orm';
 
 import {
   VAULT_HISTORY_PAGE_DEFAULT,
@@ -16,6 +16,7 @@ import type { Database } from '../db';
 import { withExclusiveParanoidTransitionTestLock } from './paranoidEnforcementRepository';
 import {
   paranoidRehydrationReceipts,
+  paranoidEnableTransitions,
   paranoidVaultHistory,
   paranoidVaultRetired,
   paranoidVaultRetirements,
@@ -86,6 +87,9 @@ export function createParanoidRehydrationTransactionRepository(
 
     async deleteServerCiphertext(userId) {
       await executor
+        .delete(paranoidEnableTransitions)
+        .where(eq(paranoidEnableTransitions.userId, userId));
+      await executor
         .delete(paranoidVaultServerCandidates)
         .where(eq(paranoidVaultServerCandidates.userId, userId));
       await executor.delete(paranoidVaultRetired).where(eq(paranoidVaultRetired.userId, userId));
@@ -128,6 +132,8 @@ export interface ParanoidVaultRetention {
 
 export interface ParanoidVaultCasInput extends ParanoidVaultBlobInput {
   userId: string;
+  /** Defaults fail-closed for any non-route/future caller. */
+  access?: ParanoidVaultAccess;
   expectedVersion: number | null;
   retention: ParanoidVaultRetention;
   now: Date;
@@ -161,6 +167,23 @@ export interface ParanoidVaultHistoryPage {
 }
 
 export type ParanoidVaultHistoryReadRow = ParanoidVaultHistoryRow | ParanoidVaultRetiredRow;
+
+export type ParanoidVaultAccess = 'owner-session' | 'sync-bearer';
+
+/** One-migration grace marker for normal-mode vault rows staged before #1126. */
+export const PARANOID_ENABLE_LEGACY_REVISION = 'legacy-pre-1126';
+
+export type ParanoidVaultReadResult =
+  | { status: 'ok'; row: ParanoidVaultRow }
+  | { status: 'not_found' }
+  | { status: 'medium_inactive' };
+
+export interface ParanoidEnableStagingInput {
+  userId: string;
+  normalDataRevision: string;
+  now: Date;
+  expiresAt: Date;
+}
 
 export interface ParanoidMediaAccountState {
   privacyMode: 'normal' | 'paranoid';
@@ -222,7 +245,16 @@ export type ParanoidRetiredPurgeResult =
   | { status: 'proof_required' };
 
 export interface ParanoidVaultRepository {
+  /** Internal metadata primitive; byte-serving callers must use readCurrent. */
   getCurrent(userId: string): Promise<ParanoidVaultRow | null>;
+  readCurrent(
+    userId: string,
+    access: ParanoidVaultAccess,
+    now: Date,
+  ): Promise<ParanoidVaultReadResult>;
+  beginEnableStaging(input: ParanoidEnableStagingInput): Promise<void>;
+  expireEnableStaging(userId: string, now: Date): Promise<boolean>;
+  cleanupExpiredEnableStaging(expiresAtOrBefore: Date, limit: number): Promise<number>;
   getMediaState(userId: string): Promise<ParanoidMediaStateResponse | null>;
   listHistory(
     userId: string,
@@ -250,10 +282,140 @@ function historyPageSize(requested: number | undefined): number {
 }
 
 export function createParanoidVaultRepository(db: Database): ParanoidVaultRepository {
+  const expireEnableStaging = async (userId: string, now: Date): Promise<boolean> =>
+    withExclusiveParanoidTransitionTestLock(db, userId, () =>
+      db.transaction(async (tx) => {
+        const [owner] = await tx
+          .select({ privacyMode: users.privacyMode })
+          .from(users)
+          .where(eq(users.id, userId))
+          .for('update');
+        const [transition] = await tx
+          .select({ expiresAt: paranoidEnableTransitions.expiresAt })
+          .from(paranoidEnableTransitions)
+          .where(eq(paranoidEnableTransitions.userId, userId))
+          .for('update');
+        if (!transition || transition.expiresAt.getTime() > now.getTime()) return false;
+
+        // Only a normal account can own enable-staging bytes. A stale marker on
+        // an already-paranoid account is metadata debris; never delete its live
+        // selected server medium.
+        if (owner?.privacyMode === 'normal') {
+          await tx.delete(paranoidVaultHistory).where(eq(paranoidVaultHistory.userId, userId));
+          await tx.delete(paranoidVaults).where(eq(paranoidVaults.userId, userId));
+        }
+        await tx
+          .delete(paranoidEnableTransitions)
+          .where(eq(paranoidEnableTransitions.userId, userId));
+        return true;
+      }),
+    );
+
   return {
     async getCurrent(userId) {
       const [row] = await db.select().from(paranoidVaults).where(eq(paranoidVaults.userId, userId));
       return row ?? null;
+    },
+
+    async readCurrent(userId, access, now) {
+      return db.transaction(async (tx) => {
+        const [owner] = await tx
+          .select({ privacyMode: users.privacyMode })
+          .from(users)
+          .where(eq(users.id, userId))
+          .for('update');
+        if (!owner) return { status: 'not_found' } as const;
+
+        if (owner.privacyMode === 'normal') {
+          const [transition] = await tx
+            .select({ expiresAt: paranoidEnableTransitions.expiresAt })
+            .from(paranoidEnableTransitions)
+            .where(eq(paranoidEnableTransitions.userId, userId))
+            .for('update');
+          if (transition && transition.expiresAt.getTime() <= now.getTime()) {
+            await tx.delete(paranoidVaultHistory).where(eq(paranoidVaultHistory.userId, userId));
+            await tx.delete(paranoidVaults).where(eq(paranoidVaults.userId, userId));
+            await tx
+              .delete(paranoidEnableTransitions)
+              .where(eq(paranoidEnableTransitions.userId, userId));
+            return { status: 'medium_inactive' } as const;
+          }
+          if (access !== 'owner-session' || !transition) {
+            return { status: 'medium_inactive' } as const;
+          }
+        }
+
+        const [row] = await tx
+          .select()
+          .from(paranoidVaults)
+          .where(eq(paranoidVaults.userId, userId))
+          .for('update');
+        return row ? ({ status: 'ok', row } as const) : ({ status: 'not_found' } as const);
+      });
+    },
+
+    async beginEnableStaging(input) {
+      await withExclusiveParanoidTransitionTestLock(db, input.userId, () =>
+        db.transaction(async (tx) => {
+          const [owner] = await tx
+            .select({ privacyMode: users.privacyMode })
+            .from(users)
+            .where(eq(users.id, input.userId))
+            .for('update');
+          if (!owner || owner.privacyMode !== 'normal') {
+            await tx
+              .delete(paranoidEnableTransitions)
+              .where(eq(paranoidEnableTransitions.userId, input.userId));
+            return;
+          }
+
+          const [existing] = await tx
+            .select({ expiresAt: paranoidEnableTransitions.expiresAt })
+            .from(paranoidEnableTransitions)
+            .where(eq(paranoidEnableTransitions.userId, input.userId))
+            .for('update');
+          if (existing && existing.expiresAt.getTime() <= input.now.getTime()) {
+            await tx
+              .delete(paranoidVaultHistory)
+              .where(eq(paranoidVaultHistory.userId, input.userId));
+            await tx.delete(paranoidVaults).where(eq(paranoidVaults.userId, input.userId));
+          }
+          await tx
+            .insert(paranoidEnableTransitions)
+            .values({
+              userId: input.userId,
+              normalDataRevision: input.normalDataRevision,
+              expiresAt: input.expiresAt,
+              createdAt: input.now,
+              updatedAt: input.now,
+            })
+            .onConflictDoUpdate({
+              target: paranoidEnableTransitions.userId,
+              set: {
+                normalDataRevision: input.normalDataRevision,
+                expiresAt: input.expiresAt,
+                updatedAt: input.now,
+              },
+            });
+        }),
+      );
+    },
+
+    expireEnableStaging,
+
+    async cleanupExpiredEnableStaging(expiresAtOrBefore, limit) {
+      if (!Number.isSafeInteger(limit) || limit < 1) return 0;
+      const expired = await db
+        .select({ userId: paranoidEnableTransitions.userId })
+        .from(paranoidEnableTransitions)
+        .where(lte(paranoidEnableTransitions.expiresAt, expiresAtOrBefore))
+        .orderBy(asc(paranoidEnableTransitions.expiresAt), asc(paranoidEnableTransitions.userId))
+        .limit(limit);
+      let cleaned = 0;
+      for (const row of expired) {
+        if (await expireEnableStaging(row.userId, expiresAtOrBefore)) cleaned += 1;
+      }
+      return cleaned;
     },
 
     async getMediaState(userId) {
@@ -382,6 +544,7 @@ export function createParanoidVaultRepository(db: Database): ParanoidVaultReposi
     async compareAndSwap(input) {
       const {
         userId,
+        access = 'sync-bearer',
         expectedVersion,
         version,
         formatVersion,
@@ -397,7 +560,25 @@ export function createParanoidVaultRepository(db: Database): ParanoidVaultReposi
           .from(users)
           .where(eq(users.id, userId))
           .for('update');
-        if (owner?.privacyMode === 'paranoid' && !(owner.mediaSet ?? []).includes('server')) {
+        if (!owner) return { status: 'medium_inactive' } as const;
+        if (owner.privacyMode === 'normal') {
+          const [transition] = await tx
+            .select({ expiresAt: paranoidEnableTransitions.expiresAt })
+            .from(paranoidEnableTransitions)
+            .where(eq(paranoidEnableTransitions.userId, userId))
+            .for('update');
+          if (transition && transition.expiresAt.getTime() <= now.getTime()) {
+            await tx.delete(paranoidVaultHistory).where(eq(paranoidVaultHistory.userId, userId));
+            await tx.delete(paranoidVaults).where(eq(paranoidVaults.userId, userId));
+            await tx
+              .delete(paranoidEnableTransitions)
+              .where(eq(paranoidEnableTransitions.userId, userId));
+            return { status: 'medium_inactive' } as const;
+          }
+          if (access !== 'owner-session' || !transition) {
+            return { status: 'medium_inactive' } as const;
+          }
+        } else if (!(owner.mediaSet ?? []).includes('server')) {
           return { status: 'medium_inactive' } as const;
         }
         const [current] = await tx

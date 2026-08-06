@@ -34,6 +34,7 @@ beforeEach(async () => {
 
 /** A repository stub that resolves nothing — the sweep then has no work. */
 const noUsers: Pick<UserRepository, 'listByIds'> = { listByIds: async () => [] };
+const noVaultStaging = { cleanupExpiredEnableStaging: async () => 0 };
 
 function ctx(): JobContext {
   return {
@@ -49,6 +50,7 @@ describe('data.retentionCleanup', () => {
     const job = createDataRetentionCleanupJob({
       audit: { deleteOlderThan: vi.fn() },
       emailLog: { deleteOlderThan: vi.fn() },
+      vaultStaging: noVaultStaging,
       users: noUsers,
       auditRetentionDays: 400,
       emailLogRetentionDays: 180,
@@ -97,6 +99,7 @@ describe('data.retentionCleanup', () => {
     const job = createDataRetentionCleanupJob({
       audit,
       emailLog,
+      vaultStaging: noVaultStaging,
       users: noUsers,
       auditRetentionDays: 400,
       emailLogRetentionDays: 180,
@@ -129,6 +132,7 @@ describe('data.retentionCleanup', () => {
     const job = createDataRetentionCleanupJob({
       audit: { deleteOlderThan: auditDelete },
       emailLog: { deleteOlderThan: emailDelete },
+      vaultStaging: noVaultStaging,
       users: noUsers,
       auditRetentionDays: 0,
       emailLogRetentionDays: 180,
@@ -169,6 +173,7 @@ describe('data.retentionCleanup — legacy remembered-device bindings', () => {
     return createDataRetentionCleanupJob({
       audit: { deleteOlderThan: vi.fn().mockResolvedValue(0) },
       emailLog: { deleteOlderThan: vi.fn().mockResolvedValue(0) },
+      vaultStaging: noVaultStaging,
       users,
       auditRetentionDays: 0,
       emailLogRetentionDays: 0,

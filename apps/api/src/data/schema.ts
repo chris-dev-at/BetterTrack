@@ -3559,6 +3559,27 @@ export const paranoidVaults = pgTable('paranoid_vaults', {
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
 
+/**
+ * Short-lived owner-session authorization for the normal → paranoid enable
+ * wizard. The capture protocol refreshes this row with its opening/closing
+ * normal-data revision; opaque server bytes are readable/writable in normal
+ * mode only while this exact transition is live. Expiry abandons the attempt
+ * and makes its staged ciphertext eligible for physical deletion.
+ */
+export const paranoidEnableTransitions = pgTable(
+  'paranoid_enable_transitions',
+  {
+    userId: uuid('user_id')
+      .primaryKey()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    normalDataRevision: text('normal_data_revision').notNull(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('paranoid_enable_transitions_expires_idx').on(t.expiresAt)],
+);
+
 // Bounded ciphertext history — the corruption/bad-write safety net (§4): each
 // superseded blob is archived here and pruned to the configured window (last N
 // versions / M days, env-tunable). Ciphertext + version metadata only, exactly
@@ -3767,6 +3788,7 @@ export const schema = {
   expenseBudgetFires,
   webhookSubscriptions,
   webhookDeliveries,
+  paranoidEnableTransitions,
   paranoidVaults,
   paranoidVaultHistory,
   paranoidVaultServerCandidates,
