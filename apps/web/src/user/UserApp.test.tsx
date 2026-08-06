@@ -318,7 +318,9 @@ test('a rate-limited mutation shows only the global 429 notice', async () => {
   await user.click(await waitForColdStart(() => screen.getByRole('button', { name: 'Re-arm' })));
 
   expect(
-    await screen.findByText("You're doing that too fast. Please wait 30 seconds and try again."),
+    await waitForColdStart(() =>
+      screen.getByText("You're doing that too fast. Please wait 30 seconds and try again."),
+    ),
   ).toBeInTheDocument();
   expect(
     screen.queryByText("Couldn't update that alert. Please try again."),
