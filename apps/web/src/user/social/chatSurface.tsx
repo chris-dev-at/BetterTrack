@@ -552,7 +552,13 @@ export function ConversationListPane({
         style={{ padding: '10px 14px' }}
       >
         <h2 className="bt-h3">{t('social.chat.title')}</h2>
-        <Button icon="plus" onClick={() => setNewOpen(true)} size="sm" variant="quiet">
+        <Button
+          data-testid="new-chat-trigger"
+          icon="plus"
+          onClick={() => setNewOpen(true)}
+          size="sm"
+          variant="quiet"
+        >
           {t('social.chat.new')}
         </Button>
       </div>

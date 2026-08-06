@@ -63,6 +63,41 @@ export const MIRRORCHAIN_BEARER_ROUTE_ALLOWLIST = [
   { method: 'POST', path: '/mirrorchain/chains/{chainId}/leave' },
 ] as const satisfies readonly BearerRoute[];
 
+/**
+ * MIRRORCHAIN lifecycle routes that deliberately remain cookie-session-only.
+ * This is policy metadata, not a second guard: the guard above is default-deny.
+ * The mounted-route completeness test compares the real Express router against
+ * the participation + administration union, so a newly added route must make
+ * an explicit access decision before CI can pass.
+ */
+export const MIRRORCHAIN_SESSION_ONLY_ROUTES = [
+  { method: 'POST', path: '/mirrorchain/chains' },
+  { method: 'POST', path: '/mirrorchain/chains/convert' },
+  { method: 'POST', path: '/mirrorchain/invites/{inviteId}/revoke' },
+  { method: 'POST', path: '/mirrorchain/chains/{chainId}/invites' },
+  { method: 'PATCH', path: '/mirrorchain/chains/{chainId}' },
+  { method: 'POST', path: '/mirrorchain/chains/{chainId}/transfer' },
+  { method: 'DELETE', path: '/mirrorchain/chains/{chainId}' },
+  {
+    method: 'PATCH',
+    path: '/mirrorchain/chains/{chainId}/members/{userId}/role',
+  },
+  { method: 'DELETE', path: '/mirrorchain/chains/{chainId}/members/{userId}' },
+] as const satisfies readonly BearerRoute[];
+
+/**
+ * Vault storage/media mutations that are explicitly outside opaque bearer
+ * synchronization. Kept beside the sync allowlist for the same mounted-route
+ * completeness check used by MIRRORCHAIN.
+ */
+export const VAULT_SESSION_ONLY_ROUTES = [
+  { method: 'PATCH', path: '/vault/media' },
+  { method: 'PUT', path: '/vault/media/server-candidate' },
+  { method: 'GET', path: '/vault/media/server-candidate/{candidateId}' },
+  { method: 'POST', path: '/vault/media/retired/purge/challenge' },
+  { method: 'POST', path: '/vault/media/retired/purge' },
+] as const satisfies readonly BearerRoute[];
+
 function normalizedRouteSegments(path: string): string[] {
   return normalizeRoutePath(path).split('/').filter(Boolean);
 }

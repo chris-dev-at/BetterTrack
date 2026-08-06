@@ -20,11 +20,13 @@ import {
 import { createOAuthRepository } from '../data/repositories/oauthRepository';
 import { paranoidEnableTransitions, paranoidVaults, users } from '../data/schema';
 import {
+  VAULT_SESSION_ONLY_ROUTES,
   VAULT_SYNC_BEARER_ROUTE_ALLOWLIST,
   openApiPathTemplateAcceptsBearer,
   pathAcceptsBearer,
   vaultSyncRouteAcceptsBearer,
 } from '../http/middleware/bearerAuth';
+import { buildRouteTable, type MountedSurface } from '../scripts/checkOpenapiCoverage';
 import { requireCookieSessionOrVaultSync } from '../http/routes/vaultRoutes';
 import {
   isParanoidKilledScope,
@@ -32,6 +34,12 @@ import {
 } from '../services/account/paranoidEnforcement';
 import { FIRST_PARTY_CLIENTS, seedFirstPartyClients } from '../services/oauth/firstPartyClients';
 import { createTestApp, type SeededUser, type TestHarness } from '../testing/createTestApp';
+
+import {
+  BEARER_ALL_METHODS_ROUTE_METHOD,
+  BEARER_OPAQUE_MOUNT_METHOD,
+  mountedBearerRouteInventory,
+} from './bearerRouteInventory';
 
 /**
  * #1043 — the deliberate bearer exception for paranoid-vault synchronization.
@@ -207,18 +215,30 @@ describe('#1043 vault bearer policy', () => {
   ] as const;
 
   const SESSION_ONLY = [
-    { method: 'PATCH', path: '/vault/media' },
-    { method: 'PUT', path: '/vault/media/server-candidate' },
-    { method: 'GET', path: `/vault/media/server-candidate/${MISSING_ID}` },
-    { method: 'POST', path: '/vault/media/retired/purge/challenge' },
-    { method: 'POST', path: '/vault/media/retired/purge' },
+    ...VAULT_SESSION_ONLY_ROUTES,
     { method: 'POST', path: '/account/paranoid/enable' },
     { method: 'POST', path: '/account/paranoid/disable' },
     { method: 'GET', path: '/account/paranoid/fork-provenance' },
     { method: 'GET', path: '/account/paranoid/normal-revision' },
   ] as const;
 
+  const EXPECTED_ROUTER_GUARDS = [
+    {
+      method: `${BEARER_OPAQUE_MOUNT_METHOD}:requireUser[1]`,
+      path: '/vault',
+    },
+    {
+      method: `${BEARER_OPAQUE_MOUNT_METHOD}:requireCookieSessionOrVaultSync[1]`,
+      path: '/vault',
+    },
+    {
+      method: `${BEARER_OPAQUE_MOUNT_METHOD}:requireParanoidHistory[1]`,
+      path: '/vault/history',
+    },
+  ] as const;
+
   const livePath = (path: string): string => path.replace('{version}', '12');
+  const liveSessionPath = (path: string): string => path.replace('{candidateId}', MISSING_ID);
 
   it('pins the exact sync routes and defaults transitions and future routes closed', () => {
     expect(VAULT_SYNC_BEARER_ROUTE_ALLOWLIST).toEqual(EXPECTED_ALLOWLIST);
@@ -231,10 +251,57 @@ describe('#1043 vault bearer policy', () => {
     expect(vaultSyncRouteAcceptsBearer('GET', '/vault/history/12')).toBe(true);
 
     for (const route of SESSION_ONLY) {
-      expect(pathAcceptsBearer(route.path, route.method)).toBe(false);
+      const path = liveSessionPath(route.path);
+      expect(pathAcceptsBearer(path, route.method)).toBe(false);
+      expect(openApiPathTemplateAcceptsBearer(route.path, route.method)).toBe(false);
     }
     expect(pathAcceptsBearer('/vault/future-transition', 'GET')).toBe(false);
     expect(pathAcceptsBearer('/vault/history/admin', 'GET')).toBe(false);
+  });
+
+  it('classifies every real mounted vault route as sync or session-only', () => {
+    const mounted = mountedBearerRouteInventory(buildRouteTable(), '/vault');
+    const classified = [
+      ...VAULT_SYNC_BEARER_ROUTE_ALLOWLIST,
+      ...VAULT_SESSION_ONLY_ROUTES,
+      ...EXPECTED_ROUTER_GUARDS,
+    ].map(({ method, path }) => ({ method, path }));
+    const sortRoutes = (routes: Array<{ method: string; path: string }>) =>
+      routes.sort(
+        (left, right) =>
+          left.path.localeCompare(right.path) || left.method.localeCompare(right.method),
+      );
+
+    expect(new Set(classified.map((route) => `${route.method} ${route.path}`)).size).toBe(
+      classified.length,
+    );
+    expect(sortRoutes(mounted)).toEqual(sortRoutes(classified));
+  });
+
+  it('keeps router.all and opaque router.use leaves in the completeness inventory', () => {
+    const futureSurfaces: MountedSurface[] = [
+      {
+        kind: 'all-methods-route',
+        path: '/api/v1/vault/future-all',
+      },
+      {
+        kind: 'opaque-mount',
+        path: '/api/v1/vault/future-leaf',
+        handler: 'futureVaultLeaf',
+        occurrence: 1,
+      },
+    ];
+
+    expect(mountedBearerRouteInventory(futureSurfaces, '/vault')).toEqual([
+      {
+        method: BEARER_ALL_METHODS_ROUTE_METHOD,
+        path: '/vault/future-all',
+      },
+      {
+        method: `${BEARER_OPAQUE_MOUNT_METHOD}:futureVaultLeaf[1]`,
+        path: '/vault/future-leaf',
+      },
+    ]);
   });
 
   it('maps HEAD to allowlisted GET routes but keeps session-only vault routes closed', () => {

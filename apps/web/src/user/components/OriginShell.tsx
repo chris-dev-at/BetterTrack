@@ -380,6 +380,7 @@ export function AccountMenu({
         aria-haspopup="menu"
         aria-label={t('nav.accountMenu')}
         className={inTopbar ? 'bt-topbar__account' : 'bt-rail__account'}
+        data-testid={inTopbar ? 'topbar-account-trigger' : undefined}
         onClick={() => setOpen((value) => !value)}
         type="button"
       >
@@ -560,6 +561,7 @@ export function CreateMenu() {
         aria-expanded={open}
         aria-haspopup="menu"
         aria-label={t('create.button')}
+        data-testid="global-create-trigger"
         icon="plus"
         onClick={() => setOpen((value) => !value)}
         variant="primary"

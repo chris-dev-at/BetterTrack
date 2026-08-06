@@ -57,7 +57,11 @@ export function StandingOrdersSection({ portfolios }: { portfolios: PortfolioSum
           </h2>
           <p className="text-xs bt-muted">{t('forecast.standingOrders.subtitle')}</p>
         </div>
-        <Button onClick={() => setCreating(true)} disabled={disableCreate}>
+        <Button
+          data-testid="standing-order-create-trigger"
+          onClick={() => setCreating(true)}
+          disabled={disableCreate}
+        >
           {t('forecast.standingOrders.newOrder')}
         </Button>
       </div>

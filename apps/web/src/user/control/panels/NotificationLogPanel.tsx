@@ -315,7 +315,13 @@ export function NotificationLogPanel() {
           >
             {t('settings.notifications.deleteArchived')}
           </Button>
-          <Button type="button" size="sm" variant="danger" onClick={() => setConfirmScope('all')}>
+          <Button
+            data-testid="notification-delete-all-trigger"
+            type="button"
+            size="sm"
+            variant="danger"
+            onClick={() => setConfirmScope('all')}
+          >
             {t('settings.notifications.deleteAll')}
           </Button>
         </div>
