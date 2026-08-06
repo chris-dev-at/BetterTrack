@@ -150,11 +150,19 @@ export type NotificationMessage = z.infer<typeof notificationMessageSchema>;
 /**
  * Additive payload envelope for inbox rows. Deep-link fields remain open-ended;
  * historical rows may omit both standardized fields (or have a null payload).
+ *
+ * Both typed fields degrade instead of failing: `message.key` is a closed enum
+ * over a column that persists forever, so a retired key — or a row written by a
+ * newer worker and read by an older API instance / a stale SPA tab mid-rollout —
+ * must cost only the localized copy (the row falls back to its persisted
+ * `title`/`body`), never `eventKey` and never the deep-link ids that share the
+ * envelope. Without the catches one unknown key would drop the WHOLE payload
+ * server-side and reject the WHOLE list response client-side.
  */
 export const notificationPayloadSchema = z
   .object({
-    eventKey: z.string().optional(),
-    message: notificationMessageSchema.optional(),
+    eventKey: z.string().optional().catch(undefined),
+    message: notificationMessageSchema.optional().catch(undefined),
   })
   .catchall(z.unknown());
 export type NotificationPayload = z.infer<typeof notificationPayloadSchema>;

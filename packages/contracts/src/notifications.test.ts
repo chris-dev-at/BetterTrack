@@ -103,6 +103,27 @@ describe('localizable notification message descriptor (#1138)', () => {
       }),
     ).toMatchObject({ requestId: 'req-1', message: { key: 'friendRequest' } });
   });
+
+  it('drops only an unreadable descriptor, never the routing data beside it', () => {
+    // A key retired later, or a row written by a newer worker and read by an
+    // older instance / a stale SPA tab: the row must degrade to its persisted
+    // title/body, keeping `eventKey` (dedupe) and every deep-link id.
+    const parsed = notificationPayloadSchema.parse({
+      eventKey: 'friend.request:req-1',
+      requestId: 'req-1',
+      message: { key: 'keyFromANewerServer', params: { actor: 'anna' } },
+    });
+    expect(parsed).toMatchObject({ eventKey: 'friend.request:req-1', requestId: 'req-1' });
+    expect(parsed.message).toBeUndefined();
+
+    // Same for a descriptor that grew a field this client does not know.
+    expect(
+      notificationPayloadSchema.parse({
+        assetId: 'a-1',
+        message: { key: 'friendRequest', params: {}, variant: 'compact' },
+      }),
+    ).toMatchObject({ assetId: 'a-1', message: undefined });
+  });
 });
 
 describe('lean email defaults (V4-P0c)', () => {

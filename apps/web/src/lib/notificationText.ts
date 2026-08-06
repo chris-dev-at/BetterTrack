@@ -7,7 +7,15 @@ import {
 
 import type { TranslateFn } from '../i18n';
 
-/** The web-catalog path for one localizable notification title/body. */
+/**
+ * The web-catalog path for one localizable notification title/body.
+ *
+ * The strings under `notificationContent.*` in `i18n/messages/{en,de}.json` are
+ * the same pairs the API renders from
+ * `apps/api/src/services/notifications/notificationI18n.ts` for push, digest and
+ * email. Edit both catalogs together — the API test
+ * `notificationLocalization.test.ts` fails on any drift between them.
+ */
 export function notificationMessagePath(
   key: NotificationMessageKey,
   part: 'title' | 'body',

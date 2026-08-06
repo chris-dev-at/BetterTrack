@@ -54,19 +54,31 @@ test('registers every not-found string in EN and DE', () => {
 });
 
 test('registers title/body copy for every dispatcher notification message key', () => {
+  // The inbox renders `notificationContent.<key>.<part>` for every dispatcher
+  // row (#1138). Read each catalog DIRECTLY rather than through
+  // `localizedMessage`: that resolver falls back to EN, so a key missing only
+  // its DE entry would still return a non-path string and pass. Comparing each
+  // locale's pair against EN per key also keeps the guard honest for any number
+  // of registered locales (the old slice pair compared two fixed halves).
+  const translated = Object.values(LOCALES)
+    .filter((l) => l.code !== 'en')
+    .map((l) => [l.code, flatten(l.messages)] as const);
+
   for (const key of NOTIFICATION_MESSAGE_KEYS) {
-    const localized: string[] = [];
-    for (const locale of Object.values(LOCALES)) {
-      for (const part of ['title', 'body'] as const) {
-        const path = notificationMessagePath(key, part);
-        const value = localizedMessage(locale.code, path);
-        expect(value, `${locale.code}: ${path}`).not.toBe(path);
-        localized.push(value);
-      }
+    const paths = (['title', 'body'] as const).map((part) => notificationMessagePath(key, part));
+    const enPair = paths.map((path) => {
+      const value = enFlat.get(path);
+      expect(value, `en: ${path} missing`).toBeTruthy();
+      return value;
+    });
+    for (const [code, flat] of translated) {
+      const pair = paths.map((path) => {
+        const value = flat.get(path);
+        expect(value, `${code}: ${path} missing`).toBeTruthy();
+        return value;
+      });
+      expect(pair, `${key}: ${code} must not silently reuse EN`).not.toEqual(enPair);
     }
-    expect(localized.slice(0, 2), `${key}: DE must not silently reuse EN`).not.toEqual(
-      localized.slice(2),
-    );
   }
 });
 

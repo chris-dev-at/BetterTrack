@@ -20,6 +20,12 @@ interface NotificationCopyPair {
  * re-render when the active UI language changes. Keeping every branch explicit
  * prevents already-English fragments (notably alert rules and order fallbacks)
  * from leaking through interpolation parameters.
+ *
+ * **Keep in sync with `apps/web/src/i18n/messages/{en,de}.json` →
+ * `notificationContent.*`** — the same pairs, rendered by the SPA inbox. A
+ * one-sided edit would make the bell disagree with the push for one event;
+ * `__tests__/notificationLocalization.test.ts` asserts the two catalogs match
+ * string for string, so edit both together.
  */
 export const NOTIFICATION_COPY: Record<
   EmailLocale,

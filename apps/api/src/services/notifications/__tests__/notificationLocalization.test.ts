@@ -1,3 +1,6 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+
 import { eq } from 'drizzle-orm';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
@@ -472,6 +475,29 @@ describe('dispatcher notification localization (#1138)', () => {
     expect(Object.keys(NOTIFICATION_COPY.de)).toEqual([...NOTIFICATION_MESSAGE_KEYS]);
     for (const key of NOTIFICATION_MESSAGE_KEYS) {
       expect(NOTIFICATION_COPY.de[key], key).not.toEqual(NOTIFICATION_COPY.en[key]);
+    }
+  });
+
+  it('keeps the server catalog byte-identical to the web inbox catalog', () => {
+    // The same 56 pairs are maintained twice: here for the persisted fallback,
+    // push, digest and email bodies, and in the SPA catalogs for live inbox
+    // re-rendering. Nothing but this assertion binds them, and a one-sided edit
+    // would make the bell disagree with the push for the SAME event with
+    // everything still green. The web catalogs are plain JSON, so reading them
+    // across the package boundary costs one fs read and no build coupling.
+    for (const locale of ['en', 'de'] as const) {
+      const path = fileURLToPath(
+        new URL(`../../../../../web/src/i18n/messages/${locale}.json`, import.meta.url),
+      );
+      const catalog = JSON.parse(readFileSync(path, 'utf8')) as {
+        notificationContent?: Record<string, { title?: string; body?: string }>;
+      };
+      expect(catalog.notificationContent, `${locale}.json: notificationContent`).toBeDefined();
+      for (const key of NOTIFICATION_MESSAGE_KEYS) {
+        expect(catalog.notificationContent?.[key], `${locale}.json: ${key}`).toEqual(
+          NOTIFICATION_COPY[locale][key],
+        );
+      }
     }
   });
 });
