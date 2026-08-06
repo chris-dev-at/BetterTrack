@@ -1,7 +1,19 @@
 import { useEffect, useRef } from 'react';
 import { useSearchParams } from 'react-router-dom';
 
-import { CREATE_INTENT_PARAM, type CreateIntent } from '../routeParams';
+import { CREATE_INTENT_PARAM, isCreateIntent, type CreateIntent } from '../routeParams';
+
+/** Remove a stale create value even on pages that own no create flow. */
+export function useDiscardUnknownCreateIntent(): void {
+  const [searchParams, setSearchParams] = useSearchParams();
+  useEffect(() => {
+    const requested = searchParams.get(CREATE_INTENT_PARAM);
+    if (requested === null || isCreateIntent(requested)) return;
+    const next = new URLSearchParams(searchParams);
+    next.delete(CREATE_INTENT_PARAM);
+    setSearchParams(next, { replace: true });
+  }, [searchParams, setSearchParams]);
+}
 
 /**
  * Start a create flow the user asked for somewhere else (#1071).
@@ -13,6 +25,9 @@ import { CREATE_INTENT_PARAM, type CreateIntent } from '../routeParams';
  * reopen it — which is this hook, once, instead of six copies drifting apart.
  *
  * Consuming keeps the rest of the query string (`?portfolio=<id>` above all).
+ * Unknown values are discarded globally by
+ * {@link useDiscardUnknownCreateIntent}, so a stale link cannot leak its inert
+ * flag into later navigation.
  *
  * @param intent the value this surface answers to — see {@link CREATE_INTENT},
  *   which documents the whole namespace and why the values must not collide
@@ -22,6 +37,7 @@ import { CREATE_INTENT_PARAM, type CreateIntent } from '../routeParams';
  *   then, so nothing is lost.
  */
 export function useCreateIntent(intent: CreateIntent, start: () => void, ready = true): void {
+  useDiscardUnknownCreateIntent();
   const [searchParams, setSearchParams] = useSearchParams();
   // The callback is written inline at every call site, so it is a new function
   // on every render; keeping it out of the dependency list is what stops this
@@ -32,8 +48,11 @@ export function useCreateIntent(intent: CreateIntent, start: () => void, ready =
   });
 
   useEffect(() => {
+    const requested = searchParams.get(CREATE_INTENT_PARAM);
+    if (requested === null) return;
+    // Another known intent is left for its own consumer on this surface.
+    if (requested !== intent) return;
     if (!ready) return;
-    if (searchParams.get(CREATE_INTENT_PARAM) !== intent) return;
     startRef.current();
     const next = new URLSearchParams(searchParams);
     next.delete(CREATE_INTENT_PARAM);

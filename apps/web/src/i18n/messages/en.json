@@ -2928,7 +2928,8 @@
     "friendsNone": "You have no friends yet. Add friends to share with specific people.",
     "friendsSelect": "Select friends",
     "allFriendsConfirm": "This shares a read-only view with everyone you are friends with.",
-    "audienceChangeConfirm": "Change access from {{from}} to {{to}}. This shares a read-only view with everyone you are friends with. Save to confirm.",
+    "audienceChangeConfirm": "Change access from {{from}} to {{to}}. This may let more people see this item.",
+    "audienceWidenAcknowledge": "I understand this change widens access.",
     "publicWarning": "This creates a public link — anyone with the link sees your holdings and net worth.",
     "publicAcknowledge": "I understand that anyone with the link can see this.",
     "publicActive": "A public link is active. For security the URL is shown only once, when it is created.",
@@ -3148,6 +3149,8 @@
         "shortcut": {
           "prompt": "{{username}} can't see this — it isn't shared with them.",
           "action": "Share it with just them",
+          "confirmWiden": "I understand this widens access to {{username}}.",
+          "confirmGroupReplace": "I understand this replaces the current friend-group audience with only {{username}}.",
           "sharing": "Sharing…",
           "error": "Couldn't share — try again."
         }
@@ -3571,6 +3574,10 @@
       "progress": {
         "preparing": "Preparing the protected migration…",
         "migrate": "Collecting your complete portfolio data on this device…",
+        "captureRequests": {
+          "one": "1 data section collected safely.",
+          "other": "{{count}} data sections collected safely."
+        },
         "validate": "Checking that the prepared vault opens and restores…",
         "encrypt": "Encrypting your vault on this device…",
         "write-server": "Saving the encrypted BetterTrack copy…",
@@ -3595,6 +3602,8 @@
         "transitionConflict": "Another privacy transition is still finishing. Wait a moment and retry.",
         "normalDataChanged": "Your account changed while the encrypted copy was being prepared, so BetterTrack stopped before deleting anything. Nothing was lost — start the switch again to include the newest data.",
         "captureUnstable": "Your account kept changing while BetterTrack was collecting it, so no complete copy could be taken and nothing was changed. Close BetterTrack in other tabs and on other devices, then start the switch again.",
+        "rateLimited": "The switch reached BetterTrack’s request limit before anything was changed. Wait {{seconds}} seconds, then start the switch again.",
+        "rateLimitedUnknown": "The switch reached BetterTrack’s request limit before anything was changed. Wait for the request window to reset, then start the switch again.",
         "unknown": "Paranoid mode could not be enabled. Your normal account is unchanged."
       }
     },
@@ -4964,6 +4973,220 @@
   },
   "review": {
     "title": "Review"
+  },
+  "notificationContent": {
+    "friendRequest": {
+      "title": "New friend request",
+      "body": "{{actor}} sent you a friend request."
+    },
+    "friendAccepted": {
+      "title": "Friend request accepted",
+      "body": "{{actor}} accepted your friend request."
+    },
+    "portfolioShared": {
+      "title": "Portfolio shared",
+      "body": "{{actor}} shared their portfolio with friends."
+    },
+    "watchlistShared": {
+      "title": "Watchlist shared",
+      "body": "{{actor}} shared a watchlist with you."
+    },
+    "conglomerateShared": {
+      "title": "Conglomerate shared",
+      "body": "{{actor}} shared a conglomerate with you."
+    },
+    "friendActivityBuy": { "title": "Friend activity", "body": "{{actor}} bought {{symbol}}." },
+    "friendActivitySell": { "title": "Friend activity", "body": "{{actor}} sold {{symbol}}." },
+    "friendActivityWatchlistAdd": {
+      "title": "Friend activity",
+      "body": "{{actor}} added {{symbol}} to a shared watchlist."
+    },
+    "followPublishedPortfolio": {
+      "title": "New portfolio from {{actor}}",
+      "body": "{{actor}} published a new portfolio: {{item}}."
+    },
+    "followPublishedWatchlist": {
+      "title": "New watchlist from {{actor}}",
+      "body": "{{actor}} published a new watchlist: {{item}}."
+    },
+    "followPublishedConglomerate": {
+      "title": "New conglomerate from {{actor}}",
+      "body": "{{actor}} published a new conglomerate: {{item}}."
+    },
+    "followPublishedIdea": {
+      "title": "New idea from {{actor}}",
+      "body": "{{actor}} published a new idea: {{item}}."
+    },
+    "followAlertCreatedPriceAbove": {
+      "title": "New alert from {{actor}}",
+      "body": "{{actor}} created a price alert: {{symbol}} above {{threshold}} {{currency}}."
+    },
+    "followAlertCreatedPriceBelow": {
+      "title": "New alert from {{actor}}",
+      "body": "{{actor}} created a price alert: {{symbol}} below {{threshold}} {{currency}}."
+    },
+    "followAlertCreatedPercentUpReference": {
+      "title": "New alert from {{actor}}",
+      "body": "{{actor}} created a price alert: {{symbol}} up {{threshold}}% from the reference price."
+    },
+    "followAlertCreatedPercentDownReference": {
+      "title": "New alert from {{actor}}",
+      "body": "{{actor}} created a price alert: {{symbol}} down {{threshold}}% from the reference price."
+    },
+    "followAlertCreatedPercentDayUp": {
+      "title": "New alert from {{actor}}",
+      "body": "{{actor}} created a price alert: {{symbol}} up {{threshold}}% on the day."
+    },
+    "followAlertCreatedPercentDayDown": {
+      "title": "New alert from {{actor}}",
+      "body": "{{actor}} created a price alert: {{symbol}} down {{threshold}}% on the day."
+    },
+    "followAlertFiredPriceAbove": {
+      "title": "{{actor}}'s alert fired",
+      "body": "{{actor}}'s price alert fired: {{symbol}} above {{threshold}} {{currency}}."
+    },
+    "followAlertFiredPriceBelow": {
+      "title": "{{actor}}'s alert fired",
+      "body": "{{actor}}'s price alert fired: {{symbol}} below {{threshold}} {{currency}}."
+    },
+    "followAlertFiredPercentUpReference": {
+      "title": "{{actor}}'s alert fired",
+      "body": "{{actor}}'s price alert fired: {{symbol}} up {{threshold}}% from the reference price."
+    },
+    "followAlertFiredPercentDownReference": {
+      "title": "{{actor}}'s alert fired",
+      "body": "{{actor}}'s price alert fired: {{symbol}} down {{threshold}}% from the reference price."
+    },
+    "followAlertFiredPercentDayUp": {
+      "title": "{{actor}}'s alert fired",
+      "body": "{{actor}}'s price alert fired: {{symbol}} up {{threshold}}% on the day."
+    },
+    "followAlertFiredPercentDayDown": {
+      "title": "{{actor}}'s alert fired",
+      "body": "{{actor}}'s price alert fired: {{symbol}} down {{threshold}}% on the day."
+    },
+    "accountTempPassword": {
+      "title": "Password was reset",
+      "body": "An administrator reset your password. Check your email for the temporary password."
+    },
+    "accountDataExport": {
+      "title": "Your data export is ready",
+      "body": "Your account data export has finished. Open Settings → Account to download it."
+    },
+    "alertTriggeredPriceAbove": {
+      "title": "Price alert: {{symbol}}",
+      "body": "{{symbol}} rose above {{threshold}} {{currency}}."
+    },
+    "alertTriggeredPriceBelow": {
+      "title": "Price alert: {{symbol}}",
+      "body": "{{symbol}} dropped below {{threshold}} {{currency}}."
+    },
+    "alertTriggeredPercentUpReference": {
+      "title": "Price alert: {{symbol}}",
+      "body": "{{symbol}} is up {{threshold}}% from your reference price."
+    },
+    "alertTriggeredPercentDownReference": {
+      "title": "Price alert: {{symbol}}",
+      "body": "{{symbol}} is down {{threshold}}% from your reference price."
+    },
+    "alertTriggeredPercentDayUp": {
+      "title": "Price alert: {{symbol}}",
+      "body": "{{symbol}} is up {{threshold}}% on the day."
+    },
+    "alertTriggeredPercentDayDown": {
+      "title": "Price alert: {{symbol}}",
+      "body": "{{symbol}} is down {{threshold}}% on the day."
+    },
+    "earningsReminderConfirmed": {
+      "title": "Earnings coming up: {{symbol}}",
+      "body": "{{name}} ({{symbol}}) reports earnings on {{date}}."
+    },
+    "earningsReminderEstimated": {
+      "title": "Earnings coming up: {{symbol}}",
+      "body": "{{name}} ({{symbol}}) is expected to report earnings around {{date}}."
+    },
+    "chatMessagePreview": { "title": "New message", "body": "{{sender}}: {{preview}}" },
+    "chatMessageSharedItem": {
+      "title": "New message",
+      "body": "{{sender}} shared an item with you."
+    },
+    "chatMessagePlain": { "title": "New message", "body": "{{sender}} sent you a message." },
+    "dividendEvent": {
+      "title": "{{symbol}} ex-dividend {{date}}",
+      "body": "{{symbol}} goes ex-dividend on {{date}}."
+    },
+    "dividendEventWithAmount": {
+      "title": "{{symbol}} ex-dividend {{date}}",
+      "body": "{{symbol}} goes ex-dividend on {{date}} ({{amount}} {{currency}} per share)."
+    },
+    "budgetExceeded": {
+      "title": "Budget exceeded: {{category}}",
+      "body": "You spent {{spent}} {{currency}} on {{category}} this month — over your {{target}} {{currency}} budget."
+    },
+    "standingOrderDeferredNamed": {
+      "title": "Standing order deferred",
+      "body": "The {{period}} occurrence for “{{order}}” could not be booked. BetterTrack will retry it."
+    },
+    "standingOrderDeferredUnnamed": {
+      "title": "Standing order deferred",
+      "body": "The {{period}} occurrence for this standing order could not be booked. BetterTrack will retry it."
+    },
+    "standingOrderDroppedNamed": {
+      "title": "Standing order period skipped",
+      "body": "The {{period}} occurrence for “{{order}}” was not recorded before the next period became due."
+    },
+    "standingOrderDroppedUnnamed": {
+      "title": "Standing order period skipped",
+      "body": "The {{period}} occurrence for this standing order was not recorded before the next period became due."
+    },
+    "standingOrderDroppedManyNamed": {
+      "title": "{{count}} standing order periods skipped",
+      "body": "{{count}} scheduled occurrences for “{{order}}”, through {{period}}, were not recorded before the newest period became due."
+    },
+    "standingOrderDroppedManyUnnamed": {
+      "title": "{{count}} standing order periods skipped",
+      "body": "{{count}} scheduled occurrences for this standing order, through {{period}}, were not recorded before the newest period became due."
+    },
+    "standingOrderBookingFailedNamed": {
+      "title": "Standing order booking failed",
+      "body": "The {{period}} occurrence for “{{order}}” could not be recorded and will not be retried."
+    },
+    "standingOrderBookingFailedUnnamed": {
+      "title": "Standing order booking failed",
+      "body": "The {{period}} occurrence for this standing order could not be recorded and will not be retried."
+    },
+    "mirrorInvite": {
+      "title": "Group portfolio invite",
+      "body": "{{actor}} invited you to join the group portfolio {{chain}}."
+    },
+    "mirrorMemberJoined": {
+      "title": "New member in {{chain}}",
+      "body": "{{actor}} joined the group portfolio {{chain}}."
+    },
+    "mirrorMemberLeft": {
+      "title": "A member left {{chain}}",
+      "body": "{{actor}} left the group portfolio {{chain}}."
+    },
+    "mirrorMemberRemoved": {
+      "title": "A member was removed from {{chain}}",
+      "body": "{{actor}} was removed from the group portfolio {{chain}}."
+    },
+    "mirrorRemoved": {
+      "title": "Removed from {{chain}}",
+      "body": "You were removed from the group portfolio {{chain}}. You keep your copy — it just stops syncing."
+    },
+    "mirrorOwnershipTransferred": {
+      "title": "Ownership of {{chain}} changed",
+      "body": "{{actor}} is now the owner of the group portfolio {{chain}}."
+    },
+    "mirrorChainDissolved": {
+      "title": "{{chain}} was dissolved",
+      "body": "The group portfolio {{chain}} was dissolved. You keep your copy — it just stops syncing."
+    },
+    "mirrorSyncStalled": {
+      "title": "Syncing {{chain}} is stuck",
+      "body": "The group portfolio {{chain}} could not finish syncing. Open it and choose Retry sync."
+    }
   },
   "control": {
     "title": "Control Center",

@@ -20,6 +20,7 @@ import {
   createTransactionsRequestSchema,
   customAssetListResponseSchema,
   customAssetSchema,
+  encodeTransactionExecutedAtCursor,
   portfolioAssetSchema,
   portfolioListResponseSchema,
   portfolioSummarySchema,
@@ -73,6 +74,7 @@ import {
   type TaxSettingsResponse,
   type Transaction,
   type TransactionInput,
+  type TransactionListOrder,
   type TransactionListResponse,
   type UpdateCashSourceRequest,
   type UpdateCustomAssetRequest,
@@ -224,7 +226,14 @@ export interface VaultPortfolioStore {
   putValuePoints(id: string, points: ValuePoint[]): Promise<ValuePointsResponse>;
   listTransactions(
     portfolioId: string,
-    params?: { cursor?: string; limit?: number; source?: string },
+    params?: {
+      cursor?: string;
+      limit?: number;
+      source?: string;
+      assetId?: string;
+      order?: TransactionListOrder;
+      includeSourceTags?: boolean;
+    },
     signal?: AbortSignal,
   ): Promise<TransactionListResponse>;
   createTransactions(portfolioId: string, inputs: TransactionInput[]): Promise<Transaction[]>;
@@ -598,30 +607,53 @@ export function createVaultPortfolioStore(
       const document = requireDocument(engine);
       requirePortfolio(document, portfolioId);
       const parsedParams = transactionListQuerySchema.parse(params);
-      const all = liveEntities(document, 'transaction')
+      const portfolioRows = liveEntities(document, 'transaction')
         .filter((entity) => stringField(entity.data, 'portfolioId') === portfolioId)
-        .map((entity) => ({ entity, transaction: transactionFromEntity(document, entity) }))
+        .map((entity) => ({ entity, transaction: transactionFromEntity(document, entity) }));
+      const sourceTags = [
+        ...new Set(portfolioRows.map(({ transaction }) => transaction.source)),
+      ].sort();
+      const all = portfolioRows
         .filter(
           ({ transaction }) =>
-            parsedParams.source == null || transaction.source === parsedParams.source,
+            (parsedParams.source == null || transaction.source === parsedParams.source) &&
+            (parsedParams.assetId == null || transaction.assetId === parsedParams.assetId),
         )
-        .sort(
-          (left, right) =>
-            right.transaction.executedAt.localeCompare(left.transaction.executedAt) ||
-            right.entity.id.localeCompare(left.entity.id),
+        .sort((left, right) =>
+          parsedParams.order === 'executedAt'
+            ? right.transaction.executedAt.localeCompare(left.transaction.executedAt) ||
+              right.entity.id.localeCompare(left.entity.id)
+            : right.entity.id.localeCompare(left.entity.id),
         );
       const cursorIndex =
         parsedParams.cursor == null
           ? -1
-          : all.findIndex(({ entity }) => entity.id === parsedParams.cursor);
+          : all.findIndex(({ entity, transaction }) =>
+              parsedParams.order === 'executedAt'
+                ? encodeTransactionExecutedAtCursor({
+                    executedAt: transaction.executedAt,
+                    id: entity.id,
+                  }) === parsedParams.cursor
+                : entity.id === parsedParams.cursor,
+            );
       const start = cursorIndex < 0 ? 0 : cursorIndex + 1;
       const limit = parsedParams.limit ?? 50;
       const page = all.slice(start, start + limit);
+      const tail = page.at(-1);
       return parseVaultData(
         () =>
           transactionListResponseSchema.parse({
             items: page.map(({ transaction }) => transaction),
-            nextCursor: start + page.length < all.length ? (page.at(-1)?.entity.id ?? null) : null,
+            nextCursor:
+              start + page.length < all.length && tail
+                ? parsedParams.order === 'executedAt'
+                  ? encodeTransactionExecutedAtCursor({
+                      executedAt: tail.transaction.executedAt,
+                      id: tail.entity.id,
+                    })
+                  : tail.entity.id
+                : null,
+            ...(parsedParams.includeSourceTags ? { sourceTags } : {}),
           }),
         'Vault transactions do not match the transaction-list contract.',
       );

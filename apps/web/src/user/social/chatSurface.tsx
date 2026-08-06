@@ -14,6 +14,7 @@ import {
   CHAT_BANNED_ERROR_CODE,
   REALTIME_SERVER_EVENTS,
   SHARE_KINDS,
+  audienceTransitionRequiresConfirmation,
   realtimeChatMessageSchema,
   type ChatChip,
   type ChatConversation,
@@ -247,11 +248,10 @@ const isShareKind = (kind: ChatChip['kind']): kind is ShareKind =>
  * the item (#380). A one-tap shortcut over the existing AudiencePicker / setAudience
  * (`PUT /social/audience/:kind/:subjectId`): it only ever ADDS this one named
  * friend to the item's audience (private → `specific_friends` + them; or add them
- * to the existing set), so it can never widen access beyond the deliberate choice
- * — the §16 friction ladder for a specific friend is no warning. It reuses the ONE
- * enforcement layer (V3-P5) and mirrors the same audience-grant rule the chip
- * resolution applies, so it appears exactly when the recipient's chip is
- * `viewable: false`. Assets carry no audience, so the shortcut never shows for them.
+ * to the existing set). The shared audience lattice makes that widening explicit
+ * before submit. A current group audience can only be replaced after a specific
+ * warning that the group will be lost. Assets carry no audience, so the shortcut
+ * never shows for them.
  */
 function ChipShareShortcut({ chip, recipient }: { chip: ChatChip; recipient: ChipRecipient }) {
   const t = useT();
@@ -264,14 +264,26 @@ function ChipShareShortcut({ chip, recipient }: { chip: ChatChip; recipient: Chi
     queryFn: ({ signal }) => getAudience(shareKind!, chip.subjectId, signal),
     enabled: shareKind !== null,
   });
+  const state = audienceQuery.data;
+  const existing = state?.audience === 'specific_friends' ? state.friendIds : [];
+  const friendIds = existing.includes(recipient.id) ? existing : [...existing, recipient.id];
+  const nextSelection = { audience: 'specific_friends' as const, friendIds };
+  const requiresWidenConfirmation = state
+    ? audienceTransitionRequiresConfirmation(state, nextSelection)
+    : false;
+  const [widenConfirmed, setWidenConfirmed] = useState(false);
+
+  useEffect(() => {
+    setWidenConfirmed(false);
+  }, [state?.audience, state?.groupId, state?.friendIds.join(':')]);
 
   const mutation = useMutation({
     mutationFn: () => {
-      // Only ever ADD the recipient; the existing membership is preserved.
-      const current = audienceQuery.data;
-      const existing = current?.audience === 'specific_friends' ? current.friendIds : [];
-      const friendIds = existing.includes(recipient.id) ? existing : [...existing, recipient.id];
-      return setAudience(shareKind!, chip.subjectId, { audience: 'specific_friends', friendIds });
+      return setAudience(shareKind!, chip.subjectId, {
+        audience: 'specific_friends',
+        friendIds,
+        confirmWiden: requiresWidenConfirmation ? widenConfirmed : undefined,
+      });
     },
     onSuccess: () => {
       // Re-resolve the audience (the prompt vanishes as the recipient is now
@@ -284,7 +296,6 @@ function ChipShareShortcut({ chip, recipient }: { chip: ChatChip; recipient: Chi
   });
 
   if (shareKind === null) return null;
-  const state = audienceQuery.data;
   if (!state) return null; // loading, or a read the owner can't make — offer nothing.
 
   // Mirror the enforcement layer's audience-grant rule: a friend recipient is
@@ -301,7 +312,28 @@ function ChipShareShortcut({ chip, recipient }: { chip: ChatChip; recipient: Chi
       <p className="bt-meta">
         {t('social.chat.chip.shortcut.prompt', { username: recipient.username })}
       </p>
-      <Button disabled={mutation.isPending} onClick={() => mutation.mutate()} size="sm">
+      {requiresWidenConfirmation ? (
+        <label className="bt-meta flex cursor-pointer items-start gap-2">
+          <input
+            type="checkbox"
+            className="mt-0.5"
+            checked={widenConfirmed}
+            onChange={(event) => setWidenConfirmed(event.target.checked)}
+          />
+          <span>
+            {state.audience === 'group'
+              ? t('social.chat.chip.shortcut.confirmGroupReplace', {
+                  username: recipient.username,
+                })
+              : t('social.chat.chip.shortcut.confirmWiden', { username: recipient.username })}
+          </span>
+        </label>
+      ) : null}
+      <Button
+        disabled={mutation.isPending || (requiresWidenConfirmation && !widenConfirmed)}
+        onClick={() => mutation.mutate()}
+        size="sm"
+      >
         {mutation.isPending
           ? t('social.chat.chip.shortcut.sharing')
           : t('social.chat.chip.shortcut.action')}

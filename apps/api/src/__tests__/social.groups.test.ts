@@ -106,7 +106,7 @@ async function shareToGroup(agent: Agent, portfolioId: string, groupId: string) 
   return agent
     .put(`/api/v1/social/audience/portfolio/${portfolioId}`)
     .set(...XRW)
-    .send({ audience: 'group', groupId });
+    .send({ audience: 'group', groupId, confirmWiden: true });
 }
 
 /**
@@ -244,6 +244,37 @@ describe('friend group CRUD', () => {
 });
 
 describe('sharing to a group (the gate criterion)', () => {
+  it('rejects an unconfirmed chat-style replacement of the current group audience', async () => {
+    const { aliceAgent, bob, pid } = await scenario();
+    const groupId = await createGroup(aliceAgent, 'Family');
+    await addMember(aliceAgent, groupId, bob.id);
+    expect((await shareToGroup(aliceAgent, pid, groupId)).status).toBe(200);
+
+    const staleChatWrite = await aliceAgent
+      .put(`/api/v1/social/audience/portfolio/${pid}`)
+      .set(...XRW)
+      .send({ audience: 'specific_friends', friendIds: [bob.id] });
+    expect(staleChatWrite.status).toBe(409);
+    expect(staleChatWrite.body.error).toMatchObject({
+      code: 'AUDIENCE_WIDEN_CONFIRMATION_REQUIRED',
+      details: { currentAudience: 'group' },
+    });
+    expect((await aliceAgent.get(`/api/v1/social/audience/portfolio/${pid}`)).body).toMatchObject({
+      audience: 'group',
+      groupId,
+    });
+
+    const confirmed = await aliceAgent
+      .put(`/api/v1/social/audience/portfolio/${pid}`)
+      .set(...XRW)
+      .send({
+        audience: 'specific_friends',
+        friendIds: [bob.id],
+        confirmWiden: true,
+      });
+    expect(confirmed.status).toBe(200);
+  });
+
   it('reaches exactly the members; membership edits apply to existing shares', async () => {
     const { aliceAgent, bobAgent, carolAgent, daveAgent, bob, pid } = await scenario();
 

@@ -1,6 +1,12 @@
-import { useMemo, useState } from 'react';
+import { type ReactNode, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  keepPreviousData,
+  useMutation,
+  useQueries,
+  useQuery,
+  useQueryClient,
+} from '@tanstack/react-query';
 import type { Time } from 'lightweight-charts';
 
 import type {
@@ -415,28 +421,29 @@ function WinnersLosersSection({ holdings }: { holdings: Holding[] }) {
 // ─── Recent transactions ────────────────────────────────────────────────────
 
 const RECENT_TRANSACTIONS_LIMIT = 8;
+/** A holding fetches its detail ledger only after the row is expanded. */
+const HOLDING_TRANSACTIONS_LIMIT = 200;
 
 /** §6.8 recent transactions — flat, newest-first ledger across all holdings. */
-function RecentTransactionsSection({ transactions }: { transactions: Transaction[] }) {
+function RecentTransactionsSection({
+  transactions,
+  sourceTags,
+  sourceFilter,
+  onSourceFilterChange,
+}: {
+  transactions: Transaction[];
+  sourceTags: string[];
+  sourceFilter: string;
+  onSourceFilterChange: (source: string) => void;
+}) {
   const t = useT();
   const phone = usePhoneShell();
   // Source-tag filter (V5-P0c + V5-P6b): mirrors the cash-history chip on
   // CashSourcesPage. Only earns its place when the ledger actually mixes
   // sources (anti-bloat — a pure-manual ledger never sees it).
-  const [sourceFilter, setSourceFilter] = useState<string>('all');
-  const sourceTags = useMemo(() => {
-    const tags = new Set<string>();
-    for (const txn of transactions) tags.add(txn.source);
-    return [...tags].sort();
-  }, [transactions]);
   const showFilter = sourceTags.length > 1;
 
   if (transactions.length === 0) return null;
-
-  const recent = [...transactions]
-    .filter((txn) => sourceFilter === 'all' || txn.source === sourceFilter)
-    .sort((a, b) => new Date(b.executedAt).getTime() - new Date(a.executedAt).getTime())
-    .slice(0, RECENT_TRANSACTIONS_LIMIT);
 
   return (
     <section
@@ -450,7 +457,7 @@ function RecentTransactionsSection({ transactions }: { transactions: Transaction
             {t('portfolio.sourceTag.filterLabel')}
             <select
               className="bt-select"
-              onChange={(e) => setSourceFilter(e.target.value)}
+              onChange={(e) => onSourceFilterChange(e.target.value)}
               style={{ minHeight: 28, padding: '2px 26px 2px 8px', width: 'auto', fontSize: 12 }}
               value={sourceFilter}
             >
@@ -466,7 +473,7 @@ function RecentTransactionsSection({ transactions }: { transactions: Transaction
       </div>
       {phone ? (
         <ul className="bt-phone-card-list">
-          {recent.map((transaction) => (
+          {transactions.map((transaction) => (
             <li className="bt-phone-card" key={transaction.id}>
               <div className="bt-phone-card__head">
                 <div className="flex min-w-0 flex-wrap items-center gap-2">
@@ -528,7 +535,7 @@ function RecentTransactionsSection({ transactions }: { transactions: Transaction
               </tr>
             </thead>
             <tbody>
-              {recent.map((txn) => (
+              {transactions.map((txn) => (
                 <tr key={txn.id}>
                   <td className="min-w-0">
                     <div className="flex items-center gap-2">
@@ -576,8 +583,8 @@ function RecentTransactionsSection({ transactions }: { transactions: Transaction
 
 interface HoldingsTableProps {
   holdings: Holding[];
-  txnsByAsset: Map<string, Transaction[]>;
-  expanded: Set<string>;
+  transactionDetailsByAsset: Map<string, HoldingTransactionDetails>;
+  expanded: ReadonlySet<string>;
   onToggle: (assetId: string) => void;
   onRecord: (asset: TransactionDialogAsset) => void;
   onEditTxn: (txn: Transaction) => void;
@@ -588,7 +595,7 @@ interface HoldingsTableProps {
 
 function HoldingsTable({
   holdings,
-  txnsByAsset,
+  transactionDetailsByAsset,
   expanded,
   onToggle,
   onRecord,
@@ -607,7 +614,9 @@ function HoldingsTable({
           <HoldingCard
             key={holding.asset.id}
             holding={holding}
-            transactions={txnsByAsset.get(holding.asset.id) ?? []}
+            transactionDetails={
+              transactionDetailsByAsset.get(holding.asset.id) ?? EMPTY_HOLDING_TRANSACTION_DETAILS
+            }
             isExpanded={expanded.has(holding.asset.id)}
             onToggle={() => onToggle(holding.asset.id)}
             onRecord={onRecord}
@@ -653,7 +662,9 @@ function HoldingsTable({
             <HoldingRow
               key={h.asset.id}
               holding={h}
-              transactions={txnsByAsset.get(h.asset.id) ?? []}
+              transactionDetails={
+                transactionDetailsByAsset.get(h.asset.id) ?? EMPTY_HOLDING_TRANSACTION_DETAILS
+              }
               isExpanded={expanded.has(h.asset.id)}
               onToggle={() => onToggle(h.asset.id)}
               onRecord={onRecord}
@@ -669,9 +680,23 @@ function HoldingsTable({
   );
 }
 
+interface HoldingTransactionDetails {
+  items: Transaction[];
+  isLoading: boolean;
+  error: unknown;
+  retry: () => void;
+}
+
+const EMPTY_HOLDING_TRANSACTION_DETAILS: HoldingTransactionDetails = {
+  items: [],
+  isLoading: false,
+  error: null,
+  retry: () => undefined,
+};
+
 interface HoldingRowProps {
   holding: Holding;
-  transactions: Transaction[];
+  transactionDetails: HoldingTransactionDetails;
   isExpanded: boolean;
   onToggle: () => void;
   onRecord: (asset: TransactionDialogAsset) => void;
@@ -681,9 +706,45 @@ interface HoldingRowProps {
   deletingId: string | null;
 }
 
+/** Keeps an on-demand holding read from being mistaken for an empty ledger. */
+function HoldingTransactions({
+  details,
+  children,
+}: {
+  details: HoldingTransactionDetails;
+  children: (transactions: Transaction[]) => ReactNode;
+}) {
+  const t = useT();
+
+  if (details.isLoading) {
+    return (
+      <div className="mt-3">
+        <SkeletonBlock height={72} />
+      </div>
+    );
+  }
+  if (details.error != null) {
+    return (
+      <div className="mt-3">
+        <AsyncReadState
+          compact
+          error={details.error}
+          errorLabel={t('portfolio.overview.detailsLoadError')}
+          loading={false}
+          onRetry={details.retry}
+        />
+      </div>
+    );
+  }
+  if (details.items.length === 0) {
+    return <p className="bt-meta mt-3">{t('portfolio.overview.holdings.noTransactions')}</p>;
+  }
+  return <>{children(details.items)}</>;
+}
+
 function HoldingCard({
   holding,
-  transactions,
+  transactionDetails,
   isExpanded,
   onToggle,
   onRecord,
@@ -809,22 +870,22 @@ function HoldingCard({
               <MoneyText amount={holding.realizedPnl} currency={asset.currency} signed />
             </p>
           ) : null}
-          {transactions.length === 0 ? (
-            <p className="bt-meta mt-3">{t('portfolio.overview.holdings.noTransactions')}</p>
-          ) : (
-            <ul className="mt-3 flex flex-col gap-2">
-              {transactions.map((transaction) => (
-                <TransactionCard
-                  key={transaction.id}
-                  currency={asset.currency}
-                  deleting={deletingId === transaction.id}
-                  onDelete={() => onDeleteTxn(transaction)}
-                  onEdit={() => onEditTxn(transaction)}
-                  txn={transaction}
-                />
-              ))}
-            </ul>
-          )}
+          <HoldingTransactions details={transactionDetails}>
+            {(transactions) => (
+              <ul className="mt-3 flex flex-col gap-2">
+                {transactions.map((transaction) => (
+                  <TransactionCard
+                    key={transaction.id}
+                    currency={asset.currency}
+                    deleting={deletingId === transaction.id}
+                    onDelete={() => onDeleteTxn(transaction)}
+                    onEdit={() => onEditTxn(transaction)}
+                    txn={transaction}
+                  />
+                ))}
+              </ul>
+            )}
+          </HoldingTransactions>
         </div>
       ) : null}
     </li>
@@ -833,7 +894,7 @@ function HoldingCard({
 
 function HoldingRow({
   holding: h,
-  transactions,
+  transactionDetails,
   isExpanded,
   onToggle,
   onRecord,
@@ -953,45 +1014,45 @@ function HoldingRow({
                 </p>
               ) : null}
 
-              {transactions.length === 0 ? (
-                <p className="bt-meta">{t('portfolio.overview.holdings.noTransactions')}</p>
-              ) : (
-                <table className="bt-table" style={{ fontSize: 12.5 }}>
-                  <thead>
-                    <tr>
-                      <th scope="col">{t('portfolio.overview.field.date')}</th>
-                      <th scope="col">{t('portfolio.overview.field.side')}</th>
-                      <th className="is-num" scope="col">
-                        {t('portfolio.overview.field.qty')}
-                      </th>
-                      <th className="is-num" scope="col">
-                        {t('portfolio.overview.field.price')}
-                      </th>
-                      <th className="is-num" scope="col">
-                        {t('portfolio.overview.field.fee')}
-                      </th>
-                      <th scope="col">{t('portfolio.overview.field.note')}</th>
-                      <th
-                        aria-label={t('portfolio.overview.holdings.actionsAriaLabel')}
-                        className="is-num"
-                        scope="col"
-                      />
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {transactions.map((txn) => (
-                      <TransactionRow
-                        key={txn.id}
-                        txn={txn}
-                        currency={asset.currency}
-                        onEdit={() => onEditTxn(txn)}
-                        onDelete={() => onDeleteTxn(txn)}
-                        deleting={deletingId === txn.id}
-                      />
-                    ))}
-                  </tbody>
-                </table>
-              )}
+              <HoldingTransactions details={transactionDetails}>
+                {(transactions) => (
+                  <table className="bt-table" style={{ fontSize: 12.5 }}>
+                    <thead>
+                      <tr>
+                        <th scope="col">{t('portfolio.overview.field.date')}</th>
+                        <th scope="col">{t('portfolio.overview.field.side')}</th>
+                        <th className="is-num" scope="col">
+                          {t('portfolio.overview.field.qty')}
+                        </th>
+                        <th className="is-num" scope="col">
+                          {t('portfolio.overview.field.price')}
+                        </th>
+                        <th className="is-num" scope="col">
+                          {t('portfolio.overview.field.fee')}
+                        </th>
+                        <th scope="col">{t('portfolio.overview.field.note')}</th>
+                        <th
+                          aria-label={t('portfolio.overview.holdings.actionsAriaLabel')}
+                          className="is-num"
+                          scope="col"
+                        />
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {transactions.map((txn) => (
+                        <TransactionRow
+                          key={txn.id}
+                          txn={txn}
+                          currency={asset.currency}
+                          onEdit={() => onEditTxn(txn)}
+                          onDelete={() => onDeleteTxn(txn)}
+                          deleting={deletingId === txn.id}
+                        />
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </HoldingTransactions>
             </div>
           </td>
         </tr>
@@ -1398,6 +1459,10 @@ export function PortfolioPage() {
   // #125: absolute value curve (€) vs. cash-flow-neutralized performance (%).
   const [perfMode, setPerfMode] = useState(false);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [recentSourceSelection, setRecentSourceSelection] = useState<{
+    portfolioId: string;
+    source: string;
+  } | null>(null);
   const [txnDialog, setTxnDialog] = useState<TxnDialogState | null>(null);
   const [valuePointAsset, setValuePointAsset] = useState<ValuePointEditorAsset | null>(null);
   const [customOpen, setCustomOpen] = useState(false);
@@ -1427,6 +1492,11 @@ export function PortfolioPage() {
     [portfoliosQuery.data, activeParam],
   );
   const portfolioId = portfolio?.id ?? null;
+  // Bind the selection to the portfolio without an effect-driven reset: a route
+  // switch immediately falls back to all sources and cannot reuse another
+  // portfolio's source slug while its reads settle.
+  const recentSourceFilter =
+    recentSourceSelection?.portfolioId === portfolioId ? recentSourceSelection.source : 'all';
 
   const portfolioQuery = useQuery({
     queryKey: ['portfolio', portfolioId],
@@ -1443,12 +1513,57 @@ export function PortfolioPage() {
     staleTime: HISTORY_STALE_MS,
   });
 
-  // Recent ledger, grouped client-side so each holding's expansion shows its rows.
+  // The overview renders exactly this page. Executed-time ordering and the
+  // selected source are enforced at the data boundary; the source facet remains
+  // portfolio-wide so older tags do not disappear from the selector.
   const transactionsQuery = useQuery({
-    queryKey: ['portfolio', portfolioId, 'transactions'],
-    queryFn: ({ signal }) => store.listTransactions(portfolioId!, { limit: 200 }, signal),
+    queryKey: [
+      'portfolio',
+      portfolioId,
+      'transactions',
+      'recent',
+      'executedAt',
+      recentSourceFilter,
+    ],
+    queryFn: ({ signal }) =>
+      store.listTransactions(
+        portfolioId!,
+        {
+          limit: RECENT_TRANSACTIONS_LIMIT,
+          order: 'executedAt',
+          source: recentSourceFilter === 'all' ? undefined : recentSourceFilter,
+          includeSourceTags: true,
+        },
+        signal,
+      ),
     enabled: portfolioId !== null,
+    placeholderData: keepPreviousData,
     staleTime: 60_000,
+  });
+
+  // Only holdings in the active portfolio's rendered result may start a detail
+  // read. The expanded set intentionally survives route switches, but a stale id
+  // from portfolio A is filtered out before queries are built for portfolio B.
+  const renderedHoldingIds = useMemo(
+    () => new Set((portfolioQuery.data?.holdings ?? []).map((holding) => holding.asset.id)),
+    [portfolioQuery.data?.holdings],
+  );
+  const expandedAssetIds = useMemo(
+    () => [...expanded].filter((assetId) => renderedHoldingIds.has(assetId)).sort(),
+    [expanded, renderedHoldingIds],
+  );
+  const holdingTransactionQueries = useQueries({
+    queries: expandedAssetIds.map((assetId) => ({
+      queryKey: ['portfolio', portfolioId, 'transactions', 'asset', assetId],
+      queryFn: ({ signal }: { signal: AbortSignal }) =>
+        store.listTransactions(
+          portfolioId!,
+          { assetId, limit: HOLDING_TRANSACTIONS_LIMIT },
+          signal,
+        ),
+      enabled: portfolioId !== null,
+      staleTime: 60_000,
+    })),
   });
 
   // Active cash sources (V3-P3): fed to the cash + transaction dialogs so their
@@ -1483,15 +1598,20 @@ export function PortfolioPage() {
       ),
   });
 
-  const txnsByAsset = useMemo(() => {
-    const map = new Map<string, Transaction[]>();
-    for (const txn of transactionsQuery.data?.items ?? []) {
-      const list = map.get(txn.assetId);
-      if (list) list.push(txn);
-      else map.set(txn.assetId, [txn]);
-    }
-    return map;
-  }, [transactionsQuery.data]);
+  const transactionDetailsByAsset = new Map<string, HoldingTransactionDetails>(
+    expandedAssetIds.map((assetId, index) => {
+      const query = holdingTransactionQueries[index]!;
+      return [
+        assetId,
+        {
+          items: query.data?.items ?? [],
+          isLoading: query.isLoading,
+          error: query.error,
+          retry: () => void query.refetch(),
+        },
+      ];
+    }),
+  );
 
   function refetchAll() {
     void queryClient.invalidateQueries({ queryKey: ['portfolio'] });
@@ -1764,7 +1884,7 @@ export function PortfolioPage() {
             {actionError ? <Alert tone="error">{actionError}</Alert> : null}
             <HoldingsTable
               holdings={holdings}
-              txnsByAsset={txnsByAsset}
+              transactionDetailsByAsset={transactionDetailsByAsset}
               expanded={expanded}
               onToggle={toggleExpanded}
               onRecord={(asset) => setTxnDialog({ kind: 'create', asset })}
@@ -1783,7 +1903,12 @@ export function PortfolioPage() {
             <DividendIntelSection />
           </NormalModeOnly>
 
-          <RecentTransactionsSection transactions={transactionsQuery.data?.items ?? []} />
+          <RecentTransactionsSection
+            transactions={transactionsQuery.data?.items ?? []}
+            sourceTags={transactionsQuery.data?.sourceTags ?? []}
+            sourceFilter={recentSourceFilter}
+            onSourceFilterChange={(source) => setRecentSourceSelection({ portfolioId, source })}
+          />
         </>
       )}
 

@@ -438,6 +438,7 @@ describe('WorkboardPage — watchlist sharing', () => {
 
     await user.click(screen.getByRole('button', { name: 'Shared with friends' }));
     await user.click(await screen.findByRole('radio', { name: /all friends/i }));
+    await user.click(screen.getByRole('checkbox', { name: /this change widens access/i }));
     await user.click(screen.getByRole('button', { name: /^save$/i }));
 
     await waitFor(() => expect(setAudience).toHaveBeenCalledTimes(1));
@@ -445,6 +446,7 @@ describe('WorkboardPage — watchlist sharing', () => {
       audience: 'all_friends',
       friendIds: undefined,
       acknowledgePublic: undefined,
+      confirmWiden: true,
     });
   });
 

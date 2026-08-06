@@ -27,6 +27,7 @@ import type {
   StandingOrderListResponse,
   Transaction,
   TransactionInput,
+  TransactionListOrder,
   TransactionListResponse,
   UpdateCustomAssetRequest,
   UpdateCashSourceRequest,
@@ -47,6 +48,9 @@ export interface PortfolioTransactionListParams {
   cursor?: string;
   limit?: number;
   source?: string;
+  assetId?: string;
+  order?: TransactionListOrder;
+  includeSourceTags?: boolean;
 }
 
 /**

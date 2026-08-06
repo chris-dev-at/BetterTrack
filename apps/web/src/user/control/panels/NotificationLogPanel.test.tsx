@@ -14,6 +14,7 @@ vi.mock('../../../lib/notificationsApi', () => ({
 
 import type { Notification, NotificationListResponse } from '@bettertrack/contracts';
 
+import { I18nProvider } from '../../../i18n';
 import {
   archiveNotification,
   deleteNotification,
@@ -28,10 +29,12 @@ function makeQueryClient() {
   return new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 0 } } });
 }
 
-function renderPanel() {
+function renderPanel(locale = 'en') {
   return render(
     <QueryClientProvider client={makeQueryClient()}>
-      <NotificationLogPanel />
+      <I18nProvider initialLocale={locale}>
+        <NotificationLogPanel />
+      </I18nProvider>
     </QueryClientProvider>,
   );
 }
@@ -93,6 +96,36 @@ describe('NotificationLogPanel', () => {
     expect(
       screen.queryByRole('switch', { name: 'Friend requests via In-app' }),
     ).not.toBeInTheDocument();
+  });
+
+  test('renders keyed content in the active locale and legacy content verbatim', async () => {
+    vi.mocked(listNotifications).mockResolvedValue({
+      items: [
+        notification({
+          id: '00000000-0000-0000-0000-000000000002',
+          payload: {
+            eventKey: 'friend.request:req-new',
+            message: { key: 'friendRequest', params: { actor: 'anna' } },
+          },
+        }),
+        notification({
+          id: '00000000-0000-0000-0000-000000000003',
+          title: 'Legacy title',
+          body: 'Legacy body',
+          payload: { eventKey: 'friend.request:req-old' },
+        }),
+      ],
+      nextCursor: null,
+      unreadCount: 2,
+    });
+    renderPanel('de');
+
+    expect(await screen.findByText('Neue Freundschaftsanfrage')).toBeInTheDocument();
+    expect(
+      screen.getByText('anna hat dir eine Freundschaftsanfrage gesendet.'),
+    ).toBeInTheDocument();
+    expect(screen.getByText('Legacy title')).toBeInTheDocument();
+    expect(screen.getByText('Legacy body')).toBeInTheDocument();
   });
 
   test('shows an empty state when there are no notifications', async () => {

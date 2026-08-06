@@ -32,7 +32,7 @@ import * as api from '../lib/userApi';
 import { listPortfolios } from '../lib/portfolioApi';
 import { listFollowing, listItemFollows } from '../lib/socialApi';
 import { listWorkboard } from '../lib/workboardApi';
-import { UserApp } from './UserApp';
+import { queryClient, UserApp } from './UserApp';
 
 const member: MeResponse = {
   id: 'user-1',
@@ -80,11 +80,13 @@ const anonymous = () =>
   vi.mocked(api.getMe).mockRejectedValue(new ApiError(401, 'UNAUTHENTICATED', 'Not signed in.'));
 
 /**
- * Budget for the first assertion after a sign-in. Landing authenticated is the
- * longest chain in this file — the login mutation flips the auth gate, the
- * legacy path redirects into its Origin destination, the shell and the
- * destination mount, and only then does that page's own query paint the text
- * being asserted on.
+ * Budget for the first wait that has to cross a cold signed-in boot: either
+ * after a sign-in, or after rendering straight at an authenticated route, which
+ * mounts the shell plus that route's lazy chunk before the page's own query
+ * paints. Landing authenticated is the longest chain in this file — the login
+ * mutation flips the auth gate, the legacy path redirects into its Origin
+ * destination, the shell and the destination mount, and only then does that
+ * page's own query paint the text being asserted on.
  *
  * Idle, that chain settles in well under 100ms; it is also the part of these
  * tests most sensitive to CPU contention, measured repeatedly past 2s on a
@@ -115,6 +117,23 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+});
+
+test('the app query client protects implicit reads without overriding explicit query settings', () => {
+  const implicit = queryClient.defaultQueryOptions({
+    queryKey: ['test', 'implicit-defaults'],
+    queryFn: async () => null,
+  });
+  expect(implicit.staleTime).toBe(30_000);
+  expect(implicit.refetchOnWindowFocus).toBe(false);
+  expect(implicit.retry).toBe(1);
+
+  const explicit = queryClient.defaultQueryOptions({
+    queryKey: ['test', 'explicit-stale-time'],
+    queryFn: async () => null,
+    staleTime: 60_000,
+  });
+  expect(explicit.staleTime).toBe(60_000);
 });
 
 test('an unauthenticated visit to a user route redirects to /login', async () => {
@@ -307,7 +326,7 @@ test('a rate-limited mutation shows only the global 429 notice', async () => {
   const user = userEvent.setup();
   renderAt('/workbench/alerts');
 
-  await user.click(await screen.findByRole('button', { name: 'Re-arm' }));
+  await user.click(await screen.findByRole('button', { name: 'Re-arm' }, SIGNED_IN_RENDER));
 
   expect(
     await screen.findByText("You're doing that too fast. Please wait 30 seconds and try again."),
@@ -381,7 +400,7 @@ test('a 429 takes over the toast slot from a success notice that is still showin
   const user = userEvent.setup();
   renderAt('/workbench/alerts');
 
-  await user.click(await screen.findByRole('button', { name: 'Re-arm' }));
+  await user.click(await screen.findByRole('button', { name: 'Re-arm' }, SIGNED_IN_RENDER));
   expect(await screen.findByText('Alert re-armed.')).toBeInTheDocument();
 
   await user.click(await screen.findByRole('button', { name: 'Re-arm' }));
@@ -408,7 +427,7 @@ test('an identical repeat 429 surfaces again after the notice was dismissed', as
   const user = userEvent.setup();
   renderAt('/workbench/alerts');
 
-  await user.click(await screen.findByRole('button', { name: 'Re-arm' }));
+  await user.click(await screen.findByRole('button', { name: 'Re-arm' }, SIGNED_IN_RENDER));
   expect(await screen.findByText(RATE_LIMIT_NOTICE)).toBeInTheDocument();
 
   await user.click(screen.getByRole('button', { name: 'Dismiss' }));

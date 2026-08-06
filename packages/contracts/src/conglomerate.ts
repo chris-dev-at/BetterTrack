@@ -205,6 +205,8 @@ export const updateConglomerateRequestSchema = z
     name: z.string().trim().min(1).max(120).optional(),
     description: z.string().trim().max(2000).nullish(),
     visibility: conglomerateVisibilitySchema.optional(),
+    /** Required when the legacy visibility write would widen the current audience. */
+    confirmWiden: z.boolean().optional(),
   })
   .strict();
 export type UpdateConglomerateRequest = z.infer<typeof updateConglomerateRequestSchema>;

@@ -21,13 +21,13 @@ import { createTestApp, type TestHarness } from '../testing/createTestApp';
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
 const MIN = 60_000;
 
-function dayOffset(offset: number): string {
-  const ms = Date.parse(`${new Date().toISOString().slice(0, 10)}T00:00:00.000Z`);
+function dayOffset(offset: number, refNow = Date.now()): string {
+  const ms = Date.parse(`${new Date(refNow).toISOString().slice(0, 10)}T00:00:00.000Z`);
   return new Date(ms + offset * 86_400_000).toISOString().slice(0, 10);
 }
 
-function tsOffset(offset: number): string {
-  return `${dayOffset(offset)}T00:00:00.000Z`;
+function tsOffset(offset: number, refNow = Date.now()): string {
+  return `${dayOffset(offset, refNow)}T00:00:00.000Z`;
 }
 
 async function loginAgent(app: Application, identifier: string, password: string) {
@@ -69,8 +69,8 @@ async function seedAsset(
 }
 
 /** Daily closes for the value engine (`1d` interval). */
-function dailyCloses(days: number[], close: number): PricePoint[] {
-  return days.map((d) => ({ time: `${dayOffset(d)}T00:00:00.000Z`, close }));
+function dailyCloses(days: number[], close: number, refNow = Date.now()): PricePoint[] {
+  return days.map((d) => ({ time: `${dayOffset(d, refNow)}T00:00:00.000Z`, close }));
 }
 
 /** 30 native candles at 15-minute spacing ending "now" (fixed per test run). */
@@ -105,9 +105,9 @@ function buildStub(refNow: number) {
   const calls: Array<{ ref: string; interval: HistoryInterval | undefined }> = [];
   const days = [-8, -7, -6, -5, -4, -3, -2, -1, 0];
   const dailyByRef: Record<string, PricePoint[]> = {
-    'BAYN.DE': dailyCloses(days, 105),
-    AAPL: dailyCloses(days, 210),
-    'EURUSD=X': dailyCloses(days, 1.1),
+    'BAYN.DE': dailyCloses(days, 105, refNow),
+    AAPL: dailyCloses(days, 210, refNow),
+    'EURUSD=X': dailyCloses(days, 1.1, refNow),
   };
   const intradayByRef: Record<string, PricePoint[]> = {
     'BAYN.DE': intradayCandles(refNow, 30, 104, 0.1), // 104 → 106.9
@@ -131,10 +131,10 @@ function buildStub(refNow: number) {
         price,
         currency: ref.providerRef === 'AAPL' ? 'USD' : 'EUR',
         prevClose: price,
-        asOf: new Date().toISOString(),
+        asOf: new Date(refNow).toISOString(),
       },
       stale: false,
-      asOf: Date.now(),
+      asOf: refNow,
     };
   };
   return { calls, marketData: createStubMarketData({ history, quote }) };
@@ -159,8 +159,8 @@ describe('intraday portfolio series (#556)', () => {
       exchange: 'NASDAQ',
     });
 
-    await buy(agent, pid, bayn.id, 5, 100, tsOffset(-6));
-    await buy(agent, pid, aapl.id, 3, 200, tsOffset(-4));
+    await buy(agent, pid, bayn.id, 5, 100, tsOffset(-6, refNow));
+    await buy(agent, pid, aapl.id, 3, 200, tsOffset(-4, refNow));
     // A custom (manual-provider) asset: no intraday history — must carry forward.
     const created = await agent
       .post('/api/v1/custom-assets')
@@ -169,14 +169,18 @@ describe('intraday portfolio series (#556)', () => {
         name: 'House',
         category: 'other',
         currency: 'EUR',
-        initialPurchase: { quantity: 1, price: 500, fee: 0, executedAt: tsOffset(-5) },
+        initialPurchase: { quantity: 1, price: 500, fee: 0, executedAt: tsOffset(-5, refNow) },
       });
     expect(created.status).toBe(201);
     return { h, agent, pid, stub };
   }
 
   it('renders a dense, timestamped 1D curve that stitches to the fresh today value', async () => {
-    const { agent, pid, stub } = await setup();
+    // Keep all 30 15-minute candles on the requested UTC day. A wall-clock
+    // fixture here made this assertion fail shortly after midnight, when most
+    // candles correctly belonged to yesterday and 1D filtered them out.
+    const refNow = Date.parse(`${dayOffset(0)}T12:00:00.000Z`);
+    const { agent, pid, stub } = await setup({ refNow, portfolioNow: () => refNow });
 
     // Warm the snapshot state so both reads below run the settled path.
     await agent.get(`/api/v1/portfolios/${pid}/history?range=1D`);
@@ -208,7 +212,7 @@ describe('intraday portfolio series (#556)', () => {
     const maxPoints = max.body.points as Array<{ date: string; valueEur: number }>;
     const maxToday = maxPoints[maxPoints.length - 1]!;
     const last = points[points.length - 1]!;
-    expect(last.date).toBe(dayOffset(0));
+    expect(last.date).toBe(dayOffset(0, refNow));
     expect(last.valueEur).toBeCloseTo(maxToday.valueEur, 6);
     // Every point is the whole portfolio incl. the carried-forward custom asset,
     // so the curve never drops below the custom asset's flat value.

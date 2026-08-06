@@ -10,6 +10,7 @@ import {
   emailLog,
   notifications,
   notificationSettings,
+  users,
   type EmailLogRow,
 } from '../../../data/schema';
 import type { FriendRequestEvent } from '../../../events';
@@ -51,6 +52,7 @@ function recordingTransport(
 let harness: TestHarness;
 let db: Database;
 let dispatcher: NotificationDispatcher;
+let transport: ReturnType<typeof recordingTransport>;
 
 async function setup(options: CreateTestAppOptions, transport: MailTransport | null) {
   harness = await createTestApp(options);
@@ -67,6 +69,15 @@ async function setup(options: CreateTestAppOptions, transport: MailTransport | n
     repo: createNotificationRepository(db),
     email,
     users: createUserRepository(db),
+    resolveAlert: async () => ({
+      userId: 'recipient',
+      assetId: 'asset-1',
+      symbol: 'AAPL',
+      name: 'Apple',
+      currency: 'EUR',
+      kind: 'price_above',
+      threshold: 200,
+    }),
     logger: harness.ctx.logger,
   });
 }
@@ -115,7 +126,8 @@ async function enableEmailFor(userId: string, ...types: string[]): Promise<void>
 
 describe('notification email dispatch (PROJECTPLAN.md §6.10)', () => {
   beforeEach(async () => {
-    await setup({ env: SMTP_ENV }, recordingTransport());
+    transport = recordingTransport();
+    await setup({ env: SMTP_ENV }, transport);
   });
 
   it('sends a friend.request email and logs it as `sent`', async () => {
@@ -176,6 +188,91 @@ describe('notification email dispatch (PROJECTPLAN.md §6.10)', () => {
       template: 'standing_order_skipped',
       userId: recipient.id,
     });
+  });
+
+  it('renders every formerly leaked dispatcher body in the DE recipient locale', async () => {
+    const recipient = await harness.seedUser({ email: 'email-de@bt.test', username: 'email-de' });
+    await db.update(users).set({ locale: 'de' }).where(eq(users.id, recipient.id));
+    await enableEmailFor(
+      recipient.id,
+      'friend.activity',
+      'follow.published',
+      'follow.alert.created',
+      'follow.alert.fired',
+      'alert.triggered',
+      'dividend.event',
+    );
+
+    await dispatcher.dispatch({
+      type: 'friend.activity',
+      userId: recipient.id,
+      actorId: 'actor',
+      actorUsername: 'anna',
+      itemKind: 'portfolio',
+      itemId: 'portfolio-1',
+      activity: 'buy',
+      assetSymbol: 'AAPL',
+      refId: 'activity-1',
+      occurredAt: OCCURRED_AT,
+    });
+    await dispatcher.dispatch({
+      type: 'follow.published',
+      userId: recipient.id,
+      actorId: 'actor',
+      actorUsername: 'anna',
+      itemKind: 'portfolio',
+      itemId: 'portfolio-2',
+      itemName: 'Wachstum',
+      occurredAt: OCCURRED_AT,
+    });
+    await dispatcher.dispatch({
+      type: 'follow.alert.created',
+      userId: recipient.id,
+      actorId: 'actor',
+      actorUsername: 'anna',
+      alertId: 'alert-created',
+      assetId: 'asset-1',
+      occurredAt: OCCURRED_AT,
+    });
+    await dispatcher.dispatch({
+      type: 'follow.alert.fired',
+      userId: recipient.id,
+      actorId: 'actor',
+      actorUsername: 'anna',
+      alertId: 'alert-fired',
+      assetId: 'asset-1',
+      occurredAt: OCCURRED_AT,
+    });
+    await dispatcher.dispatch({
+      type: 'alert.triggered',
+      userId: recipient.id,
+      alertId: 'alert-own',
+      assetId: 'asset-1',
+      occurredAt: OCCURRED_AT,
+    });
+    await dispatcher.dispatch({
+      type: 'dividend.event',
+      userId: recipient.id,
+      assetId: 'asset-1',
+      symbol: 'AAPL',
+      exDate: '2026-08-03T00:00:00.000Z',
+      payDate: null,
+      amount: 0.75,
+      currency: 'EUR',
+      occurredAt: OCCURRED_AT,
+    });
+
+    expect(transport.sent).toHaveLength(6);
+    const text = transport.sent.map((mail) => mail.text).join('\n');
+    expect(text).toContain('anna hat AAPL gekauft.');
+    expect(text).toContain('anna hat ein neues Portfolio veröffentlicht: Wachstum.');
+    expect(text).toContain('anna hat einen Preisalarm erstellt: AAPL über 200 EUR.');
+    expect(text).toContain('Der Preisalarm von anna wurde ausgelöst: AAPL über 200 EUR.');
+    expect(text).toContain('AAPL ist über 200 EUR gestiegen.');
+    expect(text).toContain('AAPL wird am 2026-08-03 ex Dividende gehandelt (0.75 EUR je Aktie).');
+    expect(text).not.toContain('anna bought AAPL');
+    expect(text).not.toContain('price alert fired');
+    expect(text).not.toContain('goes ex-dividend');
   });
 
   it('does not email when the recipient disabled the email channel', async () => {

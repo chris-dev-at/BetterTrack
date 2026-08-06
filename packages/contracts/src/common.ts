@@ -80,3 +80,75 @@ export const SHARE_AUDIENCES = [
 ] as const;
 export const shareAudienceSchema = z.enum(SHARE_AUDIENCES);
 export type ShareAudience = z.infer<typeof shareAudienceSchema>;
+
+/**
+ * The recipient-bearing parts of an audience selection. Keeping this shape in
+ * contracts lets the API and every client use the exact same privacy decision
+ * before an audience mutation is submitted or accepted.
+ */
+export interface AudienceSelection {
+  audience: ShareAudience;
+  friendIds?: readonly string[];
+  groupId?: string | null;
+}
+
+export type AudienceTransition = 'same' | 'narrowing' | 'widening';
+
+const AUDIENCE_RANK: Record<ShareAudience, number> = {
+  private: 0,
+  specific_friends: 1,
+  group: 2,
+  all_friends: 3,
+  public_link: 4,
+};
+
+function sameIds(left: ReadonlySet<string>, right: ReadonlySet<string>): boolean {
+  return left.size === right.size && [...left].every((id) => right.has(id));
+}
+
+/**
+ * Classify one audience change against the privacy lattice.
+ *
+ * Most rungs are totally ordered. The recipient-bearing branches need extra
+ * care: adding/replacing a specifically named friend widens even though the
+ * enum value is unchanged, changing groups replaces one live roster with
+ * another, and moving from a group to a specific-friends set is a cross-branch
+ * replacement rather than a provable narrowing. Removing named friends is a
+ * genuine narrowing and stays friction-free.
+ */
+export function classifyAudienceTransition(
+  current: AudienceSelection,
+  next: AudienceSelection,
+): AudienceTransition {
+  if (current.audience === next.audience) {
+    if (current.audience === 'specific_friends') {
+      const currentIds = new Set(current.friendIds ?? []);
+      const nextIds = new Set(next.friendIds ?? []);
+      if (sameIds(currentIds, nextIds)) return 'same';
+      return [...nextIds].every((id) => currentIds.has(id)) ? 'narrowing' : 'widening';
+    }
+    if (current.audience === 'group') {
+      return current.groupId === next.groupId ? 'same' : 'widening';
+    }
+    return 'same';
+  }
+
+  // These two recipient models are not subsets of one another without resolving
+  // a live group roster. Replacing either branch can expose the item to someone
+  // new, so both directions require explicit confirmation.
+  if (
+    (current.audience === 'specific_friends' && next.audience === 'group') ||
+    (current.audience === 'group' && next.audience === 'specific_friends')
+  ) {
+    return 'widening';
+  }
+
+  return AUDIENCE_RANK[next.audience] > AUDIENCE_RANK[current.audience] ? 'widening' : 'narrowing';
+}
+
+export function audienceTransitionRequiresConfirmation(
+  current: AudienceSelection,
+  next: AudienceSelection,
+): boolean {
+  return classifyAudienceTransition(current, next) === 'widening';
+}

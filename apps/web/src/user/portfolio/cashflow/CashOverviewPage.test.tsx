@@ -293,7 +293,10 @@ describe('CashOverviewPage', () => {
     );
     renderPage();
 
-    const bars = await screen.findByRole('list', { name: 'Spending by tag' });
+    // This page resolves the active portfolio before its summary query can
+    // start. The API and web suites run concurrently in CI, so give that
+    // two-stage render the same explicit budget as other routed page loads.
+    const bars = await screen.findByRole('list', { name: 'Spending by tag' }, { timeout: 5_000 });
     expect(within(bars).getByText('Untagged')).toBeInTheDocument();
   });
 

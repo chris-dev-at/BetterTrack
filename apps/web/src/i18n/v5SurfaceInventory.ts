@@ -1455,6 +1455,14 @@ export const V5_ASYNC_READ_EXEMPTIONS = [
       'Binding P5 keeps the optional portfolio dividend block absent while capability is unresolved or unavailable, including request failure.',
   },
   {
+    component: 'user/portfolio/PortfolioPage.tsx',
+    read: 'PortfolioPage.holdingTransactionQueries',
+    states: ['loading', 'error'],
+    reason:
+      "Each dynamic result is mapped to its holding row; HoldingTransactions renders that row's skeleton, retryable failure, empty state, or ledger.",
+    delegatedTo: 'HoldingTransactions',
+  },
+  {
     component: 'user/portfolio/MirrorchainPanel.tsx',
     read: 'MemberSheet.activityQuery',
     states: ['loading', 'error'],
@@ -1692,8 +1700,8 @@ export type V5AsyncStateDebtLedger = Readonly<
   Record<string, Readonly<Record<string, readonly V5AsyncReadState[]>>>
 >;
 
-/** Exact anti-shrinkage baseline for the source-derived asynchronous read universe. */
-export const V5_ASYNC_READ_SITE_BASELINE = 181;
+/** Exact anti-shrinkage baseline; #1147 adds the reviewed on-demand holding read. */
+export const V5_ASYNC_READ_SITE_BASELINE = 182;
 
 /** Ratchet this downward whenever #739 removes a read site or missing state. */
 export const V5_ASYNC_STATE_DEBT_CEILING = { readSites: 0, stateGaps: 0 } as const;

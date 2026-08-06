@@ -2928,7 +2928,8 @@
     "friendsNone": "Du hast noch keine Freunde. Füge Freunde hinzu, um gezielt zu teilen.",
     "friendsSelect": "Freunde auswählen",
     "allFriendsConfirm": "Dies teilt eine schreibgeschützte Ansicht mit allen deinen Freunden.",
-    "audienceChangeConfirm": "Zugriff von {{from}} auf {{to}} ändern. Dies teilt eine schreibgeschützte Ansicht mit allen deinen Freunden. Speichere, um zu bestätigen.",
+    "audienceChangeConfirm": "Zugriff von {{from}} auf {{to}} ändern. Dadurch könnten mehr Personen diesen Eintrag sehen.",
+    "audienceWidenAcknowledge": "Mir ist bewusst, dass diese Änderung den Zugriff erweitert.",
     "publicWarning": "Dies erstellt einen öffentlichen Link — jeder mit dem Link sieht deine Bestände und dein Nettovermögen.",
     "publicAcknowledge": "Mir ist bewusst, dass jeder mit dem Link dies sehen kann.",
     "publicActive": "Ein öffentlicher Link ist aktiv. Aus Sicherheitsgründen wird die URL nur einmal bei der Erstellung angezeigt.",
@@ -3148,6 +3149,8 @@
         "shortcut": {
           "prompt": "{{username}} kann das nicht sehen — es ist nicht mit dieser Person geteilt.",
           "action": "Nur mit dieser Person teilen",
+          "confirmWiden": "Mir ist bewusst, dass {{username}} dadurch Zugriff erhält.",
+          "confirmGroupReplace": "Mir ist bewusst, dass dies die aktuelle Freundesgruppe durch eine Freigabe ausschließlich für {{username}} ersetzt.",
           "sharing": "Wird geteilt…",
           "error": "Teilen fehlgeschlagen — bitte erneut versuchen."
         }
@@ -3571,6 +3574,10 @@
       "progress": {
         "preparing": "Geschützte Übertragung wird vorbereitet…",
         "migrate": "Vollständige Portfoliodaten werden auf diesem Gerät gesammelt…",
+        "captureRequests": {
+          "one": "1 Datenbereich wurde sicher gesammelt.",
+          "other": "{{count}} Datenbereiche wurden sicher gesammelt."
+        },
         "validate": "Es wird geprüft, ob sich der vorbereitete Tresor öffnen und zurückholen lässt…",
         "encrypt": "Der Tresor wird auf diesem Gerät verschlüsselt…",
         "write-server": "Die verschlüsselte BetterTrack-Kopie wird gespeichert…",
@@ -3595,6 +3602,8 @@
         "transitionConflict": "Ein anderer Datenschutzwechsel wird noch abgeschlossen. Warte kurz und versuche es erneut.",
         "normalDataChanged": "Dein Konto hat sich geändert, während die verschlüsselte Kopie vorbereitet wurde, deshalb hat BetterTrack vor dem Löschen abgebrochen. Es ging nichts verloren — starte den Wechsel erneut, damit die neuesten Daten enthalten sind.",
         "captureUnstable": "Dein Konto hat sich während des Sammelns immer wieder geändert, deshalb konnte keine vollständige Kopie erstellt werden und es wurde nichts geändert. Schließe BetterTrack in anderen Tabs und auf anderen Geräten und starte den Wechsel dann erneut.",
+        "rateLimited": "Beim Wechsel wurde das BetterTrack-Anfragelimit erreicht, bevor etwas geändert wurde. Warte {{seconds}} Sekunden und starte den Wechsel dann erneut.",
+        "rateLimitedUnknown": "Beim Wechsel wurde das BetterTrack-Anfragelimit erreicht, bevor etwas geändert wurde. Warte, bis das Anfragefenster zurückgesetzt wurde, und starte den Wechsel dann erneut.",
         "unknown": "Der paranoide Modus konnte nicht aktiviert werden. Dein normales Konto ist unverändert."
       }
     },
@@ -4964,6 +4973,229 @@
   },
   "review": {
     "title": "Review"
+  },
+  "notificationContent": {
+    "friendRequest": {
+      "title": "Neue Freundschaftsanfrage",
+      "body": "{{actor}} hat dir eine Freundschaftsanfrage gesendet."
+    },
+    "friendAccepted": {
+      "title": "Freundschaftsanfrage angenommen",
+      "body": "{{actor}} hat deine Freundschaftsanfrage angenommen."
+    },
+    "portfolioShared": {
+      "title": "Portfolio geteilt",
+      "body": "{{actor}} hat das eigene Portfolio mit Freunden geteilt."
+    },
+    "watchlistShared": {
+      "title": "Watchlist geteilt",
+      "body": "{{actor}} hat eine Watchlist mit dir geteilt."
+    },
+    "conglomerateShared": {
+      "title": "Konglomerat geteilt",
+      "body": "{{actor}} hat ein Konglomerat mit dir geteilt."
+    },
+    "friendActivityBuy": {
+      "title": "Aktivität von Freunden",
+      "body": "{{actor}} hat {{symbol}} gekauft."
+    },
+    "friendActivitySell": {
+      "title": "Aktivität von Freunden",
+      "body": "{{actor}} hat {{symbol}} verkauft."
+    },
+    "friendActivityWatchlistAdd": {
+      "title": "Aktivität von Freunden",
+      "body": "{{actor}} hat {{symbol}} zu einer geteilten Watchlist hinzugefügt."
+    },
+    "followPublishedPortfolio": {
+      "title": "Neues Portfolio von {{actor}}",
+      "body": "{{actor}} hat ein neues Portfolio veröffentlicht: {{item}}."
+    },
+    "followPublishedWatchlist": {
+      "title": "Neue Watchlist von {{actor}}",
+      "body": "{{actor}} hat eine neue Watchlist veröffentlicht: {{item}}."
+    },
+    "followPublishedConglomerate": {
+      "title": "Neues Konglomerat von {{actor}}",
+      "body": "{{actor}} hat ein neues Konglomerat veröffentlicht: {{item}}."
+    },
+    "followPublishedIdea": {
+      "title": "Neue Idee von {{actor}}",
+      "body": "{{actor}} hat eine neue Idee veröffentlicht: {{item}}."
+    },
+    "followAlertCreatedPriceAbove": {
+      "title": "Neuer Preisalarm von {{actor}}",
+      "body": "{{actor}} hat einen Preisalarm erstellt: {{symbol}} über {{threshold}} {{currency}}."
+    },
+    "followAlertCreatedPriceBelow": {
+      "title": "Neuer Preisalarm von {{actor}}",
+      "body": "{{actor}} hat einen Preisalarm erstellt: {{symbol}} unter {{threshold}} {{currency}}."
+    },
+    "followAlertCreatedPercentUpReference": {
+      "title": "Neuer Preisalarm von {{actor}}",
+      "body": "{{actor}} hat einen Preisalarm erstellt: {{symbol}} {{threshold}} % über dem Referenzpreis."
+    },
+    "followAlertCreatedPercentDownReference": {
+      "title": "Neuer Preisalarm von {{actor}}",
+      "body": "{{actor}} hat einen Preisalarm erstellt: {{symbol}} {{threshold}} % unter dem Referenzpreis."
+    },
+    "followAlertCreatedPercentDayUp": {
+      "title": "Neuer Preisalarm von {{actor}}",
+      "body": "{{actor}} hat einen Preisalarm erstellt: {{symbol}} heute {{threshold}} % im Plus."
+    },
+    "followAlertCreatedPercentDayDown": {
+      "title": "Neuer Preisalarm von {{actor}}",
+      "body": "{{actor}} hat einen Preisalarm erstellt: {{symbol}} heute {{threshold}} % im Minus."
+    },
+    "followAlertFiredPriceAbove": {
+      "title": "Preisalarm von {{actor}} ausgelöst",
+      "body": "Der Preisalarm von {{actor}} wurde ausgelöst: {{symbol}} über {{threshold}} {{currency}}."
+    },
+    "followAlertFiredPriceBelow": {
+      "title": "Preisalarm von {{actor}} ausgelöst",
+      "body": "Der Preisalarm von {{actor}} wurde ausgelöst: {{symbol}} unter {{threshold}} {{currency}}."
+    },
+    "followAlertFiredPercentUpReference": {
+      "title": "Preisalarm von {{actor}} ausgelöst",
+      "body": "Der Preisalarm von {{actor}} wurde ausgelöst: {{symbol}} {{threshold}} % über dem Referenzpreis."
+    },
+    "followAlertFiredPercentDownReference": {
+      "title": "Preisalarm von {{actor}} ausgelöst",
+      "body": "Der Preisalarm von {{actor}} wurde ausgelöst: {{symbol}} {{threshold}} % unter dem Referenzpreis."
+    },
+    "followAlertFiredPercentDayUp": {
+      "title": "Preisalarm von {{actor}} ausgelöst",
+      "body": "Der Preisalarm von {{actor}} wurde ausgelöst: {{symbol}} heute {{threshold}} % im Plus."
+    },
+    "followAlertFiredPercentDayDown": {
+      "title": "Preisalarm von {{actor}} ausgelöst",
+      "body": "Der Preisalarm von {{actor}} wurde ausgelöst: {{symbol}} heute {{threshold}} % im Minus."
+    },
+    "accountTempPassword": {
+      "title": "Passwort zurückgesetzt",
+      "body": "Die Administration hat dein Passwort zurückgesetzt. Das vorläufige Passwort findest du in deiner E-Mail."
+    },
+    "accountDataExport": {
+      "title": "Dein Datenexport ist bereit",
+      "body": "Der Export deiner Kontodaten ist abgeschlossen. Öffne Einstellungen → Konto, um ihn herunterzuladen."
+    },
+    "alertTriggeredPriceAbove": {
+      "title": "Preisalarm: {{symbol}}",
+      "body": "{{symbol}} ist über {{threshold}} {{currency}} gestiegen."
+    },
+    "alertTriggeredPriceBelow": {
+      "title": "Preisalarm: {{symbol}}",
+      "body": "{{symbol}} ist unter {{threshold}} {{currency}} gefallen."
+    },
+    "alertTriggeredPercentUpReference": {
+      "title": "Preisalarm: {{symbol}}",
+      "body": "{{symbol}} liegt {{threshold}} % über deinem Referenzpreis."
+    },
+    "alertTriggeredPercentDownReference": {
+      "title": "Preisalarm: {{symbol}}",
+      "body": "{{symbol}} liegt {{threshold}} % unter deinem Referenzpreis."
+    },
+    "alertTriggeredPercentDayUp": {
+      "title": "Preisalarm: {{symbol}}",
+      "body": "{{symbol}} liegt heute {{threshold}} % im Plus."
+    },
+    "alertTriggeredPercentDayDown": {
+      "title": "Preisalarm: {{symbol}}",
+      "body": "{{symbol}} liegt heute {{threshold}} % im Minus."
+    },
+    "earningsReminderConfirmed": {
+      "title": "Bald Quartalszahlen: {{symbol}}",
+      "body": "{{name}} ({{symbol}}) legt am {{date}} Quartalszahlen vor."
+    },
+    "earningsReminderEstimated": {
+      "title": "Bald Quartalszahlen: {{symbol}}",
+      "body": "{{name}} ({{symbol}}) wird voraussichtlich um den {{date}} Quartalszahlen vorlegen."
+    },
+    "chatMessagePreview": { "title": "Neue Nachricht", "body": "{{sender}}: {{preview}}" },
+    "chatMessageSharedItem": {
+      "title": "Neue Nachricht",
+      "body": "{{sender}} hat einen Inhalt mit dir geteilt."
+    },
+    "chatMessagePlain": {
+      "title": "Neue Nachricht",
+      "body": "{{sender}} hat dir eine Nachricht gesendet."
+    },
+    "dividendEvent": {
+      "title": "{{symbol}}: Ex-Dividende am {{date}}",
+      "body": "{{symbol}} wird am {{date}} ex Dividende gehandelt."
+    },
+    "dividendEventWithAmount": {
+      "title": "{{symbol}}: Ex-Dividende am {{date}}",
+      "body": "{{symbol}} wird am {{date}} ex Dividende gehandelt ({{amount}} {{currency}} je Aktie)."
+    },
+    "budgetExceeded": {
+      "title": "Budget überschritten: {{category}}",
+      "body": "Du hast diesen Monat {{spent}} {{currency}} für {{category}} ausgegeben — mehr als dein Budget von {{target}} {{currency}}."
+    },
+    "standingOrderDeferredNamed": {
+      "title": "Dauerauftrag zurückgestellt",
+      "body": "Die Ausführung von „{{order}}“ am {{period}} konnte nicht gebucht werden. BetterTrack versucht es erneut."
+    },
+    "standingOrderDeferredUnnamed": {
+      "title": "Dauerauftrag zurückgestellt",
+      "body": "Die Ausführung dieses Dauerauftrags am {{period}} konnte nicht gebucht werden. BetterTrack versucht es erneut."
+    },
+    "standingOrderDroppedNamed": {
+      "title": "Dauerauftrags-Ausführung übersprungen",
+      "body": "Die Ausführung von „{{order}}“ am {{period}} wurde nicht erfasst, bevor der nächste Termin fällig wurde."
+    },
+    "standingOrderDroppedUnnamed": {
+      "title": "Dauerauftrags-Ausführung übersprungen",
+      "body": "Die Ausführung dieses Dauerauftrags am {{period}} wurde nicht erfasst, bevor der nächste Termin fällig wurde."
+    },
+    "standingOrderDroppedManyNamed": {
+      "title": "{{count}} Dauerauftrags-Ausführungen übersprungen",
+      "body": "{{count}} geplante Ausführungen von „{{order}}“ bis einschließlich {{period}} wurden nicht erfasst, bevor der neueste Termin fällig wurde."
+    },
+    "standingOrderDroppedManyUnnamed": {
+      "title": "{{count}} Dauerauftrags-Ausführungen übersprungen",
+      "body": "{{count}} geplante Ausführungen dieses Dauerauftrags bis einschließlich {{period}} wurden nicht erfasst, bevor der neueste Termin fällig wurde."
+    },
+    "standingOrderBookingFailedNamed": {
+      "title": "Dauerauftrags-Buchung fehlgeschlagen",
+      "body": "Die Ausführung von „{{order}}“ am {{period}} konnte nicht erfasst werden und wird nicht erneut versucht."
+    },
+    "standingOrderBookingFailedUnnamed": {
+      "title": "Dauerauftrags-Buchung fehlgeschlagen",
+      "body": "Die Ausführung dieses Dauerauftrags am {{period}} konnte nicht erfasst werden und wird nicht erneut versucht."
+    },
+    "mirrorInvite": {
+      "title": "Einladung zu einem Gruppen-Portfolio",
+      "body": "{{actor}} hat dich eingeladen, dem Gruppen-Portfolio {{chain}} beizutreten."
+    },
+    "mirrorMemberJoined": {
+      "title": "Neues Mitglied in {{chain}}",
+      "body": "{{actor}} ist dem Gruppen-Portfolio {{chain}} beigetreten."
+    },
+    "mirrorMemberLeft": {
+      "title": "Ein Mitglied hat {{chain}} verlassen",
+      "body": "{{actor}} hat das Gruppen-Portfolio {{chain}} verlassen."
+    },
+    "mirrorMemberRemoved": {
+      "title": "Ein Mitglied wurde aus {{chain}} entfernt",
+      "body": "{{actor}} wurde aus dem Gruppen-Portfolio {{chain}} entfernt."
+    },
+    "mirrorRemoved": {
+      "title": "Aus {{chain}} entfernt",
+      "body": "Du wurdest aus dem Gruppen-Portfolio {{chain}} entfernt. Deine Kopie bleibt erhalten — sie wird nur nicht mehr synchronisiert."
+    },
+    "mirrorOwnershipTransferred": {
+      "title": "Eigentümerschaft von {{chain}} geändert",
+      "body": "{{actor}} ist jetzt Eigentümer:in des Gruppen-Portfolios {{chain}}."
+    },
+    "mirrorChainDissolved": {
+      "title": "{{chain}} wurde aufgelöst",
+      "body": "Das Gruppen-Portfolio {{chain}} wurde aufgelöst. Deine Kopie bleibt erhalten — sie wird nur nicht mehr synchronisiert."
+    },
+    "mirrorSyncStalled": {
+      "title": "Synchronisierung von {{chain}} hängt",
+      "body": "Das Gruppen-Portfolio {{chain}} konnte nicht fertig synchronisiert werden. Öffne es und wähle „Synchronisierung wiederholen“."
+    }
   },
   "control": {
     "title": "Kontrollzentrum",

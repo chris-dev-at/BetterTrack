@@ -122,7 +122,7 @@ const roomKey = (room: RealtimeRoom): string => `${room.kind}:${room.id}`;
  * and fans server pushes out to `useRealtimeEvent` subscribers.
  *
  * Cache sync: pushes map to TanStack Query invalidations — `quote.updated` →
- * the asset's queries, `portfolio.changed` → that portfolio + the portfolio
+ * the asset's live quote query, `portfolio.changed` → that portfolio + the portfolio
  * list (cross-tab / shared-view freshness). `notification.new` is handled by
  * the bell itself, which owns the notifications query key. Every consumer keeps
  * its poll/refetch behavior untouched, so a dead socket degrades silently.
@@ -250,7 +250,7 @@ export function RealtimeProvider({ enabled, children }: { enabled: boolean; chil
     const offQuote = on(REALTIME_SERVER_EVENTS.quoteUpdated, (payload) => {
       const parsed = realtimeQuoteUpdatedSchema.safeParse(payload);
       if (!parsed.success) return;
-      void queryClient.invalidateQueries({ queryKey: ['asset', parsed.data.assetId] });
+      void queryClient.invalidateQueries({ queryKey: ['asset', parsed.data.assetId, 'quote'] });
     });
     const offPortfolio = on(REALTIME_SERVER_EVENTS.portfolioChanged, (payload) => {
       const parsed = realtimePortfolioChangedSchema.safeParse(payload);
