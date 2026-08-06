@@ -314,7 +314,6 @@ describe('normal-mode enable staging access', () => {
   it('allows only the owner session while the enable window is live', async () => {
     await repo.beginEnableStaging({
       userId,
-      normalDataRevision: 'capture-revision',
       now: T0,
       expiresAt: new Date(T0.getTime() + 10 * 60 * 1000),
     });
@@ -346,7 +345,6 @@ describe('normal-mode enable staging access', () => {
   it('physically deletes current and historical ciphertext when staging expires', async () => {
     await repo.beginEnableStaging({
       userId,
-      normalDataRevision: 'capture-revision',
       now: T0,
       expiresAt: new Date(T0.getTime() + 1),
     });
@@ -393,7 +391,6 @@ describe('normal-mode enable staging access', () => {
   it('sweeps abandoned staging without waiting for another vault request', async () => {
     await repo.beginEnableStaging({
       userId,
-      normalDataRevision: 'capture-revision',
       now: T0,
       expiresAt: new Date(T0.getTime() + 1),
     });

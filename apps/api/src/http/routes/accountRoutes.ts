@@ -169,6 +169,10 @@ export function createAccountRouter(ctx: AppContext, limiters: RateLimiters): Ro
   // aggregate per restorable table over the caller's whole dataset. The wizard
   // spends exactly one per attempt, so the 60/min steady state is invisible to
   // it and still bounds a loop that hammers the fan-out at nothing.
+  // NOTE: a GET that changes state — it opens/renews this account's own enable
+  // window and disposes of an already-expired one. See `normalDataRevision` in
+  // `paranoidTransitionService` for why that is safe under the CSRF exemption
+  // every safe method gets.
   router.get(
     '/paranoid/normal-revision',
     requireUser,

@@ -20,7 +20,6 @@ import type { Database } from '../../data/db';
 import { createParanoidForkProvenanceRepository } from '../../data/repositories/paranoidRehydrationRepository';
 import {
   createParanoidVaultRepository,
-  PARANOID_ENABLE_LEGACY_REVISION,
   type ParanoidVaultRepository,
 } from '../../data/repositories/paranoidVaultRepository';
 import {
@@ -43,9 +42,11 @@ import {
 export type ParanoidEnableStage = 'locked' | 'sharingRevoked' | 'vaultPurged' | 'modeEnabled';
 
 /**
- * The closing capture revision refreshes this window immediately before local
- * validation/encryption. Reuse the shipped verified-candidate lifetime so both
- * kinds of unpromoted server ciphertext share one abandonment horizon.
+ * Every capture revision read refreshes this window, so the wizard's closing
+ * read renews it immediately before local validation/encryption. Reuse the
+ * shipped verified-candidate lifetime so both kinds of unpromoted server
+ * ciphertext share one abandonment horizon. It bounds staged SERVER bytes
+ * only — the enable gate below exempts a media set that stages none.
  */
 export const PARANOID_ENABLE_STAGING_TTL_MS = VAULT_SERVER_CANDIDATE_TTL_MS;
 
@@ -278,10 +279,18 @@ export function createParanoidTransitionService(
         (tx) => computeNormalDataRevision(tx as unknown as Database, userId),
         { isolationLevel: 'repeatable read', accessMode: 'read only' },
       );
+      /*
+       * Deliberately state-changing for a GET (CSRF-exempt as a safe method):
+       * this is the only point the server learns an enable wizard is running,
+       * and the wizard must read the token before its first row read. It opens
+       * or renews the owner-only window that makes normal-mode vault I/O legal,
+       * and — through `beginEnableStaging` — physically drops the ciphertext of
+       * a window that had already expired. Both effects are confined to the
+       * caller's own account and touch only already-abandoned staged bytes.
+       */
       const stagedAt = now();
       await vaults.beginEnableStaging({
         userId,
-        normalDataRevision: revision,
         now: stagedAt,
         expiresAt: new Date(stagedAt.getTime() + PARANOID_ENABLE_STAGING_TTL_MS),
       });
@@ -444,16 +453,33 @@ export function createParanoidTransitionService(
             );
           }
 
+          /*
+           * Presence and expiry ONLY, and only for a media set that actually
+           * stages server bytes. Two deliberate exclusions:
+           *
+           *  - It must not compare the window's capture revision. That row is
+           *    overwritten by EVERY normal-revision read, so an enable carrying
+           *    an older-but-still-authoritative token would be refused here as
+           *    "media not ready" ~50 lines before the capture↔commit CAS below
+           *    could answer the precise, client-handled NORMAL_DATA_CHANGED —
+           *    the one refusal that tells the wizard to recapture. It buys no
+           *    safety either: the CAS re-derives the revision under the account
+           *    lock and is what stands between a stale document and the purge.
+           *  - A media set without `server` is exempt. `ui/enable.ts` writes
+           *    only the selected media, so a Drive-only enable stages no server
+           *    ciphertext for this window to bound; requiring one would put the
+           *    10-minute abandonment horizon on a whole large-vault Drive round
+           *    trip and fail the commit after all the work was already done.
+           */
           const stagingCheckedAt = now();
           if (
-            state.enableStaging === null ||
-            state.enableStaging.expiresAt.getTime() <= stagingCheckedAt.getTime() ||
-            (state.enableStaging.normalDataRevision !== input.normalDataRevision &&
-              state.enableStaging.normalDataRevision !== PARANOID_ENABLE_LEGACY_REVISION)
+            input.mediaSet.includes('server') &&
+            (state.enableStaging === null ||
+              state.enableStaging.expiresAt.getTime() <= stagingCheckedAt.getTime())
           ) {
             throw new ParanoidTransitionError(
               'MEDIA_NOT_READY',
-              'The paranoid-enable staging window is absent, expired, or belongs to another capture.',
+              'The paranoid-enable staging window is absent or expired; capture again before enabling.',
             );
           }
 

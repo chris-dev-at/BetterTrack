@@ -440,6 +440,17 @@ export function createVaultRouter(ctx: AppContext, limiters: RateLimiters): Rout
     },
   );
 
+  /*
+   * A safe method that can change state, so worth stating: for a NORMAL-mode
+   * account whose enable window has already expired, the repository read is
+   * also the sweep that physically deletes the abandoned ciphertext before
+   * answering `medium_inactive`. It only ever destroys bytes that were already
+   * unreachable, only for the authenticated caller's own account, and the same
+   * disposal runs from the retention job — so being CSRF-exempt (`csrf.ts`
+   * exempts safe methods) costs nothing: a forged cross-site GET can reach no
+   * state a plain expiry would not have reached anyway, and cannot read the
+   * opaque response.
+   */
   router.get('/', async (req, res) => {
     const result = await ctx.paranoidVault.get(
       req.authUser!.id,

@@ -126,7 +126,7 @@ export function createDataRetentionCleanupJob(
             // scheduled run continues, so this must be visible in the log.
             deferredToNextRun: audit.capped || emailLog.capped || vaultStaging.capped,
           },
-          'expired audit and email-log rows pruned',
+          'expired audit, email-log and abandoned vault-staging rows pruned',
         );
       }
       if (devices.legacy > 0) {

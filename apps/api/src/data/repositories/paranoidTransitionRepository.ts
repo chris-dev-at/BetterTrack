@@ -70,7 +70,7 @@ import {
 
 export interface LockedParanoidTransitionState {
   privacyMode: 'normal' | 'paranoid';
-  enableStaging: { normalDataRevision: string; expiresAt: Date } | null;
+  enableStaging: { expiresAt: Date } | null;
   mediaSet: VaultMediaSet | null;
   driveAttestedVersion: number | null;
   currentServerVault: {
@@ -725,10 +725,7 @@ export function createParanoidTransitionTransactionRepository(
           .from(paranoidVaultHistory)
           .where(eq(paranoidVaultHistory.userId, userId)),
         tx
-          .select({
-            normalDataRevision: paranoidEnableTransitions.normalDataRevision,
-            expiresAt: paranoidEnableTransitions.expiresAt,
-          })
+          .select({ expiresAt: paranoidEnableTransitions.expiresAt })
           .from(paranoidEnableTransitions)
           .where(eq(paranoidEnableTransitions.userId, userId))
           .limit(1),

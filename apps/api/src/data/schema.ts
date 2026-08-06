@@ -3561,10 +3561,12 @@ export const paranoidVaults = pgTable('paranoid_vaults', {
 
 /**
  * Short-lived owner-session authorization for the normal → paranoid enable
- * wizard. The capture protocol refreshes this row with its opening/closing
- * normal-data revision; opaque server bytes are readable/writable in normal
- * mode only while this exact transition is live. Expiry abandons the attempt
- * and makes its staged ciphertext eligible for physical deletion.
+ * wizard, refreshed by every capture-revision read. Opaque server bytes are
+ * readable/writable in normal mode only while this window is live; expiry
+ * abandons the attempt and makes its staged ciphertext eligible for physical
+ * deletion. Deliberately just a window: whether the enable itself may proceed
+ * is decided by the capture↔commit revision CAS under the account lock, not by
+ * anything recorded here.
  */
 export const paranoidEnableTransitions = pgTable(
   'paranoid_enable_transitions',
@@ -3572,7 +3574,6 @@ export const paranoidEnableTransitions = pgTable(
     userId: uuid('user_id')
       .primaryKey()
       .references(() => users.id, { onDelete: 'cascade' }),
-    normalDataRevision: text('normal_data_revision').notNull(),
     expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
