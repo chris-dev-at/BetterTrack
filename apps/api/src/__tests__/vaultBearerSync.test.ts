@@ -437,7 +437,8 @@ describe('#1043 bearer vault synchronization', () => {
       .send(v3);
     expect(stale.status).toBe(412);
     expect(stale.body.error.code).toBe('VAULT_PRECONDITION_FAILED');
-    expect(stale.headers.etag).toBe('"2"');
+    expect(stale.headers.etag).toBeUndefined();
+    expect(stale.headers['last-modified']).toBeUndefined();
 
     const fresh = await request(harness.app)
       .put('/api/v1/vault')
