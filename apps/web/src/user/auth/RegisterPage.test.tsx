@@ -18,6 +18,7 @@ vi.mock('../../lib/workboardApi', () => ({
 import { ApiError } from '../../lib/apiClient';
 import * as api from '../../lib/userApi';
 import { listWorkboard } from '../../lib/workboardApi';
+import { waitForColdStart } from '../../test/waitForColdStart';
 import { UserApp } from '../UserApp';
 
 const user: MeResponse = {
@@ -69,7 +70,9 @@ test('closed mode shows a closed notice and no registration form', async () => {
   setMode('closed');
   renderAt('/register');
 
-  expect(await screen.findByText(/registration is currently closed/i)).toBeInTheDocument();
+  expect(
+    await waitForColdStart(() => screen.getByText(/registration is currently closed/i)),
+  ).toBeInTheDocument();
   expect(screen.queryByLabelText(/^Password/i)).not.toBeInTheDocument();
 });
 
@@ -79,7 +82,10 @@ test('open mode registers and signs the account straight in', async () => {
   const u = userEvent.setup();
   renderAt('/register');
 
-  await u.type(await screen.findByLabelText('Email'), 'jane@bettertrack.test');
+  await u.type(
+    await waitForColdStart(() => screen.getByLabelText('Email')),
+    'jane@bettertrack.test',
+  );
   await u.type(screen.getByLabelText('Username'), 'jane');
   await u.type(screen.getByLabelText('Password'), 'jane-strong-pass-1');
   await u.click(screen.getByRole('button', { name: 'Create account' }));
@@ -105,7 +111,7 @@ test('invite-token mode prefills the token from the URL and sends it', async () 
   const u = userEvent.setup();
   renderAt('/register?token=RAW-TOKEN');
 
-  const tokenField = await screen.findByLabelText(/Access token/i);
+  const tokenField = await waitForColdStart(() => screen.getByLabelText(/Access token/i));
   expect(tokenField).toHaveValue('RAW-TOKEN');
 
   await u.type(screen.getByLabelText('Email'), 'inv@test.dev');
@@ -126,7 +132,7 @@ test('approval mode confirms the request is pending and mints no session', async
   const u = userEvent.setup();
   renderAt('/register');
 
-  await u.type(await screen.findByLabelText('Email'), 'q@test.dev');
+  await u.type(await waitForColdStart(() => screen.getByLabelText('Email')), 'q@test.dev');
   await u.type(screen.getByLabelText('Username'), 'q_user');
   await u.type(screen.getByLabelText('Password'), 'q-strong-pass-1');
   await u.click(screen.getByRole('button', { name: 'Request account' }));
@@ -144,7 +150,7 @@ test('a taken email surfaces a friendly error', async () => {
   const u = userEvent.setup();
   renderAt('/register');
 
-  await u.type(await screen.findByLabelText('Email'), 'dupe@test.dev');
+  await u.type(await waitForColdStart(() => screen.getByLabelText('Email')), 'dupe@test.dev');
   await u.type(screen.getByLabelText('Username'), 'dupe_user');
   await u.type(screen.getByLabelText('Password'), 'dupe-strong-pass-1');
   await u.click(screen.getByRole('button', { name: 'Create account' }));
@@ -157,7 +163,7 @@ test('a taken email surfaces a friendly error', async () => {
 test('the register form shows a legal-consent notice linking all four legal documents', async () => {
   setMode('open');
   renderAt('/register');
-  await screen.findByLabelText('Email');
+  await waitForColdStart(() => screen.getByLabelText('Email'));
 
   // The notice announces the consent verbatim, then carries the four links.
   expect(screen.getByText(/By signing up you agree/i)).toBeInTheDocument();
@@ -184,7 +190,7 @@ test('the legal-consent links resolve to the DE variants when the locale is Germ
   // Seed the persisted locale so I18nProvider boots into DE.
   localStorage.setItem('bettertrack.locale', 'de');
   renderAt('/register');
-  await screen.findByLabelText(/E-Mail/);
+  await waitForColdStart(() => screen.getByLabelText(/E-Mail/));
 
   // Same four links, DE labels, /de/ URL variants.
   expect(screen.getByRole('link', { name: 'Nutzungsbedingungen' })).toHaveAttribute(
@@ -218,7 +224,9 @@ test('the connected state locks the prefilled email, seeds the username, and sub
   renderAt('/register?google=connected');
 
   // The "Connected to Google" state announces the linked email.
-  expect(await screen.findByText(/Connected to Google as ada@gmail.com/i)).toBeInTheDocument();
+  expect(
+    await waitForColdStart(() => screen.getByText(/Connected to Google as ada@gmail.com/i)),
+  ).toBeInTheDocument();
   // Email is prefilled AND locked (disabled input).
   const email = screen.getByLabelText('Email') as HTMLInputElement;
   expect(email.value).toBe('ada@gmail.com');
@@ -253,7 +261,9 @@ test('an expired Google ticket falls back to the plain form with a notice', asyn
   );
   renderAt('/register?google=connected');
 
-  expect(await screen.findByText(/Google connection expired/i)).toBeInTheDocument();
+  expect(
+    await waitForColdStart(() => screen.getByText(/Google connection expired/i)),
+  ).toBeInTheDocument();
   // The email field is editable again — a plain registration.
   const email = (await screen.findByLabelText('Email')) as HTMLInputElement;
   expect(email).not.toBeDisabled();
@@ -272,7 +282,9 @@ test.each([0, 500])(
     renderAt('/register?google=connected');
 
     expect(
-      await screen.findByText(/can’t check your Google connection right now/i),
+      await waitForColdStart(() =>
+        screen.getByText(/can’t check your Google connection right now/i),
+      ),
     ).toBeInTheDocument();
     expect(screen.queryByText(/Google connection expired/i)).not.toBeInTheDocument();
 
@@ -293,7 +305,7 @@ test('the connected invite-token form keeps the token field fillable and sends i
   const u = userEvent.setup();
   renderAt('/register?google=connected');
 
-  await screen.findByText(/Connected to Google/i);
+  await waitForColdStart(() => screen.getByText(/Connected to Google/i));
   // The invite/access-token field is still fillable AFTER connecting.
   await u.type(screen.getByLabelText(/Access token/i), 'INVITE-XYZ');
   await u.type(screen.getByLabelText('Username'), 'ada_user');
@@ -314,7 +326,7 @@ test('the connected approval form parks a pending request and mints no session',
   const u = userEvent.setup();
   renderAt('/register?google=connected');
 
-  await screen.findByText(/Connected to Google/i);
+  await waitForColdStart(() => screen.getByText(/Connected to Google/i));
   await u.type(screen.getByLabelText('Username'), 'ada_user');
   await u.type(screen.getByLabelText('Password'), 'ada-strong-pass-1');
   await u.click(screen.getByRole('button', { name: 'Request account' }));
@@ -331,7 +343,9 @@ test('the register surface orders Google, then the form, then OR, then the mirro
   vi.mocked(api.googleStartUrl).mockReturnValue('http://api.test/api/v1/auth/google/start');
   renderAt('/register');
 
-  const google = await screen.findByRole('link', { name: 'Continue with Google' });
+  const google = await waitForColdStart(() =>
+    screen.getByRole('link', { name: 'Continue with Google' }),
+  );
   const passwordField = screen.getByLabelText('Password');
   const divider = screen.getByText('or');
   // Mirrored bottom box: heading + a prominent link to the login page.
@@ -358,7 +372,7 @@ test('the mirrored Sign-in box still ships when Google is disabled', async () =>
   setMode('open');
   renderAt('/register');
 
-  await screen.findByLabelText('Email');
+  await waitForColdStart(() => screen.getByLabelText('Email'));
   expect(screen.getByText('Already have an account?')).toBeInTheDocument();
   expect(screen.getByRole('link', { name: 'Sign in' })).toHaveAttribute('href', '/login');
   // No Google → no Google button either.

@@ -33,6 +33,7 @@ import {
 } from '../../lib/passkeys';
 import * as api from '../../lib/userApi';
 import { listWorkboard } from '../../lib/workboardApi';
+import { waitForColdStart } from '../../test/waitForColdStart';
 import { TAGLINE } from '../../ui/Disclaimer';
 import { UserApp } from '../UserApp';
 
@@ -126,7 +127,7 @@ function typePin(pin: string) {
 async function submitPassword() {
   const u = userEvent.setup();
   renderApp();
-  await screen.findByText('Sign in to your account');
+  await waitForColdStart(() => screen.getByText('Sign in to your account'));
   await u.type(screen.getByLabelText('Email or username'), 'jane');
   await u.type(screen.getByLabelText('Password'), 'jane-strong-password-1');
   await u.click(screen.getByRole('button', { name: 'Sign in' }));
@@ -214,7 +215,7 @@ test('an account without 2FA logs straight into the app', async () => {
 
 test('the gate renders a decorative brand panel beside the form, leaving the fields untouched', async () => {
   renderApp();
-  await screen.findByText('Sign in to your account');
+  await waitForColdStart(() => screen.getByText('Sign in to your account'));
 
   const gate = document.querySelector('.bt-gate--split');
   expect(gate).not.toBeNull();
@@ -242,7 +243,7 @@ test('the login form shows a Stay-signed-in checkbox ticked by default; untickin
 
   const u = userEvent.setup();
   renderApp();
-  await screen.findByText('Sign in to your account');
+  await waitForColdStart(() => screen.getByText('Sign in to your account'));
 
   const stay = screen.getByLabelText('Stay signed in');
   expect(stay).toBeChecked();
@@ -265,7 +266,7 @@ test('an OAuth login shows no stay-signed-in checkbox and, without a PIN, never 
 
   const u = userEvent.setup();
   renderAppAt({ pathname: '/login', state: { from: OAUTH_FROM } });
-  await screen.findByText('Sign in to your account');
+  await waitForColdStart(() => screen.getByText('Sign in to your account'));
 
   // No "stay signed in" checkbox on the OAuth login form (PIN unknown yet).
   expect(screen.queryByLabelText('Stay signed in')).not.toBeInTheDocument();
@@ -287,7 +288,7 @@ test('an OAuth login on a PIN account offers the "stay signed in — your PIN pr
 
   const u = userEvent.setup();
   renderAppAt({ pathname: '/login', state: { from: OAUTH_FROM } });
-  await screen.findByText('Sign in to your account');
+  await waitForColdStart(() => screen.getByText('Sign in to your account'));
 
   await u.type(screen.getByLabelText('Email or username'), 'jane');
   await u.type(screen.getByLabelText('Password'), 'jane-strong-password-1');
@@ -307,7 +308,7 @@ test('opting into "stay signed in" on the OAuth persist step promotes the sessio
 
   const u = userEvent.setup();
   renderAppAt({ pathname: '/login', state: { from: OAUTH_FROM } });
-  await screen.findByText('Sign in to your account');
+  await waitForColdStart(() => screen.getByText('Sign in to your account'));
 
   await u.type(screen.getByLabelText('Email or username'), 'jane');
   await u.type(screen.getByLabelText('Password'), 'jane-strong-password-1');
@@ -330,7 +331,7 @@ test('a persist failure on the OAuth step does not strand the flow — it procee
 
   const u = userEvent.setup();
   renderAppAt({ pathname: '/login', state: { from: OAUTH_FROM } });
-  await screen.findByText('Sign in to your account');
+  await waitForColdStart(() => screen.getByText('Sign in to your account'));
 
   await u.type(screen.getByLabelText('Email or username'), 'jane');
   await u.type(screen.getByLabelText('Password'), 'jane-strong-password-1');
@@ -357,21 +358,27 @@ test('state ladder (1): a valid PIN-gated session shows the PIN gate, never the 
       </Routes>
     </MemoryRouter>,
   );
-  expect(await screen.findByRole('heading', { name: 'Enter your PIN' })).toBeInTheDocument();
+  expect(
+    await waitForColdStart(() => screen.getByRole('heading', { name: 'Enter your PIN' })),
+  ).toBeInTheDocument();
   expect(screen.queryByRole('button', { name: /log in as jane/i })).not.toBeInTheDocument();
 });
 
 test('state ladder (2): no session + a remembered identity shows the chooser', async () => {
   rememberJane();
   renderAppAt({ pathname: '/login', state: { from: OAUTH_FROM } });
-  expect(await screen.findByRole('button', { name: /log in as jane/i })).toBeInTheDocument();
+  expect(
+    await waitForColdStart(() => screen.getByRole('button', { name: /log in as jane/i })),
+  ).toBeInTheDocument();
   // Not the blank login form.
   expect(screen.queryByLabelText('Email or username')).not.toBeInTheDocument();
 });
 
 test('state ladder (3): nothing remembered shows a blank login', async () => {
   renderAppAt({ pathname: '/login', state: { from: OAUTH_FROM } });
-  expect(await screen.findByText('Sign in to your account')).toBeInTheDocument();
+  expect(
+    await waitForColdStart(() => screen.getByText('Sign in to your account')),
+  ).toBeInTheDocument();
   expect(screen.queryByRole('button', { name: /log in as/i })).not.toBeInTheDocument();
 });
 
@@ -384,7 +391,9 @@ test('chooser: "Log in as" → PIN-only entry completes login + authorize, no pa
 
   const u = userEvent.setup();
   renderAppAt({ pathname: '/login', state: { from: OAUTH_FROM } });
-  await u.click(await screen.findByRole('button', { name: /log in as jane/i }));
+  await u.click(
+    await waitForColdStart(() => screen.getByRole('button', { name: /log in as jane/i })),
+  );
 
   // Window closed → the PIN input appears; a password field is never shown.
   await screen.findByLabelText('PIN');
@@ -405,7 +414,9 @@ test('chooser: within the ~15-min window, tapping the name auto-logs-in — choo
   const u = userEvent.setup();
   renderAppAt({ pathname: '/login', state: { from: OAUTH_FROM } });
   // The chooser step WAS shown (never auto-skipped) — we must tap the name.
-  await u.click(await screen.findByRole('button', { name: /log in as jane/i }));
+  await u.click(
+    await waitForColdStart(() => screen.getByRole('button', { name: /log in as jane/i })),
+  );
 
   // Auto-pass: straight to consent from a PIN-less probe, no PIN input.
   expect(await screen.findByText('Loading authorization request…')).toBeInTheDocument();
@@ -419,7 +430,9 @@ test('chooser: "Another account" forgets the identity and drops to a blank login
 
   const u = userEvent.setup();
   renderAppAt({ pathname: '/login', state: { from: OAUTH_FROM } });
-  await u.click(await screen.findByRole('button', { name: 'Another account' }));
+  await u.click(
+    await waitForColdStart(() => screen.getByRole('button', { name: 'Another account' })),
+  );
 
   expect(await screen.findByText('Sign in to your account')).toBeInTheDocument();
   expect(api.forgetRememberedDevice).toHaveBeenCalledTimes(1);
@@ -434,7 +447,7 @@ test('remember-me: an OAuth login on a PIN account offers the one-time remember-
 
   const u = userEvent.setup();
   renderAppAt({ pathname: '/login', state: { from: OAUTH_FROM } });
-  await screen.findByText('Sign in to your account');
+  await waitForColdStart(() => screen.getByText('Sign in to your account'));
   await u.type(screen.getByLabelText('Email or username'), 'jane');
   await u.type(screen.getByLabelText('Password'), 'jane-strong-password-1');
   await u.click(screen.getByRole('button', { name: 'Sign in' }));
@@ -455,7 +468,7 @@ test('remember-me: ticking it binds the device and stores the local chooser reco
 
   const u = userEvent.setup();
   renderAppAt({ pathname: '/login', state: { from: OAUTH_FROM } });
-  await screen.findByText('Sign in to your account');
+  await waitForColdStart(() => screen.getByText('Sign in to your account'));
   await u.type(screen.getByLabelText('Email or username'), 'jane');
   await u.type(screen.getByLabelText('Password'), 'jane-strong-password-1');
   await u.click(screen.getByRole('button', { name: 'Sign in' }));
@@ -474,7 +487,7 @@ test('remember-me: shown once — hidden after this device already asked the use
 
   const u = userEvent.setup();
   renderAppAt({ pathname: '/login', state: { from: OAUTH_FROM } });
-  await screen.findByText('Sign in to your account');
+  await waitForColdStart(() => screen.getByText('Sign in to your account'));
   await u.type(screen.getByLabelText('Email or username'), 'jane');
   await u.type(screen.getByLabelText('Password'), 'jane-strong-password-1');
   await u.click(screen.getByRole('button', { name: 'Sign in' }));
@@ -490,7 +503,7 @@ test('remember-me: a PIN-less OAuth login is never prompted to remember', async 
 
   const u = userEvent.setup();
   renderAppAt({ pathname: '/login', state: { from: OAUTH_FROM } });
-  await screen.findByText('Sign in to your account');
+  await waitForColdStart(() => screen.getByText('Sign in to your account'));
   await u.type(screen.getByLabelText('Email or username'), 'jane');
   await u.type(screen.getByLabelText('Password'), 'jane-strong-password-1');
   await u.click(screen.getByRole('button', { name: 'Sign in' }));
@@ -510,7 +523,9 @@ test('chooser: a stale/forgotten server binding falls back to a blank login', as
 
   const u = userEvent.setup();
   renderAppAt({ pathname: '/login', state: { from: OAUTH_FROM } });
-  await u.click(await screen.findByRole('button', { name: /log in as jane/i }));
+  await u.click(
+    await waitForColdStart(() => screen.getByRole('button', { name: /log in as jane/i })),
+  );
 
   // The dead memory is dropped and the flow falls through to a blank login.
   expect(await screen.findByText('Sign in to your account')).toBeInTheDocument();
@@ -526,7 +541,9 @@ test('chooser: a wrong PIN shows an error and stays on the PIN step', async () =
 
   const u = userEvent.setup();
   renderAppAt({ pathname: '/login', state: { from: OAUTH_FROM } });
-  await u.click(await screen.findByRole('button', { name: /log in as jane/i }));
+  await u.click(
+    await waitForColdStart(() => screen.getByRole('button', { name: /log in as jane/i })),
+  );
   await screen.findByLabelText('PIN');
 
   typePin('0000');
@@ -544,7 +561,7 @@ test('a successful login stores the identifier for prefill on the next visit', a
 
   const u = userEvent.setup();
   renderApp();
-  await screen.findByText('Sign in to your account');
+  await waitForColdStart(() => screen.getByText('Sign in to your account'));
 
   // The blank login form on a fresh device has NO toggle for username memory —
   // memory is always on (V4-P0 (g) supersedes any prior opt-in control).
@@ -564,7 +581,9 @@ test('the identifier prefills from the last successful login on the next visit',
   localStorage.setItem(LAST_IDENTIFIER_KEY, 'jane@bettertrack.test');
 
   renderApp();
-  const field = (await screen.findByLabelText('Email or username')) as HTMLInputElement;
+  const field = (await waitForColdStart(() =>
+    screen.getByLabelText('Email or username'),
+  )) as HTMLInputElement;
   expect(field.value).toBe('jane@bettertrack.test');
 });
 
@@ -576,7 +595,9 @@ test('a bad password does NOT overwrite the remembered identifier', async () => 
 
   const u = userEvent.setup();
   renderApp();
-  const field = (await screen.findByLabelText('Email or username')) as HTMLInputElement;
+  const field = (await waitForColdStart(() =>
+    screen.getByLabelText('Email or username'),
+  )) as HTMLInputElement;
   // Prefilled from the earlier successful login; the user overwrites it and mistypes.
   await u.clear(field);
   await u.type(field, 'someoneelse@bettertrack.test');
@@ -594,7 +615,7 @@ test('a bad password does NOT overwrite the remembered identifier', async () => 
 test('the login screen exposes a designed Sign-up entry alongside the sign-in form', async () => {
   vi.mocked(api.getRegistrationInfo).mockResolvedValue({ mode: 'open', googleEnabled: false });
   renderApp();
-  await screen.findByText('Sign in to your account');
+  await waitForColdStart(() => screen.getByText('Sign in to your account'));
 
   // A prominent "Sign up" link — no more bottom-anchor "Create one" prose.
   const signUp = await screen.findByRole('link', { name: 'Sign up' });
@@ -605,7 +626,7 @@ test('the login screen exposes a designed Sign-up entry alongside the sign-in fo
 test('the Sign-up entry is hidden when the instance keeps registration closed', async () => {
   vi.mocked(api.getRegistrationInfo).mockResolvedValue({ mode: 'closed', googleEnabled: false });
   renderApp();
-  await screen.findByText('Sign in to your account');
+  await waitForColdStart(() => screen.getByText('Sign in to your account'));
 
   expect(screen.queryByRole('link', { name: 'Sign up' })).not.toBeInTheDocument();
 });
@@ -622,7 +643,9 @@ test.each([0, 500])(
     renderApp();
 
     expect(
-      await screen.findByText(/registration status is temporarily unavailable/i),
+      await waitForColdStart(() =>
+        screen.getByText(/registration status is temporarily unavailable/i),
+      ),
     ).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: 'Sign up' })).not.toBeInTheDocument();
 
@@ -644,7 +667,7 @@ test('the login surface orders Google, then the password form, then OR, then the
   // so it renders as a real link (an <a> without href has no link role).
   vi.mocked(api.googleStartUrl).mockReturnValue('http://api.test/api/v1/auth/google/start');
   renderApp();
-  await screen.findByText('Sign in to your account');
+  await waitForColdStart(() => screen.getByText('Sign in to your account'));
 
   const google = await screen.findByRole('link', { name: 'Continue with Google' });
   const passwordField = screen.getByLabelText('Password');
@@ -665,7 +688,7 @@ test('the Sign-up box (and its OR divider) stay hidden when registration is clos
   vi.mocked(api.getRegistrationInfo).mockResolvedValue({ mode: 'closed', googleEnabled: true });
   vi.mocked(api.googleStartUrl).mockReturnValue('http://api.test/api/v1/auth/google/start');
   renderApp();
-  await screen.findByText('Sign in to your account');
+  await waitForColdStart(() => screen.getByText('Sign in to your account'));
 
   expect(screen.queryByRole('link', { name: 'Sign up' })).not.toBeInTheDocument();
   // No OR without a sign-up box to divide against the form.
@@ -677,7 +700,7 @@ test('the Sign-up box (and its OR divider) stay hidden when registration is clos
 test('hides passkey sign-in when the browser does not support WebAuthn', async () => {
   vi.mocked(browserSupportsWebAuthn).mockReturnValue(false);
   renderApp();
-  await screen.findByText('Sign in to your account');
+  await waitForColdStart(() => screen.getByText('Sign in to your account'));
   expect(screen.queryByRole('button', { name: 'Sign in with a passkey' })).not.toBeInTheDocument();
 });
 
@@ -686,7 +709,7 @@ test('offers passkey sign-in when supported and lands in the app on success', as
   vi.mocked(signInWithPasskey).mockResolvedValue(user);
   const u = userEvent.setup();
   renderApp();
-  await screen.findByText('Sign in to your account');
+  await waitForColdStart(() => screen.getByText('Sign in to your account'));
 
   await u.click(screen.getByRole('button', { name: 'Sign in with a passkey' }));
 
@@ -700,7 +723,7 @@ test('a cancelled passkey prompt is graceful — no error surfaced', async () =>
   vi.mocked(signInWithPasskey).mockRejectedValue(new Error('NotAllowedError'));
   const u = userEvent.setup();
   renderApp();
-  await screen.findByText('Sign in to your account');
+  await waitForColdStart(() => screen.getByText('Sign in to your account'));
 
   await u.click(screen.getByRole('button', { name: 'Sign in with a passkey' }));
 
@@ -716,7 +739,7 @@ test('a failed passkey sign-in shows a graceful error', async () => {
   vi.mocked(signInWithPasskey).mockRejectedValue(new Error('boom'));
   const u = userEvent.setup();
   renderApp();
-  await screen.findByText('Sign in to your account');
+  await waitForColdStart(() => screen.getByText('Sign in to your account'));
 
   await u.click(screen.getByRole('button', { name: 'Sign in with a passkey' }));
 
