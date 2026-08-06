@@ -135,7 +135,7 @@ describe('CashOverviewPage', () => {
     } as Awaited<ReturnType<typeof getCashMovements>>);
     renderPage();
 
-    expect(await screen.findByText('Recent deposit')).toBeInTheDocument();
+    expect(await waitForColdStart(() => screen.getByText('Recent deposit'))).toBeInTheDocument();
     expect(getCashMovements).toHaveBeenCalledWith(
       'p1',
       { cursor: undefined, limit: 5 },
@@ -162,7 +162,7 @@ describe('CashOverviewPage', () => {
     const user = userEvent.setup();
     renderPage();
 
-    const heading = await screen.findByRole('heading', { name: 'Cash' });
+    const heading = await waitForColdStart(() => screen.getByRole('heading', { name: 'Cash' }));
     expect(heading.closest('.bt-money-surface')).not.toBeNull();
     const deposit = screen.getByRole('button', { name: 'Add to Savings' });
     expect(deposit).toHaveClass('bt-acctcard__action');
@@ -205,7 +205,7 @@ describe('CashOverviewPage', () => {
     });
     const { client } = renderPage();
 
-    expect(await screen.findByText('Savings')).toBeInTheDocument();
+    expect(await waitForColdStart(() => screen.getByText('Savings'))).toBeInTheDocument();
     expect(screen.getByText('Total cash')).toBeInTheDocument();
 
     vi.mocked(listCashSources).mockRejectedValue(
@@ -234,7 +234,7 @@ describe('CashOverviewPage', () => {
     // In/out sit together on the month line; the net reads as a change against
     // the balance above it ("… this month") rather than as a third bare figure,
     // so it is matched inside its sentence.
-    expect(await screen.findByText(/4\.200,00/)).toBeInTheDocument();
+    expect(await waitForColdStart(() => screen.getByText(/4\.200,00/))).toBeInTheDocument();
     expect(screen.getByText(/1\.000,00/)).toBeInTheDocument();
     expect(screen.getByText(/3\.200,00.*this month/)).toBeInTheDocument();
   });
@@ -305,7 +305,9 @@ describe('CashOverviewPage', () => {
   test('omits the breakdown and its note when nothing happened this month', async () => {
     renderPage();
 
-    expect(await screen.findByText('No cash movements recorded this month.')).toBeInTheDocument();
+    expect(
+      await waitForColdStart(() => screen.getByText('No cash movements recorded this month.')),
+    ).toBeInTheDocument();
     expect(screen.queryByText(/Tag totals overlap/)).not.toBeInTheDocument();
   });
 
@@ -313,6 +315,8 @@ describe('CashOverviewPage', () => {
     vi.mocked(getCashSummary).mockRejectedValue(new Error('offline'));
     renderPage();
 
-    expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't load the cash overview.");
+    expect(await waitForColdStart(() => screen.getByRole('alert'))).toHaveTextContent(
+      "Couldn't load the cash overview.",
+    );
   });
 });

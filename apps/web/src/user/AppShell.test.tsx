@@ -912,7 +912,9 @@ test('the settings redirects carry the query string onto the panel', async () =>
 test('`/developer` is its own page, linked out of the Control Center', async () => {
   renderAt('/control');
 
-  const dialog = await screen.findByRole('dialog', { name: 'Control Center' });
+  const dialog = await waitForColdStart(() =>
+    screen.getByRole('dialog', { name: 'Control Center' }),
+  );
   expect(within(dialog).getByRole('link', { name: 'Developer overview' })).toHaveAttribute(
     'href',
     '/developer',
