@@ -1,4 +1,4 @@
-import { and, desc, eq, lt, lte } from 'drizzle-orm';
+import { and, asc, desc, eq, lt, lte } from 'drizzle-orm';
 
 import {
   VAULT_HISTORY_PAGE_DEFAULT,
@@ -13,9 +13,13 @@ import {
 } from '@bettertrack/contracts';
 
 import type { Database } from '../db';
-import { withExclusiveParanoidTransitionTestLock } from './paranoidEnforcementRepository';
+import {
+  withExclusiveParanoidTransitionTestLock,
+  withLockedPrivacyModes,
+} from './paranoidEnforcementRepository';
 import {
   paranoidRehydrationReceipts,
+  paranoidEnableTransitions,
   paranoidVaultHistory,
   paranoidVaultRetired,
   paranoidVaultRetirements,
@@ -86,6 +90,9 @@ export function createParanoidRehydrationTransactionRepository(
 
     async deleteServerCiphertext(userId) {
       await executor
+        .delete(paranoidEnableTransitions)
+        .where(eq(paranoidEnableTransitions.userId, userId));
+      await executor
         .delete(paranoidVaultServerCandidates)
         .where(eq(paranoidVaultServerCandidates.userId, userId));
       await executor.delete(paranoidVaultRetired).where(eq(paranoidVaultRetired.userId, userId));
@@ -128,6 +135,8 @@ export interface ParanoidVaultRetention {
 
 export interface ParanoidVaultCasInput extends ParanoidVaultBlobInput {
   userId: string;
+  /** Defaults fail-closed for any non-route/future caller. */
+  access?: ParanoidVaultAccess;
   expectedVersion: number | null;
   retention: ParanoidVaultRetention;
   now: Date;
@@ -161,6 +170,19 @@ export interface ParanoidVaultHistoryPage {
 }
 
 export type ParanoidVaultHistoryReadRow = ParanoidVaultHistoryRow | ParanoidVaultRetiredRow;
+
+export type ParanoidVaultAccess = 'owner-session' | 'sync-bearer';
+
+export type ParanoidVaultReadResult =
+  | { status: 'ok'; row: ParanoidVaultRow }
+  | { status: 'not_found' }
+  | { status: 'medium_inactive' };
+
+export interface ParanoidEnableStagingInput {
+  userId: string;
+  now: Date;
+  expiresAt: Date;
+}
 
 export interface ParanoidMediaAccountState {
   privacyMode: 'normal' | 'paranoid';
@@ -222,7 +244,16 @@ export type ParanoidRetiredPurgeResult =
   | { status: 'proof_required' };
 
 export interface ParanoidVaultRepository {
+  /** Internal metadata primitive; byte-serving callers must use readCurrent. */
   getCurrent(userId: string): Promise<ParanoidVaultRow | null>;
+  readCurrent(
+    userId: string,
+    access: ParanoidVaultAccess,
+    now: Date,
+  ): Promise<ParanoidVaultReadResult>;
+  beginEnableStaging(input: ParanoidEnableStagingInput): Promise<void>;
+  expireEnableStaging(userId: string, now: Date): Promise<boolean>;
+  cleanupExpiredEnableStaging(expiresAtOrBefore: Date, limit: number): Promise<number>;
   getMediaState(userId: string): Promise<ParanoidMediaStateResponse | null>;
   listHistory(
     userId: string,
@@ -249,11 +280,185 @@ function historyPageSize(requested: number | undefined): number {
   return Math.min(requested, VAULT_HISTORY_PAGE_MAX);
 }
 
-export function createParanoidVaultRepository(db: Database): ParanoidVaultRepository {
+/**
+ * `lockDb` is the dedicated privacy-lock pool (§ `withLockedPrivacyModes`): the
+ * guarded reads below run their statements on `db` while a lock transaction is
+ * open, so that transaction must not hold a connection its own callback then
+ * has to wait for. Defaults to `db` for the single-pool test harness.
+ */
+export function createParanoidVaultRepository(
+  db: Database,
+  lockDb: Database = db,
+): ParanoidVaultRepository {
+  const expireEnableStaging = async (userId: string, now: Date): Promise<boolean> =>
+    withExclusiveParanoidTransitionTestLock(db, userId, () =>
+      db.transaction(async (tx) => {
+        const [owner] = await tx
+          .select({ privacyMode: users.privacyMode })
+          .from(users)
+          .where(eq(users.id, userId))
+          .for('update');
+        const [transition] = await tx
+          .select({ expiresAt: paranoidEnableTransitions.expiresAt })
+          .from(paranoidEnableTransitions)
+          .where(eq(paranoidEnableTransitions.userId, userId))
+          .for('update');
+        if (!transition || transition.expiresAt.getTime() > now.getTime()) return false;
+
+        // Only a normal account can own enable-staging bytes. A stale marker on
+        // an already-paranoid account is metadata debris; never delete its live
+        // selected server medium.
+        if (owner?.privacyMode === 'normal') {
+          await tx.delete(paranoidVaultHistory).where(eq(paranoidVaultHistory.userId, userId));
+          await tx.delete(paranoidVaults).where(eq(paranoidVaults.userId, userId));
+        }
+        await tx
+          .delete(paranoidEnableTransitions)
+          .where(eq(paranoidEnableTransitions.userId, userId));
+        return true;
+      }),
+    );
+
   return {
     async getCurrent(userId) {
       const [row] = await db.select().from(paranoidVaults).where(eq(paranoidVaults.userId, userId));
       return row ?? null;
+    },
+
+    async readCurrent(userId, access, now) {
+      /*
+       * The steady state — a paranoid account polling its own selected server
+       * medium, usually to be told 304 — reads nothing but its own two rows and
+       * changes nothing. Serve it outside a transaction and without row locks:
+       * putting the hottest vault read behind FOR UPDATE on `users` would make
+       * every sync poll queue against writers for no gain.
+       *
+       * Reading `privacyMode` unlocked is safe because it decides only WHICH
+       * path runs, never whether bytes may be deleted: the normal-mode branch
+       * below re-reads the mode under the privacy guard and acts only on what
+       * it sees there. A mode flip racing this read is equivalent
+       * to arriving a moment earlier or later, and either way the response goes
+       * to the account's own authenticated caller.
+       */
+      const [owner] = await db
+        .select({ privacyMode: users.privacyMode })
+        .from(users)
+        .where(eq(users.id, userId));
+      if (!owner) return { status: 'not_found' } as const;
+      if (owner.privacyMode !== 'normal') {
+        const [row] = await db
+          .select()
+          .from(paranoidVaults)
+          .where(eq(paranoidVaults.userId, userId));
+        return row ? ({ status: 'ok', row } as const) : ({ status: 'not_found' } as const);
+      }
+
+      /*
+       * Normal mode: bytes exist only inside an owner enable window, and this
+       * read doubles as the sweep that disposes of an expired one. Same guard
+       * class as `beginEnableStaging` — KEY SHARE, which is what keeps an
+       * enable from purging/flipping underneath the decision, without blocking
+       * on unrelated guarded actions (and re-entrant, so a vault read nested in
+       * one cannot deadlock). The row locks inside then order this against a
+       * concurrent CAS on the same rows.
+       */
+      return withLockedPrivacyModes(lockDb, [userId], async (modes) => {
+        const locked = modes.get(userId) ?? null;
+        if (locked === null) return { status: 'not_found' } as const;
+
+        return db.transaction(async (tx) => {
+          if (locked === 'normal') {
+            const [transition] = await tx
+              .select({ expiresAt: paranoidEnableTransitions.expiresAt })
+              .from(paranoidEnableTransitions)
+              .where(eq(paranoidEnableTransitions.userId, userId))
+              .for('update');
+            if (transition && transition.expiresAt.getTime() <= now.getTime()) {
+              await tx.delete(paranoidVaultHistory).where(eq(paranoidVaultHistory.userId, userId));
+              await tx.delete(paranoidVaults).where(eq(paranoidVaults.userId, userId));
+              await tx
+                .delete(paranoidEnableTransitions)
+                .where(eq(paranoidEnableTransitions.userId, userId));
+              return { status: 'medium_inactive' } as const;
+            }
+            if (access !== 'owner-session' || !transition) {
+              return { status: 'medium_inactive' } as const;
+            }
+          }
+
+          const [row] = await tx
+            .select()
+            .from(paranoidVaults)
+            .where(eq(paranoidVaults.userId, userId))
+            .for('update');
+          return row ? ({ status: 'ok', row } as const) : ({ status: 'not_found' } as const);
+        });
+      });
+    },
+
+    async beginEnableStaging(input) {
+      /*
+       * Opening the window is a guarded normal-mode ACTION, not a transition,
+       * so it takes the KEY SHARE guard: excluded from an enable's FOR UPDATE
+       * (which is the ordering that matters — the mode must not flip under it)
+       * but compatible with every other normal-mode action. Taking the
+       * transition's exclusive account lock instead would make the wizard's
+       * very first call queue behind any long guarded action — an account
+       * export holds its guard across the whole collection — and, in the
+       * single-connection test harness, deadlock against it outright.
+       */
+      await withLockedPrivacyModes(lockDb, [input.userId], async (modes) => {
+        if (modes.get(input.userId) !== 'normal') {
+          await db
+            .delete(paranoidEnableTransitions)
+            .where(eq(paranoidEnableTransitions.userId, input.userId));
+          return;
+        }
+
+        const [existing] = await db
+          .select({ expiresAt: paranoidEnableTransitions.expiresAt })
+          .from(paranoidEnableTransitions)
+          .where(eq(paranoidEnableTransitions.userId, input.userId));
+        if (existing && existing.expiresAt.getTime() <= input.now.getTime()) {
+          // The previous attempt was abandoned: its staged bytes are already
+          // unreachable, and re-opening must not silently adopt them. Every
+          // statement here is idempotent, so a second concurrent opener
+          // converges on the same end state without a wrapping transaction.
+          await db
+            .delete(paranoidVaultHistory)
+            .where(eq(paranoidVaultHistory.userId, input.userId));
+          await db.delete(paranoidVaults).where(eq(paranoidVaults.userId, input.userId));
+        }
+        await db
+          .insert(paranoidEnableTransitions)
+          .values({
+            userId: input.userId,
+            expiresAt: input.expiresAt,
+            createdAt: input.now,
+            updatedAt: input.now,
+          })
+          .onConflictDoUpdate({
+            target: paranoidEnableTransitions.userId,
+            set: { expiresAt: input.expiresAt, updatedAt: input.now },
+          });
+      });
+    },
+
+    expireEnableStaging,
+
+    async cleanupExpiredEnableStaging(expiresAtOrBefore, limit) {
+      if (!Number.isSafeInteger(limit) || limit < 1) return 0;
+      const expired = await db
+        .select({ userId: paranoidEnableTransitions.userId })
+        .from(paranoidEnableTransitions)
+        .where(lte(paranoidEnableTransitions.expiresAt, expiresAtOrBefore))
+        .orderBy(asc(paranoidEnableTransitions.expiresAt), asc(paranoidEnableTransitions.userId))
+        .limit(limit);
+      let cleaned = 0;
+      for (const row of expired) {
+        if (await expireEnableStaging(row.userId, expiresAtOrBefore)) cleaned += 1;
+      }
+      return cleaned;
     },
 
     async getMediaState(userId) {
@@ -382,6 +587,7 @@ export function createParanoidVaultRepository(db: Database): ParanoidVaultReposi
     async compareAndSwap(input) {
       const {
         userId,
+        access = 'sync-bearer',
         expectedVersion,
         version,
         formatVersion,
@@ -397,7 +603,25 @@ export function createParanoidVaultRepository(db: Database): ParanoidVaultReposi
           .from(users)
           .where(eq(users.id, userId))
           .for('update');
-        if (owner?.privacyMode === 'paranoid' && !(owner.mediaSet ?? []).includes('server')) {
+        if (!owner) return { status: 'medium_inactive' } as const;
+        if (owner.privacyMode === 'normal') {
+          const [transition] = await tx
+            .select({ expiresAt: paranoidEnableTransitions.expiresAt })
+            .from(paranoidEnableTransitions)
+            .where(eq(paranoidEnableTransitions.userId, userId))
+            .for('update');
+          if (transition && transition.expiresAt.getTime() <= now.getTime()) {
+            await tx.delete(paranoidVaultHistory).where(eq(paranoidVaultHistory.userId, userId));
+            await tx.delete(paranoidVaults).where(eq(paranoidVaults.userId, userId));
+            await tx
+              .delete(paranoidEnableTransitions)
+              .where(eq(paranoidEnableTransitions.userId, userId));
+            return { status: 'medium_inactive' } as const;
+          }
+          if (access !== 'owner-session' || !transition) {
+            return { status: 'medium_inactive' } as const;
+          }
+        } else if (!(owner.mediaSet ?? []).includes('server')) {
           return { status: 'medium_inactive' } as const;
         }
         const [current] = await tx

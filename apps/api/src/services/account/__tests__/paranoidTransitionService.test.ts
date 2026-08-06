@@ -26,6 +26,7 @@ import {
   itemReactions,
   mirrorChainMembers,
   mirrorChains,
+  paranoidEnableTransitions,
   paranoidRehydrationReceipts,
   paranoidVaultHistory,
   paranoidVaultRetired,
@@ -189,6 +190,14 @@ async function serverEnable(userId: string, vaultVersion = 1): Promise<ParanoidE
     driveAttestation: null,
     normalDataRevision: revision,
   };
+}
+
+/** Age the durable enable window out, exactly as an abandoned attempt does. */
+async function expireStagingWindow(userId: string): Promise<void> {
+  await harness.db
+    .update(paranoidEnableTransitions)
+    .set({ expiresAt: new Date(Date.now() - 1_000) })
+    .where(eq(paranoidEnableTransitions.userId, userId));
 }
 
 /** Drive-only evidence with a fresh capture token. */
@@ -554,6 +563,68 @@ describe('paranoid public transitions', () => {
         driveAttestation: { verifiedRoundTrip: true, vaultVersion: 2 },
       });
     expect(malformedDrive.status).toBe(400);
+    expect((await accountState(user.id))?.privacyMode).toBe('normal');
+  });
+
+  it('refuses a server-media enable once its staging window expired', async () => {
+    const user = await harness.seedUser();
+    await seedNormalGraph(user);
+    const body = await serverEnable(user.id);
+    await expireStagingWindow(user.id);
+
+    await expect(harness.ctx.paranoidTransitions.enable(user.id, body)).rejects.toMatchObject({
+      code: 'MEDIA_NOT_READY',
+    });
+    expect((await accountState(user.id))?.privacyMode).toBe('normal');
+    // The expiry disposed of the abandoned staged ciphertext on the way in.
+    expect(
+      await harness.db.select().from(paranoidVaults).where(eq(paranoidVaults.userId, user.id)),
+    ).toEqual([]);
+  });
+
+  /*
+   * The window bounds staged SERVER bytes. Drive-only writes none, so its
+   * 10-minute horizon must not become a deadline on a slow Drive round trip and
+   * fail the commit after the encrypt/write/verify work is already done.
+   */
+  it('commits a Drive-only enable even after the staging window expired', async () => {
+    const user = await harness.seedUser();
+    await seedNormalGraph(user, { vaultVersion: 2 });
+    const body = await driveEnable(user.id, 2);
+    await expireStagingWindow(user.id);
+
+    expect(await harness.ctx.paranoidTransitions.enable(user.id, body)).toMatchObject({
+      mode: 'paranoid',
+      mediaSet: ['drive'],
+    });
+    expect(await accountState(user.id)).toMatchObject({
+      privacyMode: 'paranoid',
+      mediaSet: ['drive'],
+    });
+  });
+
+  /*
+   * The staging gate must never preempt the capture↔commit CAS: a token that is
+   * genuinely stale has to come back as NORMAL_DATA_CHANGED — the refusal the
+   * wizard handles by recapturing — not as a generic "media not ready", even
+   * though a newer revision read has since overwritten the staging row.
+   */
+  it('answers a stale capture token inside a live window with NORMAL_DATA_CHANGED', async () => {
+    const user = await harness.seedUser();
+    const { portfolioId } = await seedNormalGraph(user);
+    const stale = await serverEnable(user.id);
+
+    await harness.db
+      .update(portfolios)
+      .set({ name: 'renamed after the capture' })
+      .where(eq(portfolios.id, portfolioId));
+    // Refreshes the staging row with a revision the request no longer carries.
+    const fresh = await serverEnable(user.id);
+    expect(fresh.normalDataRevision).not.toBe(stale.normalDataRevision);
+
+    await expect(harness.ctx.paranoidTransitions.enable(user.id, stale)).rejects.toMatchObject({
+      code: 'NORMAL_DATA_CHANGED',
+    });
     expect((await accountState(user.id))?.privacyMode).toBe('normal');
   });
 

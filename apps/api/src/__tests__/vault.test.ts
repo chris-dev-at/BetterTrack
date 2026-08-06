@@ -94,7 +94,13 @@ async function seedAndLogin(
       })
       .where(eq(users.id, user.id));
   }
-  return loginAgent(harness.app, user.email, 'user-strong-password-1');
+  const agent = await loginAgent(harness.app, user.email, 'user-strong-password-1');
+  if (privacyMode === 'normal') {
+    // The real enable wizard opens this owner-only staging window with its
+    // capture revision before probing/writing the selected server medium.
+    await agent.get('/api/v1/account/paranoid/normal-revision').expect(200);
+  }
+  return agent;
 }
 
 async function seedParanoidAgent(email: string, username: string) {
@@ -431,6 +437,7 @@ describe('vault blob store', () => {
     const smallHarness = await createTestApp({ env: { BT_VAULT_MAX_BYTES: '2048' } });
     const user = await smallHarness.seedUser({ email: 'big@bt.test', username: 'big' });
     const agent = await loginAgent(smallHarness.app, user.email, 'user-strong-password-1');
+    await agent.get('/api/v1/account/paranoid/normal-revision').expect(200);
     const res = await agent
       .put('/api/v1/vault')
       .set(...XRW)

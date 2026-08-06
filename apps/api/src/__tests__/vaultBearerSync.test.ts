@@ -18,7 +18,7 @@ import {
 } from '@bettertrack/contracts';
 
 import { createOAuthRepository } from '../data/repositories/oauthRepository';
-import { paranoidVaults, users } from '../data/schema';
+import { paranoidEnableTransitions, paranoidVaults, users } from '../data/schema';
 import {
   VAULT_SYNC_BEARER_ROUTE_ALLOWLIST,
   openApiPathTemplateAcceptsBearer,
@@ -305,6 +305,13 @@ describe('#1043 bearer vault synchronization', () => {
     // The browser wizard reads its normal-data CAS token, stages the encrypted
     // server copy through its cookie session, then commits the mode transition.
     const agent = await loginAgent(harness.app, user);
+    const refusedCookieRead = await agent.get('/api/v1/vault');
+    expect(refusedCookieRead.status, JSON.stringify(refusedCookieRead.body)).toBe(409);
+    expect(refusedCookieRead.body.error.code).toBe('VAULT_SERVER_MEDIUM_INACTIVE');
+    const refusedBearerRead = await request(harness.app).get('/api/v1/vault').set(bearer(token));
+    expect(refusedBearerRead.status, JSON.stringify(refusedBearerRead.body)).toBe(409);
+    expect(refusedBearerRead.body.error.code).toBe('VAULT_SERVER_MEDIUM_INACTIVE');
+
     const revision = await agent.get('/api/v1/account/paranoid/normal-revision');
     expect(revision.status, JSON.stringify(revision.body)).toBe(200);
     const staged = await agent
@@ -314,6 +321,13 @@ describe('#1043 bearer vault synchronization', () => {
       .set('If-None-Match', '*')
       .send(v1);
     expect(staged.status, JSON.stringify(staged.body)).toBe(204);
+
+    const ownerReadback = await agent.get('/api/v1/vault').responseType('blob');
+    expect(ownerReadback.status).toBe(200);
+    expect((ownerReadback.body as Buffer).equals(v1)).toBe(true);
+    const bearerStillRefused = await request(harness.app).get('/api/v1/vault').set(bearer(token));
+    expect(bearerStillRefused.status, JSON.stringify(bearerStillRefused.body)).toBe(409);
+    expect(bearerStillRefused.body.error.code).toBe('VAULT_SERVER_MEDIUM_INACTIVE');
 
     // A bearer cannot replace those staged bytes during the read/verify window.
     const refusedReplace = await request(harness.app)
@@ -336,6 +350,12 @@ describe('#1043 bearer vault synchronization', () => {
       });
     expect(enabled.status, JSON.stringify(enabled.body)).toBe(200);
     expect(enabled.body).toMatchObject({ mode: 'paranoid', mediaSet: ['server'], vaultVersion: 1 });
+    expect(
+      await harness.db
+        .select()
+        .from(paranoidEnableTransitions)
+        .where(eq(paranoidEnableTransitions.userId, user.id)),
+    ).toEqual([]);
 
     // The same bearer becomes a valid sync writer only after that transition.
     const synced = await request(harness.app)
@@ -346,6 +366,40 @@ describe('#1043 bearer vault synchronization', () => {
       .send(v2);
     expect(synced.status, JSON.stringify(synced.body)).toBe(204);
     expect(synced.headers.etag).toBe('"2"');
+  });
+
+  it('expires an abandoned owner staging window and deletes its ciphertext', async () => {
+    const { user, token } = await mintPersonalToken(['vault:sync'], 'expiredstage');
+    const agent = await loginAgent(harness.app, user);
+    await agent.get('/api/v1/account/paranoid/normal-revision').expect(200);
+    await agent
+      .put('/api/v1/vault')
+      .set(...XRW)
+      .set(...OCTET)
+      .set('If-None-Match', '*')
+      .send(envelope(1, new Uint8Array([8, 8, 8])))
+      .expect(204);
+
+    await harness.db
+      .update(paranoidEnableTransitions)
+      .set({ expiresAt: new Date(Date.now() - 1) })
+      .where(eq(paranoidEnableTransitions.userId, user.id));
+
+    const expiredOwnerRead = await agent.get('/api/v1/vault');
+    expect(expiredOwnerRead.status, JSON.stringify(expiredOwnerRead.body)).toBe(409);
+    expect(expiredOwnerRead.body.error.code).toBe('VAULT_SERVER_MEDIUM_INACTIVE');
+    const expiredBearerRead = await request(harness.app).get('/api/v1/vault').set(bearer(token));
+    expect(expiredBearerRead.status, JSON.stringify(expiredBearerRead.body)).toBe(409);
+    expect(expiredBearerRead.body.error.code).toBe('VAULT_SERVER_MEDIUM_INACTIVE');
+    expect(
+      await harness.db.select().from(paranoidVaults).where(eq(paranoidVaults.userId, user.id)),
+    ).toEqual([]);
+    expect(
+      await harness.db
+        .select()
+        .from(paranoidEnableTransitions)
+        .where(eq(paranoidEnableTransitions.userId, user.id)),
+    ).toEqual([]);
   });
 
   it('runs a byte-opaque CAS round trip through the first-party mobile OAuth grant', async () => {

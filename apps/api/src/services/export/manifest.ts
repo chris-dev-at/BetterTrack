@@ -277,6 +277,9 @@ export const EXPORT_TABLE_CLASSIFICATION: Record<string, TableClassification> = 
   paranoid_vault_retirements: skipped(
     'Paranoid-vault retirement proof and retention bookkeeping (V5-P13 PD6) — non-portfolio transition metadata.',
   ),
+  paranoid_enable_transitions: skipped(
+    'Paranoid-enable staging authorization — short-lived non-portfolio transition metadata.',
+  ),
   paranoid_rehydration_receipts: skipped(
     'Paranoid-disable idempotency receipt — non-sensitive internal transition metadata, never portfolio data.',
   ),
@@ -483,6 +486,7 @@ export const PARANOID_TABLE_CLASSIFICATION: Record<string, ParanoidClassificatio
   paranoid_vault_server_candidates: 'server',
   paranoid_vault_retired: 'server',
   paranoid_vault_retirements: 'server',
+  paranoid_enable_transitions: 'server',
   // PD3a completion receipt + non-sensitive data-home metadata remain server-side.
   paranoid_rehydration_receipts: 'server',
 };

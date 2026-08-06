@@ -906,14 +906,20 @@ test('the settings redirects carry the query string onto the panel', async () =>
 test('`/developer` is its own page, linked out of the Control Center', async () => {
   renderAt('/control');
 
-  const dialog = await screen.findByRole('dialog', { name: 'Control Center' });
+  // Both waits cross a cold `lazy()` boundary — the Control Center overlay and
+  // the Developer page are separate code-split chunks. Resolving those imports
+  // while this file's other shells compete for the event loop overruns the 1s
+  // default (see the same allowance on the redirect test above).
+  const dialog = await screen.findByRole('dialog', { name: 'Control Center' }, { timeout: 5000 });
   expect(within(dialog).getByRole('link', { name: 'Developer overview' })).toHaveAttribute(
     'href',
     '/developer',
   );
 
   renderAt('/developer');
-  expect(await screen.findByRole('heading', { name: 'Developer platform' })).toBeInTheDocument();
+  expect(
+    await screen.findByRole('heading', { name: 'Developer platform' }, { timeout: 5000 }),
+  ).toBeInTheDocument();
 });
 
 test('the Assets destination renders its local tabs', async () => {

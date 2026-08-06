@@ -51,10 +51,23 @@ interface FakeRepoOptions {
 
 function fakeRepo(options: FakeRepoOptions = {}) {
   const calls: ParanoidVaultCasInput[] = [];
+  const reads: Array<{ userId: string; access: string; now: Date }> = [];
   const purges: unknown[] = [];
   const repo: ParanoidVaultRepository = {
     async getCurrent() {
       return options.current ?? null;
+    },
+    async readCurrent(userId, access, now) {
+      reads.push({ userId, access, now });
+      const row = options.current ?? null;
+      return row ? ({ status: 'ok', row } as const) : ({ status: 'not_found' } as const);
+    },
+    async beginEnableStaging() {},
+    async expireEnableStaging() {
+      return false;
+    },
+    async cleanupExpiredEnableStaging() {
+      return 0;
     },
     async getMediaState() {
       return null;
@@ -92,17 +105,32 @@ function fakeRepo(options: FakeRepoOptions = {}) {
       return { status: 'ok' } as const;
     },
   };
-  return { repo, calls, purges };
+  return { repo, calls, reads, purges };
 }
 
 const retention = { maxVersions: 10, maxAgeMs: 30 * 24 * 60 * 60 * 1000 };
 
 describe('paranoid vault service', () => {
+  it('routes every byte read through the repository access guard', async () => {
+    const clock = new Date('2026-07-24T12:00:00.000Z');
+    const { repo, reads } = fakeRepo();
+    const service = createParanoidVaultService({
+      vaults: repo,
+      maxBytes: 1_000_000,
+      retention,
+      now: () => clock,
+    });
+
+    expect(await service.get(UUID_A, 'sync-bearer')).toEqual({ status: 'not_found' });
+    expect(reads).toEqual([{ userId: UUID_A, access: 'sync-bearer', now: clock }]);
+  });
+
   it('rejects an oversized payload before any parse or persistence', async () => {
     const { repo, calls } = fakeRepo();
     const service = createParanoidVaultService({ vaults: repo, maxBytes: 10, retention });
     const result = await service.put({
       userId: UUID_A,
+      access: 'owner-session',
       expectedVersion: null,
       blob: Buffer.alloc(11, 1),
     });
@@ -115,6 +143,7 @@ describe('paranoid vault service', () => {
     const service = createParanoidVaultService({ vaults: repo, maxBytes: 1_000_000, retention });
     const result = await service.put({
       userId: UUID_A,
+      access: 'owner-session',
       expectedVersion: null,
       blob: Buffer.from('this is not an envelope'),
     });
@@ -132,6 +161,7 @@ describe('paranoid vault service', () => {
     });
     const result = await service.put({
       userId: UUID_A,
+      access: 'owner-session',
       expectedVersion: null,
       blob: envelope(1, new Uint8Array([9, 9, 9])),
     });
@@ -139,6 +169,7 @@ describe('paranoid vault service', () => {
     expect(calls).toHaveLength(1);
     expect(calls[0]).toMatchObject({
       userId: UUID_A,
+      access: 'owner-session',
       expectedVersion: null,
       version: 1,
       formatVersion: 1,
@@ -151,6 +182,7 @@ describe('paranoid vault service', () => {
     const service = createParanoidVaultService({ vaults: repo, maxBytes: 1_000_000, retention });
     const result = await service.put({
       userId: UUID_A,
+      access: 'owner-session',
       expectedVersion: 5,
       blob: envelope(5, new Uint8Array([1])),
     });
@@ -163,6 +195,7 @@ describe('paranoid vault service', () => {
     const service = createParanoidVaultService({ vaults: repo, maxBytes: 1_000_000, retention });
     const result = await service.put({
       userId: UUID_A,
+      access: 'owner-session',
       expectedVersion: 5,
       blob: envelope(6, new Uint8Array([1])),
     });
