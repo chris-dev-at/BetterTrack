@@ -18,6 +18,7 @@ vi.mock('../../lib/workboardApi', () => ({
 import { ApiError } from '../../lib/apiClient';
 import * as api from '../../lib/userApi';
 import { listWorkboard } from '../../lib/workboardApi';
+import { waitForColdStart } from '../../test/waitForColdStart';
 import { UserApp } from '../UserApp';
 
 const pinUser: MeResponse = {
@@ -82,7 +83,7 @@ test('a PIN-enabled account opening the app is trapped at the PIN gate', async (
   renderAt('/portfolio');
 
   // The gate is up; the app shell is unreachable.
-  expect(await screen.findByText('Enter your PIN')).toBeInTheDocument();
+  expect(await waitForColdStart(() => screen.getByText('Enter your PIN'))).toBeInTheDocument();
   expect(screen.queryByRole('button', { name: 'Account menu' })).not.toBeInTheDocument();
 });
 
@@ -91,7 +92,7 @@ test('the gate renders exactly four boxes and auto-submits on the fourth digit (
   vi.mocked(api.verifyPin).mockResolvedValue(pinUser);
 
   renderAt('/portfolio');
-  await screen.findByText('Enter your PIN');
+  await waitForColdStart(() => screen.getByText('Enter your PIN'));
 
   // Exactly four boxes, and no separate Unlock button to press.
   expect(screen.getAllByRole('textbox')).toHaveLength(4);
@@ -110,7 +111,7 @@ test('a wrong PIN shakes the card, clears the boxes, refocuses the first (#288, 
   vi.mocked(api.verifyPin).mockRejectedValue(new ApiError(401, 'INVALID_PIN', 'Incorrect PIN.'));
 
   renderAt('/portfolio');
-  await screen.findByText('Enter your PIN');
+  await waitForColdStart(() => screen.getByText('Enter your PIN'));
 
   const form = screen.getByLabelText('PIN').closest('form') as HTMLFormElement;
   expect(form).not.toHaveClass('pin-shake');
@@ -131,7 +132,7 @@ test('the lock screen is a deliberate, branded card (Part B polish, #304)', asyn
   vi.mocked(api.getMe).mockResolvedValue(pinUser);
 
   renderAt('/portfolio');
-  await screen.findByText('Enter your PIN');
+  await waitForColdStart(() => screen.getByText('Enter your PIN'));
 
   // Wordmark present, "Enter your PIN" as the heading, and the four boxes.
   expect(screen.getByText('Better')).toBeInTheDocument();
@@ -146,7 +147,7 @@ test('the fallback after too many wrong PINs returns to the full login screen', 
   );
 
   renderAt('/portfolio');
-  await screen.findByText('Enter your PIN');
+  await waitForColdStart(() => screen.getByText('Enter your PIN'));
 
   typeGatePin('0000');
   await flush();
@@ -162,7 +163,7 @@ test('signing out from the gate returns to login', async () => {
   const user = userEvent.setup();
   renderAt('/portfolio');
 
-  await screen.findByText('Enter your PIN');
+  await waitForColdStart(() => screen.getByText('Enter your PIN'));
   await user.click(screen.getByRole('button', { name: 'Sign out' }));
 
   expect(await screen.findByText('Sign in to your account')).toBeInTheDocument();
@@ -175,7 +176,7 @@ test('a reload during active use does not re-prompt (idle, not per-open) (#304)'
 
   const { unmount } = renderAt('/portfolio');
 
-  await screen.findByText('Enter your PIN');
+  await waitForColdStart(() => screen.getByText('Enter your PIN'));
   typeGatePin('4242');
   await flush();
   expect(await screen.findByRole('button', { name: 'Account menu' })).toBeInTheDocument();
@@ -184,7 +185,9 @@ test('a reload during active use does not re-prompt (idle, not per-open) (#304)'
   // default 10-minute window), so the app opens straight through — no gate.
   unmount();
   renderAt('/portfolio');
-  expect(await screen.findByRole('button', { name: 'Account menu' })).toBeInTheDocument();
+  expect(
+    await waitForColdStart(() => screen.getByRole('button', { name: 'Account menu' })),
+  ).toBeInTheDocument();
   expect(screen.queryByText('Enter your PIN')).not.toBeInTheDocument();
 });
 
@@ -306,7 +309,9 @@ test('with the PIN disabled the app never asks for a PIN', async () => {
 
   renderAt('/portfolio');
 
-  expect(await screen.findByRole('button', { name: 'Account menu' })).toBeInTheDocument();
+  expect(
+    await waitForColdStart(() => screen.getByRole('button', { name: 'Account menu' })),
+  ).toBeInTheDocument();
   expect(screen.queryByText('Enter your PIN')).not.toBeInTheDocument();
 });
 
@@ -318,7 +323,7 @@ test('typing anywhere on the lock screen lands in the PIN boxes and auto-submits
 
   const u = userEvent.setup();
   renderAt('/portfolio');
-  await screen.findByText('Enter your PIN');
+  await waitForColdStart(() => screen.getByText('Enter your PIN'));
 
   // The sign-out button is a plausible page-level focus target — a keystroke
   // there must route into the PIN state (implicit focus) rather than be lost.
@@ -337,7 +342,7 @@ test('Backspace outside the boxes edits the PIN entry (V4-P0 (a))', async () => 
 
   const u = userEvent.setup();
   renderAt('/portfolio');
-  await screen.findByText('Enter your PIN');
+  await waitForColdStart(() => screen.getByText('Enter your PIN'));
 
   const signOut = screen.getByRole('button', { name: 'Sign out' });
   signOut.focus();
@@ -352,7 +357,7 @@ test('the lock screen never renders a typed PIN digit in the DOM (V4-P0 (a))', a
   vi.mocked(api.getMe).mockResolvedValue(pinUser);
 
   renderAt('/portfolio');
-  await screen.findByText('Enter your PIN');
+  await waitForColdStart(() => screen.getByText('Enter your PIN'));
 
   // Type the first three digits — enough to prove the masking rule without
   // triggering the auto-submit that would unmount the PIN gate. After every
