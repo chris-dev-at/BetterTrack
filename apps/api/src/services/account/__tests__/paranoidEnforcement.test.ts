@@ -780,6 +780,7 @@ describe('paranoid kill registry', () => {
       harness.ctx.social.setAudience(normal.id, 'conglomerate', namedConglomerate!.id, {
         audience: 'specific_friends',
         friendIds: [paranoid.id],
+        confirmWiden: true,
       }),
     ).rejects.toMatchObject({ code: PARANOID_MODE_ERROR_CODE });
     expect(
@@ -816,6 +817,7 @@ describe('paranoid kill registry', () => {
     });
     await harness.ctx.conglomerate.updateWithVisibility(normal.id, conglomerate.id, {
       visibility: 'friends',
+      confirmWiden: true,
     });
     expect(
       (
@@ -847,7 +849,7 @@ describe('paranoid kill registry', () => {
     const routeUpdate = await ownerAgent
       .patch(`/api/v1/portfolios/${portfolioId}`)
       .set(...XRW)
-      .send({ visibility: 'friends' });
+      .send({ visibility: 'friends', confirmWiden: true });
     expect(routeUpdate.status).toBe(200);
     expect(
       (
@@ -871,7 +873,7 @@ describe('paranoid kill registry', () => {
     const routeAudience = await ownerAgent
       .put(`/api/v1/social/audience/conglomerate/${conglomerate.id}`)
       .set(...XRW)
-      .send({ audience: 'all_friends' });
+      .send({ audience: 'all_friends', confirmWiden: true });
     expect(routeAudience.status).toBe(200);
 
     // The fan-out is the only thing the paranoid friend must not receive; the
@@ -970,6 +972,7 @@ describe('paranoid kill registry', () => {
       mutate: () =>
         harness.ctx.portfolio.updatePortfolioWithVisibility(portfolioOwner.id, portfolioId, {
           visibility: 'friends',
+          confirmWiden: true,
         }),
     });
 
@@ -1013,6 +1016,7 @@ describe('paranoid kill registry', () => {
       mutate: () =>
         harness.ctx.conglomerate.updateWithVisibility(conglomerateOwner.id, conglomerate.id, {
           visibility: 'friends',
+          confirmWiden: true,
         }),
     });
 
@@ -1604,6 +1608,7 @@ describe('paranoid kill registry', () => {
     const portfolioId = await harness.ctx.portfolio.getDefaultPortfolioId(owner.id);
     await harness.ctx.social.setAudience(owner.id, 'portfolio', portfolioId, {
       audience: 'all_friends',
+      confirmWiden: true,
     });
     const visibleComment = await harness.ctx.comments.addComment(
       viewer.id,
@@ -1665,6 +1670,7 @@ describe('paranoid kill registry', () => {
     const portfolioId = await harness.ctx.portfolio.getDefaultPortfolioId(owner.id);
     await harness.ctx.social.setAudience(owner.id, 'portfolio', portfolioId, {
       audience: 'all_friends',
+      confirmWiden: true,
     });
     const comment = await harness.ctx.comments.addComment(
       author.id,
@@ -1999,6 +2005,7 @@ describe('paranoid kill registry', () => {
     ]);
     await harness.ctx.social.setAudience(user.id, 'watchlist', defaultWatchlist!.id, {
       audience: 'all_friends',
+      confirmWiden: true,
     });
     const [globalAlert, customAlert] = await harness.db
       .insert(alerts)
@@ -2354,6 +2361,7 @@ describe('paranoid kill registry', () => {
       .returning();
     await harness.ctx.social.setAudience(owner.id, 'conglomerate', basket!.id, {
       audience: 'all_friends',
+      confirmWiden: true,
     });
     await harness.ctx.social.followItem(viewer.id, 'conglomerate', basket!.id);
     const [publicBasket] = await harness.db
@@ -2367,6 +2375,7 @@ describe('paranoid kill registry', () => {
       {
         audience: 'public_link',
         acknowledgePublic: true,
+        confirmWiden: true,
       },
     );
     const publicToken = publicAudience.link?.token;
@@ -2383,6 +2392,7 @@ describe('paranoid kill registry', () => {
     });
     await harness.ctx.social.setAudience(owner.id, 'idea', idea.id, {
       audience: 'all_friends',
+      confirmWiden: true,
     });
     const conversation = await harness.ctx.chat.openConversation(owner.id, viewer.id);
     await harness.ctx.chat.sendMessage(owner.id, conversation.id, {

@@ -173,6 +173,8 @@ export const updatePortfolioRequestSchema = z
   .object({
     name: z.string().trim().min(1).max(120).optional(),
     visibility: portfolioVisibilitySchema.optional(),
+    /** Required when the legacy visibility write would widen the current audience. */
+    confirmWiden: z.boolean().optional(),
     defaultPayFromCash: z.boolean().optional(),
   })
   .strict();

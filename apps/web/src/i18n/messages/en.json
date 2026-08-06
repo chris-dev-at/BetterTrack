@@ -2928,7 +2928,8 @@
     "friendsNone": "You have no friends yet. Add friends to share with specific people.",
     "friendsSelect": "Select friends",
     "allFriendsConfirm": "This shares a read-only view with everyone you are friends with.",
-    "audienceChangeConfirm": "Change access from {{from}} to {{to}}. This shares a read-only view with everyone you are friends with. Save to confirm.",
+    "audienceChangeConfirm": "Change access from {{from}} to {{to}}. This may let more people see this item.",
+    "audienceWidenAcknowledge": "I understand this change widens access.",
     "publicWarning": "This creates a public link — anyone with the link sees your holdings and net worth.",
     "publicAcknowledge": "I understand that anyone with the link can see this.",
     "publicActive": "A public link is active. For security the URL is shown only once, when it is created.",
@@ -3148,6 +3149,8 @@
         "shortcut": {
           "prompt": "{{username}} can't see this — it isn't shared with them.",
           "action": "Share it with just them",
+          "confirmWiden": "I understand this widens access to {{username}}.",
+          "confirmGroupReplace": "I understand this replaces the current friend-group audience with only {{username}}.",
           "sharing": "Sharing…",
           "error": "Couldn't share — try again."
         }

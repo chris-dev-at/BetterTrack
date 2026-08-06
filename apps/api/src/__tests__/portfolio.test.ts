@@ -164,7 +164,7 @@ describe('PATCH /api/v1/portfolios/:id (name + visibility)', () => {
     const res = await agent
       .patch(`/api/v1/portfolios/${pid}`)
       .set(...XRW)
-      .send({ name: 'My Money', visibility: 'friends' });
+      .send({ name: 'My Money', visibility: 'friends', confirmWiden: true });
     expect(res.status).toBe(200);
     expect(portfolioSummarySchema.safeParse(res.body.portfolio).success).toBe(true);
     expect(res.body.portfolio.name).toBe('My Money');
@@ -241,7 +241,7 @@ describe('PATCH /api/v1/portfolios/:id (name + visibility)', () => {
     const res = await agent
       .patch(`/api/v1/portfolios/${pid}`)
       .set(...XRW)
-      .send({ name: 'Main', visibility: 'friends' });
+      .send({ name: 'Main', visibility: 'friends', confirmWiden: true });
     expect(res.status).toBe(200);
     expect(res.body.portfolio.name).toBe('Main');
     expect(res.body.portfolio.visibility).toBe('friends');

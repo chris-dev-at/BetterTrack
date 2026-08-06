@@ -334,13 +334,19 @@ describe('ChatPage — share-in-chat quick-share shortcut (#380)', () => {
 
     await waitFor(() => expect(screen.getByText(/bob can't see this/i)).toBeInTheDocument());
 
-    await user.click(screen.getByRole('button', { name: 'Share it with just them' }));
+    const share = screen.getByRole('button', { name: 'Share it with just them' });
+    expect(share).toBeDisabled();
+    expect(setAudience).not.toHaveBeenCalled();
+    await user.click(screen.getByRole('checkbox', { name: /this widens access to bob/i }));
+    expect(share).toBeEnabled();
+    await user.click(share);
 
     // The shortcut only ever ADDS the named friend to a specific-friends audience.
     await waitFor(() =>
       expect(setAudience).toHaveBeenCalledWith('portfolio', 'p1', {
         audience: 'specific_friends',
         friendIds: ['u2'],
+        confirmWiden: true,
       }),
     );
   });
@@ -369,12 +375,65 @@ describe('ChatPage — share-in-chat quick-share shortcut (#380)', () => {
 
     renderAt('/social/chat/u2');
 
-    await user.click(await screen.findByRole('button', { name: 'Share it with just them' }));
+    const share = await screen.findByRole('button', { name: 'Share it with just them' });
+    expect(share).toBeDisabled();
+    await user.click(screen.getByRole('checkbox', { name: /this widens access to bob/i }));
+    await user.click(share);
 
     await waitFor(() =>
       expect(setAudience).toHaveBeenCalledWith('portfolio', 'p1', {
         audience: 'specific_friends',
         friendIds: ['u9', 'u2'],
+        confirmWiden: true,
+      }),
+    );
+  });
+
+  test('requires an explicit warning before replacing a group audience from chat', async () => {
+    ownerChipThread('me');
+    vi.mocked(getAudience).mockResolvedValue({
+      kind: 'portfolio',
+      subjectId: 'p1',
+      audience: 'group',
+      friendIds: [],
+      groupId: 'g1',
+      link: { active: false, createdAt: null },
+    });
+    vi.mocked(setAudience).mockResolvedValue({
+      state: {
+        kind: 'portfolio',
+        subjectId: 'p1',
+        audience: 'specific_friends',
+        friendIds: ['u2'],
+        groupId: null,
+        link: { active: false, createdAt: null },
+      },
+    });
+    const user = userEvent.setup();
+
+    renderAt('/social/chat/u2');
+
+    const share = await screen.findByRole('button', { name: 'Share it with just them' });
+    expect(share).toBeDisabled();
+    expect(
+      screen.getByRole('checkbox', {
+        name: /replaces the current friend-group audience with only bob/i,
+      }),
+    ).not.toBeChecked();
+    expect(setAudience).not.toHaveBeenCalled();
+
+    await user.click(
+      screen.getByRole('checkbox', {
+        name: /replaces the current friend-group audience with only bob/i,
+      }),
+    );
+    await user.click(share);
+
+    await waitFor(() =>
+      expect(setAudience).toHaveBeenCalledWith('portfolio', 'p1', {
+        audience: 'specific_friends',
+        friendIds: ['u2'],
+        confirmWiden: true,
       }),
     );
   });

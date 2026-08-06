@@ -48,7 +48,8 @@ export const adminAccountKind = (
 export const notFound = (message = 'Not found.', code = 'NOT_FOUND') =>
   new ApiError(404, code, message);
 
-export const conflict = (message: string, code = 'CONFLICT') => new ApiError(409, code, message);
+export const conflict = (message: string, code = 'CONFLICT', details?: unknown) =>
+  new ApiError(409, code, message, details);
 
 /**
  * A well-formed request the server understood but cannot process as a data

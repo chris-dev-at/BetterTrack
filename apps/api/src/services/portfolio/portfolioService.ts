@@ -193,7 +193,7 @@ export interface PortfolioServiceDeps {
   now?: () => number;
 }
 
-type PortfolioMetadataPatch = Omit<UpdatePortfolioRequest, 'visibility'>;
+type PortfolioMetadataPatch = Omit<UpdatePortfolioRequest, 'visibility' | 'confirmWiden'>;
 
 export interface PortfolioService {
   /**
@@ -1638,7 +1638,10 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       // rejects here, leaving portfolio visibility, audience, and events intact.
       return audience.withVisibilityMutation(
         userId,
+        'portfolio',
+        portfolioId,
         patch.visibility,
+        patch.confirmWiden,
         async (lockedRecipientIds) => {
           const { portfolio, becameShared } = await updatePortfolioRecord(
             userId,
@@ -1650,6 +1653,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
             'portfolio',
             portfolioId,
             patch.visibility,
+            patch.confirmWiden,
             lockedRecipientIds,
           );
           // Emit only after both writes succeeded and only to the exact friend

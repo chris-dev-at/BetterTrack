@@ -1441,7 +1441,7 @@ describe('realtime gateway — rooms (§4.5)', () => {
     await aliceLogin.agent
       .patch(`/api/v1/portfolios/${portfolioId}`)
       .set(...XRW)
-      .send({ visibility: 'friends' })
+      .send({ visibility: 'friends', confirmWiden: true })
       .expect(200);
     expect(await joinRoom(bobSocket, 'portfolio', portfolioId)).toEqual({ ok: true });
 
