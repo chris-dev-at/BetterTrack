@@ -107,7 +107,9 @@ test('an unauthenticated visit to a user route redirects to /login', async () =>
 
   renderAt('/workboard');
 
-  expect(await screen.findByText('Sign in to your account')).toBeInTheDocument();
+  expect(
+    await waitForColdStart(() => screen.getByText('Sign in to your account')),
+  ).toBeInTheDocument();
   expect(
     screen.queryByText('Your watched assets, alerts and blueprints at a glance.'),
   ).not.toBeInTheDocument();
@@ -118,7 +120,9 @@ test('an unauthenticated visit to an unknown route still redirects to /login', a
 
   renderAtWithLocation('/not-a-real-route');
 
-  expect(await screen.findByText('Sign in to your account')).toBeInTheDocument();
+  expect(
+    await waitForColdStart(() => screen.getByText('Sign in to your account')),
+  ).toBeInTheDocument();
   expect(screen.getByTestId('location')).toHaveTextContent('/login');
 });
 
@@ -128,7 +132,9 @@ test('/people/following renders and is reachable from People navigation', async 
 
   renderAtWithLocation('/people/following');
 
-  expect(await screen.findByRole('heading', { name: 'Following' })).toBeInTheDocument();
+  expect(
+    await waitForColdStart(() => screen.getByRole('heading', { name: 'Following' })),
+  ).toBeInTheDocument();
   expect(screen.getByTestId('location')).toHaveTextContent('/people/following');
   expect(screen.getAllByRole('link', { name: 'Following' })[0]).toHaveAttribute(
     'href',
@@ -143,7 +149,7 @@ test('after signing in, the user returns to the originally requested route', asy
   const user = userEvent.setup();
   renderAt('/workboard');
 
-  await screen.findByText('Sign in to your account');
+  await waitForColdStart(() => screen.getByText('Sign in to your account'));
   await user.type(screen.getByLabelText('Email or username'), 'jane');
   await user.type(screen.getByLabelText('Password'), 'correct horse');
   await user.click(screen.getByRole('button', { name: 'Sign in' }));
@@ -173,7 +179,7 @@ test('bad credentials show a single generic, non-enumerating error', async () =>
   const user = userEvent.setup();
   renderAt('/login');
 
-  await screen.findByText('Sign in to your account');
+  await waitForColdStart(() => screen.getByText('Sign in to your account'));
   await user.type(screen.getByLabelText('Email or username'), 'jane');
   await user.type(screen.getByLabelText('Password'), 'wrong-password');
   await user.click(screen.getByRole('button', { name: 'Sign in' }));
@@ -190,7 +196,7 @@ test('a 429 on login shows a dedicated rate-limit message, not the generic crede
   const user = userEvent.setup();
   renderAt('/login');
 
-  await screen.findByText('Sign in to your account');
+  await waitForColdStart(() => screen.getByText('Sign in to your account'));
   await user.type(screen.getByLabelText('Email or username'), 'jane');
   await user.type(screen.getByLabelText('Password'), 'wrong-password');
   await user.click(screen.getByRole('button', { name: 'Sign in' }));
@@ -212,7 +218,7 @@ test('a 429 on login with retryAfterSeconds mentions the wait time', async () =>
   const user = userEvent.setup();
   renderAt('/login');
 
-  await screen.findByText('Sign in to your account');
+  await waitForColdStart(() => screen.getByText('Sign in to your account'));
   await user.type(screen.getByLabelText('Email or username'), 'jane');
   await user.type(screen.getByLabelText('Password'), 'wrong-password');
   await user.click(screen.getByRole('button', { name: 'Sign in' }));
@@ -237,7 +243,9 @@ test('a 429 on the bootstrap /auth/me holds the splash and retries — never mis
   // Held on splash (never bounced to /login) while the retry is pending.
   expect(screen.queryByText('Sign in to your account')).not.toBeInTheDocument();
   // The rate-limit toast is shown while waiting.
-  expect(await screen.findByText(/You're doing that too fast/i)).toBeInTheDocument();
+  expect(
+    await waitForColdStart(() => screen.getByText(/You're doing that too fast/i)),
+  ).toBeInTheDocument();
   // After the retry, the app admits the user — the shell renders (§7.4).
   expect(
     await waitForColdStart(() => screen.getByRole('button', { name: 'Account menu' })),
@@ -416,12 +424,16 @@ test.each([0, 500])(
 
     renderAt('/portfolio');
 
-    expect(await screen.findByText(/can’t verify your session right now/i)).toBeInTheDocument();
+    expect(
+      await waitForColdStart(() => screen.getByText(/can’t verify your session right now/i)),
+    ).toBeInTheDocument();
     expect(screen.queryByText('Sign in to your account')).not.toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: 'Try again' }));
 
-    expect(await screen.findByRole('button', { name: 'Account menu' })).toBeInTheDocument();
+    expect(
+      await waitForColdStart(() => screen.getByRole('button', { name: 'Account menu' })),
+    ).toBeInTheDocument();
     expect(api.getMe).toHaveBeenCalledTimes(2);
   },
 );
@@ -437,7 +449,9 @@ test('a must-change session is trapped, then released by a successful change', a
   renderAt('/');
 
   // Trapped: the change screen is up and the app shell is unreachable.
-  expect(await screen.findByText('Choose a new password')).toBeInTheDocument();
+  expect(
+    await waitForColdStart(() => screen.getByText('Choose a new password')),
+  ).toBeInTheDocument();
   expect(screen.queryByRole('button', { name: 'Account menu' })).not.toBeInTheDocument();
 
   // No "Current password" field: the temp-password login is the proof, so it is
@@ -448,7 +462,9 @@ test('a must-change session is trapped, then released by a successful change', a
   await user.click(screen.getByRole('button', { name: 'Update password' }));
 
   // Released into the app shell (lands on /portfolio via the `/` redirect).
-  expect(await screen.findByRole('button', { name: 'Account menu' })).toBeInTheDocument();
+  expect(
+    await waitForColdStart(() => screen.getByRole('button', { name: 'Account menu' })),
+  ).toBeInTheDocument();
   expect(api.changePassword).toHaveBeenCalledWith({
     newPassword: 'a-brand-new-secret',
   });
@@ -463,11 +479,13 @@ test('sign-out works from the forced-change screen', async () => {
   const user = userEvent.setup();
   renderAt('/');
 
-  await screen.findByText('Choose a new password');
+  await waitForColdStart(() => screen.getByText('Choose a new password'));
   await user.click(screen.getByRole('button', { name: 'Sign out' }));
 
   // Now anonymous at `/` → the guard sends us to login.
-  expect(await screen.findByText('Sign in to your account')).toBeInTheDocument();
+  expect(
+    await waitForColdStart(() => screen.getByText('Sign in to your account')),
+  ).toBeInTheDocument();
   expect(api.logout).toHaveBeenCalledOnce();
 });
 
@@ -491,7 +509,7 @@ test('invite accept: a valid token shows the fixed email and creates the account
   renderAt('/invite/tok-abc123');
 
   // Fixed email is shown and locked.
-  const email = await screen.findByDisplayValue('newbie@bettertrack.test');
+  const email = await waitForColdStart(() => screen.getByDisplayValue('newbie@bettertrack.test'));
   expect(email).toBeDisabled();
 
   await user.type(screen.getByLabelText('Username'), 'newbie');
@@ -500,10 +518,14 @@ test('invite accept: a valid token shows the fixed email and creates the account
 
   // Accepting an invite creates an account, so it lands on first-run setup —
   // not on Home. Dismissing it opens the app exactly as before.
-  expect(await screen.findByRole('heading', { name: 'Is this you?' })).toBeInTheDocument();
+  expect(
+    await waitForColdStart(() => screen.getByRole('heading', { name: 'Is this you?' })),
+  ).toBeInTheDocument();
   await user.click(screen.getByRole('button', { name: 'Do this later' }));
 
-  expect(await screen.findByRole('button', { name: 'Account menu' })).toBeInTheDocument();
+  expect(
+    await waitForColdStart(() => screen.getByRole('button', { name: 'Account menu' })),
+  ).toBeInTheDocument();
   expect(api.acceptInvite).toHaveBeenCalledWith({
     token: 'tok-abc123',
     username: 'newbie',
@@ -523,7 +545,7 @@ test('logout then login as a different user shows no stale account data (#253)',
   const user = userEvent.setup();
   renderAt('/settings/account');
 
-  await screen.findByText('Sign in to your account');
+  await waitForColdStart(() => screen.getByText('Sign in to your account'));
   // The initial bootstrap `getMe` (rejected by `anonymous()` above) already
   // ran; only now redirect it, so AccountSettingsPage's own query — which
   // fires after login — resolves to jane.
@@ -538,7 +560,7 @@ test('logout then login as a different user shows no stale account data (#253)',
 
   await user.click(screen.getByRole('button', { name: 'Account menu' }));
   await user.click(screen.getByRole('menuitem', { name: 'Logout' }));
-  await screen.findByText('Sign in to your account');
+  await waitForColdStart(() => screen.getByText('Sign in to your account'));
 
   const otherMember: MeResponse = {
     ...member,
@@ -556,7 +578,9 @@ test('logout then login as a different user shows no stale account data (#253)',
   // Signing out closed the Control Center with the session that opened it, so
   // the identity has to be asked for again — which is the point: the second
   // read must come from bob's account, not from jane's cached `['auth','me']`.
-  const utilities = await screen.findByRole('navigation', { name: 'Utilities' });
+  const utilities = await waitForColdStart(() =>
+    screen.getByRole('navigation', { name: 'Utilities' }),
+  );
   await user.click(within(utilities).getByRole('link', { name: 'Control Center' }));
 
   expect(
@@ -572,7 +596,7 @@ test('invite accept: an invalid token is rejected with a clear message and no fo
   renderAt('/invite/expired-token');
 
   expect(
-    await screen.findByText(/invalid, expired, or has already been used/i),
+    await waitForColdStart(() => screen.getByText(/invalid, expired, or has already been used/i)),
   ).toBeInTheDocument();
   expect(screen.queryByLabelText('Username')).not.toBeInTheDocument();
 });
@@ -583,7 +607,7 @@ test('an unknown authenticated user path renders a not-found state without navig
 
   renderAtWithLocation('/blabla');
 
-  expect(await screen.findByText('Page not found')).toBeInTheDocument();
+  expect(await waitForColdStart(() => screen.getByText('Page not found'))).toBeInTheDocument();
   expect(screen.getByText('/blabla', { selector: 'code' })).toBeInTheDocument();
   expect(await screen.findByRole('button', { name: 'Account menu' })).toBeInTheDocument();
   expect(screen.getByRole('link', { name: 'Back to start' })).toHaveAttribute('href', '/');
