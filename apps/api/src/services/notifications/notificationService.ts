@@ -2,6 +2,7 @@ import {
   WEB_PUSH_ENDPOINT_UNSAFE,
   WEB_PUSH_MAX_SUBSCRIPTIONS,
   WEB_PUSH_SUBSCRIPTION_LIMIT_REACHED,
+  notificationPayloadSchema,
   type DevicePlatform,
   type MarkReadRequest,
   type Notification,
@@ -41,12 +42,13 @@ export interface NotificationServiceDeps {
 }
 
 function toNotification(record: NotificationRecord): Notification {
+  const payload = notificationPayloadSchema.safeParse(record.payload);
   return {
     id: record.id,
     type: record.type,
     title: record.title,
     body: record.body,
-    payload: record.payload ?? undefined,
+    payload: payload.success ? payload.data : undefined,
     readAt: record.readAt ? record.readAt.toISOString() : null,
     archivedAt: record.archivedAt ? record.archivedAt.toISOString() : null,
     createdAt: record.createdAt.toISOString(),

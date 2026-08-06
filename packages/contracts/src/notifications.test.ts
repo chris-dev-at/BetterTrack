@@ -5,12 +5,15 @@ import {
   DEVICE_PLATFORMS,
   DEFAULT_QUIET_HOURS,
   NOTIFICATION_CATEGORIES,
+  NOTIFICATION_MESSAGE_KEYS,
   NOTIFICATION_TYPES,
   OPT_IN_NOTIFICATION_TYPES,
   isAccountSecurityNotificationType,
   isOptInNotificationType,
   isUrgentNotification,
   notificationChannelDefaultEnabled,
+  notificationMessageSchema,
+  notificationPayloadSchema,
   quietHoursSchema,
   registerDeviceRequestSchema,
   webPushSubscribeRequestSchema,
@@ -65,6 +68,40 @@ describe('notification taxonomy (#368)', () => {
       'webpush',
     ]);
     expect(DEVICE_PLATFORMS).toEqual(['android', 'ios', 'web']);
+  });
+});
+
+describe('localizable notification message descriptor (#1138)', () => {
+  it('accepts a stable key with scalar interpolation params', () => {
+    expect(
+      notificationMessageSchema.parse({
+        key: 'friendRequest',
+        params: { actor: 'anna', count: 2 },
+      }),
+    ).toEqual({ key: 'friendRequest', params: { actor: 'anna', count: 2 } });
+    expect(NOTIFICATION_MESSAGE_KEYS).toContain('standingOrderDroppedManyNamed');
+  });
+
+  it('rejects unknown keys and non-scalar params', () => {
+    expect(
+      notificationMessageSchema.safeParse({ key: 'futureUnknownKey', params: {} }).success,
+    ).toBe(false);
+    expect(
+      notificationMessageSchema.safeParse({
+        key: 'friendRequest',
+        params: { actor: { name: 'anna' } },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('keeps deep-link fields open while typing the additive message envelope', () => {
+    expect(
+      notificationPayloadSchema.parse({
+        eventKey: 'friend.request:req-1',
+        requestId: 'req-1',
+        message: { key: 'friendRequest', params: { actor: 'anna' } },
+      }),
+    ).toMatchObject({ requestId: 'req-1', message: { key: 'friendRequest' } });
   });
 });
 

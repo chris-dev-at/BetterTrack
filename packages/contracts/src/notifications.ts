@@ -65,6 +65,101 @@ export type NotificationType = (typeof NOTIFICATION_TYPES)[number];
 export const notificationTypeSchema = z.enum(NOTIFICATION_TYPES);
 
 /**
+ * Stable copy identifiers for dispatcher-written notifications (#1138).
+ *
+ * New rows carry one of these keys plus interpolation parameters in
+ * `payload.message`. Web/mobile clients that know the key render it in their
+ * active locale; older clients and historical rows keep using the persisted
+ * `title` / `body` strings. Variants are explicit so no locale-specific phrase
+ * is ever smuggled through as an interpolation parameter.
+ */
+export const NOTIFICATION_MESSAGE_KEYS = [
+  'friendRequest',
+  'friendAccepted',
+  'portfolioShared',
+  'watchlistShared',
+  'conglomerateShared',
+  'friendActivityBuy',
+  'friendActivitySell',
+  'friendActivityWatchlistAdd',
+  'followPublishedPortfolio',
+  'followPublishedWatchlist',
+  'followPublishedConglomerate',
+  'followPublishedIdea',
+  'followAlertCreatedPriceAbove',
+  'followAlertCreatedPriceBelow',
+  'followAlertCreatedPercentUpReference',
+  'followAlertCreatedPercentDownReference',
+  'followAlertCreatedPercentDayUp',
+  'followAlertCreatedPercentDayDown',
+  'followAlertFiredPriceAbove',
+  'followAlertFiredPriceBelow',
+  'followAlertFiredPercentUpReference',
+  'followAlertFiredPercentDownReference',
+  'followAlertFiredPercentDayUp',
+  'followAlertFiredPercentDayDown',
+  'accountTempPassword',
+  'accountDataExport',
+  'alertTriggeredPriceAbove',
+  'alertTriggeredPriceBelow',
+  'alertTriggeredPercentUpReference',
+  'alertTriggeredPercentDownReference',
+  'alertTriggeredPercentDayUp',
+  'alertTriggeredPercentDayDown',
+  'earningsReminderConfirmed',
+  'earningsReminderEstimated',
+  'chatMessagePreview',
+  'chatMessageSharedItem',
+  'chatMessagePlain',
+  'dividendEvent',
+  'dividendEventWithAmount',
+  'budgetExceeded',
+  'standingOrderDeferredNamed',
+  'standingOrderDeferredUnnamed',
+  'standingOrderDroppedNamed',
+  'standingOrderDroppedUnnamed',
+  'standingOrderDroppedManyNamed',
+  'standingOrderDroppedManyUnnamed',
+  'standingOrderBookingFailedNamed',
+  'standingOrderBookingFailedUnnamed',
+  'mirrorInvite',
+  'mirrorMemberJoined',
+  'mirrorMemberLeft',
+  'mirrorMemberRemoved',
+  'mirrorRemoved',
+  'mirrorOwnershipTransferred',
+  'mirrorChainDissolved',
+  'mirrorSyncStalled',
+] as const;
+export type NotificationMessageKey = (typeof NOTIFICATION_MESSAGE_KEYS)[number];
+export const notificationMessageKeySchema = z.enum(NOTIFICATION_MESSAGE_KEYS);
+
+/** Values allowed in the interpolation map shared by API, web and mobile. */
+export const notificationMessageParamsSchema = z.record(z.union([z.string(), z.number()]));
+export type NotificationMessageParams = z.infer<typeof notificationMessageParamsSchema>;
+
+/** The localizable message descriptor stored under `notification.payload.message`. */
+export const notificationMessageSchema = z
+  .object({
+    key: notificationMessageKeySchema,
+    params: notificationMessageParamsSchema,
+  })
+  .strict();
+export type NotificationMessage = z.infer<typeof notificationMessageSchema>;
+
+/**
+ * Additive payload envelope for inbox rows. Deep-link fields remain open-ended;
+ * historical rows may omit both standardized fields (or have a null payload).
+ */
+export const notificationPayloadSchema = z
+  .object({
+    eventKey: z.string().optional(),
+    message: notificationMessageSchema.optional(),
+  })
+  .catchall(z.unknown());
+export type NotificationPayload = z.infer<typeof notificationPayloadSchema>;
+
+/**
  * Per-user per-type **delivery cadence** for the OUTBOUND channels — email,
  * phone push (FCM) and browser push (V5-P3 digest mode). `instant` (the default
  * and the pre-digest behaviour) delivers each event the moment it fires;
@@ -385,7 +480,7 @@ export const notificationSchema = z
     type: z.string(),
     title: z.string(),
     body: z.string(),
-    payload: z.unknown().optional(),
+    payload: notificationPayloadSchema.nullable().optional(),
     readAt: z.string().datetime().nullable(),
     /** When the row was archived (explicitly or by the sweep); null = active (#437). */
     archivedAt: z.string().datetime().nullable(),

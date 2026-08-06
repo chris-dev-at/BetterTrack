@@ -1,7 +1,8 @@
 import { describe, expect, test } from 'vitest';
 
-import { VAULT_MEDIA } from '@bettertrack/contracts';
+import { NOTIFICATION_MESSAGE_KEYS, VAULT_MEDIA } from '@bettertrack/contracts';
 
+import { notificationMessagePath } from '../lib/notificationText';
 import { vaultStoreErrorKey } from '../user/vault/engine/errorCopy';
 import { VAULT_MEDIUM_SYNC_STATES } from '../user/vault/media/status';
 import { VAULT_ENABLE_STAGES } from '../user/vault/ui/enable';
@@ -49,6 +50,23 @@ test('registers every not-found string in EN and DE', () => {
     for (const key of keys) {
       expect(localizedMessage(locale.code, key)).not.toBe(key);
     }
+  }
+});
+
+test('registers title/body copy for every dispatcher notification message key', () => {
+  for (const key of NOTIFICATION_MESSAGE_KEYS) {
+    const localized: string[] = [];
+    for (const locale of Object.values(LOCALES)) {
+      for (const part of ['title', 'body'] as const) {
+        const path = notificationMessagePath(key, part);
+        const value = localizedMessage(locale.code, path);
+        expect(value, `${locale.code}: ${path}`).not.toBe(path);
+        localized.push(value);
+      }
+    }
+    expect(localized.slice(0, 2), `${key}: DE must not silently reuse EN`).not.toEqual(
+      localized.slice(2),
+    );
   }
 });
 
