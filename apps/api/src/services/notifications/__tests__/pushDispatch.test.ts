@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createNotificationRepository } from '../../../data/repositories/notificationRepository';
 import { createUserRepository } from '../../../data/repositories/userRepository';
 import type { Database } from '../../../data/db';
-import { notifications, notificationSettings } from '../../../data/schema';
+import { notifications, notificationSettings, users } from '../../../data/schema';
 import type { ChatMessageEvent } from '../../../events';
 import { createTestApp, type TestHarness } from '../../../testing/createTestApp';
 import type { FcmChannel, PushMessage } from '../fcm';
@@ -88,6 +88,21 @@ describe('push channels through the matrix (#368)', () => {
     expect(fcmSent[0]!.message.type).toBe('chat.message');
     expect(fcmSent[0]!.message.data.conversationId).toBe('00000000-0000-7000-8000-00000000c001');
     expect(webSent).toHaveLength(1);
+  });
+
+  it('renders both phone and browser push text in a DE recipient locale', async () => {
+    const user = await harness.seedUser({ email: 'push-de@bt.test', username: 'push-de' });
+    await db.update(users).set({ locale: 'de' }).where(eq(users.id, user.id));
+
+    await dispatcher.dispatch(chatEvent(user.id, { bodyPreview: 'Hallo' }));
+
+    const expected = {
+      type: 'chat.message',
+      title: 'Neue Nachricht',
+      body: 'anna: Hallo',
+    };
+    expect(fcmSent[0]?.message).toMatchObject(expected);
+    expect(webSent[0]?.message).toMatchObject(expected);
   });
 
   it('carries the standing-order route keys and outcome in both push channels', async () => {

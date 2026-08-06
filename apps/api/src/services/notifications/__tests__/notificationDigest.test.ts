@@ -7,7 +7,12 @@ import { createNotificationDigestRepository } from '../../../data/repositories/n
 import { createNotificationRepository } from '../../../data/repositories/notificationRepository';
 import { createUserRepository } from '../../../data/repositories/userRepository';
 import type { Database } from '../../../data/db';
-import { notificationDigestQueue, notificationSettings, notifications } from '../../../data/schema';
+import {
+  notificationDigestQueue,
+  notificationSettings,
+  notifications,
+  users,
+} from '../../../data/schema';
 import type { FriendRequestEvent, WatchlistSharedEvent } from '../../../events';
 import { createTestApp, type TestHarness } from '../../../testing/createTestApp';
 import { createAuditService } from '../../audit/auditService';
@@ -181,6 +186,28 @@ describe('digest mode (§13.5 V5-P3)', () => {
     const second = await digestService.deliverDue('daily');
     expect(second.sent).toBe(0);
     expect(transport.sent).toHaveLength(1);
+  });
+
+  it('renders a DE digest item in German, not only the digest wrapper', async () => {
+    const user = await harness.seedUser({ email: 'digest-de@bt.test', username: 'digest-de' });
+    await db.update(users).set({ locale: 'de' }).where(eq(users.id, user.id));
+    await enableEmailFor(user.id, 'friend.request');
+    await digestRepo.setCadences(user.id, { 'friend.request': 'daily' });
+
+    await dispatcher.dispatch(
+      friendRequestEvent({ userId: user.id, requestId: 'de-1', actorUsername: 'anna' }),
+    );
+
+    expect(await emailQueueFor(user.id)).toMatchObject([
+      {
+        title: 'Neue Freundschaftsanfrage',
+        body: 'anna hat dir eine Freundschaftsanfrage gesendet.',
+      },
+    ]);
+    expect((await digestService.deliverDue('daily')).sent).toBe(1);
+    expect(transport.sent[0]?.text).toContain('Neue Freundschaftsanfrage');
+    expect(transport.sent[0]?.text).toContain('anna hat dir eine Freundschaftsanfrage gesendet.');
+    expect(transport.sent[0]?.text).not.toContain('anna sent you a friend request');
   });
 
   it('the weekly cadence produces one weekly summary (same shape)', async () => {

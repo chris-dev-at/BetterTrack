@@ -297,6 +297,28 @@ only, never pushed, and deep-links to `/settings/notifications`.
 
 Any future addition stays **additive** on top of these keys.
 
+### 4.1 In-app row copy is localizable (#1138)
+
+Beside the routing ids, every dispatcher-written **in-app row payload** carries
+
+```jsonc
+"message": { "key": "friendRequest", "params": { "actor": "anna" } }
+```
+
+— a stable key from `NOTIFICATION_MESSAGE_KEYS` (`@bettertrack/contracts`) plus
+the `{{token}}` values its copy interpolates. This is additive and purely about
+rendering; it changes no route key and it is **not** part of the FCM `data` map,
+whose wire shape (§3) is unchanged.
+
+A client that knows the key SHOULD render the inbox row from its own catalog in
+the **device** locale, so switching language re-renders existing rows instead of
+leaving them frozen in the language they were dispatched in. A client that does
+not know the key (or reads a historical row, which has no descriptor) MUST fall
+back **per field** to the persisted `title` / `body`, which the API renders in
+the recipient's account locale at dispatch time. Never render a raw key or
+catalog path. Delivered push text stays frozen at its dispatch-time locale — a
+notification already handed to APNs/FCM cannot be re-rendered.
+
 ---
 
 ## 5. Server setup & local testing

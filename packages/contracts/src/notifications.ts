@@ -65,6 +65,139 @@ export type NotificationType = (typeof NOTIFICATION_TYPES)[number];
 export const notificationTypeSchema = z.enum(NOTIFICATION_TYPES);
 
 /**
+ * Stable copy identifiers for dispatcher-written notifications (#1138).
+ *
+ * New rows carry one of these keys plus interpolation parameters in
+ * `payload.message`. Web/mobile clients that know the key render it in their
+ * active locale; older clients and historical rows keep using the persisted
+ * `title` / `body` strings. Variants are explicit so no locale-specific phrase
+ * is ever smuggled through as an interpolation parameter.
+ */
+export const NOTIFICATION_MESSAGE_KEYS = [
+  'friendRequest',
+  'friendAccepted',
+  'portfolioShared',
+  'watchlistShared',
+  'conglomerateShared',
+  'friendActivityBuy',
+  'friendActivitySell',
+  'friendActivityWatchlistAdd',
+  'followPublishedPortfolio',
+  'followPublishedWatchlist',
+  'followPublishedConglomerate',
+  'followPublishedIdea',
+  'followAlertCreatedPriceAbove',
+  'followAlertCreatedPriceBelow',
+  'followAlertCreatedPercentUpReference',
+  'followAlertCreatedPercentDownReference',
+  'followAlertCreatedPercentDayUp',
+  'followAlertCreatedPercentDayDown',
+  'followAlertFiredPriceAbove',
+  'followAlertFiredPriceBelow',
+  'followAlertFiredPercentUpReference',
+  'followAlertFiredPercentDownReference',
+  'followAlertFiredPercentDayUp',
+  'followAlertFiredPercentDayDown',
+  'accountTempPassword',
+  'accountDataExport',
+  'alertTriggeredPriceAbove',
+  'alertTriggeredPriceBelow',
+  'alertTriggeredPercentUpReference',
+  'alertTriggeredPercentDownReference',
+  'alertTriggeredPercentDayUp',
+  'alertTriggeredPercentDayDown',
+  'earningsReminderConfirmed',
+  'earningsReminderEstimated',
+  'chatMessagePreview',
+  'chatMessageSharedItem',
+  'chatMessagePlain',
+  'dividendEvent',
+  'dividendEventWithAmount',
+  'budgetExceeded',
+  'standingOrderDeferredNamed',
+  'standingOrderDeferredUnnamed',
+  'standingOrderDroppedNamed',
+  'standingOrderDroppedUnnamed',
+  'standingOrderDroppedManyNamed',
+  'standingOrderDroppedManyUnnamed',
+  'standingOrderBookingFailedNamed',
+  'standingOrderBookingFailedUnnamed',
+  'mirrorInvite',
+  'mirrorMemberJoined',
+  'mirrorMemberLeft',
+  'mirrorMemberRemoved',
+  'mirrorRemoved',
+  'mirrorOwnershipTransferred',
+  'mirrorChainDissolved',
+  'mirrorSyncStalled',
+] as const;
+export type NotificationMessageKey = (typeof NOTIFICATION_MESSAGE_KEYS)[number];
+export const notificationMessageKeySchema = z.enum(NOTIFICATION_MESSAGE_KEYS);
+
+/** Values allowed in the interpolation map shared by API, web and mobile. */
+export const notificationMessageParamsSchema = z.record(z.union([z.string(), z.number()]));
+export type NotificationMessageParams = z.infer<typeof notificationMessageParamsSchema>;
+
+/** The localizable message descriptor stored under `notification.payload.message`. */
+export const notificationMessageSchema = z
+  .object({
+    key: notificationMessageKeySchema,
+    params: notificationMessageParamsSchema,
+  })
+  .strict();
+export type NotificationMessage = z.infer<typeof notificationMessageSchema>;
+
+/**
+ * Additive payload envelope for inbox rows. Deep-link fields remain open-ended;
+ * historical rows may omit both standardized fields (or have a null payload).
+ *
+ * Strict on purpose — read persisted rows through {@link readNotificationPayload}
+ * rather than parsing them against this schema directly.
+ */
+export const notificationPayloadSchema = z
+  .object({
+    eventKey: z.string().optional(),
+    message: notificationMessageSchema.optional(),
+  })
+  .catchall(z.unknown());
+export type NotificationPayload = z.infer<typeof notificationPayloadSchema>;
+
+/**
+ * Tolerant reader for a PERSISTED payload envelope — the only way anything
+ * should turn a stored/received payload into a {@link NotificationPayload}.
+ *
+ * Each standardized field degrades on its own: `message.key` is a closed enum
+ * over a column that persists forever, so a retired key — or a row written by a
+ * newer worker and read by an older API instance / a stale SPA tab mid-rollout —
+ * must cost only the localized copy (the row falls back to its persisted
+ * `title`/`body`), never `eventKey` and never the deep-link ids that share the
+ * envelope. A plain parse is all-or-nothing: one unknown key would drop the
+ * WHOLE payload server-side and reject the WHOLE list response client-side.
+ *
+ * The tolerance lives here rather than as `.catch()` inside the schema because
+ * `ZodCatch` has no transformer in zod-to-openapi 7.3.x, and this schema is
+ * reachable from `NotificationListResponse`: a catch anywhere in it makes
+ * `buildOpenApiDocument()` throw, i.e. `/openapi.json` and `/docs` 500 for the
+ * whole API — the same class of generator gap the API's `document.ts` already
+ * works around for `ZodLazy`. Keep the contract itself plain zod.
+ */
+export function readNotificationPayload(value: unknown): NotificationPayload | undefined {
+  const direct = notificationPayloadSchema.safeParse(value);
+  if (direct.success) return direct.data;
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
+
+  // Strip exactly the standardized field(s) this build cannot read; everything
+  // else in the envelope (dedupe marker, deep-link ids) survives untouched.
+  const degraded: Record<string, unknown> = { ...(value as Record<string, unknown>) };
+  if (!z.string().optional().safeParse(degraded.eventKey).success) delete degraded.eventKey;
+  if (!notificationMessageSchema.optional().safeParse(degraded.message).success) {
+    delete degraded.message;
+  }
+  const parsed = notificationPayloadSchema.safeParse(degraded);
+  return parsed.success ? parsed.data : undefined;
+}
+
+/**
  * Per-user per-type **delivery cadence** for the OUTBOUND channels — email,
  * phone push (FCM) and browser push (V5-P3 digest mode). `instant` (the default
  * and the pre-digest behaviour) delivers each event the moment it fires;
@@ -385,7 +518,7 @@ export const notificationSchema = z
     type: z.string(),
     title: z.string(),
     body: z.string(),
-    payload: z.unknown().optional(),
+    payload: notificationPayloadSchema.nullable().optional(),
     readAt: z.string().datetime().nullable(),
     /** When the row was archived (explicitly or by the sweep); null = active (#437). */
     archivedAt: z.string().datetime().nullable(),

@@ -1,7 +1,8 @@
 import { describe, expect, test } from 'vitest';
 
-import { VAULT_MEDIA } from '@bettertrack/contracts';
+import { NOTIFICATION_MESSAGE_KEYS, VAULT_MEDIA } from '@bettertrack/contracts';
 
+import { notificationMessagePath } from '../lib/notificationText';
 import { vaultStoreErrorKey } from '../user/vault/engine/errorCopy';
 import { VAULT_MEDIUM_SYNC_STATES } from '../user/vault/media/status';
 import { VAULT_ENABLE_STAGES } from '../user/vault/ui/enable';
@@ -48,6 +49,35 @@ test('registers every not-found string in EN and DE', () => {
   for (const locale of Object.values(LOCALES)) {
     for (const key of keys) {
       expect(localizedMessage(locale.code, key)).not.toBe(key);
+    }
+  }
+});
+
+test('registers title/body copy for every dispatcher notification message key', () => {
+  // The inbox renders `notificationContent.<key>.<part>` for every dispatcher
+  // row (#1138). Read each catalog DIRECTLY rather than through
+  // `localizedMessage`: that resolver falls back to EN, so a key missing only
+  // its DE entry would still return a non-path string and pass. Comparing each
+  // locale's pair against EN per key also keeps the guard honest for any number
+  // of registered locales (the old slice pair compared two fixed halves).
+  const translated = Object.values(LOCALES)
+    .filter((l) => l.code !== 'en')
+    .map((l) => [l.code, flatten(l.messages)] as const);
+
+  for (const key of NOTIFICATION_MESSAGE_KEYS) {
+    const paths = (['title', 'body'] as const).map((part) => notificationMessagePath(key, part));
+    const enPair = paths.map((path) => {
+      const value = enFlat.get(path);
+      expect(value, `en: ${path} missing`).toBeTruthy();
+      return value;
+    });
+    for (const [code, flat] of translated) {
+      const pair = paths.map((path) => {
+        const value = flat.get(path);
+        expect(value, `${code}: ${path} missing`).toBeTruthy();
+        return value;
+      });
+      expect(pair, `${key}: ${code} must not silently reuse EN`).not.toEqual(enPair);
     }
   }
 });

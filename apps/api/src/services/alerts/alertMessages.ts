@@ -1,9 +1,18 @@
-import type { AlertKind } from '@bettertrack/contracts';
+import type {
+  AlertKind,
+  NotificationMessage,
+  NotificationMessageKey,
+} from '@bettertrack/contracts';
+
+import { notificationMessage } from '../notifications/notificationI18n';
 
 /**
- * Human-readable phrasing for a fired price alert (PROJECTPLAN.md §14). Shared
- * by the in-app notification (via the dispatcher) and the email template so the
- * two channels never drift.
+ * Localizable price-alert message descriptors (#1138).
+ *
+ * Alert rules branch by kind, so each branch gets a stable message key instead
+ * of passing an already-English rule sentence through as a parameter. The
+ * dispatcher renders the descriptor for server channels and stores it for the
+ * inbox client's live locale.
  */
 
 export interface AlertMessageInput {
@@ -13,50 +22,52 @@ export interface AlertMessageInput {
   currency: string;
 }
 
-/** The notification title — the asset the alert is about. */
-export function alertTitle(symbol: string): string {
-  return `Price alert: ${symbol}`;
+const TRIGGERED_KEYS: Record<AlertKind, NotificationMessageKey> = {
+  price_above: 'alertTriggeredPriceAbove',
+  price_below: 'alertTriggeredPriceBelow',
+  pct_up_from_ref: 'alertTriggeredPercentUpReference',
+  pct_down_from_ref: 'alertTriggeredPercentDownReference',
+  pct_day_up: 'alertTriggeredPercentDayUp',
+  pct_day_down: 'alertTriggeredPercentDayDown',
+};
+
+const FOLLOW_CREATED_KEYS: Record<AlertKind, NotificationMessageKey> = {
+  price_above: 'followAlertCreatedPriceAbove',
+  price_below: 'followAlertCreatedPriceBelow',
+  pct_up_from_ref: 'followAlertCreatedPercentUpReference',
+  pct_down_from_ref: 'followAlertCreatedPercentDownReference',
+  pct_day_up: 'followAlertCreatedPercentDayUp',
+  pct_day_down: 'followAlertCreatedPercentDayDown',
+};
+
+const FOLLOW_FIRED_KEYS: Record<AlertKind, NotificationMessageKey> = {
+  price_above: 'followAlertFiredPriceAbove',
+  price_below: 'followAlertFiredPriceBelow',
+  pct_up_from_ref: 'followAlertFiredPercentUpReference',
+  pct_down_from_ref: 'followAlertFiredPercentDownReference',
+  pct_day_up: 'followAlertFiredPercentDayUp',
+  pct_day_down: 'followAlertFiredPercentDayDown',
+};
+
+function alertParams(input: AlertMessageInput) {
+  return {
+    symbol: input.symbol,
+    threshold: input.threshold,
+    currency: input.currency,
+  };
 }
 
-/**
- * A short, pronoun-free description of an alert's RULE ("AAPL above 200 USD"),
- * used by the follower-facing `follow.alert.*` notifications (#455) where the
- * owner-facing phrasing of {@link alertBody} ("… from your reference price")
- * would misaddress the reader. No trailing period — callers compose it.
- */
-export function alertRuleSummary(input: AlertMessageInput): string {
-  const { kind, symbol, threshold, currency } = input;
-  switch (kind) {
-    case 'price_above':
-      return `${symbol} above ${threshold} ${currency}`;
-    case 'price_below':
-      return `${symbol} below ${threshold} ${currency}`;
-    case 'pct_up_from_ref':
-      return `${symbol} up ${threshold}% from the reference price`;
-    case 'pct_down_from_ref':
-      return `${symbol} down ${threshold}% from the reference price`;
-    case 'pct_day_up':
-      return `${symbol} up ${threshold}% on the day`;
-    case 'pct_day_down':
-      return `${symbol} down ${threshold}% on the day`;
-  }
+/** The owner-facing fired-alert message. */
+export function alertNotificationMessage(input: AlertMessageInput): NotificationMessage {
+  return notificationMessage(TRIGGERED_KEYS[input.kind], alertParams(input));
 }
 
-/** A one-sentence description of why the alert fired. */
-export function alertBody(input: AlertMessageInput): string {
-  const { kind, symbol, threshold, currency } = input;
-  switch (kind) {
-    case 'price_above':
-      return `${symbol} rose above ${threshold} ${currency}.`;
-    case 'price_below':
-      return `${symbol} dropped below ${threshold} ${currency}.`;
-    case 'pct_up_from_ref':
-      return `${symbol} is up ${threshold}% from your reference price.`;
-    case 'pct_down_from_ref':
-      return `${symbol} is down ${threshold}% from your reference price.`;
-    case 'pct_day_up':
-      return `${symbol} is up ${threshold}% on the day.`;
-    case 'pct_day_down':
-      return `${symbol} is down ${threshold}% on the day.`;
-  }
+/** A created/fired alert message shown to one of the owner's followers. */
+export function followAlertNotificationMessage(
+  variant: 'created' | 'fired',
+  actor: string,
+  input: AlertMessageInput,
+): NotificationMessage {
+  const keys = variant === 'created' ? FOLLOW_CREATED_KEYS : FOLLOW_FIRED_KEYS;
+  return notificationMessage(keys[input.kind], { actor, ...alertParams(input) });
 }
