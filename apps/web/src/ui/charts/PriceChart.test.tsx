@@ -1,4 +1,4 @@
-import { act, render, screen } from '@testing-library/react';
+import { act, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
@@ -681,6 +681,56 @@ describe('PriceChart — money scrub tooltip on a performance curve (board #68 i
     render(<PriceChart series={PERFORMANCE} mode="baseline" percentValues />);
 
     expect(mocks.subscribeCrosshairMove).not.toHaveBeenCalled();
+  });
+
+  test('the accessible data table carries the balance beside the percentage', async () => {
+    const user = userEvent.setup();
+    // A hole in the money twin: the row must read an em dash, never the
+    // neighbouring point's balance — the same time-key rule as the tooltip.
+    renderPerformanceChart({ balanceSeries: [BALANCE[1]!] });
+
+    await user.click(screen.getByRole('button', { name: 'Show chart data' }));
+
+    const table = screen.getByRole('table', { name: 'Chart data' });
+    expect(within(table).getByRole('columnheader', { name: 'Balance' })).toBeInTheDocument();
+    const [, first, second] = within(table).getAllByRole('row');
+    expect(
+      within(first!)
+        .getAllByRole('cell')
+        .map((cell) => cell.textContent),
+    ).toEqual(['2 Jan 2026', EM_DASH, '0.00%']);
+    expect(
+      within(second!)
+        .getAllByRole('cell')
+        .map((cell) => cell.textContent),
+    ).toEqual(['5 Jan 2026', '321,350.00 €', '7.12%']);
+  });
+
+  test('discreet mode masks the balance column too, and only that column', async () => {
+    setDiscreetMode(true);
+    const user = userEvent.setup();
+    renderPerformanceChart();
+
+    await user.click(screen.getByRole('button', { name: 'Show chart data' }));
+
+    const table = screen.getByRole('table', { name: 'Chart data' });
+    expect(within(table).getAllByText(DISCREET_MASK)).toHaveLength(2);
+    expect(within(table).getByText('7.12%')).toBeInTheDocument();
+  });
+
+  test('a chart without a money twin keeps its two-column table exactly as before', async () => {
+    const user = userEvent.setup();
+    render(
+      <I18nProvider initialLocale="en">
+        <PriceChart series={samplePriceSeries} valueCurrency="USD" />
+      </I18nProvider>,
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Show chart data' }));
+
+    const table = screen.getByRole('table', { name: 'Chart data' });
+    expect(within(table).queryByRole('columnheader', { name: 'Balance' })).toBeNull();
+    expect(within(table).getAllByRole('columnheader')).toHaveLength(2);
   });
 });
 

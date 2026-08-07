@@ -353,6 +353,21 @@ function indexByTime(points: readonly ChartPoint[]): Map<string, number> {
 }
 
 /**
+ * The money at `time`, or an em dash when the twin has no point there. Shared
+ * by the tooltip and the data table so the two can never disagree about which
+ * balance belongs to a point — or about discreet masking, which `formatMoney`
+ * applies on both paths.
+ */
+function formatBalanceAt(
+  balances: Map<string, number>,
+  time: Time,
+  currency: string | undefined,
+): string {
+  const value = balances.get(chartPointKey(time));
+  return value === undefined ? EM_DASH : formatMoney(value, currency);
+}
+
+/**
  * A `timeScale.tickMarkFormatter` that HONORS `tickMarkType` (§13.5 V5-P1 Part
  * C): sub-minute live rates show `HH:MM:SS`, other intraday ticks `HH:MM`, day
  * ticks `22 Jul`, month/year as short month / year. This is what stops an
@@ -597,16 +612,28 @@ export function PriceChart({
     percentValues: boolean;
     precision: ChartDatePrecision;
   } | null>(null);
+  // One index of the money twin, shared by the crosshair readout and the
+  // accessible data table: both answer "which balance is this point's?" the
+  // same way, by time key, or a screen reader and a mouse would disagree.
+  const balanceByTime = useMemo(
+    () => (hasScrubTooltip ? indexByTime(balanceSeries ?? []) : null),
+    [hasScrubTooltip, balanceSeries],
+  );
+  const valueByTime = useMemo(
+    () => (hasScrubTooltip ? indexByTime(series) : null),
+    [hasScrubTooltip, series],
+  );
   useEffect(() => {
-    scrubRef.current = hasScrubTooltip
-      ? {
-          values: indexByTime(series),
-          balances: indexByTime(balanceSeries ?? []),
-          currency: balanceCurrency,
-          percentValues,
-          precision: dataAlternative?.datePrecision ?? 'date',
-        }
-      : null;
+    scrubRef.current =
+      balanceByTime !== null && valueByTime !== null
+        ? {
+            values: valueByTime,
+            balances: balanceByTime,
+            currency: balanceCurrency,
+            percentValues,
+            precision: dataAlternative?.datePrecision ?? 'date',
+          }
+        : null;
   });
 
   // Create / tear down the chart instance. Keyed on the *shape* (mode, presence
@@ -737,16 +764,14 @@ export function PriceChart({
           setScrub(null);
           return;
         }
-        const key = chartPointKey(param.time);
-        const balance = data.balances.get(key);
-        const value = data.values.get(key);
+        const value = data.values.get(chartPointKey(param.time));
         setScrub({
           x: param.point.x,
           width: el.clientWidth,
           date: formatChartDate(param.time, data.precision),
           // formatMoney masks to ••• in discreet mode all by itself — the
           // tooltip must not become the one surface that leaks an amount.
-          balance: balance === undefined ? EM_DASH : formatMoney(balance, data.currency),
+          balance: formatBalanceAt(data.balances, param.time, data.currency),
           value:
             value === undefined
               ? EM_DASH
@@ -1001,6 +1026,15 @@ export function PriceChart({
                         <th className="py-1 pr-3 font-medium" scope="col">
                           {t('common.charts.priceChartDataDate')}
                         </th>
+                        {/* The money twin gets its own column so a % curve is
+                            not the one mode where the balance exists for a
+                            mouse and nowhere else — same time-key matching as
+                            the tooltip, in the same order (balance first). */}
+                        {balanceByTime ? (
+                          <th className="py-1 pr-3 text-right font-medium" scope="col">
+                            {t('common.charts.priceChartDataBalance')}
+                          </th>
+                        ) : null}
                         <th className="py-1 text-right font-medium" scope="col">
                           {t('common.charts.priceChartDataValue')}
                         </th>
@@ -1012,6 +1046,11 @@ export function PriceChart({
                           <td className="py-1 pr-3">
                             {formatChartDate(point.time, dataAlternative.datePrecision)}
                           </td>
+                          {balanceByTime ? (
+                            <td className="py-1 pr-3 text-right tabular-nums">
+                              {formatBalanceAt(balanceByTime, point.time, balanceCurrency)}
+                            </td>
+                          ) : null}
                           <td className="py-1 text-right tabular-nums">
                             {formatChartValue(
                               point.value,
