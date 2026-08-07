@@ -39,24 +39,30 @@ import { bytesToBase64 } from '../bytes';
  */
 
 /**
- * Every §3 path in one place. `docs/common` is r2 §8's third doc kind, which
- * owns the vault's account-scoped entities.
+ * Every §3 path in one place. These are the shapes the server PR (#1176)
+ * shipped — its census, OpenAPI document and bearer allowlist are wired to
+ * them — so they are authoritative for both clients.
  */
 export const VAULT2_ROUTES = {
   vaults: '/vaults',
   vault: (vaultId: string) => `/vaults/${encodeURIComponent(vaultId)}`,
-  headerDoc: (vaultId: string) => `/vaults/${encodeURIComponent(vaultId)}/docs/header`,
+  headerDoc: (vaultId: string) => `/vaults/${encodeURIComponent(vaultId)}/header`,
   portfolioDoc: (vaultId: string, portfolioId: string) =>
-    `/vaults/${encodeURIComponent(vaultId)}/docs/portfolio/${encodeURIComponent(portfolioId)}`,
-  commonDoc: (vaultId: string) => `/vaults/${encodeURIComponent(vaultId)}/docs/common`,
+    `/vaults/${encodeURIComponent(vaultId)}/portfolios/${encodeURIComponent(portfolioId)}`,
+  commonDoc: (vaultId: string) => `/vaults/${encodeURIComponent(vaultId)}/common`,
   join: (portfolioId: string) => `/portfolios/${encodeURIComponent(portfolioId)}/vault`,
   leave: (portfolioId: string) => `/portfolios/${encodeURIComponent(portfolioId)}/vault`,
   /**
-   * DEVIATION: §4 requires the QR share to be "re-auth-gated", but the repo has
-   * no generic step-up verifier — every existing re-auth rides on the
-   * destructive endpoint it protects. Revealing a passphrase has no such
-   * endpoint, so this client declares one. It FAILS CLOSED: if the route is
-   * missing, the QR is refused rather than shown ungated (`reauthenticate`).
+   * The cleartext display alias a locked row renders (§2 portfolio index). The
+   * server owns it so the label survives independently of the header doc.
+   */
+  alias: (portfolioId: string) => `/portfolios/${encodeURIComponent(portfolioId)}/alias`,
+  /**
+   * §4 requires the QR share to be re-auth-gated, and the repo had no generic
+   * step-up verifier — every existing re-auth rode on the destructive endpoint
+   * it protected. This route was agreed with the server PR: session-only,
+   * `{ password }`, login-class rate limit, 204, audited. It FAILS CLOSED —
+   * if it is ever missing, the QR is refused rather than shown ungated.
    */
   reauth: '/auth/reauth',
 } as const;
@@ -98,6 +104,18 @@ export async function createVault(input: CreateVaultInput): Promise<VaultSummary
     },
   });
   return vaultSummarySchema.parse(data);
+}
+
+/**
+ * Set a vaulted portfolio's cleartext display alias. Kept server-side rather
+ * than only in the header index so a locked row still has a label when the
+ * header doc has not been fetched.
+ */
+export async function setPortfolioAlias(portfolioId: string, alias: string): Promise<void> {
+  await apiRequest<unknown>(VAULT2_ROUTES.alias(portfolioId), {
+    method: 'PATCH',
+    body: { alias },
+  });
 }
 
 export async function updateVaultBackends(

@@ -4,7 +4,7 @@ import { zeroBytes } from '../bytes';
 import type { VaultCryptoDeps } from '../crypto';
 import { VaultCryptoError } from '../errors';
 
-import { openVaultHeader, type VaultHeaderSealState } from './headerCrypto';
+import { openVaultHeader } from './headerCrypto';
 
 /**
  * In-memory custody of unlocked vault content keys (`docs/VAULTS_V2_DESIGN.md`
@@ -25,7 +25,6 @@ import { openVaultHeader, type VaultHeaderSealState } from './headerCrypto';
 export interface UnlockedVault {
   vaultId: string;
   header: VaultHeaderDoc;
-  seal: VaultHeaderSealState;
   unlockedAt: number;
 }
 
@@ -36,7 +35,6 @@ interface Entry {
   contentKey: Uint8Array;
   passphrase: string;
   header: VaultHeaderDoc;
-  seal: VaultHeaderSealState;
   unlockedAt: number;
 }
 
@@ -79,7 +77,6 @@ export class VaultKeyring {
       contentKey: opened.contentKey,
       passphrase: passphrase.normalize('NFKD').toLowerCase().trim().replace(/\s+/gu, ' '),
       header: opened.header,
-      seal: opened.seal,
       unlockedAt: Date.now(),
     };
     this.entries.set(header.vaultId, entry);
@@ -115,10 +112,10 @@ export class VaultKeyring {
   }
 
   /** Replace the cached header after a revision, keeping the vault unlocked. */
-  updateHeader(vaultId: string, header: VaultHeaderDoc, seal: VaultHeaderSealState): void {
+  updateHeader(vaultId: string, header: VaultHeaderDoc): void {
     const entry = this.entries.get(vaultId);
     if (entry == null) return;
-    this.entries.set(vaultId, { ...entry, header, seal });
+    this.entries.set(vaultId, { ...entry, header });
     this.emit();
   }
 
@@ -145,10 +142,5 @@ export class VaultKeyring {
 }
 
 function toPublic(entry: Entry): UnlockedVault {
-  return {
-    vaultId: entry.vaultId,
-    header: entry.header,
-    seal: entry.seal,
-    unlockedAt: entry.unlockedAt,
-  };
+  return { vaultId: entry.vaultId, header: entry.header, unlockedAt: entry.unlockedAt };
 }

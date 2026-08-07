@@ -111,11 +111,20 @@ export type VaultPortfolioIndexEntry = z.infer<typeof vaultPortfolioIndexEntrySc
  * The cleartext vault header doc (§2). It carries crypto parameters, the key
  * slots, the portfolio index and the backend echo — never money data.
  *
- * `seal` is an AES-GCM authentication tag over {@link canonicalSealedHeaderBytes}
- * computed under `K_c`. It is OPTIONAL on read so a header written by a client
- * that predates it still opens (verification then reports `unsealed`), and
- * always written by this client. Every writer that holds `K_c` can produce it,
- * so it costs a passphrase-less writer nothing it was entitled to do anyway.
+ * **Not `.strict()` on purpose.** Unknown members are preserved rather than
+ * rejected or dropped, so a later revision can add a field — notably the header
+ * integrity tag deferred to the P5 hardening pass — without this client
+ * refusing to open the vault or silently deleting the new field when it
+ * rewrites the header.
+ *
+ * There is deliberately **no integrity tag today**. An earlier draft sealed the
+ * header with a fixed-nonce GMAC under `K_c`; that is unsafe here, because the
+ * header is rewritten whenever the portfolio index changes, and two GMAC tags
+ * produced under one key with a reused nonce leak the authentication subkey and
+ * become forgeable. Header integrity is a real concern — a blob store can
+ * currently relabel or drop a portfolio index entry — and it is tracked as a
+ * P5 hardening item with a per-write random IV, or by folding the index into
+ * the key-slot AAD.
  */
 export const vaultHeaderDocSchema = z
   .object({
@@ -134,9 +143,8 @@ export const vaultHeaderDocSchema = z
     deviceId: z.string().uuid(),
     writeId: z.string().uuid(),
     writtenAt: z.string().datetime(),
-    seal: z.string().min(1).nullable().default(null),
   })
-  .strict()
+  .passthrough()
   .superRefine((header, ctx) => {
     const ids = header.portfolios.map((entry) => entry.portfolioId);
     if (new Set(ids).size !== ids.length) {
@@ -156,60 +164,6 @@ export const vaultHeaderDocSchema = z
     }
   });
 export type VaultHeaderDoc = z.infer<typeof vaultHeaderDocSchema>;
-
-/** The header fields the `seal` authenticates — everything except `seal`. */
-export const VAULT2_SEALED_HEADER_FIELDS = [
-  'formatVersion',
-  'vaultId',
-  'name',
-  'kdfSalt',
-  'kdf',
-  'keySlots',
-  'portfolios',
-  'backends',
-  'headerVersion',
-  'deviceId',
-  'writeId',
-  'writtenAt',
-] as const;
-
-/**
- * Deterministic bytes bound as AES-GCM additional authenticated data by the
- * header `seal`. Key order is fixed by {@link VAULT2_SEALED_HEADER_FIELDS} and
- * by the explicit member order below rather than by `JSON.stringify`'s
- * insertion order, so two clients that build the same header seal the same
- * bytes.
- */
-export function canonicalSealedHeaderBytes(header: VaultHeaderDoc): Uint8Array {
-  const canonical = {
-    formatVersion: header.formatVersion,
-    vaultId: header.vaultId,
-    name: header.name,
-    kdfSalt: header.kdfSalt,
-    kdf: {
-      alg: header.kdf.alg,
-      m: header.kdf.m,
-      t: header.kdf.t,
-      p: header.kdf.p,
-      salt: header.kdf.salt,
-    },
-    keySlots: header.keySlots.map((slot) => ({
-      slotId: slot.slotId,
-      kind: slot.kind,
-      wrappedKey: slot.wrappedKey,
-    })),
-    portfolios: header.portfolios.map((entry) => ({
-      portfolioId: entry.portfolioId,
-      alias: entry.alias,
-    })),
-    backends: [...header.backends],
-    headerVersion: header.headerVersion,
-    deviceId: header.deviceId,
-    writeId: header.writeId,
-    writtenAt: header.writtenAt,
-  };
-  return new TextEncoder().encode(JSON.stringify(['bettertrack.vault2-header-seal.v1', canonical]));
-}
 
 // ── Entity scoping (r2 §8) ────────────────────────────────────────────
 

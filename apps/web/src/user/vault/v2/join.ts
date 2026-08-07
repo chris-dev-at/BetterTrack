@@ -102,9 +102,8 @@ export async function movePortfolioIntoVault(
   });
 
   input.onStage?.('index');
-  const nextHeader = await reviseVaultHeader(
+  const nextHeader = reviseVaultHeader(
     input.header,
-    input.contentKey,
     {
       portfolios: [
         ...input.header.portfolios.filter((entry) => entry.portfolioId !== input.portfolioId),
@@ -143,9 +142,8 @@ export async function movePortfolioOutOfVault(input: {
 
   await input.leave({ portfolioId: input.portfolioId, document: input.document });
 
-  const nextHeader = await reviseVaultHeader(
+  const nextHeader = reviseVaultHeader(
     input.header,
-    input.contentKey,
     {
       portfolios: input.header.portfolios.filter(
         (entry) => entry.portfolioId !== input.portfolioId,

@@ -1,5 +1,4 @@
 import {
-  canonicalSealedHeaderBytes,
   VAULT2_HEADER_FORMAT_VERSION,
   vaultHeaderDocSchema,
   type VaultBackendSet,
@@ -39,8 +38,8 @@ import { requireVaultPassphrase } from './words';
  * header instead of every portfolio blob.
  */
 
-/** Sealed-empty-plaintext GCM tag length; the seal carries no ciphertext. */
-const SEAL_TAG_BYTES = 16;
+/** AES-GCM authentication tag length, used to size-check a wrapped key slot. */
+const GCM_TAG_BYTES = 16;
 
 export interface BuildVaultHeaderInput {
   vaultId: string;
@@ -67,10 +66,7 @@ export function vaultKdfParams(kdfSalt: string): VaultKdfParams {
   return { ...VAULT_ARGON2_PARAMS, salt: kdfSalt };
 }
 
-/**
- * Build a brand-new vault header: fresh salt, fresh `K_c`, one passphrase key
- * slot, and a seal over the whole thing.
- */
+/** Build a brand-new vault header: fresh salt, fresh `K_c`, one passphrase slot. */
 export async function buildVaultHeader(input: BuildVaultHeaderInput): Promise<BuiltVaultHeader> {
   const passphrase = requireVaultPassphrase(input.passphrase);
   const randomBytes = input.randomBytes ?? secureRandomBytes;
@@ -89,7 +85,7 @@ export async function buildVaultHeader(input: BuildVaultHeaderInput): Promise<Bu
       vaultId: input.vaultId,
       randomBytes,
     });
-    const unsealed: VaultHeaderDoc = vaultHeaderDocSchema.parse({
+    const header: VaultHeaderDoc = vaultHeaderDocSchema.parse({
       formatVersion: VAULT2_HEADER_FORMAT_VERSION,
       vaultId: input.vaultId,
       name: input.name,
@@ -102,9 +98,8 @@ export async function buildVaultHeader(input: BuildVaultHeaderInput): Promise<Bu
       deviceId: input.deviceId,
       writeId: input.writeId,
       writtenAt: input.writtenAt,
-      seal: null,
     });
-    return { header: await sealVaultHeader(unsealed, contentKey), contentKey };
+    return { header, contentKey };
   } catch (cause) {
     zeroBytes(contentKey);
     throw asVaultCryptoError('kdf-failed', 'Could not build the vault header.', cause);
@@ -113,40 +108,23 @@ export async function buildVaultHeader(input: BuildVaultHeaderInput): Promise<Bu
   }
 }
 
-/**
- * Recompute and attach the header seal. Every header write goes through here,
- * so a writer that holds `K_c` cannot accidentally publish an unsealed header.
- */
-export async function sealVaultHeader(
-  header: VaultHeaderDoc,
-  contentKey: Uint8Array,
-): Promise<VaultHeaderDoc> {
-  const iv = sealIv(header);
-  const tag = await aesGcmEncrypt(contentKey, iv, new Uint8Array(0), sealBytes(header));
-  return { ...header, seal: bytesToBase64(tag) };
-}
-
-export type VaultHeaderSealState = 'sealed' | 'unsealed';
-
 export interface OpenedVaultHeader {
   header: VaultHeaderDoc;
   contentKey: Uint8Array;
   slotId: string;
-  /**
-   * `unsealed` means the header carried no seal — readable, but its portfolio
-   * index and backend echo are unauthenticated. Written only by clients older
-   * than this one; this client always seals.
-   */
-  seal: VaultHeaderSealState;
 }
 
 /**
- * Open a vault header with its 12 words: derive the KEK, unwrap `K_c` from the
- * first slot that authenticates, then verify the seal.
+ * Open a vault header with its 12 words: derive the KEK, then unwrap `K_c` from
+ * the first slot that authenticates.
  *
- * A wrong passphrase, a tampered wrapped key and a tampered header all surface
- * as `authentication-failed` — the caller cannot distinguish "wrong words" from
+ * A wrong passphrase and a tampered wrapped key both surface as
+ * `authentication-failed` — the caller cannot distinguish "wrong words" from
  * "modified blob", which is deliberate.
+ *
+ * The rest of the header (portfolio index, name, backend echo) is NOT
+ * authenticated today; see {@link vaultHeaderDocSchema} for why the fixed-nonce
+ * seal was removed and what replaces it in the P5 hardening pass.
  */
 export async function openVaultHeader(
   header: VaultHeaderDoc,
@@ -162,13 +140,7 @@ export async function openVaultHeader(
       if (slot.kind !== 'passphrase') continue;
       const contentKey = await tryUnwrapContentKey(slot, slotIndex, parsed.vaultId, kek);
       if (contentKey == null) continue;
-      try {
-        const seal = await verifyVaultHeaderSeal(parsed, contentKey);
-        return { header: parsed, contentKey, slotId: slot.slotId, seal };
-      } catch (cause) {
-        zeroBytes(contentKey);
-        throw cause;
-      }
+      return { header: parsed, contentKey, slotId: slot.slotId };
     }
     throw new VaultCryptoError(
       'authentication-failed',
@@ -177,28 +149,6 @@ export async function openVaultHeader(
   } finally {
     if (kek != null) zeroBytes(kek);
   }
-}
-
-/**
- * Verify the header seal against `K_c`. Absent seal → `unsealed`; present but
- * wrong → hard failure, because a forged index is exactly the attack the seal
- * exists to stop.
- */
-export async function verifyVaultHeaderSeal(
-  header: VaultHeaderDoc,
-  contentKey: Uint8Array,
-): Promise<VaultHeaderSealState> {
-  if (header.seal == null) return 'unsealed';
-  const tag = base64ToBytes(header.seal, 'envelope-invalid');
-  if (tag.length !== SEAL_TAG_BYTES) {
-    throw new VaultCryptoError('envelope-invalid', 'Vault header seal has an invalid length.');
-  }
-  const iv = sealIv(header);
-  const opened = await aesGcmDecrypt(contentKey, iv, tag, sealBytes(header));
-  if (opened.length !== 0) {
-    throw new VaultCryptoError('authentication-failed', 'Vault header seal is malformed.');
-  }
-  return 'sealed';
 }
 
 /**
@@ -237,31 +187,32 @@ export async function changeVaultPassphrase(
       deviceId: write.deviceId,
       writeId: write.writeId,
       writtenAt: write.writtenAt,
-      seal: null,
     });
-    return await sealVaultHeader(next, contentKey);
+    return next;
   } finally {
     if (kek != null) zeroBytes(kek);
   }
 }
 
-/** Produce the next header revision (index/name/backend edits) and re-seal it. */
-export async function reviseVaultHeader(
+/**
+ * Produce the next header revision (index/name/backend edits).
+ *
+ * Synchronous in spirit but kept `async` so the P5 hardening pass can attach an
+ * integrity tag here without changing every call site.
+ */
+export function reviseVaultHeader(
   header: VaultHeaderDoc,
-  contentKey: Uint8Array,
   patch: Partial<Pick<VaultHeaderDoc, 'name' | 'backends' | 'portfolios'>>,
   write: { deviceId: string; writeId: string; writtenAt: string },
-): Promise<VaultHeaderDoc> {
-  const next = vaultHeaderDocSchema.parse({
+): VaultHeaderDoc {
+  return vaultHeaderDocSchema.parse({
     ...header,
     ...patch,
     headerVersion: header.headerVersion + 1,
     deviceId: write.deviceId,
     writeId: write.writeId,
     writtenAt: write.writtenAt,
-    seal: null,
   });
-  return sealVaultHeader(next, contentKey);
 }
 
 // ── internals ────────────────────────────────────────────────────────────────
@@ -326,7 +277,7 @@ async function tryUnwrapContentKey(
   let payload: Uint8Array | undefined;
   try {
     payload = base64ToBytes(slot.wrappedKey, 'envelope-invalid');
-    if (payload.length !== VAULT_IV_BYTES + VAULT_KEY_BYTES + SEAL_TAG_BYTES) {
+    if (payload.length !== VAULT_IV_BYTES + VAULT_KEY_BYTES + GCM_TAG_BYTES) {
       return null;
     }
     const contentKey = await aesGcmDecrypt(
@@ -341,20 +292,6 @@ async function tryUnwrapContentKey(
   } finally {
     if (payload != null) zeroBytes(payload);
   }
-}
-
-/**
- * The seal's IV is a constant, which is normally forbidden for GCM — but this
- * call encrypts an EMPTY plaintext, so it produces no keystream-encrypted bytes
- * and degenerates to GMAC over the header. Nonce reuse across headers therefore
- * leaks nothing: each header seals different AAD under a different `K_c`.
- */
-function sealIv(_header: VaultHeaderDoc): Uint8Array {
-  return new Uint8Array(VAULT_IV_BYTES);
-}
-
-function sealBytes(header: VaultHeaderDoc): Uint8Array {
-  return canonicalSealedHeaderBytes(header);
 }
 
 /** RFC 4122 v4 id from the injected CSPRNG so vector tests stay deterministic. */

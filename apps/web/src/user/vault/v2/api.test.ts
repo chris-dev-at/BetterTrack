@@ -16,6 +16,7 @@ import {
   readVaultDoc,
   readVaultHeaderDoc,
   reauthenticate,
+  setPortfolioAlias,
   updateVaultBackends,
   VAULT2_ROUTES,
   writeVaultDoc,
@@ -163,6 +164,21 @@ describe('vault CRUD (session routes)', () => {
   });
 });
 
+describe('portfolio alias', () => {
+  it('publishes the cleartext display alias through PATCH /portfolios/{id}/alias', async () => {
+    let body: unknown = null;
+    use(
+      http.patch(`${API}/portfolios/${FIXTURE_PORTFOLIO_A}/alias`, async ({ request }) => {
+        body = await request.json();
+        expect(request.headers.get('X-Requested-With')).toBe('BetterTrack');
+        return new HttpResponse(null, { status: 204 });
+      }),
+    );
+    await setPortfolioAlias(FIXTURE_PORTFOLIO_A, 'Vault portfolio 1');
+    expect(body).toEqual({ alias: 'Vault portfolio 1' });
+  });
+});
+
 describe('join and leave', () => {
   it('posts finished ciphertext to POST /portfolios/{id}/vault', async () => {
     const blob = new Uint8Array([1, 2, 3, 4]);
@@ -214,6 +230,10 @@ describe('join and leave', () => {
 
 describe('doc transport (CAS)', () => {
   const path = VAULT2_ROUTES.headerDoc(FIXTURE_VAULT_ID);
+
+  it('talks to the shipped server paths, with no `/docs/` segment', () => {
+    expect(path).toBe(`/vaults/${FIXTURE_VAULT_ID}/header`);
+  });
 
   it('reports an absent doc rather than throwing', async () => {
     use(http.get(`${API}${path}`, () => new HttpResponse(null, { status: 404 })));
@@ -290,12 +310,12 @@ describe('doc transport (CAS)', () => {
   });
 
   it('addresses portfolio and common docs on their own paths', () => {
+    // These are the server PR's shapes (#1176) — no `/docs/` segment.
+    expect(VAULT2_ROUTES.headerDoc(FIXTURE_VAULT_ID)).toBe(`/vaults/${FIXTURE_VAULT_ID}/header`);
     expect(VAULT2_ROUTES.portfolioDoc(FIXTURE_VAULT_ID, FIXTURE_PORTFOLIO_A)).toBe(
-      `/vaults/${FIXTURE_VAULT_ID}/docs/portfolio/${FIXTURE_PORTFOLIO_A}`,
+      `/vaults/${FIXTURE_VAULT_ID}/portfolios/${FIXTURE_PORTFOLIO_A}`,
     );
-    expect(VAULT2_ROUTES.commonDoc(FIXTURE_VAULT_ID)).toBe(
-      `/vaults/${FIXTURE_VAULT_ID}/docs/common`,
-    );
+    expect(VAULT2_ROUTES.commonDoc(FIXTURE_VAULT_ID)).toBe(`/vaults/${FIXTURE_VAULT_ID}/common`);
   });
 
   it('round-trips a portfolio blob through a CAS-enforcing fake server', async () => {

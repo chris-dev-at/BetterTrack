@@ -5,6 +5,7 @@ import { useT } from '../../../../i18n';
 import { Button, Field, Input, ODialog } from '../../../../ui/origin';
 import { CHECKBOX_STYLE } from '../../../components/ui';
 import { useAuth } from '../../../AuthContext';
+import { setPortfolioAlias } from '../api';
 import { captureNormalVault } from '../../ui/migration';
 import type { VaultKeyring } from '../keyring';
 import { movePortfolioIntoVault, type JoinStage } from '../join';
@@ -61,6 +62,7 @@ export function MoveIntoVaultDialog({
     if (knowledge?.header == null || user == null) return;
     setError(null);
     try {
+      const chosenAlias = alias.trim() || portfolioName;
       const capture = await captureNormalVault({ userId: user.id });
       await keyring.withContentKey(knowledge.summary.id, async (contentKey) => {
         await movePortfolioIntoVault({
@@ -69,11 +71,15 @@ export function MoveIntoVaultDialog({
           header: knowledge.header!,
           headerVersion: knowledge.header!.headerVersion,
           contentKey,
-          alias: alias.trim() || portfolioName,
+          alias: chosenAlias,
           capture: capture.document,
           onStage: setStage,
         });
       });
+      // The alias also lives server-side (PATCH /portfolios/{id}/alias) so a
+      // locked row still has a label before the header doc has been fetched.
+      // The move already succeeded, so a failure here must not undo it.
+      await setPortfolioAlias(portfolioId, chosenAlias).catch(() => undefined);
       onMoved();
       onClose();
     } catch {
