@@ -128,7 +128,7 @@ function AppIdentity({
           style={{
             background: 'var(--bt-gold-soft)',
             border: '1px solid var(--bt-border-accent)',
-            color: 'var(--bt-gold)',
+            color: 'var(--bt-gold-ink)',
           }}
         >
           {t('auth.oauthConsent.logoBadge')}

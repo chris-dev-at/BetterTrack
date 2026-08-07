@@ -6,7 +6,7 @@
     <meta name="color-scheme" content="dark light" />
     <meta name="theme-color" content="#090c10" />
     <meta name="theme-color" content="#090c10" media="(prefers-color-scheme: dark)" />
-    <meta name="theme-color" content="#f1f2f3" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#ffffff" media="(prefers-color-scheme: light)" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="BetterTrack" />
@@ -46,7 +46,7 @@
                 ? 'light'
                 : 'dark';
           document.documentElement.setAttribute('data-bt-theme', theme);
-          var canvas = theme === 'light' ? '#f1f2f3' : '#090c10';
+          var canvas = theme === 'light' ? '#ffffff' : '#090c10';
           var metas = document.querySelectorAll('meta[name="theme-color"]');
           for (var i = 0; i < metas.length; i++) metas[i].setAttribute('content', canvas);
         } catch (error) {

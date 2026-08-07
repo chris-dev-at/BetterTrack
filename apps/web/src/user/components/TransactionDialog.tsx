@@ -215,7 +215,7 @@ const inputClass = cx(
 /** Grey uppercase field label that turns gold while its field is focused. */
 function FieldLabel({ children }: { children: ReactNode }) {
   return (
-    <span className="text-[0.7rem] font-medium uppercase tracking-wide text-[var(--bt-muted)] transition-colors group-focus-within:text-[var(--bt-gold)]">
+    <span className="text-[0.7rem] font-medium uppercase tracking-wide text-[var(--bt-muted)] transition-colors group-focus-within:text-[var(--bt-gold-ink)]">
       {children}
     </span>
   );
@@ -1376,7 +1376,7 @@ function MaxChip({ symbol, t, onClick }: { symbol: string; t: TranslateFn; onCli
       type="button"
       onClick={onClick}
       aria-label={t('portfolio.transaction.maxAria', { symbol })}
-      className="rounded-md bg-[var(--bt-gold-soft)] px-2 py-0.5 text-[0.7rem] font-semibold uppercase tracking-wide text-[var(--bt-gold)] ring-1 ring-inset ring-[var(--bt-border-accent)] transition hover:bg-[color-mix(in_srgb,var(--bt-gold)_20%,transparent)]"
+      className="rounded-md bg-[var(--bt-gold-soft)] px-2 py-0.5 text-[0.7rem] font-semibold uppercase tracking-wide text-[var(--bt-gold-ink)] ring-1 ring-inset ring-[var(--bt-border-accent)] transition hover:bg-[color-mix(in_srgb,var(--bt-gold-graphic)_20%,transparent)]"
     >
       {t('portfolio.transaction.max')}
     </button>
@@ -1404,11 +1404,11 @@ function ToggleSwitch({
       />
       <span
         aria-hidden="true"
-        className="h-5 w-9 rounded-full border border-[var(--bt-border-strong)] bg-[var(--bt-surface-soft)] transition-colors peer-checked:border-[var(--bt-gold)] peer-checked:bg-[var(--bt-gold)]"
+        className="h-5 w-9 rounded-full border border-[var(--bt-border-strong)] bg-[var(--bt-surface-soft)] transition-colors peer-checked:border-[var(--bt-gold-graphic)] peer-checked:bg-[var(--bt-gold-fill)]"
       />
       <span
         aria-hidden="true"
-        className="absolute left-0.5 h-4 w-4 rounded-full bg-[var(--bt-muted)] transition-transform peer-checked:translate-x-4 peer-checked:bg-[var(--bt-gold-ink)]"
+        className="absolute left-0.5 h-4 w-4 rounded-full bg-[var(--bt-muted)] transition-transform peer-checked:translate-x-4 peer-checked:bg-[var(--bt-gold-on)]"
       />
     </span>
   );
@@ -1473,7 +1473,7 @@ function CashCard({ row, cash, t }: { row: Row; cash: RowCash; t: TranslateFn })
               onChange={cash.onToggleSettleToday}
               aria-label={t('portfolio.transaction.deductToday')}
               className="h-4 w-4"
-              style={{ accentColor: 'var(--bt-gold)' }}
+              style={{ accentColor: 'var(--bt-gold-graphic)' }}
             />
             {t('portfolio.transaction.deductToday')}
           </label>
@@ -1841,7 +1841,7 @@ function RowFields({
                   className={cx(
                     'pointer-events-auto rounded p-0.5 transition disabled:opacity-40',
                     link.linked
-                      ? 'text-[var(--bt-gold)]'
+                      ? 'text-[var(--bt-gold-ink)]'
                       : 'bt-muted hover:text-[var(--bt-text-soft)]',
                   )}
                 >

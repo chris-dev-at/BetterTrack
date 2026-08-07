@@ -174,7 +174,7 @@ export function CustomInvestmentDialog({ onClose, onCreated, today }: CustomInve
             checked={smoothing}
             onChange={(e) => setSmoothing(e.target.checked)}
             className="h-4 w-4"
-            style={{ accentColor: 'var(--bt-gold)' }}
+            style={{ accentColor: 'var(--bt-gold-graphic)' }}
           />
           {t('portfolio.customInvestment.smoothingLabel')}
         </label>
@@ -185,7 +185,7 @@ export function CustomInvestmentDialog({ onClose, onCreated, today }: CustomInve
             checked={withPurchase}
             onChange={(e) => setWithPurchase(e.target.checked)}
             className="h-4 w-4"
-            style={{ accentColor: 'var(--bt-gold)' }}
+            style={{ accentColor: 'var(--bt-gold-graphic)' }}
           />
           {t('portfolio.customInvestment.recordPurchase')}
         </label>

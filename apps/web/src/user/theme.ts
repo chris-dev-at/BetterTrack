@@ -51,7 +51,7 @@ export const THEME_SETTINGS: readonly ThemeSetting[] = ['system', 'dark', 'light
  */
 export const THEME_CANVAS: Readonly<Record<ResolvedTheme, string>> = {
   dark: '#090c10',
-  light: '#f1f2f3',
+  light: '#ffffff',
 };
 
 /** The media query that decides `system`. */

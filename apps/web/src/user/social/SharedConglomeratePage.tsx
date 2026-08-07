@@ -423,7 +423,7 @@ function SandboxWeightRow({
           onChange={(e) => onWeight(Number(e.target.value))}
           aria-label={t('social.shared.sandbox.weightSliderAriaLabel', { symbol: label })}
           className="min-w-0 flex-1"
-          style={{ accentColor: 'var(--bt-gold)' }}
+          style={{ accentColor: 'var(--bt-gold-graphic)' }}
         />
         <div className="flex items-center gap-1.5">
           <Input

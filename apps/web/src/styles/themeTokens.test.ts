@@ -90,6 +90,15 @@ function flatten(tint: string, background: string): string {
   return `#${channel(r, 0)}${channel(g, 1)}${channel(b, 2)}`;
 }
 
+/**
+ * Every opaque surface a piece of TEXT can land on.
+ *
+ * `--bt-recess` is deliberately absent: it is the empty half of a ratio bar,
+ * the one surface in the system that carries no text, and it is darker than
+ * anything here. Sweeping inks across it would force the whole ramp darker to
+ * satisfy a ground nothing reads on. `keeps --bt-recess off the text grounds`
+ * below pins that reasoning so the omission stays a decision, not an oversight.
+ */
 const OPAQUE_SURFACES = [
   'bg',
   'bg-raised',
@@ -98,6 +107,7 @@ const OPAQUE_SURFACES = [
   'surface-soft',
   'surface-strong',
   'surface-hover',
+  'selected',
 ] as const;
 
 function weakestOnSurfaces(block: string, ink: string): { ratio: number; surface: string } {
@@ -133,6 +143,16 @@ const DARK_VALUES_LIFTED_VERBATIM: Readonly<Record<string, string>> = {
   'raised-edge': 'transparent',
   // .bt-pf-chip__mark's undefined-variable fallback
   'pf-group-ink': '#9085e9',
+  // The gold split (THEME2). Dark had ONE gold doing all three jobs, so all
+  // three tokens carry that same value here and the split moves no dark pixel.
+  'gold-ink': '#f6b82e',
+  'gold-graphic': '#f6b82e',
+  'gold-fill': '#f6b82e',
+  'gold-on': '#171105',
+  // Selection and recess were both drawn in `--bt-surface-strong` in dark.
+  selected: '#171e27',
+  recess: '#171e27',
+  'surface-quiet': '#121820',
   // ui/charts/palette.ts
   'chart-main': '#38bdf8',
   'chart-main-top': 'rgba(56, 189, 248, 0.22)',
@@ -211,16 +231,34 @@ describe('dark theme is untouched by the light-theme work', () => {
 /**
  * The values adopted verbatim from the mobile client's shipped B2 light theme
  * (spec §1.4), pinned so a later web-side tweak cannot silently un-converge the
- * two clients. `--bt-pos` is deliberately ABSENT: mobile's #0F7A55 fails this
- * theme's surface ramp at 4.42:1 and carries its own documented deviation in
- * `origin.css`. When mobile settles that, add it here.
+ * two clients.
+ *
+ * `pos` is here now: the THEME1 deviation is settled — mobile adopted this
+ * theme's #0F7853 rather than the reverse, so the two clients agree on gain
+ * again and the old "minimal darkening" guard has nothing left to guard.
  */
 const CROSS_CLIENT_LIGHT_PALETTE: Readonly<Record<string, string>> = {
-  gold: '#8f5f00',
+  'gold-ink': '#866419', // brand ray x 0.545 — gold as TEXT
+  'gold-graphic': '#a77d1f', // brand ray x 0.68 — gold as a GRAPHIC
+  'gold-on': '#171105',
+  pos: '#0f7853',
   neg: '#b23a4e',
+  text: '#131820',
+  'text-soft': '#3e4650',
+  muted: '#56616d',
+  faint: '#5d6773',
+  'chart-1': '#1f6ac4', // blue
+  'chart-2': '#b8431a', // orange
+  'chart-3': '#12805b', // green
   'chart-4': '#96600a', // yellow
+  'chart-5': '#b93a68', // magenta
+  'chart-6': '#6154c6', // violet
   'chart-7': '#00887a', // teal
+  'chart-8': '#a03832', // red-brown
   'chart-9': '#6b8a1a', // lime
+  'chart-10': '#8e46ad', // purple
+  'chart-flat': '#6e7276', // "rest"
+  'chart-cash': '#7a828b',
 };
 
 describe('cross-client light palette (mobile B2 §1.4)', () => {
@@ -233,26 +271,30 @@ describe('cross-client light palette (mobile B2 §1.4)', () => {
   });
 
   /**
-   * The deviation is allowed to exist, but not to be forgotten: it must stay
-   * the minimum darkening of mobile's hue rather than drift into a third
-   * colour, and it must actually clear the floor mobile's basis did not test.
+   * The whole point of the split: one gold could not be both legible as text
+   * and true to the brand, and the value that satisfied the text floor had
+   * dropped its blue channel to zero — off the ray that brand gold rides, which
+   * is the "rusty gold" the owner rejected. Both halves must stay ON that ray.
    */
-  it('holds --bt-pos as the minimal AA-clearing darkening of mobile #0F7A55', () => {
-    const pos = hexToken(LIGHT, 'pos');
-    const mobile = '#0f7a55';
-
+  it('keeps both golds on the brand ray rather than rusting off it', () => {
+    const BRAND = [0xf6, 0xb8, 0x2e]; // #F6B82E
     const channels = (hex: string) =>
       [1, 3, 5].map((index) => Number.parseInt(hex.slice(index, index + 2), 16));
-    const drift = channels(mobile).map((value, index) => value - channels(pos)[index]!);
 
-    expect(drift.every((delta) => delta >= 0 && delta <= 3)).toBe(true);
-    expect(weakestOnSurfaces(LIGHT, mobile).ratio).toBeLessThan(4.5);
-    expect(weakestOnSurfaces(LIGHT, pos).ratio).toBeGreaterThanOrEqual(4.5);
+    for (const name of ['gold-ink', 'gold-graphic'] as const) {
+      const rgb = channels(hexToken(LIGHT, name));
+      // Every channel scaled by the same factor => same hue, lower lightness.
+      const ratios = rgb.map((value, index) => value / BRAND[index]!);
+      const spread = Math.max(...ratios) - Math.min(...ratios);
+      expect(spread, `--bt-${name} is off the brand ray`).toBeLessThan(0.06);
+      // …and specifically: the blue channel may not be zeroed.
+      expect(rgb[2], `--bt-${name} zeroed its blue channel`).toBeGreaterThan(0);
+    }
   });
 });
 
 describe('light theme contrast', () => {
-  const INKS = ['text', 'text-soft', 'muted', 'faint', 'gold', 'pos', 'neg', 'blue'] as const;
+  const INKS = ['text', 'text-soft', 'muted', 'faint', 'gold-ink', 'pos', 'neg', 'blue'] as const;
 
   for (const ink of INKS) {
     it(`keeps --bt-${ink} at AA on every opaque light surface`, () => {
@@ -267,10 +309,20 @@ describe('light theme contrast', () => {
    * plain ink-on-surface check misses entirely, and the one that actually
    * decides whether a change pill is readable.
    */
-  for (const pair of ['gold', 'pos', 'neg', 'blue'] as const) {
-    it(`keeps --bt-${pair} at AA on its own --bt-${pair}-soft tint`, () => {
-      const ink = hexToken(LIGHT, pair);
-      const tint = token(LIGHT, `${pair}-soft`);
+  // Ink → the tint it is painted on. Gold is the odd one: the `-soft` surface
+  // belongs to `--bt-gold-ink`, since a gold badge is TEXT on a gold wash.
+  const TINTED_PAIRS: ReadonlyArray<readonly [ink: string, tint: string]> = [
+    ['gold-ink', 'gold-soft'],
+    ['pos', 'pos-soft'],
+    ['neg', 'neg-soft'],
+    ['blue', 'blue-soft'],
+  ];
+
+  for (const [inkToken, tintToken] of TINTED_PAIRS) {
+    const pair = inkToken;
+    it(`keeps --bt-${inkToken} at AA on its own --bt-${tintToken}`, () => {
+      const ink = hexToken(LIGHT, inkToken);
+      const tint = token(LIGHT, tintToken);
       const weakest = OPAQUE_SURFACES.map((surface) => ({
         surface,
         ratio: contrastRatio(ink, flatten(tint, hexToken(LIGHT, surface))),
@@ -284,10 +336,50 @@ describe('light theme contrast', () => {
   }
 
   /** Text on a gold fill — the primary button, the switch knob, the step mark. */
-  it('keeps --bt-gold-ink at AA on both gold fills', () => {
-    const ink = hexToken(LIGHT, 'gold-ink');
-    expect(contrastRatio(ink, hexToken(LIGHT, 'gold'))).toBeGreaterThanOrEqual(4.5);
-    expect(contrastRatio(ink, hexToken(LIGHT, 'gold-bright'))).toBeGreaterThanOrEqual(4.5);
+  it('keeps --bt-gold-on at AA on both gold fills', () => {
+    const on = hexToken(LIGHT, 'gold-on');
+    expect(contrastRatio(on, hexToken(LIGHT, 'gold-fill'))).toBeGreaterThanOrEqual(4.5);
+    expect(contrastRatio(on, hexToken(LIGHT, 'gold-bright'))).toBeGreaterThanOrEqual(4.5);
+  });
+
+  /**
+   * The graphic gold answers to the 3:1 non-text floor, NOT to 4.5:1 — that is
+   * the entire reason it exists as a separate token. Holding it to the text
+   * floor is what produced the rusty gold, so this asserts the looser floor
+   * deliberately rather than by omission.
+   */
+  it('keeps --bt-gold-graphic above the 3:1 graphical floor', () => {
+    const weakest = weakestOnSurfaces(LIGHT, hexToken(LIGHT, 'gold-graphic'));
+    expect(weakest.ratio, `--bt-gold-graphic on --bt-${weakest.surface}`).toBeGreaterThanOrEqual(3);
+  });
+
+  /**
+   * Clean white is only legible because the hairlines do the separating. If a
+   * structural surface ever drifts back off #FFFFFF the tonal ramp is creeping
+   * back in, which is exactly what the owner rejected.
+   */
+  it('keeps every structural surface white, with only the two functional tints', () => {
+    const white = ['bg', 'bg-raised', 'nav', 'surface', 'surface-strong', 'surface-quiet'] as const;
+    for (const surface of white) {
+      expect(hexToken(LIGHT, surface), `--bt-${surface} must stay white`).toBe('#ffffff');
+    }
+    for (const tint of ['surface-soft', 'surface-hover', 'selected'] as const) {
+      expect(hexToken(LIGHT, tint), `--bt-${tint} is the one functional tint`).toBe('#e9edf2');
+    }
+    expect(hexToken(LIGHT, 'recess')).toBe('#dae1e9');
+  });
+
+  /**
+   * `--bt-recess` is the one surface excluded from the ink sweep, so the reason
+   * is pinned here: it is darker than every text ground, and `--bt-faint` does
+   * NOT clear AA on it. Anything that puts text on a recess has to prove it.
+   */
+  it('keeps --bt-recess off the text grounds', () => {
+    const recess = hexToken(LIGHT, 'recess');
+    const tint = hexToken(LIGHT, 'selected');
+    expect(contrastRatio('#ffffff', recess)).toBeGreaterThan(contrastRatio('#ffffff', tint));
+    expect(contrastRatio(hexToken(LIGHT, 'faint'), recess)).toBeLessThan(4.5);
+    expect((OPAQUE_SURFACES as readonly string[]).includes('recess')).toBe(false);
   });
 
   /**
@@ -320,13 +412,15 @@ describe('light theme contrast', () => {
   /**
    * The owner's standing nav rule: the gold edge line marks the active MAIN
    * rail item and nothing else. In light mode that 3px dash sits on `--bt-nav`,
-   * which is the palest surface in the app — if gold ever brightens back toward
-   * `#f6b82e`, the marker disappears and the rule is silently repealed.
+   * which is now pure white — if gold ever brightens back toward `#f6b82e`
+   * (1.78:1 here) the marker disappears and the rule is silently repealed.
    */
   it('keeps the active-rail gold edge visible against the rail', () => {
-    expect(contrastRatio(hexToken(LIGHT, 'gold'), hexToken(LIGHT, 'nav'))).toBeGreaterThanOrEqual(
-      3,
-    );
+    // The rail is now WHITE, which is the hardest ground gold ever sits on.
+    expect(
+      contrastRatio(hexToken(LIGHT, 'gold-graphic'), hexToken(LIGHT, 'nav')),
+    ).toBeGreaterThanOrEqual(3);
+    expect(originCss).toContain('background: var(--bt-gold-graphic);');
     expect(originCss).toContain('.bt-rail-item.is-active::before');
     expect(originCss).not.toContain('.bt-rail-item::before {');
   });

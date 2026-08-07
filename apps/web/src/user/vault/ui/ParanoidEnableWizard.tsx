@@ -313,7 +313,7 @@ export function ParanoidEnableWizard({
         <div aria-live="polite" className="flex flex-col gap-3" role="status">
           <div className="h-1.5 overflow-hidden rounded-full bt-panel">
             <div
-              className="h-full bg-[var(--bt-gold)] transition-all"
+              className="h-full bg-[var(--bt-gold-graphic)] transition-all"
               style={{ width: `${progressForStage(stage)}%` }}
             />
           </div>
