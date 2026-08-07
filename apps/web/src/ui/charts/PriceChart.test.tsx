@@ -65,7 +65,7 @@ function chartOptions(call = 0) {
   };
 }
 
-import { categoricalColor } from './palette';
+import { resolveChartColors } from './palette';
 import { PriceChart } from './PriceChart';
 import { sampleBenchmarkSeries, sampleOverlaySeries, samplePriceSeries } from './fixtures';
 
@@ -136,10 +136,16 @@ describe('PriceChart', () => {
     render(<PriceChart series={samplePriceSeries} overlays={sampleOverlaySeries} />);
 
     // Main series + one line per overlay asset, each with its palette colour.
+    // The canvas gets RESOLVED colours, not `var(--bt-chart-n)`: lightweight-charts
+    // paints into a 2D context, which cannot read a custom property. Under jsdom
+    // no stylesheet is applied, so this resolves to the dark fallbacks.
+    const colors = resolveChartColors();
     expect(mocks.addSeries).toHaveBeenCalledTimes(1 + sampleOverlaySeries.length);
     sampleOverlaySeries.forEach((overlay, i) => {
       expect(mocks.addSeries.mock.calls[1 + i]?.[0]).toBe('LineSeries');
-      expect(mocks.addSeries.mock.calls[1 + i]?.[1]).toMatchObject({ color: categoricalColor(i) });
+      expect(mocks.addSeries.mock.calls[1 + i]?.[1]).toMatchObject({
+        color: colors.categorical[i % colors.categorical.length],
+      });
       expect(screen.getByText(overlay.label)).toBeInTheDocument();
       expect(mocks.setData).toHaveBeenCalledWith(overlay.series);
     });

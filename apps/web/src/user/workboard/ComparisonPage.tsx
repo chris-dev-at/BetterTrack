@@ -22,6 +22,7 @@ import type { TranslateFn } from '../../i18n';
 import { EmptyState, Skeleton } from '../../ui';
 import { Button, PageHead } from '../../ui/origin';
 import { overlayColor, PriceChart, type ChartPoint } from '../../ui/charts';
+import { MAIN_SERIES } from '../../ui/charts/palette';
 import { Alert } from '../components/ui';
 
 /**
@@ -35,7 +36,7 @@ import { Alert } from '../components/ui';
 
 /** Colour of the `i`-th overlaid series — index 0 is the chart's main (sky) line. */
 function seriesColor(i: number): string {
-  return i === 0 ? '#38bdf8' /* sky-400, PriceChart's MAIN_LINE */ : overlayColor(i - 1);
+  return i === 0 ? MAIN_SERIES : overlayColor(i - 1);
 }
 
 function toChartPoints(series: ReadonlyArray<{ date: string; value: number }>): ChartPoint[] {

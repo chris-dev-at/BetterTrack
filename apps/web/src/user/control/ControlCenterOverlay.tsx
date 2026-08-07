@@ -9,6 +9,7 @@ import { Button, Icon, Input, type IconName } from '../../ui/origin';
 import { useFocusTrap } from '../components/useFocusTrap';
 import { AccountPanel } from './panels/AccountPanel';
 import { ApiKeysPanel } from './panels/ApiKeysPanel';
+import { AppearancePanel } from './panels/AppearancePanel';
 import { AuthorizedAppsPanel } from './panels/AuthorizedAppsPanel';
 import { ConnectionsPanel } from './panels/ConnectionsPanel';
 import { DefaultsPanel } from './panels/DefaultsPanel';
@@ -108,12 +109,23 @@ export const CONTROL_GROUPS: readonly ControlGroup[] = [
           'settings.account.identity',
           'language.title',
           'settings.baseCurrency.title',
-          'settings.uiScale.title',
           'profile.icon.title',
           'settings.export.title',
         ],
         icon: 'user',
         Component: AccountPanel,
+      },
+      {
+        id: 'appearance',
+        labelKey: 'control.appearance',
+        keywordKeys: [
+          'settings.appearance.theme.title',
+          'settings.appearance.theme.light',
+          'settings.appearance.theme.dark',
+          'settings.uiScale.title',
+        ],
+        icon: 'sun',
+        Component: AppearancePanel,
       },
       {
         id: 'profile',

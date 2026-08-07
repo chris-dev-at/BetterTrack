@@ -19,6 +19,41 @@
     <!-- Runtime config (window.__BT__) — must load before the app bundle. Served
          from /public in dev; overwritten per-origin by nginx in production. -->
     <script src="/config.js"></script>
+    <!--
+      Theme, before the first paint (see src/user/theme.ts). Inline and
+      synchronous: stamping the root from a React effect instead would paint the
+      whole app in the wrong theme for a frame on every load, which reads as a
+      flash of dark on a light desktop.
+
+      It sits AFTER /config.js because the app kind is a runtime fact and the
+      admin console is a separate visual system — 500-odd dark-tuned Tailwind
+      utilities that no token flip reaches, so handing it `color-scheme: light`
+      would only recolour its native controls and scrollbars against a canvas
+      that stayed dark. #root is still empty here, so this is as pre-paint as
+      the <head> would have been.
+
+      Kept in lockstep with theme.ts by styles/themeTokens.test.ts.
+    -->
+    <script>
+      (function () {
+        try {
+          if (window.__BT__ && window.__BT__.app === 'admin') return;
+          var stored = localStorage.getItem('bt.ui.theme');
+          var theme =
+            stored === 'dark' || stored === 'light'
+              ? stored
+              : window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches
+                ? 'light'
+                : 'dark';
+          document.documentElement.setAttribute('data-bt-theme', theme);
+          var canvas = theme === 'light' ? '#f1f2f3' : '#090c10';
+          var metas = document.querySelectorAll('meta[name="theme-color"]');
+          for (var i = 0; i < metas.length; i++) metas[i].setAttribute('content', canvas);
+        } catch (error) {
+          /* Storage or matchMedia unavailable — dark-first is already correct. */
+        }
+      })();
+    </script>
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

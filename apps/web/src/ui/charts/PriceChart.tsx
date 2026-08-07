@@ -18,6 +18,7 @@ import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { LOCALES, useI18n, useT } from '../../i18n';
 import * as palette from './palette';
 import { Spinner } from '../../user/components/ui';
+import { useResolvedTheme } from '../../user/useTheme';
 import { cx } from '../../lib/cx';
 import {
   DISCREET_MASK,
@@ -159,21 +160,12 @@ export interface PriceChartProps {
 // Origin chart palette (ui/charts/palette.ts): spec blue for the lone main
 // series, the validated categorical order for overlays, semantic green/red
 // only where polarity is real, gold only as an event flag.
-const MAIN_LINE = palette.MAIN_SERIES;
-const MAIN_AREA_TOP = palette.MAIN_AREA_TOP;
-const MAIN_AREA_BOTTOM = palette.MAIN_AREA_BOTTOM;
-const BENCHMARK_LINE = palette.BENCHMARK;
-const MARKER_FLAG = palette.GOLD_FLAG; // entry-event flags (§14)
-const GRID = palette.CHART_GRID;
-const TEXT = palette.CHART_TEXT;
-
-// Baseline (performance-%) mode: gains above 0, losses below — real polarity.
-const BASELINE_UP_LINE = palette.POSITIVE;
-const BASELINE_UP_FILL_TOP = 'rgba(52, 211, 153, 0.22)';
-const BASELINE_UP_FILL_BOTTOM = 'rgba(52, 211, 153, 0.02)';
-const BASELINE_DOWN_LINE = palette.NEGATIVE;
-const BASELINE_DOWN_FILL_TOP = 'rgba(251, 113, 133, 0.02)';
-const BASELINE_DOWN_FILL_BOTTOM = 'rgba(251, 113, 133, 0.22)';
+//
+// Resolved to concrete colours rather than used as `var(--bt-chart-*)` like
+// every other chart in the app: this one paints into a canvas, and a 2D context
+// cannot resolve a custom property. `useResolvedTheme()` in the component turns
+// a theme change back into a normal React dependency, so the instance is rebuilt
+// with the new palette — the same rebuild mode/height/benchmark already trigger.
 
 // ─── Time-axis formatting (§13.5 V5-P1 Part C) ───────────────────────────────
 
@@ -464,6 +456,10 @@ export function PriceChart({
     onRangeChange?.(next);
   }
 
+  // Concrete palette for the canvas, re-read whenever the theme flips.
+  const theme = useResolvedTheme();
+  const colors = useMemo(() => palette.resolveChartColors(), [theme]);
+
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
   const mainRef = useRef<ISeriesApi<'Area'> | ISeriesApi<'Line'> | ISeriesApi<'Baseline'> | null>(
@@ -549,15 +545,15 @@ export function PriceChart({
       height,
       layout: {
         background: { type: ColorType.Solid, color: 'transparent' },
-        textColor: TEXT,
+        textColor: colors.text,
         attributionLogo: false,
       },
       grid: {
-        vertLines: { color: GRID },
-        horzLines: { color: GRID },
+        vertLines: { color: colors.grid },
+        horzLines: { color: colors.grid },
       },
       rightPriceScale: {
-        borderColor: GRID,
+        borderColor: colors.grid,
         // Overlay mode compares differently-scaled series (portfolio EUR value
         // vs. single-asset prices), so the scale normalizes every series to its
         // first visible value (percentage mode) — the standard "compare" view.
@@ -580,7 +576,7 @@ export function PriceChart({
             : {}),
       },
       timeScale: {
-        borderColor: GRID,
+        borderColor: colors.grid,
         tickMarkFormatter: makeTickMarkFormatter(intlLocale),
         // Live mode drives the viewport ONLY via setVisibleRange (§13.5 V5-P1
         // §3): the scale must never auto-fit or auto-shift on a new bar, or it
@@ -608,27 +604,27 @@ export function PriceChart({
       // is the "did I actually make money" boundary, so it gets its own mark.
       mainRef.current = chart.addSeries(BaselineSeries, {
         baseValue: { type: 'price', price: 0 },
-        topLineColor: BASELINE_UP_LINE,
-        topFillColor1: BASELINE_UP_FILL_TOP,
-        topFillColor2: BASELINE_UP_FILL_BOTTOM,
-        bottomLineColor: BASELINE_DOWN_LINE,
-        bottomFillColor1: BASELINE_DOWN_FILL_TOP,
-        bottomFillColor2: BASELINE_DOWN_FILL_BOTTOM,
+        topLineColor: colors.pos,
+        topFillColor1: colors['pos-top'],
+        topFillColor2: colors['pos-bottom'],
+        bottomLineColor: colors.neg,
+        bottomFillColor1: colors['neg-top'],
+        bottomFillColor2: colors['neg-bottom'],
         lineWidth: 2,
         priceLineVisible: false,
       });
     } else if (mode === 'step') {
       mainRef.current = chart.addSeries(LineSeries, {
-        color: MAIN_LINE,
+        color: colors.main,
         lineWidth: 2,
         lineType: LineType.WithSteps,
         priceLineVisible: false,
       });
     } else {
       mainRef.current = chart.addSeries(AreaSeries, {
-        lineColor: MAIN_LINE,
-        topColor: MAIN_AREA_TOP,
-        bottomColor: MAIN_AREA_BOTTOM,
+        lineColor: colors.main,
+        topColor: colors['main-top'],
+        bottomColor: colors['main-bottom'],
         lineWidth: 2,
         priceLineVisible: false,
       });
@@ -636,7 +632,7 @@ export function PriceChart({
 
     if (hasBenchmark) {
       benchRef.current = chart.addSeries(LineSeries, {
-        color: BENCHMARK_LINE,
+        color: colors.benchmark,
         lineWidth: 1,
         lineStyle: 2, // dashed
         priceLineVisible: false,
@@ -647,7 +643,7 @@ export function PriceChart({
     // One thin line per overlay asset (#122); data flows in via the data effect.
     overlayRefs.current = Array.from({ length: overlayCount }, (_, i) =>
       chart.addSeries(LineSeries, {
-        color: palette.categoricalColor(i),
+        color: colors.categorical[i % colors.categorical.length]!,
         lineWidth: 1,
         priceLineVisible: false,
         lastValueVisible: false,
@@ -687,6 +683,10 @@ export function PriceChart({
     discreet,
     live,
     intlLocale,
+    // A theme flip changes every colour baked into the canvas at create time;
+    // rebuilding is the only way to repaint them, and it is rare enough that
+    // the cost never lands in an interaction.
+    colors,
   ]);
 
   // Push data into the existing series instances; drive the visible window.
@@ -750,7 +750,7 @@ export function PriceChart({
             time: m.time,
             position: 'aboveBar' as const,
             shape: 'arrowDown' as const,
-            color: MARKER_FLAG,
+            color: colors.flag,
             text: m.label,
           })),
         );
@@ -778,6 +778,12 @@ export function PriceChart({
     liveWindowMs,
     marketClosed,
     onFallbackRedraw,
+    // A theme flip rebuilds the chart in the effect above, which leaves BRAND
+    // NEW, empty series instances behind. Without this the data pass would not
+    // re-run (its own inputs did not change) and the chart would sit blank
+    // until the next quote arrived. The rebuild resets `drawnRef`, so this
+    // re-entry takes the clean `setData` path rather than a live tail-append.
+    colors,
   ]);
 
   const toggle = showRangeToggle ? (
@@ -791,7 +797,7 @@ export function PriceChart({
             <span
               aria-hidden="true"
               className="inline-block h-0.5 w-4"
-              style={{ backgroundColor: BENCHMARK_LINE }}
+              style={{ backgroundColor: colors.benchmark }}
             />
             {benchmark.label}
           </span>
@@ -801,7 +807,7 @@ export function PriceChart({
             <span
               aria-hidden="true"
               className="inline-block h-0.5 w-4"
-              style={{ backgroundColor: palette.categoricalColor(i) }}
+              style={{ backgroundColor: colors.categorical[i % colors.categorical.length] }}
             />
             {overlay.label}
           </span>

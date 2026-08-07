@@ -1038,6 +1038,11 @@ export const NON_V5_SURFACES = [
   },
   { path: 'user/components/ui.tsx', reason: 'no-v5-deliverable', note: 'V1 user control kit.' },
   {
+    path: 'user/control/panels/AppearancePanel.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'Board #68 theme + interface-scale panel; post-V5, and every string is catalogued.',
+  },
+  {
     path: 'user/control/panels/DeleteAccountPanel.tsx',
     reason: 'no-v5-deliverable',
     note: 'V4-P2c account deletion, re-housed by the R2 Control Center.',

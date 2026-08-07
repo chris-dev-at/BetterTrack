@@ -1,5 +1,6 @@
 import { cx } from '../../lib/cx';
 import { useT } from '../../i18n';
+import * as palette from './palette';
 
 export interface SparklineProps {
   /** Short series of values (e.g. the workboard 1M closes, PROJECTPLAN.md §6.4). */
@@ -13,9 +14,19 @@ export interface SparklineProps {
   ariaLabel?: string;
 }
 
-const UP = '#34d399'; // emerald-400
-const DOWN = '#f87171'; // red-400
-const FLAT = '#71717a'; // neutral-500
+// Trend ink comes off the chart tokens (ui/charts/palette.ts). These are
+// `var(...)` references: an SVG `stroke` resolves them per paint, so a theme
+// flip repaints a watchlist of dozens of these without any of them re-rendering.
+//
+// `TREND_DOWN` is its own token rather than `palette.NEGATIVE` because this
+// component predates the Origin palette and has always drawn `#f87171`
+// (Tailwind red-400), a shade off the `#fb7185` the change pill beside it uses.
+// Board #68 is a light-theme change and may not move a dark pixel, so the dark
+// value is held exactly as-is and only the light counterpart is new. Unifying
+// the two reds is a real (small) design fix — and a separate one.
+const UP = palette.POSITIVE;
+const DOWN = palette.TREND_DOWN;
+const FLAT = palette.FLAT;
 
 /**
  * Compact, axis-less mini-chart for a short series (PROJECTPLAN.md §6.4
