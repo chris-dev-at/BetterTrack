@@ -1,5 +1,5 @@
 /**
- * BetterTrack wordmark (brand spec). "Better" in white and "Track" in gold sit
+ * BetterTrack wordmark (brand spec). "Better" in the canvas ink and "Track" in gold sit
  * tight together, with an optional lighter, smaller edition label after a normal
  * space: "Admin" (admin area), "Web" (the SPA), or "App" (the future native
  * client).
@@ -23,10 +23,12 @@ export function Wordmark({
         .filter(Boolean)
         .join(' ')}
     >
-      <span className="text-white">Better</span>
-      <span className="text-[#F6B82E]">Track</span>
+      <span className="text-[var(--bt-text)]">Better</span>
+      <span className="text-[var(--bt-gold)]">Track</span>
       {edition ? (
-        <span className="ml-[0.4em] text-[0.78em] font-medium text-[#8A8A8A]">{edition}</span>
+        <span className="ml-[0.4em] text-[0.78em] font-medium text-[var(--bt-muted)]">
+          {edition}
+        </span>
       ) : null}
     </span>
   );
@@ -36,6 +38,11 @@ export function Wordmark({
  * The compact app mark — the white **B** / gold **T** pair shown when the full
  * wordmark does not fit (the collapsed navigation rail of the Origin redesign).
  * Same brand colors as the app icon; sizing inherits from the parent font-size.
+ *
+ * The two brand inks are tokens rather than literals so the mark survives the
+ * light theme (board #68) — a pure-white "Better" and a `#f6b82e` "Track" are
+ * both invisible on a near-white rail. The admin console never stamps
+ * `data-bt-theme`, so it keeps resolving these to their dark values.
  */
 export function Brandmark({ className }: { className?: string }) {
   return (
@@ -45,8 +52,8 @@ export function Brandmark({ className }: { className?: string }) {
         .filter(Boolean)
         .join(' ')}
     >
-      <span className="text-white">B</span>
-      <span className="text-[#F6B82E]">T</span>
+      <span className="text-[var(--bt-text)]">B</span>
+      <span className="text-[var(--bt-gold)]">T</span>
     </span>
   );
 }

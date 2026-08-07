@@ -10,6 +10,7 @@ import { formatMoney } from '../../lib/format';
 import { getPortfolioDividendProjection } from '../../lib/marketIntelApi';
 import { EmptyState, Skeleton, StatCard } from '../../ui';
 import { overlayColor } from '../../ui/charts';
+import { MAIN_SERIES } from '../../ui/charts/palette';
 import { AsyncReadState, type AsyncRead } from '../components/AsyncReadState';
 import { Button, TextField } from '../components/ui';
 import { usePortfolioStore } from '../portfolio/PortfolioStoreProvider';
@@ -46,7 +47,7 @@ const ProjectionChart = lazy(() =>
  * Base line colour — matches PriceChart's main sky line. Single owner: the
  * legend chip below and the lazily-loaded renderer both read it from here.
  */
-const BASE_LINE = '#38bdf8';
+const BASE_LINE = MAIN_SERIES;
 
 /** Historical-return sampling windows offered to the user (default 5 years). */
 const RETURN_WINDOWS = ['1Y', '3Y', '5Y', 'Max'] as const;

@@ -427,7 +427,7 @@ function Builder({ initial }: { initial: BuilderInitial | null }) {
 
 function BuilderFrame({ children }: { children: React.ReactNode }) {
   return (
-    <div className="flex min-h-[calc(100*var(--bt-vh))] flex-col bg-[#0b0e14]">{children}</div>
+    <div className="flex min-h-[calc(100*var(--bt-vh))] flex-col bg-[var(--bt-bg)]">{children}</div>
   );
 }
 

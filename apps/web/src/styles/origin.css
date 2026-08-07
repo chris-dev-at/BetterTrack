@@ -8,6 +8,33 @@
  *
  * Everything is expressed as `bt-*` component classes over the token layer so
  * rebuilt screens stay visually consistent without per-page utility soup.
+ *
+ * ── The two-theme contract (board #68, "web light mode") ──────────────────
+ *
+ * The root element always carries `data-bt-theme` (`dark` | `light`), stamped
+ * before the first paint by the inline boot script in `index.html` and kept in
+ * step by `user/theme.ts`. Dark is the value set of `:root`, so the light block
+ * is the ONLY place a themed value differs — and every colour a component paints
+ * has to come through a token, or that component is dark-only by construction.
+ * `styles/themeTokens.test.ts` enforces both halves of that: the dark values
+ * here are pinned against the literals they replaced (a token refactor may not
+ * move a dark pixel), and new colour literals outside this file fail the build.
+ *
+ * How the light values were derived, so the next edit keeps the method:
+ *
+ *  - Hue is preserved. A light counterpart is the dark value scaled down the
+ *    same RGB ray (`#f6b82e` → `#7d5e17`), never a different hue. The brand
+ *    gold family stays the brand gold family; it only stops glowing.
+ *  - Ink clears 4.5:1 against the DARKEST opaque light surface
+ *    (`--bt-surface-hover`), not against white — a badge on a hovered row is
+ *    where a light theme actually fails.
+ *  - A `*-soft` tint is a wash of the VIVID (dark-theme) hue, not of the muted
+ *    light ink: a 12–20 % vivid wash stays a visible tint while keeping the
+ *    composite light enough for its own ink to clear 4.5:1 on top of it.
+ *  - `--bt-gold` doubles as fill and as ink, so it is dark enough to read as
+ *    ink, and `--bt-gold-ink` (the text ON gold) flips to a warm near-white.
+ *    That is why light gold looks like deep ochre rather than daylight yellow —
+ *    a 1.9:1 `#f6b82e` on white is not a brand, it is an invisible control.
  */
 
 :root {
@@ -41,9 +68,68 @@
   --bt-neg-soft: rgba(251, 113, 133, 0.1);
   --bt-blue: #38bdf8;
   --bt-blue-soft: rgba(56, 189, 248, 0.1);
+  /* Portfolio-kind ink for a MIRRORCHAIN group mark (see .bt-pf-chip). */
+  --bt-pf-group-ink: #9085e9;
+  /* Canvas atmosphere — the two faint corner glows behind .bt-app. */
+  --bt-glow-cool: rgba(56, 189, 248, 0.05);
+  --bt-glow-warm: rgba(246, 184, 46, 0.035);
+  /* Incidental chrome that is neither surface nor ink. */
+  --bt-selection: rgba(246, 184, 46, 0.28);
+  --bt-scrollbar: rgba(139, 148, 159, 0.28);
+  /*
+   * Edge for a raised element sitting on a raised track.
+   *
+   * Dark separates those two by LIGHTNESS — `--bt-surface-strong` (#171e27) is
+   * a clear step up from `--bt-bg-raised` (#0c1015), so nothing more is needed
+   * and this is transparent (a fully transparent shadow paints nothing, which
+   * is how dark stays pixel-identical). Light has nowhere left to go: #ffffff
+   * on #f7f7f6 is a 3% step, and a selected segment reads as unselected. There
+   * the separation has to come from an edge instead.
+   */
+  --bt-raised-edge: transparent;
+  /* Sheen: the light that a raised thing catches. Inverts between themes — on
+     a light canvas a white wash is invisible, so it becomes a dark one. */
+  --bt-sheen: rgba(222, 230, 239, 0.05);
+  --bt-sheen-strong: rgb(255 255 255 / 4.5%);
   /* Elevation (reserved for temporary overlays) */
   --bt-shadow-menu: 0 10px 34px rgba(0, 0, 0, 0.45);
   --bt-shadow-overlay: 0 28px 80px rgba(0, 0, 0, 0.55);
+  --bt-shadow-lift: 0 30px 80px -30px rgb(0 0 0 / 45%);
+  --bt-shadow-ring: 0 0 0 1px rgb(0 0 0 / 22%);
+  --bt-shadow-card: 0 18px 38px -26px rgb(0 0 0 / 62%);
+  /*
+   * Chart system. `ui/charts/palette.ts` hands these straight to SVG/DOM as
+   * `var(...)`, and resolves them through `getComputedStyle` for the one
+   * canvas-backed chart (lightweight-charts cannot read a custom property).
+   * The categorical order is the validated identity palette — assign by index,
+   * never re-sort by rank.
+   */
+  --bt-chart-main: #38bdf8;
+  --bt-chart-main-top: rgba(56, 189, 248, 0.22);
+  --bt-chart-main-bottom: rgba(56, 189, 248, 0.02);
+  --bt-chart-grid: rgba(222, 230, 239, 0.06);
+  --bt-chart-text: #77818d;
+  --bt-chart-pos: #34d399;
+  --bt-chart-pos-top: rgba(52, 211, 153, 0.22);
+  --bt-chart-pos-bottom: rgba(52, 211, 153, 0.02);
+  --bt-chart-neg: #fb7185;
+  --bt-chart-neg-top: rgba(251, 113, 133, 0.02);
+  --bt-chart-neg-bottom: rgba(251, 113, 133, 0.22);
+  --bt-chart-flat: #71717a;
+  /* Sparkline's own historical down-stroke (Tailwind red-400) — see palette.ts. */
+  --bt-chart-trend-down: #f87171;
+  --bt-chart-flag: #f6b82e;
+  --bt-chart-benchmark: #9085e9;
+  --bt-chart-1: #3987e5; /* blue */
+  --bt-chart-2: #d95926; /* orange */
+  --bt-chart-3: #199e70; /* green */
+  --bt-chart-4: #c98500; /* yellow */
+  --bt-chart-5: #d55181; /* magenta */
+  --bt-chart-6: #9085e9; /* violet */
+  --bt-chart-7: #0d9488; /* teal */
+  --bt-chart-8: #c0453f; /* red-brown */
+  --bt-chart-9: #7a9e2b; /* lime */
+  --bt-chart-10: #b06fc9; /* purple */
   /* Frame metrics */
   --bt-rail-w: 260px;
   --bt-rail-w-collapsed: 64px;
@@ -87,21 +173,110 @@
   --bt-scrim: rgba(28, 34, 42, 0.38);
   --bt-border: rgba(20, 27, 35, 0.1);
   --bt-border-strong: rgba(20, 27, 35, 0.16);
-  --bt-border-accent: rgba(174, 119, 0, 0.3);
   --bt-text: #131820;
   --bt-text-soft: #3e4650;
   --bt-muted: #56616d; /* min 5.23:1 against --bt-surface-hover (#e8eaec) */
   --bt-faint: #5d6773; /* min 4.77:1 against --bt-surface-hover (#e8eaec) */
-  --bt-gold-bright: #d89400;
-  --bt-gold-soft: rgba(213, 148, 0, 0.1);
-  --bt-pos: #168861;
-  --bt-pos-soft: rgba(22, 136, 97, 0.09);
-  --bt-neg: #d84f67;
-  --bt-neg-soft: rgba(216, 79, 103, 0.09);
-  --bt-blue: #087fab;
-  --bt-blue-soft: rgba(8, 127, 171, 0.09);
+  /*
+   * ── Cross-client palette (mobile B2 light theme, spec §1.4) ──────────────
+   *
+   * Gold, gain and loss and three categorical slots are the values the mobile
+   * client already ships, adopted verbatim so the two clients read as one
+   * product. Mobile validated them with a six-checks pass (deutan separation
+   * included) against white and #EEF0F2.
+   *
+   * Web has a deeper surface ramp than that basis — `--bt-nav` (#e9eaeb) and
+   * `--bt-surface-hover` (#e8eaec) both sit below #EEF0F2 — so every adopted
+   * value was re-checked here against all seven opaque surfaces. Five cleared
+   * 4.5:1 unchanged. `--bt-pos` did not (see its note).
+   *
+   * Gold carries three jobs at once — the fill under `--bt-gold-ink`, the 3px
+   * active-rail edge, and gold-as-ink — so one value has to satisfy the
+   * strictest of them. Hence deep ochre, not daylight yellow: `#f6b82e` on this
+   * canvas is 1.78:1, which would erase the rail marker the owner's standing
+   * nav rule depends on.
+   */
+  --bt-gold: #8f5f00; /* mobile B2 §1.4; min 4.58:1 on --bt-surface-hover */
+  --bt-gold-bright: #7a5100; /* primary :hover — DARKER here, the fill is dark */
+  --bt-gold-ink: #fff8ea; /* 5.22:1 on --bt-gold, 6.61:1 on --bt-gold-bright */
+  /*
+   * THE ONE DEVIATION from mobile B2 §1.4, pending their sign-off.
+   *
+   * Their gain ink is #0F7A55. It clears 4.5:1 on the two surfaces they
+   * validated (white 4.86, #EEF0F2 4.67) but lands at 4.42:1 on this theme's
+   * `--bt-surface-hover` (#e8eaec) and 4.43:1 on `--bt-nav` — a real surface
+   * pairing, since a gain badge sits on a hovered table row. Shipping it as-is
+   * would put a documented AA failure into the product.
+   *
+   * So it is darkened along its own RGB ray by 2/255 per channel — the minimum
+   * that clears the floor (4.54:1), and a shift no eye resolves. If mobile
+   * would rather move their value or their surface, this converges on whatever
+   * they choose; it must not silently drift back to #0F7A55.
+   */
+  --bt-pos: #0f7853;
+  --bt-neg: #b23a4e; /* mobile B2 §1.4; min 4.83:1 on --bt-surface-hover */
+  --bt-blue: #1f6a8b; /* web-only slot; min 4.99:1 */
+  /*
+   * The `-soft` tints are mixed toward WHITE, not washed from the vivid hue.
+   *
+   * The dark theme can wash: its hue is LIGHTER than the surface, so a tint
+   * lifts the chip away from the ink and contrast improves. Inverted, the same
+   * move walks the chip TOWARD the ink — a vivid wash DARKENS a near-white
+   * surface — and with the (lighter) cross-client inks there is no headroom
+   * left: every alpha down to 0.05 pushed the badge below 4.5:1. A pale chip is
+   * also simply what a light theme wants. Each is its vivid hue mixed 80 % to
+   * white, and each keeps its own ink at ≥4.76:1 on every surface.
+   */
+  --bt-gold-soft: #fdf1d5;
+  --bt-pos-soft: #d6f6eb;
+  --bt-neg-soft: #fee3e7;
+  --bt-blue-soft: #d7f2fe;
+  --bt-border-accent: rgba(143, 95, 0, 0.4);
+  --bt-pf-group-ink: #6154c6;
+  --bt-glow-cool: rgba(31, 106, 139, 0.05);
+  --bt-glow-warm: rgba(143, 95, 0, 0.04);
+  --bt-selection: rgba(246, 184, 46, 0.36);
+  --bt-scrollbar: rgba(86, 97, 109, 0.34);
+  --bt-raised-edge: rgba(20, 27, 35, 0.14);
+  --bt-sheen: rgba(20, 27, 35, 0.06);
+  --bt-sheen-strong: rgb(20 27 35 / 4%);
   --bt-shadow-menu: 0 10px 34px rgba(16, 24, 32, 0.16);
   --bt-shadow-overlay: 0 28px 80px rgba(16, 24, 32, 0.2);
+  --bt-shadow-lift: 0 30px 80px -30px rgb(16 24 32 / 18%);
+  --bt-shadow-ring: 0 0 0 1px rgb(16 24 32 / 10%);
+  --bt-shadow-card: 0 18px 38px -26px rgb(16 24 32 / 26%);
+  /*
+   * Chart light counterparts. Series marks are graphical, so the floor is 3:1
+   * rather than 4.5:1 — except `--bt-chart-text`, which is real axis text and
+   * reuses `--bt-muted`'s proven value. Slots 1/2/5/6/9/10 are the same six
+   * inks `.bt-pf-chip` already ships in light, so a portfolio's chip colour and
+   * its series colour stay the same colour.
+   */
+  --bt-chart-main: #1f6a8b;
+  --bt-chart-main-top: rgba(31, 106, 139, 0.18);
+  --bt-chart-main-bottom: rgba(31, 106, 139, 0.02);
+  --bt-chart-grid: rgba(20, 27, 35, 0.1);
+  --bt-chart-text: #56616d;
+  --bt-chart-pos: #0f7853;
+  --bt-chart-pos-top: rgba(15, 120, 83, 0.18);
+  --bt-chart-pos-bottom: rgba(15, 120, 83, 0.02);
+  --bt-chart-neg: #b23a4e;
+  --bt-chart-neg-top: rgba(178, 58, 78, 0.02);
+  --bt-chart-neg-bottom: rgba(178, 58, 78, 0.18);
+  --bt-chart-flat: #6b6b74;
+  --bt-chart-trend-down: #b23a4e;
+  --bt-chart-flag: #8f5f00;
+  --bt-chart-benchmark: #6154c6;
+  --bt-chart-1: #1f6ac4; /* blue */
+  --bt-chart-2: #b8431a; /* orange */
+  --bt-chart-3: #179066; /* green */
+  --bt-chart-4: #96600a; /* yellow — mobile B2 §1.4 */
+  --bt-chart-5: #b93a68; /* magenta */
+  --bt-chart-6: #6154c6; /* violet */
+  --bt-chart-7: #00887a; /* teal — mobile B2 §1.4 */
+  --bt-chart-8: #c0453f; /* red-brown */
+  --bt-chart-9: #6b8a1a; /* lime — mobile B2 §1.4 */
+  --bt-chart-10: #8e46ad; /* purple */
 }
 
 /* ── Base canvas ─────────────────────────────────────────────────────────── */
@@ -112,8 +287,8 @@
   max-width: 100%;
   min-height: calc(100 * var(--bt-vh));
   background:
-    radial-gradient(circle at 40% -16%, rgba(56, 189, 248, 0.05), transparent 30rem),
-    radial-gradient(circle at 94% 6%, rgba(246, 184, 46, 0.035), transparent 24rem), var(--bt-bg);
+    radial-gradient(circle at 40% -16%, var(--bt-glow-cool), transparent 30rem),
+    radial-gradient(circle at 94% 6%, var(--bt-glow-warm), transparent 24rem), var(--bt-bg);
   color: var(--bt-text);
   font-family:
     'Inter',
@@ -130,7 +305,7 @@
 }
 
 .bt-app ::selection {
-  background: rgba(246, 184, 46, 0.28);
+  background: var(--bt-selection);
 }
 
 .bt-app :focus-visible {
@@ -141,7 +316,7 @@
 
 .bt-app * {
   scrollbar-width: thin;
-  scrollbar-color: rgba(139, 148, 159, 0.28) transparent;
+  scrollbar-color: var(--bt-scrollbar) transparent;
 }
 
 /* Numeric emphasis */
@@ -822,7 +997,7 @@
 
 .bt-btn--danger {
   background: none;
-  border-color: rgba(251, 113, 133, 0.38);
+  border-color: color-mix(in srgb, var(--bt-neg) 38%, transparent);
   color: var(--bt-neg);
 }
 
@@ -970,6 +1145,10 @@ label:has(> :is(input, select, textarea):required)::after {
 .bt-seg > button.is-active {
   background: var(--bt-surface-strong);
   color: var(--bt-text);
+  /* Transparent in dark, a hairline in light — see --bt-raised-edge. Without
+     it the selected segment is white on near-white and the control looks like
+     nothing is selected at all. */
+  box-shadow: 0 0 0 1px var(--bt-raised-edge);
 }
 
 /* Switch */
@@ -1569,7 +1748,7 @@ label:has(> :is(input, select, textarea):required)::after {
   position: absolute;
   inset: 0;
   translate: -100% 0;
-  background: linear-gradient(90deg, transparent, rgba(222, 230, 239, 0.05), transparent);
+  background: linear-gradient(90deg, transparent, var(--bt-sheen), transparent);
   animation: bt-shimmer 1.6s infinite;
 }
 
@@ -5611,7 +5790,7 @@ label:has(> :is(input, select, textarea):required)::after {
 }
 
 .bt-danger-zone {
-  border-color: rgba(251, 113, 133, 0.24);
+  border-color: color-mix(in srgb, var(--bt-neg) 24%, transparent);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -5693,10 +5872,7 @@ label:has(> :is(input, select, textarea):required)::after {
      would read as modal, and any pseudo-element here would be clipped by the
      panel's own `overflow: hidden`. Nothing intercepts pointer events, so the
      page behind stays live and a click-away still closes an unpinned panel. */
-  box-shadow:
-    var(--bt-shadow-overlay),
-    0 30px 80px -30px rgb(0 0 0 / 45%),
-    0 0 0 1px rgb(0 0 0 / 22%);
+  box-shadow: var(--bt-shadow-overlay), var(--bt-shadow-lift), var(--bt-shadow-ring);
 }
 
 .bt-askdock__title {
@@ -5890,53 +6066,36 @@ label:has(> :is(input, select, textarea):required)::after {
   border-radius: 8px;
 }
 
+/*
+ * The six hues come straight off the chart palette tokens, so a portfolio's
+ * chip and its series in a chart are literally the same colour — and the light
+ * counterparts arrive with the token rather than needing a second, hand-kept
+ * `[data-bt-theme='light']` copy of this list (which is what these rules were
+ * before board #68: six duplicated overrides that had to be edited in pairs).
+ */
 .bt-pf-chip--private {
-  --bt-pf-ink: #3987e5; /* palette blue */
+  --bt-pf-ink: var(--bt-chart-1); /* palette blue */
 }
 
 .bt-pf-chip--family {
-  --bt-pf-ink: #d55181; /* palette magenta */
+  --bt-pf-ink: var(--bt-chart-5); /* palette magenta */
 }
 
 .bt-pf-chip--business {
-  --bt-pf-ink: #b06fc9; /* palette purple */
+  --bt-pf-ink: var(--bt-chart-10); /* palette purple */
 }
 
 .bt-pf-chip--savings {
-  --bt-pf-ink: #7a9e2b; /* palette lime */
+  --bt-pf-ink: var(--bt-chart-9); /* palette lime */
 }
 
 .bt-pf-chip--property {
-  --bt-pf-ink: #d95926; /* palette orange */
+  --bt-pf-ink: var(--bt-chart-2); /* palette orange */
 }
 
 /* Group (MIRRORCHAIN) copies override the icon entirely — hue included. */
 .bt-pf-chip--group {
-  --bt-pf-ink: #9085e9; /* palette violet */
-}
-
-:root[data-bt-theme='light'] .bt-pf-chip--private {
-  --bt-pf-ink: #1f6ac4;
-}
-
-:root[data-bt-theme='light'] .bt-pf-chip--family {
-  --bt-pf-ink: #b93a68;
-}
-
-:root[data-bt-theme='light'] .bt-pf-chip--business {
-  --bt-pf-ink: #8e46ad;
-}
-
-:root[data-bt-theme='light'] .bt-pf-chip--savings {
-  --bt-pf-ink: #5c7a13;
-}
-
-:root[data-bt-theme='light'] .bt-pf-chip--property {
-  --bt-pf-ink: #b8431a;
-}
-
-:root[data-bt-theme='light'] .bt-pf-chip--group {
-  --bt-pf-ink: #6154c6;
+  --bt-pf-ink: var(--bt-chart-6); /* palette violet */
 }
 
 /* ── Trigger ─────────────────────────────────────────────────────────────── */
@@ -6583,7 +6742,7 @@ label:has(> :is(input, select, textarea):required)::after {
   content: '';
   position: absolute;
   inset: -14% -18% -22%;
-  background: radial-gradient(58% 52% at 42% 44%, rgb(255 255 255 / 4.5%), transparent 72%);
+  background: radial-gradient(58% 52% at 42% 44%, var(--bt-sheen-strong), transparent 72%);
 }
 
 .bt-authfig__card {
@@ -6592,7 +6751,7 @@ label:has(> :is(input, select, textarea):required)::after {
   background: color-mix(in srgb, var(--bt-surface) 88%, transparent);
   border: 1px solid var(--bt-border-strong);
   border-radius: 8px;
-  box-shadow: 0 18px 38px -26px rgb(0 0 0 / 62%);
+  box-shadow: var(--bt-shadow-card);
   backdrop-filter: blur(2px);
   animation: bt-authfig-drift 24s ease-in-out infinite alternate;
 }
@@ -6951,7 +7110,7 @@ label:has(> :is(input, select, textarea):required)::after {
   border-radius: 50%;
   background: var(--bt-surface-strong);
   box-shadow: 0 0 0 1.5px var(--bt-bg-raised);
-  color: var(--bt-pf-group-ink, #9085e9);
+  color: var(--bt-pf-group-ink);
 }
 
 .bt-pf-chip--lg .bt-pf-chip__mark {

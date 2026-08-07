@@ -1296,6 +1296,18 @@
     "dangerZone": {
       "description": "Wenn du dein Konto löschst, werden alle deine Daten dauerhaft entfernt. Das kann nicht rückgängig gemacht werden.",
       "link": "Mein Konto löschen…"
+    },
+    "appearance": {
+      "groups": {
+        "display": "Anzeige"
+      },
+      "theme": {
+        "title": "Design",
+        "hint": "Gilt nur auf diesem Gerät — es wird nicht mit deinem Konto synchronisiert. System folgt deinem Betriebssystem und bleibt dabei, auch wenn es bei Sonnenuntergang umschaltet.",
+        "system": "System ({{resolved}})",
+        "dark": "Dunkel",
+        "light": "Hell"
+      }
     }
   },
   "portfolio": {
@@ -5113,7 +5125,10 @@
       "title": "Bald Quartalszahlen: {{symbol}}",
       "body": "{{name}} ({{symbol}}) wird voraussichtlich um den {{date}} Quartalszahlen vorlegen."
     },
-    "chatMessagePreview": { "title": "Neue Nachricht", "body": "{{sender}}: {{preview}}" },
+    "chatMessagePreview": {
+      "title": "Neue Nachricht",
+      "body": "{{sender}}: {{preview}}"
+    },
     "chatMessageSharedItem": {
       "title": "Neue Nachricht",
       "body": "{{sender}} hat einen Inhalt mit dir geteilt."
@@ -5256,7 +5271,8 @@
     "sessions": "Sitzungen",
     "notificationLog": "Benachrichtigungsprotokoll",
     "profile": "Öffentliches Profil",
-    "authorizedApps": "Autorisierte Apps"
+    "authorizedApps": "Autorisierte Apps",
+    "appearance": "Darstellung"
   },
   "privacy": {
     "subtitle": "Steuere, was der Bildschirm zeigt und wo deine Daten liegen.",

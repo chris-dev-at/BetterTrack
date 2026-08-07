@@ -1296,6 +1296,18 @@
     "dangerZone": {
       "description": "Deleting your account permanently removes all of your data. This cannot be undone.",
       "link": "Delete my account…"
+    },
+    "appearance": {
+      "groups": {
+        "display": "Display"
+      },
+      "theme": {
+        "title": "Theme",
+        "hint": "Applies to this device only — it is not synced to your account. System follows your operating system and keeps following it, including when it switches at sunset.",
+        "system": "System ({{resolved}})",
+        "dark": "Dark",
+        "light": "Light"
+      }
     }
   },
   "portfolio": {
@@ -4997,8 +5009,14 @@
       "title": "Conglomerate shared",
       "body": "{{actor}} shared a conglomerate with you."
     },
-    "friendActivityBuy": { "title": "Friend activity", "body": "{{actor}} bought {{symbol}}." },
-    "friendActivitySell": { "title": "Friend activity", "body": "{{actor}} sold {{symbol}}." },
+    "friendActivityBuy": {
+      "title": "Friend activity",
+      "body": "{{actor}} bought {{symbol}}."
+    },
+    "friendActivitySell": {
+      "title": "Friend activity",
+      "body": "{{actor}} sold {{symbol}}."
+    },
     "friendActivityWatchlistAdd": {
       "title": "Friend activity",
       "body": "{{actor}} added {{symbol}} to a shared watchlist."
@@ -5107,12 +5125,18 @@
       "title": "Earnings coming up: {{symbol}}",
       "body": "{{name}} ({{symbol}}) is expected to report earnings around {{date}}."
     },
-    "chatMessagePreview": { "title": "New message", "body": "{{sender}}: {{preview}}" },
+    "chatMessagePreview": {
+      "title": "New message",
+      "body": "{{sender}}: {{preview}}"
+    },
     "chatMessageSharedItem": {
       "title": "New message",
       "body": "{{sender}} shared an item with you."
     },
-    "chatMessagePlain": { "title": "New message", "body": "{{sender}} sent you a message." },
+    "chatMessagePlain": {
+      "title": "New message",
+      "body": "{{sender}} sent you a message."
+    },
     "dividendEvent": {
       "title": "{{symbol}} ex-dividend {{date}}",
       "body": "{{symbol}} goes ex-dividend on {{date}}."
@@ -5247,7 +5271,8 @@
     "sessions": "Sessions",
     "notificationLog": "Notification log",
     "profile": "Public profile",
-    "authorizedApps": "Authorized apps"
+    "authorizedApps": "Authorized apps",
+    "appearance": "Appearance"
   },
   "privacy": {
     "subtitle": "Control what the screen shows and where your data lives.",
