@@ -15,6 +15,7 @@ import {
   retiredServerPurgeResponseSchema,
   scopeSatisfies,
   VAULT_CONTENT_TYPE,
+  VAULT2_ERROR_CODES,
   VAULT_ERROR_CODES,
   VAULT_HISTORY_CREATED_AT_HEADER,
   VAULT_HISTORY_MEDIUM_HEADER,
@@ -516,6 +517,16 @@ export function createVaultRouter(ctx: AppContext, limiters: RateLimiters): Rout
         case 'medium_inactive':
           throw serverMediumInactive(
             'The server vault medium is inactive; stage and promote a candidate instead.',
+          );
+        // Vaults v2 (design r2 §11): this account flipped to a v2 vault, so the
+        // legacy row is a READ-ONLY tombstone. Reads still serve (recovery, and
+        // a client that has not noticed the flip); a write would fork the
+        // account's truth across two authoritative stores.
+        case 'migrated_tombstone':
+          throw new ApiError(
+            409,
+            VAULT2_ERROR_CODES.migrationIncomplete,
+            'This account has migrated to a v2 vault; the legacy vault is read-only.',
           );
         case 'proof_key_conflict':
           throw new ApiError(

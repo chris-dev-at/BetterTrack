@@ -3770,6 +3770,18 @@
       "disableBlocked": "This vault has unsynced changes on more than one device. Resolve the sync state first — disabling now would keep only the copy this device shows.",
       "disableAction": "Restore normal mode",
       "disableError": "Normal mode could not be restored completely. The account remains paranoid; retry resumes the same rehydration."
+    },
+    "errors": {
+      "VAULT_NOT_FOUND": "That vault doesn’t exist, or it isn’t yours.",
+      "VAULT_NOT_EMPTY": "Move every portfolio out of this vault before you delete it.",
+      "VAULT_VERSION_CONFLICT": "Another device changed this vault first. Reload and try again — nothing was overwritten.",
+      "VAULT_DOC_TOO_LARGE": "This vault document is too large to store.",
+      "VAULT_LOCKED_WRITE_REFUSED": "This vault is locked. Unlock it to make changes.",
+      "VAULT_MIGRATION_CLAIMED": "Another device is upgrading this vault right now. Try again in a few minutes.",
+      "VAULT_MIGRATION_INCOMPLETE": "The upgrade didn’t finish. Nothing changed — start it again from this device.",
+      "VAULT_CROSS_BLOB_REFUSED": "This change would touch two portfolios at once. Do it in two steps instead.",
+      "VAULT_FORMAT_UPDATE_REQUIRED": "This vault was written by a newer version of BetterTrack. Update the app to open it.",
+      "VAULT_BACKEND_UNAVAILABLE": "This vault’s storage isn’t reachable right now."
     }
   },
   "announcements": {

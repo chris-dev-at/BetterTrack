@@ -74,6 +74,23 @@ const componentSchemas = {
   ReadinessResponse: contracts.readinessResponseSchema,
   VersionResponse: contracts.versionResponseSchema,
   VaultHistoryListResponse: contracts.vaultHistoryListResponseSchema,
+  // Vaults v2 (`docs/VAULTS_V2_DESIGN.md` §3)
+  Vault: contracts.vaultSchema,
+  VaultListResponse: contracts.vaultListResponseSchema,
+  VaultSyncListResponse: contracts.vaultSyncListResponseSchema,
+  CreateVaultRequest: contracts.createVaultRequestSchema,
+  UpdateVaultRequest: contracts.updateVaultRequestSchema,
+  VaultCreateResponse: contracts.vaultCreateResponseSchema,
+  VaultDocMetadata: contracts.vaultDocMetadataSchema,
+  VaultJoinRequest: contracts.vaultJoinRequestSchema,
+  VaultJoinResponse: contracts.vaultJoinResponseSchema,
+  VaultLeaveRequest: contracts.vaultLeaveRequestSchema,
+  VaultLeaveResponse: contracts.vaultLeaveResponseSchema,
+  VaultMigrationState: contracts.vaultMigrationStateSchema,
+  VaultMigrationClaimRequest: contracts.vaultMigrationClaimRequestSchema,
+  VaultMigrationFlipRequest: contracts.vaultMigrationFlipRequestSchema,
+  VaultVersionConflictResponse: contracts.vaultVersionConflictResponseSchema,
+  PortfolioVaultState: contracts.portfolioVaultStateSchema,
   ParanoidMediaStateResponse: contracts.paranoidMediaStateResponseSchema,
   ParanoidMediaTransitionRequest: contracts.paranoidMediaTransitionRequestSchema,
   ParanoidMediaTransitionResponse: contracts.paranoidMediaTransitionResponseSchema,
@@ -4361,6 +4378,204 @@ const endpoints: EndpointDef[] = [
     }),
     bodyContentType: 'application/octet-stream',
     status: 204,
+  },
+
+  // ── Vaults v2 (`docs/VAULTS_V2_DESIGN.md` §3) ────────────────────────────
+  // The multi-vault surface beside the account-singleton routes above. CRUD and
+  // the two per-portfolio transitions are session-only; the `{vaultId}`-scoped
+  // documents accept the same `vault:sync` bearer exception under If-Match CAS.
+  {
+    method: 'get',
+    path: '/vaults',
+    tag: 'Vault',
+    summary:
+      'List the caller’s vaults. A cookie session receives the full DTO (name, backends, portfolio count, timestamps); a `vault:sync` bearer receives the narrow sync projection — ids, names and backends only.',
+    status: 200,
+    response: contracts.vaultListResponseSchema,
+  },
+  {
+    method: 'post',
+    path: '/vaults',
+    tag: 'Vault',
+    summary:
+      'Create a vault from a CLIENT-BUILT header. The server stores the ciphertext blindly at version 1 and never parses it; a drive-only vault supplies no header at all. 409 VAULT_NAME_TAKEN on a duplicate name, 413 VAULT_DOC_TOO_LARGE above the 1 MiB header cap. Owning browser session only.',
+    body: contracts.createVaultRequestSchema,
+    status: 201,
+    response: contracts.vaultCreateResponseSchema,
+  },
+  {
+    method: 'patch',
+    path: '/vaults/{vaultId}',
+    tag: 'Vault',
+    summary:
+      'Rename a vault and/or change its storage backend set. 404 VAULT_NOT_FOUND for a foreign or unknown id, 409 VAULT_NAME_TAKEN on a duplicate name. Owning browser session only.',
+    params: z.object({ vaultId: z.string().uuid() }),
+    body: contracts.updateVaultRequestSchema,
+    status: 200,
+    response: contracts.vaultSchema,
+  },
+  {
+    method: 'delete',
+    path: '/vaults/{vaultId}',
+    tag: 'Vault',
+    summary:
+      'Delete an EMPTY vault and its header. 409 VAULT_NOT_EMPTY while any portfolio still belongs to it or any portfolio document survives; 404 VAULT_NOT_FOUND otherwise. Owning browser session only.',
+    params: z.object({ vaultId: z.string().uuid() }),
+    status: 204,
+  },
+  {
+    method: 'get',
+    path: '/vaults/{vaultId}/header',
+    tag: 'Vault',
+    summary:
+      'Read a vault’s opaque header document with an ETag of its version. 304 when If-None-Match already holds it; 404 VAULT_NOT_FOUND / VAULT_DOC_NOT_FOUND otherwise. Never decrypted or parsed server-side.',
+    params: z.object({ vaultId: z.string().uuid() }),
+    status: 200,
+    response: z.string().openapi({
+      type: 'string',
+      format: 'binary',
+      description: 'Opaque vault header ciphertext (never interpreted server-side).',
+    }),
+    responseContentType: 'application/octet-stream',
+  },
+  {
+    method: 'put',
+    path: '/vaults/{vaultId}/header',
+    tag: 'Vault',
+    summary:
+      'Compare-and-swap write of a vault’s header. `If-None-Match: *` creates it; `If-Match: "<version>"` replaces the matching version. A stale or missing precondition returns 412 VAULT_VERSION_CONFLICT / 428 and never overwrites newer ciphertext; above 1 MiB it is 413 VAULT_DOC_TOO_LARGE.',
+    params: z.object({ vaultId: z.string().uuid() }),
+    body: z.string().openapi({
+      type: 'string',
+      format: 'binary',
+      description: 'Opaque vault header ciphertext (never interpreted server-side).',
+    }),
+    bodyContentType: 'application/octet-stream',
+    status: 200,
+    response: contracts.vaultDocMetadataSchema,
+  },
+  {
+    method: 'get',
+    path: '/vaults/{vaultId}/portfolios/{portfolioId}',
+    tag: 'Vault',
+    summary:
+      'Read one vaulted portfolio’s opaque document with an ETag of its version. Each portfolio blob is versioned independently, so two devices editing two portfolios of one vault never conflict.',
+    params: z.object({ vaultId: z.string().uuid(), portfolioId: z.string().uuid() }),
+    status: 200,
+    response: z.string().openapi({
+      type: 'string',
+      format: 'binary',
+      description: 'Opaque vaulted-portfolio ciphertext (never interpreted server-side).',
+    }),
+    responseContentType: 'application/octet-stream',
+  },
+  {
+    method: 'put',
+    path: '/vaults/{vaultId}/portfolios/{portfolioId}',
+    tag: 'Vault',
+    summary:
+      'Compare-and-swap write of one vaulted portfolio’s document, with the same precondition rules as the header. The portfolio must already belong to this vault — a blob can never be minted for an unrelated portfolio id. Cap 8 MiB.',
+    params: z.object({ vaultId: z.string().uuid(), portfolioId: z.string().uuid() }),
+    body: z.string().openapi({
+      type: 'string',
+      format: 'binary',
+      description: 'Opaque vaulted-portfolio ciphertext (never interpreted server-side).',
+    }),
+    bodyContentType: 'application/octet-stream',
+    status: 200,
+    response: contracts.vaultDocMetadataSchema,
+  },
+  {
+    method: 'get',
+    path: '/vaults/{vaultId}/common',
+    tag: 'Vault',
+    summary:
+      'Read a vault’s opaque `common` document — the account/vault-scoped entity kinds (custom assets, tags, rules, budgets, tax settings), namespaced per vault. Independently CAS-versioned. Cap 4 MiB.',
+    params: z.object({ vaultId: z.string().uuid() }),
+    status: 200,
+    response: z.string().openapi({
+      type: 'string',
+      format: 'binary',
+      description: 'Opaque vault common-document ciphertext (never interpreted server-side).',
+    }),
+    responseContentType: 'application/octet-stream',
+  },
+  {
+    method: 'put',
+    path: '/vaults/{vaultId}/common',
+    tag: 'Vault',
+    summary:
+      'Compare-and-swap write of a vault’s `common` document, with the same precondition rules as the header. Cap 4 MiB; a 412 carries the server’s `currentVersion` at the top level of the body.',
+    params: z.object({ vaultId: z.string().uuid() }),
+    body: z.string().openapi({
+      type: 'string',
+      format: 'binary',
+      description: 'Opaque vault common-document ciphertext (never interpreted server-side).',
+    }),
+    bodyContentType: 'application/octet-stream',
+    status: 200,
+    response: contracts.vaultDocMetadataSchema,
+  },
+  {
+    method: 'get',
+    path: '/vaults/migration',
+    tag: 'Vault',
+    summary:
+      'Read the v1 → v2 migration state of the legacy account vault: whether one exists, who holds the claim and until when, and the successor vault once the flip has committed. Owning browser session only.',
+    status: 200,
+    response: contracts.vaultMigrationStateSchema,
+  },
+  {
+    method: 'post',
+    path: '/vaults/migration/claim',
+    tag: 'Vault',
+    summary:
+      'Claim the v1 → v2 migration for 15 minutes. One compare-and-swap decides the winner; a losing client gets 409 VAULT_MIGRATION_CLAIMED with the live claim so it can wait. Re-claiming with the same nonce resumes a crashed migration. Owning browser session only.',
+    body: contracts.vaultMigrationClaimRequestSchema,
+    status: 200,
+    response: contracts.vaultMigrationStateSchema,
+  },
+  {
+    method: 'post',
+    path: '/vaults/migration/renew',
+    tag: 'Vault',
+    summary:
+      'Extend a LIVE claim held by this same nonce. A lapsed or foreign claim is 409 VAULT_MIGRATION_CLAIMED — the holder must claim again, where it may legitimately lose. Owning browser session only.',
+    body: contracts.vaultMigrationClaimRequestSchema,
+    status: 200,
+    response: contracts.vaultMigrationStateSchema,
+  },
+  {
+    method: 'post',
+    path: '/vaults/migration/flip',
+    tag: 'Vault',
+    summary:
+      'The COMMIT POINT: one compare-and-swap sets `migratedTo` on the legacy vault, after which it is a read-only tombstone and the named v2 vault is authoritative. Requires a live claim for this nonce (else 409 VAULT_MIGRATION_INCOMPLETE) and a v2 vault owned by this account. Owning browser session only.',
+    body: contracts.vaultMigrationFlipRequestSchema,
+    status: 200,
+    response: contracts.vaultMigrationStateSchema,
+  },
+  {
+    method: 'post',
+    path: '/portfolios/{portfolioId}/vault',
+    tag: 'Vault',
+    summary:
+      'JOIN — move a portfolio into a vault. One transaction stores the client-encrypted blob, hard-deletes every cleartext row of that portfolio and sets its vault membership; nothing commits unless all three do. 409 on an already-vaulted portfolio or an active mirrorchain membership. Owning browser session only.',
+    params: z.object({ portfolioId: z.string().uuid() }),
+    body: contracts.vaultJoinRequestSchema,
+    status: 200,
+    response: contracts.vaultJoinResponseSchema,
+  },
+  {
+    method: 'delete',
+    path: '/portfolios/{portfolioId}/vault',
+    tag: 'Vault',
+    summary:
+      'LEAVE — move a portfolio back out of its vault. The client posts the decrypted rows; one transaction repopulates them, clears the membership and retires the ciphertext. Re-sending after a committed leave is acknowledged idempotently. Owning browser session only.',
+    params: z.object({ portfolioId: z.string().uuid() }),
+    body: contracts.vaultLeaveRequestSchema,
+    status: 200,
+    response: contracts.vaultLeaveResponseSchema,
   },
 ];
 

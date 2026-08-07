@@ -200,6 +200,9 @@ import {
   type WebhookDeliveryJob,
 } from '../services/webhooks';
 import { createParanoidVaultRepository } from '../data/repositories/paranoidVaultRepository';
+import { createVaultMigrationRepository } from '../data/repositories/vaultMigrationRepository';
+import { createVaultRepository } from '../data/repositories/vaultRepository';
+import { createVaultService, type VaultService } from '../services/vault/vaultService';
 import {
   createParanoidEnforcementRepository,
   withFreshLockedPrivacyModes,
@@ -397,6 +400,12 @@ export interface AppContext {
    * a size cap and bounded ciphertext history. Never reads the payload.
    */
   paranoidVault: ParanoidVaultService;
+  /**
+   * Vaults v2 (`docs/VAULTS_V2_DESIGN.md` §3) — multi-vault CRUD, the blind
+   * per-vault document store, and the per-portfolio join/leave transitions.
+   * Ownership scoping lives in its repository, never in a controller.
+   */
+  vaults: VaultService;
   /** Public account-locked paranoid enable/disable orchestrator (§7). */
   paranoidTransitions: ParanoidTransitionService;
   /** Registry-backed account guard shared by HTTP, services, jobs, and webhooks. */
@@ -961,6 +970,14 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     proofSecret: config.sessionSecrets[0],
   });
 
+  // Vaults v2 (`docs/VAULTS_V2_DESIGN.md` §3). Independent of the account-level
+  // vault above: different tables, its own CAS, no header inspection at all.
+  const vaultsService = createVaultService({
+    vaults: createVaultRepository(db),
+    migrations: createVaultMigrationRepository(db),
+    audit,
+  });
+
   const webhookSubscriptionRepo = createWebhookSubscriptionRepository(db);
   const webhookDeliveryRepo = createWebhookDeliveryRepository(db);
   const webhooks = createWebhookService({
@@ -1261,10 +1278,13 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     cashMovementRepo,
     marketData,
     currencyService: currency,
+    // Vaults v2 (§3): a VAULTED portfolio is as unreadable to the snapshot
+    // engine as a paranoid account's is — its ledger rows were purged at join.
     isParanoidPortfolio: async (portfolioId) =>
       isParanoidOwnedSubjectBlocked(
         await paranoidSubjects.portfolioOwner(portfolioId),
         paranoidGuard,
+        'portfolioJobs',
       ),
     runIfAllowedPortfolio: async (portfolioId, action) =>
       runIfParanoidOwnedSubjectAllowed(
@@ -2023,6 +2043,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     cashTags: guarded.cashTags,
     cashBudgets: guarded.cashBudgets,
     paranoidVault,
+    vaults: vaultsService,
     paranoidTransitions,
     paranoidGuard,
     webhooks,

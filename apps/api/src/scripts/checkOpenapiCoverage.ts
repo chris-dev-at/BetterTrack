@@ -151,6 +151,7 @@ function buildInertContext(): AppContext {
     cashTags: inertService('cashTags'),
     cashBudgets: inertService('cashBudgets'),
     paranoidVault: inertService('paranoidVault'),
+    vaults: inertService('vaults'),
     paranoidTransitions: inertService('paranoidTransitions'),
     webhooks: inertService('webhooks'),
     webhookBridge: inertService('webhookBridge'),

@@ -63,6 +63,8 @@ function portfolioEntity(userId: string, portfolioId: string) {
     visibility: 'private',
     sortOrder: 0,
     defaultPayFromCash: false,
+
+    vaultId: null,
     archivedAt: null,
   });
 }
@@ -113,6 +115,7 @@ function strictPortfolioEntity(row: typeof portfolios.$inferSelect) {
     visibility: row.visibility,
     sortOrder: row.sortOrder,
     defaultPayFromCash: row.defaultPayFromCash,
+    vaultId: row.vaultId,
     archivedAt: row.archivedAt?.toISOString() ?? null,
   });
 }

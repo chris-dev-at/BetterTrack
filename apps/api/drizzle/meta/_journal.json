@@ -610,6 +610,13 @@
       "when": 1786095381216,
       "tag": "0086_portfolio_kind",
       "breakpoints": true
+    },
+    {
+      "idx": 87,
+      "version": "7",
+      "when": 1786200000000,
+      "tag": "0087_vaults_v2",
+      "breakpoints": true
     }
   ]
 }

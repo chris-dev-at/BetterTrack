@@ -3770,6 +3770,18 @@
       "disableBlocked": "Dieser Tresor hat nicht abgeglichene Änderungen auf mehreren Geräten. Gleiche den Stand zuerst ab — eine Deaktivierung jetzt würde nur die auf diesem Gerät sichtbare Fassung behalten.",
       "disableAction": "Normalen Modus wiederherstellen",
       "disableError": "Der normale Modus konnte nicht vollständig wiederhergestellt werden. Das Konto bleibt paranoid; ein erneuter Versuch setzt dieselbe Wiederherstellung fort."
+    },
+    "errors": {
+      "VAULT_NOT_FOUND": "Diesen Tresor gibt es nicht – oder er gehört nicht dir.",
+      "VAULT_NOT_EMPTY": "Verschiebe zuerst alle Portfolios aus diesem Tresor, bevor du ihn löschst.",
+      "VAULT_VERSION_CONFLICT": "Ein anderes Gerät war schneller. Lade neu und versuch es nochmal – es wurde nichts überschrieben.",
+      "VAULT_DOC_TOO_LARGE": "Dieses Tresor-Dokument ist zu groß zum Speichern.",
+      "VAULT_LOCKED_WRITE_REFUSED": "Dieser Tresor ist gesperrt. Entsperre ihn, um Änderungen zu machen.",
+      "VAULT_MIGRATION_CLAIMED": "Ein anderes Gerät aktualisiert diesen Tresor gerade. Versuch es in ein paar Minuten nochmal.",
+      "VAULT_MIGRATION_INCOMPLETE": "Die Aktualisierung wurde nicht abgeschlossen. Es hat sich nichts geändert – starte sie von diesem Gerät neu.",
+      "VAULT_CROSS_BLOB_REFUSED": "Diese Änderung würde zwei Portfolios gleichzeitig betreffen. Mach sie stattdessen in zwei Schritten.",
+      "VAULT_FORMAT_UPDATE_REQUIRED": "Dieser Tresor wurde mit einer neueren BetterTrack-Version geschrieben. Aktualisiere die App, um ihn zu öffnen.",
+      "VAULT_BACKEND_UNAVAILABLE": "Der Speicher dieses Tresors ist gerade nicht erreichbar."
     }
   },
   "announcements": {

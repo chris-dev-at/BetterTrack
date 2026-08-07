@@ -212,6 +212,11 @@ export function createParanoidRehydrationSourceRepository(
             // restore as "unclassified" — the column's own zero value, so
             // nothing is invented and nothing the vault carried is dropped.
             kind: entity.data.kind ?? null,
+            // Vaults v2: restore the v2 vault membership verbatim. The vault and
+            // its documents survived the account-level enable (both tables are
+            // `server`-classified), so re-pointing the row is what keeps the
+            // portfolio and its ciphertext agreeing about being paranoid.
+            vaultId: entity.data.vaultId,
           })),
         );
       });
