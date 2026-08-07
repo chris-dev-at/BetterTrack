@@ -106,7 +106,9 @@ describe('Origin phone chrome', () => {
     const activeEdge = tokenBlock('.bt-bottombar a.is-active::before');
 
     expect(activeEdge).toContain("content: ''");
-    expect(activeEdge).toContain('background: var(--bt-gold)');
+    // The edge is a MARK, not text, so it rides the graphic half of the gold
+    // split (THEME2) — which is what keeps it visible on the white phone bar.
+    expect(activeEdge).toContain('background: var(--bt-gold-graphic)');
     expect(originCss).not.toContain('.bt-bottombar a::before {');
   });
 

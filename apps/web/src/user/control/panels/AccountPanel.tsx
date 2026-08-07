@@ -452,7 +452,7 @@ function ParanoidProfileIconRow() {
                   style={{
                     background: current === id ? 'var(--bt-gold-soft)' : 'none',
                     border: `1px solid ${
-                      current === id ? 'var(--bt-gold)' : 'var(--bt-border-strong)'
+                      current === id ? 'var(--bt-gold-graphic)' : 'var(--bt-border-strong)'
                     }`,
                     borderRadius: 5,
                     cursor: 'pointer',

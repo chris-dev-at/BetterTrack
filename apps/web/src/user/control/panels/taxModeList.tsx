@@ -203,7 +203,7 @@ function ParamRow({
         className="h-4 w-4"
         disabled={disabled}
         onChange={(e) => onChange(e.target.checked)}
-        style={{ accentColor: 'var(--bt-gold)' }}
+        style={{ accentColor: 'var(--bt-gold-graphic)' }}
         type="checkbox"
       />
     </Row>
