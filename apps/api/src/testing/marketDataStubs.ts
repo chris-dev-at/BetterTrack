@@ -25,6 +25,8 @@ import type { MarketDataService } from '../providers';
  */
 
 export interface StubMarketDataControls {
+  /** Provider-locality lookup; defaults to every provider being upstream. */
+  local?: (ref: Pick<AssetRef, 'providerId'>) => boolean;
   /** Provider fan-out result for `GET /search`. Defaults to an empty list. */
   search?: (query: string) => Promise<AssetSearchResult[]> | AssetSearchResult[];
   /** Quote behaviour; throw to simulate a hard provider failure with no cache. */
@@ -111,6 +113,9 @@ export function createStubMarketData(controls: StubMarketDataControls = {}): Stu
 
   return {
     calls,
+    isLocalProvider(ref) {
+      return controls.local?.(ref) ?? false;
+    },
     async search(query) {
       calls.search += 1;
       return search(query);

@@ -50,6 +50,12 @@ import {
  */
 export interface MarketDataService {
   /**
+   * Whether the ref's owning provider is backed by BetterTrack's own database.
+   * Business services use this metadata when provider timestamps describe a
+   * user-maintained value point rather than an upstream market execution.
+   */
+  isLocalProvider(ref: Pick<AssetRef, 'providerId'>): boolean;
+  /**
    * Fan-out search across all registered providers; failing providers are
    * skipped. Results are cached 24 h per provider, keyed by normalized query
    * (§5.3 "provider search results").
@@ -262,6 +268,10 @@ export function createMarketDataService(deps: CreateMarketDataServiceDeps): Mark
   };
 
   return {
+    isLocalProvider(ref) {
+      return registry.for(ref).local === true;
+    },
+
     async search(query) {
       const normalized = normalizeSearchQuery(query);
       if (normalized === '') return [];

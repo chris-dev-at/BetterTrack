@@ -23,6 +23,12 @@ import type { AppContext } from '../context';
  * (due computation + booking) is the daily `standingOrders.process` job; these
  * routes are the management surface only. Gated on the same `portfolio` scope
  * pair as the rest of the portfolio surface (see the bearer MODULE_POLICIES).
+ *
+ * Market-hours semantics: the scan remains fixed at 07:00 Europe/Vienna rather
+ * than following each exchange. A buy accepts only a fresh provider quote and
+ * records the quote's actual `asOf` timestamp on the transaction and the order's
+ * `lastRunAt`; a US asset scanned before its open therefore honestly carries the
+ * prior session's close time. Cash rows keep the scan timestamp.
  */
 export function createStandingOrdersRouter(ctx: AppContext): Router {
   const router = Router();

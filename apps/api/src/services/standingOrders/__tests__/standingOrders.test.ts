@@ -1,4 +1,6 @@
 import { and, eq } from 'drizzle-orm';
+import type { Redis } from 'ioredis';
+import RedisMock from 'ioredis-mock';
 import request from 'supertest';
 import type { Application } from 'express';
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -16,6 +18,12 @@ import { createCashSourceRepository } from '../../../data/repositories/cashSourc
 import { createPortfolioRepository } from '../../../data/repositories/portfolioRepository';
 import { createStandingOrderRepository } from '../../../data/repositories/standingOrderRepository';
 import { createTransactionRepository } from '../../../data/repositories/transactionRepository';
+import {
+  createManualAssetSource,
+  createManualProvider,
+  createMarketDataService,
+  createProviderRegistry,
+} from '../../../providers';
 import type { DispatchableEvent } from '../../notifications/notificationDispatcher';
 import { createStandingOrderService } from '../standingOrderService';
 import { createStubMarketData } from '../../../testing/marketDataStubs';
@@ -31,17 +39,25 @@ import { createTestApp, type TestHarness } from '../../../testing/createTestApp'
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
 
 let harness: TestHarness;
-const quote = { mode: 'ok' as 'ok' | 'fail', price: 100 };
+let marketData: ReturnType<typeof createStubMarketData>;
+const quote = {
+  mode: 'ok' as 'ok' | 'fail',
+  price: 100,
+  stale: false,
+  asOf: '2026-04-01T00:00:00.000Z',
+};
 
 beforeEach(async () => {
   quote.mode = 'ok';
   quote.price = 100;
-  const marketData = createStubMarketData({
+  quote.stale = false;
+  quote.asOf = '2026-04-01T00:00:00.000Z';
+  marketData = createStubMarketData({
     quote: () => {
       if (quote.mode === 'fail') throw new Error('provider down');
       return {
-        value: { price: quote.price, currency: 'EUR', asOf: '2026-04-01T00:00:00.000Z' },
-        stale: false,
+        value: { price: quote.price, currency: 'EUR', asOf: quote.asOf },
+        stale: quote.stale,
         asOf: 0,
       };
     },
@@ -299,6 +315,7 @@ describe('standing orders — exactly-once per period (the gate criterion)', () 
       booked: 0,
       skippedDuplicate: 0,
       deferred: 0,
+      failed: 0,
     });
     expect(await cashRows(pid, SOURCE_TAG_STANDING_ORDER)).toHaveLength(0);
     await expect(harness.ctx.standingOrders.list(user.id)).rejects.toMatchObject({
@@ -332,6 +349,51 @@ describe('standing orders — pause / resume', () => {
     // Exactly the current period was booked on resume — never Apr 2 / Apr 3.
     const keys = (await runPeriodKeys()).map((r) => r.key).sort();
     expect(keys).toEqual(['2026-04-01', '2026-04-04']);
+  });
+
+  it('does not claim or book when a pause lands between the scan snapshot and claim', async () => {
+    const { user, agent, pid } = await setup();
+    const created = await createOrder(agent, {
+      portfolioId: pid,
+      kind: 'cash-add',
+      amount: 10,
+      cadence: 'daily',
+      startDate: '2026-04-01',
+    });
+    const id = created.body.id as string;
+    const repo = createStandingOrderRepository(harness.db);
+    let pauseLanded = false;
+    const service = createStandingOrderService({
+      repo: {
+        ...repo,
+        async claimPeriod(orderId, periodKey) {
+          expect(orderId).toBe(id);
+          const paused = await repo.setStatus(user.id, orderId, 'paused');
+          expect(paused?.status).toBe('paused');
+          pauseLanded = true;
+          return repo.claimPeriod(orderId, periodKey);
+        },
+      },
+      portfolioRepo: createPortfolioRepository(harness.db),
+      assetRepo: createAssetRepository(harness.db),
+      transactionRepo: createTransactionRepository(harness.db),
+      cashMovementRepo: createCashMovementRepository(harness.db),
+      cashSourceRepo: createCashSourceRepository(harness.db),
+      marketData: createStubMarketData(),
+      snapshots: { async invalidate() {} },
+      notify: {
+        async emit() {
+          return true;
+        },
+      },
+    });
+
+    const result = await service.processDueOrders({ now: Date.parse('2026-04-01T12:00:00Z') });
+
+    expect(pauseLanded).toBe(true);
+    expect(result).toMatchObject({ booked: 0, failed: 0, skippedDuplicate: 0 });
+    expect(await cashRows(pid, SOURCE_TAG_STANDING_ORDER)).toEqual([]);
+    expect(await runPeriodKeys()).toEqual([]);
   });
 });
 
@@ -478,6 +540,207 @@ describe('standing orders — provider failure on a buy', () => {
     // A further run does not double-book the recovered period.
     expect((await run('2026-04-02T12:00:00Z')).booked).toBe(0);
     expect(await txnRows(pid)).toHaveLength(1);
+  });
+
+  it('defers a stale direct-poll result without claiming, then books a fresh quote', async () => {
+    const { agent, pid } = await setup();
+    const assetId = await seedAsset('STALE');
+    const created = await createOrder(agent, {
+      portfolioId: pid,
+      kind: 'buy-asset',
+      assetId,
+      amount: 2,
+      cadence: 'daily',
+      startDate: '2026-04-01',
+    });
+    const id = created.body.id as string;
+    quote.asOf = '2026-03-31T20:00:00.000Z';
+    quote.stale = true;
+
+    expect(await run('2026-04-01T12:00:00Z')).toMatchObject({
+      booked: 0,
+      deferred: 1,
+      failed: 0,
+    });
+    expect(await txnRows(pid)).toEqual([]);
+    expect(await runPeriodKeys()).toEqual([]);
+    expect(marketData.calls).toMatchObject({ quote: 0, poll: 1 });
+
+    quote.stale = false;
+    expect(await run('2026-04-01T12:05:00Z')).toMatchObject({
+      booked: 1,
+      deferred: 0,
+      failed: 0,
+    });
+    const [transaction] = await txnRows(pid);
+    expect(Number(transaction?.price)).toBe(100);
+    expect(transaction?.executedAt.toISOString()).toBe(quote.asOf);
+    const order = await agent.get(`/api/v1/standing-orders/${id}`);
+    expect(order.status).toBe(200);
+    expect(order.body.lastRunAt).toBe(quote.asOf);
+    expect(marketData.calls).toMatchObject({ quote: 0, poll: 2 });
+  });
+
+  it('books a fresh provider response after an extended market closure', async () => {
+    const { agent, pid } = await setup();
+    const assetId = await seedAsset('CLOSED');
+    await createOrder(agent, {
+      portfolioId: pid,
+      kind: 'buy-asset',
+      assetId,
+      amount: 2,
+      cadence: 'daily',
+      startDate: '2026-04-01',
+    });
+    quote.asOf = '2026-03-27T12:00:00.000Z';
+
+    expect(await run('2026-04-01T12:00:00Z')).toMatchObject({
+      booked: 1,
+      deferred: 0,
+      failed: 0,
+    });
+    const [transaction] = await txnRows(pid);
+    expect(transaction?.executedAt.toISOString()).toBe(quote.asOf);
+  });
+
+  it('dates a manual-asset buy at the scan instant, not its historic value-point day', async () => {
+    const { agent, pid } = await setup();
+    const createdAsset = await agent
+      .post('/api/v1/custom-assets')
+      .set(...XRW)
+      .send({ name: 'Family house', category: 'other', currency: 'EUR' });
+    expect(createdAsset.status).toBe(201);
+    const assetId = createdAsset.body.asset.id as string;
+    const points = await agent
+      .put(`/api/v1/custom-assets/${assetId}/value-points`)
+      .set(...XRW)
+      .send({ points: [{ date: '2025-01-15', value: 400_000 }] });
+    expect(points.status).toBe(200);
+
+    const createdOrder = await createOrder(agent, {
+      portfolioId: pid,
+      kind: 'buy-asset',
+      assetId,
+      amount: 1,
+      cadence: 'daily',
+      startDate: '2026-04-01',
+    });
+    expect(createdOrder.status).toBe(201);
+
+    // Exercise the production manual provider, not the file-level quote stub:
+    // it reports the latest value-point day as Quote.asOf and is marked local.
+    const redis = new RedisMock() as unknown as Redis;
+    const manual = createManualProvider({ source: createManualAssetSource(harness.db) });
+    const marketData = createMarketDataService({
+      registry: createProviderRegistry([manual]),
+      redis,
+    });
+    const invalidatedDays: string[] = [];
+    const service = createStandingOrderService({
+      repo: createStandingOrderRepository(harness.db),
+      portfolioRepo: createPortfolioRepository(harness.db),
+      assetRepo: createAssetRepository(harness.db),
+      transactionRepo: createTransactionRepository(harness.db),
+      cashMovementRepo: createCashMovementRepository(harness.db),
+      cashSourceRepo: createCashSourceRepository(harness.db),
+      marketData,
+      snapshots: {
+        async invalidate(_portfolioId, fromDay) {
+          invalidatedDays.push(fromDay);
+        },
+      },
+      notify: {
+        async emit() {
+          return true;
+        },
+      },
+    });
+    const scanAt = '2026-04-01T12:00:00.000Z';
+
+    expect(await service.processDueOrders({ now: Date.parse(scanAt) })).toMatchObject({
+      booked: 1,
+      deferred: 0,
+      failed: 0,
+    });
+    const [transaction] = await txnRows(pid);
+    expect(Number(transaction?.price)).toBe(400_000);
+    expect(transaction?.executedAt.toISOString()).toBe(scanAt);
+    expect(invalidatedDays).toEqual(['2026-04-01']);
+    const order = await agent.get(`/api/v1/standing-orders/${createdOrder.body.id as string}`);
+    expect(order.body.lastRunAt).toBe(scanAt);
+    redis.disconnect();
+  });
+});
+
+describe('standing orders — per-order failure isolation', () => {
+  it('counts a failed claim and continues to a later order', async () => {
+    const first = await setup();
+    const poisoned = await createOrder(first.agent, {
+      portfolioId: first.pid,
+      kind: 'cash-add',
+      amount: 10,
+      label: 'poisoned',
+      cadence: 'daily',
+      startDate: '2026-04-01',
+    });
+    const secondUser = await harness.seedUser({
+      email: 'healthy-order@bettertrack.test',
+      username: 'healthyorder',
+    });
+    const secondAgent = await loginAgent(harness.app, secondUser.email, secondUser.password);
+    const secondPid = await defaultPortfolioId(secondAgent);
+    const healthy = await createOrder(secondAgent, {
+      portfolioId: secondPid,
+      kind: 'cash-add',
+      amount: 20,
+      label: 'healthy',
+      cadence: 'daily',
+      startDate: '2026-04-01',
+    });
+    const poisonedId = poisoned.body.id as string;
+    const healthyId = healthy.body.id as string;
+    await harness.db
+      .update(schema.standingOrders)
+      .set({ createdAt: new Date('2026-01-01T00:00:00.000Z') })
+      .where(eq(schema.standingOrders.id, poisonedId));
+    await harness.db
+      .update(schema.standingOrders)
+      .set({ createdAt: new Date('2026-01-02T00:00:00.000Z') })
+      .where(eq(schema.standingOrders.id, healthyId));
+
+    const repo = createStandingOrderRepository(harness.db);
+    const claimOrder: string[] = [];
+    const service = createStandingOrderService({
+      repo: {
+        ...repo,
+        async claimPeriod(orderId, periodKey) {
+          claimOrder.push(orderId);
+          if (orderId === poisonedId) throw new Error('injected poisoned claim');
+          return repo.claimPeriod(orderId, periodKey);
+        },
+      },
+      portfolioRepo: createPortfolioRepository(harness.db),
+      assetRepo: createAssetRepository(harness.db),
+      transactionRepo: createTransactionRepository(harness.db),
+      cashMovementRepo: createCashMovementRepository(harness.db),
+      cashSourceRepo: createCashSourceRepository(harness.db),
+      marketData: createStubMarketData(),
+      snapshots: { async invalidate() {} },
+      notify: {
+        async emit() {
+          return true;
+        },
+      },
+    });
+
+    const result = await service.processDueOrders({ now: Date.parse('2026-04-01T12:00:00Z') });
+
+    expect(claimOrder).toEqual([poisonedId, healthyId]);
+    expect(result).toMatchObject({ scanned: 2, booked: 1, failed: 1 });
+    expect(await cashRows(first.pid, SOURCE_TAG_STANDING_ORDER)).toEqual([]);
+    const [movement] = await cashRows(secondPid, SOURCE_TAG_STANDING_ORDER);
+    expect(movement).toMatchObject({ note: 'healthy', source: SOURCE_TAG_STANDING_ORDER });
+    expect(Number(movement?.amountEur)).toBe(20);
   });
 });
 
@@ -650,7 +913,7 @@ describe('standing orders — post-claim booking tombstone', () => {
 
     const result = await service.processDueOrders({ now: Date.parse('2026-04-01T12:00:00Z') });
 
-    expect(result).toMatchObject({ booked: 0, deferred: 0 });
+    expect(result).toMatchObject({ booked: 0, deferred: 0, failed: 0 });
     expect((await runPeriodKeys()).map((row) => row.key)).toEqual(['2026-04-01']);
     expect(emitted).toEqual([
       {
