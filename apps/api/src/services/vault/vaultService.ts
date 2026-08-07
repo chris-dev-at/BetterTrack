@@ -94,6 +94,12 @@ export interface VaultService {
   portfolioState(userId: string, portfolioId: string): Promise<PortfolioVaultState>;
   /** Owner-scoped membership probe driving the portfolio-scoped kill rail. */
   isPortfolioVaulted(userId: string, portfolioId: string): Promise<boolean>;
+  setAlias(
+    userId: string,
+    portfolioId: string,
+    alias: string | null,
+    ip: string | null,
+  ): Promise<PortfolioVaultState>;
   // ── v1 → v2 migration protocol (design r2 §11) ────────────────────────────
   migrationState(userId: string): Promise<VaultMigrationState>;
   claimMigration(userId: string, clientNonce: string): Promise<VaultMigrationState>;
@@ -157,12 +163,17 @@ function toDocMetadata(row: VaultDocMetaRow | VaultDocRow): VaultDocMetadata {
   };
 }
 
-function toPortfolioState(portfolioId: string, vault: VaultRow | null): PortfolioVaultState {
+function toPortfolioState(
+  portfolioId: string,
+  vault: VaultRow | null,
+  alias: string | null,
+): PortfolioVaultState {
   return {
     portfolioId,
     vaultId: vault?.id ?? null,
     vaultName: vault?.name ?? null,
     backends: vault?.backends ?? null,
+    alias,
   };
 }
 
@@ -211,12 +222,16 @@ export function createVaultService(deps: VaultServiceDeps): VaultService {
       const header = input.header === undefined ? null : decodeCiphertext(input.header, 'header');
       const result = await deps.vaults.createVault({
         userId,
+        ...(input.id !== undefined ? { id: input.id } : {}),
         name: input.name,
         backends: input.backends,
         header,
       });
       if (result.status === 'name_taken') {
         throw conflict('You already have a vault with that name.', VAULT2_ERROR_CODES.nameTaken);
+      }
+      if (result.status === 'id_taken') {
+        throw conflict('A vault with that id already exists.', VAULT2_ERROR_CODES.idTaken);
       }
       if (result.status === 'too_large') throw tooLarge(result.sizeBytes, result.maxBytes);
       await deps.audit.record({
@@ -334,7 +349,7 @@ export function createVaultService(deps: VaultServiceDeps): VaultService {
         meta: { vaultId: result.vault.id, backends: result.vault.backends },
       });
       return {
-        state: toPortfolioState(portfolioId, result.vault),
+        state: toPortfolioState(portfolioId, result.vault, null),
         blob: toDocMetadata(result.blob),
       };
     },
@@ -370,6 +385,34 @@ export function createVaultService(deps: VaultServiceDeps): VaultService {
 
     async isPortfolioVaulted(userId, portfolioId) {
       return deps.vaults.isPortfolioVaulted(userId, portfolioId);
+    },
+
+    async setAlias(userId, portfolioId, alias, ip) {
+      const result = await deps.vaults.setPortfolioAlias(userId, portfolioId, alias);
+      switch (result.status) {
+        case 'portfolio_not_found':
+          throw notFound('No such portfolio.', 'PORTFOLIO_NOT_FOUND');
+        case 'not_vaulted':
+          // A normal portfolio renames on the ordinary route; this one exists
+          // only because that route is killed while vaulted.
+          throw conflict(
+            'This portfolio is not in a vault; rename it on the portfolio route instead.',
+            VAULT2_ERROR_CODES.notFound,
+          );
+        case 'ok':
+          break;
+      }
+      await deps.audit.record({
+        actorId: userId,
+        action: AuditAction.VaultPortfolioAliasSet,
+        targetType: 'portfolio',
+        targetId: portfolioId,
+        ip,
+        // The alias is cleartext by construction, but it is still a user-chosen
+        // label — record only whether one is set, never its text.
+        meta: { cleared: alias === null },
+      });
+      return this.portfolioState(userId, portfolioId);
     },
 
     async migrationState(userId) {
@@ -445,7 +488,7 @@ export function createVaultService(deps: VaultServiceDeps): VaultService {
     async portfolioState(userId, portfolioId) {
       const row = await deps.vaults.portfolioVaultState(userId, portfolioId);
       if (!row) throw notFound('No such portfolio.', 'PORTFOLIO_NOT_FOUND');
-      return toPortfolioState(row.portfolioId, row.vault);
+      return toPortfolioState(row.portfolioId, row.vault, row.alias);
     },
   };
 }

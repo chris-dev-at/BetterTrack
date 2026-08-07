@@ -97,6 +97,10 @@ export const VAULTS_SESSION_ONLY_ROUTES = [
 export const PORTFOLIO_VAULT_SESSION_ONLY_ROUTES = [
   { method: 'POST', path: '/portfolios/{portfolioId}/vault' },
   { method: 'DELETE', path: '/portfolios/{portfolioId}/vault' },
+  // The vaulted-portfolio alias. Session-only like the transitions: it is the
+  // one write that stays reachable while vaulted, and widening it to a bearer
+  // would put the only writable surface of a vaulted portfolio on a token.
+  { method: 'PATCH', path: '/portfolios/{portfolioId}/alias' },
 ] as const satisfies readonly BearerRoute[];
 
 /**

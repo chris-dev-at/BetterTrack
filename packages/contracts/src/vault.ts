@@ -683,6 +683,14 @@ const portfolioRowSchema = z
      * disagree about whether it is paranoid at all.
      */
     vaultId: uuidSchema.nullable().default(null),
+    /**
+     * Vaults v2 (§4): the cleartext display alias of a vaulted portfolio.
+     * ADDITIVE within v1 and `.default(null)`, for the same reason as `vaultId`
+     * above — and it round-trips for the same reason too: an account-level
+     * enable purges the `portfolios` row, and a locked row that came back
+     * without its alias would render under a name the user had renamed away.
+     */
+    alias: z.string().nullable().default(null),
   })
   .strict();
 

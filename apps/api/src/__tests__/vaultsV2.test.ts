@@ -8,6 +8,9 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import {
   VAULT2_CANONICAL_ERROR_CODES,
   VAULT2_ERROR_CODES,
+  VAULT2_TRANSLATED_ERROR_CODES,
+  VAULT_ALIAS_MAX_LENGTH,
+  portfolioVaultStateSchema,
   VAULT_COMMON_DOC_MAX_BYTES,
   VAULT_HEADER_MAX_BYTES,
   VAULT_MIGRATION_CLAIM_TTL_MS,
@@ -196,8 +199,8 @@ async function countRows(portfolioId: string): Promise<Record<string, number>> {
   };
 }
 
-async function mintToken(user: SeededUser, scopes: ApiKeyScope[]): Promise<string> {
-  const key = await harness.ctx.apiKeys.create({ userId: user.id, name: 'sync', scopes });
+async function mintToken(user: SeededUser, scopes: ApiKeyScope[], name = 'sync'): Promise<string> {
+  const key = await harness.ctx.apiKeys.create({ userId: user.id, name, scopes });
   return key.token;
 }
 
@@ -352,6 +355,214 @@ describe('vaults v2 — CRUD', () => {
       .from(schema.vaults)
       .where(eq(schema.vaults.id, empty.vaultId));
     expect(remaining).toHaveLength(0);
+  });
+});
+
+// ── Client-minted vault ids (r2 §11 derives them) ───────────────────────────
+
+describe('vaults v2 — client-supplied vault id', () => {
+  it('honours a client-minted id so the header’s AAD and a derived migration id hold', async () => {
+    const user = await seedUser('mintedid');
+    const agent = await loginAgent(harness.app, user);
+    const id = randomUUID();
+
+    const created = await agent
+      .post('/api/v1/vaults')
+      .set(...XRW)
+      .send({ id, name: 'Derived', backends: 'server', header: b64(blob('h')) });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    expect(vaultCreateResponseSchema.parse(created.body).vault.id).toBe(id);
+
+    // The header the wizard built before create is reachable under that exact id.
+    const header = await agent.get(`/api/v1/vaults/${id}/header`);
+    expect(header.status).toBe(200);
+    expect(header.headers.etag).toBe('"1"');
+  });
+
+  it('refuses a colliding id with VAULT_ID_TAKEN, distinctly from a name clash', async () => {
+    const user = await seedUser('collide');
+    const agent = await loginAgent(harness.app, user);
+    const id = randomUUID();
+    await agent
+      .post('/api/v1/vaults')
+      .set(...XRW)
+      .send({ id, name: 'First', backends: 'server', header: b64(blob('h')) });
+
+    const sameId = await agent
+      .post('/api/v1/vaults')
+      .set(...XRW)
+      .send({ id, name: 'Different name', backends: 'server', header: b64(blob('h2')) });
+    expect(sameId.status).toBe(409);
+    expect(sameId.body.error.code).toBe(VAULT2_ERROR_CODES.idTaken);
+
+    const sameName = await agent
+      .post('/api/v1/vaults')
+      .set(...XRW)
+      .send({ id: randomUUID(), name: 'First', backends: 'server', header: b64(blob('h3')) });
+    expect(sameName.status).toBe(409);
+    expect(sameName.body.error.code).toBe(VAULT2_ERROR_CODES.nameTaken);
+
+    // The first vault is untouched by either refusal.
+    const list = await agent.get('/api/v1/vaults');
+    expect(vaultListResponseSchema.parse(list.body).vaults).toHaveLength(1);
+  });
+
+  it('never lets a client-minted id collide across accounts into an overwrite', async () => {
+    const owner = await seedUser('idowner');
+    const ownerAgent = await loginAgent(harness.app, owner);
+    const id = randomUUID();
+    await ownerAgent
+      .post('/api/v1/vaults')
+      .set(...XRW)
+      .send({ id, name: 'Mine', backends: 'server', header: b64(blob('mine')) });
+
+    const other = await seedUser('idother');
+    const otherAgent = await loginAgent(harness.app, other);
+    const res = await otherAgent
+      .post('/api/v1/vaults')
+      .set(...XRW)
+      .send({ id, name: 'Theirs', backends: 'server', header: b64(blob('theirs')) });
+    expect(res.status).toBe(409);
+    // The same code an own-account collision gets: create must not become an
+    // existence oracle for ids a caller can derive.
+    expect(res.body.error.code).toBe(VAULT2_ERROR_CODES.idTaken);
+
+    // The owner's ciphertext is exactly what they wrote.
+    const header = await ownerAgent.get(`/api/v1/vaults/${id}/header`);
+    expect(Buffer.from(header.body as Buffer).equals(blob('mine'))).toBe(true);
+    // …and the other account still owns nothing.
+    const theirs = await otherAgent.get('/api/v1/vaults');
+    expect(vaultListResponseSchema.parse(theirs.body).vaults).toHaveLength(0);
+  });
+
+  it('rejects a malformed id rather than minting one silently', async () => {
+    const user = await seedUser('badid');
+    const agent = await loginAgent(harness.app, user);
+    const res = await agent
+      .post('/api/v1/vaults')
+      .set(...XRW)
+      .send({ id: 'not-a-uuid', name: 'Bad', backends: 'server', header: b64(blob('h')) });
+    expect(res.status).toBe(400);
+  });
+});
+
+// ── POST /auth/reauth — the generic session step-up ─────────────────────────
+
+describe('auth — generic session step-up (POST /auth/reauth)', () => {
+  it('verifies the current session user’s password and mints nothing', async () => {
+    const user = await seedUser('reauth');
+    const agent = await loginAgent(harness.app, user);
+
+    const ok = await agent
+      .post('/api/v1/auth/reauth')
+      .set(...XRW)
+      .send({ password: user.password, purpose: 'vault.qr_reveal' });
+    expect(ok.status, JSON.stringify(ok.body)).toBe(204);
+    expect(ok.body).toEqual({});
+    // No cookie is set or rotated: a 204 is an assertion about this instant,
+    // never a credential the caller can carry.
+    expect(ok.headers['set-cookie']).toBeUndefined();
+
+    const audited = await harness.db
+      .select({ action: schema.auditLog.action, meta: schema.auditLog.meta })
+      .from(schema.auditLog)
+      .where(and(eq(schema.auditLog.actorId, user.id), eq(schema.auditLog.action, 'auth.reauth')));
+    expect(audited).toHaveLength(1);
+    expect(audited[0]!.meta).toMatchObject({ purpose: 'vault.qr_reveal' });
+  });
+
+  it('401s a wrong password with the generic credential error and audits the failure', async () => {
+    const user = await seedUser('reauthbad');
+    const agent = await loginAgent(harness.app, user);
+
+    const res = await agent
+      .post('/api/v1/auth/reauth')
+      .set(...XRW)
+      .send({ password: 'definitely-not-the-password', purpose: 'vault.qr_reveal' });
+    expect(res.status).toBe(401);
+    expect(res.body.error.code).toBe('INVALID_CREDENTIALS');
+
+    const failures = await harness.db
+      .select({ meta: schema.auditLog.meta })
+      .from(schema.auditLog)
+      .where(
+        and(eq(schema.auditLog.actorId, user.id), eq(schema.auditLog.action, 'auth.reauth_fail')),
+      );
+    expect(failures).toHaveLength(1);
+    expect(failures[0]!.meta).toMatchObject({ purpose: 'vault.qr_reveal' });
+
+    // The session survives a failed step-up — this is a verifier, not a logout.
+    const me = await agent.get('/api/v1/auth/me');
+    expect(me.status).toBe(200);
+  });
+
+  it('requires a session and is unreachable with a bearer token', async () => {
+    const user = await seedUser('reauthbearer');
+
+    const anonymous = await request(harness.app)
+      .post('/api/v1/auth/reauth')
+      .set(...XRW)
+      .send({ password: user.password });
+    expect(anonymous.status).toBe(401);
+
+    // Every scope a token can hold, including the account-security scope that
+    // gates the rest of the security surface: the route is session-only, so the
+    // bearer policy refuses it before routing.
+    for (const scopes of [['account:security'], ['vault:sync'], ['portfolio:write']] as const) {
+      const token = await mintToken(user, [...scopes] as ApiKeyScope[], `reauth-${scopes[0]}`);
+      const res = await request(harness.app)
+        .post('/api/v1/auth/reauth')
+        .set(bearer(token))
+        .send({ password: user.password });
+      expect(res.status, `scope ${scopes[0]}`).toBe(403);
+      expect(res.body.error.code).toBe('API_KEY_FORBIDDEN');
+    }
+
+    // Pinned at the policy layer too, so a future carve-out has to be deliberate.
+    expect(pathAcceptsBearer('/auth/reauth', 'POST')).toBe(false);
+    expect(openApiPathTemplateAcceptsBearer('/auth/reauth', 'POST')).toBe(false);
+  });
+
+  it('throttles repeated failures per account and keeps a correct password out while cooling', async () => {
+    const user = await seedUser('reauththrottle');
+    const agent = await loginAgent(harness.app, user);
+
+    let sawThrottle = false;
+    for (let attempt = 0; attempt < 12 && !sawThrottle; attempt += 1) {
+      const res = await agent
+        .post('/api/v1/auth/reauth')
+        .set(...XRW)
+        .send({ password: `wrong-${attempt}` });
+      if (res.status === 429) sawThrottle = true;
+      else expect(res.status).toBe(401);
+    }
+    expect(sawThrottle, 'the per-account throttle never engaged').toBe(true);
+
+    // The CORRECT password is refused while cooling: a blocked retry must not
+    // ride through, or the throttle would be decorative.
+    const correct = await agent
+      .post('/api/v1/auth/reauth')
+      .set(...XRW)
+      .send({ password: user.password });
+    expect(correct.status).toBe(429);
+  });
+
+  it('validates the purpose without letting it change what is verified', async () => {
+    const user = await seedUser('reauthpurpose');
+    const agent = await loginAgent(harness.app, user);
+
+    const tooLong = await agent
+      .post('/api/v1/auth/reauth')
+      .set(...XRW)
+      .send({ password: user.password, purpose: 'p'.repeat(65) });
+    expect(tooLong.status).toBe(400);
+
+    // A wrong password is still 401 no matter what purpose is claimed.
+    const spoofed = await agent
+      .post('/api/v1/auth/reauth')
+      .set(...XRW)
+      .send({ password: 'nope', purpose: 'admin.override' });
+    expect(spoofed.status).toBe(401);
   });
 });
 
@@ -761,6 +972,147 @@ describe('vaults v2 — join and leave', () => {
       .send({ restoreId: randomUUID(), document: { schemaVersion: 1, entities: [] } });
     expect(res.status).toBe(400);
     expect(res.body.error.code).toBe(VAULT2_ERROR_CODES.restoreInvalid);
+  });
+});
+
+// ── The vaulted-portfolio alias (§4) ────────────────────────────────────────
+
+describe('vaults v2 — the vaulted-portfolio alias', () => {
+  it('round-trips an alias on a vaulted portfolio and clears it with null', async () => {
+    const user = await seedUser('alias');
+    const agent = await loginAgent(harness.app, user);
+    const portfolioId = await defaultPortfolioId(agent);
+    const { vaultId } = await createVault(agent);
+    await agent
+      .post(`/api/v1/portfolios/${portfolioId}/vault`)
+      .set(...XRW)
+      .send({ vaultId, blob: b64(blob('p')) });
+
+    const set = await agent
+      .patch(`/api/v1/portfolios/${portfolioId}/alias`)
+      .set(...XRW)
+      .send({ alias: 'Locked wallet' });
+    expect(set.status, JSON.stringify(set.body)).toBe(200);
+    expect(portfolioVaultStateSchema.parse(set.body)).toMatchObject({
+      portfolioId,
+      vaultId,
+      alias: 'Locked wallet',
+    });
+
+    // Persisted on the portfolio row, readable without any key.
+    const [row] = await harness.db
+      .select({ alias: schema.portfolios.alias, name: schema.portfolios.name })
+      .from(schema.portfolios)
+      .where(eq(schema.portfolios.id, portfolioId));
+    expect(row!.alias).toBe('Locked wallet');
+    // It writes ONLY the alias — the portfolio's name is untouched.
+    expect(row!.name).toBe('Main');
+
+    const cleared = await agent
+      .patch(`/api/v1/portfolios/${portfolioId}/alias`)
+      .set(...XRW)
+      .send({ alias: null });
+    expect(cleared.status).toBe(200);
+    expect(cleared.body.alias).toBeNull();
+  });
+
+  it('refuses a normal portfolio with 409 — its rename stays on the normal route', async () => {
+    const user = await seedUser('aliasnormal');
+    const agent = await loginAgent(harness.app, user);
+    const portfolioId = await defaultPortfolioId(agent);
+
+    const res = await agent
+      .patch(`/api/v1/portfolios/${portfolioId}/alias`)
+      .set(...XRW)
+      .send({ alias: 'Nope' });
+    expect(res.status).toBe(409);
+    const [row] = await harness.db
+      .select({ alias: schema.portfolios.alias })
+      .from(schema.portfolios)
+      .where(eq(schema.portfolios.id, portfolioId));
+    expect(row!.alias).toBeNull();
+
+    // The ordinary rename still works for it, unchanged.
+    const renamed = await agent
+      .patch(`/api/v1/portfolios/${portfolioId}`)
+      .set(...XRW)
+      .send({ name: 'Renamed normally' });
+    expect(renamed.status, JSON.stringify(renamed.body)).toBe(200);
+  });
+
+  it('is session-only: a vault:sync bearer is refused', async () => {
+    const user = await seedUser('aliasbearer');
+    const agent = await loginAgent(harness.app, user);
+    const portfolioId = await defaultPortfolioId(agent);
+    const { vaultId } = await createVault(agent);
+    await agent
+      .post(`/api/v1/portfolios/${portfolioId}/vault`)
+      .set(...XRW)
+      .send({ vaultId, blob: b64(blob('p')) });
+
+    const token = await mintToken(user, ['vault:sync']);
+    const bearerCall = await request(harness.app)
+      .patch(`/api/v1/portfolios/${portfolioId}/alias`)
+      .set(bearer(token))
+      .send({ alias: 'From a token' });
+    expect(bearerCall.status).toBe(403);
+    expect(bearerCall.body.error.code).toBe('API_KEY_FORBIDDEN');
+
+    // A portfolio-scoped token fares no better — the route is session-only,
+    // not merely scope-gated.
+    const portfolioToken = await mintToken(user, ['portfolio:write'], 'aliaspf');
+    const scoped = await request(harness.app)
+      .patch(`/api/v1/portfolios/${portfolioId}/alias`)
+      .set(bearer(portfolioToken))
+      .send({ alias: 'From a token' });
+    expect(scoped.status).toBe(403);
+  });
+
+  it('rejects an over-long alias and never lets it reach the column', async () => {
+    const user = await seedUser('aliaslong');
+    const agent = await loginAgent(harness.app, user);
+    const portfolioId = await defaultPortfolioId(agent);
+    const { vaultId } = await createVault(agent);
+    await agent
+      .post(`/api/v1/portfolios/${portfolioId}/vault`)
+      .set(...XRW)
+      .send({ vaultId, blob: b64(blob('p')) });
+
+    const res = await agent
+      .patch(`/api/v1/portfolios/${portfolioId}/alias`)
+      .set(...XRW)
+      .send({ alias: 'x'.repeat(VAULT_ALIAS_MAX_LENGTH + 1) });
+    expect(res.status).toBe(400);
+    const [row] = await harness.db
+      .select({ alias: schema.portfolios.alias })
+      .from(schema.portfolios)
+      .where(eq(schema.portfolios.id, portfolioId));
+    expect(row!.alias).toBeNull();
+  });
+
+  it('cannot set an alias on another account’s vaulted portfolio', async () => {
+    const owner = await seedUser('aliasowner');
+    const ownerAgent = await loginAgent(harness.app, owner);
+    const portfolioId = await defaultPortfolioId(ownerAgent);
+    const { vaultId } = await createVault(ownerAgent);
+    await ownerAgent
+      .post(`/api/v1/portfolios/${portfolioId}/vault`)
+      .set(...XRW)
+      .send({ vaultId, blob: b64(blob('p')) });
+
+    const intruder = await seedUser('aliasintruder');
+    const intruderAgent = await loginAgent(harness.app, intruder);
+    const res = await intruderAgent
+      .patch(`/api/v1/portfolios/${portfolioId}/alias`)
+      .set(...XRW)
+      .send({ alias: 'Stolen' });
+    expect(res.status).toBe(404);
+
+    const [row] = await harness.db
+      .select({ alias: schema.portfolios.alias })
+      .from(schema.portfolios)
+      .where(eq(schema.portfolios.id, portfolioId));
+    expect(row!.alias).toBeNull();
   });
 });
 
@@ -1511,17 +1863,23 @@ describe('vaults v2 — error-code catalog (r2 §15)', () => {
     const de = (await import('../../../web/src/i18n/messages/de.json', { with: { type: 'json' } }))
       .default as { vault: { errors: Record<string, string> } };
 
-    for (const code of VAULT2_CANONICAL_ERROR_CODES) {
+    // Fifteen, not ten: the five codes beyond r2 §15's canonical set render from
+    // the same catalog, because mobile never surfaces a raw code.
+    expect(VAULT2_TRANSLATED_ERROR_CODES).toHaveLength(16);
+    for (const code of VAULT2_TRANSLATED_ERROR_CODES) {
       expect(en.vault.errors[code], `missing EN string for ${code}`).toBeTruthy();
       expect(de.vault.errors[code], `missing DE string for ${code}`).toBeTruthy();
       expect(en.vault.errors[code]).not.toBe(de.vault.errors[code]);
     }
-    expect(Object.keys(en.vault.errors).sort()).toEqual([...VAULT2_CANONICAL_ERROR_CODES].sort());
-    expect(Object.keys(de.vault.errors).sort()).toEqual([...VAULT2_CANONICAL_ERROR_CODES].sort());
+    expect(Object.keys(en.vault.errors).sort()).toEqual([...VAULT2_TRANSLATED_ERROR_CODES].sort());
+    expect(Object.keys(de.vault.errors).sort()).toEqual([...VAULT2_TRANSLATED_ERROR_CODES].sort());
   });
 
-  it('exposes every canonical code through the contract table', () => {
+  it('exposes every translated code through the contract table', () => {
     const values = new Set(Object.values(VAULT2_ERROR_CODES));
+    for (const code of VAULT2_TRANSLATED_ERROR_CODES) expect(values.has(code)).toBe(true);
+    // Every code the table defines is translated: no code can ship stringless.
+    expect([...values].sort()).toEqual([...VAULT2_TRANSLATED_ERROR_CODES].sort());
     for (const code of VAULT2_CANONICAL_ERROR_CODES) expect(values.has(code)).toBe(true);
   });
 });

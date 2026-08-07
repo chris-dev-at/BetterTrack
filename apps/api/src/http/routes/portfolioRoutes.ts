@@ -27,6 +27,8 @@ import {
   updateCashSourceRequestSchema,
   updatePortfolioRequestSchema,
   updateTaxSettingsRequestSchema,
+  portfolioVaultStateSchema,
+  setPortfolioAliasRequestSchema,
   updateTransactionRequestSchema,
   vaultJoinRequestSchema,
   vaultJoinResponseSchema,
@@ -56,6 +58,7 @@ import {
   type UpdatePortfolioRequest,
   type UpdatePortfolioResponse,
   type UpdateTaxSettingsRequest,
+  type SetPortfolioAliasRequest,
   type UpdateTransactionRequest,
   type VaultJoinRequest,
   type VaultLeaveRequest,
@@ -741,6 +744,24 @@ export function createPortfolioRouter(ctx: AppContext): Router {
         req.ip ?? null,
       );
       res.status(200).json(vaultJoinResponseSchema.parse(result));
+    },
+  );
+
+  // PATCH /portfolios/:portfolioId/alias — the split-out rename for a VAULTED
+  // portfolio. The ordinary rename route also carries `visibility`, and sharing
+  // a vaulted portfolio must stay unreachable, so that whole route is killed
+  // while vaulted; this one writes the cleartext alias column and nothing else.
+  // A normal portfolio is refused (409) — its rename stays where it always was.
+  router.patch(
+    '/:portfolioId/alias',
+    requireOwnerBrowserSessionForVault,
+    validateParams(portfolioIdParamSchema),
+    validateBody(setPortfolioAliasRequestSchema),
+    async (req, res) => {
+      const { portfolioId } = req.valid?.params as { portfolioId: string };
+      const { alias } = req.valid?.body as SetPortfolioAliasRequest;
+      const state = await ctx.vaults.setAlias(req.authUser!.id, portfolioId, alias, req.ip ?? null);
+      res.json(portfolioVaultStateSchema.parse(state));
     },
   );
 

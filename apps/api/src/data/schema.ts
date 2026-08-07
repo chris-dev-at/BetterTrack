@@ -1219,10 +1219,25 @@ export const portfolios = pgTable(
      * here would make the users-cascade delete order load-bearing.
      */
     vaultId: uuid('vault_id').references((): AnyPgColumn => vaults.id, { onDelete: 'set null' }),
+    /**
+     * Vaults v2 (`docs/VAULTS_V2_DESIGN.md` §4): the cleartext display alias for
+     * a VAULTED portfolio. A locked vault cannot be decrypted, so the header's
+     * in-document alias is unreadable exactly when it is needed — the locked row
+     * ("alias + lock glyph") has to render from a column the server can read.
+     *
+     * Deliberately separate from `name`: `name` is edited on the normal rename
+     * route, which is killed for a vaulted portfolio because it also carries
+     * `visibility`. The alias route sets THIS column and nothing else.
+     */
+    alias: text('alias'),
   },
   (t) => [
     uniqueIndex('portfolios_user_name_unique').on(t.userId, t.name),
     index('portfolios_vault_idx').on(t.vaultId),
+    check(
+      'portfolios_alias_length',
+      sql`${t.alias} is null or char_length(${t.alias}) between 1 and 64`,
+    ),
   ],
 );
 

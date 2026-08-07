@@ -75,6 +75,7 @@ const componentSchemas = {
   VersionResponse: contracts.versionResponseSchema,
   VaultHistoryListResponse: contracts.vaultHistoryListResponseSchema,
   // Vaults v2 (`docs/VAULTS_V2_DESIGN.md` §3)
+  ReauthRequest: contracts.reauthRequestSchema,
   Vault: contracts.vaultSchema,
   VaultListResponse: contracts.vaultListResponseSchema,
   VaultSyncListResponse: contracts.vaultSyncListResponseSchema,
@@ -91,6 +92,7 @@ const componentSchemas = {
   VaultMigrationFlipRequest: contracts.vaultMigrationFlipRequestSchema,
   VaultVersionConflictResponse: contracts.vaultVersionConflictResponseSchema,
   PortfolioVaultState: contracts.portfolioVaultStateSchema,
+  SetPortfolioAliasRequest: contracts.setPortfolioAliasRequestSchema,
   ParanoidMediaStateResponse: contracts.paranoidMediaStateResponseSchema,
   ParanoidMediaTransitionRequest: contracts.paranoidMediaTransitionRequestSchema,
   ParanoidMediaTransitionResponse: contracts.paranoidMediaTransitionResponseSchema,
@@ -4385,6 +4387,15 @@ const endpoints: EndpointDef[] = [
   // the two per-portfolio transitions are session-only; the `{vaultId}`-scoped
   // documents accept the same `vault:sync` bearer exception under If-Match CAS.
   {
+    method: 'post',
+    path: '/auth/reauth',
+    tag: 'Auth',
+    summary:
+      'Generic session step-up: re-verify the CURRENT session user’s password. 204 on success, 401 on mismatch, 429 under the dedicated per-account throttle. Mints nothing — the caller gates its own surface on the response, so there is no artifact to store or replay. `purpose` is audit provenance only and never affects what is verified. Cookie-session only.',
+    body: contracts.reauthRequestSchema,
+    status: 204,
+  },
+  {
     method: 'get',
     path: '/vaults',
     tag: 'Vault',
@@ -4565,6 +4576,17 @@ const endpoints: EndpointDef[] = [
     body: contracts.vaultJoinRequestSchema,
     status: 200,
     response: contracts.vaultJoinResponseSchema,
+  },
+  {
+    method: 'patch',
+    path: '/portfolios/{portfolioId}/alias',
+    tag: 'Vault',
+    summary:
+      'Set (or clear, with null) the cleartext display alias of a VAULTED portfolio — what a locked row renders, since a locked vault cannot be decrypted. Writes only this column: `visibility` stays unreachable while vaulted, which is why the ordinary rename route is killed and this one exists. 409 on a normal portfolio (rename it on the portfolio route). Owning browser session only.',
+    params: z.object({ portfolioId: z.string().uuid() }),
+    body: contracts.setPortfolioAliasRequestSchema,
+    status: 200,
+    response: contracts.portfolioVaultStateSchema,
   },
   {
     method: 'delete',

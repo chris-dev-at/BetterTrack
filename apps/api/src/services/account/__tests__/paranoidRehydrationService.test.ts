@@ -278,6 +278,7 @@ function strictPortfolioEntity(row: typeof portfolios.$inferSelect) {
     sortOrder: row.sortOrder,
     defaultPayFromCash: row.defaultPayFromCash,
     vaultId: row.vaultId,
+    alias: row.alias,
     archivedAt: row.archivedAt?.toISOString() ?? null,
   });
 }
@@ -604,6 +605,7 @@ function request(rehydrationId = REHYDRATION_ID): ParanoidDisableRehydrationRequ
           defaultPayFromCash: false,
 
           vaultId: null,
+          alias: null,
           archivedAt: null,
         }),
         entity(ASSET_ID, 'customAsset', {
@@ -2177,6 +2179,7 @@ describe('paranoid rehydration service', () => {
         defaultPayFromCash: false,
 
         vaultId: null,
+        alias: null,
         archivedAt: null,
       }),
     );
@@ -2463,6 +2466,7 @@ describe('paranoid rehydration service', () => {
         defaultPayFromCash: false,
 
         vaultId: null,
+        alias: null,
         archivedAt: editedAt,
       }),
     );
@@ -2632,6 +2636,7 @@ describe('paranoid rehydration service', () => {
         defaultPayFromCash: false,
 
         vaultId: null,
+        alias: null,
         archivedAt: null,
       }),
       entity(SECOND_CASH_SOURCE_ID, 'cashSource', {
@@ -4031,6 +4036,7 @@ describe('paranoid rehydration service', () => {
         defaultPayFromCash: false,
 
         vaultId: null,
+        alias: null,
         archivedAt: null,
       }),
       entity(SECOND_CASH_SOURCE_ID, 'cashSource', {

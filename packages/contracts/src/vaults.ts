@@ -20,6 +20,13 @@ import { VAULT_DOCUMENT_V1_VERSION, vaultStrictEntitySchema } from './vault';
 export const VAULT_NAME_MAX_LENGTH = 64;
 
 /**
+ * A vaulted portfolio's cleartext display alias (§4). It exists because a LOCKED
+ * vault cannot be decrypted, so the header's in-document alias is unreadable
+ * exactly when the locked row needs to render it.
+ */
+export const VAULT_ALIAS_MAX_LENGTH = 64;
+
+/**
  * Storage backend selection (§1, extensible). `both` means the client mirrors
  * the same documents to the server AND to Drive; `drive` means the server holds
  * no ciphertext for this vault at all and its `vault_docs` rows stay absent.
@@ -108,9 +115,17 @@ export const VAULT2_ERROR_CODES = {
   joinBlocked: 'VAULT_JOIN_BLOCKED',
   /** The leave restore payload did not satisfy the portfolio-scoped invariants, 400. */
   restoreInvalid: 'VAULT_RESTORE_INVALID',
+  /**
+   * A client-minted vault id is already in use, 409. Distinct from
+   * `VAULT_NAME_TAKEN` because it means something entirely different: ids are
+   * DERIVED (the r2 §11 migration derives the successor id from the legacy
+   * vault), so a collision reads as "this vault already exists — you are
+   * resuming", not "pick another label".
+   */
+  idTaken: 'VAULT_ID_TAKEN',
 } as const;
 
-/** Exactly the ten codes r2 §15 requires EN + DE strings for. */
+/** The ten codes r2 §15 names as the contract's canonical set. */
 export const VAULT2_CANONICAL_ERROR_CODES = [
   'VAULT_NOT_FOUND',
   'VAULT_NOT_EMPTY',
@@ -122,6 +137,26 @@ export const VAULT2_CANONICAL_ERROR_CODES = [
   'VAULT_CROSS_BLOB_REFUSED',
   'VAULT_FORMAT_UPDATE_REQUIRED',
   'VAULT_BACKEND_UNAVAILABLE',
+] as const;
+
+/**
+ * The five codes beyond r2 §15's ten. They ship EN + DE strings exactly like the
+ * canonical set: mobile renders every error from the catalog, so a code with no
+ * string would surface raw in the UI.
+ */
+export const VAULT2_ADDITIONAL_ERROR_CODES = [
+  'VAULT_PRECONDITION_REQUIRED',
+  'VAULT_NAME_TAKEN',
+  'VAULT_PORTFOLIO_ALREADY_VAULTED',
+  'VAULT_JOIN_BLOCKED',
+  'VAULT_RESTORE_INVALID',
+  'VAULT_ID_TAKEN',
+] as const;
+
+/** Every code the i18n catalog must carry a string pair for. */
+export const VAULT2_TRANSLATED_ERROR_CODES = [
+  ...VAULT2_CANONICAL_ERROR_CODES,
+  ...VAULT2_ADDITIONAL_ERROR_CODES,
 ] as const;
 
 export type Vault2ErrorCode = (typeof VAULT2_ERROR_CODES)[keyof typeof VAULT2_ERROR_CODES];
@@ -192,6 +227,17 @@ export type VaultSyncListResponse = z.infer<typeof vaultSyncListResponseSchema>;
  */
 export const createVaultRequestSchema = z
   .object({
+    /**
+     * CLIENT-MINTED vault id. Required by the contract rather than a
+     * convenience: the r2 §11 migration derives the successor id deterministically
+     * from the legacy vault (which is what makes a resumed migration idempotent),
+     * and the web wizard builds the header — whose AAD references the id — before
+     * it can call create. A server-minted id would make both impossible.
+     *
+     * Optional here so a caller with no such constraint can still let the server
+     * mint one; a collision is `VAULT_ID_TAKEN`, never a silent overwrite.
+     */
+    id: z.string().uuid().optional(),
     name: vaultNameSchema,
     backends: vaultBackendsSchema,
     header: ciphertextBase64Schema.optional(),
@@ -374,9 +420,29 @@ export const portfolioVaultStateSchema = z
     vaultId: z.string().uuid().nullable(),
     vaultName: z.string().nullable(),
     backends: vaultBackendsSchema.nullable(),
+    /**
+     * The cleartext display alias of a vaulted portfolio (§4). Null means the
+     * locked row falls back to the portfolio's ordinary name. Always null for a
+     * normal portfolio — only the alias route can set it, and it refuses those.
+     */
+    alias: z.string().max(VAULT_ALIAS_MAX_LENGTH).nullable(),
   })
   .strict();
 export type PortfolioVaultState = z.infer<typeof portfolioVaultStateSchema>;
+
+/**
+ * `PATCH /portfolios/{portfolioId}/alias` — the split-out rename for a VAULTED
+ * portfolio. The ordinary rename route also carries `visibility`, and sharing a
+ * vaulted portfolio must stay unreachable, so that whole route is killed while
+ * vaulted; this one writes the alias column and nothing else. `null` clears the
+ * alias and falls the locked row back to the portfolio's name.
+ */
+export const setPortfolioAliasRequestSchema = z
+  .object({
+    alias: z.string().trim().min(1).max(VAULT_ALIAS_MAX_LENGTH).nullable(),
+  })
+  .strict();
+export type SetPortfolioAliasRequest = z.infer<typeof setPortfolioAliasRequestSchema>;
 
 export const vaultJoinResponseSchema = z
   .object({

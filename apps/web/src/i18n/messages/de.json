@@ -3781,7 +3781,13 @@
       "VAULT_MIGRATION_INCOMPLETE": "Die Aktualisierung wurde nicht abgeschlossen. Es hat sich nichts geändert – starte sie von diesem Gerät neu.",
       "VAULT_CROSS_BLOB_REFUSED": "Diese Änderung würde zwei Portfolios gleichzeitig betreffen. Mach sie stattdessen in zwei Schritten.",
       "VAULT_FORMAT_UPDATE_REQUIRED": "Dieser Tresor wurde mit einer neueren BetterTrack-Version geschrieben. Aktualisiere die App, um ihn zu öffnen.",
-      "VAULT_BACKEND_UNAVAILABLE": "Der Speicher dieses Tresors ist gerade nicht erreichbar."
+      "VAULT_BACKEND_UNAVAILABLE": "Der Speicher dieses Tresors ist gerade nicht erreichbar.",
+      "VAULT_PRECONDITION_REQUIRED": "BetterTrack konnte nicht erkennen, welche Version du bearbeitest. Lade neu und versuch es nochmal.",
+      "VAULT_NAME_TAKEN": "Du hast schon einen Tresor mit diesem Namen. Wähle einen anderen.",
+      "VAULT_PORTFOLIO_ALREADY_VAULTED": "Dieses Portfolio ist bereits in einem Tresor. Hol es zuerst heraus, bevor du es in einen anderen legst.",
+      "VAULT_JOIN_BLOCKED": "Dieses Portfolio kann noch nicht in einen Tresor. Verlasse zuerst sein geteiltes Gruppenportfolio.",
+      "VAULT_RESTORE_INVALID": "Diese Portfolio-Daten konnten nicht wiederhergestellt werden. Es wurde nichts geändert – versuch es von einem entsperrten Gerät nochmal.",
+      "VAULT_ID_TAKEN": "Diesen Tresor gibt es schon. Wenn du wiederherstellst oder aktualisierst, öffne ihn, statt einen neuen anzulegen."
     }
   },
   "announcements": {

@@ -71,6 +71,12 @@ export const VAULTED_PORTFOLIO_KEPT_ROUTES: readonly {
       'Deleting the portfolio row is metadata, reads no content, and must stay available — the vault blob dies with it by FK cascade.',
   },
   {
+    method: 'PATCH',
+    path: '/portfolios/{portfolioId}/alias',
+    reason:
+      'The alias IS the vaulted-portfolio surface: it writes one cleartext label column and nothing else, and it refuses a normal portfolio itself. Killing it would leave a locked row permanently stuck with whatever name it had at join time.',
+  },
+  {
     method: 'POST',
     path: '/portfolios/{portfolioId}/archive',
     reason: 'Archive/restore only move the portfolio row between two list states.',

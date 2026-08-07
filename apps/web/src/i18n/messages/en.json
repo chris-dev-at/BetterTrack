@@ -3781,7 +3781,13 @@
       "VAULT_MIGRATION_INCOMPLETE": "The upgrade didn’t finish. Nothing changed — start it again from this device.",
       "VAULT_CROSS_BLOB_REFUSED": "This change would touch two portfolios at once. Do it in two steps instead.",
       "VAULT_FORMAT_UPDATE_REQUIRED": "This vault was written by a newer version of BetterTrack. Update the app to open it.",
-      "VAULT_BACKEND_UNAVAILABLE": "This vault’s storage isn’t reachable right now."
+      "VAULT_BACKEND_UNAVAILABLE": "This vault’s storage isn’t reachable right now.",
+      "VAULT_PRECONDITION_REQUIRED": "BetterTrack couldn’t tell which version you were editing. Reload and try again.",
+      "VAULT_NAME_TAKEN": "You already have a vault with that name. Pick another.",
+      "VAULT_PORTFOLIO_ALREADY_VAULTED": "This portfolio is already in a vault. Move it out before putting it in another one.",
+      "VAULT_JOIN_BLOCKED": "This portfolio can’t move into a vault yet. Leave its shared group portfolio first.",
+      "VAULT_RESTORE_INVALID": "Those portfolio records couldn’t be restored. Nothing was changed — try again from an unlocked device.",
+      "VAULT_ID_TAKEN": "That vault already exists. If you’re restoring or upgrading, open it instead of creating a new one."
     }
   },
   "announcements": {

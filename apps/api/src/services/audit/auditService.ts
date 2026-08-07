@@ -69,6 +69,14 @@ export const AuditAction = {
   VaultPortfolioLeft: 'vault.portfolio_left',
   /** The one-way v1 → v2 commit point (design r2 §11): legacy becomes read-only. */
   VaultMigrated: 'vault.migrated',
+  /** Cleartext display alias of a vaulted portfolio; the label text is never logged. */
+  VaultPortfolioAliasSet: 'vault.portfolio_alias_set',
+  /**
+   * Generic session step-up (`POST /auth/reauth`). `meta.purpose` is the
+   * caller-supplied provenance string; it is never trusted for authorization.
+   */
+  AuthReauth: 'auth.reauth',
+  AuthReauthFail: 'auth.reauth_fail',
   UserPasswordReset: 'user.pw_reset',
   InviteCreated: 'invite.created',
   InviteUsed: 'invite.used',

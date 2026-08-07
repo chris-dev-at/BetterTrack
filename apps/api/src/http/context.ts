@@ -200,6 +200,7 @@ import {
   type WebhookDeliveryJob,
 } from '../services/webhooks';
 import { createParanoidVaultRepository } from '../data/repositories/paranoidVaultRepository';
+import { createReauthService, type ReauthService } from '../services/auth/reauthService';
 import { createVaultMigrationRepository } from '../data/repositories/vaultMigrationRepository';
 import { createVaultRepository } from '../data/repositories/vaultRepository';
 import { createVaultService, type VaultService } from '../services/vault/vaultService';
@@ -406,6 +407,12 @@ export interface AppContext {
    * Ownership scoping lives in its repository, never in a controller.
    */
   vaults: VaultService;
+  /**
+   * Generic session step-up (`POST /auth/reauth`). The missing primitive for
+   * sensitive acts that happen entirely client-side — the Vaults v2 QR handoff
+   * has no destructive endpoint of its own to hang a re-auth on.
+   */
+  reauth: ReauthService;
   /** Public account-locked paranoid enable/disable orchestrator (§7). */
   paranoidTransitions: ParanoidTransitionService;
   /** Registry-backed account guard shared by HTTP, services, jobs, and webhooks. */
@@ -972,6 +979,14 @@ export function buildContext(deps: BuildContextDeps): AppContext {
 
   // Vaults v2 (`docs/VAULTS_V2_DESIGN.md` §3). Independent of the account-level
   // vault above: different tables, its own CAS, no header inspection at all.
+  const reauth = createReauthService({
+    config,
+    redis,
+    userRepo,
+    passwordHasher,
+    audit,
+  });
+
   const vaultsService = createVaultService({
     vaults: createVaultRepository(db),
     migrations: createVaultMigrationRepository(db),
@@ -2043,6 +2058,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     cashTags: guarded.cashTags,
     cashBudgets: guarded.cashBudgets,
     paranoidVault,
+    reauth,
     vaults: vaultsService,
     paranoidTransitions,
     paranoidGuard,

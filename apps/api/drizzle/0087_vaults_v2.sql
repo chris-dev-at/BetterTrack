@@ -112,3 +112,14 @@ ALTER TABLE "paranoid_vaults" ADD COLUMN "migrating_by" text;
 ALTER TABLE "paranoid_vaults" ADD COLUMN "migration_expires_at" timestamp with time zone;
 --> statement-breakpoint
 ALTER TABLE "paranoid_vaults" ADD COLUMN "migrated_to" uuid;
+--> statement-breakpoint
+-- Cleartext display alias for a VAULTED portfolio (design §4). A locked vault
+-- cannot be decrypted, so the header's in-document alias is unreadable exactly
+-- when the locked row needs to render it. Separate from `name` because the
+-- normal rename route also carries `visibility`, which stays unreachable while
+-- vaulted; the alias route writes this column and nothing else.
+ALTER TABLE "portfolios" ADD COLUMN "alias" text;
+--> statement-breakpoint
+ALTER TABLE "portfolios"
+ADD CONSTRAINT "portfolios_alias_length"
+CHECK ("portfolios"."alias" is null or char_length("portfolios"."alias") between 1 and 64);

@@ -168,6 +168,7 @@ const fixtures: VaultStrictEntity[] = [
       // Vaults v2: a portfolio that lived in a v2 vault must come back pointing
       // at the same vault, so the membership is part of the persisted fixture.
       vaultId: uuid(77),
+      alias: 'Locked wallet',
     },
   },
   {

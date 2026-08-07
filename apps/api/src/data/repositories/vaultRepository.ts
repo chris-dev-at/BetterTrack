@@ -3,7 +3,7 @@ import {
   type VaultBackends,
   type VaultPortfolioRestoreDocument,
 } from '@bettertrack/contracts';
-import { and, asc, count, eq, sql } from 'drizzle-orm';
+import { and, asc, count, eq, isNotNull, sql } from 'drizzle-orm';
 
 import { createParanoidRehydrationSourceRepository } from './paranoidRehydrationRepository';
 import { hasVaultPortfolioCleartextRows, purgeVaultPortfolioRows } from './vaultPortfolioPurge';
@@ -66,6 +66,8 @@ export type VaultUpdateResult =
 export type VaultCreateResult =
   | { status: 'ok'; vault: VaultWithCount; header: VaultDocMetaRow | null }
   | { status: 'name_taken' }
+  /** A client-minted id already exists (possibly on ANOTHER account — see below). */
+  | { status: 'id_taken' }
   | { status: 'too_large'; sizeBytes: number; maxBytes: number };
 
 export type VaultJoinResult =
@@ -76,16 +78,38 @@ export type VaultJoinResult =
   | { status: 'blocked'; reason: string }
   | { status: 'too_large'; sizeBytes: number; maxBytes: number };
 
+export type PortfolioAliasResult =
+  | { status: 'ok' }
+  | { status: 'portfolio_not_found' }
+  /** The portfolio is not in a vault — its rename stays on the normal route. */
+  | { status: 'not_vaulted' };
+
 export type VaultLeaveResult =
   | { status: 'ok'; idempotent: boolean }
   | { status: 'portfolio_not_found' }
   | { status: 'not_vaulted' }
   | { status: 'restore_invalid'; reason: string };
 
-/** Postgres unique-violation, used to turn a name race into a clean 409. */
+/** Postgres unique-violation, used to turn a create race into a clean 409. */
 function isUniqueViolation(error: unknown): boolean {
   const code = (error as { code?: unknown } | null)?.code;
   return code === '23505';
+}
+
+/**
+ * Which uniqueness lost. The primary key means a client-minted id collided; any
+ * other unique index on `vaults` is the per-owner name. Read from the driver's
+ * `constraint`/`constraint_name` field, with a message fallback for drivers that
+ * do not populate it (the PGlite test harness among them).
+ */
+function violatedVaultPrimaryKey(error: unknown): boolean {
+  const err = error as { constraint?: unknown; constraint_name?: unknown; message?: unknown };
+  const constraint =
+    (typeof err?.constraint === 'string' && err.constraint) ||
+    (typeof err?.constraint_name === 'string' && err.constraint_name) ||
+    '';
+  if (constraint) return constraint === 'vaults_pkey';
+  return typeof err?.message === 'string' && err.message.includes('vaults_pkey');
 }
 
 function metaOf(row: VaultDocRow | VaultDocMetaRow): VaultDocMetaRow {
@@ -112,6 +136,8 @@ export interface VaultRepository {
   findVault(userId: string, vaultId: string): Promise<VaultWithCount | null>;
   createVault(input: {
     userId: string;
+    /** Client-minted id (r2 §11 derives it); omitted lets the database mint one. */
+    id?: string;
     name: string;
     backends: VaultBackends;
     header: Buffer | null;
@@ -154,13 +180,25 @@ export interface VaultRepository {
   portfolioVaultState(
     userId: string,
     portfolioId: string,
-  ): Promise<{ portfolioId: string; vault: VaultRow | null } | null>;
+  ): Promise<{ portfolioId: string; alias: string | null; vault: VaultRow | null } | null>;
   /**
    * Owner-scoped membership probe for the HTTP kill rail. A portfolio the
    * caller does not own answers `false`, never `true` — the guard must not
    * become a membership oracle for foreign ids.
    */
   isPortfolioVaulted(userId: string, portfolioId: string): Promise<boolean>;
+  /**
+   * Set the cleartext display alias of a VAULTED portfolio (§4). The
+   * `vault_id IS NOT NULL` predicate is part of the UPDATE, not a prior read, so
+   * a portfolio that leaves its vault concurrently cannot have an alias written
+   * onto it — the statement simply matches nothing and the caller gets the same
+   * refusal a normal portfolio gets.
+   */
+  setPortfolioAlias(
+    userId: string,
+    portfolioId: string,
+    alias: string | null,
+  ): Promise<PortfolioAliasResult>;
 }
 
 export function createVaultRepository(db: Database): VaultRepository {
@@ -230,7 +268,7 @@ export function createVaultRepository(db: Database): VaultRepository {
       return enriched ?? null;
     },
 
-    async createVault({ userId, name, backends, header }) {
+    async createVault({ userId, id, name, backends, header }) {
       if (header) {
         const maxBytes = vaultDocMaxBytes('header');
         if (header.length > maxBytes) {
@@ -239,7 +277,15 @@ export function createVaultRepository(db: Database): VaultRepository {
       }
       try {
         return await db.transaction(async (tx) => {
-          const [vault] = await tx.insert(vaults).values({ userId, name, backends }).returning();
+          const [vault] = await tx
+            .insert(vaults)
+            // A client-minted id is global, so a collision can name ANOTHER
+            // account's vault. That is answered with the same `VAULT_ID_TAKEN` as
+            // an own-account collision and nothing else: revealing which of the
+            // two it was would turn create into an existence oracle for ids a
+            // caller can derive.
+            .values({ ...(id !== undefined ? { id } : {}), userId, name, backends })
+            .returning();
           if (!vault) throw new Error('vault insert returned no row');
           let headerRow: VaultDocMetaRow | null = null;
           if (header) {
@@ -264,7 +310,9 @@ export function createVaultRepository(db: Database): VaultRepository {
           };
         });
       } catch (error) {
-        if (isUniqueViolation(error)) return { status: 'name_taken' };
+        if (isUniqueViolation(error)) {
+          return violatedVaultPrimaryKey(error) ? { status: 'id_taken' } : { status: 'name_taken' };
+        }
         throw error;
       }
     },
@@ -562,14 +610,38 @@ export function createVaultRepository(db: Database): VaultRepository {
       return row?.vaultId != null;
     },
 
+    async setPortfolioAlias(userId, portfolioId, alias) {
+      const updated = await db
+        .update(portfolios)
+        .set({ alias })
+        .where(
+          and(
+            eq(portfolios.id, portfolioId),
+            eq(portfolios.userId, userId),
+            isNotNull(portfolios.vaultId),
+          ),
+        )
+        .returning({ id: portfolios.id });
+      if (updated.length > 0) return { status: 'ok' };
+      // Nothing matched: distinguish "not yours / gone" from "not vaulted" with
+      // one more owner-scoped read, so a normal portfolio gets the precise 409
+      // and a foreign id still gets an indistinguishable 404.
+      const [row] = await db
+        .select({ vaultId: portfolios.vaultId })
+        .from(portfolios)
+        .where(and(eq(portfolios.id, portfolioId), eq(portfolios.userId, userId)));
+      if (!row) return { status: 'portfolio_not_found' };
+      return { status: 'not_vaulted' };
+    },
+
     async portfolioVaultState(userId, portfolioId) {
       const [row] = await db
-        .select({ portfolioId: portfolios.id, vault: vaults })
+        .select({ portfolioId: portfolios.id, alias: portfolios.alias, vault: vaults })
         .from(portfolios)
         .leftJoin(vaults, eq(vaults.id, portfolios.vaultId))
         .where(and(eq(portfolios.id, portfolioId), eq(portfolios.userId, userId)));
       if (!row) return null;
-      return { portfolioId: row.portfolioId, vault: row.vault ?? null };
+      return { portfolioId: row.portfolioId, alias: row.alias, vault: row.vault ?? null };
     },
   };
 }

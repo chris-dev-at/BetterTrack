@@ -699,6 +699,12 @@ export const PARANOID_CONTEXT_SERVICE_EXEMPTIONS: readonly ParanoidServiceExempt
     'Provider/cache primitives operate on public market references, not account portfolio rows.',
   ),
   serviceExemption(
+    'reauth',
+    ['*'],
+    'kept',
+    'Generic session step-up verifies the caller’s own password and mints nothing. It reads no portfolio row, and paranoid-design §8 keeps the full auth stack — a paranoid account must be able to re-authenticate for the vault’s own QR handoff, which is precisely what this verifier gates.',
+  ),
+  serviceExemption(
     'paranoidVault',
     ['*'],
     'kept',

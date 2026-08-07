@@ -217,6 +217,7 @@ export function createParanoidRehydrationSourceRepository(
             // `server`-classified), so re-pointing the row is what keeps the
             // portfolio and its ciphertext agreeing about being paranoid.
             vaultId: entity.data.vaultId,
+            alias: entity.data.alias,
           })),
         );
       });
