@@ -122,7 +122,7 @@ function ConglomeratePicker({
                   className="size-4"
                   disabled={disabled}
                   onChange={() => onToggle(c.id)}
-                  style={{ accentColor: 'var(--bt-gold)' }}
+                  style={{ accentColor: 'var(--bt-gold-graphic)' }}
                   type="checkbox"
                 />
                 <span className="bt-row-title flex-1 truncate">{c.name}</span>
@@ -256,7 +256,7 @@ function ComparisonGrid({
                       className="size-3"
                       name="comparison-baseline"
                       onChange={() => onPickBaseline(s.conglomerateId)}
-                      style={{ accentColor: 'var(--bt-gold)' }}
+                      style={{ accentColor: 'var(--bt-gold-graphic)' }}
                       type="radio"
                     />
                     {t('workboard.comparison.baselineLabel')}

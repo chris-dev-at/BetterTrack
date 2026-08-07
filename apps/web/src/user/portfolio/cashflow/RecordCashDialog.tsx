@@ -508,7 +508,7 @@ export function RecordCashDialog({
               <input
                 checked={countsToPerformance}
                 onChange={(event) => setCountsToPerformance(event.target.checked)}
-                style={{ accentColor: 'var(--bt-gold)' }}
+                style={{ accentColor: 'var(--bt-gold-graphic)' }}
                 type="checkbox"
               />
               <span className="bt-soft">{t('cashflow.record.countsToPerformanceShort')}</span>

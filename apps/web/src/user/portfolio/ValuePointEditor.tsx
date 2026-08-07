@@ -186,7 +186,7 @@ export function ValuePointEditor({ asset, onClose, onSaved, today }: ValuePointE
               checked={smoothing}
               onChange={(e) => setSmoothing(e.target.checked)}
               className="h-4 w-4"
-              style={{ accentColor: 'var(--bt-gold)' }}
+              style={{ accentColor: 'var(--bt-gold-graphic)' }}
             />
             {t('portfolio.valuePoint.smoothingLabel')}
           </label>

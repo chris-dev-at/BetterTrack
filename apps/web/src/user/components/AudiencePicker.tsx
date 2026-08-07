@@ -116,7 +116,7 @@ function TierIcon({ audience, className }: { audience: ShareAudience; className?
 function selectedSurface(active: boolean): CSSProperties {
   return {
     background: active ? 'var(--bt-gold-soft)' : 'none',
-    border: `1px solid ${active ? 'var(--bt-gold)' : 'var(--bt-border)'}`,
+    border: `1px solid ${active ? 'var(--bt-gold-graphic)' : 'var(--bt-border)'}`,
     borderRadius: 8,
     transition: 'background var(--bt-t-fast), border-color var(--bt-t-fast)',
   };
@@ -128,10 +128,10 @@ function CheckMark({ active, square = false }: { active: boolean; square?: boole
     <span
       className="flex shrink-0 items-center justify-center"
       style={{
-        background: active ? 'var(--bt-gold)' : 'none',
-        border: `1px solid ${active ? 'var(--bt-gold)' : 'var(--bt-border-strong)'}`,
+        background: active ? 'var(--bt-gold-fill)' : 'none',
+        border: `1px solid ${active ? 'var(--bt-gold-graphic)' : 'var(--bt-border-strong)'}`,
         borderRadius: square ? 5 : '50%',
-        color: active ? 'var(--bt-gold-ink)' : 'transparent',
+        color: active ? 'var(--bt-gold-on)' : 'transparent',
         height: 20,
         width: 20,
       }}
@@ -413,7 +413,7 @@ export function AudiencePicker({
                   style={{
                     background: active ? 'none' : 'var(--bt-surface-strong)',
                     borderRadius: 6,
-                    color: active ? 'var(--bt-gold)' : 'var(--bt-muted)',
+                    color: active ? 'var(--bt-gold-ink)' : 'var(--bt-muted)',
                     height: 34,
                     width: 34,
                   }}
@@ -539,7 +539,7 @@ export function AudiencePicker({
                   className="mt-0.5"
                   checked={widenConfirmed}
                   onChange={(event) => setWidenConfirmed(event.target.checked)}
-                  style={{ accentColor: 'var(--bt-gold)' }}
+                  style={{ accentColor: 'var(--bt-gold-graphic)' }}
                 />
                 <span>{t('sharing.audienceWidenAcknowledge')}</span>
               </label>
@@ -568,7 +568,7 @@ export function AudiencePicker({
                 className="mt-0.5"
                 checked={acknowledged}
                 onChange={(e) => setAcknowledged(e.target.checked)}
-                style={{ accentColor: 'var(--bt-gold)' }}
+                style={{ accentColor: 'var(--bt-gold-graphic)' }}
               />
               <span>{t('sharing.publicAcknowledge')}</span>
             </label>

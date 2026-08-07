@@ -30,7 +30,7 @@ import { provisionUserInContext } from './support/users';
 /** The canvas colours the light and dark token blocks declare (`origin.css`). */
 const CANVAS = {
   dark: 'rgb(9, 12, 16)', // #090c10
-  light: 'rgb(241, 242, 243)', // #f1f2f3
+  light: 'rgb(255, 255, 255)', // #ffffff — clean white (THEME2)
 };
 
 const theme = (page: Page) => page.locator('html').getAttribute('data-bt-theme');
@@ -81,7 +81,7 @@ test('boots light from a stored pin, without a flash of the dark canvas', async 
   await expect(canvas).toBeVisible();
   await expect(canvas).toHaveCSS('background-color', CANVAS.light);
   expect(await page.locator('meta[name="theme-color"]').first().getAttribute('content')).toBe(
-    '#f1f2f3',
+    '#ffffff',
   );
 
   // `color-scheme` is what makes native widgets and the overscroll gutter follow.
@@ -165,6 +165,6 @@ test('the Appearance panel switches the theme live', async ({ context }, testInf
   expect(tooltipTokens.surface).toBe('#ffffff');
   // The dark theme's border and menu shadow are a light-on-dark hairline and a
   // 45 % black drop; both must have flipped, or the tooltip is a dark card.
-  expect(tooltipTokens.border).toBe('rgba(20, 27, 35, 0.1)');
+  expect(tooltipTokens.border).toBe('rgba(19, 24, 32, 0.1)');
   expect(tooltipTokens.shadow).toBe('0 10px 34px rgba(16, 24, 32, 0.16)');
 });
