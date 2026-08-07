@@ -74,7 +74,7 @@ function chartOptions(call = 0) {
   };
 }
 
-import { categoricalColor } from './palette';
+import { resolveChartColors } from './palette';
 import { PriceChart, type PriceChartProps } from './PriceChart';
 import { sampleBenchmarkSeries, sampleOverlaySeries, samplePriceSeries } from './fixtures';
 
@@ -145,10 +145,16 @@ describe('PriceChart', () => {
     render(<PriceChart series={samplePriceSeries} overlays={sampleOverlaySeries} />);
 
     // Main series + one line per overlay asset, each with its palette colour.
+    // The canvas gets RESOLVED colours, not `var(--bt-chart-n)`: lightweight-charts
+    // paints into a 2D context, which cannot read a custom property. Under jsdom
+    // no stylesheet is applied, so this resolves to the dark fallbacks.
+    const colors = resolveChartColors();
     expect(mocks.addSeries).toHaveBeenCalledTimes(1 + sampleOverlaySeries.length);
     sampleOverlaySeries.forEach((overlay, i) => {
       expect(mocks.addSeries.mock.calls[1 + i]?.[0]).toBe('LineSeries');
-      expect(mocks.addSeries.mock.calls[1 + i]?.[1]).toMatchObject({ color: categoricalColor(i) });
+      expect(mocks.addSeries.mock.calls[1 + i]?.[1]).toMatchObject({
+        color: colors.categorical[i % colors.categorical.length],
+      });
       expect(screen.getByText(overlay.label)).toBeInTheDocument();
       expect(mocks.setData).toHaveBeenCalledWith(overlay.series);
     });
@@ -644,6 +650,27 @@ describe('PriceChart — money scrub tooltip on a performance curve (board #68 i
     expect(screen.getByText('300,000.00 €')).toBeInTheDocument();
     expect(screen.getByText('0.00%')).toBeInTheDocument();
     expect(screen.queryByText('321,350.00 €')).not.toBeInTheDocument();
+  });
+
+  /**
+   * The tooltip floats over the plot in BOTH themes (board #68 + #1164 landed
+   * together), so every colour it paints has to come from a token — a literal
+   * surface or a literal black drop shadow would be a dark-only card sitting on
+   * a white chart. Asserted on the element rather than in the stylesheet gate
+   * because these are inline styles, which that scan reads but cannot prove are
+   * actually the ones the tooltip uses.
+   */
+  test('paints itself entirely from theme tokens, so it survives the light canvas', () => {
+    renderPerformanceChart();
+    hover('2026-01-05');
+
+    const tooltip = screen.getByText('321,350.00 €').parentElement!;
+    const { background, border, boxShadow } = tooltip.style;
+
+    expect(background).toBe('var(--bt-surface-strong)');
+    expect(border).toBe('1px solid var(--bt-border)');
+    expect(boxShadow).toBe('var(--bt-shadow-menu)');
+    expect(tooltip.getAttribute('style')).not.toMatch(/#[0-9a-fA-F]{3,8}|rgba?\(/);
   });
 
   test('leaving the plot clears the readout', () => {

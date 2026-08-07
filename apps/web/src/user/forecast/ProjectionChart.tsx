@@ -32,21 +32,27 @@ export function ProjectionChart({
   return (
     <ResponsiveContainer width="100%" height="100%">
       <LineChart data={data} margin={{ top: 8, right: 12, bottom: 4, left: 4 }}>
-        <CartesianGrid stroke="rgba(82, 82, 91, 0.25)" vertical={false} />
+        <CartesianGrid stroke="var(--bt-chart-grid)" vertical={false} />
         <XAxis
           dataKey="date"
           tickFormatter={(value: string) => value.slice(0, 4)}
           minTickGap={48}
-          stroke="#a1a1aa"
+          stroke="var(--bt-chart-text)"
           fontSize={12}
         />
-        <YAxis width={64} tickFormatter={formatCompactEur} stroke="#a1a1aa" fontSize={12} />
+        <YAxis
+          width={64}
+          tickFormatter={formatCompactEur}
+          stroke="var(--bt-chart-text)"
+          fontSize={12}
+        />
         <Tooltip
           formatter={(value) => formatMoney(Number(value))}
           contentStyle={{
-            background: '#0b0e14',
-            border: '1px solid #3f3f46',
+            background: 'var(--bt-surface-strong)',
+            border: '1px solid var(--bt-border-strong)',
             borderRadius: 8,
+            color: 'var(--bt-text)',
             fontSize: 12,
           }}
         />

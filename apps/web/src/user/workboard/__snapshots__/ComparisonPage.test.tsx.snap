@@ -24,7 +24,7 @@ exports[`ComparisonPage > three blueprints compare on one chart with a full stat
           <span
             aria-hidden="true"
             class="bt-dot"
-            style="background: rgb(56, 189, 248);"
+            style="background: var(--bt-chart-main);"
           />
           <span
             class="bt-soft"
@@ -56,7 +56,7 @@ exports[`ComparisonPage > three blueprints compare on one chart with a full stat
           <span
             aria-hidden="true"
             class="bt-dot"
-            style="background: rgb(57, 135, 229);"
+            style="background: var(--bt-chart-1);"
           />
           <span
             class="bt-soft"
@@ -87,7 +87,7 @@ exports[`ComparisonPage > three blueprints compare on one chart with a full stat
           <span
             aria-hidden="true"
             class="bt-dot"
-            style="background: rgb(217, 89, 38);"
+            style="background: var(--bt-chart-2);"
           />
           <span
             class="bt-soft"
