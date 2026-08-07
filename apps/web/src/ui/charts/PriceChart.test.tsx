@@ -1,9 +1,15 @@
-import { render, screen } from '@testing-library/react';
+import { act, render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
 import { I18nProvider } from '../../i18n';
-import { DISCREET_MASK, formatUnitPrice, setDiscreetMode, setFormatLocale } from '../../lib/format';
+import {
+  DISCREET_MASK,
+  EM_DASH,
+  formatUnitPrice,
+  setDiscreetMode,
+  setFormatLocale,
+} from '../../lib/format';
 
 // Mock the canvas-backed charting lib: jsdom can't draw, and the wrapper's
 // contract is *how* it drives the lib (series type, setData, disposal).
@@ -20,10 +26,12 @@ const mocks = vi.hoisted(() => {
     update,
     applyOptions: vi.fn(),
   }));
+  const subscribeCrosshairMove = vi.fn();
   const createChart = vi.fn((_el: unknown, _opts?: unknown) => ({
     addSeries,
     applyOptions,
     timeScale: () => ({ fitContent, setVisibleRange }),
+    subscribeCrosshairMove,
     remove,
   }));
   const createSeriesMarkers = vi.fn(() => ({ setMarkers }));
@@ -36,6 +44,7 @@ const mocks = vi.hoisted(() => {
     applyOptions,
     setMarkers,
     addSeries,
+    subscribeCrosshairMove,
     createChart,
     createSeriesMarkers,
   };
@@ -66,7 +75,7 @@ function chartOptions(call = 0) {
 }
 
 import { categoricalColor } from './palette';
-import { PriceChart } from './PriceChart';
+import { PriceChart, type PriceChartProps } from './PriceChart';
 import { sampleBenchmarkSeries, sampleOverlaySeries, samplePriceSeries } from './fixtures';
 
 beforeEach(() => {
@@ -582,6 +591,96 @@ describe('PriceChart — live generation + fixed viewport (§13.5 V5-P1)', () =>
     const range = mocks.setVisibleRange.mock.calls.at(-1)?.[0] as { from: number; to: number };
     expect(range.to).toBe(lastSec); // anchored to the data, not `now`
     expect(range.to - range.from).toBe(600);
+  });
+});
+
+describe('PriceChart — money scrub tooltip on a performance curve (board #68 item 4)', () => {
+  /** The % curve the chart draws, and its 1:1 money twin at the same times. */
+  const PERFORMANCE = [
+    { time: '2026-01-02' as never, value: 0 },
+    { time: '2026-01-05' as never, value: 7.1167 },
+  ];
+  const BALANCE = [
+    { time: '2026-01-02' as never, value: 300000 },
+    { time: '2026-01-05' as never, value: 321350 },
+  ];
+
+  /** Drive the crosshair the way lightweight-charts does, from the real subscription. */
+  function hover(time: string | undefined, x = 40) {
+    const handler = mocks.subscribeCrosshairMove.mock.calls.at(-1)?.[0] as (p: unknown) => void;
+    act(() =>
+      handler(time === undefined ? {} : { time, point: { x, y: 100 }, seriesData: new Map() }),
+    );
+  }
+
+  function renderPerformanceChart(props: Partial<PriceChartProps> = {}) {
+    return render(
+      <I18nProvider initialLocale="en">
+        <PriceChart
+          series={PERFORMANCE}
+          mode="baseline"
+          percentValues
+          balanceSeries={BALANCE}
+          balanceCurrency="EUR"
+          {...props}
+        />
+      </I18nProvider>,
+    );
+  }
+
+  test('scrubbing shows the balance in money with the percentage beneath it', () => {
+    renderPerformanceChart();
+    expect(mocks.subscribeCrosshairMove).toHaveBeenCalledTimes(1);
+
+    hover('2026-01-05');
+
+    // The money value is the headline the owner asked for; the % rides along.
+    expect(screen.getByText('321,350.00 €')).toBeInTheDocument();
+    expect(screen.getByText('+7.12%')).toBeInTheDocument();
+    expect(screen.getByText('5 Jan 2026')).toBeInTheDocument();
+
+    // Moving to the other point re-reads both from the same hovered time.
+    hover('2026-01-02');
+    expect(screen.getByText('300,000.00 €')).toBeInTheDocument();
+    expect(screen.getByText('0.00%')).toBeInTheDocument();
+    expect(screen.queryByText('321,350.00 €')).not.toBeInTheDocument();
+  });
+
+  test('leaving the plot clears the readout', () => {
+    renderPerformanceChart();
+    hover('2026-01-05');
+    expect(screen.getByText('321,350.00 €')).toBeInTheDocument();
+
+    hover(undefined); // crosshair off the chart → no time, no point
+    expect(screen.queryByText('321,350.00 €')).not.toBeInTheDocument();
+  });
+
+  test('discreet mode masks the money in the tooltip but keeps the percentage live', () => {
+    setDiscreetMode(true);
+    renderPerformanceChart();
+
+    hover('2026-01-05');
+
+    // Exactly the masking every other money surface applies (§13.5 V5-P13
+    // arc (a)) — the tooltip must not become the one place an amount leaks.
+    expect(screen.getByText(DISCREET_MASK)).toBeInTheDocument();
+    expect(screen.queryByText('321,350.00 €')).not.toBeInTheDocument();
+    expect(screen.getByText('+7.12%')).toBeInTheDocument();
+  });
+
+  test('a point with no money twin reads an em dash instead of a neighbour’s balance', () => {
+    renderPerformanceChart({ balanceSeries: [BALANCE[0]!] });
+
+    hover('2026-01-05');
+
+    expect(screen.getByText(EM_DASH)).toBeInTheDocument();
+    expect(screen.getByText('+7.12%')).toBeInTheDocument();
+  });
+
+  test('without a money twin the chart never subscribes to the crosshair', () => {
+    render(<PriceChart series={PERFORMANCE} mode="baseline" percentValues />);
+
+    expect(mocks.subscribeCrosshairMove).not.toHaveBeenCalled();
   });
 });
 
