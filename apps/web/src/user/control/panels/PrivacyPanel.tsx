@@ -1,5 +1,5 @@
 import { lazy, Suspense, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 
 import { useT } from '../../../i18n';
 import { usePrivacyMode } from '../../vault/usePrivacyMode';
@@ -7,6 +7,7 @@ import { useOptionalVaultRuntime } from '../../vault/VaultRuntimeContext';
 import { Alert } from '../../components/ui';
 import { Button, SkeletonBlock, Switch } from '../../../ui/origin';
 import { useAuth } from '../../AuthContext';
+import { VAULT_HOW_IT_WORKS_PATH } from '../../vault/v2/ui/routes';
 import { VAULT_ENABLE_PARAM } from '../matchControlPanel';
 import { PanelGroup, PanelHead, Row } from './panelKit';
 
@@ -102,15 +103,30 @@ export function PrivacyPanel() {
           </Suspense>
         ) : (
           <PanelGroup label={t('vault.settings.title')}>
-            <Row hint={t('vault.settings.normalHint')} label={t('vault.settings.normal')}>
+            {/*
+              Vaults v2 (docs/VAULTS_V2_DESIGN.md §4): paranoid mode is chosen
+              PER PORTFOLIO now, so this panel no longer owns an account-level
+              enable wizard. It signposts the per-portfolio flow and keeps one
+              entry point for accounts still on the legacy account-wide vault.
+            */}
+            <Row hint={t('vault.v2.control.pointerHint')} label={t('vault.v2.control.pointer')}>
+              <Link className="bt-btn bt-btn--sm" to="/portfolio/settings">
+                {t('vault.v2.control.pointerAction')}
+              </Link>
+            </Row>
+            <Row hint={t('vault.v2.control.explainerHint')} label={t('vault.v2.explainerLink')}>
+              <Link className="bt-btn bt-btn--sm" to={VAULT_HOW_IT_WORKS_PATH}>
+                {t('vault.v2.control.open')}
+              </Link>
+            </Row>
+            <Row hint={t('vault.v2.control.legacyHint')} label={t('vault.v2.control.legacy')}>
               <Button
                 aria-busy={wizard}
                 disabled={wizard}
                 onClick={() => setWizard(true)}
                 size="sm"
-                variant="primary"
               >
-                {wizard ? t('common.loading') : t('vault.settings.enable')}
+                {wizard ? t('common.loading') : t('vault.v2.control.legacyAction')}
               </Button>
             </Row>
           </PanelGroup>

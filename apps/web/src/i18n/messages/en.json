@@ -3752,6 +3752,321 @@
       "disableBlocked": "This vault has unsynced changes on more than one device. Resolve the sync state first — disabling now would keep only the copy this device shows.",
       "disableAction": "Restore normal mode",
       "disableError": "Normal mode could not be restored completely. The account remains paranoid; retry resumes the same rehydration."
+    },
+    "v2": {
+      "explainerLink": "How vaults work",
+      "backends": {
+        "server": "Stored encrypted on BetterTrack",
+        "drive": "Stored only in your Google Drive",
+        "both": "Stored encrypted on BetterTrack and in your Google Drive"
+      },
+      "section": {
+        "heading": "Vault / Paranoid mode",
+        "sub": "Encrypt this portfolio on your device so nobody else can read it — not even us.",
+        "error": "We could not load your vaults. Reload the page to try again.",
+        "legacy": {
+          "body": "This account still uses the older account-wide Paranoid mode. Move it to vaults to choose per portfolio.",
+          "action": "Open the migration"
+        },
+        "teaser": {
+          "body": "A vault is a container with its own 12-word passphrase. Portfolios you move into it are encrypted on your device before they leave it.",
+          "points": {
+            "encrypted": "Your money data is encrypted here, in your browser. The server stores bytes it cannot read.",
+            "separate": "Each vault has its own passphrase and its own storage, so you can keep some portfolios normal.",
+            "words": "The 12 words are the only key. We never see them and cannot reset them."
+          }
+        },
+        "joinable": {
+          "body": "This portfolio is a normal portfolio. Move it into a vault to encrypt it on this device."
+        },
+        "vaulted": {
+          "alias": "Shown as “{{alias}}” while locked",
+          "locked": "Locked",
+          "unlocked": "Unlocked"
+        },
+        "actions": {
+          "create": "Create a vault",
+          "createAnother": "Create another vault",
+          "move": "Move into vault",
+          "unlock": "Unlock",
+          "qr": "Share to another device",
+          "moveOut": "Move out",
+          "moveOutHint": "Decrypt this portfolio and restore it as a normal portfolio."
+        }
+      },
+      "create": {
+        "title": "Create a vault",
+        "step": "Step {{current}} of {{total}}",
+        "steps": {
+          "1": {
+            "title": "Name your vault",
+            "body": "The name is only a label so you can tell your vaults apart. It is stored unencrypted, so do not put anything private in it."
+          },
+          "2": {
+            "title": "Choose where the encrypted data lives",
+            "body": "Wherever you pick, the bytes are already encrypted before they leave this device. You can change this later."
+          },
+          "3": {
+            "title": "Write down your 12 words",
+            "body": "These twelve words are the key to this vault. They are shown once, here, and never sent anywhere."
+          },
+          "4": {
+            "title": "Vault created",
+            "body": "You can now move portfolios into this vault from their settings."
+          }
+        },
+        "name": "Vault name",
+        "nameHint": "For example “Drive vault”.",
+        "wordsLabel": "Your twelve vault words",
+        "lostWords": "If you lose these words, the data in this vault is gone. There is no reset and no recovery.",
+        "writtenDown": "I have written these words down somewhere safe.",
+        "confirmIntro": "Type these words back to confirm you have them.",
+        "wordN": "Word {{n}}",
+        "backends": {
+          "server": {
+            "title": "BetterTrack storage",
+            "body": "Encrypted bytes on our servers. Syncs everywhere you sign in."
+          },
+          "drive": {
+            "title": "Google Drive only",
+            "body": "Nothing on BetterTrack servers — not even encrypted."
+          },
+          "both": {
+            "title": "Both",
+            "body": "An encrypted copy in each place, so losing one does not lose the vault."
+          }
+        },
+        "actions": {
+          "create": "Create vault"
+        },
+        "errors": {
+          "failed": "The vault could not be created. Nothing was changed.",
+          "idMismatch": "The server assigned a different vault id, so the key material would not match. Nothing was changed."
+        }
+      },
+      "unlock": {
+        "title": "Unlock {{name}}",
+        "modes": {
+          "device": "This device",
+          "words": "12 words"
+        },
+        "devicePassword": "Device password",
+        "devicePasswordHint": "The password you chose when you saved this vault on this device.",
+        "phrase": "Your 12 words",
+        "phraseHint": "Separate the words with spaces. Capitalisation does not matter.",
+        "remember": "Remember this vault on this device",
+        "newDevicePassword": "Device password",
+        "newDevicePasswordHint": "Used to encrypt the words on this device. It is not your BetterTrack password.",
+        "rawTitle": "Store the words unencrypted (not recommended)",
+        "rawWarning": "Anyone who gets this device unlocked can open this vault instantly.",
+        "actions": {
+          "unlock": "Unlock"
+        },
+        "errors": {
+          "failed": "That did not unlock the vault.",
+          "wordCount": "Expected {{expected}} words, got {{count}}.",
+          "unknownWords": "Not in the word list: {{words}}",
+          "checksum": "Those are all real words, but not in a valid order. Check for a typo."
+        }
+      },
+      "move": {
+        "title": "Move into {{name}}",
+        "body": "“{{portfolio}}” will be encrypted on this device, and its readable rows will be deleted from the server.",
+        "points": {
+          "irreversible": "The server copy is deleted in the same step. This cannot be undone from the server side.",
+          "serverBlind": "After this, the server stores only encrypted bytes for this portfolio.",
+          "featuresOff": "Server-side features turn off for it: sharing, Mirrorchain, imports, alerts and scheduled jobs.",
+          "lostWords": "If you lose the vault words, this portfolio is gone."
+        },
+        "alias": "Name shown while locked",
+        "aliasHint": "Stored unencrypted so the row still has a label when the vault is locked.",
+        "mustUnlock": "Unlock this vault first — moving a portfolio in needs its key.",
+        "understood": "I understand this cannot be undone and that losing the words loses the data.",
+        "stages": {
+          "capture": "Reading your portfolio…",
+          "encrypt": "Encrypting on this device…",
+          "verify": "Verifying we can read it back…",
+          "join": "Moving it into the vault…",
+          "index": "Updating the vault index…",
+          "done": "Done."
+        },
+        "actions": {
+          "move": "Move into vault"
+        },
+        "errors": {
+          "failed": "The move failed. Your portfolio was not changed."
+        }
+      },
+      "qr": {
+        "title": "Share {{name}} to another device",
+        "body": "You will see a QR code and, separately, a 6-digit PIN. The other device needs both — the code on its own is useless.",
+        "password": "Your BetterTrack password",
+        "passwordHint": "Confirming your password before a secret is shown on screen.",
+        "scanFirst": "Scan this with the other device first.",
+        "codeLabel": "QR code for the vault {{name}}",
+        "expires": "Expires in {{seconds}} seconds",
+        "pinLabel": "One-time PIN",
+        "pinHint": "Read this out to the other device. It is not stored anywhere.",
+        "pinPending": "Once the other device has scanned the code, show the PIN.",
+        "screenshotWarning": "Do not screenshot this. A photo of the code is harmless on its own, but a photo that also catches the PIN hands over the whole vault.",
+        "expired": "The handoff expired. Confirm your password again to start a new one.",
+        "actions": {
+          "start": "Start handoff",
+          "revealPin": "Show the PIN",
+          "again": "Start again"
+        },
+        "errors": {
+          "invalidPassword": "That password did not match.",
+          "rateLimited": "Too many attempts. Wait a moment and try again.",
+          "reauthUnavailable": "We cannot confirm your password right now, so the code stays hidden.",
+          "failed": "The code could not be shown."
+        }
+      },
+      "import": {
+        "title": "Add a vault to this device",
+        "body": "Scan the QR code from a device that already has the vault, or paste its text.",
+        "file": "Or pick a photo of the code",
+        "paste": "Or paste the code text",
+        "pasteHint": "It starts with btvault1:",
+        "cameraLabel": "Camera preview for scanning",
+        "found": "Found the vault “{{name}}”.",
+        "pinIntro": "Now type the 6-digit PIN shown on the other device.",
+        "pin": "One-time PIN",
+        "pinHint": "Six digits, shown on the sending device.",
+        "storeIntro": "Choose how this device stores the words.",
+        "devicePassword": "Device password",
+        "devicePasswordHint": "Used to encrypt the words on this device.",
+        "actions": {
+          "scan": "Scan with camera",
+          "stop": "Stop scanning",
+          "use": "Use this code",
+          "unlockCode": "Unlock with PIN",
+          "save": "Save on this device"
+        },
+        "errors": {
+          "prefix": "That is not a BetterTrack vault code.",
+          "json": "That code is damaged.",
+          "shape": "That code is not a vault code this version understands.",
+          "wrapped": "That code is incomplete.",
+          "passphrase": "The words in that code are not valid.",
+          "pinFormat": "The PIN is six digits.",
+          "pinWrong": "That PIN did not unlock the code. It may also have expired.",
+          "camera": "The camera could not be opened.",
+          "noDecoder": "This browser cannot read QR codes. Paste the code text instead.",
+          "notFound": "No QR code was found in that image.",
+          "store": "The vault could not be saved on this device."
+        }
+      },
+      "aggregate": {
+        "locked": "+ {{count}} locked portfolios",
+        "unavailable": "+ {{count}} portfolios we could not open",
+        "lockedAndUnavailable": "+ {{locked}} locked, {{unavailable}} unavailable",
+        "chip": "Entries from “{{vault}}” hidden"
+      },
+      "unavailable": {
+        "title": "This portfolio could not be opened",
+        "body": "Its encrypted document could not be fetched or decrypted. The rest of the vault still works.",
+        "detail": "Document: {{doc}} (version {{version}})",
+        "aria": "{{alias}}, unavailable"
+      },
+      "lockedWrite": {
+        "title": "Unlock to make changes",
+        "body": "A locked vault accepts no reads and no writes. Unlock it and your change goes through immediately."
+      },
+      "transfer": {
+        "crossBlob": "A transfer between two vaulted portfolios happens in two steps: the withdrawal first, then the deposit. Each step is saved on its own.",
+        "crossVault": "Transfers between two different vaults are not supported."
+      },
+      "locked": {
+        "aria": "{{alias}}, locked in the vault {{vault}}. Activate to unlock.",
+        "hint": "Locked in {{vault}}",
+        "action": "Unlock"
+      },
+      "explainer": {
+        "title": "How vaults work",
+        "sub": "What is encrypted, what we can still see, and what happens when things go wrong.",
+        "keys": {
+          "heading": "The keys",
+          "body": "Two independent passwords do two different jobs. Neither of them ever reaches our servers.",
+          "points": {
+            "passphrase": "Your 12 words unlock the vault. They are stretched with Argon2id using a salt stored with the vault.",
+            "contentKey": "That gives a key which unwraps the content key — a random 256-bit key that actually encrypts your portfolios.",
+            "device": "Your device password protects a local copy of the 12 words, so you do not retype them on every visit.",
+            "slots": "The content key is stored in “slots”. Today there is one, for your passphrase. Shared vaults will add more."
+          }
+        },
+        "diagram": {
+          "title": "How a vault passphrase becomes portfolio decryption",
+          "desc": "The 12-word passphrase goes through Argon2id with the vault salt to produce a master key, which unwraps the content key. The content key decrypts each portfolio blob with AES-256-GCM. Separately, a device password goes through Argon2id with a device salt to produce a device key, which encrypts the 12-word passphrase for local storage only.",
+          "wrapsPassphrase": "encrypts your 12 words on this device",
+          "nodes": {
+            "passphrase": "12-word passphrase (per vault)",
+            "kdfVault": "Argon2id with the vault salt",
+            "masterKey": "Master key",
+            "contentKey": "Content key (random, 256-bit)",
+            "blobs": "AES-256-GCM decrypts each portfolio",
+            "devicePassword": "Device password (per device)",
+            "kdfDevice": "Argon2id with the device salt",
+            "deviceKey": "Device key"
+          }
+        },
+        "server": {
+          "heading": "What the server sees",
+          "rows": {
+            "sees": {
+              "label": "It does see",
+              "value": "That a vault exists, its name, which backends you picked, which portfolio ids belong to it and their display labels."
+            },
+            "seesNot": {
+              "label": "It does not see",
+              "value": "Any amount, holding, transaction, cash movement or note inside a vaulted portfolio. Not your words, not the content key."
+            },
+            "sizes": {
+              "label": "It can measure",
+              "value": "How large the encrypted blobs are and how often you write them. Size and timing are not hidden."
+            }
+          }
+        },
+        "outcomes": {
+          "heading": "When things go wrong",
+          "sub": "The honest version.",
+          "breach": {
+            "title": "Someone steals the whole database",
+            "body": "They get encrypted blobs, vault names, portfolio labels and blob sizes. Reading the contents needs your 12 words, which are not there."
+          },
+          "deviceWrapped": {
+            "title": "Someone steals your device (words stored encrypted)",
+            "body": "They still need your device password to reach the words. They can see whatever was already unlocked on screen."
+          },
+          "deviceRaw": {
+            "title": "Someone steals your device (words stored unencrypted)",
+            "body": "The vault opens instantly. This is the trade-off you accept when you turn off encryption for the local copy."
+          },
+          "lostWords": {
+            "title": "You lose the 12 words",
+            "body": "The data is unrecoverable. We have no copy of the key and no way to reset it. This is not a policy — it is the design."
+          }
+        },
+        "caveats": {
+          "heading": "Read this before you rely on it",
+          "tickers": "Assets are shared across your account and stay readable on the server. Which tickers you track is visible even for a vaulted portfolio.",
+          "aliases": "Vault names and the label shown on a locked row are stored unencrypted so the app can render them while locked.",
+          "metadata": "Blob sizes, write times and how many portfolios a vault holds are visible to whoever stores the bytes.",
+          "membership": "The server knows which portfolios belong to which vault. Routing and the cleartext purge both need it, so this is accepted by design rather than hidden.",
+          "qrPin": "A shared QR code carries the words wrapped under a one-time PIN. A photo of the code alone cannot open your vault; a photo that also captures the PIN can.",
+          "noRecovery": "There is no server-side recovery, no support override and no backdoor. Losing your words loses your data."
+        }
+      },
+      "control": {
+        "pointer": "Paranoid mode is per portfolio",
+        "pointerHint": "Choose which portfolios are encrypted in a vault from each portfolio’s own settings.",
+        "pointerAction": "Open portfolio settings",
+        "explainerHint": "What is encrypted, what we can still see, and what happens when things go wrong.",
+        "open": "Read",
+        "legacy": "Legacy account-wide vault",
+        "legacyHint": "Only for accounts set up before vaults existed. It moves your existing encrypted data into your first vault.",
+        "legacyAction": "Open migration"
+      }
     }
   },
   "announcements": {

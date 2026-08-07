@@ -721,7 +721,7 @@ export const V5_SURFACE_INVENTORY = [
   {
     id: 'p13-privacy-modes',
     phases: ['P13'],
-    routes: ['/control/privacy'],
+    routes: ['/control/privacy', '/vault/how-it-works'],
     components: [
       'user/UserApp.tsx',
       'user/control/panels/ParanoidAccountExport.tsx',
@@ -734,6 +734,17 @@ export const V5_SURFACE_INVENTORY = [
       'user/vault/ui/ParanoidSurfaceGate.tsx',
       'user/vault/ui/VaultSyncChip.tsx',
       'user/vault/ui/VaultUnlockGate.tsx',
+      // Vaults v2 (docs/VAULTS_V2_DESIGN.md §4): per-portfolio vault UX.
+      'user/vault/v2/ui/CreateVaultWizard.tsx',
+      'user/vault/v2/ui/LockedPortfolioRow.tsx',
+      'user/vault/v2/ui/MoveIntoVaultDialog.tsx',
+      'user/vault/v2/ui/PortfolioVaultSection.tsx',
+      'user/vault/v2/ui/VaultHowItWorksPage.tsx',
+      'user/vault/v2/ui/VaultKeyDiagram.tsx',
+      'user/vault/v2/ui/VaultQrImportDialog.tsx',
+      'user/vault/v2/ui/VaultQrShareDialog.tsx',
+      'user/vault/v2/ui/VaultUnlockDialog.tsx',
+      'user/vault/v2/ui/VaultsProvider.tsx',
       'ui/MoneyText.tsx',
       'ui/charts/AllocationDonut.tsx',
       'ui/charts/LazyAllocationDonut.tsx',
@@ -757,6 +768,9 @@ export const V5_SURFACE_INVENTORY = [
       'user/vault/ui/ParanoidEnableWizard.test.tsx',
       'user/vault/ui/VaultUnlockGate.test.tsx',
       'user/vault/ui/VaultSyncChip.test.tsx',
+      'user/vault/v2/ui/PortfolioVaultSection.test.tsx',
+      'user/vault/v2/ui/CreateVaultWizard.test.tsx',
+      'user/vault/v2/ui/VaultQrShareDialog.test.tsx',
       'ui/MoneyText.test.tsx',
       'ui/charts/AllocationDonut.test.tsx',
     ],
@@ -1432,6 +1446,14 @@ export interface V5AsyncReadExemption {
 
 export const V5_ASYNC_READ_EXEMPTIONS = [
   {
+    component: 'user/vault/v2/ui/VaultsProvider.tsx',
+    read: 'VaultsProvider.directory',
+    states: ['loading', 'error'],
+    reason:
+      'The Vaults v2 provider wraps the whole app so it can render neither a spinner nor an error; it projects the read outcome as `status`, and PortfolioVaultSection renders both states from it (asserted in PortfolioVaultSection.test.tsx).',
+    delegatedTo: 'PortfolioVaultSection',
+  },
+  {
     component: 'user/social/chatSurface.tsx',
     read: 'ChipShareShortcut.audienceQuery',
     states: ['loading', 'error'],
@@ -1621,6 +1643,11 @@ export interface V5NonHookAsyncSite {
 
 export const V5_NON_HOOK_ASYNC_BOUNDARY = [
   {
+    component: 'user/vault/v2/ui/VaultsProvider.tsx',
+    site: 'VaultsProvider.useSyncExternalStore',
+    note: 'Subscribes to the in-memory vault keyring, which is synchronous local state — no request, so there is nothing to load or fail.',
+  },
+  {
     component: 'admin/pages/LoginPage.tsx',
     site: 'LoginPage.useEffect',
     note: 'Fetches the API build marker for the footer; a failure is swallowed by design.',
@@ -1716,7 +1743,7 @@ export type V5AsyncStateDebtLedger = Readonly<
  * Exact anti-shrinkage baseline; #1147 adds the reviewed on-demand holding
  * read, board #68 item 4 the Analysis money twin behind the scrub tooltip.
  */
-export const V5_ASYNC_READ_SITE_BASELINE = 183;
+export const V5_ASYNC_READ_SITE_BASELINE = 184;
 
 /** Ratchet this downward whenever #739 removes a read site or missing state. */
 export const V5_ASYNC_STATE_DEBT_CEILING = { readSites: 0, stateGaps: 0 } as const;

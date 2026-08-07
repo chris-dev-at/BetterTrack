@@ -3752,6 +3752,321 @@
       "disableBlocked": "Dieser Tresor hat nicht abgeglichene Änderungen auf mehreren Geräten. Gleiche den Stand zuerst ab — eine Deaktivierung jetzt würde nur die auf diesem Gerät sichtbare Fassung behalten.",
       "disableAction": "Normalen Modus wiederherstellen",
       "disableError": "Der normale Modus konnte nicht vollständig wiederhergestellt werden. Das Konto bleibt paranoid; ein erneuter Versuch setzt dieselbe Wiederherstellung fort."
+    },
+    "v2": {
+      "explainerLink": "So funktionieren Tresore",
+      "backends": {
+        "server": "Verschlüsselt auf BetterTrack gespeichert",
+        "drive": "Nur in deinem Google Drive gespeichert",
+        "both": "Verschlüsselt auf BetterTrack und in deinem Google Drive gespeichert"
+      },
+      "section": {
+        "heading": "Tresor / Paranoid-Modus",
+        "sub": "Verschlüssle dieses Portfolio auf deinem Gerät, sodass es niemand sonst lesen kann — auch wir nicht.",
+        "error": "Deine Tresore konnten nicht geladen werden. Lade die Seite neu.",
+        "legacy": {
+          "body": "Dieses Konto nutzt noch den älteren kontoweiten Paranoid-Modus. Stelle auf Tresore um, damit du pro Portfolio entscheiden kannst.",
+          "action": "Migration öffnen"
+        },
+        "teaser": {
+          "body": "Ein Tresor ist ein Behälter mit eigener 12-Wörter-Passphrase. Portfolios, die du hineinlegst, werden auf deinem Gerät verschlüsselt, bevor sie es verlassen.",
+          "points": {
+            "encrypted": "Deine Finanzdaten werden hier im Browser verschlüsselt. Der Server speichert Bytes, die er nicht lesen kann.",
+            "separate": "Jeder Tresor hat eigene Passphrase und eigenen Speicher — manche Portfolios können normal bleiben.",
+            "words": "Die 12 Wörter sind der einzige Schlüssel. Wir sehen sie nie und können sie nicht zurücksetzen."
+          }
+        },
+        "joinable": {
+          "body": "Dieses Portfolio ist ein normales Portfolio. Lege es in einen Tresor, um es auf diesem Gerät zu verschlüsseln."
+        },
+        "vaulted": {
+          "alias": "Wird gesperrt als „{{alias}}“ angezeigt",
+          "locked": "Gesperrt",
+          "unlocked": "Entsperrt"
+        },
+        "actions": {
+          "create": "Tresor anlegen",
+          "createAnother": "Weiteren Tresor anlegen",
+          "move": "In Tresor legen",
+          "unlock": "Entsperren",
+          "qr": "An anderes Gerät übertragen",
+          "moveOut": "Herausnehmen",
+          "moveOutHint": "Dieses Portfolio entschlüsseln und als normales Portfolio wiederherstellen."
+        }
+      },
+      "create": {
+        "title": "Tresor anlegen",
+        "step": "Schritt {{current}} von {{total}}",
+        "steps": {
+          "1": {
+            "title": "Benenne deinen Tresor",
+            "body": "Der Name ist nur eine Bezeichnung, damit du deine Tresore unterscheiden kannst. Er wird unverschlüsselt gespeichert — schreib also nichts Privates hinein."
+          },
+          "2": {
+            "title": "Wähle, wo die verschlüsselten Daten liegen",
+            "body": "Egal was du wählst: Die Bytes sind bereits verschlüsselt, bevor sie dieses Gerät verlassen. Du kannst das später ändern."
+          },
+          "3": {
+            "title": "Schreib deine 12 Wörter auf",
+            "body": "Diese zwölf Wörter sind der Schlüssel zu diesem Tresor. Sie werden genau einmal hier angezeigt und nirgendwohin gesendet."
+          },
+          "4": {
+            "title": "Tresor angelegt",
+            "body": "Du kannst jetzt in den Portfolio-Einstellungen Portfolios in diesen Tresor legen."
+          }
+        },
+        "name": "Tresorname",
+        "nameHint": "Zum Beispiel „Drive-Tresor“.",
+        "wordsLabel": "Deine zwölf Tresor-Wörter",
+        "lostWords": "Wenn du diese Wörter verlierst, sind die Daten in diesem Tresor weg. Es gibt kein Zurücksetzen und keine Wiederherstellung.",
+        "writtenDown": "Ich habe diese Wörter an einem sicheren Ort notiert.",
+        "confirmIntro": "Tippe diese Wörter zur Bestätigung noch einmal ein.",
+        "wordN": "Wort {{n}}",
+        "backends": {
+          "server": {
+            "title": "BetterTrack-Speicher",
+            "body": "Verschlüsselte Bytes auf unseren Servern. Synchronisiert überall, wo du dich anmeldest."
+          },
+          "drive": {
+            "title": "Nur Google Drive",
+            "body": "Nichts auf BetterTrack-Servern — nicht einmal verschlüsselt."
+          },
+          "both": {
+            "title": "Beides",
+            "body": "Je eine verschlüsselte Kopie, damit der Verlust einer Seite nicht den Tresor verliert."
+          }
+        },
+        "actions": {
+          "create": "Tresor anlegen"
+        },
+        "errors": {
+          "failed": "Der Tresor konnte nicht angelegt werden. Es wurde nichts geändert.",
+          "idMismatch": "Der Server hat eine andere Tresor-ID vergeben, das Schlüsselmaterial würde nicht passen. Es wurde nichts geändert."
+        }
+      },
+      "unlock": {
+        "title": "{{name}} entsperren",
+        "modes": {
+          "device": "Dieses Gerät",
+          "words": "12 Wörter"
+        },
+        "devicePassword": "Gerätepasswort",
+        "devicePasswordHint": "Das Passwort, das du beim Speichern dieses Tresors auf diesem Gerät gewählt hast.",
+        "phrase": "Deine 12 Wörter",
+        "phraseHint": "Trenne die Wörter mit Leerzeichen. Groß- und Kleinschreibung ist egal.",
+        "remember": "Diesen Tresor auf diesem Gerät merken",
+        "newDevicePassword": "Gerätepasswort",
+        "newDevicePasswordHint": "Verschlüsselt die Wörter auf diesem Gerät. Es ist nicht dein BetterTrack-Passwort.",
+        "rawTitle": "Wörter unverschlüsselt speichern (nicht empfohlen)",
+        "rawWarning": "Wer dieses Gerät entsperrt in die Hände bekommt, öffnet diesen Tresor sofort.",
+        "actions": {
+          "unlock": "Entsperren"
+        },
+        "errors": {
+          "failed": "Damit ließ sich der Tresor nicht entsperren.",
+          "wordCount": "{{expected}} Wörter erwartet, {{count}} erhalten.",
+          "unknownWords": "Nicht in der Wortliste: {{words}}",
+          "checksum": "Das sind alles echte Wörter, aber nicht in gültiger Reihenfolge. Prüfe auf Tippfehler."
+        }
+      },
+      "move": {
+        "title": "In {{name}} legen",
+        "body": "„{{portfolio}}“ wird auf diesem Gerät verschlüsselt, und die lesbaren Zeilen werden vom Server gelöscht.",
+        "points": {
+          "irreversible": "Die Serverkopie wird im selben Schritt gelöscht. Serverseitig lässt sich das nicht rückgängig machen.",
+          "serverBlind": "Danach speichert der Server für dieses Portfolio nur noch verschlüsselte Bytes.",
+          "featuresOff": "Serverseitige Funktionen entfallen dafür: Teilen, Mirrorchain, Importe, Alerts und geplante Jobs.",
+          "lostWords": "Wenn du die Tresor-Wörter verlierst, ist dieses Portfolio weg."
+        },
+        "alias": "Name im gesperrten Zustand",
+        "aliasHint": "Unverschlüsselt gespeichert, damit die Zeile auch bei gesperrtem Tresor eine Bezeichnung hat.",
+        "mustUnlock": "Entsperre diesen Tresor zuerst — das Hineinlegen braucht seinen Schlüssel.",
+        "understood": "Mir ist klar, dass das nicht rückgängig zu machen ist und dass verlorene Wörter die Daten verlieren.",
+        "stages": {
+          "capture": "Portfolio wird gelesen…",
+          "encrypt": "Wird auf diesem Gerät verschlüsselt…",
+          "verify": "Rücklesbarkeit wird geprüft…",
+          "join": "Wird in den Tresor gelegt…",
+          "index": "Tresor-Index wird aktualisiert…",
+          "done": "Fertig."
+        },
+        "actions": {
+          "move": "In Tresor legen"
+        },
+        "errors": {
+          "failed": "Das Verschieben ist fehlgeschlagen. Dein Portfolio wurde nicht verändert."
+        }
+      },
+      "qr": {
+        "title": "{{name}} an anderes Gerät übertragen",
+        "body": "Du siehst einen QR-Code und getrennt davon eine 6-stellige PIN. Das andere Gerät braucht beides — der Code allein nützt nichts.",
+        "password": "Dein BetterTrack-Passwort",
+        "passwordHint": "Wir bestätigen dein Passwort, bevor ein Geheimnis am Bildschirm erscheint.",
+        "scanFirst": "Scanne das zuerst mit dem anderen Gerät.",
+        "codeLabel": "QR-Code für den Tresor {{name}}",
+        "expires": "Läuft in {{seconds}} Sekunden ab",
+        "pinLabel": "Einmal-PIN",
+        "pinHint": "Sage sie dem anderen Gerät an. Sie wird nirgends gespeichert.",
+        "pinPending": "Sobald das andere Gerät den Code gescannt hat, zeige die PIN.",
+        "screenshotWarning": "Mach hiervon keinen Screenshot. Ein Foto des Codes allein ist harmlos, aber ein Foto, das auch die PIN erwischt, gibt den ganzen Tresor preis.",
+        "expired": "Die Übertragung ist abgelaufen. Bestätige dein Passwort erneut für einen neuen Versuch.",
+        "actions": {
+          "start": "Übertragung starten",
+          "revealPin": "PIN anzeigen",
+          "again": "Neu starten"
+        },
+        "errors": {
+          "invalidPassword": "Dieses Passwort stimmt nicht.",
+          "rateLimited": "Zu viele Versuche. Warte einen Moment und versuche es erneut.",
+          "reauthUnavailable": "Wir können dein Passwort gerade nicht bestätigen, deshalb bleibt der Code verborgen.",
+          "failed": "Der Code konnte nicht angezeigt werden."
+        }
+      },
+      "import": {
+        "title": "Tresor auf diesem Gerät hinzufügen",
+        "body": "Scanne den QR-Code von einem Gerät, das den Tresor schon hat, oder füge seinen Text ein.",
+        "file": "Oder wähle ein Foto des Codes",
+        "paste": "Oder füge den Code-Text ein",
+        "pasteHint": "Er beginnt mit btvault1:",
+        "cameraLabel": "Kameravorschau zum Scannen",
+        "found": "Tresor „{{name}}“ gefunden.",
+        "pinIntro": "Tippe jetzt die 6-stellige PIN ein, die auf dem anderen Gerät steht.",
+        "pin": "Einmal-PIN",
+        "pinHint": "Sechs Ziffern, angezeigt auf dem sendenden Gerät.",
+        "storeIntro": "Wähle, wie dieses Gerät die Wörter speichert.",
+        "devicePassword": "Gerätepasswort",
+        "devicePasswordHint": "Verschlüsselt die Wörter auf diesem Gerät.",
+        "actions": {
+          "scan": "Mit Kamera scannen",
+          "stop": "Scannen beenden",
+          "use": "Diesen Code verwenden",
+          "unlockCode": "Mit PIN entsperren",
+          "save": "Auf diesem Gerät speichern"
+        },
+        "errors": {
+          "prefix": "Das ist kein BetterTrack-Tresorcode.",
+          "json": "Dieser Code ist beschädigt.",
+          "shape": "Diesen Tresorcode versteht diese Version nicht.",
+          "wrapped": "Dieser Code ist unvollständig.",
+          "passphrase": "Die Wörter in diesem Code sind ungültig.",
+          "pinFormat": "Die PIN hat sechs Ziffern.",
+          "pinWrong": "Diese PIN hat den Code nicht entsperrt. Möglicherweise ist er auch abgelaufen.",
+          "camera": "Die Kamera konnte nicht geöffnet werden.",
+          "noDecoder": "Dieser Browser kann keine QR-Codes lesen. Füge stattdessen den Code-Text ein.",
+          "notFound": "In diesem Bild wurde kein QR-Code gefunden.",
+          "store": "Der Tresor konnte auf diesem Gerät nicht gespeichert werden."
+        }
+      },
+      "aggregate": {
+        "locked": "+ {{count}} gesperrte Portfolios",
+        "unavailable": "+ {{count}} Portfolios, die wir nicht öffnen konnten",
+        "lockedAndUnavailable": "+ {{locked}} gesperrt, {{unavailable}} nicht verfügbar",
+        "chip": "Einträge aus „{{vault}}“ ausgeblendet"
+      },
+      "unavailable": {
+        "title": "Dieses Portfolio konnte nicht geöffnet werden",
+        "body": "Sein verschlüsseltes Dokument ließ sich nicht laden oder entschlüsseln. Der Rest des Tresors funktioniert weiterhin.",
+        "detail": "Dokument: {{doc}} (Version {{version}})",
+        "aria": "{{alias}}, nicht verfügbar"
+      },
+      "lockedWrite": {
+        "title": "Zum Ändern entsperren",
+        "body": "Ein gesperrter Tresor erlaubt weder Lesen noch Schreiben. Entsperre ihn, dann geht deine Änderung sofort durch."
+      },
+      "transfer": {
+        "crossBlob": "Eine Umbuchung zwischen zwei Tresor-Portfolios erfolgt in zwei Schritten: erst die Abbuchung, dann die Einbuchung. Jeder Schritt wird für sich gespeichert.",
+        "crossVault": "Umbuchungen zwischen zwei verschiedenen Tresoren werden nicht unterstützt."
+      },
+      "locked": {
+        "aria": "{{alias}}, gesperrt im Tresor {{vault}}. Aktivieren zum Entsperren.",
+        "hint": "Gesperrt in {{vault}}",
+        "action": "Entsperren"
+      },
+      "explainer": {
+        "title": "So funktionieren Tresore",
+        "sub": "Was verschlüsselt ist, was wir noch sehen und was passiert, wenn etwas schiefgeht.",
+        "keys": {
+          "heading": "Die Schlüssel",
+          "body": "Zwei unabhängige Passwörter erledigen zwei verschiedene Aufgaben. Keines davon erreicht jemals unsere Server.",
+          "points": {
+            "passphrase": "Deine 12 Wörter entsperren den Tresor. Sie werden mit Argon2id und einem beim Tresor gespeicherten Salt gestreckt.",
+            "contentKey": "Daraus entsteht ein Schlüssel, der den Inhaltsschlüssel auspackt — einen zufälligen 256-Bit-Schlüssel, der deine Portfolios tatsächlich verschlüsselt.",
+            "device": "Dein Gerätepasswort schützt eine lokale Kopie der 12 Wörter, damit du sie nicht bei jedem Besuch neu tippst.",
+            "slots": "Der Inhaltsschlüssel liegt in „Slots“. Heute gibt es einen für deine Passphrase. Geteilte Tresore werden weitere hinzufügen."
+          }
+        },
+        "diagram": {
+          "title": "Wie aus der Tresor-Passphrase die Portfolio-Entschlüsselung wird",
+          "desc": "Die 12-Wörter-Passphrase läuft durch Argon2id mit dem Tresor-Salt und ergibt einen Hauptschlüssel, der den Inhaltsschlüssel auspackt. Der Inhaltsschlüssel entschlüsselt jedes Portfolio-Blob mit AES-256-GCM. Getrennt davon läuft ein Gerätepasswort durch Argon2id mit einem Geräte-Salt und ergibt einen Geräteschlüssel, der die 12 Wörter ausschließlich für die lokale Speicherung verschlüsselt.",
+          "wrapsPassphrase": "verschlüsselt deine 12 Wörter auf diesem Gerät",
+          "nodes": {
+            "passphrase": "12-Wörter-Passphrase (pro Tresor)",
+            "kdfVault": "Argon2id mit dem Tresor-Salt",
+            "masterKey": "Hauptschlüssel",
+            "contentKey": "Inhaltsschlüssel (zufällig, 256 Bit)",
+            "blobs": "AES-256-GCM entschlüsselt jedes Portfolio",
+            "devicePassword": "Gerätepasswort (pro Gerät)",
+            "kdfDevice": "Argon2id mit dem Geräte-Salt",
+            "deviceKey": "Geräteschlüssel"
+          }
+        },
+        "server": {
+          "heading": "Was der Server sieht",
+          "rows": {
+            "sees": {
+              "label": "Er sieht",
+              "value": "Dass ein Tresor existiert, seinen Namen, die gewählten Speicherorte, welche Portfolio-IDs dazugehören und ihre Anzeigebezeichnungen."
+            },
+            "seesNot": {
+              "label": "Er sieht nicht",
+              "value": "Keinen Betrag, Bestand, keine Transaktion, Bargeldbewegung oder Notiz in einem Tresor-Portfolio. Nicht deine Wörter, nicht den Inhaltsschlüssel."
+            },
+            "sizes": {
+              "label": "Er kann messen",
+              "value": "Wie groß die verschlüsselten Blobs sind und wie oft du sie schreibst. Größe und Zeitpunkt sind nicht verborgen."
+            }
+          }
+        },
+        "outcomes": {
+          "heading": "Wenn etwas schiefgeht",
+          "sub": "Die ehrliche Version.",
+          "breach": {
+            "title": "Jemand stiehlt die ganze Datenbank",
+            "body": "Er bekommt verschlüsselte Blobs, Tresornamen, Portfolio-Bezeichnungen und Blob-Größen. Zum Lesen der Inhalte braucht er deine 12 Wörter, die dort nicht liegen."
+          },
+          "deviceWrapped": {
+            "title": "Jemand stiehlt dein Gerät (Wörter verschlüsselt gespeichert)",
+            "body": "Er braucht weiterhin dein Gerätepasswort für die Wörter. Er sieht, was ohnehin schon entsperrt am Bildschirm stand."
+          },
+          "deviceRaw": {
+            "title": "Jemand stiehlt dein Gerät (Wörter unverschlüsselt gespeichert)",
+            "body": "Der Tresor öffnet sich sofort. Das ist der Kompromiss, den du eingehst, wenn du die lokale Verschlüsselung abschaltest."
+          },
+          "lostWords": {
+            "title": "Du verlierst die 12 Wörter",
+            "body": "Die Daten sind unwiederbringlich. Wir haben keine Kopie des Schlüssels und keine Möglichkeit, ihn zurückzusetzen. Das ist keine Richtlinie — das ist die Konstruktion."
+          }
+        },
+        "caveats": {
+          "heading": "Lies das, bevor du dich darauf verlässt",
+          "tickers": "Wertpapiere gelten kontoweit und bleiben auf dem Server lesbar. Welche Ticker du verfolgst, ist auch bei einem Tresor-Portfolio sichtbar.",
+          "aliases": "Tresornamen und die Bezeichnung einer gesperrten Zeile werden unverschlüsselt gespeichert, damit die App sie im gesperrten Zustand anzeigen kann.",
+          "metadata": "Blob-Größen, Schreibzeitpunkte und die Anzahl der Portfolios in einem Tresor sind für den Speicherort sichtbar.",
+          "membership": "Der Server weiß, welche Portfolios zu welchem Tresor gehören. Sowohl das Routing als auch das Löschen des Klartexts brauchen das — es ist bewusst so, nicht versteckt.",
+          "qrPin": "Ein geteilter QR-Code enthält die Wörter, verpackt unter einer Einmal-PIN. Ein Foto des Codes allein öffnet deinen Tresor nicht; ein Foto, das auch die PIN erfasst, schon.",
+          "noRecovery": "Es gibt keine serverseitige Wiederherstellung, kein Support-Override und keine Hintertür. Verlorene Wörter bedeuten verlorene Daten."
+        }
+      },
+      "control": {
+        "pointer": "Paranoid-Modus gilt pro Portfolio",
+        "pointerHint": "Wähle in den Einstellungen jedes Portfolios, welche Portfolios in einem Tresor verschlüsselt werden.",
+        "pointerAction": "Portfolio-Einstellungen öffnen",
+        "explainerHint": "Was verschlüsselt ist, was wir noch sehen und was passiert, wenn etwas schiefgeht.",
+        "open": "Lesen",
+        "legacy": "Alter kontoweiter Tresor",
+        "legacyHint": "Nur für Konten, die vor den Tresoren eingerichtet wurden. Überführt die vorhandenen verschlüsselten Daten in deinen ersten Tresor.",
+        "legacyAction": "Migration öffnen"
+      }
     }
   },
   "announcements": {
