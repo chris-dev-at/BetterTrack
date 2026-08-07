@@ -173,32 +173,68 @@
   --bt-scrim: rgba(28, 34, 42, 0.38);
   --bt-border: rgba(20, 27, 35, 0.1);
   --bt-border-strong: rgba(20, 27, 35, 0.16);
-  --bt-border-accent: rgba(174, 119, 0, 0.3);
   --bt-text: #131820;
   --bt-text-soft: #3e4650;
   --bt-muted: #56616d; /* min 5.23:1 against --bt-surface-hover (#e8eaec) */
   --bt-faint: #5d6773; /* min 4.77:1 against --bt-surface-hover (#e8eaec) */
   /*
-   * Gold carries three jobs at once — the fill under `--bt-gold-ink`, the
-   * 3px active-rail edge, and gold-as-ink — so ONE value has to satisfy the
-   * strictest of them (ink at 4.5:1). Hence deep ochre, not daylight yellow:
-   * `#f6b82e` on this canvas is 1.9:1, which would erase the rail marker the
-   * owner's standing nav rule depends on.
+   * ── Cross-client palette (mobile B2 light theme, spec §1.4) ──────────────
+   *
+   * Gold, gain and loss and three categorical slots are the values the mobile
+   * client already ships, adopted verbatim so the two clients read as one
+   * product. Mobile validated them with a six-checks pass (deutan separation
+   * included) against white and #EEF0F2.
+   *
+   * Web has a deeper surface ramp than that basis — `--bt-nav` (#e9eaeb) and
+   * `--bt-surface-hover` (#e8eaec) both sit below #EEF0F2 — so every adopted
+   * value was re-checked here against all seven opaque surfaces. Five cleared
+   * 4.5:1 unchanged. `--bt-pos` did not (see its note).
+   *
+   * Gold carries three jobs at once — the fill under `--bt-gold-ink`, the 3px
+   * active-rail edge, and gold-as-ink — so one value has to satisfy the
+   * strictest of them. Hence deep ochre, not daylight yellow: `#f6b82e` on this
+   * canvas is 1.78:1, which would erase the rail marker the owner's standing
+   * nav rule depends on.
    */
-  --bt-gold: #7d5e17; /* min 5.00:1 against --bt-surface-hover (#e8eaec) */
-  --bt-gold-bright: #674d13; /* primary :hover — DARKER here, the fill is dark */
-  --bt-gold-ink: #fff8ea; /* 5.70:1 on --bt-gold, 7.50:1 on --bt-gold-bright */
-  --bt-gold-soft: rgba(246, 184, 46, 0.2);
-  --bt-pos: #1c7051; /* 4.99:1 plain, 4.53:1 on its own tint */
-  --bt-pos-soft: rgba(52, 211, 153, 0.18);
-  --bt-neg: #9e4754; /* 5.00:1 plain, 4.51:1 on its own tint */
-  --bt-neg-soft: rgba(251, 113, 133, 0.12);
-  --bt-blue: #1f6a8b; /* 4.99:1 plain, 4.52:1 on its own tint */
-  --bt-blue-soft: rgba(56, 189, 248, 0.16);
-  --bt-border-accent: rgba(125, 94, 23, 0.4);
+  --bt-gold: #8f5f00; /* mobile B2 §1.4; min 4.58:1 on --bt-surface-hover */
+  --bt-gold-bright: #7a5100; /* primary :hover — DARKER here, the fill is dark */
+  --bt-gold-ink: #fff8ea; /* 5.22:1 on --bt-gold, 6.61:1 on --bt-gold-bright */
+  /*
+   * THE ONE DEVIATION from mobile B2 §1.4, pending their sign-off.
+   *
+   * Their gain ink is #0F7A55. It clears 4.5:1 on the two surfaces they
+   * validated (white 4.86, #EEF0F2 4.67) but lands at 4.42:1 on this theme's
+   * `--bt-surface-hover` (#e8eaec) and 4.43:1 on `--bt-nav` — a real surface
+   * pairing, since a gain badge sits on a hovered table row. Shipping it as-is
+   * would put a documented AA failure into the product.
+   *
+   * So it is darkened along its own RGB ray by 2/255 per channel — the minimum
+   * that clears the floor (4.54:1), and a shift no eye resolves. If mobile
+   * would rather move their value or their surface, this converges on whatever
+   * they choose; it must not silently drift back to #0F7A55.
+   */
+  --bt-pos: #0f7853;
+  --bt-neg: #b23a4e; /* mobile B2 §1.4; min 4.83:1 on --bt-surface-hover */
+  --bt-blue: #1f6a8b; /* web-only slot; min 4.99:1 */
+  /*
+   * The `-soft` tints are mixed toward WHITE, not washed from the vivid hue.
+   *
+   * The dark theme can wash: its hue is LIGHTER than the surface, so a tint
+   * lifts the chip away from the ink and contrast improves. Inverted, the same
+   * move walks the chip TOWARD the ink — a vivid wash DARKENS a near-white
+   * surface — and with the (lighter) cross-client inks there is no headroom
+   * left: every alpha down to 0.05 pushed the badge below 4.5:1. A pale chip is
+   * also simply what a light theme wants. Each is its vivid hue mixed 80 % to
+   * white, and each keeps its own ink at ≥4.76:1 on every surface.
+   */
+  --bt-gold-soft: #fdf1d5;
+  --bt-pos-soft: #d6f6eb;
+  --bt-neg-soft: #fee3e7;
+  --bt-blue-soft: #d7f2fe;
+  --bt-border-accent: rgba(143, 95, 0, 0.4);
   --bt-pf-group-ink: #6154c6;
   --bt-glow-cool: rgba(31, 106, 139, 0.05);
-  --bt-glow-warm: rgba(125, 94, 23, 0.04);
+  --bt-glow-warm: rgba(143, 95, 0, 0.04);
   --bt-selection: rgba(246, 184, 46, 0.36);
   --bt-scrollbar: rgba(86, 97, 109, 0.34);
   --bt-raised-edge: rgba(20, 27, 35, 0.14);
@@ -221,25 +257,25 @@
   --bt-chart-main-bottom: rgba(31, 106, 139, 0.02);
   --bt-chart-grid: rgba(20, 27, 35, 0.1);
   --bt-chart-text: #56616d;
-  --bt-chart-pos: #1c7051;
-  --bt-chart-pos-top: rgba(28, 112, 81, 0.18);
-  --bt-chart-pos-bottom: rgba(28, 112, 81, 0.02);
-  --bt-chart-neg: #9e4754;
-  --bt-chart-neg-top: rgba(158, 71, 84, 0.02);
-  --bt-chart-neg-bottom: rgba(158, 71, 84, 0.18);
+  --bt-chart-pos: #0f7853;
+  --bt-chart-pos-top: rgba(15, 120, 83, 0.18);
+  --bt-chart-pos-bottom: rgba(15, 120, 83, 0.02);
+  --bt-chart-neg: #b23a4e;
+  --bt-chart-neg-top: rgba(178, 58, 78, 0.02);
+  --bt-chart-neg-bottom: rgba(178, 58, 78, 0.18);
   --bt-chart-flat: #6b6b74;
-  --bt-chart-trend-down: #9e4754;
-  --bt-chart-flag: #7d5e17;
+  --bt-chart-trend-down: #b23a4e;
+  --bt-chart-flag: #8f5f00;
   --bt-chart-benchmark: #6154c6;
   --bt-chart-1: #1f6ac4; /* blue */
   --bt-chart-2: #b8431a; /* orange */
   --bt-chart-3: #179066; /* green */
-  --bt-chart-4: #ad7200; /* yellow */
+  --bt-chart-4: #96600a; /* yellow — mobile B2 §1.4 */
   --bt-chart-5: #b93a68; /* magenta */
   --bt-chart-6: #6154c6; /* violet */
-  --bt-chart-7: #0c8e83; /* teal */
+  --bt-chart-7: #00887a; /* teal — mobile B2 §1.4 */
   --bt-chart-8: #c0453f; /* red-brown */
-  --bt-chart-9: #5c7a13; /* lime */
+  --bt-chart-9: #6b8a1a; /* lime — mobile B2 §1.4 */
   --bt-chart-10: #8e46ad; /* purple */
 }
 

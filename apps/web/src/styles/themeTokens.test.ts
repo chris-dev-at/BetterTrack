@@ -67,8 +67,18 @@ function contrastRatio(foreground: string, background: string): number {
   return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
 }
 
-/** Composite `rgba(r, g, b, a)` over an opaque hex, the way the browser does. */
+/**
+ * Composite a tint over an opaque hex, the way the browser does.
+ *
+ * A tint may be either form: dark washes its hue over the surface at low alpha
+ * (`rgba(...)`), light uses an opaque pale hex — an alpha wash on a near-white
+ * surface darkens it toward the ink instead of away from it, which is the
+ * opposite of what the dark theme gets for free. An opaque tint composites to
+ * itself.
+ */
 function flatten(tint: string, background: string): string {
+  if (/^#[0-9a-fA-F]{6}$/.test(tint)) return tint;
+
   const parts = /rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)[,/\s]+([\d.]+)\s*\)/.exec(tint);
   if (!parts) throw new Error(`Not an rgba tint: ${tint}`);
   const [r, g, b, alpha] = parts.slice(1, 5).map(Number) as [number, number, number, number];
@@ -197,6 +207,49 @@ describe('dark theme is untouched by the light-theme work', () => {
 });
 
 // ── 2. Light must be legible ────────────────────────────────────────────────
+
+/**
+ * The values adopted verbatim from the mobile client's shipped B2 light theme
+ * (spec §1.4), pinned so a later web-side tweak cannot silently un-converge the
+ * two clients. `--bt-pos` is deliberately ABSENT: mobile's #0F7A55 fails this
+ * theme's surface ramp at 4.42:1 and carries its own documented deviation in
+ * `origin.css`. When mobile settles that, add it here.
+ */
+const CROSS_CLIENT_LIGHT_PALETTE: Readonly<Record<string, string>> = {
+  gold: '#8f5f00',
+  neg: '#b23a4e',
+  'chart-4': '#96600a', // yellow
+  'chart-7': '#00887a', // teal
+  'chart-9': '#6b8a1a', // lime
+};
+
+describe('cross-client light palette (mobile B2 §1.4)', () => {
+  it('keeps every adopted value exactly as the mobile client ships it', () => {
+    const drifted = Object.entries(CROSS_CLIENT_LIGHT_PALETTE)
+      .map(([name, expected]) => ({ name, expected, actual: hexToken(LIGHT, name) }))
+      .filter((entry) => entry.actual !== entry.expected);
+
+    expect(drifted).toEqual([]);
+  });
+
+  /**
+   * The deviation is allowed to exist, but not to be forgotten: it must stay
+   * the minimum darkening of mobile's hue rather than drift into a third
+   * colour, and it must actually clear the floor mobile's basis did not test.
+   */
+  it('holds --bt-pos as the minimal AA-clearing darkening of mobile #0F7A55', () => {
+    const pos = hexToken(LIGHT, 'pos');
+    const mobile = '#0f7a55';
+
+    const channels = (hex: string) =>
+      [1, 3, 5].map((index) => Number.parseInt(hex.slice(index, index + 2), 16));
+    const drift = channels(mobile).map((value, index) => value - channels(pos)[index]!);
+
+    expect(drift.every((delta) => delta >= 0 && delta <= 3)).toBe(true);
+    expect(weakestOnSurfaces(LIGHT, mobile).ratio).toBeLessThan(4.5);
+    expect(weakestOnSurfaces(LIGHT, pos).ratio).toBeGreaterThanOrEqual(4.5);
+  });
+});
 
 describe('light theme contrast', () => {
   const INKS = ['text', 'text-soft', 'muted', 'faint', 'gold', 'pos', 'neg', 'blue'] as const;
