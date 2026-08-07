@@ -31,10 +31,14 @@
  *  - A `*-soft` tint is a wash of the VIVID (dark-theme) hue, not of the muted
  *    light ink: a 12–20 % vivid wash stays a visible tint while keeping the
  *    composite light enough for its own ink to clear 4.5:1 on top of it.
- *  - `--bt-gold` doubles as fill and as ink, so it is dark enough to read as
- *    ink, and `--bt-gold-ink` (the text ON gold) flips to a warm near-white.
- *    That is why light gold looks like deep ochre rather than daylight yellow —
- *    a 1.9:1 `#f6b82e` on white is not a brand, it is an invisible control.
+ *  - GOLD IS THE ONE EXCEPTION, and it is an owner decision rather than a
+ *    derivation (2026-08-07, final word, decided with the mobile team). Brand
+ *    gold stays BRIGHT on light even though it is 1.78:1 on white; the
+ *    legibility budget is paid in geometry — heavier strokes, doubled edge
+ *    alphas — and the handful of places where gold letters carried real
+ *    reading text were converted to page ink plus a gold mark. See the gold
+ *    block in the light theme below; `themeTokens.test.ts` holds that override
+ *    in its own block so the AA gate over every OTHER ink stays exact.
  */
 
 :root {
@@ -79,8 +83,8 @@
    * zeroed the blue channel — off the brand ray, which is what the owner
    * reacted to. Split by JOB, each free to sit where its own floor allows:
    *
-   *   --bt-gold-ink      gold that IS text, or a glyph carrying meaning (4.5:1)
-   *   --bt-gold-graphic  borders, rings, chart lines, the nav active edge (3:1)
+   *   --bt-gold-ink      gold that IS text, or a glyph carrying meaning
+   *   --bt-gold-graphic  borders, rings, chart lines, the nav active edge
    *   --bt-gold-fill     gold as a filled background, under --bt-gold-on
    *   --bt-gold-on       the text/glyph sitting ON a gold fill
    *
@@ -93,6 +97,31 @@
   --bt-gold-on: #171105;
   --bt-gold-bright: #ffd26b;
   --bt-gold-soft: rgba(246, 184, 46, 0.11);
+  /*
+   * The safety valve (THEME3). Light ships gold ink deliberately below AA, so
+   * the few places where gold letters carry a SENTENCE or a LABEL — text whose
+   * loss breaks comprehension — draw from this token instead and let a gold
+   * MARK carry the brand. Dark aliases it straight back to the gold, so every
+   * one of those sites paints exactly the pixel it painted before.
+   */
+  --bt-gold-ink-safe: var(--bt-gold-ink);
+  /*
+   * Gold GEOMETRY (THEME3, owner final word 2026-08-07).
+   *
+   * Brand gold is 1.78:1 on white — under the 3:1 graphical floor — and the
+   * owner's decision is that the colour does not move. So light compensates
+   * with MASS rather than darkness, mirroring what the mobile client shipped
+   * (3dp strokes where dark uses 2dp, edge alphas doubled). Every gold stroke
+   * in the sheet sizes itself from one of these three, so the compensation is
+   * a token flip and not thirty hand-tuned rules.
+   *
+   *   --bt-gold-hair  a 1px gold rule/border/ring
+   *   --bt-gold-ring  a 2px focus outline or underline bar
+   *   --bt-gold-edge  the 3px nav active-edge dash
+   */
+  --bt-gold-hair: 1px;
+  --bt-gold-ring: 2px;
+  --bt-gold-edge: 3px;
   --bt-pos: #34d399;
   --bt-pos-soft: rgba(52, 211, 153, 0.1);
   --bt-neg: #fb7185;
@@ -255,22 +284,49 @@
    * verbatim so the two clients read as one product. Mobile six-checks-validated
    * them (deutan separation included) on white and #EEF0F2; every one is
    * re-verified here against this theme's own binding ground (#E9EDF2), which
-   * is darker than either, and all clear their floor.
+   * is darker than either. Every SEMANTIC ink clears its floor there; gold is
+   * the one that does not, and does not try to — see immediately below.
    *
-   * The gold split is the point of this pass. One gold had to be legible AS
-   * TEXT, which dragged it to #8F5F00 — blue channel zeroed, off the brand ray
-   * that carries B=46, and the "rusty gold" the owner flagged. Two tokens, two
-   * floors, both back on the ray:
+   * ── Gold: owner FINAL WORD, 2026-08-07 ───────────────────────────────────
    *
-   *   --bt-gold-ink      #866419 = ray × 0.545, 4.64:1 — text and glyphs only
-   *   --bt-gold-graphic  #A77D1F = ray × 0.68,  3.19:1 — edges, rings, lines,
-   *                      and the active-rail marker the owner's nav rule needs
+   * Decided on-device with the mobile team and shipped there as "bright brand
+   * yellow everywhere (owner final word)". It REPLACES the darkened light golds
+   * this file shipped one pass earlier (#866419 ink / #A77D1F graphic): those
+   * cleared their contrast floors, and the owner rejected the result as not the
+   * brand. The brand gold stays BRIGHT on light, and the legibility budget is
+   * paid in GEOMETRY instead — see --bt-gold-hair/ring/edge above, and the
+   * doubled edge alphas below.
+   *
+   *   --bt-gold-graphic  #F6B82E  brand gold, unchanged from dark. 1.78:1 on
+   *                      white, i.e. UNDER the 3:1 graphical floor, and carried
+   *                      instead by a stroke that is 1.5–2× its dark mass.
+   *   --bt-gold-fill     #F6B82E  a gold FILL is bright gold again, not the old
+   *                      dusty #D2B37A. --bt-gold-on clears 10.56:1 on it.
+   *   --bt-gold-ink      #D49E28  mobile's goldInk. ~2.41:1 on white, ~2.05:1
+   *                      on the binding ground, ~2.15:1 on --bt-gold-soft — all
+   *                      sub-AA BY OWNER DECISION, accepted for short numbers,
+   *                      badges and accent marks only. Text that has to be READ
+   *                      draws --bt-gold-ink-safe and wears a gold mark instead.
+   *
+   * All four are on the brand ray (B channel preserved), which is the one
+   * property the owner did react to and which the token test still guards.
    */
-  --bt-gold-ink: #866419; /* mobile B2 §1.4 */
-  --bt-gold-graphic: #a77d1f; /* mobile B2 §1.4 */
-  --bt-gold-fill: #d2b37a; /* goldSurfaceStrong; carries --bt-gold-on at 9.36:1 */
+  --bt-gold-ink: #d49e28; /* mobile goldInk — owner override, sub-AA on purpose */
+  --bt-gold-graphic: #f6b82e; /* brand gold; geometry compensates */
+  --bt-gold-fill: #f6b82e; /* brand gold; carries --bt-gold-on at 10.56:1 */
   --bt-gold-on: #171105; /* mobile B2 onGold */
-  --bt-gold-bright: #a77d1f; /* primary :hover — deepens toward the graphic gold */
+  --bt-gold-bright: #ffd26b; /* primary :hover — brightens, as dark does */
+  /* Critical reading text drops to the page ink; a gold mark carries the brand. */
+  --bt-gold-ink-safe: var(--bt-text);
+  /*
+   * The geometry half of the override: mobile went 3dp where dark uses 2dp, so
+   * every gold stroke here is one step heavier than its dark counterpart. A
+   * 4px active-rail dash at 1.78:1 is a mark you see; a 3px one at 3.19:1 was
+   * the colour compromise the owner threw out.
+   */
+  --bt-gold-hair: 2px;
+  --bt-gold-ring: 3px;
+  --bt-gold-edge: 4px;
   --bt-pos: #0f7853; /* 4.66:1 */
   --bt-neg: #b23a4e; /* 4.95:1 */
   --bt-blue: #1f6a8b; /* web-only slot */
@@ -283,14 +339,20 @@
    * loss 4.19, gold 4.33). Opaque pale surfaces make the badge's ground a fact
    * rather than a function of what it happens to be sitting on.
    */
-  --bt-gold-soft: #fcf1db; /* mobile goldSurface; --bt-gold-ink on it 4.87:1 */
+  --bt-gold-soft: #fcf1db; /* mobile goldSurface — the badge/wash ground */
   --bt-pos-soft: #eaf6f1; /* 4.95:1 */
   --bt-neg-soft: #fbedef; /* mobile lossSurface; 5.12:1 */
   --bt-blue-soft: #eaf3fa; /* 5.35:1 */
-  --bt-border-accent: rgba(167, 125, 31, 0.3); /* graphic gold at 30 % */
+  /*
+   * The edge alpha, DOUBLED (THEME3) — the other half of mobile's compensation.
+   * It was the darkened gold at 30 %; it is brand gold at 60 %, so a gold-framed
+   * callout, a chat bubble rule and a selected radio card keep the edge they had
+   * even though the hue no longer does any of the work.
+   */
+  --bt-border-accent: rgba(246, 184, 46, 0.6);
   --bt-pf-group-ink: #6154c6;
   --bt-glow-cool: rgba(31, 106, 139, 0.05);
-  --bt-glow-warm: rgba(167, 125, 31, 0.04);
+  --bt-glow-warm: rgba(246, 184, 46, 0.08); /* brand gold, alpha doubled */
   --bt-selection: rgba(246, 184, 46, 0.36);
   --bt-scrollbar: rgba(86, 97, 109, 0.34);
   --bt-raised-edge: rgba(19, 24, 32, 0.14);
@@ -321,7 +383,7 @@
   --bt-chart-neg-bottom: rgba(178, 58, 78, 0.18);
   --bt-chart-flat: #6e7276; /* 'rest' slot — mobile B2 §1.4 */
   --bt-chart-trend-down: #b23a4e;
-  --bt-chart-flag: #a77d1f; /* a chart flag is a graphic, not text */
+  --bt-chart-flag: #f6b82e; /* brand gold: a chart's gold mark is graphic (THEME3) */
   --bt-chart-benchmark: #6154c6;
   --bt-chart-1: #1f6ac4; /* blue */
   --bt-chart-2: #b8431a; /* orange */
@@ -366,7 +428,7 @@
 }
 
 .bt-app :focus-visible {
-  outline: 2px solid var(--bt-gold-graphic);
+  outline: var(--bt-gold-ring) solid var(--bt-gold-graphic);
   outline-offset: 2px;
   border-radius: 4px;
 }
@@ -390,8 +452,46 @@
   color: var(--bt-neg);
 }
 
+/* Gold as an ACCENT: a short highlighted number, a badge, a pill. Bright, and
+   deliberately sub-AA on light — see the gold block in the light theme. */
 .bt-gold {
   color: var(--bt-gold-ink);
+}
+
+/* Gold as a MARK: an icon or glyph that points at something rather than
+   spelling it out. Takes the graphic gold, so it stays brand-bright. */
+.bt-gold-mark {
+  color: var(--bt-gold-graphic);
+}
+
+/*
+ * ── The gold safety valve (THEME3) ─────────────────────────────────────────
+ *
+ * Gold ink is an owner-accepted sub-AA colour on light, which is fine for a
+ * number you glance at and wrong for a sentence you have to read. These two
+ * classes are the escape hatch, and in DARK both are literally `--bt-gold-ink`
+ * — the conversion costs the dark theme nothing.
+ *
+ *   .bt-gold-safe  the ink swap alone. For text that already sits inside a
+ *                  gold frame (a gold-washed callout, a gold focus ring): the
+ *                  frame is the mark, so a second one would be noise.
+ *   .bt-gold-note  the ink swap plus the mark — a leading gold dot, sized in
+ *                  `em` so it tracks whatever type it is introducing.
+ */
+.bt-gold-safe,
+.bt-gold-note {
+  color: var(--bt-gold-ink-safe);
+}
+
+:root[data-bt-theme='light'] .bt-gold-note::before {
+  content: '';
+  display: inline-block;
+  width: 0.5em;
+  height: 0.5em;
+  margin-right: 0.45em;
+  border-radius: 50%;
+  background: var(--bt-gold-graphic);
+  vertical-align: 0.05em;
 }
 
 .bt-muted {
@@ -535,7 +635,7 @@
   left: -10px;
   top: 50%;
   translate: 0 -50%;
-  width: 3px;
+  width: var(--bt-gold-edge);
   height: 18px;
   border-radius: 0 2px 2px 0;
   background: var(--bt-gold-graphic);
@@ -552,7 +652,9 @@
 
 .bt-rail-item.is-active > svg,
 .bt-rail-item.is-active > .bt-rail-item__link > svg {
-  color: var(--bt-gold-ink);
+  /* A mark, not a word: the row's label is what you read, and it takes
+     `--bt-text`. So the icon rides the bright graphic gold with the edge. */
+  color: var(--bt-gold-graphic);
 }
 
 .bt-rail-item__label {
@@ -747,13 +849,13 @@
   left: 50%;
   translate: -50% 0;
   width: 24px;
-  height: 3px;
+  height: var(--bt-gold-edge);
   border-radius: 0 0 2px 2px;
   background: var(--bt-gold-graphic);
 }
 
 .bt-bottombar a.is-active > svg {
-  color: var(--bt-gold-ink);
+  color: var(--bt-gold-graphic);
 }
 
 .bt-bottombar__label {
@@ -1146,7 +1248,7 @@ label:has(> :is(input, select, textarea):required)::after {
 .bt-textarea:focus-visible {
   outline: none;
   border-color: var(--bt-gold-graphic);
-  box-shadow: 0 0 0 1px var(--bt-gold-graphic);
+  box-shadow: 0 0 0 var(--bt-gold-hair) var(--bt-gold-graphic);
 }
 
 .bt-input[aria-invalid='true'] {
@@ -1351,7 +1453,9 @@ label:has(> :is(input, select, textarea):required)::after {
   min-height: 38px;
   padding: 0 13px;
   border: 0;
-  border-bottom: 2px solid transparent;
+  /* Reserved on every tab, gold only on the active one — so widening it in
+     light thickens the marker without shifting one tab against another. */
+  border-bottom: var(--bt-gold-ring) solid transparent;
   background: none;
   color: var(--bt-muted);
   font: inherit;
@@ -1878,8 +1982,15 @@ label:has(> :is(input, select, textarea):required)::after {
   text-decoration-thickness: 2px;
 }
 
+/* A gold LINK is reading text you also have to click, so it takes the safe ink
+   and puts the gold in its underline. */
 .bt-link--gold {
-  color: var(--bt-gold-ink);
+  color: var(--bt-gold-ink-safe);
+  text-decoration-color: var(--bt-gold-graphic);
+}
+
+:root[data-bt-theme='light'] .bt-link--gold {
+  text-decoration-thickness: var(--bt-gold-hair);
 }
 
 .bt-footer-link {
@@ -2649,6 +2760,9 @@ label:has(> :is(input, select, textarea):required)::after {
    no opacity drop (which would read as "disabled" rather than "held"). */
 .bt-home-w.is-armed {
   outline-color: var(--bt-gold-graphic);
+  /* 1px in dark — the width the neutral edit outline already had — and 2px in
+     light, where bright gold on white needs the extra mass to register. */
+  outline-width: var(--bt-gold-hair);
   background: var(--bt-surface);
 }
 
@@ -2672,7 +2786,7 @@ label:has(> :is(input, select, textarea):required)::after {
 /* A click target, not a drag handle: no `touch-action` override (the page must
    keep scrolling under the finger) and no grab cursor. */
 .bt-home-w__grip[aria-pressed='true'] {
-  color: var(--bt-gold-ink);
+  color: var(--bt-gold-graphic);
 }
 
 .bt-home-w__anchor {
@@ -2843,8 +2957,21 @@ label:has(> :is(input, select, textarea):required)::after {
   text-decoration: none;
 }
 
+/*
+ * Hover turns a row title gold. On light that would be 2.4:1 exactly while the
+ * cursor is on it — the title disappearing under the pointer is the worst
+ * possible moment for it to go — so light keeps the ink and moves the gold into
+ * a rule under the words. Dark is unchanged: `--bt-gold-ink-safe` is the gold.
+ */
 .bt-home-mover__link:hover {
-  color: var(--bt-gold-ink);
+  color: var(--bt-gold-ink-safe);
+}
+
+:root[data-bt-theme='light'] .bt-home-mover__link:hover {
+  text-decoration: underline;
+  text-decoration-color: var(--bt-gold-graphic);
+  text-decoration-thickness: var(--bt-gold-hair);
+  text-underline-offset: 3px;
 }
 
 .bt-home-mover__name {
@@ -2963,7 +3090,7 @@ label:has(> :is(input, select, textarea):required)::after {
 
 .bt-home-shortcut__icon {
   flex: 0 0 auto;
-  color: var(--bt-gold-ink);
+  color: var(--bt-gold-graphic);
 }
 
 .bt-home-shortcut__sub {
@@ -3025,7 +3152,7 @@ label:has(> :is(input, select, textarea):required)::after {
 }
 
 .bt-home-catalog__item:hover .bt-home-catalog__add {
-  color: var(--bt-gold-ink);
+  color: var(--bt-gold-graphic);
 }
 
 /* ── Board responsiveness ────────────────────────────────────────────────── */
@@ -3097,7 +3224,14 @@ label:has(> :is(input, select, textarea):required)::after {
 }
 
 .bt-home-txn__link:hover {
-  color: var(--bt-gold-ink);
+  color: var(--bt-gold-ink-safe);
+}
+
+:root[data-bt-theme='light'] .bt-home-txn__link:hover {
+  text-decoration: underline;
+  text-decoration-color: var(--bt-gold-graphic);
+  text-decoration-thickness: var(--bt-gold-hair);
+  text-underline-offset: 3px;
 }
 
 .bt-home-divs {
@@ -3739,8 +3873,11 @@ label:has(> :is(input, select, textarea):required)::after {
   color: var(--bt-gold-ink);
 }
 
+/* The widget's own label brightens on hover. `.bt-label` rests at `--bt-muted`,
+   so on light the safe ink is still a clear step up — the feedback survives the
+   colour swap without needing a mark of its own. */
 .bt-home-alerts:hover .bt-label {
-  color: var(--bt-gold-ink);
+  color: var(--bt-gold-ink-safe);
 }
 
 .bt-home-alerts__list {
@@ -3825,6 +3962,13 @@ label:has(> :is(input, select, textarea):required)::after {
   opacity: 0.75;
 }
 
+/* Bright gold at 75 % on white is a suggestion, not a drop target. Light spends
+   the last quarter of the alpha as well — the same "double the edge" trade the
+   gold tokens make. */
+:root[data-bt-theme='light'] .bt-home-place::after {
+  opacity: 1;
+}
+
 /* ── Horizontal slot: a row boundary, so the line spans the widget's width ── */
 
 .bt-home-place.is-h {
@@ -3848,8 +3992,8 @@ label:has(> :is(input, select, textarea):required)::after {
   top: 50%;
   right: 0;
   left: 0;
-  height: 2px;
-  margin-top: -1px;
+  height: var(--bt-gold-ring);
+  margin-top: calc(var(--bt-gold-ring) / -2);
 }
 
 /* ── Vertical slot: a column boundary inside the column gap ───────────────── */
@@ -3872,8 +4016,8 @@ label:has(> :is(input, select, textarea):required)::after {
   top: 0;
   bottom: 0;
   left: 50%;
-  width: 2px;
-  margin-left: -1px;
+  width: var(--bt-gold-ring);
+  margin-left: calc(var(--bt-gold-ring) / -2);
 }
 
 /* ── The pill ──────────────────────────────────────────────────────────────
@@ -3891,10 +4035,11 @@ label:has(> :is(input, select, textarea):required)::after {
   align-items: center;
   justify-content: center;
   padding: 4px;
-  border: 1px solid var(--bt-gold-graphic);
+  border: var(--bt-gold-hair) solid var(--bt-gold-graphic);
   border-radius: 999px;
   background: var(--bt-bg);
-  color: var(--bt-gold-ink);
+  /* The ⊕ inside is a glyph, not a word — it rides the graphic gold. */
+  color: var(--bt-gold-graphic);
   line-height: 1;
 }
 
@@ -6517,7 +6662,7 @@ label:has(> :is(input, select, textarea):required)::after {
 .bt-searchfield:focus-visible {
   outline: none;
   border-color: var(--bt-gold-graphic);
-  box-shadow: 0 0 0 1px var(--bt-gold-graphic);
+  box-shadow: 0 0 0 var(--bt-gold-hair) var(--bt-gold-graphic);
 }
 
 /* The placeholder stand-in: muted like a real one, and it yields the row so the

@@ -8,7 +8,7 @@ import { THEME_CANVAS, THEME_STORAGE_KEY } from '../user/theme';
 /**
  * The two-theme gate (board #68).
  *
- * Three jobs, in the order they matter:
+ * Four jobs, in the order they matter:
  *
  *  1. DARK MUST NOT MOVE. Adding a light theme meant lifting three dozen colour
  *     literals out of components and rules into tokens. Every one of those was
@@ -19,7 +19,13 @@ import { THEME_CANVAS, THEME_STORAGE_KEY } from '../user/theme';
  *  2. LIGHT MUST BE LEGIBLE. Every light ink is checked against every opaque
  *     light surface, and against its own tinted background where it is used on
  *     one, at the WCAG AA 4.5:1 floor.
- *  3. NEW LITERALS MUST NOT APPEAR. A colour written into a component is a
+ *  3. GOLD IS THE ONE DOCUMENTED EXCEPTION, and it lives in its own block
+ *     (`gold — owner final word`) rather than as a hole punched in job 2. The
+ *     owner decided on 2026-08-07 that brand gold stays bright on light and the
+ *     legibility budget is paid in geometry; that block pins the exact values,
+ *     records the ratios it is knowingly accepting, and asserts the geometry
+ *     that pays for them. Job 2's floor is NOT relaxed for anything else.
+ *  4. NEW LITERALS MUST NOT APPEAR. A colour written into a component is a
  *     component that only has one theme. The scan below fails on new ones.
  */
 
@@ -49,6 +55,21 @@ function hexToken(block: string, name: string): string {
   if (!/^#[0-9a-fA-F]{6}$/.test(value))
     throw new Error(`--bt-${name} is not a plain hex: ${value}`);
   return value;
+}
+
+/** A geometry token (`2px`), as a number, so themes can be compared. */
+function pxToken(block: string, name: string): number {
+  const value = token(block, name);
+  const match = /^(\d+(?:\.\d+)?)px$/.exec(value);
+  if (!match) throw new Error(`--bt-${name} is not a px length: ${value}`);
+  return Number(match[1]);
+}
+
+/** The alpha of an `rgba(...)` token. */
+function alphaOf(value: string): number {
+  const parts = /rgba?\(\s*[\d.]+[,\s]+[\d.]+[,\s]+[\d.]+[,/\s]+([\d.]+)\s*\)/.exec(value);
+  if (!parts) throw new Error(`Not an rgba value: ${value}`);
+  return Number(parts[1]);
 }
 
 // ── Contrast ────────────────────────────────────────────────────────────────
@@ -238,9 +259,8 @@ describe('dark theme is untouched by the light-theme work', () => {
  * again and the old "minimal darkening" guard has nothing left to guard.
  */
 const CROSS_CLIENT_LIGHT_PALETTE: Readonly<Record<string, string>> = {
-  'gold-ink': '#866419', // brand ray x 0.545 — gold as TEXT
-  'gold-graphic': '#a77d1f', // brand ray x 0.68 — gold as a GRAPHIC
-  'gold-on': '#171105',
+  // Gold is cross-client too, but it answers to a different floor and lives in
+  // its own block below — see `gold — owner final word`.
   pos: '#0f7853',
   neg: '#b23a4e',
   text: '#131820',
@@ -269,32 +289,16 @@ describe('cross-client light palette (mobile B2 §1.4)', () => {
 
     expect(drifted).toEqual([]);
   });
-
-  /**
-   * The whole point of the split: one gold could not be both legible as text
-   * and true to the brand, and the value that satisfied the text floor had
-   * dropped its blue channel to zero — off the ray that brand gold rides, which
-   * is the "rusty gold" the owner rejected. Both halves must stay ON that ray.
-   */
-  it('keeps both golds on the brand ray rather than rusting off it', () => {
-    const BRAND = [0xf6, 0xb8, 0x2e]; // #F6B82E
-    const channels = (hex: string) =>
-      [1, 3, 5].map((index) => Number.parseInt(hex.slice(index, index + 2), 16));
-
-    for (const name of ['gold-ink', 'gold-graphic'] as const) {
-      const rgb = channels(hexToken(LIGHT, name));
-      // Every channel scaled by the same factor => same hue, lower lightness.
-      const ratios = rgb.map((value, index) => value / BRAND[index]!);
-      const spread = Math.max(...ratios) - Math.min(...ratios);
-      expect(spread, `--bt-${name} is off the brand ray`).toBeLessThan(0.06);
-      // …and specifically: the blue channel may not be zeroed.
-      expect(rgb[2], `--bt-${name} zeroed its blue channel`).toBeGreaterThan(0);
-    }
-  });
 });
 
 describe('light theme contrast', () => {
-  const INKS = ['text', 'text-soft', 'muted', 'faint', 'gold-ink', 'pos', 'neg', 'blue'] as const;
+  /**
+   * Every ink that is held to AA. `gold-ink` is deliberately absent — and ONLY
+   * gold-ink: the owner's 2026-08-07 override is a decision about the brand
+   * colour, not a licence to loosen this sweep. It is enforced instead by the
+   * gold block below, which pins its value and the geometry that carries it.
+   */
+  const INKS = ['text', 'text-soft', 'muted', 'faint', 'pos', 'neg', 'blue'] as const;
 
   for (const ink of INKS) {
     it(`keeps --bt-${ink} at AA on every opaque light surface`, () => {
@@ -309,10 +313,9 @@ describe('light theme contrast', () => {
    * plain ink-on-surface check misses entirely, and the one that actually
    * decides whether a change pill is readable.
    */
-  // Ink → the tint it is painted on. Gold is the odd one: the `-soft` surface
-  // belongs to `--bt-gold-ink`, since a gold badge is TEXT on a gold wash.
+  // Ink → the tint it is painted on. `gold-ink`/`gold-soft` is the one pair
+  // that is not here, for the same reason gold is out of INKS.
   const TINTED_PAIRS: ReadonlyArray<readonly [ink: string, tint: string]> = [
-    ['gold-ink', 'gold-soft'],
     ['pos', 'pos-soft'],
     ['neg', 'neg-soft'],
     ['blue', 'blue-soft'],
@@ -334,24 +337,6 @@ describe('light theme contrast', () => {
       ).toBeGreaterThanOrEqual(4.5);
     });
   }
-
-  /** Text on a gold fill — the primary button, the switch knob, the step mark. */
-  it('keeps --bt-gold-on at AA on both gold fills', () => {
-    const on = hexToken(LIGHT, 'gold-on');
-    expect(contrastRatio(on, hexToken(LIGHT, 'gold-fill'))).toBeGreaterThanOrEqual(4.5);
-    expect(contrastRatio(on, hexToken(LIGHT, 'gold-bright'))).toBeGreaterThanOrEqual(4.5);
-  });
-
-  /**
-   * The graphic gold answers to the 3:1 non-text floor, NOT to 4.5:1 — that is
-   * the entire reason it exists as a separate token. Holding it to the text
-   * floor is what produced the rusty gold, so this asserts the looser floor
-   * deliberately rather than by omission.
-   */
-  it('keeps --bt-gold-graphic above the 3:1 graphical floor', () => {
-    const weakest = weakestOnSurfaces(LIGHT, hexToken(LIGHT, 'gold-graphic'));
-    expect(weakest.ratio, `--bt-gold-graphic on --bt-${weakest.surface}`).toBeGreaterThanOrEqual(3);
-  });
 
   /**
    * Clean white is only legible because the hairlines do the separating. If a
@@ -385,6 +370,9 @@ describe('light theme contrast', () => {
   /**
    * Chart marks are graphical, so the floor is the 3:1 non-text one — but axis
    * text is text, and gets the full 4.5:1.
+   *
+   * `chart-flag` is the one slot missing, and only because it is gold: it is
+   * pinned to brand gold in the block below, under the same owner override.
    */
   it('keeps every chart series above the 3:1 graphical floor', () => {
     const slots = [
@@ -392,7 +380,6 @@ describe('light theme contrast', () => {
       'chart-main',
       'chart-pos',
       'chart-neg',
-      'chart-flag',
       'chart-benchmark',
       'chart-trend-down',
       'chart-flat',
@@ -411,22 +398,199 @@ describe('light theme contrast', () => {
 
   /**
    * The owner's standing nav rule: the gold edge line marks the active MAIN
-   * rail item and nothing else. In light mode that 3px dash sits on `--bt-nav`,
-   * which is now pure white — if gold ever brightens back toward `#f6b82e`
-   * (1.78:1 here) the marker disappears and the rule is silently repealed.
+   * rail item and nothing else. The COLOUR half of this used to be asserted
+   * here (gold ≥ 3:1 on the rail); since 2026-08-07 the colour is fixed by
+   * owner decision and the mass is the variable, so what survives here is the
+   * structural half — one marker, on the active row, and nowhere else.
    */
-  it('keeps the active-rail gold edge visible against the rail', () => {
-    // The rail is now WHITE, which is the hardest ground gold ever sits on.
-    expect(
-      contrastRatio(hexToken(LIGHT, 'gold-graphic'), hexToken(LIGHT, 'nav')),
-    ).toBeGreaterThanOrEqual(3);
+  it('draws the active-rail gold edge on the active row and nowhere else', () => {
     expect(originCss).toContain('background: var(--bt-gold-graphic);');
     expect(originCss).toContain('.bt-rail-item.is-active::before');
     expect(originCss).not.toContain('.bt-rail-item::before {');
+    // Its width is a token, which is what lets light thicken it — see below.
+    expect(originCss).toContain('width: var(--bt-gold-edge);');
   });
 });
 
-// ── 3. The boot script cannot drift from the module ─────────────────────────
+// ── 3. Gold — owner final word (2026-08-07) ─────────────────────────────────
+
+/**
+ * ── THE OWNER OVERRIDE ──────────────────────────────────────────────────────
+ *
+ * Decision: 2026-08-07, by the owner, on-device with the mobile team, shipped
+ * there as "bright brand yellow everywhere (owner final word)". It retires the
+ * darkened light golds of THEME2 (#866419 ink, #A77D1F graphic) — which passed
+ * their contrast floors and which the owner rejected as not the brand.
+ *
+ *   Brand gold stays BRIGHT on light. The legibility budget is paid in
+ *   GEOMETRY: heavier gold strokes and doubled edge alphas, mirroring the
+ *   mobile client's 3dp-on-light / 2dp-on-dark rule.
+ *
+ * What that knowingly buys, measured, on this theme's own surfaces:
+ *
+ *   --bt-gold-graphic #F6B82E   1.78:1 on white, 1.51:1 on the binding ground
+ *                               — under the 3:1 graphical floor
+ *   --bt-gold-ink     #D49E28   2.41:1 on white, 2.05:1 on the binding ground,
+ *                               2.15:1 on --bt-gold-soft — all under 4.5:1
+ *
+ * These are ACCEPTED, not overlooked. This block exists so the acceptance is
+ * explicit, bounded and dated: the values are pinned, the ratios are asserted
+ * to be what we think they are, and the compensation is asserted to exist. It
+ * covers gold and nothing else — every other ink is still swept at AA above.
+ *
+ * The one accessibility floor that did NOT move is text sitting ON gold
+ * (`--bt-gold-on`), and the safety valve: reading text that used to be gold
+ * letters now draws `--bt-gold-ink-safe`, which is the page ink on light.
+ */
+describe('gold — owner final word (2026-08-07)', () => {
+  /** Pinned exactly. Changing one of these is re-litigating an owner decision. */
+  const GOLD_LIGHT: Readonly<Record<string, string>> = {
+    'gold-ink': '#d49e28', // mobile goldInk — gold as an accent/number/badge
+    'gold-graphic': '#f6b82e', // brand gold — every gold MARK
+    'gold-fill': '#f6b82e', // brand gold — a gold background
+    'gold-on': '#171105', // mobile onGold — text on that background
+    'gold-bright': '#ffd26b', // primary :hover
+    'gold-soft': '#fcf1db', // mobile goldSurface — the wash
+    'chart-flag': '#f6b82e', // a chart's gold mark is a graphic
+  };
+
+  it('pins every light gold at the value the owner signed off', () => {
+    const drifted = Object.entries(GOLD_LIGHT)
+      .map(([name, expected]) => ({ name, expected, actual: hexToken(LIGHT, name) }))
+      .filter((entry) => entry.actual !== entry.expected);
+
+    expect(drifted).toEqual([]);
+  });
+
+  /**
+   * The guard that SURVIVES the override, and the reason the earlier rusty gold
+   * was rejected in the first place: a gold that satisfies a contrast floor by
+   * dropping its blue channel to zero is no longer the brand's gold. Every gold
+   * token has to stay on the brand ray — same hue, only lightness moving.
+   */
+  it('keeps every gold on the brand ray rather than rusting off it', () => {
+    const BRAND = [0xf6, 0xb8, 0x2e]; // #F6B82E
+    const channels = (hex: string) =>
+      [1, 3, 5].map((index) => Number.parseInt(hex.slice(index, index + 2), 16));
+
+    for (const name of ['gold-ink', 'gold-graphic', 'gold-fill', 'chart-flag'] as const) {
+      const rgb = channels(hexToken(LIGHT, name));
+      // Every channel scaled by the same factor => same hue, lower lightness.
+      const ratios = rgb.map((value, index) => value / BRAND[index]!);
+      const spread = Math.max(...ratios) - Math.min(...ratios);
+      expect(spread, `--bt-${name} is off the brand ray`).toBeLessThan(0.06);
+      // …and specifically: the blue channel may not be zeroed.
+      expect(rgb[2], `--bt-${name} zeroed its blue channel`).toBeGreaterThan(0);
+    }
+  });
+
+  /**
+   * The accepted cost, written down as a number rather than as an absence.
+   *
+   * Asserting a CEILING as well as a floor is the point: it fails just as loudly
+   * if someone quietly darkens gold back toward AA (which would be reversing the
+   * owner) as if someone brightens it into invisibility.
+   */
+  it('records the sub-AA ratios it is knowingly accepting', () => {
+    const white = hexToken(LIGHT, 'bg');
+    const ground = hexToken(LIGHT, 'surface-hover'); // the binding ground
+    const wash = hexToken(LIGHT, 'gold-soft');
+    const ink = hexToken(LIGHT, 'gold-ink');
+    const graphic = hexToken(LIGHT, 'gold-graphic');
+
+    const near = (actual: number, expected: number) =>
+      expect(actual, `expected ~${expected}, got ${actual.toFixed(2)}`).toBeCloseTo(expected, 1);
+
+    near(contrastRatio(ink, white), 2.41);
+    near(contrastRatio(ink, ground), 2.05);
+    near(contrastRatio(ink, wash), 2.15);
+    near(contrastRatio(graphic, white), 1.78);
+    near(contrastRatio(graphic, ground), 1.51);
+  });
+
+  /**
+   * Text ON gold never moved, and must not: a primary button's label, the
+   * switch knob, the step mark. This is the floor that stayed at AA.
+   */
+  it('keeps --bt-gold-on at AA on both gold fills', () => {
+    const on = hexToken(LIGHT, 'gold-on');
+    expect(contrastRatio(on, hexToken(LIGHT, 'gold-fill'))).toBeGreaterThanOrEqual(4.5);
+    expect(contrastRatio(on, hexToken(LIGHT, 'gold-bright'))).toBeGreaterThanOrEqual(4.5);
+  });
+
+  /**
+   * GEOMETRY COMPENSATION — the half of the decision that pays for the other.
+   *
+   * Mobile went 3dp on light where dark uses 2dp. Each of these three tokens is
+   * one step heavier in light, and every gold stroke in the sheet is sized from
+   * one of them, so this is the whole compensation rather than a sample of it.
+   */
+  it('makes every gold stroke heavier in light than in dark', () => {
+    for (const name of ['gold-hair', 'gold-ring', 'gold-edge'] as const) {
+      expect(pxToken(LIGHT, name), `--bt-${name} must gain mass in light`).toBeGreaterThan(
+        pxToken(DARK, name),
+      );
+    }
+    // The dark side is a transcription of the literals these replaced, so the
+    // compensation could not move a dark pixel: 1px ring, 2px tab underline and
+    // focus outline, 3px active-rail dash.
+    expect(pxToken(DARK, 'gold-hair')).toBe(1);
+    expect(pxToken(DARK, 'gold-ring')).toBe(2);
+    expect(pxToken(DARK, 'gold-edge')).toBe(3);
+    expect(pxToken(LIGHT, 'gold-hair')).toBe(2);
+    expect(pxToken(LIGHT, 'gold-ring')).toBe(3);
+    expect(pxToken(LIGHT, 'gold-edge')).toBe(4);
+  });
+
+  /** …and that the strokes actually consume the tokens rather than literals. */
+  it('sizes the gold strokes from the geometry tokens', () => {
+    for (const rule of [
+      'outline: var(--bt-gold-ring) solid var(--bt-gold-graphic);', // :focus-visible
+      'width: var(--bt-gold-edge);', // the active-rail dash
+      'height: var(--bt-gold-edge);', // the bottom-bar dash
+      'border-bottom: var(--bt-gold-ring) solid transparent;', // the active tab
+      'box-shadow: 0 0 0 var(--bt-gold-hair) var(--bt-gold-graphic);', // field focus
+      'border: var(--bt-gold-hair) solid var(--bt-gold-graphic);', // the ⊕ pill
+    ]) {
+      expect(originCss, rule).toContain(rule);
+    }
+  });
+
+  /**
+   * The alpha half of mobile's compensation: the gold EDGE alpha doubles. It was
+   * the darkened gold at 30 %; it is brand gold at 60 %, so a gold-framed callout
+   * keeps its edge even though the hue stopped doing the work.
+   */
+  it('doubles the gold edge alphas in light', () => {
+    const accent = token(LIGHT, 'border-accent');
+    expect(accent).toContain('246, 184, 46'); // brand gold, not a darkened one
+    expect(alphaOf(accent)).toBeCloseTo(0.6, 5);
+    expect(alphaOf(accent)).toBeGreaterThanOrEqual(2 * 0.3); // the THEME2 value
+    expect(alphaOf(token(LIGHT, 'glow-warm'))).toBeCloseTo(0.08, 5);
+  });
+
+  /**
+   * THE SAFETY VALVE. Gold ink is fine for a number you glance at and wrong for
+   * a sentence you have to read, so the sites that carried real reading text in
+   * gold draw `--bt-gold-ink-safe`: the page ink on light, and the gold itself
+   * in dark, which is why none of those conversions moved a dark pixel.
+   */
+  it('routes critical reading text away from the sub-AA gold', () => {
+    // Dark: a pure alias, so every converted site paints what it always did.
+    expect(token(DARK, 'gold-ink-safe')).toBe('var(--bt-gold-ink)');
+    // Light: the page ink, which the AA sweep above already proves legible.
+    expect(token(LIGHT, 'gold-ink-safe')).toBe('var(--bt-text)');
+
+    // Both escape-hatch classes exist and take that token…
+    expect(originCss).toContain(
+      '.bt-gold-safe,\n.bt-gold-note {\n  color: var(--bt-gold-ink-safe);',
+    );
+    // …and the note variant replaces the gold letters with a gold MARK.
+    expect(originCss).toContain(":root[data-bt-theme='light'] .bt-gold-note::before");
+  });
+});
+
+// ── 4. The boot script cannot drift from the module ─────────────────────────
 
 describe('pre-hydration stamp', () => {
   it('agrees with theme.ts on the storage key and both canvas colours', () => {
@@ -457,7 +621,7 @@ describe('pre-hydration stamp', () => {
   });
 });
 
-// ── 4. No new colour literals ───────────────────────────────────────────────
+// ── 5. No new colour literals ───────────────────────────────────────────────
 
 /**
  * Where a raw colour is still legitimate. Each entry is a REASON, not a

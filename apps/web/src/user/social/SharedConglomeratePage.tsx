@@ -325,7 +325,7 @@ function WhatIfSandbox({
           </ul>
 
           {!allPositive ? (
-            <p className="bt-gold" style={{ fontSize: 12 }}>
+            <p className="bt-gold-note" style={{ fontSize: 12 }}>
               {t('social.shared.sandbox.weightsPositiveHint')}
             </p>
           ) : preview.isError ? (
