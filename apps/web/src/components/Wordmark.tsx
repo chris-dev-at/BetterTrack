@@ -24,7 +24,7 @@ export function Wordmark({
         .join(' ')}
     >
       <span className="text-[var(--bt-text)]">Better</span>
-      <span className="text-[var(--bt-gold)]">Track</span>
+      <span className="text-[var(--bt-gold-ink)]">Track</span>
       {edition ? (
         <span className="ml-[0.4em] text-[0.78em] font-medium text-[var(--bt-muted)]">
           {edition}
@@ -53,7 +53,7 @@ export function Brandmark({ className }: { className?: string }) {
         .join(' ')}
     >
       <span className="text-[var(--bt-text)]">B</span>
-      <span className="text-[var(--bt-gold)]">T</span>
+      <span className="text-[var(--bt-gold-ink)]">T</span>
     </span>
   );
 }

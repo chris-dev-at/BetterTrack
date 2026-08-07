@@ -278,8 +278,8 @@ export function NotificationBell() {
             aria-hidden="true"
             className="absolute right-0.5 top-0.5 grid h-4 min-w-4 place-items-center rounded-full px-1 text-[0.625rem] font-semibold leading-none"
             style={{
-              background: 'var(--bt-gold)',
-              color: 'var(--bt-gold-ink)',
+              background: 'var(--bt-gold-graphic)',
+              color: 'var(--bt-gold-on)',
               boxShadow: '0 0 0 2px var(--bt-bg)',
             }}
           >

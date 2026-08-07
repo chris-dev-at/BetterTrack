@@ -40,7 +40,7 @@ exports[`ComparisonPage > three blueprints compare on one chart with a full stat
             checked=""
             class="size-3"
             name="comparison-baseline"
-            style="accent-color: var(--bt-gold);"
+            style="accent-color: var(--bt-gold-graphic);"
             type="radio"
           />
           Baseline
@@ -71,7 +71,7 @@ exports[`ComparisonPage > three blueprints compare on one chart with a full stat
             aria-label="Use Beta as the baseline"
             class="size-3"
             name="comparison-baseline"
-            style="accent-color: var(--bt-gold);"
+            style="accent-color: var(--bt-gold-graphic);"
             type="radio"
           />
           Baseline
@@ -102,7 +102,7 @@ exports[`ComparisonPage > three blueprints compare on one chart with a full stat
             aria-label="Use Gamma as the baseline"
             class="size-3"
             name="comparison-baseline"
-            style="accent-color: var(--bt-gold);"
+            style="accent-color: var(--bt-gold-graphic);"
             type="radio"
           />
           Baseline

@@ -175,7 +175,7 @@ export function ProfilePanel() {
                       role="radio"
                       style={{
                         background: active ? 'var(--bt-gold-soft)' : 'none',
-                        border: `1px solid ${active ? 'var(--bt-gold)' : 'var(--bt-border-strong)'}`,
+                        border: `1px solid ${active ? 'var(--bt-gold-graphic)' : 'var(--bt-border-strong)'}`,
                         borderRadius: 5,
                         cursor: 'pointer',
                         padding: 0,
@@ -247,7 +247,7 @@ export function ProfilePanel() {
                   checked={ack}
                   className="mt-0.5"
                   onChange={(e) => setAck(e.target.checked)}
-                  style={{ accentColor: 'var(--bt-gold)' }}
+                  style={{ accentColor: 'var(--bt-gold-graphic)' }}
                   type="checkbox"
                 />
                 <span>{t('profile.acknowledge')}</span>
