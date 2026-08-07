@@ -23,7 +23,7 @@ import { cx } from '../../../lib/cx';
 import { EM_DASH, formatDate, formatPercent, formatSignedPercent } from '../../../lib/format';
 import { EmptyState, Skeleton } from '../../../ui';
 import { Button, PageHead, Stat, StatStrip } from '../../../ui/origin';
-import { PriceChart } from '../../../ui/charts';
+import { PriceChart, useChartDisplayMode } from '../../../ui/charts';
 import type { BenchmarkSeries, ChartPoint } from '../../../ui/charts';
 import { Alert } from '../../components/ui';
 import { ACTIVE_PORTFOLIO_PARAM, resolveActivePortfolio } from '../PortfolioSwitcher';
@@ -196,7 +196,10 @@ export function AnalyticsPage() {
   const paranoid = useResolvedPrivacyMode() === 'paranoid';
   const [searchParams] = useSearchParams();
 
-  const [mode, setMode] = useState<AnalyticsMode>('value');
+  // Remembered per device for this surface, separately from the overview
+  // (board #68 item 4). `AnalyticsMode` and `ChartDisplayMode` are the same
+  // two tokens by construction — the contract enum is the narrower of the two.
+  const [mode, setMode] = useChartDisplayMode('portfolio-analysis');
   const [preset, setPreset] = useState<RangePreset>('y1');
   const [customFrom, setCustomFrom] = useState('');
   const [customTo, setCustomTo] = useState('');
@@ -257,22 +260,29 @@ export function AnalyticsPage() {
     ...inflationParam,
   };
 
+  // One loader for both reads below, so the money twin can never be fetched
+  // through a different code path (or a different privacy mode) than the curve.
+  const loadAnalytics = async (
+    params: AnalyticsSeriesParams,
+    signal: AbortSignal,
+  ): Promise<AnalyticsSeriesResponse> => {
+    if (!paranoid) return getAnalyticsSeries(portfolioId!, params, signal);
+    const [portfolioView, history] = await Promise.all([
+      store.getPortfolio(portfolioId!, signal),
+      store.getPortfolioHistory(portfolioId!, analyticsHistoryRange(preset), false, signal),
+    ]);
+    return clientAnalyticsResponse(
+      portfolioId!,
+      portfolio?.name ?? '',
+      portfolioView,
+      history,
+      params,
+    );
+  };
+
   const analyticsQuery = useQuery({
     queryKey: ['analytics', portfolioId, analyticsParams],
-    queryFn: async ({ signal }) => {
-      if (!paranoid) return getAnalyticsSeries(portfolioId!, analyticsParams, signal);
-      const [portfolioView, history] = await Promise.all([
-        store.getPortfolio(portfolioId!, signal),
-        store.getPortfolioHistory(portfolioId!, analyticsHistoryRange(preset), false, signal),
-      ]);
-      return clientAnalyticsResponse(
-        portfolioId!,
-        portfolio?.name ?? '',
-        portfolioView,
-        history,
-        analyticsParams,
-      );
-    },
+    queryFn: ({ signal }) => loadAnalytics(analyticsParams, signal),
     enabled: portfolioId !== null,
     placeholderData: keepPreviousData,
     staleTime: 60_000,
@@ -295,6 +305,34 @@ export function AnalyticsPage() {
   const primaryPoints = useMemo<ChartPoint[]>(
     () => (data?.primary.points ?? []).map((p) => ({ time: p.date as Time, value: p.value })),
     [data],
+  );
+
+  // The money twin behind the % curve's scrub tooltip (board #68 item 4).
+  //
+  // Unlike the overview — where one `/history` response carries both series —
+  // this endpoint returns ONE series per request, and its € values must come
+  // from the very same filters/window/inflation as the % curve or the tooltip
+  // would quote a balance for a different set of assets. So the twin is the
+  // identical request with `mode: 'value'`: same query key shape as the value
+  // read this page already issues, so switching to % almost always reuses the
+  // cache entry the user arrived with rather than costing a round trip.
+  const balanceParams: AnalyticsSeriesParams = { ...analyticsParams, mode: 'value' };
+  const balanceQuery = useQuery({
+    queryKey: ['analytics', portfolioId, balanceParams],
+    queryFn: ({ signal }) => loadAnalytics(balanceParams, signal),
+    enabled: portfolioId !== null && isPerf,
+    placeholderData: keepPreviousData,
+    staleTime: 60_000,
+  });
+  const balancePoints = useMemo<ChartPoint[] | undefined>(
+    () =>
+      isPerf
+        ? (balanceQuery.data?.primary.points ?? []).map((p) => ({
+            time: p.date as Time,
+            value: p.value,
+          }))
+        : undefined,
+    [isPerf, balanceQuery.data],
   );
 
   // Per-asset overlays (#122): raw native closes in value mode (the chart
@@ -505,6 +543,8 @@ export function AnalyticsPage() {
           series={primaryPoints}
           mode={isPerf ? 'baseline' : 'area'}
           percentValues={isPerf}
+          balanceSeries={balancePoints}
+          balanceCurrency={balanceQuery.data?.baseCurrency ?? data?.baseCurrency}
           valueCurrency={data?.baseCurrency}
           overlays={overlays}
           showRangeToggle={false}

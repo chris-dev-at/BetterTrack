@@ -290,6 +290,7 @@
       "priceChartDataCollapse": "Chartdaten ausblenden",
       "priceChartDataTableCaption": "Chartdaten",
       "priceChartDataDate": "Datum",
+      "priceChartDataBalance": "Bestand",
       "priceChartDataValue": "Wert",
       "priceChartDataSampled": "Es werden {{shown}} von {{total}} dargestellten Punkten angezeigt.",
       "allocationFallbackTitle": "Aufteilung im Überblick",
