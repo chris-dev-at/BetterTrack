@@ -5,6 +5,13 @@ export { AllocationDonut } from './LazyAllocationDonut';
 export type { AllocationDonutProps } from './AllocationDonut';
 export { categoricalColor as overlayColor } from './palette';
 export {
+  readChartDisplayMode,
+  useChartDisplayMode,
+  writeChartDisplayMode,
+  type ChartDisplayMode,
+  type ChartDisplaySurface,
+} from './displayMode';
+export {
   PRICE_RANGES,
   type AllocationSegment,
   type BenchmarkSeries,
