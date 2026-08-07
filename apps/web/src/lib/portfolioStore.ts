@@ -60,7 +60,10 @@ export interface PortfolioTransactionListParams {
  */
 export interface PortfolioStore {
   listPortfolios(signal?: AbortSignal, includeArchived?: boolean): Promise<PortfolioListResponse>;
-  createPortfolio(name: CreatePortfolioRequest['name']): Promise<PortfolioSummary>;
+  createPortfolio(
+    name: CreatePortfolioRequest['name'],
+    kind?: CreatePortfolioRequest['kind'],
+  ): Promise<PortfolioSummary>;
   getPortfolio(portfolioId: string, signal?: AbortSignal): Promise<PortfolioResponse>;
   getPortfolioHistory(
     portfolioId: string,

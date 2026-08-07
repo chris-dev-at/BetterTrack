@@ -19,7 +19,7 @@ import {
   isGroupPortfolio,
   portfolioIconName,
   portfolioIconTint,
-  usePortfolioKinds,
+  portfolioKindsFor,
 } from './portfolioKinds';
 import { PortfolioWizard } from './wizard/PortfolioWizard';
 import { usePortfolioStore } from './PortfolioStoreProvider';
@@ -207,7 +207,9 @@ export function PortfolioSwitcher() {
   const portfolios = useMemo(() => activeQuery.data?.portfolios ?? [], [activeQuery.data]);
   const param = searchParams.get(ACTIVE_PORTFOLIO_PARAM);
   const active = resolveActivePortfolio(portfolios, param);
-  const kinds = usePortfolioKinds();
+  // Kinds come off the rows this list already carries (board #69) — no second
+  // query, so this widget's one AsyncReadState still covers everything it shows.
+  const kinds = useMemo(() => portfolioKindsFor(portfolios), [portfolios]);
 
   const showSearch = portfolios.length > 1;
   const autoFocusSearch = portfolios.length > SEARCH_THRESHOLD;

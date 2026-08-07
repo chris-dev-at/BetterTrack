@@ -36,7 +36,7 @@ import {
   rememberActivePortfolio,
   resolveActivePortfolio,
 } from './PortfolioSwitcher';
-import { resetPortfolioKindCache, setPortfolioKind } from './portfolioKinds';
+import { resetPortfolioKindCache, type PortfolioKind } from './portfolioKinds';
 
 type Summary = {
   id: string;
@@ -46,6 +46,7 @@ type Summary = {
   isDefault: boolean;
   defaultPayFromCash: boolean;
   archivedAt: string | null;
+  kind: PortfolioKind | null;
   mirror?: {
     chainId: string;
     chainName: string;
@@ -62,6 +63,7 @@ function summary(over: Partial<Summary> & { id: string; name: string }): Summary
     isDefault: false,
     defaultPayFromCash: false,
     archivedAt: null,
+    kind: null,
     ...over,
   };
 }
@@ -333,7 +335,7 @@ describe('PortfolioSwitcher', () => {
     // the portfolio straight to the switcher, which activates it.
     await userEvent.click(screen.getByRole('button', { name: 'Create portfolio' }));
 
-    await waitFor(() => expect(createPortfolio).toHaveBeenCalledWith('Retirement'));
+    await waitFor(() => expect(createPortfolio).toHaveBeenCalledWith('Retirement', 'private'));
     await waitFor(() => expect(screen.getByTestId('active-param')).toHaveTextContent('p9'));
   });
 
@@ -349,9 +351,10 @@ describe('PortfolioSwitcher', () => {
 
   // ── Icons (kinds, internally) ──────────────────────────────────────────────
 
-  test('each row renders its stored icon glyph and hue, defaulting to private', async () => {
-    setPortfolioKind(TRADING.id, 'business');
-    vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [MAIN, TRADING] });
+  test('each row renders the icon glyph and hue the server carries, defaulting to private', async () => {
+    vi.mocked(listPortfolios).mockResolvedValue({
+      portfolios: [MAIN, { ...TRADING, kind: 'business' as const }],
+    });
     renderSwitcher();
 
     await userEvent.click(await screen.findByRole('button', { name: 'Switch portfolio' }));
@@ -365,8 +368,9 @@ describe('PortfolioSwitcher', () => {
   });
 
   test('the trigger follows the active portfolio icon', async () => {
-    setPortfolioKind(MAIN.id, 'savings');
-    vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [MAIN, TRADING] });
+    vi.mocked(listPortfolios).mockResolvedValue({
+      portfolios: [{ ...MAIN, kind: 'savings' as const }, TRADING],
+    });
     renderSwitcher();
 
     const trigger = await screen.findByRole('button', { name: 'Switch portfolio' });
@@ -387,8 +391,9 @@ describe('PortfolioSwitcher', () => {
   });
 
   test('the chips are garnish: they add no words to a row or the trigger', async () => {
-    setPortfolioKind(TRADING.id, 'business');
-    vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [MAIN, TRADING] });
+    vi.mocked(listPortfolios).mockResolvedValue({
+      portfolios: [MAIN, { ...TRADING, kind: 'business' as const }],
+    });
     renderSwitcher();
 
     await userEvent.click(await screen.findByRole('button', { name: 'Switch portfolio' }));
@@ -399,8 +404,9 @@ describe('PortfolioSwitcher', () => {
   });
 
   test('a group portfolio keeps its chosen Icon and wears the shared marker', async () => {
-    setPortfolioKind(HOUSEHOLD.id, 'family');
-    vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [MAIN, HOUSEHOLD] });
+    vi.mocked(listPortfolios).mockResolvedValue({
+      portfolios: [MAIN, { ...HOUSEHOLD, kind: 'family' as const }],
+    });
     renderSwitcher();
 
     await userEvent.click(await screen.findByRole('button', { name: 'Switch portfolio' }));

@@ -138,6 +138,13 @@ export interface MirrorInviteDetailRow extends MirrorChainInviteRow {
   chainName: string;
   fromUsername: string | null;
   toUsername: string;
+  /**
+   * The inviter's curated profile icon, from the joined `users` row; null when
+   * they never picked one or the account was deleted (board #70).
+   */
+  fromProfileIcon: string | null;
+  /** The invitee's curated profile icon — the outgoing row's face (board #70). */
+  toProfileIcon: string | null;
 }
 
 /** Identity-only active member row used before any chain/profile enrichment. */
@@ -744,6 +751,11 @@ export function createMirrorchainRepository(db: Database) {
           chainName: mirrorChains.name,
           fromUsername: fromU.username,
           toUsername: toU.username,
+          // Both faces come off the SAME joins the usernames already use — no
+          // extra round trip, and no way for the icon to disagree with the name
+          // it is rendered beside (board #70).
+          fromProfileIcon: fromU.profileIcon,
+          toProfileIcon: toU.profileIcon,
         })
         .from(mirrorChainInvites)
         .innerJoin(mirrorChains, eq(mirrorChains.id, mirrorChainInvites.chainId))
@@ -764,6 +776,8 @@ export function createMirrorchainRepository(db: Database) {
         chainName: r.chainName,
         fromUsername: r.fromUsername ?? null,
         toUsername: r.toUsername,
+        fromProfileIcon: r.fromProfileIcon ?? null,
+        toProfileIcon: r.toProfileIcon ?? null,
       }));
     },
 

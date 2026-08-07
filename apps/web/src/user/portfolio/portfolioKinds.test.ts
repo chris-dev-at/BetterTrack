@@ -1,49 +1,40 @@
-import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
+import { beforeEach, describe, expect, test, vi } from 'vitest';
+
+import { PORTFOLIO_KINDS as CONTRACT_KINDS } from '@bettertrack/contracts';
 
 import {
   DEFAULT_PORTFOLIO_KIND,
   PORTFOLIO_KINDS,
   isGroupPortfolio,
   PORTFOLIO_KIND_ICONS,
-  getPortfolioKind,
-  getPortfolioKinds,
   portfolioIconName,
   portfolioIconTint,
+  portfolioKindsFor,
   resetPortfolioKindCache,
-  setPortfolioKind,
+  type PortfolioKind,
 } from './portfolioKinds';
 
 const STORAGE_KEY = 'bt.portfolio.kinds';
 
+/** A portfolio row as the kind resolver sees it. */
+const row = (id: string, kind: PortfolioKind | null = null) => ({ id, kind });
+
 beforeEach(() => {
   localStorage.clear();
   resetPortfolioKindCache();
-});
-
-afterEach(() => {
   vi.restoreAllMocks();
 });
 
-describe('portfolio kind storage', () => {
-  test('an unclassified portfolio is private', () => {
-    expect(getPortfolioKind('p1')).toBe(DEFAULT_PORTFOLIO_KIND);
+describe('the kind enum is the wire contract', () => {
+  test('the tokens, their order and the default are the contract, verbatim', () => {
+    // Board #69: the mobile app ported these five tokens AND their hues off this
+    // module before it graduated. Renaming, renumbering or reordering them —
+    // here or in contracts — silently repaints or blanks icons on a shipped
+    // client, so both ends are pinned to one literal list.
+    expect(PORTFOLIO_KINDS).toEqual(['private', 'family', 'business', 'savings', 'property']);
+    expect(PORTFOLIO_KINDS).toEqual(CONTRACT_KINDS);
     expect(DEFAULT_PORTFOLIO_KIND).toBe('private');
-  });
-
-  test('a set kind round-trips through localStorage', () => {
-    setPortfolioKind('p1', 'business');
-    expect(JSON.parse(localStorage.getItem(STORAGE_KEY)!)).toEqual({ p1: 'business' });
-
-    resetPortfolioKindCache(); // force a re-read from storage
-    expect(getPortfolioKind('p1')).toBe('business');
-  });
-
-  test('kinds are per portfolio and merge rather than replace', () => {
-    setPortfolioKind('p1', 'family');
-    setPortfolioKind('p2', 'property');
-
-    expect(getPortfolioKinds()).toEqual({ p1: 'family', p2: 'property' });
-    expect(getPortfolioKind('p3')).toBe('private');
+    expect(PORTFOLIO_KINDS).toContain(DEFAULT_PORTFOLIO_KIND);
   });
 
   test('every kind has an icon and no two kinds share one', () => {
@@ -51,39 +42,82 @@ describe('portfolio kind storage', () => {
     expect(icons).toHaveLength(PORTFOLIO_KINDS.length);
     expect(new Set(icons).size).toBe(PORTFOLIO_KINDS.length);
   });
+});
 
-  // ── Hostile storage: kinds are garnish, never a crash ──────────────────────
+describe('portfolioKindsFor — server value, legacy fallback', () => {
+  test('the server value is the kind', () => {
+    expect(portfolioKindsFor([row('p1', 'business'), row('p2', 'property')])).toEqual({
+      p1: 'business',
+      p2: 'property',
+    });
+  });
 
-  test('corrupt JSON degrades to the default instead of throwing', () => {
+  test('an unclassified portfolio is absent, so callers land on the default', () => {
+    expect(portfolioKindsFor([row('p1')])).toEqual({});
+  });
+
+  test('a pre-#69 local kind fills in until the server carries one', () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ p1: 'family' }));
+    resetPortfolioKindCache();
+
+    expect(portfolioKindsFor([row('p1'), row('p2')])).toEqual({ p1: 'family' });
+  });
+
+  test('the server value wins over a stale local one', () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ p1: 'family' }));
+    resetPortfolioKindCache();
+
+    expect(portfolioKindsFor([row('p1', 'savings')])).toEqual({ p1: 'savings' });
+  });
+
+  test('a local kind for a portfolio that is not in the list is not invented', () => {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ ghost: 'family' }));
+    resetPortfolioKindCache();
+
+    expect(portfolioKindsFor([row('p1')])).toEqual({});
+  });
+
+  // ── Hostile storage: the fallback is garnish, never a crash ────────────────
+
+  test('corrupt JSON degrades to the server value instead of throwing', () => {
     localStorage.setItem(STORAGE_KEY, '{not json');
     resetPortfolioKindCache();
 
-    expect(getPortfolioKind('p1')).toBe('private');
-    expect(getPortfolioKinds()).toEqual({});
+    expect(portfolioKindsFor([row('p1'), row('p2', 'savings')])).toEqual({ p2: 'savings' });
   });
 
   test('a non-object payload is ignored', () => {
     localStorage.setItem(STORAGE_KEY, '["family"]');
     resetPortfolioKindCache();
 
-    expect(getPortfolioKinds()).toEqual({});
+    expect(portfolioKindsFor([row('p1')])).toEqual({});
   });
 
-  test('unknown kind tokens are dropped, valid neighbours survive', () => {
+  test('unknown local tokens are dropped, valid neighbours survive', () => {
     localStorage.setItem(STORAGE_KEY, JSON.stringify({ p1: 'yacht', p2: 'savings', p3: 7 }));
     resetPortfolioKindCache();
 
-    expect(getPortfolioKinds()).toEqual({ p2: 'savings' });
-    expect(getPortfolioKind('p1')).toBe('private');
+    expect(portfolioKindsFor([row('p1'), row('p2'), row('p3')])).toEqual({ p2: 'savings' });
   });
 
-  test('a write that throws still updates the session in memory', () => {
-    vi.spyOn(Storage.prototype, 'setItem').mockImplementation(() => {
-      throw new Error('QuotaExceededError');
+  test('storage that throws on read degrades instead of breaking the switcher', () => {
+    vi.spyOn(Storage.prototype, 'getItem').mockImplementation(() => {
+      throw new Error('SecurityError');
     });
+    resetPortfolioKindCache();
 
-    expect(() => setPortfolioKind('p1', 'savings')).not.toThrow();
-    expect(getPortfolioKind('p1')).toBe('savings');
+    expect(portfolioKindsFor([row('p1'), row('p2', 'family')])).toEqual({ p2: 'family' });
+  });
+
+  test('the legacy map is never written back — the server owns kinds now', () => {
+    const write = vi.spyOn(Storage.prototype, 'setItem');
+    localStorage.setItem(STORAGE_KEY, JSON.stringify({ p1: 'family' }));
+    resetPortfolioKindCache();
+    write.mockClear();
+
+    portfolioKindsFor([row('p1'), row('p2', 'savings')]);
+
+    expect(write).not.toHaveBeenCalled();
   });
 });
 
