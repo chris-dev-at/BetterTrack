@@ -289,6 +289,7 @@
       "priceChartDataCollapse": "Hide chart data",
       "priceChartDataTableCaption": "Chart data",
       "priceChartDataDate": "Date",
+      "priceChartDataBalance": "Balance",
       "priceChartDataValue": "Value",
       "priceChartDataSampled": "Showing {{shown}} of {{total}} plotted points.",
       "allocationFallbackTitle": "Allocation breakdown",

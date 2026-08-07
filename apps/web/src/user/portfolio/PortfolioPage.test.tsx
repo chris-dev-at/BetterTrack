@@ -43,13 +43,16 @@ vi.mock('../../lib/assetApi', () => ({
 const chartMocks = vi.hoisted(() => {
   const setData = vi.fn();
   const addSeries = vi.fn(() => ({ setData, applyOptions: vi.fn() }));
+  const subscribeCrosshairMove = vi.fn();
   return {
     setData,
     addSeries,
+    subscribeCrosshairMove,
     createChart: vi.fn(() => ({
       addSeries,
       applyOptions: vi.fn(),
       timeScale: () => ({ fitContent: vi.fn() }),
+      subscribeCrosshairMove,
       remove: vi.fn(),
     })),
   };
@@ -277,6 +280,9 @@ function transactionPage(
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // The chart display mode is a device preference (board #68 item 4): start
+  // every case from a browser that has never expressed one.
+  localStorage.clear();
   vi.mocked(listPortfolios).mockResolvedValue(PORTFOLIO_LIST);
   vi.mocked(getPortfolioHistory).mockResolvedValue(HISTORY);
   vi.mocked(listTransactions).mockImplementation(async (_portfolioId, params = {}) =>
@@ -701,6 +707,56 @@ describe('PortfolioPage — performance-% display mode', () => {
 
     // No refetch: both series arrive with the same history response.
     expect(vi.mocked(getPortfolioHistory)).toHaveBeenCalledTimes(1);
+  });
+
+  test('the chosen mode is remembered for this device and restored on the next visit', async () => {
+    const user = userEvent.setup();
+    const first = renderPage();
+    await user.click(await screen.findByRole('button', { name: 'Performance %' }));
+    expect(localStorage.getItem('bettertrack.chartDisplayMode.portfolio-overview')).toBe('perf');
+    first.unmount();
+
+    // A fresh mount of the page — the reload case — opens on the % curve.
+    renderPage();
+    expect(await screen.findByRole('button', { name: 'Performance %' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    await waitFor(() =>
+      expect(chartMocks.addSeries).toHaveBeenCalledWith('BaselineSeries', expect.anything()),
+    );
+
+    // …and switching back is remembered just as faithfully.
+    await user.click(screen.getByRole('button', { name: 'Value €' }));
+    expect(localStorage.getItem('bettertrack.chartDisplayMode.portfolio-overview')).toBe('value');
+  });
+
+  test('scrubbing the % curve reads out the balance in € at that point', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await user.click(await screen.findByRole('button', { name: 'Performance %' }));
+
+    await waitFor(() => expect(chartMocks.subscribeCrosshairMove).toHaveBeenCalled());
+    const onCrosshair = chartMocks.subscribeCrosshairMove.mock.calls.at(-1)?.[0] as (
+      param: unknown,
+    ) => void;
+    act(() => onCrosshair({ time: '2024-06-01', point: { x: 120, y: 80 }, seriesData: new Map() }));
+
+    // The money answer the owner asked for, from the same history response the
+    // % curve is drawn from — no second request was made for it. Scoped to the
+    // chart so the totals hero's own market value can't stand in for it.
+    const chart = screen.getByRole('region', { name: 'Value over time' });
+    expect(within(chart).getByText('321.350,00 €')).toBeInTheDocument();
+    expect(within(chart).getByText('+7,12 %')).toBeInTheDocument();
+    expect(vi.mocked(getPortfolioHistory)).toHaveBeenCalledTimes(1);
+  });
+
+  test('the € curve keeps its plain crosshair — no tooltip, nothing subscribed', async () => {
+    renderPage();
+    await screen.findByRole('button', { name: 'Value €' });
+
+    await waitFor(() => expect(chartMocks.createChart).toHaveBeenCalled());
+    expect(chartMocks.subscribeCrosshairMove).not.toHaveBeenCalled();
   });
 });
 

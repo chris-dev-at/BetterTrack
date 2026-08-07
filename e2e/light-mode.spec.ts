@@ -50,7 +50,9 @@ test.beforeAll(async () => {
   await loginAsAdmin(apiRequest);
 });
 
-test.afterAll(async () => {});
+test.afterAll(async () => {
+  await apiRequest.dispose();
+});
 
 test('boots light from a stored pin, without a flash of the dark canvas', async ({
   context,
@@ -143,4 +145,26 @@ test('the Appearance panel switches the theme live', async ({ context }, testInf
   );
   expect(edges.length).toBeGreaterThan(0);
   expect(edges.filter((row) => row.edge && !row.active)).toEqual([]);
+
+  /**
+   * The scrub tooltip (#1164) paints itself from `--bt-*` custom properties in
+   * INLINE styles. A unit test can prove it names the right tokens; only a real
+   * browser can prove those tokens resolve to light values once the theme is
+   * on. Reaching the tooltip itself needs a funded portfolio and a canvas
+   * hover, so this resolves the exact three properties it uses — the cheap half
+   * of that assertion, and the half a stylesheet typo would break.
+   */
+  const tooltipTokens = await page.evaluate(() => {
+    const style = getComputedStyle(document.documentElement);
+    return {
+      surface: style.getPropertyValue('--bt-surface-strong').trim(),
+      border: style.getPropertyValue('--bt-border').trim(),
+      shadow: style.getPropertyValue('--bt-shadow-menu').trim(),
+    };
+  });
+  expect(tooltipTokens.surface).toBe('#ffffff');
+  // The dark theme's border and menu shadow are a light-on-dark hairline and a
+  // 45 % black drop; both must have flipped, or the tooltip is a dark card.
+  expect(tooltipTokens.border).toBe('rgba(20, 27, 35, 0.1)');
+  expect(tooltipTokens.shadow).toBe('0 10px 34px rgba(16, 24, 32, 0.16)');
 });
