@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
@@ -47,13 +47,16 @@ vi.mock('../../components/AssetSearchBox', () => ({
 const chartMocks = vi.hoisted(() => {
   const setData = vi.fn();
   const addSeries = vi.fn(() => ({ setData, applyOptions: vi.fn() }));
+  const subscribeCrosshairMove = vi.fn();
   return {
     setData,
     addSeries,
+    subscribeCrosshairMove,
     createChart: vi.fn(() => ({
       addSeries,
       applyOptions: vi.fn(),
       timeScale: () => ({ fitContent: vi.fn() }),
+      subscribeCrosshairMove,
       remove: vi.fn(),
     })),
   };
@@ -70,7 +73,7 @@ vi.mock('lightweight-charts', () => ({
 
 import { getAnalyticsSeries } from '../../../lib/analyticsApi';
 import { listConglomerates } from '../../../lib/conglomerateApi';
-import { formatDate } from '../../../lib/format';
+import { DISCREET_MASK, formatDate, setDiscreetMode } from '../../../lib/format';
 import { getPortfolio, getPortfolioHistory, listPortfolios } from '../../../lib/portfolioApi';
 import { ResolvedPrivacyModeProvider } from '../../vault/usePrivacyMode';
 import { AnalyticsPage } from './AnalyticsPage';
@@ -163,6 +166,23 @@ const RESP_FULL: AnalyticsSeriesResponse = {
   contributions: [contribRow(AAPL, 14), contribRow(MSFT, 11), contribRow(BTC, 2)],
 };
 
+/**
+ * The same window read as performance-% — the shape `mode: 'perf'` returns.
+ * Its points are the % twins of RESP_FULL's € ones, at the same dates, which is
+ * what the scrub tooltip pairs up (board #68 item 4).
+ */
+const RESP_PERF: AnalyticsSeriesResponse = {
+  ...RESP_FULL,
+  mode: 'perf',
+  primary: {
+    ...RESP_FULL.primary,
+    points: [
+      { date: '2024-01-01', value: 0 },
+      { date: '2024-06-30', value: 20 },
+    ],
+  },
+};
+
 const RESP_HIDDEN: AnalyticsSeriesResponse = {
   ...RESP_FULL,
   primary: { ...RESP_FULL.primary, stats: stats(8, 6) },
@@ -252,6 +272,10 @@ function renderPage(mode: 'normal' | 'paranoid' = 'normal') {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // The display mode is a per-surface device preference (board #68 item 4):
+  // every case starts from a browser that has never expressed one.
+  localStorage.clear();
+  setDiscreetMode(false);
   vi.mocked(listPortfolios).mockResolvedValue(PORTFOLIO_LIST);
   vi.mocked(getPortfolio).mockResolvedValue(PORTFOLIO);
   vi.mocked(getPortfolioHistory).mockResolvedValue(
@@ -263,6 +287,9 @@ beforeEach(() => {
     if (params.inflation === 'flat') return Promise.resolve(RESP_INFLATION);
     if (params.hideGroups?.includes('crypto')) return Promise.resolve(RESP_NO_CRYPTO);
     if (params.hide?.includes('a1')) return Promise.resolve(RESP_HIDDEN);
+    // Last, so every filter case above keeps answering exactly as before: the
+    // endpoint returns ONE series per request, % or €, per the asked-for mode.
+    if (params.mode === 'perf') return Promise.resolve(RESP_PERF);
     return Promise.resolve(RESP_FULL);
   });
 });
@@ -475,6 +502,103 @@ describe('AnalyticsPage — compare mode', () => {
         { time: '2024-01-01', value: 400 },
         { time: '2024-06-30', value: 440 },
       ]),
+    );
+  });
+});
+
+describe('AnalyticsPage — display mode: % curve with a € scrub (board #68 item 4)', () => {
+  /** Drive the crosshair the way lightweight-charts does, from the real subscription. */
+  async function scrub(date: string) {
+    await waitFor(() => expect(chartMocks.subscribeCrosshairMove).toHaveBeenCalled());
+    const onCrosshair = chartMocks.subscribeCrosshairMove.mock.calls.at(-1)?.[0] as (
+      param: unknown,
+    ) => void;
+    act(() => onCrosshair({ time: date, point: { x: 140, y: 90 }, seriesData: new Map() }));
+  }
+
+  const chartRegion = () => screen.getByRole('region', { name: 'Portfolio analytics chart' });
+
+  test('opens on the € curve and never subscribes a tooltip there', async () => {
+    renderPage();
+    await screen.findByRole('table');
+
+    expect(screen.getByRole('button', { name: 'Value €' })).toHaveAttribute('aria-pressed', 'true');
+    expect(vi.mocked(getAnalyticsSeries)).toHaveBeenCalledWith(
+      'p1',
+      expect.objectContaining({ mode: 'value' }),
+      expect.anything(),
+    );
+    expect(chartMocks.subscribeCrosshairMove).not.toHaveBeenCalled();
+  });
+
+  test('% mode draws the baseline curve and reads the € balance out of the SAME filtered window', async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByRole('table');
+
+    // Hide an asset first: the money twin must answer for the visible set, not
+    // for the whole portfolio, or the tooltip would quote a different balance.
+    await user.click(screen.getByRole('button', { name: 'Performance %' }));
+
+    await waitFor(() =>
+      expect(chartMocks.addSeries).toHaveBeenCalledWith('BaselineSeries', expect.anything()),
+    );
+    // The % curve is the server's own perf series — nothing recomputed here.
+    await waitFor(() => {
+      const points = chartMocks.setData.mock.calls.at(-1)?.[0] as Array<{ value: number }>;
+      expect(points.map((point) => point.value)).toEqual([0, 20]);
+    });
+    // The money twin is the identical request with mode: 'value'.
+    await waitFor(() =>
+      expect(vi.mocked(getAnalyticsSeries)).toHaveBeenCalledWith(
+        'p1',
+        expect.objectContaining({ mode: 'value', from: expect.any(String) }),
+        expect.anything(),
+      ),
+    );
+
+    await scrub('2024-06-30');
+    expect(within(chartRegion()).getByText('1.200,00 €')).toBeInTheDocument();
+    expect(within(chartRegion()).getByText('+20,00 %')).toBeInTheDocument();
+  });
+
+  test('discreet mode masks the € in the tooltip and keeps the % readable', async () => {
+    setDiscreetMode(true);
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByRole('table');
+
+    await user.click(screen.getByRole('button', { name: 'Performance %' }));
+    await scrub('2024-06-30');
+
+    expect(within(chartRegion()).getByText(DISCREET_MASK)).toBeInTheDocument();
+    expect(within(chartRegion()).queryByText('1.200,00 €')).not.toBeInTheDocument();
+    expect(within(chartRegion()).getByText('+20,00 %')).toBeInTheDocument();
+  });
+
+  test('remembers the mode for Analysis alone, without touching the overview’s', async () => {
+    const user = userEvent.setup();
+    const first = renderPage();
+    await screen.findByRole('table');
+
+    await user.click(screen.getByRole('button', { name: 'Performance %' }));
+    expect(localStorage.getItem('bettertrack.chartDisplayMode.portfolio-analysis')).toBe('perf');
+    // The overview is a separate surface and keeps its own (still unset) mode.
+    expect(localStorage.getItem('bettertrack.chartDisplayMode.portfolio-overview')).toBeNull();
+    first.unmount();
+
+    renderPage();
+    expect(await screen.findByRole('button', { name: 'Performance %' })).toHaveAttribute(
+      'aria-pressed',
+      'true',
+    );
+    // A restored % mode requests the % series on the very first read.
+    await waitFor(() =>
+      expect(vi.mocked(getAnalyticsSeries)).toHaveBeenCalledWith(
+        'p1',
+        expect.objectContaining({ mode: 'perf' }),
+        expect.anything(),
+      ),
     );
   });
 });
