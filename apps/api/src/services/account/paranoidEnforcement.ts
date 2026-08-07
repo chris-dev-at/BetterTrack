@@ -396,6 +396,12 @@ export const PARANOID_SERVICE_EXEMPTIONS: readonly ParanoidServiceExemption[] = 
     'A fresh basket has no constituents and delete surfaces no asset row, so neither can carry the owner custom-asset provenance.',
   ),
   serviceExemption(
+    'taxYearLock',
+    ['*'],
+    'kept',
+    'Tax-year lock state (§16 2026-08-07) is account-level POLICY about server-mode tax data and stores only year numbers — no portfolio content to leak. Its whole HTTP surface (/settings/taxes/years*) is killed for paranoid accounts by the portfolioServer route rules above, and the guard methods only ever execute inside portfolio/tax service entry points that are themselves killed for paranoid accounts.',
+  ),
+  serviceExemption(
     'conglomerate',
     ['list', 'get', 'update', 'replacePositions', 'activate', 'resolved', 'allocate'],
     'internallyFiltered',
@@ -1051,6 +1057,11 @@ export const PARANOID_KILL_REGISTRY: readonly ParanoidKillRegistryEntry[] = [
       { exact: '/assets/portfolio/news-digest' },
       { method: 'POST', exact: '/ai/insights' },
       { exact: '/settings/taxes' },
+      // Tax year locking (§16 2026-08-07): the lock state + unlock/relock
+      // ritual govern SERVER-side tax data, which a paranoid account does not
+      // have — same capability, fail closed like the settings above.
+      { exact: '/settings/taxes/years' },
+      { prefix: '/settings/taxes/years/' },
       { exact: '/settings/home' },
       // Every namespace of the widget-composition surface, by prefix: a client
       // surface added later inherits the kill instead of quietly opening a new
