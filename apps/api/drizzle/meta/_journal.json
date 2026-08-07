@@ -589,6 +589,13 @@
       "when": 1785997963533,
       "tag": "0083_transaction_recent_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 84,
+      "version": "7",
+      "when": 1786064187644,
+      "tag": "0084_widget_layouts",
+      "breakpoints": true
     }
   ]
 }

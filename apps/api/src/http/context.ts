@@ -56,6 +56,7 @@ import { createPortfolioSettingsRepository } from '../data/repositories/portfoli
 import { createTaxRepository } from '../data/repositories/taxRepository';
 import { createTransactionRepository } from '../data/repositories/transactionRepository';
 import { createUserRepository } from '../data/repositories/userRepository';
+import { createWidgetLayoutRepository } from '../data/repositories/widgetLayoutRepository';
 import { createWorkboardRepository } from '../data/repositories/workboardRepository';
 import { createEventBus, type EventBus } from '../events';
 import {
@@ -84,6 +85,10 @@ import {
   createHomeLayoutService,
   type HomeLayoutService,
 } from '../services/account/homeLayoutService';
+import {
+  createWidgetLayoutService,
+  type WidgetLayoutService,
+} from '../services/account/widgetLayoutService';
 import { createExportService, type ExportService } from '../services/export';
 import { createExportRepository } from '../data/repositories/exportRepository';
 import { createAlertService, type AlertService } from '../services/alerts/alertService';
@@ -415,6 +420,11 @@ export interface AppContext {
   accountSettings: AccountSettingsService;
   /** The per-account Home widget board (R2 home-widgets) — stored verbatim. */
   homeLayout: HomeLayoutService;
+  /**
+   * Per-account widget compositions, one per client namespace (`mobile`/`web`,
+   * mobile board #68 item 3) — an opaque, size-capped document stored verbatim.
+   */
+  widgetLayouts: WidgetLayoutService;
   /** Self-service account deletion — re-auth-gated hard delete (§13.4 V4-P2c, #362). */
   accountDeletion: AccountDeletionService;
   /**
@@ -1619,6 +1629,13 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // the user to every browser they sign in from.
   const homeLayout = createHomeLayoutService({ userRepo });
 
+  // Per-account widget compositions (mobile board #68 item 3): one opaque,
+  // size-capped document per (account, client namespace), so the mobile and web
+  // boards sync across devices as two separate saved compositions.
+  const widgetLayouts = createWidgetLayoutService({
+    widgetLayoutRepo: createWidgetLayoutRepository(db),
+  });
+
   // Self-service account deletion (§13.4 V4-P2c, #362): re-auth + typed
   // confirmation, then a hard delete the FK graph fans out — with the chat
   // anonymize-and-purge exception handled through the chat repository.
@@ -1939,6 +1956,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
       cashTags,
       cashBudgets,
       homeLayout,
+      widgetLayouts,
     },
     paranoidGuard,
     paranoidSubjects,
@@ -1992,6 +2010,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     discordSetup,
     accountSettings,
     homeLayout: guarded.homeLayout,
+    widgetLayouts: guarded.widgetLayouts,
     accountDeletion,
     dataExport,
     alerts: guarded.alerts,
