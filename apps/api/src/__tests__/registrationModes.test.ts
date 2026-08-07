@@ -156,6 +156,114 @@ describe('registration mode matrix (PROJECTPLAN.md §6.12, §13.4 V4-P4a)', () =
   });
 });
 
+/**
+ * App-native registration inside the OAuth authorize flow (owner directive
+ * 2026-08-07; PROJECTPLAN.md §16, owner spec #399 §A).
+ *
+ * The phone registers in a Custom Tab, which shares cookies with the phone's
+ * browser. A PIN-less OAuth *login* is already forced ephemeral for exactly that
+ * reason; a registration made in the same flow must obey the same rule, or a
+ * brand-new account would leave a persistent web session that silently
+ * re-authorizes after an app logout. The server decides — the SPA only asks.
+ */
+describe('registration inside an OAuth authorize flow (§16, §399 §A)', () => {
+  const applicant = {
+    email: 'phone@test.dev',
+    username: 'phone_user',
+    password: 'phone-strong-pass-1',
+  };
+
+  /** A persisted cookie carries Max-Age/Expires; a browser-session cookie carries neither. */
+  function sessionCookie(res: request.Response): string {
+    const setCookie = res.headers['set-cookie'] as unknown as string[] | undefined;
+    const header = (setCookie ?? []).filter((c) => c.startsWith('bt_sid=')).at(-1);
+    expect(header).toBeDefined();
+    return header as string;
+  }
+  const isPersistentCookie = (header: string): boolean =>
+    /max-age=/i.test(header) || /expires=/i.test(header);
+
+  it('oauthRegistration:true → the new account gets an EPHEMERAL, still-usable session', async () => {
+    await setMode(adminAgent, 'open');
+
+    const res = await register(harness.app, { ...applicant, oauthRegistration: true });
+    expect(res.status).toBe(201);
+
+    const cookie = sessionCookie(res);
+    expect(isPersistentCookie(cookie)).toBe(false);
+
+    // Ephemeral, not crippled: the session must carry the very next hop — the
+    // consent screen — or the whole flow would dead-end.
+    const sid = cookie.split(';')[0] as string;
+    const me = await request(harness.app).get('/api/v1/auth/me').set('Cookie', sid);
+    expect(me.status).toBe(200);
+    expect(me.body.email).toBe(applicant.email);
+  });
+
+  it('an ordinary web registration is unchanged — a persistent session', async () => {
+    await setMode(adminAgent, 'open');
+
+    const res = await register(harness.app, applicant);
+    expect(res.status).toBe(201);
+    expect(isPersistentCookie(sessionCookie(res))).toBe(true);
+  });
+
+  it('works the same in invite-token mode and still spends exactly one use', async () => {
+    await setMode(adminAgent, 'invite_token');
+    const created = await adminAgent
+      .post('/api/v1/admin/registration-tokens')
+      .set(...XRW)
+      .send({});
+    expect(created.status).toBe(201);
+    const token = tokenFromUrl(created.body.registerUrl);
+
+    const res = await register(harness.app, {
+      ...applicant,
+      inviteToken: token,
+      oauthRegistration: true,
+    });
+    expect(res.status).toBe(201);
+    expect(isPersistentCookie(sessionCookie(res))).toBe(false);
+
+    // Single-use by default: the token cannot create a second account.
+    const second = await register(harness.app, {
+      email: 'phone2@test.dev',
+      username: 'phone_user2',
+      password: 'phone2-strong-pass-1',
+      inviteToken: token,
+      oauthRegistration: true,
+    });
+    expect(second.status).toBe(400);
+    expect(second.body.error.code).toBe('INVALID_REGISTRATION_TOKEN');
+  });
+
+  it('approval mode ignores the flag entirely — still 202 pending with no session', async () => {
+    await setMode(adminAgent, 'approval');
+
+    const res = await register(harness.app, { ...applicant, oauthRegistration: true });
+    expect(res.status).toBe(202);
+    expect(res.body).toEqual({ pending: true });
+    expect(res.headers['set-cookie']).toBeUndefined();
+  });
+
+  it('closed mode ignores the flag entirely — still 403 REGISTRATION_CLOSED', async () => {
+    // Default is closed; no mode switch needed.
+    const res = await register(harness.app, { ...applicant, oauthRegistration: true });
+    expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe('REGISTRATION_CLOSED');
+  });
+
+  it('rejects a non-boolean flag rather than coercing it (strict schema)', async () => {
+    await setMode(adminAgent, 'open');
+
+    const res = await register(harness.app, { ...applicant, oauthRegistration: 'yes' });
+    expect(res.status).toBe(400);
+    // Nothing was created by the rejected request.
+    const attempt = await login(harness.app, applicant.email, applicant.password);
+    expect(attempt.status).toBe(401);
+  });
+});
+
 describe('invite tokens — single / multi-use / expiry (§13.4 V4-P4a)', () => {
   beforeEach(async () => {
     await setMode(adminAgent, 'invite_token');
