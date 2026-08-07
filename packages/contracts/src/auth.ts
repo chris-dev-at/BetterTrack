@@ -91,6 +91,18 @@ export const registerRequestSchema = z
     inviteToken: z.string().min(1).max(256).optional(),
     /** UI language of the register form — used to localize a later decision email. */
     locale: localeSchema.optional(),
+    /**
+     * Set by the SPA when this registration happens INSIDE an OAuth authorize
+     * flow — the app-native signup path (owner directive 2026-08-07). The minted
+     * session is then EPHEMERAL, the same rule a PIN-less OAuth login already
+     * obeys (§16, owner spec #399 §A): a Custom-Tab browser shares cookies with
+     * the phone's browser, so a brand-new account must not leave a persistent
+     * web session behind that silently re-authorizes after an app logout. A new
+     * account never has a PIN, so there is no persistent branch to preserve.
+     * Enforced server-side; it can only ever WEAKEN the caller's own session.
+     * Ignored in `approval` mode, which mints no session at all.
+     */
+    oauthRegistration: z.boolean().optional(),
   })
   .strict();
 export type RegisterRequest = z.infer<typeof registerRequestSchema>;

@@ -32,6 +32,11 @@ import {
   TextField,
 } from '../components/ui';
 import { GoogleButton } from './GoogleButton';
+import {
+  registerPathForAuthorize,
+  safeAuthorizeContinuation,
+  wantsRegisterScreen,
+} from './oauthContinuation';
 import { OAuthAccountChooser } from './OAuthAccountChooser';
 import {
   hasBeenAskedToRemember,
@@ -103,6 +108,17 @@ export function LoginPage() {
   // PIN-less account is never persisted — the checkbox appears only afterwards,
   // once the account is known to have a PIN.
   const oauthContext = from.startsWith('/oauth/authorize');
+  // App-native registration (owner directive 2026-08-07): the SAME pending
+  // authorize request, validated as a safe continuation, is handed to the
+  // register page so a brand-new account walks straight on to consent instead
+  // of landing in the webapp. `null` whenever `from` is not exactly the
+  // authorize path — see `safeAuthorizeContinuation` for the rule.
+  const authorizeContinuation = safeAuthorizeContinuation(from);
+  const registerHref = registerPathForAuthorize(authorizeContinuation);
+  // Registration is offered on this screen when it is a normal login, or when
+  // the OAuth flow has a continuation to carry. (An `oauthContext` without a
+  // safe continuation gets the old behavior: password form only.)
+  const offerRegistration = !oauthContext || authorizeContinuation !== null;
   // State-ladder step 2 (§399 §B): a device that remembers a PIN user shows the
   // "Log in as [name]? / Another account" chooser instead of a blank login. Read
   // once; "Another account" clears it (→ blank login). Step 1 (a live PIN-gated
@@ -180,6 +196,16 @@ export function LoginPage() {
   // While the OAuth persist choice is up, the login is deliberately deferred
   // (status stays anonymous), so this guard doesn't fire mid-choice.
   if (status === 'authenticated') return <Navigate to={from} replace />;
+
+  // `screen=register` on the authorize URL — the app's "Create account" button
+  // (owner directive 2026-08-07). An anonymous visitor opens straight on the
+  // register form with the continuation attached; no login screen in between,
+  // and no chooser (the user has just said they want a NEW account). An
+  // authenticated one never gets here: the guard above already sent them to
+  // consent. Unknown/absent hints fall through to the login form as before.
+  if (wantsRegisterScreen(authorizeContinuation)) {
+    return <Navigate to={registerHref} replace />;
+  }
 
   // Land an authenticated user. An OAuth login on a PIN account pauses on the
   // "stay signed in" step; everyone else proceeds. A normal login is already
@@ -430,20 +456,23 @@ export function LoginPage() {
       </form>
       {/* (3) Self-serve registration treatment (V4-P0 (f), §13.4): a designed,
           stand-out card, at the very bottom with an OR divider above it. Shown
-          only when the instance allows registration and never in the OAuth flow. */}
-      {!oauthContext && registrationFailure ? (
+          only when the instance allows registration. Inside the OAuth flow it
+          carries the pending authorize request along (owner 2026-08-07) —
+          without a continuation to carry it stays hidden, because registering
+          would strand the user in the webapp. */}
+      {offerRegistration && registrationFailure ? (
         <div className="bt-panel bt-panel--soft mt-5 flex flex-col items-center gap-3 p-4 text-center">
           <p className="bt-soft text-sm">{t('auth.login.registrationUnavailable')}</p>
           <Button variant="ghost" onClick={retryRegistrationInfo}>
             {t('common.retry')}
           </Button>
         </div>
-      ) : !oauthContext && registrationMode && registrationMode !== 'closed' ? (
+      ) : offerRegistration && registrationMode && registrationMode !== 'closed' ? (
         <div className="mt-5 flex flex-col gap-4">
           <OrDivider label={t('common.or')} />
           <div className="bt-panel bt-panel--soft flex flex-col gap-3 p-4">
             <p className="bt-label text-center">{t('auth.login.newHere')}</p>
-            <Link to="/register" className="bt-btn w-full">
+            <Link to={registerHref} className="bt-btn w-full">
               {t('auth.login.signUp')}
             </Link>
           </div>
