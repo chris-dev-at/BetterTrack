@@ -480,7 +480,9 @@ export function createSocialRouter(ctx: AppContext, limiters: RateLimiters): Rou
 
   // PUT /social/profile — update the caller's public-profile opt-in + bio.
   // Enabling requires an explicit acknowledgment (§16); disabling unpublishes the
-  // slug instantly.
+  // slug instantly. Clearing `profileIcon` requires sending the key with an
+  // EXPLICIT null — omitting it means "leave unchanged" (serializers that drop
+  // null fields, e.g. kotlinx with explicitNulls=false, silently no-op the clear).
   router.put('/profile', validateBody(updateProfileSettingsRequestSchema), async (req, res) => {
     const body = req.valid?.body as UpdateProfileSettingsRequest;
     const result = await ctx.social.updateProfileSettings(req.authUser!.id, body);

@@ -47,11 +47,15 @@ export const VAULT_SYNC_BEARER_ROUTE_ALLOWLIST = [
 ] as const satisfies readonly BearerRoute[];
 
 /**
- * The deliberately narrow mobile-participation surface for MIRRORCHAIN (#1042).
- * This list is method-aware because `GET /chains` participates while
- * `POST /chains` administers, and both operations share one path. Anything
- * under `/mirrorchain` that is not listed here remains cookie-session-only even
- * though the module has a coarse scope-policy row below.
+ * The MIRRORCHAIN bearer surface: participation (#1042) plus administration
+ * (mobile board #67 — the owner's fully-capable phone-management mandate,
+ * owner-approved 2026-08-07). This list is method-aware because `GET /chains`
+ * reads while `POST /chains` administers, and both operations share one path.
+ * Reads require `mirrorchain:read`, every write `mirrorchain:write` (the
+ * module policy row below); ownership/role checks for administration live in
+ * the service layer and are identical to the cookie session. Anything under
+ * `/mirrorchain` that is not listed here remains cookie-session-only and
+ * default-closed.
  */
 export const MIRRORCHAIN_BEARER_ROUTE_ALLOWLIST = [
   { method: 'GET', path: '/mirrorchain/chains' },
@@ -61,16 +65,6 @@ export const MIRRORCHAIN_BEARER_ROUTE_ALLOWLIST = [
   { method: 'POST', path: '/mirrorchain/invites/{inviteId}/accept' },
   { method: 'POST', path: '/mirrorchain/invites/{inviteId}/decline' },
   { method: 'POST', path: '/mirrorchain/chains/{chainId}/leave' },
-] as const satisfies readonly BearerRoute[];
-
-/**
- * MIRRORCHAIN lifecycle routes that deliberately remain cookie-session-only.
- * This is policy metadata, not a second guard: the guard above is default-deny.
- * The mounted-route completeness test compares the real Express router against
- * the participation + administration union, so a newly added route must make
- * an explicit access decision before CI can pass.
- */
-export const MIRRORCHAIN_SESSION_ONLY_ROUTES = [
   { method: 'POST', path: '/mirrorchain/chains' },
   { method: 'POST', path: '/mirrorchain/chains/convert' },
   { method: 'POST', path: '/mirrorchain/invites/{inviteId}/revoke' },
@@ -84,6 +78,17 @@ export const MIRRORCHAIN_SESSION_ONLY_ROUTES = [
   },
   { method: 'DELETE', path: '/mirrorchain/chains/{chainId}/members/{userId}' },
 ] as const satisfies readonly BearerRoute[];
+
+/**
+ * MIRRORCHAIN routes that deliberately remain cookie-session-only. Emptied by
+ * the board-#67 widening (administration moved into the bearer allowlist
+ * above), but the constant stays: the mounted-route completeness test compares
+ * the real Express router against the allowlist + session-only union, so a
+ * newly added route must still make an explicit access decision before CI can
+ * pass. This is policy metadata, not a second guard — the guard above is
+ * default-deny.
+ */
+export const MIRRORCHAIN_SESSION_ONLY_ROUTES: readonly BearerRoute[] = [];
 
 /**
  * Vault storage/media mutations that are explicitly outside opaque bearer

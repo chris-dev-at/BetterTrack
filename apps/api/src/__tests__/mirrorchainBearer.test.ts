@@ -154,6 +154,18 @@ describe('#1042 MIRRORCHAIN bearer route allowlist', () => {
     { method: 'POST', path: '/mirrorchain/invites/{inviteId}/accept' },
     { method: 'POST', path: '/mirrorchain/invites/{inviteId}/decline' },
     { method: 'POST', path: '/mirrorchain/chains/{chainId}/leave' },
+    { method: 'POST', path: '/mirrorchain/chains' },
+    { method: 'POST', path: '/mirrorchain/chains/convert' },
+    { method: 'POST', path: '/mirrorchain/invites/{inviteId}/revoke' },
+    { method: 'POST', path: '/mirrorchain/chains/{chainId}/invites' },
+    { method: 'PATCH', path: '/mirrorchain/chains/{chainId}' },
+    { method: 'POST', path: '/mirrorchain/chains/{chainId}/transfer' },
+    { method: 'DELETE', path: '/mirrorchain/chains/{chainId}' },
+    {
+      method: 'PATCH',
+      path: '/mirrorchain/chains/{chainId}/members/{userId}/role',
+    },
+    { method: 'DELETE', path: '/mirrorchain/chains/{chainId}/members/{userId}' },
   ] as const;
 
   const EXPECTED_ROUTER_GUARDS = [
@@ -170,7 +182,7 @@ describe('#1042 MIRRORCHAIN bearer route allowlist', () => {
   const livePath = (path: string): string =>
     path.replace(/\{(?:chainId|inviteId|userId)\}/g, MISSING_ID);
 
-  it('pins the seven exact method + path templates and defaults every other route closed', () => {
+  it('pins the sixteen exact method + path templates and defaults every other route closed', () => {
     expect(MIRRORCHAIN_BEARER_ROUTE_ALLOWLIST).toEqual(EXPECTED_ALLOWLIST);
     for (const route of EXPECTED_ALLOWLIST) {
       const path = livePath(route.path);
@@ -401,7 +413,7 @@ describe('#1042 bearer participation writes', () => {
   });
 });
 
-describe('#1042 mirrorchain administration remains session-only', () => {
+describe('board #67 mirrorchain administration over bearer', () => {
   const ADMIN_ROUTES: RouteCase[] = [
     {
       name: 'create chain',
@@ -456,16 +468,95 @@ describe('#1042 mirrorchain administration remains session-only', () => {
     },
   ];
 
-  it.each(ADMIN_ROUTES)(
-    'rejects a fully-scoped bearer with explicit API_KEY_FORBIDDEN: $name',
-    async (row) => {
-      const user = await seedUser('adminattempt');
-      const token = await mintKey(user, ['mirrorchain:write']);
-      const response = await callRoute(token, row);
-      expect(response.status, JSON.stringify(response.body)).toBe(403);
-      expect(response.body.error.code).toBe('API_KEY_FORBIDDEN');
-    },
-  );
+  it.each(ADMIN_ROUTES)('rejects mirrorchain:read on $name', async (row) => {
+    const user = await seedUser('adminreadonly');
+    const token = await mintKey(user, ['mirrorchain:read']);
+    const response = await callRoute(token, row);
+    expect(response.status, JSON.stringify(response.body)).toBe(403);
+    expect(response.body.error.code).toBe('INSUFFICIENT_SCOPE');
+    expect(response.body.error.message).toContain('mirrorchain:write');
+  });
+
+  it('creates a chain and converts a portfolio with mirrorchain:write', async () => {
+    const creator = await seedUser('admincreate');
+    const creatorToken = await mintKey(creator, ['mirrorchain:write']);
+
+    const created = await callRoute(creatorToken, {
+      name: 'create chain',
+      method: 'post',
+      path: '/mirrorchain/chains',
+      body: { name: 'Bearer-born group' },
+    });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    expect(created.body.chainId).toBeTruthy();
+
+    const converter = await seedUser('adminconvert');
+    const portfolioId = await harness.ctx.portfolio.getDefaultPortfolioId(converter.id);
+    const converterToken = await mintKey(converter, ['mirrorchain:write']);
+    const converted = await callRoute(converterToken, {
+      name: 'convert portfolio',
+      method: 'post',
+      path: '/mirrorchain/chains/convert',
+      body: { portfolioId, name: 'Converted by bearer' },
+    });
+    expect(converted.status, JSON.stringify(converted.body)).toBe(201);
+    expect(converted.body.chainId).toBeTruthy();
+  });
+
+  it('renames, manages invites, roles, ownership and dissolution with mirrorchain:write', async () => {
+    const { owner, chainId } = await createOwnerChain('adminops');
+    const ownerToken = await mintKey(owner, ['mirrorchain:write']);
+
+    const renamed = await request(harness.app)
+      .patch(`/api/v1/mirrorchain/chains/${chainId}`)
+      .set(bearer(ownerToken))
+      .send({ name: 'Renamed by bearer' });
+    expect(renamed.status, JSON.stringify(renamed.body)).toBe(200);
+
+    const invitee = await seedUser('adminopsinvitee');
+    await makeFriends(owner.id, invitee.id);
+    const invited = await request(harness.app)
+      .post(`/api/v1/mirrorchain/chains/${chainId}/invites`)
+      .set(bearer(ownerToken))
+      .send({ userId: invitee.id });
+    expect(invited.status, JSON.stringify(invited.body)).toBe(202);
+    const inviteId = (await harness.ctx.mirror.listInvites(invitee.id)).incoming[0]!.id;
+
+    const revoked = await request(harness.app)
+      .post(`/api/v1/mirrorchain/invites/${inviteId}/revoke`)
+      .set(bearer(ownerToken));
+    expect(revoked.status, JSON.stringify(revoked.body)).toBe(200);
+    expect((await harness.ctx.mirror.listInvites(invitee.id)).incoming).toHaveLength(0);
+
+    const member = await seedUser('adminopsmember');
+    const { portfolioId } = await harness.ctx.mirror.attachMemberCopy(chainId, member.id, {
+      role: 'member',
+    });
+
+    const promoted = await request(harness.app)
+      .patch(`/api/v1/mirrorchain/chains/${chainId}/members/${member.id}/role`)
+      .set(bearer(ownerToken))
+      .send({ role: 'manager' });
+    expect(promoted.status, JSON.stringify(promoted.body)).toBe(200);
+
+    const transferred = await request(harness.app)
+      .post(`/api/v1/mirrorchain/chains/${chainId}/transfer`)
+      .set(bearer(ownerToken))
+      .send({ toUserId: member.id });
+    expect(transferred.status, JSON.stringify(transferred.body)).toBe(200);
+
+    const memberToken = await mintKey(member, ['mirrorchain:write']);
+    const kicked = await request(harness.app)
+      .delete(`/api/v1/mirrorchain/chains/${chainId}/members/${owner.id}`)
+      .set(bearer(memberToken));
+    expect(kicked.status, JSON.stringify(kicked.body)).toBe(204);
+
+    const dissolved = await request(harness.app)
+      .delete(`/api/v1/mirrorchain/chains/${chainId}`)
+      .set(bearer(memberToken));
+    expect(dissolved.status, JSON.stringify(dissolved.body)).toBe(204);
+    expect(await harness.ctx.mirror.syncedMembership(portfolioId)).toBeNull();
+  });
 });
 
 describe('#1042 first-party mobile grant', () => {
