@@ -163,6 +163,7 @@ function buildInertContext(): AppContext {
     discordSetup: inertService('discordSetup'),
     accountSettings: inertService('accountSettings'),
     homeLayout: inertService('homeLayout'),
+    widgetLayouts: inertService('widgetLayouts'),
     accountDeletion: inertService('accountDeletion'),
     dataExport: inertService('dataExport'),
     alerts: inertService('alerts'),
