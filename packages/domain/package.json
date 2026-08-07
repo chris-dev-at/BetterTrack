@@ -38,7 +38,7 @@
   },
   "devDependencies": {
     "@bettertrack/config": "workspace:*",
-    "typescript": "~5.7.3",
-    "vitest": "^3.0.5"
+    "typescript": "~7.0.2",
+    "vitest": "^4.1.10"
   }
 }
