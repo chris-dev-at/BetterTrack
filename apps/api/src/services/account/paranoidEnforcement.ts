@@ -330,6 +330,14 @@ export const PARANOID_SERVICE_BINDINGS: readonly ParanoidServiceBinding[] = [
   // vault is exactly the leak this mode exists to prevent, so a paranoid account
   // keeps its board on the device instead of on the account.
   serviceBinding('portfolioServer', 'homeLayout', 'userIdFirst', ['*']),
+  // The per-namespace widget compositions (mobile board #68 item 3) are the same
+  // document class as the Home board and carry the same content — a composition
+  // names the portfolios and assets it renders. The server cannot even inspect
+  // this one (it is opaque by contract), which makes it strictly less safe to
+  // keep, not more: an opaque document must be assumed to hold everything the
+  // board it replaces holds. So a paranoid account keeps its widget layouts on
+  // the device, exactly as it keeps its Home board there.
+  serviceBinding('portfolioServer', 'widgetLayouts', 'userIdFirst', ['*']),
   serviceBinding('portfolioServer', 'expenses', 'userIdFirst', ['*']),
   serviceBinding('portfolioServer', 'expenseBudgets', 'userIdFirst', ['*']),
   // V5 cash fusion: classification ON the portfolio cash ledger, so it dies with
@@ -1044,6 +1052,10 @@ export const PARANOID_KILL_REGISTRY: readonly ParanoidKillRegistryEntry[] = [
       { method: 'POST', exact: '/ai/insights' },
       { exact: '/settings/taxes' },
       { exact: '/settings/home' },
+      // Every namespace of the widget-composition surface, by prefix: a client
+      // surface added later inherits the kill instead of quietly opening a new
+      // cleartext channel for the same content.
+      { prefix: '/settings/widget-layout/' },
     ],
     services: servicesFor('portfolioServer'),
     scopes: [],

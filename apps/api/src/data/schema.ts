@@ -1904,6 +1904,35 @@ export const portfolioSettings = pgTable(
 );
 
 /**
+ * Per-account dashboard widget compositions, one row per (user, namespace)
+ * (mobile board #68 item 3). `mobile` and `web` are deliberately separate rows:
+ * the two clients lay out different widgets at different sizes, so one shared
+ * row would make each client's save clobber the other's.
+ *
+ * `doc` is OPAQUE to the server — jsonb, never interpreted, validated only as "a
+ * JSON object of at most 32 KB" (see `widgetLayoutDocSchema`). jsonb rather than
+ * text so the column stays queryable and the cap is enforced against parsed
+ * JSON. The composite primary key is what makes the write an upsert and gives
+ * last-write-wins its idempotency key.
+ *
+ * `namespace` is text, not a pg enum: the accepted values are pinned by the
+ * contract enum at the edge, and a future client surface should not need a
+ * migration with an enum-value rewrite to be added.
+ */
+export const widgetLayouts = pgTable(
+  'widget_layouts',
+  {
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    namespace: text('namespace').notNull(),
+    doc: jsonb('doc').notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.userId, t.namespace] })],
+);
+
+/**
  * Social graph (PROJECTPLAN.md §5.5, §6.9). Two tables:
  *
  * `friend_requests` — a directed request from one user to another. A pair may
@@ -2668,6 +2697,7 @@ export type DividendRow = typeof dividends.$inferSelect;
 export type NewDividendRow = typeof dividends.$inferInsert;
 export type UserTaxSettingsRow = typeof userTaxSettings.$inferSelect;
 export type PortfolioSettingsRow = typeof portfolioSettings.$inferSelect;
+export type WidgetLayoutRow = typeof widgetLayouts.$inferSelect;
 export type FriendRequestRow = typeof friendRequests.$inferSelect;
 export type NewFriendRequestRow = typeof friendRequests.$inferInsert;
 export type FriendshipRow = typeof friendships.$inferSelect;
@@ -3761,6 +3791,7 @@ export const schema = {
   portfolioSnapshotState,
   userTaxSettings,
   portfolioSettings,
+  widgetLayouts,
   friendRequests,
   friendships,
   friendGroups,
