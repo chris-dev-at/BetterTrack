@@ -457,6 +457,8 @@ const componentSchemas = {
   UpdateAccountSettingsRequest: contracts.updateAccountSettingsRequestSchema,
   HomeLayoutResponse: contracts.homeLayoutResponseSchema,
   UpdateHomeLayoutRequest: contracts.updateHomeLayoutRequestSchema,
+  WidgetLayoutResponse: contracts.widgetLayoutResponseSchema,
+  UpdateWidgetLayoutRequest: contracts.updateWidgetLayoutRequestSchema,
 
   // Telegram + Discord channels (§13.4 V4-P10)
   TelegramSettingsResponse: contracts.telegramSettingsResponseSchema,
@@ -3910,6 +3912,31 @@ const endpoints: EndpointDef[] = [
     body: R.UpdateHomeLayoutRequest,
     status: 200,
     response: R.HomeLayoutResponse,
+  },
+
+  // Per-account widget compositions, one per client namespace (board #68)
+  {
+    method: 'get',
+    path: '/settings/widget-layout/{namespace}',
+    tag: 'Settings',
+    summary: 'The caller’s saved widget composition for one client namespace.',
+    description:
+      '`mobile` and `web` are two independent compositions. Answers `404 WIDGET_LAYOUT_NOT_FOUND` when this account never saved this namespace; any namespace outside the enum is a `400`.',
+    params: contracts.widgetLayoutNamespaceParamSchema,
+    status: 200,
+    response: R.WidgetLayoutResponse,
+  },
+  {
+    method: 'put',
+    path: '/settings/widget-layout/{namespace}',
+    tag: 'Settings',
+    summary: 'Replace the caller’s widget composition for one client namespace.',
+    description:
+      'Upsert, last write wins. The document is opaque — stored and returned verbatim, validated only as a JSON object serialising to at most 32 KB (`413 WIDGET_LAYOUT_TOO_LARGE` past the cap).',
+    params: contracts.widgetLayoutNamespaceParamSchema,
+    body: R.UpdateWidgetLayoutRequest,
+    status: 200,
+    response: R.WidgetLayoutResponse,
   },
 
   // Telegram + Discord channels (§13.4 V4-P10)
