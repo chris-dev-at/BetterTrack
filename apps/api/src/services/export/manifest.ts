@@ -74,6 +74,14 @@ export const EXPORT_TABLE_CLASSIFICATION: Record<string, TableClassification> = 
     'Content-free asset UUID integrity anchors plus opaque account claims; contain no asset or portfolio content.',
   ),
 
+  // Per-account widget compositions (mobile board #68 item 3) — user-owned UI
+  // config, one opaque document per client namespace. Export coverage lands with
+  // the same later export sweep as standing_orders / cash_* (the composition is
+  // a view OF the exported portfolios, not a second copy of them).
+  widget_layouts: skipped(
+    'Per-namespace dashboard widget compositions (board #68) — user-owned UI config referencing already-exported portfolios; export coverage lands with a later export sweep.',
+  ),
+
   // ── Global / not user-owned ───────────────────────────────────────────────
   announcements: skipped('Global admin-authored content, not owned by any user.'),
   app_settings: skipped('Global application settings, not user-owned.'),
@@ -422,6 +430,21 @@ export const PARANOID_TABLE_CLASSIFICATION: Record<string, ParanoidClassificatio
   export_jobs: 'server',
   announcements: 'server',
   announcement_dismissals: 'server',
+
+  // Per-namespace widget compositions (mobile board #68 item 3) — classified
+  // `server` for the SAME reason `users.home_layout` is: this is UI composition,
+  // and the paranoid guarantee for a board is enforced at the ACCESS layer, not
+  // by purging it. `/settings/widget-layout/*` is killed for a paranoid account
+  // by the `portfolioServer` capability exactly as `/settings/home` is, so no
+  // paranoid account can read or write one.
+  //
+  // KNOWN RESIDUE (identical to `home_layout`, and to be resolved with it): rows
+  // saved BEFORE an account enables paranoid mode survive the enable purge. The
+  // `vault` axis is not the fix available here — it would require enrolling this
+  // table in the strict v1 encrypted-vault document contract
+  // (`VAULT_TABLE_ENTITY_KINDS`), a cross-client format change, to hold a
+  // document this server cannot even parse.
+  widget_layouts: 'server',
 
   // ── server: kept product surfaces (no portfolio content, §8 "kept" list) ───
   // Private watchlists/conglomerates/ideas/backtest configs (hypothetical

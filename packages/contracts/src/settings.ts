@@ -401,6 +401,94 @@ export const updateHomeLayoutRequestSchema = z
   .strict();
 export type UpdateHomeLayoutRequest = z.infer<typeof updateHomeLayoutRequestSchema>;
 
+// --- Per-account widget layouts, per client namespace (board #68 item 3) ----
+
+/**
+ * `GET/PUT /settings/widget-layout/{namespace}` — the dashboard widget
+ * composition a user arranged, stored per ACCOUNT and per CLIENT so it follows
+ * them across devices without the two clients overwriting each other.
+ *
+ * **Two saved compositions, never one.** `mobile` and `web` are independent
+ * documents keyed by (user, namespace): a phone board and a desktop board are
+ * different layouts of different widgets at different sizes, and merging them
+ * into one row would make each client's last save silently clobber the other's.
+ *
+ * **The document is opaque.** Unlike {@link homeLayoutSchema}, which bounds the
+ * board's internal shape, this surface validates exactly two things: the payload
+ * is a JSON **object**, and it serialises to at most
+ * {@link WIDGET_LAYOUT_MAX_BYTES}. Nothing else is interpreted, so a client any
+ * number of deploys ahead of the server can define whatever widget vocabulary,
+ * nesting or versioning it likes and read it back byte-for-byte. The size cap is
+ * the abuse boundary — the only thing an opaque store can meaningfully defend.
+ */
+
+/** The client surfaces that own an independent saved composition. */
+export const WIDGET_LAYOUT_NAMESPACES = ['mobile', 'web'] as const;
+export const widgetLayoutNamespaceSchema = z.enum(WIDGET_LAYOUT_NAMESPACES);
+export type WidgetLayoutNamespace = z.infer<typeof widgetLayoutNamespaceSchema>;
+
+/**
+ * Path parameter for both endpoints. Anything outside the enum is a 400 rather
+ * than a fresh namespace: an open namespace would let one bearer token mint
+ * unbounded rows per account, and a typo (`Mobile`, `ios`) would silently strand
+ * a user's board in a namespace nothing ever reads back.
+ */
+export const widgetLayoutNamespaceParamSchema = z
+  .object({ namespace: widgetLayoutNamespaceSchema })
+  .strict();
+export type WidgetLayoutNamespaceParam = z.infer<typeof widgetLayoutNamespaceParamSchema>;
+
+/** Whole-document cap, measured on the serialised UTF-8 bytes. */
+export const WIDGET_LAYOUT_MAX_BYTES = 32 * 1024;
+
+/** `413` when a document exceeds {@link WIDGET_LAYOUT_MAX_BYTES}. */
+export const WIDGET_LAYOUT_TOO_LARGE_CODE = 'WIDGET_LAYOUT_TOO_LARGE';
+/** `404` when the account has never saved this namespace. */
+export const WIDGET_LAYOUT_NOT_FOUND_CODE = 'WIDGET_LAYOUT_NOT_FOUND';
+
+/**
+ * The stored document: any JSON object. `z.record` rejects arrays, `null` and
+ * primitives (they parse as a different type), which is the whole shape contract
+ * — a top-level object is what keeps the document extensible without a server
+ * deploy, and it is the only structural promise either client relies on.
+ *
+ * The size cap deliberately lives OUTSIDE this schema: it is enforced in the
+ * service so a breach answers `413 WIDGET_LAYOUT_TOO_LARGE` instead of being
+ * folded into a generic `400 VALIDATION_ERROR` a client cannot act on.
+ */
+export const widgetLayoutDocSchema = z.record(z.string(), z.unknown());
+export type WidgetLayoutDoc = z.infer<typeof widgetLayoutDocSchema>;
+
+/** Serialised UTF-8 size of a document — what the cap is measured against. */
+export function widgetLayoutDocByteLength(doc: unknown): number {
+  return new TextEncoder().encode(JSON.stringify(doc)).length;
+}
+
+/**
+ * `PUT /settings/widget-layout/{namespace}` body. The whole document is replaced
+ * outright — last write wins. There is no partial update and no conflict model:
+ * the client always holds the entire composition, and `updatedAt` is the
+ * revision it can compare against before deciding to push.
+ */
+export const updateWidgetLayoutRequestSchema = z.object({ doc: widgetLayoutDocSchema }).strict();
+export type UpdateWidgetLayoutRequest = z.infer<typeof updateWidgetLayoutRequestSchema>;
+
+/**
+ * `GET/PUT /settings/widget-layout/{namespace}` response — the stored document
+ * and the stamp of the write that produced it. A namespace that was never saved
+ * has no row and answers `404 WIDGET_LAYOUT_NOT_FOUND`, so `doc` here is always
+ * a real document (never null): "never saved" and "saved an empty board" stay
+ * distinguishable, which is what lets a client tell "adopt my local default"
+ * apart from "the user deliberately cleared this".
+ */
+export const widgetLayoutResponseSchema = z
+  .object({
+    doc: widgetLayoutDocSchema,
+    updatedAt: z.string().datetime(),
+  })
+  .strict();
+export type WidgetLayoutResponse = z.infer<typeof widgetLayoutResponseSchema>;
+
 // --- Account data export (§13.4 V4-P6a, #494) ------------------------------
 
 /**

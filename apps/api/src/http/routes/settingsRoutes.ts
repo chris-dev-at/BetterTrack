@@ -9,6 +9,8 @@ import {
   updateHomeLayoutRequestSchema,
   updateNotificationSettingsRequestSchema,
   updateTaxSettingsRequestSchema,
+  updateWidgetLayoutRequestSchema,
+  widgetLayoutNamespaceParamSchema,
   type CreateApiKeyRequest,
   type CreateOAuthClientRequest,
   type DiscordWebhookRequest,
@@ -16,6 +18,8 @@ import {
   type UpdateHomeLayoutRequest,
   type UpdateNotificationSettingsRequest,
   type UpdateTaxSettingsRequest,
+  type UpdateWidgetLayoutRequest,
+  type WidgetLayoutNamespaceParam,
 } from '@bettertrack/contracts';
 
 import { DiscordSetupError } from '../../services/notifications/discordSetupService';
@@ -194,6 +198,40 @@ export function createSettingsRouter(ctx: AppContext): Router {
     const layout = await ctx.homeLayout.set(req.authUser!.id, body.layout);
     res.json(layout);
   });
+
+  // ── Per-account widget compositions (mobile board #68 item 3) ──────────────
+  // One saved composition per (account, client namespace): `mobile` and `web`
+  // are independent documents, so a phone board and a desktop board sync
+  // across devices without either client clobbering the other's layout.
+  //
+  // The document is OPAQUE here — validated only as a JSON object of at most
+  // 32 KB (`widgetLayoutDocSchema` + the service's size cap). An unknown
+  // namespace never reaches a handler: `validateParams` rejects it with a 400
+  // before any lookup, so the enum is the whole namespace surface.
+
+  // GET /settings/widget-layout/:namespace — 404 when never saved.
+  router.get(
+    '/widget-layout/:namespace',
+    validateParams(widgetLayoutNamespaceParamSchema),
+    async (req, res) => {
+      const { namespace } = req.valid?.params as WidgetLayoutNamespaceParam;
+      const layout = await ctx.widgetLayouts.get(req.authUser!.id, namespace);
+      res.json(layout);
+    },
+  );
+
+  // PUT /settings/widget-layout/:namespace — upsert, last write wins.
+  router.put(
+    '/widget-layout/:namespace',
+    validateParams(widgetLayoutNamespaceParamSchema),
+    validateBody(updateWidgetLayoutRequestSchema),
+    async (req, res) => {
+      const { namespace } = req.valid?.params as WidgetLayoutNamespaceParam;
+      const body = req.valid?.body as UpdateWidgetLayoutRequest;
+      const layout = await ctx.widgetLayouts.set(req.authUser!.id, namespace, body.doc);
+      res.json(layout);
+    },
+  );
 
   // GET /settings/taxes — the caller's tax mode (+ country), V3-P4 (§13.3).
   router.get('/taxes', async (req, res) => {
