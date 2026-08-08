@@ -1,6 +1,7 @@
 import {
   isCommonScopedKind,
   isPortfolioScopedKind,
+  trimVaultMergeLog,
   VAULT_ENTITY_KINDS,
   VAULT2_DOCUMENT_VERSION,
   VAULT2_NAME_MAX_LENGTH,
@@ -197,8 +198,11 @@ export function splitVaultDocument(input: SplitVaultDocumentInput): VaultUpgrade
     docKind: 'common',
     vaultId: input.vaultId,
     entities: Object.fromEntries(commonEntities),
-    // r2 §8 assigns mergeLog and mirrorProvenance to `common`, per vault.
-    mergeLog: input.document.mergeLog ?? [],
+    // r3 §20: mergeLog and mirrorProvenance are per-vault MEMBERS of `common`.
+    // The log is trimmed on write (never rejected on read) so an oversized
+    // diagnostic array can never make the common doc — and with it the whole
+    // vault — unparseable.
+    mergeLog: trimVaultMergeLog(input.document.mergeLog ?? []),
     ...(input.document.mirrorProvenance != null
       ? { mirrorProvenance: input.document.mirrorProvenance }
       : {}),

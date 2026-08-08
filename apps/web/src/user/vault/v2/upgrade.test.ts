@@ -194,6 +194,59 @@ describe('v1 → v2 split', () => {
     }
   });
 
+  it('keeps mergeLog/clientSecurity/mirrorProvenance as document MEMBERS, never as entities (r3 §20)', () => {
+    const provenance = {
+      chainId: 'c0000000-0000-4000-8000-000000000000',
+      membershipId: 'd0000000-0000-4000-8000-000000000000',
+      portfolioId: FIXTURE_PORTFOLIO_A,
+      alias: 'x',
+      severedAt: '2026-08-08T00:00:00.000Z',
+    };
+    const security = {
+      retirementProofPublicKeyJwk: { kty: 'OKP', crv: 'Ed25519', x: 'abc' },
+    };
+    const split = splitVaultDocument({
+      document: v1Document(
+        { portfolio: [entity(FIXTURE_PORTFOLIO_A, { name: 'A' })] },
+        {
+          schemaVersion: 2,
+          mirrorProvenance: [provenance],
+          clientSecurity: security,
+        } as Partial<VaultDocument>,
+      ),
+      vaultId: FIXTURE_VAULT_ID,
+    });
+    // They live on the object, not inside `entities`.
+    expect(split.commonDoc.mirrorProvenance).toEqual([provenance]);
+    expect(split.commonDoc.clientSecurity).toEqual(security);
+    for (const key of ['mergeLog', 'clientSecurity', 'mirrorProvenance']) {
+      expect(split.commonDoc.entities).not.toHaveProperty(key);
+      for (const doc of split.portfolioDocs) expect(doc.entities).not.toHaveProperty(key);
+    }
+  });
+
+  it('trims the common doc mergeLog on write rather than rejecting an oversized one (r3 §20 / A1.2)', () => {
+    const record = (into: number) => ({
+      mergedAt: '2026-08-08T00:00:00.000Z',
+      parents: [into - 1],
+      into,
+      deviceId: '018f0000-0000-7000-8000-00000000000b',
+    });
+    const oversized = Array.from({ length: 45 }, (_, index) => record(index + 2));
+    const split = splitVaultDocument({
+      document: v1Document(
+        { portfolio: [entity(FIXTURE_PORTFOLIO_A, { name: 'A' })] },
+        { mergeLog: oversized },
+      ),
+      vaultId: FIXTURE_VAULT_ID,
+    });
+    // A 45-record log does not make the split throw; it is trimmed to the
+    // newest 20, keeping the common doc parseable.
+    expect(split.commonDoc.mergeLog).toHaveLength(20);
+    expect(split.commonDoc.mergeLog.at(-1)).toEqual(record(46));
+    expect(split.commonDoc.mergeLog[0]).toEqual(record(27));
+  });
+
   it('produces an empty-but-valid split for an account with no portfolios', () => {
     const split = splitVaultDocument({ document: v1Document({}), vaultId: FIXTURE_VAULT_ID });
     expect(split.portfolioDocs).toEqual([]);

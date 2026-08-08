@@ -275,6 +275,17 @@ export const VAULT2_UNSCOPED_KINDS: readonly VaultEntityKind[] = VAULT_ENTITY_KI
 
 const entitiesSchema = z.record(vaultEntityKindSchema, z.array(vaultEntitySchema));
 
+/**
+ * `mergeLog` is a document MEMBER of BOTH content-doc kinds — not an entity
+ * kind, and PER-DOCUMENT (r3 §20, closing mobile A1.1/A1.2). Merge records name
+ * bare document versions, so one shared array across N independently-versioned
+ * docs would mix N lineages. The cap is a WRITE-side trim (`VAULT_MERGE_LOG_LIMIT`),
+ * NEVER a parse-time rejection: a parse `.max()` would let a bookkeeping array
+ * make `common` unreadable and take `clientSecurity` and `mirrorProvenance` —
+ * the whole vault — down with it. Readers therefore tolerate any length.
+ */
+const mergeLogSchema = z.array(vaultMergeRecordSchema).default([]);
+
 /** One portfolio's decrypted content (§2 "portfolio doc"). */
 export const vaultPortfolioDocSchema = z
   .object({
@@ -283,14 +294,21 @@ export const vaultPortfolioDocSchema = z
     vaultId: z.string().uuid(),
     portfolioId: z.string().uuid(),
     entities: entitiesSchema,
-    mergeLog: z.array(vaultMergeRecordSchema).max(20).default([]),
+    mergeLog: mergeLogSchema,
   })
   .strict();
 export type VaultPortfolioDoc = z.infer<typeof vaultPortfolioDocSchema>;
 
 /**
- * The vault's `common` doc (r2 §8): every account/vault-scoped entity kind for
- * THIS vault, plus the three document-level carriers r2 assigns to it.
+ * The vault's `common` doc (r3 §20): every account/vault-scoped entity KIND for
+ * THIS vault (the 13 in {@link VAULT2_COMMON_SCOPED_KINDS}), plus the two
+ * document MEMBERS `mirrorProvenance` and `clientSecurity`, and its own
+ * per-document `mergeLog`.
+ *
+ * `clientSecurity`, `mirrorProvenance` and `mergeLog` are MEMBERS, not entity
+ * kinds — r2 §8 listed them among what `common` "owns", but a doc carrying them
+ * inside `entities` is rejected by both engines' fail-closed parsers (unknown
+ * entity keys stay fatal). They live here, on the object.
  *
  * Ids are namespaced per vault by design — the same conceptual custom asset in
  * two vaults is two independent lineages, and there is no cross-vault dedup.
@@ -301,7 +319,7 @@ export const vaultCommonDocSchema = z
     docKind: z.literal('common'),
     vaultId: z.string().uuid(),
     entities: entitiesSchema,
-    mergeLog: z.array(vaultMergeRecordSchema).max(20).default([]),
+    mergeLog: mergeLogSchema,
     /** Per-vault severed-fork identity map; divergence rules apply within one vault. */
     mirrorProvenance: z.array(vaultMirrorProvenanceSchema).optional(),
     /** Per-vault retirement-proof material. Never part of a server DTO. */

@@ -1257,6 +1257,13 @@ export type VaultMergeRecord = z.infer<typeof vaultMergeRecordSchema>;
  */
 export const VAULT_MERGE_LOG_LIMIT = 20;
 
+/** Keep the newest {@link VAULT_MERGE_LOG_LIMIT} records — the write-side trim. */
+export function trimVaultMergeLog(mergeLog: readonly VaultMergeRecord[]): VaultMergeRecord[] {
+  return mergeLog.length <= VAULT_MERGE_LOG_LIMIT
+    ? [...mergeLog]
+    : mergeLog.slice(mergeLog.length - VAULT_MERGE_LOG_LIMIT);
+}
+
 /**
  * Strict v1 restore payload; newer versions are rejected without coercion.
  *
