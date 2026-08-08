@@ -211,6 +211,9 @@ describe('paranoid vault service', () => {
       sizeBytes: 42,
       blob: Buffer.from('opaque'),
       retirementProofPublicKey: null,
+      migratingBy: null,
+      migrationExpiresAt: null,
+      migratedTo: null,
       createdAt: new Date('2026-07-24T09:00:00.000Z'),
       updatedAt: new Date('2026-07-24T10:00:00.000Z'),
     };

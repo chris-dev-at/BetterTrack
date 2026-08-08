@@ -70,6 +70,18 @@ export const ACCOUNT_EXPORT_NAMESPACE = 'account_export_account';
 export const ACCOUNT_PASSKEY_NAMESPACE = 'account_passkey_account';
 
 /**
+ * Per-account brute-force throttle for the GENERIC session step-up
+ * (`POST /auth/reauth`, Vaults v2). Unlike the namespaces above it does not
+ * belong to one destructive endpoint — it exists because some sensitive acts are
+ * entirely client-side (the QR handoff reveals a passphrase-bearing payload and
+ * has nothing to POST) and still need a server-verified step-up. Its own
+ * namespace for the same reason as the others: a generic verifier reusing
+ * login's counter would either weaken login's schedule or let one surface lock
+ * the other. Reuses the `loginAccount` schedule.
+ */
+export const REAUTH_ACCOUNT_NAMESPACE = 'reauth_account';
+
+/**
  * Per-account brute-force throttle for the paranoid `discard` re-auth (§13.5
  * V5-P13, docs/paranoid-design.md §3). Destroying an undecryptable vault
  * re-verifies a credential exactly like account deletion; wrong attempts accrue

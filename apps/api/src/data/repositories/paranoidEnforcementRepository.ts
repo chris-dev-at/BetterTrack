@@ -193,6 +193,15 @@ export interface ParanoidOwnedSubject {
   exists: boolean;
   /** Null is valid only for a global market asset. */
   userId: string | null;
+  /**
+   * Vaults v2 (`docs/VAULTS_V2_DESIGN.md` §3): non-null when the subject is a
+   * portfolio that lives in a vault. The guard treats such a portfolio exactly
+   * as it treats a paranoid ACCOUNT for the portfolio-scoped capabilities — the
+   * cleartext rows are gone either way, so every server-side feature that reads
+   * them must refuse. Always null for an asset subject (assets are user-owned,
+   * never portfolio-owned).
+   */
+  vaultId?: string | null;
 }
 
 /**
@@ -203,11 +212,13 @@ export function createParanoidEnforcementRepository(db: Database) {
   return {
     async portfolioOwner(portfolioId: string): Promise<ParanoidOwnedSubject> {
       const [row] = await db
-        .select({ userId: portfolios.userId })
+        .select({ userId: portfolios.userId, vaultId: portfolios.vaultId })
         .from(portfolios)
         .where(eq(portfolios.id, portfolioId))
         .limit(1);
-      return row ? { exists: true, userId: row.userId } : { exists: false, userId: null };
+      return row
+        ? { exists: true, userId: row.userId, vaultId: row.vaultId }
+        : { exists: false, userId: null, vaultId: null };
     },
 
     async assetOwner(assetId: string): Promise<ParanoidOwnedSubject> {
@@ -216,7 +227,9 @@ export function createParanoidEnforcementRepository(db: Database) {
         .from(assets)
         .where(eq(assets.id, assetId))
         .limit(1);
-      return row ? { exists: true, userId: row.userId } : { exists: false, userId: null };
+      return row
+        ? { exists: true, userId: row.userId, vaultId: null }
+        : { exists: false, userId: null, vaultId: null };
     },
   };
 }

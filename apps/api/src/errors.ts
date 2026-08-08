@@ -14,6 +14,28 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * An `ApiError` that additionally contributes TOP-LEVEL members to the response
+ * envelope, beside `error`. Introduced for the Vaults v2 CAS contract (design
+ * r2 §15), which requires every 412 to carry `currentVersion` at the top level
+ * so a client that lost the race can re-fetch without a second round trip.
+ *
+ * Deliberately narrow: `envelope` is a plain record the error handler spreads
+ * BEFORE `error`, so no subclass can overwrite the error envelope itself.
+ */
+export class EnvelopeApiError extends ApiError {
+  constructor(
+    statusCode: number,
+    code: string,
+    message: string,
+    public readonly envelope: Record<string, unknown>,
+    details?: unknown,
+  ) {
+    super(statusCode, code, message, details);
+    this.name = 'EnvelopeApiError';
+  }
+}
+
 export const badRequest = (message: string, code = 'BAD_REQUEST', details?: unknown) =>
   new ApiError(400, code, message, details);
 
