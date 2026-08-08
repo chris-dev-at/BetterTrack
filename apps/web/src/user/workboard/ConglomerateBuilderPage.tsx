@@ -427,7 +427,7 @@ function Builder({ initial }: { initial: BuilderInitial | null }) {
 
 function BuilderFrame({ children }: { children: React.ReactNode }) {
   return (
-    <div className="flex min-h-[calc(100*var(--bt-vh))] flex-col bg-[#0b0e14]">{children}</div>
+    <div className="flex min-h-[calc(100*var(--bt-vh))] flex-col bg-[var(--bt-bg)]">{children}</div>
   );
 }
 
@@ -749,7 +749,7 @@ export function WeightRow({
           onChange={(e) => onWeight(Number(e.target.value))}
           aria-label={t('workboard.builder.weightSliderAriaLabel', { symbol })}
           className="min-w-0 flex-1"
-          style={{ accentColor: 'var(--bt-gold)' }}
+          style={{ accentColor: 'var(--bt-gold-graphic)' }}
         />
         <div className="flex items-center gap-1">
           <input

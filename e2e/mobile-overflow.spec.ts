@@ -162,6 +162,7 @@ const AUTHENTICATED_CORE_ROUTES = [
 const CONTROL_CORE_ROUTES = [
   '/control',
   '/control/account',
+  '/control/appearance',
   '/control/profile',
   '/control/sign-in',
   '/control/sessions',

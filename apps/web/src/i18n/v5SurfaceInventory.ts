@@ -1038,6 +1038,11 @@ export const NON_V5_SURFACES = [
   },
   { path: 'user/components/ui.tsx', reason: 'no-v5-deliverable', note: 'V1 user control kit.' },
   {
+    path: 'user/control/panels/AppearancePanel.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'Board #68 theme + interface-scale panel; post-V5, and every string is catalogued.',
+  },
+  {
     path: 'user/control/panels/DeleteAccountPanel.tsx',
     reason: 'no-v5-deliverable',
     note: 'V4-P2c account deletion, re-housed by the R2 Control Center.',
@@ -1463,6 +1468,13 @@ export const V5_ASYNC_READ_EXEMPTIONS = [
     delegatedTo: 'HoldingTransactions',
   },
   {
+    component: 'user/portfolio/analytics/AnalyticsPage.tsx',
+    read: 'AnalyticsPage.balanceQuery',
+    states: ['loading', 'error'],
+    reason:
+      'The money twin behind the performance curve’s scrub tooltip (board #68 item 4) is a pure enhancement of a chart that draws without it: until it lands, and if it never does, the tooltip renders an em dash for the balance. Blocking or alarming the whole graph on it would be a regression of the read it decorates.',
+  },
+  {
     component: 'user/portfolio/MirrorchainPanel.tsx',
     read: 'MemberSheet.activityQuery',
     states: ['loading', 'error'],
@@ -1700,8 +1712,11 @@ export type V5AsyncStateDebtLedger = Readonly<
   Record<string, Readonly<Record<string, readonly V5AsyncReadState[]>>>
 >;
 
-/** Exact anti-shrinkage baseline; #1147 adds the reviewed on-demand holding read. */
-export const V5_ASYNC_READ_SITE_BASELINE = 182;
+/**
+ * Exact anti-shrinkage baseline; #1147 adds the reviewed on-demand holding
+ * read, board #68 item 4 the Analysis money twin behind the scrub tooltip.
+ */
+export const V5_ASYNC_READ_SITE_BASELINE = 183;
 
 /** Ratchet this downward whenever #739 removes a read site or missing state. */
 export const V5_ASYNC_STATE_DEBT_CEILING = { readSites: 0, stateGaps: 0 } as const;

@@ -53,6 +53,34 @@ export const portfolioVisibilitySchema = z.enum(['private', 'friends']);
 export type PortfolioVisibility = z.infer<typeof portfolioVisibilitySchema>;
 
 /**
+ * Portfolio kind — the purpose category a portfolio is filed under. It drives
+ * the icon + hue a portfolio renders with in the switcher trigger, the switcher
+ * list and the portfolio settings page, so a long portfolio list stays scannable
+ * at a glance.
+ *
+ * ⚠️ NAMING: `kind` is the internal name only. To the user this is the
+ * portfolio's **Icon** — a colour plus a glyph, not a taxonomy they have to
+ * reason about. Rename the copy, never these tokens.
+ *
+ * ⚠️ FROZEN ORDER + TOKENS. This is the graduated form of the web client's
+ * `portfolioKinds.ts` localStorage stopgap, and the mobile app ported the same
+ * five hues off it (board #69). The tokens and their order are the wire
+ * contract both clients already ship: never rename, renumber or reorder them.
+ * A new kind goes at the END and brings its own hue.
+ */
+export const PORTFOLIO_KINDS = ['private', 'family', 'business', 'savings', 'property'] as const;
+export const portfolioKindSchema = z.enum(PORTFOLIO_KINDS);
+export type PortfolioKind = z.infer<typeof portfolioKindSchema>;
+
+/**
+ * The kind an unclassified portfolio (`kind === null`) renders as. Kept as a
+ * *client-side* fallback rather than a column default on purpose: a stored
+ * `null` means "the user never chose", which is what lets a client that carried
+ * its own local kinds fall back to them until the first server write.
+ */
+export const DEFAULT_PORTFOLIO_KIND: PortfolioKind = 'private';
+
+/**
  * MIRRORCHAIN badge on a portfolio summary (V5-P7 M5, design §11): present
  * exactly when this portfolio is a **synced copy of an active chain**. The
  * portfolio header renders the avatar stack + syncing state off this field;
@@ -114,6 +142,18 @@ export const portfolioSummarySchema = z
      */
     archivedAt: z.string().datetime().nullable(),
     /**
+     * The portfolio's kind — its Icon, in user-facing copy (board #69). `null`
+     * when the user never chose one; the client renders
+     * {@link DEFAULT_PORTFOLIO_KIND} then, and a client that carried its own
+     * local kinds before this field existed may fall back to those until the
+     * first server write.
+     *
+     * Optional in the schema so pre-#69 fixtures still parse and both clients
+     * adopt the field with zero call-site changes (the server always emits it —
+     * this mirrors how `profileIcon` graduated onto the social DTOs).
+     */
+    kind: portfolioKindSchema.nullable().optional(),
+    /**
      * MIRRORCHAIN synced-copy badge (V5-P7 M5, design §11): present exactly
      * when this portfolio is a synced copy of an active chain. Absent on every
      * normal portfolio, so pre-M5 clients are unaffected.
@@ -154,7 +194,15 @@ export type PortfolioListResponse = z.infer<typeof portfolioListResponseSchema>;
 
 /** `POST /portfolios` body — create a named portfolio (§13.2 V2-P8). */
 export const createPortfolioRequestSchema = z
-  .object({ name: z.string().trim().min(1).max(120) })
+  .object({
+    name: z.string().trim().min(1).max(120),
+    /**
+     * The Icon the creation flow picked (board #69). Omitted → the row is
+     * stored unclassified (`null`) and renders as {@link DEFAULT_PORTFOLIO_KIND},
+     * so the create body stays byte-compatible for callers that never send it.
+     */
+    kind: portfolioKindSchema.optional(),
+  })
   .strict();
 export type CreatePortfolioRequest = z.infer<typeof createPortfolioRequestSchema>;
 
@@ -176,6 +224,11 @@ export const updatePortfolioRequestSchema = z
     /** Required when the legacy visibility write would widen the current audience. */
     confirmWiden: z.boolean().optional(),
     defaultPayFromCash: z.boolean().optional(),
+    /**
+     * Set the portfolio's Icon (board #69). Only a concrete kind is accepted —
+     * the picker has no "none" option, so there is no clear-back-to-null verb.
+     */
+    kind: portfolioKindSchema.optional(),
   })
   .strict();
 export type UpdatePortfolioRequest = z.infer<typeof updatePortfolioRequestSchema>;
@@ -377,6 +430,41 @@ export const portfolioTaxSettingsResponseSchema = z
   })
   .strict();
 export type PortfolioTaxSettingsResponse = z.infer<typeof portfolioTaxSettingsResponseSchema>;
+
+// --- Tax year locking (owner directive 2026-08-07, §16) -----------------------
+
+/** Route params for `/settings/taxes/years/:year/(unlock|relock)`. */
+export const taxYearLockParamsSchema = z
+  .object({ year: z.coerce.number().int().min(1900).max(3000) })
+  .strict();
+
+/**
+ * `POST /settings/taxes/years/:year/unlock` body — the explicit unlock ritual.
+ * Amending a passed tax year is legal reality (AT/DE), but it must never happen
+ * casually: the endpoint is cookie-session only (never bearer) and re-verifies
+ * the account password before the year opens for amendments.
+ */
+export const unlockTaxYearRequestSchema = z
+  .object({ password: z.string().min(1).max(1024) })
+  .strict();
+export type UnlockTaxYearRequest = z.infer<typeof unlockTaxYearRequestSchema>;
+
+/**
+ * `GET /settings/taxes/years` (and the unlock/relock responses): the caller's
+ * tax-year lock state. Every Vienna year before `currentYear` is LOCKED unless
+ * it appears in `unlockedYears` — a year the user explicitly opened for
+ * amendments, which stays open until they explicitly re-lock it. The current
+ * (open) year is never lockable and never appears here.
+ */
+export const taxYearLockStateResponseSchema = z
+  .object({
+    /** The current Vienna tax year — years before it auto-lock at rollover. */
+    currentYear: z.number().int(),
+    /** Elapsed years explicitly unlocked for amendments, ascending. */
+    unlockedYears: z.array(z.number().int()),
+  })
+  .strict();
+export type TaxYearLockStateResponse = z.infer<typeof taxYearLockStateResponseSchema>;
 
 /**
  * Reject a manual tax entry that states both an absolute amount and a rate —
@@ -1445,10 +1533,15 @@ export const taxYearSummarySchema = z
     /** German year-end block (V5-P4) — present exactly when the year has DE-taxed rows. */
     de: taxYearDeSummarySchema.optional(),
     /**
-     * Closed-year marker (#635): true for Vienna years before the current one,
-     * which keep their recording-time settlements and are never re-derived by
-     * settings changes. Open years (key omitted) re-derive live under the
-     * portfolio's CURRENT tax settings and self-heal on every read.
+     * Tax-year lock state (owner directive 2026-08-07, §16; supersedes the
+     * bare closed-year marker of #635). Present exactly for Vienna years
+     * before the current one: `true` = the year is LOCKED — the API refuses
+     * every mutation dated into it (409 `TAX_YEAR_LOCKED`) until the user
+     * runs the explicit unlock ritual; `false` = the year is elapsed but
+     * UNLOCKED for amendments (backdated entries settle append-only through
+     * the closed-year machinery) until explicitly re-locked. Open years (key
+     * omitted) re-derive live under the portfolio's CURRENT tax settings and
+     * self-heal on every read.
      */
     locked: z.boolean().optional(),
   })

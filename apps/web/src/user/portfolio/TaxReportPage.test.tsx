@@ -9,12 +9,15 @@ import { beforeEach, describe, expect, test, vi } from 'vitest';
 import type { PortfolioAsset, TaxYearReportResponse, TaxYearSummary } from '@bettertrack/contracts';
 
 vi.mock('../../lib/portfolioApi');
+vi.mock('../../lib/settingsApi');
 vi.mock('../vault/export/deliver', () => ({
   deliverClientDownload: vi.fn(),
   printClientDocument: vi.fn(),
 }));
 
+import { ApiError } from '../../lib/apiClient';
 import * as portfolioApi from '../../lib/portfolioApi';
+import * as settingsApi from '../../lib/settingsApi';
 import {
   createClientMoneyMarket,
   createMutableTestSync,
@@ -163,14 +166,83 @@ describe('TaxReportPage', () => {
     expect(portfolioApi.getTaxYearReport).toHaveBeenCalledTimes(2);
   });
 
-  test('a past year shows the "Passed" status (not "Locked")', async () => {
+  // ── Tax year locking (§16 2026-08-07) ──────────────────────────────────────
+
+  test('a locked passed year shows the Locked badge with an Unlock action', async () => {
     vi.mocked(portfolioApi.getTaxYearReports).mockResolvedValue({
       years: [{ ...YEAR_2026, year: 2024, locked: true }],
     });
     renderPage();
 
-    expect(await screen.findByText('Passed')).toBeInTheDocument();
+    expect(await screen.findByText('Locked')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Unlock…' })).toBeInTheDocument();
+    expect(screen.queryByText(/unlocked for amendments/i)).not.toBeInTheDocument();
+  });
+
+  test('the unlock ritual re-authenticates with the password and unlocks the named year', async () => {
+    vi.mocked(portfolioApi.getTaxYearReports).mockResolvedValue({
+      years: [{ ...YEAR_2026, year: 2024, locked: true }],
+    });
+    vi.mocked(settingsApi.unlockTaxYear).mockResolvedValue({
+      currentYear: 2026,
+      unlockedYears: [2024],
+    });
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole('button', { name: 'Unlock…' }));
+    expect(await screen.findByText('Unlock tax year 2024')).toBeInTheDocument();
+    await user.type(screen.getByLabelText('Your password'), 'hunter2!');
+    await user.click(screen.getByRole('button', { name: 'Unlock 2024' }));
+
+    await waitFor(() => expect(settingsApi.unlockTaxYear).toHaveBeenCalledWith(2024, 'hunter2!'));
+    // The dialog closes once the year is open.
+    await waitFor(() => expect(screen.queryByText('Unlock tax year 2024')).not.toBeInTheDocument());
+  });
+
+  test('a wrong password keeps the dialog open and says so', async () => {
+    vi.mocked(portfolioApi.getTaxYearReports).mockResolvedValue({
+      years: [{ ...YEAR_2026, year: 2024, locked: true }],
+    });
+    vi.mocked(settingsApi.unlockTaxYear).mockRejectedValue(
+      new ApiError(401, 'INVALID_CREDENTIALS', 'Current password is incorrect.'),
+    );
+    const user = userEvent.setup();
+    renderPage();
+
+    await user.click(await screen.findByRole('button', { name: 'Unlock…' }));
+    await user.type(await screen.findByLabelText('Your password'), 'wrong');
+    await user.click(screen.getByRole('button', { name: 'Unlock 2024' }));
+
+    expect(await screen.findByText('That password is incorrect.')).toBeInTheDocument();
+    expect(screen.getByText('Unlock tax year 2024')).toBeInTheDocument();
+  });
+
+  test('an unlocked year shows the amendment banner and re-locks from it', async () => {
+    vi.mocked(portfolioApi.getTaxYearReports).mockResolvedValue({
+      years: [{ ...YEAR_2026, year: 2024, locked: false }],
+    });
+    vi.mocked(settingsApi.relockTaxYear).mockResolvedValue({
+      currentYear: 2026,
+      unlockedYears: [],
+    });
+    const user = userEvent.setup();
+    renderPage();
+
+    expect(
+      await screen.findByText(/Tax year 2024 is unlocked for amendments/i),
+    ).toBeInTheDocument();
+    expect(screen.getByText('Unlocked for amendments')).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Re-lock 2024' }));
+    await waitFor(() => expect(settingsApi.relockTaxYear).toHaveBeenCalledWith(2024));
+  });
+
+  test('an open year carries neither badge nor lock actions', async () => {
+    renderPage();
+
+    expect(await screen.findByText('2026')).toBeInTheDocument();
     expect(screen.queryByText('Locked')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Unlock…' })).not.toBeInTheDocument();
   });
 
   test('with this portfolio inheriting `none`, shows the off state and never queries the report', async () => {

@@ -56,6 +56,9 @@ export const EXPORT_TABLE_CLASSIFICATION: Record<string, TableClassification> = 
   // tax choices, exported alongside the user-level default.
   portfolio_settings: exported('portfolioSettings'),
   user_tax_settings: exported('taxSettings'),
+  // Tax year locking (§16 2026-08-07): the user's explicitly-unlocked elapsed
+  // years — part of their tax record's posture, so it travels with the export.
+  tax_year_unlocks: exported('taxYearUnlocks'),
   friend_requests: exported('friendRequests'),
   friendships: exported('friendships'),
   user_follows: exported('userFollows'),
@@ -72,6 +75,14 @@ export const EXPORT_TABLE_CLASSIFICATION: Record<string, TableClassification> = 
   price_history: exported('customAssetPriceHistory'),
   asset_identities: skipped(
     'Content-free asset UUID integrity anchors plus opaque account claims; contain no asset or portfolio content.',
+  ),
+
+  // Per-account widget compositions (mobile board #68 item 3) — user-owned UI
+  // config, one opaque document per client namespace. Export coverage lands with
+  // the same later export sweep as standing_orders / cash_* (the composition is
+  // a view OF the exported portfolios, not a second copy of them).
+  widget_layouts: skipped(
+    'Per-namespace dashboard widget compositions (board #68) — user-owned UI config referencing already-exported portfolios; export coverage lands with a later export sweep.',
   ),
 
   // ── Global / not user-owned ───────────────────────────────────────────────
@@ -283,6 +294,21 @@ export const EXPORT_TABLE_CLASSIFICATION: Record<string, TableClassification> = 
   paranoid_rehydration_receipts: skipped(
     'Paranoid-disable idempotency receipt — non-sensitive internal transition metadata, never portfolio data.',
   ),
+  // Vaults v2 (docs/VAULTS_V2_DESIGN.md §3). Same reasoning as the v1 rows
+  // above: `vault_docs` is opaque ciphertext + CAS metadata and `vaults` is the
+  // container's cleartext name/backend selection, which is routing metadata
+  // rather than portfolio content. Neither belongs in a cleartext export —
+  // exporting a vault's ciphertext without its passphrase would be noise, and
+  // the user already holds the only copy that can open it.
+  vaults: skipped(
+    'Vaults v2 container metadata (name + storage backends) — routing metadata for client-encrypted documents, not portfolio content.',
+  ),
+  vault_docs: skipped(
+    'Vaults v2 document ciphertext — an opaque encrypted blob + CAS/version metadata the server can never decrypt.',
+  ),
+  vault_leave_receipts: skipped(
+    'Vaults v2 leave idempotency receipt — non-sensitive internal transition metadata, never portfolio data.',
+  ),
 };
 
 /** Every entity name the classification claims is exported (dedup, sorted). */
@@ -410,6 +436,11 @@ export const PARANOID_TABLE_CLASSIFICATION: Record<string, ParanoidClassificatio
   passkeys: 'server',
   device_tokens: 'server',
   push_subscriptions: 'server',
+  // Tax year locking (§16 2026-08-07): account-level lock POLICY, not money
+  // content — rows carry only year numbers (like the security posture rows
+  // above), so a paranoid account keeps them server-side; the mode's tax
+  // surface itself is killed for paranoid accounts by the route/service rules.
+  tax_year_unlocks: 'server',
 
   // ── server: operational / global records (kept) ────────────────────────────
   audit_log: 'server',
@@ -422,6 +453,21 @@ export const PARANOID_TABLE_CLASSIFICATION: Record<string, ParanoidClassificatio
   export_jobs: 'server',
   announcements: 'server',
   announcement_dismissals: 'server',
+
+  // Per-namespace widget compositions (mobile board #68 item 3) — classified
+  // `server` for the SAME reason `users.home_layout` is: this is UI composition,
+  // and the paranoid guarantee for a board is enforced at the ACCESS layer, not
+  // by purging it. `/settings/widget-layout/*` is killed for a paranoid account
+  // by the `portfolioServer` capability exactly as `/settings/home` is, so no
+  // paranoid account can read or write one.
+  //
+  // KNOWN RESIDUE (identical to `home_layout`, and to be resolved with it): rows
+  // saved BEFORE an account enables paranoid mode survive the enable purge. The
+  // `vault` axis is not the fix available here — it would require enrolling this
+  // table in the strict v1 encrypted-vault document contract
+  // (`VAULT_TABLE_ENTITY_KINDS`), a cross-client format change, to hold a
+  // document this server cannot even parse.
+  widget_layouts: 'server',
 
   // ── server: kept product surfaces (no portfolio content, §8 "kept" list) ───
   // Private watchlists/conglomerates/ideas/backtest configs (hypothetical
@@ -489,6 +535,15 @@ export const PARANOID_TABLE_CLASSIFICATION: Record<string, ParanoidClassificatio
   paranoid_enable_transitions: 'server',
   // PD3a completion receipt + non-sensitive data-home metadata remain server-side.
   paranoid_rehydration_receipts: 'server',
+  // Vaults v2 (docs/VAULTS_V2_DESIGN.md §3). Server-classified for the same
+  // reason as the v1 vault rows: they hold ciphertext and routing metadata, and
+  // they must SURVIVE an account-level paranoid enable rather than be purged by
+  // it — a v2 vault is a data home, not data to destroy.
+  vaults: 'server',
+  vault_docs: 'server',
+  // The leave receipt is transition bookkeeping, exactly like PD3a's rehydration
+  // receipt above: server-classified so it is neither purged nor carried.
+  vault_leave_receipts: 'server',
 };
 
 /**

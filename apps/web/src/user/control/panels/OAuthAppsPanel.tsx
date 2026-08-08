@@ -282,7 +282,7 @@ function RegisterOAuthClientForm({
           checked={isPublic}
           className="mt-0.5 h-4 w-4"
           onChange={(e) => setIsPublic(e.target.checked)}
-          style={{ accentColor: 'var(--bt-gold)' }}
+          style={{ accentColor: 'var(--bt-gold-graphic)' }}
           type="checkbox"
         />
         <span className="flex flex-col">

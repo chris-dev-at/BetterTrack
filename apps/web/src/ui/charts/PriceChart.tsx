@@ -18,6 +18,7 @@ import { useEffect, useId, useMemo, useRef, useState } from 'react';
 import { LOCALES, useI18n, useT } from '../../i18n';
 import * as palette from './palette';
 import { Spinner } from '../../user/components/ui';
+import { useResolvedTheme } from '../../user/useTheme';
 import { cx } from '../../lib/cx';
 import {
   DISCREET_MASK,
@@ -96,6 +97,20 @@ export interface PriceChartProps {
    */
   percentValues?: boolean;
   /**
+   * The absolute-money twin of `series`, aligned 1:1 **by time** (owner
+   * directive 2026-08-07, mobile board #68 item 4). Supplying it turns on the
+   * scrub tooltip: the curve keeps its performance-% shape while hovering any
+   * point names the balance in money — prominently — with the % beneath it.
+   *
+   * Points are matched by their `time` key, never by index, so a series with a
+   * hole simply shows an em dash for that point rather than a neighbour's
+   * money. Omit the prop entirely (the default) and the chart behaves exactly
+   * as it did before: no subscription, no tooltip, nothing to re-style.
+   */
+  balanceSeries?: readonly ChartPoint[];
+  /** ISO currency for {@link PriceChartProps.balanceSeries}. */
+  balanceCurrency?: string;
+  /**
    * ISO currency for monetary values in the primary series. Omit this for
    * unitless series such as rebased base-100 backtests; `percentValues` takes
    * precedence when both are supplied.
@@ -159,21 +174,12 @@ export interface PriceChartProps {
 // Origin chart palette (ui/charts/palette.ts): spec blue for the lone main
 // series, the validated categorical order for overlays, semantic green/red
 // only where polarity is real, gold only as an event flag.
-const MAIN_LINE = palette.MAIN_SERIES;
-const MAIN_AREA_TOP = palette.MAIN_AREA_TOP;
-const MAIN_AREA_BOTTOM = palette.MAIN_AREA_BOTTOM;
-const BENCHMARK_LINE = palette.BENCHMARK;
-const MARKER_FLAG = palette.GOLD_FLAG; // entry-event flags (§14)
-const GRID = palette.CHART_GRID;
-const TEXT = palette.CHART_TEXT;
-
-// Baseline (performance-%) mode: gains above 0, losses below — real polarity.
-const BASELINE_UP_LINE = palette.POSITIVE;
-const BASELINE_UP_FILL_TOP = 'rgba(52, 211, 153, 0.22)';
-const BASELINE_UP_FILL_BOTTOM = 'rgba(52, 211, 153, 0.02)';
-const BASELINE_DOWN_LINE = palette.NEGATIVE;
-const BASELINE_DOWN_FILL_TOP = 'rgba(251, 113, 133, 0.02)';
-const BASELINE_DOWN_FILL_BOTTOM = 'rgba(251, 113, 133, 0.22)';
+//
+// Resolved to concrete colours rather than used as `var(--bt-chart-*)` like
+// every other chart in the app: this one paints into a canvas, and a 2D context
+// cannot resolve a custom property. `useResolvedTheme()` in the component turns
+// a theme change back into a normal React dependency, so the instance is rebuilt
+// with the new palette — the same rebuild mode/height/benchmark already trigger.
 
 // ─── Time-axis formatting (§13.5 V5-P1 Part C) ───────────────────────────────
 
@@ -312,6 +318,47 @@ function chartPointKey(time: Time): string {
   return `${time.year}-${time.month}-${time.day}`;
 }
 
+// ─── Scrub tooltip (board #68 item 4) ────────────────────────────────────────
+
+/** One hovered point, already formatted — the tooltip itself does no maths. */
+interface ScrubReadout {
+  /** Crosshair x within the chart container, px. */
+  x: number;
+  /** Container width when the reading was taken; drives the right-edge flip. */
+  width: number;
+  date: string;
+  /** The balance in money at that point — the headline (owner: € prominent). */
+  balance: string;
+  /** The curve's own value at that point (the performance %), signed. */
+  value: string;
+}
+
+/**
+ * Index a series by its time key. Matching by key rather than by index is what
+ * lets a hole in either series show an em dash instead of a neighbouring
+ * point's money — the two arrays are aligned by the API, not by this component.
+ */
+function indexByTime(points: readonly ChartPoint[]): Map<string, number> {
+  const byTime = new Map<string, number>();
+  for (const point of points) byTime.set(chartPointKey(point.time), point.value);
+  return byTime;
+}
+
+/**
+ * The money at `time`, or an em dash when the twin has no point there. Shared
+ * by the tooltip and the data table so the two can never disagree about which
+ * balance belongs to a point — or about discreet masking, which `formatMoney`
+ * applies on both paths.
+ */
+function formatBalanceAt(
+  balances: Map<string, number>,
+  time: Time,
+  currency: string | undefined,
+): string {
+  const value = balances.get(chartPointKey(time));
+  return value === undefined ? EM_DASH : formatMoney(value, currency);
+}
+
 /**
  * A `timeScale.tickMarkFormatter` that HONORS `tickMarkType` (§13.5 V5-P1 Part
  * C): sub-minute live rates show `HH:MM:SS`, other intraday ticks `HH:MM`, day
@@ -434,6 +481,8 @@ export function PriceChart({
   markers = [],
   overlays = [],
   percentValues = false,
+  balanceSeries,
+  balanceCurrency,
   valueCurrency,
   valueFormat = 'money',
   showDataAlternative = true,
@@ -455,6 +504,7 @@ export function PriceChart({
   // toggle works standalone (and in tests with no parent).
   const [internalRange, setInternalRange] = useState<PriceRange>(range ?? defaultRange);
   const [isDataTableOpen, setIsDataTableOpen] = useState(false);
+  const [scrub, setScrub] = useState<ScrubReadout | null>(null);
   const summaryId = useId();
   const dataTableId = useId();
   const activeRange = range ?? internalRange;
@@ -463,6 +513,10 @@ export function PriceChart({
     if (range === undefined) setInternalRange(next);
     onRangeChange?.(next);
   }
+
+  // Concrete palette for the canvas, re-read whenever the theme flips.
+  const theme = useResolvedTheme();
+  const colors = useMemo(() => palette.resolveChartColors(), [theme]);
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const chartRef = useRef<IChartApi | null>(null);
@@ -483,6 +537,10 @@ export function PriceChart({
   const isEmpty = series.length === 0;
   const hasBenchmark = benchmark !== null && benchmark.series.length > 0;
   const overlayCount = overlays.length;
+  // The scrub tooltip exists ONLY for callers that hand over a money twin —
+  // keyed on the prop being supplied at all, not on it having arrived yet, so a
+  // slow companion read fills the tooltip in instead of rebuilding the chart.
+  const hasScrubTooltip = balanceSeries !== undefined;
   // Snapshot the discreet flag at chart-create time so a toggle mid-life
   // rebuilds the chart with the correct axis formatter (§13.5 V5-P13 arc (a)).
   const discreet = isDiscreetMode();
@@ -538,6 +596,42 @@ export function PriceChart({
     });
   }, [dataAlternative, discreet, locale, percentValues, t, valueCurrency, valueFormat]);
 
+  // Everything the crosshair handler needs, behind a ref: the handler is
+  // registered once with the chart instance and must never capture a stale
+  // series, but re-subscribing on every data change would mean tearing the
+  // chart down mid-hover. Written after every render, read only on a mouse
+  // move — which cannot happen before the first commit.
+  const scrubRef = useRef<{
+    values: Map<string, number>;
+    balances: Map<string, number>;
+    currency: string | undefined;
+    percentValues: boolean;
+    precision: ChartDatePrecision;
+  } | null>(null);
+  // One index of the money twin, shared by the crosshair readout and the
+  // accessible data table: both answer "which balance is this point's?" the
+  // same way, by time key, or a screen reader and a mouse would disagree.
+  const balanceByTime = useMemo(
+    () => (hasScrubTooltip ? indexByTime(balanceSeries ?? []) : null),
+    [hasScrubTooltip, balanceSeries],
+  );
+  const valueByTime = useMemo(
+    () => (hasScrubTooltip ? indexByTime(series) : null),
+    [hasScrubTooltip, series],
+  );
+  useEffect(() => {
+    scrubRef.current =
+      balanceByTime !== null && valueByTime !== null
+        ? {
+            values: valueByTime,
+            balances: balanceByTime,
+            currency: balanceCurrency,
+            percentValues,
+            precision: dataAlternative?.datePrecision ?? 'date',
+          }
+        : null;
+  });
+
   // Create / tear down the chart instance. Keyed on the *shape* (mode, presence
   // of a benchmark, height) rather than the data, so wiggling data is cheap.
   useEffect(() => {
@@ -549,15 +643,15 @@ export function PriceChart({
       height,
       layout: {
         background: { type: ColorType.Solid, color: 'transparent' },
-        textColor: TEXT,
+        textColor: colors.text,
         attributionLogo: false,
       },
       grid: {
-        vertLines: { color: GRID },
-        horzLines: { color: GRID },
+        vertLines: { color: colors.grid },
+        horzLines: { color: colors.grid },
       },
       rightPriceScale: {
-        borderColor: GRID,
+        borderColor: colors.grid,
         // Overlay mode compares differently-scaled series (portfolio EUR value
         // vs. single-asset prices), so the scale normalizes every series to its
         // first visible value (percentage mode) — the standard "compare" view.
@@ -580,7 +674,7 @@ export function PriceChart({
             : {}),
       },
       timeScale: {
-        borderColor: GRID,
+        borderColor: colors.grid,
         tickMarkFormatter: makeTickMarkFormatter(intlLocale),
         // Live mode drives the viewport ONLY via setVisibleRange (§13.5 V5-P1
         // §3): the scale must never auto-fit or auto-shift on a new bar, or it
@@ -608,27 +702,27 @@ export function PriceChart({
       // is the "did I actually make money" boundary, so it gets its own mark.
       mainRef.current = chart.addSeries(BaselineSeries, {
         baseValue: { type: 'price', price: 0 },
-        topLineColor: BASELINE_UP_LINE,
-        topFillColor1: BASELINE_UP_FILL_TOP,
-        topFillColor2: BASELINE_UP_FILL_BOTTOM,
-        bottomLineColor: BASELINE_DOWN_LINE,
-        bottomFillColor1: BASELINE_DOWN_FILL_TOP,
-        bottomFillColor2: BASELINE_DOWN_FILL_BOTTOM,
+        topLineColor: colors.pos,
+        topFillColor1: colors['pos-top'],
+        topFillColor2: colors['pos-bottom'],
+        bottomLineColor: colors.neg,
+        bottomFillColor1: colors['neg-top'],
+        bottomFillColor2: colors['neg-bottom'],
         lineWidth: 2,
         priceLineVisible: false,
       });
     } else if (mode === 'step') {
       mainRef.current = chart.addSeries(LineSeries, {
-        color: MAIN_LINE,
+        color: colors.main,
         lineWidth: 2,
         lineType: LineType.WithSteps,
         priceLineVisible: false,
       });
     } else {
       mainRef.current = chart.addSeries(AreaSeries, {
-        lineColor: MAIN_LINE,
-        topColor: MAIN_AREA_TOP,
-        bottomColor: MAIN_AREA_BOTTOM,
+        lineColor: colors.main,
+        topColor: colors['main-top'],
+        bottomColor: colors['main-bottom'],
         lineWidth: 2,
         priceLineVisible: false,
       });
@@ -636,7 +730,7 @@ export function PriceChart({
 
     if (hasBenchmark) {
       benchRef.current = chart.addSeries(LineSeries, {
-        color: BENCHMARK_LINE,
+        color: colors.benchmark,
         lineWidth: 1,
         lineStyle: 2, // dashed
         priceLineVisible: false,
@@ -647,12 +741,40 @@ export function PriceChart({
     // One thin line per overlay asset (#122); data flows in via the data effect.
     overlayRefs.current = Array.from({ length: overlayCount }, (_, i) =>
       chart.addSeries(LineSeries, {
-        color: palette.categoricalColor(i),
+        color: colors.categorical[i % colors.categorical.length]!,
         lineWidth: 1,
         priceLineVisible: false,
         lastValueVisible: false,
       }),
     );
+
+    // Scrub tooltip (board #68 item 4). Subscribed only for callers with a
+    // money twin, so every other chart's runtime behaviour is byte-identical.
+    // The chart-wide `chart.remove()` in this effect's cleanup disposes the
+    // subscription with the instance, so there is nothing left to unhook.
+    if (hasScrubTooltip) {
+      chart.subscribeCrosshairMove((param) => {
+        const data = scrubRef.current;
+        // Off the plot (or before the first commit) ⇒ nothing to read.
+        if (data === null || param.time === undefined || param.point === undefined) {
+          setScrub(null);
+          return;
+        }
+        const value = data.values.get(chartPointKey(param.time));
+        setScrub({
+          x: param.point.x,
+          width: el.clientWidth,
+          date: formatChartDate(param.time, data.precision),
+          // formatMoney masks to ••• in discreet mode all by itself — the
+          // tooltip must not become the one surface that leaks an amount.
+          balance: formatBalanceAt(data.balances, param.time, data.currency),
+          value:
+            value === undefined
+              ? EM_DASH
+              : formatSignedChartValue(value, data.percentValues, undefined, 'money'),
+        });
+      });
+    }
 
     // Keep the chart sized to its container across responsive layout changes.
     const observer = new ResizeObserver((entries) => {
@@ -675,18 +797,26 @@ export function PriceChart({
       overlayRefs.current = [];
       drawnRef.current = { firstTime: null, length: 0, generation: null };
       markersRef.current = null;
+      // A reading belongs to the instance that produced it: never let one
+      // survive a mode switch and float over a freshly drawn curve.
+      setScrub(null);
     };
   }, [
     mode,
     hasBenchmark,
     overlayCount,
     percentValues,
+    hasScrubTooltip,
     height,
     loading,
     isEmpty,
     discreet,
     live,
     intlLocale,
+    // A theme flip changes every colour baked into the canvas at create time;
+    // rebuilding is the only way to repaint them, and it is rare enough that
+    // the cost never lands in an interaction.
+    colors,
   ]);
 
   // Push data into the existing series instances; drive the visible window.
@@ -750,7 +880,7 @@ export function PriceChart({
             time: m.time,
             position: 'aboveBar' as const,
             shape: 'arrowDown' as const,
-            color: MARKER_FLAG,
+            color: colors.flag,
             text: m.label,
           })),
         );
@@ -778,6 +908,12 @@ export function PriceChart({
     liveWindowMs,
     marketClosed,
     onFallbackRedraw,
+    // A theme flip rebuilds the chart in the effect above, which leaves BRAND
+    // NEW, empty series instances behind. Without this the data pass would not
+    // re-run (its own inputs did not change) and the chart would sit blank
+    // until the next quote arrived. The rebuild resets `drawnRef`, so this
+    // re-entry takes the clean `setData` path rather than a live tail-append.
+    colors,
   ]);
 
   const toggle = showRangeToggle ? (
@@ -791,7 +927,7 @@ export function PriceChart({
             <span
               aria-hidden="true"
               className="inline-block h-0.5 w-4"
-              style={{ backgroundColor: BENCHMARK_LINE }}
+              style={{ backgroundColor: colors.benchmark }}
             />
             {benchmark.label}
           </span>
@@ -801,7 +937,7 @@ export function PriceChart({
             <span
               aria-hidden="true"
               className="inline-block h-0.5 w-4"
-              style={{ backgroundColor: palette.categoricalColor(i) }}
+              style={{ backgroundColor: colors.categorical[i % colors.categorical.length] }}
             />
             {overlay.label}
           </span>
@@ -811,6 +947,17 @@ export function PriceChart({
   // `justify-between` with a placeholder for whichever end is empty: the toggle
   // sits at its declared end whether or not there is a legend to face it.
   const [leading, trailing] = rangeAlign === 'end' ? [legend, toggle] : ([toggle, legend] as const);
+
+  const canvas = (
+    <div
+      ref={containerRef}
+      role="img"
+      aria-describedby={summary ? summaryId : undefined}
+      aria-label={ariaLabel ?? t('common.charts.priceChartAria')}
+      className="w-full"
+      style={{ height }}
+    />
+  );
 
   return (
     <div className={cx('flex flex-col gap-3', className)}>
@@ -841,14 +988,16 @@ export function PriceChart({
               {summary}
             </p>
           ) : null}
-          <div
-            ref={containerRef}
-            role="img"
-            aria-describedby={summary ? summaryId : undefined}
-            aria-label={ariaLabel ?? t('common.charts.priceChartAria')}
-            className="w-full"
-            style={{ height }}
-          />
+          {hasScrubTooltip ? (
+            // The positioning context for the tooltip. Only rendered for the
+            // scrub-tooltip callers, so no other chart's DOM shifts by a node.
+            <div className="relative">
+              {canvas}
+              {scrub ? <ScrubTooltip scrub={scrub} /> : null}
+            </div>
+          ) : (
+            canvas
+          )}
           {dataAlternative ? (
             <>
               <button
@@ -883,6 +1032,15 @@ export function PriceChart({
                         <th className="py-1 pr-3 font-medium" scope="col">
                           {t('common.charts.priceChartDataDate')}
                         </th>
+                        {/* The money twin gets its own column so a % curve is
+                            not the one mode where the balance exists for a
+                            mouse and nowhere else — same time-key matching as
+                            the tooltip, in the same order (balance first). */}
+                        {balanceByTime ? (
+                          <th className="py-1 pr-3 text-right font-medium" scope="col">
+                            {t('common.charts.priceChartDataBalance')}
+                          </th>
+                        ) : null}
                         <th className="py-1 text-right font-medium" scope="col">
                           {t('common.charts.priceChartDataValue')}
                         </th>
@@ -894,6 +1052,11 @@ export function PriceChart({
                           <td className="py-1 pr-3">
                             {formatChartDate(point.time, dataAlternative.datePrecision)}
                           </td>
+                          {balanceByTime ? (
+                            <td className="py-1 pr-3 text-right tabular-nums">
+                              {formatBalanceAt(balanceByTime, point.time, balanceCurrency)}
+                            </td>
+                          ) : null}
                           <td className="py-1 text-right tabular-nums">
                             {formatChartValue(
                               point.value,
@@ -912,6 +1075,43 @@ export function PriceChart({
           ) : null}
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * The hovered point's readout (board #68 item 4): the money balance is the
+ * headline — the owner's whole reason for the mode — with the curve's own
+ * percentage as its subtitle, and the date above both for context.
+ *
+ * Pinned to the top of the plot and following the crosshair horizontally: a
+ * tooltip that also tracked `y` would jitter along the curve while the number
+ * is being read. It flips to the left of the crosshair past the halfway mark so
+ * it never runs off the right edge, and is `pointer-events: none` so it can
+ * never eat the very crosshair that drives it.
+ */
+function ScrubTooltip({ scrub }: { scrub: ScrubReadout }) {
+  const flip = scrub.width > 0 && scrub.x > scrub.width / 2;
+  return (
+    <div
+      className="pointer-events-none absolute flex flex-col gap-0.5 rounded-md px-2.5 py-1.5"
+      style={{
+        left: scrub.x,
+        top: 8,
+        transform: flip ? 'translateX(calc(-100% - 12px))' : 'translateX(12px)',
+        background: 'var(--bt-surface-strong)',
+        border: '1px solid var(--bt-border)',
+        // The menu elevation token rather than a literal black shadow: on the
+        // light canvas a 24 % black drop reads as grime under a white card,
+        // and this tooltip is the one surface that floats over a chart in
+        // both themes (board #68 + #1164 landing together).
+        boxShadow: 'var(--bt-shadow-menu)',
+        zIndex: 1,
+      }}
+    >
+      <span className="bt-meta">{scrub.date}</span>
+      <span className="text-sm font-semibold tabular-nums">{scrub.balance}</span>
+      <span className="bt-meta tabular-nums">{scrub.value}</span>
     </div>
   );
 }

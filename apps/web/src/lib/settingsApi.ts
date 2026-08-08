@@ -5,6 +5,7 @@ import {
   homeLayoutEnvelopeSchema,
   notificationSettingsResponseSchema,
   taxSettingsResponseSchema,
+  taxYearLockStateResponseSchema,
   telegramConfirmResponseSchema,
   telegramSettingsResponseSchema,
   type AccountSettingsResponse,
@@ -14,6 +15,7 @@ import {
   type HomeLayoutEnvelope,
   type NotificationSettingsResponse,
   type TaxSettingsResponse,
+  type TaxYearLockStateResponse,
   type TelegramConfirmResponse,
   type TelegramSettingsResponse,
   type UpdateAccountSettingsRequest,
@@ -87,6 +89,39 @@ export async function updateTaxSettings(
 ): Promise<TaxSettingsResponse> {
   const data = await apiRequest<unknown>('/settings/taxes', { method: 'PATCH', body });
   return taxSettingsResponseSchema.parse(data);
+}
+
+// ── Tax year locking (§16 2026-08-07) ───────────────────────────────────────
+// Elapsed Vienna years auto-lock against mutations (409 TAX_YEAR_LOCKED); the
+// unlock ritual below re-verifies the account password and opens ONE named
+// year for amendments until it is explicitly re-locked. Session-only — these
+// calls are never reachable with a bearer token.
+
+/** `GET /settings/taxes/years` — the caller's lock state. */
+export async function getTaxYearLockState(signal?: AbortSignal): Promise<TaxYearLockStateResponse> {
+  const data = await apiRequest<unknown>('/settings/taxes/years', { signal });
+  return taxYearLockStateResponseSchema.parse(data);
+}
+
+/** `POST /settings/taxes/years/:year/unlock` — password re-auth, then open the year. */
+export async function unlockTaxYear(
+  year: number,
+  password: string,
+): Promise<TaxYearLockStateResponse> {
+  const data = await apiRequest<unknown>(`/settings/taxes/years/${year}/unlock`, {
+    method: 'POST',
+    body: { password },
+  });
+  return taxYearLockStateResponseSchema.parse(data);
+}
+
+/** `POST /settings/taxes/years/:year/relock` — close the year again (idempotent). */
+export async function relockTaxYear(year: number): Promise<TaxYearLockStateResponse> {
+  const data = await apiRequest<unknown>(`/settings/taxes/years/${year}/relock`, {
+    method: 'POST',
+    body: {},
+  });
+  return taxYearLockStateResponseSchema.parse(data);
 }
 
 // ── Home widget board (R2 home-widgets) ─────────────────────────────────────

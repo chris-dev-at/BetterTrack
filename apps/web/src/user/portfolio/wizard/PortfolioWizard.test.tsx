@@ -11,7 +11,7 @@ vi.mock('../../../lib/portfolioApi', () => ({
 
 import { ApiError } from '../../../lib/apiClient';
 import { createPortfolio, updatePortfolio } from '../../../lib/portfolioApi';
-import { getPortfolioKind, resetPortfolioKindCache } from '../portfolioKinds';
+import { resetPortfolioKindCache } from '../portfolioKinds';
 import { PortfolioWizard } from './PortfolioWizard';
 import { setViewportWidth } from '../../../test/viewport';
 
@@ -129,7 +129,7 @@ describe('PortfolioWizard — one screen', () => {
     await waitFor(() => expect(field).toHaveFocus());
 
     await userEvent.type(field, 'Retirement{Enter}');
-    await waitFor(() => expect(createPortfolio).toHaveBeenCalledWith('Retirement'));
+    await waitFor(() => expect(createPortfolio).toHaveBeenCalledWith('Retirement', 'private'));
   });
 
   test('Escape closes without creating anything', async () => {
@@ -165,7 +165,7 @@ describe('PortfolioWizard — one screen', () => {
 });
 
 describe('PortfolioWizard — icon', () => {
-  test('the picked icon is stored for the created portfolio', async () => {
+  test('the picked icon is created WITH the portfolio, in one request', async () => {
     vi.mocked(createPortfolio).mockResolvedValue(CREATED);
     renderWizard();
 
@@ -175,20 +175,21 @@ describe('PortfolioWizard — icon', () => {
 
     await userEvent.click(primary());
 
-    await waitFor(() => expect(getPortfolioKind('p9')).toBe('savings'));
-    // …through the same store the Settings picker writes, so it survives a reload.
-    resetPortfolioKindCache();
-    expect(getPortfolioKind('p9')).toBe('savings');
+    // Board #69: the kind rides the create body, so it lands on the row the
+    // server owns — no follow-up write that could fail and leave the portfolio
+    // wearing an icon nobody picked.
+    await waitFor(() => expect(createPortfolio).toHaveBeenCalledWith('Retirement', 'savings'));
+    expect(updatePortfolio).not.toHaveBeenCalled();
   });
 
-  test('an untouched icon still stores the private default', async () => {
+  test('an untouched icon still creates with the private default', async () => {
     vi.mocked(createPortfolio).mockResolvedValue(CREATED);
     renderWizard();
 
     await nameIt();
     await userEvent.click(primary());
 
-    await waitFor(() => expect(getPortfolioKind('p9')).toBe('private'));
+    await waitFor(() => expect(createPortfolio).toHaveBeenCalledWith('Retirement', 'private'));
   });
 });
 
@@ -201,7 +202,7 @@ describe('PortfolioWizard — book', () => {
     expect(screen.getByRole('radio', { name: /Just me/ })).toHaveAttribute('aria-checked', 'true');
     await userEvent.click(primary());
 
-    await waitFor(() => expect(createPortfolio).toHaveBeenCalledWith('Retirement'));
+    await waitFor(() => expect(createPortfolio).toHaveBeenCalledWith('Retirement', 'private'));
     expect(onSharedBook).not.toHaveBeenCalled();
   });
 
@@ -269,7 +270,7 @@ describe('PortfolioWizard — creation', () => {
     await userEvent.type(field, 'Pension');
     await userEvent.click(primary());
 
-    await waitFor(() => expect(createPortfolio).toHaveBeenLastCalledWith('Pension'));
+    await waitFor(() => expect(createPortfolio).toHaveBeenLastCalledWith('Pension', 'private'));
     expect(createPortfolio).toHaveBeenCalledTimes(2); // one refusal + one success
   });
 
@@ -293,7 +294,7 @@ describe('PortfolioWizard — creation', () => {
     await nameIt('   Retirement   ');
     await userEvent.click(primary());
 
-    await waitFor(() => expect(createPortfolio).toHaveBeenCalledWith('Retirement'));
+    await waitFor(() => expect(createPortfolio).toHaveBeenCalledWith('Retirement', 'private'));
   });
 });
 

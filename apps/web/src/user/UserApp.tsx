@@ -22,6 +22,7 @@ import { PeopleLayout } from './people/PeopleLayout';
 import { MutationFeedbackProvider, useMutationFeedback } from './hooks/useMutationFeedback';
 import { ResolvedPrivacyModeProvider, usePrivacyMode } from './vault/usePrivacyMode';
 import { matchControlPanel, matchesVaultEnableRequest } from './control/matchControlPanel';
+import { useThemeWatcher } from './useTheme';
 import { useUiScaleWatcher } from './useUiScale';
 
 /**
@@ -771,6 +772,12 @@ function UiScaleWatcher() {
   return null;
 }
 
+/** Keeps a `system` theme following the OS as it flips (board #68). */
+function ThemeWatcher() {
+  useThemeWatcher();
+  return null;
+}
+
 /**
  * Follow the authenticated user's stored UI language (§13.3 V3-P1): whenever the
  * signed-in `me` carries a locale, switch the runtime to it. Renders nothing.
@@ -792,6 +799,7 @@ export function UserApp() {
         <MutationFeedbackProvider>
           <AuthProvider>
             <UiScaleWatcher />
+            <ThemeWatcher />
             <LocaleSync />
             <RateLimitToastBridge />
             <Suspense fallback={<Splash />}>

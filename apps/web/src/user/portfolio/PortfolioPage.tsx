@@ -40,7 +40,7 @@ import {
 } from '../../lib/format';
 import { EmptyState, MoneyText } from '../../ui';
 import { Badge, Button, PageHead, Seg, SkeletonBlock, Stat, StatStrip } from '../../ui/origin';
-import { AllocationDonut, PriceChart } from '../../ui/charts';
+import { AllocationDonut, PriceChart, useChartDisplayMode } from '../../ui/charts';
 import { MAIN_SERIES, POSITIVE } from '../../ui/charts/palette';
 import type { AllocationSegment, PriceRange } from '../../ui/charts';
 import { Alert } from '../components/ui';
@@ -78,6 +78,18 @@ function toHistoryRange(r: PriceRange): PortfolioHistoryRange {
 
 /** §6.9 caches the series 1 h; mirror that as the client staleTime. */
 const HISTORY_STALE_MS = 3_600_000;
+
+/**
+ * The chart key for a history point. #556: 1D/1W points carry an intraday
+ * `time` — key on the exact instant so the dense curve plots, versus the
+ * business-day string the daily ranges use. Shared by the value and
+ * performance forms so both are keyed identically and stay scrub-alignable.
+ */
+function historyTime(point: { date: string; time?: string }): Time {
+  return point.time !== undefined
+    ? (Math.floor(Date.parse(point.time) / 1000) as Time)
+    : (point.date as Time);
+}
 
 // ─── Totals hero ────────────────────────────────────────────────────────────
 
@@ -1457,7 +1469,10 @@ export function PortfolioPage() {
   const store = usePortfolioStore();
   const [range, setRange] = useState<PriceRange>('1M');
   // #125: absolute value curve (€) vs. cash-flow-neutralized performance (%).
-  const [perfMode, setPerfMode] = useState(false);
+  // Remembered per device for this surface (board #68 item 4) — the default is
+  // still the € curve, so nobody's overview changes until they ask it to.
+  const [displayMode, setDisplayMode] = useChartDisplayMode('portfolio-overview');
+  const perfMode = displayMode === 'perf';
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [recentSourceSelection, setRecentSourceSelection] = useState<{
     portfolioId: string;
@@ -1588,7 +1603,11 @@ export function PortfolioPage() {
     // transient-sounding "try again" the user would retry forever.
     onError: (err) =>
       setActionError(
-        err instanceof ApiError && err.code === 'CASH_LEDGER_WOULD_GO_NEGATIVE'
+        // TAX_YEAR_LOCKED (§16 2026-08-07): like the solvency gate, the
+        // refusal is deliberate — the server copy names the locked year and
+        // the unlock path the user must take first.
+        err instanceof ApiError &&
+          (err.code === 'CASH_LEDGER_WOULD_GO_NEGATIVE' || err.code === 'TAX_YEAR_LOCKED')
           ? err.message
           : err instanceof ApiError && err.code === 'MIRROR_CONFLICT'
             ? t('portfolio.transaction.mirrorConflict')
@@ -1629,16 +1648,22 @@ export function PortfolioPage() {
 
   // #125: in performance mode the curve is the deposit-neutralized TWR series —
   // a 1 000 € top-up causes no jump; the line only moves when holdings move.
-  // #556: 1D/1W points carry an intraday `time` — key the chart on the exact
-  // instant (a UNIX-second `Time`) so the dense curve plots, versus the
-  // business-day string the daily ranges use.
-  const chartPoints = useMemo(() => {
-    const at = (p: { date: string; time?: string }): Time =>
-      p.time !== undefined ? (Math.floor(Date.parse(p.time) / 1000) as Time) : (p.date as Time);
-    return perfMode
-      ? (historyQuery.data?.performance ?? []).map((p) => ({ time: at(p), value: p.pct }))
-      : (historyQuery.data?.points ?? []).map((p) => ({ time: at(p), value: p.valueEur }));
-  }, [historyQuery.data, perfMode]);
+  //
+  // Both forms are mapped from the SAME history response — `performance[]` is
+  // aligned 1:1 with `points[]` and keyed identically — which is what lets the
+  // % curve carry a money scrub tooltip without a second request (board #68
+  // item 4). Nothing is recomputed here: the server owns both series.
+  const valuePoints = useMemo(
+    () =>
+      (historyQuery.data?.points ?? []).map((p) => ({ time: historyTime(p), value: p.valueEur })),
+    [historyQuery.data],
+  );
+  const performancePoints = useMemo(
+    () =>
+      (historyQuery.data?.performance ?? []).map((p) => ({ time: historyTime(p), value: p.pct })),
+    [historyQuery.data],
+  );
+  const chartPoints = perfMode ? performancePoints : valuePoints;
 
   // ── Loading / error ──
   if (portfoliosQuery.isLoading || (portfolioId !== null && portfolioQuery.isLoading)) {
@@ -1808,7 +1833,7 @@ export function PortfolioPage() {
               <div className="flex flex-wrap items-center gap-2">
                 <Seg
                   ariaLabel={t('portfolio.overview.chart.displayModeAriaLabel')}
-                  onChange={(mode) => setPerfMode(mode === 'perf')}
+                  onChange={(mode) => setDisplayMode(mode === 'perf' ? 'perf' : 'value')}
                   options={[
                     { value: 'value', label: t('portfolio.overview.chart.valueMode') },
                     { value: 'perf', label: t('portfolio.overview.chart.performanceMode') },
@@ -1857,6 +1882,12 @@ export function PortfolioPage() {
                   series={chartPoints}
                   mode={perfMode ? 'baseline' : 'area'}
                   percentValues={perfMode}
+                  // Board #68 item 4: the % curve keeps the money answer one
+                  // hover away. Same response, same time keys — no second read.
+                  balanceSeries={perfMode ? valuePoints : undefined}
+                  balanceCurrency={
+                    historyQuery.data?.baseCurrency ?? portfolioQuery.data?.baseCurrency
+                  }
                   valueCurrency={
                     historyQuery.data?.baseCurrency ?? portfolioQuery.data?.baseCurrency
                   }

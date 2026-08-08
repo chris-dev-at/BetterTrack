@@ -339,6 +339,9 @@ export async function buildNormalVaultDocument(
         sortOrder: portfolio.sortOrder,
         defaultPayFromCash: portfolio.defaultPayFromCash,
         archivedAt: portfolio.archivedAt,
+        // Board #69: captured with the row, or enable→disable would silently
+        // reset every portfolio's Icon (the #729 irreversible-loss class).
+        kind: portfolio.kind ?? null,
       },
       portfolio.archivedAt ?? now(),
     );

@@ -101,6 +101,7 @@ import { createMirrorService } from '../services/mirror';
 import { createPortfolioService } from '../services/portfolio/portfolioService';
 import { createPortfolioSnapshotService } from '../services/portfolio/portfolioSnapshots';
 import { createTaxService } from '../services/tax/taxService';
+import { createTaxYearLockService } from '../services/tax/taxYearLockService';
 import { createUsageAnalyticsRepository } from '../data/repositories/usageAnalyticsRepository';
 import { createUsageAnalyticsService } from '../services/analytics/usageAnalyticsService';
 import { createLogger } from '../logger';
@@ -166,8 +167,14 @@ const paranoidGuard = createParanoidModeGuard({
   withLockedPrivacyModes: (userIds, run) => withLockedPrivacyModes(lockDb, userIds, run),
 });
 const paranoidSubjects = createParanoidEnforcementRepository(db);
+// Vaults v2 (§3): a vaulted portfolio is blocked for the same reason a paranoid
+// account's is — the job's input rows no longer exist in cleartext.
 const isBlockedPortfolio = async (portfolioId: string) =>
-  isParanoidOwnedSubjectBlocked(await paranoidSubjects.portfolioOwner(portfolioId), paranoidGuard);
+  isParanoidOwnedSubjectBlocked(
+    await paranoidSubjects.portfolioOwner(portfolioId),
+    paranoidGuard,
+    'portfolioJobs',
+  );
 const runPortfolioJobIfAllowed = async (portfolioId: string, action: () => Promise<void>) =>
   runIfParanoidOwnedSubjectAllowed(
     await paranoidSubjects.portfolioOwner(portfolioId),
@@ -358,6 +365,17 @@ const audience = createAudienceService({
   logger,
   paranoid: paranoidGuard,
 });
+// Tax year locking (§16 2026-08-07): the worker's replica-apply paths run
+// with `force` (origin-gated), but the guard must exist for any non-force
+// path a job takes — same policy as the API composes.
+const taxYearLock = createTaxYearLockService({
+  config,
+  redis: deadLetterConnection,
+  taxRepo,
+  userRepo: workerUserRepo,
+  passwordHasher: createPasswordHasher(),
+  audit,
+});
 const taxService = createTaxService({
   taxRepo,
   portfolioSettingsRepo: createPortfolioSettingsRepository(db),
@@ -367,6 +385,7 @@ const taxService = createTaxService({
   portfolioRepo,
   currencyService,
   snapshots,
+  yearLock: taxYearLock,
   logger,
   paranoid: paranoidGuard,
 });
@@ -386,6 +405,7 @@ const portfolioService = createPortfolioService({
   }),
   snapshots,
   taxService,
+  yearLock: taxYearLock,
   friendshipRepo,
   audience,
   profile: profileRepo,

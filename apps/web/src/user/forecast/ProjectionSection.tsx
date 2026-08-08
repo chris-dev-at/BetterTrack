@@ -10,6 +10,7 @@ import { formatMoney } from '../../lib/format';
 import { getPortfolioDividendProjection } from '../../lib/marketIntelApi';
 import { EmptyState, Skeleton, StatCard } from '../../ui';
 import { overlayColor } from '../../ui/charts';
+import { MAIN_SERIES } from '../../ui/charts/palette';
 import { AsyncReadState, type AsyncRead } from '../components/AsyncReadState';
 import { Button, TextField } from '../components/ui';
 import { usePortfolioStore } from '../portfolio/PortfolioStoreProvider';
@@ -46,7 +47,7 @@ const ProjectionChart = lazy(() =>
  * Base line colour — matches PriceChart's main sky line. Single owner: the
  * legend chip below and the lazily-loaded renderer both read it from here.
  */
-const BASE_LINE = '#38bdf8';
+const BASE_LINE = MAIN_SERIES;
 
 /** Historical-return sampling windows offered to the user (default 5 years). */
 const RETURN_WINDOWS = ['1Y', '3Y', '5Y', 'Max'] as const;
@@ -335,7 +336,7 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
                 onChange={(e: ChangeEvent<HTMLInputElement>) => setReturnPct(e.target.value)}
               />
               {returnPctIsClamped ? (
-                <p role="alert" className="text-xs bt-gold">
+                <p role="alert" className="text-xs bt-gold-note">
                   {t('forecast.projection.returnPctClamped')}
                 </p>
               ) : null}
@@ -498,7 +499,7 @@ function FactorToggle({
         checked={checked}
         onChange={(e) => onChange(e.target.checked)}
         className="h-4 w-4 rounded"
-        style={{ accentColor: 'var(--bt-gold)' }}
+        style={{ accentColor: 'var(--bt-gold-graphic)' }}
       />
       <span>{label}</span>
     </label>

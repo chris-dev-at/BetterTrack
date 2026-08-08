@@ -76,28 +76,41 @@
         font-weight: 650;
       }
 
+      /*
+       * The light half. Values track the light token block in
+       * `src/styles/origin.css` — this page is served by the service worker
+       * with no stylesheet and no bundle, so it carries its own copy and has to
+       * be edited alongside it. `#d89400` was the old gold here and sat at
+       * 2.6:1 on this canvas; the deep ochre is the same value the app uses.
+       */
       @media (prefers-color-scheme: light) {
         :root {
-          background: #f1f2f3;
+          background: #ffffff;
           color: #131820;
         }
 
         body {
           background:
-            radial-gradient(circle at 50% 15%, rgb(213 148 0 / 10%), transparent 22rem), #f1f2f3;
+            radial-gradient(circle at 50% 15%, rgb(246 184 46 / 12%), transparent 22rem), #ffffff;
         }
 
         .mark {
-          background: #fff;
-          color: #d89400;
+          border-color: rgb(167 125 31 / 32%);
+          background: #ffffff;
+          color: #866419;
         }
 
         h1 span {
-          color: #d89400;
+          color: #866419;
         }
 
         p {
           color: #56616d;
+        }
+
+        a {
+          border-color: rgb(167 125 31 / 40%);
+          color: #866419;
         }
       }
     </style>

@@ -88,6 +88,22 @@ async function setup(mode?: 'manual_per_trade' | 'country_specific') {
   return { user, agent, pid, asset };
 }
 
+/**
+ * Amendment mode (§16 2026-08-07): elapsed years now LOCK against mutations
+ * (409 TAX_YEAR_LOCKED) until explicitly unlocked. The machinery tests below
+ * backdate into passed years by design — they run with those years unlocked,
+ * exactly the state in which the closed-year settlement machinery operates.
+ * The lock gate itself (and the unlock ritual) is pinned by
+ * `taxYearLock.test.ts`. Note the report's `locked` flag then reads `false`
+ * (elapsed-but-amendable) for these years.
+ */
+async function unlockYears(userId: string, years: number[]) {
+  await harness.db
+    .insert(schema.taxYearUnlocks)
+    .values(years.map((year) => ({ userId, year })))
+    .onConflictDoNothing();
+}
+
 async function trade(
   agent: Agent,
   pid: string,
@@ -345,7 +361,8 @@ describe('AT mode: flat KESt with same-year offset (V3-P4b)', () => {
   });
 
   it('November gain + February loss ⇒ NO offset (hard Jan-1 reset)', async () => {
-    const { agent, pid, asset } = await setup('country_specific');
+    const { user, agent, pid, asset } = await setup('country_specific');
+    await unlockYears(user.id, [2025]);
 
     await trade(agent, pid, {
       assetId: asset.id,
@@ -393,8 +410,9 @@ describe('AT mode: flat KESt with same-year offset (V3-P4b)', () => {
       },
       {
         year: 2025,
-        // #635: 2025 is closed — locked against re-derivation.
-        locked: true,
+        // #635: 2025 is closed-machinery; explicitly unlocked above, so the
+        // policy flag reads amendable (§16 2026-08-07).
+        locked: false,
         realizedPnlEur: 450,
         dividendsGrossEur: 0,
         taxWithheldEur: 123.75,
@@ -484,7 +502,8 @@ describe('AT mode: flat KESt with same-year offset (V3-P4b)', () => {
   });
 
   it('backdated sells join THAT year’s pool and settle append-only', async () => {
-    const { agent, pid, asset } = await setup('country_specific');
+    const { user, agent, pid, asset } = await setup('country_specific');
+    await unlockYears(user.id, [2025]);
     await trade(agent, pid, {
       assetId: asset.id,
       side: 'buy',
@@ -1106,7 +1125,8 @@ describe('mode switches re-derive open years (#635 live model)', () => {
   });
 
   it('closed years stay locked: a mode switch never re-taxes them (#635 boundary)', async () => {
-    const { agent, pid, asset } = await setup();
+    const { user, agent, pid, asset } = await setup();
+    await unlockYears(user.id, [2024, 2025]);
     await trade(agent, pid, {
       assetId: asset.id,
       side: 'buy',
@@ -1147,7 +1167,7 @@ describe('mode switches re-derive open years (#635 live model)', () => {
     });
     expect(years.find((y) => y.year === 2026)!.locked).toBeUndefined();
     expect(years.find((y) => y.year === 2025)).toMatchObject({
-      locked: true,
+      locked: false,
       realizedPnlEur: 450,
       taxNetEur: 0,
     });
@@ -1172,7 +1192,7 @@ describe('healed years survive rollover (#635 residue lock)', () => {
   });
 
   it('a backdated sell after rollover keeps the healed withholding (write path)', async () => {
-    const { agent, pid, asset } = await setup();
+    const { user, agent, pid, asset } = await setup();
     await trade(agent, pid, {
       assetId: asset.id,
       side: 'buy',
@@ -1202,8 +1222,9 @@ describe('healed years survive rollover (#635 residue lock)', () => {
     // Jan 1 passes: 2026 closes carrying the healed state, and a read posts
     // nothing further — the residue is locked, not drift.
     clock = Date.parse('2027-01-05T12:00:00.000Z');
+    await unlockYears(user.id, [2025, 2026]); // amendment mode (§16 2026-08-07)
     years = await yearSummaries(agent, pid);
-    expect(years.find((y) => y.year === 2026)).toMatchObject({ locked: true, taxNetEur: 123.75 });
+    expect(years.find((y) => y.year === 2026)).toMatchObject({ locked: false, taxNetEur: 123.75 });
     expect(taxMovements((await cashState(agent, pid)).movements)).toHaveLength(1);
 
     // Backdating a sell into the closed year settles only its own marginal
@@ -1222,14 +1243,14 @@ describe('healed years survive rollover (#635 residue lock)', () => {
     expect(settlements.map((m) => m.amountEur).sort((a, b) => a - b)).toEqual([-123.75, -13.75]);
     years = await yearSummaries(agent, pid);
     expect(years.find((y) => y.year === 2026)).toMatchObject({
-      locked: true,
+      locked: false,
       realizedPnlEur: 500,
       taxNetEur: 137.5,
     });
   });
 
   it('a year refunded under none while open is never re-taxed after rollover (dividend paths)', async () => {
-    const { agent, pid, asset } = await setup('country_specific');
+    const { user, agent, pid, asset } = await setup('country_specific');
     await trade(agent, pid, {
       assetId: asset.id,
       side: 'buy',
@@ -1255,12 +1276,13 @@ describe('healed years survive rollover (#635 residue lock)', () => {
 
     // Roll over, switch back to AT: the closed year keeps its refunded state.
     clock = Date.parse('2027-01-05T12:00:00.000Z');
+    await unlockYears(user.id, [2025, 2026]); // amendment mode (§16 2026-08-07)
     await agent
       .patch('/api/v1/settings/taxes')
       .set(...XRW)
       .send({ mode: 'country_specific', country: 'AT' });
     years = await yearSummaries(agent, pid);
-    expect(years.find((y) => y.year === 2026)).toMatchObject({ locked: true, taxNetEur: 0 });
+    expect(years.find((y) => y.year === 2026)).toMatchObject({ locked: false, taxNetEur: 0 });
 
     // A backdated dividend into it settles only its own marginal 27.5 % × 200
     // = 55 (attached) — the frozen sell is NOT re-taxed (+123.75 stays out).
@@ -1275,7 +1297,7 @@ describe('healed years survive rollover (#635 residue lock)', () => {
     ]);
     years = await yearSummaries(agent, pid);
     expect(years.find((y) => y.year === 2026)).toMatchObject({
-      locked: true,
+      locked: false,
       dividendsGrossEur: 200,
       taxNetEur: 55,
     });
@@ -1288,11 +1310,11 @@ describe('healed years survive rollover (#635 residue lock)', () => {
     settlements = taxMovements((await cashState(agent, pid)).movements);
     expect(settlements.map((m) => m.amountEur).sort((a, b) => a - b)).toEqual([-123.75, 123.75]);
     years = await yearSummaries(agent, pid);
-    expect(years.find((y) => y.year === 2026)).toMatchObject({ locked: true, taxNetEur: 0 });
+    expect(years.find((y) => y.year === 2026)).toMatchObject({ locked: false, taxNetEur: 0 });
   });
 
   it('a post-rollover delete reshapes the frozen component only, residue intact (delete path)', async () => {
-    const { agent, pid, asset } = await setup('country_specific');
+    const { user, agent, pid, asset } = await setup('country_specific');
     await trade(agent, pid, {
       assetId: asset.id,
       side: 'buy',
@@ -1329,6 +1351,7 @@ describe('healed years survive rollover (#635 residue lock)', () => {
     // target MINUS the locked residue (247.50 − 110 = +137.50) — the open-era
     // refund itself is never clawed back wholesale (pre-fix: +247.50).
     clock = Date.parse('2027-01-05T12:00:00.000Z');
+    await unlockYears(user.id, [2025, 2026]); // amendment mode (§16 2026-08-07)
     const buyId = expensiveBuy.body.transactions[0].id as string;
     const del = await agent.delete(`/api/v1/portfolios/${pid}/transactions/${buyId}`).set(...XRW);
     expect(del.status, JSON.stringify(del.body)).toBe(204);
@@ -1341,7 +1364,7 @@ describe('healed years survive rollover (#635 residue lock)', () => {
     });
     years = await yearSummaries(agent, pid);
     expect(years.find((y) => y.year === 2026)).toMatchObject({
-      locked: true,
+      locked: false,
       realizedPnlEur: 900,
       taxNetEur: 137.5,
     });
@@ -1353,7 +1376,7 @@ describe('healed years survive rollover (#635 residue lock)', () => {
   // ΔF/baseline lock preserves the coupling term.
 
   it('a nonlinear open era (DE allowance sharing) survives rollover intact', async () => {
-    const { agent, pid, asset } = await setup();
+    const { user, agent, pid, asset } = await setup();
     await trade(agent, pid, {
       assetId: asset.id,
       side: 'buy',
@@ -1401,8 +1424,9 @@ describe('healed years survive rollover (#635 residue lock)', () => {
 
     // Jan 1 passes: the joint-vs-standalone gap is locked; a read posts nothing.
     clock = Date.parse('2027-01-05T12:00:00.000Z');
+    await unlockYears(user.id, [2025, 2026]); // amendment mode (§16 2026-08-07)
     years = await yearSummaries(agent, pid);
-    expect(years.find((y) => y.year === 2026)).toMatchObject({ locked: true, taxNetEur: 619.81 });
+    expect(years.find((y) => y.year === 2026)).toMatchObject({ locked: false, taxNetEur: 619.81 });
     expect(taxMovements((await cashState(agent, pid)).movements)).toHaveLength(1);
 
     // A backdated dividend settles only its own standalone marginal (the
@@ -1418,7 +1442,7 @@ describe('healed years survive rollover (#635 residue lock)', () => {
     expect(settlements.filter((m) => m.kind === 'tax_refund')).toHaveLength(0);
     expect(settlements.map((m) => m.amountEur).sort((a, b) => a - b)).toEqual([-619.81, -26.38]);
     years = await yearSummaries(agent, pid);
-    expect(years.find((y) => y.year === 2026)).toMatchObject({ locked: true, taxNetEur: 646.19 });
+    expect(years.find((y) => y.year === 2026)).toMatchObject({ locked: false, taxNetEur: 646.19 });
 
     // Deleting it restores the locked state exactly — zero correction posts.
     const del = await agent
@@ -1428,7 +1452,7 @@ describe('healed years survive rollover (#635 residue lock)', () => {
     settlements = taxMovements((await cashState(agent, pid)).movements);
     expect(settlements.map((m) => m.amountEur)).toEqual([-619.81]);
     years = await yearSummaries(agent, pid);
-    expect(years.find((y) => y.year === 2026)).toMatchObject({ locked: true, taxNetEur: 619.81 });
+    expect(years.find((y) => y.year === 2026)).toMatchObject({ locked: false, taxNetEur: 619.81 });
   });
 
   it('switching to manual closes the year in place — the coupling survives engine-row deletion', async () => {
@@ -1500,7 +1524,9 @@ describe('healed years survive rollover (#635 residue lock)', () => {
   // absorbed into the locked residue, permanently.
 
   it('a mutation in an earlier closed year re-settles FI-frozen years by their ΔF (write + delete paths)', async () => {
-    const { agent, pid, asset } = await setup();
+    const { user, agent, pid, asset } = await setup();
+    // The 2025 seeding below backdates from mid-2026 — amendment mode (§16).
+    await unlockYears(user.id, [2025]);
     const toFi = await agent
       .patch('/api/v1/settings/taxes')
       .set(...XRW)
@@ -1540,8 +1566,9 @@ describe('healed years survive rollover (#635 residue lock)', () => {
 
     // Jan 1 passes: 2026 closes at 450; a read posts nothing.
     clock = Date.parse('2027-01-05T12:00:00.000Z');
+    await unlockYears(user.id, [2025, 2026]); // amendment mode (§16 2026-08-07)
     let years = await yearSummaries(agent, pid);
-    expect(years.find((y) => y.year === 2026)).toMatchObject({ locked: true, taxNetEur: 450 });
+    expect(years.find((y) => y.year === 2026)).toMatchObject({ locked: false, taxNetEur: 450 });
     expect(taxMovements((await cashState(agent, pid)).movements)).toHaveLength(1);
 
     // Backdating a sell into closed 2025 consumes 50 @ 10 first (gain 1,000 →
@@ -1566,8 +1593,8 @@ describe('healed years survive rollover (#635 residue lock)', () => {
       note: 'Tax year correction (FI)',
     });
     years = await yearSummaries(agent, pid);
-    expect(years.find((y) => y.year === 2025)).toMatchObject({ locked: true, taxNetEur: 300 });
-    expect(years.find((y) => y.year === 2026)).toMatchObject({ locked: true, taxNetEur: 300 });
+    expect(years.find((y) => y.year === 2025)).toMatchObject({ locked: false, taxNetEur: 300 });
+    expect(years.find((y) => y.year === 2026)).toMatchObject({ locked: false, taxNetEur: 300 });
 
     // Deleting the 2025 sell hands the €10 lot back to the 2026 sell: its own
     // attached 300 cascades away with the row, and 2026 re-settles by
@@ -1585,7 +1612,7 @@ describe('healed years survive rollover (#635 residue lock)', () => {
       note: 'Tax year correction (FI)',
     });
     years = await yearSummaries(agent, pid);
-    expect(years.find((y) => y.year === 2026)).toMatchObject({ locked: true, taxNetEur: 450 });
+    expect(years.find((y) => y.year === 2026)).toMatchObject({ locked: false, taxNetEur: 450 });
   });
 
   // Round-4 review (#656): batch WRITES under a non-engine mode must settle
@@ -1595,7 +1622,7 @@ describe('healed years survive rollover (#635 residue lock)', () => {
   // lock reads it as locked open-era state on the year's next touch.
 
   it('a backdated buy recorded under none re-settles the frozen closed year by ΔF (write path)', async () => {
-    const { agent, pid, asset } = await setup('country_specific');
+    const { user, agent, pid, asset } = await setup('country_specific');
     await trade(agent, pid, {
       assetId: asset.id,
       side: 'buy',
@@ -1615,12 +1642,13 @@ describe('healed years survive rollover (#635 residue lock)', () => {
 
     // Jan 1 passes, tracking switches off: 2026 is closed at 137.50.
     clock = Date.parse('2027-01-05T12:00:00.000Z');
+    await unlockYears(user.id, [2025, 2026]); // amendment mode (§16 2026-08-07)
     await agent
       .patch('/api/v1/settings/taxes')
       .set(...XRW)
       .send({ mode: 'none' });
     let years = await yearSummaries(agent, pid);
-    expect(years.find((y) => y.year === 2026)).toMatchObject({ locked: true, taxNetEur: 137.5 });
+    expect(years.find((y) => y.year === 2026)).toMatchObject({ locked: false, taxNetEur: 137.5 });
 
     // A backdated €10 buy re-bases the frozen sell (avg 20 → 15, gain 500 →
     // 1,000, AT target 275): the none-mode write must post the +137.50 ΔF
@@ -1642,7 +1670,7 @@ describe('healed years survive rollover (#635 residue lock)', () => {
     });
     years = await yearSummaries(agent, pid);
     expect(years.find((y) => y.year === 2026)).toMatchObject({
-      locked: true,
+      locked: false,
       realizedPnlEur: 1000,
       taxNetEur: 275,
     });
@@ -1665,7 +1693,7 @@ describe('healed years survive rollover (#635 residue lock)', () => {
       -137.5, -137.5, -55,
     ]);
     years = await yearSummaries(agent, pid);
-    expect(years.find((y) => y.year === 2026)).toMatchObject({ locked: true, taxNetEur: 330 });
+    expect(years.find((y) => y.year === 2026)).toMatchObject({ locked: false, taxNetEur: 330 });
   });
 
   it('a backdated buy recorded under manual settles every year closed-machinery (openFrom = ∞)', async () => {
@@ -1731,7 +1759,9 @@ describe('healed years survive rollover (#635 residue lock)', () => {
   });
 
   it('a backdated none-mode sell shifts FI-frozen lots in another closed year (FIFO, write path)', async () => {
-    const { agent, pid, asset } = await setup();
+    const { user, agent, pid, asset } = await setup();
+    // The 2025 seeding below backdates from mid-2026 — amendment mode (§16).
+    await unlockYears(user.id, [2025]);
     const toFi = await agent
       .patch('/api/v1/settings/taxes')
       .set(...XRW)
@@ -1761,12 +1791,13 @@ describe('healed years survive rollover (#635 residue lock)', () => {
       addProceedsToCash: true,
     });
     clock = Date.parse('2027-01-05T12:00:00.000Z');
+    await unlockYears(user.id, [2025, 2026]); // amendment mode (§16 2026-08-07)
     await agent
       .patch('/api/v1/settings/taxes')
       .set(...XRW)
       .send({ mode: 'none' });
     let years = await yearSummaries(agent, pid);
-    expect(years.find((y) => y.year === 2026)).toMatchObject({ locked: true, taxNetEur: 450 });
+    expect(years.find((y) => y.year === 2026)).toMatchObject({ locked: false, taxNetEur: 450 });
 
     // The backdated 2025 sell is none-frozen (no engine component of its own)
     // but consumes 50 @ 10 first, re-basing the 2026 FI sell to 50 @ 10 +
@@ -1790,7 +1821,7 @@ describe('healed years survive rollover (#635 residue lock)', () => {
     });
     expect(settlements.filter((m) => m.taxYear === 2025)).toHaveLength(0);
     years = await yearSummaries(agent, pid);
-    expect(years.find((y) => y.year === 2026)).toMatchObject({ locked: true, taxNetEur: 300 });
+    expect(years.find((y) => y.year === 2026)).toMatchObject({ locked: false, taxNetEur: 300 });
   });
 });
 

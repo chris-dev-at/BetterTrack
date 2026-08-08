@@ -123,7 +123,7 @@ function ModeOption({
         disabled={disabled}
         onChange={onSelect}
         className="mt-0.5 h-4 w-4"
-        style={{ accentColor: 'var(--bt-gold)' }}
+        style={{ accentColor: 'var(--bt-gold-graphic)' }}
       />
       <span className="flex flex-col gap-0.5">
         <span className="bt-row-title">{t(`settings.taxes.mode.${option.i18nKey}.label`)}</span>
@@ -177,7 +177,7 @@ function ParamToggle({
         disabled={disabled}
         onChange={(e) => onChange(e.target.checked)}
         className="h-4 w-4"
-        style={{ accentColor: 'var(--bt-gold)' }}
+        style={{ accentColor: 'var(--bt-gold-graphic)' }}
       />
       <span>{label}</span>
       <InfoPoint text={info} />

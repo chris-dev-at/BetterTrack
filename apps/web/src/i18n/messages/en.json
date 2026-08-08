@@ -179,6 +179,7 @@
       "closedMessage": "Registration is currently closed. Ask an administrator for an invite.",
       "pendingSubtitle": "Almost there",
       "pendingMessage": "Thanks! Your registration is pending administrator approval. You'll receive an email once it's reviewed.",
+      "pendingOauthHint": "You can close this page and return to the BetterTrack app — sign in there once your account has been approved.",
       "legalConsent": "By signing up you agree to our {{terms}}, {{privacy}}, {{impressum}} and {{cookies}}.",
       "google": {
         "connecting": "Connecting to Google…",
@@ -289,6 +290,7 @@
       "priceChartDataCollapse": "Hide chart data",
       "priceChartDataTableCaption": "Chart data",
       "priceChartDataDate": "Date",
+      "priceChartDataBalance": "Balance",
       "priceChartDataValue": "Value",
       "priceChartDataSampled": "Showing {{shown}} of {{total}} plotted points.",
       "allocationFallbackTitle": "Allocation breakdown",
@@ -1294,6 +1296,18 @@
     "dangerZone": {
       "description": "Deleting your account permanently removes all of your data. This cannot be undone.",
       "link": "Delete my account…"
+    },
+    "appearance": {
+      "groups": {
+        "display": "Display"
+      },
+      "theme": {
+        "title": "Theme",
+        "hint": "Applies to this device only — it is not synced to your account. System follows your operating system and keeps following it, including when it switches at sunset.",
+        "system": "System ({{resolved}})",
+        "dark": "Dark",
+        "light": "Light"
+      }
     }
   },
   "portfolio": {
@@ -1639,8 +1653,26 @@
       },
       "expandYear": "Show {{year}} details",
       "collapseYear": "Hide {{year}} details",
-      "passed": "Passed",
-      "passedHint": "This year has passed: its settlements are final and tax-mode changes never re-tax it. Open years are taxed live under the portfolio's current tax mode; in manual mode tax is instead recorded per trade as entered.",
+      "locked": "Locked",
+      "lockedHint": "This tax year has ended and is locked: entries dated into it are refused, so its settled taxes can no longer change. Unlock it to record an amendment.",
+      "unlocked": "Unlocked for amendments",
+      "unlockedHint": "You unlocked this passed year: backdated entries are accepted and change its settled taxes until you re-lock it.",
+      "unlockAction": "Unlock…",
+      "relockAction": "Re-lock",
+      "relockYearAction": "Re-lock {{year}}",
+      "unlockedBannerOne": "Tax year {{year}} is unlocked for amendments — re-lock it when you are done.",
+      "unlockedBannerOther": "Tax years {{years}} are unlocked for amendments — re-lock them when you are done.",
+      "unlockSuccess": "Tax year {{year}} unlocked for amendments.",
+      "relockSuccess": "Tax year {{year}} locked again.",
+      "unlockDialog": {
+        "title": "Unlock tax year {{year}}",
+        "description": "Amending a passed year is an explicit step — confirm it with your password.",
+        "consequence": "While {{year}} is unlocked, entries dated into it change its settled taxes — corrections are recorded as separate movements, nothing is rewritten. The year stays amendable until you re-lock it.",
+        "passwordLabel": "Your password",
+        "confirm": "Unlock {{year}}",
+        "wrongPassword": "That password is incorrect.",
+        "throttled": "Too many attempts. Please wait a moment and try again."
+      },
       "realized": "Realized",
       "tax": "Tax",
       "sell": {
@@ -3738,6 +3770,25 @@
       "disableBlocked": "This vault has unsynced changes on more than one device. Resolve the sync state first — disabling now would keep only the copy this device shows.",
       "disableAction": "Restore normal mode",
       "disableError": "Normal mode could not be restored completely. The account remains paranoid; retry resumes the same rehydration."
+    },
+    "errors": {
+      "VAULT_NOT_FOUND": "That vault doesn’t exist, or it isn’t yours.",
+      "VAULT_NOT_EMPTY": "Move every portfolio out of this vault before you delete it.",
+      "VAULT_VERSION_CONFLICT": "Another device changed this vault first. Reload and try again — nothing was overwritten.",
+      "VAULT_DOC_TOO_LARGE": "This vault document is too large to store.",
+      "VAULT_LOCKED_WRITE_REFUSED": "This vault is locked. Unlock it to make changes.",
+      "VAULT_MIGRATION_CLAIMED": "Another device is upgrading this vault right now. Try again in a few minutes.",
+      "VAULT_MIGRATION_INCOMPLETE": "The upgrade didn’t finish. Nothing changed — start it again from this device.",
+      "VAULT_CROSS_BLOB_REFUSED": "This change would touch two portfolios at once. Do it in two steps instead.",
+      "VAULT_FORMAT_UPDATE_REQUIRED": "This vault was written by a newer version of BetterTrack. Update the app to open it.",
+      "VAULT_BACKEND_UNAVAILABLE": "This vault’s storage isn’t reachable right now.",
+      "VAULT_PRECONDITION_REQUIRED": "BetterTrack couldn’t tell which version you were editing. Reload and try again.",
+      "VAULT_NAME_TAKEN": "You already have a vault with that name. Pick another.",
+      "VAULT_PORTFOLIO_ALREADY_VAULTED": "This portfolio is already in a vault. Move it out before putting it in another one.",
+      "VAULT_JOIN_BLOCKED": "This portfolio can’t move into a vault yet. Leave its shared group portfolio first.",
+      "VAULT_RESTORE_INVALID": "Those portfolio records couldn’t be restored. Nothing was changed — try again from an unlocked device.",
+      "VAULT_ID_TAKEN": "That vault already exists. If you’re restoring or upgrading, open it instead of creating a new one.",
+      "VAULT_PORTFOLIO_NOT_VAULTED": "This portfolio isn’t in a vault. Move it into one first."
     }
   },
   "announcements": {
@@ -4995,8 +5046,14 @@
       "title": "Conglomerate shared",
       "body": "{{actor}} shared a conglomerate with you."
     },
-    "friendActivityBuy": { "title": "Friend activity", "body": "{{actor}} bought {{symbol}}." },
-    "friendActivitySell": { "title": "Friend activity", "body": "{{actor}} sold {{symbol}}." },
+    "friendActivityBuy": {
+      "title": "Friend activity",
+      "body": "{{actor}} bought {{symbol}}."
+    },
+    "friendActivitySell": {
+      "title": "Friend activity",
+      "body": "{{actor}} sold {{symbol}}."
+    },
     "friendActivityWatchlistAdd": {
       "title": "Friend activity",
       "body": "{{actor}} added {{symbol}} to a shared watchlist."
@@ -5105,12 +5162,18 @@
       "title": "Earnings coming up: {{symbol}}",
       "body": "{{name}} ({{symbol}}) is expected to report earnings around {{date}}."
     },
-    "chatMessagePreview": { "title": "New message", "body": "{{sender}}: {{preview}}" },
+    "chatMessagePreview": {
+      "title": "New message",
+      "body": "{{sender}}: {{preview}}"
+    },
     "chatMessageSharedItem": {
       "title": "New message",
       "body": "{{sender}} shared an item with you."
     },
-    "chatMessagePlain": { "title": "New message", "body": "{{sender}} sent you a message." },
+    "chatMessagePlain": {
+      "title": "New message",
+      "body": "{{sender}} sent you a message."
+    },
     "dividendEvent": {
       "title": "{{symbol}} ex-dividend {{date}}",
       "body": "{{symbol}} goes ex-dividend on {{date}}."
@@ -5245,7 +5308,8 @@
     "sessions": "Sessions",
     "notificationLog": "Notification log",
     "profile": "Public profile",
-    "authorizedApps": "Authorized apps"
+    "authorizedApps": "Authorized apps",
+    "appearance": "Appearance"
   },
   "privacy": {
     "subtitle": "Control what the screen shows and where your data lives.",
