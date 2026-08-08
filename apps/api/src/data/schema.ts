@@ -1195,6 +1195,17 @@ export const portfolios = pgTable(
     // rows, and archiving the last active portfolio is rejected upstream so a
     // user can never be left with zero usable portfolios.
     archivedAt: timestamp('archived_at', { withTimezone: true }),
+    // Purpose category — the portfolio's "Icon" in user-facing copy (board
+    // #69). NULL = the user never chose, which is what lets a client that
+    // carried its own local kinds fall back to them until the first server
+    // write; every render surface falls back to `DEFAULT_PORTFOLIO_KIND`.
+    // Bare text (no pg enum, no CHECK) for the same reason `users.profile_icon`
+    // is: the token set is finite and owned by the contract
+    // (`PORTFOLIO_KINDS`), validated at the service write path, so adding a
+    // sixth kind stays a code-only change instead of an `ALTER TYPE ... ADD
+    // VALUE` that drizzle cannot run inside its transactional migration. The
+    // read path narrows unrecognized text back to NULL rather than trusting it.
+    kind: text('kind'),
   },
   (t) => [uniqueIndex('portfolios_user_name_unique').on(t.userId, t.name)],
 );

@@ -1,14 +1,19 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  DEFAULT_PORTFOLIO_KIND,
   MAX_CASH_AMOUNT_EUR,
+  PORTFOLIO_KINDS,
   cashEntryRequestSchema,
   cashMovementKindSchema,
   cashMovementsQuerySchema,
   cashPreviewRequestSchema,
+  createPortfolioRequestSchema,
   decodeTransactionExecutedAtCursor,
   encodeTransactionExecutedAtCursor,
   importSourceTag,
+  portfolioKindSchema,
+  portfolioSummarySchema,
   sourceTagSchema,
   taxYearLockParamsSchema,
   taxYearLockStateResponseSchema,
@@ -16,6 +21,7 @@ import {
   transactionListQuerySchema,
   transactionListResponseSchema,
   unlockTaxYearRequestSchema,
+  updatePortfolioRequestSchema,
 } from './portfolio';
 
 describe('cash amount validation (§14 hardening)', () => {
@@ -234,5 +240,67 @@ describe('tax year locking (§16 2026-08-07)', () => {
         .success,
     ).toBe(true);
     expect(taxYearLockStateResponseSchema.safeParse({ currentYear: 2026 }).success).toBe(false);
+  });
+});
+
+describe('portfolio kind (board #69)', () => {
+  const summary = {
+    id: '11111111-1111-4111-8111-111111111111',
+    name: 'Main',
+    visibility: 'private' as const,
+    sortOrder: 0,
+    isDefault: true,
+    defaultPayFromCash: false,
+    archivedAt: null,
+  };
+
+  it('is exactly the five tokens both clients ported, in their shipped order', () => {
+    // The web `portfolioKinds.ts` stopgap defined this list and the mobile app
+    // ported these hues off it. Renaming or reordering a token silently
+    // repaints (or blanks) icons on a client we cannot redeploy, so the enum is
+    // pinned literally here rather than derived from anything.
+    expect(PORTFOLIO_KINDS).toEqual(['private', 'family', 'business', 'savings', 'property']);
+    expect(DEFAULT_PORTFOLIO_KIND).toBe('private');
+    expect(PORTFOLIO_KINDS).toContain(DEFAULT_PORTFOLIO_KIND);
+    for (const kind of PORTFOLIO_KINDS) {
+      expect(portfolioKindSchema.safeParse(kind).success).toBe(true);
+    }
+    expect(portfolioKindSchema.safeParse('yacht').success).toBe(false);
+    expect(portfolioKindSchema.safeParse('PRIVATE').success).toBe(false);
+  });
+
+  it('reads back as a kind, as null, or absent — all three are legal', () => {
+    // Absent keeps every pre-#69 fixture and every older client parsing; null is
+    // "the user never chose", which is what lets a client that carried local
+    // kinds keep falling back to them until the first server write.
+    expect(portfolioSummarySchema.safeParse({ ...summary, kind: 'family' }).success).toBe(true);
+    expect(portfolioSummarySchema.safeParse({ ...summary, kind: null }).success).toBe(true);
+    expect(portfolioSummarySchema.safeParse(summary).success).toBe(true);
+    expect(portfolioSummarySchema.safeParse({ ...summary, kind: 'yacht' }).success).toBe(false);
+  });
+
+  it('create accepts an optional concrete kind and nothing else', () => {
+    expect(createPortfolioRequestSchema.parse({ name: 'Book', kind: 'savings' })).toEqual({
+      name: 'Book',
+      kind: 'savings',
+    });
+    expect(createPortfolioRequestSchema.safeParse({ name: 'Book' }).success).toBe(true);
+    // No clear-back-to-null verb: the picker has no "none" option.
+    expect(createPortfolioRequestSchema.safeParse({ name: 'Book', kind: null }).success).toBe(
+      false,
+    );
+    expect(createPortfolioRequestSchema.safeParse({ name: 'Book', kind: 'yacht' }).success).toBe(
+      false,
+    );
+  });
+
+  it('update accepts a kind alone, mixed, or not at all', () => {
+    expect(updatePortfolioRequestSchema.parse({ kind: 'business' })).toEqual({ kind: 'business' });
+    expect(
+      updatePortfolioRequestSchema.safeParse({ name: 'Renamed', kind: 'property' }).success,
+    ).toBe(true);
+    expect(updatePortfolioRequestSchema.safeParse({}).success).toBe(true);
+    expect(updatePortfolioRequestSchema.safeParse({ kind: null }).success).toBe(false);
+    expect(updatePortfolioRequestSchema.safeParse({ kind: 'yacht' }).success).toBe(false);
   });
 });

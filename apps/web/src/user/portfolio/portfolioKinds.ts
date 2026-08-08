@@ -1,8 +1,16 @@
-import { useCallback, useSyncExternalStore } from 'react';
+import { useCallback } from 'react';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 
-import type { PortfolioSummary } from '@bettertrack/contracts';
+import {
+  DEFAULT_PORTFOLIO_KIND,
+  PORTFOLIO_KINDS,
+  type PortfolioKind,
+  type PortfolioSummary,
+} from '@bettertrack/contracts';
 
 import type { IconName } from '../../ui/origin';
+
+import { usePortfolioStore } from './PortfolioStoreProvider';
 
 /**
  * Portfolio kind — the purpose category a portfolio is filed under (private,
@@ -13,29 +21,32 @@ import type { IconName } from '../../ui/origin';
  * ⚠️ NAMING: `kind` is the internal name only. To the user this is the
  * portfolio's **Icon** (settings section, aria labels, helper copy) — a colour
  * plus a glyph, not a taxonomy they have to reason about. Rename the copy, never
- * the type or {@link STORAGE_KEY} (no migration).
+ * the type.
  *
- * ⚠️ CLIENT-ONLY, FOR NOW. There is no `kind` field on `PortfolioSummary` and no
- * `PATCH /portfolios/:id` body field for it (see `packages/contracts/src/
- * portfolio.ts` — the patch accepts `name`, `visibility`, `defaultPayFromCash`
- * only). Until the API grows one, the mapping lives in `localStorage` under
- * {@link STORAGE_KEY}: per-browser, not synced, lost when site data is cleared.
+ * GRADUATED (board #69). The kind now lives on the portfolio row: it is read off
+ * `PortfolioSummary.kind` and written with `PATCH /portfolios/:id`, so it
+ * follows the account to every device instead of living in one browser. The
+ * public surface below is otherwise unchanged from the localStorage era —
+ * {@link PortfolioKind}, {@link PORTFOLIO_KINDS}, {@link PORTFOLIO_KIND_ICONS},
+ * {@link portfolioIconName}, {@link usePortfolioKind} — because it was
+ * API-shaped from the start.
  *
- * GRADUATION PATH: when the API gains `kind` on the portfolio row, delete the
- * storage layer below and keep the public surface — {@link PortfolioKind},
- * {@link PORTFOLIO_KINDS}, {@link PORTFOLIO_KIND_ICONS} and
- * {@link portfolioIconName} are all API-shaped already. `usePortfolioKinds`
- * becomes a read off the portfolio query and `setPortfolioKind` becomes the
- * PATCH mutation; no call site changes shape.
+ * The enum itself moved to `@bettertrack/contracts` (it is the wire contract
+ * now, shared with the mobile app, which ported these hues) and is re-exported
+ * here so imports of this module keep working. Reads take the portfolio rows the
+ * caller already loaded rather than firing a second query behind its back: the
+ * surface's own async state stays the one story about the portfolio list.
+ *
+ * LEGACY FALLBACK: the stopgap's `localStorage` map is still READ — never
+ * written — for portfolios the server has no kind for yet (`kind === null`).
+ * That is what keeps a browser that classified its portfolios before this
+ * shipped looking exactly the same, right up until the first server write for
+ * that portfolio takes over. The stopgap documented no data migration, so
+ * nothing is silently PATCHed upward on the user's behalf; a kind becomes
+ * account-wide the moment they next pick one.
  */
 
-/** Every selectable kind, in picker order. */
-export const PORTFOLIO_KINDS = ['private', 'family', 'business', 'savings', 'property'] as const;
-
-export type PortfolioKind = (typeof PORTFOLIO_KINDS)[number];
-
-/** The kind an unclassified portfolio falls back to. */
-export const DEFAULT_PORTFOLIO_KIND: PortfolioKind = 'private';
+export { DEFAULT_PORTFOLIO_KIND, PORTFOLIO_KINDS, type PortfolioKind };
 
 /** The Origin stroke glyph each kind renders with (`ui/origin/icons.tsx`). */
 export const PORTFOLIO_KIND_ICONS: Record<PortfolioKind, IconName> = {
@@ -74,7 +85,7 @@ export function portfolioIconTint(
   return kind;
 }
 
-/** localStorage key for the portfolioId → kind map. */
+/** localStorage key the pre-#69 stopgap wrote the portfolioId → kind map under. */
 const STORAGE_KEY = 'bt.portfolio.kinds';
 
 type KindMap = Readonly<Record<string, PortfolioKind>>;
@@ -86,92 +97,95 @@ function isKind(value: unknown): value is PortfolioKind {
 }
 
 /**
- * Cached snapshot. `useSyncExternalStore` requires a stable object identity
- * between notifications (a fresh parse each read would loop forever), so the
- * parsed map is memoised and only replaced when something actually writes.
+ * Cached parse of the legacy map. Read once per session and never written: the
+ * server owns kinds now, so there is nothing to invalidate.
  */
-let snapshot: KindMap | null = null;
-const listeners = new Set<() => void>();
+let legacySnapshot: KindMap | null = null;
 
-function read(): KindMap {
-  if (snapshot !== null) return snapshot;
+function readLegacy(): KindMap {
+  if (legacySnapshot !== null) return legacySnapshot;
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     const parsed: unknown = raw === null ? null : JSON.parse(raw);
     if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
-      snapshot = EMPTY;
-      return snapshot;
+      legacySnapshot = EMPTY;
+      return legacySnapshot;
     }
     const clean: Record<string, PortfolioKind> = {};
     for (const [id, kind] of Object.entries(parsed as Record<string, unknown>)) {
       if (isKind(kind)) clean[id] = kind;
     }
-    snapshot = Object.freeze(clean);
+    legacySnapshot = Object.freeze(clean);
   } catch {
-    // Private-mode / disabled storage / corrupt JSON: kinds are pure garnish,
-    // so degrade to "everything is private" rather than breaking the switcher.
-    snapshot = EMPTY;
+    // Private-mode / disabled storage / corrupt JSON: the fallback is a nicety
+    // on top of the server value, so degrade to "no fallback" rather than
+    // breaking the switcher.
+    legacySnapshot = EMPTY;
   }
-  return snapshot;
+  return legacySnapshot;
 }
 
-function subscribe(listener: () => void): () => void {
-  listeners.add(listener);
-  return () => {
-    listeners.delete(listener);
-  };
-}
-
-/** Every stored kind, keyed by portfolio id. Ids with no entry are absent. */
-export function getPortfolioKinds(): KindMap {
-  return read();
-}
-
-/** One portfolio's kind, defaulting to {@link DEFAULT_PORTFOLIO_KIND}. */
-export function getPortfolioKind(portfolioId: string): PortfolioKind {
-  return read()[portfolioId] ?? DEFAULT_PORTFOLIO_KIND;
-}
-
-/** Persist one portfolio's kind and notify every mounted hook. */
-export function setPortfolioKind(portfolioId: string, kind: PortfolioKind): void {
-  const next = { ...read(), [portfolioId]: kind };
-  snapshot = Object.freeze(next);
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(next));
-  } catch {
-    // Write failed (quota/private mode) — the in-memory snapshot still updates,
-    // so the current session stays consistent; it just won't survive a reload.
-  }
-  for (const listener of listeners) listener();
-}
-
-/** Test/teardown helper: drop the in-memory snapshot so storage is re-read. */
+/** Test/teardown helper: drop the cached legacy map so storage is re-read. */
 export function resetPortfolioKindCache(): void {
-  snapshot = null;
-  for (const listener of listeners) listener();
+  legacySnapshot = null;
 }
 
 /**
- * Subscribe to the whole kind map. Re-renders on every
- * {@link setPortfolioKind} anywhere in the tree, so the switcher trigger, the
- * switcher list and the settings picker never disagree.
+ * The kind map for a list of portfolios: the server's value where it has one,
+ * the legacy per-browser value where it does not. Ids with neither are absent —
+ * callers fall back to {@link DEFAULT_PORTFOLIO_KIND}, exactly as before.
  */
-export function usePortfolioKinds(): KindMap {
-  return useSyncExternalStore(subscribe, read, () => EMPTY);
+export function portfolioKindsFor(
+  portfolios: readonly Pick<PortfolioSummary, 'id' | 'kind'>[],
+): KindMap {
+  const legacy = readLegacy();
+  const map: Record<string, PortfolioKind> = {};
+  for (const portfolio of portfolios) {
+    const resolved = portfolio.kind ?? legacy[portfolio.id];
+    if (resolved !== undefined) map[portfolio.id] = resolved;
+  }
+  return Object.freeze(map);
 }
 
-/** One portfolio's kind plus a setter bound to it. */
+/** One portfolio's kind, resolved the same way, defaulting when neither has one. */
+export function portfolioKindOf(
+  portfolio: Pick<PortfolioSummary, 'id' | 'kind'> | null | undefined,
+): PortfolioKind {
+  if (!portfolio) return DEFAULT_PORTFOLIO_KIND;
+  return portfolio.kind ?? readLegacy()[portfolio.id] ?? DEFAULT_PORTFOLIO_KIND;
+}
+
+/**
+ * One portfolio's kind plus a setter bound to it.
+ *
+ * The kind is READ off the portfolio the caller already has — this module fires
+ * no query of its own, so the surface's own loading/error state stays the one
+ * story about the portfolio list (the V5 async-read gate would otherwise count
+ * a second, invisible read here with no states of its own). The setter is the
+ * `PATCH /portfolios/:id` mutation, fire-and-forget from the caller's side just
+ * as the localStorage write it replaces was, invalidating the portfolio lists so
+ * the switcher and the picker never disagree.
+ */
 export function usePortfolioKind(
-  portfolioId: string | null,
+  portfolio: Pick<PortfolioSummary, 'id' | 'kind'> | null | undefined,
 ): [PortfolioKind, (kind: PortfolioKind) => void] {
-  const kinds = usePortfolioKinds();
+  const store = usePortfolioStore();
+  const queryClient = useQueryClient();
+  const { mutate } = useMutation({
+    mutationFn: ({ id, kind }: { id: string; kind: PortfolioKind }) =>
+      store.updatePortfolio(id, { kind }),
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: ['portfolios'] });
+    },
+  });
+  const portfolioId = portfolio?.id ?? null;
   const set = useCallback(
     (kind: PortfolioKind) => {
-      if (portfolioId !== null) setPortfolioKind(portfolioId, kind);
+      if (portfolioId !== null) mutate({ id: portfolioId, kind });
     },
-    [portfolioId],
+    [mutate, portfolioId],
   );
-  return [(portfolioId !== null ? kinds[portfolioId] : undefined) ?? DEFAULT_PORTFOLIO_KIND, set];
+  return [portfolioKindOf(portfolio), set];
 }
 
 /**

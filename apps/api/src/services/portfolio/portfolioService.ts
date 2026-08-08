@@ -820,6 +820,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       name: patch.name,
       visibility: patch.visibility,
       defaultPayFromCash: patch.defaultPayFromCash,
+      kind: patch.kind,
     });
     if (!updated) throw notFound('Portfolio not found.', 'PORTFOLIO_NOT_FOUND');
     return {
@@ -1584,7 +1585,11 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       // #377, so new portfolios start private and are shared deliberately from the
       // Social area's "My items" via the AudiencePicker. Existing portfolios and
       // the auto-created "Main" (always private) are untouched.
-      return portfolioRepo.createPortfolio(userId, name, 'private');
+      //
+      // `kind` is the one thing the creation flow may state up front (board #69):
+      // omitted leaves the row unclassified (null), which renders as the client's
+      // default rather than claiming a choice the user never made.
+      return portfolioRepo.createPortfolio(userId, name, 'private', input.kind ?? null);
     },
 
     async archivePortfolio(userId, portfolioId) {
