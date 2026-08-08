@@ -8,8 +8,10 @@ import { and, asc, count, eq, isNotNull, sql } from 'drizzle-orm';
 import { createParanoidRehydrationSourceRepository } from './paranoidRehydrationRepository';
 import { hasVaultPortfolioCleartextRows, purgeVaultPortfolioRows } from './vaultPortfolioPurge';
 import type { Database } from '../db';
+import type { VaultMigrationStateRow } from './vaultMigrationRepository';
 import {
   mirrorChainMembers,
+  paranoidVaults,
   portfolios,
   vaultDocs,
   vaultLeaveReceipts,
@@ -52,7 +54,11 @@ export type VaultCasResult =
   | { status: 'vault_not_found' }
   | { status: 'doc_not_found' }
   | { status: 'server_backend_inactive' }
-  | { status: 'too_large'; sizeBytes: number; maxBytes: number };
+  | { status: 'too_large'; sizeBytes: number; maxBytes: number }
+  /** A live v1→v2 migration claim exists and the write carried no `If-Claim` (428). */
+  | { status: 'migration_claim_required'; state: VaultMigrationStateRow }
+  /** The write asserted a claim nonce that is not the live one (409). */
+  | { status: 'migration_claimed'; state: VaultMigrationStateRow };
 
 export type VaultDeleteResult =
   | { status: 'ok' }
@@ -163,6 +169,16 @@ export interface VaultRepository {
     selector: VaultDocSelector;
     expectedVersion: number | null;
     ciphertext: Buffer;
+    /**
+     * The `If-Claim` nonce (design r3, closing mobile finding A2.2). While the
+     * account's legacy vault carries a LIVE v1→v2 migration claim, every vault
+     * document write must assert that claim's nonce — "losers wait" is enforced
+     * here, not on the honour system. A nonce that no longer names the live
+     * claim (expired, taken over, or already flipped) is refused, so a stale
+     * claim holder returning after the flip can never overwrite the committed
+     * vault's documents.
+     */
+    claimNonce: string | null;
   }): Promise<VaultCasResult>;
   joinPortfolio(input: {
     userId: string;
@@ -395,7 +411,7 @@ export function createVaultRepository(db: Database): VaultRepository {
       return { status: 'ok', row };
     },
 
-    async writeDoc({ userId, vaultId, selector, expectedVersion, ciphertext }) {
+    async writeDoc({ userId, vaultId, selector, expectedVersion, ciphertext, claimNonce }) {
       const maxBytes = vaultDocMaxBytes(selector.kind);
       if (ciphertext.length > maxBytes) {
         return { status: 'too_large', sizeBytes: ciphertext.length, maxBytes };
@@ -412,6 +428,48 @@ export function createVaultRepository(db: Database): VaultRepository {
         if (!vault) return { status: 'vault_not_found' as const };
         if (!usesServerBackend(vault.backends)) {
           return { status: 'server_backend_inactive' as const };
+        }
+
+        // ── r3 migration-claim gate (mobile finding A2.2) ────────────────────
+        // Read inside the SAME transaction as the write, so a concurrent claim
+        // or flip cannot slip between the check and the ciphertext landing.
+        // The rules, in order:
+        //  1. The caller asserts a nonce → it must equal the LIVE claim's nonce.
+        //     An expired, superseded or post-flip nonce is refused: that caller
+        //     is the "returning stale claim holder" whose writes would corrupt
+        //     the committed vault.
+        //  2. The caller asserts nothing while a live claim exists → refused
+        //     with 428: during a migration window only the claim holder writes.
+        //  3. No live claim, no asserted nonce → the normal path.
+        const [legacy] = await tx
+          .select({
+            migratingBy: paranoidVaults.migratingBy,
+            migrationExpiresAt: paranoidVaults.migrationExpiresAt,
+            migratedTo: paranoidVaults.migratedTo,
+          })
+          .from(paranoidVaults)
+          .where(eq(paranoidVaults.userId, userId));
+        const now = new Date();
+        const migrationState: VaultMigrationStateRow = legacy
+          ? {
+              legacyPresent: true,
+              migratingBy: legacy.migratingBy,
+              claimExpiresAt: legacy.migrationExpiresAt,
+              migratedTo: legacy.migratedTo,
+            }
+          : { legacyPresent: false, migratingBy: null, claimExpiresAt: null, migratedTo: null };
+        const claimIsLive =
+          legacy != null &&
+          legacy.migratedTo == null &&
+          legacy.migratingBy != null &&
+          legacy.migrationExpiresAt != null &&
+          legacy.migrationExpiresAt > now;
+        if (claimNonce !== null) {
+          if (!claimIsLive || legacy!.migratingBy !== claimNonce) {
+            return { status: 'migration_claimed' as const, state: migrationState };
+          }
+        } else if (claimIsLive) {
+          return { status: 'migration_claim_required' as const, state: migrationState };
         }
         if (selector.kind === 'portfolio') {
           // A portfolio blob may only exist for a portfolio that is IN this

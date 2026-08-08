@@ -506,6 +506,9 @@ describe('#1043 bearer vault synchronization', () => {
     expect(stale.body.error.code).toBe('VAULT_PRECONDITION_FAILED');
     expect(stale.headers.etag).toBeUndefined();
     expect(stale.headers['last-modified']).toBeUndefined();
+    // r3: the winner's version rides the body, so a mobile CAS loser on a
+    // dropped link never needs a second GET just to learn the current version.
+    expect(stale.body.currentVersion).toBe(2);
 
     const fresh = await request(harness.app)
       .put('/api/v1/vault')

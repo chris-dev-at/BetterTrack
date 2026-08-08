@@ -1944,6 +1944,210 @@ describe('vaults v2 — v1 to v2 migration protocol (r2 §11)', () => {
   });
 });
 
+// ── r3: the If-Claim gate on vault document writes ─────────────────────────
+
+describe('vaults v2 — migration-claim enforcement on doc writes (r3, mobile A2.2)', () => {
+  async function seedLegacyVault(userId: string): Promise<void> {
+    await harness.db.insert(schema.paranoidVaults).values({
+      userId,
+      version: 1,
+      formatVersion: 1,
+      sizeBytes: 8,
+      blob: Buffer.alloc(8, 1),
+    });
+  }
+
+  const NONCE_A = 'client-nonce-aaaaaaaaaaaaaaaa';
+  const NONCE_B = 'client-nonce-bbbbbbbbbbbbbbbb';
+
+  async function claim(agent: Agent, nonce: string): Promise<void> {
+    const res = await agent
+      .post('/api/v1/vaults/migration/claim')
+      .set(...XRW)
+      .send({ clientNonce: nonce });
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+  }
+
+  it('refuses every unclaimed doc write while a claim is live — "losers wait" is enforced, not honour-system', async () => {
+    const user = await seedUser('ifclaim');
+    await seedLegacyVault(user.id);
+    const agent = await loginAgent(harness.app, user);
+    const portfolioId = await defaultPortfolioId(agent);
+    const { vaultId } = await createVault(agent);
+    await agent
+      .post(`/api/v1/portfolios/${portfolioId}/vault`)
+      .set(...XRW)
+      .send({ vaultId, blob: b64(blob('p1')) });
+
+    await claim(agent, NONCE_A);
+
+    // No If-Claim at all → 428, on every doc surface.
+    for (const path of [
+      `/api/v1/vaults/${vaultId}/header`,
+      `/api/v1/vaults/${vaultId}/common`,
+      `/api/v1/vaults/${vaultId}/portfolios/${portfolioId}`,
+    ]) {
+      const naked = await agent
+        .put(path)
+        .set(...XRW)
+        .set(...OCTET)
+        .set('If-Match', '"1"')
+        .send(blob('unclaimed'));
+      expect(naked.status, `${path}: ${JSON.stringify(naked.body)}`).toBe(428);
+      expect(naked.body.error.code).toBe(VAULT2_ERROR_CODES.preconditionRequired);
+      // The refusal names the live claim, so the loser knows to wait.
+      expect(naked.body.state.migratingBy).toBe(NONCE_A);
+    }
+
+    // A wrong nonce → 409: this caller believes it holds a claim it does not.
+    const foreign = await agent
+      .put(`/api/v1/vaults/${vaultId}/header`)
+      .set(...XRW)
+      .set(...OCTET)
+      .set('If-Match', '"1"')
+      .set('If-Claim', NONCE_B)
+      .send(blob('wrong-nonce'));
+    expect(foreign.status).toBe(409);
+    expect(foreign.body.error.code).toBe(VAULT2_ERROR_CODES.migrationClaimed);
+    expect(foreign.body.state.migratingBy).toBe(NONCE_A);
+
+    // The live claim holder writes normally.
+    const held = await agent
+      .put(`/api/v1/vaults/${vaultId}/header`)
+      .set(...XRW)
+      .set(...OCTET)
+      .set('If-Match', '"1"')
+      .set('If-Claim', NONCE_A)
+      .send(blob('h2'));
+    expect(held.status, JSON.stringify(held.body)).toBe(200);
+    expect(held.body.version).toBe(2);
+
+    // None of the refused writes advanced any CAS version.
+    const header = await agent.get(`/api/v1/vaults/${vaultId}/header`);
+    expect(header.headers.etag).toBe('"2"');
+    const portfolioDoc = await agent.get(`/api/v1/vaults/${vaultId}/portfolios/${portfolioId}`);
+    expect(portfolioDoc.headers.etag).toBe('"1"');
+  });
+
+  it('gates the vault:sync bearer surface identically', async () => {
+    const user = await seedUser('ifclaimbearer');
+    await seedLegacyVault(user.id);
+    const agent = await loginAgent(harness.app, user);
+    const { vaultId } = await createVault(agent);
+    await claim(agent, NONCE_A);
+    const token = await mintToken(user, ['vault:sync']);
+
+    const naked = await request(harness.app)
+      .put(`/api/v1/vaults/${vaultId}/header`)
+      .set(bearer(token))
+      .set(...OCTET)
+      .set('If-Match', '"1"')
+      .send(blob('bearer-unclaimed'));
+    expect(naked.status, JSON.stringify(naked.body)).toBe(428);
+    expect(naked.body.error.code).toBe(VAULT2_ERROR_CODES.preconditionRequired);
+
+    const held = await request(harness.app)
+      .put(`/api/v1/vaults/${vaultId}/header`)
+      .set(bearer(token))
+      .set(...OCTET)
+      .set('If-Match', '"1"')
+      .set('If-Claim', NONCE_A)
+      .send(blob('bearer-held'));
+    expect(held.status, JSON.stringify(held.body)).toBe(200);
+  });
+
+  it('refuses the returning stale claim holder after the flip — the A2.2 data-loss path', async () => {
+    const user = await seedUser('staleclaim');
+    await seedLegacyVault(user.id);
+    const agent = await loginAgent(harness.app, user);
+    const { vaultId } = await createVault(agent);
+
+    await claim(agent, NONCE_A);
+    const flipped = await agent
+      .post('/api/v1/vaults/migration/flip')
+      .set(...XRW)
+      .send({ clientNonce: NONCE_A, vaultId });
+    expect(flipped.status, JSON.stringify(flipped.body)).toBe(200);
+
+    // The old claim holder comes back from a stall and tries to keep writing
+    // "its" migration docs. Its nonce no longer names a live claim: refused,
+    // and the committed vault's documents stay exactly as the flip left them.
+    const stale = await agent
+      .put(`/api/v1/vaults/${vaultId}/header`)
+      .set(...XRW)
+      .set(...OCTET)
+      .set('If-Match', '"1"')
+      .set('If-Claim', NONCE_A)
+      .send(blob('stale-overwrite'));
+    expect(stale.status).toBe(409);
+    expect(stale.body.error.code).toBe(VAULT2_ERROR_CODES.migrationClaimed);
+    expect(stale.body.state.migratedTo).toBe(vaultId);
+
+    // Ordinary writes without the header work again — the window is closed.
+    const normal = await agent
+      .put(`/api/v1/vaults/${vaultId}/header`)
+      .set(...XRW)
+      .set(...OCTET)
+      .set('If-Match', '"1"')
+      .send(blob('post-flip'));
+    expect(normal.status, JSON.stringify(normal.body)).toBe(200);
+  });
+
+  it('refuses an expired nonce and admits the takeover claim', async () => {
+    const user = await seedUser('expiredclaim');
+    await seedLegacyVault(user.id);
+    const agent = await loginAgent(harness.app, user);
+    const { vaultId } = await createVault(agent);
+
+    await claim(agent, NONCE_A);
+    // The holder stalls past its TTL.
+    await harness.db
+      .update(schema.paranoidVaults)
+      .set({ migrationExpiresAt: new Date(Date.now() - 1000) })
+      .where(eq(schema.paranoidVaults.userId, user.id));
+
+    const lapsed = await agent
+      .put(`/api/v1/vaults/${vaultId}/header`)
+      .set(...XRW)
+      .set(...OCTET)
+      .set('If-Match', '"1"')
+      .set('If-Claim', NONCE_A)
+      .send(blob('lapsed'));
+    expect(lapsed.status).toBe(409);
+    expect(lapsed.body.error.code).toBe(VAULT2_ERROR_CODES.migrationClaimed);
+
+    // Another client takes over; its nonce is now the one that writes.
+    await claim(agent, NONCE_B);
+    const takeover = await agent
+      .put(`/api/v1/vaults/${vaultId}/header`)
+      .set(...XRW)
+      .set(...OCTET)
+      .set('If-Match', '"1"')
+      .set('If-Claim', NONCE_B)
+      .send(blob('takeover'));
+    expect(takeover.status, JSON.stringify(takeover.body)).toBe(200);
+  });
+
+  it('refuses an asserted claim when no migration is running at all', async () => {
+    const user = await seedUser('noclaim');
+    const agent = await loginAgent(harness.app, user);
+    const { vaultId } = await createVault(agent);
+
+    // Fail closed: a client asserting a claim that cannot exist is confused
+    // about the world and must re-read the migration state, not write.
+    const res = await agent
+      .put(`/api/v1/vaults/${vaultId}/header`)
+      .set(...XRW)
+      .set(...OCTET)
+      .set('If-Match', '"1"')
+      .set('If-Claim', NONCE_A)
+      .send(blob('phantom-claim'));
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe(VAULT2_ERROR_CODES.migrationClaimed);
+    expect(res.body.state.legacyPresent).toBe(false);
+  });
+});
+
 // ── r2 §15: the wire error-code catalog ─────────────────────────────────────
 
 describe('vaults v2 — error-code catalog (r2 §15)', () => {

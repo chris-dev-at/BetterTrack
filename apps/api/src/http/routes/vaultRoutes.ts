@@ -37,7 +37,7 @@ import {
   type VaultHistoryVersionParam,
 } from '@bettertrack/contracts';
 
-import { ApiError, forbidden, notFound } from '../../errors';
+import { ApiError, EnvelopeApiError, forbidden, notFound } from '../../errors';
 
 import type { AppContext } from '../context';
 import { VAULT_SYNC_SCOPE, vaultSyncRouteAcceptsBearer } from '../middleware/bearerAuth';
@@ -52,11 +52,21 @@ const preconditionRequired = (): ApiError =>
     'A vault write requires an If-Match (replace) or If-None-Match: * (create) precondition.',
   );
 
-const preconditionFailed = (): ApiError =>
-  new ApiError(
+/**
+ * The v1 CAS 412. It carries the server's current version as a TOP-LEVEL body
+ * member, exactly like the v2 surface (design r2 §15 / r3): the ETag hint this
+ * route once set was removed by #1161's no-validators-on-errors rule, which
+ * left a v1 CAS loser paying a second `GET /vault` just to learn the winner.
+ * The body member restores the hint without putting a cache validator back on
+ * an error response. `null` means the precondition never named a real stored
+ * version (malformed `If-Match`, or nothing stored at all).
+ */
+const preconditionFailed = (currentVersion: number | null = null): ApiError =>
+  new EnvelopeApiError(
     412,
     VAULT_ERROR_CODES.preconditionFailed,
     'The vault precondition did not match the current version.',
+    { currentVersion },
   );
 
 const payloadTooLarge = (): ApiError =>
@@ -509,7 +519,7 @@ export function createVaultRouter(ctx: AppContext, limiters: RateLimiters): Rout
           res.status(204).end();
           return;
         case 'precondition_failed':
-          throw preconditionFailed();
+          throw preconditionFailed(result.currentVersion);
         case 'too_large':
           throw payloadTooLarge();
         case 'malformed':

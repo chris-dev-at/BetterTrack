@@ -44,7 +44,7 @@ import {
   VECTOR_WRITE_ID,
   vaultInteroperabilityFixture,
   vaultVectorDocument,
-} from './vectors';
+} from '@bettertrack/domain/vaultVectors';
 
 const headerMetadata = {
   vaultVersion: 1,
