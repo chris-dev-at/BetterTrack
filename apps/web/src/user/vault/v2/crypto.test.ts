@@ -80,13 +80,15 @@ describe('vault v2 header', () => {
     expect(built.header.keySlots).toHaveLength(1);
     expect(built.header.keySlots[0]!.kind).toBe('passphrase');
     expect(built.contentKey).toHaveLength(32);
-    // No integrity tag ships today — see vaultHeaderDocSchema for why the
-    // fixed-nonce seal was withdrawn and what the P5 pass replaces it with.
+    // r3 §21: every written header carries the HMAC integrity tag (the r2-era
+    // fixed-nonce GMAC `seal` stays withdrawn — this is its safe replacement).
+    expect(built.header.mac).toMatchObject({ v: 1 });
     expect(built.header).not.toHaveProperty('seal');
 
     const opened = await openVaultHeader(built.header, FIXTURE_PASSPHRASE, fastDeps);
     expect(bytesToBase64(opened.contentKey)).toBe(bytesToBase64(built.contentKey));
     expect(opened.slotId).toBe(built.header.keySlots[0]!.slotId);
+    expect(opened.sealState).toBe('verified');
   });
 
   it('accepts the phrase in any casing and spacing', async () => {
@@ -160,36 +162,117 @@ describe('vault v2 header', () => {
     });
   });
 
-  it('documents that the portfolio index is NOT authenticated yet', async () => {
+  it('authenticates the portfolio index: relabel, add and drop are all detected (r3 §21)', async () => {
+    // The r2-era known-gap test asserted the OPPOSITE — that a blob store could
+    // relabel the index unnoticed. The header MAC closes it: every written
+    // header carries `mac`, and any index edit fails verification.
+    const built = await buildVaultHeader({
+      vaultId: FIXTURE_VAULT_ID,
+      name: 'Drive vault',
+      backends: 'drive',
+      passphrase: FIXTURE_PASSPHRASE,
+      portfolios: [{ portfolioId: FIXTURE_PORTFOLIO_A, alias: 'Tech' }],
+      deviceId: FIXTURE_DEVICE_ID,
+      writeId: FIXTURE_WRITE_ID,
+      writtenAt: FIXTURE_WRITTEN_AT,
+      randomBytes: deterministicBytes(7),
+      deps: fastDeps,
+    });
+    expect(built.header.mac).toMatchObject({ v: 1 });
+
+    const opened = await openVaultHeader(built.header, FIXTURE_PASSPHRASE, fastDeps);
+    expect(opened.sealState).toBe('verified');
+
+    const tampered: Array<Partial<typeof built.header>> = [
+      // relabel
+      { portfolios: [{ portfolioId: FIXTURE_PORTFOLIO_A, alias: 'injected' }] },
+      // add
+      {
+        portfolios: [
+          ...built.header.portfolios,
+          { portfolioId: FIXTURE_PORTFOLIO_B, alias: 'smuggled' },
+        ],
+      },
+      // drop
+      { portfolios: [] },
+      // cleartext metadata edits are covered too
+      { name: 'Renamed by the blob store' },
+      { backends: 'both' as const },
+    ];
+    for (const patch of tampered) {
+      await expect(
+        openVaultHeader({ ...built.header, ...patch }, FIXTURE_PASSPHRASE, fastDeps),
+      ).rejects.toMatchObject({ code: 'authentication-failed' });
+    }
+
+    // A wrong tag over the ORIGINAL content is tampering too, not tolerance.
+    await expect(
+      openVaultHeader(
+        { ...built.header, mac: { v: 1, tag: bytesToBase64(new Uint8Array(32)) } },
+        FIXTURE_PASSPHRASE,
+        fastDeps,
+      ),
+    ).rejects.toMatchObject({ code: 'authentication-failed' });
+  });
+
+  it('tolerates an ABSENT tag as unsealed and upgrades it on the next write', async () => {
     const built = await buildHeader();
-    // This is the known gap the P5 hardening pass closes. It is asserted so the
-    // property cannot be quietly assumed by a later change: a blob store CAN
-    // currently relabel the index, and the vault still opens.
-    const relabelled = {
-      ...built.header,
-      portfolios: [{ portfolioId: FIXTURE_PORTFOLIO_A, alias: 'injected' }],
-    };
-    const opened = await openVaultHeader(relabelled, FIXTURE_PASSPHRASE, fastDeps);
+    // A pre-r3 header: strip the tag entirely. It still opens — the tolerance
+    // exists exactly so shipped headers do not brick — but the state says so.
+    const { mac: _mac, ...pre } = built.header;
+    const opened = await openVaultHeader(pre, FIXTURE_PASSPHRASE, fastDeps);
+    expect(opened.sealState).toBe('unsealed');
     expect(bytesToBase64(opened.contentKey)).toBe(bytesToBase64(built.contentKey));
-    expect(opened.header.portfolios[0]!.alias).toBe('injected');
+
+    // Upgrade-on-write: the first revision attaches the tag.
+    const revised = await reviseVaultHeader(pre, { name: 'Now sealed' }, WRITE, built.contentKey);
+    expect(revised.mac).toMatchObject({ v: 1 });
+    const reopened = await openVaultHeader(revised, FIXTURE_PASSPHRASE, fastDeps);
+    expect(reopened.sealState).toBe('verified');
   });
 
-  it('preserves unknown header members so a future integrity tag is additive', async () => {
+  it('covers unknown header members with the tag — preserved means authenticated', async () => {
     const built = await buildHeader();
-    const forward = { ...built.header, seal: 'from-a-newer-client' };
-    const opened = await openVaultHeader(forward, FIXTURE_PASSPHRASE, fastDeps);
-    expect(opened.header).toMatchObject({ seal: 'from-a-newer-client' });
 
-    const revised = reviseVaultHeader(opened.header, { name: 'Renamed vault' }, WRITE);
-    expect(revised).toMatchObject({ seal: 'from-a-newer-client', name: 'Renamed vault' });
+    // A newer client seals a header CONTAINING a member we do not know. We
+    // preserve it, and the tag still verifies because the canonical bytes
+    // include it.
+    const { mac: _mac, ...unsealed } = built.header;
+    const withUnknown = await reviseVaultHeader(
+      { ...unsealed, forwardField: 'from-a-newer-client' } as typeof built.header,
+      {},
+      WRITE,
+      built.contentKey,
+    );
+    const opened = await openVaultHeader(withUnknown, FIXTURE_PASSPHRASE, fastDeps);
+    expect(opened.sealState).toBe('verified');
+    expect(opened.header).toMatchObject({ forwardField: 'from-a-newer-client' });
+
+    // But a member INJECTED after sealing breaks verification: preservation is
+    // not a laundering channel.
+    await expect(
+      openVaultHeader(
+        { ...built.header, injected: 'by-the-blob-store' } as typeof built.header,
+        FIXTURE_PASSPHRASE,
+        fastDeps,
+      ),
+    ).rejects.toMatchObject({ code: 'authentication-failed' });
   });
 
-  it('advances the header version on every revision', async () => {
+  it('advances the header version on every revision and re-seals it', async () => {
     const built = await buildHeader();
-    const revised = reviseVaultHeader(built.header, { name: 'Renamed vault' }, WRITE);
+    const revised = await reviseVaultHeader(
+      built.header,
+      { name: 'Renamed vault' },
+      WRITE,
+      built.contentKey,
+    );
     expect(revised.headerVersion).toBe(built.header.headerVersion + 1);
     expect(revised.name).toBe('Renamed vault');
     expect(revised.keySlots).toEqual(built.header.keySlots);
+    expect(revised.mac).not.toEqual(built.header.mac);
+    const reopened = await openVaultHeader(revised, FIXTURE_PASSPHRASE, fastDeps);
+    expect(reopened.sealState).toBe('verified');
   });
 
   it('changes the passphrase without touching the content key or any blob', async () => {

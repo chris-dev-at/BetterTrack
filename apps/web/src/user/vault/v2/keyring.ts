@@ -5,6 +5,7 @@ import type { VaultCryptoDeps } from '../crypto';
 import { VaultCryptoError } from '../errors';
 
 import { openVaultHeader } from './headerCrypto';
+import type { VaultHeaderSealState } from './headerMac';
 
 /**
  * In-memory custody of unlocked vault content keys (`docs/VAULTS_V2_DESIGN.md`
@@ -26,6 +27,12 @@ export interface UnlockedVault {
   vaultId: string;
   header: VaultHeaderDoc;
   unlockedAt: number;
+  /**
+   * r3 §21: whether the header carried a VALID integrity tag (`verified`) or
+   * none at all (`unsealed`, a pre-r3 header — upgraded on its next write). An
+   * invalid tag never unlocks; it throws at {@link VaultKeyring.unlock}.
+   */
+  sealState: VaultHeaderSealState;
 }
 
 export type VaultKeyringListener = () => void;
@@ -36,6 +43,7 @@ interface Entry {
   passphrase: string;
   header: VaultHeaderDoc;
   unlockedAt: number;
+  sealState: VaultHeaderSealState;
 }
 
 export class VaultKeyring {
@@ -78,6 +86,7 @@ export class VaultKeyring {
       passphrase: passphrase.normalize('NFKD').toLowerCase().trim().replace(/\s+/gu, ' '),
       header: opened.header,
       unlockedAt: Date.now(),
+      sealState: opened.sealState,
     };
     this.entries.set(header.vaultId, entry);
     this.emit();
@@ -142,5 +151,10 @@ export class VaultKeyring {
 }
 
 function toPublic(entry: Entry): UnlockedVault {
-  return { vaultId: entry.vaultId, header: entry.header, unlockedAt: entry.unlockedAt };
+  return {
+    vaultId: entry.vaultId,
+    header: entry.header,
+    unlockedAt: entry.unlockedAt,
+    sealState: entry.sealState,
+  };
 }

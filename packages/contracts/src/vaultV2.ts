@@ -98,7 +98,7 @@ export type VaultKeySlot = z.infer<typeof vaultKeySlotSchema>;
  * `alias` is rendered on locked money surfaces (§4) — which is only possible
  * while the vault is LOCKED if it is readable without `K_c`, so the index is
  * part of the cleartext header. It is display-only and never trusted for key
- * material; the header `seal` still authenticates it once `K_c` is available,
+ * material; the r3 §21 header `mac` authenticates it once `K_c` is available,
  * so a blob store cannot silently add, drop or relabel a portfolio.
  */
 export const vaultPortfolioIndexEntrySchema = z
@@ -112,23 +112,46 @@ export type VaultPortfolioIndexEntry = z.infer<typeof vaultPortfolioIndexEntrySc
 // ── Vault header doc ─────────────────────────────────────────────────────────
 
 /**
+ * The r3 §21 header integrity tag.
+ *
+ * `tag = base64(HMAC-SHA256(K_mac, canonicalHeaderBytes))` with
+ * `K_mac = HKDF-SHA256(salt = empty, IKM = K_c, info = "btv2-header-mac-v1")`
+ * and `canonicalHeaderBytes` = the canonical JSON (sorted keys at every level,
+ * no whitespace) of the header WITHOUT the `mac` member — unknown members
+ * included: what a client preserves, it authenticates.
+ *
+ * HMAC rather than the withdrawn GMAC seal because HMAC is deterministic and
+ * safe under key reuse — rewriting the header on every index change is exactly
+ * the pattern that made a fixed-nonce GMAC leak its authentication subkey.
+ * Versioned (`v: 1`) so a future construction can coexist during a rollover.
+ */
+export const vaultHeaderMacSchema = z
+  .object({
+    v: z.literal(1),
+    tag: z.string().min(1),
+  })
+  .strict();
+export type VaultHeaderMac = z.infer<typeof vaultHeaderMacSchema>;
+
+/** HKDF info string for the header-MAC key (r3 §21). */
+export const VAULT2_HEADER_MAC_INFO = 'btv2-header-mac-v1';
+
+/**
  * The cleartext vault header doc (§2). It carries crypto parameters, the key
  * slots, the portfolio index and the backend echo — never money data.
  *
  * **Not `.strict()` on purpose.** Unknown members are preserved rather than
- * rejected or dropped, so a later revision can add a field — notably the header
- * integrity tag deferred to the P5 hardening pass — without this client
+ * rejected or dropped, so a later revision can add a field without this client
  * refusing to open the vault or silently deleting the new field when it
- * rewrites the header.
+ * rewrites the header. Preserved members are covered by the `mac`, so carrying
+ * them is safe rather than a laundering channel.
  *
- * There is deliberately **no integrity tag today**. An earlier draft sealed the
- * header with a fixed-nonce GMAC under `K_c`; that is unsafe here, because the
- * header is rewritten whenever the portfolio index changes, and two GMAC tags
- * produced under one key with a reused nonce leak the authentication subkey and
- * become forgeable. Header integrity is a real concern — a blob store can
- * currently relabel or drop a portfolio index entry — and it is tracked as a
- * P5 hardening item with a per-write random IV, or by folding the index into
- * the key-slot AAD.
+ * **Integrity (r3 §21).** `mac` is REQUIRED on every header written from r3
+ * onward and verified whenever `K_c` is available: present-and-valid opens as
+ * `verified`, absent opens as `unsealed` (tolerated this arc; the next header
+ * write attaches it), present-and-INVALID fails closed. The r2 draft's
+ * fixed-nonce GMAC seal stays withdrawn — see {@link vaultHeaderMacSchema} for
+ * why HMAC replaces it.
  */
 export const vaultHeaderDocSchema = z
   .object({
@@ -147,6 +170,8 @@ export const vaultHeaderDocSchema = z
     deviceId: z.string().uuid(),
     writeId: z.string().uuid(),
     writtenAt: z.string().datetime(),
+    /** r3 §21 integrity tag; absent only on pre-r3 headers (read as `unsealed`). */
+    mac: vaultHeaderMacSchema.optional(),
   })
   .passthrough()
   .superRefine((header, ctx) => {

@@ -108,7 +108,7 @@ export async function movePortfolioIntoVault(
   });
 
   input.onStage?.('index');
-  const nextHeader = reviseVaultHeader(
+  const nextHeader = await reviseVaultHeader(
     input.header,
     {
       portfolios: [
@@ -117,6 +117,7 @@ export async function movePortfolioIntoVault(
       ],
     },
     { deviceId: id(), writeId: id(), writtenAt: now() },
+    input.contentKey,
   );
 
   let headerVersion: number | null = null;
@@ -142,6 +143,8 @@ export async function movePortfolioOutOfVault(input: {
   vaultId: string;
   header: VaultHeaderDoc;
   headerVersion: number | null;
+  /** The unlocked vault's content key — a leave decrypted the blob, so it holds one. */
+  contentKey: Uint8Array;
   restoreId: string;
   document: VaultPortfolioRestoreDocument;
   leave: (payload: {
@@ -161,7 +164,7 @@ export async function movePortfolioOutOfVault(input: {
     document: input.document,
   });
 
-  const nextHeader = reviseVaultHeader(
+  const nextHeader = await reviseVaultHeader(
     input.header,
     {
       portfolios: input.header.portfolios.filter(
@@ -169,6 +172,7 @@ export async function movePortfolioOutOfVault(input: {
       ),
     },
     { deviceId: id(), writeId: id(), writtenAt: now() },
+    input.contentKey,
   );
   await writeVaultHeaderDoc(input.vaultId, nextHeader, input.headerVersion);
   return { header: nextHeader, receipt };

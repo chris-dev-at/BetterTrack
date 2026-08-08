@@ -24,6 +24,7 @@ import {
 } from '../crypto';
 import { asVaultCryptoError, VaultCryptoError } from '../errors';
 
+import { attachHeaderMac, verifyHeaderMac, type VaultHeaderSealState } from './headerMac';
 import { requireVaultPassphrase } from './words';
 
 /**
@@ -50,6 +51,24 @@ export interface BuildVaultHeaderInput {
   deviceId: string;
   writeId: string;
   writtenAt: string;
+  /**
+   * r3 §18 migration path: the DERIVED content key
+   * (`HKDF(VK, "btv2-migration-v1")`) instead of a fresh random one, so every
+   * claim holder builds a header that unwraps to the same `K_c`. Normal vault
+   * creation never passes this.
+   */
+  contentKey?: Uint8Array;
+  /**
+   * r3 §18 migration path: reuse the LEGACY vault's KDF salt (base64) instead
+   * of drawing a fresh one, keeping the successor header deterministic.
+   */
+  kdfSalt?: string;
+  /**
+   * r2 §9: free-text passphrases remain valid input for v1-MIGRATED vaults
+   * only. When set, the passphrase is used verbatim (the v1 KDF never
+   * normalized), instead of being required to be 12 checksummed words.
+   */
+  legacyPassphrase?: boolean;
   /** Test seam only; production always uses the WebCrypto CSPRNG. */
   randomBytes?: RandomBytes;
   deps?: VaultCryptoDeps;
@@ -68,11 +87,13 @@ export function vaultKdfParams(kdfSalt: string): VaultKdfParams {
 
 /** Build a brand-new vault header: fresh salt, fresh `K_c`, one passphrase slot. */
 export async function buildVaultHeader(input: BuildVaultHeaderInput): Promise<BuiltVaultHeader> {
-  const passphrase = requireVaultPassphrase(input.passphrase);
+  const passphrase = input.legacyPassphrase
+    ? requireLegacyPassphrase(input.passphrase)
+    : requireVaultPassphrase(input.passphrase);
   const randomBytes = input.randomBytes ?? secureRandomBytes;
-  const kdfSalt = bytesToBase64(generateVaultSalt(randomBytes));
+  const kdfSalt = input.kdfSalt ?? bytesToBase64(generateVaultSalt(randomBytes));
   const kdf = vaultKdfParams(kdfSalt);
-  const contentKey = generateVaultKey(randomBytes);
+  const contentKey = input.contentKey?.slice() ?? generateVaultKey(randomBytes);
 
   let kek: Uint8Array | undefined;
   try {
@@ -99,7 +120,8 @@ export async function buildVaultHeader(input: BuildVaultHeaderInput): Promise<Bu
       writeId: input.writeId,
       writtenAt: input.writtenAt,
     });
-    return { header, contentKey };
+    // r3 §21: every header this client writes carries the integrity tag.
+    return { header: await attachHeaderMac(header, contentKey), contentKey };
   } catch (cause) {
     zeroBytes(contentKey);
     throw asVaultCryptoError('kdf-failed', 'Could not build the vault header.', cause);
@@ -108,31 +130,56 @@ export async function buildVaultHeader(input: BuildVaultHeaderInput): Promise<Bu
   }
 }
 
+/**
+ * r2 §9's carve-out: a v1-MIGRATED vault keeps the free-text passphrase the
+ * user already knows, verbatim — the v1 KDF never normalized, so neither may
+ * this path. Everything else about the header (slot wrap, AAD, mac) is
+ * identical to the 12-word path.
+ */
+function requireLegacyPassphrase(passphrase: string): string {
+  if (passphrase.length === 0) {
+    throw new VaultCryptoError('kdf-failed', 'The legacy vault passphrase must be non-empty.');
+  }
+  return passphrase;
+}
+
 export interface OpenedVaultHeader {
   header: VaultHeaderDoc;
   contentKey: Uint8Array;
   slotId: string;
+  /**
+   * r3 §21: `verified` when the header carried a valid integrity tag,
+   * `unsealed` when it carried none (a pre-r3 header — tolerated this arc,
+   * upgraded on the next header write). An INVALID tag never reaches the
+   * caller: it throws `authentication-failed` instead.
+   */
+  sealState: VaultHeaderSealState;
 }
 
 /**
- * Open a vault header with its 12 words: derive the KEK, then unwrap `K_c` from
- * the first slot that authenticates.
+ * Open a vault header with its 12 words: derive the KEK, unwrap `K_c` from the
+ * first slot that authenticates, then verify the r3 §21 integrity tag under
+ * the unwrapped key.
  *
  * A wrong passphrase and a tampered wrapped key both surface as
  * `authentication-failed` — the caller cannot distinguish "wrong words" from
- * "modified blob", which is deliberate.
+ * "modified blob", which is deliberate. A present-but-wrong `mac` also fails
+ * closed: a blob store that relabels, adds or drops a portfolio index entry is
+ * now DETECTED, not survived silently (the gap r2 §9 recorded is closed).
  *
- * The rest of the header (portfolio index, name, backend echo) is NOT
- * authenticated today; see {@link vaultHeaderDocSchema} for why the fixed-nonce
- * seal was removed and what replaces it in the P5 hardening pass.
+ * `legacyPassphrase` mirrors {@link buildVaultHeader}: v1-migrated vaults keep
+ * their free-text words, verbatim.
  */
 export async function openVaultHeader(
   header: VaultHeaderDoc,
   passphrase: string,
   deps?: VaultCryptoDeps,
+  options?: { legacyPassphrase?: boolean },
 ): Promise<OpenedVaultHeader> {
   const parsed = vaultHeaderDocSchema.parse(header);
-  const normalized = requireVaultPassphrase(passphrase);
+  const normalized = options?.legacyPassphrase
+    ? requireLegacyPassphrase(passphrase)
+    : requireVaultPassphrase(passphrase);
   let kek: Uint8Array | undefined;
   try {
     kek = await deriveVaultKek(normalized, parsed.kdf, deps);
@@ -140,7 +187,14 @@ export async function openVaultHeader(
       if (slot.kind !== 'passphrase') continue;
       const contentKey = await tryUnwrapContentKey(slot, slotIndex, parsed.vaultId, kek);
       if (contentKey == null) continue;
-      return { header: parsed, contentKey, slotId: slot.slotId };
+      let sealState: VaultHeaderSealState;
+      try {
+        sealState = await verifyHeaderMac(parsed, contentKey);
+      } catch (cause) {
+        zeroBytes(contentKey);
+        throw cause;
+      }
+      return { header: parsed, contentKey, slotId: slot.slotId, sealState };
     }
     throw new VaultCryptoError(
       'authentication-failed',
@@ -188,24 +242,25 @@ export async function changeVaultPassphrase(
       writeId: write.writeId,
       writtenAt: write.writtenAt,
     });
-    return next;
+    // r3 §21: the rewritten header is re-sealed under the same content key.
+    return await attachHeaderMac(next, contentKey);
   } finally {
     if (kek != null) zeroBytes(kek);
   }
 }
 
 /**
- * Produce the next header revision (index/name/backend edits).
- *
- * Synchronous in spirit but kept `async` so the P5 hardening pass can attach an
- * integrity tag here without changing every call site.
+ * Produce the next header revision (index/name/backend edits), re-sealed under
+ * the vault content key (r3 §21) — which is also the upgrade-on-write path for
+ * a pre-r3 `unsealed` header: its first revision attaches the tag.
  */
-export function reviseVaultHeader(
+export async function reviseVaultHeader(
   header: VaultHeaderDoc,
   patch: Partial<Pick<VaultHeaderDoc, 'name' | 'backends' | 'portfolios'>>,
   write: { deviceId: string; writeId: string; writtenAt: string },
-): VaultHeaderDoc {
-  return vaultHeaderDocSchema.parse({
+  contentKey: Uint8Array,
+): Promise<VaultHeaderDoc> {
+  const next = vaultHeaderDocSchema.parse({
     ...header,
     ...patch,
     headerVersion: header.headerVersion + 1,
@@ -213,6 +268,7 @@ export function reviseVaultHeader(
     writeId: write.writeId,
     writtenAt: write.writtenAt,
   });
+  return attachHeaderMac(next, contentKey);
 }
 
 // ── internals ────────────────────────────────────────────────────────────────

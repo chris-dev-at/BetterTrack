@@ -319,7 +319,7 @@ export async function writeVaultDoc(
  * The header doc rides the same opaque-bytes transport as the content blobs.
  * It is UTF-8 JSON rather than ciphertext by necessity — `kdfSalt` and the
  * wrapped key slots must be readable before any key exists — and it is
- * integrity-protected by its own `seal`, not by the transport.
+ * integrity-protected by its own r3 §21 `mac`, not by the transport.
  */
 export function encodeHeaderDoc(header: VaultHeaderDoc): Uint8Array {
   return new TextEncoder().encode(JSON.stringify(vaultHeaderDocSchema.parse(header)));
