@@ -48,6 +48,15 @@ export interface EncryptVaultBlobInput {
   writeId: string;
   writtenAt: string;
   randomBytes?: RandomBytes;
+  /**
+   * An explicit 96-bit IV. **Migration writes only** (r3 §18): the IV is
+   * derived per-doc from `K_c`, so any claim holder produces identical
+   * ciphertext for identical plaintext. Normal operation omits it and draws a
+   * random IV — reusing an IV across two DIFFERENT plaintexts under one key
+   * breaks GCM, and only the migration context guarantees the triple is fixed
+   * and unique per docId.
+   */
+  iv?: Uint8Array;
 }
 
 export interface EncryptedVaultBlob {
@@ -153,7 +162,7 @@ export function inspectVaultBlob(bytes: Uint8Array): VaultBlobHeader {
 export async function encryptVaultBlob(input: EncryptVaultBlobInput): Promise<EncryptedVaultBlob> {
   const document = vaultContentDocSchema.parse(input.document);
   const randomBytes = input.randomBytes ?? secureRandomBytes;
-  const iv = randomBytes(VAULT_IV_BYTES);
+  const iv = input.iv ?? randomBytes(VAULT_IV_BYTES);
   if (iv.length !== VAULT_IV_BYTES) {
     throw new VaultCryptoError('envelope-invalid', 'Vault blob IV must be 96 bits.');
   }

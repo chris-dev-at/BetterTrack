@@ -206,14 +206,11 @@ describe('v1 → v2 split', () => {
       retirementProofPublicKeyJwk: { kty: 'OKP', crv: 'Ed25519', x: 'abc' },
     };
     const split = splitVaultDocument({
-      document: v1Document(
-        { portfolio: [entity(FIXTURE_PORTFOLIO_A, { name: 'A' })] },
-        {
-          schemaVersion: 2,
-          mirrorProvenance: [provenance],
-          clientSecurity: security,
-        } as Partial<VaultDocument>,
-      ),
+      document: v1Document({ portfolio: [entity(FIXTURE_PORTFOLIO_A, { name: 'A' })] }, {
+        schemaVersion: 2,
+        mirrorProvenance: [provenance],
+        clientSecurity: security,
+      } as unknown as Partial<VaultDocument>),
       vaultId: FIXTURE_VAULT_ID,
     });
     // They live on the object, not inside `entities`.

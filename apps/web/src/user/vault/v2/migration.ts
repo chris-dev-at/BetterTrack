@@ -2,8 +2,14 @@ import type { VaultDocument, VaultHeaderDoc } from '@bettertrack/contracts';
 
 import { VaultCryptoError } from '../errors';
 
-import { encryptVaultBlob } from './blobCrypto';
-import { splitVaultDocument, type VaultUpgradeReport } from './upgrade';
+import { encryptVaultBlob, type EncryptedVaultBlob } from './blobCrypto';
+import {
+  deriveMigrationDeviceId,
+  deriveMigrationIv,
+  deriveMigrationWriteId,
+  migrationDocId,
+} from './migrationCrypto';
+import { splitVaultDocument, type VaultUpgradeReport, type VaultUpgradeSplit } from './upgrade';
 
 /**
  * v1 → v2 migration protocol (`docs/VAULTS_V2_DESIGN.md` r2 §11).
@@ -93,9 +99,53 @@ export interface RunMigrationInput {
   aliases?: Record<string, string>;
   onStep?: (step: MigrationStep) => void;
   now?: () => Date;
-  id?: () => string;
   /** Claim lifetime. r2 §11 fixes it at 15 minutes, renewable. */
   claimTtlMs?: number;
+}
+
+export interface MigrationBlobSet {
+  common: EncryptedVaultBlob;
+  portfolios: Array<{ portfolioId: string; blob: EncryptedVaultBlob }>;
+}
+
+/**
+ * Encrypt the `common` and per-portfolio blobs of a migration BYTE-exactly
+ * (r3 §18): every blob's IV and writer identity is derived from `K_c`, and the
+ * `writtenAt` is fixed to the legacy header's, so any two claim holders produce
+ * identical envelopes. Shared by {@link runVaultMigration} and the vector
+ * generator, so the transcript the vectors pin is the one that actually runs.
+ */
+export async function buildMigrationBlobs(input: {
+  split: VaultUpgradeSplit;
+  contentKey: Uint8Array;
+  writtenAt: string;
+}): Promise<MigrationBlobSet> {
+  const deviceId = await deriveMigrationDeviceId(input.contentKey);
+  const encryptDeterministic = async (
+    doc: VaultUpgradeSplit['commonDoc'] | VaultUpgradeSplit['portfolioDocs'][number],
+    ref: { kind: 'common' | 'portfolio'; portfolioId?: string },
+  ): Promise<EncryptedVaultBlob> => {
+    const docId = migrationDocId(ref);
+    return encryptVaultBlob({
+      document: doc,
+      contentKey: input.contentKey,
+      blobVersion: 1,
+      deviceId,
+      writeId: await deriveMigrationWriteId(input.contentKey, docId),
+      writtenAt: input.writtenAt,
+      iv: await deriveMigrationIv(input.contentKey, docId),
+    });
+  };
+
+  const common = await encryptDeterministic(input.split.commonDoc, { kind: 'common' });
+  const portfolios: MigrationBlobSet['portfolios'] = [];
+  for (const doc of input.split.portfolioDocs) {
+    portfolios.push({
+      portfolioId: doc.portfolioId,
+      blob: await encryptDeterministic(doc, { kind: 'portfolio', portfolioId: doc.portfolioId }),
+    });
+  }
+  return { common, portfolios };
 }
 
 export const MIGRATION_CLAIM_TTL_MS = 15 * 60 * 1000;
@@ -119,7 +169,6 @@ export function claimIsHeldByOther(
  */
 export async function runVaultMigration(input: RunMigrationInput): Promise<MigrationOutcome> {
   const now = input.now ?? (() => new Date());
-  const id = input.id ?? (() => globalThis.crypto.randomUUID());
   const ttl = input.claimTtlMs ?? MIGRATION_CLAIM_TTL_MS;
 
   // ── 1. Claim ──
@@ -149,39 +198,26 @@ export async function runVaultMigration(input: RunMigrationInput): Promise<Migra
   }
   state = { ...state, claim, version: state.version + 1 };
 
-  // ── 2. Write (idempotent, deterministic identities) ──
+  // ── 2. Write (idempotent, BYTE-deterministic — r3 §18) ──
   input.onStep?.('write');
   const split = splitVaultDocument({
     document: input.document,
     vaultId: input.identity.vaultId,
     aliases: input.aliases,
   });
+  const blobs = await buildMigrationBlobs({
+    split,
+    contentKey: input.contentKey,
+    writtenAt: input.header.writtenAt,
+  });
 
   await input.transport.writeDoc(input.identity.vaultId, { kind: 'header' }, input.headerBytes);
-
-  const commonBlob = await encryptVaultBlob({
-    document: split.commonDoc,
-    contentKey: input.contentKey,
-    blobVersion: 1,
-    deviceId: id(),
-    writeId: id(),
-    writtenAt: now().toISOString(),
-  });
-  await input.transport.writeDoc(input.identity.vaultId, { kind: 'common' }, commonBlob.envelope);
-
-  for (const doc of split.portfolioDocs) {
-    const blob = await encryptVaultBlob({
-      document: doc,
-      contentKey: input.contentKey,
-      blobVersion: 1,
-      deviceId: id(),
-      writeId: id(),
-      writtenAt: now().toISOString(),
-    });
+  await input.transport.writeDoc(input.identity.vaultId, { kind: 'common' }, blobs.common.envelope);
+  for (const portfolio of blobs.portfolios) {
     await input.transport.writeDoc(
       input.identity.vaultId,
-      { kind: 'portfolio', portfolioId: doc.portfolioId },
-      blob.envelope,
+      { kind: 'portfolio', portfolioId: portfolio.portfolioId },
+      portfolio.blob.envelope,
     );
   }
 

@@ -122,7 +122,6 @@ async function run(
     transport: harness.transport,
     clientNonce: 'client-1',
     now: () => NOW,
-    id: () => FIXTURE_WRITE_ID,
     ...overrides,
   });
 }
@@ -192,29 +191,27 @@ describe('v1 → v2 migration protocol (r2 §11)', () => {
       contentKey: built.contentKey,
       clientNonce: 'client-1',
       now: () => NOW,
-      id: () => FIXTURE_WRITE_ID,
     };
 
     const first = createTransport();
     await runVaultMigration({ ...common, transport: first.transport });
 
-    // A resumed run writes the SAME identities — never a duplicate set. The
-    // ciphertext deliberately differs (a fresh GCM IV per write; reusing one
-    // under the same key would be a real vulnerability), so idempotency is a
-    // property of the identities and the plaintext, not of the bytes.
+    // r3 §18: a resumed run writes the SAME identities AND the SAME BYTES. The
+    // IV and writer identity are derived from K_c per docId, so two claim
+    // holders produce byte-identical envelopes — that is what makes a resumed
+    // or racing migration safe, closing mobile A2.1. (Idempotent addressing
+    // alone was not enough: random keys/IVs produced mutually undecryptable
+    // blobs under one identity.)
     const second = createTransport();
     await runVaultMigration({ ...common, transport: second.transport });
 
     expect([...second.docs.keys()].sort()).toEqual([...first.docs.keys()].sort());
     for (const [name, bytes] of second.docs) {
-      if (name === 'header') {
-        expect(Array.from(bytes)).toEqual(Array.from(first.docs.get(name)!));
-        continue;
-      }
+      expect(Array.from(bytes)).toEqual(Array.from(first.docs.get(name)!));
+      if (name === 'header') continue;
       const resumed = await decryptVaultBlob(bytes, built.contentKey);
       const original = await decryptVaultBlob(first.docs.get(name)!, built.contentKey);
       expect(resumed.document).toEqual(original.document);
-      expect(bytes).not.toEqual(first.docs.get(name));
     }
   });
 
@@ -259,7 +256,6 @@ describe('v1 → v2 migration protocol (r2 §11)', () => {
       transport: harness.transport,
       clientNonce: 'client-1',
       now: () => NOW,
-      id: () => FIXTURE_WRITE_ID,
     });
 
     const blob = harness.docs.get(`portfolio:${FIXTURE_PORTFOLIO_A}`)!;
@@ -280,7 +276,6 @@ describe('v1 → v2 migration protocol (r2 §11)', () => {
       transport: harness.transport,
       clientNonce: 'client-1',
       now: () => NOW,
-      id: () => FIXTURE_WRITE_ID,
     });
     const { document } = await decryptVaultBlob(harness.docs.get('common')!, built.contentKey);
     expect(document.docKind).toBe('common');
