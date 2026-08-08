@@ -60,6 +60,12 @@ crypto substrate. This document is the binding contract for the platform
 - `portfolios.vaultId` nullable FK. Vaulted portfolios: server-side jobs,
   sharing, mirrorchain, alerts are killed for them (extend the existing
   paranoid kill-rails, now portfolio-scoped).
+- **Erratum (2026-08-08) — alerts are NOT portfolio-killable.** An alert carries
+  no portfolio reference: alerts are account-level and fire on an asset, so
+  there is nothing to scope a kill to. Account-level alerts therefore SURVIVE
+  vaulting untouched and keep working for a vaulted portfolio's assets. What
+  does die is alert _sharing_, and it dies with sharing generally rather than as
+  a rule of its own. The original line above overstated the kill list.
 - Endpoints (session): vault CRUD (create takes the client-built header;
   server stores blindly), backend config change, **join** =
   `POST /portfolios/{id}/vault` (body: vaultId + client-encrypted blob) — one
@@ -69,7 +75,18 @@ crypto substrate. This document is the binding contract for the platform
 - Endpoints (bearer, `vault:sync`, per-vault): header/blob GET + PUT with
   `If-Match` CAS — the existing vault:sync discipline widened from
   account-singleton to `{vaultId}`-scoped routes. Transitions stay
-  session-only (unchanged principle).
+  session-only (unchanged principle). Shipped paths (P2/P3 reconciliation,
+  2026-08-08): `/vaults/{vaultId}/header`, `/vaults/{vaultId}/common`,
+  `/vaults/{vaultId}/portfolios/{portfolioId}`.
+- `POST /vaults` **takes the client-minted `id`**: §11 derives the vault id
+  deterministically from the legacy vault, and the client must know it before
+  it writes any doc. A client refuses loudly if a server ever reassigns it.
+- `POST /auth/reauth` (session-only, `{ password }`, login-class rate limit,
+  204, audited) is the step-up verifier the QR reveal is gated on. Clients FAIL
+  CLOSED: an absent or failing verifier refuses the reveal, never degrades to
+  showing the secret ungated.
+- `PATCH /portfolios/{id}/alias` sets the cleartext display alias a locked row
+  renders, so the label survives independently of the header doc.
 - Migration: accounts in old per-account paranoid get vault #1 ("My vault")
   wrapping their existing vault doc; the v1→v2 header upgrade happens
   client-side on next unlock (silent-upgrade precedent). Old routes serve
@@ -119,3 +136,176 @@ crypto substrate. This document is the binding contract for the platform
   server-side recovery. AA/a11y and i18n bars unchanged. `packages/domain`
   stays pure and shared. Conformance-vector discipline holds for every format
   change (both clients re-pin).
+
+---
+
+# Revision 2 — rulings from the mobile review (#73, docs/VAULTS_V2_MOBILE_REVIEW.md in the app repo)
+
+Binding amendments. Where r2 conflicts with the text above, r2 wins.
+
+## 8. Document model (supersedes parts of §2/§3)
+
+- Three doc kinds per vault: **`header`**, **`common`**, **`portfolio`** (one per
+  member portfolio). All CAS-versioned independently.
+- **Custom-asset creation context (2026-08-08).** Which document a custom asset
+  belongs to is decided by WHERE IT WAS CREATED, not by what references it. An
+  asset created while working inside a vaulted portfolio lands in that vault's
+  `common` doc and is invisible to the server. An asset that already existed
+  server-side when the portfolio was vaulted STAYS cleartext on the server —
+  other, normal portfolios of the same account still reference it, and a join
+  must not break them. This is the concrete mechanism behind §4's
+  ticker-visibility caveat, and it is why the leave restore graph carries no
+  user-scoped kinds.
+- **`common` owns every account/vault-scoped entity kind** for that vault:
+  `customAsset`, `customAssetValue`, `clientSecurity`, `mirrorProvenance`,
+  `mergeLog`, `cashTag`, `cashRule`, `cashBudget`, `expenseCategory`,
+  `expenseRule`, `expenseBudget`, `taxSetting`, plus the four child kinds
+  ruled in during P3 reconciliation (2026-08-08) — `expenseTransaction`,
+  `expenseBudgetFire`, `cashBudgetFire` and `cashRuleTag`. Those four have no
+  portfolio linkage at all: their parents live in `common`, so a portfolio doc
+  could never route them and every migration would orphan them. With them the
+  partition is exact — 13 kinds in `common`, 13 in `portfolio`, covering all 26
+  `VAULT_ENTITY_KINDS` with no overlap and no remainder, which is what lets the
+  v1→v2 split assert "entities in === entities out".
+  Ids are namespaced per vault;
+  the same conceptual custom asset in two vaults is two independent lineages
+  by design (no cross-vault dedup). Retirement-proof/`clientSecurity` and
+  `mirrorProvenance` are per-vault; divergence rules apply within one vault
+  only — leave/disable consults only the owning vault's provenance.
+- **Single-blob mutation rule: every mutation touches exactly one doc.**
+  - Cross-portfolio transfer within a vault: REFUSED as one op. The UX offers
+    a guided two-step (withdrawal commits in blob A, then deposit in blob B;
+    each step independently consistent; a cosmetic `transferGroupId` links
+    them for display only — no transactional meaning; an unmatched first leg
+    renders honestly as an unmatched withdrawal).
+  - Cross-VAULT transfer: refused at UI and op layer in v2.
+- **Locked vault = no reads AND no writes.** A locked portfolio's add-entry
+  surfaces prompt inline unlock; there is no queued-write path (keeps vault
+  ops terminal; no new idempotency machinery for locked-state applies).
+- **Unfetchable/undecryptable blob** named by the header index: that
+  portfolio renders as `unavailable` (a distinct error state — never empty,
+  never €0); the rest of the vault stays usable; a banner names the doc and
+  version for recovery.
+- Size caps: header 1 MB, common 4 MB, portfolio 8 MB.
+
+## 9. Format versioning
+
+- The v2 header declares **`formatVersion: 2`** (v1 parsers get a clean
+  UPDATE_REQUIRED path — never "vault corrupt"). Header remains AAD; AAD input
+  includes `formatVersion`, `vaultId`, and slot index for each key slot.
+- **No header integrity tag ships in v2** (P3 reconciliation, 2026-08-08). A
+  draft sealed the header with a fixed-nonce GMAC under `K_c`; that is unsafe
+  here, because the header is rewritten whenever the portfolio index changes,
+  and two GMAC tags under one key with a reused nonce leak the authentication
+  subkey. The exposure is real and acknowledged — a blob store can relabel,
+  add or drop a portfolio index entry — and it is deferred to the **P5
+  hardening pass** with a per-write random IV stored beside the tag, or by
+  folding the index into the key-slot AAD. Header schemas on both clients MUST
+  therefore accept and preserve unknown members so the tag lands additively.
+- The QR payload's version member is renamed **`qr: 1`** (no collision with
+  `VAULT_DOCUMENT_VERSION`). Recovery kit gets a v2 layout (kit lists vault
+  name, id, backend set, and the 12 words; kit format documented with the
+  vector family below).
+- 12-word passphrase = **BIP39 English wordlist, 12 words, NFKD, single-space
+  separated, BIP39 checksum valid**. Free-text passphrases remain valid input
+  for v1-migrated vaults only.
+
+## 10. QR handoff (supersedes §2's payload)
+
+- Payload: `btvault1:{"qr":1,"vaultId":…,"name":…,"w":…}` where `w` =
+  AES-GCM(KDF(pin), P) with a 6-digit one-time PIN. The QR alone is useless —
+  **a screenshot no longer captures the secret**.
+- Flow: re-auth → QR screen (no PIN shown) → receiver scans → sender taps
+  "reveal code" (second screen) → receiver types the PIN → P unwrapped and
+  stored under the receiver's device custody. Total TTL 120 s.
+- Native clients MUST exclude these screens from screenshots/recents
+  (FLAG_SECURE); web shows an explicit screenshot warning.
+- Device custody of P: platform-appropriate. Password-wrap is the default;
+  **the raw-storage opt-in is platform-optional** — a platform with stronger
+  native custody (Android Keystore) MAY decline to offer raw storage.
+
+## 11. v1→v2 migration protocol (supersedes §3's one-liner)
+
+1. **Claim**: CAS write of `{migratingBy: clientNonce, ttl: 15min}` on the
+   legacy vault row; the claim is renewable; losers see the claim and wait
+   (read-only on v1 meanwhile).
+2. **Write**: claim holder writes all v2 docs — deterministic doc identities
+   (`vaultId` = derived from legacy vault id; portfolio docs keyed by
+   portfolioId) make every write idempotent on resume.
+3. **Verify**: holder lists written docs and checks completeness against the
+   legacy content.
+4. **Flip**: single CAS write `{migratedTo: vaultId}` on the legacy row —
+   this is the commit point. Before it, v1 is authoritative; after it, v1 is
+   a read-only tombstone and v2 is authoritative.
+5. **Resume**: a returning claim holder re-lists and continues from step 2;
+   a crashed half-migration is invisible to other clients (flip never
+   happened).
+
+- **Op idempotency**: op `clientId`s are preserved verbatim into split docs;
+  every executor MUST honor `op.clientId` on replay (no fresh-id minting on
+  a replayed op).
+
+## 12. Aggregates, coverage, and account surfaces
+
+- Price/coverage arithmetic gains a fourth state: **`lockedExcluded`**.
+- Net worth and any cross-portfolio total render as **sum-of-visible plus a
+  mandatory lock qualifier** ("+ N locked portfolios") — never a bare total
+  while any vault is locked; identical arithmetic on web and mobile.
+- Account-scoped list surfaces (tags, rules, budgets): server-side entries
+  always visible; a locked vault's entries are hidden behind a per-vault lock
+  chip ("entries from '<vault>' hidden") — not all-or-nothing.
+
+## 13. Backends
+
+- `both` = the same doc set mirrored to both media, **independent CAS per
+  medium**; reconcile = highest (version, then updatedAt) wins; writes go
+  write-through to both, tolerating one medium temporarily behind.
+- Drive naming (appDataFolder is flat): `btv2.{vaultId}.header`,
+  `btv2.{vaultId}.common`, `btv2.{vaultId}.p.{portfolioId}`. Rename
+  migration for existing single-file vaults: copy to new names → verify →
+  write `btv2.{vaultId}.migrated` marker → retire old names; resumable by
+  re-listing at every step.
+
+## 14. Server knowledge (honest metadata note)
+
+- The server learns vault membership (`portfolios.vaultId`), blob sizes and
+  write timings. **Accepted by design in v2** (routing and purge require it);
+  stated plainly in the explainer. Hiding membership (padding, uniform ids)
+  is future work if ever wanted.
+
+## 15. Wire contract additions
+
+- **412 responses carry the current version** (`{error, currentVersion}`) on
+  every CAS surface.
+- Error codes (EN+DE strings ship with the platform i18n catalog). The
+  canonical ten:
+  `VAULT_NOT_FOUND`, `VAULT_NOT_EMPTY`, `VAULT_VERSION_CONFLICT`,
+  `VAULT_DOC_TOO_LARGE`, `VAULT_LOCKED_WRITE_REFUSED`,
+  `VAULT_MIGRATION_CLAIMED`, `VAULT_MIGRATION_INCOMPLETE`,
+  `VAULT_CROSS_BLOB_REFUSED`, `VAULT_FORMAT_UPDATE_REQUIRED`,
+  `VAULT_BACKEND_UNAVAILABLE`.
+- **Erratum (P2/P3 reconciliation, 2026-08-08): seven further codes ship**, for
+  outcomes the canonical ten cannot express without lying about what happened.
+  All seventeen carry EN+DE strings — mobile renders every error from the
+  catalog, so a code with no string surfaces raw:
+  `VAULT_PRECONDITION_REQUIRED` (a write with neither `If-Match` nor
+  `If-None-Match: *`, 428), `VAULT_NAME_TAKEN` (409),
+  `VAULT_PORTFOLIO_ALREADY_VAULTED` (409), `VAULT_JOIN_BLOCKED` (a precondition
+  such as live mirrorchain membership, 409), `VAULT_RESTORE_INVALID` (the leave
+  payload failed the portfolio-scoped invariants, 400), `VAULT_ID_TAKEN` (a
+  client-minted id collision — distinct from a name clash, because ids are
+  DERIVED and a collision reads as "you are resuming", 409), and
+  `VAULT_PORTFOLIO_NOT_VAULTED` (409 — distinct from `VAULT_NOT_FOUND` because a
+  non-vaulted portfolio is an ordinary portfolio the client should just render).
+- Vault membership (list of vaultIds + names + which portfolios) is exposed
+  to authenticated clients of the owning account only.
+
+## 16. Vectors (platform ships; mobile replays)
+
+Six families, produced by the platform hardening pass and published in the
+**shared vectors location** (`packages/domain` fixture area — vault vectors
+relocate out of `apps/web` as part of this arc): (1) v2 header
+derive/wrap/unwrap, (2) multi-slot unwrap, (3) per-portfolio split across all
+26 entity kinds, (4) a full migration transcript (claim→write→verify→flip),
+(5) recovery-kit v2, (6) canonical QR string (exact member order + encoding
+for a fixed input).

@@ -150,35 +150,45 @@ describe('PrivacyPanel (§13.5 V5-P13)', () => {
   });
 
   test('renders for a normal account with no vault runtime above it', () => {
-    // What the panel looks like for every normal session now that opening it no
-    // longer mounts the vault stack: discreet mode works, and the setup entry
-    // is the only thing that asks for the encrypted runtime.
+    // Vaults v2 (docs/VAULTS_V2_DESIGN.md §4): the account-level enable wizard
+    // is gone from this panel. What remains is discreet mode, a pointer into
+    // the per-portfolio flow, the explainer, and the legacy migration entry.
     vaultRuntime = null;
 
     renderPanel();
 
     expect(screen.getByRole('switch', { name: 'Discreet mode' })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Set up' })).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Open portfolio settings' })).toHaveAttribute(
+      'href',
+      '/portfolio/settings',
+    );
+    expect(screen.getByRole('link', { name: 'Read' })).toHaveAttribute(
+      'href',
+      '/vault/how-it-works',
+    );
+    expect(screen.getByRole('button', { name: 'Open migration' })).toBeInTheDocument();
+    // The old account-level CTA must not survive anywhere in the panel.
+    expect(screen.queryByRole('button', { name: 'Set up' })).not.toBeInTheDocument();
   });
 
-  test('the setup request rides in the URL, so the gate above can act on it', async () => {
+  test('the legacy-migration request rides in the URL, so the gate above can act on it', async () => {
     // `AccountModeRoot` mounts the vault providers from this param and replaces
     // the subtree doing it — local `useState` would not survive that.
     vaultRuntime = null;
     const user = userEvent.setup();
     renderPanel();
 
-    await user.click(screen.getByRole('button', { name: 'Set up' }));
+    await user.click(screen.getByRole('button', { name: 'Open migration' }));
 
     expect(screen.getByTestId('url')).toHaveTextContent('/control/privacy?enable=1');
   });
 
-  test('opens the live setup wizard with the compact killed-surface review', async () => {
+  test('opens the legacy migration wizard with the compact killed-surface review', async () => {
     const user = userEvent.setup();
     renderPanel();
 
     expect(screen.getByRole('heading', { name: /Paranoid mode/i })).toBeInTheDocument();
-    await user.click(screen.getByRole('button', { name: 'Set up' }));
+    await user.click(screen.getByRole('button', { name: 'Open migration' }));
 
     // The wizard is its own chunk (#1089), so it arrives a tick later.
     expect(await screen.findByRole('heading', { name: 'What changes' })).toBeInTheDocument();
@@ -244,7 +254,7 @@ describe('PrivacyPanel (§13.5 V5-P13)', () => {
     expect(screen.getByText('Rotate vault key')).toBeInTheDocument();
     expect(screen.getByText('Start fresh')).toBeInTheDocument();
     expect(screen.getByText('Disable Paranoid mode')).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: 'Set up' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Open migration' })).not.toBeInTheDocument();
   });
 
   test('disable stays closed while the vault sync is split — the other branch would be lost', async () => {
