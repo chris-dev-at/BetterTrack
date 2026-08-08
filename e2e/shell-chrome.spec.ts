@@ -95,8 +95,12 @@ test('shell chrome fits the viewport and keeps every main area reachable', async
     );
     await expect(activeMainItems).toHaveCount(1);
     const activeEdge = await activeMainItems.evaluate((item) => {
+      // `--bt-gold-graphic`, not `--bt-gold`: the single gold token was split by
+      // job in THEME2 and the edge takes the GRAPHIC one. Probing the retired
+      // name resolved to `transparent`, which quietly turned this assertion into
+      // a comparison of two things that were both wrong.
       const goldProbe = document.createElement('span');
-      goldProbe.style.backgroundColor = 'var(--bt-gold)';
+      goldProbe.style.backgroundColor = 'var(--bt-gold-graphic)';
       item.append(goldProbe);
       const gold = getComputedStyle(goldProbe).backgroundColor;
       goldProbe.remove();

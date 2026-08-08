@@ -336,7 +336,7 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
                 onChange={(e: ChangeEvent<HTMLInputElement>) => setReturnPct(e.target.value)}
               />
               {returnPctIsClamped ? (
-                <p role="alert" className="text-xs bt-gold">
+                <p role="alert" className="text-xs bt-gold-note">
                   {t('forecast.projection.returnPctClamped')}
                 </p>
               ) : null}

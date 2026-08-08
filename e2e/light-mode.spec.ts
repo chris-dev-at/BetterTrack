@@ -168,3 +168,84 @@ test('the Appearance panel switches the theme live', async ({ context }, testInf
   expect(tooltipTokens.border).toBe('rgba(19, 24, 32, 0.1)');
   expect(tooltipTokens.shadow).toBe('0 10px 34px rgba(16, 24, 32, 0.16)');
 });
+
+/**
+ * The gold override reaches paint (THEME3, owner final word 2026-08-07).
+ *
+ * The unit suite proves the token VALUES in the stylesheet. What it cannot
+ * prove is that a real browser, on a real page, resolves them — a cascade
+ * mistake, a stale rule or a component painting its own gold all look fine to a
+ * file scanner. So this loads the two pages that carry the most gold (portfolio
+ * and analytics) with light pinned, and reads the values back off the document.
+ *
+ * The geometry half matters most here: `--bt-gold-edge` is the token that pays
+ * for keeping brand gold bright at 1.78:1 on white, and a laid-out `4px` dash
+ * is the only honest proof it did.
+ */
+test('light mode resolves the bright gold and its geometry on real pages', async ({
+  context,
+}, testInfo) => {
+  test.skip(testInfo.project.name !== 'chromium', 'One browser is enough for a theme smoke.');
+
+  const { page } = await provisionUserInContext(context, apiRequest, 'theme-gold');
+
+  await page.evaluate(() => localStorage.setItem('bt.ui.theme', 'light'));
+
+  for (const route of ['/portfolio', '/portfolio/analysis']) {
+    await page.goto(route, { waitUntil: 'networkidle' });
+    expect(await theme(page), `${route} is light`).toBe('light');
+
+    const gold = await page.evaluate(() => {
+      const style = getComputedStyle(document.documentElement);
+      const read = (name: string) => style.getPropertyValue(name).trim();
+      return {
+        ink: read('--bt-gold-ink'),
+        graphic: read('--bt-gold-graphic'),
+        fill: read('--bt-gold-fill'),
+        soft: read('--bt-gold-soft'),
+        chartFlag: read('--bt-chart-flag'),
+        accent: read('--bt-border-accent'),
+        hair: read('--bt-gold-hair'),
+        ring: read('--bt-gold-ring'),
+        edge: read('--bt-gold-edge'),
+        // The safety valve is declared as `var(--bt-text)`; only a browser
+        // resolves that chain, and a converted sentence is unreadable if it
+        // ever resolves back to the gold.
+        safe: getComputedStyle(document.body).color,
+      };
+    });
+
+    // Bright brand gold, on every graphical job.
+    expect(gold.graphic, `${route} graphic gold`).toBe('#f6b82e');
+    expect(gold.fill, `${route} gold fill`).toBe('#f6b82e');
+    expect(gold.chartFlag, `${route} chart flag`).toBe('#f6b82e');
+    // Gold as an accent ink, sub-AA by owner decision.
+    expect(gold.ink, `${route} gold ink`).toBe('#d49e28');
+    // The wash family the badges sit on is unchanged and still opaque.
+    expect(gold.soft, `${route} gold surface`).toBe('#fcf1db');
+    // Geometry compensation: heavier strokes, doubled edge alpha.
+    expect(gold.hair, `${route} gold hairline`).toBe('2px');
+    expect(gold.ring, `${route} gold ring`).toBe('3px');
+    expect(gold.edge, `${route} gold edge`).toBe('4px');
+    expect(gold.accent, `${route} edge alpha`).toBe('rgba(246, 184, 46, 0.6)');
+  }
+
+  // …and the active-rail dash is really laid out at the compensated width, not
+  // merely declared at it.
+  const dash = await page
+    .locator('.bt-rail-item.is-active')
+    .first()
+    .evaluate((row) => getComputedStyle(row, '::before').width);
+  expect(dash).toBe('4px');
+
+  // The safety valve resolves to the page ink rather than back to the gold.
+  const noteInk = await page.evaluate(() => {
+    const probe = document.createElement('span');
+    probe.className = 'bt-gold-note';
+    document.querySelector('.bt-app')?.append(probe);
+    const colour = getComputedStyle(probe).color;
+    probe.remove();
+    return colour;
+  });
+  expect(noteInk).toBe('rgb(19, 24, 32)'); // --bt-text, not --bt-gold-ink
+});
