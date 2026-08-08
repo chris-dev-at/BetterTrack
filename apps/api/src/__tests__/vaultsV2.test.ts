@@ -301,6 +301,10 @@ describe('vaults v2 — CRUD', () => {
     const res = await agent
       .post('/api/v1/vaults')
       .set(...XRW)
+      // The server rejects on the size cap without draining the request, so
+      // this socket must not go back into the agent's keep-alive pool — a later
+      // test picking it up fails as "Parse Error: Expected HTTP/".
+      .set('Connection', 'close')
       .send({
         name: 'Too big',
         backends: 'server',
@@ -1727,6 +1731,10 @@ describe('vaults v2 — the common document (r2 §8)', () => {
       .set(...XRW)
       .set(...OCTET)
       .set('If-Match', '"1"')
+      // The server rejects on the size cap without draining the request, so
+      // this socket must not go back into the agent's keep-alive pool — a later
+      // test picking it up fails as "Parse Error: Expected HTTP/".
+      .set('Connection', 'close')
       .send(twoMiB);
     expect(headerTooBig.status).toBe(413);
     expect(headerTooBig.body.error.code).toBe(VAULT2_ERROR_CODES.docTooLarge);
@@ -1745,6 +1753,10 @@ describe('vaults v2 — the common document (r2 §8)', () => {
       .set(...XRW)
       .set(...OCTET)
       .set('If-Match', '"1"')
+      // The server rejects on the size cap without draining the request, so
+      // this socket must not go back into the agent's keep-alive pool — a later
+      // test picking it up fails as "Parse Error: Expected HTTP/".
+      .set('Connection', 'close')
       .send(Buffer.alloc(VAULT_COMMON_DOC_MAX_BYTES + 1, 7));
     expect(commonTooBig.status).toBe(413);
   });
