@@ -202,7 +202,7 @@ function StandingOrderRow({
             onClick={() => pauseMutation.mutate()}
             disabled={busy}
             aria-labelledby={`${titleId} ${pauseResumeActionId}`}
-            className="font-medium bt-gold hover:bt-gold disabled:cursor-not-allowed disabled:bt-muted"
+            className="font-medium bt-gold-note disabled:cursor-not-allowed disabled:bt-muted"
           >
             {pauseMutation.isPending
               ? t('forecast.standingOrders.list.pausing')
