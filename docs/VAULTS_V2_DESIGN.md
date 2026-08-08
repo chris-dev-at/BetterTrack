@@ -309,3 +309,225 @@ derive/wrap/unwrap, (2) multi-slot unwrap, (3) per-portfolio split across all
 26 entity kinds, (4) a full migration transcript (claim→write→verify→flip),
 (5) recovery-kit v2, (6) canonical QR string (exact member order + encoding
 for a fixed input).
+
+---
+
+# Revision 3 — hardening rulings (P5, 2026-08-08)
+
+Binding amendments from the platform chief's rulings on the mobile r2
+verification appendix (`docs/VAULTS_V2_MOBILE_REVIEW.md`, appendix A1–A9 in the
+app repo). Where r3 conflicts with r2 or the base text, r3 wins. Every format
+statement below is pinned by the §25 vector families.
+
+## 17. `both` reconciles by per-document MERGE (supersedes §13's rule — A8)
+
+- r2 §13's "reconcile = highest (version, then updatedAt) wins" was wrong: it
+  promoted the engines' degenerate corrupt-bytes fallback to the primary path
+  and would discard a whole divergent document — a trade booked offline on one
+  device, silently dropped because a browser's clock ran ahead.
+- **The rule:** when both media hold a READABLE candidate for one document, the
+  client decrypts both and applies the engine's existing per-entity merge rules
+  to that document — union by entity id; whole-entity winner by
+  `rev → live-beats-tombstone → editedAt → editedBy → canonical content`;
+  `mirrorProvenance` united then pruned against the merged entities;
+  `clientSecurity` divergence throws (within one vault). The merged document is
+  written through to BOTH media at `max(candidate versions) + 1`.
+- **`(version, then updatedAt)` survives ONLY as the fallback for undecryptable
+  candidates:** a readable candidate always beats an unreadable one regardless
+  of version; among unreadable candidates the highest `(version, updatedAt)`
+  selects which bytes are kept — quarantined for the restore picker, never
+  silently discarded, never merged.
+- Identical bytes / linear successors short-circuit exactly as in the v1
+  engine (`documentDominates`); no new merge generation is minted for them.
+
+## 18. Byte-idempotent migration (A2.1/A2.2) — derived key, deterministic bytes
+
+The r2 §11 claim protocol gave idempotent _addressing_; r3 makes the migration
+idempotent in _bytes_, so any claim holder — first, resumed, or racing — writes
+identical ciphertext from identical legacy content.
+
+- **Derived content key.** The migration-created vault's content key is
+  `K_c = HKDF-SHA256(salt = <empty>, IKM = VK, info = "btv2-migration-v1", L = 32)`
+  where `VK` is the legacy BTVAULT1 vault key (the 32-byte content key every
+  claim holder already possesses once the legacy vault is unlocked). Two claim
+  holders can no longer mint divergent random keys and write mutually
+  undecryptable blobs under one identity. The migrated vault's key material is
+  therefore exactly as strong (and as exposed — e.g. to an old recovery kit) as
+  the legacy vault's, by design: migration moves format, not trust. A future v2
+  rekey mints a fresh random `K_c`.
+- **Deterministic IVs — migration writes ONLY.** Each migration blob's GCM IV is
+  `IV = HKDF-SHA256(salt = <empty>, IKM = K_c, info = utf8("btv2-migration-iv") ‖ utf8(docId), L = 12)`
+  with `docId = "common"` or `"p.{portfolioId}"`. **Why this is safe:** GCM
+  breaks only when one `(key, IV)` pair encrypts two DIFFERENT plaintexts. In
+  the migration context the plaintext for a `docId` is a pure function of the
+  legacy document (the split is deterministic, §20, pinned byte-exactly by
+  vector family 4), the key is a pure function of `VK`, and the IV is a pure
+  function of `(K_c, docId)` — so each `(key, IV, plaintext)` triple is fixed
+  and unique per `docId`, and any two conforming writers produce identical
+  ciphertext. A client whose split serialization deviates from the pinned
+  vectors MUST NOT write migration blobs — that is what vector conformance
+  means. Normal (non-migration) operation keeps random IVs.
+- **Deterministic writer identity.** For blob-header bytes to be identical, the
+  migration also fixes the header's writer fields:
+  `deviceId = uuid(HKDF(K_c, "btv2-migration-device", 16))`,
+  `writeId(doc) = uuid(HKDF(K_c, utf8("btv2-migration-write") ‖ utf8(docId), 16))`,
+  `writtenAt` = the legacy envelope header's `writtenAt` verbatim,
+  `blobVersion = 1`. (`uuid(bytes)` = the 16 bytes with the RFC 4122 version
+  nibble forced to 4 and the variant bits to 10.)
+- **Deterministic header doc.** The successor header reuses the legacy vault's
+  KDF salt (`kdfSalt` = the legacy active wrapper's `kdf.salt`), and draws slot
+  0's `slotId` (16 bytes) and wrap IV (12 bytes) from one 28-byte expansion
+  `HKDF(K_c, "btv2-migration-header", 28)`; `writtenAt` as above. A v1-migrated
+  vault keeps its legacy free-text passphrase (r2 §9), so the header's KEK is
+  derived from the words the user already knows.
+- **Successor vault id.** `vaultId = uuid(SHA-256(utf8("btv2-migration-vault-id:") ‖ utf8(scopeId))[0..16))`
+  where `scopeId` is the account `userId` for server-coordinated migrations and
+  the Drive-local `accountId` for Drive-only vaults (§23). Public, derivable
+  before any unlock, and collision-answered by `VAULT_ID_TAKEN` = "you are
+  resuming".
+- **Server enforcement — the `If-Claim` precondition (A2.2).** While the legacy
+  row carries a live claim, every vault document write must send
+  `If-Claim: <clientNonce>`. Missing → `428 VAULT_PRECONDITION_REQUIRED`;
+  present but not the live claim's nonce (expired, superseded, or arriving
+  after the flip) → `409 VAULT_MIGRATION_CLAIMED`. Both carry the migration
+  `state` beside `error`. The check runs inside the write transaction. "Losers
+  wait" is enforced by the server, not by good manners.
+
+## 19. QR wrap hardened (supersedes §10's 6-digit PIN — A4.1)
+
+- **The one-time code is 8 characters of Crockford base32** — alphabet
+  `0123456789ABCDEFGHJKMNPQRSTVWXYZ` (no I, L, O, U) — exactly 40 bits, drawn
+  uniformly (5 CSPRNG bytes → eight 5-bit groups). Displayed grouped
+  `XXXX-XXXX`; entry normalization per Crockford: uppercase, separators
+  stripped, `I`/`L`→`1`, `O`→`0`.
+- **The KDF is normative:** `w = salt(16) ‖ iv(12) ‖ AES-256-GCM(KDF(code), P)`
+  with `KDF = Argon2id, m = 65536 (64 MiB), t = 3, p = 1`, 32-byte output, the
+  canonical code string (8 uppercase characters, no separators) as the UTF-8
+  password over the random 16-byte salt, and `AAD = utf8(vaultId)` — the same
+  Argon2id profile as the vault KDF, so no client ships a second cost profile.
+- **Threat math (normative).** A photograph or screen-grab of the QR screen
+  alone yields `w` and its GCM tag — an offline verification oracle whose
+  search space is the code: `2^40` candidates × one 64 MiB Argon2id evaluation
+  each. At ~0.35 s per guess that is ≈12,000 CPU-years, memory-hard and
+  GPU-hostile — versus ≈97 CPU-hours for the 6-digit PIN r2 specified. A
+  capture of BOTH screens (the QR and the reveal-code screen) defeats any
+  short-code wrap by construction; against that the controls remain the
+  re-auth gate, the 120 s TTL, the one-time single-use code, FLAG_SECURE +
+  recents exclusion on native, and the explicit screenshot warning on web.
+
+## 20. The §8 partition, corrected (A1.1–A1.3)
+
+- **`clientSecurity`, `mirrorProvenance` and `mergeLog` are document MEMBERS,
+  not entity kinds.** r2 §8 listed them among what `common` "owns"; a `common`
+  doc carrying them as entity kinds is rejected by both engines' fail-closed
+  parsers. `clientSecurity` and `mirrorProvenance` are members of the `common`
+  doc (per-vault, divergence rules within one vault). **`mergeLog` stays
+  PER-DOCUMENT**: every portfolio doc and the common doc carries its own —
+  merge records name bare document versions and cannot share one array across
+  N independently-versioned lineages (A1.2).
+- **The mergeLog bound is a write-side TRIM, never a parse-time rejection.**
+  Writers keep the newest 20 records; readers accept any length. A parse-time
+  cap would let a bookkeeping array make `common` unreadable and take
+  `clientSecurity` and `mirrorProvenance` — the whole vault — down with it.
+- **The exact 26-kind partition** (normative; pinned by vector family 3):
+  - `portfolio` doc (13): `portfolio`, `transaction`, `dividend`, `cashSource`,
+    `cashMovement`, `cashMovementTag`, `portfolioSetting`, `standingOrder`,
+    `standingOrderRun`, `importBatch`, `importRow`, `portfolioDailySnapshot`,
+    `portfolioSnapshotState`.
+  - `common` doc (13): `taxSetting`, `customAsset`, `customAssetValue`,
+    `cashTag`, `cashRule`, `cashBudget`, `expenseCategory`, `expenseRule`,
+    `expenseBudget`, `expenseTransaction`, `expenseBudgetFire`,
+    `cashBudgetFire`, `cashRuleTag`.
+  - No overlap, no remainder; the split asserts entities-in == entities-out and
+    UNKNOWN entity keys stay fatal on both ends (fail-closed, unchanged).
+- **Two-step transfer legs are normatively `withdrawal` then `deposit`**
+  (A1.3) — the two external cash-movement kinds. Never `transfer_out` /
+  `transfer_in`: both engines define those as never-external, so misusing them
+  silently corrupts time-weighted return (a phantom market loss in A, a
+  phantom gain in B). `transferGroupId` remains display-only.
+
+## 21. Header integrity tag — the §9 gap, closed (no GCM/GMAC)
+
+r2 §9 withdrew a fixed-nonce GMAC seal (correctly: two GMAC tags under one key
+with a reused nonce leak the authentication subkey) and deferred header
+integrity to this pass. The replacement is a deterministic MAC, safe under key
+reuse by construction:
+
+- **`header.mac = { "v": 1, "tag": base64(HMAC-SHA256(K_mac, canonicalHeaderBytes)) }`**
+  with `K_mac = HKDF-SHA256(salt = <empty>, IKM = K_c, info = "btv2-header-mac-v1", L = 32)`.
+- **`canonicalHeaderBytes`** = UTF-8 of the canonical JSON of the header object
+  with the `mac` member removed: object keys sorted lexicographically (by UTF-16
+  code unit) at every nesting level, arrays in order, no insignificant
+  whitespace, finite numbers only — the same canonical-JSON discipline the §4
+  merge already uses. Unknown members are INCLUDED: what a client preserves, it
+  authenticates.
+- **Write rule:** REQUIRED on every `formatVersion: 2` header written from r3
+  onward (build, passphrase change, every revision).
+- **Read rule (this arc):** absent → the header opens as **`unsealed`** —
+  tolerated for pre-r3 headers, and the next header write attaches the tag
+  (upgrade-on-write). Present and valid → **`verified`**. Present and INVALID →
+  authentication failure, fail closed. Clients surface the unsealed/verified
+  distinction; a later revision may end the tolerance.
+- **What it closes:** a blob store relabeling, adding or dropping portfolio
+  index entries, or editing `name`/`backends`/KDF parameters, is now detected
+  whenever a tag is present. **What it does not do:** replay of a complete
+  older `(header, mac)` pair — rollback protection remains the transport CAS's
+  job, which is why `headerVersion` is inside the authenticated bytes.
+
+## 22. "Locked = no reads", scoped (A5.1)
+
+r2 §8's "locked vault = no reads and no writes" means: **no plaintext
+RENDERING and no NEW WRITES while locked.** A client's working store may hold
+plaintext at rest under its own storage design (Room, IndexedDB); encrypting
+working stores at rest is explicitly out of this arc's scope. The no-new-writes
+half is unchanged (inline unlock, no queued writes).
+
+## 23. Drive-only migration claim (the §11 variant — A2.3)
+
+Drive-only installs have no server row to CAS, so the claim moves onto the
+medium, following §13's copy → verify → marker → retire pattern:
+
+- **Claim file** `btv2.migration.claim`, content
+  `{ "claim": 1, "nonce": <clientNonce>, "expiresAt": <ISO-8601> }`, 15-minute
+  TTL, renewable by its holder only.
+- Drive has no CAS, so arbitration is observational: after any create the
+  client RE-LISTS; duplicate claim files from a create race resolve to the
+  lexicographically smallest Drive file id on every device; losers delete only
+  their own file and wait. A takeover of an expired (or unparseable) claim is
+  an UPDATE of the existing file, never a second create, and nothing is
+  believed until a read-back shows the claimant's nonce alone.
+- **The flip** is the `btv2.{vaultId}.migrated` marker (§13). It is written
+  only by the live claim holder (re-checked immediately before the write — the
+  Drive analogue of `If-Claim`), then the claim file is retired. Marker
+  present → every later claim answers `already-migrated`. Resume at any
+  interruption = re-list and continue; before the marker, v1 is authoritative.
+
+## 24. v1 412 conflict hint, restored as a body member (A9)
+
+Every legacy `/vault` CAS 412 again tells the loser the winning version — as
+`currentVersion` at the top level of the body, the same shape the v2 surface
+uses, not as the ETag header the route once set: the 2026-08-06 ruling that
+error responses carry no cache validators (#1161) stands. One 412, zero
+follow-up GETs, no misleading validator on an error.
+
+## 25. Vectors — §16 delivered
+
+Published under `packages/domain/src/vaultVectors/` (the v1 vectors relocated
+there from `apps/web`, bytes unchanged); each family is a JSON fixture plus a
+replay test, fully deterministic (fixed keys, fixed salts, derived or fixed
+IVs, no randomness):
+
+1. `v2Header` — header build/derive/wrap/unwrap including the §21 `mac`;
+   negative cases: wrong words, tampered slot, tampered index with mac,
+   future formatVersion.
+2. `v2MultiSlot` — two passphrase slots wrapping one `K_c`; either phrase
+   opens its slot; slot order is authenticated (AAD binds the index).
+3. `v2Partition` — the §20 partition across all 26 kinds: a v1 document
+   containing every kind splits into the exact expected doc set.
+4. `v2Migration` — the full §18 transcript: legacy envelope in;
+   claim → write → verify → flip; derived `K_c`, deterministic IVs and writer
+   identity; byte-exact header and blob envelopes out.
+5. `v2RecoveryKit` — the v2 kit layout (vault name, id, backend set, the 12
+   words) and its import rules.
+6. `v2Qr` — the canonical QR string for a fixed input under the §19 code KDF,
+   plus the unwrap.
