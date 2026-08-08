@@ -39,11 +39,17 @@ export const MIGRATION_HEADER_INFO = 'btv2-migration-header';
 export const MIGRATION_VAULT_ID_CONTEXT = 'btv2-migration-vault-id:';
 
 /** The migration doc id used in IV/writeId derivation: `common` or `p.{portfolioId}`. */
-export function migrationDocId(doc: { kind: 'header' | 'common' | 'portfolio'; portfolioId?: string }): string {
+export function migrationDocId(doc: {
+  kind: 'header' | 'common' | 'portfolio';
+  portfolioId?: string;
+}): string {
   if (doc.kind === 'header') return 'header';
   if (doc.kind === 'common') return 'common';
   if (!doc.portfolioId) {
-    throw new VaultCryptoError('envelope-invalid', 'A migration portfolio doc needs a portfolioId.');
+    throw new VaultCryptoError(
+      'envelope-invalid',
+      'A migration portfolio doc needs a portfolioId.',
+    );
   }
   return `p.${doc.portfolioId}`;
 }
@@ -67,7 +73,10 @@ export async function deriveMigrationDeviceId(contentKey: Uint8Array): Promise<s
 }
 
 /** Deterministic per-doc write id: `uuid(HKDF(K_c, "btv2-migration-write" ‖ docId, 16))`. */
-export async function deriveMigrationWriteId(contentKey: Uint8Array, docId: string): Promise<string> {
+export async function deriveMigrationWriteId(
+  contentKey: Uint8Array,
+  docId: string,
+): Promise<string> {
   return uuidFromBytes(
     await hkdfSha256(contentKey, concat(utf8(MIGRATION_WRITE_INFO), utf8(docId)), 16),
   );
@@ -113,7 +122,9 @@ export async function deriveMigrationVaultId(scopeId: string): Promise<string> {
  * for the slot id (uuidFrom), then a 12-byte draw for the wrap IV. Any further
  * draw is an error — the migration header must be fully deterministic.
  */
-export function migrationHeaderRandom(material: MigrationHeaderMaterial): (length: number) => Uint8Array {
+export function migrationHeaderRandom(
+  material: MigrationHeaderMaterial,
+): (length: number) => Uint8Array {
   const queue: Uint8Array[] = [material.slotIdBytes, material.slotIvBytes];
   return (length: number) => {
     const next = queue.shift();

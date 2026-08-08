@@ -52,7 +52,9 @@ describe('both-backend reconcile (r3 §17 / mobile A8)', () => {
 
   it('an edit beats a tombstone at equal rev (§4 rule 2), never the reverse', () => {
     const edited = portfolioDoc({
-      transaction: [entity(TX_A, { side: 'buy', note: 'kept' }, { rev: 3, editedBy: DEVICE_PHONE })],
+      transaction: [
+        entity(TX_A, { side: 'buy', note: 'kept' }, { rev: 3, editedBy: DEVICE_PHONE }),
+      ],
     });
     const tombstoned = portfolioDoc({
       transaction: [

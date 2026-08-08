@@ -135,7 +135,8 @@ export function mergeVaultContentDocs(
   }
 
   const converged =
-    canonicalVaultJson(doc) === canonicalVaultJson(l) && canonicalVaultJson(l) === canonicalVaultJson(r);
+    canonicalVaultJson(doc) === canonicalVaultJson(l) &&
+    canonicalVaultJson(l) === canonicalVaultJson(r);
   return { doc: vaultContentDocSchema.parse(doc), converged };
 }
 
@@ -186,7 +187,9 @@ function unionMergeLog(
 ): VaultContentDoc['mergeLog'] {
   const byKey = new Map<string, VaultContentDoc['mergeLog'][number]>();
   for (const record of [...left, ...right]) byKey.set(canonicalVaultJson(record), record);
-  return [...byKey.values()].sort((a, b) => compareText(canonicalVaultJson(a), canonicalVaultJson(b)));
+  return [...byKey.values()].sort((a, b) =>
+    compareText(canonicalVaultJson(a), canonicalVaultJson(b)),
+  );
 }
 
 /**
@@ -201,7 +204,9 @@ function unionMirrorProvenance(
   if (left == null && right == null) return undefined;
   const byKey = new Map<string, VaultMirrorProvenance>();
   for (const row of [...(left ?? []), ...(right ?? [])]) byKey.set(canonicalVaultJson(row), row);
-  return [...byKey.values()].sort((a, b) => compareText(canonicalVaultJson(a), canonicalVaultJson(b)));
+  return [...byKey.values()].sort((a, b) =>
+    compareText(canonicalVaultJson(a), canonicalVaultJson(b)),
+  );
 }
 
 function reconcileClientSecurity(

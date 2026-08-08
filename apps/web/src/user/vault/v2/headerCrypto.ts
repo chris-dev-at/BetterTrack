@@ -250,6 +250,48 @@ export async function changeVaultPassphrase(
 }
 
 /**
+ * Add another passphrase slot wrapping the SAME `K_c` (the §2 multi-slot hook,
+ * pinned by vector family 2). The new slot's KEK is derived from `passphrase`
+ * over the header's existing `kdf`, and its AAD binds its INDEX — so a blob
+ * store cannot reorder the slots and re-attribute a wrapped key once shared
+ * vaults add members. Any slot still opens the vault.
+ */
+export async function addPassphraseSlot(
+  header: VaultHeaderDoc,
+  contentKey: Uint8Array,
+  passphrase: string,
+  write: { deviceId: string; writeId: string; writtenAt: string },
+  randomBytes: RandomBytes = secureRandomBytes,
+  deps?: VaultCryptoDeps,
+): Promise<VaultHeaderDoc> {
+  const normalized = requireVaultPassphrase(passphrase);
+  const slotIndex = header.keySlots.length;
+  let kek: Uint8Array | undefined;
+  try {
+    kek = await deriveVaultKek(normalized, header.kdf, deps);
+    const slot = await wrapContentKey({
+      contentKey,
+      kek,
+      slotId: uuidFrom(randomBytes),
+      slotIndex,
+      vaultId: header.vaultId,
+      randomBytes,
+    });
+    const next = vaultHeaderDocSchema.parse({
+      ...header,
+      keySlots: [...header.keySlots, slot],
+      headerVersion: header.headerVersion + 1,
+      deviceId: write.deviceId,
+      writeId: write.writeId,
+      writtenAt: write.writtenAt,
+    });
+    return await attachHeaderMac(next, contentKey);
+  } finally {
+    if (kek != null) zeroBytes(kek);
+  }
+}
+
+/**
  * Produce the next header revision (index/name/backend edits), re-sealed under
  * the vault content key (r3 §21) — which is also the upgrade-on-write path for
  * a pre-r3 `unsealed` header: its first revision attaches the tag.
