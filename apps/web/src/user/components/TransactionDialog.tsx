@@ -212,10 +212,14 @@ const inputClass = cx(
   '[&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none [&]:[-moz-appearance:textfield]',
 );
 
-/** Grey uppercase field label that turns gold while its field is focused. */
+/**
+ * Grey uppercase field label that lifts while its field is focused — gold in
+ * dark, and the page ink in light, where gold letters are sub-AA by owner
+ * decision and the field's own gold focus ring is already the mark.
+ */
 function FieldLabel({ children }: { children: ReactNode }) {
   return (
-    <span className="text-[0.7rem] font-medium uppercase tracking-wide text-[var(--bt-muted)] transition-colors group-focus-within:text-[var(--bt-gold-ink)]">
+    <span className="text-[0.7rem] font-medium uppercase tracking-wide text-[var(--bt-muted)] transition-colors group-focus-within:text-[var(--bt-gold-ink-safe)]">
       {children}
     </span>
   );
@@ -1221,7 +1225,7 @@ export interface RowUncovered {
 function AutoHint() {
   const t = useT();
   return (
-    <span className="ml-1 text-[0.65rem] font-normal uppercase tracking-wide bt-gold">
+    <span className="ml-1 text-[0.65rem] font-normal uppercase tracking-wide bt-gold-note">
       {t('portfolio.transaction.autoHint')}
     </span>
   );
@@ -1341,7 +1345,7 @@ function AssetCard({
         <span className="truncate text-xs bt-muted">{asset.name}</span>
       </span>
       {onChangeAsset ? (
-        <span className="shrink-0 bt-gold">
+        <span className="shrink-0 bt-gold-mark">
           <Chevron />
         </span>
       ) : null}
@@ -1460,7 +1464,9 @@ function CashCard({ row, cash, t }: { row: Row; cash: RowCash; t: TranslateFn })
           className="flex flex-col gap-2 rounded-md border p-3"
           style={{ borderColor: 'var(--bt-border-accent)', background: 'var(--bt-gold-soft)' }}
         >
-          <p className="text-xs leading-relaxed bt-gold">
+          {/* The gold-washed, gold-bordered box IS the mark, so the sentence
+              takes the ink swap alone rather than a dot as well. */}
+          <p className="text-xs leading-relaxed bt-gold-safe">
             {t('portfolio.transaction.backdatedWarning', { date: cash.buyDate })}
           </p>
           <label className="flex items-center gap-2 text-xs font-medium bt-soft">
@@ -1838,7 +1844,7 @@ function RowFields({
                   className={cx(
                     'pointer-events-auto rounded p-0.5 transition disabled:opacity-40',
                     link.linked
-                      ? 'text-[var(--bt-gold-ink)]'
+                      ? 'text-[var(--bt-gold-graphic)]'
                       : 'bt-muted hover:text-[var(--bt-text-soft)]',
                   )}
                 >
@@ -1851,7 +1857,7 @@ function RowFields({
       </div>
 
       {link?.note ? (
-        <p className="-mt-2 text-xs bt-gold" role="status">
+        <p className="-mt-2 text-xs bt-gold-note" role="status">
           {link.note}
         </p>
       ) : null}
