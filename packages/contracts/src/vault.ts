@@ -14,6 +14,7 @@ import { mirrorRowKindSchema } from './mirrorchain';
 import {
   cashMovementKindSchema,
   cashSourceTypeSchema,
+  portfolioKindSchema,
   portfolioVisibilitySchema,
   taxCountrySchema,
   taxModeSchema,
@@ -657,6 +658,18 @@ const portfolioRowSchema = z
     sortOrder: z.number().int(),
     defaultPayFromCash: z.boolean(),
     archivedAt: timestampSchema.nullable(),
+    /**
+     * The `portfolios.kind` column (board #69). The ONE `.optional()` field in
+     * this strict graph, and for exactly one reason: disable strict-parses the
+     * rows a vault ALREADY holds (`paranoidDisable.ts` → `parseStrictEntity`),
+     * and every document written before this column existed carries no `kind`
+     * key at all. Required here would lock every pre-existing paranoid vault
+     * out of disable. Nothing is defaulted or derived by admitting `undefined`
+     * — absent and `null` both mean what the nullable column itself means,
+     * "unclassified" — and every writer below (enable capture, vault create)
+     * emits the field explicitly, so no *new* document is ever missing it.
+     */
+    kind: portfolioKindSchema.nullable().optional(),
   })
   .strict();
 

@@ -208,6 +208,10 @@ export function createParanoidRehydrationSourceRepository(
             sortOrder: entity.data.sortOrder,
             defaultPayFromCash: entity.data.defaultPayFromCash,
             archivedAt: entity.data.archivedAt ? new Date(entity.data.archivedAt) : null,
+            // Absent (a vault written before the column existed) and null both
+            // restore as "unclassified" — the column's own zero value, so
+            // nothing is invented and nothing the vault carried is dropped.
+            kind: entity.data.kind ?? null,
           })),
         );
       });

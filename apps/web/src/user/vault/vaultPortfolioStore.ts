@@ -202,7 +202,10 @@ export interface VaultStandingOrderOccurrenceResult {
  */
 export interface VaultPortfolioStore {
   listPortfolios(signal?: AbortSignal, includeArchived?: boolean): Promise<PortfolioListResponse>;
-  createPortfolio(name: CreatePortfolioRequest['name']): Promise<PortfolioSummary>;
+  createPortfolio(
+    name: CreatePortfolioRequest['name'],
+    kind?: CreatePortfolioRequest['kind'],
+  ): Promise<PortfolioSummary>;
   getPortfolio(portfolioId: string, signal?: AbortSignal): Promise<PortfolioResponse>;
   updatePortfolio(portfolioId: string, patch: UpdatePortfolioRequest): Promise<PortfolioSummary>;
   archivePortfolio(portfolioId: string): Promise<PortfolioSummary>;
@@ -372,8 +375,10 @@ export function createVaultPortfolioStore(
       );
     },
 
-    async createPortfolio(name) {
-      const parsedName = createPortfolioRequestSchema.parse({ name }).name;
+    async createPortfolio(name, kind) {
+      const parsed = createPortfolioRequestSchema.parse(
+        kind === undefined ? { name } : { name, kind },
+      );
       const entity = await appendEntity(context, 'portfolio', (document, id, timestamp) => {
         const portfolios = portfolioSummariesFromDocument(document);
         const highestSortOrder = portfolios.reduce(
@@ -386,11 +391,12 @@ export function createVaultPortfolioStore(
           timestamp,
           strictPortfolioData({
             userId: portfolioOwnerUserId(document),
-            name: parsedName,
+            name: parsed.name,
             visibility: 'private',
             sortOrder: highestSortOrder + 1,
             defaultPayFromCash: false,
             archivedAt: null,
+            kind: parsed.kind ?? null,
           }),
         );
       });
@@ -2994,6 +3000,10 @@ function portfolioSummaryFromEntity(entity: VaultEntity, isDefault: boolean): Po
         isDefault,
         defaultPayFromCash: booleanField(entity.data, 'defaultPayFromCash', false),
         archivedAt: nullableStringField(entity.data, 'archivedAt'),
+        // Absent on every portfolio entity written before board #69; `null` is
+        // the same "unclassified" the column means, so the client falls back to
+        // DEFAULT_PORTFOLIO_KIND exactly as it does for a normal account.
+        kind: nullableStringField(entity.data, 'kind'),
       }),
     'A vault portfolio does not match the portfolio contract.',
   );

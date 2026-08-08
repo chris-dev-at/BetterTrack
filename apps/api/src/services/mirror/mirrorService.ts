@@ -1665,13 +1665,18 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
   }
 
   function toInviteDto(row: MirrorInviteDetailRow, selfUserId: string): MirrorInvite {
+    const direction = row.toUser === selfUserId ? 'incoming' : 'outgoing';
     return {
       id: row.id,
       chainId: row.chainId,
       chainName: row.chainName,
       fromUsername: row.fromUsername,
       toUsername: row.toUsername,
-      direction: row.toUser === selfUserId ? 'incoming' : 'outgoing',
+      // The face of the OTHER party — the inviter on an incoming row, the
+      // invitee on an outgoing one — so it always pairs with the username the
+      // row leads with (board #70). Never the viewer's own icon.
+      profileIcon: direction === 'incoming' ? row.fromProfileIcon : row.toProfileIcon,
+      direction,
       createdAt: row.createdAt.toISOString(),
     };
   }

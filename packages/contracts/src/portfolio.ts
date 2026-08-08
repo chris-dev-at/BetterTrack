@@ -53,6 +53,34 @@ export const portfolioVisibilitySchema = z.enum(['private', 'friends']);
 export type PortfolioVisibility = z.infer<typeof portfolioVisibilitySchema>;
 
 /**
+ * Portfolio kind — the purpose category a portfolio is filed under. It drives
+ * the icon + hue a portfolio renders with in the switcher trigger, the switcher
+ * list and the portfolio settings page, so a long portfolio list stays scannable
+ * at a glance.
+ *
+ * ⚠️ NAMING: `kind` is the internal name only. To the user this is the
+ * portfolio's **Icon** — a colour plus a glyph, not a taxonomy they have to
+ * reason about. Rename the copy, never these tokens.
+ *
+ * ⚠️ FROZEN ORDER + TOKENS. This is the graduated form of the web client's
+ * `portfolioKinds.ts` localStorage stopgap, and the mobile app ported the same
+ * five hues off it (board #69). The tokens and their order are the wire
+ * contract both clients already ship: never rename, renumber or reorder them.
+ * A new kind goes at the END and brings its own hue.
+ */
+export const PORTFOLIO_KINDS = ['private', 'family', 'business', 'savings', 'property'] as const;
+export const portfolioKindSchema = z.enum(PORTFOLIO_KINDS);
+export type PortfolioKind = z.infer<typeof portfolioKindSchema>;
+
+/**
+ * The kind an unclassified portfolio (`kind === null`) renders as. Kept as a
+ * *client-side* fallback rather than a column default on purpose: a stored
+ * `null` means "the user never chose", which is what lets a client that carried
+ * its own local kinds fall back to them until the first server write.
+ */
+export const DEFAULT_PORTFOLIO_KIND: PortfolioKind = 'private';
+
+/**
  * MIRRORCHAIN badge on a portfolio summary (V5-P7 M5, design §11): present
  * exactly when this portfolio is a **synced copy of an active chain**. The
  * portfolio header renders the avatar stack + syncing state off this field;
@@ -114,6 +142,18 @@ export const portfolioSummarySchema = z
      */
     archivedAt: z.string().datetime().nullable(),
     /**
+     * The portfolio's kind — its Icon, in user-facing copy (board #69). `null`
+     * when the user never chose one; the client renders
+     * {@link DEFAULT_PORTFOLIO_KIND} then, and a client that carried its own
+     * local kinds before this field existed may fall back to those until the
+     * first server write.
+     *
+     * Optional in the schema so pre-#69 fixtures still parse and both clients
+     * adopt the field with zero call-site changes (the server always emits it —
+     * this mirrors how `profileIcon` graduated onto the social DTOs).
+     */
+    kind: portfolioKindSchema.nullable().optional(),
+    /**
      * MIRRORCHAIN synced-copy badge (V5-P7 M5, design §11): present exactly
      * when this portfolio is a synced copy of an active chain. Absent on every
      * normal portfolio, so pre-M5 clients are unaffected.
@@ -154,7 +194,15 @@ export type PortfolioListResponse = z.infer<typeof portfolioListResponseSchema>;
 
 /** `POST /portfolios` body — create a named portfolio (§13.2 V2-P8). */
 export const createPortfolioRequestSchema = z
-  .object({ name: z.string().trim().min(1).max(120) })
+  .object({
+    name: z.string().trim().min(1).max(120),
+    /**
+     * The Icon the creation flow picked (board #69). Omitted → the row is
+     * stored unclassified (`null`) and renders as {@link DEFAULT_PORTFOLIO_KIND},
+     * so the create body stays byte-compatible for callers that never send it.
+     */
+    kind: portfolioKindSchema.optional(),
+  })
   .strict();
 export type CreatePortfolioRequest = z.infer<typeof createPortfolioRequestSchema>;
 
@@ -176,6 +224,11 @@ export const updatePortfolioRequestSchema = z
     /** Required when the legacy visibility write would widen the current audience. */
     confirmWiden: z.boolean().optional(),
     defaultPayFromCash: z.boolean().optional(),
+    /**
+     * Set the portfolio's Icon (board #69). Only a concrete kind is accepted —
+     * the picker has no "none" option, so there is no clear-back-to-null verb.
+     */
+    kind: portfolioKindSchema.optional(),
   })
   .strict();
 export type UpdatePortfolioRequest = z.infer<typeof updatePortfolioRequestSchema>;

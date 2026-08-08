@@ -603,6 +603,13 @@
       "when": 1786064750000,
       "tag": "0085_tax_year_unlocks",
       "breakpoints": true
+    },
+    {
+      "idx": 86,
+      "version": "7",
+      "when": 1786095381216,
+      "tag": "0086_portfolio_kind",
+      "breakpoints": true
     }
   ]
 }

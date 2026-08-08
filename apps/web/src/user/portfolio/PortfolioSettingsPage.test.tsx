@@ -30,7 +30,7 @@ import {
 import { PortfolioSettingsPage } from './PortfolioSettingsPage';
 import { setViewportWidth } from '../../test/viewport';
 import { ACTIVE_PORTFOLIO_PARAM } from './PortfolioSwitcher';
-import { getPortfolioKind, resetPortfolioKindCache, setPortfolioKind } from './portfolioKinds';
+import { resetPortfolioKindCache, type PortfolioKind } from './portfolioKinds';
 
 type Summary = {
   id: string;
@@ -40,6 +40,7 @@ type Summary = {
   isDefault: boolean;
   defaultPayFromCash: boolean;
   archivedAt: string | null;
+  kind: PortfolioKind | null;
   mirror?: {
     chainId: string;
     chainName: string;
@@ -56,6 +57,7 @@ function summary(over: Partial<Summary> & { id: string; name: string }): Summary
     isDefault: false,
     defaultPayFromCash: false,
     archivedAt: null,
+    kind: null,
     ...over,
   };
 }
@@ -254,34 +256,68 @@ describe('PortfolioSettingsPage — icon', () => {
     );
   });
 
-  test('picking an icon persists it for that portfolio only', async () => {
+  test('picking an icon PATCHes it onto that portfolio only', async () => {
+    // Board #69: the kind lives on the row now, so the pick is a server write —
+    // it follows the account to every device instead of one browser.
     mockLists([MAIN, TRADING]);
+    vi.mocked(updatePortfolio).mockImplementation((_id, patch) => {
+      const next = { ...TRADING, ...patch };
+      mockLists([MAIN, next]);
+      return Promise.resolve(next);
+    });
     renderSettings('p2');
 
     await userEvent.click(await screen.findByRole('radio', { name: 'Property' }));
 
+    await waitFor(() => expect(updatePortfolio).toHaveBeenCalledWith('p2', { kind: 'property' }));
     await waitFor(() =>
       expect(screen.getByRole('radio', { name: 'Property' })).toHaveAttribute(
         'aria-checked',
         'true',
       ),
     );
-    expect(getPortfolioKind('p2')).toBe('property');
-    // Untouched portfolios keep the default.
-    expect(getPortfolioKind('p1')).toBe('private');
-    // …and it survives a reload of the store from localStorage.
-    resetPortfolioKindCache();
-    expect(getPortfolioKind('p2')).toBe('property');
+    // Exactly one portfolio was written — the other keeps whatever it had.
+    expect(updatePortfolio).toHaveBeenCalledTimes(1);
   });
 
-  test('shows the stored icon on mount', async () => {
-    setPortfolioKind('p2', 'savings');
-    mockLists([MAIN, TRADING]);
+  test('shows the kind the server carries on mount', async () => {
+    mockLists([MAIN, summary({ id: 'p2', name: 'Trading', sortOrder: 1, kind: 'savings' })]);
     renderSettings('p2');
 
     expect(await screen.findByRole('radio', { name: 'Savings' })).toHaveAttribute(
       'aria-checked',
       'true',
+    );
+  });
+
+  test('falls back to the pre-#69 localStorage kind until the server carries one', async () => {
+    // The stopgap documented no data migration, so a browser that classified
+    // its portfolios before this shipped must look unchanged: the local value
+    // is READ for a row the server has no kind for (`kind: null`)…
+    localStorage.setItem('bt.portfolio.kinds', JSON.stringify({ p2: 'business' }));
+    resetPortfolioKindCache();
+    mockLists([MAIN, TRADING]);
+    renderSettings('p2');
+
+    expect(await screen.findByRole('radio', { name: 'Business' })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    );
+  });
+
+  test('the server value wins over a stale local one', async () => {
+    localStorage.setItem('bt.portfolio.kinds', JSON.stringify({ p2: 'business' }));
+    resetPortfolioKindCache();
+    mockLists([MAIN, summary({ id: 'p2', name: 'Trading', sortOrder: 1, kind: 'family' })]);
+    renderSettings('p2');
+
+    expect(await screen.findByRole('radio', { name: 'Family' })).toHaveAttribute(
+      'aria-checked',
+      'true',
+    );
+    expect(screen.getByRole('radio', { name: 'Business' })).toHaveAttribute(
+      'aria-checked',
+      'false',
     );
   });
 });
