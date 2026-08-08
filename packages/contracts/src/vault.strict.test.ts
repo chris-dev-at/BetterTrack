@@ -164,6 +164,7 @@ const fixtures: VaultStrictEntity[] = [
       sortOrder: 2,
       defaultPayFromCash: true,
       archivedAt: '2026-07-25T10:00:00.000Z',
+      kind: 'business',
     },
   },
   {
@@ -562,6 +563,33 @@ describe('strict vault document v1', () => {
     expect(vaultStrictEntitySchema.safeParse({ ...expense, data: withoutDedupHash }).success).toBe(
       false,
     );
+  });
+
+  it('admits a portfolio row written before `kind` existed, and never invents one', () => {
+    // The ONE optional field in the strict graph, and the reason is mechanical:
+    // disable strict-parses the rows a vault ALREADY holds, and every document
+    // written before board #69 carries no `kind` key at all. Required would
+    // lock every pre-existing paranoid vault out of disable. Absent stays
+    // absent — it is not defaulted to 'private', which would fabricate a choice
+    // the user never made and destroy the null the restore path needs.
+    const portfolio = fixtures.find((fixture) => fixture.kind === 'portfolio');
+    if (portfolio?.kind !== 'portfolio') throw new Error('portfolio fixture missing');
+    const { kind: _omitted, ...withoutKind } = portfolio.data;
+    const parsed = vaultStrictEntitySchema.parse({ ...portfolio, data: withoutKind });
+    if (parsed.kind !== 'portfolio') throw new Error('portfolio parse changed kind');
+    expect(parsed.data.kind).toBeUndefined();
+    expect('kind' in parsed.data).toBe(false);
+    // A stored null stays null, and a bogus token is still refused.
+    expect(
+      vaultStrictEntitySchema.safeParse({ ...portfolio, data: { ...portfolio.data, kind: null } })
+        .success,
+    ).toBe(true);
+    expect(
+      vaultStrictEntitySchema.safeParse({
+        ...portfolio,
+        data: { ...portfolio.data, kind: 'yacht' },
+      }).success,
+    ).toBe(false);
   });
 
   it('keeps assets.meta.recategorize and every sibling metadata field', () => {

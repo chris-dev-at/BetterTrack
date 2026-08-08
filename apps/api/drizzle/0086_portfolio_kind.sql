@@ -1,0 +1,13 @@
+-- Board #69 — the portfolio's purpose category ("Icon" in user-facing copy)
+-- graduates off the web client's localStorage stopgap onto the row itself.
+--
+-- Nullable with no default on purpose: NULL means "the user never chose", which
+-- is what lets a client that carried its own local kinds fall back to them until
+-- the first server write. A DEFAULT 'private' would be indistinguishable from a
+-- deliberate choice and would silently discard every locally stored kind.
+--
+-- Bare text, like `users.profile_icon`: the token set is finite and owned by the
+-- contract (`PORTFOLIO_KINDS`) and validated at the service write path, so a
+-- sixth kind stays a code-only change rather than an `ALTER TYPE ... ADD VALUE`
+-- that cannot run inside drizzle's transactional migration.
+ALTER TABLE "portfolios" ADD COLUMN "kind" text;

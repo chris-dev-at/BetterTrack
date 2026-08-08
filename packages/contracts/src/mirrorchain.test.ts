@@ -7,6 +7,8 @@ import {
   MIRROR_OP_VERSION,
   SOURCE_TAG_SYNC_MIRRORCHAIN,
   mirrorAttributionSchema,
+  mirrorInviteListResponseSchema,
+  mirrorInviteSchema,
   mirrorOpPayloadSchema,
   mirrorRowInfoSchema,
 } from './mirrorchain';
@@ -173,5 +175,55 @@ describe('additive DTO field schemas', () => {
       mirrorRowInfoSchema.safeParse({ mirrorId: MIRROR_A, version: 41, addedBy: attribution })
         .success,
     ).toBe(true);
+  });
+});
+
+describe('mirror invite rows carry a face (board #70)', () => {
+  const invite = {
+    id: '018f0000-0000-7000-8000-0000000000e1',
+    chainId: '018f0000-0000-7000-8000-0000000000e2',
+    chainName: 'Household',
+    fromUsername: 'alice',
+    toUsername: 'bob',
+    profileIcon: 'fox',
+    direction: 'incoming' as const,
+    createdAt: '2026-08-07T09:00:00.000Z',
+  };
+
+  it('requires the icon field, nullable — the same shape the member roster uses', () => {
+    // Required-and-nullable, not optional: the server always emits it, and a
+    // client that always finds the key never has to distinguish "no icon" from
+    // "old server". `null` covers both "never picked one" and the deleted
+    // inviter (whose `fromUsername` is null too).
+    expect(mirrorInviteSchema.safeParse(invite).success).toBe(true);
+    expect(mirrorInviteSchema.safeParse({ ...invite, profileIcon: null }).success).toBe(true);
+    expect(
+      mirrorInviteSchema.safeParse({ ...invite, fromUsername: null, profileIcon: null }).success,
+    ).toBe(true);
+    const { profileIcon: _omitted, ...withoutIcon } = invite;
+    expect(mirrorInviteSchema.safeParse(withoutIcon).success).toBe(false);
+  });
+
+  it('stays strict — the icon is the only field the row grew', () => {
+    expect(Object.keys(mirrorInviteSchema.parse(invite)).sort()).toEqual([
+      'chainId',
+      'chainName',
+      'createdAt',
+      'direction',
+      'fromUsername',
+      'id',
+      'profileIcon',
+      'toUsername',
+    ]);
+    expect(mirrorInviteSchema.safeParse({ ...invite, email: 'a@b.test' }).success).toBe(false);
+  });
+
+  it('carries on both directions of the list response', () => {
+    const parsed = mirrorInviteListResponseSchema.parse({
+      incoming: [invite],
+      outgoing: [{ ...invite, direction: 'outgoing', profileIcon: 'panda' }],
+    });
+    expect(parsed.incoming[0]!.profileIcon).toBe('fox');
+    expect(parsed.outgoing[0]!.profileIcon).toBe('panda');
   });
 });
