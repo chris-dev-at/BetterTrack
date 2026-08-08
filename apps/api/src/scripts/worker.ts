@@ -101,6 +101,7 @@ import { createMirrorService } from '../services/mirror';
 import { createPortfolioService } from '../services/portfolio/portfolioService';
 import { createPortfolioSnapshotService } from '../services/portfolio/portfolioSnapshots';
 import { createTaxService } from '../services/tax/taxService';
+import { createTaxYearLockService } from '../services/tax/taxYearLockService';
 import { createUsageAnalyticsRepository } from '../data/repositories/usageAnalyticsRepository';
 import { createUsageAnalyticsService } from '../services/analytics/usageAnalyticsService';
 import { createLogger } from '../logger';
@@ -358,6 +359,17 @@ const audience = createAudienceService({
   logger,
   paranoid: paranoidGuard,
 });
+// Tax year locking (§16 2026-08-07): the worker's replica-apply paths run
+// with `force` (origin-gated), but the guard must exist for any non-force
+// path a job takes — same policy as the API composes.
+const taxYearLock = createTaxYearLockService({
+  config,
+  redis: deadLetterConnection,
+  taxRepo,
+  userRepo: workerUserRepo,
+  passwordHasher: createPasswordHasher(),
+  audit,
+});
 const taxService = createTaxService({
   taxRepo,
   portfolioSettingsRepo: createPortfolioSettingsRepository(db),
@@ -367,6 +379,7 @@ const taxService = createTaxService({
   portfolioRepo,
   currencyService,
   snapshots,
+  yearLock: taxYearLock,
   logger,
   paranoid: paranoidGuard,
 });
@@ -386,6 +399,7 @@ const portfolioService = createPortfolioService({
   }),
   snapshots,
   taxService,
+  yearLock: taxYearLock,
   friendshipRepo,
   audience,
   profile: profileRepo,

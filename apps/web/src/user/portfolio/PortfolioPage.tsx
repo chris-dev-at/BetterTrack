@@ -1603,7 +1603,11 @@ export function PortfolioPage() {
     // transient-sounding "try again" the user would retry forever.
     onError: (err) =>
       setActionError(
-        err instanceof ApiError && err.code === 'CASH_LEDGER_WOULD_GO_NEGATIVE'
+        // TAX_YEAR_LOCKED (§16 2026-08-07): like the solvency gate, the
+        // refusal is deliberate — the server copy names the locked year and
+        // the unlock path the user must take first.
+        err instanceof ApiError &&
+          (err.code === 'CASH_LEDGER_WOULD_GO_NEGATIVE' || err.code === 'TAX_YEAR_LOCKED')
           ? err.message
           : err instanceof ApiError && err.code === 'MIRROR_CONFLICT'
             ? t('portfolio.transaction.mirrorConflict')

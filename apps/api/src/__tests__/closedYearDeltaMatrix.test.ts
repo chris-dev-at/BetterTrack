@@ -108,6 +108,16 @@ async function setup() {
   const agent = await loginAgent(harness.app, user.email, user.password);
   const pid = await defaultPortfolioId(agent);
   const asset = await seedAsset();
+  // Amendment mode (§16 2026-08-07): elapsed years now LOCK against mutations
+  // until explicitly unlocked. Every cell of this matrix backdates into the
+  // closed fixture years by design — run with them unlocked, which is exactly
+  // the state the closed-year ΔF machinery operates in. The lock gate itself
+  // is pinned by `taxYearLock.test.ts`; the report `locked` flag reads false
+  // for these years (elapsed but amendable).
+  await harness.db
+    .insert(schema.taxYearUnlocks)
+    .values([2024, 2025, 2026].map((year) => ({ userId: user.id, year })))
+    .onConflictDoNothing();
   return { agent, pid, asset };
 }
 
@@ -576,8 +586,9 @@ describe('pre-#635 legacy drift is preserved as locked residue, never healed', (
     expect(res.status).toBe(200);
     const year2026 = res.body.years.find((y: { year: number }) => y.year === 2026);
     // Held (450) is reported as-is; the € 100 gap to the decomposition (550)
-    // is locked residue, not drift to repair.
-    expect(year2026).toMatchObject({ locked: true, taxNetEur: 450 });
+    // is locked residue, not drift to repair. (`locked: false` = the year is
+    // machinery-closed but explicitly unlocked for these amendment writes.)
+    expect(year2026).toMatchObject({ locked: false, taxNetEur: 450 });
     expect(taxMovements(await cashMovements(agent, pid))).toHaveLength(2);
   });
 
