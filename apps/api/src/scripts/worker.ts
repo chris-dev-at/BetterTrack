@@ -167,8 +167,14 @@ const paranoidGuard = createParanoidModeGuard({
   withLockedPrivacyModes: (userIds, run) => withLockedPrivacyModes(lockDb, userIds, run),
 });
 const paranoidSubjects = createParanoidEnforcementRepository(db);
+// Vaults v2 (§3): a vaulted portfolio is blocked for the same reason a paranoid
+// account's is — the job's input rows no longer exist in cleartext.
 const isBlockedPortfolio = async (portfolioId: string) =>
-  isParanoidOwnedSubjectBlocked(await paranoidSubjects.portfolioOwner(portfolioId), paranoidGuard);
+  isParanoidOwnedSubjectBlocked(
+    await paranoidSubjects.portfolioOwner(portfolioId),
+    paranoidGuard,
+    'portfolioJobs',
+  );
 const runPortfolioJobIfAllowed = async (portfolioId: string, action: () => Promise<void>) =>
   runIfParanoidOwnedSubjectAllowed(
     await paranoidSubjects.portfolioOwner(portfolioId),

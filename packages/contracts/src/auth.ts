@@ -20,6 +20,23 @@ export const USERNAME_PATTERN = /^[a-zA-Z0-9_.-]+$/;
 export const usernameSchema = z.string().min(3).max(40).regex(USERNAME_PATTERN);
 export const emailSchema = z.string().email().max(320);
 
+/**
+ * `POST /auth/reauth` — generic session step-up. The session identifies the
+ * subject, so there is deliberately no user selector in the body.
+ *
+ * `purpose` is caller-supplied provenance recorded on the audit row (for
+ * example `vault.qr_reveal`). It is never trusted for authorization and never
+ * changes what the server verifies — it exists so an operator reading the audit
+ * log can tell which surface asked.
+ */
+export const reauthRequestSchema = z
+  .object({
+    password: z.string().min(1).max(512),
+    purpose: z.string().trim().min(1).max(64).optional(),
+  })
+  .strict();
+export type ReauthRequest = z.infer<typeof reauthRequestSchema>;
+
 export const loginRequestSchema = z
   .object({
     identifier: z.string().min(1).max(320),
