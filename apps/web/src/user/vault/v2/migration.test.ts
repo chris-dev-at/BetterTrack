@@ -98,7 +98,7 @@ async function fixtureHeader() {
   return buildVaultHeader({
     vaultId: FIXTURE_VAULT_ID,
     name: 'My vault',
-    backends: ['server'],
+    backends: 'server',
     passphrase: FIXTURE_PASSPHRASE,
     deviceId: FIXTURE_DEVICE_ID,
     writeId: FIXTURE_WRITE_ID,

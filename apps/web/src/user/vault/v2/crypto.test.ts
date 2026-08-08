@@ -47,7 +47,7 @@ function buildHeader(overrides: Partial<Parameters<typeof buildVaultHeader>[0]> 
   return buildVaultHeader({
     vaultId: FIXTURE_VAULT_ID,
     name: 'Drive vault',
-    backends: ['drive'],
+    backends: 'drive',
     passphrase: FIXTURE_PASSPHRASE,
     deviceId: FIXTURE_DEVICE_ID,
     writeId: FIXTURE_WRITE_ID,
@@ -230,7 +230,7 @@ describe('vault v2 header', () => {
     const built = await buildVaultHeader({
       vaultId: FIXTURE_VAULT_ID,
       name: 'Server vault',
-      backends: ['server'],
+      backends: 'server',
       passphrase: FIXTURE_PASSPHRASE,
       deviceId: FIXTURE_DEVICE_ID,
       writeId: FIXTURE_WRITE_ID,

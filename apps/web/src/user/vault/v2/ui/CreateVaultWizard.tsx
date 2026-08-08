@@ -1,4 +1,4 @@
-import { VAULT2_NAME_MAX_LENGTH, type VaultBackendSet } from '@bettertrack/contracts';
+import { VAULT2_NAME_MAX_LENGTH, type VaultBackends } from '@bettertrack/contracts';
 import { useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import { uuidv7 } from 'uuidv7';
@@ -21,15 +21,9 @@ import { checkVaultPassphrase, generateVaultPassphrase, pickConfirmationPosition
  */
 
 type Step = 1 | 2 | 3 | 4;
-type BackendChoice = 'server' | 'drive' | 'both';
 
-const BACKEND_SETS: Record<BackendChoice, VaultBackendSet> = {
-  server: ['server'],
-  drive: ['drive'],
-  both: ['server', 'drive'],
-};
-
-const BACKEND_CHOICES: BackendChoice[] = ['server', 'drive', 'both'];
+/** The wizard's three cards are exactly the contract's backend selection. */
+const BACKEND_CHOICES: VaultBackends[] = ['server', 'drive', 'both'];
 
 export interface CreateVaultWizardProps {
   open: boolean;
@@ -42,7 +36,7 @@ export function CreateVaultWizard({ open, onClose, onCreated }: CreateVaultWizar
   const t = useT();
   const [step, setStep] = useState<Step>(1);
   const [name, setName] = useState('');
-  const [backend, setBackend] = useState<BackendChoice>('server');
+  const [backend, setBackend] = useState<VaultBackends>('server');
   const [passphrase, setPassphrase] = useState<string | null>(null);
   const [written, setWritten] = useState(false);
   const [answers, setAnswers] = useState<Record<number, string>>({});
@@ -86,7 +80,7 @@ export function CreateVaultWizard({ open, onClose, onCreated }: CreateVaultWizar
     setError(null);
     try {
       const vaultId = uuidv7();
-      const backends = BACKEND_SETS[backend];
+      const backends = backend;
       const built = await buildVaultHeader({
         vaultId,
         name: name.trim(),
@@ -97,21 +91,24 @@ export function CreateVaultWizard({ open, onClose, onCreated }: CreateVaultWizar
         writtenAt: new Date().toISOString(),
       });
       try {
-        const summary = await createVault({
+        const created = await createVault({
           id: vaultId,
           name: name.trim(),
           backends,
           header: built.header,
         });
-        if (summary.id !== vaultId) {
+        if (created.vault.id !== vaultId) {
           // The server assigned its own id. The header's seal binds `vaultId`,
           // so the stored copy would never open — refuse loudly rather than
           // leave an unopenable vault behind.
           throw new Error('VAULT_ID_MISMATCH');
         }
-        // Belt and braces: if the server did not persist the inline header,
-        // write it through the doc route so the vault is never headerless.
-        await writeVaultHeaderDoc(vaultId, built.header, null).catch(() => undefined);
+        // A drive-only vault stores no server header, and a server-backed one
+        // already stored it inline at version 1. Only write through the doc
+        // route when the server reports no header at all.
+        if (created.header == null && backend !== 'drive') {
+          await writeVaultHeaderDoc(vaultId, built.header, null).catch(() => undefined);
+        }
       } finally {
         built.contentKey.fill(0);
       }

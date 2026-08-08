@@ -1,4 +1,10 @@
-import type { VaultDocument, VaultHeaderDoc, VaultPortfolioDoc } from '@bettertrack/contracts';
+import type {
+  VaultDocument,
+  VaultHeaderDoc,
+  VaultLeaveResponse,
+  VaultPortfolioDoc,
+  VaultPortfolioRestoreDocument,
+} from '@bettertrack/contracts';
 import { uuidv7 } from 'uuidv7';
 
 import { zeroBytes } from '../bytes';
@@ -118,29 +124,42 @@ export async function movePortfolioIntoVault(
   if (written.status === 'ok') headerVersion = written.version;
 
   input.onStage?.('done');
-  return { blobVersion: joined.blobVersion, header: nextHeader, headerVersion };
+  return { blobVersion: joined.blob.version, header: nextHeader, headerVersion };
 }
 
 /**
- * Move a portfolio back out (`§3` leave). The caller must already hold the
- * decrypted document; this helper only shapes the restore payload and drops the
- * portfolio from the header index.
+ * Move a portfolio back out (`§3` leave).
+ *
+ * `restoreId` is the server's idempotency key. The client mints it ONCE and
+ * keeps it until the leave is acknowledged: a crashed or retried leave re-sends
+ * the same id and the server answers the original receipt from
+ * `vault_leave_receipts` instead of re-inserting the rows. Minting a fresh id
+ * on retry would defeat that entirely, which is why it is an input here rather
+ * than something this function generates.
  */
 export async function movePortfolioOutOfVault(input: {
   portfolioId: string;
   vaultId: string;
   header: VaultHeaderDoc;
   headerVersion: number | null;
-  contentKey: Uint8Array;
-  document: VaultPortfolioDoc;
-  leave: (payload: { portfolioId: string; document: unknown }) => Promise<unknown>;
+  restoreId: string;
+  document: VaultPortfolioRestoreDocument;
+  leave: (payload: {
+    portfolioId: string;
+    restoreId: string;
+    document: VaultPortfolioRestoreDocument;
+  }) => Promise<VaultLeaveResponse>;
   now?: () => string;
   id?: () => string;
-}): Promise<VaultHeaderDoc> {
+}): Promise<{ header: VaultHeaderDoc; receipt: VaultLeaveResponse }> {
   const now = input.now ?? (() => new Date().toISOString());
   const id = input.id ?? uuidv7;
 
-  await input.leave({ portfolioId: input.portfolioId, document: input.document });
+  const receipt = await input.leave({
+    portfolioId: input.portfolioId,
+    restoreId: input.restoreId,
+    document: input.document,
+  });
 
   const nextHeader = reviseVaultHeader(
     input.header,
@@ -152,7 +171,7 @@ export async function movePortfolioOutOfVault(input: {
     { deviceId: id(), writeId: id(), writtenAt: now() },
   );
   await writeVaultHeaderDoc(input.vaultId, nextHeader, input.headerVersion);
-  return nextHeader;
+  return { header: nextHeader, receipt };
 }
 
 /** Zero a content key copy a caller had to materialize. */

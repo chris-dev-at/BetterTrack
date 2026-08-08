@@ -1,4 +1,4 @@
-import type { VaultHeaderDoc, VaultSummary } from '@bettertrack/contracts';
+import type { VaultHeaderDoc, Vault } from '@bettertrack/contracts';
 import { describe, expect, it } from 'vitest';
 
 import {
@@ -11,13 +11,15 @@ import { FIXTURE_PORTFOLIO_A, FIXTURE_PORTFOLIO_B, FIXTURE_VAULT_ID } from './te
 
 const OTHER_VAULT_ID = '7f6f3f1e-9f2a-4a53-9a6a-9b8f2f8c1a07';
 
-function summary(overrides: Partial<VaultSummary> = {}): VaultSummary {
+function summary(overrides: Partial<Vault> = {}): Vault {
   return {
     id: FIXTURE_VAULT_ID,
     name: 'Drive vault',
-    backends: ['drive'],
+    backends: 'drive',
     createdAt: '2026-08-08T09:00:00.000Z',
+    updatedAt: '2026-08-08T09:00:00.000Z',
     portfolioIds: [],
+    portfolioCount: 0,
     ...overrides,
   };
 }
@@ -37,7 +39,7 @@ function header(portfolios: { portfolioId: string; alias: string }[]): VaultHead
       },
     ],
     portfolios,
-    backends: ['drive'],
+    backends: 'drive',
     headerVersion: 1,
     deviceId: '2f2f3f1e-9f2a-4a53-9a6a-9b8f2f8c1a02',
     writeId: '6f6f3f1e-9f2a-4a53-9a6a-9b8f2f8c1a03',
@@ -90,15 +92,15 @@ describe('portfolio settings vault section state', () => {
       vaults: [
         knowledge({ unlocked: true }),
         knowledge({
-          summary: summary({ id: OTHER_VAULT_ID, name: 'Server vault', backends: ['server'] }),
+          summary: summary({ id: OTHER_VAULT_ID, name: 'Server vault', backends: 'server' }),
         }),
       ],
     });
     expect(state).toEqual({
       kind: 'joinable',
       choices: [
-        { vaultId: FIXTURE_VAULT_ID, name: 'Drive vault', backends: ['drive'], unlocked: true },
-        { vaultId: OTHER_VAULT_ID, name: 'Server vault', backends: ['server'], unlocked: false },
+        { vaultId: FIXTURE_VAULT_ID, name: 'Drive vault', backends: 'drive', unlocked: true },
+        { vaultId: OTHER_VAULT_ID, name: 'Server vault', backends: 'server', unlocked: false },
       ],
     });
   });
@@ -120,7 +122,7 @@ describe('portfolio settings vault section state', () => {
       vaultId: FIXTURE_VAULT_ID,
       vaultName: 'Drive vault',
       alias: 'Tech',
-      backends: ['drive'],
+      backends: 'drive',
       rememberedOnDevice: true,
     });
   });
@@ -260,7 +262,7 @@ describe('locked rows on money surfaces', () => {
     const index = lockedPortfolioIndex([
       knowledge({ header: header([{ portfolioId: FIXTURE_PORTFOLIO_A, alias: 'Tech' }]) }),
       knowledge({
-        summary: summary({ id: OTHER_VAULT_ID, name: 'Server vault', backends: ['server'] }),
+        summary: summary({ id: OTHER_VAULT_ID, name: 'Server vault', backends: 'server' }),
         header: {
           ...header([{ portfolioId: FIXTURE_PORTFOLIO_B, alias: 'Pension' }]),
           vaultId: OTHER_VAULT_ID,

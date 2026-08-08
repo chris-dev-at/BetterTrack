@@ -6,7 +6,7 @@ import type { PortfolioSummary } from '@bettertrack/contracts';
 import { useT } from '../../../i18n';
 import { ApiError } from '../../../lib/apiClient';
 import { Button, ODialog } from '../../../ui/origin';
-import { DEFAULT_PORTFOLIO_KIND, setPortfolioKind } from '../portfolioKinds';
+import { DEFAULT_PORTFOLIO_KIND } from '../portfolioKinds';
 import { usePortfolioStore } from '../PortfolioStoreProvider';
 import { PORTFOLIO_WIZARD_STEPS } from './steps';
 import type { PortfolioDraft, PortfolioWizardStepReport } from './types';
@@ -83,15 +83,15 @@ export function PortfolioWizard({
   const report = useCallback((next: PortfolioWizardStepReport) => setReported(next), []);
 
   /**
-   * Create the portfolio and write its icon through the same store the Settings
-   * picker uses — one code path for "this portfolio's icon".
+   * Create the portfolio WITH its icon, in one request through the same store
+   * the Settings picker writes through — one code path for "this portfolio's
+   * icon". It used to be create-then-write; since the kind graduated onto the
+   * row (board #69) the create body carries it, so a failure after the insert
+   * can no longer leave a portfolio wearing an icon the user did not choose.
    */
   const commit = useMutation({
-    mutationFn: async (): Promise<PortfolioSummary> => {
-      const portfolio = await store.createPortfolio(draft.name.trim());
-      setPortfolioKind(portfolio.id, draft.kind);
-      return portfolio;
-    },
+    mutationFn: (): Promise<PortfolioSummary> =>
+      store.createPortfolio(draft.name.trim(), draft.kind),
     onSuccess: (portfolio) => {
       setError(null);
       setCreated(portfolio);

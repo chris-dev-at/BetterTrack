@@ -60,6 +60,12 @@ crypto substrate. This document is the binding contract for the platform
 - `portfolios.vaultId` nullable FK. Vaulted portfolios: server-side jobs,
   sharing, mirrorchain, alerts are killed for them (extend the existing
   paranoid kill-rails, now portfolio-scoped).
+- **Erratum (2026-08-08) — alerts are NOT portfolio-killable.** An alert carries
+  no portfolio reference: alerts are account-level and fire on an asset, so
+  there is nothing to scope a kill to. Account-level alerts therefore SURVIVE
+  vaulting untouched and keep working for a vaulted portfolio's assets. What
+  does die is alert _sharing_, and it dies with sharing generally rather than as
+  a rule of its own. The original line above overstated the kill list.
 - Endpoints (session): vault CRUD (create takes the client-built header;
   server stores blindly), backend config change, **join** =
   `POST /portfolios/{id}/vault` (body: vaultId + client-encrypted blob) — one
@@ -141,6 +147,15 @@ Binding amendments. Where r2 conflicts with the text above, r2 wins.
 
 - Three doc kinds per vault: **`header`**, **`common`**, **`portfolio`** (one per
   member portfolio). All CAS-versioned independently.
+- **Custom-asset creation context (2026-08-08).** Which document a custom asset
+  belongs to is decided by WHERE IT WAS CREATED, not by what references it. An
+  asset created while working inside a vaulted portfolio lands in that vault's
+  `common` doc and is invisible to the server. An asset that already existed
+  server-side when the portfolio was vaulted STAYS cleartext on the server —
+  other, normal portfolios of the same account still reference it, and a join
+  must not break them. This is the concrete mechanism behind §4's
+  ticker-visibility caveat, and it is why the leave restore graph carries no
+  user-scoped kinds.
 - **`common` owns every account/vault-scoped entity kind** for that vault:
   `customAsset`, `customAssetValue`, `clientSecurity`, `mirrorProvenance`,
   `mergeLog`, `cashTag`, `cashRule`, `cashBudget`, `expenseCategory`,
@@ -262,12 +277,26 @@ Binding amendments. Where r2 conflicts with the text above, r2 wins.
 
 - **412 responses carry the current version** (`{error, currentVersion}`) on
   every CAS surface.
-- Error codes (EN+DE strings ship with the platform i18n catalog):
+- Error codes (EN+DE strings ship with the platform i18n catalog). The
+  canonical ten:
   `VAULT_NOT_FOUND`, `VAULT_NOT_EMPTY`, `VAULT_VERSION_CONFLICT`,
   `VAULT_DOC_TOO_LARGE`, `VAULT_LOCKED_WRITE_REFUSED`,
   `VAULT_MIGRATION_CLAIMED`, `VAULT_MIGRATION_INCOMPLETE`,
   `VAULT_CROSS_BLOB_REFUSED`, `VAULT_FORMAT_UPDATE_REQUIRED`,
   `VAULT_BACKEND_UNAVAILABLE`.
+- **Erratum (P2/P3 reconciliation, 2026-08-08): seven further codes ship**, for
+  outcomes the canonical ten cannot express without lying about what happened.
+  All seventeen carry EN+DE strings — mobile renders every error from the
+  catalog, so a code with no string surfaces raw:
+  `VAULT_PRECONDITION_REQUIRED` (a write with neither `If-Match` nor
+  `If-None-Match: *`, 428), `VAULT_NAME_TAKEN` (409),
+  `VAULT_PORTFOLIO_ALREADY_VAULTED` (409), `VAULT_JOIN_BLOCKED` (a precondition
+  such as live mirrorchain membership, 409), `VAULT_RESTORE_INVALID` (the leave
+  payload failed the portfolio-scoped invariants, 400), `VAULT_ID_TAKEN` (a
+  client-minted id collision — distinct from a name clash, because ids are
+  DERIVED and a collision reads as "you are resuming", 409), and
+  `VAULT_PORTFOLIO_NOT_VAULTED` (409 — distinct from `VAULT_NOT_FOUND` because a
+  non-vaulted portfolio is an ordinary portfolio the client should just render).
 - Vault membership (list of vaultIds + names + which portfolios) is exposed
   to authenticated clients of the owning account only.
 

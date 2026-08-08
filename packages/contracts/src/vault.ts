@@ -14,6 +14,7 @@ import { mirrorRowKindSchema } from './mirrorchain';
 import {
   cashMovementKindSchema,
   cashSourceTypeSchema,
+  portfolioKindSchema,
   portfolioVisibilitySchema,
   taxCountrySchema,
   taxModeSchema,
@@ -657,6 +658,39 @@ const portfolioRowSchema = z
     sortOrder: z.number().int(),
     defaultPayFromCash: z.boolean(),
     archivedAt: timestampSchema.nullable(),
+    /**
+     * The `portfolios.kind` column (board #69). The ONE `.optional()` field in
+     * this strict graph, and for exactly one reason: disable strict-parses the
+     * rows a vault ALREADY holds (`paranoidDisable.ts` → `parseStrictEntity`),
+     * and every document written before this column existed carries no `kind`
+     * key at all. Required here would lock every pre-existing paranoid vault
+     * out of disable. Nothing is defaulted or derived by admitting `undefined`
+     * — absent and `null` both mean what the nullable column itself means,
+     * "unclassified" — and every writer below (enable capture, vault create)
+     * emits the field explicitly, so no *new* document is ever missing it.
+     */
+    kind: portfolioKindSchema.nullable().optional(),
+    /**
+     * Vaults v2 (`docs/VAULTS_V2_DESIGN.md`): which v2 vault this portfolio
+     * belongs to, or null. ADDITIVE within v1 and `.default(null)`, exactly like
+     * `mirrorProvenance` and `cashMovement.dedupHash` — a document written
+     * before Vaults v2 has no such key, and absent means the same as null.
+     *
+     * It has to round-trip: an account-level paranoid enable purges the
+     * `portfolios` row itself, so a portfolio that lived in a v2 vault would
+     * come back from disable as an ordinary cleartext portfolio while its
+     * ciphertext still sat in `vault_docs` — the row and its documents would
+     * disagree about whether it is paranoid at all.
+     */
+    vaultId: uuidSchema.nullable().default(null),
+    /**
+     * Vaults v2 (§4): the cleartext display alias of a vaulted portfolio.
+     * ADDITIVE within v1 and `.default(null)`, for the same reason as `vaultId`
+     * above — and it round-trips for the same reason too: an account-level
+     * enable purges the `portfolios` row, and a locked row that came back
+     * without its alias would render under a name the user had renamed away.
+     */
+    alias: z.string().nullable().default(null),
   })
   .strict();
 

@@ -1653,8 +1653,26 @@
       },
       "expandYear": "Details für {{year}} anzeigen",
       "collapseYear": "Details für {{year}} ausblenden",
-      "passed": "Vergangen",
-      "passedHint": "Dieses Jahr ist vergangen: Seine Abrechnungen sind endgültig, und Änderungen am Steuermodus besteuern es nie neu. Offene Jahre werden laufend nach dem aktuellen Steuermodus des Portfolios besteuert; im manuellen Modus wird die Steuer stattdessen je Trade wie erfasst übernommen.",
+      "locked": "Gesperrt",
+      "lockedHint": "Dieses Steuerjahr ist abgelaufen und gesperrt: Einträge mit Datum in diesem Jahr werden abgelehnt, seine abgerechneten Steuern ändern sich nicht mehr. Zum Nacherfassen zuerst entsperren.",
+      "unlocked": "Für Korrekturen entsperrt",
+      "unlockedHint": "Du hast dieses vergangene Jahr entsperrt: rückdatierte Einträge werden angenommen und verändern seine abgerechneten Steuern, bis du es wieder sperrst.",
+      "unlockAction": "Entsperren…",
+      "relockAction": "Wieder sperren",
+      "relockYearAction": "{{year}} wieder sperren",
+      "unlockedBannerOne": "Steuerjahr {{year}} ist für Korrekturen entsperrt — danach wieder sperren.",
+      "unlockedBannerOther": "Die Steuerjahre {{years}} sind für Korrekturen entsperrt — danach wieder sperren.",
+      "unlockSuccess": "Steuerjahr {{year}} für Korrekturen entsperrt.",
+      "relockSuccess": "Steuerjahr {{year}} wieder gesperrt.",
+      "unlockDialog": {
+        "title": "Steuerjahr {{year}} entsperren",
+        "description": "Ein vergangenes Jahr zu korrigieren ist ein bewusster Schritt — bestätige ihn mit deinem Passwort.",
+        "consequence": "Solange {{year}} entsperrt ist, ändern Einträge mit Datum in diesem Jahr seine abgerechneten Steuern — Korrekturen werden als eigene Buchungen erfasst, nichts wird umgeschrieben. Das Jahr bleibt korrigierbar, bis du es wieder sperrst.",
+        "passwordLabel": "Dein Passwort",
+        "confirm": "{{year}} entsperren",
+        "wrongPassword": "Dieses Passwort ist falsch.",
+        "throttled": "Zu viele Versuche. Bitte warte kurz und versuche es erneut."
+      },
       "realized": "Realisiert",
       "tax": "Steuer",
       "sell": {
@@ -3753,6 +3771,25 @@
       "disableAction": "Normalen Modus wiederherstellen",
       "disableError": "Der normale Modus konnte nicht vollständig wiederhergestellt werden. Das Konto bleibt paranoid; ein erneuter Versuch setzt dieselbe Wiederherstellung fort."
     },
+    "errors": {
+      "VAULT_NOT_FOUND": "Diesen Tresor gibt es nicht – oder er gehört nicht dir.",
+      "VAULT_NOT_EMPTY": "Verschiebe zuerst alle Portfolios aus diesem Tresor, bevor du ihn löschst.",
+      "VAULT_VERSION_CONFLICT": "Ein anderes Gerät war schneller. Lade neu und versuch es nochmal – es wurde nichts überschrieben.",
+      "VAULT_DOC_TOO_LARGE": "Dieses Tresor-Dokument ist zu groß zum Speichern.",
+      "VAULT_LOCKED_WRITE_REFUSED": "Dieser Tresor ist gesperrt. Entsperre ihn, um Änderungen zu machen.",
+      "VAULT_MIGRATION_CLAIMED": "Ein anderes Gerät aktualisiert diesen Tresor gerade. Versuch es in ein paar Minuten nochmal.",
+      "VAULT_MIGRATION_INCOMPLETE": "Die Aktualisierung wurde nicht abgeschlossen. Es hat sich nichts geändert – starte sie von diesem Gerät neu.",
+      "VAULT_CROSS_BLOB_REFUSED": "Diese Änderung würde zwei Portfolios gleichzeitig betreffen. Mach sie stattdessen in zwei Schritten.",
+      "VAULT_FORMAT_UPDATE_REQUIRED": "Dieser Tresor wurde mit einer neueren BetterTrack-Version geschrieben. Aktualisiere die App, um ihn zu öffnen.",
+      "VAULT_BACKEND_UNAVAILABLE": "Der Speicher dieses Tresors ist gerade nicht erreichbar.",
+      "VAULT_PRECONDITION_REQUIRED": "BetterTrack konnte nicht erkennen, welche Version du bearbeitest. Lade neu und versuch es nochmal.",
+      "VAULT_NAME_TAKEN": "Du hast schon einen Tresor mit diesem Namen. Wähle einen anderen.",
+      "VAULT_PORTFOLIO_ALREADY_VAULTED": "Dieses Portfolio ist bereits in einem Tresor. Hol es zuerst heraus, bevor du es in einen anderen legst.",
+      "VAULT_JOIN_BLOCKED": "Dieses Portfolio kann noch nicht in einen Tresor. Verlasse zuerst sein geteiltes Gruppenportfolio.",
+      "VAULT_RESTORE_INVALID": "Diese Portfolio-Daten konnten nicht wiederhergestellt werden. Es wurde nichts geändert – versuch es von einem entsperrten Gerät nochmal.",
+      "VAULT_ID_TAKEN": "Diesen Tresor gibt es schon. Wenn du wiederherstellst oder aktualisierst, öffne ihn, statt einen neuen anzulegen.",
+      "VAULT_PORTFOLIO_NOT_VAULTED": "Dieses Portfolio liegt in keinem Tresor. Verschiebe es zuerst in einen."
+    },
     "v2": {
       "explainerLink": "So funktionieren Tresore",
       "backends": {
@@ -3782,7 +3819,8 @@
         "vaulted": {
           "alias": "Wird gesperrt als „{{alias}}“ angezeigt",
           "locked": "Gesperrt",
-          "unlocked": "Entsperrt"
+          "unlocked": "Entsperrt",
+          "leavePending": "Ein Herausnehmen ist noch nicht abgeschlossen. Versuche es erneut."
         },
         "actions": {
           "create": "Tresor anlegen",
@@ -4066,6 +4104,23 @@
         "legacy": "Alter kontoweiter Tresor",
         "legacyHint": "Nur für Konten, die vor den Tresoren eingerichtet wurden. Überführt die vorhandenen verschlüsselten Daten in deinen ersten Tresor.",
         "legacyAction": "Migration öffnen"
+      },
+      "moveOut": {
+        "title": "„{{portfolio}}“ aus dem Tresor nehmen",
+        "body": "Dein Gerät entschlüsselt dieses Portfolio und schickt die Zeilen zurück; der Server speichert sie wieder lesbar.",
+        "points": {
+          "readable": "Danach kann BetterTrack dieses Portfolio wieder lesen — genau das lässt die Serverfunktionen arbeiten.",
+          "featuresBack": "Teilen, Importe, Alerts auf geteilten Inhalten und geplante Jobs stehen wieder zur Verfügung.",
+          "retry": "Wenn das mittendrin fehlschlägt, ist ein erneuter Versuch sicher: dieselbe Wiederherstellung wird erkannt und nie doppelt angewendet."
+        },
+        "understood": "Mir ist klar, dass dieses Portfolio auf dem Server wieder lesbar wird.",
+        "unavailable": "Entsperre den Tresor zuerst — das Herausnehmen braucht seinen Schlüssel.",
+        "actions": {
+          "move": "Aus dem Tresor nehmen"
+        },
+        "errors": {
+          "failed": "Das Herausnehmen ist fehlgeschlagen. Es wurde nichts geändert — du kannst es gefahrlos erneut versuchen."
+        }
       }
     }
   },

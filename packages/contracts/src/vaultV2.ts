@@ -1,5 +1,6 @@
 import { z } from 'zod';
 
+import { vaultBackendsSchema, VAULT_NAME_MAX_LENGTH, type VaultBackends } from './vaults';
 import {
   VAULT_ENTITY_KINDS,
   vaultEntityKindSchema,
@@ -29,6 +30,13 @@ import {
  * compare-and-swap. These shapes live here so the web client (P3) and the
  * mobile client (P4) pin the same bytes and can share conformance vectors — §5
  * requires exactly that for the v2 header and the per-portfolio doc split.
+ *
+ * **Scope split with `./vaults.ts`.** That module is the SERVER surface — the
+ * wire DTOs, error codes, size caps and backend selection the API validates
+ * against — and it is authoritative wherever the two overlap. This module
+ * carries only what the server never sees: the document formats inside the
+ * ciphertext, and the client-side scoping rules that decide which entity goes
+ * into which document.
  */
 
 /** Header-doc layout version. v1 vaults carry no header doc at all. */
@@ -38,27 +46,23 @@ export const VAULT2_BLOB_FORMAT_VERSION = 2;
 /** Per-portfolio / per-account payload document version. */
 export const VAULT2_DOCUMENT_VERSION = 1;
 
-/** Longest user-chosen vault name and portfolio alias. Both are cleartext. */
-export const VAULT2_NAME_MAX_LENGTH = 60;
+/**
+ * Longest user-chosen vault name and portfolio alias. Both are cleartext.
+ * Re-exported from the server surface so the wizard's field cap, the header
+ * schema and the API validator cannot drift apart.
+ */
+export const VAULT2_NAME_MAX_LENGTH = VAULT_NAME_MAX_LENGTH;
 
-// ── Backends ─────────────────────────────────────────────────────────────────
+// ── Backends ───────────────────────────────────────────────
 
 /**
- * A vault's storage backend. The enum is the documented extension point for
- * WebDAV/iCloud/file (§6); adding one is a value here plus a `DataHome`.
+ * Storage backend selection. The shipped server models this as ONE scalar
+ * (`server` | `drive` | `both`, see `vaultBackendsSchema` in `./vaults.ts`)
+ * rather than as a set, so the header's backend echo uses the same value and
+ * the two can never disagree about what "both" means.
  */
-export const VAULT2_BACKENDS = ['server', 'drive'] as const;
-export const vaultBackendSchema = z.enum(VAULT2_BACKENDS);
-export type VaultBackend = z.infer<typeof vaultBackendSchema>;
-
-/** `server` | `drive` | `both`, expressed as a non-empty duplicate-free set. */
-export const vaultBackendSetSchema = z
-  .array(vaultBackendSchema)
-  .min(1, 'a vault must keep at least one backend')
-  .refine((backends) => new Set(backends).size === backends.length, {
-    message: 'a backend set must not repeat a backend',
-  });
-export type VaultBackendSet = z.infer<typeof vaultBackendSetSchema>;
+export const vaultBackendEchoSchema = vaultBackendsSchema;
+export type VaultBackendEcho = VaultBackends;
 
 // ── Key slots ────────────────────────────────────────────────────────────────
 
@@ -137,7 +141,7 @@ export const vaultHeaderDocSchema = z
     kdf: vaultKdfParamsSchema,
     keySlots: z.array(vaultKeySlotSchema).min(1),
     portfolios: z.array(vaultPortfolioIndexEntrySchema),
-    backends: vaultBackendSetSchema,
+    backends: vaultBackendsSchema,
     /** Monotonic CAS token for the header doc itself. */
     headerVersion: vaultVersionSchema,
     deviceId: z.string().uuid(),
@@ -241,15 +245,6 @@ export function isCommonScopedKind(kind: VaultEntityKind): kind is VaultCommonSc
 export const VAULT2_UNSCOPED_KINDS: readonly VaultEntityKind[] = VAULT_ENTITY_KINDS.filter(
   (kind) => !PORTFOLIO_SCOPED_SET.has(kind) && !COMMON_SCOPED_SET.has(kind),
 );
-
-// ── Size caps (r2 §8) ────────────────────────────────────────────────
-
-/** Per-doc-kind ciphertext caps the server enforces and the client checks first. */
-export const VAULT2_DOC_SIZE_CAPS = {
-  header: 1 * 1024 * 1024,
-  common: 4 * 1024 * 1024,
-  portfolio: 8 * 1024 * 1024,
-} as const;
 
 // ── Content documents ────────────────────────────────────────────
 
@@ -416,106 +411,27 @@ export function parseVaultQrPayloadStructure(
   return parsed.success ? { ok: true, payload: parsed.data } : { ok: false, reason: 'shape' };
 }
 
-// ── Server surface DTOs (§3) ─────────────────────────────────────────────────
+// ── Server surface ─────────────────────────────────────────
 
 /**
- * The P3 client's reading of the §3 session routes. The server PR (P2) is being
- * built in parallel against the same section; if the shipped server differs,
- * THIS is the reconciliation point — no client call site restates a shape.
+ * The §3 wire DTOs, error codes and size caps live in `./vaults.ts`, which the
+ * shipped API validates against. Nothing is redefined here: an earlier draft of
+ * this file carried its own `vaultSummarySchema`, `createVaultRequestSchema`,
+ * join/leave DTOs and error-code table, all written before the server existed.
+ * They were removed rather than kept as aliases, so there is exactly one
+ * definition of each shape to reconcile against.
  */
-
-export const vaultSummarySchema = z
-  .object({
-    id: z.string().uuid(),
-    name: z.string().trim().min(1).max(VAULT2_NAME_MAX_LENGTH),
-    backends: vaultBackendSetSchema,
-    createdAt: z.string().datetime(),
-    /** Portfolio ids the server believes belong to this vault. */
-    portfolioIds: z.array(z.string().uuid()).default([]),
-  })
-  .strip();
-export type VaultSummary = z.infer<typeof vaultSummarySchema>;
-
-export const vaultListResponseSchema = z.object({ items: z.array(vaultSummarySchema) }).strip();
-export type VaultListResponse = z.infer<typeof vaultListResponseSchema>;
-
-/**
- * `POST /vaults` — "create takes the client-built header; server stores
- * blindly". The client mints the id so the header it just sealed (the seal
- * binds `vaultId`) is exactly the header the server stores.
- */
-export const createVaultRequestSchema = z
-  .object({
-    id: z.string().uuid(),
-    name: z.string().trim().min(1).max(VAULT2_NAME_MAX_LENGTH),
-    backends: vaultBackendSetSchema,
-    /** Base64 of the UTF-8 header doc bytes. Opaque to the server. */
-    header: z.string().min(1),
-  })
-  .strict();
-export type CreateVaultRequest = z.infer<typeof createVaultRequestSchema>;
-
-export const updateVaultRequestSchema = z
-  .object({
-    name: z.string().trim().min(1).max(VAULT2_NAME_MAX_LENGTH).optional(),
-    backends: vaultBackendSetSchema.optional(),
-  })
-  .strict()
-  .refine((value) => value.name !== undefined || value.backends !== undefined, {
-    message: 'a vault update must change the name or the backends',
-  });
-export type UpdateVaultRequest = z.infer<typeof updateVaultRequestSchema>;
-
-/**
- * `POST /portfolios/{id}/vault` — one transaction: store the blob, purge that
- * portfolio's cleartext rows, set `vaultId`.
- */
-export const vaultJoinRequestSchema = z
-  .object({
-    vaultId: z.string().uuid(),
-    /** Base64 of the finished per-portfolio ciphertext blob. */
-    blob: z.string().min(1),
-  })
-  .strict();
-export type VaultJoinRequest = z.infer<typeof vaultJoinRequestSchema>;
-
-export const vaultJoinResponseSchema = z
-  .object({
-    portfolioId: z.string().uuid(),
-    vaultId: z.string().uuid(),
-    blobVersion: vaultVersionSchema,
-  })
-  .strip();
-export type VaultJoinResponse = z.infer<typeof vaultJoinResponseSchema>;
-
-export const vaultLeaveResponseSchema = z
-  .object({ portfolioId: z.string().uuid(), restoredAt: z.string().datetime() })
-  .strip();
-export type VaultLeaveResponse = z.infer<typeof vaultLeaveResponseSchema>;
-
-/** Typed failures the v2 vault routes raise in the standard `{ error }` envelope. */
-export const VAULT2_ERROR_CODES = {
-  notFound: 'VAULT_NOT_FOUND',
-  notEmpty: 'VAULT_NOT_EMPTY',
-  versionConflict: 'VAULT_VERSION_CONFLICT',
-  docTooLarge: 'VAULT_DOC_TOO_LARGE',
-  lockedWriteRefused: 'VAULT_LOCKED_WRITE_REFUSED',
-  migrationClaimed: 'VAULT_MIGRATION_CLAIMED',
-  migrationIncomplete: 'VAULT_MIGRATION_INCOMPLETE',
-  crossBlobRefused: 'VAULT_CROSS_BLOB_REFUSED',
-  formatUpdateRequired: 'VAULT_FORMAT_UPDATE_REQUIRED',
-  backendUnavailable: 'VAULT_BACKEND_UNAVAILABLE',
-} as const;
-export type Vault2ErrorCode = (typeof VAULT2_ERROR_CODES)[keyof typeof VAULT2_ERROR_CODES];
-
-/**
- * r2 §15: every CAS surface returns the current version alongside its 412 so a
- * client can re-apply without a second round trip.
- */
-export const vaultConflictResponseSchema = z
-  .object({
-    error: z.object({ code: z.string(), message: z.string() }).passthrough(),
-    currentVersion: vaultVersionSchema.nullable(),
-  })
-  .passthrough();
-export type VaultConflictResponse = z.infer<typeof vaultConflictResponseSchema>;
+export {
+  createVaultRequestSchema,
+  setPortfolioAliasRequestSchema,
+  updateVaultRequestSchema,
+  VAULT2_ERROR_CODES,
+  VAULT_DOC_MAX_BYTES,
+  vaultDocMaxBytes,
+  vaultJoinRequestSchema,
+  vaultJoinResponseSchema,
+  vaultLeaveRequestSchema,
+  vaultLeaveResponseSchema,
+  vaultListResponseSchema,
+  vaultSchema,
+} from './vaults';

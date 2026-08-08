@@ -97,6 +97,9 @@ const portfolio: PortfolioSummary = {
   isDefault: true,
   defaultPayFromCash: false,
   archivedAt: null,
+  // Board #69: a vault entity written before the column existed carries no
+  // `kind` key, and the summary surfaces that as "unclassified".
+  kind: null,
 };
 
 const asset: PortfolioAsset = {
@@ -267,6 +270,7 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
           isDefault: true,
           defaultPayFromCash: false,
           archivedAt: null,
+          kind: null,
         },
       ],
     });

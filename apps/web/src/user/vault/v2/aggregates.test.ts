@@ -1,4 +1,4 @@
-import type { VaultHeaderDoc, VaultSummary } from '@bettertrack/contracts';
+import type { VaultHeaderDoc, Vault } from '@bettertrack/contracts';
 import { describe, expect, it } from 'vitest';
 
 import { foldVaultCoverage, qualifierFor } from './aggregates';
@@ -7,13 +7,15 @@ import { FIXTURE_PORTFOLIO_A, FIXTURE_PORTFOLIO_B, FIXTURE_VAULT_ID } from './te
 
 const NORMAL_PORTFOLIO = '33333333-3333-4333-8333-333333333333';
 
-function summary(overrides: Partial<VaultSummary> = {}): VaultSummary {
+function summary(overrides: Partial<Vault> = {}): Vault {
   return {
     id: FIXTURE_VAULT_ID,
     name: 'Drive vault',
-    backends: ['drive'],
+    backends: 'drive',
     createdAt: '2026-08-08T09:00:00.000Z',
+    updatedAt: '2026-08-08T09:00:00.000Z',
     portfolioIds: [],
+    portfolioCount: 0,
     ...overrides,
   };
 }
@@ -32,7 +34,7 @@ function header(portfolioIds: string[]): VaultHeaderDoc {
       portfolioId,
       alias: `Vault portfolio ${index + 1}`,
     })),
-    backends: ['drive'],
+    backends: 'drive',
     headerVersion: 1,
     deviceId: '2f2f3f1e-9f2a-4a53-9a6a-9b8f2f8c1a02',
     writeId: '6f6f3f1e-9f2a-4a53-9a6a-9b8f2f8c1a03',

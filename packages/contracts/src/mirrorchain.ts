@@ -797,6 +797,24 @@ export const mirrorInviteSchema = z
     chainName: z.string(),
     fromUsername: z.string().nullable(),
     toUsername: z.string(),
+    /**
+     * The curated profile icon of the person the row is ABOUT — the inviter on
+     * an incoming row, the invitee on an outgoing one — so the same face the
+     * rest of the app shows renders on the invite (board #70). `null` when that
+     * user never picked one, or when the inviter's account was deleted
+     * (`fromUsername` is `null` then too); the client falls back to its
+     * deterministic id-derived avatar.
+     *
+     * An invite is exactly the case where the client CANNOT resolve the icon
+     * locally: the inviter is by definition not yet a co-member, and need not
+     * be a friend either, so nothing in the viewer's own graph carries it.
+     *
+     * Shape mirrors {@link mirrorMemberSchema} and {@link mirrorAttributionSchema}
+     * — bare nullable string, not the `profileIconIdSchema` enum — so a curated
+     * id retired from the picker degrades to an unknown-id fallback in the
+     * client instead of 500ing a whole invite list on the way out.
+     */
+    profileIcon: z.string().nullable(),
     direction: z.enum(['incoming', 'outgoing']),
     createdAt: z.string().datetime(),
   })

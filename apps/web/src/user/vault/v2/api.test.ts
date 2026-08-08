@@ -53,19 +53,32 @@ function use(...handlers: HttpHandler[]): void {
   server.use(...handlers);
 }
 
+const RESTORE_ID = '5f6f3f1e-9f2a-4a53-9a6a-9b8f2f8c1a05';
+
 const SUMMARY = {
   id: FIXTURE_VAULT_ID,
   name: 'Drive vault',
-  backends: ['drive'],
-  createdAt: '2026-08-08T09:00:00.000Z',
+  backends: 'drive' as const,
   portfolioIds: [FIXTURE_PORTFOLIO_A],
+  portfolioCount: 1,
+  createdAt: '2026-08-08T09:00:00.000Z',
+  updatedAt: '2026-08-08T09:00:00.000Z',
+};
+
+const BLOB_META = {
+  vaultId: FIXTURE_VAULT_ID,
+  docKind: 'portfolio' as const,
+  portfolioId: FIXTURE_PORTFOLIO_A,
+  version: 1,
+  sizeBytes: 4,
+  updatedAt: '2026-08-08T09:00:00.000Z',
 };
 
 async function fixtureHeader() {
   const built = await buildVaultHeader({
     vaultId: FIXTURE_VAULT_ID,
     name: 'Drive vault',
-    backends: ['drive'],
+    backends: 'drive',
     passphrase: FIXTURE_PASSPHRASE,
     deviceId: FIXTURE_DEVICE_ID,
     writeId: FIXTURE_WRITE_ID,
@@ -77,23 +90,20 @@ async function fixtureHeader() {
 }
 
 describe('vault CRUD (session routes)', () => {
-  it('lists vaults and tolerates extra server fields', async () => {
-    use(
-      http.get(`${API}/vaults`, () =>
-        HttpResponse.json({ items: [{ ...SUMMARY, futureField: 'ignored' }] }),
-      ),
-    );
+  it('lists vaults from the shipped {vaults: [...]} envelope', async () => {
+    use(http.get(`${API}/vaults`, () => HttpResponse.json({ vaults: [SUMMARY] })));
     await expect(listVaults()).resolves.toEqual([SUMMARY]);
   });
 
-  it('defaults portfolioIds when the server omits them', async () => {
+  it('refuses a malformed vault rather than rendering a half-parsed one', async () => {
+    // The shipped DTO is `.strict()`. A response that drifts from it is a bug
+    // worth surfacing, not something to paper over with defaults.
     use(
       http.get(`${API}/vaults`, () =>
-        HttpResponse.json({ items: [{ ...SUMMARY, portfolioIds: undefined }] }),
+        HttpResponse.json({ vaults: [{ ...SUMMARY, futureField: 'unexpected' }] }),
       ),
     );
-    const vaults = await listVaults();
-    expect(vaults[0]!.portfolioIds).toEqual([]);
+    await expect(listVaults()).rejects.toThrow();
   });
 
   it('creates a vault by posting the client-built header, id included', async () => {
@@ -103,7 +113,7 @@ describe('vault CRUD (session routes)', () => {
       http.post(`${API}/vaults`, async ({ request }) => {
         received = (await request.json()) as Record<string, unknown>;
         expect(request.headers.get('X-Requested-With')).toBe('BetterTrack');
-        return HttpResponse.json(SUMMARY, { status: 201 });
+        return HttpResponse.json({ vault: SUMMARY, header: null }, { status: 201 });
       }),
     );
 
@@ -111,15 +121,15 @@ describe('vault CRUD (session routes)', () => {
       createVault({
         id: FIXTURE_VAULT_ID,
         name: 'Drive vault',
-        backends: ['drive'],
+        backends: 'both',
         header,
       }),
-    ).resolves.toEqual(SUMMARY);
+    ).resolves.toEqual({ vault: SUMMARY, header: null });
 
     expect(received).toMatchObject({
       id: FIXTURE_VAULT_ID,
       name: 'Drive vault',
-      backends: ['drive'],
+      backends: 'both',
     });
     // The header travels as opaque base64 and survives the round trip byte for byte.
     const decoded = decodeHeaderDoc(base64ToBytes(received!.header as string, 'envelope-invalid'));
@@ -132,12 +142,12 @@ describe('vault CRUD (session routes)', () => {
     use(
       http.patch(`${API}/vaults/${FIXTURE_VAULT_ID}`, async ({ request }) => {
         body = await request.json();
-        return HttpResponse.json({ ...SUMMARY, backends: ['server', 'drive'] });
+        return HttpResponse.json({ ...SUMMARY, backends: 'both' });
       }),
     );
-    const updated = await updateVaultBackends(FIXTURE_VAULT_ID, ['server', 'drive']);
-    expect(body).toEqual({ backends: ['server', 'drive'] });
-    expect(updated.backends).toEqual(['server', 'drive']);
+    const updated = await updateVaultBackends(FIXTURE_VAULT_ID, 'both');
+    expect(body).toEqual({ backends: 'both' });
+    expect(updated.backends).toBe('both');
   });
 
   it('deletes a vault', async () => {
@@ -187,9 +197,14 @@ describe('join and leave', () => {
       http.post(`${API}/portfolios/${FIXTURE_PORTFOLIO_A}/vault`, async ({ request }) => {
         body = (await request.json()) as Record<string, unknown>;
         return HttpResponse.json({
-          portfolioId: FIXTURE_PORTFOLIO_A,
-          vaultId: FIXTURE_VAULT_ID,
-          blobVersion: 1,
+          state: {
+            portfolioId: FIXTURE_PORTFOLIO_A,
+            vaultId: FIXTURE_VAULT_ID,
+            vaultName: 'Drive vault',
+            backends: 'drive',
+            alias: 'Tech',
+          },
+          blob: BLOB_META,
         });
       }),
     );
@@ -200,31 +215,75 @@ describe('join and leave', () => {
         vaultId: FIXTURE_VAULT_ID,
         blob,
       }),
-    ).resolves.toEqual({
-      portfolioId: FIXTURE_PORTFOLIO_A,
-      vaultId: FIXTURE_VAULT_ID,
-      blobVersion: 1,
-    });
+    ).resolves.toMatchObject({ blob: { version: 1 }, state: { vaultId: FIXTURE_VAULT_ID } });
     expect(body).toEqual({ vaultId: FIXTURE_VAULT_ID, blob: bytesToBase64(blob) });
   });
 
-  it('sends the plaintext rows back on leave', async () => {
+  it('sends the plaintext rows back on leave with the client-minted restore id', async () => {
     let body: Record<string, unknown> | null = null;
     use(
       http.delete(`${API}/portfolios/${FIXTURE_PORTFOLIO_A}/vault`, async ({ request }) => {
         body = (await request.json()) as Record<string, unknown>;
         return HttpResponse.json({
-          portfolioId: FIXTURE_PORTFOLIO_A,
-          restoredAt: '2026-08-08T10:00:00.000Z',
+          state: {
+            portfolioId: FIXTURE_PORTFOLIO_A,
+            vaultId: null,
+            vaultName: null,
+            backends: null,
+            alias: null,
+          },
+          restoreId: RESTORE_ID,
+          idempotent: false,
         });
       }),
     );
 
-    const document = { schemaVersion: 1, entities: [] };
+    const document = { schemaVersion: 1 as const, entities: [] };
     await expect(
-      leavePortfolioVault({ portfolioId: FIXTURE_PORTFOLIO_A, document }),
-    ).resolves.toMatchObject({ portfolioId: FIXTURE_PORTFOLIO_A });
-    expect(body).toEqual({ document });
+      leavePortfolioVault({ portfolioId: FIXTURE_PORTFOLIO_A, restoreId: RESTORE_ID, document }),
+    ).resolves.toMatchObject({ restoreId: RESTORE_ID, idempotent: false });
+    expect(body).toEqual({ restoreId: RESTORE_ID, document });
+  });
+
+  it('replays the SAME restore id so a retried leave is receipt-recognized', async () => {
+    // The server keeps `vault_leave_receipts` keyed by restoreId. A client that
+    // minted a fresh id on retry would restore the portfolio twice, so the id
+    // must be an input the caller persists — this asserts the adapter sends
+    // exactly what it was given, both times.
+    const seen: string[] = [];
+    use(
+      http.delete(`${API}/portfolios/${FIXTURE_PORTFOLIO_A}/vault`, async ({ request }) => {
+        const body = (await request.json()) as { restoreId: string };
+        seen.push(body.restoreId);
+        return HttpResponse.json({
+          state: {
+            portfolioId: FIXTURE_PORTFOLIO_A,
+            vaultId: null,
+            vaultName: null,
+            backends: null,
+            alias: null,
+          },
+          restoreId: body.restoreId,
+          idempotent: seen.length > 1,
+        });
+      }),
+    );
+
+    const document = { schemaVersion: 1 as const, entities: [] };
+    const first = await leavePortfolioVault({
+      portfolioId: FIXTURE_PORTFOLIO_A,
+      restoreId: RESTORE_ID,
+      document,
+    });
+    const retry = await leavePortfolioVault({
+      portfolioId: FIXTURE_PORTFOLIO_A,
+      restoreId: RESTORE_ID,
+      document,
+    });
+
+    expect(seen).toEqual([RESTORE_ID, RESTORE_ID]);
+    expect(first.idempotent).toBe(false);
+    expect(retry.idempotent).toBe(true);
   });
 });
 

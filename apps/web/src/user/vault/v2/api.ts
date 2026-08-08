@@ -1,20 +1,23 @@
 import {
   parseVaultEtag,
   VAULT_CONTENT_TYPE,
-  VAULT2_DOC_SIZE_CAPS,
+  VAULT_DOC_MAX_BYTES,
   VAULT2_ERROR_CODES,
-  vaultConflictResponseSchema,
   vaultEtag,
   vaultHeaderDocSchema,
+  vaultCreateResponseSchema,
   vaultJoinResponseSchema,
   vaultLeaveResponseSchema,
   vaultListResponseSchema,
-  vaultSummarySchema,
-  type VaultBackendSet,
+  vaultSchema,
+  vaultVersionConflictResponseSchema,
+  type Vault,
+  type VaultBackends,
+  type VaultCreateResponse,
   type VaultHeaderDoc,
   type VaultJoinResponse,
   type VaultLeaveResponse,
-  type VaultSummary,
+  type VaultPortfolioRestoreDocument,
 } from '@bettertrack/contracts';
 
 import { ApiError, apiRequest } from '../../../lib/apiClient';
@@ -71,15 +74,15 @@ export const VAULT2_QUERY_KEY = ['vaults', 'v2'] as const;
 
 // ── Session routes ───────────────────────────────────────────────────────────
 
-export async function listVaults(signal?: AbortSignal): Promise<VaultSummary[]> {
+export async function listVaults(signal?: AbortSignal): Promise<Vault[]> {
   const data = await apiRequest<unknown>(VAULT2_ROUTES.vaults, { signal });
-  return vaultListResponseSchema.parse(data).items;
+  return vaultListResponseSchema.parse(data).vaults;
 }
 
 export interface CreateVaultInput {
   id: string;
   name: string;
-  backends: VaultBackendSet;
+  backends: VaultBackends;
   /** The client-built header doc; the server stores it blindly. */
   header: VaultHeaderDoc;
 }
@@ -93,17 +96,22 @@ export interface CreateVaultInput {
  * accept a header/vault id mismatch, because a header sealed for another id
  * would fail every later open.
  */
-export async function createVault(input: CreateVaultInput): Promise<VaultSummary> {
-  const data = await apiRequest<unknown>(VAULT2_ROUTES.vaults, {
-    method: 'POST',
-    body: {
-      id: input.id,
-      name: input.name,
-      backends: input.backends,
-      header: bytesToBase64(encodeHeaderDoc(input.header)),
-    },
-  });
-  return vaultSummarySchema.parse(data);
+export async function createVault(input: CreateVaultInput): Promise<VaultCreateResponse> {
+  return vaultCreateResponseSchema.parse(
+    await apiRequest<unknown>(VAULT2_ROUTES.vaults, {
+      method: 'POST',
+      body: {
+        id: input.id,
+        name: input.name,
+        backends: input.backends,
+        // A drive-only vault keeps NO ciphertext server-side, so it must not
+        // send a header — the create schema refuses one.
+        ...(input.backends === 'drive'
+          ? {}
+          : { header: bytesToBase64(encodeHeaderDoc(input.header)) }),
+      },
+    }),
+  );
 }
 
 /**
@@ -120,21 +128,21 @@ export async function setPortfolioAlias(portfolioId: string, alias: string): Pro
 
 export async function updateVaultBackends(
   vaultId: string,
-  backends: VaultBackendSet,
-): Promise<VaultSummary> {
+  backends: VaultBackends,
+): Promise<Vault> {
   const data = await apiRequest<unknown>(VAULT2_ROUTES.vault(vaultId), {
     method: 'PATCH',
     body: { backends },
   });
-  return vaultSummarySchema.parse(data);
+  return vaultSchema.parse(data);
 }
 
-export async function renameVault(vaultId: string, name: string): Promise<VaultSummary> {
+export async function renameVault(vaultId: string, name: string): Promise<Vault> {
   const data = await apiRequest<unknown>(VAULT2_ROUTES.vault(vaultId), {
     method: 'PATCH',
     body: { name },
   });
-  return vaultSummarySchema.parse(data);
+  return vaultSchema.parse(data);
 }
 
 export async function deleteVault(vaultId: string): Promise<void> {
@@ -170,11 +178,18 @@ export async function joinPortfolioToVault(input: {
  */
 export async function leavePortfolioVault(input: {
   portfolioId: string;
-  document: unknown;
+  /**
+   * The client-minted idempotency key. It must SURVIVE a retry: the server
+   * records it in `vault_leave_receipts` and replays the original receipt
+   * rather than re-inserting rows, so a caller that mints a fresh id on retry
+   * would restore the portfolio twice.
+   */
+  restoreId: string;
+  document: VaultPortfolioRestoreDocument;
 }): Promise<VaultLeaveResponse> {
   const data = await apiRequest<unknown>(VAULT2_ROUTES.leave(input.portfolioId), {
     method: 'DELETE',
-    body: { document: input.document },
+    body: { restoreId: input.restoreId, document: input.document },
   });
   return vaultLeaveResponseSchema.parse(data);
 }
@@ -208,7 +223,7 @@ async function conflictVersion(response: Response): Promise<number | null> {
   if (fromEtag !== null) return fromEtag;
   try {
     const body: unknown = await response.clone().json();
-    const parsed = vaultConflictResponseSchema.safeParse(body);
+    const parsed = vaultVersionConflictResponseSchema.safeParse(body);
     return parsed.success ? parsed.data.currentVersion : null;
   } catch {
     return null;
@@ -331,7 +346,7 @@ export function writeVaultHeaderDoc(
   options: VaultDocTransportOptions = {},
 ): Promise<VaultDocWriteResult> {
   return writeVaultDoc(VAULT2_ROUTES.headerDoc(vaultId), encodeHeaderDoc(header), ifVersion, {
-    sizeCap: VAULT2_DOC_SIZE_CAPS.header,
+    sizeCap: VAULT_DOC_MAX_BYTES.header,
     ...options,
   });
 }
@@ -345,7 +360,7 @@ export function writeVaultPortfolioDoc(
   options: VaultDocTransportOptions = {},
 ): Promise<VaultDocWriteResult> {
   return writeVaultDoc(VAULT2_ROUTES.portfolioDoc(vaultId, portfolioId), bytes, ifVersion, {
-    sizeCap: VAULT2_DOC_SIZE_CAPS.portfolio,
+    sizeCap: VAULT_DOC_MAX_BYTES.portfolio,
     ...options,
   });
 }
@@ -358,7 +373,7 @@ export function writeVaultCommonDoc(
   options: VaultDocTransportOptions = {},
 ): Promise<VaultDocWriteResult> {
   return writeVaultDoc(VAULT2_ROUTES.commonDoc(vaultId), bytes, ifVersion, {
-    sizeCap: VAULT2_DOC_SIZE_CAPS.common,
+    sizeCap: VAULT_DOC_MAX_BYTES.common,
     ...options,
   });
 }

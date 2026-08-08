@@ -231,6 +231,9 @@ function disableRequest(userId: string, rehydrationId = REHYDRATION_ID): Paranoi
             visibility: 'private',
             sortOrder: 0,
             defaultPayFromCash: false,
+
+            vaultId: null,
+            alias: null,
             archivedAt: null,
           },
         },
@@ -291,6 +294,9 @@ function cashRestoreRequest(userId: string, movementId: string): ParanoidDisable
           visibility: 'private',
           sortOrder: 0,
           defaultPayFromCash: false,
+
+          vaultId: null,
+          alias: null,
           archivedAt: null,
         }),
         // The seeded custom asset's opaque identity survives the purge, so the

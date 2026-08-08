@@ -1,7 +1,7 @@
 import {
   VAULT2_HEADER_FORMAT_VERSION,
   vaultHeaderDocSchema,
-  type VaultBackendSet,
+  type VaultBackends,
   type VaultHeaderDoc,
   type VaultKdfParams,
   type VaultKeySlot,
@@ -44,7 +44,7 @@ const GCM_TAG_BYTES = 16;
 export interface BuildVaultHeaderInput {
   vaultId: string;
   name: string;
-  backends: VaultBackendSet;
+  backends: VaultBackends;
   passphrase: string;
   portfolios?: VaultPortfolioIndexEntry[];
   deviceId: string;

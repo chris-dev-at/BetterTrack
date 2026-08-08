@@ -200,6 +200,10 @@ import {
   type WebhookDeliveryJob,
 } from '../services/webhooks';
 import { createParanoidVaultRepository } from '../data/repositories/paranoidVaultRepository';
+import { createReauthService, type ReauthService } from '../services/auth/reauthService';
+import { createVaultMigrationRepository } from '../data/repositories/vaultMigrationRepository';
+import { createVaultRepository } from '../data/repositories/vaultRepository';
+import { createVaultService, type VaultService } from '../services/vault/vaultService';
 import {
   createParanoidEnforcementRepository,
   withFreshLockedPrivacyModes,
@@ -297,6 +301,10 @@ import { createSocialService, type SocialService } from '../services/social/soci
 import { createCommentService, type CommentService } from '../services/social/commentService';
 import { createTaxService, type TaxService } from '../services/tax/taxService';
 import {
+  createTaxYearLockService,
+  type TaxYearLockService,
+} from '../services/tax/taxYearLockService';
+import {
   createWorkboardService,
   type WorkboardService,
 } from '../services/workboard/workboardService';
@@ -352,6 +360,12 @@ export interface AppContext {
   /** Realized P/L, tax modes, dividends + the per-year report (§13.3 V3-P4). */
   tax: TaxService;
   /**
+   * Tax year locking (§16 2026-08-07): lock state + the session-only,
+   * password-re-authenticated unlock/relock ritual. The mutation gates run
+   * inside the tax/portfolio services; routes only expose the ritual.
+   */
+  taxYearLock: TaxYearLockService;
+  /**
    * MIRRORCHAIN replication core (§13.5 V5-P7 M2, design §§1–3): the write-path
    * seam for synced copies — op append under the chain lock, origin apply,
    * replicate/replay, conflict guard. Portfolio-content write routes call its
@@ -387,6 +401,18 @@ export interface AppContext {
    * a size cap and bounded ciphertext history. Never reads the payload.
    */
   paranoidVault: ParanoidVaultService;
+  /**
+   * Vaults v2 (`docs/VAULTS_V2_DESIGN.md` §3) — multi-vault CRUD, the blind
+   * per-vault document store, and the per-portfolio join/leave transitions.
+   * Ownership scoping lives in its repository, never in a controller.
+   */
+  vaults: VaultService;
+  /**
+   * Generic session step-up (`POST /auth/reauth`). The missing primitive for
+   * sensitive acts that happen entirely client-side — the Vaults v2 QR handoff
+   * has no destructive endpoint of its own to hang a re-auth on.
+   */
+  reauth: ReauthService;
   /** Public account-locked paranoid enable/disable orchestrator (§7). */
   paranoidTransitions: ParanoidTransitionService;
   /** Registry-backed account guard shared by HTTP, services, jobs, and webhooks. */
@@ -951,6 +977,22 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     proofSecret: config.sessionSecrets[0],
   });
 
+  // Vaults v2 (`docs/VAULTS_V2_DESIGN.md` §3). Independent of the account-level
+  // vault above: different tables, its own CAS, no header inspection at all.
+  const reauth = createReauthService({
+    config,
+    redis,
+    userRepo,
+    passwordHasher,
+    audit,
+  });
+
+  const vaultsService = createVaultService({
+    vaults: createVaultRepository(db),
+    migrations: createVaultMigrationRepository(db),
+    audit,
+  });
+
   const webhookSubscriptionRepo = createWebhookSubscriptionRepository(db);
   const webhookDeliveryRepo = createWebhookDeliveryRepository(db);
   const webhooks = createWebhookService({
@@ -1251,10 +1293,13 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     cashMovementRepo,
     marketData,
     currencyService: currency,
+    // Vaults v2 (§3): a VAULTED portfolio is as unreadable to the snapshot
+    // engine as a paranoid account's is — its ledger rows were purged at join.
     isParanoidPortfolio: async (portfolioId) =>
       isParanoidOwnedSubjectBlocked(
         await paranoidSubjects.portfolioOwner(portfolioId),
         paranoidGuard,
+        'portfolioJobs',
       ),
     runIfAllowedPortfolio: async (portfolioId, action) =>
       runIfParanoidOwnedSubjectAllowed(
@@ -1275,6 +1320,19 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // Tax engine (V3-P4): built before the portfolio service, which folds its
   // per-sell tax plans into transaction writes.
   const taxRepo = createTaxRepository(db);
+  // Tax year locking (§16 2026-08-07): the API-layer lock policy the tax and
+  // portfolio mutation paths gate through, plus the session-only unlock
+  // ritual. Shares the tax engine's clock seam so the lock boundary and the
+  // open/closed derivation boundary can never disagree.
+  const taxYearLock = createTaxYearLockService({
+    config,
+    redis,
+    taxRepo,
+    userRepo,
+    passwordHasher,
+    audit,
+    now: deps.taxNow,
+  });
   const tax = createTaxService({
     taxRepo,
     portfolioSettingsRepo,
@@ -1284,6 +1342,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     portfolioRepo,
     currencyService: currency,
     snapshots,
+    yearLock: taxYearLock,
     logger,
     now: deps.taxNow,
     paranoid: paranoidGuard,
@@ -1307,6 +1366,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     referenceBackfill,
     snapshots,
     taxService: tax,
+    yearLock: taxYearLock,
     friendshipRepo,
     audience,
     profile: profileRepo,
@@ -1944,6 +2004,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
       portfolioMarketIntel,
       marketIntel,
       tax,
+      taxYearLock,
       expenses,
       expenseBudgets,
       aiFeatures,
@@ -1983,6 +2044,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     portfolio: guarded.portfolio,
     snapshots: guarded.snapshots,
     tax: guarded.tax,
+    taxYearLock: guarded.taxYearLock,
     mirror: guarded.mirror,
     customAssets: guarded.customAssets,
     conglomerate: guarded.conglomerate,
@@ -1996,6 +2058,8 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     cashTags: guarded.cashTags,
     cashBudgets: guarded.cashBudgets,
     paranoidVault,
+    reauth,
+    vaults: vaultsService,
     paranoidTransitions,
     paranoidGuard,
     webhooks,

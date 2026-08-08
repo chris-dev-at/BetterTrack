@@ -1,4 +1,4 @@
-import type { VaultHeaderDoc, VaultSummary } from '@bettertrack/contracts';
+import type { VaultHeaderDoc, Vault } from '@bettertrack/contracts';
 import { render, screen } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { describe, expect, it, vi } from 'vitest';
@@ -13,13 +13,15 @@ import { PortfolioVaultSection } from './PortfolioVaultSection';
 const VAULT_ID = '4f6f3f1e-9f2a-4a53-9a6a-9b8f2f8c1a01';
 const PORTFOLIO_ID = '11111111-1111-4111-8111-111111111111';
 
-function summary(overrides: Partial<VaultSummary> = {}): VaultSummary {
+function summary(overrides: Partial<Vault> = {}): Vault {
   return {
     id: VAULT_ID,
     name: 'Drive vault',
-    backends: ['drive'],
+    backends: 'drive',
     createdAt: '2026-08-08T09:00:00.000Z',
+    updatedAt: '2026-08-08T09:00:00.000Z',
     portfolioIds: [],
+    portfolioCount: 0,
     ...overrides,
   };
 }
@@ -35,7 +37,7 @@ function header(): VaultHeaderDoc {
       { slotId: '8f6f3f1e-9f2a-4a53-9a6a-9b8f2f8c1a08', kind: 'passphrase', wrappedKey: 'AAAA' },
     ],
     portfolios: [{ portfolioId: PORTFOLIO_ID, alias: 'Tech' }],
-    backends: ['drive'],
+    backends: 'drive',
     headerVersion: 1,
     deviceId: '2f2f3f1e-9f2a-4a53-9a6a-9b8f2f8c1a02',
     writeId: '6f6f3f1e-9f2a-4a53-9a6a-9b8f2f8c1a03',
@@ -89,7 +91,7 @@ describe('PortfolioVaultSection — the always-visible settings section', () => 
           summary: summary({
             id: '7f6f3f1e-9f2a-4a53-9a6a-9b8f2f8c1a07',
             name: 'Server vault',
-            backends: ['server'],
+            backends: 'server',
           }),
           header: null,
           unlocked: false,
@@ -144,7 +146,7 @@ describe('PortfolioVaultSection — the always-visible settings section', () => 
     mount({
       vaults: [
         {
-          summary: summary({ portfolioIds: [PORTFOLIO_ID], backends: ['server', 'drive'] }),
+          summary: summary({ portfolioIds: [PORTFOLIO_ID], backends: 'both' }),
           header: header(),
           unlocked: true,
           rememberedOnDevice: false,

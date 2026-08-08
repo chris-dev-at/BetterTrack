@@ -36,11 +36,16 @@ describe('CreateVaultWizard', () => {
     vi.clearAllMocks();
     api.createVault.mockImplementation((input: { id: string }) =>
       Promise.resolve({
-        id: input.id,
-        name: 'Drive vault',
-        backends: ['drive'],
-        createdAt: '2026-08-08T09:00:00.000Z',
-        portfolioIds: [],
+        vault: {
+          id: input.id,
+          name: 'Drive vault',
+          backends: 'drive',
+          portfolioIds: [],
+          portfolioCount: 0,
+          createdAt: '2026-08-08T09:00:00.000Z',
+          updatedAt: '2026-08-08T09:00:00.000Z',
+        },
+        header: null,
       }),
     );
     api.writeVaultHeaderDoc.mockResolvedValue({ status: 'ok', version: 1 });
@@ -89,11 +94,11 @@ describe('CreateVaultWizard', () => {
     const call = api.createVault.mock.calls[0]![0] as {
       id: string;
       name: string;
-      backends: string[];
+      backends: string;
       header: { vaultId: string; seal: string | null; portfolios: unknown[] };
     };
     expect(call.name).toBe('Drive vault');
-    expect(call.backends).toEqual(['drive']);
+    expect(call.backends).toBe('drive');
     // The header is built client-side, sealed, and bound to the id we minted.
     expect(call.header.vaultId).toBe(call.id);
     expect(call.header.seal).not.toBeNull();
@@ -134,11 +139,16 @@ describe('CreateVaultWizard', () => {
   it('refuses when the server hands back a different vault id', async () => {
     const user = userEvent.setup();
     api.createVault.mockResolvedValue({
-      id: '00000000-0000-4000-8000-000000000000',
-      name: 'Drive vault',
-      backends: ['drive'],
-      createdAt: '2026-08-08T09:00:00.000Z',
-      portfolioIds: [],
+      vault: {
+        id: '00000000-0000-4000-8000-000000000000',
+        name: 'Drive vault',
+        backends: 'drive',
+        portfolioIds: [],
+        portfolioCount: 0,
+        createdAt: '2026-08-08T09:00:00.000Z',
+        updatedAt: '2026-08-08T09:00:00.000Z',
+      },
+      header: null,
     });
 
     mount();

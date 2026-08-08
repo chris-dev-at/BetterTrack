@@ -48,6 +48,8 @@ import { createSearchRouter } from './http/routes/searchRoutes';
 import { createStandingOrdersRouter } from './http/routes/standingOrdersRoutes';
 import { createSettingsRouter } from './http/routes/settingsRoutes';
 import { createVaultRouter } from './http/routes/vaultRoutes';
+import { createVaultsRouter, VAULTS_CREATE_HTTP_PATH } from './http/routes/vaultsRoutes';
+import { createVaultedPortfolioRouteGuard } from './services/vault/vaultedPortfolioGuard';
 import { createSocialRouter } from './http/routes/socialRoutes';
 import { createWebhooksRouter } from './http/routes/webhooksRoutes';
 import { createWorkboardRouter } from './http/routes/workboardRoutes';
@@ -96,6 +98,17 @@ export function createApp(ctx: AppContext) {
     if (
       req.method === 'POST' &&
       (path === PARANOID_DISABLE_HTTP_PATH || path === `${PARANOID_DISABLE_HTTP_PATH}/`)
+    ) {
+      next();
+      return;
+    }
+    // Vaults v2 create carries the client-built header inline as base64, and the
+    // header cap is 1 MiB — which base64 inflates past the 100 KiB global bound.
+    // Same deferral pattern, same reason: the route re-applies a bound derived
+    // from the header cap itself, so nothing else widens.
+    if (
+      req.method === 'POST' &&
+      (path === VAULTS_CREATE_HTTP_PATH || path === `${VAULTS_CREATE_HTTP_PATH}/`)
     ) {
       next();
       return;
@@ -163,6 +176,17 @@ export function createApp(ctx: AppContext) {
   app.use('/api/v1', createCsrfGuard(ctx.config.corsOrigins));
   app.use('/api/v1', enforcePasswordChange);
   app.use('/api/v1', createParanoidRouteGuard());
+  // Vaults v2 (`docs/VAULTS_V2_DESIGN.md` §3): the PORTFOLIO-scoped counterpart
+  // of the rail above. Mounted immediately after it, for the same reason and
+  // with the same error code — a vaulted portfolio's cleartext was purged at
+  // join time, so every server-side surface that names it must refuse.
+  app.use(
+    '/api/v1',
+    createVaultedPortfolioRouteGuard({
+      isPortfolioVaulted: (userId, portfolioId) =>
+        ctx.vaults.isPortfolioVaulted(userId, portfolioId),
+    }),
+  );
   app.use('/api/v1', enforceApiKeyScope(ctx));
 
   // First-party usage capture (§13.5 V5-P2 arc (b)): folds one in-memory signal
@@ -234,6 +258,11 @@ export function createApp(ctx: AppContext) {
   // client-encrypted vault (§13.5 V5-P13 arc b). Opaque GET/PUT with ETag CAS,
   // a size cap and a dedicated per-user write limiter.
   app.use('/api/v1/vault', createVaultRouter(ctx, limiters));
+  // Vaults v2 (`docs/VAULTS_V2_DESIGN.md` §3) — the multi-vault surface beside
+  // the legacy account-singleton routes above, which keep serving unchanged for
+  // the migration window. Vault CRUD is session-only; the `{vaultId}`-scoped
+  // header/portfolio documents accept the same `vault:sync` bearer exception.
+  app.use('/api/v1/vaults', createVaultsRouter(ctx, limiters));
   // Session-authenticated OAuth consent endpoints (authorize + authorization-
   // details). The public /oauth/token router above already handled its path.
   app.use('/api/v1/oauth', createOAuthRouter(ctx));

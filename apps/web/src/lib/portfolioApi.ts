@@ -42,6 +42,7 @@ import {
   type DividendListResponse,
   type PortfolioHistoryRange,
   type PortfolioHistoryResponse,
+  type PortfolioKind,
   type PortfolioListResponse,
   type PortfolioResponse,
   type PortfolioSummary,
@@ -97,8 +98,16 @@ export async function listPortfolios(
 }
 
 /** `POST /portfolios` — create a named portfolio (§13.2 V2-P8). */
-export async function createPortfolio(name: string): Promise<PortfolioSummary> {
-  const data = await apiRequest<unknown>('/portfolios', { method: 'POST', body: { name } });
+export async function createPortfolio(
+  name: string,
+  kind?: PortfolioKind,
+): Promise<PortfolioSummary> {
+  const data = await apiRequest<unknown>('/portfolios', {
+    method: 'POST',
+    // Omitted rather than sent as null when the caller has no kind: the create
+    // body accepts a concrete kind only, and an unclassified row is the default.
+    body: kind === undefined ? { name } : { name, kind },
+  });
   return portfolioMutationResponseSchema.parse(data).portfolio;
 }
 

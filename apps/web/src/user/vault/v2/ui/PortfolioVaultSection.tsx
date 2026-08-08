@@ -3,9 +3,11 @@ import { Link } from 'react-router-dom';
 
 import { useT } from '../../../../i18n';
 import { Badge, Button, Icon, SectionHead, SkeletonBlock } from '../../../../ui/origin';
+import { pendingRestoreIds } from '../restoreId';
 import { resolveVaultSectionState, type VaultSectionState } from '../sectionState';
 import { CreateVaultWizard } from './CreateVaultWizard';
 import { MoveIntoVaultDialog } from './MoveIntoVaultDialog';
+import { MoveOutOfVaultDialog } from './MoveOutOfVaultDialog';
 import { VAULT_HOW_IT_WORKS_PATH } from './routes';
 import { useVaults } from './VaultsProvider';
 import { VaultQrShareDialog } from './VaultQrShareDialog';
@@ -40,6 +42,11 @@ export function PortfolioVaultSection({
   const [unlockVaultId, setUnlockVaultId] = useState<string | null>(null);
   const [moveVaultId, setMoveVaultId] = useState<string | null>(null);
   const [qrVaultId, setQrVaultId] = useState<string | null>(null);
+  const [moveOutOpen, setMoveOutOpen] = useState(false);
+  // The leave idempotency key is minted before the request and kept until the
+  // server acknowledges it, so a reload mid-leave replays the same receipt
+  // instead of restoring the portfolio twice.
+  const pendingRestoreId = pendingRestoreIds()[portfolioId] ?? null;
 
   const state: VaultSectionState = useMemo(
     () =>
@@ -109,7 +116,7 @@ export function PortfolioVaultSection({
                   <span>
                     <span className="bt-row-title">{choice.name}</span>
                     <span className="bt-row-sub block">
-                      {t(`vault.v2.backends.${backendKey(choice.backends)}`)}
+                      {t(`vault.v2.backends.${choice.backends}`)}
                     </span>
                   </span>
                   <Button onClick={() => setMoveVaultId(choice.vaultId)} size="sm">
@@ -148,8 +155,14 @@ export function PortfolioVaultSection({
             </div>
 
             <p className="bt-meta">
-              <Icon name="cloud" size={14} /> {t(`vault.v2.backends.${backendKey(state.backends)}`)}
+              <Icon name="cloud" size={14} /> {t(`vault.v2.backends.${state.backends}`)}
             </p>
+
+            {pendingRestoreId != null ? (
+              <p className="bt-field__error" role="status">
+                {t('vault.v2.section.vaulted.leavePending')}
+              </p>
+            ) : null}
 
             <div className="flex flex-wrap items-center gap-2">
               {state.kind === 'vaulted-locked' ? (
@@ -166,7 +179,7 @@ export function PortfolioVaultSection({
                     {t('vault.v2.section.actions.qr')}
                   </Button>
                   <Button
-                    onClick={() => setMoveVaultId(null)}
+                    onClick={() => setMoveOutOpen(true)}
                     title={t('vault.v2.section.actions.moveOutHint')}
                     variant="quiet"
                   >
@@ -201,6 +214,16 @@ export function PortfolioVaultSection({
           knowledge={knowledgeFor(moveVaultId)}
           keyring={vaults.keyring}
           onClose={() => setMoveVaultId(null)}
+          onMoved={() => void vaults.refresh()}
+          open
+          portfolioId={portfolioId}
+          portfolioName={portfolioName}
+        />
+      ) : null}
+
+      {moveOutOpen && vaults != null ? (
+        <MoveOutOfVaultDialog
+          onClose={() => setMoveOutOpen(false)}
           onMoved={() => void vaults.refresh()}
           open
           portfolioId={portfolioId}
@@ -244,12 +267,4 @@ function UnlockHost({
       vaultName={knowledge.summary.name}
     />
   );
-}
-
-/** `server` | `drive` | `both` as one i18n key. */
-export function backendKey(backends: readonly string[]): 'server' | 'drive' | 'both' {
-  const hasServer = backends.includes('server');
-  const hasDrive = backends.includes('drive');
-  if (hasServer && hasDrive) return 'both';
-  return hasDrive ? 'drive' : 'server';
 }

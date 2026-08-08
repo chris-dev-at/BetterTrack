@@ -1,4 +1,4 @@
-import type { VaultBackendSet, VaultHeaderDoc, VaultSummary } from '@bettertrack/contracts';
+import type { VaultBackends, VaultHeaderDoc, Vault } from '@bettertrack/contracts';
 
 /**
  * The state machine behind the always-visible "Vault / Paranoid mode" section on
@@ -13,7 +13,7 @@ import type { VaultBackendSet, VaultHeaderDoc, VaultSummary } from '@bettertrack
 
 export interface VaultKnowledge {
   /** The vault as the server lists it. */
-  summary: VaultSummary;
+  summary: Vault;
   /**
    * Its header doc, once fetched. `null` while unfetched or unreadable — the
    * section still renders, it just cannot show the alias or the key state.
@@ -53,7 +53,7 @@ export type VaultSectionState =
       vaultId: string;
       vaultName: string;
       alias: string | null;
-      backends: VaultBackendSet;
+      backends: VaultBackends;
       rememberedOnDevice: boolean;
     }
   /** This portfolio lives in a vault this browser has unlocked. */
@@ -62,14 +62,14 @@ export type VaultSectionState =
       vaultId: string;
       vaultName: string;
       alias: string | null;
-      backends: VaultBackendSet;
+      backends: VaultBackends;
       rememberedOnDevice: boolean;
     };
 
 export interface VaultChoice {
   vaultId: string;
   name: string;
-  backends: VaultBackendSet;
+  backends: VaultBackends;
   /** Vault membership is only provable with the key, so joining needs it. */
   unlocked: boolean;
 }

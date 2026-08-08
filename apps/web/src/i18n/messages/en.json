@@ -1653,8 +1653,26 @@
       },
       "expandYear": "Show {{year}} details",
       "collapseYear": "Hide {{year}} details",
-      "passed": "Passed",
-      "passedHint": "This year has passed: its settlements are final and tax-mode changes never re-tax it. Open years are taxed live under the portfolio's current tax mode; in manual mode tax is instead recorded per trade as entered.",
+      "locked": "Locked",
+      "lockedHint": "This tax year has ended and is locked: entries dated into it are refused, so its settled taxes can no longer change. Unlock it to record an amendment.",
+      "unlocked": "Unlocked for amendments",
+      "unlockedHint": "You unlocked this passed year: backdated entries are accepted and change its settled taxes until you re-lock it.",
+      "unlockAction": "Unlock…",
+      "relockAction": "Re-lock",
+      "relockYearAction": "Re-lock {{year}}",
+      "unlockedBannerOne": "Tax year {{year}} is unlocked for amendments — re-lock it when you are done.",
+      "unlockedBannerOther": "Tax years {{years}} are unlocked for amendments — re-lock them when you are done.",
+      "unlockSuccess": "Tax year {{year}} unlocked for amendments.",
+      "relockSuccess": "Tax year {{year}} locked again.",
+      "unlockDialog": {
+        "title": "Unlock tax year {{year}}",
+        "description": "Amending a passed year is an explicit step — confirm it with your password.",
+        "consequence": "While {{year}} is unlocked, entries dated into it change its settled taxes — corrections are recorded as separate movements, nothing is rewritten. The year stays amendable until you re-lock it.",
+        "passwordLabel": "Your password",
+        "confirm": "Unlock {{year}}",
+        "wrongPassword": "That password is incorrect.",
+        "throttled": "Too many attempts. Please wait a moment and try again."
+      },
       "realized": "Realized",
       "tax": "Tax",
       "sell": {
@@ -3753,6 +3771,25 @@
       "disableAction": "Restore normal mode",
       "disableError": "Normal mode could not be restored completely. The account remains paranoid; retry resumes the same rehydration."
     },
+    "errors": {
+      "VAULT_NOT_FOUND": "That vault doesn’t exist, or it isn’t yours.",
+      "VAULT_NOT_EMPTY": "Move every portfolio out of this vault before you delete it.",
+      "VAULT_VERSION_CONFLICT": "Another device changed this vault first. Reload and try again — nothing was overwritten.",
+      "VAULT_DOC_TOO_LARGE": "This vault document is too large to store.",
+      "VAULT_LOCKED_WRITE_REFUSED": "This vault is locked. Unlock it to make changes.",
+      "VAULT_MIGRATION_CLAIMED": "Another device is upgrading this vault right now. Try again in a few minutes.",
+      "VAULT_MIGRATION_INCOMPLETE": "The upgrade didn’t finish. Nothing changed — start it again from this device.",
+      "VAULT_CROSS_BLOB_REFUSED": "This change would touch two portfolios at once. Do it in two steps instead.",
+      "VAULT_FORMAT_UPDATE_REQUIRED": "This vault was written by a newer version of BetterTrack. Update the app to open it.",
+      "VAULT_BACKEND_UNAVAILABLE": "This vault’s storage isn’t reachable right now.",
+      "VAULT_PRECONDITION_REQUIRED": "BetterTrack couldn’t tell which version you were editing. Reload and try again.",
+      "VAULT_NAME_TAKEN": "You already have a vault with that name. Pick another.",
+      "VAULT_PORTFOLIO_ALREADY_VAULTED": "This portfolio is already in a vault. Move it out before putting it in another one.",
+      "VAULT_JOIN_BLOCKED": "This portfolio can’t move into a vault yet. Leave its shared group portfolio first.",
+      "VAULT_RESTORE_INVALID": "Those portfolio records couldn’t be restored. Nothing was changed — try again from an unlocked device.",
+      "VAULT_ID_TAKEN": "That vault already exists. If you’re restoring or upgrading, open it instead of creating a new one.",
+      "VAULT_PORTFOLIO_NOT_VAULTED": "This portfolio isn’t in a vault. Move it into one first."
+    },
     "v2": {
       "explainerLink": "How vaults work",
       "backends": {
@@ -3782,7 +3819,8 @@
         "vaulted": {
           "alias": "Shown as “{{alias}}” while locked",
           "locked": "Locked",
-          "unlocked": "Unlocked"
+          "unlocked": "Unlocked",
+          "leavePending": "A move-out is still unfinished. Try it again to complete it."
         },
         "actions": {
           "create": "Create a vault",
@@ -4066,6 +4104,23 @@
         "legacy": "Legacy account-wide vault",
         "legacyHint": "Only for accounts set up before vaults existed. It moves your existing encrypted data into your first vault.",
         "legacyAction": "Open migration"
+      },
+      "moveOut": {
+        "title": "Move “{{portfolio}}” out of its vault",
+        "body": "Your device decrypts this portfolio and sends the rows back, and the server stores them readably again.",
+        "points": {
+          "readable": "After this, BetterTrack can read this portfolio again — that is what makes server features work.",
+          "featuresBack": "Sharing, imports, alerts on shared items and scheduled jobs become available again.",
+          "retry": "If this fails halfway, retrying is safe: the same restore is recognised and never applied twice."
+        },
+        "understood": "I understand this portfolio becomes readable on the server again.",
+        "unavailable": "Unlock the vault first — moving a portfolio out needs its key.",
+        "actions": {
+          "move": "Move out of vault"
+        },
+        "errors": {
+          "failed": "The move failed. Nothing was changed — you can safely try again."
+        }
       }
     }
   },

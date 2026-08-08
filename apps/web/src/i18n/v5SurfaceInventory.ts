@@ -738,6 +738,7 @@ export const V5_SURFACE_INVENTORY = [
       'user/vault/v2/ui/CreateVaultWizard.tsx',
       'user/vault/v2/ui/LockedPortfolioRow.tsx',
       'user/vault/v2/ui/MoveIntoVaultDialog.tsx',
+      'user/vault/v2/ui/MoveOutOfVaultDialog.tsx',
       'user/vault/v2/ui/PortfolioVaultSection.tsx',
       'user/vault/v2/ui/VaultHowItWorksPage.tsx',
       'user/vault/v2/ui/VaultKeyDiagram.tsx',

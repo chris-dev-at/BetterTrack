@@ -74,7 +74,7 @@ export function PortfolioSettingsPage() {
   const param = searchParams.get(ACTIVE_PORTFOLIO_PARAM);
   const portfolio = useMemo(() => resolveActivePortfolio(portfolios, param), [portfolios, param]);
   const portfolioId = portfolio?.id ?? null;
-  const [kind, setKind] = usePortfolioKind(portfolioId);
+  const [kind, setKind] = usePortfolioKind(portfolio);
 
   // The archived list only matters here, so it is fetched with the page.
   const archivedQuery = useQuery({
