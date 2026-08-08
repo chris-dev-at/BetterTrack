@@ -407,6 +407,15 @@ function resolvePolicy(
   if (path === '/settings/webhooks' || path.startsWith('/settings/webhooks/')) {
     return { kind: 'session-only' };
   }
+  // Tax year locking (§16 2026-08-07): the unlock ritual re-verifies the
+  // account password and re-opens a legally-settled year — strictly a
+  // browser-cookie-session act, never a bearer's (no delegated token or
+  // personal key may unlock, re-lock, or even read the lock surface).
+  // Checked before the `/settings` module catch-all below, which would
+  // otherwise fold these under the social scope.
+  if (path === '/settings/taxes/years' || path.startsWith('/settings/taxes/years/')) {
+    return { kind: 'session-only' };
+  }
   // #1043: native clients may synchronize the already-encrypted vault with the
   // single inherently read-write vault:sync scope. The exact method-aware
   // allowlist admits the live blob, media-state read and conflict-history reads

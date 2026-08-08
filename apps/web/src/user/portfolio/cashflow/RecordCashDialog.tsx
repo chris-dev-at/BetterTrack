@@ -318,7 +318,11 @@ export function RecordCashDialog({
     onError: (err) => {
       setError(
         err instanceof ApiError &&
-          (err.code === 'INSUFFICIENT_CASH' || err.code === 'CASH_MOVEMENT_NOT_EDITABLE')
+          (err.code === 'INSUFFICIENT_CASH' ||
+            err.code === 'CASH_MOVEMENT_NOT_EDITABLE' ||
+            // Tax year lock (§16 2026-08-07): the server copy names the
+            // locked year and the unlock path.
+            err.code === 'TAX_YEAR_LOCKED')
           ? err.message
           : t('portfolio.cash.saveError'),
       );
@@ -336,7 +340,11 @@ export function RecordCashDialog({
     onError: (err) => {
       setError(
         err instanceof ApiError &&
-          (err.code === 'INSUFFICIENT_CASH' || err.code === 'CASH_MOVEMENT_NOT_EDITABLE')
+          (err.code === 'INSUFFICIENT_CASH' ||
+            err.code === 'CASH_MOVEMENT_NOT_EDITABLE' ||
+            // Tax year lock (§16 2026-08-07): the server copy names the
+            // locked year and the unlock path.
+            err.code === 'TAX_YEAR_LOCKED')
           ? err.message
           : t('cashflow.record.deleteError'),
       );

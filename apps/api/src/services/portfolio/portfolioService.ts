@@ -97,8 +97,10 @@ import { FxRateUnavailableError, type CurrencyService } from '../currency/curren
 import type { LiveRingBuffer } from '../liveMode';
 import type { NotificationCenter } from '../notifications/notificationCenter';
 import type { AudienceService } from '../social/audienceService';
+import { viennaYearOf } from '../../domain/tax';
 import { isEngineTaxed } from '../tax/closedSettlement';
 import type { TaxService } from '../tax/taxService';
+import type { TaxYearLockGuard } from '../tax/taxYearLockService';
 import {
   anchorlessAssetDays,
   assetDayKey,
@@ -169,6 +171,13 @@ export interface PortfolioServiceDeps {
    * transaction write must carry, and the year corrections a delete posts.
    */
   taxService: TaxService;
+  /**
+   * Tax year locking (§16 2026-08-07): every user mutation dated into a
+   * locked Vienna year — transactions AND cash movements, create/edit/delete —
+   * is refused (409 `TAX_YEAR_LOCKED`) before any planning or write. Replica
+   * applies (`force`) bypass: the origin actor's own lock state gated the op.
+   */
+  yearLock: TaxYearLockGuard;
   /** Social graph — used to resolve the owner's friends when a portfolio is shared (§6.10). */
   friendshipRepo: FriendshipRepository;
   /**
@@ -271,11 +280,17 @@ export interface PortfolioService {
     inputs: TransactionInput[],
     opts?: { source?: string; force?: boolean },
   ): Promise<TransactionDto[]>;
+  /**
+   * `opts.force` (MIRRORCHAIN replica apply, design §2): skips the tax-year
+   * lock gate — the origin actor's own lock state gated the op before it
+   * entered the chain. Every other validation stays on.
+   */
   updateTransaction(
     userId: string,
     portfolioId: string,
     id: string,
     patch: UpdateTransactionRequest,
+    opts?: { force?: boolean },
   ): Promise<TransactionDto>;
   /**
    * `opts.force` (MIRRORCHAIN replica apply, design §2): waives the
@@ -369,12 +384,16 @@ export interface PortfolioService {
     sourceId: string,
     input: SetCashBalanceRequest,
   ): Promise<SetCashBalanceResponse>;
-  /** Record an external cash deposit (§14) into a source (Main by default, V3-P3). */
+  /**
+   * Record an external cash deposit (§14) into a source (Main by default,
+   * V3-P3). `opts.force` (MIRRORCHAIN replica apply, design §2) skips the
+   * tax-year lock gate only — a deposit has no overdraw gate to waive.
+   */
   depositCash(
     userId: string,
     portfolioId: string,
     input: CashEntryRequest,
-    opts?: { source?: string },
+    opts?: { source?: string; force?: boolean },
   ): Promise<CashMovementResponse>;
   /**
    * Record an external cash withdrawal from a source (Main by default);
@@ -551,8 +570,13 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
     notify,
     liveRing,
     logger,
+    yearLock,
   } = deps;
   const now = deps.now ?? Date.now;
+
+  /** Vienna tax year of an ISO timestamp / Date (tax year locking, §16 2026-08-07). */
+  const taxYearOf = (at: string | Date): number =>
+    viennaYearOf(at instanceof Date ? at.toISOString() : new Date(at).toISOString());
   // The STORAGE base (EUR): the cash ledger's currency and the denomination of
   // the cached history ingredients. A caller's per-user base (V3-P10d) never
   // replaces this — it is applied at read time via `fxFor`/`seriesInBase`.
@@ -1028,6 +1052,9 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
     await requireOwnedPortfolio(userId, portfolioId);
     const source = await resolveFlowSource(portfolioId, input.sourceId);
     const executedAt = input.executedAt ? new Date(input.executedAt) : new Date(now());
+    // Tax year lock (§16 2026-08-07): a movement dated into a locked year is
+    // refused; replica applies bypass (origin-gated).
+    if (!opts?.force) await yearLock.assertYearsAmendable(userId, [taxYearOf(executedAt)]);
     // Cash is whole-cent money — quantize the entered amount to cents (#322),
     // so a withdraw-all (the cent-exact reported balance) cancels the ledger
     // to exactly €0.00 rather than stranding sub-cent residue.
@@ -1725,6 +1752,15 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
     async createTransactions(userId, portfolioId, inputs, opts) {
       if (inputs.length === 0) throw badRequest('No transactions to create.', 'EMPTY_BATCH');
       await requireOwnedPortfolio(userId, portfolioId);
+      // Tax year lock (§16 2026-08-07): rows dated into a locked year are
+      // refused before any validation or planning; replica applies bypass
+      // (the origin actor's own lock state already gated the op).
+      if (!opts?.force) {
+        await yearLock.assertYearsAmendable(
+          userId,
+          inputs.map((i) => taxYearOf(i.executedAt)),
+        );
+      }
       // Source tag (V5-P0c): `manual` unless the caller (the CSV apply path)
       // passes `import:<broker>`. The HTTP body carries no source, so a client
       // can never forge a non-manual tag on a hand-entered row.
@@ -1797,6 +1833,8 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
         // The manual-default gate (V5-P4c): imported rows never take the default.
         source,
         resolveSourceId: (explicitId) => flowSource(explicitId).then((s) => s.id),
+        // Replica applies skip the tax-year lock guard inside the plan too.
+        force: opts?.force,
       });
 
       /**
@@ -1951,7 +1989,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       });
     },
 
-    async updateTransaction(userId, portfolioId, id, patch) {
+    async updateTransaction(userId, portfolioId, id, patch, opts) {
       await requireOwnedPortfolio(userId, portfolioId);
       const existing = await transactionRepo.findByIdForUser(userId, id);
       // Scope the transaction to *this* portfolio: a txn in another (even owned)
@@ -1972,6 +2010,15 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
         patch.price !== undefined ||
         patch.fee !== undefined ||
         patch.executedAt !== undefined;
+      // Tax year lock (§16 2026-08-07): a financial edit touching a locked
+      // year — the row's current year OR the year the patch moves it into —
+      // is refused. Note-only edits change no year figure and stay allowed.
+      if (financialEdit && !opts?.force) {
+        await yearLock.assertYearsAmendable(userId, [
+          taxYearOf(existing.executedAt),
+          ...(patch.executedAt !== undefined ? [taxYearOf(patch.executedAt)] : []),
+        ]);
+      }
       if (financialEdit) {
         // A row carrying recorded tax is financially immutable (V3-P4): its
         // frozen tax and settlement movement mirror the numbers it was
@@ -2065,6 +2112,11 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       if (!existing || existing.portfolioId !== portfolioId) {
         throw notFound('Transaction not found.', 'TRANSACTION_NOT_FOUND');
       }
+      // Tax year lock (§16 2026-08-07): deleting a row dated into a locked
+      // year is refused before any correction planning; replica applies bypass.
+      if (!opts?.force) {
+        await yearLock.assertYearsAmendable(userId, [taxYearOf(existing.executedAt)]);
+      }
 
       // Removing a BUY can leave a later SELL over-selling; replay without it.
       const siblings = await transactionRepo.listForAsset(existing.portfolioId, existing.assetId);
@@ -2080,6 +2132,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
         userId,
         portfolioId,
         existing,
+        { force: opts?.force },
       );
 
       // Deleting a cash-linked buy/sell cascades away its cash movements (§14,
@@ -2351,6 +2404,9 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
         resolveFlowSource(portfolioId, input.toSourceId),
       ]);
       const executedAt = input.executedAt ? new Date(input.executedAt) : new Date(now());
+      // Tax year lock (§16 2026-08-07): a transfer dated into a locked year is
+      // refused; replica applies bypass (origin-gated).
+      if (!opts?.force) await yearLock.assertYearsAmendable(userId, [taxYearOf(executedAt)]);
       // The pure builder quantizes the magnitude to cents (#322) and mirrors it
       // into the two double-entry legs sharing one timestamp.
       let legs: CashTransferLegs;
@@ -2473,6 +2529,9 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       const source = await resolveFlowSource(portfolioId, input.sourceId);
       // A deposit only ever raises the balance, so it needs no solvency gate.
       const executedAt = input.executedAt ? new Date(input.executedAt) : new Date(now());
+      // Tax year lock (§16 2026-08-07): a deposit dated into a locked year is
+      // refused; replica applies bypass (origin-gated).
+      if (!opts?.force) await yearLock.assertYearsAmendable(userId, [taxYearOf(executedAt)]);
       // Cash is whole-cent money — quantize the entered amount to cents (#322).
       const movement = await cashMovementRepo.insert(portfolioId, {
         sourceId: source.id,
@@ -2511,6 +2570,20 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
     async updateCashMovement(userId, portfolioId, movementId, patch, opts) {
       await requireOwnedPortfolio(userId, portfolioId);
       const existing = await requireEditableMovement(portfolioId, movementId);
+      // Tax year lock (§16 2026-08-07): any non-note edit of a movement dated
+      // into a locked year — or moving one into a locked year — is refused;
+      // replica applies bypass (origin-gated).
+      const movesMoney =
+        patch.kind !== undefined ||
+        patch.amountEur !== undefined ||
+        patch.sourceId !== undefined ||
+        patch.executedAt !== undefined;
+      if (movesMoney && !opts?.force) {
+        await yearLock.assertYearsAmendable(userId, [
+          taxYearOf(existing.executedAt),
+          ...(patch.executedAt !== undefined ? [taxYearOf(patch.executedAt)] : []),
+        ]);
+      }
 
       // Staying put is always allowed; MOVING onto an archived source is not.
       // A row that has always lived on a since-archived source would otherwise
@@ -2598,6 +2671,11 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
     async deleteCashMovement(userId, portfolioId, movementId, opts) {
       await requireOwnedPortfolio(userId, portfolioId);
       const existing = await requireEditableMovement(portfolioId, movementId);
+      // Tax year lock (§16 2026-08-07): deleting a movement dated into a
+      // locked year is refused; replica applies bypass (origin-gated).
+      if (!opts?.force) {
+        await yearLock.assertYearsAmendable(userId, [taxYearOf(existing.executedAt)]);
+      }
       // Removing an INFLOW is the dangerous direction: the deposit that funded
       // three later withdrawals cannot simply vanish. Replaying what is left
       // catches exactly that, and costs nothing when the row is an outflow.
