@@ -3787,7 +3787,8 @@
       "VAULT_PORTFOLIO_ALREADY_VAULTED": "This portfolio is already in a vault. Move it out before putting it in another one.",
       "VAULT_JOIN_BLOCKED": "This portfolio can’t move into a vault yet. Leave its shared group portfolio first.",
       "VAULT_RESTORE_INVALID": "Those portfolio records couldn’t be restored. Nothing was changed — try again from an unlocked device.",
-      "VAULT_ID_TAKEN": "That vault already exists. If you’re restoring or upgrading, open it instead of creating a new one."
+      "VAULT_ID_TAKEN": "That vault already exists. If you’re restoring or upgrading, open it instead of creating a new one.",
+      "VAULT_PORTFOLIO_NOT_VAULTED": "This portfolio isn’t in a vault. Move it into one first."
     }
   },
   "announcements": {

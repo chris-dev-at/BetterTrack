@@ -948,6 +948,83 @@ describe('vaults v2 — join and leave', () => {
     expect((await countRows(portfolioId)).cashSources).toBe(1);
   });
 
+  it('tells a replayed leave apart from one against a never-vaulted portfolio', async () => {
+    const user = await seedUser('notvaulted');
+    const agent = await loginAgent(harness.app, user);
+    const portfolioId = await defaultPortfolioId(agent);
+
+    const emptyDocument = { schemaVersion: 1, entities: [] } as const;
+
+    // Never vaulted: a precise 409, NOT a silent idempotent success. Answering
+    // this one with `ok` would confirm a transition that never happened.
+    const never = await agent
+      .delete(`/api/v1/portfolios/${portfolioId}/vault`)
+      .set(...XRW)
+      .send({ restoreId: randomUUID(), document: emptyDocument });
+    expect(never.status).toBe(409);
+    expect(never.body.error.code).toBe(VAULT2_ERROR_CODES.notVaulted);
+
+    // Now actually vault it and leave, then replay the SAME restoreId.
+    const { vaultId } = await createVault(agent);
+    await agent
+      .post(`/api/v1/portfolios/${portfolioId}/vault`)
+      .set(...XRW)
+      .send({ vaultId, blob: b64(blob('p')) });
+
+    const restoreId = randomUUID();
+    const first = await agent
+      .delete(`/api/v1/portfolios/${portfolioId}/vault`)
+      .set(...XRW)
+      .send({ restoreId, document: emptyDocument });
+    expect(first.status, JSON.stringify(first.body)).toBe(200);
+    expect(first.body.idempotent).toBe(false);
+
+    const replay = await agent
+      .delete(`/api/v1/portfolios/${portfolioId}/vault`)
+      .set(...XRW)
+      .send({ restoreId, document: emptyDocument });
+    expect(replay.status).toBe(200);
+    expect(replay.body.idempotent).toBe(true);
+
+    // A DIFFERENT restoreId against the same, now-unvaulted portfolio is the
+    // never-vaulted case again — the receipt is what separates the two.
+    const other = await agent
+      .delete(`/api/v1/portfolios/${portfolioId}/vault`)
+      .set(...XRW)
+      .send({ restoreId: randomUUID(), document: emptyDocument });
+    expect(other.status).toBe(409);
+    expect(other.body.error.code).toBe(VAULT2_ERROR_CODES.notVaulted);
+  });
+
+  it('does not let one account’s restore id acknowledge another’s leave', async () => {
+    const owner = await seedUser('receiptowner');
+    const ownerAgent = await loginAgent(harness.app, owner);
+    const ownerPortfolio = await defaultPortfolioId(ownerAgent);
+    const { vaultId } = await createVault(ownerAgent);
+    await ownerAgent
+      .post(`/api/v1/portfolios/${ownerPortfolio}/vault`)
+      .set(...XRW)
+      .send({ vaultId, blob: b64(blob('p')) });
+
+    const restoreId = randomUUID();
+    await ownerAgent
+      .delete(`/api/v1/portfolios/${ownerPortfolio}/vault`)
+      .set(...XRW)
+      .send({ restoreId, document: { schemaVersion: 1, entities: [] } });
+
+    // Another account replaying that receipt's id gets the honest refusal for
+    // ITS portfolio, never a borrowed acknowledgement.
+    const other = await seedUser('receiptother');
+    const otherAgent = await loginAgent(harness.app, other);
+    const otherPortfolio = await defaultPortfolioId(otherAgent);
+    const res = await otherAgent
+      .delete(`/api/v1/portfolios/${otherPortfolio}/vault`)
+      .set(...XRW)
+      .send({ restoreId, document: { schemaVersion: 1, entities: [] } });
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe(VAULT2_ERROR_CODES.notVaulted);
+  });
+
   it('refuses to restore on top of surviving cleartext rows', async () => {
     const user = await seedUser('dirty');
     const agent = await loginAgent(harness.app, user);
@@ -1026,6 +1103,7 @@ describe('vaults v2 — the vaulted-portfolio alias', () => {
       .set(...XRW)
       .send({ alias: 'Nope' });
     expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe(VAULT2_ERROR_CODES.notVaulted);
     const [row] = await harness.db
       .select({ alias: schema.portfolios.alias })
       .from(schema.portfolios)
@@ -1865,7 +1943,7 @@ describe('vaults v2 — error-code catalog (r2 §15)', () => {
 
     // Fifteen, not ten: the five codes beyond r2 §15's canonical set render from
     // the same catalog, because mobile never surfaces a raw code.
-    expect(VAULT2_TRANSLATED_ERROR_CODES).toHaveLength(16);
+    expect(VAULT2_TRANSLATED_ERROR_CODES).toHaveLength(17);
     for (const code of VAULT2_TRANSLATED_ERROR_CODES) {
       expect(en.vault.errors[code], `missing EN string for ${code}`).toBeTruthy();
       expect(de.vault.errors[code], `missing DE string for ${code}`).toBeTruthy();

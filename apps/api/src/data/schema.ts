@@ -3914,6 +3914,34 @@ export const vaultDocs = pgTable(
   ],
 );
 
+/**
+ * One receipt per committed LEAVE. It exists to separate two states that are
+ * otherwise indistinguishable once `portfolios.vault_id` is null: a replayed
+ * leave whose response was lost (must be acknowledged, never re-inserted) and a
+ * leave against a portfolio that was never vaulted (a client error that must say
+ * so). Without it, one of those two has to be answered wrongly.
+ *
+ * `restore_id` is the client-supplied idempotency key and is the primary key, so
+ * the insert itself is the uniqueness check. Same shape and reasoning as
+ * `paranoid_rehydration_receipts`; it carries no document content, no row
+ * counts and no fingerprints — only that a restore under this id committed.
+ */
+export const vaultLeaveReceipts = pgTable(
+  'vault_leave_receipts',
+  {
+    restoreId: uuid('restore_id').primaryKey(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    portfolioId: uuid('portfolio_id')
+      .notNull()
+      .references(() => portfolios.id, { onDelete: 'cascade' }),
+    completedAt: timestamp('completed_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('vault_leave_receipts_portfolio_idx').on(t.portfolioId)],
+);
+
+export type VaultLeaveReceiptRow = typeof vaultLeaveReceipts.$inferSelect;
 export type VaultRow = typeof vaults.$inferSelect;
 export type NewVaultRow = typeof vaults.$inferInsert;
 export type VaultDocRow = typeof vaultDocs.$inferSelect;
@@ -4015,6 +4043,7 @@ export const schema = {
   paranoidRehydrationReceipts,
   vaults,
   vaultDocs,
+  vaultLeaveReceipts,
   vaultBackendsEnum,
   vaultDocKindEnum,
   userRoleEnum,

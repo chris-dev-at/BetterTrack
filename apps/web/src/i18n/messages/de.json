@@ -3787,7 +3787,8 @@
       "VAULT_PORTFOLIO_ALREADY_VAULTED": "Dieses Portfolio ist bereits in einem Tresor. Hol es zuerst heraus, bevor du es in einen anderen legst.",
       "VAULT_JOIN_BLOCKED": "Dieses Portfolio kann noch nicht in einen Tresor. Verlasse zuerst sein geteiltes Gruppenportfolio.",
       "VAULT_RESTORE_INVALID": "Diese Portfolio-Daten konnten nicht wiederhergestellt werden. Es wurde nichts geändert – versuch es von einem entsperrten Gerät nochmal.",
-      "VAULT_ID_TAKEN": "Diesen Tresor gibt es schon. Wenn du wiederherstellst oder aktualisierst, öffne ihn, statt einen neuen anzulegen."
+      "VAULT_ID_TAKEN": "Diesen Tresor gibt es schon. Wenn du wiederherstellst oder aktualisierst, öffne ihn, statt einen neuen anzulegen.",
+      "VAULT_PORTFOLIO_NOT_VAULTED": "Dieses Portfolio liegt in keinem Tresor. Verschiebe es zuerst in einen."
     }
   },
   "announcements": {

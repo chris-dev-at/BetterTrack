@@ -12,6 +12,7 @@ import {
   mirrorChainMembers,
   portfolios,
   vaultDocs,
+  vaultLeaveReceipts,
   vaults,
   type VaultDocRow,
   type VaultRow,
@@ -174,6 +175,8 @@ export interface VaultRepository {
   leavePortfolio(input: {
     userId: string;
     portfolioId: string;
+    /** Client-supplied idempotency key; persisted so a replay stays tellable. */
+    restoreId: string;
     document: VaultPortfolioRestoreDocument;
     afterRestore?: () => Promise<void>;
   }): Promise<VaultLeaveResult>;
@@ -533,7 +536,7 @@ export function createVaultRepository(db: Database): VaultRepository {
       });
     },
 
-    async leavePortfolio({ userId, portfolioId, document, afterRestore }) {
+    async leavePortfolio({ userId, portfolioId, restoreId, document, afterRestore }) {
       return db.transaction(async (tx) => {
         const [portfolio] = await tx
           .select({ id: portfolios.id, vaultId: portfolios.vaultId })
@@ -542,13 +545,28 @@ export function createVaultRepository(db: Database): VaultRepository {
           .for('update');
         if (!portfolio) return { status: 'portfolio_not_found' as const };
         if (portfolio.vaultId === null) {
-          // IDEMPOTENCY KEY: `(portfolioId, portfolios.vault_id IS NULL)`. Leave
-          // is one atomic transaction, so a crash either rolled everything back
-          // (vault_id still set — the retry does the real work) or committed
-          // everything (vault_id already null — this branch acknowledges the
-          // retry instead of inserting the rows twice). No receipt table is
-          // needed precisely because there is no post-commit step to straddle.
-          return { status: 'ok' as const, idempotent: true };
+          // IDEMPOTENCY KEY: `vault_leave_receipts.restore_id`. Leave is one
+          // atomic transaction, so a crash either rolled everything back
+          // (vault_id still set — the retry below does the real work) or
+          // committed everything, in which case the receipt is present and this
+          // acknowledges the replay instead of inserting the rows twice.
+          //
+          // The receipt is what makes the OTHER case tellable: a leave against a
+          // portfolio that was never vaulted looks identical from `vault_id`
+          // alone, and answering it with an idempotent success would silently
+          // confirm a transition that never happened.
+          const [receipt] = await tx
+            .select({ restoreId: vaultLeaveReceipts.restoreId })
+            .from(vaultLeaveReceipts)
+            .where(
+              and(
+                eq(vaultLeaveReceipts.restoreId, restoreId),
+                eq(vaultLeaveReceipts.userId, userId),
+                eq(vaultLeaveReceipts.portfolioId, portfolioId),
+              ),
+            );
+          if (receipt) return { status: 'ok' as const, idempotent: true };
+          return { status: 'not_vaulted' as const };
         }
         if (await hasVaultPortfolioCleartextRows(tx, portfolioId)) {
           return {
@@ -582,6 +600,7 @@ export function createVaultRepository(db: Database): VaultRepository {
         await restore.restoreCashMovementTags(byKind('cashMovementTag'));
         if (afterRestore) await afterRestore();
 
+        await tx.insert(vaultLeaveReceipts).values({ restoreId, userId, portfolioId });
         await tx
           .update(portfolios)
           .set({ vaultId: null })

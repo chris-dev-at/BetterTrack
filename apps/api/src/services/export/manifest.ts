@@ -306,6 +306,9 @@ export const EXPORT_TABLE_CLASSIFICATION: Record<string, TableClassification> = 
   vault_docs: skipped(
     'Vaults v2 document ciphertext — an opaque encrypted blob + CAS/version metadata the server can never decrypt.',
   ),
+  vault_leave_receipts: skipped(
+    'Vaults v2 leave idempotency receipt — non-sensitive internal transition metadata, never portfolio data.',
+  ),
 };
 
 /** Every entity name the classification claims is exported (dedup, sorted). */
@@ -538,6 +541,9 @@ export const PARANOID_TABLE_CLASSIFICATION: Record<string, ParanoidClassificatio
   // it — a v2 vault is a data home, not data to destroy.
   vaults: 'server',
   vault_docs: 'server',
+  // The leave receipt is transition bookkeeping, exactly like PD3a's rehydration
+  // receipt above: server-classified so it is neither purged nor carried.
+  vault_leave_receipts: 'server',
 };
 
 /**

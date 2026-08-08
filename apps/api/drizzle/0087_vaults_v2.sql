@@ -123,3 +123,28 @@ ALTER TABLE "portfolios" ADD COLUMN "alias" text;
 ALTER TABLE "portfolios"
 ADD CONSTRAINT "portfolios_alias_length"
 CHECK ("portfolios"."alias" is null or char_length("portfolios"."alias") between 1 and 64);
+--> statement-breakpoint
+-- One receipt per committed LEAVE. It separates two states that are otherwise
+-- indistinguishable once `portfolios.vault_id` is null: a replayed leave whose
+-- response was lost (acknowledge, never re-insert) and a leave against a
+-- portfolio that was never vaulted (a client error that must say so). The
+-- client-supplied `restore_id` is the primary key, so the insert IS the
+-- uniqueness check. Carries no document content, row counts or fingerprints.
+CREATE TABLE "vault_leave_receipts" (
+	"restore_id" uuid PRIMARY KEY NOT NULL,
+	"user_id" uuid NOT NULL,
+	"portfolio_id" uuid NOT NULL,
+	"completed_at" timestamp with time zone DEFAULT now() NOT NULL
+);
+--> statement-breakpoint
+ALTER TABLE "vault_leave_receipts"
+ADD CONSTRAINT "vault_leave_receipts_user_id_users_id_fk"
+FOREIGN KEY ("user_id") REFERENCES "public"."users"("id")
+ON DELETE cascade ON UPDATE no action;
+--> statement-breakpoint
+ALTER TABLE "vault_leave_receipts"
+ADD CONSTRAINT "vault_leave_receipts_portfolio_id_portfolios_id_fk"
+FOREIGN KEY ("portfolio_id") REFERENCES "public"."portfolios"("id")
+ON DELETE cascade ON UPDATE no action;
+--> statement-breakpoint
+CREATE INDEX "vault_leave_receipts_portfolio_idx" ON "vault_leave_receipts" USING btree ("portfolio_id");

@@ -358,13 +358,17 @@ export function createVaultService(deps: VaultServiceDeps): VaultService {
       const result = await deps.vaults.leavePortfolio({
         userId,
         portfolioId,
+        restoreId: input.restoreId,
         document: input.document,
       });
       switch (result.status) {
         case 'portfolio_not_found':
           throw notFound('No such portfolio.', 'PORTFOLIO_NOT_FOUND');
         case 'not_vaulted':
-          throw conflict('This portfolio does not belong to a vault.', VAULT2_ERROR_CODES.notFound);
+          throw conflict(
+            'This portfolio does not belong to a vault.',
+            VAULT2_ERROR_CODES.notVaulted,
+          );
         case 'restore_invalid':
           throw badRequest(result.reason, VAULT2_ERROR_CODES.restoreInvalid);
         case 'ok':
@@ -397,7 +401,7 @@ export function createVaultService(deps: VaultServiceDeps): VaultService {
           // only because that route is killed while vaulted.
           throw conflict(
             'This portfolio is not in a vault; rename it on the portfolio route instead.',
-            VAULT2_ERROR_CODES.notFound,
+            VAULT2_ERROR_CODES.notVaulted,
           );
         case 'ok':
           break;

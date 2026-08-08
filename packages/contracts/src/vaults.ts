@@ -123,6 +123,13 @@ export const VAULT2_ERROR_CODES = {
    * resuming", not "pick another label".
    */
   idTaken: 'VAULT_ID_TAKEN',
+  /**
+   * The portfolio is not in a vault, 409. Distinct from `VAULT_NOT_FOUND`
+   * because the two states demand different UI: a missing vault is an error the
+   * user cannot act on, while a non-vaulted portfolio is a perfectly ordinary
+   * portfolio the client should render as such.
+   */
+  notVaulted: 'VAULT_PORTFOLIO_NOT_VAULTED',
 } as const;
 
 /** The ten codes r2 §15 names as the contract's canonical set. */
@@ -151,6 +158,7 @@ export const VAULT2_ADDITIONAL_ERROR_CODES = [
   'VAULT_JOIN_BLOCKED',
   'VAULT_RESTORE_INVALID',
   'VAULT_ID_TAKEN',
+  'VAULT_PORTFOLIO_NOT_VAULTED',
 ] as const;
 
 /** Every code the i18n catalog must carry a string pair for. */
