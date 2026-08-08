@@ -1247,6 +1247,17 @@ export const vaultMergeRecordSchema = z.object({
 export type VaultMergeRecord = z.infer<typeof vaultMergeRecordSchema>;
 
 /**
+ * The merge-log bound is a **write-side trim, never a parse-time rejection**
+ * (design r3, closing mobile finding A1.2). A writer keeps at most this many
+ * records; a reader accepts any length. The distinction is load-bearing: a
+ * parse-time `max` turns a merely-oversized diagnostic log into an unreadable
+ * document, and in the v2 layout an unreadable `common` doc takes
+ * `clientSecurity` and `mirrorProvenance` down with it — the whole vault, lost
+ * to a bookkeeping array. Writers trim; parsers tolerate.
+ */
+export const VAULT_MERGE_LOG_LIMIT = 20;
+
+/**
  * Strict v1 restore payload; newer versions are rejected without coercion.
  *
  * `mirrorProvenance` is ADDITIVE within v1 and `.default([])`: a document written
@@ -1259,7 +1270,7 @@ export const vaultStrictDocumentV1Schema = z
   .object({
     schemaVersion: z.literal(VAULT_DOCUMENT_V1_VERSION),
     entities: z.array(vaultStrictEntitySchema),
-    mergeLog: z.array(vaultMergeRecordSchema).max(20).default([]),
+    mergeLog: z.array(vaultMergeRecordSchema).default([]),
     mirrorProvenance: z.array(vaultMirrorProvenanceSchema).default([]),
   })
   .strict();
@@ -1273,7 +1284,7 @@ export type VaultStrictDocumentV1 = z.infer<typeof vaultStrictDocumentV1Schema>;
 export const vaultDocumentV1Schema = z.object({
   schemaVersion: z.literal(VAULT_DOCUMENT_V1_VERSION),
   entities: z.record(vaultEntityKindSchema, z.array(vaultEntitySchema)),
-  mergeLog: z.array(vaultMergeRecordSchema).max(20).default([]),
+  mergeLog: z.array(vaultMergeRecordSchema).default([]),
   /**
    * §7.1 severed-fork identity map. OPTIONAL rather than defaulted, unlike its
    * strict-document counterpart: a document written before §7.1 has no such key,
@@ -1295,7 +1306,7 @@ export type VaultDocumentV1 = z.infer<typeof vaultDocumentV1Schema>;
 export const vaultDocumentV2Schema = z.object({
   schemaVersion: z.literal(VAULT_DOCUMENT_VERSION),
   entities: z.record(vaultEntityKindSchema, z.array(vaultEntitySchema)),
-  mergeLog: z.array(vaultMergeRecordSchema).max(20).default([]),
+  mergeLog: z.array(vaultMergeRecordSchema).default([]),
   /** §7.1 severed-fork identity map; optional exactly as in v1 above. */
   mirrorProvenance: z.array(vaultMirrorProvenanceSchema).optional(),
   /**

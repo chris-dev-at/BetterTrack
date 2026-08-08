@@ -10,6 +10,7 @@ import {
   VAULT_CONTENT_TYPE,
   VAULT_COMMON_DOC_MAX_BYTES,
   VAULT_HEADER_MAX_BYTES,
+  VAULT_IF_CLAIM_HEADER,
   VAULT_PORTFOLIO_DOC_MAX_BYTES,
   vaultMigrationClaimRequestSchema,
   vaultMigrationFlipRequestSchema,
@@ -324,12 +325,19 @@ export function createVaultsRouter(ctx: AppContext, limiters: RateLimiters): Rou
     async (req, res) => {
       const params = req.valid?.params as Record<string, string>;
       const ciphertext = requireRawCiphertext(req);
+      // r3: while a v1→v2 migration claim is live, the claim holder asserts its
+      // nonce here and everyone else is refused (enforced inside the write
+      // transaction, see the repository). An absent header is `null`.
+      const rawClaim = (
+        req.headers[VAULT_IF_CLAIM_HEADER.toLowerCase()] as string | undefined
+      )?.trim();
       const doc = await ctx.vaults.writeDoc({
         userId: req.authUser!.id,
         vaultId: params.vaultId!,
         selector: selectorOf(params),
         expectedVersion: expectedVersionOf(req),
         ciphertext,
+        claimNonce: rawClaim ? rawClaim : null,
       });
       res.setHeader('ETag', vaultEtag(doc.version));
       res.setHeader('Cache-Control', 'private, no-store');

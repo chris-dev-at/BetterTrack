@@ -313,6 +313,20 @@ export type VaultVersionConflictResponse = z.infer<typeof vaultVersionConflictRe
 /** How long a migration claim survives without a renew. */
 export const VAULT_MIGRATION_CLAIM_TTL_MS = 15 * 60 * 1000;
 
+/**
+ * The migration-claim precondition header (r3, closing mobile finding A2.2).
+ *
+ * While the account's legacy vault carries a LIVE migration claim, every vault
+ * document `PUT` must send `If-Claim: <clientNonce>` naming that claim. A write
+ * without it answers 428 `VAULT_PRECONDITION_REQUIRED`; a write asserting a
+ * nonce that is not the live claim — expired, superseded, or arriving after the
+ * flip — answers 409 `VAULT_MIGRATION_CLAIMED`. Both carry the current
+ * migration `state` beside `error`, so the loser learns who holds the claim
+ * without a second round trip. Outside a live claim window the header is
+ * simply not sent.
+ */
+export const VAULT_IF_CLAIM_HEADER = 'If-Claim';
+
 const clientNonceSchema = z
   .string()
   .trim()

@@ -1,8 +1,22 @@
 import type { VaultDocument, VaultEnvelopeHeader, VaultKdfParams } from '@bettertrack/contracts';
 
-import fixture from './vectors.fixture.json';
+import fixture from './v1.fixture.json';
 
-import type { RandomBytes } from './crypto';
+/**
+ * BTVAULT1 (v1) conformance vectors — the account-singleton vault format.
+ *
+ * RELOCATED from `apps/web/src/user/vault/vectors.ts` (design r3 / mobile N2):
+ * `packages/domain` is the shared vectors location both clients pin, so the
+ * mobile port never again has to vendor crypto oracles out of the web APP.
+ * The fixture bytes are UNCHANGED by the move — that is the whole point of a
+ * conformance vector — and the web replay suites now import them from here.
+ *
+ * Like every module in this package the runtime is pure data: the only
+ * non-JSON imports are `import type`, which erase at compile time. The types
+ * come from `@bettertrack/contracts` rather than local mirrors because these
+ * shapes ARE the contract — a drifted local copy would be a second, silently
+ * different definition of the format under test.
+ */
 
 export const VECTOR_KEY_ID = '018f0000-0000-7000-8000-00000000000a';
 export const VECTOR_DEVICE_ID = '018f0000-0000-7000-8000-00000000000b';
@@ -92,8 +106,11 @@ interface VaultRollbackCase {
  */
 export const vaultInteroperabilityFixture = fixture as VaultInteroperabilityFixture;
 
+/** The deterministic byte source every vector in this package is generated with. */
+export type VectorRandomBytes = (length: number) => Uint8Array;
+
 /** Deterministic only for reproducing public test vectors — never use for real vaults. */
-export function deterministicRandom(start = 0): RandomBytes {
+export function deterministicRandom(start = 0): VectorRandomBytes {
   let next = start;
   return (length) => Uint8Array.from({ length }, () => next++ & 0xff);
 }

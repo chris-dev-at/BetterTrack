@@ -1,6 +1,7 @@
 import {
   VAULT_DOCUMENT_V1_VERSION,
   VAULT_DOCUMENT_VERSION,
+  VAULT_MERGE_LOG_LIMIT,
   vaultDocumentSchema,
   vaultEntitySchema,
   vaultMergeRecordSchema,
@@ -20,7 +21,9 @@ import {
   pruneForkProvenance,
 } from './mirrorProvenance';
 
-export const VAULT_MERGE_LOG_LIMIT = 20;
+// The bound is a WRITE-side trim (`appendMergeRecord` below); parsing tolerates
+// any length (r3, mobile A1.2). Re-exported so existing imports keep working.
+export { VAULT_MERGE_LOG_LIMIT };
 
 export interface MergeVaultDocumentsInput {
   left: VaultDocument;

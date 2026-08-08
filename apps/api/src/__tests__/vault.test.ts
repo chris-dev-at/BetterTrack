@@ -256,8 +256,12 @@ describe('vault blob store', () => {
       .send(envelope(2, new Uint8Array([9, 9, 9])));
     expect(stale.status).toBe(412);
     expect(stale.body.error.code).toBe('VAULT_PRECONDITION_FAILED');
+    // #1161 keeps validators off error responses; the winner's version rides
+    // the BODY instead (r3 regression guard — the loser must not need a second
+    // GET /vault just to learn the current version).
     expect(stale.headers.etag).toBeUndefined();
     expect(stale.headers['last-modified']).toBeUndefined();
+    expect(stale.body.currentVersion).toBe(2);
 
     const read = await agent.get('/api/v1/vault').responseType('blob');
     expect(read.headers.etag).toBe('"2"');
