@@ -379,17 +379,34 @@ export const VAULT2_BLOB_HEADER_FIELDS = [
 export const VAULT2_QR_PREFIX = 'btvault1:';
 /** r2 §10: the whole two-screen handoff lives at most 120 seconds. */
 export const VAULT2_QR_TTL_MS = 120_000;
-/** Digits in the one-time PIN that unwraps `w`. */
-export const VAULT2_QR_PIN_LENGTH = 6;
 
 /**
- * `btvault1:{"qr":1,"vaultId":…,"name":…,"w":…}` (r2 §10).
+ * The one-time code that unwraps `w` (r3 §19, superseding r2 §10's 6-digit
+ * PIN). Eight characters of Crockford base32 — **exactly 40 bits** — because
+ * the code is the ENTIRE security margin of a photographed QR: `w` plus its
+ * GCM tag is an offline verification oracle, and a 6-digit sweep at the vault
+ * Argon2id profile costs only ≈97 CPU-hours. At 2^40 the same sweep is
+ * ≈12,000 CPU-years of memory-hard work.
  *
- * `w` is **not** the passphrase. It is `iv ‖ AES-GCM(KDF(pin), P)` under a
- * 6-digit one-time PIN that is shown on a SEPARATE screen and never encoded
- * into the image — so a photograph of the code, a shoulder-surfer, or a
- * screen-recording captures nothing usable. The receiver needs the code AND the
- * PIN within the 120 s window.
+ * The alphabet omits I, L, O, U; decoding forgives case, separators and the
+ * classic confusions (`I`/`L` → `1`, `O` → `0`). The KDF input is the CANONICAL
+ * form: 8 uppercase characters, no separators.
+ */
+export const VAULT2_QR_CODE_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
+export const VAULT2_QR_CODE_LENGTH = 8;
+export const VAULT2_QR_CODE_BITS = 40;
+
+/**
+ * `btvault1:{"qr":1,"vaultId":…,"name":…,"w":…}` (r2 §10, code per r3 §19).
+ *
+ * `w` is **not** the passphrase. It is
+ * `salt(16) ‖ iv(12) ‖ AES-256-GCM(KDF(code), P)` with
+ * `KDF = Argon2id, m = 65536 (64 MiB), t = 3, p = 1` — the vault profile,
+ * normative — and `AAD = utf8(vaultId)`. The 8-character one-time code is
+ * shown on a SEPARATE screen and never encoded into the image, so a
+ * photograph of the QR, a shoulder-surfer, or a screen-recording captures
+ * nothing usable on its own. The receiver needs the image AND the code within
+ * the 120 s window.
  *
  * The member name is `qr` rather than `v` (r2 §9) so it cannot be confused with
  * `VAULT_DOCUMENT_VERSION`.

@@ -1,3 +1,9 @@
+import {
+  VAULT2_QR_CODE_ALPHABET,
+  VAULT2_QR_CODE_BITS,
+  VAULT2_QR_CODE_LENGTH,
+} from '@bettertrack/contracts';
+
 import { secureRandomBytes, type RandomBytes } from '../crypto';
 import { VaultCryptoError } from '../errors';
 
@@ -12,14 +18,11 @@ import { VaultCryptoError } from '../errors';
  *
  * Crockford base32 because humans read it aloud and type it: no I, L, O, U in
  * the alphabet, and decoding forgives the classic confusions (`I`/`L` → `1`,
- * `O` → `0`) plus case and separators.
+ * `O` → `0`) plus case and separators. The alphabet/length/bits constants live
+ * in `@bettertrack/contracts` — mobile pins the same values.
  */
 
-/** Crockford base32, in encoding order. Index IS the 5-bit value. */
-export const VAULT2_QR_CODE_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
-export const VAULT2_QR_CODE_LENGTH = 8;
-/** 8 × 5 bits. The whole security margin of a photographed QR (r3 §19). */
-export const VAULT2_QR_CODE_BITS = 40;
+export { VAULT2_QR_CODE_ALPHABET, VAULT2_QR_CODE_BITS, VAULT2_QR_CODE_LENGTH };
 
 const CODE_BYTES = VAULT2_QR_CODE_BITS / 8;
 

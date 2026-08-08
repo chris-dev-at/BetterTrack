@@ -3937,27 +3937,27 @@
       },
       "qr": {
         "title": "{{name}} an anderes Gerät übertragen",
-        "body": "Du siehst einen QR-Code und getrennt davon eine 6-stellige PIN. Das andere Gerät braucht beides — der Code allein nützt nichts.",
+        "body": "Du siehst einen QR-Code und getrennt davon einen 8-stelligen Einmal-Code. Das andere Gerät braucht beides — das Bild allein nützt nichts.",
         "password": "Dein BetterTrack-Passwort",
         "passwordHint": "Wir bestätigen dein Passwort, bevor ein Geheimnis am Bildschirm erscheint.",
         "scanFirst": "Scanne das zuerst mit dem anderen Gerät.",
         "codeLabel": "QR-Code für den Tresor {{name}}",
         "expires": "Läuft in {{seconds}} Sekunden ab",
-        "pinLabel": "Einmal-PIN",
-        "pinHint": "Sage sie dem anderen Gerät an. Sie wird nirgends gespeichert.",
-        "pinPending": "Sobald das andere Gerät den Code gescannt hat, zeige die PIN.",
-        "screenshotWarning": "Mach hiervon keinen Screenshot. Ein Foto des Codes allein ist harmlos, aber ein Foto, das auch die PIN erwischt, gibt den ganzen Tresor preis.",
+        "pinLabel": "Einmal-Code",
+        "pinHint": "Sage ihn dem anderen Gerät an. Er wird nirgends gespeichert.",
+        "pinPending": "Sobald das andere Gerät das Bild gescannt hat, zeige den Code.",
+        "screenshotWarning": "Mach hiervon keinen Screenshot. Ein Foto des QR-Bilds allein ist nutzlos, aber ein Foto, das auch den Einmal-Code erwischt, gibt den ganzen Tresor preis.",
         "expired": "Die Übertragung ist abgelaufen. Bestätige dein Passwort erneut für einen neuen Versuch.",
         "actions": {
           "start": "Übertragung starten",
-          "revealPin": "PIN anzeigen",
+          "revealPin": "Code anzeigen",
           "again": "Neu starten"
         },
         "errors": {
           "invalidPassword": "Dieses Passwort stimmt nicht.",
           "rateLimited": "Zu viele Versuche. Warte einen Moment und versuche es erneut.",
           "reauthUnavailable": "Wir können dein Passwort gerade nicht bestätigen, deshalb bleibt der Code verborgen.",
-          "failed": "Der Code konnte nicht angezeigt werden."
+          "failed": "Der QR-Code konnte nicht angezeigt werden."
         }
       },
       "import": {
@@ -3968,9 +3968,9 @@
         "pasteHint": "Er beginnt mit btvault1:",
         "cameraLabel": "Kameravorschau zum Scannen",
         "found": "Tresor „{{name}}“ gefunden.",
-        "pinIntro": "Tippe jetzt die 6-stellige PIN ein, die auf dem anderen Gerät steht.",
-        "pin": "Einmal-PIN",
-        "pinHint": "Sechs Ziffern, angezeigt auf dem sendenden Gerät.",
+        "pinIntro": "Tippe jetzt den 8-stelligen Code ein, der auf dem anderen Gerät steht.",
+        "pin": "Einmal-Code",
+        "pinHint": "Acht Buchstaben und Ziffern, angezeigt auf dem sendenden Gerät. Striche und Groß-/Kleinschreibung sind egal.",
         "storeIntro": "Wähle, wie dieses Gerät die Wörter speichert.",
         "devicePassword": "Gerätepasswort",
         "devicePasswordHint": "Verschlüsselt die Wörter auf diesem Gerät.",
@@ -3978,7 +3978,7 @@
           "scan": "Mit Kamera scannen",
           "stop": "Scannen beenden",
           "use": "Diesen Code verwenden",
-          "unlockCode": "Mit PIN entsperren",
+          "unlockCode": "Mit dem Code entsperren",
           "save": "Auf diesem Gerät speichern"
         },
         "errors": {
@@ -3987,8 +3987,8 @@
           "shape": "Diesen Tresorcode versteht diese Version nicht.",
           "wrapped": "Dieser Code ist unvollständig.",
           "passphrase": "Die Wörter in diesem Code sind ungültig.",
-          "pinFormat": "Die PIN hat sechs Ziffern.",
-          "pinWrong": "Diese PIN hat den Code nicht entsperrt. Möglicherweise ist er auch abgelaufen.",
+          "pinFormat": "Der Code hat acht Buchstaben und Ziffern.",
+          "pinWrong": "Dieser Code hat den Tresor nicht entsperrt. Möglicherweise ist er auch abgelaufen.",
           "camera": "Die Kamera konnte nicht geöffnet werden.",
           "noDecoder": "Dieser Browser kann keine QR-Codes lesen. Füge stattdessen den Code-Text ein.",
           "notFound": "In diesem Bild wurde kein QR-Code gefunden.",
@@ -4091,7 +4091,7 @@
           "aliases": "Tresornamen und die Bezeichnung einer gesperrten Zeile werden unverschlüsselt gespeichert, damit die App sie im gesperrten Zustand anzeigen kann.",
           "metadata": "Blob-Größen, Schreibzeitpunkte und die Anzahl der Portfolios in einem Tresor sind für den Speicherort sichtbar.",
           "membership": "Der Server weiß, welche Portfolios zu welchem Tresor gehören. Sowohl das Routing als auch das Löschen des Klartexts brauchen das — es ist bewusst so, nicht versteckt.",
-          "qrPin": "Ein geteilter QR-Code enthält die Wörter, verpackt unter einer Einmal-PIN. Ein Foto des Codes allein öffnet deinen Tresor nicht; ein Foto, das auch die PIN erfasst, schon.",
+          "qrPin": "Ein geteilter QR-Code enthält die Wörter, verpackt unter einem 8-stelligen Einmal-Code, gehärtet mit demselben Argon2id-Profil wie der Tresor selbst. Ein Foto des QR-Bilds allein öffnet deinen Tresor nicht; ein Foto, das auch den Einmal-Code erfasst, schon.",
           "noRecovery": "Es gibt keine serverseitige Wiederherstellung, kein Support-Override und keine Hintertür. Verlorene Wörter bedeuten verlorene Daten."
         }
       },

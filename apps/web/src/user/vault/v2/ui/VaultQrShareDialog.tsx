@@ -6,18 +6,19 @@ import { useT } from '../../../../i18n';
 import { Button, Field, Input, ODialog } from '../../../../ui/origin';
 import { reauthenticate } from '../api';
 import type { VaultKeyring } from '../keyring';
-import { buildVaultQrPayload, generateQrPin } from '../qr';
+import { buildVaultQrPayload, formatQrCode, generateQrCode } from '../qr';
 
 /**
  * QR handoff to another device (`docs/VAULTS_V2_DESIGN.md` r2 §10).
  *
  * The r2 shape is deliberately two screens:
  *
- *  1. **the code** — `btvault1:{"qr":1,…,"w":…}`, where `w` is the passphrase
- *     wrapped under a one-time 6-digit PIN. Photographing this screen gets an
- *     attacker nothing.
- *  2. **the PIN** — shown only after the sender taps "reveal", read out loud or
- *     typed on the other device.
+ *  1. **the image** — `btvault1:{"qr":1,…,"w":…}`, where `w` is the passphrase
+ *     wrapped under a one-time 8-character code (r3 §19: Crockford base32,
+ *     exactly 40 bits, stretched with the vault Argon2id profile).
+ *     Photographing this screen gets an attacker a 2^40 × Argon2id job.
+ *  2. **the code** — shown only after the sender taps "reveal", read out loud
+ *     or typed on the other device.
  *
  * Gates, all mandatory:
  *  - the vault must be UNLOCKED here (otherwise there are no words);
@@ -39,7 +40,7 @@ export interface VaultQrShareDialogProps {
 
 type Phase =
   | { kind: 'reauth' }
-  | { kind: 'code'; payload: string; pin: string; expiresAt: number; pinRevealed: boolean }
+  | { kind: 'code'; payload: string; code: string; expiresAt: number; codeRevealed: boolean }
   | { kind: 'expired' };
 
 export function VaultQrShareDialog({
@@ -100,20 +101,20 @@ export function VaultQrShareDialog({
         return;
       }
 
-      const pin = generateQrPin();
+      const code = generateQrCode();
       const payload = await buildVaultQrPayload({
         vaultId,
         name: vaultName,
         passphrase: keyring.revealPassphrase(vaultId),
-        pin,
+        code,
       });
       setPassword('');
       setPhase({
         kind: 'code',
         payload,
-        pin,
+        code,
         expiresAt: Date.now() + VAULT2_QR_TTL_MS,
-        pinRevealed: false,
+        codeRevealed: false,
       });
     } catch {
       setError(t('vault.v2.qr.errors.failed'));
@@ -139,8 +140,8 @@ export function VaultQrShareDialog({
               {t('vault.v2.qr.actions.start')}
             </Button>
           ) : null}
-          {phase.kind === 'code' && !phase.pinRevealed ? (
-            <Button onClick={() => setPhase({ ...phase, pinRevealed: true })} variant="primary">
+          {phase.kind === 'code' && !phase.codeRevealed ? (
+            <Button onClick={() => setPhase({ ...phase, codeRevealed: true })} variant="primary">
               {t('vault.v2.qr.actions.revealPin')}
             </Button>
           ) : null}
@@ -201,10 +202,10 @@ export function VaultQrShareDialog({
               {t('vault.v2.qr.expires', { seconds: remaining })}
             </p>
 
-            {phase.pinRevealed ? (
+            {phase.codeRevealed ? (
               <div className="bt-panel bt-panel--soft flex flex-col items-center gap-1">
                 <p className="bt-label">{t('vault.v2.qr.pinLabel')}</p>
-                <p className="bt-h2 tracking-widest tabular-nums">{phase.pin}</p>
+                <p className="bt-h2 tracking-widest tabular-nums">{formatQrCode(phase.code)}</p>
                 <p className="bt-row-sub">{t('vault.v2.qr.pinHint')}</p>
               </div>
             ) : (

@@ -3937,27 +3937,27 @@
       },
       "qr": {
         "title": "Share {{name}} to another device",
-        "body": "You will see a QR code and, separately, a 6-digit PIN. The other device needs both — the code on its own is useless.",
+        "body": "You will see a QR code and, separately, an 8-character one-time code. The other device needs both — the image on its own is useless.",
         "password": "Your BetterTrack password",
         "passwordHint": "Confirming your password before a secret is shown on screen.",
         "scanFirst": "Scan this with the other device first.",
         "codeLabel": "QR code for the vault {{name}}",
         "expires": "Expires in {{seconds}} seconds",
-        "pinLabel": "One-time PIN",
+        "pinLabel": "One-time code",
         "pinHint": "Read this out to the other device. It is not stored anywhere.",
-        "pinPending": "Once the other device has scanned the code, show the PIN.",
-        "screenshotWarning": "Do not screenshot this. A photo of the code is harmless on its own, but a photo that also catches the PIN hands over the whole vault.",
+        "pinPending": "Once the other device has scanned the image, show the code.",
+        "screenshotWarning": "Do not screenshot this. A photo of the QR image is useless on its own, but a photo that also catches the one-time code hands over the whole vault.",
         "expired": "The handoff expired. Confirm your password again to start a new one.",
         "actions": {
           "start": "Start handoff",
-          "revealPin": "Show the PIN",
+          "revealPin": "Show the code",
           "again": "Start again"
         },
         "errors": {
           "invalidPassword": "That password did not match.",
           "rateLimited": "Too many attempts. Wait a moment and try again.",
           "reauthUnavailable": "We cannot confirm your password right now, so the code stays hidden.",
-          "failed": "The code could not be shown."
+          "failed": "The QR code could not be shown."
         }
       },
       "import": {
@@ -3968,9 +3968,9 @@
         "pasteHint": "It starts with btvault1:",
         "cameraLabel": "Camera preview for scanning",
         "found": "Found the vault “{{name}}”.",
-        "pinIntro": "Now type the 6-digit PIN shown on the other device.",
-        "pin": "One-time PIN",
-        "pinHint": "Six digits, shown on the sending device.",
+        "pinIntro": "Now type the 8-character code shown on the other device.",
+        "pin": "One-time code",
+        "pinHint": "Eight letters and digits, shown on the sending device. Dashes and case do not matter.",
         "storeIntro": "Choose how this device stores the words.",
         "devicePassword": "Device password",
         "devicePasswordHint": "Used to encrypt the words on this device.",
@@ -3978,7 +3978,7 @@
           "scan": "Scan with camera",
           "stop": "Stop scanning",
           "use": "Use this code",
-          "unlockCode": "Unlock with PIN",
+          "unlockCode": "Unlock with the code",
           "save": "Save on this device"
         },
         "errors": {
@@ -3987,8 +3987,8 @@
           "shape": "That code is not a vault code this version understands.",
           "wrapped": "That code is incomplete.",
           "passphrase": "The words in that code are not valid.",
-          "pinFormat": "The PIN is six digits.",
-          "pinWrong": "That PIN did not unlock the code. It may also have expired.",
+          "pinFormat": "The code is 8 letters and digits.",
+          "pinWrong": "That code did not unlock the vault. It may also have expired.",
           "camera": "The camera could not be opened.",
           "noDecoder": "This browser cannot read QR codes. Paste the code text instead.",
           "notFound": "No QR code was found in that image.",
@@ -4091,7 +4091,7 @@
           "aliases": "Vault names and the label shown on a locked row are stored unencrypted so the app can render them while locked.",
           "metadata": "Blob sizes, write times and how many portfolios a vault holds are visible to whoever stores the bytes.",
           "membership": "The server knows which portfolios belong to which vault. Routing and the cleartext purge both need it, so this is accepted by design rather than hidden.",
-          "qrPin": "A shared QR code carries the words wrapped under a one-time PIN. A photo of the code alone cannot open your vault; a photo that also captures the PIN can.",
+          "qrPin": "A shared QR code carries the words wrapped under an 8-character one-time code, stretched with the same Argon2id profile as the vault itself. A photo of the QR image alone cannot open your vault; a photo that also captures the one-time code can.",
           "noRecovery": "There is no server-side recovery, no support override and no backdoor. Losing your words loses your data."
         }
       },

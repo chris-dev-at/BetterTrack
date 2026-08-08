@@ -5,10 +5,10 @@ import { Button, Field, Input, ODialog } from '../../../../ui/origin';
 import { CHECKBOX_STYLE } from '../../../components/ui';
 import { RAW_STORAGE_ACKNOWLEDGEMENT, type VaultPassphraseVaultStore } from '../devicePassphrase';
 import {
-  isValidQrPin,
+  isValidQrCode,
   parseVaultQrPayload,
   unwrapVaultQrPayload,
-  VAULT2_QR_PIN_LENGTH,
+  VAULT2_QR_CODE_LENGTH,
   type VaultQrPayload,
 } from '../qr';
 
@@ -168,7 +168,7 @@ export function VaultQrImportDialog({
       if (!result.ok) {
         setError(
           t(
-            `vault.v2.import.errors.${result.reason === 'pin-format' ? 'pinFormat' : result.reason === 'passphrase' ? 'passphrase' : 'pinWrong'}`,
+            `vault.v2.import.errors.${result.reason === 'code-format' ? 'pinFormat' : result.reason === 'passphrase' ? 'passphrase' : 'pinWrong'}`,
           ),
         );
         return;
@@ -215,7 +215,7 @@ export function VaultQrImportDialog({
           </Button>
           {payload != null && passphrase == null ? (
             <Button
-              disabled={busy || !isValidQrPin(pin)}
+              disabled={busy || !isValidQrCode(pin)}
               loading={busy}
               onClick={() => void unwrap()}
               variant="primary"
@@ -306,8 +306,8 @@ export function VaultQrImportDialog({
               <Input
                 autoComplete="one-time-code"
                 id="vault-import-pin"
-                inputMode="numeric"
-                maxLength={VAULT2_QR_PIN_LENGTH}
+                autoCapitalize="characters"
+                maxLength={VAULT2_QR_CODE_LENGTH + 1}
                 onChange={(event) => setPin(event.target.value)}
                 value={pin}
               />

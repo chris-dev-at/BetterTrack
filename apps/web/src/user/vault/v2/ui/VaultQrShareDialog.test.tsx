@@ -41,7 +41,7 @@ vi.mock('qrcode.react', () => ({
   },
 }));
 
-describe('VaultQrShareDialog — re-auth-gated, PIN-wrapped handoff (r2 §10)', () => {
+describe('VaultQrShareDialog — re-auth-gated, code-wrapped handoff (r2 §10, r3 §19)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     lastBuiltPayload = '';
@@ -96,7 +96,7 @@ describe('VaultQrShareDialog — re-auth-gated, PIN-wrapped handoff (r2 §10)', 
     expect(screen.queryByRole('img', { name: /QR code/u })).not.toBeInTheDocument();
   });
 
-  it('encodes a PIN-wrapped payload that never contains the words', async () => {
+  it('encodes a code-wrapped payload that never contains the words', async () => {
     const user = userEvent.setup();
     api.reauthenticate.mockResolvedValue({ status: 'ok' });
     mount();
@@ -112,7 +112,7 @@ describe('VaultQrShareDialog — re-auth-gated, PIN-wrapped handoff (r2 §10)', 
     expect(parseVaultQrPayload(lastBuiltPayload).ok).toBe(true);
   });
 
-  it('holds the PIN back until the sender asks for it, then unwraps the code', async () => {
+  it('holds the code back until the sender asks for it, then unwraps the image', async () => {
     const user = userEvent.setup();
     api.reauthenticate.mockResolvedValue({ status: 'ok' });
     mount();
@@ -120,16 +120,16 @@ describe('VaultQrShareDialog — re-auth-gated, PIN-wrapped handoff (r2 §10)', 
     await user.click(screen.getByRole('button', { name: 'Start handoff' }));
     await waitFor(() => expect(lastBuiltPayload).not.toBe(''));
 
-    // Screen one: the code, no PIN. A photo of this is useless.
-    expect(screen.queryByText(/^\d{6}$/u)).not.toBeInTheDocument();
+    // Screen one: the QR image, no code. A photo of this is useless.
+    expect(screen.queryByText(/^[0-9A-Z]{4}-[0-9A-Z]{4}$/u)).not.toBeInTheDocument();
     expect(screen.getByText(/Once the other device has scanned/iu)).toBeInTheDocument();
 
-    await user.click(screen.getByRole('button', { name: 'Show the PIN' }));
-    const pin = screen.getByText(/^\d{6}$/u).textContent!;
+    await user.click(screen.getByRole('button', { name: 'Show the code' }));
+    const code = screen.getByText(/^[0-9A-Z]{4}-[0-9A-Z]{4}$/u).textContent!;
 
     const parsed = parseVaultQrPayload(lastBuiltPayload);
     if (!parsed.ok) throw new Error('expected a parsable payload');
-    await expect(unwrapVaultQrPayload(parsed.payload, pin)).resolves.toEqual({
+    await expect(unwrapVaultQrPayload(parsed.payload, code)).resolves.toEqual({
       ok: true,
       passphrase: FIXTURE_PASSPHRASE,
     });

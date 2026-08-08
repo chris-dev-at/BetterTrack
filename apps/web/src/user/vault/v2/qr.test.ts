@@ -3,22 +3,21 @@ import { describe, expect, it } from 'vitest';
 
 import {
   buildVaultQrPayload,
-  generateQrPin,
-  isValidQrPin,
+  isValidQrCode,
   parseVaultQrPayload,
   unwrapVaultQrPayload,
   VAULT2_QR_PREFIX,
 } from './qr';
 import { deterministicBytes, fastDeps, FIXTURE_PASSPHRASE, FIXTURE_VAULT_ID } from './testSupport';
 
-const PIN = '042195';
+const CODE = '1199T5HY';
 
 function build(overrides: Partial<Parameters<typeof buildVaultQrPayload>[0]> = {}) {
   return buildVaultQrPayload({
     vaultId: FIXTURE_VAULT_ID,
     name: 'Drive vault',
     passphrase: FIXTURE_PASSPHRASE,
-    pin: PIN,
+    code: CODE,
     randomBytes: deterministicBytes(5),
     deps: fastDeps,
     ...overrides,
@@ -45,22 +44,28 @@ describe('vault QR payload (r2 §10)', () => {
     for (const word of FIXTURE_PASSPHRASE.split(' ')) {
       expect(payload).not.toContain(`"${word}`);
     }
-    expect(payload).not.toContain(PIN);
+    expect(payload).not.toContain(CODE);
   });
 
-  it('round-trips only with the right PIN', async () => {
+  it('round-trips only with the right code — and with any Crockford spelling of it', async () => {
     const payload = await build();
     const parsed = parseVaultQrPayload(payload);
     expect(parsed.ok).toBe(true);
     if (!parsed.ok) return;
 
-    await expect(unwrapVaultQrPayload(parsed.payload, PIN, fastDeps)).resolves.toEqual({
+    await expect(unwrapVaultQrPayload(parsed.payload, CODE, fastDeps)).resolves.toEqual({
       ok: true,
       passphrase: FIXTURE_PASSPHRASE,
     });
-    await expect(unwrapVaultQrPayload(parsed.payload, '000000', fastDeps)).resolves.toEqual({
+    // Crockford tolerance: case, separators and the I/L/O confusions all
+    // canonicalize to the same code, so the same key derives.
+    await expect(unwrapVaultQrPayload(parsed.payload, ' Il99-t5hy ', fastDeps)).resolves.toEqual({
+      ok: true,
+      passphrase: FIXTURE_PASSPHRASE,
+    });
+    await expect(unwrapVaultQrPayload(parsed.payload, '00000000', fastDeps)).resolves.toEqual({
       ok: false,
-      reason: 'pin-wrong',
+      reason: 'code-wrong',
     });
   });
 
@@ -70,9 +75,9 @@ describe('vault QR payload (r2 §10)', () => {
     if (!parsed.ok) throw new Error('expected a parsable payload');
 
     const spliced = { ...parsed.payload, vaultId: '9f6f3f1e-9f2a-4a53-9a6a-9b8f2f8c1a09' };
-    await expect(unwrapVaultQrPayload(spliced, PIN, fastDeps)).resolves.toEqual({
+    await expect(unwrapVaultQrPayload(spliced, CODE, fastDeps)).resolves.toEqual({
       ok: false,
-      reason: 'pin-wrong',
+      reason: 'code-wrong',
     });
   });
 
@@ -84,7 +89,7 @@ describe('vault QR payload (r2 §10)', () => {
     expect(payload).toContain('"name":"Drive vault"');
     const parsed = parseVaultQrPayload(payload);
     if (!parsed.ok) throw new Error('expected a parsable payload');
-    await expect(unwrapVaultQrPayload(parsed.payload, PIN, fastDeps)).resolves.toEqual({
+    await expect(unwrapVaultQrPayload(parsed.payload, CODE, fastDeps)).resolves.toEqual({
       ok: true,
       passphrase: FIXTURE_PASSPHRASE,
     });
@@ -114,7 +119,7 @@ describe('vault QR payload (r2 §10)', () => {
     ).toEqual({ ok: false, reason: 'shape' });
   });
 
-  it('rejects a truncated wrap before asking for a PIN', () => {
+  it('rejects a truncated wrap before asking for the code', () => {
     expect(
       parseVaultQrPayload(
         `btvault1:{"qr":1,"vaultId":"${FIXTURE_VAULT_ID}","name":"n","w":"AAAA"}`,
@@ -134,42 +139,24 @@ describe('vault QR payload (r2 §10)', () => {
   });
 });
 
-describe('handoff PIN', () => {
-  it('only accepts six digits', () => {
-    expect(isValidQrPin('042195')).toBe(true);
-    expect(isValidQrPin(' 042195 ')).toBe(true);
-    expect(isValidQrPin('12345')).toBe(false);
-    expect(isValidQrPin('1234567')).toBe(false);
-    expect(isValidQrPin('12345a')).toBe(false);
+describe('handoff code (r3 §19)', () => {
+  it('accepts only 8 Crockford base32 characters, in any spelling', () => {
+    expect(isValidQrCode('1199T5HY')).toBe(true);
+    expect(isValidQrCode(' 1199-t5hy ')).toBe(true);
+    expect(isValidQrCode('1199T5H')).toBe(false);
+    expect(isValidQrCode('1199T5HYA')).toBe(false);
+    expect(isValidQrCode('1199T5HU')).toBe(false);
   });
 
-  it('refuses to build or unwrap with a malformed PIN', async () => {
-    await expect(build({ pin: '123' })).rejects.toMatchObject({ code: 'kdf-failed' });
+  it('refuses to build or unwrap with a malformed code', async () => {
+    await expect(build({ code: '123' })).rejects.toMatchObject({ code: 'kdf-failed' });
     const payload = await build();
     const parsed = parseVaultQrPayload(payload);
     if (!parsed.ok) throw new Error('expected a parsable payload');
     await expect(unwrapVaultQrPayload(parsed.payload, '123', fastDeps)).resolves.toEqual({
       ok: false,
-      reason: 'pin-format',
+      reason: 'code-format',
     });
-  });
-
-  it('generates six digits, keeps leading zeros, and draws without modulo bias', () => {
-    // A source that always returns the smallest rejectable value proves the
-    // rejection branch is reached rather than folded with a biased modulo.
-    let call = 0;
-    const source = (length: number) => {
-      call += 1;
-      const bytes = new Uint8Array(length);
-      // First draw lands in the unfair tail (>= floor(2^32/10^6)*10^6).
-      new DataView(bytes.buffer).setUint32(0, call === 1 ? 0xfffffff0 : 7, false);
-      return bytes;
-    };
-    expect(generateQrPin(source)).toBe('000007');
-    expect(call).toBe(2);
-
-    const real = generateQrPin();
-    expect(real).toMatch(/^\d{6}$/u);
   });
 
   it('keeps the whole handoff inside the contract TTL', () => {
