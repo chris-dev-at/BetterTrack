@@ -2,7 +2,7 @@ import { and, eq } from 'drizzle-orm';
 
 import type { Database } from '../db';
 import { newId } from '../ids';
-import { dividends, portfolioCashMovements, userTaxSettings } from '../schema';
+import { dividends, portfolioCashMovements, taxYearUnlocks, userTaxSettings } from '../schema';
 import type { CashMovementRow, DividendRow, UserTaxSettingsRow } from '../schema';
 import {
   insertCashMovementsInTransaction,
@@ -140,6 +140,39 @@ export function createTaxRepository(db: Database) {
         .returning();
       if (!row) throw new Error('Tax settings upsert returned no row');
       return toSettingsRecord(row);
+    },
+
+    /**
+     * The user's explicitly-unlocked tax years, ascending (tax year locking,
+     * §16 2026-08-07). LOCKED is the absence of a row for an elapsed year —
+     * the service derives it against the clock, so rollover needs no job.
+     */
+    async listUnlockedTaxYears(userId: string): Promise<number[]> {
+      const rows = await db
+        .select({ year: taxYearUnlocks.year })
+        .from(taxYearUnlocks)
+        .where(eq(taxYearUnlocks.userId, userId))
+        .orderBy(taxYearUnlocks.year);
+      return rows.map((r) => r.year);
+    },
+
+    /** Open one year for amendments; idempotent (returns whether it was locked). */
+    async unlockTaxYear(userId: string, year: number): Promise<boolean> {
+      const rows = await db
+        .insert(taxYearUnlocks)
+        .values({ userId, year })
+        .onConflictDoNothing()
+        .returning({ year: taxYearUnlocks.year });
+      return rows.length > 0;
+    },
+
+    /** Re-lock one year; idempotent (returns whether it was unlocked). */
+    async relockTaxYear(userId: string, year: number): Promise<boolean> {
+      const rows = await db
+        .delete(taxYearUnlocks)
+        .where(and(eq(taxYearUnlocks.userId, userId), eq(taxYearUnlocks.year, year)))
+        .returning({ year: taxYearUnlocks.year });
+      return rows.length > 0;
     },
 
     /**

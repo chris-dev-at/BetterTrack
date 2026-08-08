@@ -1879,6 +1879,32 @@ export const userTaxSettings = pgTable(
 );
 
 /**
+ * Explicit tax-year unlocks (owner directive 2026-08-07, §16). A tax year
+ * auto-locks the moment the Vienna calendar year ends: the LOCKED state is the
+ * absence of a row here for any year before the current one, so fully-elapsed
+ * years start locked with no backfill and every future rollover locks the
+ * ending year with no job. One row = one year the user explicitly opened for
+ * amendments through the re-authenticated unlock ritual; it stays open until
+ * the user explicitly re-locks (row deleted). Per USER, not per portfolio —
+ * amending a tax year is an account-level legal act, like the filings it
+ * mirrors. The current (open) year is never lockable, so `year` is always in
+ * the past relative to the unlock moment. Cascades away with the user.
+ */
+export const taxYearUnlocks = pgTable(
+  'tax_year_unlocks',
+  {
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    year: integer('year').notNull(),
+    unlockedAt: timestamp('unlocked_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.userId, t.year] })],
+);
+
+export type TaxYearUnlockRow = typeof taxYearUnlocks.$inferSelect;
+
+/**
  * Per-portfolio setting overrides (issue #636). The override layer of the
  * scoping cascade `effective = portfolio override ?? user default ?? system
  * default`: one row per (portfolio, setting key) that pins a value for THAT
@@ -3790,6 +3816,7 @@ export const schema = {
   portfolioDailySnapshots,
   portfolioSnapshotState,
   userTaxSettings,
+  taxYearUnlocks,
   portfolioSettings,
   widgetLayouts,
   friendRequests,

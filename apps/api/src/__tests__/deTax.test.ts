@@ -13,6 +13,7 @@ import {
 
 import * as schema from '../data/schema';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
+import { unlockRecentTaxYears } from '../testing/taxYearUnlocks';
 
 /**
  * V5-P4 German tax engine end-to-end (issue #580): the #576 fixture scenarios
@@ -73,6 +74,9 @@ async function seedAsset(symbol: string, type: 'stock' | 'etf' = 'stock') {
 /** One logged-in DE-mode user with their default portfolio and a stock asset. */
 async function setupDe() {
   const user = await harness.seedUser();
+  // Amendment mode (§16 2026-08-07): the DE scenarios backdate into passed
+  // years by design; the lock gate itself is pinned by taxYearLock.test.ts.
+  await unlockRecentTaxYears(harness.db, user.id);
   const agent = await loginAgent(harness.app, user.email, user.password);
   const pid = await defaultPortfolioId(agent);
   const asset = await seedAsset('BAYN.DE');
@@ -538,6 +542,7 @@ describe('DE year boundary: pots carry forward, the Sparer-Pauschbetrag does not
 describe('switching AT→DE mid-year re-derives the open year live under DE', () => {
   it('the AT-era gain re-enters the DE year (KESt refunds via correction); new rows settle under DE FIFO', async () => {
     const user = await harness.seedUser();
+    await unlockRecentTaxYears(harness.db, user.id);
     const agent = await loginAgent(harness.app, user.email, user.password);
     const pid = await defaultPortfolioId(agent);
     const asset = await seedAsset('BAYN.DE');
@@ -646,6 +651,7 @@ describe('switching AT→DE mid-year re-derives the open year live under DE', ()
 
   it('a DE dividend backdated below a frozen-AT year replays that year for the ripple', async () => {
     const user = await harness.seedUser();
+    await unlockRecentTaxYears(harness.db, user.id);
     const agent = await loginAgent(harness.app, user.email, user.password);
     const pid = await defaultPortfolioId(agent);
     const asset = await seedAsset('BAYN.DE');
@@ -711,7 +717,9 @@ describe('switching AT→DE mid-year re-derives the open year live under DE', ()
 
     const years = await yearSummaries(agent, pid);
     expect(years.find((y) => y.year === 2025)).toMatchObject({
-      locked: true,
+      // Machinery-closed; explicitly unlocked above, so the policy flag reads
+      // amendable (§16 2026-08-07).
+      locked: false,
       taxNetEur: 263.75,
       de: { allowanceUsedEur: 1000, kapestEur: 250, soliEur: 13.75 },
     });

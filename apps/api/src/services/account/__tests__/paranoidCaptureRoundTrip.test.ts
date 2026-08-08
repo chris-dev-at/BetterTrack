@@ -40,6 +40,7 @@ import {
   standingOrderRuns,
 } from '../../../data/schema';
 import { createTestApp, type TestHarness } from '../../../testing/createTestApp';
+import { unlockTaxYears } from '../../../testing/taxYearUnlocks';
 
 /**
  * The user-visible paranoid round trip: seed a real normal account, CAPTURE it
@@ -640,6 +641,8 @@ describe('paranoid capture round trip', () => {
      * in `migration.test.ts`.
      */
     const { agent, userId } = await seedAgent();
+    // Amendment mode (§16 2026-08-07): the fixture backdates a 2025 buy.
+    await unlockTaxYears(harness.db, userId, [2025]);
     const portfolioId = await defaultPortfolioId(agent);
     const [asset] = await harness.db
       .insert(assets)
