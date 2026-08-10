@@ -1,4 +1,5 @@
 import type {
+  AssetFundamentals,
   AssetMeta,
   AssetRef,
   AssetSearchResult,
@@ -21,12 +22,18 @@ import {
   mapAssetType,
   mapDividendEvents,
   mapEarningsEvents,
+  mapFundamentals,
   mapMarketState,
   mapNewsHeadlines,
   mapSplitEvents,
   normalizeCurrency,
 } from './yahooMapping';
-import type { YahooChartEventsResult, YahooChartInterval, YahooClient } from './yahooClient';
+import type {
+  YahooChartEventsResult,
+  YahooChartInterval,
+  YahooClient,
+  YahooQuoteSummaryModule,
+} from './yahooClient';
 
 /**
  * The Yahoo Finance provider (PROJECTPLAN.md §5.2): `search`/`getQuote`/
@@ -44,6 +51,24 @@ const PROVIDER_ID = 'yahoo';
 
 /** How many headlines to request per asset (§13.5 V5-P5) — compact, expandable. */
 const NEWS_HEADLINE_COUNT = 20;
+
+/**
+ * The `quoteSummary` modules the fundamentals arc (INTEL1, board #76) fetches in
+ * one call: the statement histories at both granularities plus the data/stats
+ * modules the ratios draw from. `summaryDetail` supplies marketCap + trailing/
+ * forward P/E (which the statement + key-stats modules do not carry).
+ */
+const FUNDAMENTALS_MODULES: YahooQuoteSummaryModule[] = [
+  'financialData',
+  'defaultKeyStatistics',
+  'summaryDetail',
+  'incomeStatementHistory',
+  'incomeStatementHistoryQuarterly',
+  'balanceSheetHistory',
+  'balanceSheetHistoryQuarterly',
+  'cashflowStatementHistory',
+  'cashflowStatementHistoryQuarterly',
+];
 
 /** §5.3 interval → the matching `yahoo-finance2` candle granularity. */
 const INTERVAL_MAP: Record<HistoryInterval, YahooChartInterval> = {
@@ -241,6 +266,16 @@ export function createYahooProvider(deps: CreateYahooProviderDeps): AssetProvide
     return mapSplitEvents(chart);
   }
 
+  async function getFundamentals(ref: AssetRef): Promise<AssetFundamentals> {
+    // One quoteSummary call for every fundamentals module; the market-data
+    // service caches/coalesces it per asset (arc f). A single upstream call
+    // through the queue, exactly like the other intel families.
+    const summary = await queue.run(() =>
+      client.quoteSummary(ref.providerRef, FUNDAMENTALS_MODULES),
+    );
+    return mapFundamentals(summary);
+  }
+
   return {
     id: PROVIDER_ID,
     search,
@@ -251,5 +286,6 @@ export function createYahooProvider(deps: CreateYahooProviderDeps): AssetProvide
     getEarningsEvents,
     getNewsHeadlines,
     getSplitEvents,
+    getFundamentals,
   };
 }

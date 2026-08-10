@@ -1,4 +1,5 @@
 import type {
+  AssetFundamentals,
   AssetMeta,
   AssetRef,
   AssetSearchResult,
@@ -77,4 +78,13 @@ export interface AssetProvider {
 
   /** Past + announced stock splits with ratios (arc d). */
   getSplitEvents?(ref: AssetRef): Promise<SplitEvents>;
+
+  /**
+   * Revenue / statement / ratio fundamentals for the richer asset page (arc f,
+   * INTEL1). OPTIONAL like the four families above: a provider without it (the
+   * local/Drive-only sources) simply does not advertise it, and the read layer
+   * degrades the endpoint to `available: false`. Returns BOTH period
+   * granularities plus snapshot ratios; the service selects and slices.
+   */
+  getFundamentals?(ref: AssetRef): Promise<AssetFundamentals>;
 }

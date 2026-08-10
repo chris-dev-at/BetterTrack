@@ -50,6 +50,7 @@ export {
   EARNINGS_TTL_SECONDS,
   SPLITS_TTL_SECONDS,
   NEWS_TTL_SECONDS,
+  FUNDAMENTALS_TTL_SECONDS,
   historyTtlSeconds,
 } from './ttl';
 

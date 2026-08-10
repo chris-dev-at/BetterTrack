@@ -340,3 +340,126 @@ export type SplitEvents = z.infer<typeof splitEventsSchema>;
 /** `GET /assets/:id/intel/splits`. */
 export const splitsResponseSchema = splitEventsSchema.extend({ available: z.boolean() }).strict();
 export type SplitsResponse = z.infer<typeof splitsResponseSchema>;
+
+// ── Fundamentals (arc f — INTEL1, mobile board #76) ──────────────────────────
+// Revenue / statement / ratio data for the richer asset page. A FIFTH optional
+// provider capability that mirrors the four families' provider→service→route→
+// contract shape and rides the very same caching/coalescing/currency keystone.
+// It is deliberately NOT folded into the {@link MarketIntelCapabilities} map (and
+// so not into the `GET /assets/:id/intel` descriptor): a provider that cannot
+// serve fundamentals (the Drive-only / local providers) just makes the endpoint
+// report `available: false`, exactly like a gate-off or upstream-error read.
+//
+// The statement figures are plain numbers in the company's own reporting
+// `currency` — informational and never converted to the portfolio base (the same
+// convention as earnings EPS). Real-world revenues (hundreds of billions) sit
+// far inside `Number.MAX_SAFE_INTEGER`, so a JSON number never loses precision.
+
+/** Statement granularity: full fiscal years or fiscal quarters. */
+export const FUNDAMENTALS_PERIODS = ['annual', 'quarterly'] as const;
+export const fundamentalsPeriodTypeSchema = z.enum(FUNDAMENTALS_PERIODS);
+export type FundamentalsPeriodType = z.infer<typeof fundamentalsPeriodTypeSchema>;
+
+/** Hard cap on the number of periods a caller may request; extras are dropped. */
+export const FUNDAMENTALS_MAX_LIMIT = 12;
+
+/**
+ * Query for `GET /assets/:id/intel/fundamentals`. `period` selects the
+ * granularity (defaulting to `annual`); an out-of-enum value is a 400. `limit`
+ * is an optional positive integer that the service CLAMPS to
+ * `1..FUNDAMENTALS_MAX_LIMIT` — a request for 50 periods yields at most 12, never
+ * an error — so a client can over-ask without a round-trip failure.
+ */
+export const fundamentalsQuerySchema = z
+  .object({
+    period: fundamentalsPeriodTypeSchema.default('annual'),
+    limit: z.coerce.number().int().positive().optional(),
+  })
+  .strict();
+export type FundamentalsQuery = z.infer<typeof fundamentalsQuerySchema>;
+
+/**
+ * One reporting period's statement line items. `fiscalPeriod` is `"FY"` for an
+ * annual row and `"Q1".."Q4"` for a quarterly one; `fiscalYear` and the quarter
+ * are derived from `endDate` (the period-end date the provider reports), so both
+ * are calendar-based approximations for issuers whose fiscal year is offset.
+ * `reportDate` (the date results were announced) and per-period `eps` are carried
+ * for shape-completeness and forward compatibility: Yahoo's statement modules do
+ * not supply either, so they are `null` today (trailing/forward EPS live in
+ * `ratios`, where they are authoritative). Every figure is nullable — a provider
+ * fills only what it has, and a gap is `null`, never a fabricated 0.
+ */
+export const fundamentalsPeriodSchema = z
+  .object({
+    fiscalPeriod: z.string(),
+    fiscalYear: z.number().int().nullable(),
+    endDate: z.string().datetime().nullable(),
+    reportDate: z.string().datetime().nullable(),
+    revenue: z.number().nullable(),
+    netIncome: z.number().nullable(),
+    eps: z.number().nullable(),
+    grossProfit: z.number().nullable(),
+    operatingIncome: z.number().nullable(),
+    totalAssets: z.number().nullable(),
+    totalLiabilities: z.number().nullable(),
+    totalEquity: z.number().nullable(),
+    operatingCashFlow: z.number().nullable(),
+    freeCashFlow: z.number().nullable(),
+  })
+  .strict();
+export type FundamentalsPeriod = z.infer<typeof fundamentalsPeriodSchema>;
+
+/**
+ * Snapshot valuation / profitability ratios for the asset as of the read (not
+ * per-period). Every field is nullable — the provider fills what it can and a
+ * missing ratio is `null`. Fractions (`profitMargin`, `returnOnEquity`) are left
+ * as the provider reports them (`0.25` ≈ 25 %).
+ */
+export const fundamentalsRatiosSchema = z
+  .object({
+    marketCap: z.number().nullable(),
+    trailingPe: z.number().nullable(),
+    forwardPe: z.number().nullable(),
+    priceToBook: z.number().nullable(),
+    profitMargin: z.number().nullable(),
+    returnOnEquity: z.number().nullable(),
+    debtToEquity: z.number().nullable(),
+    trailingEps: z.number().nullable(),
+    forwardEps: z.number().nullable(),
+  })
+  .strict();
+export type FundamentalsRatios = z.infer<typeof fundamentalsRatiosSchema>;
+
+/**
+ * The provider payload for the fundamentals capability: BOTH period granularities
+ * (annual + quarterly, most-recent-first) plus the snapshot `ratios` and the
+ * reporting `currency`. Cached once per asset through the keystone; the route
+ * selects one granularity and slices it to the requested `limit`.
+ */
+export const assetFundamentalsSchema = z
+  .object({
+    currency: currencyCodeSchema.nullable(),
+    annual: z.array(fundamentalsPeriodSchema),
+    quarterly: z.array(fundamentalsPeriodSchema),
+    ratios: fundamentalsRatiosSchema,
+  })
+  .strict();
+export type AssetFundamentals = z.infer<typeof assetFundamentalsSchema>;
+
+/**
+ * `GET /assets/:id/intel/fundamentals` — the period-selected, limit-sliced view.
+ * `available: false` with empty `periods` and all-null `ratios` whenever the gate
+ * is off, the asset's provider lacks the capability, or the upstream errored —
+ * never a 5xx, exactly like the sibling intel families. `period` echoes the
+ * granularity actually served so the client need not re-derive it.
+ */
+export const fundamentalsResponseSchema = z
+  .object({
+    available: z.boolean(),
+    currency: currencyCodeSchema.nullable(),
+    period: fundamentalsPeriodTypeSchema,
+    periods: z.array(fundamentalsPeriodSchema),
+    ratios: fundamentalsRatiosSchema,
+  })
+  .strict();
+export type FundamentalsResponse = z.infer<typeof fundamentalsResponseSchema>;

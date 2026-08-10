@@ -84,6 +84,7 @@ function stubMarketData(
     getEarningsEvents: unused('getEarningsEvents'),
     getNewsHeadlines: unused('getNewsHeadlines'),
     getSplitEvents: unused('getSplitEvents'),
+    getFundamentals: unused('getFundamentals'),
     settled: async () => {},
     breakerStates: () => [],
     failoverStatus: () => ({ chains: [], switches: [], attribution: [] }),

@@ -1,19 +1,22 @@
 import { Router } from 'express';
 
-import { assetIdParamSchema } from '@bettertrack/contracts';
+import { assetIdParamSchema, fundamentalsQuerySchema } from '@bettertrack/contracts';
+import type { FundamentalsQuery } from '@bettertrack/contracts';
 
 import { requireUser } from '../middleware/session';
-import { validateParams } from '../middleware/validate';
+import { validateParams, validateQuery } from '../middleware/validate';
 import type { AppContext } from '../context';
 
 /**
  * Per-asset market-intelligence reads (PROJECTPLAN.md §13.5 V5-P5): the
- * capability descriptor plus the four event families. Mounted under
- * `/api/v1/assets` alongside the asset detail routes and auth-guarded the same
- * way (`requireUser` + the §10 asset-scoping enforced in the service). Every
- * handler returns 200 with a contract-validated body — the "unconfigured" shape
- * (`available: false`) when the global gate is off, the provider lacks the
- * capability, or the upstream errored — so an asset page never 5xxs on intel.
+ * capability descriptor, the four event families and the fundamentals arc
+ * (INTEL1). Mounted under `/api/v1/assets` alongside the asset detail routes and
+ * auth-guarded the same way (`requireUser` + the §10 asset-scoping enforced in
+ * the service; bearer callers are further gated on `market:read` by the module
+ * scope map). Every handler returns 200 with a contract-validated body — the
+ * "unconfigured" shape (`available: false`) when the global gate is off, the
+ * provider lacks the capability, or the upstream errored — so an asset page
+ * never 5xxs on intel.
  */
 export function createMarketIntelRouter(ctx: AppContext): Router {
   const router = Router();
@@ -76,6 +79,20 @@ export function createMarketIntelRouter(ctx: AppContext): Router {
     const { id } = req.valid?.params as { id: string };
     res.json(await ctx.marketIntel.splits(req.authUser!.id, id));
   });
+
+  // GET /assets/:id/intel/fundamentals?period=annual|quarterly&limit=1..12 —
+  // revenue/statements/ratios (INTEL1). A bad `period` is a 400 (VALIDATION_ERROR);
+  // `limit` is clamped, not rejected. Registered after `/:id/intel/*` siblings.
+  router.get(
+    '/:id/intel/fundamentals',
+    validateParams(assetIdParamSchema),
+    validateQuery(fundamentalsQuerySchema),
+    async (req, res) => {
+      const { id } = req.valid?.params as { id: string };
+      const query = req.valid?.query as FundamentalsQuery;
+      res.json(await ctx.marketIntel.fundamentals(req.authUser!.id, id, query));
+    },
+  );
 
   return router;
 }

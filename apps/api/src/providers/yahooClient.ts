@@ -121,12 +121,19 @@ export interface YahooCalendarEvents {
   earnings?: YahooCalendarEarnings;
 }
 
-/** `quoteSummary.summaryDetail` — currency + the forward/trailing dividend fields. */
+/**
+ * `quoteSummary.summaryDetail` — currency + the forward/trailing dividend fields,
+ * and (for the fundamentals arc) the market-cap and trailing/forward P/E snapshot
+ * ratios, which live here rather than in `defaultKeyStatistics`.
+ */
 export interface YahooSummaryDetail {
   currency?: string;
   dividendYield?: number;
   dividendRate?: number;
   trailingAnnualDividendRate?: number;
+  marketCap?: number;
+  trailingPE?: number;
+  forwardPE?: number;
 }
 
 /** One row of `quoteSummary.earningsHistory.history` — a past reported quarter. */
@@ -140,15 +147,93 @@ export interface YahooEarningsHistory {
   history?: YahooEarningsHistoryRow[];
 }
 
+// ── Fundamentals modules (§13.5 arc f / INTEL1) ──────────────────────────────
+// The statement-history modules Yahoo exposes for the richer asset page. Every
+// figure is optional/nullable — the mappers read defensively and null out gaps.
+
+/** `quoteSummary.financialData` — reporting currency + key financial ratios. */
+export interface YahooFinancialData {
+  financialCurrency?: string | null;
+  profitMargins?: number | null;
+  returnOnEquity?: number | null;
+  debtToEquity?: number | null;
+}
+
+/** `quoteSummary.defaultKeyStatistics` — valuation stats + trailing/forward EPS. */
+export interface YahooDefaultKeyStatistics {
+  trailingEps?: number | null;
+  forwardEps?: number | null;
+  priceToBook?: number | null;
+}
+
+/** One row of a Yahoo income-statement history (annual or quarterly). */
+export interface YahooIncomeStatementRow {
+  endDate?: Date | number | string | null;
+  totalRevenue?: number | null;
+  grossProfit?: number | null;
+  operatingIncome?: number | null;
+  netIncome?: number | null;
+}
+
+/** One row of a Yahoo balance-sheet history (annual or quarterly). */
+export interface YahooBalanceSheetRow {
+  endDate?: Date | number | string | null;
+  totalAssets?: number | null;
+  totalLiab?: number | null;
+  totalStockholderEquity?: number | null;
+}
+
+/** One row of a Yahoo cashflow-statement history (annual or quarterly). */
+export interface YahooCashflowStatementRow {
+  endDate?: Date | number | string | null;
+  totalCashFromOperatingActivities?: number | null;
+  capitalExpenditures?: number | null;
+}
+
+/** `incomeStatementHistory` / `incomeStatementHistoryQuarterly` (same inner key). */
+export interface YahooIncomeStatementHistory {
+  incomeStatementHistory?: YahooIncomeStatementRow[];
+}
+
+/** `balanceSheetHistory` / `balanceSheetHistoryQuarterly` (same inner key). */
+export interface YahooBalanceSheetHistory {
+  balanceSheetStatements?: YahooBalanceSheetRow[];
+}
+
+/** `cashflowStatementHistory` / `cashflowStatementHistoryQuarterly` (same inner key). */
+export interface YahooCashflowStatementHistory {
+  cashflowStatements?: YahooCashflowStatementRow[];
+}
+
 /** The `quoteSummary` modules the intel provider requests, narrowed. */
 export interface YahooQuoteSummaryResult {
   calendarEvents?: YahooCalendarEvents;
   summaryDetail?: YahooSummaryDetail;
   earningsHistory?: YahooEarningsHistory;
+  // Fundamentals (arc f) modules:
+  financialData?: YahooFinancialData;
+  defaultKeyStatistics?: YahooDefaultKeyStatistics;
+  incomeStatementHistory?: YahooIncomeStatementHistory;
+  incomeStatementHistoryQuarterly?: YahooIncomeStatementHistory;
+  balanceSheetHistory?: YahooBalanceSheetHistory;
+  balanceSheetHistoryQuarterly?: YahooBalanceSheetHistory;
+  cashflowStatementHistory?: YahooCashflowStatementHistory;
+  cashflowStatementHistoryQuarterly?: YahooCashflowStatementHistory;
 }
 
 /** The `quoteSummary` module names the intel provider asks for. */
-export type YahooQuoteSummaryModule = 'calendarEvents' | 'summaryDetail' | 'earningsHistory';
+export type YahooQuoteSummaryModule =
+  | 'calendarEvents'
+  | 'summaryDetail'
+  | 'earningsHistory'
+  | 'financialData'
+  | 'defaultKeyStatistics'
+  | 'incomeStatementHistory'
+  | 'incomeStatementHistoryQuarterly'
+  | 'balanceSheetHistory'
+  | 'balanceSheetHistoryQuarterly'
+  | 'cashflowStatementHistory'
+  | 'cashflowStatementHistoryQuarterly';
 
 /** One item of `search(...).news`. */
 export interface YahooNewsItem {
