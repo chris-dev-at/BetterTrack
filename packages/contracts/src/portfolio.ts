@@ -884,11 +884,55 @@ export const portfolioHistoryRangeSchema = z.enum(PORTFOLIO_HISTORY_RANGES);
 export type PortfolioHistoryRange = z.infer<typeof portfolioHistoryRangeSchema>;
 
 /**
- * `GET /portfolios/:id/history?range=&overlay=` query. `overlay=true` additionally
- * returns each held asset's own daily price series (issue #122) so the chart
- * can overlay them on the portfolio curve; it arrives as a query-string token,
- * so it is an explicit `'true' | 'false'` enum rather than a boolean coercion
- * (`z.coerce.boolean()` would turn the literal string `"false"` into `true`).
+ * Client-selectable series interval (IN3, board #76 item 2). `auto` keeps each
+ * range's established resolution — EXCEPT 1D, where `auto` now serves the finer
+ * 5-minute grid (~288 grid marks worst-case for a 24/7 asset, ~156 over a 13-hour
+ * trading day; comfortably inside the shared point budget). An explicit
+ * sub-daily interval is honored exactly when the range can serve that grid
+ * within the point budget; a request FINER than the range can serve is
+ * coarsened to the finest grid that fits — never rejected (the "finest-fit"
+ * rule) — and the response's `interval` echoes what was actually served. `1d`
+ * always means the plain daily grid (the pre-#556 daily slice on 1D/1W/1M; the
+ * standard daily/downsampled series elsewhere). Ranges without sub-daily data
+ * (6M/1Y/5Y/MAX) resolve every request to `1d` with the series unchanged.
+ */
+export const PORTFOLIO_HISTORY_INTERVALS = ['auto', '1m', '5m', '15m', '30m', '1h', '1d'] as const;
+export const portfolioHistoryIntervalSchema = z.enum(PORTFOLIO_HISTORY_INTERVALS);
+export type PortfolioHistoryInterval = z.infer<typeof portfolioHistoryIntervalSchema>;
+
+/**
+ * The grid the server actually served, echoed on every history response so the
+ * client knows what it got (IN3). Auto-resolution per range: 1D → `5m`,
+ * 1W → `1h`, 1M → `144m`, 6M/1Y/5Y/MAX → `1d`. Two values differ from the
+ * request enum: `144m` is the 1M budget grid (the closest UTC-day divisor to
+ * the ~2.5-hour point-budget target) — servable only by resolution, never
+ * requestable directly; `1m` never appears, because no range can serve a
+ * 1-minute grid within the point budget (a 1D request for `1m` resolves to
+ * `5m` under the finest-fit rule). On the sub-daily grids the value describes
+ * the QUANTIZATION step: grid marks exist only where intraday data does, so
+ * sparse candles yield fewer points at that spacing, exactly as before.
+ */
+export const PORTFOLIO_HISTORY_RESOLVED_INTERVALS = [
+  '5m',
+  '15m',
+  '30m',
+  '1h',
+  '144m',
+  '1d',
+] as const;
+export const portfolioHistoryResolvedIntervalSchema = z.enum(PORTFOLIO_HISTORY_RESOLVED_INTERVALS);
+export type PortfolioHistoryResolvedInterval = z.infer<
+  typeof portfolioHistoryResolvedIntervalSchema
+>;
+
+/**
+ * `GET /portfolios/:id/history?range=&overlay=&interval=` query. `overlay=true`
+ * additionally returns each held asset's own daily price series (issue #122) so
+ * the chart can overlay them on the portfolio curve; it arrives as a
+ * query-string token, so it is an explicit `'true' | 'false'` enum rather than
+ * a boolean coercion (`z.coerce.boolean()` would turn the literal string
+ * `"false"` into `true`). `interval` selects the series grid (IN3, see
+ * {@link portfolioHistoryIntervalSchema}); omitted ⇒ `auto`.
  */
 export const portfolioHistoryQuerySchema = z
   .object({
@@ -897,6 +941,7 @@ export const portfolioHistoryQuerySchema = z
       .enum(['true', 'false'])
       .default('false')
       .transform((v) => v === 'true'),
+    interval: portfolioHistoryIntervalSchema.default('auto'),
   })
   .strict();
 export type PortfolioHistoryQuery = z.infer<typeof portfolioHistoryQuerySchema>;
@@ -907,11 +952,12 @@ export const portfolioHistoryPointSchema = z
     /** The calendar day the point falls on (ISO `YYYY-MM-DD`), UTC. */
     date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
     /**
-     * Exact instant of an **intraday** point (ISO-8601), present on the
-     * sub-daily curves 1D/1W/1M (V5-P1 arc d, issue #556). Absent on the
-     * daily-grid ranges (6M/1Y/5Y/MAX), where `date` alone locates the point.
-     * Multiple intraday points share a `date` and are disambiguated by `time`;
-     * the client keys the chart on `time ?? date`.
+     * Exact instant of an **intraday** point (ISO-8601), present whenever the
+     * response's resolved `interval` is sub-daily (the 1D/1W/1M grids, V5-P1
+     * arc d, issue #556). Absent on the daily grid — the 6M/1Y/5Y/MAX ranges,
+     * and a short range served with `interval=1d` (IN3) — where `date` alone
+     * locates the point. Multiple intraday points share a `date` and are
+     * disambiguated by `time`; the client keys the chart on `time ?? date`.
      */
     time: z.string().datetime().optional(),
     valueEur: z.number(),
@@ -969,6 +1015,12 @@ export type PortfolioPerformancePoint = z.infer<typeof portfolioPerformancePoint
 export const portfolioHistoryResponseSchema = z
   .object({
     range: portfolioHistoryRangeSchema,
+    /**
+     * The grid actually served (IN3): the resolved form of the request's
+     * `interval` — `auto` and finer-than-servable requests land on the range's
+     * finest-fit grid (see {@link portfolioHistoryResolvedIntervalSchema}).
+     */
+    interval: portfolioHistoryResolvedIntervalSchema,
     baseCurrency: currencyCodeSchema,
     points: z.array(portfolioHistoryPointSchema),
     /** Performance-% display mode data (issue #125), aligned 1:1 with `points`

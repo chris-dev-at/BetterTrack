@@ -20,9 +20,11 @@ import type {
   UpdateCashSourceRequest,
   Holding as HoldingDto,
   PortfolioAsset,
+  PortfolioHistoryInterval,
   PortfolioHistoryOverlay,
   PortfolioHistoryPoint,
   PortfolioHistoryRange,
+  PortfolioHistoryResolvedInterval,
   PortfolioPerformancePoint,
   PortfolioListResponse,
   PortfolioResponse,
@@ -106,12 +108,10 @@ import {
   assetDayKey,
   buildIntradayEurValuePoints,
   downsampledIndices,
-  intradayFetchRange,
-  intradayIntervalFor,
   intradayPerformancePoints,
-  intradayStepMs,
   isDownsampledRange,
   isIntradayRange,
+  resolveHistoryInterval,
   TARGET_POINTS,
   unitsTimelineFromTrades,
   type IntradayAssetUnits,
@@ -120,6 +120,7 @@ import {
   type IntradayFlowEvent,
   type IntradayPortfolioRange,
   type IntradayValuePoint,
+  type ResolvedHistoryInterval,
 } from './portfolioIntraday';
 import type { PortfolioSnapshotService } from './portfolioSnapshots';
 
@@ -475,9 +476,15 @@ export interface PortfolioService {
     userId: string,
     portfolioId: string,
     range: PortfolioHistoryRange,
-    opts?: { overlay?: boolean; baseCurrency?: string },
+    opts?: { overlay?: boolean; baseCurrency?: string; interval?: PortfolioHistoryInterval },
   ): Promise<{
     range: PortfolioHistoryRange;
+    /**
+     * The grid actually served (IN3, board #76): `opts.interval` resolved by
+     * {@link resolveHistoryInterval} — `auto` (the default) keeps each range's
+     * established behaviour except 1D, whose auto grid is now 5-minute.
+     */
+    interval: PortfolioHistoryResolvedInterval;
     baseCurrency: string;
     /** Daily on 1M+; a dense intraday curve (each point carries `time`) on 1D/1W (#556). */
     points: PortfolioHistoryPoint[];
@@ -1259,18 +1266,16 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
    */
   async function loadIntradayCandles(
     asset: { id: string; providerId: string; providerRef: string },
-    range: IntradayPortfolioRange,
+    grid: NonNullable<ResolvedHistoryInterval['grid']>,
     candleStartMs: number,
   ): Promise<IntradayCandle[]> {
     const ref = { providerId: asset.providerId, providerRef: asset.providerRef };
     const byMs = new Map<number, number>();
     try {
       // 1D/1W fetch over their own range; 1M over the recent month `fetchRange`.
-      const history = await marketData.getHistory(
-        ref,
-        intradayFetchRange(range),
-        intradayIntervalFor(range),
-      );
+      // The provider interval is the resolved grid's (IN3): the finest native
+      // §5.3 interval no coarser than the grid step.
+      const history = await marketData.getHistory(ref, grid.fetchRange, grid.fetchInterval);
       for (const point of history.value) {
         const atMs = Date.parse(point.time);
         if (!Number.isNaN(atMs) && atMs >= candleStartMs && Number.isFinite(point.close)) {
@@ -1308,6 +1313,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
   async function buildIntradayHistory(
     portfolioId: string,
     range: IntradayPortfolioRange,
+    grid: NonNullable<ResolvedHistoryInterval['grid']>,
     fx: CurrencyService,
     asOf: { day: string; nowMs: number },
   ): Promise<{ points: PortfolioHistoryPoint[]; performance: PortfolioPerformancePoint[] } | null> {
@@ -1339,7 +1345,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       heldAssetIds.map(async (assetId) => {
         const asset = assetsById.get(assetId);
         if (!asset || asset.providerId === 'manual') return;
-        const candles = await loadIntradayCandles(asset, range, candleStartMs);
+        const candles = await loadIntradayCandles(asset, grid, candleStartMs);
         if (candles.length > 0) candlesByAsset.set(assetId, candles);
       }),
     );
@@ -1486,6 +1492,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
 
     const eurPoints = buildIntradayEurValuePoints({
       range,
+      stepMs: grid.stepMs,
       cutoffDay,
       asOfDay: asOf.day,
       nowMs: asOf.nowMs,
@@ -1552,7 +1559,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       dailyBasePoints: baseDaily.points,
       flowsBase: baseDaily.flows,
       flowEvents: flowEventsBase,
-      stepMs: intradayStepMs(range),
+      stepMs: grid.stepMs,
     }).map((p) => ({ date: p.date, time: new Date(p.timeMs).toISOString(), pct: p.pct }));
 
     return { points, performance };
@@ -2771,15 +2778,23 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       const asOfMs = now();
       const today = isoDayAt(asOfMs);
 
+      // The requested interval resolved against the range (IN3, board #76):
+      // `auto` keeps each range's established behaviour except 1D, whose auto
+      // grid is now 5-minute; explicit sub-daily intervals are honored within
+      // the point budget (finer requests coarsen, finest-fit); `1d` — and any
+      // request against a daily-only range — is the plain daily path.
+      const resolved = resolveHistoryInterval(range, opts?.interval ?? 'auto');
+
       // Short ranges (1D/1W/1M) render a sub-daily intraday curve rather than a
       // ~2-point daily slice (V5-P1 arc d, issue #556; 2026-07-20 point-budget
       // rework). The builder degrades to the daily slice when no intraday data
       // exists, and returns null only for a history-less portfolio — which falls
-      // through to the empty daily result. 6M/1Y/5Y take the daily path below and
+      // through to the daily path below, whose (empty) result serves the daily
+      // grid and honestly echoes `1d`. 6M/1Y/5Y take the daily path below and
       // downsample it to the point budget; MAX keeps its full since-inception
       // daily curve.
-      if (isIntradayRange(range)) {
-        const intraday = await buildIntradayHistory(portfolioId, range, fx, {
+      if (isIntradayRange(range) && resolved.grid) {
+        const intraday = await buildIntradayHistory(portfolioId, range, resolved.grid, fx, {
           day: today,
           nowMs: asOfMs,
         });
@@ -2787,6 +2802,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
           if (!overlay) {
             return {
               range,
+              interval: resolved.interval,
               baseCurrency: fx.baseCurrency,
               points: intraday.points,
               performance: intraday.performance,
@@ -2799,6 +2815,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
             .filter((a) => a.points.length > 0);
           return {
             range,
+            interval: resolved.interval,
             baseCurrency: fx.baseCurrency,
             points: intraday.points,
             performance: intraday.performance,
@@ -2834,7 +2851,11 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
         points = keep.map((i) => points[i]!);
         performance = keep.map((i) => performance[i]!);
       }
-      if (!overlay) return { range, baseCurrency: fx.baseCurrency, points, performance };
+      // Everything below serves the daily grid — echo `1d` regardless of what
+      // was requested (the null-builder fallthrough above lands here too).
+      if (!overlay) {
+        return { range, interval: '1d', baseCurrency: fx.baseCurrency, points, performance };
+      }
 
       // Overlays share the curve's daily grid, so the same range slice keeps
       // them point-for-point aligned. An asset whose data lies entirely outside
@@ -2855,7 +2876,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
           };
         })
         .filter((a) => a.points.length > 0);
-      return { range, baseCurrency: fx.baseCurrency, points, performance, assets };
+      return { range, interval: '1d', baseCurrency: fx.baseCurrency, points, performance, assets };
     },
 
     async getAssetValueSeries(userId, portfolioId) {

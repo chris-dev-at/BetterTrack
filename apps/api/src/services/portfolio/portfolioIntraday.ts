@@ -1,4 +1,10 @@
-import type { HistoryInterval, HistoryRange, PortfolioHistoryRange } from '@bettertrack/contracts';
+import type {
+  HistoryInterval,
+  HistoryRange,
+  PortfolioHistoryInterval,
+  PortfolioHistoryRange,
+  PortfolioHistoryResolvedInterval,
+} from '@bettertrack/contracts';
 
 import {
   QTY_EPSILON,
@@ -204,13 +210,16 @@ export function isDownsampledRange(
 const INTRADAY_MONTH_STEP_MS = 144 * MINUTE_MS;
 
 /**
- * Per-range candle `fetchRange` + provider `interval` + grid `stepMs` for the
- * intraday ranges. 1D pulls 15-minute candles onto a 15-minute grid; 1W pulls
- * 30-minute candles thinned onto an hourly grid (there is no native 1-hour
- * provider interval, and 30-minute bars quantized to the hour give one clean
- * point per market hour); 1M reuses the 30-minute candles on the budget-sized
- * grid. Every interval is short-TTL cached by the §5.3 keystone (1D = 60 s,
- * 1W = 5 min, 1M = 15 min), so a burst of series reads costs at most one
+ * Per-range candle `fetchRange` + provider `interval` + grid `stepMs` — the
+ * pure builder's FALLBACK grid when the caller supplies no resolved `stepMs`
+ * (see {@link resolveHistoryInterval}, which owns request-time resolution since
+ * IN3). Kept at the long-established grids (1D 15-minute, 1W hourly, 1M the
+ * budget grid) so the direct-call surface — and the fixture-heavy #1120/#1121
+ * regression suites pinning it — stays byte-stable; the 15-minute 1D grid
+ * remains a requestable interval, so these fallbacks stay genuinely served
+ * configurations, not dead code. The SERVICE always passes the resolved grid
+ * explicitly. Every interval is short-TTL cached by the §5.3 keystone (1D =
+ * 60 s, 1W = 5 min, 1M = 15 min), so a burst of series reads costs at most one
  * upstream fetch per asset/interval.
  */
 const RANGE_CONFIG: Record<
@@ -233,6 +242,105 @@ export function intradayStepMs(range: IntradayPortfolioRange): number {
 /** The §5.3 range window whose candles feed `range` (1D/1W self; 1M the month). */
 export function intradayFetchRange(range: IntradayPortfolioRange): HistoryRange {
   return RANGE_CONFIG[range].fetchRange;
+}
+
+/**
+ * Candle fetch + grid step behind each servable sub-daily interval (IN3, board
+ * #76 item 2). The provider interval is the finest native §5.3 interval no
+ * coarser than the grid step, so every grid mark can carry a real observation:
+ * a 5-minute grid quantizes 1-minute candles (§5.3's own 1D table row — 60 s
+ * TTL), the hourly and 144-minute grids thin 30-minute bars, and `15m`/`30m`
+ * fetch natively. Every step divides the 1440-minute UTC day (#1121/IN2), so
+ * no bucket can span midnight and day-scoped state can never leak across it.
+ */
+const SUB_DAILY_GRIDS: Record<
+  Exclude<PortfolioHistoryResolvedInterval, '1d'>,
+  { stepMs: number; fetchInterval: HistoryInterval }
+> = {
+  '5m': { stepMs: 5 * MINUTE_MS, fetchInterval: '1m' },
+  '15m': { stepMs: 15 * MINUTE_MS, fetchInterval: '15m' },
+  '30m': { stepMs: 30 * MINUTE_MS, fetchInterval: '30m' },
+  '1h': { stepMs: 60 * MINUTE_MS, fetchInterval: '30m' },
+  '144m': { stepMs: INTRADAY_MONTH_STEP_MS, fetchInterval: '30m' },
+};
+
+/**
+ * The sub-daily grids each intraday range can serve, FINEST FIRST — the head is
+ * what `auto` resolves to. Membership is budget-derived: a grid is servable iff
+ * its worst-case bucket count (a 24/7 asset covering the whole span, span ×
+ * 1440 min / step) stays inside the {@link TARGET_POINTS} band (≤ 350, the
+ * documented ceiling):
+ *
+ *  - 1D (1 day):  5m → 288 ✓ (the IN3 owner ask), 15m → 96, 30m → 48, 1h → 24;
+ *                 1m → 1440 ✗ (why `1m` is never servable anywhere).
+ *  - 1W (7 days): 1h → 168 ✓; 30m → 336 ✗.
+ *  - 1M (31 days): 144m → 310 ✓ (the established budget grid); 1h → 744 ✗.
+ */
+const SERVABLE_SUB_DAILY: Record<
+  IntradayPortfolioRange,
+  readonly Exclude<PortfolioHistoryResolvedInterval, '1d'>[]
+> = {
+  '1D': ['5m', '15m', '30m', '1h'],
+  '1W': ['1h'],
+  '1M': ['144m'],
+};
+
+/** Requested sub-daily interval → minutes, for the finest-fit comparison. */
+const REQUESTED_STEP_MINUTES: Record<Exclude<PortfolioHistoryInterval, 'auto' | '1d'>, number> = {
+  '1m': 1,
+  '5m': 5,
+  '15m': 15,
+  '30m': 30,
+  '1h': 60,
+};
+
+/** A resolved history request: what to echo, and (sub-daily only) how to build it. */
+export interface ResolvedHistoryInterval {
+  /** Echoed to the client as the response's `interval`. */
+  interval: PortfolioHistoryResolvedInterval;
+  /**
+   * The sub-daily grid to assemble; absent ⇔ `interval` is `'1d'` and the
+   * range serves its plain daily path (slice/downsample), untouched by IN3.
+   */
+  grid?: { stepMs: number; fetchInterval: HistoryInterval; fetchRange: HistoryRange };
+}
+
+/**
+ * Resolve a client `interval` request against a range (IN3, board #76 item 2).
+ * Total — every (range, interval) pair resolves; nothing is rejected:
+ *
+ *  - `auto` → the range's finest servable grid: 1D `5m` (the owner's "more 1D
+ *    detail" — 1W/1M/daily auto behaviour is UNCHANGED), 1W `1h`, 1M `144m`,
+ *    6M/1Y/5Y/MAX `1d`.
+ *  - An explicit sub-daily interval is honored exactly when servable; one finer
+ *    than the range's budget allows is coarsened to the finest servable grid
+ *    that is not finer than requested (the **finest-fit rule** — chosen over a
+ *    400 so every enum value stays usable as "the finest you can give me", and
+ *    the echoed `interval` tells the client what it actually got).
+ *  - `1d` — and every request against a range with no sub-daily data — is the
+ *    plain daily grid.
+ */
+export function resolveHistoryInterval(
+  range: PortfolioHistoryRange,
+  requested: PortfolioHistoryInterval,
+): ResolvedHistoryInterval {
+  if (!isIntradayRange(range) || requested === '1d') return { interval: '1d' };
+  const servable = SERVABLE_SUB_DAILY[range];
+  let pick = servable[0]!; // auto ⇒ the finest servable grid
+  if (requested !== 'auto') {
+    const wantedMs = REQUESTED_STEP_MINUTES[requested] * MINUTE_MS;
+    const fit = servable.find((interval) => SUB_DAILY_GRIDS[interval].stepMs >= wantedMs);
+    // No servable sub-daily grid at/above the request ⇒ daily. Unreachable
+    // while every range's coarsest servable grid is coarser than `1h`-or-finer
+    // requests, but the fallback keeps the function total by construction.
+    if (fit === undefined) return { interval: '1d' };
+    pick = fit;
+  }
+  const { stepMs, fetchInterval } = SUB_DAILY_GRIDS[pick];
+  return {
+    interval: pick,
+    grid: { stepMs, fetchInterval, fetchRange: RANGE_CONFIG[range].fetchRange },
+  };
 }
 
 /**
@@ -441,6 +549,15 @@ export interface IntradayValuePoint {
 export interface BuildIntradayEurInput {
   range: IntradayPortfolioRange;
   /**
+   * Grid step in ms — the resolved interval's step ({@link resolveHistoryInterval},
+   * IN3). MUST divide the 1440-minute UTC day (#1121/IN2) so no bucket spans
+   * midnight; every servable grid does by construction. Omitted ⇒ the range's
+   * {@link RANGE_CONFIG} fallback grid (1D 15-minute, 1W hourly, 1M 144-minute),
+   * which keeps the pure surface — and the #1120/#1121 fixture suites pinning
+   * it — byte-stable. The service always passes the resolved step explicitly.
+   */
+  stepMs?: number;
+  /**
    * Inclusive daily window start (ISO), i.e. `rangeCutoffIso(range, today)`.
    * For 1D this is the prior-close anchor; its intraday grid begins today.
    */
@@ -508,7 +625,7 @@ export function buildIntradayEurValuePoints(input: BuildIntradayEurInput): Intra
     unitsByAsset,
     cashEvents,
   } = input;
-  const stepMs = RANGE_CONFIG[input.range].stepMs;
+  const stepMs = input.stepMs ?? RANGE_CONFIG[input.range].stepMs;
 
   // In-window days come straight from the daily series (one point per calendar
   // day), so weekends/holidays are already present via carry-forward.

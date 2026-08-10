@@ -119,7 +119,10 @@ function buildStub(refNow: number) {
     interval?: HistoryInterval,
   ): CachedResult<PricePoint[]> => {
     calls.push({ ref: ref.providerRef, interval });
-    const intraday = interval === '15m' || interval === '30m';
+    // Sub-daily fetches: 1D pulls 1-minute candles for its 5-minute grid (IN3);
+    // 1W/1M pull 15/30-minute bars. The fixture serves the same sparse candle
+    // set for all three — sparse 1-minute coverage is valid provider output.
+    const intraday = interval === '1m' || interval === '15m' || interval === '30m';
     const value = (intraday ? intradayByRef[ref.providerRef] : dailyByRef[ref.providerRef]) ?? [];
     return { value, stale: false, asOf: 0 };
   };
@@ -219,8 +222,9 @@ describe('intraday portfolio series (#556)', () => {
     for (const p of points) expect(p.valueEur).toBeGreaterThan(500);
 
     // Provider discipline: exactly one intraday fetch per MARKET asset (the two
-    // yahoo symbols); the manual custom asset is never fetched intraday.
-    const intradayFetches = stub.calls.filter((c) => c.interval === '15m');
+    // yahoo symbols); the manual custom asset is never fetched intraday. 1D
+    // fetches 1-minute candles for its 5-minute auto grid (IN3, board #76).
+    const intradayFetches = stub.calls.filter((c) => c.interval === '1m');
     expect(intradayFetches.length).toBe(2);
     expect(intradayFetches.map((c) => c.ref).sort()).toEqual(['AAPL', 'BAYN.DE']);
   });
