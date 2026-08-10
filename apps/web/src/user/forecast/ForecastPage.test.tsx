@@ -92,6 +92,7 @@ const PORTFOLIO: PortfolioResponse = {
 // CAGR. Only a paranoid account samples this curve.
 const HISTORY: PortfolioHistoryResponse = {
   range: 'MAX',
+  interval: '1d',
   baseCurrency: 'EUR',
   points: [
     { date: '2020-01-01', valueEur: 100 },

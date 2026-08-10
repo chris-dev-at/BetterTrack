@@ -198,8 +198,10 @@ export function createPortfolioRouter(ctx: AppContext): Router {
     },
   );
 
-  // GET /portfolios/:portfolioId/history?range=&overlay= — value-over-time series,
-  // optionally with each held asset's own price series for the chart overlay (§6.8, #122).
+  // GET /portfolios/:portfolioId/history?range=&overlay=&interval= — value-over-
+  // time series, optionally with each held asset's own price series for the
+  // chart overlay (§6.8, #122). `interval` selects the series grid (IN3, board
+  // #76); the response echoes the grid actually served.
   router.get(
     '/:portfolioId/history',
     validateParams(portfolioIdParamSchema),
@@ -210,10 +212,11 @@ export function createPortfolioRouter(ctx: AppContext): Router {
     conditionalGet({ liveToday: true }),
     async (req, res) => {
       const { portfolioId } = req.valid?.params as { portfolioId: string };
-      const { range, overlay } = req.valid?.query as PortfolioHistoryQuery;
+      const { range, overlay, interval } = req.valid?.query as PortfolioHistoryQuery;
       const history = await ctx.portfolio.getHistory(req.authUser!.id, portfolioId, range, {
         overlay,
         baseCurrency: req.authUser!.baseCurrency,
+        interval,
       });
       const freshness = await ctx.portfolio.getSnapshotFreshness(req.authUser!.id, portfolioId);
       if (freshness) res.locals[CONDITIONAL_LAST_MODIFIED] = freshness;

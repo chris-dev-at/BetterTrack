@@ -159,6 +159,7 @@ function summary(marketValueEur: number, cashEur: number, dayChangeEur: number):
 const HISTORY: PortfolioHistoryResponse = {
   baseCurrency: 'EUR',
   range: '1M',
+  interval: '1d',
   points: [
     { date: '2026-07-01', valueEur: 100 },
     { date: '2026-07-02', valueEur: 140 },
