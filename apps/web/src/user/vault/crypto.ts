@@ -274,7 +274,12 @@ export async function decryptVaultDocument(
   }
 }
 
-async function aesGcmEncrypt(
+/**
+ * The single AES-256-GCM encrypt in the vault core. Exported so the Vaults v2
+ * layer (`./v2`) reuses this exact implementation — including the fail-closed
+ * key-material check — instead of standing up a second one.
+ */
+export async function aesGcmEncrypt(
   keyMaterial: VaultKeyMaterial,
   iv: Uint8Array,
   plaintext: Uint8Array,
@@ -290,7 +295,8 @@ async function aesGcmEncrypt(
   return new Uint8Array(result);
 }
 
-async function aesGcmDecrypt(
+/** The matching AES-256-GCM open. Every failure is one opaque code. */
+export async function aesGcmDecrypt(
   keyMaterial: VaultKeyMaterial,
   iv: Uint8Array,
   ciphertext: Uint8Array,

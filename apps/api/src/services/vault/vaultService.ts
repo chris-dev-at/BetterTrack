@@ -78,6 +78,8 @@ export interface VaultService {
     selector: VaultDocSelector;
     expectedVersion: number | null;
     ciphertext: Buffer;
+    /** The `If-Claim` migration-claim nonce, or `null` when the header is absent (r3). */
+    claimNonce: string | null;
   }): Promise<VaultDocMetadata>;
   join(
     userId: string,
@@ -311,6 +313,21 @@ export function createVaultService(deps: VaultServiceDeps): VaultService {
           throw conflict(
             'This vault keeps no ciphertext on the server.',
             VAULT2_ERROR_CODES.backendUnavailable,
+          );
+        // ── r3 migration-claim gate (mobile finding A2.2) ────────────────────
+        case 'migration_claim_required':
+          throw new EnvelopeApiError(
+            428,
+            VAULT2_ERROR_CODES.preconditionRequired,
+            'A v1→v2 migration claim is live for this account; vault document writes must assert it with an If-Claim header.',
+            { state: toMigrationState(result.state) },
+          );
+        case 'migration_claimed':
+          throw new EnvelopeApiError(
+            409,
+            VAULT2_ERROR_CODES.migrationClaimed,
+            'The If-Claim nonce does not name the live migration claim; re-claim and re-verify before writing.',
+            { state: toMigrationState(result.state) },
           );
       }
     },

@@ -26,7 +26,7 @@ import type { DriveDataHome, GoogleDriveTokenClient } from '../drive';
 import { VaultCryptoError } from '../errors';
 import { inspectVaultEnvelope } from '../envelope';
 import type { VaultSyncCandidate, VaultSyncState } from '../sync';
-import fixture from '../vectors.fixture.json';
+import { vaultInteroperabilityFixture as fixture } from '@bettertrack/domain/vaultVectors';
 import type { VaultMediaApi } from './mediaSwitcher';
 import {
   createVaultRetirementProofManager,

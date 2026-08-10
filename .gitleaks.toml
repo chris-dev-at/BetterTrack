@@ -22,6 +22,12 @@ id = "generic-api-key"
     '''^apps/api/src/config/__tests__/env\.test\.ts$''',
     '''^apps/api/src/services/imports/__tests__/importService\.test\.ts$''',
     '''^apps/web/src/user/vault/vectors\.fixture\.json$''',
+    # Vault conformance vectors relocated to the shared domain package (VAULT2-P5,
+    # board §16): deterministic test key material (wrappedKey, contentKeyBase64,
+    # header MACs, QR-wrap bytes) that both clients pin byte-for-byte — public by
+    # design, not real secrets. Same rule-level allowlist as the former web path.
+    '''^packages/domain/src/vaultVectors/v1\.fixture\.json$''',
+    '''^packages/domain/src/vaultVectors/v2\.fixture\.json$''',
     # The redesign demo is a static SPA of hand-written fixture data; its
     # deterministic ids (e.g. `idempotencyKey: 'basis_msft_lot_2020-11'`)
     # trip only this generic heuristic.
