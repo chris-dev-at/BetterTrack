@@ -41,6 +41,15 @@ vi.mock('qrcode.react', () => ({
   },
 }));
 
+// The Start-handoff path runs the real code-wrap KDF (Argon2id, m=64MiB) — the
+// tests deliberately keep it unmocked so the payload round-trip stays honest.
+// That work is CPU-bound and, under a loaded CI runner sharing cores across
+// test files, comfortably exceeds vitest's 5s default. Raise the per-test
+// budget for this file (and give the crypto-bound waitFors matching headroom
+// below) so a slow KDF reads as slow, never as a failure.
+vi.setConfig({ testTimeout: 20_000 });
+const CRYPTO_WAIT = { timeout: 15_000 } as const;
+
 describe('VaultQrShareDialog — re-auth-gated, code-wrapped handoff (r2 §10, r3 §19)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -59,8 +68,9 @@ describe('VaultQrShareDialog — re-auth-gated, code-wrapped handoff (r2 §10, r
     await user.type(screen.getByLabelText('Your BetterTrack password'), 'hunter2');
     await user.click(screen.getByRole('button', { name: 'Start handoff' }));
 
-    await waitFor(() =>
-      expect(screen.getByRole('img', { name: /QR code for the vault/u })).toBeInTheDocument(),
+    await waitFor(
+      () => expect(screen.getByRole('img', { name: /QR code for the vault/u })).toBeInTheDocument(),
+      CRYPTO_WAIT,
     );
     expect(api.reauthenticate).toHaveBeenCalledWith('hunter2');
   });
@@ -102,7 +112,7 @@ describe('VaultQrShareDialog — re-auth-gated, code-wrapped handoff (r2 §10, r
     mount();
     await user.type(screen.getByLabelText('Your BetterTrack password'), 'hunter2');
     await user.click(screen.getByRole('button', { name: 'Start handoff' }));
-    await waitFor(() => expect(lastBuiltPayload).not.toBe(''));
+    await waitFor(() => expect(lastBuiltPayload).not.toBe(''), CRYPTO_WAIT);
 
     expect(lastBuiltPayload.startsWith('btvault1:{"qr":1,')).toBe(true);
     expect(lastBuiltPayload).not.toContain(FIXTURE_PASSPHRASE);
@@ -118,7 +128,7 @@ describe('VaultQrShareDialog — re-auth-gated, code-wrapped handoff (r2 §10, r
     mount();
     await user.type(screen.getByLabelText('Your BetterTrack password'), 'hunter2');
     await user.click(screen.getByRole('button', { name: 'Start handoff' }));
-    await waitFor(() => expect(lastBuiltPayload).not.toBe(''));
+    await waitFor(() => expect(lastBuiltPayload).not.toBe(''), CRYPTO_WAIT);
 
     // Screen one: the QR image, no code. A photo of this is useless.
     expect(screen.queryByText(/^[0-9A-Z]{4}-[0-9A-Z]{4}$/u)).not.toBeInTheDocument();
@@ -141,7 +151,10 @@ describe('VaultQrShareDialog — re-auth-gated, code-wrapped handoff (r2 §10, r
     mount();
     await user.type(screen.getByLabelText('Your BetterTrack password'), 'hunter2');
     await user.click(screen.getByRole('button', { name: 'Start handoff' }));
-    await waitFor(() => expect(screen.getByText(/Do not screenshot this/iu)).toBeInTheDocument());
+    await waitFor(
+      () => expect(screen.getByText(/Do not screenshot this/iu)).toBeInTheDocument(),
+      CRYPTO_WAIT,
+    );
   });
 
   it('expires the whole handoff after the contract TTL', async () => {
@@ -151,7 +164,10 @@ describe('VaultQrShareDialog — re-auth-gated, code-wrapped handoff (r2 §10, r
     mount();
     await user.type(screen.getByLabelText('Your BetterTrack password'), 'hunter2');
     await user.click(screen.getByRole('button', { name: 'Start handoff' }));
-    await waitFor(() => expect(screen.getByRole('img', { name: /QR code/u })).toBeInTheDocument());
+    await waitFor(
+      () => expect(screen.getByRole('img', { name: /QR code/u })).toBeInTheDocument(),
+      CRYPTO_WAIT,
+    );
 
     await vi.advanceTimersByTimeAsync(121_000);
     await waitFor(() => {
