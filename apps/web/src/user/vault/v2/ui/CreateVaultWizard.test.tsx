@@ -62,13 +62,14 @@ describe('CreateVaultWizard', () => {
     await user.type(screen.getByLabelText('Vault name'), 'Drive vault');
     await user.click(screen.getByRole('button', { name: 'Continue' }));
 
-    // Step 2 — backend.
-    expect(screen.getByText('Step 2 of 4')).toBeInTheDocument();
+    // Step 2 — backend. Await the step transition (async re-render) before
+    // querying it, or a loaded CI runner races the assertion.
+    expect(await screen.findByText('Step 2 of 4')).toBeInTheDocument();
     await user.click(screen.getByRole('radio', { name: /Google Drive only/u }));
     await user.click(screen.getByRole('button', { name: 'Continue' }));
 
     // Step 3 — twelve generated words.
-    expect(screen.getByText('Step 3 of 4')).toBeInTheDocument();
+    expect(await screen.findByText('Step 3 of 4')).toBeInTheDocument();
     const words = shownWords();
     expect(words).toHaveLength(12);
     expect(checkVaultPassphrase(words.join(' ')).valid).toBe(true);
@@ -77,8 +78,9 @@ describe('CreateVaultWizard', () => {
     expect(create).toBeDisabled();
 
     await user.click(screen.getByRole('checkbox'));
-    // Confirmation fields appear only after the user says they wrote them down.
-    const fields = screen.getAllByLabelText(/^Word \d+$/u);
+    // Confirmation fields appear only after the user says they wrote them down —
+    // await their async appearance rather than querying synchronously.
+    const fields = await screen.findAllByLabelText(/^Word \d+$/u);
     expect(fields).toHaveLength(3);
     expect(screen.getByRole('button', { name: 'Create vault' })).toBeDisabled();
 
@@ -114,9 +116,9 @@ describe('CreateVaultWizard', () => {
     await user.type(screen.getByLabelText('Vault name'), 'Drive vault');
     await user.click(screen.getByRole('button', { name: 'Continue' }));
     await user.click(screen.getByRole('button', { name: 'Continue' }));
-    await user.click(screen.getByRole('checkbox'));
+    await user.click(await screen.findByRole('checkbox'));
 
-    for (const field of screen.getAllByLabelText(/^Word \d+$/u)) {
+    for (const field of await screen.findAllByLabelText(/^Word \d+$/u)) {
       await user.type(field, 'wrongword');
     }
     expect(screen.getByRole('button', { name: 'Create vault' })).toBeDisabled();
