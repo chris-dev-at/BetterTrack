@@ -208,6 +208,8 @@ async function ownedAssetProvenanceProbes(
     'marketIntel.earnings': () => ctx.marketIntel.earnings(userId, customAssetId),
     'marketIntel.news': () => ctx.marketIntel.news(userId, customAssetId),
     'marketIntel.splits': () => ctx.marketIntel.splits(userId, customAssetId),
+    'marketIntel.fundamentals': () =>
+      ctx.marketIntel.fundamentals(userId, customAssetId, { period: 'annual' }),
     'marketIntel.earningsCalendar': () => ctx.marketIntel.earningsCalendar(userId),
     'workboard.list': () => ctx.workboard.list(userId),
     'workboard.listInWatchlist': () => ctx.workboard.listInWatchlist(userId, watchlist!.id),
