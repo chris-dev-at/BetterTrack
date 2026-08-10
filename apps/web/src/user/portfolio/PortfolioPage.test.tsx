@@ -228,6 +228,7 @@ const TXNS = {
 
 const HISTORY = {
   range: '1M' as const,
+  interval: '1d' as const,
   baseCurrency: 'EUR' as const,
   points: [
     { date: '2024-05-01', valueEur: 300000 },
@@ -1152,6 +1153,7 @@ describe('PortfolioPage — intraday 1D/1W dense curve (#556)', () => {
   const sec = (iso: string) => Math.floor(Date.parse(iso) / 1000);
   const INTRADAY_HISTORY = {
     range: '1D' as const,
+    interval: '15m' as const, // the instants below sit on the quarter-hour grid
     baseCurrency: 'EUR' as const,
     // A 1D curve starts with the prior daily close and then uses today's exact
     // intraday instants. Four points stand in for the ≥20 the API emits; the
