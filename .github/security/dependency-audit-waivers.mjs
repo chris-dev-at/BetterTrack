@@ -55,10 +55,10 @@ export const dependencyAuditWaivers = {
   // Provider/tooling transitive updates are kept out of the CI-gate change so
   // their upstream compatibility can be reviewed independently.
   'GHSA-v422-hmwv-36x6': {
-    expires: '2026-08-08',
+    expires: '2026-08-16',
     moduleName: 'body-parser',
     reason:
-      'Body-parser is transitive through Express; upgrade with the API HTTP regression suite in a dedicated update.',
+      'Renewed 2026-08-10: body-parser is transitive through Express; the fix is an Express bump that needs the API HTTP regression suite in a dedicated update, scheduled with the pending dependency wave.',
   },
   'GHSA-frvp-7c67-39w9': {
     expires: '2026-08-15',
