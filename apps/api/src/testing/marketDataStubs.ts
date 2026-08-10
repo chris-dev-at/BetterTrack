@@ -1,4 +1,5 @@
 import type {
+  AssetFundamentals,
   AssetMeta,
   AssetRef,
   AssetSearchResult,
@@ -58,6 +59,14 @@ export interface StubMarketDataControls {
   news?: (ref: AssetRef) => Promise<CachedResult<NewsHeadline[]>> | CachedResult<NewsHeadline[]>;
   /** Splits behaviour; throw to simulate a provider failure with no cache. */
   splits?: (ref: AssetRef) => Promise<CachedResult<SplitEvents>> | CachedResult<SplitEvents>;
+  /**
+   * Fundamentals behaviour (arc f / INTEL1). Leave unset to model a
+   * capability-less provider: `getFundamentals` then rejects, so the read layer
+   * degrades to `available: false`.
+   */
+  fundamentals?: (
+    ref: AssetRef,
+  ) => Promise<CachedResult<AssetFundamentals>> | CachedResult<AssetFundamentals>;
 }
 
 export interface StubMarketData extends MarketDataService {
@@ -72,6 +81,7 @@ export interface StubMarketData extends MarketDataService {
     earnings: number;
     news: number;
     splits: number;
+    fundamentals: number;
   };
 }
 
@@ -90,6 +100,7 @@ export function createStubMarketData(controls: StubMarketDataControls = {}): Stu
     earnings: 0,
     news: 0,
     splits: 0,
+    fundamentals: 0,
   };
   const search = controls.search ?? (() => []);
   const quote = controls.quote ?? notConfigured('getQuote');
@@ -100,6 +111,7 @@ export function createStubMarketData(controls: StubMarketDataControls = {}): Stu
   const earnings = controls.earnings ?? notConfigured('getEarningsEvents');
   const news = controls.news ?? notConfigured('getNewsHeadlines');
   const splits = controls.splits ?? notConfigured('getSplitEvents');
+  const fundamentals = controls.fundamentals ?? notConfigured('getFundamentals');
   // Default capabilities reflect which intel behaviours the test wired up, so a
   // fixtured family reports available without a separate declaration.
   const capabilities: MarketIntelCapabilities = {
@@ -151,6 +163,10 @@ export function createStubMarketData(controls: StubMarketDataControls = {}): Stu
     async getSplitEvents(ref) {
       calls.splits += 1;
       return splits(ref);
+    },
+    async getFundamentals(ref) {
+      calls.fundamentals += 1;
+      return fundamentals(ref);
     },
     // The stub has no cache, so there is never a background refresh to await.
     async settled() {},
@@ -267,6 +283,72 @@ export function sampleSplitEvents(overrides: Partial<SplitEvents> = {}): SplitEv
   return {
     history: [{ date: '2020-08-31T00:00:00.000Z', numerator: 4, denominator: 1, ratio: '4:1' }],
     upcoming: [],
+    ...overrides,
+  };
+}
+
+/**
+ * A canned {@link AssetFundamentals} payload (arc f / INTEL1), overridable per
+ * field. Three annual periods (most-recent-first) and one quarter, so a test can
+ * exercise both granularities and the limit clamp.
+ */
+export function sampleFundamentals(overrides: Partial<AssetFundamentals> = {}): AssetFundamentals {
+  const annualRow = (
+    year: number,
+    revenue: number,
+    netIncome: number,
+  ): AssetFundamentals['annual'][number] => ({
+    fiscalPeriod: 'FY',
+    fiscalYear: year,
+    endDate: `${year}-09-30T00:00:00.000Z`,
+    reportDate: null,
+    revenue,
+    netIncome,
+    eps: null,
+    grossProfit: Math.round(revenue * 0.44),
+    operatingIncome: Math.round(revenue * 0.3),
+    totalAssets: Math.round(revenue * 0.9),
+    totalLiabilities: Math.round(revenue * 0.7),
+    totalEquity: Math.round(revenue * 0.2),
+    operatingCashFlow: Math.round(netIncome * 1.2),
+    freeCashFlow: Math.round(netIncome * 1.05),
+  });
+  return {
+    currency: 'USD',
+    annual: [
+      annualRow(2025, 391_035_000_000, 93_736_000_000),
+      annualRow(2024, 383_285_000_000, 96_995_000_000),
+      annualRow(2023, 394_328_000_000, 96_995_000_000),
+    ],
+    quarterly: [
+      {
+        fiscalPeriod: 'Q2',
+        fiscalYear: 2026,
+        endDate: '2026-03-28T00:00:00.000Z',
+        reportDate: null,
+        revenue: 90_753_000_000,
+        netIncome: 23_636_000_000,
+        eps: null,
+        grossProfit: 40_000_000_000,
+        operatingIncome: 27_000_000_000,
+        totalAssets: 331_000_000_000,
+        totalLiabilities: 264_000_000_000,
+        totalEquity: 67_000_000_000,
+        operatingCashFlow: 24_000_000_000,
+        freeCashFlow: 22_000_000_000,
+      },
+    ],
+    ratios: {
+      marketCap: 3_100_000_000_000,
+      trailingPe: 32.4,
+      forwardPe: 29.1,
+      priceToBook: 48.2,
+      profitMargin: 0.24,
+      returnOnEquity: 1.47,
+      debtToEquity: 145.0,
+      trailingEps: 6.12,
+      forwardEps: 7.3,
+    },
     ...overrides,
   };
 }

@@ -252,6 +252,7 @@ const componentSchemas = {
   NewsResponse: contracts.newsResponseSchema,
   NewsDigestResponse: contracts.newsDigestResponseSchema,
   SplitsResponse: contracts.splitsResponseSchema,
+  FundamentalsResponse: contracts.fundamentalsResponseSchema,
   DividendCalendarResponse: contracts.dividendCalendarResponseSchema,
   ProjectedDividendIncomeResponse: contracts.projectedDividendIncomeResponseSchema,
 
@@ -1991,6 +1992,17 @@ const endpoints: EndpointDef[] = [
     params: contracts.assetIdParamSchema,
     status: 200,
     response: R.SplitsResponse,
+  },
+  {
+    method: 'get',
+    path: '/assets/{id}/intel/fundamentals',
+    tag: 'Assets',
+    summary:
+      'Revenue, statement line items and snapshot ratios (period=annual|quarterly, limit clamped to 1..12).',
+    params: contracts.assetIdParamSchema,
+    query: contracts.fundamentalsQuerySchema,
+    status: 200,
+    response: R.FundamentalsResponse,
   },
   {
     method: 'get',

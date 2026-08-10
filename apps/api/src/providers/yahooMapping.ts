@@ -1,10 +1,13 @@
 import type {
+  AssetFundamentals,
   AssetType,
   CurrencyCode,
   DividendEvent,
   DividendEvents,
   EarningsEvent,
   EarningsEvents,
+  FundamentalsPeriod,
+  FundamentalsRatios,
   MarketState,
   NewsHeadline,
   SplitEvent,
@@ -12,7 +15,10 @@ import type {
 } from '@bettertrack/contracts';
 
 import type {
+  YahooBalanceSheetRow,
+  YahooCashflowStatementRow,
   YahooChartEventsResult,
+  YahooIncomeStatementRow,
   YahooNewsResult,
   YahooQuoteSummaryResult,
 } from './yahooClient';
@@ -437,4 +443,145 @@ export function mapSplitEvents(chart: YahooChartEventsResult): SplitEvents {
     .filter((s): s is SplitEvent => s !== null)
     .sort(byIsoDate);
   return { history, upcoming: [] };
+}
+
+// ── Fundamentals mapping (arc f / INTEL1, board #76) ─────────────────────────
+
+/** A finite number, or null for anything Yahoo omitted / reported as non-finite. */
+function numOrNull(value: number | null | undefined): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+/** Calendar year of an ISO date, or null. */
+function fiscalYearOf(iso: string | null): number | null {
+  if (!iso) return null;
+  const year = new Date(iso).getUTCFullYear();
+  return Number.isNaN(year) ? null : year;
+}
+
+/** `"Q1".."Q4"` from the calendar quarter of the period-end date (`"Q"` if undated). */
+function quarterLabel(iso: string | null): string {
+  if (!iso) return 'Q';
+  const month = new Date(iso).getUTCMonth();
+  return Number.isNaN(month) ? 'Q' : `Q${Math.floor(month / 3) + 1}`;
+}
+
+/** A fresh, all-null period row anchored on one period-end date. */
+function blankPeriod(iso: string | null, kind: 'FY' | 'Q'): FundamentalsPeriod {
+  return {
+    fiscalPeriod: kind === 'FY' ? 'FY' : quarterLabel(iso),
+    fiscalYear: fiscalYearOf(iso),
+    endDate: iso,
+    // Yahoo's statement modules carry no announce date or per-period EPS; both
+    // stay null (trailing/forward EPS are surfaced in `ratios`, where authoritative).
+    reportDate: null,
+    revenue: null,
+    netIncome: null,
+    eps: null,
+    grossProfit: null,
+    operatingIncome: null,
+    totalAssets: null,
+    totalLiabilities: null,
+    totalEquity: null,
+    operatingCashFlow: null,
+    freeCashFlow: null,
+  };
+}
+
+/**
+ * Merge Yahoo's three statement histories (income / balance / cashflow) for one
+ * granularity into {@link FundamentalsPeriod} rows, joined on the shared
+ * period-end date and returned most-recent-first. Undated rows never collide
+ * across statements (they fall back to a per-statement synthetic key) and sort
+ * last. `freeCashFlow = operatingCashFlow + capitalExpenditures` (Yahoo reports
+ * capex as a negative outflow), falling back to operating cash flow alone.
+ */
+function mergeStatementPeriods(
+  income: YahooIncomeStatementRow[] | undefined,
+  balance: YahooBalanceSheetRow[] | undefined,
+  cashflow: YahooCashflowStatementRow[] | undefined,
+  kind: 'FY' | 'Q',
+): FundamentalsPeriod[] {
+  const byKey = new Map<string, FundamentalsPeriod>();
+  const ensure = (iso: string | null, fallbackKey: string): FundamentalsPeriod => {
+    const key = iso ?? fallbackKey;
+    let row = byKey.get(key);
+    if (!row) {
+      row = blankPeriod(iso, kind);
+      byKey.set(key, row);
+    }
+    return row;
+  };
+
+  (income ?? []).forEach((r, idx) => {
+    const iso = toIsoOrNull(r.endDate);
+    const row = ensure(iso, `i#${idx}`);
+    row.revenue = numOrNull(r.totalRevenue);
+    row.grossProfit = numOrNull(r.grossProfit);
+    row.operatingIncome = numOrNull(r.operatingIncome);
+    row.netIncome = numOrNull(r.netIncome);
+  });
+  (balance ?? []).forEach((r, idx) => {
+    const iso = toIsoOrNull(r.endDate);
+    const row = ensure(iso, `b#${idx}`);
+    row.totalAssets = numOrNull(r.totalAssets);
+    row.totalLiabilities = numOrNull(r.totalLiab);
+    row.totalEquity = numOrNull(r.totalStockholderEquity);
+  });
+  (cashflow ?? []).forEach((r, idx) => {
+    const iso = toIsoOrNull(r.endDate);
+    const row = ensure(iso, `c#${idx}`);
+    const operating = numOrNull(r.totalCashFromOperatingActivities);
+    const capex = numOrNull(r.capitalExpenditures);
+    row.operatingCashFlow = operating;
+    row.freeCashFlow = operating !== null && capex !== null ? operating + capex : operating;
+  });
+
+  return [...byKey.values()].sort((a, b) => (b.endDate ?? '').localeCompare(a.endDate ?? ''));
+}
+
+/**
+ * Map Yahoo's `quoteSummary` fundamentals modules into the {@link AssetFundamentals}
+ * contract: both period granularities (most-recent-first) plus the snapshot
+ * ratios and the company's reporting currency. Pure and network-free; the
+ * provider requests the modules and the market-data keystone caches the result.
+ * The reporting currency prefers `financialData.financialCurrency` and falls back
+ * to `summaryDetail.currency`; an unmappable code yields null (informational
+ * figures stay as-is) rather than throwing on this non-money-path.
+ */
+export function mapFundamentals(summary: YahooQuoteSummaryResult): AssetFundamentals {
+  const currency =
+    safeNormalizeCurrency(
+      summary.financialData?.financialCurrency ?? summary.summaryDetail?.currency,
+    )?.code ?? null;
+
+  const annual = mergeStatementPeriods(
+    summary.incomeStatementHistory?.incomeStatementHistory,
+    summary.balanceSheetHistory?.balanceSheetStatements,
+    summary.cashflowStatementHistory?.cashflowStatements,
+    'FY',
+  );
+  const quarterly = mergeStatementPeriods(
+    summary.incomeStatementHistoryQuarterly?.incomeStatementHistory,
+    summary.balanceSheetHistoryQuarterly?.balanceSheetStatements,
+    summary.cashflowStatementHistoryQuarterly?.cashflowStatements,
+    'Q',
+  );
+
+  const detail = summary.summaryDetail ?? {};
+  const stats = summary.defaultKeyStatistics ?? {};
+  const fin = summary.financialData ?? {};
+  const ratios: FundamentalsRatios = {
+    marketCap: numOrNull(detail.marketCap),
+    trailingPe: numOrNull(detail.trailingPE),
+    forwardPe: numOrNull(detail.forwardPE),
+    priceToBook: numOrNull(stats.priceToBook),
+    profitMargin: numOrNull(fin.profitMargins),
+    returnOnEquity: numOrNull(fin.returnOnEquity),
+    debtToEquity: numOrNull(fin.debtToEquity),
+    trailingEps: numOrNull(stats.trailingEps),
+    forwardEps: numOrNull(stats.forwardEps),
+  };
+
+  return { currency, annual, quarterly, ratios };
 }
