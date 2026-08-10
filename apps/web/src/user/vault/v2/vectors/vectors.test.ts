@@ -1,5 +1,6 @@
 import { webcrypto } from 'node:crypto';
 
+import { vaultHeaderDocSchema } from '@bettertrack/contracts';
 import { vaultV2Vectors } from '@bettertrack/domain/vaultVectors';
 import { beforeAll, describe, expect, it } from 'vitest';
 
@@ -25,6 +26,13 @@ import {
  * build, and the mobile port has an exact oracle), and the bytes actually open
  * — decrypt/unwrap/import round-trips. Real Argon2id runs here; that is the
  * point of a conformance vector.
+ *
+ * `packages/domain` deliberately types its fixtures with local STRUCTURAL
+ * mirrors instead of importing contracts (its build must not pull the
+ * contracts compile graph into a lib-minimal package). The zod parses below
+ * are therefore load-bearing twice over: they bridge the mirror types to the
+ * real contract types, and they FAIL this suite if the mirror ever drifts
+ * from the schema.
  */
 
 beforeAll(() => {
@@ -38,11 +46,10 @@ describe('vault v2 conformance vectors (r3 §25)', () => {
     expect(regenerated.headerBytesBase64).toBe(vaultV2Vectors.v2Header.headerBytesBase64);
     expect(regenerated.header.mac).toEqual(vaultV2Vectors.v2Header.header.mac);
 
-    // And it opens: verified seal + the pinned content key.
-    const opened = await openVaultHeader(
-      vaultV2Vectors.v2Header.header,
-      vaultV2Vectors.v2Header.passphrase,
-    );
+    // The frozen fixture satisfies the REAL contract schema (mirror-drift guard)…
+    const header = vaultHeaderDocSchema.parse(vaultV2Vectors.v2Header.header);
+    // …and it opens: verified seal + the pinned content key.
+    const opened = await openVaultHeader(header, vaultV2Vectors.v2Header.passphrase);
     expect(opened.sealState).toBe('verified');
     expect(bytesToBase64(opened.contentKey)).toBe(vaultV2Vectors.v2Header.contentKeyBase64);
   });
@@ -51,7 +58,7 @@ describe('vault v2 conformance vectors (r3 §25)', () => {
     const regenerated = await buildMultiSlotVector();
     expect(regenerated.headerBytesBase64).toBe(vaultV2Vectors.v2MultiSlot.headerBytesBase64);
 
-    const header = vaultV2Vectors.v2MultiSlot.header;
+    const header = vaultHeaderDocSchema.parse(vaultV2Vectors.v2MultiSlot.header);
     expect(header.keySlots).toHaveLength(2);
     const first = await openVaultHeader(header, vaultV2Vectors.v2MultiSlot.firstPassphrase);
     const second = await openVaultHeader(header, vaultV2Vectors.v2MultiSlot.secondPassphrase);

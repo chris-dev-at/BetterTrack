@@ -42,7 +42,6 @@
   },
   "devDependencies": {
     "@bettertrack/config": "workspace:*",
-    "@bettertrack/contracts": "workspace:*",
     "typescript": "~5.7.3",
     "vitest": "^3.0.5"
   }

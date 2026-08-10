@@ -346,9 +346,6 @@ importers:
       '@bettertrack/config':
         specifier: workspace:*
         version: link:../config
-      '@bettertrack/contracts':
-        specifier: workspace:*
-        version: link:../contracts
       typescript:
         specifier: ~5.7.3
         version: 5.7.3

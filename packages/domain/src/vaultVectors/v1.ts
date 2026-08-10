@@ -1,5 +1,3 @@
-import type { VaultDocument, VaultEnvelopeHeader, VaultKdfParams } from '@bettertrack/contracts';
-
 import fixture from './v1.fixture.json';
 
 /**
@@ -11,11 +9,15 @@ import fixture from './v1.fixture.json';
  * The fixture bytes are UNCHANGED by the move — that is the whole point of a
  * conformance vector — and the web replay suites now import them from here.
  *
- * Like every module in this package the runtime is pure data: the only
- * non-JSON imports are `import type`, which erase at compile time. The types
- * come from `@bettertrack/contracts` rather than local mirrors because these
- * shapes ARE the contract — a drifted local copy would be a second, silently
- * different definition of the format under test.
+ * Like every module in this package it imports NOTHING (design r3 build
+ * ruling): even a type-only import of `@bettertrack/contracts` would pull the
+ * contracts sources into this package's compile graph, and contracts uses
+ * platform globals (`TextEncoder`, `URL`) that this package's deliberately
+ * minimal lib config does not provide — the isomorphic-purity guarantee is a
+ * BUILD property, not just a runtime one. The `VaultVector*` interfaces below
+ * are therefore local STRUCTURAL mirrors of the contract shapes; the web
+ * replay suite parses every fixture through the real zod schemas, so a drift
+ * between mirror and contract fails the build there, where both sides exist.
  */
 
 export const VECTOR_KEY_ID = '018f0000-0000-7000-8000-00000000000a';
@@ -23,7 +25,64 @@ export const VECTOR_DEVICE_ID = '018f0000-0000-7000-8000-00000000000b';
 export const VECTOR_WRITE_ID = '018f0000-0000-7000-8000-00000000000c';
 export const VECTOR_NEXT_KEY_ID = '018f0000-0000-7000-8000-00000000000d';
 
-export const vaultVectorDocument: VaultDocument = {
+// ── Structural mirrors of the v1 contract shapes (see the header note) ───────
+
+/** Mirror of `VaultKdfParams` (`vaultKdfParamsSchema`). */
+export interface VaultVectorKdfParams {
+  alg: 'argon2id';
+  m: number;
+  t: number;
+  p: number;
+  salt: string;
+}
+
+/** Mirror of `VaultWrappedKey` (`vaultWrappedKeySchema`). */
+export interface VaultVectorWrappedKey {
+  keyId: string;
+  kdf: VaultVectorKdfParams;
+  wrappedVk: string;
+}
+
+/** Mirror of `VaultEnvelopeHeader` (`vaultEnvelopeHeaderSchema`). */
+export interface VaultVectorEnvelopeHeader {
+  formatVersion: number;
+  cipher: 'A256GCM';
+  iv: string;
+  keyId: string;
+  wrappedKeys: VaultVectorWrappedKey[];
+  vaultVersion: number;
+  schemaVersion: number;
+  deviceId: string;
+  writeId: string;
+  writtenAt: string;
+}
+
+/** Mirror of `VaultEntity` (`vaultEntitySchema`). */
+export interface VaultVectorEntity {
+  id: string;
+  rev: number;
+  editedAt: string;
+  editedBy: string;
+  deletedAt: string | null;
+  data: Record<string, unknown>;
+}
+
+/** Mirror of `VaultMergeRecord` (`vaultMergeRecordSchema`). */
+export interface VaultVectorMergeRecord {
+  mergedAt: string;
+  parents: number[];
+  into: number;
+  deviceId: string;
+}
+
+/** Mirror of the schemaVersion-1 `VaultDocument` (`vaultDocumentV1Schema`). */
+export interface VaultVectorDocument {
+  schemaVersion: 1;
+  entities: Record<string, VaultVectorEntity[]>;
+  mergeLog: VaultVectorMergeRecord[];
+}
+
+export const vaultVectorDocument: VaultVectorDocument = {
   schemaVersion: 1,
   entities: {
     portfolio: [
@@ -47,7 +106,7 @@ export interface VaultInteroperabilityFixture {
   passphrase: string;
   newPassphrase: string;
   vaultKeyBase64: string;
-  kdf: VaultKdfParams;
+  kdf: VaultVectorKdfParams;
   kekBase64: string;
   initial: VaultFixtureEnvelope;
   wrongSecret: {
@@ -79,7 +138,7 @@ export interface VaultInteroperabilityFixture {
 }
 
 interface VaultFixtureEnvelope {
-  header: VaultEnvelopeHeader;
+  header: VaultVectorEnvelopeHeader;
   headerBytesBase64: string;
   envelopeBase64: string;
   tamperedEnvelopeBase64?: string;
