@@ -81,6 +81,7 @@ const PORTFOLIO: PortfolioResponse = {
 // 100 → 127.628 over five years is 5,00 %/yr.
 const HISTORY: PortfolioHistoryResponse = {
   range: '5Y',
+  interval: '1d',
   baseCurrency: 'EUR',
   points: [
     { date: HISTORY_START.toISOString().slice(0, 10), valueEur: 100 },
