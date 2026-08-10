@@ -561,7 +561,7 @@ export const PARANOID_SERVICE_EXEMPTIONS: readonly ParanoidServiceExemption[] = 
   ),
   serviceExemption(
     'marketIntel',
-    ['capabilities', 'dividends', 'earnings', 'news', 'splits', 'earningsCalendar'],
+    ['capabilities', 'dividends', 'earnings', 'news', 'splits', 'earningsCalendar', 'fundamentals'],
     'internallyFiltered',
     'Market-intelligence reads scope each asset to global-or-owned provenance before querying providers.',
     ['accountMode', 'ownedAssetProvenance'],
@@ -1425,7 +1425,7 @@ export const PARANOID_KEPT_ROUTE_RULES: readonly ParanoidExemptRouteRule[] = [
   ...keptRoutes('Per-asset market reads enforce global-or-owned asset provenance.', [
     {
       pattern:
-        /^\/assets\/[^/]+(?:\/(?:quote|history|daily-closes|intel(?:\/(?:dividends|earnings|news|splits))?))?$/,
+        /^\/assets\/[^/]+(?:\/(?:quote|history|daily-closes|intel(?:\/(?:dividends|earnings|news|splits|fundamentals))?))?$/,
     },
     { exact: '/assets/intel/earnings-calendar' },
   ]),

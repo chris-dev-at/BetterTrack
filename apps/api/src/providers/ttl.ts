@@ -62,3 +62,10 @@ export const DIVIDENDS_TTL_SECONDS = 12 * 60 * 60;
 export const EARNINGS_TTL_SECONDS = 6 * 60 * 60;
 export const SPLITS_TTL_SECONDS = 12 * 60 * 60;
 export const NEWS_TTL_SECONDS = 10 * 60;
+
+/**
+ * Fundamentals (arc f / INTEL1) are quarterly filings that barely move within a
+ * session, so they cache for 12 h — the same window as dividends/splits — under
+ * the same coalescing + serve-stale machinery.
+ */
+export const FUNDAMENTALS_TTL_SECONDS = 12 * 60 * 60;
