@@ -1595,10 +1595,14 @@ describe('GET /api/v1/portfolios/:id/history (V4-P0 ranges: 1D, 1W, 5Y)', () => 
     for (const p of week.body.points as Array<{ date: string }>) {
       expect(p.date >= weekCutoff).toBe(true);
     }
-    // 1W is a strict superset of 1D.
-    expect((week.body.points as unknown[]).length).toBeGreaterThanOrEqual(
-      (day.body.points as unknown[]).length,
-    );
+    // 1W is a strict superset of 1D — as day-level coverage, not raw point
+    // counts: since IN3 (#1179) 1D auto serves a 5-minute grid while 1W stays
+    // hourly, so on a trading day 1D legitimately carries MORE points than 1W.
+    // Every day plotted on 1D is plotted on 1W (the windows nest).
+    const weekDays = new Set((week.body.points as Array<{ date: string }>).map((p) => p.date));
+    for (const p of day.body.points as Array<{ date: string }>) {
+      expect(weekDays.has(p.date)).toBe(true);
+    }
   });
 
   it('5Y windows to at most 5 years back, and is a strict superset of 1Y', async () => {
