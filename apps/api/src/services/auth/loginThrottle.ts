@@ -24,6 +24,14 @@ export const LOGIN_ACCOUNT_NAMESPACE = 'login_account';
 export const TWO_FACTOR_ACCOUNT_NAMESPACE = 'two_factor_account';
 
 /**
+ * Per-account wrong-factor throttle for disabling TOTP from an authenticated
+ * session. This proof is deliberately isolated from login 2FA: somebody who
+ * holds a bearer with `account:security` must not be able to spend the victim's
+ * pending-login verification budget (or vice versa).
+ */
+export const TWO_FACTOR_DISABLE_ACCOUNT_NAMESPACE = 'two_factor_disable_account';
+
+/**
  * Per-account brute-force throttle for bearer PIN verification (#361, §6.1, §10).
  * The session PIN gate (below) protects the cookie flow by destroying the
  * session after {@link PIN_FALLBACK_THRESHOLD} wrong PINs; a bearer request has
@@ -62,6 +70,18 @@ export const ACCOUNT_EXPORT_NAMESPACE = 'account_export_account';
 export const ACCOUNT_PASSKEY_NAMESPACE = 'account_passkey_account';
 
 /**
+ * Per-account brute-force throttle for the GENERIC session step-up
+ * (`POST /auth/reauth`, Vaults v2). Unlike the namespaces above it does not
+ * belong to one destructive endpoint — it exists because some sensitive acts are
+ * entirely client-side (the QR handoff reveals a passphrase-bearing payload and
+ * has nothing to POST) and still need a server-verified step-up. Its own
+ * namespace for the same reason as the others: a generic verifier reusing
+ * login's counter would either weaken login's schedule or let one surface lock
+ * the other. Reuses the `loginAccount` schedule.
+ */
+export const REAUTH_ACCOUNT_NAMESPACE = 'reauth_account';
+
+/**
  * Per-account brute-force throttle for the paranoid `discard` re-auth (§13.5
  * V5-P13, docs/paranoid-design.md §3). Destroying an undecryptable vault
  * re-verifies a credential exactly like account deletion; wrong attempts accrue
@@ -70,6 +90,16 @@ export const ACCOUNT_PASSKEY_NAMESPACE = 'account_passkey_account';
  * login. Reuses the `loginAccount` schedule like every sibling re-auth.
  */
 export const ACCOUNT_PARANOID_DISCARD_NAMESPACE = 'account_paranoid_discard_account';
+
+/**
+ * Per-account brute-force throttle for the tax-year unlock re-auth (§16
+ * 2026-08-07). Opening a locked tax year for amendments re-verifies the
+ * account password; wrong attempts accrue here — independent of the login/2FA
+ * counters and the per-IP limiter — so the unlock endpoint is never a
+ * lighter-weight password oracle than login. Reuses the `loginAccount`
+ * schedule like every sibling re-auth.
+ */
+export const ACCOUNT_TAX_YEAR_UNLOCK_NAMESPACE = 'account_tax_year_unlock_account';
 
 /**
  * Consecutive-failure counter for the PIN gate (§6.1). Kept separate from the
@@ -374,13 +404,15 @@ export const clearPasswordThrottle = async (redis: Redis, userId: string): Promi
 };
 
 /**
- * Drop all per-account login-throttle state for a user — password-failure, PIN
- * fallback, AND the second-factor throttle — so they can authenticate
- * immediately. Called on a successful second-factor verify, admin password
- * reset, and re-enable. For a bare correct password (which still faces a 2FA
- * gate) use {@link clearPasswordThrottle} instead so the 2FA lock survives.
+ * Drop all per-account authentication-throttle state for a user — password
+ * failures, PIN fallback, login second-factor, and authenticated TOTP-disable —
+ * so they can authenticate and manage the factor immediately. Called on a
+ * successful second-factor verify, admin password reset, and re-enable. For a
+ * bare correct password (which still faces a 2FA gate) use
+ * {@link clearPasswordThrottle} instead so both factor locks survive.
  */
 export const clearLoginThrottle = async (redis: Redis, userId: string): Promise<void> => {
   await clearPasswordThrottle(redis, userId);
   await resetProgressiveLimiter(redis, TWO_FACTOR_ACCOUNT_NAMESPACE, userId);
+  await resetProgressiveLimiter(redis, TWO_FACTOR_DISABLE_ACCOUNT_NAMESPACE, userId);
 };

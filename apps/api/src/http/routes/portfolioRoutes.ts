@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { Router, type RequestHandler } from 'express';
 
 import {
   cashEntryRequestSchema,
@@ -27,7 +27,13 @@ import {
   updateCashSourceRequestSchema,
   updatePortfolioRequestSchema,
   updateTaxSettingsRequestSchema,
+  portfolioVaultStateSchema,
+  setPortfolioAliasRequestSchema,
   updateTransactionRequestSchema,
+  vaultJoinRequestSchema,
+  vaultJoinResponseSchema,
+  vaultLeaveRequestSchema,
+  vaultLeaveResponseSchema,
   type CashEntryRequest,
   type CashMovementsQuery,
   type CashPreviewRequest,
@@ -52,9 +58,13 @@ import {
   type UpdatePortfolioRequest,
   type UpdatePortfolioResponse,
   type UpdateTaxSettingsRequest,
+  type SetPortfolioAliasRequest,
   type UpdateTransactionRequest,
+  type VaultJoinRequest,
+  type VaultLeaveRequest,
 } from '@bettertrack/contracts';
 
+import { forbidden } from '../../errors';
 import { serializeTaxYearReportCsv, taxReportCsvFilename } from '../../services/tax/taxReportCsv';
 import { conditionalGet, CONDITIONAL_LAST_MODIFIED } from '../middleware/conditional';
 import { createIdempotency, withIdempotencyExecution } from '../middleware/idempotency';
@@ -92,8 +102,10 @@ export function createPortfolioRouter(ctx: AppContext): Router {
   // §6.8; archived rows included only when asked, §13.2 V2-P8). Enriched with
   // the MIRRORCHAIN badge / fork provenance (V5-P7 M5, design §11/§6) so the
   // switcher can render the avatar stack + "Syncing…" state / "Forked from ⟨X⟩"
-  // line without a second round-trip.
-  router.get('/', validateQuery(portfolioListQuerySchema), async (req, res) => {
+  // line without a second round-trip. The shared conditional layer derives a
+  // per-user ETag from the full enriched list; no list-wide freshness watermark
+  // exists, so it intentionally does not emit a Last-Modified validator.
+  router.get('/', validateQuery(portfolioListQuerySchema), conditionalGet(), async (req, res) => {
     const { includeArchived } = req.valid?.query as PortfolioListQuery;
     const list = await ctx.portfolio.listPortfolios(req.authUser!.id, { includeArchived });
     const portfolios = await ctx.mirror.enrichPortfolioSummaries(req.authUser!.id, list.portfolios);
@@ -186,8 +198,10 @@ export function createPortfolioRouter(ctx: AppContext): Router {
     },
   );
 
-  // GET /portfolios/:portfolioId/history?range=&overlay= — value-over-time series,
-  // optionally with each held asset's own price series for the chart overlay (§6.8, #122).
+  // GET /portfolios/:portfolioId/history?range=&overlay=&interval= — value-over-
+  // time series, optionally with each held asset's own price series for the
+  // chart overlay (§6.8, #122). `interval` selects the series grid (IN3, board
+  // #76); the response echoes the grid actually served.
   router.get(
     '/:portfolioId/history',
     validateParams(portfolioIdParamSchema),
@@ -198,10 +212,11 @@ export function createPortfolioRouter(ctx: AppContext): Router {
     conditionalGet({ liveToday: true }),
     async (req, res) => {
       const { portfolioId } = req.valid?.params as { portfolioId: string };
-      const { range, overlay } = req.valid?.query as PortfolioHistoryQuery;
+      const { range, overlay, interval } = req.valid?.query as PortfolioHistoryQuery;
       const history = await ctx.portfolio.getHistory(req.authUser!.id, portfolioId, range, {
         overlay,
         baseCurrency: req.authUser!.baseCurrency,
+        interval,
       });
       const freshness = await ctx.portfolio.getSnapshotFreshness(req.authUser!.id, portfolioId);
       if (freshness) res.locals[CONDITIONAL_LAST_MODIFIED] = freshness;
@@ -209,8 +224,8 @@ export function createPortfolioRouter(ctx: AppContext): Router {
     },
   );
 
-  // GET /portfolios/:portfolioId/cash?source= — cash movements + current balance
-  // (§14, #220), optionally narrowed to one source tag (V5-P0c). On a synced
+  // GET /portfolios/:portfolioId/cash?cursor=&limit= — paged cash movements +
+  // current balance (§14, #220), optionally narrowed by source/tag. On a synced
   // copy, each replicated movement / source carries the M5 `mirror` overlay
   // (design §3/§11).
   router.get(
@@ -219,8 +234,13 @@ export function createPortfolioRouter(ctx: AppContext): Router {
     validateQuery(cashMovementsQuerySchema),
     async (req, res) => {
       const { portfolioId } = req.valid?.params as { portfolioId: string };
-      const { source } = req.valid?.query as CashMovementsQuery;
-      const cash = await ctx.portfolio.getCashMovements(req.authUser!.id, portfolioId, { source });
+      const { cursor, limit, source, tag } = req.valid?.query as CashMovementsQuery;
+      const cash = await ctx.portfolio.getCashMovements(req.authUser!.id, portfolioId, {
+        cursor,
+        limit,
+        source,
+        tag,
+      });
       const overlay = await ctx.mirror.overlayForPortfolio(portfolioId);
       const movements = cash.movements.map((m) => {
         const mirror = overlay.cashMovements.get(m.id);
@@ -627,11 +647,15 @@ export function createPortfolioRouter(ctx: AppContext): Router {
     validateQuery(transactionListQuerySchema),
     async (req, res) => {
       const { portfolioId } = req.valid?.params as { portfolioId: string };
-      const { cursor, limit, source } = req.valid?.query as TransactionListQuery;
+      const { cursor, limit, source, assetId, order, includeSourceTags } = req.valid
+        ?.query as TransactionListQuery;
       const page = await ctx.portfolio.listTransactions(req.authUser!.id, portfolioId, {
         cursor,
         limit,
         source,
+        assetId,
+        order,
+        includeSourceTags,
       });
       const overlay = await ctx.mirror.overlayForPortfolio(portfolioId);
       const items = page.items.map((tx) => {
@@ -691,6 +715,78 @@ export function createPortfolioRouter(ctx: AppContext): Router {
       await ctx.mirror.submitTransactionDelete(req.authUser!.id, portfolioId, txId, { baseSeq });
       res.status(204).send();
     }),
+  );
+
+  // ── Vaults v2 transitions (`docs/VAULTS_V2_DESIGN.md` §3) ─────────────────
+  // Both are OWNING-BROWSER-SESSION only. `bearerAuth.resolvePolicy` pins them
+  // ahead of the `/portfolios` module row, and the router-local guard below
+  // repeats the decision so a policy-table regression alone cannot expose
+  // either. Join hard-deletes this portfolio's cleartext; leave writes a
+  // caller-authored document back into the account. Neither may ride a token.
+  const requireOwnerBrowserSessionForVault: RequestHandler = (req, _res, next) => {
+    if (req.apiKey) {
+      next(forbidden('This endpoint is not accessible with an API key.', 'API_KEY_FORBIDDEN'));
+      return;
+    }
+    next();
+  };
+
+  // POST /portfolios/:portfolioId/vault — JOIN. One transaction: store the
+  // client-encrypted blob, purge this portfolio's cleartext rows, set vault_id.
+  router.post(
+    '/:portfolioId/vault',
+    requireOwnerBrowserSessionForVault,
+    validateParams(portfolioIdParamSchema),
+    validateBody(vaultJoinRequestSchema),
+    async (req, res) => {
+      const { portfolioId } = req.valid?.params as { portfolioId: string };
+      const result = await ctx.vaults.join(
+        req.authUser!.id,
+        portfolioId,
+        req.valid?.body as VaultJoinRequest,
+        req.ip ?? null,
+      );
+      res.status(200).json(vaultJoinResponseSchema.parse(result));
+    },
+  );
+
+  // PATCH /portfolios/:portfolioId/alias — the split-out rename for a VAULTED
+  // portfolio. The ordinary rename route also carries `visibility`, and sharing
+  // a vaulted portfolio must stay unreachable, so that whole route is killed
+  // while vaulted; this one writes the cleartext alias column and nothing else.
+  // A normal portfolio is refused (409) — its rename stays where it always was.
+  router.patch(
+    '/:portfolioId/alias',
+    requireOwnerBrowserSessionForVault,
+    validateParams(portfolioIdParamSchema),
+    validateBody(setPortfolioAliasRequestSchema),
+    async (req, res) => {
+      const { portfolioId } = req.valid?.params as { portfolioId: string };
+      const { alias } = req.valid?.body as SetPortfolioAliasRequest;
+      const state = await ctx.vaults.setAlias(req.authUser!.id, portfolioId, alias, req.ip ?? null);
+      res.json(portfolioVaultStateSchema.parse(state));
+    },
+  );
+
+  // DELETE /portfolios/:portfolioId/vault — LEAVE. The reverse, equally atomic:
+  // repopulate from the posted plaintext rows, clear vault_id, retire the blob.
+  // A DELETE with a body is deliberate — it mirrors the account-level disable,
+  // where the restore document IS the request.
+  router.delete(
+    '/:portfolioId/vault',
+    requireOwnerBrowserSessionForVault,
+    validateParams(portfolioIdParamSchema),
+    validateBody(vaultLeaveRequestSchema),
+    async (req, res) => {
+      const { portfolioId } = req.valid?.params as { portfolioId: string };
+      const result = await ctx.vaults.leave(
+        req.authUser!.id,
+        portfolioId,
+        req.valid?.body as VaultLeaveRequest,
+        req.ip ?? null,
+      );
+      res.status(200).json(vaultLeaveResponseSchema.parse(result));
+    },
   );
 
   return router;

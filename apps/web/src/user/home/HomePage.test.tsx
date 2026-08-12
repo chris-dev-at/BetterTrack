@@ -159,6 +159,7 @@ function summary(marketValueEur: number, cashEur: number, dayChangeEur: number):
 const HISTORY: PortfolioHistoryResponse = {
   baseCurrency: 'EUR',
   range: '1M',
+  interval: '1d',
   points: [
     { date: '2026-07-01', valueEur: 100 },
     { date: '2026-07-02', valueEur: 140 },
@@ -914,7 +915,11 @@ test('the row-count setting persists and re-asks the API for that many rows', as
 
   expect(persisted().widgets[0]?.settings.count).toBe(15);
   await vi.waitFor(() => {
-    expect(listTransactions).toHaveBeenCalledWith(MAIN.id, { limit: 15 }, expect.anything());
+    expect(listTransactions).toHaveBeenCalledWith(
+      MAIN.id,
+      { limit: 15, order: 'executedAt' },
+      expect.anything(),
+    );
   });
 });
 

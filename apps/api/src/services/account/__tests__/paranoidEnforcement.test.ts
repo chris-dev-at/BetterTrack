@@ -3,6 +3,8 @@ import type { Application } from 'express';
 import request from 'supertest';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { API_KEY_SCOPES } from '@bettertrack/contracts';
+
 import {
   createParanoidEnforcementRepository,
   withExclusiveParanoidTransitionTestLock,
@@ -53,6 +55,7 @@ import {
   isParanoidOwnedSubjectBlocked,
   paranoidClassificationsForRoute,
   paranoidCapabilityForRoute,
+  PARANOID_API_SCOPE_CLASSIFICATIONS,
   PARANOID_JOB_POLICIES,
   PARANOID_KILL_REGISTRY,
   PARANOID_MODE_ERROR_CODE,
@@ -207,6 +210,8 @@ async function ownedAssetProvenanceProbes(
     'marketIntel.earnings': () => ctx.marketIntel.earnings(userId, customAssetId),
     'marketIntel.news': () => ctx.marketIntel.news(userId, customAssetId),
     'marketIntel.splits': () => ctx.marketIntel.splits(userId, customAssetId),
+    'marketIntel.fundamentals': () =>
+      ctx.marketIntel.fundamentals(userId, customAssetId, { period: 'annual' }),
     'marketIntel.earningsCalendar': () => ctx.marketIntel.earningsCalendar(userId),
     'workboard.list': () => ctx.workboard.list(userId),
     'workboard.listInWatchlist': () => ctx.workboard.listInWatchlist(userId, watchlist!.id),
@@ -312,6 +317,26 @@ describe('paranoid kill registry', () => {
           expect(paranoidCapabilityForRoute(route.method, route.path)).toBe(entry.capability);
         }
       }
+    }
+  });
+
+  it('explicitly classifies every API key scope and matches the runtime kill decision', () => {
+    expect(Object.keys(PARANOID_API_SCOPE_CLASSIFICATIONS).sort()).toEqual(
+      [...API_KEY_SCOPES].sort(),
+    );
+
+    for (const scope of API_KEY_SCOPES) {
+      const classification = PARANOID_API_SCOPE_CLASSIFICATIONS[scope];
+      expect(
+        classification,
+        `${scope} needs an explicit paranoid-mode classification`,
+      ).toBeDefined();
+      if (!classification) continue;
+      expect(classification.reason.trim(), `${scope} needs a rationale`).not.toBe('');
+      expect(classification.reason, `${scope} rationale must stay on one line`).not.toMatch(
+        /[\r\n]/,
+      );
+      expect(isParanoidKilledScope(scope), scope).toBe(classification.disposition === 'killed');
     }
   });
 
@@ -490,14 +515,6 @@ describe('paranoid kill registry', () => {
         expect(serialized.includes(secret), `${rail} leaked ${secret}`).toBe(false);
       }
     }
-
-    for (const scope of PARANOID_KILL_REGISTRY.flatMap((entry) => entry.scopes)) {
-      expect(isParanoidKilledScope(scope), scope).toBe(true);
-    }
-    expect(isParanoidKilledScope('market:read')).toBe(false);
-    // #1043's combined scope exists specifically so a paranoid native client
-    // can move opaque ciphertext; it must never join the portfolio-scope kill rail.
-    expect(isParanoidKilledScope('vault:sync')).toBe(false);
 
     const killedWebhookEvents = PARANOID_KILL_REGISTRY.flatMap((entry) => entry.webhookEventTypes);
     expect(Object.keys(PARANOID_WEBHOOK_SUBJECT_POLICIES).sort()).toEqual(
@@ -767,6 +784,7 @@ describe('paranoid kill registry', () => {
       harness.ctx.social.setAudience(normal.id, 'conglomerate', namedConglomerate!.id, {
         audience: 'specific_friends',
         friendIds: [paranoid.id],
+        confirmWiden: true,
       }),
     ).rejects.toMatchObject({ code: PARANOID_MODE_ERROR_CODE });
     expect(
@@ -803,6 +821,7 @@ describe('paranoid kill registry', () => {
     });
     await harness.ctx.conglomerate.updateWithVisibility(normal.id, conglomerate.id, {
       visibility: 'friends',
+      confirmWiden: true,
     });
     expect(
       (
@@ -834,7 +853,7 @@ describe('paranoid kill registry', () => {
     const routeUpdate = await ownerAgent
       .patch(`/api/v1/portfolios/${portfolioId}`)
       .set(...XRW)
-      .send({ visibility: 'friends' });
+      .send({ visibility: 'friends', confirmWiden: true });
     expect(routeUpdate.status).toBe(200);
     expect(
       (
@@ -858,7 +877,7 @@ describe('paranoid kill registry', () => {
     const routeAudience = await ownerAgent
       .put(`/api/v1/social/audience/conglomerate/${conglomerate.id}`)
       .set(...XRW)
-      .send({ audience: 'all_friends' });
+      .send({ audience: 'all_friends', confirmWiden: true });
     expect(routeAudience.status).toBe(200);
 
     // The fan-out is the only thing the paranoid friend must not receive; the
@@ -957,6 +976,7 @@ describe('paranoid kill registry', () => {
       mutate: () =>
         harness.ctx.portfolio.updatePortfolioWithVisibility(portfolioOwner.id, portfolioId, {
           visibility: 'friends',
+          confirmWiden: true,
         }),
     });
 
@@ -1000,6 +1020,7 @@ describe('paranoid kill registry', () => {
       mutate: () =>
         harness.ctx.conglomerate.updateWithVisibility(conglomerateOwner.id, conglomerate.id, {
           visibility: 'friends',
+          confirmWiden: true,
         }),
     });
 
@@ -1591,6 +1612,7 @@ describe('paranoid kill registry', () => {
     const portfolioId = await harness.ctx.portfolio.getDefaultPortfolioId(owner.id);
     await harness.ctx.social.setAudience(owner.id, 'portfolio', portfolioId, {
       audience: 'all_friends',
+      confirmWiden: true,
     });
     const visibleComment = await harness.ctx.comments.addComment(
       viewer.id,
@@ -1652,6 +1674,7 @@ describe('paranoid kill registry', () => {
     const portfolioId = await harness.ctx.portfolio.getDefaultPortfolioId(owner.id);
     await harness.ctx.social.setAudience(owner.id, 'portfolio', portfolioId, {
       audience: 'all_friends',
+      confirmWiden: true,
     });
     const comment = await harness.ctx.comments.addComment(
       author.id,
@@ -1986,6 +2009,7 @@ describe('paranoid kill registry', () => {
     ]);
     await harness.ctx.social.setAudience(user.id, 'watchlist', defaultWatchlist!.id, {
       audience: 'all_friends',
+      confirmWiden: true,
     });
     const [globalAlert, customAlert] = await harness.db
       .insert(alerts)
@@ -2341,6 +2365,7 @@ describe('paranoid kill registry', () => {
       .returning();
     await harness.ctx.social.setAudience(owner.id, 'conglomerate', basket!.id, {
       audience: 'all_friends',
+      confirmWiden: true,
     });
     await harness.ctx.social.followItem(viewer.id, 'conglomerate', basket!.id);
     const [publicBasket] = await harness.db
@@ -2354,6 +2379,7 @@ describe('paranoid kill registry', () => {
       {
         audience: 'public_link',
         acknowledgePublic: true,
+        confirmWiden: true,
       },
     );
     const publicToken = publicAudience.link?.token;
@@ -2370,6 +2396,7 @@ describe('paranoid kill registry', () => {
     });
     await harness.ctx.social.setAudience(owner.id, 'idea', idea.id, {
       audience: 'all_friends',
+      confirmWiden: true,
     });
     const conversation = await harness.ctx.chat.openConversation(owner.id, viewer.id);
     await harness.ctx.chat.sendMessage(owner.id, conversation.id, {

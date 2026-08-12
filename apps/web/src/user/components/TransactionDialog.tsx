@@ -212,10 +212,14 @@ const inputClass = cx(
   '[&::-webkit-outer-spin-button]:appearance-none [&::-webkit-inner-spin-button]:appearance-none [&]:[-moz-appearance:textfield]',
 );
 
-/** Grey uppercase field label that turns gold while its field is focused. */
+/**
+ * Grey uppercase field label that lifts while its field is focused — gold in
+ * dark, and the page ink in light, where gold letters are sub-AA by owner
+ * decision and the field's own gold focus ring is already the mark.
+ */
 function FieldLabel({ children }: { children: ReactNode }) {
   return (
-    <span className="text-[0.7rem] font-medium uppercase tracking-wide text-[var(--bt-muted)] transition-colors group-focus-within:text-[var(--bt-gold)]">
+    <span className="text-[0.7rem] font-medium uppercase tracking-wide text-[var(--bt-muted)] transition-colors group-focus-within:text-[var(--bt-gold-ink-safe)]">
       {children}
     </span>
   );
@@ -940,7 +944,10 @@ export function TransactionDialog(props: TransactionDialogProps) {
         err instanceof ApiError &&
         (err.code === 'OVERSELL' ||
           err.code === 'INSUFFICIENT_CASH' ||
-          err.code === 'TRANSACTION_CASH_LINKED')
+          err.code === 'TRANSACTION_CASH_LINKED' ||
+          // Tax year lock (§16 2026-08-07): the server copy names the locked
+          // year and the unlock path — exactly what the user must act on.
+          err.code === 'TAX_YEAR_LOCKED')
       ) {
         setError(err.message);
       } else if (
@@ -1221,7 +1228,7 @@ export interface RowUncovered {
 function AutoHint() {
   const t = useT();
   return (
-    <span className="ml-1 text-[0.65rem] font-normal uppercase tracking-wide bt-gold">
+    <span className="ml-1 text-[0.65rem] font-normal uppercase tracking-wide bt-gold-note">
       {t('portfolio.transaction.autoHint')}
     </span>
   );
@@ -1341,7 +1348,7 @@ function AssetCard({
         <span className="truncate text-xs bt-muted">{asset.name}</span>
       </span>
       {onChangeAsset ? (
-        <span className="shrink-0 bt-gold">
+        <span className="shrink-0 bt-gold-mark">
           <Chevron />
         </span>
       ) : null}
@@ -1373,7 +1380,7 @@ function MaxChip({ symbol, t, onClick }: { symbol: string; t: TranslateFn; onCli
       type="button"
       onClick={onClick}
       aria-label={t('portfolio.transaction.maxAria', { symbol })}
-      className="rounded-md bg-[var(--bt-gold-soft)] px-2 py-0.5 text-[0.7rem] font-semibold uppercase tracking-wide text-[var(--bt-gold)] ring-1 ring-inset ring-[var(--bt-border-accent)] transition hover:bg-[color-mix(in_srgb,var(--bt-gold)_20%,transparent)]"
+      className="rounded-md bg-[var(--bt-gold-soft)] px-2 py-0.5 text-[0.7rem] font-semibold uppercase tracking-wide text-[var(--bt-gold-ink)] ring-1 ring-inset ring-[var(--bt-border-accent)] transition hover:bg-[color-mix(in_srgb,var(--bt-gold-graphic)_20%,transparent)]"
     >
       {t('portfolio.transaction.max')}
     </button>
@@ -1401,11 +1408,11 @@ function ToggleSwitch({
       />
       <span
         aria-hidden="true"
-        className="h-5 w-9 rounded-full border border-[var(--bt-border-strong)] bg-[var(--bt-surface-soft)] transition-colors peer-checked:border-[var(--bt-gold)] peer-checked:bg-[var(--bt-gold)]"
+        className="h-5 w-9 rounded-full border border-[var(--bt-border-strong)] bg-[var(--bt-surface-soft)] transition-colors peer-checked:border-[var(--bt-gold-graphic)] peer-checked:bg-[var(--bt-gold-fill)]"
       />
       <span
         aria-hidden="true"
-        className="absolute left-0.5 h-4 w-4 rounded-full bg-[var(--bt-muted)] transition-transform peer-checked:translate-x-4 peer-checked:bg-[var(--bt-gold-ink)]"
+        className="absolute left-0.5 h-4 w-4 rounded-full bg-[var(--bt-muted)] transition-transform peer-checked:translate-x-4 peer-checked:bg-[var(--bt-gold-on)]"
       />
     </span>
   );
@@ -1460,7 +1467,9 @@ function CashCard({ row, cash, t }: { row: Row; cash: RowCash; t: TranslateFn })
           className="flex flex-col gap-2 rounded-md border p-3"
           style={{ borderColor: 'var(--bt-border-accent)', background: 'var(--bt-gold-soft)' }}
         >
-          <p className="text-xs leading-relaxed bt-gold">
+          {/* The gold-washed, gold-bordered box IS the mark, so the sentence
+              takes the ink swap alone rather than a dot as well. */}
+          <p className="text-xs leading-relaxed bt-gold-safe">
             {t('portfolio.transaction.backdatedWarning', { date: cash.buyDate })}
           </p>
           <label className="flex items-center gap-2 text-xs font-medium bt-soft">
@@ -1470,7 +1479,7 @@ function CashCard({ row, cash, t }: { row: Row; cash: RowCash; t: TranslateFn })
               onChange={cash.onToggleSettleToday}
               aria-label={t('portfolio.transaction.deductToday')}
               className="h-4 w-4"
-              style={{ accentColor: 'var(--bt-gold)' }}
+              style={{ accentColor: 'var(--bt-gold-graphic)' }}
             />
             {t('portfolio.transaction.deductToday')}
           </label>
@@ -1838,7 +1847,7 @@ function RowFields({
                   className={cx(
                     'pointer-events-auto rounded p-0.5 transition disabled:opacity-40',
                     link.linked
-                      ? 'text-[var(--bt-gold)]'
+                      ? 'text-[var(--bt-gold-graphic)]'
                       : 'bt-muted hover:text-[var(--bt-text-soft)]',
                   )}
                 >
@@ -1851,7 +1860,7 @@ function RowFields({
       </div>
 
       {link?.note ? (
-        <p className="-mt-2 text-xs bt-gold" role="status">
+        <p className="-mt-2 text-xs bt-gold-note" role="status">
           {link.note}
         </p>
       ) : null}

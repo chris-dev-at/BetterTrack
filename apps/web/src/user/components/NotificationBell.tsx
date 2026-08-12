@@ -7,6 +7,7 @@ import type { MarkReadRequest, Notification } from '@bettertrack/contracts';
 
 import { useT } from '../../i18n';
 import { getFormatLocale } from '../../lib/format';
+import { notificationText } from '../../lib/notificationText';
 import { listNotifications, markNotificationsRead } from '../../lib/notificationsApi';
 import { useRealtimeEvent } from '../../lib/realtime';
 import { EmptyState, Skeleton } from '../../ui';
@@ -134,8 +135,10 @@ function NotificationRow({
   onRead: () => void;
   onNavigate: () => void;
 }) {
+  const t = useT();
   const unread = notification.readAt === null;
   const to = notificationLink(notification);
+  const copy = notificationText(notification, t);
   const rowClassName = cx(
     'flex w-full flex-col gap-0.5 px-3 py-2.5 text-left transition-colors ',
     unread ? 'bg-[var(--bt-surface-soft)]' : undefined,
@@ -147,10 +150,10 @@ function NotificationRow({
           <span aria-hidden="true" className="bt-dot bt-dot--gold h-1.5 w-1.5 flex-none" />
         ) : null}
         <span className={cx('truncate text-sm font-medium', unread ? '' : 'bt-muted')}>
-          {notification.title}
+          {copy.title}
         </span>
       </span>
-      <span className="truncate text-xs bt-muted">{notification.body}</span>
+      <span className="truncate text-xs bt-muted">{copy.body}</span>
       <span className="text-[0.65rem] uppercase tracking-wide bt-muted">
         {formatRelativeTime(notification.createdAt)}
       </span>
@@ -255,6 +258,7 @@ export function NotificationBell() {
             : t('settings.notifications.bellAria')
         }
         className="relative grid h-9 w-9 place-items-center rounded-full bt-muted transition-colors hover:bt-soft"
+        data-testid="notification-bell-trigger"
       >
         <svg
           aria-hidden="true"
@@ -274,8 +278,8 @@ export function NotificationBell() {
             aria-hidden="true"
             className="absolute right-0.5 top-0.5 grid h-4 min-w-4 place-items-center rounded-full px-1 text-[0.625rem] font-semibold leading-none"
             style={{
-              background: 'var(--bt-gold)',
-              color: 'var(--bt-gold-ink)',
+              background: 'var(--bt-gold-graphic)',
+              color: 'var(--bt-gold-on)',
               boxShadow: '0 0 0 2px var(--bt-bg)',
             }}
           >

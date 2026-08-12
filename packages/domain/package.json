@@ -29,6 +29,10 @@
     "./settingsScope": {
       "types": "./src/settingsScope.ts",
       "default": "./src/settingsScope.ts"
+    },
+    "./vaultVectors": {
+      "types": "./src/vaultVectors/index.ts",
+      "default": "./src/vaultVectors/index.ts"
     }
   },
   "scripts": {

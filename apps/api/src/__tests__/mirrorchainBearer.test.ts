@@ -21,13 +21,21 @@ import { createOAuthRepository } from '../data/repositories/oauthRepository';
 import * as schema from '../data/schema';
 import {
   MIRRORCHAIN_BEARER_ROUTE_ALLOWLIST,
+  MIRRORCHAIN_SESSION_ONLY_ROUTES,
   enforceMirrorchainBearerAllowlist,
   mirrorchainRouteAcceptsBearer,
   openApiPathTemplateAcceptsBearer,
   pathAcceptsBearer,
 } from '../http/middleware/bearerAuth';
+import { buildRouteTable, type MountedSurface } from '../scripts/checkOpenapiCoverage';
 import { FIRST_PARTY_CLIENTS, seedFirstPartyClients } from '../services/oauth/firstPartyClients';
 import { createTestApp, type SeededUser, type TestHarness } from '../testing/createTestApp';
+
+import {
+  BEARER_ALL_METHODS_ROUTE_METHOD,
+  BEARER_OPAQUE_MOUNT_METHOD,
+  mountedBearerRouteInventory,
+} from './bearerRouteInventory';
 
 /**
  * #1042 — participation-over-administration bearer access for MIRRORCHAIN.
@@ -146,26 +154,35 @@ describe('#1042 MIRRORCHAIN bearer route allowlist', () => {
     { method: 'POST', path: '/mirrorchain/invites/{inviteId}/accept' },
     { method: 'POST', path: '/mirrorchain/invites/{inviteId}/decline' },
     { method: 'POST', path: '/mirrorchain/chains/{chainId}/leave' },
-  ] as const;
-
-  const ADMIN_ROUTES = [
     { method: 'POST', path: '/mirrorchain/chains' },
     { method: 'POST', path: '/mirrorchain/chains/convert' },
-    { method: 'POST', path: `/mirrorchain/invites/${MISSING_ID}/revoke` },
-    { method: 'POST', path: `/mirrorchain/chains/${MISSING_ID}/invites` },
-    { method: 'PATCH', path: `/mirrorchain/chains/${MISSING_ID}` },
-    { method: 'POST', path: `/mirrorchain/chains/${MISSING_ID}/transfer` },
-    { method: 'DELETE', path: `/mirrorchain/chains/${MISSING_ID}` },
+    { method: 'POST', path: '/mirrorchain/invites/{inviteId}/revoke' },
+    { method: 'POST', path: '/mirrorchain/chains/{chainId}/invites' },
+    { method: 'PATCH', path: '/mirrorchain/chains/{chainId}' },
+    { method: 'POST', path: '/mirrorchain/chains/{chainId}/transfer' },
+    { method: 'DELETE', path: '/mirrorchain/chains/{chainId}' },
     {
       method: 'PATCH',
-      path: `/mirrorchain/chains/${MISSING_ID}/members/${MISSING_ID}/role`,
+      path: '/mirrorchain/chains/{chainId}/members/{userId}/role',
     },
-    { method: 'DELETE', path: `/mirrorchain/chains/${MISSING_ID}/members/${MISSING_ID}` },
+    { method: 'DELETE', path: '/mirrorchain/chains/{chainId}/members/{userId}' },
   ] as const;
 
-  const livePath = (path: string): string => path.replace(/\{(?:chainId|inviteId)\}/g, MISSING_ID);
+  const EXPECTED_ROUTER_GUARDS = [
+    {
+      method: `${BEARER_OPAQUE_MOUNT_METHOD}:requireUser[1]`,
+      path: '/mirrorchain',
+    },
+    {
+      method: `${BEARER_OPAQUE_MOUNT_METHOD}:enforceMirrorchainBearerAllowlist[1]`,
+      path: '/mirrorchain',
+    },
+  ] as const;
 
-  it('pins the seven exact method + path templates and defaults every other route closed', () => {
+  const livePath = (path: string): string =>
+    path.replace(/\{(?:chainId|inviteId|userId)\}/g, MISSING_ID);
+
+  it('pins the sixteen exact method + path templates and defaults every other route closed', () => {
     expect(MIRRORCHAIN_BEARER_ROUTE_ALLOWLIST).toEqual(EXPECTED_ALLOWLIST);
     for (const route of EXPECTED_ALLOWLIST) {
       const path = livePath(route.path);
@@ -173,9 +190,11 @@ describe('#1042 MIRRORCHAIN bearer route allowlist', () => {
       expect(pathAcceptsBearer(path, route.method)).toBe(true);
       expect(openApiPathTemplateAcceptsBearer(route.path, route.method)).toBe(true);
     }
-    for (const route of ADMIN_ROUTES) {
-      expect(mirrorchainRouteAcceptsBearer(route.method, route.path)).toBe(false);
-      expect(pathAcceptsBearer(route.path, route.method)).toBe(false);
+    for (const route of MIRRORCHAIN_SESSION_ONLY_ROUTES) {
+      const path = livePath(route.path);
+      expect(mirrorchainRouteAcceptsBearer(route.method, path)).toBe(false);
+      expect(pathAcceptsBearer(path, route.method)).toBe(false);
+      expect(openApiPathTemplateAcceptsBearer(route.path, route.method)).toBe(false);
     }
 
     // Canary for future routes: the coarse /mirrorchain MODULE_POLICIES row
@@ -183,6 +202,51 @@ describe('#1042 MIRRORCHAIN bearer route allowlist', () => {
     expect(pathAcceptsBearer('/mirrorchain/chains/future-admin', 'POST')).toBe(false);
     expect(pathAcceptsBearer('/mirrorchain/future-read', 'GET')).toBe(false);
     expect(pathAcceptsBearer('/mirrorchain/chains/settings/members', 'GET')).toBe(false);
+  });
+
+  it('classifies every real mounted route as participation or session-only administration', () => {
+    const mounted = mountedBearerRouteInventory(buildRouteTable(), '/mirrorchain');
+    const classified = [
+      ...MIRRORCHAIN_BEARER_ROUTE_ALLOWLIST,
+      ...MIRRORCHAIN_SESSION_ONLY_ROUTES,
+      ...EXPECTED_ROUTER_GUARDS,
+    ].map(({ method, path }) => ({ method, path }));
+    const sortRoutes = (routes: Array<{ method: string; path: string }>) =>
+      routes.sort(
+        (left, right) =>
+          left.path.localeCompare(right.path) || left.method.localeCompare(right.method),
+      );
+
+    expect(new Set(classified.map((route) => `${route.method} ${route.path}`)).size).toBe(
+      classified.length,
+    );
+    expect(sortRoutes(mounted)).toEqual(sortRoutes(classified));
+  });
+
+  it('keeps router.all and opaque router.use leaves in the completeness inventory', () => {
+    const futureSurfaces: MountedSurface[] = [
+      {
+        kind: 'all-methods-route',
+        path: '/api/v1/mirrorchain/future-all',
+      },
+      {
+        kind: 'opaque-mount',
+        path: '/api/v1/mirrorchain/future-leaf',
+        handler: 'futureMirrorchainLeaf',
+        occurrence: 1,
+      },
+    ];
+
+    expect(mountedBearerRouteInventory(futureSurfaces, '/mirrorchain')).toEqual([
+      {
+        method: BEARER_ALL_METHODS_ROUTE_METHOD,
+        path: '/mirrorchain/future-all',
+      },
+      {
+        method: `${BEARER_OPAQUE_MOUNT_METHOD}:futureMirrorchainLeaf[1]`,
+        path: '/mirrorchain/future-leaf',
+      },
+    ]);
   });
 
   it('maps HEAD to allowlisted GET routes while leaving templates and closed paths unavailable', () => {
@@ -349,7 +413,7 @@ describe('#1042 bearer participation writes', () => {
   });
 });
 
-describe('#1042 mirrorchain administration remains session-only', () => {
+describe('board #67 mirrorchain administration over bearer', () => {
   const ADMIN_ROUTES: RouteCase[] = [
     {
       name: 'create chain',
@@ -404,16 +468,95 @@ describe('#1042 mirrorchain administration remains session-only', () => {
     },
   ];
 
-  it.each(ADMIN_ROUTES)(
-    'rejects a fully-scoped bearer with explicit API_KEY_FORBIDDEN: $name',
-    async (row) => {
-      const user = await seedUser('adminattempt');
-      const token = await mintKey(user, ['mirrorchain:write']);
-      const response = await callRoute(token, row);
-      expect(response.status, JSON.stringify(response.body)).toBe(403);
-      expect(response.body.error.code).toBe('API_KEY_FORBIDDEN');
-    },
-  );
+  it.each(ADMIN_ROUTES)('rejects mirrorchain:read on $name', async (row) => {
+    const user = await seedUser('adminreadonly');
+    const token = await mintKey(user, ['mirrorchain:read']);
+    const response = await callRoute(token, row);
+    expect(response.status, JSON.stringify(response.body)).toBe(403);
+    expect(response.body.error.code).toBe('INSUFFICIENT_SCOPE');
+    expect(response.body.error.message).toContain('mirrorchain:write');
+  });
+
+  it('creates a chain and converts a portfolio with mirrorchain:write', async () => {
+    const creator = await seedUser('admincreate');
+    const creatorToken = await mintKey(creator, ['mirrorchain:write']);
+
+    const created = await callRoute(creatorToken, {
+      name: 'create chain',
+      method: 'post',
+      path: '/mirrorchain/chains',
+      body: { name: 'Bearer-born group' },
+    });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    expect(created.body.chainId).toBeTruthy();
+
+    const converter = await seedUser('adminconvert');
+    const portfolioId = await harness.ctx.portfolio.getDefaultPortfolioId(converter.id);
+    const converterToken = await mintKey(converter, ['mirrorchain:write']);
+    const converted = await callRoute(converterToken, {
+      name: 'convert portfolio',
+      method: 'post',
+      path: '/mirrorchain/chains/convert',
+      body: { portfolioId, name: 'Converted by bearer' },
+    });
+    expect(converted.status, JSON.stringify(converted.body)).toBe(201);
+    expect(converted.body.chainId).toBeTruthy();
+  });
+
+  it('renames, manages invites, roles, ownership and dissolution with mirrorchain:write', async () => {
+    const { owner, chainId } = await createOwnerChain('adminops');
+    const ownerToken = await mintKey(owner, ['mirrorchain:write']);
+
+    const renamed = await request(harness.app)
+      .patch(`/api/v1/mirrorchain/chains/${chainId}`)
+      .set(bearer(ownerToken))
+      .send({ name: 'Renamed by bearer' });
+    expect(renamed.status, JSON.stringify(renamed.body)).toBe(200);
+
+    const invitee = await seedUser('adminopsinvitee');
+    await makeFriends(owner.id, invitee.id);
+    const invited = await request(harness.app)
+      .post(`/api/v1/mirrorchain/chains/${chainId}/invites`)
+      .set(bearer(ownerToken))
+      .send({ userId: invitee.id });
+    expect(invited.status, JSON.stringify(invited.body)).toBe(202);
+    const inviteId = (await harness.ctx.mirror.listInvites(invitee.id)).incoming[0]!.id;
+
+    const revoked = await request(harness.app)
+      .post(`/api/v1/mirrorchain/invites/${inviteId}/revoke`)
+      .set(bearer(ownerToken));
+    expect(revoked.status, JSON.stringify(revoked.body)).toBe(200);
+    expect((await harness.ctx.mirror.listInvites(invitee.id)).incoming).toHaveLength(0);
+
+    const member = await seedUser('adminopsmember');
+    const { portfolioId } = await harness.ctx.mirror.attachMemberCopy(chainId, member.id, {
+      role: 'member',
+    });
+
+    const promoted = await request(harness.app)
+      .patch(`/api/v1/mirrorchain/chains/${chainId}/members/${member.id}/role`)
+      .set(bearer(ownerToken))
+      .send({ role: 'manager' });
+    expect(promoted.status, JSON.stringify(promoted.body)).toBe(200);
+
+    const transferred = await request(harness.app)
+      .post(`/api/v1/mirrorchain/chains/${chainId}/transfer`)
+      .set(bearer(ownerToken))
+      .send({ toUserId: member.id });
+    expect(transferred.status, JSON.stringify(transferred.body)).toBe(200);
+
+    const memberToken = await mintKey(member, ['mirrorchain:write']);
+    const kicked = await request(harness.app)
+      .delete(`/api/v1/mirrorchain/chains/${chainId}/members/${owner.id}`)
+      .set(bearer(memberToken));
+    expect(kicked.status, JSON.stringify(kicked.body)).toBe(204);
+
+    const dissolved = await request(harness.app)
+      .delete(`/api/v1/mirrorchain/chains/${chainId}`)
+      .set(bearer(memberToken));
+    expect(dissolved.status, JSON.stringify(dissolved.body)).toBe(204);
+    expect(await harness.ctx.mirror.syncedMembership(portfolioId)).toBeNull();
+  });
 });
 
 describe('#1042 first-party mobile grant', () => {

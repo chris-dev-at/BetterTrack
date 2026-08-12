@@ -4,6 +4,9 @@ import type {
   EarningsCalendarEntry,
   EarningsCalendarResponse,
   EarningsResponse,
+  FundamentalsQuery,
+  FundamentalsRatios,
+  FundamentalsResponse,
   MarketIntelCapabilities,
   MarketIntelStatusResponse,
   NewsDigestGroup,
@@ -11,6 +14,8 @@ import type {
   NewsResponse,
   SplitsResponse,
 } from '@bettertrack/contracts';
+
+import { FUNDAMENTALS_MAX_LIMIT } from '@bettertrack/contracts';
 
 import type { AssetRepository } from '../../data/repositories/assetRepository';
 import type { MarketIntelRepository } from '../../data/repositories/marketIntelRepository';
@@ -38,6 +43,14 @@ export interface MarketIntelService {
   news(userId: string, id: string): Promise<NewsResponse>;
   /** Past + announced splits (arc d). */
   splits(userId: string, id: string): Promise<SplitsResponse>;
+  /**
+   * Revenue / statement / ratio fundamentals for the asset (arc f, INTEL1). The
+   * `query` picks the period granularity (default `annual`) and an optional
+   * `limit` the service clamps to 1..{@link FUNDAMENTALS_MAX_LIMIT}. Degrades to
+   * `available: false` (empty periods, all-null ratios) when the gate is off, the
+   * provider lacks the capability, or the upstream errored — never a 5xx.
+   */
+  fundamentals(userId: string, id: string, query: FundamentalsQuery): Promise<FundamentalsResponse>;
   /**
    * Upcoming-earnings calendar across the caller's held + watched assets,
    * ascending by date (the Workboard panel, arc b). Unavailable/empty when the
@@ -85,6 +98,36 @@ const UNAVAILABLE_DIVIDENDS: DividendsResponse = {
 const UNAVAILABLE_EARNINGS: EarningsResponse = { available: false, next: null, recent: [] };
 const UNAVAILABLE_NEWS: NewsResponse = { available: false, headlines: [] };
 const UNAVAILABLE_SPLITS: SplitsResponse = { available: false, history: [], upcoming: [] };
+
+/** All-null snapshot ratios — the shape a hidden/failed fundamentals read returns. */
+const EMPTY_FUNDAMENTALS_RATIOS: FundamentalsRatios = {
+  marketCap: null,
+  trailingPe: null,
+  forwardPe: null,
+  priceToBook: null,
+  profitMargin: null,
+  returnOnEquity: null,
+  debtToEquity: null,
+  trailingEps: null,
+  forwardEps: null,
+};
+
+/** The "unconfigured" fundamentals payload, echoing the requested granularity. */
+function unavailableFundamentals(period: FundamentalsQuery['period']): FundamentalsResponse {
+  return {
+    available: false,
+    currency: null,
+    period,
+    periods: [],
+    ratios: EMPTY_FUNDAMENTALS_RATIOS,
+  };
+}
+
+/** Clamp a caller's optional `limit` into 1..{@link FUNDAMENTALS_MAX_LIMIT}. */
+function clampFundamentalsLimit(limit: number | undefined): number {
+  if (limit === undefined) return FUNDAMENTALS_MAX_LIMIT;
+  return Math.max(1, Math.min(limit, FUNDAMENTALS_MAX_LIMIT));
+}
 
 export function createMarketIntelService(deps: MarketIntelServiceDeps): MarketIntelService {
   const { marketData, assetRepo, intelRepo, enabled, paranoid } = deps;
@@ -226,6 +269,33 @@ export function createMarketIntelService(deps: MarketIntelServiceDeps): MarketIn
           return { available: true, ...cached.value };
         } catch {
           return UNAVAILABLE_SPLITS;
+        }
+      });
+    },
+
+    async fundamentals(userId, id, query) {
+      const period = query.period;
+      const limit = clampFundamentalsLimit(query.limit);
+      return withResolvedRef(userId, id, async (ref) => {
+        // Gate off ⇒ invisible: never consult the provider (mirrors the four
+        // families, whose `capsFor` is forced all-false when the gate is off).
+        if (!enabled) return unavailableFundamentals(period);
+        try {
+          // `getFundamentals` rejects with CapabilityUnavailableError when the
+          // asset's provider lacks the capability (no upstream call), so a
+          // capability-less/Drive-only provider lands in the catch below and
+          // degrades cleanly — never a 5xx.
+          const cached = await marketData.getFundamentals(ref);
+          const all = period === 'annual' ? cached.value.annual : cached.value.quarterly;
+          return {
+            available: true,
+            currency: cached.value.currency,
+            period,
+            periods: all.slice(0, limit),
+            ratios: cached.value.ratios,
+          };
+        } catch {
+          return unavailableFundamentals(period);
         }
       });
     },

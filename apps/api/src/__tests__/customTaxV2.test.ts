@@ -119,10 +119,15 @@ async function trade(agent: Agent, pid: string, body: Record<string, unknown>, e
 }
 
 async function cashState(agent: Agent, pid: string) {
-  const res = await agent.get(`/api/v1/portfolios/${pid}/cash`);
+  const res = await agent.get(`/api/v1/portfolios/${pid}/cash?limit=200`);
   expect(res.status).toBe(200);
   expect(cashMovementsResponseSchema.safeParse(res.body).success).toBe(true);
-  return res.body as { balanceEur: number; movements: CashMovement[] };
+  const state = res.body as { balanceEur: number; movements: CashMovement[] };
+  state.movements.sort(
+    (left, right) =>
+      left.executedAt.localeCompare(right.executedAt) || left.id.localeCompare(right.id),
+  );
+  return state;
 }
 
 const taxMovements = (movements: CashMovement[]): CashMovement[] =>

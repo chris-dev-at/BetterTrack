@@ -218,7 +218,10 @@ function MirrorGroupRow({
                 if (node) node.indeterminate = state === 'mixed';
               }}
               role="switch"
-              style={{ accentColor: 'var(--bt-gold)', opacity: gridDisabled ? 0.5 : undefined }}
+              style={{
+                accentColor: 'var(--bt-gold-graphic)',
+                opacity: gridDisabled ? 0.5 : undefined,
+              }}
               type="checkbox"
             />
           </td>
@@ -254,7 +257,10 @@ function MatrixCell({
       disabled={disabled || locked}
       onChange={(event) => onToggle(event.target.checked)}
       className={cx('h-4 w-4', (disabled || locked) && 'cursor-not-allowed')}
-      style={{ accentColor: 'var(--bt-gold)', opacity: disabled || locked ? 0.5 : undefined }}
+      style={{
+        accentColor: 'var(--bt-gold-graphic)',
+        opacity: disabled || locked ? 0.5 : undefined,
+      }}
     />
   );
 }
@@ -335,7 +341,7 @@ function NotificationMatrixGrid({
                   disabled={gridDisabled}
                   onChange={(event) => toggleCategory(category.types, event.target.checked)}
                   role="switch"
-                  style={{ accentColor: 'var(--bt-gold)' }}
+                  style={{ accentColor: 'var(--bt-gold-graphic)' }}
                   type="checkbox"
                 />
                 <span className="bt-label">{catLabels[category.key]}</span>
@@ -377,7 +383,7 @@ function NotificationMatrixGrid({
                                 if (node) node.indeterminate = state === 'mixed';
                               }}
                               role="switch"
-                              style={{ accentColor: 'var(--bt-gold)' }}
+                              style={{ accentColor: 'var(--bt-gold-graphic)' }}
                               type="checkbox"
                             />
                           </label>
@@ -466,7 +472,7 @@ function NotificationMatrixGrid({
                       onChange={(event) => toggleCategory(category.types, event.target.checked)}
                       className={cx('h-4 w-4', gridDisabled && 'cursor-not-allowed')}
                       style={{
-                        accentColor: 'var(--bt-gold)',
+                        accentColor: 'var(--bt-gold-graphic)',
                         opacity: gridDisabled ? 0.5 : undefined,
                       }}
                     />
@@ -651,7 +657,7 @@ function QuietHoursFold({
               disabled={busy}
               onChange={(event) => onUpdate({ quietHours: { enabled: event.target.checked } })}
               className={cx('h-4 w-4', busy && 'cursor-not-allowed')}
-              style={{ accentColor: 'var(--bt-gold)', opacity: busy ? 0.5 : undefined }}
+              style={{ accentColor: 'var(--bt-gold-graphic)', opacity: busy ? 0.5 : undefined }}
             />
           </Row>
           {quiet.enabled ? (
@@ -1196,7 +1202,7 @@ export function NotificationsPanel() {
             disabled={busy}
             onChange={(event) => mutation.mutate({ muted: event.target.checked })}
             className={cx('h-4 w-4', busy && 'cursor-not-allowed')}
-            style={{ accentColor: 'var(--bt-gold)', opacity: busy ? 0.5 : undefined }}
+            style={{ accentColor: 'var(--bt-gold-graphic)', opacity: busy ? 0.5 : undefined }}
           />
         </Row>
         {settings.channels.webpush && settings.webPushPublicKey ? (

@@ -179,6 +179,7 @@
       "closedMessage": "Die Registrierung ist derzeit geschlossen. Bitte deinen Administrator um eine Einladung.",
       "pendingSubtitle": "Fast geschafft",
       "pendingMessage": "Danke! Deine Registrierung wartet auf die Freigabe durch einen Administrator. Du erhältst eine E-Mail, sobald sie geprüft wurde.",
+      "pendingOauthHint": "Du kannst diese Seite schließen und zur BetterTrack-App zurückkehren — melde dich dort an, sobald dein Konto freigegeben wurde.",
       "legalConsent": "Mit der Registrierung stimmst du unseren {{terms}}, unserer {{privacy}}, dem {{impressum}} und den {{cookies}} zu.",
       "google": {
         "connecting": "Verbinde mit Google…",
@@ -289,6 +290,7 @@
       "priceChartDataCollapse": "Chartdaten ausblenden",
       "priceChartDataTableCaption": "Chartdaten",
       "priceChartDataDate": "Datum",
+      "priceChartDataBalance": "Bestand",
       "priceChartDataValue": "Wert",
       "priceChartDataSampled": "Es werden {{shown}} von {{total}} dargestellten Punkten angezeigt.",
       "allocationFallbackTitle": "Aufteilung im Überblick",
@@ -1294,6 +1296,18 @@
     "dangerZone": {
       "description": "Wenn du dein Konto löschst, werden alle deine Daten dauerhaft entfernt. Das kann nicht rückgängig gemacht werden.",
       "link": "Mein Konto löschen…"
+    },
+    "appearance": {
+      "groups": {
+        "display": "Anzeige"
+      },
+      "theme": {
+        "title": "Design",
+        "hint": "Gilt nur auf diesem Gerät — es wird nicht mit deinem Konto synchronisiert. System folgt deinem Betriebssystem und bleibt dabei, auch wenn es bei Sonnenuntergang umschaltet.",
+        "system": "System ({{resolved}})",
+        "dark": "Dunkel",
+        "light": "Hell"
+      }
     }
   },
   "portfolio": {
@@ -1639,8 +1653,26 @@
       },
       "expandYear": "Details für {{year}} anzeigen",
       "collapseYear": "Details für {{year}} ausblenden",
-      "passed": "Vergangen",
-      "passedHint": "Dieses Jahr ist vergangen: Seine Abrechnungen sind endgültig, und Änderungen am Steuermodus besteuern es nie neu. Offene Jahre werden laufend nach dem aktuellen Steuermodus des Portfolios besteuert; im manuellen Modus wird die Steuer stattdessen je Trade wie erfasst übernommen.",
+      "locked": "Gesperrt",
+      "lockedHint": "Dieses Steuerjahr ist abgelaufen und gesperrt: Einträge mit Datum in diesem Jahr werden abgelehnt, seine abgerechneten Steuern ändern sich nicht mehr. Zum Nacherfassen zuerst entsperren.",
+      "unlocked": "Für Korrekturen entsperrt",
+      "unlockedHint": "Du hast dieses vergangene Jahr entsperrt: rückdatierte Einträge werden angenommen und verändern seine abgerechneten Steuern, bis du es wieder sperrst.",
+      "unlockAction": "Entsperren…",
+      "relockAction": "Wieder sperren",
+      "relockYearAction": "{{year}} wieder sperren",
+      "unlockedBannerOne": "Steuerjahr {{year}} ist für Korrekturen entsperrt — danach wieder sperren.",
+      "unlockedBannerOther": "Die Steuerjahre {{years}} sind für Korrekturen entsperrt — danach wieder sperren.",
+      "unlockSuccess": "Steuerjahr {{year}} für Korrekturen entsperrt.",
+      "relockSuccess": "Steuerjahr {{year}} wieder gesperrt.",
+      "unlockDialog": {
+        "title": "Steuerjahr {{year}} entsperren",
+        "description": "Ein vergangenes Jahr zu korrigieren ist ein bewusster Schritt — bestätige ihn mit deinem Passwort.",
+        "consequence": "Solange {{year}} entsperrt ist, ändern Einträge mit Datum in diesem Jahr seine abgerechneten Steuern — Korrekturen werden als eigene Buchungen erfasst, nichts wird umgeschrieben. Das Jahr bleibt korrigierbar, bis du es wieder sperrst.",
+        "passwordLabel": "Dein Passwort",
+        "confirm": "{{year}} entsperren",
+        "wrongPassword": "Dieses Passwort ist falsch.",
+        "throttled": "Zu viele Versuche. Bitte warte kurz und versuche es erneut."
+      },
       "realized": "Realisiert",
       "tax": "Steuer",
       "sell": {
@@ -2932,7 +2964,8 @@
     "friendsNone": "Du hast noch keine Freunde. Füge Freunde hinzu, um gezielt zu teilen.",
     "friendsSelect": "Freunde auswählen",
     "allFriendsConfirm": "Dies teilt eine schreibgeschützte Ansicht mit allen deinen Freunden.",
-    "audienceChangeConfirm": "Zugriff von {{from}} auf {{to}} ändern. Dies teilt eine schreibgeschützte Ansicht mit allen deinen Freunden. Speichere, um zu bestätigen.",
+    "audienceChangeConfirm": "Zugriff von {{from}} auf {{to}} ändern. Dadurch könnten mehr Personen diesen Eintrag sehen.",
+    "audienceWidenAcknowledge": "Mir ist bewusst, dass diese Änderung den Zugriff erweitert.",
     "publicWarning": "Dies erstellt einen öffentlichen Link — jeder mit dem Link sieht deine Bestände und dein Nettovermögen.",
     "publicAcknowledge": "Mir ist bewusst, dass jeder mit dem Link dies sehen kann.",
     "publicActive": "Ein öffentlicher Link ist aktiv. Aus Sicherheitsgründen wird die URL nur einmal bei der Erstellung angezeigt.",
@@ -3152,6 +3185,8 @@
         "shortcut": {
           "prompt": "{{username}} kann das nicht sehen — es ist nicht mit dieser Person geteilt.",
           "action": "Nur mit dieser Person teilen",
+          "confirmWiden": "Mir ist bewusst, dass {{username}} dadurch Zugriff erhält.",
+          "confirmGroupReplace": "Mir ist bewusst, dass dies die aktuelle Freundesgruppe durch eine Freigabe ausschließlich für {{username}} ersetzt.",
           "sharing": "Wird geteilt…",
           "error": "Teilen fehlgeschlagen — bitte erneut versuchen."
         }
@@ -3575,6 +3610,10 @@
       "progress": {
         "preparing": "Geschützte Übertragung wird vorbereitet…",
         "migrate": "Vollständige Portfoliodaten werden auf diesem Gerät gesammelt…",
+        "captureRequests": {
+          "one": "1 Datenbereich wurde sicher gesammelt.",
+          "other": "{{count}} Datenbereiche wurden sicher gesammelt."
+        },
         "validate": "Es wird geprüft, ob sich der vorbereitete Tresor öffnen und zurückholen lässt…",
         "encrypt": "Der Tresor wird auf diesem Gerät verschlüsselt…",
         "write-server": "Die verschlüsselte BetterTrack-Kopie wird gespeichert…",
@@ -3599,6 +3638,8 @@
         "transitionConflict": "Ein anderer Datenschutzwechsel wird noch abgeschlossen. Warte kurz und versuche es erneut.",
         "normalDataChanged": "Dein Konto hat sich geändert, während die verschlüsselte Kopie vorbereitet wurde, deshalb hat BetterTrack vor dem Löschen abgebrochen. Es ging nichts verloren — starte den Wechsel erneut, damit die neuesten Daten enthalten sind.",
         "captureUnstable": "Dein Konto hat sich während des Sammelns immer wieder geändert, deshalb konnte keine vollständige Kopie erstellt werden und es wurde nichts geändert. Schließe BetterTrack in anderen Tabs und auf anderen Geräten und starte den Wechsel dann erneut.",
+        "rateLimited": "Beim Wechsel wurde das BetterTrack-Anfragelimit erreicht, bevor etwas geändert wurde. Warte {{seconds}} Sekunden und starte den Wechsel dann erneut.",
+        "rateLimitedUnknown": "Beim Wechsel wurde das BetterTrack-Anfragelimit erreicht, bevor etwas geändert wurde. Warte, bis das Anfragefenster zurückgesetzt wurde, und starte den Wechsel dann erneut.",
         "unknown": "Der paranoide Modus konnte nicht aktiviert werden. Dein normales Konto ist unverändert."
       }
     },
@@ -3733,6 +3774,358 @@
       "disableBlocked": "Dieser Tresor hat nicht abgeglichene Änderungen auf mehreren Geräten. Gleiche den Stand zuerst ab — eine Deaktivierung jetzt würde nur die auf diesem Gerät sichtbare Fassung behalten.",
       "disableAction": "Normalen Modus wiederherstellen",
       "disableError": "Der normale Modus konnte nicht vollständig wiederhergestellt werden. Das Konto bleibt paranoid; ein erneuter Versuch setzt dieselbe Wiederherstellung fort."
+    },
+    "errors": {
+      "VAULT_NOT_FOUND": "Diesen Tresor gibt es nicht – oder er gehört nicht dir.",
+      "VAULT_NOT_EMPTY": "Verschiebe zuerst alle Portfolios aus diesem Tresor, bevor du ihn löschst.",
+      "VAULT_VERSION_CONFLICT": "Ein anderes Gerät war schneller. Lade neu und versuch es nochmal – es wurde nichts überschrieben.",
+      "VAULT_DOC_TOO_LARGE": "Dieses Tresor-Dokument ist zu groß zum Speichern.",
+      "VAULT_LOCKED_WRITE_REFUSED": "Dieser Tresor ist gesperrt. Entsperre ihn, um Änderungen zu machen.",
+      "VAULT_MIGRATION_CLAIMED": "Ein anderes Gerät aktualisiert diesen Tresor gerade. Versuch es in ein paar Minuten nochmal.",
+      "VAULT_MIGRATION_INCOMPLETE": "Die Aktualisierung wurde nicht abgeschlossen. Es hat sich nichts geändert – starte sie von diesem Gerät neu.",
+      "VAULT_CROSS_BLOB_REFUSED": "Diese Änderung würde zwei Portfolios gleichzeitig betreffen. Mach sie stattdessen in zwei Schritten.",
+      "VAULT_FORMAT_UPDATE_REQUIRED": "Dieser Tresor wurde mit einer neueren BetterTrack-Version geschrieben. Aktualisiere die App, um ihn zu öffnen.",
+      "VAULT_BACKEND_UNAVAILABLE": "Der Speicher dieses Tresors ist gerade nicht erreichbar.",
+      "VAULT_PRECONDITION_REQUIRED": "BetterTrack konnte nicht erkennen, welche Version du bearbeitest. Lade neu und versuch es nochmal.",
+      "VAULT_NAME_TAKEN": "Du hast schon einen Tresor mit diesem Namen. Wähle einen anderen.",
+      "VAULT_PORTFOLIO_ALREADY_VAULTED": "Dieses Portfolio ist bereits in einem Tresor. Hol es zuerst heraus, bevor du es in einen anderen legst.",
+      "VAULT_JOIN_BLOCKED": "Dieses Portfolio kann noch nicht in einen Tresor. Verlasse zuerst sein geteiltes Gruppenportfolio.",
+      "VAULT_RESTORE_INVALID": "Diese Portfolio-Daten konnten nicht wiederhergestellt werden. Es wurde nichts geändert – versuch es von einem entsperrten Gerät nochmal.",
+      "VAULT_ID_TAKEN": "Diesen Tresor gibt es schon. Wenn du wiederherstellst oder aktualisierst, öffne ihn, statt einen neuen anzulegen.",
+      "VAULT_PORTFOLIO_NOT_VAULTED": "Dieses Portfolio liegt in keinem Tresor. Verschiebe es zuerst in einen."
+    },
+    "v2": {
+      "explainerLink": "So funktionieren Tresore",
+      "backends": {
+        "server": "Verschlüsselt auf BetterTrack gespeichert",
+        "drive": "Nur in deinem Google Drive gespeichert",
+        "both": "Verschlüsselt auf BetterTrack und in deinem Google Drive gespeichert"
+      },
+      "section": {
+        "heading": "Tresor / Paranoid-Modus",
+        "sub": "Verschlüssle dieses Portfolio auf deinem Gerät, sodass es niemand sonst lesen kann — auch wir nicht.",
+        "error": "Deine Tresore konnten nicht geladen werden. Lade die Seite neu.",
+        "legacy": {
+          "body": "Dieses Konto nutzt noch den älteren kontoweiten Paranoid-Modus. Stelle auf Tresore um, damit du pro Portfolio entscheiden kannst.",
+          "action": "Migration öffnen"
+        },
+        "teaser": {
+          "body": "Ein Tresor ist ein Behälter mit eigener 12-Wörter-Passphrase. Portfolios, die du hineinlegst, werden auf deinem Gerät verschlüsselt, bevor sie es verlassen.",
+          "points": {
+            "encrypted": "Deine Finanzdaten werden hier im Browser verschlüsselt. Der Server speichert Bytes, die er nicht lesen kann.",
+            "separate": "Jeder Tresor hat eigene Passphrase und eigenen Speicher — manche Portfolios können normal bleiben.",
+            "words": "Die 12 Wörter sind der einzige Schlüssel. Wir sehen sie nie und können sie nicht zurücksetzen."
+          }
+        },
+        "joinable": {
+          "body": "Dieses Portfolio ist ein normales Portfolio. Lege es in einen Tresor, um es auf diesem Gerät zu verschlüsseln."
+        },
+        "vaulted": {
+          "alias": "Wird gesperrt als „{{alias}}“ angezeigt",
+          "locked": "Gesperrt",
+          "unlocked": "Entsperrt",
+          "leavePending": "Ein Herausnehmen ist noch nicht abgeschlossen. Versuche es erneut."
+        },
+        "actions": {
+          "create": "Tresor anlegen",
+          "createAnother": "Weiteren Tresor anlegen",
+          "move": "In Tresor legen",
+          "unlock": "Entsperren",
+          "qr": "An anderes Gerät übertragen",
+          "moveOut": "Herausnehmen",
+          "moveOutHint": "Dieses Portfolio entschlüsseln und als normales Portfolio wiederherstellen."
+        }
+      },
+      "create": {
+        "title": "Tresor anlegen",
+        "step": "Schritt {{current}} von {{total}}",
+        "steps": {
+          "1": {
+            "title": "Benenne deinen Tresor",
+            "body": "Der Name ist nur eine Bezeichnung, damit du deine Tresore unterscheiden kannst. Er wird unverschlüsselt gespeichert — schreib also nichts Privates hinein."
+          },
+          "2": {
+            "title": "Wähle, wo die verschlüsselten Daten liegen",
+            "body": "Egal was du wählst: Die Bytes sind bereits verschlüsselt, bevor sie dieses Gerät verlassen. Du kannst das später ändern."
+          },
+          "3": {
+            "title": "Schreib deine 12 Wörter auf",
+            "body": "Diese zwölf Wörter sind der Schlüssel zu diesem Tresor. Sie werden genau einmal hier angezeigt und nirgendwohin gesendet."
+          },
+          "4": {
+            "title": "Tresor angelegt",
+            "body": "Du kannst jetzt in den Portfolio-Einstellungen Portfolios in diesen Tresor legen."
+          }
+        },
+        "name": "Tresorname",
+        "nameHint": "Zum Beispiel „Drive-Tresor“.",
+        "wordsLabel": "Deine zwölf Tresor-Wörter",
+        "lostWords": "Wenn du diese Wörter verlierst, sind die Daten in diesem Tresor weg. Es gibt kein Zurücksetzen und keine Wiederherstellung.",
+        "writtenDown": "Ich habe diese Wörter an einem sicheren Ort notiert.",
+        "confirmIntro": "Tippe diese Wörter zur Bestätigung noch einmal ein.",
+        "wordN": "Wort {{n}}",
+        "backends": {
+          "server": {
+            "title": "BetterTrack-Speicher",
+            "body": "Verschlüsselte Bytes auf unseren Servern. Synchronisiert überall, wo du dich anmeldest."
+          },
+          "drive": {
+            "title": "Nur Google Drive",
+            "body": "Nichts auf BetterTrack-Servern — nicht einmal verschlüsselt."
+          },
+          "both": {
+            "title": "Beides",
+            "body": "Je eine verschlüsselte Kopie, damit der Verlust einer Seite nicht den Tresor verliert."
+          }
+        },
+        "actions": {
+          "create": "Tresor anlegen"
+        },
+        "errors": {
+          "failed": "Der Tresor konnte nicht angelegt werden. Es wurde nichts geändert.",
+          "idMismatch": "Der Server hat eine andere Tresor-ID vergeben, das Schlüsselmaterial würde nicht passen. Es wurde nichts geändert."
+        }
+      },
+      "unlock": {
+        "title": "{{name}} entsperren",
+        "modes": {
+          "device": "Dieses Gerät",
+          "words": "12 Wörter"
+        },
+        "devicePassword": "Gerätepasswort",
+        "devicePasswordHint": "Das Passwort, das du beim Speichern dieses Tresors auf diesem Gerät gewählt hast.",
+        "phrase": "Deine 12 Wörter",
+        "phraseHint": "Trenne die Wörter mit Leerzeichen. Groß- und Kleinschreibung ist egal.",
+        "remember": "Diesen Tresor auf diesem Gerät merken",
+        "newDevicePassword": "Gerätepasswort",
+        "newDevicePasswordHint": "Verschlüsselt die Wörter auf diesem Gerät. Es ist nicht dein BetterTrack-Passwort.",
+        "rawTitle": "Wörter unverschlüsselt speichern (nicht empfohlen)",
+        "rawWarning": "Wer dieses Gerät entsperrt in die Hände bekommt, öffnet diesen Tresor sofort.",
+        "actions": {
+          "unlock": "Entsperren"
+        },
+        "errors": {
+          "failed": "Damit ließ sich der Tresor nicht entsperren.",
+          "wordCount": "{{expected}} Wörter erwartet, {{count}} erhalten.",
+          "unknownWords": "Nicht in der Wortliste: {{words}}",
+          "checksum": "Das sind alles echte Wörter, aber nicht in gültiger Reihenfolge. Prüfe auf Tippfehler."
+        }
+      },
+      "move": {
+        "title": "In {{name}} legen",
+        "body": "„{{portfolio}}“ wird auf diesem Gerät verschlüsselt, und die lesbaren Zeilen werden vom Server gelöscht.",
+        "points": {
+          "irreversible": "Die Serverkopie wird im selben Schritt gelöscht. Serverseitig lässt sich das nicht rückgängig machen.",
+          "serverBlind": "Danach speichert der Server für dieses Portfolio nur noch verschlüsselte Bytes.",
+          "featuresOff": "Serverseitige Funktionen entfallen dafür: Teilen, Mirrorchain, Importe, Alerts und geplante Jobs.",
+          "lostWords": "Wenn du die Tresor-Wörter verlierst, ist dieses Portfolio weg."
+        },
+        "alias": "Name im gesperrten Zustand",
+        "aliasHint": "Unverschlüsselt gespeichert, damit die Zeile auch bei gesperrtem Tresor eine Bezeichnung hat.",
+        "mustUnlock": "Entsperre diesen Tresor zuerst — das Hineinlegen braucht seinen Schlüssel.",
+        "understood": "Mir ist klar, dass das nicht rückgängig zu machen ist und dass verlorene Wörter die Daten verlieren.",
+        "stages": {
+          "capture": "Portfolio wird gelesen…",
+          "encrypt": "Wird auf diesem Gerät verschlüsselt…",
+          "verify": "Rücklesbarkeit wird geprüft…",
+          "join": "Wird in den Tresor gelegt…",
+          "index": "Tresor-Index wird aktualisiert…",
+          "done": "Fertig."
+        },
+        "actions": {
+          "move": "In Tresor legen"
+        },
+        "errors": {
+          "failed": "Das Verschieben ist fehlgeschlagen. Dein Portfolio wurde nicht verändert."
+        }
+      },
+      "qr": {
+        "title": "{{name}} an anderes Gerät übertragen",
+        "body": "Du siehst einen QR-Code und getrennt davon einen 8-stelligen Einmal-Code. Das andere Gerät braucht beides — das Bild allein nützt nichts.",
+        "password": "Dein BetterTrack-Passwort",
+        "passwordHint": "Wir bestätigen dein Passwort, bevor ein Geheimnis am Bildschirm erscheint.",
+        "scanFirst": "Scanne das zuerst mit dem anderen Gerät.",
+        "codeLabel": "QR-Code für den Tresor {{name}}",
+        "expires": "Läuft in {{seconds}} Sekunden ab",
+        "pinLabel": "Einmal-Code",
+        "pinHint": "Sage ihn dem anderen Gerät an. Er wird nirgends gespeichert.",
+        "pinPending": "Sobald das andere Gerät das Bild gescannt hat, zeige den Code.",
+        "screenshotWarning": "Mach hiervon keinen Screenshot. Ein Foto des QR-Bilds allein ist nutzlos, aber ein Foto, das auch den Einmal-Code erwischt, gibt den ganzen Tresor preis.",
+        "expired": "Die Übertragung ist abgelaufen. Bestätige dein Passwort erneut für einen neuen Versuch.",
+        "actions": {
+          "start": "Übertragung starten",
+          "revealPin": "Code anzeigen",
+          "again": "Neu starten"
+        },
+        "errors": {
+          "invalidPassword": "Dieses Passwort stimmt nicht.",
+          "rateLimited": "Zu viele Versuche. Warte einen Moment und versuche es erneut.",
+          "reauthUnavailable": "Wir können dein Passwort gerade nicht bestätigen, deshalb bleibt der Code verborgen.",
+          "failed": "Der QR-Code konnte nicht angezeigt werden."
+        }
+      },
+      "import": {
+        "title": "Tresor auf diesem Gerät hinzufügen",
+        "body": "Scanne den QR-Code von einem Gerät, das den Tresor schon hat, oder füge seinen Text ein.",
+        "file": "Oder wähle ein Foto des Codes",
+        "paste": "Oder füge den Code-Text ein",
+        "pasteHint": "Er beginnt mit btvault1:",
+        "cameraLabel": "Kameravorschau zum Scannen",
+        "found": "Tresor „{{name}}“ gefunden.",
+        "pinIntro": "Tippe jetzt den 8-stelligen Code ein, der auf dem anderen Gerät steht.",
+        "pin": "Einmal-Code",
+        "pinHint": "Acht Buchstaben und Ziffern, angezeigt auf dem sendenden Gerät. Striche und Groß-/Kleinschreibung sind egal.",
+        "storeIntro": "Wähle, wie dieses Gerät die Wörter speichert.",
+        "devicePassword": "Gerätepasswort",
+        "devicePasswordHint": "Verschlüsselt die Wörter auf diesem Gerät.",
+        "actions": {
+          "scan": "Mit Kamera scannen",
+          "stop": "Scannen beenden",
+          "use": "Diesen Code verwenden",
+          "unlockCode": "Mit dem Code entsperren",
+          "save": "Auf diesem Gerät speichern"
+        },
+        "errors": {
+          "prefix": "Das ist kein BetterTrack-Tresorcode.",
+          "json": "Dieser Code ist beschädigt.",
+          "shape": "Diesen Tresorcode versteht diese Version nicht.",
+          "wrapped": "Dieser Code ist unvollständig.",
+          "passphrase": "Die Wörter in diesem Code sind ungültig.",
+          "pinFormat": "Der Code hat acht Buchstaben und Ziffern.",
+          "pinWrong": "Dieser Code hat den Tresor nicht entsperrt. Möglicherweise ist er auch abgelaufen.",
+          "camera": "Die Kamera konnte nicht geöffnet werden.",
+          "noDecoder": "Dieser Browser kann keine QR-Codes lesen. Füge stattdessen den Code-Text ein.",
+          "notFound": "In diesem Bild wurde kein QR-Code gefunden.",
+          "store": "Der Tresor konnte auf diesem Gerät nicht gespeichert werden."
+        }
+      },
+      "aggregate": {
+        "locked": "+ {{count}} gesperrte Portfolios",
+        "unavailable": "+ {{count}} Portfolios, die wir nicht öffnen konnten",
+        "lockedAndUnavailable": "+ {{locked}} gesperrt, {{unavailable}} nicht verfügbar",
+        "chip": "Einträge aus „{{vault}}“ ausgeblendet"
+      },
+      "unavailable": {
+        "title": "Dieses Portfolio konnte nicht geöffnet werden",
+        "body": "Sein verschlüsseltes Dokument ließ sich nicht laden oder entschlüsseln. Der Rest des Tresors funktioniert weiterhin.",
+        "detail": "Dokument: {{doc}} (Version {{version}})",
+        "aria": "{{alias}}, nicht verfügbar"
+      },
+      "lockedWrite": {
+        "title": "Zum Ändern entsperren",
+        "body": "Ein gesperrter Tresor erlaubt weder Lesen noch Schreiben. Entsperre ihn, dann geht deine Änderung sofort durch."
+      },
+      "transfer": {
+        "crossBlob": "Eine Umbuchung zwischen zwei Tresor-Portfolios erfolgt in zwei Schritten: erst die Abbuchung, dann die Einbuchung. Jeder Schritt wird für sich gespeichert.",
+        "crossVault": "Umbuchungen zwischen zwei verschiedenen Tresoren werden nicht unterstützt."
+      },
+      "locked": {
+        "aria": "{{alias}}, gesperrt im Tresor {{vault}}. Aktivieren zum Entsperren.",
+        "hint": "Gesperrt in {{vault}}",
+        "action": "Entsperren"
+      },
+      "explainer": {
+        "title": "So funktionieren Tresore",
+        "sub": "Was verschlüsselt ist, was wir noch sehen und was passiert, wenn etwas schiefgeht.",
+        "keys": {
+          "heading": "Die Schlüssel",
+          "body": "Zwei unabhängige Passwörter erledigen zwei verschiedene Aufgaben. Keines davon erreicht jemals unsere Server.",
+          "points": {
+            "passphrase": "Deine 12 Wörter entsperren den Tresor. Sie werden mit Argon2id und einem beim Tresor gespeicherten Salt gestreckt.",
+            "contentKey": "Daraus entsteht ein Schlüssel, der den Inhaltsschlüssel auspackt — einen zufälligen 256-Bit-Schlüssel, der deine Portfolios tatsächlich verschlüsselt.",
+            "device": "Dein Gerätepasswort schützt eine lokale Kopie der 12 Wörter, damit du sie nicht bei jedem Besuch neu tippst.",
+            "slots": "Der Inhaltsschlüssel liegt in „Slots“. Heute gibt es einen für deine Passphrase. Geteilte Tresore werden weitere hinzufügen."
+          }
+        },
+        "diagram": {
+          "title": "Wie aus der Tresor-Passphrase die Portfolio-Entschlüsselung wird",
+          "desc": "Die 12-Wörter-Passphrase läuft durch Argon2id mit dem Tresor-Salt und ergibt einen Hauptschlüssel, der den Inhaltsschlüssel auspackt. Der Inhaltsschlüssel entschlüsselt jedes Portfolio-Blob mit AES-256-GCM. Getrennt davon läuft ein Gerätepasswort durch Argon2id mit einem Geräte-Salt und ergibt einen Geräteschlüssel, der die 12 Wörter ausschließlich für die lokale Speicherung verschlüsselt.",
+          "wrapsPassphrase": "verschlüsselt deine 12 Wörter auf diesem Gerät",
+          "nodes": {
+            "passphrase": "12-Wörter-Passphrase (pro Tresor)",
+            "kdfVault": "Argon2id mit dem Tresor-Salt",
+            "masterKey": "Hauptschlüssel",
+            "contentKey": "Inhaltsschlüssel (zufällig, 256 Bit)",
+            "blobs": "AES-256-GCM entschlüsselt jedes Portfolio",
+            "devicePassword": "Gerätepasswort (pro Gerät)",
+            "kdfDevice": "Argon2id mit dem Geräte-Salt",
+            "deviceKey": "Geräteschlüssel"
+          }
+        },
+        "server": {
+          "heading": "Was der Server sieht",
+          "rows": {
+            "sees": {
+              "label": "Er sieht",
+              "value": "Dass ein Tresor existiert, seinen Namen, die gewählten Speicherorte, welche Portfolio-IDs dazugehören und ihre Anzeigebezeichnungen."
+            },
+            "seesNot": {
+              "label": "Er sieht nicht",
+              "value": "Keinen Betrag, Bestand, keine Transaktion, Bargeldbewegung oder Notiz in einem Tresor-Portfolio. Nicht deine Wörter, nicht den Inhaltsschlüssel."
+            },
+            "sizes": {
+              "label": "Er kann messen",
+              "value": "Wie groß die verschlüsselten Blobs sind und wie oft du sie schreibst. Größe und Zeitpunkt sind nicht verborgen."
+            }
+          }
+        },
+        "outcomes": {
+          "heading": "Wenn etwas schiefgeht",
+          "sub": "Die ehrliche Version.",
+          "breach": {
+            "title": "Jemand stiehlt die ganze Datenbank",
+            "body": "Er bekommt verschlüsselte Blobs, Tresornamen, Portfolio-Bezeichnungen und Blob-Größen. Zum Lesen der Inhalte braucht er deine 12 Wörter, die dort nicht liegen."
+          },
+          "deviceWrapped": {
+            "title": "Jemand stiehlt dein Gerät (Wörter verschlüsselt gespeichert)",
+            "body": "Er braucht weiterhin dein Gerätepasswort für die Wörter. Er sieht, was ohnehin schon entsperrt am Bildschirm stand."
+          },
+          "deviceRaw": {
+            "title": "Jemand stiehlt dein Gerät (Wörter unverschlüsselt gespeichert)",
+            "body": "Der Tresor öffnet sich sofort. Das ist der Kompromiss, den du eingehst, wenn du die lokale Verschlüsselung abschaltest."
+          },
+          "lostWords": {
+            "title": "Du verlierst die 12 Wörter",
+            "body": "Die Daten sind unwiederbringlich. Wir haben keine Kopie des Schlüssels und keine Möglichkeit, ihn zurückzusetzen. Das ist keine Richtlinie — das ist die Konstruktion."
+          }
+        },
+        "caveats": {
+          "heading": "Lies das, bevor du dich darauf verlässt",
+          "tickers": "Wertpapiere gelten kontoweit und bleiben auf dem Server lesbar. Welche Ticker du verfolgst, ist auch bei einem Tresor-Portfolio sichtbar.",
+          "aliases": "Tresornamen und die Bezeichnung einer gesperrten Zeile werden unverschlüsselt gespeichert, damit die App sie im gesperrten Zustand anzeigen kann.",
+          "metadata": "Blob-Größen, Schreibzeitpunkte und die Anzahl der Portfolios in einem Tresor sind für den Speicherort sichtbar.",
+          "membership": "Der Server weiß, welche Portfolios zu welchem Tresor gehören. Sowohl das Routing als auch das Löschen des Klartexts brauchen das — es ist bewusst so, nicht versteckt.",
+          "qrPin": "Ein geteilter QR-Code enthält die Wörter, verpackt unter einem 8-stelligen Einmal-Code, gehärtet mit demselben Argon2id-Profil wie der Tresor selbst. Ein Foto des QR-Bilds allein öffnet deinen Tresor nicht; ein Foto, das auch den Einmal-Code erfasst, schon.",
+          "noRecovery": "Es gibt keine serverseitige Wiederherstellung, kein Support-Override und keine Hintertür. Verlorene Wörter bedeuten verlorene Daten."
+        }
+      },
+      "control": {
+        "pointer": "Paranoid-Modus gilt pro Portfolio",
+        "pointerHint": "Wähle in den Einstellungen jedes Portfolios, welche Portfolios in einem Tresor verschlüsselt werden.",
+        "pointerAction": "Portfolio-Einstellungen öffnen",
+        "explainerHint": "Was verschlüsselt ist, was wir noch sehen und was passiert, wenn etwas schiefgeht.",
+        "open": "Lesen",
+        "legacy": "Alter kontoweiter Tresor",
+        "legacyHint": "Nur für Konten, die vor den Tresoren eingerichtet wurden. Überführt die vorhandenen verschlüsselten Daten in deinen ersten Tresor.",
+        "legacyAction": "Migration öffnen"
+      },
+      "moveOut": {
+        "title": "„{{portfolio}}“ aus dem Tresor nehmen",
+        "body": "Dein Gerät entschlüsselt dieses Portfolio und schickt die Zeilen zurück; der Server speichert sie wieder lesbar.",
+        "points": {
+          "readable": "Danach kann BetterTrack dieses Portfolio wieder lesen — genau das lässt die Serverfunktionen arbeiten.",
+          "featuresBack": "Teilen, Importe, Alerts auf geteilten Inhalten und geplante Jobs stehen wieder zur Verfügung.",
+          "retry": "Wenn das mittendrin fehlschlägt, ist ein erneuter Versuch sicher: dieselbe Wiederherstellung wird erkannt und nie doppelt angewendet."
+        },
+        "understood": "Mir ist klar, dass dieses Portfolio auf dem Server wieder lesbar wird.",
+        "unavailable": "Entsperre den Tresor zuerst — das Herausnehmen braucht seinen Schlüssel.",
+        "actions": {
+          "move": "Aus dem Tresor nehmen"
+        },
+        "errors": {
+          "failed": "Das Herausnehmen ist fehlgeschlagen. Es wurde nichts geändert — du kannst es gefahrlos erneut versuchen."
+        }
+      }
     }
   },
   "announcements": {
@@ -4841,6 +5234,7 @@
       "noteColumn": "Notiz",
       "editTagsAction": "Tags bearbeiten",
       "originalCurrency": "urspr. {{currency}}",
+      "loadMore": "Mehr laden",
       "tagDialog": {
         "title": "Tags bearbeiten",
         "noTags": "Du hast noch keine Tags — leg zuerst eines auf der Seite „Labels & Regeln“ an.",
@@ -4968,6 +5362,232 @@
   "review": {
     "title": "Review"
   },
+  "notificationContent": {
+    "friendRequest": {
+      "title": "Neue Freundschaftsanfrage",
+      "body": "{{actor}} hat dir eine Freundschaftsanfrage gesendet."
+    },
+    "friendAccepted": {
+      "title": "Freundschaftsanfrage angenommen",
+      "body": "{{actor}} hat deine Freundschaftsanfrage angenommen."
+    },
+    "portfolioShared": {
+      "title": "Portfolio geteilt",
+      "body": "{{actor}} hat das eigene Portfolio mit Freunden geteilt."
+    },
+    "watchlistShared": {
+      "title": "Watchlist geteilt",
+      "body": "{{actor}} hat eine Watchlist mit dir geteilt."
+    },
+    "conglomerateShared": {
+      "title": "Konglomerat geteilt",
+      "body": "{{actor}} hat ein Konglomerat mit dir geteilt."
+    },
+    "friendActivityBuy": {
+      "title": "Aktivität von Freunden",
+      "body": "{{actor}} hat {{symbol}} gekauft."
+    },
+    "friendActivitySell": {
+      "title": "Aktivität von Freunden",
+      "body": "{{actor}} hat {{symbol}} verkauft."
+    },
+    "friendActivityWatchlistAdd": {
+      "title": "Aktivität von Freunden",
+      "body": "{{actor}} hat {{symbol}} zu einer geteilten Watchlist hinzugefügt."
+    },
+    "followPublishedPortfolio": {
+      "title": "Neues Portfolio von {{actor}}",
+      "body": "{{actor}} hat ein neues Portfolio veröffentlicht: {{item}}."
+    },
+    "followPublishedWatchlist": {
+      "title": "Neue Watchlist von {{actor}}",
+      "body": "{{actor}} hat eine neue Watchlist veröffentlicht: {{item}}."
+    },
+    "followPublishedConglomerate": {
+      "title": "Neues Konglomerat von {{actor}}",
+      "body": "{{actor}} hat ein neues Konglomerat veröffentlicht: {{item}}."
+    },
+    "followPublishedIdea": {
+      "title": "Neue Idee von {{actor}}",
+      "body": "{{actor}} hat eine neue Idee veröffentlicht: {{item}}."
+    },
+    "followAlertCreatedPriceAbove": {
+      "title": "Neuer Preisalarm von {{actor}}",
+      "body": "{{actor}} hat einen Preisalarm erstellt: {{symbol}} über {{threshold}} {{currency}}."
+    },
+    "followAlertCreatedPriceBelow": {
+      "title": "Neuer Preisalarm von {{actor}}",
+      "body": "{{actor}} hat einen Preisalarm erstellt: {{symbol}} unter {{threshold}} {{currency}}."
+    },
+    "followAlertCreatedPercentUpReference": {
+      "title": "Neuer Preisalarm von {{actor}}",
+      "body": "{{actor}} hat einen Preisalarm erstellt: {{symbol}} {{threshold}} % über dem Referenzpreis."
+    },
+    "followAlertCreatedPercentDownReference": {
+      "title": "Neuer Preisalarm von {{actor}}",
+      "body": "{{actor}} hat einen Preisalarm erstellt: {{symbol}} {{threshold}} % unter dem Referenzpreis."
+    },
+    "followAlertCreatedPercentDayUp": {
+      "title": "Neuer Preisalarm von {{actor}}",
+      "body": "{{actor}} hat einen Preisalarm erstellt: {{symbol}} heute {{threshold}} % im Plus."
+    },
+    "followAlertCreatedPercentDayDown": {
+      "title": "Neuer Preisalarm von {{actor}}",
+      "body": "{{actor}} hat einen Preisalarm erstellt: {{symbol}} heute {{threshold}} % im Minus."
+    },
+    "followAlertFiredPriceAbove": {
+      "title": "Preisalarm von {{actor}} ausgelöst",
+      "body": "Der Preisalarm von {{actor}} wurde ausgelöst: {{symbol}} über {{threshold}} {{currency}}."
+    },
+    "followAlertFiredPriceBelow": {
+      "title": "Preisalarm von {{actor}} ausgelöst",
+      "body": "Der Preisalarm von {{actor}} wurde ausgelöst: {{symbol}} unter {{threshold}} {{currency}}."
+    },
+    "followAlertFiredPercentUpReference": {
+      "title": "Preisalarm von {{actor}} ausgelöst",
+      "body": "Der Preisalarm von {{actor}} wurde ausgelöst: {{symbol}} {{threshold}} % über dem Referenzpreis."
+    },
+    "followAlertFiredPercentDownReference": {
+      "title": "Preisalarm von {{actor}} ausgelöst",
+      "body": "Der Preisalarm von {{actor}} wurde ausgelöst: {{symbol}} {{threshold}} % unter dem Referenzpreis."
+    },
+    "followAlertFiredPercentDayUp": {
+      "title": "Preisalarm von {{actor}} ausgelöst",
+      "body": "Der Preisalarm von {{actor}} wurde ausgelöst: {{symbol}} heute {{threshold}} % im Plus."
+    },
+    "followAlertFiredPercentDayDown": {
+      "title": "Preisalarm von {{actor}} ausgelöst",
+      "body": "Der Preisalarm von {{actor}} wurde ausgelöst: {{symbol}} heute {{threshold}} % im Minus."
+    },
+    "accountTempPassword": {
+      "title": "Passwort zurückgesetzt",
+      "body": "Die Administration hat dein Passwort zurückgesetzt. Das vorläufige Passwort findest du in deiner E-Mail."
+    },
+    "accountDataExport": {
+      "title": "Dein Datenexport ist bereit",
+      "body": "Der Export deiner Kontodaten ist abgeschlossen. Öffne Einstellungen → Konto, um ihn herunterzuladen."
+    },
+    "alertTriggeredPriceAbove": {
+      "title": "Preisalarm: {{symbol}}",
+      "body": "{{symbol}} ist über {{threshold}} {{currency}} gestiegen."
+    },
+    "alertTriggeredPriceBelow": {
+      "title": "Preisalarm: {{symbol}}",
+      "body": "{{symbol}} ist unter {{threshold}} {{currency}} gefallen."
+    },
+    "alertTriggeredPercentUpReference": {
+      "title": "Preisalarm: {{symbol}}",
+      "body": "{{symbol}} liegt {{threshold}} % über deinem Referenzpreis."
+    },
+    "alertTriggeredPercentDownReference": {
+      "title": "Preisalarm: {{symbol}}",
+      "body": "{{symbol}} liegt {{threshold}} % unter deinem Referenzpreis."
+    },
+    "alertTriggeredPercentDayUp": {
+      "title": "Preisalarm: {{symbol}}",
+      "body": "{{symbol}} liegt heute {{threshold}} % im Plus."
+    },
+    "alertTriggeredPercentDayDown": {
+      "title": "Preisalarm: {{symbol}}",
+      "body": "{{symbol}} liegt heute {{threshold}} % im Minus."
+    },
+    "earningsReminderConfirmed": {
+      "title": "Bald Quartalszahlen: {{symbol}}",
+      "body": "{{name}} ({{symbol}}) legt am {{date}} Quartalszahlen vor."
+    },
+    "earningsReminderEstimated": {
+      "title": "Bald Quartalszahlen: {{symbol}}",
+      "body": "{{name}} ({{symbol}}) wird voraussichtlich um den {{date}} Quartalszahlen vorlegen."
+    },
+    "chatMessagePreview": {
+      "title": "Neue Nachricht",
+      "body": "{{sender}}: {{preview}}"
+    },
+    "chatMessageSharedItem": {
+      "title": "Neue Nachricht",
+      "body": "{{sender}} hat einen Inhalt mit dir geteilt."
+    },
+    "chatMessagePlain": {
+      "title": "Neue Nachricht",
+      "body": "{{sender}} hat dir eine Nachricht gesendet."
+    },
+    "dividendEvent": {
+      "title": "{{symbol}}: Ex-Dividende am {{date}}",
+      "body": "{{symbol}} wird am {{date}} ex Dividende gehandelt."
+    },
+    "dividendEventWithAmount": {
+      "title": "{{symbol}}: Ex-Dividende am {{date}}",
+      "body": "{{symbol}} wird am {{date}} ex Dividende gehandelt ({{amount}} {{currency}} je Aktie)."
+    },
+    "budgetExceeded": {
+      "title": "Budget überschritten: {{category}}",
+      "body": "Du hast diesen Monat {{spent}} {{currency}} für {{category}} ausgegeben — mehr als dein Budget von {{target}} {{currency}}."
+    },
+    "standingOrderDeferredNamed": {
+      "title": "Dauerauftrag zurückgestellt",
+      "body": "Die Ausführung von „{{order}}“ am {{period}} konnte nicht gebucht werden. BetterTrack versucht es erneut."
+    },
+    "standingOrderDeferredUnnamed": {
+      "title": "Dauerauftrag zurückgestellt",
+      "body": "Die Ausführung dieses Dauerauftrags am {{period}} konnte nicht gebucht werden. BetterTrack versucht es erneut."
+    },
+    "standingOrderDroppedNamed": {
+      "title": "Dauerauftrags-Ausführung übersprungen",
+      "body": "Die Ausführung von „{{order}}“ am {{period}} wurde nicht erfasst, bevor der nächste Termin fällig wurde."
+    },
+    "standingOrderDroppedUnnamed": {
+      "title": "Dauerauftrags-Ausführung übersprungen",
+      "body": "Die Ausführung dieses Dauerauftrags am {{period}} wurde nicht erfasst, bevor der nächste Termin fällig wurde."
+    },
+    "standingOrderDroppedManyNamed": {
+      "title": "{{count}} Dauerauftrags-Ausführungen übersprungen",
+      "body": "{{count}} geplante Ausführungen von „{{order}}“ bis einschließlich {{period}} wurden nicht erfasst, bevor der neueste Termin fällig wurde."
+    },
+    "standingOrderDroppedManyUnnamed": {
+      "title": "{{count}} Dauerauftrags-Ausführungen übersprungen",
+      "body": "{{count}} geplante Ausführungen dieses Dauerauftrags bis einschließlich {{period}} wurden nicht erfasst, bevor der neueste Termin fällig wurde."
+    },
+    "standingOrderBookingFailedNamed": {
+      "title": "Dauerauftrags-Buchung fehlgeschlagen",
+      "body": "Die Ausführung von „{{order}}“ am {{period}} konnte nicht erfasst werden und wird nicht erneut versucht."
+    },
+    "standingOrderBookingFailedUnnamed": {
+      "title": "Dauerauftrags-Buchung fehlgeschlagen",
+      "body": "Die Ausführung dieses Dauerauftrags am {{period}} konnte nicht erfasst werden und wird nicht erneut versucht."
+    },
+    "mirrorInvite": {
+      "title": "Einladung zu einem Gruppen-Portfolio",
+      "body": "{{actor}} hat dich eingeladen, dem Gruppen-Portfolio {{chain}} beizutreten."
+    },
+    "mirrorMemberJoined": {
+      "title": "Neues Mitglied in {{chain}}",
+      "body": "{{actor}} ist dem Gruppen-Portfolio {{chain}} beigetreten."
+    },
+    "mirrorMemberLeft": {
+      "title": "Ein Mitglied hat {{chain}} verlassen",
+      "body": "{{actor}} hat das Gruppen-Portfolio {{chain}} verlassen."
+    },
+    "mirrorMemberRemoved": {
+      "title": "Ein Mitglied wurde aus {{chain}} entfernt",
+      "body": "{{actor}} wurde aus dem Gruppen-Portfolio {{chain}} entfernt."
+    },
+    "mirrorRemoved": {
+      "title": "Aus {{chain}} entfernt",
+      "body": "Du wurdest aus dem Gruppen-Portfolio {{chain}} entfernt. Deine Kopie bleibt erhalten — sie wird nur nicht mehr synchronisiert."
+    },
+    "mirrorOwnershipTransferred": {
+      "title": "Eigentümerschaft von {{chain}} geändert",
+      "body": "{{actor}} ist jetzt Eigentümer:in des Gruppen-Portfolios {{chain}}."
+    },
+    "mirrorChainDissolved": {
+      "title": "{{chain}} wurde aufgelöst",
+      "body": "Das Gruppen-Portfolio {{chain}} wurde aufgelöst. Deine Kopie bleibt erhalten — sie wird nur nicht mehr synchronisiert."
+    },
+    "mirrorSyncStalled": {
+      "title": "Synchronisierung von {{chain}} hängt",
+      "body": "Das Gruppen-Portfolio {{chain}} konnte nicht fertig synchronisiert werden. Öffne es und wähle „Synchronisierung wiederholen“."
+    }
+  },
   "control": {
     "title": "Kontrollzentrum",
     "subtitle": "Einstellungen, Daten und die Developer-Plattform — alles, was den Arbeitsbereich betreibt.",
@@ -5025,7 +5645,8 @@
     "sessions": "Sitzungen",
     "notificationLog": "Benachrichtigungsprotokoll",
     "profile": "Öffentliches Profil",
-    "authorizedApps": "Autorisierte Apps"
+    "authorizedApps": "Autorisierte Apps",
+    "appearance": "Darstellung"
   },
   "privacy": {
     "subtitle": "Steuere, was der Bildschirm zeigt und wo deine Daten liegen.",

@@ -64,7 +64,7 @@ export interface ConglomerateServiceDeps {
   audience: AudienceService;
 }
 
-type ConglomerateMetadataPatch = Omit<UpdateConglomerateRequest, 'visibility'>;
+type ConglomerateMetadataPatch = Omit<UpdateConglomerateRequest, 'visibility' | 'confirmWiden'>;
 
 export interface ConglomerateService {
   list(ownerId: string): Promise<ConglomerateListResponse>;
@@ -562,7 +562,10 @@ export function createConglomerateService(deps: ConglomerateServiceDeps): Conglo
     async updateWithVisibility(ownerId, id, patch) {
       return audience.withVisibilityMutation(
         ownerId,
+        'conglomerate',
+        id,
         patch.visibility,
+        patch.confirmWiden,
         async (lockedRecipientIds) => {
           const detail = await updateRecord(ownerId, id, patch);
           await audience.applyVisibility(
@@ -570,6 +573,7 @@ export function createConglomerateService(deps: ConglomerateServiceDeps): Conglo
             'conglomerate',
             id,
             patch.visibility,
+            patch.confirmWiden,
             lockedRecipientIds,
           );
           return detail;

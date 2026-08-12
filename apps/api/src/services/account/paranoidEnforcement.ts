@@ -5,15 +5,18 @@
  * The inventory half is still the single source of truth: the completeness
  * harness proves every mounted route, callable context method and registered
  * job carries exactly one policy, and the composition half below consumes those
- * same arrays — there is no second hand-maintained kill list. Imports stay
- * limited to the error helpers, the Express handler type and the domain-event
- * type so the data remains readable without dragging in a service graph.
+ * same arrays — there is no second hand-maintained kill list. Dependencies stay
+ * limited to the contract taxonomy, narrow enforcement helpers and types so the
+ * data remains readable without dragging in a service graph.
  */
 
 import type { RequestHandler } from 'express';
 
+import type { ApiKeyScope } from '@bettertrack/contracts';
+
 import type { DomainEvent } from '../../events';
 import { ApiError, forbidden, notFound } from '../../errors';
+import { normalizeRoutePath } from '../security/routePath';
 
 /** Stable error code for every server-side surface killed in paranoid mode. */
 export const PARANOID_MODE_ERROR_CODE = 'PARANOID_MODE' as const;
@@ -29,6 +32,46 @@ export type ParanoidKilledCapability =
   | 'standingOrderExecution'
   | 'portfolioJobs'
   | 'portfolioWebhooks';
+
+/**
+ * Vaults v2 (`docs/VAULTS_V2_DESIGN.md` §3): the capabilities that are ALSO
+ * killed for a single VAULTED PORTFOLIO on an otherwise normal account.
+ *
+ * The account-level rails stay exactly as they are — this set only widens the
+ * SUBJECT of an already-declared capability from "the account is paranoid" to
+ * "the account is paranoid OR this portfolio lives in a vault". It applies to
+ * every registry binding whose subject is a portfolio id, so a new
+ * portfolio-scoped binding inherits it without a second registration.
+ *
+ * Membership rationale, capability by capability:
+ * - `portfolioServer`  — the portfolio's cleartext rows were purged at join;
+ *                        a server read would answer an honest-looking zero.
+ * - `portfolioJobs`    — snapshot/scan jobs would recompute over that void.
+ * - `sharing`          — there is nothing to share and a share would leak the
+ *                        portfolio's existence and name.
+ * - `mirrorchain`      — replication writes ledger rows; join already refuses
+ *                        while a membership is active, this holds the reverse.
+ * - `imports`          — a broker import is server-side parsing of money data.
+ * - `standingOrderExecution` — the server cannot book into a vaulted ledger.
+ *
+ * NOT in this set: `publicProfile` and `portfolioApiScope` are account-wide
+ * decisions with no portfolio subject, and `portfolioWebhooks` is filtered by
+ * event subject rather than by a portfolio-id argument.
+ */
+export const PARANOID_PORTFOLIO_SCOPED_CAPABILITIES: ReadonlySet<ParanoidKilledCapability> =
+  new Set([
+    'portfolioServer',
+    'portfolioJobs',
+    'sharing',
+    'mirrorchain',
+    'imports',
+    'standingOrderExecution',
+  ]);
+
+/** Whether a vaulted portfolio kills this capability even on a normal account. */
+export function isVaultedPortfolioKilledCapability(capability: ParanoidKilledCapability): boolean {
+  return PARANOID_PORTFOLIO_SCOPED_CAPABILITIES.has(capability);
+}
 
 export interface ParanoidSurfaceSource {
   readonly file: string;
@@ -182,6 +225,11 @@ export interface ParanoidKillRegistryEntry {
   readonly webhookEventTypes: readonly string[];
 }
 
+export interface ParanoidApiScopeClassification {
+  readonly disposition: 'killed' | 'allowed';
+  readonly reason: string;
+}
+
 export const PARANOID_ROUTE_TABLE_SOURCE: ParanoidSurfaceSource = {
   file: 'apps/api/src/app.ts',
   symbol: 'createApp',
@@ -322,6 +370,14 @@ export const PARANOID_SERVICE_BINDINGS: readonly ParanoidServiceBinding[] = [
   // vault is exactly the leak this mode exists to prevent, so a paranoid account
   // keeps its board on the device instead of on the account.
   serviceBinding('portfolioServer', 'homeLayout', 'userIdFirst', ['*']),
+  // The per-namespace widget compositions (mobile board #68 item 3) are the same
+  // document class as the Home board and carry the same content — a composition
+  // names the portfolios and assets it renders. The server cannot even inspect
+  // this one (it is opaque by contract), which makes it strictly less safe to
+  // keep, not more: an opaque document must be assumed to hold everything the
+  // board it replaces holds. So a paranoid account keeps its widget layouts on
+  // the device, exactly as it keeps its Home board there.
+  serviceBinding('portfolioServer', 'widgetLayouts', 'userIdFirst', ['*']),
   serviceBinding('portfolioServer', 'expenses', 'userIdFirst', ['*']),
   serviceBinding('portfolioServer', 'expenseBudgets', 'userIdFirst', ['*']),
   // V5 cash fusion: classification ON the portfolio cash ledger, so it dies with
@@ -378,6 +434,12 @@ export const PARANOID_SERVICE_EXEMPTIONS: readonly ParanoidServiceExemption[] = 
     ['create', 'remove'],
     'kept',
     'A fresh basket has no constituents and delete surfaces no asset row, so neither can carry the owner custom-asset provenance.',
+  ),
+  serviceExemption(
+    'taxYearLock',
+    ['*'],
+    'kept',
+    'Tax-year lock state (§16 2026-08-07) is account-level POLICY about server-mode tax data and stores only year numbers — no portfolio content to leak. Its whole HTTP surface (/settings/taxes/years*) is killed for paranoid accounts by the portfolioServer route rules above, and the guard methods only ever execute inside portfolio/tax service entry points that are themselves killed for paranoid accounts.',
   ),
   serviceExemption(
     'conglomerate',
@@ -499,7 +561,7 @@ export const PARANOID_SERVICE_EXEMPTIONS: readonly ParanoidServiceExemption[] = 
   ),
   serviceExemption(
     'marketIntel',
-    ['capabilities', 'dividends', 'earnings', 'news', 'splits', 'earningsCalendar'],
+    ['capabilities', 'dividends', 'earnings', 'news', 'splits', 'earningsCalendar', 'fundamentals'],
     'internallyFiltered',
     'Market-intelligence reads scope each asset to global-or-owned provenance before querying providers.',
     ['accountMode', 'ownedAssetProvenance'],
@@ -637,10 +699,22 @@ export const PARANOID_CONTEXT_SERVICE_EXEMPTIONS: readonly ParanoidServiceExempt
     'Provider/cache primitives operate on public market references, not account portfolio rows.',
   ),
   serviceExemption(
+    'reauth',
+    ['*'],
+    'kept',
+    'Generic session step-up verifies the caller’s own password and mints nothing. It reads no portfolio row, and paranoid-design §8 keeps the full auth stack — a paranoid account must be able to re-authenticate for the vault’s own QR handoff, which is precisely what this verifier gates.',
+  ),
+  serviceExemption(
     'paranoidVault',
     ['*'],
     'kept',
     'The opaque ciphertext vault is the deliberate paranoid-mode data home.',
+  ),
+  serviceExemption(
+    'vaults',
+    ['*'],
+    'kept',
+    'Vaults v2 (docs/VAULTS_V2_DESIGN.md §3): the multi-vault ciphertext store is the v2 paranoid data home, and every method is ownership-scoped in its repository. The server stores and returns ciphertext without ever parsing it, so no method can expose portfolio content; the join/leave transitions are additionally pinned to the owning browser session at the HTTP layer.',
   ),
   serviceExemption(
     'paranoidTransitions',
@@ -1035,7 +1109,16 @@ export const PARANOID_KILL_REGISTRY: readonly ParanoidKillRegistryEntry[] = [
       { exact: '/assets/portfolio/news-digest' },
       { method: 'POST', exact: '/ai/insights' },
       { exact: '/settings/taxes' },
+      // Tax year locking (§16 2026-08-07): the lock state + unlock/relock
+      // ritual govern SERVER-side tax data, which a paranoid account does not
+      // have — same capability, fail closed like the settings above.
+      { exact: '/settings/taxes/years' },
+      { prefix: '/settings/taxes/years/' },
       { exact: '/settings/home' },
+      // Every namespace of the widget-composition surface, by prefix: a client
+      // surface added later inherits the kill instead of quietly opening a new
+      // cleartext channel for the same content.
+      { prefix: '/settings/widget-layout/' },
     ],
     services: servicesFor('portfolioServer'),
     scopes: [],
@@ -1192,12 +1275,14 @@ export const PARANOID_KEPT_ROUTE_RULES: readonly ParanoidExemptRouteRule[] = [
   ...keptRoutes(
     'These API-root opaque mounts are the known authentication, audit, rate-limit, request-policy and paranoid-capability middleware; concrete operations are classified separately.',
     [
-      // Nine now: #884 adds the registry-driven paranoid route guard
-      // ({@link createParanoidRouteGuard}) after the request-policy middleware.
-      // It is the enforcement point for the killed route families below, so it
-      // is itself kept — a guard that killed its own mount would 403 every
+      // Ten now: #884 added the registry-driven paranoid route guard
+      // ({@link createParanoidRouteGuard}) after the request-policy middleware,
+      // and Vaults v2 adds its PORTFOLIO-scoped counterpart
+      // ({@link createVaultedPortfolioRouteGuard}) immediately after that. Both
+      // are the enforcement points for the killed route families below, so both
+      // are themselves kept — a guard that killed its own mount would 403 every
       // request a paranoid account makes.
-      ...Array.from({ length: 9 }, (_, index) =>
+      ...Array.from({ length: 10 }, (_, index) =>
         productionOpaqueRoute({
           mountedPath: '/api/v1',
           normalizedPath: '/',
@@ -1321,6 +1406,14 @@ export const PARANOID_KEPT_ROUTE_RULES: readonly ParanoidExemptRouteRule[] = [
     { exact: '/vault' },
     { prefix: '/vault/' },
   ]),
+  // Vaults v2 (`docs/VAULTS_V2_DESIGN.md` §3). Same reasoning as `/vault`
+  // above and then some: these routes move ciphertext and cleartext vault
+  // NAMES, nothing else. They are the data home in the v2 model, so killing
+  // them for an account-level paranoid account would strand it mid-migration.
+  ...keptRoutes('Multi-vault ciphertext containers are the v2 paranoid data home.', [
+    { exact: '/vaults' },
+    { prefix: '/vaults/' },
+  ]),
   ...keptRoutes(
     'Local workboard organization remains available; sharing settings are classified separately.',
     [
@@ -1338,7 +1431,7 @@ export const PARANOID_KEPT_ROUTE_RULES: readonly ParanoidExemptRouteRule[] = [
       // The aggregate routes above are classified explicitly, so the id segment
       // deliberately excludes them rather than swallowing them incidentally.
       pattern:
-        /^\/assets\/(?!quotes$|sparklines$)[^/]+(?:\/(?:quote|history|daily-closes|intel(?:\/(?:dividends|earnings|news|splits))?))?$/,
+        /^\/assets\/(?!quotes$|sparklines$)[^/]+(?:\/(?:quote|history|daily-closes|intel(?:\/(?:dividends|earnings|news|splits|fundamentals))?))?$/,
     },
     { exact: '/assets/intel/earnings-calendar' },
   ]),
@@ -1556,6 +1649,93 @@ export function isParanoidSurfaceClassified(surface: ParanoidSurface): boolean {
 }
 
 const KILLED_SCOPES = new Set(PARANOID_KILL_REGISTRY.flatMap((entry) => entry.scopes));
+
+/**
+ * Explicit paranoid-mode policy for every public API-key scope. This remains a
+ * Partial record deliberately: adding a contract scope must compile far enough
+ * for the completeness test to report the missing policy decision.
+ */
+export const PARANOID_API_SCOPE_CLASSIFICATIONS: Readonly<
+  Partial<Record<ApiKeyScope, ParanoidApiScopeClassification>>
+> = {
+  'portfolio:read': {
+    disposition: 'killed',
+    reason: 'Server-held portfolio data is unavailable in paranoid mode.',
+  },
+  'portfolio:write': {
+    disposition: 'killed',
+    reason: 'Server-held portfolio data is unavailable in paranoid mode.',
+  },
+  'workboard:read': {
+    disposition: 'allowed',
+    reason: 'Private workboard configuration remains available; sharing is killed separately.',
+  },
+  'workboard:write': {
+    disposition: 'allowed',
+    reason: 'Private workboard configuration remains available; sharing is killed separately.',
+  },
+  'market:read': {
+    disposition: 'allowed',
+    reason: 'Global market data does not expose account-owned portfolio bytes.',
+  },
+  'social:read': {
+    disposition: 'allowed',
+    reason: 'Friendship and profile settings remain available; sharing is killed separately.',
+  },
+  'social:write': {
+    disposition: 'allowed',
+    reason: 'Friendship and profile settings remain available; sharing is killed separately.',
+  },
+  'notifications:read': {
+    disposition: 'allowed',
+    reason: 'Notification inbox and preferences remain available for server alert delivery.',
+  },
+  'notifications:write': {
+    disposition: 'allowed',
+    reason: 'Notification inbox and preferences remain available for server alert delivery.',
+  },
+  'chat:read': {
+    disposition: 'allowed',
+    reason: 'Private chat remains separate from server-side portfolio content.',
+  },
+  'chat:write': {
+    disposition: 'allowed',
+    reason: 'Private chat remains separate from server-side portfolio content.',
+  },
+  'account:security': {
+    disposition: 'allowed',
+    reason: 'Credential and session security operations do not expose portfolio content.',
+  },
+  'alerts:read': {
+    disposition: 'allowed',
+    reason: 'Alert CRUD is provenance-filtered; alert sharing is killed separately.',
+  },
+  'alerts:write': {
+    disposition: 'allowed',
+    reason: 'Alert CRUD is provenance-filtered; alert sharing is killed separately.',
+  },
+  'cash:read': {
+    disposition: 'killed',
+    reason: 'Cash records are encrypted portfolio data and unavailable server-side.',
+  },
+  'cash:write': {
+    disposition: 'killed',
+    reason: 'Cash records are encrypted portfolio data and unavailable server-side.',
+  },
+  'mirrorchain:read': {
+    disposition: 'killed',
+    reason: 'Group-portfolio participation is unavailable because sharing is disabled.',
+  },
+  'mirrorchain:write': {
+    disposition: 'killed',
+    reason: 'Group-portfolio participation is unavailable because sharing is disabled.',
+  },
+  'vault:sync': {
+    disposition: 'allowed',
+    reason: 'Vault sync transports only opaque ciphertext for paranoid clients.',
+  },
+};
+
 const PARANOID_WEBHOOK_EVENTS = new Set(
   PARANOID_KILL_REGISTRY.flatMap((entry) => entry.webhookEventTypes),
 );
@@ -1599,7 +1779,7 @@ const requestSurface = (method: string, path: string): ParanoidRouteSurface => (
   kind: 'route',
   source: PARANOID_ROUTE_TABLE_SOURCE,
   method,
-  path,
+  path: normalizeRoutePath(path),
 });
 
 export function paranoidCapabilityForRoute(
@@ -1814,26 +1994,47 @@ export function registeredServiceMethods(
   return [...resolved].sort();
 }
 
+export interface ParanoidOwnedSubjectView {
+  exists: boolean;
+  userId: string | null;
+  /** Vaults v2 (§3): set when a portfolio subject lives in a vault. */
+  vaultId?: string | null;
+}
+
 export interface ParanoidServiceGuardResolvers {
-  portfolioOwner(portfolioId: string): Promise<{ exists: boolean; userId: string | null }>;
-  assetOwner(assetId: string): Promise<{ exists: boolean; userId: string | null }>;
+  portfolioOwner(portfolioId: string): Promise<ParanoidOwnedSubjectView>;
+  assetOwner(assetId: string): Promise<ParanoidOwnedSubjectView>;
 }
 
 export async function isParanoidOwnedSubjectBlocked(
-  subject: { exists: boolean; userId: string | null },
+  subject: { exists: boolean; userId: string | null; vaultId?: string | null },
   guard: Pick<ParanoidModeGuard, 'isParanoid'>,
+  // Vaults v2 (§3): the capability the caller is about to exercise. Optional so
+  // existing call sites keep their exact account-level behaviour; supplying it
+  // additionally blocks a VAULTED portfolio whose owner account is normal.
+  capability?: ParanoidKilledCapability,
 ): Promise<boolean> {
-  return !subject.exists || (subject.userId !== null && (await guard.isParanoid(subject.userId)));
+  if (!subject.exists) return true;
+  if (
+    subject.vaultId != null &&
+    (capability === undefined || isVaultedPortfolioKilledCapability(capability))
+  ) {
+    return true;
+  }
+  return subject.userId !== null && (await guard.isParanoid(subject.userId));
 }
 
 /** Transition-serialized action for a portfolio/asset-owned subject. */
 export async function runIfParanoidOwnedSubjectAllowed(
-  subject: { exists: boolean; userId: string | null },
+  subject: { exists: boolean; userId: string | null; vaultId?: string | null },
   guard: Pick<ParanoidModeGuard, 'runAllowed'>,
   capability: ParanoidKilledCapability,
   action: () => Promise<void>,
 ): Promise<boolean> {
   if (!subject.exists) return false;
+  // A vaulted portfolio has no cleartext left to act on; the job/read is
+  // skipped for it exactly as it is for a paranoid account.
+  if (subject.vaultId != null && isVaultedPortfolioKilledCapability(capability)) return false;
   if (subject.userId === null) {
     await action();
     return true;
@@ -1902,6 +2103,16 @@ async function invokeServiceSubject<T>(
   // portfolio is gone, so absence must not turn into "normal account".
   if (!owner.exists) {
     if (binding.subject === 'portfolioIdFirstAllowMissing') return invoke();
+    throw new ParanoidModeError(binding.capability);
+  }
+  // Vaults v2 (§3): a VAULTED portfolio kills the portfolio-scoped capabilities
+  // on an otherwise normal account. Checked before the account guard because it
+  // is the stricter of the two — the account may be perfectly normal while this
+  // one portfolio's cleartext has already been purged into a vault. `action:
+  // 'skip'` bindings (job fan-outs) skip the portfolio instead of throwing,
+  // exactly as they do for a paranoid account.
+  if (owner.vaultId != null && isVaultedPortfolioKilledCapability(binding.capability)) {
+    if (binding.action === 'skip') return undefined;
     throw new ParanoidModeError(binding.capability);
   }
   // Global market assets have no owner and are valid for asset-level kept paths.
@@ -2023,10 +2234,7 @@ export function createParanoidRouteGuard(): RequestHandler {
       next();
       return;
     }
-    // Express routes case-insensitively by default. Fold the live path exactly
-    // like the bearer policy resolver so both guards classify the handler that
-    // Express actually selected.
-    const capability = paranoidCapabilityForRoute(req.method, req.path.toLowerCase());
+    const capability = paranoidCapabilityForRoute(req.method, req.path);
     if (!capability) {
       next();
       return;

@@ -21,5 +21,5 @@ export * from './serverBlobDataHome';
 export * from './standingOrders';
 export * from './sync';
 export * from './usePrivacyMode';
-export * from './vectors';
+export * from '@bettertrack/domain/vaultVectors';
 export * from './VaultRuntimeProvider';

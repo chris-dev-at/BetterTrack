@@ -2,6 +2,8 @@ import {
   VAULT_DOCUMENT_V1_VERSION,
   VAULT_ENTITY_ROW_SCHEMAS,
   type CustomTaxParams,
+  type CashMovement,
+  type CashMovementsResponse,
   type Dividend,
   type ExpenseTransaction,
   type PortfolioAsset,
@@ -26,8 +28,24 @@ import { getTaxYearReport, getTaxYearReports, listDividends } from '../../../lib
 import { apiPortfolioStore, type PortfolioStore } from '../../../lib/portfolioStore';
 import { listStandingOrderRuns } from '../../../lib/standingOrdersApi';
 import { getParanoidNormalRevision } from '../../../lib/userApi';
+import { markRateLimitHandledLocally } from '../../../lib/apiClient';
 import { assetSnapshotRow } from '../assetSnapshot';
 import { emptyVaultDocument } from './enable';
+
+export interface NormalVaultCaptureProgress {
+  completedRequests: number;
+}
+
+export interface CaptureRequestScheduler {
+  run<T>(request: () => Promise<T>): Promise<T>;
+}
+
+export interface CaptureRequestSchedulerOptions {
+  signal: AbortSignal;
+  now?: () => number;
+  wait?: (delayMs: number, signal: AbortSignal) => Promise<void>;
+  onRequestStart?: (startedAt: number) => void;
+}
 
 export interface NormalVaultMigrationOptions {
   userId: string;
@@ -36,6 +54,9 @@ export interface NormalVaultMigrationOptions {
   now?: () => string;
   id?: () => string;
   signal?: AbortSignal;
+  onProgress?: (progress: NormalVaultCaptureProgress) => void;
+  /** Injectable only so capture protocol tests do not spend real rate-limit time. */
+  requestScheduler?: CaptureRequestScheduler;
 }
 
 /**
@@ -63,6 +84,96 @@ export interface NormalVaultCapture {
  * actively writing, which has to fail loudly instead.
  */
 export const CAPTURE_STABILITY_ATTEMPTS = 2;
+
+/**
+ * The general limiter allows 60 requests per ten seconds. Capture deliberately
+ * owns only one third of that window, leaving room for the login/dashboard
+ * reads that opened the wizard and for ordinary background refetches.
+ */
+export const CAPTURE_REQUEST_WINDOW_MS = 10_000;
+export const CAPTURE_REQUEST_BUDGET = 20;
+export const CAPTURE_REQUEST_MIN_SPACING_MS =
+  Math.floor(CAPTURE_REQUEST_WINDOW_MS / CAPTURE_REQUEST_BUDGET) + 1;
+
+/**
+ * Serialize capture reads and space their starts so every rolling ten-second
+ * window stays within {@link CAPTURE_REQUEST_BUDGET}. The queue stops before
+ * starting any more reads after the first failure.
+ */
+export function createCaptureRequestScheduler({
+  signal,
+  now = monotonicNow,
+  wait = waitForCaptureBudget,
+  onRequestStart,
+}: CaptureRequestSchedulerOptions): CaptureRequestScheduler {
+  let tail: Promise<void> = Promise.resolve();
+  let lastStartedAt: number | null = null;
+  let stopped = false;
+  let failure: unknown;
+
+  return {
+    run<T>(request: () => Promise<T>): Promise<T> {
+      const scheduled = tail.then(async () => {
+        if (stopped) throw failure;
+        signal.throwIfAborted();
+        if (lastStartedAt != null) {
+          const remaining = lastStartedAt + CAPTURE_REQUEST_MIN_SPACING_MS - now();
+          if (remaining > 0) await wait(remaining, signal);
+        }
+        signal.throwIfAborted();
+        lastStartedAt = now();
+        onRequestStart?.(lastStartedAt);
+        try {
+          return await request();
+        } catch (cause) {
+          stopped = true;
+          failure = cause;
+          throw cause;
+        }
+      });
+      tail = scheduled.then(
+        () => undefined,
+        () => undefined,
+      );
+      return scheduled;
+    },
+  };
+}
+
+type CaptureRead = <T>(request: () => Promise<T>) => Promise<T>;
+
+const immediateCaptureRead: CaptureRead = (request) => request();
+
+function monotonicNow(): number {
+  return globalThis.performance?.now() ?? Date.now();
+}
+
+function waitForCaptureBudget(delayMs: number, signal: AbortSignal): Promise<void> {
+  signal.throwIfAborted();
+  return new Promise((resolve, reject) => {
+    const timer = globalThis.setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, delayMs);
+    const onAbort = () => {
+      globalThis.clearTimeout(timer);
+      reject(signal.reason);
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+function linkedCaptureSignal(parent?: AbortSignal): { signal: AbortSignal; release(): void } {
+  const controller = new AbortController();
+  const relayAbort = () => controller.abort(parent?.reason);
+  if (parent?.aborted) relayAbort();
+  else parent?.addEventListener('abort', relayAbort, { once: true });
+  markRateLimitHandledLocally(controller.signal);
+  return {
+    signal: controller.signal,
+    release: () => parent?.removeEventListener('abort', relayAbort),
+  };
+}
 
 /**
  * The account would not hold still: the revision moved across the document build
@@ -127,23 +238,40 @@ export class VaultCaptureUnstableError extends Error {
 export async function captureNormalVault(
   options: NormalVaultMigrationOptions,
 ): Promise<NormalVaultCapture> {
-  let revision = (await getParanoidNormalRevision(options.signal)).revision;
-  for (let attempt = 1; attempt <= CAPTURE_STABILITY_ATTEMPTS; attempt += 1) {
-    const document = await buildNormalVaultDocument(options);
-    const settled = (await getParanoidNormalRevision(options.signal)).revision;
-    if (settled === revision) return { document, normalDataRevision: revision };
-    // Carry the closing token into the next attempt as its opening one: nothing
-    // runs between the two, so the window the next document is judged against is
-    // at worst slightly wider than that build. Wider can only refuse a capture
-    // that was fine — never accept one that was not.
-    revision = settled;
+  const captureSignal = linkedCaptureSignal(options.signal);
+  const scheduler =
+    options.requestScheduler ?? createCaptureRequestScheduler({ signal: captureSignal.signal });
+  let completedRequests = 0;
+  const read: CaptureRead = async (request) => {
+    const result = await scheduler.run(request);
+    completedRequests += 1;
+    options.onProgress?.({ completedRequests });
+    return result;
+  };
+  const captureOptions = { ...options, signal: captureSignal.signal };
+
+  try {
+    let revision = (await read(() => getParanoidNormalRevision(captureSignal.signal))).revision;
+    for (let attempt = 1; attempt <= CAPTURE_STABILITY_ATTEMPTS; attempt += 1) {
+      const document = await buildNormalVaultDocument(captureOptions, read);
+      const settled = (await read(() => getParanoidNormalRevision(captureSignal.signal))).revision;
+      if (settled === revision) return { document, normalDataRevision: revision };
+      // Carry the closing token into the next attempt as its opening one: nothing
+      // runs between the two, so the window the next document is judged against is
+      // at worst slightly wider than that build. Wider can only refuse a capture
+      // that was fine — never accept one that was not.
+      revision = settled;
+    }
+    throw new VaultCaptureUnstableError(CAPTURE_STABILITY_ATTEMPTS);
+  } finally {
+    captureSignal.release();
   }
-  throw new VaultCaptureUnstableError(CAPTURE_STABILITY_ATTEMPTS);
 }
 
 /** The row-reading half of {@link captureNormalVault}; exported for tests. */
 export async function buildNormalVaultDocument(
   options: NormalVaultMigrationOptions,
+  read: CaptureRead = immediateCaptureRead,
 ): Promise<VaultDocument> {
   const store = options.store ?? apiPortfolioStore;
   const now = options.now ?? (() => new Date().toISOString());
@@ -181,19 +309,19 @@ export async function buildNormalVaultDocument(
     buckets.set(kind, bucket);
   };
 
-  const portfolios = await store.listPortfolios(signal, true);
+  const portfolios = await read(() => store.listPortfolios(signal, true));
   const portfolioFacts = await Promise.all(
     portfolios.portfolios.map(async (portfolio) => {
       signal?.throwIfAborted();
       const [transactions, cash, dividends, tax, taxYears] = await Promise.all([
-        listAllTransactions(store, portfolio.id, signal),
-        store.getCashMovements(portfolio.id, signal),
-        listDividends(portfolio.id, undefined, signal),
-        store.getPortfolioTaxSettings(portfolio.id, signal),
-        getTaxYearReports(portfolio.id, signal),
+        listAllTransactions(store, portfolio.id, signal, read),
+        listAllCashMovements(store, portfolio.id, signal, read),
+        read(() => listDividends(portfolio.id, undefined, signal)),
+        read(() => store.getPortfolioTaxSettings(portfolio.id, signal)),
+        read(() => getTaxYearReports(portfolio.id, signal)),
       ]);
       const reports = await Promise.all(
-        taxYears.years.map((year) => getTaxYearReport(portfolio.id, year.year, signal)),
+        taxYears.years.map((year) => read(() => getTaxYearReport(portfolio.id, year.year, signal))),
       );
       return { portfolio, transactions, cash, dividends, tax, reports };
     }),
@@ -211,6 +339,9 @@ export async function buildNormalVaultDocument(
         sortOrder: portfolio.sortOrder,
         defaultPayFromCash: portfolio.defaultPayFromCash,
         archivedAt: portfolio.archivedAt,
+        // Board #69: captured with the row, or enable→disable would silently
+        // reset every portfolio's Icon (the #729 irreversible-loss class).
+        kind: portfolio.kind ?? null,
       },
       portfolio.archivedAt ?? now(),
     );
@@ -329,7 +460,7 @@ export async function buildNormalVaultDocument(
     }
   }
 
-  const customAssets = await store.listCustomAssets(signal);
+  const customAssets = await read(() => store.listCustomAssets(signal));
   for (const item of customAssets.assets) {
     assets.set(item.id, {
       id: item.id,
@@ -349,25 +480,26 @@ export async function buildNormalVaultDocument(
   // `assetId`/`assetSymbol`/`assetName`, so resolve the full asset before the
   // local asset table is emitted; a reference that cannot be resolved refuses
   // the enable rather than migrating a dangling id.
-  const standingOrders = await store.listStandingOrders(undefined, signal);
+  const standingOrders = await read(() => store.listStandingOrders(undefined, signal));
   for (const order of standingOrders.orders) {
-    if (order.assetId == null || assets.has(order.assetId)) continue;
+    const assetId = order.assetId;
+    if (assetId == null || assets.has(assetId)) continue;
     signal?.throwIfAborted();
-    const detail = await getAssetDetail(order.assetId, signal);
+    const detail = await read(() => getAssetDetail(assetId, signal));
     if (detail.asset.isCustom) {
       // Owner customs were listed exhaustively above; a custom asset resolving
       // only here has ownership facts this client cannot prove. Refuse.
       throw new Error(
-        `Vault migration cannot prove ownership of asset ${order.assetId} referenced by standing order ${order.id}.`,
+        `Vault migration cannot prove ownership of asset ${assetId} referenced by standing order ${order.id}.`,
       );
     }
-    assets.set(order.assetId, detail.asset);
+    assets.set(assetId, detail.asset);
   }
 
   for (const asset of assets.values()) {
     append('customAsset', asset.id, assetSnapshotRow(asset, options.userId));
     if (asset.isCustom) {
-      const points = await store.getValuePoints(asset.id, signal);
+      const points = await read(() => store.getValuePoints(asset.id, signal));
       for (const point of points.points) {
         append('customAssetValue', id(), {
           assetId: asset.id,
@@ -378,7 +510,7 @@ export async function buildNormalVaultDocument(
     }
   }
 
-  const userTax = await store.getTaxSettings(signal);
+  const userTax = await read(() => store.getTaxSettings(signal));
   append('taxSetting', id(), taxSettingRow(options.userId, userTax, now()));
 
   // The authoritative exactly-once ledger, read RAW — not reconstructed from the
@@ -390,7 +522,7 @@ export async function buildNormalVaultDocument(
   // `standing_order_runs` and disable restores it from this document alone, the
   // scheduler would afterwards re-book a period that was intentionally closed:
   // a duplicate money booking. Every row rides, under its real id.
-  const runLedger = await listStandingOrderRuns(signal);
+  const runLedger = await read(() => listStandingOrderRuns(signal));
   const orderIds = new Set(standingOrders.orders.map((order) => order.id));
   const capturedRuns = new Set<string>();
   for (const run of runLedger.runs) {
@@ -447,10 +579,10 @@ export async function buildNormalVaultDocument(
   }
 
   const [categories, expenseTransactions, rules, budgets] = await Promise.all([
-    listExpenseCategories(signal),
-    listAllExpenseTransactions(signal),
-    listExpenseRules(signal),
-    listExpenseBudgets(undefined, signal),
+    read(() => listExpenseCategories(signal)),
+    listAllExpenseTransactions(signal, read),
+    read(() => listExpenseRules(signal)),
+    read(() => listExpenseBudgets(undefined, signal)),
   ]);
   for (const category of categories.categories) {
     append(
@@ -530,9 +662,9 @@ export async function buildNormalVaultDocument(
   // periods) because the per-month progress list cannot enumerate other months'
   // month-specific rows.
   const [cashTags, cashRules, cashBudgets] = await Promise.all([
-    listCashTags(signal),
-    listCashRules(signal),
-    listAllCashBudgets(signal),
+    read(() => listCashTags(signal)),
+    read(() => listCashRules(signal)),
+    read(() => listAllCashBudgets(signal)),
   ]);
   for (const tag of cashTags.tags) {
     append(
@@ -606,15 +738,40 @@ async function listAllTransactions(
   store: PortfolioStore,
   portfolioId: string,
   signal?: AbortSignal,
+  read: CaptureRead = immediateCaptureRead,
 ): Promise<Transaction[]> {
   const rows: Transaction[] = [];
   let cursor: string | undefined;
   do {
-    const page = await store.listTransactions(portfolioId, { cursor, limit: 200 }, signal);
+    const page = await read(() =>
+      store.listTransactions(portfolioId, { cursor, limit: 200 }, signal),
+    );
     rows.push(...page.items);
     cursor = page.nextCursor ?? undefined;
   } while (cursor != null);
   return rows;
+}
+
+/** Drain the paged cash ledger: migration must capture every row before purge. */
+async function listAllCashMovements(
+  store: PortfolioStore,
+  portfolioId: string,
+  signal?: AbortSignal,
+  read: CaptureRead = immediateCaptureRead,
+): Promise<CashMovementsResponse> {
+  const movements: CashMovement[] = [];
+  let firstPage: CashMovementsResponse | undefined;
+  let cursor: string | undefined;
+  do {
+    const page = await read(() =>
+      store.getCashMovements(portfolioId, { cursor, limit: 200 }, signal),
+    );
+    firstPage ??= page;
+    movements.push(...page.movements);
+    cursor = page.nextCursor ?? undefined;
+  } while (cursor != null);
+  if (!firstPage) throw new Error('Cash ledger pagination returned no first page.');
+  return { ...firstPage, movements, nextCursor: null };
 }
 
 /**
@@ -622,12 +779,17 @@ async function listAllTransactions(
  * boundary day so a page split never drops rows. If one day itself reaches the
  * endpoint cap, abort before enable—the client cannot prove completeness.
  */
-async function listAllExpenseTransactions(signal?: AbortSignal): Promise<ExpenseTransaction[]> {
+async function listAllExpenseTransactions(
+  signal?: AbortSignal,
+  read: CaptureRead = immediateCaptureRead,
+): Promise<ExpenseTransaction[]> {
   const rows = new Map<string, ExpenseTransaction>();
   let to: string | undefined;
   for (;;) {
     signal?.throwIfAborted();
-    const page = await listExpenseTransactions({ limit: 500, ...(to ? { to } : {}) }, signal);
+    const page = await read(() =>
+      listExpenseTransactions({ limit: 500, ...(to ? { to } : {}) }, signal),
+    );
     if (page.transactions.length < 500) {
       for (const transaction of page.transactions) rows.set(transaction.id, transaction);
       return [...rows.values()];
@@ -637,9 +799,8 @@ async function listAllExpenseTransactions(signal?: AbortSignal): Promise<Expense
     if (boundaryDay == null) {
       throw new Error('Expense migration could not establish a complete page boundary.');
     }
-    const boundary = await listExpenseTransactions(
-      { from: boundaryDay, to: boundaryDay, limit: 500 },
-      signal,
+    const boundary = await read(() =>
+      listExpenseTransactions({ from: boundaryDay, to: boundaryDay, limit: 500 }, signal),
     );
     if (boundary.transactions.length >= 500) {
       throw new Error('Expense migration cannot prove completeness for one booking day.');

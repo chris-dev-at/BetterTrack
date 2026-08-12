@@ -69,7 +69,7 @@ function putAudience(
   return agent
     .put(`/api/v1/social/audience/${kind}/${subjectId}`)
     .set(...XRW)
-    .send(body);
+    .send({ confirmWiden: true, ...body });
 }
 
 function followItem(agent: Agent, kind: string, subjectId: string): Promise<request.Response> {

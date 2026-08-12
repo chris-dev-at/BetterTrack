@@ -9,10 +9,10 @@
 export const dependencyAuditWaivers = {
   // Direct runtime packages need a separately reviewed compatibility update.
   'GHSA-gpj5-g38j-94v9': {
-    expires: '2026-08-06',
+    expires: '2026-08-14',
     moduleName: 'drizzle-orm',
     reason:
-      'Drizzle 0.x minor upgrades can require migration compatibility changes; update in a dedicated, tested Dependabot PR.',
+      'Renewed 2026-08-07: the 0.38→0.45 upgrade spans schema-layer changes and two in-flight migration PRs; dedicated tested upgrade PR scheduled right after the board-#68 package wave lands.',
   },
   'GHSA-p6gq-j5cr-w38f': {
     expires: '2026-08-13',
@@ -55,10 +55,10 @@ export const dependencyAuditWaivers = {
   // Provider/tooling transitive updates are kept out of the CI-gate change so
   // their upstream compatibility can be reviewed independently.
   'GHSA-v422-hmwv-36x6': {
-    expires: '2026-08-08',
+    expires: '2026-08-16',
     moduleName: 'body-parser',
     reason:
-      'Body-parser is transitive through Express; upgrade with the API HTTP regression suite in a dedicated update.',
+      'Renewed 2026-08-10: body-parser is transitive through Express; the fix is an Express bump that needs the API HTTP regression suite in a dedicated update, scheduled with the pending dependency wave.',
   },
   'GHSA-frvp-7c67-39w9': {
     expires: '2026-08-15',
@@ -71,6 +71,14 @@ export const dependencyAuditWaivers = {
     moduleName: 'js-yaml',
     reason:
       'Js-yaml is transitive through the lint toolchain and needs a coordinated ESLint update.',
+  },
+  // Sibling advisory to GHSA-52cp-r559-cp3m (published after the wave above);
+  // identical exposure and identical remediation path.
+  'GHSA-5p4m-2wfm-xmqj': {
+    expires: '2026-08-30',
+    moduleName: 'js-yaml',
+    reason:
+      'Js-yaml is transitive through the lint toolchain and needs a coordinated ESLint update (same remediation as GHSA-52cp-r559-cp3m).',
   },
   // re2 advisories published 2026-07-31, moderate (DoS only — crash / infinite
   // loop; no data exposure). The exact re2@1.22.3 is already what production
@@ -89,5 +97,20 @@ export const dependencyAuditWaivers = {
     moduleName: 're2',
     reason:
       'Moderate DoS in the safe-regex engine behind user cash rules; upgrade needs the rule-matching regression suite in its own tested PR.',
+  },
+  // Two further re2 sibling advisories (same 2026-07/08 wave, same moderate
+  // DoS class, no data exposure); covered by the same dedicated-upgrade plan
+  // and the same expiry as their siblings above.
+  'GHSA-8hcv-x26h-mcgp': {
+    expires: '2026-08-14',
+    moduleName: 're2',
+    reason:
+      'Moderate DoS in the safe-regex engine behind user cash rules; upgrade needs the rule-matching regression suite in its own tested PR (same plan as GHSA-6hxr-mr5r-9836).',
+  },
+  'GHSA-j4r3-hg7j-8chg': {
+    expires: '2026-08-14',
+    moduleName: 're2',
+    reason:
+      'Moderate DoS in the safe-regex engine behind user cash rules; upgrade needs the rule-matching regression suite in its own tested PR (same plan as GHSA-6hxr-mr5r-9836).',
   },
 };

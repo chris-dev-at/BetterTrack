@@ -19,6 +19,7 @@ import { cashBalance, externalCashFlowsForTwr } from '../domain/cashLedger';
 import { TARGET_POINTS } from '../services/portfolio/portfolioIntraday';
 import { createRecordingBackfill, createStubMarketData } from '../testing/marketDataStubs';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
+import { unlockRecentTaxYears } from '../testing/taxYearUnlocks';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
 
@@ -164,7 +165,7 @@ describe('PATCH /api/v1/portfolios/:id (name + visibility)', () => {
     const res = await agent
       .patch(`/api/v1/portfolios/${pid}`)
       .set(...XRW)
-      .send({ name: 'My Money', visibility: 'friends' });
+      .send({ name: 'My Money', visibility: 'friends', confirmWiden: true });
     expect(res.status).toBe(200);
     expect(portfolioSummarySchema.safeParse(res.body.portfolio).success).toBe(true);
     expect(res.body.portfolio.name).toBe('My Money');
@@ -241,7 +242,7 @@ describe('PATCH /api/v1/portfolios/:id (name + visibility)', () => {
     const res = await agent
       .patch(`/api/v1/portfolios/${pid}`)
       .set(...XRW)
-      .send({ name: 'Main', visibility: 'friends' });
+      .send({ name: 'Main', visibility: 'friends', confirmWiden: true });
     expect(res.status).toBe(200);
     expect(res.body.portfolio.name).toBe('Main');
     expect(res.body.portfolio.visibility).toBe('friends');
@@ -829,6 +830,147 @@ describe('GET /api/v1/portfolios/:id/transactions (pagination)', () => {
     expect(second.body.items).toHaveLength(1);
     expect(second.body.nextCursor).toBeNull();
   });
+
+  it('keeps the id walk stable while executed-time pages and source facets right-size the overview', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
+    const asset = await seedAsset(harness);
+    const transactionId = (index: number) =>
+      `018f6f00-0000-7000-8000-${String(index).padStart(12, '0')}`;
+
+    // ids 1–9 are the most recent executions, 10–17 are older standing orders,
+    // and id 18 is recorded last but backdated. The legacy id walk must put 18
+    // first; the overview must exclude it from its newest-eight execution page.
+    const rows = [
+      ...Array.from({ length: 9 }, (_, index) => ({
+        id: transactionId(index + 1),
+        executedAt: new Date(tsOffset(-(index + 1))),
+        source: 'manual',
+      })),
+      ...Array.from({ length: 8 }, (_, index) => ({
+        id: transactionId(index + 10),
+        executedAt: new Date(tsOffset(-(index + 10))),
+        source: 'standing-order',
+      })),
+      { id: transactionId(18), executedAt: new Date(tsOffset(-30)), source: 'manual' },
+    ];
+    await harness.db.insert(schema.transactions).values(
+      rows.map((row, index) => ({
+        ...row,
+        portfolioId: pid,
+        assetId: asset.id,
+        side: 'buy' as const,
+        quantity: '1',
+        price: String(100 + index),
+      })),
+    );
+
+    const idWalk: Array<{ id: string; executedAt: string; source: string }> = [];
+    let idCursor: string | null = null;
+    do {
+      const page = await agent
+        .get(`/api/v1/portfolios/${pid}/transactions`)
+        .query({ limit: 5, ...(idCursor ? { cursor: idCursor } : {}) });
+      expect(page.status).toBe(200);
+      idWalk.push(...page.body.items);
+      idCursor = page.body.nextCursor as string | null;
+    } while (idCursor !== null);
+
+    expect(idWalk.map((row) => row.id)).toEqual(rows.map((row) => row.id).reverse());
+    expect(new Set(idWalk.map((row) => row.id)).size).toBe(rows.length);
+    expect(idWalk[0]?.id).toBe(transactionId(18));
+
+    const fullLedgerComputation = [...idWalk].sort(
+      (left, right) =>
+        right.executedAt.localeCompare(left.executedAt) || right.id.localeCompare(left.id),
+    );
+    const recent = await agent
+      .get(`/api/v1/portfolios/${pid}/transactions`)
+      .query({ limit: 8, order: 'executedAt', includeSourceTags: 'true' });
+    expect(recent.status).toBe(200);
+    expect(recent.body.items.map((row: { id: string }) => row.id)).toEqual(
+      fullLedgerComputation.slice(0, 8).map((row) => row.id),
+    );
+    expect(recent.body.items.map((row: { id: string }) => row.id)).not.toContain(transactionId(18));
+    expect(recent.body.sourceTags).toEqual(['manual', 'standing-order']);
+
+    const standingExpected = fullLedgerComputation
+      .filter((row) => row.source === 'standing-order')
+      .slice(0, 8);
+    const standing = await agent
+      .get(`/api/v1/portfolios/${pid}/transactions`)
+      .query({ limit: 8, order: 'executedAt', source: 'standing-order' });
+    expect(standing.status).toBe(200);
+    expect(standing.body.items.map((row: { id: string }) => row.id)).toEqual(
+      standingExpected.map((row) => row.id),
+    );
+
+    // The alternate walk owns a compound cursor and remains gap/duplicate free.
+    const firstExecutedPage = await agent
+      .get(`/api/v1/portfolios/${pid}/transactions`)
+      .query({ limit: 5, order: 'executedAt' });
+    const secondExecutedPage = await agent.get(`/api/v1/portfolios/${pid}/transactions`).query({
+      limit: 5,
+      order: 'executedAt',
+      cursor: firstExecutedPage.body.nextCursor as string,
+    });
+    expect(firstExecutedPage.status).toBe(200);
+    expect(secondExecutedPage.status).toBe(200);
+    expect(
+      [...firstExecutedPage.body.items, ...secondExecutedPage.body.items].map(
+        (row: { id: string }) => row.id,
+      ),
+    ).toEqual(fullLedgerComputation.slice(0, 10).map((row) => row.id));
+  });
+
+  it('pages one holding asset without reading another asset and validates the filter', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
+    const target = await seedAsset(harness, {
+      providerRef: 'TARGET.DE',
+      symbol: 'TARGET.DE',
+      name: 'Target holding',
+    });
+    const other = await seedAsset(harness, {
+      providerRef: 'OTHER.DE',
+      symbol: 'OTHER.DE',
+      name: 'Other holding',
+    });
+
+    for (const [assetId, offset] of [
+      [target.id, -3],
+      [other.id, -2],
+      [target.id, -1],
+    ] as const) {
+      const created = await agent
+        .post(`/api/v1/portfolios/${pid}/transactions`)
+        .set(...XRW)
+        .send({ assetId, side: 'buy', quantity: 1, price: 50, executedAt: tsOffset(offset) });
+      expect(created.status).toBe(201);
+    }
+
+    const first = await agent
+      .get(`/api/v1/portfolios/${pid}/transactions`)
+      .query({ assetId: target.id, limit: 1 });
+    expect(first.status).toBe(200);
+    expect(first.body.items).toHaveLength(1);
+    expect(first.body.items[0].assetId).toBe(target.id);
+
+    const second = await agent
+      .get(`/api/v1/portfolios/${pid}/transactions`)
+      .query({ assetId: target.id, limit: 1, cursor: first.body.nextCursor as string });
+    expect(second.status).toBe(200);
+    expect(second.body.items).toHaveLength(1);
+    expect(second.body.items[0].assetId).toBe(target.id);
+    expect(second.body.nextCursor).toBeNull();
+
+    const malformed = await agent
+      .get(`/api/v1/portfolios/${pid}/transactions`)
+      .query({ assetId: 'not-an-asset-id' });
+    expect(malformed.status).toBe(400);
+  });
 });
 
 describe('PATCH/DELETE /api/v1/portfolios/:id/transactions/:txId', () => {
@@ -1410,6 +1552,8 @@ describe('GET /api/v1/portfolios/:id/history (V4-P0 ranges: 1D, 1W, 5Y)', () => 
   /** Deterministic marketing-friendly ladder: every 30 d back through the last 5 y. */
   async function seed30DayLadder(h: TestHarness) {
     const user = await h.seedUser();
+    // Amendment mode (§16 2026-08-07): these fixtures backdate years back.
+    await unlockRecentTaxYears(h.db, user.id);
     const agent = await loginAgent(h.app, user.email, user.password);
     const pid = await defaultPortfolioId(agent);
     const asset = await seedAsset(h, { currency: 'EUR' });
@@ -1451,10 +1595,14 @@ describe('GET /api/v1/portfolios/:id/history (V4-P0 ranges: 1D, 1W, 5Y)', () => 
     for (const p of week.body.points as Array<{ date: string }>) {
       expect(p.date >= weekCutoff).toBe(true);
     }
-    // 1W is a strict superset of 1D.
-    expect((week.body.points as unknown[]).length).toBeGreaterThanOrEqual(
-      (day.body.points as unknown[]).length,
-    );
+    // 1W is a strict superset of 1D — as day-level coverage, not raw point
+    // counts: since IN3 (#1179) 1D auto serves a 5-minute grid while 1W stays
+    // hourly, so on a trading day 1D legitimately carries MORE points than 1W.
+    // Every day plotted on 1D is plotted on 1W (the windows nest).
+    const weekDays = new Set((week.body.points as Array<{ date: string }>).map((p) => p.date));
+    for (const p of day.body.points as Array<{ date: string }>) {
+      expect(weekDays.has(p.date)).toBe(true);
+    }
   });
 
   it('5Y windows to at most 5 years back, and is a strict superset of 1Y', async () => {
@@ -1518,6 +1666,8 @@ describe('GET /api/v1/portfolios/:id/history (V4-P0 ranges: 1D, 1W, 5Y)', () => 
 
   it('graceful when history is shorter than the selected range (5Y over a 3-day portfolio → whole history)', async () => {
     const user = await harness.seedUser();
+    // Amendment mode (§16 2026-08-07): these fixtures backdate years back.
+    await unlockRecentTaxYears(harness.db, user.id);
     const agent = await loginAgent(harness.app, user.email, user.password);
     const pid = await defaultPortfolioId(agent);
     const asset = await seedAsset(harness, { currency: 'EUR' });
@@ -1567,6 +1717,8 @@ describe('GET /api/v1/portfolios/:id/history (provider-fed daily curve, #108)', 
     });
     const h = await createTestApp({ marketData });
     const user = await h.seedUser();
+    // Amendment mode (§16 2026-08-07): these fixtures backdate years back.
+    await unlockRecentTaxYears(h.db, user.id);
     const agent = await loginAgent(h.app, user.email, user.password);
     const pid = await defaultPortfolioId(agent);
     const asset = await seedAsset(h, { currency: 'EUR' });
@@ -1602,6 +1754,8 @@ describe('GET /api/v1/portfolios/:id/history (provider-fed daily curve, #108)', 
     // Default harness: the manual provider is local (our own DB), so this is the
     // real end-to-end path with zero network.
     const user = await harness.seedUser();
+    // Amendment mode (§16 2026-08-07): these fixtures backdate years back.
+    await unlockRecentTaxYears(harness.db, user.id);
     const agent = await loginAgent(harness.app, user.email, user.password);
     const pid = await defaultPortfolioId(agent);
     const asset = await seedAsset(harness, {
@@ -1648,6 +1802,8 @@ describe('GET /api/v1/portfolios/:id/history (provider-fed daily curve, #108)', 
     });
     const h = await createTestApp({ marketData });
     const user = await h.seedUser();
+    // Amendment mode (§16 2026-08-07): these fixtures backdate years back.
+    await unlockRecentTaxYears(h.db, user.id);
     const agent = await loginAgent(h.app, user.email, user.password);
     const pid = await defaultPortfolioId(agent);
     const stock = await seedAsset(h, { currency: 'EUR' });
@@ -1689,6 +1845,8 @@ describe('GET /api/v1/portfolios/:id/history (provider-fed daily curve, #108)', 
     });
     const h = await createTestApp({ marketData });
     const user = await h.seedUser();
+    // Amendment mode (§16 2026-08-07): these fixtures backdate years back.
+    await unlockRecentTaxYears(h.db, user.id);
     const agent = await loginAgent(h.app, user.email, user.password);
     const pid = await defaultPortfolioId(agent);
     const asset = await seedAsset(h, { currency: 'EUR' });
@@ -1767,6 +1925,8 @@ describe('GET /api/v1/portfolios/:id/history (2-year reconstruction + overlay, #
     const { closes, marketData } = twoYearHarnessStub();
     const h = await createTestApp({ marketData });
     const user = await h.seedUser();
+    // Amendment mode (§16 2026-08-07): these fixtures backdate years back.
+    await unlockRecentTaxYears(h.db, user.id);
     const agent = await loginAgent(h.app, user.email, user.password);
     const pid = await defaultPortfolioId(agent);
     const asset = await seedAsset(h, { currency: 'EUR' });
@@ -1806,6 +1966,8 @@ describe('GET /api/v1/portfolios/:id/history (2-year reconstruction + overlay, #
     const { closes, marketData } = twoYearHarnessStub();
     const h = await createTestApp({ marketData });
     const user = await h.seedUser();
+    // Amendment mode (§16 2026-08-07): these fixtures backdate years back.
+    await unlockRecentTaxYears(h.db, user.id);
     const agent = await loginAgent(h.app, user.email, user.password);
     const pid = await defaultPortfolioId(agent);
     const asset = await seedAsset(h, { currency: 'EUR' });
@@ -1844,6 +2006,8 @@ describe('GET /api/v1/portfolios/:id/history (2-year reconstruction + overlay, #
     const { marketData } = twoYearHarnessStub();
     const h = await createTestApp({ marketData });
     const user = await h.seedUser();
+    // Amendment mode (§16 2026-08-07): these fixtures backdate years back.
+    await unlockRecentTaxYears(h.db, user.id);
     const agent = await loginAgent(h.app, user.email, user.password);
     const pid = await defaultPortfolioId(agent);
     const asset = await seedAsset(h, { currency: 'EUR' });
@@ -1873,6 +2037,8 @@ describe('GET /api/v1/portfolios/:id/history (2-year reconstruction + overlay, #
     const { marketData } = twoYearHarnessStub();
     const h = await createTestApp({ marketData });
     const user = await h.seedUser();
+    // Amendment mode (§16 2026-08-07): these fixtures backdate years back.
+    await unlockRecentTaxYears(h.db, user.id);
     const agent = await loginAgent(h.app, user.email, user.password);
     const pid = await defaultPortfolioId(agent);
     const asset = await seedAsset(h, { currency: 'EUR' });
@@ -1906,6 +2072,8 @@ describe('GET /api/v1/portfolios/:id/history (2-year reconstruction + overlay, #
 
   it('rejects an invalid overlay token instead of guessing', async () => {
     const user = await harness.seedUser();
+    // Amendment mode (§16 2026-08-07): these fixtures backdate years back.
+    await unlockRecentTaxYears(harness.db, user.id);
     const agent = await loginAgent(harness.app, user.email, user.password);
     const pid = await defaultPortfolioId(agent);
     const res = await agent.get(`/api/v1/portfolios/${pid}/history?range=MAX&overlay=yes`);
@@ -1979,6 +2147,53 @@ describe('Portfolio cash ledger', () => {
       '/api/v1/portfolios/11111111-1111-7111-8111-111111111111/cash',
     );
     expect(res.status).toBe(401);
+  });
+
+  it('paginates newest-first without gaps at equal execution timestamps', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
+    const inputs = [
+      { note: 'oldest', executedAt: '2026-01-01T10:00:00.000Z' },
+      { note: 'same first', executedAt: '2026-01-02T10:00:00.000Z' },
+      { note: 'same second', executedAt: '2026-01-02T10:00:00.000Z' },
+      { note: 'newest', executedAt: '2026-01-03T10:00:00.000Z' },
+    ];
+    const created: Array<{ id: string; executedAt: string }> = [];
+    for (const input of inputs) {
+      const response = await agent
+        .post(`/api/v1/portfolios/${pid}/cash/deposit`)
+        .set(...XRW)
+        .send({ amountEur: 10, ...input });
+      expect(response.status).toBe(201);
+      created.push(response.body.movement);
+    }
+    const expectedIds = [...created]
+      .sort(
+        (left, right) =>
+          right.executedAt.localeCompare(left.executedAt) || left.id.localeCompare(right.id),
+      )
+      .map((movement) => movement.id);
+
+    const first = await agent.get(`/api/v1/portfolios/${pid}/cash?limit=2`);
+    expect(first.status).toBe(200);
+    expect(cashMovementsResponseSchema.safeParse(first.body).success).toBe(true);
+    expect(first.body.movements.map((movement: { id: string }) => movement.id)).toEqual(
+      expectedIds.slice(0, 2),
+    );
+    expect(first.body.nextCursor).toBe(expectedIds[1]);
+    expect(first.body.balanceEur).toBe(40);
+
+    const second = await agent.get(
+      `/api/v1/portfolios/${pid}/cash?limit=2&cursor=${first.body.nextCursor}`,
+    );
+    expect(second.status).toBe(200);
+    expect(cashMovementsResponseSchema.safeParse(second.body).success).toBe(true);
+    expect(second.body.movements.map((movement: { id: string }) => movement.id)).toEqual(
+      expectedIds.slice(2),
+    );
+    expect(second.body.nextCursor).toBeNull();
+    expect([...first.body.movements, ...second.body.movements]).toHaveLength(4);
   });
 
   it('classic movements carry the V3-P4 linkage fields as nulls (wire-shape stability)', async () => {

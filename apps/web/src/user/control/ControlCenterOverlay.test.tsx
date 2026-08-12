@@ -10,6 +10,9 @@ import { beforeEach, describe, expect, test, vi } from 'vitest';
 vi.mock('./panels/AccountPanel', () => ({
   AccountPanel: () => createElement('p', null, 'account-panel'),
 }));
+vi.mock('./panels/AppearancePanel', () => ({
+  AppearancePanel: () => createElement('p', null, 'appearance-panel'),
+}));
 vi.mock('./panels/ProfilePanel', () => ({
   ProfilePanel: () => createElement('p', null, 'profile-panel'),
 }));
@@ -117,6 +120,7 @@ describe('ControlCenterOverlay', () => {
   });
 
   test.each([
+    ['/control/appearance', 'appearance-panel', 'Appearance'],
     ['/control/profile', 'profile-panel', 'Public profile'],
     ['/control/sign-in', 'sign-in-panel', 'Sign-in'],
     ['/control/sessions', 'sessions-panel', 'Sessions'],
@@ -140,7 +144,7 @@ describe('ControlCenterOverlay', () => {
     const ids = CONTROL_GROUPS.flatMap((group) => group.panels.map((panel) => panel.id));
     // The taxonomy and the deep-link table above must not drift apart (the
     // table covers all but `privacy`, whose stub is the nested-modal fixture).
-    expect(ids).toHaveLength(14);
+    expect(ids).toHaveLength(15);
     for (const id of ids) {
       const view = renderAt(`/control/${id}`);
       expect(

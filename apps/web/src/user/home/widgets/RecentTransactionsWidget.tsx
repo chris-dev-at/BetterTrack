@@ -15,13 +15,10 @@ import type { WidgetProps, WidgetSettingsExtraProps } from './types';
  * The latest trades, newest first — across every portfolio or just the scoped
  * one.
  *
- * **Query-key deviation, deliberate.** The portfolio page holds its ledger under
- * the bare `['portfolio', id, 'transactions']` key with `limit: 200`, and that
- * entry is the page's *paginated* cache (it grows as the user pages through).
- * Writing this widget's short `limit: N` response into that key would truncate
- * the page's ledger the next time it mounted from cache. So this widget keys on
- * `['portfolio', id, 'transactions', 'recent', N]` — a sibling entry, one per
- * requested length, that no other surface reads or invalidates narrowly. The
+ * **Query-key deviation, deliberate.** The portfolio page owns its eight-row
+ * recent ledger under an executed-time/source key and uses separate per-asset
+ * keys for expanded holdings. This widget still needs a distinct entry per
+ * requested length, so it includes `executedAt` and N in its sibling key. The
  * page's broad `invalidateQueries({ queryKey: ['portfolio'] })` after a mutation
  * still covers it, so an added or deleted trade refreshes this widget too.
  */
@@ -59,9 +56,9 @@ export function RecentTransactionsWidget({
   // set is necessarily a subset of those, so no portfolio can be under-sampled.
   const merged = useQueries({
     queries: sourced.map((portfolio) => ({
-      queryKey: ['portfolio', portfolio.id, 'transactions', 'recent', count],
+      queryKey: ['portfolio', portfolio.id, 'transactions', 'recent', 'executedAt', count],
       queryFn: ({ signal }: { signal: AbortSignal }) =>
-        listTransactions(portfolio.id, { limit: count }, signal),
+        listTransactions(portfolio.id, { limit: count, order: 'executedAt' }, signal),
       staleTime: 60_000,
     })),
     combine: (results) => ({
@@ -72,7 +69,11 @@ export function RecentTransactionsWidget({
             portfolioName: sourced[index]?.name ?? '',
           })),
         )
-        .sort((a, b) => b.transaction.executedAt.localeCompare(a.transaction.executedAt))
+        .sort(
+          (a, b) =>
+            b.transaction.executedAt.localeCompare(a.transaction.executedAt) ||
+            b.transaction.id.localeCompare(a.transaction.id),
+        )
         .slice(0, count),
       loading: results.some((result) => result.isLoading),
     }),

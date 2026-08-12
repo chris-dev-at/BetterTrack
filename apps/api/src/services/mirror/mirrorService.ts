@@ -786,20 +786,30 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
         const noteChanged = (local.note ?? null) !== payload.note;
         if (!financial && !noteChanged) return { applied: false }; // replay-idempotent
         if (!financial) {
-          const dto = await portfolio.updateTransaction(userId, portfolioId, local.id, {
-            note: payload.note,
-          });
+          const dto = await portfolio.updateTransaction(
+            userId,
+            portfolioId,
+            local.id,
+            { note: payload.note },
+            { force },
+          );
           return { applied: true, rowKind: 'transaction', localId: local.id, result: dto };
         }
         try {
-          const dto = await portfolio.updateTransaction(userId, portfolioId, local.id, {
-            side: payload.side,
-            quantity: payload.quantity,
-            price: payload.price,
-            fee: payload.fee,
-            executedAt: payload.executedAt,
-            note: payload.note,
-          });
+          const dto = await portfolio.updateTransaction(
+            userId,
+            portfolioId,
+            local.id,
+            {
+              side: payload.side,
+              quantity: payload.quantity,
+              price: payload.price,
+              fee: payload.fee,
+              executedAt: payload.executedAt,
+              note: payload.note,
+            },
+            { force },
+          );
           return { applied: true, rowKind: 'transaction', localId: local.id, result: dto };
         } catch (err) {
           // Tax-immutable / cash-linked rows: the sanctioned correction path —
@@ -902,7 +912,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
         // fee external to THIS copy's TWR and diverge its curve from the origin's.
         const res =
           payload.kind === 'cash.deposit'
-            ? await portfolio.depositCash(userId, portfolioId, entry, { source: syncTag })
+            ? await portfolio.depositCash(userId, portfolioId, entry, { source: syncTag, force })
             : payload.kind === 'cash.fee'
               ? await portfolio.chargeCashFee(userId, portfolioId, entry, {
                   source: syncTag,
@@ -984,7 +994,7 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
         };
         const res =
           payload.deltaEur > 0
-            ? await portfolio.depositCash(userId, portfolioId, entry, { source: syncTag })
+            ? await portfolio.depositCash(userId, portfolioId, entry, { source: syncTag, force })
             : await portfolio.withdrawCash(userId, portfolioId, entry, { source: syncTag, force });
         await repo.insertMirrorRow({
           chainId: member.chainId,
@@ -1655,13 +1665,18 @@ export function createMirrorService(deps: MirrorServiceDeps): MirrorService {
   }
 
   function toInviteDto(row: MirrorInviteDetailRow, selfUserId: string): MirrorInvite {
+    const direction = row.toUser === selfUserId ? 'incoming' : 'outgoing';
     return {
       id: row.id,
       chainId: row.chainId,
       chainName: row.chainName,
       fromUsername: row.fromUsername,
       toUsername: row.toUsername,
-      direction: row.toUser === selfUserId ? 'incoming' : 'outgoing',
+      // The face of the OTHER party — the inviter on an incoming row, the
+      // invitee on an outgoing one — so it always pairs with the username the
+      // row leads with (board #70). Never the viewer's own icon.
+      profileIcon: direction === 'incoming' ? row.fromProfileIcon : row.toProfileIcon,
+      direction,
       createdAt: row.createdAt.toISOString(),
     };
   }

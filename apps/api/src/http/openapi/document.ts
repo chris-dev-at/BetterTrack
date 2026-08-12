@@ -74,6 +74,25 @@ const componentSchemas = {
   ReadinessResponse: contracts.readinessResponseSchema,
   VersionResponse: contracts.versionResponseSchema,
   VaultHistoryListResponse: contracts.vaultHistoryListResponseSchema,
+  // Vaults v2 (`docs/VAULTS_V2_DESIGN.md` §3)
+  ReauthRequest: contracts.reauthRequestSchema,
+  Vault: contracts.vaultSchema,
+  VaultListResponse: contracts.vaultListResponseSchema,
+  VaultSyncListResponse: contracts.vaultSyncListResponseSchema,
+  CreateVaultRequest: contracts.createVaultRequestSchema,
+  UpdateVaultRequest: contracts.updateVaultRequestSchema,
+  VaultCreateResponse: contracts.vaultCreateResponseSchema,
+  VaultDocMetadata: contracts.vaultDocMetadataSchema,
+  VaultJoinRequest: contracts.vaultJoinRequestSchema,
+  VaultJoinResponse: contracts.vaultJoinResponseSchema,
+  VaultLeaveRequest: contracts.vaultLeaveRequestSchema,
+  VaultLeaveResponse: contracts.vaultLeaveResponseSchema,
+  VaultMigrationState: contracts.vaultMigrationStateSchema,
+  VaultMigrationClaimRequest: contracts.vaultMigrationClaimRequestSchema,
+  VaultMigrationFlipRequest: contracts.vaultMigrationFlipRequestSchema,
+  VaultVersionConflictResponse: contracts.vaultVersionConflictResponseSchema,
+  PortfolioVaultState: contracts.portfolioVaultStateSchema,
+  SetPortfolioAliasRequest: contracts.setPortfolioAliasRequestSchema,
   ParanoidMediaStateResponse: contracts.paranoidMediaStateResponseSchema,
   ParanoidMediaTransitionRequest: contracts.paranoidMediaTransitionRequestSchema,
   ParanoidMediaTransitionResponse: contracts.paranoidMediaTransitionResponseSchema,
@@ -235,6 +254,7 @@ const componentSchemas = {
   NewsResponse: contracts.newsResponseSchema,
   NewsDigestResponse: contracts.newsDigestResponseSchema,
   SplitsResponse: contracts.splitsResponseSchema,
+  FundamentalsResponse: contracts.fundamentalsResponseSchema,
   DividendCalendarResponse: contracts.dividendCalendarResponseSchema,
   ProjectedDividendIncomeResponse: contracts.projectedDividendIncomeResponseSchema,
 
@@ -275,6 +295,9 @@ const componentSchemas = {
   TaxSettingsResponse: contracts.taxSettingsResponseSchema,
   UpdateTaxSettingsRequest: contracts.updateTaxSettingsRequestSchema,
   PortfolioTaxSettingsResponse: contracts.portfolioTaxSettingsResponseSchema,
+  // Tax year locking (§16 2026-08-07)
+  UnlockTaxYearRequest: contracts.unlockTaxYearRequestSchema,
+  TaxYearLockStateResponse: contracts.taxYearLockStateResponseSchema,
   CreateDividendRequest: contracts.createDividendRequestSchema,
   CreateDividendResponse: contracts.createDividendResponseSchema,
   DividendListResponse: contracts.dividendListResponseSchema,
@@ -459,6 +482,8 @@ const componentSchemas = {
   UpdateAccountSettingsRequest: contracts.updateAccountSettingsRequestSchema,
   HomeLayoutResponse: contracts.homeLayoutResponseSchema,
   UpdateHomeLayoutRequest: contracts.updateHomeLayoutRequestSchema,
+  WidgetLayoutResponse: contracts.widgetLayoutResponseSchema,
+  UpdateWidgetLayoutRequest: contracts.updateWidgetLayoutRequestSchema,
 
   // Telegram + Discord channels (§13.4 V4-P10)
   TelegramSettingsResponse: contracts.telegramSettingsResponseSchema,
@@ -564,6 +589,8 @@ interface EndpointDef {
   path: string;
   tag: string;
   summary: string;
+  /** Additional wire semantics that are too important to hide in schema fields. */
+  description?: string;
   /** Public (`P`) routes need no session; everything else is session-guarded. */
   public?: boolean;
   params?: z.AnyZodObject;
@@ -1990,6 +2017,17 @@ const endpoints: EndpointDef[] = [
   },
   {
     method: 'get',
+    path: '/assets/{id}/intel/fundamentals',
+    tag: 'Assets',
+    summary:
+      'Revenue, statement line items and snapshot ratios (period=annual|quarterly, limit clamped to 1..12).',
+    params: contracts.assetIdParamSchema,
+    query: contracts.fundamentalsQuerySchema,
+    status: 200,
+    response: R.FundamentalsResponse,
+  },
+  {
+    method: 'get',
     path: '/assets/portfolio/dividend-calendar',
     tag: 'Assets',
     summary: 'Upcoming dividend ex/pay dates across the caller’s held + watchlist assets.',
@@ -2091,8 +2129,13 @@ const endpoints: EndpointDef[] = [
     method: 'get',
     path: '/portfolios/{portfolioId}/cash',
     tag: 'Portfolios',
-    summary: 'Cash movements + current balance.',
+    summary: 'Paged cash movements + current balance.',
+    description:
+      `Returns cash movements newest first (executedAt descending, then id ascending). ` +
+      `Requests without limit return at most ${contracts.CASH_MOVEMENTS_DEFAULT_LIMIT} rows; ` +
+      'follow nextCursor to retrieve older rows.',
     params: contracts.portfolioIdParamSchema,
+    query: contracts.cashMovementsQuerySchema,
     status: 200,
     response: R.CashMovementsResponse,
   },
@@ -2319,7 +2362,9 @@ const endpoints: EndpointDef[] = [
     tag: 'Portfolios',
     summary: 'Cursor-paged transaction ledger.',
     params: contracts.portfolioIdParamSchema,
-    query: contracts.transactionListQuerySchema,
+    // OpenAPI registers the query's object shape; the route still uses the
+    // outer refinement that rejects a cursor from the other ordering mode.
+    query: contracts.transactionListQuerySchema.innerType(),
     status: 200,
     response: R.TransactionListResponse,
   },
@@ -3925,6 +3970,31 @@ const endpoints: EndpointDef[] = [
     response: R.HomeLayoutResponse,
   },
 
+  // Per-account widget compositions, one per client namespace (board #68)
+  {
+    method: 'get',
+    path: '/settings/widget-layout/{namespace}',
+    tag: 'Settings',
+    summary: 'The caller’s saved widget composition for one client namespace.',
+    description:
+      '`mobile` and `web` are two independent compositions. Answers `404 WIDGET_LAYOUT_NOT_FOUND` when this account never saved this namespace; any namespace outside the enum is a `400`.',
+    params: contracts.widgetLayoutNamespaceParamSchema,
+    status: 200,
+    response: R.WidgetLayoutResponse,
+  },
+  {
+    method: 'put',
+    path: '/settings/widget-layout/{namespace}',
+    tag: 'Settings',
+    summary: 'Replace the caller’s widget composition for one client namespace.',
+    description:
+      'Upsert, last write wins. The document is opaque — stored and returned verbatim, validated only as a JSON object serialising to at most 32 KB (`413 WIDGET_LAYOUT_TOO_LARGE` past the cap).',
+    params: contracts.widgetLayoutNamespaceParamSchema,
+    body: R.UpdateWidgetLayoutRequest,
+    status: 200,
+    response: R.WidgetLayoutResponse,
+  },
+
   // Telegram + Discord channels (§13.4 V4-P10)
   {
     method: 'get',
@@ -4011,6 +4081,38 @@ const endpoints: EndpointDef[] = [
     body: R.UpdateTaxSettingsRequest,
     status: 200,
     response: R.TaxSettingsResponse,
+  },
+
+  // Tax year locking (§16 2026-08-07) — session-only (never reachable by a
+  // bearer token): elapsed years auto-lock; the unlock ritual re-verifies the
+  // account password and opens ONE named year for amendments until re-locked.
+  {
+    method: 'get',
+    path: '/settings/taxes/years',
+    tag: 'Settings',
+    summary: 'The caller’s tax-year lock state: current year + explicitly-unlocked years.',
+    status: 200,
+    response: R.TaxYearLockStateResponse,
+  },
+  {
+    method: 'post',
+    path: '/settings/taxes/years/{year}/unlock',
+    tag: 'Settings',
+    summary:
+      'Unlock one elapsed tax year for amendments (password re-auth; audited; stays open until re-locked).',
+    params: contracts.taxYearLockParamsSchema,
+    body: R.UnlockTaxYearRequest,
+    status: 200,
+    response: R.TaxYearLockStateResponse,
+  },
+  {
+    method: 'post',
+    path: '/settings/taxes/years/{year}/relock',
+    tag: 'Settings',
+    summary: 'Re-lock a previously unlocked tax year (audited; idempotent).',
+    params: contracts.taxYearLockParamsSchema,
+    status: 200,
+    response: R.TaxYearLockStateResponse,
   },
 
   // Personal API keys (§6.13, V2-P12) — session-only (never reachable by a key).
@@ -4221,7 +4323,7 @@ const endpoints: EndpointDef[] = [
     path: '/vault',
     tag: 'Vault',
     summary:
-      'Read the account’s opaque encrypted vault blob (application/octet-stream) with an ETag of its version. 404 when no vault exists; 304 when If-None-Match already holds the current version. The server never decrypts or parses the ciphertext.',
+      'Read the account’s opaque encrypted vault blob (application/octet-stream) with an ETag of its version. 404 when no vault exists; 304 when If-None-Match already holds the current version; 409 VAULT_SERVER_MEDIUM_INACTIVE for a normal-mode account outside a live owner enable window, and for any bearer while the account is not paranoid. The server never decrypts or parses the ciphertext.',
     status: 200,
     response: z.string().openapi({
       type: 'string',
@@ -4313,6 +4415,224 @@ const endpoints: EndpointDef[] = [
     bodyContentType: 'application/octet-stream',
     status: 204,
   },
+
+  // ── Vaults v2 (`docs/VAULTS_V2_DESIGN.md` §3) ────────────────────────────
+  // The multi-vault surface beside the account-singleton routes above. CRUD and
+  // the two per-portfolio transitions are session-only; the `{vaultId}`-scoped
+  // documents accept the same `vault:sync` bearer exception under If-Match CAS.
+  {
+    method: 'post',
+    path: '/auth/reauth',
+    tag: 'Auth',
+    summary:
+      'Generic session step-up: re-verify the CURRENT session user’s password. 204 on success, 401 on mismatch, 429 under the dedicated per-account throttle. Mints nothing — the caller gates its own surface on the response, so there is no artifact to store or replay. `purpose` is audit provenance only and never affects what is verified. Cookie-session only.',
+    body: contracts.reauthRequestSchema,
+    status: 204,
+  },
+  {
+    method: 'get',
+    path: '/vaults',
+    tag: 'Vault',
+    summary:
+      'List the caller’s vaults. A cookie session receives the full DTO (name, backends, portfolio count, timestamps); a `vault:sync` bearer receives the narrow sync projection — ids, names and backends only.',
+    status: 200,
+    response: contracts.vaultListResponseSchema,
+  },
+  {
+    method: 'post',
+    path: '/vaults',
+    tag: 'Vault',
+    summary:
+      'Create a vault from a CLIENT-BUILT header. The server stores the ciphertext blindly at version 1 and never parses it; a drive-only vault supplies no header at all. 409 VAULT_NAME_TAKEN on a duplicate name, 413 VAULT_DOC_TOO_LARGE above the 1 MiB header cap. Owning browser session only.',
+    body: contracts.createVaultRequestSchema,
+    status: 201,
+    response: contracts.vaultCreateResponseSchema,
+  },
+  {
+    method: 'patch',
+    path: '/vaults/{vaultId}',
+    tag: 'Vault',
+    summary:
+      'Rename a vault and/or change its storage backend set. 404 VAULT_NOT_FOUND for a foreign or unknown id, 409 VAULT_NAME_TAKEN on a duplicate name. Owning browser session only.',
+    params: z.object({ vaultId: z.string().uuid() }),
+    body: contracts.updateVaultRequestSchema,
+    status: 200,
+    response: contracts.vaultSchema,
+  },
+  {
+    method: 'delete',
+    path: '/vaults/{vaultId}',
+    tag: 'Vault',
+    summary:
+      'Delete an EMPTY vault and its header. 409 VAULT_NOT_EMPTY while any portfolio still belongs to it or any portfolio document survives; 404 VAULT_NOT_FOUND otherwise. Owning browser session only.',
+    params: z.object({ vaultId: z.string().uuid() }),
+    status: 204,
+  },
+  {
+    method: 'get',
+    path: '/vaults/{vaultId}/header',
+    tag: 'Vault',
+    summary:
+      'Read a vault’s opaque header document with an ETag of its version. 304 when If-None-Match already holds it; 404 VAULT_NOT_FOUND / VAULT_DOC_NOT_FOUND otherwise. Never decrypted or parsed server-side.',
+    params: z.object({ vaultId: z.string().uuid() }),
+    status: 200,
+    response: z.string().openapi({
+      type: 'string',
+      format: 'binary',
+      description: 'Opaque vault header ciphertext (never interpreted server-side).',
+    }),
+    responseContentType: 'application/octet-stream',
+  },
+  {
+    method: 'put',
+    path: '/vaults/{vaultId}/header',
+    tag: 'Vault',
+    summary:
+      'Compare-and-swap write of a vault’s header. `If-None-Match: *` creates it; `If-Match: "<version>"` replaces the matching version. A stale or missing precondition returns 412 VAULT_VERSION_CONFLICT / 428 and never overwrites newer ciphertext; above 1 MiB it is 413 VAULT_DOC_TOO_LARGE.',
+    params: z.object({ vaultId: z.string().uuid() }),
+    body: z.string().openapi({
+      type: 'string',
+      format: 'binary',
+      description: 'Opaque vault header ciphertext (never interpreted server-side).',
+    }),
+    bodyContentType: 'application/octet-stream',
+    status: 200,
+    response: contracts.vaultDocMetadataSchema,
+  },
+  {
+    method: 'get',
+    path: '/vaults/{vaultId}/portfolios/{portfolioId}',
+    tag: 'Vault',
+    summary:
+      'Read one vaulted portfolio’s opaque document with an ETag of its version. Each portfolio blob is versioned independently, so two devices editing two portfolios of one vault never conflict.',
+    params: z.object({ vaultId: z.string().uuid(), portfolioId: z.string().uuid() }),
+    status: 200,
+    response: z.string().openapi({
+      type: 'string',
+      format: 'binary',
+      description: 'Opaque vaulted-portfolio ciphertext (never interpreted server-side).',
+    }),
+    responseContentType: 'application/octet-stream',
+  },
+  {
+    method: 'put',
+    path: '/vaults/{vaultId}/portfolios/{portfolioId}',
+    tag: 'Vault',
+    summary:
+      'Compare-and-swap write of one vaulted portfolio’s document, with the same precondition rules as the header. The portfolio must already belong to this vault — a blob can never be minted for an unrelated portfolio id. Cap 8 MiB.',
+    params: z.object({ vaultId: z.string().uuid(), portfolioId: z.string().uuid() }),
+    body: z.string().openapi({
+      type: 'string',
+      format: 'binary',
+      description: 'Opaque vaulted-portfolio ciphertext (never interpreted server-side).',
+    }),
+    bodyContentType: 'application/octet-stream',
+    status: 200,
+    response: contracts.vaultDocMetadataSchema,
+  },
+  {
+    method: 'get',
+    path: '/vaults/{vaultId}/common',
+    tag: 'Vault',
+    summary:
+      'Read a vault’s opaque `common` document — the account/vault-scoped entity kinds (custom assets, tags, rules, budgets, tax settings), namespaced per vault. Independently CAS-versioned. Cap 4 MiB.',
+    params: z.object({ vaultId: z.string().uuid() }),
+    status: 200,
+    response: z.string().openapi({
+      type: 'string',
+      format: 'binary',
+      description: 'Opaque vault common-document ciphertext (never interpreted server-side).',
+    }),
+    responseContentType: 'application/octet-stream',
+  },
+  {
+    method: 'put',
+    path: '/vaults/{vaultId}/common',
+    tag: 'Vault',
+    summary:
+      'Compare-and-swap write of a vault’s `common` document, with the same precondition rules as the header. Cap 4 MiB; a 412 carries the server’s `currentVersion` at the top level of the body.',
+    params: z.object({ vaultId: z.string().uuid() }),
+    body: z.string().openapi({
+      type: 'string',
+      format: 'binary',
+      description: 'Opaque vault common-document ciphertext (never interpreted server-side).',
+    }),
+    bodyContentType: 'application/octet-stream',
+    status: 200,
+    response: contracts.vaultDocMetadataSchema,
+  },
+  {
+    method: 'get',
+    path: '/vaults/migration',
+    tag: 'Vault',
+    summary:
+      'Read the v1 → v2 migration state of the legacy account vault: whether one exists, who holds the claim and until when, and the successor vault once the flip has committed. Owning browser session only.',
+    status: 200,
+    response: contracts.vaultMigrationStateSchema,
+  },
+  {
+    method: 'post',
+    path: '/vaults/migration/claim',
+    tag: 'Vault',
+    summary:
+      'Claim the v1 → v2 migration for 15 minutes. One compare-and-swap decides the winner; a losing client gets 409 VAULT_MIGRATION_CLAIMED with the live claim so it can wait. Re-claiming with the same nonce resumes a crashed migration. Owning browser session only.',
+    body: contracts.vaultMigrationClaimRequestSchema,
+    status: 200,
+    response: contracts.vaultMigrationStateSchema,
+  },
+  {
+    method: 'post',
+    path: '/vaults/migration/renew',
+    tag: 'Vault',
+    summary:
+      'Extend a LIVE claim held by this same nonce. A lapsed or foreign claim is 409 VAULT_MIGRATION_CLAIMED — the holder must claim again, where it may legitimately lose. Owning browser session only.',
+    body: contracts.vaultMigrationClaimRequestSchema,
+    status: 200,
+    response: contracts.vaultMigrationStateSchema,
+  },
+  {
+    method: 'post',
+    path: '/vaults/migration/flip',
+    tag: 'Vault',
+    summary:
+      'The COMMIT POINT: one compare-and-swap sets `migratedTo` on the legacy vault, after which it is a read-only tombstone and the named v2 vault is authoritative. Requires a live claim for this nonce (else 409 VAULT_MIGRATION_INCOMPLETE) and a v2 vault owned by this account. Owning browser session only.',
+    body: contracts.vaultMigrationFlipRequestSchema,
+    status: 200,
+    response: contracts.vaultMigrationStateSchema,
+  },
+  {
+    method: 'post',
+    path: '/portfolios/{portfolioId}/vault',
+    tag: 'Vault',
+    summary:
+      'JOIN — move a portfolio into a vault. One transaction stores the client-encrypted blob, hard-deletes every cleartext row of that portfolio and sets its vault membership; nothing commits unless all three do. 409 on an already-vaulted portfolio or an active mirrorchain membership. Owning browser session only.',
+    params: z.object({ portfolioId: z.string().uuid() }),
+    body: contracts.vaultJoinRequestSchema,
+    status: 200,
+    response: contracts.vaultJoinResponseSchema,
+  },
+  {
+    method: 'patch',
+    path: '/portfolios/{portfolioId}/alias',
+    tag: 'Vault',
+    summary:
+      'Set (or clear, with null) the cleartext display alias of a VAULTED portfolio — what a locked row renders, since a locked vault cannot be decrypted. Writes only this column: `visibility` stays unreachable while vaulted, which is why the ordinary rename route is killed and this one exists. 409 on a normal portfolio (rename it on the portfolio route). Owning browser session only.',
+    params: z.object({ portfolioId: z.string().uuid() }),
+    body: contracts.setPortfolioAliasRequestSchema,
+    status: 200,
+    response: contracts.portfolioVaultStateSchema,
+  },
+  {
+    method: 'delete',
+    path: '/portfolios/{portfolioId}/vault',
+    tag: 'Vault',
+    summary:
+      'LEAVE — move a portfolio back out of its vault. The client posts the decrypted rows; one transaction repopulates them, clears the membership and retires the ciphertext. Re-sending after a committed leave is acknowledged idempotently. Owning browser session only.',
+    params: z.object({ portfolioId: z.string().uuid() }),
+    body: contracts.vaultLeaveRequestSchema,
+    status: 200,
+    response: contracts.vaultLeaveResponseSchema,
+  },
 ];
 
 const jsonContent = (schema: z.ZodTypeAny) => ({ 'application/json': { schema } });
@@ -4371,6 +4691,7 @@ for (const ep of endpoints) {
     path: ep.path,
     tags: [ep.tag],
     summary: ep.summary,
+    ...(ep.description ? { description: ep.description } : {}),
     security,
     request: {
       ...(ep.params ? { params: ep.params } : {}),

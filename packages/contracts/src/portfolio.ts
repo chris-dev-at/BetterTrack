@@ -53,6 +53,34 @@ export const portfolioVisibilitySchema = z.enum(['private', 'friends']);
 export type PortfolioVisibility = z.infer<typeof portfolioVisibilitySchema>;
 
 /**
+ * Portfolio kind — the purpose category a portfolio is filed under. It drives
+ * the icon + hue a portfolio renders with in the switcher trigger, the switcher
+ * list and the portfolio settings page, so a long portfolio list stays scannable
+ * at a glance.
+ *
+ * ⚠️ NAMING: `kind` is the internal name only. To the user this is the
+ * portfolio's **Icon** — a colour plus a glyph, not a taxonomy they have to
+ * reason about. Rename the copy, never these tokens.
+ *
+ * ⚠️ FROZEN ORDER + TOKENS. This is the graduated form of the web client's
+ * `portfolioKinds.ts` localStorage stopgap, and the mobile app ported the same
+ * five hues off it (board #69). The tokens and their order are the wire
+ * contract both clients already ship: never rename, renumber or reorder them.
+ * A new kind goes at the END and brings its own hue.
+ */
+export const PORTFOLIO_KINDS = ['private', 'family', 'business', 'savings', 'property'] as const;
+export const portfolioKindSchema = z.enum(PORTFOLIO_KINDS);
+export type PortfolioKind = z.infer<typeof portfolioKindSchema>;
+
+/**
+ * The kind an unclassified portfolio (`kind === null`) renders as. Kept as a
+ * *client-side* fallback rather than a column default on purpose: a stored
+ * `null` means "the user never chose", which is what lets a client that carried
+ * its own local kinds fall back to them until the first server write.
+ */
+export const DEFAULT_PORTFOLIO_KIND: PortfolioKind = 'private';
+
+/**
  * MIRRORCHAIN badge on a portfolio summary (V5-P7 M5, design §11): present
  * exactly when this portfolio is a **synced copy of an active chain**. The
  * portfolio header renders the avatar stack + syncing state off this field;
@@ -114,6 +142,18 @@ export const portfolioSummarySchema = z
      */
     archivedAt: z.string().datetime().nullable(),
     /**
+     * The portfolio's kind — its Icon, in user-facing copy (board #69). `null`
+     * when the user never chose one; the client renders
+     * {@link DEFAULT_PORTFOLIO_KIND} then, and a client that carried its own
+     * local kinds before this field existed may fall back to those until the
+     * first server write.
+     *
+     * Optional in the schema so pre-#69 fixtures still parse and both clients
+     * adopt the field with zero call-site changes (the server always emits it —
+     * this mirrors how `profileIcon` graduated onto the social DTOs).
+     */
+    kind: portfolioKindSchema.nullable().optional(),
+    /**
      * MIRRORCHAIN synced-copy badge (V5-P7 M5, design §11): present exactly
      * when this portfolio is a synced copy of an active chain. Absent on every
      * normal portfolio, so pre-M5 clients are unaffected.
@@ -154,7 +194,15 @@ export type PortfolioListResponse = z.infer<typeof portfolioListResponseSchema>;
 
 /** `POST /portfolios` body — create a named portfolio (§13.2 V2-P8). */
 export const createPortfolioRequestSchema = z
-  .object({ name: z.string().trim().min(1).max(120) })
+  .object({
+    name: z.string().trim().min(1).max(120),
+    /**
+     * The Icon the creation flow picked (board #69). Omitted → the row is
+     * stored unclassified (`null`) and renders as {@link DEFAULT_PORTFOLIO_KIND},
+     * so the create body stays byte-compatible for callers that never send it.
+     */
+    kind: portfolioKindSchema.optional(),
+  })
   .strict();
 export type CreatePortfolioRequest = z.infer<typeof createPortfolioRequestSchema>;
 
@@ -173,7 +221,14 @@ export const updatePortfolioRequestSchema = z
   .object({
     name: z.string().trim().min(1).max(120).optional(),
     visibility: portfolioVisibilitySchema.optional(),
+    /** Required when the legacy visibility write would widen the current audience. */
+    confirmWiden: z.boolean().optional(),
     defaultPayFromCash: z.boolean().optional(),
+    /**
+     * Set the portfolio's Icon (board #69). Only a concrete kind is accepted —
+     * the picker has no "none" option, so there is no clear-back-to-null verb.
+     */
+    kind: portfolioKindSchema.optional(),
   })
   .strict();
 export type UpdatePortfolioRequest = z.infer<typeof updatePortfolioRequestSchema>;
@@ -375,6 +430,41 @@ export const portfolioTaxSettingsResponseSchema = z
   })
   .strict();
 export type PortfolioTaxSettingsResponse = z.infer<typeof portfolioTaxSettingsResponseSchema>;
+
+// --- Tax year locking (owner directive 2026-08-07, §16) -----------------------
+
+/** Route params for `/settings/taxes/years/:year/(unlock|relock)`. */
+export const taxYearLockParamsSchema = z
+  .object({ year: z.coerce.number().int().min(1900).max(3000) })
+  .strict();
+
+/**
+ * `POST /settings/taxes/years/:year/unlock` body — the explicit unlock ritual.
+ * Amending a passed tax year is legal reality (AT/DE), but it must never happen
+ * casually: the endpoint is cookie-session only (never bearer) and re-verifies
+ * the account password before the year opens for amendments.
+ */
+export const unlockTaxYearRequestSchema = z
+  .object({ password: z.string().min(1).max(1024) })
+  .strict();
+export type UnlockTaxYearRequest = z.infer<typeof unlockTaxYearRequestSchema>;
+
+/**
+ * `GET /settings/taxes/years` (and the unlock/relock responses): the caller's
+ * tax-year lock state. Every Vienna year before `currentYear` is LOCKED unless
+ * it appears in `unlockedYears` — a year the user explicitly opened for
+ * amendments, which stays open until they explicitly re-lock it. The current
+ * (open) year is never lockable and never appears here.
+ */
+export const taxYearLockStateResponseSchema = z
+  .object({
+    /** The current Vienna tax year — years before it auto-lock at rollover. */
+    currentYear: z.number().int(),
+    /** Elapsed years explicitly unlocked for amendments, ascending. */
+    unlockedYears: z.array(z.number().int()),
+  })
+  .strict();
+export type TaxYearLockStateResponse = z.infer<typeof taxYearLockStateResponseSchema>;
 
 /**
  * Reject a manual tax entry that states both an absolute amount and a rate —
@@ -625,19 +715,94 @@ export const transactionListResponseSchema = z
   .object({
     items: z.array(transactionSchema),
     nextCursor: z.string().nullable(),
+    /** Complete portfolio-wide source facet, returned only when explicitly requested. */
+    sourceTags: z.array(sourceTagSchema).optional(),
   })
   .strict();
 export type TransactionListResponse = z.infer<typeof transactionListResponseSchema>;
 
-/** Cursor pagination query for the transaction ledger, with an optional source filter (V5-P0c). */
+export const TRANSACTION_LIST_ORDERS = ['id', 'executedAt'] as const;
+export const transactionListOrderSchema = z.enum(TRANSACTION_LIST_ORDERS);
+export type TransactionListOrder = z.infer<typeof transactionListOrderSchema>;
+
+const TRANSACTION_EXECUTED_AT_CURSOR_SEPARATOR = '|';
+const transactionExecutedAtCursorPayloadSchema = z
+  .object({
+    executedAt: z.string().datetime(),
+    id: z.string().uuid(),
+  })
+  .strict();
+export type TransactionExecutedAtCursor = z.infer<typeof transactionExecutedAtCursorPayloadSchema>;
+
+/** Encode the `(executedAt, id)` keyset used only by the executed-time ordering mode. */
+export function encodeTransactionExecutedAtCursor(cursor: TransactionExecutedAtCursor): string {
+  const parsed = transactionExecutedAtCursorPayloadSchema.parse(cursor);
+  return `${parsed.executedAt}${TRANSACTION_EXECUTED_AT_CURSOR_SEPARATOR}${parsed.id}`;
+}
+
+/** Decode an executed-time cursor without weakening the legacy UUID cursor contract. */
+export function decodeTransactionExecutedAtCursor(
+  value: string,
+): TransactionExecutedAtCursor | null {
+  const separator = value.indexOf(TRANSACTION_EXECUTED_AT_CURSOR_SEPARATOR);
+  if (separator <= 0 || separator !== value.lastIndexOf(TRANSACTION_EXECUTED_AT_CURSOR_SEPARATOR)) {
+    return null;
+  }
+  const parsed = transactionExecutedAtCursorPayloadSchema.safeParse({
+    executedAt: value.slice(0, separator),
+    id: value.slice(separator + 1),
+  });
+  return parsed.success ? parsed.data : null;
+}
+
+export const transactionExecutedAtCursorSchema = z
+  .string()
+  .max(128)
+  .refine((value) => decodeTransactionExecutedAtCursor(value) !== null, {
+    message: 'Invalid executed-time transaction cursor.',
+  });
+
+const transactionQueryBooleanSchema = z
+  .union([z.boolean(), z.enum(['true', 'false'])])
+  .default(false)
+  .transform((value) => value === true || value === 'true');
+
+/**
+ * Cursor pagination query for the transaction ledger. The default `id` mode is
+ * the legacy UUIDv7 keyset used by full-ledger walks. `executedAt` is an opt-in
+ * display ordering with its own compound cursor, so the two walks cannot be
+ * silently mixed.
+ */
 export const transactionListQuerySchema = z
   .object({
-    cursor: z.string().uuid().optional(),
+    cursor: z.string().max(128).optional(),
     limit: z.coerce.number().int().min(1).max(200).optional(),
     /** Return only rows carrying this exact source tag (V5-P0c). */
     source: sourceTagSchema.optional(),
+    /** Return only rows for this asset (for an on-demand holding expansion). */
+    assetId: z.string().uuid().optional(),
+    order: transactionListOrderSchema.default('id'),
+    /** Add the complete portfolio-wide distinct-source facet to the response. */
+    includeSourceTags: transactionQueryBooleanSchema,
   })
-  .strict();
+  .strict()
+  .superRefine((query, ctx) => {
+    if (query.cursor === undefined) return;
+    const valid =
+      query.order === 'executedAt'
+        ? transactionExecutedAtCursorSchema.safeParse(query.cursor).success
+        : z.string().uuid().safeParse(query.cursor).success;
+    if (!valid) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['cursor'],
+        message:
+          query.order === 'executedAt'
+            ? 'Expected an executed-time transaction cursor.'
+            : 'Expected a UUID transaction cursor.',
+      });
+    }
+  });
 export type TransactionListQuery = z.infer<typeof transactionListQuerySchema>;
 
 // --- Holdings + totals (`GET /portfolios/:id`) ------------------------------
@@ -719,11 +884,55 @@ export const portfolioHistoryRangeSchema = z.enum(PORTFOLIO_HISTORY_RANGES);
 export type PortfolioHistoryRange = z.infer<typeof portfolioHistoryRangeSchema>;
 
 /**
- * `GET /portfolios/:id/history?range=&overlay=` query. `overlay=true` additionally
- * returns each held asset's own daily price series (issue #122) so the chart
- * can overlay them on the portfolio curve; it arrives as a query-string token,
- * so it is an explicit `'true' | 'false'` enum rather than a boolean coercion
- * (`z.coerce.boolean()` would turn the literal string `"false"` into `true`).
+ * Client-selectable series interval (IN3, board #76 item 2). `auto` keeps each
+ * range's established resolution — EXCEPT 1D, where `auto` now serves the finer
+ * 5-minute grid (~288 grid marks worst-case for a 24/7 asset, ~156 over a 13-hour
+ * trading day; comfortably inside the shared point budget). An explicit
+ * sub-daily interval is honored exactly when the range can serve that grid
+ * within the point budget; a request FINER than the range can serve is
+ * coarsened to the finest grid that fits — never rejected (the "finest-fit"
+ * rule) — and the response's `interval` echoes what was actually served. `1d`
+ * always means the plain daily grid (the pre-#556 daily slice on 1D/1W/1M; the
+ * standard daily/downsampled series elsewhere). Ranges without sub-daily data
+ * (6M/1Y/5Y/MAX) resolve every request to `1d` with the series unchanged.
+ */
+export const PORTFOLIO_HISTORY_INTERVALS = ['auto', '1m', '5m', '15m', '30m', '1h', '1d'] as const;
+export const portfolioHistoryIntervalSchema = z.enum(PORTFOLIO_HISTORY_INTERVALS);
+export type PortfolioHistoryInterval = z.infer<typeof portfolioHistoryIntervalSchema>;
+
+/**
+ * The grid the server actually served, echoed on every history response so the
+ * client knows what it got (IN3). Auto-resolution per range: 1D → `5m`,
+ * 1W → `1h`, 1M → `144m`, 6M/1Y/5Y/MAX → `1d`. Two values differ from the
+ * request enum: `144m` is the 1M budget grid (the closest UTC-day divisor to
+ * the ~2.5-hour point-budget target) — servable only by resolution, never
+ * requestable directly; `1m` never appears, because no range can serve a
+ * 1-minute grid within the point budget (a 1D request for `1m` resolves to
+ * `5m` under the finest-fit rule). On the sub-daily grids the value describes
+ * the QUANTIZATION step: grid marks exist only where intraday data does, so
+ * sparse candles yield fewer points at that spacing, exactly as before.
+ */
+export const PORTFOLIO_HISTORY_RESOLVED_INTERVALS = [
+  '5m',
+  '15m',
+  '30m',
+  '1h',
+  '144m',
+  '1d',
+] as const;
+export const portfolioHistoryResolvedIntervalSchema = z.enum(PORTFOLIO_HISTORY_RESOLVED_INTERVALS);
+export type PortfolioHistoryResolvedInterval = z.infer<
+  typeof portfolioHistoryResolvedIntervalSchema
+>;
+
+/**
+ * `GET /portfolios/:id/history?range=&overlay=&interval=` query. `overlay=true`
+ * additionally returns each held asset's own daily price series (issue #122) so
+ * the chart can overlay them on the portfolio curve; it arrives as a
+ * query-string token, so it is an explicit `'true' | 'false'` enum rather than
+ * a boolean coercion (`z.coerce.boolean()` would turn the literal string
+ * `"false"` into `true`). `interval` selects the series grid (IN3, see
+ * {@link portfolioHistoryIntervalSchema}); omitted ⇒ `auto`.
  */
 export const portfolioHistoryQuerySchema = z
   .object({
@@ -732,6 +941,7 @@ export const portfolioHistoryQuerySchema = z
       .enum(['true', 'false'])
       .default('false')
       .transform((v) => v === 'true'),
+    interval: portfolioHistoryIntervalSchema.default('auto'),
   })
   .strict();
 export type PortfolioHistoryQuery = z.infer<typeof portfolioHistoryQuerySchema>;
@@ -742,11 +952,12 @@ export const portfolioHistoryPointSchema = z
     /** The calendar day the point falls on (ISO `YYYY-MM-DD`), UTC. */
     date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
     /**
-     * Exact instant of an **intraday** point (ISO-8601), present on the
-     * sub-daily curves 1D/1W/1M (V5-P1 arc d, issue #556). Absent on the
-     * daily-grid ranges (6M/1Y/5Y/MAX), where `date` alone locates the point.
-     * Multiple intraday points share a `date` and are disambiguated by `time`;
-     * the client keys the chart on `time ?? date`.
+     * Exact instant of an **intraday** point (ISO-8601), present whenever the
+     * response's resolved `interval` is sub-daily (the 1D/1W/1M grids, V5-P1
+     * arc d, issue #556). Absent on the daily grid — the 6M/1Y/5Y/MAX ranges,
+     * and a short range served with `interval=1d` (IN3) — where `date` alone
+     * locates the point. Multiple intraday points share a `date` and are
+     * disambiguated by `time`; the client keys the chart on `time ?? date`.
      */
     time: z.string().datetime().optional(),
     valueEur: z.number(),
@@ -804,6 +1015,12 @@ export type PortfolioPerformancePoint = z.infer<typeof portfolioPerformancePoint
 export const portfolioHistoryResponseSchema = z
   .object({
     range: portfolioHistoryRangeSchema,
+    /**
+     * The grid actually served (IN3): the resolved form of the request's
+     * `interval` — `auto` and finer-than-servable requests land on the range's
+     * finest-fit grid (see {@link portfolioHistoryResolvedIntervalSchema}).
+     */
+    interval: portfolioHistoryResolvedIntervalSchema,
     baseCurrency: currencyCodeSchema,
     points: z.array(portfolioHistoryPointSchema),
     /** Performance-% display mode data (issue #125), aligned 1:1 with `points`
@@ -981,25 +1198,37 @@ export const cashMovementSchema = z
 export type CashMovement = z.infer<typeof cashMovementSchema>;
 
 /**
- * `GET /portfolios/:id/cash` response — every movement (all sources,
- * chronological), the portfolio's rolled-up balance across all sources, and the
- * sources themselves (archived ones included, so historical movements can
- * always resolve their source's name) with per-source balances — the liquidity
- * split (V3-P3).
+ * `GET /portfolios/:id/cash?cursor=` response — one newest-first movement page,
+ * the portfolio's rolled-up balance across all sources, and the sources
+ * themselves (archived ones included, so historical movements can always
+ * resolve their source's name) with per-source balances — the liquidity split
+ * (V3-P3).
  */
 export const cashMovementsResponseSchema = z
   .object({
     balanceEur: z.number(),
     movements: z.array(cashMovementSchema),
     sources: z.array(cashSourceSchema),
+    nextCursor: z.string().uuid().nullable(),
   })
   .strict();
 export type CashMovementsResponse = z.infer<typeof cashMovementsResponseSchema>;
 
-/** `GET /portfolios/:id/cash?source=` query — optional source-tag filter (V5-P0c). */
+/** Default page size for `GET /portfolios/:id/cash`. */
+export const CASH_MOVEMENTS_DEFAULT_LIMIT = 50 as const;
+export const CASH_MOVEMENT_UNTAGGED_FILTER = 'untagged' as const;
+
+/**
+ * Cursor pagination for the cash ledger. `tag` is a cash-flow label id; the
+ * sentinel selects rows with no labels. `source` remains the provenance filter
+ * added in V5-P0c.
+ */
 export const cashMovementsQuerySchema = z
   .object({
+    cursor: z.string().uuid().optional(),
+    limit: z.coerce.number().int().min(1).max(200).optional(),
     source: sourceTagSchema.optional(),
+    tag: z.union([z.string().uuid(), z.literal(CASH_MOVEMENT_UNTAGGED_FILTER)]).optional(),
   })
   .strict();
 export type CashMovementsQuery = z.infer<typeof cashMovementsQuerySchema>;
@@ -1356,10 +1585,15 @@ export const taxYearSummarySchema = z
     /** German year-end block (V5-P4) — present exactly when the year has DE-taxed rows. */
     de: taxYearDeSummarySchema.optional(),
     /**
-     * Closed-year marker (#635): true for Vienna years before the current one,
-     * which keep their recording-time settlements and are never re-derived by
-     * settings changes. Open years (key omitted) re-derive live under the
-     * portfolio's CURRENT tax settings and self-heal on every read.
+     * Tax-year lock state (owner directive 2026-08-07, §16; supersedes the
+     * bare closed-year marker of #635). Present exactly for Vienna years
+     * before the current one: `true` = the year is LOCKED — the API refuses
+     * every mutation dated into it (409 `TAX_YEAR_LOCKED`) until the user
+     * runs the explicit unlock ritual; `false` = the year is elapsed but
+     * UNLOCKED for amendments (backdated entries settle append-only through
+     * the closed-year machinery) until explicitly re-locked. Open years (key
+     * omitted) re-derive live under the portfolio's CURRENT tax settings and
+     * self-heal on every read.
      */
     locked: z.boolean().optional(),
   })

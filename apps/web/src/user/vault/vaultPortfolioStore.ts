@@ -1,5 +1,8 @@
 import {
+  CASH_MOVEMENTS_DEFAULT_LIMIT,
+  CASH_MOVEMENT_UNTAGGED_FILTER,
   cashEntryRequestSchema,
+  cashMovementsQuerySchema,
   cashMovementsResponseSchema,
   cashMovementResponseSchema,
   cashMovementSchema,
@@ -17,6 +20,7 @@ import {
   createTransactionsRequestSchema,
   customAssetListResponseSchema,
   customAssetSchema,
+  encodeTransactionExecutedAtCursor,
   portfolioAssetSchema,
   portfolioListResponseSchema,
   portfolioSummarySchema,
@@ -41,6 +45,7 @@ import {
   VAULT_ENTITY_KINDS,
   VAULT_ENTITY_ROW_SCHEMAS,
   type CashEntryRequest,
+  type CashMovementsQuery,
   type CashMovementsResponse,
   type CashMovementResponse,
   type CashPreviewRequest,
@@ -69,6 +74,7 @@ import {
   type TaxSettingsResponse,
   type Transaction,
   type TransactionInput,
+  type TransactionListOrder,
   type TransactionListResponse,
   type UpdateCashSourceRequest,
   type UpdateCustomAssetRequest,
@@ -196,7 +202,10 @@ export interface VaultStandingOrderOccurrenceResult {
  */
 export interface VaultPortfolioStore {
   listPortfolios(signal?: AbortSignal, includeArchived?: boolean): Promise<PortfolioListResponse>;
-  createPortfolio(name: CreatePortfolioRequest['name']): Promise<PortfolioSummary>;
+  createPortfolio(
+    name: CreatePortfolioRequest['name'],
+    kind?: CreatePortfolioRequest['kind'],
+  ): Promise<PortfolioSummary>;
   getPortfolio(portfolioId: string, signal?: AbortSignal): Promise<PortfolioResponse>;
   updatePortfolio(portfolioId: string, patch: UpdatePortfolioRequest): Promise<PortfolioSummary>;
   archivePortfolio(portfolioId: string): Promise<PortfolioSummary>;
@@ -220,7 +229,14 @@ export interface VaultPortfolioStore {
   putValuePoints(id: string, points: ValuePoint[]): Promise<ValuePointsResponse>;
   listTransactions(
     portfolioId: string,
-    params?: { cursor?: string; limit?: number; source?: string },
+    params?: {
+      cursor?: string;
+      limit?: number;
+      source?: string;
+      assetId?: string;
+      order?: TransactionListOrder;
+      includeSourceTags?: boolean;
+    },
     signal?: AbortSignal,
   ): Promise<TransactionListResponse>;
   createTransactions(portfolioId: string, inputs: TransactionInput[]): Promise<Transaction[]>;
@@ -255,7 +271,11 @@ export interface VaultPortfolioStore {
     sourceId: string,
     options?: { baseSeq?: number },
   ): Promise<CashSource>;
-  getCashMovements(portfolioId: string, signal?: AbortSignal): Promise<CashMovementsResponse>;
+  getCashMovements(
+    portfolioId: string,
+    params?: CashMovementsQuery,
+    signal?: AbortSignal,
+  ): Promise<CashMovementsResponse>;
   previewCash(
     portfolioId: string,
     body: CashPreviewRequest,
@@ -355,8 +375,10 @@ export function createVaultPortfolioStore(
       );
     },
 
-    async createPortfolio(name) {
-      const parsedName = createPortfolioRequestSchema.parse({ name }).name;
+    async createPortfolio(name, kind) {
+      const parsed = createPortfolioRequestSchema.parse(
+        kind === undefined ? { name } : { name, kind },
+      );
       const entity = await appendEntity(context, 'portfolio', (document, id, timestamp) => {
         const portfolios = portfolioSummariesFromDocument(document);
         const highestSortOrder = portfolios.reduce(
@@ -369,11 +391,12 @@ export function createVaultPortfolioStore(
           timestamp,
           strictPortfolioData({
             userId: portfolioOwnerUserId(document),
-            name: parsedName,
+            name: parsed.name,
             visibility: 'private',
             sortOrder: highestSortOrder + 1,
             defaultPayFromCash: false,
             archivedAt: null,
+            kind: parsed.kind ?? null,
           }),
         );
       });
@@ -590,30 +613,53 @@ export function createVaultPortfolioStore(
       const document = requireDocument(engine);
       requirePortfolio(document, portfolioId);
       const parsedParams = transactionListQuerySchema.parse(params);
-      const all = liveEntities(document, 'transaction')
+      const portfolioRows = liveEntities(document, 'transaction')
         .filter((entity) => stringField(entity.data, 'portfolioId') === portfolioId)
-        .map((entity) => ({ entity, transaction: transactionFromEntity(document, entity) }))
+        .map((entity) => ({ entity, transaction: transactionFromEntity(document, entity) }));
+      const sourceTags = [
+        ...new Set(portfolioRows.map(({ transaction }) => transaction.source)),
+      ].sort();
+      const all = portfolioRows
         .filter(
           ({ transaction }) =>
-            parsedParams.source == null || transaction.source === parsedParams.source,
+            (parsedParams.source == null || transaction.source === parsedParams.source) &&
+            (parsedParams.assetId == null || transaction.assetId === parsedParams.assetId),
         )
-        .sort(
-          (left, right) =>
-            right.transaction.executedAt.localeCompare(left.transaction.executedAt) ||
-            right.entity.id.localeCompare(left.entity.id),
+        .sort((left, right) =>
+          parsedParams.order === 'executedAt'
+            ? right.transaction.executedAt.localeCompare(left.transaction.executedAt) ||
+              right.entity.id.localeCompare(left.entity.id)
+            : right.entity.id.localeCompare(left.entity.id),
         );
       const cursorIndex =
         parsedParams.cursor == null
           ? -1
-          : all.findIndex(({ entity }) => entity.id === parsedParams.cursor);
+          : all.findIndex(({ entity, transaction }) =>
+              parsedParams.order === 'executedAt'
+                ? encodeTransactionExecutedAtCursor({
+                    executedAt: transaction.executedAt,
+                    id: entity.id,
+                  }) === parsedParams.cursor
+                : entity.id === parsedParams.cursor,
+            );
       const start = cursorIndex < 0 ? 0 : cursorIndex + 1;
       const limit = parsedParams.limit ?? 50;
       const page = all.slice(start, start + limit);
+      const tail = page.at(-1);
       return parseVaultData(
         () =>
           transactionListResponseSchema.parse({
             items: page.map(({ transaction }) => transaction),
-            nextCursor: start + page.length < all.length ? (page.at(-1)?.entity.id ?? null) : null,
+            nextCursor:
+              start + page.length < all.length && tail
+                ? parsedParams.order === 'executedAt'
+                  ? encodeTransactionExecutedAtCursor({
+                      executedAt: tail.transaction.executedAt,
+                      id: tail.entity.id,
+                    })
+                  : tail.entity.id
+                : null,
+            ...(parsedParams.includeSourceTags ? { sourceTags } : {}),
           }),
         'Vault transactions do not match the transaction-list contract.',
       );
@@ -874,17 +920,34 @@ export function createVaultPortfolioStore(
       return currentCashSource(requireDocument(engine), entity);
     },
 
-    async getCashMovements(portfolioId, signal) {
+    async getCashMovements(portfolioId, params = {}, signal) {
       signal?.throwIfAborted();
       const document = requireDocument(engine);
       requirePortfolio(document, portfolioId);
+      const parsedParams = cashMovementsQuerySchema.parse(params);
       const all = liveEntities(document, 'cashMovement')
         .filter((entity) => stringField(entity.data, 'portfolioId') === portfolioId)
         .map(cashMovementFromEntity)
+        .filter((movement) => {
+          if (parsedParams.source != null && movement.source !== parsedParams.source) return false;
+          if (parsedParams.tag == null) return true;
+          const tags = movement.tags ?? [];
+          return parsedParams.tag === CASH_MOVEMENT_UNTAGGED_FILTER
+            ? tags.length === 0
+            : tags.includes(parsedParams.tag);
+        })
         .sort(
           (left, right) =>
-            left.executedAt.localeCompare(right.executedAt) || left.id.localeCompare(right.id),
+            right.executedAt.localeCompare(left.executedAt) || left.id.localeCompare(right.id),
         );
+      const cursorIndex =
+        parsedParams.cursor == null
+          ? -1
+          : all.findIndex((movement) => movement.id === parsedParams.cursor);
+      const start =
+        parsedParams.cursor == null ? 0 : cursorIndex < 0 ? all.length : cursorIndex + 1;
+      const limit = parsedParams.limit ?? CASH_MOVEMENTS_DEFAULT_LIMIT;
+      const page = all.slice(start, start + limit);
       const balances = cashBalancesBySource(domainCashMovements(document, portfolioId));
       const sources = liveEntities(document, 'cashSource')
         .filter((entity) => stringField(entity.data, 'portfolioId') === portfolioId)
@@ -895,8 +958,9 @@ export function createVaultPortfolioStore(
         // (`transferCash`, `setCashBalance`, `previewCash`) and like the
         // server's `loadCashState().totalEur`.
         balanceEur: floorCents([...balances.values()].reduce((sum, value) => sum + value, 0)),
-        movements: all,
+        movements: page,
         sources,
+        nextCursor: start + page.length < all.length ? (page.at(-1)?.id ?? null) : null,
       });
     },
 
@@ -2936,6 +3000,10 @@ function portfolioSummaryFromEntity(entity: VaultEntity, isDefault: boolean): Po
         isDefault,
         defaultPayFromCash: booleanField(entity.data, 'defaultPayFromCash', false),
         archivedAt: nullableStringField(entity.data, 'archivedAt'),
+        // Absent on every portfolio entity written before board #69; `null` is
+        // the same "unclassified" the column means, so the client falls back to
+        // DEFAULT_PORTFOLIO_KIND exactly as it does for a normal account.
+        kind: nullableStringField(entity.data, 'kind'),
       }),
     'A vault portfolio does not match the portfolio contract.',
   );

@@ -1,22 +1,31 @@
-import { Router } from 'express';
+import { Router, type RequestHandler } from 'express';
 
 import {
   createApiKeyRequestSchema,
   createOAuthClientRequestSchema,
   discordWebhookRequestSchema,
   idParamSchema,
+  taxYearLockParamsSchema,
+  unlockTaxYearRequestSchema,
   updateAccountSettingsRequestSchema,
   updateHomeLayoutRequestSchema,
   updateNotificationSettingsRequestSchema,
   updateTaxSettingsRequestSchema,
+  updateWidgetLayoutRequestSchema,
+  widgetLayoutNamespaceParamSchema,
   type CreateApiKeyRequest,
   type CreateOAuthClientRequest,
   type DiscordWebhookRequest,
+  type UnlockTaxYearRequest,
   type UpdateAccountSettingsRequest,
   type UpdateHomeLayoutRequest,
   type UpdateNotificationSettingsRequest,
   type UpdateTaxSettingsRequest,
+  type UpdateWidgetLayoutRequest,
+  type WidgetLayoutNamespaceParam,
 } from '@bettertrack/contracts';
+
+import { ApiError } from '../../errors';
 
 import { DiscordSetupError } from '../../services/notifications/discordSetupService';
 import { TelegramSetupError } from '../../services/notifications/telegramSetupService';
@@ -195,6 +204,40 @@ export function createSettingsRouter(ctx: AppContext): Router {
     res.json(layout);
   });
 
+  // ── Per-account widget compositions (mobile board #68 item 3) ──────────────
+  // One saved composition per (account, client namespace): `mobile` and `web`
+  // are independent documents, so a phone board and a desktop board sync
+  // across devices without either client clobbering the other's layout.
+  //
+  // The document is OPAQUE here — validated only as a JSON object of at most
+  // 32 KB (`widgetLayoutDocSchema` + the service's size cap). An unknown
+  // namespace never reaches a handler: `validateParams` rejects it with a 400
+  // before any lookup, so the enum is the whole namespace surface.
+
+  // GET /settings/widget-layout/:namespace — 404 when never saved.
+  router.get(
+    '/widget-layout/:namespace',
+    validateParams(widgetLayoutNamespaceParamSchema),
+    async (req, res) => {
+      const { namespace } = req.valid?.params as WidgetLayoutNamespaceParam;
+      const layout = await ctx.widgetLayouts.get(req.authUser!.id, namespace);
+      res.json(layout);
+    },
+  );
+
+  // PUT /settings/widget-layout/:namespace — upsert, last write wins.
+  router.put(
+    '/widget-layout/:namespace',
+    validateParams(widgetLayoutNamespaceParamSchema),
+    validateBody(updateWidgetLayoutRequestSchema),
+    async (req, res) => {
+      const { namespace } = req.valid?.params as WidgetLayoutNamespaceParam;
+      const body = req.valid?.body as UpdateWidgetLayoutRequest;
+      const layout = await ctx.widgetLayouts.set(req.authUser!.id, namespace, body.doc);
+      res.json(layout);
+    },
+  );
+
   // GET /settings/taxes — the caller's tax mode (+ country), V3-P4 (§13.3).
   router.get('/taxes', async (req, res) => {
     const settings = await ctx.tax.getSettings(req.authUser!.id);
@@ -208,6 +251,69 @@ export function createSettingsRouter(ctx: AppContext): Router {
     const settings = await ctx.tax.updateSettings(req.authUser!.id, body);
     res.json(settings);
   });
+
+  // ── Tax year locking (§16 2026-08-07) ──────────────────────────────────────
+  // Elapsed Vienna years auto-lock; mutations dated into them 409
+  // (TAX_YEAR_LOCKED) until the explicit unlock ritual below re-opens ONE
+  // named year for amendments. Strictly browser-cookie-session (never bearer):
+  // the global policy table already refuses bearer tokens on this subtree —
+  // this local guard is the defense-in-depth twin (the paranoid pattern).
+  const requireBrowserSession: RequestHandler = (req, _res, next) => {
+    if (req.apiKey || !req.sessionId) {
+      next(
+        new ApiError(
+          403,
+          'API_KEY_FORBIDDEN',
+          'Tax year unlocking is available only to the owning browser session.',
+        ),
+      );
+      return;
+    }
+    next();
+  };
+
+  // GET /settings/taxes/years — the caller's lock state (current year +
+  // explicitly-unlocked years). Powers the report banner and the mobile slot.
+  router.get('/taxes/years', requireBrowserSession, async (req, res) => {
+    res.json(await ctx.taxYearLock.lockState(req.authUser!.id));
+  });
+
+  // POST /settings/taxes/years/:year/unlock — password re-auth, then open the
+  // named elapsed year for amendments. Per-account throttled + audited.
+  router.post(
+    '/taxes/years/:year/unlock',
+    requireBrowserSession,
+    validateParams(taxYearLockParamsSchema),
+    validateBody(unlockTaxYearRequestSchema),
+    async (req, res) => {
+      const { year } = req.valid?.params as { year: number };
+      const { password } = req.valid?.body as UnlockTaxYearRequest;
+      const state = await ctx.taxYearLock.unlock({
+        userId: req.authUser!.id,
+        year,
+        password,
+        ip: req.ip ?? null,
+      });
+      res.json(state);
+    },
+  );
+
+  // POST /settings/taxes/years/:year/relock — close the year again (audited;
+  // no re-auth: locking is the safe direction).
+  router.post(
+    '/taxes/years/:year/relock',
+    requireBrowserSession,
+    validateParams(taxYearLockParamsSchema),
+    async (req, res) => {
+      const { year } = req.valid?.params as { year: number };
+      const state = await ctx.taxYearLock.relock({
+        userId: req.authUser!.id,
+        year,
+        ip: req.ip ?? null,
+      });
+      res.json(state);
+    },
+  );
 
   // ── Personal API keys (§6.13, V2-P12) ──────────────────────────────────────
   // Session-only: the bearer scope guard blocks API-key requests from reaching

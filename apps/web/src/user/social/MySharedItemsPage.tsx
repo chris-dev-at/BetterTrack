@@ -174,7 +174,7 @@ function AlertSharingControl() {
       {confirming ? (
         <Dialog phoneSheet title={t('social.alertSharing.confirmTitle')} onClose={closeConfirm}>
           <div className="flex flex-col gap-4">
-            <p className="bt-gold">{t('social.alertSharing.confirmWarning')}</p>
+            <p className="bt-gold-note">{t('social.alertSharing.confirmWarning')}</p>
             {mutation.isError ? <Alert tone="error">{t('social.alertSharing.error')}</Alert> : null}
             <div className="flex flex-wrap justify-end gap-2">
               <Button onClick={closeConfirm} variant="quiet">

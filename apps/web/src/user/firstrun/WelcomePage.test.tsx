@@ -23,6 +23,7 @@ import * as socialApi from '../../lib/socialApi';
 import * as twoFactorApi from '../../lib/twoFactorApi';
 import * as api from '../../lib/userApi';
 import { listWorkboard } from '../../lib/workboardApi';
+import { waitForColdStart } from '../../test/waitForColdStart';
 import { UserApp, queryClient } from '../UserApp';
 import { readFirstRun } from './firstRunStorage';
 import { FIRST_RUN_STEP_META } from './stepMeta';
@@ -107,7 +108,9 @@ async function clickContinue(u: ReturnType<typeof userEvent.setup>) {
 test('the wizard opens on the first registered step and counts the registry', async () => {
   renderWelcome();
 
-  expect(await screen.findByRole('heading', { name: 'Is this you?' })).toBeInTheDocument();
+  expect(
+    await waitForColdStart(() => screen.getByRole('heading', { name: 'Is this you?' })),
+  ).toBeInTheDocument();
   expect(screen.getByText(`Step 1 of ${FIRST_RUN_STEPS.length}`, { exact: false })).toBeVisible();
   // The frame renders one question at a time — the next step's is not mounted.
   expect(screen.queryByRole('heading', { name: 'Add a second lock?' })).not.toBeInTheDocument();
@@ -128,7 +131,7 @@ test('the registry and the step metadata stay in lockstep', () => {
 test('Continue walks the registry in order and Back returns', async () => {
   const u = userEvent.setup();
   renderWelcome();
-  await screen.findByRole('heading', { name: 'Is this you?' });
+  await waitForColdStart(() => screen.getByRole('heading', { name: 'Is this you?' }));
 
   await clickContinue(u);
   expect(await screen.findByRole('heading', { name: 'Verify your email' })).toBeInTheDocument();
@@ -144,7 +147,7 @@ test('Continue walks the registry in order and Back returns', async () => {
 test('walking past a step records it as skipped, and a satisfied step as complete', async () => {
   const u = userEvent.setup();
   renderWelcome();
-  await screen.findByRole('heading', { name: 'Is this you?' });
+  await waitForColdStart(() => screen.getByRole('heading', { name: 'Is this you?' }));
 
   // Profile is a confirmation — seeing it completes it.
   await clickContinue(u);
@@ -171,7 +174,7 @@ test('a Google-verified account completes the email step without any code entry'
   });
   const u = userEvent.setup();
   renderWelcome();
-  await screen.findByRole('heading', { name: 'Is this you?' });
+  await waitForColdStart(() => screen.getByRole('heading', { name: 'Is this you?' }));
   await clickContinue(u);
 
   await screen.findByRole('heading', { name: 'Verify your email' });
@@ -186,7 +189,7 @@ test('setting a PIN through the real endpoint completes the security step', asyn
   vi.mocked(api.setPin).mockResolvedValue({ ...user, pinEnabled: true });
   const u = userEvent.setup();
   renderWelcome();
-  await screen.findByRole('heading', { name: 'Is this you?' });
+  await waitForColdStart(() => screen.getByRole('heading', { name: 'Is this you?' }));
   await clickContinue(u);
   await screen.findByRole('heading', { name: 'Verify your email' });
   await clickContinue(u);
@@ -217,7 +220,7 @@ test('setting a PIN through the real endpoint completes the security step', asyn
 test('a mismatched PIN confirmation never reaches the server', async () => {
   const u = userEvent.setup();
   renderWelcome();
-  await screen.findByRole('heading', { name: 'Is this you?' });
+  await waitForColdStart(() => screen.getByRole('heading', { name: 'Is this you?' }));
   await clickContinue(u);
   await screen.findByRole('heading', { name: 'Verify your email' });
   await clickContinue(u);
@@ -250,7 +253,7 @@ const RAIL_LABELS = ['You', 'Email', 'Security', 'Preferences', 'Tax', 'Profile'
 
 test('the rail lists every registered step up front, current marked, rest upcoming', async () => {
   renderWelcome();
-  await screen.findByRole('heading', { name: 'Is this you?' });
+  await waitForColdStart(() => screen.getByRole('heading', { name: 'Is this you?' }));
 
   // The whole run is visible, so it reads as bounded rather than open-ended —
   // and the rail is driven by the registry, so this covers every step there is.
@@ -268,7 +271,7 @@ test('the rail lists every registered step up front, current marked, rest upcomi
 test('the rail distinguishes done from skipped', async () => {
   const u = userEvent.setup();
   renderWelcome();
-  await screen.findByRole('heading', { name: 'Is this you?' });
+  await waitForColdStart(() => screen.getByRole('heading', { name: 'Is this you?' }));
 
   // Profile completes itself; the parked email step does not.
   await clickContinue(u);
@@ -286,7 +289,7 @@ test('the rail distinguishes done from skipped', async () => {
 test('a visited rail row navigates back; an unreached one does nothing', async () => {
   const u = userEvent.setup();
   renderWelcome();
-  await screen.findByRole('heading', { name: 'Is this you?' });
+  await waitForColdStart(() => screen.getByRole('heading', { name: 'Is this you?' }));
   await clickContinue(u);
   await clickContinue(u);
   await screen.findByRole('heading', { name: 'Add a second lock?' });
@@ -305,7 +308,7 @@ test('a visited rail row navigates back; an unreached one does nothing', async (
 test('each step renders exactly one figure, and it is hidden from assistive tech', async () => {
   const u = userEvent.setup();
   renderWelcome();
-  await screen.findByRole('heading', { name: 'Is this you?' });
+  await waitForColdStart(() => screen.getByRole('heading', { name: 'Is this you?' }));
 
   for (let i = 0; i < FIRST_RUN_STEPS.length; i += 1) {
     const figures = document.querySelectorAll('.bt-frfig');
@@ -321,7 +324,7 @@ test('each step renders exactly one figure, and it is hidden from assistive tech
 test('"Do this later" closes the run out and hands over the app', async () => {
   const u = userEvent.setup();
   renderWelcome();
-  await screen.findByRole('heading', { name: 'Is this you?' });
+  await waitForColdStart(() => screen.getByRole('heading', { name: 'Is this you?' }));
 
   await u.click(screen.getByRole('button', { name: 'Do this later' }));
 
@@ -332,7 +335,7 @@ test('"Do this later" closes the run out and hands over the app', async () => {
 test('the last step summarises what was set versus deferred, then opens the app', async () => {
   const u = userEvent.setup();
   renderWelcome();
-  await screen.findByRole('heading', { name: 'Is this you?' });
+  await waitForColdStart(() => screen.getByRole('heading', { name: 'Is this you?' }));
 
   // Walk the whole registry without configuring anything.
   for (let i = 0; i < FIRST_RUN_STEPS.length - 1; i += 1) await clickContinue(u);
@@ -355,7 +358,7 @@ test('the last step summarises what was set versus deferred, then opens the app'
 test('/welcome is re-runnable: a finished run reopens at the first step', async () => {
   const u = userEvent.setup();
   const first = renderWelcome();
-  await screen.findByRole('heading', { name: 'Is this you?' });
+  await waitForColdStart(() => screen.getByRole('heading', { name: 'Is this you?' }));
   await u.click(screen.getByRole('button', { name: 'Do this later' }));
   await screen.findByRole('button', { name: 'Account menu' });
   expect(readFirstRun(user.id).done).toBe(true);
@@ -363,5 +366,7 @@ test('/welcome is re-runnable: a finished run reopens at the first step', async 
 
   renderWelcome();
   // Not a one-shot gate: the run simply starts again from the top.
-  expect(await screen.findByRole('heading', { name: 'Is this you?' })).toBeInTheDocument();
+  expect(
+    await waitForColdStart(() => screen.getByRole('heading', { name: 'Is this you?' })),
+  ).toBeInTheDocument();
 });

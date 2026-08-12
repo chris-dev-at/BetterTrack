@@ -22,6 +22,7 @@ import type { TranslateFn } from '../../i18n';
 import { EmptyState, Skeleton } from '../../ui';
 import { Button, PageHead } from '../../ui/origin';
 import { overlayColor, PriceChart, type ChartPoint } from '../../ui/charts';
+import { MAIN_SERIES } from '../../ui/charts/palette';
 import { Alert } from '../components/ui';
 
 /**
@@ -35,7 +36,7 @@ import { Alert } from '../components/ui';
 
 /** Colour of the `i`-th overlaid series — index 0 is the chart's main (sky) line. */
 function seriesColor(i: number): string {
-  return i === 0 ? '#38bdf8' /* sky-400, PriceChart's MAIN_LINE */ : overlayColor(i - 1);
+  return i === 0 ? MAIN_SERIES : overlayColor(i - 1);
 }
 
 function toChartPoints(series: ReadonlyArray<{ date: string; value: number }>): ChartPoint[] {
@@ -121,7 +122,7 @@ function ConglomeratePicker({
                   className="size-4"
                   disabled={disabled}
                   onChange={() => onToggle(c.id)}
-                  style={{ accentColor: 'var(--bt-gold)' }}
+                  style={{ accentColor: 'var(--bt-gold-graphic)' }}
                   type="checkbox"
                 />
                 <span className="bt-row-title flex-1 truncate">{c.name}</span>
@@ -255,7 +256,7 @@ function ComparisonGrid({
                       className="size-3"
                       name="comparison-baseline"
                       onChange={() => onPickBaseline(s.conglomerateId)}
-                      style={{ accentColor: 'var(--bt-gold)' }}
+                      style={{ accentColor: 'var(--bt-gold-graphic)' }}
                       type="radio"
                     />
                     {t('workboard.comparison.baselineLabel')}

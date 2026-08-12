@@ -8,6 +8,7 @@ import { RealtimeProvider } from '../lib/realtime';
 import { NotFoundState } from '../ui';
 
 import { AuthProvider, useAuth } from './AuthContext';
+import { VaultsProvider } from './vault/v2/ui/VaultsProvider';
 import { RequireUser } from './RequireUser';
 import { FirstRunGate } from './firstrun/FirstRunGate';
 import { OriginShell } from './components/OriginShell';
@@ -22,6 +23,7 @@ import { PeopleLayout } from './people/PeopleLayout';
 import { MutationFeedbackProvider, useMutationFeedback } from './hooks/useMutationFeedback';
 import { ResolvedPrivacyModeProvider, usePrivacyMode } from './vault/usePrivacyMode';
 import { matchControlPanel, matchesVaultEnableRequest } from './control/matchControlPanel';
+import { useThemeWatcher } from './useTheme';
 import { useUiScaleWatcher } from './useUiScale';
 
 /**
@@ -30,7 +32,17 @@ import { useUiScaleWatcher } from './useUiScale';
  * so without that a `staleTime`d response from one case is still served to the
  * next one.
  */
-export const queryClient = new QueryClient();
+export const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      // Individual reads retain their deliberately chosen staleness and polling;
+      // these guardrails only apply when a new query forgets to declare them.
+      staleTime: 30_000,
+      refetchOnWindowFocus: false,
+      retry: 1,
+    },
+  },
+});
 
 const ForcedPasswordChangePage = lazy(() =>
   import('./auth/ForcedPasswordChangePage').then((m) => ({ default: m.ForcedPasswordChangePage })),
@@ -199,6 +211,9 @@ const ParkedPage = lazy(() =>
 );
 const VaultAccountRoot = lazy(() =>
   import('./vault/VaultAccountRoot').then((m) => ({ default: m.VaultAccountRoot })),
+);
+const VaultHowItWorksPage = lazy(() =>
+  import('./vault/v2/ui/VaultHowItWorksPage').then((m) => ({ default: m.VaultHowItWorksPage })),
 );
 
 /**
@@ -616,6 +631,9 @@ function UserRoutes({ location }: { location: Location }) {
               element={<LegacyRedirect to="/workbench/ideas" withSplat />}
             />
             <Route path="forecast" element={<LegacyRedirect to="/workbench/forecasts" />} />
+            {/* Vaults v2 explainer (docs/VAULTS_V2_DESIGN.md §4). Deliberately
+                reachable in every privacy mode: a locked user needs it most. */}
+            <Route path="vault/how-it-works" element={<VaultHowItWorksPage />} />
             <Route path="expenses/*" element={<LegacyRedirect to="/portfolio/cash" withSplat />} />
             <Route path="social" element={<LegacyRedirect to="/people" />} />
             <Route path="social/friends" element={<LegacyRedirect to="/people" />} />
@@ -761,6 +779,12 @@ function UiScaleWatcher() {
   return null;
 }
 
+/** Keeps a `system` theme following the OS as it flips (board #68). */
+function ThemeWatcher() {
+  useThemeWatcher();
+  return null;
+}
+
 /**
  * Follow the authenticated user's stored UI language (§13.3 V3-P1): whenever the
  * signed-in `me` carries a locale, switch the runtime to it. Renders nothing.
@@ -782,14 +806,20 @@ export function UserApp() {
         <MutationFeedbackProvider>
           <AuthProvider>
             <UiScaleWatcher />
+            <ThemeWatcher />
             <LocaleSync />
             <RateLimitToastBridge />
             <Suspense fallback={<Splash />}>
               <AccountModeRoot>
-                <RealtimeRoot>
-                  <AnnouncementBannerRoot />
-                  <UserShell />
-                </RealtimeRoot>
+                {/* Vaults v2: mounted once, above the router, because the
+                    in-memory keyring must survive navigation — rebuilding it
+                    would silently relock every vault. */}
+                <VaultsProvider>
+                  <RealtimeRoot>
+                    <AnnouncementBannerRoot />
+                    <UserShell />
+                  </RealtimeRoot>
+                </VaultsProvider>
               </AccountModeRoot>
             </Suspense>
           </AuthProvider>

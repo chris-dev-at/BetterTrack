@@ -56,6 +56,7 @@ import { createPortfolioSettingsRepository } from '../data/repositories/portfoli
 import { createTaxRepository } from '../data/repositories/taxRepository';
 import { createTransactionRepository } from '../data/repositories/transactionRepository';
 import { createUserRepository } from '../data/repositories/userRepository';
+import { createWidgetLayoutRepository } from '../data/repositories/widgetLayoutRepository';
 import { createWorkboardRepository } from '../data/repositories/workboardRepository';
 import { createEventBus, type EventBus } from '../events';
 import {
@@ -84,6 +85,10 @@ import {
   createHomeLayoutService,
   type HomeLayoutService,
 } from '../services/account/homeLayoutService';
+import {
+  createWidgetLayoutService,
+  type WidgetLayoutService,
+} from '../services/account/widgetLayoutService';
 import { createExportService, type ExportService } from '../services/export';
 import { createExportRepository } from '../data/repositories/exportRepository';
 import { createAlertService, type AlertService } from '../services/alerts/alertService';
@@ -195,6 +200,10 @@ import {
   type WebhookDeliveryJob,
 } from '../services/webhooks';
 import { createParanoidVaultRepository } from '../data/repositories/paranoidVaultRepository';
+import { createReauthService, type ReauthService } from '../services/auth/reauthService';
+import { createVaultMigrationRepository } from '../data/repositories/vaultMigrationRepository';
+import { createVaultRepository } from '../data/repositories/vaultRepository';
+import { createVaultService, type VaultService } from '../services/vault/vaultService';
 import {
   createParanoidEnforcementRepository,
   withFreshLockedPrivacyModes,
@@ -292,6 +301,10 @@ import { createSocialService, type SocialService } from '../services/social/soci
 import { createCommentService, type CommentService } from '../services/social/commentService';
 import { createTaxService, type TaxService } from '../services/tax/taxService';
 import {
+  createTaxYearLockService,
+  type TaxYearLockService,
+} from '../services/tax/taxYearLockService';
+import {
   createWorkboardService,
   type WorkboardService,
 } from '../services/workboard/workboardService';
@@ -347,6 +360,12 @@ export interface AppContext {
   /** Realized P/L, tax modes, dividends + the per-year report (§13.3 V3-P4). */
   tax: TaxService;
   /**
+   * Tax year locking (§16 2026-08-07): lock state + the session-only,
+   * password-re-authenticated unlock/relock ritual. The mutation gates run
+   * inside the tax/portfolio services; routes only expose the ritual.
+   */
+  taxYearLock: TaxYearLockService;
+  /**
    * MIRRORCHAIN replication core (§13.5 V5-P7 M2, design §§1–3): the write-path
    * seam for synced copies — op append under the chain lock, origin apply,
    * replicate/replay, conflict guard. Portfolio-content write routes call its
@@ -382,6 +401,18 @@ export interface AppContext {
    * a size cap and bounded ciphertext history. Never reads the payload.
    */
   paranoidVault: ParanoidVaultService;
+  /**
+   * Vaults v2 (`docs/VAULTS_V2_DESIGN.md` §3) — multi-vault CRUD, the blind
+   * per-vault document store, and the per-portfolio join/leave transitions.
+   * Ownership scoping lives in its repository, never in a controller.
+   */
+  vaults: VaultService;
+  /**
+   * Generic session step-up (`POST /auth/reauth`). The missing primitive for
+   * sensitive acts that happen entirely client-side — the Vaults v2 QR handoff
+   * has no destructive endpoint of its own to hang a re-auth on.
+   */
+  reauth: ReauthService;
   /** Public account-locked paranoid enable/disable orchestrator (§7). */
   paranoidTransitions: ParanoidTransitionService;
   /** Registry-backed account guard shared by HTTP, services, jobs, and webhooks. */
@@ -415,6 +446,11 @@ export interface AppContext {
   accountSettings: AccountSettingsService;
   /** The per-account Home widget board (R2 home-widgets) — stored verbatim. */
   homeLayout: HomeLayoutService;
+  /**
+   * Per-account widget compositions, one per client namespace (`mobile`/`web`,
+   * mobile board #68 item 3) — an opaque, size-capped document stored verbatim.
+   */
+  widgetLayouts: WidgetLayoutService;
   /** Self-service account deletion — re-auth-gated hard delete (§13.4 V4-P2c, #362). */
   accountDeletion: AccountDeletionService;
   /**
@@ -560,6 +596,8 @@ export interface BuildContextDeps {
   emailTransport?: MailTransport | null;
   /** Test seam: inject a stubbed market-data service instead of the live providers. */
   marketData?: MarketDataService;
+  /** Test seam: controlled portfolio-service clock for UTC-window boundary tests. */
+  portfolioNow?: () => number;
   /** Test seam: inject a backfill scheduler (e.g. a recording fake). */
   backfill?: BackfillScheduler;
   /** Test seam: a down-tuned hasher — §10's parameters are pure overhead in tests. */
@@ -928,14 +966,31 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // Paranoid vault (§13.5 V5-P13 arc b): the blind server blob store. The
   // service reads only the safe envelope header for CAS, enforces the size cap
   // and drives the repository's atomic compare-and-swap + bounded history.
+  const paranoidVaultRepository = createParanoidVaultRepository(db, privacyLockDb);
   const paranoidVault = createParanoidVaultService({
-    vaults: createParanoidVaultRepository(db),
+    vaults: paranoidVaultRepository,
     maxBytes: config.vault.maxBytes,
     retention: config.vault.history,
     // Short-lived candidate/purge transcripts are domain-separated inside the
     // service. Losing a rotated cookie secret only invalidates in-flight proofs;
     // durable retirement bytes and their client-held signing keys are untouched.
     proofSecret: config.sessionSecrets[0],
+  });
+
+  // Vaults v2 (`docs/VAULTS_V2_DESIGN.md` §3). Independent of the account-level
+  // vault above: different tables, its own CAS, no header inspection at all.
+  const reauth = createReauthService({
+    config,
+    redis,
+    userRepo,
+    passwordHasher,
+    audit,
+  });
+
+  const vaultsService = createVaultService({
+    vaults: createVaultRepository(db),
+    migrations: createVaultMigrationRepository(db),
+    audit,
   });
 
   const webhookSubscriptionRepo = createWebhookSubscriptionRepository(db);
@@ -1238,10 +1293,13 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     cashMovementRepo,
     marketData,
     currencyService: currency,
+    // Vaults v2 (§3): a VAULTED portfolio is as unreadable to the snapshot
+    // engine as a paranoid account's is — its ledger rows were purged at join.
     isParanoidPortfolio: async (portfolioId) =>
       isParanoidOwnedSubjectBlocked(
         await paranoidSubjects.portfolioOwner(portfolioId),
         paranoidGuard,
+        'portfolioJobs',
       ),
     runIfAllowedPortfolio: async (portfolioId, action) =>
       runIfParanoidOwnedSubjectAllowed(
@@ -1262,6 +1320,19 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // Tax engine (V3-P4): built before the portfolio service, which folds its
   // per-sell tax plans into transaction writes.
   const taxRepo = createTaxRepository(db);
+  // Tax year locking (§16 2026-08-07): the API-layer lock policy the tax and
+  // portfolio mutation paths gate through, plus the session-only unlock
+  // ritual. Shares the tax engine's clock seam so the lock boundary and the
+  // open/closed derivation boundary can never disagree.
+  const taxYearLock = createTaxYearLockService({
+    config,
+    redis,
+    taxRepo,
+    userRepo,
+    passwordHasher,
+    audit,
+    now: deps.taxNow,
+  });
   const tax = createTaxService({
     taxRepo,
     portfolioSettingsRepo,
@@ -1271,6 +1342,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     portfolioRepo,
     currencyService: currency,
     snapshots,
+    yearLock: taxYearLock,
     logger,
     now: deps.taxNow,
     paranoid: paranoidGuard,
@@ -1294,12 +1366,14 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     referenceBackfill,
     snapshots,
     taxService: tax,
+    yearLock: taxYearLock,
     friendshipRepo,
     audience,
     profile: profileRepo,
     notify,
     liveRing,
     logger,
+    now: deps.portfolioNow,
   });
   const customAssetRepo = createCustomAssetRepository(db);
   const customAssets = createCustomAssetService({
@@ -1615,6 +1689,13 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // the user to every browser they sign in from.
   const homeLayout = createHomeLayoutService({ userRepo });
 
+  // Per-account widget compositions (mobile board #68 item 3): one opaque,
+  // size-capped document per (account, client namespace), so the mobile and web
+  // boards sync across devices as two separate saved compositions.
+  const widgetLayouts = createWidgetLayoutService({
+    widgetLayoutRepo: createWidgetLayoutRepository(db),
+  });
+
   // Self-service account deletion (§13.4 V4-P2c, #362): re-auth + typed
   // confirmation, then a hard delete the FK graph fans out — with the chat
   // anonymize-and-purge exception handled through the chat repository.
@@ -1852,6 +1933,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
 
   const paranoidTransitions = createParanoidTransitionService({
     db,
+    vaults: paranoidVaultRepository,
     // The §3 destruction exit re-authenticates like `DELETE /account`.
     discardReauth: createParanoidDiscardReauth({
       config,
@@ -1922,6 +2004,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
       portfolioMarketIntel,
       marketIntel,
       tax,
+      taxYearLock,
       expenses,
       expenseBudgets,
       aiFeatures,
@@ -1934,6 +2017,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
       cashTags,
       cashBudgets,
       homeLayout,
+      widgetLayouts,
     },
     paranoidGuard,
     paranoidSubjects,
@@ -1960,6 +2044,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     portfolio: guarded.portfolio,
     snapshots: guarded.snapshots,
     tax: guarded.tax,
+    taxYearLock: guarded.taxYearLock,
     mirror: guarded.mirror,
     customAssets: guarded.customAssets,
     conglomerate: guarded.conglomerate,
@@ -1973,6 +2058,8 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     cashTags: guarded.cashTags,
     cashBudgets: guarded.cashBudgets,
     paranoidVault,
+    reauth,
+    vaults: vaultsService,
     paranoidTransitions,
     paranoidGuard,
     webhooks,
@@ -1987,6 +2074,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     discordSetup,
     accountSettings,
     homeLayout: guarded.homeLayout,
+    widgetLayouts: guarded.widgetLayouts,
     accountDeletion,
     dataExport,
     alerts: guarded.alerts,

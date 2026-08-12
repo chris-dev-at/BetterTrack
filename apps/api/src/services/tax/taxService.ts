@@ -132,6 +132,7 @@ import { badRequest, notFound, unprocessable } from '../../errors';
 import type { Logger } from '../../logger';
 import { FxRateUnavailableError, type CurrencyService } from '../currency/currencyService';
 import type { PortfolioSnapshotService } from '../portfolio/portfolioSnapshots';
+import type { TaxYearLockGuard } from './taxYearLockService';
 
 /**
  * Tax service (V3-P4, §13.3, issue #331): the orchestration seam between the
@@ -180,6 +181,12 @@ export interface TaxServiceDeps {
   currencyService: CurrencyService;
   /** The V5-P1 snapshot layer (issue #553): dividend writes invalidate through it. */
   snapshots: PortfolioSnapshotService;
+  /**
+   * Tax year locking (§16 2026-08-07): the API-layer gate refusing mutations
+   * dated into — or amendments reshaping — a locked year, BEFORE any planning
+   * or correction posting. Sits strictly in FRONT of the settlement machinery.
+   */
+  yearLock: TaxYearLockGuard;
   logger?: Logger;
   /** Injectable clock (tests); defaults to the wall clock. */
   now?: () => number;
@@ -228,6 +235,11 @@ export interface TransactionTaxPlanInput {
    * portfolio service so both share one resolution (and its caching).
    */
   resolveSourceId: (explicitId: string | undefined) => Promise<string>;
+  /**
+   * MIRRORCHAIN replica apply (design §2): skip the tax-year lock guard — the
+   * origin actor's own lock state gated the op before it entered the chain.
+   */
+  force?: boolean;
 }
 
 export interface TaxService {
@@ -283,6 +295,7 @@ export interface TaxService {
     userId: string,
     portfolioId: string,
     transaction: TransactionRecord,
+    opts?: { force?: boolean },
   ): Promise<NewCashMovement[]>;
   /**
    * Record a dividend (V3-P4c): gross EUR into a source, tax-mode aware.
@@ -825,11 +838,17 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
    * `none` settles closed years only — its open years re-derive to the
    * tracking-off target on the next read.
    */
+  /** The earliest Vienna year a batch writes rows into (buys included). */
+  const minInputYear = (inputs: readonly TransactionInput[]): number =>
+    Math.min(...inputs.map((i) => viennaYearOf(new Date(i.executedAt).toISOString())));
+
   async function planNonEngineReshapeCorrections(
+    userId: string,
     portfolioId: string,
     inputs: readonly TransactionInput[],
     assetsById: ReadonlyMap<string, AssetRow>,
     openFrom: number,
+    opts?: { force?: boolean },
   ): Promise<{ extras: BatchCashMovement[]; proposed: SourcedCashMovement[] }> {
     const batchAssets = new Set(inputs.map((i) => i.assetId));
     const allTxns = await transactionRepo.listForPortfolio(portfolioId);
@@ -857,6 +876,14 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
       openFrom,
     });
     if (scope.years.length === 0) return { extras: [], proposed: [] };
+    // Tax year lock (§16 2026-08-07): an amendment that would reshape a LATER
+    // locked year is refused here — before any correction is planned.
+    if (!opts?.force) {
+      await deps.yearLock.assertReshapeAmendable(userId, {
+        amendedYear: minInputYear(inputs),
+        reshapedYears: scope.years,
+      });
+    }
     const { involveDe, involveFi, involveCustom } = scope;
 
     // The EUR replay both sides need: engine sells of the affected years plus
@@ -973,10 +1000,12 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
       // #656 round 4: untaxed rows can still reshape engine-frozen CLOSED
       // years — settle those by ΔF (open years re-derive on the next read).
       const reshape = await planNonEngineReshapeCorrections(
+        userId,
         portfolioId,
         inputs,
         assetsById,
         openFromYearNow(),
+        { force: planInput.force },
       );
       return { rows, extras: reshape.extras, proposed: reshape.proposed };
     }
@@ -1067,10 +1096,12 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
       // machinery (`openFrom = ∞`, mirroring the delete path) — settle the
       // batch's engine-frozen reshapes by ΔF before returning.
       const reshape = await planNonEngineReshapeCorrections(
+        userId,
         portfolioId,
         inputs,
         assetsById,
         Number.POSITIVE_INFINITY,
+        { force: planInput.force },
       );
       return {
         rows,
@@ -1119,6 +1150,15 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
       recordingRegime: openRegime,
       openFrom,
     });
+    // Tax year lock (§16 2026-08-07): an amendment that would reshape a LATER
+    // locked year is refused here — before any settlement is planned. The
+    // batch's own dated years were already gated at the service entry.
+    if (!planInput.force && scope.years.length > 0) {
+      await deps.yearLock.assertReshapeAmendable(userId, {
+        amendedYear: minInputYear(inputs),
+        reshapedYears: scope.years,
+      });
+    }
     const { involveDe, involveFi, involveCustom } = scope;
     const closedYears = scope.years;
 
@@ -1496,6 +1536,7 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
     userId: string,
     portfolioId: string,
     transaction: TransactionRecord,
+    opts?: { force?: boolean },
   ): Promise<NewCashMovement[]> {
     const isCsSell = transaction.side === 'sell' && transaction.taxMode === 'country_specific';
     const deletedWasCustom = isCustomSell(transaction);
@@ -1533,6 +1574,15 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
       mutatedAssetIds: new Set([transaction.assetId]),
       openFrom,
     });
+    // Tax year lock (§16 2026-08-07): deleting an amendable-year row must not
+    // reshape a LATER locked year. The row's own dated year was already gated
+    // by the delete path before planning.
+    if (!opts?.force && scope.years.length > 0) {
+      await deps.yearLock.assertReshapeAmendable(userId, {
+        amendedYear: deletedYear,
+        reshapedYears: scope.years,
+      });
+    }
     const { involveDe, involveFi, involveCustom } = scope;
 
     // Open years (#635): the deleted derivable row's own open year, plus
@@ -1785,6 +1835,9 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
     const executedAt = input.executedAt ? new Date(input.executedAt) : new Date(now());
     const executedAtIso = executedAt.toISOString();
     const year = viennaYearOf(executedAtIso);
+    // Tax year lock (§16 2026-08-07): a dividend dated into a locked year is
+    // refused before any planning; replica applies bypass (origin-gated).
+    if (!opts?.force) await deps.yearLock.assertYearsAmendable(userId, [year]);
     // Cash is whole-cent money (#322): quantize the entered gross.
     const grossEur = floorCents(input.grossAmountEur);
     if (grossEur <= 0) {
@@ -1860,6 +1913,14 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
         recordingRegime: openRegime,
         openFrom,
       });
+      // Tax year lock (§16 2026-08-07): an amendment dividend must not feed
+      // carry into a LATER locked year (chain-sensitive regimes).
+      if (!opts?.force && scope.years.length > 0) {
+        await deps.yearLock.assertReshapeAmendable(userId, {
+          amendedYear: year,
+          reshapedYears: scope.years,
+        });
+      }
       const { involveDe, involveFi, involveCustom } = scope;
       const rippleYears = scope.years.filter((y) => y !== year);
       // The open years the write re-settles: every derivable open year when
@@ -2278,6 +2339,11 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
     await requireOwnedPortfolio(userId, portfolioId);
     const dividend = await taxRepo.findByIdForPortfolio(portfolioId, dividendId);
     if (!dividend) throw notFound('Dividend not found.', 'DIVIDEND_NOT_FOUND');
+    // Tax year lock (§16 2026-08-07): deleting a dividend dated into a locked
+    // year is refused before any planning; replica applies bypass.
+    if (!opts?.force) {
+      await deps.yearLock.assertYearsAmendable(userId, [viennaYearOfDate(dividend.executedAt)]);
+    }
 
     const [allTxns, dividendRows, movements] = await Promise.all([
       transactionRepo.listForPortfolio(portfolioId),
@@ -2321,6 +2387,14 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
         mutatedAssetIds: new Set<string>(),
         openFrom,
       });
+      // Tax year lock (§16 2026-08-07): the removal must not reshape a LATER
+      // locked year through carry chains.
+      if (!opts?.force && scope.years.length > 0) {
+        await deps.yearLock.assertReshapeAmendable(userId, {
+          amendedYear: year,
+          reshapedYears: scope.years,
+        });
+      }
       const { involveDe, involveFi, involveCustom } = scope;
       // Open years re-settle when the deleted dividend was itself open, or a
       // closed chained year's carry-outs may cross the boundary.
@@ -2516,8 +2590,14 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
     openStrategy: CostBasisStrategy | null;
     /** First live year for DERIVATION (∞ under the manual regime). */
     openFrom: number;
-    /** First non-locked year for the report flag (always the current Vienna year). */
+    /** First non-lockable year for the report flag (always the current Vienna year). */
     lockedBefore: number;
+    /**
+     * Elapsed years the user explicitly unlocked for amendments (§16
+     * 2026-08-07): the report states `locked: false` for them — the wire
+     * signal behind the "unlocked for amendments — re-lock" banner.
+     */
+    unlockedYears: ReadonlySet<number>;
     /** Live settlements of the open years (empty under the manual regime). */
     openSettlements: OpenYearSettlement[];
   }
@@ -2528,6 +2608,7 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
     const lockedBefore = openFromYearNow();
     const openFrom = openRegime.kind === 'manual' ? Number.POSITIVE_INFINITY : lockedBefore;
     const openStrategy = openRegimeStrategy(openRegime);
+    const unlockedYears = await deps.yearLock.unlockedYears(userId);
     const [transactions, dividendRows, movements] = await Promise.all([
       transactionRepo.listForPortfolio(portfolioId),
       taxRepo.listForPortfolio(portfolioId),
@@ -2609,6 +2690,7 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
       openStrategy,
       openFrom,
       lockedBefore,
+      unlockedYears,
       openSettlements,
     };
   }
@@ -2829,8 +2911,10 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
       taxNetEur,
       // Omit the key entirely for non-DE years (exact pre-V5-P4 shape).
       ...(de !== undefined ? { de } : {}),
-      // #635: closed years are locked (never re-derived); key omitted = live.
-      ...(year < state.lockedBefore ? { locked: true } : {}),
+      // Tax year lock (§16 2026-08-07): elapsed years state their POLICY lock —
+      // `true` = mutations refused, `false` = explicitly unlocked for
+      // amendments. Open years omit the key (live derivation, #635).
+      ...(year < state.lockedBefore ? { locked: !state.unlockedYears.has(year) } : {}),
     };
   }
 

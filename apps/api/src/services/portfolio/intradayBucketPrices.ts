@@ -9,7 +9,11 @@ export interface IntradayBucketPriceCandle {
  *
  * Each bucket uses the last candle whose instant is strictly before the
  * bucket's end. Buckets before the first candle carry that first price
- * backward, matching the portfolio curve's later-opening asset behavior.
+ * backward — purely mechanical backfill. The portfolio curve treats those
+ * pre-open buckets specially (#1120/I2): it anchors them to the PRIOR day's
+ * value when one exists (the backfilled price would put an overnight gap at
+ * the wrong instant) and uses the backfill only as the legacy fallback on the
+ * series' first day.
  */
 export function buildIntradayBucketPrices(
   candles: readonly IntradayBucketPriceCandle[],

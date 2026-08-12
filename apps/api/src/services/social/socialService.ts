@@ -179,6 +179,7 @@ export interface SocialService {
     kind: ShareKind,
     subjectId: string,
     visibility: 'private' | 'friends',
+    confirmWiden?: boolean,
   ): Promise<void>;
   /** UNAUTHENTICATED public-link read (§14): resolve a token to its live read-only view, or 404. */
   getByPublicLink(token: string): Promise<SharedLinkResponse>;
@@ -1114,8 +1115,23 @@ export function createSocialService(deps: SocialServiceDeps): SocialService {
       return result;
     },
 
-    async applyAudienceVisibility(userId, kind, subjectId, visibility) {
-      await audience.applyVisibility(userId, kind, subjectId, visibility);
+    async applyAudienceVisibility(userId, kind, subjectId, visibility, confirmWiden) {
+      await audience.withVisibilityMutation(
+        userId,
+        kind,
+        subjectId,
+        visibility,
+        confirmWiden,
+        (lockedRecipientIds) =>
+          audience.applyVisibility(
+            userId,
+            kind,
+            subjectId,
+            visibility,
+            confirmWiden,
+            lockedRecipientIds,
+          ),
+      );
     },
 
     async getByPublicLink(token) {

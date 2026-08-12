@@ -1,0 +1,196 @@
+{
+  "v2Header": {
+    "passphrase": "legal winner thank year wave sausage worth useful legal winner thank yellow",
+    "header": {
+      "formatVersion": 2,
+      "vaultId": "4f6f3f1e-9f2a-4a53-9a6a-9b8f2f8c1a01",
+      "name": "Drive vault",
+      "kdfSalt": "BwgJCgsMDQ4PEBESExQVFg==",
+      "kdf": {
+        "alg": "argon2id",
+        "m": 65536,
+        "t": 3,
+        "p": 1,
+        "salt": "BwgJCgsMDQ4PEBESExQVFg=="
+      },
+      "keySlots": [
+        {
+          "slotId": "3738393a-3b3c-4d3e-bf40-414243444546",
+          "kind": "passphrase",
+          "wrappedKey": "R0hJSktMTU5PUFFSWTlZALdiuhrOxKDJ9Ln8w6xhAa8SyGoio5rhsNsIIhO8vXJvkEP6MuVzjKi6Zvq8"
+        }
+      ],
+      "portfolios": [
+        {
+          "portfolioId": "11111111-1111-4111-8111-111111111111",
+          "alias": "Tech"
+        }
+      ],
+      "backends": "drive",
+      "headerVersion": 1,
+      "deviceId": "2f2f3f1e-9f2a-4a53-9a6a-9b8f2f8c1a02",
+      "writeId": "6f6f3f1e-9f2a-4a53-9a6a-9b8f2f8c1a03",
+      "writtenAt": "2026-08-08T09:00:00.000Z",
+      "mac": {
+        "v": 1,
+        "tag": "10XHZRFwuq097OQYDJA9o1GG+YWxpaR4VkXtIlZ5jas="
+      }
+    },
+    "headerBytesBase64": "eyJmb3JtYXRWZXJzaW9uIjoyLCJ2YXVsdElkIjoiNGY2ZjNmMWUtOWYyYS00YTUzLTlhNmEtOWI4ZjJmOGMxYTAxIiwibmFtZSI6IkRyaXZlIHZhdWx0Iiwia2RmU2FsdCI6IkJ3Z0pDZ3NNRFE0UEVCRVNFeFFWRmc9PSIsImtkZiI6eyJhbGciOiJhcmdvbjJpZCIsIm0iOjY1NTM2LCJ0IjozLCJwIjoxLCJzYWx0IjoiQndnSkNnc01EUTRQRUJFU0V4UVZGZz09In0sImtleVNsb3RzIjpbeyJzbG90SWQiOiIzNzM4MzkzYS0zYjNjLTRkM2UtYmY0MC00MTQyNDM0NDQ1NDYiLCJraW5kIjoicGFzc3BocmFzZSIsIndyYXBwZWRLZXkiOiJSMGhKU2t0TVRVNVBVRkZTV1RsWkFMZGl1aHJPeEtESjlMbjh3NnhoQWE4U3lHb2lvNXJoc05zSUloTzh2WEp2a0VQNk11VnpqS2k2WnZxOCJ9XSwicG9ydGZvbGlvcyI6W3sicG9ydGZvbGlvSWQiOiIxMTExMTExMS0xMTExLTQxMTEtODExMS0xMTExMTExMTExMTEiLCJhbGlhcyI6IlRlY2gifV0sImJhY2tlbmRzIjoiZHJpdmUiLCJoZWFkZXJWZXJzaW9uIjoxLCJkZXZpY2VJZCI6IjJmMmYzZjFlLTlmMmEtNGE1My05YTZhLTliOGYyZjhjMWEwMiIsIndyaXRlSWQiOiI2ZjZmM2YxZS05ZjJhLTRhNTMtOWE2YS05YjhmMmY4YzFhMDMiLCJ3cml0dGVuQXQiOiIyMDI2LTA4LTA4VDA5OjAwOjAwLjAwMFoiLCJtYWMiOnsidiI6MSwidGFnIjoiMTBYSFpSRnd1cTA5N09RWURKQTlvMUdHK1lXeHBhUjRWa1h0SWxaNWphcz0ifX0=",
+    "contentKeyBase64": "FxgZGhscHR4fICEiIyQlJicoKSorLC0uLzAxMjM0NTY="
+  },
+  "v2MultiSlot": {
+    "firstPassphrase": "legal winner thank year wave sausage worth useful legal winner thank yellow",
+    "secondPassphrase": "letter advice cage absurd amount doctor acoustic avoid letter advice cage above",
+    "header": {
+      "formatVersion": 2,
+      "vaultId": "4f6f3f1e-9f2a-4a53-9a6a-9b8f2f8c1a01",
+      "name": "Shared vault",
+      "kdfSalt": "FBUWFxgZGhscHR4fICEiIw==",
+      "kdf": {
+        "alg": "argon2id",
+        "m": 65536,
+        "t": 3,
+        "p": 1,
+        "salt": "FBUWFxgZGhscHR4fICEiIw=="
+      },
+      "keySlots": [
+        {
+          "slotId": "44454647-4849-4a4b-8c4d-4e4f50515253",
+          "kind": "passphrase",
+          "wrappedKey": "VFVWV1hZWltcXV5flnC3BQfOxPmu4pAFJW+fo6CsO8kcjXAXejLbKw8XKLNWKeMBibO7E4wGIf8M7XUq"
+        },
+        {
+          "slotId": "78797a7b-7c7d-4e7f-8081-828384858687",
+          "kind": "passphrase",
+          "wrappedKey": "iImKi4yNjo+QkZKTcU1YSeKw2HEguGMSG8ld0c9oZrLEQHleVmV71FCVY2H9ykOHpEwo/NQsigyxXSk5"
+        }
+      ],
+      "portfolios": [],
+      "backends": "server",
+      "headerVersion": 2,
+      "deviceId": "2f2f3f1e-9f2a-4a53-9a6a-9b8f2f8c1a02",
+      "writeId": "6f6f3f1e-9f2a-4a53-9a6a-9b8f2f8c1a03",
+      "writtenAt": "2026-08-08T09:00:00.000Z",
+      "mac": {
+        "v": 1,
+        "tag": "EL5P/SU/mk3Aju7l/n8C8Iij5t8QdbyXChkXO9y91bw="
+      }
+    },
+    "headerBytesBase64": "eyJmb3JtYXRWZXJzaW9uIjoyLCJ2YXVsdElkIjoiNGY2ZjNmMWUtOWYyYS00YTUzLTlhNmEtOWI4ZjJmOGMxYTAxIiwibmFtZSI6IlNoYXJlZCB2YXVsdCIsImtkZlNhbHQiOiJGQlVXRnhnWkdoc2NIUjRmSUNFaUl3PT0iLCJrZGYiOnsiYWxnIjoiYXJnb24yaWQiLCJtIjo2NTUzNiwidCI6MywicCI6MSwic2FsdCI6IkZCVVdGeGdaR2hzY0hSNGZJQ0VpSXc9PSJ9LCJrZXlTbG90cyI6W3sic2xvdElkIjoiNDQ0NTQ2NDctNDg0OS00YTRiLThjNGQtNGU0ZjUwNTE1MjUzIiwia2luZCI6InBhc3NwaHJhc2UiLCJ3cmFwcGVkS2V5IjoiVkZWV1YxaFpXbHRjWFY1ZmxuQzNCUWZPeFBtdTRwQUZKVytmbzZDc084a2NqWEFYZWpMYkt3OFhLTE5XS2VNQmliTzdFNHdHSWY4TTdYVXEifSx7InNsb3RJZCI6Ijc4Nzk3YTdiLTdjN2QtNGU3Zi04MDgxLTgyODM4NDg1ODY4NyIsImtpbmQiOiJwYXNzcGhyYXNlIiwid3JhcHBlZEtleSI6ImlJbUtpNHlOam8rUWtaS1RjVTFZU2VLdzJIRWd1R01TRzhsZDBjOW9ackxFUUhsZVZtVjcxRkNWWTJIOXlrT0hwRXdvL05Rc2lneXhYU2s1In1dLCJwb3J0Zm9saW9zIjpbXSwiYmFja2VuZHMiOiJzZXJ2ZXIiLCJoZWFkZXJWZXJzaW9uIjoyLCJkZXZpY2VJZCI6IjJmMmYzZjFlLTlmMmEtNGE1My05YTZhLTliOGYyZjhjMWEwMiIsIndyaXRlSWQiOiI2ZjZmM2YxZS05ZjJhLTRhNTMtOWE2YS05YjhmMmY4YzFhMDMiLCJ3cml0dGVuQXQiOiIyMDI2LTA4LTA4VDA5OjAwOjAwLjAwMFoiLCJtYWMiOnsidiI6MSwidGFnIjoiRUw1UC9TVS9tazNBanU3bC9uOEM4SWlqNXQ4UWRieVhDaGtYTzl5OTFidz0ifX0=",
+    "contentKeyBase64": "JCUmJygpKissLS4vMDEyMzQ1Njc4OTo7PD0+P0BBQkM="
+  },
+  "v2Partition": {
+    "coveredKinds": [
+      "portfolio",
+      "transaction",
+      "dividend",
+      "cashSource",
+      "cashMovement",
+      "portfolioSetting",
+      "taxSetting",
+      "customAsset",
+      "customAssetValue",
+      "standingOrder",
+      "standingOrderRun",
+      "importBatch",
+      "importRow",
+      "portfolioDailySnapshot",
+      "portfolioSnapshotState",
+      "expenseCategory",
+      "expenseTransaction",
+      "expenseRule",
+      "expenseBudget",
+      "expenseBudgetFire",
+      "cashTag",
+      "cashMovementTag",
+      "cashBudget",
+      "cashBudgetFire",
+      "cashRule",
+      "cashRuleTag"
+    ],
+    "commonKinds": [
+      "cashBudget",
+      "cashBudgetFire",
+      "cashRule",
+      "cashRuleTag",
+      "cashTag",
+      "customAsset",
+      "customAssetValue",
+      "expenseBudget",
+      "expenseBudgetFire",
+      "expenseCategory",
+      "expenseRule",
+      "expenseTransaction",
+      "taxSetting"
+    ],
+    "portfolioDocs": [
+      {
+        "portfolioId": "11111111-1111-4111-8111-111111111111",
+        "kinds": [
+          "cashSource",
+          "portfolio",
+          "portfolioDailySnapshot",
+          "portfolioSetting",
+          "standingOrder",
+          "standingOrderRun",
+          "transaction"
+        ]
+      },
+      {
+        "portfolioId": "22222222-2222-4222-8222-222222222222",
+        "kinds": [
+          "cashMovement",
+          "cashMovementTag",
+          "dividend",
+          "importBatch",
+          "importRow",
+          "portfolio",
+          "portfolioSnapshotState"
+        ]
+      }
+    ],
+    "index": [
+      {
+        "portfolioId": "11111111-1111-4111-8111-111111111111",
+        "alias": "Tech"
+      },
+      {
+        "portfolioId": "22222222-2222-4222-8222-222222222222",
+        "alias": "Pension"
+      }
+    ],
+    "report": {
+      "entitiesIn": 27,
+      "entitiesOut": 27,
+      "orphans": []
+    }
+  },
+  "v2Migration": {
+    "legacyVaultKeyBase64": "AwoRGB8mLTQ7QklQV15lbHN6gYiPlp2kq7K5wMfO1dw=",
+    "scopeId": "user-vector-42",
+    "derivedVaultId": "5a5e5367-9a13-4ef5-a26e-eef453cbcd15",
+    "contentKeyBase64": "qbn95mhAg/HSevUX7h0AHFa0ttKK0wiwu3GUhWTDp0A=",
+    "headerBytesBase64": "eyJmb3JtYXRWZXJzaW9uIjoyLCJ2YXVsdElkIjoiNWE1ZTUzNjctOWExMy00ZWY1LWEyNmUtZWVmNDUzY2JjZDE1IiwibmFtZSI6Ik15IHZhdWx0Iiwia2RmU2FsdCI6IkFRSURCQVVHQndnSkNnc01EUTRQRUE9PSIsImtkZiI6eyJhbGciOiJhcmdvbjJpZCIsIm0iOjY1NTM2LCJ0IjozLCJwIjoxLCJzYWx0IjoiQVFJREJBVUdCd2dKQ2dzTURRNFBFQT09In0sImtleVNsb3RzIjpbeyJzbG90SWQiOiIwYzIwNGM2ZS1mZWYzLTRlYmUtYWVlYS1lMDlmZGI2ODVhNDMiLCJraW5kIjoicGFzc3BocmFzZSIsIndyYXBwZWRLZXkiOiJ0M1VZTjlJVDJOQTYyVmQ5VDRaN2RrYmEyUCtrVi9NTGY3VThHU0VES2NIT3hzTG5WdVhHR3Y4N3BzMDJYbSttejFZWExRMDcrRkkvdm9pMSJ9XSwicG9ydGZvbGlvcyI6W3sicG9ydGZvbGlvSWQiOiIxMTExMTExMS0xMTExLTQxMTEtODExMS0xMTExMTExMTExMTEiLCJhbGlhcyI6IlRlY2gifV0sImJhY2tlbmRzIjoic2VydmVyIiwiaGVhZGVyVmVyc2lvbiI6MSwiZGV2aWNlSWQiOiIyZjJmM2YxZS05ZjJhLTRhNTMtOWE2YS05YjhmMmY4YzFhMDIiLCJ3cml0ZUlkIjoiNmY2ZjNmMWUtOWYyYS00YTUzLTlhNmEtOWI4ZjJmOGMxYTAzIiwid3JpdHRlbkF0IjoiMjAyNi0wOC0wOFQwOTowMDowMC4wMDBaIiwibWFjIjp7InYiOjEsInRhZyI6ImJ6anNKZWZ5cWlaQitHTGlRb3ZKRlZNN0ZGWm1HNXdaSG1KZ2pENVIyV2c9In19",
+    "commonEnvelopeBase64": "QlRWQVVMVDEAAAFBeyJmb3JtYXRWZXJzaW9uIjoyLCJjaXBoZXIiOiJBMjU2R0NNIiwiaXYiOiJ3TURvMEtUNnhNRjd1aWIvIiwidmF1bHRJZCI6IjVhNWU1MzY3LTlhMTMtNGVmNS1hMjZlLWVlZjQ1M2NiY2QxNSIsImRvY0tpbmQiOiJjb21tb24iLCJwb3J0Zm9saW9JZCI6bnVsbCwic2NoZW1hVmVyc2lvbiI6MSwiYmxvYlZlcnNpb24iOjEsImRldmljZUlkIjoiZDZkMWNkMTUtOTA0MS00Njc3LWJlNDQtNTIwYTU2OTI1MDQ0Iiwid3JpdGVJZCI6IjFiZGU1ZDU1LTk4OWYtNDgxMC04M2E0LWQ3NTRmMDdhZTUyNyIsIndyaXR0ZW5BdCI6IjIwMjYtMDgtMDhUMDk6MDA6MDAuMDAwWiJ9333UftyD0UBdX+e7r1yxRQ5zOMMgYLF4UQIbaHyrrrn9/w0mCQ+QLW4qeTlV370wJWIx+YuUY4l/f/F9CXHkUTDt/RKOW7vNiFHMzac3o10iKJLFMFa3JoXUp+eOoH0XdmgjIZoEb/HAV5sV0UU58d/jJWv4ZkHRfnkaC/0G79pf13zfcpeFpPupAAKvcewkX7zLWuo0kHIDlvleIoMnF4tAxxCSHJVAhRIv3ciJBO8MEfUvppDZoNBk/xkLPntD84josKAlbUlQdMfd6C5mEF2SB3lx7cZeydva8U3ld68cpM5rG6OJcbNWRPuvFps=",
+    "portfolioEnvelopes": [
+      {
+        "portfolioId": "11111111-1111-4111-8111-111111111111",
+        "envelopeBase64": "QlRWQVVMVDEAAAFmeyJmb3JtYXRWZXJzaW9uIjoyLCJjaXBoZXIiOiJBMjU2R0NNIiwiaXYiOiJEZ0RMQjNpV0FsQ0hzK2JYIiwidmF1bHRJZCI6IjVhNWU1MzY3LTlhMTMtNGVmNS1hMjZlLWVlZjQ1M2NiY2QxNSIsImRvY0tpbmQiOiJwb3J0Zm9saW8iLCJwb3J0Zm9saW9JZCI6IjExMTExMTExLTExMTEtNDExMS04MTExLTExMTExMTExMTExMSIsInNjaGVtYVZlcnNpb24iOjEsImJsb2JWZXJzaW9uIjoxLCJkZXZpY2VJZCI6ImQ2ZDFjZDE1LTkwNDEtNDY3Ny1iZTQ0LTUyMGE1NjkyNTA0NCIsIndyaXRlSWQiOiJmZDgxNjJiOS1mMWEzLTQ5OTctODIxNC1mN2QwODExYmUxOWUiLCJ3cml0dGVuQXQiOiIyMDI2LTA4LTA4VDA5OjAwOjAwLjAwMFoifdc1DQjNUNpGrngBVYmo0sCpy9iue68/svtBnpHlz/7jKrv+nQpbiYb7lwjGCloXlTBDMH9tPUa29vFAjRViIEsoJmUAEOV1S5eO7TS5m2vsSB4NABJGXHQjAw0MtvdcQe7h/Q374JCI4siwdTPqvS4AUwylk8hmCHar3BAChpOT0zEZ2sIn//CBBdprJJUZKRlT+TatG7/apYHcm3NDaHs46vX5qWDTnOIfTnGqOlBw4O/L52/MmlwkkKq8r/A9/6IjmUHRJH4WKgkinAgfK4nvcPZvnhQY+RLkOkX20uIw/6jGS1tOPF9RBIasVdI2QuCU2Q//JNBW4D8DcGeCQsXrsgHMcq94/yyNMD/jOPgo"
+      }
+    ]
+  },
+  "v2RecoveryKit": {
+    "vaultId": "4f6f3f1e-9f2a-4a53-9a6a-9b8f2f8c1a01",
+    "vaultName": "Drive vault",
+    "backends": "drive",
+    "passphrase": "legal winner thank year wave sausage worth useful legal winner thank yellow",
+    "kitBase64": "QmV0dGVyVHJhY2sgdmF1bHQgcmVjb3Zlcnkga2l0CmZvcm1hdFZlcnNpb246IDIKdmF1bHRJZDogNGY2ZjNmMWUtOWYyYS00YTUzLTlhNmEtOWI4ZjJmOGMxYTAxCnZhdWx0TmFtZTogRHJpdmUgdmF1bHQKYmFja2VuZHM6IGRyaXZlCndvcmRzOiBsZWdhbCB3aW5uZXIgdGhhbmsgeWVhciB3YXZlIHNhdXNhZ2Ugd29ydGggdXNlZnVsIGxlZ2FsIHdpbm5lciB0aGFuayB5ZWxsb3cKCkFueW9uZSB3aG8gaGFzIHRoZXNlIHR3ZWx2ZSB3b3JkcyBjYW4gb3BlbiB0aGlzIHZhdWx0LiBLZWVwIHRoaXMgZmlsZSBvZmZsaW5lIGFuZCBwcml2YXRlLiBJZiB5b3UgbG9zZSBib3RoIHRoZSB3b3JkcyBhbmQgdGhpcyBmaWxlLCB0aGUgdmF1bHQgY2Fubm90IGJlIHJlY292ZXJlZCDigJQgbm90IGJ5IHlvdSwgbm90IGJ5IEJldHRlclRyYWNrLgo="
+  },
+  "v2Qr": {
+    "vaultId": "4f6f3f1e-9f2a-4a53-9a6a-9b8f2f8c1a01",
+    "name": "Drive vault",
+    "code": "1199T5HY",
+    "payload": "btvault1:{\"qr\":1,\"vaultId\":\"4f6f3f1e-9f2a-4a53-9a6a-9b8f2f8c1a01\",\"name\":\"Drive vault\",\"w\":\"BQYHCAkKCwwNDg8QERITFBUWFxgZGhscHR4fIDpBkpCm7ZQyfIHYeC4daQ7W2T6qjN9x9sOoEyyDR/zQBFUGQk0AsI4clc99hZCzgsfFw9atQI/bpcdwoQVqUBmeUiIv07f6rS9i47tBo4ptnKImE//S4tbjbdA=\"}"
+  }
+}

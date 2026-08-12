@@ -95,7 +95,7 @@ export function TextField({ label, hint, error, id, className, ...rest }: TextFi
  * brand gold with a browser-correct contrasting check — no custom control, so
  * the native keyboard/AT semantics are untouched.
  */
-export const CHECKBOX_STYLE: CSSProperties = { accentColor: 'var(--bt-gold)' };
+export const CHECKBOX_STYLE: CSSProperties = { accentColor: 'var(--bt-gold-graphic)' };
 
 /** A hairline rule broken by a small uppercase label — "… or …". */
 export function OrDivider({ label }: { label: string }) {
@@ -135,7 +135,11 @@ const ALERT_TONES: Record<AlertTone, CSSProperties> = {
 
 export function Alert({ tone, children }: { tone: AlertTone; children: ReactNode }) {
   return (
-    <div role="alert" className="rounded-md border px-3 py-2 text-sm" style={ALERT_TONES[tone]}>
+    <div
+      role={tone === 'success' ? 'status' : 'alert'}
+      className="rounded-md border px-3 py-2 text-sm"
+      style={ALERT_TONES[tone]}
+    >
       {children}
     </div>
   );
@@ -147,7 +151,7 @@ export function Spinner({ label }: { label?: string }) {
     <div className="bt-muted flex items-center gap-3 text-sm" role="status">
       <span
         className="h-4 w-4 animate-spin rounded-full border-2"
-        style={{ borderColor: 'var(--bt-border-strong)', borderTopColor: 'var(--bt-gold)' }}
+        style={{ borderColor: 'var(--bt-border-strong)', borderTopColor: 'var(--bt-gold-graphic)' }}
         aria-hidden="true"
       />
       <span>{label ?? t('common.loading')}</span>
@@ -187,7 +191,11 @@ export function Toast({
 }) {
   const t = useT();
   const rail =
-    tone === 'error' ? 'var(--bt-neg)' : tone === 'success' ? 'var(--bt-pos)' : 'var(--bt-gold)';
+    tone === 'error'
+      ? 'var(--bt-neg)'
+      : tone === 'success'
+        ? 'var(--bt-pos)'
+        : 'var(--bt-gold-graphic)';
   return (
     <div
       role="alert"

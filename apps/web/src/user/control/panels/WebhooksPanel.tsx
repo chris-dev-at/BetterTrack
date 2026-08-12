@@ -235,7 +235,7 @@ function CreateWebhookForm({
                 checked={events.has(type)}
                 className="h-4 w-4"
                 onChange={() => toggle(type)}
-                style={{ accentColor: 'var(--bt-gold)' }}
+                style={{ accentColor: 'var(--bt-gold-graphic)' }}
                 type="checkbox"
               />
               <span>{t(`settings.api.webhooks.event.${EVENT_LABEL_KEY[type]}`)}</span>

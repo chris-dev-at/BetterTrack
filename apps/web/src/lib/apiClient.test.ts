@@ -7,6 +7,7 @@ import {
   isApiOutage,
   isConfirmedApiOutcome,
   isConfirmedUnauthorized,
+  markRateLimitHandledLocally,
   setAuthResponsePolicy,
 } from './apiClient';
 
@@ -189,5 +190,28 @@ test('a 429 with suppressAuthRedirect does not invoke onRateLimited', async () =
   await expect(apiRequest('/auth/login', { suppressAuthRedirect: true })).rejects.toBeInstanceOf(
     ApiError,
   );
+  expect(onRateLimited).not.toHaveBeenCalled();
+});
+
+test('a locally handled 429 stays typed without firing the global rate-limit notice', async () => {
+  vi.stubGlobal(
+    'fetch',
+    vi
+      .fn()
+      .mockResolvedValue(
+        jsonResponse(
+          429,
+          { error: { code: 'RATE_LIMITED', message: 'Too many requests.' } },
+          { 'retry-after': '37' },
+        ),
+      ),
+  );
+  const signal = markRateLimitHandledLocally(new AbortController().signal);
+
+  const error = await apiRequest('/account/paranoid/normal-revision', { signal }).catch(
+    (cause: unknown) => cause,
+  );
+
+  expect(error).toMatchObject({ status: 429, code: 'RATE_LIMITED', retryAfterSeconds: 37 });
   expect(onRateLimited).not.toHaveBeenCalled();
 });

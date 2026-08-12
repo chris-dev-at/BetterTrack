@@ -51,7 +51,11 @@ export interface WorkboardService {
   /** Legacy per-user watchlist sharing state (§6.9, V2-P9) — the General list's audience, coarsened. */
   getSharing(userId: string): Promise<WatchlistSharingResponse>;
   /** Legacy toggle — sets the General list's audience to all-friends / private. */
-  setSharing(userId: string, visibility: 'private' | 'friends'): Promise<WatchlistSharingResponse>;
+  setSharing(
+    userId: string,
+    visibility: 'private' | 'friends',
+    confirmWiden?: boolean,
+  ): Promise<WatchlistSharingResponse>;
 }
 
 export function createWorkboardService(deps: WorkboardServiceDeps): WorkboardService {
@@ -261,9 +265,9 @@ export function createWorkboardService(deps: WorkboardServiceDeps): WorkboardSer
       return { visibility };
     },
 
-    async setSharing(userId, visibility) {
+    async setSharing(userId, visibility, confirmWiden) {
       const defaultId = await repo.ensureDefaultWatchlist(userId);
-      await audience.applyVisibility(userId, 'watchlist', defaultId, visibility);
+      await audience.applyVisibility(userId, 'watchlist', defaultId, visibility, confirmWiden);
       return { visibility };
     },
   };

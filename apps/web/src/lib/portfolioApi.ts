@@ -26,6 +26,7 @@ import {
   type CashDeletionResponse,
   type CashEntryRequest,
   type CashMovementResponse,
+  type CashMovementsQuery,
   type CashMovementsResponse,
   type CashPreviewRequest,
   type CashPreviewResponse,
@@ -41,6 +42,7 @@ import {
   type DividendListResponse,
   type PortfolioHistoryRange,
   type PortfolioHistoryResponse,
+  type PortfolioKind,
   type PortfolioListResponse,
   type PortfolioResponse,
   type PortfolioSummary,
@@ -53,6 +55,7 @@ import {
   type TaxYearReportResponse,
   type Transaction,
   type TransactionInput,
+  type TransactionListOrder,
   type TransactionListResponse,
   type UpdateCashMovementRequest,
   type UpdateCashSourceRequest,
@@ -95,8 +98,16 @@ export async function listPortfolios(
 }
 
 /** `POST /portfolios` — create a named portfolio (§13.2 V2-P8). */
-export async function createPortfolio(name: string): Promise<PortfolioSummary> {
-  const data = await apiRequest<unknown>('/portfolios', { method: 'POST', body: { name } });
+export async function createPortfolio(
+  name: string,
+  kind?: PortfolioKind,
+): Promise<PortfolioSummary> {
+  const data = await apiRequest<unknown>('/portfolios', {
+    method: 'POST',
+    // Omitted rather than sent as null when the caller has no kind: the create
+    // body accepts a concrete kind only, and an unclassified row is the default.
+    body: kind === undefined ? { name } : { name, kind },
+  });
   return portfolioMutationResponseSchema.parse(data).portfolio;
 }
 
@@ -176,14 +187,29 @@ export async function getPortfolioHistory(
 /** `GET /portfolios/:id/transactions?cursor=` — newest-first ledger, keyset paginated. */
 export async function listTransactions(
   portfolioId: string,
-  params: { cursor?: string; limit?: number; source?: string } = {},
+  params: {
+    cursor?: string;
+    limit?: number;
+    source?: string;
+    assetId?: string;
+    order?: TransactionListOrder;
+    includeSourceTags?: boolean;
+  } = {},
   signal?: AbortSignal,
 ): Promise<TransactionListResponse> {
   const data = await apiRequest<unknown>(
     `/portfolios/${encodeURIComponent(portfolioId)}/transactions`,
     {
-      // `source` is the V5-P0c source-tag filter (omitted → all rows).
-      query: { cursor: params.cursor, limit: params.limit, source: params.source },
+      // `source` is the V5-P0c source-tag filter; `assetId` powers the
+      // on-demand holding ledger (both omitted → all rows).
+      query: {
+        cursor: params.cursor,
+        limit: params.limit,
+        source: params.source,
+        assetId: params.assetId,
+        order: params.order,
+        includeSourceTags: params.includeSourceTags ? 'true' : undefined,
+      },
       signal,
     },
   );
@@ -353,12 +379,14 @@ export async function clearPortfolioTaxOverride(
 
 // --- Cash ledger ("Bargeld") -------------------------------------------------
 
-/** `GET /portfolios/:id/cash` — cash movements + current balance (§14, #220). */
+/** `GET /portfolios/:id/cash?cursor=` — newest-first cash movement page + balance. */
 export async function getCashMovements(
   portfolioId: string,
+  params: CashMovementsQuery = {},
   signal?: AbortSignal,
 ): Promise<CashMovementsResponse> {
   const data = await apiRequest<unknown>(`/portfolios/${encodeURIComponent(portfolioId)}/cash`, {
+    query: params,
     signal,
   });
   return cashMovementsResponseSchema.parse(data);

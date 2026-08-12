@@ -19,7 +19,7 @@ import {
   VaultRuntimeProvider,
   type VaultRuntimeProviderDependencies,
 } from './VaultRuntimeProvider';
-import fixture from './vectors.fixture.json';
+import { vaultInteroperabilityFixture as fixture } from '@bettertrack/domain/vaultVectors';
 
 const envelope = base64ToBytes(fixture.initial.envelopeBase64, 'envelope-invalid');
 

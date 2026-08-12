@@ -18,6 +18,7 @@ vi.mock('../../lib/workboardApi', () => ({
 import { ApiError } from '../../lib/apiClient';
 import * as api from '../../lib/userApi';
 import { listWorkboard } from '../../lib/workboardApi';
+import { waitForColdStart } from '../../test/waitForColdStart';
 import { UserApp } from '../UserApp';
 
 const user: MeResponse = {
@@ -65,7 +66,7 @@ beforeEach(() => {
 async function submitNewPassword() {
   const u = userEvent.setup();
   renderApp();
-  await screen.findByText('Choose a new password');
+  await waitForColdStart(() => screen.getByText('Choose a new password'));
   await u.type(screen.getByLabelText('New password'), 'fresh-reset-password-1');
   await u.click(screen.getByRole('button', { name: 'Set new password' }));
   return u;

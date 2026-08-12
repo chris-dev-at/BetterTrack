@@ -165,12 +165,21 @@ export function YearRow({
   expanded,
   onToggle,
   detail,
+  onUnlock,
+  onRelock,
 }: {
   summary: TaxYearSummary;
   expanded: boolean;
   onToggle: () => void;
   /** The drill-down content rendered while expanded (server-fetched or client-derived). */
   detail: ReactNode;
+  /**
+   * Tax year locking (§16 2026-08-07): opens the unlock ritual for a LOCKED
+   * year / re-locks an UNLOCKED one. Omitted on surfaces without the ritual
+   * (the paranoid client-derived report) — the badge still states the flag.
+   */
+  onUnlock?: (year: number) => void;
+  onRelock?: (year: number) => void;
 }) {
   const t = useT();
   return (
@@ -201,15 +210,48 @@ export function YearRow({
             </span>
             {summary.year}
           </button>
-          {summary.locked ? (
-            <Badge
-              className="ml-2"
-              outline
-              style={{ verticalAlign: 'middle' }}
-              title={t('portfolio.taxReport.passedHint')}
-            >
-              {t('portfolio.taxReport.passed')}
-            </Badge>
+          {summary.locked === true ? (
+            <>
+              <Badge
+                className="ml-2"
+                outline
+                style={{ verticalAlign: 'middle' }}
+                title={t('portfolio.taxReport.lockedHint')}
+              >
+                {t('portfolio.taxReport.locked')}
+              </Badge>
+              {onUnlock ? (
+                <button
+                  className="bt-link ml-2 text-xs font-medium"
+                  onClick={() => onUnlock(summary.year)}
+                  style={{ verticalAlign: 'middle' }}
+                  type="button"
+                >
+                  {t('portfolio.taxReport.unlockAction')}
+                </button>
+              ) : null}
+            </>
+          ) : summary.locked === false ? (
+            <>
+              <Badge
+                className="ml-2"
+                style={{ verticalAlign: 'middle' }}
+                title={t('portfolio.taxReport.unlockedHint')}
+                tone="gold"
+              >
+                {t('portfolio.taxReport.unlocked')}
+              </Badge>
+              {onRelock ? (
+                <button
+                  className="bt-link ml-2 text-xs font-medium"
+                  onClick={() => onRelock(summary.year)}
+                  style={{ verticalAlign: 'middle' }}
+                  type="button"
+                >
+                  {t('portfolio.taxReport.relockAction')}
+                </button>
+              ) : null}
+            </>
           ) : null}
         </td>
         <td className="is-num">

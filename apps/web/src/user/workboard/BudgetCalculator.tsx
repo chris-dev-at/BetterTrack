@@ -120,7 +120,7 @@ function AtLeastOneShareToggle({
           className={cx(
             'relative inline-flex h-6 w-11 shrink-0 rounded-full transition-colors',
             '',
-            checked ? 'bg-[var(--bt-gold)]' : 'bg-[var(--bt-surface-strong)]',
+            checked ? 'bg-[var(--bt-gold-fill)]' : 'bg-[var(--bt-surface-strong)]',
           )}
         >
           <span

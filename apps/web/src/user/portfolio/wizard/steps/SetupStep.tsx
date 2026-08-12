@@ -72,8 +72,9 @@ export function SetupStep({ allowShared, draft, error, patch, report }: Portfoli
       {error ? <Alert tone="error">{error}</Alert> : null}
 
       {/* The same picker as the Settings tab, and it persists the same way: the
-          frame writes the pick through `setPortfolioKind` once the portfolio
-          has an id, so there is one code path for "this portfolio's icon". */}
+          frame carries the pick in the create body (board #69), so there is one
+          code path for "this portfolio's icon" and no window in which a fresh
+          portfolio wears an icon nobody chose. */}
       <div className="bt-pfw__section">
         <p className="bt-pfw__sectionlabel">{t('portfolio.wizard.icon.title')}</p>
         <div

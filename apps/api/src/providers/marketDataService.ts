@@ -1,4 +1,5 @@
 import type {
+  AssetFundamentals,
   AssetMeta,
   AssetRef,
   AssetSearchResult,
@@ -29,6 +30,7 @@ import { DEFAULT_TIMEOUT_MS, retryOnce, withTimeout } from './resilience';
 import {
   DIVIDENDS_TTL_SECONDS,
   EARNINGS_TTL_SECONDS,
+  FUNDAMENTALS_TTL_SECONDS,
   historyTtlSeconds,
   META_TTL_SECONDS,
   NEWS_TTL_SECONDS,
@@ -92,6 +94,12 @@ export interface MarketDataService {
   getNewsHeadlines(ref: AssetRef): Promise<CachedResult<NewsHeadline[]>>;
   /** Past + announced splits (arc d), cached in hours. */
   getSplitEvents(ref: AssetRef): Promise<CachedResult<SplitEvents>>;
+  /**
+   * Revenue / statement / ratio fundamentals (arc f, INTEL1), cached in hours.
+   * Rejects with {@link CapabilityUnavailableError} when the asset's provider
+   * does not implement the capability; the read layer degrades to "unconfigured".
+   */
+  getFundamentals(ref: AssetRef): Promise<CachedResult<AssetFundamentals>>;
 
   /**
    * Resolves once in-flight background cache revalidations have finished
@@ -418,6 +426,16 @@ export function createMarketDataService(deps: CreateMarketDataServiceDeps): Mark
         'splits',
         SPLITS_TTL_SECONDS,
         provider.getSplitEvents?.bind(provider),
+      );
+    },
+
+    getFundamentals(ref) {
+      const provider = registry.for(ref);
+      return loadIntel<AssetFundamentals>(
+        ref,
+        'fundamentals',
+        FUNDAMENTALS_TTL_SECONDS,
+        provider.getFundamentals?.bind(provider),
       );
     },
 

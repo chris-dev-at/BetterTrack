@@ -1,9 +1,11 @@
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 
 import type { Alert, MeResponse } from '@bettertrack/contracts';
+
+import { waitForColdStart } from '../test/waitForColdStart';
 
 vi.mock('../lib/userApi');
 vi.mock('../lib/workboardApi', () => ({
@@ -32,7 +34,7 @@ import * as api from '../lib/userApi';
 import { listPortfolios } from '../lib/portfolioApi';
 import { listFollowing, listItemFollows } from '../lib/socialApi';
 import { listWorkboard } from '../lib/workboardApi';
-import { UserApp } from './UserApp';
+import { queryClient, UserApp } from './UserApp';
 
 const member: MeResponse = {
   id: 'user-1',
@@ -79,23 +81,6 @@ function renderAtWithLocation(path: string) {
 const anonymous = () =>
   vi.mocked(api.getMe).mockRejectedValue(new ApiError(401, 'UNAUTHENTICATED', 'Not signed in.'));
 
-/**
- * Budget for the first assertion after a sign-in. Landing authenticated is the
- * longest chain in this file — the login mutation flips the auth gate, the
- * legacy path redirects into its Origin destination, the shell and the
- * destination mount, and only then does that page's own query paint the text
- * being asserted on.
- *
- * Idle, that chain settles in well under 100ms; it is also the part of these
- * tests most sensitive to CPU contention, measured repeatedly past 2s on a
- * loaded machine while the sign-in-page waits around it stayed in the tens of
- * milliseconds. So on a saturated CI runner it is Testing Library's 1s default
- * that expires, not the app failing to render. These waits are still bounded
- * and still fail on a genuine regression — just not on runner load.
- * `AppShell.test.tsx` budgets the same shell surfaces the same way.
- */
-const SIGNED_IN_RENDER = { timeout: 5_000 } as const;
-
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(api.getParanoidMediaState).mockResolvedValue({
@@ -117,12 +102,31 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+test('the app query client protects implicit reads without overriding explicit query settings', () => {
+  const implicit = queryClient.defaultQueryOptions({
+    queryKey: ['test', 'implicit-defaults'],
+    queryFn: async () => null,
+  });
+  expect(implicit.staleTime).toBe(30_000);
+  expect(implicit.refetchOnWindowFocus).toBe(false);
+  expect(implicit.retry).toBe(1);
+
+  const explicit = queryClient.defaultQueryOptions({
+    queryKey: ['test', 'explicit-stale-time'],
+    queryFn: async () => null,
+    staleTime: 60_000,
+  });
+  expect(explicit.staleTime).toBe(60_000);
+});
+
 test('an unauthenticated visit to a user route redirects to /login', async () => {
   anonymous();
 
   renderAt('/workboard');
 
-  expect(await screen.findByText('Sign in to your account')).toBeInTheDocument();
+  expect(
+    await waitForColdStart(() => screen.getByText('Sign in to your account')),
+  ).toBeInTheDocument();
   expect(
     screen.queryByText('Your watched assets, alerts and blueprints at a glance.'),
   ).not.toBeInTheDocument();
@@ -133,7 +137,9 @@ test('an unauthenticated visit to an unknown route still redirects to /login', a
 
   renderAtWithLocation('/not-a-real-route');
 
-  expect(await screen.findByText('Sign in to your account')).toBeInTheDocument();
+  expect(
+    await waitForColdStart(() => screen.getByText('Sign in to your account')),
+  ).toBeInTheDocument();
   expect(screen.getByTestId('location')).toHaveTextContent('/login');
 });
 
@@ -143,7 +149,9 @@ test('/people/following renders and is reachable from People navigation', async 
 
   renderAtWithLocation('/people/following');
 
-  expect(await screen.findByRole('heading', { name: 'Following' })).toBeInTheDocument();
+  expect(
+    await waitForColdStart(() => screen.getByRole('heading', { name: 'Following' })),
+  ).toBeInTheDocument();
   expect(screen.getByTestId('location')).toHaveTextContent('/people/following');
   expect(screen.getAllByRole('link', { name: 'Following' })[0]).toHaveAttribute(
     'href',
@@ -158,7 +166,7 @@ test('after signing in, the user returns to the originally requested route', asy
   const user = userEvent.setup();
   renderAt('/workboard');
 
-  await screen.findByText('Sign in to your account');
+  await waitForColdStart(() => screen.getByText('Sign in to your account'));
   await user.type(screen.getByLabelText('Email or username'), 'jane');
   await user.type(screen.getByLabelText('Password'), 'correct horse');
   await user.click(screen.getByRole('button', { name: 'Sign in' }));
@@ -166,10 +174,8 @@ test('after signing in, the user returns to the originally requested route', asy
   // Landed on the intended route (the legacy /workboard path redirects into
   // the Workbench destination), not the Home command center.
   expect(
-    await screen.findByText(
-      'Your watched assets, alerts and blueprints at a glance.',
-      {},
-      SIGNED_IN_RENDER,
+    await waitForColdStart(() =>
+      screen.getByText('Your watched assets, alerts and blueprints at a glance.'),
     ),
   ).toBeInTheDocument();
   expect(screen.queryByRole('heading', { name: /Welcome back/ })).not.toBeInTheDocument();
@@ -190,7 +196,7 @@ test('bad credentials show a single generic, non-enumerating error', async () =>
   const user = userEvent.setup();
   renderAt('/login');
 
-  await screen.findByText('Sign in to your account');
+  await waitForColdStart(() => screen.getByText('Sign in to your account'));
   await user.type(screen.getByLabelText('Email or username'), 'jane');
   await user.type(screen.getByLabelText('Password'), 'wrong-password');
   await user.click(screen.getByRole('button', { name: 'Sign in' }));
@@ -207,7 +213,7 @@ test('a 429 on login shows a dedicated rate-limit message, not the generic crede
   const user = userEvent.setup();
   renderAt('/login');
 
-  await screen.findByText('Sign in to your account');
+  await waitForColdStart(() => screen.getByText('Sign in to your account'));
   await user.type(screen.getByLabelText('Email or username'), 'jane');
   await user.type(screen.getByLabelText('Password'), 'wrong-password');
   await user.click(screen.getByRole('button', { name: 'Sign in' }));
@@ -229,7 +235,7 @@ test('a 429 on login with retryAfterSeconds mentions the wait time', async () =>
   const user = userEvent.setup();
   renderAt('/login');
 
-  await screen.findByText('Sign in to your account');
+  await waitForColdStart(() => screen.getByText('Sign in to your account'));
   await user.type(screen.getByLabelText('Email or username'), 'jane');
   await user.type(screen.getByLabelText('Password'), 'wrong-password');
   await user.click(screen.getByRole('button', { name: 'Sign in' }));
@@ -254,10 +260,12 @@ test('a 429 on the bootstrap /auth/me holds the splash and retries — never mis
   // Held on splash (never bounced to /login) while the retry is pending.
   expect(screen.queryByText('Sign in to your account')).not.toBeInTheDocument();
   // The rate-limit toast is shown while waiting.
-  expect(await screen.findByText(/You're doing that too fast/i)).toBeInTheDocument();
+  expect(
+    await waitForColdStart(() => screen.getByText(/You're doing that too fast/i)),
+  ).toBeInTheDocument();
   // After the retry, the app admits the user — the shell renders (§7.4).
   expect(
-    await screen.findByRole('button', { name: 'Account menu' }, { timeout: 3_000 }),
+    await waitForColdStart(() => screen.getByRole('button', { name: 'Account menu' })),
   ).toBeInTheDocument();
   await waitFor(() => expect(api.getMe).toHaveBeenCalledTimes(2));
 });
@@ -282,32 +290,52 @@ test('a rate-limited mutation shows only the global 429 notice', async () => {
   vi.mocked(api.getMe).mockResolvedValue(member);
   vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [] });
   vi.mocked(listAlerts).mockResolvedValue({ items: [triggeredAlert] });
-  vi.mocked(rearmAlert).mockImplementation(() =>
-    apiRequest<Alert>('/alerts/al1/rearm', { method: 'POST' }),
-  );
+  let releaseRateLimitedResponse!: (response: Response) => void;
+  const rateLimitedResponse = new Promise<Response>((resolve) => {
+    releaseRateLimitedResponse = resolve;
+  });
+  let markRearmSettled!: () => void;
+  const rearmSettled = new Promise<void>((resolve) => {
+    markRearmSettled = resolve;
+  });
+  vi.mocked(rearmAlert).mockImplementation(async () => {
+    try {
+      return await apiRequest<Alert>('/alerts/al1/rearm', { method: 'POST' });
+    } finally {
+      // The global policy receives the 429 before apiRequest rejects. Waiting
+      // for that handoff lets the assertion below keep its ordinary UI wait.
+      markRearmSettled();
+    }
+  });
   vi.stubGlobal(
     'fetch',
-    vi.fn<typeof globalThis.fetch>(async (input) => {
+    vi.fn<typeof globalThis.fetch>((input) => {
       if (!String(input).endsWith('/alerts/al1/rearm')) {
         throw new TypeError(`Unexpected test request: ${String(input)}`);
       }
-      return {
-        ok: false,
-        status: 429,
-        json: async () => ({
-          error: { code: 'RATE_LIMITED', message: 'Too many requests.' },
-        }),
-        headers: {
-          get: (name: string) => (name.toLowerCase() === 'retry-after' ? '30' : null),
-        },
-      } as Response;
+      return rateLimitedResponse;
     }),
   );
 
   const user = userEvent.setup();
   renderAt('/workbench/alerts');
 
-  await user.click(await screen.findByRole('button', { name: 'Re-arm' }));
+  await user.click(await waitForColdStart(() => screen.getByRole('button', { name: 'Re-arm' })));
+
+  await waitFor(() => expect(rearmAlert).toHaveBeenCalledWith('al1'));
+  await act(async () => {
+    releaseRateLimitedResponse({
+      ok: false,
+      status: 429,
+      json: async () => ({
+        error: { code: 'RATE_LIMITED', message: 'Too many requests.' },
+      }),
+      headers: {
+        get: (name: string) => (name.toLowerCase() === 'retry-after' ? '30' : null),
+      },
+    } as Response);
+    await rearmSettled;
+  });
 
   expect(
     await screen.findByText("You're doing that too fast. Please wait 30 seconds and try again."),
@@ -381,7 +409,7 @@ test('a 429 takes over the toast slot from a success notice that is still showin
   const user = userEvent.setup();
   renderAt('/workbench/alerts');
 
-  await user.click(await screen.findByRole('button', { name: 'Re-arm' }));
+  await user.click(await waitForColdStart(() => screen.getByRole('button', { name: 'Re-arm' })));
   expect(await screen.findByText('Alert re-armed.')).toBeInTheDocument();
 
   await user.click(await screen.findByRole('button', { name: 'Re-arm' }));
@@ -408,7 +436,7 @@ test('an identical repeat 429 surfaces again after the notice was dismissed', as
   const user = userEvent.setup();
   renderAt('/workbench/alerts');
 
-  await user.click(await screen.findByRole('button', { name: 'Re-arm' }));
+  await user.click(await waitForColdStart(() => screen.getByRole('button', { name: 'Re-arm' })));
   expect(await screen.findByText(RATE_LIMIT_NOTICE)).toBeInTheDocument();
 
   await user.click(screen.getByRole('button', { name: 'Dismiss' }));
@@ -433,12 +461,16 @@ test.each([0, 500])(
 
     renderAt('/portfolio');
 
-    expect(await screen.findByText(/can’t verify your session right now/i)).toBeInTheDocument();
+    expect(
+      await waitForColdStart(() => screen.getByText(/can’t verify your session right now/i)),
+    ).toBeInTheDocument();
     expect(screen.queryByText('Sign in to your account')).not.toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: 'Try again' }));
 
-    expect(await screen.findByRole('button', { name: 'Account menu' })).toBeInTheDocument();
+    expect(
+      await waitForColdStart(() => screen.getByRole('button', { name: 'Account menu' })),
+    ).toBeInTheDocument();
     expect(api.getMe).toHaveBeenCalledTimes(2);
   },
 );
@@ -454,7 +486,9 @@ test('a must-change session is trapped, then released by a successful change', a
   renderAt('/');
 
   // Trapped: the change screen is up and the app shell is unreachable.
-  expect(await screen.findByText('Choose a new password')).toBeInTheDocument();
+  expect(
+    await waitForColdStart(() => screen.getByText('Choose a new password')),
+  ).toBeInTheDocument();
   expect(screen.queryByRole('button', { name: 'Account menu' })).not.toBeInTheDocument();
 
   // No "Current password" field: the temp-password login is the proof, so it is
@@ -465,7 +499,9 @@ test('a must-change session is trapped, then released by a successful change', a
   await user.click(screen.getByRole('button', { name: 'Update password' }));
 
   // Released into the app shell (lands on /portfolio via the `/` redirect).
-  expect(await screen.findByRole('button', { name: 'Account menu' })).toBeInTheDocument();
+  expect(
+    await waitForColdStart(() => screen.getByRole('button', { name: 'Account menu' })),
+  ).toBeInTheDocument();
   expect(api.changePassword).toHaveBeenCalledWith({
     newPassword: 'a-brand-new-secret',
   });
@@ -480,11 +516,13 @@ test('sign-out works from the forced-change screen', async () => {
   const user = userEvent.setup();
   renderAt('/');
 
-  await screen.findByText('Choose a new password');
+  await waitForColdStart(() => screen.getByText('Choose a new password'));
   await user.click(screen.getByRole('button', { name: 'Sign out' }));
 
   // Now anonymous at `/` → the guard sends us to login.
-  expect(await screen.findByText('Sign in to your account')).toBeInTheDocument();
+  expect(
+    await waitForColdStart(() => screen.getByText('Sign in to your account')),
+  ).toBeInTheDocument();
   expect(api.logout).toHaveBeenCalledOnce();
 });
 
@@ -508,7 +546,7 @@ test('invite accept: a valid token shows the fixed email and creates the account
   renderAt('/invite/tok-abc123');
 
   // Fixed email is shown and locked.
-  const email = await screen.findByDisplayValue('newbie@bettertrack.test');
+  const email = await waitForColdStart(() => screen.getByDisplayValue('newbie@bettertrack.test'));
   expect(email).toBeDisabled();
 
   await user.type(screen.getByLabelText('Username'), 'newbie');
@@ -517,10 +555,14 @@ test('invite accept: a valid token shows the fixed email and creates the account
 
   // Accepting an invite creates an account, so it lands on first-run setup —
   // not on Home. Dismissing it opens the app exactly as before.
-  expect(await screen.findByRole('heading', { name: 'Is this you?' })).toBeInTheDocument();
+  expect(
+    await waitForColdStart(() => screen.getByRole('heading', { name: 'Is this you?' })),
+  ).toBeInTheDocument();
   await user.click(screen.getByRole('button', { name: 'Do this later' }));
 
-  expect(await screen.findByRole('button', { name: 'Account menu' })).toBeInTheDocument();
+  expect(
+    await waitForColdStart(() => screen.getByRole('button', { name: 'Account menu' })),
+  ).toBeInTheDocument();
   expect(api.acceptInvite).toHaveBeenCalledWith({
     token: 'tok-abc123',
     username: 'newbie',
@@ -540,7 +582,7 @@ test('logout then login as a different user shows no stale account data (#253)',
   const user = userEvent.setup();
   renderAt('/settings/account');
 
-  await screen.findByText('Sign in to your account');
+  await waitForColdStart(() => screen.getByText('Sign in to your account'));
   // The initial bootstrap `getMe` (rejected by `anonymous()` above) already
   // ran; only now redirect it, so AccountSettingsPage's own query — which
   // fires after login — resolves to jane.
@@ -550,12 +592,12 @@ test('logout then login as a different user shows no stale account data (#253)',
   await user.click(screen.getByRole('button', { name: 'Sign in' }));
 
   expect(
-    await screen.findByText('jane@bettertrack.test', {}, SIGNED_IN_RENDER),
+    await waitForColdStart(() => screen.getByText('jane@bettertrack.test')),
   ).toBeInTheDocument();
 
   await user.click(screen.getByRole('button', { name: 'Account menu' }));
   await user.click(screen.getByRole('menuitem', { name: 'Logout' }));
-  await screen.findByText('Sign in to your account');
+  await waitForColdStart(() => screen.getByText('Sign in to your account'));
 
   const otherMember: MeResponse = {
     ...member,
@@ -573,10 +615,14 @@ test('logout then login as a different user shows no stale account data (#253)',
   // Signing out closed the Control Center with the session that opened it, so
   // the identity has to be asked for again — which is the point: the second
   // read must come from bob's account, not from jane's cached `['auth','me']`.
-  const utilities = await screen.findByRole('navigation', { name: 'Utilities' });
+  const utilities = await waitForColdStart(() =>
+    screen.getByRole('navigation', { name: 'Utilities' }),
+  );
   await user.click(within(utilities).getByRole('link', { name: 'Control Center' }));
 
-  expect(await screen.findByText('bob@bettertrack.test', {}, SIGNED_IN_RENDER)).toBeInTheDocument();
+  expect(
+    await waitForColdStart(() => screen.getByText('bob@bettertrack.test')),
+  ).toBeInTheDocument();
   expect(screen.queryByText('jane@bettertrack.test')).not.toBeInTheDocument();
 });
 
@@ -587,7 +633,7 @@ test('invite accept: an invalid token is rejected with a clear message and no fo
   renderAt('/invite/expired-token');
 
   expect(
-    await screen.findByText(/invalid, expired, or has already been used/i),
+    await waitForColdStart(() => screen.getByText(/invalid, expired, or has already been used/i)),
   ).toBeInTheDocument();
   expect(screen.queryByLabelText('Username')).not.toBeInTheDocument();
 });
@@ -598,7 +644,7 @@ test('an unknown authenticated user path renders a not-found state without navig
 
   renderAtWithLocation('/blabla');
 
-  expect(await screen.findByText('Page not found')).toBeInTheDocument();
+  expect(await waitForColdStart(() => screen.getByText('Page not found'))).toBeInTheDocument();
   expect(screen.getByText('/blabla', { selector: 'code' })).toBeInTheDocument();
   expect(await screen.findByRole('button', { name: 'Account menu' })).toBeInTheDocument();
   expect(screen.getByRole('link', { name: 'Back to start' })).toHaveAttribute('href', '/');

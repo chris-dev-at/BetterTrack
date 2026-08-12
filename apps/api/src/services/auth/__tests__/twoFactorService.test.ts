@@ -15,6 +15,11 @@ import {
 import { createSessionService } from '../../sessions/sessionService';
 import { encryptSecret } from '../../crypto/secretBox';
 import { hashToken } from '../../crypto/tokens';
+import { createProgressiveLimiter } from '../../security/progressiveLimiter';
+import {
+  TWO_FACTOR_ACCOUNT_NAMESPACE,
+  TWO_FACTOR_DISABLE_ACCOUNT_NAMESPACE,
+} from '../loginThrottle';
 import { generateTotpCode, normalizeRecoveryCode, TOTP_STEP_SECONDS } from '../totp';
 
 // SMTP env that flips config.email.enabled on (host + from are the deciders).
@@ -263,6 +268,46 @@ describe('twoFactorService — authenticator (TOTP) method (§6.1, §13.2 V2-P5)
     await expect(h.ctx.twoFactor.disableTotp(userId, validCode)).rejects.toMatchObject({
       statusCode: 429,
       code: 'RATE_LIMITED',
+    });
+    expect((await readUserTwoFactor()).enabled).toBe(true);
+  });
+
+  it('keeps TOTP-disable and login-2FA failure budgets isolated in both directions', async () => {
+    const { secret } = await h.ctx.twoFactor.enrollTotp(userId);
+    await h.ctx.twoFactor.confirmTotp(userId, generateTotpCode(secret));
+    const validCode = generateTotpCode(secret);
+    const wrongCode = validCode === '000000' ? '111111' : '000000';
+    const loginThrottle = createProgressiveLimiter(
+      h.ctx.redis,
+      TWO_FACTOR_ACCOUNT_NAMESPACE,
+      h.ctx.config.rateLimits.loginAccount,
+    );
+    const disableThrottle = createProgressiveLimiter(
+      h.ctx.redis,
+      TWO_FACTOR_DISABLE_ACCOUNT_NAMESPACE,
+      h.ctx.config.rateLimits.loginAccount,
+    );
+
+    // Spend the full non-cooling disable allowance. A first login failure must
+    // still be admitted; the old shared namespace turned this into the 11th
+    // event and armed a login cooldown.
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      await expect(h.ctx.twoFactor.disableTotp(userId, wrongCode)).rejects.toMatchObject({
+        code: 'TWO_FACTOR_INVALID_CODE',
+      });
+    }
+    await expect(loginThrottle.consume(userId)).resolves.toMatchObject({ allowed: true });
+
+    await Promise.all([loginThrottle.reset(userId), disableThrottle.reset(userId)]);
+
+    // Reverse the pressure: ten pending-login failures must not make the first
+    // authenticated disable failure return 429.
+    for (let attempt = 0; attempt < 10; attempt += 1) {
+      await expect(loginThrottle.consume(userId)).resolves.toMatchObject({ allowed: true });
+    }
+    await expect(h.ctx.twoFactor.disableTotp(userId, wrongCode)).rejects.toMatchObject({
+      statusCode: 401,
+      code: 'TWO_FACTOR_INVALID_CODE',
     });
     expect((await readUserTwoFactor()).enabled).toBe(true);
   });

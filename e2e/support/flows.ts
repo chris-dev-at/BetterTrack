@@ -23,12 +23,11 @@ export async function dismissFirstRun(page: Page): Promise<void> {
  *
  * The account menu lives in the desktop rail and is intentionally hidden on
  * phone widths. The top-bar Create control is the stable, user-shell-only
- * landmark shared by desktop and mobile.
+ * landmark shared by desktop and mobile. Its test id deliberately avoids the
+ * translated accessible name so this readiness check works in every locale.
  */
 export async function expectUserShellReady(page: Page): Promise<void> {
-  await expect(
-    page.getByRole('banner').getByRole('button', { name: 'Create', exact: true }),
-  ).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByTestId('global-create-trigger')).toBeVisible({ timeout: 20_000 });
 }
 
 /** Drives the real /invite/:token page to provision a brand-new account. */

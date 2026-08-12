@@ -1,7 +1,7 @@
 import { render, screen } from '@testing-library/react';
 import { expect, test } from 'vitest';
 
-import { AuthCard, TextField } from './ui';
+import { Alert, AuthCard, TextField } from './ui';
 
 test('AuthCard provides one page heading inside its main landmark', () => {
   render(
@@ -56,4 +56,20 @@ test('TextField only marks the input invalid when an error is supplied', () => {
   expect(input).not.toHaveAttribute('aria-invalid');
   expect(input).toHaveAttribute('aria-describedby', 'email-hint');
   expect(screen.queryByRole('alert')).not.toBeInTheDocument();
+});
+
+test('Alert reserves assertive semantics for errors and announces success politely', () => {
+  render(
+    <>
+      <Alert tone="success">Vault ready</Alert>
+      <Alert tone="info">Vault notice</Alert>
+      <Alert tone="error">Vault failed</Alert>
+    </>,
+  );
+
+  expect(screen.getByRole('status')).toHaveTextContent('Vault ready');
+  expect(screen.getAllByRole('alert').map((alert) => alert.textContent)).toEqual([
+    'Vault notice',
+    'Vault failed',
+  ]);
 });

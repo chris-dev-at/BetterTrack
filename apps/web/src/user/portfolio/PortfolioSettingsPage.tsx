@@ -14,6 +14,7 @@ import { Alert, cx } from '../components/ui';
 import { ConvertChainDialog, MemberSheet, MirrorInviteStepDialog } from './MirrorchainPanel';
 import { PortfolioIconChip } from './PortfolioIconChip';
 import { PortfolioTaxSection } from './PortfolioTaxSection';
+import { PortfolioVaultSection } from '../vault/v2/ui/PortfolioVaultSection';
 import {
   ACTIVE_PORTFOLIO_PARAM,
   promotedDefaultName,
@@ -73,7 +74,7 @@ export function PortfolioSettingsPage() {
   const param = searchParams.get(ACTIVE_PORTFOLIO_PARAM);
   const portfolio = useMemo(() => resolveActivePortfolio(portfolios, param), [portfolios, param]);
   const portfolioId = portfolio?.id ?? null;
-  const [kind, setKind] = usePortfolioKind(portfolioId);
+  const [kind, setKind] = usePortfolioKind(portfolio);
 
   // The archived list only matters here, so it is fetched with the page.
   const archivedQuery = useQuery({
@@ -264,6 +265,11 @@ export function PortfolioSettingsPage() {
         <SectionHead title={t('portfolio.settings.taxHeading')} />
         <PortfolioTaxSection portfolioId={portfolio.id} />
       </section>
+
+      {/* ── Vault / Paranoid mode (docs/VAULTS_V2_DESIGN.md §4) ──────────
+          Owner order: ALWAYS visible, on every portfolio, so the feature is
+          discoverable rather than buried in the Control Center. */}
+      <PortfolioVaultSection portfolioId={portfolio.id} portfolioName={portfolio.name} />
 
       {/* ── Group portfolio (MIRRORCHAIN) ───────────────────────────────── */}
       <NormalModeOnly>

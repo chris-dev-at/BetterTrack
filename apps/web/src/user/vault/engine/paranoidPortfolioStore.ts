@@ -169,6 +169,9 @@ function portfolioHistoryResponse(derived: ClientPortfolioDerivation): Portfolio
   );
   return portfolioHistoryResponseSchema.parse({
     range: derived.range,
+    // The client-side derivation is daily-resolution on every range (IN3): the
+    // vault engine has no intraday candles, so `1d` is the honest grid echo.
+    interval: '1d',
     baseCurrency: derived.baseCurrency,
     points: readable.map((point) => ({ date: point.date, valueEur: point.valueEur })),
     performance: readable.map((point) => ({ date: point.date, pct: point.twrPct ?? 0 })),

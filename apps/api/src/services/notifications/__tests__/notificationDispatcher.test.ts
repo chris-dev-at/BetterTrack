@@ -297,6 +297,7 @@ describe('producers → center → dispatcher (one pipeline, #368)', () => {
     const portfolioId = await harness.ctx.portfolio.getDefaultPortfolioId(owner.id);
     await harness.ctx.portfolio.updatePortfolioWithVisibility(owner.id, portfolioId, {
       visibility: 'friends',
+      confirmWiden: true,
     });
 
     expect(await visibleRowsFor(f1.id, 'portfolio.shared')).toHaveLength(1);
@@ -315,6 +316,7 @@ describe('producers → center → dispatcher (one pipeline, #368)', () => {
     // Share once → one notification.
     await harness.ctx.portfolio.updatePortfolioWithVisibility(owner.id, portfolioId, {
       visibility: 'friends',
+      confirmWiden: true,
     });
     expect(await visibleRowsFor(friend.id, 'portfolio.shared')).toHaveLength(1);
 
@@ -322,6 +324,7 @@ describe('producers → center → dispatcher (one pipeline, #368)', () => {
     await harness.ctx.portfolio.updatePortfolio(owner.id, portfolioId, { name: 'Renamed' });
     await harness.ctx.portfolio.updatePortfolioWithVisibility(owner.id, portfolioId, {
       visibility: 'friends',
+      confirmWiden: true,
     });
     // Turning it off then on again is a fresh transition, but the event key is the
     // same (portfolio + owner), so dedupe keeps it at one row.
@@ -330,6 +333,7 @@ describe('producers → center → dispatcher (one pipeline, #368)', () => {
     });
     await harness.ctx.portfolio.updatePortfolioWithVisibility(owner.id, portfolioId, {
       visibility: 'friends',
+      confirmWiden: true,
     });
 
     expect(await allRowsFor(friend.id, 'portfolio.shared')).toHaveLength(1);

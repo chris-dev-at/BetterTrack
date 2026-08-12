@@ -1,5 +1,6 @@
 import type {
   CashEntryRequest,
+  CashMovementsQuery,
   CashMovementsResponse,
   CashMovementResponse,
   CashPreviewRequest,
@@ -26,6 +27,7 @@ import type {
   StandingOrderListResponse,
   Transaction,
   TransactionInput,
+  TransactionListOrder,
   TransactionListResponse,
   UpdateCustomAssetRequest,
   UpdateCashSourceRequest,
@@ -46,6 +48,9 @@ export interface PortfolioTransactionListParams {
   cursor?: string;
   limit?: number;
   source?: string;
+  assetId?: string;
+  order?: TransactionListOrder;
+  includeSourceTags?: boolean;
 }
 
 /**
@@ -55,7 +60,10 @@ export interface PortfolioTransactionListParams {
  */
 export interface PortfolioStore {
   listPortfolios(signal?: AbortSignal, includeArchived?: boolean): Promise<PortfolioListResponse>;
-  createPortfolio(name: CreatePortfolioRequest['name']): Promise<PortfolioSummary>;
+  createPortfolio(
+    name: CreatePortfolioRequest['name'],
+    kind?: CreatePortfolioRequest['kind'],
+  ): Promise<PortfolioSummary>;
   getPortfolio(portfolioId: string, signal?: AbortSignal): Promise<PortfolioResponse>;
   getPortfolioHistory(
     portfolioId: string,
@@ -122,7 +130,11 @@ export interface PortfolioStore {
     sourceId: string,
     options?: { baseSeq?: number },
   ): Promise<CashSource>;
-  getCashMovements(portfolioId: string, signal?: AbortSignal): Promise<CashMovementsResponse>;
+  getCashMovements(
+    portfolioId: string,
+    params?: CashMovementsQuery,
+    signal?: AbortSignal,
+  ): Promise<CashMovementsResponse>;
   previewCash(
     portfolioId: string,
     body: CashPreviewRequest,

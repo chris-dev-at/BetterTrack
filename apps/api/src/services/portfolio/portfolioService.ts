@@ -3,6 +3,7 @@ import type {
   CashEntryRequest,
   CashMovement as CashMovementDto,
   CashMovementResponse,
+  CashMovementsQuery,
   CashMovementsResponse,
   EditableCashMovementKind,
   UpdateCashMovementRequest,
@@ -19,21 +20,28 @@ import type {
   UpdateCashSourceRequest,
   Holding as HoldingDto,
   PortfolioAsset,
+  PortfolioHistoryInterval,
   PortfolioHistoryOverlay,
   PortfolioHistoryPoint,
   PortfolioHistoryRange,
+  PortfolioHistoryResolvedInterval,
   PortfolioPerformancePoint,
   PortfolioListResponse,
   PortfolioResponse,
   PortfolioSummary,
   PortfolioTotals,
   TransactionInput,
+  TransactionListOrder,
   TransactionListResponse,
   Transaction as TransactionDto,
   UpdatePortfolioRequest,
   UpdateTransactionRequest,
 } from '@bettertrack/contracts';
-import { customAssetCategorySchema, editableCashMovementKindSchema } from '@bettertrack/contracts';
+import {
+  CASH_MOVEMENTS_DEFAULT_LIMIT,
+  customAssetCategorySchema,
+  editableCashMovementKindSchema,
+} from '@bettertrack/contracts';
 
 import type { AssetRow } from '../../data/schema';
 import { newId } from '../../data/ids';
@@ -62,6 +70,7 @@ import {
   cashBalancesBySource,
   CashLedgerError,
   InsufficientCashError,
+  isExternalCashMovement,
   pairedTransferMovements,
   projectCashLedgerBySource,
   floorCents,
@@ -72,6 +81,7 @@ import {
 } from '../../domain/cashLedger';
 import {
   deriveHoldings,
+  netFlowsOverTime,
   OversellError,
   rebasePerformance,
   reducePosition,
@@ -89,20 +99,28 @@ import { FxRateUnavailableError, type CurrencyService } from '../currency/curren
 import type { LiveRingBuffer } from '../liveMode';
 import type { NotificationCenter } from '../notifications/notificationCenter';
 import type { AudienceService } from '../social/audienceService';
+import { viennaYearOf } from '../../domain/tax';
 import { isEngineTaxed } from '../tax/closedSettlement';
 import type { TaxService } from '../tax/taxService';
+import type { TaxYearLockGuard } from '../tax/taxYearLockService';
 import {
+  anchorlessAssetDays,
+  assetDayKey,
   buildIntradayEurValuePoints,
   downsampledIndices,
-  intradayFetchRange,
-  intradayIntervalFor,
   intradayPerformancePoints,
   isDownsampledRange,
   isIntradayRange,
+  resolveHistoryInterval,
   TARGET_POINTS,
+  unitsTimelineFromTrades,
+  type IntradayAssetUnits,
   type IntradayCandle,
+  type IntradayCashEvent,
+  type IntradayFlowEvent,
   type IntradayPortfolioRange,
   type IntradayValuePoint,
+  type ResolvedHistoryInterval,
 } from './portfolioIntraday';
 import type { PortfolioSnapshotService } from './portfolioSnapshots';
 
@@ -154,6 +172,13 @@ export interface PortfolioServiceDeps {
    * transaction write must carry, and the year corrections a delete posts.
    */
   taxService: TaxService;
+  /**
+   * Tax year locking (§16 2026-08-07): every user mutation dated into a
+   * locked Vienna year — transactions AND cash movements, create/edit/delete —
+   * is refused (409 `TAX_YEAR_LOCKED`) before any planning or write. Replica
+   * applies (`force`) bypass: the origin actor's own lock state gated the op.
+   */
+  yearLock: TaxYearLockGuard;
   /** Social graph — used to resolve the owner's friends when a portfolio is shared (§6.10). */
   friendshipRepo: FriendshipRepository;
   /**
@@ -179,7 +204,7 @@ export interface PortfolioServiceDeps {
   now?: () => number;
 }
 
-type PortfolioMetadataPatch = Omit<UpdatePortfolioRequest, 'visibility'>;
+type PortfolioMetadataPatch = Omit<UpdatePortfolioRequest, 'visibility' | 'confirmWiden'>;
 
 export interface PortfolioService {
   /**
@@ -229,7 +254,14 @@ export interface PortfolioService {
   listTransactions(
     userId: string,
     portfolioId: string,
-    params: { cursor?: string; limit?: number; source?: string },
+    params: {
+      cursor?: string;
+      limit?: number;
+      source?: string;
+      assetId?: string;
+      order?: TransactionListOrder;
+      includeSourceTags?: boolean;
+    },
   ): Promise<TransactionListResponse>;
   /**
    * Record one or more transactions. `opts.source` is the V5-P0c source tag the
@@ -249,11 +281,17 @@ export interface PortfolioService {
     inputs: TransactionInput[],
     opts?: { source?: string; force?: boolean },
   ): Promise<TransactionDto[]>;
+  /**
+   * `opts.force` (MIRRORCHAIN replica apply, design §2): skips the tax-year
+   * lock gate — the origin actor's own lock state gated the op before it
+   * entered the chain. Every other validation stays on.
+   */
   updateTransaction(
     userId: string,
     portfolioId: string,
     id: string,
     patch: UpdateTransactionRequest,
+    opts?: { force?: boolean },
   ): Promise<TransactionDto>;
   /**
    * `opts.force` (MIRRORCHAIN replica apply, design §2): waives the
@@ -277,13 +315,14 @@ export interface PortfolioService {
     opts?: { baseCurrency?: string },
   ): Promise<PortfolioResponse>;
   /**
-   * The portfolio's cash movements (all sources) + rolled-up balance + the
-   * sources with per-source balances — the liquidity split (§14, #220, V3-P3).
+   * One newest-first page of the portfolio's cash movements + rolled-up balance
+   * + sources with per-source balances — the liquidity split (§14, #220,
+   * V3-P3).
    */
   getCashMovements(
     userId: string,
     portfolioId: string,
-    opts?: { source?: string },
+    opts?: CashMovementsQuery,
   ): Promise<CashMovementsResponse>;
   /** The portfolio's cash sources with balances, Main first (V3-P3). */
   listCashSources(
@@ -346,12 +385,16 @@ export interface PortfolioService {
     sourceId: string,
     input: SetCashBalanceRequest,
   ): Promise<SetCashBalanceResponse>;
-  /** Record an external cash deposit (§14) into a source (Main by default, V3-P3). */
+  /**
+   * Record an external cash deposit (§14) into a source (Main by default,
+   * V3-P3). `opts.force` (MIRRORCHAIN replica apply, design §2) skips the
+   * tax-year lock gate only — a deposit has no overdraw gate to waive.
+   */
   depositCash(
     userId: string,
     portfolioId: string,
     input: CashEntryRequest,
-    opts?: { source?: string },
+    opts?: { source?: string; force?: boolean },
   ): Promise<CashMovementResponse>;
   /**
    * Record an external cash withdrawal from a source (Main by default);
@@ -433,9 +476,15 @@ export interface PortfolioService {
     userId: string,
     portfolioId: string,
     range: PortfolioHistoryRange,
-    opts?: { overlay?: boolean; baseCurrency?: string },
+    opts?: { overlay?: boolean; baseCurrency?: string; interval?: PortfolioHistoryInterval },
   ): Promise<{
     range: PortfolioHistoryRange;
+    /**
+     * The grid actually served (IN3, board #76): `opts.interval` resolved by
+     * {@link resolveHistoryInterval} — `auto` (the default) keeps each range's
+     * established behaviour except 1D, whose auto grid is now 5-minute.
+     */
+    interval: PortfolioHistoryResolvedInterval;
     baseCurrency: string;
     /** Daily on 1M+; a dense intraday curve (each point carries `time`) on 1D/1W (#556). */
     points: PortfolioHistoryPoint[];
@@ -528,16 +577,26 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
     notify,
     liveRing,
     logger,
+    yearLock,
   } = deps;
   const now = deps.now ?? Date.now;
+
+  /** Vienna tax year of an ISO timestamp / Date (tax year locking, §16 2026-08-07). */
+  const taxYearOf = (at: string | Date): number =>
+    viennaYearOf(at instanceof Date ? at.toISOString() : new Date(at).toISOString());
   // The STORAGE base (EUR): the cash ledger's currency and the denomination of
   // the cached history ingredients. A caller's per-user base (V3-P10d) never
   // replaces this — it is applied at read time via `fxFor`/`seriesInBase`.
   const baseCurrency = currencyService.baseCurrency;
 
+  /** UTC calendar day for an already-captured instant. */
+  function isoDayAt(asOfMs: number): string {
+    return new Date(asOfMs).toISOString().slice(0, 10);
+  }
+
   /** Today's UTC calendar day, the last point of the value series. */
   function todayIso(): string {
-    return new Date(now()).toISOString().slice(0, 10);
+    return isoDayAt(now());
   }
 
   /** Map a stored record / input into the pure-domain transaction shape. */
@@ -768,6 +827,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       name: patch.name,
       visibility: patch.visibility,
       defaultPayFromCash: patch.defaultPayFromCash,
+      kind: patch.kind,
     });
     if (!updated) throw notFound('Portfolio not found.', 'PORTFOLIO_NOT_FOUND');
     return {
@@ -1000,6 +1060,9 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
     await requireOwnedPortfolio(userId, portfolioId);
     const source = await resolveFlowSource(portfolioId, input.sourceId);
     const executedAt = input.executedAt ? new Date(input.executedAt) : new Date(now());
+    // Tax year lock (§16 2026-08-07): a movement dated into a locked year is
+    // refused; replica applies bypass (origin-gated).
+    if (!opts?.force) await yearLock.assertYearsAmendable(userId, [taxYearOf(executedAt)]);
     // Cash is whole-cent money — quantize the entered amount to cents (#322),
     // so a withdraw-all (the cent-exact reported balance) cancels the ledger
     // to exactly €0.00 rather than stranding sub-cent residue.
@@ -1203,31 +1266,33 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
    */
   async function loadIntradayCandles(
     asset: { id: string; providerId: string; providerRef: string },
-    range: IntradayPortfolioRange,
-    cutoffMs: number,
+    grid: NonNullable<ResolvedHistoryInterval['grid']>,
+    candleStartMs: number,
   ): Promise<IntradayCandle[]> {
     const ref = { providerId: asset.providerId, providerRef: asset.providerRef };
     const byMs = new Map<number, number>();
     try {
       // 1D/1W fetch over their own range; 1M over the recent month `fetchRange`.
-      const history = await marketData.getHistory(
-        ref,
-        intradayFetchRange(range),
-        intradayIntervalFor(range),
-      );
+      // The provider interval is the resolved grid's (IN3): the finest native
+      // §5.3 interval no coarser than the grid step.
+      const history = await marketData.getHistory(ref, grid.fetchRange, grid.fetchInterval);
       for (const point of history.value) {
         const atMs = Date.parse(point.time);
-        if (!Number.isNaN(atMs) && Number.isFinite(point.close)) byMs.set(atMs, point.close);
+        if (!Number.isNaN(atMs) && atMs >= candleStartMs && Number.isFinite(point.close)) {
+          byMs.set(atMs, point.close);
+        }
       }
     } catch {
       // Provider outage past the stale window — the ring (if any) still seeds it.
     }
     if (liveRing) {
       try {
-        for (const frame of await liveRing.readSince(asset.id, cutoffMs)) {
+        for (const frame of await liveRing.readSince(asset.id, candleStartMs)) {
           const atMs = Date.parse(frame.at);
           // Ring ticks win at their instant — the freshest observed native price.
-          if (!Number.isNaN(atMs) && Number.isFinite(frame.price)) byMs.set(atMs, frame.price);
+          if (!Number.isNaN(atMs) && atMs >= candleStartMs && Number.isFinite(frame.price)) {
+            byMs.set(atMs, frame.price);
+          }
         }
       } catch {
         // The ring is a best-effort accelerator; ignore a Redis hiccup.
@@ -1248,15 +1313,18 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
   async function buildIntradayHistory(
     portfolioId: string,
     range: IntradayPortfolioRange,
+    grid: NonNullable<ResolvedHistoryInterval['grid']>,
     fx: CurrencyService,
-    today: string,
+    asOf: { day: string; nowMs: number },
   ): Promise<{ points: PortfolioHistoryPoint[]; performance: PortfolioPerformancePoint[] } | null> {
     const series = await snapshots.getSeries(portfolioId);
     if (series.points.length === 0) return null;
 
-    const cutoffDay = rangeCutoffIso(range, today);
+    const cutoffDay = rangeCutoffIso(range, asOf.day);
     const cutoffMs = Date.parse(`${cutoffDay}T00:00:00.000Z`);
-    const nowMs = now();
+    // A 1D curve starts at the captured request day. Its previous daily point
+    // is the close anchor, so the live ring never needs yesterday's ticks.
+    const candleStartMs = range === '1D' ? Date.parse(`${asOf.day}T00:00:00.000Z`) : cutoffMs;
 
     const dailyValueEurByDay = new Map(series.points.map((p) => [p.date, p.valueEur]));
     const perAssetEurByDay = new Map<string, Map<string, number>>();
@@ -1267,7 +1335,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
     // Fetch candles only for assets actually held during the window; manual /
     // custom assets have no intraday history and always carry forward.
     const heldAssetIds = series.assets
-      .filter((a) => a.points.some((p) => p.date >= cutoffDay))
+      .filter((a) => a.points.some((p) => p.date >= cutoffDay && p.date <= asOf.day))
       .map((a) => a.assetId);
     const assetsById = new Map(
       (await portfolioRepo.assetsByIds(heldAssetIds)).map((r) => [r.id, r]),
@@ -1277,18 +1345,165 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       heldAssetIds.map(async (assetId) => {
         const asset = assetsById.get(assetId);
         if (!asset || asset.providerId === 'manual') return;
-        const candles = await loadIntradayCandles(asset, range, cutoffMs);
+        const candles = await loadIntradayCandles(asset, grid, candleStartMs);
         if (candles.length > 0) candlesByAsset.set(assetId, candles);
       }),
     );
 
+    // Same-day steps (#1120/I1): trades and cash movements applied at their
+    // actual instants, so the curve before a 14:00 buy shows the pre-trade
+    // holdings instead of retro-applying the day's EOD units+cash from the
+    // first bucket. The ledgers come back from `getSeries` — the exact rows the
+    // snapshot engine computed this series from, so the two never disagree and
+    // this hot read issues no second pair of unbounded queries (#1120 review).
+    const seriesAssetIds = new Set(series.assets.map((a) => a.assetId));
+    const txnRecords = series.transactions;
+    const cashRecords = series.cashMovements;
+    const txnRecordById = new Map(txnRecords.map((t) => [t.id, t]));
+
+    const tradesByAsset = new Map<string, { atMs: number; unitsDelta: number }[]>();
+    for (const t of txnRecords) {
+      if (!seriesAssetIds.has(t.assetId)) continue; // FX-unconvertible: not in the series
+      const trade = {
+        atMs: t.executedAt.getTime(),
+        unitsDelta: t.side === 'buy' ? t.quantity : -t.quantity,
+      };
+      const list = tradesByAsset.get(t.assetId);
+      if (list) list.push(trade);
+      else tradesByAsset.set(t.assetId, [trade]);
+    }
+    const unitsByAsset = new Map<string, IntradayAssetUnits>();
+    for (const [assetId, trades] of tradesByAsset) {
+      const timeline = unitsTimelineFromTrades(trades, cutoffMs);
+      if (timeline !== undefined) unitsByAsset.set(assetId, timeline);
+    }
+
+    // Asset-days whose position cannot be priced at any bucket (#1120 review):
+    // a same-day round trip has no EUR anchor on either side, so stepping its
+    // cash legs or booking its flows at their instants would fabricate a dip
+    // the size of the position. Those days stay day-anchored, as before #1120.
+    const anchorless = anchorlessAssetDays({ dailyValueEurByDay, perAssetEurByDay, unitsByAsset });
+
+    const cashEvents: IntradayCashEvent[] = [];
+    for (const m of cashRecords) {
+      const atMs = m.executedAt.getTime();
+      if (atMs < cutoffMs) continue;
+      // Linked legs carry their transaction's asset so the builder can leave an
+      // unpriceable position's cash inside the day's EOD figure.
+      const linked = m.transactionId !== null ? txnRecordById.get(m.transactionId) : undefined;
+      cashEvents.push({ atMs, amountEur: m.amountEur, assetId: linked?.assetId });
+    }
+
+    // External-flow instants for the intraday % curve (#1120) — the same three
+    // legs the snapshot engine books per day (external ledger movements,
+    // unlinked transactions, #378 split-buy compensators), kept at their
+    // timestamps. EUR here; re-denominated with the points below.
+    const flowEventsEur: IntradayFlowEvent[] = [];
+    const cashSettledIds = new Set<string>();
+    for (const m of cashRecords) {
+      const atMs = m.executedAt.getTime();
+      if (atMs >= cutoffMs && isExternalCashMovement(m.kind)) {
+        flowEventsEur.push({ atMs, flowEur: m.amountEur });
+      }
+      if (m.transactionId !== null && (m.kind === 'buy' || m.kind === 'sell_proceeds')) {
+        cashSettledIds.add(m.transactionId);
+      }
+    }
+    const windowUnlinkedTxns = txnRecords.filter(
+      (t) =>
+        t.executedAt.getTime() >= cutoffMs &&
+        seriesAssetIds.has(t.assetId) &&
+        assetsById.has(t.assetId) &&
+        !cashSettledIds.has(t.id) &&
+        // A same-day round trip never materialises on the value curve, so
+        // booking its flow at the trade instant would inflate the denominator
+        // for the hours it was held — a phantom drawdown that then recovers.
+        // Leave the pair day-anchored, where it nets out (#1120 review).
+        !anchorless.has(assetDayKey(t.assetId, t.executedAt.toISOString().slice(0, 10))),
+    );
+    // One conversion per distinct trade INSTANT rather than per transaction,
+    // all issued concurrently (#1120 review): trades sharing an instant
+    // coalesce per (day, currency) inside `netFlowsOverTime` exactly as the
+    // engine coalesces them, and N serialized FX round trips become one batch.
+    const unlinkedCurrencyByAsset = new Map<string, string>();
+    const unlinkedByInstant = new Map<number, TransactionRecord[]>();
+    for (const t of windowUnlinkedTxns) {
+      unlinkedCurrencyByAsset.set(t.assetId, assetsById.get(t.assetId)!.currency);
+      const atMs = t.executedAt.getTime();
+      const list = unlinkedByInstant.get(atMs);
+      if (list) list.push(t);
+      else unlinkedByInstant.set(atMs, [t]);
+    }
+    const convertedInstants = await Promise.all(
+      [...unlinkedByInstant].map(async ([atMs, txns]) => {
+        try {
+          const flows = await netFlowsOverTime({
+            transactions: txns.map(recordToDomain),
+            currencyByAsset: unlinkedCurrencyByAsset,
+            converter: currencyService,
+          });
+          let flowEur = 0;
+          for (const f of flows) flowEur += f.flowEur;
+          return { atMs, flowEur };
+        } catch (err) {
+          // FX gap: leave this flow day-anchored (the daily total still has it).
+          // Only that degrade is intentional — a genuine converter fault must
+          // surface, exactly as the two neighbouring FX sites treat it (#1120
+          // review), instead of silently coarsening the curve.
+          if (!(err instanceof FxRateUnavailableError)) throw err;
+          return null;
+        }
+      }),
+    );
+    for (const event of convertedInstants) {
+      if (event !== null && event.flowEur !== 0) flowEventsEur.push(event);
+    }
+    for (const m of cashRecords) {
+      if (m.kind !== 'buy' || m.transactionId === null) continue;
+      const txn = txnRecordById.get(m.transactionId);
+      if (!txn || !seriesAssetIds.has(txn.assetId)) continue;
+      const buyDay = txn.executedAt.toISOString().slice(0, 10);
+      // The position this pays for is unplottable that day: its cash leg is
+      // already left un-stepped, so the % curve must stay day-anchored too.
+      if (anchorless.has(assetDayKey(txn.assetId, buyDay))) continue;
+      // #378 compensator pair, each leg at its own instant. Emitted for
+      // SAME-day settlements as well (#1120 review): when
+      // `settleCashAsOfToday` stamps the movement later than the trade, the
+      // pair neutralises the interval in which the stepped value curve shows
+      // the position with its cash not yet deducted. Both legs land in one
+      // bucket in the ordinary case and cancel exactly, and the pair always
+      // sums to 0 within the day — the day's closing flow is untouched.
+      //
+      // A movement stamped BEFORE its trade is left day-anchored instead: the
+      // pair would have to be emitted inverted (+ at the movement, − at the
+      // trade) to neutralise that interval, and `settleCashAsOfToday` — the
+      // only writer that can separate the two instants — always stamps "now",
+      // i.e. at or after the trade. Day-anchoring is the safe fallback, so the
+      // asymmetry with `deriveSplitCashBuys` (which is order-agnostic because
+      // it works in whole days) costs nothing today (#1120 review).
+      if (m.executedAt.getTime() < txn.executedAt.getTime()) continue;
+      if (txn.executedAt.getTime() >= cutoffMs) {
+        flowEventsEur.push({ atMs: txn.executedAt.getTime(), flowEur: -m.amountEur });
+      }
+      if (m.executedAt.getTime() >= cutoffMs) {
+        flowEventsEur.push({ atMs: m.executedAt.getTime(), flowEur: m.amountEur });
+      }
+    }
+
     const eurPoints = buildIntradayEurValuePoints({
       range,
+      stepMs: grid.stepMs,
       cutoffDay,
-      nowMs,
+      asOfDay: asOf.day,
+      nowMs: asOf.nowMs,
       dailyValueEurByDay,
       perAssetEurByDay,
       candlesByAsset,
+      unitsByAsset,
+      cashEvents,
+      // The set computed above, so the value curve and the % curve suppress
+      // exactly the same asset-days by construction (#1120 review).
+      anchorlessDays: anchorless,
     });
     if (eurPoints.length === 0) return null;
 
@@ -1297,6 +1512,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
     // curve, so 1D/1W stay currency-consistent with 1M+. Days whose FX is
     // unavailable in the requested base drop, exactly as they do daily.
     const points: PortfolioHistoryPoint[] = [];
+    let flowEventsBase: IntradayFlowEvent[] = flowEventsEur;
     if (fx.baseCurrency === baseCurrency) {
       for (const p of eurPoints) {
         points.push({ date: p.date, time: new Date(p.timeMs).toISOString(), valueEur: p.valueEur });
@@ -1320,6 +1536,13 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
           valueEur: p.valueEur * rate,
         });
       }
+      // Flow instants re-denominate with the same per-day rates (§5.4); a
+      // dropped day's events drop with its points.
+      flowEventsBase = [];
+      for (const e of flowEventsEur) {
+        const rate = rateByDay.get(new Date(e.atMs).toISOString().slice(0, 10));
+        if (rate !== undefined) flowEventsBase.push({ atMs: e.atMs, flowEur: e.flowEur * rate });
+      }
     }
     if (points.length === 0) return null;
 
@@ -1335,6 +1558,8 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       intradayPoints: baseIntraday,
       dailyBasePoints: baseDaily.points,
       flowsBase: baseDaily.flows,
+      flowEvents: flowEventsBase,
+      stepMs: grid.stepMs,
     }).map((p) => ({ date: p.date, time: new Date(p.timeMs).toISOString(), pct: p.pct }));
 
     return { points, performance };
@@ -1367,7 +1592,11 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       // #377, so new portfolios start private and are shared deliberately from the
       // Social area's "My items" via the AudiencePicker. Existing portfolios and
       // the auto-created "Main" (always private) are untouched.
-      return portfolioRepo.createPortfolio(userId, name, 'private');
+      //
+      // `kind` is the one thing the creation flow may state up front (board #69):
+      // omitted leaves the row unclassified (null), which renders as the client's
+      // default rather than claiming a choice the user never made.
+      return portfolioRepo.createPortfolio(userId, name, 'private', input.kind ?? null);
     },
 
     async archivePortfolio(userId, portfolioId) {
@@ -1456,7 +1685,10 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       // rejects here, leaving portfolio visibility, audience, and events intact.
       return audience.withVisibilityMutation(
         userId,
+        'portfolio',
+        portfolioId,
         patch.visibility,
+        patch.confirmWiden,
         async (lockedRecipientIds) => {
           const { portfolio, becameShared } = await updatePortfolioRecord(
             userId,
@@ -1468,6 +1700,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
             'portfolio',
             portfolioId,
             patch.visibility,
+            patch.confirmWiden,
             lockedRecipientIds,
           );
           // Emit only after both writes succeeded and only to the exact friend
@@ -1488,11 +1721,18 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
     async listTransactions(userId, portfolioId, params) {
       await requireOwnedPortfolio(userId, portfolioId);
       const limit = params.limit ?? DEFAULT_LIMIT;
-      const { items, nextCursor } = await transactionRepo.listByPortfolio(portfolioId, {
-        limit,
-        cursor: params.cursor,
-        source: params.source,
-      });
+      const [{ items, nextCursor }, sourceTags] = await Promise.all([
+        transactionRepo.listByPortfolio(portfolioId, {
+          limit,
+          cursor: params.cursor,
+          source: params.source,
+          assetId: params.assetId,
+          order: params.order,
+        }),
+        params.includeSourceTags
+          ? transactionRepo.listSourceTagsByPortfolio(portfolioId)
+          : Promise.resolve(undefined),
+      ]);
       return {
         items: items.map((row) => ({
           id: row.id,
@@ -1517,12 +1757,22 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
           },
         })),
         nextCursor,
+        ...(sourceTags === undefined ? {} : { sourceTags }),
       };
     },
 
     async createTransactions(userId, portfolioId, inputs, opts) {
       if (inputs.length === 0) throw badRequest('No transactions to create.', 'EMPTY_BATCH');
       await requireOwnedPortfolio(userId, portfolioId);
+      // Tax year lock (§16 2026-08-07): rows dated into a locked year are
+      // refused before any validation or planning; replica applies bypass
+      // (the origin actor's own lock state already gated the op).
+      if (!opts?.force) {
+        await yearLock.assertYearsAmendable(
+          userId,
+          inputs.map((i) => taxYearOf(i.executedAt)),
+        );
+      }
       // Source tag (V5-P0c): `manual` unless the caller (the CSV apply path)
       // passes `import:<broker>`. The HTTP body carries no source, so a client
       // can never forge a non-manual tag on a hand-entered row.
@@ -1595,6 +1845,8 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
         // The manual-default gate (V5-P4c): imported rows never take the default.
         source,
         resolveSourceId: (explicitId) => flowSource(explicitId).then((s) => s.id),
+        // Replica applies skip the tax-year lock guard inside the plan too.
+        force: opts?.force,
       });
 
       /**
@@ -1749,7 +2001,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       });
     },
 
-    async updateTransaction(userId, portfolioId, id, patch) {
+    async updateTransaction(userId, portfolioId, id, patch, opts) {
       await requireOwnedPortfolio(userId, portfolioId);
       const existing = await transactionRepo.findByIdForUser(userId, id);
       // Scope the transaction to *this* portfolio: a txn in another (even owned)
@@ -1770,6 +2022,15 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
         patch.price !== undefined ||
         patch.fee !== undefined ||
         patch.executedAt !== undefined;
+      // Tax year lock (§16 2026-08-07): a financial edit touching a locked
+      // year — the row's current year OR the year the patch moves it into —
+      // is refused. Note-only edits change no year figure and stay allowed.
+      if (financialEdit && !opts?.force) {
+        await yearLock.assertYearsAmendable(userId, [
+          taxYearOf(existing.executedAt),
+          ...(patch.executedAt !== undefined ? [taxYearOf(patch.executedAt)] : []),
+        ]);
+      }
       if (financialEdit) {
         // A row carrying recorded tax is financially immutable (V3-P4): its
         // frozen tax and settlement movement mirror the numbers it was
@@ -1863,6 +2124,11 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       if (!existing || existing.portfolioId !== portfolioId) {
         throw notFound('Transaction not found.', 'TRANSACTION_NOT_FOUND');
       }
+      // Tax year lock (§16 2026-08-07): deleting a row dated into a locked
+      // year is refused before any correction planning; replica applies bypass.
+      if (!opts?.force) {
+        await yearLock.assertYearsAmendable(userId, [taxYearOf(existing.executedAt)]);
+      }
 
       // Removing a BUY can leave a later SELL over-selling; replay without it.
       const siblings = await transactionRepo.listForAsset(existing.portfolioId, existing.assetId);
@@ -1878,6 +2144,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
         userId,
         portfolioId,
         existing,
+        { force: opts?.force },
       );
 
       // Deleting a cash-linked buy/sell cascades away its cash movements (§14,
@@ -2012,27 +2279,34 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       // Materialise Main so even an untouched portfolio answers with its
       // default source (V3-P3) — mirrors listPortfolios' behavior.
       await cashSourceRepo.getOrCreateMain(portfolioId);
-      const [{ records, balanceBySource, totalEur }, sources] = await Promise.all([
-        loadCashState(portfolioId),
+      const [page, balances, sources] = await Promise.all([
+        cashMovementRepo.listPageForPortfolio(portfolioId, {
+          cursor: opts?.cursor,
+          limit: opts?.limit ?? CASH_MOVEMENTS_DEFAULT_LIMIT,
+          source: opts?.source,
+          tag: opts?.tag,
+        }),
+        cashMovementRepo.balancesForPortfolio(portfolioId),
         // Archived sources are included here so every historical movement can
         // resolve its source's name; active listings use listCashSources.
         cashSourceRepo.listForPortfolio(portfolioId, { includeArchived: true }),
       ]);
-      // Source-tag filter (V5-P0c): the returned movements are narrowed to the
-      // requested tag, but balances still roll up the FULL ledger — a filter is
-      // a view, never a re-computation of net worth.
-      const visible = opts?.source ? records.filter((r) => r.source === opts.source) : records;
+      const balanceBySource = new Map(
+        balances.map((row) => [row.sourceId, floorCents(row.balanceEur)]),
+      );
+      const totalEur = floorCents(balances.reduce((sum, row) => sum + row.balanceEur, 0));
       // One extra query for the whole page's labels (V5 cash fusion) — the
       // tagged ledger is what the Cash flow tab renders, so resolving them per
       // movement would be N+1 on the busiest read in the area.
       const tagsByMovement = await cashTagRepo.tagIdsForMovements(
         portfolioId,
-        visible.map((r) => r.id),
+        page.items.map((r) => r.id),
       );
       return {
         balanceEur: totalEur,
-        movements: visible.map((r) => movementToDto(r, tagsByMovement.get(r.id) ?? [])),
+        movements: page.items.map((r) => movementToDto(r, tagsByMovement.get(r.id) ?? [])),
         sources: sources.map((s) => sourceToDto(s, balanceBySource.get(s.id) ?? 0)),
+        nextCursor: page.nextCursor,
       };
     },
 
@@ -2142,6 +2416,9 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
         resolveFlowSource(portfolioId, input.toSourceId),
       ]);
       const executedAt = input.executedAt ? new Date(input.executedAt) : new Date(now());
+      // Tax year lock (§16 2026-08-07): a transfer dated into a locked year is
+      // refused; replica applies bypass (origin-gated).
+      if (!opts?.force) await yearLock.assertYearsAmendable(userId, [taxYearOf(executedAt)]);
       // The pure builder quantizes the magnitude to cents (#322) and mirrors it
       // into the two double-entry legs sharing one timestamp.
       let legs: CashTransferLegs;
@@ -2264,6 +2541,9 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       const source = await resolveFlowSource(portfolioId, input.sourceId);
       // A deposit only ever raises the balance, so it needs no solvency gate.
       const executedAt = input.executedAt ? new Date(input.executedAt) : new Date(now());
+      // Tax year lock (§16 2026-08-07): a deposit dated into a locked year is
+      // refused; replica applies bypass (origin-gated).
+      if (!opts?.force) await yearLock.assertYearsAmendable(userId, [taxYearOf(executedAt)]);
       // Cash is whole-cent money — quantize the entered amount to cents (#322).
       const movement = await cashMovementRepo.insert(portfolioId, {
         sourceId: source.id,
@@ -2302,6 +2582,20 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
     async updateCashMovement(userId, portfolioId, movementId, patch, opts) {
       await requireOwnedPortfolio(userId, portfolioId);
       const existing = await requireEditableMovement(portfolioId, movementId);
+      // Tax year lock (§16 2026-08-07): any non-note edit of a movement dated
+      // into a locked year — or moving one into a locked year — is refused;
+      // replica applies bypass (origin-gated).
+      const movesMoney =
+        patch.kind !== undefined ||
+        patch.amountEur !== undefined ||
+        patch.sourceId !== undefined ||
+        patch.executedAt !== undefined;
+      if (movesMoney && !opts?.force) {
+        await yearLock.assertYearsAmendable(userId, [
+          taxYearOf(existing.executedAt),
+          ...(patch.executedAt !== undefined ? [taxYearOf(patch.executedAt)] : []),
+        ]);
+      }
 
       // Staying put is always allowed; MOVING onto an archived source is not.
       // A row that has always lived on a since-archived source would otherwise
@@ -2389,6 +2683,11 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
     async deleteCashMovement(userId, portfolioId, movementId, opts) {
       await requireOwnedPortfolio(userId, portfolioId);
       const existing = await requireEditableMovement(portfolioId, movementId);
+      // Tax year lock (§16 2026-08-07): deleting a movement dated into a
+      // locked year is refused; replica applies bypass (origin-gated).
+      if (!opts?.force) {
+        await yearLock.assertYearsAmendable(userId, [taxYearOf(existing.executedAt)]);
+      }
       // Removing an INFLOW is the dangerous direction: the deposit that funded
       // three later withdrawals cannot simply vanish. Replaying what is left
       // catches exactly that, and costs nothing when the row is an outflow.
@@ -2473,21 +2772,37 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       const overlay = opts?.overlay ?? false;
       const fx = fxFor(opts?.baseCurrency);
 
-      const today = todayIso();
+      // A series request must have one as-of instant: deriving the cutoff day
+      // before async snapshot/candle work and the 1D candle day afterwards can
+      // otherwise straddle UTC midnight and combine two different windows.
+      const asOfMs = now();
+      const today = isoDayAt(asOfMs);
+
+      // The requested interval resolved against the range (IN3, board #76):
+      // `auto` keeps each range's established behaviour except 1D, whose auto
+      // grid is now 5-minute; explicit sub-daily intervals are honored within
+      // the point budget (finer requests coarsen, finest-fit); `1d` — and any
+      // request against a daily-only range — is the plain daily path.
+      const resolved = resolveHistoryInterval(range, opts?.interval ?? 'auto');
 
       // Short ranges (1D/1W/1M) render a sub-daily intraday curve rather than a
       // ~2-point daily slice (V5-P1 arc d, issue #556; 2026-07-20 point-budget
       // rework). The builder degrades to the daily slice when no intraday data
       // exists, and returns null only for a history-less portfolio — which falls
-      // through to the empty daily result. 6M/1Y/5Y take the daily path below and
+      // through to the daily path below, whose (empty) result serves the daily
+      // grid and honestly echoes `1d`. 6M/1Y/5Y take the daily path below and
       // downsample it to the point budget; MAX keeps its full since-inception
       // daily curve.
-      if (isIntradayRange(range)) {
-        const intraday = await buildIntradayHistory(portfolioId, range, fx, today);
+      if (isIntradayRange(range) && resolved.grid) {
+        const intraday = await buildIntradayHistory(portfolioId, range, resolved.grid, fx, {
+          day: today,
+          nowMs: asOfMs,
+        });
         if (intraday) {
           if (!overlay) {
             return {
               range,
+              interval: resolved.interval,
               baseCurrency: fx.baseCurrency,
               points: intraday.points,
               performance: intraday.performance,
@@ -2500,6 +2815,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
             .filter((a) => a.points.length > 0);
           return {
             range,
+            interval: resolved.interval,
             baseCurrency: fx.baseCurrency,
             points: intraday.points,
             performance: intraday.performance,
@@ -2535,7 +2851,11 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
         points = keep.map((i) => points[i]!);
         performance = keep.map((i) => performance[i]!);
       }
-      if (!overlay) return { range, baseCurrency: fx.baseCurrency, points, performance };
+      // Everything below serves the daily grid — echo `1d` regardless of what
+      // was requested (the null-builder fallthrough above lands here too).
+      if (!overlay) {
+        return { range, interval: '1d', baseCurrency: fx.baseCurrency, points, performance };
+      }
 
       // Overlays share the curve's daily grid, so the same range slice keeps
       // them point-for-point aligned. An asset whose data lies entirely outside
@@ -2556,7 +2876,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
           };
         })
         .filter((a) => a.points.length > 0);
-      return { range, baseCurrency: fx.baseCurrency, points, performance, assets };
+      return { range, interval: '1d', baseCurrency: fx.baseCurrency, points, performance, assets };
     },
 
     async getAssetValueSeries(userId, portfolioId) {

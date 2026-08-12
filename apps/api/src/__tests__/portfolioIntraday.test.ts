@@ -21,13 +21,13 @@ import { createTestApp, type TestHarness } from '../testing/createTestApp';
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
 const MIN = 60_000;
 
-function dayOffset(offset: number): string {
-  const ms = Date.parse(`${new Date().toISOString().slice(0, 10)}T00:00:00.000Z`);
+function dayOffset(offset: number, refNow = Date.now()): string {
+  const ms = Date.parse(`${new Date(refNow).toISOString().slice(0, 10)}T00:00:00.000Z`);
   return new Date(ms + offset * 86_400_000).toISOString().slice(0, 10);
 }
 
-function tsOffset(offset: number): string {
-  return `${dayOffset(offset)}T00:00:00.000Z`;
+function tsOffset(offset: number, refNow = Date.now()): string {
+  return `${dayOffset(offset, refNow)}T00:00:00.000Z`;
 }
 
 async function loginAgent(app: Application, identifier: string, password: string) {
@@ -69,8 +69,8 @@ async function seedAsset(
 }
 
 /** Daily closes for the value engine (`1d` interval). */
-function dailyCloses(days: number[], close: number): PricePoint[] {
-  return days.map((d) => ({ time: `${dayOffset(d)}T00:00:00.000Z`, close }));
+function dailyCloses(days: number[], close: number, refNow = Date.now()): PricePoint[] {
+  return days.map((d) => ({ time: `${dayOffset(d, refNow)}T00:00:00.000Z`, close }));
 }
 
 /** 30 native candles at 15-minute spacing ending "now" (fixed per test run). */
@@ -105,9 +105,9 @@ function buildStub(refNow: number) {
   const calls: Array<{ ref: string; interval: HistoryInterval | undefined }> = [];
   const days = [-8, -7, -6, -5, -4, -3, -2, -1, 0];
   const dailyByRef: Record<string, PricePoint[]> = {
-    'BAYN.DE': dailyCloses(days, 105),
-    AAPL: dailyCloses(days, 210),
-    'EURUSD=X': dailyCloses(days, 1.1),
+    'BAYN.DE': dailyCloses(days, 105, refNow),
+    AAPL: dailyCloses(days, 210, refNow),
+    'EURUSD=X': dailyCloses(days, 1.1, refNow),
   };
   const intradayByRef: Record<string, PricePoint[]> = {
     'BAYN.DE': intradayCandles(refNow, 30, 104, 0.1), // 104 → 106.9
@@ -119,7 +119,10 @@ function buildStub(refNow: number) {
     interval?: HistoryInterval,
   ): CachedResult<PricePoint[]> => {
     calls.push({ ref: ref.providerRef, interval });
-    const intraday = interval === '15m' || interval === '30m';
+    // Sub-daily fetches: 1D pulls 1-minute candles for its 5-minute grid (IN3);
+    // 1W/1M pull 15/30-minute bars. The fixture serves the same sparse candle
+    // set for all three — sparse 1-minute coverage is valid provider output.
+    const intraday = interval === '1m' || interval === '15m' || interval === '30m';
     const value = (intraday ? intradayByRef[ref.providerRef] : dailyByRef[ref.providerRef]) ?? [];
     return { value, stale: false, asOf: 0 };
   };
@@ -131,20 +134,23 @@ function buildStub(refNow: number) {
         price,
         currency: ref.providerRef === 'AAPL' ? 'USD' : 'EUR',
         prevClose: price,
-        asOf: new Date().toISOString(),
+        asOf: new Date(refNow).toISOString(),
       },
       stale: false,
-      asOf: Date.now(),
+      asOf: refNow,
     };
   };
   return { calls, marketData: createStubMarketData({ history, quote }) };
 }
 
 describe('intraday portfolio series (#556)', () => {
-  async function setup() {
-    const refNow = Date.now();
+  async function setup(options: { refNow?: number; portfolioNow?: () => number } = {}) {
+    const refNow = options.refNow ?? Date.now();
     const stub = buildStub(refNow);
-    const h = await createTestApp({ marketData: stub.marketData });
+    const h = await createTestApp({
+      marketData: stub.marketData,
+      portfolioNow: options.portfolioNow,
+    });
     const user = await h.seedUser();
     const agent = await loginAgent(h.app, user.email, user.password);
     const pid = await defaultPortfolioId(agent);
@@ -156,8 +162,8 @@ describe('intraday portfolio series (#556)', () => {
       exchange: 'NASDAQ',
     });
 
-    await buy(agent, pid, bayn.id, 5, 100, tsOffset(-6));
-    await buy(agent, pid, aapl.id, 3, 200, tsOffset(-4));
+    await buy(agent, pid, bayn.id, 5, 100, tsOffset(-6, refNow));
+    await buy(agent, pid, aapl.id, 3, 200, tsOffset(-4, refNow));
     // A custom (manual-provider) asset: no intraday history — must carry forward.
     const created = await agent
       .post('/api/v1/custom-assets')
@@ -166,14 +172,18 @@ describe('intraday portfolio series (#556)', () => {
         name: 'House',
         category: 'other',
         currency: 'EUR',
-        initialPurchase: { quantity: 1, price: 500, fee: 0, executedAt: tsOffset(-5) },
+        initialPurchase: { quantity: 1, price: 500, fee: 0, executedAt: tsOffset(-5, refNow) },
       });
     expect(created.status).toBe(201);
     return { h, agent, pid, stub };
   }
 
   it('renders a dense, timestamped 1D curve that stitches to the fresh today value', async () => {
-    const { agent, pid, stub } = await setup();
+    // Keep all 30 15-minute candles on the requested UTC day. A wall-clock
+    // fixture here made this assertion fail shortly after midnight, when most
+    // candles correctly belonged to yesterday and 1D filtered them out.
+    const refNow = Date.parse(`${dayOffset(0)}T12:00:00.000Z`);
+    const { agent, pid, stub } = await setup({ refNow, portfolioNow: () => refNow });
 
     // Warm the snapshot state so both reads below run the settled path.
     await agent.get(`/api/v1/portfolios/${pid}/history?range=1D`);
@@ -205,17 +215,49 @@ describe('intraday portfolio series (#556)', () => {
     const maxPoints = max.body.points as Array<{ date: string; valueEur: number }>;
     const maxToday = maxPoints[maxPoints.length - 1]!;
     const last = points[points.length - 1]!;
-    expect(last.date).toBe(dayOffset(0));
+    expect(last.date).toBe(dayOffset(0, refNow));
     expect(last.valueEur).toBeCloseTo(maxToday.valueEur, 6);
     // Every point is the whole portfolio incl. the carried-forward custom asset,
     // so the curve never drops below the custom asset's flat value.
     for (const p of points) expect(p.valueEur).toBeGreaterThan(500);
 
     // Provider discipline: exactly one intraday fetch per MARKET asset (the two
-    // yahoo symbols); the manual custom asset is never fetched intraday.
-    const intradayFetches = stub.calls.filter((c) => c.interval === '15m');
+    // yahoo symbols); the manual custom asset is never fetched intraday. 1D
+    // fetches 1-minute candles for its 5-minute auto grid (IN3, board #76).
+    const intradayFetches = stub.calls.filter((c) => c.interval === '1m');
     expect(intradayFetches.length).toBe(2);
     expect(intradayFetches.map((c) => c.ref).sort()).toEqual(['AAPL', 'BAYN.DE']);
+  });
+
+  it('keeps a 1D request on one captured pre-midnight UTC day', async () => {
+    const asOfDay = new Date().toISOString().slice(0, 10);
+    const dayStartMs = Date.parse(`${asOfDay}T00:00:00.000Z`);
+    const beforeMidnightMs = dayStartMs + 24 * 60 * MIN - 1;
+    const afterMidnightMs = beforeMidnightMs + 1;
+    let exerciseBoundaryClock = false;
+    let boundaryClockCalls = 0;
+    const portfolioNow = () => {
+      if (!exerciseBoundaryClock) return Date.now();
+      boundaryClockCalls += 1;
+      return boundaryClockCalls === 1 ? beforeMidnightMs : afterMidnightMs;
+    };
+
+    const { agent, pid } = await setup({ refNow: beforeMidnightMs, portfolioNow });
+    exerciseBoundaryClock = true;
+
+    const res = await agent.get(`/api/v1/portfolios/${pid}/history?range=1D`);
+    expect(res.status).toBe(200);
+    // `getHistory` must not read a new clock after its async snapshot/candle
+    // work. A second call returns tomorrow here and used to remove every
+    // requested-day candle from the 1D curve.
+    expect(boundaryClockCalls).toBe(1);
+
+    const points = res.body.points as Array<{ date: string; time?: string }>;
+    const previousDay = new Date(dayStartMs - 24 * 60 * MIN).toISOString().slice(0, 10);
+    expect([...new Set(points.map((point) => point.date))]).toEqual([previousDay, asOfDay]);
+    // The captured request day retains its intraday curve rather than degrading
+    // to its one daily fallback point after the simulated rollover.
+    expect(points.filter((point) => point.date === asOfDay)).toHaveLength(30);
   });
 
   it('honours conditional requests on the intraday series (304 round-trip)', async () => {
@@ -289,5 +331,113 @@ describe('intraday portfolio series (#556)', () => {
     // manual custom asset is never fetched intraday.
     const thirtyMinFetches = stub.calls.filter((c) => c.interval === '30m');
     expect(thirtyMinFetches.map((c) => c.ref).sort()).toEqual(['AAPL', 'BAYN.DE']);
+  });
+});
+
+/**
+ * A position opened AND fully closed inside one day has no EUR anchor on either
+ * side, so it can never be plotted at a bucket (#1120 review). Its trades must
+ * therefore stay day-anchored on BOTH curves: step its cash legs and the value
+ * curve dips by the whole position; book its TWR flows at their instants and
+ * the % curve's denominator carries the buy's cost for the hours it was held —
+ * a phantom drawdown that then recovers.
+ */
+describe('intraday same-day round trip stays day-anchored (#1120 review)', () => {
+  /** A fixed past day: 10:00/15:00 there are never in the future, whatever the clock. */
+  const RT = -3;
+  const HELD_CLOSE = 105;
+
+  /** Flat 30-minute candles 09:00 → 17:00 on the round-trip day. */
+  function roundTripDayCandles(): PricePoint[] {
+    const base = Date.parse(`${dayOffset(RT)}T09:00:00.000Z`);
+    return Array.from({ length: 17 }, (_, i) => ({
+      time: new Date(base + i * 30 * MIN).toISOString(),
+      close: HELD_CLOSE,
+    }));
+  }
+
+  function roundTripStub() {
+    const days = [-10, -9, -8, -7, -6, -5, -4, -3, -2, -1, 0];
+    const daily: Record<string, PricePoint[]> = {
+      'BAYN.DE': dailyCloses(days, HELD_CLOSE),
+      'SAP.DE': dailyCloses(days, 112),
+    };
+    const history = (
+      ref: { providerRef: string },
+      _range: unknown,
+      interval?: HistoryInterval,
+    ): CachedResult<PricePoint[]> => {
+      const intraday = interval === '15m' || interval === '30m';
+      // Only the held asset carries candles — it alone builds the day's grid.
+      const value = intraday
+        ? ref.providerRef === 'BAYN.DE'
+          ? roundTripDayCandles()
+          : []
+        : (daily[ref.providerRef] ?? []);
+      return { value, stale: false, asOf: 0 };
+    };
+    const quote = (ref: { providerRef: string }): CachedResult<Quote> => ({
+      value: {
+        price: ref.providerRef === 'BAYN.DE' ? HELD_CLOSE : 112,
+        currency: 'EUR',
+        prevClose: HELD_CLOSE,
+        asOf: new Date().toISOString(),
+      },
+      stale: false,
+      asOf: Date.now(),
+    });
+    return createStubMarketData({ history, quote });
+  }
+
+  it('keeps the value flat and the % curve free of the phantom drawdown', async () => {
+    const h = await createTestApp({ marketData: roundTripStub() });
+    const user = await h.seedUser();
+    const agent = await loginAgent(h.app, user.email, user.password);
+    const pid = await defaultPortfolioId(agent);
+    const held = await seedAsset(h);
+    const flipped = await seedAsset(h, {
+      providerRef: 'SAP.DE',
+      symbol: 'SAP.DE',
+      name: 'SAP SE',
+    });
+
+    // A stable €1050 base position across the whole window …
+    await buy(agent, pid, held.id, 10, 100, tsOffset(-10));
+    // … plus 10 units bought at 110 and sold at 112 within one past day (+€20).
+    await buy(agent, pid, flipped.id, 10, 110, `${dayOffset(RT)}T10:00:00.000Z`);
+    const sell = await agent
+      .post(`/api/v1/portfolios/${pid}/transactions`)
+      .set(...XRW)
+      .send({
+        assetId: flipped.id,
+        side: 'sell',
+        quantity: 10,
+        price: 112,
+        executedAt: `${dayOffset(RT)}T15:00:00.000Z`,
+      });
+    expect(sell.status).toBe(201);
+
+    const res = await agent.get(`/api/v1/portfolios/${pid}/history?range=1M`);
+    expect(res.status).toBe(200);
+    const points = res.body.points as Array<{ date: string; valueEur: number }>;
+    const performance = res.body.performance as Array<{ date: string; pct: number }>;
+
+    const rtDay = dayOffset(RT);
+    const rtPoints = points.filter((p) => p.date === rtDay);
+    const rtPerf = performance.filter((p) => p.date === rtDay);
+    // The day really is sub-daily — the held asset's candles give it a grid, so
+    // there are buckets between the 10:00 buy and the 15:00 sell to fabricate on.
+    expect(rtPoints.length).toBeGreaterThanOrEqual(2);
+    // Value: every bucket is the untouched €1050 base position.
+    for (const p of rtPoints) expect(p.valueEur).toBeCloseTo(1050, 6);
+    // Performance: ONE level for the whole day — the +€20 lands at the day
+    // boundary. Per-instant flows would put the buy's €1100 in the denominator
+    // between 10:00 and 15:00 (1050 / 2150 ⇒ roughly −50 %).
+    for (const p of rtPerf) expect(p.pct).toBeCloseTo(rtPerf[0]!.pct, 9);
+    // The window opens at 0 % and never dips below it anywhere.
+    expect(performance[0]!.pct).toBeCloseTo(0, 9);
+    for (const p of performance) expect(p.pct).toBeGreaterThan(-1e-9);
+    // The round trip's gain is real and still lands: +20 on the 1050 base.
+    expect(performance[performance.length - 1]!.pct).toBeCloseTo((1070 / 1050 - 1) * 100, 6);
   });
 });

@@ -36,6 +36,7 @@ import { CREATE_COMMANDS, commandPath, withPortfolioScope } from './commands';
 import { usePreservedSearch } from './LocalNav';
 import { NotificationBell } from './NotificationBell';
 import { isChildActive, SECTION_NAV, useRailNavChildren, type SectionKey } from './sectionNav';
+import { useDiscardUnknownCreateIntent } from './useCreateIntent';
 import { useMenuKeyboard } from './useMenuKeyboard';
 
 const VaultSyncChip = lazy(() =>
@@ -379,6 +380,7 @@ export function AccountMenu({
         aria-haspopup="menu"
         aria-label={t('nav.accountMenu')}
         className={inTopbar ? 'bt-topbar__account' : 'bt-rail__account'}
+        data-testid={inTopbar ? 'topbar-account-trigger' : undefined}
         onClick={() => setOpen((value) => !value)}
         type="button"
       >
@@ -559,6 +561,7 @@ export function CreateMenu() {
         aria-expanded={open}
         aria-haspopup="menu"
         aria-label={t('create.button')}
+        data-testid="global-create-trigger"
         icon="plus"
         onClick={() => setOpen((value) => !value)}
         variant="primary"
@@ -603,6 +606,7 @@ function sectionKey(pathname: string): string {
 
 export function OriginShell() {
   const { t, locale } = useI18n();
+  useDiscardUnknownCreateIntent();
   const privacy = useResolvedPrivacyModeState();
   const location = useLocation();
   const { pathname } = location;
@@ -706,7 +710,7 @@ export function OriginShell() {
   return (
     <div className="bt-app" ref={shellRef}>
       <a
-        className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-50 focus:rounded-md focus:bg-[var(--bt-surface)] focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:text-[var(--bt-text)] focus:shadow-lg focus:outline-none focus:ring-2 focus:ring-[var(--bt-gold)]"
+        className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-50 focus:rounded-md focus:bg-[var(--bt-surface)] focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:text-[var(--bt-text)] focus:shadow-lg focus:outline-none focus:ring-2 focus:ring-[var(--bt-gold-graphic)]"
         href="#main-content"
         onClick={() => document.getElementById('main-content')?.focus()}
       >
