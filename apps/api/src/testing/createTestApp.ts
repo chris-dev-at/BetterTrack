@@ -192,7 +192,7 @@ export interface CreateTestAppOptions {
   passwordHasher?: PasswordHasher;
   /** Stubbed market-data service, in place of the live Yahoo/manual providers. */
   marketData?: MarketDataService;
-  /** Controlled portfolio-service clock for UTC-window boundary tests. */
+  /** Controlled portfolio-service clock (UTC-window boundaries, archive/restore transitions). */
   portfolioNow?: () => number;
   /** Backfill scheduler (e.g. a recording fake) to assert first-touch enqueues. */
   backfill?: BackfillScheduler;
