@@ -504,7 +504,11 @@ export function createStandingOrderRepository(db: Database) {
     /**
      * Record that a period booked: bump the order's display bookkeeping without
      * ever walking its watermark backward. A slow worker may finish after a
-     * later restore or scan has already acknowledged a newer period.
+     * later restore or scan has already acknowledged a newer period. `bookedAt`
+     * lands on `lastRunAt` — for an upstream buy the engine passes the booked
+     * quote's provider `asOf` (the #1119 market-hours stamp, record-only);
+     * otherwise the scan instant. The money row and `standing_order_runs`
+     * both stamp their own wall-clock instants independently of it.
      */
     async markBooked(standingOrderId: string, periodKey: string, bookedAt: Date): Promise<void> {
       await db

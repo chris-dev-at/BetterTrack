@@ -69,6 +69,7 @@ function stubMarketData(
     throw new Error(`stub market data: ${name} should not be called`);
   };
   const service: MarketDataService = {
+    isLocalProvider: () => false,
     getQuote,
     getHistory,
     search: unused('search'),
