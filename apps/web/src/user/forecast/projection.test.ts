@@ -326,7 +326,6 @@ describe('normalizeStandingOrders', () => {
       startDate: '2026-01-01',
       endDate: null,
       status: 'active',
-      suspendedByArchive: false,
       lastRunAt: null,
       lastPeriodKey: null,
       nextRunDate: '2026-02-01',
@@ -351,10 +350,6 @@ describe('normalizeStandingOrders', () => {
     ]);
     expect(normalized).toHaveLength(1);
     expect(normalized[0]!.amountEur).toBe(40);
-  });
-
-  test('excludes orders suspended by an archived portfolio', () => {
-    expect(normalizeStandingOrders([order({ suspendedByArchive: true })])).toEqual([]);
   });
 
   test('excludes buy-asset orders (net-worth-neutral reallocations)', () => {

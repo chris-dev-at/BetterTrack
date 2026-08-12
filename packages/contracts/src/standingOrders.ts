@@ -139,8 +139,12 @@ export const standingOrderSchema = z
     startDate: isoDaySchema,
     endDate: isoDaySchema.nullable(),
     status: standingOrderStatusSchema,
-    /** True when the owning portfolio is archived, regardless of manual pause state. */
-    suspendedByArchive: z.boolean(),
+    /**
+     * True when the owning portfolio is archived, regardless of manual pause
+     * state. The API always emits it; optional because the vault surface does
+     * not model archive suspension yet (#1188).
+     */
+    suspendedByArchive: z.boolean().optional(),
     /** When the scheduler last satisfied a period for this order (ISO-8601), or null. */
     lastRunAt: z.string().datetime().nullable(),
     /** The occurrence day last satisfied (booked or archive-skipped), or null. */

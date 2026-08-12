@@ -1,6 +1,5 @@
 import {
   VAULT_ENTITY_ROW_SCHEMAS,
-  type VaultDocument,
   type StandingOrderKind,
   type VaultEntity,
 } from '@bettertrack/contracts';
@@ -79,7 +78,6 @@ export async function materializeDueStandingOrders(
     for (const order of orders) {
       signal?.throwIfAborted();
       if (order.row.status !== 'active') continue;
-      if (isArchivedPortfolio(snapshot.document, order.row.portfolioId)) continue;
       const dueDate = dueStandingOrderOccurrence(order.row, today);
       if (dueDate === null) continue;
 
@@ -256,20 +254,5 @@ function parseOrder(entity: VaultEntity): {
     };
   } catch (cause) {
     throw moneyFailure('VAULT_CORRUPT', `Standing order ${entity.id} is malformed.`, { cause });
-  }
-}
-
-function isArchivedPortfolio(document: VaultDocument, portfolioId: string): boolean {
-  const portfolio = liveEntities(document, 'portfolio').find((entity) => entity.id === portfolioId);
-  if (portfolio === undefined) {
-    throw moneyFailure(
-      'VAULT_CORRUPT',
-      `Standing order references unavailable portfolio ${portfolioId}.`,
-    );
-  }
-  try {
-    return VAULT_ENTITY_ROW_SCHEMAS.portfolio.parse(portfolio.data).archivedAt !== null;
-  } catch (cause) {
-    throw moneyFailure('VAULT_CORRUPT', `Portfolio ${portfolioId} is malformed.`, { cause });
   }
 }
