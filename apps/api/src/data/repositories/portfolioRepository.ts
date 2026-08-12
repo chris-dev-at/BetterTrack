@@ -1,5 +1,7 @@
 import { and, asc, count, desc, eq, inArray, isNotNull, isNull, ne } from 'drizzle-orm';
 
+import { PORTFOLIO_KINDS, type PortfolioKind } from '@bettertrack/contracts';
+
 import type { Database } from '../db';
 import { lockPortfolioMutationInTransaction } from './cashMovementRepository';
 import { assets, portfolios, priceHistory } from '../schema';
@@ -37,10 +39,26 @@ export interface PortfolioSummaryRow {
   defaultPayFromCash: boolean;
   /** ISO-8601 archive timestamp, or null while active (§13.2 V2-P8). */
   archivedAt: string | null;
+  /** Purpose category ("Icon"), or null when the user never chose (board #69). */
+  kind: PortfolioKind | null;
 }
 
 /** The default portfolio's canonical name (§5.5). */
 const DEFAULT_PORTFOLIO_NAME = 'Main';
+
+const KIND_TOKENS: ReadonlySet<string> = new Set(PORTFOLIO_KINDS);
+
+/**
+ * Narrow the bare-text `kind` column back onto the contract's token set. The
+ * column carries no pg enum and no CHECK (see the schema comment), so a value
+ * written by anything other than the validated service path — a hand-run SQL
+ * fix, a restored dump, a kind retired from a later release — must degrade to
+ * "unclassified" here rather than escape as an unparseable DTO and 500 a whole
+ * portfolio list on the way out.
+ */
+function toKind(value: string | null): PortfolioKind | null {
+  return value !== null && KIND_TOKENS.has(value) ? (value as PortfolioKind) : null;
+}
 
 function toSummary(
   row: {
@@ -50,6 +68,7 @@ function toSummary(
     sortOrder: number;
     defaultPayFromCash: boolean;
     archivedAt: Date | string | null;
+    kind: string | null;
   },
   isDefault: boolean,
 ): PortfolioSummaryRow {
@@ -61,6 +80,7 @@ function toSummary(
     isDefault,
     defaultPayFromCash: row.defaultPayFromCash,
     archivedAt: row.archivedAt ? new Date(row.archivedAt).toISOString() : null,
+    kind: toKind(row.kind),
   };
 }
 
@@ -72,6 +92,7 @@ const summaryColumns = {
   sortOrder: portfolios.sortOrder,
   defaultPayFromCash: portfolios.defaultPayFromCash,
   archivedAt: portfolios.archivedAt,
+  kind: portfolios.kind,
 } as const;
 
 /**
@@ -209,6 +230,7 @@ export function createPortfolioRepository(db: Database) {
       userId: string,
       name: string,
       visibility: 'private' | 'friends' = 'private',
+      kind: PortfolioKind | null = null,
     ): Promise<PortfolioSummaryRow> {
       const [maxRow] = await db
         .select({ sortOrder: portfolios.sortOrder })
@@ -219,7 +241,7 @@ export function createPortfolioRepository(db: Database) {
       const nextSortOrder = (maxRow?.sortOrder ?? -1) + 1;
       const [row] = await db
         .insert(portfolios)
-        .values({ userId, name, sortOrder: nextSortOrder, visibility })
+        .values({ userId, name, sortOrder: nextSortOrder, visibility, kind })
         .returning(summaryColumns);
       if (!row) throw new Error('Portfolio insert returned no row');
       // A freshly created portfolio can never be the default (Main outranks it).
@@ -330,23 +352,30 @@ export function createPortfolioRepository(db: Database) {
     },
 
     /**
-     * Update a portfolio's mutable fields (name, visibility), scoped to the owner
-     * at the DB layer (§8). Returns the updated summary, or null when the id is
-     * not one of the caller's own portfolios.
+     * Update a portfolio's mutable fields (name, visibility, kind), scoped to the
+     * owner at the DB layer (§8). Returns the updated summary, or null when the id
+     * is not one of the caller's own portfolios.
      */
     async updatePortfolio(
       userId: string,
       portfolioId: string,
-      patch: { name?: string; visibility?: 'private' | 'friends'; defaultPayFromCash?: boolean },
+      patch: {
+        name?: string;
+        visibility?: 'private' | 'friends';
+        defaultPayFromCash?: boolean;
+        kind?: PortfolioKind;
+      },
     ): Promise<PortfolioSummaryRow | null> {
       const set: Partial<{
         name: string;
         visibility: 'private' | 'friends';
         defaultPayFromCash: boolean;
+        kind: PortfolioKind;
       }> = {};
       if (patch.name !== undefined) set.name = patch.name;
       if (patch.visibility !== undefined) set.visibility = patch.visibility;
       if (patch.defaultPayFromCash !== undefined) set.defaultPayFromCash = patch.defaultPayFromCash;
+      if (patch.kind !== undefined) set.kind = patch.kind;
 
       // Nothing to change — return the current row (still ownership-scoped).
       if (Object.keys(set).length === 0) {

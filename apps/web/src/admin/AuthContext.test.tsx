@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, expect, test, vi } from 'vitest';
 
@@ -47,8 +47,26 @@ function AuthProbe() {
   );
 }
 
+/**
+ * Wait for the probe to reach `status`.
+ *
+ * The `status` span is in the DOM from the very first render, so a
+ * `findByTestId` here resolves instantly against the initial `loading` value:
+ * it waits for the *element*, never for the transition, leaving the assertion
+ * that follows it racing the bootstrap promise. Polling the text content is
+ * what actually waits for that promise to settle, so a loaded runner no longer
+ * decides the outcome. Still bounded, so a genuine regression still fails.
+ */
+async function expectStatus(status: string) {
+  await waitFor(() => expect(screen.getByTestId('status')).toHaveTextContent(status));
+}
+
 beforeEach(() => {
-  vi.clearAllMocks();
+  // `resetAllMocks`, not `clearAllMocks`: only a reset drains queued
+  // `mockRejectedValueOnce`/`mockResolvedValueOnce` values. A test that fails
+  // before consuming its queue would otherwise hand the leftovers to the next
+  // test, turning one failure into a cascade of unrelated ones.
+  vi.resetAllMocks();
   vi.mocked(api.getTwoFactorStatus).mockResolvedValue(enrolledTwoFactor);
 });
 
@@ -68,12 +86,12 @@ test.each([0, 500])(
       </AuthProvider>,
     );
 
-    expect(await screen.findByTestId('status')).toHaveTextContent('session-unavailable');
+    await expectStatus('session-unavailable');
     expect(screen.getByTestId('status')).not.toHaveTextContent('anonymous');
 
     await user.click(screen.getByRole('button', { name: 'Retry session' }));
 
-    expect(await screen.findByTestId('status')).toHaveTextContent('authenticated');
+    await expectStatus('authenticated');
     expect(screen.getByTestId('user')).toHaveTextContent('rootadmin');
   },
 );
@@ -89,11 +107,11 @@ test('an outage during a recheck preserves the already resolved admin', async ()
       <AuthProbe />
     </AuthProvider>,
   );
-  expect(await screen.findByTestId('status')).toHaveTextContent('authenticated');
+  await expectStatus('authenticated');
 
   await user.click(screen.getByRole('button', { name: 'Retry session' }));
 
-  expect(await screen.findByTestId('status')).toHaveTextContent('session-unavailable');
+  await expectStatus('session-unavailable');
   expect(screen.getByTestId('user')).toHaveTextContent('rootadmin');
 });
 
@@ -108,6 +126,6 @@ test('a confirmed 401 keeps the existing anonymous transition', async () => {
     </AuthProvider>,
   );
 
-  expect(await screen.findByTestId('status')).toHaveTextContent('anonymous');
+  await expectStatus('anonymous');
   expect(screen.getByTestId('user')).toHaveTextContent('none');
 });

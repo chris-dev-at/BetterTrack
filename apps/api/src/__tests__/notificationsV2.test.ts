@@ -439,6 +439,7 @@ describe('friend-activity events (#368, V3-P6 opt-in prefs)', () => {
     // friend-activity producer re-checks per viewer at emit time.
     await harness.ctx.social.setAudience(ownerId, 'portfolio', portfolioId, {
       audience: 'all_friends',
+      confirmWiden: true,
     });
     return portfolioId;
   }
@@ -518,7 +519,7 @@ describe('friend-activity events (#368, V3-P6 opt-in prefs)', () => {
 
     const lists = await harness.ctx.workboard.listWatchlists(owner.id);
     const general = lists[0]!.id;
-    await harness.ctx.workboard.setSharing(owner.id, 'friends');
+    await harness.ctx.workboard.setSharing(owner.id, 'friends', true);
     const profile = createProfileRepository(harness.db);
     await profile.setActivityPref(fan.id, 'watchlist', general, true);
 
@@ -541,6 +542,7 @@ describe('watchlist/conglomerate share events via the audience picker (#368)', (
     const general = lists[0]!.id;
     await harness.ctx.social.setAudience(owner.id, 'watchlist', general, {
       audience: 'all_friends',
+      confirmWiden: true,
     });
 
     const rows = await visibleNotifications(f1.id, 'watchlist.shared');
@@ -565,6 +567,7 @@ describe('watchlist/conglomerate share events via the audience picker (#368)', (
     await harness.ctx.social.setAudience(owner.id, 'watchlist', lists[0]!.id, {
       audience: 'specific_friends',
       friendIds: [picked.id],
+      confirmWiden: true,
     });
 
     expect(await visibleNotifications(picked.id, 'watchlist.shared')).toHaveLength(1);

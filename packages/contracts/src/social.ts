@@ -553,7 +553,8 @@ export type AudienceState = z.infer<typeof audienceStateSchema>;
  * `specific_friends`. `acknowledgePublic` MUST be `true` to select `public_link`
  * — the §16 explicit-acknowledgment gate, enforced server-side as well as in the
  * picker: the confirm cannot submit ("anyone with the link sees your holdings and
- * net worth") without it.
+ * net worth") without it. Every widening or recipient-replacing transition also
+ * requires `confirmWiden: true`; the server compares it with the current state.
  */
 export const setAudienceRequestSchema = z
   .object({
@@ -567,6 +568,7 @@ export const setAudienceRequestSchema = z
      */
     groupId: z.string().uuid().optional(),
     acknowledgePublic: z.boolean().optional(),
+    confirmWiden: z.boolean().optional(),
   })
   .strict();
 export type SetAudienceRequest = z.infer<typeof setAudienceRequestSchema>;

@@ -15,6 +15,7 @@ import {
   retiredServerPurgeResponseSchema,
   scopeSatisfies,
   VAULT_CONTENT_TYPE,
+  VAULT2_ERROR_CODES,
   VAULT_ERROR_CODES,
   VAULT_HISTORY_CREATED_AT_HEADER,
   VAULT_HISTORY_MEDIUM_HEADER,
@@ -36,7 +37,7 @@ import {
   type VaultHistoryVersionParam,
 } from '@bettertrack/contracts';
 
-import { ApiError, forbidden, notFound } from '../../errors';
+import { ApiError, EnvelopeApiError, forbidden, notFound } from '../../errors';
 
 import type { AppContext } from '../context';
 import { VAULT_SYNC_SCOPE, vaultSyncRouteAcceptsBearer } from '../middleware/bearerAuth';
@@ -51,11 +52,21 @@ const preconditionRequired = (): ApiError =>
     'A vault write requires an If-Match (replace) or If-None-Match: * (create) precondition.',
   );
 
-const preconditionFailed = (): ApiError =>
-  new ApiError(
+/**
+ * The v1 CAS 412. It carries the server's current version as a TOP-LEVEL body
+ * member, exactly like the v2 surface (design r2 §15 / r3): the ETag hint this
+ * route once set was removed by #1161's no-validators-on-errors rule, which
+ * left a v1 CAS loser paying a second `GET /vault` just to learn the winner.
+ * The body member restores the hint without putting a cache validator back on
+ * an error response. `null` means the precondition never named a real stored
+ * version (malformed `If-Match`, or nothing stored at all).
+ */
+const preconditionFailed = (currentVersion: number | null = null): ApiError =>
+  new EnvelopeApiError(
     412,
     VAULT_ERROR_CODES.preconditionFailed,
     'The vault precondition did not match the current version.',
+    { currentVersion },
   );
 
 const payloadTooLarge = (): ApiError =>
@@ -440,9 +451,31 @@ export function createVaultRouter(ctx: AppContext, limiters: RateLimiters): Rout
     },
   );
 
+  /*
+   * A safe method that can change state, so worth stating: for a NORMAL-mode
+   * account whose enable window has already expired, the repository read is
+   * also the sweep that physically deletes the abandoned ciphertext before
+   * answering `medium_inactive`. It only ever destroys bytes that were already
+   * unreachable, only for the authenticated caller's own account, and the same
+   * disposal runs from the retention job — so being CSRF-exempt (`csrf.ts`
+   * exempts safe methods) costs nothing: a forged cross-site GET can reach no
+   * state a plain expiry would not have reached anyway, and cannot read the
+   * opaque response.
+   */
   router.get('/', async (req, res) => {
-    const row = await ctx.paranoidVault.get(req.authUser!.id);
-    if (!row) throw notFound('No vault stored.', VAULT_ERROR_CODES.notFound);
+    const result = await ctx.paranoidVault.get(
+      req.authUser!.id,
+      req.apiKey ? 'sync-bearer' : 'owner-session',
+    );
+    if (result.status === 'medium_inactive') {
+      throw serverMediumInactive(
+        'The server vault is available only while paranoid mode or its owner enable window is active.',
+      );
+    }
+    if (result.status === 'not_found') {
+      throw notFound('No vault stored.', VAULT_ERROR_CODES.notFound);
+    }
+    const { row } = result;
     res.setHeader('ETag', vaultEtag(row.version));
     res.setHeader('Cache-Control', 'private, no-store');
     const ifNoneMatch = parseVaultEtag(req.headers['if-none-match'] as string | undefined);
@@ -475,6 +508,7 @@ export function createVaultRouter(ctx: AppContext, limiters: RateLimiters): Rout
       }
       const result = await ctx.paranoidVault.put({
         userId: req.authUser!.id,
+        access: req.apiKey ? 'sync-bearer' : 'owner-session',
         expectedVersion,
         blob,
         retirementProofPublicKey: parseRetirementProofPublicKey(req),
@@ -485,9 +519,7 @@ export function createVaultRouter(ctx: AppContext, limiters: RateLimiters): Rout
           res.status(204).end();
           return;
         case 'precondition_failed':
-          if (result.currentVersion !== null)
-            res.setHeader('ETag', vaultEtag(result.currentVersion));
-          throw preconditionFailed();
+          throw preconditionFailed(result.currentVersion);
         case 'too_large':
           throw payloadTooLarge();
         case 'malformed':
@@ -495,6 +527,16 @@ export function createVaultRouter(ctx: AppContext, limiters: RateLimiters): Rout
         case 'medium_inactive':
           throw serverMediumInactive(
             'The server vault medium is inactive; stage and promote a candidate instead.',
+          );
+        // Vaults v2 (design r2 §11): this account flipped to a v2 vault, so the
+        // legacy row is a READ-ONLY tombstone. Reads still serve (recovery, and
+        // a client that has not noticed the flip); a write would fork the
+        // account's truth across two authoritative stores.
+        case 'migrated_tombstone':
+          throw new ApiError(
+            409,
+            VAULT2_ERROR_CODES.migrationIncomplete,
+            'This account has migrated to a v2 vault; the legacy vault is read-only.',
           );
         case 'proof_key_conflict':
           throw new ApiError(

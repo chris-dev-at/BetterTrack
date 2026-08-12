@@ -1,6 +1,16 @@
-export { PriceChart, overlayColor, type PriceChartProps } from './PriceChart';
+export { PriceChart } from './LazyPriceChart';
+export type { PriceChartProps } from './PriceChart';
 export { Sparkline, type SparklineProps } from './Sparkline';
-export { AllocationDonut, type AllocationDonutProps } from './AllocationDonut';
+export { AllocationDonut } from './LazyAllocationDonut';
+export type { AllocationDonutProps } from './AllocationDonut';
+export { categoricalColor as overlayColor } from './palette';
+export {
+  readChartDisplayMode,
+  useChartDisplayMode,
+  writeChartDisplayMode,
+  type ChartDisplayMode,
+  type ChartDisplaySurface,
+} from './displayMode';
 export {
   PRICE_RANGES,
   type AllocationSegment,

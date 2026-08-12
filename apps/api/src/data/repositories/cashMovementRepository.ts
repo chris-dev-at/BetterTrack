@@ -1,7 +1,7 @@
-import { and, asc, eq, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, exists, gt, lt, notExists, or, sql } from 'drizzle-orm';
 
 import type { Database } from '../db';
-import { portfolioCashMovements } from '../schema';
+import { cashMovementTags, portfolioCashMovements } from '../schema';
 import type { CashMovementRow } from '../schema';
 import { restampMovementTags, stampMovementTags } from './cashSystemTagStamp';
 
@@ -303,6 +303,86 @@ export function createCashMovementRepository(db: Database) {
     },
 
     /**
+     * Newest-first display page, ordered by execution time and then id. The
+     * UUID cursor resolves its execution time server-side so backdated rows and
+     * equal timestamps cannot create gaps or duplicates across page boundaries.
+     */
+    async listPageForPortfolio(
+      portfolioId: string,
+      params: { limit: number; cursor?: string; source?: string; tag?: string },
+    ): Promise<{ items: CashMovementRecord[]; nextCursor: string | null }> {
+      const [cursorRow] = params.cursor
+        ? await db
+            .select({
+              id: portfolioCashMovements.id,
+              executedAt: portfolioCashMovements.executedAt,
+            })
+            .from(portfolioCashMovements)
+            .where(
+              and(
+                eq(portfolioCashMovements.portfolioId, portfolioId),
+                eq(portfolioCashMovements.id, params.cursor),
+              ),
+            )
+            .limit(1)
+        : [];
+      if (params.cursor && !cursorRow) return { items: [], nextCursor: null };
+
+      const tagged = db
+        .select({ id: cashMovementTags.id })
+        .from(cashMovementTags)
+        .where(
+          and(
+            eq(cashMovementTags.movementId, portfolioCashMovements.id),
+            params.tag && params.tag !== 'untagged'
+              ? eq(cashMovementTags.tagId, params.tag)
+              : undefined,
+          ),
+        );
+      const rows = await db
+        .select()
+        .from(portfolioCashMovements)
+        .where(
+          and(
+            eq(portfolioCashMovements.portfolioId, portfolioId),
+            params.source ? eq(portfolioCashMovements.source, params.source) : undefined,
+            params.tag === 'untagged' ? notExists(tagged) : params.tag ? exists(tagged) : undefined,
+            cursorRow
+              ? or(
+                  lt(portfolioCashMovements.executedAt, cursorRow.executedAt),
+                  and(
+                    eq(portfolioCashMovements.executedAt, cursorRow.executedAt),
+                    gt(portfolioCashMovements.id, cursorRow.id),
+                  ),
+                )
+              : undefined,
+          ),
+        )
+        .orderBy(desc(portfolioCashMovements.executedAt), asc(portfolioCashMovements.id))
+        .limit(params.limit + 1);
+
+      const hasMore = rows.length > params.limit;
+      const page = hasMore ? rows.slice(0, params.limit) : rows;
+      const items = page.map(toRecord);
+      return { items, nextCursor: hasMore ? (items.at(-1)?.id ?? null) : null };
+    },
+
+    /** Per-source cash totals without materialising the movement ledger. */
+    async balancesForPortfolio(
+      portfolioId: string,
+    ): Promise<Array<{ sourceId: string; balanceEur: number }>> {
+      const rows = await db
+        .select({
+          sourceId: portfolioCashMovements.sourceId,
+          balanceEur: sql<string>`coalesce(sum(${portfolioCashMovements.amountEur}), 0)`,
+        })
+        .from(portfolioCashMovements)
+        .where(eq(portfolioCashMovements.portfolioId, portfolioId))
+        .groupBy(portfolioCashMovements.sourceId);
+      return rows.map((row) => ({ sourceId: row.sourceId, balanceEur: Number(row.balanceEur) }));
+    },
+
+    /**
      * Correct a hand-entered movement IN PLACE (V5 cash fusion, §16 2026-07-31).
      *
      * The row keeps its id, which is the deliberate difference from the way an
@@ -323,27 +403,33 @@ export function createCashMovementRepository(db: Database) {
       previousKind: Kind,
       patch: CashMovementUpdatePatch,
     ): Promise<CashMovementRecord | null> {
-      const [row] = await db
-        .update(portfolioCashMovements)
-        .set({
-          sourceId: patch.sourceId,
-          kind: patch.kind,
-          amountEur: String(patch.amountEur),
-          executedAt: patch.executedAt,
-          note: patch.note,
-        })
-        .where(
-          and(
-            eq(portfolioCashMovements.id, id),
-            eq(portfolioCashMovements.portfolioId, portfolioId),
-          ),
-        )
-        .returning();
-      if (!row) return null;
-      // Re-labelling hangs off the write path for the same reason stamping does
-      // (see `cashSystemTagStamp`): a caller cannot forget it.
-      await restampMovementTags(db, portfolioId, row, previousKind);
-      return toRecord(row);
+      return db.transaction(async (tx) => {
+        // Replica apply deliberately waives solvency validation, not ledger
+        // serialization. A direct write that validates against this portfolio
+        // must observe this correction before it decides whether it is solvent.
+        await lockPortfolioCashLedgerInTransaction(tx, portfolioId);
+        const [row] = await tx
+          .update(portfolioCashMovements)
+          .set({
+            sourceId: patch.sourceId,
+            kind: patch.kind,
+            amountEur: String(patch.amountEur),
+            executedAt: patch.executedAt,
+            note: patch.note,
+          })
+          .where(
+            and(
+              eq(portfolioCashMovements.id, id),
+              eq(portfolioCashMovements.portfolioId, portfolioId),
+            ),
+          )
+          .returning();
+        if (!row) return null;
+        // Re-labelling hangs off the write path for the same reason stamping does
+        // (see `cashSystemTagStamp`): a caller cannot forget it.
+        await restampMovementTags(tx, portfolioId, row, previousKind);
+        return toRecord(row);
+      });
     },
 
     /**
@@ -397,16 +483,22 @@ export function createCashMovementRepository(db: Database) {
      * rather than a silent success.
      */
     async deleteForPortfolio(portfolioId: string, id: string): Promise<boolean> {
-      const rows = await db
-        .delete(portfolioCashMovements)
-        .where(
-          and(
-            eq(portfolioCashMovements.id, id),
-            eq(portfolioCashMovements.portfolioId, portfolioId),
-          ),
-        )
-        .returning({ id: portfolioCashMovements.id });
-      return rows.length > 0;
+      return db.transaction(async (tx) => {
+        // `force` skips the replay gate at the service boundary, but a replica
+        // delete still participates in the same critical section as guarded
+        // user withdrawals and tax reconciliation.
+        await lockPortfolioCashLedgerInTransaction(tx, portfolioId);
+        const rows = await tx
+          .delete(portfolioCashMovements)
+          .where(
+            and(
+              eq(portfolioCashMovements.id, id),
+              eq(portfolioCashMovements.portfolioId, portfolioId),
+            ),
+          )
+          .returning({ id: portfolioCashMovements.id });
+        return rows.length > 0;
+      });
     },
 
     /** Validate and delete one movement inside the shared ledger lock. */

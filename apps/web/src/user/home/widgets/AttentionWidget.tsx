@@ -2,6 +2,7 @@ import { Link } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 
 import { useT } from '../../../i18n';
+import { notificationText } from '../../../lib/notificationText';
 import { listNotifications } from '../../../lib/notificationsApi';
 import { Icon, SkeletonBlock } from '../../../ui/origin';
 import type { WidgetProps } from './types';
@@ -10,6 +11,11 @@ import type { WidgetProps } from './types';
  * What needs the user: unread, unarchived notifications. Ported unchanged from
  * the pre-widget Home (same query, same key) — it stands in for the Review inbox
  * until that backend lands.
+ *
+ * This is the third in-app inbox surface (with `NotificationBell` and
+ * `NotificationLogPanel`), so it renders through {@link notificationText} too:
+ * one unread row must never read EN on the board while the bell shows it in DE
+ * (#1138).
  */
 
 const LIMIT = 4;
@@ -40,12 +46,15 @@ export function AttentionWidget({ size }: WidgetProps) {
   return (
     <div>
       <div className="bt-band">
-        {items.map((item) => (
-          <div className="bt-home-row" key={item.id}>
-            <p className="bt-row-title">{item.title}</p>
-            <p className="bt-row-sub">{item.body}</p>
-          </div>
-        ))}
+        {items.map((item) => {
+          const copy = notificationText(item, t);
+          return (
+            <div className="bt-home-row" key={item.id}>
+              <p className="bt-row-title">{copy.title}</p>
+              <p className="bt-row-sub">{copy.body}</p>
+            </div>
+          );
+        })}
       </div>
       <Link className="bt-link bt-home-more" to="/review">
         {t('home.attention.review')}

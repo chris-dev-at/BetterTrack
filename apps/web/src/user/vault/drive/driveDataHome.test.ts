@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { base64ToBytes } from '../bytes';
 import { decodeVaultEnvelope, encodeVaultEnvelope } from '../envelope';
-import { vaultInteroperabilityFixture } from '../vectors';
+import { vaultInteroperabilityFixture } from '@bettertrack/domain/vaultVectors';
 import {
   createDriveDataHome,
   driveVaultFileName,

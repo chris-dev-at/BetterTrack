@@ -347,7 +347,7 @@ export const COMMANDS: readonly CommandEntry[] = [
   },
   {
     labelKey: 'create.idea',
-    to: '/workbench/blueprints/new',
+    to: createTo('/workbench/blueprints/new', CREATE_INTENT.idea),
     group: 'create',
     icon: 'sparkles',
   },

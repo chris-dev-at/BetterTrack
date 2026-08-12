@@ -25,7 +25,7 @@ import { useResolvedPrivacyModeState, vaultMediaQueryKey } from '../../vault/use
 import {
   useOptionalVaultRuntime,
   type VaultDriveUnlockOptions,
-} from '../../vault/VaultRuntimeProvider';
+} from '../../vault/VaultRuntimeContext';
 import {
   PanelFold,
   PanelForm,

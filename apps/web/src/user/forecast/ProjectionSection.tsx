@@ -1,24 +1,16 @@
-import { useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
+import { lazy, Suspense, useEffect, useMemo, useRef, useState, type ChangeEvent } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import {
-  CartesianGrid,
-  Line,
-  LineChart,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from 'recharts';
 
 import type { PortfolioHistoryRange, PortfolioSummary } from '@bettertrack/contracts';
 
 import { useT } from '../../i18n';
 import { getAnalyticsSeries } from '../../lib/analyticsApi';
 import { cx } from '../../lib/cx';
-import { DISCREET_MASK, formatMoney, isDiscreetMode } from '../../lib/format';
+import { formatMoney } from '../../lib/format';
 import { getPortfolioDividendProjection } from '../../lib/marketIntelApi';
-import { EmptyState, StatCard } from '../../ui';
+import { EmptyState, Skeleton, StatCard } from '../../ui';
 import { overlayColor } from '../../ui/charts';
+import { MAIN_SERIES } from '../../ui/charts/palette';
 import { AsyncReadState, type AsyncRead } from '../components/AsyncReadState';
 import { Button, TextField } from '../components/ui';
 import { usePortfolioStore } from '../portfolio/PortfolioStoreProvider';
@@ -36,6 +28,10 @@ import {
   type ForecastWhatIfPlan,
 } from './projection';
 
+const ProjectionChart = lazy(() =>
+  import('./ProjectionChart').then((module) => ({ default: module.ProjectionChart })),
+);
+
 /**
  * Forecast projection view (PROJECTPLAN.md §13.5 V5-P6b arc (b), issue #596) —
  * the deterministic client-side net-worth projection that fills the #594 slot.
@@ -47,8 +43,11 @@ import {
  * surface only resolves inputs and renders — compact per the anti-bloat rule.
  */
 
-/** Base line colour — matches PriceChart's main sky line. */
-const BASE_LINE = '#38bdf8';
+/**
+ * Base line colour — matches PriceChart's main sky line. Single owner: the
+ * legend chip below and the lazily-loaded renderer both read it from here.
+ */
+const BASE_LINE = MAIN_SERIES;
 
 /** Historical-return sampling windows offered to the user (default 5 years). */
 const RETURN_WINDOWS = ['1Y', '3Y', '5Y', 'Max'] as const;
@@ -337,7 +336,7 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
                 onChange={(e: ChangeEvent<HTMLInputElement>) => setReturnPct(e.target.value)}
               />
               {returnPctIsClamped ? (
-                <p role="alert" className="text-xs bt-gold">
+                <p role="alert" className="text-xs bt-gold-note">
                   {t('forecast.projection.returnPctClamped')}
                 </p>
               ) : null}
@@ -367,50 +366,18 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
           className="w-full"
           style={{ height: 320 }}
         >
-          <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={chartData} margin={{ top: 8, right: 12, bottom: 4, left: 4 }}>
-              <CartesianGrid stroke="rgba(82, 82, 91, 0.25)" vertical={false} />
-              <XAxis
-                dataKey="date"
-                tickFormatter={(value: string) => value.slice(0, 4)}
-                minTickGap={48}
-                stroke="#a1a1aa"
-                fontSize={12}
-              />
-              <YAxis width={64} tickFormatter={formatCompactEur} stroke="#a1a1aa" fontSize={12} />
-              <Tooltip
-                formatter={(value) => formatMoney(Number(value))}
-                contentStyle={{
-                  background: '#0b0e14',
-                  border: '1px solid #3f3f46',
-                  borderRadius: 8,
-                  fontSize: 12,
-                }}
-              />
-              <Line
-                type="monotone"
-                dataKey="base"
-                name={t('forecast.projection.baseLabel')}
-                stroke={BASE_LINE}
-                strokeWidth={2}
-                dot={false}
-                isAnimationActive={false}
-              />
-              {result.overlays.map((overlay, i) => (
-                <Line
-                  key={overlay.id}
-                  type="monotone"
-                  dataKey={overlay.id}
-                  name={overlay.label}
-                  stroke={overlayColor(i)}
-                  strokeWidth={1.5}
-                  strokeDasharray="4 3"
-                  dot={false}
-                  isAnimationActive={false}
-                />
-              ))}
-            </LineChart>
-          </ResponsiveContainer>
+          <Suspense fallback={<Skeleton className="rounded-md" height="h-full" />}>
+            <ProjectionChart
+              baseColor={BASE_LINE}
+              baseLabel={t('forecast.projection.baseLabel')}
+              data={chartData}
+              overlays={result.overlays.map((overlay, index) => ({
+                id: overlay.id,
+                label: overlay.label,
+                color: overlayColor(index),
+              }))}
+            />
+          </Suspense>
         </div>
 
         <ul className="flex flex-wrap gap-x-4 gap-y-1.5">
@@ -446,8 +413,8 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
 
       {/* ── What-if plans (local only) ──────────────────────────────────── */}
       <div className="flex flex-col gap-3">
-        <div className="flex items-center justify-between gap-3">
-          <div className="flex flex-col">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex min-w-0 flex-1 flex-col">
             <h3 className="text-sm font-semibold bt-soft">
               {t('forecast.projection.whatIf.title')}
             </h3>
@@ -532,7 +499,7 @@ function FactorToggle({
         checked={checked}
         onChange={(e) => onChange(e.target.checked)}
         className="h-4 w-4 rounded"
-        style={{ accentColor: 'var(--bt-gold)' }}
+        style={{ accentColor: 'var(--bt-gold-graphic)' }}
       />
       <span>{label}</span>
     </label>
@@ -559,19 +526,6 @@ function windowStartIso(asOf: string, window: ReturnWindow): string | undefined 
   const date = new Date(`${asOf}T00:00:00Z`);
   date.setUTCFullYear(date.getUTCFullYear() - years);
   return date.toISOString().slice(0, 10);
-}
-
-/**
- * Compact EUR axis tick, e.g. `€1.2M` / `€820k` — locale-agnostic and short.
- * Masked to {@link DISCREET_MASK} under discreet mode (§13.5 V5-P13 arc (a)) so
- * the projection chart's y-axis never paints an absolute forecast amount.
- */
-function formatCompactEur(value: number): string {
-  if (isDiscreetMode()) return DISCREET_MASK;
-  const abs = Math.abs(value);
-  if (abs >= 1_000_000) return `€${(value / 1_000_000).toFixed(1)}M`;
-  if (abs >= 1_000) return `€${Math.round(value / 1_000)}k`;
-  return `€${Math.round(value)}`;
 }
 
 function safeNumber(raw: string, fallback = 0): number {

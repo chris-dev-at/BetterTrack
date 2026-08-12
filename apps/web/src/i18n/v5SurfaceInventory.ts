@@ -230,6 +230,7 @@ export const V5_SURFACE_INVENTORY = [
     routes: ['/portfolio', '/portfolio/analysis', '/workbench', '/assets/:id', '/admin/health'],
     components: [
       'ui/MarketStateBadge.tsx',
+      'ui/charts/LazyPriceChart.tsx',
       'ui/charts/PriceChart.tsx',
       'user/portfolio/PortfolioPage.tsx',
       'user/portfolio/analytics/AnalyticsPage.tsx',
@@ -356,8 +357,10 @@ export const V5_SURFACE_INVENTORY = [
       'user/control/panels/taxModeList.tsx',
       'user/settings/taxModePicker.tsx',
       'user/portfolio/PortfolioTaxSection.tsx',
+      'user/portfolio/ParanoidTaxReport.tsx',
       'user/portfolio/TaxReportPage.tsx',
       'user/portfolio/TaxReportPrintPage.tsx',
+      'user/portfolio/taxReportRows.tsx',
     ],
     copyRoots: ['settings.taxes', 'portfolio.taxReport', 'vaultExports.tax'],
     copyReview: 'AT/DE/custom modes, exports, print view, and disclaimer terminology reviewed.',
@@ -463,6 +466,7 @@ export const V5_SURFACE_INVENTORY = [
     routes: ['/workbench/forecasts', '/workbench/calculators'],
     components: [
       'user/forecast/ForecastPage.tsx',
+      'user/forecast/ProjectionChart.tsx',
       'user/forecast/ProjectionSection.tsx',
       'user/forecast/StandingOrdersSection.tsx',
       'user/forecast/StandingOrderDialog.tsx',
@@ -717,18 +721,34 @@ export const V5_SURFACE_INVENTORY = [
   {
     id: 'p13-privacy-modes',
     phases: ['P13'],
-    routes: ['/control/privacy'],
+    routes: ['/control/privacy', '/vault/how-it-works'],
     components: [
       'user/UserApp.tsx',
+      'user/control/panels/ParanoidAccountExport.tsx',
       'user/control/panels/PrivacyPanel.tsx',
+      'user/control/panels/PrivacyVaultSection.tsx',
+      'user/vault/VaultAccountRoot.tsx',
       'user/vault/VaultRuntimeProvider.tsx',
       'user/vault/engine/VaultMoneyEngineProvider.tsx',
       'user/vault/ui/ParanoidEnableWizard.tsx',
       'user/vault/ui/ParanoidSurfaceGate.tsx',
       'user/vault/ui/VaultSyncChip.tsx',
       'user/vault/ui/VaultUnlockGate.tsx',
+      // Vaults v2 (docs/VAULTS_V2_DESIGN.md §4): per-portfolio vault UX.
+      'user/vault/v2/ui/CreateVaultWizard.tsx',
+      'user/vault/v2/ui/LockedPortfolioRow.tsx',
+      'user/vault/v2/ui/MoveIntoVaultDialog.tsx',
+      'user/vault/v2/ui/MoveOutOfVaultDialog.tsx',
+      'user/vault/v2/ui/PortfolioVaultSection.tsx',
+      'user/vault/v2/ui/VaultHowItWorksPage.tsx',
+      'user/vault/v2/ui/VaultKeyDiagram.tsx',
+      'user/vault/v2/ui/VaultQrImportDialog.tsx',
+      'user/vault/v2/ui/VaultQrShareDialog.tsx',
+      'user/vault/v2/ui/VaultUnlockDialog.tsx',
+      'user/vault/v2/ui/VaultsProvider.tsx',
       'ui/MoneyText.tsx',
       'ui/charts/AllocationDonut.tsx',
+      'ui/charts/LazyAllocationDonut.tsx',
     ],
     copyRoots: ['privacy', 'vault', 'vaultMoney', 'vaultExports', 'common.charts'],
     copyReview:
@@ -749,6 +769,9 @@ export const V5_SURFACE_INVENTORY = [
       'user/vault/ui/ParanoidEnableWizard.test.tsx',
       'user/vault/ui/VaultUnlockGate.test.tsx',
       'user/vault/ui/VaultSyncChip.test.tsx',
+      'user/vault/v2/ui/PortfolioVaultSection.test.tsx',
+      'user/vault/v2/ui/CreateVaultWizard.test.tsx',
+      'user/vault/v2/ui/VaultQrShareDialog.test.tsx',
       'ui/MoneyText.test.tsx',
       'ui/charts/AllocationDonut.test.tsx',
     ],
@@ -1029,6 +1052,11 @@ export const NON_V5_SURFACES = [
     note: 'Origin-redesign R2 ask dock.',
   },
   { path: 'user/components/ui.tsx', reason: 'no-v5-deliverable', note: 'V1 user control kit.' },
+  {
+    path: 'user/control/panels/AppearancePanel.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'Board #68 theme + interface-scale panel; post-V5, and every string is catalogued.',
+  },
   {
     path: 'user/control/panels/DeleteAccountPanel.tsx',
     reason: 'no-v5-deliverable',
@@ -1419,6 +1447,14 @@ export interface V5AsyncReadExemption {
 
 export const V5_ASYNC_READ_EXEMPTIONS = [
   {
+    component: 'user/vault/v2/ui/VaultsProvider.tsx',
+    read: 'VaultsProvider.directory',
+    states: ['loading', 'error'],
+    reason:
+      'The Vaults v2 provider wraps the whole app so it can render neither a spinner nor an error; it projects the read outcome as `status`, and PortfolioVaultSection renders both states from it (asserted in PortfolioVaultSection.test.tsx).',
+    delegatedTo: 'PortfolioVaultSection',
+  },
+  {
     component: 'user/social/chatSurface.tsx',
     read: 'ChipShareShortcut.audienceQuery',
     states: ['loading', 'error'],
@@ -1445,6 +1481,21 @@ export const V5_ASYNC_READ_EXEMPTIONS = [
     states: ['loading', 'error'],
     reason:
       'Binding P5 keeps the optional portfolio dividend block absent while capability is unresolved or unavailable, including request failure.',
+  },
+  {
+    component: 'user/portfolio/PortfolioPage.tsx',
+    read: 'PortfolioPage.holdingTransactionQueries',
+    states: ['loading', 'error'],
+    reason:
+      "Each dynamic result is mapped to its holding row; HoldingTransactions renders that row's skeleton, retryable failure, empty state, or ledger.",
+    delegatedTo: 'HoldingTransactions',
+  },
+  {
+    component: 'user/portfolio/analytics/AnalyticsPage.tsx',
+    read: 'AnalyticsPage.balanceQuery',
+    states: ['loading', 'error'],
+    reason:
+      'The money twin behind the performance curve’s scrub tooltip (board #68 item 4) is a pure enhancement of a chart that draws without it: until it lands, and if it never does, the tooltip renders an em dash for the balance. Blocking or alarming the whole graph on it would be a regression of the read it decorates.',
   },
   {
     component: 'user/portfolio/MirrorchainPanel.tsx',
@@ -1593,6 +1644,11 @@ export interface V5NonHookAsyncSite {
 
 export const V5_NON_HOOK_ASYNC_BOUNDARY = [
   {
+    component: 'user/vault/v2/ui/VaultsProvider.tsx',
+    site: 'VaultsProvider.useSyncExternalStore',
+    note: 'Subscribes to the in-memory vault keyring, which is synchronous local state — no request, so there is nothing to load or fail.',
+  },
+  {
     component: 'admin/pages/LoginPage.tsx',
     site: 'LoginPage.useEffect',
     note: 'Fetches the API build marker for the footer; a failure is swallowed by design.',
@@ -1643,12 +1699,12 @@ export const V5_NON_HOOK_ASYNC_BOUNDARY = [
     note: 'Debounced cash preview against the active store.',
   },
   {
-    component: 'user/portfolio/TaxReportPage.tsx',
+    component: 'user/portfolio/ParanoidTaxReport.tsx',
     site: 'ParanoidTaxReport.useEffect',
     note: 'Paranoid-mode portfolio list from the local vault store, with its own status union.',
   },
   {
-    component: 'user/portfolio/TaxReportPage.tsx',
+    component: 'user/portfolio/ParanoidTaxReport.tsx',
     site: 'ParanoidYearTable.useEffect',
     note: 'Client-side tax derivation, with its own pending/error/ready status union.',
   },
@@ -1684,8 +1740,11 @@ export type V5AsyncStateDebtLedger = Readonly<
   Record<string, Readonly<Record<string, readonly V5AsyncReadState[]>>>
 >;
 
-/** Exact anti-shrinkage baseline for the source-derived asynchronous read universe. */
-export const V5_ASYNC_READ_SITE_BASELINE = 181;
+/**
+ * Exact anti-shrinkage baseline; #1147 adds the reviewed on-demand holding
+ * read, board #68 item 4 the Analysis money twin behind the scrub tooltip.
+ */
+export const V5_ASYNC_READ_SITE_BASELINE = 184;
 
 /** Ratchet this downward whenever #739 removes a read site or missing state. */
 export const V5_ASYNC_STATE_DEBT_CEILING = { readSites: 0, stateGaps: 0 } as const;

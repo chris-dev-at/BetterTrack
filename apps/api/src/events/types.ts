@@ -356,6 +356,36 @@ export interface BudgetExceededEvent {
   occurredAt: string;
 }
 
+/** Why one scheduled standing-order occurrence did not become a ledger row. */
+export type StandingOrderSkipOutcome = 'deferred' | 'dropped' | 'booking_failed';
+
+/**
+ * `standing_order.skipped` → a scheduled occurrence could not be recorded
+ * (#1118). One type covers the three points at which the engine can make that
+ * decision: a retriable pre-claim defer, previous occurrences being dropped
+ * when a newer anchor becomes due, and a post-claim booking failure whose claim
+ * remains as an at-most-once tombstone. Catch-up drops are aggregated into one
+ * event keyed by the newest dropped period; `droppedCount` says how many periods
+ * that event represents. The producer stamps the scheduled period (rather than
+ * the scan clock) into `occurredAt`; inbox and webhook delivery both dedupe on
+ * recipient + standing order + period + outcome, so mutable display copy does
+ * not create a second logical notice.
+ */
+export interface StandingOrderSkippedEvent {
+  type: 'standing_order.skipped';
+  /** Recipient — the standing order's owner. */
+  userId: string;
+  standingOrderId: string;
+  /** Scheduled occurrence (`YYYY-MM-DD`) affected by this notice. */
+  periodKey: string;
+  outcome: StandingOrderSkipOutcome;
+  /** Number of periods represented by an aggregated `dropped` notice. */
+  droppedCount?: number;
+  /** User label or asset symbol for copy; null falls back to "this standing order". */
+  orderLabel: string | null;
+  occurredAt: string;
+}
+
 /**
  * Ephemeral realtime-credential invalidation. Credential services publish this
  * after a session, personal key, OAuth grant, or whole account is invalidated;
@@ -440,6 +470,7 @@ export type DomainEvent =
   | ChatMessageEvent
   | DividendEventNotice
   | BudgetExceededEvent
+  | StandingOrderSkippedEvent
   | RealtimePrincipalInvalidatedEvent
   | MirrorNotificationEvent;
 
@@ -480,4 +511,5 @@ export const DOMAIN_EVENT_TYPES = [
   'mirror.ownership_transferred',
   'mirror.chain_dissolved',
   'mirror.sync_stalled',
+  'standing_order.skipped',
 ] as const satisfies readonly DomainEventType[];

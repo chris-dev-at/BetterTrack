@@ -6,6 +6,7 @@ import {
   paranoidForkProvenanceResponseSchema,
   paranoidNormalRevisionResponseSchema,
   PARANOID_TRANSITION_ERROR_CODES,
+  VAULT_SERVER_CANDIDATE_TTL_MS,
   type ParanoidDisableRequest,
   type ParanoidDisableResponse,
   type ParanoidEnableRequest,
@@ -17,6 +18,10 @@ import {
 
 import type { Database } from '../../data/db';
 import { createParanoidForkProvenanceRepository } from '../../data/repositories/paranoidRehydrationRepository';
+import {
+  createParanoidVaultRepository,
+  type ParanoidVaultRepository,
+} from '../../data/repositories/paranoidVaultRepository';
 import {
   computeNormalDataRevision,
   createParanoidTransitionTransactionRepository,
@@ -35,6 +40,15 @@ import {
 } from './paranoidRehydrationService';
 
 export type ParanoidEnableStage = 'locked' | 'sharingRevoked' | 'vaultPurged' | 'modeEnabled';
+
+/**
+ * Every capture revision read refreshes this window, so the wizard's closing
+ * read renews it immediately before local validation/encryption. Reuse the
+ * shipped verified-candidate lifetime so both kinds of unpromoted server
+ * ciphertext share one abandonment horizon. It bounds staged SERVER bytes
+ * only — the enable gate below exempts a media set that stages none.
+ */
+export const PARANOID_ENABLE_STAGING_TTL_MS = VAULT_SERVER_CANDIDATE_TTL_MS;
 
 export class ParanoidTransitionError extends Error {
   constructor(
@@ -57,6 +71,8 @@ export class ParanoidTransitionError extends Error {
 
 export interface ParanoidTransitionServiceDeps {
   db: Database;
+  /** Shared durable owner-enable window used by normal-revision and vault I/O. */
+  vaults?: Pick<ParanoidVaultRepository, 'beginEnableStaging' | 'expireEnableStaging'>;
   /**
    * Dedicated privacy-lock pool handle. Admin metadata reads take their lock
    * here and query on `db`, so an open lock transaction never waits on a
@@ -126,9 +142,9 @@ export interface ParanoidTransitionService {
   forkProvenance(userId: string): Promise<ParanoidForkProvenanceResponse>;
   /**
    * The capture↔commit CAS token, read BEFORE the wizard's first row read and
-   * handed back to {@link ParanoidTransitionService.enable}. Lock-free for the
-   * same reason as {@link ParanoidTransitionService.forkProvenance}: it runs
-   * long before the account commits to anything.
+   * handed back to {@link ParanoidTransitionService.enable}. The expensive
+   * revision derivation stays lock-free; a short account lock then opens or
+   * refreshes the owner-only ciphertext-staging window for this capture.
    */
   normalDataRevision(userId: string): Promise<ParanoidNormalRevisionResponse>;
   /** Non-sensitive admin-only mode/media/blob metadata; never returns blob bytes. */
@@ -185,6 +201,7 @@ export function createParanoidTransitionService(
   deps: ParanoidTransitionServiceDeps,
 ): ParanoidTransitionService {
   const now = deps.now ?? (() => new Date());
+  const vaults = deps.vaults ?? createParanoidVaultRepository(deps.db);
   const lockDb = deps.lockDb ?? deps.db;
   const stage = async (value: ParanoidEnableStage) => deps.afterEnableStage?.(value);
   const withTransitionTransaction =
@@ -248,22 +265,36 @@ export function createParanoidTransitionService(
        * Derived under one snapshot, so the capture side and the enable side are
        * symmetric. The enable-side derivation runs inside the destructive
        * transaction, behind the account row's FOR UPDATE lock — nothing it hashes
-       * can move between its ~20 per-table aggregates. This side takes no lock by
-       * design (it runs long before the account commits to anything), so a
-       * concurrent write could otherwise tear the token across tables: counted in
-       * one, missing from the next. REPEATABLE READ pins one snapshot for all of
-       * them at a cost that is irrelevant on a once-per-transition read.
+       * can move between its ~20 per-table aggregates. This derivation takes no
+       * lock by design (it runs long before the account commits to anything), so
+       * a concurrent write could otherwise tear the token across tables: counted
+       * in one, missing from the next. REPEATABLE READ pins one snapshot for all
+       * of them at a cost that is irrelevant on a once-per-transition read.
        *
        * A torn token could only ever have produced a spurious refusal, never a
        * purge — but a spurious refusal on THIS flow costs the user the whole
        * capture/encrypt/write/verify pass, so it is worth not manufacturing.
        */
-      return paranoidNormalRevisionResponseSchema.parse({
-        revision: await deps.db.transaction(
-          (tx) => computeNormalDataRevision(tx as unknown as Database, userId),
-          { isolationLevel: 'repeatable read', accessMode: 'read only' },
-        ),
+      const revision = await deps.db.transaction(
+        (tx) => computeNormalDataRevision(tx as unknown as Database, userId),
+        { isolationLevel: 'repeatable read', accessMode: 'read only' },
+      );
+      /*
+       * Deliberately state-changing for a GET (CSRF-exempt as a safe method):
+       * this is the only point the server learns an enable wizard is running,
+       * and the wizard must read the token before its first row read. It opens
+       * or renews the owner-only window that makes normal-mode vault I/O legal,
+       * and — through `beginEnableStaging` — physically drops the ciphertext of
+       * a window that had already expired. Both effects are confined to the
+       * caller's own account and touch only already-abandoned staged bytes.
+       */
+      const stagedAt = now();
+      await vaults.beginEnableStaging({
+        userId,
+        now: stagedAt,
+        expiresAt: new Date(stagedAt.getTime() + PARANOID_ENABLE_STAGING_TTL_MS),
       });
+      return paranoidNormalRevisionResponseSchema.parse({ revision });
     },
 
     async enable(userId, request) {
@@ -276,6 +307,10 @@ export function createParanoidTransitionService(
       }
       const input = parsed.data;
       const completedAt = now();
+      // Cleanup commits independently before the destructive transition. If an
+      // abandoned window expired, throwing from the enable transaction must not
+      // roll its ciphertext deletion back.
+      await vaults.expireEnableStaging(userId, completedAt);
       const preparedRetirements: PreparedExportFileRetirement[] = [];
       let retirementArtifacts: CleartextExportArtifact[] = [];
       let restoreRetirementsOnFailure = true;
@@ -415,6 +450,36 @@ export function createParanoidTransitionService(
             throw new ParanoidTransitionError(
               'TRANSITION_CONFLICT',
               'The account is already paranoid with different media evidence.',
+            );
+          }
+
+          /*
+           * Presence and expiry ONLY, and only for a media set that actually
+           * stages server bytes. Two deliberate exclusions:
+           *
+           *  - It must not compare the window's capture revision. That row is
+           *    overwritten by EVERY normal-revision read, so an enable carrying
+           *    an older-but-still-authoritative token would be refused here as
+           *    "media not ready" ~50 lines before the capture↔commit CAS below
+           *    could answer the precise, client-handled NORMAL_DATA_CHANGED —
+           *    the one refusal that tells the wizard to recapture. It buys no
+           *    safety either: the CAS re-derives the revision under the account
+           *    lock and is what stands between a stale document and the purge.
+           *  - A media set without `server` is exempt. `ui/enable.ts` writes
+           *    only the selected media, so a Drive-only enable stages no server
+           *    ciphertext for this window to bound; requiring one would put the
+           *    10-minute abandonment horizon on a whole large-vault Drive round
+           *    trip and fail the commit after all the work was already done.
+           */
+          const stagingCheckedAt = now();
+          if (
+            input.mediaSet.includes('server') &&
+            (state.enableStaging === null ||
+              state.enableStaging.expiresAt.getTime() <= stagingCheckedAt.getTime())
+          ) {
+            throw new ParanoidTransitionError(
+              'MEDIA_NOT_READY',
+              'The paranoid-enable staging window is absent or expired; capture again before enabling.',
             );
           }
 

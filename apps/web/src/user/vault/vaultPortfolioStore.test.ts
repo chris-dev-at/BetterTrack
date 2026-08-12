@@ -54,7 +54,12 @@ import {
   reconcilePortfolioDocument,
   VaultPortfolioStoreError,
 } from './vaultPortfolioStore';
-import { deterministicRandom, VECTOR_DEVICE_ID, VECTOR_KEY_ID, VECTOR_WRITE_ID } from './vectors';
+import {
+  deterministicRandom,
+  VECTOR_DEVICE_ID,
+  VECTOR_KEY_ID,
+  VECTOR_WRITE_ID,
+} from '@bettertrack/domain/vaultVectors';
 
 const DEVICE_ID = VECTOR_DEVICE_ID;
 const REMOTE_DEVICE_ID = '018f0000-0000-7000-8000-00000000000e';
@@ -97,6 +102,9 @@ const portfolio: PortfolioSummary = {
   isDefault: true,
   defaultPayFromCash: false,
   archivedAt: null,
+  // Board #69: a vault entity written before the column existed carries no
+  // `kind` key, and the summary surfaces that as "unclassified".
+  kind: null,
 };
 
 const asset: PortfolioAsset = {
@@ -267,6 +275,7 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
           isDefault: true,
           defaultPayFromCash: false,
           archivedAt: null,
+          kind: null,
         },
       ],
     });
@@ -497,6 +506,57 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
     expect(terminal.nextCursor).toBeNull();
     expect(pagedIds).toEqual(created.map((row) => row.id).reverse());
     expect(new Set(pagedIds).size).toBe(created.length);
+  });
+
+  it('uses a compound cursor for executed-time pages and returns the requested source facet', async () => {
+    const engine = createMutableEngine(initialDocument());
+    const store = createVaultPortfolioStore(engine, {
+      now: () => AT,
+      newId: idSequence(),
+    });
+    const created = await store.createTransactions(PORTFOLIO_ID, [
+      {
+        assetId: ASSET_ID,
+        side: 'buy',
+        quantity: 1,
+        price: 10,
+        fee: 0,
+        executedAt: '2026-07-25T10:03:00.000Z',
+      },
+      {
+        assetId: ASSET_ID,
+        side: 'buy',
+        quantity: 2,
+        price: 10,
+        fee: 0,
+        executedAt: '2026-07-25T10:01:00.000Z',
+      },
+      {
+        assetId: ASSET_ID,
+        side: 'buy',
+        quantity: 3,
+        price: 10,
+        fee: 0,
+        executedAt: '2026-07-25T10:02:00.000Z',
+      },
+    ]);
+
+    const first = await store.listTransactions(PORTFOLIO_ID, {
+      limit: 2,
+      order: 'executedAt',
+      includeSourceTags: true,
+    });
+    const second = await store.listTransactions(PORTFOLIO_ID, {
+      limit: 2,
+      order: 'executedAt',
+      cursor: first.nextCursor ?? undefined,
+    });
+
+    expect(first.items.map((row) => row.id)).toEqual([created[0]?.id, created[2]?.id]);
+    expect(first.sourceTags).toEqual(['manual']);
+    expect(first.nextCursor).not.toBe(first.items.at(-1)?.id);
+    expect(second.items.map((row) => row.id)).toEqual([created[1]?.id]);
+    expect(second.nextCursor).toBeNull();
   });
 
   it('persists a supported transaction in strict restore form and reads it back unchanged', async () => {

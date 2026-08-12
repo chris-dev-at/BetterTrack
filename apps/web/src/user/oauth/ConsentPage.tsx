@@ -128,7 +128,7 @@ function AppIdentity({
           style={{
             background: 'var(--bt-gold-soft)',
             border: '1px solid var(--bt-border-accent)',
-            color: 'var(--bt-gold)',
+            color: 'var(--bt-gold-ink)',
           }}
         >
           {t('auth.oauthConsent.logoBadge')}
@@ -155,7 +155,9 @@ function AppIdentity({
       <div className="min-w-0">
         <div className="bt-h3 truncate">{name}</div>
         {firstParty ? (
-          <div className="bt-gold text-xs font-medium">{t('auth.oauthConsent.firstParty')}</div>
+          <div className="bt-gold-note text-xs font-medium">
+            {t('auth.oauthConsent.firstParty')}
+          </div>
         ) : (
           <div className="bt-row-sub">{t('auth.oauthConsent.thirdParty')}</div>
         )}

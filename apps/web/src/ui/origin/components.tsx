@@ -1,6 +1,9 @@
 import {
+  cloneElement,
+  isValidElement,
   useEffect,
   useId,
+  type AriaAttributes,
   type ButtonHTMLAttributes,
   type HTMLAttributes,
   type InputHTMLAttributes,
@@ -208,12 +211,25 @@ export function Field({
   children: ReactNode;
   className?: string;
 }) {
+  const generatedErrorId = useId();
+  const hasError = Boolean(error);
+  const errorId = `${htmlFor ?? generatedErrorId}-error`;
+  const control =
+    hasError && isValidElement<Pick<AriaAttributes, 'aria-describedby' | 'aria-invalid'>>(children)
+      ? cloneElement(children, {
+          'aria-describedby': [children.props['aria-describedby'], errorId]
+            .filter((value): value is string => Boolean(value))
+            .join(' '),
+          'aria-invalid': true,
+        })
+      : children;
+
   return (
     <div className={cx('bt-field', className)}>
       {label ? <label htmlFor={htmlFor}>{label}</label> : null}
-      {children}
-      {error ? (
-        <span className="bt-field__error" role="alert">
+      {control}
+      {hasError ? (
+        <span className="bt-field__error" id={errorId} role="alert">
           {error}
         </span>
       ) : hint ? (

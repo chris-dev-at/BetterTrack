@@ -40,6 +40,7 @@ import {
   previewCashRules,
 } from '../../../lib/cashApi';
 import { ApiError } from '../../../lib/apiClient';
+import { waitForColdStart } from '../../../test/waitForColdStart';
 
 import { CashOverviewPage } from './CashOverviewPage';
 import { setViewportWidth } from '../../../test/viewport';
@@ -84,6 +85,13 @@ function renderPage() {
   return { ...view, client };
 }
 
+function findTagBreakdown() {
+  // This page resolves the active portfolio before its summary query can
+  // start. The API and web suites run concurrently in CI, so give that
+  // two-stage render the shared bounded allowance used by routed page loads.
+  return waitForColdStart(() => screen.getByRole('list', { name: 'Spending by tag' }));
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(listPortfolios).mockResolvedValue(PORTFOLIOS);
@@ -100,10 +108,45 @@ beforeEach(() => {
     balanceEur: 0,
     movements: [],
     sources: [],
+    nextCursor: null,
   } as unknown as Awaited<ReturnType<typeof getCashMovements>>);
 });
 
 describe('CashOverviewPage', () => {
+  test('requests only the bounded recent movement page', async () => {
+    vi.mocked(getCashMovements).mockResolvedValue({
+      balanceEur: 25,
+      movements: [
+        {
+          id: 'movement-recent',
+          sourceId: 'source-main',
+          kind: 'deposit',
+          amountEur: 25,
+          transactionId: null,
+          transferId: null,
+          counterpartSourceId: null,
+          dividendId: null,
+          taxYear: null,
+          executedAt: '2026-07-15T10:00:00.000Z',
+          note: 'Recent deposit',
+          source: 'manual',
+          createdAt: '2026-07-15T10:00:00.000Z',
+        },
+      ],
+      sources: [],
+      nextCursor: 'older-cursor',
+    } as Awaited<ReturnType<typeof getCashMovements>>);
+    renderPage();
+
+    expect(await waitForColdStart(() => screen.getByText('Recent deposit'))).toBeInTheDocument();
+    expect(getCashMovements).toHaveBeenCalledWith(
+      'p1',
+      { cursor: undefined, limit: 5 },
+      expect.anything(),
+    );
+    expect(getCashMovements).toHaveBeenCalledTimes(1);
+  });
+
   test('390px keeps account actions touchable and opens the cash sheet', async () => {
     setViewportWidth(390);
     vi.mocked(listCashSources).mockResolvedValue({
@@ -122,7 +165,7 @@ describe('CashOverviewPage', () => {
     const user = userEvent.setup();
     renderPage();
 
-    const heading = await screen.findByRole('heading', { name: 'Cash' });
+    const heading = await waitForColdStart(() => screen.getByRole('heading', { name: 'Cash' }));
     expect(heading.closest('.bt-money-surface')).not.toBeNull();
     const deposit = screen.getByRole('button', { name: 'Add to Savings' });
     expect(deposit).toHaveClass('bt-acctcard__action');
@@ -165,7 +208,7 @@ describe('CashOverviewPage', () => {
     });
     const { client } = renderPage();
 
-    expect(await screen.findByText('Savings')).toBeInTheDocument();
+    expect(await waitForColdStart(() => screen.getByText('Savings'))).toBeInTheDocument();
     expect(screen.getByText('Total cash')).toBeInTheDocument();
 
     vi.mocked(listCashSources).mockRejectedValue(
@@ -194,7 +237,7 @@ describe('CashOverviewPage', () => {
     // In/out sit together on the month line; the net reads as a change against
     // the balance above it ("… this month") rather than as a third bare figure,
     // so it is matched inside its sentence.
-    expect(await screen.findByText(/4\.200,00/)).toBeInTheDocument();
+    expect(await waitForColdStart(() => screen.getByText(/4\.200,00/))).toBeInTheDocument();
     expect(screen.getByText(/1\.000,00/)).toBeInTheDocument();
     expect(screen.getByText(/3\.200,00.*this month/)).toBeInTheDocument();
   });
@@ -228,7 +271,7 @@ describe('CashOverviewPage', () => {
     renderPage();
 
     // Scoped to the ranked bars: the donut beside them carries the same labels.
-    const bars = await screen.findByRole('list', { name: 'Spending by tag' });
+    const bars = await findTagBreakdown();
     expect(within(bars).getByText('Food')).toBeInTheDocument();
     expect(within(bars).getByText('Groceries')).toBeInTheDocument();
     // 300 + 300 ≠ 500 — the note explaining why must be on screen, not just implied.
@@ -258,14 +301,16 @@ describe('CashOverviewPage', () => {
     );
     renderPage();
 
-    const bars = await screen.findByRole('list', { name: 'Spending by tag' });
+    const bars = await findTagBreakdown();
     expect(within(bars).getByText('Untagged')).toBeInTheDocument();
   });
 
   test('omits the breakdown and its note when nothing happened this month', async () => {
     renderPage();
 
-    expect(await screen.findByText('No cash movements recorded this month.')).toBeInTheDocument();
+    expect(
+      await waitForColdStart(() => screen.getByText('No cash movements recorded this month.')),
+    ).toBeInTheDocument();
     expect(screen.queryByText(/Tag totals overlap/)).not.toBeInTheDocument();
   });
 
@@ -273,6 +318,8 @@ describe('CashOverviewPage', () => {
     vi.mocked(getCashSummary).mockRejectedValue(new Error('offline'));
     renderPage();
 
-    expect(await screen.findByRole('alert')).toHaveTextContent("Couldn't load the cash overview.");
+    expect(await waitForColdStart(() => screen.getByRole('alert'))).toHaveTextContent(
+      "Couldn't load the cash overview.",
+    );
   });
 });

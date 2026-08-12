@@ -1,9 +1,11 @@
-import type {
-  AudienceState,
-  SetAudienceRequest,
-  ShareAudience,
-  ShareKind,
-  ShareLinkSecret,
+import {
+  audienceTransitionRequiresConfirmation,
+  type AudienceSelection,
+  type AudienceState,
+  type SetAudienceRequest,
+  type ShareAudience,
+  type ShareKind,
+  type ShareLinkSecret,
 } from '@bettertrack/contracts';
 
 import type {
@@ -21,7 +23,7 @@ import type { FriendshipRepository } from '../../data/repositories/friendshipRep
 import type { ItemFollowsRepository } from '../../data/repositories/itemFollowsRepository';
 import type { ProfileRepository } from '../../data/repositories/profileRepository';
 import type { UserFollowsRepository } from '../../data/repositories/userFollowsRepository';
-import { badRequest } from '../../errors';
+import { badRequest, conflict } from '../../errors';
 import type { Logger } from '../../logger';
 import { ParanoidModeError, type ParanoidModeGuard } from '../account/paranoidEnforcement';
 import { generateToken, hashToken } from '../crypto/tokens';
@@ -155,6 +157,7 @@ export interface AudienceService {
     kind: ShareKind,
     subjectId: string,
     visibility: 'private' | 'friends',
+    confirmWiden?: boolean,
     /**
      * A recipient snapshot already locked by {@link withVisibilityMutation}.
      * Omit for standalone legacy visibility writes.
@@ -172,7 +175,10 @@ export interface AudienceService {
    */
   withVisibilityMutation<T>(
     ownerId: string,
+    kind: ShareKind,
+    subjectId: string,
     visibility: 'private' | 'friends',
+    confirmWiden: boolean | undefined,
     action: (lockedRecipientIds: readonly string[]) => Promise<T>,
   ): Promise<T>;
   /** Current audience per subject for a same-kind batch (missing = private) — list views. */
@@ -244,6 +250,24 @@ export const GROUP_AUDIENCE_INVALID = () =>
     'Sharing to a group requires one of your own friend groups.',
     'GROUP_AUDIENCE_INVALID',
   );
+
+/** A widening/replacement write must be a fresh, deliberate owner action. */
+export const AUDIENCE_WIDEN_CONFIRMATION_REQUIRED = (currentAudience: ShareAudience) =>
+  conflict(
+    `The current audience is "${currentAudience}". Widening or replacing it requires confirmWiden: true.`,
+    'AUDIENCE_WIDEN_CONFIRMATION_REQUIRED',
+    { currentAudience },
+  );
+
+function assertAudienceTransitionConfirmed(
+  current: AudienceSelection,
+  next: AudienceSelection,
+  confirmed: boolean | undefined,
+): void {
+  if (audienceTransitionRequiresConfirmation(current, next) && confirmed !== true) {
+    throw AUDIENCE_WIDEN_CONFIRMATION_REQUIRED(current.audience);
+  }
+}
 
 /** Relative resolution path the SPA turns into a shareable absolute URL. */
 function linkPath(token: string): string {
@@ -601,12 +625,6 @@ export function createAudienceService(deps: AudienceServiceDeps): AudienceServic
       await paranoid?.assertAllowed(ownerId, 'sharing');
       if (!(await repo.ownsSubject(ownerId, kind, subjectId))) return undefined;
 
-      // §16 friction ladder — the public rung cannot be selected without the
-      // explicit acknowledgment, enforced here as defense in depth behind the UI.
-      if (input.audience === 'public_link' && input.acknowledgePublic !== true) {
-        throw PUBLIC_ACK_REQUIRED();
-      }
-
       // A `group` audience must name a friend group the caller owns; validate
       // before touching state so an unowned/unknown group is a clean 400 (§8).
       let groupId: string | null = null;
@@ -626,6 +644,17 @@ export function createAudienceService(deps: AudienceServiceDeps): AudienceServic
         input.audience === 'specific_friends'
           ? await repo.friendIdsOf(ownerId, input.friendIds ?? [])
           : [];
+      assertAudienceTransitionConfirmed(
+        prior,
+        { audience: input.audience, friendIds: memberIds, groupId },
+        input.confirmWiden,
+      );
+
+      // §16 friction ladder — the public rung keeps its stronger content warning
+      // in addition to the general widening confirmation.
+      if (input.audience === 'public_link' && input.acknowledgePublic !== true) {
+        throw PUBLIC_ACK_REQUIRED();
+      }
       // `specific_friends` names its recipients, so they are required principals;
       // an all-friends set or a group roster is incidental fan-out and is
       // filtered instead (see {@link withNormalRecipients}).
@@ -676,8 +705,12 @@ export function createAudienceService(deps: AudienceServiceDeps): AudienceServic
       );
     },
 
-    async applyVisibility(ownerId, kind, subjectId, visibility, lockedRecipientIds) {
+    async applyVisibility(ownerId, kind, subjectId, visibility, confirmWiden, lockedRecipientIds) {
       const audience: ShareAudience = visibility === 'friends' ? 'all_friends' : 'private';
+      if (await repo.ownsSubject(ownerId, kind, subjectId)) {
+        const current = await repo.getOwnedState(kind, subjectId);
+        assertAudienceTransitionConfirmed(current, { audience }, confirmWiden);
+      }
       const recipients =
         lockedRecipientIds ?? (visibility === 'friends' ? await allFriendRecipients(ownerId) : []);
       await withNormalRecipients(ownerId, { derived: recipients }, async () => {
@@ -685,14 +718,22 @@ export function createAudienceService(deps: AudienceServiceDeps): AudienceServic
       });
     },
 
-    async withVisibilityMutation(ownerId, visibility, action) {
+    async withVisibilityMutation(ownerId, kind, subjectId, visibility, confirmWiden, action) {
       const recipients = visibility === 'friends' ? await allFriendRecipients(ownerId) : [];
       // The callback receives only the recipients still normal under the held
       // locks, so its paired persistence + `*.shared` fan-out skip a paranoid
       // friend while the owner's own visibility write commits.
-      return withNormalRecipients(ownerId, { derived: recipients }, (allowedRecipientIds) =>
-        action(allowedRecipientIds),
-      );
+      return withNormalRecipients(ownerId, { derived: recipients }, async (allowedRecipientIds) => {
+        // Let the owner-scoped business mutation produce its existing uniform
+        // 404 for a missing/foreign subject. Comparing a foreign audience here
+        // would turn the confirmation guard into an existence oracle.
+        if (await repo.ownsSubject(ownerId, kind, subjectId)) {
+          const current = await repo.getOwnedState(kind, subjectId);
+          const audience: ShareAudience = visibility === 'friends' ? 'all_friends' : 'private';
+          assertAudienceTransitionConfirmed(current, { audience }, confirmWiden);
+        }
+        return action(allowedRecipientIds);
+      });
     },
 
     audiencesForSubjects: (kind, subjectIds) => repo.audiencesForSubjects(kind, subjectIds),

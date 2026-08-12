@@ -41,7 +41,7 @@ import {
   type V5AsyncStateDebt,
   type V5SurfaceReview,
 } from './v5SurfaceInventory';
-import { matchControlPanel } from '../user/control/ControlCenterOverlay';
+import { matchControlPanel } from '../user/control/matchControlPanel';
 
 const SRC_ROOT = resolve(process.cwd(), 'src');
 
@@ -84,6 +84,8 @@ ui/MoneyText.tsx
 ui/ScopePicker.tsx
 ui/MarketStateBadge.tsx
 ui/charts/AllocationDonut.tsx
+ui/charts/LazyAllocationDonut.tsx
+ui/charts/LazyPriceChart.tsx
 ui/charts/PriceChart.tsx
 user/AuthContext.tsx
 user/UserApp.tsx
@@ -111,12 +113,15 @@ user/control/panels/DefaultsPanel.tsx
 user/control/panels/NotificationLogPanel.tsx
 user/control/panels/NotificationsPanel.tsx
 user/control/panels/OAuthAppsPanel.tsx
+user/control/panels/ParanoidAccountExport.tsx
 user/control/panels/PrivacyPanel.tsx
+user/control/panels/PrivacyVaultSection.tsx
 user/control/panels/ProfilePanel.tsx
 user/control/panels/SignInPanel.tsx
 user/control/panels/WebhooksPanel.tsx
 user/control/panels/taxModeList.tsx
 user/forecast/ForecastPage.tsx
+user/forecast/ProjectionChart.tsx
 user/forecast/ProjectionSection.tsx
 user/forecast/StandingOrderDialog.tsx
 user/forecast/StandingOrdersSection.tsx
@@ -129,6 +134,7 @@ user/portfolio/CashSourcesPage.tsx
 user/portfolio/CustomInvestmentDialog.tsx
 user/portfolio/ImportPage.tsx
 user/portfolio/MirrorchainPanel.tsx
+user/portfolio/ParanoidTaxReport.tsx
 user/portfolio/PortfolioPage.tsx
 user/portfolio/PortfolioSection.tsx
 user/portfolio/PortfolioSettingsPage.tsx
@@ -163,6 +169,7 @@ user/portfolio/cashflow/RecordCashButton.tsx
 user/portfolio/cashflow/RecordCashDialog.tsx
 user/portfolio/cashflow/SectionHead.tsx
 user/portfolio/cashflow/TagChip.tsx
+user/portfolio/taxReportRows.tsx
 user/portfolio/wizard/PortfolioWizard.tsx
 user/settings/taxModePicker.tsx
 user/social/ChatPage.tsx
@@ -177,12 +184,24 @@ user/social/SharedIdeaPage.tsx
 user/social/SharedPortfolioPage.tsx
 user/social/SharedWatchlistPage.tsx
 user/social/chatSurface.tsx
+user/vault/VaultAccountRoot.tsx
 user/vault/VaultRuntimeProvider.tsx
 user/vault/engine/VaultMoneyEngineProvider.tsx
 user/vault/ui/ParanoidEnableWizard.tsx
 user/vault/ui/ParanoidSurfaceGate.tsx
 user/vault/ui/VaultSyncChip.tsx
 user/vault/ui/VaultUnlockGate.tsx
+user/vault/v2/ui/CreateVaultWizard.tsx
+user/vault/v2/ui/LockedPortfolioRow.tsx
+user/vault/v2/ui/MoveIntoVaultDialog.tsx
+user/vault/v2/ui/MoveOutOfVaultDialog.tsx
+user/vault/v2/ui/PortfolioVaultSection.tsx
+user/vault/v2/ui/VaultHowItWorksPage.tsx
+user/vault/v2/ui/VaultKeyDiagram.tsx
+user/vault/v2/ui/VaultQrImportDialog.tsx
+user/vault/v2/ui/VaultQrShareDialog.tsx
+user/vault/v2/ui/VaultUnlockDialog.tsx
+user/vault/v2/ui/VaultsProvider.tsx
 user/workboard/BudgetCalculator.tsx
 user/workboard/ComparisonPage.tsx
 user/workboard/ConglomerateBuilderPage.tsx
@@ -253,6 +272,7 @@ const EXPECTED_V5_ROUTES = baseline(`
 /register
 /s/:token
 /u/:username
+/vault/how-it-works
 /workbench
 /workbench/blueprints
 /workbench/blueprints/:id
@@ -2465,7 +2485,7 @@ describe('V5-P14 surface traceability inventory', () => {
       coveredClaimFindings,
       `Mechanically covered state claims do not match component code:\n${coveredClaimFindings.join('\n')}`,
     ).toEqual([]);
-    // This gate parses every inventoried component and walks 179 async read
+    // This gate parses every inventoried component and walks 182 async read
     // sites; on a shared CI runner it lands around 20s, which is exactly the
     // suite default. That made it fail on runner load rather than on a defect —
     // it took main red and blocked every open PR, including the remediation

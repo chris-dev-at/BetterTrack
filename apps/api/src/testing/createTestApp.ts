@@ -61,9 +61,12 @@ let realRedisClient: Redis | undefined;
 
 async function acquireRealDb(): Promise<Database> {
   if (!pgClient) {
-    // Keep at least two independent sessions available: admin.test.ts proves
-    // the active-administrator row lock with genuinely overlapping transactions.
-    pgClient = postgres(realDbUrl!, { max: 2 });
+    // Keep independent sessions plus one spare available: admin.test.ts proves
+    // the active-administrator row lock with genuinely overlapping transactions,
+    // while mirrorReplication.test.ts pauses one writer and queues another.
+    // The spare keeps an incidental pooled read from turning either lock
+    // regression into connection-pool starvation.
+    pgClient = postgres(realDbUrl!, { max: 3 });
     pgDb = drizzlePostgres(pgClient, { schema });
   }
   if (!pgMigrated) {
@@ -189,6 +192,8 @@ export interface CreateTestAppOptions {
   passwordHasher?: PasswordHasher;
   /** Stubbed market-data service, in place of the live Yahoo/manual providers. */
   marketData?: MarketDataService;
+  /** Controlled portfolio-service clock (UTC-window boundaries, archive/restore transitions). */
+  portfolioNow?: () => number;
   /** Backfill scheduler (e.g. a recording fake) to assert first-touch enqueues. */
   backfill?: BackfillScheduler;
   /**
@@ -227,8 +232,6 @@ export interface CreateTestAppOptions {
    * boundary derives from it, so tests can advance it across a rollover.
    */
   taxNow?: () => number;
-  /** Controlled portfolio-service clock for archive/restore transition tests. */
-  portfolioNow?: () => number;
   /**
    * Controlled clock for the expense budget/dashboard engine (§13.5 V5-P9) — the
    * current evaluation period + a dashboard's default month derive from it, so a
@@ -290,6 +293,7 @@ export async function createTestApp(options: CreateTestAppOptions = {}): Promise
     logger,
     emailTransport: options.emailTransport,
     marketData: options.marketData,
+    portfolioNow: options.portfolioNow,
     backfill: options.backfill,
     googleVerifier: options.googleVerifier,
     passwordHasher: options.passwordHasher ?? testPasswordHasher,
@@ -301,7 +305,6 @@ export async function createTestApp(options: CreateTestAppOptions = {}): Promise
     exportAfterCollect: options.exportAfterCollect,
     notificationNow: options.notificationNow,
     taxNow: options.taxNow,
-    portfolioNow: options.portfolioNow,
     budgetNow: options.budgetNow,
     webhookTransport: options.webhookTransport,
     aiFetch: options.aiFetch,

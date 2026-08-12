@@ -373,7 +373,7 @@ export function ImportPage() {
                       checked={linkCash}
                       className="h-4 w-4"
                       onChange={(e) => setLinkCash(e.target.checked)}
-                      style={{ accentColor: 'var(--bt-gold)' }}
+                      style={{ accentColor: 'var(--bt-gold-graphic)' }}
                       type="checkbox"
                     />
                     <span className="bt-meta">{t('portfolio.import.linkCashLabel')}</span>

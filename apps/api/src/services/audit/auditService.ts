@@ -57,6 +57,26 @@ export const AuditAction = {
   ParanoidDisabled: 'account.paranoid_disabled',
   /** A failed re-auth on the irreversible paranoid discard (throttled like deletion). */
   ParanoidDiscardFail: 'account.paranoid_discard_fail',
+  /**
+   * Vaults v2 lifecycle (`docs/VAULTS_V2_DESIGN.md` §3). Metadata is the vault
+   * id, its cleartext name/backends and the affected portfolio id — never a
+   * byte of ciphertext, a version of a document, or any row count.
+   */
+  VaultCreated: 'vault.created',
+  VaultUpdated: 'vault.updated',
+  VaultDeleted: 'vault.deleted',
+  VaultPortfolioJoined: 'vault.portfolio_joined',
+  VaultPortfolioLeft: 'vault.portfolio_left',
+  /** The one-way v1 → v2 commit point (design r2 §11): legacy becomes read-only. */
+  VaultMigrated: 'vault.migrated',
+  /** Cleartext display alias of a vaulted portfolio; the label text is never logged. */
+  VaultPortfolioAliasSet: 'vault.portfolio_alias_set',
+  /**
+   * Generic session step-up (`POST /auth/reauth`). `meta.purpose` is the
+   * caller-supplied provenance string; it is never trusted for authorization.
+   */
+  AuthReauth: 'auth.reauth',
+  AuthReauthFail: 'auth.reauth_fail',
   UserPasswordReset: 'user.pw_reset',
   InviteCreated: 'invite.created',
   InviteUsed: 'invite.used',
@@ -120,6 +140,12 @@ export const AuditAction = {
   MirrorRoleChanged: 'mirror.role_changed',
   MirrorOwnershipTransferred: 'mirror.ownership_transferred',
   MirrorChainDissolved: 'mirror.chain_dissolved',
+  // Tax year locking (§16 2026-08-07): the explicit unlock ritual that opens
+  // one elapsed tax year for amendments, its re-lock, and a failed unlock
+  // re-auth (per-account throttled like export/deletion).
+  TaxYearUnlocked: 'tax_year.unlocked',
+  TaxYearRelocked: 'tax_year.relocked',
+  TaxYearUnlockReauthFail: 'tax_year.unlock_reauth_fail',
   // Outbound webhooks (§13.5 V5-P10, issue 1/2): subscription lifecycle + the
   // auto-disable that a dead receiver triggers (the disable is audit-visible).
   WebhookCreated: 'webhook.created',

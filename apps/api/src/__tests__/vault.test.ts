@@ -94,7 +94,13 @@ async function seedAndLogin(
       })
       .where(eq(users.id, user.id));
   }
-  return loginAgent(harness.app, user.email, 'user-strong-password-1');
+  const agent = await loginAgent(harness.app, user.email, 'user-strong-password-1');
+  if (privacyMode === 'normal') {
+    // The real enable wizard opens this owner-only staging window with its
+    // capture revision before probing/writing the selected server medium.
+    await agent.get('/api/v1/account/paranoid/normal-revision').expect(200);
+  }
+  return agent;
 }
 
 async function seedParanoidAgent(email: string, username: string) {
@@ -182,6 +188,8 @@ describe('vault blob store', () => {
   it('requires an authenticated owner', async () => {
     const res = await request(harness.app).get('/api/v1/vault');
     expect(res.status).toBe(401);
+    expect(res.headers.etag).toBeUndefined();
+    expect(res.headers['last-modified']).toBeUndefined();
   });
 
   it('404s before any blob exists', async () => {
@@ -189,6 +197,8 @@ describe('vault blob store', () => {
     const res = await agent.get('/api/v1/vault');
     expect(res.status).toBe(404);
     expect(res.body.error.code).toBe('VAULT_NOT_FOUND');
+    expect(res.headers.etag).toBeUndefined();
+    expect(res.headers['last-modified']).toBeUndefined();
   });
 
   it('creates, reads back byte-identical, and conditionally 304s', async () => {
@@ -246,7 +256,12 @@ describe('vault blob store', () => {
       .send(envelope(2, new Uint8Array([9, 9, 9])));
     expect(stale.status).toBe(412);
     expect(stale.body.error.code).toBe('VAULT_PRECONDITION_FAILED');
-    expect(stale.headers.etag).toBe('"2"');
+    // #1161 keeps validators off error responses; the winner's version rides
+    // the BODY instead (r3 regression guard — the loser must not need a second
+    // GET /vault just to learn the current version).
+    expect(stale.headers.etag).toBeUndefined();
+    expect(stale.headers['last-modified']).toBeUndefined();
+    expect(stale.body.currentVersion).toBe(2);
 
     const read = await agent.get('/api/v1/vault').responseType('blob');
     expect(read.headers.etag).toBe('"2"');
@@ -356,6 +371,8 @@ describe('vault blob store', () => {
     const normalResult = await normal.get('/api/v1/vault/history');
     expect(normalResult.status).toBe(403);
     expect(normalResult.body.error.code).toBe('VAULT_PARANOID_MODE_REQUIRED');
+    expect(normalResult.headers.etag).toBeUndefined();
+    expect(normalResult.headers['last-modified']).toBeUndefined();
 
     const alice = await seedAndLogin('alice@bt.test', 'alice', 'paranoid');
     await alice
@@ -431,6 +448,7 @@ describe('vault blob store', () => {
     const smallHarness = await createTestApp({ env: { BT_VAULT_MAX_BYTES: '2048' } });
     const user = await smallHarness.seedUser({ email: 'big@bt.test', username: 'big' });
     const agent = await loginAgent(smallHarness.app, user.email, 'user-strong-password-1');
+    await agent.get('/api/v1/account/paranoid/normal-revision').expect(200);
     const res = await agent
       .put('/api/v1/vault')
       .set(...XRW)

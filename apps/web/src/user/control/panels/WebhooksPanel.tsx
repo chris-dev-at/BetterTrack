@@ -61,6 +61,7 @@ const EVENT_LABEL_KEY: Record<WebhookEventType, string> = {
   'chat.message': 'chatMessage',
   'dividend.event': 'dividendEvent',
   'budget.exceeded': 'budgetExceeded',
+  'standing_order.skipped': 'standingOrderSkipped',
   'mirror.invite': 'mirrorInvite',
   'mirror.member_joined': 'mirrorMemberJoined',
   'mirror.member_left': 'mirrorMemberLeft',
@@ -234,7 +235,7 @@ function CreateWebhookForm({
                 checked={events.has(type)}
                 className="h-4 w-4"
                 onChange={() => toggle(type)}
-                style={{ accentColor: 'var(--bt-gold)' }}
+                style={{ accentColor: 'var(--bt-gold-graphic)' }}
                 type="checkbox"
               />
               <span>{t(`settings.api.webhooks.event.${EVENT_LABEL_KEY[type]}`)}</span>

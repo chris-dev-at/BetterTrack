@@ -140,6 +140,15 @@ describe('OpenAPI document', () => {
     const notifications = (paths['/notifications'] as JsonObject).get as JsonObject;
     expect(notifications.security).toEqual([{ sessionCookie: [] }, { apiKeyBearer: [] }]);
 
+    // The cash endpoint changed from an unbounded chronological ledger to a
+    // bounded newest-first page. External clients must see both semantics in
+    // the generated reference instead of discovering truncation implicitly.
+    const cashMovements = (paths['/portfolios/{portfolioId}/cash'] as JsonObject).get as JsonObject;
+    expect(cashMovements.description).toContain('newest first');
+    expect(cashMovements.description).toContain(
+      `at most ${contracts.CASH_MOVEMENTS_DEFAULT_LIMIT} rows`,
+    );
+
     // #1041: every documented cash-classification operation derives bearer
     // admission from the /cash module policy. No endpoint-specific OpenAPI
     // override is allowed to drift from the middleware table.
@@ -157,10 +166,14 @@ describe('OpenAPI document', () => {
       }
     }
 
-    // #1042: mirrorchain is intentionally split by exact method + route. The
-    // seven participation operations advertise bearer access, while lifecycle
-    // administration stays marked as an owning browser session even when it
-    // shares a path with an allowed read (GET vs POST /chains).
+    // #1042 + board #67 (owner-approved 2026-08-07): mirrorchain is split by
+    // exact method + route. Participation always advertised bearer; chain
+    // administration was widened from session-only to bearer under the owner's
+    // fully-capable phone-management mandate, so all sixteen operations now
+    // advertise bearer access (reads gated by mirrorchain:read, every write by
+    // mirrorchain:write via the module policy). The GET-vs-POST /chains split
+    // still matters — both are bearer now, but the method-aware allowlist is
+    // what makes that safe.
     const mirrorchainBearerOperations = [
       ['get', '/mirrorchain/chains'],
       ['get', '/mirrorchain/chains/{chainId}/members'],
@@ -169,16 +182,6 @@ describe('OpenAPI document', () => {
       ['post', '/mirrorchain/invites/{inviteId}/accept'],
       ['post', '/mirrorchain/invites/{inviteId}/decline'],
       ['post', '/mirrorchain/chains/{chainId}/leave'],
-    ] as const;
-    for (const [method, path] of mirrorchainBearerOperations) {
-      const operation = (paths[path] as JsonObject)[method] as JsonObject;
-      expect(operation.security, `security for ${method.toUpperCase()} ${path}`).toEqual([
-        { sessionCookie: [] },
-        { apiKeyBearer: [] },
-      ]);
-    }
-
-    const mirrorchainSessionOperations = [
       ['post', '/mirrorchain/chains'],
       ['post', '/mirrorchain/chains/convert'],
       ['post', '/mirrorchain/invites/{inviteId}/revoke'],
@@ -189,10 +192,11 @@ describe('OpenAPI document', () => {
       ['patch', '/mirrorchain/chains/{chainId}/members/{userId}/role'],
       ['delete', '/mirrorchain/chains/{chainId}/members/{userId}'],
     ] as const;
-    for (const [method, path] of mirrorchainSessionOperations) {
+    for (const [method, path] of mirrorchainBearerOperations) {
       const operation = (paths[path] as JsonObject)[method] as JsonObject;
       expect(operation.security, `security for ${method.toUpperCase()} ${path}`).toEqual([
         { sessionCookie: [] },
+        { apiKeyBearer: [] },
       ]);
     }
 

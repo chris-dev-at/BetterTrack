@@ -18,12 +18,8 @@ import {
   decryptClientMoneyFixture,
 } from './clientMoney.testSupport';
 import type { VaultMoneyEngine } from './types';
-import {
-  moneyEngineSyncAccess,
-  useVaultMoneySession,
-  VaultMoneyEngineProvider,
-  type VaultMoneySession,
-} from './VaultMoneyEngineProvider';
+import { useVaultMoneySession, type VaultMoneySession } from './VaultMoneyEngineContext';
+import { moneyEngineSyncAccess, VaultMoneyEngineProvider } from './VaultMoneyEngineProvider';
 
 const LOCKED: VaultSyncState = { status: 'locked', active: null, pending: null };
 

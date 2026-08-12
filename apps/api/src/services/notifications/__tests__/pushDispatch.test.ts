@@ -4,7 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createNotificationRepository } from '../../../data/repositories/notificationRepository';
 import { createUserRepository } from '../../../data/repositories/userRepository';
 import type { Database } from '../../../data/db';
-import { notifications, notificationSettings } from '../../../data/schema';
+import { notifications, notificationSettings, users } from '../../../data/schema';
 import type { ChatMessageEvent } from '../../../events';
 import { createTestApp, type TestHarness } from '../../../testing/createTestApp';
 import type { FcmChannel, PushMessage } from '../fcm';
@@ -88,6 +88,49 @@ describe('push channels through the matrix (#368)', () => {
     expect(fcmSent[0]!.message.type).toBe('chat.message');
     expect(fcmSent[0]!.message.data.conversationId).toBe('00000000-0000-7000-8000-00000000c001');
     expect(webSent).toHaveLength(1);
+  });
+
+  it('renders both phone and browser push text in a DE recipient locale', async () => {
+    const user = await harness.seedUser({ email: 'push-de@bt.test', username: 'push-de' });
+    await db.update(users).set({ locale: 'de' }).where(eq(users.id, user.id));
+
+    await dispatcher.dispatch(chatEvent(user.id, { bodyPreview: 'Hallo' }));
+
+    const expected = {
+      type: 'chat.message',
+      title: 'Neue Nachricht',
+      body: 'anna: Hallo',
+    };
+    expect(fcmSent[0]?.message).toMatchObject(expected);
+    expect(webSent[0]?.message).toMatchObject(expected);
+  });
+
+  it('carries the standing-order route keys and outcome in both push channels', async () => {
+    const user = await harness.seedUser({ email: 'orders@bt.test', username: 'orders' });
+    await dispatcher.dispatch({
+      type: 'standing_order.skipped',
+      userId: user.id,
+      standingOrderId: '00000000-0000-7000-8000-00000000a111',
+      periodKey: '2026-04-01',
+      outcome: 'dropped',
+      droppedCount: 3,
+      orderLabel: 'Netflix',
+      occurredAt: '2026-05-01T10:00:00.000Z',
+    });
+
+    const expected = {
+      type: 'standing_order.skipped',
+      data: {
+        standingOrderId: '00000000-0000-7000-8000-00000000a111',
+        periodKey: '2026-04-01',
+        outcome: 'dropped',
+        droppedCount: '3',
+      },
+    };
+    expect(fcmSent).toHaveLength(1);
+    expect(fcmSent[0]!.message).toMatchObject(expected);
+    expect(webSent).toHaveLength(1);
+    expect(webSent[0]!.message).toMatchObject(expected);
   });
 
   it('routes push and webpush independently via the matrix', async () => {

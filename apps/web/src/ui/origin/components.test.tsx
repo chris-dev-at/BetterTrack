@@ -3,7 +3,25 @@ import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { expect, test } from 'vitest';
 
-import { Drawer, ODialog } from './components';
+import { Drawer, Field, Input, ODialog } from './components';
+
+test('Field marks its control invalid and links the rendered error', () => {
+  render(
+    <>
+      <span id="amount-hint">Whole euros only.</span>
+      <Field error="Enter an amount." htmlFor="amount" label="Amount">
+        <Input aria-describedby="amount-hint" id="amount" />
+      </Field>
+    </>,
+  );
+
+  const input = screen.getByLabelText('Amount');
+  const error = screen.getByRole('alert');
+
+  expect(input).toHaveAttribute('aria-invalid', 'true');
+  expect(input).toHaveAttribute('aria-describedby', 'amount-hint amount-error');
+  expect(error).toHaveAttribute('id', 'amount-error');
+});
 
 function DialogFixture() {
   const [open, setOpen] = useState(false);

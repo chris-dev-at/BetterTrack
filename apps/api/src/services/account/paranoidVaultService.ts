@@ -25,7 +25,9 @@ import {
 
 import type {
   ParanoidMediaTransitionResult,
+  ParanoidVaultAccess,
   ParanoidRetiredPurgeResult,
+  ParanoidVaultReadResult,
   ParanoidStageServerCandidateResult,
   ParanoidVaultHistoryReadRow,
   ParanoidVaultRepository,
@@ -50,6 +52,7 @@ export interface ParanoidVaultServiceDeps {
 
 export interface ParanoidVaultPutInput {
   userId: string;
+  access: ParanoidVaultAccess;
   expectedVersion: number | null;
   blob: Buffer;
   /**
@@ -65,6 +68,8 @@ export type ParanoidVaultPutResult =
   | { status: 'too_large'; sizeBytes: number; maxBytes: number }
   | { status: 'malformed'; reason: string }
   | { status: 'medium_inactive' }
+  /** Vaults v2 (r2 §11): this account flipped to a v2 vault; legacy is read-only. */
+  | { status: 'migrated_tombstone' }
   | { status: 'proof_key_conflict' };
 
 export type RetiredPurgeChallengeResult =
@@ -79,7 +84,7 @@ export type RetiredPurgeResult =
   | { status: 'state_conflict' };
 
 export interface ParanoidVaultService {
-  get(userId: string): Promise<ParanoidVaultRow | null>;
+  get(userId: string, access: ParanoidVaultAccess): Promise<ParanoidVaultReadResult>;
   getMetadata(userId: string): Promise<VaultMetadata | null>;
   listHistory(userId: string, input: VaultHistoryListQuery): Promise<VaultHistoryListResponse>;
   getHistory(userId: string, version: number): Promise<ParanoidVaultHistoryReadRow | null>;
@@ -136,8 +141,8 @@ export function createParanoidVaultService(deps: ParanoidVaultServiceDeps): Para
   const now = deps.now ?? (() => new Date());
 
   return {
-    async get(userId) {
-      return deps.vaults.getCurrent(userId);
+    async get(userId, access) {
+      return deps.vaults.readCurrent(userId, access, now());
     },
 
     async getMetadata(userId) {
@@ -162,7 +167,7 @@ export function createParanoidVaultService(deps: ParanoidVaultServiceDeps): Para
       return deps.vaults.getHistory(userId, version);
     },
 
-    async put({ userId, expectedVersion, blob, retirementProofPublicKey = null }) {
+    async put({ userId, access, expectedVersion, blob, retirementProofPublicKey = null }) {
       const inspected = inspectBlob(blob, deps.maxBytes);
       if ('status' in inspected) return inspected;
       if (expectedVersion !== null && inspected.header.vaultVersion <= expectedVersion) {
@@ -173,6 +178,7 @@ export function createParanoidVaultService(deps: ParanoidVaultServiceDeps): Para
       }
       return deps.vaults.compareAndSwap({
         userId,
+        access,
         expectedVersion,
         version: inspected.header.vaultVersion,
         formatVersion: inspected.header.formatVersion,

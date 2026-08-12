@@ -12,6 +12,7 @@ vi.mock('../../lib/notificationsApi', () => ({
 import type { Notification, NotificationListResponse } from '@bettertrack/contracts';
 import { REALTIME_SERVER_EVENTS } from '@bettertrack/contracts';
 
+import { I18nProvider } from '../../i18n';
 import { listNotifications, markNotificationsRead } from '../../lib/notificationsApi';
 import { RealtimeContext, type RealtimeContextValue } from '../../lib/realtime';
 import { NotificationBell } from './NotificationBell';
@@ -20,13 +21,15 @@ function makeQueryClient() {
   return new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 0 } } });
 }
 
-function renderBell() {
+function renderBell(locale = 'en') {
   // The dropdown always renders the "All notifications" footer Link (#437),
   // so every bell render needs a router context.
   return render(
     <QueryClientProvider client={makeQueryClient()}>
       <MemoryRouter>
-        <NotificationBell />
+        <I18nProvider initialLocale={locale}>
+          <NotificationBell />
+        </I18nProvider>
       </MemoryRouter>
     </QueryClientProvider>,
   );
@@ -104,6 +107,40 @@ describe('NotificationBell', () => {
     expect(screen.getByRole('group', { name: 'Notifications' })).toBeInTheDocument();
     expect(screen.getByText('Unread item')).toBeInTheDocument();
     expect(screen.getByText('Read item')).toBeInTheDocument();
+  });
+
+  test('localizes keyed rows and keeps historical rows on their persisted fallback', async () => {
+    const user = userEvent.setup();
+    vi.mocked(listNotifications).mockResolvedValue({
+      items: [
+        notification({
+          id: '00000000-0000-0000-0000-000000000002',
+          title: 'New friend request',
+          body: 'anna sent you a friend request.',
+          payload: {
+            eventKey: 'friend.request:req-new',
+            message: { key: 'friendRequest', params: { actor: 'anna' } },
+          },
+        }),
+        notification({
+          id: '00000000-0000-0000-0000-000000000003',
+          title: 'Legacy title',
+          body: 'Legacy body',
+          payload: { eventKey: 'friend.request:req-old' },
+        }),
+      ],
+      nextCursor: null,
+      unreadCount: 2,
+    });
+    renderBell('de');
+
+    await user.click(await screen.findByRole('button', { name: /Benachrichtigungen/ }));
+    expect(screen.getByText('Neue Freundschaftsanfrage')).toBeInTheDocument();
+    expect(
+      screen.getByText('anna hat dir eine Freundschaftsanfrage gesendet.'),
+    ).toBeInTheDocument();
+    expect(screen.getByText('Legacy title')).toBeInTheDocument();
+    expect(screen.getByText('Legacy body')).toBeInTheDocument();
   });
 
   test('uses a non-modal popover with natural tab order and Escape restoration', async () => {
@@ -403,6 +440,11 @@ describe('NotificationBell', () => {
     },
     { type: 'account.temp_password', payload: {}, href: '/settings/security' },
     { type: 'account.invite', payload: {}, href: '/settings/account' },
+    {
+      type: 'standing_order.skipped',
+      payload: { standingOrderId: 'so-1', periodKey: '2026-04-01', outcome: 'dropped' },
+      href: '/workbench/forecasts#standing-order-so-1',
+    },
     { type: 'account.notice', payload: {}, href: '/settings/notifications' },
   ];
 

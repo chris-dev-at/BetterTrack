@@ -7,6 +7,7 @@ import {
   isParanoidKilledScope,
   PARANOID_MODE_ERROR_CODE,
 } from '../../services/account/paranoidEnforcement';
+import { normalizeRoutePath } from '../../services/security/routePath';
 import { toAuthUser } from '../serializers';
 import type { AppContext } from '../context';
 
@@ -46,11 +47,72 @@ export const VAULT_SYNC_BEARER_ROUTE_ALLOWLIST = [
 ] as const satisfies readonly BearerRoute[];
 
 /**
- * The deliberately narrow mobile-participation surface for MIRRORCHAIN (#1042).
- * This list is method-aware because `GET /chains` participates while
- * `POST /chains` administers, and both operations share one path. Anything
- * under `/mirrorchain` that is not listed here remains cookie-session-only even
- * though the module has a coarse scope-policy row below.
+ * Vaults v2 (`docs/VAULTS_V2_DESIGN.md` §3): the SAME `vault:sync` exception,
+ * widened from the account-singleton `/vault` routes to `{vaultId}`-scoped
+ * ones. A sync client may enumerate the account's vaults (ids + names +
+ * backends — the narrow projection the list route serves a bearer) and
+ * GET/PUT each vault's opaque header and per-portfolio blobs under If-Match
+ * CAS. Nothing else: every transition below is absent by design and the module
+ * defaults closed, exactly like `/vault`.
+ */
+export const VAULTS_SYNC_BEARER_ROUTE_ALLOWLIST = [
+  { method: 'GET', path: '/vaults' },
+  { method: 'GET', path: '/vaults/{vaultId}/header' },
+  { method: 'PUT', path: '/vaults/{vaultId}/header' },
+  { method: 'GET', path: '/vaults/{vaultId}/common' },
+  { method: 'PUT', path: '/vaults/{vaultId}/common' },
+  { method: 'GET', path: '/vaults/{vaultId}/portfolios/{portfolioId}' },
+  { method: 'PUT', path: '/vaults/{vaultId}/portfolios/{portfolioId}' },
+] as const satisfies readonly BearerRoute[];
+
+/**
+ * Vaults v2 lifecycle routes that deliberately remain cookie-session-only.
+ * Policy metadata for the mounted-route completeness census, not a second guard
+ * — the guard is default-deny. `POST /vaults` shares its path with the
+ * allowlisted `GET /vaults`, which is exactly why the matcher is method-aware.
+ */
+export const VAULTS_SESSION_ONLY_ROUTES = [
+  { method: 'POST', path: '/vaults' },
+  { method: 'PATCH', path: '/vaults/{vaultId}' },
+  { method: 'DELETE', path: '/vaults/{vaultId}' },
+  // The v1 → v2 migration protocol (design r2 §11). The flip is a one-way
+  // commit that turns the legacy account vault into a read-only tombstone —
+  // exactly the class of transition `/account/paranoid/*` already reserves for
+  // the owning browser session.
+  { method: 'GET', path: '/vaults/migration' },
+  { method: 'POST', path: '/vaults/migration/claim' },
+  { method: 'POST', path: '/vaults/migration/renew' },
+  { method: 'POST', path: '/vaults/migration/flip' },
+] as const satisfies readonly BearerRoute[];
+
+/**
+ * The two per-portfolio vault TRANSITIONS. They live under `/portfolios`, whose
+ * module policy grants `portfolio:read`/`portfolio:write`, so without an
+ * explicit rule ahead of `MODULE_POLICIES` a `portfolio:write` bearer would be
+ * able to purge a portfolio's cleartext (join) or write a caller-authored
+ * document back into the account (leave). Both are destructive, one-way-ish
+ * transitions — the same class the account-level `/account/paranoid/*` routes
+ * keep browser-session-only — so they are pinned session-only here.
+ */
+export const PORTFOLIO_VAULT_SESSION_ONLY_ROUTES = [
+  { method: 'POST', path: '/portfolios/{portfolioId}/vault' },
+  { method: 'DELETE', path: '/portfolios/{portfolioId}/vault' },
+  // The vaulted-portfolio alias. Session-only like the transitions: it is the
+  // one write that stays reachable while vaulted, and widening it to a bearer
+  // would put the only writable surface of a vaulted portfolio on a token.
+  { method: 'PATCH', path: '/portfolios/{portfolioId}/alias' },
+] as const satisfies readonly BearerRoute[];
+
+/**
+ * The MIRRORCHAIN bearer surface: participation (#1042) plus administration
+ * (mobile board #67 — the owner's fully-capable phone-management mandate,
+ * owner-approved 2026-08-07). This list is method-aware because `GET /chains`
+ * reads while `POST /chains` administers, and both operations share one path.
+ * Reads require `mirrorchain:read`, every write `mirrorchain:write` (the
+ * module policy row below); ownership/role checks for administration live in
+ * the service layer and are identical to the cookie session. Anything under
+ * `/mirrorchain` that is not listed here remains cookie-session-only and
+ * default-closed.
  */
 export const MIRRORCHAIN_BEARER_ROUTE_ALLOWLIST = [
   { method: 'GET', path: '/mirrorchain/chains' },
@@ -60,11 +122,46 @@ export const MIRRORCHAIN_BEARER_ROUTE_ALLOWLIST = [
   { method: 'POST', path: '/mirrorchain/invites/{inviteId}/accept' },
   { method: 'POST', path: '/mirrorchain/invites/{inviteId}/decline' },
   { method: 'POST', path: '/mirrorchain/chains/{chainId}/leave' },
+  { method: 'POST', path: '/mirrorchain/chains' },
+  { method: 'POST', path: '/mirrorchain/chains/convert' },
+  { method: 'POST', path: '/mirrorchain/invites/{inviteId}/revoke' },
+  { method: 'POST', path: '/mirrorchain/chains/{chainId}/invites' },
+  { method: 'PATCH', path: '/mirrorchain/chains/{chainId}' },
+  { method: 'POST', path: '/mirrorchain/chains/{chainId}/transfer' },
+  { method: 'DELETE', path: '/mirrorchain/chains/{chainId}' },
+  {
+    method: 'PATCH',
+    path: '/mirrorchain/chains/{chainId}/members/{userId}/role',
+  },
+  { method: 'DELETE', path: '/mirrorchain/chains/{chainId}/members/{userId}' },
+] as const satisfies readonly BearerRoute[];
+
+/**
+ * MIRRORCHAIN routes that deliberately remain cookie-session-only. Emptied by
+ * the board-#67 widening (administration moved into the bearer allowlist
+ * above), but the constant stays: the mounted-route completeness test compares
+ * the real Express router against the allowlist + session-only union, so a
+ * newly added route must still make an explicit access decision before CI can
+ * pass. This is policy metadata, not a second guard — the guard above is
+ * default-deny.
+ */
+export const MIRRORCHAIN_SESSION_ONLY_ROUTES: readonly BearerRoute[] = [];
+
+/**
+ * Vault storage/media mutations that are explicitly outside opaque bearer
+ * synchronization. Kept beside the sync allowlist for the same mounted-route
+ * completeness check used by MIRRORCHAIN.
+ */
+export const VAULT_SESSION_ONLY_ROUTES = [
+  { method: 'PATCH', path: '/vault/media' },
+  { method: 'PUT', path: '/vault/media/server-candidate' },
+  { method: 'GET', path: '/vault/media/server-candidate/{candidateId}' },
+  { method: 'POST', path: '/vault/media/retired/purge/challenge' },
+  { method: 'POST', path: '/vault/media/retired/purge' },
 ] as const satisfies readonly BearerRoute[];
 
 function normalizedRouteSegments(path: string): string[] {
-  const pathname = path.split('?', 1)[0]!.replace(/\/+$/, '').toLowerCase();
-  return pathname.split('/').filter(Boolean);
+  return normalizeRoutePath(path).split('/').filter(Boolean);
 }
 
 const UUID_ROUTE_SEGMENT = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -115,6 +212,11 @@ function routeAllowlistAccepts(
 /** Whether one exact method + path is in the paranoid-vault sync allowlist. */
 export function vaultSyncRouteAcceptsBearer(method: string, path: string): boolean {
   return routeAllowlistAccepts(VAULT_SYNC_BEARER_ROUTE_ALLOWLIST, method, path);
+}
+
+/** Whether one exact method + path is in the Vaults v2 sync allowlist. */
+export function vaultsSyncRouteAcceptsBearer(method: string, path: string): boolean {
+  return routeAllowlistAccepts(VAULTS_SYNC_BEARER_ROUTE_ALLOWLIST, method, path);
 }
 
 /** Whether one exact method + path is in the MIRRORCHAIN bearer allowlist. */
@@ -367,6 +469,15 @@ function resolvePolicy(
   if (path === '/settings/webhooks' || path.startsWith('/settings/webhooks/')) {
     return { kind: 'session-only' };
   }
+  // Tax year locking (§16 2026-08-07): the unlock ritual re-verifies the
+  // account password and re-opens a legally-settled year — strictly a
+  // browser-cookie-session act, never a bearer's (no delegated token or
+  // personal key may unlock, re-lock, or even read the lock surface).
+  // Checked before the `/settings` module catch-all below, which would
+  // otherwise fold these under the social scope.
+  if (path === '/settings/taxes/years' || path.startsWith('/settings/taxes/years/')) {
+    return { kind: 'session-only' };
+  }
   // #1043: native clients may synchronize the already-encrypted vault with the
   // single inherently read-write vault:sync scope. The exact method-aware
   // allowlist admits the live blob, media-state read and conflict-history reads
@@ -381,6 +492,33 @@ function resolvePolicy(
     )
       ? { kind: 'scope', read: VAULT_SYNC_SCOPE, write: VAULT_SYNC_SCOPE }
       : { kind: 'session-only' };
+  }
+  // Vaults v2 (`docs/VAULTS_V2_DESIGN.md` §3): the same `vault:sync` exception
+  // on the `{vaultId}`-scoped surface. Method-aware because `GET /vaults`
+  // synchronizes while `POST /vaults` creates, and both share one path. An
+  // unlisted route — including every future one — defaults closed.
+  if (path === '/vaults' || path.startsWith('/vaults/')) {
+    return routeAllowlistAccepts(
+      VAULTS_SYNC_BEARER_ROUTE_ALLOWLIST,
+      requestMethod,
+      path,
+      allowPathTemplate,
+    )
+      ? { kind: 'scope', read: VAULT_SYNC_SCOPE, write: VAULT_SYNC_SCOPE }
+      : { kind: 'session-only' };
+  }
+  // The per-portfolio vault transitions. Resolved BEFORE the `/portfolios`
+  // module row below, which would otherwise fold a one-way purge and a
+  // caller-authored restore into the coarse `portfolio:write` scope.
+  if (
+    routeAllowlistAccepts(
+      PORTFOLIO_VAULT_SESSION_ONLY_ROUTES,
+      requestMethod,
+      path,
+      allowPathTemplate,
+    )
+  ) {
+    return { kind: 'session-only' };
   }
   // MIRRORCHAIN is participation-over-administration for bearer clients
   // (#1042). Resolve the method-aware allowlist BEFORE MODULE_POLICIES: an

@@ -118,8 +118,12 @@ describe('RealtimeProvider', () => {
     expect(received).toEqual([push]);
   });
 
-  test('quote.updated / portfolio.changed pushes invalidate the matching query caches', () => {
+  test('quote.updated invalidates only the matching quote cache; portfolio.changed keeps its caches', () => {
     const invalidate = vi.spyOn(queryClient, 'invalidateQueries');
+    const quoteKey = ['asset', 'asset-1', 'quote'];
+    const historyKey = ['asset', 'asset-1', 'history', '1Y'];
+    queryClient.setQueryData(quoteKey, { price: 100 });
+    queryClient.setQueryData(historyKey, { points: [] });
     renderProvider(true);
 
     act(() =>
@@ -128,7 +132,9 @@ describe('RealtimeProvider', () => {
         occurredAt: 'now',
       }),
     );
-    expect(invalidate).toHaveBeenCalledWith({ queryKey: ['asset', 'asset-1'] });
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: quoteKey });
+    expect(queryClient.getQueryState(quoteKey)?.isInvalidated).toBe(true);
+    expect(queryClient.getQueryState(historyKey)?.isInvalidated).toBe(false);
 
     const portfolioId = '018f6f00-0000-7000-8000-000000000002';
     act(() =>

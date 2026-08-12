@@ -1,8 +1,22 @@
-import { render, screen, waitFor } from '@testing-library/react';
-import { MemoryRouter, Route, Routes } from 'react-router-dom';
+import { act, render, screen, waitFor } from '@testing-library/react';
+import { MemoryRouter, Route, Routes, useNavigate } from 'react-router-dom';
 import { beforeEach, expect, test, vi } from 'vitest';
 
 import type { MeResponse, ParanoidMediaStateResponse } from '@bettertrack/contracts';
+
+import { waitForColdStart } from '../test/waitForColdStart';
+
+const vaultRuntimeMocks = vi.hoisted(() => ({
+  createServerBlobDataHome: vi.fn(() => ({
+    read: vi.fn(async () => {
+      throw new Error('no envelope in tests');
+    }),
+    write: vi.fn(async () => {
+      throw new Error('no envelope in tests');
+    }),
+    remove: vi.fn(async () => undefined),
+  })),
+}));
 
 vi.mock('../lib/userApi');
 vi.mock('../lib/portfolioApi');
@@ -20,15 +34,7 @@ vi.mock('../lib/workboardApi', () => ({
 // phase 'locked' without a real request (`unlockFromDevice` swallows the error
 // by contract), which is exactly the state under test.
 vi.mock('./vault/serverBlobDataHome', () => ({
-  createServerBlobDataHome: () => ({
-    read: vi.fn(async () => {
-      throw new Error('no envelope in tests');
-    }),
-    write: vi.fn(async () => {
-      throw new Error('no envelope in tests');
-    }),
-    remove: vi.fn(async () => undefined),
-  }),
+  createServerBlobDataHome: vaultRuntimeMocks.createServerBlobDataHome,
   serverBlobDataHome: () => {
     throw new Error('unused');
   },
@@ -63,10 +69,22 @@ const paranoidOnServer: ParanoidMediaStateResponse = {
   },
 };
 
+/**
+ * Drives in-app navigation from a case, so a surface can be reached the way a
+ * user reaches it — mid-session — instead of only as a cold deep link.
+ */
+let navigateTo: ((to: string) => void) | null = null;
+
+function Navigator() {
+  navigateTo = useNavigate();
+  return null;
+}
+
 /** Mount the user app under a `/*` parent, exactly as App.tsx does. */
 function renderAt(path: string) {
   return render(
     <MemoryRouter initialEntries={[path]}>
+      <Navigator />
       <Routes>
         <Route path="/*" element={<UserApp />} />
       </Routes>
@@ -76,6 +94,7 @@ function renderAt(path: string) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  navigateTo = null;
   globalThis.localStorage?.clear();
   // `UserApp` owns a module-level QueryClient, so the resolved privacy mode of
   // one case would otherwise still be cached (and fresh) for the next one.
@@ -99,7 +118,14 @@ test('paranoid + locked replaces the whole authenticated subtree with the unlock
 
   renderAt('/portfolio');
 
-  expect(await screen.findByText('Unlock your vault')).toBeInTheDocument();
+  expect(await waitForColdStart(() => screen.getByText('Unlock your vault'))).toBeInTheDocument();
+  // The real lazy vault runtime is mounted and reaching for custody, rather than
+  // deferred until something first needs it: the gate's own mount effect starts
+  // the trusted-device unlock, which is what reads the envelope through this seam.
+  // That effect is passive, so React flushes it *after* the commit that painted
+  // the card above — the call is not yet on the books at the moment the heading
+  // becomes findable. Wait for it instead of reading it off that commit.
+  await waitFor(() => expect(vaultRuntimeMocks.createServerBlobDataHome).toHaveBeenCalled());
   // No app chrome either — the gate replaces the shell, not just the page.
   expect(screen.queryByRole('button', { name: 'Account menu' })).not.toBeInTheDocument();
   expect(listPortfolios).not.toHaveBeenCalled();
@@ -110,7 +136,7 @@ test('a money deep link on a locked vault still lands on the gate, with no serve
 
   renderAt('/portfolio/tax');
 
-  expect(await screen.findByText('Unlock your vault')).toBeInTheDocument();
+  expect(await waitForColdStart(() => screen.getByText('Unlock your vault'))).toBeInTheDocument();
   // Give the route a turn to settle before claiming nothing was fetched.
   await waitFor(() => expect(listPortfolios).not.toHaveBeenCalled());
 });
@@ -125,8 +151,61 @@ test('the gate never appears for a normal account, which keeps reading the serve
 
   // The control for the two cases above: the same route on a normal account
   // does mount a money surface and does call `apiPortfolioStore`.
-  await waitFor(() => expect(listPortfolios).toHaveBeenCalled());
+  await waitForColdStart(() => expect(listPortfolios).toHaveBeenCalled());
   expect(screen.queryByText('Unlock your vault')).not.toBeInTheDocument();
+  expect(vaultRuntimeMocks.createServerBlobDataHome).not.toHaveBeenCalled();
+});
+
+/**
+ * Control Center → Privacy is the one settings surface that reaches into the
+ * vault stack, and it is reachable from every normal session. Opening it must
+ * not swap the account-mode branch: that replaces the whole authenticated
+ * subtree — shell, socket, mounted page and the page the popup opens over — so
+ * the popup would end up floating over a freshly booted Home instead of the
+ * page it was opened from.
+ */
+test('opening Privacy mid-session keeps the whole authenticated subtree mounted', async () => {
+  vi.mocked(api.getParanoidMediaState).mockResolvedValue({
+    privacyMode: 'normal',
+    mediaState: null,
+  });
+
+  renderAt('/portfolio');
+
+  await waitForColdStart(() => screen.getByRole('button', { name: 'Account menu' }));
+  const shellBefore = document.querySelector('#main-content');
+  expect(shellBefore).not.toBeNull();
+
+  await act(async () => {
+    navigateTo?.('/control/privacy');
+  });
+
+  // The panel renders — nothing above it threw for want of a vault provider…
+  expect(
+    await waitForColdStart(() => screen.getByRole('switch', { name: 'Discreet mode' })),
+  ).toBeInTheDocument();
+  // …the very same shell node is still on screen (a remount would replace it,
+  // taking the popup's background page with it)…
+  expect(document.querySelector('#main-content')).toBe(shellBefore);
+  // …and no vault runtime was mounted for a normal account just reading it.
+  expect(vaultRuntimeMocks.createServerBlobDataHome).not.toHaveBeenCalled();
+});
+
+test('the explicit setup request is what mounts the vault runtime for a normal account', async () => {
+  vi.mocked(api.getParanoidMediaState).mockResolvedValue({
+    privacyMode: 'normal',
+    mediaState: null,
+  });
+
+  renderAt('/control/privacy?enable=1');
+
+  // The wizard only renders with the providers above it (`useVaultRuntime`
+  // throws otherwise), so its heading IS the assertion that the gate swapped.
+  // The request rides in the URL precisely because that swap unmounts whoever
+  // asked for it.
+  expect(
+    await waitForColdStart(() => screen.getByRole('heading', { name: 'What changes' })),
+  ).toBeInTheDocument();
 });
 
 test('the mode read failing closed shows the retry card, never a money page', async () => {

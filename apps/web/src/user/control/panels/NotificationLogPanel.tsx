@@ -11,6 +11,7 @@ import {
 
 import { useT } from '../../../i18n';
 import { cx } from '../../../lib/cx';
+import { notificationText } from '../../../lib/notificationText';
 import {
   archiveNotification,
   deleteNotification,
@@ -87,6 +88,7 @@ function NotificationRow({
   const t = useT();
   const unread = notification.readAt === null;
   const archived = notification.archivedAt !== null;
+  const copy = notificationText(notification, t);
   return (
     <PanelListItem
       main={
@@ -113,11 +115,11 @@ function NotificationRow({
               />
             ) : null}
             <span className={cx('truncate', unread ? 'bt-row-title' : 'bt-muted')}>
-              {notification.title}
+              {copy.title}
             </span>
           </span>
           <span className="flex min-w-0 items-baseline gap-2">
-            <span className="bt-row-sub truncate">{notification.body}</span>
+            <span className="bt-row-sub truncate">{copy.body}</span>
             <span className="bt-label" style={{ fontSize: 10.5 }}>
               {formatRelativeTime(notification.createdAt)}
             </span>
@@ -133,7 +135,7 @@ function NotificationRow({
               variant="quiet"
               onClick={() => onAction('unarchive')}
               disabled={busy}
-              aria-label={t('settings.notifications.unarchiveAria', { title: notification.title })}
+              aria-label={t('settings.notifications.unarchiveAria', { title: copy.title })}
             >
               {t('settings.notifications.unarchive')}
             </Button>
@@ -144,7 +146,7 @@ function NotificationRow({
               variant="quiet"
               onClick={() => onAction('archive')}
               disabled={busy}
-              aria-label={t('settings.notifications.archiveAria', { title: notification.title })}
+              aria-label={t('settings.notifications.archiveAria', { title: copy.title })}
             >
               {t('settings.notifications.archive')}
             </Button>
@@ -155,7 +157,7 @@ function NotificationRow({
             variant="danger"
             onClick={() => onAction('delete')}
             disabled={busy}
-            aria-label={t('settings.notifications.deleteAria', { title: notification.title })}
+            aria-label={t('settings.notifications.deleteAria', { title: copy.title })}
           >
             {t('common.delete')}
           </Button>
@@ -313,7 +315,13 @@ export function NotificationLogPanel() {
           >
             {t('settings.notifications.deleteArchived')}
           </Button>
-          <Button type="button" size="sm" variant="danger" onClick={() => setConfirmScope('all')}>
+          <Button
+            data-testid="notification-delete-all-trigger"
+            type="button"
+            size="sm"
+            variant="danger"
+            onClick={() => setConfirmScope('all')}
+          >
             {t('settings.notifications.deleteAll')}
           </Button>
         </div>

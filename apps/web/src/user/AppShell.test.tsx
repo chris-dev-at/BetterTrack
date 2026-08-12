@@ -5,6 +5,8 @@ import { beforeEach, expect, test, vi } from 'vitest';
 
 import type { MeResponse } from '@bettertrack/contracts';
 
+import { waitForColdStart } from '../test/waitForColdStart';
+
 // The shell mounts pages that fetch; auto-mock their data modules so navigation
 // is instant and these tests exercise only the rail/topbar/parked shell.
 vi.mock('../lib/userApi');
@@ -73,7 +75,7 @@ function setViewportWidth(width: number) {
 
 /** The desktop navigation rail (the mobile bottom bar shares the label). */
 async function findRail(): Promise<HTMLElement> {
-  const navs = await screen.findAllByRole('navigation', { name: 'Primary' });
+  const navs = await waitForColdStart(() => screen.getAllByRole('navigation', { name: 'Primary' }));
   const rail = navs.find((nav) => nav.closest('.bt-rail'));
   expect(rail).toBeDefined();
   return rail!;
@@ -128,7 +130,9 @@ test('the user shell starts with a hidden skip link that focuses main content', 
   const user = userEvent.setup();
   const { container } = renderAt('/portfolio');
 
-  const skipLink = await screen.findByRole('link', { name: 'Skip to main content' });
+  const skipLink = await waitForColdStart(() =>
+    screen.getByRole('link', { name: 'Skip to main content' }),
+  );
   const main = screen.getByRole('main');
   const firstFocusable = container.querySelector<HTMLElement>(
     'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled])',
@@ -166,7 +170,9 @@ test('390px exposes the mobile nav while 1024px keeps the desktop rail', async (
   setViewportWidth(390);
   const phone = renderAt('/assets/search');
 
-  const mobileNav = await screen.findByRole('navigation', { name: 'Primary' });
+  const mobileNav = await waitForColdStart(() =>
+    screen.getByRole('navigation', { name: 'Primary' }),
+  );
   expect(mobileNav).toHaveClass('bt-bottombar');
   expect(document.querySelector('.bt-rail')).not.toBeVisible();
   expect(
@@ -183,7 +189,9 @@ test('390px exposes the mobile nav while 1024px keeps the desktop rail', async (
   setViewportWidth(1024);
   renderAt('/assets/search');
 
-  const desktopNav = await screen.findByRole('navigation', { name: 'Primary' });
+  const desktopNav = await waitForColdStart(() =>
+    screen.getByRole('navigation', { name: 'Primary' }),
+  );
   expect(desktopNav).toHaveClass('bt-rail__group--suite');
   expect(document.querySelector('.bt-bottombar')).not.toBeVisible();
   const desktopActive = desktopNav.querySelectorAll('.bt-rail-item.is-active');
@@ -207,7 +215,9 @@ test('the phone topbar puts the wrapped switcher last in focus order, not just i
   setViewportWidth(390);
   const phone = renderAt('/portfolio');
 
-  const phoneSwitcher = await screen.findByRole('button', { name: 'Switch portfolio' });
+  const phoneSwitcher = await waitForColdStart(() =>
+    screen.getByRole('button', { name: 'Switch portfolio' }),
+  );
   // Exactly ONE switcher is mounted — a per-placement copy would duplicate the
   // control in the a11y tree, which is the mistake the CSS approach avoided.
   expect(document.querySelectorAll('.bt-portfolio-switcher')).toHaveLength(1);
@@ -232,7 +242,9 @@ test('the phone topbar puts the wrapped switcher last in focus order, not just i
 
   // Above the breakpoint the header is a single row and the switcher sits back
   // beside the brand, before the search — again in DOM order, not by `order`.
-  const wideSwitcher = await screen.findByRole('button', { name: 'Switch portfolio' });
+  const wideSwitcher = await waitForColdStart(() =>
+    screen.getByRole('button', { name: 'Switch portfolio' }),
+  );
   const wideHeader = topbar();
   expect(document.querySelectorAll('.bt-portfolio-switcher')).toHaveLength(1);
   expect(topbarFocusOrder()).toEqual([
@@ -317,7 +329,9 @@ test('the chevron toggles without navigating; leaving the section closes the tre
   const user = userEvent.setup();
   renderAt('/assets/search');
 
-  const expand = await screen.findByRole('button', { name: 'Expand Assets' });
+  const expand = await waitForColdStart(() =>
+    screen.getByRole('button', { name: 'Expand Assets' }),
+  );
   await user.click(expand);
 
   // Toggling is navigation-free: the Assets page is still mounted.
@@ -329,12 +343,14 @@ test('the chevron toggles without navigating; leaving the section closes the tre
 
   // Navigating OUT of the section (Home) closes the open tree again.
   await user.click(within(await findRail()).getByRole('link', { name: 'Home' }));
-  for (const section of ['Portfolio', 'Workbench', 'Assets', 'People']) {
-    expect(screen.getByRole('button', { name: `Expand ${section}` })).toHaveAttribute(
-      'aria-expanded',
-      'false',
-    );
-  }
+  await waitFor(() => {
+    for (const section of ['Portfolio', 'Workbench', 'Assets', 'People']) {
+      expect(screen.getByRole('button', { name: `Expand ${section}` })).toHaveAttribute(
+        'aria-expanded',
+        'false',
+      );
+    }
+  });
 });
 
 test('a freshly selected section starts closed; re-clicks toggle open and shut', async () => {
@@ -403,7 +419,9 @@ test('the rail is an accordion — expanding one group closes the other', async 
   const user = userEvent.setup();
   renderAt('/portfolio');
 
-  await user.click(await screen.findByRole('button', { name: 'Expand Portfolio' }));
+  await user.click(
+    await waitForColdStart(() => screen.getByRole('button', { name: 'Expand Portfolio' })),
+  );
   expect(screen.getByRole('button', { name: 'Collapse Portfolio' })).toHaveAttribute(
     'aria-expanded',
     'true',
@@ -447,7 +465,9 @@ test('the collapse control sits in the rail and persists the preference', async 
   const user = userEvent.setup();
   renderAt('/');
 
-  const collapse = await screen.findByRole('button', { name: 'Collapse navigation' });
+  const collapse = await waitForColdStart(() =>
+    screen.getByRole('button', { name: 'Collapse navigation' }),
+  );
   expect(collapse.closest('.bt-rail')).not.toBeNull();
 
   await user.click(collapse);
@@ -460,7 +480,9 @@ test('the in-page strip renders in full alongside the rail tree', async () => {
 
   // The strip is the complete sub-navigation at every width (owner: "still
   // keep the full nav inside the content page"); the rail curates on top.
-  const strip = await screen.findByRole('navigation', { name: 'Portfolio workspace' });
+  const strip = await waitForColdStart(() =>
+    screen.getByRole('navigation', { name: 'Portfolio workspace' }),
+  );
   expect(strip).not.toHaveClass('bt-hide-when-rail');
   expect(within(strip).getByRole('link', { name: 'Analysis' })).toBeInTheDocument();
 });
@@ -468,7 +490,9 @@ test('the in-page strip renders in full alongside the rail tree', async () => {
 test('the rail utilities expose Ask, Review and the Control Center', async () => {
   renderAt('/portfolio');
 
-  const utilities = await screen.findByRole('navigation', { name: 'Utilities' });
+  const utilities = await waitForColdStart(() =>
+    screen.getByRole('navigation', { name: 'Utilities' }),
+  );
   for (const label of ['Review', 'Control Center']) {
     expect(within(utilities).getByRole('link', { name: label })).toBeInTheDocument();
   }
@@ -481,7 +505,9 @@ test('the rail Ask row opens and closes the floating AI panel over the page', as
   const user = userEvent.setup();
   renderAt('/portfolio');
 
-  const utilities = await screen.findByRole('navigation', { name: 'Utilities' });
+  const utilities = await waitForColdStart(() =>
+    screen.getByRole('navigation', { name: 'Utilities' }),
+  );
   const ask = within(utilities).getByRole('button', { name: 'Ask BetterTrack' });
   expect(ask).toHaveAttribute('aria-expanded', 'false');
   expect(screen.queryByRole('complementary', { name: 'Ask BetterTrack panel' })).toBeNull();
@@ -504,7 +530,7 @@ test('the rail Ask row opens and closes the floating AI panel over the page', as
 test('no chat or AI icon sits in the topbar (owner: the rail row is the trigger)', async () => {
   renderAt('/portfolio');
 
-  await screen.findByRole('button', { name: 'Notifications' });
+  await waitForColdStart(() => screen.getByRole('button', { name: 'Notifications' }));
   const header = document.querySelector('.bt-topbar');
   expect(header).not.toBeNull();
   expect(within(header as HTMLElement).queryByRole('button', { name: /^Chat/ })).toBeNull();
@@ -516,7 +542,7 @@ test('no chat or AI icon sits in the topbar (owner: the rail row is the trigger)
 test('the header exposes a live, enabled notification bell', async () => {
   renderAt('/portfolio');
 
-  const bell = await screen.findByRole('button', { name: 'Notifications' });
+  const bell = await waitForColdStart(() => screen.getByRole('button', { name: 'Notifications' }));
   expect(bell).not.toBeDisabled();
   const actions = bell.closest('.bt-topbar__actions');
   expect(actions).not.toBeNull();
@@ -531,7 +557,9 @@ test('the header exposes a live, enabled notification bell', async () => {
 test('the footer shows the passion tagline on every page', async () => {
   renderAt('/portfolio');
 
-  expect(await screen.findByText('BetterTrack — finances under your control')).toBeInTheDocument();
+  expect(
+    await waitForColdStart(() => screen.getByText('BetterTrack — finances under your control')),
+  ).toBeInTheDocument();
 });
 
 // ─── Account menu ─────────────────────────────────────────────────────────────
@@ -541,7 +569,9 @@ test('the account menu lists profile, settings, discreet mode and Logout works',
   const user = userEvent.setup();
   renderAt('/portfolio');
 
-  await user.click(await screen.findByRole('button', { name: 'Account menu' }));
+  await user.click(
+    await waitForColdStart(() => screen.getByRole('button', { name: 'Account menu' })),
+  );
 
   const menu = screen.getByRole('menu');
   expect(within(menu).getByRole('menuitem', { name: 'My profile' })).toBeInTheDocument();
@@ -556,7 +586,9 @@ test('the live account menu supports roving focus and restores its trigger on Es
   const user = userEvent.setup();
   renderAt('/portfolio');
 
-  const trigger = await screen.findByRole('button', { name: 'Account menu' });
+  const trigger = await waitForColdStart(() =>
+    screen.getByRole('button', { name: 'Account menu' }),
+  );
   await user.click(trigger);
   const menu = screen.getByRole('menu', { name: 'Account' });
   const profile = within(menu).getByRole('menuitem', { name: 'My profile' });
@@ -592,7 +624,7 @@ test('the live Create menu supports roving focus and restores its trigger on Esc
   const user = userEvent.setup();
   renderAt('/portfolio');
 
-  const trigger = await screen.findByRole('button', { name: 'Create' });
+  const trigger = await waitForColdStart(() => screen.getByRole('button', { name: 'Create' }));
   await user.click(trigger);
   const menu = screen.getByRole('menu', { name: 'Create' });
   const trade = within(menu).getByRole('menuitem', { name: 'Buy or sell' });
@@ -612,7 +644,7 @@ test('the live Create menu supports roving focus and restores its trigger on Esc
   expect(blueprint).toHaveAttribute('href', '/workbench/blueprints/new');
   expect(watchlist).toHaveAttribute('href', '/assets/watchlists?create=1');
   expect(alert).toHaveAttribute('href', '/workbench/alerts?create=1');
-  expect(idea).toHaveAttribute('href', '/workbench/blueprints/new');
+  expect(idea).toHaveAttribute('href', '/workbench/blueprints/new?create=idea');
   expect(portfolio).toHaveAttribute('href', '/portfolios?create=1');
 
   await waitFor(() => expect(trade).toHaveFocus());
@@ -644,7 +676,7 @@ test('Create entries that write into one portfolio keep the active portfolio sco
   const user = userEvent.setup();
   renderAt('/portfolio?portfolio=p-second');
 
-  await user.click(await screen.findByRole('button', { name: 'Create' }));
+  await user.click(await waitForColdStart(() => screen.getByRole('button', { name: 'Create' })));
   const menu = screen.getByRole('menu', { name: 'Create' });
 
   // Without the scope these three would open a write dialog on the DEFAULT
@@ -688,12 +720,17 @@ test('following a Create entry starts that flow and nothing else', async () => {
       },
     ],
   });
-  vi.mocked(getCashMovements).mockResolvedValue({ balanceEur: 0, movements: [], sources: [] });
+  vi.mocked(getCashMovements).mockResolvedValue({
+    balanceEur: 0,
+    movements: [],
+    sources: [],
+    nextCursor: null,
+  });
   vi.mocked(listCashSources).mockResolvedValue({ sources: [] });
   const user = userEvent.setup();
   renderAt('/portfolio');
 
-  await user.click(await screen.findByRole('button', { name: 'Create' }));
+  await user.click(await waitForColdStart(() => screen.getByRole('button', { name: 'Create' })));
   await user.click(
     within(screen.getByRole('menu', { name: 'Create' })).getByRole('menuitem', {
       name: 'Income or expense',
@@ -719,7 +756,7 @@ test('the command shortcut cannot mount a palette inside an inert modal backgrou
   );
 
   const modal = screen.getByRole('dialog', { name: 'Blocking modal' });
-  await waitFor(() => expect(document.querySelector('.bt-topbar')).not.toBeNull());
+  await waitForColdStart(() => expect(document.querySelector('.bt-topbar')).not.toBeNull());
   expect(document.querySelectorAll('[aria-modal="true"]')).toHaveLength(1);
 
   fireEvent.keyDown(document, { key: 'k', ctrlKey: true });
@@ -736,7 +773,11 @@ test('the command shortcut still opens over the inert-backed Control Center', as
   // deliberately portals above it (z-index 76 vs 71), so the shortcut remains
   // available without putting the palette inside an inert DOM branch.
   renderAt('/control/profile');
-  const controlCenter = await screen.findByRole('dialog', { name: 'Control Center' });
+  // Crosses a real lazy boundary (the overlay is its own chunk, and Vitest
+  // transforms it on first use), so this one wait outlasts the 1 s default.
+  const controlCenter = await waitForColdStart(() =>
+    screen.getByRole('dialog', { name: 'Control Center' }),
+  );
   const shell = document.querySelector<HTMLElement>('.bt-shell')!;
   expect(shell.closest('[inert]')).not.toBeNull();
   expect(controlCenter.closest('[inert]')).toBeNull();
@@ -764,14 +805,18 @@ test('the command shortcut still opens over the inert-backed Control Center', as
 test('`/` is the Home command center', async () => {
   renderAt('/');
 
-  expect(await screen.findByRole('heading', { name: /Welcome back/ })).toBeInTheDocument();
+  expect(
+    await waitForColdStart(() => screen.getByRole('heading', { name: /Welcome back/ })),
+  ).toBeInTheDocument();
   expect(screen.getByText('Net worth')).toBeInTheDocument();
 });
 
 test('the portfolio workspace shows the switcher and its local tabs', async () => {
   renderAt('/portfolio');
 
-  expect(await screen.findByRole('button', { name: 'Switch portfolio' })).toBeInTheDocument();
+  expect(
+    await waitForColdStart(() => screen.getByRole('button', { name: 'Switch portfolio' })),
+  ).toBeInTheDocument();
   const tabs = screen.getByRole('navigation', { name: 'Portfolio workspace' });
   // Parked tabs append the "Planned" dot to their accessible name — anchor the
   // match so "Plan" does not also match every parked tab's name.
@@ -784,12 +829,14 @@ test('the portfolio workspace shows the switcher and its local tabs', async () =
 
 test('`/social` redirects to the People destination', async () => {
   renderAt('/social');
-  expect(await screen.findByRole('heading', { name: 'Friends' })).toBeInTheDocument();
+  expect(
+    await waitForColdStart(() => screen.getByRole('heading', { name: 'Friends' })),
+  ).toBeInTheDocument();
 });
 
 test('`/workboard` redirects to the Workbench', async () => {
   renderAt('/workboard');
-  const tabs = await screen.findByRole('navigation', { name: 'Workbench' });
+  const tabs = await waitForColdStart(() => screen.getByRole('navigation', { name: 'Workbench' }));
   for (const tab of ['Overview', 'Studio', 'Forecasts', 'Blueprints', 'Backtests', 'Alerts']) {
     expect(within(tabs).getByRole('link', { name: new RegExp(tab) })).toBeInTheDocument();
   }
@@ -807,13 +854,15 @@ test('the Control Center opens over the page you were on, which stays on screen'
   const user = userEvent.setup();
   renderAt('/assets/search');
 
-  const tabs = await screen.findByRole('navigation', { name: 'Assets' });
+  const tabs = await waitForColdStart(() => screen.getByRole('navigation', { name: 'Assets' }));
   expect(tabs).toBeInTheDocument();
 
   const utilities = await screen.findByRole('navigation', { name: 'Utilities' });
   await user.click(within(utilities).getByRole('link', { name: 'Control Center' }));
 
-  const dialog = await screen.findByRole('dialog', { name: 'Control Center' });
+  const dialog = await waitForColdStart(() =>
+    screen.getByRole('dialog', { name: 'Control Center' }),
+  );
   expect(dialog).toBeInTheDocument();
   // The Assets workspace is still there — same element, so its state (and the
   // user's scroll position) survived opening the popup.
@@ -829,7 +878,9 @@ test('the Control Center opens over the page you were on, which stays on screen'
 test('a cold deep link opens the popup over Home rather than nothing', async () => {
   renderAt('/control/sessions');
 
-  const dialog = await screen.findByRole('dialog', { name: 'Control Center' });
+  const dialog = await waitForColdStart(() =>
+    screen.getByRole('dialog', { name: 'Control Center' }),
+  );
   expect(within(dialog).getByRole('link', { name: 'Sessions', current: 'page' })).toBeVisible();
   const rail = await findRail();
   expect(within(rail).getByRole('link', { name: 'Home' })).toHaveAttribute('aria-current', 'page');
@@ -857,7 +908,9 @@ test.each([
 ])('%s opens the Control Center on the %s panel', async (path, panel) => {
   renderAt(path);
 
-  const dialog = await screen.findByRole('dialog', { name: 'Control Center' });
+  const dialog = await waitForColdStart(() =>
+    screen.getByRole('dialog', { name: 'Control Center' }),
+  );
   expect(within(dialog).getByRole('link', { name: panel, current: 'page' })).toBeInTheDocument();
 });
 
@@ -865,7 +918,9 @@ test.each([['/settings/imports'], ['/settings/backups']])(
   '%s folds into the Data management page',
   async (path) => {
     renderAt(path);
-    expect(await screen.findByRole('heading', { name: 'Data management' })).toBeInTheDocument();
+    expect(
+      await waitForColdStart(() => screen.getByRole('heading', { name: 'Data management' })),
+    ).toBeInTheDocument();
   },
 );
 
@@ -886,26 +941,34 @@ test('the settings redirects carry the query string onto the panel', async () =>
   // Generous timeout: the overlay is a lazy route, and resolving its chunk
   // while the rest of this file's shell renders compete for the event loop can
   // exceed the 1s default.
-  await screen.findByRole('dialog', { name: 'Control Center' }, { timeout: 5000 });
+  await waitForColdStart(() => screen.getByRole('dialog', { name: 'Control Center' }));
   expect(screen.getByTestId('location')).toHaveTextContent('/control/api?google=linked');
 });
 
 test('`/developer` is its own page, linked out of the Control Center', async () => {
   renderAt('/control');
 
-  const dialog = await screen.findByRole('dialog', { name: 'Control Center' });
+  // Both waits cross a cold `lazy()` boundary — the Control Center overlay and
+  // the Developer page are separate code-split chunks. Resolving those imports
+  // while this file's other shells compete for the event loop can overrun the
+  // normal 1 s default, so use the shared bounded allowance.
+  const dialog = await waitForColdStart(() =>
+    screen.getByRole('dialog', { name: 'Control Center' }),
+  );
   expect(within(dialog).getByRole('link', { name: 'Developer overview' })).toHaveAttribute(
     'href',
     '/developer',
   );
 
   renderAt('/developer');
-  expect(await screen.findByRole('heading', { name: 'Developer platform' })).toBeInTheDocument();
+  expect(
+    await waitForColdStart(() => screen.getByRole('heading', { name: 'Developer platform' })),
+  ).toBeInTheDocument();
 });
 
 test('the Assets destination renders its local tabs', async () => {
   renderAt('/assets/search');
-  const tabs = await screen.findByRole('navigation', { name: 'Assets' });
+  const tabs = await waitForColdStart(() => screen.getByRole('navigation', { name: 'Assets' }));
   for (const tab of ['Overview', 'Search', 'Watchlists', 'News', 'Discover', 'Screener']) {
     expect(within(tabs).getByRole('link', { name: new RegExp(tab) })).toBeInTheDocument();
   }
@@ -932,7 +995,7 @@ test.each([
   ['/review', 'Review inbox'],
 ])('parked destination %s renders its designed surface', async (path, title) => {
   renderAt(path);
-  const heading = await screen.findByRole('heading', { name: title });
+  const heading = await waitForColdStart(() => screen.getByRole('heading', { name: title }));
   expect(heading).toBeInTheDocument();
   // Every parked surface carries the "In the works" flag.
   expect(within(heading.closest('section')!).getByText('In the works')).toBeInTheDocument();
@@ -940,6 +1003,8 @@ test.each([
 
 test('legacy category stubs fold into the parked Discover surface', async () => {
   renderAt('/assets/stocks');
-  expect(await screen.findByRole('heading', { name: 'Discover' })).toBeInTheDocument();
+  expect(
+    await waitForColdStart(() => screen.getByRole('heading', { name: 'Discover' })),
+  ).toBeInTheDocument();
   expect(screen.getByText('In the works')).toBeInTheDocument();
 });

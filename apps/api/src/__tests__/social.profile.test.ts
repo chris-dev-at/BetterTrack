@@ -100,7 +100,7 @@ function putAudience(
   return agent
     .put(`/api/v1/social/audience/${kind}/${subjectId}`)
     .set(...XRW)
-    .send(body);
+    .send({ confirmWiden: true, ...body });
 }
 
 /** alice (owner) + bob (friend), an asset, a funded portfolio, a conglomerate, a watchlist. */

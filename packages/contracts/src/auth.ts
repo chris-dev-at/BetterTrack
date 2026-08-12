@@ -20,6 +20,23 @@ export const USERNAME_PATTERN = /^[a-zA-Z0-9_.-]+$/;
 export const usernameSchema = z.string().min(3).max(40).regex(USERNAME_PATTERN);
 export const emailSchema = z.string().email().max(320);
 
+/**
+ * `POST /auth/reauth` — generic session step-up. The session identifies the
+ * subject, so there is deliberately no user selector in the body.
+ *
+ * `purpose` is caller-supplied provenance recorded on the audit row (for
+ * example `vault.qr_reveal`). It is never trusted for authorization and never
+ * changes what the server verifies — it exists so an operator reading the audit
+ * log can tell which surface asked.
+ */
+export const reauthRequestSchema = z
+  .object({
+    password: z.string().min(1).max(512),
+    purpose: z.string().trim().min(1).max(64).optional(),
+  })
+  .strict();
+export type ReauthRequest = z.infer<typeof reauthRequestSchema>;
+
 export const loginRequestSchema = z
   .object({
     identifier: z.string().min(1).max(320),
@@ -91,6 +108,18 @@ export const registerRequestSchema = z
     inviteToken: z.string().min(1).max(256).optional(),
     /** UI language of the register form — used to localize a later decision email. */
     locale: localeSchema.optional(),
+    /**
+     * Set by the SPA when this registration happens INSIDE an OAuth authorize
+     * flow — the app-native signup path (owner directive 2026-08-07). The minted
+     * session is then EPHEMERAL, the same rule a PIN-less OAuth login already
+     * obeys (§16, owner spec #399 §A): a Custom-Tab browser shares cookies with
+     * the phone's browser, so a brand-new account must not leave a persistent
+     * web session behind that silently re-authorizes after an app logout. A new
+     * account never has a PIN, so there is no persistent branch to preserve.
+     * Enforced server-side; it can only ever WEAKEN the caller's own session.
+     * Ignored in `approval` mode, which mints no session at all.
+     */
+    oauthRegistration: z.boolean().optional(),
   })
   .strict();
 export type RegisterRequest = z.infer<typeof registerRequestSchema>;

@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useId, useState } from 'react';
+import { useEffect, useId, useState } from 'react';
+import { useLocation } from 'react-router-dom';
 
 import type { PortfolioSummary, StandingOrder } from '@bettertrack/contracts';
 
@@ -25,6 +26,7 @@ const EM_DASH = '—';
 export function StandingOrdersSection({ portfolios }: { portfolios: PortfolioSummary[] }) {
   const t = useT();
   const store = usePortfolioStore();
+  const location = useLocation();
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<StandingOrder | null>(null);
 
@@ -35,6 +37,14 @@ export function StandingOrdersSection({ portfolios }: { portfolios: PortfolioSum
   });
 
   const orders = query.data?.orders ?? [];
+
+  // The notification route resolves before this async list does, so the
+  // browser's one-shot native fragment scroll cannot see the target row. Retry
+  // after query data commits the rows to the DOM.
+  useEffect(() => {
+    if (!location.hash.startsWith('#standing-order-') || query.data === undefined) return;
+    document.getElementById(location.hash.slice(1))?.scrollIntoView({ block: 'center' });
+  }, [location.hash, query.data]);
 
   const disableCreate = portfolios.length === 0;
 
@@ -47,7 +57,11 @@ export function StandingOrdersSection({ portfolios }: { portfolios: PortfolioSum
           </h2>
           <p className="text-xs bt-muted">{t('forecast.standingOrders.subtitle')}</p>
         </div>
-        <Button onClick={() => setCreating(true)} disabled={disableCreate}>
+        <Button
+          data-testid="standing-order-create-trigger"
+          onClick={() => setCreating(true)}
+          disabled={disableCreate}
+        >
           {t('forecast.standingOrders.newOrder')}
         </Button>
       </div>
@@ -139,7 +153,7 @@ function StandingOrderRow({
   const paused = order.status === 'paused';
 
   return (
-    <li className="flex flex-col gap-2 bt-panel p-3">
+    <li id={`standing-order-${order.id}`} className="flex flex-col gap-2 bt-panel p-3">
       <div className="flex flex-wrap items-start justify-between gap-2">
         <div className="min-w-0 flex flex-col gap-0.5">
           <span className="flex flex-wrap items-center gap-2">
@@ -188,7 +202,7 @@ function StandingOrderRow({
             onClick={() => pauseMutation.mutate()}
             disabled={busy}
             aria-labelledby={`${titleId} ${pauseResumeActionId}`}
-            className="font-medium bt-gold hover:bt-gold disabled:cursor-not-allowed disabled:bt-muted"
+            className="font-medium bt-gold-note disabled:cursor-not-allowed disabled:bt-muted"
           >
             {pauseMutation.isPending
               ? t('forecast.standingOrders.list.pausing')

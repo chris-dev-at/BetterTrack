@@ -6,6 +6,7 @@ import {
   googleRegisterRequestSchema,
   googleUnlinkRequestSchema,
   loginRequestSchema,
+  reauthRequestSchema,
   passkeyDeleteRequestSchema,
   passkeyIdParamSchema,
   passkeyLoginVerifyRequestSchema,
@@ -30,6 +31,7 @@ import {
   type GoogleRegisterRequest,
   type GoogleUnlinkRequest,
   type LoginRequest,
+  type ReauthRequest,
   type PasskeyDeleteRequest,
   type PasskeyLoginVerifyRequest,
   type PasskeyRegisterVerifyRequest,
@@ -350,6 +352,30 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
       setSessionCookie(res, ctx.config, result.sessionId, false);
       if (deviceId) setRememberedDeviceCookie(res, ctx.config, deviceId);
       res.json(toMeResponseFromRow(result.user));
+    },
+  );
+
+  // POST /auth/reauth — GENERIC session step-up (Vaults v2). Cookie-session only
+  // (`requireUser` 403s bearer/admin, and `/auth/reauth` is not in the
+  // account-security scope carve-out, so the bearer policy refuses it before
+  // routing). It answers 204 or 401 and mints NOTHING: the caller gates its own
+  // surface on the response, so there is no artifact to replay. The per-account
+  // throttle lives in its own namespace, which is what stops it from being a
+  // cheaper password oracle than login itself.
+  router.post(
+    '/reauth',
+    limiters.login,
+    requireUser,
+    validateBody(reauthRequestSchema),
+    async (req, res) => {
+      const body = req.valid?.body as ReauthRequest;
+      await ctx.reauth.verify({
+        userId: req.authUser!.id,
+        password: body.password,
+        purpose: body.purpose,
+        ip: req.ip,
+      });
+      res.status(204).send();
     },
   );
 

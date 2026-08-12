@@ -54,6 +54,26 @@ function canonicalJson(value: unknown): string {
 }
 
 /**
+ * Stable identity material for one logical webhook event. Most producers emit
+ * a durable event object once, so its canonical payload is the identity. A
+ * standing-order defer can be reconstructed by later scans, however, and its
+ * user-facing label may be edited between observations. Match the notification
+ * dedupe key for that event so mutable display copy cannot mint a new delivery.
+ */
+function webhookEventIdentity(event: DomainEvent): unknown {
+  if (event.type === 'standing_order.skipped') {
+    return {
+      type: event.type,
+      userId: event.userId,
+      standingOrderId: event.standingOrderId,
+      periodKey: event.periodKey,
+      outcome: event.outcome,
+    };
+  }
+  return event;
+}
+
+/**
  * A deterministic UUIDv8 for one subscription's delivery of one logical event.
  * Replaying the same BullMQ event therefore preserves both the receiver's
  * dedupe key and the delivery-log primary key.
@@ -63,7 +83,7 @@ function webhookDeliveryId(subscriptionId: string, event: DomainEvent): string {
     .update('bettertrack:webhook-delivery:v1\0')
     .update(subscriptionId)
     .update('\0')
-    .update(canonicalJson(event))
+    .update(canonicalJson(webhookEventIdentity(event)))
     .digest('hex');
   const variant = '89ab'.charAt(Number.parseInt(hash.slice(16, 17), 16) & 0x3);
 

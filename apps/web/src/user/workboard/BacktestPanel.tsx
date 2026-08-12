@@ -622,7 +622,7 @@ export function BacktestPanel({ positions, className, source, initialParams }: B
                     checked={showRebalanceMarkers}
                     onChange={(e) => setShowRebalanceMarkers(e.target.checked)}
                     className="size-3.5"
-                    style={{ accentColor: 'var(--bt-gold)' }}
+                    style={{ accentColor: 'var(--bt-gold-graphic)' }}
                   />
                   {t('workboard.backtest.showRebalanceMarkers')}
                 </label>
@@ -634,7 +634,7 @@ export function BacktestPanel({ positions, className, source, initialParams }: B
                     checked={showDelta}
                     onChange={(e) => setShowDelta(e.target.checked)}
                     className="size-3.5"
-                    style={{ accentColor: 'var(--bt-gold)' }}
+                    style={{ accentColor: 'var(--bt-gold-graphic)' }}
                   />
                   {t('workboard.backtest.statsTable.showDelta')}
                 </label>

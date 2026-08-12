@@ -2,7 +2,14 @@ import { eq } from 'drizzle-orm';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import type { Database } from '../../db';
-import { paranoidVaultRetired, paranoidVaultRetirements, users } from '../../schema';
+import {
+  paranoidEnableTransitions,
+  paranoidVaultHistory,
+  paranoidVaultRetired,
+  paranoidVaultRetirements,
+  paranoidVaults,
+  users,
+} from '../../schema';
 import { createTestApp, type TestHarness } from '../../../testing/createTestApp';
 import {
   createParanoidVaultRepository,
@@ -24,6 +31,14 @@ beforeEach(async () => {
   repo = createParanoidVaultRepository(db);
   const user = await harness.seedUser({ email: 'vaulter@bt.test', username: 'vaulter' });
   userId = user.id;
+  await db
+    .update(users)
+    .set({
+      privacyMode: 'paranoid',
+      paranoidMediaSet: ['server'],
+      paranoidDriveAttestedVersion: null,
+    })
+    .where(eq(users.id, userId));
 });
 
 function blob(text: string): Buffer {
@@ -263,6 +278,142 @@ describe('paranoid vault repository CAS', () => {
     });
     const history = await repo.listHistory(userId);
     expect(history.items.map((h) => h.version)).toEqual([2]);
+  });
+});
+
+describe('normal-mode enable staging access', () => {
+  beforeEach(async () => {
+    await db
+      .update(users)
+      .set({ privacyMode: 'normal', paranoidMediaSet: null, paranoidDriveAttestedVersion: null })
+      .where(eq(users.id, userId));
+  });
+
+  it('fails closed until an owner capture opens a staging window', async () => {
+    expect(await repo.readCurrent(userId, 'owner-session', T0)).toEqual({
+      status: 'medium_inactive',
+    });
+    expect(await repo.readCurrent(userId, 'sync-bearer', T0)).toEqual({
+      status: 'medium_inactive',
+    });
+
+    const denied = await repo.compareAndSwap({
+      userId,
+      access: 'owner-session',
+      expectedVersion: null,
+      version: 1,
+      formatVersion: 1,
+      sizeBytes: 1,
+      blob: blob('x'),
+      retention: RETENTION,
+      now: T0,
+    });
+    expect(denied).toEqual({ status: 'medium_inactive' });
+  });
+
+  it('allows only the owner session while the enable window is live', async () => {
+    await repo.beginEnableStaging({
+      userId,
+      now: T0,
+      expiresAt: new Date(T0.getTime() + 10 * 60 * 1000),
+    });
+    expect(await repo.readCurrent(userId, 'owner-session', T0)).toEqual({ status: 'not_found' });
+
+    const bytes = blob('staged-ciphertext');
+    expect(
+      await repo.compareAndSwap({
+        userId,
+        access: 'owner-session',
+        expectedVersion: null,
+        version: 1,
+        formatVersion: 1,
+        sizeBytes: bytes.length,
+        blob: bytes,
+        retention: RETENTION,
+        now: T0,
+      }),
+    ).toMatchObject({ status: 'ok', version: 1 });
+    expect(await repo.readCurrent(userId, 'owner-session', T0)).toMatchObject({
+      status: 'ok',
+      row: { version: 1 },
+    });
+    expect(await repo.readCurrent(userId, 'sync-bearer', T0)).toEqual({
+      status: 'medium_inactive',
+    });
+  });
+
+  it('physically deletes current and historical ciphertext when staging expires', async () => {
+    await repo.beginEnableStaging({
+      userId,
+      now: T0,
+      expiresAt: new Date(T0.getTime() + 1),
+    });
+    await repo.compareAndSwap({
+      userId,
+      access: 'owner-session',
+      expectedVersion: null,
+      version: 1,
+      formatVersion: 1,
+      sizeBytes: 2,
+      blob: blob('v1'),
+      retention: RETENTION,
+      now: T0,
+    });
+    await repo.compareAndSwap({
+      userId,
+      access: 'owner-session',
+      expectedVersion: 1,
+      version: 2,
+      formatVersion: 1,
+      sizeBytes: 2,
+      blob: blob('v2'),
+      retention: RETENTION,
+      now: T0,
+    });
+
+    expect(await repo.readCurrent(userId, 'owner-session', new Date(T0.getTime() + 2))).toEqual({
+      status: 'medium_inactive',
+    });
+    expect(await db.select().from(paranoidVaults).where(eq(paranoidVaults.userId, userId))).toEqual(
+      [],
+    );
+    expect(
+      await db.select().from(paranoidVaultHistory).where(eq(paranoidVaultHistory.userId, userId)),
+    ).toEqual([]);
+    expect(
+      await db
+        .select()
+        .from(paranoidEnableTransitions)
+        .where(eq(paranoidEnableTransitions.userId, userId)),
+    ).toEqual([]);
+  });
+
+  it('sweeps abandoned staging without waiting for another vault request', async () => {
+    await repo.beginEnableStaging({
+      userId,
+      now: T0,
+      expiresAt: new Date(T0.getTime() + 1),
+    });
+    await repo.compareAndSwap({
+      userId,
+      access: 'owner-session',
+      expectedVersion: null,
+      version: 1,
+      formatVersion: 1,
+      sizeBytes: 6,
+      blob: blob('staged'),
+      retention: RETENTION,
+      now: T0,
+    });
+
+    expect(await repo.cleanupExpiredEnableStaging(new Date(T0.getTime() + 2), 10)).toBe(1);
+    expect(await repo.getCurrent(userId)).toBeNull();
+    expect(
+      await db
+        .select()
+        .from(paranoidEnableTransitions)
+        .where(eq(paranoidEnableTransitions.userId, userId)),
+    ).toEqual([]);
   });
 });
 

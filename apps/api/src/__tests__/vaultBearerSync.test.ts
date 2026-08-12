@@ -18,13 +18,15 @@ import {
 } from '@bettertrack/contracts';
 
 import { createOAuthRepository } from '../data/repositories/oauthRepository';
-import { paranoidVaults, users } from '../data/schema';
+import { paranoidEnableTransitions, paranoidVaults, users } from '../data/schema';
 import {
+  VAULT_SESSION_ONLY_ROUTES,
   VAULT_SYNC_BEARER_ROUTE_ALLOWLIST,
   openApiPathTemplateAcceptsBearer,
   pathAcceptsBearer,
   vaultSyncRouteAcceptsBearer,
 } from '../http/middleware/bearerAuth';
+import { buildRouteTable, type MountedSurface } from '../scripts/checkOpenapiCoverage';
 import { requireCookieSessionOrVaultSync } from '../http/routes/vaultRoutes';
 import {
   isParanoidKilledScope,
@@ -32,6 +34,12 @@ import {
 } from '../services/account/paranoidEnforcement';
 import { FIRST_PARTY_CLIENTS, seedFirstPartyClients } from '../services/oauth/firstPartyClients';
 import { createTestApp, type SeededUser, type TestHarness } from '../testing/createTestApp';
+
+import {
+  BEARER_ALL_METHODS_ROUTE_METHOD,
+  BEARER_OPAQUE_MOUNT_METHOD,
+  mountedBearerRouteInventory,
+} from './bearerRouteInventory';
 
 /**
  * #1043 — the deliberate bearer exception for paranoid-vault synchronization.
@@ -207,18 +215,30 @@ describe('#1043 vault bearer policy', () => {
   ] as const;
 
   const SESSION_ONLY = [
-    { method: 'PATCH', path: '/vault/media' },
-    { method: 'PUT', path: '/vault/media/server-candidate' },
-    { method: 'GET', path: `/vault/media/server-candidate/${MISSING_ID}` },
-    { method: 'POST', path: '/vault/media/retired/purge/challenge' },
-    { method: 'POST', path: '/vault/media/retired/purge' },
+    ...VAULT_SESSION_ONLY_ROUTES,
     { method: 'POST', path: '/account/paranoid/enable' },
     { method: 'POST', path: '/account/paranoid/disable' },
     { method: 'GET', path: '/account/paranoid/fork-provenance' },
     { method: 'GET', path: '/account/paranoid/normal-revision' },
   ] as const;
 
+  const EXPECTED_ROUTER_GUARDS = [
+    {
+      method: `${BEARER_OPAQUE_MOUNT_METHOD}:requireUser[1]`,
+      path: '/vault',
+    },
+    {
+      method: `${BEARER_OPAQUE_MOUNT_METHOD}:requireCookieSessionOrVaultSync[1]`,
+      path: '/vault',
+    },
+    {
+      method: `${BEARER_OPAQUE_MOUNT_METHOD}:requireParanoidHistory[1]`,
+      path: '/vault/history',
+    },
+  ] as const;
+
   const livePath = (path: string): string => path.replace('{version}', '12');
+  const liveSessionPath = (path: string): string => path.replace('{candidateId}', MISSING_ID);
 
   it('pins the exact sync routes and defaults transitions and future routes closed', () => {
     expect(VAULT_SYNC_BEARER_ROUTE_ALLOWLIST).toEqual(EXPECTED_ALLOWLIST);
@@ -231,10 +251,57 @@ describe('#1043 vault bearer policy', () => {
     expect(vaultSyncRouteAcceptsBearer('GET', '/vault/history/12')).toBe(true);
 
     for (const route of SESSION_ONLY) {
-      expect(pathAcceptsBearer(route.path, route.method)).toBe(false);
+      const path = liveSessionPath(route.path);
+      expect(pathAcceptsBearer(path, route.method)).toBe(false);
+      expect(openApiPathTemplateAcceptsBearer(route.path, route.method)).toBe(false);
     }
     expect(pathAcceptsBearer('/vault/future-transition', 'GET')).toBe(false);
     expect(pathAcceptsBearer('/vault/history/admin', 'GET')).toBe(false);
+  });
+
+  it('classifies every real mounted vault route as sync or session-only', () => {
+    const mounted = mountedBearerRouteInventory(buildRouteTable(), '/vault');
+    const classified = [
+      ...VAULT_SYNC_BEARER_ROUTE_ALLOWLIST,
+      ...VAULT_SESSION_ONLY_ROUTES,
+      ...EXPECTED_ROUTER_GUARDS,
+    ].map(({ method, path }) => ({ method, path }));
+    const sortRoutes = (routes: Array<{ method: string; path: string }>) =>
+      routes.sort(
+        (left, right) =>
+          left.path.localeCompare(right.path) || left.method.localeCompare(right.method),
+      );
+
+    expect(new Set(classified.map((route) => `${route.method} ${route.path}`)).size).toBe(
+      classified.length,
+    );
+    expect(sortRoutes(mounted)).toEqual(sortRoutes(classified));
+  });
+
+  it('keeps router.all and opaque router.use leaves in the completeness inventory', () => {
+    const futureSurfaces: MountedSurface[] = [
+      {
+        kind: 'all-methods-route',
+        path: '/api/v1/vault/future-all',
+      },
+      {
+        kind: 'opaque-mount',
+        path: '/api/v1/vault/future-leaf',
+        handler: 'futureVaultLeaf',
+        occurrence: 1,
+      },
+    ];
+
+    expect(mountedBearerRouteInventory(futureSurfaces, '/vault')).toEqual([
+      {
+        method: BEARER_ALL_METHODS_ROUTE_METHOD,
+        path: '/vault/future-all',
+      },
+      {
+        method: `${BEARER_OPAQUE_MOUNT_METHOD}:futureVaultLeaf[1]`,
+        path: '/vault/future-leaf',
+      },
+    ]);
   });
 
   it('maps HEAD to allowlisted GET routes but keeps session-only vault routes closed', () => {
@@ -305,6 +372,13 @@ describe('#1043 bearer vault synchronization', () => {
     // The browser wizard reads its normal-data CAS token, stages the encrypted
     // server copy through its cookie session, then commits the mode transition.
     const agent = await loginAgent(harness.app, user);
+    const refusedCookieRead = await agent.get('/api/v1/vault');
+    expect(refusedCookieRead.status, JSON.stringify(refusedCookieRead.body)).toBe(409);
+    expect(refusedCookieRead.body.error.code).toBe('VAULT_SERVER_MEDIUM_INACTIVE');
+    const refusedBearerRead = await request(harness.app).get('/api/v1/vault').set(bearer(token));
+    expect(refusedBearerRead.status, JSON.stringify(refusedBearerRead.body)).toBe(409);
+    expect(refusedBearerRead.body.error.code).toBe('VAULT_SERVER_MEDIUM_INACTIVE');
+
     const revision = await agent.get('/api/v1/account/paranoid/normal-revision');
     expect(revision.status, JSON.stringify(revision.body)).toBe(200);
     const staged = await agent
@@ -314,6 +388,13 @@ describe('#1043 bearer vault synchronization', () => {
       .set('If-None-Match', '*')
       .send(v1);
     expect(staged.status, JSON.stringify(staged.body)).toBe(204);
+
+    const ownerReadback = await agent.get('/api/v1/vault').responseType('blob');
+    expect(ownerReadback.status).toBe(200);
+    expect((ownerReadback.body as Buffer).equals(v1)).toBe(true);
+    const bearerStillRefused = await request(harness.app).get('/api/v1/vault').set(bearer(token));
+    expect(bearerStillRefused.status, JSON.stringify(bearerStillRefused.body)).toBe(409);
+    expect(bearerStillRefused.body.error.code).toBe('VAULT_SERVER_MEDIUM_INACTIVE');
 
     // A bearer cannot replace those staged bytes during the read/verify window.
     const refusedReplace = await request(harness.app)
@@ -336,6 +417,12 @@ describe('#1043 bearer vault synchronization', () => {
       });
     expect(enabled.status, JSON.stringify(enabled.body)).toBe(200);
     expect(enabled.body).toMatchObject({ mode: 'paranoid', mediaSet: ['server'], vaultVersion: 1 });
+    expect(
+      await harness.db
+        .select()
+        .from(paranoidEnableTransitions)
+        .where(eq(paranoidEnableTransitions.userId, user.id)),
+    ).toEqual([]);
 
     // The same bearer becomes a valid sync writer only after that transition.
     const synced = await request(harness.app)
@@ -346,6 +433,40 @@ describe('#1043 bearer vault synchronization', () => {
       .send(v2);
     expect(synced.status, JSON.stringify(synced.body)).toBe(204);
     expect(synced.headers.etag).toBe('"2"');
+  });
+
+  it('expires an abandoned owner staging window and deletes its ciphertext', async () => {
+    const { user, token } = await mintPersonalToken(['vault:sync'], 'expiredstage');
+    const agent = await loginAgent(harness.app, user);
+    await agent.get('/api/v1/account/paranoid/normal-revision').expect(200);
+    await agent
+      .put('/api/v1/vault')
+      .set(...XRW)
+      .set(...OCTET)
+      .set('If-None-Match', '*')
+      .send(envelope(1, new Uint8Array([8, 8, 8])))
+      .expect(204);
+
+    await harness.db
+      .update(paranoidEnableTransitions)
+      .set({ expiresAt: new Date(Date.now() - 1) })
+      .where(eq(paranoidEnableTransitions.userId, user.id));
+
+    const expiredOwnerRead = await agent.get('/api/v1/vault');
+    expect(expiredOwnerRead.status, JSON.stringify(expiredOwnerRead.body)).toBe(409);
+    expect(expiredOwnerRead.body.error.code).toBe('VAULT_SERVER_MEDIUM_INACTIVE');
+    const expiredBearerRead = await request(harness.app).get('/api/v1/vault').set(bearer(token));
+    expect(expiredBearerRead.status, JSON.stringify(expiredBearerRead.body)).toBe(409);
+    expect(expiredBearerRead.body.error.code).toBe('VAULT_SERVER_MEDIUM_INACTIVE');
+    expect(
+      await harness.db.select().from(paranoidVaults).where(eq(paranoidVaults.userId, user.id)),
+    ).toEqual([]);
+    expect(
+      await harness.db
+        .select()
+        .from(paranoidEnableTransitions)
+        .where(eq(paranoidEnableTransitions.userId, user.id)),
+    ).toEqual([]);
   });
 
   it('runs a byte-opaque CAS round trip through the first-party mobile OAuth grant', async () => {
@@ -383,7 +504,11 @@ describe('#1043 bearer vault synchronization', () => {
       .send(v3);
     expect(stale.status).toBe(412);
     expect(stale.body.error.code).toBe('VAULT_PRECONDITION_FAILED');
-    expect(stale.headers.etag).toBe('"2"');
+    expect(stale.headers.etag).toBeUndefined();
+    expect(stale.headers['last-modified']).toBeUndefined();
+    // r3: the winner's version rides the body, so a mobile CAS loser on a
+    // dropped link never needs a second GET just to learn the current version.
+    expect(stale.body.currentVersion).toBe(2);
 
     const fresh = await request(harness.app)
       .put('/api/v1/vault')

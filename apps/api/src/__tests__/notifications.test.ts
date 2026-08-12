@@ -38,7 +38,13 @@ function one<T>(rows: T[]): T {
 async function seedNotification(
   h: TestHarness,
   userId: string,
-  overrides: { type?: string; title?: string; body?: string; readAt?: Date } = {},
+  overrides: {
+    type?: string;
+    title?: string;
+    body?: string;
+    readAt?: Date;
+    payload?: Record<string, unknown>;
+  } = {},
 ) {
   return one(
     await h.db
@@ -49,6 +55,7 @@ async function seedNotification(
         title: overrides.title ?? 'New friend request',
         body: overrides.body ?? 'alice sent you a friend request.',
         readAt: overrides.readAt ?? null,
+        payload: overrides.payload ?? null,
       })
       .returning(),
   );
@@ -86,6 +93,29 @@ describe('GET /api/v1/notifications', () => {
     expect(page.items.map((n) => n.id)).toEqual([second.id, first.id]);
     expect(page.unreadCount).toBe(2);
     expect(page.nextCursor).toBeNull();
+  });
+
+  it('serves a row whose message descriptor it cannot read, minus the descriptor', async () => {
+    // Mid-rollout an older API instance reads a row a newer worker wrote with a
+    // key outside this build's enum (#1138). The localized copy is all it may
+    // cost: the row keeps its persisted title/body, its `eventKey` (the durable
+    // dedupe marker) and every deep-link id.
+    const alice = await harness.seedUser({ email: 'alice@bt.test', username: 'alice' });
+    const agent = await loginAgent(harness.app, alice.email, alice.password);
+    await seedNotification(harness, alice.id, {
+      payload: {
+        eventKey: 'friend.request:req-1',
+        requestId: 'req-1',
+        message: { key: 'keyFromANewerWorker', params: { actor: 'anna' } },
+      },
+    });
+
+    const page = await listNotifications(agent);
+    expect(page.items[0]?.payload).toEqual({
+      eventKey: 'friend.request:req-1',
+      requestId: 'req-1',
+    });
+    expect(page.items[0]?.title).toBe('New friend request');
   });
 
   it('never returns another user notification', async () => {

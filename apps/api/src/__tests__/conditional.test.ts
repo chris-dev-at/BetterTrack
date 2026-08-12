@@ -8,10 +8,10 @@ import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 /**
  * Route-level round-trips for the V5-P1b conditional read layer (issue #555):
- * portfolio summary, portfolio series and catalog search carry ETag +
- * Last-Modified and honour If-None-Match / If-Modified-Since, a data-changing
- * write flips the validator, a fresh "today" quote is never masked, and no
- * validator is reused across users.
+ * portfolio list, summary, portfolio series and catalog search carry ETag +
+ * Last-Modified where a reliable freshness watermark exists and honour
+ * If-None-Match / If-Modified-Since, a data-changing write flips the validator,
+ * a fresh "today" quote is never masked, and no validator is reused across users.
  */
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
@@ -95,6 +95,33 @@ async function buyInto(
   return res.body.transactions[0].id as string;
 }
 
+describe('conditional reads — portfolio list (GET /api/v1/portfolios)', () => {
+  let harness: TestHarness;
+
+  beforeEach(async () => {
+    harness = await createTestApp();
+  });
+
+  it('carries an ETag and serves a 304 on an unchanged list', async () => {
+    const user = await harness.seedUser();
+    const agent = await loginAgent(harness.app, user.email, user.password);
+
+    const first = await agent.get('/api/v1/portfolios');
+    expect(first.status).toBe(200);
+    expect(first.headers.etag).toMatch(/^W\//);
+    expect(first.headers['cache-control']).toBe('private, no-cache');
+    expect(first.headers.vary).toContain('Cookie');
+    expect(first.headers['last-modified']).toBeUndefined();
+
+    const revalidate = await agent
+      .get('/api/v1/portfolios')
+      .set('If-None-Match', first.headers.etag as string);
+    expect(revalidate.status).toBe(304);
+    expect(revalidate.text).toBe('');
+    expect(revalidate.headers.etag).toBe(first.headers.etag);
+  });
+});
+
 describe('conditional reads — portfolio summary (GET /api/v1/portfolios/:id)', () => {
   let harness: TestHarness;
   const priceRef = { price: 120 };
@@ -102,6 +129,14 @@ describe('conditional reads — portfolio summary (GET /api/v1/portfolios/:id)',
   beforeEach(async () => {
     priceRef.price = 120;
     harness = await createTestApp({ marketData: deterministicMarketData(priceRef) });
+  });
+
+  it('does not emit validators for non-vault errors', async () => {
+    const res = await request(harness.app).get('/api/v1/portfolios');
+
+    expect(res.status).toBe(401);
+    expect(res.headers.etag).toBeUndefined();
+    expect(res.headers['last-modified']).toBeUndefined();
   });
 
   it('carries ETag + Last-Modified and serves a 304 on an unchanged summary', async () => {

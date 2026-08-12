@@ -20,7 +20,7 @@ const runtime = vi.hoisted(() => ({
   reconnect: vi.fn(async () => ({})),
 }));
 
-vi.mock('../VaultRuntimeProvider', () => ({
+vi.mock('../VaultRuntimeContext', () => ({
   useVaultRuntime: () => runtime,
 }));
 

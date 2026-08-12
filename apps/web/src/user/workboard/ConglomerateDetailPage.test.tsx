@@ -229,7 +229,15 @@ describe('ConglomerateDetailPage', () => {
     expect(within(table).getByText('60,00 %')).toBeInTheDocument();
     expect(within(table).getByText('40,00 %')).toBeInTheDocument();
 
-    const donut = screen.getByRole('img', { name: /blueprint allocation/i });
+    // Cold lazy boundary: this is the first mount of the donut chunk, and its
+    // `recharts` mock pulls the real module through `importOriginal`. Vitest
+    // transforms that on first use, which outruns the default 1 s wait on a
+    // loaded CI worker (see the note in `src/test/setup.ts`).
+    const donut = await screen.findByRole(
+      'img',
+      { name: /blueprint allocation/i },
+      { timeout: 10_000 },
+    );
     expect(donut).toBeInTheDocument();
   });
 
@@ -404,6 +412,7 @@ describe('ConglomerateDetailPage', () => {
 
     await user.click(screen.getByRole('button', { name: 'Share with friends' }));
     await user.click(await screen.findByRole('radio', { name: /all friends/i }));
+    await user.click(screen.getByRole('checkbox', { name: /this change widens access/i }));
     // The server mirrors any non-private audience into the visibility column.
     vi.mocked(getConglomerate).mockResolvedValue({ ...DETAIL, visibility: 'friends' });
     await user.click(screen.getByRole('button', { name: /^save$/i }));
@@ -413,6 +422,7 @@ describe('ConglomerateDetailPage', () => {
       audience: 'all_friends',
       friendIds: undefined,
       acknowledgePublic: undefined,
+      confirmWiden: true,
     });
     // The picker only invalidates ['social'] + ['workboard']; this page wires
     // its own key, so the header label must not stay stale after a save.

@@ -1,6 +1,8 @@
+import { Suspense } from 'react';
 import { Outlet, useLocation } from 'react-router-dom';
 
 import { useT } from '../../i18n';
+import { Skeleton } from '../../ui';
 import { LocalNav, usePreservedSearch } from '../components/LocalNav';
 import { SECTION_NAV, useSectionNavItems } from '../components/sectionNav';
 import { SubTabLink } from '../../ui/origin';
@@ -30,7 +32,11 @@ export function PortfolioWorkspace() {
         items={items}
         preserveParams={SECTION_NAV.portfolio.preserveParams}
       />
-      <Outlet />
+      {/* Skeleton, not `null` (§7.1): the layout and its LocalNav stay put and
+          only the page area waits, so a cold page still says it is loading. */}
+      <Suspense fallback={<Skeleton className="rounded-md" height="h-64" />}>
+        <Outlet />
+      </Suspense>
     </div>
   );
 }
@@ -88,7 +94,11 @@ export function CashLayout() {
             </SubTabLink>
           ))}
       </nav>
-      <Outlet key={location.pathname} />
+      {/* Skeleton, not `null` (§7.1): the layout and its LocalNav stay put and
+          only the page area waits, so a cold page still says it is loading. */}
+      <Suspense fallback={<Skeleton className="rounded-md" height="h-64" />}>
+        <Outlet key={location.pathname} />
+      </Suspense>
     </div>
   );
 }

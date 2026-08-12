@@ -26,7 +26,7 @@ import {
 } from '../localDataHome';
 import { createMemoryVaultQuarantineStore } from '../quarantine';
 import { createVaultSyncEngine } from '../sync';
-import fixture from '../vectors.fixture.json';
+import { vaultInteroperabilityFixture as fixture } from '@bettertrack/domain/vaultVectors';
 import type { DriveDataHome, DriveReplicaCycle } from '../drive';
 import {
   createReplicaReconcileCoordinator,

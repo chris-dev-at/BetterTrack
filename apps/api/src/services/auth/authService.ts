@@ -1166,23 +1166,24 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
       const responseFloor = delay(PASSWORD_RESET_RESPONSE_FLOOR_MS);
       try {
         const user = await userRepo.findByEmail(address);
+        const resetUser = user?.role === 'user' && user.status === 'active' ? user : null;
+        const { token, tokenHash } = generateToken();
+        const expiresAt = new Date(Date.now() + RESET_TOKEN_TTL_MS);
         // Only active, user-kind accounts get a self-service link. Admin recovery
         // is the admin temp-password path (#268); disabled accounts stay closed.
         // The caller always sees the same generic acknowledgement, and the shared
-        // response deadline below masks the known-account writes (§6.1).
-        if (user && user.role === 'user' && user.status === 'active') {
-          const { token, tokenHash } = generateToken();
-          // The repository serializes concurrent issues around the owning user,
-          // replacing any prior token in the same transaction.
-          await passwordResetRepo.issue({
-            userId: user.id,
-            tokenHash,
-            expiresAt: new Date(Date.now() + RESET_TOKEN_TTL_MS),
-          });
+        // response deadline below masks the known-account writes (§6.1). Both
+        // branches also take the repository's per-address issue lock, so a burst
+        // of concurrent requests cannot distinguish the row-locking branch.
+        await passwordResetRepo.issueOrEqualize(
+          resetUser ? { userId: resetUser.id, tokenHash, expiresAt } : null,
+          address.trim().toLowerCase(),
+        );
+        if (resetUser) {
           await audit.record({
             action: AuditAction.PasswordResetRequested,
             targetType: 'user',
-            targetId: user.id,
+            targetId: resetUser.id,
             ip,
           });
           // Best-effort send after the token is committed. SMTP latency must never
@@ -1191,12 +1192,17 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
           const resetUrl = `${config.appOrigin}/reset/${token}`;
           void email
             .sendPasswordReset({
-              to: user.email,
+              to: resetUser.email,
               resetUrl,
-              audit: { actorId: user.id, targetType: 'user', targetId: user.id, ip },
+              audit: {
+                actorId: resetUser.id,
+                targetType: 'user',
+                targetId: resetUser.id,
+                ip,
+              },
             })
             .catch((err) => {
-              logger?.warn({ err, userId: user.id }, 'detached password-reset email failed');
+              logger?.warn({ err, userId: resetUser.id }, 'detached password-reset email failed');
             });
         }
       } finally {
@@ -1425,7 +1431,14 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
         targetType: 'user',
         targetId: user.id,
         ip,
-        meta: tokenId ? { via: 'registration', mode, tokenId } : { via: 'registration', mode },
+        meta: {
+          via: 'registration',
+          mode,
+          ...(tokenId ? { tokenId } : {}),
+          // Attribution for the app-native signup path (owner 2026-08-07): this
+          // account was created inside an OAuth authorize flow.
+          ...(input.oauthRegistration ? { oauth: true } : {}),
+        },
       });
 
       // Best-effort welcome mail, after the account is fully provisioned.
@@ -1435,10 +1448,19 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
         audit: { actorId: user.id, targetType: 'user', targetId: user.id, ip },
       });
 
-      const sessionId = await sessions.create(user.id, user.securityGeneration, true, {
+      // Persistence decision. An ordinary web registration lands a persistent
+      // session (unchanged). A registration made INSIDE an OAuth authorize flow
+      // is forced EPHEMERAL — the same rule `login` applies to a PIN-less OAuth
+      // login (§16, owner spec #399 §A): the Custom-Tab browser shares cookies
+      // with the phone's browser, so a brand-new account must not leave a
+      // persistent web session that silently re-authorizes after an app logout.
+      // A fresh account never has a PIN, so no persistent branch is lost. This
+      // is the authoritative enforcement; the SPA only asks.
+      const persistent = !(input.oauthRegistration ?? false);
+      const sessionId = await sessions.create(user.id, user.securityGeneration, persistent, {
         method: 'registration',
       });
-      return { status: 'authenticated', user, sessionId, persistent: true };
+      return { status: 'authenticated', user, sessionId, persistent };
     },
 
     async verifyPin({ userId, sessionId, pin, ip }) {

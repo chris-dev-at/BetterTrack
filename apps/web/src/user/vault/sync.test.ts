@@ -56,7 +56,12 @@ import {
   type VaultDocumentReconcileContext,
   type VaultSyncEngineOptions,
 } from './sync';
-import { deterministicRandom, VECTOR_DEVICE_ID, VECTOR_KEY_ID, VECTOR_WRITE_ID } from './vectors';
+import {
+  deterministicRandom,
+  VECTOR_DEVICE_ID,
+  VECTOR_KEY_ID,
+  VECTOR_WRITE_ID,
+} from '@bettertrack/domain/vaultVectors';
 
 const DEVICE_A = VECTOR_DEVICE_ID;
 const DEVICE_B = '018f0000-0000-7000-8000-00000000000e';

@@ -16,7 +16,7 @@ import { base64ToBytes } from '../bytes';
 import { decryptVaultDocument, encryptVaultDocument } from '../crypto';
 import { decodeVaultEnvelope } from '../envelope';
 import { mergeVaultDocuments } from '../merge';
-import fixture from '../vectors.fixture.json';
+import { vaultInteroperabilityFixture as fixture } from '@bettertrack/domain/vaultVectors';
 import { createVaultRetirementProofManager } from './retirementProof';
 
 const document: VaultDocument = {

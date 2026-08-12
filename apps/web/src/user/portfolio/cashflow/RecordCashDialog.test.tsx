@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, expect, test, vi } from 'vitest';
 
@@ -177,6 +177,26 @@ test('a spend is two fields — amount, what for, record', async () => {
       amountEur: 300,
       sourceId: 's1',
       note: 'SPAR MARKT 4021',
+    }),
+  );
+});
+
+test('stamps backdated cash at noon UTC, after same-day trades', async () => {
+  vi.mocked(withdrawCash).mockResolvedValue({
+    movement: { id: 'm-backdated', tags: [] },
+  } as unknown as Awaited<ReturnType<typeof withdrawCash>>);
+  const user = userEvent.setup();
+  renderDialog();
+
+  await user.type(await screen.findByLabelText('Amount'), '300');
+  fireEvent.change(screen.getByLabelText('Date'), { target: { value: '2020-01-02' } });
+  await user.click(screen.getByRole('button', { name: 'Record' }));
+
+  await waitFor(() =>
+    expect(withdrawCash).toHaveBeenCalledWith('p1', {
+      amountEur: 300,
+      sourceId: 's1',
+      executedAt: '2020-01-02T12:00:00.000Z',
     }),
   );
 });

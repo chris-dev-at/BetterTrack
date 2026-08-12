@@ -1,6 +1,7 @@
 import {
   isAccountSecurityNotificationType,
   type DigestCadence,
+  type NotificationMessage,
   type NotificationCadence,
 } from '@bettertrack/contracts';
 
@@ -22,6 +23,7 @@ import type {
   FriendRequestEvent,
   MirrorNotificationEvent,
   PortfolioSharedEvent,
+  StandingOrderSkippedEvent,
   WatchlistSharedEvent,
 } from '../../events';
 import type {
@@ -34,7 +36,7 @@ import type {
 } from '../../data/repositories/notificationDigestRepository';
 import type { AlertNotificationContext } from '../../data/repositories/alertRepository';
 import type { UserRepository } from '../../data/repositories/userRepository';
-import { alertBody, alertRuleSummary, alertTitle } from '../alerts/alertMessages';
+import { alertNotificationMessage, followAlertNotificationMessage } from '../alerts/alertMessages';
 import type { EmailService } from '../email/emailService';
 import type { MirrorEmailVariant } from '../email/templates';
 import type { Logger } from '../../logger';
@@ -47,6 +49,7 @@ import { isInQuietHours, quietHoursWindowEnd } from './quietHours';
 import { quietHoursConfigForUser } from './quietHoursConfig';
 import type { TelegramChannel } from './telegramChannel';
 import type { WebPushChannel } from './webPush';
+import { notificationMessage, renderNotificationMessage } from './notificationI18n';
 
 /**
  * The central notification dispatcher (#368 Notifications v2; PROJECTPLAN.md
@@ -98,6 +101,7 @@ export type DispatchableEvent =
   | ChatMessageEvent
   | DividendEventNotice
   | BudgetExceededEvent
+  | StandingOrderSkippedEvent
   | MirrorNotificationEvent;
 
 /** The `type` strings the dispatcher accepts (guards the job payload). */
@@ -126,6 +130,7 @@ export const DISPATCHABLE_EVENT_TYPES = [
   'mirror.ownership_transferred',
   'mirror.chain_dissolved',
   'mirror.sync_stalled',
+  'standing_order.skipped',
 ] as const satisfies ReadonlyArray<DispatchableEvent['type']>;
 
 export function isDispatchableEvent(event: { type: string }): event is DispatchableEvent {
@@ -139,11 +144,10 @@ export function isDispatchableEvent(event: { type: string }): event is Dispatcha
  */
 export type AlertContextResolver = (alertId: string) => Promise<AlertNotificationContext | null>;
 
-/** The rendered notification for one event, shared by all channels. */
+/** The localizable notification descriptor for one event, shared by all channels. */
 interface RenderedNotification {
   eventKey: string;
-  title: string;
-  body: string;
+  message: NotificationMessage;
   /** Inbox payload (carries `eventKey` — the §6.10 dedupe key). */
   payload: Record<string, unknown>;
   /** String-valued deep-link ids for the push channels' data message. */
@@ -151,6 +155,8 @@ interface RenderedNotification {
   /** The alert's symbol — only set for `alert.triggered` (email subject). */
   alertSymbol?: string;
 }
+
+type LocalizedNotification = RenderedNotification & { title: string; body: string };
 
 /**
  * The dedupe key per event: type + what makes the *logical* event unique.
@@ -216,6 +222,11 @@ function eventKeyFor(event: DispatchableEvent): string {
       // at the dispatch layer so a redelivered/duplicated emit no-ops — exactly
       // one alert per budget per month.
       return `budget.exceeded:${event.budgetId}:${event.period}`;
+    case 'standing_order.skipped':
+      // A retriable defer may be observed by every daily retry, while the same
+      // period can later be permanently dropped. Fold the outcome into the key
+      // so retries dedupe without swallowing that later state transition.
+      return `standing_order.skipped:${event.standingOrderId}:${event.periodKey}:${event.outcome}`;
     case 'mirror.invite':
     case 'mirror.member_joined':
     case 'mirror.member_left':
@@ -232,119 +243,108 @@ function eventKeyFor(event: DispatchableEvent): string {
   }
 }
 
-/**
- * MIRRORCHAIN notice copy (EN — inbox strings are stored rendered like every
- * other type; the email localizes its own from the `mirror` copy block). Names
- * the chain and, where relevant, the member the notice is about (design §11).
- */
-function mirrorCopy(event: MirrorNotificationEvent): { title: string; body: string } {
-  const chain = event.chainName;
-  const actor = event.actorUsername;
+/** Localizable MIRRORCHAIN lifecycle descriptor (design §11). */
+function mirrorMessage(event: MirrorNotificationEvent): NotificationMessage {
+  const params = { chain: event.chainName, actor: event.actorUsername };
   switch (event.type) {
     case 'mirror.invite':
-      return {
-        title: 'Group portfolio invite',
-        body: `${actor} invited you to join the group portfolio ${chain}.`,
-      };
+      return notificationMessage('mirrorInvite', params);
     case 'mirror.member_joined':
-      return {
-        title: `New member in ${chain}`,
-        body: `${actor} joined the group portfolio ${chain}.`,
-      };
+      return notificationMessage('mirrorMemberJoined', params);
     case 'mirror.member_left':
-      return {
-        title: `A member left ${chain}`,
-        body: `${actor} left the group portfolio ${chain}.`,
-      };
+      return notificationMessage('mirrorMemberLeft', params);
     case 'mirror.member_removed':
-      return {
-        title: `A member was removed from ${chain}`,
-        body: `${actor} was removed from the group portfolio ${chain}.`,
-      };
+      return notificationMessage('mirrorMemberRemoved', params);
     case 'mirror.removed':
-      return {
-        title: `Removed from ${chain}`,
-        body: `You were removed from the group portfolio ${chain}. You keep your copy — it just stops syncing.`,
-      };
+      return notificationMessage('mirrorRemoved', params);
     case 'mirror.ownership_transferred':
-      return {
-        title: `Ownership of ${chain} changed`,
-        body: `${actor} is now the owner of the group portfolio ${chain}.`,
-      };
+      return notificationMessage('mirrorOwnershipTransferred', params);
     case 'mirror.chain_dissolved':
-      return {
-        title: `${chain} was dissolved`,
-        body: `The group portfolio ${chain} was dissolved. You keep your copy — it just stops syncing.`,
-      };
+      return notificationMessage('mirrorChainDissolved', params);
     case 'mirror.sync_stalled':
-      return {
-        title: `Syncing ${chain} is stuck`,
-        body: `The group portfolio ${chain} could not finish syncing. Open it and choose Retry sync.`,
-      };
+      return notificationMessage('mirrorSyncStalled', params);
   }
 }
 
-/**
- * Budget-exceeded copy (EN — inbox strings are stored rendered like every other
- * type). Names the blown category, the target and the recorded spend so the
- * notification reads on its own; amounts render in the budget's currency.
- */
-function budgetExceededCopy(event: BudgetExceededEvent): { title: string; body: string } {
-  const target = `${event.amount} ${event.currency}`;
-  const spent = `${event.spent} ${event.currency}`;
-  return {
-    title: `Budget exceeded: ${event.categoryName}`,
-    body: `You spent ${spent} on ${event.categoryName} this month — over your ${target} budget.`,
-  };
+/** Localizable budget-overrun descriptor; amounts stay raw interpolation data. */
+function budgetExceededMessage(event: BudgetExceededEvent): NotificationMessage {
+  return notificationMessage('budgetExceeded', {
+    category: event.categoryName,
+    target: event.amount,
+    spent: event.spent,
+    currency: event.currency,
+  });
 }
 
-/**
- * Localizable-free dividend-event copy (EN — the inbox strings are stored
- * rendered, like every other type). "in N days" reads naturally for the common
- * near-term reminder; the payout amount is appended when the provider reported it.
- */
-function dividendEventCopy(event: DividendEventNotice): { title: string; body: string } {
-  const amountPart =
-    event.amount != null && event.currency ? ` (${event.amount} ${event.currency} per share)` : '';
-  const exDay = event.exDate.slice(0, 10);
-  return {
-    title: `${event.symbol} ex-dividend ${exDay}`,
-    body: `${event.symbol} goes ex-dividend on ${exDay}${amountPart}.`,
-  };
+/** Localizable dividend-event descriptor, with/without the optional payout. */
+function dividendEventMessage(event: DividendEventNotice): NotificationMessage {
+  const params = { symbol: event.symbol, date: event.exDate.slice(0, 10) };
+  return event.amount != null && event.currency
+    ? notificationMessage('dividendEventWithAmount', {
+        ...params,
+        amount: event.amount,
+        currency: event.currency,
+      })
+    : notificationMessage('dividendEvent', params);
 }
 
-/** The English noun for a followed item's kind (#438). */
-function followItemNoun(itemKind: FollowPublishedEvent['itemKind']): string {
-  switch (itemKind) {
+/** Localizable newly-published item descriptor (#438). */
+function followPublishedMessage(event: FollowPublishedEvent): NotificationMessage {
+  const params = { actor: event.actorUsername, item: event.itemName };
+  switch (event.itemKind) {
     case 'portfolio':
-      return 'portfolio';
+      return notificationMessage('followPublishedPortfolio', params);
     case 'watchlist':
-      return 'watchlist';
+      return notificationMessage('followPublishedWatchlist', params);
     case 'conglomerate':
-      return 'conglomerate';
+      return notificationMessage('followPublishedConglomerate', params);
     case 'idea':
-      return 'idea';
+      return notificationMessage('followPublishedIdea', params);
   }
 }
 
-/** The follow-published title + body (EN — inbox strings are stored rendered). */
-function followPublishedCopy(event: FollowPublishedEvent): { title: string; body: string } {
-  const noun = followItemNoun(event.itemKind);
-  return {
-    title: `New ${noun} from ${event.actorUsername}`,
-    body: `${event.actorUsername} published a new ${noun}: ${event.itemName}.`,
-  };
-}
-
-/** The friend-activity body sentence (EN — inbox strings are stored rendered). */
-function friendActivityBody(event: FriendActivityEvent): string {
+/** Localizable friend-activity descriptor. */
+function friendActivityMessage(event: FriendActivityEvent): NotificationMessage {
+  const params = { actor: event.actorUsername, symbol: event.assetSymbol };
   switch (event.activity) {
     case 'buy':
-      return `${event.actorUsername} bought ${event.assetSymbol}.`;
+      return notificationMessage('friendActivityBuy', params);
     case 'sell':
-      return `${event.actorUsername} sold ${event.assetSymbol}.`;
+      return notificationMessage('friendActivitySell', params);
     case 'watchlist_add':
-      return `${event.actorUsername} added ${event.assetSymbol} to a shared watchlist.`;
+      return notificationMessage('friendActivityWatchlistAdd', params);
+  }
+}
+
+/** Localizable standing-order failure descriptor (#1118/#1138). */
+function standingOrderSkippedMessage(event: StandingOrderSkippedEvent): NotificationMessage {
+  const named = Boolean(event.orderLabel);
+  const params = {
+    period: event.periodKey,
+    ...(event.orderLabel ? { order: event.orderLabel } : {}),
+  };
+  switch (event.outcome) {
+    case 'deferred':
+      return notificationMessage(
+        named ? 'standingOrderDeferredNamed' : 'standingOrderDeferredUnnamed',
+        params,
+      );
+    case 'dropped':
+      if ((event.droppedCount ?? 1) > 1) {
+        return notificationMessage(
+          named ? 'standingOrderDroppedManyNamed' : 'standingOrderDroppedManyUnnamed',
+          { ...params, count: event.droppedCount ?? 1 },
+        );
+      }
+      return notificationMessage(
+        named ? 'standingOrderDroppedNamed' : 'standingOrderDroppedUnnamed',
+        params,
+      );
+    case 'booking_failed':
+      return notificationMessage(
+        named ? 'standingOrderBookingFailedNamed' : 'standingOrderBookingFailedUnnamed',
+        params,
+      );
   }
 }
 
@@ -428,19 +428,14 @@ export function createNotificationDispatcher(
   } = deps;
   const now = deps.now ?? (() => new Date());
 
-  /**
-   * Render an event to its channel-shared strings. Async because the alert
-   * context resolves at dispatch time; returns null when the event has nothing
-   * to render (alert vanished, or alerts not wired here).
-   */
+  /** Build the event's locale-neutral message + routing payload. */
   async function render(event: DispatchableEvent): Promise<RenderedNotification | null> {
     const eventKey = eventKeyFor(event);
     switch (event.type) {
       case 'friend.request':
         return {
           eventKey,
-          title: 'New friend request',
-          body: `${event.actorUsername} sent you a friend request.`,
+          message: notificationMessage('friendRequest', { actor: event.actorUsername }),
           payload: {
             eventKey,
             actorId: event.actorId,
@@ -452,8 +447,7 @@ export function createNotificationDispatcher(
       case 'friend.accepted':
         return {
           eventKey,
-          title: 'Friend request accepted',
-          body: `${event.actorUsername} accepted your friend request.`,
+          message: notificationMessage('friendAccepted', { actor: event.actorUsername }),
           payload: {
             eventKey,
             actorId: event.actorId,
@@ -465,8 +459,7 @@ export function createNotificationDispatcher(
       case 'portfolio.shared':
         return {
           eventKey,
-          title: 'Portfolio shared',
-          body: `${event.actorUsername} shared their portfolio with friends.`,
+          message: notificationMessage('portfolioShared', { actor: event.actorUsername }),
           payload: {
             eventKey,
             actorId: event.actorId,
@@ -478,8 +471,7 @@ export function createNotificationDispatcher(
       case 'watchlist.shared':
         return {
           eventKey,
-          title: 'Watchlist shared',
-          body: `${event.actorUsername} shared a watchlist with you.`,
+          message: notificationMessage('watchlistShared', { actor: event.actorUsername }),
           payload: {
             eventKey,
             actorId: event.actorId,
@@ -491,8 +483,7 @@ export function createNotificationDispatcher(
       case 'conglomerate.shared':
         return {
           eventKey,
-          title: 'Conglomerate shared',
-          body: `${event.actorUsername} shared a conglomerate with you.`,
+          message: notificationMessage('conglomerateShared', { actor: event.actorUsername }),
           payload: {
             eventKey,
             actorId: event.actorId,
@@ -504,8 +495,7 @@ export function createNotificationDispatcher(
       case 'friend.activity':
         return {
           eventKey,
-          title: 'Friend activity',
-          body: friendActivityBody(event),
+          message: friendActivityMessage(event),
           payload: {
             eventKey,
             actorId: event.actorId,
@@ -524,11 +514,9 @@ export function createNotificationDispatcher(
           },
         };
       case 'follow.published': {
-        const { title, body } = followPublishedCopy(event);
         return {
           eventKey,
-          title,
-          body,
+          message: followPublishedMessage(event),
           payload: {
             eventKey,
             actorId: event.actorId,
@@ -553,21 +541,19 @@ export function createNotificationDispatcher(
         if (!resolveAlert) return null;
         const context = await resolveAlert(event.alertId);
         if (!context) return null;
-        const rule = alertRuleSummary({
-          kind: context.kind,
-          symbol: context.symbol,
-          threshold: context.threshold,
-          currency: context.currency,
-        });
         const created = event.type === 'follow.alert.created';
         return {
           eventKey,
-          title: created
-            ? `New alert from ${event.actorUsername}`
-            : `${event.actorUsername}'s alert fired`,
-          body: created
-            ? `${event.actorUsername} created a price alert: ${rule}.`
-            : `${event.actorUsername}'s price alert fired: ${rule}.`,
+          message: followAlertNotificationMessage(
+            created ? 'created' : 'fired',
+            event.actorUsername,
+            {
+              kind: context.kind,
+              symbol: context.symbol,
+              threshold: context.threshold,
+              currency: context.currency,
+            },
+          ),
           payload: {
             eventKey,
             actorId: event.actorId,
@@ -583,16 +569,14 @@ export function createNotificationDispatcher(
       case 'account.temp_password':
         return {
           eventKey,
-          title: 'Password was reset',
-          body: 'An administrator reset your password. Check your email for the temporary password.',
+          message: notificationMessage('accountTempPassword'),
           payload: { eventKey },
           data: {},
         };
       case 'account.data_export':
         return {
           eventKey,
-          title: 'Your data export is ready',
-          body: 'Your account data export has finished. Open Settings → Account to download it.',
+          message: notificationMessage('accountDataExport'),
           payload: { eventKey },
           data: {},
         };
@@ -602,8 +586,7 @@ export function createNotificationDispatcher(
         if (!context) return null;
         return {
           eventKey,
-          title: alertTitle(context.symbol),
-          body: alertBody({
+          message: alertNotificationMessage({
             kind: context.kind,
             symbol: context.symbol,
             threshold: context.threshold,
@@ -620,14 +603,13 @@ export function createNotificationDispatcher(
         };
       }
       case 'earnings.reminder': {
-        // Inbox strings are stored rendered (EN); the email localizes its own.
         const dateLabel = event.earningsDate.slice(0, 10);
         return {
           eventKey,
-          title: `Earnings coming up: ${event.symbol}`,
-          body: event.estimated
-            ? `${event.name} (${event.symbol}) is expected to report earnings around ${dateLabel}.`
-            : `${event.name} (${event.symbol}) reports earnings on ${dateLabel}.`,
+          message: notificationMessage(
+            event.estimated ? 'earningsReminderEstimated' : 'earningsReminderConfirmed',
+            { symbol: event.symbol, name: event.name, date: dateLabel },
+          ),
           payload: {
             eventKey,
             assetId: event.assetId,
@@ -642,12 +624,14 @@ export function createNotificationDispatcher(
       case 'chat.message':
         return {
           eventKey,
-          title: 'New message',
-          body: event.bodyPreview
-            ? `${event.senderUsername}: ${event.bodyPreview}`
+          message: event.bodyPreview
+            ? notificationMessage('chatMessagePreview', {
+                sender: event.senderUsername,
+                preview: event.bodyPreview,
+              })
             : event.hasChip
-              ? `${event.senderUsername} shared an item with you.`
-              : `${event.senderUsername} sent you a message.`,
+              ? notificationMessage('chatMessageSharedItem', { sender: event.senderUsername })
+              : notificationMessage('chatMessagePlain', { sender: event.senderUsername }),
           payload: {
             eventKey,
             conversationId: event.conversationId,
@@ -658,11 +642,9 @@ export function createNotificationDispatcher(
           data: { conversationId: event.conversationId, messageId: event.messageId },
         };
       case 'dividend.event': {
-        const { title, body } = dividendEventCopy(event);
         return {
           eventKey,
-          title,
-          body,
+          message: dividendEventMessage(event),
           payload: {
             eventKey,
             assetId: event.assetId,
@@ -674,11 +656,9 @@ export function createNotificationDispatcher(
         };
       }
       case 'budget.exceeded': {
-        const { title, body } = budgetExceededCopy(event);
         return {
           eventKey,
-          title,
-          body,
+          message: budgetExceededMessage(event),
           payload: {
             eventKey,
             budgetId: event.budgetId,
@@ -692,6 +672,29 @@ export function createNotificationDispatcher(
           data: { categoryId: event.categoryId, period: event.period },
         };
       }
+      case 'standing_order.skipped': {
+        return {
+          eventKey,
+          message: standingOrderSkippedMessage(event),
+          payload: {
+            eventKey,
+            standingOrderId: event.standingOrderId,
+            periodKey: event.periodKey,
+            outcome: event.outcome,
+            ...(event.droppedCount === undefined ? {} : { droppedCount: event.droppedCount }),
+          },
+          // The order id lands on the exact Forecast row; period/outcome let a
+          // native client preserve context when it opens that order.
+          data: {
+            standingOrderId: event.standingOrderId,
+            periodKey: event.periodKey,
+            outcome: event.outcome,
+            ...(event.droppedCount === undefined
+              ? {}
+              : { droppedCount: String(event.droppedCount) }),
+          },
+        };
+      }
       case 'mirror.invite':
       case 'mirror.member_joined':
       case 'mirror.member_left':
@@ -700,11 +703,9 @@ export function createNotificationDispatcher(
       case 'mirror.ownership_transferred':
       case 'mirror.chain_dissolved':
       case 'mirror.sync_stalled': {
-        const { title, body } = mirrorCopy(event);
         return {
           eventKey,
-          title,
-          body,
+          message: mirrorMessage(event),
           payload: {
             eventKey,
             chainId: event.chainId,
@@ -742,7 +743,7 @@ export function createNotificationDispatcher(
    */
   async function sendEmail(
     event: DispatchableEvent,
-    rendered: RenderedNotification,
+    rendered: LocalizedNotification,
     recipient: { id: string; email: string; locale: string },
   ): Promise<void> {
     if (!email) return;
@@ -823,6 +824,18 @@ export function createNotificationDispatcher(
         // budget alert is a lightweight nudge and the dashboards are the system
         // of record — no localized budget email template ships (V5-P9, issue 3/3).
         return;
+      case 'standing_order.skipped':
+        await email.sendStandingOrderSkipped({
+          to,
+          userId,
+          standingOrderId: event.standingOrderId,
+          orderLabel: event.orderLabel,
+          periodKey: event.periodKey,
+          outcome: event.outcome,
+          droppedCount: event.droppedCount,
+          locale,
+        });
+        return;
       case 'mirror.invite':
       case 'mirror.member_joined':
       case 'mirror.member_left':
@@ -851,6 +864,15 @@ export function createNotificationDispatcher(
 
     const recipient = await users.findById(event.userId);
     if (!recipient) return;
+
+    // Server channels need delivered text, while the payload descriptor lets a
+    // current client re-render the inbox in its active locale. Persisting this
+    // localized pair too keeps older/mobile clients correct and is the fallback
+    // for historical clients that do not understand `payload.message` (#1138).
+    const localized: LocalizedNotification = {
+      ...rendered,
+      ...renderNotificationMessage(rendered.message, recipient.locale),
+    };
 
     // At-least-once delivery: the (user, eventKey) row — visible or hidden — is
     // the durable dedupe marker for EVERY channel (§6.10, #368).
@@ -881,9 +903,9 @@ export function createNotificationDispatcher(
     const notificationId = await repo.insert({
       userId: event.userId,
       type: event.type,
-      title: rendered.title,
-      body: rendered.body,
-      payload: rendered.payload,
+      title: localized.title,
+      body: localized.body,
+      payload: { ...rendered.payload, message: rendered.message },
       hidden: !visible,
       readAt: alreadyRead ? new Date() : null,
     });
@@ -955,8 +977,8 @@ export function createNotificationDispatcher(
             channel: 'email',
             cadence: deferredCadence,
             period,
-            title: rendered.title,
-            body: rendered.body,
+            title: localized.title,
+            body: localized.body,
           });
         } catch (err) {
           logger?.warn({ err, type: event.type }, 'digest email enqueue failed');
@@ -967,8 +989,8 @@ export function createNotificationDispatcher(
             userId: event.userId,
             type: event.type,
             channel: 'email',
-            title: rendered.title,
-            body: rendered.body,
+            title: localized.title,
+            body: localized.body,
             deliverAfter: quietDeferUntil,
           });
         } catch (err) {
@@ -976,7 +998,7 @@ export function createNotificationDispatcher(
         }
       } else {
         try {
-          await sendEmail(event, rendered, {
+          await sendEmail(event, localized, {
             id: recipient.id,
             email: recipient.email,
             locale: recipient.locale,
@@ -989,8 +1011,8 @@ export function createNotificationDispatcher(
 
     const pushMessage: PushMessage = {
       type: event.type,
-      title: rendered.title,
-      body: rendered.body,
+      title: localized.title,
+      body: localized.body,
       data: rendered.data,
     };
     if (routing.push && fcm) {
@@ -1002,8 +1024,8 @@ export function createNotificationDispatcher(
             channel: 'push',
             cadence: deferredCadence,
             period,
-            title: rendered.title,
-            body: rendered.body,
+            title: localized.title,
+            body: localized.body,
             data: rendered.data,
           });
         } catch (err) {
@@ -1015,8 +1037,8 @@ export function createNotificationDispatcher(
             userId: event.userId,
             type: event.type,
             channel: 'push',
-            title: rendered.title,
-            body: rendered.body,
+            title: localized.title,
+            body: localized.body,
             data: rendered.data,
             deliverAfter: quietDeferUntil,
           });
@@ -1040,8 +1062,8 @@ export function createNotificationDispatcher(
             channel: 'webpush',
             cadence: deferredCadence,
             period,
-            title: rendered.title,
-            body: rendered.body,
+            title: localized.title,
+            body: localized.body,
             data: rendered.data,
           });
         } catch (err) {
@@ -1053,8 +1075,8 @@ export function createNotificationDispatcher(
             userId: event.userId,
             type: event.type,
             channel: 'webpush',
-            title: rendered.title,
-            body: rendered.body,
+            title: localized.title,
+            body: localized.body,
             data: rendered.data,
             deliverAfter: quietDeferUntil,
           });

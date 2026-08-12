@@ -18,6 +18,7 @@ import {
   uniqueIndex,
   uuid,
   varchar,
+  type AnyPgColumn,
 } from 'drizzle-orm/pg-core';
 
 import { newId } from './ids';
@@ -1195,8 +1196,49 @@ export const portfolios = pgTable(
     // rows, and archiving the last active portfolio is rejected upstream so a
     // user can never be left with zero usable portfolios.
     archivedAt: timestamp('archived_at', { withTimezone: true }),
+    // Purpose category — the portfolio's "Icon" in user-facing copy (board
+    // #69). NULL = the user never chose, which is what lets a client that
+    // carried its own local kinds fall back to them until the first server
+    // write; every render surface falls back to `DEFAULT_PORTFOLIO_KIND`.
+    // Bare text (no pg enum, no CHECK) for the same reason `users.profile_icon`
+    // is: the token set is finite and owned by the contract
+    // (`PORTFOLIO_KINDS`), validated at the service write path, so adding a
+    // sixth kind stays a code-only change instead of an `ALTER TYPE ... ADD
+    // VALUE` that drizzle cannot run inside its transactional migration. The
+    // read path narrows unrecognized text back to NULL rather than trusting it.
+    kind: text('kind'),
+    /**
+     * Vaults v2 (`docs/VAULTS_V2_DESIGN.md` §1): a portfolio is PARANOID iff
+     * this is set. Its cleartext content rows were purged at join time and live
+     * only inside the vault's ciphertext, so every server-side feature that
+     * reads the portfolio is killed for it (§3, portfolio-scoped kill rails).
+     *
+     * `ON DELETE SET NULL` rather than RESTRICT: the empty-vault precondition
+     * is enforced in the repository under `FOR UPDATE` (a check RESTRICT could
+     * not express anyway, since it must also see `vault_docs`), and a RESTRICT
+     * here would make the users-cascade delete order load-bearing.
+     */
+    vaultId: uuid('vault_id').references((): AnyPgColumn => vaults.id, { onDelete: 'set null' }),
+    /**
+     * Vaults v2 (`docs/VAULTS_V2_DESIGN.md` §4): the cleartext display alias for
+     * a VAULTED portfolio. A locked vault cannot be decrypted, so the header's
+     * in-document alias is unreadable exactly when it is needed — the locked row
+     * ("alias + lock glyph") has to render from a column the server can read.
+     *
+     * Deliberately separate from `name`: `name` is edited on the normal rename
+     * route, which is killed for a vaulted portfolio because it also carries
+     * `visibility`. The alias route sets THIS column and nothing else.
+     */
+    alias: text('alias'),
   },
-  (t) => [uniqueIndex('portfolios_user_name_unique').on(t.userId, t.name)],
+  (t) => [
+    uniqueIndex('portfolios_user_name_unique').on(t.userId, t.name),
+    index('portfolios_vault_idx').on(t.vaultId),
+    check(
+      'portfolios_alias_length',
+      sql`${t.alias} is null or char_length(${t.alias}) between 1 and 64`,
+    ),
+  ],
 );
 
 export const transactionSideEnum = pgEnum('transaction_side', ['buy', 'sell']);
@@ -1262,6 +1304,16 @@ export const transactions = pgTable(
     source: text('source').notNull().default('manual'),
   },
   (t) => [
+    // Supports both the chronological money-math replay (forward scan) and the
+    // small recent-card read (backward scan with a deterministic id tiebreak).
+    index('transactions_portfolio_executed_id_idx').on(t.portfolioId, t.executedAt, t.id),
+    // Source-filtered recent reads and the distinct-source facet share this prefix.
+    index('transactions_portfolio_source_executed_id_idx').on(
+      t.portfolioId,
+      t.source,
+      t.executedAt,
+      t.id,
+    ),
     check('transactions_quantity_positive', sql`${t.quantity} > 0`),
     check('transactions_price_nonneg', sql`${t.price} >= 0`),
     // Uncovered fields are sell-only, and an entry price is meaningless without
@@ -1869,6 +1921,32 @@ export const userTaxSettings = pgTable(
 );
 
 /**
+ * Explicit tax-year unlocks (owner directive 2026-08-07, §16). A tax year
+ * auto-locks the moment the Vienna calendar year ends: the LOCKED state is the
+ * absence of a row here for any year before the current one, so fully-elapsed
+ * years start locked with no backfill and every future rollover locks the
+ * ending year with no job. One row = one year the user explicitly opened for
+ * amendments through the re-authenticated unlock ritual; it stays open until
+ * the user explicitly re-locks (row deleted). Per USER, not per portfolio —
+ * amending a tax year is an account-level legal act, like the filings it
+ * mirrors. The current (open) year is never lockable, so `year` is always in
+ * the past relative to the unlock moment. Cascades away with the user.
+ */
+export const taxYearUnlocks = pgTable(
+  'tax_year_unlocks',
+  {
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    year: integer('year').notNull(),
+    unlockedAt: timestamp('unlocked_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.userId, t.year] })],
+);
+
+export type TaxYearUnlockRow = typeof taxYearUnlocks.$inferSelect;
+
+/**
  * Per-portfolio setting overrides (issue #636). The override layer of the
  * scoping cascade `effective = portfolio override ?? user default ?? system
  * default`: one row per (portfolio, setting key) that pins a value for THAT
@@ -1891,6 +1969,35 @@ export const portfolioSettings = pgTable(
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [primaryKey({ columns: [t.portfolioId, t.key] })],
+);
+
+/**
+ * Per-account dashboard widget compositions, one row per (user, namespace)
+ * (mobile board #68 item 3). `mobile` and `web` are deliberately separate rows:
+ * the two clients lay out different widgets at different sizes, so one shared
+ * row would make each client's save clobber the other's.
+ *
+ * `doc` is OPAQUE to the server — jsonb, never interpreted, validated only as "a
+ * JSON object of at most 32 KB" (see `widgetLayoutDocSchema`). jsonb rather than
+ * text so the column stays queryable and the cap is enforced against parsed
+ * JSON. The composite primary key is what makes the write an upsert and gives
+ * last-write-wins its idempotency key.
+ *
+ * `namespace` is text, not a pg enum: the accepted values are pinned by the
+ * contract enum at the edge, and a future client surface should not need a
+ * migration with an enum-value rewrite to be added.
+ */
+export const widgetLayouts = pgTable(
+  'widget_layouts',
+  {
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    namespace: text('namespace').notNull(),
+    doc: jsonb('doc').notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.userId, t.namespace] })],
 );
 
 /**
@@ -2658,6 +2765,7 @@ export type DividendRow = typeof dividends.$inferSelect;
 export type NewDividendRow = typeof dividends.$inferInsert;
 export type UserTaxSettingsRow = typeof userTaxSettings.$inferSelect;
 export type PortfolioSettingsRow = typeof portfolioSettings.$inferSelect;
+export type WidgetLayoutRow = typeof widgetLayouts.$inferSelect;
 export type FriendRequestRow = typeof friendRequests.$inferSelect;
 export type NewFriendRequestRow = typeof friendRequests.$inferInsert;
 export type FriendshipRow = typeof friendships.$inferSelect;
@@ -3555,9 +3663,42 @@ export const paranoidVaults = pgTable('paranoid_vaults', {
    * legacy blobs recoverable but deliberately non-purgeable.
    */
   retirementProofPublicKey: text('retirement_proof_public_key'),
+  /**
+   * Vaults v2 server-coordinated migration (r2 §11). `migrating_by` holds the
+   * claiming client's opaque nonce and `migration_expires_at` its renewable TTL,
+   * so exactly one client writes the v2 documents at a time. `migrated_to` is
+   * the COMMIT POINT: once set, this legacy row is a read-only tombstone and the
+   * named v2 vault is authoritative. All three are written under the same
+   * account lock the rest of this table already uses.
+   */
+  migratingBy: text('migrating_by'),
+  migrationExpiresAt: timestamp('migration_expires_at', { withTimezone: true }),
+  migratedTo: uuid('migrated_to'),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
 });
+
+/**
+ * Short-lived owner-session authorization for the normal → paranoid enable
+ * wizard, refreshed by every capture-revision read. Opaque server bytes are
+ * readable/writable in normal mode only while this window is live; expiry
+ * abandons the attempt and makes its staged ciphertext eligible for physical
+ * deletion. Deliberately just a window: whether the enable itself may proceed
+ * is decided by the capture↔commit revision CAS under the account lock, not by
+ * anything recorded here.
+ */
+export const paranoidEnableTransitions = pgTable(
+  'paranoid_enable_transitions',
+  {
+    userId: uuid('user_id')
+      .primaryKey()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('paranoid_enable_transitions_expires_idx').on(t.expiresAt)],
+);
 
 // Bounded ciphertext history — the corruption/bad-write safety net (§4): each
 // superseded blob is archived here and pruned to the configured window (last N
@@ -3682,6 +3823,130 @@ export type NewParanoidVaultRetiredRow = typeof paranoidVaultRetired.$inferInser
 export type ParanoidRehydrationReceiptRow = typeof paranoidRehydrationReceipts.$inferSelect;
 export type NewParanoidRehydrationReceiptRow = typeof paranoidRehydrationReceipts.$inferInsert;
 
+// ── Vaults v2 (`docs/VAULTS_V2_DESIGN.md`) ───────────────────────────────────
+// A vault is a NAMED, user-owned container with its own passphrase and its own
+// storage backends. A portfolio is paranoid iff `portfolios.vault_id` is set.
+// The two tables below are the multi-vault blind store; the account-singleton
+// `paranoid_vaults` family above keeps serving the legacy routes unchanged
+// during the migration window.
+//
+// `name` and `backends` are the ONLY cleartext a vault carries — both are
+// deliberately non-secret (§1). Everything else is opaque ciphertext the server
+// stores, size-caps and CAS-versions without ever parsing it.
+
+export const vaultBackendsEnum = pgEnum('vault_backends', ['server', 'drive', 'both']);
+export const vaultDocKindEnum = pgEnum('vault_doc_kind', ['header', 'common', 'portfolio']);
+
+export const vaults = pgTable(
+  'vaults',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    /** User-chosen label ("Drive vault"); cleartext by design, ≤ 64 chars. */
+    name: text('name').notNull(),
+    backends: vaultBackendsEnum('backends').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('vaults_user_name_unique').on(t.userId, t.name),
+    index('vaults_user_idx').on(t.userId),
+    check('vaults_name_length', sql`char_length(${t.name}) between 1 and 64`),
+  ],
+);
+
+/**
+ * One opaque document. Exactly one `header` row per vault (kdfSalt + keySlots[]
+ * + the portfolio index) and one `portfolio` row per vaulted portfolio, each
+ * INDIVIDUALLY CAS-versioned so two devices editing two different portfolios of
+ * the same vault never conflict with each other.
+ *
+ * `portfolio_id` is NULL exactly when the row is the header — enforced by a
+ * CHECK rather than convention, so the two partial unique indexes below are
+ * exhaustive. Sizes are capped in the service AND here, because a byte cap that
+ * exists only in application code is one bad code path away from unbounded.
+ */
+export const vaultDocs = pgTable(
+  'vault_docs',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    vaultId: uuid('vault_id')
+      .notNull()
+      .references(() => vaults.id, { onDelete: 'cascade' }),
+    docKind: vaultDocKindEnum('doc_kind').notNull(),
+    /** The vaulted portfolio this blob belongs to; NULL for `header` and `common`. */
+    portfolioId: uuid('portfolio_id').references(() => portfolios.id, { onDelete: 'cascade' }),
+    ciphertext: bytea('ciphertext').notNull(),
+    sizeBytes: integer('size_bytes').notNull(),
+    /** Monotonic CAS token surfaced as the document's `ETag`. Starts at 1. */
+    version: integer('version').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('vault_docs_header_unique')
+      .on(t.vaultId)
+      .where(sql`${t.docKind} = 'header'`),
+    uniqueIndex('vault_docs_common_unique')
+      .on(t.vaultId)
+      .where(sql`${t.docKind} = 'common'`),
+    uniqueIndex('vault_docs_portfolio_unique')
+      .on(t.vaultId, t.portfolioId)
+      .where(sql`${t.docKind} = 'portfolio'`),
+    index('vault_docs_vault_idx').on(t.vaultId),
+    check(
+      'vault_docs_portfolio_id_matches_kind',
+      sql`(${t.docKind} = 'portfolio') = (${t.portfolioId} is not null)`,
+    ),
+    check('vault_docs_version_positive', sql`${t.version} > 0`),
+    // Per-kind caps (r2 §8): header 1 MiB, common 4 MiB, portfolio 8 MiB.
+    check(
+      'vault_docs_size_cap',
+      sql`${t.sizeBytes} = octet_length(${t.ciphertext})
+        and ${t.sizeBytes} > 0
+        and ${t.sizeBytes} <= (case ${t.docKind}
+          when 'header' then 1048576
+          when 'common' then 4194304
+          else 8388608 end)`,
+    ),
+  ],
+);
+
+/**
+ * One receipt per committed LEAVE. It exists to separate two states that are
+ * otherwise indistinguishable once `portfolios.vault_id` is null: a replayed
+ * leave whose response was lost (must be acknowledged, never re-inserted) and a
+ * leave against a portfolio that was never vaulted (a client error that must say
+ * so). Without it, one of those two has to be answered wrongly.
+ *
+ * `restore_id` is the client-supplied idempotency key and is the primary key, so
+ * the insert itself is the uniqueness check. Same shape and reasoning as
+ * `paranoid_rehydration_receipts`; it carries no document content, no row
+ * counts and no fingerprints — only that a restore under this id committed.
+ */
+export const vaultLeaveReceipts = pgTable(
+  'vault_leave_receipts',
+  {
+    restoreId: uuid('restore_id').primaryKey(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    portfolioId: uuid('portfolio_id')
+      .notNull()
+      .references(() => portfolios.id, { onDelete: 'cascade' }),
+    completedAt: timestamp('completed_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index('vault_leave_receipts_portfolio_idx').on(t.portfolioId)],
+);
+
+export type VaultLeaveReceiptRow = typeof vaultLeaveReceipts.$inferSelect;
+export type VaultRow = typeof vaults.$inferSelect;
+export type NewVaultRow = typeof vaults.$inferInsert;
+export type VaultDocRow = typeof vaultDocs.$inferSelect;
+export type NewVaultDocRow = typeof vaultDocs.$inferInsert;
+
 export const schema = {
   users,
   apiKeys,
@@ -3728,7 +3993,9 @@ export const schema = {
   portfolioDailySnapshots,
   portfolioSnapshotState,
   userTaxSettings,
+  taxYearUnlocks,
   portfolioSettings,
+  widgetLayouts,
   friendRequests,
   friendships,
   friendGroups,
@@ -3767,12 +4034,18 @@ export const schema = {
   expenseBudgetFires,
   webhookSubscriptions,
   webhookDeliveries,
+  paranoidEnableTransitions,
   paranoidVaults,
   paranoidVaultHistory,
   paranoidVaultServerCandidates,
   paranoidVaultRetirements,
   paranoidVaultRetired,
   paranoidRehydrationReceipts,
+  vaults,
+  vaultDocs,
+  vaultLeaveReceipts,
+  vaultBackendsEnum,
+  vaultDocKindEnum,
   userRoleEnum,
   userStatusEnum,
   assetTypeEnum,

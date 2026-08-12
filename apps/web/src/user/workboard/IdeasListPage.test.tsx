@@ -159,10 +159,10 @@ describe('IdeasListPage', () => {
     expect(listGroups).toHaveBeenCalledWith(expect.anything());
 
     // public → strong acknowledgment; all-friends → light confirm (the §16 ladder).
-    await userEvent.click(await screen.findByText('Public link'));
+    await userEvent.click(await screen.findByRole('radio', { name: /public link/i }));
     expect(screen.getByText(/sees your holdings and net worth/i)).toBeInTheDocument();
-    await userEvent.click(screen.getByText('All friends'));
-    expect(screen.getByText(/shares a read-only view/i)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('radio', { name: /all friends/i }));
+    expect(screen.getByText(/this change widens access/i)).toBeInTheDocument();
   });
 
   test('deleting an idea confirms then calls the API', async () => {

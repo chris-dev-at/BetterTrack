@@ -1,8 +1,15 @@
+import { lazy, Suspense } from 'react';
 import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom';
 
-import { AdminApp } from './admin/AdminApp';
 import { getRuntimeConfig } from './lib/runtimeConfig';
+import { Splash } from './user/components/ui';
 import { UserApp } from './user/UserApp';
+
+const AdminApp = lazy(() =>
+  import('./admin/AdminApp').then((module) => ({
+    default: module.AdminApp,
+  })),
+);
 
 /**
  * Top-level routing: admin and user are two fully separate systems (§3, §4.6),
@@ -23,7 +30,17 @@ export default function App() {
     return (
       <BrowserRouter>
         <Routes>
-          <Route path="/admin/*" element={<AdminApp />} />
+          <Route
+            path="/admin/*"
+            element={
+              // The admin origin's ENTIRE first paint is this chunk, so a null
+              // fallback is a blank page until it lands — the branded splash the
+              // user app shows while it bootstraps is the right stand-in.
+              <Suspense fallback={<Splash edition="Admin" />}>
+                <AdminApp />
+              </Suspense>
+            }
+          />
           <Route path="/*" element={<Navigate to="/admin" replace />} />
         </Routes>
       </BrowserRouter>

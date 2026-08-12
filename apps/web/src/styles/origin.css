@@ -8,6 +8,37 @@
  *
  * Everything is expressed as `bt-*` component classes over the token layer so
  * rebuilt screens stay visually consistent without per-page utility soup.
+ *
+ * ── The two-theme contract (board #68, "web light mode") ──────────────────
+ *
+ * The root element always carries `data-bt-theme` (`dark` | `light`), stamped
+ * before the first paint by the inline boot script in `index.html` and kept in
+ * step by `user/theme.ts`. Dark is the value set of `:root`, so the light block
+ * is the ONLY place a themed value differs — and every colour a component paints
+ * has to come through a token, or that component is dark-only by construction.
+ * `styles/themeTokens.test.ts` enforces both halves of that: the dark values
+ * here are pinned against the literals they replaced (a token refactor may not
+ * move a dark pixel), and new colour literals outside this file fail the build.
+ *
+ * How the light values were derived, so the next edit keeps the method:
+ *
+ *  - Hue is preserved. A light counterpart is the dark value scaled down the
+ *    same RGB ray (`#f6b82e` → `#7d5e17`), never a different hue. The brand
+ *    gold family stays the brand gold family; it only stops glowing.
+ *  - Ink clears 4.5:1 against the DARKEST opaque light surface
+ *    (`--bt-surface-hover`), not against white — a badge on a hovered row is
+ *    where a light theme actually fails.
+ *  - A `*-soft` tint is a wash of the VIVID (dark-theme) hue, not of the muted
+ *    light ink: a 12–20 % vivid wash stays a visible tint while keeping the
+ *    composite light enough for its own ink to clear 4.5:1 on top of it.
+ *  - GOLD IS THE ONE EXCEPTION, and it is an owner decision rather than a
+ *    derivation (2026-08-07, final word, decided with the mobile team). Brand
+ *    gold stays BRIGHT on light even though it is 1.78:1 on white; the
+ *    legibility budget is paid in geometry — heavier strokes, doubled edge
+ *    alphas — and the handful of places where gold letters carried real
+ *    reading text were converted to page ink plus a gold mark. See the gold
+ *    block in the light theme below; `themeTokens.test.ts` holds that override
+ *    in its own block so the AA gate over every OTHER ink stays exact.
  */
 
 :root {
@@ -18,8 +49,21 @@
   --bt-nav: #07090c;
   --bt-surface: #10151b;
   --bt-surface-soft: #121820;
+  /* A card that reads QUIETER than `--bt-surface`, not a hover state. Dark
+     drew it in `--bt-surface-soft`; clean-white needs it white while that
+     token becomes the tint. */
+  --bt-surface-quiet: #121820;
   --bt-surface-strong: #171e27;
   --bt-surface-hover: #1b232d;
+  /* An inset well that reads BELOW the page — a ratio-bar track, a sunken
+     strip. Dark has always drawn these in `--bt-surface-strong`; it becomes
+     its own token because the white light theme needs it to go the other way
+     (down, into grey) while `--bt-surface-strong` goes up, into white. */
+  --bt-recess: #171e27;
+  /* A persistently selected/checked row. Dark drew this in
+     `--bt-surface-strong`; under clean-white that token is the card white
+     itself, so selection needs a tint of its own or it disappears. */
+  --bt-selected: #171e27;
   --bt-scrim: rgba(4, 6, 9, 0.62);
   /* Rules + borders (8–15% opacity neutrals) */
   --bt-border: rgba(222, 230, 239, 0.085);
@@ -30,20 +74,126 @@
   --bt-text-soft: #c7cdd5;
   --bt-muted: #8b949f; /* min 5.16:1 against --bt-surface-hover (#1b232d) */
   --bt-faint: #828c96; /* min 4.63:1 against --bt-surface-hover (#1b232d) */
-  /* Brand + semantics */
-  --bt-gold: #f6b82e;
+  /*
+   * Brand + semantics.
+   *
+   * Gold is FOUR tokens, not one (owner via mobile B2, board #68 follow-up).
+   * The single `--bt-gold` had to satisfy the strictest of its jobs at once,
+   * and on a light canvas "legible as text" dragged it to a rusty ochre that
+   * zeroed the blue channel — off the brand ray, which is what the owner
+   * reacted to. Split by JOB, each free to sit where its own floor allows:
+   *
+   *   --bt-gold-ink      gold that IS text, or a glyph carrying meaning
+   *   --bt-gold-graphic  borders, rings, chart lines, the nav active edge
+   *   --bt-gold-fill     gold as a filled background, under --bt-gold-on
+   *   --bt-gold-on       the text/glyph sitting ON a gold fill
+   *
+   * In DARK all three gold roles are the one brand gold, exactly as before —
+   * the split costs this theme nothing and moves no pixel.
+   */
+  --bt-gold-ink: #f6b82e;
+  --bt-gold-graphic: #f6b82e;
+  --bt-gold-fill: #f6b82e;
+  --bt-gold-on: #171105;
   --bt-gold-bright: #ffd26b;
-  --bt-gold-ink: #171105;
   --bt-gold-soft: rgba(246, 184, 46, 0.11);
+  /*
+   * The safety valve (THEME3). Light ships gold ink deliberately below AA, so
+   * the few places where gold letters carry a SENTENCE or a LABEL — text whose
+   * loss breaks comprehension — draw from this token instead and let a gold
+   * MARK carry the brand. Dark aliases it straight back to the gold, so every
+   * one of those sites paints exactly the pixel it painted before.
+   */
+  --bt-gold-ink-safe: var(--bt-gold-ink);
+  /*
+   * Gold GEOMETRY (THEME3, owner final word 2026-08-07).
+   *
+   * Brand gold is 1.78:1 on white — under the 3:1 graphical floor — and the
+   * owner's decision is that the colour does not move. So light compensates
+   * with MASS rather than darkness, mirroring what the mobile client shipped
+   * (3dp strokes where dark uses 2dp, edge alphas doubled). Every gold stroke
+   * in the sheet sizes itself from one of these three, so the compensation is
+   * a token flip and not thirty hand-tuned rules.
+   *
+   *   --bt-gold-hair  a 1px gold rule/border/ring
+   *   --bt-gold-ring  a 2px focus outline or underline bar
+   *   --bt-gold-edge  the 3px nav active-edge dash
+   */
+  --bt-gold-hair: 1px;
+  --bt-gold-ring: 2px;
+  --bt-gold-edge: 3px;
   --bt-pos: #34d399;
   --bt-pos-soft: rgba(52, 211, 153, 0.1);
   --bt-neg: #fb7185;
   --bt-neg-soft: rgba(251, 113, 133, 0.1);
   --bt-blue: #38bdf8;
   --bt-blue-soft: rgba(56, 189, 248, 0.1);
+  /* Portfolio-kind ink for a MIRRORCHAIN group mark (see .bt-pf-chip). */
+  --bt-pf-group-ink: #9085e9;
+  /* Canvas atmosphere — the two faint corner glows behind .bt-app. */
+  --bt-glow-cool: rgba(56, 189, 248, 0.05);
+  --bt-glow-warm: rgba(246, 184, 46, 0.035);
+  /* Incidental chrome that is neither surface nor ink. */
+  --bt-selection: rgba(246, 184, 46, 0.28);
+  --bt-scrollbar: rgba(139, 148, 159, 0.28);
+  /*
+   * Edge for a raised element sitting on a raised track.
+   *
+   * Dark separates those two by LIGHTNESS — `--bt-surface-strong` (#171e27) is
+   * a clear step up from `--bt-bg-raised` (#0c1015), so nothing more is needed
+   * and this is transparent (a fully transparent shadow paints nothing, which
+   * is how dark stays pixel-identical). Light has nowhere left to go: #ffffff
+   * on #f7f7f6 is a 3% step, and a selected segment reads as unselected. There
+   * the separation has to come from an edge instead.
+   */
+  --bt-raised-edge: transparent;
+  /* Sheen: the light that a raised thing catches. Inverts between themes — on
+     a light canvas a white wash is invisible, so it becomes a dark one. */
+  --bt-sheen: rgba(222, 230, 239, 0.05);
+  --bt-sheen-strong: rgb(255 255 255 / 4.5%);
   /* Elevation (reserved for temporary overlays) */
   --bt-shadow-menu: 0 10px 34px rgba(0, 0, 0, 0.45);
   --bt-shadow-overlay: 0 28px 80px rgba(0, 0, 0, 0.55);
+  --bt-shadow-lift: 0 30px 80px -30px rgb(0 0 0 / 45%);
+  --bt-shadow-ring: 0 0 0 1px rgb(0 0 0 / 22%);
+  --bt-shadow-card: 0 18px 38px -26px rgb(0 0 0 / 62%);
+  /*
+   * Chart system. `ui/charts/palette.ts` hands these straight to SVG/DOM as
+   * `var(...)`, and resolves them through `getComputedStyle` for the one
+   * canvas-backed chart (lightweight-charts cannot read a custom property).
+   * The categorical order is the validated identity palette — assign by index,
+   * never re-sort by rank.
+   */
+  --bt-chart-main: #38bdf8;
+  --bt-chart-main-top: rgba(56, 189, 248, 0.22);
+  --bt-chart-main-bottom: rgba(56, 189, 248, 0.02);
+  --bt-chart-grid: rgba(222, 230, 239, 0.06);
+  --bt-chart-text: #77818d;
+  --bt-chart-pos: #34d399;
+  --bt-chart-pos-top: rgba(52, 211, 153, 0.22);
+  --bt-chart-pos-bottom: rgba(52, 211, 153, 0.02);
+  --bt-chart-neg: #fb7185;
+  --bt-chart-neg-top: rgba(251, 113, 133, 0.02);
+  --bt-chart-neg-bottom: rgba(251, 113, 133, 0.22);
+  --bt-chart-flat: #71717a;
+  /* Sparkline's own historical down-stroke (Tailwind red-400) — see palette.ts. */
+  --bt-chart-trend-down: #f87171;
+  --bt-chart-flag: #f6b82e;
+  --bt-chart-benchmark: #9085e9;
+  --bt-chart-1: #3987e5; /* blue */
+  --bt-chart-2: #d95926; /* orange */
+  --bt-chart-3: #199e70; /* green */
+  --bt-chart-4: #c98500; /* yellow */
+  --bt-chart-5: #d55181; /* magenta */
+  --bt-chart-6: #9085e9; /* violet */
+  --bt-chart-7: #0d9488; /* teal */
+  --bt-chart-8: #c0453f; /* red-brown */
+  --bt-chart-9: #7a9e2b; /* lime */
+  --bt-chart-10: #b06fc9; /* purple */
+  /* Cash sits OUTSIDE the categorical ramp on purpose: it is not one series
+     among ten, it is the non-invested remainder. No consumer yet — declared so
+     both clients name the same colour when one lands. */
+  --bt-chart-cash: #7a828b;
   /* Frame metrics */
   --bt-rail-w: 260px;
   --bt-rail-w-collapsed: 64px;
@@ -77,31 +227,175 @@
 
 :root[data-bt-theme='light'] {
   color-scheme: light;
-  --bt-bg: #f1f2f3;
-  --bt-bg-raised: #f7f7f6;
-  --bt-nav: #e9eaeb;
-  --bt-surface: #fafafa;
-  --bt-surface-soft: #f1f2f3;
+  /*
+   * ── Clean white (owner order, 2026-08-07, via the mobile B2 redesign) ────
+   *
+   * The page, the cards and the bars are all #FFFFFF. Separation is a HAIRLINE,
+   * not a tone.
+   *
+   * The previous light theme separated layers the way the dark one does — by
+   * stepping lightness (#f1f2f3 page, #fafafa card, #ffffff raised). Inverted,
+   * that made the page tone the single largest grey area on screen, and that
+   * grey is what the owner reacted to. So the ramp is gone: every structural
+   * surface is white and `--bt-border` draws the edges.
+   *
+   * Exactly two tints survive, both FUNCTIONAL rather than structural:
+   *
+   *   #E9EDF2  hover (`--bt-surface-hover`), selection (`--bt-selected`) and
+   *       the soft/skeleton/badge tone (`--bt-surface-soft`). This is the
+   *       theme's BINDING GROUND — the darkest surface any text sits on — so
+   *       every ink below is verified against it, not against white.
+   *   #DAE1E9  `--bt-recess`, an inset well that reads BELOW the page (the
+   *       empty half of a ratio bar). Deliberately NOT a text ground:
+   *       `--bt-faint` is only 4.36:1 here.
+   *
+   * Hover and selection share the tint on purpose. What distinguishes the
+   * ACTIVE navigation row is the gold edge plus brighter ink — the owner's
+   * standing nav rule — not a third grey.
+   *
+   * `--bt-surface-strong` stays white: it is the whitest card (tooltip, toast,
+   * button, avatar disc), which is the opposite job from "the row you are on".
+   * Dark drew both with one token; clean-white cannot, so selection moved to
+   * `--bt-selected` and the hovers that used to brighten toward white now
+   * darken toward the tint instead.
+   */
+  --bt-bg: #ffffff;
+  --bt-bg-raised: #ffffff;
+  --bt-nav: #ffffff;
+  --bt-surface: #ffffff;
+  --bt-surface-soft: #e9edf2;
+  --bt-surface-quiet: #ffffff;
   --bt-surface-strong: #ffffff;
-  --bt-surface-hover: #e8eaec;
-  --bt-scrim: rgba(28, 34, 42, 0.38);
-  --bt-border: rgba(20, 27, 35, 0.1);
-  --bt-border-strong: rgba(20, 27, 35, 0.16);
-  --bt-border-accent: rgba(174, 119, 0, 0.3);
-  --bt-text: #131820;
-  --bt-text-soft: #3e4650;
-  --bt-muted: #56616d; /* min 5.23:1 against --bt-surface-hover (#e8eaec) */
-  --bt-faint: #5d6773; /* min 4.77:1 against --bt-surface-hover (#e8eaec) */
-  --bt-gold-bright: #d89400;
-  --bt-gold-soft: rgba(213, 148, 0, 0.1);
-  --bt-pos: #168861;
-  --bt-pos-soft: rgba(22, 136, 97, 0.09);
-  --bt-neg: #d84f67;
-  --bt-neg-soft: rgba(216, 79, 103, 0.09);
-  --bt-blue: #087fab;
-  --bt-blue-soft: rgba(8, 127, 171, 0.09);
+  --bt-surface-hover: #e9edf2;
+  --bt-selected: #e9edf2;
+  --bt-recess: #dae1e9;
+  --bt-scrim: rgba(19, 24, 32, 0.38);
+  /* Hairlines carry the structure now, so they are the ink family at 10 %/16 %. */
+  --bt-border: rgba(19, 24, 32, 0.1);
+  --bt-border-strong: rgba(19, 24, 32, 0.16);
+  --bt-text: #131820; /* 15.15:1 on the binding ground */
+  --bt-text-soft: #3e4650; /* 8.13:1 */
+  --bt-muted: #56616d; /* 5.37:1 */
+  --bt-faint: #5d6773; /* 4.89:1 — keep off --bt-recess, where it is 4.36:1 */
+  /*
+   * ── Cross-client palette (mobile B2 light theme, spec §1.4) ──────────────
+   *
+   * The brand + semantic inks are the values the mobile client ships, adopted
+   * verbatim so the two clients read as one product. Mobile six-checks-validated
+   * them (deutan separation included) on white and #EEF0F2; every one is
+   * re-verified here against this theme's own binding ground (#E9EDF2), which
+   * is darker than either. Every SEMANTIC ink clears its floor there; gold is
+   * the one that does not, and does not try to — see immediately below.
+   *
+   * ── Gold: owner FINAL WORD, 2026-08-07 ───────────────────────────────────
+   *
+   * Decided on-device with the mobile team and shipped there as "bright brand
+   * yellow everywhere (owner final word)". It REPLACES the darkened light golds
+   * this file shipped one pass earlier (#866419 ink / #A77D1F graphic): those
+   * cleared their contrast floors, and the owner rejected the result as not the
+   * brand. The brand gold stays BRIGHT on light, and the legibility budget is
+   * paid in GEOMETRY instead — see --bt-gold-hair/ring/edge above, and the
+   * doubled edge alphas below.
+   *
+   *   --bt-gold-graphic  #F6B82E  brand gold, unchanged from dark. 1.78:1 on
+   *                      white, i.e. UNDER the 3:1 graphical floor, and carried
+   *                      instead by a stroke that is 1.5–2× its dark mass.
+   *   --bt-gold-fill     #F6B82E  a gold FILL is bright gold again, not the old
+   *                      dusty #D2B37A. --bt-gold-on clears 10.56:1 on it.
+   *   --bt-gold-ink      #D49E28  mobile's goldInk. ~2.41:1 on white, ~2.05:1
+   *                      on the binding ground, ~2.15:1 on --bt-gold-soft — all
+   *                      sub-AA BY OWNER DECISION, accepted for short numbers,
+   *                      badges and accent marks only. Text that has to be READ
+   *                      draws --bt-gold-ink-safe and wears a gold mark instead.
+   *
+   * All four are on the brand ray (B channel preserved), which is the one
+   * property the owner did react to and which the token test still guards.
+   */
+  --bt-gold-ink: #d49e28; /* mobile goldInk — owner override, sub-AA on purpose */
+  --bt-gold-graphic: #f6b82e; /* brand gold; geometry compensates */
+  --bt-gold-fill: #f6b82e; /* brand gold; carries --bt-gold-on at 10.56:1 */
+  --bt-gold-on: #171105; /* mobile B2 onGold */
+  --bt-gold-bright: #ffd26b; /* primary :hover — brightens, as dark does */
+  /* Critical reading text drops to the page ink; a gold mark carries the brand. */
+  --bt-gold-ink-safe: var(--bt-text);
+  /*
+   * The geometry half of the override: mobile went 3dp where dark uses 2dp, so
+   * every gold stroke here is one step heavier than its dark counterpart. A
+   * 4px active-rail dash at 1.78:1 is a mark you see; a 3px one at 3.19:1 was
+   * the colour compromise the owner threw out.
+   */
+  --bt-gold-hair: 2px;
+  --bt-gold-ring: 3px;
+  --bt-gold-edge: 4px;
+  --bt-pos: #0f7853; /* 4.66:1 */
+  --bt-neg: #b23a4e; /* 4.95:1 */
+  --bt-blue: #1f6a8b; /* web-only slot */
+  /*
+   * The `-soft` surfaces are OPAQUE, not alpha washes.
+   *
+   * A wash composites against whatever is under it, and the thing under a badge
+   * is often a hovered row. Re-checked at the spec's 12 %/16 % alphas over the
+   * binding ground, every one of these fell through its floor (gain 3.99,
+   * loss 4.19, gold 4.33). Opaque pale surfaces make the badge's ground a fact
+   * rather than a function of what it happens to be sitting on.
+   */
+  --bt-gold-soft: #fcf1db; /* mobile goldSurface — the badge/wash ground */
+  --bt-pos-soft: #eaf6f1; /* 4.95:1 */
+  --bt-neg-soft: #fbedef; /* mobile lossSurface; 5.12:1 */
+  --bt-blue-soft: #eaf3fa; /* 5.35:1 */
+  /*
+   * The edge alpha, DOUBLED (THEME3) — the other half of mobile's compensation.
+   * It was the darkened gold at 30 %; it is brand gold at 60 %, so a gold-framed
+   * callout, a chat bubble rule and a selected radio card keep the edge they had
+   * even though the hue no longer does any of the work.
+   */
+  --bt-border-accent: rgba(246, 184, 46, 0.6);
+  --bt-pf-group-ink: #6154c6;
+  --bt-glow-cool: rgba(31, 106, 139, 0.05);
+  --bt-glow-warm: rgba(246, 184, 46, 0.08); /* brand gold, alpha doubled */
+  --bt-selection: rgba(246, 184, 46, 0.36);
+  --bt-scrollbar: rgba(86, 97, 109, 0.34);
+  --bt-raised-edge: rgba(19, 24, 32, 0.14);
+  --bt-sheen: rgba(19, 24, 32, 0.06);
+  --bt-sheen-strong: rgb(19 24 32 / 4%);
   --bt-shadow-menu: 0 10px 34px rgba(16, 24, 32, 0.16);
   --bt-shadow-overlay: 0 28px 80px rgba(16, 24, 32, 0.2);
+  --bt-shadow-lift: 0 30px 80px -30px rgb(16 24 32 / 18%);
+  --bt-shadow-ring: 0 0 0 1px rgb(16 24 32 / 10%);
+  --bt-shadow-card: 0 18px 38px -26px rgb(16 24 32 / 26%);
+  /*
+   * Chart light counterparts. Series marks are graphical, so the floor is 3:1
+   * rather than 4.5:1 — except `--bt-chart-text`, which is real axis text and
+   * reuses `--bt-muted`'s proven value. Slots 1/2/5/6/9/10 are the same six
+   * inks `.bt-pf-chip` already ships in light, so a portfolio's chip colour and
+   * its series colour stay the same colour.
+   */
+  --bt-chart-main: #1f6a8b;
+  --bt-chart-main-top: rgba(31, 106, 139, 0.18);
+  --bt-chart-main-bottom: rgba(31, 106, 139, 0.02);
+  --bt-chart-grid: rgba(19, 24, 32, 0.1);
+  --bt-chart-text: #56616d;
+  --bt-chart-pos: #0f7853;
+  --bt-chart-pos-top: rgba(15, 120, 83, 0.18);
+  --bt-chart-pos-bottom: rgba(15, 120, 83, 0.02);
+  --bt-chart-neg: #b23a4e;
+  --bt-chart-neg-top: rgba(178, 58, 78, 0.02);
+  --bt-chart-neg-bottom: rgba(178, 58, 78, 0.18);
+  --bt-chart-flat: #6e7276; /* 'rest' slot — mobile B2 §1.4 */
+  --bt-chart-trend-down: #b23a4e;
+  --bt-chart-flag: #f6b82e; /* brand gold: a chart's gold mark is graphic (THEME3) */
+  --bt-chart-benchmark: #6154c6;
+  --bt-chart-1: #1f6ac4; /* blue */
+  --bt-chart-2: #b8431a; /* orange */
+  --bt-chart-3: #12805b; /* green — mobile B2 §1.4 */
+  --bt-chart-4: #96600a; /* yellow — mobile B2 §1.4 */
+  --bt-chart-5: #b93a68; /* magenta */
+  --bt-chart-6: #6154c6; /* violet */
+  --bt-chart-7: #00887a; /* teal — mobile B2 §1.4 */
+  --bt-chart-8: #a03832; /* red-brown — mobile B2 §1.4 */
+  --bt-chart-9: #6b8a1a; /* lime — mobile B2 §1.4 */
+  --bt-chart-10: #8e46ad; /* purple */
+  --bt-chart-cash: #7a828b; /* mobile B2 §1.4 — cash, outside the ramp */
 }
 
 /* ── Base canvas ─────────────────────────────────────────────────────────── */
@@ -112,8 +406,8 @@
   max-width: 100%;
   min-height: calc(100 * var(--bt-vh));
   background:
-    radial-gradient(circle at 40% -16%, rgba(56, 189, 248, 0.05), transparent 30rem),
-    radial-gradient(circle at 94% 6%, rgba(246, 184, 46, 0.035), transparent 24rem), var(--bt-bg);
+    radial-gradient(circle at 40% -16%, var(--bt-glow-cool), transparent 30rem),
+    radial-gradient(circle at 94% 6%, var(--bt-glow-warm), transparent 24rem), var(--bt-bg);
   color: var(--bt-text);
   font-family:
     'Inter',
@@ -130,18 +424,18 @@
 }
 
 .bt-app ::selection {
-  background: rgba(246, 184, 46, 0.28);
+  background: var(--bt-selection);
 }
 
 .bt-app :focus-visible {
-  outline: 2px solid var(--bt-gold);
+  outline: var(--bt-gold-ring) solid var(--bt-gold-graphic);
   outline-offset: 2px;
   border-radius: 4px;
 }
 
 .bt-app * {
   scrollbar-width: thin;
-  scrollbar-color: rgba(139, 148, 159, 0.28) transparent;
+  scrollbar-color: var(--bt-scrollbar) transparent;
 }
 
 /* Numeric emphasis */
@@ -158,8 +452,46 @@
   color: var(--bt-neg);
 }
 
+/* Gold as an ACCENT: a short highlighted number, a badge, a pill. Bright, and
+   deliberately sub-AA on light — see the gold block in the light theme. */
 .bt-gold {
-  color: var(--bt-gold);
+  color: var(--bt-gold-ink);
+}
+
+/* Gold as a MARK: an icon or glyph that points at something rather than
+   spelling it out. Takes the graphic gold, so it stays brand-bright. */
+.bt-gold-mark {
+  color: var(--bt-gold-graphic);
+}
+
+/*
+ * ── The gold safety valve (THEME3) ─────────────────────────────────────────
+ *
+ * Gold ink is an owner-accepted sub-AA colour on light, which is fine for a
+ * number you glance at and wrong for a sentence you have to read. These two
+ * classes are the escape hatch, and in DARK both are literally `--bt-gold-ink`
+ * — the conversion costs the dark theme nothing.
+ *
+ *   .bt-gold-safe  the ink swap alone. For text that already sits inside a
+ *                  gold frame (a gold-washed callout, a gold focus ring): the
+ *                  frame is the mark, so a second one would be noise.
+ *   .bt-gold-note  the ink swap plus the mark — a leading gold dot, sized in
+ *                  `em` so it tracks whatever type it is introducing.
+ */
+.bt-gold-safe,
+.bt-gold-note {
+  color: var(--bt-gold-ink-safe);
+}
+
+:root[data-bt-theme='light'] .bt-gold-note::before {
+  content: '';
+  display: inline-block;
+  width: 0.5em;
+  height: 0.5em;
+  margin-right: 0.45em;
+  border-radius: 50%;
+  background: var(--bt-gold-graphic);
+  vertical-align: 0.05em;
 }
 
 .bt-muted {
@@ -289,7 +621,7 @@
 
 .bt-rail-item.is-active {
   position: relative;
-  background: var(--bt-surface-strong);
+  background: var(--bt-selected);
   color: var(--bt-text);
 }
 
@@ -303,10 +635,10 @@
   left: -10px;
   top: 50%;
   translate: 0 -50%;
-  width: 3px;
+  width: var(--bt-gold-edge);
   height: 18px;
   border-radius: 0 2px 2px 0;
-  background: var(--bt-gold);
+  background: var(--bt-gold-graphic);
 }
 
 /* The destination icon — a direct child of the row, or of the link inside an
@@ -320,7 +652,9 @@
 
 .bt-rail-item.is-active > svg,
 .bt-rail-item.is-active > .bt-rail-item__link > svg {
-  color: var(--bt-gold);
+  /* A mark, not a word: the row's label is what you read, and it takes
+     `--bt-text`. So the icon rides the bright graphic gold with the edge. */
+  color: var(--bt-gold-graphic);
 }
 
 .bt-rail-item__label {
@@ -341,7 +675,7 @@
   padding: 1px 5px;
   border-radius: 9px;
   background: var(--bt-gold-soft);
-  color: var(--bt-gold);
+  color: var(--bt-gold-ink);
   font-size: 11px;
   font-weight: 600;
   text-align: center;
@@ -515,13 +849,13 @@
   left: 50%;
   translate: -50% 0;
   width: 24px;
-  height: 3px;
+  height: var(--bt-gold-edge);
   border-radius: 0 0 2px 2px;
-  background: var(--bt-gold);
+  background: var(--bt-gold-graphic);
 }
 
 .bt-bottombar a.is-active > svg {
-  color: var(--bt-gold);
+  color: var(--bt-gold-graphic);
 }
 
 .bt-bottombar__label {
@@ -553,6 +887,7 @@
   font-weight: 640;
   letter-spacing: -0.02em;
   line-height: 1.15;
+  overflow-wrap: anywhere;
 }
 
 .bt-page-sub {
@@ -700,7 +1035,7 @@
 }
 
 .bt-panel--soft {
-  background: var(--bt-surface-soft);
+  background: var(--bt-surface-quiet);
 }
 
 /* A ruled band: sections separated by internal 1px rules, no nested cards. */
@@ -797,9 +1132,9 @@
 }
 
 .bt-btn--primary {
-  background: var(--bt-gold);
-  border-color: var(--bt-gold);
-  color: var(--bt-gold-ink);
+  background: var(--bt-gold-fill);
+  border-color: var(--bt-gold-graphic);
+  color: var(--bt-gold-on);
   font-weight: 640;
 }
 
@@ -821,7 +1156,7 @@
 
 .bt-btn--danger {
   background: none;
-  border-color: rgba(251, 113, 133, 0.38);
+  border-color: color-mix(in srgb, var(--bt-neg) 38%, transparent);
   color: var(--bt-neg);
 }
 
@@ -864,6 +1199,15 @@
   font-weight: 570;
 }
 
+/* Native `required` remains the programmatic source of truth; the marker makes
+   that constraint visible before submit across both Origin and legacy forms. */
+.bt-field:has(:is(input, select, textarea):required) > label::after,
+label:has(+ :is(input, select, textarea):required)::after,
+label:has(> :is(input, select, textarea):required)::after {
+  content: ' *';
+  color: var(--bt-neg);
+}
+
 .bt-field__hint {
   color: var(--bt-muted);
   font-size: 11.5px;
@@ -903,8 +1247,8 @@
 .bt-select:focus-visible,
 .bt-textarea:focus-visible {
   outline: none;
-  border-color: var(--bt-gold);
-  box-shadow: 0 0 0 1px var(--bt-gold);
+  border-color: var(--bt-gold-graphic);
+  box-shadow: 0 0 0 var(--bt-gold-hair) var(--bt-gold-graphic);
 }
 
 .bt-input[aria-invalid='true'] {
@@ -958,8 +1302,12 @@
 }
 
 .bt-seg > button.is-active {
-  background: var(--bt-surface-strong);
+  background: var(--bt-selected);
   color: var(--bt-text);
+  /* Transparent in dark, a hairline in light — see --bt-raised-edge. Without
+     it the selected segment is white on near-white and the control looks like
+     nothing is selected at all. */
+  box-shadow: 0 0 0 1px var(--bt-raised-edge);
 }
 
 /* Switch */
@@ -992,13 +1340,13 @@
 }
 
 .bt-switch[aria-checked='true'] {
-  background: var(--bt-gold);
-  border-color: var(--bt-gold);
+  background: var(--bt-gold-fill);
+  border-color: var(--bt-gold-graphic);
 }
 
 .bt-switch[aria-checked='true']::after {
   transform: translateX(14px);
-  background: var(--bt-gold-ink);
+  background: var(--bt-gold-on);
 }
 
 /* Keyboard hint */
@@ -1046,7 +1394,7 @@
 .bt-badge--gold {
   background: var(--bt-gold-soft);
   border-color: transparent;
-  color: var(--bt-gold);
+  color: var(--bt-gold-ink);
 }
 
 .bt-badge--blue {
@@ -1076,7 +1424,7 @@
 }
 
 .bt-dot--gold {
-  background: var(--bt-gold);
+  background: var(--bt-gold-graphic);
 }
 
 /* ── Local navigation (portfolio tabs, section tabs) ─────────────────────── */
@@ -1105,7 +1453,9 @@
   min-height: 38px;
   padding: 0 13px;
   border: 0;
-  border-bottom: 2px solid transparent;
+  /* Reserved on every tab, gold only on the active one — so widening it in
+     light thickens the marker without shifting one tab against another. */
+  border-bottom: var(--bt-gold-ring) solid transparent;
   background: none;
   color: var(--bt-muted);
   font: inherit;
@@ -1125,7 +1475,7 @@
 
 .bt-tab.is-active {
   color: var(--bt-text);
-  border-bottom-color: var(--bt-gold);
+  border-bottom-color: var(--bt-gold-graphic);
 }
 
 .bt-tab__count {
@@ -1167,7 +1517,7 @@
 }
 
 .bt-subtab.is-active {
-  background: var(--bt-surface-strong);
+  background: var(--bt-selected);
   border-color: var(--bt-border-strong);
   color: var(--bt-text);
 }
@@ -1391,6 +1741,7 @@
   position: absolute;
   z-index: 72;
   min-width: 220px;
+  max-width: calc(100 * var(--bt-vw) - 16px);
   background: var(--bt-bg-raised);
   border: 1px solid var(--bt-border-strong);
   border-radius: 8px;
@@ -1493,7 +1844,7 @@
   padding: 3px 10px;
   border-radius: 999px;
   background: var(--bt-gold-soft);
-  color: var(--bt-gold);
+  color: var(--bt-gold-ink);
   font-size: 11px;
   font-weight: 640;
   letter-spacing: 0.07em;
@@ -1535,7 +1886,7 @@
   width: 5px;
   height: 5px;
   border-radius: 50%;
-  background: var(--bt-gold);
+  background: var(--bt-gold-graphic);
   translate: 0 -2px;
 }
 
@@ -1558,7 +1909,7 @@
   position: absolute;
   inset: 0;
   translate: -100% 0;
-  background: linear-gradient(90deg, transparent, rgba(222, 230, 239, 0.05), transparent);
+  background: linear-gradient(90deg, transparent, var(--bt-sheen), transparent);
   animation: bt-shimmer 1.6s infinite;
 }
 
@@ -1631,8 +1982,15 @@
   text-decoration-thickness: 2px;
 }
 
+/* A gold LINK is reading text you also have to click, so it takes the safe ink
+   and puts the gold in its underline. */
 .bt-link--gold {
-  color: var(--bt-gold);
+  color: var(--bt-gold-ink-safe);
+  text-decoration-color: var(--bt-gold-graphic);
+}
+
+:root[data-bt-theme='light'] .bt-link--gold {
+  text-decoration-thickness: var(--bt-gold-hair);
 }
 
 .bt-footer-link {
@@ -1684,6 +2042,15 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
+
   .bt-shell,
   .bt-scrim,
   .bt-dialog__panel,
@@ -1867,6 +2234,18 @@
    the DOM at this width instead — `usePhoneShell`, which must stay in lockstep
    with the 480px literal below. */
 @media (max-width: 480px) {
+  /* iOS zooms the viewport when any focused native field computes below 16px.
+     Keep this global: auth and portalled surfaces sit outside the app shell. */
+  :is(input, select, textarea) {
+    font-size: 16px !important;
+  }
+
+  .bt-btn--sm.bt-btn--icon,
+  .bt-tab {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
   .bt-topbar {
     flex-wrap: wrap;
     gap: 4px;
@@ -2036,8 +2415,18 @@
     flex: 1 1 calc(50% - 4px);
   }
 
+  /* The donut + ranked bars need more than a phone-width row once their fixed
+     label/value columns are populated. Stack them throughout the narrow band;
+     waiting for the 480px phone-sheet breakpoint lets their min-content width
+     enlarge Chromium's layout viewport before that media query can match. */
+  .bt-money-surface .bt-bytag {
+    align-items: stretch;
+    flex-direction: column;
+    min-width: 0;
+  }
+
   .bt-money-surface .bt-bytag__chart {
-    margin-inline: auto;
+    align-self: center;
   }
 
   .bt-money-surface .bt-bytag__bars {
@@ -2370,7 +2759,10 @@
    ink only — the existing dashed edit outline simply turns gold. No edge bar, and
    no opacity drop (which would read as "disabled" rather than "held"). */
 .bt-home-w.is-armed {
-  outline-color: var(--bt-gold);
+  outline-color: var(--bt-gold-graphic);
+  /* 1px in dark — the width the neutral edit outline already had — and 2px in
+     light, where bright gold on white needs the extra mass to register. */
+  outline-width: var(--bt-gold-hair);
   background: var(--bt-surface);
 }
 
@@ -2394,7 +2786,7 @@
 /* A click target, not a drag handle: no `touch-action` override (the page must
    keep scrolling under the finger) and no grab cursor. */
 .bt-home-w__grip[aria-pressed='true'] {
-  color: var(--bt-gold);
+  color: var(--bt-gold-graphic);
 }
 
 .bt-home-w__anchor {
@@ -2565,8 +2957,21 @@
   text-decoration: none;
 }
 
+/*
+ * Hover turns a row title gold. On light that would be 2.4:1 exactly while the
+ * cursor is on it — the title disappearing under the pointer is the worst
+ * possible moment for it to go — so light keeps the ink and moves the gold into
+ * a rule under the words. Dark is unchanged: `--bt-gold-ink-safe` is the gold.
+ */
 .bt-home-mover__link:hover {
-  color: var(--bt-gold);
+  color: var(--bt-gold-ink-safe);
+}
+
+:root[data-bt-theme='light'] .bt-home-mover__link:hover {
+  text-decoration: underline;
+  text-decoration-color: var(--bt-gold-graphic);
+  text-decoration-thickness: var(--bt-gold-hair);
+  text-underline-offset: 3px;
 }
 
 .bt-home-mover__name {
@@ -2685,7 +3090,7 @@
 
 .bt-home-shortcut__icon {
   flex: 0 0 auto;
-  color: var(--bt-gold);
+  color: var(--bt-gold-graphic);
 }
 
 .bt-home-shortcut__sub {
@@ -2747,7 +3152,7 @@
 }
 
 .bt-home-catalog__item:hover .bt-home-catalog__add {
-  color: var(--bt-gold);
+  color: var(--bt-gold-graphic);
 }
 
 /* ── Board responsiveness ────────────────────────────────────────────────── */
@@ -2819,7 +3224,14 @@
 }
 
 .bt-home-txn__link:hover {
-  color: var(--bt-gold);
+  color: var(--bt-gold-ink-safe);
+}
+
+:root[data-bt-theme='light'] .bt-home-txn__link:hover {
+  text-decoration: underline;
+  text-decoration-color: var(--bt-gold-graphic);
+  text-decoration-thickness: var(--bt-gold-hair);
+  text-underline-offset: 3px;
 }
 
 .bt-home-divs {
@@ -2881,7 +3293,7 @@
 }
 
 .bt-monthpick__arrow:hover:not(:disabled) {
-  background: var(--bt-surface-strong);
+  background: var(--bt-surface-hover);
   color: var(--bt-text);
 }
 
@@ -2920,7 +3332,7 @@
 }
 
 .bt-iconbtn:hover {
-  background: var(--bt-surface-strong);
+  background: var(--bt-surface-hover);
   color: var(--bt-text);
 }
 
@@ -3168,7 +3580,7 @@
 }
 
 .bt-monthpick__arrow:hover:not(:disabled) {
-  background: var(--bt-surface-strong);
+  background: var(--bt-surface-hover);
   color: var(--bt-text);
 }
 
@@ -3207,7 +3619,7 @@
 }
 
 .bt-iconbtn:hover {
-  background: var(--bt-surface-strong);
+  background: var(--bt-surface-hover);
   color: var(--bt-text);
 }
 
@@ -3302,7 +3714,7 @@
 }
 
 .bt-monthpick__arrow:hover:not(:disabled) {
-  background: var(--bt-surface-strong);
+  background: var(--bt-surface-hover);
   color: var(--bt-text);
 }
 
@@ -3458,11 +3870,14 @@
 /* Gold, never the negative palette: a fired alert wants attention, it is not a
    loss. pos/neg ink stays reserved for real gain/loss polarity. */
 .bt-home-alerts__value.is-hot {
-  color: var(--bt-gold);
+  color: var(--bt-gold-ink);
 }
 
+/* The widget's own label brightens on hover. `.bt-label` rests at `--bt-muted`,
+   so on light the safe ink is still a clear step up — the feedback survives the
+   colour swap without needing a mark of its own. */
 .bt-home-alerts:hover .bt-label {
-  color: var(--bt-gold);
+  color: var(--bt-gold-ink-safe);
 }
 
 .bt-home-alerts__list {
@@ -3543,8 +3958,15 @@
   content: '';
   position: absolute;
   border-radius: 1px;
-  background: var(--bt-gold);
+  background: var(--bt-gold-graphic);
   opacity: 0.75;
+}
+
+/* Bright gold at 75 % on white is a suggestion, not a drop target. Light spends
+   the last quarter of the alpha as well — the same "double the edge" trade the
+   gold tokens make. */
+:root[data-bt-theme='light'] .bt-home-place::after {
+  opacity: 1;
 }
 
 /* ── Horizontal slot: a row boundary, so the line spans the widget's width ── */
@@ -3570,8 +3992,8 @@
   top: 50%;
   right: 0;
   left: 0;
-  height: 2px;
-  margin-top: -1px;
+  height: var(--bt-gold-ring);
+  margin-top: calc(var(--bt-gold-ring) / -2);
 }
 
 /* ── Vertical slot: a column boundary inside the column gap ───────────────── */
@@ -3594,8 +4016,8 @@
   top: 0;
   bottom: 0;
   left: 50%;
-  width: 2px;
-  margin-left: -1px;
+  width: var(--bt-gold-ring);
+  margin-left: calc(var(--bt-gold-ring) / -2);
 }
 
 /* ── The pill ──────────────────────────────────────────────────────────────
@@ -3613,10 +4035,11 @@
   align-items: center;
   justify-content: center;
   padding: 4px;
-  border: 1px solid var(--bt-gold);
+  border: var(--bt-gold-hair) solid var(--bt-gold-graphic);
   border-radius: 999px;
   background: var(--bt-bg);
-  color: var(--bt-gold);
+  /* The ⊕ inside is a glyph, not a word — it rides the graphic gold. */
+  color: var(--bt-gold-graphic);
   line-height: 1;
 }
 
@@ -3638,8 +4061,8 @@
 
 .bt-home-place:hover .bt-home-place__pill,
 .bt-home-place:focus-visible .bt-home-place__pill {
-  background: var(--bt-gold);
-  color: var(--bt-gold-ink);
+  background: var(--bt-gold-fill);
+  color: var(--bt-gold-on);
 }
 
 /* The ring belongs to the pill, not to the invisible full-gap hit box. */
@@ -3698,7 +4121,7 @@
   overflow: hidden;
   height: 8px;
   border-radius: 999px;
-  background: var(--bt-surface-strong);
+  background: var(--bt-recess);
 }
 
 .bt-home-ind__track > span {
@@ -3801,7 +4224,7 @@
   overflow: hidden;
   height: 6px;
   border-radius: 999px;
-  background: var(--bt-surface-strong);
+  background: var(--bt-recess);
   align-self: center;
 }
 
@@ -3946,7 +4369,7 @@
   height: 14px;
   flex: 0 0 auto;
   border-radius: 3px;
-  accent-color: var(--bt-gold);
+  accent-color: var(--bt-gold-graphic);
 }
 
 .bt-home-scope__name {
@@ -4273,9 +4696,9 @@
 
 /* Current — the brightest ink in the rail and its single gold hit. */
 .bt-fr__steprow[data-state='current'] .bt-fr__stepmark {
-  border-color: var(--bt-gold);
-  background: var(--bt-gold);
-  color: var(--bt-gold-ink);
+  border-color: var(--bt-gold-graphic);
+  background: var(--bt-gold-fill);
+  color: var(--bt-gold-on);
   font-weight: 700;
 }
 
@@ -4528,7 +4951,7 @@
 
 /* Selected row: background + ink only. No edge marker, no gold fill. */
 .bt-cc__item.is-active {
-  background: var(--bt-surface-strong);
+  background: var(--bt-selected);
   color: var(--bt-text);
   font-weight: 590;
 }
@@ -4905,6 +5328,9 @@
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
 }
 
 /* Controls stay narrow: a popup is not a canvas. */
@@ -4941,7 +5367,7 @@
 }
 
 .bt-cc-note--warn {
-  color: var(--bt-gold);
+  color: var(--bt-gold-ink);
 }
 
 /* Dense object rows (sessions, keys, apps, webhooks, connectors): title line
@@ -5074,7 +5500,7 @@
 }
 
 .bt-cc-mode.is-selected {
-  background: var(--bt-surface-strong);
+  background: var(--bt-selected);
 }
 
 .bt-cc-mode.is-disabled {
@@ -5086,7 +5512,7 @@
   width: 14px;
   height: 14px;
   margin: 0;
-  accent-color: var(--bt-gold);
+  accent-color: var(--bt-gold-graphic);
   align-self: center;
 }
 
@@ -5401,7 +5827,7 @@
 }
 
 .bt-portfolio-search:focus-within {
-  border-color: var(--bt-gold);
+  border-color: var(--bt-gold-graphic);
   color: var(--bt-text-soft);
 }
 
@@ -5516,7 +5942,7 @@
 }
 
 .bt-kind-option.is-active {
-  background: var(--bt-surface-strong);
+  background: var(--bt-selected);
   border-color: var(--bt-border-strong);
   color: var(--bt-text);
   font-weight: 590;
@@ -5566,7 +5992,7 @@
 }
 
 .bt-danger-zone {
-  border-color: rgba(251, 113, 133, 0.24);
+  border-color: color-mix(in srgb, var(--bt-neg) 24%, transparent);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -5648,10 +6074,7 @@
      would read as modal, and any pseudo-element here would be clipped by the
      panel's own `overflow: hidden`. Nothing intercepts pointer events, so the
      page behind stays live and a click-away still closes an unpinned panel. */
-  box-shadow:
-    var(--bt-shadow-overlay),
-    0 30px 80px -30px rgb(0 0 0 / 45%),
-    0 0 0 1px rgb(0 0 0 / 22%);
+  box-shadow: var(--bt-shadow-overlay), var(--bt-shadow-lift), var(--bt-shadow-ring);
 }
 
 .bt-askdock__title {
@@ -5699,7 +6122,7 @@
 }
 
 .bt-askdock__mode.is-on {
-  background: var(--bt-surface-strong);
+  background: var(--bt-selected);
   border-color: var(--bt-border-strong);
   color: var(--bt-text);
 }
@@ -5845,53 +6268,36 @@
   border-radius: 8px;
 }
 
+/*
+ * The six hues come straight off the chart palette tokens, so a portfolio's
+ * chip and its series in a chart are literally the same colour — and the light
+ * counterparts arrive with the token rather than needing a second, hand-kept
+ * `[data-bt-theme='light']` copy of this list (which is what these rules were
+ * before board #68: six duplicated overrides that had to be edited in pairs).
+ */
 .bt-pf-chip--private {
-  --bt-pf-ink: #3987e5; /* palette blue */
+  --bt-pf-ink: var(--bt-chart-1); /* palette blue */
 }
 
 .bt-pf-chip--family {
-  --bt-pf-ink: #d55181; /* palette magenta */
+  --bt-pf-ink: var(--bt-chart-5); /* palette magenta */
 }
 
 .bt-pf-chip--business {
-  --bt-pf-ink: #b06fc9; /* palette purple */
+  --bt-pf-ink: var(--bt-chart-10); /* palette purple */
 }
 
 .bt-pf-chip--savings {
-  --bt-pf-ink: #7a9e2b; /* palette lime */
+  --bt-pf-ink: var(--bt-chart-9); /* palette lime */
 }
 
 .bt-pf-chip--property {
-  --bt-pf-ink: #d95926; /* palette orange */
+  --bt-pf-ink: var(--bt-chart-2); /* palette orange */
 }
 
 /* Group (MIRRORCHAIN) copies override the icon entirely — hue included. */
 .bt-pf-chip--group {
-  --bt-pf-ink: #9085e9; /* palette violet */
-}
-
-:root[data-bt-theme='light'] .bt-pf-chip--private {
-  --bt-pf-ink: #1f6ac4;
-}
-
-:root[data-bt-theme='light'] .bt-pf-chip--family {
-  --bt-pf-ink: #b93a68;
-}
-
-:root[data-bt-theme='light'] .bt-pf-chip--business {
-  --bt-pf-ink: #8e46ad;
-}
-
-:root[data-bt-theme='light'] .bt-pf-chip--savings {
-  --bt-pf-ink: #5c7a13;
-}
-
-:root[data-bt-theme='light'] .bt-pf-chip--property {
-  --bt-pf-ink: #b8431a;
-}
-
-:root[data-bt-theme='light'] .bt-pf-chip--group {
-  --bt-pf-ink: #6154c6;
+  --bt-pf-ink: var(--bt-chart-6); /* palette violet */
 }
 
 /* ── Trigger ─────────────────────────────────────────────────────────────── */
@@ -6012,7 +6418,7 @@
 .bt-pfw__dot[data-state='current'] {
   width: 18px;
   border-radius: 3px;
-  background: var(--bt-gold);
+  background: var(--bt-gold-graphic);
 }
 
 .bt-pfw__stepnow {
@@ -6255,8 +6661,8 @@
 
 .bt-searchfield:focus-visible {
   outline: none;
-  border-color: var(--bt-gold);
-  box-shadow: 0 0 0 1px var(--bt-gold);
+  border-color: var(--bt-gold-graphic);
+  box-shadow: 0 0 0 var(--bt-gold-hair) var(--bt-gold-graphic);
 }
 
 /* The placeholder stand-in: muted like a real one, and it yields the row so the
@@ -6379,7 +6785,7 @@
 
 .bt-palette__row:hover,
 .bt-palette__row[aria-selected='true'] {
-  background: var(--bt-surface-strong);
+  background: var(--bt-selected);
   color: var(--bt-text);
 }
 
@@ -6398,7 +6804,7 @@
 .bt-palette__row:hover > .bt-palette__chip,
 .bt-palette__row[aria-selected='true'] > .bt-palette__chip {
   background: var(--bt-surface-soft);
-  color: var(--bt-gold);
+  color: var(--bt-gold-ink);
 }
 
 .bt-palette__primary {
@@ -6538,7 +6944,7 @@
   content: '';
   position: absolute;
   inset: -14% -18% -22%;
-  background: radial-gradient(58% 52% at 42% 44%, rgb(255 255 255 / 4.5%), transparent 72%);
+  background: radial-gradient(58% 52% at 42% 44%, var(--bt-sheen-strong), transparent 72%);
 }
 
 .bt-authfig__card {
@@ -6547,7 +6953,7 @@
   background: color-mix(in srgb, var(--bt-surface) 88%, transparent);
   border: 1px solid var(--bt-border-strong);
   border-radius: 8px;
-  box-shadow: 0 18px 38px -26px rgb(0 0 0 / 62%);
+  box-shadow: var(--bt-shadow-card);
   backdrop-filter: blur(2px);
   animation: bt-authfig-drift 24s ease-in-out infinite alternate;
 }
@@ -6782,7 +7188,7 @@
   margin-bottom: 22px;
   padding: 12px 14px;
   min-height: 64px;
-  background: var(--bt-surface-soft);
+  background: var(--bt-surface-quiet);
   border: 1px solid var(--bt-border);
   border-radius: 8px;
   font-variant-numeric: tabular-nums;
@@ -6906,7 +7312,7 @@
   border-radius: 50%;
   background: var(--bt-surface-strong);
   box-shadow: 0 0 0 1.5px var(--bt-bg-raised);
-  color: var(--bt-pf-group-ink, #9085e9);
+  color: var(--bt-pf-group-ink);
 }
 
 .bt-pf-chip--lg .bt-pf-chip__mark {
@@ -6967,6 +7373,8 @@
 .bt-tag-chip {
   display: inline-flex;
   align-items: center;
+  min-width: 0;
+  max-width: 100%;
   gap: 3px;
   padding: 2px 9px;
   border-radius: 999px;
@@ -6977,6 +7385,12 @@
   font-weight: 610;
   line-height: 1.6;
   white-space: nowrap;
+}
+
+.bt-tag-chip__label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 :root[data-bt-theme='light'] .bt-tag-chip {
@@ -7028,6 +7442,6 @@
 }
 
 .bt-tag-toggle:focus-visible {
-  outline: 2px solid var(--bt-gold);
+  outline: 2px solid var(--bt-gold-graphic);
   outline-offset: 2px;
 }

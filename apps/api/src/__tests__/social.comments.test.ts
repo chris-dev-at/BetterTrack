@@ -84,7 +84,7 @@ function putAudience(
   return agent
     .put(`/api/v1/social/audience/portfolio/${subjectId}`)
     .set(...XRW)
-    .send(body);
+    .send({ confirmWiden: true, ...body });
 }
 
 function getThread(agent: Agent, subjectId: string): Promise<request.Response> {

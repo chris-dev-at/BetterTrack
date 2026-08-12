@@ -7,6 +7,7 @@ import {
   dueOccurrence,
   nextRunDate,
   skippedPeriodCount,
+  skippedPeriods,
   type ScheduleSpec,
 } from '../schedule';
 
@@ -99,6 +100,19 @@ describe('standing-order schedule: nextRunDate', () => {
 });
 
 describe('standing-order schedule: skippedPeriodCount', () => {
+  it('returns the concrete dropped occurrence keys without including the due day', () => {
+    expect(skippedPeriods(daily('2026-04-01'), null, '2026-04-04')).toEqual([
+      '2026-04-01',
+      '2026-04-02',
+      '2026-04-03',
+    ]);
+    expect(skippedPeriods(monthly(1, '2026-01-01'), null, '2026-04-01')).toEqual([
+      '2026-01-01',
+      '2026-02-01',
+      '2026-03-01',
+    ]);
+  });
+
   it('counts occurrences strictly between the last booked and the due day', () => {
     // Downtime since the start: Apr 1/2/3 are skipped when booking Apr 4.
     expect(skippedPeriodCount(daily('2026-04-01'), null, '2026-04-04')).toBe(3);
@@ -119,6 +133,11 @@ describe('standing-order schedule: skippedPeriodCount', () => {
   it('caps long daily and monthly spans at the supplied limit', () => {
     expect(skippedPeriodCount(daily('2026-01-01'), null, '2026-01-05', 3)).toBe(3);
     expect(skippedPeriodCount(monthly(1, '2026-01-01'), null, '2026-06-01', 3)).toBe(3);
+    expect(skippedPeriods(daily('2026-01-01'), null, '2026-01-05', 3)).toEqual([
+      '2026-01-02',
+      '2026-01-03',
+      '2026-01-04',
+    ]);
   });
 
   it('returns zero immediately when the cap is zero', () => {

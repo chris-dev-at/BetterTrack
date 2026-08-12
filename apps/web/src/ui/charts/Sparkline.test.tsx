@@ -15,17 +15,26 @@ describe('Sparkline', () => {
     expect(pairs).toHaveLength(sampleSparkline.length);
   });
 
+  /**
+   * The stroke is a TOKEN, not a hex: an SVG attribute resolves `var(...)` at
+   * paint time, so one watchlist repaints for both themes without a single row
+   * re-rendering. Asserting the token is therefore asserting the mechanism —
+   * a literal here would mean the sparkline had gone dark-only again.
+   */
   test('colours an upward trend green and a downward trend red', () => {
     const up = render(<Sparkline data={[1, 2, 3]} />);
-    expect(up.container.querySelector('polyline')).toHaveAttribute('stroke', '#34d399');
+    expect(up.container.querySelector('polyline')).toHaveAttribute('stroke', 'var(--bt-chart-pos)');
 
     const down = render(<Sparkline data={[3, 2, 1]} />);
-    expect(down.container.querySelector('polyline')).toHaveAttribute('stroke', '#f87171');
+    expect(down.container.querySelector('polyline')).toHaveAttribute(
+      'stroke',
+      'var(--bt-chart-trend-down)',
+    );
   });
 
   test('honours the positive override regardless of the series direction', () => {
     const { container } = render(<Sparkline data={[3, 2, 1]} positive />);
-    expect(container.querySelector('polyline')).toHaveAttribute('stroke', '#34d399');
+    expect(container.querySelector('polyline')).toHaveAttribute('stroke', 'var(--bt-chart-pos)');
   });
 
   test('renders a muted baseline for empty / single-point data', () => {

@@ -5,13 +5,17 @@ import {
   DEVICE_PLATFORMS,
   DEFAULT_QUIET_HOURS,
   NOTIFICATION_CATEGORIES,
+  NOTIFICATION_MESSAGE_KEYS,
   NOTIFICATION_TYPES,
   OPT_IN_NOTIFICATION_TYPES,
   isAccountSecurityNotificationType,
   isOptInNotificationType,
   isUrgentNotification,
   notificationChannelDefaultEnabled,
+  notificationMessageSchema,
+  notificationPayloadSchema,
   quietHoursSchema,
+  readNotificationPayload,
   registerDeviceRequestSchema,
   webPushSubscribeRequestSchema,
 } from './notifications';
@@ -54,6 +58,7 @@ describe('notification taxonomy (#368)', () => {
       'mirror.ownership_transferred',
       'mirror.chain_dissolved',
       'mirror.sync_stalled',
+      'standing_order.skipped',
     ]);
     expect(NOTIFICATION_SETTING_CHANNELS).toEqual([
       'inapp',
@@ -64,6 +69,94 @@ describe('notification taxonomy (#368)', () => {
       'webpush',
     ]);
     expect(DEVICE_PLATFORMS).toEqual(['android', 'ios', 'web']);
+  });
+});
+
+describe('localizable notification message descriptor (#1138)', () => {
+  it('accepts a stable key with scalar interpolation params', () => {
+    expect(
+      notificationMessageSchema.parse({
+        key: 'friendRequest',
+        params: { actor: 'anna', count: 2 },
+      }),
+    ).toEqual({ key: 'friendRequest', params: { actor: 'anna', count: 2 } });
+    expect(NOTIFICATION_MESSAGE_KEYS).toContain('standingOrderDroppedManyNamed');
+  });
+
+  it('rejects unknown keys and non-scalar params', () => {
+    expect(
+      notificationMessageSchema.safeParse({ key: 'futureUnknownKey', params: {} }).success,
+    ).toBe(false);
+    expect(
+      notificationMessageSchema.safeParse({
+        key: 'friendRequest',
+        params: { actor: { name: 'anna' } },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('keeps deep-link fields open while typing the additive message envelope', () => {
+    expect(
+      notificationPayloadSchema.parse({
+        eventKey: 'friend.request:req-1',
+        requestId: 'req-1',
+        message: { key: 'friendRequest', params: { actor: 'anna' } },
+      }),
+    ).toMatchObject({ requestId: 'req-1', message: { key: 'friendRequest' } });
+  });
+
+  it('drops only an unreadable descriptor, never the routing data beside it', () => {
+    // A key retired later, or a row written by a newer worker and read by an
+    // older instance / a stale SPA tab: the row must degrade to its persisted
+    // title/body, keeping `eventKey` (dedupe) and every deep-link id.
+    const degraded = readNotificationPayload({
+      eventKey: 'friend.request:req-1',
+      requestId: 'req-1',
+      message: { key: 'keyFromANewerServer', params: { actor: 'anna' } },
+    });
+    expect(degraded).toMatchObject({ eventKey: 'friend.request:req-1', requestId: 'req-1' });
+    expect(degraded?.message).toBeUndefined();
+
+    // Same for a descriptor that grew a field this client does not know.
+    const grown = readNotificationPayload({
+      assetId: 'a-1',
+      message: { key: 'friendRequest', params: {}, variant: 'compact' },
+    });
+    expect(grown).toEqual({ assetId: 'a-1' });
+
+    // …and the mirror case: a non-string `eventKey` costs the dedupe marker
+    // only — the readable descriptor and the deep-link id both survive.
+    const keptMessage = readNotificationPayload({
+      eventKey: 42,
+      requestId: 'req-2',
+      message: { key: 'friendRequest', params: { actor: 'anna' } },
+    });
+    expect(keptMessage).toMatchObject({
+      requestId: 'req-2',
+      message: { key: 'friendRequest', params: { actor: 'anna' } },
+    });
+    expect(keptMessage?.eventKey).toBeUndefined();
+  });
+
+  it('reads a well-formed envelope unchanged, and non-objects as no payload', () => {
+    const payload = { eventKey: 'friend.request:req-1', requestId: 'req-1' };
+    expect(readNotificationPayload(payload)).toEqual(payload);
+    expect(readNotificationPayload(null)).toBeUndefined();
+    expect(readNotificationPayload('not-an-envelope')).toBeUndefined();
+    expect(readNotificationPayload([{ eventKey: 'a' }])).toBeUndefined();
+  });
+
+  it('keeps the schema itself plain — the tolerance is the reader, not `.catch()`', () => {
+    // `ZodCatch` has no transformer in zod-to-openapi 7.3.x and this schema is
+    // reachable from NotificationListResponse, so a catch inside it makes
+    // `/openapi.json` and `/docs` 500 (guarded end-to-end by the API's
+    // openapi.test.ts). The strictness below is what makes the reader load-bearing.
+    expect(
+      notificationPayloadSchema.safeParse({
+        eventKey: 'friend.request:req-1',
+        message: { key: 'keyFromANewerServer', params: {} },
+      }).success,
+    ).toBe(false);
   });
 });
 

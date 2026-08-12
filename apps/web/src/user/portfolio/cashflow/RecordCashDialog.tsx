@@ -268,6 +268,7 @@ export function RecordCashDialog({
 
   const submit = useMutation({
     mutationFn: async () => {
+      // Cash movements use noon UTC so they replay after same-day trades.
       const executedAt = new Date(`${date}T12:00:00Z`).toISOString();
       if (editing) {
         const result = await updateCashMovement(portfolioId, editing.id, {
@@ -317,7 +318,11 @@ export function RecordCashDialog({
     onError: (err) => {
       setError(
         err instanceof ApiError &&
-          (err.code === 'INSUFFICIENT_CASH' || err.code === 'CASH_MOVEMENT_NOT_EDITABLE')
+          (err.code === 'INSUFFICIENT_CASH' ||
+            err.code === 'CASH_MOVEMENT_NOT_EDITABLE' ||
+            // Tax year lock (§16 2026-08-07): the server copy names the
+            // locked year and the unlock path.
+            err.code === 'TAX_YEAR_LOCKED')
           ? err.message
           : t('portfolio.cash.saveError'),
       );
@@ -335,7 +340,11 @@ export function RecordCashDialog({
     onError: (err) => {
       setError(
         err instanceof ApiError &&
-          (err.code === 'INSUFFICIENT_CASH' || err.code === 'CASH_MOVEMENT_NOT_EDITABLE')
+          (err.code === 'INSUFFICIENT_CASH' ||
+            err.code === 'CASH_MOVEMENT_NOT_EDITABLE' ||
+            // Tax year lock (§16 2026-08-07): the server copy names the
+            // locked year and the unlock path.
+            err.code === 'TAX_YEAR_LOCKED')
           ? err.message
           : t('cashflow.record.deleteError'),
       );
@@ -507,7 +516,7 @@ export function RecordCashDialog({
               <input
                 checked={countsToPerformance}
                 onChange={(event) => setCountsToPerformance(event.target.checked)}
-                style={{ accentColor: 'var(--bt-gold)' }}
+                style={{ accentColor: 'var(--bt-gold-graphic)' }}
                 type="checkbox"
               />
               <span className="bt-soft">{t('cashflow.record.countsToPerformanceShort')}</span>

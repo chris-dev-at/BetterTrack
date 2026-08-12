@@ -13,12 +13,9 @@ import type { Holding } from '@bettertrack/domain/holdings';
 import * as portfolioApi from '../../lib/portfolioApi';
 import { apiPortfolioStore } from '../../lib/portfolioStore';
 import type { ClientPortfolioDerivation } from '../vault/engine/types';
-import type { VaultMoneySession } from '../vault/engine/VaultMoneyEngineProvider';
-import {
-  createParanoidAppPortfolioStore,
-  PortfolioStoreProvider,
-  usePortfolioStore,
-} from './PortfolioStoreProvider';
+import type { VaultMoneySession } from '../vault/engine/VaultMoneyEngineContext';
+import { createParanoidAppPortfolioStore } from '../vault/engine/paranoidPortfolioStore';
+import { PortfolioStoreProvider, usePortfolioStore } from './PortfolioStoreProvider';
 
 function Probe() {
   const store = usePortfolioStore();

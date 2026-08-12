@@ -106,7 +106,9 @@ describe('Origin phone chrome', () => {
     const activeEdge = tokenBlock('.bt-bottombar a.is-active::before');
 
     expect(activeEdge).toContain("content: ''");
-    expect(activeEdge).toContain('background: var(--bt-gold)');
+    // The edge is a MARK, not text, so it rides the graphic half of the gold
+    // split (THEME2) — which is what keeps it visible on the white phone bar.
+    expect(activeEdge).toContain('background: var(--bt-gold-graphic)');
     expect(originCss).not.toContain('.bt-bottombar a::before {');
   });
 
@@ -145,6 +147,9 @@ describe('Origin phone chrome', () => {
     }
     expect(phoneCss).toContain('min-width: 44px');
     expect(phoneCss).toContain('min-height: 44px');
+    expect(phoneCss).toMatch(
+      /\.bt-btn--sm\.bt-btn--icon,\s*\.bt-tab \{[^}]*min-width: 44px;[^}]*min-height: 44px;/,
+    );
     expect(phoneCss).toContain('.bt-topbar .bt-popover :is(a, button, input, select, textarea)');
   });
 
@@ -170,9 +175,27 @@ describe('Origin phone chrome', () => {
   it('prevents iOS field zoom and contains dense money data at 390px', () => {
     const phoneCss = phoneBlock();
 
+    expect(phoneCss).toMatch(
+      /\n\s*:is\(input, select, textarea\) \{\s*font-size: 16px !important;/,
+    );
     expect(phoneCss).toContain('.bt-money-surface :is(input, select, textarea)');
     expect(phoneCss).toContain('font-size: 16px !important');
     expect(phoneCss).toContain('.bt-phone-scroll-table .bt-phone-scroll-table__lead');
     expect(phoneCss).toContain('position: sticky');
+  });
+});
+
+describe('Origin accessibility safety nets', () => {
+  it('shows a persistent marker beside labels for native required fields', () => {
+    expect(originCss).toMatch(
+      /\.bt-field:has\(:is\(input, select, textarea\):required\) > label::after,[^}]*content: ' \*';/,
+    );
+  });
+
+  it('limits any unhandled motion while preserving component-specific rules', () => {
+    expect(originCss).toMatch(
+      /@media \(prefers-reduced-motion: reduce\) \{\s*\*,\s*\*::before,\s*\*::after \{[^}]*animation-duration: 0\.01ms !important;[^}]*animation-iteration-count: 1 !important;[^}]*scroll-behavior: auto !important;[^}]*transition-duration: 0\.01ms !important;/,
+    );
+    expect(originCss).toContain('.bt-skeleton::after');
   });
 });

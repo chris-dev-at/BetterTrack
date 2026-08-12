@@ -1,7 +1,7 @@
 import type { ErrorRequestHandler } from 'express';
 import { ZodError } from 'zod';
 
-import { ApiError } from '../errors';
+import { ApiError, EnvelopeApiError } from '../errors';
 import type { Logger } from '../logger';
 
 /** Reports an unexpected error to error tracking (Sentry). Never throws. */
@@ -18,7 +18,12 @@ export type ErrorReporter = (err: unknown) => void;
 export function createErrorHandler(logger: Logger, report?: ErrorReporter): ErrorRequestHandler {
   return (err, _req, res, _next) => {
     if (err instanceof ApiError) {
+      // `EnvelopeApiError` contributes top-level members beside `error` (the
+      // Vaults v2 CAS contract's `currentVersion`, design r2 §15). Spread FIRST
+      // so `error` always wins — an envelope can add fields, never rewrite the
+      // error itself.
       res.status(err.statusCode).json({
+        ...(err instanceof EnvelopeApiError ? err.envelope : {}),
         error: {
           code: err.code,
           message: err.message,

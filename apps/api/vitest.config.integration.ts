@@ -34,6 +34,12 @@ export default defineConfig({
       // #1097: two truly concurrent cash outflows must serialize around the
       // post-lock solvency replay; PGlite intentionally has only one session.
       'src/__tests__/cashSources.test.ts',
+      // #1124: a HOT update can reverse same-instant transaction heap order;
+      // the oversell and tax replays must retain their (executed_at, id) order.
+      'src/__tests__/transactionOrdering.test.ts',
+      // #1128: replica force-delete and a direct withdrawal must serialize on
+      // the real two-session advisory lock before either mutates the ledger.
+      'src/__tests__/mirrorReplication.test.ts',
       // …and the journal-ordering invariant that was the actual root cause (a
       // misordered `when` makes drizzle skip a migration on any database that
       // already applied a later-stamped one).

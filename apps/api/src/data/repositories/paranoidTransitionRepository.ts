@@ -33,6 +33,7 @@ import {
   itemReactions,
   mirrorChainInvites,
   mirrorChainMembers,
+  paranoidEnableTransitions,
   paranoidRehydrationReceipts,
   paranoidVaultHistory,
   paranoidVaultRetired,
@@ -69,6 +70,7 @@ import {
 
 export interface LockedParanoidTransitionState {
   privacyMode: 'normal' | 'paranoid';
+  enableStaging: { expiresAt: Date } | null;
   mediaSet: VaultMediaSet | null;
   driveAttestedVersion: number | null;
   currentServerVault: {
@@ -702,6 +704,7 @@ export function createParanoidTransitionTransactionRepository(
       const [
         [vault],
         [historyCount],
+        [enableStaging],
         [membership],
         [pendingImport],
         ownedAssetIdentities,
@@ -721,6 +724,11 @@ export function createParanoidTransitionTransactionRepository(
           .select({ value: count() })
           .from(paranoidVaultHistory)
           .where(eq(paranoidVaultHistory.userId, userId)),
+        tx
+          .select({ expiresAt: paranoidEnableTransitions.expiresAt })
+          .from(paranoidEnableTransitions)
+          .where(eq(paranoidEnableTransitions.userId, userId))
+          .limit(1),
         tx
           .select({ id: mirrorChainMembers.id })
           .from(mirrorChainMembers)
@@ -751,6 +759,7 @@ export function createParanoidTransitionTransactionRepository(
 
       return {
         privacyMode: user.privacyMode,
+        enableStaging: enableStaging ?? null,
         mediaSet: user.mediaSet as VaultMediaSet | null,
         driveAttestedVersion: user.driveAttestedVersion,
         currentServerVault: vault ?? null,
@@ -940,6 +949,9 @@ export function createParanoidTransitionTransactionRepository(
     },
 
     async completeEnable(input) {
+      await tx
+        .delete(paranoidEnableTransitions)
+        .where(eq(paranoidEnableTransitions.userId, input.userId));
       if (input.freshTransition) {
         // Candidates and retired media are never part of the initial selected
         // state of a normal → paranoid transition. A retry against an

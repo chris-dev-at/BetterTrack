@@ -1,4 +1,4 @@
-import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 
 import {
   createBetterTrackMarketDataSource,
@@ -7,17 +7,13 @@ import {
 import { VaultCryptoError } from '../errors';
 import type { VaultDriveSyncCoordinator } from '../media/runtime';
 import type { VaultSyncEngine } from '../sync';
-import { createVaultPortfolioStore, type VaultPortfolioStore } from '../vaultPortfolioStore';
-import { useOptionalVaultRuntime } from '../VaultRuntimeProvider';
+import { createVaultPortfolioStore } from '../vaultPortfolioStore';
+// The CONTEXT module, never `VaultRuntimeProvider`: the provider pulls the lock
+// core and with it argon2/fflate, and this module is reachable from any surface
+// that mounts a money session.
+import { useOptionalVaultRuntime } from '../VaultRuntimeContext';
+import { VaultMoneyEngineContext, type VaultMoneySession } from './VaultMoneyEngineContext';
 import { createVaultMoneyEngine } from './index';
-import type { VaultMoneyEngine } from './types';
-
-/** Everything a paranoid surface needs from one unlocked vault session. */
-export interface VaultMoneySession {
-  engine: VaultMoneyEngine;
-  sync: VaultSyncEngine;
-  store: VaultPortfolioStore;
-}
 
 export interface VaultMoneyEngineDependencies {
   /** Replaces the runtime-derived sync access (tests and isolated pages). */
@@ -26,8 +22,6 @@ export interface VaultMoneyEngineDependencies {
   createEngine?: typeof createVaultMoneyEngine;
   createStore?: typeof createVaultPortfolioStore;
 }
-
-const VaultMoneyEngineContext = createContext<VaultMoneySession | null>(null);
 
 /** Adapt the unlocked runtime's narrow sync coordinator to the engine's sync surface. */
 export function moneyEngineSyncAccess(coordinator: VaultDriveSyncCoordinator): VaultSyncEngine {
@@ -152,9 +146,4 @@ export function VaultMoneyEngineProvider({
   return (
     <VaultMoneyEngineContext.Provider value={session}>{children}</VaultMoneyEngineContext.Provider>
   );
-}
-
-/** The active money session, or null while the vault is locked. */
-export function useVaultMoneySession(): VaultMoneySession | null {
-  return useContext(VaultMoneyEngineContext);
 }

@@ -24,6 +24,7 @@ import * as socialApi from '../../lib/socialApi';
 import * as twoFactorApi from '../../lib/twoFactorApi';
 import * as api from '../../lib/userApi';
 import { listWorkboard } from '../../lib/workboardApi';
+import { waitForColdStart } from '../../test/waitForColdStart';
 import { UserApp, queryClient } from '../UserApp';
 
 const BASE: MeResponse = {
@@ -123,21 +124,27 @@ test('an account that has never been set up is diverted to setup from Home', asy
   vi.mocked(api.getMe).mockResolvedValue(NEVER_SET_UP);
   renderAt('/');
 
-  expect(await screen.findByRole('heading', { name: 'Is this you?' })).toBeInTheDocument();
+  expect(
+    await waitForColdStart(() => screen.getByRole('heading', { name: 'Is this you?' })),
+  ).toBeInTheDocument();
 });
 
 test('it diverts from a deep link too, not just Home', async () => {
   vi.mocked(api.getMe).mockResolvedValue(NEVER_SET_UP);
   renderAt('/settings/security');
 
-  expect(await screen.findByRole('heading', { name: 'Is this you?' })).toBeInTheDocument();
+  expect(
+    await waitForColdStart(() => screen.getByRole('heading', { name: 'Is this you?' })),
+  ).toBeInTheDocument();
 });
 
 test('an established account is never diverted', async () => {
   vi.mocked(api.getMe).mockResolvedValue(SET_UP);
   renderAt('/');
 
-  expect(await screen.findByRole('button', { name: 'Account menu' })).toBeInTheDocument();
+  expect(
+    await waitForColdStart(() => screen.getByRole('button', { name: 'Account menu' })),
+  ).toBeInTheDocument();
   expect(screen.queryByRole('heading', { name: 'Is this you?' })).not.toBeInTheDocument();
 });
 
@@ -149,7 +156,9 @@ test('a server that does not report the field at all never diverts', async () =>
   vi.mocked(api.getMe).mockResolvedValue(legacy);
   renderAt('/');
 
-  expect(await screen.findByRole('button', { name: 'Account menu' })).toBeInTheDocument();
+  expect(
+    await waitForColdStart(() => screen.getByRole('button', { name: 'Account menu' })),
+  ).toBeInTheDocument();
   expect(screen.queryByRole('heading', { name: 'Is this you?' })).not.toBeInTheDocument();
 });
 
@@ -163,7 +172,9 @@ test('a local "done" record suppresses the divert even while the server still sa
   vi.mocked(api.getMe).mockResolvedValue(NEVER_SET_UP);
   renderAt('/');
 
-  expect(await screen.findByRole('button', { name: 'Account menu' })).toBeInTheDocument();
+  expect(
+    await waitForColdStart(() => screen.getByRole('button', { name: 'Account menu' })),
+  ).toBeInTheDocument();
   expect(screen.queryByRole('heading', { name: 'Is this you?' })).not.toBeInTheDocument();
 });
 
@@ -177,7 +188,9 @@ test('the OAuth authorize flow is never hijacked', async () => {
 
   // Routing stays put: a third party is waiting on the other end of this flow,
   // so setup must not steal it — only delay itself.
-  await waitFor(() => expect(screen.getByTestId('path')).toHaveTextContent('/oauth/authorize'));
+  await waitForColdStart(() =>
+    expect(screen.getByTestId('path')).toHaveTextContent('/oauth/authorize'),
+  );
   expect(screen.queryByRole('heading', { name: 'Is this you?' })).not.toBeInTheDocument();
 });
 
@@ -186,7 +199,9 @@ test('the forced-password-change trap wins — it sits above routing', async () 
   renderAt('/');
 
   // An admin-created account is exactly this shape: temp password AND no setup.
-  expect(await screen.findByText('Choose a new password')).toBeInTheDocument();
+  expect(
+    await waitForColdStart(() => screen.getByText('Choose a new password')),
+  ).toBeInTheDocument();
   expect(screen.queryByRole('heading', { name: 'Is this you?' })).not.toBeInTheDocument();
 });
 
@@ -194,7 +209,7 @@ test('the PIN gate wins — it also sits above routing', async () => {
   vi.mocked(api.getMe).mockResolvedValue({ ...NEVER_SET_UP, pinEnabled: true });
   renderAt('/');
 
-  expect(await screen.findByLabelText('PIN')).toBeInTheDocument();
+  expect(await waitForColdStart(() => screen.getByLabelText('PIN'))).toBeInTheDocument();
   expect(screen.queryByRole('heading', { name: 'Is this you?' })).not.toBeInTheDocument();
 });
 
@@ -204,7 +219,7 @@ test('"Do this later" records completion server-side and does not bounce back', 
   vi.mocked(api.getMe).mockResolvedValue(NEVER_SET_UP);
   const u = userEvent.setup();
   renderAt('/');
-  await screen.findByRole('heading', { name: 'Is this you?' });
+  await waitForColdStart(() => screen.getByRole('heading', { name: 'Is this you?' }));
 
   await u.click(screen.getByRole('button', { name: 'Do this later' }));
 
@@ -219,7 +234,7 @@ test('a failed completion request still lets the user out — no trap', async ()
   vi.mocked(api.completeFirstRun).mockRejectedValue(new ApiError(500, 'BOOM', 'nope'));
   const u = userEvent.setup();
   renderAt('/');
-  await screen.findByRole('heading', { name: 'Is this you?' });
+  await waitForColdStart(() => screen.getByRole('heading', { name: 'Is this you?' }));
 
   await u.click(screen.getByRole('button', { name: 'Do this later' }));
 
@@ -231,7 +246,9 @@ test('/welcome stays reachable on demand for an established account', async () =
   renderAt('/welcome');
 
   // Re-runnable: being set up already does not lock the wizard away.
-  expect(await screen.findByRole('heading', { name: 'Is this you?' })).toBeInTheDocument();
+  expect(
+    await waitForColdStart(() => screen.getByRole('heading', { name: 'Is this you?' })),
+  ).toBeInTheDocument();
 });
 
 test("another account's done record does NOT suppress this account's setup", async () => {
@@ -244,5 +261,7 @@ test("another account's done record does NOT suppress this account's setup", asy
   vi.mocked(api.getMe).mockResolvedValue(NEVER_SET_UP);
   renderAt('/');
 
-  expect(await screen.findByRole('heading', { name: 'Is this you?' })).toBeInTheDocument();
+  expect(
+    await waitForColdStart(() => screen.getByRole('heading', { name: 'Is this you?' })),
+  ).toBeInTheDocument();
 });
