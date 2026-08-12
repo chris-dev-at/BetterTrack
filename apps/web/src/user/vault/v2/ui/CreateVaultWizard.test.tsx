@@ -12,6 +12,16 @@ vi.mock('../api', () => api);
 import { CreateVaultWizard } from './CreateVaultWizard';
 import { checkVaultPassphrase } from '../words';
 
+// Create vault runs the real code-wrap KDF (Argon2id, m=64MiB) inside
+// buildVaultHeader — the tests deliberately keep it unmocked so the header
+// round-trip stays honest. That work is CPU-bound and, under a loaded CI
+// runner sharing cores across test files, comfortably exceeds vitest's 5s
+// default. Raise the per-test budget for this file (and give the
+// crypto-bound waitFors matching headroom below) so a slow KDF reads as
+// slow, never as a failure.
+vi.setConfig({ testTimeout: 20_000 });
+const CRYPTO_WAIT = { timeout: 15_000 } as const;
+
 function mount(onCreated = vi.fn()) {
   return {
     onCreated,
@@ -92,7 +102,7 @@ describe('CreateVaultWizard', () => {
     await waitFor(() => expect(screen.getByRole('button', { name: 'Create vault' })).toBeEnabled());
     await user.click(screen.getByRole('button', { name: 'Create vault' }));
 
-    await waitFor(() => expect(api.createVault).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(api.createVault).toHaveBeenCalledTimes(1), CRYPTO_WAIT);
     const call = api.createVault.mock.calls[0]![0] as {
       id: string;
       name: string;
@@ -165,8 +175,9 @@ describe('CreateVaultWizard', () => {
     }
     await user.click(screen.getByRole('button', { name: 'Create vault' }));
 
-    await waitFor(() =>
-      expect(screen.getByRole('alert')).toHaveTextContent(/different vault id/iu),
+    await waitFor(
+      () => expect(screen.getByRole('alert')).toHaveTextContent(/different vault id/iu),
+      CRYPTO_WAIT,
     );
     expect(screen.queryByText('Step 4 of 4')).not.toBeInTheDocument();
   });
