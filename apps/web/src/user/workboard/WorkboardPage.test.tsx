@@ -16,8 +16,15 @@ vi.mock('../../lib/workboardApi', () => ({
 }));
 
 vi.mock('../../lib/assetApi', () => ({
-  getAssetQuote: vi.fn(),
-  getAssetHistory: vi.fn(),
+  getAssetQuotes: vi.fn(),
+  getAssetSparklines: vi.fn(),
+  workboardQuotesQueryKey: (ids: readonly string[]) => ['assets', 'workboard', 'quotes', ids],
+  workboardSparklinesQueryKey: (ids: readonly string[]) => [
+    'assets',
+    'workboard',
+    'sparklines',
+    ids,
+  ],
 }));
 
 vi.mock('../../lib/marketIntelApi', () => ({
@@ -33,12 +40,13 @@ vi.mock('../../lib/socialApi', () => ({
 }));
 
 import {
+  WORKBOARD_QUERY_KEY,
   listWatchlists,
   listWorkboard,
   removeFromWorkboard,
   reorderWorkboard,
 } from '../../lib/workboardApi';
-import { getAssetHistory, getAssetQuote } from '../../lib/assetApi';
+import { getAssetQuotes, getAssetSparklines } from '../../lib/assetApi';
 import { ApiError } from '../../lib/apiClient';
 import { getEarningsCalendar } from '../../lib/marketIntelApi';
 import { getAudience, listFriends, listGroups, setAudience } from '../../lib/socialApi';
@@ -92,10 +100,7 @@ const BASE_QUOTE = {
   asOf: '2024-06-01T12:00:00.000Z',
 };
 
-const BASE_HISTORY = {
-  range: '1M' as const,
-  interval: '1d' as const,
-  currency: 'USD' as const,
+const BASE_SPARKLINE = {
   points: [
     { time: '2024-05-01T00:00:00.000Z', close: 140.0 },
     { time: '2024-05-15T00:00:00.000Z', close: 145.0 },
@@ -130,8 +135,14 @@ function renderPage(client = makeQueryClient()) {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.mocked(getAssetQuote).mockResolvedValue(BASE_QUOTE);
-  vi.mocked(getAssetHistory).mockResolvedValue(BASE_HISTORY);
+  vi.mocked(getAssetQuotes).mockImplementation(async (ids) => ({
+    quotes: ids.map((assetId) => ({ assetId, ...BASE_QUOTE })),
+    failed: [],
+  }));
+  vi.mocked(getAssetSparklines).mockImplementation(async (ids) => ({
+    sparklines: ids.map((assetId) => ({ assetId, ...BASE_SPARKLINE })),
+    failed: [],
+  }));
   vi.mocked(removeFromWorkboard).mockResolvedValue(undefined);
   vi.mocked(reorderWorkboard).mockResolvedValue(undefined);
   vi.mocked(listWatchlists).mockResolvedValue({
@@ -242,16 +253,30 @@ describe('WorkboardPage — empty state', () => {
 describe('WorkboardPage — item rendering', () => {
   test('renders terminal failures without retry and offers retry only for an outage', async () => {
     vi.mocked(listWorkboard).mockResolvedValue({ items: [ITEM_A] });
-    vi.mocked(getAssetQuote).mockRejectedValue(new ApiError(503, 'UNAVAILABLE', 'offline'));
-    vi.mocked(getAssetHistory).mockRejectedValue(new ApiError(404, 'NOT_FOUND', 'missing'));
+    vi.mocked(getAssetQuotes).mockRejectedValue(new ApiError(503, 'UNAVAILABLE', 'offline'));
+    vi.mocked(getAssetSparklines).mockRejectedValue(new ApiError(404, 'NOT_FOUND', 'missing'));
     vi.mocked(listWatchlists).mockRejectedValue(new ApiError(403, 'FORBIDDEN', 'forbidden'));
     renderPage();
 
+    // The 403 sharing read stays terminal and retry-less; the shared market
+    // read presents ONE outage state with ONE retry, not one per row.
     await waitFor(() =>
-      expect(screen.getAllByText("This information isn't available.")).toHaveLength(2),
+      expect(screen.getByText('Something went wrong. Please try again.')).toBeInTheDocument(),
     );
-    expect(screen.getByText('Something went wrong. Please try again.')).toBeInTheDocument();
+    expect(screen.getByText("This information isn't available.")).toBeInTheDocument();
     expect(screen.getAllByRole('button', { name: 'Try again' })).toHaveLength(1);
+  });
+
+  test('a terminal market read shows one zone-level unavailable state, no retry', async () => {
+    vi.mocked(listWorkboard).mockResolvedValue({ items: [ITEM_A, ITEM_B] });
+    vi.mocked(getAssetQuotes).mockRejectedValue(new ApiError(404, 'NOT_FOUND', 'missing'));
+    vi.mocked(getAssetSparklines).mockRejectedValue(new ApiError(404, 'NOT_FOUND', 'missing'));
+    renderPage();
+
+    await waitFor(() =>
+      expect(screen.getByText("This information isn't available.")).toBeInTheDocument(),
+    );
+    expect(screen.queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
   });
 
   test('keeps cached quote and sparkline visible after a failed background refetch', async () => {
@@ -265,19 +290,149 @@ describe('WorkboardPage — item rendering', () => {
     ).toBeInTheDocument();
     expect(await within(row!).findByText(/150/)).toBeInTheDocument();
 
-    vi.mocked(getAssetQuote).mockRejectedValue(new ApiError(503, 'UNAVAILABLE', 'quote offline'));
-    vi.mocked(getAssetHistory).mockRejectedValue(
+    vi.mocked(getAssetQuotes).mockRejectedValue(new ApiError(503, 'UNAVAILABLE', 'quote offline'));
+    vi.mocked(getAssetSparklines).mockRejectedValue(
       new ApiError(503, 'UNAVAILABLE', 'history offline'),
     );
     await act(async () => {
-      await client.refetchQueries({ queryKey: ['asset', ITEM_A.assetId], type: 'active' });
+      await client.refetchQueries({ queryKey: ['assets', 'workboard'], type: 'active' });
     });
 
     expect(
       await within(row!).findByRole('img', { name: '1-month trend for AAPL' }),
     ).toBeInTheDocument();
     expect(within(row!).getByText(/150/)).toBeInTheDocument();
-    expect(await within(row!).findAllByRole('button', { name: 'Try again' })).toHaveLength(2);
+    // One retry for the shared read, offered outside the table rather than
+    // stamped into every row.
+    expect(await screen.findAllByRole('button', { name: 'Try again' })).toHaveLength(1);
+    expect(within(row!).queryByRole('button', { name: 'Try again' })).not.toBeInTheDocument();
+  });
+
+  test('keeps surviving rows rendered while a removal remints the batch key', async () => {
+    vi.mocked(listWorkboard).mockResolvedValue({ items: [ITEM_A, ITEM_B] });
+    renderPage();
+
+    expect(await screen.findByRole('img', { name: '1-month trend for AAPL' })).toBeInTheDocument();
+
+    // Removing MSFT changes the id set, so both aggregate queries get a brand
+    // new cache key. `keepPreviousData` must keep AAPL's row rendered instead
+    // of dropping every survivor back to a skeleton.
+    vi.mocked(listWorkboard).mockResolvedValue({ items: [ITEM_A] });
+    let resolveQuotes: (() => void) | undefined;
+    vi.mocked(getAssetQuotes).mockImplementation(
+      (ids) =>
+        new Promise((resolve) => {
+          resolveQuotes = () =>
+            resolve({ quotes: ids.map((assetId) => ({ assetId, ...BASE_QUOTE })), failed: [] });
+        }),
+    );
+    await userEvent.click(screen.getByRole('button', { name: 'Remove MSFT from watchlist' }));
+
+    await waitFor(() => expect(screen.queryByText('MSFT')).not.toBeInTheDocument());
+    expect(screen.getByRole('img', { name: '1-month trend for AAPL' })).toBeInTheDocument();
+    expect(screen.getByText(/150/)).toBeInTheDocument();
+    await act(async () => {
+      resolveQuotes?.();
+    });
+  });
+
+  test('reports rows the provider could not price, with one retry for the zone', async () => {
+    // A partial provider failure comes back as a 200 with the id in `failed`,
+    // so neither query is in an error state. Without this the row would show
+    // "—" forever and nothing would re-run it (the sparkline read has a
+    // 15-minute stale window and no poll).
+    vi.mocked(listWorkboard).mockResolvedValue({ items: [ITEM_A, ITEM_B] });
+    vi.mocked(getAssetQuotes).mockImplementation(async (ids) => ({
+      quotes: ids
+        .filter((assetId) => assetId !== ITEM_B.assetId)
+        .map((assetId) => ({ assetId, ...BASE_QUOTE })),
+      failed: [ITEM_B.assetId],
+    }));
+    renderPage();
+
+    expect(
+      await screen.findByText("Market data for 1 asset couldn't be loaded."),
+    ).toBeInTheDocument();
+    // The healthy row is untouched — isolation, not an all-or-nothing failure.
+    expect(screen.getByText(/150/)).toBeInTheDocument();
+
+    const quoteCalls = vi.mocked(getAssetQuotes).mock.calls.length;
+    await userEvent.click(screen.getByRole('button', { name: 'Try again' }));
+    await waitFor(() =>
+      expect(vi.mocked(getAssetQuotes).mock.calls.length).toBeGreaterThan(quoteCalls),
+    );
+    // Only the read that lost rows re-runs; the healthy sparkline read does not.
+    expect(vi.mocked(getAssetSparklines)).toHaveBeenCalledTimes(1);
+  });
+
+  test('counts each failed asset once across both aggregate reads', async () => {
+    vi.mocked(listWorkboard).mockResolvedValue({ items: [ITEM_A, ITEM_B] });
+    vi.mocked(getAssetQuotes).mockImplementation(async () => ({
+      quotes: [],
+      failed: [ITEM_A.assetId, ITEM_B.assetId],
+    }));
+    vi.mocked(getAssetSparklines).mockImplementation(async () => ({
+      sparklines: [],
+      failed: [ITEM_B.assetId],
+    }));
+    renderPage();
+
+    expect(
+      await screen.findByText("Market data for 2 assets couldn't be loaded."),
+    ).toBeInTheDocument();
+  });
+
+  test('reports a row the server omitted entirely, not only the ones it called failed', async () => {
+    // An id the caller can no longer see is absent from BOTH `quotes` and
+    // `failed` — the server keeps invisible ids indistinguishable from a foreign
+    // custom asset (§10) — so only the client can notice the gap. Otherwise the
+    // stranded row shows "—" forever with nothing to press.
+    vi.mocked(listWorkboard).mockResolvedValue({ items: [ITEM_A, ITEM_B] });
+    vi.mocked(getAssetQuotes).mockImplementation(async (ids) => ({
+      quotes: ids
+        .filter((assetId) => assetId !== ITEM_B.assetId)
+        .map((assetId) => ({ assetId, ...BASE_QUOTE })),
+      failed: [],
+    }));
+    renderPage();
+
+    expect(
+      await screen.findByText("Market data for 1 asset couldn't be loaded."),
+    ).toBeInTheDocument();
+    // Folded into the same zone alert, not a second one.
+    expect(screen.getAllByRole('button', { name: 'Try again' })).toHaveLength(1);
+    expect(screen.getByText(/150/)).toBeInTheDocument();
+  });
+
+  test('does not accuse a just-added row while the previous batch is still shown', async () => {
+    // Adding a row remints the batch key, and `keepPreviousData` keeps showing
+    // the previous id set's answer — which legitimately has no entry for the new
+    // asset. That placeholder window must not read as "the server omitted it".
+    vi.mocked(listWorkboard).mockResolvedValue({ items: [ITEM_A] });
+    const { client } = renderPage();
+    expect(await screen.findByText('AAPL')).toBeInTheDocument();
+
+    vi.mocked(listWorkboard).mockResolvedValue({ items: [ITEM_A, ITEM_B] });
+    let resolveQuotes: (() => void) | undefined;
+    vi.mocked(getAssetQuotes).mockImplementation(
+      (ids) =>
+        new Promise((resolve) => {
+          resolveQuotes = () =>
+            resolve({ quotes: ids.map((assetId) => ({ assetId, ...BASE_QUOTE })), failed: [] });
+        }),
+    );
+    await act(async () => {
+      await client.invalidateQueries({ queryKey: WORKBOARD_QUERY_KEY });
+    });
+
+    await waitFor(() => expect(screen.getByText('MSFT')).toBeInTheDocument());
+    expect(screen.queryByText(/couldn't be loaded/)).not.toBeInTheDocument();
+
+    await act(async () => {
+      resolveQuotes?.();
+    });
+    await waitFor(() => expect(screen.getAllByText(/150/).length).toBeGreaterThan(1));
+    expect(screen.queryByText(/couldn't be loaded/)).not.toBeInTheDocument();
   });
 
   test('shows asset symbols and names for all items', async () => {
@@ -287,6 +442,37 @@ describe('WorkboardPage — item rendering', () => {
     expect(screen.getByText('Apple Inc.')).toBeInTheDocument();
     expect(screen.getByText('MSFT')).toBeInTheDocument();
     expect(screen.getByText('Microsoft Corporation')).toBeInTheDocument();
+  });
+
+  test('loads 20 rows through one quote batch and one compact-sparkline batch', async () => {
+    const items = Array.from({ length: 20 }, (_, index) => ({
+      ...ITEM_A,
+      id: `10000000-0000-4000-8000-${String(index).padStart(12, '0')}`,
+      assetId: `20000000-0000-4000-8000-${String(index).padStart(12, '0')}`,
+      sortOrder: index,
+      asset: {
+        ...ITEM_A.asset,
+        symbol: `ASSET${index}`,
+        name: `Asset ${index}`,
+      },
+    }));
+    vi.mocked(listWorkboard).mockResolvedValue({ items });
+
+    renderPage();
+
+    await waitFor(() => {
+      expect(vi.mocked(getAssetQuotes)).toHaveBeenCalledTimes(1);
+      expect(vi.mocked(getAssetSparklines)).toHaveBeenCalledTimes(1);
+    });
+    expect(vi.mocked(getAssetQuotes).mock.calls[0]?.[0]).toEqual(
+      items.map((item) => item.assetId).sort(),
+    );
+    expect(vi.mocked(getAssetSparklines).mock.calls[0]?.[0]).toEqual(
+      items.map((item) => item.assetId).sort(),
+    );
+    expect(
+      await screen.findByRole('img', { name: '1-month trend for ASSET19' }),
+    ).toBeInTheDocument();
   });
 
   test('symbol links navigate to asset detail page', async () => {

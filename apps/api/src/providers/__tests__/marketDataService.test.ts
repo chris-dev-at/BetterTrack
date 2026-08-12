@@ -259,6 +259,31 @@ describe('MarketDataService — negative caching (§5.3)', () => {
   });
 });
 
+describe('MarketDataService — history freshness is a function of range alone (§5.3)', () => {
+  // The interval picks the cache *key* (each candle density gets its own entry);
+  // it must never move the *window*. Overriding the interval is not a
+  // workboard-only concern: `portfolioSnapshots` and `marketDataFxSource` both
+  // ask for an explicit `1d` at ranges starting at `1M`, so widening the window
+  // for daily candles would silently stale the portfolio value series and every
+  // non-EUR conversion. Pinned here so it cannot be re-widened incidentally.
+  it.each([
+    ['1M', '1d', 15 * 60],
+    ['1M', '30m', 15 * 60],
+    ['1W', '1d', 5 * 60],
+    ['MAX', '1d', 6 * 60 * 60],
+  ] as const)('keeps %s@%s on its range window of %d s', async (range, interval, expected) => {
+    const { service } = serviceWith();
+
+    await service.getHistory(REF, range, interval);
+
+    const ttl = await redis.ttl(
+      freshCacheKey(cacheKey('fake', 'ACME', 'history', `${range}@${interval}`)),
+    );
+    expect(ttl).toBeGreaterThan(expected - 10);
+    expect(ttl).toBeLessThanOrEqual(expected);
+  });
+});
+
 describe('MarketDataService — local providers', () => {
   it('bypasses the TTL cache so a manual asset edit is visible immediately', async () => {
     let price = 100;

@@ -3,7 +3,10 @@ import type { Application } from 'express';
 import { describe, expect, it } from 'vitest';
 
 import {
+  assetQuotesResponseSchema,
+  assetSparklinesResponseSchema,
   assetDetailResponseSchema,
+  createApiKeyResponseSchema,
   dailyClosesResponseSchema,
   historyResponseSchema,
   quoteResponseSchema,
@@ -14,6 +17,7 @@ import {
 } from '@bettertrack/contracts';
 
 import * as schema from '../data/schema';
+import { MAX_INFLIGHT_ROW_READS } from '../services/assets/assetService';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 import { createStubMarketData } from '../testing/marketDataStubs';
 
@@ -59,6 +63,15 @@ async function loginAgent(app: Application, identifier: string, password: string
     .send({ identifier, password });
   expect(res.status).toBe(200);
   return agent;
+}
+
+async function mintKey(agent: Awaited<ReturnType<typeof loginAgent>>, scopes: string[]) {
+  const res = await agent
+    .post('/api/v1/settings/api-keys')
+    .set(...XRW)
+    .send({ name: `assets ${scopes.join(' ')}`, scopes });
+  expect(res.status).toBe(201);
+  return createApiKeyResponseSchema.parse(res.body).token;
 }
 
 async function seedGlobalAsset(
@@ -225,6 +238,199 @@ describe('GET /api/v1/assets/:id/quote', () => {
     const res = await agent.get(`/api/v1/assets/${asset.id}/quote`);
     expect(res.status).toBe(502);
     expect(res.body.error.code).toBe('UPSTREAM_UNAVAILABLE');
+  });
+});
+
+describe('GET /api/v1/assets/quotes', () => {
+  it('batches quotes and requires the market:read bearer scope', async () => {
+    const marketData = createStubMarketData({
+      quote: (ref) =>
+        cachedQuote({
+          value: sampleQuote({ price: ref.providerRef === 'MSFT' ? 420 : 187.5 }),
+        }),
+    });
+    const h = await createTestApp({ marketData });
+    const user = await h.seedUser();
+    const apple = await seedGlobalAsset(h);
+    const microsoft = await seedGlobalAsset(h, {
+      providerRef: 'MSFT',
+      symbol: 'MSFT',
+      name: 'Microsoft Corporation',
+    });
+    const agent = await loginAgent(h.app, user.email, user.password);
+    const wrongScopeToken = await mintKey(agent, ['workboard:read']);
+    const marketToken = await mintKey(agent, ['market:read']);
+    const path = `/api/v1/assets/quotes?ids=${apple.id},${microsoft.id}`;
+
+    const denied = await request(h.app).get(path).set('Authorization', `Bearer ${wrongScopeToken}`);
+    expect(denied.status).toBe(403);
+    expect(denied.body.error.code).toBe('INSUFFICIENT_SCOPE');
+    expect(marketData.calls.quote).toBe(0);
+
+    const res = await request(h.app).get(path).set('Authorization', `Bearer ${marketToken}`);
+    expect(res.status).toBe(200);
+    const parsed = assetQuotesResponseSchema.parse(res.body);
+    expect(parsed.quotes.map((entry) => entry.assetId)).toEqual([apple.id, microsoft.id]);
+    expect(parsed.quotes.map((entry) => entry.quote.price)).toEqual([187.5, 420]);
+    expect(marketData.calls.quote).toBe(2);
+  });
+
+  it('keeps upstream fan-out bounded and still answers in request order', async () => {
+    // One request must not dump 100 calls into the shared per-provider queue
+    // (§5.2): every other caller on the box would queue behind them, and this
+    // request's own tail would age out of the service timeout while waiting.
+    let inFlight = 0;
+    let peakInFlight = 0;
+    const marketData = createStubMarketData({
+      quote: async (ref) => {
+        inFlight += 1;
+        peakInFlight = Math.max(peakInFlight, inFlight);
+        await new Promise((resolve) => setImmediate(resolve));
+        inFlight -= 1;
+        return cachedQuote({
+          value: sampleQuote({ price: Number(ref.providerRef.replace('SYM', '')) }),
+        });
+      },
+    });
+    const h = await createTestApp({ marketData });
+    const user = await h.seedUser();
+    const rows = [];
+    for (let index = 0; index < MAX_INFLIGHT_ROW_READS * 2; index += 1) {
+      rows.push(
+        await seedGlobalAsset(h, {
+          providerRef: `SYM${index}`,
+          symbol: `SYM${index}`,
+          name: `Sym ${index}`,
+        }),
+      );
+    }
+    const agent = await loginAgent(h.app, user.email, user.password);
+    // Reversed, so "request order" cannot be satisfied by insertion order.
+    const ids = [...rows].reverse().map((row) => row.id);
+
+    const res = await agent.get(`/api/v1/assets/quotes?ids=${ids.join(',')}`);
+
+    expect(res.status).toBe(200);
+    const parsed = assetQuotesResponseSchema.parse(res.body);
+    expect(parsed.quotes.map((entry) => entry.assetId)).toEqual(ids);
+    expect(marketData.calls.quote).toBe(rows.length);
+    expect(peakInFlight).toBeLessThanOrEqual(MAX_INFLIGHT_ROW_READS);
+    // Still concurrent — the pool bounds the fan-out, it does not serialize it.
+    expect(peakInFlight).toBeGreaterThan(1);
+  });
+
+  it('isolates rows: an unpriceable asset and an invisible id never fail the batch', async () => {
+    const marketData = createStubMarketData({
+      quote: (ref) => {
+        // Stands in for an emptied custom asset (MANUAL_ASSET_EMPTY) or a
+        // delisted ticker parked on a negative cache entry.
+        if (ref.providerRef === 'MSFT') throw new Error('no quote available');
+        return cachedQuote();
+      },
+    });
+    const h = await createTestApp({ marketData });
+    const user = await h.seedUser();
+    const apple = await seedGlobalAsset(h);
+    const microsoft = await seedGlobalAsset(h, {
+      providerRef: 'MSFT',
+      symbol: 'MSFT',
+      name: 'Microsoft Corporation',
+    });
+    const agent = await loginAgent(h.app, user.email, user.password);
+    const missingId = '00000000-0000-4000-8000-0000000000ff';
+
+    const res = await agent.get(
+      `/api/v1/assets/quotes?ids=${apple.id},${microsoft.id},${missingId}`,
+    );
+
+    expect(res.status).toBe(200);
+    const parsed = assetQuotesResponseSchema.parse(res.body);
+    expect(parsed.quotes.map((entry) => entry.assetId)).toEqual([apple.id]);
+    expect(parsed.quotes[0]?.quote.price).toBe(187.5);
+    // The unpriceable row is REPORTED so the client can offer a retry; the id
+    // the caller cannot see stays absent, indistinguishable from foreign (§10).
+    expect(parsed.failed).toEqual([microsoft.id]);
+  });
+});
+
+describe('GET /api/v1/assets/sparklines', () => {
+  it('requests daily 1M history and bounds each compact series to 30 points', async () => {
+    const seen: Array<{ range: HistoryRange; interval: string | undefined }> = [];
+    const denseDaily = Array.from({ length: 35 }, (_, index) => ({
+      time: new Date(Date.UTC(2026, 4, index + 1)).toISOString(),
+      close: 100 + index,
+    }));
+    const marketData = createStubMarketData({
+      history: (_ref, range, interval) => {
+        seen.push({ range, interval });
+        return cachedHistory({ value: denseDaily });
+      },
+    });
+    const h = await createTestApp({ marketData });
+    const user = await h.seedUser();
+    const asset = await seedGlobalAsset(h);
+    const agent = await loginAgent(h.app, user.email, user.password);
+
+    const res = await agent.get(`/api/v1/assets/sparklines?ids=${asset.id}`);
+
+    expect(res.status).toBe(200);
+    const parsed = assetSparklinesResponseSchema.parse(res.body);
+    expect(seen).toEqual([{ range: '1M', interval: '1d' }]);
+    expect(parsed.sparklines[0]?.points).toHaveLength(30);
+    expect(parsed.sparklines[0]?.points[0]?.close).toBe(105);
+    expect(parsed.sparklines[0]?.points.at(-1)?.close).toBe(134);
+  });
+
+  it('omits an asset with no series instead of blanking every other sparkline', async () => {
+    const marketData = createStubMarketData({
+      history: (ref) => {
+        if (ref.providerRef === 'MSFT') throw new Error('no history available');
+        return cachedHistory();
+      },
+    });
+    const h = await createTestApp({ marketData });
+    const user = await h.seedUser();
+    const apple = await seedGlobalAsset(h);
+    const microsoft = await seedGlobalAsset(h, {
+      providerRef: 'MSFT',
+      symbol: 'MSFT',
+      name: 'Microsoft Corporation',
+    });
+    const agent = await loginAgent(h.app, user.email, user.password);
+
+    const res = await agent.get(`/api/v1/assets/sparklines?ids=${apple.id},${microsoft.id}`);
+
+    expect(res.status).toBe(200);
+    const parsed = assetSparklinesResponseSchema.parse(res.body);
+    expect(parsed.sparklines.map((entry) => entry.assetId)).toEqual([apple.id]);
+    expect(parsed.sparklines[0]?.points).toHaveLength(2);
+    expect(parsed.failed).toEqual([microsoft.id]);
+  });
+
+  it('keeps a full batch of unreadable rows a 200 with every id reported', async () => {
+    // The total-outage case: nothing resolves, but the response still has to
+    // say WHICH ids failed, or the client shows an empty table with no error.
+    const marketData = createStubMarketData({
+      history: () => {
+        throw new Error('provider down');
+      },
+    });
+    const h = await createTestApp({ marketData });
+    const user = await h.seedUser();
+    const apple = await seedGlobalAsset(h);
+    const microsoft = await seedGlobalAsset(h, {
+      providerRef: 'MSFT',
+      symbol: 'MSFT',
+      name: 'Microsoft Corporation',
+    });
+    const agent = await loginAgent(h.app, user.email, user.password);
+
+    const res = await agent.get(`/api/v1/assets/sparklines?ids=${apple.id},${microsoft.id}`);
+
+    expect(res.status).toBe(200);
+    const parsed = assetSparklinesResponseSchema.parse(res.body);
+    expect(parsed.sparklines).toEqual([]);
+    expect(parsed.failed).toEqual([apple.id, microsoft.id]);
   });
 });
 

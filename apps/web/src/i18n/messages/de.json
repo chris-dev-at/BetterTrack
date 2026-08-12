@@ -2193,6 +2193,10 @@
         "shareButton": "Mit Freunden teilen",
         "sharedButton": "Mit Freunden geteilt",
         "loadError": "Deine Watchlist konnte nicht geladen werden. Bitte lade die Seite neu.",
+        "partialMarketError": {
+          "one": "Marktdaten für 1 Anlage konnten nicht geladen werden.",
+          "other": "Marktdaten für {{count}} Anlagen konnten nicht geladen werden."
+        },
         "removeError": "Entfernen fehlgeschlagen. Bitte versuche es erneut.",
         "reorderError": "Neue Reihenfolge konnte nicht gespeichert werden. Bitte versuche es erneut.",
         "emptyTitle": "Deine Watchlist ist leer",

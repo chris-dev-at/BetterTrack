@@ -241,6 +241,8 @@ const componentSchemas = {
   // Assets (§6.3)
   AssetDetailResponse: contracts.assetDetailResponseSchema,
   QuoteResponse: contracts.quoteResponseSchema,
+  AssetQuotesResponse: contracts.assetQuotesResponseSchema,
+  AssetSparklinesResponse: contracts.assetSparklinesResponseSchema,
   HistoryResponse: contracts.historyResponseSchema,
   DailyClosesResponse: contracts.dailyClosesResponseSchema,
 
@@ -1901,6 +1903,26 @@ const endpoints: EndpointDef[] = [
   },
 
   // Assets (§6.3)
+  {
+    method: 'get',
+    path: '/assets/quotes',
+    tag: 'Assets',
+    summary:
+      'Latest quotes for an aggregate asset id set; ids the caller cannot see are omitted, ids the provider could not price are listed in `failed`.',
+    query: contracts.assetBatchQuerySchema,
+    status: 200,
+    response: R.AssetQuotesResponse,
+  },
+  {
+    method: 'get',
+    path: '/assets/sparklines',
+    tag: 'Assets',
+    summary:
+      'Compact one-month daily sparklines for an aggregate asset id set; invisible ids are omitted, ids whose series could not be read are listed in `failed`.',
+    query: contracts.assetBatchQuerySchema,
+    status: 200,
+    response: R.AssetSparklinesResponse,
+  },
   {
     method: 'get',
     path: '/assets/{id}',
