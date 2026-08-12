@@ -32,6 +32,7 @@ import {
   calendarDayInTimezone,
   dueOccurrence,
   nextRunDate,
+  prevDay,
   skippedPeriods,
   type ScheduleSpec,
 } from './schedule';
@@ -98,6 +99,13 @@ export interface ProcessDueResult {
   skippedDuplicate: number;
   /** Periods left unbooked by a pre-check (provider failure / insufficient cash). */
   deferred: number;
+  /**
+   * Orders whose final in-lock recheck aborted the write: the portfolio was
+   * archived — or the order paused, removed, or its watermark advanced past the
+   * candidate period — between the scan's optimistic `listActive` read and the
+   * locked claim.
+   */
+  skippedArchived: number;
 }
 
 /** A newly-created archive/restore tombstone, retained only for compensation. */
@@ -346,11 +354,24 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
 
       for (const order of orders) {
         const due = dueOccurrence(specOf(order), today);
-        if (due === null || (order.lastPeriodKey !== null && order.lastPeriodKey >= due)) continue;
-        if (await repo.claimSkippedPeriod(order.id, due, skippedAt)) {
+        if (due === null) continue;
+        // Only STRICTLY-PAST periods are tombstoned: a period due on the
+        // restore day itself books normally once the portfolio is scannable
+        // again (the anchor-day ruling — restoring a monthly on its anchor must
+        // not silently burn that month). Tombstoning the newest elapsed
+        // occurrence still closes the archive window: the advanced watermark
+        // keeps a stale pre-archive worker from back-filling anything older.
+        const skipThrough = due < today ? due : dueOccurrence(specOf(order), prevDay(today));
+        if (
+          skipThrough === null ||
+          (order.lastPeriodKey !== null && order.lastPeriodKey >= skipThrough)
+        ) {
+          continue;
+        }
+        if (await repo.claimSkippedPeriod(order.id, skipThrough, skippedAt)) {
           claims.push({
             orderId: order.id,
-            periodKey: due,
+            periodKey: skipThrough,
             previousLastPeriodKey: order.lastPeriodKey,
             previousLastRunAt: order.lastRunAt,
           });
@@ -366,10 +387,10 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
       return claims;
     },
 
-    async rollbackSkippedPeriodsForPortfolioRestore(_userId, claims) {
+    async rollbackSkippedPeriodsForPortfolioRestore(userId, claims) {
       await Promise.all(
         claims.map((claim) =>
-          repo.rollbackSkippedPeriod(claim.orderId, claim.periodKey, {
+          repo.rollbackSkippedPeriod(userId, claim.orderId, claim.periodKey, {
             lastPeriodKey: claim.previousLastPeriodKey,
             lastRunAt: claim.previousLastRunAt,
           }),
@@ -387,6 +408,7 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
         booked: 0,
         skippedDuplicate: 0,
         deferred: 0,
+        skippedArchived: 0,
       };
 
       for (const order of orders) {
@@ -503,7 +525,14 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
             },
           );
 
-          if (outcome === null) return;
+          if (outcome === null) {
+            result.skippedArchived += 1;
+            logger?.info(
+              { orderId: order.id, portfolioId: order.portfolioId, due },
+              'standing order: skipped — portfolio archived or order superseded during execution',
+            );
+            return;
+          }
           if (outcome === 'deferred') {
             result.deferred += 1;
             logger?.warn(

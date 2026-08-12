@@ -305,6 +305,7 @@ describe('standing orders — exactly-once per period (the gate criterion)', () 
       booked: 0,
       skippedDuplicate: 0,
       deferred: 0,
+      skippedArchived: 0,
     });
     expect(await cashRows(pid, SOURCE_TAG_STANDING_ORDER)).toHaveLength(0);
     await expect(harness.ctx.standingOrders.list(user.id)).rejects.toMatchObject({
@@ -417,6 +418,7 @@ describe('standing orders — archived portfolios', () => {
       booked: 1,
       skippedDuplicate: 0,
       deferred: 0,
+      skippedArchived: 0,
     });
     expect(await cashRows(pid, SOURCE_TAG_STANDING_ORDER)).toHaveLength(1);
     expect(await cashRows(activePid, SOURCE_TAG_STANDING_ORDER)).toHaveLength(2);
@@ -447,6 +449,64 @@ describe('standing orders — archived portfolios', () => {
     expect(
       (await runPeriodKeys(retiredOrder.body.id as string)).map((row) => row.key).sort(),
     ).toEqual(['2026-04-01', '2026-05-01', '2026-06-01']);
+  });
+
+  it('books the period due on the restore day itself (anchor-day restore)', async () => {
+    const { agent } = await setup();
+    const portfolio = await agent
+      .post('/api/v1/portfolios')
+      .set(...XRW)
+      .send({ name: 'Anchor-day restore' });
+    expect(portfolio.status).toBe(201);
+    const pid = portfolio.body.portfolio.id as string;
+
+    const order = await createOrder(agent, {
+      portfolioId: pid,
+      kind: 'cash-add',
+      amount: 100,
+      label: 'salary',
+      cadence: 'monthly',
+      anchorDay: 1,
+      startDate: '2026-04-01',
+    });
+    expect(order.status).toBe(201);
+    expect((await run('2026-04-01T12:00:00Z')).booked).toBe(1);
+
+    portfolioNow = Date.parse('2026-04-20T12:00:00Z');
+    expect((await agent.post(`/api/v1/portfolios/${pid}/archive`).set(...XRW)).status).toBe(200);
+
+    // Restoring ON the anchor day must not tombstone that period: only
+    // strictly-past periods are skipped, and April is already booked, so the
+    // restore claims nothing and May 1 books normally on the day's scan.
+    portfolioNow = Date.parse('2026-05-01T08:00:00Z');
+    expect((await agent.post(`/api/v1/portfolios/${pid}/restore`).set(...XRW)).status).toBe(200);
+
+    const restored = await agent.get(`/api/v1/standing-orders?portfolioId=${pid}`);
+    const restoredOrder = standingOrderListResponseSchema
+      .parse(restored.body)
+      .orders.find((candidate) => candidate.id === order.body.id);
+    expect(restoredOrder).toMatchObject({
+      status: 'active',
+      suspendedByArchive: false,
+      lastPeriodKey: '2026-04-01',
+      nextRunDate: '2026-05-01',
+    });
+    expect((await runPeriodKeys(order.body.id as string)).map((row) => row.key)).toEqual([
+      '2026-04-01',
+    ]);
+
+    expect(await run('2026-05-01T12:00:00Z')).toEqual({
+      scanned: 1,
+      booked: 1,
+      skippedDuplicate: 0,
+      deferred: 0,
+      skippedArchived: 0,
+    });
+    expect(await cashRows(pid, SOURCE_TAG_STANDING_ORDER)).toHaveLength(2);
+    expect((await runPeriodKeys(order.body.id as string)).map((row) => row.key).sort()).toEqual([
+      '2026-04-01',
+      '2026-05-01',
+    ]);
   });
 
   it('tombstones an archived buy before the post-restore quote pre-check', async () => {
@@ -484,6 +544,7 @@ describe('standing orders — archived portfolios', () => {
       booked: 0,
       skippedDuplicate: 0,
       deferred: 0,
+      skippedArchived: 0,
     });
     expect(await txnRows(pid)).toHaveLength(1);
 
@@ -550,6 +611,8 @@ describe('standing orders — archived portfolios', () => {
       booked: 0,
       skippedDuplicate: 0,
       deferred: 0,
+      // The in-lock recheck's abort is visible in the scan tally.
+      skippedArchived: 1,
     });
     expect(await txnRows(pid)).toHaveLength(0);
     expect(await runPeriodKeys(created.body.id as string)).toEqual([]);
@@ -558,15 +621,22 @@ describe('standing orders — archived portfolios', () => {
   it('does not let a delayed pre-midnight scan book behind a restored watermark', async () => {
     let quoteStarted!: () => void;
     let releaseQuote!: () => void;
+    let released = false;
     const quoteIsInFlight = new Promise<void>((resolve) => {
       quoteStarted = resolve;
     });
     const delayedMarketData = createStubMarketData({
       quote: async () => {
-        quoteStarted();
-        await new Promise<void>((resolve) => {
-          releaseQuote = resolve;
-        });
+        // Only the first quote is held in flight; later scans resolve directly.
+        if (!released) {
+          quoteStarted();
+          await new Promise<void>((resolve) => {
+            releaseQuote = () => {
+              released = true;
+              resolve();
+            };
+          });
+        }
         return {
           value: { price: 100, currency: 'EUR', asOf: '2026-04-01T00:00:00.000Z' },
           stale: false,
@@ -613,11 +683,14 @@ describe('standing orders — archived portfolios', () => {
       booked: 0,
       skippedDuplicate: 0,
       deferred: 0,
+      skippedArchived: 1,
     });
     expect(await txnRows(pid)).toHaveLength(0);
     expect(await cashRows(pid, SOURCE_TAG_STANDING_ORDER)).toHaveLength(0);
+    // Restore tombstones only the strictly-past Apr 1 period the delayed worker
+    // was still holding; Apr 2 — due on the restore day itself — stays bookable.
     expect((await runPeriodKeys(created.body.id as string)).map((row) => row.key)).toEqual([
-      '2026-04-02',
+      '2026-04-01',
     ]);
 
     const restored = await agent.get(`/api/v1/standing-orders?portfolioId=${pid}`);
@@ -625,9 +698,18 @@ describe('standing orders — archived portfolios', () => {
       .parse(restored.body)
       .orders.find((order) => order.id === created.body.id);
     expect(restoredOrder).toMatchObject({
-      lastPeriodKey: '2026-04-02',
-      nextRunDate: '2026-04-03',
+      lastPeriodKey: '2026-04-01',
+      nextRunDate: '2026-04-02',
     });
+
+    // The watermark blocks only the elapsed period: the restore-day occurrence
+    // books normally on its own scan.
+    expect((await run('2026-04-02T10:00:00Z')).booked).toBe(1);
+    expect(await txnRows(pid)).toHaveLength(1);
+    expect((await runPeriodKeys(created.body.id as string)).map((row) => row.key).sort()).toEqual([
+      '2026-04-01',
+      '2026-04-02',
+    ]);
   });
 });
 

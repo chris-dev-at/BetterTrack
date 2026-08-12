@@ -454,16 +454,26 @@ export function createStandingOrderRepository(db: Database) {
 
     /**
      * Compensate a newly-created archive/restore claim if the portfolio never
-     * became active. The conditional watermark reset cannot clobber a later
-     * scheduler acknowledgement.
+     * became active. Scoped to the claim owner (§8/§10): the caller's `userId`
+     * is re-checked against the order row, so a foreign order id can never have
+     * its tombstone or watermark touched. The conditional watermark reset
+     * cannot clobber a later scheduler acknowledgement.
      */
     async rollbackSkippedPeriod(
+      userId: string,
       standingOrderId: string,
       periodKey: string,
       previous: { lastPeriodKey: string | null; lastRunAt: Date | null },
     ): Promise<void> {
       await db.transaction(async (tx) => {
         const transaction = tx as unknown as Database;
+        const owned = await transaction
+          .select({ id: standingOrders.id })
+          .from(standingOrders)
+          .where(and(eq(standingOrders.id, standingOrderId), eq(standingOrders.userId, userId)))
+          .limit(1)
+          .for('update');
+        if (owned.length === 0) return;
         const removed = await transaction
           .delete(standingOrderRuns)
           .where(
