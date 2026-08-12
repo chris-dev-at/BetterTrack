@@ -60,13 +60,32 @@ import {
  *
  * **No negative balances.** A `cash-deduct` that would overdraw is deferred (and
  * retried) rather than forced negative — the app's cash invariant holds. Buys
- * never touch cash (they book only the BUY transaction at the current quote).
- * Rows are dated at the execution instant; the scheduled period identity lives
- * in the run's `period_key`.
+ * never touch cash (they book only the BUY transaction after synchronously
+ * refreshing its quote via `pollQuote`).
+ *
+ * **Timestamps (#1119 AC 4).** Every money row is dated at the scan instant —
+ * the engine writes through the repositories without traversing the tax-year
+ * unlock ritual, so a pre-open scan must never produce a row in an earlier,
+ * possibly locked (#1168) tax year. The accepted quote's provider `asOf` is
+ * RECORDED on the order's `lastRunAt` as the market-hours stamp (record-only;
+ * see {@link resolveBookQuote}). The scheduled period identity lives in the
+ * run's `period_key`.
  */
 
 /** Timezone the daily scan reads "today" in — the deploy tz, matching the crons. */
 export const STANDING_ORDERS_SCAN_TZ = 'Europe/Vienna';
+
+/**
+ * Oldest provider quote timestamp a standing-order buy will accept (#1119
+ * finding on quote staleness). The 07:00 Europe/Vienna scan legitimately sees
+ * the prior session's close — across a long weekend with a Monday holiday that
+ * close is ~3.6 days old — so four days bounds every legitimate closure while
+ * refusing the frozen last close of a halted or delisted symbol, which would
+ * otherwise keep being accepted (and recorded) at one historical instant
+ * indefinitely. An older `asOf` defers the period exactly like a provider
+ * failure: it retries next scan and surfaces through the SO3 deferred notice.
+ */
+export const STANDING_ORDER_MAX_QUOTE_AGE_MS = 4 * 24 * 60 * 60 * 1000;
 
 export interface StandingOrderServiceDeps {
   repo: StandingOrderRepository;
@@ -75,7 +94,7 @@ export interface StandingOrderServiceDeps {
   transactionRepo: Pick<TransactionRepository, 'insertMany'>;
   cashMovementRepo: Pick<CashMovementRepository, 'insert' | 'listForPortfolio'>;
   cashSourceRepo: Pick<CashSourceRepository, 'getOrCreateMain'>;
-  marketData: Pick<MarketDataService, 'getQuote'>;
+  marketData: Pick<MarketDataService, 'pollQuote' | 'isLocalProvider'>;
   snapshots: Pick<PortfolioSnapshotService, 'invalidate'>;
   /** Standard durable notification entry point for deferred/dropped periods. */
   notify: NotificationCenter;
@@ -115,6 +134,18 @@ export interface ProcessDueResult {
    * deliberate at-most-once tombstone and must never provoke a retry.
    */
   failed: number;
+}
+
+/** A buy's pre-claim quote: the booking price plus the recorded market stamp. */
+interface BookQuote {
+  price: number;
+  /**
+   * What `lastRunAt` will record for this booking: the provider's `asOf` for an
+   * upstream asset (clamped to the scan instant when the provider clock runs
+   * ahead), or the scan instant itself for a local/custom asset. Record-only —
+   * never the money row's `executedAt`.
+   */
+  recordedAt: Date;
 }
 
 /** A newly-created archive/restore tombstone, retained only for compensation. */
@@ -468,9 +499,12 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
           // period and it retries cleanly next run (no double-book risk).
           let bookPrice: number | null = null;
           let cashSourceId: string | null = null;
+          let quoteRecordedAt: Date | null = null;
           try {
             if (order.kind === 'buy-asset') {
-              bookPrice = await resolveQuotePrice(order);
+              const bookQuote = await resolveBookQuote(order, executedAt);
+              bookPrice = bookQuote.price;
+              quoteRecordedAt = bookQuote.recordedAt;
             } else {
               cashSourceId = (await cashSourceRepo.getOrCreateMain(order.portfolioId)).id;
             }
@@ -561,8 +595,10 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
 
           // Bookkeeping + snapshot invalidation are best-effort — the ledger row is
           // already durable; a hiccup here self-heals (next run / nightly reroll).
+          // For a buy, `lastRunAt` records the quote's market stamp (AC 4);
+          // cash kinds record the scan instant.
           try {
-            await repo.markBooked(order.id, due, executedAt);
+            await repo.markBooked(order.id, due, quoteRecordedAt ?? executedAt);
           } catch (err) {
             logger?.warn({ orderId: order.id, due, err }, 'standing order: markBooked failed');
           }
@@ -627,16 +663,53 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
     });
   }
 
-  /** Fetch the current native-currency quote price for a buy (throws on failure). */
-  async function resolveQuotePrice(order: StandingOrderWithAsset): Promise<number> {
+  /**
+   * Fetch one definitive native-currency quote for a buy (throws to defer).
+   *
+   * The regular `getQuote` read may serve a cache entry that expired its 60 s
+   * freshness window days ago (serve-stale-while-revalidate, §5.3) — the normal
+   * outcome for any asset somebody looked at within the stale-retention week.
+   * An automatic money write needs a definitive answer, so booking goes through
+   * `pollQuote`: it bypasses the freshness window and synchronously asks the
+   * provider through the same timeout / retry / breaker / failover chain. A
+   * failed refresh (or an open breaker) throws, leaving the period unclaimed to
+   * retry next scan — AC 3's defer, exercised at its reachable seam.
+   *
+   * The response's market timestamp is then judged by AGE, not by the cache
+   * flag: an `asOf` older than {@link STANDING_ORDER_MAX_QUOTE_AGE_MS} is a
+   * halted/delisted symbol's frozen close, not a booking basis, and defers too.
+   * Local (custom) assets are exempt — their `asOf` is the owner's latest
+   * value-point day, routinely months old without indicating an outage — and
+   * record the scan instant instead. Either way the stamp is record-only
+   * (`lastRunAt`); the money row is dated at the scan instant.
+   */
+  async function resolveBookQuote(order: StandingOrderWithAsset, scanAt: Date): Promise<BookQuote> {
     if (!order.assetProviderId || !order.assetProviderRef) {
       throw new Error(`standing order ${order.id}: buy has no asset ref`);
     }
-    const quote = await marketData.getQuote({
+    const ref = {
       providerId: order.assetProviderId,
       providerRef: order.assetProviderRef,
-    });
-    return quote.value.price;
+    };
+    const quote = await marketData.pollQuote(ref);
+    if (marketData.isLocalProvider(ref)) {
+      return { price: quote.value.price, recordedAt: new Date(scanAt.getTime()) };
+    }
+    const providerAsOfMs = new Date(quote.value.asOf).getTime();
+    if (!Number.isFinite(providerAsOfMs)) {
+      throw new Error(`standing order ${order.id}: quote has an invalid asOf timestamp`);
+    }
+    if (scanAt.getTime() - providerAsOfMs > STANDING_ORDER_MAX_QUOTE_AGE_MS) {
+      throw new Error(
+        `standing order ${order.id}: quote asOf ${quote.value.asOf} exceeds the booking age ceiling`,
+      );
+    }
+    // The stamp is record-only, so a provider clock running ahead of the scan
+    // is merely clamped — never a reason to defer.
+    return {
+      price: quote.value.price,
+      recordedAt: new Date(Math.min(providerAsOfMs, scanAt.getTime())),
+    };
   }
 
   /** Whether the portfolio's Main cash can cover a deduction (no negatives). */
