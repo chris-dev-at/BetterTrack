@@ -106,6 +106,15 @@ export interface ProcessDueResult {
    * locked claim.
    */
   skippedArchived: number;
+  /**
+   * Orders whose unexpected processing error was isolated from the rest of the
+   * sweep. Isolation keeps the remaining orders booking; the caller is expected
+   * to surface a non-zero tally as a failed run (the job handler throws on it)
+   * so the retry → dead-letter path still covers a poisoned order. Only
+   * pre-claim/unexpected errors count here — a post-claim booking failure is a
+   * deliberate at-most-once tombstone and must never provoke a retry.
+   */
+  failed: number;
 }
 
 /** A newly-created archive/restore tombstone, retained only for compensation. */
@@ -409,13 +418,10 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
         skippedDuplicate: 0,
         deferred: 0,
         skippedArchived: 0,
+        failed: 0,
       };
 
       for (const order of orders) {
-        // Definitions are vault-owned in paranoid mode. A row seen by a stale
-        // worker around the enable transaction is skipped before quote, claim,
-        // ledger write, or snapshot invalidation.
-        if (await isParanoidForProcessing?.(order.userId)) continue;
         const processOrder = async () => {
           const due = dueOccurrence(specOf(order), today);
           if (due === null) return;
@@ -570,10 +576,27 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
           }
           result.booked += 1;
         };
-        if (runIfAllowedForProcessing) {
-          await runIfAllowedForProcessing(order.userId, processOrder);
-        } else {
-          await processOrder();
+        // Per-order isolation (#1119 AC 2): one poisoned order must not starve
+        // every later order in the sweep. The catch sits at this altitude so a
+        // graceful defer, a duplicate skip, and the post-claim at-most-once
+        // tombstone (which all resolve inside `processOrder`) never count as
+        // `failed` — only an unexpected escape does, and the sweep continues.
+        try {
+          // Definitions are vault-owned in paranoid mode. A row seen by a stale
+          // worker around the enable transaction is skipped before quote, claim,
+          // ledger write, or snapshot invalidation.
+          if (await isParanoidForProcessing?.(order.userId)) continue;
+          if (runIfAllowedForProcessing) {
+            await runIfAllowedForProcessing(order.userId, processOrder);
+          } else {
+            await processOrder();
+          }
+        } catch (err) {
+          result.failed += 1;
+          logger?.error(
+            { orderId: order.id, kind: order.kind, err },
+            'standing order: order processing failed; continuing scan',
+          );
         }
       }
 
