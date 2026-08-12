@@ -8,8 +8,12 @@ import {
 } from '@bettertrack/contracts';
 
 import { floorCents } from '../../domain/cashLedger';
+import type { Database } from '../../data/db';
 import type { AssetRepository } from '../../data/repositories/assetRepository';
-import type { CashMovementRepository } from '../../data/repositories/cashMovementRepository';
+import type {
+  CashMovementRecord,
+  CashMovementRepository,
+} from '../../data/repositories/cashMovementRepository';
 import type { CashSourceRepository } from '../../data/repositories/cashSourceRepository';
 import type { PortfolioRepository } from '../../data/repositories/portfolioRepository';
 import type {
@@ -28,6 +32,7 @@ import {
   calendarDayInTimezone,
   dueOccurrence,
   nextRunDate,
+  prevDay,
   skippedPeriods,
   type ScheduleSpec,
 } from './schedule';
@@ -94,6 +99,21 @@ export interface ProcessDueResult {
   skippedDuplicate: number;
   /** Periods left unbooked by a pre-check (provider failure / insufficient cash). */
   deferred: number;
+  /**
+   * Orders whose final in-lock recheck aborted the write: the portfolio was
+   * archived — or the order paused, removed, or its watermark advanced past the
+   * candidate period — between the scan's optimistic `listActive` read and the
+   * locked claim.
+   */
+  skippedArchived: number;
+}
+
+/** A newly-created archive/restore tombstone, retained only for compensation. */
+export interface StandingOrderRestoreSkip {
+  orderId: string;
+  periodKey: string;
+  previousLastPeriodKey: string | null;
+  previousLastRunAt: Date | null;
 }
 
 export interface StandingOrderService {
@@ -112,6 +132,20 @@ export interface StandingOrderService {
   pause(userId: string, id: string): Promise<StandingOrder>;
   resume(userId: string, id: string): Promise<StandingOrder>;
   remove(userId: string, id: string): Promise<void>;
+  /**
+   * Claim the active orders' elapsed period while their portfolio is still
+   * archived, so restoring it resumes only at a later scheduled anchor.
+   */
+  skipDuePeriodsForPortfolioRestore(
+    userId: string,
+    portfolioId: string,
+    opts?: { now?: number },
+  ): Promise<StandingOrderRestoreSkip[]>;
+  /** Remove newly-created restore tombstones when the portfolio never reopens. */
+  rollbackSkippedPeriodsForPortfolioRestore(
+    userId: string,
+    claims: readonly StandingOrderRestoreSkip[],
+  ): Promise<void>;
   /** The daily job body: book every active order's newest due occurrence once. */
   processDueOrders(opts?: { now?: number }): Promise<ProcessDueResult>;
 }
@@ -165,6 +199,7 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
       : undefined);
 
   function toDto(record: StandingOrderWithAsset, today: string): StandingOrder {
+    const suspendedByArchive = record.portfolioArchivedAt !== null;
     return {
       id: record.id,
       portfolioId: record.portfolioId,
@@ -180,13 +215,14 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
       startDate: record.startDate,
       endDate: record.endDate,
       status: record.status,
+      suspendedByArchive,
       lastRunAt: record.lastRunAt ? record.lastRunAt.toISOString() : null,
       lastPeriodKey: record.lastPeriodKey,
       nextRunDate: nextRunDate(
         specOf(record),
         today,
         record.lastPeriodKey,
-        record.status === 'active',
+        record.status === 'active' && !suspendedByArchive,
       ),
       createdAt: record.createdAt.toISOString(),
       updatedAt: record.updatedAt.toISOString(),
@@ -309,6 +345,59 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
       if (!removed) throw ORDER_NOT_FOUND();
     },
 
+    async skipDuePeriodsForPortfolioRestore(userId, portfolioId, opts) {
+      const restoreNow = opts?.now ?? now();
+      const today = calendarDayInTimezone(restoreNow, timezone);
+      const skippedAt = new Date(restoreNow);
+      const orders = await repo.listActiveForPortfolio(userId, portfolioId);
+      const claims: StandingOrderRestoreSkip[] = [];
+
+      for (const order of orders) {
+        const due = dueOccurrence(specOf(order), today);
+        if (due === null) continue;
+        // Only STRICTLY-PAST periods are tombstoned: a period due on the
+        // restore day itself books normally once the portfolio is scannable
+        // again (the anchor-day ruling — restoring a monthly on its anchor must
+        // not silently burn that month). Tombstoning the newest elapsed
+        // occurrence still closes the archive window: the advanced watermark
+        // keeps a stale pre-archive worker from back-filling anything older.
+        const skipThrough = due < today ? due : dueOccurrence(specOf(order), prevDay(today));
+        if (
+          skipThrough === null ||
+          (order.lastPeriodKey !== null && order.lastPeriodKey >= skipThrough)
+        ) {
+          continue;
+        }
+        if (await repo.claimSkippedPeriod(order.id, skipThrough, skippedAt)) {
+          claims.push({
+            orderId: order.id,
+            periodKey: skipThrough,
+            previousLastPeriodKey: order.lastPeriodKey,
+            previousLastRunAt: order.lastRunAt,
+          });
+        }
+      }
+
+      if (claims.length > 0) {
+        logger?.info(
+          { portfolioId, userId, through: today, claimed: claims.length },
+          'standing orders: claimed elapsed periods before archived portfolio restore',
+        );
+      }
+      return claims;
+    },
+
+    async rollbackSkippedPeriodsForPortfolioRestore(userId, claims) {
+      await Promise.all(
+        claims.map((claim) =>
+          repo.rollbackSkippedPeriod(userId, claim.orderId, claim.periodKey, {
+            lastPeriodKey: claim.previousLastPeriodKey,
+            lastRunAt: claim.previousLastRunAt,
+          }),
+        ),
+      );
+    },
+
     async processDueOrders(opts) {
       const nowMs = opts?.now ?? now();
       const today = calendarDayInTimezone(nowMs, timezone);
@@ -319,6 +408,7 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
         booked: 0,
         skippedDuplicate: 0,
         deferred: 0,
+        skippedArchived: 0,
       };
 
       for (const order of orders) {
@@ -371,11 +461,12 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
           // Retriable pre-checks BEFORE claiming, so a failure never claims the
           // period and it retries cleanly next run (no double-book risk).
           let bookPrice: number | null = null;
+          let cashSourceId: string | null = null;
           try {
             if (order.kind === 'buy-asset') {
               bookPrice = await resolveQuotePrice(order);
-            } else if (order.kind === 'cash-deduct') {
-              await assertCashCovers(order);
+            } else {
+              cashSourceId = (await cashSourceRepo.getOrCreateMain(order.portfolioId)).id;
             }
           } catch (err) {
             result.deferred += 1;
@@ -391,21 +482,73 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
             return;
           }
 
-          const claimed = await repo.claimPeriod(order.id, due);
-          if (!claimed) {
+          // The scan's `listActive` result is intentionally only an optimistic
+          // candidate list. Archive can commit while a quote is in flight, so
+          // the final active check, claim and money write share one portfolio
+          // mutation lock. An archive that wins that lock makes this a no-op;
+          // an execution that wins finishes while the portfolio is still active.
+          const outcome = await repo.withActivePortfolioLock(
+            order.portfolioId,
+            order.id,
+            due,
+            async (tx) => {
+              if (order.kind === 'cash-deduct') {
+                const movements = await cashMovementRepo.listForPortfolio(order.portfolioId, tx);
+                if (!cashCovers(order, cashSourceId!, movements)) return 'deferred' as const;
+              }
+
+              const claimed = await repo.claimPeriod(order.id, due, tx);
+              if (!claimed) return 'duplicate' as const;
+
+              try {
+                // A failed money write must leave its run claim as the existing
+                // no-retry tombstone. A nested transaction is a savepoint, so the
+                // failed write rolls back without releasing the outer portfolio
+                // lock or rolling back the durable claim.
+                await tx.transaction(async (savepoint) => {
+                  await bookRow(
+                    order,
+                    bookPrice,
+                    executedAt,
+                    cashSourceId,
+                    savepoint as unknown as Database,
+                  );
+                });
+              } catch (err) {
+                logger?.error(
+                  { orderId: order.id, kind: order.kind, due, err },
+                  'standing order: booking failed AFTER claim; period will not retry',
+                );
+                return 'booking-failed' as const;
+              }
+              return 'booked' as const;
+            },
+          );
+
+          if (outcome === null) {
+            result.skippedArchived += 1;
+            logger?.info(
+              { orderId: order.id, portfolioId: order.portfolioId, due },
+              'standing order: skipped — portfolio archived or order superseded during execution',
+            );
+            return;
+          }
+          if (outcome === 'deferred') {
+            result.deferred += 1;
+            logger?.warn(
+              { orderId: order.id, kind: order.kind, due },
+              'standing order: period deferred (insufficient cash), will retry',
+            );
+            // Same rule as the pre-check deferral above: a same-day transient
+            // is not yet "deferred past its anchor".
+            if (due < today) await notifyFailure(order, due, 'deferred');
+            return;
+          }
+          if (outcome === 'duplicate') {
             result.skippedDuplicate += 1;
             return;
           }
-
-          try {
-            await bookRow(order, bookPrice, executedAt);
-          } catch (err) {
-            // The claim stays as a tombstone (not retried) — booking at-most-once
-            // is safer for money than risking a double-book on retry.
-            logger?.error(
-              { orderId: order.id, kind: order.kind, due, err },
-              'standing order: booking failed AFTER claim; period will not retry',
-            );
+          if (outcome === 'booking-failed') {
             await notifyFailure(order, due, 'booking_failed');
             return;
           }
@@ -473,26 +616,27 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
     return quote.value.price;
   }
 
-  /** Reject when the portfolio's Main cash can't cover a deduction (no negatives). */
-  async function assertCashCovers(order: StandingOrderWithAsset): Promise<void> {
-    const main = await cashSourceRepo.getOrCreateMain(order.portfolioId);
-    const movements = await cashMovementRepo.listForPortfolio(order.portfolioId);
+  /** Whether the portfolio's Main cash can cover a deduction (no negatives). */
+  function cashCovers(
+    order: StandingOrderWithAsset,
+    cashSourceId: string,
+    movements: readonly CashMovementRecord[],
+  ): boolean {
     const balance = floorCents(
-      movements.filter((m) => m.sourceId === main.id).reduce((sum, m) => sum + m.amountEur, 0),
+      movements
+        .filter((movement) => movement.sourceId === cashSourceId)
+        .reduce((sum, movement) => sum + movement.amountEur, 0),
     );
-    if (floorCents(order.amount) > balance) {
-      throw badRequest(
-        'Insufficient cash to cover the standing order.',
-        'STANDING_ORDER_INSUFFICIENT_CASH',
-      );
-    }
+    return floorCents(order.amount) <= balance;
   }
 
-  /** Book the ledger row for one due period, tagged `standing-order`. */
+  /** Book the ledger row for one due period, tagged `standing-order`, in `tx`. */
   async function bookRow(
     order: StandingOrderWithAsset,
     bookPrice: number | null,
     executedAt: Date,
+    cashSourceId: string | null,
+    tx: Database,
   ): Promise<void> {
     if (order.kind === 'buy-asset') {
       await transactionRepo.insertMany(
@@ -511,18 +655,25 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
           },
         ],
         [],
+        tx,
       );
       return;
     }
-    const main = await cashSourceRepo.getOrCreateMain(order.portfolioId);
+    if (cashSourceId === null) {
+      throw new Error(`standing order ${order.id}: cash order has no Main source`);
+    }
     const magnitude = floorCents(order.amount);
-    await cashMovementRepo.insert(order.portfolioId, {
-      sourceId: main.id,
-      kind: order.kind === 'cash-add' ? 'deposit' : 'withdrawal',
-      amountEur: order.kind === 'cash-add' ? magnitude : -magnitude,
-      executedAt,
-      note: order.label,
-      source: SOURCE_TAG_STANDING_ORDER,
-    });
+    await cashMovementRepo.insert(
+      order.portfolioId,
+      {
+        sourceId: cashSourceId,
+        kind: order.kind === 'cash-add' ? 'deposit' : 'withdrawal',
+        amountEur: order.kind === 'cash-add' ? magnitude : -magnitude,
+        executedAt,
+        note: order.label,
+        source: SOURCE_TAG_STANDING_ORDER,
+      },
+      tx,
+    );
   }
 }

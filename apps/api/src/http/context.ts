@@ -1347,6 +1347,26 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     now: deps.taxNow,
     paranoid: paranoidGuard,
   });
+  // Standing orders (§13.5 V5-P6b arc a, #593): scheduled recurring buys / cash
+  // movements auto-recorded by the daily `standingOrders.process` job. Built
+  // before the portfolio service so archive restore can close elapsed periods
+  // before a portfolio re-enters the scanner.
+  const standingOrders = createStandingOrderService({
+    repo: createStandingOrderRepository(db),
+    portfolioRepo,
+    assetRepo,
+    transactionRepo,
+    cashMovementRepo,
+    cashSourceRepo,
+    marketData,
+    snapshots,
+    notify,
+    logger,
+    paranoid: paranoidGuard,
+    // Keep archive/restore and standing-order DTOs on the same injected clock
+    // under test; production leaves this undefined and both use Date.now().
+    now: deps.portfolioNow,
+  });
   // A read-only view onto the Live-Mode per-asset ring buffer (§6.3): the same
   // `live:ring:*` Redis keys the poll loop writes. The intraday 1D/1W series
   // (issue #556) prefers these already-recorded ticks over new provider calls;
@@ -1366,6 +1386,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     referenceBackfill,
     snapshots,
     taxService: tax,
+    standingOrders,
     yearLock: taxYearLock,
     friendshipRepo,
     audience,
@@ -1501,25 +1522,6 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     portfolio,
     tax,
     mappers: ALL_MAPPERS,
-    logger,
-    paranoid: paranoidGuard,
-  });
-
-  // Standing orders (§13.5 V5-P6b arc a, #593): scheduled recurring buys / cash
-  // movements auto-recorded by the daily `standingOrders.process` job. Books
-  // through the transaction/cash repositories tagged `standing-order`, exactly
-  // once per period via its own runs ledger; the API here drives CRUD +
-  // pause/resume and can also run the scan in-process under test.
-  const standingOrders = createStandingOrderService({
-    repo: createStandingOrderRepository(db),
-    portfolioRepo,
-    assetRepo,
-    transactionRepo,
-    cashMovementRepo,
-    cashSourceRepo,
-    marketData,
-    snapshots,
-    notify,
     logger,
     paranoid: paranoidGuard,
   });

@@ -3,6 +3,7 @@ import { and, asc, count, desc, eq, inArray, isNotNull, isNull, ne } from 'drizz
 import { PORTFOLIO_KINDS, type PortfolioKind } from '@bettertrack/contracts';
 
 import type { Database } from '../db';
+import { lockPortfolioMutationInTransaction } from './cashMovementRepository';
 import { assets, portfolios, priceHistory } from '../schema';
 import type { AssetRow } from '../schema';
 
@@ -258,26 +259,43 @@ export function createPortfolioRepository(db: Database) {
       portfolioId: string,
       archivedAt: Date,
     ): Promise<PortfolioSummaryRow | null> {
-      const rows = await db
-        .update(portfolios)
-        .set({ archivedAt })
-        .where(
-          and(
-            eq(portfolios.id, portfolioId),
-            eq(portfolios.userId, userId),
-            isNull(portfolios.archivedAt),
-          ),
-        )
-        .returning(summaryColumns);
-      const row = rows[0];
-      if (!row) return null;
-      // Archived → never the default.
-      return toSummary(row, false);
+      return db.transaction(async (tx) => {
+        // Standing-order execution takes this same lock across its final active
+        // check, claim and money write. Whichever transition acquires it first
+        // defines the boundary; no booking can commit after archival.
+        await lockPortfolioMutationInTransaction(tx, portfolioId);
+        const rows = await tx
+          .update(portfolios)
+          .set({ archivedAt })
+          .where(
+            and(
+              eq(portfolios.id, portfolioId),
+              eq(portfolios.userId, userId),
+              isNull(portfolios.archivedAt),
+            ),
+          )
+          .returning(summaryColumns);
+        const row = rows[0];
+        if (!row) return null;
+        // Archived → never the default.
+        return toSummary(row, false);
+      });
     },
 
     /**
      * Restore an owned, currently-archived portfolio (§13.2 V2-P8). Returns null
      * when the id is unknown, another user's, or already active.
+     *
+     * Deliberately takes NO portfolio mutation lock, unlike `archivePortfolio`
+     * above. The load-bearing invariant lives one layer up:
+     * `portfolioService.restore` calls
+     * `standingOrders.skipDuePeriodsForPortfolioRestore` BEFORE this UPDATE, so
+     * every elapsed period is already durably claimed and each order's
+     * watermark advanced while the row is still archived (and thus invisible to
+     * the scanner's `listActive`). A stale pre-archive worker that resumes
+     * after this flip is rejected by the watermark recheck inside
+     * `withActivePortfolioLock`/`claimPeriod` — not by this transition. Do not
+     * call this method on any path that has not pre-claimed those watermarks.
      */
     async restorePortfolio(
       userId: string,

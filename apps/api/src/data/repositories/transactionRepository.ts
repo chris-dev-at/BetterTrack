@@ -287,8 +287,13 @@ export function createTransactionRepository(db: Database) {
       portfolioId: string,
       rows: readonly NewTransaction[],
       extraMovements: readonly BatchCashMovement[] = [],
+      executor?: Database,
     ): Promise<TransactionRecord[]> {
       if (rows.length === 0) return [];
+      // A caller that already owns a transaction (the standing-order archive
+      // guard) keeps both the trade and its active-portfolio lock in that same
+      // atomic boundary. Ordinary callers retain the original transaction policy.
+      if (executor) return insertManyWithExecutor(executor, portfolioId, rows, extraMovements);
       const hasCashLink = rows.some((r) => (r.cashMovements?.length ?? 0) > 0);
       if (!hasCashLink && extraMovements.length === 0) {
         return insertManyWithExecutor(db, portfolioId, rows, extraMovements);

@@ -102,6 +102,7 @@ import type { AudienceService } from '../social/audienceService';
 import { viennaYearOf } from '../../domain/tax';
 import { isEngineTaxed } from '../tax/closedSettlement';
 import type { TaxService } from '../tax/taxService';
+import type { StandingOrderService } from '../standingOrders/standingOrderService';
 import type { TaxYearLockGuard } from '../tax/taxYearLockService';
 import {
   anchorlessAssetDays,
@@ -172,6 +173,11 @@ export interface PortfolioServiceDeps {
    * transaction write must carry, and the year corrections a delete posts.
    */
   taxService: TaxService;
+  /** Archives suspend recurring booking; restore claims elapsed periods before reopening the portfolio. */
+  standingOrders: Pick<
+    StandingOrderService,
+    'skipDuePeriodsForPortfolioRestore' | 'rollbackSkippedPeriodsForPortfolioRestore'
+  >;
   /**
    * Tax year locking (§16 2026-08-07): every user mutation dated into a
    * locked Vienna year — transactions AND cash movements, create/edit/delete —
@@ -571,6 +577,7 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
     referenceBackfill,
     snapshots,
     taxService,
+    standingOrders,
     friendshipRepo,
     audience,
     profile,
@@ -1627,8 +1634,34 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       if (!portfolio.archivedAt) {
         throw badRequest('Portfolio is not archived.', 'PORTFOLIO_NOT_ARCHIVED');
       }
-      const restored = await portfolioRepo.restorePortfolio(userId, portfolioId);
-      if (!restored) throw notFound('Portfolio not found.', 'PORTFOLIO_NOT_FOUND');
+      // This must happen while `archived_at` is still set: the global standing
+      // order scan excludes archived portfolios, so its elapsed occurrence is
+      // durably tombstoned before this portfolio becomes scannable again.
+      const restoreAt = now();
+      const skippedClaims = await standingOrders.skipDuePeriodsForPortfolioRestore(
+        userId,
+        portfolioId,
+        { now: restoreAt },
+      );
+      const rollbackRestoreClaims = async (): Promise<void> => {
+        // A concurrent successful restore owns these claims now. Otherwise, the
+        // portfolio is still archived (or was deleted), so remove only the
+        // tombstones this request created before surfacing the failed restore.
+        const current = await portfolioRepo.findByIdForUser(userId, portfolioId);
+        if (current?.archivedAt === null) return;
+        await standingOrders.rollbackSkippedPeriodsForPortfolioRestore(userId, skippedClaims);
+      };
+      let restored;
+      try {
+        restored = await portfolioRepo.restorePortfolio(userId, portfolioId);
+      } catch (error) {
+        await rollbackRestoreClaims();
+        throw error;
+      }
+      if (!restored) {
+        await rollbackRestoreClaims();
+        throw notFound('Portfolio not found.', 'PORTFOLIO_NOT_FOUND');
+      }
       return restored;
     },
 

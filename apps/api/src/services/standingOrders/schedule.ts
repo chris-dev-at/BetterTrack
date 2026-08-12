@@ -151,8 +151,12 @@ export function nextRunDate(
   return next;
 }
 
-/** The calendar day before `iso` (used to include `startDate` itself in a scan). */
-function prevDay(iso: string): string {
+/**
+ * The calendar day before `iso` (used to include `startDate` itself in a scan;
+ * exported so the restore boundary can resolve the newest strictly-past
+ * occurrence via `dueOccurrence(spec, prevDay(today))`).
+ */
+export function prevDay(iso: string): string {
   const { year, month, day } = parseDay(iso);
   if (day > 1) return formatDay(year, month, day - 1);
   const prev = prevMonth(year, month);

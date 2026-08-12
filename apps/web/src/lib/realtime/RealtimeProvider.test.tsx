@@ -6,6 +6,8 @@ vi.mock('./socket', () => ({ createRealtimeSocket: vi.fn() }));
 
 import { REALTIME_CLIENT_EVENTS, REALTIME_SERVER_EVENTS } from '@bettertrack/contracts';
 
+import { workboardQuotesQueryKey, workboardSparklinesQueryKey } from '../assetApi';
+
 import { RealtimeProvider, useRealtime, useRealtimeEvent } from './RealtimeProvider';
 import { createRealtimeSocket } from './socket';
 
@@ -145,6 +147,31 @@ describe('RealtimeProvider', () => {
     );
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['portfolio', portfolioId] });
     expect(invalidate).toHaveBeenCalledWith({ queryKey: ['portfolios'] });
+  });
+
+  test('a quote push reaches the watchlist batch holding that asset, and only that one', () => {
+    // The watchlist reads its quotes as one batch whose key carries the id
+    // list, so the ['asset', id] prefix cannot reach it. The predicate that
+    // closes the gap must stay as narrow as the per-row keys it replaced.
+    const watching = workboardQuotesQueryKey(['asset-1', 'asset-2']);
+    const unrelated = workboardQuotesQueryKey(['asset-9']);
+    const sparklines = workboardSparklinesQueryKey(['asset-1', 'asset-2']);
+    queryClient.setQueryData(watching, { quotes: [], failed: [] });
+    queryClient.setQueryData(unrelated, { quotes: [], failed: [] });
+    queryClient.setQueryData(sparklines, { sparklines: [], failed: [] });
+    renderProvider(true);
+
+    act(() =>
+      fakeSocket.fire(REALTIME_SERVER_EVENTS.quoteUpdated, {
+        assetId: 'asset-1',
+        occurredAt: 'now',
+      }),
+    );
+
+    expect(queryClient.getQueryState(watching)?.isInvalidated).toBe(true);
+    expect(queryClient.getQueryState(unrelated)?.isInvalidated).toBe(false);
+    // A moved quote says nothing new about the daily sparkline candles.
+    expect(queryClient.getQueryState(sparklines)?.isInvalidated).toBe(false);
   });
 
   test('a malformed push invalidates nothing', () => {
