@@ -227,8 +227,11 @@ export const VAULT2_PORTFOLIO_SCOPED_KINDS = [
  * linkage at all, so a portfolio doc could never route them — they would become
  * orphans on every migration. r2's governing sentence is "common owns every
  * account/vault-scoped entity kind", so they follow their parents into `common`.
- * FLAGGED for the platform chief: if r2's list is meant to be exhaustive rather
- * than illustrative, these four need an explicit home.
+ * CHIEF RULING (2026-08-11, mobile board follow-up): r2's list is ILLUSTRATIVE,
+ * not exhaustive. Verified against the schema — none of these four carries a
+ * portfolioId (`expense_transactions` is userId-scoped; the fire/join tables
+ * reference userId-scoped parents), so `common` is the only valid home. The
+ * conformance vectors pin them here and both clients follow; ruling closed.
  */
 export const VAULT2_COMMON_SCOPED_KINDS = [
   'taxSetting',

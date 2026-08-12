@@ -1424,10 +1424,16 @@ export const PARANOID_KEPT_ROUTE_RULES: readonly ParanoidExemptRouteRule[] = [
       { pattern: /^\/workboard\/(?!sharing$)[^/]+$/ },
     ],
   ),
+  ...keptRoutes(
+    'Aggregate market reads run every id through the same global-or-owned asset provenance check as the per-asset reads.',
+    [{ exact: '/assets/quotes' }, { exact: '/assets/sparklines' }],
+  ),
   ...keptRoutes('Per-asset market reads enforce global-or-owned asset provenance.', [
     {
+      // The aggregate routes above are classified explicitly, so the id segment
+      // deliberately excludes them rather than swallowing them incidentally.
       pattern:
-        /^\/assets\/[^/]+(?:\/(?:quote|history|daily-closes|intel(?:\/(?:dividends|earnings|news|splits|fundamentals))?))?$/,
+        /^\/assets\/(?!quotes$|sparklines$)[^/]+(?:\/(?:quote|history|daily-closes|intel(?:\/(?:dividends|earnings|news|splits|fundamentals))?))?$/,
     },
     { exact: '/assets/intel/earnings-calendar' },
   ]),

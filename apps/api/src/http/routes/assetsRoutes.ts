@@ -1,6 +1,12 @@
 import { Router } from 'express';
 
-import { assetIdParamSchema, historyQuerySchema, type HistoryQuery } from '@bettertrack/contracts';
+import {
+  assetBatchQuerySchema,
+  assetIdParamSchema,
+  historyQuerySchema,
+  type AssetBatchQuery,
+  type HistoryQuery,
+} from '@bettertrack/contracts';
 
 import { requireUser } from '../middleware/session';
 import { validateParams, validateQuery } from '../middleware/validate';
@@ -11,6 +17,20 @@ export function createAssetsRouter(ctx: AppContext): Router {
   const router = Router();
 
   router.use(requireUser);
+
+  // Static aggregate routes must precede /:id. Both stay GET-only under the
+  // existing /assets => market:read bearer policy.
+  router.get('/quotes', validateQuery(assetBatchQuerySchema), async (req, res) => {
+    const { ids } = req.valid?.query as AssetBatchQuery;
+    const quotes = await ctx.assets.getQuotes(req.authUser!.id, ids);
+    res.json(quotes);
+  });
+
+  router.get('/sparklines', validateQuery(assetBatchQuerySchema), async (req, res) => {
+    const { ids } = req.valid?.query as AssetBatchQuery;
+    const sparklines = await ctx.assets.getSparklines(req.authUser!.id, ids);
+    res.json(sparklines);
+  });
 
   // GET /assets/:id — meta + latest quote.
   router.get('/:id', validateParams(assetIdParamSchema), async (req, res) => {

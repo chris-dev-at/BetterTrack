@@ -2193,6 +2193,10 @@
         "shareButton": "Share with friends",
         "sharedButton": "Shared with friends",
         "loadError": "Could not load your watchlist. Please refresh the page.",
+        "partialMarketError": {
+          "one": "Market data for 1 asset couldn't be loaded.",
+          "other": "Market data for {{count}} assets couldn't be loaded."
+        },
         "removeError": "Failed to remove. Please try again.",
         "reorderError": "Failed to save new order. Please try again.",
         "emptyTitle": "Your watchlist is empty",

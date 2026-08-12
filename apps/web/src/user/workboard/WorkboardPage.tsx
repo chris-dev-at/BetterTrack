@@ -5,12 +5,17 @@
  *  3. My Conglomerates — placeholder (P3)
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import type { WorkboardItem } from '@bettertrack/contracts';
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import type { AssetBatchQuote, AssetSparkline, WorkboardItem } from '@bettertrack/contracts';
 
-import { getAssetHistory, getAssetQuote } from '../../lib/assetApi';
+import {
+  getAssetQuotes,
+  getAssetSparklines,
+  workboardQuotesQueryKey,
+  workboardSparklinesQueryKey,
+} from '../../lib/assetApi';
 import { cx } from '../../lib/cx';
 import { formatDate, formatSignedPercent } from '../../lib/format';
 import { EARNINGS_CALENDAR_QUERY_KEY, getEarningsCalendar } from '../../lib/marketIntelApi';
@@ -35,6 +40,10 @@ import { NormalModeOnly } from '../vault/ui/ParanoidSurfaceGate';
 
 interface WatchlistRowProps {
   item: WorkboardItem;
+  quoteResult: AssetBatchQuote | undefined;
+  sparkline: AssetSparkline | undefined;
+  quoteLoading: boolean;
+  sparklineLoading: boolean;
   isDragging: boolean;
   isDragOver: boolean;
   onDragStart: () => void;
@@ -47,6 +56,10 @@ interface WatchlistRowProps {
 
 function WatchlistRow({
   item,
+  quoteResult,
+  sparkline,
+  quoteLoading,
+  sparklineLoading,
   isDragging,
   isDragOver,
   onDragStart,
@@ -57,21 +70,8 @@ function WatchlistRow({
   removeDisabled,
 }: WatchlistRowProps) {
   const t = useT();
-  const quoteQuery = useQuery({
-    queryKey: ['asset', item.assetId, 'quote'],
-    queryFn: ({ signal }) => getAssetQuote(item.assetId, signal),
-    staleTime: 60_000,
-    refetchInterval: 60_000,
-  });
-
-  const sparklineQuery = useQuery({
-    queryKey: ['asset', item.assetId, 'history', '1M'],
-    queryFn: ({ signal }) => getAssetHistory(item.assetId, '1M', signal),
-    staleTime: 900_000,
-  });
-
-  const quote = quoteQuery.data?.quote;
-  const sparkData = sparklineQuery.data?.points.map((p) => p.close) ?? [];
+  const quote = quoteResult?.quote;
+  const sparkData = sparkline?.points.map((point) => point.close) ?? [];
   const dayPct = quote?.dayChangePct;
 
   return (
@@ -100,26 +100,16 @@ function WatchlistRow({
 
       {/* Sparkline (1M) */}
       <td className="px-2 py-3">
-        {sparklineQuery.isLoading ? (
+        {sparklineLoading ? (
           <Skeleton width="w-24" height="h-7" />
-        ) : (
-          <div className="flex flex-col items-start gap-1">
-            {sparklineQuery.data ? (
-              <Sparkline
-                data={sparkData}
-                ariaLabel={t('workboard.overview.watchlist.sparklineAriaLabel', {
-                  symbol: item.asset.symbol,
-                })}
-              />
-            ) : null}
-            <AsyncReadState
-              compact
-              loading={false}
-              error={sparklineQuery.error}
-              onRetry={() => void sparklineQuery.refetch()}
-            />
-          </div>
-        )}
+        ) : sparkline ? (
+          <Sparkline
+            data={sparkData}
+            ariaLabel={t('workboard.overview.watchlist.sparklineAriaLabel', {
+              symbol: item.asset.symbol,
+            })}
+          />
+        ) : null}
       </td>
 
       {/* Symbol + Name + optional note */}
@@ -142,28 +132,18 @@ function WatchlistRow({
 
       {/* Price */}
       <td className="px-3 py-3 text-right text-sm">
-        {quoteQuery.isLoading ? (
+        {quoteLoading ? (
           <Skeleton variant="line" width="w-20" className="ml-auto" />
+        ) : quote ? (
+          <MoneyText amount={quote.price} currency={quote.currency} unitPrice />
         ) : (
-          <div className="flex flex-col items-end gap-1">
-            {quote ? (
-              <MoneyText amount={quote.price} currency={quote.currency} unitPrice />
-            ) : quoteQuery.error ? null : (
-              <span className="bt-muted">—</span>
-            )}
-            <AsyncReadState
-              compact
-              loading={false}
-              error={quoteQuery.error}
-              onRetry={() => void quoteQuery.refetch()}
-            />
-          </div>
+          <span className="bt-muted">—</span>
         )}
       </td>
 
       {/* Day ±% */}
       <td className="px-3 py-3 text-right text-sm tabular-nums">
-        {quoteQuery.isLoading ? (
+        {quoteLoading ? (
           <Skeleton variant="line" width="w-14" className="ml-auto" />
         ) : dayPct != null ? (
           <span className={dayPct > 0 ? 'bt-pos' : dayPct < 0 ? 'bt-neg' : 'bt-muted'}>
@@ -273,6 +253,70 @@ function WatchlistZone() {
     refetchOnMount: 'always',
   });
 
+  // Aggregate market reads: ordering is canonical so a drag-only reorder keeps
+  // the same cache entry. One quote observer owns the single 60-second poll.
+  const assetIds = useMemo(
+    () => [...new Set(orderedItems.map((item) => item.assetId))].sort(),
+    [orderedItems],
+  );
+  // `placeholderData` matters because the id set is part of the key: adding or
+  // removing one row mints a new entry, and without it every surviving row
+  // would drop back to a skeleton and re-render from scratch.
+  const quoteQuery = useQuery({
+    queryKey: workboardQuotesQueryKey(assetIds),
+    queryFn: ({ signal }) => getAssetQuotes(assetIds, signal),
+    enabled: assetIds.length > 0,
+    staleTime: 60_000,
+    refetchInterval: 60_000,
+    placeholderData: keepPreviousData,
+  });
+  const sparklineQuery = useQuery({
+    queryKey: workboardSparklinesQueryKey(assetIds),
+    queryFn: ({ signal }) => getAssetSparklines(assetIds, signal),
+    enabled: assetIds.length > 0,
+    staleTime: 900_000,
+    placeholderData: keepPreviousData,
+  });
+  const quotesByAssetId = useMemo(
+    () => new Map(quoteQuery.data?.quotes.map((quote) => [quote.assetId, quote]) ?? []),
+    [quoteQuery.data],
+  );
+  const sparklinesByAssetId = useMemo(
+    () =>
+      new Map(
+        sparklineQuery.data?.sparklines.map((sparkline) => [sparkline.assetId, sparkline]) ?? [],
+      ),
+    [sparklineQuery.data],
+  );
+
+  // A row the provider could not price comes back as a 200 with the id in
+  // `failed`, so neither query is in an error state and the row would silently
+  // render "—" forever (the sparkline read has a 15-minute stale window and no
+  // poll). Report the partial outage once for the zone, with one retry that
+  // re-runs only the reads that actually lost rows.
+  const failedQuoteIds = quoteQuery.data?.failed ?? [];
+  const failedSparklineIds = sparklineQuery.data?.failed ?? [];
+  // An id that resolves to no *visible* row is in neither `quotes` nor `failed`:
+  // the server keeps invisible ids absent so they stay indistinguishable from a
+  // foreign custom asset (§10), which leaves the client to notice. Without this
+  // the row an asset deletion stranded between the list read and the aggregate
+  // read renders "—" with nothing to press. Skipped while `placeholderData`
+  // still shows the previous id set's answer, which legitimately lacks a
+  // just-added row.
+  const unresolvedQuoteIds =
+    quoteQuery.data && !quoteQuery.isPlaceholderData
+      ? assetIds.filter((id) => !quotesByAssetId.has(id) && !failedQuoteIds.includes(id))
+      : [];
+  const unresolvedAssetCount = new Set([
+    ...failedQuoteIds,
+    ...failedSparklineIds,
+    ...unresolvedQuoteIds,
+  ]).size;
+  const retryUnresolvedReads = () => {
+    if (failedQuoteIds.length > 0 || unresolvedQuoteIds.length > 0) void quoteQuery.refetch();
+    if (failedSparklineIds.length > 0) void sparklineQuery.refetch();
+  };
+
   // Mirror server order; resets on every successful fetch (including post-remove refetch).
   useEffect(() => {
     if (data) setOrderedItems(data.items);
@@ -371,6 +415,34 @@ function WatchlistZone() {
 
       {removeError ? <Alert tone="error">{removeError}</Alert> : null}
 
+      {/* One shared market read per zone => one state and one retry, not N
+          identical buttons stamped into every row. */}
+      <AsyncReadState
+        loading={false}
+        reads={[
+          { error: quoteQuery.error, refetch: () => void quoteQuery.refetch() },
+          { error: sparklineQuery.error, refetch: () => void sparklineQuery.refetch() },
+        ]}
+      />
+
+      {unresolvedAssetCount > 0 ? (
+        <Alert tone="error">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span>
+              {t(
+                `workboard.overview.watchlist.partialMarketError.${
+                  unresolvedAssetCount === 1 ? 'one' : 'other'
+                }`,
+                { count: unresolvedAssetCount },
+              )}
+            </span>
+            <Button variant="secondary" onClick={retryUnresolvedReads}>
+              {t('common.retry')}
+            </Button>
+          </div>
+        </Alert>
+      ) : null}
+
       {orderedItems.length === 0 ? (
         <EmptyState
           icon="👁"
@@ -415,6 +487,10 @@ function WatchlistZone() {
                 <WatchlistRow
                   key={item.id}
                   item={item}
+                  quoteResult={quotesByAssetId.get(item.assetId)}
+                  sparkline={sparklinesByAssetId.get(item.assetId)}
+                  quoteLoading={quoteQuery.isLoading}
+                  sparklineLoading={sparklineQuery.isLoading}
                   isDragging={draggedId === item.id}
                   isDragOver={dragOverId === item.id}
                   onDragStart={() => handleDragStart(item.id)}
