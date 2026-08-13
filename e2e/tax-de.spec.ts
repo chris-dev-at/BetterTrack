@@ -1,6 +1,6 @@
 import { expect, request as newRequestContext, test, type Page } from '@playwright/test';
 
-import { API_BASE_URL } from './support/config';
+import { ACCOUNT_PASSWORD, API_BASE_URL } from './support/config';
 import { provisionUser } from './support/users';
 import { loginAsAdmin } from './support/adminApi';
 
@@ -34,6 +34,18 @@ import { loginAsAdmin } from './support/adminApi';
 /** Mutating API calls need this header or the CSRF guard 403s them (see dividends.spec). */
 const CSRF_HEADERS = { 'X-Requested-With': 'BetterTrack' };
 
+/** Exercise the cookie-session-only amendment ritual before booking an elapsed year. */
+async function unlockTaxYear(page: Page, year: number): Promise<void> {
+  const response = await page.request.post(
+    `${API_BASE_URL}/api/v1/settings/taxes/years/${year}/unlock`,
+    {
+      headers: CSRF_HEADERS,
+      data: { password: ACCOUNT_PASSWORD },
+    },
+  );
+  expect(response.ok(), `unlock tax year ${year} → ${await response.text()}`).toBeTruthy();
+}
+
 /** Enable "Germany (Abgeltungsteuer)" via Settings → Taxes and confirm it persisted. */
 async function enableGermanyTaxMode(page: Page): Promise<void> {
   await page.goto('/settings/taxes');
@@ -54,15 +66,19 @@ async function enableGermanyTaxMode(page: Page): Promise<void> {
 // funding deposit must predate the backdated trades it settles (see tax-at).
 async function depositToMain(page: Page, amount: string, date: string): Promise<void> {
   await page.goto('/portfolio/cash/accounts');
-  const rows = page.locator('table[aria-label="Cash sources"] tbody tr');
-  // sortSourcesMainFirst: Main is row 0 on a fresh account.
-  await rows.nth(0).getByRole('button', { name: 'Deposit' }).click();
+  const sourceSurface = page
+    .getByRole('table', { name: 'Cash sources' })
+    .or(page.getByRole('list', { name: 'Cash sources' }));
+  // The responsive page renders table rows on desktop and list-item cards on
+  // phones. sortSourcesMainFirst keeps Main first in either presentation.
+  const mainSource = sourceSurface.locator('tbody tr, li').first();
+  await mainSource.getByRole('button', { name: 'Deposit' }).click();
   const dialog = page.getByRole('dialog', { name: 'Cash balance' });
   await dialog.getByLabel('Amount', { exact: true }).fill(amount);
   await dialog.getByLabel('Date').fill(date);
   await dialog.getByRole('button', { name: 'Deposit cash' }).click();
   await expect(dialog).toBeHidden();
-  await expect(rows.nth(0)).toContainText(/50[.,]000/);
+  await expect(mainSource).toContainText(/50[.,]000/);
 }
 
 interface Trade {
@@ -165,6 +181,10 @@ test('DE tax mode: FIFO, Sparer-Pauschbetrag exhaustion, both loss pots, and rep
 
   const page = owner.page;
   const api = owner.context.request;
+
+  // Tax-year unlocks are per account. Both years must be open before any booking:
+  // the 2024 SAP buy can reshape the later 2025 SAP sell's FIFO settlement.
+  for (const year of [2024, 2025]) await unlockTaxYear(page, year);
 
   await enableGermanyTaxMode(page);
   // Fund Main generously so the 2025 dividend's withholding never overdraws it.
