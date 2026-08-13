@@ -12,7 +12,7 @@ import {
 
 import { createUserRepository } from '../data/repositories/userRepository';
 import { emailLog, passwordResetTokens, users } from '../data/schema';
-import { PASSWORD_RESET_RESPONSE_TARGET_MS } from '../services/auth/authService';
+import { PASSWORD_RESET_RESPONSE_FLOOR_MS } from '../services/auth/authService';
 import type { MailTransport, OutgoingMail } from '../services/email/transport';
 import { createPasswordHasher, type PasswordHasher } from '../services/password/passwordHasher';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
@@ -447,67 +447,15 @@ describe('self-service password-reset concurrency', () => {
     for (const sample of [...known, ...unknown]) {
       expect(sample.response.status).toBe(200);
       expect(sample.response.body).toEqual({ ok: true });
-      expect(sample.elapsedMs).toBeGreaterThanOrEqual(PASSWORD_RESET_RESPONSE_TARGET_MS - 25);
+      expect(sample.elapsedMs).toBeGreaterThanOrEqual(PASSWORD_RESET_RESPONSE_FLOOR_MS - 25);
     }
     // Both branches enter at least one repository transaction per probe. Audit
     // or detached-email persistence may legitimately add calls on this shared
     // seam, so only assert the lower bound relevant to equalization.
-    await vi.waitFor(
-      () => {
-        expect(transactionSpy.mock.calls.length).toBeGreaterThanOrEqual(pairCount * 2);
-      },
-      { timeout: 5_000 },
-    );
-    // The public responses are allowed to win the target race. Drain every
-    // reset transaction observed by the shared spy before the next test
-    // truncates the integration database.
-    await Promise.allSettled(
-      transactionSpy.mock.results.flatMap((result) =>
-        result.type === 'return' ? [Promise.resolve(result.value)] : [],
-      ),
-    );
+    expect(transactionSpy.mock.calls.length).toBeGreaterThanOrEqual(pairCount * 2);
     expect(Math.abs(percentile(knownTimes, 0.5) - percentile(unknownTimes, 0.5))).toBeLessThan(75);
     expect(Math.abs(percentile(knownTimes, 0.9) - percentile(unknownTimes, 0.9))).toBeLessThan(100);
     transactionSpy.mockRestore();
-  });
-
-  it('returns on the public target while a known-account issue is still queued', async () => {
-    const transport = recordingTransport();
-    harness = await createTestApp({ env: SMTP_ENV, emailTransport: transport });
-    const user = await harness.seedUser();
-    let releaseIssue!: () => void;
-    const issueGate = new Promise<null>((resolve) => {
-      releaseIssue = () => resolve(null);
-    });
-    const transactionSpy = vi
-      .spyOn(harness.db, 'transaction')
-      .mockImplementationOnce(() => issueGate as never);
-    const pendingRequest = requestPasswordReset(harness, user.email).then((response) => response);
-    let timeout: NodeJS.Timeout | undefined;
-
-    try {
-      const first = await Promise.race([
-        pendingRequest.then((response) => ({ kind: 'response' as const, response })),
-        new Promise<{ kind: 'timeout' }>((resolve) => {
-          timeout = setTimeout(
-            () => resolve({ kind: 'timeout' }),
-            PASSWORD_RESET_RESPONSE_TARGET_MS + 250,
-          );
-        }),
-      ]);
-      expect(first.kind).toBe('response');
-      if (first.kind === 'response') {
-        expect(first.response.status).toBe(200);
-        expect(first.response.body).toEqual({ ok: true });
-      }
-    } finally {
-      if (timeout) clearTimeout(timeout);
-      releaseIssue();
-      transactionSpy.mockRestore();
-      await pendingRequest;
-    }
-
-    await vi.waitFor(() => expect(transport.sent).toHaveLength(1));
   });
 
   it('returns the uniform acknowledgement without waiting for a slow email transport', async () => {
@@ -534,7 +482,7 @@ describe('self-service password-reset concurrency', () => {
     const first = await Promise.race([
       knownRequest.then(() => 'response' as const),
       new Promise<'timeout'>((resolve) => {
-        timeout = setTimeout(() => resolve('timeout'), PASSWORD_RESET_RESPONSE_TARGET_MS + 250);
+        timeout = setTimeout(() => resolve('timeout'), PASSWORD_RESET_RESPONSE_FLOOR_MS + 250);
       }),
     ]);
     if (timeout) clearTimeout(timeout);

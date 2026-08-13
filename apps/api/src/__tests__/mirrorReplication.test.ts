@@ -472,9 +472,6 @@ describe('mirrorchain M2 — replication core', () => {
     ).toBe(false);
   });
 
-  // This integration scenario creates a chain and performs multiple replicated
-  // writes. Keep a bounded budget above transient hosted-runner I/O stalls;
-  // all convergence and negative-balance assertions still execute.
   it('set-balance replicates the origin-computed delta; force mode lets a skewed copy go honestly negative (§2/§8)', async () => {
     const { alice, bob, aPid, bPid, chain } = await setupChain();
     await harness.ctx.mirror.submitCashDeposit(alice.id, aPid, { amountEur: 100 });
@@ -514,7 +511,7 @@ describe('mirrorchain M2 — replication core', () => {
     await harness.ctx.mirror.replicateChain(chain.id);
     expect((await sourceBalances(alice.id, aPid)).find((s) => s.isMain)!.balanceEur).toBe(0);
     expect((await sourceBalances(bob.id, bPid)).find((s) => s.isMain)!.balanceEur).toBe(-27.5);
-  }, 15_000);
+  });
 
   it.skipIf(!REAL_DATABASE_URL)(
     'serializes replica force-delete against a direct withdrawal so the ledger never goes negative',
