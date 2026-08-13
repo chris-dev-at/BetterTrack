@@ -145,7 +145,15 @@ export const standingOrderSchema = z
      * not model archive suspension yet (#1188).
      */
     suspendedByArchive: z.boolean().optional(),
-    /** When the scheduler last satisfied a period for this order (ISO-8601), or null. */
+    /**
+     * When the scheduler last satisfied a period (ISO-8601), or null — the
+     * market-hours stamp of #1119 AC 4. For an upstream `buy-asset` booking it
+     * records the accepted quote's provider `asOf` (a pre-open scan honestly
+     * shows the prior session's close); cash kinds, local (custom) assets and
+     * archive-skip tombstones carry the scan/restore instant. Record-only: the
+     * booked transaction itself is always dated at the scan instant, so a
+     * booking can never land in an earlier tax year.
+     */
     lastRunAt: z.string().datetime().nullable(),
     /** The occurrence day last satisfied (booked or archive-skipped), or null. */
     lastPeriodKey: isoDaySchema.nullable(),

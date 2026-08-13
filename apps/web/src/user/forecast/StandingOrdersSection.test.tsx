@@ -225,6 +225,17 @@ describe('StandingOrdersSection', () => {
     expect(screen.getByText('No next run scheduled.')).toBeInTheDocument();
   });
 
+  test('shows an archive-suspended order as suspended rather than active', async () => {
+    vi.mocked(standingOrdersApi.listStandingOrders).mockResolvedValue({
+      orders: [makeOrder({ suspendedByArchive: true, nextRunDate: null })],
+    });
+    renderSection();
+
+    await screen.findByText('VWCE.DE');
+    expect(screen.getByText('Suspended — portfolio archived')).toBeInTheDocument();
+    expect(screen.queryByText('Active')).not.toBeInTheDocument();
+  });
+
   test('opens the edit dialog for a row', async () => {
     vi.mocked(standingOrdersApi.listStandingOrders).mockResolvedValue({
       orders: [makeOrder()],

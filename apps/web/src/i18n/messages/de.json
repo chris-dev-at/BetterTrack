@@ -2708,7 +2708,8 @@
       },
       "status": {
         "active": "Aktiv",
-        "paused": "Pausiert"
+        "paused": "Pausiert",
+        "suspendedByArchive": "Ausgesetzt — Portfolio archiviert"
       },
       "list": {
         "buyAmount": "Kaufe {{quantity}} × {{symbol}}",

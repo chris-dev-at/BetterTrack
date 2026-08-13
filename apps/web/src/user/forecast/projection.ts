@@ -249,14 +249,16 @@ export function projectNetWorth(input: ForecastInput): ForecastResult {
 
 /**
  * Normalize the caller's standing orders into the projection's factor-1 input:
- * drops **paused** orders (only active orders continue forward) and drops
- * **buy-asset** orders (net-worth-neutral reallocations, see the module note),
- * mapping each cash order to its signed EUR flow.
+ * drops **paused** and archive-suspended orders (only effective-active orders
+ * continue forward) and drops **buy-asset** orders (net-worth-neutral
+ * reallocations, see the module note), mapping each cash order to its signed
+ * EUR flow.
  */
 export function normalizeStandingOrders(orders: readonly StandingOrder[]): ForecastStandingOrder[] {
   const normalized: ForecastStandingOrder[] = [];
   for (const order of orders) {
     if (order.status !== 'active') continue;
+    if (order.suspendedByArchive === true) continue;
     if (order.kind === 'buy-asset') continue;
     const sign = order.kind === 'cash-add' ? 1 : -1;
     normalized.push({

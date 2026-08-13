@@ -151,6 +151,7 @@ function StandingOrderRow({
 
   const busy = pauseMutation.isPending || resumeMutation.isPending || deleteMutation.isPending;
   const paused = order.status === 'paused';
+  const suspendedByArchive = order.suspendedByArchive === true;
 
   return (
     <li id={`standing-order-${order.id}`} className="flex flex-col gap-2 bt-panel p-3">
@@ -160,7 +161,7 @@ function StandingOrderRow({
             <span id={titleId} className="text-sm font-semibold">
               {orderTitle(t, order)}
             </span>
-            <StatusBadge paused={paused} />
+            <StatusBadge paused={paused} suspendedByArchive={suspendedByArchive} />
           </span>
           <span className="text-xs bt-muted">
             {describeAmount(t, order)} · {describeCadence(t, order)}
@@ -264,18 +265,26 @@ function StandingOrderRow({
   );
 }
 
-function StatusBadge({ paused }: { paused: boolean }) {
+function StatusBadge({
+  paused,
+  suspendedByArchive,
+}: {
+  paused: boolean;
+  suspendedByArchive: boolean;
+}) {
   const t = useT();
   return (
     <span
       className={cx(
         'inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium ring-1 ring-inset',
-        paused ? 'bt-badge' : 'bt-badge bt-badge--pos',
+        paused || suspendedByArchive ? 'bt-badge' : 'bt-badge bt-badge--pos',
       )}
     >
-      {paused
-        ? t('forecast.standingOrders.status.paused')
-        : t('forecast.standingOrders.status.active')}
+      {suspendedByArchive
+        ? t('forecast.standingOrders.status.suspendedByArchive')
+        : paused
+          ? t('forecast.standingOrders.status.paused')
+          : t('forecast.standingOrders.status.active')}
     </span>
   );
 }

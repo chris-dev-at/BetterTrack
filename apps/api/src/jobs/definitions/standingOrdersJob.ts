@@ -10,6 +10,22 @@ import { QUEUE_NAMES, type JobDefinition } from '../types';
  * double-books). It runs after the morning price refresh so a buy's quote is
  * fresh, and degrades gracefully — a per-order provider failure or insufficient
  * cash just defers that period to the next run, never aborting the sweep.
+ *
+ * **Isolation, then retry.** The service isolates an unexpected per-order error
+ * so the rest of the sweep still books, and reports it as `failed`. That tally
+ * is not a mere log line: the handler logs it and then throws, so the standard
+ * `attempts: 3` + exponential backoff (`options.ts`) re-runs the scan seconds
+ * later — still inside the same calendar day, so the retry re-attempts the very
+ * same period rather than letting it age into a reported drop — and a
+ * persistently poisoned order ends up dead-lettered and on the admin Problems
+ * page instead of masquerading as a green run. A retry cannot double-book: an
+ * order booked in an earlier attempt exits on its watermark, and the run-ledger
+ * claim catches it otherwise.
+ *
+ * Only `failed` fails the run. `deferred` is the designed graceful path (a
+ * provider hiccup or insufficient cash) which already retries on the next daily
+ * scan, and a post-claim booking failure is a deliberate at-most-once tombstone
+ * that must never be retried — neither may turn into an immediate re-run.
  */
 
 export const STANDING_ORDERS_SCHEDULER_ID = 'standingOrders.process';
@@ -33,7 +49,18 @@ export function createStandingOrdersJob(
     },
     async handler(_job, ctx) {
       const result = await deps.standingOrders.processDueOrders();
+      // Log first, so a failing run still reports everything that did book.
       ctx.logger.info(result, 'standingOrders.process complete');
+      if (result.failed > 0) {
+        // Deliberate trade-off: this re-runs the WHOLE sweep (bounded at 3
+        // attempts). Booked orders exit on their watermark before any quote
+        // fetch, so the extra cost is one uncached `pollQuote` per still-unbooked
+        // buy per retry against the §5.3 budget — accepted for regaining the
+        // retry → dead-letter coverage of a poisoned order.
+        throw new Error(
+          `standingOrders.process: ${result.failed}/${result.scanned} orders failed unexpectedly`,
+        );
+      }
     },
   };
 }
