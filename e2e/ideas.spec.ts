@@ -1,7 +1,7 @@
 import { expect, request as newRequestContext, test } from '@playwright/test';
 
 import { loginAsAdmin } from './support/adminApi';
-import { setAudienceThroughLadder } from './support/audience';
+import { setWideningAudienceThroughLadder } from './support/audience';
 import { API_BASE_URL } from './support/config';
 import { activateConglomerate } from './support/flows';
 import { befriend, provisionUser } from './support/users';
@@ -85,7 +85,7 @@ test('ideas: save → reopen restores, share specific-friends read-only + clone,
     .click();
   const picker = A.getByRole('dialog', { name: /Share/ });
   await expect(picker).toBeVisible();
-  await setAudienceThroughLadder(picker, {
+  await setWideningAudienceThroughLadder(picker, {
     audience: 'specific_friends',
     recipient: chosen.username,
     afterAudienceSelected: async (dialog) => {

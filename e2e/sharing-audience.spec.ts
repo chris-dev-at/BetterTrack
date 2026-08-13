@@ -1,15 +1,16 @@
 import { expect, request as newRequestContext, test } from '@playwright/test';
 
 import { loginAsAdmin } from './support/adminApi';
-import { setAudienceThroughLadder } from './support/audience';
+import { setWideningAudienceThroughLadder } from './support/audience';
 import { API_BASE_URL } from './support/config';
 import { befriend, provisionUser } from './support/users';
 
 /**
  * V3-P5 sharing audiences (issue #426, flow 3). The owner sets a portfolio's
  * audience to ONE specific friend. Its private → `specific_friends` widening
- * needs the shared light confirmation. The enforcement must prove BOTH directions: the chosen friend sees
- * the share, a second friend who is NOT in the audience gets nothing.
+ * needs the shared light confirmation. The enforcement must prove BOTH
+ * directions: the chosen friend sees the share, while a second friend who is
+ * NOT in the audience gets nothing.
  */
 test('sharing audience: portfolio shared to one specific friend, hidden from another', async ({
   browser,
@@ -34,7 +35,7 @@ test('sharing audience: portfolio shared to one specific friend, hidden from ano
 
   const picker = owner.page.getByRole('dialog', { name: /Share/ });
   await expect(picker).toBeVisible();
-  await setAudienceThroughLadder(picker, {
+  await setWideningAudienceThroughLadder(picker, {
     audience: 'specific_friends',
     recipient: chosen.username,
   });

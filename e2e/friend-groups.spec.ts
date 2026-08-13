@@ -1,7 +1,7 @@
 import { expect, request as newRequestContext, test } from '@playwright/test';
 
 import { loginAsAdmin } from './support/adminApi';
-import { setAudienceThroughLadder } from './support/audience';
+import { setWideningAudienceThroughLadder } from './support/audience';
 import { API_BASE_URL } from './support/config';
 import { befriend, provisionUser } from './support/users';
 
@@ -60,7 +60,10 @@ test('friend groups: a portfolio shared to a group is visible to members only', 
 
   const picker = owner.page.getByRole('dialog', { name: /Share/ });
   await expect(picker).toBeVisible();
-  await setAudienceThroughLadder(picker, { audience: 'group', recipient: 'Inner Circle' });
+  await setWideningAudienceThroughLadder(picker, {
+    audience: 'group',
+    recipient: 'Inner Circle',
+  });
   await expect(picker).toBeHidden();
 
   // The group member sees the shared portfolio in the owner's friend overview.

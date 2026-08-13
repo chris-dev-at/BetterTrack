@@ -1,7 +1,7 @@
 import { expect, request as newRequestContext, test } from '@playwright/test';
 
 import { createInvite, loginAsAdmin } from './support/adminApi';
-import { setAudienceThroughLadder } from './support/audience';
+import { setWideningAudienceThroughLadder } from './support/audience';
 import { ACCOUNT_PASSWORD, API_BASE_URL } from './support/config';
 import { acceptInvite, openAssetAndWatchFromDetail, watchAsset } from './support/flows';
 
@@ -163,7 +163,7 @@ test('happy path: invite through friend sharing', async ({ browser }) => {
   await mainRow.getByRole('button', { name: 'Share' }).click();
   const audiencePicker = owner.getByRole('dialog', { name: /Share/ });
   await expect(audiencePicker).toBeVisible();
-  await setAudienceThroughLadder(audiencePicker, { audience: 'all_friends' });
+  await setWideningAudienceThroughLadder(audiencePicker, { audience: 'all_friends' });
   await expect(audiencePicker).toBeHidden();
 
   // owner sends the friend request

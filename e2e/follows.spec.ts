@@ -1,7 +1,7 @@
 import { expect, request as newRequestContext, test } from '@playwright/test';
 
 import { loginAsAdmin } from './support/adminApi';
-import { setAudienceThroughLadder } from './support/audience';
+import { setWideningAudienceThroughLadder } from './support/audience';
 import { API_BASE_URL } from './support/config';
 import { befriend, provisionUser } from './support/users';
 
@@ -39,7 +39,7 @@ test('follows: follow + bookmark, alert toggle, and restored /following page', a
   await portfolioRow.getByRole('button', { name: 'Share' }).click();
   const picker = owner.page.getByRole('dialog', { name: /Share/ });
   await expect(picker).toBeVisible();
-  await setAudienceThroughLadder(picker, {
+  await setWideningAudienceThroughLadder(picker, {
     audience: 'specific_friends',
     recipient: follower.username,
   });

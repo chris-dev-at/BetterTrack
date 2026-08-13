@@ -23,7 +23,7 @@ const PUBLIC_LINK_ACKNOWLEDGMENT = 'I understand that anyone with the link can s
  * genuine widening needs the light confirmation; public links use their
  * separate, stronger acknowledgement instead.
  */
-export async function setAudienceThroughLadder(
+export async function setWideningAudienceThroughLadder(
   picker: Locator,
   selection: AudienceSelection,
 ): Promise<void> {
