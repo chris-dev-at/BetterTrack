@@ -6,6 +6,9 @@ RUN corepack enable
 # ── deps: install all workspace deps (layer-cached on lockfile change) ──────
 FROM base AS deps
 WORKDIR /app
+# Native modules fall back to node-gyp when their prebuilt download is unavailable.
+# Keep its toolchain in this build-only stage so the runtime image stays minimal.
+RUN apk add --no-cache python3 make g++
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
 COPY packages/contracts/package.json ./packages/contracts/
 COPY packages/config/package.json ./packages/config/
