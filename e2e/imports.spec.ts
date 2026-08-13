@@ -22,10 +22,6 @@ const FIXTURE_DIR = path.join(HERE, 'support', 'fixtures');
 const HAPPY_CSV = path.join(FIXTURE_DIR, 'trade-republic-happy.csv');
 const ERROR_CSV = path.join(FIXTURE_DIR, 'trade-republic-with-error.csv');
 const CSV_YEAR_TOKEN = '{{CURRENT_VIENNA_YEAR}}';
-const CURRENT_VIENNA_YEAR = new Intl.DateTimeFormat('en', {
-  timeZone: 'Europe/Vienna',
-  year: 'numeric',
-}).format(new Date());
 
 /** Resolve dated booking rows into the current tax year before browser upload. */
 async function currentYearCsv(filePath: string) {
@@ -34,10 +30,17 @@ async function currentYearCsv(filePath: string) {
     throw new Error(`CSV fixture ${path.basename(filePath)} has no year token`);
   }
 
+  // Resolve at upload time so a suite started before Vienna's Jan 1 boundary
+  // cannot retain the newly elapsed (and therefore auto-locked) tax year.
+  const currentViennaYear = new Intl.DateTimeFormat('en', {
+    timeZone: 'Europe/Vienna',
+    year: 'numeric',
+  }).format(new Date());
+
   return {
     name: path.basename(filePath),
     mimeType: 'text/csv',
-    buffer: Buffer.from(template.replaceAll(CSV_YEAR_TOKEN, CURRENT_VIENNA_YEAR)),
+    buffer: Buffer.from(template.replaceAll(CSV_YEAR_TOKEN, currentViennaYear)),
   };
 }
 
