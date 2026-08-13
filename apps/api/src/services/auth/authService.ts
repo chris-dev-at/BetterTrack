@@ -361,9 +361,10 @@ export interface AuthService {
 const RESET_TOKEN_TTL_MS = 60 * 60 * 1000;
 
 // Known-account requests do durable token + audit writes that an unknown address
-// cannot safely mirror. Both paths therefore wait on the same deadline, masking
-// that bounded work while preserving the generic acknowledgement.
-export const PASSWORD_RESET_RESPONSE_FLOOR_MS = 250;
+// cannot safely mirror. Both paths therefore respond on the same target: work
+// starts immediately and usually finishes first, but slow/queued work may finish
+// after the generic acknowledgement instead of extending its public timing.
+export const PASSWORD_RESET_RESPONSE_TARGET_MS = 250;
 
 // The login 2FA challenge window (§6.1, §13.2 V2-P5): the pending state — and any
 // emailed code minted under it — live at most this long before the user must
@@ -1163,8 +1164,8 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
     },
 
     async requestPasswordReset({ email: address }, ip) {
-      const responseFloor = delay(PASSWORD_RESET_RESPONSE_FLOOR_MS);
-      try {
+      const responseTarget = delay(PASSWORD_RESET_RESPONSE_TARGET_MS);
+      const requestWork = (async () => {
         const user = await userRepo.findByEmail(address);
         const resetUser = user?.role === 'user' && user.status === 'active' ? user : null;
         const { token, tokenHash } = generateToken();
@@ -1205,9 +1206,16 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
               logger?.warn({ err, userId: resetUser.id }, 'detached password-reset email failed');
             });
         }
-      } finally {
-        await responseFloor;
-      }
+      })().catch((err) => {
+        // This endpoint is deliberately generic even when account-specific
+        // issuance fails. Keep the operational signal without turning a slow
+        // or failed known-account write into a response oracle.
+        logger?.warn({ err }, 'detached password-reset request failed');
+      });
+
+      // If the work settles first, retain the minimum response delay. If the
+      // target wins, the guarded promise keeps draining in the background.
+      await Promise.all([responseTarget, Promise.race([requestWork, responseTarget])]);
     },
 
     async completePasswordReset({ token, newPassword }, ip) {
