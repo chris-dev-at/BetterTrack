@@ -52,7 +52,7 @@ COMPOSER_REQUEST_ID=
 COMPOSER_REQUEST_EXACT_COUNT=
 COMPOSER_REQUEST_BRIEF=
 COMPOSER_TICK_ACTIVE=0
-COMPOSER_TICK_LANES_RAN=0
+COMPOSER_TICK_MERGER_RAN=0
 
 MF_SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 . "$MF_SCRIPT_DIR/contracts.sh"
@@ -900,6 +900,14 @@ composer_discovery_after(){ ( # $1=manifest; subshell contains cleanup traps
   cat "$accumulated"
 ) }
 
+composer_prepare_repo(){
+  ( cd "$REPO_DIR" \
+    && git checkout -q main && git fetch -q origin main && git reset -q --hard origin/main \
+  ) || return 1
+  ( cd "$REPO_DIR" && node factory/knowledge/build.mjs 2>>"$LOG" ) \
+    || log "composer knowledge refresh failed (non-fatal)"
+}
+
 composer_step(){ # $1=mode
   local mode=$1 allow_ready_claim=0
   if [ -e "$CONTROL/composer-discovery-fence" ]; then
@@ -972,9 +980,6 @@ composer_step(){ # $1=mode
   fi
   log "runnable=$count < $((WORKERS+1)) → running composer"
   mstatus composing
-  ( cd "$REPO_DIR" \
-    && git checkout -q main && git fetch -q origin main && git reset -q --hard origin/main \
-    && node factory/knowledge/build.mjs 2>>"$LOG" ) || log "composer pre-sync failed (non-fatal)"
   local attempt before after manifest run_id transport outcome=protocol newnums prompt
   local prompt_batch=$COMPOSER_BATCH manifest_issue_count
   local outcome_recorded=0 protocol_recorded=0 owner_blocked=0
@@ -983,6 +988,16 @@ composer_step(){ # $1=mode
   local invalid_new_seen=0
   mkdir -p "$CONTROL/composer-manifests"
   for attempt in $(seq 1 "$MF_COMPOSER_PROTOCOL_ATTEMPTS"); do
+    # The retry work slice may dispatch a conflict/CI fixer in this shared
+    # checkout. Re-establish main and rebuild the pack before every paid attempt;
+    # if a fixer left an in-progress merge or dirty tree, fail closed instead of
+    # composing against that PR branch.
+    mstatus composing
+    if ! composer_prepare_repo; then
+      log "composer pre-sync failed — model was not run; retrying next tick"
+      [ "$COMPOSER_REQUEST_LOADED" -eq 1 ] && return 2
+      return 1
+    fi
     before=$(mf_recent_issues_json) || {
       log "composer protocol: cannot snapshot repository issues — retrying next tick"
       break
@@ -1642,17 +1657,25 @@ drained_check(){ # $1=mode
 
 composer_retry_work_slice(){
   [ "$COMPOSER_TICK_ACTIVE" -eq 1 ] || return 0
-  [ "$COMPOSER_TICK_LANES_RAN" -eq 0 ] || return 0
+  [ "$COMPOSER_TICK_MERGER_RAN" -eq 0 ] || return 0
   local mode
   mode=$(cat "$CONTROL/mode" 2>/dev/null || echo run)
   log "composer retry pending: giving scheduler and merge lanes their tick slice"
-  if [ -e "$CONTROL/composer-discovery-fence" ]; then
+  # TICK_ISSUES was snapshotted before composition, so an ordinary retry cannot
+  # schedule its quarantined artifacts. Owner-request failures retain the
+  # stronger historical rule: never schedule at all until the request validates.
+  if [ "$COMPOSER_REQUEST_LOADED" -eq 1 ]; then
+    log "scheduler paused: owner-request composer retry is fail-closed"
+  elif [ -e "$CONTROL/composer-discovery-fence" ]; then
     log "scheduler paused: unresolved composer discovery fence"
   else
+    mstatus scheduling
     scheduler "$mode"
   fi
+  mstatus merging
   merger_step
-  COMPOSER_TICK_LANES_RAN=1
+  COMPOSER_TICK_MERGER_RAN=1
+  mstatus composing
 }
 
 tick(){
@@ -1665,7 +1688,7 @@ tick(){
   stall_check
   local composer_rc=0
   COMPOSER_TICK_ACTIVE=1
-  COMPOSER_TICK_LANES_RAN=0
+  COMPOSER_TICK_MERGER_RAN=0
   composer_step "$mode" || composer_rc=$?
   COMPOSER_TICK_ACTIVE=0
   # The composer (and merger LLM/regate paths) can block this tick for minutes;
@@ -1673,14 +1696,19 @@ tick(){
   # the scheduler hands out new work (caught live: stale 'run' assigned an issue
   # 6 minutes into close-down).
   mode=$(cat "$CONTROL/mode" 2>/dev/null || echo run)
-  if [ "$COMPOSER_TICK_LANES_RAN" -eq 0 ]; then
-    if [ -e "$CONTROL/composer-discovery-fence" ]; then
-      log "scheduler paused: unresolved composer discovery fence"
-    elif [ "$composer_rc" -eq 2 ]; then
-      log "scheduler paused: composer returned a fail-closed safety signal"
-    else
-      scheduler "$mode"
-    fi
+  # Always retain the normal post-composer scheduler pass. In particular, this
+  # assigns issues accepted by attempt 2 in the same tick. The retry slice only
+  # consumes the merge lane, whose LLM paths can mutate the shared checkout.
+  if [ -e "$CONTROL/composer-discovery-fence" ]; then
+    log "scheduler paused: unresolved composer discovery fence"
+  elif [ "$composer_rc" -eq 2 ]; then
+    log "scheduler paused: composer returned a fail-closed safety signal"
+  else
+    mstatus scheduling
+    scheduler "$mode"
+  fi
+  if [ "$COMPOSER_TICK_MERGER_RAN" -eq 0 ]; then
+    mstatus merging
     merger_step
   fi
   drained_check "$mode"

@@ -246,12 +246,32 @@ check "empty discovery doubles the idle cooldown" "1800" "$(cat "$CONTROL/.compo
 check "empty discovery arms no protocol retry cooldown" "0" \
   "$([ -f "$CONTROL/.composer-protocol-last" ] && echo 1 || echo 0)"
 
+EMPTY_GUARD_MANIFEST=$T/composer-empty-guard.manifest
+EMPTY_BARE_AFTER='[{"number":999,"title":"unmanifested","body":"x","labels":["autopilot"]}]'
+: >"$EMPTY_GUARD_MANIFEST"
+if composer_manifest_validate_or_idle "$EMPTY_GUARD_MANIFEST" '[]' '[]' \
+  guard-transport "" 0 0 42 "" ""; then
+  bad "empty manifest after a transport error must remain a protocol failure"
+else
+  ok "empty manifest after a transport error remains a protocol failure"
+fi
+if composer_manifest_validate_or_idle "$EMPTY_GUARD_MANIFEST" '[]' "$EMPTY_BARE_AFTER" \
+  guard-artifact "" 0 0 0 "" "999"; then
+  bad "empty manifest with a discovered artifact must remain a protocol failure"
+else
+  ok "empty manifest with a discovered artifact remains a protocol failure"
+fi
+
 echo "— composer correction waits for scheduler + merge lanes"
 RETRY_EVENTS=$T/composer-retry.events
 RETRY_LOG=$T/composer-retry.log
+RETRY_STATUS=$T/composer-retry.status
+RETRY_CHECKOUT=$T/composer-retry.checkout
 RETRY_QUEUE=$QUEUE/1000-pr77.json
-rm -f "$CONTROL"/.composer-* "$CONTROL/composer-quarantine" "$RETRY_EVENTS" 2>/dev/null || true
+rm -f "$CONTROL"/.composer-* "$CONTROL/composer-quarantine" "$RETRY_EVENTS" \
+  "$RETRY_STATUS" "$RETRY_CHECKOUT" 2>/dev/null || true
 printf '%s\n' '{"pr":77,"issue":707,"touches":["multi-factory/**"]}' >"$RETRY_QUEUE"
+printf 'main\n' >"$RETRY_CHECKOUT"
 echo run >"$CONTROL/mode"
 echo '[]' >"$TICK_ISSUES"
 (
@@ -262,15 +282,24 @@ echo '[]' >"$TICK_ISSUES"
   MF_PROMPTS=$TEST_SCRIPT_DIR/prompts
   log(){ printf '%s\n' "$*" >>"$RETRY_LOG"; }
   notify(){ printf 'NOTIFY %s\n' "$*" >>"$RETRY_LOG"; }
-  mstatus(){ :; }
-  git(){ :; }
+  mstatus(){ printf '%s\n' "$1" >>"$RETRY_STATUS"; }
+  git(){
+    if [ "$1" = checkout ]; then
+      printf 'sync-%s\n' "$attempt" >>"$RETRY_EVENTS"
+      printf 'main\n' >"$RETRY_CHECKOUT"
+    fi
+  }
   node(){ :; }
   role_diff(){ echo intermediate; }
   with_pack(){ printf '%s' "$1"; }
   mf_recent_issues_json(){ printf '[]\n'; }
   mf_cc(){
-    printf 'attempt-%s\n' "$attempt" >>"$RETRY_EVENTS"
-    printf 'BROKEN\n' >"$manifest"
+    printf 'attempt-%s-%s\n' "$attempt" "$(<"$RETRY_CHECKOUT")" >>"$RETRY_EVENTS"
+    if [ "$attempt" -eq 1 ]; then
+      printf 'BROKEN\n' >"$manifest"
+    else
+      printf 'NONE\n' >"$manifest"
+    fi
     return 0
   }
   fetch_issues(){ printf '[]\n' >"$TICK_ISSUES"; }
@@ -279,22 +308,46 @@ echo '[]' >"$TICK_ISSUES"
   scheduler(){ printf 'scheduler\n' >>"$RETRY_EVENTS"; }
   merger_step(){
     [ -f "$RETRY_QUEUE" ] && rm -f "$RETRY_QUEUE"
+    printf 'pr-branch\n' >"$RETRY_CHECKOUT"
     printf 'merge\n' >>"$RETRY_EVENTS"
   }
   drained_check(){ :; }
 
   tick
 )
-check "retry ordering gives both work lanes a slice" \
-  "attempt-1
+check "retry ordering re-syncs main after both work lanes run" \
+  "sync-1
+attempt-1-main
 scheduler
 merge
-attempt-2" "$(cat "$RETRY_EVENTS")"
+sync-2
+attempt-2-main
+scheduler" "$(cat "$RETRY_EVENTS")"
 [ -f "$RETRY_QUEUE" ] \
   && bad "merge queue entry must be processed before the correction" \
   || ok "merge queue entry processed before the correction"
 check "bounded correction invokes exactly two composer attempts" \
   "2" "$(grep -c '^attempt-' "$RETRY_EVENTS")"
+check "successful correction retains the normal post-composer scheduler pass" \
+  "2" "$(grep -c '^scheduler$' "$RETRY_EVENTS")"
+check "retry slice reports the merge lane instead of staying composing" \
+  "1" "$(grep -c '^merging$' "$RETRY_STATUS")"
+
+echo "— owner-request correction keeps scheduling fail-closed"
+OWNER_SLICE_EVENTS=$T/composer-owner-slice.events
+: >"$OWNER_SLICE_EVENTS"
+(
+  COMPOSER_TICK_ACTIVE=1
+  COMPOSER_TICK_MERGER_RAN=0
+  COMPOSER_REQUEST_LOADED=1
+  log(){ :; }
+  mstatus(){ :; }
+  scheduler(){ printf 'scheduler\n' >>"$OWNER_SLICE_EVENTS"; }
+  merger_step(){ printf 'merge\n' >>"$OWNER_SLICE_EVENTS"; }
+  composer_retry_work_slice
+)
+check "owner-request retry slice runs only the merge lane" \
+  "merge" "$(cat "$OWNER_SLICE_EVENTS")"
 
 echo "— cc() transient transport classifier (factory/lib.sh, issue #497)"
 # lib.sh is the source of the classifier + regexes. Sourcing it redefines log/notify

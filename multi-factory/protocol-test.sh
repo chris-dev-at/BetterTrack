@@ -325,6 +325,7 @@ export MF_SOURCE_ONLY=1 TICK_ISSUES=$T/issues.json TICK_DEPS=$T/deps
 export MF_COMPOSER_DISCOVERY_ATTEMPTS=4 MF_COMPOSER_DISCOVERY_SLEEP=0
 mkdir -p "$T/deps"
 . ./master.sh
+composer_prepare_repo(){ :; }
 
 echo "— composer canonical manifest reconstruction"
 printf 'NONE\n' >"$T/repair-manifest"
@@ -555,6 +556,7 @@ check "valid directly reconciled issue is not dropped into quarantine" 0 \
 # Restore production functions after the focused tick stubs.
 log(){ :; }; notify(){ :; }; mark_human(){ :; }; issue_cost(){ :; }
 MF_SOURCE_ONLY=1 . ./master.sh
+composer_prepare_repo(){ :; }
 rm -f "$ASSIGN/worker-1.json"
 
 echo "— composer fence commits outcome/protocol state before clearing"
@@ -701,6 +703,7 @@ unset -f touch
 # Restore production state writers and orchestration functions.
 log(){ :; }; notify(){ :; }; mark_human(){ :; }; issue_cost(){ :; }
 MF_SOURCE_ONLY=1 . ./master.sh
+composer_prepare_repo(){ :; }
 
 echo "— inconsistent persisted composer fences fail closed"
 composer_corrupt_reset(){
@@ -768,6 +771,7 @@ rm -rf "$CONTROL/composer-discovery-fence" "$CONTROL/.composer-request-claim"
 rm -f "$CONTROL/.composer-request-active.json"
 log(){ :; }; notify(){ :; }; mark_human(){ :; }; issue_cost(){ :; }
 MF_SOURCE_ONLY=1 . ./master.sh
+composer_prepare_repo(){ :; }
 
 echo "— composer protocol backoff cadence"
 MF_PROMPTS=$(pwd)/prompts
@@ -1247,6 +1251,7 @@ check "close-down also reports an unresolved foreign claim" 2 "$CLOSE_DOWN_RC"
 MF_MASTER_SESSION=test-master-session
 # Restore the production master functions replaced by the focused tick stubs.
 MF_SOURCE_ONLY=1 . ./master.sh
+composer_prepare_repo(){ :; }
 
 echo "— queue approval head/comment binding"
 QUEUE_FILE=$MFSTATE/merge-queue/1-pr10.json
