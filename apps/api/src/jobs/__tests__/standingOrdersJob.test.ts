@@ -209,6 +209,7 @@ describe('standingOrders.process job — schedule', () => {
           return {
             scanned: 0,
             booked: 0,
+            bookingFailed: 0,
             skippedDuplicate: 0,
             deferred: 0,
             skippedArchived: 0,

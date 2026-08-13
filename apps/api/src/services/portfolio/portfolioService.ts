@@ -1092,12 +1092,8 @@ export function createPortfolioService(deps: PortfolioServiceDeps): PortfolioSer
       note: input.note ?? null,
       // Source tag (V5-P0c): `manual` unless the CSV apply path stamps a broker.
       source: opts?.source ?? 'manual',
-      // TODO(v5/cash-phase-2): a `fee` should also receive the app-owned `fees`
-      // system tag (`CASH_SYSTEM_TAGS`, `system_key = 'fees'`, migration 0076).
-      // Nothing assigns system tags yet — the kind → tag auto-tagging engine and
-      // the `cash_movement_tags` write path are cash-fusion phase 2 — so this is
-      // deliberately left unwired rather than half-built here. The tag rows and
-      // their seed already exist, so phase 2 backfills existing fees by kind.
+      // Fee movements receive the app-owned `fees` system tag by construction:
+      // `SYSTEM_TAG_FOR_KIND` is applied by `stampMovementTags` on every repository insert path.
     };
     const movement = opts?.force
       ? await cashMovementRepo.insert(portfolioId, newMovement)

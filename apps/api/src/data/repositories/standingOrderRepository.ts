@@ -388,6 +388,10 @@ export function createStandingOrderRepository(db: Database) {
      * worker has already acknowledged. Returns true iff THIS call created the
      * claim (so it must book); false means the period was already handled or
      * claimed (skip — the double-run guard).
+     *
+     * The inserted run's `bookedAt` intentionally uses its DB default, so it
+     * records the claim instant. See {@link markBooked} for the related,
+     * deliberately divergent booking timestamps.
      */
     async claimPeriod(
       standingOrderId: string,
@@ -509,6 +513,11 @@ export function createStandingOrderRepository(db: Database) {
      * quote's provider `asOf` (the #1119 market-hours stamp, record-only);
      * otherwise the scan instant. The money row and `standing_order_runs`
      * both stamp their own wall-clock instants independently of it.
+     *
+     * These three timestamps intentionally diverge: the run's `bookedAt` is
+     * the DB-default claim instant; the booked transaction's `executedAt` is
+     * the scan instant; and `standing_orders.lastRunAt` is the quote market
+     * stamp for `buy-asset`, or the scan instant for cash kinds.
      */
     async markBooked(standingOrderId: string, periodKey: string, bookedAt: Date): Promise<void> {
       await db
