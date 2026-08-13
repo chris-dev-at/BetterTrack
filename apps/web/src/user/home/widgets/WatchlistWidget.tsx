@@ -1,11 +1,11 @@
 import { useId } from 'react';
 import { Link } from 'react-router-dom';
-import { useQueries, useQuery } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 
 import type { WorkboardItem } from '@bettertrack/contracts';
 
 import { useT } from '../../../i18n';
-import { getAssetQuote } from '../../../lib/assetApi';
+import { getAssetQuotes, workboardQuotesQueryKey } from '../../../lib/assetApi';
 import { cx } from '../../../lib/cx';
 import { formatSignedPercent } from '../../../lib/format';
 import {
@@ -27,8 +27,9 @@ import type { WidgetProps, WidgetSettingsExtraProps } from './types';
  * fetches the *unfiltered* set the page already caches and narrows it here —
  * otherwise a board holding this widget and a visit to the Workboard would keep
  * two overlapping entries warm, and switching the picked list would refetch rows
- * the client already had. Quotes fan out under the asset page's
- * `['asset', id, 'quote']`, so a watched asset the user opens costs nothing extra.
+ * the client already had. Quotes use the Workboard's aggregate key family for
+ * only the rendered rows, avoiding a provider-backed request per row while
+ * keeping `quote.updated` push invalidation scoped to batches that contain it.
  *
  * Unscoped: a watchlist is a user-level object with no portfolio dimension.
  */
@@ -70,14 +71,18 @@ export function WatchlistWidget({ settings, size }: WidgetProps) {
     .sort((a, b) => a.sortOrder - b.sortOrder)
     .slice(0, size === 's' ? 5 : MAX_ROWS);
 
-  const quotes = useQueries({
-    queries: items.map((item) => ({
-      queryKey: ['asset', item.assetId, 'quote'],
-      queryFn: ({ signal }: { signal: AbortSignal }) => getAssetQuote(item.assetId, signal),
-      staleTime: QUOTE_STALE_MS,
-    })),
-    combine: (results) => results.map((result) => result.data?.quote ?? null),
+  // Canonical ids keep a drag-only reorder on the same aggregate cache entry.
+  // `items` was already capped above, so hidden rows never enter this request.
+  const assetIds = [...new Set(items.map((item) => item.assetId))].sort();
+  const quoteQuery = useQuery({
+    queryKey: workboardQuotesQueryKey(assetIds),
+    queryFn: ({ signal }) => getAssetQuotes(assetIds, signal),
+    enabled: assetIds.length > 0,
+    staleTime: QUOTE_STALE_MS,
   });
+  const quotesByAssetId = new Map(
+    quoteQuery.data?.quotes.map((result) => [result.assetId, result.quote]) ?? [],
+  );
 
   if (listsQuery.isLoading || itemsQuery.isLoading) return <SkeletonBlock height={130} />;
   if (active === null) return <Empty title={t('home.widgets.watchlist.noLists')} />;
@@ -87,8 +92,8 @@ export function WatchlistWidget({ settings, size }: WidgetProps) {
 
   return (
     <ul className="bt-band">
-      {items.map((item, index) => (
-        <WatchRow item={item} key={item.id} quote={quotes[index] ?? null} />
+      {items.map((item) => (
+        <WatchRow item={item} key={item.id} quote={quotesByAssetId.get(item.assetId) ?? null} />
       ))}
     </ul>
   );
