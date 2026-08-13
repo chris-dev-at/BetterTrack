@@ -437,7 +437,7 @@ describe('PortfolioSettingsPage — archived', () => {
     renderSettings('p2');
 
     expect(await screen.findByText("This information isn't available.")).toBeInTheDocument();
-    expect(screen.getByLabelText('Name')).toHaveValue('Trading');
+    await waitFor(() => expect(screen.getByLabelText('Name')).toHaveValue('Trading'));
   });
 
   test('lists archived portfolios and restores one', async () => {
