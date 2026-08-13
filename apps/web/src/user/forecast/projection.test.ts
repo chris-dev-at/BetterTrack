@@ -352,6 +352,13 @@ describe('normalizeStandingOrders', () => {
     expect(normalized[0]!.amountEur).toBe(40);
   });
 
+  test('excludes archive-suspended orders while leaving unflagged active orders unchanged', () => {
+    const active = order({ kind: 'cash-add', amount: 40 });
+
+    expect(normalizeStandingOrders([active])).toMatchObject([{ amountEur: 40 }]);
+    expect(normalizeStandingOrders([{ ...active, suspendedByArchive: true }])).toEqual([]);
+  });
+
   test('excludes buy-asset orders (net-worth-neutral reallocations)', () => {
     const normalized = normalizeStandingOrders([
       order({ kind: 'buy-asset', assetId: '22222222-2222-2222-2222-222222222222', amount: 5 }),
