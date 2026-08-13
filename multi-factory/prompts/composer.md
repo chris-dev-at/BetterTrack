@@ -9,10 +9,6 @@ This invocation is `{{RUN_ID}}`. Issue creation has a hard protocol:
   `/work/mf/create-issue.sh --run-id {{RUN_ID}} --manifest {{MANIFEST}} --mode autopilot --difficulty <easy|normal|intermediate|hard|max> --title "<title>" --body-file <file>`
 - The helper validates the sections/meta before mutation, applies `autopilot` plus the one difficulty label, tags the body with this invocation, and writes the issue number to the authoritative manifest. A helper rejection means fix the body and call it again.
 - If—and only if—there is genuinely no issue to create, write exactly `NONE` followed by a newline to `{{MANIFEST}}`. Never mix `NONE` with issue entries.
-- The orchestrator defensively accepts its own still-empty, pre-created manifest as
-  the same idle outcome only after a clean transport and a full discovery window
-  prove that no artifacts exist. You must still write `NONE`; empty-manifest
-  acceptance is recovery behavior, not an alternate composer contract.
 - Do not claim, relabel, or repair issues that lack this invocation's marker. They may belong to a concurrent human or another process.
 
 An optional one-shot `OWNER-APPROVED COMPOSITION BRIEF` may be appended after
