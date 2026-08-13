@@ -1851,7 +1851,7 @@ export const DEFERRED_NON_V5_ASYNC_STATE_DEBT: V5AsyncStateDebtLedger = {
     'WatchlistSettings.listsQuery': ['loading', 'error'],
     'WatchlistWidget.itemsQuery': ['error'],
     'WatchlistWidget.listsQuery': ['error'],
-    'WatchlistWidget.quotes': ['loading', 'error'],
+    'WatchlistWidget.quoteQuery': ['loading', 'error'],
   },
   'user/people/PeopleLayout.tsx': {
     'PeopleLayout.items': ['loading', 'error'],
