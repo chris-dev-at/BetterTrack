@@ -1,3 +1,4 @@
+import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -20,6 +21,25 @@ const HERE = path.dirname(fileURLToPath(import.meta.url));
 const FIXTURE_DIR = path.join(HERE, 'support', 'fixtures');
 const HAPPY_CSV = path.join(FIXTURE_DIR, 'trade-republic-happy.csv');
 const ERROR_CSV = path.join(FIXTURE_DIR, 'trade-republic-with-error.csv');
+const CSV_YEAR_TOKEN = '{{CURRENT_VIENNA_YEAR}}';
+const CURRENT_VIENNA_YEAR = new Intl.DateTimeFormat('en', {
+  timeZone: 'Europe/Vienna',
+  year: 'numeric',
+}).format(new Date());
+
+/** Resolve dated booking rows into the current tax year before browser upload. */
+async function currentYearCsv(filePath: string) {
+  const template = await readFile(filePath, 'utf8');
+  if (!template.includes(CSV_YEAR_TOKEN)) {
+    throw new Error(`CSV fixture ${path.basename(filePath)} has no year token`);
+  }
+
+  return {
+    name: path.basename(filePath),
+    mimeType: 'text/csv',
+    buffer: Buffer.from(template.replaceAll(CSV_YEAR_TOKEN, CURRENT_VIENNA_YEAR)),
+  };
+}
 
 test('imports: TR CSV — autodetect, staged preview, transactional apply, re-upload dedupes', async ({
   browser,
@@ -32,11 +52,12 @@ test('imports: TR CSV — autodetect, staged preview, transactional apply, re-up
   await apiRequest.dispose();
 
   const page = owner.page;
+  const happyCsv = await currentYearCsv(HAPPY_CSV);
 
   // ── Step 1: upload & preview ──────────────────────────────────────────────
   await page.goto('/portfolio/import');
   await expect(page.getByRole('heading', { name: 'Broker CSV import' })).toBeVisible();
-  await page.getByLabel('CSV export').setInputFiles(HAPPY_CSV);
+  await page.getByLabel('CSV export').setInputFiles(happyCsv);
   await page.getByRole('button', { name: 'Create preview' }).click();
 
   // Broker autodetect: the framework fingerprints the TR header (all nine
@@ -87,7 +108,7 @@ test('imports: TR CSV — autodetect, staged preview, transactional apply, re-up
 
   // ── Step 3: re-upload the same file → every row flags as duplicate ────────
   await page.goto('/portfolio/import');
-  await page.getByLabel('CSV export').setInputFiles(HAPPY_CSV);
+  await page.getByLabel('CSV export').setInputFiles(happyCsv);
   await page.getByRole('button', { name: 'Create preview' }).click();
 
   await expect(page.getByText('Broker: Trade Republic')).toBeVisible({ timeout: 60_000 });
@@ -119,9 +140,10 @@ test('imports: malformed row shows as error while the rest apply', async ({ brow
   await apiRequest.dispose();
 
   const page = owner.page;
+  const errorCsv = await currentYearCsv(ERROR_CSV);
 
   await page.goto('/portfolio/import');
-  await page.getByLabel('CSV export').setInputFiles(ERROR_CSV);
+  await page.getByLabel('CSV export').setInputFiles(errorCsv);
   await page.getByRole('button', { name: 'Create preview' }).click();
 
   // Preview lands with the broker autodetected and the malformed row surfaced
