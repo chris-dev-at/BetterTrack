@@ -34,7 +34,12 @@ import type {
 vi.mock('../../lib/portfolioApi');
 vi.mock('../../lib/notificationsApi');
 vi.mock('../../lib/standingOrdersApi');
-vi.mock('../../lib/assetApi');
+vi.mock('../../lib/assetApi', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../lib/assetApi')>()),
+  getAssetHistory: vi.fn(),
+  getAssetQuote: vi.fn(),
+  getAssetQuotes: vi.fn(),
+}));
 vi.mock('../../lib/cashApi', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../lib/cashApi')>()),
   getCashTrends: vi.fn(),
@@ -91,7 +96,7 @@ vi.mock('lightweight-charts', () => ({
 
 import { I18nProvider } from '../../i18n';
 import { listAlerts } from '../../lib/alertsApi';
-import { getAssetHistory, getAssetQuote } from '../../lib/assetApi';
+import { getAssetHistory, getAssetQuote, getAssetQuotes } from '../../lib/assetApi';
 import { getCashTrends } from '../../lib/cashApi';
 import { DISCREET_MASK, setDiscreetMode, setMoneyCurrency } from '../../lib/format';
 import { getNewsDigest, getPortfolioDividendCalendar } from '../../lib/marketIntelApi';
@@ -348,6 +353,10 @@ beforeEach(() => {
   vi.mocked(listWorkboard).mockResolvedValue({ items: [CORE_ITEM, SPEC_ITEM] });
   vi.mocked(listAlerts).mockResolvedValue({ items: [ARMED_ALERT, FIRED_ALERT] });
   vi.mocked(getAssetQuote).mockResolvedValue(QUOTE);
+  vi.mocked(getAssetQuotes).mockImplementation(async (ids) => ({
+    quotes: ids.map((assetId) => ({ assetId, ...QUOTE })),
+    failed: [],
+  }));
   vi.mocked(getAssetHistory).mockResolvedValue(ASSET_HISTORY);
   // No board on the account by default; `seedBoard` overrides this.
   vi.mocked(getHomeLayout).mockResolvedValue({ layout: null, updatedAt: null });
