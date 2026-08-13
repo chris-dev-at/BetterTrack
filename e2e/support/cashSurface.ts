@@ -9,6 +9,8 @@ const CASH_MOVEMENTS_LABEL = 'Cash movements';
  * specs assert the product behavior rather than a particular shell's markup.
  */
 function responsiveRows(page: Page, label: string): Locator {
+  // The responsive shells are mutually exclusive: rendering both would make
+  // this union's positional locators ambiguous.
   return page
     .getByRole('table', { name: label })
     .locator('tbody > tr')
@@ -27,7 +29,7 @@ export function cashSourceAction(source: Locator, name: string): Locator {
   return source.getByRole('button', { name, exact: true });
 }
 
-export function cashMovementRows(page: Page): Locator {
+function cashMovementRows(page: Page): Locator {
   return responsiveRows(page, CASH_MOVEMENTS_LABEL);
 }
 
