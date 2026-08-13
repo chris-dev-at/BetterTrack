@@ -66,15 +66,19 @@ async function enableGermanyTaxMode(page: Page): Promise<void> {
 // funding deposit must predate the backdated trades it settles (see tax-at).
 async function depositToMain(page: Page, amount: string, date: string): Promise<void> {
   await page.goto('/portfolio/cash/accounts');
-  const rows = page.locator('table[aria-label="Cash sources"] tbody tr');
-  // sortSourcesMainFirst: Main is row 0 on a fresh account.
-  await rows.nth(0).getByRole('button', { name: 'Deposit' }).click();
+  const sourceSurface = page
+    .getByRole('table', { name: 'Cash sources' })
+    .or(page.getByRole('list', { name: 'Cash sources' }));
+  // The responsive page renders table rows on desktop and list-item cards on
+  // phones. sortSourcesMainFirst keeps Main first in either presentation.
+  const mainSource = sourceSurface.locator('tbody tr, li').first();
+  await mainSource.getByRole('button', { name: 'Deposit' }).click();
   const dialog = page.getByRole('dialog', { name: 'Cash balance' });
   await dialog.getByLabel('Amount', { exact: true }).fill(amount);
   await dialog.getByLabel('Date').fill(date);
   await dialog.getByRole('button', { name: 'Deposit cash' }).click();
   await expect(dialog).toBeHidden();
-  await expect(rows.nth(0)).toContainText(/50[.,]000/);
+  await expect(mainSource).toContainText(/50[.,]000/);
 }
 
 interface Trade {
