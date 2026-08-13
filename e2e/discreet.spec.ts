@@ -1,6 +1,7 @@
 import { expect, request as newRequestContext, test, type Page } from '@playwright/test';
 
 import { loginAsAdmin } from './support/adminApi';
+import { cashSourceAction, cashSourceRow } from './support/cashSurface';
 import { API_BASE_URL } from './support/config';
 import { provisionUser } from './support/users';
 
@@ -66,8 +67,7 @@ test('discreet mode masks every absolute amount on the portfolio surface and tog
   // stays on the accounts surface (below), so no holding is needed: the
   // redesigned Overview reports an empty portfolio when only cash exists.
   await user.page.goto('/portfolio/cash/accounts');
-  const mainRow = user.page.locator('table[aria-label="Cash sources"] tbody tr').first();
-  await mainRow.getByRole('button', { name: 'Deposit' }).click();
+  await cashSourceAction(cashSourceRow(user.page, 0), 'Deposit').click();
   const depositDialog = user.page.getByRole('dialog', { name: 'Cash balance' });
   await depositDialog.getByLabel('Amount', { exact: true }).fill('1234.56');
   await depositDialog.getByRole('button', { name: 'Deposit cash' }).click();
