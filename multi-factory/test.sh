@@ -210,6 +210,92 @@ echo '[{"number":260,"title":"new issue appeared","body":"x","labels":["autopilo
 composer_step run
 check "open-issue set change resets backoff to base (900)" "900" "$(cat "$MFSTATE/control/.composer-backoff")"
 
+echo "— composer empty discovery is a real idle outcome"
+EMPTY_LOG=$T/composer-empty.log
+EMPTY_CALLS=$T/composer-empty.calls
+EMPTY_RC=$T/composer-empty.rc
+rm -f "$CONTROL"/.composer-* "$CONTROL/composer-quarantine" 2>/dev/null || true
+echo '[]' >"$TICK_ISSUES"
+mkdir -p "$REPO_DIR"
+(
+  MF_DRY_RUN=0
+  MF_COMPOSER_DISCOVERY_ATTEMPTS=1
+  MF_COMPOSER_DISCOVERY_SLEEP=0
+  MF_PROMPTS=$TEST_SCRIPT_DIR/prompts
+  log(){ printf '%s\n' "$*" >>"$EMPTY_LOG"; }
+  notify(){ printf 'NOTIFY %s\n' "$*" >>"$EMPTY_LOG"; }
+  mstatus(){ :; }
+  git(){ :; }
+  node(){ :; }
+  role_diff(){ echo intermediate; }
+  with_pack(){ printf '%s' "$1"; }
+  mf_recent_issues_json(){ printf '[]\n'; }
+  mf_cc(){ printf 'call\n' >>"$EMPTY_CALLS"; return 0; }
+
+  empty_snap=$(composer_snapshot run)
+  atomic_write "$CONTROL/.composer-snapshot" "$empty_snap"
+  atomic_write "$CONTROL/.composer-backoff" 900
+  composer_step run
+  printf '%s\n' "$?" >"$EMPTY_RC"
+)
+check "empty discovery exits successfully" "0" "$(cat "$EMPTY_RC")"
+check "empty discovery invokes the composer only once" "1" "$(wc -l <"$EMPTY_CALLS" | tr -d ' ')"
+check "empty discovery logs an idle outcome" "1" "$(grep -c 'composer outcome: idle' "$EMPTY_LOG")"
+check "empty discovery logs no protocol failure" "0" "$(grep -c 'protocol failure' "$EMPTY_LOG" || true)"
+check "empty discovery doubles the idle cooldown" "1800" "$(cat "$CONTROL/.composer-backoff")"
+check "empty discovery arms no protocol retry cooldown" "0" \
+  "$([ -f "$CONTROL/.composer-protocol-last" ] && echo 1 || echo 0)"
+
+echo "— composer correction waits for scheduler + merge lanes"
+RETRY_EVENTS=$T/composer-retry.events
+RETRY_LOG=$T/composer-retry.log
+RETRY_QUEUE=$QUEUE/1000-pr77.json
+rm -f "$CONTROL"/.composer-* "$CONTROL/composer-quarantine" "$RETRY_EVENTS" 2>/dev/null || true
+printf '%s\n' '{"pr":77,"issue":707,"touches":["multi-factory/**"]}' >"$RETRY_QUEUE"
+echo run >"$CONTROL/mode"
+echo '[]' >"$TICK_ISSUES"
+(
+  MF_DRY_RUN=0
+  MF_COMPOSER_PROTOCOL_ATTEMPTS=2
+  MF_COMPOSER_DISCOVERY_ATTEMPTS=1
+  MF_COMPOSER_DISCOVERY_SLEEP=0
+  MF_PROMPTS=$TEST_SCRIPT_DIR/prompts
+  log(){ printf '%s\n' "$*" >>"$RETRY_LOG"; }
+  notify(){ printf 'NOTIFY %s\n' "$*" >>"$RETRY_LOG"; }
+  mstatus(){ :; }
+  git(){ :; }
+  node(){ :; }
+  role_diff(){ echo intermediate; }
+  with_pack(){ printf '%s' "$1"; }
+  mf_recent_issues_json(){ printf '[]\n'; }
+  mf_cc(){
+    printf 'attempt-%s\n' "$attempt" >>"$RETRY_EVENTS"
+    printf 'BROKEN\n' >"$manifest"
+    return 0
+  }
+  fetch_issues(){ printf '[]\n' >"$TICK_ISSUES"; }
+  process_acks(){ :; }
+  stall_check(){ :; }
+  scheduler(){ printf 'scheduler\n' >>"$RETRY_EVENTS"; }
+  merger_step(){
+    [ -f "$RETRY_QUEUE" ] && rm -f "$RETRY_QUEUE"
+    printf 'merge\n' >>"$RETRY_EVENTS"
+  }
+  drained_check(){ :; }
+
+  tick
+)
+check "retry ordering gives both work lanes a slice" \
+  "attempt-1
+scheduler
+merge
+attempt-2" "$(cat "$RETRY_EVENTS")"
+[ -f "$RETRY_QUEUE" ] \
+  && bad "merge queue entry must be processed before the correction" \
+  || ok "merge queue entry processed before the correction"
+check "bounded correction invokes exactly two composer attempts" \
+  "2" "$(grep -c '^attempt-' "$RETRY_EVENTS")"
+
 echo "— cc() transient transport classifier (factory/lib.sh, issue #497)"
 # lib.sh is the source of the classifier + regexes. Sourcing it redefines log/notify
 # with the real implementations, so re-stub them right after to keep the rest quiet.

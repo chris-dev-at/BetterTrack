@@ -780,7 +780,11 @@ echo '[]' >"$TICK_ISSUES"
 COMPOSER_CALLS=0
 runnable_issues(){ :; }
 mf_recent_issues_json(){ echo '[]'; }
-mf_cc(){ COMPOSER_CALLS=$((COMPOSER_CALLS+1)); return 0; }
+mf_cc(){
+  COMPOSER_CALLS=$((COMPOSER_CALLS+1))
+  printf 'BROKEN\n' >"$manifest"
+  return 0
+}
 role_diff(){ echo hard; }
 with_pack(){ printf '%s' "$1"; }
 fetch_issues(){ :; }
