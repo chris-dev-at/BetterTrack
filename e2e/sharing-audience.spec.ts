@@ -1,13 +1,14 @@
 import { expect, request as newRequestContext, test } from '@playwright/test';
 
 import { loginAsAdmin } from './support/adminApi';
+import { setAudienceThroughLadder } from './support/audience';
 import { API_BASE_URL } from './support/config';
 import { befriend, provisionUser } from './support/users';
 
 /**
  * V3-P5 sharing audiences (issue #426, flow 3). The owner sets a portfolio's
- * audience to ONE specific friend (the `specific_friends` tier has no friction
- * dialog). The enforcement must prove BOTH directions: the chosen friend sees
+ * audience to ONE specific friend. Its private → `specific_friends` widening
+ * needs the shared light confirmation. The enforcement must prove BOTH directions: the chosen friend sees
  * the share, a second friend who is NOT in the audience gets nothing.
  */
 test('sharing audience: portfolio shared to one specific friend, hidden from another', async ({
@@ -33,11 +34,10 @@ test('sharing audience: portfolio shared to one specific friend, hidden from ano
 
   const picker = owner.page.getByRole('dialog', { name: /Share/ });
   await expect(picker).toBeVisible();
-  // Pick the "Specific friends" tier — no friction dialog for this tier.
-  await picker.getByText('Specific friends', { exact: true }).click();
-  await picker.getByText(chosen.username, { exact: true }).click();
-  await expect(picker.getByText('1 selected')).toBeVisible();
-  await picker.getByRole('button', { name: 'Save' }).click();
+  await setAudienceThroughLadder(picker, {
+    audience: 'specific_friends',
+    recipient: chosen.username,
+  });
   await expect(picker).toBeHidden();
 
   // The chosen friend sees the shared portfolio in the owner's friend overview.

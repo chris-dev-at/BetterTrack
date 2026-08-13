@@ -1,6 +1,7 @@
 import { expect, request as newRequestContext, test } from '@playwright/test';
 
 import { loginAsAdmin } from './support/adminApi';
+import { setAudienceThroughLadder } from './support/audience';
 import { API_BASE_URL } from './support/config';
 import { apiV1, CSRF_HEADERS, ownerDeleteComment, ownerThreadComments } from './support/e2';
 import { befriend, provisionUser } from './support/users';
@@ -82,9 +83,7 @@ test('comments: audience-scoped thread, reactions, delete-own and owner moderati
   await portfolioRow.getByRole('button', { name: 'Share' }).click();
   const picker = owner.page.getByRole('dialog', { name: /Share/ });
   await expect(picker).toBeVisible();
-  await picker.getByText('Friend group', { exact: true }).click();
-  await picker.getByText(groupName, { exact: true }).click();
-  await picker.getByRole('button', { name: 'Save' }).click();
+  await setAudienceThroughLadder(picker, { audience: 'group', recipient: groupName });
   await expect(picker).toBeHidden();
 
   // ── The in-audience member opens the shared portfolio → the comment thread. ──
@@ -192,9 +191,7 @@ test('comments: a public link stays read-only with no comment or reaction UI', a
   await portfolioRow.getByRole('button', { name: 'Share' }).click();
   const picker = owner.page.getByRole('dialog', { name: /Share/ });
   await expect(picker).toBeVisible();
-  await picker.getByText('Public link', { exact: true }).click();
-  await picker.getByRole('checkbox').check();
-  await picker.getByRole('button', { name: 'Save' }).click();
+  await setAudienceThroughLadder(picker, { audience: 'public_link' });
 
   // The minted URL is shown exactly once in a <code> element.
   const code = picker.locator('code');

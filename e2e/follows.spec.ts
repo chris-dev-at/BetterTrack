@@ -1,6 +1,7 @@
 import { expect, request as newRequestContext, test } from '@playwright/test';
 
 import { loginAsAdmin } from './support/adminApi';
+import { setAudienceThroughLadder } from './support/audience';
 import { API_BASE_URL } from './support/config';
 import { befriend, provisionUser } from './support/users';
 
@@ -31,17 +32,17 @@ test('follows: follow + bookmark, alert toggle, and restored /following page', a
   await befriend(owner, follower);
 
   // Owner shares the default "Main" portfolio with the follower only
-  // (sharing-audience.spec.ts pattern — the specific_friends tier has no
-  // friction dialog).
+  // (sharing-audience.spec.ts pattern — private → specific_friends is a
+  // genuine widening, so it needs the shared light confirmation).
   await owner.page.goto('/people/shared');
   const portfolioRow = owner.page.getByRole('listitem').filter({ hasText: 'Main' });
   await portfolioRow.getByRole('button', { name: 'Share' }).click();
   const picker = owner.page.getByRole('dialog', { name: /Share/ });
   await expect(picker).toBeVisible();
-  await picker.getByText('Specific friends', { exact: true }).click();
-  await picker.getByText(follower.username, { exact: true }).click();
-  await expect(picker.getByText('1 selected')).toBeVisible();
-  await picker.getByRole('button', { name: 'Save' }).click();
+  await setAudienceThroughLadder(picker, {
+    audience: 'specific_friends',
+    recipient: follower.username,
+  });
   await expect(picker).toBeHidden();
 
   // Follower expands the owner's friend card and follows the person straight
