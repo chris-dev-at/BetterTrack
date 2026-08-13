@@ -9,16 +9,16 @@
 export const dependencyAuditWaivers = {
   // Direct runtime packages need a separately reviewed compatibility update.
   'GHSA-gpj5-g38j-94v9': {
-    expires: '2026-08-20',
+    expires: '2026-08-21',
     moduleName: 'drizzle-orm',
     reason:
-      'Renewed 2026-08-13: the 0.38→0.45 upgrade needs schema-layer compatibility and migration checks in #1198 after #1208 fences the parked zod majors.',
+      'Renewed 2026-08-13: the dedicated 0.38→0.45 upgrade in #1217 needs schema-layer compatibility and migration checks.',
   },
   'GHSA-p6gq-j5cr-w38f': {
-    expires: '2026-08-20',
+    expires: '2026-08-22',
     moduleName: 'nodemailer',
     reason:
-      'Renewed 2026-08-13: the SMTP regression check remains in the #1198 dependency wave after #1208 fences the parked zod majors.',
+      'Renewed 2026-08-13: the in-range Nodemailer update in #1222 needs the required SMTP transport regression check.',
   },
   // React Router remediation spans a compatible minor update plus a later
   // major-only advisory, so it needs the user-flow regression suite.
