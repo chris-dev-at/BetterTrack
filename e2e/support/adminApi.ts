@@ -26,13 +26,9 @@ const CSRF_HEADERS = { 'X-Requested-With': 'BetterTrack' };
  */
 const ADMIN_TOTP_SECRET_FILE =
   process.env.E2E_ADMIN_TOTP_FILE ?? join(tmpdir(), 'bettertrack-e2e-admin-totp');
-const ADMIN_TOTP_STEP_FILE = `${ADMIN_TOTP_SECRET_FILE}.last-step`;
-const TOTP_STEP_MS = 30_000;
 
 /** In-process mirror of the persisted secret; primed lazily from disk on first read. */
 let cachedAdminTotpSecret: string | null = null;
-/** `undefined` means unread; `null` means this secret has not consumed a step yet. */
-let cachedAdminTotpStep: number | null | undefined;
 
 /**
  * A shard can legitimately cross the production-shaped 25/minute login-IP
@@ -79,41 +75,11 @@ function readAdminTotpSecret(): string | null {
 
 function persistAdminTotpSecret(secret: string): void {
   cachedAdminTotpSecret = secret;
-  cachedAdminTotpStep = null;
   try {
     mkdirSync(dirname(ADMIN_TOTP_SECRET_FILE), { recursive: true });
     writeFileSync(ADMIN_TOTP_SECRET_FILE, secret, { mode: 0o600 });
-    // A newly enrolled secret has its own server-side replay key. Clear the
-    // companion counter so an earlier enrollment cannot delay its first use.
-    writeFileSync(ADMIN_TOTP_STEP_FILE, '', { mode: 0o600 });
   } catch {
     // Best-effort — in-process cache still covers this worker's remaining specs.
-  }
-}
-
-function readAdminTotpStep(): number | null {
-  if (cachedAdminTotpStep !== undefined) return cachedAdminTotpStep;
-  try {
-    const raw = readFileSync(ADMIN_TOTP_STEP_FILE, 'utf8').trim();
-    const step = Number(raw);
-    if (raw.length > 0 && Number.isSafeInteger(step) && step >= 0) {
-      cachedAdminTotpStep = step;
-      return step;
-    }
-  } catch {
-    // Fresh enrollment, or a run from before replay-step tracking landed.
-  }
-  cachedAdminTotpStep = null;
-  return null;
-}
-
-function persistAdminTotpStep(step: number): void {
-  cachedAdminTotpStep = step;
-  try {
-    mkdirSync(dirname(ADMIN_TOTP_STEP_FILE), { recursive: true });
-    writeFileSync(ADMIN_TOTP_STEP_FILE, String(step), { mode: 0o600 });
-  } catch {
-    // Best-effort — the in-process value still serializes this worker's logins.
   }
 }
 
@@ -155,35 +121,6 @@ function generateTotpCode(secret: string, nowMs: number = Date.now()): string {
 }
 
 /**
- * Produce a code from a step newer than the last successful admin challenge.
- *
- * Production rejects TOTP replay across sessions. Playwright deliberately
- * creates a fresh admin request context per scenario, so reusing the same
- * 30-second code would make the next scenario fail before reaching its flow.
- * Persisting the consumed step also keeps a retried spec's replacement worker
- * from hiding the original failure behind a replay rejection.
- */
-async function generateFreshTotpCode(secret: string): Promise<{ code: string; step: number }> {
-  const lastStep = readAdminTotpStep();
-  let nowMs = Date.now();
-  let step = Math.floor(nowMs / TOTP_STEP_MS);
-
-  if (lastStep !== null && step <= lastStep) {
-    const waitMs = (lastStep + 1) * TOTP_STEP_MS - nowMs + 50;
-    if (waitMs > TOTP_STEP_MS + 100) {
-      throw new Error(
-        `Admin TOTP replay-step file is ahead of the local clock: ${ADMIN_TOTP_STEP_FILE}`,
-      );
-    }
-    await new Promise((resolve) => setTimeout(resolve, Math.max(waitMs, 50)));
-    nowMs = Date.now();
-    step = Math.floor(nowMs / TOTP_STEP_MS);
-  }
-
-  return { code: generateTotpCode(secret, nowMs), step };
-}
-
-/**
  * One sign-in attempt. Resolves to `'assured'` when the context now holds a
  * fully assured admin session, or `'enrolled'` when this attempt had to perform
  * the first-boot TOTP enrollment — which deliberately ends the session it ran
@@ -214,15 +151,13 @@ async function signInAsAdminOnce(request: APIRequestContext): Promise<'assured' 
           `${ADMIN_EMAIL}\`) so the fresh-boot enrollment path can run again.`,
       );
     }
-    const totp = await generateFreshTotpCode(secret);
     const verifyRes = await postAdminAuth(request, '/api/v1/auth/2fa/verify', () => ({
       pendingToken: body.pendingToken,
-      code: totp.code,
+      code: generateTotpCode(secret),
     }));
     if (!verifyRes.ok()) {
       throw new Error(`Admin 2FA verify failed: ${verifyRes.status()} ${await verifyRes.text()}`);
     }
-    persistAdminTotpStep(totp.step);
     return 'assured';
   }
 
