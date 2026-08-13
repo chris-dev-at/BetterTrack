@@ -1,6 +1,6 @@
 import { expect, request as newRequestContext, test, type Page } from '@playwright/test';
 
-import { API_BASE_URL } from './support/config';
+import { ACCOUNT_PASSWORD, API_BASE_URL } from './support/config';
 import { provisionUser } from './support/users';
 import { loginAsAdmin } from './support/adminApi';
 
@@ -33,6 +33,18 @@ import { loginAsAdmin } from './support/adminApi';
 
 /** Mutating API calls need this header or the CSRF guard 403s them (see dividends.spec). */
 const CSRF_HEADERS = { 'X-Requested-With': 'BetterTrack' };
+
+/** Exercise the cookie-session-only amendment ritual before booking an elapsed year. */
+async function unlockTaxYear(page: Page, year: number): Promise<void> {
+  const response = await page.request.post(
+    `${API_BASE_URL}/api/v1/settings/taxes/years/${year}/unlock`,
+    {
+      headers: CSRF_HEADERS,
+      data: { password: ACCOUNT_PASSWORD },
+    },
+  );
+  expect(response.ok(), `unlock tax year ${year} → ${await response.text()}`).toBeTruthy();
+}
 
 /** Enable "Germany (Abgeltungsteuer)" via Settings → Taxes and confirm it persisted. */
 async function enableGermanyTaxMode(page: Page): Promise<void> {
@@ -165,6 +177,10 @@ test('DE tax mode: FIFO, Sparer-Pauschbetrag exhaustion, both loss pots, and rep
 
   const page = owner.page;
   const api = owner.context.request;
+
+  // Tax-year unlocks are per account. Both years must be open before any booking:
+  // the 2024 SAP buy can reshape the later 2025 SAP sell's FIFO settlement.
+  for (const year of [2024, 2025]) await unlockTaxYear(page, year);
 
   await enableGermanyTaxMode(page);
   // Fund Main generously so the 2025 dividend's withholding never overdraws it.

@@ -18,8 +18,12 @@ const V1 = `${API_BASE_URL}/api/v1`;
 /** Every mutation needs the CSRF belt-and-suspenders header (§6.13). */
 const CSRF_HEADERS = { 'X-Requested-With': 'BetterTrack' };
 
-/** A fixed past trade day so no market-history assist perturbs the entered price. */
-export const TRADE_DATE = '2024-01-15';
+/** A stable day in the current Vienna tax year so the fixture never needs an unlock. */
+const CURRENT_VIENNA_YEAR = new Intl.DateTimeFormat('en', {
+  timeZone: 'Europe/Vienna',
+  year: 'numeric',
+}).format(new Date());
+export const TRADE_DATE = `${CURRENT_VIENNA_YEAR}-01-01`;
 const TRADE_DATE_ISO = `${TRADE_DATE}T00:00:00.000Z`;
 const DAILY_CLOSES_ROUTE = /\/api\/v1\/assets\/[^/]+\/daily-closes(?:\?.*)?$/;
 const EMPTY_DAILY_CLOSES = { points: [], stale: false, asOf: null };

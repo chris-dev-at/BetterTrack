@@ -17,6 +17,7 @@ import {
   members,
   recordBuy,
   recordSapBuyOnCopyUi,
+  TRADE_DATE,
   waitChainSynced,
   waitForTransaction,
   type LedgerTx,
@@ -612,7 +613,7 @@ test('mirrorchain: a kick leaves a fully working, un-synced fork', async ({ brow
     quantity: 3,
     price: 100,
     fee: 0,
-    executedAt: '2024-01-15T00:00:00.000Z',
+    executedAt: `${TRADE_DATE}T00:00:00.000Z`,
     note: null,
   });
   expect(forkWrite.status(), 'fork write succeeds locally').toBe(201);
