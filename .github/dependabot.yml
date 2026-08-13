@@ -16,5 +16,14 @@ updates:
     groups:
       production-dependencies:
         dependency-type: production
+        update-types: ['minor', 'patch']
       development-dependencies:
         dependency-type: development
+        update-types: ['minor', 'patch']
+    ignore:
+      # parked behind #1031 — remove when the deliberate migration lands
+      - dependency-name: zod
+        update-types: ['version-update:semver-major']
+      # parked behind #1031 — remove when the deliberate migration lands
+      - dependency-name: '@asteasolutions/zod-to-openapi'
+        update-types: ['version-update:semver-major']
