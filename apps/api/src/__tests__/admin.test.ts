@@ -219,8 +219,21 @@ function bullBoardFixture(): {
         }),
         isPaused: async () => false,
         getGlobalConcurrency: async () => null,
-        getJobSchedulersCount: async () => 0,
-        getJobSchedulers: async () => [],
+        getJobSchedulersCount: async () => (name === activeQueue ? 1 : 0),
+        getJobSchedulers: async () =>
+          name === activeQueue
+            ? [
+                {
+                  key: 'scheduler-1',
+                  name: 'sensitive-scheduled-job',
+                  every: 86_400_000,
+                  template: {
+                    data: { accessToken: 'scheduler-payload-secret' },
+                    opts: { removeOnComplete: true },
+                  },
+                },
+              ]
+            : [],
         getJobs: async () =>
           name === activeQueue
             ? [
@@ -481,7 +494,16 @@ describe('Bull Board administrator boundary (#878)', () => {
 
     const schedulers = await request(app).get(`${BULL_BOARD_BASE_PATH}/api/job-schedulers`);
     expect(schedulers.status).toBe(200);
-    expect(schedulers.body).toEqual({ schedulers: [] });
+    expect(schedulers.body).toMatchObject({
+      schedulers: [
+        {
+          id: 'scheduler-1',
+          queueName: activeQueue,
+          template: { data: BULL_BOARD_REDACTED_VALUE },
+        },
+      ],
+    });
+    expect(JSON.stringify(schedulers.body)).not.toContain('scheduler-payload-secret');
 
     const mutation = await request(app).put(
       `${BULL_BOARD_BASE_PATH}/api/queues/${encodeURIComponent(activeQueue)}/pause`,

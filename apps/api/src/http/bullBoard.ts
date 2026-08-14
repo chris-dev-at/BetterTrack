@@ -24,16 +24,33 @@ import { ALL_QUEUE_NAMES, type QueueRegistry } from '../jobs';
 export const BULL_BOARD_BASE_PATH = '/api/v1/admin/queues';
 export const BULL_BOARD_REDACTED_VALUE = '[redacted]';
 
+class RedactingBullMQAdapter extends BullMQAdapter {
+  override async getJobSchedulers() {
+    const schedulers = await super.getJobSchedulers();
+    return schedulers.map((scheduler) =>
+      scheduler.template
+        ? {
+            ...scheduler,
+            template: {
+              ...scheduler.template,
+              data: this.format('data', scheduler.template.data),
+            },
+          }
+        : scheduler,
+    );
+  }
+}
+
 /**
  * Queue adapters are diagnostics-only. Bull Board enforces read-only mode on
- * every mutation endpoint, while formatters ensure its list/detail APIs never
- * serialize the job payload or return value (both may contain user data or
- * delivery secrets).
+ * every mutation endpoint, while formatters ensure its job list/detail and
+ * scheduler-list APIs never serialize the job payload or return value (both may
+ * contain user data or delivery secrets).
  */
 export function createBullBoardQueueAdapter(
   queue: ConstructorParameters<typeof BullMQAdapter>[0],
 ): BullMQAdapter {
-  const adapter = new BullMQAdapter(queue, {
+  const adapter = new RedactingBullMQAdapter(queue, {
     readOnlyMode: true,
     allowRetries: false,
   });
