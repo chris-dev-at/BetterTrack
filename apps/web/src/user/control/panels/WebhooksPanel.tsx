@@ -74,8 +74,8 @@ const EVENT_LABEL_KEY: Record<WebhookEventType, string> = {
 
 /**
  * The one-time secret modal — the plaintext is available here and never again.
- * Stays a {@link Dialog} (`role="dialog" aria-modal="true"`): the Control
- * Center's Escape handler defers to nested modals via exactly that selector.
+ * Stays a {@link Dialog} because Dialog registers on the shared overlay stack,
+ * so Escape closes this modal without discarding the Control Center beneath it.
  */
 function SecretModal({
   result,

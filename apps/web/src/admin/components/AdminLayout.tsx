@@ -11,6 +11,12 @@ import { Button, Spinner, cx } from './ui';
 type NavItem = { to: string; labelKey: string };
 type NavSection = { key: string; labelKey: string; items: NavItem[] };
 
+// Tailwind's default `md` breakpoint. The drawer is `md:hidden`, so its state
+// must retire at the exact same handoff or it can keep the desktop shell inert
+// after CSS swaps the mobile chrome out.
+const ADMIN_DESKTOP_MEDIA_QUERY = '(min-width: 48rem)';
+const ADMIN_DESKTOP_MIN_WIDTH_PX = 768;
+
 /**
  * Light IA regroup (§13.4 V4-P0d): the grown admin surface, ordered into sane
  * sections — People, Configuration, Diagnostics — shown as three groups in the
@@ -88,6 +94,32 @@ export function AdminLayout() {
   useEffect(() => {
     setDrawerOpen(false);
   }, [location.pathname]);
+
+  // CSS hides the mobile drawer at `md`, but hidden markup would still own the
+  // focus trap and its inert holds. Close it as the desktop sidebar takes over
+  // so resizing or rotating a device can never strand the visible shell inert.
+  useEffect(() => {
+    if (!drawerOpen) return;
+
+    if (typeof window.matchMedia === 'function') {
+      const desktop = window.matchMedia(ADMIN_DESKTOP_MEDIA_QUERY);
+      const closeOnDesktop = (event: MediaQueryListEvent) => {
+        if (event.matches) closeDrawer();
+      };
+
+      if (desktop.matches) closeDrawer();
+      desktop.addEventListener('change', closeOnDesktop);
+      return () => desktop.removeEventListener('change', closeOnDesktop);
+    }
+
+    const closeOnDesktop = () => {
+      if (window.innerWidth >= ADMIN_DESKTOP_MIN_WIDTH_PX) closeDrawer();
+    };
+
+    closeOnDesktop();
+    window.addEventListener('resize', closeOnDesktop);
+    return () => window.removeEventListener('resize', closeOnDesktop);
+  }, [drawerOpen, closeDrawer]);
 
   // The shared trap owns initial focus, background inerting, Tab containment,
   // and restoration to the burger. This effect keeps the admin-specific body

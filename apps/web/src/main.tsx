@@ -21,7 +21,7 @@ const appKind = getRuntimeConfig().app;
 if (appKind !== 'admin') bootUiScale();
 
 // Theme, re-asserted after the inline boot script in index.html (see
-// user/theme.ts). Normally a no-op that restamps the attribute already there;
+// lib/theme.ts). Normally a no-op that restamps the attribute already there;
 // it earns its place when the inline script did not run — CSP, a cached shell,
 // or a bfcache restore carrying a stale attribute. Admin is excluded for the
 // same reason it opts out of the interface scale: its own visual system.

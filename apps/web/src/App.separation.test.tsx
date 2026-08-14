@@ -1,3 +1,6 @@
+import { readFileSync, readdirSync } from 'node:fs';
+import { join, relative, resolve } from 'node:path';
+
 import { render, screen } from '@testing-library/react';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 
@@ -13,6 +16,21 @@ vi.mock('./admin/AdminApp', () => ({ AdminApp: () => <div>ADMIN_APP_MOUNTED</div
 vi.mock('./user/UserApp', () => ({ UserApp: () => <div>USER_APP_MOUNTED</div> }));
 
 import App from './App';
+
+function sourceFiles(directory: string): string[] {
+  return readdirSync(directory, { withFileTypes: true }).flatMap((entry) => {
+    const path = join(directory, entry.name);
+    if (entry.isDirectory()) return sourceFiles(path);
+    return /\.tsx?$/.test(entry.name) ? [path] : [];
+  });
+}
+
+function importSpecifiers(source: string): string[] {
+  return Array.from(
+    source.matchAll(/\b(?:from\s+|import\s*\(\s*|import\s+)(['"])([^'"]+)\1/g),
+    (match) => match[2]!,
+  );
+}
 
 function setRuntimeApp(app: 'user' | 'admin') {
   vi.mocked(getRuntimeConfig).mockReturnValue({
@@ -82,4 +100,17 @@ test('admin origin: the user app is never reachable — root redirects into /adm
   // Any non-admin path redirects to /admin; the user app must not render.
   expect(await screen.findByText('ADMIN_APP_MOUNTED')).toBeInTheDocument();
   expect(screen.queryByText('USER_APP_MOUNTED')).not.toBeInTheDocument();
+});
+
+test('shared ui modules never import from the user display layer', () => {
+  const webRoot = process.cwd();
+  const violations = sourceFiles(resolve(webRoot, 'src/ui'))
+    .filter((file) =>
+      importSpecifiers(readFileSync(file, 'utf8')).some((specifier) =>
+        /(?:^|\/)user(?:\/|$)/.test(specifier),
+      ),
+    )
+    .map((file) => relative(webRoot, file));
+
+  expect(violations).toEqual([]);
 });
