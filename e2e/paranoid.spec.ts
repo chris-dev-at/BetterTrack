@@ -392,7 +392,17 @@ test.describe('PD9 paranoid-mode end-to-end gate', () => {
           .getByLabel('I want to rehydrate this unlocked vault and disable Paranoid mode.')
           .check();
         await page.getByRole('button', { name: 'Restore normal mode' }).click();
-        await expect(page.getByText('Client-encrypted vault')).toBeVisible({ timeout: 30_000 });
+        // Back-to-normal signal. The old locator watched for `vault.settings.normal`
+        // ("Client-encrypted vault"), the label of the account-level enable row that
+        // the Vaults-v2 panel redesign deleted — the same latent staleness as the
+        // `Set up` → `Open migration` relabel, and it only became reachable once the
+        // seam repair let this block run to its end. The legacy entry replaces it
+        // one-for-one: PrivacyPanel renders it exclusively under
+        // `privacy.privacyMode === 'normal'`, so it appears only after the disable
+        // has actually flipped the account back.
+        await expect(page.getByRole('button', { name: 'Open migration' })).toBeVisible({
+          timeout: 30_000,
+        });
 
         // Owner-audit decision: these five strict-document/operational kinds are
         // intentionally purge-only. The current-period budget marker is not
@@ -580,15 +590,32 @@ async function enableDriveOnly(page: Page, sensitive: Pd9SensitiveCanary[]): Pro
     )
     .check();
   await page.getByRole('button', { name: 'Enable Paranoid mode' }).click();
-  // Wait for the wizard's ACTUAL completion notice. The old signal — the
+  // Wait for a signal that enable ACTUALLY completed. The original signal — the
   // account-menu button becoming visible — only meant "the app shell is back",
   // and the Origin redesign renders the Control Center as a popup OVER the
   // shell, so the button is visible the whole time and the wait passed before
   // enable had written anything (the A3 ordering assertions then sampled an
   // empty monitor).
-  await expect(page.getByText('Paranoid mode is on. Your encrypted vault is ready.')).toBeVisible({
-    timeout: 60_000,
-  });
+  //
+  // Its replacement, the panel's success alert, is TRANSIENT: accepting the
+  // receipt flips the account to paranoid, and when that flip remounts the app
+  // root the Control Center popup goes with it — taking the alert along before
+  // it can be sampled. Locally that raced ~3 runs in 5. So the wait now also
+  // accepts the vault sync chip, which `OriginShell` renders only under
+  // `privacyMode === 'paranoid' && mediaState != null` — i.e. only once the same
+  // receipt has been accepted, but as a permanent part of the shell. Neither
+  // branch can appear before enable committed, and the A3 ordering assertions
+  // right after this call still prove the drive-write → verified-read pair.
+  await expect(
+    page
+      .getByText('Paranoid mode is on. Your encrypted vault is ready.')
+      .or(
+        page.getByRole('button', {
+          name: /^(Synced|Syncing|Offline|Needs attention|Disconnected)$/,
+        }),
+      )
+      .first(),
+  ).toBeVisible({ timeout: 60_000 });
 }
 
 // Post-PERF1 the vault stack is code-split: `VaultRuntimeProvider` is pulled in
