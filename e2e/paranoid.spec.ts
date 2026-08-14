@@ -93,7 +93,7 @@ interface AlertFixture {
 test.use({ trace: 'off', screenshot: 'off', video: 'off' });
 
 test.describe('PD9 paranoid-mode end-to-end gate', () => {
-  test('normal account remains on the server store when the Drive seam is installed', async ({
+  test('normal account remains on the server store after opening the migration wizard with the Drive seam installed', async ({
     context,
   }, testInfo) => {
     const diagnostics: string[] = [];
@@ -104,8 +104,34 @@ test.describe('PD9 paranoid-mode end-to-end gate', () => {
     try {
       await loginAsAdmin(admin);
       owner = await provisionUserInContext(context, admin, 'pd9normal');
-      await assertPd9DriveInstalled(owner.page);
+      // Registered before the first paranoid gesture so console/pageerror output
+      // from the privacy panel AND the lazy vault-chunk load — the exact window
+      // where a lazy-boundary regression announces itself — lands in the report.
       collectSanitizedDiagnostics(owner.page, diagnostics);
+      // PRECONDITION: this step must stay ABOVE `openParanoidSetup`. The injected
+      // assignment sits in the provider's component body, so it re-sets the flag
+      // on every render; it only proves fail-closed while the provider is
+      // guaranteed unmounted, which post-PERF1 holds until the enable gesture
+      // pulls in the vault chunk. Moving it below any vault mount makes it flake.
+      await test.step('the unconsumed lazy boundary fails closed', async () => {
+        expect(
+          await owner!.page.evaluate(() => window.__bettertrackE2EVaultDependencies !== undefined),
+        ).toBe(true);
+        // Self-enforce the precondition above instead of leaving it to the
+        // comment: if a future reorder puts this step below a vault mount, the
+        // flag is already true here and this fails LOUDLY with that fact,
+        // rather than degrading into a re-render race on the 100 ms budget.
+        expect(
+          await owner!.page.evaluate(() => window.__bettertrackPd9DependencyConsumed === true),
+        ).toBe(false);
+        await owner!.page.evaluate(() => {
+          window.__bettertrackPd9DependencyConsumed = false;
+        });
+        await expect(assertPd9DriveInstalled(owner!.page, 100)).rejects.toThrow(
+          'PD9 Drive dependency was installed but not consumed by the vault provider.',
+        );
+      });
+      await openParanoidSetup(owner.page);
 
       const portfolioReads: string[] = [];
       owner.page.on('request', (request) => {
@@ -157,7 +183,6 @@ test.describe('PD9 paranoid-mode end-to-end gate', () => {
       await loginAsAdmin(admin);
       owner = await provisionUserInContext(context, admin, 'pd9vault');
       const { page } = owner;
-      await assertPd9DriveInstalled(page);
       collectSanitizedDiagnostics(page, diagnostics);
       const fixture = await createMoneyFixture(owner, harness);
       // The decrypted-content canary joins the scan set for the whole flow. It
@@ -374,7 +399,17 @@ test.describe('PD9 paranoid-mode end-to-end gate', () => {
           .getByLabel('I want to rehydrate this unlocked vault and disable Paranoid mode.')
           .check();
         await page.getByRole('button', { name: 'Restore normal mode' }).click();
-        await expect(page.getByText('Client-encrypted vault')).toBeVisible({ timeout: 30_000 });
+        // Back-to-normal signal. The old locator watched for `vault.settings.normal`
+        // ("Client-encrypted vault"), the label of the account-level enable row that
+        // the Vaults-v2 panel redesign deleted — the same latent staleness as the
+        // `Set up` → `Open migration` relabel, and it only became reachable once the
+        // seam repair let this block run to its end. The legacy entry replaces it
+        // one-for-one: PrivacyPanel renders it exclusively under
+        // `privacy.privacyMode === 'normal'`, so it appears only after the disable
+        // has actually flipped the account back.
+        await expect(page.getByRole('button', { name: 'Open migration' })).toBeVisible({
+          timeout: 30_000,
+        });
 
         // Owner-audit decision: these five strict-document/operational kinds are
         // intentionally purge-only. The current-period budget marker is not
@@ -542,9 +577,7 @@ async function createKeptAlert(owner: E2EUser): Promise<AlertFixture> {
 }
 
 async function enableDriveOnly(page: Page, sensitive: Pd9SensitiveCanary[]): Promise<void> {
-  await page.goto('/control/privacy');
-  await page.getByRole('button', { name: 'Set up' }).click();
-  await expect(page.getByRole('heading', { name: 'What changes' })).toBeVisible();
+  await openParanoidSetup(page);
   await page.getByRole('button', { name: 'Continue' }).click();
   await page.getByText('Advanced', { exact: true }).click();
   await page.getByText('Google Drive only', { exact: true }).click();
@@ -564,15 +597,55 @@ async function enableDriveOnly(page: Page, sensitive: Pd9SensitiveCanary[]): Pro
     )
     .check();
   await page.getByRole('button', { name: 'Enable Paranoid mode' }).click();
-  // Wait for the wizard's ACTUAL completion notice. The old signal — the
+  // Wait for a signal that enable ACTUALLY completed. The original signal — the
   // account-menu button becoming visible — only meant "the app shell is back",
   // and the Origin redesign renders the Control Center as a popup OVER the
   // shell, so the button is visible the whole time and the wait passed before
   // enable had written anything (the A3 ordering assertions then sampled an
   // empty monitor).
-  await expect(page.getByText('Paranoid mode is on. Your encrypted vault is ready.')).toBeVisible({
-    timeout: 60_000,
-  });
+  //
+  // Its replacement, the panel's success alert, is TRANSIENT: accepting the
+  // receipt flips the account to paranoid, and when that flip remounts the app
+  // root the Control Center popup goes with it — taking the alert along before
+  // it can be sampled. Locally that raced ~3 runs in 5. So the wait now also
+  // accepts the vault sync chip, which `OriginShell` renders only under
+  // `privacyMode === 'paranoid' && mediaState != null` — i.e. only once the same
+  // receipt has been accepted, but as a permanent part of the shell. Neither
+  // branch can appear before enable committed, and the A3 ordering assertions
+  // right after this call still prove the drive-write → verified-read pair.
+  await expect(
+    page
+      .getByText('Paranoid mode is on. Your encrypted vault is ready.')
+      .or(
+        page.getByRole('button', {
+          name: /^(Synced|Syncing|Offline|Needs attention|Disconnected)$/,
+        }),
+      )
+      .first(),
+  ).toBeVisible({ timeout: 60_000 });
+}
+
+// Post-PERF1 the vault stack is code-split: `VaultRuntimeProvider` is pulled in
+// only when the privacy panel's legacy entry sets `?enable=1`, so this gesture —
+// not a bare page load — is what makes the boundary double observable.
+//
+// This is also where the seam is proven POSITIVELY, and it is what makes the
+// whole gate fail closed on drift: if a future URL or module-graph change stops
+// the route transform from running, the consumed flag never turns true and this
+// assertion throws for every caller (both blocks, both projects). The
+// `assertPd9DriveInstalled` self-test above only covers the complementary half —
+// that the helper is not a no-op.
+async function openParanoidSetup(page: Page): Promise<void> {
+  await page.goto('/control/privacy');
+  await page.getByRole('button', { name: 'Open migration' }).click();
+  // Heading FIRST, flag second, so the two failure modes stay distinguishable.
+  // On a cold Vite dev server the vault/crypto chunk is the slowest transform in
+  // the suite; asserting the flag first would report that slowness as
+  // "installed but not consumed" — the seam-regression diagnosis this whole
+  // change exists to make trustworthy. Once the wizard has rendered, the chunk
+  // demonstrably loaded, so a still-false flag can only mean seam drift.
+  await expect(page.getByRole('heading', { name: 'What changes' })).toBeVisible();
+  await assertPd9DriveInstalled(page);
 }
 
 async function assertClientMoneyWithoutServerReads(

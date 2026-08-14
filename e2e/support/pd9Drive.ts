@@ -1,6 +1,7 @@
 import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
+import { errors as playwrightErrors } from '@playwright/test';
 import type { BrowserContext, Download, Page, TestInfo } from '@playwright/test';
 
 /**
@@ -73,6 +74,24 @@ interface BrowserDriveControl {
   setTamperReads(enabled: boolean): void;
 }
 
+const VAULT_RUNTIME_PROVIDER_SOURCE_PATH = '/src/user/vault/VaultRuntimeProvider.tsx';
+const PD9_DEPENDENCY_CONSUMPTION_TIMEOUT_MS = 15_000;
+
+function isVaultRuntimeProviderSource(url: URL): boolean {
+  // This predicate runs for EVERY request in the context, so it must never
+  // throw: a stray `%` survives URL parsing and would make `decodeURIComponent`
+  // raise a URIError that surfaces as an unrelated route-matcher failure. The
+  // cheap substring test short-circuits before the decode for all other traffic.
+  if (!url.pathname.includes('VaultRuntimeProvider')) return false;
+  let pathname: string;
+  try {
+    pathname = decodeURIComponent(url.pathname);
+  } catch {
+    pathname = url.pathname;
+  }
+  return pathname.replaceAll('\\', '/').endsWith(VAULT_RUNTIME_PROVIDER_SOURCE_PATH);
+}
+
 declare global {
   interface Window {
     __bettertrackPd9Drive?: BrowserDriveControl;
@@ -124,7 +143,7 @@ export async function installPd9Drive(context: BrowserContext): Promise<Pd9Drive
   // Vite serves this module as transformed JavaScript. The single assignment is
   // an e2e-only composition hook: production source and build output stay
   // untouched, while the real provider receives the boundary double.
-  await context.route(/\/src\/user\/vault\/VaultRuntimeProvider\.tsx(?:\?|$)/, async (route) => {
+  await context.route(isVaultRuntimeProviderSource, async (route) => {
     const response = await route.fetch();
     const body = await response.text();
     const coreDeclaration = /^(\s*)const \[core\]/m;
@@ -436,11 +455,26 @@ export async function installPd9Drive(context: BrowserContext): Promise<Pd9Drive
   };
 }
 
-/** Prove the transformed provider consumed the boundary double on this page. */
-export async function assertPd9DriveInstalled(page: Page): Promise<void> {
-  const consumed = await page.evaluate(() => window.__bettertrackPd9DependencyConsumed === true);
-  if (!consumed) {
-    throw new Error('PD9 Drive dependency was installed but not consumed by the vault provider.');
+/** Prove the transformed, lazily loaded provider consumed the boundary double. */
+export async function assertPd9DriveInstalled(
+  page: Page,
+  timeoutMs = PD9_DEPENDENCY_CONSUMPTION_TIMEOUT_MS,
+): Promise<void> {
+  try {
+    await page.waitForFunction(
+      () => window.__bettertrackPd9DependencyConsumed === true,
+      undefined,
+      { timeout: timeoutMs },
+    );
+  } catch (cause) {
+    // `waitForFunction` also rejects on page close, navigation crash and
+    // evaluation errors. Collapsing those into the seam message would report a
+    // dead page as a lazy-boundary regression, so only a real timeout — the flag
+    // never turning true — is translated; everything else keeps its diagnosis.
+    if (!(cause instanceof playwrightErrors.TimeoutError)) throw cause;
+    throw new Error('PD9 Drive dependency was installed but not consumed by the vault provider.', {
+      cause,
+    });
   }
 }
 
