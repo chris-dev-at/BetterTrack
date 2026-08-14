@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 
-import type { Alert, MeResponse } from '@bettertrack/contracts';
+import type { Alert, MeResponse, SharedLinkResponse } from '@bettertrack/contracts';
 
 import { waitForColdStart } from '../test/waitForColdStart';
 
@@ -22,6 +22,10 @@ vi.mock('../lib/workboardApi', () => ({
 // network call; these tests only assert we reached the authenticated shell.
 vi.mock('../lib/portfolioApi');
 vi.mock('../lib/socialApi');
+vi.mock('./vault/v2/api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./vault/v2/api')>()),
+  listVaults: vi.fn(async () => []),
+}));
 vi.mock('../lib/alertsApi', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../lib/alertsApi')>()),
   listAlerts: vi.fn(),
@@ -32,8 +36,9 @@ import { ApiError, apiRequest } from '../lib/apiClient';
 import { listAlerts, rearmAlert } from '../lib/alertsApi';
 import * as api from '../lib/userApi';
 import { listPortfolios } from '../lib/portfolioApi';
-import { listFollowing, listItemFollows } from '../lib/socialApi';
+import { listFollowing, listItemFollows, resolveShareLink } from '../lib/socialApi';
 import { listWorkboard } from '../lib/workboardApi';
+import { listVaults } from './vault/v2/api';
 import { queryClient, UserApp } from './UserApp';
 
 const member: MeResponse = {
@@ -49,6 +54,16 @@ const member: MeResponse = {
   locale: 'en',
   lastLoginAt: null,
   createdAt: '2026-01-01T00:00:00.000Z',
+};
+
+const publicWatchlist: SharedLinkResponse = {
+  kind: 'watchlist',
+  watchlist: {
+    watchlistId: '00000000-0000-0000-0000-000000000010',
+    name: 'Public watchlist',
+    owner: { id: '00000000-0000-0000-0000-000000000011', username: 'jane' },
+    items: [],
+  },
 };
 
 /** Mount the user app under a `/*` parent, exactly as App.tsx does. */
@@ -130,6 +145,20 @@ test('an unauthenticated visit to a user route redirects to /login', async () =>
   expect(
     screen.queryByText('Your watched assets, alerts and blueprints at a glance.'),
   ).not.toBeInTheDocument();
+});
+
+test('an anonymous public link does not start the protected vault directory', async () => {
+  anonymous();
+  vi.mocked(resolveShareLink).mockResolvedValue(publicWatchlist);
+  queryClient.clear();
+
+  renderAt('/s/tok_abc');
+
+  expect(
+    await waitForColdStart(() => screen.getByText('Read-only shared view')),
+  ).toBeInTheDocument();
+  expect(await screen.findByRole('heading', { name: 'Public watchlist' })).toBeInTheDocument();
+  expect(listVaults).not.toHaveBeenCalled();
 });
 
 test('an unauthenticated visit to an unknown route still redirects to /login', async () => {

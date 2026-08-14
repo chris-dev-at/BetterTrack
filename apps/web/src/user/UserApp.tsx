@@ -667,6 +667,17 @@ function RealtimeRoot({ children }: { children: ReactNode }) {
 }
 
 /**
+ * The vault directory is an authenticated-only read. Public-link/profile pages
+ * intentionally mount the user app while anonymous; starting `/vaults` there
+ * would receive a 401, clear the shared query client, and cancel the public
+ * page's own request before it can render.
+ */
+function VaultsRoot({ children }: { children: ReactNode }) {
+  const { status } = useAuth();
+  return <VaultsProvider enabled={status === 'authenticated'}>{children}</VaultsProvider>;
+}
+
+/**
  * Resolve the account mode before any money route mounts. The default normal
  * branch contains only the API adapter; the heavy vault module loads when the
  * account IS paranoid, or when a normal account explicitly asks to set the
@@ -814,12 +825,12 @@ export function UserApp() {
                 {/* Vaults v2: mounted once, above the router, because the
                     in-memory keyring must survive navigation — rebuilding it
                     would silently relock every vault. */}
-                <VaultsProvider>
+                <VaultsRoot>
                   <RealtimeRoot>
                     <AnnouncementBannerRoot />
                     <UserShell />
                   </RealtimeRoot>
-                </VaultsProvider>
+                </VaultsRoot>
               </AccountModeRoot>
             </Suspense>
           </AuthProvider>

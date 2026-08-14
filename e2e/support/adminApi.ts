@@ -9,6 +9,8 @@ import { ADMIN_BASE_URL, ADMIN_EMAIL, ADMIN_PASSWORD, API_BASE_URL } from './con
 
 /** Every mutating request needs this header or the API's CSRF guard 403s it. */
 const CSRF_HEADERS = { 'X-Requested-With': 'BetterTrack' };
+const TOTP_STEP_MS = 30_000;
+const TOTP_NEXT_STEP_SETTLE_MS = 100;
 
 /**
  * Cross-process store for the enrolled admin TOTP secret. The mandatory
@@ -121,6 +123,44 @@ function generateTotpCode(secret: string, nowMs: number = Date.now()): string {
 }
 
 /**
+ * The API consumes a TOTP time step atomically, so a fresh admin request
+ * context can legitimately land in the same 30-second window as the prior
+ * spec's login. Wait for a genuinely new factor rather than retrying the
+ * replayed code or weakening the production replay guard.
+ */
+function waitForNextTotpStep(): Promise<void> {
+  const now = Date.now();
+  const nextStepAt = (Math.floor(now / TOTP_STEP_MS) + 1) * TOTP_STEP_MS;
+  return new Promise((resolve) => setTimeout(resolve, nextStepAt - now + TOTP_NEXT_STEP_SETTLE_MS));
+}
+
+async function verifyAdminTotpChallenge(
+  request: APIRequestContext,
+  pendingToken: string,
+  secret: string,
+): Promise<void> {
+  const verify = () =>
+    postAdminAuth(request, '/api/v1/auth/2fa/verify', () => ({
+      pendingToken,
+      code: generateTotpCode(secret),
+    }));
+
+  let verifyRes = await verify();
+  if (verifyRes.ok()) return;
+
+  const firstFailure = await verifyRes.text();
+  if (verifyRes.status() !== 401 || !firstFailure.includes('"code":"TWO_FACTOR_INVALID_CODE"')) {
+    throw new Error(`Admin 2FA verify failed: ${verifyRes.status()} ${firstFailure}`);
+  }
+
+  await waitForNextTotpStep();
+  verifyRes = await verify();
+  if (!verifyRes.ok()) {
+    throw new Error(`Admin 2FA verify failed: ${verifyRes.status()} ${await verifyRes.text()}`);
+  }
+}
+
+/**
  * One sign-in attempt. Resolves to `'assured'` when the context now holds a
  * fully assured admin session, or `'enrolled'` when this attempt had to perform
  * the first-boot TOTP enrollment — which deliberately ends the session it ran
@@ -151,13 +191,7 @@ async function signInAsAdminOnce(request: APIRequestContext): Promise<'assured' 
           `${ADMIN_EMAIL}\`) so the fresh-boot enrollment path can run again.`,
       );
     }
-    const verifyRes = await postAdminAuth(request, '/api/v1/auth/2fa/verify', () => ({
-      pendingToken: body.pendingToken,
-      code: generateTotpCode(secret),
-    }));
-    if (!verifyRes.ok()) {
-      throw new Error(`Admin 2FA verify failed: ${verifyRes.status()} ${await verifyRes.text()}`);
-    }
+    await verifyAdminTotpChallenge(request, body.pendingToken, secret);
     return 'assured';
   }
 
