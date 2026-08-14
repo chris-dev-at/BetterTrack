@@ -24,6 +24,9 @@ import type { VaultSyncEngine } from '../sync';
 import { standingOrderOccurrenceId } from './occurrenceId';
 import { calendarDayInTimezone, dueStandingOrderOccurrence } from './schedule';
 
+/** Client mirror of the server's automatic-buy quote age ceiling. */
+export const STANDING_ORDER_MAX_QUOTE_AGE_MS = 4 * 24 * 60 * 60 * 1000;
+
 export interface StandingOrderMaterializerOptions {
   now?: () => Date;
   timezone?: string;
@@ -68,15 +71,20 @@ export async function materializeDueStandingOrders(
     const timezone = options.timezone ?? 'Europe/Vienna';
     const today = calendarDayInTimezone(now, timezone);
     let snapshot = validatedVaultSnapshot(sync);
-    const orders = liveEntities(snapshot.document, 'standingOrder').map(parseOrder);
+    const orderIds = liveEntities(snapshot.document, 'standingOrder').map((entity) => entity.id);
     const result: StandingOrderMaterializationResult = {
       today,
       booked: [],
       deferred: [],
     };
 
-    for (const order of orders) {
+    for (const orderId of orderIds) {
       signal?.throwIfAborted();
+      const orderEntity = liveEntities(snapshot.document, 'standingOrder').find(
+        (entity) => entity.id === orderId,
+      );
+      if (orderEntity === undefined) continue;
+      const order = parseOrder(orderEntity);
       if (order.row.status !== 'active') continue;
       const dueDate = dueStandingOrderOccurrence(order.row, today);
       if (dueDate === null) continue;
@@ -89,6 +97,7 @@ export async function materializeDueStandingOrders(
         calendarDay: today,
         timezone,
         executedAt: now.toISOString(),
+        recordedAt: now.toISOString(),
         expectedCandidate: {
           vaultVersion: snapshot.vaultVersion,
           vaultKeyId: snapshot.vaultKeyId,
@@ -97,7 +106,7 @@ export async function materializeDueStandingOrders(
       });
       if (existing !== null) continue;
 
-      let quote: { price: number; currency: string } | null = null;
+      let quote: { price: number; currency: string; recordedAt: string } | null = null;
       if (order.row.kind === 'buy-asset') {
         if (order.row.assetId === null) {
           throw moneyFailure(
@@ -126,7 +135,11 @@ export async function materializeDueStandingOrders(
                 },
               );
             }
-            quote = { price: manual.quote.price, currency: asset.currency };
+            quote = {
+              price: manual.quote.price,
+              currency: asset.currency,
+              recordedAt: now.toISOString(),
+            };
           } else {
             const marketQuote = await market.quote(order.row.assetId, signal);
             if (marketQuote.stale) {
@@ -149,9 +162,31 @@ export async function materializeDueStandingOrders(
                 `Standing-order quote metadata is invalid for asset ${order.row.assetId}.`,
               );
             }
+            const providerAsOfMs = Date.parse(marketQuote.value.asOf);
+            if (!Number.isFinite(providerAsOfMs)) {
+              throw moneyFailure(
+                'MARKET_DATA_INVALID',
+                `Standing-order quote timestamp is invalid for asset ${order.row.assetId}.`,
+              );
+            }
+            if (now.getTime() - providerAsOfMs > STANDING_ORDER_MAX_QUOTE_AGE_MS) {
+              throw moneyFailure(
+                'MARKET_DATA_UNAVAILABLE',
+                `Fresh standing-order quote is unavailable for asset ${order.row.assetId}.`,
+                {
+                  retryable: true,
+                  details: {
+                    assetId: order.row.assetId,
+                    asOf: marketQuote.value.asOf,
+                    maxQuoteAgeMs: STANDING_ORDER_MAX_QUOTE_AGE_MS,
+                  },
+                },
+              );
+            }
             quote = {
               price: marketQuote.value.price,
               currency: marketQuote.value.currency,
+              recordedAt: new Date(Math.min(providerAsOfMs, now.getTime())).toISOString(),
             };
           }
           if (
@@ -190,6 +225,22 @@ export async function materializeDueStandingOrders(
       }
 
       try {
+        const commitSnapshot = validatedVaultSnapshot(sync);
+        const commitOrderEntity = liveEntities(commitSnapshot.document, 'standingOrder').find(
+          (entity) => entity.id === order.entity.id,
+        );
+        if (commitOrderEntity === undefined) {
+          snapshot = commitSnapshot;
+          continue;
+        }
+        const commitOrder = parseOrder(commitOrderEntity);
+        if (
+          commitOrder.row.status !== 'active' ||
+          dueStandingOrderOccurrence(commitOrder.row, today) !== dueDate
+        ) {
+          snapshot = commitSnapshot;
+          continue;
+        }
         assertVaultSnapshotCurrent(sync, snapshot);
         const committed = await store.materializeStandingOrderOccurrence(
           {
@@ -199,6 +250,7 @@ export async function materializeDueStandingOrders(
             calendarDay: today,
             timezone,
             executedAt: now.toISOString(),
+            recordedAt: quote?.recordedAt ?? now.toISOString(),
             expectedCandidate: {
               vaultVersion: snapshot.vaultVersion,
               vaultKeyId: snapshot.vaultKeyId,
