@@ -219,6 +219,7 @@ function bullBoardFixture(): {
         }),
         isPaused: async () => false,
         getGlobalConcurrency: async () => null,
+        getJobSchedulersCount: async () => 0,
         getJobs: async () =>
           name === activeQueue
             ? [
