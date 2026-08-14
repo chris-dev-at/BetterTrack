@@ -46,12 +46,4 @@ export const dependencyAuditWaivers = {
     reason:
       'The only published remediation is a React Router major upgrade, which needs a separately reviewed migration.',
   },
-  // Provider/tooling transitive updates are kept out of the CI-gate change so
-  // their upstream compatibility can be reviewed independently.
-  'GHSA-frvp-7c67-39w9': {
-    expires: '2026-08-27',
-    moduleName: '@hono/node-server',
-    reason:
-      'Renewed 2026-08-13: the vulnerable Hono server is transitive through the market-data SDK; its dedicated market-data-SDK update needs upstream compatibility verification.',
-  },
 };
