@@ -10,7 +10,7 @@
   "scripts": {
     "dev:infra": "docker compose -f infra/docker-compose.dev.yml up -d",
     "dev": "pnpm --parallel --filter \"./apps/*\" dev",
-    "typecheck": "pnpm -r typecheck",
+    "typecheck": "pnpm -r typecheck && pnpm exec tsc --project e2e/tsconfig.json",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
