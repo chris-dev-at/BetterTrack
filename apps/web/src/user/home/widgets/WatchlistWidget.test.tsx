@@ -176,11 +176,11 @@ test('keeps surviving prices painted while resizing remints the quote batch key'
   await waitFor(() => expect(survivor?.querySelector('.bt-skeleton')).toBeNull());
   expect(survivor).toHaveTextContent(/190[,.]50/);
 
-  let resolveQuotes: (() => void) | undefined;
+  const quoteResolvers: Array<() => void> = [];
   vi.mocked(getAssetQuotes).mockImplementation(
     (ids) =>
       new Promise((resolve) => {
-        resolveQuotes = () => resolve({ quotes: ids.map(quote), failed: [] });
+        quoteResolvers.push(() => resolve({ quotes: ids.map(quote), failed: [] }));
       }),
   );
   rerenderWidget({ settings: {}, size: 'm' });
@@ -190,7 +190,7 @@ test('keeps surviving prices painted while resizing remints the quote batch key'
   expect(survivor).toHaveTextContent(/190[,.]50/);
 
   await act(async () => {
-    resolveQuotes?.();
+    for (const resolveQuotes of quoteResolvers) resolveQuotes();
   });
 });
 
