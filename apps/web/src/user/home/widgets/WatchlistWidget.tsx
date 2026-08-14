@@ -1,6 +1,6 @@
-import { useId } from 'react';
+import { useId, useMemo } from 'react';
 import { Link } from 'react-router-dom';
-import { useQuery } from '@tanstack/react-query';
+import { keepPreviousData, useQuery } from '@tanstack/react-query';
 
 import type { WorkboardItem } from '@bettertrack/contracts';
 
@@ -73,15 +73,17 @@ export function WatchlistWidget({ settings, size }: WidgetProps) {
 
   // Canonical ids keep a drag-only reorder on the same aggregate cache entry.
   // `items` was already capped above, so hidden rows never enter this request.
-  const assetIds = [...new Set(items.map((item) => item.assetId))].sort();
+  const assetIds = useMemo(() => [...new Set(items.map((item) => item.assetId))].sort(), [items]);
   const quoteQuery = useQuery({
     queryKey: workboardQuotesQueryKey(assetIds),
     queryFn: ({ signal }) => getAssetQuotes(assetIds, signal),
     enabled: assetIds.length > 0,
     staleTime: QUOTE_STALE_MS,
+    placeholderData: keepPreviousData,
   });
-  const quotesByAssetId = new Map(
-    quoteQuery.data?.quotes.map((result) => [result.assetId, result.quote]) ?? [],
+  const quotesByAssetId = useMemo(
+    () => new Map(quoteQuery.data?.quotes.map((result) => [result.assetId, result.quote]) ?? []),
+    [quoteQuery.data],
   );
 
   if (listsQuery.isLoading || itemsQuery.isLoading) return <SkeletonBlock height={130} />;
