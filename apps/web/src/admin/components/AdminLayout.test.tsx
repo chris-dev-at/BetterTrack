@@ -159,11 +159,12 @@ test('the compact language control re-renders the admin shell immediately', asyn
   expect(screen.getByRole('button', { name: 'Abmelden' })).toBeInTheDocument();
 });
 
-test('the burger button opens the mobile drawer with an i18n aria-label and closes on Escape', async () => {
+test('the burger button opens an inert-background drawer and cleans up on Escape', async () => {
   const user = userEvent.setup();
   renderAdmin('/admin/invites');
 
   const burger = screen.getByRole('button', { name: 'Open admin menu' });
+  const main = screen.getByRole('main');
   expect(burger).toHaveAttribute('aria-expanded', 'false');
   expect(screen.queryByRole('dialog', { name: 'Admin menu' })).not.toBeInTheDocument();
 
@@ -172,10 +173,16 @@ test('the burger button opens the mobile drawer with an i18n aria-label and clos
   const drawer = screen.getByRole('dialog', { name: 'Admin menu' });
   expect(drawer).toBeInTheDocument();
   expect(within(drawer).getByRole('button', { name: 'Close admin menu' })).toBeInTheDocument();
+  expect(main).toHaveAttribute('inert');
+  expect(burger.closest('[inert]')).not.toBeNull();
+  expect(drawer.closest('[inert]')).toBeNull();
 
   await user.keyboard('{Escape}');
 
   expect(screen.queryByRole('dialog', { name: 'Admin menu' })).not.toBeInTheDocument();
+  expect(main).not.toHaveAttribute('inert');
+  expect(burger.closest('[inert]')).toBeNull();
+  expect(burger).toHaveFocus();
 });
 
 test('navigating from inside the drawer closes it', async () => {

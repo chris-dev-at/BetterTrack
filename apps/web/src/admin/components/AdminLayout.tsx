@@ -4,6 +4,7 @@ import { NavLink, Navigate, Outlet, useLocation } from 'react-router-dom';
 import { Wordmark } from '../../components/Wordmark';
 import { SUPPORTED_LOCALES, useI18n, useT } from '../../i18n';
 import { ErrorBoundary } from '../../ui';
+import { useFocusTrap } from '../../ui/useFocusTrap';
 import { useAuth } from '../AuthContext';
 import { Button, Spinner, cx } from './ui';
 
@@ -72,7 +73,11 @@ export function AdminLayout() {
   const location = useLocation();
   const [drawerOpen, setDrawerOpen] = useState(false);
   const burgerRef = useRef<HTMLButtonElement>(null);
-  const drawerRef = useRef<HTMLDivElement>(null);
+  const { containerRef: drawerRootRef, onKeyDown: onDrawerKeyDown } = useFocusTrap<HTMLDivElement>({
+    active: drawerOpen,
+    inertBackground: true,
+    restoreFocusRef: burgerRef,
+  });
 
   const closeDrawer = useCallback(() => {
     setDrawerOpen(false);
@@ -84,43 +89,18 @@ export function AdminLayout() {
     setDrawerOpen(false);
   }, [location.pathname]);
 
-  // While the drawer is open: lock body scroll, close on Escape, and trap Tab
-  // inside the drawer. Focus jumps to the first focusable on open and restores
-  // to the burger button on close so the keyboard path never leaves the sidebar.
+  // The shared trap owns initial focus, background inerting, Tab containment,
+  // and restoration to the burger. This effect keeps the admin-specific body
+  // scroll lock and document-level Escape behavior scoped to the open drawer.
   useEffect(() => {
     if (!drawerOpen) return;
     const prevOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
 
-    const focusables = () =>
-      drawerRef.current
-        ? Array.from(
-            drawerRef.current.querySelectorAll<HTMLElement>(
-              'a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])',
-            ),
-          )
-        : [];
-
-    focusables()[0]?.focus();
-
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.preventDefault();
         closeDrawer();
-        return;
-      }
-      if (e.key !== 'Tab') return;
-      const items = focusables();
-      if (items.length === 0) return;
-      const first = items[0]!;
-      const last = items[items.length - 1]!;
-      const active = document.activeElement as HTMLElement | null;
-      if (e.shiftKey && (active === first || !drawerRef.current?.contains(active))) {
-        e.preventDefault();
-        last.focus();
-      } else if (!e.shiftKey && active === last) {
-        e.preventDefault();
-        first.focus();
       }
     };
 
@@ -128,8 +108,6 @@ export function AdminLayout() {
     return () => {
       document.removeEventListener('keydown', onKey);
       document.body.style.overflow = prevOverflow;
-      // Restore focus to the burger so the tab order continues from the trigger.
-      burgerRef.current?.focus();
     };
   }, [drawerOpen, closeDrawer]);
 
@@ -272,10 +250,15 @@ export function AdminLayout() {
       {/* Mobile drawer: backdrop + slide-in panel. Rendered only while open so
           the focus trap and body-scroll lock stay scoped to the visible dialog. */}
       {drawerOpen ? (
-        <div className="fixed inset-0 z-40 md:hidden" role="presentation">
+        <div
+          className="fixed inset-0 z-40 md:hidden"
+          onKeyDown={onDrawerKeyDown}
+          ref={drawerRootRef}
+          role="presentation"
+          tabIndex={-1}
+        >
           <div className="absolute inset-0 bg-black/70" onClick={closeDrawer} aria-hidden="true" />
           <div
-            ref={drawerRef}
             role="dialog"
             aria-modal="true"
             aria-label={t('admin.nav.menu')}

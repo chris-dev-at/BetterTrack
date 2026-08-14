@@ -1,8 +1,8 @@
 import { useT } from '../../../i18n';
+import { THEME_SETTINGS, type ThemeSetting } from '../../../lib/theme';
+import { useResolvedTheme, useThemeSetting } from '../../../lib/useTheme';
 import { Seg, Select } from '../../../ui/origin';
-import { THEME_SETTINGS, type ThemeSetting } from '../../theme';
 import { UI_SCALE_STEPS } from '../../uiScale';
-import { useResolvedTheme, useThemeSetting } from '../../useTheme';
 import { useEffectiveUiScale, useUiScaleSetting } from '../../useUiScale';
 import { PanelGroup, PanelHead, Row } from './panelKit';
 

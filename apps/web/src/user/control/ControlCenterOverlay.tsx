@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useId, useMemo, useState } from 'react';
 import type { ComponentType } from 'react';
 import { createPortal } from 'react-dom';
 import { Link, useNavigate, useParams } from 'react-router-dom';
@@ -6,7 +6,8 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useT, type TranslateFn } from '../../i18n';
 import { cx } from '../../lib/cx';
 import { Button, Icon, Input, type IconName } from '../../ui/origin';
-import { useFocusTrap } from '../components/useFocusTrap';
+import { useOverlayEscape } from '../../ui/overlayStack';
+import { useFocusTrap } from '../../ui/useFocusTrap';
 import { AccountPanel } from './panels/AccountPanel';
 import { ApiKeysPanel } from './panels/ApiKeysPanel';
 import { AppearancePanel } from './panels/AppearancePanel';
@@ -304,17 +305,6 @@ function findPanel(id: string | undefined, paranoid = false): ControlPanel {
   );
 }
 
-/**
- * Is a nested modal (a delete confirm, the one-time token modal…) open above
- * us? Then Escape belongs to IT — the inner dialog closes itself first and the
- * overlay stays put. Portalled and in-tree dialogs both count.
- */
-function hasNestedDialog(panel: HTMLElement | null): boolean {
-  return [...document.querySelectorAll('[role="dialog"][aria-modal="true"]')].some(
-    (el) => el !== panel,
-  );
-}
-
 function matches(
   t: TranslateFn,
   labelKey: string,
@@ -347,7 +337,6 @@ export function ControlCenterOverlay({ panel, closeTo = '/' }: ControlCenterOver
   const navigate = useNavigate();
   const params = useParams();
   const titleId = useId();
-  const panelRef = useRef<HTMLDivElement>(null);
   const { containerRef: rootRef, onKeyDown } = useFocusTrap<HTMLDivElement>({
     inertBackground: true,
   });
@@ -364,6 +353,8 @@ export function ControlCenterOverlay({ panel, closeTo = '/' }: ControlCenterOver
     else navigate(closeTo, { replace: true });
   }, [closeTo, navigate]);
 
+  useOverlayEscape(true, close, rootRef);
+
   // The shared trap owns initial focus, background inerting and restoration;
   // body scroll stays locked while the popup owns the screen.
   useEffect(() => {
@@ -373,16 +364,6 @@ export function ControlCenterOverlay({ panel, closeTo = '/' }: ControlCenterOver
       document.body.style.overflow = previousOverflow;
     };
   }, []);
-
-  useEffect(() => {
-    function onKey(event: KeyboardEvent) {
-      if (event.key !== 'Escape') return;
-      if (hasNestedDialog(panelRef.current)) return;
-      close();
-    }
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [close]);
 
   const needle = filter.trim().toLowerCase();
   const groups = useMemo(
@@ -408,19 +389,12 @@ export function ControlCenterOverlay({ panel, closeTo = '/' }: ControlCenterOver
     // live. The root carries `bt-app` itself and `bt-cc-root` neutralises its
     // page paint (this is an overlay, not a canvas).
     <div className="bt-app bt-cc-root" onKeyDown={onKeyDown} ref={rootRef} tabIndex={-1}>
-      <button
-        aria-label={t('common.close')}
-        className="bt-scrim"
-        onClick={close}
-        tabIndex={-1}
-        type="button"
-      />
+      <div aria-hidden="true" className="bt-scrim" onClick={close} />
       <div className="bt-cc">
         <div
           aria-labelledby={titleId}
           aria-modal="true"
           className="bt-cc__panel"
-          ref={panelRef}
           role="dialog"
           tabIndex={-1}
         >

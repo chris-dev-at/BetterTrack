@@ -5,6 +5,8 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import type { AssetType, SearchResultItem } from '@bettertrack/contracts';
 import { useT } from '../../i18n';
 import { Icon, type IconName } from '../../ui/origin';
+import { useOverlayEscape } from '../../ui/overlayStack';
+import { useFocusTrap } from '../../ui/useFocusTrap';
 import {
   SUGGESTED_COMMANDS,
   commandPath,
@@ -16,8 +18,6 @@ import {
 } from './commands';
 import { ACTIVE_PORTFOLIO_PARAM } from '../routeParams';
 import { useAssetSearch } from './useAssetSearch';
-import { useOverlayEscape } from './overlayStack';
-import { useFocusTrap } from './useFocusTrap';
 import { useResolvedPrivacyMode } from '../vault/usePrivacyMode';
 import { isParanoidKilledPath } from '../vault/ui/ParanoidSurfaceGate';
 

@@ -226,7 +226,7 @@ interface FocusTrapOptions {
 }
 
 /**
- * Dependency-free focus containment for user-app overlays. It captures the
+ * Dependency-free focus containment for app overlays. It captures the
  * opener before descendants commit, focuses the first available control (or an
  * explicit target), contains Tab/Shift+Tab, and restores focus on close — to
  * the opener, or down the {@link restoreFocusTo} ladder when the opener is gone.

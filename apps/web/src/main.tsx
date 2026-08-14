@@ -6,7 +6,7 @@ import './index.css';
 import { initializeAppPwa } from './lib/appServiceWorker';
 import { getRuntimeConfig } from './lib/runtimeConfig';
 import { createRootErrorOptions } from './rootErrorHandling';
-import { bootTheme } from './user/theme';
+import { bootTheme } from './lib/theme';
 import { bootUiScale } from './user/uiScale';
 
 const rootElement = document.getElementById('root');

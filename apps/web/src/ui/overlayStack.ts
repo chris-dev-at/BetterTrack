@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react';
 import type { RefObject } from 'react';
 
 /**
- * The user app's open-overlay stack, and the single document-level Escape
+ * The app's open-overlay stack, and the single document-level Escape
  * listener that serves it.
  *
  * Tab containment composes for free: `useFocusTrap` binds a React `onKeyDown`
