@@ -220,6 +220,7 @@ function bullBoardFixture(): {
         isPaused: async () => false,
         getGlobalConcurrency: async () => null,
         getJobSchedulersCount: async () => 0,
+        getJobSchedulers: async () => [],
         getJobs: async () =>
           name === activeQueue
             ? [
@@ -477,6 +478,10 @@ describe('Bull Board administrator boundary (#878)', () => {
     });
     expect(JSON.stringify(listed.body)).not.toContain('payload-secret');
     expect(JSON.stringify(listed.body)).not.toContain('result-secret');
+
+    const schedulers = await request(app).get(`${BULL_BOARD_BASE_PATH}/api/job-schedulers`);
+    expect(schedulers.status).toBe(200);
+    expect(schedulers.body).toEqual({ schedulers: [] });
 
     const mutation = await request(app).put(
       `${BULL_BOARD_BASE_PATH}/api/queues/${encodeURIComponent(activeQueue)}/pause`,

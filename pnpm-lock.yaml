@@ -50,10 +50,10 @@ importers:
         version: link:../../packages/domain
       '@bull-board/api':
         specifier: ^8.6.0
-        version: 8.6.1(@bull-board/ui@8.6.1(bullmq@5.78.1))(bullmq@5.78.1)
+        version: 8.6.1(@bull-board/ui@8.6.1(bullmq@5.81.3))(bullmq@5.81.3)
       '@bull-board/express':
         specifier: ^8.6.0
-        version: 8.6.1(bullmq@5.78.1)
+        version: 8.6.1(bullmq@5.81.3)
       '@node-rs/argon2':
         specifier: ^2.0.2
         version: 2.0.2
@@ -64,8 +64,8 @@ importers:
         specifier: ^13.3.2
         version: 13.3.2
       bullmq:
-        specifier: ^5.78.1
-        version: 5.78.1
+        specifier: ^5.79.2
+        version: 5.81.3
       cookie-parser:
         specifier: ^1.4.7
         version: 1.4.7
@@ -2363,8 +2363,8 @@ packages:
   buffer-from@1.1.2:
     resolution: {integrity: sha512-E+XQCRwSbaaiChtv6k6Dwgc+bx+Bs6vuKJHHl5kox/BaKbhiXzqQOwK4cO22yElGp2OCmjwVhT3HmxgyPGnJfQ==}
 
-  bullmq@5.78.1:
-    resolution: {integrity: sha512-zD5IT+qMqbMgPFPdL9FwnZka1bz6nckM+5lXj4N0vsXqdzoVO6wizmXpwsg/4GnHmXJsL7XOKeWA64tYUdPrOA==}
+  bullmq@5.81.3:
+    resolution: {integrity: sha512-Q7uEH2G92rVjX3Yl2qw3+6VEO15uxehC6DfeTHQBQTehddcRDSDuquD9zuvDjxiCffXsPUaBwrRlvlbVcgKs7g==}
     engines: {node: '>=12.22.0'}
     peerDependencies:
       redis: '>=5.0.0'
@@ -3536,8 +3536,8 @@ packages:
     resolution: {integrity: sha512-4kmO/MdyUIkLIvTPr8VHLil4AtoKIoniWPIEk5+CDy0xnWC84azhSFmuJ7PxZdsYtiP5kEeQsORAVIeMgxT+Hw==}
     hasBin: true
 
-  msgpackr@2.0.2:
-    resolution: {integrity: sha512-c5hYOXFbP79Slh6Dzd2wzk+jnV7mX1UxfMYtilnY1NmalXPqG8DGb5cYCMBrW4AsH3zekBBZd4QrKz9NhtvYLQ==}
+  msgpackr@2.0.5:
+    resolution: {integrity: sha512-cef05H/dSYpLpqp3sj/qyZh5vhUYCalnaLO7j1yOmpsR0y/XwLVtK7r5gn+U/F7CTEfMowcGhlUQJDLcLf7jcA==}
 
   msw@2.15.0:
     resolution: {integrity: sha512-2wQAmKkQKxRuXvYJxVhPGG0wZNBQyD06oJvxqw90XqLvptdqxdlHrFUfEteKkpaNORX3Xzc+HtEl/q0nfmN2wQ==}
@@ -3982,13 +3982,13 @@ packages:
     resolution: {integrity: sha512-BR7VvDCVHO+q2xBEWskxS6DJE1qRnb7DxzUrogb71CWoSficBxYsiAGd+Kl0mmq/MprG9yArRkyrQxTO6XjMzA==}
     hasBin: true
 
-  semver@7.8.1:
-    resolution: {integrity: sha512-rkVq3IXh+4FDGch+KwzX3aV9W3kO54GyEgpvBzSyctDA6Xtd7RJQV1xmXbeQp5v7+VzLOfVqiutSE6GICgPFvg==}
+  semver@7.8.4:
+    resolution: {integrity: sha512-rUCObTnP32Q08R2uuIrt7r9PlEonuTmtuXYcW6s5kjdlj3xbnwe+21yXptAUYcMAABLkYYTtnmzb3w3EDZfueA==}
     engines: {node: '>=10'}
     hasBin: true
 
-  semver@7.8.4:
-    resolution: {integrity: sha512-rUCObTnP32Q08R2uuIrt7r9PlEonuTmtuXYcW6s5kjdlj3xbnwe+21yXptAUYcMAABLkYYTtnmzb3w3EDZfueA==}
+  semver@7.8.5:
+    resolution: {integrity: sha512-Y7/KDsb8LjooZpwaqGyulO6DQlksgCncchHGk+sZIY4SBvUocMBEFH5Ur1fI4dV+Jvl0w6cjvucaIi40puRioA==}
     engines: {node: '>=10'}
     hasBin: true
 
@@ -4729,17 +4729,17 @@ snapshots:
       '@babel/helper-string-parser': 7.29.7
       '@babel/helper-validator-identifier': 7.29.7
 
-  '@bull-board/api@8.6.1(@bull-board/ui@8.6.1(bullmq@5.78.1))(bullmq@5.78.1)':
+  '@bull-board/api@8.6.1(@bull-board/ui@8.6.1(bullmq@5.81.3))(bullmq@5.81.3)':
     dependencies:
-      '@bull-board/ui': 8.6.1(bullmq@5.78.1)
+      '@bull-board/ui': 8.6.1(bullmq@5.81.3)
       redis-info: 3.1.0
     optionalDependencies:
-      bullmq: 5.78.1
+      bullmq: 5.81.3
 
-  '@bull-board/express@8.6.1(bullmq@5.78.1)':
+  '@bull-board/express@8.6.1(bullmq@5.81.3)':
     dependencies:
-      '@bull-board/api': 8.6.1(@bull-board/ui@8.6.1(bullmq@5.78.1))(bullmq@5.78.1)
-      '@bull-board/ui': 8.6.1(bullmq@5.78.1)
+      '@bull-board/api': 8.6.1(@bull-board/ui@8.6.1(bullmq@5.81.3))(bullmq@5.81.3)
+      '@bull-board/ui': 8.6.1(bullmq@5.81.3)
       ejs: 6.0.1
       express: 5.2.1
     transitivePeerDependencies:
@@ -4747,9 +4747,9 @@ snapshots:
       - bullmq
       - supports-color
 
-  '@bull-board/ui@8.6.1(bullmq@5.78.1)':
+  '@bull-board/ui@8.6.1(bullmq@5.81.3)':
     dependencies:
-      '@bull-board/api': 8.6.1(@bull-board/ui@8.6.1(bullmq@5.78.1))(bullmq@5.78.1)
+      '@bull-board/api': 8.6.1(@bull-board/ui@8.6.1(bullmq@5.81.3))(bullmq@5.81.3)
     transitivePeerDependencies:
       - bull
       - bullmq
@@ -6306,13 +6306,13 @@ snapshots:
 
   buffer-from@1.1.2: {}
 
-  bullmq@5.78.1:
+  bullmq@5.81.3:
     dependencies:
       cron-parser: 4.9.0
       ioredis: 5.11.1
-      msgpackr: 2.0.2
+      msgpackr: 2.0.5
       node-abort-controller: 3.1.1
-      semver: 7.8.1
+      semver: 7.8.5
       tslib: 2.8.1
     transitivePeerDependencies:
       - supports-color
@@ -7454,7 +7454,7 @@ snapshots:
       '@msgpackr-extract/msgpackr-extract-win32-x64': 3.0.4
     optional: true
 
-  msgpackr@2.0.2:
+  msgpackr@2.0.5:
     optionalDependencies:
       msgpackr-extract: 3.0.4
 
@@ -7896,9 +7896,9 @@ snapshots:
 
   semver@6.3.1: {}
 
-  semver@7.8.1: {}
-
   semver@7.8.4: {}
+
+  semver@7.8.5: {}
 
   send@1.2.1:
     dependencies:

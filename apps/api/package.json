@@ -32,7 +32,7 @@
     "@node-rs/argon2": "^2.0.2",
     "@sentry/node": "^10.65.0",
     "@simplewebauthn/server": "^13.3.2",
-    "bullmq": "^5.78.1",
+    "bullmq": "^5.79.2",
     "cookie-parser": "^1.4.7",
     "drizzle-orm": "^0.38.3",
     "express": "^5.1.0",
