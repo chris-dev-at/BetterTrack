@@ -9,16 +9,16 @@
 export const dependencyAuditWaivers = {
   // Direct runtime packages need a separately reviewed compatibility update.
   'GHSA-gpj5-g38j-94v9': {
-    expires: '2026-08-14',
+    expires: '2026-08-21',
     moduleName: 'drizzle-orm',
     reason:
-      'Renewed 2026-08-07: the 0.38→0.45 upgrade spans schema-layer changes and two in-flight migration PRs; dedicated tested upgrade PR scheduled right after the board-#68 package wave lands.',
+      'Renewed 2026-08-13: the dedicated 0.38→0.45 upgrade in #1217 needs schema-layer compatibility and migration checks.',
   },
   'GHSA-p6gq-j5cr-w38f': {
-    expires: '2026-08-13',
+    expires: '2026-08-22',
     moduleName: 'nodemailer',
     reason:
-      'Existing Nodemailer lockfile entry needs an SMTP regression check before its dedicated Dependabot update can merge.',
+      'Renewed 2026-08-13: the in-range Nodemailer update in #1222 needs the required SMTP transport regression check.',
   },
   // React Router remediation spans a compatible minor update plus a later
   // major-only advisory, so it needs the user-flow regression suite.
@@ -55,16 +55,16 @@ export const dependencyAuditWaivers = {
   // Provider/tooling transitive updates are kept out of the CI-gate change so
   // their upstream compatibility can be reviewed independently.
   'GHSA-v422-hmwv-36x6': {
-    expires: '2026-08-16',
+    expires: '2026-08-23',
     moduleName: 'body-parser',
     reason:
-      'Renewed 2026-08-10: body-parser is transitive through Express; the fix is an Express bump that needs the API HTTP regression suite in a dedicated update, scheduled with the pending dependency wave.',
+      'Renewed 2026-08-13: body-parser is transitive through Express; the dedicated Express bump needs the API HTTP regression suite.',
   },
   'GHSA-frvp-7c67-39w9': {
-    expires: '2026-08-15',
+    expires: '2026-08-27',
     moduleName: '@hono/node-server',
     reason:
-      'The vulnerable Hono server is transitive through the market-data SDK and needs an upstream compatibility update.',
+      'Renewed 2026-08-13: the vulnerable Hono server is transitive through the market-data SDK; its dedicated market-data-SDK update needs upstream compatibility verification.',
   },
   'GHSA-52cp-r559-cp3m': {
     expires: '2026-08-30',
