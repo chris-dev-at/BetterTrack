@@ -104,6 +104,15 @@ test.describe('PD9 paranoid-mode end-to-end gate', () => {
     try {
       await loginAsAdmin(admin);
       owner = await provisionUserInContext(context, admin, 'pd9normal');
+      // Registered before the first paranoid gesture so console/pageerror output
+      // from the privacy panel AND the lazy vault-chunk load — the exact window
+      // where a lazy-boundary regression announces itself — lands in the report.
+      collectSanitizedDiagnostics(owner.page, diagnostics);
+      // PRECONDITION: this step must stay ABOVE `openParanoidSetup`. The injected
+      // assignment sits in the provider's component body, so it re-sets the flag
+      // on every render; it only proves fail-closed while the provider is
+      // guaranteed unmounted, which post-PERF1 holds until the enable gesture
+      // pulls in the vault chunk. Moving it below any vault mount makes it flake.
       await test.step('the unconsumed lazy boundary fails closed', async () => {
         expect(
           await owner!.page.evaluate(() => window.__bettertrackE2EVaultDependencies !== undefined),
@@ -116,7 +125,6 @@ test.describe('PD9 paranoid-mode end-to-end gate', () => {
         );
       });
       await openParanoidSetup(owner.page);
-      collectSanitizedDiagnostics(owner.page, diagnostics);
 
       const portfolioReads: string[] = [];
       owner.page.on('request', (request) => {
@@ -583,6 +591,16 @@ async function enableDriveOnly(page: Page, sensitive: Pd9SensitiveCanary[]): Pro
   });
 }
 
+// Post-PERF1 the vault stack is code-split: `VaultRuntimeProvider` is pulled in
+// only when the privacy panel's legacy entry sets `?enable=1`, so this gesture —
+// not a bare page load — is what makes the boundary double observable.
+//
+// This is also where the seam is proven POSITIVELY, and it is what makes the
+// whole gate fail closed on drift: if a future URL or module-graph change stops
+// the route transform from running, the consumed flag never turns true and this
+// assertion throws for every caller (both blocks, both projects). The
+// `assertPd9DriveInstalled` self-test above only covers the complementary half —
+// that the helper is not a no-op.
 async function openParanoidSetup(page: Page): Promise<void> {
   await page.goto('/control/privacy');
   await page.getByRole('button', { name: 'Open migration' }).click();

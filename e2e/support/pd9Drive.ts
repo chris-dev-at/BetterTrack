@@ -1,6 +1,7 @@
 import { readdir, readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
+import { errors as playwrightErrors } from '@playwright/test';
 import type { BrowserContext, Download, Page, TestInfo } from '@playwright/test';
 
 /**
@@ -77,9 +78,18 @@ const VAULT_RUNTIME_PROVIDER_SOURCE_PATH = '/src/user/vault/VaultRuntimeProvider
 const PD9_DEPENDENCY_CONSUMPTION_TIMEOUT_MS = 15_000;
 
 function isVaultRuntimeProviderSource(url: URL): boolean {
-  return decodeURIComponent(url.pathname)
-    .replaceAll('\\', '/')
-    .endsWith(VAULT_RUNTIME_PROVIDER_SOURCE_PATH);
+  // This predicate runs for EVERY request in the context, so it must never
+  // throw: a stray `%` survives URL parsing and would make `decodeURIComponent`
+  // raise a URIError that surfaces as an unrelated route-matcher failure. The
+  // cheap substring test short-circuits before the decode for all other traffic.
+  if (!url.pathname.includes('VaultRuntimeProvider')) return false;
+  let pathname: string;
+  try {
+    pathname = decodeURIComponent(url.pathname);
+  } catch {
+    pathname = url.pathname;
+  }
+  return pathname.replaceAll('\\', '/').endsWith(VAULT_RUNTIME_PROVIDER_SOURCE_PATH);
 }
 
 declare global {
@@ -456,8 +466,15 @@ export async function assertPd9DriveInstalled(
       undefined,
       { timeout: timeoutMs },
     );
-  } catch {
-    throw new Error('PD9 Drive dependency was installed but not consumed by the vault provider.');
+  } catch (cause) {
+    // `waitForFunction` also rejects on page close, navigation crash and
+    // evaluation errors. Collapsing those into the seam message would report a
+    // dead page as a lazy-boundary regression, so only a real timeout — the flag
+    // never turning true — is translated; everything else keeps its diagnosis.
+    if (!(cause instanceof playwrightErrors.TimeoutError)) throw cause;
+    throw new Error('PD9 Drive dependency was installed but not consumed by the vault provider.', {
+      cause,
+    });
   }
 }
 
