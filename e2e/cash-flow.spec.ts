@@ -2,6 +2,7 @@ import { expect, request as newRequestContext, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 
 import { loginAsAdmin } from './support/adminApi';
+import { cashMovementRow } from './support/cashSurface';
 import { API_BASE_URL } from './support/config';
 import { provisionUser } from './support/users';
 
@@ -130,11 +131,6 @@ async function createRule(page: Page, pattern: string, tagName: string): Promise
   await expect(dialog).toBeHidden({ timeout: 15_000 });
 }
 
-/** The Movements-tab row for a movement carrying `note`. */
-function movementRow(page: Page, note: string) {
-  return page.locator('table[aria-label="Cash movements"] tbody tr').filter({ hasText: note });
-}
-
 test('cash flow: a rule tags a real entry, the ledger shows it, and a budget blows', async ({
   browser,
 }) => {
@@ -164,7 +160,7 @@ test('cash flow: a rule tags a real entry, the ledger shows it, and a budget blo
     // BOTH halves of auto-tagging — `Withdrawal` from its kind, `Groceries`
     // from the user's rule. Nothing was tagged by hand.
     await openCashTab(page, 'Transactions');
-    const spendRow = movementRow(page, 'SPAR MARKT 4021');
+    const spendRow = cashMovementRow(page, 'SPAR MARKT 4021');
     await expect(spendRow).toBeVisible({ timeout: 15_000 });
     await expect(spendRow).toContainText('Groceries');
     await expect(spendRow).toContainText('Withdrawal');
@@ -197,7 +193,7 @@ test('cash flow: a rule tags a real entry, the ledger shows it, and a budget blo
       countsToPerformance: true,
     });
     await openCashTab(page, 'Transactions');
-    const feeRow = movementRow(page, 'Custody charge Q1');
+    const feeRow = cashMovementRow(page, 'Custody charge Q1');
     await expect(feeRow).toBeVisible({ timeout: 15_000 });
     await expect(feeRow).toContainText('Fees');
 
@@ -213,14 +209,14 @@ test('cash flow: a rule tags a real entry, the ledger shows it, and a budget blo
       note: 'BILLA DANKT 77',
     });
     await openCashTab(page, 'Transactions');
-    const lateRow = movementRow(page, 'BILLA DANKT 77');
+    const lateRow = cashMovementRow(page, 'BILLA DANKT 77');
     await expect(lateRow).toBeVisible({ timeout: 15_000 });
     await expect(lateRow).not.toContainText('Groceries');
 
     await createRule(page, 'BILLA', 'Groceries');
     // Still untagged — a new rule changes nothing that already happened.
     await openCashTab(page, 'Transactions');
-    await expect(movementRow(page, 'BILLA DANKT 77')).not.toContainText('Groceries');
+    await expect(cashMovementRow(page, 'BILLA DANKT 77')).not.toContainText('Groceries');
 
     await openCashLabels(page);
     // Re-running rules over the back catalogue is destructive enough to ask first
@@ -235,11 +231,11 @@ test('cash flow: a rule tags a real entry, the ledger shows it, and a budget blo
     });
 
     await openCashTab(page, 'Transactions');
-    await expect(movementRow(page, 'BILLA DANKT 77')).toContainText('Groceries', {
+    await expect(cashMovementRow(page, 'BILLA DANKT 77')).toContainText('Groceries', {
       timeout: 15_000,
     });
     // Additive and idempotent: the earlier rows kept exactly what they had.
-    await expect(movementRow(page, 'SPAR MARKT 4021')).toContainText('Groceries');
+    await expect(cashMovementRow(page, 'SPAR MARKT 4021')).toContainText('Groceries');
   } finally {
     await owner.context.close();
   }
