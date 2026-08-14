@@ -175,6 +175,8 @@ export interface VaultStandingOrderOccurrenceInput {
   timezone: string;
   /** The authenticated client's wall-clock booking time. */
   executedAt: string;
+  /** Record-only market stamp for `lastRunAt`; ledger rows still use `executedAt`. */
+  recordedAt: string;
   /** Authenticated candidate from which the due occurrence and quote were selected. */
   expectedCandidate: {
     vaultVersion: number;
@@ -2013,7 +2015,7 @@ async function materializeStandingOrderOccurrence(
         () =>
           VAULT_ENTITY_ROW_SCHEMAS.standingOrder.parse({
             ...order.data,
-            lastRunAt: timestamp,
+            lastRunAt: input.recordedAt,
             lastPeriodKey: input.dueDate,
             updatedAt: timestamp,
           }),
@@ -2049,13 +2051,17 @@ async function materializeStandingOrderOccurrence(
 function assertStandingOrderOccurrenceInput(input: VaultStandingOrderOccurrenceInput): void {
   const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
   const day = /^\d{4}-\d{2}-\d{2}$/;
+  const executedAtMs = Date.parse(input.executedAt);
+  const recordedAtMs = Date.parse(input.recordedAt);
   if (
     !uuid.test(input.occurrenceId) ||
     !uuid.test(input.orderId) ||
     !day.test(input.dueDate) ||
     !day.test(input.calendarDay) ||
     input.timezone.trim().length === 0 ||
-    !Number.isFinite(Date.parse(input.executedAt)) ||
+    !Number.isFinite(executedAtMs) ||
+    !Number.isFinite(recordedAtMs) ||
+    recordedAtMs > executedAtMs ||
     !Number.isSafeInteger(input.expectedCandidate.vaultVersion) ||
     input.expectedCandidate.vaultVersion < 0 ||
     !uuid.test(input.expectedCandidate.vaultKeyId) ||
@@ -2120,11 +2126,23 @@ function assertStandingOrderDefinition(
     !isBuy &&
     (stringField(order.data, 'currency') !== 'EUR' ||
       input.price !== undefined ||
-      input.quoteCurrency !== undefined)
+      input.quoteCurrency !== undefined ||
+      Date.parse(input.recordedAt) !== Date.parse(input.executedAt))
   ) {
     throw storeError(
       'VAULT_DATA_INVALID',
-      'Cash standing orders must use EUR and cannot carry quote data.',
+      'Cash standing orders must use EUR, the scan timestamp, and no quote data.',
+    );
+  }
+  if (
+    isBuy &&
+    assetId !== null &&
+    resolveTransactionAsset(document, assetId).isCustom &&
+    Date.parse(input.recordedAt) !== Date.parse(input.executedAt)
+  ) {
+    throw storeError(
+      'VAULT_DATA_INVALID',
+      'A local-asset standing order must record the scan timestamp.',
     );
   }
   const lastRunAt = nullableStringField(order.data, 'lastRunAt');
