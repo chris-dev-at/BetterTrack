@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, expect, test, vi } from 'vitest';
 
@@ -120,12 +120,18 @@ beforeEach(() => {
 });
 
 test('batches only rendered rows under the realtime-aware Workboard key', async () => {
-  const coreItems = Array.from({ length: 9 }, (_, index) => item(index + 1));
+  const coreItems = Array.from({ length: 9 }, (_, index) => ({
+    ...item(index + 1),
+    sortOrder: 9 - index,
+  }));
   const specItems = [item(20, SPEC_LIST.id), item(21, SPEC_LIST.id)];
   vi.mocked(listWorkboard).mockResolvedValue({ items: [...coreItems, ...specItems] });
 
   const { client, rerenderWidget } = renderWidget();
-  const mediumIds = coreItems.slice(0, 8).map((entry) => entry.assetId);
+  const canonicalIdsFor = (entries: WorkboardItem[]) =>
+    [...new Set(entries.map((entry) => entry.assetId))].sort();
+  const renderedCoreItems = [...coreItems].sort((a, b) => a.sortOrder - b.sortOrder);
+  const mediumIds = canonicalIdsFor(renderedCoreItems.slice(0, 8));
 
   await waitFor(() => expect(getAssetQuotes).toHaveBeenCalledTimes(1));
   expect(vi.mocked(getAssetQuotes).mock.calls[0]?.[0]).toEqual(mediumIds);
@@ -149,15 +155,43 @@ test('batches only rendered rows under the realtime-aware Workboard key', async 
 
   rerenderWidget({ settings: { watchlistId: SPEC_LIST.id }, size: 'm' });
   await waitFor(() => expect(getAssetQuotes).toHaveBeenCalledTimes(2));
-  expect(vi.mocked(getAssetQuotes).mock.calls[1]?.[0]).toEqual(
-    specItems.map((entry) => entry.assetId),
-  );
+  expect(vi.mocked(getAssetQuotes).mock.calls[1]?.[0]).toEqual(canonicalIdsFor(specItems));
 
   rerenderWidget({ settings: {}, size: 's' });
   await waitFor(() => expect(getAssetQuotes).toHaveBeenCalledTimes(3));
   expect(vi.mocked(getAssetQuotes).mock.calls[2]?.[0]).toEqual(
-    coreItems.slice(0, 5).map((entry) => entry.assetId),
+    canonicalIdsFor(renderedCoreItems.slice(0, 5)),
   );
+});
+
+test('keeps surviving prices painted while resizing remints the quote batch key', async () => {
+  const items = Array.from({ length: 6 }, (_, index) => item(index + 1));
+  vi.mocked(listWorkboard).mockResolvedValue({ items });
+
+  const { rerenderWidget } = renderWidget({ size: 's' });
+  const survivor = (await screen.findByRole('link', { name: items[0]!.asset.symbol })).closest(
+    'li',
+  );
+  expect(survivor).not.toBeNull();
+  await waitFor(() => expect(survivor?.querySelector('.bt-skeleton')).toBeNull());
+  expect(survivor).toHaveTextContent(/190[,.]50/);
+
+  let resolveQuotes: (() => void) | undefined;
+  vi.mocked(getAssetQuotes).mockImplementation(
+    (ids) =>
+      new Promise((resolve) => {
+        resolveQuotes = () => resolve({ quotes: ids.map(quote), failed: [] });
+      }),
+  );
+  rerenderWidget({ settings: {}, size: 'm' });
+
+  await waitFor(() => expect(getAssetQuotes).toHaveBeenCalledTimes(2));
+  expect(survivor?.querySelector('.bt-skeleton')).toBeNull();
+  expect(survivor).toHaveTextContent(/190[,.]50/);
+
+  await act(async () => {
+    resolveQuotes?.();
+  });
 });
 
 test('keeps a failed batch row on the existing quote skeleton', async () => {
