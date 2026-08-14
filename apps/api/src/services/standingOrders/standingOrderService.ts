@@ -114,6 +114,11 @@ export interface StandingOrderServiceDeps {
 export interface ProcessDueResult {
   scanned: number;
   booked: number;
+  /**
+   * Post-claim savepoint write failures that leave an at-most-once tombstone.
+   * These are visible in the scan log but never fail or retry the job.
+   */
+  bookingFailed: number;
   /** Periods already claimed by an earlier/concurrent run (the double-run guard). */
   skippedDuplicate: number;
   /** Periods left unbooked by a pre-check (provider failure / insufficient cash). */
@@ -446,6 +451,7 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
       const result: ProcessDueResult = {
         scanned: orders.length,
         booked: 0,
+        bookingFailed: 0,
         skippedDuplicate: 0,
         deferred: 0,
         skippedArchived: 0,
@@ -589,6 +595,7 @@ export function createStandingOrderService(deps: StandingOrderServiceDeps): Stan
             return;
           }
           if (outcome === 'booking-failed') {
+            result.bookingFailed += 1;
             await notifyFailure(order, due, 'booking_failed');
             return;
           }

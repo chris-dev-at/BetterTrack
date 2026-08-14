@@ -315,6 +315,7 @@ describe('standing orders — exactly-once per period (the gate criterion)', () 
     expect(await run('2026-04-01T12:00:00Z')).toEqual({
       scanned: 1,
       booked: 0,
+      bookingFailed: 0,
       skippedDuplicate: 0,
       deferred: 0,
       skippedArchived: 0,
@@ -482,6 +483,7 @@ describe('standing orders — archived portfolios', () => {
     expect(await run('2026-05-01T12:00:00Z')).toEqual({
       scanned: 1,
       booked: 1,
+      bookingFailed: 0,
       skippedDuplicate: 0,
       deferred: 0,
       skippedArchived: 0,
@@ -565,6 +567,7 @@ describe('standing orders — archived portfolios', () => {
     expect(await run('2026-05-01T12:00:00Z')).toEqual({
       scanned: 1,
       booked: 1,
+      bookingFailed: 0,
       skippedDuplicate: 0,
       deferred: 0,
       skippedArchived: 0,
@@ -610,6 +613,7 @@ describe('standing orders — archived portfolios', () => {
     expect(await run('2026-05-15T12:00:00Z')).toEqual({
       scanned: 1,
       booked: 0,
+      bookingFailed: 0,
       skippedDuplicate: 0,
       deferred: 0,
       skippedArchived: 0,
@@ -679,6 +683,7 @@ describe('standing orders — archived portfolios', () => {
     expect(await processing).toEqual({
       scanned: 1,
       booked: 0,
+      bookingFailed: 0,
       skippedDuplicate: 0,
       deferred: 0,
       // The in-lock recheck's abort is visible in the scan tally.
@@ -752,6 +757,7 @@ describe('standing orders — archived portfolios', () => {
     expect(await processing).toEqual({
       scanned: 1,
       booked: 0,
+      bookingFailed: 0,
       skippedDuplicate: 0,
       deferred: 0,
       skippedArchived: 1,
@@ -1353,7 +1359,7 @@ describe('standing orders — post-claim booking tombstone', () => {
 
     const result = await service.processDueOrders({ now: Date.parse('2026-04-01T12:00:00Z') });
 
-    expect(result).toMatchObject({ booked: 0, deferred: 0 });
+    expect(result).toMatchObject({ booked: 0, bookingFailed: 1, deferred: 0, failed: 0 });
     expect((await runPeriodKeys()).map((row) => row.key)).toEqual(['2026-04-01']);
     expect(emitted).toEqual([
       {
@@ -1372,7 +1378,7 @@ describe('standing orders — post-claim booking tombstone', () => {
       now: Date.parse('2026-04-02T12:00:00Z'),
     });
 
-    expect(nextAnchor).toMatchObject({ booked: 0, deferred: 0 });
+    expect(nextAnchor).toMatchObject({ booked: 0, bookingFailed: 1, deferred: 0, failed: 0 });
     expect((await runPeriodKeys()).map((row) => row.key).sort()).toEqual([
       '2026-04-01',
       '2026-04-02',
