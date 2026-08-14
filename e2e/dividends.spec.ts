@@ -3,6 +3,7 @@ import { expect, request as newRequestContext, test, type Page } from '@playwrig
 import { loginAsAdmin } from './support/adminApi';
 import { cashSourceRow } from './support/cashSurface';
 import { API_BASE_URL } from './support/config';
+import { recentOpenBookingDates } from './support/dates';
 import { recordSapTrade } from './support/flows';
 import { provisionUser } from './support/users';
 
@@ -56,10 +57,13 @@ test('dividends: an AT-mode dividend lands net of withholding in cash, no auto-r
 
   const page = owner.page;
   const api = owner.context.request;
+  const dates = await recentOpenBookingDates(page, 2);
+  const buyDate = dates[0]!;
+  const dividendDate = dates[1]!;
 
   await enableAustriaTaxMode(page);
   // Hold 10 SAP.DE — a dividend can only be recorded on an asset the portfolio holds.
-  await recordSapTrade(page, { side: 'buy', quantity: '10', price: '100', date: '2026-01-10' });
+  await recordSapTrade(page, { side: 'buy', quantity: '10', price: '100', date: buyDate });
 
   // Resolve the default portfolio and the SAP.DE holding through the owner's session.
   const portfoliosRes = await api.get(`${API_BASE_URL}/api/v1/portfolios`);
@@ -84,7 +88,11 @@ test('dividends: an AT-mode dividend lands net of withholding in cash, no auto-r
   // so the source nets €72.50 and exactly two movements post (gross + withholding).
   const divRes = await api.post(`${API_BASE_URL}/api/v1/portfolios/${pid}/dividends`, {
     headers: CSRF_HEADERS,
-    data: { assetId: sap!.asset.id, grossAmountEur: 100, executedAt: '2026-04-01T10:00:00.000Z' },
+    data: {
+      assetId: sap!.asset.id,
+      grossAmountEur: 100,
+      executedAt: `${dividendDate}T10:00:00.000Z`,
+    },
   });
   expect(divRes.status(), await divRes.text()).toBe(201);
   const recorded = (await divRes.json()) as {

@@ -4,6 +4,7 @@ import type { Page } from '@playwright/test';
 import { loginAsAdmin } from './support/adminApi';
 import { cashMovementRow } from './support/cashSurface';
 import { API_BASE_URL } from './support/config';
+import { recentOpenBookingDates } from './support/dates';
 import { provisionUser } from './support/users';
 
 /**
@@ -21,13 +22,10 @@ import { provisionUser } from './support/users';
  * island had no equivalent for: the `fee` kind carrying its app-owned tag
  * (§16 2026-07-30), and applying rules to movements that already exist.
  *
- * Every date is absolute and precedes "now": cash solvency is replayed
- * chronologically, so a deposit must predate the spending it funds regardless
- * of the wall clock (the trap that expired `tax-at.spec.ts`).
+ * Every date comes from the shared non-future booking window: cash solvency is
+ * replayed chronologically, so a deposit must predate the spending it funds
+ * regardless of the wall clock (the trap that expired `tax-at.spec.ts`).
  */
-
-const FUNDING_DATE = '2026-01-05';
-const SPEND_DATE = '2026-01-12';
 
 /**
  * In-app navigation inside the Cash area — tab clicks, not `page.goto`.
@@ -141,6 +139,9 @@ test('cash flow: a rule tags a real entry, the ledger shows it, and a budget blo
   const owner = await provisionUser(browser, apiRequest, 'cashflowowner');
   await apiRequest.dispose();
   const page = owner.page;
+  const dates = await recentOpenBookingDates(page, 2);
+  const fundingDate = dates[0]!;
+  const spendDate = dates[1]!;
 
   try {
     // ── Classification first: a tag, and a rule that assigns it ──
@@ -148,11 +149,11 @@ test('cash flow: a rule tags a real entry, the ledger shows it, and a budget blo
     await createRule(page, 'SPAR', 'Groceries');
 
     // ── Then the money: fund Main, then spend at a merchant the rule knows ──
-    await recordCashEntry(page, { direction: 'Money in', amount: '1000', date: FUNDING_DATE });
+    await recordCashEntry(page, { direction: 'Money in', amount: '1000', date: fundingDate });
     await recordCashEntry(page, {
       direction: 'Money out',
       amount: '300',
-      date: SPEND_DATE,
+      date: spendDate,
       note: 'SPAR MARKT 4021',
     });
 
@@ -176,7 +177,7 @@ test('cash flow: a rule tags a real entry, the ledger shows it, and a budget blo
 
     // The budget reads against the month the spending happened in, so the
     // month picker has to be pointed at it — "this month" is empty by design.
-    await page.getByLabel('Month', { exact: true }).fill(SPEND_DATE.slice(0, 7));
+    await page.getByLabel('Month', { exact: true }).fill(spendDate.slice(0, 7));
     const budgetRow = page.getByRole('listitem').filter({ hasText: 'Groceries' });
     await expect(budgetRow).toContainText('Over budget', { timeout: 15_000 });
     // €300 of a €200 target — €100 over. Locale-agnostic (EN "100.00", DE "100,00").
@@ -188,7 +189,7 @@ test('cash flow: a rule tags a real entry, the ledger shows it, and a budget blo
     await recordCashEntry(page, {
       direction: 'Money out',
       amount: '25',
-      date: SPEND_DATE,
+      date: spendDate,
       note: 'Custody charge Q1',
       countsToPerformance: true,
     });
@@ -205,7 +206,7 @@ test('cash flow: a rule tags a real entry, the ledger shows it, and a budget blo
     await recordCashEntry(page, {
       direction: 'Money out',
       amount: '40',
-      date: SPEND_DATE,
+      date: spendDate,
       note: 'BILLA DANKT 77',
     });
     await openCashTab(page, 'Transactions');
