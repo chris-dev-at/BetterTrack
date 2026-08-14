@@ -14,12 +14,6 @@ export const dependencyAuditWaivers = {
     reason:
       'Renewed 2026-08-07: the 0.38→0.45 upgrade spans schema-layer changes and two in-flight migration PRs; dedicated tested upgrade PR scheduled right after the board-#68 package wave lands.',
   },
-  'GHSA-p6gq-j5cr-w38f': {
-    expires: '2026-08-13',
-    moduleName: 'nodemailer',
-    reason:
-      'Existing Nodemailer lockfile entry needs an SMTP regression check before its dedicated Dependabot update can merge.',
-  },
   // React Router remediation spans a compatible minor update plus a later
   // major-only advisory, so it needs the user-flow regression suite.
   'GHSA-wrjc-x8rr-h8h6': {
