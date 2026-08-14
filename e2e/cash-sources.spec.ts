@@ -1,6 +1,7 @@
 import { expect, request as newRequestContext, test } from '@playwright/test';
 
 import { loginAsAdmin } from './support/adminApi';
+import { cashSourceAction, cashSourceRow, cashSourceRows } from './support/cashSurface';
 import { API_BASE_URL } from './support/config';
 import { provisionUser } from './support/users';
 
@@ -30,18 +31,18 @@ test('cash sources: create, deposit and transfer between two sources', async ({ 
   await createDialog.getByRole('button', { name: 'Create source' }).click();
   await expect(createDialog).toBeHidden();
 
-  const rows = page.locator('table[aria-label="Cash sources"] tbody tr');
+  const rows = cashSourceRows(page);
   // sortSourcesMainFirst: Main is row 0, Savings row 1.
   await expect(rows).toHaveCount(2);
 
   // Deposit €1000 into Main (its per-row "Deposit" preselects Main).
-  await rows.nth(0).getByRole('button', { name: 'Deposit' }).click();
+  await cashSourceAction(cashSourceRow(page, 0), 'Deposit').click();
   const depositDialog = page.getByRole('dialog', { name: 'Cash balance' });
   await depositDialog.getByLabel('Amount', { exact: true }).fill('1000');
   await depositDialog.getByRole('button', { name: 'Deposit cash' }).click();
   await expect(depositDialog).toBeHidden();
   // Locale-agnostic: EN renders "1,000.00 €" (en-GB), DE renders "1.000,00 €" (de-AT).
-  await expect(rows.nth(0)).toContainText(/1[.,]000[.,]00/);
+  await expect(cashSourceRow(page, 0)).toContainText(/1[.,]000[.,]00/);
 
   // Transfer €400 Main → Savings.
   await page.getByRole('button', { name: 'Transfer' }).click();
@@ -55,8 +56,8 @@ test('cash sources: create, deposit and transfer between two sources', async ({ 
   await expect(transferDialog).toBeHidden();
 
   // Both balances reflect the atomic pair: Main 600, Savings 400. Locale-agnostic.
-  await expect(rows.nth(0)).toContainText(/600[.,]00/, { timeout: 15_000 });
-  await expect(rows.nth(1)).toContainText(/400[.,]00/);
+  await expect(cashSourceRow(page, 0)).toContainText(/600[.,]00/, { timeout: 15_000 });
+  await expect(cashSourceRow(page, 1)).toContainText(/400[.,]00/);
 
   // The movement history carries both legs of the one transfer.
   const history = page.getByRole('region', { name: 'Movement history' });

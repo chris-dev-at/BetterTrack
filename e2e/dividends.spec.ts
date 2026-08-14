@@ -1,6 +1,7 @@
 import { expect, request as newRequestContext, test, type Page } from '@playwright/test';
 
 import { loginAsAdmin } from './support/adminApi';
+import { cashSourceRow } from './support/cashSurface';
 import { API_BASE_URL } from './support/config';
 import { recordSapTrade } from './support/flows';
 import { provisionUser } from './support/users';
@@ -100,7 +101,7 @@ test('dividends: an AT-mode dividend lands net of withholding in cash, no auto-r
 
   // The net figure surfaces on the real Cash-sources page: Main (row 0) reads €72.50.
   await page.goto('/portfolio/cash/accounts');
-  const mainRow = page.locator('table[aria-label="Cash sources"] tbody tr').nth(0);
+  const mainRow = cashSourceRow(page, 0);
   // Decimal separator is locale-dependent (de-AT `,` / en-GB `.`) — accept either.
   await expect(mainRow).toContainText(/72[.,]50/, { timeout: 15_000 });
 

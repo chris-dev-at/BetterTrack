@@ -14,12 +14,6 @@ export const dependencyAuditWaivers = {
     reason:
       'Renewed 2026-08-13: the dedicated 0.38→0.45 upgrade in #1217 needs schema-layer compatibility and migration checks.',
   },
-  'GHSA-p6gq-j5cr-w38f': {
-    expires: '2026-08-22',
-    moduleName: 'nodemailer',
-    reason:
-      'Renewed 2026-08-13: the in-range Nodemailer update in #1222 needs the required SMTP transport regression check.',
-  },
   // React Router remediation spans a compatible minor update plus a later
   // major-only advisory, so it needs the user-flow regression suite.
   'GHSA-wrjc-x8rr-h8h6': {
@@ -65,19 +59,5 @@ export const dependencyAuditWaivers = {
     moduleName: '@hono/node-server',
     reason:
       'Renewed 2026-08-13: the vulnerable Hono server is transitive through the market-data SDK; its dedicated market-data-SDK update needs upstream compatibility verification.',
-  },
-  'GHSA-52cp-r559-cp3m': {
-    expires: '2026-08-30',
-    moduleName: 'js-yaml',
-    reason:
-      'Js-yaml is transitive through the lint toolchain and needs a coordinated ESLint update.',
-  },
-  // Sibling advisory to GHSA-52cp-r559-cp3m (published after the wave above);
-  // identical exposure and identical remediation path.
-  'GHSA-5p4m-2wfm-xmqj': {
-    expires: '2026-08-30',
-    moduleName: 'js-yaml',
-    reason:
-      'Js-yaml is transitive through the lint toolchain and needs a coordinated ESLint update (same remediation as GHSA-52cp-r559-cp3m).',
   },
 };

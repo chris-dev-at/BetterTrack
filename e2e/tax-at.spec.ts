@@ -1,6 +1,7 @@
 import { expect, request as newRequestContext, test, type Page } from '@playwright/test';
 
 import { loginAsAdmin } from './support/adminApi';
+import { cashSourceAction, cashSourceRow } from './support/cashSurface';
 import { API_BASE_URL } from './support/config';
 import { recordSapTrade } from './support/flows';
 import { provisionUser } from './support/users';
@@ -52,15 +53,15 @@ async function enableAustriaTaxMode(page: Page): Promise<void> {
  */
 async function depositToMain(page: Page, amount: string, on: string): Promise<void> {
   await page.goto('/portfolio/cash/accounts');
-  const rows = page.locator('table[aria-label="Cash sources"] tbody tr');
+  const mainSource = cashSourceRow(page, 0);
   // sortSourcesMainFirst: Main is row 0 on a fresh account.
-  await rows.nth(0).getByRole('button', { name: 'Deposit' }).click();
+  await cashSourceAction(mainSource, 'Deposit').click();
   const dialog = page.getByRole('dialog', { name: 'Cash balance' });
   await dialog.getByLabel('Amount', { exact: true }).fill(amount);
   await dialog.getByLabel('Date', { exact: true }).fill(on);
   await dialog.getByRole('button', { name: 'Deposit cash' }).click();
   await expect(dialog).toBeHidden();
-  await expect(rows.nth(0)).toContainText(/1[.,]000/);
+  await expect(mainSource).toContainText(/1[.,]000/);
 }
 
 test('AT tax mode: an intra-year loss sell refunds tax in the per-year report', async ({
