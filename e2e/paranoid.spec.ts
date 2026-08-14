@@ -104,7 +104,18 @@ test.describe('PD9 paranoid-mode end-to-end gate', () => {
     try {
       await loginAsAdmin(admin);
       owner = await provisionUserInContext(context, admin, 'pd9normal');
-      await assertPd9DriveInstalled(owner.page);
+      await test.step('the unconsumed lazy boundary fails closed', async () => {
+        expect(
+          await owner!.page.evaluate(() => window.__bettertrackE2EVaultDependencies !== undefined),
+        ).toBe(true);
+        await owner!.page.evaluate(() => {
+          window.__bettertrackPd9DependencyConsumed = false;
+        });
+        await expect(assertPd9DriveInstalled(owner!.page, 100)).rejects.toThrow(
+          'PD9 Drive dependency was installed but not consumed by the vault provider.',
+        );
+      });
+      await openParanoidSetup(owner.page);
       collectSanitizedDiagnostics(owner.page, diagnostics);
 
       const portfolioReads: string[] = [];
@@ -157,7 +168,6 @@ test.describe('PD9 paranoid-mode end-to-end gate', () => {
       await loginAsAdmin(admin);
       owner = await provisionUserInContext(context, admin, 'pd9vault');
       const { page } = owner;
-      await assertPd9DriveInstalled(page);
       collectSanitizedDiagnostics(page, diagnostics);
       const fixture = await createMoneyFixture(owner, harness);
       // The decrypted-content canary joins the scan set for the whole flow. It
@@ -542,9 +552,7 @@ async function createKeptAlert(owner: E2EUser): Promise<AlertFixture> {
 }
 
 async function enableDriveOnly(page: Page, sensitive: Pd9SensitiveCanary[]): Promise<void> {
-  await page.goto('/control/privacy');
-  await page.getByRole('button', { name: 'Set up' }).click();
-  await expect(page.getByRole('heading', { name: 'What changes' })).toBeVisible();
+  await openParanoidSetup(page);
   await page.getByRole('button', { name: 'Continue' }).click();
   await page.getByText('Advanced', { exact: true }).click();
   await page.getByText('Google Drive only', { exact: true }).click();
@@ -573,6 +581,13 @@ async function enableDriveOnly(page: Page, sensitive: Pd9SensitiveCanary[]): Pro
   await expect(page.getByText('Paranoid mode is on. Your encrypted vault is ready.')).toBeVisible({
     timeout: 60_000,
   });
+}
+
+async function openParanoidSetup(page: Page): Promise<void> {
+  await page.goto('/control/privacy');
+  await page.getByRole('button', { name: 'Open migration' }).click();
+  await assertPd9DriveInstalled(page);
+  await expect(page.getByRole('heading', { name: 'What changes' })).toBeVisible();
 }
 
 async function assertClientMoneyWithoutServerReads(

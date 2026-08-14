@@ -73,6 +73,15 @@ interface BrowserDriveControl {
   setTamperReads(enabled: boolean): void;
 }
 
+const VAULT_RUNTIME_PROVIDER_SOURCE_PATH = '/src/user/vault/VaultRuntimeProvider.tsx';
+const PD9_DEPENDENCY_CONSUMPTION_TIMEOUT_MS = 15_000;
+
+function isVaultRuntimeProviderSource(url: URL): boolean {
+  return decodeURIComponent(url.pathname)
+    .replaceAll('\\', '/')
+    .endsWith(VAULT_RUNTIME_PROVIDER_SOURCE_PATH);
+}
+
 declare global {
   interface Window {
     __bettertrackPd9Drive?: BrowserDriveControl;
@@ -124,7 +133,7 @@ export async function installPd9Drive(context: BrowserContext): Promise<Pd9Drive
   // Vite serves this module as transformed JavaScript. The single assignment is
   // an e2e-only composition hook: production source and build output stay
   // untouched, while the real provider receives the boundary double.
-  await context.route(/\/src\/user\/vault\/VaultRuntimeProvider\.tsx(?:\?|$)/, async (route) => {
+  await context.route(isVaultRuntimeProviderSource, async (route) => {
     const response = await route.fetch();
     const body = await response.text();
     const coreDeclaration = /^(\s*)const \[core\]/m;
@@ -436,10 +445,18 @@ export async function installPd9Drive(context: BrowserContext): Promise<Pd9Drive
   };
 }
 
-/** Prove the transformed provider consumed the boundary double on this page. */
-export async function assertPd9DriveInstalled(page: Page): Promise<void> {
-  const consumed = await page.evaluate(() => window.__bettertrackPd9DependencyConsumed === true);
-  if (!consumed) {
+/** Prove the transformed, lazily loaded provider consumed the boundary double. */
+export async function assertPd9DriveInstalled(
+  page: Page,
+  timeoutMs = PD9_DEPENDENCY_CONSUMPTION_TIMEOUT_MS,
+): Promise<void> {
+  try {
+    await page.waitForFunction(
+      () => window.__bettertrackPd9DependencyConsumed === true,
+      undefined,
+      { timeout: timeoutMs },
+    );
+  } catch {
     throw new Error('PD9 Drive dependency was installed but not consumed by the vault provider.');
   }
 }
