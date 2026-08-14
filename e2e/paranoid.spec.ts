@@ -93,7 +93,7 @@ interface AlertFixture {
 test.use({ trace: 'off', screenshot: 'off', video: 'off' });
 
 test.describe('PD9 paranoid-mode end-to-end gate', () => {
-  test('normal account remains on the server store when the Drive seam is installed', async ({
+  test('normal account remains on the server store after opening the migration wizard with the Drive seam installed', async ({
     context,
   }, testInfo) => {
     const diagnostics: string[] = [];
@@ -117,6 +117,13 @@ test.describe('PD9 paranoid-mode end-to-end gate', () => {
         expect(
           await owner!.page.evaluate(() => window.__bettertrackE2EVaultDependencies !== undefined),
         ).toBe(true);
+        // Self-enforce the precondition above instead of leaving it to the
+        // comment: if a future reorder puts this step below a vault mount, the
+        // flag is already true here and this fails LOUDLY with that fact,
+        // rather than degrading into a re-render race on the 100 ms budget.
+        expect(
+          await owner!.page.evaluate(() => window.__bettertrackPd9DependencyConsumed === true),
+        ).toBe(false);
         await owner!.page.evaluate(() => {
           window.__bettertrackPd9DependencyConsumed = false;
         });
@@ -631,8 +638,14 @@ async function enableDriveOnly(page: Page, sensitive: Pd9SensitiveCanary[]): Pro
 async function openParanoidSetup(page: Page): Promise<void> {
   await page.goto('/control/privacy');
   await page.getByRole('button', { name: 'Open migration' }).click();
-  await assertPd9DriveInstalled(page);
+  // Heading FIRST, flag second, so the two failure modes stay distinguishable.
+  // On a cold Vite dev server the vault/crypto chunk is the slowest transform in
+  // the suite; asserting the flag first would report that slowness as
+  // "installed but not consumed" — the seam-regression diagnosis this whole
+  // change exists to make trustworthy. Once the wizard has rendered, the chunk
+  // demonstrably loaded, so a still-false flag can only mean seam drift.
   await expect(page.getByRole('heading', { name: 'What changes' })).toBeVisible();
+  await assertPd9DriveInstalled(page);
 }
 
 async function assertClientMoneyWithoutServerReads(
