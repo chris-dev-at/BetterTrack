@@ -224,6 +224,25 @@ describe('compose readiness and cross-container exports (#939)', () => {
     expect(dockerfile).toContain(`mkdir -p ${exportPath}`);
     expect(dockerfile).toContain('chown -R bettertrack:bettertrack /var/lib/bettertrack');
   });
+
+  it('keeps the gyp fallback toolchain in Docker build-only stages', () => {
+    const runnerMarker = 'AS runner';
+    const runnerMarkerIndex = dockerfile.indexOf(runnerMarker);
+
+    expect(runnerMarkerIndex, 'Dockerfile must define its final runner stage').toBeGreaterThan(-1);
+
+    const buildStages = dockerfile.slice(0, runnerMarkerIndex);
+    const runnerStage = dockerfile.slice(runnerMarkerIndex);
+
+    expect(
+      buildStages,
+      'Dockerfile must retain the node-gyp fallback toolchain in a build stage',
+    ).toContain('RUN apk add --no-cache python3 make g++');
+    expect(
+      runnerStage,
+      'Dockerfile invariant: build toolchain stays in build-only stages',
+    ).not.toContain('apk add');
+  });
 });
 
 describe('worker entry registers the durable notification consumer + bridge (guard 2)', () => {
