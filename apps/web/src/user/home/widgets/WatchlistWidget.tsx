@@ -66,10 +66,14 @@ export function WatchlistWidget({ settings, size }: WidgetProps) {
    */
   const active = lists.find((list) => list.id === settings.watchlistId) ?? lists[0] ?? null;
 
-  const items = (itemsQuery.data?.items ?? [])
-    .filter((item) => active !== null && item.watchlistId === active.id)
-    .sort((a, b) => a.sortOrder - b.sortOrder)
-    .slice(0, size === 's' ? 5 : MAX_ROWS);
+  const items = useMemo(
+    () =>
+      (itemsQuery.data?.items ?? [])
+        .filter((item) => active?.id !== undefined && item.watchlistId === active.id)
+        .sort((a, b) => a.sortOrder - b.sortOrder)
+        .slice(0, size === 's' ? 5 : MAX_ROWS),
+    [itemsQuery.data, active?.id, size],
+  );
 
   // Canonical ids keep a drag-only reorder on the same aggregate cache entry.
   // `items` was already capped above, so hidden rows never enter this request.
