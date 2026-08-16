@@ -37,8 +37,8 @@ describe('EmptyState', () => {
   test('uses compact vertical spacing when requested', () => {
     const { container } = render(<EmptyState title="Empty" compact />);
 
-    expect(container.firstElementChild).toHaveClass('py-10');
-    expect(container.firstElementChild).not.toHaveClass('py-16');
+    expect(container.firstElementChild).toHaveClass('py-8');
+    expect(container.firstElementChild).not.toHaveClass('py-12');
   });
 
   test('omits the CTA wrapper when not provided', () => {

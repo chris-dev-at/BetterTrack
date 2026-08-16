@@ -3,7 +3,61 @@ import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { expect, test } from 'vitest';
 
-import { Drawer, Field, Input, ODialog } from './components';
+import {
+  ChartFrame,
+  DataList,
+  DataRow,
+  Drawer,
+  Field,
+  Input,
+  ODialog,
+  Page,
+  StatePanel,
+  Surface,
+  SurfaceBody,
+  SurfaceHead,
+} from './components';
+
+test('content primitives compose one connected, semantic page surface', () => {
+  render(
+    <Page aria-label="Portfolio overview" width="wide">
+      <Surface>
+        <SurfaceHead sub="Across every account" title="Holdings" />
+        <SurfaceBody flush>
+          <DataList>
+            <DataRow>
+              <span>Alphabet</span>
+              <span className="bt-data-row__meta">+3.2%</span>
+            </DataRow>
+          </DataList>
+        </SurfaceBody>
+      </Surface>
+      <ChartFrame caption="Month to date" title="Performance">
+        <div>plot</div>
+      </ChartFrame>
+    </Page>,
+  );
+
+  expect(screen.getByLabelText('Portfolio overview')).toHaveClass('bt-page', 'bt-page--wide');
+  expect(screen.getByRole('list')).toContainElement(screen.getByRole('listitem'));
+  expect(screen.getByRole('figure')).toHaveTextContent('PerformanceplotMonth to date');
+});
+
+test('StatePanel exposes loading and error announcements without changing its hierarchy', () => {
+  const { rerender } = render(
+    <StatePanel kind="loading" title="Loading positions">
+      This may take a moment.
+    </StatePanel>,
+  );
+  expect(screen.getByRole('status')).toHaveTextContent('Loading positionsThis may take a moment.');
+
+  rerender(
+    <StatePanel kind="error" title="Positions unavailable">
+      Try again.
+    </StatePanel>,
+  );
+  expect(screen.getByRole('alert')).toHaveTextContent('Positions unavailableTry again.');
+});
 
 test('Field marks its control invalid and links the rendered error', () => {
   render(

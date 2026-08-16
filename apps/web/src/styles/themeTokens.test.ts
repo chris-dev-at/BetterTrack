@@ -532,8 +532,8 @@ describe('gold — owner final word (2026-08-07)', () => {
       );
     }
     // The dark side is a transcription of the literals these replaced, so the
-    // compensation could not move a dark pixel: 1px ring, 2px tab underline and
-    // focus outline, 3px active-rail dash.
+    // The ring now belongs to focus alone: selected in-page tabs use a tonal
+    // background, because the owner's gold edge is reserved for main nav.
     expect(pxToken(DARK, 'gold-hair')).toBe(1);
     expect(pxToken(DARK, 'gold-ring')).toBe(2);
     expect(pxToken(DARK, 'gold-edge')).toBe(3);
@@ -548,12 +548,12 @@ describe('gold — owner final word (2026-08-07)', () => {
       'outline: var(--bt-gold-ring) solid var(--bt-gold-graphic);', // :focus-visible
       'width: var(--bt-gold-edge);', // the active-rail dash
       'height: var(--bt-gold-edge);', // the bottom-bar dash
-      'border-bottom: var(--bt-gold-ring) solid transparent;', // the active tab
       'box-shadow: 0 0 0 var(--bt-gold-hair) var(--bt-gold-graphic);', // field focus
       'border: var(--bt-gold-hair) solid var(--bt-gold-graphic);', // the ⊕ pill
     ]) {
       expect(originCss, rule).toContain(rule);
     }
+    expect(originCss).not.toMatch(/\.bt-tab\.is-active\s*\{[^}]*gold/s);
   });
 
   /**

@@ -33,23 +33,15 @@ export function EmptyState({
   className,
 }: EmptyStateProps) {
   return (
-    <div
-      className={cx(
-        'flex flex-col items-center justify-center gap-4 text-center',
-        compact ? 'py-10' : 'py-16',
-        className,
-      )}
-    >
+    <div className={cx('bt-state bt-state--center', compact ? 'py-8' : 'py-12', className)}>
       {icon != null ? (
-        <span className="text-4xl" style={{ color: 'var(--bt-faint)' }} aria-hidden="true">
+        <span className="bt-state__icon" aria-hidden="true">
           {icon}
         </span>
       ) : null}
-      <div className="flex flex-col gap-1">
-        <p className="bt-empty__title">{title}</p>
-        {description ? <p className="bt-muted text-sm">{description}</p> : null}
-      </div>
-      {cta != null ? <div>{cta}</div> : null}
+      <p className="bt-state__title">{title}</p>
+      {description ? <p className="bt-state__body">{description}</p> : null}
+      {cta != null ? <div className="bt-state__action">{cta}</div> : null}
     </div>
   );
 }

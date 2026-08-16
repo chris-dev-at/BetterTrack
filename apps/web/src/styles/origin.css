@@ -200,6 +200,21 @@
   --bt-topbar-h: 60px;
   --bt-gutter: 48px;
   --bt-gutter-y: 28px;
+  /* Page-content geometry. The shell keeps its own fixed metrics above; these
+     are deliberately content-only so a page can become denser without moving
+     the rail, topbar or their interaction targets. Android's B2 surfaces use a
+     12dp card rhythm and 16dp internal gutters, which maps cleanly to the web. */
+  --bt-content-max: 1320px;
+  --bt-reading-max: 880px;
+  --bt-page-gap: 22px;
+  --bt-section-gap: 16px;
+  --bt-surface-pad-x: 18px;
+  --bt-surface-pad-y: 16px;
+  --bt-radius-card: 12px;
+  --bt-radius-control: 8px;
+  /* Dark separates content layers by tone; light needs a hairline because its
+     structural surfaces are intentionally all white. */
+  --bt-content-edge: transparent;
   /* Motion */
   --bt-t-fast: 160ms cubic-bezier(0.3, 0, 0.2, 1);
   --bt-t-panel: 320ms cubic-bezier(0.32, 0.72, 0.22, 1);
@@ -396,6 +411,7 @@
   --bt-chart-9: #6b8a1a; /* lime — mobile B2 §1.4 */
   --bt-chart-10: #8e46ad; /* purple */
   --bt-chart-cash: #7a828b; /* mobile B2 §1.4 — cash, outside the ramp */
+  --bt-content-edge: var(--bt-border);
 }
 
 /* ── Base canvas ─────────────────────────────────────────────────────────── */
@@ -806,6 +822,49 @@
   max-width: 880px;
 }
 
+/* Every redesigned page sits on this bounded, self-spacing content plane.
+   Keeping the width constraint inside the canvas makes 1440px layouts feel
+   composed while preserving the shell's exact grid and sticky behaviour. */
+.bt-page {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bt-page-gap);
+  width: min(100%, var(--bt-content-max));
+  min-width: 0;
+  margin-inline: auto;
+}
+
+.bt-page--wide {
+  --bt-content-max: 1480px;
+}
+
+.bt-page--narrow {
+  --bt-content-max: var(--bt-reading-max);
+}
+
+.bt-page > :is(.bt-page-head, .bt-section) {
+  margin-block: 0;
+}
+
+.bt-page-grid {
+  display: grid;
+  grid-template-columns: repeat(12, minmax(0, 1fr));
+  gap: var(--bt-section-gap);
+  min-width: 0;
+}
+
+.bt-page-grid > * {
+  min-width: 0;
+}
+
+.bt-page-grid__main {
+  grid-column: span 8;
+}
+
+.bt-page-grid__aside {
+  grid-column: span 4;
+}
+
 /* Mobile bottom bar */
 .bt-bottombar {
   position: fixed;
@@ -875,7 +934,7 @@
   align-items: flex-end;
   justify-content: space-between;
   gap: 12px 18px;
-  margin-bottom: 22px;
+  margin-bottom: var(--bt-page-gap);
 }
 
 .bt-page-head__titles {
@@ -883,15 +942,16 @@
 }
 
 .bt-page-title {
-  font-size: 28px;
-  font-weight: 640;
-  letter-spacing: -0.02em;
-  line-height: 1.15;
+  font-size: clamp(25px, calc(2.2 * var(--bt-vw)), 30px);
+  font-weight: 660;
+  letter-spacing: -0.028em;
+  line-height: 1.1;
   overflow-wrap: anywhere;
 }
 
 .bt-page-sub {
-  margin-top: 4px;
+  max-width: 68ch;
+  margin-top: 5px;
   color: var(--bt-muted);
   font-size: 13px;
 }
@@ -936,7 +996,7 @@
 }
 
 .bt-section {
-  margin-top: 34px;
+  margin-top: 30px;
 }
 
 .bt-section__head {
@@ -945,7 +1005,16 @@
   align-items: center;
   justify-content: space-between;
   gap: 10px;
-  margin-bottom: 14px;
+  margin-bottom: 12px;
+}
+
+.bt-section__eyebrow {
+  margin-bottom: 3px;
+  color: var(--bt-faint);
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
 }
 
 /* A money workspace is never allowed to make the page itself wider than the
@@ -1026,16 +1095,272 @@
 
 .bt-panel {
   background: var(--bt-surface);
-  border: 1px solid var(--bt-border);
-  border-radius: 8px;
+  border: 1px solid var(--bt-content-edge);
+  border-radius: var(--bt-radius-card);
 }
 
 .bt-panel--pad {
-  padding: 18px 20px;
+  padding: var(--bt-surface-pad-y) var(--bt-surface-pad-x);
 }
 
 .bt-panel--soft {
   background: var(--bt-surface-quiet);
+}
+
+/* Connected content card. It is intentionally separate from `.bt-panel`: the
+   latter remains a compatibility shell, while this grammar gives new pages a
+   named head/body/foot and prevents ad-hoc nested card stacks. */
+.bt-surface {
+  min-width: 0;
+  overflow: clip;
+  border: 1px solid var(--bt-content-edge);
+  border-radius: var(--bt-radius-card);
+  background: var(--bt-surface);
+}
+
+.bt-surface--quiet {
+  background: var(--bt-surface-quiet);
+}
+
+.bt-surface--raised {
+  background: var(--bt-surface-strong);
+  box-shadow: 0 0 0 1px var(--bt-raised-edge);
+}
+
+.bt-surface__head,
+.bt-surface__body,
+.bt-surface__foot {
+  min-width: 0;
+  padding: var(--bt-surface-pad-y) var(--bt-surface-pad-x);
+}
+
+.bt-surface__head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px 16px;
+}
+
+.bt-surface__head + :is(.bt-surface__body, .bt-data-list, .bt-state) {
+  border-top: 1px solid var(--bt-border);
+}
+
+.bt-surface__title {
+  color: var(--bt-text);
+  font-size: 14px;
+  font-weight: 630;
+  letter-spacing: -0.008em;
+}
+
+.bt-surface__sub {
+  max-width: 62ch;
+  margin-top: 2px;
+  color: var(--bt-muted);
+  font-size: 12px;
+}
+
+.bt-surface__actions,
+.bt-toolbar__actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+}
+
+.bt-surface__body--flush {
+  padding: 0;
+}
+
+.bt-surface__foot {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  border-top: 1px solid var(--bt-border);
+  background: var(--bt-surface-quiet);
+}
+
+/* Ruled groups are the default for repeated data. One surface owns the outer
+   shape; rows provide rhythm and state, so ten records still read as one set. */
+.bt-data-list {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.bt-data-list > * + * {
+  border-top: 1px solid var(--bt-border);
+}
+
+.bt-data-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px 18px;
+  min-width: 0;
+  min-height: 54px;
+  padding: 11px var(--bt-surface-pad-x);
+  transition: background var(--bt-t-fast);
+}
+
+:is(a, button).bt-data-row {
+  width: 100%;
+  border: 0;
+  background: none;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+:is(a, button).bt-data-row:hover {
+  background: var(--bt-surface-hover);
+}
+
+.bt-data-row__main,
+.bt-data-row__meta {
+  min-width: 0;
+}
+
+.bt-data-row__meta {
+  color: var(--bt-muted);
+  font-size: 12px;
+  text-align: right;
+}
+
+.bt-data-row__actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+/* Toolbars and forms share one wrapping rule. This is especially important at
+   390px: filters wrap within their region instead of widening the page. */
+.bt-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  justify-content: space-between;
+  gap: 10px 14px;
+  min-width: 0;
+  padding: 11px var(--bt-surface-pad-x);
+  border-block: 1px solid var(--bt-border);
+  background: var(--bt-surface-quiet);
+}
+
+.bt-toolbar__group {
+  display: flex;
+  flex: 1 1 280px;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 8px;
+  min-width: 0;
+}
+
+.bt-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px 16px;
+  min-width: 0;
+}
+
+.bt-form-grid > * {
+  min-width: 0;
+}
+
+.bt-form-grid__full {
+  grid-column: 1 / -1;
+}
+
+/* Metrics keep a shared baseline and chart frames integrate their controls,
+   plot and caption into one surface instead of boxing the plot on its own. */
+.bt-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  overflow: clip;
+  border: 1px solid var(--bt-content-edge);
+  border-radius: var(--bt-radius-card);
+  background: var(--bt-surface);
+}
+
+.bt-metrics > * {
+  min-width: 0;
+}
+
+.bt-metrics > * + * {
+  border-left: 1px solid var(--bt-border);
+}
+
+.bt-chart-frame {
+  min-width: 0;
+  overflow: clip;
+  border: 1px solid var(--bt-content-edge);
+  border-radius: var(--bt-radius-card);
+  background: var(--bt-surface);
+}
+
+.bt-chart-frame__plot {
+  min-width: 0;
+  padding: 6px var(--bt-surface-pad-x) var(--bt-surface-pad-y);
+}
+
+.bt-chart-frame__caption {
+  padding: 9px var(--bt-surface-pad-x);
+  border-top: 1px solid var(--bt-border);
+  color: var(--bt-muted);
+  font-size: 11.5px;
+}
+
+/* One component for loading, empty and error regions. Colour and iconography
+   reinforce the state; the heading/body/action ordering remains identical. */
+.bt-state {
+  display: grid;
+  justify-items: start;
+  gap: 6px;
+  min-width: 0;
+  padding: 26px var(--bt-surface-pad-x);
+  color: var(--bt-muted);
+}
+
+.bt-state--center {
+  justify-items: center;
+  text-align: center;
+}
+
+.bt-state__icon {
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  margin-bottom: 3px;
+  border-radius: 10px;
+  background: var(--bt-surface-soft);
+  color: var(--bt-faint);
+}
+
+.bt-state--error .bt-state__icon {
+  background: var(--bt-neg-soft);
+  color: var(--bt-neg);
+}
+
+.bt-state__title {
+  color: var(--bt-text);
+  font-size: 14px;
+  font-weight: 620;
+}
+
+.bt-state__body {
+  max-width: 54ch;
+  font-size: 12.5px;
+}
+
+.bt-state__action {
+  margin-top: 6px;
 }
 
 /* A ruled band: sections separated by internal 1px rules, no nested cards. */
@@ -1055,8 +1380,8 @@
 }
 
 .bt-stats--panel {
-  border: 1px solid var(--bt-border);
-  border-radius: 8px;
+  border: 1px solid var(--bt-content-edge);
+  border-radius: var(--bt-radius-card);
   background: var(--bt-surface);
   overflow: hidden;
 }
@@ -1432,9 +1757,12 @@ label:has(> :is(input, select, textarea):required)::after {
 .bt-tabs {
   display: flex;
   align-items: flex-end;
-  gap: 2px;
-  margin-bottom: 24px;
-  border-bottom: 1px solid var(--bt-border);
+  gap: 3px;
+  margin-bottom: 20px;
+  padding: 4px;
+  border: 1px solid var(--bt-content-edge);
+  border-radius: 10px;
+  background: var(--bt-surface-quiet);
   overflow-x: auto;
   scrollbar-width: none;
   -webkit-mask-image: linear-gradient(to right, black calc(100% - 28px), transparent);
@@ -1450,13 +1778,11 @@ label:has(> :is(input, select, textarea):required)::after {
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  min-height: 38px;
+  min-height: 34px;
   padding: 0 13px;
   border: 0;
-  /* Reserved on every tab, gold only on the active one — so widening it in
-     light thickens the marker without shifting one tab against another. */
-  border-bottom: var(--bt-gold-ring) solid transparent;
-  background: none;
+  border-radius: 7px;
+  background: transparent;
   color: var(--bt-muted);
   font: inherit;
   font-size: 13px;
@@ -1466,16 +1792,19 @@ label:has(> :is(input, select, textarea):required)::after {
   cursor: pointer;
   transition:
     color var(--bt-t-fast),
-    border-color var(--bt-t-fast);
+    background var(--bt-t-fast),
+    box-shadow var(--bt-t-fast);
 }
 
 .bt-tab:hover {
   color: var(--bt-text-soft);
+  background: var(--bt-surface-hover);
 }
 
 .bt-tab.is-active {
   color: var(--bt-text);
-  border-bottom-color: var(--bt-gold-graphic);
+  background: var(--bt-surface-strong);
+  box-shadow: 0 0 0 1px var(--bt-raised-edge);
 }
 
 .bt-tab__count {
@@ -1530,8 +1859,8 @@ label:has(> :is(input, select, textarea):required)::after {
 }
 
 .bt-table-wrap--panel {
-  border: 1px solid var(--bt-border);
-  border-radius: 8px;
+  border: 1px solid var(--bt-content-edge);
+  border-radius: var(--bt-radius-card);
   background: var(--bt-surface);
 }
 
@@ -2189,6 +2518,15 @@ label:has(> :is(input, select, textarea):required)::after {
     font-size: 23px;
   }
 
+  .bt-page-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .bt-page-grid__main,
+  .bt-page-grid__aside {
+    grid-column: 1;
+  }
+
   .bt-stats {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -2238,6 +2576,71 @@ label:has(> :is(input, select, textarea):required)::after {
      Keep this global: auth and portalled surfaces sit outside the app shell. */
   :is(input, select, textarea) {
     font-size: 16px !important;
+  }
+
+  :root {
+    --bt-page-gap: 16px;
+    --bt-section-gap: 12px;
+    --bt-surface-pad-x: 14px;
+    --bt-surface-pad-y: 14px;
+  }
+
+  .bt-page-head {
+    align-items: stretch;
+  }
+
+  .bt-page-head__titles,
+  .bt-page-head__actions {
+    flex: 1 1 100%;
+    width: 100%;
+  }
+
+  .bt-page-head__actions > :is(.bt-btn, a) {
+    flex: 1 1 auto;
+  }
+
+  .bt-surface__actions,
+  .bt-toolbar__actions {
+    width: 100%;
+  }
+
+  .bt-data-row {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 5px;
+    min-height: 58px;
+  }
+
+  .bt-data-row__meta {
+    text-align: left;
+  }
+
+  .bt-data-row__actions {
+    justify-content: flex-start;
+    width: 100%;
+  }
+
+  .bt-form-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .bt-form-grid__full {
+    grid-column: 1;
+  }
+
+  .bt-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .bt-metrics > * + * {
+    border-left: 0;
+  }
+
+  .bt-metrics > *:nth-child(even) {
+    border-left: 1px solid var(--bt-border);
+  }
+
+  .bt-metrics > *:nth-child(n + 3) {
+    border-top: 1px solid var(--bt-border);
   }
 
   .bt-btn--sm.bt-btn--icon,

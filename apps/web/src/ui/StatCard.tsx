@@ -18,16 +18,10 @@ export interface StatCardProps {
  */
 export function StatCard({ label, value, subValue, className }: StatCardProps) {
   return (
-    <div className={cx('bt-panel p-4', className)}>
+    <div className={cx('bt-stat', className)}>
       <p className="bt-stat__label">{label}</p>
-      <p className="bt-num" style={{ fontSize: 20, fontWeight: 630, marginTop: 2 }}>
-        {value}
-      </p>
-      {subValue != null ? (
-        <p className="bt-meta" style={{ marginTop: 2 }}>
-          {subValue}
-        </p>
-      ) : null}
+      <p className="bt-stat__value">{value}</p>
+      {subValue != null ? <p className="bt-stat__delta bt-muted">{subValue}</p> : null}
     </div>
   );
 }

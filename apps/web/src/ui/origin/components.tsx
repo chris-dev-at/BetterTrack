@@ -98,18 +98,43 @@ export function PageHead({
   );
 }
 
+export function Page({
+  width = 'default',
+  className,
+  ...rest
+}: HTMLAttributes<HTMLDivElement> & { width?: 'default' | 'wide' | 'narrow' }) {
+  return (
+    <div
+      className={cx(
+        'bt-page',
+        width === 'wide' && 'bt-page--wide',
+        width === 'narrow' && 'bt-page--narrow',
+        className,
+      )}
+      {...rest}
+    />
+  );
+}
+
+export function PageGrid({ className, ...rest }: HTMLAttributes<HTMLDivElement>) {
+  return <div className={cx('bt-page-grid', className)} {...rest} />;
+}
+
 export function SectionHead({
   title,
   sub,
   actions,
+  eyebrow,
 }: {
   title: ReactNode;
   sub?: ReactNode;
   actions?: ReactNode;
+  eyebrow?: ReactNode;
 }) {
   return (
     <div className="bt-section__head">
       <div>
+        {eyebrow ? <div className="bt-section__eyebrow">{eyebrow}</div> : null}
         <h2 className="bt-h2">{title}</h2>
         {sub ? (
           <p className="bt-meta" style={{ marginTop: 2 }}>
@@ -118,6 +143,137 @@ export function SectionHead({
         ) : null}
       </div>
       {actions ? <div className="bt-page-head__actions">{actions}</div> : null}
+    </div>
+  );
+}
+
+export function Surface({
+  tone = 'default',
+  className,
+  ...rest
+}: HTMLAttributes<HTMLDivElement> & { tone?: 'default' | 'quiet' | 'raised' }) {
+  return (
+    <div
+      className={cx('bt-surface', tone !== 'default' && `bt-surface--${tone}`, className)}
+      {...rest}
+    />
+  );
+}
+
+export function SurfaceHead({
+  title,
+  sub,
+  actions,
+  className,
+  ...rest
+}: HTMLAttributes<HTMLDivElement> & {
+  title: ReactNode;
+  sub?: ReactNode;
+  actions?: ReactNode;
+}) {
+  return (
+    <div className={cx('bt-surface__head', className)} {...rest}>
+      <div>
+        <div className="bt-surface__title">{title}</div>
+        {sub ? <div className="bt-surface__sub">{sub}</div> : null}
+      </div>
+      {actions ? <div className="bt-surface__actions">{actions}</div> : null}
+    </div>
+  );
+}
+
+export function SurfaceBody({
+  flush = false,
+  className,
+  ...rest
+}: HTMLAttributes<HTMLDivElement> & { flush?: boolean }) {
+  return (
+    <div
+      className={cx('bt-surface__body', flush && 'bt-surface__body--flush', className)}
+      {...rest}
+    />
+  );
+}
+
+export function SurfaceFoot({ className, ...rest }: HTMLAttributes<HTMLDivElement>) {
+  return <div className={cx('bt-surface__foot', className)} {...rest} />;
+}
+
+export function DataList({ className, ...rest }: HTMLAttributes<HTMLDivElement>) {
+  return <div className={cx('bt-data-list', className)} role="list" {...rest} />;
+}
+
+export function DataRow({ className, ...rest }: HTMLAttributes<HTMLDivElement>) {
+  return <div className={cx('bt-data-row', className)} role="listitem" {...rest} />;
+}
+
+export function Toolbar({ className, ...rest }: HTMLAttributes<HTMLDivElement>) {
+  return <div className={cx('bt-toolbar', className)} {...rest} />;
+}
+
+export function FormGrid({ className, ...rest }: HTMLAttributes<HTMLDivElement>) {
+  return <div className={cx('bt-form-grid', className)} {...rest} />;
+}
+
+export function MetricGrid({ className, ...rest }: HTMLAttributes<HTMLDivElement>) {
+  return <div className={cx('bt-metrics', className)} {...rest} />;
+}
+
+export function ChartFrame({
+  title,
+  sub,
+  actions,
+  caption,
+  children,
+  className,
+  ...rest
+}: HTMLAttributes<HTMLElement> & {
+  title: ReactNode;
+  sub?: ReactNode;
+  actions?: ReactNode;
+  caption?: ReactNode;
+}) {
+  return (
+    <figure className={cx('bt-chart-frame', className)} {...rest}>
+      <SurfaceHead actions={actions} sub={sub} title={title} />
+      <div className="bt-chart-frame__plot">{children}</div>
+      {caption ? <figcaption className="bt-chart-frame__caption">{caption}</figcaption> : null}
+    </figure>
+  );
+}
+
+export function StatePanel({
+  kind = 'empty',
+  title,
+  children,
+  action,
+  icon,
+  center = false,
+  className,
+}: {
+  kind?: 'empty' | 'loading' | 'error';
+  title: ReactNode;
+  children?: ReactNode;
+  action?: ReactNode;
+  icon?: ReactNode;
+  center?: boolean;
+  className?: string;
+}) {
+  return (
+    <div
+      aria-live={kind === 'loading' ? 'polite' : undefined}
+      className={cx(
+        'bt-state',
+        center && 'bt-state--center',
+        kind === 'error' && 'bt-state--error',
+        className,
+      )}
+      role={kind === 'error' ? 'alert' : kind === 'loading' ? 'status' : undefined}
+    >
+      {icon ? <div className="bt-state__icon">{icon}</div> : null}
+      <div className="bt-state__title">{title}</div>
+      {children ? <div className="bt-state__body">{children}</div> : null}
+      {action ? <div className="bt-state__action">{action}</div> : null}
     </div>
   );
 }
