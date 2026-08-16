@@ -18,7 +18,10 @@ const V1 = `${API_BASE_URL}/api/v1`;
 /** Every mutation needs the CSRF belt-and-suspenders header (§6.13). */
 const CSRF_HEADERS = { 'X-Requested-With': 'BetterTrack' };
 
-/** Jan 1 avoids market-history assist and stays in the current Vienna tax year, so no unlock. */
+/**
+ * A fixed early-January day keeps market-history assist from perturbing the
+ * entered price and stays in the current Vienna tax year, so no unlock is needed.
+ */
 const CURRENT_VIENNA_YEAR = new Intl.DateTimeFormat('en', {
   timeZone: 'Europe/Vienna',
   year: 'numeric',
