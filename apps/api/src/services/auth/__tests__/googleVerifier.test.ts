@@ -3,9 +3,9 @@ import {
   exportJWK,
   generateKeyPair,
   SignJWT,
+  type CryptoKey,
   type JWK,
   type JWTPayload,
-  type KeyLike,
 } from 'jose';
 import { beforeAll, describe, expect, it } from 'vitest';
 
@@ -21,7 +21,7 @@ import { createGoogleVerifier, GOOGLE_JWKS_URI, GOOGLE_TOKEN_ENDPOINT } from '..
 const CLIENT_ID = '123.apps.googleusercontent.com';
 const KID = 'test-key-1';
 
-let privateKey: KeyLike;
+let privateKey: CryptoKey;
 let keyResolver: ReturnType<typeof createLocalJWKSet>;
 
 beforeAll(async () => {
@@ -56,7 +56,7 @@ function claimedOrDefault(
 
 async function signIdToken(
   claims: TokenClaims = {},
-  signingKey: KeyLike = privateKey,
+  signingKey: CryptoKey = privateKey,
 ): Promise<string> {
   const payload = {
     sub: claimedOrDefault(claims, 'sub', 'google-sub-abc'),
