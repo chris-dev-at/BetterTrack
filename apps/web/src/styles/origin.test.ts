@@ -193,6 +193,9 @@ describe('Origin phone chrome', () => {
 
 describe('Origin accessibility safety nets', () => {
   it('styles component-rendered required markers instead of generated label content', () => {
+    expect(originCss).toMatch(
+      /\.bt-field__label \{[^}]*display: flex;[^}]*column-gap: 2px;[^}]*\}/,
+    );
     expect(originCss).toMatch(/\.bt-field__required-marker \{[^}]*color: var\(--bt-neg\);/);
     expect(originCss).not.toContain('label::after');
     expect(originCss).not.toContain("content: ' *'");
