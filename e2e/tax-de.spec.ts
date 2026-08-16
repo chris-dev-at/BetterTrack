@@ -1,7 +1,7 @@
 import { expect, request as newRequestContext, test, type Page } from '@playwright/test';
 
 import { API_BASE_URL } from './support/config';
-import { relockTaxYear, unlockTaxYear } from './support/dates';
+import { relockTaxYear, unlockTaxYear } from './support/taxYears';
 import { provisionUser } from './support/users';
 import { loginAsAdmin } from './support/adminApi';
 import { cashSourceAction, cashSourceRow } from './support/cashSurface';
