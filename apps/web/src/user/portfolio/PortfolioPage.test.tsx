@@ -1218,6 +1218,32 @@ describe('PortfolioPage — recent-transactions source filter', () => {
     expect(within(recent).queryByLabelText('Source')).not.toBeInTheDocument();
   });
 
+  test('keeps a multi-source filter clearable when its selected page is empty', async () => {
+    const manualTransaction = TXNS.items[0]! as Transaction;
+    const sourceTags = ['manual', 'standing-order'];
+    vi.mocked(listTransactions).mockImplementation(async (_portfolioId, params = {}) => ({
+      items: params.source === 'standing-order' ? [] : [manualTransaction],
+      nextCursor: null,
+      ...(params.includeSourceTags ? { sourceTags } : {}),
+    }));
+    const user = userEvent.setup();
+    renderPage();
+
+    const recent = await screen.findByRole('region', { name: 'Recent transactions' });
+    const filter = within(recent).getByLabelText('Source');
+    await user.selectOptions(filter, 'standing-order');
+
+    await waitFor(() =>
+      expect(within(recent).getByText('No transactions for this source.')).toBeInTheDocument(),
+    );
+    expect(within(recent).getByLabelText('Source')).toBeInTheDocument();
+
+    await user.selectOptions(filter, 'all');
+    await waitFor(() =>
+      expect(within(recent).getByRole('link', { name: 'AAPL' })).toBeInTheDocument(),
+    );
+  });
+
   test('renders the full-ledger newest eight and refetches a selected source at the boundary', async () => {
     const base = TXNS.items[0]! as Transaction;
     const transaction = (
@@ -1296,6 +1322,9 @@ describe('PortfolioPage — recent-transactions source filter', () => {
           .getAllByRole('link')
           .map((link) => link.textContent),
       ).toEqual(standingExpected.map((row) => row.asset.symbol)),
+    );
+    expect(within(recent).getAllByText('Standing order', { selector: 'span' })).toHaveLength(
+      standingExpected.length,
     );
     expect(vi.mocked(listTransactions)).toHaveBeenCalledWith(
       DEFAULT_PORTFOLIO_ID,

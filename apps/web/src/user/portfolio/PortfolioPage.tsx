@@ -455,7 +455,7 @@ function RecentTransactionsSection({
   // sources (anti-bloat — a pure-manual ledger never sees it).
   const showFilter = sourceTags.length > 1;
 
-  if (transactions.length === 0) return null;
+  if (transactions.length === 0 && !showFilter) return null;
 
   return (
     <section
@@ -483,7 +483,11 @@ function RecentTransactionsSection({
           </label>
         ) : null}
       </div>
-      {phone ? (
+      {transactions.length === 0 ? (
+        <p className="bt-meta" style={{ padding: '10px 0' }}>
+          {t('portfolio.overview.recentTransactions.emptyForSource')}
+        </p>
+      ) : phone ? (
         <ul className="bt-phone-card-list">
           {transactions.map((transaction) => (
             <li className="bt-phone-card" key={transaction.id}>
