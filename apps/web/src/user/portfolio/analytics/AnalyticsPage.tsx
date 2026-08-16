@@ -22,7 +22,19 @@ import { getAnalyticsSeries, type AnalyticsSeriesParams } from '../../../lib/ana
 import { cx } from '../../../lib/cx';
 import { EM_DASH, formatDate, formatPercent, formatSignedPercent } from '../../../lib/format';
 import { EmptyState, Skeleton } from '../../../ui';
-import { Button, PageHead, Stat, StatStrip } from '../../../ui/origin';
+import {
+  Badge,
+  Button,
+  Page,
+  PageHead,
+  SectionHead,
+  Stat,
+  StatStrip,
+  Surface,
+  SurfaceBody,
+  SurfaceHead,
+  Toolbar,
+} from '../../../ui/origin';
 import { PriceChart, useChartDisplayMode } from '../../../ui/charts';
 import type { BenchmarkSeries, ChartPoint } from '../../../ui/charts';
 import { Alert } from '../../components/ui';
@@ -411,17 +423,17 @@ export function AnalyticsPage() {
   // ── Loading / error / empty ──
   if (portfoliosQuery.isLoading || (portfolioId !== null && portfolioQuery.isLoading)) {
     return (
-      <div className="flex flex-col gap-6">
+      <Page width="wide" className="bt-analytics-page bt-money-surface">
         <Skeleton height="h-8" width="w-48" />
         <Skeleton height="h-80" />
         <Skeleton height="h-40" />
-      </div>
+      </Page>
     );
   }
 
   if (portfoliosQuery.isError || (portfolioId !== null && portfolioQuery.isError)) {
     return (
-      <div className="flex flex-col gap-4">
+      <Page width="wide" className="bt-analytics-page bt-money-surface">
         <PageHeader t={t} />
         <Alert tone="error">{t('portfolio.analytics.loadError')}</Alert>
         <div>
@@ -434,13 +446,13 @@ export function AnalyticsPage() {
             {t('common.retry')}
           </Button>
         </div>
-      </div>
+      </Page>
     );
   }
 
   if (portfolioId === null) {
     return (
-      <div className="flex flex-col gap-6">
+      <Page width="wide" className="bt-analytics-page bt-money-surface">
         <PageHeader t={t} />
         <EmptyState
           icon="📊"
@@ -452,27 +464,27 @@ export function AnalyticsPage() {
             </Link>
           }
         />
-      </div>
+      </Page>
     );
   }
 
   if (assets.length === 0) {
     return (
-      <div className="flex flex-col gap-6">
+      <Page width="wide" className="bt-analytics-page bt-money-surface">
         <PageHeader t={t} />
         <EmptyState
           icon="📊"
           title={t('portfolio.analytics.empty.title')}
           description={t('portfolio.analytics.empty.description')}
         />
-      </div>
+      </Page>
     );
   }
 
   const chartLoading = analyticsQuery.isLoading || (overlayAssets && overlayHistory.isLoading);
 
   return (
-    <div className="bt-money-surface flex flex-col gap-8">
+    <Page width="wide" className="bt-analytics-page bt-money-surface">
       <PageHeader t={t} />
 
       {analyticsQuery.isError ? (
@@ -488,71 +500,87 @@ export function AnalyticsPage() {
         </div>
       ) : null}
 
-      {/* Top controls: display mode, range presets + custom window, inflation. */}
-      <section className="flex flex-col gap-4">
-        <div className="flex flex-wrap items-end justify-between gap-4">
-          <div className="flex flex-wrap items-center gap-2">
-            <ModeToggle t={t} mode={mode} onChange={setMode} />
-            {!paranoid ? (
-              <InflationControl
-                t={t}
-                inflation={inflation}
-                onInflationChange={setInflation}
-                rate={inflationRate}
-                onRateChange={setInflationRate}
-                presets={data?.inflationPresets ?? []}
-              />
-            ) : null}
-          </div>
-        </div>
-
-        <RangeControl
-          t={t}
-          preset={preset}
-          onPreset={setPreset}
-          customFrom={customFrom}
-          customTo={customTo}
-          onCustomFrom={setCustomFrom}
-          onCustomTo={setCustomTo}
-          resolvedFrom={data?.from}
-          resolvedTo={data?.to}
+      {/* One connected analysis surface owns context, controls, plot and filters. */}
+      <Surface className="bt-analytics-workspace">
+        <SurfaceHead
+          title={data?.primary.label ?? portfolio?.name ?? t('portfolio.analytics.title')}
+          sub={
+            data?.from && data.to
+              ? `${formatDate(data.from)} – ${formatDate(data.to)}`
+              : t('portfolio.analytics.chart.ariaLabel')
+          }
+          actions={<ModeToggle t={t} mode={mode} onChange={setMode} />}
         />
-      </section>
 
-      {!paranoid ? (
-        <CompareControl value={compare} onChange={setCompare} currentPortfolioId={portfolioId} />
-      ) : null}
+        <Toolbar className="bt-analytics-toolbar">
+          <RangeControl
+            t={t}
+            preset={preset}
+            onPreset={setPreset}
+            customFrom={customFrom}
+            customTo={customTo}
+            onCustomFrom={setCustomFrom}
+            onCustomTo={setCustomTo}
+            resolvedFrom={data?.from}
+            resolvedTo={data?.to}
+          />
+          {!paranoid ? (
+            <InflationControl
+              t={t}
+              inflation={inflation}
+              onInflationChange={setInflation}
+              rate={inflationRate}
+              onRateChange={setInflationRate}
+              presets={data?.inflationPresets ?? []}
+            />
+          ) : null}
+        </Toolbar>
 
-      {/* Main graph. */}
-      <section
-        aria-label={t('portfolio.analytics.chart.ariaLabel')}
-        className="flex flex-col gap-3"
-      >
-        {data?.inflation ? (
-          <p className="bt-meta flex items-center gap-2">
-            <span
-              className="bt-badge bt-badge--gold"
-              style={{ textTransform: 'uppercase', fontSize: 10.5, letterSpacing: '0.05em' }}
-            >
-              {t('portfolio.analytics.inflation.realTermsBadge')}
-            </span>
-            {t('portfolio.analytics.inflation.realTermsHint')}
-          </p>
+        {!paranoid ? (
+          <CompareControl value={compare} onChange={setCompare} currentPortfolioId={portfolioId} />
         ) : null}
-        <PriceChart
-          series={primaryPoints}
-          mode={isPerf ? 'baseline' : 'area'}
-          percentValues={isPerf}
-          balanceSeries={balancePoints}
-          balanceCurrency={balanceQuery.data?.baseCurrency ?? data?.baseCurrency}
-          valueCurrency={data?.baseCurrency}
-          overlays={overlays}
-          showRangeToggle={false}
-          loading={chartLoading}
-          emptyMessage={t('portfolio.analytics.chart.emptyMessage')}
-          ariaLabel={t('portfolio.analytics.chart.ariaLabel')}
-        />
-      </section>
+
+        <SurfaceBody className="bt-analytics-chart-body">
+          {data?.inflation ? (
+            <p className="bt-analytics-real-terms bt-meta">
+              <Badge tone="gold">{t('portfolio.analytics.inflation.realTermsBadge')}</Badge>
+              {t('portfolio.analytics.inflation.realTermsHint')}
+            </p>
+          ) : null}
+          <section
+            aria-label={t('portfolio.analytics.chart.ariaLabel')}
+            className="bt-analytics-chart-region"
+          >
+            <PriceChart
+              series={primaryPoints}
+              mode={isPerf ? 'baseline' : 'area'}
+              percentValues={isPerf}
+              balanceSeries={balancePoints}
+              balanceCurrency={balanceQuery.data?.baseCurrency ?? data?.baseCurrency}
+              valueCurrency={data?.baseCurrency}
+              overlays={overlays}
+              showRangeToggle={false}
+              loading={chartLoading}
+              emptyMessage={t('portfolio.analytics.chart.emptyMessage')}
+              ariaLabel={t('portfolio.analytics.chart.ariaLabel')}
+            />
+          </section>
+        </SurfaceBody>
+
+        {!paranoid ? (
+          <VisibilityFilters
+            t={t}
+            assets={assets}
+            hidden={hidden}
+            onToggleAsset={toggleHidden}
+            presentGroups={presentGroups}
+            excludedGroups={excludedGroups}
+            onToggleGroup={toggleGroup}
+            overlayAssets={overlayAssets}
+            onToggleOverlay={() => setOverlayAssets((v) => !v)}
+          />
+        ) : null}
+      </Surface>
 
       {/* Side-by-side stats: primary + optional compare. */}
       {data ? (
@@ -574,28 +602,15 @@ export function AnalyticsPage() {
         </section>
       ) : null}
 
-      {/* Visibility & overlay filters. */}
-      {!paranoid ? (
-        <VisibilityFilters
-          t={t}
-          assets={assets}
-          hidden={hidden}
-          onToggleAsset={toggleHidden}
-          presentGroups={presentGroups}
-          excludedGroups={excludedGroups}
-          onToggleGroup={toggleGroup}
-          overlayAssets={overlayAssets}
-          onToggleOverlay={() => setOverlayAssets((v) => !v)}
-        />
-      ) : null}
-
       {/* Per-asset contribution table (visible set). */}
-      <section className="flex flex-col gap-3">
-        <h2 className="bt-h2">{t('portfolio.analytics.contribution.sectionHeading')}</h2>
-        <ContributionTable
-          rows={data?.contributions ?? []}
-          baseCurrency={data?.baseCurrency ?? 'EUR'}
-        />
+      <section className="bt-section">
+        <SectionHead title={t('portfolio.analytics.contribution.sectionHeading')} />
+        <Surface className="bt-analytics-contribution-surface">
+          <ContributionTable
+            rows={data?.contributions ?? []}
+            baseCurrency={data?.baseCurrency ?? 'EUR'}
+          />
+        </Surface>
       </section>
 
       {/* AI insights (§13.5 V5-P12) — hidden entirely unless the capability read
@@ -603,7 +618,7 @@ export function AnalyticsPage() {
       <NormalModeOnly>
         <AiInsightsPanel portfolioId={portfolioId} hasHoldings={assets.length > 0} />
       </NormalModeOnly>
-    </div>
+    </Page>
   );
 }
 
@@ -686,13 +701,12 @@ function InflationControl({
     });
   };
   return (
-    <div className="flex flex-wrap items-center gap-2">
+    <div className="bt-analytics-inflation">
       <select
         aria-label={t('portfolio.analytics.inflation.label')}
         value={inflation}
         onChange={(e) => onInflationChange(e.target.value as 'none' | AnalyticsInflationMode)}
-        className="bt-select"
-        style={{ width: 'auto', minHeight: 30, padding: '3px 28px 3px 10px', fontSize: 12.5 }}
+        className="bt-select bt-analytics-inflation__select"
       >
         <option value="none">{labels.none}</option>
         {ANALYTICS_INFLATION_MODES.map((id) => (
@@ -702,7 +716,7 @@ function InflationControl({
         ))}
       </select>
       {inflation === 'flat' ? (
-        <span className="flex items-center gap-1">
+        <span className="bt-analytics-inflation__rate">
           <input
             type="number"
             inputMode="decimal"
@@ -710,8 +724,7 @@ function InflationControl({
             value={rate}
             onChange={(e) => onRateChange(e.target.value)}
             aria-label={t('portfolio.analytics.inflation.rateLabel')}
-            className="bt-input bt-num w-20"
-            style={{ minHeight: 30, fontSize: 12.5 }}
+            className="bt-input bt-num"
           />
           <span className="bt-meta">{t('portfolio.analytics.inflation.rateSuffix')}</span>
         </span>
@@ -751,11 +764,11 @@ function RangeControl({
     custom: t('portfolio.analytics.range.custom'),
   };
   return (
-    <section aria-label={t('portfolio.analytics.range.heading')} className="flex flex-col gap-2">
-      <div className="flex flex-wrap items-center gap-2">
+    <section aria-label={t('portfolio.analytics.range.heading')} className="bt-analytics-range">
+      <div className="bt-analytics-range__top">
         <div
           aria-label={t('portfolio.analytics.range.heading')}
-          className="bt-seg flex-wrap"
+          className="bt-seg bt-analytics-range__seg"
           role="group"
         >
           {RANGE_PRESETS.map((p) => (
@@ -774,14 +787,13 @@ function RangeControl({
         ) : null}
       </div>
       {preset === 'custom' ? (
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="bt-analytics-range__custom">
           <input
             type="date"
             value={customFrom}
             onChange={(e) => onCustomFrom(e.target.value)}
             aria-label={t('portfolio.analytics.range.fromLabel')}
             className="bt-input"
-            style={{ width: 'auto', minHeight: 30, fontSize: 12.5 }}
           />
           <span aria-hidden="true" className="bt-muted">
             –
@@ -792,7 +804,6 @@ function RangeControl({
             onChange={(e) => onCustomTo(e.target.value)}
             aria-label={t('portfolio.analytics.range.toLabel')}
             className="bt-input"
-            style={{ width: 'auto', minHeight: 30, fontSize: 12.5 }}
           />
         </div>
       ) : null}
@@ -825,18 +836,22 @@ function StatsBlock({
           {label}
         </span>
       </div>
-      <StatStrip panel>
+      <StatStrip panel className="bt-analytics-stats">
         <Stat
           label={t('portfolio.analytics.stats.totalReturn')}
-          value={formatSignedPercent(stats.totalReturnPct)}
+          value={<SemanticPercent value={stats.totalReturnPct} />}
         />
         <Stat
           label={t('portfolio.analytics.stats.cagr')}
-          value={formatSignedPercent(stats.cagrPct)}
+          value={<SemanticPercent value={stats.cagrPct} />}
         />
         <Stat
           label={t('portfolio.analytics.stats.maxDrawdown')}
-          value={formatPercent(stats.maxDrawdownPct)}
+          value={
+            <span className={stats.maxDrawdownPct < 0 ? 'bt-neg' : undefined}>
+              {formatPercent(stats.maxDrawdownPct)}
+            </span>
+          }
         />
         <Stat
           label={t('portfolio.analytics.stats.bestDay')}
@@ -855,10 +870,18 @@ function DayStat({ day }: { day: { date: string; returnPct: number } | null }) {
   if (!day) return <span className="bt-muted">{EM_DASH}</span>;
   return (
     <span className="flex flex-col">
-      <span>{formatSignedPercent(day.returnPct)}</span>
+      <SemanticPercent value={day.returnPct} />
       <span className="bt-meta" style={{ fontWeight: 400 }}>
         {formatDate(day.date)}
       </span>
+    </span>
+  );
+}
+
+function SemanticPercent({ value }: { value: number | null }) {
+  return (
+    <span className={value == null ? 'bt-muted' : value > 0 ? 'bt-pos' : value < 0 ? 'bt-neg' : ''}>
+      {formatSignedPercent(value)}
     </span>
   );
 }
@@ -885,25 +908,25 @@ function VisibilityFilters({
   onToggleOverlay: () => void;
 }) {
   return (
-    <section className="bt-panel bt-panel--pad bt-panel--soft flex flex-col gap-4">
-      <div className="flex flex-wrap items-center justify-between gap-2">
+    <section className="bt-analytics-filters">
+      <div className="bt-analytics-filters__head">
         <h2 className="bt-label">{t('portfolio.analytics.filters.heading')}</h2>
         <button
           type="button"
           aria-pressed={overlayAssets}
           onClick={onToggleOverlay}
           title={t('portfolio.analytics.filters.overlayHint')}
-          className={cx('bt-subtab', overlayAssets && 'is-active')}
+          className={cx('bt-subtab bt-analytics-filter-chip', overlayAssets && 'is-active')}
         >
           {t('portfolio.analytics.filters.overlayToggle')}
         </button>
       </div>
 
-      <div className="flex flex-col gap-1.5">
+      <div className="bt-analytics-filter-group">
         <span className="bt-meta" style={{ fontWeight: 550 }}>
           {t('portfolio.analytics.filters.assetsHeading')}
         </span>
-        <div className="flex flex-wrap gap-1.5">
+        <div className="bt-analytics-filter-chips">
           {assets.map((asset) => {
             const shown = !hidden.has(asset.id);
             return (
@@ -921,11 +944,11 @@ function VisibilityFilters({
       </div>
 
       {presentGroups.length > 0 ? (
-        <div className="flex flex-col gap-1.5">
+        <div className="bt-analytics-filter-group">
           <span className="bt-meta" style={{ fontWeight: 550 }}>
             {t('portfolio.analytics.filters.groupsHeading')}
           </span>
-          <div className="flex flex-wrap gap-1.5">
+          <div className="bt-analytics-filter-chips">
             {presentGroups.map((key) => {
               const included = !excludedGroups.has(key);
               const label = t(`portfolio.analytics.groups.${key}`);
@@ -964,8 +987,7 @@ function FilterChip({
       aria-pressed={active}
       aria-label={ariaLabel}
       onClick={onClick}
-      className={cx('bt-subtab', active ? 'is-active' : 'line-through')}
-      style={{ borderRadius: 999 }}
+      className={cx('bt-subtab bt-analytics-filter-chip', active ? 'is-active' : 'line-through')}
     >
       {children}
     </button>

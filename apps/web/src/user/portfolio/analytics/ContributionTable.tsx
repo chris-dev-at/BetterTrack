@@ -31,7 +31,7 @@ export function ContributionTable({
 
   if (rows.length === 0) {
     return (
-      <p className="bt-panel bt-panel--soft bt-muted px-3 py-4 text-sm">
+      <p className="bt-analytics-contribution-empty bt-muted">
         {t('portfolio.analytics.contribution.empty')}
       </p>
     );
@@ -40,8 +40,8 @@ export function ContributionTable({
   const showContribution = rows.some((row) => row.contributionPct !== null);
 
   return (
-    <div className="bt-phone-scroll-table -mx-4 overflow-x-auto px-4 sm:mx-0 sm:px-0">
-      <table className="w-full min-w-[36rem] border-collapse text-sm">
+    <div className="bt-phone-scroll-table bt-analytics-contribution-table">
+      <table className="w-full border-collapse text-sm">
         <caption className="sr-only">{t('portfolio.analytics.contribution.caption')}</caption>
         <thead>
           <tr className="bt-label text-left" style={{ borderBottom: '1px solid var(--bt-border)' }}>
@@ -69,25 +69,47 @@ export function ContributionTable({
         </thead>
         <tbody>
           {rows.map((row) => (
-            <tr key={row.asset.id} className="">
-              <td className="bt-phone-scroll-table__lead py-2 pr-3">
+            <tr key={row.asset.id} className="bt-analytics-contribution-row">
+              <td
+                className="bt-phone-scroll-table__lead bt-analytics-contribution-asset py-2 pr-3"
+                data-label={t('portfolio.analytics.contribution.asset')}
+              >
                 <span className="bt-row-title">{row.asset.symbol}</span>
                 <span className="bt-row-sub ml-2 truncate">{row.asset.name}</span>
               </td>
-              <td className="py-2 pr-3 text-right">
+              <td
+                className="py-2 pr-3 text-right"
+                data-label={t('portfolio.analytics.contribution.value')}
+              >
                 <MoneyText amount={row.value} currency={baseCurrency} />
               </td>
-              <td className="py-2 pr-3 text-right">
+              <td
+                className="py-2 pr-3 text-right"
+                data-label={t('portfolio.analytics.contribution.cost')}
+              >
                 <MoneyText amount={row.cost} currency={baseCurrency} />
               </td>
-              <td className="py-2 pr-3 text-right">
+              <td
+                className="bt-analytics-contribution-delta py-2 pr-3 text-right"
+                data-label={t('portfolio.analytics.contribution.pnl')}
+              >
                 <MoneyText amount={row.pnl} currency={baseCurrency} signed />
               </td>
-              <td className="bt-soft py-2 pr-3 text-right tabular-nums">
+              <td
+                className="bt-soft py-2 pr-3 text-right tabular-nums"
+                data-label={t('portfolio.analytics.contribution.weight')}
+              >
                 {formatPercent(row.weight * 100)}
               </td>
               {showContribution ? (
-                <td className="bt-soft py-2 text-right tabular-nums">
+                <td
+                  className={
+                    row.contributionPct == null
+                      ? 'bt-muted py-2 text-right tabular-nums'
+                      : `${row.contributionPct > 0 ? 'bt-pos' : row.contributionPct < 0 ? 'bt-neg' : 'bt-soft'} py-2 text-right tabular-nums`
+                  }
+                  data-label={t('portfolio.analytics.contribution.contribution')}
+                >
                   {row.contributionPct === null
                     ? EM_DASH
                     : formatSignedPercent(row.contributionPct)}

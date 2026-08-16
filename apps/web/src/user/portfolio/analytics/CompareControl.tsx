@@ -72,8 +72,8 @@ export function CompareControl({
   ];
 
   return (
-    <div className="bt-panel bt-panel--soft flex flex-col gap-3 p-3">
-      <div className="flex flex-wrap items-center justify-between gap-2">
+    <div className="bt-analytics-compare">
+      <div className="bt-analytics-compare__head">
         <span className="bt-label">{t('portfolio.analytics.compare.heading')}</span>
         {value ? (
           <span className="bt-meta">
@@ -85,7 +85,7 @@ export function CompareControl({
       <div
         role="group"
         aria-label={t('portfolio.analytics.compare.heading')}
-        className="bt-seg flex-wrap self-start"
+        className="bt-seg bt-analytics-compare__seg"
       >
         {tabs.map((tab) => (
           <button
@@ -171,7 +171,7 @@ function PickerSelect({
   if (error) {
     return (
       <div className="flex flex-col items-start gap-2">
-        <p className="text-xs text-rose-400">{errorLabel}</p>
+        <p className="text-xs bt-neg">{errorLabel}</p>
         <Button onClick={onRetry} size="sm">
           {t('common.retry')}
         </Button>
@@ -189,7 +189,7 @@ function PickerSelect({
         const picked = options.find((o) => o.id === e.target.value);
         if (picked) onPick(picked.id, picked.name);
       }}
-      className="bt-select w-full"
+      className="bt-select bt-analytics-compare__select"
     >
       <option value="">{placeholder}</option>
       {options.map((o) => (

@@ -46,8 +46,8 @@ export function AiInsightsPanel({
   const result = mutation.data;
 
   return (
-    <details className="bt-panel group">
-      <summary className="bt-h3 flex cursor-pointer list-none items-center justify-between gap-3 px-4 py-3 [&::-webkit-details-marker]:hidden">
+    <details className="bt-surface bt-analytics-ai group">
+      <summary className="bt-analytics-ai__summary [&::-webkit-details-marker]:hidden">
         <span className="flex items-center gap-2">
           <span aria-hidden="true">✦</span>
           {t('portfolio.analytics.ai.title')}
@@ -57,10 +57,7 @@ export function AiInsightsPanel({
         </span>
       </summary>
 
-      <div
-        className="flex flex-col gap-3 px-4 py-3"
-        style={{ borderTop: '1px solid var(--bt-border)' }}
-      >
+      <div className="bt-analytics-ai__body">
         <p className="bt-meta">{t('portfolio.analytics.ai.hint')}</p>
 
         <div className="flex items-center gap-3">
@@ -100,7 +97,7 @@ export function AiInsightsPanel({
             </p>
 
             {result.observations.length > 0 ? (
-              <div className="flex flex-wrap gap-3">
+              <div className="bt-analytics-observations">
                 {result.observations.map((observation) => (
                   <ObservationCard key={observation.kind} observation={observation} t={t} />
                 ))}
@@ -129,7 +126,7 @@ function ObservationCard({
   t: TranslateFn;
 }) {
   return (
-    <div className="bt-panel bt-panel--soft min-w-[9rem] flex-1 p-3">
+    <div className="bt-analytics-observation">
       <h3 className="bt-label">{t(`portfolio.analytics.ai.observation.${observation.kind}`)}</h3>
       <dl className="mt-2 flex flex-col gap-1">
         {observation.facts.map((fact) => (
