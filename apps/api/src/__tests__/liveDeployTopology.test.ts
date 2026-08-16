@@ -226,13 +226,18 @@ describe('compose readiness and cross-container exports (#939)', () => {
   });
 
   it('keeps the gyp fallback toolchain in Docker build-only stages', () => {
-    const runnerMarker = 'AS runner';
-    const runnerMarkerIndex = dockerfile.indexOf(runnerMarker);
+    const runnerStageHeader = /^FROM\s+\S+\s+AS\s+runner(?:\s|$).*$/m;
+    const runnerStageMatch = dockerfile.match(runnerStageHeader);
+    const runnerMarkerIndex = runnerStageMatch?.index ?? -1;
 
     expect(runnerMarkerIndex, 'Dockerfile must define its final runner stage').toBeGreaterThan(-1);
 
     const buildStages = dockerfile.slice(0, runnerMarkerIndex);
     const runnerStage = dockerfile.slice(runnerMarkerIndex);
+    // Covers `apk add` plus any number or order of `--flag` options before
+    // `add` (for example, `apk --no-cache add`); it intentionally does not
+    // span backslash-continued command lines.
+    const apkAddCommand = /\bapk\s+(?:--\S+\s+)*add\b/;
 
     expect(
       buildStages,
@@ -241,7 +246,7 @@ describe('compose readiness and cross-container exports (#939)', () => {
     expect(
       runnerStage,
       'Dockerfile invariant: build toolchain stays in build-only stages',
-    ).not.toContain('apk add');
+    ).not.toMatch(apkAddCommand);
   });
 });
 
