@@ -107,9 +107,24 @@ describe('SMTP transport', () => {
     });
   });
 
-  it('records and audits an SMTP send failure without throwing to the caller', async () => {
-    const error = { code: 'ECONNREFUSED' };
-    smtp.sendMail.mockRejectedValue(error);
+  it.each([
+    {
+      name: 'records and audits a code-bearing SMTP send failure without throwing to the caller',
+      rejection: Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }),
+      expectedCode: 'ECONNREFUSED',
+    },
+    {
+      name: 'uses an Error name when an SMTP send failure has no code',
+      rejection: new TypeError('SMTP connection failed'),
+      expectedCode: 'TypeError',
+    },
+    {
+      name: 'uses UNKNOWN when an SMTP send failure has no code or usable name',
+      rejection: {},
+      expectedCode: 'UNKNOWN',
+    },
+  ])('$name', async ({ rejection, expectedCode }) => {
+    smtp.sendMail.mockRejectedValue(rejection);
     const transport = createSmtpTransport(emailConfig);
     const service = createEmailService({ config, logger, audit, emailLog, transport });
     const inviteUrl = 'https://app.bettertrack.test/invites/accept?token=test-token';
@@ -121,7 +136,7 @@ describe('SMTP transport', () => {
         inviteUrl,
         audit: { targetType: 'invite', targetId: 'invite-1' },
       }),
-    ).resolves.toEqual({ status: 'failed', code: 'ECONNREFUSED' });
+    ).resolves.toEqual({ status: 'failed', code: expectedCode });
 
     expect(emailLogInsert).toHaveBeenCalledOnce();
     expect(emailLogInsert).toHaveBeenCalledWith({
@@ -130,7 +145,7 @@ describe('SMTP transport', () => {
       template: 'invite',
       subject: content.subject,
       status: 'failed',
-      errorCode: 'ECONNREFUSED',
+      errorCode: expectedCode,
     });
     expect(auditRecord).toHaveBeenCalledOnce();
     expect(auditRecord).toHaveBeenCalledWith({
@@ -139,7 +154,7 @@ describe('SMTP transport', () => {
       targetType: 'invite',
       targetId: 'invite-1',
       ip: null,
-      meta: { kind: 'invite', code: 'ECONNREFUSED' },
+      meta: { kind: 'invite', code: expectedCode },
     });
   });
 });
