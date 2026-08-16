@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AppConfig } from '../../../config/env';
 import type { EmailLogRepository } from '../../../data/repositories/emailLogRepository';
 import type { Logger } from '../../../logger';
-import type { AuditService } from '../../audit/auditService';
+import { AuditAction, type AuditService } from '../../audit/auditService';
 import { createEmailService } from '../emailService';
 import { inviteEmail } from '../templates';
 import { createSmtpTransport } from '../transport';
@@ -80,6 +80,66 @@ describe('SMTP transport', () => {
       subject: content.subject,
       html: content.html,
       text: content.text,
+    });
+  });
+
+  it('uses the default STARTTLS port when no SMTP port is configured', () => {
+    createSmtpTransport({ ...emailConfig, port: undefined });
+
+    expect(smtp.createTransport).toHaveBeenCalledOnce();
+    expect(smtp.createTransport).toHaveBeenCalledWith({
+      host: 'smtp.bettertrack.test',
+      port: 587,
+      secure: false,
+      auth: { user: 'smtp-user', pass: 'smtp-password' },
+    });
+  });
+
+  it('omits SMTP auth when no SMTP user is configured', () => {
+    createSmtpTransport({ ...emailConfig, user: undefined });
+
+    expect(smtp.createTransport).toHaveBeenCalledOnce();
+    expect(smtp.createTransport).toHaveBeenCalledWith({
+      host: 'smtp.bettertrack.test',
+      port: 465,
+      secure: true,
+      auth: undefined,
+    });
+  });
+
+  it('records and audits an SMTP send failure without throwing to the caller', async () => {
+    const error = { code: 'ECONNREFUSED' };
+    smtp.sendMail.mockRejectedValue(error);
+    const transport = createSmtpTransport(emailConfig);
+    const service = createEmailService({ config, logger, audit, emailLog, transport });
+    const inviteUrl = 'https://app.bettertrack.test/invites/accept?token=test-token';
+    const content = inviteEmail({ inviteUrl });
+
+    await expect(
+      service.sendInvite({
+        to: 'recipient@example.test',
+        inviteUrl,
+        audit: { targetType: 'invite', targetId: 'invite-1' },
+      }),
+    ).resolves.toEqual({ status: 'failed', code: 'ECONNREFUSED' });
+
+    expect(emailLogInsert).toHaveBeenCalledOnce();
+    expect(emailLogInsert).toHaveBeenCalledWith({
+      userId: null,
+      recipient: 'recipient@example.test',
+      template: 'invite',
+      subject: content.subject,
+      status: 'failed',
+      errorCode: 'ECONNREFUSED',
+    });
+    expect(auditRecord).toHaveBeenCalledOnce();
+    expect(auditRecord).toHaveBeenCalledWith({
+      actorId: null,
+      action: AuditAction.EmailSendFailed,
+      targetType: 'invite',
+      targetId: 'invite-1',
+      ip: null,
+      meta: { kind: 'invite', code: 'ECONNREFUSED' },
     });
   });
 });
