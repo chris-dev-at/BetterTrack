@@ -151,7 +151,7 @@ const TRADES: Trade[] = [
 ];
 
 /** The `<dd>` value of a DE year-block stat, located by its `<dt>` label text. */
-function deStatValue(page: Page, label: string) {
+function deStatValue(page: Page, label: string | RegExp) {
   return page.locator('dt', { hasText: label }).locator('xpath=following-sibling::dd[1]');
 }
 
