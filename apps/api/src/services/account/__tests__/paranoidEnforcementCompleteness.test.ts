@@ -4,6 +4,8 @@ import { Router, type RequestHandler } from 'express';
 import ts from 'typescript';
 import { beforeAll, describe, expect, it } from 'vitest';
 
+import { API_KEY_SCOPES } from '@bettertrack/contracts';
+
 import { createApp } from '../../../app';
 import { JOB_REGISTRATION_DESCRIPTORS, type JobRegistrationDescriptor } from '../../../jobs';
 import { buildRouteTable, type MountedSurface } from '../../../scripts/checkOpenapiCoverage';
@@ -12,6 +14,7 @@ import {
   PARANOID_ACCOUNT_CONTEXT_SOURCE,
   PARANOID_ALL_METHODS_ROUTE_METHOD,
   PARANOID_DIRECT_SERVICE_CALL,
+  PARANOID_KILL_REGISTRY,
   PARANOID_KNOWN_GAPS,
   PARANOID_OPAQUE_MOUNT_METHOD,
   PARANOID_ROUTE_TABLE_SOURCE,
@@ -243,6 +246,15 @@ describe('paranoid enforcement completeness', () => {
     expect(surfaces.length).toBeGreaterThan(0);
     expect(classificationProblems(surfaces)).toEqual([]);
     expect(surfaces.every(isParanoidSurfaceClassified)).toBe(true);
+  });
+
+  it('names only contract API-key scopes in the paranoid kill registry', () => {
+    const contractScopes = new Set<string>(API_KEY_SCOPES);
+    const unknownScopes = PARANOID_KILL_REGISTRY.flatMap((entry) =>
+      entry.scopes.filter((scope) => !contractScopes.has(scope)),
+    );
+
+    expect(unknownScopes).toEqual([]);
   });
 
   it('discovers nullable and prototype-declared context methods from the production contract', () => {
