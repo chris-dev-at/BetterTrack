@@ -251,7 +251,9 @@ describe('paranoid enforcement completeness', () => {
   it('names only contract API-key scopes in the paranoid kill registry', () => {
     const contractScopes = new Set<string>(API_KEY_SCOPES);
     const unknownScopes = PARANOID_KILL_REGISTRY.flatMap((entry) =>
-      entry.scopes.filter((scope) => !contractScopes.has(scope)),
+      entry.scopes
+        .filter((scope) => !contractScopes.has(scope))
+        .map((scope) => `${entry.capability}:${scope}`),
     );
 
     expect(unknownScopes).toEqual([]);
