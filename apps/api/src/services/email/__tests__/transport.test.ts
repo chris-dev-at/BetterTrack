@@ -108,7 +108,7 @@ describe('SMTP transport', () => {
   });
 
   it('records and audits an SMTP send failure without throwing to the caller', async () => {
-    const error = { code: 'ECONNREFUSED' };
+    const error = Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' });
     smtp.sendMail.mockRejectedValue(error);
     const transport = createSmtpTransport(emailConfig);
     const service = createEmailService({ config, logger, audit, emailLog, transport });
@@ -140,6 +140,77 @@ describe('SMTP transport', () => {
       targetId: 'invite-1',
       ip: null,
       meta: { kind: 'invite', code: 'ECONNREFUSED' },
+    });
+  });
+
+  it('uses an Error name when an SMTP send failure has no code', async () => {
+    const error = new TypeError('SMTP connection failed');
+    smtp.sendMail.mockRejectedValue(error);
+    const transport = createSmtpTransport(emailConfig);
+    const service = createEmailService({ config, logger, audit, emailLog, transport });
+    const inviteUrl = 'https://app.bettertrack.test/invites/accept?token=test-token';
+    const content = inviteEmail({ inviteUrl });
+
+    await expect(
+      service.sendInvite({
+        to: 'recipient@example.test',
+        inviteUrl,
+        audit: { targetType: 'invite', targetId: 'invite-1' },
+      }),
+    ).resolves.toEqual({ status: 'failed', code: error.name });
+
+    expect(emailLogInsert).toHaveBeenCalledOnce();
+    expect(emailLogInsert).toHaveBeenCalledWith({
+      userId: null,
+      recipient: 'recipient@example.test',
+      template: 'invite',
+      subject: content.subject,
+      status: 'failed',
+      errorCode: error.name,
+    });
+    expect(auditRecord).toHaveBeenCalledOnce();
+    expect(auditRecord).toHaveBeenCalledWith({
+      actorId: null,
+      action: AuditAction.EmailSendFailed,
+      targetType: 'invite',
+      targetId: 'invite-1',
+      ip: null,
+      meta: { kind: 'invite', code: error.name },
+    });
+  });
+
+  it('uses UNKNOWN when an SMTP send failure has no code or usable name', async () => {
+    smtp.sendMail.mockRejectedValue({});
+    const transport = createSmtpTransport(emailConfig);
+    const service = createEmailService({ config, logger, audit, emailLog, transport });
+    const inviteUrl = 'https://app.bettertrack.test/invites/accept?token=test-token';
+    const content = inviteEmail({ inviteUrl });
+
+    await expect(
+      service.sendInvite({
+        to: 'recipient@example.test',
+        inviteUrl,
+        audit: { targetType: 'invite', targetId: 'invite-1' },
+      }),
+    ).resolves.toEqual({ status: 'failed', code: 'UNKNOWN' });
+
+    expect(emailLogInsert).toHaveBeenCalledOnce();
+    expect(emailLogInsert).toHaveBeenCalledWith({
+      userId: null,
+      recipient: 'recipient@example.test',
+      template: 'invite',
+      subject: content.subject,
+      status: 'failed',
+      errorCode: 'UNKNOWN',
+    });
+    expect(auditRecord).toHaveBeenCalledOnce();
+    expect(auditRecord).toHaveBeenCalledWith({
+      actorId: null,
+      action: AuditAction.EmailSendFailed,
+      targetType: 'invite',
+      targetId: 'invite-1',
+      ip: null,
+      meta: { kind: 'invite', code: 'UNKNOWN' },
     });
   });
 });
