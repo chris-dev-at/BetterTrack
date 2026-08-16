@@ -1477,7 +1477,7 @@
       "recentTransactions": {
         "ariaLabel": "Letzte Transaktionen",
         "heading": "Letzte Transaktionen",
-        "emptyForSource": "Keine Transaktionen für diese Quelle."
+        "empty": "Keine Transaktionen anzuzeigen."
       },
       "side": {
         "buy": "Kauf",

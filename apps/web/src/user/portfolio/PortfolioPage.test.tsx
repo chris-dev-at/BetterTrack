@@ -1218,14 +1218,19 @@ describe('PortfolioPage — recent-transactions source filter', () => {
     expect(within(recent).queryByLabelText('Source')).not.toBeInTheDocument();
   });
 
-  test('keeps a multi-source filter clearable when its selected page is empty', async () => {
+  test('keeps a selected source clearable after deleting its final row shrinks the source facet', async () => {
     const manualTransaction = TXNS.items[0]! as Transaction;
-    const sourceTags = ['manual', 'standing-order'];
-    vi.mocked(listTransactions).mockImplementation(async (_portfolioId, params = {}) => ({
-      items: params.source === 'standing-order' ? [] : [manualTransaction],
-      nextCursor: null,
-      ...(params.includeSourceTags ? { sourceTags } : {}),
-    }));
+    const ledger: Transaction[] = [
+      manualTransaction,
+      { ...(TXNS.items[1]! as Transaction), source: 'standing-order' },
+    ];
+    vi.mocked(listTransactions).mockImplementation(async (_portfolioId, params = {}) =>
+      transactionPage(ledger, params),
+    );
+    vi.mocked(deleteTransaction).mockImplementation(async (_portfolioId, transactionId) => {
+      const index = ledger.findIndex((transaction) => transaction.id === transactionId);
+      if (index >= 0) ledger.splice(index, 1);
+    });
     const user = userEvent.setup();
     renderPage();
 
@@ -1233,14 +1238,27 @@ describe('PortfolioPage — recent-transactions source filter', () => {
     const filter = within(recent).getByLabelText('Source');
     await user.selectOptions(filter, 'standing-order');
 
-    await waitFor(() =>
-      expect(within(recent).getByText('No transactions for this source.')).toBeInTheDocument(),
-    );
-    expect(within(recent).getByLabelText('Source')).toBeInTheDocument();
+    const holdings = screen.getByRole('region', { name: 'Holdings' });
+    await user.click(within(holdings).getByRole('button', { name: /Expand HOUSE transactions/i }));
+    const row = (await screen.findByText('Down payment')).closest('tr')!;
+    await user.click(within(row).getByRole('button', { name: /Delete transaction from/i }));
+    await user.click(screen.getByRole('button', { name: 'Yes' }));
 
-    await user.selectOptions(filter, 'all');
+    await waitFor(() => expect(screen.getByText('No transactions to show.')).toBeInTheDocument());
+    const refreshedRecent = screen.getByRole('region', { name: 'Recent transactions' });
+    const refreshedFilter = within(refreshedRecent).getByLabelText('Source');
+    expect(refreshedFilter).toHaveValue('standing-order');
+    expect(
+      within(refreshedFilter).getByRole('option', { name: 'Standing order' }),
+    ).toBeInTheDocument();
+
+    await user.selectOptions(refreshedFilter, 'all');
     await waitFor(() =>
-      expect(within(recent).getByRole('link', { name: 'AAPL' })).toBeInTheDocument(),
+      expect(
+        within(screen.getByRole('region', { name: 'Recent transactions' })).getByRole('link', {
+          name: 'AAPL',
+        }),
+      ).toBeInTheDocument(),
     );
   });
 

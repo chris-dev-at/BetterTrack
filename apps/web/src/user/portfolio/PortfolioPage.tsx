@@ -453,7 +453,15 @@ function RecentTransactionsSection({
   // Source-tag filter (V5-P0c + V5-P6b): mirrors the cash-history chip on
   // CashSourcesPage. Only earns its place when the ledger actually mixes
   // sources (anti-bloat — a pure-manual ledger never sees it).
-  const showFilter = sourceTags.length > 1;
+  // A successful deletion can remove the last row for the selected source.
+  // Keep that now-stale option long enough for the person to clear it; without
+  // it, the single-source guard below would also remove their only route back
+  // to the remaining ledger rows.
+  const selectableSourceTags =
+    sourceFilter !== 'all' && !sourceTags.includes(sourceFilter)
+      ? [sourceFilter, ...sourceTags]
+      : sourceTags;
+  const showFilter = selectableSourceTags.length > 1;
 
   if (transactions.length === 0 && !showFilter) return null;
 
@@ -474,7 +482,7 @@ function RecentTransactionsSection({
               value={sourceFilter}
             >
               <option value="all">{t('portfolio.sourceTag.filterAll')}</option>
-              {sourceTags.map((tag) => (
+              {selectableSourceTags.map((tag) => (
                 <option key={tag} value={tag}>
                   {sourceTagLabel(t, tag) ?? t('portfolio.sourceTag.manual')}
                 </option>
@@ -485,7 +493,7 @@ function RecentTransactionsSection({
       </div>
       {transactions.length === 0 ? (
         <p className="bt-meta" style={{ padding: '10px 0' }}>
-          {t('portfolio.overview.recentTransactions.emptyForSource')}
+          {t('portfolio.overview.recentTransactions.empty')}
         </p>
       ) : phone ? (
         <ul className="bt-phone-card-list">
