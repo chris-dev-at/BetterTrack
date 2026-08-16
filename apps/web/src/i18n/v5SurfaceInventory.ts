@@ -945,6 +945,11 @@ export const NON_V5_SURFACES = [
     note: 'V1 skeleton and spinner primitives (#64).',
   },
   {
+    path: 'ui/Spinner.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'V1 loading primitive (#64), promoted to the shared UI layer by #1263.',
+  },
+  {
     path: 'ui/StatCard.tsx',
     reason: 'no-user-copy',
     note: 'V1 stat tile; label and value are caller props.',

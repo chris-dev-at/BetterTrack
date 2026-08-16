@@ -11,7 +11,7 @@ import {
 } from './theme';
 
 /**
- * React binding for the per-device theme ({@link theme}).
+ * Shared React binding for the per-device theme ({@link theme}).
  *
  * A module-level store rather than a context, for the same reason `useUiScale`
  * is one: the theme is stamped on `document.documentElement` before React

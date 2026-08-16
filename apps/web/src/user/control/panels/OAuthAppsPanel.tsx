@@ -56,8 +56,8 @@ function ScopeChip({ scope, inactive = false }: { scope: string; inactive?: bool
  * is non-secret and always shown; a confidential client's `client_secret` is
  * shown here exactly once and never again (the #302 show-once pattern).
  *
- * Stays a {@link Dialog} (`role="dialog" aria-modal="true"`) — the Control
- * Center's Escape handler defers to nested modals via exactly that selector.
+ * Stays a {@link Dialog} because Dialog registers on the shared overlay stack,
+ * so Escape closes this modal without discarding the Control Center beneath it.
  */
 function OAuthCredentialsModal({
   result,

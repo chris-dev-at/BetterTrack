@@ -51,8 +51,8 @@ function ScopeChip({ scope, inactive = false }: { scope: string; inactive?: bool
 
 /**
  * The one-time token modal — the plaintext is available here and never again.
- * Stays a {@link Dialog} (`role="dialog" aria-modal="true"`): the Control
- * Center's Escape handler defers to nested modals via exactly that selector.
+ * Stays a {@link Dialog} because Dialog registers on the shared overlay stack,
+ * so Escape closes this modal without discarding the Control Center beneath it.
  * The token is the modal's FIRST `<code>`; `e2e/bearer-scopes.spec.ts` reads it
  * from there.
  */

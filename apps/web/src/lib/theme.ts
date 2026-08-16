@@ -1,5 +1,5 @@
 /**
- * Light / dark theme (board #68 item 2, owner 2026-08-07: "tell webdev to
+ * Shared light / dark theme (board #68 item 2, owner 2026-08-07: "tell webdev to
  * implement white mode" — the mobile app ships both, the web follows).
  *
  * Three states, not two. "System" is a real, persistent choice that keeps

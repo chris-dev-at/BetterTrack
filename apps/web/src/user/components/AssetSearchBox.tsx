@@ -18,6 +18,7 @@ import {
   listWorkboard,
 } from '../../lib/workboardApi';
 import { EmptyState, MarketStateBadge, Skeleton } from '../../ui';
+import { restoreFocusTo } from '../../ui/useFocusTrap';
 import { AsyncReadState } from './AsyncReadState';
 import { useAssetSearch } from './useAssetSearch';
 import {
@@ -31,7 +32,6 @@ import {
 } from '../workboard/conglomerateBuilder';
 import { CapabilityTags } from '../assets/capabilityTags';
 import { TransactionDialog, type TransactionDialogAsset } from './TransactionDialog';
-import { restoreFocusTo } from './useFocusTrap';
 import { useMenuKeyboard } from './useMenuKeyboard';
 import { usePortfolioStore } from '../portfolio/PortfolioStoreProvider';
 

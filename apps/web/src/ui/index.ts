@@ -6,6 +6,7 @@ export { EmptyState, type EmptyStateProps } from './EmptyState';
 export { NotFoundState, type NotFoundStateProps } from './NotFoundState';
 export { ComingSoon, type ComingSoonProps } from './ComingSoon';
 export { Skeleton, type SkeletonProps } from './Skeleton';
+export { Spinner } from './Spinner';
 export { ErrorBoundary, type ErrorBoundaryProps } from './ErrorBoundary';
 export { Disclaimer, TAGLINE, type DisclaimerProps } from './Disclaimer';
 export {
