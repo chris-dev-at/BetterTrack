@@ -3,6 +3,7 @@ import { useEffect, useId, useRef } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react';
 
 import { useBodyScrollLock } from '../../ui/useBodyScrollLock';
+import { restoreFocusTo } from '../../ui/useFocusTrap';
 import { useOverlayEscape } from '../../ui/overlayStack';
 
 const FOCUSABLE_SELECTOR = [
@@ -158,10 +159,7 @@ export function Modal({
     (focusable[0] ?? dialog)?.focus();
 
     return () => {
-      const openingElement = openingElementRef.current;
-      if (openingElement instanceof HTMLElement && openingElement.isConnected) {
-        openingElement.focus();
-      }
+      restoreFocusTo([openingElementRef.current], { exclude: dialog });
     };
   }, []);
 

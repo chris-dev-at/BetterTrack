@@ -430,6 +430,8 @@ test('crossing the desktop breakpoint beneath a Modal preserves its focus and sc
     expect(screen.queryByRole('dialog', { name: 'Layered admin modal' })).not.toBeInTheDocument();
   });
   expect(document.body.style.overflow).toBe(previousOverflow);
+  expect(main).toHaveFocus();
+  expect(document.body).not.toHaveFocus();
 });
 
 test('navigating from inside the drawer closes it', async () => {
