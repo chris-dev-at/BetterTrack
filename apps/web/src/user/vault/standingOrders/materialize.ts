@@ -24,6 +24,7 @@ import {
   assertVaultSnapshotCurrent,
   createStandingOrderScanValidator,
   liveEntities,
+  refreshedStandingOrderSnapshot,
   validatedStandingOrderSnapshot,
 } from '../engine/session';
 import type { VaultSyncEngine } from '../sync';
@@ -96,17 +97,17 @@ export async function materializeDueStandingOrders(
     let snapshot = validatedStandingOrderSnapshot(sync);
     let validateOrderForScan = createStandingOrderScanValidator(snapshot.document);
     const adoptSnapshot = (next: typeof snapshot): void => {
-      const candidateChanged =
-        next.vaultVersion !== snapshot.vaultVersion ||
-        next.vaultKeyId !== snapshot.vaultKeyId ||
-        next.writeId !== snapshot.writeId;
+      // The validator indexes this exact document, so its freshness is keyed on
+      // document identity — not on the candidate triple, which cannot prove that
+      // the rows behind it are the same object.
+      const documentChanged = next.document !== snapshot.document;
       snapshot = next;
-      if (candidateChanged) {
+      if (documentChanged) {
         validateOrderForScan = createStandingOrderScanValidator(next.document);
       }
     };
     const refreshSnapshot = (): void => {
-      adoptSnapshot(validatedStandingOrderSnapshot(sync));
+      adoptSnapshot(refreshedStandingOrderSnapshot(sync, snapshot));
     };
     const orderIds = liveEntities(snapshot.document, 'standingOrder').map((entity) => entity.id);
     const result: StandingOrderMaterializationResult = {
@@ -130,8 +131,12 @@ export async function materializeDueStandingOrders(
         recordOrderFailure(result, orderId, null, cause);
         continue;
       }
-      // Paused orders cannot book, so catch-up tolerates their malformed business
-      // fields silently; strict money derivations still expose that corruption.
+      /*
+       * Paused orders cannot book, so catch-up tolerates them silently — both
+       * malformed business fields and an unreachable run row of their own, since
+       * neither reaches a booking from here. Strict money derivations still
+       * expose that corruption, which is where the user sees it.
+       */
       if (order.row.status !== 'active') continue;
       let dueDate: string | null;
       try {

@@ -196,7 +196,7 @@ describe('paranoid standing-order materialization', () => {
   });
 
   it.each(['watermark without rows', 'run without ledger'] as const)(
-    'isolates an interrupted occurrence with a %s while strict derivations fail closed',
+    'isolates an interrupted occurrence with a %s from the rest of the scan',
     async (partialState) => {
       const fixture = await decryptClientMoneyFixture();
       const occurrenceId = await standingOrderOccurrenceId(DAILY_ADD_ID, '2026-07-27');
@@ -242,8 +242,6 @@ describe('paranoid standing-order materialization', () => {
       });
 
       const catchUp = await engine.onAppOpen();
-      const portfolio = await engine.derivePortfolio(CLIENT_MONEY_IDS.portfolio, 'MAX');
-      const tax = await engine.deriveTaxReport(CLIENT_MONEY_IDS.portfolio, 2026);
 
       expect(catchUp).toMatchObject({
         ok: true,
@@ -254,19 +252,141 @@ describe('paranoid standing-order materialization', () => {
           skipped: [],
         },
       });
-      for (const outcome of [portfolio, tax]) {
-        expect(outcome).toMatchObject({
-          ok: false,
-          error: { code: 'VAULT_CORRUPT', retryable: false },
-        });
-        expect(outcome).not.toHaveProperty('value');
-      }
       expect(sync.mutationCount).toBe(1);
+      // Both orders are cash rows, so the scan itself touches no market data.
       expect(market.calls.quote).toEqual([]);
       expect(market.calls.history).toEqual([]);
       expect(market.calls.fx).toEqual([]);
+
+      const portfolio = await engine.derivePortfolio(CLIENT_MONEY_IDS.portfolio, 'MAX');
+      const tax = await engine.deriveTaxReport(CLIENT_MONEY_IDS.portfolio, 2026);
+
+      /*
+       * The two partial states differ in scope on purpose. A watermark with no
+       * durable claim is document-scope corruption: the order asserts a booking
+       * the vault cannot show anywhere, so every money surface fails closed
+       * without reaching the market. A live run whose ledger row is gone is NOT
+       * — deleting a standing-order transaction produces exactly that shape —
+       * so the scan's per-order `failed` entry carries the whole signal and the
+       * derivations run normally.
+       */
+      if (partialState === 'watermark without rows') {
+        for (const outcome of [portfolio, tax]) {
+          expect(outcome).toMatchObject({
+            ok: false,
+            error: { code: 'VAULT_CORRUPT', retryable: false },
+          });
+          expect(outcome).not.toHaveProperty('value');
+        }
+        expect(market.calls.history).toEqual([]);
+      } else {
+        expect(portfolio.ok, portfolio.ok ? undefined : JSON.stringify(portfolio.error)).toBe(true);
+        expect(tax.ok, tax.ok ? undefined : JSON.stringify(tax.error)).toBe(true);
+        expect(market.calls.history).toEqual([
+          CLIENT_MONEY_IDS.eurAsset,
+          CLIENT_MONEY_IDS.usdAsset,
+        ]);
+      }
     },
   );
+
+  /*
+   * Deleting a standing-order-booked row tombstones the ledger entities and
+   * never touches the run, so a live run outliving its booking is a state the
+   * delete surface produces on demand. It stays a per-order concern: the order
+   * books its next period, and no money surface is allowed to go dark over it.
+   */
+  it('keeps every money surface derivable after a booked ledger row is deleted', async () => {
+    const fixture = await decryptClientMoneyFixture();
+    const occurrenceId = await standingOrderOccurrenceId(DAILY_ADD_ID, '2026-07-26');
+    const document = withOrders(fixture.document, [
+      standingOrder(DAILY_ADD_ID, {
+        kind: 'cash-add',
+        amount: '25',
+        cadence: 'daily',
+        anchorDay: null,
+        startDate: '2026-07-20',
+        lastRunAt: PRIOR_BOOKED_AT,
+        lastPeriodKey: '2026-07-26',
+      }),
+    ]);
+    document.entities.standingOrderRun = [
+      bookedRun(occurrenceId, DAILY_ADD_ID, '2026-07-26', PRIOR_BOOKED_AT),
+    ];
+    const sync = createMutableTestSync(document, fixture.header);
+    const market = createClientMoneyMarket();
+    const engine = createVaultMoneyEngine(sync, market.market, {
+      now: () => new Date(BOOKED_AT).getTime(),
+    });
+
+    const catchUp = await engine.onAppOpen();
+    const portfolio = await engine.derivePortfolio(CLIENT_MONEY_IDS.portfolio, 'MAX');
+    const tax = await engine.deriveTaxReport(CLIENT_MONEY_IDS.portfolio, 2026);
+
+    expect(catchUp).toMatchObject({
+      ok: true,
+      value: {
+        booked: [{ orderId: DAILY_ADD_ID, dueDate: '2026-07-27', status: 'created' }],
+        deferred: [],
+        failed: [],
+        skipped: [],
+      },
+    });
+    expect(portfolio.ok, portfolio.ok ? undefined : JSON.stringify(portfolio.error)).toBe(true);
+    expect(tax.ok, tax.ok ? undefined : JSON.stringify(tax.error)).toBe(true);
+    expect(sync.mutationCount).toBe(1);
+  });
+
+  /*
+   * Entity merge is per-entity LWW, so a second device editing the order while
+   * this one books the same period can land a complete occurrence under an
+   * order whose watermark stayed behind it. The store's occurrence contract
+   * wedges that one order in the scan, but the lag is a per-order signal: every
+   * money surface stays derivable, including the booked rows themselves.
+   */
+  it('keeps every money surface derivable when a merged watermark lags its booked run', async () => {
+    const fixture = await decryptClientMoneyFixture();
+    const occurrenceId = await standingOrderOccurrenceId(DAILY_ADD_ID, '2026-07-27');
+    const document = withOrders(fixture.document, [
+      standingOrder(DAILY_ADD_ID, {
+        kind: 'cash-add',
+        amount: '25',
+        cadence: 'daily',
+        anchorDay: null,
+        startDate: '2026-07-20',
+      }),
+    ]);
+    document.entities.standingOrderRun = [
+      bookedRun(occurrenceId, DAILY_ADD_ID, '2026-07-27', BOOKED_AT),
+    ];
+    document.entities.cashMovement = [
+      ...(document.entities.cashMovement ?? []),
+      bookedDeposit(occurrenceId, '25', BOOKED_AT),
+    ];
+    const sync = createMutableTestSync(document, fixture.header);
+    const market = createClientMoneyMarket();
+    const engine = createVaultMoneyEngine(sync, market.market, {
+      now: () => new Date(BOOKED_AT).getTime(),
+    });
+
+    const catchUp = await engine.onAppOpen();
+    const portfolio = await engine.derivePortfolio(CLIENT_MONEY_IDS.portfolio, 'MAX');
+    const tax = await engine.deriveTaxReport(CLIENT_MONEY_IDS.portfolio, 2026);
+
+    expect(catchUp).toMatchObject({
+      ok: true,
+      value: {
+        booked: [],
+        deferred: [],
+        failed: [{ orderId: DAILY_ADD_ID, dueDate: '2026-07-27', errorCode: 'VAULT_CORRUPT' }],
+        skipped: [],
+      },
+    });
+    expect(portfolio.ok, portfolio.ok ? undefined : JSON.stringify(portfolio.error)).toBe(true);
+    expect(tax.ok, tax.ok ? undefined : JSON.stringify(tax.error)).toBe(true);
+    expect(order(sync.state.active!.document, DAILY_ADD_ID).data.lastPeriodKey).toBeNull();
+    expect(sync.mutationCount).toBe(0);
+  });
 
   it.each(['booked with random ledger id', 'claim-only tombstone'] as const)(
     'preserves a legacy server occurrence that is %s',
