@@ -1,7 +1,7 @@
 import { Link } from 'react-router-dom';
 
 import { useT } from '../../i18n';
-import { Icon, PageHead, type IconName } from '../../ui/origin';
+import { Icon, Page, PageHead, type IconName } from '../../ui/origin';
 import { ParkedPage } from '../parked/ParkedPage';
 
 /**
@@ -17,20 +17,20 @@ import { ParkedPage } from '../parked/ParkedPage';
 export function AskPage() {
   const t = useT();
   return (
-    <div className="bt-phone-surface bt-hub-page">
+    <Page className="bt-phone-surface bt-hub-page" width="narrow">
       <PageHead title={t('ask.title')} />
       <ParkedPage page="ask" />
-    </div>
+    </Page>
   );
 }
 
 export function ReviewPage() {
   const t = useT();
   return (
-    <div className="bt-phone-surface bt-hub-page">
+    <Page className="bt-phone-surface bt-hub-page" width="narrow">
       <PageHead title={t('review.title')} />
       <ParkedPage page="review" />
-    </div>
+    </Page>
   );
 }
 
@@ -91,7 +91,7 @@ const DEVELOPER_ENTRIES: readonly DeveloperEntry[] = [
 export function DeveloperPlatformPage() {
   const t = useT();
   return (
-    <div className="bt-phone-surface bt-hub-page">
+    <Page className="bt-phone-surface bt-hub-page" width="narrow">
       <PageHead sub={t('control.developerSub')} title={t('control.groups.developer')} />
       <div className="bt-panel bt-band">
         {DEVELOPER_ENTRIES.map((entry) => (
@@ -129,6 +129,6 @@ export function DeveloperPlatformPage() {
           </Link>
         ))}
       </div>
-    </div>
+    </Page>
   );
 }

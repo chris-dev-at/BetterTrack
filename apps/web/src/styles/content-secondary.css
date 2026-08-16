@@ -1,0 +1,76 @@
+/* Secondary canvas surfaces: parked destinations and suite utilities. These
+   pages share the same compact, connected content grammar as the live money
+   workspaces without changing their routes or the shell around them. */
+
+.bt-canvas .bt-parked {
+  width: min(100%, var(--bt-reading-max));
+  max-width: none;
+  margin-inline: auto;
+  overflow: clip;
+  padding: 28px clamp(18px, calc(3 * var(--bt-vw)), 34px) 30px;
+  border: 1px solid var(--bt-content-edge);
+  border-radius: var(--bt-radius-card);
+  background: var(--bt-surface);
+}
+
+.bt-canvas .bt-parked__flag {
+  margin-bottom: 12px;
+}
+
+.bt-canvas .bt-parked__points {
+  gap: 0;
+  margin-top: 18px;
+  border-block: 1px solid var(--bt-border);
+}
+
+.bt-canvas .bt-parked__points > li {
+  min-height: 42px;
+  padding-block: 10px;
+}
+
+.bt-canvas .bt-parked__points > li + li {
+  border-top: 1px solid var(--bt-border);
+}
+
+.bt-parked__actions {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.bt-hub-page > .bt-page-head {
+  margin-bottom: 0;
+}
+
+.bt-hub-page > .bt-parked {
+  width: 100%;
+}
+
+.bt-hub-page > .bt-panel.bt-band {
+  overflow: clip;
+  border-color: var(--bt-content-edge);
+  border-radius: var(--bt-radius-card);
+}
+
+.bt-hub-page > .bt-panel.bt-band .bt-band__row {
+  min-height: 62px;
+  padding: 12px var(--bt-surface-pad-x);
+}
+
+@media (max-width: 480px) {
+  .bt-canvas .bt-parked {
+    padding: 22px 16px 24px;
+  }
+
+  .bt-canvas .bt-parked__actions {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    width: 100%;
+  }
+
+  .bt-canvas .bt-parked .bt-btn {
+    width: 100%;
+    min-height: 44px;
+    justify-content: center;
+  }
+}

@@ -115,7 +115,7 @@ export function ParkedPage({ page }: { page: ParkedPageKey }) {
     <Parked
       actions={
         spec.links?.length ? (
-          <span style={{ display: 'inline-flex', flexWrap: 'wrap', gap: 8 }}>
+          <span className="bt-parked__actions">
             {spec.links.map((link) => (
               <Link className="bt-btn bt-btn--sm" key={link.to} to={link.to}>
                 {t(link.labelKey)}
