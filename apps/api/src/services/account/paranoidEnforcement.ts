@@ -220,7 +220,7 @@ export interface ParanoidKillRegistryEntry {
   readonly capability: ParanoidKilledCapability;
   readonly routes: readonly ParanoidRouteRule[];
   readonly services: readonly ParanoidServiceBinding[];
-  readonly scopes: readonly string[];
+  readonly scopes: readonly ApiKeyScope[];
   readonly jobs: readonly string[];
   readonly webhookEventTypes: readonly string[];
 }
@@ -1812,7 +1812,10 @@ export function paranoidClassificationsForRoute(
 }
 
 export function isParanoidKilledScope(scope: string): boolean {
-  return KILLED_SCOPES.has(scope);
+  for (const killedScope of KILLED_SCOPES) {
+    if (killedScope === scope) return true;
+  }
+  return false;
 }
 
 export function isParanoidKilledWebhookEvent(event: DomainEvent): boolean {
