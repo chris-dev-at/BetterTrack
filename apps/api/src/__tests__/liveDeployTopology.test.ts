@@ -209,7 +209,7 @@ describe('compose readiness and cross-container exports (#939)', () => {
   // Covers `apk add` plus any number or order of short or long options before
   // `add` (for example, `apk -q --no-cache add`); it intentionally does not
   // span backslash-continued command lines.
-  const apkAddCommand = /\bapk\s+(?:-{1,2}\S+\s+)*add\b/;
+  const apkAddCommand = /\bapk[ \t]+(?:-{1,2}[^\s\\]+[ \t]+)*add\b/;
 
   it('gates api health on the DB + Redis readiness route', () => {
     expect(apiBlock).toContain('/api/v1/health/ready');
@@ -270,6 +270,7 @@ describe('compose readiness and cross-container exports (#939)', () => {
     }
 
     expect('RUN apk -q info').not.toMatch(apkAddCommand);
+    expect('RUN apk -q\\\n  add curl').not.toMatch(apkAddCommand);
   });
 });
 
