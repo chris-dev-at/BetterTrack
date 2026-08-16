@@ -538,38 +538,39 @@ describe('mirrorchain M2 — replication core', () => {
       });
       let deletion: Promise<unknown> | undefined;
       let withdrawalSettled: Promise<PromiseSettledResult<unknown>[]> | undefined;
-
-      // This trigger is global to the shared table. The integration config's
-      // singleFork is therefore part of this harness contract, and the finally
-      // cleanup below is load-bearing: no later test may inherit the pause.
-      await observer.unsafe(`
-        CREATE OR REPLACE FUNCTION bt_test_pause_force_cash_delete()
-        RETURNS trigger
-        LANGUAGE plpgsql
-        AS $$
-        BEGIN
-          PERFORM pg_advisory_xact_lock(${FORCE_DELETE_PAUSE_LOCK[0]}, ${FORCE_DELETE_PAUSE_LOCK[1]});
-          RETURN OLD;
-        END;
-        $$
-      `);
-      await observer.unsafe(
-        'DROP TRIGGER IF EXISTS bt_test_pause_force_cash_delete ON portfolio_cash_movements',
-      );
-      await observer.unsafe(`
-        CREATE TRIGGER bt_test_pause_force_cash_delete
-        BEFORE DELETE ON portfolio_cash_movements
-        FOR EACH ROW
-        EXECUTE FUNCTION bt_test_pause_force_cash_delete()
-      `);
-
-      const pauseOwner = controller.begin(async (tx) => {
-        await tx`SELECT pg_advisory_xact_lock(${FORCE_DELETE_PAUSE_LOCK[0]}, ${FORCE_DELETE_PAUSE_LOCK[1]})`;
-        pauseOwned();
-        await release;
-      });
+      let pauseOwner: Promise<unknown> | undefined;
 
       try {
+        // This trigger is global to the shared table. The integration config's
+        // singleFork is therefore part of this harness contract, and the finally
+        // cleanup below is load-bearing: no later test may inherit the pause.
+        await observer.unsafe(`
+          CREATE OR REPLACE FUNCTION bt_test_pause_force_cash_delete()
+          RETURNS trigger
+          LANGUAGE plpgsql
+          AS $$
+          BEGIN
+            PERFORM pg_advisory_xact_lock(${FORCE_DELETE_PAUSE_LOCK[0]}, ${FORCE_DELETE_PAUSE_LOCK[1]});
+            RETURN OLD;
+          END;
+          $$
+        `);
+        await observer.unsafe(
+          'DROP TRIGGER IF EXISTS bt_test_pause_force_cash_delete ON portfolio_cash_movements',
+        );
+        await observer.unsafe(`
+          CREATE TRIGGER bt_test_pause_force_cash_delete
+          BEFORE DELETE ON portfolio_cash_movements
+          FOR EACH ROW
+          EXECUTE FUNCTION bt_test_pause_force_cash_delete()
+        `);
+
+        pauseOwner = controller.begin(async (tx) => {
+          await tx`SELECT pg_advisory_xact_lock(${FORCE_DELETE_PAUSE_LOCK[0]}, ${FORCE_DELETE_PAUSE_LOCK[1]})`;
+          pauseOwned();
+          await release;
+        });
+
         await owned;
         // This is the exact PortfolioService force call used by replica apply.
         // The HTTP/mirror seam also admits member withdrawals; its chain mutex
@@ -621,7 +622,7 @@ describe('mirrorchain M2 — replication core', () => {
         expect(running).toBe(0);
       } finally {
         releasePause();
-        await pauseOwner.catch(() => undefined);
+        await pauseOwner?.catch(() => undefined);
         await deletion?.catch(() => undefined);
         await withdrawalSettled?.catch(() => undefined);
         await observer.unsafe(
