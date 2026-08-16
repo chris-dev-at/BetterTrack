@@ -5,7 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
 import { ApiError } from '../errors';
-import { createLogger } from '../logger';
+import { createLogger, type Logger } from '../logger';
 import { loadConfig } from '../config/env';
 
 import { createErrorHandler } from './errorHandler';
@@ -19,7 +19,7 @@ const logger = createLogger(
   }),
 );
 
-function mockRes(): {
+function mockRes(headersSent = false): {
   res: Response;
   status: ReturnType<typeof vi.fn>;
   json: ReturnType<typeof vi.fn>;
@@ -28,7 +28,7 @@ function mockRes(): {
   const json = vi.fn();
   const status = vi.fn().mockReturnValue({ json });
   const removeHeader = vi.fn();
-  const res = { status, json, removeHeader } as unknown as Response;
+  const res = { headersSent, status, json, removeHeader } as unknown as Response;
   return { res, status, json, removeHeader };
 }
 
@@ -44,7 +44,7 @@ function validatorErrorApp(error: Error) {
   return app;
 }
 
-describe('createErrorHandler PII-safe reporting', () => {
+describe('createErrorHandler validator stripping', () => {
   it('removes pre-set validators from an ApiError envelope', async () => {
     const res = await request(validatorErrorApp(new ApiError(409, 'CONFLICT', 'stale'))).get(
       '/error',
@@ -66,7 +66,9 @@ describe('createErrorHandler PII-safe reporting', () => {
     expect(res.headers.etag).toBeUndefined();
     expect(res.headers['last-modified']).toBeUndefined();
   });
+});
 
+describe('createErrorHandler PII-safe reporting', () => {
   it('reports an unexpected error (the 500 path) to the reporter', () => {
     const report = vi.fn();
     const handler = createErrorHandler(logger, report);
@@ -108,5 +110,23 @@ describe('createErrorHandler PII-safe reporting', () => {
     const { res, status } = mockRes();
     expect(() => handler(new Error('x'), {} as Request, res, vi.fn())).not.toThrow();
     expect(status).toHaveBeenCalledWith(500);
+  });
+
+  it('reports and delegates an unexpected error after headers are sent', () => {
+    const errorLogger = { error: vi.fn() } as unknown as Logger;
+    const report = vi.fn();
+    const handler = createErrorHandler(errorLogger, report);
+    const { res, status, json, removeHeader } = mockRes(true);
+    const next = vi.fn();
+    const err = new Error('kaboom');
+
+    expect(() => handler(err, {} as Request, res, next)).not.toThrow();
+
+    expect(errorLogger.error).toHaveBeenCalledWith({ err: 'kaboom' }, 'Unhandled request error');
+    expect(report).toHaveBeenCalledWith(err);
+    expect(removeHeader).not.toHaveBeenCalled();
+    expect(status).not.toHaveBeenCalled();
+    expect(json).not.toHaveBeenCalled();
+    expect(next).toHaveBeenCalledWith(err);
   });
 });
