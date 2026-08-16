@@ -115,7 +115,7 @@ test('the admin nav is a vertical sidebar — no horizontal scroll, no wrap', ()
   expect(nav.className).toContain('flex-col');
 
   const link = screen.getByRole('link', { name: 'Invites' });
-  expect(link.className).toContain('min-h-[40px]');
+  expect(link.className).toContain('min-h-11');
 });
 
 test('every admin shell key is available in every supported locale', () => {

@@ -1,7 +1,26 @@
 import { render, screen } from '@testing-library/react';
 import { expect, test } from 'vitest';
 
-import { TextField } from './ui';
+import { Badge, Button, EmptyState, PageHeader, TextField } from './ui';
+
+test('admin content primitives share the compact tokenized grammar', () => {
+  render(
+    <>
+      <PageHeader description="Operational controls" title="Console" />
+      <Button>Save</Button>
+      <Badge tone="green">Healthy</Badge>
+      <EmptyState>No results</EmptyState>
+    </>,
+  );
+
+  expect(screen.getByRole('heading', { name: 'Console' })).toHaveClass('bt-admin-page-head__title');
+  expect(screen.getByRole('button', { name: 'Save' })).toHaveClass(
+    'bt-admin-btn',
+    'bt-admin-btn--primary',
+  );
+  expect(screen.getByText('Healthy')).toHaveClass('bt-admin-badge', 'bt-admin-badge--green');
+  expect(screen.getByText('No results')).toHaveClass('bt-admin-empty');
+});
 
 test('TextField associates its hint and error with the input', () => {
   render(

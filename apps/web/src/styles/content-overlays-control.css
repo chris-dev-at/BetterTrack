@@ -1,0 +1,221 @@
+/* Page-content redesign: settings, dialogs and temporary surfaces.
+ *
+ * Behaviour lives in the existing React adapters (focus traps, portals,
+ * overlay ordering and route-backed panel state). This sheet changes only the
+ * visual/content grammar and loads after origin.css so every dialog family
+ * receives one coherent treatment without duplicating behaviour. */
+
+.bt-dialog__panel {
+  border-color: var(--bt-content-edge);
+  border-radius: 16px;
+  background: var(--bt-surface);
+}
+
+.bt-dialog__head {
+  min-height: 58px;
+  padding: 15px 18px;
+  background: var(--bt-surface-quiet);
+}
+
+.bt-dialog__title {
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.bt-dialog__body {
+  padding: 18px;
+}
+
+.bt-dialog__foot,
+.bt-dialog__pinned-foot {
+  padding: 12px 18px;
+  background: var(--bt-surface-quiet);
+}
+
+.bt-drawer {
+  border-left-color: var(--bt-content-edge);
+  background: var(--bt-surface);
+}
+
+.bt-drawer__head {
+  min-height: 58px;
+  background: var(--bt-surface-quiet);
+}
+
+.bt-popover,
+.bt-menu {
+  border-color: var(--bt-content-edge);
+  border-radius: 10px;
+  background: var(--bt-surface-strong);
+}
+
+/* The Control Center stays a route-backed overlay, but the content reads as a
+   settings workspace rather than a set of loose horizontal rules. */
+.bt-cc__panel {
+  width: min(1040px, calc(94 * var(--bt-vw)));
+  height: min(720px, calc(92 * var(--bt-vh)));
+  overflow: hidden;
+  border-color: var(--bt-content-edge);
+  border-radius: 16px;
+  background: var(--bt-surface);
+}
+
+.bt-cc__head {
+  min-height: 58px;
+  padding: 12px 18px;
+  background: var(--bt-surface-quiet);
+}
+
+.bt-cc__body {
+  grid-template-columns: 252px minmax(0, 1fr);
+}
+
+.bt-cc__nav {
+  padding: 14px 12px 22px;
+  background: var(--bt-bg-raised);
+}
+
+.bt-cc__item {
+  min-height: 36px;
+  padding-inline: 10px;
+  border-radius: var(--bt-radius-control);
+}
+
+.bt-cc__content {
+  padding: 24px 28px 32px;
+}
+
+.bt-cc-panel {
+  gap: 20px;
+}
+
+.bt-cc-panel__title {
+  font-size: 18px;
+  font-weight: 660;
+  letter-spacing: -0.02em;
+}
+
+.bt-cc-group + .bt-cc-group {
+  margin-top: 18px;
+}
+
+.bt-cc-group__label {
+  margin: 0 2px 7px;
+  color: var(--bt-faint);
+  font-size: 10.5px;
+  font-weight: 650;
+  letter-spacing: 0.09em;
+}
+
+.bt-cc-rows {
+  overflow: clip;
+  border: 1px solid var(--bt-content-edge);
+  border-radius: var(--bt-radius-card);
+  background: var(--bt-surface-quiet);
+}
+
+.bt-cc-row {
+  min-height: 54px;
+  padding: 11px 14px;
+}
+
+.bt-cc-row:last-child {
+  border-bottom: 0;
+}
+
+.bt-cc-row__label {
+  font-size: 13.5px;
+  font-weight: 590;
+}
+
+.bt-cc-row__hint {
+  max-width: 56ch;
+  font-size: 12px;
+}
+
+.bt-cc-list {
+  overflow: clip;
+  border: 1px solid var(--bt-content-edge);
+  border-radius: var(--bt-radius-card);
+  background: var(--bt-surface-quiet);
+}
+
+.bt-cc-rows > .bt-cc-list {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.bt-cc-list__item {
+  min-height: 52px;
+  padding: 10px 14px;
+}
+
+.bt-cc-list__item:last-child {
+  border-bottom: 0;
+}
+
+.bt-cc-list__item > .bt-cc-list__item {
+  min-height: 0;
+  padding: 0;
+}
+
+.bt-cc-fold {
+  overflow: clip;
+  border: 1px solid var(--bt-content-edge);
+  border-radius: var(--bt-radius-control);
+  background: var(--bt-surface-quiet);
+}
+
+.bt-cc-fold > summary {
+  min-height: 48px;
+  padding: 10px 13px;
+}
+
+.bt-cc-fold__body {
+  padding: 4px 13px 13px;
+  border-top: 1px solid var(--bt-border);
+}
+
+@media (max-width: 760px) {
+  .bt-cc__panel {
+    width: calc(100 * var(--bt-vw));
+    height: calc(100 * var(--bt-dvh));
+    border: 0;
+    border-radius: 0;
+  }
+
+  .bt-cc__body {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .bt-cc__content {
+    padding: 18px 16px 28px;
+  }
+}
+
+@media (max-width: 480px) {
+  .bt-dialog__panel.bt-dialog__panel--phone-sheet {
+    border-radius: 0;
+  }
+
+  .bt-dialog__panel:not(.bt-dialog__panel--phone-sheet) {
+    border-radius: 14px;
+  }
+
+  .bt-dialog__head,
+  .bt-dialog__body,
+  .bt-dialog__foot,
+  .bt-dialog__pinned-foot {
+    padding-inline: 16px;
+  }
+
+  .bt-cc-row {
+    padding: 12px;
+  }
+
+  .bt-cc-list__item {
+    padding-inline: 12px;
+  }
+}

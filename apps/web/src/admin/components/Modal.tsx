@@ -192,7 +192,7 @@ export function Modal({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/70 p-4 sm:items-center"
+      className="bt-admin bt-admin-modal-layer"
       onMouseDown={() => {
         if (dismissable) onClose();
       }}
@@ -203,11 +203,11 @@ export function Modal({
         aria-modal="true"
         aria-labelledby={titleId}
         tabIndex={-1}
-        className="mt-12 w-full max-w-md rounded-lg border border-neutral-800 bg-neutral-900 p-6 shadow-xl sm:mt-0"
+        className="bt-admin-modal"
         onMouseDown={(e) => e.stopPropagation()}
         onKeyDown={onDialogKeyDown}
       >
-        <h2 id={titleId} className="mb-4 text-lg font-semibold text-neutral-100">
+        <h2 id={titleId} className="bt-admin-modal__title">
           {title}
         </h2>
         {children}

@@ -187,7 +187,7 @@ export function AdminLayout() {
                 to={item.to}
                 className={({ isActive }) =>
                   cx(
-                    'flex min-h-[40px] items-center rounded-md px-3 py-1.5 text-sm font-medium transition-colors',
+                    'flex min-h-11 items-center rounded-md px-3 py-1.5 text-sm font-medium transition-colors',
                     isActive
                       ? 'bg-neutral-800 text-white'
                       : 'text-neutral-400 hover:bg-neutral-800/60 hover:text-neutral-200',
@@ -222,7 +222,7 @@ export function AdminLayout() {
   );
 
   return (
-    <div className="min-h-screen bg-neutral-950 text-neutral-100 md:flex">
+    <div className="bt-admin min-h-screen bg-neutral-950 text-neutral-100 md:flex">
       <a
         className="sr-only focus:not-sr-only focus:fixed focus:left-4 focus:top-4 focus:z-50 focus:rounded-md focus:bg-sky-500 focus:px-3 focus:py-2 focus:text-sm focus:font-medium focus:text-white focus:outline-none focus:ring-2 focus:ring-white"
         href="#main-content"
@@ -240,7 +240,7 @@ export function AdminLayout() {
           aria-label={t('admin.nav.openMenu')}
           aria-expanded={drawerOpen}
           aria-controls="admin-sidebar"
-          className="inline-flex h-9 w-9 items-center justify-center rounded-md text-neutral-300 hover:bg-neutral-800 hover:text-white focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+          className="inline-flex h-11 w-11 items-center justify-center rounded-md text-neutral-300 hover:bg-neutral-800 hover:text-white focus:outline-none"
         >
           <svg
             aria-hidden="true"
@@ -287,7 +287,7 @@ export function AdminLayout() {
       ) : null}
 
       <main id="main-content" className="min-w-0 flex-1" tabIndex={-1}>
-        <div className="mx-auto max-w-5xl px-4 py-8">
+        <div className="bt-admin-content">
           {/* Keyed on the route so navigating away from a failed page always
               resets the boundary (§7.1) rather than leaving it stuck. */}
           <ErrorBoundary key={location.pathname}>
