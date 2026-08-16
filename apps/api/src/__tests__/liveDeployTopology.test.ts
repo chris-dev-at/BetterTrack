@@ -204,7 +204,8 @@ describe('compose readiness and cross-container exports (#939)', () => {
   const exportPath = '/var/lib/bettertrack/exports';
   // Matches the named final runner stage, allowing `FROM --option image` and
   // lowercase `as`; it intentionally does not span backslash-continued headers.
-  const runnerStageHeader = /^FROM\s+(?:--\S+\s+)*\S+\s+[Aa][Ss]\s+runner(?:\s|$).*$/m;
+  const runnerStageHeader =
+    /^FROM[ \t]+(?:--[^\s\\]+[ \t]+)*[^\s\\]+[ \t]+[Aa][Ss][ \t]+runner(?:[ \t]|$).*$/m;
   // Covers `apk add` plus any number or order of short or long options before
   // `add` (for example, `apk -q --no-cache add`); it intentionally does not
   // span backslash-continued command lines.
@@ -255,6 +256,10 @@ describe('compose readiness and cross-container exports (#939)', () => {
     expect('FROM --platform=$BUILDPLATFORM node:22-alpine AS runner').toMatch(runnerStageHeader);
     expect('FROM node:22-alpine as runner').toMatch(runnerStageHeader);
     expect('FROM node:22-alpine AS build').not.toMatch(runnerStageHeader);
+    expect('FROM node:22-alpine AS runner-tools').not.toMatch(runnerStageHeader);
+    expect('FROM --platform=$BUILDPLATFORM\\\n node:22-alpine AS runner').not.toMatch(
+      runnerStageHeader,
+    );
 
     for (const command of [
       'RUN apk -U add curl',
@@ -263,6 +268,8 @@ describe('compose readiness and cross-container exports (#939)', () => {
     ]) {
       expect(command).toMatch(apkAddCommand);
     }
+
+    expect('RUN apk -q info').not.toMatch(apkAddCommand);
   });
 });
 
