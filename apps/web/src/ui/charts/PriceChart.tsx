@@ -16,10 +16,10 @@ import {
 import { useEffect, useId, useMemo, useRef, useState } from 'react';
 
 import { LOCALES, useI18n, useT } from '../../i18n';
-import * as palette from './palette';
-import { Spinner } from '../../user/components/ui';
-import { useResolvedTheme } from '../../user/useTheme';
 import { cx } from '../../lib/cx';
+import { useResolvedTheme } from '../../lib/useTheme';
+import { Spinner } from '../Spinner';
+import * as palette from './palette';
 import {
   DISCREET_MASK,
   EM_DASH,

@@ -50,7 +50,11 @@ test('ODialog inerts the background, traps focus, and restores its opener', asyn
   const dialog = screen.getByRole('dialog', { name: 'Edit portfolio' });
   const close = within(dialog).getByRole('button', { name: 'Close' });
   const save = within(dialog).getByRole('button', { name: 'Save' });
+  const scrim = dialog.closest('.bt-dialog-root')!.querySelector<HTMLElement>('.bt-scrim')!;
   expect(close).toHaveFocus();
+  expect(scrim.tagName).toBe('DIV');
+  expect(scrim).toHaveAttribute('aria-hidden', 'true');
+  expect(screen.getAllByRole('button', { name: 'Close' })).toHaveLength(1);
   expect(opener.closest('[inert]')).not.toBeNull();
   expect(behind.closest('[inert]')).not.toBeNull();
   expect(dialog.closest('[inert]')).toBeNull();
@@ -61,7 +65,7 @@ test('ODialog inerts the background, traps focus, and restores its opener', asyn
   await user.tab({ shift: true });
   expect(save).toHaveFocus();
 
-  await user.click(close);
+  await user.click(scrim);
   await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
   expect(opener).toHaveFocus();
   expect(opener.closest('[inert]')).toBeNull();
@@ -94,8 +98,12 @@ test('Drawer is a modal dialog with inert background, trapped focus, and restora
   const drawer = screen.getByRole('dialog', { name: 'Widget catalog' });
   const close = within(drawer).getByRole('button', { name: 'Close' });
   const last = within(drawer).getByRole('button', { name: 'Last widget' });
+  const scrim = drawer.parentElement!.querySelector<HTMLElement>('.bt-scrim')!;
   expect(drawer).toHaveAttribute('aria-modal', 'true');
   expect(close).toHaveFocus();
+  expect(scrim.tagName).toBe('DIV');
+  expect(scrim).toHaveAttribute('aria-hidden', 'true');
+  expect(screen.getAllByRole('button', { name: 'Close' })).toHaveLength(1);
   expect(opener.closest('[inert]')).not.toBeNull();
   expect(behind.closest('[inert]')).not.toBeNull();
   expect(drawer.closest('[inert]')).toBeNull();
@@ -106,8 +114,48 @@ test('Drawer is a modal dialog with inert background, trapped focus, and restora
   await user.tab({ shift: true });
   expect(last).toHaveFocus();
 
-  await user.click(close);
+  await user.click(scrim);
   await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
   expect(opener).toHaveFocus();
   expect(opener.closest('[inert]')).toBeNull();
+});
+
+function StackedOriginFixture() {
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [dialogOpen, setDialogOpen] = useState(false);
+  return (
+    <>
+      <button onClick={() => setDrawerOpen(true)} type="button">
+        Open catalog
+      </button>
+      <Drawer onClose={() => setDrawerOpen(false)} open={drawerOpen} title="Catalog">
+        <button onClick={() => setDialogOpen(true)} type="button">
+          Open details
+        </button>
+      </Drawer>
+      <ODialog onClose={() => setDialogOpen(false)} open={dialogOpen} title="Details">
+        <button type="button">Done</button>
+      </ODialog>
+    </>
+  );
+}
+
+test('shared Escape arbitration closes the top origin overlay only', async () => {
+  const user = userEvent.setup();
+  render(<StackedOriginFixture />);
+
+  await user.click(screen.getByRole('button', { name: 'Open catalog' }));
+  await user.click(screen.getByRole('button', { name: 'Open details' }));
+
+  await user.keyboard('{Escape}');
+
+  await waitFor(() =>
+    expect(screen.queryByRole('dialog', { name: 'Details' })).not.toBeInTheDocument(),
+  );
+  expect(screen.getByRole('dialog', { name: 'Catalog' })).toBeInTheDocument();
+
+  await user.keyboard('{Escape}');
+  await waitFor(() =>
+    expect(screen.queryByRole('dialog', { name: 'Catalog' })).not.toBeInTheDocument(),
+  );
 });

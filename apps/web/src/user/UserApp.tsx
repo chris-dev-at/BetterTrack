@@ -23,7 +23,7 @@ import { PeopleLayout } from './people/PeopleLayout';
 import { MutationFeedbackProvider, useMutationFeedback } from './hooks/useMutationFeedback';
 import { ResolvedPrivacyModeProvider, usePrivacyMode } from './vault/usePrivacyMode';
 import { matchControlPanel, matchesVaultEnableRequest } from './control/matchControlPanel';
-import { useThemeWatcher } from './useTheme';
+import { useThemeWatcher } from '../lib/useTheme';
 import { useUiScaleWatcher } from './useUiScale';
 
 /**

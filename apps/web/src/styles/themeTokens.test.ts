@@ -3,7 +3,7 @@ import { join, relative, resolve } from 'node:path';
 
 import { describe, expect, it } from 'vitest';
 
-import { THEME_CANVAS, THEME_STORAGE_KEY } from '../user/theme';
+import { THEME_CANVAS, THEME_STORAGE_KEY } from '../lib/theme';
 
 /**
  * The two-theme gate (board #68).
@@ -650,7 +650,7 @@ const LITERAL_ALLOWLIST: Readonly<Record<string, string>> = {
     'Seed colour for a NEW user-owned tag — stored data, not chrome.',
   'src/ui/charts/palette.ts':
     'Dark fallbacks for the canvas resolver, used when no stylesheet has been applied.',
-  'src/user/theme.ts': 'Owns THEME_CANVAS, the browser-chrome colour CSS cannot reach.',
+  'src/lib/theme.ts': 'Owns THEME_CANVAS, the browser-chrome colour CSS cannot reach.',
 };
 
 /** A colour literal, not a hash-prefixed id or a percentage in a gradient. */

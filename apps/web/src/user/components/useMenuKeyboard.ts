@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useRef } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent, RefObject } from 'react';
 
-import { useOverlayEscape } from './overlayStack';
-import { restoreFocusTo } from './useFocusTrap';
+import { useOverlayEscape } from '../../ui/overlayStack';
+import { restoreFocusTo } from '../../ui/useFocusTrap';
 
 const MENU_ITEM_SELECTOR = [
   '[role="menuitem"]',

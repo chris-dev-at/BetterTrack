@@ -11,9 +11,9 @@ import { notificationText } from '../../lib/notificationText';
 import { listNotifications, markNotificationsRead } from '../../lib/notificationsApi';
 import { useRealtimeEvent } from '../../lib/realtime';
 import { EmptyState, Skeleton } from '../../ui';
+import { useOverlayEscape } from '../../ui/overlayStack';
+import { restoreFocusTo } from '../../ui/useFocusTrap';
 import { Alert, cx } from './ui';
-import { useOverlayEscape } from './overlayStack';
-import { restoreFocusTo } from './useFocusTrap';
 
 /** Read a string field from a notification payload, or null when absent/empty. */
 function payloadString(payload: unknown, key: string): string | null {
