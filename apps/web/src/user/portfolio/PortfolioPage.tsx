@@ -1,4 +1,4 @@
-import { type ReactNode, useMemo, useState } from 'react';
+import { type ReactNode, useEffect, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import {
   keepPreviousData,
@@ -454,14 +454,15 @@ function RecentTransactionsSection({
   // CashSourcesPage. Only earns its place when the ledger actually mixes
   // sources (anti-bloat — a pure-manual ledger never sees it).
   // A successful deletion can remove the last row for the selected source.
-  // Keep that now-stale option long enough for the person to clear it; without
-  // it, the single-source guard below would also remove their only route back
-  // to the remaining ledger rows.
-  const selectableSourceTags =
-    sourceFilter !== 'all' && !sourceTags.includes(sourceFilter)
-      ? [sourceFilter, ...sourceTags]
-      : sourceTags;
-  const showFilter = selectableSourceTags.length > 1;
+  // The facet is authoritative, so clear that stale selection instead of
+  // inventing a local option that would make a single-source ledger look mixed.
+  useEffect(() => {
+    if (sourceFilter !== 'all' && !sourceTags.includes(sourceFilter)) {
+      onSourceFilterChange('all');
+    }
+  }, [onSourceFilterChange, sourceFilter, sourceTags]);
+
+  const showFilter = sourceTags.length > 1;
 
   if (transactions.length === 0 && !showFilter) return null;
 
@@ -482,7 +483,7 @@ function RecentTransactionsSection({
               value={sourceFilter}
             >
               <option value="all">{t('portfolio.sourceTag.filterAll')}</option>
-              {selectableSourceTags.map((tag) => (
+              {sourceTags.map((tag) => (
                 <option key={tag} value={tag}>
                   {sourceTagLabel(t, tag) ?? t('portfolio.sourceTag.manual')}
                 </option>
