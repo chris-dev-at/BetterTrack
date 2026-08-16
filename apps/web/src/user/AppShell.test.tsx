@@ -114,10 +114,6 @@ function topbarFocusOrder(): HTMLElement[] {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  // UserApp owns a module-level QueryClient. Clear its staleTime-backed cache
-  // before every mount so a portfolio seeded by one shell case cannot start
-  // background reads (or rerenders) in the cases that follow it.
-  queryClient.clear();
   localStorage.clear();
   setViewportWidth(1024);
   vi.mocked(api.getMe).mockResolvedValue(member);
@@ -710,6 +706,7 @@ test('following a Create entry starts that flow and nothing else', async () => {
   // `/portfolio*` surface and consumes `?create=1` for its wizard, so a page
   // under that prefix reusing that value would answer the same link twice and
   // stack the wizard on top of the flow the user asked for.
+  queryClient.clear();
   vi.mocked(listPortfolios).mockResolvedValue({
     portfolios: [
       {
@@ -782,34 +779,25 @@ test('the command shortcut still opens over the inert-backed Control Center', as
     screen.getByRole('dialog', { name: 'Control Center' }),
   );
   const shell = document.querySelector<HTMLElement>('.bt-shell')!;
-  // The shared focus trap applies inertness in a passive effect. Synchronize
-  // with that modal-stack transition instead of assuming that observing the
-  // lazy portal also means its effect has already run.
-  await waitFor(() => {
-    expect(shell.closest('[inert]')).not.toBeNull();
-    expect(controlCenter.closest('[inert]')).toBeNull();
-  });
+  expect(shell.closest('[inert]')).not.toBeNull();
+  expect(controlCenter.closest('[inert]')).toBeNull();
 
   fireEvent.keyDown(document, { key: 'k', ctrlKey: true });
 
   const palette = await screen.findByRole('dialog', { name: 'Quick search' });
-  await waitFor(() => {
-    expect(palette).toHaveClass('bt-palette-overlay');
-    expect(palette.closest('[inert]')).toBeNull();
-    expect(controlCenter.closest('[inert]')).not.toBeNull();
-  });
+  expect(palette).toHaveClass('bt-palette-overlay');
+  expect(palette.closest('[inert]')).toBeNull();
+  expect(controlCenter.closest('[inert]')).not.toBeNull();
   // The shortcut closes the palette and releases only its inert hold: Control
   // Center becomes active again while its background remains inert.
   await waitFor(() => expect(palette.contains(document.activeElement)).toBe(true));
 
   fireEvent.keyDown(document, { key: 'k', ctrlKey: true });
-  await waitFor(() => {
-    expect(document.querySelector('.bt-palette-overlay')).toBeNull();
-    expect(screen.getByRole('dialog', { name: 'Control Center' })).toBeInTheDocument();
-    expect(controlCenter.closest('[inert]')).toBeNull();
-    expect(shell.closest('[inert]')).not.toBeNull();
-    expect(controlCenter).toContainElement(document.activeElement as HTMLElement);
-  });
+  await waitFor(() => expect(document.querySelector('.bt-palette-overlay')).toBeNull());
+  expect(screen.getByRole('dialog', { name: 'Control Center' })).toBeInTheDocument();
+  expect(controlCenter.closest('[inert]')).toBeNull();
+  expect(shell.closest('[inert]')).not.toBeNull();
+  expect(controlCenter).toContainElement(document.activeElement as HTMLElement);
 });
 
 // ─── Destinations & redirects ─────────────────────────────────────────────────
