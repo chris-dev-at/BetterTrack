@@ -3,6 +3,7 @@ import { expect, request as newRequestContext, test } from '@playwright/test';
 import { loginAsAdmin } from './support/adminApi';
 import { passwordSignIn } from './support/auth';
 import { ACCOUNT_PASSWORD, API_BASE_URL } from './support/config';
+import { recentOpenBookingDates } from './support/dates';
 import { expectUserShellReady, recordSapTrade, watchAsset } from './support/flows';
 import { befriend, provisionUser, provisionUserInContext } from './support/users';
 
@@ -32,6 +33,7 @@ test('mobile happy path: money, portfolio wizard, market, chat and settings', as
   await apiRequest.dispose();
 
   const { page } = owner;
+  const [tradeDate] = await recentOpenBookingDates(page, 1);
 
   // The spec's contract is stricter than a project nickname: hold the actual
   // browser context to the owner-mandated iPhone-sized viewport and touch DPR.
@@ -62,7 +64,7 @@ test('mobile happy path: money, portfolio wizard, market, chat and settings', as
       side: 'buy',
       quantity: '2',
       price: '50',
-      date: '2026-08-01',
+      date: tradeDate!,
     });
     await expect(
       page.getByRole('region', { name: 'Holdings' }).getByRole('link', { name: 'SAP.DE' }),

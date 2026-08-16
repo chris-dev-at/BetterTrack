@@ -1,6 +1,7 @@
 import { expect, request as newRequestContext, test, type Page } from '@playwright/test';
 
-import { ACCOUNT_PASSWORD, API_BASE_URL } from './support/config';
+import { API_BASE_URL } from './support/config';
+import { relockTaxYear, unlockTaxYear } from './support/dates';
 import { provisionUser } from './support/users';
 import { loginAsAdmin } from './support/adminApi';
 import { cashSourceAction, cashSourceRow } from './support/cashSurface';
@@ -34,18 +35,6 @@ import { cashSourceAction, cashSourceRow } from './support/cashSurface';
 
 /** Mutating API calls need this header or the CSRF guard 403s them (see dividends.spec). */
 const CSRF_HEADERS = { 'X-Requested-With': 'BetterTrack' };
-
-/** Exercise the cookie-session-only amendment ritual before booking an elapsed year. */
-async function unlockTaxYear(page: Page, year: number): Promise<void> {
-  const response = await page.request.post(
-    `${API_BASE_URL}/api/v1/settings/taxes/years/${year}/unlock`,
-    {
-      headers: CSRF_HEADERS,
-      data: { password: ACCOUNT_PASSWORD },
-    },
-  );
-  expect(response.ok(), `unlock tax year ${year} → ${await response.text()}`).toBeTruthy();
-}
 
 /** Enable "Germany (Abgeltungsteuer)" via Settings → Taxes and confirm it persisted. */
 async function enableGermanyTaxMode(page: Page): Promise<void> {
@@ -264,6 +253,27 @@ test('DE tax mode: FIFO, Sparer-Pauschbetrag exhaustion, both loss pots, and rep
   await page.goto(printHref!);
   await expect(page.getByText('2025').first()).toBeVisible({ timeout: 15_000 });
   await expect(page.getByRole('button', { name: 'Print', exact: true })).toBeVisible();
+
+  // Close 2024 again, then prove the same owner session cannot amend it until
+  // another explicit unlock. Re-book the first fixture buy through the real API.
+  await relockTaxYear(page, 2024);
+  const firstTrade = TRADES[0]!;
+  const refused = await api.post(`${API_BASE_URL}/api/v1/portfolios/${pid}/transactions`, {
+    headers: CSRF_HEADERS,
+    data: {
+      assetId: sap!.asset.id,
+      side: 'buy',
+      quantity: Number(firstTrade.quantity),
+      price: Number(firstTrade.price),
+      fee: 0,
+      executedAt: `${firstTrade.date}T12:00:00.000Z`,
+    },
+  });
+  const refusedBody = (await refused.json()) as {
+    error: { code: string; details?: { year?: number } };
+  };
+  expect(refused.status(), JSON.stringify(refusedBody)).toBe(409);
+  expect(refusedBody.error).toMatchObject({ code: 'TAX_YEAR_LOCKED', details: { year: 2024 } });
 
   await owner.context.close();
 });
