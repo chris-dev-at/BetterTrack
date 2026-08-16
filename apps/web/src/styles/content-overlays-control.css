@@ -219,3 +219,207 @@
     padding-inline: 12px;
   }
 }
+
+/* API/OAuth permission scopes appear in both Control Center and Admin. The
+   component therefore owns a token-only grammar instead of inheriting either
+   host's raw palette. */
+.bt-scope-list {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.bt-scope-row {
+  min-width: 0;
+  border: 1px solid var(--bt-content-edge);
+  border-radius: 10px;
+  background: var(--bt-surface-quiet);
+  padding: 10px 12px;
+}
+
+.bt-scope-row__line {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+}
+
+.bt-scope-row__identity {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 180px;
+  align-items: center;
+  gap: 8px;
+}
+
+.bt-scope-row__info {
+  display: grid;
+  width: 24px;
+  height: 24px;
+  flex: none;
+  place-items: center;
+  border: 1px solid var(--bt-border-strong);
+  border-radius: 50%;
+  background: transparent;
+  color: var(--bt-muted);
+  font: inherit;
+  font-size: 10px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.bt-scope-row__info:hover {
+  background: var(--bt-surface-hover);
+  color: var(--bt-text);
+}
+
+.bt-scope-row__label {
+  overflow: hidden;
+  color: var(--bt-text);
+  font-size: 13px;
+  font-weight: 590;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bt-scope-row__choices {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 14px;
+}
+
+.bt-scope-choice {
+  display: flex;
+  min-height: 28px;
+  align-items: center;
+  gap: 7px;
+  color: var(--bt-text-soft);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.bt-scope-choice__input {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--bt-gold-fill);
+}
+
+.bt-scope-choice__empty {
+  width: 58px;
+  color: var(--bt-faint);
+  font-size: 11px;
+  text-align: center;
+}
+
+.bt-scope-row__description {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--bt-border);
+  color: var(--bt-muted);
+  font-size: 12px;
+}
+
+.bt-scope-fold {
+  overflow: clip;
+  border: 1px solid var(--bt-content-edge);
+  border-radius: var(--bt-radius-card);
+  background: var(--bt-surface-quiet);
+}
+
+.bt-scope-fold__summary {
+  display: flex;
+  min-height: 44px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 12px;
+  color: var(--bt-text);
+  font-size: 13px;
+  font-weight: 590;
+  cursor: pointer;
+  list-style: none;
+}
+
+.bt-scope-fold__summary::-webkit-details-marker {
+  display: none;
+}
+
+.bt-scope-fold__meta {
+  color: var(--bt-muted);
+  font-size: 11.5px;
+  font-weight: 500;
+}
+
+.bt-scope-fold__body {
+  padding: 10px;
+  border-top: 1px solid var(--bt-border);
+}
+
+.bt-scope-summary {
+  display: flex;
+  margin: 0;
+  padding: 0;
+  flex-direction: column;
+  gap: 7px;
+  list-style: none;
+}
+
+.bt-scope-summary__item {
+  display: flex;
+  min-width: 0;
+  align-items: flex-start;
+  gap: 10px;
+  border: 1px solid var(--bt-content-edge);
+  border-radius: 10px;
+  background: var(--bt-surface-quiet);
+  padding: 10px 12px;
+}
+
+.bt-scope-summary__mark {
+  flex: none;
+  color: var(--bt-pos);
+}
+
+.bt-scope-summary__label {
+  color: var(--bt-text);
+  font-size: 13px;
+  font-weight: 590;
+}
+
+.bt-scope-summary__claims {
+  display: flex;
+  margin: 2px 0 0;
+  padding: 0;
+  flex-direction: column;
+  gap: 2px;
+  color: var(--bt-text-soft);
+  font-size: 11.5px;
+  list-style: none;
+}
+
+@media (max-width: 480px) {
+  .bt-scope-row__identity,
+  .bt-scope-row__choices {
+    flex-basis: 100%;
+  }
+
+  .bt-scope-row__choices {
+    justify-content: flex-end;
+  }
+
+  .bt-scope-row__info,
+  .bt-scope-choice {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
+  .bt-scope-choice {
+    justify-content: center;
+  }
+
+  .bt-scope-fold__summary {
+    min-height: 44px;
+  }
+}

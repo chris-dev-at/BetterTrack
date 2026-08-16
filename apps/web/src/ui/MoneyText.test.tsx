@@ -71,30 +71,30 @@ describe('MoneyText', () => {
   test('signed positive → emerald colour and a + prefix', () => {
     const { container } = render(<MoneyText amount={50} signed />);
     const span = container.querySelector('span');
-    expect(span).toHaveClass('text-emerald-400');
+    expect(span).toHaveClass('bt-pos');
     expect(span?.textContent).toMatch(/^\+50,00 €/);
   });
 
   test('signed negative → red colour', () => {
     const { container } = render(<MoneyText amount={-50} signed />);
     const span = container.querySelector('span');
-    expect(span).toHaveClass('text-red-400');
+    expect(span).toHaveClass('bt-neg');
     expect(span?.textContent).toContain('-50,00 €');
   });
 
   test('signed zero → neutral (no colour, no + prefix)', () => {
     const { container } = render(<MoneyText amount={0} signed />);
     const span = container.querySelector('span');
-    expect(span).not.toHaveClass('text-emerald-400');
-    expect(span).not.toHaveClass('text-red-400');
+    expect(span).not.toHaveClass('bt-pos');
+    expect(span).not.toHaveClass('bt-neg');
     expect(span?.textContent).toBe('0,00 €');
   });
 
   test('unsigned → no colour regardless of sign', () => {
     const { container } = render(<MoneyText amount={-10} />);
     const span = container.querySelector('span');
-    expect(span).not.toHaveClass('text-red-400');
-    expect(span).not.toHaveClass('text-emerald-400');
+    expect(span).not.toHaveClass('bt-neg');
+    expect(span).not.toHaveClass('bt-pos');
   });
 
   // Discreet mode (§13.5 V5-P13 arc (a)): every path that would paint an
@@ -118,10 +118,10 @@ describe('MoneyText', () => {
   test('discreet mode strips the sign colour and the + prefix', () => {
     setDiscreetMode(true);
     const { container: pos } = render(<MoneyText amount={50} signed />);
-    expect(pos.querySelector('span')).not.toHaveClass('text-emerald-400');
+    expect(pos.querySelector('span')).not.toHaveClass('bt-pos');
     expect(pos.textContent).toBe(DISCREET_MASK);
     const { container: neg } = render(<MoneyText amount={-50} signed />);
-    expect(neg.querySelector('span')).not.toHaveClass('text-red-400');
+    expect(neg.querySelector('span')).not.toHaveClass('bt-neg');
     expect(neg.textContent).toBe(DISCREET_MASK);
   });
 

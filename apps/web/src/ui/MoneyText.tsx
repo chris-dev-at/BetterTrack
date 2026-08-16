@@ -58,7 +58,7 @@ export function MoneyText({
   // or down (§13.5 V5-P13 arc (a)).
   const sign =
     !discreet && signed && amount != null && Number.isFinite(amount) ? Math.sign(amount) : 0;
-  const colorClass = sign > 0 ? 'text-emerald-400' : sign < 0 ? 'text-red-400' : undefined;
+  const colorClass = sign > 0 ? 'bt-pos' : sign < 0 ? 'bt-neg' : undefined;
   // Intl already emits `-` for negatives; we only need to add the `+`.
   const display = sign > 0 ? `+${formatted}` : formatted;
 

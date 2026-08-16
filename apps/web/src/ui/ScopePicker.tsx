@@ -172,31 +172,31 @@ function ScopeRow({
   const writeChecked = writeScope !== null && scopes.has(writeScope);
 
   return (
-    <div className="rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2">
-      <div className="flex flex-wrap items-center gap-3">
-        <div className="flex min-w-0 flex-1 items-center gap-2">
+    <div className="bt-scope-row">
+      <div className="bt-scope-row__line">
+        <div className="bt-scope-row__identity">
           <button
             type="button"
             aria-label={t('ui.scopePicker.moreInfoAria', { module: moduleLabel })}
             aria-expanded={infoOpen}
             title={description}
             onClick={() => setInfoOpen((o) => !o)}
-            className="grid h-5 w-5 flex-none place-items-center rounded-full border border-neutral-700 text-[0.6rem] font-semibold leading-none text-neutral-400 hover:border-neutral-500 hover:text-neutral-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+            className="bt-scope-row__info"
           >
             i
           </button>
-          <span className="text-sm font-medium text-neutral-100">{moduleLabel}</span>
+          <span className="bt-scope-row__label">{moduleLabel}</span>
         </div>
 
-        <div className="flex items-center gap-4">
+        <div className="bt-scope-row__choices">
           {combined !== null ? (
-            <label className="flex cursor-pointer items-center gap-2 text-xs text-neutral-300">
+            <label className="bt-scope-choice">
               <input
                 type="checkbox"
                 checked={scopes.has(combined)}
                 onChange={() => onChange(toggleWithImplied(scopes, combined))}
                 aria-label={t('ui.scopePicker.accessAria', { module: moduleLabel })}
-                className="h-4 w-4 accent-sky-500"
+                className="bt-scope-choice__input"
               />
               {t('ui.scopePicker.access')}
             </label>
@@ -204,10 +204,7 @@ function ScopeRow({
             <>
               {readScope !== null ? (
                 <label
-                  className={cx(
-                    'flex cursor-pointer items-center gap-2 text-xs text-neutral-300',
-                    isReadLocked && 'opacity-70',
-                  )}
+                  className={cx('bt-scope-choice', isReadLocked && 'opacity-70')}
                   title={isReadLocked ? t('ui.scopePicker.impliedByWrite') : undefined}
                 >
                   <input
@@ -216,28 +213,28 @@ function ScopeRow({
                     disabled={isReadLocked}
                     aria-label={t('ui.scopePicker.readAria', { module: moduleLabel })}
                     onChange={() => onChange(toggleWithImplied(scopes, readScope))}
-                    className="h-4 w-4 accent-sky-500 disabled:opacity-60"
+                    className="bt-scope-choice__input disabled:opacity-60"
                   />
                   {t('ui.scopePicker.read')}
                 </label>
               ) : (
-                <span aria-hidden="true" className="w-16 text-center text-xs text-neutral-700">
+                <span aria-hidden="true" className="bt-scope-choice__empty">
                   —
                 </span>
               )}
               {writeScope !== null ? (
-                <label className="flex cursor-pointer items-center gap-2 text-xs text-neutral-300">
+                <label className="bt-scope-choice">
                   <input
                     type="checkbox"
                     checked={writeChecked}
                     aria-label={t('ui.scopePicker.writeAria', { module: moduleLabel })}
                     onChange={() => onChange(toggleWithImplied(scopes, writeScope))}
-                    className="h-4 w-4 accent-sky-500"
+                    className="bt-scope-choice__input"
                   />
                   {t('ui.scopePicker.write')}
                 </label>
               ) : (
-                <span aria-hidden="true" className="w-16 text-center text-xs text-neutral-700">
+                <span aria-hidden="true" className="bt-scope-choice__empty">
                   —
                 </span>
               )}
@@ -247,7 +244,7 @@ function ScopeRow({
       </div>
 
       {infoOpen ? (
-        <p className="mt-2 text-xs text-neutral-400" role="note">
+        <p className="bt-scope-row__description" role="note">
           {description}
         </p>
       ) : null}
@@ -277,7 +274,7 @@ export function ScopePicker({
     : scopes;
 
   const rows = (
-    <div className="flex flex-col gap-1.5">
+    <div className="bt-scope-list">
       {modules.map((module) => (
         <ScopeRow key={module.key} module={module} scopes={visibleScopes} onChange={onChange} />
       ))}
@@ -298,12 +295,12 @@ export function ScopePicker({
   const summaryLabel = legend ?? t('ui.scopePicker.legend');
 
   return (
-    <details className="rounded-md border border-neutral-800 bg-neutral-900" open={defaultOpen}>
-      <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2 text-sm font-medium text-neutral-200 marker:hidden [&::-webkit-details-marker]:hidden">
+    <details className="bt-scope-fold" open={defaultOpen}>
+      <summary className="bt-scope-fold__summary">
         <span>{summaryLabel}</span>
-        <span className="text-xs text-neutral-400">{summaryText}</span>
+        <span className="bt-scope-fold__meta">{summaryText}</span>
       </summary>
-      <div className="border-t border-neutral-800 p-3">{rows}</div>
+      <div className="bt-scope-fold__body">{rows}</div>
     </details>
   );
 }
@@ -334,20 +331,17 @@ export function ScopeSummary({ items }: ScopeSummaryProps) {
   }
 
   return (
-    <ul className="flex flex-col gap-2">
+    <ul className="bt-scope-summary">
       {grouped.map(({ module, claims }) => (
-        <li
-          key={module.key}
-          className="flex items-start gap-3 rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2"
-        >
-          <span aria-hidden="true" className="mt-0.5 text-sky-400">
+        <li key={module.key} className="bt-scope-summary__item">
+          <span aria-hidden="true" className="bt-scope-summary__mark">
             ✓
           </span>
           <div className="flex min-w-0 flex-col gap-0.5">
-            <span className="text-sm font-medium text-neutral-100">
+            <span className="bt-scope-summary__label">
               {t(`ui.scopePicker.module.${module.key}.label`)}
             </span>
-            <ul className="flex flex-col gap-0.5 text-xs text-neutral-300">
+            <ul className="bt-scope-summary__claims">
               {claims.map(({ scope, label }) => (
                 <li key={scope}>{label}</li>
               ))}
