@@ -82,8 +82,9 @@ export function validatedVaultSnapshot(engine: VaultSyncEngine): ValidatedVaultS
 
 /**
  * Validate a scan candidate without letting one corrupt standing-order row hide
- * every later order. All document, non-order entity, and durable-run validation
- * remains active; the materializer validates each order row in isolation.
+ * every later order. All document, non-order entity, and run-row structural
+ * validation remains active; the materializer validates each order and its
+ * run-to-schedule reachability in isolation.
  */
 export function validatedStandingOrderSnapshot(engine: VaultSyncEngine): ValidatedVaultSnapshot {
   return validatedSnapshot(engine, true);
@@ -218,15 +219,10 @@ export function requireLiveEntity(
   return entity;
 }
 
-/** Validate one standing order independently for the catch-up scanner. */
-export function validateStandingOrderForScan(document: VaultDocument, entity: VaultEntity): void {
-  const row = VAULT_ENTITY_ROW_SCHEMAS.standingOrder.parse(entity.data);
-  const portfolio = liveEntities(document, 'portfolio').find(
-    (candidate) => candidate.id === row.portfolioId,
-  );
-  if (portfolio === undefined || field(portfolio, 'userId') !== row.userId) {
-    invalidReference('standingOrder', entity.id, 'portfolioId');
-  }
+/** Build one document-scoped validator for the catch-up scanner. */
+export function createStandingOrderScanValidator(
+  document: VaultDocument,
+): (entity: VaultEntity) => void {
   const assets = liveEntities(document, 'customAsset');
   const assetCurrency = new Map(
     assets.map((asset) => [
@@ -234,6 +230,22 @@ export function validateStandingOrderForScan(document: VaultDocument, entity: Va
       VAULT_ENTITY_ROW_SCHEMAS.customAsset.parse(asset.data).currency,
     ]),
   );
+  return (entity) => validateStandingOrderForScan(document, entity, assetCurrency);
+}
+
+/** Validate one standing order independently for the catch-up scanner. */
+function validateStandingOrderForScan(
+  document: VaultDocument,
+  entity: VaultEntity,
+  assetCurrency: ReadonlyMap<string, string>,
+): void {
+  const row = VAULT_ENTITY_ROW_SCHEMAS.standingOrder.parse(entity.data);
+  const portfolio = liveEntities(document, 'portfolio').find(
+    (candidate) => candidate.id === row.portfolioId,
+  );
+  if (portfolio === undefined || field(portfolio, 'userId') !== row.userId) {
+    invalidReference('standingOrder', entity.id, 'portfolioId');
+  }
   if (row.assetId !== null && !assetCurrency.has(row.assetId)) {
     throw moneyFailure(
       'VAULT_CORRUPT',
@@ -241,6 +253,18 @@ export function validateStandingOrderForScan(document: VaultDocument, entity: Va
     );
   }
   validatePersistedStandingOrder(document, entity, assetCurrency);
+  for (const run of liveEntities(document, 'standingOrderRun')) {
+    const runRow = VAULT_ENTITY_ROW_SCHEMAS.standingOrderRun.parse(run.data);
+    if (
+      runRow.standingOrderId === entity.id &&
+      !isPersistedStandingOrderOccurrence(entity, runRow.periodKey)
+    ) {
+      invalidStandingOrder(
+        entity.id,
+        `run ${run.id} does not belong to a reachable schedule occurrence`,
+      );
+    }
+  }
 }
 
 function validateStrictEntities(document: VaultDocument, isolateStandingOrders: boolean): void {
@@ -625,11 +649,14 @@ function validateRelationships(document: VaultDocument, isolateStandingOrders: b
       throw moneyFailure('VAULT_CORRUPT', `Vault contains duplicate standing-order run ${key}.`);
     }
     runKeys.add(key);
-    if (!isolateStandingOrders && !isPersistedStandingOrderOccurrence(order, periodKey)) {
-      invalidStandingOrder(
-        order.id,
-        `run ${run.id} does not belong to a reachable schedule occurrence`,
-      );
+    if (!isolateStandingOrders) {
+      if (!isPersistedStandingOrderOccurrence(order, periodKey)) {
+        invalidStandingOrder(
+          order.id,
+          `run ${run.id} does not belong to a reachable schedule occurrence`,
+        );
+      }
+      validateDeterministicStandingOrderRun(document, order, run, periodKey);
     }
   }
   const taxSettings = liveEntities(document, 'taxSetting');
@@ -758,6 +785,37 @@ function isPersistedStandingOrderOccurrence(entity: VaultEntity, periodKey: stri
     return isStandingOrderScheduleDay(row, periodKey);
   } catch {
     return false;
+  }
+}
+
+function validateDeterministicStandingOrderRun(
+  document: VaultDocument,
+  order: VaultEntity,
+  run: VaultEntity,
+  periodKey: string,
+): void {
+  /*
+   * Client occurrences use UUIDv5 and atomically share that id across the run
+   * and ledger row. Legacy server claims use independent UUIDv7 ids and may be
+   * claim-only after a failed booking; a tombstoned order may also retain live
+   * history after a cross-device delete race.
+   */
+  if (run.id[14] !== '5' || order.deletedAt !== null) return;
+  const row = VAULT_ENTITY_ROW_SCHEMAS.standingOrder.parse(order.data);
+  const expectedKind = row.kind === 'buy-asset' ? 'transaction' : 'cashMovement';
+  const otherKind = expectedKind === 'transaction' ? 'cashMovement' : 'transaction';
+  const ledger = liveEntities(document, expectedKind).find((entity) => entity.id === run.id);
+  const conflictingLedger = liveEntities(document, otherKind).some(
+    (entity) => entity.id === run.id,
+  );
+  if (
+    ledger === undefined ||
+    conflictingLedger ||
+    field(ledger, 'source') !== 'standing-order' ||
+    row.lastPeriodKey === null ||
+    row.lastPeriodKey < periodKey
+  ) {
+    invalidStandingOrder(order.id, `run ${run.id} has no complete deterministic occurrence`);
   }
 }
 
