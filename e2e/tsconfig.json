@@ -1,0 +1,10 @@
+{
+  "extends": "@bettertrack/config/tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["node", "@playwright/test"],
+    "jsx": "react-jsx",
+    "noEmit": true
+  },
+  "include": ["./**/*.ts", "../playwright.config.ts", "../apps/api/src/http/types.ts"]
+}
