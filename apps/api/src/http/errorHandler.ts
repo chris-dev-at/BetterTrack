@@ -16,38 +16,51 @@ export type ErrorReporter = (err: unknown) => void;
  * are never reported. `report` is a no-op when Sentry is disabled.
  */
 export function createErrorHandler(logger: Logger, report?: ErrorReporter): ErrorRequestHandler {
-  return (err, _req, res, _next) => {
-    res.removeHeader('ETag');
-    res.removeHeader('Last-Modified');
-
-    if (err instanceof ApiError) {
-      // `EnvelopeApiError` contributes top-level members beside `error` (the
-      // Vaults v2 CAS contract's `currentVersion`, design r2 §15). Spread FIRST
-      // so `error` always wins — an envelope can add fields, never rewrite the
-      // error itself.
-      res.status(err.statusCode).json({
-        ...(err instanceof EnvelopeApiError ? err.envelope : {}),
-        error: {
-          code: err.code,
-          message: err.message,
-          ...(err.details !== undefined ? { details: err.details } : {}),
-        },
-      });
-      return;
-    }
-
-    if (err instanceof ZodError) {
-      res.status(400).json({
-        error: { code: 'VALIDATION_ERROR', message: 'Invalid request.', details: err.flatten() },
-      });
-      return;
-    }
-
+  const reportUnexpected = (err: unknown) => {
     logger.error(
       { err: err instanceof Error ? err.message : 'unknown' },
       'Unhandled request error',
     );
     report?.(err);
-    res.status(500).json({ error: { code: 'INTERNAL', message: 'Internal server error.' } });
+  };
+
+  return (err, _req, res, next) => {
+    if (!res.headersSent) {
+      res.removeHeader('ETag');
+      res.removeHeader('Last-Modified');
+
+      if (err instanceof ApiError) {
+        // `EnvelopeApiError` contributes top-level members beside `error` (the
+        // Vaults v2 CAS contract's `currentVersion`, design r2 §15). Spread FIRST
+        // so `error` always wins — an envelope can add fields, never rewrite the
+        // error itself.
+        res.status(err.statusCode).json({
+          ...(err instanceof EnvelopeApiError ? err.envelope : {}),
+          error: {
+            code: err.code,
+            message: err.message,
+            ...(err.details !== undefined ? { details: err.details } : {}),
+          },
+        });
+        return;
+      }
+
+      if (err instanceof ZodError) {
+        res.status(400).json({
+          error: { code: 'VALIDATION_ERROR', message: 'Invalid request.', details: err.flatten() },
+        });
+        return;
+      }
+
+      reportUnexpected(err);
+      res.status(500).json({ error: { code: 'INTERNAL', message: 'Internal server error.' } });
+      return;
+    }
+
+    if (!(err instanceof ApiError) && !(err instanceof ZodError)) {
+      reportUnexpected(err);
+    }
+
+    next(err);
   };
 }
