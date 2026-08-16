@@ -8,7 +8,7 @@ import { deleteIdea, listIdeas } from '../../lib/ideasApi';
 import { listMyShared } from '../../lib/socialApi';
 import { useT } from '../../i18n';
 import { EmptyState, Skeleton } from '../../ui';
-import { Badge, Button, PageHead, type BadgeTone } from '../../ui/origin';
+import { Badge, Button, Page, PageHead, type BadgeTone } from '../../ui/origin';
 import { AudiencePicker } from '../components/AudiencePicker';
 import { AsyncReadState } from '../components/AsyncReadState';
 import { Dialog } from '../components/Dialog';
@@ -85,7 +85,7 @@ function IdeaRow({
 }) {
   const t = useT();
   return (
-    <li className="bt-band__row bt-idea-row flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+    <li className="bt-data-row bt-idea-row">
       <div className="flex min-w-0 flex-col gap-1">
         <span className="bt-row-title truncate">{idea.name}</span>
         <p className="bt-row-sub truncate">{idea.thesis ?? t('workboard.ideas.list.thesisNone')}</p>
@@ -148,21 +148,22 @@ export function IdeasListPage() {
 
   if (ideasQuery.isLoading) {
     return (
-      <section className="bt-phone-surface bt-ideas-page flex flex-col gap-3">
-        <Skeleton height="h-6" width="w-48" />
+      <Page className="bt-phone-surface bt-workboard-family bt-ideas-page" width="narrow">
+        <PageHead title={t('workboard.ideas.list.title')} />
         <Skeleton height="h-16" />
-      </section>
+      </Page>
     );
   }
 
   if (ideasQuery.isError || !ideasQuery.data) {
     return (
-      <div className="bt-phone-surface bt-ideas-page flex flex-col gap-3">
+      <Page className="bt-phone-surface bt-workboard-family bt-ideas-page" width="narrow">
+        <PageHead title={t('workboard.ideas.list.title')} />
         <Alert tone="error">{t('workboard.ideas.list.loadError')}</Alert>
         <div>
           <Button onClick={() => void ideasQuery.refetch()}>{t('common.retry')}</Button>
         </div>
-      </div>
+      </Page>
     );
   }
 
@@ -172,7 +173,7 @@ export function IdeasListPage() {
   );
 
   return (
-    <div className="bt-phone-surface bt-ideas-page flex flex-col gap-6">
+    <Page className="bt-phone-surface bt-workboard-family bt-ideas-page" width="narrow">
       <PageHead title={t('workboard.ideas.list.title')} />
 
       {!paranoid ? (
@@ -196,7 +197,7 @@ export function IdeasListPage() {
           }
         />
       ) : (
-        <ul className="bt-panel bt-band">
+        <ul className="bt-surface bt-data-list">
           {ideas.map((idea) => {
             const shared = audienceById.get(idea.id);
             return (
@@ -233,6 +234,6 @@ export function IdeasListPage() {
           error={deleteMutation.isError}
         />
       ) : null}
-    </div>
+    </Page>
   );
 }

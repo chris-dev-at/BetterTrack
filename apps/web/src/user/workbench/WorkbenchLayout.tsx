@@ -18,7 +18,7 @@ export function WorkbenchLayout() {
   const items = useSectionNavItems('workbench');
 
   return (
-    <div>
+    <div className="bt-phone-surface bt-family-workspace bt-workbench-workspace">
       <LocalNav ariaLabel={t(SECTION_NAV.workbench.ariaLabelKey)} items={items} />
       {/* Skeleton, not `null` (§7.1): the layout and its LocalNav stay put and
           only the page area waits, so a cold page still says it is loading. */}

@@ -694,6 +694,20 @@ describe('WorkboardPage — remove', () => {
 // ─── Drag-to-reorder ─────────────────────────────────────────────────────────
 
 describe('WorkboardPage — reorder', () => {
+  test('offers keyboard and touch-safe move controls alongside drag-and-drop', async () => {
+    vi.mocked(listWorkboard).mockResolvedValue({ items: [ITEM_A, ITEM_B] });
+    const user = userEvent.setup();
+    renderPage();
+    await waitFor(() => expect(screen.getByText('AAPL')).toBeInTheDocument());
+
+    expect(screen.getByRole('button', { name: 'AAPL · ↑' })).toBeDisabled();
+    await user.click(screen.getByRole('button', { name: 'AAPL · ↓' }));
+
+    await waitFor(() =>
+      expect(vi.mocked(reorderWorkboard)).toHaveBeenCalledWith([ITEM_B.id, ITEM_A.id]),
+    );
+  });
+
   test('calls reorderWorkboard with new order after drag-and-drop', async () => {
     vi.mocked(listWorkboard).mockResolvedValue({ items: [ITEM_A, ITEM_B] });
     renderPage();

@@ -400,7 +400,7 @@ function Builder({ initial }: { initial: BuilderInitial | null }) {
         </div>
       ) : null}
 
-      <div className="mx-auto grid w-full max-w-7xl flex-1 grid-cols-1 gap-6 px-4 py-6 lg:grid-cols-[minmax(0,20rem)_minmax(0,1fr)_minmax(0,22rem)]">
+      <div className="bt-blueprint-builder__grid">
         <AddAssetsPanel
           notice={notice}
           onSelect={handleAddAsset}
@@ -427,7 +427,7 @@ function Builder({ initial }: { initial: BuilderInitial | null }) {
 
 function BuilderFrame({ children }: { children: React.ReactNode }) {
   return (
-    <div className="flex min-h-[calc(100*var(--bt-vh))] flex-col bg-[var(--bt-bg)]">{children}</div>
+    <div className="bt-phone-surface bt-workboard-family bt-blueprint-builder">{children}</div>
   );
 }
 
@@ -452,8 +452,8 @@ function BuilderHeader({
 }) {
   const t = useT();
   return (
-    <header className="bt-b-rule" style={{ background: 'var(--bt-bg-raised)' }}>
-      <div className="mx-auto flex w-full max-w-7xl flex-col gap-3 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+    <header className="bt-blueprint-builder__header">
+      <div className="bt-blueprint-builder__header-inner">
         <div className="flex min-w-0 flex-1 items-center gap-3">
           <Link
             to="/workbench/blueprints"
@@ -540,7 +540,7 @@ function AddAssetsPanel({
 }) {
   const t = useT();
   return (
-    <section aria-labelledby="add-assets-heading" className="flex flex-col gap-3">
+    <section aria-labelledby="add-assets-heading" className="bt-builder-column bt-builder-add">
       <h2
         id="add-assets-heading"
         className="text-sm font-semibold uppercase tracking-wide bt-muted"
@@ -650,7 +650,7 @@ function PositionsPanel({
 }) {
   const t = useT();
   return (
-    <section aria-labelledby="positions-heading" className="flex min-w-0 flex-col gap-3">
+    <section aria-labelledby="positions-heading" className="bt-builder-column bt-builder-positions">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h2
           id="positions-heading"
@@ -680,7 +680,7 @@ function PositionsPanel({
         </div>
       ) : (
         <ul
-          className="flex flex-col gap-2"
+          className="bt-surface bt-data-list"
           aria-label={t('workboard.builder.positionsListAriaLabel')}
         >
           {positions.map((position) => (
@@ -728,7 +728,7 @@ export function WeightRow({
   }, [weightPct, draft]);
 
   return (
-    <li className="flex flex-col gap-2 bt-panel p-3 sm:flex-row sm:items-center sm:gap-4">
+    <li className="bt-data-row bt-builder-position-row">
       <div className="flex min-w-0 flex-1 flex-col">
         <span className="flex items-center gap-2">
           <span className="truncate font-mono text-sm font-semibold">{symbol}</span>
@@ -808,7 +808,7 @@ export function WeightRow({
 function PositionsFooter({ positions }: { positions: BuilderPosition[] }) {
   const t = useT();
   return (
-    <div className="flex items-center justify-between bt-panel px-4 py-3">
+    <div className="bt-surface bt-builder-positions-foot">
       <span className="text-xs bt-muted">
         {t('workboard.builder.positionsCount', { count: positions.length, max: MAX_POSITIONS })}
       </span>
@@ -873,12 +873,12 @@ function LivePreviewPanel({ positions }: { positions: BuilderPosition[] }) {
   );
 
   return (
-    <section aria-labelledby="preview-heading" className="flex flex-col gap-3">
+    <section aria-labelledby="preview-heading" className="bt-builder-column bt-builder-preview">
       <h2 id="preview-heading" className="text-sm font-semibold uppercase tracking-wide bt-muted">
         {t('workboard.builder.livePreviewHeading')}
       </h2>
 
-      <div className="bt-panel bt-panel--pad">
+      <div className="bt-surface bt-builder-preview__chart">
         <AllocationDonut
           data={donutData}
           size={180}
@@ -886,7 +886,7 @@ function LivePreviewPanel({ positions }: { positions: BuilderPosition[] }) {
         />
       </div>
 
-      <dl className="grid grid-cols-3 gap-2">
+      <dl className="bt-metrics">
         <Stat label={t('workboard.builder.statPositions')} value={String(live.length)} />
         <Stat label={t('workboard.builder.statTotalWeight')} value={formatPercent(total)} />
         <Stat
@@ -947,9 +947,9 @@ function LivePreviewPanel({ positions }: { positions: BuilderPosition[] }) {
 
 function Stat({ label, value }: { label: string; value: string }) {
   return (
-    <div className="bt-panel p-3">
-      <dt className="text-xs bt-muted">{label}</dt>
-      <dd className="mt-0.5 truncate text-sm font-semibold" title={value}>
+    <div className="bt-stat">
+      <dt className="bt-stat__label">{label}</dt>
+      <dd className="bt-stat__value" title={value}>
         {value}
       </dd>
     </div>

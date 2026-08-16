@@ -30,6 +30,7 @@ import {
 } from '../../lib/workboardApi';
 import { EmptyState, MarketStateBadge, MoneyText, Skeleton } from '../../ui';
 import { Sparkline } from '../../ui/charts';
+import { Page, PageHead, SectionHead, Surface } from '../../ui/origin';
 import { Alert, Button } from '../components/ui';
 import { AsyncReadState } from '../components/AsyncReadState';
 import { AudiencePicker } from '../components/AudiencePicker';
@@ -50,6 +51,10 @@ interface WatchlistRowProps {
   onDragOver: () => void;
   onDrop: () => void;
   onDragEnd: () => void;
+  onMoveUp: () => void;
+  onMoveDown: () => void;
+  moveUpDisabled: boolean;
+  moveDownDisabled: boolean;
   onRemove: () => void;
   removeDisabled: boolean;
 }
@@ -66,6 +71,10 @@ function WatchlistRow({
   onDragOver,
   onDrop,
   onDragEnd,
+  onMoveUp,
+  onMoveDown,
+  moveUpDisabled,
+  moveDownDisabled,
   onRemove,
   removeDisabled,
 }: WatchlistRowProps) {
@@ -94,12 +103,18 @@ function WatchlistRow({
       )}
     >
       {/* Drag handle */}
-      <td className="w-5 cursor-grab select-none pl-2 pr-0 text-center bt-muted" aria-hidden="true">
+      <td
+        className="bt-workboard-watchlist__drag w-5 cursor-grab select-none pl-2 pr-0 text-center bt-muted"
+        aria-hidden="true"
+      >
         ⠿
       </td>
 
       {/* Sparkline (1M) */}
-      <td className="px-2 py-3">
+      <td
+        className="bt-workboard-watchlist__trend px-2 py-3"
+        data-label={t('workboard.overview.watchlist.trendHeader')}
+      >
         {sparklineLoading ? (
           <Skeleton width="w-24" height="h-7" />
         ) : sparkline ? (
@@ -113,7 +128,7 @@ function WatchlistRow({
       </td>
 
       {/* Symbol + Name + optional note */}
-      <td className="min-w-0 px-3 py-3">
+      <td className="bt-workboard-watchlist__asset min-w-0 px-3 py-3">
         <div className="flex items-center gap-2">
           <Link
             to={`/assets/${item.assetId}`}
@@ -131,7 +146,10 @@ function WatchlistRow({
       </td>
 
       {/* Price */}
-      <td className="px-3 py-3 text-right text-sm">
+      <td
+        className="bt-workboard-watchlist__price px-3 py-3 text-right text-sm"
+        data-label={t('workboard.overview.watchlist.priceHeader')}
+      >
         {quoteLoading ? (
           <Skeleton variant="line" width="w-20" className="ml-auto" />
         ) : quote ? (
@@ -142,7 +160,10 @@ function WatchlistRow({
       </td>
 
       {/* Day ±% */}
-      <td className="px-3 py-3 text-right text-sm tabular-nums">
+      <td
+        className="bt-workboard-watchlist__change px-3 py-3 text-right text-sm tabular-nums"
+        data-label={t('workboard.overview.watchlist.dayHeader')}
+      >
         {quoteLoading ? (
           <Skeleton variant="line" width="w-14" className="ml-auto" />
         ) : dayPct != null ? (
@@ -155,7 +176,10 @@ function WatchlistRow({
       </td>
 
       {/* Alert count badge — alerts API arrives in P5 */}
-      <td className="px-3 py-3 text-center">
+      <td
+        className="bt-workboard-watchlist__alerts px-3 py-3 text-center"
+        data-label={t('workboard.overview.watchlist.alertsHeader')}
+      >
         <span
           className="bt-badge inline-flex h-5 min-w-[1.25rem] items-center justify-center px-1.5 text-xs"
           title={t('workboard.overview.watchlist.alertsComingSoonTitle')}
@@ -165,18 +189,42 @@ function WatchlistRow({
       </td>
 
       {/* Remove */}
-      <td className="py-3 pr-2 text-right">
-        <button
-          type="button"
-          onClick={onRemove}
-          disabled={removeDisabled}
-          aria-label={t('workboard.overview.watchlist.removeAriaLabel', {
-            symbol: item.asset.symbol,
-          })}
-          className="rounded p-1 text-xs bt-muted transition-colors hover:bt-neg disabled:cursor-not-allowed disabled:opacity-40"
+      <td className="bt-workboard-watchlist__actions py-3 pr-2 text-right">
+        <div
+          aria-label={`${t('workboard.overview.watchlist.actionsAriaLabel')} · ${item.asset.symbol}`}
+          className="bt-workboard-order-actions"
+          role="group"
         >
-          ✕
-        </button>
+          <button
+            aria-label={`${item.asset.symbol} · ↑`}
+            className="bt-workboard-order-btn"
+            disabled={moveUpDisabled}
+            onClick={onMoveUp}
+            type="button"
+          >
+            ↑
+          </button>
+          <button
+            aria-label={`${item.asset.symbol} · ↓`}
+            className="bt-workboard-order-btn"
+            disabled={moveDownDisabled}
+            onClick={onMoveDown}
+            type="button"
+          >
+            ↓
+          </button>
+          <button
+            type="button"
+            onClick={onRemove}
+            disabled={removeDisabled}
+            aria-label={t('workboard.overview.watchlist.removeAriaLabel', {
+              symbol: item.asset.symbol,
+            })}
+            className="bt-workboard-order-btn is-remove"
+          >
+            ✕
+          </button>
+        </div>
       </td>
     </tr>
   );
@@ -371,6 +419,18 @@ function WatchlistZone() {
     reorderMutation.mutate(next.map((i) => i.id));
   };
 
+  const handleMove = (itemId: string, offset: -1 | 1) => {
+    if (reorderMutation.isPending) return;
+    const fromIndex = orderedItems.findIndex((item) => item.id === itemId);
+    const toIndex = fromIndex + offset;
+    if (fromIndex < 0 || toIndex < 0 || toIndex >= orderedItems.length) return;
+    const next = [...orderedItems];
+    const [moved] = next.splice(fromIndex, 1);
+    next.splice(toIndex, 0, moved!);
+    setOrderedItems(next);
+    reorderMutation.mutate(next.map((item) => item.id));
+  };
+
   const handleDragEnd = () => {
     setDraggedId(null);
     setDragOverId(null);
@@ -378,10 +438,8 @@ function WatchlistZone() {
 
   if (isLoading) {
     return (
-      <section aria-labelledby="watchlist-heading" className="flex flex-col gap-4">
-        <h2 id="watchlist-heading" className="text-lg font-semibold bt-soft">
-          {t('workboard.overview.watchlist.heading')}
-        </h2>
+      <section aria-label={t('workboard.overview.watchlist.heading')}>
+        <SectionHead title={t('workboard.overview.watchlist.heading')} />
         <div className="flex flex-col gap-2">
           <Skeleton height="h-14" />
           <Skeleton height="h-14" />
@@ -393,25 +451,23 @@ function WatchlistZone() {
 
   if (isError) {
     return (
-      <section aria-labelledby="watchlist-heading" className="flex flex-col gap-4">
-        <h2 id="watchlist-heading" className="text-lg font-semibold bt-soft">
-          {t('workboard.overview.watchlist.heading')}
-        </h2>
+      <section aria-label={t('workboard.overview.watchlist.heading')}>
+        <SectionHead title={t('workboard.overview.watchlist.heading')} />
         <Alert tone="error">{t('workboard.overview.watchlist.loadError')}</Alert>
       </section>
     );
   }
 
   return (
-    <section aria-labelledby="watchlist-heading" className="flex flex-col gap-4">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <h2 id="watchlist-heading" className="text-lg font-semibold bt-soft">
-          {t('workboard.overview.watchlist.heading')}
-        </h2>
-        <NormalModeOnly>
-          <WatchlistSharingControl />
-        </NormalModeOnly>
-      </div>
+    <section aria-label={t('workboard.overview.watchlist.heading')}>
+      <SectionHead
+        actions={
+          <NormalModeOnly>
+            <WatchlistSharingControl />
+          </NormalModeOnly>
+        }
+        title={t('workboard.overview.watchlist.heading')}
+      />
 
       {removeError ? <Alert tone="error">{removeError}</Alert> : null}
 
@@ -455,7 +511,7 @@ function WatchlistZone() {
           }
         />
       ) : (
-        <div className="overflow-x-auto bt-panel">
+        <Surface className="bt-workboard-watchlist-table">
           <table className="w-full text-left">
             <thead>
               <tr className="bt-b-rule bt-label">
@@ -483,7 +539,7 @@ function WatchlistZone() {
               </tr>
             </thead>
             <tbody>
-              {orderedItems.map((item) => (
+              {orderedItems.map((item, index) => (
                 <WatchlistRow
                   key={item.id}
                   item={item}
@@ -497,13 +553,17 @@ function WatchlistZone() {
                   onDragOver={() => handleDragOver(item.id)}
                   onDrop={() => handleDrop(item.id)}
                   onDragEnd={handleDragEnd}
+                  onMoveUp={() => handleMove(item.id, -1)}
+                  onMoveDown={() => handleMove(item.id, 1)}
+                  moveUpDisabled={index === 0 || reorderMutation.isPending}
+                  moveDownDisabled={index === orderedItems.length - 1 || reorderMutation.isPending}
                   onRemove={() => removeMutation.mutate(item.id)}
                   removeDisabled={removeMutation.isPending}
                 />
               ))}
             </tbody>
           </table>
-        </div>
+        </Surface>
       )}
     </section>
   );
@@ -536,11 +596,9 @@ function UpcomingEarningsZone() {
   const hiddenCount = data.entries.length - rows.length;
 
   return (
-    <section aria-labelledby="earnings-heading" className="flex flex-col gap-4">
-      <h2 id="earnings-heading" className="text-lg font-semibold bt-soft">
-        {t('workboard.overview.earnings.heading')}
-      </h2>
-      <div className="overflow-hidden bt-panel">
+    <section aria-label={t('workboard.overview.earnings.heading')}>
+      <SectionHead title={t('workboard.overview.earnings.heading')} />
+      <Surface>
         <ul className="bt-band">
           {rows.map((e) => (
             <li key={`${e.assetId}-${e.date}`} className="flex items-center gap-3 px-4 py-2.5">
@@ -594,7 +652,7 @@ function UpcomingEarningsZone() {
               : t('workboard.overview.earnings.showMore', { count: hiddenCount })}
           </button>
         ) : null}
-      </div>
+      </Surface>
     </section>
   );
 }
@@ -611,11 +669,9 @@ function UpcomingEarningsZone() {
 function AlertsZone() {
   const t = useT();
   return (
-    <section aria-labelledby="alerts-heading" className="flex flex-col gap-4">
-      <h2 id="alerts-heading" className="text-lg font-semibold bt-soft">
-        {t('workboard.overview.alerts.heading')}
-      </h2>
-      <div className="bt-panel p-6">
+    <section aria-label={t('workboard.overview.alerts.heading')}>
+      <SectionHead title={t('workboard.overview.alerts.heading')} />
+      <Surface className="bt-workboard-signpost">
         <EmptyState
           icon="🔔"
           title={t('workboard.overview.alerts.emptyTitle')}
@@ -626,7 +682,7 @@ function AlertsZone() {
             </Link>
           }
         />
-      </div>
+      </Surface>
     </section>
   );
 }
@@ -636,11 +692,9 @@ function AlertsZone() {
 function ConglomeratesZone() {
   const t = useT();
   return (
-    <section aria-labelledby="conglomerates-heading" className="flex flex-col gap-4">
-      <h2 id="conglomerates-heading" className="text-lg font-semibold bt-soft">
-        {t('workboard.overview.conglomerates.heading')}
-      </h2>
-      <div className="bt-panel p-6">
+    <section aria-label={t('workboard.overview.conglomerates.heading')}>
+      <SectionHead title={t('workboard.overview.conglomerates.heading')} />
+      <Surface className="bt-workboard-signpost">
         <EmptyState
           icon="📊"
           title={t('workboard.overview.conglomerates.emptyTitle')}
@@ -651,7 +705,7 @@ function ConglomeratesZone() {
             </Link>
           }
         />
-      </div>
+      </Surface>
     </section>
   );
 }
@@ -662,15 +716,14 @@ function ConglomeratesZone() {
 export function WorkboardPage() {
   const t = useT();
   return (
-    <div className="flex flex-col gap-10">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">{t('workboard.overview.title')}</h1>
-        <p className="mt-1 text-sm bt-muted">{t('workboard.overview.subtitle')}</p>
-      </div>
+    <Page className="bt-phone-surface bt-workboard-family bt-workboard-page" width="wide">
+      <PageHead sub={t('workboard.overview.subtitle')} title={t('workboard.overview.title')} />
       <WatchlistZone />
       <UpcomingEarningsZone />
-      <AlertsZone />
-      <ConglomeratesZone />
-    </div>
+      <div className="bt-workboard-glance">
+        <AlertsZone />
+        <ConglomeratesZone />
+      </div>
+    </Page>
   );
 }

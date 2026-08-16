@@ -326,14 +326,14 @@ export function BudgetCalculator({ conglomerateId, className }: BudgetCalculator
   const prefillRows = mutation.data ? toPrefillRows(mutation.data.positions) : [];
 
   return (
-    <div className={cx('flex flex-col gap-4', className)}>
+    <div className={cx('bt-budget-calculator bt-surface', className)}>
       <AsyncReadState
         loading={portfoliosQuery.isLoading}
         error={portfoliosQuery.error}
         onRetry={() => void portfoliosQuery.refetch()}
       />
 
-      <form onSubmit={handleCalculate} className="flex flex-wrap items-end gap-3">
+      <form onSubmit={handleCalculate} className="bt-budget-calculator__form">
         <div className="flex flex-col gap-1.5">
           <span className="text-sm font-medium bt-soft">
             {t('workboard.calculator.budgetLabel')}

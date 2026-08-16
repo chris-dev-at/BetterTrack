@@ -19,6 +19,7 @@ import { useT } from '../../i18n';
 import { cx } from '../../lib/cx';
 import { EmptyState, Skeleton } from '../../ui';
 import { AllocationDonut } from '../../ui/charts';
+import { Page, PageHead, SectionHead, Surface } from '../../ui/origin';
 import { AsyncReadState } from '../components/AsyncReadState';
 import { AudiencePicker } from '../components/AudiencePicker';
 import { Alert, Button } from '../components/ui';
@@ -33,7 +34,7 @@ import { useResolvedPrivacyMode } from '../vault/usePrivacyMode';
 function PositionsFrame({ children }: { children: React.ReactNode }) {
   const t = useT();
   return (
-    <div className="overflow-x-auto bt-panel">
+    <Surface className="bt-blueprint-positions">
       <table className="w-full text-left">
         <thead>
           <tr className="bt-b-rule bt-label">
@@ -47,7 +48,7 @@ function PositionsFrame({ children }: { children: React.ReactNode }) {
         </thead>
         <tbody>{children}</tbody>
       </table>
-    </div>
+    </Surface>
   );
 }
 
@@ -224,24 +225,25 @@ export function ConglomerateDetailPage() {
 
   if (isLoading) {
     return (
-      <div className="flex flex-col gap-6">
-        <Skeleton height="h-8" width="w-64" />
+      <Page className="bt-phone-surface bt-workboard-family bt-blueprint-detail-page">
+        <PageHead title={t('workboard.conglomerates.title')} />
         <Skeleton height="h-40" />
-      </div>
+      </Page>
     );
   }
 
   if (isError || !data) {
     return (
-      <div className="flex flex-col gap-4">
+      <Page className="bt-phone-surface bt-workboard-family bt-blueprint-detail-page">
         <Link to="/workbench/blueprints" className="text-sm bt-link">
           {t('workboard.detail.backToConglomeratesError')}
         </Link>
+        <PageHead title={t('workboard.conglomerates.title')} />
         <Alert tone="error">{t('workboard.detail.loadError')}</Alert>
         <div>
           <Button onClick={() => void refetch()}>{t('common.retry')}</Button>
         </div>
-      </div>
+      </Page>
     );
   }
 
@@ -271,19 +273,15 @@ export function ConglomerateDetailPage() {
       : t('workboard.conglomerates.positionCountOther', { count: data.positionCount });
 
   return (
-    <div className="flex flex-col gap-8">
+    <Page className="bt-phone-surface bt-workboard-family bt-blueprint-detail-page" width="wide">
       <Link to="/workbench/blueprints" className="text-sm bt-muted hover:bt-soft">
         {t('workboard.detail.backLink')}
       </Link>
 
       {/* Header */}
-      <div className="flex flex-col gap-3">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="flex items-center gap-3">
-            <h1 className="text-2xl font-semibold tracking-tight">{data.name}</h1>
-            <StatusBadge status={data.status} />
-          </div>
-          <div className="flex flex-wrap gap-2">
+      <PageHead
+        actions={
+          <>
             {!paranoid ? (
               <Button
                 variant="secondary"
@@ -301,44 +299,53 @@ export function ConglomerateDetailPage() {
             <Button variant="secondary" onClick={() => setConfirmOpen(true)}>
               {t('common.delete')}
             </Button>
-          </div>
-        </div>
-        <p className="text-sm bt-muted">{positionCountText}</p>
-        {data.description ? <p className="text-sm bt-muted">{data.description}</p> : null}
-      </div>
+          </>
+        }
+        sub={
+          <>
+            {positionCountText}
+            {data.description ? (
+              <span className="bt-blueprint-description">{data.description}</span>
+            ) : null}
+          </>
+        }
+        title={
+          <span className="bt-blueprint-title">
+            <span>{data.name}</span>
+            <StatusBadge status={data.status} />
+          </span>
+        }
+      />
 
       {/* Positions + allocation */}
-      <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-        <section aria-labelledby="positions-heading" className="flex flex-col gap-3">
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            <h2 id="positions-heading" className="text-base font-semibold bt-soft">
-              {t('workboard.detail.positionsHeading')}
-            </h2>
-            {resolved?.nested ? (
-              <div
-                role="group"
-                aria-label={t('workboard.detail.viewToggleAriaLabel')}
-                className="inline-flex rounded-md"
-              >
-                {(['stored', 'resolved'] as const).map((v) => (
-                  <button
-                    key={v}
-                    type="button"
-                    onClick={() => setView(v)}
-                    aria-pressed={view === v}
-                    className={cx(
-                      'px-2.5 py-1 text-xs font-medium first:rounded-l-md last:rounded-r-md ',
-                      view === v ? 'is-active' : 'bt-muted hover:bt-soft',
-                    )}
-                  >
-                    {v === 'stored'
-                      ? t('workboard.detail.viewStored')
-                      : t('workboard.detail.viewResolved')}
-                  </button>
-                ))}
-              </div>
-            ) : null}
-          </div>
+      <div className="bt-blueprint-detail-grid">
+        <section aria-label={t('workboard.detail.positionsHeading')}>
+          <SectionHead
+            actions={
+              resolved?.nested ? (
+                <div
+                  role="group"
+                  aria-label={t('workboard.detail.viewToggleAriaLabel')}
+                  className="bt-seg"
+                >
+                  {(['stored', 'resolved'] as const).map((v) => (
+                    <button
+                      key={v}
+                      type="button"
+                      onClick={() => setView(v)}
+                      aria-pressed={view === v}
+                      className={cx(view === v && 'is-active')}
+                    >
+                      {v === 'stored'
+                        ? t('workboard.detail.viewStored')
+                        : t('workboard.detail.viewResolved')}
+                    </button>
+                  ))}
+                </div>
+              ) : undefined
+            }
+            title={t('workboard.detail.positionsHeading')}
+          />
           <AsyncReadState
             loading={resolvedQuery.isLoading}
             error={resolvedQuery.error}
@@ -354,21 +361,17 @@ export function ConglomerateDetailPage() {
             <PositionsTable positions={data.positions} />
           )}
         </section>
-        <section aria-labelledby="allocation-heading" className="flex flex-col gap-3">
-          <h2 id="allocation-heading" className="text-base font-semibold bt-soft">
-            {t('workboard.detail.allocationHeading')}
-          </h2>
-          <div className="bt-panel bt-panel--pad">
+        <section aria-label={t('workboard.detail.allocationHeading')}>
+          <SectionHead title={t('workboard.detail.allocationHeading')} />
+          <Surface className="bt-blueprint-allocation">
             <AllocationDonut data={donutData} title={t('workboard.detail.allocationChartTitle')} />
-          </div>
+          </Surface>
         </section>
       </div>
 
       {/* Backtest panel (#137) */}
-      <section aria-labelledby="backtest-heading" className="flex flex-col gap-3">
-        <h2 id="backtest-heading" className="text-base font-semibold bt-soft">
-          {t('workboard.detail.backtestHeading')}
-        </h2>
+      <section aria-label={t('workboard.detail.backtestHeading')}>
+        <SectionHead title={t('workboard.detail.backtestHeading')} />
         <BacktestPanel
           positions={backtestPositions}
           source={{ kind: 'conglomerate', conglomerateId: id }}
@@ -376,10 +379,8 @@ export function ConglomerateDetailPage() {
       </section>
 
       {/* Invest Calculator (§6.7, #138) */}
-      <section aria-labelledby="calculator-heading" className="flex flex-col gap-3">
-        <h2 id="calculator-heading" className="text-base font-semibold bt-soft">
-          {t('workboard.detail.calculatorHeading')}
-        </h2>
+      <section aria-label={t('workboard.detail.calculatorHeading')}>
+        <SectionHead title={t('workboard.detail.calculatorHeading')} />
         <BudgetCalculator conglomerateId={id} />
       </section>
 
@@ -404,6 +405,6 @@ export function ConglomerateDetailPage() {
           error={deleteError}
         />
       ) : null}
-    </div>
+    </Page>
   );
 }

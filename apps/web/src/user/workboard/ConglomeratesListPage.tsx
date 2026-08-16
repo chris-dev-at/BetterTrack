@@ -7,6 +7,7 @@ import { listConglomerates } from '../../lib/conglomerateApi';
 import { useT } from '../../i18n';
 import type { TranslateFn } from '../../i18n';
 import { EmptyState, Skeleton } from '../../ui';
+import { Badge, Page, PageHead } from '../../ui/origin';
 import { Alert, Button } from '../components/ui';
 
 function statusLabels(t: TranslateFn): Record<ConglomerateStatus, string> {
@@ -15,11 +16,6 @@ function statusLabels(t: TranslateFn): Record<ConglomerateStatus, string> {
     active: t('workboard.conglomerates.status.active'),
   };
 }
-
-const STATUS_CLASS: Record<ConglomerateStatus, string> = {
-  draft: 'bt-badge',
-  active: 'bt-badge bt-badge--pos',
-};
 
 /**
  * What "Active" means (§6.5, §13.2 V2-P7): shared across Builder, Detail and
@@ -42,12 +38,9 @@ function positionCountLabel(t: TranslateFn, count: number): string {
 export function StatusBadge({ status }: { status: ConglomerateStatus }) {
   const t = useT();
   return (
-    <span
-      title={statusExplainers(t)[status]}
-      className={`inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium ring-1 ring-inset ${STATUS_CLASS[status]}`}
-    >
+    <Badge title={statusExplainers(t)[status]} tone={status === 'active' ? 'pos' : 'neutral'}>
       {statusLabels(t)[status]}
-    </span>
+    </Badge>
   );
 }
 
@@ -59,41 +52,43 @@ export function StatusBadge({ status }: { status: ConglomerateStatus }) {
 export function NestedBadge() {
   const t = useT();
   return (
-    <span className="inline-flex shrink-0 items-center rounded bg-violet-950/60 px-1.5 py-0.5 text-xs font-medium text-violet-300 ring-1 ring-inset ring-violet-800">
+    <Badge className="shrink-0" outline tone="blue">
       {t('workboard.conglomerates.nestedBadge')}
-    </span>
+    </Badge>
   );
 }
 
 function ConglomerateCard({ conglomerate }: { conglomerate: ConglomerateSummary }) {
   const t = useT();
   return (
-    <Link
-      to={`/workbench/blueprints/${conglomerate.id}`}
-      className="flex flex-col gap-3 bt-panel bt-panel--pad transition-colors"
-    >
-      <div className="flex items-start justify-between gap-2">
-        <h3 className="min-w-0 truncate text-base font-semibold">{conglomerate.name}</h3>
-        <StatusBadge status={conglomerate.status} />
-      </div>
-      <p className="text-sm bt-muted">{positionCountLabel(t, conglomerate.positionCount)}</p>
-    </Link>
+    <li>
+      <Link
+        to={`/workbench/blueprints/${conglomerate.id}`}
+        className="bt-data-row bt-blueprint-row"
+      >
+        <div className="bt-data-row__main">
+          <h3 className="bt-row-title truncate">{conglomerate.name}</h3>
+          <p className="bt-row-sub">{positionCountLabel(t, conglomerate.positionCount)}</p>
+        </div>
+        <div className="bt-data-row__meta">
+          <StatusBadge status={conglomerate.status} />
+        </div>
+      </Link>
+    </li>
   );
 }
 
 function NewConglomerateCard() {
   const t = useT();
   return (
-    <Link
-      to="/workbench/blueprints/new"
-      className="flex min-h-[104px] flex-col items-center justify-center gap-1 rounded-lg p-4 text-center text-sm bt-muted transition-colors"
-      style={{ border: '1px dashed var(--bt-border-strong)' }}
-    >
-      <span className="text-xl" aria-hidden="true">
-        +
-      </span>
-      <span className="font-medium">{t('workboard.conglomerates.newCardLabel')}</span>
-    </Link>
+    <li>
+      <Link to="/workbench/blueprints/new" className="bt-data-row bt-blueprint-row is-create">
+        <span aria-hidden="true" className="bt-blueprint-row__plus">
+          +
+        </span>
+        <span className="bt-row-title">{t('workboard.conglomerates.newCardLabel')}</span>
+      </Link>
+    </li>
   );
 }
 
@@ -111,16 +106,14 @@ export function ConglomeratesListPage() {
   });
 
   return (
-    <div className="flex flex-col gap-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">
-          {t('workboard.conglomerates.title')}
-        </h1>
-        <p className="mt-1 text-sm bt-muted">{t('workboard.conglomerates.subtitle')}</p>
-      </div>
+    <Page className="bt-phone-surface bt-workboard-family bt-blueprints-page" width="narrow">
+      <PageHead
+        sub={t('workboard.conglomerates.subtitle')}
+        title={t('workboard.conglomerates.title')}
+      />
 
       {isLoading ? (
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <div className="bt-blueprints-skeletons">
           <Skeleton height="h-[104px]" />
           <Skeleton height="h-[104px]" />
           <Skeleton height="h-[104px]" />
@@ -142,13 +135,13 @@ export function ConglomeratesListPage() {
           }
         />
       ) : (
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <ul className="bt-surface bt-data-list">
           {data!.conglomerates.map((c) => (
             <ConglomerateCard key={c.id} conglomerate={c} />
           ))}
           <NewConglomerateCard />
-        </div>
+        </ul>
       )}
-    </div>
+    </Page>
   );
 }

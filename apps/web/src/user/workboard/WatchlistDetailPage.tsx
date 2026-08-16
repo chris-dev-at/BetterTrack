@@ -13,7 +13,7 @@ import {
   removeFromWorkboard,
 } from '../../lib/workboardApi';
 import { EmptyState, Skeleton } from '../../ui';
-import { Button, PageHead } from '../../ui/origin';
+import { Button, Page, PageHead, Surface, SurfaceBody, SurfaceHead } from '../../ui/origin';
 import { Alert } from '../components/ui';
 import { AssetSearchBox } from '../components/AssetSearchBox';
 
@@ -71,33 +71,36 @@ export function WatchlistDetailPage() {
 
   if (watchlistsQuery.isLoading) {
     return (
-      <section className="flex min-w-0 flex-col gap-3">
-        <Skeleton height="h-5" width="w-32" />
-        <Skeleton height="h-8" width="w-64" />
+      <Page className="bt-phone-surface bt-workboard-family bt-watchlist-detail-page">
+        <BackToWatchlists />
+        <PageHead title={t('watchlists.title')} />
         <Skeleton height="h-24" />
-      </section>
+      </Page>
     );
   }
 
   if (watchlistsQuery.isError) {
     return (
-      <div className="flex min-w-0 flex-col items-start gap-3">
+      <Page className="bt-phone-surface bt-workboard-family bt-watchlist-detail-page">
         <BackToWatchlists />
+        <PageHead title={t('watchlists.title')} />
         <Alert tone="error">{t('watchlists.loadError')}</Alert>
-        <Button onClick={() => void watchlistsQuery.refetch()}>{t('common.retry')}</Button>
-      </div>
+        <div>
+          <Button onClick={() => void watchlistsQuery.refetch()}>{t('common.retry')}</Button>
+        </div>
+      </Page>
     );
   }
 
   if (!watchlist) {
     return (
-      <div className="flex min-w-0 flex-col gap-4">
+      <Page className="bt-phone-surface bt-workboard-family bt-watchlist-detail-page">
         <BackToWatchlists />
         <EmptyState
           title={t('watchlists.unavailableTitle')}
           description={t('common.unavailable')}
         />
-      </div>
+      </Page>
     );
   }
 
@@ -105,29 +108,29 @@ export function WatchlistDetailPage() {
 
   if (itemsQuery.isLoading) {
     return (
-      <section className="flex min-w-0 flex-col gap-3">
+      <Page className="bt-phone-surface bt-workboard-family bt-watchlist-detail-page">
         <BackToWatchlists />
         <PageHead title={watchlistTitle} />
         <Skeleton height="h-24" />
-      </section>
+      </Page>
     );
   }
 
   if (itemsQuery.isError || !itemsQuery.data) {
     return (
-      <div className="flex min-w-0 flex-col items-start gap-3">
+      <Page className="bt-phone-surface bt-workboard-family bt-watchlist-detail-page">
         <BackToWatchlists />
         <PageHead title={watchlistTitle} />
         <Alert tone="error">{t('workboard.overview.watchlist.loadError')}</Alert>
         <Button onClick={() => void itemsQuery.refetch()}>{t('common.retry')}</Button>
-      </div>
+      </Page>
     );
   }
 
   const itemCount = itemsQuery.data.items.length;
 
   return (
-    <div className="flex min-w-0 flex-col gap-6">
+    <Page className="bt-phone-surface bt-workboard-family bt-watchlist-detail-page">
       <div className="flex min-w-0 flex-col">
         <BackToWatchlists />
         <PageHead
@@ -140,16 +143,18 @@ export function WatchlistDetailPage() {
         />
       </div>
 
-      <section className="bt-panel bt-panel--soft flex min-w-0 flex-col gap-3 p-3">
-        <h2 className="bt-h2">{t('watchlists.addTo')}</h2>
-        <AssetSearchBox
-          onSelect={(item) => {
-            setAddError(null);
-            if (!add.isPending) add.mutate(item.id);
-          }}
-        />
-        {addError ? <Alert tone="error">{addError}</Alert> : null}
-      </section>
+      <Surface className="bt-watchlist-add" tone="quiet">
+        <SurfaceHead title={t('watchlists.addTo')} />
+        <SurfaceBody>
+          <AssetSearchBox
+            onSelect={(item) => {
+              setAddError(null);
+              if (!add.isPending) add.mutate(item.id);
+            }}
+          />
+          {addError ? <Alert tone="error">{addError}</Alert> : null}
+        </SurfaceBody>
+      </Surface>
 
       {removeError ? <Alert tone="error">{removeError}</Alert> : null}
 
@@ -159,12 +164,9 @@ export function WatchlistDetailPage() {
           description={t('workboard.overview.watchlist.emptyDescription')}
         />
       ) : (
-        <ul className="bt-panel bt-band min-w-0">
+        <ul className="bt-surface bt-data-list min-w-0">
           {itemsQuery.data.items.map((item) => (
-            <li
-              className="bt-band__row flex min-w-0 flex-col items-stretch gap-3 sm:flex-row sm:items-center"
-              key={item.id}
-            >
+            <li className="bt-data-row bt-watchlist-detail-row" key={item.id}>
               <Link
                 className="min-w-0 flex-1 rounded"
                 to={`/assets/${item.assetId}`}
@@ -195,7 +197,7 @@ export function WatchlistDetailPage() {
           ))}
         </ul>
       )}
-    </div>
+    </Page>
   );
 }
 

@@ -6,7 +6,7 @@ import type { Alert } from '@bettertrack/contracts';
 import { ALERTS_QUERY_KEY, listAlerts } from '../../lib/alertsApi';
 import { useT } from '../../i18n';
 import { EmptyState, Skeleton } from '../../ui';
-import { Button, PageHead } from '../../ui/origin';
+import { Button, Page, PageHead, Surface } from '../../ui/origin';
 import { AlertDialog } from '../components/AlertDialog';
 import { AlertList } from '../components/AlertList';
 import { Alert as AlertBanner } from '../components/ui';
@@ -41,7 +41,7 @@ export function AlertsPage() {
   const alerts = data?.items ?? [];
 
   return (
-    <div className="bt-phone-surface bt-alerts-page flex flex-col gap-6">
+    <Page className="bt-phone-surface bt-workboard-family bt-alerts-page" width="narrow">
       <PageHead
         actions={
           <Button onClick={() => setCreating(true)} variant="primary">
@@ -72,11 +72,13 @@ export function AlertsPage() {
           }
         />
       ) : (
-        <AlertList alerts={alerts} showAsset onEdit={setEditing} />
+        <Surface className="bt-alerts-list">
+          <AlertList alerts={alerts} showAsset onEdit={setEditing} />
+        </Surface>
       )}
 
       {creating ? <AlertDialog onClose={() => setCreating(false)} /> : null}
       {editing ? <AlertDialog existing={editing} onClose={() => setEditing(null)} /> : null}
-    </div>
+    </Page>
   );
 }

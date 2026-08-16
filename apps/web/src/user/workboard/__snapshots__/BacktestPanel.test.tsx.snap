@@ -46,12 +46,12 @@ exports[`BacktestPanel > a blueprint benchmark renders two full stat columns + d
         Total return
       </th>
       <td
-        class="px-3 py-2 text-right"
+        class="px-3 py-2 text-right bt-pos"
       >
         +42,50 %
       </td>
       <td
-        class="px-3 py-2 text-right"
+        class="px-3 py-2 text-right bt-pos"
       >
         +30,00 %
       </td>
@@ -71,12 +71,12 @@ exports[`BacktestPanel > a blueprint benchmark renders two full stat columns + d
         CAGR
       </th>
       <td
-        class="px-3 py-2 text-right"
+        class="px-3 py-2 text-right bt-pos"
       >
         +7,30 %
       </td>
       <td
-        class="px-3 py-2 text-right"
+        class="px-3 py-2 text-right bt-pos"
       >
         +5,40 %
       </td>
@@ -96,12 +96,12 @@ exports[`BacktestPanel > a blueprint benchmark renders two full stat columns + d
         Max drawdown
       </th>
       <td
-        class="px-3 py-2 text-right"
+        class="px-3 py-2 text-right bt-neg"
       >
         -9,10 %
       </td>
       <td
-        class="px-3 py-2 text-right"
+        class="px-3 py-2 text-right bt-neg"
       >
         -12,40 %
       </td>
@@ -146,7 +146,7 @@ exports[`BacktestPanel > a blueprint benchmark renders two full stat columns + d
         Best day
       </th>
       <td
-        class="px-3 py-2 text-right"
+        class="px-3 py-2 text-right bt-pos"
       >
         +3,20 %
         <span
@@ -156,7 +156,7 @@ exports[`BacktestPanel > a blueprint benchmark renders two full stat columns + d
         </span>
       </td>
       <td
-        class="px-3 py-2 text-right"
+        class="px-3 py-2 text-right bt-pos"
       >
         +2,90 %
         <span
@@ -181,7 +181,7 @@ exports[`BacktestPanel > a blueprint benchmark renders two full stat columns + d
         Worst day
       </th>
       <td
-        class="px-3 py-2 text-right"
+        class="px-3 py-2 text-right bt-neg"
       >
         -2,80 %
         <span
@@ -191,7 +191,7 @@ exports[`BacktestPanel > a blueprint benchmark renders two full stat columns + d
         </span>
       </td>
       <td
-        class="px-3 py-2 text-right"
+        class="px-3 py-2 text-right bt-neg"
       >
         -3,40 %
         <span

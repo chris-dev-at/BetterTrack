@@ -277,11 +277,7 @@ function BenchmarkPicker({
 
   const activePreset = value && 'preset' in value.input ? value.input.preset : null;
   const pillClass = (selected: boolean) =>
-    cx(
-      'rounded-full px-2.5 py-1 text-xs font-medium ring-1 ring-inset transition-colors',
-      '',
-      selected ? 'bg-violet-600/20 text-violet-200 ring-violet-600' : '',
-    );
+    cx('bt-badge transition-colors', selected ? 'bt-badge--blue' : 'bt-badge--outline');
 
   return (
     <div className="flex flex-col gap-2">
@@ -324,13 +320,13 @@ function BenchmarkPicker({
           {t('workboard.backtest.benchmark.myConglomerates')}
         </button>
         {value && !('preset' in value.input) ? (
-          <span className="inline-flex items-center gap-1.5 rounded-full bg-violet-600/20 px-2.5 py-1 text-xs font-medium text-violet-200 ring-1 ring-inset ring-violet-600">
+          <span className="bt-badge bt-badge--blue inline-flex items-center gap-1.5">
             {value.label}
             <button
               type="button"
               aria-label={t('workboard.backtest.benchmark.clear')}
               onClick={() => onChange(null)}
-              className="rounded-full leading-none text-violet-300 hover:text-white"
+              className="bt-link rounded-full leading-none"
             >
               ×
             </button>
@@ -446,6 +442,11 @@ function statRows(t: TranslateFn, basket: BacktestStats, bench: BacktestStats): 
   ];
 }
 
+function signedTone(value: number | null, signed: boolean): string | undefined {
+  if (!signed || value == null || value === 0) return undefined;
+  return value > 0 ? 'bt-pos' : 'bt-neg';
+}
+
 /**
  * Side-by-side stats (§13.4 V4-P7): every bottom-panel stat rendered for the
  * basket AND the benchmark, with an optional Δ column (basket − benchmark, in
@@ -496,13 +497,13 @@ function StatsTable({
                 <th scope="row" className="px-3 py-2 text-left font-medium bt-muted">
                   {row.label}
                 </th>
-                <td className="px-3 py-2 text-right">
+                <td className={cx('px-3 py-2 text-right', signedTone(row.basket, row.signed))}>
                   {fmt(row.basket)}
                   {row.basketSub ? (
                     <span className="block text-xs bt-muted">{row.basketSub}</span>
                   ) : null}
                 </td>
-                <td className="px-3 py-2 text-right">
+                <td className={cx('px-3 py-2 text-right', signedTone(row.bench, row.signed))}>
                   {fmt(row.bench)}
                   {row.benchSub ? (
                     <span className="block text-xs bt-muted">{row.benchSub}</span>
@@ -582,8 +583,8 @@ export function BacktestPanel({ positions, className, source, initialParams }: B
   const rebalNotice = data ? rebalanceNotice(t, data) : null;
 
   return (
-    <div className={cx('bt-backtest flex flex-col gap-4', className)}>
-      <div className="flex flex-wrap items-center gap-2">
+    <div className={cx('bt-backtest bt-surface', className)}>
+      <div className="bt-backtest__toolbar">
         <RangeSelector active={range} onSelect={setRange} />
         <ModeSelector active={mode} onSelect={setMode} />
         <RebalanceSelector active={rebalance} onSelect={setRebalance} />
@@ -653,7 +654,7 @@ export function BacktestPanel({ positions, className, source, initialParams }: B
             <>
               <StatsTable stats={data.stats} benchmark={data.benchmark} showDelta={showDelta} />
               {data.mode === 'cash' && data.idleCashAvgPct !== null ? (
-                <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+                <div className="bt-metrics">
                   <StatCard
                     label={t('workboard.backtest.stats.idleCash')}
                     value={formatPercent(data.idleCashAvgPct)}
@@ -662,18 +663,30 @@ export function BacktestPanel({ positions, className, source, initialParams }: B
               ) : null}
             </>
           ) : (
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+            <div className="bt-metrics">
               <StatCard
                 label={t('workboard.backtest.stats.totalReturn')}
-                value={formatSignedPercent(data.stats.totalReturnPct)}
+                value={
+                  <span className={signedTone(data.stats.totalReturnPct, true)}>
+                    {formatSignedPercent(data.stats.totalReturnPct)}
+                  </span>
+                }
               />
               <StatCard
                 label={t('workboard.backtest.stats.cagr')}
-                value={formatSignedPercent(data.stats.cagrPct)}
+                value={
+                  <span className={signedTone(data.stats.cagrPct, true)}>
+                    {formatSignedPercent(data.stats.cagrPct)}
+                  </span>
+                }
               />
               <StatCard
                 label={t('workboard.backtest.stats.maxDrawdown')}
-                value={formatSignedPercent(data.stats.maxDrawdownPct)}
+                value={
+                  <span className={signedTone(data.stats.maxDrawdownPct, true)}>
+                    {formatSignedPercent(data.stats.maxDrawdownPct)}
+                  </span>
+                }
               />
               <StatCard
                 label={t('workboard.backtest.stats.volatility')}
@@ -681,12 +694,20 @@ export function BacktestPanel({ positions, className, source, initialParams }: B
               />
               <StatCard
                 label={t('workboard.backtest.stats.bestDay')}
-                value={formatSignedPercent(data.stats.bestDay?.returnPct)}
+                value={
+                  <span className={signedTone(data.stats.bestDay?.returnPct ?? null, true)}>
+                    {formatSignedPercent(data.stats.bestDay?.returnPct)}
+                  </span>
+                }
                 subValue={formatDate(data.stats.bestDay?.date)}
               />
               <StatCard
                 label={t('workboard.backtest.stats.worstDay')}
-                value={formatSignedPercent(data.stats.worstDay?.returnPct)}
+                value={
+                  <span className={signedTone(data.stats.worstDay?.returnPct ?? null, true)}>
+                    {formatSignedPercent(data.stats.worstDay?.returnPct)}
+                  </span>
+                }
                 subValue={formatDate(data.stats.worstDay?.date)}
               />
               {data.mode === 'cash' && data.idleCashAvgPct !== null ? (

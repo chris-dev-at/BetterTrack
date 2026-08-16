@@ -14,7 +14,17 @@ import { getIdea, updateIdea } from '../../lib/ideasApi';
 import { isConfirmedApiOutcome } from '../../lib/apiClient';
 import { useT } from '../../i18n';
 import { Skeleton } from '../../ui';
-import { Button, Field, Input, Textarea } from '../../ui/origin';
+import {
+  Button,
+  Field,
+  Input,
+  Page,
+  PageHead,
+  SectionHead,
+  Surface,
+  SurfaceBody,
+  Textarea,
+} from '../../ui/origin';
 import { Dialog } from '../components/Dialog';
 import { Alert } from '../components/ui';
 import { usePhoneShell } from '../hooks/useCompactShell';
@@ -125,22 +135,25 @@ export function IdeaWorkboardPage() {
 
   if (ideaQuery.isLoading) {
     return (
-      <div className="bt-phone-surface bt-idea-detail flex flex-col gap-6">
+      <Page className="bt-phone-surface bt-workboard-family bt-idea-detail">
+        {backLink}
+        <PageHead title={t('workboard.ideas.list.title')} />
         <Skeleton height="h-8" width="w-64" />
         <Skeleton height="h-40" />
-      </div>
+      </Page>
     );
   }
 
   if (ideaQuery.isError || !idea || !source) {
     return (
-      <div className="bt-phone-surface bt-idea-detail flex flex-col gap-4">
+      <Page className="bt-phone-surface bt-workboard-family bt-idea-detail">
         {backLink}
+        <PageHead title={t('workboard.ideas.list.title')} />
         <Alert tone="error">{t('workboard.ideas.open.loadError')}</Alert>
         <div>
           <Button onClick={() => void ideaQuery.refetch()}>{t('common.retry')}</Button>
         </div>
-      </div>
+      </Page>
     );
   }
 
@@ -162,34 +175,33 @@ export function IdeaWorkboardPage() {
   }
 
   return (
-    <div className="bt-phone-surface bt-idea-detail flex flex-col gap-6">
+    <Page className="bt-phone-surface bt-workboard-family bt-idea-detail">
       {backLink}
 
-      <div className="flex flex-col gap-2">
-        <div className="flex items-center justify-between gap-3">
-          <h1 className="bt-page-title">{idea.name}</h1>
-          {phone ? (
+      <PageHead
+        actions={
+          phone ? (
             <Button onClick={() => setEditing(true)} size="sm" variant="neutral">
               {t('workboard.ideas.edit.action')}
             </Button>
-          ) : null}
-        </div>
-        {idea.thesis ? (
-          <div className="bt-panel bt-panel--pad">
-            <h2 className="bt-label" style={{ marginBottom: 4 }}>
-              {t('workboard.ideas.open.thesisHeading')}
-            </h2>
-            <p className="bt-soft" style={{ whiteSpace: 'pre-wrap' }}>
-              {idea.thesis}
-            </p>
-          </div>
-        ) : null}
-      </div>
+          ) : undefined
+        }
+        title={idea.name}
+      />
+      {idea.thesis ? (
+        <Surface className="bt-idea-thesis" tone="quiet">
+          <SurfaceBody>
+            <h2 className="bt-label">{t('workboard.ideas.open.thesisHeading')}</h2>
+            <p className="bt-soft bt-idea-thesis__copy">{idea.thesis}</p>
+          </SurfaceBody>
+        </Surface>
+      ) : null}
 
-      <section aria-labelledby="idea-backtest-heading" className="flex flex-col gap-3">
-        <h2 className="bt-h2" id="idea-backtest-heading">
-          {t('workboard.ideas.open.backtestHeading')}
-        </h2>
+      <section
+        aria-label={t('workboard.ideas.open.backtestHeading')}
+        className="flex flex-col gap-3"
+      >
+        <SectionHead title={t('workboard.ideas.open.backtestHeading')} />
         {source.kind === 'conglomerate' && conglomerateQuery.isLoading ? (
           <Skeleton height="h-40" />
         ) : source.kind === 'conglomerate' &&
@@ -207,6 +219,6 @@ export function IdeaWorkboardPage() {
       </section>
 
       {editing ? <EditIdeaDialog idea={idea} onClose={() => setEditing(false)} /> : null}
-    </div>
+    </Page>
   );
 }

@@ -14,7 +14,7 @@ import {
 import { ApiError } from '../../lib/apiClient';
 import { useT } from '../../i18n';
 import { EmptyState, Skeleton } from '../../ui';
-import { Badge, Button, Field, Input, PageHead } from '../../ui/origin';
+import { Badge, Button, Field, Input, Page, PageHead, Surface, SurfaceBody } from '../../ui/origin';
 import { AudiencePicker } from '../components/AudiencePicker';
 import { Dialog } from '../components/Dialog';
 import { Alert } from '../components/ui';
@@ -77,64 +77,68 @@ export function WatchlistsPage() {
 
   if (isLoading) {
     return (
-      <section className="bt-phone-surface bt-watchlists-page flex flex-col gap-3">
-        <Skeleton height="h-8" width="w-48" />
+      <Page className="bt-phone-surface bt-workboard-family bt-watchlists-page">
+        <PageHead title={t('watchlists.title')} />
         <Skeleton height="h-24" />
-      </section>
+      </Page>
     );
   }
   if (isError || !data) {
     return (
-      <div className="bt-phone-surface bt-watchlists-page flex flex-col items-start gap-3">
+      <Page className="bt-phone-surface bt-workboard-family bt-watchlists-page">
+        <PageHead title={t('watchlists.title')} />
         <Alert tone="error">{t('watchlists.loadError')}</Alert>
-        <Button onClick={() => void refetch()}>{t('common.retry')}</Button>
-      </div>
+        <div>
+          <Button onClick={() => void refetch()}>{t('common.retry')}</Button>
+        </div>
+      </Page>
     );
   }
 
   return (
-    <div className="bt-phone-surface bt-watchlists-page flex flex-col gap-6">
+    <Page className="bt-phone-surface bt-workboard-family bt-watchlists-page">
       <PageHead title={t('watchlists.title')} />
 
-      <form
-        ref={createFormRef}
-        className="flex flex-col items-stretch gap-2 sm:flex-row sm:items-end"
-        onSubmit={(e) => {
-          e.preventDefault();
-          const trimmed = name.trim();
-          if (trimmed) create.mutate(trimmed);
-        }}
-      >
-        <Field className="flex-1" htmlFor="watchlist-name" label={t('watchlists.create')}>
-          <Input
-            id="watchlist-name"
-            onChange={(e) => {
-              setName(e.target.value);
-              setNameError(null);
+      <Surface className="bt-watchlist-create" tone="quiet">
+        <SurfaceBody>
+          <form
+            ref={createFormRef}
+            className="bt-watchlist-create__form"
+            onSubmit={(e) => {
+              e.preventDefault();
+              const trimmed = name.trim();
+              if (trimmed) create.mutate(trimmed);
             }}
-            placeholder={t('watchlists.namePlaceholder')}
-            value={name}
-          />
-        </Field>
-        <Button
-          disabled={create.isPending || name.trim().length === 0}
-          type="submit"
-          variant="primary"
-        >
-          {t('watchlists.create')}
-        </Button>
-      </form>
+          >
+            <Field className="flex-1" htmlFor="watchlist-name" label={t('watchlists.create')}>
+              <Input
+                id="watchlist-name"
+                onChange={(e) => {
+                  setName(e.target.value);
+                  setNameError(null);
+                }}
+                placeholder={t('watchlists.namePlaceholder')}
+                value={name}
+              />
+            </Field>
+            <Button
+              disabled={create.isPending || name.trim().length === 0}
+              type="submit"
+              variant="primary"
+            >
+              {t('watchlists.create')}
+            </Button>
+          </form>
+        </SurfaceBody>
+      </Surface>
       {nameError ? <Alert tone="error">{nameError}</Alert> : null}
 
       {data.watchlists.length === 0 ? (
         <EmptyState title={t('watchlists.empty')} description={t('watchlists.subtitle')} />
       ) : (
-        <ul className="bt-panel bt-band">
+        <ul className="bt-surface bt-data-list">
           {data.watchlists.map((w) => (
-            <li
-              className="bt-band__row bt-watchlist-row flex flex-col items-stretch justify-between gap-3 sm:flex-row sm:items-center"
-              key={w.id}
-            >
+            <li className="bt-data-row bt-watchlist-row" key={w.id}>
               <div className="flex min-w-0 flex-1 flex-col gap-1">
                 <div className="flex min-w-0 flex-wrap items-center gap-2">
                   <Link
@@ -228,7 +232,7 @@ export function WatchlistsPage() {
           onChanged={() => void invalidate()}
         />
       ) : null}
-    </div>
+    </Page>
   );
 }
 

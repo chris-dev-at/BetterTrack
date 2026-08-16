@@ -20,7 +20,7 @@ import { formatDate, formatPercent, formatSignedPercent } from '../../lib/format
 import { useT } from '../../i18n';
 import type { TranslateFn } from '../../i18n';
 import { EmptyState, Skeleton } from '../../ui';
-import { Button, PageHead } from '../../ui/origin';
+import { Button, ChartFrame, Page, PageGrid, PageHead } from '../../ui/origin';
 import { overlayColor, PriceChart, type ChartPoint } from '../../ui/charts';
 import { MAIN_SERIES } from '../../ui/charts/palette';
 import { Alert } from '../components/ui';
@@ -95,7 +95,7 @@ function ConglomeratePicker({
   const t = useT();
   const atCap = selected.length >= COMPARISON_MAX_SERIES;
   return (
-    <fieldset className="flex flex-col gap-1.5">
+    <fieldset className="bt-comparison-picker bt-surface">
       <legend className="bt-h3 mb-1">{t('workboard.comparison.selectHeading')}</legend>
       <p className="bt-meta mb-1">
         {t('workboard.comparison.selectHint', {
@@ -103,7 +103,7 @@ function ConglomeratePicker({
           max: COMPARISON_MAX_SERIES,
         })}
       </p>
-      <ul className="bt-panel bt-band">
+      <ul className="bt-data-list">
         {conglomerates.map((c) => {
           const isSelected = selected.includes(c.id);
           const noPositions = c.positionCount === 0;
@@ -112,7 +112,7 @@ function ConglomeratePicker({
             <li key={c.id}>
               <label
                 className={cx(
-                  'bt-band__row flex items-center gap-2.5',
+                  'bt-data-row bt-comparison-picker__row',
                   disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer',
                 )}
                 style={isSelected ? { background: 'var(--bt-surface-soft)' } : undefined}
@@ -211,6 +211,11 @@ function metricValue(
   }
 }
 
+function metricTone(key: ComparisonMetricKey, value: number | null): string | undefined {
+  if (value == null || key === 'volatilityPct' || value === 0) return undefined;
+  return value > 0 ? 'bt-pos' : 'bt-neg';
+}
+
 /** Metric-by-conglomerate grid with per-metric deltas against the baseline column. */
 function ComparisonGrid({
   series,
@@ -282,10 +287,12 @@ function ComparisonGrid({
                       key={s.conglomerateId}
                       style={isBaseline ? { background: 'var(--bt-blue-soft)' } : undefined}
                     >
-                      {fmt(value)}
+                      <span className={metricTone(row.key, value)}>{fmt(value)}</span>
                       {sub ? <span className="bt-meta block">{sub}</span> : null}
                       {!isBaseline ? (
-                        <span className="bt-meta block">{formatSignedPercent(delta)}</span>
+                        <span className={cx('bt-meta block', metricTone(row.key, delta))}>
+                          {formatSignedPercent(delta)}
+                        </span>
                       ) : null}
                     </td>
                   );
@@ -349,7 +356,7 @@ export function ComparisonPage() {
   const errorCode = compareQuery.error instanceof ApiError ? compareQuery.error.code : null;
 
   return (
-    <div className="flex flex-col gap-6">
+    <Page className="bt-phone-surface bt-workboard-family bt-comparison-page" width="wide">
       <PageHead
         sub={t('workboard.comparison.description')}
         title={t('workboard.comparison.title')}
@@ -368,51 +375,60 @@ export function ComparisonPage() {
           description={t('workboard.comparison.noConglomeratesHint')}
         />
       ) : (
-        <div className="grid gap-6 lg:grid-cols-[minmax(0,18rem)_minmax(0,1fr)]">
-          <ConglomeratePicker conglomerates={conglomerates} selected={selected} onToggle={toggle} />
+        <PageGrid>
+          <aside className="bt-page-grid__aside">
+            <ConglomeratePicker
+              conglomerates={conglomerates}
+              selected={selected}
+              onToggle={toggle}
+            />
+          </aside>
 
-          <div className="flex flex-col gap-4">
-            <div className="flex flex-wrap items-center gap-2">
-              <RangeSelector active={range} onSelect={setRange} />
-            </div>
-
-            {!canCompare ? (
-              <EmptyState
-                title={t('workboard.comparison.needTwo', { min: COMPARISON_MIN_SERIES })}
+          <div className="bt-page-grid__main bt-comparison-results">
+            <ChartFrame
+              actions={<RangeSelector active={range} onSelect={setRange} />}
+              title={t('workboard.comparison.chartAriaLabel')}
+            >
+              {!canCompare ? (
+                <EmptyState
+                  title={t('workboard.comparison.needTwo', { min: COMPARISON_MIN_SERIES })}
+                />
+              ) : compareQuery.isLoading ? (
+                <Skeleton height="h-80" />
+              ) : compareQuery.isError ? (
+                <div className="flex flex-col items-start gap-2">
+                  <Alert tone="error">
+                    {errorCode === 'BACKTEST_UNAVAILABLE'
+                      ? t('workboard.comparison.windowError')
+                      : t('workboard.comparison.error')}
+                  </Alert>
+                  <Button onClick={() => void compareQuery.refetch()}>{t('common.retry')}</Button>
+                </div>
+              ) : !data ? null : (
+                <>
+                  <PriceChart
+                    series={toChartPoints(data.series[0]!.series)}
+                    overlays={data.series
+                      .slice(1)
+                      .map((s) => ({ label: s.name, series: toChartPoints(s.series) }))}
+                    showRangeToggle={false}
+                    loading={compareQuery.isFetching}
+                    ariaLabel={t('workboard.comparison.chartAriaLabel')}
+                  />
+                  <ChartLegend series={data.series} />
+                </>
+              )}
+            </ChartFrame>
+            {canCompare && !compareQuery.isLoading && !compareQuery.isError && data ? (
+              <ComparisonGrid
+                series={data.series}
+                baselineId={data.baselineId}
+                onPickBaseline={setBaselineId}
               />
-            ) : compareQuery.isLoading ? (
-              <Skeleton height="h-80" />
-            ) : compareQuery.isError ? (
-              <div className="flex flex-col items-start gap-2">
-                <Alert tone="error">
-                  {errorCode === 'BACKTEST_UNAVAILABLE'
-                    ? t('workboard.comparison.windowError')
-                    : t('workboard.comparison.error')}
-                </Alert>
-                <Button onClick={() => void compareQuery.refetch()}>{t('common.retry')}</Button>
-              </div>
-            ) : !data ? null : (
-              <>
-                <PriceChart
-                  series={toChartPoints(data.series[0]!.series)}
-                  overlays={data.series
-                    .slice(1)
-                    .map((s) => ({ label: s.name, series: toChartPoints(s.series) }))}
-                  showRangeToggle={false}
-                  loading={compareQuery.isFetching}
-                  ariaLabel={t('workboard.comparison.chartAriaLabel')}
-                />
-                <ChartLegend series={data.series} />
-                <ComparisonGrid
-                  series={data.series}
-                  baselineId={data.baselineId}
-                  onPickBaseline={setBaselineId}
-                />
-              </>
-            )}
+            ) : null}
           </div>
-        </div>
+        </PageGrid>
       )}
-    </div>
+    </Page>
   );
 }
