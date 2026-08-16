@@ -870,6 +870,7 @@ export function createPd9Harness(): Pd9Harness {
         currency: 'EUR',
         bookedOn,
         description,
+        source: 'manual',
       });
       // The retired HTTP write path evaluated budgets as a side effect, and
       // the €300 spend against the €200 target booked the current period's
