@@ -225,16 +225,34 @@ describe('StandingOrdersSection', () => {
     expect(screen.getByText('No next run scheduled.')).toBeInTheDocument();
   });
 
-  test('shows an archive-suspended order as suspended rather than active', async () => {
-    vi.mocked(standingOrdersApi.listStandingOrders).mockResolvedValue({
-      orders: [makeOrder({ suspendedByArchive: true, nextRunDate: null })],
-    });
-    renderSection();
+  test.each([
+    ['active live', false, 'active', 'Active', 'Pause'],
+    ['paused live', false, 'paused', 'Paused', 'Resume'],
+    ['active archive-suspended', true, 'active', 'Suspended — portfolio archived', null],
+    ['paused archive-suspended', true, 'paused', 'Suspended — portfolio archived', null],
+  ] as const)(
+    '%s rows show the intended badge and pause/resume affordance',
+    async (_state, suspendedByArchive, status, badge, pauseResumeAction) => {
+      vi.mocked(standingOrdersApi.listStandingOrders).mockResolvedValue({
+        orders: [makeOrder({ suspendedByArchive, status, nextRunDate: null })],
+      });
+      renderSection();
 
-    await screen.findByText('VWCE.DE');
-    expect(screen.getByText('Suspended — portfolio archived')).toBeInTheDocument();
-    expect(screen.queryByText('Active')).not.toBeInTheDocument();
-  });
+      await screen.findByText('VWCE.DE');
+      expect(screen.getByText(badge)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'VWCE.DE Edit' })).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: 'VWCE.DE Delete' })).toBeInTheDocument();
+
+      if (pauseResumeAction) {
+        expect(
+          screen.getByRole('button', { name: `VWCE.DE ${pauseResumeAction}` }),
+        ).toBeInTheDocument();
+      } else {
+        expect(screen.queryByRole('button', { name: 'VWCE.DE Pause' })).not.toBeInTheDocument();
+        expect(screen.queryByRole('button', { name: 'VWCE.DE Resume' })).not.toBeInTheDocument();
+      }
+    },
+  );
 
   test('opens the edit dialog for a row', async () => {
     vi.mocked(standingOrdersApi.listStandingOrders).mockResolvedValue({
