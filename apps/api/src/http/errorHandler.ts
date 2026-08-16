@@ -17,6 +17,9 @@ export type ErrorReporter = (err: unknown) => void;
  */
 export function createErrorHandler(logger: Logger, report?: ErrorReporter): ErrorRequestHandler {
   return (err, _req, res, _next) => {
+    res.removeHeader('ETag');
+    res.removeHeader('Last-Modified');
+
     if (err instanceof ApiError) {
       // `EnvelopeApiError` contributes top-level members beside `error` (the
       // Vaults v2 CAS contract's `currentVersion`, design r2 §15). Spread FIRST
