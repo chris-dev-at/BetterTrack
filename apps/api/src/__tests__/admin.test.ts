@@ -505,6 +505,16 @@ describe('Bull Board administrator boundary (#878)', () => {
     });
     expect(JSON.stringify(schedulers.body)).not.toContain('scheduler-payload-secret');
 
+    const jobDataSchema = await request(app).get(
+      `${BULL_BOARD_BASE_PATH}/api/queues/${encodeURIComponent(activeQueue)}/job-data-schema`,
+    );
+    expect(jobDataSchema.status).toBe(200);
+    expect(jobDataSchema.body).toEqual({});
+    const serializedJobDataSchema = JSON.stringify(jobDataSchema.body);
+    expect(serializedJobDataSchema).not.toContain('payload-secret');
+    expect(serializedJobDataSchema).not.toContain('result-secret');
+    expect(serializedJobDataSchema).not.toContain('scheduler-payload-secret');
+
     const mutation = await request(app).put(
       `${BULL_BOARD_BASE_PATH}/api/queues/${encodeURIComponent(activeQueue)}/pause`,
     );
