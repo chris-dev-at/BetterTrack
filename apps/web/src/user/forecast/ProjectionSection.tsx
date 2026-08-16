@@ -6,9 +6,10 @@ import type { PortfolioHistoryRange, PortfolioSummary } from '@bettertrack/contr
 import { useT } from '../../i18n';
 import { getAnalyticsSeries } from '../../lib/analyticsApi';
 import { cx } from '../../lib/cx';
-import { formatMoney } from '../../lib/format';
+import { formatMoney, isDiscreetMode } from '../../lib/format';
 import { getPortfolioDividendProjection } from '../../lib/marketIntelApi';
-import { EmptyState, Skeleton, StatCard } from '../../ui';
+import { EmptyState, Skeleton } from '../../ui';
+import { Stat, StatStrip } from '../../ui/origin';
 import { overlayColor } from '../../ui/charts';
 import { MAIN_SERIES } from '../../ui/charts/palette';
 import { AsyncReadState, type AsyncRead } from '../components/AsyncReadState';
@@ -261,35 +262,94 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
   }
 
   return (
-    <div className="flex flex-col gap-5 px-4 py-4">
-      <p className="text-sm bt-muted">{t('forecast.projection.description')}</p>
+    <div className="bt-forecast-projection">
+      <div className="bt-forecast-projection__intro">
+        <p className="text-sm bt-muted">{t('forecast.projection.description')}</p>
+        <AsyncReadState
+          loading={prefillLoading}
+          reads={prefillReads}
+          errorLabel={t('forecast.prefill.error')}
+          loadingLabel={t('forecast.prefill.loading')}
+        />
+      </div>
 
-      <AsyncReadState
-        loading={prefillLoading}
-        reads={prefillReads}
-        errorLabel={t('forecast.prefill.error')}
-        loadingLabel={t('forecast.prefill.loading')}
-      />
+      {/* The money outcome leads; the plot and its assumptions stay attached below it. */}
+      <StatStrip className="bt-forecast-projection__stats">
+        <Stat
+          label={t('forecast.projection.startingLabel')}
+          value={formatMoney(startingNetWorthEur)}
+        />
+        <Stat
+          label={t('forecast.projection.projectedLabel', { years: horizonYears })}
+          value={
+            <span
+              className={
+                isDiscreetMode()
+                  ? undefined
+                  : finalBase > startingNetWorthEur
+                    ? 'bt-pos'
+                    : finalBase < startingNetWorthEur
+                      ? 'bt-neg'
+                      : undefined
+              }
+            >
+              {formatMoney(finalBase)}
+            </span>
+          }
+        />
+      </StatStrip>
 
-      {/* ── Factor controls ─────────────────────────────────────────────── */}
-      <div className="flex flex-col gap-4 bt-panel bt-panel--pad">
-        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-          <TextField
-            type="number"
-            inputMode="numeric"
-            min={FORECAST_HORIZON_MIN_YEARS}
-            max={FORECAST_HORIZON_MAX_YEARS}
-            label={t('forecast.projection.horizonLabel')}
-            hint={t('forecast.projection.horizonHint')}
-            value={horizon}
-            onChange={(e: ChangeEvent<HTMLInputElement>) => setHorizon(e.target.value)}
-          />
+      <div className="bt-forecast-projection__chart-wrap">
+        <div
+          role="img"
+          aria-label={t('forecast.projection.chartAria')}
+          className="bt-forecast-projection__chart"
+        >
+          <Suspense fallback={<Skeleton className="rounded-md" height="h-full" />}>
+            <ProjectionChart
+              baseColor={BASE_LINE}
+              baseLabel={t('forecast.projection.baseLabel')}
+              data={chartData}
+              overlays={result.overlays.map((overlay, index) => ({
+                id: overlay.id,
+                label: overlay.label,
+                color: overlayColor(index),
+              }))}
+            />
+          </Suspense>
         </div>
 
-        <fieldset className="flex flex-col gap-3">
-          <legend className="text-xs font-semibold uppercase tracking-wide bt-muted">
-            {t('forecast.projection.factorsLegend')}
-          </legend>
+        <ul className="bt-forecast-projection__legend">
+          {legend.map((series) => (
+            <li key={series.id} data-testid={`projection-series-${series.id}`}>
+              <span
+                aria-hidden="true"
+                className="bt-forecast-projection__legend-line"
+                style={{ backgroundColor: series.color }}
+              />
+              <span className="bt-soft">{series.label}</span>
+              <span className="tabular-nums bt-muted">{formatMoney(series.value)}</span>
+            </li>
+          ))}
+        </ul>
+      </div>
+
+      {/* ── Factor controls ─────────────────────────────────────────────── */}
+      <div className="bt-forecast-factors">
+        <TextField
+          type="number"
+          inputMode="numeric"
+          min={FORECAST_HORIZON_MIN_YEARS}
+          max={FORECAST_HORIZON_MAX_YEARS}
+          className="bt-forecast-factors__horizon"
+          label={t('forecast.projection.horizonLabel')}
+          hint={t('forecast.projection.horizonHint')}
+          value={horizon}
+          onChange={(e: ChangeEvent<HTMLInputElement>) => setHorizon(e.target.value)}
+        />
+
+        <fieldset className="bt-forecast-factors__fieldset">
+          <legend className="bt-label">{t('forecast.projection.factorsLegend')}</legend>
 
           <FactorToggle
             label={t('forecast.projection.factor.return')}
@@ -297,8 +357,8 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
             onChange={setReturnEnabled}
           />
           {returnEnabled ? (
-            <div className="ml-6 flex flex-col gap-2 sm:flex-row sm:items-end sm:gap-3">
-              <div className="flex flex-col gap-1.5">
+            <div className="bt-forecast-return-settings">
+              <div className="bt-forecast-return-window">
                 <span className="text-xs bt-muted">
                   {t('forecast.projection.returnWindowLabel')}
                 </span>
@@ -329,7 +389,7 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
                 min={FORECAST_RETURN_MIN_PCT}
                 max={FORECAST_RETURN_MAX_PCT}
                 step="any"
-                className="sm:w-40"
+                className="bt-forecast-return-rate"
                 label={t('forecast.projection.returnPctLabel')}
                 hint={t('forecast.projection.returnPctHint')}
                 value={returnPct}
@@ -358,62 +418,9 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
         </fieldset>
       </div>
 
-      {/* ── Chart + legend ──────────────────────────────────────────────── */}
-      <div className="flex flex-col gap-3">
-        <div
-          role="img"
-          aria-label={t('forecast.projection.chartAria')}
-          className="w-full"
-          style={{ height: 320 }}
-        >
-          <Suspense fallback={<Skeleton className="rounded-md" height="h-full" />}>
-            <ProjectionChart
-              baseColor={BASE_LINE}
-              baseLabel={t('forecast.projection.baseLabel')}
-              data={chartData}
-              overlays={result.overlays.map((overlay, index) => ({
-                id: overlay.id,
-                label: overlay.label,
-                color: overlayColor(index),
-              }))}
-            />
-          </Suspense>
-        </div>
-
-        <ul className="flex flex-wrap gap-x-4 gap-y-1.5">
-          {legend.map((series) => (
-            <li
-              key={series.id}
-              data-testid={`projection-series-${series.id}`}
-              className="flex items-center gap-1.5 text-xs bt-muted"
-            >
-              <span
-                aria-hidden="true"
-                className="inline-block h-0.5 w-4"
-                style={{ backgroundColor: series.color }}
-              />
-              <span className="bt-soft">{series.label}</span>
-              <span className="tabular-nums bt-muted">{formatMoney(series.value)}</span>
-            </li>
-          ))}
-        </ul>
-      </div>
-
-      {/* ── Headline stats ──────────────────────────────────────────────── */}
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <StatCard
-          label={t('forecast.projection.startingLabel')}
-          value={formatMoney(startingNetWorthEur)}
-        />
-        <StatCard
-          label={t('forecast.projection.projectedLabel', { years: horizonYears })}
-          value={formatMoney(finalBase)}
-        />
-      </div>
-
       {/* ── What-if plans (local only) ──────────────────────────────────── */}
-      <div className="flex flex-col gap-3">
-        <div className="flex flex-wrap items-center justify-between gap-3">
+      <div className="bt-forecast-what-if">
+        <div className="bt-forecast-what-if__head">
           <div className="flex min-w-0 flex-1 flex-col">
             <h3 className="text-sm font-semibold bt-soft">
               {t('forecast.projection.whatIf.title')}
@@ -428,12 +435,9 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
         {plans.length === 0 ? (
           <p className="text-xs bt-muted">{t('forecast.projection.whatIf.empty')}</p>
         ) : (
-          <ul className="flex flex-col gap-3">
+          <ul className="bt-forecast-plan-list">
             {plans.map((plan, index) => (
-              <li
-                key={plan.id}
-                className="grid grid-cols-1 gap-3 bt-panel p-3 sm:grid-cols-[1fr_auto_auto_auto] sm:items-end"
-              >
+              <li key={plan.id} className="bt-forecast-plan-row">
                 <TextField
                   label={t('forecast.projection.whatIf.labelLabel')}
                   placeholder={t('forecast.projection.whatIf.defaultLabel', { n: index + 1 })}
@@ -445,7 +449,7 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
                 <TextField
                   type="number"
                   inputMode="decimal"
-                  className="sm:w-36"
+                  className="bt-forecast-plan-row__amount"
                   label={t('forecast.projection.whatIf.monthlyLabel')}
                   value={plan.monthlyContribution}
                   onChange={(e: ChangeEvent<HTMLInputElement>) =>
@@ -455,7 +459,7 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
                 <TextField
                   type="number"
                   inputMode="decimal"
-                  className="sm:w-32"
+                  className="bt-forecast-plan-row__return"
                   label={t('forecast.projection.whatIf.returnLabel')}
                   placeholder={t('forecast.projection.whatIf.returnPlaceholder')}
                   value={plan.ownReturn}
@@ -466,7 +470,7 @@ export function ProjectionSection({ portfolios }: { portfolios: PortfolioSummary
                 <Button
                   variant="ghost"
                   onClick={() => removePlan(plan.id)}
-                  className="justify-self-start px-2 py-1 bt-muted sm:justify-self-auto"
+                  className="bt-forecast-plan-row__remove bt-muted"
                   aria-label={t('forecast.projection.whatIf.remove')}
                 >
                   {t('forecast.projection.whatIf.remove')}

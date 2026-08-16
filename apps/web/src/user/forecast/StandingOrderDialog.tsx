@@ -18,7 +18,8 @@ import { Dialog } from '../components/Dialog';
 import { Alert, Button, cx } from '../components/ui';
 import { usePortfolioStore } from '../portfolio/PortfolioStoreProvider';
 
-const inputClass = cx('bt-input w-full', '', '');
+const inputClass = 'bt-input w-full';
+const selectClass = 'bt-select w-full';
 
 /**
  * Minimal picked-asset shape held in dialog state after a search selection.
@@ -178,10 +179,10 @@ export function StandingOrderDialog({ portfolios, existing, onClose }: StandingO
       description={t('forecast.standingOrders.dialog.description')}
       onClose={onClose}
     >
-      <form onSubmit={handleSubmit} className="flex flex-col gap-4">
+      <form onSubmit={handleSubmit} className="bt-standing-order-form">
         {/* Kind — locked in edit mode (server refuses schedule changes). */}
         <div
-          className="bt-seg"
+          className="bt-seg bt-standing-order-form__kinds"
           role="group"
           aria-label={t('forecast.standingOrders.dialog.kindGroupAria')}
         >
@@ -197,8 +198,7 @@ export function StandingOrderDialog({ portfolios, existing, onClose }: StandingO
               disabled={isEdit && k !== kind}
               aria-pressed={kind === k}
               className={cx(
-                'flex-1 rounded-md px-3 py-1.5 text-xs font-medium transition',
-                '',
+                'flex-1',
                 kind === k ? 'is-active' : 'bt-muted hover:bt-soft',
                 isEdit && kind !== k ? 'cursor-not-allowed opacity-40' : '',
               )}
@@ -210,7 +210,7 @@ export function StandingOrderDialog({ portfolios, existing, onClose }: StandingO
 
         {/* Portfolio (create only — an order is bound to its portfolio at creation). */}
         {!isEdit && portfolios.length > 1 ? (
-          <label className="flex flex-col gap-1.5">
+          <label className="bt-field">
             <span className="text-sm font-medium bt-soft">
               {t('forecast.standingOrders.dialog.portfolioLabel')}
             </span>
@@ -218,7 +218,7 @@ export function StandingOrderDialog({ portfolios, existing, onClose }: StandingO
               value={portfolioId}
               onChange={(e) => setPortfolioId(e.target.value)}
               aria-label={t('forecast.standingOrders.dialog.portfolioLabel')}
-              className={inputClass}
+              className={selectClass}
             >
               {portfolios.map((p) => (
                 <option key={p.id} value={p.id}>
@@ -232,7 +232,7 @@ export function StandingOrderDialog({ portfolios, existing, onClose }: StandingO
         {/* Asset — only for buy-asset; locked (chip) once picked. */}
         {kind === 'buy-asset' ? (
           asset ? (
-            <div className="bt-panel bt-panel--soft flex items-center justify-between gap-3 px-3 py-2">
+            <div className="bt-standing-order-form__asset">
               <span className="min-w-0">
                 <span className="font-mono text-sm bt-soft">{asset.symbol}</span>
                 <span className="ml-2 truncate text-sm bt-muted">{asset.name}</span>
@@ -248,7 +248,7 @@ export function StandingOrderDialog({ portfolios, existing, onClose }: StandingO
               ) : null}
             </div>
           ) : (
-            <div className="flex flex-col gap-1.5">
+            <div className="bt-field">
               <span className="text-sm font-medium bt-soft">
                 {t('forecast.standingOrders.dialog.assetLabel')}
               </span>
@@ -268,7 +268,7 @@ export function StandingOrderDialog({ portfolios, existing, onClose }: StandingO
         ) : null}
 
         {/* Amount — meaning depends on kind. */}
-        <label className="flex flex-col gap-1.5">
+        <label className="bt-field">
           <span className="text-sm font-medium bt-soft">{t(amountLabelKey)}</span>
           <input
             type="number"
@@ -283,7 +283,7 @@ export function StandingOrderDialog({ portfolios, existing, onClose }: StandingO
         </label>
 
         {/* Label — optional; the human hint on the auto-recorded row. */}
-        <label className="flex flex-col gap-1.5">
+        <label className="bt-field">
           <span className="text-sm font-medium bt-soft">
             {t('forecast.standingOrders.dialog.labelLabel')}
           </span>
@@ -300,8 +300,8 @@ export function StandingOrderDialog({ portfolios, existing, onClose }: StandingO
 
         {/* Cadence + anchor day — schedule is immutable in edit, so read-only there. */}
         {!isEdit ? (
-          <div className="flex flex-col gap-3 sm:flex-row">
-            <label className="flex-1 flex flex-col gap-1.5">
+          <div className="bt-standing-order-form__grid">
+            <label className="bt-field">
               <span className="text-sm font-medium bt-soft">
                 {t('forecast.standingOrders.dialog.cadenceLabel')}
               </span>
@@ -309,14 +309,14 @@ export function StandingOrderDialog({ portfolios, existing, onClose }: StandingO
                 value={cadence}
                 onChange={(e) => setCadence(e.target.value as StandingOrderCadence)}
                 aria-label={t('forecast.standingOrders.dialog.cadenceLabel')}
-                className={inputClass}
+                className={selectClass}
               >
                 <option value="daily">{t('forecast.standingOrders.cadence.daily')}</option>
                 <option value="monthly">{t('forecast.standingOrders.cadence.monthly')}</option>
               </select>
             </label>
             {cadence === 'monthly' ? (
-              <label className="flex-1 flex flex-col gap-1.5">
+              <label className="bt-field">
                 <span className="text-sm font-medium bt-soft">
                   {t('forecast.standingOrders.dialog.anchorDayLabel')}
                 </span>
@@ -340,9 +340,9 @@ export function StandingOrderDialog({ portfolios, existing, onClose }: StandingO
         )}
 
         {/* Start (create only) + optional End date. */}
-        <div className="flex flex-col gap-3 sm:flex-row">
+        <div className="bt-standing-order-form__grid">
           {!isEdit ? (
-            <label className="flex-1 flex flex-col gap-1.5">
+            <label className="bt-field">
               <span className="text-sm font-medium bt-soft">
                 {t('forecast.standingOrders.dialog.startDateLabel')}
               </span>
@@ -355,7 +355,7 @@ export function StandingOrderDialog({ portfolios, existing, onClose }: StandingO
               />
             </label>
           ) : null}
-          <label className="flex-1 flex flex-col gap-1.5">
+          <label className="bt-field">
             <span className="text-sm font-medium bt-soft">
               {t('forecast.standingOrders.dialog.endDateLabel')}
             </span>
@@ -371,7 +371,7 @@ export function StandingOrderDialog({ portfolios, existing, onClose }: StandingO
 
         {errorMessage ? <Alert tone="error">{errorMessage}</Alert> : null}
 
-        <div className="flex justify-end gap-2">
+        <div className="bt-standing-order-form__actions">
           <Button type="button" variant="secondary" onClick={onClose} disabled={mutation.isPending}>
             {t('common.cancel')}
           </Button>

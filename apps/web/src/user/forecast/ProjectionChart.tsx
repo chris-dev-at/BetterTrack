@@ -1,7 +1,8 @@
 import {
+  Area,
+  AreaChart,
   CartesianGrid,
   Line,
-  LineChart,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -31,20 +32,31 @@ export function ProjectionChart({
 }) {
   return (
     <ResponsiveContainer width="100%" height="100%">
-      <LineChart data={data} margin={{ top: 8, right: 12, bottom: 4, left: 4 }}>
-        <CartesianGrid stroke="var(--bt-chart-grid)" vertical={false} />
+      <AreaChart data={data} margin={{ top: 12, right: 8, bottom: 0, left: 0 }}>
+        <defs>
+          <linearGradient id="bt-projection-fill" x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0%" stopColor={baseColor} stopOpacity={0.2} />
+            <stop offset="78%" stopColor={baseColor} stopOpacity={0.025} />
+            <stop offset="100%" stopColor={baseColor} stopOpacity={0} />
+          </linearGradient>
+        </defs>
+        <CartesianGrid stroke="var(--bt-chart-grid)" strokeDasharray="2 4" vertical={false} />
         <XAxis
           dataKey="date"
           tickFormatter={(value: string) => value.slice(0, 4)}
           minTickGap={48}
           stroke="var(--bt-chart-text)"
           fontSize={12}
+          axisLine={false}
+          tickLine={false}
         />
         <YAxis
           width={64}
           tickFormatter={formatCompactEur}
           stroke="var(--bt-chart-text)"
           fontSize={12}
+          axisLine={false}
+          tickLine={false}
         />
         <Tooltip
           formatter={(value) => formatMoney(Number(value))}
@@ -54,14 +66,18 @@ export function ProjectionChart({
             borderRadius: 8,
             color: 'var(--bt-text)',
             fontSize: 12,
+            boxShadow: '0 12px 32px color-mix(in srgb, var(--bt-bg) 48%, transparent)',
           }}
+          cursor={{ stroke: 'var(--bt-border-strong)', strokeDasharray: '3 3' }}
         />
-        <Line
+        <Area
           type="monotone"
           dataKey="base"
           name={baseLabel}
           stroke={baseColor}
           strokeWidth={2}
+          fill="url(#bt-projection-fill)"
+          fillOpacity={1}
           dot={false}
           isAnimationActive={false}
         />
@@ -78,7 +94,7 @@ export function ProjectionChart({
             isAnimationActive={false}
           />
         ))}
-      </LineChart>
+      </AreaChart>
     </ResponsiveContainer>
   );
 }

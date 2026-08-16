@@ -8,7 +8,8 @@ import { useT, type TranslateFn } from '../../i18n';
 import { formatDate, formatMoney, formatQuantity } from '../../lib/format';
 import { STANDING_ORDERS_QUERY_KEY } from '../../lib/standingOrdersApi';
 import { EmptyState, Skeleton } from '../../ui';
-import { Alert, Button, cx } from '../components/ui';
+import { Badge, Button, SectionHead, Surface } from '../../ui/origin';
+import { Alert } from '../components/ui';
 
 import { StandingOrderDialog } from './StandingOrderDialog';
 import { usePortfolioStore } from '../portfolio/PortfolioStoreProvider';
@@ -49,57 +50,59 @@ export function StandingOrdersSection({ portfolios }: { portfolios: PortfolioSum
   const disableCreate = portfolios.length === 0;
 
   return (
-    <section aria-labelledby="forecast-standing-orders-heading" className="flex flex-col gap-3">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h2 id="forecast-standing-orders-heading" className="text-sm font-semibold bt-soft">
-            {t('forecast.standingOrders.title')}
-          </h2>
-          <p className="text-xs bt-muted">{t('forecast.standingOrders.subtitle')}</p>
-        </div>
-        <Button
-          data-testid="standing-order-create-trigger"
-          onClick={() => setCreating(true)}
-          disabled={disableCreate}
-        >
-          {t('forecast.standingOrders.newOrder')}
-        </Button>
-      </div>
+    <section aria-labelledby="forecast-standing-orders-heading" className="bt-section">
+      <SectionHead
+        title={
+          <span id="forecast-standing-orders-heading">{t('forecast.standingOrders.title')}</span>
+        }
+        sub={t('forecast.standingOrders.subtitle')}
+        actions={
+          <Button
+            data-testid="standing-order-create-trigger"
+            onClick={() => setCreating(true)}
+            disabled={disableCreate}
+          >
+            {t('forecast.standingOrders.newOrder')}
+          </Button>
+        }
+      />
 
-      {query.isLoading ? (
-        <div className="flex flex-col gap-2">
-          <Skeleton height="h-16" />
-          <Skeleton height="h-16" />
-        </div>
-      ) : query.isError ? (
-        <div className="flex flex-col items-start gap-2">
-          <Alert tone="error">{t('forecast.standingOrders.loadError')}</Alert>
-          <Button onClick={() => void query.refetch()}>{t('common.retry')}</Button>
-        </div>
-      ) : orders.length === 0 ? (
-        <EmptyState
-          icon="🔁"
-          title={t('forecast.standingOrders.emptyTitle')}
-          description={t('forecast.standingOrders.emptyDescription')}
-          cta={
-            !disableCreate ? (
-              <button
-                type="button"
-                onClick={() => setCreating(true)}
-                className="rounded text-sm bt-link"
-              >
-                {t('forecast.standingOrders.emptyCta')}
-              </button>
-            ) : null
-          }
-        />
-      ) : (
-        <ul className="flex flex-col gap-2">
-          {orders.map((order) => (
-            <StandingOrderRow key={order.id} order={order} onEdit={setEditing} />
-          ))}
-        </ul>
-      )}
+      <Surface className="bt-standing-orders-surface">
+        {query.isLoading ? (
+          <div className="bt-standing-orders-state flex flex-col gap-2">
+            <Skeleton height="h-16" />
+            <Skeleton height="h-16" />
+          </div>
+        ) : query.isError ? (
+          <div className="bt-standing-orders-state flex flex-col items-start gap-2">
+            <Alert tone="error">{t('forecast.standingOrders.loadError')}</Alert>
+            <Button onClick={() => void query.refetch()}>{t('common.retry')}</Button>
+          </div>
+        ) : orders.length === 0 ? (
+          <EmptyState
+            icon="🔁"
+            title={t('forecast.standingOrders.emptyTitle')}
+            description={t('forecast.standingOrders.emptyDescription')}
+            cta={
+              !disableCreate ? (
+                <button
+                  type="button"
+                  onClick={() => setCreating(true)}
+                  className="rounded text-sm bt-link"
+                >
+                  {t('forecast.standingOrders.emptyCta')}
+                </button>
+              ) : null
+            }
+          />
+        ) : (
+          <ul className="bt-standing-orders-list">
+            {orders.map((order) => (
+              <StandingOrderRow key={order.id} order={order} onEdit={setEditing} />
+            ))}
+          </ul>
+        )}
+      </Surface>
 
       {creating ? (
         <StandingOrderDialog portfolios={portfolios} onClose={() => setCreating(false)} />
@@ -154,8 +157,8 @@ function StandingOrderRow({
   const suspendedByArchive = order.suspendedByArchive === true;
 
   return (
-    <li id={`standing-order-${order.id}`} className="flex flex-col gap-2 bt-panel p-3">
-      <div className="flex flex-wrap items-start justify-between gap-2">
+    <li id={`standing-order-${order.id}`} className="bt-standing-order-row">
+      <div className="bt-standing-order-row__main">
         <div className="min-w-0 flex flex-col gap-0.5">
           <span className="flex flex-wrap items-center gap-2">
             <span id={titleId} className="text-sm font-semibold">
@@ -182,7 +185,7 @@ function StandingOrderRow({
         </div>
       </div>
 
-      <div className="flex flex-wrap items-center gap-3 pt-1 text-sm">
+      <div className="bt-standing-order-row__actions">
         {paused ? (
           <button
             id={pauseResumeActionId}
@@ -190,7 +193,7 @@ function StandingOrderRow({
             onClick={() => resumeMutation.mutate()}
             disabled={busy}
             aria-labelledby={`${titleId} ${pauseResumeActionId}`}
-            className="font-medium bt-link disabled:cursor-not-allowed disabled:bt-muted"
+            className="bt-standing-order-action bt-link disabled:cursor-not-allowed disabled:bt-muted"
           >
             {resumeMutation.isPending
               ? t('forecast.standingOrders.list.resuming')
@@ -203,7 +206,7 @@ function StandingOrderRow({
             onClick={() => pauseMutation.mutate()}
             disabled={busy}
             aria-labelledby={`${titleId} ${pauseResumeActionId}`}
-            className="font-medium bt-gold-note disabled:cursor-not-allowed disabled:bt-muted"
+            className="bt-standing-order-action bt-gold-note disabled:cursor-not-allowed disabled:bt-muted"
           >
             {pauseMutation.isPending
               ? t('forecast.standingOrders.list.pausing')
@@ -216,12 +219,12 @@ function StandingOrderRow({
           onClick={() => onEdit(order)}
           disabled={busy}
           aria-labelledby={`${titleId} ${editActionId}`}
-          className="font-medium bt-soft hover: disabled:cursor-not-allowed disabled:bt-muted"
+          className="bt-standing-order-action bt-soft disabled:cursor-not-allowed disabled:bt-muted"
         >
           {t('common.edit')}
         </button>
         {confirmingDelete ? (
-          <span className="inline-flex items-center gap-2 text-xs">
+          <span className="bt-standing-order-confirm">
             <span className="bt-muted">{t('forecast.standingOrders.list.deleteConfirm')}</span>
             <button
               id={deleteConfirmYesActionId}
@@ -229,7 +232,7 @@ function StandingOrderRow({
               onClick={() => deleteMutation.mutate()}
               disabled={busy}
               aria-labelledby={`${titleId} ${deleteConfirmYesActionId}`}
-              className="font-medium bt-neg hover:bt-neg disabled:cursor-not-allowed disabled:bt-muted"
+              className="bt-standing-order-action bt-neg disabled:cursor-not-allowed disabled:bt-muted"
             >
               {deleteMutation.isPending ? t('common.saving') : t('common.yes')}
             </button>
@@ -239,7 +242,7 @@ function StandingOrderRow({
               onClick={() => setConfirmingDelete(false)}
               disabled={busy}
               aria-labelledby={`${titleId} ${deleteConfirmNoActionId}`}
-              className="font-medium bt-muted hover:bt-soft disabled:cursor-not-allowed disabled:bt-muted"
+              className="bt-standing-order-action bt-muted disabled:cursor-not-allowed disabled:bt-muted"
             >
               {t('common.no')}
             </button>
@@ -251,7 +254,7 @@ function StandingOrderRow({
             onClick={() => setConfirmingDelete(true)}
             disabled={busy}
             aria-labelledby={`${titleId} ${deleteActionId}`}
-            className="font-medium bt-neg hover:bt-neg disabled:cursor-not-allowed disabled:bt-muted"
+            className="bt-standing-order-action bt-neg disabled:cursor-not-allowed disabled:bt-muted"
           >
             {t('common.delete')}
           </button>
@@ -259,7 +262,9 @@ function StandingOrderRow({
       </div>
 
       {pauseMutation.isError || resumeMutation.isError || deleteMutation.isError ? (
-        <Alert tone="error">{t('forecast.standingOrders.list.updateError')}</Alert>
+        <div className="bt-standing-order-row__error">
+          <Alert tone="error">{t('forecast.standingOrders.list.updateError')}</Alert>
+        </div>
       ) : null}
     </li>
   );
@@ -274,18 +279,13 @@ function StatusBadge({
 }) {
   const t = useT();
   return (
-    <span
-      className={cx(
-        'inline-flex items-center rounded px-1.5 py-0.5 text-xs font-medium ring-1 ring-inset',
-        paused || suspendedByArchive ? 'bt-badge' : 'bt-badge bt-badge--pos',
-      )}
-    >
+    <Badge tone={paused || suspendedByArchive ? 'neutral' : 'pos'}>
       {suspendedByArchive
         ? t('forecast.standingOrders.status.suspendedByArchive')
         : paused
           ? t('forecast.standingOrders.status.paused')
           : t('forecast.standingOrders.status.active')}
-    </span>
+    </Badge>
   );
 }
 
