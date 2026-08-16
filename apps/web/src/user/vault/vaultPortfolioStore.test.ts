@@ -30,6 +30,7 @@ import { InsufficientCashError } from '@bettertrack/domain/cashLedger';
 
 import * as portfolioApi from '../../lib/portfolioApi';
 
+import { marketAssetSnapshotRow, ownedAssetSnapshotRow } from './assetSnapshot';
 import { decryptVaultDocument, encryptVaultDocument } from './crypto';
 import type {
   DataHome,
@@ -45,6 +46,7 @@ import {
   type LocalVaultRecord,
 } from './localDataHome';
 import { vaultStoreErrorKey } from './engine/errorCopy';
+import { isLocalAssetSnapshot } from './engine/model';
 import { openVaultSession } from './engine/session';
 import { toStrictRestoreDocument } from './paranoidDisable';
 import { createMemoryVaultQuarantineStore } from './quarantine';
@@ -129,6 +131,30 @@ afterEach(() => {
 });
 
 describe('vaultPortfolioStore privacy and correctness boundaries', () => {
+  it('classifies owned and market snapshot rows through the shared local-asset predicate', () => {
+    const owned = ownedAssetSnapshotRow({
+      id: ASSET_ID,
+      ownerId: USER_ID,
+      symbol: 'LOCAL',
+      name: 'Local Asset',
+      currency: 'EUR',
+      category: 'stock',
+      smoothing: false,
+    });
+    const market = marketAssetSnapshotRow({
+      symbol: 'NVDA',
+      name: 'NVIDIA',
+      exchange: 'NASDAQ',
+      currency: 'USD',
+      type: 'stock',
+      providerId: 'yahoo',
+      providerRef: 'NVDA',
+    });
+
+    expect(isLocalAssetSnapshot(owned)).toBe(true);
+    expect(isLocalAssetSnapshot(market)).toBe(false);
+  });
+
   it.each(['locked', 'corrupt'] as const)(
     'fails closed while %s and makes no API or fetch request',
     async (status) => {

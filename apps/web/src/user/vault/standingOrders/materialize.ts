@@ -24,7 +24,10 @@ import type { VaultSyncEngine } from '../sync';
 import { standingOrderOccurrenceId } from './occurrenceId';
 import { calendarDayInTimezone, dueStandingOrderOccurrence } from './schedule';
 
-/** Client mirror of the server's automatic-buy quote age ceiling. */
+/**
+ * Client mirror of the server's automatic-buy quote age ceiling in
+ * `apps/api/src/services/standingOrders/standingOrderService.ts`.
+ */
 export const STANDING_ORDER_MAX_QUOTE_AGE_MS = 4 * 24 * 60 * 60 * 1000;
 
 export interface StandingOrderMaterializerOptions {
@@ -94,15 +97,6 @@ export async function materializeDueStandingOrders(
         occurrenceId,
         orderId: order.entity.id,
         dueDate,
-        calendarDay: today,
-        timezone,
-        executedAt: now.toISOString(),
-        recordedAt: now.toISOString(),
-        expectedCandidate: {
-          vaultVersion: snapshot.vaultVersion,
-          vaultKeyId: snapshot.vaultKeyId,
-          writeId: snapshot.writeId,
-        },
       });
       if (existing !== null) continue;
 
@@ -123,7 +117,7 @@ export async function materializeDueStandingOrders(
               `Buy standing order ${order.entity.id} references an unavailable asset.`,
             );
           }
-          if (asset.providerId === 'manual') {
+          if (asset.dto.isCustom) {
             const manual = localManualAssetMarket(snapshot.document, asset);
             if (manual.quote === null) {
               throw moneyFailure(
