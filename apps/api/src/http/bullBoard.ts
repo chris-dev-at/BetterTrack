@@ -1,7 +1,7 @@
 import { Router } from 'express';
 
 import { createBullBoard } from '@bull-board/api';
-import { BullMQAdapter } from '@bull-board/api/dist/queueAdapters/bullMQ.js';
+import { BullMQAdapter } from '@bull-board/api/bullMQAdapter.js';
 import { ExpressAdapter } from '@bull-board/express';
 
 import { ALL_QUEUE_NAMES, type QueueRegistry } from '../jobs';
