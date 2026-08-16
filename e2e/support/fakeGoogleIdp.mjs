@@ -60,26 +60,49 @@ publicJwk.alg = 'RS256';
 publicJwk.use = 'sig';
 const jwksBody = JSON.stringify({ keys: [publicJwk] });
 
+/**
+ * @typedef {object} GoogleIdentity
+ * @property {string} sub
+ * @property {string} email
+ * @property {boolean} [email_verified]
+ * @property {string} [name]
+ */
+
 /** The identity the next `/authorize` will bind a code to (single, sequential). */
+/** @type {GoogleIdentity | null} */
 let pendingIdentity = null;
 /** code → identity, so the token exchange mints exactly what authorize captured. */
+/** @type {Map<string, GoogleIdentity>} */
 const codesToIdentity = new Map();
 
 /** Read a whole request body as a string. */
+/**
+ * @param {import('node:http').IncomingMessage} req
+ * @returns {Promise<string>}
+ */
 function readBody(req) {
   return new Promise((resolve) => {
     let data = '';
-    req.on('data', (chunk) => (data += chunk));
+    req.on('data', /** @param {Buffer} chunk */ (chunk) => (data += chunk));
     req.on('end', () => resolve(data));
   });
 }
 
+/**
+ * @param {import('node:http').ServerResponse} res
+ * @param {number} status
+ * @param {unknown} body
+ */
 function sendJson(res, status, body) {
   const payload = JSON.stringify(body);
   res.writeHead(status, { 'content-type': 'application/json' });
   res.end(payload);
 }
 
+/**
+ * @param {GoogleIdentity} identity
+ * @returns {Promise<string>}
+ */
 async function mintIdToken(identity) {
   return new SignJWT({
     email: identity.email,
@@ -192,6 +215,7 @@ const server = createServer(async (req, res) => {
 });
 
 /** Deterministic small hash so a code is stable per (sub, state, redirect) tuple. */
+/** @param {string} input */
 function hashString(input) {
   let h = 0;
   for (let i = 0; i < input.length; i += 1) {
