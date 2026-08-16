@@ -1,4 +1,6 @@
+import express from 'express';
 import type { Request, Response } from 'express';
+import request from 'supertest';
 import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 
@@ -21,14 +23,50 @@ function mockRes(): {
   res: Response;
   status: ReturnType<typeof vi.fn>;
   json: ReturnType<typeof vi.fn>;
+  removeHeader: ReturnType<typeof vi.fn>;
 } {
   const json = vi.fn();
   const status = vi.fn().mockReturnValue({ json });
-  const res = { status, json } as unknown as Response;
-  return { res, status, json };
+  const removeHeader = vi.fn();
+  const res = { status, json, removeHeader } as unknown as Response;
+  return { res, status, json, removeHeader };
+}
+
+function validatorErrorApp(error: Error) {
+  const app = express();
+  app.disable('etag');
+  app.get('/error', (_req, res) => {
+    res.setHeader('ETag', 'W/"stale"');
+    res.setHeader('Last-Modified', 'Tue, 14 Aug 2026 06:11:34 GMT');
+    throw error;
+  });
+  app.use(createErrorHandler(logger));
+  return app;
 }
 
 describe('createErrorHandler PII-safe reporting', () => {
+  it('removes pre-set validators from an ApiError envelope', async () => {
+    const res = await request(validatorErrorApp(new ApiError(409, 'CONFLICT', 'stale'))).get(
+      '/error',
+    );
+
+    expect(res.status).toBe(409);
+    expect(res.body).toEqual({ error: { code: 'CONFLICT', message: 'stale' } });
+    expect(res.headers.etag).toBeUndefined();
+    expect(res.headers['last-modified']).toBeUndefined();
+  });
+
+  it('removes pre-set validators from an unexpected 500 envelope', async () => {
+    const res = await request(validatorErrorApp(new Error('kaboom'))).get('/error');
+
+    expect(res.status).toBe(500);
+    expect(res.body).toEqual({
+      error: { code: 'INTERNAL', message: 'Internal server error.' },
+    });
+    expect(res.headers.etag).toBeUndefined();
+    expect(res.headers['last-modified']).toBeUndefined();
+  });
+
   it('reports an unexpected error (the 500 path) to the reporter', () => {
     const report = vi.fn();
     const handler = createErrorHandler(logger, report);
