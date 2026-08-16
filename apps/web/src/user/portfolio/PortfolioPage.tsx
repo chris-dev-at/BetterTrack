@@ -440,11 +440,13 @@ const HOLDING_TRANSACTIONS_LIMIT = 200;
 function RecentTransactionsSection({
   transactions,
   sourceTags,
+  sourceTagsAreCurrent,
   sourceFilter,
   onSourceFilterChange,
 }: {
   transactions: Transaction[];
   sourceTags: string[];
+  sourceTagsAreCurrent: boolean;
   sourceFilter: string;
   onSourceFilterChange: (source: string) => void;
 }) {
@@ -454,13 +456,13 @@ function RecentTransactionsSection({
   // CashSourcesPage. Only earns its place when the ledger actually mixes
   // sources (anti-bloat — a pure-manual ledger never sees it).
   // A successful deletion can remove the last row for the selected source.
-  // The facet is authoritative, so clear that stale selection instead of
-  // inventing a local option that would make a single-source ledger look mixed.
+  // Only a resolved response for this query may clear it: keepPreviousData can
+  // temporarily render another portfolio's facet during a route switch.
   useEffect(() => {
-    if (sourceFilter !== 'all' && !sourceTags.includes(sourceFilter)) {
+    if (sourceTagsAreCurrent && sourceFilter !== 'all' && !sourceTags.includes(sourceFilter)) {
       onSourceFilterChange('all');
     }
-  }, [onSourceFilterChange, sourceFilter, sourceTags]);
+  }, [onSourceFilterChange, sourceFilter, sourceTags, sourceTagsAreCurrent]);
 
   const showFilter = sourceTags.length > 1;
 
@@ -1950,6 +1952,9 @@ export function PortfolioPage() {
           <RecentTransactionsSection
             transactions={transactionsQuery.data?.items ?? []}
             sourceTags={transactionsQuery.data?.sourceTags ?? []}
+            sourceTagsAreCurrent={
+              transactionsQuery.data !== undefined && !transactionsQuery.isPlaceholderData
+            }
             sourceFilter={recentSourceFilter}
             onSourceFilterChange={(source) => setRecentSourceSelection({ portfolioId, source })}
           />
