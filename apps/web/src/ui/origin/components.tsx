@@ -213,6 +213,8 @@ export function Field({
 }) {
   const generatedErrorId = useId();
   const hasError = Boolean(error);
+  const isRequired =
+    isValidElement<{ required?: boolean }>(children) && Boolean(children.props.required);
   const errorId = `${htmlFor ?? generatedErrorId}-error`;
   const control =
     hasError && isValidElement<Pick<AriaAttributes, 'aria-describedby' | 'aria-invalid'>>(children)
@@ -226,7 +228,16 @@ export function Field({
 
   return (
     <div className={cx('bt-field', className)}>
-      {label ? <label htmlFor={htmlFor}>{label}</label> : null}
+      {label ? (
+        <span className="bt-field__label">
+          <label htmlFor={htmlFor}>{label}</label>
+          {isRequired ? (
+            <span aria-hidden="true" className="bt-field__required-marker">
+              {' *'}
+            </span>
+          ) : null}
+        </span>
+      ) : null}
       {control}
       {hasError ? (
         <span className="bt-field__error" id={errorId} role="alert">
