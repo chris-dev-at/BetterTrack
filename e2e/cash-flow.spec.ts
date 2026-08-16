@@ -175,8 +175,8 @@ test('cash flow: a rule tags a real entry, the ledger shows it, and a budget blo
     await budgetDialog.getByRole('button', { name: 'Save' }).click();
     await expect(budgetDialog).toBeHidden({ timeout: 15_000 });
 
-    // The budget reads against the month the spending happened in, so the
-    // month picker has to be pointed at it — "this month" is empty by design.
+    // `spendDate` is yesterday, so point the picker at the spend month explicitly.
+    // That keeps the month-boundary case (the 1st of a month) behaving the same.
     await page.getByLabel('Month', { exact: true }).fill(spendDate.slice(0, 7));
     const budgetRow = page.getByRole('listitem').filter({ hasText: 'Groceries' });
     await expect(budgetRow).toContainText('Over budget', { timeout: 15_000 });
