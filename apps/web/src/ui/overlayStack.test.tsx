@@ -1,20 +1,45 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import { render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { expect, test } from 'vitest';
 
-import { Dialog } from './Dialog';
-import { useMenuKeyboard } from './useMenuKeyboard';
+import { useOverlayEscape } from './overlayStack';
+
+function TestDialog({
+  title,
+  onClose,
+  children,
+}: {
+  title: string;
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  useOverlayEscape(true, onClose, dialogRef);
+
+  return (
+    <div aria-label={title} ref={dialogRef} role="dialog">
+      {children}
+    </div>
+  );
+}
 
 /** A minimal disclosure menu on the shared hook — the shape every picker uses. */
 function Menu({ label }: { label: string }) {
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
-  const { closeAndRestoreFocus, menuRef, onKeyDown } = useMenuKeyboard({
-    open,
-    onClose: () => setOpen(false),
-    triggerRef,
-  });
+  const menuRef = useRef<HTMLDivElement>(null);
+  const closeAndRestoreFocus = () => {
+    setOpen(false);
+    triggerRef.current?.focus();
+  };
+  useOverlayEscape(open, closeAndRestoreFocus, menuRef);
+
+  useEffect(() => {
+    if (!open) return;
+    menuRef.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus();
+  }, [open]);
 
   return (
     <>
@@ -28,7 +53,7 @@ function Menu({ label }: { label: string }) {
         {label}
       </button>
       {open ? (
-        <div aria-label={`${label} menu`} onKeyDown={onKeyDown} ref={menuRef} role="menu">
+        <div aria-label={`${label} menu`} ref={menuRef} role="menu">
           <button onClick={closeAndRestoreFocus} role="menuitem" type="button">
             {label} one
           </button>
@@ -49,9 +74,9 @@ function MenuInDialogFixture() {
         Open sheet
       </button>
       {open ? (
-        <Dialog onClose={() => setOpen(false)} title="Sheet">
+        <TestDialog onClose={() => setOpen(false)} title="Sheet">
           <Menu label="Audience" />
-        </Dialog>
+        </TestDialog>
       ) : null}
     </>
   );

@@ -1,6 +1,8 @@
 import { useEffect, useId, useRef } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react';
 
+import { useOverlayEscape } from '../../ui/overlayStack';
+
 const FOCUSABLE_SELECTOR = [
   'a[href]',
   'area[href]',
@@ -139,11 +141,15 @@ export function Modal({
   onCloseRef.current = onClose;
   dismissableRef.current = dismissable;
 
+  useOverlayEscape(
+    true,
+    () => {
+      if (dismissableRef.current) onCloseRef.current();
+    },
+    dialogRef,
+  );
+
   useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && dismissableRef.current) onCloseRef.current();
-    };
-    document.addEventListener('keydown', onKey);
     const prevOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
 
@@ -152,7 +158,6 @@ export function Modal({
     (focusable[0] ?? dialog)?.focus();
 
     return () => {
-      document.removeEventListener('keydown', onKey);
       document.body.style.overflow = prevOverflow;
       const openingElement = openingElementRef.current;
       if (openingElement instanceof HTMLElement && openingElement.isConnected) {

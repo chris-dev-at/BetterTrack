@@ -4,6 +4,7 @@ import { NavLink, Navigate, Outlet, useLocation } from 'react-router-dom';
 import { Wordmark } from '../../components/Wordmark';
 import { SUPPORTED_LOCALES, useI18n, useT } from '../../i18n';
 import { ErrorBoundary } from '../../ui';
+import { useOverlayEscape } from '../../ui/overlayStack';
 import { useFocusTrap } from '../../ui/useFocusTrap';
 import { useAuth } from '../AuthContext';
 import { Button, Spinner, cx } from './ui';
@@ -96,6 +97,8 @@ export function AdminLayout() {
     setDrawerOpen(false);
   }, []);
 
+  useOverlayEscape(drawerOpen, closeDrawer, drawerRootRef);
+
   // Close the drawer whenever navigation lands on a new admin route. Uses the
   // pathname as the effect key so the setter only runs on real transitions.
   useEffect(() => {
@@ -138,27 +141,18 @@ export function AdminLayout() {
   }, [drawerOpen, closeDrawer]);
 
   // The shared trap owns initial focus, background inerting, Tab containment,
-  // and restoration to the burger (or main at the desktop handoff). This
-  // effect keeps the admin-specific body scroll lock and document-level Escape
-  // behavior scoped to the open drawer.
+  // and restoration to the burger (or main at the desktop handoff), while the
+  // overlay stack arbitrates Escape. This effect keeps the admin-specific body
+  // scroll lock scoped to the open drawer.
   useEffect(() => {
     if (!drawerOpen) return;
     const prevOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
 
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.preventDefault();
-        closeDrawer();
-      }
-    };
-
-    document.addEventListener('keydown', onKey);
     return () => {
-      document.removeEventListener('keydown', onKey);
       document.body.style.overflow = prevOverflow;
     };
-  }, [drawerOpen, closeDrawer]);
+  }, [drawerOpen]);
 
   if (status === 'loading') {
     return (
