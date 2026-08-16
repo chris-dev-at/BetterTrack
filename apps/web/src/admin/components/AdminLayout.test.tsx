@@ -228,28 +228,40 @@ test('the burger button opens an inert-background drawer and cleans up on Escape
   expect(burger).toHaveFocus();
 });
 
-test('crossing into the desktop breakpoint closes the drawer and releases its inert holds', async () => {
+test('crossing into the desktop breakpoint closes the drawer, releases inert, and focuses main', async () => {
   setViewportWidth(767);
   const desktopBreakpoint = stubDesktopBreakpoint();
   const user = userEvent.setup();
   const { container } = renderAdmin('/admin/invites');
 
-  await user.click(screen.getByRole('button', { name: 'Open admin menu' }));
+  const burger = screen.getByRole('button', { name: 'Open admin menu' });
+  await user.click(burger);
 
   const main = screen.getByRole('main');
+  const mobileHeader = burger.closest('header')!;
   const desktopSidebar = container.querySelector<HTMLElement>('aside')!;
-  expect(screen.getByRole('dialog', { name: 'Admin menu' })).toBeInTheDocument();
+  const drawer = screen.getByRole('dialog', { name: 'Admin menu' });
+  expect(drawer).toBeInTheDocument();
+  expect(drawer.contains(document.activeElement)).toBe(true);
   expect(main).toHaveAttribute('inert');
   expect(desktopSidebar).toHaveAttribute('inert');
   expect(desktopBreakpoint.matchMedia).toHaveBeenCalledWith('(min-width: 48rem)');
 
-  act(() => desktopBreakpoint.enterDesktop());
+  act(() => {
+    // Model the CSS breakpoint before matchMedia notifies React: the mobile
+    // burger is already display:none while the desktop shell becomes visible.
+    mobileHeader.style.display = 'none';
+    desktopSidebar.style.display = 'block';
+    desktopBreakpoint.enterDesktop();
+  });
 
   await waitFor(() => {
     expect(screen.queryByRole('dialog', { name: 'Admin menu' })).not.toBeInTheDocument();
   });
   expect(main).not.toHaveAttribute('inert');
   expect(desktopSidebar).not.toHaveAttribute('inert');
+  expect(main).toHaveFocus();
+  expect(document.body).not.toHaveFocus();
 });
 
 test('navigating from inside the drawer closes it', async () => {

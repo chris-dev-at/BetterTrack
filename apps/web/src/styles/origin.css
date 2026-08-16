@@ -13,7 +13,7 @@
  *
  * The root element always carries `data-bt-theme` (`dark` | `light`), stamped
  * before the first paint by the inline boot script in `index.html` and kept in
- * step by `user/theme.ts`. Dark is the value set of `:root`, so the light block
+ * step by `lib/theme.ts`. Dark is the value set of `:root`, so the light block
  * is the ONLY place a themed value differs — and every colour a component paints
  * has to come through a token, or that component is dark-only by construction.
  * `styles/themeTokens.test.ts` enforces both halves of that: the dark values

@@ -79,11 +79,18 @@ export function AdminLayout() {
   const location = useLocation();
   const [drawerOpen, setDrawerOpen] = useState(false);
   const burgerRef = useRef<HTMLButtonElement>(null);
+  const mainRef = useRef<HTMLElement>(null);
+  const drawerRestoreFocusRef = useRef<HTMLElement>(null);
   const { containerRef: drawerRootRef, onKeyDown: onDrawerKeyDown } = useFocusTrap<HTMLDivElement>({
     active: drawerOpen,
     inertBackground: true,
-    restoreFocusRef: burgerRef,
+    restoreFocusRef: drawerRestoreFocusRef,
   });
+
+  const openDrawer = useCallback(() => {
+    drawerRestoreFocusRef.current = burgerRef.current;
+    setDrawerOpen(true);
+  }, []);
 
   const closeDrawer = useCallback(() => {
     setDrawerOpen(false);
@@ -104,16 +111,25 @@ export function AdminLayout() {
     if (typeof window.matchMedia === 'function') {
       const desktop = window.matchMedia(ADMIN_DESKTOP_MEDIA_QUERY);
       const closeOnDesktop = (event: MediaQueryListEvent) => {
-        if (event.matches) closeDrawer();
+        if (event.matches) {
+          drawerRestoreFocusRef.current = mainRef.current;
+          closeDrawer();
+        }
       };
 
-      if (desktop.matches) closeDrawer();
+      if (desktop.matches) {
+        drawerRestoreFocusRef.current = mainRef.current;
+        closeDrawer();
+      }
       desktop.addEventListener('change', closeOnDesktop);
       return () => desktop.removeEventListener('change', closeOnDesktop);
     }
 
     const closeOnDesktop = () => {
-      if (window.innerWidth >= ADMIN_DESKTOP_MIN_WIDTH_PX) closeDrawer();
+      if (window.innerWidth >= ADMIN_DESKTOP_MIN_WIDTH_PX) {
+        drawerRestoreFocusRef.current = mainRef.current;
+        closeDrawer();
+      }
     };
 
     closeOnDesktop();
@@ -122,8 +138,9 @@ export function AdminLayout() {
   }, [drawerOpen, closeDrawer]);
 
   // The shared trap owns initial focus, background inerting, Tab containment,
-  // and restoration to the burger. This effect keeps the admin-specific body
-  // scroll lock and document-level Escape behavior scoped to the open drawer.
+  // and restoration to the burger (or main at the desktop handoff). This
+  // effect keeps the admin-specific body scroll lock and document-level Escape
+  // behavior scoped to the open drawer.
   useEffect(() => {
     if (!drawerOpen) return;
     const prevOverflow = document.body.style.overflow;
@@ -246,7 +263,7 @@ export function AdminLayout() {
         <button
           ref={burgerRef}
           type="button"
-          onClick={() => setDrawerOpen(true)}
+          onClick={openDrawer}
           aria-label={t('admin.nav.openMenu')}
           aria-expanded={drawerOpen}
           aria-controls="admin-sidebar"
@@ -301,7 +318,7 @@ export function AdminLayout() {
         </div>
       ) : null}
 
-      <main id="main-content" className="min-w-0 flex-1" tabIndex={-1}>
+      <main ref={mainRef} id="main-content" className="min-w-0 flex-1" tabIndex={-1}>
         <div className="mx-auto max-w-5xl px-4 py-8">
           {/* Keyed on the route so navigating away from a failed page always
               resets the boundary (§7.1) rather than leaving it stuck. */}
