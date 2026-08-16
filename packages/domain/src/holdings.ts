@@ -61,8 +61,8 @@ export const QTY_EPSILON = 1e-9;
  * stored row can sit up to one quantum away from the raw value that was
  * validated. A replayed position can therefore show a spurious shortfall
  * bounded by one quantum per stored row since the last close — including
- * non-contributing sells — {@link reducePosition} waives exactly that envelope;
- * anything beyond it fails closed as a genuine oversell.
+ * non-contributing sells; {@link reducePosition} waives exactly that envelope.
+ * Anything beyond it fails closed as a genuine oversell.
  */
 export const QTY_STORAGE_QUANTUM = 1e-8;
 
@@ -205,12 +205,11 @@ function executedAtToMs(executedAt: string): number {
  *    {@link QTY_EPSILON}) throws {@link OversellError}. One exception
  *    (#917/#1094): a shortfall within one {@link QTY_STORAGE_QUANTUM} per
  *    stored row since the last close — including non-contributing sells — is
- *    `numeric(20,8)` rounding drift, not an oversell — the write path validated
+ *    `numeric(20,8)` rounding drift, not an oversell. The write path validated
  *    the raw values before PostgreSQL rounded the rows apart. Such a sell closes
  *    the position like an exact one: the held shares realize against the running
  *    average, the dust remainder takes the sale price (0 gain). The envelope is
- *    per stored row since the last close, including non-contributing sells; never
- *    a blanket loosening — a shortfall beyond it still fails closed.
+ *    per-row, never a blanket loosening; a shortfall beyond it still fails closed.
  *
  * The input may contain transactions for a single asset; mixing assets is a
  * programming error and throws.
