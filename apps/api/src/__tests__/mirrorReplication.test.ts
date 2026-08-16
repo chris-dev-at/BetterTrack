@@ -577,6 +577,8 @@ describe('mirrorchain M2 — replication core', () => {
           await release;
         });
 
+        // The rejection path is load-bearing: a failed BEGIN must not leave the
+        // harness waiting for a readiness signal that can no longer arrive.
         await Promise.race([
           owned,
           pauseOwner.then(() => {
@@ -639,6 +641,8 @@ describe('mirrorchain M2 — replication core', () => {
         await pauseOwner?.catch(() => undefined);
         await deletion?.catch(() => undefined);
         await withdrawalSettled?.catch(() => undefined);
+        // Retain this structural guard so later additions to trigger cleanup
+        // cannot prevent either client from being closed.
         try {
           if (observer) {
             for (const statement of [
@@ -664,7 +668,15 @@ describe('mirrorchain M2 — replication core', () => {
         }
       }
 
-      if (bodyFailed) throw bodyFailure;
+      if (bodyFailed) {
+        if (cleanupFailures.length > 0) {
+          console.warn(
+            'Pause harness cleanup also failed; preserving the original body failure',
+            cleanupFailures,
+          );
+        }
+        throw bodyFailure;
+      }
       if (cleanupFailures.length === 1) throw cleanupFailures[0];
       if (cleanupFailures.length > 1) {
         throw new AggregateError(cleanupFailures, 'Pause harness cleanup failed');
