@@ -253,7 +253,7 @@ export async function installPd9Drive(context: BrowserContext): Promise<Pd9Drive
 
     function maybeTampered(encoded: string, enabled: boolean): Uint8Array {
       const bytes = fromBase64(encoded);
-      if (enabled && bytes.length > 0) bytes[bytes.length - 1] ^= 0x01;
+      if (enabled && bytes.length > 0) bytes[bytes.length - 1]! ^= 0x01;
       return bytes;
     }
 
@@ -423,7 +423,7 @@ export async function installPd9Drive(context: BrowserContext): Promise<Pd9Drive
         const state = load();
         if (state.current == null) throw new Error('No Drive envelope is available to tamper.');
         const bytes = fromBase64(state.current);
-        bytes[bytes.length - 1] ^= 0x01;
+        bytes[bytes.length - 1]! ^= 0x01;
         save({ ...state, current: toBase64(bytes), revision: state.revision + 1 });
       },
       restoreStored() {
