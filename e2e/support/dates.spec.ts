@@ -23,7 +23,7 @@ test('recentOpenBookingDates keeps booking days open across Vienna New Year', as
     const dates = await recentOpenBookingDates(page, 5, new Date(`${today}T12:00:00.000Z`));
 
     expect(dates).toHaveLength(5);
-    expect(dates.every((date) => date <= today)).toBe(true);
+    expect(dates.every((date) => date < today)).toBe(true);
     expect(unlockUrls).toEqual([`${API_BASE_URL}/api/v1/settings/taxes/years/2025/unlock`]);
     expect(unlockedYears).toEqual([
       ...new Set(dates.map((date) => Number(date.slice(0, 4))).filter((year) => year < 2026)),
