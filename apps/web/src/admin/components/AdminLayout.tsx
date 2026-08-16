@@ -4,11 +4,18 @@ import { NavLink, Navigate, Outlet, useLocation } from 'react-router-dom';
 import { Wordmark } from '../../components/Wordmark';
 import { SUPPORTED_LOCALES, useI18n, useT } from '../../i18n';
 import { ErrorBoundary } from '../../ui';
+import { useFocusTrap } from '../../ui/useFocusTrap';
 import { useAuth } from '../AuthContext';
 import { Button, Spinner, cx } from './ui';
 
 type NavItem = { to: string; labelKey: string };
 type NavSection = { key: string; labelKey: string; items: NavItem[] };
+
+// Tailwind's default `md` breakpoint. The drawer is `md:hidden`, so its state
+// must retire at the exact same handoff or it can keep the desktop shell inert
+// after CSS swaps the mobile chrome out.
+const ADMIN_DESKTOP_MEDIA_QUERY = '(min-width: 48rem)';
+const ADMIN_DESKTOP_MIN_WIDTH_PX = 768;
 
 /**
  * Light IA regroup (§13.4 V4-P0d): the grown admin surface, ordered into sane
@@ -72,7 +79,18 @@ export function AdminLayout() {
   const location = useLocation();
   const [drawerOpen, setDrawerOpen] = useState(false);
   const burgerRef = useRef<HTMLButtonElement>(null);
-  const drawerRef = useRef<HTMLDivElement>(null);
+  const mainRef = useRef<HTMLElement>(null);
+  const drawerRestoreFocusRef = useRef<HTMLElement>(null);
+  const { containerRef: drawerRootRef, onKeyDown: onDrawerKeyDown } = useFocusTrap<HTMLDivElement>({
+    active: drawerOpen,
+    inertBackground: true,
+    restoreFocusRef: drawerRestoreFocusRef,
+  });
+
+  const openDrawer = useCallback(() => {
+    drawerRestoreFocusRef.current = burgerRef.current;
+    setDrawerOpen(true);
+  }, []);
 
   const closeDrawer = useCallback(() => {
     setDrawerOpen(false);
@@ -84,43 +102,54 @@ export function AdminLayout() {
     setDrawerOpen(false);
   }, [location.pathname]);
 
-  // While the drawer is open: lock body scroll, close on Escape, and trap Tab
-  // inside the drawer. Focus jumps to the first focusable on open and restores
-  // to the burger button on close so the keyboard path never leaves the sidebar.
+  // CSS hides the mobile drawer at `md`, but hidden markup would still own the
+  // focus trap and its inert holds. Close it as the desktop sidebar takes over
+  // so resizing or rotating a device can never strand the visible shell inert.
+  useEffect(() => {
+    if (!drawerOpen) return;
+
+    if (typeof window.matchMedia === 'function') {
+      const desktop = window.matchMedia(ADMIN_DESKTOP_MEDIA_QUERY);
+      const closeOnDesktop = (event: MediaQueryListEvent) => {
+        if (event.matches) {
+          drawerRestoreFocusRef.current = mainRef.current;
+          closeDrawer();
+        }
+      };
+
+      if (desktop.matches) {
+        drawerRestoreFocusRef.current = mainRef.current;
+        closeDrawer();
+      }
+      desktop.addEventListener('change', closeOnDesktop);
+      return () => desktop.removeEventListener('change', closeOnDesktop);
+    }
+
+    const closeOnDesktop = () => {
+      if (window.innerWidth >= ADMIN_DESKTOP_MIN_WIDTH_PX) {
+        drawerRestoreFocusRef.current = mainRef.current;
+        closeDrawer();
+      }
+    };
+
+    closeOnDesktop();
+    window.addEventListener('resize', closeOnDesktop);
+    return () => window.removeEventListener('resize', closeOnDesktop);
+  }, [drawerOpen, closeDrawer]);
+
+  // The shared trap owns initial focus, background inerting, Tab containment,
+  // and restoration to the burger (or main at the desktop handoff). This
+  // effect keeps the admin-specific body scroll lock and document-level Escape
+  // behavior scoped to the open drawer.
   useEffect(() => {
     if (!drawerOpen) return;
     const prevOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
 
-    const focusables = () =>
-      drawerRef.current
-        ? Array.from(
-            drawerRef.current.querySelectorAll<HTMLElement>(
-              'a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])',
-            ),
-          )
-        : [];
-
-    focusables()[0]?.focus();
-
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.preventDefault();
         closeDrawer();
-        return;
-      }
-      if (e.key !== 'Tab') return;
-      const items = focusables();
-      if (items.length === 0) return;
-      const first = items[0]!;
-      const last = items[items.length - 1]!;
-      const active = document.activeElement as HTMLElement | null;
-      if (e.shiftKey && (active === first || !drawerRef.current?.contains(active))) {
-        e.preventDefault();
-        last.focus();
-      } else if (!e.shiftKey && active === last) {
-        e.preventDefault();
-        first.focus();
       }
     };
 
@@ -128,8 +157,6 @@ export function AdminLayout() {
     return () => {
       document.removeEventListener('keydown', onKey);
       document.body.style.overflow = prevOverflow;
-      // Restore focus to the burger so the tab order continues from the trigger.
-      burgerRef.current?.focus();
     };
   }, [drawerOpen, closeDrawer]);
 
@@ -236,7 +263,7 @@ export function AdminLayout() {
         <button
           ref={burgerRef}
           type="button"
-          onClick={() => setDrawerOpen(true)}
+          onClick={openDrawer}
           aria-label={t('admin.nav.openMenu')}
           aria-expanded={drawerOpen}
           aria-controls="admin-sidebar"
@@ -272,10 +299,15 @@ export function AdminLayout() {
       {/* Mobile drawer: backdrop + slide-in panel. Rendered only while open so
           the focus trap and body-scroll lock stay scoped to the visible dialog. */}
       {drawerOpen ? (
-        <div className="fixed inset-0 z-40 md:hidden" role="presentation">
+        <div
+          className="fixed inset-0 z-40 md:hidden"
+          onKeyDown={onDrawerKeyDown}
+          ref={drawerRootRef}
+          role="presentation"
+          tabIndex={-1}
+        >
           <div className="absolute inset-0 bg-black/70" onClick={closeDrawer} aria-hidden="true" />
           <div
-            ref={drawerRef}
             role="dialog"
             aria-modal="true"
             aria-label={t('admin.nav.menu')}
@@ -286,7 +318,7 @@ export function AdminLayout() {
         </div>
       ) : null}
 
-      <main id="main-content" className="min-w-0 flex-1" tabIndex={-1}>
+      <main ref={mainRef} id="main-content" className="min-w-0 flex-1" tabIndex={-1}>
         <div className="mx-auto max-w-5xl px-4 py-8">
           {/* Keyed on the route so navigating away from a failed page always
               resets the boundary (§7.1) rather than leaving it stuck. */}

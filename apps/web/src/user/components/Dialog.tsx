@@ -3,9 +3,9 @@ import { useEffect, useId } from 'react';
 import type { CSSProperties, ReactNode, RefObject } from 'react';
 
 import { useT } from '../../i18n';
+import { useOverlayEscape } from '../../ui/overlayStack';
+import { useFocusTrap } from '../../ui/useFocusTrap';
 import { cx } from './ui';
-import { useOverlayEscape } from './overlayStack';
-import { useFocusTrap } from './useFocusTrap';
 
 /**
  * Minimal accessible modal for the user app (mirrors the admin `Modal`): a dimmed

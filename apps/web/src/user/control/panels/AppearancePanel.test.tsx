@@ -3,8 +3,8 @@ import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 import { I18nProvider } from '../../../i18n';
-import { bootTheme, THEME_STORAGE_KEY } from '../../theme';
-import { __resetThemeStoreForTests, useThemeWatcher } from '../../useTheme';
+import { bootTheme, THEME_STORAGE_KEY } from '../../../lib/theme';
+import { __resetThemeStoreForTests, useThemeWatcher } from '../../../lib/useTheme';
 import { AppearancePanel } from './AppearancePanel';
 
 /**

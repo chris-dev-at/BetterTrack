@@ -1,7 +1,6 @@
 import {
   cloneElement,
   isValidElement,
-  useEffect,
   useId,
   type AriaAttributes,
   type ButtonHTMLAttributes,
@@ -17,7 +16,8 @@ import { NavLink, type NavLinkProps } from 'react-router-dom';
 
 import { useT } from '../../i18n';
 import { cx } from '../../lib/cx';
-import { useFocusTrap } from '../../user/components/useFocusTrap';
+import { useOverlayEscape } from '../overlayStack';
+import { useFocusTrap } from '../useFocusTrap';
 import { Icon, type IconName } from './icons';
 
 /*
@@ -439,15 +439,7 @@ export function ODialog({
     active: open,
     inertBackground: true,
   });
-
-  useEffect(() => {
-    if (!open) return;
-    function onKey(event: KeyboardEvent) {
-      if (event.key === 'Escape') onClose();
-    }
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [open, onClose]);
+  useOverlayEscape(open, onClose, rootRef);
 
   if (!open) return null;
   // Portalled to <body>: rendered in place, `position: fixed` resolves against
@@ -457,13 +449,7 @@ export function ODialog({
   // carries `bt-app`, which is where the ink, type scale and focus ring live.
   return createPortal(
     <div className="bt-app bt-dialog-root" onKeyDown={onKeyDown} ref={rootRef} tabIndex={-1}>
-      <button
-        aria-label={t('common.close')}
-        className="bt-scrim"
-        onClick={onClose}
-        tabIndex={-1}
-        type="button"
-      />
+      <div aria-hidden="true" className="bt-scrim" onClick={onClose} />
       <div className={cx('bt-dialog', phoneSheet && 'bt-dialog--phone-sheet')}>
         <div
           aria-labelledby={titleId}
@@ -517,26 +503,12 @@ export function Drawer({
     active: open,
     inertBackground: true,
   });
-
-  useEffect(() => {
-    if (!open) return;
-    function onKey(event: KeyboardEvent) {
-      if (event.key === 'Escape') onClose();
-    }
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [open, onClose]);
+  useOverlayEscape(open, onClose, rootRef);
 
   if (!open) return null;
   return (
     <div onKeyDown={onKeyDown} ref={rootRef} tabIndex={-1}>
-      <button
-        aria-label={t('common.close')}
-        className="bt-scrim"
-        onClick={onClose}
-        tabIndex={-1}
-        type="button"
-      />
+      <div aria-hidden="true" className="bt-scrim" onClick={onClose} />
       <aside
         aria-labelledby={titleId}
         aria-modal="true"

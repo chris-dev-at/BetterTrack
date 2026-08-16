@@ -1,9 +1,10 @@
-import { render, screen, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
-import { beforeEach, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 
 import { I18nProvider, LOCALES, localizedMessage } from '../../i18n';
+import { setViewportWidth } from '../../test/viewport';
 
 vi.mock('../AuthContext', () => ({
   useAuth: () => ({
@@ -63,8 +64,49 @@ function renderAdmin(initialPath: string, initialLocale = 'en') {
   );
 }
 
+function stubDesktopBreakpoint() {
+  let matches = false;
+  const listeners = new Set<(event: MediaQueryListEvent) => void>();
+  const list = {
+    get matches() {
+      return matches;
+    },
+    media: '(min-width: 48rem)',
+    addEventListener: (_: string, listener: (event: MediaQueryListEvent) => void) => {
+      listeners.add(listener);
+    },
+    removeEventListener: (_: string, listener: (event: MediaQueryListEvent) => void) => {
+      listeners.delete(listener);
+    },
+  } as MediaQueryList;
+  const matchMedia = vi.fn(() => list);
+
+  Object.defineProperty(window, 'matchMedia', {
+    configurable: true,
+    writable: true,
+    value: matchMedia,
+  });
+
+  return {
+    enterDesktop() {
+      matches = true;
+      const event = { matches, media: list.media } as MediaQueryListEvent;
+      for (const listener of listeners) listener(event);
+    },
+    matchMedia,
+  };
+}
+
 beforeEach(() => {
   vi.spyOn(console, 'error').mockImplementation(() => {});
+});
+
+afterEach(() => {
+  Object.defineProperty(window, 'matchMedia', {
+    configurable: true,
+    writable: true,
+    value: undefined,
+  });
 });
 
 test('the admin shell starts with a hidden skip link that focuses main content', async () => {
@@ -159,11 +201,13 @@ test('the compact language control re-renders the admin shell immediately', asyn
   expect(screen.getByRole('button', { name: 'Abmelden' })).toBeInTheDocument();
 });
 
-test('the burger button opens the mobile drawer with an i18n aria-label and closes on Escape', async () => {
+test('the burger button opens an inert-background drawer and cleans up on Escape', async () => {
+  setViewportWidth(390);
   const user = userEvent.setup();
   renderAdmin('/admin/invites');
 
   const burger = screen.getByRole('button', { name: 'Open admin menu' });
+  const main = screen.getByRole('main');
   expect(burger).toHaveAttribute('aria-expanded', 'false');
   expect(screen.queryByRole('dialog', { name: 'Admin menu' })).not.toBeInTheDocument();
 
@@ -172,13 +216,56 @@ test('the burger button opens the mobile drawer with an i18n aria-label and clos
   const drawer = screen.getByRole('dialog', { name: 'Admin menu' });
   expect(drawer).toBeInTheDocument();
   expect(within(drawer).getByRole('button', { name: 'Close admin menu' })).toBeInTheDocument();
+  expect(main).toHaveAttribute('inert');
+  expect(burger.closest('[inert]')).not.toBeNull();
+  expect(drawer.closest('[inert]')).toBeNull();
 
   await user.keyboard('{Escape}');
 
   expect(screen.queryByRole('dialog', { name: 'Admin menu' })).not.toBeInTheDocument();
+  expect(main).not.toHaveAttribute('inert');
+  expect(burger.closest('[inert]')).toBeNull();
+  expect(burger).toHaveFocus();
+});
+
+test('crossing into the desktop breakpoint closes the drawer, releases inert, and focuses main', async () => {
+  setViewportWidth(767);
+  const desktopBreakpoint = stubDesktopBreakpoint();
+  const user = userEvent.setup();
+  const { container } = renderAdmin('/admin/invites');
+
+  const burger = screen.getByRole('button', { name: 'Open admin menu' });
+  await user.click(burger);
+
+  const main = screen.getByRole('main');
+  const mobileHeader = burger.closest('header')!;
+  const desktopSidebar = container.querySelector<HTMLElement>('aside')!;
+  const drawer = screen.getByRole('dialog', { name: 'Admin menu' });
+  expect(drawer).toBeInTheDocument();
+  expect(drawer.contains(document.activeElement)).toBe(true);
+  expect(main).toHaveAttribute('inert');
+  expect(desktopSidebar).toHaveAttribute('inert');
+  expect(desktopBreakpoint.matchMedia).toHaveBeenCalledWith('(min-width: 48rem)');
+
+  act(() => {
+    // Model the CSS breakpoint before matchMedia notifies React: the mobile
+    // burger is already display:none while the desktop shell becomes visible.
+    mobileHeader.style.display = 'none';
+    desktopSidebar.style.display = 'block';
+    desktopBreakpoint.enterDesktop();
+  });
+
+  await waitFor(() => {
+    expect(screen.queryByRole('dialog', { name: 'Admin menu' })).not.toBeInTheDocument();
+  });
+  expect(main).not.toHaveAttribute('inert');
+  expect(desktopSidebar).not.toHaveAttribute('inert');
+  expect(main).toHaveFocus();
+  expect(document.body).not.toHaveFocus();
 });
 
 test('navigating from inside the drawer closes it', async () => {
+  setViewportWidth(390);
   const user = userEvent.setup();
   renderAdmin('/admin/invites');
 

@@ -49,15 +49,29 @@ vi.mock('./panels/WebhooksPanel', () => ({
 vi.mock('./panels/DeleteAccountPanel', () => ({
   DeleteAccountPanel: () => createElement('p', null, 'delete-account-panel'),
 }));
-// The privacy panel stands in for "a panel that opens a nested modal".
-vi.mock('./panels/PrivacyPanel', () => ({
-  PrivacyPanel: () =>
-    createElement(
-      'div',
-      { role: 'dialog', 'aria-modal': 'true', 'aria-label': 'Nested modal' },
-      'privacy-panel-with-nested-modal',
-    ),
-}));
+// The privacy panel stands in for a panel whose modal replaces (and detaches)
+// its opener, reproducing the focus-restoration corner case from the review.
+vi.mock('./panels/PrivacyPanel', async () => {
+  const { createElement, useState } = await import('react');
+  const { Dialog } = await import('../components/Dialog');
+
+  function PrivacyPanel() {
+    const [open, setOpen] = useState(false);
+    return open
+      ? createElement(Dialog, {
+          children: createElement('button', { type: 'button' }, 'Nested action'),
+          onClose: () => setOpen(false),
+          title: 'Nested modal',
+        })
+      : createElement(
+          'button',
+          { onClick: () => setOpen(true), type: 'button' },
+          'Open nested modal',
+        );
+  }
+
+  return { PrivacyPanel };
+});
 
 import { I18nProvider } from '../../i18n';
 import { setViewportWidth } from '../../test/viewport';
@@ -300,15 +314,27 @@ describe('ControlCenterOverlay', () => {
     expect(screen.queryByRole('dialog', { name: 'Control Center' })).not.toBeInTheDocument();
   });
 
-  test('a nested modal owns Escape — the overlay stays open behind it', async () => {
+  test('a nested modal owns Escape and restores focus into the overlay when its opener detached', async () => {
     const user = userEvent.setup();
     renderAt('/control/privacy');
 
+    const opener = await screen.findByRole('button', { name: 'Open nested modal' });
+    await user.click(opener);
     expect(screen.getByRole('dialog', { name: 'Nested modal' })).toBeInTheDocument();
+    expect(opener.isConnected).toBe(false);
+
     await user.keyboard('{Escape}');
 
-    // The overlay ignored it (the inner dialog closes itself first).
-    expect(screen.getByRole('dialog', { name: 'Control Center' })).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.queryByRole('dialog', { name: 'Nested modal' })).not.toBeInTheDocument(),
+    );
+    const controlCenter = screen.getByRole('dialog', { name: 'Control Center' });
+    const overlayRoot = controlCenter.closest<HTMLElement>('.bt-cc-root')!;
+    expect(controlCenter).toBeInTheDocument();
+    expect(overlayRoot).toHaveFocus();
+    expect(overlayRoot).toContainElement(document.activeElement as HTMLElement);
+    expect(document.activeElement).not.toBe(document.body);
+    expect((document.activeElement as HTMLElement).closest('[inert]')).toBeNull();
     expect(screen.queryByText('home-canvas')).not.toBeInTheDocument();
   });
 
@@ -316,7 +342,14 @@ describe('ControlCenterOverlay', () => {
     const user = userEvent.setup();
     renderAt('/control/account');
 
-    await user.click(screen.getAllByRole('button', { name: 'Close' })[0]!);
+    const dialog = popup();
+    const root = dialog.closest<HTMLElement>('.bt-cc-root')!;
+    const scrim = root.querySelector<HTMLElement>('.bt-scrim')!;
+    expect(scrim.tagName).toBe('DIV');
+    expect(scrim).toHaveAttribute('aria-hidden', 'true');
+    expect(within(dialog).getAllByRole('button', { name: 'Close' })).toHaveLength(1);
+
+    await user.click(scrim);
 
     await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument());
   });

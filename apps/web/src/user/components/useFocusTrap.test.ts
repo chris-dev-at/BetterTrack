@@ -3,7 +3,7 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { expect, test } from 'vitest';
 
-import { useFocusTrap } from './useFocusTrap';
+import { useFocusTrap } from '../../ui/useFocusTrap';
 
 function TrapFixture() {
   const { containerRef, onKeyDown } = useFocusTrap<HTMLDivElement>();
