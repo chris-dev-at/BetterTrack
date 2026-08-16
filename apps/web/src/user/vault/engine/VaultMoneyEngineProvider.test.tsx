@@ -41,7 +41,7 @@ function fakeMarket(): MarketDataSource {
 function fakeEngine(): VaultMoneyEngine {
   const catchUp: VaultMoneyOutcome<StandingOrderMaterializationResult> = {
     ok: true,
-    value: { today: '2026-07-28', booked: [], deferred: [] },
+    value: { today: '2026-07-28', booked: [], deferred: [], failed: [], skipped: [] },
   };
   return {
     onAppOpen: vi.fn(async () => catchUp),
