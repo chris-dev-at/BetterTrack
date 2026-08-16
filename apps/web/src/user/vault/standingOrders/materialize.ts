@@ -6,11 +6,16 @@ import {
 import { InsufficientCashError } from '@bettertrack/domain/cashLedger';
 
 import { MarketDataSourceError, type MarketDataSource } from '../../../lib/marketDataSource';
-import { existingStandingOrderOccurrence, type VaultPortfolioStore } from '../vaultPortfolioStore';
+import {
+  existingStandingOrderOccurrence,
+  VaultPortfolioStoreError,
+  type VaultPortfolioStore,
+} from '../vaultPortfolioStore';
 import {
   asMoneyFailure,
   moneyFailure,
   VaultMoneyEngineError,
+  type VaultMoneyErrorCode,
   type VaultMoneyOutcome,
 } from '../engine/errors';
 import { localManualAssetMarket } from '../engine/manualAsset';
@@ -18,7 +23,8 @@ import { readPortfolioModel } from '../engine/model';
 import {
   assertVaultSnapshotCurrent,
   liveEntities,
-  validatedVaultSnapshot,
+  validateStandingOrderForScan,
+  validatedStandingOrderSnapshot,
 } from '../engine/session';
 import type { VaultSyncEngine } from '../sync';
 import { standingOrderOccurrenceId } from './occurrenceId';
@@ -47,13 +53,27 @@ export interface MaterializedStandingOrder {
 export interface DeferredStandingOrder {
   orderId: string;
   dueDate: string;
-  reason: 'insufficient-cash';
+  reason: 'insufficient-cash' | 'quote-unavailable';
+}
+
+export interface FailedStandingOrder {
+  orderId: string;
+  dueDate: string | null;
+  errorCode: VaultMoneyErrorCode;
+}
+
+export interface SkippedStandingOrder {
+  orderId: string;
+  dueDate: string;
+  reason: 'deleted' | 'status-changed' | 'no-longer-due';
 }
 
 export interface StandingOrderMaterializationResult {
   today: string;
   booked: MaterializedStandingOrder[];
   deferred: DeferredStandingOrder[];
+  failed: FailedStandingOrder[];
+  skipped: SkippedStandingOrder[];
 }
 
 /**
@@ -73,12 +93,14 @@ export async function materializeDueStandingOrders(
     const now = (options.now ?? (() => new Date()))();
     const timezone = options.timezone ?? 'Europe/Vienna';
     const today = calendarDayInTimezone(now, timezone);
-    let snapshot = validatedVaultSnapshot(sync);
+    let snapshot = validatedStandingOrderSnapshot(sync);
     const orderIds = liveEntities(snapshot.document, 'standingOrder').map((entity) => entity.id);
     const result: StandingOrderMaterializationResult = {
       today,
       booked: [],
       deferred: [],
+      failed: [],
+      skipped: [],
     };
 
     for (const orderId of orderIds) {
@@ -87,10 +109,28 @@ export async function materializeDueStandingOrders(
         (entity) => entity.id === orderId,
       );
       if (orderEntity === undefined) continue;
-      const order = parseOrder(orderEntity);
+      let order: ReturnType<typeof parseOrder>;
+      try {
+        order = parseOrder(orderEntity);
+      } catch (cause) {
+        recordOrderFailure(result, orderId, null, cause);
+        continue;
+      }
       if (order.row.status !== 'active') continue;
-      const dueDate = dueStandingOrderOccurrence(order.row, today);
+      let dueDate: string | null;
+      try {
+        dueDate = dueStandingOrderOccurrence(order.row, today);
+      } catch (cause) {
+        recordOrderFailure(result, orderId, null, cause);
+        continue;
+      }
       if (dueDate === null) continue;
+      try {
+        validateStandingOrderForScan(snapshot.document, order.entity);
+      } catch (cause) {
+        recordOrderFailure(result, orderId, dueDate, cause);
+        continue;
+      }
 
       const occurrenceId = await standingOrderOccurrenceId(order.entity.id, dueDate);
       const existing = existingStandingOrderOccurrence(snapshot.document, {
@@ -103,10 +143,13 @@ export async function materializeDueStandingOrders(
       let quote: { price: number; currency: string; recordedAt: string } | null = null;
       if (order.row.kind === 'buy-asset') {
         if (order.row.assetId === null) {
-          throw moneyFailure(
-            'VAULT_CORRUPT',
-            `Buy standing order ${order.entity.id} has no asset.`,
+          recordOrderFailure(
+            result,
+            order.entity.id,
+            dueDate,
+            moneyFailure('VAULT_CORRUPT', `Buy standing order ${order.entity.id} has no asset.`),
           );
+          continue;
         }
         try {
           const model = readPortfolioModel(snapshot.document, order.row.portfolioId);
@@ -192,50 +235,62 @@ export async function materializeDueStandingOrders(
           }
         } catch (cause) {
           if (cause instanceof DOMException && cause.name === 'AbortError') throw cause;
-          if (cause instanceof VaultMoneyEngineError) throw cause;
-          if (cause instanceof MarketDataSourceError) {
-            if (cause.code === 'MARKET_DATA_INVALID') {
-              throw moneyFailure('MARKET_DATA_INVALID', cause.message, { cause });
+          if (cause instanceof VaultMoneyEngineError && !isMarketDataFailure(cause.failure.code)) {
+            if (cause.failure.code === 'VAULT_CORRUPT') {
+              recordOrderFailure(result, order.entity.id, dueDate, cause);
+              continue;
             }
-            if (cause.code === 'MARKET_DATA_UNSUPPORTED') {
-              throw moneyFailure('MARKET_DATA_UNSUPPORTED', cause.message, { cause });
-            }
-            throw moneyFailure('MARKET_DATA_UNAVAILABLE', cause.message, {
-              retryable: true,
-              details: { assetId: order.row.assetId },
-              cause,
-            });
+            throw cause;
           }
-          throw moneyFailure(
-            'MARKET_DATA_UNAVAILABLE',
-            `A standing-order quote is unavailable for asset ${order.row.assetId}.`,
-            {
-              retryable: true,
-              details: { assetId: order.row.assetId },
-              cause,
-            },
-          );
+          const quoteFailure = normalizeQuoteFailure(cause, order.row.assetId);
+          if (!isMarketDataFailure(quoteFailure.failure.code)) throw quoteFailure;
+          result.deferred.push({
+            orderId: order.entity.id,
+            dueDate,
+            reason: 'quote-unavailable',
+          });
+          continue;
         }
       }
 
+      const commitSnapshot = validatedStandingOrderSnapshot(sync);
+      const commitOrderEntity = liveEntities(commitSnapshot.document, 'standingOrder').find(
+        (entity) => entity.id === order.entity.id,
+      );
+      if (commitOrderEntity === undefined) {
+        result.skipped.push({ orderId: order.entity.id, dueDate, reason: 'deleted' });
+        snapshot = commitSnapshot;
+        continue;
+      }
+      let commitOrder: ReturnType<typeof parseOrder>;
       try {
-        const commitSnapshot = validatedVaultSnapshot(sync);
-        const commitOrderEntity = liveEntities(commitSnapshot.document, 'standingOrder').find(
-          (entity) => entity.id === order.entity.id,
-        );
-        if (commitOrderEntity === undefined) {
-          snapshot = commitSnapshot;
-          continue;
-        }
-        const commitOrder = parseOrder(commitOrderEntity);
-        if (
-          commitOrder.row.status !== 'active' ||
-          dueStandingOrderOccurrence(commitOrder.row, today) !== dueDate
-        ) {
-          snapshot = commitSnapshot;
-          continue;
-        }
-        assertVaultSnapshotCurrent(sync, snapshot);
+        commitOrder = parseOrder(commitOrderEntity);
+      } catch (cause) {
+        recordOrderFailure(result, order.entity.id, dueDate, cause);
+        snapshot = commitSnapshot;
+        continue;
+      }
+      if (commitOrder.row.status !== 'active') {
+        result.skipped.push({ orderId: order.entity.id, dueDate, reason: 'status-changed' });
+        snapshot = commitSnapshot;
+        continue;
+      }
+      let commitDueDate: string | null;
+      try {
+        commitDueDate = dueStandingOrderOccurrence(commitOrder.row, today);
+      } catch (cause) {
+        recordOrderFailure(result, order.entity.id, dueDate, cause);
+        snapshot = commitSnapshot;
+        continue;
+      }
+      if (commitDueDate !== dueDate) {
+        result.skipped.push({ orderId: order.entity.id, dueDate, reason: 'no-longer-due' });
+        snapshot = commitSnapshot;
+        continue;
+      }
+
+      try {
+        assertVaultSnapshotCurrent(sync, commitSnapshot);
         const committed = await store.materializeStandingOrderOccurrence(
           {
             occurrenceId,
@@ -246,9 +301,9 @@ export async function materializeDueStandingOrders(
             executedAt: now.toISOString(),
             recordedAt: quote?.recordedAt ?? now.toISOString(),
             expectedCandidate: {
-              vaultVersion: snapshot.vaultVersion,
-              vaultKeyId: snapshot.vaultKeyId,
-              writeId: snapshot.writeId,
+              vaultVersion: commitSnapshot.vaultVersion,
+              vaultKeyId: commitSnapshot.vaultKeyId,
+              writeId: commitSnapshot.writeId,
             },
             ...(quote === null ? {} : { price: quote.price, quoteCurrency: quote.currency }),
           },
@@ -261,10 +316,14 @@ export async function materializeDueStandingOrders(
           kind: order.row.kind,
           status: committed.status,
         });
-        snapshot = validatedVaultSnapshot(sync);
+        snapshot = validatedStandingOrderSnapshot(sync);
       } catch (cause) {
         if (isInsufficientCashFailure(cause)) {
           result.deferred.push({ orderId: order.entity.id, dueDate, reason: 'insufficient-cash' });
+          continue;
+        }
+        if (isOrderScopedStoreFailure(cause)) {
+          recordOrderFailure(result, order.entity.id, dueDate, cause);
           continue;
         }
         throw cause;
@@ -275,6 +334,59 @@ export async function materializeDueStandingOrders(
   } catch (cause) {
     return { ok: false, error: asMoneyFailure(cause) };
   }
+}
+
+function isMarketDataFailure(code: VaultMoneyErrorCode): boolean {
+  return (
+    code === 'MARKET_DATA_MISSING' ||
+    code === 'MARKET_DATA_INVALID' ||
+    code === 'MARKET_DATA_UNAVAILABLE' ||
+    code === 'MARKET_DATA_UNSUPPORTED'
+  );
+}
+
+function normalizeQuoteFailure(cause: unknown, assetId: string): VaultMoneyEngineError {
+  if (cause instanceof VaultMoneyEngineError) return cause;
+  if (cause instanceof MarketDataSourceError) {
+    if (cause.code === 'MARKET_DATA_INVALID') {
+      return moneyFailure('MARKET_DATA_INVALID', cause.message, { cause });
+    }
+    if (cause.code === 'MARKET_DATA_UNSUPPORTED') {
+      return moneyFailure('MARKET_DATA_UNSUPPORTED', cause.message, { cause });
+    }
+    return moneyFailure('MARKET_DATA_UNAVAILABLE', cause.message, {
+      retryable: true,
+      details: { assetId },
+      cause,
+    });
+  }
+  return moneyFailure(
+    'MARKET_DATA_UNAVAILABLE',
+    `A standing-order quote is unavailable for asset ${assetId}.`,
+    {
+      retryable: true,
+      details: { assetId },
+      cause,
+    },
+  );
+}
+
+function recordOrderFailure(
+  result: StandingOrderMaterializationResult,
+  orderId: string,
+  dueDate: string | null,
+  cause: unknown,
+): void {
+  result.failed.push({ orderId, dueDate, errorCode: asMoneyFailure(cause).code });
+}
+
+function isOrderScopedStoreFailure(cause: unknown): boolean {
+  return (
+    cause instanceof VaultPortfolioStoreError &&
+    (cause.code === 'VAULT_CORRUPT' ||
+      cause.code === 'VAULT_DATA_INVALID' ||
+      cause.code === 'VAULT_ENTITY_NOT_FOUND')
+  );
 }
 
 /**
