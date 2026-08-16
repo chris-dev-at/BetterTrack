@@ -710,7 +710,6 @@ test('following a Create entry starts that flow and nothing else', async () => {
   // `/portfolio*` surface and consumes `?create=1` for its wizard, so a page
   // under that prefix reusing that value would answer the same link twice and
   // stack the wizard on top of the flow the user asked for.
-  queryClient.clear();
   vi.mocked(listPortfolios).mockResolvedValue({
     portfolios: [
       {
