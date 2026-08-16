@@ -4,7 +4,15 @@
     "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "types": ["node", "@playwright/test"],
     "jsx": "react-jsx",
+    "allowJs": true,
+    "checkJs": true,
     "noEmit": true
   },
-  "include": ["./**/*.ts", "../playwright.config.ts", "../apps/api/src/http/types.ts"]
+  "include": [
+    "./**/*.ts",
+    "./support/fakeGoogleIdp.mjs",
+    "./support/workerServer.mjs",
+    "../playwright.config.ts",
+    "../apps/api/src/http/types.ts"
+  ]
 }
