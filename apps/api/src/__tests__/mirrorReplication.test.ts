@@ -526,21 +526,27 @@ describe('mirrorchain M2 — replication core', () => {
       );
       if (!funding) throw new Error('Replica funding movement was not applied');
 
-      const controller = postgres(REAL_DATABASE_URL!, { max: 1 });
-      const observer = postgres(REAL_DATABASE_URL!, { max: 1 });
-      let releasePause!: () => void;
-      let pauseOwned!: () => void;
-      const release = new Promise<void>((resolve) => {
-        releasePause = resolve;
-      });
-      const owned = new Promise<void>((resolve) => {
-        pauseOwned = resolve;
-      });
+      let controller: ReturnType<typeof postgres> | undefined;
+      let observer: ReturnType<typeof postgres> | undefined;
+      let releasePause: (() => void) | undefined;
       let deletion: Promise<unknown> | undefined;
       let withdrawalSettled: Promise<PromiseSettledResult<unknown>[]> | undefined;
       let pauseOwner: Promise<unknown> | undefined;
+      let bodyFailed = false;
+      let bodyFailure: unknown;
+      const cleanupFailures: unknown[] = [];
 
       try {
+        controller = postgres(REAL_DATABASE_URL!, { max: 1 });
+        observer = postgres(REAL_DATABASE_URL!, { max: 1 });
+        let pauseOwned!: () => void;
+        const release = new Promise<void>((resolve) => {
+          releasePause = resolve;
+        });
+        const owned = new Promise<void>((resolve) => {
+          pauseOwned = resolve;
+        });
+
         // This trigger is global to the shared table. The integration config's
         // singleFork is therefore part of this harness contract, and the finally
         // cleanup below is load-bearing: no later test may inherit the pause.
@@ -571,7 +577,12 @@ describe('mirrorchain M2 — replication core', () => {
           await release;
         });
 
-        await owned;
+        await Promise.race([
+          owned,
+          pauseOwner.then(() => {
+            throw new Error('Pause owner completed before signalling readiness');
+          }),
+        ]);
         // This is the exact PortfolioService force call used by replica apply.
         // The HTTP/mirror seam also admits member withdrawals; its chain mutex
         // normally orders replay and submit, while this lower-level regression
@@ -604,7 +615,7 @@ describe('mirrorchain M2 — replication core', () => {
           'the direct withdrawal to wait behind the replica force-delete',
         );
 
-        releasePause();
+        releasePause?.();
         await pauseOwner;
         await deletion;
         const [withdrawalResult] = await withdrawalSettled;
@@ -620,16 +631,43 @@ describe('mirrorchain M2 — replication core', () => {
           expect(running).toBeGreaterThanOrEqual(0);
         }
         expect(running).toBe(0);
+      } catch (error) {
+        bodyFailed = true;
+        bodyFailure = error;
       } finally {
-        releasePause();
+        releasePause?.();
         await pauseOwner?.catch(() => undefined);
         await deletion?.catch(() => undefined);
         await withdrawalSettled?.catch(() => undefined);
-        await observer.unsafe(
-          'DROP TRIGGER IF EXISTS bt_test_pause_force_cash_delete ON portfolio_cash_movements',
-        );
-        await observer.unsafe('DROP FUNCTION IF EXISTS bt_test_pause_force_cash_delete()');
-        await Promise.all([controller.end({ timeout: 1 }), observer.end({ timeout: 1 })]);
+        try {
+          if (observer) {
+            for (const statement of [
+              'DROP TRIGGER IF EXISTS bt_test_pause_force_cash_delete ON portfolio_cash_movements',
+              'DROP FUNCTION IF EXISTS bt_test_pause_force_cash_delete()',
+            ]) {
+              try {
+                await observer.unsafe(statement);
+              } catch (error) {
+                cleanupFailures.push(error);
+              }
+            }
+          }
+        } finally {
+          const endResults = await Promise.allSettled(
+            [controller, observer].map(async (client) => {
+              await client?.end({ timeout: 1 });
+            }),
+          );
+          for (const result of endResults) {
+            if (result.status === 'rejected') cleanupFailures.push(result.reason);
+          }
+        }
+      }
+
+      if (bodyFailed) throw bodyFailure;
+      if (cleanupFailures.length === 1) throw cleanupFailures[0];
+      if (cleanupFailures.length > 1) {
+        throw new AggregateError(cleanupFailures, 'Pause harness cleanup failed');
       }
     },
     15_000,
