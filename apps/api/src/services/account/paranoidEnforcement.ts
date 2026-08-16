@@ -1142,10 +1142,6 @@ export const PARANOID_KILL_REGISTRY: readonly ParanoidKillRegistryEntry[] = [
     scopes: [
       'portfolio:read',
       'portfolio:write',
-      'tax:read',
-      'tax:write',
-      'import:read',
-      'import:write',
       'cash:read',
       'cash:write',
       'mirrorchain:read',
