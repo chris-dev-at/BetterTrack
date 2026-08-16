@@ -45,11 +45,11 @@ const SEARCH_STALE_MS = 30_000;
 // (V3-P2, issue #325).
 const TYPE_BADGE: Record<string, string> = {
   stock: 'bt-badge--blue',
-  etf: 'bg-violet-900/60 text-violet-300',
-  index: 'bg-orange-900/60 text-orange-300',
+  etf: 'bt-badge--blue bt-badge--outline',
+  index: 'bt-badge--gold',
   fx: 'bt-badge--pos',
-  commodity: 'bt-badge--gold',
-  crypto: 'bg-pink-900/60 text-pink-300',
+  commodity: 'bt-badge--gold bt-badge--outline',
+  crypto: 'bt-badge--gold',
 };
 
 export interface AssetSearchBoxProps {

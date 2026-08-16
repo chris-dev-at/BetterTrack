@@ -31,10 +31,10 @@ export function NewsHeadlineList({
   const remaining = headlines.length - initial;
 
   return (
-    <div className="flex flex-col gap-2">
-      <ul className="flex flex-col gap-2">
+    <div className="bt-news-feed">
+      <ul className="bt-news-headlines">
         {shown.map((h) => (
-          <li key={h.id} className="flex flex-col gap-0.5">
+          <li key={h.id} className="bt-news-headline">
             <a
               href={h.url}
               target="_blank"
@@ -55,7 +55,7 @@ export function NewsHeadlineList({
         <button
           type="button"
           onClick={() => setExpanded((v) => !v)}
-          className="self-start rounded text-xs font-medium bt-link"
+          className="bt-news-feed__toggle bt-link"
         >
           {expanded ? t('assets.news.showLess') : t('assets.news.showMore', { count: remaining })}
         </button>

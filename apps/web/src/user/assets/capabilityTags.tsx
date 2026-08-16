@@ -1,5 +1,6 @@
 import { useT } from '../../i18n';
 import { cx } from '../../lib/cx';
+import { Badge } from '../../ui/origin';
 
 /**
  * Per-asset integration-support flags (PROJECTPLAN.md §13.5 V5-P0c). A static,
@@ -36,13 +37,14 @@ export function CapabilityTags({ type, className }: { type: string; className?: 
   return (
     <span className={cx('flex flex-wrap items-center gap-1', className)}>
       {tags.map((tag) => (
-        <span
+        <Badge
           key={tag.provider}
+          outline
           title={t(`assets.capability.${tag.provider}`)}
-          className="rounded bg-teal-900/50 px-1.5 py-0.5 text-xs font-medium text-teal-300"
+          tone="blue"
         >
           {t(`assets.capability.${tag.provider}`)}
-        </span>
+        </Badge>
       ))}
     </span>
   );

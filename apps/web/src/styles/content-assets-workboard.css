@@ -1,0 +1,868 @@
+/* Assets + Workboard content family
+ *
+ * The application shell and section navigation intentionally stay out of this
+ * sheet. These rules only compose the shared Origin primitives into research,
+ * watchlist and blueprint page families. Every colour comes from a theme token.
+ */
+
+:where(.bt-assets-family, .bt-workboard-family) {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.bt-family-workspace {
+  width: min(100%, 1480px);
+  min-width: 0;
+  margin-inline: auto;
+}
+
+.bt-family-workspace > .bt-tabs {
+  max-width: 100%;
+}
+
+:where(.bt-assets-family, .bt-workboard-family) > *,
+:where(.bt-assets-family, .bt-workboard-family) section,
+:where(.bt-assets-family, .bt-workboard-family) form,
+:where(.bt-assets-family, .bt-workboard-family) fieldset {
+  min-width: 0;
+}
+
+:where(.bt-assets-family, .bt-workboard-family) :is(.bt-page-head, .bt-section__head) {
+  margin-bottom: 0;
+}
+
+:where(.bt-assets-family, .bt-workboard-family) :is(.bt-section__head + *, .bt-page-head + *) {
+  margin-top: 12px;
+}
+
+/* ── Asset search ───────────────────────────────────────────────────────── */
+
+.bt-asset-search-surface > .bt-surface__body {
+  padding: clamp(16px, 3vw, 26px);
+}
+
+.bt-asset-search-surface .bt-input[type='search'] {
+  min-height: 48px;
+  border-color: var(--bt-border-strong);
+  background: var(--bt-surface-quiet);
+  font-size: 15px;
+}
+
+.bt-asset-search-surface .bt-asset-result {
+  margin: 0;
+  border-color: var(--bt-border);
+  border-radius: 0;
+  background: transparent;
+}
+
+.bt-asset-search-surface .bt-asset-result + .bt-asset-result {
+  border-top: 0;
+}
+
+.bt-asset-search-surface .bt-asset-result:hover,
+.bt-asset-search-surface .bt-asset-result:focus-within {
+  background: var(--bt-surface-hover);
+}
+
+.bt-asset-search-surface .bt-asset-result .bt-badge {
+  border-color: var(--bt-border-strong);
+}
+
+/* ── News digest + reusable feed ────────────────────────────────────────── */
+
+.bt-news-skeletons {
+  display: grid;
+  gap: 10px;
+}
+
+.bt-news-group {
+  display: grid;
+  grid-template-columns: minmax(150px, 0.34fr) minmax(0, 1fr);
+  gap: 18px;
+  padding: var(--bt-surface-pad-y) var(--bt-surface-pad-x);
+}
+
+.bt-news-group__identity {
+  display: flex;
+  align-content: flex-start;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  min-width: 0;
+}
+
+.bt-news-group__name {
+  flex: 1 1 100%;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 12.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bt-news-group__feed,
+.bt-news-feed,
+.bt-news-headlines {
+  min-width: 0;
+}
+
+.bt-news-feed {
+  display: flex;
+  flex-direction: column;
+}
+
+.bt-news-headlines {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.bt-news-headline {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 8px 0;
+}
+
+.bt-news-headline:first-child {
+  padding-top: 0;
+}
+
+.bt-news-headline + .bt-news-headline {
+  border-top: 1px solid var(--bt-border);
+}
+
+.bt-news-feed__toggle {
+  align-self: flex-start;
+  margin-top: 6px;
+  border-radius: var(--bt-radius-control);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+/* ── Asset identity, chart and intelligence ─────────────────────────────── */
+
+.bt-asset-overview {
+  overflow: visible;
+}
+
+.bt-asset-overview > .bt-asset-detail__header,
+.bt-asset-overview > .bt-asset-detail__actions {
+  padding: var(--bt-surface-pad-y) var(--bt-surface-pad-x);
+}
+
+.bt-asset-overview > .bt-asset-detail__actions,
+.bt-asset-overview > .bt-metrics {
+  border-top: 1px solid var(--bt-border);
+}
+
+.bt-asset-overview > .bt-metrics {
+  border-width: 0;
+  border-radius: 0;
+}
+
+.bt-asset-detail__hero {
+  gap: 16px 28px;
+}
+
+.bt-asset-detail__hero > * {
+  min-width: 0;
+}
+
+.bt-asset-detail__hero .bt-hero-value {
+  font-size: clamp(28px, 4vw, 38px);
+}
+
+.bt-asset-detail__actions {
+  background: var(--bt-surface-quiet);
+}
+
+.bt-asset-chart .bt-chart-frame__plot {
+  padding-top: 12px;
+}
+
+.bt-asset-chart .bt-surface__actions {
+  max-width: 100%;
+}
+
+.bt-asset-chart .bt-seg {
+  max-width: 100%;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.bt-asset-chart .bt-seg::-webkit-scrollbar {
+  display: none;
+}
+
+.bt-asset-intelligence {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--bt-section-gap);
+  min-width: 0;
+}
+
+.bt-asset-section {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+}
+
+.bt-asset-section > h2 {
+  color: var(--bt-text);
+  font-size: 14px;
+  font-weight: 630;
+}
+
+.bt-asset-section > .bt-surface,
+.bt-asset-mini-chart,
+.bt-asset-intel-body {
+  padding: var(--bt-surface-pad-y) var(--bt-surface-pad-x);
+}
+
+.bt-asset-section > .bt-metrics {
+  flex: none;
+}
+
+.bt-asset-intel-body {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.bt-asset-mini-chart {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.bt-asset-alerts {
+  min-width: 0;
+}
+
+.bt-asset-alerts > .bt-surface .bt-empty {
+  padding-inline: 0;
+}
+
+/* ── Workboard overview ─────────────────────────────────────────────────── */
+
+.bt-workboard-page > section,
+.bt-workboard-glance > section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.bt-workboard-glance {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--bt-section-gap);
+}
+
+.bt-workboard-signpost {
+  display: grid;
+  flex: 1 1 auto;
+  min-height: 180px;
+  padding: var(--bt-surface-pad-y) var(--bt-surface-pad-x);
+  place-items: center;
+}
+
+.bt-workboard-watchlist-table {
+  max-width: 100%;
+}
+
+.bt-workboard-watchlist-table table {
+  min-width: 690px;
+}
+
+.bt-workboard-watchlist-table tbody tr:hover {
+  background: var(--bt-surface-hover);
+}
+
+.bt-workboard-order-actions {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 2px;
+}
+
+.bt-workboard-order-btn {
+  display: inline-grid;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--bt-radius-control);
+  background: transparent;
+  color: var(--bt-muted);
+  font: inherit;
+  line-height: 1;
+  place-items: center;
+  transition:
+    color var(--bt-t-fast),
+    background var(--bt-t-fast);
+}
+
+.bt-workboard-order-btn:hover:not(:disabled),
+.bt-workboard-order-btn:focus-visible {
+  background: var(--bt-surface-hover);
+  color: var(--bt-text);
+}
+
+.bt-workboard-order-btn.is-remove:hover:not(:disabled) {
+  background: var(--bt-neg-soft);
+  color: var(--bt-neg);
+}
+
+.bt-workboard-order-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.34;
+}
+
+.bt-workboard-page [aria-label$='earnings'] .bt-data-list,
+.bt-workboard-page ul.bt-band {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+/* ── Watchlists, alerts and ideas ───────────────────────────────────────── */
+
+.bt-watchlist-create__form {
+  display: flex;
+  align-items: end;
+  gap: 10px;
+}
+
+.bt-watchlist-create__form .bt-field {
+  min-width: 0;
+}
+
+.bt-watchlist-row,
+.bt-idea-row,
+.bt-watchlist-detail-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.bt-watchlist-row__actions,
+.bt-idea-row__actions {
+  justify-content: flex-end;
+}
+
+.bt-watchlist-add > .bt-surface__body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.bt-watchlist-detail-row > a {
+  min-width: 0;
+}
+
+.bt-alerts-list > .bt-panel {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+/* ── Blueprint library + detail ─────────────────────────────────────────── */
+
+.bt-blueprints-skeletons {
+  display: grid;
+  gap: 10px;
+}
+
+.bt-blueprint-row {
+  min-height: 68px;
+}
+
+.bt-blueprint-row.is-create {
+  grid-template-columns: auto minmax(0, 1fr);
+  color: var(--bt-text-soft);
+}
+
+.bt-blueprint-row__plus {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  border: 1px dashed var(--bt-border-strong);
+  border-radius: var(--bt-radius-control);
+  color: var(--bt-blue);
+  place-items: center;
+}
+
+.bt-blueprint-title {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  max-width: 100%;
+}
+
+.bt-blueprint-description {
+  display: block;
+  margin-top: 3px;
+}
+
+.bt-blueprint-detail-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(280px, 0.9fr);
+  gap: var(--bt-section-gap);
+}
+
+.bt-blueprint-detail-grid > section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.bt-blueprint-positions {
+  overflow-x: auto;
+}
+
+.bt-blueprint-positions table {
+  min-width: 360px;
+}
+
+.bt-blueprint-allocation {
+  display: grid;
+  min-height: 220px;
+  padding: var(--bt-surface-pad-y) var(--bt-surface-pad-x);
+  place-items: center;
+}
+
+/* Backtests and calculators are each one connected working surface. */
+.bt-backtest,
+.bt-budget-calculator {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: var(--bt-surface-pad-y) var(--bt-surface-pad-x);
+}
+
+.bt-backtest__toolbar,
+.bt-budget-calculator__form {
+  display: flex;
+  align-items: end;
+  flex-wrap: wrap;
+  gap: 10px;
+  min-width: 0;
+}
+
+.bt-backtest .bt-metrics {
+  border-width: 1px;
+}
+
+.bt-backtest > .bt-table-wrap,
+.bt-budget-calculator > .bt-table-wrap {
+  max-width: 100%;
+}
+
+/* ── Comparison ─────────────────────────────────────────────────────────── */
+
+.bt-comparison-page .bt-page-grid__aside {
+  grid-column: span 3;
+}
+
+.bt-comparison-page .bt-page-grid__main {
+  grid-column: span 9;
+}
+
+.bt-comparison-picker {
+  align-self: start;
+  overflow: hidden;
+  padding: var(--bt-surface-pad-y) var(--bt-surface-pad-x) 10px;
+}
+
+.bt-comparison-picker > .bt-data-list {
+  margin: 12px calc(var(--bt-surface-pad-x) * -1) 8px;
+  border-block: 1px solid var(--bt-border);
+}
+
+.bt-comparison-picker__row {
+  grid-template-columns: auto minmax(0, 1fr) auto;
+}
+
+.bt-comparison-results {
+  display: flex;
+  flex-direction: column;
+  gap: var(--bt-section-gap);
+}
+
+.bt-comparison-results .bt-table-wrap {
+  max-width: 100%;
+  overscroll-behavior-inline: contain;
+}
+
+.bt-comparison-results .bt-chart-frame__plot > .bt-meta {
+  margin-top: 8px;
+}
+
+/* ── Full-screen Blueprint builder ──────────────────────────────────────── */
+
+.bt-blueprint-builder {
+  display: flex;
+  flex-direction: column;
+  min-height: calc(100 * var(--bt-vh));
+  background: var(--bt-bg);
+}
+
+.bt-blueprint-builder__header {
+  position: sticky;
+  z-index: 5;
+  top: 0;
+  border-bottom: 1px solid var(--bt-border);
+  background: var(--bt-bg-raised);
+}
+
+.bt-blueprint-builder__header-inner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px 18px;
+  width: min(100%, 1480px);
+  margin-inline: auto;
+  padding: 12px clamp(14px, 3vw, 28px);
+}
+
+.bt-blueprint-builder__grid {
+  display: grid;
+  grid-template-columns: minmax(250px, 0.85fr) minmax(360px, 1.35fr) minmax(280px, 0.9fr);
+  gap: var(--bt-section-gap);
+  width: min(100%, 1480px);
+  margin-inline: auto;
+  padding: clamp(16px, 3vw, 28px);
+}
+
+.bt-builder-column {
+  align-self: start;
+  min-width: 0;
+}
+
+.bt-builder-add,
+.bt-builder-positions,
+.bt-builder-preview {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.bt-builder-position-row {
+  grid-template-columns: minmax(120px, 0.7fr) minmax(220px, 1fr) auto;
+}
+
+.bt-builder-positions-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 11px var(--bt-surface-pad-x);
+  background: var(--bt-surface-quiet);
+}
+
+.bt-builder-preview__chart {
+  display: grid;
+  min-height: 220px;
+  padding: var(--bt-surface-pad-y) var(--bt-surface-pad-x);
+  place-items: center;
+}
+
+.bt-blueprint-builder .bt-metrics {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+/* ── Responsive hierarchy ───────────────────────────────────────────────── */
+
+@media (max-width: 900px) {
+  .bt-asset-intelligence,
+  .bt-workboard-glance,
+  .bt-blueprint-detail-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .bt-comparison-page .bt-page-grid__aside,
+  .bt-comparison-page .bt-page-grid__main {
+    grid-column: 1 / -1;
+  }
+
+  .bt-blueprint-builder__grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .bt-builder-add,
+  .bt-builder-preview {
+    padding: var(--bt-surface-pad-y) var(--bt-surface-pad-x);
+    border: 1px solid var(--bt-content-edge);
+    border-radius: var(--bt-radius-card);
+    background: var(--bt-surface);
+  }
+}
+
+@media (max-width: 640px) {
+  .bt-news-group {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+  }
+
+  .bt-news-group__name {
+    flex: 1 1 auto;
+  }
+
+  .bt-watchlist-create__form {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .bt-watchlist-row,
+  .bt-idea-row,
+  .bt-watchlist-detail-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .bt-watchlist-row__actions,
+  .bt-idea-row__actions {
+    justify-content: flex-start;
+  }
+
+  /* The desktop table remains byte-for-byte for drag-and-drop and tests. At
+     phone widths the same semantic rows become compact definition cards, so
+     the document never widens and every value retains its column label. */
+  .bt-workboard-watchlist-table {
+    overflow: visible;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+  }
+
+  .bt-workboard-watchlist-table table,
+  .bt-workboard-watchlist-table tbody {
+    display: block;
+    min-width: 0;
+    width: 100%;
+  }
+
+  .bt-workboard-watchlist-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+
+  .bt-workboard-watchlist-table tbody {
+    display: grid;
+    gap: 10px;
+  }
+
+  .bt-workboard-watchlist-table tbody tr {
+    position: relative;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+    grid-template-areas:
+      'asset actions'
+      'trend trend'
+      'price change'
+      'alerts alerts';
+    gap: 0;
+    overflow: hidden;
+    border: 1px solid var(--bt-content-edge);
+    border-radius: var(--bt-radius-card);
+    background: var(--bt-surface);
+  }
+
+  .bt-workboard-watchlist-table td {
+    display: flex;
+    min-width: 0;
+    padding: 10px 13px;
+    text-align: left;
+  }
+
+  .bt-workboard-watchlist__drag {
+    position: absolute;
+    z-index: 1;
+    top: 11px;
+    left: 4px;
+    width: 20px;
+    padding: 0 !important;
+  }
+
+  .bt-workboard-watchlist__asset {
+    grid-area: asset;
+    padding-left: 24px !important;
+  }
+
+  .bt-workboard-watchlist__actions {
+    align-items: flex-start;
+    grid-area: actions;
+    justify-content: flex-end;
+  }
+
+  .bt-workboard-watchlist__trend {
+    align-items: center;
+    grid-area: trend;
+    justify-content: space-between;
+    border-top: 1px solid var(--bt-border);
+  }
+
+  .bt-workboard-watchlist__price {
+    grid-area: price;
+  }
+
+  .bt-workboard-watchlist__change {
+    grid-area: change;
+  }
+
+  .bt-workboard-watchlist__alerts {
+    grid-area: alerts;
+  }
+
+  :is(
+    .bt-workboard-watchlist__trend,
+    .bt-workboard-watchlist__price,
+    .bt-workboard-watchlist__change,
+    .bt-workboard-watchlist__alerts
+  ) {
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    border-top: 1px solid var(--bt-border);
+  }
+
+  :is(
+    .bt-workboard-watchlist__trend,
+    .bt-workboard-watchlist__price,
+    .bt-workboard-watchlist__change,
+    .bt-workboard-watchlist__alerts
+  )::before {
+    content: attr(data-label);
+    color: var(--bt-muted);
+    font-size: 11px;
+    font-weight: 600;
+  }
+
+  .bt-workboard-watchlist__change {
+    border-left: 1px solid var(--bt-border);
+  }
+
+  .bt-workboard-order-btn {
+    width: 44px;
+    height: 44px;
+  }
+
+  .bt-builder-position-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .bt-blueprint-positions table {
+    min-width: 0;
+  }
+}
+
+@media (max-width: 480px) {
+  :where(.bt-assets-family, .bt-workboard-family, .bt-blueprint-builder)
+    :is(button, a.bt-btn, a.bt-link) {
+    min-height: 44px;
+  }
+
+  :where(.bt-assets-family, .bt-workboard-family, .bt-blueprint-builder) a.bt-link {
+    display: inline-flex;
+    align-items: center;
+  }
+
+  :where(.bt-assets-family, .bt-workboard-family, .bt-blueprint-builder)
+    :is(.bt-input, .bt-select, .bt-textarea) {
+    min-height: 44px;
+  }
+
+  :where(.bt-assets-family, .bt-workboard-family, .bt-blueprint-builder) .bt-seg > button {
+    min-height: 44px;
+  }
+
+  .bt-asset-detail__hero {
+    flex-direction: column;
+  }
+
+  .bt-asset-detail__hero > :last-child {
+    width: 100%;
+    text-align: left;
+  }
+
+  .bt-asset-detail__actions > div,
+  .bt-asset-detail__actions > div > div:first-child {
+    width: 100%;
+  }
+
+  .bt-asset-detail__actions .bt-btn {
+    flex: 1 1 auto;
+  }
+
+  .bt-asset-chart .bt-surface__actions,
+  .bt-asset-chart .bt-surface__actions > div,
+  .bt-asset-chart .bt-surface__actions > div > div {
+    width: 100%;
+  }
+
+  .bt-asset-chart .bt-chart-frame__plot {
+    padding-inline: 8px;
+  }
+
+  .bt-workboard-glance {
+    gap: 18px;
+  }
+
+  .bt-blueprint-builder__header-inner {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .bt-blueprint-builder__header-inner > div:last-child {
+    justify-content: space-between;
+    width: 100%;
+  }
+
+  .bt-blueprint-builder__grid {
+    padding: 14px;
+  }
+
+  .bt-builder-positions > div:first-child,
+  .bt-builder-positions > div:first-child > div {
+    align-items: stretch;
+    flex-direction: column;
+    width: 100%;
+  }
+
+  .bt-builder-positions > div:first-child .bt-btn {
+    flex: 1 1 auto;
+  }
+
+  .bt-builder-positions-foot {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .bt-blueprint-builder .bt-metrics {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .bt-blueprint-builder .bt-metrics > * + * {
+    border-top: 1px solid var(--bt-border);
+    border-left: 0;
+  }
+
+  .bt-comparison-picker__row {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .bt-comparison-picker__row > :last-child {
+    grid-column: 2;
+  }
+
+  .bt-backtest__toolbar > *,
+  .bt-budget-calculator__form > * {
+    max-width: 100%;
+  }
+}

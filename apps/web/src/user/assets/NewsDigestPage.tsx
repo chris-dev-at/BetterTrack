@@ -5,7 +5,7 @@ import type { NewsDigestGroup } from '@bettertrack/contracts';
 import { useT } from '../../i18n';
 import { getNewsDigest, PORTFOLIO_NEWS_DIGEST_QUERY_KEY } from '../../lib/marketIntelApi';
 import { EmptyState, Skeleton } from '../../ui';
-import { Button } from '../../ui/origin';
+import { Button, Page, PageHead, Surface } from '../../ui/origin';
 import { Alert } from '../components/ui';
 import { Link } from 'react-router-dom';
 
@@ -20,16 +20,17 @@ function NewsGroupCard({ group }: { group: NewsDigestGroup }) {
   return (
     <section
       aria-label={t('assets.news.groupAria', { symbol: group.symbol })}
-      className="flex flex-col gap-3 bt-panel bt-panel--pad"
+      className="bt-news-group"
+      role="listitem"
     >
-      <div className="flex flex-wrap items-center gap-2">
+      <div className="bt-news-group__identity">
         <Link
           to={`/assets/${encodeURIComponent(group.assetId)}`}
           className="rounded font-mono text-sm font-semibold hover:underline"
         >
           {group.symbol}
         </Link>
-        <span className="truncate text-sm bt-muted">{group.name}</span>
+        <span className="bt-news-group__name bt-muted">{group.name}</span>
         {group.held ? (
           <span className="bt-badge bt-badge--pos px-2 py-0.5 text-[0.65rem] uppercase tracking-wide">
             {t('assets.news.held')}
@@ -41,7 +42,9 @@ function NewsGroupCard({ group }: { group: NewsDigestGroup }) {
           </span>
         ) : null}
       </div>
-      <NewsHeadlineList headlines={group.headlines} />
+      <div className="bt-news-group__feed">
+        <NewsHeadlineList headlines={group.headlines} />
+      </div>
     </section>
   );
 }
@@ -66,11 +69,8 @@ export function NewsDigestPage() {
   const groups = data?.available ? data.groups : [];
 
   return (
-    <div className="flex flex-col gap-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">{t('assets.news.title')}</h1>
-        <p className="mt-1 text-sm bt-muted">{t('assets.news.subtitle')}</p>
-      </div>
+    <Page className="bt-phone-surface bt-assets-family bt-news-page" width="narrow">
+      <PageHead sub={t('assets.news.subtitle')} title={t('assets.news.title')} />
 
       <section aria-busy={isLoading} aria-label={t('assets.news.title')}>
         {isLoading ? (
@@ -78,17 +78,19 @@ export function NewsDigestPage() {
             <span aria-label={t('common.loading')} className="sr-only" role="status">
               {t('common.loading')}
             </span>
-            <div className="flex flex-col gap-3">
+            <div className="bt-news-skeletons">
               <Skeleton height="h-28" />
               <Skeleton height="h-28" />
               <Skeleton height="h-28" />
             </div>
           </>
         ) : isError ? (
-          <div className="flex flex-col items-start gap-2">
-            <Alert tone="error">{t('assets.news.loadError')}</Alert>
-            <Button onClick={() => void refetch()}>{t('common.retry')}</Button>
-          </div>
+          <Surface className="bt-news-state">
+            <div className="flex flex-col items-start gap-2 p-4">
+              <Alert tone="error">{t('assets.news.loadError')}</Alert>
+              <Button onClick={() => void refetch()}>{t('common.retry')}</Button>
+            </div>
+          </Surface>
         ) : groups.length === 0 ? (
           <EmptyState
             icon="📰"
@@ -96,13 +98,15 @@ export function NewsDigestPage() {
             description={t('assets.news.emptyDescription')}
           />
         ) : (
-          <div className="flex flex-col gap-3">
-            {groups.map((g) => (
-              <NewsGroupCard key={g.assetId} group={g} />
-            ))}
-          </div>
+          <Surface className="bt-news-groups">
+            <div className="bt-data-list" role="list">
+              {groups.map((g) => (
+                <NewsGroupCard key={g.assetId} group={g} />
+              ))}
+            </div>
+          </Surface>
         )}
       </section>
-    </div>
+    </Page>
   );
 }

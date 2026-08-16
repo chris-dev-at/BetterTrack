@@ -46,10 +46,10 @@ import {
   formatSignedPercent,
   formatUnitPrice,
 } from '../../lib/format';
-import { Disclaimer, EmptyState, MarketStateBadge, MoneyText, Skeleton, StatCard } from '../../ui';
+import { Disclaimer, EmptyState, MarketStateBadge, MoneyText, Skeleton } from '../../ui';
 import { PriceChart, Sparkline } from '../../ui/charts';
 import type { ChartPoint, PriceRange } from '../../ui/charts';
-import { Seg } from '../../ui/origin';
+import { ChartFrame, MetricGrid, Page, Seg, Stat, Surface } from '../../ui/origin';
 import { CapabilityTags } from './capabilityTags';
 import { NewsHeadlineList } from './newsFeed';
 import { AlertDialog, type AlertDialogAsset } from '../components/AlertDialog';
@@ -126,7 +126,7 @@ function AssetHeader({
     <section aria-labelledby={headingId} className="bt-asset-detail__header flex flex-col gap-3">
       <div className="bt-asset-detail__hero flex flex-wrap items-start justify-between gap-2">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight" id={headingId}>
+          <h1 className="bt-page-title" id={headingId}>
             {asset.name}
           </h1>
           <p className="mt-0.5 text-sm bt-muted">
@@ -145,7 +145,7 @@ function AssetHeader({
 
         {quote ? (
           <div className="text-right">
-            <p className="text-3xl font-semibold tabular-nums">
+            <p className="bt-hero-value">
               <MoneyText
                 amount={quote.price}
                 currency={quote.currency}
@@ -205,13 +205,13 @@ function StatsRow({
   if (prevClose == null) return null;
 
   return (
-    <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+    <MetricGrid>
       {/* Previous close is a per-unit price (§7.1 rule 4) — sub-cent tokens keep precision. */}
-      <StatCard
+      <Stat
         label={t('assets.detail.previousClose')}
         value={<MoneyText amount={prevClose} currency={currency} unitPrice />}
       />
-    </div>
+    </MetricGrid>
   );
 }
 
@@ -244,7 +244,7 @@ function AlertsSection({
   const alerts = (data?.items ?? []).filter((a) => a.asset.id === asset.id);
 
   return (
-    <section aria-labelledby="alerts-heading" className="flex flex-col gap-3">
+    <section aria-labelledby="alerts-heading" className="bt-asset-section bt-asset-alerts">
       <div className="flex items-center justify-between gap-2">
         <h2 id="alerts-heading" className="text-base font-semibold bt-soft">
           {t('assets.detail.alerts.title')}
@@ -259,13 +259,13 @@ function AlertsSection({
       ) : isError ? (
         <Alert tone="error">{t('assets.detail.alerts.loadError')}</Alert>
       ) : alerts.length === 0 ? (
-        <div className="bt-panel bt-panel--pad">
+        <Surface>
           <EmptyState
             icon="🔔"
             title={t('assets.detail.alerts.emptyTitle')}
             description={t('assets.detail.alerts.emptyDescription')}
           />
-        </div>
+        </Surface>
       ) : (
         <AlertList alerts={alerts} showAsset={false} onEdit={setEditing} />
       )}
@@ -314,38 +314,32 @@ function DividendsSection({ assetId }: { assetId: string }) {
     .filter((v): v is number => typeof v === 'number' && Number.isFinite(v));
 
   return (
-    <section aria-labelledby="dividends-heading" className="flex flex-col gap-3">
+    <section aria-labelledby="dividends-heading" className="bt-asset-section">
       <h2 id="dividends-heading" className="text-base font-semibold bt-soft">
         {t('assets.detail.dividends.title')}
       </h2>
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+      <MetricGrid>
         {forwardYield != null ? (
-          <StatCard
+          <Stat
             label={t('assets.detail.dividends.forwardYield')}
             value={formatPercent(forwardYield * 100)}
           />
         ) : null}
         {trailingAmount != null ? (
-          <StatCard
+          <Stat
             label={t('assets.detail.dividends.trailing')}
             value={formatUnitPrice(trailingAmount, currency ?? undefined)}
           />
         ) : null}
         {next?.exDate ? (
-          <StatCard
-            label={t('assets.detail.dividends.nextExDate')}
-            value={formatDate(next.exDate)}
-          />
+          <Stat label={t('assets.detail.dividends.nextExDate')} value={formatDate(next.exDate)} />
         ) : null}
         {next?.payDate ? (
-          <StatCard
-            label={t('assets.detail.dividends.nextPayDate')}
-            value={formatDate(next.payDate)}
-          />
+          <Stat label={t('assets.detail.dividends.nextPayDate')} value={formatDate(next.payDate)} />
         ) : null}
-      </div>
+      </MetricGrid>
       {sparkData.length > 1 ? (
-        <div className="flex items-center gap-3 bt-panel bt-panel--pad">
+        <Surface className="bt-asset-mini-chart">
           <span className="text-xs bt-muted">{t('assets.detail.dividends.history')}</span>
           <Sparkline
             data={sparkData}
@@ -353,7 +347,7 @@ function DividendsSection({ assetId }: { assetId: string }) {
             height={32}
             ariaLabel={t('assets.detail.dividends.historyAriaLabel')}
           />
-        </div>
+        </Surface>
       ) : null}
     </section>
   );
@@ -362,17 +356,17 @@ function DividendsSection({ assetId }: { assetId: string }) {
 function AppearsInSection() {
   const t = useT();
   return (
-    <section aria-labelledby="appears-in-heading" className="flex flex-col gap-3">
+    <section aria-labelledby="appears-in-heading" className="bt-asset-section">
       <h2 id="appears-in-heading" className="text-base font-semibold bt-soft">
         {t('assets.detail.appearsIn.title')}
       </h2>
-      <div className="bt-panel bt-panel--pad">
+      <Surface>
         <EmptyState
           icon="📂"
           title={t('assets.detail.appearsIn.emptyTitle')}
           description={t('assets.detail.appearsIn.emptyDescription')}
         />
-      </div>
+      </Surface>
     </section>
   );
 }
@@ -416,11 +410,11 @@ function EarningsSection({ assetId }: { assetId: string }) {
   if (!data.next && data.recent.length === 0) return null;
 
   return (
-    <section aria-labelledby="earnings-heading" className="flex flex-col gap-3">
+    <section aria-labelledby="earnings-heading" className="bt-asset-section">
       <h2 id="earnings-heading" className="text-base font-semibold bt-soft">
         {t('assets.detail.earnings.title')}
       </h2>
-      <div className="flex flex-col gap-3 bt-panel bt-panel--pad">
+      <Surface className="bt-asset-intel-body">
         {data.next && data.next.date ? (
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="flex flex-col">
@@ -471,7 +465,7 @@ function EarningsSection({ assetId }: { assetId: string }) {
             </ul>
           </div>
         ) : null}
-      </div>
+      </Surface>
     </section>
   );
 }
@@ -499,11 +493,11 @@ function SplitsSection({ assetId }: { assetId: string }) {
   if (data.history.length === 0 && data.upcoming.length === 0) return null;
 
   return (
-    <section aria-labelledby="splits-heading" className="flex flex-col gap-3">
+    <section aria-labelledby="splits-heading" className="bt-asset-section">
       <h2 id="splits-heading" className="text-base font-semibold bt-soft">
         {t('assets.detail.splits.title')}
       </h2>
-      <div className="flex flex-col gap-2 bt-panel bt-panel--pad">
+      <Surface className="bt-asset-intel-body">
         {data.upcoming.map((s, i) => (
           <div
             key={`upcoming-${s.date ?? i}`}
@@ -529,7 +523,7 @@ function SplitsSection({ assetId }: { assetId: string }) {
               </span>
             </div>
           ))}
-      </div>
+      </Surface>
     </section>
   );
 }
@@ -552,13 +546,13 @@ function NewsSection({ assetId }: { assetId: string }) {
   if (data.headlines.length === 0) return null;
 
   return (
-    <section aria-labelledby="news-heading" className="flex flex-col gap-3">
+    <section aria-labelledby="news-heading" className="bt-asset-section">
       <h2 id="news-heading" className="text-base font-semibold bt-soft">
         {t('assets.detail.news.title')}
       </h2>
-      <div className="bt-panel bt-panel--pad">
+      <Surface className="bt-asset-intel-body">
         <NewsHeadlineList headlines={data.headlines} />
-      </div>
+      </Surface>
     </section>
   );
 }
@@ -955,24 +949,24 @@ export function AssetDetailPage() {
   // Full-page loading state (first load only).
   if (detailQuery.isLoading) {
     return (
-      <div className="bt-phone-surface bt-asset-detail flex flex-col gap-6">
+      <Page className="bt-phone-surface bt-assets-family bt-asset-detail" width="wide">
         <div className="flex flex-col gap-2">
           <Skeleton height="h-8" width="w-64" />
           <Skeleton height="h-4" width="w-40" />
         </div>
         <Skeleton height="h-80" />
-      </div>
+      </Page>
     );
   }
 
   if (detailQuery.isError) {
     return (
-      <div className="bt-phone-surface bt-asset-detail flex flex-col gap-4">
+      <Page className="bt-phone-surface bt-assets-family bt-asset-detail" width="wide">
         <Link to="/assets/search" className="text-sm bt-link">
           {t('assets.detail.backToSearch')}
         </Link>
         <Alert tone="error">{t('assets.detail.loadError')}</Alert>
-      </div>
+      </Page>
     );
   }
 
@@ -983,51 +977,61 @@ export function AssetDetailPage() {
     quoteQuery.data?.quote?.currency ?? detail.quote?.currency ?? asset.currency;
 
   return (
-    <div className="bt-phone-surface bt-asset-detail flex flex-col gap-8">
+    <Page className="bt-phone-surface bt-assets-family bt-asset-detail" width="wide">
       <div className="flex items-center gap-3">
         <Link to="/assets/search" className="text-sm bt-muted hover:bt-soft">
           {t('assets.detail.backShort')}
         </Link>
       </div>
 
-      {/* Header */}
-      <AssetHeader detail={detail} liveQuote={quoteQuery.data} />
+      <Surface className="bt-asset-overview" tone="raised">
+        {/* Header */}
+        <AssetHeader detail={detail} liveQuote={quoteQuery.data} />
 
-      <AsyncReadState
-        loading={quoteQuery.isLoading}
-        error={quoteQuery.error}
-        errorLabel={t('assets.detail.quoteLoadError')}
-        onRetry={() => void quoteQuery.refetch()}
-      />
+        <AsyncReadState
+          loading={quoteQuery.isLoading}
+          error={quoteQuery.error}
+          errorLabel={t('assets.detail.quoteLoadError')}
+          onRetry={() => void quoteQuery.refetch()}
+        />
 
-      {/* Quick actions — reachable near the top (§13.2), not buried below the fold */}
-      <ActionBar assetId={id} symbol={asset.symbol} />
+        {/* Quick actions — reachable near the top (§13.2), not buried below the fold */}
+        <ActionBar assetId={id} symbol={asset.symbol} />
+
+        {/* Stats row */}
+        <StatsRow detail={detail} liveQuote={quoteQuery.data} />
+      </Surface>
 
       {/* Price chart — historical ranges, or short live windows when LIVE is on (§6.3) */}
-      <div className="flex flex-col gap-3">
-        {!asset.isCustom ? (
-          <div className="flex flex-wrap items-center gap-3">
-            <LiveControls
-              live={liveActive}
-              window={liveWindow}
-              rate={liveRate}
-              onToggle={() => setLive((v) => !v)}
-              onWindowChange={setLiveWindow}
-              onRateChange={setLiveRate}
-            />
-            {liveActive && marketClosed ? (
-              <span
-                className="bt-badge gap-1 px-2 py-0.5 text-xs"
-                title={t('assets.live.marketClosedHint')}
-              >
-                <span aria-hidden="true" className="bt-dot h-1.5 w-1.5" />
-                {t('assets.live.marketClosed')}
-              </span>
-            ) : liveActive && !streaming ? (
-              <span className="text-xs bt-muted">{t('assets.live.fallbackNote')}</span>
-            ) : null}
-          </div>
-        ) : null}
+      <ChartFrame
+        className="bt-asset-chart"
+        title={t('assets.detail.chartAriaLabel', { symbol: asset.symbol })}
+        actions={
+          !asset.isCustom ? (
+            <div className="flex flex-wrap items-center gap-3">
+              <LiveControls
+                live={liveActive}
+                window={liveWindow}
+                rate={liveRate}
+                onToggle={() => setLive((v) => !v)}
+                onWindowChange={setLiveWindow}
+                onRateChange={setLiveRate}
+              />
+              {liveActive && marketClosed ? (
+                <span
+                  className="bt-badge gap-1 px-2 py-0.5 text-xs"
+                  title={t('assets.live.marketClosedHint')}
+                >
+                  <span aria-hidden="true" className="bt-dot h-1.5 w-1.5" />
+                  {t('assets.live.marketClosed')}
+                </span>
+              ) : liveActive && !streaming ? (
+                <span className="text-xs bt-muted">{t('assets.live.fallbackNote')}</span>
+              ) : null}
+            </div>
+          ) : undefined
+        }
+      >
         {!liveActive ? (
           <AsyncReadState
             loading={false}
@@ -1075,20 +1079,19 @@ export function AssetDetailPage() {
             ariaLabel={t('assets.detail.chartAriaLabel', { symbol: asset.symbol })}
           />
         ) : null}
-      </div>
-
-      {/* Stats row */}
-      <StatsRow detail={detail} liveQuote={quoteQuery.data} />
+      </ChartFrame>
 
       {/* Sections */}
-      <DividendsSection assetId={id} />
-      <AppearsInSection />
-      {/* Market intelligence (§13.5 V5-P5) — each block self-hides when its
-          capability is unavailable, so the page is byte-identical when the arc
-          is unconfigured. */}
-      <EarningsSection assetId={id} />
-      <SplitsSection assetId={id} />
-      <NewsSection assetId={id} />
+      <div className="bt-asset-intelligence">
+        <DividendsSection assetId={id} />
+        <AppearsInSection />
+        {/* Market intelligence (§13.5 V5-P5) — each block self-hides when its
+            capability is unavailable, so the page is byte-identical when the arc
+            is unconfigured. */}
+        <EarningsSection assetId={id} />
+        <SplitsSection assetId={id} />
+        <NewsSection assetId={id} />
+      </div>
       <AlertsSection
         asset={{
           id,
@@ -1100,6 +1103,6 @@ export function AssetDetailPage() {
       />
 
       <Disclaimer>{t('assets.detail.disclaimer')}</Disclaimer>
-    </div>
+    </Page>
   );
 }

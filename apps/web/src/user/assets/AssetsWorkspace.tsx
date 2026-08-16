@@ -18,7 +18,7 @@ export function AssetsWorkspace() {
   const items = useSectionNavItems('assets');
 
   return (
-    <div className="bt-phone-surface bt-assets-workspace">
+    <div className="bt-phone-surface bt-family-workspace bt-assets-workspace">
       <LocalNav ariaLabel={t(SECTION_NAV.assets.ariaLabelKey)} items={items} />
       {/* Skeleton, not `null` (§7.1): the layout and its LocalNav stay put and
           only the page area waits, so a cold page still says it is loading. */}
