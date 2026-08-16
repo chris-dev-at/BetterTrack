@@ -166,7 +166,7 @@ export function SurfaceHead({
   actions,
   className,
   ...rest
-}: HTMLAttributes<HTMLDivElement> & {
+}: Omit<HTMLAttributes<HTMLDivElement>, 'title'> & {
   title: ReactNode;
   sub?: ReactNode;
   actions?: ReactNode;
@@ -227,7 +227,7 @@ export function ChartFrame({
   children,
   className,
   ...rest
-}: HTMLAttributes<HTMLElement> & {
+}: Omit<HTMLAttributes<HTMLElement>, 'title'> & {
   title: ReactNode;
   sub?: ReactNode;
   actions?: ReactNode;
