@@ -28,6 +28,15 @@ test('TextField associates its hint and error with the input', () => {
   expect(input).toHaveAttribute('aria-invalid', 'true');
 });
 
+test('TextField keeps a required marker out of its accessible label', () => {
+  const { container } = render(<TextField label="Administrator email" required type="email" />);
+
+  expect(screen.getByLabelText('Administrator email', { exact: true })).toHaveAttribute('required');
+  const marker = container.querySelector<HTMLElement>('.bt-field__required-marker')!;
+  expect(marker).toHaveAttribute('aria-hidden', 'true');
+  expect(marker).toHaveTextContent('*');
+});
+
 test('TextField only marks the input invalid when an error is supplied', () => {
   const { rerender } = render(
     <TextField

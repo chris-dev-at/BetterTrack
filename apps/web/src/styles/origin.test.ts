@@ -148,7 +148,7 @@ describe('Origin phone chrome', () => {
     expect(phoneCss).toContain('min-width: 44px');
     expect(phoneCss).toContain('min-height: 44px');
     expect(phoneCss).toMatch(
-      /\.bt-btn--sm\.bt-btn--icon,\s*\.bt-tab \{[^}]*min-width: 44px;[^}]*min-height: 44px;/,
+      /\.bt-btn--icon,\s*\.bt-iconbtn,\s*\.bt-tab \{[^}]*min-width: 44px;[^}]*min-height: 44px;/,
     );
     expect(phoneCss).toContain('.bt-topbar .bt-popover :is(a, button, input, select, textarea)');
   });
@@ -183,13 +183,19 @@ describe('Origin phone chrome', () => {
     expect(phoneCss).toContain('.bt-phone-scroll-table .bt-phone-scroll-table__lead');
     expect(phoneCss).toContain('position: sticky');
   });
+
+  it('prevents iOS field zoom for coarse pointers beyond the phone breakpoint', () => {
+    expect(originCss).toMatch(
+      /@media \(pointer: coarse\) \{\s*:is\(input, select, textarea\) \{\s*font-size: 16px !important;/,
+    );
+  });
 });
 
 describe('Origin accessibility safety nets', () => {
-  it('shows a persistent marker beside labels for native required fields', () => {
-    expect(originCss).toMatch(
-      /\.bt-field:has\(:is\(input, select, textarea\):required\) > label::after,[^}]*content: ' \*';/,
-    );
+  it('styles component-rendered required markers instead of generated label content', () => {
+    expect(originCss).toMatch(/\.bt-field__required-marker \{[^}]*color: var\(--bt-neg\);/);
+    expect(originCss).not.toContain('label::after');
+    expect(originCss).not.toContain("content: ' *'");
   });
 
   it('limits any unhandled motion while preserving component-specific rules', () => {

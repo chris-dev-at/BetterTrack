@@ -23,6 +23,19 @@ test('Field marks its control invalid and links the rendered error', () => {
   expect(error).toHaveAttribute('id', 'amount-error');
 });
 
+test('Field keeps a required marker out of its control accessible name', () => {
+  const { container } = render(
+    <Field htmlFor="current-password" label="Current password">
+      <Input id="current-password" required type="password" />
+    </Field>,
+  );
+
+  expect(screen.getByLabelText('Current password', { exact: true })).toHaveAttribute('required');
+  const marker = container.querySelector<HTMLElement>('.bt-field__required-marker')!;
+  expect(marker).toHaveAttribute('aria-hidden', 'true');
+  expect(marker).toHaveTextContent('*');
+});
+
 function DialogFixture() {
   const [open, setOpen] = useState(false);
   return (
