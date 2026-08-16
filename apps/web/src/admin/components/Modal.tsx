@@ -1,3 +1,4 @@
+import { createPortal } from 'react-dom';
 import { useEffect, useId, useRef } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react';
 
@@ -195,7 +196,10 @@ export function Modal({
     focusable[nextIndex]!.focus();
   };
 
-  return (
+  // Admin pages render inside the shell's <main>, which the mobile drawer
+  // makes inert while it is open. Keep a later Modal outside that inert branch
+  // so it can take focus and correctly become the top Escape target.
+  return createPortal(
     <div
       className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/70 p-4 sm:items-center"
       onMouseDown={() => {
@@ -217,6 +221,7 @@ export function Modal({
         </h2>
         {children}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

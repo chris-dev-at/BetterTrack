@@ -1,4 +1,5 @@
 import { createRef, forwardRef, useImperativeHandle, useState } from 'react';
+import type { ReactNode } from 'react';
 import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
@@ -54,9 +55,11 @@ function Bomb(): never {
 function AdminTestApp({
   initialPath,
   initialLocale = 'en',
+  invitesElement = <p>Invites page</p>,
 }: {
   initialPath: string;
   initialLocale?: string;
+  invitesElement?: ReactNode;
 }) {
   return (
     <I18nProvider initialLocale={initialLocale}>
@@ -64,7 +67,7 @@ function AdminTestApp({
         <Routes>
           <Route element={<AdminLayout />}>
             <Route path="/admin/users" element={<Bomb />} />
-            <Route path="/admin/invites" element={<p>Invites page</p>} />
+            <Route path="/admin/invites" element={invitesElement} />
           </Route>
         </Routes>
       </MemoryRouter>
@@ -76,13 +79,13 @@ function renderAdmin(initialPath: string, initialLocale = 'en') {
   return render(<AdminTestApp initialPath={initialPath} initialLocale={initialLocale} />);
 }
 
-interface AdminOverlayFixtureHandle {
+interface AdminOverlayPageHandle {
   closeModal: () => void;
   openModal: () => void;
 }
 
-const AdminOverlayFixture = forwardRef<AdminOverlayFixtureHandle, { dismissable: boolean }>(
-  function AdminOverlayFixture({ dismissable }, ref) {
+const AdminOverlayPage = forwardRef<AdminOverlayPageHandle, { dismissable: boolean }>(
+  function AdminOverlayPage({ dismissable }, ref) {
     const [modalOpen, setModalOpen] = useState(false);
     useImperativeHandle(
       ref,
@@ -95,7 +98,7 @@ const AdminOverlayFixture = forwardRef<AdminOverlayFixtureHandle, { dismissable:
 
     return (
       <>
-        <AdminTestApp initialPath="/admin/invites" />
+        <p>Invites page</p>
         {modalOpen ? (
           <Modal
             dismissable={dismissable}
@@ -280,15 +283,26 @@ test('the burger button opens an inert-background drawer and cleans up on Escape
 test('Escape closes an admin Modal above the drawer before closing the drawer', async () => {
   setViewportWidth(390);
   const user = userEvent.setup();
-  const fixture = createRef<AdminOverlayFixtureHandle>();
+  const page = createRef<AdminOverlayPageHandle>();
   const previousOverflow = document.body.style.overflow;
-  render(<AdminOverlayFixture dismissable ref={fixture} />);
+  render(
+    <AdminTestApp
+      initialPath="/admin/invites"
+      invitesElement={<AdminOverlayPage dismissable ref={page} />}
+    />,
+  );
 
   await user.click(screen.getByRole('button', { name: 'Open admin menu' }));
-  act(() => fixture.current?.openModal());
+  act(() => page.current?.openModal());
 
-  expect(screen.getByRole('dialog', { name: 'Layered admin modal' })).toBeInTheDocument();
+  const modal = screen.getByRole('dialog', { name: 'Layered admin modal' });
+  expect(modal).toBeInTheDocument();
   expect(screen.getByRole('dialog', { name: 'Admin menu' })).toBeInTheDocument();
+  expect(screen.getByText('Invites page').closest('main')).not.toBeNull();
+  expect(screen.getByRole('main')).toHaveAttribute('inert');
+  expect(modal.closest('main')).toBeNull();
+  expect(modal.closest('[inert]')).toBeNull();
+  expect(screen.getByRole('button', { name: 'Modal action' })).toHaveFocus();
 
   await user.keyboard('{Escape}');
 
@@ -307,18 +321,28 @@ test('Escape closes an admin Modal above the drawer before closing the drawer', 
 test('a non-dismissable admin Modal consumes Escape without closing the drawer beneath it', async () => {
   setViewportWidth(390);
   const user = userEvent.setup();
-  const fixture = createRef<AdminOverlayFixtureHandle>();
-  render(<AdminOverlayFixture dismissable={false} ref={fixture} />);
+  const page = createRef<AdminOverlayPageHandle>();
+  render(
+    <AdminTestApp
+      initialPath="/admin/invites"
+      invitesElement={<AdminOverlayPage dismissable={false} ref={page} />}
+    />,
+  );
 
   await user.click(screen.getByRole('button', { name: 'Open admin menu' }));
-  act(() => fixture.current?.openModal());
+  act(() => page.current?.openModal());
+
+  const modal = screen.getByRole('dialog', { name: 'Layered admin modal' });
+  expect(screen.getByRole('main')).toHaveAttribute('inert');
+  expect(modal.closest('[inert]')).toBeNull();
+  expect(screen.getByRole('button', { name: 'Modal action' })).toHaveFocus();
 
   await user.keyboard('{Escape}');
 
   expect(screen.getByRole('dialog', { name: 'Layered admin modal' })).toBeInTheDocument();
   expect(screen.getByRole('dialog', { name: 'Admin menu' })).toBeInTheDocument();
 
-  act(() => fixture.current?.closeModal());
+  act(() => page.current?.closeModal());
   await user.keyboard('{Escape}');
   expect(screen.queryByRole('dialog', { name: 'Admin menu' })).not.toBeInTheDocument();
 });

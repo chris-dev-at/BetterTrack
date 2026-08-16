@@ -25,7 +25,7 @@ function TestDialog({
   );
 }
 
-/** A minimal disclosure menu on the shared hook — the shape every picker uses. */
+/** A picker-shaped disclosure stand-in wired directly to the shared Escape stack. */
 function Menu({ label }: { label: string }) {
   const [open, setOpen] = useState(false);
   const triggerRef = useRef<HTMLButtonElement>(null);
