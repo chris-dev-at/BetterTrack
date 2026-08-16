@@ -59,9 +59,16 @@ export function TextField({ label, hint, error, id, className, ...rest }: TextFi
 
   return (
     <div className="flex flex-col gap-1.5">
-      <label htmlFor={inputId} className="text-sm font-medium text-neutral-300">
-        {label}
-      </label>
+      <span className="bt-field__label">
+        <label htmlFor={inputId} className="text-sm font-medium text-neutral-300">
+          {label}
+        </label>
+        {rest.required ? (
+          <span aria-hidden="true" className="bt-field__required-marker">
+            {' *'}
+          </span>
+        ) : null}
+      </span>
       <input
         id={inputId}
         className={cx(

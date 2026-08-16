@@ -71,7 +71,14 @@ export function TextField({ label, hint, error, id, className, ...rest }: TextFi
 
   return (
     <div className={cx('bt-field', className)}>
-      <label htmlFor={inputId}>{label}</label>
+      <span className="bt-field__label">
+        <label htmlFor={inputId}>{label}</label>
+        {rest.required ? (
+          <span aria-hidden="true" className="bt-field__required-marker">
+            {' *'}
+          </span>
+        ) : null}
+      </span>
       <input
         id={inputId}
         className="bt-input"
