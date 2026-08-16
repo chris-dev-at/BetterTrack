@@ -31,7 +31,7 @@ import {
   type VaultPortfolioStore,
 } from '../vaultPortfolioStore';
 import { createStandingOrderMaterializationLifecycle } from './lifecycle';
-import { materializeDueStandingOrders } from './materialize';
+import { materializeDueStandingOrders, STANDING_ORDER_MAX_QUOTE_AGE_MS } from './materialize';
 import { standingOrderOccurrenceId } from './occurrenceId';
 import { calendarDayInTimezone, dueStandingOrderOccurrence } from './schedule';
 
@@ -816,6 +816,56 @@ describe('paranoid standing-order materialization', () => {
     expect(sync.mutationCount).toBe(1);
   });
 
+  it('books a provider quote exactly at the automatic-buy age ceiling', async () => {
+    const fixture = await decryptClientMoneyFixture();
+    const document = withOrders(fixture.document, [
+      standingOrder(MONTHLY_BUY_ID, {
+        kind: 'buy-asset',
+        assetId: CLIENT_MONEY_IDS.eurAsset,
+        amount: '1',
+        currency: 'EUR',
+        cadence: 'daily',
+        anchorDay: null,
+        startDate: '2026-07-20',
+      }),
+    ]);
+    const sync = createMutableTestSync(document, fixture.header);
+    const base = createClientMoneyMarket();
+    const providerAsOf = new Date(
+      Date.parse(BOOKED_AT) - STANDING_ORDER_MAX_QUOTE_AGE_MS,
+    ).toISOString();
+    const market: MarketDataSource = {
+      ...base.market,
+      async quote(assetId, signal) {
+        const result = await base.market.quote(assetId, signal);
+        return {
+          ...result,
+          asOf: providerAsOf,
+          value: { ...result.value, asOf: providerAsOf },
+        };
+      },
+    };
+    const occurrenceId = await standingOrderOccurrenceId(MONTHLY_BUY_ID, '2026-07-27');
+
+    await expect(
+      materializeDueStandingOrders(sync, createVaultPortfolioStore(sync), market, {
+        now: () => new Date(BOOKED_AT),
+        timezone: 'Europe/Vienna',
+      }),
+    ).resolves.toMatchObject({
+      ok: true,
+      value: {
+        booked: [{ orderId: MONTHLY_BUY_ID, occurrenceId, status: 'created' }],
+        deferred: [],
+      },
+    });
+    expect(order(sync.state.active!.document, MONTHLY_BUY_ID).data).toMatchObject({
+      lastRunAt: providerAsOf,
+      lastPeriodKey: '2026-07-27',
+    });
+    expect(sync.mutationCount).toBe(1);
+  });
+
   it('skips an order paused in the freshest local document before commit', async () => {
     const fixture = await decryptClientMoneyFixture();
     const document = withOrders(fixture.document, [
@@ -1532,6 +1582,141 @@ describe('paranoid standing-order materialization', () => {
     ).toBe('2026-01-31');
     expect(calendarDayInTimezone(new Date(BOOKED_AT), 'Europe/Vienna')).toBe('2026-07-27');
     expect(calendarDayInTimezone(new Date(BOOKED_AT), 'America/New_York')).toBe('2026-07-26');
+  });
+
+  it('refuses invalid scan stamps at the direct standing-order store boundary', async () => {
+    const fixture = await decryptClientMoneyFixture();
+    const document = withOrders(fixture.document, [
+      standingOrder(DAILY_ADD_ID, {
+        kind: 'cash-add',
+        amount: '25',
+        cadence: 'daily',
+        anchorDay: null,
+        startDate: '2026-07-20',
+      }),
+      standingOrder(MONTHLY_BUY_ID, {
+        kind: 'buy-asset',
+        assetId: CLIENT_MONEY_IDS.eurAsset,
+        amount: '1',
+        currency: 'EUR',
+        cadence: 'daily',
+        anchorDay: null,
+        startDate: '2026-07-20',
+      }),
+    ]);
+    const localAsset = document.entities.customAsset!.find(
+      (entity) => entity.id === CLIENT_MONEY_IDS.eurAsset,
+    )!;
+    localAsset.data.providerId = 'manual';
+    localAsset.data.providerRef = localAsset.id;
+    localAsset.data.ownerId = CLIENT_MONEY_IDS.user;
+    localAsset.data.type = 'custom';
+    const sync = createMutableTestSync(document, fixture.header);
+    const store = createVaultPortfolioStore(sync);
+    const expectedCandidate = candidateIdentity(fixture.header);
+    const cashOccurrenceId = await standingOrderOccurrenceId(DAILY_ADD_ID, '2026-07-27');
+    const buyOccurrenceId = await standingOrderOccurrenceId(MONTHLY_BUY_ID, '2026-07-27');
+
+    await expect(
+      store.materializeStandingOrderOccurrence({
+        occurrenceId: cashOccurrenceId,
+        orderId: DAILY_ADD_ID,
+        dueDate: '2026-07-27',
+        calendarDay: '2026-07-27',
+        timezone: 'Europe/Vienna',
+        executedAt: BOOKED_AT,
+        recordedAt: '2026-07-26T22:30:00.001Z',
+        expectedCandidate,
+      }),
+    ).rejects.toMatchObject({
+      code: 'VAULT_DATA_INVALID',
+      message: 'The standing-order occurrence identity is invalid.',
+    });
+    await expect(
+      store.materializeStandingOrderOccurrence({
+        occurrenceId: cashOccurrenceId,
+        orderId: DAILY_ADD_ID,
+        dueDate: '2026-07-27',
+        calendarDay: '2026-07-27',
+        timezone: 'Europe/Vienna',
+        executedAt: BOOKED_AT,
+        recordedAt: PRIOR_BOOKED_AT,
+        expectedCandidate,
+      }),
+    ).rejects.toMatchObject({
+      code: 'VAULT_DATA_INVALID',
+      message: 'Cash standing orders must use EUR, the scan timestamp, and no quote data.',
+    });
+    await expect(
+      store.materializeStandingOrderOccurrence({
+        occurrenceId: buyOccurrenceId,
+        orderId: MONTHLY_BUY_ID,
+        dueDate: '2026-07-27',
+        calendarDay: '2026-07-27',
+        timezone: 'Europe/Vienna',
+        executedAt: BOOKED_AT,
+        recordedAt: PRIOR_BOOKED_AT,
+        expectedCandidate,
+        price: 175,
+        quoteCurrency: 'EUR',
+      }),
+    ).rejects.toMatchObject({
+      code: 'VAULT_DATA_INVALID',
+      message: 'A local-asset standing order must record the scan timestamp.',
+    });
+    expect(sync.mutationCount).toBe(0);
+  });
+
+  it('returns an existing buy replay after its local asset snapshot is gone', async () => {
+    const fixture = await decryptClientMoneyFixture();
+    const dueDate = '2026-07-27';
+    const occurrenceId = await standingOrderOccurrenceId(MONTHLY_BUY_ID, dueDate);
+    const document = withOrders(fixture.document, [
+      standingOrder(MONTHLY_BUY_ID, {
+        kind: 'buy-asset',
+        assetId: CLIENT_MONEY_IDS.eurAsset,
+        amount: '1',
+        currency: 'EUR',
+        cadence: 'daily',
+        anchorDay: null,
+        startDate: '2026-07-20',
+        lastRunAt: BOOKED_AT,
+        lastPeriodKey: dueDate,
+      }),
+    ]);
+    document.entities.standingOrderRun = [
+      bookedRun(occurrenceId, MONTHLY_BUY_ID, dueDate, BOOKED_AT),
+    ];
+    document.entities.transaction = [
+      ...(document.entities.transaction ?? []),
+      bookedBuy(occurrenceId, CLIENT_MONEY_IDS.eurAsset, '1', '175', BOOKED_AT),
+    ];
+    document.entities.customAsset = document.entities.customAsset?.filter(
+      (entity) => entity.id !== CLIENT_MONEY_IDS.eurAsset,
+    );
+    const sync = createMutableTestSync(document, fixture.header);
+
+    await expect(
+      createVaultPortfolioStore(sync).materializeStandingOrderOccurrence({
+        occurrenceId,
+        orderId: MONTHLY_BUY_ID,
+        dueDate,
+        calendarDay: dueDate,
+        timezone: 'Europe/Vienna',
+        executedAt: BOOKED_AT,
+        recordedAt: BOOKED_AT,
+        expectedCandidate: candidateIdentity(fixture.header),
+        price: 175,
+        quoteCurrency: 'EUR',
+      }),
+    ).resolves.toEqual({
+      occurrenceId,
+      orderId: MONTHLY_BUY_ID,
+      dueDate,
+      rowKind: 'transaction',
+      status: 'existing',
+    });
+    expect(sync.mutationCount).toBe(0);
   });
 
   it('refuses a non-derived occurrence id and a date before the schedule is due', async () => {

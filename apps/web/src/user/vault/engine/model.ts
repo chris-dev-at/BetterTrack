@@ -21,6 +21,22 @@ export interface ClientAssetRecord {
   dto: PortfolioAsset;
 }
 
+export interface LocalAssetSnapshotFacts {
+  readonly isCustom?: unknown;
+  readonly ownerId?: unknown;
+  readonly providerId?: unknown;
+  readonly type?: unknown;
+}
+
+/** Decide whether one row in the vault's local asset table is owner-local. */
+export function isLocalAssetSnapshot(row: LocalAssetSnapshotFacts): boolean {
+  return typeof row.isCustom === 'boolean'
+    ? row.isCustom
+    : row.ownerId != null ||
+        (typeof row.providerId === 'string' ? row.providerId : 'manual') === 'manual' ||
+        row.type === 'custom';
+}
+
 export interface ClientTransactionRecord extends DomainTransaction {
   id: string;
   portfolioId: string;
@@ -81,7 +97,7 @@ export function readPortfolioModel(
     liveEntities(document, 'customAsset').map((entity) => {
       const row = VAULT_ENTITY_ROW_SCHEMAS.customAsset.parse(entity.data);
       const meta = isRecord(row.meta) ? row.meta : null;
-      const isCustom = row.ownerId !== null || row.providerId === 'manual' || row.type === 'custom';
+      const isCustom = isLocalAssetSnapshot(entity.data);
       const dto: PortfolioAsset = {
         id: entity.id,
         symbol: row.symbol,
