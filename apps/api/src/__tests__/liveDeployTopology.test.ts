@@ -242,14 +242,7 @@ describe('compose readiness and cross-container exports (#939)', () => {
     expect(
       buildStages,
       'Dockerfile must retain the node-gyp fallback toolchain in a build stage',
-    ).toContain('apk add --no-cache python3 make g++');
-    expect(
-      buildStages,
-      'Dockerfile must make the build-only toolchain install resilient to transient package-index failures',
-    ).toMatch(/for attempt in 1 2 3; do \\\s+apk add --no-cache python3 make g\+\+ && break;/);
-    expect(buildStages, 'Dockerfile must fail if every toolchain-install attempt fails').toContain(
-      'if [ "$attempt" -eq 3 ]; then exit 1; fi;',
-    );
+    ).toContain('RUN apk add --no-cache python3 make g++');
     expect(
       runnerStage,
       'Dockerfile invariant: build toolchain stays in build-only stages',

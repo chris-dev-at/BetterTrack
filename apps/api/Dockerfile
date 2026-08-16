@@ -8,13 +8,7 @@ FROM base AS deps
 WORKDIR /app
 # Native modules fall back to node-gyp when their prebuilt download is unavailable.
 # Keep its toolchain in this build-only stage so the runtime image stays minimal.
-# A clean build fetches Alpine's signed package indexes. Hosted builders can see
-# transient CDN TLS failures, so retry the atomic install before failing closed.
-RUN for attempt in 1 2 3; do \
-      apk add --no-cache python3 make g++ && break; \
-      if [ "$attempt" -eq 3 ]; then exit 1; fi; \
-      sleep "$attempt"; \
-    done
+RUN apk add --no-cache python3 make g++
 COPY package.json pnpm-workspace.yaml pnpm-lock.yaml ./
 COPY packages/contracts/package.json ./packages/contracts/
 COPY packages/config/package.json ./packages/config/
