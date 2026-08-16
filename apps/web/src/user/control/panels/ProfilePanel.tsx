@@ -162,9 +162,8 @@ export function ProfilePanel() {
                 {PROFILE_ICON_IDS.map((id) => {
                   const active = currentIcon === id;
                   return (
-                    // Selection is the one thing gold is for here: the picked
-                    // tile takes the accent rule + its soft wash, the rest stay
-                    // on the quiet neutral border.
+                    // Content selection stays tonal. Gold edges belong to the
+                    // active main rail; the chosen icon uses surface/ink shift.
                     <button
                       aria-checked={active}
                       aria-label={t(`profile.icon.name.${id}`)}
@@ -174,8 +173,8 @@ export function ProfilePanel() {
                       onClick={() => setDraftIcon(id)}
                       role="radio"
                       style={{
-                        background: active ? 'var(--bt-gold-soft)' : 'none',
-                        border: `1px solid ${active ? 'var(--bt-gold-graphic)' : 'var(--bt-border-strong)'}`,
+                        background: active ? 'var(--bt-selected)' : 'none',
+                        border: '1px solid var(--bt-border-strong)',
                         borderRadius: 5,
                         cursor: 'pointer',
                         padding: 0,

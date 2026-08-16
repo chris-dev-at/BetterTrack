@@ -108,15 +108,15 @@ function TierIcon({ audience, className }: { audience: ShareAudience; className?
 }
 
 /**
- * Selection chrome, Origin-style. This dialog is the one place gold carries a
- * *decision*: the chosen tier (and each chosen friend/group) takes the accent
- * rule plus its soft wash, everything else stays on quiet neutral borders. That
- * keeps the privacy choice unmistakable without flooding the sheet with gold.
+ * Selection chrome, Origin-style. Chosen tiers and people use the same tonal
+ * surface/ink shift as every other in-page choice. Gold edges are reserved for
+ * the active main rail, so privacy choices stay unmistakable without borrowing
+ * navigation's active-state language.
  */
 function selectedSurface(active: boolean): CSSProperties {
   return {
-    background: active ? 'var(--bt-gold-soft)' : 'none',
-    border: `1px solid ${active ? 'var(--bt-gold-graphic)' : 'var(--bt-border)'}`,
+    background: active ? 'var(--bt-selected)' : 'none',
+    border: `1px solid ${active ? 'var(--bt-border-strong)' : 'var(--bt-border)'}`,
     borderRadius: 8,
     transition: 'background var(--bt-t-fast), border-color var(--bt-t-fast)',
   };
@@ -128,10 +128,10 @@ function CheckMark({ active, square = false }: { active: boolean; square?: boole
     <span
       className="flex shrink-0 items-center justify-center"
       style={{
-        background: active ? 'var(--bt-gold-fill)' : 'none',
-        border: `1px solid ${active ? 'var(--bt-gold-graphic)' : 'var(--bt-border-strong)'}`,
+        background: active ? 'var(--bt-text)' : 'none',
+        border: `1px solid ${active ? 'var(--bt-text)' : 'var(--bt-border-strong)'}`,
         borderRadius: square ? 5 : '50%',
-        color: active ? 'var(--bt-gold-on)' : 'transparent',
+        color: active ? 'var(--bt-bg)' : 'transparent',
         height: 20,
         width: 20,
       }}
@@ -413,7 +413,7 @@ export function AudiencePicker({
                   style={{
                     background: active ? 'none' : 'var(--bt-surface-strong)',
                     borderRadius: 6,
-                    color: active ? 'var(--bt-gold-ink)' : 'var(--bt-muted)',
+                    color: active ? 'var(--bt-text)' : 'var(--bt-muted)',
                     height: 34,
                     width: 34,
                   }}
