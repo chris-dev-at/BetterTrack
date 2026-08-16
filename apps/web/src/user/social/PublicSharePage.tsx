@@ -33,14 +33,17 @@ const COLUMN = {
 function Shell({ children }: { children: React.ReactNode }) {
   const t = useT();
   return (
-    <div className="bt-app">
-      <header className="bt-b-rule">
-        <div className="flex items-center justify-between gap-3 py-4" style={COLUMN}>
+    <div className="bt-app bt-public-social">
+      <header className="bt-public-social__header bt-b-rule">
+        <div
+          className="bt-public-social__bar flex items-center justify-between gap-3 py-4"
+          style={COLUMN}
+        >
           <Wordmark edition="Web" className="text-lg" />
           <span className="bt-label">{t('publicShare.readOnly')}</span>
         </div>
       </header>
-      <main className="py-10" style={COLUMN}>
+      <main className="bt-public-social__content py-10" style={COLUMN}>
         {children}
       </main>
     </div>
@@ -83,15 +86,15 @@ export function PublicSharePage() {
     const p = data.portfolio;
     return (
       <Shell>
-        <div className="flex flex-col gap-6">
-          <div>
+        <div className="bt-public-share flex flex-col gap-6">
+          <div className="bt-public-share__head">
             <h1 className="bt-page-title">{p.name}</h1>
             <p className="bt-page-sub">
               {t('publicShare.ownerLabel', { username: p.owner.username })}
             </p>
           </div>
           {/* The headline value leads the canvas rather than sitting in a box. */}
-          <div>
+          <div className="bt-public-share__metric">
             <p className="bt-label">{t('publicShare.netWorth')}</p>
             <p className="bt-hero-value" style={{ marginTop: 4 }}>
               {formatMoney(p.totals.totalValueEur, 'EUR')}
@@ -120,7 +123,7 @@ export function PublicSharePage() {
             <h2 className="bt-h3" style={{ marginBottom: 6 }}>
               {t('publicShare.holdings')}
             </h2>
-            <ul className="bt-band bt-t-rule bt-b-rule flex flex-col">
+            <ul className="bt-public-social__list bt-band bt-t-rule bt-b-rule flex flex-col">
               {p.holdings.map((h) => (
                 <li
                   key={h.asset.id}
@@ -147,8 +150,8 @@ export function PublicSharePage() {
     const c = data.conglomerate;
     return (
       <Shell>
-        <div className="flex flex-col gap-6">
-          <div>
+        <div className="bt-public-share flex flex-col gap-6">
+          <div className="bt-public-share__head">
             <h1 className="bt-page-title">{c.name}</h1>
             <p className="bt-page-sub">
               {t('publicShare.ownerLabel', { username: c.owner.username })}
@@ -158,7 +161,7 @@ export function PublicSharePage() {
             <h2 className="bt-h3" style={{ marginBottom: 6 }}>
               {t('publicShare.positions')}
             </h2>
-            <ul className="bt-band bt-t-rule bt-b-rule flex flex-col">
+            <ul className="bt-public-social__list bt-band bt-t-rule bt-b-rule flex flex-col">
               {c.positions.map((pos) => (
                 <li
                   key={pos.kind === 'asset' ? pos.assetId : pos.childId}
@@ -188,8 +191,8 @@ export function PublicSharePage() {
   const w = data.watchlist;
   return (
     <Shell>
-      <div className="flex flex-col gap-6">
-        <div>
+      <div className="bt-public-share flex flex-col gap-6">
+        <div className="bt-public-share__head">
           <h1 className="bt-page-title">{w.name}</h1>
           <p className="bt-page-sub">
             {t('publicShare.ownerLabel', { username: w.owner.username })}
@@ -199,7 +202,7 @@ export function PublicSharePage() {
           <h2 className="bt-h3" style={{ marginBottom: 6 }}>
             {t('publicShare.watchedAssets')}
           </h2>
-          <ul className="bt-band bt-t-rule bt-b-rule flex flex-col">
+          <ul className="bt-public-social__list bt-band bt-t-rule bt-b-rule flex flex-col">
             {w.items.map((item) => (
               <li
                 key={item.id}

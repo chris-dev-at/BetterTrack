@@ -15,7 +15,7 @@ import { isConfirmedApiOutcome } from '../../lib/apiClient';
 import { getSharedConglomerate, previewSharedConglomerateSandbox } from '../../lib/socialApi';
 import { formatPercent, formatSignedPercent } from '../../lib/format';
 import { EmptyState, Skeleton } from '../../ui';
-import { Button, Icon, Input, PageHead, Seg, Stat, StatStrip } from '../../ui/origin';
+import { Button, Icon, Input, Page, PageHead, Seg, Stat, StatStrip } from '../../ui/origin';
 import { PriceChart, type ChartPoint } from '../../ui/charts';
 import { useDebounce } from '../hooks/useDebounce';
 import { NestedBadge } from '../workboard/ConglomeratesListPage';
@@ -55,49 +55,61 @@ export function SharedConglomeratePage() {
 
   if (isLoading) {
     return (
-      <section className="flex flex-col gap-3">
+      <Page
+        className="bt-phone-surface bt-shared-detail-page bt-social-page flex flex-col gap-3"
+        width="wide"
+      >
         <Skeleton height="h-8" width="w-64" />
         <Skeleton height="h-24" />
-      </section>
+      </Page>
     );
   }
 
   if (isError && isConfirmedApiOutcome(error)) {
     return (
-      <div className="flex flex-col gap-4">
+      <Page
+        className="bt-phone-surface bt-shared-detail-page bt-social-page flex flex-col gap-4"
+        width="wide"
+      >
         <BackLink />
         <EmptyState
           title={t('social.shared.conglomerateUnavailableTitle')}
           description={t('social.shared.unavailableDescription')}
         />
-      </div>
+      </Page>
     );
   }
 
   if (isError) {
     return (
-      <div className="flex flex-col items-start gap-3">
+      <Page
+        className="bt-phone-surface bt-shared-detail-page bt-social-page flex flex-col items-start gap-3"
+        width="wide"
+      >
         <BackLink />
         <Alert tone="error">{t('social.shared.loadError')}</Alert>
         <Button onClick={() => void refetch()}>{t('common.retry')}</Button>
-      </div>
+      </Page>
     );
   }
 
   if (!data) {
     return (
-      <div className="flex flex-col gap-4">
+      <Page
+        className="bt-phone-surface bt-shared-detail-page bt-social-page flex flex-col gap-4"
+        width="wide"
+      >
         <BackLink />
         <EmptyState
           title={t('social.shared.conglomerateUnavailableTitle')}
           description={t('social.shared.unavailableDescription')}
         />
-      </div>
+      </Page>
     );
   }
 
   return (
-    <div className="flex flex-col">
+    <Page className="bt-phone-surface bt-shared-detail-page bt-social-page" width="wide">
       <BackLink />
       <PageHead
         actions={<ItemFollowButton kind="conglomerate" subjectId={id} ownerId={data.owner.id} />}
@@ -153,7 +165,7 @@ export function SharedConglomeratePage() {
       <div className="bt-section">
         <CommentThread kind="conglomerate" subjectId={id} />
       </div>
-    </div>
+    </Page>
   );
 }
 

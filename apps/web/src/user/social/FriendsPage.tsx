@@ -16,7 +16,7 @@ import {
 } from '../../lib/socialApi';
 import { useT } from '../../i18n';
 import { EmptyState, MoneyText } from '../../ui';
-import { Button, Field, Icon, Input, PageHead, SkeletonBlock } from '../../ui/origin';
+import { Button, Field, Icon, Input, Page, PageHead, SkeletonBlock } from '../../ui/origin';
 import { Alert } from '../components/ui';
 import { Avatar } from '../components/Avatar';
 import { AsyncReadState } from '../components/AsyncReadState';
@@ -754,7 +754,7 @@ export function FriendsPage() {
   const t = useT();
   const sharingAllowed = useResolvedPrivacyMode() === 'normal';
   return (
-    <div className="bt-phone-surface bt-friends-page flex flex-col">
+    <Page className="bt-phone-surface bt-friends-page bt-social-page">
       <PageHead title={t('common.friends')} />
       {/* PageHead already carries its own 22px rhythm below the title, so the
           section stack starts here rather than inheriting the page gap. */}
@@ -764,6 +764,6 @@ export function FriendsPage() {
         {sharingAllowed ? <FriendGroupsSection /> : null}
         <RequestsSection sharingAllowed={sharingAllowed} />
       </div>
-    </div>
+    </Page>
   );
 }

@@ -5,7 +5,7 @@ import { useT } from '../../i18n';
 import { isConfirmedApiOutcome } from '../../lib/apiClient';
 import { getSharedWatchlist } from '../../lib/socialApi';
 import { EmptyState, Skeleton } from '../../ui';
-import { Button, PageHead } from '../../ui/origin';
+import { Button, Page, PageHead } from '../../ui/origin';
 import { Alert } from '../components/ui';
 import { CommentThread } from './CommentThread';
 import { ItemFollowButton } from './ItemFollowButton';
@@ -29,49 +29,49 @@ export function SharedWatchlistPage() {
 
   if (isLoading) {
     return (
-      <section className="flex flex-col gap-3">
+      <Page className="bt-phone-surface bt-shared-detail-page bt-social-page flex flex-col gap-3">
         <Skeleton height="h-8" width="w-64" />
         <Skeleton height="h-24" />
-      </section>
+      </Page>
     );
   }
 
   if (isError && isConfirmedApiOutcome(error)) {
     return (
-      <div className="flex flex-col gap-4">
+      <Page className="bt-phone-surface bt-shared-detail-page bt-social-page flex flex-col gap-4">
         <BackLink />
         <EmptyState
           title={t('social.shared.watchlistUnavailableTitle')}
           description={t('social.shared.unavailableDescription')}
         />
-      </div>
+      </Page>
     );
   }
 
   if (isError) {
     return (
-      <div className="flex flex-col items-start gap-3">
+      <Page className="bt-phone-surface bt-shared-detail-page bt-social-page flex flex-col items-start gap-3">
         <BackLink />
         <Alert tone="error">{t('social.shared.loadError')}</Alert>
         <Button onClick={() => void refetch()}>{t('common.retry')}</Button>
-      </div>
+      </Page>
     );
   }
 
   if (!data) {
     return (
-      <div className="flex flex-col gap-4">
+      <Page className="bt-phone-surface bt-shared-detail-page bt-social-page flex flex-col gap-4">
         <BackLink />
         <EmptyState
           title={t('social.shared.watchlistUnavailableTitle')}
           description={t('social.shared.unavailableDescription')}
         />
-      </div>
+      </Page>
     );
   }
 
   return (
-    <div className="flex flex-col">
+    <Page className="bt-phone-surface bt-shared-detail-page bt-social-page">
       <BackLink />
       <PageHead
         actions={
@@ -107,7 +107,7 @@ export function SharedWatchlistPage() {
       <div className="bt-section">
         <CommentThread kind="watchlist" subjectId={data.watchlistId} />
       </div>
-    </div>
+    </Page>
   );
 }
 

@@ -6,7 +6,7 @@ import type { FollowedItem, FollowingEntry } from '@bettertrack/contracts';
 import { useT } from '../../i18n';
 import { listFollowing, listItemFollows, unfollowItem } from '../../lib/socialApi';
 import { EmptyState } from '../../ui';
-import { Badge, Button, PageHead, SectionHead, SkeletonBlock } from '../../ui/origin';
+import { Badge, Button, Page, PageHead, SectionHead, SkeletonBlock } from '../../ui/origin';
 import { Avatar } from '../components/Avatar';
 import { Alert } from '../components/ui';
 import { FOLLOWING_QUERY_KEY, FollowButton } from './FollowButton';
@@ -157,7 +157,7 @@ export function FollowingPage() {
   });
 
   return (
-    <div className="bt-phone-surface flex flex-col">
+    <Page className="bt-phone-surface bt-following-page bt-social-page">
       <PageHead sub={t('social.follow.listSubtitle')} title={t('social.follow.listTitle')} />
 
       <div className="flex flex-col gap-8">
@@ -206,6 +206,6 @@ export function FollowingPage() {
           )}
         </section>
       </div>
-    </div>
+    </Page>
   );
 }

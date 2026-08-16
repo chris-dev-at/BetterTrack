@@ -3,7 +3,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 
 import { useT } from '../../i18n';
 import { EmptyState } from '../../ui';
-import { PageHead } from '../../ui/origin';
+import { Page, PageHead } from '../../ui/origin';
 import { cx } from '../components/ui';
 import {
   ChatThreadPane,
@@ -74,7 +74,7 @@ export function ChatPage() {
   }
 
   return (
-    <div className="bt-phone-surface bt-chat-page flex flex-col">
+    <Page className="bt-phone-surface bt-chat-page bt-social-page" width="wide">
       <PageHead
         actions={
           <ChatPopoutButton
@@ -109,6 +109,6 @@ export function ChatPage() {
           )}
         </section>
       </div>
-    </div>
+    </Page>
   );
 }

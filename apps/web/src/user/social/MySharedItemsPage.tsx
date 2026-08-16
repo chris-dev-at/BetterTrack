@@ -12,6 +12,7 @@ import { EmptyState } from '../../ui';
 import {
   Badge,
   Button,
+  Page,
   PageHead,
   SectionHead,
   SkeletonBlock,
@@ -248,19 +249,19 @@ export function MySharedItemsPage() {
 
   if (isLoading) {
     return (
-      <section className="bt-phone-surface bt-my-shared-page flex flex-col gap-4">
+      <Page className="bt-phone-surface bt-my-shared-page bt-social-page flex flex-col gap-4">
         <SkeletonBlock height={28} width={210} />
         <SkeletonBlock height={92} />
-      </section>
+      </Page>
     );
   }
 
   if (isError || !data) {
     return (
-      <div className="bt-phone-surface bt-my-shared-page flex flex-col items-start gap-3">
+      <Page className="bt-phone-surface bt-my-shared-page bt-social-page flex flex-col items-start gap-3">
         <Alert tone="error">{t('social.myShared.error')}</Alert>
         <Button onClick={() => void refetch()}>{t('common.retry')}</Button>
-      </div>
+      </Page>
     );
   }
 
@@ -273,7 +274,7 @@ export function MySharedItemsPage() {
   const shareLabel = t('sharing.shareButton');
 
   return (
-    <div className="bt-phone-surface bt-my-shared-page flex flex-col">
+    <Page className="bt-phone-surface bt-my-shared-page bt-social-page">
       <PageHead sub={t('social.myShared.subtitle')} title={t('social.myShared.title')} />
       {data.portfolios.length > 0 && !portfolioMetadataReady && !portfoliosQuery.isError ? (
         <div className="mb-4" data-testid="portfolio-share-metadata-loading">
@@ -400,6 +401,6 @@ export function MySharedItemsPage() {
           onChanged={onChanged}
         />
       ) : null}
-    </div>
+    </Page>
   );
 }

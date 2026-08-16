@@ -12,7 +12,7 @@ import { getSharedPortfolio } from '../../lib/socialApi';
 import { cx } from '../../lib/cx';
 import { formatQuantity, formatSignedPercent } from '../../lib/format';
 import { EmptyState, MoneyText, Skeleton } from '../../ui';
-import { Button, PageHead, Stat, StatStrip } from '../../ui/origin';
+import { Button, Page, PageHead, Stat, StatStrip } from '../../ui/origin';
 import { AllocationDonut, PriceChart } from '../../ui/charts';
 import { CommentThread } from './CommentThread';
 import { ItemFollowButton } from './ItemFollowButton';
@@ -205,18 +205,24 @@ export function SharedPortfolioPage() {
 
   if (query.isLoading) {
     return (
-      <div className="flex flex-col gap-6">
+      <Page
+        className="bt-phone-surface bt-shared-detail-page bt-social-page flex flex-col gap-6"
+        width="wide"
+      >
         <Skeleton height="h-8" width="w-48" />
         {/* One band, not four boxes — the totals now render as a ruled stat strip. */}
         <Skeleton height="h-20" />
         <Skeleton height="h-80" />
-      </div>
+      </Page>
     );
   }
 
   if (query.isError && isConfirmedApiOutcome(query.error)) {
     return (
-      <div className="flex flex-col gap-4">
+      <Page
+        className="bt-phone-surface bt-shared-detail-page bt-social-page flex flex-col gap-4"
+        width="wide"
+      >
         <Link className="bt-link self-start" to="/people">
           {t('social.shared.backToFriends')}
         </Link>
@@ -224,27 +230,34 @@ export function SharedPortfolioPage() {
           title={t('social.shared.portfolioUnavailableTitle')}
           description={t('social.shared.unavailableDescription')}
         />
-      </div>
+      </Page>
     );
   }
 
   if (query.isError) {
     return (
-      <div className="flex flex-col items-start gap-3">
+      <Page
+        className="bt-phone-surface bt-shared-detail-page bt-social-page flex flex-col items-start gap-3"
+        width="wide"
+      >
         <Alert tone="error">{t('social.shared.portfolioLoadError')}</Alert>
         <Button onClick={() => void query.refetch()}>{t('common.retry')}</Button>
-      </div>
+      </Page>
     );
   }
 
   if (!query.data) {
-    return <Alert tone="error">{t('social.shared.portfolioLoadError')}</Alert>;
+    return (
+      <Page className="bt-phone-surface bt-shared-detail-page bt-social-page" width="wide">
+        <Alert tone="error">{t('social.shared.portfolioLoadError')}</Alert>
+      </Page>
+    );
   }
 
   const { name, owner, totals, holdings } = query.data;
 
   return (
-    <div className="flex flex-col">
+    <Page className="bt-phone-surface bt-shared-detail-page bt-social-page" width="wide">
       <Link
         to="/people"
         className="bt-link self-start"
@@ -302,6 +315,6 @@ export function SharedPortfolioPage() {
       <div className="bt-section">
         <CommentThread kind="portfolio" subjectId={query.data.portfolioId} />
       </div>
-    </div>
+    </Page>
   );
 }

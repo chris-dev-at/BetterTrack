@@ -42,14 +42,17 @@ const COLUMN = {
 function Shell({ children }: { children: React.ReactNode }) {
   const t = useT();
   return (
-    <div className="bt-app">
-      <header className="bt-b-rule">
-        <div className="flex items-center justify-between gap-3 py-4" style={COLUMN}>
+    <div className="bt-app bt-public-social">
+      <header className="bt-public-social__header bt-b-rule">
+        <div
+          className="bt-public-social__bar flex items-center justify-between gap-3 py-4"
+          style={COLUMN}
+        >
           <Wordmark edition="Web" className="text-lg" />
           <span className="bt-label">{t('profile.publicBadge')}</span>
         </div>
       </header>
-      <main className="py-10" style={COLUMN}>
+      <main className="bt-public-social__content py-10" style={COLUMN}>
         {children}
       </main>
     </div>
@@ -99,7 +102,7 @@ function ProfileItemCard({
   });
 
   return (
-    <div className="bt-panel overflow-hidden">
+    <div className="bt-panel bt-public-social__item overflow-hidden">
       <div className="flex items-center gap-2 pr-3">
         <button
           type="button"
@@ -227,7 +230,7 @@ function ProfileItemCard({
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <section className="flex flex-col gap-2">
+    <section className="bt-public-social__section flex flex-col gap-2">
       <h2 className="bt-label">{title}</h2>
       <div className="flex flex-col gap-2">{children}</div>
     </section>
@@ -271,8 +274,8 @@ export function PublicProfileViewPage() {
 
   return (
     <Shell>
-      <div className="flex flex-col gap-8">
-        <div className="flex items-center gap-4">
+      <div className="bt-public-profile flex flex-col gap-8">
+        <div className="bt-public-profile__hero flex items-center gap-4">
           <Avatar name={data.username} iconId={data.profileIcon} size="lg" />
           <div className="min-w-0 flex-1">
             <h1 className="bt-page-title truncate">@{data.username}</h1>

@@ -5,7 +5,7 @@ import { cloneIdea } from '../../lib/ideasApi';
 import { listSharedWithMe } from '../../lib/socialApi';
 import { useT } from '../../i18n';
 import { EmptyState, Skeleton } from '../../ui';
-import { Button } from '../../ui/origin';
+import { Button, Page } from '../../ui/origin';
 import { Avatar } from '../components/Avatar';
 import { Alert } from '../components/ui';
 import { CommentThread } from './CommentThread';
@@ -48,22 +48,22 @@ export function SharedIdeaPage() {
 
   if (sharedQuery.isLoading) {
     return (
-      <div className="flex flex-col gap-6">
+      <Page className="bt-phone-surface bt-shared-detail-page bt-social-page flex flex-col gap-6">
         <Skeleton height="h-8" width="w-64" />
         <Skeleton height="h-40" />
-      </div>
+      </Page>
     );
   }
 
   if (sharedQuery.isError) {
     return (
-      <div className="flex flex-col gap-4">
+      <Page className="bt-phone-surface bt-shared-detail-page bt-social-page flex flex-col gap-4">
         {backLink}
         <Alert tone="error">{t('social.sharedIdea.loadError')}</Alert>
         <div>
           <Button onClick={() => void sharedQuery.refetch()}>{t('common.retry')}</Button>
         </div>
-      </div>
+      </Page>
     );
   }
 
@@ -71,19 +71,19 @@ export function SharedIdeaPage() {
 
   if (!idea) {
     return (
-      <div className="flex flex-col gap-4">
+      <Page className="bt-phone-surface bt-shared-detail-page bt-social-page flex flex-col gap-4">
         {backLink}
         <EmptyState
           icon="🔒"
           title={t('social.sharedIdea.notAvailableTitle')}
           description={t('social.sharedIdea.notAvailableBody')}
         />
-      </div>
+      </Page>
     );
   }
 
   return (
-    <div className="flex flex-col">
+    <Page className="bt-phone-surface bt-shared-detail-page bt-social-page">
       <div style={{ marginBottom: 10 }}>{backLink}</div>
 
       {/* The owner's avatar leads the title block, so the page head is composed
@@ -121,6 +121,6 @@ export function SharedIdeaPage() {
       <div className="bt-section">
         <CommentThread kind="idea" subjectId={ideaId} />
       </div>
-    </div>
+    </Page>
   );
 }

@@ -1,0 +1,318 @@
+/* People + social content family.
+ *
+ * The application shell and People LocalNav retain their existing markup and
+ * behaviour. This sheet only puts the nav and routed content on one bounded
+ * axis, then composes the existing Origin tokens into calm connected surfaces.
+ */
+
+.bt-people-layout {
+  display: flex;
+  flex-direction: column;
+  width: min(100%, 1240px);
+  min-width: 0;
+  margin-inline: auto;
+}
+
+.bt-people-layout > :is(.bt-tabs, .bt-page, [role='status']) {
+  width: 100%;
+  min-width: 0;
+}
+
+.bt-people-layout > .bt-page {
+  --bt-content-max: 1240px;
+}
+
+.bt-social-page,
+.bt-social-page > *,
+.bt-public-social__content,
+.bt-public-social__content > * {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.bt-social-page > .bt-page-head {
+  margin-bottom: 0;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--bt-border);
+}
+
+/* Friends, following and the owner's sharing index are reading surfaces: one
+   outlined region per task and one internally ruled list per result set. */
+.bt-friends-page > div > :is(form, section),
+.bt-friends-page > div > #requests > section,
+.bt-friends-page > div > #requests > div > section,
+.bt-following-page > div > section,
+.bt-my-shared-page > section {
+  min-width: 0;
+  margin-top: 0;
+  padding: var(--bt-surface-pad-y) var(--bt-surface-pad-x);
+  border: 1px solid var(--bt-content-edge);
+  border-radius: var(--bt-radius-card);
+  background: var(--bt-surface);
+}
+
+:is(.bt-following-page, .bt-my-shared-page) ul.bt-band {
+  overflow: hidden;
+  border: 1px solid var(--bt-content-edge);
+  border-radius: var(--bt-radius-card);
+  background: var(--bt-surface-quiet);
+}
+
+.bt-my-shared-page .bt-shared-item-row {
+  min-height: 58px;
+  padding-inline: var(--bt-surface-pad-x);
+}
+
+.bt-my-shared-page .bt-shared-item-row + .bt-shared-item-row {
+  border-top: 1px solid var(--bt-border);
+}
+
+.bt-friends-page .bt-panel,
+.bt-following-page ul.bt-band,
+.bt-my-shared-page ul.bt-band {
+  border-color: var(--bt-content-edge);
+  box-shadow: none;
+}
+
+.bt-friends-page .bt-friend-card,
+.bt-friends-page > div > section > ul > li.bt-panel {
+  background: var(--bt-surface-quiet);
+}
+
+/* Chat remains the existing route-driven master/detail experience. These rules
+   only give both panes a consistent connected edge and protect their scroll
+   containers from forcing the People canvas wider. */
+.bt-chat-page {
+  --bt-content-max: 1240px;
+}
+
+.bt-chat-page__surface,
+.bt-chat-page__surface > aside,
+.bt-chat-page__surface > section,
+.bt-chat-page__surface .bt-panel,
+.bt-chat-page__surface .bt-chat-log {
+  min-width: 0;
+  min-height: 0;
+}
+
+.bt-chat-page__surface .bt-panel {
+  border-color: var(--bt-content-edge);
+  background: var(--bt-surface);
+  box-shadow: none;
+}
+
+.bt-chat-page__surface > aside .bt-panel {
+  background: var(--bt-surface-quiet);
+}
+
+.bt-chat-page__surface .bt-band > li > button {
+  min-height: 58px;
+}
+
+.bt-chat-page__surface .bt-chat-log {
+  background: var(--bt-surface-quiet);
+  overscroll-behavior: contain;
+}
+
+/* Friend-shared detail pages mirror the owner views, but stay unmistakably
+   read-only. Metrics, charts, tables, sandbox and comments use one surface each. */
+.bt-shared-detail-page {
+  --bt-content-max: 1120px;
+}
+
+.bt-shared-detail-page > :is(.bt-section, ul.bt-band),
+.bt-shared-detail-page > section > .bt-stats {
+  overflow: hidden;
+  border: 1px solid var(--bt-content-edge);
+  border-radius: var(--bt-radius-card);
+  background: var(--bt-surface);
+}
+
+.bt-shared-detail-page > .bt-section {
+  margin-top: 0;
+  padding: var(--bt-surface-pad-y) var(--bt-surface-pad-x);
+}
+
+.bt-shared-detail-page > ul.bt-band > li {
+  min-height: 54px;
+  padding-inline: var(--bt-surface-pad-x);
+}
+
+.bt-shared-detail-page > section > .bt-stats {
+  border-block: 1px solid var(--bt-content-edge);
+}
+
+.bt-shared-detail-page .bt-table-wrap {
+  max-width: 100%;
+  overscroll-behavior-inline: contain;
+}
+
+.bt-shared-detail-page .bt-chart,
+.bt-shared-detail-page .bt-chart > * {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.bt-shared-detail-page > .bt-section > .bt-comment-thread {
+  padding-top: 0 !important;
+  border-top: 0;
+}
+
+.bt-shared-detail-page .bt-subtab.is-active {
+  border-color: var(--bt-border-strong);
+  background: var(--bt-selected);
+  box-shadow: none;
+}
+
+/* Standalone public routes use the same vocabulary without inheriting the app
+   shell. The public badge is status; the content remains neutral and read-only. */
+.bt-public-social__header {
+  background: var(--bt-surface-quiet);
+}
+
+.bt-public-social__content {
+  padding-block: clamp(24px, 5vw, 48px) !important;
+}
+
+.bt-public-profile__hero,
+.bt-public-share__head,
+.bt-public-share__metric,
+.bt-public-social__section {
+  padding: var(--bt-surface-pad-y) var(--bt-surface-pad-x);
+  border: 1px solid var(--bt-content-edge);
+  border-radius: var(--bt-radius-card);
+  background: var(--bt-surface);
+}
+
+.bt-public-share__metric {
+  background: var(--bt-surface-quiet);
+}
+
+.bt-public-social__section > div {
+  gap: 0;
+  overflow: hidden;
+  border: 1px solid var(--bt-content-edge);
+  border-radius: var(--bt-radius-card);
+}
+
+.bt-public-social__section .bt-public-social__item {
+  border: 0;
+  border-radius: 0;
+  background: var(--bt-surface-quiet);
+}
+
+.bt-public-social__section .bt-public-social__item + .bt-public-social__item {
+  border-top: 1px solid var(--bt-border);
+}
+
+.bt-public-social__list {
+  overflow: hidden;
+  padding-inline: var(--bt-surface-pad-x);
+  border: 1px solid var(--bt-content-edge) !important;
+  border-radius: var(--bt-radius-card);
+  background: var(--bt-surface);
+}
+
+@media (max-width: 480px) {
+  .bt-people-layout {
+    width: 100%;
+  }
+
+  .bt-people-layout > .bt-tabs {
+    margin-bottom: 16px;
+  }
+
+  .bt-social-page > .bt-page-head {
+    padding-bottom: 14px;
+  }
+
+  .bt-friends-page > div,
+  .bt-following-page > div {
+    gap: 14px;
+  }
+
+  .bt-friends-page > div > #requests {
+    gap: 14px;
+  }
+
+  .bt-friends-page > div > :is(form, section),
+  .bt-friends-page > div > #requests > section,
+  .bt-friends-page > div > #requests > div > section,
+  .bt-following-page > div > section,
+  .bt-my-shared-page > section,
+  .bt-shared-detail-page > .bt-section,
+  .bt-public-profile__hero,
+  .bt-public-share__head,
+  .bt-public-share__metric,
+  .bt-public-social__section {
+    padding: 14px;
+  }
+
+  .bt-chat-page__surface .bt-panel {
+    border-radius: var(--bt-radius-card);
+  }
+
+  .bt-following-page .bt-band__row,
+  .bt-my-shared-page .bt-shared-item-row {
+    align-items: stretch;
+  }
+
+  .bt-following-page .bt-band__row > :last-child,
+  .bt-following-page .bt-band__row > :last-child > .bt-btn,
+  .bt-my-shared-page .bt-shared-item-row > .bt-btn {
+    width: 100%;
+  }
+
+  .bt-shared-detail-page .bt-seg {
+    max-width: 100%;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .bt-shared-detail-page .bt-seg::-webkit-scrollbar {
+    display: none;
+  }
+
+  .bt-shared-detail-page input[type='range'] {
+    min-height: 44px;
+  }
+
+  .bt-public-social__bar,
+  .bt-public-social__content {
+    padding-inline: 16px !important;
+  }
+
+  .bt-public-profile__hero {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .bt-public-profile__hero > :nth-child(2),
+  .bt-public-profile__hero > :last-child {
+    width: 100%;
+  }
+
+  .bt-public-profile__hero > :last-child {
+    align-items: stretch;
+  }
+
+  .bt-public-profile__hero > :last-child > :is(.bt-btn, button, label),
+  .bt-public-social :is(button, .bt-btn, a.bt-btn) {
+    min-height: 44px;
+  }
+
+  .bt-public-social__item > div > button {
+    min-height: 58px;
+  }
+
+  .bt-public-social__list > li {
+    min-height: 54px;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bt-public-social svg,
+  .bt-social-page svg {
+    transition: none !important;
+  }
+}
