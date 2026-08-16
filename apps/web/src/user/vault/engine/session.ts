@@ -43,6 +43,13 @@ export interface VaultDocumentSession {
  * rejects would have been `VAULT_CORRUPT` after the irreversible purge.
  */
 export function openVaultSession(raw: unknown): VaultDocumentSession {
+  return openVaultSessionWithOptions(raw, false);
+}
+
+function openVaultSessionWithOptions(
+  raw: unknown,
+  isolateStandingOrders: boolean,
+): VaultDocumentSession {
   if (
     typeof raw === 'object' &&
     raw !== null &&
@@ -61,15 +68,31 @@ export function openVaultSession(raw: unknown): VaultDocumentSession {
       details: { issues: parsed.error.issues.map((issue) => issue.path.join('.')) },
     });
   }
-  validateStrictEntities(parsed.data);
+  validateStrictEntities(parsed.data, isolateStandingOrders);
   validatePersistedTaxFacts(parsed.data);
   validatePersistedTaxSettings(parsed.data);
-  const ownerUserId = validateRelationships(parsed.data);
+  const ownerUserId = validateRelationships(parsed.data, isolateStandingOrders);
   return { document: parsed.data, ownerUserId };
 }
 
 /** Obtain one authenticated, strict snapshot of the decrypted in-memory vault. */
 export function validatedVaultSnapshot(engine: VaultSyncEngine): ValidatedVaultSnapshot {
+  return validatedSnapshot(engine, false);
+}
+
+/**
+ * Validate a scan candidate without letting one corrupt standing-order row hide
+ * every later order. All document, non-order entity, and durable-run validation
+ * remains active; the materializer validates each order row in isolation.
+ */
+export function validatedStandingOrderSnapshot(engine: VaultSyncEngine): ValidatedVaultSnapshot {
+  return validatedSnapshot(engine, true);
+}
+
+function validatedSnapshot(
+  engine: VaultSyncEngine,
+  isolateStandingOrders: boolean,
+): ValidatedVaultSnapshot {
   const state = engine.state;
   assertAuthoritativeSyncState(state, 'before money data is read');
   const candidate = state.active;
@@ -89,7 +112,7 @@ export function validatedVaultSnapshot(engine: VaultSyncEngine): ValidatedVaultS
       `Vault envelope schema version ${candidate.header.schemaVersion} is not supported.`,
     );
   }
-  const session = openVaultSession(candidate.document as unknown);
+  const session = openVaultSessionWithOptions(candidate.document as unknown, isolateStandingOrders);
   if (session.document.schemaVersion !== candidate.header.schemaVersion) {
     throw moneyFailure(
       'VAULT_UNSUPPORTED_VERSION',
@@ -195,7 +218,32 @@ export function requireLiveEntity(
   return entity;
 }
 
-function validateStrictEntities(document: VaultDocument): void {
+/** Validate one standing order independently for the catch-up scanner. */
+export function validateStandingOrderForScan(document: VaultDocument, entity: VaultEntity): void {
+  const row = VAULT_ENTITY_ROW_SCHEMAS.standingOrder.parse(entity.data);
+  const portfolio = liveEntities(document, 'portfolio').find(
+    (candidate) => candidate.id === row.portfolioId,
+  );
+  if (portfolio === undefined || field(portfolio, 'userId') !== row.userId) {
+    invalidReference('standingOrder', entity.id, 'portfolioId');
+  }
+  const assets = liveEntities(document, 'customAsset');
+  const assetCurrency = new Map(
+    assets.map((asset) => [
+      asset.id,
+      VAULT_ENTITY_ROW_SCHEMAS.customAsset.parse(asset.data).currency,
+    ]),
+  );
+  if (row.assetId !== null && !assetCurrency.has(row.assetId)) {
+    throw moneyFailure(
+      'VAULT_CORRUPT',
+      `Vault standingOrder ${entity.id} references an unavailable asset.`,
+    );
+  }
+  validatePersistedStandingOrder(document, entity, assetCurrency);
+}
+
+function validateStrictEntities(document: VaultDocument, isolateStandingOrders: boolean): void {
   const knownKinds = new Set<string>(VAULT_ENTITY_KINDS);
   for (const kind of Object.keys(document.entities)) {
     if (!knownKinds.has(kind)) {
@@ -209,6 +257,7 @@ function validateStrictEntities(document: VaultDocument): void {
         throw moneyFailure('VAULT_CORRUPT', `Vault entity ${kind}/${entity.id} is duplicated.`);
       }
       ids.add(entity.id);
+      if (isolateStandingOrders && kind === 'standingOrder') continue;
       const schema = VAULT_ENTITY_SCHEMAS[kind];
       const result = schema.safeParse({ ...entity, kind });
       if (!result.success) {
@@ -430,7 +479,7 @@ function invalidTaxSetting(
   throw moneyFailure('VAULT_CORRUPT', `Vault ${kind} ${id} is unreachable: ${reason}.`);
 }
 
-function validateRelationships(document: VaultDocument): string {
+function validateRelationships(document: VaultDocument, isolateStandingOrders: boolean): string {
   const portfolios = liveEntities(document, 'portfolio');
   const owners = new Set(portfolios.map((portfolio) => field(portfolio, 'userId')));
   if (owners.size !== 1) {
@@ -474,7 +523,7 @@ function validateRelationships(document: VaultDocument): string {
     ]),
   );
 
-  for (const kind of [
+  const portfolioScopedKinds = [
     'transaction',
     'dividend',
     'cashSource',
@@ -484,7 +533,9 @@ function validateRelationships(document: VaultDocument): string {
     'importBatch',
     'portfolioDailySnapshot',
     'portfolioSnapshotState',
-  ] as const) {
+  ] as const;
+  for (const kind of portfolioScopedKinds) {
+    if (isolateStandingOrders && kind === 'standingOrder') continue;
     for (const entity of liveEntities(document, kind)) {
       const portfolioId = field(entity, 'portfolioId');
       if (!portfolioIds.has(portfolioId)) invalidReference(kind, entity.id, 'portfolioId');
@@ -541,15 +592,17 @@ function validateRelationships(document: VaultDocument): string {
     }
     valueKeys.add(key);
   }
-  for (const order of liveEntities(document, 'standingOrder')) {
-    if (field(order, 'userId') !== ownerUserId) {
-      invalidReference('standingOrder', order.id, 'userId');
+  if (!isolateStandingOrders) {
+    for (const order of liveEntities(document, 'standingOrder')) {
+      if (field(order, 'userId') !== ownerUserId) {
+        invalidReference('standingOrder', order.id, 'userId');
+      }
+      const assetId = nullableField(order, 'assetId');
+      if (assetId !== null && !assetIds.has(assetId)) {
+        invalidReference('standingOrder', order.id, 'assetId');
+      }
+      validatePersistedStandingOrder(document, order, assetCurrency);
     }
-    const assetId = nullableField(order, 'assetId');
-    if (assetId !== null && !assetIds.has(assetId)) {
-      invalidReference('standingOrder', order.id, 'assetId');
-    }
-    validatePersistedStandingOrder(document, order, assetCurrency);
   }
   /*
    * Runs are historical claims. Their order may legally be tombstoned while
@@ -572,7 +625,7 @@ function validateRelationships(document: VaultDocument): string {
       throw moneyFailure('VAULT_CORRUPT', `Vault contains duplicate standing-order run ${key}.`);
     }
     runKeys.add(key);
-    if (!isPersistedStandingOrderOccurrence(order, periodKey)) {
+    if (!isolateStandingOrders && !isPersistedStandingOrderOccurrence(order, periodKey)) {
       invalidStandingOrder(
         order.id,
         `run ${run.id} does not belong to a reachable schedule occurrence`,
