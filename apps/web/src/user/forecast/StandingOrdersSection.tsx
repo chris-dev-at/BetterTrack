@@ -183,33 +183,34 @@ function StandingOrderRow({
       </div>
 
       <div className="flex flex-wrap items-center gap-3 pt-1 text-sm">
-        {paused ? (
-          <button
-            id={pauseResumeActionId}
-            type="button"
-            onClick={() => resumeMutation.mutate()}
-            disabled={busy}
-            aria-labelledby={`${titleId} ${pauseResumeActionId}`}
-            className="font-medium bt-link disabled:cursor-not-allowed disabled:bt-muted"
-          >
-            {resumeMutation.isPending
-              ? t('forecast.standingOrders.list.resuming')
-              : t('forecast.standingOrders.list.resume')}
-          </button>
-        ) : (
-          <button
-            id={pauseResumeActionId}
-            type="button"
-            onClick={() => pauseMutation.mutate()}
-            disabled={busy}
-            aria-labelledby={`${titleId} ${pauseResumeActionId}`}
-            className="font-medium bt-gold-note disabled:cursor-not-allowed disabled:bt-muted"
-          >
-            {pauseMutation.isPending
-              ? t('forecast.standingOrders.list.pausing')
-              : t('forecast.standingOrders.list.pause')}
-          </button>
-        )}
+        {!suspendedByArchive &&
+          (paused ? (
+            <button
+              id={pauseResumeActionId}
+              type="button"
+              onClick={() => resumeMutation.mutate()}
+              disabled={busy}
+              aria-labelledby={`${titleId} ${pauseResumeActionId}`}
+              className="font-medium bt-link disabled:cursor-not-allowed disabled:bt-muted"
+            >
+              {resumeMutation.isPending
+                ? t('forecast.standingOrders.list.resuming')
+                : t('forecast.standingOrders.list.resume')}
+            </button>
+          ) : (
+            <button
+              id={pauseResumeActionId}
+              type="button"
+              onClick={() => pauseMutation.mutate()}
+              disabled={busy}
+              aria-labelledby={`${titleId} ${pauseResumeActionId}`}
+              className="font-medium bt-gold-note disabled:cursor-not-allowed disabled:bt-muted"
+            >
+              {pauseMutation.isPending
+                ? t('forecast.standingOrders.list.pausing')
+                : t('forecast.standingOrders.list.pause')}
+            </button>
+          ))}
         <button
           id={editActionId}
           type="button"
