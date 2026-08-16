@@ -383,6 +383,55 @@ test('crossing into the desktop breakpoint closes the drawer, releases inert, an
   expect(document.body).not.toHaveFocus();
 });
 
+test('crossing the desktop breakpoint beneath a Modal preserves its focus and scroll locks', async () => {
+  setViewportWidth(767);
+  const desktopBreakpoint = stubDesktopBreakpoint();
+  const user = userEvent.setup();
+  const page = createRef<AdminOverlayPageHandle>();
+  const previousOverflow = document.body.style.overflow;
+  const { container } = render(
+    <AdminTestApp
+      initialPath="/admin/invites"
+      invitesElement={<AdminOverlayPage dismissable ref={page} />}
+    />,
+  );
+
+  const burger = screen.getByRole('button', { name: 'Open admin menu' });
+  await user.click(burger);
+  act(() => page.current?.openModal());
+
+  const modal = screen.getByRole('dialog', { name: 'Layered admin modal' });
+  const modalAction = screen.getByRole('button', { name: 'Modal action' });
+  const main = screen.getByRole('main');
+  const mobileHeader = burger.closest('header')!;
+  const desktopSidebar = container.querySelector<HTMLElement>('aside')!;
+  expect(modalAction).toHaveFocus();
+  expect(document.body.style.overflow).toBe('hidden');
+
+  act(() => {
+    mobileHeader.style.display = 'none';
+    desktopSidebar.style.display = 'block';
+    desktopBreakpoint.enterDesktop();
+  });
+
+  await waitFor(() => {
+    expect(screen.queryByRole('dialog', { name: 'Admin menu' })).not.toBeInTheDocument();
+  });
+  expect(modal).toBeInTheDocument();
+  expect(main).not.toHaveAttribute('inert');
+  expect(modalAction).toHaveFocus();
+  expect(document.body.style.overflow).toBe('hidden');
+
+  await user.tab();
+  expect(modalAction).toHaveFocus();
+
+  act(() => page.current?.closeModal());
+  await waitFor(() => {
+    expect(screen.queryByRole('dialog', { name: 'Layered admin modal' })).not.toBeInTheDocument();
+  });
+  expect(document.body.style.overflow).toBe(previousOverflow);
+});
+
 test('navigating from inside the drawer closes it', async () => {
   setViewportWidth(390);
   const user = userEvent.setup();

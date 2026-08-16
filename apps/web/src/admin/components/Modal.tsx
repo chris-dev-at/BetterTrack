@@ -2,6 +2,7 @@ import { createPortal } from 'react-dom';
 import { useEffect, useId, useRef } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react';
 
+import { useBodyScrollLock } from '../../ui/useBodyScrollLock';
 import { useOverlayEscape } from '../../ui/overlayStack';
 
 const FOCUSABLE_SELECTOR = [
@@ -149,17 +150,14 @@ export function Modal({
     },
     dialogRef,
   );
+  useBodyScrollLock();
 
   useEffect(() => {
-    const prevOverflow = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-
     const dialog = dialogRef.current;
     const focusable = dialog ? focusableDescendants(dialog) : [];
     (focusable[0] ?? dialog)?.focus();
 
     return () => {
-      document.body.style.overflow = prevOverflow;
       const openingElement = openingElementRef.current;
       if (openingElement instanceof HTMLElement && openingElement.isConnected) {
         openingElement.focus();
@@ -201,7 +199,7 @@ export function Modal({
   // so it can take focus and correctly become the top Escape target.
   return createPortal(
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/70 p-4 sm:items-center"
+      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/70 p-4 text-neutral-100 sm:items-center"
       onMouseDown={() => {
         if (dismissable) onClose();
       }}
