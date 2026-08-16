@@ -1429,16 +1429,42 @@ label:has(> :is(input, select, textarea):required)::after {
 
 /* ── Local navigation (portfolio tabs, section tabs) ─────────────────────── */
 
+/**
+ * The section strip is a contained segmented control, not an underlined rule
+ * (ported from the #1281 content redesign — the one element the owner kept).
+ * Two deliberate departures from that branch:
+ *
+ *  - NO EDGE FADE. #1281 inherited the old strip's trailing-edge gradient mask
+ *    (a linear-gradient to transparent over the last 28px), which under the new
+ *    container also dissolved the strip's own border and background — the bar
+ *    looked like it evaporated on the right. The owner rejected that
+ *    ("not the way it fades out on the back"), so the strip clips hard against
+ *    its own rounded edge and simply scrolls when it overflows. The masking
+ *    property is now absent sheet-wide; `origin.test.ts` keeps it out.
+ *  - NO GOLD. The active tab is tonal (see `.bt-tab.is-active`). The gold edge
+ *    line marks the active MAIN rail item and nothing else — owner's standing
+ *    nav rule, asserted in `themeTokens.test.ts`.
+ */
 .bt-tabs {
+  /* Dark separates the strip from the canvas by tone alone; light needs the
+     hairline because the strip and the page are both white. Scoped here on
+     purpose — the redesign's global content-edge token stays out of this
+     change. */
+  --bt-tabs-edge: transparent;
   display: flex;
   align-items: flex-end;
-  gap: 2px;
-  margin-bottom: 24px;
-  border-bottom: 1px solid var(--bt-border);
+  gap: 3px;
+  margin-bottom: 20px;
+  padding: 4px;
+  border: 1px solid var(--bt-tabs-edge);
+  border-radius: 10px;
+  background: var(--bt-surface-quiet);
   overflow-x: auto;
   scrollbar-width: none;
-  -webkit-mask-image: linear-gradient(to right, black calc(100% - 28px), transparent);
-  mask-image: linear-gradient(to right, black calc(100% - 28px), transparent);
+}
+
+:root[data-bt-theme='light'] .bt-tabs {
+  --bt-tabs-edge: var(--bt-border);
 }
 
 .bt-tabs::-webkit-scrollbar {
@@ -1450,13 +1476,11 @@ label:has(> :is(input, select, textarea):required)::after {
   display: inline-flex;
   align-items: center;
   gap: 7px;
-  min-height: 38px;
+  min-height: 34px;
   padding: 0 13px;
   border: 0;
-  /* Reserved on every tab, gold only on the active one — so widening it in
-     light thickens the marker without shifting one tab against another. */
-  border-bottom: var(--bt-gold-ring) solid transparent;
-  background: none;
+  border-radius: 7px;
+  background: transparent;
   color: var(--bt-muted);
   font: inherit;
   font-size: 13px;
@@ -1466,16 +1490,24 @@ label:has(> :is(input, select, textarea):required)::after {
   cursor: pointer;
   transition:
     color var(--bt-t-fast),
-    border-color var(--bt-t-fast);
+    background var(--bt-t-fast),
+    box-shadow var(--bt-t-fast);
 }
 
 .bt-tab:hover {
   color: var(--bt-text-soft);
+  background: var(--bt-surface-hover);
 }
 
+/* Tonal selection, same idiom as `.bt-seg > button.is-active`: the raised
+   surface carries it in dark, and in light — where that surface is the same
+   white as the strip — the `--bt-raised-edge` hairline does. No gold: that
+   marker belongs to the main rail. Declared after `:hover` at equal
+   specificity, so pointing at the selected tab does not lighten it. */
 .bt-tab.is-active {
   color: var(--bt-text);
-  border-bottom-color: var(--bt-gold-graphic);
+  background: var(--bt-surface-strong);
+  box-shadow: 0 0 0 1px var(--bt-raised-edge);
 }
 
 .bt-tab__count {

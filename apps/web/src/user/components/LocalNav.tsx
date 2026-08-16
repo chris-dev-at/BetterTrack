@@ -31,11 +31,12 @@ export function usePreservedSearch(preserveParams?: readonly string[]): string {
 }
 
 /**
- * Origin local navigation: the horizontal tab rule under a destination's
- * header (portfolio workspace, Workbench, People…). Long strips scroll with a
- * fade-out continuation cue (styles/origin.css `.bt-tabs`). `preserveParams`
- * carries named search params — most importantly the portfolio scope
- * `?portfolio=<id>` — across the section's own tabs (V3-P0 bug, #322).
+ * Origin local navigation: the horizontal segmented strip under a destination's
+ * header (portfolio workspace, Workbench, People…). Long strips scroll inside
+ * the strip's own contained edge — no edge fade, by owner decision (styles
+ * `origin.css` `.bt-tabs`). `preserveParams` carries named search params —
+ * most importantly the portfolio scope `?portfolio=<id>` — across the
+ * section's own tabs (V3-P0 bug, #322).
  */
 export function LocalNav({
   items,

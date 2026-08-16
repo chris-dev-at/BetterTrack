@@ -532,8 +532,9 @@ describe('gold — owner final word (2026-08-07)', () => {
       );
     }
     // The dark side is a transcription of the literals these replaced, so the
-    // compensation could not move a dark pixel: 1px ring, 2px tab underline and
-    // focus outline, 3px active-rail dash.
+    // compensation could not move a dark pixel: 1px ring, 2px focus outline,
+    // 3px active-rail dash. (The tab underline the ring also used to size is
+    // gone — the section strip selects tonally now, see below.)
     expect(pxToken(DARK, 'gold-hair')).toBe(1);
     expect(pxToken(DARK, 'gold-ring')).toBe(2);
     expect(pxToken(DARK, 'gold-edge')).toBe(3);
@@ -548,12 +549,14 @@ describe('gold — owner final word (2026-08-07)', () => {
       'outline: var(--bt-gold-ring) solid var(--bt-gold-graphic);', // :focus-visible
       'width: var(--bt-gold-edge);', // the active-rail dash
       'height: var(--bt-gold-edge);', // the bottom-bar dash
-      'border-bottom: var(--bt-gold-ring) solid transparent;', // the active tab
       'box-shadow: 0 0 0 var(--bt-gold-hair) var(--bt-gold-graphic);', // field focus
       'border: var(--bt-gold-hair) solid var(--bt-gold-graphic);', // the ⊕ pill
     ]) {
       expect(originCss, rule).toContain(rule);
     }
+    // The in-page section strip is NOT one of them: its selected tab is tonal,
+    // because the gold edge marks the active main-rail item and nothing else.
+    expect(originCss).not.toMatch(/\.bt-tab\.is-active \{[^}]*gold/);
   });
 
   /**

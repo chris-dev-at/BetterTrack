@@ -185,6 +185,59 @@ describe('Origin phone chrome', () => {
   });
 });
 
+/**
+ * The in-page section strip (`LocalNav` → `.bt-tabs`), restyled from the #1281
+ * content redesign. Three owner decisions ride on this block, so each gets a
+ * test rather than a comment: the strip is a contained segmented control, it
+ * never fades out at its trailing edge, and its selection is tonal — the gold
+ * edge line stays the property of the active MAIN rail item.
+ */
+describe('Origin section strip', () => {
+  it('draws the strip as a contained, scrollable segmented control', () => {
+    const strip = tokenBlock('.bt-tabs');
+
+    expect(strip).toContain('border-radius: 10px');
+    expect(strip).toContain('background: var(--bt-surface-quiet)');
+    expect(strip).toContain('padding: 4px');
+    // Overflow still scrolls (touch swipe included) with the bar's scrollbar
+    // hidden — the strip's own clipped edge is the continuation cue now.
+    expect(strip).toContain('overflow-x: auto');
+    expect(strip).toContain('scrollbar-width: none');
+    expect(originCss).toContain('.bt-tabs::-webkit-scrollbar');
+    // Light needs the hairline (strip and page are both white); dark separates
+    // by tone, so the edge is reserved but invisible.
+    expect(strip).toContain('--bt-tabs-edge: transparent');
+    expect(strip).toContain('border: 1px solid var(--bt-tabs-edge)');
+    expect(originCss).toMatch(
+      /:root\[data-bt-theme='light'\] \.bt-tabs \{\s*--bt-tabs-edge: var\(--bt-border\);/,
+    );
+  });
+
+  /**
+   * The one thing the owner rejected in #1281: the strip's right edge was
+   * masked to transparent, which under the contained bar dissolved its own
+   * border and background. No mask anywhere on the strip, in either browser
+   * spelling.
+   */
+  it('never fades out the trailing edge of the strip', () => {
+    const strip = tokenBlock('.bt-tabs');
+
+    expect(strip).not.toContain('mask-image');
+    expect(originCss).not.toContain('mask-image');
+  });
+
+  it('marks the selected tab tonally, with no gold anywhere on the strip', () => {
+    const activeTab = tokenBlock('.bt-tab.is-active');
+
+    expect(activeTab).toContain('background: var(--bt-surface-strong)');
+    // Transparent in dark, a hairline in light — the same idiom `.bt-seg` uses.
+    expect(activeTab).toContain('box-shadow: 0 0 0 1px var(--bt-raised-edge)');
+    expect(activeTab).not.toContain('gold');
+    expect(tokenBlock('.bt-tab')).not.toContain('gold');
+    expect(tokenBlock('.bt-tab:hover')).not.toContain('gold');
+  });
+});
+
 describe('Origin accessibility safety nets', () => {
   it('shows a persistent marker beside labels for native required fields', () => {
     expect(originCss).toMatch(
