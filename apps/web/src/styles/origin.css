@@ -1193,18 +1193,21 @@
   min-width: 0;
 }
 
-.bt-field > label {
+.bt-field > label,
+.bt-field > .bt-field__label > label {
   color: var(--bt-text-soft);
   font-size: 12px;
   font-weight: 570;
 }
 
-/* Native `required` remains the programmatic source of truth; the marker makes
-   that constraint visible before submit across both Origin and legacy forms. */
-.bt-field:has(:is(input, select, textarea):required) > label::after,
-label:has(+ :is(input, select, textarea):required)::after,
-label:has(> :is(input, select, textarea):required)::after {
-  content: ' *';
+.bt-field__label {
+  display: flex;
+  align-items: baseline;
+}
+
+/* Native `required` remains the programmatic source of truth. Shared fields
+   render this visual-only marker as aria-hidden markup beside their label. */
+.bt-field__required-marker {
   color: var(--bt-neg);
 }
 
@@ -2233,14 +2236,22 @@ label:has(> :is(input, select, textarea):required)::after {
    wrapped switcher back up to row one. The shell renders the switcher last in
    the DOM at this width instead — `usePhoneShell`, which must stay in lockstep
    with the 480px literal below. */
+/* iOS zooms the viewport when any focused native field computes below 16px.
+   Coarse pointers include landscape phones and iPads wider than the phone shell. */
+@media (pointer: coarse) {
+  :is(input, select, textarea) {
+    font-size: 16px !important;
+  }
+}
+
 @media (max-width: 480px) {
-  /* iOS zooms the viewport when any focused native field computes below 16px.
-     Keep this global: auth and portalled surfaces sit outside the app shell. */
+  /* Keep this global: auth and portalled surfaces sit outside the app shell. */
   :is(input, select, textarea) {
     font-size: 16px !important;
   }
 
-  .bt-btn--sm.bt-btn--icon,
+  .bt-btn--icon,
+  .bt-iconbtn,
   .bt-tab {
     min-width: 44px;
     min-height: 44px;
