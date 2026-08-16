@@ -105,6 +105,7 @@ import { uuidv7 } from 'uuidv7';
 
 import { getAssetDetail } from '../../lib/assetApi';
 import { marketAssetSnapshotRow, ownedAssetSnapshotRow } from './assetSnapshot';
+import { isLocalAssetSnapshot } from './engine/model';
 import { VaultCryptoError } from './errors';
 import { standingOrderOccurrenceId } from './standingOrders/occurrenceId';
 import {
@@ -2137,8 +2138,8 @@ function assertStandingOrderDefinition(
   if (
     isBuy &&
     assetId !== null &&
-    resolveTransactionAsset(document, assetId).isCustom &&
-    Date.parse(input.recordedAt) !== Date.parse(input.executedAt)
+    Date.parse(input.recordedAt) !== Date.parse(input.executedAt) &&
+    resolveTransactionAsset(document, assetId).isCustom
   ) {
     throw storeError(
       'VAULT_DATA_INVALID',
@@ -2209,7 +2210,7 @@ function standingOrderRowKind(order: VaultEntity): 'transaction' | 'cashMovement
 
 export function existingStandingOrderOccurrence(
   document: VaultDocument,
-  input: VaultStandingOrderOccurrenceInput,
+  input: Pick<VaultStandingOrderOccurrenceInput, 'occurrenceId' | 'orderId' | 'dueDate'>,
 ): VaultStandingOrderOccurrenceResult | null {
   const order = findLiveEntity(document, 'standingOrder', input.orderId);
   const runById = findLiveEntity(document, 'standingOrderRun', input.occurrenceId);
@@ -3299,12 +3300,7 @@ function appendMarketSnapshots(
 
 function portfolioAssetFromEntity(entity: VaultEntity): PortfolioAsset {
   const meta = recordField(entity.data, 'meta');
-  const isCustom =
-    typeof entity.data.isCustom === 'boolean'
-      ? entity.data.isCustom
-      : entity.data.ownerId != null ||
-        stringField(entity.data, 'providerId', 'manual') === 'manual' ||
-        stringField(entity.data, 'type') === 'custom';
+  const isCustom = isLocalAssetSnapshot(entity.data);
   return parseVaultData(
     () =>
       portfolioAssetSchema.parse({
