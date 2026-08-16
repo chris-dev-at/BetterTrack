@@ -123,6 +123,7 @@ test('AT tax mode: annual settlement applies a loss refund only within the same 
       .filter({ hasText: String(lossYear) })
       .first();
     await expect(gainYearRow).toContainText(/123[.,]75/);
+    await expect(lossYearRow).toContainText(/0[.,]00/);
     await expect(lossYearRow).not.toContainText(/27[.,]50/);
   }
 
