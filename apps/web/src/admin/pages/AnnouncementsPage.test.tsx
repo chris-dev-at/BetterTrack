@@ -134,3 +134,14 @@ test('uses the German announcement title in a German confirmation', async () => 
     '„Service-Update“ löschen?',
   );
 });
+
+test('keeps required announcement body markers out of accessible labels', async () => {
+  const { container } = renderPage();
+
+  expect(await screen.findByLabelText('English body', { exact: true })).toHaveAttribute('required');
+  const marker = container.querySelector<HTMLElement>(
+    'label[for="bodyEn"] + .bt-field__required-marker',
+  )!;
+  expect(marker).toHaveAttribute('aria-hidden', 'true');
+  expect(marker).toHaveTextContent('*');
+});
