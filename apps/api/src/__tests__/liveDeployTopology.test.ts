@@ -202,6 +202,13 @@ describe('compose readiness and cross-container exports (#939)', () => {
   const buildConfig = read('apps/api/tsup.config.ts');
   const dockerfile = read('apps/api/Dockerfile');
   const exportPath = '/var/lib/bettertrack/exports';
+  // Matches the named final runner stage, allowing `FROM --option image` and
+  // lowercase `as`; it intentionally does not span backslash-continued headers.
+  const runnerStageHeader = /^FROM\s+(?:--\S+\s+)*\S+\s+[Aa][Ss]\s+runner(?:\s|$).*$/m;
+  // Covers `apk add` plus any number or order of short or long options before
+  // `add` (for example, `apk -q --no-cache add`); it intentionally does not
+  // span backslash-continued command lines.
+  const apkAddCommand = /\bapk\s+(?:-{1,2}\S+\s+)*add\b/;
 
   it('gates api health on the DB + Redis readiness route', () => {
     expect(apiBlock).toContain('/api/v1/health/ready');
@@ -226,7 +233,6 @@ describe('compose readiness and cross-container exports (#939)', () => {
   });
 
   it('keeps the gyp fallback toolchain in Docker build-only stages', () => {
-    const runnerStageHeader = /^FROM\s+\S+\s+AS\s+runner(?:\s|$).*$/m;
     const runnerStageMatch = dockerfile.match(runnerStageHeader);
     const runnerMarkerIndex = runnerStageMatch?.index ?? -1;
 
@@ -234,10 +240,6 @@ describe('compose readiness and cross-container exports (#939)', () => {
 
     const buildStages = dockerfile.slice(0, runnerMarkerIndex);
     const runnerStage = dockerfile.slice(runnerMarkerIndex);
-    // Covers `apk add` plus any number or order of `--flag` options before
-    // `add` (for example, `apk --no-cache add`); it intentionally does not
-    // span backslash-continued command lines.
-    const apkAddCommand = /\bapk\s+(?:--\S+\s+)*add\b/;
 
     expect(
       buildStages,
@@ -247,6 +249,20 @@ describe('compose readiness and cross-container exports (#939)', () => {
       runnerStage,
       'Dockerfile invariant: build toolchain stays in build-only stages',
     ).not.toMatch(apkAddCommand);
+  });
+
+  it('recognizes runner-stage and apk option drift without changing the Dockerfile', () => {
+    expect('FROM --platform=$BUILDPLATFORM node:22-alpine AS runner').toMatch(runnerStageHeader);
+    expect('FROM node:22-alpine as runner').toMatch(runnerStageHeader);
+    expect('FROM node:22-alpine AS build').not.toMatch(runnerStageHeader);
+
+    for (const command of [
+      'RUN apk -U add curl',
+      'RUN apk -q --no-cache add curl',
+      'RUN apk --no-cache add curl',
+    ]) {
+      expect(command).toMatch(apkAddCommand);
+    }
   });
 });
 
