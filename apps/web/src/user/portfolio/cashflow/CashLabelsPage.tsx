@@ -1,7 +1,7 @@
 import { Link } from 'react-router-dom';
 
 import { useT } from '../../../i18n';
-import { PageHead } from '../../../ui/origin';
+import { Page, PageHead } from '../../../ui/origin';
 import { CashRulesPage } from './CashRulesPage';
 import { CashTagsPage } from './CashTagsPage';
 import { usePreservedSearch } from '../../components/LocalNav';
@@ -30,7 +30,7 @@ export function CashLabelsPage() {
     : '/portfolio/cash/movements';
 
   return (
-    <div className="bt-money-surface flex flex-col gap-8">
+    <Page className="bt-money-surface bt-portfolio-page bt-cash-labels-page" width="narrow">
       <PageHead
         actions={
           <Link className="bt-btn" to={movements}>
@@ -41,6 +41,6 @@ export function CashLabelsPage() {
       />
       <CashTagsPage embedded />
       <CashRulesPage embedded />
-    </div>
+    </Page>
   );
 }

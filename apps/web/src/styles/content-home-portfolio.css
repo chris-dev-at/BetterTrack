@@ -1,0 +1,669 @@
+/*
+ * Dashboard + portfolio content layer.
+ *
+ * These rules deliberately stop at page-owned classes. The shell, rail,
+ * portfolio switcher and local navigation keep their existing structure and
+ * behaviour; only the canvas below them adopts the Android-inspired compact
+ * surface rhythm.
+ */
+
+/* ── Dashboard ─────────────────────────────────────────────────────────── */
+
+.bt-home-page {
+  --bt-content-max: 1400px;
+  --bt-home-rowgap: 16px;
+  --bt-home-colgap: 16px;
+}
+
+.bt-home-page > .bt-page-head {
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--bt-border);
+}
+
+.bt-home-page .bt-page-title {
+  font-size: clamp(24px, calc(2 * var(--bt-vw)), 29px);
+}
+
+.bt-home-grid {
+  gap: var(--bt-home-rowgap) var(--bt-home-colgap);
+  margin-top: 0;
+}
+
+/* A widget is one connected card: label rail, then content. This mirrors the
+   mobile dashboard's BtCard grouping while retaining the user's 12-column
+   sizing and click-to-place editor. */
+.bt-home-w {
+  overflow: visible;
+  padding: 0 16px 16px;
+  border: 1px solid var(--bt-border);
+  border-radius: var(--bt-radius-card);
+  background: var(--bt-surface);
+  box-shadow: 0 1px 0 color-mix(in srgb, var(--bt-text) 3%, transparent);
+}
+
+.bt-home-w:has(.bt-home-hero) {
+  background:
+    radial-gradient(circle at 92% 8%, var(--bt-sheen-strong), transparent 34%), var(--bt-surface);
+}
+
+.bt-home-w__head {
+  min-height: 43px;
+  margin: 0 -16px 14px;
+  padding: 10px 16px;
+  border-bottom: 1px solid var(--bt-border);
+}
+
+.bt-home-w__title {
+  color: var(--bt-text-soft);
+  letter-spacing: 0.075em;
+}
+
+.bt-home-w__body,
+.bt-home-w__body > *,
+.bt-home-w__body svg {
+  max-width: 100%;
+  min-width: 0;
+}
+
+.bt-home-w.is-editing {
+  outline-offset: 4px;
+}
+
+.bt-home-w.is-armed {
+  background: var(--bt-selected);
+}
+
+.bt-home-grid.is-editing {
+  --bt-home-rowgap: 58px;
+  --bt-home-colgap: 40px;
+}
+
+.bt-home-hero .bt-hero-value {
+  font-size: clamp(32px, calc(3.2 * var(--bt-vw)), 45px);
+  line-height: 1;
+}
+
+.bt-home-hero__sub {
+  margin-top: 14px;
+}
+
+.bt-home-row,
+.bt-home-mover,
+.bt-home-news__group {
+  min-height: 46px;
+  padding-block: 10px;
+}
+
+.bt-home-pcards {
+  gap: 9px;
+}
+
+.bt-home-pcard {
+  border-color: var(--bt-border);
+  border-radius: 9px;
+  background: var(--bt-surface-quiet);
+}
+
+.bt-home-shortcuts {
+  gap: 8px;
+}
+
+.bt-home-shortcut {
+  min-height: 64px;
+  padding: 12px 13px;
+  border-color: var(--bt-border);
+  border-radius: 9px;
+  background: var(--bt-surface-quiet);
+}
+
+.bt-home-ptable {
+  width: 100%;
+}
+
+/* ── Portfolio overview ────────────────────────────────────────────────── */
+
+.bt-portfolio-page {
+  --bt-content-max: 1320px;
+  gap: 16px;
+}
+
+.bt-portfolio-page > .bt-page-head {
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--bt-border);
+}
+
+.bt-portfolio-hero {
+  padding: 20px;
+  border: 1px solid var(--bt-content-edge);
+  border-radius: 14px;
+  background:
+    radial-gradient(circle at 96% 0%, var(--bt-sheen-strong), transparent 36%), var(--bt-surface);
+}
+
+.bt-portfolio-hero .bt-hero-value {
+  font-size: clamp(34px, calc(3.5 * var(--bt-vw)), 48px);
+  line-height: 1;
+}
+
+.bt-portfolio-metrics {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  border-color: var(--bt-border);
+  border-radius: 10px;
+}
+
+.bt-portfolio-metrics .bt-stat {
+  min-height: 84px;
+  padding: 14px 15px;
+}
+
+.bt-portfolio-chart {
+  border-color: var(--bt-content-edge);
+}
+
+.bt-portfolio-chart .bt-surface__head {
+  align-items: center;
+}
+
+.bt-portfolio-chart .bt-chart-frame__plot {
+  padding-top: 2px;
+}
+
+.bt-portfolio-section {
+  margin-top: 0;
+  padding: 16px 18px;
+  border-color: var(--bt-content-edge);
+}
+
+.bt-portfolio-section > .bt-section__head {
+  margin: -2px 0 14px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--bt-border);
+}
+
+.bt-portfolio-section > .bt-table-wrap {
+  margin-inline: -18px;
+  width: calc(100% + 36px);
+  border-top: 1px solid var(--bt-border);
+}
+
+.bt-portfolio-section > .bt-phone-card-list {
+  margin-inline: -18px;
+  margin-bottom: -16px;
+}
+
+.bt-portfolio-section > .bt-phone-card-list > .bt-phone-card {
+  border-width: 1px 0 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.bt-portfolio-page .bt-table tbody tr:hover {
+  background: var(--bt-surface-hover);
+}
+
+/* Portfolio overview gains/losses are data, never brand decoration. */
+.bt-portfolio-page :is(.bt-pos, .text-emerald-400) {
+  color: var(--bt-pos);
+}
+
+.bt-portfolio-page :is(.bt-neg, .text-red-400) {
+  color: var(--bt-neg);
+}
+
+/* ── Settings, import and tax ──────────────────────────────────────────── */
+
+.bt-portfolio-settings > .bt-section,
+.bt-portfolio-import > .bt-section {
+  margin-top: 0;
+  padding: 16px 18px;
+  border: 1px solid var(--bt-content-edge);
+  border-radius: var(--bt-radius-card);
+  background: var(--bt-surface);
+}
+
+.bt-portfolio-settings > .bt-section > .bt-section__head {
+  margin: -2px 0 14px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--bt-border);
+}
+
+.bt-portfolio-settings .bt-settings-block {
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--bt-border);
+}
+
+.bt-portfolio-settings .bt-kind-option {
+  min-height: 44px;
+  border-radius: 9px;
+  background: var(--bt-surface-quiet);
+}
+
+.bt-portfolio-settings .bt-kind-option.is-active {
+  background: var(--bt-selected);
+  box-shadow: inset 0 0 0 1px var(--bt-border-strong);
+}
+
+.bt-portfolio-import > .bt-section > .bt-panel {
+  border: 0 !important;
+  background: transparent;
+  padding: 0;
+}
+
+.bt-portfolio-import > .bt-section .bt-table-wrap--panel,
+.bt-tax-report-page .bt-table-wrap--panel {
+  border-color: var(--bt-border);
+  border-radius: 10px;
+}
+
+.bt-tax-report-page > .bt-section {
+  margin-top: 0;
+}
+
+.bt-tax-report-page > .bt-section:has(> .bt-table-wrap),
+.bt-tax-report-page > .bt-section:has(> table) {
+  overflow: clip;
+  border: 1px solid var(--bt-content-edge);
+  border-radius: var(--bt-radius-card);
+  background: var(--bt-surface);
+}
+
+.bt-tax-report-page .bt-pftax-line {
+  margin: 0;
+  padding: 12px 14px;
+  border: 1px solid var(--bt-content-edge);
+  border-radius: 10px;
+  background: var(--bt-surface-quiet);
+}
+
+/* ── Cash pages ────────────────────────────────────────────────────────── */
+
+.bt-cash-overview-page > section,
+.bt-cash-sources-page > section {
+  margin-top: 0;
+  padding: 16px 18px;
+  border: 1px solid var(--bt-content-edge);
+  border-radius: var(--bt-radius-card);
+  background: var(--bt-surface);
+}
+
+.bt-cash-overview-page > section:first-of-type,
+.bt-cash-sources-hero {
+  padding: 18px 20px;
+  border: 1px solid var(--bt-content-edge);
+  border-radius: 14px;
+  background:
+    radial-gradient(circle at 95% 0%, var(--bt-sheen-strong), transparent 38%), var(--bt-surface);
+}
+
+.bt-cash-overview-page > section:first-of-type .bt-hero-value {
+  font-size: clamp(32px, calc(3.4 * var(--bt-vw)), 45px);
+  line-height: 1;
+}
+
+.bt-cash-overview-page .bt-acctgrid {
+  gap: 8px;
+  grid-template-columns: repeat(auto-fill, minmax(164px, 1fr));
+}
+
+.bt-cash-overview-page .bt-acctcard {
+  background: var(--bt-surface-quiet);
+}
+
+.bt-cash-overview-page .bt-bytag__bars {
+  flex: 1 1 360px;
+  min-width: 0;
+}
+
+.bt-cash-overview-page .bt-cashchart,
+.bt-cash-overview-page .bt-chart {
+  min-width: 0;
+}
+
+.bt-cash-overview-page > section > .bt-band,
+.bt-cash-budgets-page > .bt-band,
+.bt-cash-setup-section > .bt-band,
+.bt-cash-setup-section > div > .bt-band {
+  overflow: clip;
+  border: 1px solid var(--bt-border) !important;
+  border-radius: 10px;
+  background: var(--bt-surface-quiet);
+}
+
+.bt-cash-movements-page > .bt-table-wrap,
+.bt-cash-sources-page .bt-table-wrap {
+  overflow: auto;
+  border: 1px solid var(--bt-content-edge);
+  border-radius: var(--bt-radius-card);
+  background: var(--bt-surface);
+}
+
+.bt-cash-movements-page > .bt-phone-card-list,
+.bt-cash-sources-page .bt-phone-card-list {
+  gap: 0;
+  overflow: clip;
+  border: 1px solid var(--bt-content-edge);
+  border-radius: var(--bt-radius-card);
+  background: var(--bt-surface);
+}
+
+.bt-cash-movements-page > .bt-phone-card-list > .bt-phone-card,
+.bt-cash-sources-page .bt-phone-card-list > .bt-phone-card {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+}
+
+.bt-cash-movements-page > .bt-phone-card-list > .bt-phone-card + .bt-phone-card,
+.bt-cash-sources-page .bt-phone-card-list > .bt-phone-card + .bt-phone-card {
+  border-top: 1px solid var(--bt-border);
+}
+
+.bt-cash-budgets-page > .bt-band {
+  background: var(--bt-surface);
+}
+
+.bt-cash-labels-page {
+  gap: 14px;
+}
+
+.bt-cash-labels-page > .bt-cash-setup-section {
+  gap: 14px;
+  padding: 16px 18px;
+  border: 1px solid var(--bt-content-edge);
+  border-radius: var(--bt-radius-card);
+  background: var(--bt-surface);
+}
+
+.bt-cash-labels-page > .bt-cash-setup-section + .bt-cash-setup-section {
+  margin-top: 0;
+}
+
+/* Repeated action rows stay one group. Their controls may wrap without making
+   the data column wider than the viewport. */
+.bt-portfolio-page :is(.bt-band__row, .bt-phone-card, .bt-data-row) {
+  min-width: 0;
+}
+
+.bt-portfolio-page .bt-row-actions {
+  max-width: 100%;
+}
+
+/* ── Portfolio collaboration surfaces ─────────────────────────────────── */
+
+.bt-source-badge {
+  min-height: 18px;
+  padding: 1px 7px;
+  font-size: 10.5px;
+  line-height: 1.2;
+}
+
+.bt-mirror-stack {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 44px;
+  max-width: 100%;
+  padding: 6px 12px;
+  border: 1px solid var(--bt-border);
+  border-radius: 9px;
+  background: var(--bt-surface-quiet);
+  color: var(--bt-text);
+  font: inherit;
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.bt-mirror-stack:hover {
+  border-color: var(--bt-border-strong);
+  background: var(--bt-surface-hover);
+}
+
+.bt-mirror-stack:focus-visible {
+  outline: 2px solid var(--bt-gold-graphic);
+  outline-offset: 2px;
+}
+
+.bt-mirror-avatar {
+  box-shadow: 0 0 0 2px var(--bt-surface-quiet);
+}
+
+.bt-mirror-stack__more {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--bt-surface-strong);
+  box-shadow: 0 0 0 2px var(--bt-surface-quiet);
+  color: var(--bt-text-soft);
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.bt-mirror-attribution {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 100%;
+  padding: 2px 8px 2px 2px;
+  border: 1px solid var(--bt-border);
+  border-radius: 999px;
+  background: var(--bt-surface-soft);
+  color: var(--bt-text-soft);
+  font-size: 11px;
+}
+
+.bt-mirror-list {
+  overflow: clip;
+  margin: 0;
+  padding: 0;
+  border: 1px solid var(--bt-border);
+  border-radius: 9px;
+  background: var(--bt-surface-quiet);
+  list-style: none;
+}
+
+.bt-mirror-list > * + * {
+  border-top: 1px solid var(--bt-border);
+}
+
+/* ── Phone safety (reference viewport: 390px) ───────────────────────────── */
+
+@media (max-width: 759.98px) {
+  .bt-home-page,
+  .bt-portfolio-page {
+    width: 100%;
+    max-width: 100%;
+  }
+
+  .bt-home-page > .bt-page-head,
+  .bt-portfolio-page > .bt-page-head {
+    padding-bottom: 12px;
+  }
+
+  .bt-home-grid {
+    --bt-home-rowgap: 12px;
+    gap: var(--bt-home-rowgap) 0;
+  }
+
+  .bt-home-grid.is-editing {
+    --bt-home-rowgap: 54px;
+  }
+
+  .bt-home-w {
+    padding: 0 14px 14px;
+    border-radius: 10px;
+  }
+
+  .bt-home-w__head {
+    margin-inline: -14px;
+    padding-inline: 14px;
+  }
+
+  .bt-home-pcards {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .bt-home-shortcuts {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .bt-home-shortcut {
+    align-items: center;
+    min-height: 70px;
+  }
+
+  .bt-home-shortcut__sub {
+    display: none;
+  }
+
+  .bt-home-movers {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 14px;
+  }
+
+  .bt-home-ptable,
+  .bt-portfolio-page .bt-table {
+    max-width: none;
+  }
+
+  .bt-portfolio-hero,
+  .bt-cash-overview-page > section:first-of-type,
+  .bt-cash-sources-hero {
+    padding: 16px;
+  }
+
+  .bt-portfolio-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .bt-portfolio-metrics > * {
+    border-left: 0;
+    border-top: 1px solid var(--bt-border);
+  }
+
+  .bt-portfolio-metrics > *:nth-child(-n + 2) {
+    border-top: 0;
+  }
+
+  .bt-portfolio-metrics > *:nth-child(even) {
+    border-left: 1px solid var(--bt-border);
+  }
+
+  .bt-portfolio-metrics > *:last-child:nth-child(odd) {
+    grid-column: 1 / -1;
+  }
+
+  .bt-portfolio-section,
+  .bt-portfolio-settings > .bt-section,
+  .bt-portfolio-import > .bt-section,
+  .bt-cash-overview-page > section,
+  .bt-cash-sources-page > section,
+  .bt-cash-labels-page > .bt-cash-setup-section {
+    padding: 14px;
+    border-radius: 10px;
+  }
+
+  .bt-portfolio-section > .bt-table-wrap {
+    width: calc(100% + 28px);
+    margin-inline: -14px;
+  }
+
+  .bt-portfolio-section > .bt-phone-card-list {
+    margin-inline: -14px;
+    margin-bottom: -14px;
+  }
+
+  .bt-cash-overview-page .bt-acctgrid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .bt-cash-overview-page .bt-bytag {
+    align-items: stretch;
+  }
+
+  .bt-cash-overview-page .bt-bytag__chart {
+    margin-inline: auto;
+  }
+
+  .bt-cash-overview-page .bt-bytag__bars {
+    flex-basis: 100%;
+    width: 100%;
+  }
+
+  .bt-cash-overview-page .bt-bytag__bars li {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .bt-cash-overview-page .bt-bytag__bars li > :first-child {
+    width: auto;
+  }
+
+  .bt-cash-overview-page .bt-bytag__bars li > :nth-child(2) {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+
+  .bt-cash-overview-page .bt-bytag__bars li > :last-child {
+    width: auto;
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .bt-portfolio-page .bt-page-head__actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .bt-portfolio-page .bt-page-head__actions > :only-child,
+  .bt-portfolio-page .bt-page-head__actions > :last-child:nth-child(odd) {
+    grid-column: 1 / -1;
+  }
+
+  .bt-portfolio-page .bt-page-head__actions > :is(.bt-btn, a, label) {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .bt-portfolio-page .bt-row-actions {
+    width: 100%;
+    margin-left: 0 !important;
+    justify-content: flex-start;
+  }
+
+  .bt-portfolio-page .bt-band__row {
+    padding: 12px 13px;
+  }
+}
+
+@media (max-width: 420px) {
+  .bt-home-shortcuts {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .bt-portfolio-page .bt-page-head__actions {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .bt-portfolio-page .bt-page-head__actions > * {
+    grid-column: 1;
+    width: 100%;
+  }
+
+  .bt-cash-overview-page .bt-acctgrid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .bt-home-w,
+  .bt-home-pcard,
+  .bt-home-shortcut {
+    transition: none;
+  }
+}

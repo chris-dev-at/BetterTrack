@@ -93,7 +93,7 @@ export function MirrorAvatarStack({
     <button
       type="button"
       onClick={onClick}
-      className="group flex items-center gap-3 rounded-md border border-neutral-800 bg-neutral-900/60 px-3 py-1.5 text-left text-sm hover:border-neutral-700 hover:bg-neutral-800 focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+      className="bt-mirror-stack"
       aria-label={t('mirrorchain.avatarStack.openAria', {
         name: badge.chainName,
         count: badge.memberCount,
@@ -101,7 +101,7 @@ export function MirrorAvatarStack({
     >
       <span className="flex -space-x-2" aria-hidden="true">
         {shown.length === 0 ? (
-          <Avatar name={badge.chainName} size="sm" className="ring-2 ring-neutral-900" />
+          <Avatar name={badge.chainName} size="sm" className="bt-mirror-avatar" />
         ) : (
           shown.map((m) => (
             <Avatar
@@ -109,19 +109,15 @@ export function MirrorAvatarStack({
               name={m.username}
               iconId={m.profileIcon}
               size="sm"
-              className="ring-2 ring-neutral-900"
+              className="bt-mirror-avatar"
             />
           ))
         )}
-        {hidden > 0 ? (
-          <span className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-neutral-800 text-xs font-medium text-neutral-200 ring-2 ring-neutral-900">
-            +{hidden}
-          </span>
-        ) : null}
+        {hidden > 0 ? <span className="bt-mirror-stack__more">+{hidden}</span> : null}
       </span>
       <span className="flex flex-col leading-tight">
-        <span className="font-medium text-neutral-100">{badge.chainName}</span>
-        <span className="text-xs text-neutral-400">
+        <span className="bt-row-title">{badge.chainName}</span>
+        <span className="bt-meta">
           {badge.sync.synced
             ? t('mirrorchain.avatarStack.membersCount', { count: badge.memberCount })
             : t('mirrorchain.avatarStack.syncing', { percent: badge.sync.percent })}
@@ -142,7 +138,7 @@ export function MirrorAvatarStack({
 export function MirrorForkProvenanceLine({ fork }: { fork: PortfolioForkProvenance }) {
   const t = useT();
   return (
-    <p className="text-xs text-neutral-400">
+    <p className="bt-meta">
       {t('mirrorchain.fork.provenance', {
         chain: fork.chainName,
         date: formatDate(fork.endedAt),
@@ -172,7 +168,7 @@ export function MirrorAttributionChip({
   const label = stripped ? t('mirrorchain.attribution.groupMember') : attribution.username;
   return (
     <span
-      className="inline-flex items-center gap-1.5 rounded-full bg-neutral-800 py-0.5 pl-0.5 pr-2 text-xs text-neutral-300"
+      className="bt-mirror-attribution"
       title={t('mirrorchain.attribution.by', { username: label })}
     >
       <Avatar name={label} iconId={attribution.profileIcon} size="sm" className="!h-4 !w-4" />
@@ -214,7 +210,7 @@ export function MemberSheet({ chainId, onClose }: { chainId: string; onClose: ()
         onClose={onClose}
         widthClassName="max-w-2xl"
       >
-        <p className="text-sm text-neutral-400">{t('common.loading')}</p>
+        <p className="bt-meta">{t('common.loading')}</p>
       </Dialog>
     );
   }
@@ -244,7 +240,7 @@ export function MemberSheet({ chainId, onClose }: { chainId: string; onClose: ()
     >
       <div className="flex flex-col gap-6">
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="text-xs text-neutral-400">
+          <div className="bt-meta">
             {t('mirrorchain.memberSheet.roster', {
               count: data.members.length,
               max: data.memberCap,
@@ -283,10 +279,7 @@ export function MemberSheet({ chainId, onClose }: { chainId: string; onClose: ()
         {/* Named, like every other list in this sheet: three unlabelled lists in
             one dialog are indistinguishable to a screen reader, and the member
             rows and the activity feed both mention the same usernames. */}
-        <ul
-          aria-label={t('mirrorchain.membersListAria')}
-          className="divide-y divide-neutral-800 rounded-md border border-neutral-800"
-        >
+        <ul aria-label={t('mirrorchain.membersListAria')} className="bt-mirror-list">
           {data.members.map((member) => (
             <MemberRow
               key={member.userId ?? member.username}
@@ -373,15 +366,13 @@ function MemberRow({
       <div className="flex items-center gap-3">
         <Avatar name={member.username} iconId={member.profileIcon} size="md" />
         <div className="flex flex-col leading-tight">
-          <span className="text-sm font-medium text-neutral-100">
+          <span className="bt-row-title">
             {member.username}
             {member.isSelf ? (
-              <span className="ml-2 text-xs text-neutral-400">
-                ({t('mirrorchain.memberRow.you')})
-              </span>
+              <span className="bt-meta ml-2">({t('mirrorchain.memberRow.you')})</span>
             ) : null}
           </span>
-          <span className="text-xs text-neutral-400">
+          <span className="bt-meta">
             {t(`mirrorchain.role.${member.role}`)} ·{' '}
             {t('mirrorchain.memberRow.joined', {
               date: formatDate(member.joinedAt),
@@ -391,7 +382,7 @@ function MemberRow({
       </div>
       <div className="flex flex-wrap items-center gap-2">
         {!member.sync.synced ? (
-          <span className="rounded-full bg-sky-500/10 px-2 py-0.5 text-xs text-sky-300">
+          <span className="bt-badge bt-badge--blue">
             {t('mirrorchain.avatarStack.syncing', { percent: member.sync.percent })}
           </span>
         ) : null}
@@ -431,27 +422,22 @@ function ActivitySection({
   const t = useT();
   return (
     <section className="flex flex-col gap-2">
-      <h3 className="text-xs font-semibold uppercase tracking-wide text-neutral-400">
-        {t('mirrorchain.activity.title')}
-      </h3>
+      <h3 className="bt-label">{t('mirrorchain.activity.title')}</h3>
       {query.isLoading ? (
-        <p className="text-sm text-neutral-400">{t('common.loading')}</p>
+        <p className="bt-meta">{t('common.loading')}</p>
       ) : query.isError || !query.data ? (
         <Alert tone="error">{t('mirrorchain.activity.loadError')}</Alert>
       ) : query.data.entries.length === 0 ? (
-        <p className="text-sm text-neutral-400">{t('mirrorchain.activity.empty')}</p>
+        <p className="bt-meta">{t('mirrorchain.activity.empty')}</p>
       ) : (
-        <ul
-          aria-label={t('mirrorchain.activityListAria')}
-          className="divide-y divide-neutral-800 rounded-md border border-neutral-800"
-        >
+        <ul aria-label={t('mirrorchain.activityListAria')} className="bt-mirror-list">
           {query.data.entries.slice(0, ACTIVITY_LIMIT).map((entry) => (
             <li
               key={entry.seq}
               className="flex flex-wrap items-baseline justify-between gap-2 px-3 py-2 text-sm"
             >
-              <span className="text-neutral-200">{entry.summary}</span>
-              <span className="text-xs text-neutral-400">{formatDate(entry.createdAt)}</span>
+              <span className="bt-soft">{entry.summary}</span>
+              <span className="bt-meta">{formatDate(entry.createdAt)}</span>
             </li>
           ))}
         </ul>
@@ -509,13 +495,13 @@ export function InviteDialog({
       widthClassName="max-w-md"
     >
       <div className="flex flex-col gap-3">
-        <p className="text-sm text-neutral-400">{t('mirrorchain.invite.body')}</p>
+        <p className="bt-meta">{t('mirrorchain.invite.body')}</p>
         <input
           type="search"
           value={query}
           onChange={(event) => setQuery(event.target.value)}
           placeholder={t('mirrorchain.invite.searchPlaceholder')}
-          className="w-full rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm text-neutral-100 placeholder-neutral-400 focus:border-sky-400 focus:outline-none"
+          className="bt-input"
         />
         <AsyncReadState
           loading={friendsQuery.isLoading}
@@ -524,11 +510,11 @@ export function InviteDialog({
           onRetry={() => void friendsQuery.refetch()}
         />
         {!friendsQuery.isLoading && !friendsQuery.error && friends.length === 0 ? (
-          <p className="text-sm text-neutral-400">{t('mirrorchain.invite.empty')}</p>
+          <p className="bt-meta">{t('mirrorchain.invite.empty')}</p>
         ) : !friendsQuery.isLoading && !friendsQuery.error ? (
           <ul
             aria-label={t('mirrorchain.inviteListAria')}
-            className="max-h-72 divide-y divide-neutral-800 overflow-y-auto rounded-md border border-neutral-800"
+            className="bt-mirror-list max-h-72 overflow-y-auto"
           >
             {friends.map((friendship) => (
               <li
@@ -541,7 +527,7 @@ export function InviteDialog({
                     iconId={friendship.user.profileIcon}
                     size="sm"
                   />
-                  <span className="text-sm text-neutral-100">{friendship.user.username}</span>
+                  <span className="bt-row-title">{friendship.user.username}</span>
                 </span>
                 <Button
                   variant="primary"
@@ -609,7 +595,7 @@ export function MirrorInviteStepDialog({
         restoreFocusRef={restoreFocusRef}
         widthClassName="max-w-md"
       >
-        <p className="text-sm text-neutral-400">{t('common.loading')}</p>
+        <p className="bt-meta">{t('common.loading')}</p>
       </Dialog>
     );
   }
@@ -673,7 +659,7 @@ function RenameChainDialog({
           onChange={(event) => setName(event.target.value)}
           autoFocus
           maxLength={120}
-          className="w-full rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm text-neutral-100 focus:border-sky-400 focus:outline-none"
+          className="bt-input"
         />
         {rename.isError ? (
           <Alert tone="error">
@@ -752,7 +738,7 @@ function ConfirmActionDialog({
   return (
     <Dialog title={title} onClose={onClose} widthClassName="max-w-md">
       <div className="flex flex-col gap-3">
-        <p className="text-sm text-neutral-300">{body}</p>
+        <p className="bt-soft text-sm">{body}</p>
         {mutation.isError ? (
           <Alert tone="error">
             {isForbidden(mutation.error)
@@ -768,7 +754,7 @@ function ConfirmActionDialog({
             variant="primary"
             onClick={() => mutation.mutate()}
             disabled={mutation.isPending}
-            className={cx(danger && 'bg-red-700 hover:bg-red-600 disabled:bg-red-900')}
+            className={cx(danger && 'bt-btn--danger')}
           >
             {mutation.isPending ? t('common.processing') : confirmLabel}
           </Button>
@@ -829,7 +815,7 @@ export function CreateChainDialog({
           placeholder={t('mirrorchain.create.namePlaceholder')}
           maxLength={120}
           autoFocus
-          className="w-full rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm text-neutral-100 focus:border-sky-400 focus:outline-none"
+          className="bt-input"
         />
         {create.isError ? <Alert tone="error">{t('mirrorchain.create.error')}</Alert> : null}
         <div className="flex justify-end gap-2">
@@ -886,7 +872,7 @@ export function ConvertChainDialog({
           value={name}
           onChange={(event) => setName(event.target.value)}
           maxLength={120}
-          className="w-full rounded-md border border-neutral-800 bg-neutral-950 px-3 py-2 text-sm text-neutral-100 focus:border-sky-400 focus:outline-none"
+          className="bt-input"
         />
         {convert.isError ? (
           <Alert tone="error">{convertErrorMessage(convert.error, t)}</Alert>
@@ -946,7 +932,7 @@ export function AcceptInviteDialog({
       widthClassName="max-w-md"
     >
       <div className="flex flex-col gap-4">
-        <p className="text-sm text-neutral-200">
+        <p className="bt-soft text-sm">
           {t('mirrorchain.accept.acknowledgment', { chain: invite.chainName })}
         </p>
         {accept.isError || decline.isError ? (

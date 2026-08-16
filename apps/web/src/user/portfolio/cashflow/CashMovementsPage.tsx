@@ -22,7 +22,7 @@ import { getCashMovements } from '../../../lib/portfolioApi';
 import { Alert } from '../../components/ui';
 import { AsyncReadState } from '../../components/AsyncReadState';
 import { EmptyState, MoneyText, Skeleton } from '../../../ui';
-import { Button, PageHead } from '../../../ui/origin';
+import { Button, Page, PageHead } from '../../../ui/origin';
 import { SourceBadge } from '../SourceBadge';
 import { usePreservedSearch } from '../../components/LocalNav';
 import { useCreateIntent } from '../../components/useCreateIntent';
@@ -127,7 +127,7 @@ export function CashMovementsPage() {
   }
 
   return (
-    <div className="bt-money-surface flex flex-col gap-6">
+    <Page className="bt-money-surface bt-portfolio-page bt-cash-movements-page" width="wide">
       {/* Labels live one click from here on purpose: this is where you are
           standing when you notice a movement is tagged wrong, or not at all. */}
       <PageHead
@@ -368,6 +368,6 @@ export function CashMovementsPage() {
           tags={tags}
         />
       ) : null}
-    </div>
+    </Page>
   );
 }

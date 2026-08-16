@@ -19,7 +19,7 @@ import { EM_DASH, formatDate, formatPercent } from '../../lib/format';
 import { Alert } from '../components/ui';
 import { AsyncReadState } from '../components/AsyncReadState';
 import { EmptyState, MoneyText, Skeleton } from '../../ui';
-import { Badge, Button, PageHead } from '../../ui/origin';
+import { Badge, Button, Page, PageHead } from '../../ui/origin';
 import { resolveActivePortfolio } from './PortfolioSwitcher';
 import { useCreateIntent } from '../components/useCreateIntent';
 import { ACTIVE_PORTFOLIO_PARAM, CREATE_INTENT } from '../routeParams';
@@ -580,7 +580,7 @@ export function CashSourcesPage() {
   }
 
   return (
-    <div className="bt-money-surface flex flex-col">
+    <Page className="bt-money-surface bt-portfolio-page bt-cash-sources-page" width="wide">
       <PageHead
         actions={
           <>
@@ -598,7 +598,7 @@ export function CashSourcesPage() {
         title={t('portfolio.cashSources.title')}
       />
 
-      <div>
+      <div className="bt-cash-sources-hero">
         <p className="bt-label">{t('portfolio.cashSources.totalLabel')}</p>
         <p className="bt-num" style={{ marginTop: 4, fontSize: 24, fontWeight: 630 }}>
           <MoneyText amount={totalActive} currency="EUR" />
@@ -712,6 +712,6 @@ export function CashSourcesPage() {
           onSubmitted={refetchAll}
         />
       ) : null}
-    </div>
+    </Page>
   );
 }

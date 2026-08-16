@@ -101,7 +101,7 @@ export function CashTagsPage({ embedded = false }: { embedded?: boolean } = {}) 
   }
 
   return (
-    <div className="bt-money-surface flex flex-col gap-6">
+    <div className="bt-money-surface bt-cash-setup-section flex flex-col gap-6">
       <SectionHead
         action={
           <Button onClick={() => setCreating(true)} variant="primary">

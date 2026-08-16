@@ -5,7 +5,7 @@ import type { PortfolioSummary, TaxMode } from '@bettertrack/contracts';
 
 import { useI18n, useT } from '../../i18n';
 import { Disclaimer, EmptyState } from '../../ui';
-import { Button, Icon, SkeletonBlock } from '../../ui/origin';
+import { Button, Icon, Page, SkeletonBlock } from '../../ui/origin';
 import { Alert } from '../components/ui';
 import { vaultMoneyErrorKey } from '../vault/engine/errorCopy';
 import { asMoneyFailure, type VaultMoneyFailure } from '../vault/engine/errors';
@@ -65,29 +65,29 @@ export function ParanoidTaxReport({ header }: { header: ReactNode }) {
 
   if (session === null) {
     return (
-      <div>
+      <Page className="bt-portfolio-page bt-tax-report-page" width="wide">
         {header}
         <EmptyState
           description={t('portfolio.taxReport.paranoid.locked.description')}
           icon="🔒"
           title={t('portfolio.taxReport.paranoid.locked.title')}
         />
-      </div>
+      </Page>
     );
   }
 
   if (portfolios.status === 'pending') {
     return (
-      <div>
+      <Page className="bt-portfolio-page bt-tax-report-page" width="wide">
         {header}
         <SkeletonBlock height={96} />
-      </div>
+      </Page>
     );
   }
 
   if (portfolios.status === 'error') {
     return (
-      <div>
+      <Page className="bt-portfolio-page bt-tax-report-page" width="wide">
         {header}
         <EmptyState
           cta={
@@ -100,31 +100,31 @@ export function ParanoidTaxReport({ header }: { header: ReactNode }) {
           description={t(vaultMoneyErrorKey(portfolios.failure))}
           title={t('portfolio.taxReport.loadError.title')}
         />
-      </div>
+      </Page>
     );
   }
 
   const active = resolveActivePortfolio(portfolios.list, param);
   if (!active) {
     return (
-      <div>
+      <Page className="bt-portfolio-page bt-tax-report-page" width="wide">
         {header}
         <EmptyState
           description={t('portfolio.taxReport.empty.description')}
           icon="🧾"
           title={t('portfolio.taxReport.empty.title')}
         />
-      </div>
+      </Page>
     );
   }
 
   return (
-    <div>
+    <Page className="bt-portfolio-page bt-tax-report-page" width="wide">
       {header}
       <div className="bt-section">
         <ParanoidYearTable session={session} portfolio={active} />
       </div>
-    </div>
+    </Page>
   );
 }
 

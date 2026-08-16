@@ -16,7 +16,7 @@ import {
 import { Alert } from '../../components/ui';
 import { AsyncReadState } from '../../components/AsyncReadState';
 import { EmptyState, Skeleton } from '../../../ui';
-import { Badge, Button, PageHead } from '../../../ui/origin';
+import { Badge, Button, Page, PageHead } from '../../../ui/origin';
 import { CashBudgetDialog } from './CashBudgetDialog';
 import { DisabledActionHint } from './DisabledActionHint';
 import { TagChip } from './TagChip';
@@ -106,7 +106,7 @@ export function CashBudgetsPage() {
       : t('cashflow.budgets.dialog.noTags');
 
   return (
-    <div className="bt-money-surface flex flex-col gap-6">
+    <Page className="bt-money-surface bt-portfolio-page bt-cash-budgets-page" width="wide">
       <PageHead
         actions={
           <>
@@ -253,6 +253,6 @@ export function CashBudgetsPage() {
           tags={tags}
         />
       ) : null}
-    </div>
+    </Page>
   );
 }

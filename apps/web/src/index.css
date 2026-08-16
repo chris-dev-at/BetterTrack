@@ -1,5 +1,6 @@
 @import 'tailwindcss';
 @import './styles/origin.css';
+@import './styles/content-home-portfolio.css';
 @import './styles/content-overlays-control.css';
 @import './styles/admin-content.css';
 

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react
 
 import { useT } from '../../i18n';
 import { cx } from '../../lib/cx';
-import { Button, Empty, PageHead } from '../../ui/origin';
+import { Button, Empty, Page, PageHead } from '../../ui/origin';
 import { useAuth } from '../AuthContext';
 import { AsyncReadState } from '../components/AsyncReadState';
 import { PortfolioPage } from '../portfolio/PortfolioPage';
@@ -277,7 +277,7 @@ function HomeBoard() {
   const greeting = user?.username ? `${t('home.greeting')}, ${user.username}` : t('home.greeting');
 
   return (
-    <div className="bt-phone-surface bt-home-page">
+    <Page className="bt-phone-surface bt-home-page" width="wide">
       <PageHead
         actions={
           editing ? (
@@ -386,6 +386,6 @@ function HomeBoard() {
         }}
         open={addOpen}
       />
-    </div>
+    </Page>
   );
 }

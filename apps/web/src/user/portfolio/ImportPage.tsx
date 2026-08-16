@@ -24,7 +24,7 @@ import {
 } from '../../lib/importsApi';
 import { listCashSources, listPortfolios } from '../../lib/portfolioApi';
 import { EmptyState, MoneyText } from '../../ui';
-import { Badge, Button, Field, PageHead, Select, type BadgeTone } from '../../ui/origin';
+import { Badge, Button, Field, Page, PageHead, Select, type BadgeTone } from '../../ui/origin';
 import { Alert } from '../components/ui';
 import { AsyncReadState, type AsyncRead } from '../components/AsyncReadState';
 import { ACTIVE_PORTFOLIO_PARAM, resolveActivePortfolio } from './PortfolioSwitcher';
@@ -222,7 +222,7 @@ export function ImportPage() {
   const counts = preview?.batch.counts;
 
   return (
-    <div>
+    <Page className="bt-portfolio-page bt-portfolio-import" width="wide">
       <PageHead title={t('portfolio.import.title')}>
         <p className="bt-page-sub" style={{ maxWidth: 720 }}>
           {t('portfolio.import.intro')}
@@ -437,6 +437,6 @@ export function ImportPage() {
           </div>
         </section>
       ) : null}
-    </div>
+    </Page>
   );
 }

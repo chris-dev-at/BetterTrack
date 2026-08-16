@@ -16,7 +16,7 @@ import { EM_DASH, formatDate, formatMoney } from '../../../lib/format';
 import { Alert } from '../../components/ui';
 import { AsyncReadState } from '../../components/AsyncReadState';
 import { EmptyState, MoneyText, Skeleton } from '../../../ui';
-import { Icon, PageHead } from '../../../ui/origin';
+import { Icon, Page, PageHead } from '../../../ui/origin';
 import { AllocationDonut } from '../../../ui/charts';
 import { CashflowChart } from './CashflowChart';
 import { MonthPicker } from './MonthPicker';
@@ -151,7 +151,7 @@ export function CashOverviewPage() {
   const tagMax = Math.max(1, ...summary.tags.map((tag) => tag.outflow));
 
   return (
-    <div className="bt-money-surface flex flex-col gap-8">
+    <Page className="bt-money-surface bt-portfolio-page bt-cash-overview-page" width="wide">
       <PageHead
         actions={
           <>
@@ -414,6 +414,6 @@ export function CashOverviewPage() {
           )
         ) : null}
       </section>
-    </div>
+    </Page>
   );
 }

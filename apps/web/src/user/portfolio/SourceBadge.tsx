@@ -50,10 +50,7 @@ export function SourceBadge({ source, className }: { source: string; className?:
   if (label === null) return null;
   return (
     <span
-      className={
-        'inline-flex items-center rounded-full border border-sky-800/60 bg-sky-950/40 px-1.5 py-0.5 text-[0.65rem] font-medium leading-none text-sky-300' +
-        (className ? ` ${className}` : '')
-      }
+      className={`bt-badge bt-badge--blue bt-source-badge${className ? ` ${className}` : ''}`}
       title={label}
     >
       {label}

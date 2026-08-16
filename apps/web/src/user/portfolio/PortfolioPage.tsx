@@ -39,7 +39,17 @@ import {
   formatSignedPercent,
 } from '../../lib/format';
 import { EmptyState, MoneyText } from '../../ui';
-import { Badge, Button, PageHead, Seg, SkeletonBlock, Stat, StatStrip } from '../../ui/origin';
+import {
+  Badge,
+  Button,
+  ChartFrame,
+  MetricGrid,
+  Page,
+  PageHead,
+  Seg,
+  SkeletonBlock,
+  Stat,
+} from '../../ui/origin';
 import { AllocationDonut, PriceChart, useChartDisplayMode } from '../../ui/charts';
 import { MAIN_SERIES, POSITIVE } from '../../ui/charts/palette';
 import type { AllocationSegment, PriceRange } from '../../ui/charts';
@@ -194,7 +204,10 @@ function TotalsHeader({
   const cashPct = investedPct == null ? null : 100 - investedPct;
 
   return (
-    <section aria-label={t('portfolio.overview.totalsAriaLabel')} className="flex flex-col gap-5">
+    <section
+      aria-label={t('portfolio.overview.totalsAriaLabel')}
+      className="bt-portfolio-hero flex flex-col gap-5"
+    >
       <div className="flex flex-wrap items-end justify-between gap-x-8 gap-y-4">
         <div>
           <p className="bt-label">{t('portfolio.overview.netWorth.label')}</p>
@@ -211,7 +224,7 @@ function TotalsHeader({
           <LiquidityRing investedPct={investedPct} cashPct={cashPct} />
         ) : null}
       </div>
-      <StatStrip>
+      <MetricGrid className="bt-portfolio-metrics">
         <Stat
           label={t('portfolio.overview.field.marketValue')}
           value={<MoneyText amount={totals.marketValueEur} />}
@@ -244,7 +257,7 @@ function TotalsHeader({
           label={t('portfolio.overview.field.cash')}
           value={<MoneyText amount={totals.cashEur} />}
         />
-      </StatStrip>
+      </MetricGrid>
     </section>
   );
 }
@@ -282,7 +295,10 @@ function AllocationSection({ holdings, cashEur }: { holdings: Holding[]; cashEur
   if (byAsset.length === 0) return null;
 
   return (
-    <section aria-label={t('portfolio.overview.allocationAriaLabel')} className="bt-section">
+    <section
+      aria-label={t('portfolio.overview.allocationAriaLabel')}
+      className="bt-section bt-surface bt-portfolio-section"
+    >
       <div
         style={{
           display: 'grid',
@@ -403,7 +419,10 @@ function WinnersLosersSection({ holdings }: { holdings: Holding[] }) {
     .slice(0, WINNERS_LOSERS_LIMIT);
 
   return (
-    <section aria-label={t('portfolio.overview.winnersLosers.ariaLabel')} className="bt-section">
+    <section
+      aria-label={t('portfolio.overview.winnersLosers.ariaLabel')}
+      className="bt-section bt-surface bt-portfolio-section"
+    >
       <div className="bt-section__head">
         <h2 className="bt-h2">{t('portfolio.overview.winnersLosers.heading')}</h2>
         <Seg
@@ -460,7 +479,7 @@ function RecentTransactionsSection({
   return (
     <section
       aria-label={t('portfolio.overview.recentTransactions.ariaLabel')}
-      className="bt-section"
+      className="bt-section bt-surface bt-portfolio-section"
     >
       <div className="bt-section__head">
         <h2 className="bt-h2">{t('portfolio.overview.recentTransactions.heading')}</h2>
@@ -1374,7 +1393,10 @@ function DividendIntelSection() {
   const total = view === 'monthly' ? proj.monthlyTotalEur : proj.yearlyTotalEur;
 
   return (
-    <section aria-label={t('portfolio.dividends.ariaLabel')} className="bt-section">
+    <section
+      aria-label={t('portfolio.dividends.ariaLabel')}
+      className="bt-section bt-surface bt-portfolio-section"
+    >
       <div className="bt-section__head">
         <h2 className="bt-h2">{t('portfolio.dividends.title')}</h2>
         <Seg
@@ -1763,7 +1785,7 @@ export function PortfolioPage() {
   }
 
   return (
-    <div className="bt-money-surface flex flex-col">
+    <Page className="bt-money-surface bt-portfolio-page" width="wide">
       <PageHeader
         onRecord={() => setTxnDialog({ kind: 'create' })}
         onNewCustom={() => setCustomOpen(true)}
@@ -1827,9 +1849,8 @@ export function PortfolioPage() {
             onWithdraw={() => setCashDialogKind('withdrawal')}
           />
 
-          <section aria-label={t('portfolio.overview.chart.heading')} className="bt-section">
-            <div className="bt-section__head">
-              <h2 className="bt-h2">{t('portfolio.overview.chart.heading')}</h2>
+          <ChartFrame
+            actions={
               <div className="flex flex-wrap items-center gap-2">
                 <Seg
                   ariaLabel={t('portfolio.overview.chart.displayModeAriaLabel')}
@@ -1856,7 +1877,12 @@ export function PortfolioPage() {
                   {t('portfolio.overview.chart.analyticsLink')}
                 </Link>
               </div>
-            </div>
+            }
+            aria-label={t('portfolio.overview.chart.heading')}
+            className="bt-portfolio-chart"
+            role="region"
+            title={<h2 className="bt-h2">{t('portfolio.overview.chart.heading')}</h2>}
+          >
             {perfMode ? (
               <p className="bt-meta" style={{ marginBottom: 8 }}>
                 {t('portfolio.overview.chart.perfHint')}
@@ -1904,11 +1930,14 @@ export function PortfolioPage() {
                 />
               ) : null}
             </div>
-          </section>
+          </ChartFrame>
 
           <AllocationSection holdings={holdings} cashEur={totals.cashEur} />
 
-          <section aria-label={t('portfolio.overview.holdingsAriaLabel')} className="bt-section">
+          <section
+            aria-label={t('portfolio.overview.holdingsAriaLabel')}
+            className="bt-section bt-surface bt-portfolio-section"
+          >
             <div className="bt-section__head">
               <h2 className="bt-h2">{t('portfolio.overview.holdingsHeading')}</h2>
             </div>
@@ -1944,7 +1973,7 @@ export function PortfolioPage() {
       )}
 
       {renderDialogs()}
-    </div>
+    </Page>
   );
 }
 

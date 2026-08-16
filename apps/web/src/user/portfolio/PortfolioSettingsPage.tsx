@@ -7,7 +7,7 @@ import type { PortfolioSummary } from '@bettertrack/contracts';
 import { useT } from '../../i18n';
 import { ApiError } from '../../lib/apiClient';
 import { Skeleton } from '../../ui';
-import { Button, Field, Input, PageHead, SectionHead } from '../../ui/origin';
+import { Button, Field, Input, Page, PageHead, SectionHead } from '../../ui/origin';
 import { Dialog } from '../components/Dialog';
 import { AsyncReadState } from '../components/AsyncReadState';
 import { Alert, cx } from '../components/ui';
@@ -193,7 +193,7 @@ export function PortfolioSettingsPage() {
   const onlyOneActive = portfolios.length <= 1;
 
   return (
-    <div className="bt-money-surface flex flex-col">
+    <Page className="bt-money-surface bt-portfolio-page bt-portfolio-settings" width="narrow">
       <PageHead title={t('portfolio.settings.title')} />
 
       {/* ── General ─────────────────────────────────────────────────────── */}
@@ -464,7 +464,7 @@ export function PortfolioSettingsPage() {
           />
         ) : null}
       </NormalModeOnly>
-    </div>
+    </Page>
   );
 }
 

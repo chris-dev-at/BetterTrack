@@ -7,7 +7,7 @@ import { ApiError } from '../../lib/apiClient';
 import { getTaxYearReport, getTaxYearReports, taxYearReportCsvUrl } from '../../lib/portfolioApi';
 import { relockTaxYear, unlockTaxYear } from '../../lib/settingsApi';
 import { Disclaimer, EmptyState } from '../../ui';
-import { Button, Icon, PageHead, SkeletonBlock } from '../../ui/origin';
+import { Button, Icon, Page, PageHead, SkeletonBlock } from '../../ui/origin';
 import { Alert, TextField } from '../components/ui';
 import { Dialog } from '../components/Dialog';
 import { useMutationFeedback } from '../hooks/useMutationFeedback';
@@ -282,10 +282,10 @@ export function TaxReportPage() {
     return (
       <Suspense
         fallback={
-          <div>
+          <Page className="bt-portfolio-page bt-tax-report-page" width="wide">
             {header}
             <SkeletonBlock height={96} />
-          </div>
+          </Page>
         }
       >
         <ParanoidTaxReport header={header} />
@@ -297,36 +297,36 @@ export function TaxReportPage() {
   // drives everything below (the per-portfolio tax settings + the report).
   if (portfoliosQuery.isPending) {
     return (
-      <div>
+      <Page className="bt-portfolio-page bt-tax-report-page" width="wide">
         {header}
         <SkeletonBlock height={96} />
-      </div>
+      </Page>
     );
   }
 
   if (portfoliosQuery.isError) {
     return (
-      <div>
+      <Page className="bt-portfolio-page bt-tax-report-page" width="wide">
         {header}
         <EmptyState
           description={t('settings.retryHint')}
           title={t('portfolio.taxReport.loadError.title')}
           cta={<Button onClick={() => void portfoliosQuery.refetch()}>{t('common.retry')}</Button>}
         />
-      </div>
+      </Page>
     );
   }
 
   if (!active) {
     return (
-      <div>
+      <Page className="bt-portfolio-page bt-tax-report-page" width="wide">
         {header}
         <EmptyState
           description={t('portfolio.taxReport.empty.description')}
           icon="🧾"
           title={t('portfolio.taxReport.empty.title')}
         />
-      </div>
+      </Page>
     );
   }
 
@@ -338,7 +338,7 @@ export function TaxReportPage() {
   const unlockedYears = years.filter((summary) => summary.locked === false);
 
   return (
-    <div>
+    <Page className="bt-portfolio-page bt-tax-report-page" width="wide">
       {header}
 
       {unlockedYears.length > 0 ? (
@@ -478,6 +478,6 @@ export function TaxReportPage() {
           }}
         />
       ) : null}
-    </div>
+    </Page>
   );
 }
