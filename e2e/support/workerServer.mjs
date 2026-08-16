@@ -39,6 +39,7 @@ child.on('exit', (code, signal) => {
   process.exit(code ?? 0);
 });
 
+/** @param {NodeJS.Signals} signal */
 function shutdown(signal) {
   child.kill(signal);
 }
