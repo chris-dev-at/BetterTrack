@@ -22,8 +22,9 @@ import { localManualAssetMarket } from '../engine/manualAsset';
 import { readPortfolioModel } from '../engine/model';
 import {
   assertVaultSnapshotCurrent,
+  createStandingOrderScanValidator,
   liveEntities,
-  validateStandingOrderForScan,
+  refreshedStandingOrderSnapshot,
   validatedStandingOrderSnapshot,
 } from '../engine/session';
 import type { VaultSyncEngine } from '../sync';
@@ -94,6 +95,20 @@ export async function materializeDueStandingOrders(
     const timezone = options.timezone ?? 'Europe/Vienna';
     const today = calendarDayInTimezone(now, timezone);
     let snapshot = validatedStandingOrderSnapshot(sync);
+    let validateOrderForScan = createStandingOrderScanValidator(snapshot.document);
+    const adoptSnapshot = (next: typeof snapshot): void => {
+      // The validator indexes this exact document, so its freshness is keyed on
+      // document identity — not on the candidate triple, which cannot prove that
+      // the rows behind it are the same object.
+      const documentChanged = next.document !== snapshot.document;
+      snapshot = next;
+      if (documentChanged) {
+        validateOrderForScan = createStandingOrderScanValidator(next.document);
+      }
+    };
+    const refreshSnapshot = (): void => {
+      adoptSnapshot(refreshedStandingOrderSnapshot(sync, snapshot));
+    };
     const orderIds = liveEntities(snapshot.document, 'standingOrder').map((entity) => entity.id);
     const result: StandingOrderMaterializationResult = {
       today,
@@ -116,6 +131,12 @@ export async function materializeDueStandingOrders(
         recordOrderFailure(result, orderId, null, cause);
         continue;
       }
+      /*
+       * Paused orders cannot book, so catch-up tolerates them silently — both
+       * malformed business fields and an unreachable run row of their own, since
+       * neither reaches a booking from here. Strict money derivations still
+       * expose that corruption, which is where the user sees it.
+       */
       if (order.row.status !== 'active') continue;
       let dueDate: string | null;
       try {
@@ -126,19 +147,30 @@ export async function materializeDueStandingOrders(
       }
       if (dueDate === null) continue;
       try {
-        validateStandingOrderForScan(snapshot.document, order.entity);
+        validateOrderForScan(order.entity);
       } catch (cause) {
         recordOrderFailure(result, orderId, dueDate, cause);
         continue;
       }
 
       const occurrenceId = await standingOrderOccurrenceId(order.entity.id, dueDate);
-      const existing = existingStandingOrderOccurrence(snapshot.document, {
-        occurrenceId,
-        orderId: order.entity.id,
-        dueDate,
-      });
-      if (existing !== null) continue;
+      let existing: ReturnType<typeof existingStandingOrderOccurrence>;
+      try {
+        existing = existingStandingOrderOccurrence(snapshot.document, {
+          occurrenceId,
+          orderId: order.entity.id,
+          dueDate,
+        });
+      } catch (cause) {
+        if (!isOrderScopedStoreFailure(cause)) throw cause;
+        recordOrderFailure(result, order.entity.id, dueDate, cause);
+        refreshSnapshot();
+        continue;
+      }
+      if (existing !== null) {
+        refreshSnapshot();
+        continue;
+      }
 
       let quote: { price: number; currency: string; recordedAt: string } | null = null;
       if (order.row.kind === 'buy-asset') {
@@ -161,6 +193,9 @@ export async function materializeDueStandingOrders(
             );
           }
           if (asset.dto.isCustom) {
+            // Keep the pre-quote manual valuation for this booking. The fresh
+            // commit snapshot rechecks asset identity/currency, while an edit to
+            // the valuation itself intentionally takes effect on the next scan.
             const manual = localManualAssetMarket(snapshot.document, asset);
             if (manual.quote === null) {
               throw moneyFailure(
@@ -238,6 +273,7 @@ export async function materializeDueStandingOrders(
           if (cause instanceof VaultMoneyEngineError && !isMarketDataFailure(cause.failure.code)) {
             if (cause.failure.code === 'VAULT_CORRUPT') {
               recordOrderFailure(result, order.entity.id, dueDate, cause);
+              refreshSnapshot();
               continue;
             }
             throw cause;
@@ -249,6 +285,7 @@ export async function materializeDueStandingOrders(
             dueDate,
             reason: 'quote-unavailable',
           });
+          refreshSnapshot();
           continue;
         }
       }
@@ -259,7 +296,7 @@ export async function materializeDueStandingOrders(
       );
       if (commitOrderEntity === undefined) {
         result.skipped.push({ orderId: order.entity.id, dueDate, reason: 'deleted' });
-        snapshot = commitSnapshot;
+        adoptSnapshot(commitSnapshot);
         continue;
       }
       let commitOrder: ReturnType<typeof parseOrder>;
@@ -267,12 +304,12 @@ export async function materializeDueStandingOrders(
         commitOrder = parseOrder(commitOrderEntity);
       } catch (cause) {
         recordOrderFailure(result, order.entity.id, dueDate, cause);
-        snapshot = commitSnapshot;
+        adoptSnapshot(commitSnapshot);
         continue;
       }
       if (commitOrder.row.status !== 'active') {
         result.skipped.push({ orderId: order.entity.id, dueDate, reason: 'status-changed' });
-        snapshot = commitSnapshot;
+        adoptSnapshot(commitSnapshot);
         continue;
       }
       let commitDueDate: string | null;
@@ -280,17 +317,16 @@ export async function materializeDueStandingOrders(
         commitDueDate = dueStandingOrderOccurrence(commitOrder.row, today);
       } catch (cause) {
         recordOrderFailure(result, order.entity.id, dueDate, cause);
-        snapshot = commitSnapshot;
+        adoptSnapshot(commitSnapshot);
         continue;
       }
       if (commitDueDate !== dueDate) {
         result.skipped.push({ orderId: order.entity.id, dueDate, reason: 'no-longer-due' });
-        snapshot = commitSnapshot;
+        adoptSnapshot(commitSnapshot);
         continue;
       }
 
       try {
-        assertVaultSnapshotCurrent(sync, commitSnapshot);
         const committed = await store.materializeStandingOrderOccurrence(
           {
             occurrenceId,
@@ -316,14 +352,16 @@ export async function materializeDueStandingOrders(
           kind: order.row.kind,
           status: committed.status,
         });
-        snapshot = validatedStandingOrderSnapshot(sync);
+        refreshSnapshot();
       } catch (cause) {
         if (isInsufficientCashFailure(cause)) {
           result.deferred.push({ orderId: order.entity.id, dueDate, reason: 'insufficient-cash' });
+          refreshSnapshot();
           continue;
         }
         if (isOrderScopedStoreFailure(cause)) {
           recordOrderFailure(result, order.entity.id, dueDate, cause);
+          refreshSnapshot();
           continue;
         }
         throw cause;
@@ -383,9 +421,7 @@ function recordOrderFailure(
 function isOrderScopedStoreFailure(cause: unknown): boolean {
   return (
     cause instanceof VaultPortfolioStoreError &&
-    (cause.code === 'VAULT_CORRUPT' ||
-      cause.code === 'VAULT_DATA_INVALID' ||
-      cause.code === 'VAULT_ENTITY_NOT_FOUND')
+    (cause.code === 'VAULT_DATA_INVALID' || cause.code === 'VAULT_ENTITY_NOT_FOUND')
   );
 }
 
