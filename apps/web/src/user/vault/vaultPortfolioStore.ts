@@ -104,8 +104,11 @@ import { viennaYearOf } from '@bettertrack/domain/tax';
 import { uuidv7 } from 'uuidv7';
 
 import { getAssetDetail } from '../../lib/assetApi';
-import { marketAssetSnapshotRow, ownedAssetSnapshotRow } from './assetSnapshot';
-import { isLocalAssetSnapshot } from './engine/model';
+import {
+  isLocalAssetSnapshot,
+  marketAssetSnapshotRow,
+  ownedAssetSnapshotRow,
+} from './assetSnapshot';
 import { VaultCryptoError } from './errors';
 import { standingOrderOccurrenceId } from './standingOrders/occurrenceId';
 import {

@@ -30,7 +30,11 @@ import { InsufficientCashError } from '@bettertrack/domain/cashLedger';
 
 import * as portfolioApi from '../../lib/portfolioApi';
 
-import { marketAssetSnapshotRow, ownedAssetSnapshotRow } from './assetSnapshot';
+import {
+  isLocalAssetSnapshot,
+  marketAssetSnapshotRow,
+  ownedAssetSnapshotRow,
+} from './assetSnapshot';
 import { decryptVaultDocument, encryptVaultDocument } from './crypto';
 import type {
   DataHome,
@@ -46,7 +50,6 @@ import {
   type LocalVaultRecord,
 } from './localDataHome';
 import { vaultStoreErrorKey } from './engine/errorCopy';
-import { isLocalAssetSnapshot } from './engine/model';
 import { openVaultSession } from './engine/session';
 import { toStrictRestoreDocument } from './paranoidDisable';
 import { createMemoryVaultQuarantineStore } from './quarantine';
