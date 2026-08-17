@@ -81,6 +81,8 @@ export function createVaultMoneyEngine(
   return {
     onAppOpen,
     afterUnlock,
+    getLastStandingOrderMaterialization: standingOrders.getLastStandingOrderMaterialization,
+    subscribeStandingOrderMaterialization: standingOrders.subscribeStandingOrderMaterialization,
     async derivePortfolio(...args) {
       const error = await catchUpFailure();
       if (error !== null) return { ok: false, error };

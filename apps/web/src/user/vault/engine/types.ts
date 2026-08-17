@@ -69,6 +69,10 @@ export interface VaultMoneyEngine {
   onAppOpen(): Promise<VaultMoneyOutcome<StandingOrderMaterializationResult>>;
   /** Required catch-up boundary after a fresh unlock. Its outcome gates later derivations. */
   afterUnlock(): Promise<VaultMoneyOutcome<StandingOrderMaterializationResult>>;
+  /** Latest successful standing-order scan in this unlocked session. */
+  getLastStandingOrderMaterialization(): StandingOrderMaterializationResult | null;
+  /** Subscribe to successful standing-order scans for compact row-level status UI. */
+  subscribeStandingOrderMaterialization(listener: () => void): () => void;
   derivePortfolio(
     portfolioId: string,
     range: ClientPortfolioRange,

@@ -22,6 +22,10 @@ export interface StandingOrderMaterializationLifecycle {
   onAppOpen(): Promise<VaultMoneyOutcome<StandingOrderMaterializationResult>>;
   /** Fresh-unlock boundary; a prior locked result is deliberately attempted again. */
   afterUnlock(): Promise<VaultMoneyOutcome<StandingOrderMaterializationResult>>;
+  /** Latest completed scan in this unlocked session; never persisted in the vault document. */
+  getLastStandingOrderMaterialization(): StandingOrderMaterializationResult | null;
+  /** Observe successful scan results without coupling UI state to booking mutations. */
+  subscribeStandingOrderMaterialization(listener: () => void): () => void;
 }
 
 /**
@@ -38,10 +42,15 @@ export function createStandingOrderMaterializationLifecycle(
   const materialize = options.materialize ?? materializeDueStandingOrders;
   const retryCount = options.retryCount ?? 1;
   let inFlight: Promise<VaultMoneyOutcome<StandingOrderMaterializationResult>> | null = null;
+  let lastResult: StandingOrderMaterializationResult | null = null;
+  const listeners = new Set<() => void>();
 
   function run(): Promise<VaultMoneyOutcome<StandingOrderMaterializationResult>> {
     if (inFlight !== null) return inFlight;
-    const current = runWithRetry();
+    const current = runWithRetry().then((outcome) => {
+      if (outcome.ok) publish(outcome.value);
+      return outcome;
+    });
     inFlight = current;
     const clear = () => {
       if (inFlight === current) inFlight = null;
@@ -77,5 +86,26 @@ export function createStandingOrderMaterializationLifecycle(
     }
   }
 
-  return { onAppOpen: run, afterUnlock: run };
+  function publish(result: StandingOrderMaterializationResult): void {
+    lastResult = result;
+    for (const listener of listeners) {
+      try {
+        listener();
+      } catch {
+        // An observer cannot turn a completed materialization into a failed run.
+      }
+    }
+  }
+
+  function subscribeStandingOrderMaterialization(listener: () => void): () => void {
+    listeners.add(listener);
+    return () => listeners.delete(listener);
+  }
+
+  return {
+    onAppOpen: run,
+    afterUnlock: run,
+    getLastStandingOrderMaterialization: () => lastResult,
+    subscribeStandingOrderMaterialization,
+  };
 }

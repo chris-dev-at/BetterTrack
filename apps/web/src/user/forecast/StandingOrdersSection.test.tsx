@@ -1,10 +1,12 @@
+import { webcrypto } from 'node:crypto';
+
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
-import { render, screen, waitFor, within } from '@testing-library/react';
+import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
-import type { PortfolioSummary, StandingOrder } from '@bettertrack/contracts';
+import type { PortfolioSummary, StandingOrder, VaultEntity } from '@bettertrack/contracts';
 
 vi.mock('../../lib/standingOrdersApi', () => ({
   STANDING_ORDERS_QUERY_KEY: ['standingOrders'],
@@ -17,8 +19,24 @@ vi.mock('../../lib/standingOrdersApi', () => ({
 }));
 
 import * as standingOrdersApi from '../../lib/standingOrdersApi';
+import { MarketDataSourceError, type MarketDataSource } from '../../lib/marketDataSource';
 
 import { StandingOrdersSection } from './StandingOrdersSection';
+import { PortfolioStoreProvider } from '../portfolio/PortfolioStoreProvider';
+import {
+  CLIENT_MONEY_IDS,
+  createClientMoneyMarket,
+  createMutableTestSync,
+  decryptClientMoneyFixture,
+} from '../vault/engine/clientMoney.testSupport';
+import { createVaultMoneyEngine, moneyFailure } from '../vault/engine';
+import { createParanoidAppPortfolioStore } from '../vault/engine/paranoidPortfolioStore';
+import {
+  VaultMoneyEngineContext,
+  type VaultMoneySession,
+} from '../vault/engine/VaultMoneyEngineContext';
+import { createStandingOrderMaterializationLifecycle } from '../vault/standingOrders/lifecycle';
+import { createVaultPortfolioStore } from '../vault/vaultPortfolioStore';
 
 const PORTFOLIOS: PortfolioSummary[] = [
   {
@@ -31,6 +49,13 @@ const PORTFOLIOS: PortfolioSummary[] = [
     archivedAt: null,
   },
 ];
+
+const VAULT_QUOTE_DEFERRED_ID = '018f0000-0000-7000-8000-000000000301';
+const VAULT_FAILED_ID = '018f0000-0000-7000-8000-000000000302';
+const VAULT_BOOKED_ID = '018f0000-0000-7000-8000-000000000303';
+const VAULT_PAUSED_ID = '018f0000-0000-7000-8000-000000000304';
+const VAULT_FUTURE_ID = '018f0000-0000-7000-8000-000000000305';
+const VAULT_SCAN_AT = '2026-07-26T22:30:00.000Z';
 
 function makeOrder(over: Partial<StandingOrder> = {}): StandingOrder {
   return {
@@ -68,7 +93,24 @@ function renderSection(initialEntry = '/') {
   );
 }
 
+function renderVaultSection(session: VaultMoneySession) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const portfolios = [{ ...PORTFOLIOS[0]!, id: CLIENT_MONEY_IDS.portfolio }];
+  render(
+    <QueryClientProvider client={client}>
+      <VaultMoneyEngineContext.Provider value={session}>
+        <PortfolioStoreProvider store={createParanoidAppPortfolioStore(session)}>
+          <MemoryRouter>
+            <StandingOrdersSection portfolios={portfolios} />
+          </MemoryRouter>
+        </PortfolioStoreProvider>
+      </VaultMoneyEngineContext.Provider>
+    </QueryClientProvider>,
+  );
+}
+
 beforeEach(() => {
+  Object.defineProperty(globalThis, 'crypto', { configurable: true, value: webcrypto });
   vi.clearAllMocks();
   vi.mocked(standingOrdersApi.listStandingOrders).mockResolvedValue({ orders: [] });
 });
@@ -114,6 +156,117 @@ describe('StandingOrdersSection', () => {
 
     expect(screen.getByText('salary')).toBeInTheDocument();
     expect(screen.getByText(/Add 2\.500,00 €/)).toBeInTheDocument();
+  });
+
+  test('keeps server-mode rows free of vault materialization notices', async () => {
+    vi.mocked(standingOrdersApi.listStandingOrders).mockResolvedValue({
+      orders: [makeOrder()],
+    });
+    renderSection();
+
+    const row = (await screen.findByText('VWCE.DE')).closest('li')!;
+    expect(within(row).queryByText(/^Not booked/)).not.toBeInTheDocument();
+  });
+
+  test('shows only affected vault rows after a scan and clears a quote notice after recovery', async () => {
+    const fixture = await decryptClientMoneyFixture();
+    const document = structuredClone(fixture.document);
+    document.entities.standingOrder = [
+      vaultStandingOrder(VAULT_QUOTE_DEFERRED_ID, {
+        kind: 'buy-asset',
+        assetId: CLIENT_MONEY_IDS.eurAsset,
+        label: 'Deferred quote',
+      }),
+      vaultStandingOrder(VAULT_FAILED_ID, {
+        kind: 'buy-asset',
+        assetId: CLIENT_MONEY_IDS.usdAsset,
+        label: 'Corrupt order',
+      }),
+      vaultStandingOrder(VAULT_BOOKED_ID, { label: 'Salary' }),
+      vaultStandingOrder(VAULT_PAUSED_ID, { label: 'Paused', status: 'paused' }),
+      vaultStandingOrder(VAULT_FUTURE_ID, {
+        label: 'Tomorrow',
+        startDate: '2026-07-28',
+      }),
+    ];
+    const sync = createMutableTestSync(document, fixture.header);
+    const store = createVaultPortfolioStore(sync, { now: () => VAULT_SCAN_AT });
+    const baseMarket = createClientMoneyMarket();
+    let quoteRecovered = false;
+    const market: MarketDataSource = {
+      ...baseMarket.market,
+      async quote(assetId, signal) {
+        if (assetId === CLIENT_MONEY_IDS.eurAsset && !quoteRecovered) {
+          throw new MarketDataSourceError(
+            'MARKET_DATA_UNSUPPORTED',
+            'The test quote is deliberately unsupported.',
+          );
+        }
+        if (assetId === CLIENT_MONEY_IDS.usdAsset) {
+          throw moneyFailure('VAULT_CORRUPT', 'The test order is deliberately corrupt.');
+        }
+        return baseMarket.market.quote(assetId, signal);
+      },
+    };
+    const lifecycle = createStandingOrderMaterializationLifecycle(sync, market, {
+      store,
+      now: () => new Date(VAULT_SCAN_AT),
+      timezone: 'Europe/Vienna',
+      retryCount: 0,
+    });
+    const engine = createVaultMoneyEngine(sync, market, {
+      now: () => Date.parse(VAULT_SCAN_AT),
+      standingOrders: lifecycle,
+    });
+
+    await expect(engine.afterUnlock()).resolves.toMatchObject({
+      ok: true,
+      value: {
+        booked: [{ orderId: VAULT_BOOKED_ID, dueDate: '2026-07-27' }],
+        deferred: [
+          {
+            orderId: VAULT_QUOTE_DEFERRED_ID,
+            dueDate: '2026-07-27',
+            reason: 'quote-unavailable',
+          },
+        ],
+        failed: [{ orderId: VAULT_FAILED_ID, dueDate: '2026-07-27', errorCode: 'VAULT_CORRUPT' }],
+      },
+    });
+    renderVaultSection({ engine, sync, store });
+
+    await waitFor(() =>
+      expect(documentElementById(`standing-order-${VAULT_QUOTE_DEFERRED_ID}`)).toBeInTheDocument(),
+    );
+    const deferredRow = documentElementById(`standing-order-${VAULT_QUOTE_DEFERRED_ID}`);
+    const failedRow = documentElementById(`standing-order-${VAULT_FAILED_ID}`);
+    expect(
+      within(deferredRow).getByText('Not booked — quote unavailable since 27.07.2026'),
+    ).toBeInTheDocument();
+    expect(
+      within(failedRow).getByText('Not booked — booking error since 27.07.2026'),
+    ).toBeInTheDocument();
+
+    for (const orderId of [VAULT_BOOKED_ID, VAULT_PAUSED_ID, VAULT_FUTURE_ID]) {
+      expect(
+        within(documentElementById(`standing-order-${orderId}`)).queryByText(/^Not booked/),
+      ).not.toBeInTheDocument();
+    }
+
+    quoteRecovered = true;
+    await act(async () => {
+      await expect(engine.afterUnlock()).resolves.toMatchObject({
+        ok: true,
+        value: {
+          booked: [{ orderId: VAULT_QUOTE_DEFERRED_ID, dueDate: '2026-07-27' }],
+        },
+      });
+    });
+
+    await waitFor(() =>
+      expect(within(deferredRow).queryByText(/^Not booked/)).not.toBeInTheDocument(),
+    );
+    expect(within(failedRow).getByText(/^Not booked — booking error/)).toBeInTheDocument();
   });
 
   test('scrolls to a notification-linked row after the async list loads', async () => {
@@ -310,3 +463,38 @@ describe('StandingOrdersSection', () => {
     expect(screen.getByRole('button', { name: 'salary No' })).toBeInTheDocument();
   });
 });
+
+function vaultStandingOrder(id: string, overrides: Partial<Record<string, unknown>>): VaultEntity {
+  return {
+    id,
+    rev: 0,
+    editedAt: '2026-07-01T08:00:00.000Z',
+    editedBy: CLIENT_MONEY_IDS.device,
+    deletedAt: null,
+    data: {
+      userId: CLIENT_MONEY_IDS.user,
+      portfolioId: CLIENT_MONEY_IDS.portfolio,
+      kind: 'cash-add',
+      assetId: null,
+      amount: '1',
+      currency: 'EUR',
+      label: null,
+      cadence: 'daily',
+      anchorDay: null,
+      startDate: '2026-07-01',
+      endDate: null,
+      status: 'active',
+      lastRunAt: null,
+      lastPeriodKey: null,
+      createdAt: '2026-07-01T08:00:00.000Z',
+      updatedAt: '2026-07-01T08:00:00.000Z',
+      ...overrides,
+    },
+  };
+}
+
+function documentElementById(id: string): HTMLElement {
+  const element = document.getElementById(id);
+  if (element === null) throw new Error(`Expected an element with id ${id}.`);
+  return element;
+}

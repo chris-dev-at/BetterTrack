@@ -1908,6 +1908,8 @@ describe('paranoid standing-order materialization', () => {
           unlockCalls += 1;
           return success;
         },
+        getLastStandingOrderMaterialization: () => null,
+        subscribeStandingOrderMaterialization: () => () => undefined,
       },
     });
 

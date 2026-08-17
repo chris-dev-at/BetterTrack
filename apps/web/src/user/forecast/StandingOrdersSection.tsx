@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useId, useState } from 'react';
+import { useEffect, useId, useState, useSyncExternalStore } from 'react';
 import { useLocation } from 'react-router-dom';
 
 import type { PortfolioSummary, StandingOrder } from '@bettertrack/contracts';
@@ -12,8 +12,17 @@ import { Alert, Button, cx } from '../components/ui';
 
 import { StandingOrderDialog } from './StandingOrderDialog';
 import { usePortfolioStore } from '../portfolio/PortfolioStoreProvider';
+import type { StandingOrderMaterializationResult } from '../vault/standingOrders/materialize';
+import { useVaultMoneySession } from '../vault/engine/VaultMoneyEngineContext';
 
 const EM_DASH = '—';
+const NO_VAULT_MATERIALIZATION = () => null;
+const NO_VAULT_SUBSCRIPTION = () => () => undefined;
+
+interface StandingOrderNotice {
+  kind: 'quote-unavailable' | 'insufficient-cash' | 'failed';
+  dueDate: string;
+}
 
 /**
  * Standing-orders management surface (PROJECTPLAN.md §13.5 V5-P6b arc (a);
@@ -26,6 +35,7 @@ const EM_DASH = '—';
 export function StandingOrdersSection({ portfolios }: { portfolios: PortfolioSummary[] }) {
   const t = useT();
   const store = usePortfolioStore();
+  const materialization = useVaultStandingOrderMaterialization();
   const location = useLocation();
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<StandingOrder | null>(null);
@@ -96,7 +106,12 @@ export function StandingOrdersSection({ portfolios }: { portfolios: PortfolioSum
       ) : (
         <ul className="flex flex-col gap-2">
           {orders.map((order) => (
-            <StandingOrderRow key={order.id} order={order} onEdit={setEditing} />
+            <StandingOrderRow
+              key={order.id}
+              order={order}
+              notice={standingOrderNotice(order, materialization)}
+              onEdit={setEditing}
+            />
           ))}
         </ul>
       )}
@@ -119,9 +134,11 @@ export function StandingOrdersSection({ portfolios }: { portfolios: PortfolioSum
 
 function StandingOrderRow({
   order,
+  notice,
   onEdit,
 }: {
   order: StandingOrder;
+  notice: StandingOrderNotice | null;
   onEdit: (order: StandingOrder) => void;
 }) {
   const t = useT();
@@ -179,6 +196,7 @@ function StandingOrderRow({
                 })
               : t('forecast.standingOrders.list.noNextRun')}
           </span>
+          {notice ? <StandingOrderNoticeText notice={notice} /> : null}
         </div>
       </div>
 
@@ -264,6 +282,62 @@ function StandingOrderRow({
       ) : null}
     </li>
   );
+}
+
+function StandingOrderNoticeText({ notice }: { notice: StandingOrderNotice }) {
+  const t = useT();
+  const date = formatDate(notice.dueDate);
+  const key =
+    notice.kind === 'quote-unavailable'
+      ? 'forecast.standingOrders.list.notBookedQuoteUnavailable'
+      : notice.kind === 'insufficient-cash'
+        ? 'forecast.standingOrders.list.notBookedInsufficientCash'
+        : 'forecast.standingOrders.list.notBookedFailed';
+  return <span className="text-xs bt-gold-note">{t(key, { date })}</span>;
+}
+
+function useVaultStandingOrderMaterialization(): StandingOrderMaterializationResult | null {
+  const engine = useVaultMoneySession()?.engine;
+  return useSyncExternalStore(
+    engine?.subscribeStandingOrderMaterialization ?? NO_VAULT_SUBSCRIPTION,
+    engine?.getLastStandingOrderMaterialization ?? NO_VAULT_MATERIALIZATION,
+    NO_VAULT_MATERIALIZATION,
+  );
+}
+
+function standingOrderNotice(
+  order: StandingOrder,
+  result: StandingOrderMaterializationResult | null,
+): StandingOrderNotice | null {
+  if (
+    result === null ||
+    order.status !== 'active' ||
+    order.suspendedByArchive === true ||
+    result.booked.some((booked) => booked.orderId === order.id)
+  ) {
+    return null;
+  }
+
+  const failureDates = result.failed
+    .filter((failure) => failure.orderId === order.id)
+    .map((failure) => failure.dueDate ?? result.today);
+  if (failureDates.length > 0) {
+    return { kind: 'failed', dueDate: oldestDay(failureDates) };
+  }
+
+  const deferrals = result.deferred.filter((deferred) => deferred.orderId === order.id);
+  if (deferrals.length === 0) return null;
+  const reason = deferrals.some((deferred) => deferred.reason === 'quote-unavailable')
+    ? 'quote-unavailable'
+    : 'insufficient-cash';
+  return {
+    kind: reason,
+    dueDate: oldestDay(deferrals.map((deferred) => deferred.dueDate)),
+  };
+}
+
+function oldestDay(days: string[]): string {
+  return days.reduce((oldest, day) => (day < oldest ? day : oldest));
 }
 
 function StatusBadge({
