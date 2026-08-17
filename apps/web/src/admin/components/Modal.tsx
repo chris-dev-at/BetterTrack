@@ -1,5 +1,10 @@
+import { createPortal } from 'react-dom';
 import { useEffect, useId, useRef } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react';
+
+import { useBodyScrollLock } from '../../ui/useBodyScrollLock';
+import { restoreFocusTo } from '../../ui/useFocusTrap';
+import { useOverlayEscape } from '../../ui/overlayStack';
 
 const FOCUSABLE_SELECTOR = [
   'a[href]',
@@ -139,25 +144,22 @@ export function Modal({
   onCloseRef.current = onClose;
   dismissableRef.current = dismissable;
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && dismissableRef.current) onCloseRef.current();
-    };
-    document.addEventListener('keydown', onKey);
-    const prevOverflow = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
+  useOverlayEscape(
+    true,
+    () => {
+      if (dismissableRef.current) onCloseRef.current();
+    },
+    dialogRef,
+  );
+  useBodyScrollLock();
 
+  useEffect(() => {
     const dialog = dialogRef.current;
     const focusable = dialog ? focusableDescendants(dialog) : [];
     (focusable[0] ?? dialog)?.focus();
 
     return () => {
-      document.removeEventListener('keydown', onKey);
-      document.body.style.overflow = prevOverflow;
-      const openingElement = openingElementRef.current;
-      if (openingElement instanceof HTMLElement && openingElement.isConnected) {
-        openingElement.focus();
-      }
+      restoreFocusTo([openingElementRef.current], { exclude: dialog });
     };
   }, []);
 
@@ -190,9 +192,12 @@ export function Modal({
     focusable[nextIndex]!.focus();
   };
 
-  return (
+  // Admin pages render inside the shell's <main>, which the mobile drawer
+  // makes inert while it is open. Keep a later Modal outside that inert branch
+  // so it can take focus and correctly become the top Escape target.
+  return createPortal(
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/70 p-4 sm:items-center"
+      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/70 p-4 text-neutral-100 sm:items-center"
       onMouseDown={() => {
         if (dismissable) onClose();
       }}
@@ -212,6 +217,7 @@ export function Modal({
         </h2>
         {children}
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

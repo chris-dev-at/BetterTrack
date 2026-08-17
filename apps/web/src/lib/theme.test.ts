@@ -10,7 +10,7 @@ import {
   THEME_CANVAS,
   THEME_STORAGE_KEY,
   writeThemeSetting,
-} from '../lib/theme';
+} from './theme';
 
 /**
  * jsdom ships no `matchMedia`, which is exactly the shape of "a platform with
