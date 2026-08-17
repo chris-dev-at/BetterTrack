@@ -787,11 +787,19 @@ function marketOrMoneyFailure(cause: unknown) {
 export function withTaxEngine(
   portfolio: PortfolioDerivationEngine,
   deriveTaxReport: VaultMoneyEngine['deriveTaxReport'],
-  lifecycle: Pick<VaultMoneyEngine, 'onAppOpen' | 'afterUnlock'>,
+  lifecycle: Pick<
+    VaultMoneyEngine,
+    | 'onAppOpen'
+    | 'afterUnlock'
+    | 'getLastStandingOrderMaterialization'
+    | 'subscribeStandingOrderMaterialization'
+  >,
 ): VaultMoneyEngine {
   return {
     onAppOpen: lifecycle.onAppOpen,
     afterUnlock: lifecycle.afterUnlock,
+    getLastStandingOrderMaterialization: lifecycle.getLastStandingOrderMaterialization,
+    subscribeStandingOrderMaterialization: lifecycle.subscribeStandingOrderMaterialization,
     derivePortfolio: portfolio.derivePortfolio,
     deriveTaxReport,
     clearCache: portfolio.clearCache,

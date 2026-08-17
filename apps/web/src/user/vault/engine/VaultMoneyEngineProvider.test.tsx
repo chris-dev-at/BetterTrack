@@ -46,6 +46,8 @@ function fakeEngine(): VaultMoneyEngine {
   return {
     onAppOpen: vi.fn(async () => catchUp),
     afterUnlock: vi.fn(async () => catchUp),
+    getLastStandingOrderMaterialization: vi.fn(() => null),
+    subscribeStandingOrderMaterialization: vi.fn(() => () => undefined),
     derivePortfolio: vi.fn(),
     deriveTaxReport: vi.fn(),
     clearCache: vi.fn(),

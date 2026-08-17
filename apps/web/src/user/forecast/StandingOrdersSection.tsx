@@ -1,5 +1,5 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { useEffect, useId, useState } from 'react';
+import { useEffect, useId, useState, useSyncExternalStore } from 'react';
 import { useLocation } from 'react-router-dom';
 
 import type { PortfolioSummary, StandingOrder } from '@bettertrack/contracts';
@@ -12,8 +12,18 @@ import { Alert, Button, cx } from '../components/ui';
 
 import { StandingOrderDialog } from './StandingOrderDialog';
 import { usePortfolioStore } from '../portfolio/PortfolioStoreProvider';
+import type { StandingOrderMaterializationResult } from '../vault/standingOrders/materialize';
+import { oldestUnbookedStandingOrderDueDate } from '../vault/standingOrders/schedule';
+import { useVaultMoneySession } from '../vault/engine/VaultMoneyEngineContext';
 
 const EM_DASH = '—';
+const NO_VAULT_MATERIALIZATION = () => null;
+const NO_VAULT_SUBSCRIPTION = () => () => undefined;
+
+interface StandingOrderNotice {
+  kind: 'quote-unavailable' | 'insufficient-cash' | 'failed';
+  dueDate: string;
+}
 
 /**
  * Standing-orders management surface (PROJECTPLAN.md §13.5 V5-P6b arc (a);
@@ -26,6 +36,7 @@ const EM_DASH = '—';
 export function StandingOrdersSection({ portfolios }: { portfolios: PortfolioSummary[] }) {
   const t = useT();
   const store = usePortfolioStore();
+  const materialization = useVaultStandingOrderMaterialization();
   const location = useLocation();
   const [creating, setCreating] = useState(false);
   const [editing, setEditing] = useState<StandingOrder | null>(null);
@@ -96,7 +107,12 @@ export function StandingOrdersSection({ portfolios }: { portfolios: PortfolioSum
       ) : (
         <ul className="flex flex-col gap-2">
           {orders.map((order) => (
-            <StandingOrderRow key={order.id} order={order} onEdit={setEditing} />
+            <StandingOrderRow
+              key={order.id}
+              order={order}
+              notice={standingOrderNotice(order, materialization)}
+              onEdit={setEditing}
+            />
           ))}
         </ul>
       )}
@@ -119,9 +135,11 @@ export function StandingOrdersSection({ portfolios }: { portfolios: PortfolioSum
 
 function StandingOrderRow({
   order,
+  notice,
   onEdit,
 }: {
   order: StandingOrder;
+  notice: StandingOrderNotice | null;
   onEdit: (order: StandingOrder) => void;
 }) {
   const t = useT();
@@ -179,6 +197,7 @@ function StandingOrderRow({
                 })
               : t('forecast.standingOrders.list.noNextRun')}
           </span>
+          {notice ? <StandingOrderNoticeText notice={notice} /> : null}
         </div>
       </div>
 
@@ -264,6 +283,85 @@ function StandingOrderRow({
       ) : null}
     </li>
   );
+}
+
+function StandingOrderNoticeText({ notice }: { notice: StandingOrderNotice }) {
+  const t = useT();
+  const date = formatDate(notice.dueDate);
+  const key =
+    notice.kind === 'quote-unavailable'
+      ? 'forecast.standingOrders.list.notBookedQuoteUnavailable'
+      : notice.kind === 'insufficient-cash'
+        ? 'forecast.standingOrders.list.notBookedInsufficientCash'
+        : 'forecast.standingOrders.list.notBookedFailed';
+  return <span className="text-xs bt-gold-note">{t(key, { date })}</span>;
+}
+
+function useVaultStandingOrderMaterialization(): StandingOrderMaterializationResult | null {
+  const engine = useVaultMoneySession()?.engine;
+  return useSyncExternalStore(
+    engine?.subscribeStandingOrderMaterialization ?? NO_VAULT_SUBSCRIPTION,
+    engine?.getLastStandingOrderMaterialization ?? NO_VAULT_MATERIALIZATION,
+    NO_VAULT_MATERIALIZATION,
+  );
+}
+
+function standingOrderNotice(
+  order: StandingOrder,
+  result: StandingOrderMaterializationResult | null,
+): StandingOrderNotice | null {
+  if (
+    result === null ||
+    order.status !== 'active' ||
+    order.suspendedByArchive === true ||
+    result.booked.some((booked) => booked.orderId === order.id)
+  ) {
+    return null;
+  }
+
+  // The document decides *whether* anything is owed and *since when*; the
+  // retained scan entry only supplies the reason. Its own `dueDate` ages out the
+  // moment the row moves on — another device books the occurrence, the watermark
+  // advances, the user shortens `endDate` — so letting it speak for the schedule
+  // is what kept resurrecting notices on ended, booked and not-yet-due orders.
+  const dueDate = outstandingDueDate(order, result.today);
+  if (dueDate === null) return null;
+
+  if (result.failed.some((failure) => failure.orderId === order.id)) {
+    return { kind: 'failed', dueDate };
+  }
+
+  const deferrals = result.deferred.filter((deferred) => deferred.orderId === order.id);
+  if (deferrals.length === 0) return null;
+  return {
+    kind: deferrals.some((deferred) => deferred.reason === 'quote-unavailable')
+      ? 'quote-unavailable'
+      : 'insufficient-cash',
+    dueDate,
+  };
+}
+
+/**
+ * The oldest occurrence the order still owes as of the scan day, or null when it
+ * owes nothing — ended, booked up to date, or not yet due. Both halves are
+ * load-bearing: {@link oldestUnbookedStandingOrderDueDate} reads
+ * cadence/anchor/startDate/endDate against the booking watermark, and the
+ * `> today` clamp stops a watermark that already covers today from naming
+ * tomorrow's occurrence as an outage that started in the future.
+ *
+ * The contract regex-checks `lastPeriodKey` without proving it is a real
+ * calendar day, and no read-path gate does either, so a document carrying
+ * `2026-02-30` reaches this render. Drop that one row's notice rather than let a
+ * RangeError take the whole Forecast page down.
+ */
+function outstandingDueDate(order: StandingOrder, today: string): string | null {
+  let oldest: string | null;
+  try {
+    oldest = oldestUnbookedStandingOrderDueDate(order, order.lastPeriodKey);
+  } catch {
+    return null;
+  }
+  return oldest === null || oldest > today ? null : oldest;
 }
 
 function StatusBadge({

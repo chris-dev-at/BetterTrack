@@ -113,6 +113,36 @@ export function nextStandingOrderRunDate(
   return schedule.endDate !== null && next > schedule.endDate ? null : next;
 }
 
+/**
+ * The first scheduled occurrence that has not been satisfied by the persisted
+ * watermark. Unlike the most-recent-only catch-up date, this stays pinned to
+ * the beginning of a deferral so UI notices do not roll forward on every scan.
+ */
+export function oldestUnbookedStandingOrderDueDate(
+  schedule: StandingOrderSchedule,
+  lastPeriodKey: string | null,
+): string | null {
+  assertSchedule(schedule, lastPeriodKey ?? schedule.startDate);
+  const afterWatermark =
+    lastPeriodKey === null ? schedule.startDate : nextCalendarDay(lastPeriodKey);
+  const earliest = afterWatermark < schedule.startDate ? schedule.startDate : afterWatermark;
+  if (schedule.endDate !== null && earliest > schedule.endDate) return null;
+  if (schedule.cadence === 'daily') return earliest;
+
+  const anchorDay = schedule.anchorDay;
+  if (anchorDay === null) return null;
+  const { year, month } = parseDay(earliest);
+  const inMonth = monthlyOccurrence(year, month, anchorDay);
+  const first =
+    inMonth >= earliest
+      ? inMonth
+      : (() => {
+          const following = nextMonth(year, month);
+          return monthlyOccurrence(following.year, following.month, anchorDay);
+        })();
+  return schedule.endDate !== null && first > schedule.endDate ? null : first;
+}
+
 function nextCalendarDay(day: string): string {
   const { year, month, day: date } = parseDay(day);
   if (date < daysInMonth(year, month)) return formatDay(year, month, date + 1);

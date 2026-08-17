@@ -34,7 +34,11 @@ import {
 import { createStandingOrderMaterializationLifecycle } from './lifecycle';
 import { materializeDueStandingOrders, STANDING_ORDER_MAX_QUOTE_AGE_MS } from './materialize';
 import { standingOrderOccurrenceId } from './occurrenceId';
-import { calendarDayInTimezone, dueStandingOrderOccurrence } from './schedule';
+import {
+  calendarDayInTimezone,
+  dueStandingOrderOccurrence,
+  oldestUnbookedStandingOrderDueDate,
+} from './schedule';
 
 const DAILY_ADD_ID = '018f0000-0000-7000-8000-000000000201';
 const MONTHLY_BUY_ID = '018f0000-0000-7000-8000-000000000202';
@@ -1908,6 +1912,8 @@ describe('paranoid standing-order materialization', () => {
           unlockCalls += 1;
           return success;
         },
+        getLastStandingOrderMaterialization: () => null,
+        subscribeStandingOrderMaterialization: () => () => undefined,
       },
     });
 
@@ -2261,6 +2267,39 @@ describe('paranoid standing-order materialization', () => {
         '2026-07-27',
       ),
     ).toBe('2026-01-31');
+    expect(
+      oldestUnbookedStandingOrderDueDate(
+        {
+          cadence: 'daily',
+          anchorDay: null,
+          startDate: '2026-07-01',
+          endDate: null,
+        },
+        null,
+      ),
+    ).toBe('2026-07-01');
+    expect(
+      oldestUnbookedStandingOrderDueDate(
+        {
+          cadence: 'daily',
+          anchorDay: null,
+          startDate: '2026-07-01',
+          endDate: null,
+        },
+        '2026-07-15',
+      ),
+    ).toBe('2026-07-16');
+    expect(
+      oldestUnbookedStandingOrderDueDate(
+        {
+          cadence: 'monthly',
+          anchorDay: 31,
+          startDate: '2024-01-01',
+          endDate: null,
+        },
+        '2024-01-31',
+      ),
+    ).toBe('2024-02-29');
     expect(calendarDayInTimezone(new Date(BOOKED_AT), 'Europe/Vienna')).toBe('2026-07-27');
     expect(calendarDayInTimezone(new Date(BOOKED_AT), 'America/New_York')).toBe('2026-07-26');
   });
