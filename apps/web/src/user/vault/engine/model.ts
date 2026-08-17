@@ -9,8 +9,11 @@ import {
 import type { SourcedCashMovement } from '@bettertrack/domain/cashLedger';
 import type { Transaction as DomainTransaction } from '@bettertrack/domain/holdings';
 
+import { isLocalAssetSnapshot } from '../assetSnapshot';
 import { moneyFailure } from './errors';
 import { liveEntities, requireLiveEntity } from './session';
+
+export { isLocalAssetSnapshot, type LocalAssetSnapshotFacts } from '../assetSnapshot';
 
 export interface ClientAssetRecord {
   id: string;
@@ -19,22 +22,6 @@ export interface ClientAssetRecord {
   currency: string;
   type: string;
   dto: PortfolioAsset;
-}
-
-export interface LocalAssetSnapshotFacts {
-  readonly isCustom?: unknown;
-  readonly ownerId?: unknown;
-  readonly providerId?: unknown;
-  readonly type?: unknown;
-}
-
-/** Decide whether one row in the vault's local asset table is owner-local. */
-export function isLocalAssetSnapshot(row: LocalAssetSnapshotFacts): boolean {
-  return typeof row.isCustom === 'boolean'
-    ? row.isCustom
-    : row.ownerId != null ||
-        (typeof row.providerId === 'string' ? row.providerId : 'manual') === 'manual' ||
-        row.type === 'custom';
 }
 
 export interface ClientTransactionRecord extends DomainTransaction {

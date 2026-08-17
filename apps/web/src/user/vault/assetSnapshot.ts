@@ -3,6 +3,23 @@ import type { PortfolioAsset } from '@bettertrack/contracts';
 /** The public catalog every non-custom asset row in this deployment came from. */
 export const CATALOG_PROVIDER_ID = 'yahoo';
 
+export interface LocalAssetSnapshotFacts {
+  readonly isCustom?: unknown;
+  readonly ownerId?: unknown;
+  readonly providerId?: unknown;
+  readonly type?: unknown;
+}
+
+/** Decide whether one row in the vault's local asset table is owner-local. */
+export function isLocalAssetSnapshot(row: LocalAssetSnapshotFacts): boolean {
+  // `portfolioAssetFromEntity` passes a looser payload and needs this explicit flag to win.
+  return typeof row.isCustom === 'boolean'
+    ? row.isCustom
+    : row.ownerId != null ||
+        (typeof row.providerId === 'string' ? row.providerId : 'manual') === 'manual' ||
+        row.type === 'custom';
+}
+
 /**
  * The single producer of the vault's LOCAL ASSET TABLE rows. One `customAsset`
  * row is emitted for every asset the document references — market-catalog ones

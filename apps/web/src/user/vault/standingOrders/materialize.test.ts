@@ -1768,6 +1768,72 @@ describe('paranoid standing-order materialization', () => {
     expect(market.calls.quote).not.toContain(CLIENT_MONEY_IDS.eurAsset);
   });
 
+  it('keeps materialization and valuation on the same route for a divergent local row', async () => {
+    const fixture = await decryptClientMoneyFixture();
+    const document = withOrders(fixture.document, [
+      standingOrder(MONTHLY_BUY_ID, {
+        kind: 'buy-asset',
+        assetId: CLIENT_MONEY_IDS.eurAsset,
+        amount: '1',
+        currency: 'EUR',
+        cadence: 'daily',
+        anchorDay: null,
+        startDate: '2026-07-20',
+      }),
+    ]);
+    const asset = document.entities.customAsset!.find(
+      (entity) => entity.id === CLIENT_MONEY_IDS.eurAsset,
+    )!;
+    // Synthetic drift guard: local ownership facts deliberately disagree with
+    // the old provider-only valuation check. Real producers never emit this row.
+    asset.data.providerId = 'synthetic-provider';
+    asset.data.providerRef = asset.id;
+    asset.data.ownerId = CLIENT_MONEY_IDS.user;
+    asset.data.type = 'custom';
+    asset.data.meta = { smoothing: false };
+    document.entities.customAssetValue = [
+      manualValue('018f0000-0000-7000-8000-000000000208', asset.id, '2026-07-20', '100'),
+      manualValue('018f0000-0000-7000-8000-000000000209', asset.id, '2026-07-26', '175'),
+    ];
+    const sync = createMutableTestSync(document, fixture.header);
+    const market = createClientMoneyMarket();
+
+    const materialized = await materializeDueStandingOrders(
+      sync,
+      createVaultPortfolioStore(sync),
+      market.market,
+      {
+        now: () => new Date(BOOKED_AT),
+        timezone: 'Europe/Vienna',
+      },
+    );
+
+    expect(materialized).toMatchObject({
+      ok: true,
+      value: {
+        booked: [{ orderId: MONTHLY_BUY_ID, kind: 'buy-asset' }],
+        deferred: [],
+      },
+    });
+    const occurrenceId = await standingOrderOccurrenceId(MONTHLY_BUY_ID, '2026-07-27');
+    expect(live(sync.state.active!.document, 'transaction', occurrenceId)?.data).toMatchObject({
+      price: '175',
+    });
+    expect(market.calls.quote).not.toContain(CLIENT_MONEY_IDS.eurAsset);
+
+    const valuation = await createVaultMoneyEngine(sync, market.market, {
+      now: () => new Date(BOOKED_AT).getTime(),
+    }).derivePortfolio(CLIENT_MONEY_IDS.portfolio, 'MAX');
+
+    expect(valuation.ok, valuation.ok ? undefined : JSON.stringify(valuation.error)).toBe(true);
+    if (!valuation.ok) return;
+    expect(
+      valuation.value.holdings.find((holding) => holding.assetId === CLIENT_MONEY_IDS.eurAsset),
+    ).toMatchObject({ price: 175 });
+    expect(market.calls.quote).not.toContain(CLIENT_MONEY_IDS.eurAsset);
+    expect(market.calls.history).not.toContain(CLIENT_MONEY_IDS.eurAsset);
+  });
+
   it('runs catch-up at the public money-engine app-open boundary', async () => {
     const fixture = await decryptClientMoneyFixture();
     const document = withOrders(fixture.document, [

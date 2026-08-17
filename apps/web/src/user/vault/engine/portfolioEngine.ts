@@ -28,6 +28,7 @@ import {
   type MarketDataValue,
   type MarketFxValue,
 } from '../../../lib/marketDataSource';
+import { isLocalAssetSnapshot } from '../assetSnapshot';
 import type { VaultSyncEngine } from '../sync';
 import { VaultDerivedCache } from './cache';
 import {
@@ -355,7 +356,7 @@ async function loadMarketInputs(
         throw moneyFailure('VAULT_INVALID_OWNERSHIP', `Asset ${assetId} is unavailable.`);
       }
       const local = storedPrices(document, assetId);
-      if (asset.providerId === 'manual') {
+      if (isLocalAssetSnapshot(asset.dto)) {
         const manual = localManualAssetMarket(document, asset);
         if (demand.history && manual.prices.length === 0) {
           throw moneyFailure(
