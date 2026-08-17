@@ -4,6 +4,18 @@ import { expect, test, vi } from 'vitest';
 
 import { Modal } from './Modal';
 
+test('carries the admin foreground color into its body portal', () => {
+  render(
+    <Modal title="Audit details" onClose={vi.fn()}>
+      <p>Inherited audit row</p>
+    </Modal>,
+  );
+
+  expect(screen.getByRole('dialog', { name: 'Audit details' }).parentElement).toHaveClass(
+    'text-neutral-100',
+  );
+});
+
 test('focuses the first enabled descendant when it opens', () => {
   render(
     <Modal title="Edit user" onClose={vi.fn()}>

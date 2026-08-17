@@ -1,3 +1,5 @@
+import { createRef, forwardRef, useImperativeHandle, useState } from 'react';
+import type { ReactNode } from 'react';
 import { act, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
@@ -15,6 +17,7 @@ vi.mock('../AuthContext', () => ({
 }));
 
 import { AdminLayout } from './AdminLayout';
+import { Modal } from './Modal';
 
 const ADMIN_NAV_KEYS = [
   'admin.nav.users',
@@ -49,20 +52,66 @@ function Bomb(): never {
   throw new Error('kaboom');
 }
 
-function renderAdmin(initialPath: string, initialLocale = 'en') {
-  return render(
+function AdminTestApp({
+  initialPath,
+  initialLocale = 'en',
+  invitesElement = <p>Invites page</p>,
+}: {
+  initialPath: string;
+  initialLocale?: string;
+  invitesElement?: ReactNode;
+}) {
+  return (
     <I18nProvider initialLocale={initialLocale}>
       <MemoryRouter initialEntries={[initialPath]}>
         <Routes>
           <Route element={<AdminLayout />}>
             <Route path="/admin/users" element={<Bomb />} />
-            <Route path="/admin/invites" element={<p>Invites page</p>} />
+            <Route path="/admin/invites" element={invitesElement} />
           </Route>
         </Routes>
       </MemoryRouter>
-    </I18nProvider>,
+    </I18nProvider>
   );
 }
+
+function renderAdmin(initialPath: string, initialLocale = 'en') {
+  return render(<AdminTestApp initialPath={initialPath} initialLocale={initialLocale} />);
+}
+
+interface AdminOverlayPageHandle {
+  closeModal: () => void;
+  openModal: () => void;
+}
+
+const AdminOverlayPage = forwardRef<AdminOverlayPageHandle, { dismissable: boolean }>(
+  function AdminOverlayPage({ dismissable }, ref) {
+    const [modalOpen, setModalOpen] = useState(false);
+    useImperativeHandle(
+      ref,
+      () => ({
+        closeModal: () => setModalOpen(false),
+        openModal: () => setModalOpen(true),
+      }),
+      [],
+    );
+
+    return (
+      <>
+        <p>Invites page</p>
+        {modalOpen ? (
+          <Modal
+            dismissable={dismissable}
+            onClose={() => setModalOpen(false)}
+            title="Layered admin modal"
+          >
+            <button type="button">Modal action</button>
+          </Modal>
+        ) : null}
+      </>
+    );
+  },
+);
 
 function stubDesktopBreakpoint() {
   let matches = false;
@@ -204,6 +253,7 @@ test('the compact language control re-renders the admin shell immediately', asyn
 test('the burger button opens an inert-background drawer and cleans up on Escape', async () => {
   setViewportWidth(390);
   const user = userEvent.setup();
+  const previousOverflow = document.body.style.overflow;
   renderAdmin('/admin/invites');
 
   const burger = screen.getByRole('button', { name: 'Open admin menu' });
@@ -219,6 +269,7 @@ test('the burger button opens an inert-background drawer and cleans up on Escape
   expect(main).toHaveAttribute('inert');
   expect(burger.closest('[inert]')).not.toBeNull();
   expect(drawer.closest('[inert]')).toBeNull();
+  expect(document.body.style.overflow).toBe('hidden');
 
   await user.keyboard('{Escape}');
 
@@ -226,6 +277,74 @@ test('the burger button opens an inert-background drawer and cleans up on Escape
   expect(main).not.toHaveAttribute('inert');
   expect(burger.closest('[inert]')).toBeNull();
   expect(burger).toHaveFocus();
+  expect(document.body.style.overflow).toBe(previousOverflow);
+});
+
+test('Escape closes an admin Modal above the drawer before closing the drawer', async () => {
+  setViewportWidth(390);
+  const user = userEvent.setup();
+  const page = createRef<AdminOverlayPageHandle>();
+  const previousOverflow = document.body.style.overflow;
+  render(
+    <AdminTestApp
+      initialPath="/admin/invites"
+      invitesElement={<AdminOverlayPage dismissable ref={page} />}
+    />,
+  );
+
+  await user.click(screen.getByRole('button', { name: 'Open admin menu' }));
+  act(() => page.current?.openModal());
+
+  const modal = screen.getByRole('dialog', { name: 'Layered admin modal' });
+  expect(modal).toBeInTheDocument();
+  expect(screen.getByRole('dialog', { name: 'Admin menu' })).toBeInTheDocument();
+  expect(screen.getByText('Invites page').closest('main')).not.toBeNull();
+  expect(screen.getByRole('main')).toHaveAttribute('inert');
+  expect(modal.closest('main')).toBeNull();
+  expect(modal.closest('[inert]')).toBeNull();
+  expect(screen.getByRole('button', { name: 'Modal action' })).toHaveFocus();
+
+  await user.keyboard('{Escape}');
+
+  await waitFor(() => {
+    expect(screen.queryByRole('dialog', { name: 'Layered admin modal' })).not.toBeInTheDocument();
+  });
+  expect(screen.getByRole('dialog', { name: 'Admin menu' })).toBeInTheDocument();
+  expect(document.body.style.overflow).toBe('hidden');
+
+  await user.keyboard('{Escape}');
+
+  expect(screen.queryByRole('dialog', { name: 'Admin menu' })).not.toBeInTheDocument();
+  expect(document.body.style.overflow).toBe(previousOverflow);
+});
+
+test('a non-dismissable admin Modal consumes Escape without closing the drawer beneath it', async () => {
+  setViewportWidth(390);
+  const user = userEvent.setup();
+  const page = createRef<AdminOverlayPageHandle>();
+  render(
+    <AdminTestApp
+      initialPath="/admin/invites"
+      invitesElement={<AdminOverlayPage dismissable={false} ref={page} />}
+    />,
+  );
+
+  await user.click(screen.getByRole('button', { name: 'Open admin menu' }));
+  act(() => page.current?.openModal());
+
+  const modal = screen.getByRole('dialog', { name: 'Layered admin modal' });
+  expect(screen.getByRole('main')).toHaveAttribute('inert');
+  expect(modal.closest('[inert]')).toBeNull();
+  expect(screen.getByRole('button', { name: 'Modal action' })).toHaveFocus();
+
+  await user.keyboard('{Escape}');
+
+  expect(screen.getByRole('dialog', { name: 'Layered admin modal' })).toBeInTheDocument();
+  expect(screen.getByRole('dialog', { name: 'Admin menu' })).toBeInTheDocument();
+
+  act(() => page.current?.closeModal());
+  await user.keyboard('{Escape}');
+  expect(screen.queryByRole('dialog', { name: 'Admin menu' })).not.toBeInTheDocument();
 });
 
 test('crossing into the desktop breakpoint closes the drawer, releases inert, and focuses main', async () => {
@@ -260,6 +379,57 @@ test('crossing into the desktop breakpoint closes the drawer, releases inert, an
   });
   expect(main).not.toHaveAttribute('inert');
   expect(desktopSidebar).not.toHaveAttribute('inert');
+  expect(main).toHaveFocus();
+  expect(document.body).not.toHaveFocus();
+});
+
+test('crossing the desktop breakpoint beneath a Modal preserves its focus and scroll locks', async () => {
+  setViewportWidth(767);
+  const desktopBreakpoint = stubDesktopBreakpoint();
+  const user = userEvent.setup();
+  const page = createRef<AdminOverlayPageHandle>();
+  const previousOverflow = document.body.style.overflow;
+  const { container } = render(
+    <AdminTestApp
+      initialPath="/admin/invites"
+      invitesElement={<AdminOverlayPage dismissable ref={page} />}
+    />,
+  );
+
+  const burger = screen.getByRole('button', { name: 'Open admin menu' });
+  await user.click(burger);
+  act(() => page.current?.openModal());
+
+  const modal = screen.getByRole('dialog', { name: 'Layered admin modal' });
+  const modalAction = screen.getByRole('button', { name: 'Modal action' });
+  const main = screen.getByRole('main');
+  const mobileHeader = burger.closest('header')!;
+  const desktopSidebar = container.querySelector<HTMLElement>('aside')!;
+  expect(modalAction).toHaveFocus();
+  expect(document.body.style.overflow).toBe('hidden');
+
+  act(() => {
+    mobileHeader.style.display = 'none';
+    desktopSidebar.style.display = 'block';
+    desktopBreakpoint.enterDesktop();
+  });
+
+  await waitFor(() => {
+    expect(screen.queryByRole('dialog', { name: 'Admin menu' })).not.toBeInTheDocument();
+  });
+  expect(modal).toBeInTheDocument();
+  expect(main).not.toHaveAttribute('inert');
+  expect(modalAction).toHaveFocus();
+  expect(document.body.style.overflow).toBe('hidden');
+
+  await user.tab();
+  expect(modalAction).toHaveFocus();
+
+  act(() => page.current?.closeModal());
+  await waitFor(() => {
+    expect(screen.queryByRole('dialog', { name: 'Layered admin modal' })).not.toBeInTheDocument();
+  });
+  expect(document.body.style.overflow).toBe(previousOverflow);
   expect(main).toHaveFocus();
   expect(document.body).not.toHaveFocus();
 });
