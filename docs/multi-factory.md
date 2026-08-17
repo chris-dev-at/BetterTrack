@@ -9,16 +9,23 @@ same `factory/lib.sh` internals, and **the two must never run at the same time**
 
 ## Roles
 
-| Role      | Where  | Model (via difficulty routing)       | What                                                        |
-| --------- | ------ | ------------------------------------ | ----------------------------------------------------------- |
-| Composer  | master | `roles.composer` slot (default hard) | planner v2 — issues carry an `mf-meta` block (deps/touches) |
-| Scheduler | master | none (pure bash)                     | assigns runnable, non-conflicting issues to idle workers    |
-| Merger    | master | none (pure bash)                     | the ONLY thing that merges; FIFO queue, one ci-fix, re-gate |
-| Writer    | worker | issue difficulty                     | same prompt as the single factory                           |
-| Reviewer  | worker | issue difficulty, ≥ review floor     | same prompt/rules                                           |
-| Fixer     | worker | issue difficulty                     | same prompt/rules                                           |
-| Checker   | worker | `roles.checker` slot (default hard)  | triage after failed rounds: escalate / relocate / human     |
-| ci-fix    | master | issue difficulty                     | one CI-repair attempt before needs-human                    |
+| Role      | Where  | Model (via difficulty routing)       | What                                                                   |
+| --------- | ------ | ------------------------------------ | ---------------------------------------------------------------------- |
+| Composer  | master | `roles.composer` slot (default hard) | planner v2 — issues carry an `mf-meta` block (deps/touches)            |
+| Scheduler | master | none (pure bash)                     | assigns runnable, non-conflicting issues to idle workers               |
+| Merger    | master | none (pure bash)                     | the ONLY thing that merges; FIFO-preferring queue, one ci-fix, re-gate |
+| Writer    | worker | issue difficulty                     | same prompt as the single factory                                      |
+| Reviewer  | worker | issue difficulty, ≥ review floor     | same prompt/rules                                                      |
+| Fixer     | worker | issue difficulty                     | same prompt/rules                                                      |
+| Checker   | worker | `roles.checker` slot (default hard)  | triage after failed rounds: escalate / relocate / human                |
+| ci-fix    | master | issue difficulty                     | one CI-repair attempt before needs-human                               |
+
+The merge queue is FIFO-**preferring**, not strictly serial: each tick inspects up
+to `MF_MERGE_LOOKAHEAD` records (default 5) in FIFO order and skips past entries
+that are only _deferred_ — CI still pending, or a merge command GitHub refused —
+so an already-CLEAN PR behind them is not starved. Queue files are never
+reordered or rewritten, and at most one merge lands per tick, so the oldest
+genuinely mergeable record always wins.
 
 ## Difficulty routing & model providers (mflib.sh)
 

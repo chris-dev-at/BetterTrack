@@ -36,7 +36,8 @@ CONTROL=$MFSTATE/control; LOGS=$MFSTATE/logs; CIFIX=$MFSTATE/ci-fix
 : "${MF_COMPOSER_DISCOVERY_SLEEP:=2}" # seconds between post-create snapshots
 : "${MF_CIFIX_PROTOCOL_BACKOFF:=300}" # delay before the one no-head protocol retry
 : "${MF_APPROVAL_READ_MAX:=40}"   # consecutive approval-read failures before the queue head parks to a human
-: "${MF_MERGE_FAIL_MAX:=40}"      # same-head merge refusals (BLOCKED/DRAFT/protection) before parking to a human
+: "${MF_MERGE_FAIL_MAX:=40}"      # merge refusals for one PR before parking it with a human
+: "${MF_MERGE_LOOKAHEAD:=5}"      # FIFO records inspected per tick while earlier entries are deferred
 : "${MF_DRY_RUN:=0}"
 if [ -z "${MF_MASTER_SESSION:-}" ]; then
   MF_MASTER_NONCE=$(od -An -N8 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')
@@ -1176,14 +1177,31 @@ scheduler(){ # $1=mode — assigns runnable, non-conflicting issues to idle work
   done
 }
 
-# One queue head per tick, non-blocking on pending CI: workers never babysit CI
-# and the master keeps scheduling while checks run. LLM (ci-fix) and the rare
-# BEHIND re-gate are the only blocking parts, by design (single sequential merger).
+# One successful merge per tick, with bounded FIFO look-ahead past entries whose
+# CI is pending or whose merge command is refused. Queue files stay in place, so
+# the oldest genuinely mergeable record still wins. Note that look-ahead does not
+# only ever MERGE: a non-head record it reaches takes the same branches the head
+# would have, so ci_fix_red_step / conflict_fix_step / requeue_for_review /
+# mark_human are no longer head-privileged. That is bounded to one such action
+# per tick (only pending and refused-merge continue the scan) and it always makes
+# forward progress. LLM (ci-fix) and the rare BEHIND re-gate remain blocking by
+# design (single sequential merger).
 requeue_for_review(){ # $1=queue file $2=issue $3=reason
   local f=$1 n=$2 why=$3
   log "merger: approval invalidated for issue #$n — $why; requeueing for fresh review"
   rm -f "$f"
   gh issue edit "$n" --remove-label in-progress >/dev/null 2>&1 || true
+}
+
+# The merge-refusal budget is keyed per PR, not per head, so it survives the
+# update-branch head churn that used to reset it. It is deliberately NOT cleared
+# by requeue_for_review (a PR that keeps earning refusals across review cycles
+# must still reach the park bound) and has no age-based decay — but it IS cleared
+# on every path that retires the PR from the queue for good, so the queue dir
+# stays self-cleaning. Legacy `-<head>`-suffixed files predating the re-key are
+# swept alongside.
+mergefail_clear(){ # $1=pr
+  rm -f "$QUEUE/.mergefail-pr$1" "$QUEUE"/.mergefail-pr"$1"-* 2>/dev/null || true
 }
 
 ci_fix_state_file(){ printf '%s/issue-%s-pr%s.json' "$CIFIX" "$1" "$2"; }
@@ -1204,7 +1222,7 @@ ci_fix_exhaust(){ # $1=queue file $2=state file $3=issue $4=pr $5=invocations $6
   ci_fix_state_write "$sf" "$n" "$pr" "$invocations" false exhausted 0 "$source_head" || return 1
   log "merger: CI-fix protocol exhausted on PR #$pr after $invocations no-head invocations"
   mark_human "$n" "CI-fix produced no pushed head after its bounded protocol retry"
-  rm -f "$f"
+  rm -f "$f"; mergefail_clear "$pr"
 }
 
 ci_fix_red_step(){ # $1=queue file $2=issue $3=pr $4=approved head
@@ -1249,7 +1267,7 @@ ci_fix_red_step(){ # $1=queue file $2=issue $3=pr $4=approved head
     ci_fix_state_write "$sf" "$n" "$pr" "$invocations" true exhausted 0 "$source_head" || return 1
     log "merger: CI still red after the one pushed CI-fix on PR #$pr"
     mark_human "$n" "CI still failing after the factory's one CI-fix attempt and fresh review"
-    rm -f "$f"
+    rm -f "$f"; mergefail_clear "$pr"
     return 0
   fi
   [ "$status" = exhausted ] && { rm -f "$f"; return 0; }
@@ -1428,10 +1446,25 @@ ci_rollup_state(){ # stdin=statusCheckRollup JSON; stdout=green|red|pending
   '
 }
 
-merger_step(){
-  local head; head=$(ls "$QUEUE" 2>/dev/null | grep -E '^[0-9]+-pr[0-9]+\.json$' | sort -n | head -1)
-  [ -n "$head" ] || return 0
-  local f=$QUEUE/$head pr n approved_head ci_state
+update_behind_step(){ # $1=queue file $2=pr $3=head before update
+  local f=$1 pr=$2 current_head=$3 can_carry=1 new_head
+  carry_forward_ok "$pr" "$current_head" && can_carry=0
+  if gh pr update-branch "$pr" >/dev/null 2>&1; then
+    new_head=$(mf_pr_head "$pr" 2>/dev/null || true)
+    if [ "$can_carry" = 0 ] && [ -n "$new_head" ] && [ "$new_head" != "$current_head" ] \
+      && queue_carry_head "$f" "$new_head"; then
+      log "merger: updated BEHIND PR #$pr; main touched no file it changes — approval carried to ${new_head:0:12}"
+    else
+      log "merger: updated BEHIND PR #$pr; fresh review required"
+    fi
+  else
+    log "merger: update-branch failed for PR #$pr — retrying next tick"
+  fi
+}
+
+merger_record_step(){ # $1=queue file; SETS MERGER_SCAN_NEXT=1 when the caller may look past this record
+  local f=$1 pr n approved_head ci_state
+  [ -f "$f" ] || { MERGER_SCAN_NEXT=1; return 0; }
   pr=$(jq -r '.pr' "$f"); n=$(jq -r '.issue' "$f")
   ci_state=$(ci_fix_state_file "$n" "$pr")
   # The SHA we now expect to merge: the carried head when a BEHIND update was
@@ -1443,10 +1476,10 @@ merger_step(){
   pstate=$(gh pr view "$pr" --json state -q '.state' 2>/dev/null || echo unknown)
   case "$pstate" in
     MERGED) log "merger: PR #$pr already merged — finalizing"
-            finalize_issue "$pr" "$n"; rm -f "$f" "$ci_state"; return 0;;
+            finalize_issue "$pr" "$n"; rm -f "$f" "$ci_state"; mergefail_clear "$pr"; return 0;;
     OPEN)   ;;
     unknown) log "merger: cannot read PR #$pr (transient?) — retrying next tick"; return 0;;
-    *)      mark_human "$n" "PR #$pr $pstate without merge"; rm -f "$f" "$ci_state"; return 0;;
+    *)      mark_human "$n" "PR #$pr $pstate without merge"; rm -f "$f" "$ci_state"; mergefail_clear "$pr"; return 0;;
   esac
 
   # Approval is bound to both one canonical comment and the exact code SHA.
@@ -1479,9 +1512,8 @@ merger_step(){
   # BEFORE the CI gate or it wedges the queue head as forever-"pending". This
   # exact wedge WAS the 2026-07-28 queue jam: PR #891 sat DIRTY with an empty
   # rollup at the FIFO head from 05:38 UTC, starving every PR behind it
-  # (#890/#873 shared the state). The read is reused for the BEHIND decision
-  # after the CI gate; a stale value there only costs one failed merge
-  # attempt, which retries with fresh state.
+  # (#890/#873 shared the state). This admission read handles DIRTY early and
+  # BEHIND after the CI gate; the state is read again at the merge boundary.
   local merge_state
   merge_state=$(gh pr view "$pr" --json mergeStateStatus -q .mergeStateStatus 2>/dev/null) || {
     log "merger: merge-state read failed for PR #$pr — retrying next tick"
@@ -1513,7 +1545,7 @@ merger_step(){
   }
   case "$rollup_state" in
     red) ci_fix_red_step "$f" "$n" "$pr" "$approved_head"; return 0;;
-    pending) return 0;;
+    pending) MERGER_SCAN_NEXT=1; return 0;;
     green) ;;
     *) log "merger: unknown rollup classification for PR #$pr — retrying next tick"; return 0;;
   esac
@@ -1527,19 +1559,25 @@ merger_step(){
     return 0
   fi
   if [ "$merge_state" = BEHIND ]; then
-    local can_carry=1 new_head
-    carry_forward_ok "$pr" "$current_head" && can_carry=0
-    if gh pr update-branch "$pr" >/dev/null 2>&1; then
-      new_head=$(mf_pr_head "$pr" 2>/dev/null || true)
-      if [ "$can_carry" = 0 ] && [ -n "$new_head" ] && [ "$new_head" != "$current_head" ] \
-        && queue_carry_head "$f" "$new_head"; then
-        log "merger: updated BEHIND PR #$pr; main touched no file it changes — approval carried to ${new_head:0:12}"
-      else
-        log "merger: updated BEHIND PR #$pr; fresh review required"
-      fi
-    else
-      log "merger: update-branch failed for PR #$pr — retrying next tick"
-    fi
+    update_behind_step "$f" "$pr" "$current_head"
+    return 0
+  fi
+
+  # BEHIND does real mutation work (one `gh pr update-branch`, which retriggers
+  # CI on that PR) so it deliberately does NOT continue the scan: capping the
+  # merger at one update-branch per tick keeps a queue that went uniformly
+  # BEHIND behind a merge from firing N simultaneous CI runs. It converges —
+  # the updated record reads `pending` next tick and look-ahead moves past it.
+  #
+  # The earlier merge-state read can go stale while GitHub recomputes strict
+  # branch protection. Re-read at the merge boundary so a newly-BEHIND PR takes
+  # the established update-branch path instead of spending a doomed merge call.
+  merge_state=$(gh pr view "$pr" --json mergeStateStatus -q .mergeStateStatus 2>/dev/null) || {
+    log "merger: merge-state recheck failed for PR #$pr — retrying next tick"
+    return 0
+  }
+  if [ "$merge_state" = BEHIND ]; then
+    update_behind_step "$f" "$pr" "$current_head"
     return 0
   fi
 
@@ -1552,29 +1590,52 @@ merger_step(){
       requeue_for_review "$f" "$n" "head changed during merge attempt"
       return 0
     fi
-    # Same-head refusals (BLOCKED by protection, DRAFT, an admin rule) are the
-    # last unbounded head-of-line trap — bound them like approval reads. The
-    # counter is head-scoped so a stale head's budget never leaks onto a new
-    # head (a re-approval at the SAME head deliberately resumes its count).
-    local mergefail=$QUEUE/.mergefail-pr$pr-$approved_head mfails stale
-    for stale in "$QUEUE"/.mergefail-pr$pr-*; do
-      [ -e "$stale" ] || continue
-      [ "$stale" = "$mergefail" ] || rm -f "$stale"
-    done
-    mfails=$(cat "$mergefail" 2>/dev/null || echo 0)
+    # Refusals (BLOCKED by protection, DRAFT, an admin rule) are bounded per PR,
+    # not per head: update-branch mints a new SHA and must not reset the budget.
+    # `head`/`updated_at` are written for diagnostics ONLY — nothing reads them
+    # back; see mergefail_clear for the counter's lifetime.
+    local mergefail=$QUEUE/.mergefail-pr$pr mfails
+    rm -f "$QUEUE"/.mergefail-pr"$pr"-* 2>/dev/null
+    mfails=$(jq -r '.count // 0' "$mergefail" 2>/dev/null || echo 0)
     case "$mfails" in ''|*[!0-9]*) mfails=0;; esac
     mfails=$((mfails + 1))
     if [ "$mfails" -ge "$MF_MERGE_FAIL_MAX" ]; then
-      log "merger: merge refused $mfails times without a head change on PR #$pr — parking with a human"
-      mark_human "$n" "PR #$pr cannot merge (state $merge_state) after $mfails same-head attempts — likely branch protection, draft status, or an admin rule"
-      rm -f "$f" "$mergefail"
+      log "merger: merge refused $mfails times for PR #$pr (latest head $approved_head) — parking with a human"
+      mark_human "$n" "PR #$pr cannot merge (state $merge_state, latest head $approved_head) after $mfails attempts — likely branch protection, draft status, or an admin rule"
+      rm -f "$f"; mergefail_clear "$pr"
       return 0
     fi
-    atomic_write "$mergefail" "$mfails"
-    log "merger: merge command failed without a head change — retaining queue record ($mfails/$MF_MERGE_FAIL_MAX)"
+    atomic_write "$mergefail" "$(jq -cn --argjson count "$mfails" --arg head "$approved_head" \
+      --arg at "$(date -Is)" '{count:$count,head:$head,updated_at:$at}')"
+    log "merger: merge command failed for PR #$pr at head $approved_head — retaining queue record ($mfails/$MF_MERGE_FAIL_MAX)"
+    MERGER_SCAN_NEXT=1
     return 0
   fi
-  rm -f "$f" "$ci_state" "$QUEUE"/.mergefail-pr"$pr"-* 2>/dev/null
+  rm -f "$f" "$ci_state"; mergefail_clear "$pr"
+}
+
+merger_step(){
+  local limit=$MF_MERGE_LOOKAHEAD head f MERGER_SCAN_NEXT
+  local -a window=()
+  case "$limit" in ''|*[!0-9]*) limit=5;; esac
+  [ "$limit" -ge 1 ] || limit=1
+  # Snapshot the FIFO window into an array BEFORE iterating, and never leave a
+  # reader bound to the loop. A `while read … done < <(…)` form redirects stdin
+  # for the ENTIRE compound command, body included, so every callee would
+  # inherit the not-yet-read queue filenames on fd 0 — including the ci-fix and
+  # conflict-fix `claude -p` runs, which fold non-TTY stdin into the prompt
+  # (factory/lib.sh cc() pipes only stdout). Reading the listing up front keeps
+  # the loop body on the master's own stdin, as it was before look-ahead.
+  mapfile -t window < <(ls "$QUEUE" 2>/dev/null \
+    | grep -E '^[0-9]+-pr[0-9]+\.json$' | sort -n | head -n "$limit")
+  for head in ${window[@]+"${window[@]}"}; do
+    [ -n "$head" ] || continue
+    f=$QUEUE/$head
+    [ -f "$f" ] || continue
+    MERGER_SCAN_NEXT=0
+    merger_record_step "$f"
+    [ "$MERGER_SCAN_NEXT" = 1 ] || return 0
+  done
 }
 
 finalize_issue(){ # $1=pr $2=issue
