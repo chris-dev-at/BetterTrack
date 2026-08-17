@@ -139,6 +139,22 @@ export function restoreFocusTo(
   candidates: Array<HTMLElement | null | undefined>,
   { exclude }: { exclude?: HTMLElement | null } = {},
 ) {
+  const survivingOverlay = topOverlayElement(exclude);
+  const focused = currentActiveElement();
+
+  // A lower overlay can retire while a portalled overlay above it remains
+  // open (for example, the admin drawer at the desktop breakpoint). In that
+  // case focus already has the right owner; restoring the lower overlay's
+  // trigger would move focus out of the surviving modal and break its trap.
+  if (
+    survivingOverlay !== null &&
+    focused !== null &&
+    survivingOverlay.contains(focused) &&
+    !exclude?.contains(focused)
+  ) {
+    return;
+  }
+
   for (const candidate of candidates) {
     if (candidate instanceof HTMLElement && candidate.isConnected) {
       candidate.focus();
@@ -146,9 +162,8 @@ export function restoreFocusTo(
     }
   }
 
-  const overlayBelow = topOverlayElement(exclude);
-  if (overlayBelow !== null) {
-    focusProgrammatically(overlayBelow);
+  if (survivingOverlay !== null) {
+    focusProgrammatically(survivingOverlay);
     return;
   }
 

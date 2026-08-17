@@ -4,6 +4,7 @@ import userEvent from '@testing-library/user-event';
 import { expect, test, vi } from 'vitest';
 
 import { Dialog } from './Dialog';
+import { useMenuKeyboard } from './useMenuKeyboard';
 
 function DialogFixture() {
   const [open, setOpen] = useState(false);
@@ -22,6 +23,75 @@ function DialogFixture() {
     </>
   );
 }
+
+function Menu({ label }: { label: string }) {
+  const [open, setOpen] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const { closeAndRestoreFocus, menuRef, onKeyDown } = useMenuKeyboard({
+    open,
+    onClose: () => setOpen(false),
+    triggerRef,
+  });
+
+  return (
+    <>
+      <button
+        aria-expanded={open}
+        aria-haspopup="menu"
+        onClick={() => setOpen((value) => !value)}
+        ref={triggerRef}
+        type="button"
+      >
+        {label}
+      </button>
+      {open ? (
+        <div aria-label={`${label} menu`} onKeyDown={onKeyDown} ref={menuRef} role="menu">
+          <button onClick={closeAndRestoreFocus} role="menuitem" type="button">
+            {label} one
+          </button>
+          <button onClick={closeAndRestoreFocus} role="menuitem" type="button">
+            {label} two
+          </button>
+        </div>
+      ) : null}
+    </>
+  );
+}
+
+function MenuInDialogFixture() {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <button onClick={() => setOpen(true)} type="button">
+        Open sheet
+      </button>
+      {open ? (
+        <Dialog onClose={() => setOpen(false)} title="Sheet">
+          <Menu label="Audience" />
+        </Dialog>
+      ) : null}
+    </>
+  );
+}
+
+test('routes Escape through a real menu nested in a real dialog', async () => {
+  const user = userEvent.setup();
+  render(<MenuInDialogFixture />);
+
+  await user.click(screen.getByRole('button', { name: 'Open sheet' }));
+  const menuTrigger = screen.getByRole('button', { name: 'Audience' });
+  await user.click(menuTrigger);
+  expect(screen.getByRole('menu', { name: 'Audience menu' })).toBeInTheDocument();
+
+  await user.keyboard('{Escape}');
+
+  await waitFor(() => expect(screen.queryByRole('menu')).toBeNull());
+  expect(screen.getByRole('dialog', { name: 'Sheet' })).toBeInTheDocument();
+  expect(menuTrigger).toHaveFocus();
+
+  await user.keyboard('{Escape}');
+  await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+});
 
 test('associates its visible description with the dialog', () => {
   render(
