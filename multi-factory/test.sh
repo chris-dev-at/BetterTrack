@@ -1071,6 +1071,101 @@ check "look-ahead merges the clean second record" "42" "$(<"$LOOKAHEAD_MERGES")"
 [ -f "$QDIR/1005-pr42.json" ] && bad "merged look-ahead record must leave the queue" || ok "merged look-ahead record left the queue"
 rm -f "$QDIR/1004-pr41.json"
 
+echo "— merger: look-ahead still prefers the FIFO head and merges once per tick"
+# Every other merger case has at most ONE mergeable record, so a look-ahead that
+# reordered the queue or kept scanning after a landed merge would stay green.
+FIFO_MERGES=$T/fifo-merges.log; : >"$FIFO_MERGES"
+jq -nc '{pr:43,issue:403,touches:["a/**"],approved_head:"head43",approval_kind:"reviewer",approval_comment_id:"43"}' >"$QDIR/1010-pr43.json"
+jq -nc '{pr:44,issue:404,touches:["b/**"],approved_head:"head44",approval_kind:"reviewer",approval_comment_id:"44"}' >"$QDIR/1011-pr44.json"
+mf_pr_head(){ case "$1" in 43) echo head43;; 44) echo head44;; esac; }
+gh(){
+  if [ "$1 $2" = "pr view" ]; then
+    case "$5" in
+      state) echo OPEN;;
+      mergeStateStatus) echo CLEAN;;
+      statusCheckRollup) echo '[{"conclusion":"SUCCESS","status":"COMPLETED"}]';;
+    esac
+    return 0
+  fi
+  if [ "$1 $2" = "pr merge" ]; then printf '%s\n' "$3" >>"$FIFO_MERGES"; return 0; fi
+  return 0
+}
+merger_step
+check "two mergeable records: only the FIFO head merges" "43" "$(<"$FIFO_MERGES")"
+[ -f "$QDIR/1010-pr43.json" ] && bad "merged FIFO head must leave the queue" || ok "merged FIFO head left the queue"
+[ -f "$QDIR/1011-pr44.json" ] && ok "the later mergeable record waits for the next tick" || bad "a second record merged in the same tick"
+rm -f "$QDIR/1011-pr44.json"
+
+echo "— merger: the look-ahead window is bounded and MF_MERGE_LOOKAHEAD sanitized"
+BOUND_SEEN=$T/bound-seen.log
+BOUND_MERGES=$T/bound-merges.log
+seed_bound_queue(){ # three records: two pending, then one mergeable
+  jq -nc '{pr:45,issue:405,touches:["c/**"],approved_head:"head45",approval_kind:"reviewer",approval_comment_id:"45"}' >"$QDIR/1012-pr45.json"
+  jq -nc '{pr:46,issue:406,touches:["d/**"],approved_head:"head46",approval_kind:"reviewer",approval_comment_id:"46"}' >"$QDIR/1013-pr46.json"
+  jq -nc '{pr:47,issue:407,touches:["e/**"],approved_head:"head47",approval_kind:"reviewer",approval_comment_id:"47"}' >"$QDIR/1014-pr47.json"
+  : >"$BOUND_SEEN"; : >"$BOUND_MERGES"
+}
+mf_pr_head(){ case "$1" in 45) echo head45;; 46) echo head46;; 47) echo head47;; esac; }
+gh(){
+  if [ "$1 $2" = "pr view" ]; then
+    case "$5" in
+      state) printf '%s\n' "$3" >>"$BOUND_SEEN"; echo OPEN;;   # first read of a record
+      mergeStateStatus) echo CLEAN;;
+      statusCheckRollup)
+        if [ "$3" = 47 ]; then echo '[{"conclusion":"SUCCESS","status":"COMPLETED"}]'; else echo '[]'; fi
+        ;;
+    esac
+    return 0
+  fi
+  if [ "$1 $2" = "pr merge" ]; then printf '%s\n' "$3" >>"$BOUND_MERGES"; return 0; fi
+  return 0
+}
+seed_bound_queue
+MF_MERGE_LOOKAHEAD=2
+merger_step
+check "look-ahead stops at the limit — the 3rd record is never inspected" \
+  "45 46" "$(tr '\n' ' ' <"$BOUND_SEEN" | sed 's/ *$//')"
+check "a mergeable record beyond the limit does not merge" "0" "$(wc -l <"$BOUND_MERGES" | tr -d ' ')"
+seed_bound_queue
+MF_MERGE_LOOKAHEAD=abc
+merger_step
+check "non-numeric limit falls back to the default 5" "47" "$(<"$BOUND_MERGES")"
+seed_bound_queue
+MF_MERGE_LOOKAHEAD=0
+merger_step
+check "zero limit clamps to the FIFO head alone" "45" "$(tr -d '\n' <"$BOUND_SEEN")"
+check "zero limit merges nothing behind the pending head" "0" "$(wc -l <"$BOUND_MERGES" | tr -d ' ')"
+MF_MERGE_LOOKAHEAD=5
+rm -f "$QDIR/1012-pr45.json" "$QDIR/1013-pr46.json" "$QDIR/1014-pr47.json"
+
+echo "— merger: look-ahead never leaks the queue listing into a fixer's stdin"
+# `while read … done < <(ls …)` binds the queue-listing pipe to fd 0 for the
+# WHOLE compound command, body included. The remediation paths a non-head record
+# can now reach spawn `claude -p` (factory/lib.sh cc() redirects stdout only),
+# and claude folds non-TTY stdin into the prompt — so the fixer would silently
+# receive the remaining queue filenames as input. Feed merger_step a known
+# sentinel and assert the fixer sees exactly that, not `1016-pr49.json`.
+CIFIX_STDIN=$T/cifix-stdin.log; : >"$CIFIX_STDIN"
+jq -nc '{pr:48,issue:408,touches:["f/**"],approved_head:"head48",approval_kind:"reviewer",approval_comment_id:"48"}' >"$QDIR/1015-pr48.json"
+jq -nc '{pr:49,issue:409,touches:["g/**"],approved_head:"head49",approval_kind:"reviewer",approval_comment_id:"49"}' >"$QDIR/1016-pr49.json"
+mf_pr_head(){ case "$1" in 48) echo head48;; 49) echo head49;; esac; }
+mf_cc(){ cat >"$CIFIX_STDIN"; return 0; }
+gh(){
+  if [ "$1 $2" = "pr view" ]; then
+    case "$5" in
+      state) echo OPEN;;
+      mergeStateStatus) echo CLEAN;;
+      statusCheckRollup) echo '[{"conclusion":"FAILURE","status":"COMPLETED"}]';;
+    esac
+    return 0
+  fi
+  return 0
+}
+merger_step <<<'MERGER-STDIN-SENTINEL'
+check "ci-fix inherits the master's own stdin, not the queue listing" \
+  "MERGER-STDIN-SENTINEL" "$(<"$CIFIX_STDIN")"
+rm -f "$QDIR/1015-pr48.json" "$QDIR/1016-pr49.json" "$CIFIX/issue-408-pr48.json"
+
 echo "— merger: merge-state recheck routes newly-BEHIND PRs to update-branch"
 RECHECK_STATES=$T/recheck-states.log; : >"$RECHECK_STATES"
 RECHECK_UPDATES=$T/recheck-updates.log; : >"$RECHECK_UPDATES"
