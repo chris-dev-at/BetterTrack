@@ -13,6 +13,7 @@ import { Alert, Button, cx } from '../components/ui';
 import { StandingOrderDialog } from './StandingOrderDialog';
 import { usePortfolioStore } from '../portfolio/PortfolioStoreProvider';
 import type { StandingOrderMaterializationResult } from '../vault/standingOrders/materialize';
+import { oldestUnbookedStandingOrderDueDate } from '../vault/standingOrders/schedule';
 import { useVaultMoneySession } from '../vault/engine/VaultMoneyEngineContext';
 
 const EM_DASH = '—';
@@ -322,7 +323,7 @@ function standingOrderNotice(
     .filter((failure) => failure.orderId === order.id)
     .map((failure) => failure.dueDate ?? result.today);
   if (failureDates.length > 0) {
-    return { kind: 'failed', dueDate: oldestDay(failureDates) };
+    return { kind: 'failed', dueDate: noticeStartDate(order, failureDates) };
   }
 
   const deferrals = result.deferred.filter((deferred) => deferred.orderId === order.id);
@@ -332,8 +333,15 @@ function standingOrderNotice(
     : 'insufficient-cash';
   return {
     kind: reason,
-    dueDate: oldestDay(deferrals.map((deferred) => deferred.dueDate)),
+    dueDate: noticeStartDate(
+      order,
+      deferrals.map((deferred) => deferred.dueDate),
+    ),
   };
+}
+
+function noticeStartDate(order: StandingOrder, scanDates: string[]): string {
+  return oldestUnbookedStandingOrderDueDate(order, order.lastPeriodKey) ?? oldestDay(scanDates);
 }
 
 function oldestDay(days: string[]): string {

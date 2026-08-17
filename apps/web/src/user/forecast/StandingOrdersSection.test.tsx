@@ -36,6 +36,7 @@ import {
   type VaultMoneySession,
 } from '../vault/engine/VaultMoneyEngineContext';
 import { createStandingOrderMaterializationLifecycle } from '../vault/standingOrders/lifecycle';
+import { standingOrderOccurrenceId } from '../vault/standingOrders/occurrenceId';
 import { createVaultPortfolioStore } from '../vault/vaultPortfolioStore';
 
 const PORTFOLIOS: PortfolioSummary[] = [
@@ -55,6 +56,7 @@ const VAULT_FAILED_ID = '018f0000-0000-7000-8000-000000000302';
 const VAULT_BOOKED_ID = '018f0000-0000-7000-8000-000000000303';
 const VAULT_PAUSED_ID = '018f0000-0000-7000-8000-000000000304';
 const VAULT_FUTURE_ID = '018f0000-0000-7000-8000-000000000305';
+const VAULT_INSUFFICIENT_ID = '018f0000-0000-7000-8000-000000000306';
 const VAULT_SCAN_AT = '2026-07-26T22:30:00.000Z';
 
 function makeOrder(over: Partial<StandingOrder> = {}): StandingOrder {
@@ -171,6 +173,7 @@ describe('StandingOrdersSection', () => {
   test('shows only affected vault rows after a scan and clears a quote notice after recovery', async () => {
     const fixture = await decryptClientMoneyFixture();
     const document = structuredClone(fixture.document);
+    const priorRunId = await standingOrderOccurrenceId(VAULT_INSUFFICIENT_ID, '2026-07-22');
     document.entities.standingOrder = [
       vaultStandingOrder(VAULT_QUOTE_DEFERRED_ID, {
         kind: 'buy-asset',
@@ -188,6 +191,27 @@ describe('StandingOrdersSection', () => {
         label: 'Tomorrow',
         startDate: '2026-07-28',
       }),
+      vaultStandingOrder(VAULT_INSUFFICIENT_ID, {
+        kind: 'cash-deduct',
+        amount: '5000',
+        label: 'Rent',
+        lastRunAt: '2026-07-22T08:00:00.000Z',
+        lastPeriodKey: '2026-07-22',
+        updatedAt: '2026-07-23T08:00:00.000Z',
+      }),
+    ];
+    document.entities.standingOrderRun = [
+      ...(document.entities.standingOrderRun ?? []),
+      vaultStandingOrderRun(
+        priorRunId,
+        VAULT_INSUFFICIENT_ID,
+        '2026-07-22',
+        '2026-07-22T08:00:00.000Z',
+      ),
+    ];
+    document.entities.cashMovement = [
+      ...(document.entities.cashMovement ?? []),
+      vaultStandingOrderWithdrawal(priorRunId, '-1', '2026-07-22T08:00:00.000Z'),
     ];
     const sync = createMutableTestSync(document, fixture.header);
     const store = createVaultPortfolioStore(sync, { now: () => VAULT_SCAN_AT });
@@ -229,6 +253,11 @@ describe('StandingOrdersSection', () => {
             dueDate: '2026-07-27',
             reason: 'quote-unavailable',
           },
+          {
+            orderId: VAULT_INSUFFICIENT_ID,
+            dueDate: '2026-07-27',
+            reason: 'insufficient-cash',
+          },
         ],
         failed: [{ orderId: VAULT_FAILED_ID, dueDate: '2026-07-27', errorCode: 'VAULT_CORRUPT' }],
       },
@@ -240,11 +269,15 @@ describe('StandingOrdersSection', () => {
     );
     const deferredRow = documentElementById(`standing-order-${VAULT_QUOTE_DEFERRED_ID}`);
     const failedRow = documentElementById(`standing-order-${VAULT_FAILED_ID}`);
+    const insufficientRow = documentElementById(`standing-order-${VAULT_INSUFFICIENT_ID}`);
     expect(
-      within(deferredRow).getByText('Not booked — quote unavailable since 27.07.2026'),
+      within(deferredRow).getByText('Not booked — quote unavailable since 01.07.2026'),
     ).toBeInTheDocument();
     expect(
-      within(failedRow).getByText('Not booked — booking error since 27.07.2026'),
+      within(failedRow).getByText('Not booked — booking error since 01.07.2026'),
+    ).toBeInTheDocument();
+    expect(
+      within(insufficientRow).getByText('Not booked — insufficient cash since 23.07.2026'),
     ).toBeInTheDocument();
 
     for (const orderId of [VAULT_BOOKED_ID, VAULT_PAUSED_ID, VAULT_FUTURE_ID]) {
@@ -267,6 +300,9 @@ describe('StandingOrdersSection', () => {
       expect(within(deferredRow).queryByText(/^Not booked/)).not.toBeInTheDocument(),
     );
     expect(within(failedRow).getByText(/^Not booked — booking error/)).toBeInTheDocument();
+    expect(
+      within(insufficientRow).getByText('Not booked — insufficient cash since 23.07.2026'),
+    ).toBeInTheDocument();
   });
 
   test('scrolls to a notification-linked row after the async list loads', async () => {
@@ -489,6 +525,53 @@ function vaultStandingOrder(id: string, overrides: Partial<Record<string, unknow
       createdAt: '2026-07-01T08:00:00.000Z',
       updatedAt: '2026-07-01T08:00:00.000Z',
       ...overrides,
+    },
+  };
+}
+
+function vaultStandingOrderRun(
+  id: string,
+  standingOrderId: string,
+  periodKey: string,
+  bookedAt: string,
+): VaultEntity {
+  return {
+    id,
+    rev: 0,
+    editedAt: bookedAt,
+    editedBy: CLIENT_MONEY_IDS.device,
+    deletedAt: null,
+    data: { standingOrderId, periodKey, bookedAt },
+  };
+}
+
+function vaultStandingOrderWithdrawal(
+  id: string,
+  amountEur: string,
+  executedAt: string,
+): VaultEntity {
+  return {
+    id,
+    rev: 0,
+    editedAt: executedAt,
+    editedBy: CLIENT_MONEY_IDS.device,
+    deletedAt: null,
+    data: {
+      portfolioId: CLIENT_MONEY_IDS.portfolio,
+      sourceId: CLIENT_MONEY_IDS.cashSource,
+      kind: 'withdrawal',
+      amountEur,
+      transactionId: null,
+      transferId: null,
+      counterpartSourceId: null,
+      dividendId: null,
+      taxYear: null,
+      executedAt,
+      note: 'Rent',
+      source: 'standing-order',
+      dedupHash: null,
+      originalCurrency: null,
+      createdAt: executedAt,
     },
   };
 }
