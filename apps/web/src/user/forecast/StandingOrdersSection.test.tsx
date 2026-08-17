@@ -36,6 +36,7 @@ import {
   type VaultMoneySession,
 } from '../vault/engine/VaultMoneyEngineContext';
 import { createStandingOrderMaterializationLifecycle } from '../vault/standingOrders/lifecycle';
+import type { StandingOrderMaterializationResult } from '../vault/standingOrders/materialize';
 import { standingOrderOccurrenceId } from '../vault/standingOrders/occurrenceId';
 import { createVaultPortfolioStore } from '../vault/vaultPortfolioStore';
 
@@ -305,66 +306,87 @@ describe('StandingOrdersSection', () => {
     ).toBeInTheDocument();
   });
 
-  test('suppresses a retained deferral once the vault watermark covers its due date', async () => {
-    const fixture = await decryptClientMoneyFixture();
-    const document = structuredClone(fixture.document);
-    const bookedDay = '2026-07-22';
-    const runId = await standingOrderOccurrenceId(VAULT_INSUFFICIENT_ID, bookedDay);
-    document.entities.standingOrder = [
-      vaultStandingOrder(VAULT_INSUFFICIENT_ID, {
-        kind: 'cash-deduct',
-        label: 'Rent',
-        lastRunAt: '2026-07-22T08:00:00.000Z',
-        lastPeriodKey: bookedDay,
-        updatedAt: '2026-07-22T08:00:00.000Z',
-      }),
-    ];
-    document.entities.standingOrderRun = [
-      ...(document.entities.standingOrderRun ?? []),
-      vaultStandingOrderRun(runId, VAULT_INSUFFICIENT_ID, bookedDay, '2026-07-22T08:00:00.000Z'),
-    ];
-    document.entities.cashMovement = [
-      ...(document.entities.cashMovement ?? []),
-      vaultStandingOrderWithdrawal(runId, '-1', '2026-07-22T08:00:00.000Z'),
-    ];
-    const sync = createMutableTestSync(document, fixture.header);
-    const store = createVaultPortfolioStore(sync, { now: () => VAULT_SCAN_AT });
-    const market = createClientMoneyMarket().market;
-    const lifecycle = createStandingOrderMaterializationLifecycle(sync, market, {
-      store,
-      retryCount: 0,
-      materialize: async () => ({
-        ok: true,
-        value: {
-          today: bookedDay,
-          booked: [],
-          deferred: [
-            {
-              orderId: VAULT_INSUFFICIENT_ID,
-              dueDate: bookedDay,
-              reason: 'insufficient-cash',
-            },
-          ],
-          failed: [],
-          skipped: [],
-        },
-      }),
-    });
-    const engine = createVaultMoneyEngine(sync, market, {
-      now: () => Date.parse(VAULT_SCAN_AT),
-      standingOrders: lifecycle,
-    });
+  // One case per axis on which a retained scan outcome can go stale. The row's
+  // notice is derived from the document alone, so each of these must suppress it
+  // even though the lifecycle still holds — and republishes — the old outcome.
 
-    await expect(engine.afterUnlock()).resolves.toMatchObject({
-      ok: true,
-      value: {
-        deferred: [{ orderId: VAULT_INSUFFICIENT_ID, dueDate: bookedDay }],
+  test('suppresses a retained deferral once the vault watermark covers its due date', async () => {
+    const row = await renderRetainedScan({
+      booked: { day: '2026-07-22', at: '2026-07-22T08:00:00.000Z' },
+      scan: {
+        today: '2026-07-22',
+        deferred: [
+          { orderId: VAULT_INSUFFICIENT_ID, dueDate: '2026-07-22', reason: 'insufficient-cash' },
+        ],
+        failed: [],
       },
     });
-    renderVaultSection({ engine, sync, store });
 
-    const row = await waitFor(() => documentElementById(`standing-order-${VAULT_INSUFFICIENT_ID}`));
     expect(within(row).queryByText(/^Not booked/)).not.toBeInTheDocument();
+  });
+
+  test('suppresses a retained deferral once the end date leaves no outstanding occurrence', async () => {
+    const row = await renderRetainedScan({
+      // The user pulled `endDate` back behind the deferred day after the scan.
+      order: { endDate: '2026-07-22' },
+      booked: { day: '2026-07-22', at: '2026-07-22T08:00:00.000Z' },
+      scan: {
+        today: '2026-07-27',
+        deferred: [
+          { orderId: VAULT_INSUFFICIENT_ID, dueDate: '2026-07-27', reason: 'quote-unavailable' },
+        ],
+        failed: [],
+      },
+    });
+
+    expect(within(row).queryByText(/^Not booked/)).not.toBeInTheDocument();
+  });
+
+  test('never dates a notice in the future when the watermark already covers today', async () => {
+    const row = await renderRetainedScan({
+      booked: { day: '2026-07-27', at: VAULT_SCAN_AT },
+      scan: {
+        today: '2026-07-27',
+        deferred: [
+          { orderId: VAULT_INSUFFICIENT_ID, dueDate: '2026-07-27', reason: 'insufficient-cash' },
+        ],
+        failed: [],
+      },
+    });
+
+    expect(within(row).queryByText(/^Not booked/)).not.toBeInTheDocument();
+    // Tomorrow is the only still-unbooked occurrence, and an outage cannot have
+    // started in the future — the row may schedule it, never date a notice to it.
+    expect(within(row).queryByText(/since 28\.07\.2026/)).not.toBeInTheDocument();
+    expect(within(row).getByText('Next run: 28.07.2026')).toBeInTheDocument();
+  });
+
+  test('suppresses an undated failure when the order owes no occurrence', async () => {
+    const row = await renderRetainedScan({
+      order: { endDate: '2026-07-22' },
+      booked: { day: '2026-07-22', at: '2026-07-22T08:00:00.000Z' },
+      scan: {
+        today: '2026-07-27',
+        deferred: [],
+        failed: [{ orderId: VAULT_INSUFFICIENT_ID, dueDate: null, errorCode: 'VAULT_CORRUPT' }],
+      },
+    });
+
+    expect(within(row).queryByText(/^Not booked/)).not.toBeInTheDocument();
+  });
+
+  test('dates an undated failure from the document when an occurrence is outstanding', async () => {
+    const row = await renderRetainedScan({
+      scan: {
+        today: '2026-07-27',
+        deferred: [],
+        failed: [{ orderId: VAULT_INSUFFICIENT_ID, dueDate: null, errorCode: 'VAULT_CORRUPT' }],
+      },
+    });
+
+    expect(
+      within(row).getByText('Not booked — booking error since 01.07.2026'),
+    ).toBeInTheDocument();
   });
 
   test('scrolls to a notification-linked row after the async list loads', async () => {
@@ -561,6 +583,67 @@ describe('StandingOrdersSection', () => {
     expect(screen.getByRole('button', { name: 'salary No' })).toBeInTheDocument();
   });
 });
+
+/**
+ * Render one vault-backed `cash-deduct` row against a lifecycle that keeps
+ * republishing a fixed scan outcome, so a test can move the *document* (booking
+ * watermark, end date) underneath a retained deferral or failure and assert what
+ * the row derives. `booked` adds the matching run + withdrawal aggregate so the
+ * watermark it sets is a real prior booking rather than a dangling stamp.
+ */
+async function renderRetainedScan(options: {
+  order?: Partial<Record<string, unknown>>;
+  booked?: { day: string; at: string };
+  scan: Pick<StandingOrderMaterializationResult, 'today' | 'deferred' | 'failed'>;
+}): Promise<HTMLElement> {
+  const fixture = await decryptClientMoneyFixture();
+  const document = structuredClone(fixture.document);
+  const booked = options.booked;
+  document.entities.standingOrder = [
+    vaultStandingOrder(VAULT_INSUFFICIENT_ID, {
+      kind: 'cash-deduct',
+      label: 'Rent',
+      ...(booked === undefined
+        ? {}
+        : { lastRunAt: booked.at, lastPeriodKey: booked.day, updatedAt: booked.at }),
+      ...options.order,
+    }),
+  ];
+  if (booked !== undefined) {
+    const runId = await standingOrderOccurrenceId(VAULT_INSUFFICIENT_ID, booked.day);
+    document.entities.standingOrderRun = [
+      ...(document.entities.standingOrderRun ?? []),
+      vaultStandingOrderRun(runId, VAULT_INSUFFICIENT_ID, booked.day, booked.at),
+    ];
+    document.entities.cashMovement = [
+      ...(document.entities.cashMovement ?? []),
+      vaultStandingOrderWithdrawal(runId, '-1', booked.at),
+    ];
+  }
+
+  const sync = createMutableTestSync(document, fixture.header);
+  const store = createVaultPortfolioStore(sync, { now: () => VAULT_SCAN_AT });
+  const market = createClientMoneyMarket().market;
+  const lifecycle = createStandingOrderMaterializationLifecycle(sync, market, {
+    store,
+    retryCount: 0,
+    materialize: async () => ({
+      ok: true,
+      value: { booked: [], skipped: [], ...options.scan },
+    }),
+  });
+  const engine = createVaultMoneyEngine(sync, market, {
+    now: () => Date.parse(VAULT_SCAN_AT),
+    standingOrders: lifecycle,
+  });
+
+  // Proves the outcome really is published — otherwise a suppression assertion
+  // below would pass for the trivial reason that no scan result exists at all.
+  await expect(engine.afterUnlock()).resolves.toMatchObject({ ok: true, value: options.scan });
+  renderVaultSection({ engine, sync, store });
+
+  return waitFor(() => documentElementById(`standing-order-${VAULT_INSUFFICIENT_ID}`));
+}
 
 function vaultStandingOrder(id: string, overrides: Partial<Record<string, unknown>>): VaultEntity {
   return {

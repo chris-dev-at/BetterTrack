@@ -319,43 +319,49 @@ function standingOrderNotice(
     return null;
   }
 
-  const failureDates = result.failed
-    .filter(
-      (failure) =>
-        failure.orderId === order.id && materializationDateIsOutstanding(order, failure.dueDate),
-    )
-    .map((failure) => failure.dueDate ?? result.today);
-  if (failureDates.length > 0) {
-    return { kind: 'failed', dueDate: noticeStartDate(order, failureDates) };
+  // The document decides *whether* anything is owed and *since when*; the
+  // retained scan entry only supplies the reason. Its own `dueDate` ages out the
+  // moment the row moves on — another device books the occurrence, the watermark
+  // advances, the user shortens `endDate` — so letting it speak for the schedule
+  // is what kept resurrecting notices on ended, booked and not-yet-due orders.
+  const dueDate = outstandingDueDate(order, result.today);
+  if (dueDate === null) return null;
+
+  if (result.failed.some((failure) => failure.orderId === order.id)) {
+    return { kind: 'failed', dueDate };
   }
 
-  const deferrals = result.deferred.filter(
-    (deferred) =>
-      deferred.orderId === order.id && materializationDateIsOutstanding(order, deferred.dueDate),
-  );
+  const deferrals = result.deferred.filter((deferred) => deferred.orderId === order.id);
   if (deferrals.length === 0) return null;
-  const reason = deferrals.some((deferred) => deferred.reason === 'quote-unavailable')
-    ? 'quote-unavailable'
-    : 'insufficient-cash';
   return {
-    kind: reason,
-    dueDate: noticeStartDate(
-      order,
-      deferrals.map((deferred) => deferred.dueDate),
-    ),
+    kind: deferrals.some((deferred) => deferred.reason === 'quote-unavailable')
+      ? 'quote-unavailable'
+      : 'insufficient-cash',
+    dueDate,
   };
 }
 
-function materializationDateIsOutstanding(order: StandingOrder, dueDate: string | null): boolean {
-  return dueDate === null || order.lastPeriodKey === null || dueDate > order.lastPeriodKey;
-}
-
-function noticeStartDate(order: StandingOrder, scanDates: string[]): string {
-  return oldestUnbookedStandingOrderDueDate(order, order.lastPeriodKey) ?? oldestDay(scanDates);
-}
-
-function oldestDay(days: string[]): string {
-  return days.reduce((oldest, day) => (day < oldest ? day : oldest));
+/**
+ * The oldest occurrence the order still owes as of the scan day, or null when it
+ * owes nothing — ended, booked up to date, or not yet due. Both halves are
+ * load-bearing: {@link oldestUnbookedStandingOrderDueDate} reads
+ * cadence/anchor/startDate/endDate against the booking watermark, and the
+ * `> today` clamp stops a watermark that already covers today from naming
+ * tomorrow's occurrence as an outage that started in the future.
+ *
+ * The contract regex-checks `lastPeriodKey` without proving it is a real
+ * calendar day, and no read-path gate does either, so a document carrying
+ * `2026-02-30` reaches this render. Drop that one row's notice rather than let a
+ * RangeError take the whole Forecast page down.
+ */
+function outstandingDueDate(order: StandingOrder, today: string): string | null {
+  let oldest: string | null;
+  try {
+    oldest = oldestUnbookedStandingOrderDueDate(order, order.lastPeriodKey);
+  } catch {
+    return null;
+  }
+  return oldest === null || oldest > today ? null : oldest;
 }
 
 function StatusBadge({
