@@ -1,4 +1,4 @@
-import { type ReactNode, useMemo, useState } from 'react';
+import { type ReactNode, useEffect, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import {
   keepPreviousData,
@@ -440,11 +440,13 @@ const HOLDING_TRANSACTIONS_LIMIT = 200;
 function RecentTransactionsSection({
   transactions,
   sourceTags,
+  sourceTagsAreSettled,
   sourceFilter,
   onSourceFilterChange,
 }: {
   transactions: Transaction[];
   sourceTags: string[];
+  sourceTagsAreSettled: boolean;
   sourceFilter: string;
   onSourceFilterChange: (source: string) => void;
 }) {
@@ -453,9 +455,20 @@ function RecentTransactionsSection({
   // Source-tag filter (V5-P0c + V5-P6b): mirrors the cash-history chip on
   // CashSourcesPage. Only earns its place when the ledger actually mixes
   // sources (anti-bloat — a pure-manual ledger never sees it).
+  // A successful deletion can remove the last row for the selected source.
+  // Only a settled successful response for this query may clear it:
+  // keepPreviousData can temporarily render another portfolio's facet during a
+  // route switch, and an invalidated cache can be visible while its refetch is
+  // still in flight.
+  useEffect(() => {
+    if (sourceTagsAreSettled && sourceFilter !== 'all' && !sourceTags.includes(sourceFilter)) {
+      onSourceFilterChange('all');
+    }
+  }, [onSourceFilterChange, sourceFilter, sourceTags, sourceTagsAreSettled]);
+
   const showFilter = sourceTags.length > 1;
 
-  if (transactions.length === 0) return null;
+  if (transactions.length === 0 && !showFilter) return null;
 
   return (
     <section
@@ -483,7 +496,11 @@ function RecentTransactionsSection({
           </label>
         ) : null}
       </div>
-      {phone ? (
+      {transactions.length === 0 ? (
+        <p className="bt-meta" style={{ padding: '10px 0' }}>
+          {t('portfolio.overview.recentTransactions.empty')}
+        </p>
+      ) : phone ? (
         <ul className="bt-phone-card-list">
           {transactions.map((transaction) => (
             <li className="bt-phone-card" key={transaction.id}>
@@ -1937,6 +1954,11 @@ export function PortfolioPage() {
           <RecentTransactionsSection
             transactions={transactionsQuery.data?.items ?? []}
             sourceTags={transactionsQuery.data?.sourceTags ?? []}
+            sourceTagsAreSettled={
+              transactionsQuery.isSuccess &&
+              transactionsQuery.fetchStatus === 'idle' &&
+              !transactionsQuery.isPlaceholderData
+            }
             sourceFilter={recentSourceFilter}
             onSourceFilterChange={(source) => setRecentSourceSelection({ portfolioId, source })}
           />
