@@ -60,12 +60,12 @@ const realSleep = (ms: number): Promise<void> => new Promise((resolve) => setTim
 
 /**
  * `yahoo-finance2` sets `error.code` to the HTTP status on its `HTTPError`
- * (verified against the installed v3 source). Only 5xx (server errors) are
- * transient and worth a backed-off retry here. 429 must propagate immediately
- * so the circuit breaker can trip on it (§5.3 — see the module docstring);
- * other 4xx (bad symbol, etc.) are definitive. Network/timeout errors carry no
- * numeric `code` here — those are handled by the service-level retry-once and
- * circuit breaker, not this queue.
+ * (verified against the installed v4 source and its real error path). Only 5xx
+ * (server errors) are transient and worth a backed-off retry here. 429 must
+ * propagate immediately so the circuit breaker can trip on it (§5.3 — see the
+ * module docstring); other 4xx (bad symbol, etc.) are definitive.
+ * Network/timeout errors carry no numeric `code` here — those are handled by
+ * the service-level retry-once and circuit breaker, not this queue.
  */
 export function isRetryableUpstreamError(err: unknown): boolean {
   const code = (err as { code?: unknown } | null | undefined)?.code;
