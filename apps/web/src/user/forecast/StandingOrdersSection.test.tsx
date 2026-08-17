@@ -305,6 +305,68 @@ describe('StandingOrdersSection', () => {
     ).toBeInTheDocument();
   });
 
+  test('suppresses a retained deferral once the vault watermark covers its due date', async () => {
+    const fixture = await decryptClientMoneyFixture();
+    const document = structuredClone(fixture.document);
+    const bookedDay = '2026-07-22';
+    const runId = await standingOrderOccurrenceId(VAULT_INSUFFICIENT_ID, bookedDay);
+    document.entities.standingOrder = [
+      vaultStandingOrder(VAULT_INSUFFICIENT_ID, {
+        kind: 'cash-deduct',
+        label: 'Rent',
+        lastRunAt: '2026-07-22T08:00:00.000Z',
+        lastPeriodKey: bookedDay,
+        updatedAt: '2026-07-22T08:00:00.000Z',
+      }),
+    ];
+    document.entities.standingOrderRun = [
+      ...(document.entities.standingOrderRun ?? []),
+      vaultStandingOrderRun(runId, VAULT_INSUFFICIENT_ID, bookedDay, '2026-07-22T08:00:00.000Z'),
+    ];
+    document.entities.cashMovement = [
+      ...(document.entities.cashMovement ?? []),
+      vaultStandingOrderWithdrawal(runId, '-1', '2026-07-22T08:00:00.000Z'),
+    ];
+    const sync = createMutableTestSync(document, fixture.header);
+    const store = createVaultPortfolioStore(sync, { now: () => VAULT_SCAN_AT });
+    const market = createClientMoneyMarket().market;
+    const lifecycle = createStandingOrderMaterializationLifecycle(sync, market, {
+      store,
+      retryCount: 0,
+      materialize: async () => ({
+        ok: true,
+        value: {
+          today: bookedDay,
+          booked: [],
+          deferred: [
+            {
+              orderId: VAULT_INSUFFICIENT_ID,
+              dueDate: bookedDay,
+              reason: 'insufficient-cash',
+            },
+          ],
+          failed: [],
+          skipped: [],
+        },
+      }),
+    });
+    const engine = createVaultMoneyEngine(sync, market, {
+      now: () => Date.parse(VAULT_SCAN_AT),
+      standingOrders: lifecycle,
+    });
+
+    await expect(engine.afterUnlock()).resolves.toMatchObject({
+      ok: true,
+      value: {
+        deferred: [{ orderId: VAULT_INSUFFICIENT_ID, dueDate: bookedDay }],
+      },
+    });
+    renderVaultSection({ engine, sync, store });
+
+    const row = await waitFor(() => documentElementById(`standing-order-${VAULT_INSUFFICIENT_ID}`));
+    expect(within(row).queryByText(/^Not booked/)).not.toBeInTheDocument();
+  });
+
   test('scrolls to a notification-linked row after the async list loads', async () => {
     const scrollIntoView = vi.fn();
     Object.defineProperty(HTMLElement.prototype, 'scrollIntoView', {

@@ -320,13 +320,19 @@ function standingOrderNotice(
   }
 
   const failureDates = result.failed
-    .filter((failure) => failure.orderId === order.id)
+    .filter(
+      (failure) =>
+        failure.orderId === order.id && materializationDateIsOutstanding(order, failure.dueDate),
+    )
     .map((failure) => failure.dueDate ?? result.today);
   if (failureDates.length > 0) {
     return { kind: 'failed', dueDate: noticeStartDate(order, failureDates) };
   }
 
-  const deferrals = result.deferred.filter((deferred) => deferred.orderId === order.id);
+  const deferrals = result.deferred.filter(
+    (deferred) =>
+      deferred.orderId === order.id && materializationDateIsOutstanding(order, deferred.dueDate),
+  );
   if (deferrals.length === 0) return null;
   const reason = deferrals.some((deferred) => deferred.reason === 'quote-unavailable')
     ? 'quote-unavailable'
@@ -338,6 +344,10 @@ function standingOrderNotice(
       deferrals.map((deferred) => deferred.dueDate),
     ),
   };
+}
+
+function materializationDateIsOutstanding(order: StandingOrder, dueDate: string | null): boolean {
+  return dueDate === null || order.lastPeriodKey === null || dueDate > order.lastPeriodKey;
 }
 
 function noticeStartDate(order: StandingOrder, scanDates: string[]): string {
