@@ -1699,6 +1699,11 @@ export const V5_NON_HOOK_ASYNC_BOUNDARY = [
     note: 'Reads the browser web-push permission/subscription state on mount.',
   },
   {
+    component: 'user/forecast/StandingOrdersSection.tsx',
+    site: 'useVaultStandingOrderMaterialization.useSyncExternalStore',
+    note: 'Observes the latest successful scan already retained by the vault engine; the Forecast surface starts no request at this subscription boundary.',
+  },
+  {
     component: 'user/portfolio/CashDialog.tsx',
     site: 'CashDialog.useEffect',
     note: 'Debounced cash preview against the active store.',
