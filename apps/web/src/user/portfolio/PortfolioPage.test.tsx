@@ -1218,6 +1218,281 @@ describe('PortfolioPage — recent-transactions source filter', () => {
     expect(within(recent).queryByLabelText('Source')).not.toBeInTheDocument();
   });
 
+  test('keeps a multi-source filter clearable when its selected page is empty', async () => {
+    const manualTransaction = TXNS.items[0]! as Transaction;
+    const sourceTags = ['manual', 'standing-order'];
+    vi.mocked(listTransactions).mockImplementation(async (_portfolioId, params = {}) => ({
+      items: params.source === 'standing-order' ? [] : [manualTransaction],
+      nextCursor: null,
+      ...(params.includeSourceTags ? { sourceTags } : {}),
+    }));
+    const user = userEvent.setup();
+    renderPage();
+
+    const recent = await screen.findByRole('region', { name: 'Recent transactions' });
+    const filter = within(recent).getByLabelText('Source');
+    await user.selectOptions(filter, 'standing-order');
+
+    await waitFor(() =>
+      expect(within(recent).getByText('No transactions to show.')).toBeInTheDocument(),
+    );
+    expect(within(recent).getByLabelText('Source')).toHaveValue('standing-order');
+
+    await user.selectOptions(within(recent).getByLabelText('Source'), 'all');
+    await waitFor(() =>
+      expect(within(recent).getByRole('link', { name: 'AAPL' })).toBeInTheDocument(),
+    );
+  });
+
+  test('resets a selected source after deleting its final row shrinks the source facet', async () => {
+    const manualTransaction = TXNS.items[0]! as Transaction;
+    const ledger: Transaction[] = [
+      manualTransaction,
+      { ...(TXNS.items[1]! as Transaction), source: 'standing-order' },
+    ];
+    const recentRequestedSources: Array<string | undefined> = [];
+    vi.mocked(listTransactions).mockImplementation(async (_portfolioId, params = {}) => {
+      if (params.includeSourceTags) recentRequestedSources.push(params.source);
+      return transactionPage(ledger, params);
+    });
+    vi.mocked(deleteTransaction).mockImplementation(async (_portfolioId, transactionId) => {
+      const index = ledger.findIndex((transaction) => transaction.id === transactionId);
+      if (index >= 0) ledger.splice(index, 1);
+    });
+    const user = userEvent.setup();
+    renderPage();
+
+    const recent = await screen.findByRole('region', { name: 'Recent transactions' });
+    const filter = within(recent).getByLabelText('Source');
+    const initialAllRequests = recentRequestedSources.filter(
+      (source) => source === undefined,
+    ).length;
+    await user.selectOptions(filter, 'standing-order');
+
+    const holdings = screen.getByRole('region', { name: 'Holdings' });
+    await user.click(within(holdings).getByRole('button', { name: /Expand HOUSE transactions/i }));
+    const row = (await screen.findByText('Down payment')).closest('tr')!;
+    await user.click(within(row).getByRole('button', { name: /Delete transaction from/i }));
+    await user.click(screen.getByRole('button', { name: 'Yes' }));
+
+    await waitFor(() =>
+      expect(
+        within(screen.getByRole('region', { name: 'Recent transactions' })).getByRole('link', {
+          name: 'AAPL',
+        }),
+      ).toBeInTheDocument(),
+    );
+    expect(recentRequestedSources).toContain('standing-order');
+    expect(recentRequestedSources.filter((source) => source === undefined).length).toBeGreaterThan(
+      initialAllRequests,
+    );
+    expect(
+      within(screen.getByRole('region', { name: 'Recent transactions' })).queryByLabelText(
+        'Source',
+      ),
+    ).not.toBeInTheDocument();
+  });
+
+  test('waits for an invalidated cached selected-source query before clearing it', async () => {
+    const manualTransaction = TXNS.items[0]! as Transaction;
+    const standingOrderTransaction: Transaction = {
+      ...(TXNS.items[1]! as Transaction),
+      source: 'standing-order',
+    };
+    const ledger = [manualTransaction, standingOrderTransaction];
+    const standingOrderQueryKey = [
+      'portfolio',
+      DEFAULT_PORTFOLIO_ID,
+      'transactions',
+      'recent',
+      'executedAt',
+      'standing-order',
+    ];
+    let delayStandingOrderRefetch = false;
+    let releaseStandingOrderRefetch: (() => void) | undefined;
+
+    vi.mocked(listTransactions).mockImplementation(async (_portfolioId, params = {}) => {
+      if (
+        params.includeSourceTags &&
+        params.source === 'standing-order' &&
+        delayStandingOrderRefetch
+      ) {
+        return new Promise<Awaited<ReturnType<typeof listTransactions>>>((resolve) => {
+          releaseStandingOrderRefetch = () => resolve(transactionPage(ledger, params));
+        });
+      }
+      return transactionPage(ledger, params);
+    });
+    const user = userEvent.setup();
+    const { client } = renderPage();
+
+    const recent = await screen.findByRole('region', { name: 'Recent transactions' });
+    await user.selectOptions(within(recent).getByLabelText('Source'), 'standing-order');
+    await waitFor(() =>
+      expect(within(recent).getByRole('link', { name: 'HOUSE' })).toBeInTheDocument(),
+    );
+    await user.selectOptions(within(recent).getByLabelText('Source'), 'all');
+    await waitFor(() =>
+      expect(within(recent).getByRole('link', { name: 'AAPL' })).toBeInTheDocument(),
+    );
+
+    // The source was previously deleted, so the now-inactive selected-source
+    // cache has a one-source facet. A later write reintroduces it before the
+    // user selects it again; the invalidation forces a refetch of that stale
+    // cache when the selection changes.
+    await act(async () => {
+      client.setQueryData(standingOrderQueryKey, {
+        items: [],
+        nextCursor: null,
+        sourceTags: ['manual'],
+      });
+      await client.invalidateQueries({ queryKey: standingOrderQueryKey, exact: true });
+    });
+    delayStandingOrderRefetch = true;
+    await user.selectOptions(within(recent).getByLabelText('Source'), 'standing-order');
+    await waitFor(() => expect(releaseStandingOrderRefetch).toBeDefined());
+
+    await act(async () => {
+      releaseStandingOrderRefetch?.();
+    });
+
+    await waitFor(() => {
+      const refreshedRecent = screen.getByRole('region', { name: 'Recent transactions' });
+      expect(within(refreshedRecent).getByLabelText('Source')).toHaveValue('standing-order');
+      expect(within(refreshedRecent).getByRole('link', { name: 'HOUSE' })).toBeInTheDocument();
+    });
+  });
+
+  test('retains a portfolio source while another portfolio supplies placeholder facets', async () => {
+    const secondPortfolio = {
+      id: 'p2',
+      name: 'Second',
+      visibility: 'private' as const,
+      sortOrder: 1,
+      isDefault: false,
+      defaultPayFromCash: false,
+      archivedAt: null,
+    };
+    const manualTransaction = TXNS.items[0]! as Transaction;
+    const standingOrderTransaction: Transaction = {
+      ...(TXNS.items[1]! as Transaction),
+      source: 'standing-order',
+    };
+    const secondPortfolioTransaction: Transaction = {
+      ...manualTransaction,
+      id: 'p2-manual',
+      assetId: 'p2-a1',
+      asset: {
+        ...manualTransaction.asset,
+        id: 'p2-a1',
+        symbol: 'MSFT',
+        name: 'Microsoft Corp.',
+      },
+    };
+    const firstPortfolioLedger = [manualTransaction, standingOrderTransaction];
+    let delayRetainedSourceRequest = false;
+    let releaseRetainedSourceRequest: (() => void) | undefined;
+
+    vi.mocked(listPortfolios).mockResolvedValue({
+      portfolios: [...PORTFOLIO_LIST.portfolios, secondPortfolio],
+    });
+    vi.mocked(listTransactions).mockImplementation(async (portfolioId, params = {}) => {
+      if (!params.includeSourceTags) return transactionPage(TXNS.items as Transaction[], params);
+      if (portfolioId === secondPortfolio.id) {
+        return transactionPage([secondPortfolioTransaction], params);
+      }
+      if (params.source === 'standing-order' && delayRetainedSourceRequest) {
+        return new Promise<Awaited<ReturnType<typeof listTransactions>>>((resolve) => {
+          releaseRetainedSourceRequest = () =>
+            resolve(transactionPage(firstPortfolioLedger, params));
+        });
+      }
+      return transactionPage(firstPortfolioLedger, params);
+    });
+
+    function SwitchHarness() {
+      const navigate = useNavigate();
+      return (
+        <>
+          <button type="button" onClick={() => navigate('/portfolio?portfolio=p2')}>
+            Switch to second portfolio
+          </button>
+          <button type="button" onClick={() => navigate('/portfolio')}>
+            Switch to main portfolio
+          </button>
+          <PortfolioPage />
+        </>
+      );
+    }
+
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={client}>
+        <MemoryRouter initialEntries={['/portfolio']}>
+          <SwitchHarness />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    const user = userEvent.setup();
+
+    const firstRecent = await screen.findByRole('region', { name: 'Recent transactions' });
+    await user.selectOptions(within(firstRecent).getByLabelText('Source'), 'standing-order');
+    await waitFor(() =>
+      expect(within(firstRecent).getByLabelText('Source')).toHaveValue('standing-order'),
+    );
+
+    await user.click(screen.getByRole('button', { name: 'Switch to second portfolio' }));
+    await waitFor(() =>
+      expect(vi.mocked(listTransactions)).toHaveBeenCalledWith(
+        secondPortfolio.id,
+        expect.objectContaining({ order: 'executedAt', source: undefined }),
+        expect.anything(),
+      ),
+    );
+    await waitFor(() =>
+      expect(
+        within(screen.getByRole('region', { name: 'Recent transactions' })).queryByLabelText(
+          'Source',
+        ),
+      ).not.toBeInTheDocument(),
+    );
+
+    // Simulate the selected request having been evicted while inactive. Returning
+    // to Main now renders Second's one-source result as placeholder data while
+    // the retained standing-order request is in flight.
+    client.removeQueries({
+      queryKey: [
+        'portfolio',
+        DEFAULT_PORTFOLIO_ID,
+        'transactions',
+        'recent',
+        'executedAt',
+        'standing-order',
+      ],
+      exact: true,
+    });
+    delayRetainedSourceRequest = true;
+    await user.click(screen.getByRole('button', { name: 'Switch to main portfolio' }));
+    await waitFor(() => {
+      expect(releaseRetainedSourceRequest).toBeDefined();
+      const recent = screen.getByRole('region', { name: 'Recent transactions' });
+      expect(within(recent).getByRole('link', { name: 'MSFT' })).toBeInTheDocument();
+      expect(within(recent).queryByLabelText('Source')).not.toBeInTheDocument();
+    });
+
+    await act(async () => {
+      releaseRetainedSourceRequest?.();
+    });
+
+    await waitFor(() =>
+      expect(
+        within(screen.getByRole('region', { name: 'Recent transactions' })).getByLabelText(
+          'Source',
+        ),
+      ).toHaveValue('standing-order'),
+    );
+  });
+
   test('renders the full-ledger newest eight and refetches a selected source at the boundary', async () => {
     const base = TXNS.items[0]! as Transaction;
     const transaction = (
@@ -1296,6 +1571,9 @@ describe('PortfolioPage — recent-transactions source filter', () => {
           .getAllByRole('link')
           .map((link) => link.textContent),
       ).toEqual(standingExpected.map((row) => row.asset.symbol)),
+    );
+    expect(within(recent).getAllByText('Standing order', { selector: 'span' })).toHaveLength(
+      standingExpected.length,
     );
     expect(vi.mocked(listTransactions)).toHaveBeenCalledWith(
       DEFAULT_PORTFOLIO_ID,

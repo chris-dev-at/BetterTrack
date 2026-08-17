@@ -1476,7 +1476,8 @@
       },
       "recentTransactions": {
         "ariaLabel": "Letzte Transaktionen",
-        "heading": "Letzte Transaktionen"
+        "heading": "Letzte Transaktionen",
+        "empty": "Keine Transaktionen anzuzeigen."
       },
       "side": {
         "buy": "Kauf",
