@@ -1293,6 +1293,76 @@ describe('PortfolioPage — recent-transactions source filter', () => {
     ).not.toBeInTheDocument();
   });
 
+  test('waits for an invalidated cached selected-source query before clearing it', async () => {
+    const manualTransaction = TXNS.items[0]! as Transaction;
+    const standingOrderTransaction: Transaction = {
+      ...(TXNS.items[1]! as Transaction),
+      source: 'standing-order',
+    };
+    const ledger = [manualTransaction, standingOrderTransaction];
+    const standingOrderQueryKey = [
+      'portfolio',
+      DEFAULT_PORTFOLIO_ID,
+      'transactions',
+      'recent',
+      'executedAt',
+      'standing-order',
+    ];
+    let delayStandingOrderRefetch = false;
+    let releaseStandingOrderRefetch: (() => void) | undefined;
+
+    vi.mocked(listTransactions).mockImplementation(async (_portfolioId, params = {}) => {
+      if (
+        params.includeSourceTags &&
+        params.source === 'standing-order' &&
+        delayStandingOrderRefetch
+      ) {
+        return new Promise<Awaited<ReturnType<typeof listTransactions>>>((resolve) => {
+          releaseStandingOrderRefetch = () => resolve(transactionPage(ledger, params));
+        });
+      }
+      return transactionPage(ledger, params);
+    });
+    const user = userEvent.setup();
+    const { client } = renderPage();
+
+    const recent = await screen.findByRole('region', { name: 'Recent transactions' });
+    await user.selectOptions(within(recent).getByLabelText('Source'), 'standing-order');
+    await waitFor(() =>
+      expect(within(recent).getByRole('link', { name: 'HOUSE' })).toBeInTheDocument(),
+    );
+    await user.selectOptions(within(recent).getByLabelText('Source'), 'all');
+    await waitFor(() =>
+      expect(within(recent).getByRole('link', { name: 'AAPL' })).toBeInTheDocument(),
+    );
+
+    // The source was previously deleted, so the now-inactive selected-source
+    // cache has a one-source facet. A later write reintroduces it before the
+    // user selects it again; the invalidation forces a refetch of that stale
+    // cache when the selection changes.
+    await act(async () => {
+      client.setQueryData(standingOrderQueryKey, {
+        items: [],
+        nextCursor: null,
+        sourceTags: ['manual'],
+      });
+      await client.invalidateQueries({ queryKey: standingOrderQueryKey, exact: true });
+    });
+    delayStandingOrderRefetch = true;
+    await user.selectOptions(within(recent).getByLabelText('Source'), 'standing-order');
+    await waitFor(() => expect(releaseStandingOrderRefetch).toBeDefined());
+
+    await act(async () => {
+      releaseStandingOrderRefetch?.();
+    });
+
+    await waitFor(() => {
+      const refreshedRecent = screen.getByRole('region', { name: 'Recent transactions' });
+      expect(within(refreshedRecent).getByLabelText('Source')).toHaveValue('standing-order');
+      expect(within(refreshedRecent).getByRole('link', { name: 'HOUSE' })).toBeInTheDocument();
+    });
+  });
+
   test('retains a portfolio source while another portfolio supplies placeholder facets', async () => {
     const secondPortfolio = {
       id: 'p2',

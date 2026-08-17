@@ -440,13 +440,13 @@ const HOLDING_TRANSACTIONS_LIMIT = 200;
 function RecentTransactionsSection({
   transactions,
   sourceTags,
-  sourceTagsAreCurrent,
+  sourceTagsAreSettled,
   sourceFilter,
   onSourceFilterChange,
 }: {
   transactions: Transaction[];
   sourceTags: string[];
-  sourceTagsAreCurrent: boolean;
+  sourceTagsAreSettled: boolean;
   sourceFilter: string;
   onSourceFilterChange: (source: string) => void;
 }) {
@@ -456,13 +456,15 @@ function RecentTransactionsSection({
   // CashSourcesPage. Only earns its place when the ledger actually mixes
   // sources (anti-bloat — a pure-manual ledger never sees it).
   // A successful deletion can remove the last row for the selected source.
-  // Only a resolved response for this query may clear it: keepPreviousData can
-  // temporarily render another portfolio's facet during a route switch.
+  // Only a settled successful response for this query may clear it:
+  // keepPreviousData can temporarily render another portfolio's facet during a
+  // route switch, and an invalidated cache can be visible while its refetch is
+  // still in flight.
   useEffect(() => {
-    if (sourceTagsAreCurrent && sourceFilter !== 'all' && !sourceTags.includes(sourceFilter)) {
+    if (sourceTagsAreSettled && sourceFilter !== 'all' && !sourceTags.includes(sourceFilter)) {
       onSourceFilterChange('all');
     }
-  }, [onSourceFilterChange, sourceFilter, sourceTags, sourceTagsAreCurrent]);
+  }, [onSourceFilterChange, sourceFilter, sourceTags, sourceTagsAreSettled]);
 
   const showFilter = sourceTags.length > 1;
 
@@ -1952,8 +1954,10 @@ export function PortfolioPage() {
           <RecentTransactionsSection
             transactions={transactionsQuery.data?.items ?? []}
             sourceTags={transactionsQuery.data?.sourceTags ?? []}
-            sourceTagsAreCurrent={
-              transactionsQuery.data !== undefined && !transactionsQuery.isPlaceholderData
+            sourceTagsAreSettled={
+              transactionsQuery.isSuccess &&
+              transactionsQuery.fetchStatus === 'idle' &&
+              !transactionsQuery.isPlaceholderData
             }
             sourceFilter={recentSourceFilter}
             onSourceFilterChange={(source) => setRecentSourceSelection({ portfolioId, source })}
