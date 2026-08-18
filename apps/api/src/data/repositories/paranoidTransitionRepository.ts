@@ -54,14 +54,15 @@ import {
   standingOrderRuns,
   standingOrders,
   transactions,
+  usageEvents,
   userFollows,
   users,
   userTaxSettings,
   watchlists,
 } from '../schema';
 import {
+  PARANOID_PURGED_TABLE_NAMES,
   PARANOID_RESTORABLE_TABLE_NAMES,
-  PARANOID_VAULT_TABLE_NAMES,
 } from '../../services/export/manifest';
 import {
   withExclusiveParanoidTransitionTestLock,
@@ -282,6 +283,12 @@ const PURGE_HANDLERS: Record<string, PurgeHandler> = {
     ),
   user_tax_settings: ({ userId, tx }) =>
     tx.delete(userTaxSettings).where(eq(userTaxSettings.userId, userId)),
+  // `purge`-classified (see the manifest entry): the per-(user, feature, asset,
+  // day) telemetry rows recorded this account's holdings roster every day it
+  // valued its portfolio. ALL of the user's rows go, not just the
+  // asset-identifying ones — the residual `hits` counter on a bare
+  // `feature='assets'` row still tracks how many holdings were priced.
+  usage_events: ({ userId, tx }) => tx.delete(usageEvents).where(eq(usageEvents.userId, userId)),
 };
 
 /**
@@ -315,6 +322,8 @@ const PARANOID_PURGE_ORDER = [
   'price_history',
   'assets',
   'user_tax_settings',
+  // FK-independent (references `users` only), so ordering is free here.
+  'usage_events',
 ] as const;
 
 /** One scope-aware zero-cleartext query per classified table. */
@@ -449,6 +458,11 @@ const PROBE_HANDLERS: Record<string, ProbeHandler> = {
     probe(
       tx.select({ value: count() }).from(userTaxSettings).where(eq(userTaxSettings.userId, userId)),
     ),
+  // Zero rows for this user, full stop — this probe is what keeps the capture
+  // suppression honest at RUNTIME, not just in a test: if any writer starts
+  // recording a paranoid account again, the next enable aborts on it.
+  usage_events: ({ userId, tx }) =>
+    probe(tx.select({ value: count() }).from(usageEvents).where(eq(usageEvents.userId, userId))),
 };
 
 /**
@@ -607,7 +621,7 @@ export const PARANOID_PROBE_HANDLER_NAMES = Object.keys(PROBE_HANDLERS).sort();
 export const PARANOID_REVISION_HANDLER_NAMES = Object.keys(REVISION_HANDLERS).sort();
 
 function assertPurgeCompleteness(): void {
-  const expected = [...PARANOID_VAULT_TABLE_NAMES];
+  const expected = [...PARANOID_PURGED_TABLE_NAMES];
   const handlerSets = [
     ['purge handlers', PARANOID_PURGE_HANDLER_NAMES],
     ['probe handlers', PARANOID_PROBE_HANDLER_NAMES],
@@ -940,7 +954,7 @@ export function createParanoidTransitionTransactionRepository(
       for (const tableName of PARANOID_PURGE_ORDER) {
         await PURGE_HANDLERS[tableName]!(scope);
       }
-      for (const tableName of PARANOID_VAULT_TABLE_NAMES) {
+      for (const tableName of PARANOID_PURGED_TABLE_NAMES) {
         const remaining = await PROBE_HANDLERS[tableName]!(scope);
         if (remaining !== 0) {
           throw new Error(`paranoid zero-cleartext probe failed for ${tableName}`);
