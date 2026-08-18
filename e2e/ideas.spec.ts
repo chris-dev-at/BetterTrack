@@ -1,6 +1,7 @@
 import { expect, request as newRequestContext, test } from '@playwright/test';
 
 import { loginAsAdmin } from './support/adminApi';
+import { setWideningAudienceThroughLadder } from './support/audience';
 import { API_BASE_URL } from './support/config';
 import { activateConglomerate } from './support/flows';
 import { befriend, provisionUser } from './support/users';
@@ -11,8 +12,8 @@ import { befriend, provisionUser } from './support/users';
  *      backtest) as a named idea with a thesis note.
  *   2. Reopening the idea from `/workbench/ideas` restores that exact state —
  *      the same conglomerate, thesis text, and yearly rebalance mode.
- *   3. Sharing the idea to ONE `specific_friend` shows no friction dialog
- *      (the mid tier of the §16 ladder), and the recipient sees the shared
+ *   3. Sharing the idea to ONE `specific_friend` drives the widening
+ *      confirmation (the §16 ladder), and the recipient sees the shared
  *      idea from the friend-row expansion, reads it in the read-only view,
  *      and clones it into their own private Ideas byte-for-byte.
  *   4. Sending an idea chip in chat to a friend who is NOT in the audience
@@ -75,9 +76,8 @@ test('ideas: save → reopen restores, share specific-friends read-only + clone,
     }),
   ).toHaveAttribute('aria-pressed', 'true', { timeout: 20_000 });
 
-  // Step 3 — share the idea to ONE specific friend. The mid tier of the
-  // friction ladder must render no confirm dialog (that's the point of picking
-  // "specific friends" over "all friends" / "public link").
+  // Step 3 — share the idea to ONE specific friend. This is a genuine widening,
+  // so the ladder needs its light confirmation but never the public-link ack.
   await A.goto('/workbench/ideas');
   await A.getByRole('listitem')
     .filter({ hasText: IDEA_NAME })
@@ -85,14 +85,15 @@ test('ideas: save → reopen restores, share specific-friends read-only + clone,
     .click();
   const picker = A.getByRole('dialog', { name: /Share/ });
   await expect(picker).toBeVisible();
-  await picker.getByText('Specific friends', { exact: true }).click();
-  // No friction dialog on this tier — neither the all-friends confirm nor the
-  // public-link acknowledgment surfaces.
-  await expect(picker.getByText(/read-only view with everyone/i)).toHaveCount(0);
-  await expect(picker.getByText(/I understand that anyone with the link/i)).toHaveCount(0);
-  await picker.getByText(chosen.username, { exact: true }).click();
-  await expect(picker.getByText('1 selected')).toBeVisible();
-  await picker.getByRole('button', { name: 'Save' }).click();
+  await setWideningAudienceThroughLadder(picker, {
+    audience: 'specific_friends',
+    recipient: chosen.username,
+    afterAudienceSelected: async (dialog) => {
+      // Specific friends must never surface the all-friends or public-link copy.
+      await expect(dialog.getByText(/read-only view with everyone/i)).toHaveCount(0);
+      await expect(dialog.getByText(/I understand that anyone with the link/i)).toHaveCount(0);
+    },
+  });
   await expect(picker).toBeHidden();
 
   // The chosen friend sees the idea inside the author's friend-row expansion

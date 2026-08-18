@@ -1,6 +1,7 @@
 import { expect, request as newRequestContext, test } from '@playwright/test';
 
 import { createInvite, loginAsAdmin } from './support/adminApi';
+import { setWideningAudienceThroughLadder } from './support/audience';
 import { ACCOUNT_PASSWORD, API_BASE_URL } from './support/config';
 import { acceptInvite, openAssetAndWatchFromDetail, watchAsset } from './support/flows';
 
@@ -89,6 +90,11 @@ test('happy path: invite through friend sharing', async ({ browser }) => {
   await owner.getByRole('button', { name: '+ Deposit' }).click();
   const cashDialog = owner.getByRole('dialog', { name: 'Cash balance' });
   await cashDialog.getByLabel('Amount').fill('800');
+  // Cash entries are stamped at noon UTC, while the transaction form records
+  // its selected day at midnight. Fund the portfolio on the preceding day so
+  // this real server-side cash-solvency check sees the deposit before the buy.
+  const fundedOn = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+  await cashDialog.getByLabel('Date').fill(fundedOn);
   await cashDialog.getByRole('button', { name: 'Deposit cash' }).click();
   await expect(cashDialog).toBeHidden();
 
@@ -96,6 +102,10 @@ test('happy path: invite through friend sharing', async ({ browser }) => {
   const buyDialog = owner.getByRole('dialog', { name: /new transaction/i });
   await buyDialog.getByRole('searchbox', { name: 'Search assets' }).fill('SAP');
   await buyDialog.getByRole('button', { name: 'Select SAP.DE', exact: true }).click();
+  // The test deliberately uses a round manual price. Keep that manual entry on
+  // today's date instead of allowing the price↔date helper to find a historic
+  // SAP close (which can land in an auto-locked tax year).
+  await buyDialog.getByRole('button', { name: 'Unlink date and price' }).click();
   await buyDialog.getByLabel('Quantity for SAP.DE').fill('4');
   await buyDialog.getByLabel('Price for SAP.DE').fill('50');
   // Keyboard toggle + checked assertion (main's #1019 hardening) — .check()
@@ -162,8 +172,7 @@ test('happy path: invite through friend sharing', async ({ browser }) => {
   await mainRow.getByRole('button', { name: 'Share' }).click();
   const audiencePicker = owner.getByRole('dialog', { name: /Share/ });
   await expect(audiencePicker).toBeVisible();
-  await audiencePicker.getByText('All friends', { exact: true }).click();
-  await audiencePicker.getByRole('button', { name: 'Save' }).click();
+  await setWideningAudienceThroughLadder(audiencePicker, { audience: 'all_friends' });
   await expect(audiencePicker).toBeHidden();
 
   // owner sends the friend request
@@ -200,6 +209,10 @@ test('happy path: invite through friend sharing', async ({ browser }) => {
   // sees the "General" watchlist read-only inside the same friend-card row.
   await owner.goto('/workbench');
   await owner.getByRole('button', { name: 'Share with friends' }).click();
+  const watchlistPicker = owner.getByRole('dialog', { name: /Share/ });
+  await expect(watchlistPicker).toBeVisible();
+  await setWideningAudienceThroughLadder(watchlistPicker, { audience: 'all_friends' });
+  await expect(watchlistPicker).toBeHidden();
   await expect(owner.getByRole('button', { name: 'Shared with friends' })).toBeVisible();
 
   await friend.goto('/people');
