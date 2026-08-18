@@ -4,7 +4,11 @@ import { Router, type RequestHandler } from 'express';
 import ts from 'typescript';
 import { beforeAll, describe, expect, it } from 'vitest';
 
-import { API_KEY_SCOPES } from '@bettertrack/contracts';
+import {
+  API_KEY_SCOPES,
+  PARANOID_CLIENT_ROUTE_DECISIONS,
+  type ParanoidServerRouteReference,
+} from '@bettertrack/contracts';
 
 import { createApp } from '../../../app';
 import { JOB_REGISTRATION_DESCRIPTORS, type JobRegistrationDescriptor } from '../../../jobs';
@@ -233,6 +237,102 @@ function classificationProblems(surfaces: readonly ParanoidSurface[]): string[] 
   return problems;
 }
 
+function registryRouteReference(
+  capability: (typeof PARANOID_KILL_REGISTRY)[number]['capability'],
+  rule: (typeof PARANOID_KILL_REGISTRY)[number]['routes'][number],
+): ParanoidServerRouteReference {
+  const matcherCount =
+    Number(rule.exact !== undefined) +
+    Number(rule.prefix !== undefined) +
+    Number(rule.pattern !== undefined);
+  if (matcherCount !== 1) {
+    throw new Error(
+      `Paranoid kill-registry route ${capability} must declare exactly one matcher for the client-gate decision matrix.`,
+    );
+  }
+
+  const common = {
+    capability,
+    ...(rule.method === undefined ? {} : { method: rule.method }),
+    ...(rule.source === undefined ? {} : { source: rule.source }),
+  };
+  if (rule.exact !== undefined) return { ...common, match: 'exact', path: rule.exact };
+  if (rule.prefix !== undefined) return { ...common, match: 'prefix', path: rule.prefix };
+
+  const pattern = rule.pattern!;
+  return {
+    ...common,
+    match: 'pattern',
+    // RegExp.source escapes `/` for literal notation; contract references do
+    // not need that representation-only escape.
+    path: pattern.source.replaceAll('\\/', '/'),
+    ...(pattern.flags.length === 0 ? {} : { flags: pattern.flags }),
+  };
+}
+
+function serverRouteReferenceKey(reference: ParanoidServerRouteReference): string {
+  return JSON.stringify([
+    reference.capability,
+    reference.method ?? null,
+    reference.match,
+    reference.path,
+    reference.flags ?? null,
+    reference.source?.file ?? null,
+    reference.source?.symbol ?? null,
+  ]);
+}
+
+function serverRouteReferenceLabel(reference: ParanoidServerRouteReference): string {
+  const source = reference.source ? ` at ${reference.source.file}#${reference.source.symbol}` : '';
+  const flags = reference.flags ? `/${reference.flags}` : '';
+  return `${reference.capability}:${reference.method ?? '*'} ${reference.match} ${reference.path}${flags}${source}`;
+}
+
+function countRouteReferences(
+  references: readonly ParanoidServerRouteReference[],
+): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const reference of references) {
+    const key = serverRouteReferenceKey(reference);
+    counts.set(key, (counts.get(key) ?? 0) + 1);
+  }
+  return counts;
+}
+
+function clientGateDecisionProblems(): string[] {
+  const registryReferences = PARANOID_KILL_REGISTRY.flatMap((entry) =>
+    entry.routes.map((route) => registryRouteReference(entry.capability, route)),
+  );
+  const decisionReferences = PARANOID_CLIENT_ROUTE_DECISIONS.flatMap(
+    (decision) => decision.serverRoutes,
+  );
+  const registryCounts = countRouteReferences(registryReferences);
+  const decisionCounts = countRouteReferences(decisionReferences);
+  const referencesByKey = new Map(
+    [...registryReferences, ...decisionReferences].map((reference) => [
+      serverRouteReferenceKey(reference),
+      reference,
+    ]),
+  );
+
+  const problems: string[] = [];
+  for (const key of [...referencesByKey.keys()].sort()) {
+    const registryCount = registryCounts.get(key) ?? 0;
+    const decisionCount = decisionCounts.get(key) ?? 0;
+    const label = serverRouteReferenceLabel(referencesByKey.get(key)!);
+    if (registryCount === 0) {
+      problems.push(`${label} has a stale client-gate decision but no kill-registry route`);
+    } else if (decisionCount === 0) {
+      problems.push(`${label} has no client-gate mapping decision`);
+    } else if (registryCount !== decisionCount) {
+      problems.push(
+        `${label} occurs ${registryCount} time(s) in the kill registry and ${decisionCount} time(s) in client-gate decisions`,
+      );
+    }
+  }
+  return problems;
+}
+
 describe('paranoid enforcement completeness', () => {
   let contextSurfaces: ParanoidServiceSurface[] = [];
 
@@ -257,6 +357,22 @@ describe('paranoid enforcement completeness', () => {
     );
 
     expect(unknownScopes).toEqual([]);
+  });
+
+  it('maps every killed server route to exactly one shared client-gate decision', () => {
+    expect(clientGateDecisionProblems()).toEqual([]);
+  });
+
+  it('gives every shared client-gate decision a unique id and explanation', () => {
+    const ids = PARANOID_CLIENT_ROUTE_DECISIONS.map((decision) => decision.id);
+
+    expect(ids.filter((id) => id.trim().length === 0)).toEqual([]);
+    expect(ids).toHaveLength(new Set(ids).size);
+    expect(
+      PARANOID_CLIENT_ROUTE_DECISIONS.filter((decision) => decision.reason.trim().length === 0).map(
+        (decision) => decision.id,
+      ),
+    ).toEqual([]);
   });
 
   it('discovers nullable and prototype-declared context methods from the production contract', () => {

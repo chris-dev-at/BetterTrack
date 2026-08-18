@@ -12,7 +12,11 @@
 
 import type { RequestHandler } from 'express';
 
-import { PARANOID_KILLED_WEBHOOK_EVENT_TYPES, type ApiKeyScope } from '@bettertrack/contracts';
+import {
+  PARANOID_KILLED_WEBHOOK_EVENT_TYPES,
+  type ApiKeyScope,
+  type ParanoidKilledCapability,
+} from '@bettertrack/contracts';
 
 import type { DomainEvent } from '../../events';
 import { ApiError, forbidden, notFound } from '../../errors';
@@ -20,18 +24,6 @@ import { normalizeRoutePath } from '../security/routePath';
 
 /** Stable error code for every server-side surface killed in paranoid mode. */
 export const PARANOID_MODE_ERROR_CODE = 'PARANOID_MODE' as const;
-
-/** Stable capability names shared by the #884 enforcement composition. */
-export type ParanoidKilledCapability =
-  | 'publicProfile'
-  | 'sharing'
-  | 'mirrorchain'
-  | 'portfolioServer'
-  | 'imports'
-  | 'portfolioApiScope'
-  | 'standingOrderExecution'
-  | 'portfolioJobs'
-  | 'portfolioWebhooks';
 
 /**
  * Vaults v2 (`docs/VAULTS_V2_DESIGN.md` §3): the capabilities that are ALSO
