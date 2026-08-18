@@ -1,8 +1,8 @@
 import { expect, request as newRequestContext, test } from '@playwright/test';
 
-import { loginAsAdmin } from './support/adminApi';
+import { newAdminRequestContext } from './support/adminApi';
 import { passwordSignIn } from './support/auth';
-import { ACCOUNT_PASSWORD, API_BASE_URL } from './support/config';
+import { ACCOUNT_PASSWORD } from './support/config';
 import { recentOpenBookingDates } from './support/dates';
 import { expectUserShellReady, recordSapTrade, watchAsset } from './support/flows';
 import { befriend, provisionUser, provisionUserInContext } from './support/users';
@@ -25,8 +25,7 @@ test('mobile happy path: money, portfolio wizard, market, chat and settings', as
 }) => {
   test.setTimeout(300_000);
 
-  const apiRequest = await newRequestContext.newContext({ baseURL: API_BASE_URL });
-  await loginAsAdmin(apiRequest);
+  const apiRequest = await newAdminRequestContext(newRequestContext);
   const owner = await provisionUserInContext(context, apiRequest, 'mobile-owner');
   // The friend only supplies chat state; the owner's context is the viewport under test.
   const friend = await provisionUser(browser, apiRequest, 'mobile-friend');

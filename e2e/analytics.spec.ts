@@ -1,7 +1,6 @@
 import { expect, request as newRequestContext, test } from '@playwright/test';
 
-import { loginAsAdmin } from './support/adminApi';
-import { API_BASE_URL } from './support/config';
+import { newAdminRequestContext } from './support/adminApi';
 import { recordSapTrade } from './support/flows';
 import { provisionUser } from './support/users';
 
@@ -31,8 +30,7 @@ test('analytics: compare vs an index/asset shows side-by-side stats and the cont
 }) => {
   test.setTimeout(180_000);
 
-  const apiRequest = await newRequestContext.newContext({ baseURL: API_BASE_URL });
-  await loginAsAdmin(apiRequest);
+  const apiRequest = await newAdminRequestContext(newRequestContext);
   const owner = await provisionUser(browser, apiRequest, 'analytics');
   await apiRequest.dispose();
 

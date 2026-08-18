@@ -1,7 +1,6 @@
 import { expect, request as newRequestContext, test } from '@playwright/test';
 
-import { loginAsAdmin } from './support/adminApi';
-import { API_BASE_URL } from './support/config';
+import { newAdminRequestContext } from './support/adminApi';
 import { befriend, provisionUser } from './support/users';
 
 /**
@@ -22,8 +21,7 @@ test('follows: follow + bookmark, alert toggle, and restored /following page', a
   // 180 s ran out in the nightly on slow steps (#521), so match happy-path's budget.
   test.setTimeout(240_000);
 
-  const apiRequest = await newRequestContext.newContext({ baseURL: API_BASE_URL });
-  await loginAsAdmin(apiRequest);
+  const apiRequest = await newAdminRequestContext(newRequestContext);
   const owner = await provisionUser(browser, apiRequest, 'followowner');
   const follower = await provisionUser(browser, apiRequest, 'follower');
   await apiRequest.dispose();

@@ -13,7 +13,7 @@ import {
   isParanoidKilledPath,
   safeDestination,
 } from '../apps/web/src/user/vault/ui/ParanoidSurfaceGate';
-import { loginAsAdmin } from './support/adminApi';
+import { newAdminRequestContext } from './support/adminApi';
 import { API_BASE_URL } from './support/config';
 import {
   assertPd9DesignPrecondition,
@@ -98,11 +98,10 @@ test.describe('PD9 paranoid-mode end-to-end gate', () => {
   }, testInfo) => {
     const diagnostics: string[] = [];
     const monitor = await installPd9Drive(context);
-    const admin = await newRequestContext.newContext({ baseURL: API_BASE_URL });
+    const admin = await newAdminRequestContext(newRequestContext);
     let owner: E2EUser | null = null;
     let bodyFailure: unknown;
     try {
-      await loginAsAdmin(admin);
       owner = await provisionUserInContext(context, admin, 'pd9normal');
       // Registered before the first paranoid gesture so console/pageerror output
       // from the privacy panel AND the lazy vault-chunk load — the exact window
@@ -169,7 +168,7 @@ test.describe('PD9 paranoid-mode end-to-end gate', () => {
     const diagnostics: string[] = [];
     const sensitive: Pd9SensitiveCanary[] = [];
     const monitor = await installPd9Drive(context);
-    const admin = await newRequestContext.newContext({ baseURL: API_BASE_URL });
+    const admin = await newAdminRequestContext(newRequestContext);
     const harness = createPd9Harness();
     let owner: E2EUser | null = null;
     let bodyFailure: unknown;
@@ -180,7 +179,6 @@ test.describe('PD9 paranoid-mode end-to-end gate', () => {
         expect(PD9_TRACEABILITY).toHaveLength(7);
       });
 
-      await loginAsAdmin(admin);
       owner = await provisionUserInContext(context, admin, 'pd9vault');
       const { page } = owner;
       collectSanitizedDiagnostics(page, diagnostics);
