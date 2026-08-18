@@ -12,7 +12,11 @@
 
 import type { RequestHandler } from 'express';
 
-import type { ApiKeyScope } from '@bettertrack/contracts';
+import {
+  PARANOID_KILLED_WEBHOOK_EVENT_TYPES,
+  type ApiKeyScope,
+  type ParanoidKilledCapability,
+} from '@bettertrack/contracts';
 
 import type { DomainEvent } from '../../events';
 import { ApiError, forbidden, notFound } from '../../errors';
@@ -20,18 +24,6 @@ import { normalizeRoutePath } from '../security/routePath';
 
 /** Stable error code for every server-side surface killed in paranoid mode. */
 export const PARANOID_MODE_ERROR_CODE = 'PARANOID_MODE' as const;
-
-/** Stable capability names shared by the #884 enforcement composition. */
-export type ParanoidKilledCapability =
-  | 'publicProfile'
-  | 'sharing'
-  | 'mirrorchain'
-  | 'portfolioServer'
-  | 'imports'
-  | 'portfolioApiScope'
-  | 'standingOrderExecution'
-  | 'portfolioJobs'
-  | 'portfolioWebhooks';
 
 /**
  * Vaults v2 (`docs/VAULTS_V2_DESIGN.md` §3): the capabilities that are ALSO
@@ -1162,10 +1154,7 @@ export const PARANOID_KILL_REGISTRY: readonly ParanoidKillRegistryEntry[] = [
     services: servicesFor('standingOrderExecution'),
     scopes: [],
     jobs: jobsFor('standingOrderExecution'),
-    // Server standing-order execution is disabled in paranoid mode, and a
-    // queued failure event carries an order id/label/period. Kill that webhook
-    // under the same capability so the transition lock cannot leak it later.
-    webhookEventTypes: ['standing_order.skipped'],
+    webhookEventTypes: [],
   },
   {
     capability: 'portfolioJobs',
@@ -1181,26 +1170,10 @@ export const PARANOID_KILL_REGISTRY: readonly ParanoidKillRegistryEntry[] = [
     services: servicesFor('portfolioWebhooks'),
     scopes: [],
     jobs: jobsFor('portfolioWebhooks'),
-    webhookEventTypes: [
-      'portfolio.changed',
-      'portfolio.shared',
-      'watchlist.shared',
-      'conglomerate.shared',
-      'friend.activity',
-      'follow.published',
-      'follow.alert.created',
-      'follow.alert.fired',
-      'dividend.event',
-      'budget.exceeded',
-      'mirror.invite',
-      'mirror.member_joined',
-      'mirror.member_left',
-      'mirror.member_removed',
-      'mirror.removed',
-      'mirror.ownership_transferred',
-      'mirror.chain_dissolved',
-      'mirror.sync_stalled',
-    ],
+    // `portfolio.changed` is an internal domain event, not a subscribable
+    // contract event; every subscribable decision comes from the exhaustive
+    // contracts policy instead of a second registry list.
+    webhookEventTypes: ['portfolio.changed', ...PARANOID_KILLED_WEBHOOK_EVENT_TYPES],
   },
 ] as const;
 
