@@ -529,7 +529,11 @@ export function ParanoidEnableWizard({
               !kitDownloaded ||
               !kitStored ||
               !lostKeyAcknowledged ||
-              authorizingDrive
+              authorizingDrive ||
+              // A failed final reauthorization clears the previously connected
+              // Drive home. Keep the transfer action unavailable until the user
+              // returns to step 2 and reconnects it.
+              (driveSelected && drive == null)
             }
             onClick={() => void enable()}
           >

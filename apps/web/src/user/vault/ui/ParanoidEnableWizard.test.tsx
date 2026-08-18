@@ -346,6 +346,7 @@ describe('ParanoidEnableWizard', () => {
     expect(mocks.migrate).not.toHaveBeenCalled();
     expect(mocks.enable).not.toHaveBeenCalled();
     expect(mocks.commitApi).not.toHaveBeenCalled();
+    expect(screen.getByRole('button', { name: 'Enable Paranoid mode' })).toBeDisabled();
 
     // The failed final check invalidates the early Drive home. Going back
     // cannot re-enter the passphrase/recovery step until Drive reconnects.
