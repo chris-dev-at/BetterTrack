@@ -321,6 +321,28 @@
       "selectedNone": "None selected",
       "selectedOne": "1 selected",
       "selectedOther": "{{count}} selected",
+      "scopeDescription": {
+        "portfolio:read": "View your portfolios, holdings, transactions and cash balances",
+        "portfolio:write": "Create and edit portfolios, transactions, custom assets and cash",
+        "workboard:read": "View your watchlist, conglomerates and backtests",
+        "workboard:write": "Create and edit your watchlist and conglomerates",
+        "market:read": "Search assets and read market data",
+        "social:read": "See your friends and the items shared with you",
+        "social:write": "Send and respond to friend requests and manage your friends",
+        "notifications:read": "View your notifications",
+        "notifications:write": "Mark your notifications as read and change your notification settings",
+        "chat:read": "Read your messages",
+        "chat:write": "Send messages on your behalf",
+        "account:security": "Manage your account security: sign-in sessions, two-factor, password change and app PIN",
+        "alerts:read": "View your price alerts",
+        "alerts:write": "Create, edit, re-arm and delete your price alerts",
+        "cash:read": "View your cash tags, budgets, rules, summaries and trends",
+        "cash:write": "Create and edit your cash tags, budgets and rules",
+        "mirrorchain:read": "View your group portfolios, members, activity and invitations",
+        "mirrorchain:write": "Accept or decline group invitations and leave group portfolios",
+        "vault:sync": "Synchronize your client-encrypted vault across your devices",
+        "feedback:write": "Send feedback, feature requests and bug reports on your behalf"
+      },
       "module": {
         "portfolio": {
           "label": "Portfolio",

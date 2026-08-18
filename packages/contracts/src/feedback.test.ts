@@ -47,6 +47,23 @@ describe('feedback contracts', () => {
     ).toBe(false);
   });
 
+  it('normalizes a supplied subject and rejects an empty one', () => {
+    const normalized = createFeedbackRequestSchema.parse({
+      category: 'feature',
+      message: 'A useful request',
+      subject: '  Better import preview  ',
+    });
+
+    expect(normalized.subject).toBe('Better import preview');
+    expect(
+      createFeedbackRequestSchema.safeParse({
+        category: 'feature',
+        message: 'A useful request',
+        subject: '   ',
+      }).success,
+    ).toBe(false);
+  });
+
   it('bounds diagnostics by key count and serialized UTF-8 size without locking their names', () => {
     const tooManyKeys = Object.fromEntries(
       Array.from({ length: FEEDBACK_CONTEXT_MAX_KEYS + 1 }, (_, index) => [`key${index}`, index]),

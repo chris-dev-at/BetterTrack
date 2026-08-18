@@ -3,8 +3,10 @@ import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 import { describe, expect, test } from 'vitest';
 
-import { API_KEY_SCOPES, type ApiKeyScope } from '@bettertrack/contracts';
+import { API_KEY_SCOPES, OAUTH_SCOPE_LABELS, type ApiKeyScope } from '@bettertrack/contracts';
 
+import { I18nProvider, localizedMessage } from '../i18n';
+import { oauthScopeDescriptionKey } from '../lib/oauthScopeCopy';
 import { isParanoidBlockedScope, ScopePicker, ScopeSummary } from './ScopePicker';
 
 /**
@@ -248,6 +250,32 @@ describe('ScopePicker', () => {
 });
 
 describe('ScopeSummary', () => {
+  test('ships distinct EN and DE descriptions for every stable scope id', () => {
+    for (const scope of API_KEY_SCOPES) {
+      const key = oauthScopeDescriptionKey(scope);
+      const english = localizedMessage('en', key);
+      const german = localizedMessage('de', key);
+
+      expect(english, `en: ${scope}`).toBe(OAUTH_SCOPE_LABELS[scope]);
+      expect(german, `de: ${scope}`).not.toBe(english);
+    }
+  });
+
+  test('localizes feedback consent copy from its scope id instead of the server English label', () => {
+    render(
+      <I18nProvider initialLocale="de">
+        <ScopeSummary
+          items={[{ scope: 'feedback:write', label: OAUTH_SCOPE_LABELS['feedback:write'] }]}
+        />
+      </I18nProvider>,
+    );
+
+    expect(
+      screen.getByText('Feedback, Funktionswünsche und Fehlerberichte in deinem Namen senden'),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(OAUTH_SCOPE_LABELS['feedback:write'])).not.toBeInTheDocument();
+  });
+
   test('groups requested scopes by module in the canonical order (Portfolio → Social → Market → …)', () => {
     // Deliberately out-of-order + across modules to prove the grouping.
     render(

@@ -185,7 +185,7 @@ describe('POST /api/v1/feedback', () => {
 describe('feedback:write OAuth catalog', () => {
   it('is grantable and pre-allowed for BetterTrackMobile', () => {
     const mobile = FIRST_PARTY_CLIENTS.find((client) => client.name === 'BetterTrackMobile');
-    expect(API_KEY_SCOPES.at(-1)).toBe('feedback:write');
+    expect(API_KEY_SCOPES).toContain('feedback:write');
     expect(mobile?.scopeCeiling).toContain('feedback:write');
   });
 });

@@ -631,6 +631,7 @@ export const feedback = pgTable(
     context: jsonb('context'),
     status: feedbackStatusEnum('status').notNull().default('new'),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    // No trigger/$onUpdate owns this: future status transitions must set it explicitly.
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [

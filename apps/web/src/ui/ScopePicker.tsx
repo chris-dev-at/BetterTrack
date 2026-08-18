@@ -8,6 +8,7 @@ import {
 } from '@bettertrack/contracts';
 
 import { cx } from '../lib/cx';
+import { localizedOAuthScopeDescription } from '../lib/oauthScopeCopy';
 import { useT } from '../i18n';
 
 const PARANOID_BLOCKED_SCOPES: ReadonlySet<ApiKeyScope> = new Set([
@@ -351,7 +352,7 @@ export function ScopeSummary({ items }: ScopeSummaryProps) {
             </span>
             <ul className="flex flex-col gap-0.5 text-xs text-neutral-300">
               {claims.map(({ scope, label }) => (
-                <li key={scope}>{label}</li>
+                <li key={scope}>{localizedOAuthScopeDescription(t, scope, label)}</li>
               ))}
             </ul>
           </div>
