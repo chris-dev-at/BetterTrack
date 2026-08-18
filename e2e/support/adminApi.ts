@@ -38,7 +38,9 @@ const ADMIN_TOTP_SECRET_FILE =
  * retried in a new Playwright worker, so an in-memory cursor alone can mint the
  * same 30-second code that the previous worker just consumed. Keep the cursor
  * next to the secret by default; deployments that isolate the secret path get
- * an isolated cursor automatically.
+ * an isolated cursor automatically. Reservation is intentionally lock-free
+ * while every shard runs one Playwright worker; increasing `workers` requires
+ * a cross-process lock around the read/reserve/write sequence below.
  */
 const ADMIN_TOTP_STEP_FILE =
   process.env.E2E_ADMIN_TOTP_STEP_FILE ?? `${ADMIN_TOTP_SECRET_FILE}.last-step`;
@@ -141,12 +143,13 @@ const totpStepAt = (nowMs: number): number => Math.floor(nowMs / TOTP_STEP_MS);
 async function freshAdminTotpCode(secret: string): Promise<string> {
   let nowMs = Date.now();
   const lastStep = readAdminTotpStep();
-  if (lastStep !== null && totpStepAt(nowMs) <= lastStep) {
+  const currentStep = totpStepAt(nowMs);
+  if (lastStep !== null && currentStep <= lastStep) {
     const waitMs = (lastStep + 1) * TOTP_STEP_MS - nowMs + TOTP_BOUNDARY_GRACE_MS;
-    // A cursor more than one step ahead means the shared file came from a host
-    // with a materially different clock. Fail instead of silently sleeping for
-    // an unbounded period.
-    if (waitMs > TOTP_STEP_MS * 2) {
+    // One future step is a valid prior-run reservation and can require just
+    // over two step lengths of waiting near a boundary. Anything farther ahead
+    // points to a materially different clock.
+    if (lastStep > currentStep + 1) {
       throw new Error(
         `Admin TOTP step cursor ${lastStep} is ahead of the local clock; remove ` +
           `${ADMIN_TOTP_STEP_FILE} after fixing the clock skew.`,
@@ -159,6 +162,15 @@ async function freshAdminTotpCode(secret: string): Promise<string> {
   const step = totpStepAt(nowMs);
   persistAdminTotpStep(step);
   return generateTotpCode(secret, nowMs);
+}
+
+function apiErrorCode(body: string): string | null {
+  try {
+    const parsed = JSON.parse(body) as { error?: { code?: unknown } };
+    return typeof parsed.error?.code === 'string' ? parsed.error.code : null;
+  } catch {
+    return null;
+  }
 }
 
 /** RFC 4648 base32 decode — only what the admin-2FA enroll endpoint returns (uppercase, no padding). */
@@ -229,13 +241,27 @@ async function signInAsAdminOnce(request: APIRequestContext): Promise<'assured' 
           `${ADMIN_EMAIL}\`) so the fresh-boot enrollment path can run again.`,
       );
     }
-    const code = await freshAdminTotpCode(secret);
-    const verifyRes = await postAdminAuth(request, '/api/v1/auth/2fa/verify', () => ({
+    let code = await freshAdminTotpCode(secret);
+    let verifyRes = await postAdminAuth(request, '/api/v1/auth/2fa/verify', () => ({
       pendingToken: body.pendingToken,
       code,
     }));
     if (!verifyRes.ok()) {
-      throw new Error(`Admin 2FA verify failed: ${verifyRes.status()} ${await verifyRes.text()}`);
+      let verifyBody = await verifyRes.text();
+      if (verifyRes.status() === 401 && apiErrorCode(verifyBody) === 'TWO_FACTOR_INVALID_CODE') {
+        // The file cursor is best-effort, so the server can know about a step
+        // this process did not. Keep the still-valid pending challenge and try
+        // exactly once with the next reserved step rather than relying on a
+        // Playwright retry worker to recover.
+        code = await freshAdminTotpCode(secret);
+        verifyRes = await postAdminAuth(request, '/api/v1/auth/2fa/verify', () => ({
+          pendingToken: body.pendingToken,
+          code,
+        }));
+        if (verifyRes.ok()) return 'assured';
+        verifyBody = await verifyRes.text();
+      }
+      throw new Error(`Admin 2FA verify failed: ${verifyRes.status()} ${verifyBody}`);
     }
     return 'assured';
   }
@@ -266,9 +292,10 @@ async function signInAsAdminOnce(request: APIRequestContext): Promise<'assured' 
   }
   const { secret } = (await enrollRes.json()) as { secret: string };
   persistAdminTotpSecret(secret);
+  const confirmCode = await freshAdminTotpCode(secret);
   const confirmRes = await request.post(`${API_BASE_URL}/api/v1/admin/security/2fa/totp/confirm`, {
     headers: CSRF_HEADERS,
-    data: { code: generateTotpCode(secret) },
+    data: { code: confirmCode },
   });
   if (!confirmRes.ok()) {
     throw new Error(`Admin TOTP confirm failed: ${confirmRes.status()} ${await confirmRes.text()}`);

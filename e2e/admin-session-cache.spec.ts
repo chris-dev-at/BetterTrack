@@ -4,6 +4,8 @@ import { newAdminRequestContext } from './support/adminApi';
 import { API_BASE_URL } from './support/config';
 
 test('admin harness reuses one assured session without authenticating ordinary contexts', async () => {
+  test.setTimeout(180_000);
+
   const first = await newAdminRequestContext(newRequestContext);
   const second = await newAdminRequestContext(newRequestContext);
   const anonymous = await newRequestContext.newContext({ baseURL: API_BASE_URL });
