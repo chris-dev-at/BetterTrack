@@ -1,4 +1,6 @@
 import { eq } from 'drizzle-orm';
+
+import { VAULT_RETIRED_SERVER_MIN_RETENTION_MS } from '@bettertrack/contracts';
 import { beforeEach, describe, expect, it } from 'vitest';
 
 import type { Database } from '../../db';
@@ -43,6 +45,78 @@ beforeEach(async () => {
 
 function blob(text: string): Buffer {
   return Buffer.from(text, 'utf8');
+}
+
+async function seedParanoidUser(email: string, username: string): Promise<string> {
+  const user = await harness.seedUser({ email, username });
+  await db
+    .update(users)
+    .set({
+      privacyMode: 'paranoid',
+      paranoidMediaSet: ['server'],
+      paranoidDriveAttestedVersion: null,
+    })
+    .where(eq(users.id, user.id));
+  return user.id;
+}
+
+async function writeServerVault(
+  targetUserId: string,
+  values: readonly string[],
+  now: Date,
+): Promise<number> {
+  for (const [index, value] of values.entries()) {
+    const bytes = blob(value);
+    const version = index + 1;
+    expect(
+      await repo.compareAndSwap({
+        userId: targetUserId,
+        expectedVersion: version === 1 ? null : version - 1,
+        version,
+        formatVersion: 1,
+        sizeBytes: bytes.length,
+        blob: bytes,
+        retirementProofPublicKey: 'test-retirement-proof-key',
+        retention: RETENTION,
+        now,
+      }),
+    ).toMatchObject({ status: 'ok', version });
+  }
+  return values.length;
+}
+
+async function retireServerVault(
+  targetUserId: string,
+  values: readonly string[],
+  now: Date,
+): Promise<number> {
+  const retiredVersion = await writeServerVault(targetUserId, values, now);
+  const serverOnly = { mediaSet: ['server'] as Array<'server'>, driveAttestedVersion: null };
+  const both = {
+    mediaSet: ['server', 'drive'] as Array<'server' | 'drive'>,
+    driveAttestedVersion: retiredVersion,
+  };
+  expect(
+    await repo.transitionMedia({
+      userId: targetUserId,
+      expected: serverOnly,
+      nextMediaSet: both.mediaSet,
+      verification: { kind: 'drive', version: retiredVersion },
+      candidateReadbackVerified: false,
+      now,
+    }),
+  ).toMatchObject({ status: 'ok' });
+  expect(
+    await repo.transitionMedia({
+      userId: targetUserId,
+      expected: both,
+      nextMediaSet: ['drive'],
+      verification: { kind: 'drive', version: retiredVersion },
+      candidateReadbackVerified: false,
+      now,
+    }),
+  ).toMatchObject({ status: 'ok' });
+  return retiredVersion;
 }
 
 describe('paranoid vault repository CAS', () => {
@@ -488,5 +562,126 @@ describe('durable paranoid media transitions', () => {
     const [user] = await db.select().from(users).where(eq(users.id, userId));
     expect(user?.paranoidMediaSet).toEqual(['server', 'drive']);
     expect((await repo.getHistory(userId, 1))?.blob.equals(blob('different'))).toBe(true);
+  });
+});
+
+describe('retired server vault purge', () => {
+  it('refuses before the injected retention clock reaches purgeAfter and deletes nothing', async () => {
+    let clock = T0;
+    const now = () => clock;
+    const retiredVersion = await retireServerVault(userId, ['retired-v1', 'retired-v2'], now());
+
+    clock = new Date(T0.getTime() + VAULT_RETIRED_SERVER_MIN_RETENTION_MS - 1);
+    expect(
+      await repo.purgeRetired({
+        userId,
+        retiredVersion,
+        proofVerified: true,
+        now: now(),
+      }),
+    ).toEqual({
+      status: 'retention_pending',
+      purgeAfter: new Date(T0.getTime() + VAULT_RETIRED_SERVER_MIN_RETENTION_MS),
+    });
+    expect(
+      await db.select().from(paranoidVaultRetired).where(eq(paranoidVaultRetired.userId, userId)),
+    ).toHaveLength(2);
+    expect(
+      await db
+        .select()
+        .from(paranoidVaultRetirements)
+        .where(eq(paranoidVaultRetirements.userId, userId)),
+    ).toHaveLength(1);
+  });
+
+  it('purges exactly the retired set at purgeAfter and preserves live vault and history rows', async () => {
+    let clock = T0;
+    const now = () => clock;
+    const retiredVersion = await retireServerVault(userId, ['retired-v1', 'retired-v2'], now());
+    const liveUserId = await seedParanoidUser('live-vault@bt.test', 'livevault');
+    await writeServerVault(liveUserId, ['live-v1', 'live-v2'], now());
+
+    clock = new Date(T0.getTime() + VAULT_RETIRED_SERVER_MIN_RETENTION_MS);
+    expect(
+      await repo.purgeRetired({
+        userId,
+        retiredVersion,
+        proofVerified: true,
+        now: now(),
+      }),
+    ).toEqual({ status: 'ok' });
+
+    expect(
+      await db.select().from(paranoidVaultRetired).where(eq(paranoidVaultRetired.userId, userId)),
+    ).toEqual([]);
+    expect(
+      await db
+        .select()
+        .from(paranoidVaultRetirements)
+        .where(eq(paranoidVaultRetirements.userId, userId)),
+    ).toEqual([]);
+    expect(
+      await db.select().from(paranoidVaults).where(eq(paranoidVaults.userId, liveUserId)),
+    ).toMatchObject([{ version: 2 }]);
+    expect(
+      await db
+        .select()
+        .from(paranoidVaultHistory)
+        .where(eq(paranoidVaultHistory.userId, liveUserId)),
+    ).toMatchObject([{ version: 1 }]);
+  });
+
+  it("cannot see or purge another user's retirement", async () => {
+    let clock = T0;
+    const now = () => clock;
+    const otherUserId = await seedParanoidUser('other-retirement@bt.test', 'otherretirement');
+    const otherVersion = await retireServerVault(otherUserId, ['other-v1', 'other-v2'], now());
+    clock = new Date(T0.getTime() + VAULT_RETIRED_SERVER_MIN_RETENTION_MS);
+
+    expect(await repo.getRetirementState(userId)).toBeNull();
+    expect(
+      await repo.purgeRetired({
+        userId,
+        retiredVersion: otherVersion,
+        proofVerified: true,
+        now: now(),
+      }),
+    ).toEqual({ status: 'not_found' });
+    expect(await repo.getRetirementState(otherUserId)).toMatchObject({
+      retiredVersion: otherVersion,
+    });
+    expect(
+      await db
+        .select()
+        .from(paranoidVaultRetired)
+        .where(eq(paranoidVaultRetired.userId, otherUserId)),
+    ).toHaveLength(2);
+  });
+
+  it('treats a repeated purge of the same retirement as an idempotent no-op', async () => {
+    let clock = T0;
+    const now = () => clock;
+    const retiredVersion = await retireServerVault(userId, ['retired-v1'], now());
+    clock = new Date(T0.getTime() + VAULT_RETIRED_SERVER_MIN_RETENTION_MS);
+    const input = {
+      userId,
+      retiredVersion,
+      proofVerified: true as const,
+      now: now(),
+    };
+
+    expect(await repo.purgeRetired(input)).toEqual({ status: 'ok' });
+    // The retirement identity `(userId, retiredVersion)` is the natural
+    // idempotency key: replaying that exact purge converges on the same empty set.
+    expect(await repo.purgeRetired(input)).toEqual({ status: 'ok' });
+    expect(
+      await db.select().from(paranoidVaultRetired).where(eq(paranoidVaultRetired.userId, userId)),
+    ).toEqual([]);
+    expect(
+      await db
+        .select()
+        .from(paranoidVaultRetirements)
+        .where(eq(paranoidVaultRetirements.userId, userId)),
+    ).toEqual([]);
   });
 });

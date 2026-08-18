@@ -1146,7 +1146,19 @@ export function createParanoidVaultRepository(
           candidate ?? null,
           retirement ?? null,
         );
-        if (!retirement) return { status: 'not_found' } as const;
+        if (!retirement) {
+          // `(userId, retiredVersion)` is the retirement purge's natural
+          // idempotency key. Once that row is gone, the surviving Drive
+          // attestation lets an exact/older replay converge as a clean no-op;
+          // a future version or any remaining server medium is still unknown.
+          const alreadyPurged =
+            !selection.mediaSet.includes('server') &&
+            !active &&
+            !candidate &&
+            selection.driveAttestedVersion !== null &&
+            input.retiredVersion <= selection.driveAttestedVersion;
+          return alreadyPurged ? ({ status: 'ok' } as const) : ({ status: 'not_found' } as const);
+        }
         // A staged candidate is still server-held ciphertext. Do not report a
         // successful retirement purge unless this transaction leaves no server
         // bytes behind; preserving the candidate lets its owner either promote

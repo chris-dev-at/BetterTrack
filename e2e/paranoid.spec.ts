@@ -392,6 +392,34 @@ test.describe('PD9 paranoid-mode end-to-end gate', () => {
         sensitive.push(...(await pd9CiphertextCanaries(page)));
       });
 
+      await test.step('explicitly purges the elapsed retained server recovery copy', async () => {
+        await harness.makeRetirementPurgeable(owner!.email);
+        // Refetch the server-authored purgeAfter timestamp. A browser-only
+        // clock override cannot make the repository retention gate elapse.
+        await page.reload();
+
+        const retiredFold = page.getByText('Retained server recovery copy', { exact: true });
+        await expect(retiredFold).toBeVisible();
+        await retiredFold.click();
+        const purge = page.getByRole('button', { name: 'Delete retained server copy' });
+        await expect(purge).toBeEnabled();
+        await purge.click();
+
+        const passphrase = page.getByLabel('Vault passphrase');
+        const purgedNotice = page.getByText('The retained server recovery copy was deleted.', {
+          exact: true,
+        });
+        await expect(passphrase.or(purgedNotice)).toBeVisible();
+        if (await passphrase.isVisible()) {
+          await fillPd9Secret(page, 'Vault passphrase', 'passphrase');
+          await page.getByRole('button', { name: 'Unlock and continue' }).click();
+        }
+
+        await expect(purgedNotice).toBeVisible();
+        await expect(retiredFold).toHaveCount(0);
+        expect(await harness.vaultStorage(owner!.email)).toEqual(emptyVaultStorage());
+      });
+
       await test.step('disable rehydrates restorable rows and drops purge-only history', async () => {
         await navigateInApp(page, '/control/privacy');
         await page.getByText('Disable Paranoid mode', { exact: true }).click();

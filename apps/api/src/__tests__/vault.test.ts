@@ -641,6 +641,7 @@ describe('durable paranoid server-media lifecycle', () => {
   it('moves bytes through candidate and retirement states before a retained, advanced-version purge', async () => {
     const { user, agent } = await seedParanoidAgent('lifecycle@bt.test', 'lifecycle');
     const { privateKey, publicKey } = retirementProofKey();
+    const { privateKey: invalidPrivateKey } = retirementProofKey();
     const v1 = envelope(1, new Uint8Array([1, 2, 3]));
     const serverOnly = { mediaSet: ['server'], driveAttestedVersion: null };
     const both = { mediaSet: ['server', 'drive'], driveAttestedVersion: 1 };
@@ -818,12 +819,31 @@ describe('durable paranoid server-media lifecycle', () => {
       challenge,
       signature: purgeSignature(privateKey, 1, 2, challenge),
     };
+    const invalidProof = await agent
+      .post('/api/v1/vault/media/retired/purge')
+      .set(...XRW)
+      .send({
+        ...advancedProof,
+        signature: purgeSignature(invalidPrivateKey, 1, 2, challenge),
+      });
+    expect(invalidProof.status).toBe(412);
+    expect(invalidProof.body).toEqual({
+      error: {
+        code: 'VAULT_RETIRED_SERVER_PROOF_INVALID',
+        message: 'The retired-server purge proof is malformed, stale, or does not verify.',
+      },
+    });
     const beforeRetention = await agent
       .post('/api/v1/vault/media/retired/purge')
       .set(...XRW)
       .send(advancedProof);
     expect(beforeRetention.status).toBe(409);
-    expect(beforeRetention.body.error.code).toBe('VAULT_RETIRED_SERVER_RETENTION');
+    expect(beforeRetention.body).toEqual({
+      error: {
+        code: 'VAULT_RETIRED_SERVER_RETENTION',
+        message: 'The retired server recovery window has not elapsed.',
+      },
+    });
     expect((await agent.get('/api/v1/vault/history/1')).status).toBe(200);
 
     await harness.db
