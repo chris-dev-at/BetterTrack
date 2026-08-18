@@ -60,6 +60,10 @@ export const privacyModeEnum = pgEnum('privacy_mode', ['normal', 'paranoid']);
 export const problemKindEnum = pgEnum('problem_kind', ['error', 'job', 'provider']);
 export const problemStatusEnum = pgEnum('problem_status', ['open', 'resolved']);
 
+/** Authenticated in-app feedback, triaged category-first in the admin inbox. */
+export const feedbackCategoryEnum = pgEnum('feedback_category', ['feature', 'bug', 'other']);
+export const feedbackStatusEnum = pgEnum('feedback_status', ['new', 'triaged', 'done']);
+
 export const users = pgTable(
   'users',
   {
@@ -604,6 +608,35 @@ export const problems = pgTable(
     uniqueIndex('problems_fingerprint_unique').on(t.fingerprint),
     index('problems_status_last_seen_idx').on(t.status, t.lastSeenAt),
     index('problems_kind_idx').on(t.kind),
+  ],
+);
+
+/**
+ * Authenticated user feedback (#1315). Both web and native clients write into
+ * this one owner-visible queue. `context` is bounded and validated at the
+ * contract edge but stays shape-extensible JSON so client diagnostics can grow
+ * without a schema migration. V1 is create-only for users: no read-back route,
+ * anonymous submissions, or attachments.
+ */
+export const feedback = pgTable(
+  'feedback',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    category: feedbackCategoryEnum('category').notNull(),
+    subject: text('subject'),
+    message: text('message').notNull(),
+    context: jsonb('context'),
+    status: feedbackStatusEnum('status').notNull().default('new'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    // No trigger/$onUpdate owns this: future status transitions must set it explicitly.
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('feedback_user_created_idx').on(t.userId, t.createdAt),
+    index('feedback_status_created_idx').on(t.status, t.createdAt),
   ],
 );
 
@@ -2730,6 +2763,8 @@ export type NewPasskeyRow = typeof passkeys.$inferInsert;
 export type AuditLogRow = typeof auditLog.$inferSelect;
 export type ProblemRow = typeof problems.$inferSelect;
 export type NewProblemRow = typeof problems.$inferInsert;
+export type FeedbackRow = typeof feedback.$inferSelect;
+export type NewFeedbackRow = typeof feedback.$inferInsert;
 export type UsageEventRow = typeof usageEvents.$inferSelect;
 export type NewUsageEventRow = typeof usageEvents.$inferInsert;
 export type UsageDailyRow = typeof usageDaily.$inferSelect;

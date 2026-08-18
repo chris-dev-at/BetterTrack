@@ -345,6 +345,12 @@ const MODULE_POLICIES: readonly { prefix: string; read: string; write: string }[
   // Ideas (§13.4 V4-P9) are a Workboard surface — a saved Workboard analysis —
   // so they gate on the same workboard scope pair as conglomerates/backtest.
   { prefix: '/ideas', read: 'workboard:read', write: 'workboard:write' },
+  // #1315: feedback is a create-only module in v1. Mapping it explicitly is
+  // critical: without this row a bearer falls through to API_KEY_FORBIDDEN
+  // before the new feedback:write scope can ever be evaluated.
+  // Revisit the read half when #1338 adds GET /feedback/mine: write access must
+  // not silently grant access to a user's submission history.
+  { prefix: '/feedback', read: 'feedback:write', write: 'feedback:write' },
   { prefix: '/assets', read: 'market:read', write: 'market:write' },
   { prefix: '/search', read: 'market:read', write: 'market:write' },
   // #361: `social:write` and `notifications:*` are now real, granularly-enforced

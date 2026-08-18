@@ -6,6 +6,7 @@ import { OAUTH_SCOPE_LABELS, type OAuthGrantSummary } from '@bettertrack/contrac
 
 import { useT } from '../../../i18n';
 import { formatDate } from '../../../lib/format';
+import { localizedOAuthScopeDescription } from '../../../lib/oauthScopeCopy';
 import { listOAuthGrants, revokeOAuthGrant } from '../../../lib/oauthApi';
 import { Skeleton } from '../../../ui';
 import { isParanoidBlockedScope } from '../../../ui/ScopePicker';
@@ -81,7 +82,7 @@ function OAuthGrantRow({ grant }: { grant: OAuthGrantSummary }) {
                 <li className="bt-cc-row__hint" key={scope}>
                   ·{' '}
                   <span className={inactive ? 'line-through opacity-70' : undefined}>
-                    {OAUTH_SCOPE_LABELS[scope]}
+                    {localizedOAuthScopeDescription(t, scope, OAUTH_SCOPE_LABELS[scope])}
                   </span>
                   {inactive ? <span> ({t('settings.api.keys.scopeInactive')})</span> : null}
                 </li>

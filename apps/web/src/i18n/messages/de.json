@@ -321,6 +321,28 @@
       "selectedNone": "Keine ausgewählt",
       "selectedOne": "1 ausgewählt",
       "selectedOther": "{{count}} ausgewählt",
+      "scopeDescription": {
+        "portfolio:read": "Deine Portfolios, Bestände, Transaktionen und Cashbestände ansehen",
+        "portfolio:write": "Portfolios, Transaktionen, benutzerdefinierte Anlagen und Cash erstellen und bearbeiten",
+        "workboard:read": "Deine Watchlist, Konglomerate und Backtests ansehen",
+        "workboard:write": "Deine Watchlist und Konglomerate erstellen und bearbeiten",
+        "market:read": "Anlagen suchen und Marktdaten lesen",
+        "social:read": "Deine Freunde und mit dir geteilte Inhalte ansehen",
+        "social:write": "Freundschaftsanfragen senden und beantworten und deine Freunde verwalten",
+        "notifications:read": "Deine Benachrichtigungen ansehen",
+        "notifications:write": "Deine Benachrichtigungen als gelesen markieren und deine Benachrichtigungseinstellungen ändern",
+        "chat:read": "Deine Nachrichten lesen",
+        "chat:write": "Nachrichten in deinem Namen senden",
+        "account:security": "Deine Kontosicherheit verwalten: Sitzungen, Zwei-Faktor-Authentifizierung, Passwortänderung und App-PIN",
+        "alerts:read": "Deine Preisalarme ansehen",
+        "alerts:write": "Deine Preisalarme erstellen, bearbeiten, neu aktivieren und löschen",
+        "cash:read": "Deine Cash-Tags, Budgets, Regeln, Zusammenfassungen und Trends ansehen",
+        "cash:write": "Deine Cash-Tags, Budgets und Regeln erstellen und bearbeiten",
+        "mirrorchain:read": "Deine Gruppenportfolios, Mitglieder, Aktivitäten und Einladungen ansehen",
+        "mirrorchain:write": "Einladungen zu Gruppenportfolios annehmen oder ablehnen und Gruppenportfolios verlassen",
+        "vault:sync": "Deinen clientseitig verschlüsselten Tresor zwischen deinen Geräten synchronisieren",
+        "feedback:write": "Feedback, Funktionswünsche und Fehlerberichte in deinem Namen senden"
+      },
       "module": {
         "portfolio": {
           "label": "Portfolio",
@@ -365,6 +387,10 @@
         "accountSecurity": {
           "label": "Kontosicherheit",
           "description": "Sitzungen, Zwei-Faktor-Authentifizierung, Passwort und die App-PIN verwalten."
+        },
+        "feedback": {
+          "label": "Feedback",
+          "description": "Funktionswünsche, Fehlerberichte und sonstiges Feedback in deinem Namen senden. Feedback ist in v1 nur schreibbar."
         }
       }
     }

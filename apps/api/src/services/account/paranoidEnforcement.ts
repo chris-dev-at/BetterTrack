@@ -687,6 +687,12 @@ export const PARANOID_CONTEXT_SERVICE_EXEMPTIONS: readonly ParanoidServiceExempt
     'OAuth client and grant lifecycle is credential management; portfolio scopes are classified separately.',
   ),
   serviceExemption(
+    'feedback',
+    ['*'],
+    'kept',
+    'Voluntary user feedback and bounded client diagnostics remain available without reading or deriving server portfolio data.',
+  ),
+  serviceExemption(
     'marketData',
     ['*'],
     'kept',
@@ -1375,6 +1381,9 @@ export const PARANOID_KEPT_ROUTE_RULES: readonly ParanoidExemptRouteRule[] = [
     { exact: '/notifications' },
     { prefix: '/notifications/' },
   ]),
+  ...keptRoutes('Authenticated feedback capture reads no server portfolio data.', [
+    { exact: '/feedback' },
+  ]),
   ...keptRoutes('Alert CRUD is provenance-filtered; sharing settings are classified separately.', [
     { exact: '/alerts' },
     { pattern: /^\/alerts\/(?!sharing$)[^/]+(?:\/rearm)?$/ },
@@ -1710,6 +1719,10 @@ export const PARANOID_API_SCOPE_CLASSIFICATIONS: Readonly<
   'vault:sync': {
     disposition: 'allowed',
     reason: 'Vault sync transports only opaque ciphertext for paranoid clients.',
+  },
+  'feedback:write': {
+    disposition: 'allowed',
+    reason: 'Voluntary feedback submission reads no server-held portfolio data.',
   },
 };
 

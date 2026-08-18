@@ -42,6 +42,9 @@ export const EXPORT_TABLE_CLASSIFICATION: Record<string, TableClassification> = 
   alerts: exported('alerts'),
   notifications: exported('notifications'),
   notification_settings: exported('notificationSettings'),
+  // User-authored product feedback and the bounded diagnostics they chose to
+  // submit are part of their account data, even though v1 has no read-back API.
+  feedback: exported('feedback'),
   conglomerates: exported('conglomerates'),
   conglomerate_positions: exported('conglomeratePositions'),
   share_links: exported('conglomerateShareLinks'),
@@ -550,6 +553,9 @@ export const PARANOID_TABLE_CLASSIFICATION: Record<string, ParanoidClassificatio
   notification_settings: 'server',
   notification_cadences: 'server',
   notification_digest_queue: 'server',
+  // Voluntary feedback and bounded client diagnostics contain no portfolio or
+  // money data, so paranoid accounts keep (and can export) these rows normally.
+  feedback: 'server',
   // Friendships + chat REMAIN — they carry no portfolio data (§8, §16).
   friend_requests: 'server',
   friendships: 'server',

@@ -35,6 +35,7 @@ import { createBacktestRouter } from './http/routes/backtestRoutes';
 import { createChatRouter } from './http/routes/chatRoutes';
 import { createConglomerateRouter } from './http/routes/conglomerateRoutes';
 import { createExpensesRouter } from './http/routes/expensesRoutes';
+import { createFeedbackRouter } from './http/routes/feedbackRoutes';
 import { createCashRouter } from './http/routes/cashRoutes';
 import { createIdeasRouter } from './http/routes/ideasRoutes';
 import { createImportsRouter } from './http/routes/importsRoutes';
@@ -229,6 +230,7 @@ export function createApp(ctx: AppContext) {
   app.use('/api/v1/conglomerates', createConglomerateRouter(ctx));
   app.use('/api/v1/backtest', createBacktestRouter(ctx));
   app.use('/api/v1/ideas', createIdeasRouter(ctx));
+  app.use('/api/v1/feedback', createFeedbackRouter(ctx, limiters));
   // Expense tracking (§13.5 V5-P9) — SUPERSEDED by `/api/v1/cash` below (V5 cash
   // fusion) and now READ-ONLY, so the fused tables cannot diverge again.
   app.use('/api/v1/expenses', createExpensesRouter(ctx));

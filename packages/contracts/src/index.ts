@@ -13,6 +13,7 @@ export * from './imports';
 export * from './conglomerate';
 export * from './backtest';
 export * from './ideas';
+export * from './feedback';
 export * from './analytics';
 export * from './social';
 export * from './chat';

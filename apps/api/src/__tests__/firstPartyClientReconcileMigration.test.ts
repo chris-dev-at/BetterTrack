@@ -31,6 +31,7 @@ import { FIRST_PARTY_CLIENTS, seedFirstPartyClients } from '../services/oauth/fi
  *     #1042's mirrorchain:read / mirrorchain:write pair.
  *   - 0081 (`0081_first_party_client_vault_sync_scope`) appends #1043's single
  *     inherently read-write vault:sync scope.
+ *   - 0088 (`0088_feedback`) appends #1315's create-only feedback:write scope.
  *
  * The shared harness only ever replays migrations onto an empty DB (and truncates),
  * so — exactly like the 0019 / 0024 data-migration suites — this boots a throwaway
@@ -44,6 +45,7 @@ const TARGET_0030 = '0030_first_party_client_alerts_scopes';
 const TARGET_0079 = '0079_first_party_client_cash_scopes';
 const TARGET_0080 = '0080_first_party_client_mirrorchain_scopes';
 const TARGET_0081 = '0081_first_party_client_vault_sync_scope';
+const TARGET_0088 = '0088_feedback';
 const OAUTH_LOGO_CACHE_MIGRATION = '0074_oauth_client_logo_cache';
 
 const MOBILE = FIRST_PARTY_CLIENTS.find((c) => c.clientId === 'btc_IbT1mzw_7kBiPHPkGfaE0Q')!;
@@ -92,6 +94,11 @@ const MIRRORCHAIN_ERA_CEILING = [...CASH_ERA_CEILING, ...MIRRORCHAIN_SCOPES];
 
 /** The single combined scope 0081 appends for #1043, pinned to the migration payload. */
 const VAULT_SYNC_SCOPES = ['vault:sync'];
+const VAULT_SYNC_ERA_CEILING = [...MIRRORCHAIN_ERA_CEILING, ...VAULT_SYNC_SCOPES];
+
+/** The create-only scope 0088 appends for #1315, pinned to the migration payload. */
+const FEEDBACK_SCOPES = ['feedback:write'];
+const FEEDBACK_ERA_CEILING = [...VAULT_SYNC_ERA_CEILING, ...FEEDBACK_SCOPES];
 
 interface JournalEntry {
   idx: number;
@@ -105,13 +112,17 @@ function migrationTags(): string[] {
   return journal.entries.sort((a, b) => a.idx - b.idx).map((e) => e.tag);
 }
 
-/** Apply one migration file the way drizzle's migrator does: statement chunks, one transaction. */
-async function applyMigration(client: PGlite, tag: string): Promise<void> {
+function migrationChunks(tag: string): string[] {
   const sql = readFileSync(path.join(drizzleDir, `${tag}.sql`), 'utf8');
-  const chunks = sql
+  return sql
     .split(/-->\s*statement-breakpoint\s*/)
     .map((chunk) => chunk.trim())
     .filter((chunk) => chunk.length > 0);
+}
+
+/** Apply one migration file the way drizzle's migrator does: statement chunks, one transaction. */
+async function applyMigration(client: PGlite, tag: string): Promise<void> {
+  const chunks = migrationChunks(tag);
   await client.exec('BEGIN');
   try {
     for (const chunk of chunks) {
@@ -122,6 +133,17 @@ async function applyMigration(client: PGlite, tag: string): Promise<void> {
     await client.exec('ROLLBACK');
     throw err;
   }
+}
+
+/** Replay one uniquely identified DML chunk without re-running sibling one-time DDL. */
+async function applyMigrationChunkContaining(
+  client: PGlite,
+  tag: string,
+  needle: string,
+): Promise<void> {
+  const matches = migrationChunks(tag).filter((chunk) => chunk.includes(needle));
+  expect(matches, `${tag} should contain exactly one ${needle} chunk`).toHaveLength(1);
+  await client.exec(matches[0]!);
 }
 
 /**
@@ -460,26 +482,29 @@ describe(`migration ${TARGET_0081} — first-party client vault sync scope (unio
     client = await bootUpTo(TARGET_0081);
   });
 
-  it('reaches the live ceiling additively, idempotently and without narrowing extras', async () => {
+  it('reaches the vault-sync-era ceiling additively and without narrowing extras', async () => {
     const before = (await readClient(client, CLIENT_ID))!;
     expect(before.scopes).toEqual(MIRRORCHAIN_ERA_CEILING);
 
     await applyMigration(client, TARGET_0081);
 
     const row = (await readClient(client, CLIENT_ID))!;
-    expect(row.scopes).toEqual([...MIRRORCHAIN_ERA_CEILING, ...VAULT_SYNC_SCOPES]);
-    expect(row.scopes).toEqual(CEILING);
+    expect(row.scopes).toEqual(VAULT_SYNC_ERA_CEILING);
     expect(row.redirect_uris).toEqual([CANONICAL_URI]);
     expect(row.id).toBe(before.id);
     expect(row.created_at).toEqual(before.created_at);
 
-    // Re-running is a true no-op, and migrate-only has converged far enough
-    // that the code seed also has nothing to do.
+    // Re-running the historical migration is a true no-op. The current seed
+    // then appends scopes introduced after 0081.
     await applyMigration(client, TARGET_0081);
     expect(await readClient(client, CLIENT_ID)).toEqual(row);
     const repo = createOAuthRepository(drizzlePglite(client, { schema }) as unknown as Database);
     const seeded = (await seedFirstPartyClients(repo)).find((r) => r.clientId === CLIENT_ID)!;
-    expect(seeded.action).toBe('unchanged');
+    expect(seeded.action).toBe('converged');
+    expect((await readClient(client, CLIENT_ID))!.scopes).toEqual(CEILING);
+
+    const seededAgain = (await seedFirstPartyClients(repo)).find((r) => r.clientId === CLIENT_ID)!;
+    expect(seededAgain.action).toBe('unchanged');
 
     // An admin-customized row keeps its order and extra; only vault:sync is appended.
     await client.exec(`
@@ -492,6 +517,53 @@ describe(`migration ${TARGET_0081} — first-party client vault sync scope (unio
 
     const partialRow = (await readClient(client, CLIENT_ID))!;
     expect(partialRow.scopes).toEqual(['portfolio:read', 'experimental:beta', 'vault:sync']);
+    expect(new Set(partialRow.scopes).size).toBe(partialRow.scopes.length);
+  });
+});
+
+describe(`migration ${TARGET_0088} — first-party client feedback scope (union-only)`, () => {
+  let client: PGlite;
+
+  beforeEach(async () => {
+    // Replay the complete chain through 0087. The first-party client therefore
+    // starts at the frozen vault-sync-era ceiling immediately before 0088.
+    client = await bootUpTo(TARGET_0088);
+  });
+
+  it('reaches the live ceiling additively, idempotently and without narrowing extras', async () => {
+    const before = (await readClient(client, CLIENT_ID))!;
+    expect(before.scopes).toEqual(VAULT_SYNC_ERA_CEILING);
+
+    await applyMigration(client, TARGET_0088);
+
+    const row = (await readClient(client, CLIENT_ID))!;
+    expect(row.scopes).toEqual(FEEDBACK_ERA_CEILING);
+    expect(row.scopes).toEqual(CEILING);
+    expect(row.redirect_uris).toEqual([CANONICAL_URI]);
+    expect(row.id).toBe(before.id);
+    expect(row.created_at).toEqual(before.created_at);
+
+    // The migration also creates the table and enums, which are deliberately
+    // one-shot DDL. Replaying its guarded OAuth UPDATE alone is a true no-op,
+    // and migrate-only has converged far enough that the code seed has nothing
+    // to do either.
+    await applyMigrationChunkContaining(client, TARGET_0088, 'UPDATE "oauth_clients"');
+    expect(await readClient(client, CLIENT_ID)).toEqual(row);
+    const repo = createOAuthRepository(drizzlePglite(client, { schema }) as unknown as Database);
+    const seeded = (await seedFirstPartyClients(repo)).find((r) => r.clientId === CLIENT_ID)!;
+    expect(seeded.action).toBe('unchanged');
+
+    // An admin-customized row keeps its order and extra; only feedback:write is appended.
+    await client.exec(`
+      UPDATE "oauth_clients"
+      SET "scopes" = ARRAY['portfolio:read','experimental:beta']::text[]
+      WHERE "client_id" = '${CLIENT_ID}';
+    `);
+
+    await applyMigrationChunkContaining(client, TARGET_0088, 'UPDATE "oauth_clients"');
+
+    const partialRow = (await readClient(client, CLIENT_ID))!;
+    expect(partialRow.scopes).toEqual(['portfolio:read', 'experimental:beta', 'feedback:write']);
     expect(new Set(partialRow.scopes).size).toBe(partialRow.scopes.length);
   });
 });
