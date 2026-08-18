@@ -31,6 +31,7 @@ const NAV_SECTIONS: NavSection[] = [
     items: [
       { to: '/admin/users', labelKey: 'admin.nav.users' },
       { to: '/admin/invites', labelKey: 'admin.nav.invites' },
+      { to: '/admin/feedback', labelKey: 'admin.nav.feedback' },
     ],
   },
   {
