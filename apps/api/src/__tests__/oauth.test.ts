@@ -374,7 +374,7 @@ describe('OAuth client registration', () => {
     const grants = await repo.listGrantsForUser(stored!.userId!);
     expect(grants[0]!.client).not.toHaveProperty('logoBytes');
     const bearerRow = await repo.findAccessTokenByHash(hashToken(access));
-    expect(bearerRow!.client).toEqual({ scopes: ['portfolio:read'] });
+    expect(bearerRow!.client).toEqual({ scopes: ['portfolio:read'], isFirstParty: false });
   });
 
   it('keeps registration working, retains the server-only source and returns the placeholder state when logo fetch fails', async () => {

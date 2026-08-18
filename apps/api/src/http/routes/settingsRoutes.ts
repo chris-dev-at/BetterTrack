@@ -5,6 +5,7 @@ import {
   createOAuthClientRequestSchema,
   discordWebhookRequestSchema,
   idParamSchema,
+  scopeSatisfies,
   taxYearLockParamsSchema,
   unlockTaxYearRequestSchema,
   updateAccountSettingsRequestSchema,
@@ -23,7 +24,6 @@ import {
   type UpdateTaxSettingsRequest,
   type UpdateWidgetLayoutRequest,
   type WidgetLayoutNamespaceParam,
-  scopeSatisfies,
 } from '@bettertrack/contracts';
 
 import { forbidden } from '../../errors';
@@ -31,8 +31,12 @@ import { forbidden } from '../../errors';
 import { DiscordSetupError } from '../../services/notifications/discordSetupService';
 import { TelegramSetupError } from '../../services/notifications/telegramSetupService';
 
+import {
+  ACCOUNT_SECURITY_SCOPE,
+  oauthGrantRouteAcceptsBearer,
+  taxYearLockRouteAcceptsBearer,
+} from '../middleware/bearerAuth';
 import { requireUser } from '../middleware/session';
-import { ACCOUNT_SECURITY_SCOPE, taxYearLockRouteAcceptsBearer } from '../middleware/bearerAuth';
 import { validateBody, validateParams } from '../middleware/validate';
 import type { AppContext } from '../context';
 
@@ -66,8 +70,34 @@ export const requireCookieSessionOrTaxYearLockBearer: RequestHandler = (req, _re
  * Per-user settings endpoints (PROJECTPLAN.md §6.10, §6.11, §8). V1 exposes the
  * notification channel toggles the dispatcher honors; every handler is
  * authenticated and strictly scoped to the caller, with bearer-capable
- * subtrees carrying their own explicit scope guards.
+ * subtrees carrying their own explicit scope guards. OAuth grant list/revoke
+ * additionally admit trusted first-party bearers holding `account:security`.
  */
+
+/**
+ * Router-local twin of the global first-party grant policy. It independently
+ * checks the exact route, scope, credential kind and first-party marker so a
+ * policy-table reshuffle or direct router mount cannot expose grant management
+ * to a third-party token or personal key.
+ */
+export const requireCookieSessionOrFirstPartyOAuthGrant: RequestHandler = (req, _res, next) => {
+  const bearerAllowed =
+    req.apiKey?.kind === 'oauth' &&
+    req.apiKey.firstParty &&
+    scopeSatisfies(req.apiKey.scopes, ACCOUNT_SECURITY_SCOPE) &&
+    oauthGrantRouteAcceptsBearer(
+      req.method,
+      `/settings${req.path === '/' || req.path === '' ? '' : req.path}`,
+    );
+  if ((!req.apiKey && req.sessionId) || bearerAllowed) {
+    next();
+    return;
+  }
+  next(
+    forbidden('This endpoint is available to first-party OAuth clients only.', 'API_KEY_FORBIDDEN'),
+  );
+};
+
 export function createSettingsRouter(ctx: AppContext): Router {
   const router = Router();
 
@@ -361,9 +391,9 @@ export function createSettingsRouter(ctx: AppContext): Router {
   });
 
   // ── OAuth apps + grants (§6.13, V2-P12) ─────────────────────────────────────
-  // Also session-only (the bearer scope guard blocks API-key/OAuth-token
-  // requests from `/settings/oauth-*`), so a delegated token can never register
-  // an app or manage grants — no privilege escalation.
+  // Client registration stays session-only. Grant list/revoke also admit the
+  // official first-party app under the global + local account:security guards;
+  // third-party OAuth tokens and personal keys remain unable to manage grants.
 
   // GET /settings/oauth-clients — the caller's registered OAuth apps.
   router.get('/oauth-clients', async (req, res) => {
@@ -395,17 +425,22 @@ export function createSettingsRouter(ctx: AppContext): Router {
   });
 
   // GET /settings/oauth-grants — apps the caller has authorized (active grants).
-  router.get('/oauth-grants', async (req, res) => {
+  router.get('/oauth-grants', requireCookieSessionOrFirstPartyOAuthGrant, async (req, res) => {
     const grants = await ctx.oauth.listGrants(req.authUser!.id);
     res.json({ grants });
   });
 
   // DELETE /settings/oauth-grants/:id — revoke a grant; kills its tokens instantly.
-  router.delete('/oauth-grants/:id', validateParams(idParamSchema), async (req, res) => {
-    const { id } = req.valid?.params as { id: string };
-    await ctx.oauth.revokeGrant({ userId: req.authUser!.id, id, ip: req.ip ?? null });
-    res.status(204).end();
-  });
+  router.delete(
+    '/oauth-grants/:id',
+    requireCookieSessionOrFirstPartyOAuthGrant,
+    validateParams(idParamSchema),
+    async (req, res) => {
+      const { id } = req.valid?.params as { id: string };
+      await ctx.oauth.revokeGrant({ userId: req.authUser!.id, id, ip: req.ip ?? null });
+      res.status(204).end();
+    },
+  );
 
   return router;
 }

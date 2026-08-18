@@ -4189,6 +4189,8 @@ const endpoints: EndpointDef[] = [
     path: '/settings/oauth-grants',
     tag: 'Settings',
     summary: 'List the apps the caller has authorized (active grants).',
+    description:
+      'Cookie sessions are supported. Bearer access requires an official first-party OAuth client holding account:security; third-party OAuth tokens and personal API keys are refused.',
     status: 200,
     response: R.OAuthGrantListResponse,
   },
@@ -4197,6 +4199,8 @@ const endpoints: EndpointDef[] = [
     path: '/settings/oauth-grants/{id}',
     tag: 'Settings',
     summary: 'Revoke an authorized app; kills its access + refresh tokens instantly.',
+    description:
+      'Cookie sessions are supported. Bearer access requires an official first-party OAuth client holding account:security; third-party OAuth tokens and personal API keys are refused.',
     params: contracts.idParamSchema,
     status: 204,
   },
