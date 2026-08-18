@@ -94,6 +94,330 @@ export const PRIVACY_MODES = ['normal', 'paranoid'] as const;
 export const privacyModeSchema = z.enum(PRIVACY_MODES);
 export type PrivacyMode = z.infer<typeof privacyModeSchema>;
 
+/** Stable server capabilities whose cleartext surfaces are absent in paranoid mode. */
+export const PARANOID_KILLED_CAPABILITIES = [
+  'publicProfile',
+  'sharing',
+  'mirrorchain',
+  'portfolioServer',
+  'imports',
+  'portfolioApiScope',
+  'standingOrderExecution',
+  'portfolioJobs',
+  'portfolioWebhooks',
+] as const;
+export type ParanoidKilledCapability = (typeof PARANOID_KILLED_CAPABILITIES)[number];
+
+export interface ParanoidServerRouteReference {
+  readonly capability: ParanoidKilledCapability;
+  readonly method?: string;
+  readonly match: 'exact' | 'prefix' | 'pattern';
+  readonly path: string;
+  readonly flags?: string;
+  readonly source?: {
+    readonly file: string;
+    readonly symbol: string;
+  };
+}
+
+export interface ParanoidClientRouteRule {
+  readonly match: 'exact' | 'prefix';
+  readonly path: string;
+  readonly destination: string;
+}
+
+export interface ParanoidClientRouteDecision {
+  readonly id: string;
+  readonly serverRoutes: readonly ParanoidServerRouteReference[];
+  readonly clientRoutes: readonly ParanoidClientRouteRule[];
+  /** Why these client routes are absent, or why no route-level gate is needed. */
+  readonly reason: string;
+}
+
+/**
+ * The shared server-to-client §8 kill decision matrix. Server route rules are
+ * references rather than executable matchers so this stays browser-safe. The
+ * API completeness test binds every reference to `PARANOID_KILL_REGISTRY`; the
+ * SPA derives its route gate and redirect destination from `clientRoutes`.
+ * An empty client list is an explicit decision, never an implicit allow.
+ */
+export const PARANOID_CLIENT_ROUTE_DECISIONS: readonly ParanoidClientRouteDecision[] = [
+  {
+    id: 'public-profiles',
+    serverRoutes: [{ capability: 'publicProfile', match: 'prefix', path: '/social/profiles/' }],
+    clientRoutes: [
+      { match: 'prefix', path: '/u', destination: '/portfolio' },
+      { match: 'prefix', path: '/people/profile', destination: '/people' },
+      // The Control Center is an overlay: land on a neighbouring panel instead
+      // of closing the popup by redirecting to `/portfolio`.
+      { match: 'prefix', path: '/control/profile', destination: '/control/account' },
+      { match: 'prefix', path: '/settings/profile', destination: '/portfolio' },
+      { match: 'prefix', path: '/social/profile', destination: '/people' },
+    ],
+    reason:
+      'Public-profile pages depend on server profile data and are absent for paranoid accounts.',
+  },
+  {
+    id: 'sharing-and-mirrorchain',
+    serverRoutes: [
+      { capability: 'sharing', match: 'prefix', path: '/social/links/' },
+      { capability: 'sharing', match: 'exact', path: '/social/groups' },
+      { capability: 'sharing', match: 'prefix', path: '/social/groups/' },
+      { capability: 'sharing', match: 'exact', path: '/social/follows' },
+      { capability: 'sharing', match: 'prefix', path: '/social/follows/' },
+      { capability: 'sharing', match: 'exact', path: '/social/followers' },
+      { capability: 'sharing', match: 'exact', path: '/social/item-follows' },
+      { capability: 'sharing', match: 'prefix', path: '/social/item-follows/' },
+      { capability: 'sharing', match: 'exact', path: '/social/shared' },
+      { capability: 'sharing', match: 'prefix', path: '/social/shared/' },
+      { capability: 'sharing', match: 'exact', path: '/social/my-shared' },
+      { capability: 'sharing', match: 'prefix', path: '/social/audience/' },
+      { capability: 'sharing', match: 'prefix', path: '/social/items/' },
+      { capability: 'sharing', match: 'prefix', path: '/social/comments/' },
+      { capability: 'sharing', match: 'exact', path: '/alerts/sharing' },
+      { capability: 'sharing', match: 'exact', path: '/workboard/sharing' },
+      {
+        capability: 'sharing',
+        match: 'pattern',
+        path: '^/ideas/[^/]+/clone$',
+      },
+      { capability: 'sharing', match: 'prefix', path: '/backtest/shared/' },
+      { capability: 'mirrorchain', match: 'prefix', path: '/mirrorchain/' },
+    ],
+    clientRoutes: [
+      { match: 'prefix', path: '/s', destination: '/portfolio' },
+      { match: 'prefix', path: '/people/shared', destination: '/people' },
+      { match: 'exact', path: '/people/following', destination: '/people' },
+      { match: 'prefix', path: '/portfolio/people', destination: '/portfolio' },
+      { match: 'prefix', path: '/social/my-shared', destination: '/people' },
+      { match: 'prefix', path: '/social/shared-with-me', destination: '/people' },
+    ],
+    reason:
+      'Sharing, following, public links, and mirror membership require server-side social rows, so their combined SPA surfaces are absent.',
+  },
+  {
+    id: 'client-backed-portfolio',
+    serverRoutes: [
+      { capability: 'portfolioServer', match: 'exact', path: '/portfolios' },
+      { capability: 'portfolioServer', match: 'prefix', path: '/portfolios/' },
+      { capability: 'portfolioServer', match: 'exact', path: '/custom-assets' },
+      { capability: 'portfolioServer', match: 'prefix', path: '/custom-assets/' },
+      { capability: 'portfolioServer', match: 'prefix', path: '/analytics/' },
+    ],
+    clientRoutes: [],
+    reason:
+      'Core portfolio, custom-asset, and analytics routes stay mounted because paranoid mode serves their equivalents from the decrypted client vault.',
+  },
+  /**
+   * The expense area (V5-P9). Its `/expenses/*` endpoints are already refused
+   * server-side under the `portfolioServer` capability (the PD3b enforcement
+   * registry), so these five pages are hidden rather than left to 403 into an
+   * empty shell. The DATA is not killed: the expense tables are vault-classified,
+   * `migration.ts` carries every category/transaction/rule/budget into the blob,
+   * and the whole area returns intact on disable. Re-deriving these pages against
+   * the vault store is v6 follow-up work — recorded in PROJECTPLAN §16
+   * (2026-07-31, issue #729) and as kill-list item 11 in docs/paranoid-design.md
+   * §8, because §8's rule is that an absent surface is a documented one.
+   *
+   * `/portfolio/cash-flow/accounts` deliberately stays live: cash sources are
+   * portfolio rows served by the vault store, not expense rows.
+   *
+   * The area was renamed `/portfolio/cash` with three tabs plus setup pages
+   * (V5 cash fusion phase 2 — the fused ledger's overview/movements/budgets/
+   * labels read the SERVER cash endpoints, which the PD3b registry refuses for a
+   * paranoid account), so the SAME kill decision covers both vocabularies: the
+   * legacy names for deep links and bookmarks, the canonical names for the live
+   * router. `/portfolio/cash/accounts` stays live exactly like its legacy alias.
+   */
+  {
+    id: 'expense-and-cash-pages',
+    serverRoutes: [
+      { capability: 'portfolioServer', match: 'prefix', path: '/expenses/categories' },
+      { capability: 'portfolioServer', match: 'prefix', path: '/expenses/transactions' },
+      { capability: 'portfolioServer', match: 'prefix', path: '/expenses/rules' },
+      { capability: 'portfolioServer', match: 'prefix', path: '/expenses/summary' },
+      { capability: 'portfolioServer', match: 'prefix', path: '/expenses/trends' },
+      { capability: 'portfolioServer', match: 'prefix', path: '/expenses/budgets' },
+      { capability: 'portfolioServer', match: 'prefix', path: '/cash/tags' },
+      { capability: 'portfolioServer', match: 'prefix', path: '/cash/movements/' },
+      { capability: 'portfolioServer', match: 'prefix', path: '/cash/budgets' },
+      { capability: 'portfolioServer', match: 'prefix', path: '/cash/rules' },
+      { capability: 'portfolioServer', match: 'prefix', path: '/cash/summary' },
+      { capability: 'portfolioServer', match: 'prefix', path: '/cash/trends' },
+    ],
+    clientRoutes: [
+      { match: 'exact', path: '/portfolio/cash-flow', destination: '/portfolio/cash/accounts' },
+      {
+        match: 'exact',
+        path: '/portfolio/cash-flow/transactions',
+        destination: '/portfolio/cash/accounts',
+      },
+      {
+        match: 'exact',
+        path: '/portfolio/cash-flow/budgets',
+        destination: '/portfolio/cash/accounts',
+      },
+      {
+        match: 'exact',
+        path: '/portfolio/cash-flow/categories',
+        destination: '/portfolio/cash/accounts',
+      },
+      {
+        match: 'exact',
+        path: '/portfolio/cash-flow/rules',
+        destination: '/portfolio/cash/accounts',
+      },
+      { match: 'exact', path: '/portfolio/cash', destination: '/portfolio/cash/accounts' },
+      {
+        match: 'exact',
+        path: '/portfolio/cash/movements',
+        destination: '/portfolio/cash/accounts',
+      },
+      {
+        match: 'exact',
+        path: '/portfolio/cash/transactions',
+        destination: '/portfolio/cash/accounts',
+      },
+      {
+        match: 'exact',
+        path: '/portfolio/cash/budgets',
+        destination: '/portfolio/cash/accounts',
+      },
+      {
+        match: 'exact',
+        path: '/portfolio/cash/labels',
+        destination: '/portfolio/cash/accounts',
+      },
+      {
+        match: 'exact',
+        path: '/portfolio/cash/tags',
+        destination: '/portfolio/cash/accounts',
+      },
+      {
+        match: 'exact',
+        path: '/portfolio/cash/rules',
+        destination: '/portfolio/cash/accounts',
+      },
+      {
+        match: 'exact',
+        path: '/portfolio/cash/categories',
+        destination: '/portfolio/cash/accounts',
+      },
+    ],
+    reason:
+      'Expense and classified-cash pages still read refused server endpoints; only the client-backed cash accounts page remains mounted.',
+  },
+  {
+    id: 'portfolio-dividend-calendar',
+    serverRoutes: [
+      {
+        capability: 'portfolioServer',
+        match: 'exact',
+        path: '/assets/portfolio/dividend-calendar',
+      },
+    ],
+    clientRoutes: [],
+    reason:
+      'The calendar has no standalone client route; its Home widget is unreachable because paranoid Home renders the client-backed portfolio substitute.',
+  },
+  {
+    id: 'portfolio-dividend-projection',
+    serverRoutes: [
+      {
+        capability: 'portfolioServer',
+        match: 'exact',
+        path: '/assets/portfolio/dividend-projection',
+      },
+    ],
+    clientRoutes: [],
+    reason:
+      'Forecast stays mounted, but its dividend-projection query is disabled after privacy mode resolves paranoid.',
+  },
+  {
+    id: 'portfolio-news-digest',
+    serverRoutes: [
+      {
+        capability: 'portfolioServer',
+        match: 'exact',
+        path: '/assets/portfolio/news-digest',
+      },
+    ],
+    clientRoutes: [{ match: 'prefix', path: '/assets/news', destination: '/assets' }],
+    reason:
+      'The portfolio news-digest route depends on cleartext server holdings; per-asset provider news remains available.',
+  },
+  {
+    id: 'ai-insights-panel',
+    serverRoutes: [
+      {
+        capability: 'portfolioServer',
+        method: 'POST',
+        match: 'exact',
+        path: '/ai/insights',
+      },
+    ],
+    clientRoutes: [],
+    reason:
+      'AI insights are a component-level panel rather than a route and are suppressed inside the client-backed analytics surface.',
+  },
+  {
+    id: 'server-tax-settings-and-print',
+    serverRoutes: [
+      { capability: 'portfolioServer', match: 'exact', path: '/settings/taxes' },
+      { capability: 'portfolioServer', match: 'exact', path: '/settings/taxes/years' },
+      { capability: 'portfolioServer', match: 'prefix', path: '/settings/taxes/years/' },
+    ],
+    clientRoutes: [
+      { match: 'prefix', path: '/portfolio/tax/print', destination: '/portfolio/tax' },
+    ],
+    reason:
+      'Server tax settings and printable reports are absent; the main tax surface stays live through the client tax engine.',
+  },
+  {
+    id: 'client-backed-home',
+    serverRoutes: [
+      { capability: 'portfolioServer', match: 'exact', path: '/settings/home' },
+      { capability: 'portfolioServer', match: 'prefix', path: '/settings/widget-layout/' },
+    ],
+    clientRoutes: [],
+    reason:
+      'The root route stays mounted but paranoid Home replaces the server widget board with the client-backed Portfolio page before these endpoints can run.',
+  },
+  {
+    id: 'imports',
+    serverRoutes: [
+      { capability: 'imports', match: 'exact', path: '/imports' },
+      { capability: 'imports', match: 'prefix', path: '/imports/' },
+      { capability: 'imports', match: 'prefix', path: '/expenses/import/' },
+    ],
+    clientRoutes: [
+      { match: 'prefix', path: '/portfolio/import', destination: '/portfolio' },
+      {
+        match: 'prefix',
+        path: '/portfolio/cash-flow/import',
+        destination: '/portfolio/cash/accounts',
+      },
+      {
+        match: 'prefix',
+        path: '/portfolio/cash/import',
+        destination: '/portfolio/cash/accounts',
+      },
+    ],
+    reason:
+      'Broker and expense imports execute on the server and are absent while the server has no cleartext portfolio data.',
+  },
+  {
+    id: 'client-standing-orders',
+    serverRoutes: [
+      { capability: 'standingOrderExecution', match: 'exact', path: '/standing-orders' },
+      { capability: 'standingOrderExecution', match: 'prefix', path: '/standing-orders/' },
+    ],
+    clientRoutes: [],
+    reason:
+      'The Forecast route stays mounted because paranoid standing orders are stored and materialized by the client vault runtime.',
+  },
+];
+
 /**
  * A storage medium a blob syncs to (`§4`). `server` = the BetterTrack blind
  * store; `drive` = the user's Google Drive appdata folder. Both are blind
