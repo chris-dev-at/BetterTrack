@@ -330,7 +330,7 @@ export interface AppContext {
   apiKeys: ApiKeyService;
   /** OAuth 2.0 provider — app registration, authorize/consent, token exchange, grants (§6.13, V2-P12). */
   oauth: OAuthService;
-  /** Authenticated in-app feedback submission into the owner-visible queue (#1315). */
+  /** Authenticated feedback capture plus the owner-only admin triage queue. */
   feedback: FeedbackService;
   workboard: WorkboardService;
   /** Cached, resilience-wrapped market data over the Yahoo + manual providers (§5.1). */
@@ -1513,9 +1513,8 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     audience,
   });
 
-  // One create-only queue for web + native feedback (#1315). User identity is
-  // supplied by the authenticated route; the service never accepts anonymous
-  // submissions and exposes no user read-back surface.
+  // One queue for web + native feedback. User identity is supplied by the
+  // authenticated capture route; only the admin router exposes read/update.
   const feedback = createFeedbackService({ repo: createFeedbackRepository(db) });
 
   // Broker CSV imports (§13.4 V4-P8): staged upload → preview → apply. Staging
