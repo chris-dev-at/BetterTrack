@@ -1,4 +1,4 @@
-import type { VaultEntityKind } from '@bettertrack/contracts';
+import { PARANOID_REHYDRATION_HANDLERS, type VaultEntityKind } from '@bettertrack/contracts';
 import { getTableName, is } from 'drizzle-orm';
 import { PgTable } from 'drizzle-orm/pg-core';
 
@@ -655,33 +655,8 @@ export const PARANOID_REHYDRATION_POLICY: Record<string, ParanoidRehydrationPoli
   cash_budget_fires: purgeOnly(),
 };
 
-/**
- * Rehydration branches intentionally mirror the table-to-entity restore policy.
- * Keep this as an exportable contract so the completeness gate proves that every
- * future `restore` table has an insertion branch as well as a payload schema.
- */
-export const PARANOID_REHYDRATION_HANDLERS = [
-  'portfolio',
-  'transaction',
-  'dividend',
-  'cashSource',
-  'cashMovement',
-  'portfolioSetting',
-  'taxSetting',
-  'customAsset',
-  'customAssetValue',
-  'standingOrder',
-  'standingOrderRun',
-  'expenseCategory',
-  'expenseTransaction',
-  'expenseRule',
-  'expenseBudget',
-  'cashTag',
-  'cashMovementTag',
-  'cashBudget',
-  'cashRule',
-  'cashRuleTag',
-] as const satisfies readonly VaultEntityKind[];
+/** Shared with the web capture completeness gate; never duplicate this tuple. */
+export { PARANOID_REHYDRATION_HANDLERS };
 
 /** The `vault`-classified table names (the encrypted document + rehydration). */
 export const PARANOID_VAULT_TABLE_NAMES: readonly string[] = Object.entries(
