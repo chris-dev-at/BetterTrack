@@ -50,7 +50,7 @@ server {
     # replace its http-level X-Robots-Tag inheritance.
     add_header X-Robots-Tag "noindex, nofollow" always;
 
-    # Per-origin runtime config (§7.1): app kind + API and product origins.
+    # Per-origin runtime config (§7.1): app kind, origins and Drive client id.
     # Overrides the default /public/config.js baked into the image.
     location = /config.js {
         default_type application/javascript;
@@ -59,7 +59,7 @@ server {
         include /etc/nginx/bt-includes/static-security-headers.conf;
         include /etc/nginx/bt-includes/static-hsts.conf;
         add_header Cache-Control "no-store";
-        return 200 'window.__BT__ = { app: "user", apiOrigin: "${API_ORIGIN}", productOrigin: "${PRODUCT_ORIGIN}" };';
+        return 200 'window.__BT__ = { app: "user", apiOrigin: "${API_ORIGIN}", productOrigin: "${PRODUCT_ORIGIN}", googleDriveClientId: "${BT_GOOGLE_DRIVE_CLIENT_ID}" };';
     }
 
     # A service-worker update check must reach the current deploy, and the
@@ -102,7 +102,7 @@ server {
         include /etc/nginx/bt-includes/static-security-headers.conf;
         include /etc/nginx/bt-includes/static-hsts.conf;
         add_header Cache-Control "no-store";
-        return 200 'window.__BT__ = { app: "admin", apiOrigin: "${API_ORIGIN}", productOrigin: "${PRODUCT_ORIGIN}" };';
+        return 200 'window.__BT__ = { app: "admin", apiOrigin: "${API_ORIGIN}", productOrigin: "${PRODUCT_ORIGIN}", googleDriveClientId: "${BT_GOOGLE_DRIVE_CLIENT_ID}" };';
     }
 
     location ~* ^/(service-worker\.js|manifest\.webmanifest)$ {

@@ -10,6 +10,7 @@ import {
 
 import { VAULT_FORMAT_VERSION } from '@bettertrack/contracts';
 
+import { getGoogleDriveClientId } from '../../lib/runtimeConfig';
 import { createIndexedDbVaultCustody, type DeviceVaultCustody } from './custody';
 import {
   createDriveDataHome,
@@ -103,9 +104,7 @@ export function VaultRuntimeProvider({
   const driveRef = useRef<{ userId: string; home: DriveDataHome } | null>(null);
 
   const clientId =
-    dependencies?.clientId === undefined
-      ? (import.meta.env.VITE_GOOGLE_DRIVE_CLIENT_ID?.trim() ?? null)
-      : dependencies.clientId;
+    dependencies?.clientId === undefined ? getGoogleDriveClientId() || null : dependencies.clientId;
 
   const tokens = useCallback(
     (requireConfigured = false): GoogleDriveTokenClient => {
