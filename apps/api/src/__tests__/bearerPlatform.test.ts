@@ -2,10 +2,11 @@ import { createHash, randomBytes } from 'node:crypto';
 
 import { and, desc, eq } from 'drizzle-orm';
 import request from 'supertest';
-import type { Application } from 'express';
+import type { Application, Request, Response } from 'express';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  API_KEY_SCOPES,
   alertListResponseSchema,
   alertSchema,
   cashBudgetResponseSchema,
@@ -30,9 +31,20 @@ import { createOAuthRepository } from '../data/repositories/oauthRepository';
 import { createTwoFactorRepository } from '../data/repositories/twoFactorRepository';
 import { createUserRepository } from '../data/repositories/userRepository';
 import * as schema from '../data/schema';
-import { pathAcceptsBearer } from '../http/middleware/bearerAuth';
+import {
+  ACCOUNT_SECURITY_SCOPE,
+  passkeyManagementRouteAcceptsBearer,
+  pathAcceptsBearer,
+  taxYearLockRouteAcceptsBearer,
+} from '../http/middleware/bearerAuth';
+import { requireCookieSessionOrTaxYearLockBearer } from '../http/routes/settingsRoutes';
+import {
+  ACCOUNT_PASSKEY_NAMESPACE,
+  ACCOUNT_TAX_YEAR_UNLOCK_NAMESPACE,
+} from '../services/auth/loginThrottle';
 import { generateTotpCode } from '../services/auth/totp';
 import { FIRST_PARTY_CLIENTS, seedFirstPartyClients } from '../services/oauth/firstPartyClients';
+import { progressiveKeys } from '../services/security/progressiveLimiter';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 /**
@@ -114,9 +126,14 @@ function pkce(): { verifier: string; challenge: string } {
 }
 
 /** Seed a fresh user, register a public PKCE client they own, and mint a delegated token. */
-async function mintOAuthToken(
-  scopes: string[],
-): Promise<{ token: string; userId: string; grantId: string; clientRowId: string; email: string }> {
+async function mintOAuthToken(scopes: string[]): Promise<{
+  token: string;
+  userId: string;
+  grantId: string;
+  clientRowId: string;
+  email: string;
+  password: string;
+}> {
   const user = await seedFreshUser();
   const agent = await loginAgent(harness.app, user.email, user.password);
   const reg = await agent
@@ -174,10 +191,155 @@ async function mintOAuthToken(
     .orderBy(desc(schema.oauthGrants.createdAt));
   expect(grantRows).toHaveLength(1);
   const grant = grantRows[0]!;
-  return { token, userId: user.id, grantId: grant.id, clientRowId, email: user.email };
+  return {
+    token,
+    userId: user.id,
+    grantId: grant.id,
+    clientRowId,
+    email: user.email,
+    password: user.password,
+  };
 }
 
 const bearer = (token: string) => ({ Authorization: `Bearer ${token}` });
+
+type AccountSecurityRoute = {
+  name: string;
+  method: 'get' | 'post' | 'patch' | 'delete';
+  path: string;
+  body?: Record<string, unknown>;
+};
+
+const ACCOUNT_SECURITY_WIDENED_ROUTES: readonly AccountSecurityRoute[] = [
+  { name: 'passkey list', method: 'get', path: '/auth/passkeys' },
+  {
+    name: 'passkey rename',
+    method: 'patch',
+    path: `/auth/passkeys/${MISSING_ID}`,
+    body: { name: 'Phone' },
+  },
+  {
+    name: 'passkey delete',
+    method: 'delete',
+    path: `/auth/passkeys/${MISSING_ID}`,
+    body: { password: 'irrelevant-before-scope-check' },
+  },
+  { name: 'tax-year lock state', method: 'get', path: '/settings/taxes/years' },
+  {
+    name: 'tax-year unlock',
+    method: 'post',
+    path: '/settings/taxes/years/2025/unlock',
+    body: { password: 'irrelevant-before-scope-check' },
+  },
+  {
+    name: 'tax-year relock',
+    method: 'post',
+    path: '/settings/taxes/years/2025/relock',
+  },
+  { name: 'first-run completion', method: 'post', path: '/auth/first-run/complete' },
+] as const;
+
+function callAccountSecurityRoute(token: string, row: AccountSecurityRoute) {
+  const url = `/api/v1${row.path}`;
+  const base = request(harness.app);
+  const started =
+    row.method === 'get'
+      ? base.get(url)
+      : row.method === 'post'
+        ? base.post(url)
+        : row.method === 'delete'
+          ? base.delete(url)
+          : base.patch(url);
+  const withAuth = started.set(bearer(token));
+  return row.body ? withAuth.send(row.body) : withAuth;
+}
+
+async function seedManagedPasskeys(userId: string) {
+  const suffix = uniq();
+  return harness.db
+    .insert(schema.passkeys)
+    .values([
+      {
+        userId,
+        name: 'Rename me',
+        credentialId: `credential-rename-${suffix}`,
+        publicKey: 'AQID',
+        counter: 0,
+        transports: null,
+      },
+      {
+        userId,
+        name: 'Delete me',
+        credentialId: `credential-delete-${suffix}`,
+        publicKey: 'AQID',
+        counter: 0,
+        transports: null,
+      },
+    ])
+    .returning();
+}
+
+async function exerciseWidenedAccountSecuritySurface(input: {
+  token: string;
+  userId: string;
+  password: string;
+}) {
+  const [renameTarget, deleteTarget] = await seedManagedPasskeys(input.userId);
+  const responses: request.Response[] = [];
+
+  const listed = await request(harness.app).get('/api/v1/auth/passkeys').set(bearer(input.token));
+  expect(listed.status, JSON.stringify(listed.body)).toBe(200);
+  expect(listed.body.passkeys).toHaveLength(2);
+  responses.push(listed);
+
+  const renamed = await request(harness.app)
+    .patch(`/api/v1/auth/passkeys/${renameTarget!.id}`)
+    .set(bearer(input.token))
+    .send({ name: 'Native phone' });
+  expect(renamed.status, JSON.stringify(renamed.body)).toBe(200);
+  expect(renamed.body.name).toBe('Native phone');
+  responses.push(renamed);
+
+  const deleted = await request(harness.app)
+    .delete(`/api/v1/auth/passkeys/${deleteTarget!.id}`)
+    .set(bearer(input.token))
+    .send({ password: input.password });
+  expect(deleted.status, JSON.stringify(deleted.body)).toBe(200);
+  expect(deleted.body).toEqual({ ok: true });
+  responses.push(deleted);
+
+  const lockState = await request(harness.app)
+    .get('/api/v1/settings/taxes/years')
+    .set(bearer(input.token));
+  expect(lockState.status, JSON.stringify(lockState.body)).toBe(200);
+  const elapsedYear = (lockState.body.currentYear as number) - 1;
+  responses.push(lockState);
+
+  const unlocked = await request(harness.app)
+    .post(`/api/v1/settings/taxes/years/${elapsedYear}/unlock`)
+    .set(bearer(input.token))
+    .send({ password: input.password });
+  expect(unlocked.status, JSON.stringify(unlocked.body)).toBe(200);
+  expect(unlocked.body.unlockedYears).toContain(elapsedYear);
+  responses.push(unlocked);
+
+  const relocked = await request(harness.app)
+    .post(`/api/v1/settings/taxes/years/${elapsedYear}/relock`)
+    .set(bearer(input.token));
+  expect(relocked.status, JSON.stringify(relocked.body)).toBe(200);
+  expect(relocked.body.unlockedYears).not.toContain(elapsedYear);
+  responses.push(relocked);
+
+  const completed = await request(harness.app)
+    .post('/api/v1/auth/first-run/complete')
+    .set(bearer(input.token));
+  expect(completed.status, JSON.stringify(completed.body)).toBe(200);
+  expect(meResponseSchema.parse(completed.body).firstRunCompletedAt).not.toBeNull();
+  responses.push(completed);
+
+  // Bearer management never mints or refreshes a browser session.
+  for (const response of responses) expect(response.headers['set-cookie']).toBeUndefined();
+}
 
 function deferred(): { promise: Promise<void>; resolve: () => void } {
   let resolve!: () => void;
@@ -391,6 +553,229 @@ describe('#361 route × scope matrix', () => {
       .send({ identifier: email, password: newPassword });
     expect(fresh.status).toBe(200);
     expect(meResponseSchema.safeParse(fresh.body).success).toBe(true);
+  });
+});
+
+describe('#1324 account:security parity for native account state', () => {
+  it.each(['personal', 'oauth'] as const)(
+    'serves all seven widened routes to a scoped %s bearer',
+    async (kind) => {
+      const principal =
+        kind === 'personal'
+          ? await mintKey([ACCOUNT_SECURITY_SCOPE])
+          : await mintOAuthToken([ACCOUNT_SECURITY_SCOPE]);
+      expect(principal.token.startsWith(kind === 'personal' ? 'btk_' : 'bto_')).toBe(true);
+
+      await exerciseWidenedAccountSecuritySurface(principal);
+    },
+  );
+
+  it.each(ACCOUNT_SECURITY_WIDENED_ROUTES)(
+    'returns scope-evaluation 403 without account:security: $name',
+    async (row) => {
+      const { token } = await mintKey(['market:read']);
+      const res = await callAccountSecurityRoute(token, row);
+
+      expect(res.status, `${row.method} ${row.path} → ${JSON.stringify(res.body)}`).toBe(403);
+      expect(res.body.error.code).toBe('INSUFFICIENT_SCOPE');
+      expect(res.body.error.message).toContain(ACCOUNT_SECURITY_SCOPE);
+    },
+  );
+
+  it('keeps passkey bearer admission method-aware and default-closed', () => {
+    const id = '11111111-1111-4111-8111-111111111111';
+    for (const [method, path] of [
+      ['GET', '/auth/passkeys'],
+      ['PATCH', `/auth/passkeys/${id}`],
+      ['DELETE', `/auth/passkeys/${id}`],
+    ] as const) {
+      expect(passkeyManagementRouteAcceptsBearer(method, path), `${method} ${path}`).toBe(true);
+      expect(pathAcceptsBearer(path, method), `${method} ${path}`).toBe(true);
+    }
+
+    for (const path of [
+      '/auth/passkeys/register/options',
+      '/auth/passkeys/register/verify',
+      '/auth/passkeys/login/options',
+      '/auth/passkeys/login/verify',
+      '/auth/passkeys/export',
+    ]) {
+      expect(pathAcceptsBearer(path, 'POST'), `POST ${path}`).toBe(false);
+    }
+    expect(pathAcceptsBearer(`/auth/passkeys/${id}`, 'POST')).toBe(false);
+    expect(pathAcceptsBearer('/auth/passkeys/not-a-uuid', 'PATCH')).toBe(false);
+    expect(pathAcceptsBearer('/auth/first-run/complete', 'POST')).toBe(true);
+    expect(pathAcceptsBearer('/auth/first-run/complete', 'GET')).toBe(false);
+  });
+
+  it('keeps the tax-year router guard route- and scope-aware without the global policy', () => {
+    const invoke = (scopes: string[], method: string, path: string) => {
+      const next = vi.fn();
+      requireCookieSessionOrTaxYearLockBearer(
+        {
+          apiKey: {
+            id: 'bypassed-policy-key',
+            scopes,
+            kind: 'personal',
+            securityGeneration: 0,
+          },
+          method,
+          path,
+        } as unknown as Request,
+        {} as Response,
+        next,
+      );
+      return next;
+    };
+
+    const wrongScope = invoke(['market:read'], 'GET', '/taxes/years');
+    expect(wrongScope.mock.calls[0]![0]).toMatchObject({
+      statusCode: 403,
+      code: 'API_KEY_FORBIDDEN',
+    });
+
+    const unknownRoute = invoke([ACCOUNT_SECURITY_SCOPE], 'POST', '/taxes/years/2025/export');
+    expect(unknownRoute.mock.calls[0]![0]).toMatchObject({
+      statusCode: 403,
+      code: 'API_KEY_FORBIDDEN',
+    });
+
+    expect(invoke([ACCOUNT_SECURITY_SCOPE], 'GET', '/taxes/years')).toHaveBeenCalledWith();
+    expect(
+      invoke([ACCOUNT_SECURITY_SCOPE], 'POST', '/taxes/years/2025/unlock'),
+    ).toHaveBeenCalledWith();
+    expect(taxYearLockRouteAcceptsBearer('POST', '/settings/taxes/years/2025/relock')).toBe(true);
+  });
+
+  it('keeps bearer passkey deletion on the shared contract, audit and account throttle', async () => {
+    const principal = await mintKey([ACCOUNT_SECURITY_SCOPE]);
+    const [passkey] = await seedManagedPasskeys(principal.userId);
+    const path = `/api/v1/auth/passkeys/${passkey!.id}`;
+
+    const missingReauth = await request(harness.app)
+      .delete(path)
+      .set(bearer(principal.token))
+      .send({});
+    expect(missingReauth.status).toBe(400);
+    expect(missingReauth.body.error.code).toBe('VALIDATION_ERROR');
+    const limiter = progressiveKeys(ACCOUNT_PASSKEY_NAMESPACE, principal.userId);
+    expect(await harness.ctx.redis.get(limiter.count)).toBeNull();
+
+    const bearerWrong = await request(harness.app)
+      .delete(path)
+      .set(bearer(principal.token))
+      .send({ password: 'wrong-bearer-password' });
+    expect(bearerWrong.status).toBe(401);
+    expect(bearerWrong.body.error.code).toBe('INVALID_CREDENTIALS');
+    expect(await harness.ctx.redis.get(limiter.count)).toBe('1');
+
+    const cookie = await loginAgent(harness.app, principal.email, principal.password);
+    const cookieWrong = await cookie
+      .delete(path)
+      .set(...XRW)
+      .send({ password: 'wrong-cookie-password' });
+    expect(cookieWrong.status).toBe(401);
+    expect(cookieWrong.body.error.code).toBe('INVALID_CREDENTIALS');
+    expect(await harness.ctx.redis.get(limiter.count)).toBe('2');
+
+    const audits = await harness.db
+      .select()
+      .from(schema.auditLog)
+      .where(
+        and(
+          eq(schema.auditLog.actorId, principal.userId),
+          eq(schema.auditLog.action, 'passkey.manage_reauth_fail'),
+        ),
+      );
+    expect(audits).toHaveLength(2);
+    expect(audits.map((row) => (row.meta as { kind?: string }).kind)).toEqual([
+      'password',
+      'password',
+    ]);
+  });
+
+  it('keeps bearer tax unlock on the shared audit and account throttle', async () => {
+    const principal = await mintKey([ACCOUNT_SECURITY_SCOPE]);
+    const lockState = await request(harness.app)
+      .get('/api/v1/settings/taxes/years')
+      .set(bearer(principal.token));
+    const elapsedYear = (lockState.body.currentYear as number) - 1;
+    const path = `/api/v1/settings/taxes/years/${elapsedYear}/unlock`;
+
+    const bearerWrong = await request(harness.app)
+      .post(path)
+      .set(bearer(principal.token))
+      .send({ password: 'wrong-bearer-password' });
+    expect(bearerWrong.status).toBe(401);
+    expect(bearerWrong.body.error.code).toBe('INVALID_CREDENTIALS');
+    const limiter = progressiveKeys(ACCOUNT_TAX_YEAR_UNLOCK_NAMESPACE, principal.userId);
+    expect(await harness.ctx.redis.get(limiter.count)).toBe('1');
+
+    const cookie = await loginAgent(harness.app, principal.email, principal.password);
+    const cookieWrong = await cookie
+      .post(path)
+      .set(...XRW)
+      .send({ password: 'wrong-cookie-password' });
+    expect(cookieWrong.status).toBe(401);
+    expect(cookieWrong.body.error.code).toBe('INVALID_CREDENTIALS');
+    expect(await harness.ctx.redis.get(limiter.count)).toBe('2');
+
+    const audits = await harness.db
+      .select()
+      .from(schema.auditLog)
+      .where(
+        and(
+          eq(schema.auditLog.actorId, principal.userId),
+          eq(schema.auditLog.action, 'tax_year.unlock_reauth_fail'),
+        ),
+      );
+    expect(audits).toHaveLength(2);
+    expect(audits.map((row) => (row.meta as { year?: number }).year)).toEqual([
+      elapsedYear,
+      elapsedYear,
+    ]);
+  });
+
+  it('404s an admin-kind bearer on every widened user route', async () => {
+    const principal = await mintKey([ACCOUNT_SECURITY_SCOPE]);
+    await harness.db
+      .update(schema.users)
+      .set({ role: 'admin' })
+      .where(eq(schema.users.id, principal.userId));
+
+    for (const row of ACCOUNT_SECURITY_WIDENED_ROUTES) {
+      const res = await callAccountSecurityRoute(principal.token, row);
+      expect(res.status, `${row.method} ${row.path} → ${JSON.stringify(res.body)}`).toBe(404);
+      expect(res.body.error.code).toBe('NOT_FOUND');
+    }
+  });
+
+  it('reuses the existing account scope without widening scope or first-party registries', () => {
+    const preexistingScopes = [
+      'portfolio:read',
+      'portfolio:write',
+      'workboard:read',
+      'workboard:write',
+      'market:read',
+      'social:read',
+      'social:write',
+      'notifications:read',
+      'notifications:write',
+      'chat:read',
+      'chat:write',
+      'account:security',
+      'alerts:read',
+      'alerts:write',
+      'cash:read',
+      'cash:write',
+      'mirrorchain:read',
+      'mirrorchain:write',
+      'vault:sync',
+      'feedback:write',
+    ];
+    expect(API_KEY_SCOPES).toEqual(preexistingScopes);
+    const mobile = FIRST_PARTY_CLIENTS.find((client) => client.name === 'BetterTrackMobile');
+    expect(mobile?.scopeCeiling).toEqual(preexistingScopes);
   });
 });
 

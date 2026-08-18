@@ -17,10 +17,11 @@ import { createTestApp, type TestHarness } from '../testing/createTestApp';
 /**
  * Tax year locking (owner directive 2026-08-07, §16): an elapsed Vienna year
  * auto-locks — every mutation dated into it 409s (`TAX_YEAR_LOCKED`) until
- * the session-only, password-re-authenticated unlock ritual opens that ONE
- * year for amendments; re-locking closes it again. The gate sits strictly in
- * FRONT of the settlement machinery: once unlocked, backdated writes settle
- * cent-exactly through the untouched closed-year ΔF machinery (#635/#669).
+ * the password-re-authenticated unlock ritual opens that ONE year for
+ * amendments; the owning session and `account:security` bearer share it, and
+ * re-locking closes it again. The gate sits strictly in FRONT of the settlement
+ * machinery: once unlocked, backdated writes settle cent-exactly through the
+ * untouched closed-year ΔF machinery (#635/#669).
  * EUR assets throughout, so every cent asserts exactly.
  */
 
@@ -310,32 +311,55 @@ describe('tax year locking — unlock ritual', () => {
     expect(await auditActions()).toContain('tax_year.relocked');
   });
 
-  it('is session-only: a bearer token can never unlock, relock, or read the surface', async () => {
+  it('requires account:security from a bearer and preserves cookie-session access', async () => {
     const { agent, user } = await setup();
     clock = Date.parse('2026-02-01T12:00:00.000Z');
-    const minted = await agent
+    const unrelated = await agent
       .post('/api/v1/settings/api-keys')
       .set(...XRW)
       .send({ name: 'full key', scopes: ['portfolio:read', 'portfolio:write', 'social:write'] });
-    expect(minted.status).toBe(201);
-    const auth = `Bearer ${minted.body.token as string}`;
+    expect(unrelated.status).toBe(201);
+    const unrelatedAuth = `Bearer ${unrelated.body.token as string}`;
 
     for (const call of [
       request(harness.app)
         .post('/api/v1/settings/taxes/years/2025/unlock')
-        .set('Authorization', auth)
+        .set('Authorization', unrelatedAuth)
         .send({ password: user.password }),
       request(harness.app)
         .post('/api/v1/settings/taxes/years/2025/relock')
-        .set('Authorization', auth)
+        .set('Authorization', unrelatedAuth)
         .send({}),
-      request(harness.app).get('/api/v1/settings/taxes/years').set('Authorization', auth),
+      request(harness.app).get('/api/v1/settings/taxes/years').set('Authorization', unrelatedAuth),
     ]) {
       const res = await call;
       expect(res.status).toBe(403);
-      expect(res.body.error.code).toBe('API_KEY_FORBIDDEN');
+      expect(res.body.error.code).toBe('INSUFFICIENT_SCOPE');
+      expect(res.body.error.message).toContain('account:security');
     }
-    // The session still can — proving the 403 was the bearer, not the route.
+
+    const scoped = await agent
+      .post('/api/v1/settings/api-keys')
+      .set(...XRW)
+      .send({ name: 'native account security', scopes: ['account:security'] });
+    expect(scoped.status).toBe(201);
+    const scopedAuth = `Bearer ${scoped.body.token as string}`;
+    await request(harness.app)
+      .get('/api/v1/settings/taxes/years')
+      .set('Authorization', scopedAuth)
+      .expect(200);
+    await request(harness.app)
+      .post('/api/v1/settings/taxes/years/2025/unlock')
+      .set('Authorization', scopedAuth)
+      .send({ password: user.password })
+      .expect(200);
+    await request(harness.app)
+      .post('/api/v1/settings/taxes/years/2025/relock')
+      .set('Authorization', scopedAuth)
+      .send({})
+      .expect(200);
+
+    // The session remains unchanged alongside the newly admitted bearer.
     const state = await agent.get('/api/v1/settings/taxes/years');
     expect(state.status).toBe(200);
   });
