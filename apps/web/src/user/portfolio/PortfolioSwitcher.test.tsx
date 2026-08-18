@@ -29,6 +29,7 @@ import { MIRROR_MAX_MEMBERS } from '@bettertrack/contracts';
 import { createMirrorChain, getMirrorMembers } from '../../lib/mirrorApi';
 import { ApiError } from '../../lib/apiClient';
 import { createPortfolio, listPortfolios } from '../../lib/portfolioApi';
+import { apiPortfolioStore } from '../../lib/portfolioStore';
 import { listFriends } from '../../lib/socialApi';
 import {
   ACTIVE_PORTFOLIO_PARAM,
@@ -37,6 +38,8 @@ import {
   resolveActivePortfolio,
 } from './PortfolioSwitcher';
 import { resetPortfolioKindCache, type PortfolioKind } from './portfolioKinds';
+import { PortfolioStoreProvider } from './PortfolioStoreProvider';
+import { useActivePortfolio } from './cashflow/useActivePortfolio';
 
 type Summary = {
   id: string;
@@ -131,6 +134,12 @@ function ActiveProbe() {
   return <div data-testid="active-param">{params.get(ACTIVE_PORTFOLIO_PARAM) ?? ''}</div>;
 }
 
+/** The one active-portfolio resolver shared by all three cash-flow sub-tabs. */
+function CashActiveProbe() {
+  const { portfolio } = useActivePortfolio();
+  return <div data-testid="cash-active-portfolio">{portfolio?.name ?? ''}</div>;
+}
+
 function renderSwitcher(initialPath = '/portfolio') {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   const view = render(
@@ -175,6 +184,38 @@ describe('resolveActivePortfolio session stickiness', () => {
 });
 
 describe('PortfolioSwitcher', () => {
+  test('cash sub-tabs and the switcher share the vault writer and active portfolio', async () => {
+    const vaultMain = summary({ id: 'vault-p1', name: 'Vault main', isDefault: true });
+    const vaultTrading = summary({ id: 'vault-p2', name: 'Vault trading', sortOrder: 1 });
+    const vaultList = vi.fn(async () => ({ portfolios: [vaultMain, vaultTrading] }));
+    vi.mocked(listPortfolios).mockResolvedValue({
+      portfolios: [summary({ id: 'server-p1', name: 'Server portfolio', isDefault: true })],
+    });
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+
+    render(
+      <MemoryRouter initialEntries={['/portfolio/cash?portfolio=vault-p2']}>
+        <QueryClientProvider client={client}>
+          <PortfolioStoreProvider store={{ ...apiPortfolioStore, listPortfolios: vaultList }}>
+            {/* Mount the cash observer first: before #1335 its direct API query
+                won this shared key and poisoned the switcher's result. */}
+            <CashActiveProbe />
+            <PortfolioSwitcher />
+          </PortfolioStoreProvider>
+        </QueryClientProvider>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() =>
+      expect(screen.getByTestId('cash-active-portfolio')).toHaveTextContent('Vault trading'),
+    );
+    expect(screen.getByRole('button', { name: 'Switch portfolio' })).toHaveTextContent(
+      'Vault trading',
+    );
+    expect(vaultList).toHaveBeenCalledOnce();
+    expect(listPortfolios).not.toHaveBeenCalled();
+  });
+
   test('renders a portfolio-list read failure when the switcher opens', async () => {
     vi.mocked(listPortfolios).mockRejectedValue(new Error('portfolios unavailable'));
     const user = userEvent.setup();
