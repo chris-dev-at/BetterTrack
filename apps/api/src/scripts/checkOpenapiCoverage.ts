@@ -128,6 +128,7 @@ function buildInertContext(): AppContext {
     admin: inertService('admin'),
     apiKeys: inertService('apiKeys'),
     oauth: inertService('oauth'),
+    feedback: inertService('feedback'),
     workboard: inertService('workboard'),
     marketData: inertService('marketData'),
     assets: inertService('assets'),

@@ -29,8 +29,9 @@ export const API_KEY_TOKEN_PREFIX = 'btk_';
  * shipped without a bearer scope, so mobile could never reach it). `cash:*`
  * gates the V5 cash-classification layer under `/cash/*` (#1041),
  * `mirrorchain:*` gates the deliberately limited group-portfolio participation
- * surface (#1042), and `vault:sync` is the single read-write capability for the
- * deliberately narrow native-client paranoid-vault sync exception (#1043).
+ * surface (#1042), `vault:sync` is the single read-write capability for the
+ * deliberately narrow native-client paranoid-vault sync exception (#1043), and
+ * `feedback:write` admits authenticated feedback submissions (#1315).
  */
 export const API_KEY_SCOPES = [
   'portfolio:read',
@@ -62,6 +63,9 @@ export const API_KEY_SCOPES = [
   // #1043 addition — opaque paranoid-vault sync is inherently read-write, so
   // this is one combined scope rather than an artificial read/write pair.
   'vault:sync',
+  // #1315 addition — feedback is create-only in v1 (no /feedback/mine), so a
+  // standalone write scope is more honest than inventing an unreadable pair.
+  'feedback:write',
 ] as const;
 
 export const apiKeyScopeSchema = z.enum(API_KEY_SCOPES);

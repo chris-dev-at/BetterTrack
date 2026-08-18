@@ -59,16 +59,17 @@ describe('ScopePicker', () => {
       'Group portfolios',
       'Vault sync',
       'Account security',
+      'Feedback',
     ]) {
       expect(screen.getAllByText(label)).toHaveLength(1);
     }
     // The read/write column labels appear as visible text.
     expect(screen.getAllByText('Read').length).toBeGreaterThan(0);
     expect(screen.getAllByText('Write').length).toBeGreaterThan(0);
-    // 8 modules with read+write (16) + market (read only, 1) + vault sync and
-    // account security (one Access toggle each, 2) = 19. Verbose descriptions are gone
-    // — the row IS the module now.
-    expect(screen.getAllByRole('checkbox').length).toBe(19);
+    // 8 modules with read+write (16) + market (read only, 1) + feedback (write
+    // only, 1) + vault sync and account security (one Access toggle each, 2) =
+    // 20. Verbose descriptions are gone — the row IS the module now.
+    expect(screen.getAllByRole('checkbox').length).toBe(20);
   });
 
   test('ticking Write auto-ticks and locks Read (#371 — write implies read)', async () => {
@@ -124,6 +125,7 @@ describe('ScopePicker', () => {
       /alerts · write/i,
       /cash · write/i,
       /group portfolios · write/i,
+      /feedback · write/i,
     ];
     for (const rx of writes) {
       await user.click(screen.getByRole('checkbox', { name: rx }));
@@ -137,7 +139,7 @@ describe('ScopePicker', () => {
     expect(new Set(last)).toEqual(new Set(API_KEY_SCOPES));
   });
 
-  test('Market has no Write half and combined scopes use one Access toggle', () => {
+  test('single-half modules and combined scopes render only their real capability', () => {
     render(<PickerHarness />);
     // Market: read only, no write.
     expect(screen.queryByRole('checkbox', { name: /market · write/i })).not.toBeInTheDocument();
@@ -153,6 +155,11 @@ describe('ScopePicker', () => {
       screen.getByRole('checkbox', { name: /account security · access/i }),
     ).toBeInTheDocument();
     expect(screen.getByRole('checkbox', { name: /vault sync · access/i })).toBeInTheDocument();
+    // Feedback is create-only in v1: the real scope is write-only, with no
+    // invented read or Access capability.
+    expect(screen.queryByRole('checkbox', { name: /feedback · read/i })).not.toBeInTheDocument();
+    expect(screen.getByRole('checkbox', { name: /feedback · write/i })).toBeInTheDocument();
+    expect(screen.queryByRole('checkbox', { name: /feedback · access/i })).not.toBeInTheDocument();
   });
 
   test('removes server-portfolio grants entirely for a paranoid account', () => {
@@ -236,7 +243,7 @@ describe('ScopePicker', () => {
     );
     const details = container.querySelector('details');
     expect(details?.open).toBe(true);
-    expect(screen.getAllByRole('checkbox').length).toBe(19);
+    expect(screen.getAllByRole('checkbox').length).toBe(20);
   });
 });
 

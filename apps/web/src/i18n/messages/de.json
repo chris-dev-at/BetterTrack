@@ -365,6 +365,10 @@
         "accountSecurity": {
           "label": "Kontosicherheit",
           "description": "Sitzungen, Zwei-Faktor-Authentifizierung, Passwort und die App-PIN verwalten."
+        },
+        "feedback": {
+          "label": "Feedback",
+          "description": "Funktionswünsche, Fehlerberichte und sonstiges Feedback in deinem Namen senden. Feedback ist in v1 nur schreibbar."
         }
       }
     }

@@ -25,6 +25,7 @@ const ctx = (): AppContext => {
       generalBurst: base,
       search: base,
       social: base,
+      feedback: base,
       vault: base,
       apiKey: base,
       loginIp: base,

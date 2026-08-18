@@ -365,6 +365,10 @@
         "accountSecurity": {
           "label": "Account security",
           "description": "Manage sign-in sessions, two-factor authentication, password and the app PIN."
+        },
+        "feedback": {
+          "label": "Feedback",
+          "description": "Send feature requests, bug reports and other feedback on your behalf. Feedback is write-only in v1."
         }
       }
     }

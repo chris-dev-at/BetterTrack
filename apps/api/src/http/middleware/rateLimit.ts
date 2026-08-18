@@ -19,6 +19,8 @@ export interface RateLimiters {
   admin: RequestHandler;
   search: RequestHandler;
   social: RequestHandler;
+  /** Authenticated feedback submissions, per user (#1315). */
+  feedback: RequestHandler;
   /** Paranoid vault writes, per user (§13.5 V5-P13). */
   vault: RequestHandler;
 }
@@ -34,7 +36,7 @@ export interface RateLimiters {
  * way of deterministic API tests; the limiter primitive itself is unit-tested.
  */
 export function createRateLimiters(ctx: AppContext): RateLimiters {
-  const { enabled, general, generalBurst, search, social, vault, loginIp, apiKey } =
+  const { enabled, general, generalBurst, search, social, feedback, vault, loginIp, apiKey } =
     ctx.config.rateLimits;
 
   /**
@@ -114,6 +116,7 @@ export function createRateLimiters(ctx: AppContext): RateLimiters {
   const generalBurstLimiter = createProgressiveLimiter(ctx.redis, 'general_burst', generalBurst);
   const searchLimiter = createProgressiveLimiter(ctx.redis, 'search', search);
   const socialLimiter = createProgressiveLimiter(ctx.redis, 'social', social);
+  const feedbackLimiter = createProgressiveLimiter(ctx.redis, 'feedback', feedback);
   const vaultLimiter = createProgressiveLimiter(ctx.redis, 'vault', vault);
 
   return {
@@ -126,6 +129,9 @@ export function createRateLimiters(ctx: AppContext): RateLimiters {
     search: guard([searchLimiter], keyByUserOrIp),
     // Friend-request creation, per user — blunts bulk email→username probing (§6.9).
     social: guard([socialLimiter], keyByUserOrIp),
+    // Text-only feedback is create-only and deliberately small-volume: five
+    // accepted attempts per user/hour before the standard progressive 429.
+    feedback: guard([feedbackLimiter], keyByUserOrIp),
     // Paranoid vault writes, per user — a modest dedicated write budget (§13.5
     // V5-P13, design §4).
     vault: guard([vaultLimiter], keyByUserOrIp),
