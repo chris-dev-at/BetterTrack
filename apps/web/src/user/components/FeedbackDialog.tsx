@@ -151,6 +151,7 @@ export function FeedbackDialog({ onClose, screen }: { onClose: () => void; scree
   return (
     <Dialog
       description={t('feedback.dialogDescription')}
+      dismissable={!pending}
       onClose={onClose}
       phoneSheet
       title={t('feedback.title')}

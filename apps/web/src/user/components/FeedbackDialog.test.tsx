@@ -78,6 +78,47 @@ test('at 390 px submits feedback from the Settings panel with client context', a
   expect(await screen.findByText('Thanks — your feedback was submitted.')).toBeInTheDocument();
 });
 
+test('keeps an in-flight submission open to prevent duplicate feedback', async () => {
+  let settleSubmission!: () => void;
+  const pendingSubmission = new Promise<Awaited<ReturnType<typeof submitFeedback>>>((resolve) => {
+    settleSubmission = () =>
+      resolve({
+        id: '00000000-0000-4000-8000-000000000001',
+        createdAt: '2026-08-18T12:00:00.000Z',
+      });
+  });
+  vi.mocked(submitFeedback).mockReturnValue(pendingSubmission);
+  const user = userEvent.setup();
+  renderFeedbackPanel('/portfolio?portfolio=portfolio-1');
+
+  await user.click(screen.getByRole('button', { name: 'Write feedback' }));
+  const dialog = screen.getByRole('dialog', { name: 'Send feedback' });
+  await user.selectOptions(screen.getByLabelText('Category'), 'bug');
+  await user.type(
+    screen.getByLabelText('Message'),
+    'The request must stay visible while it sends.',
+  );
+  await user.click(screen.getByRole('button', { name: 'Submit feedback' }));
+
+  await waitFor(() => expect(submitFeedback).toHaveBeenCalledOnce());
+  expect(screen.queryByRole('button', { name: 'Close dialog' })).not.toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Cancel' })).toBeDisabled();
+
+  await user.keyboard('{Escape}');
+  fireEvent.mouseDown(dialog.parentElement!);
+  expect(screen.getByRole('dialog', { name: 'Send feedback' })).toBeInTheDocument();
+  expect(submitFeedback).toHaveBeenCalledOnce();
+
+  settleSubmission();
+  expect(await screen.findByText('Thanks — your feedback was submitted.')).toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: 'Close' }));
+  expect(screen.queryByRole('dialog', { name: 'Send feedback' })).not.toBeInTheDocument();
+
+  await user.click(screen.getByRole('button', { name: 'Write feedback' }));
+  expect(screen.getByRole('dialog', { name: 'Send feedback' })).toBeInTheDocument();
+  expect(submitFeedback).toHaveBeenCalledOnce();
+});
+
 test('accepts exactly 5000 characters and blocks a longer message locally', async () => {
   vi.mocked(submitFeedback).mockResolvedValue({
     id: '00000000-0000-4000-8000-000000000001',
