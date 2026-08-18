@@ -50,16 +50,41 @@ tested classification (`EXPORT_TABLE_CLASSIFICATION` over `schemaTableNames`,
 axis in the same file and style:
 
 ```
-PARANOID_TABLE_CLASSIFICATION: Record<tableName, 'vault' | 'server'>
+PARANOID_TABLE_CLASSIFICATION: Record<tableName, 'vault' | 'server' | 'purge'>
 ```
 
 with the same "every table must be classified, CI fails otherwise" test. The
-**enable-time purge sweep (§7), the zero-cleartext probe test, and disable
-rehydration all iterate the `vault` set** — so a future table (e.g. the V5-P9
-expense tables) cannot silently leak: adding it to the schema forces the
-author to classify it, and classifying it `vault` automatically enrolls it in
-purge + probe + rehydration. This is the rule that keeps the "zero portfolio
-rows server-side" guarantee durable as the schema grows.
+**enable-time purge sweep (§7) and the zero-cleartext probe iterate the
+`vault` ∪ `purge` set; disable rehydration iterates the `vault` set** — so a
+future table (e.g. the V5-P9 expense tables) cannot silently leak: adding it to
+the schema forces the author to classify it, and classifying it `vault`
+automatically enrolls it in purge + probe + rehydration. This is the rule that
+keeps the "zero portfolio rows server-side" guarantee durable as the schema
+grows.
+
+**The third value, `purge`** (added 2026-08-18, §16; PR #1344): server-side rows
+that are **not the client's to hold, but that must not EXIST for a paranoid
+account** — derived telemetry or operational state whose columns are
+portfolio-identifying. Destroyed and zero-probed at enable exactly like `vault`,
+but deliberately never captured into the encrypted document, never restored on
+disable, and forbidden by test from appearing in `VAULT_TABLE_ENTITY_KINDS` or
+taking a rehydration policy.
+
+It exists because neither other value fits such a table. `vault` is not
+available: every `vault` table — including the `purge-only` ones — is enrolled in
+the strict v1 client document contract and must carry each of its Drizzle columns
+in a payload schema, so classifying telemetry `vault` would mean a cross-client
+blob-format change to ship rows nobody wants back. `server` is not available
+either: it means *kept*, and these rows are deleted.
+
+`purge` is deliberately the narrowest of the three, because it is the only value
+that permits "destroyed but never captured" — which is also a green way to stop
+capturing an existing `vault` table. It therefore carries two guardrails the
+other values already have in some form: a **mandatory non-empty reason** per
+table (`PARANOID_PURGE_REASONS`, mirroring `skipped(reason)` on the export axis)
+and a **pinned membership roster** in `paranoidClassification.test.ts`, so a
+second member cannot join without a reviewer editing that list on purpose. Its
+only member today is `usage_events`.
 
 **`vault`-classified (client-only, encrypted; hard-deleted server-side at
 enable):** portfolios and all their content — transactions, dividends, cash
@@ -77,8 +102,20 @@ curated icon), friendships + chat, notification prefs/matrix/digest/quiet
 hours + the notification inbox, price alerts (§9), watchlists, conglomerates +
 ideas + backtest configs (hypothetical baskets — interest, not holdings; their
 _sharing_ dies, §8), API keys/OAuth grants (portfolio scopes refuse, §8),
-announcements, feature flags, audit log, usage-analytics counters, and the
+announcements, feature flags, audit log, the `usage_daily` analytics rollup
+(keyed `(day, feature)` across all accounts — no user id, no asset id), and the
 vault blob rows themselves (ciphertext + version metadata only).
+
+**`purge`-classified (destroyed at enable, never captured):** `usage_events`.
+It was listed here as a kept "usage-analytics counter" until 2026-08-18, and
+that was a leak, not a simplification: the table folds one row per
+`(user, feature, asset, day)`, and a paranoid client values its portfolio
+locally — one `GET /assets/:id/quote` per holding, every day — so its
+`feature='assets'` rows recorded the account's complete **holdings roster**,
+keyed to its user id, daily. Capture is now suppressed for paranoid accounts at
+both the request middleware and the write boundary, and the enable transaction
+destroys the history a converting account brings with it. Per-user analytics for
+such an account simply end at the moment it turns paranoid.
 
 `asset_identities` is the content-free server-side integrity seam between those
 two sets. It stores exactly one opaque asset UUID plus a nullable opaque account
