@@ -306,7 +306,7 @@ describe('passkeys — re-auth gating on add + delete', () => {
     expect(list.body.passkeys).toHaveLength(0);
   });
 
-  it('requires a session for management endpoints', async () => {
+  it('requires an authenticated user for management endpoints', async () => {
     const anon = request.agent(harness.app);
     const res = await anon.get('/api/v1/auth/passkeys');
     expect(res.status).toBe(401);
