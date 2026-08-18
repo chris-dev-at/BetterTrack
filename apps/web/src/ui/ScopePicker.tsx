@@ -8,6 +8,7 @@ import {
 } from '@bettertrack/contracts';
 
 import { cx } from '../lib/cx';
+import { localizedOAuthScopeDescription } from '../lib/oauthScopeCopy';
 import { useT } from '../i18n';
 
 const PARANOID_BLOCKED_SCOPES: ReadonlySet<ApiKeyScope> = new Set([
@@ -50,7 +51,8 @@ interface ScopeModule {
     | 'cash'
     | 'mirrorchain'
     | 'vaultSync'
-    | 'accountSecurity';
+    | 'accountSecurity'
+    | 'feedback';
   /** The `:read` scope for this module, or null when no read-half exists. */
   read: ApiKeyScope | null;
   /** The `:write` scope for this module, or null when the module is read-only. */
@@ -85,6 +87,7 @@ const SCOPE_MODULES: readonly ScopeModule[] = [
   },
   { key: 'vaultSync', read: null, write: null, combined: 'vault:sync' },
   { key: 'accountSecurity', read: null, write: null, combined: 'account:security' },
+  { key: 'feedback', read: null, write: 'feedback:write', combined: null },
 ];
 
 /**
@@ -349,7 +352,7 @@ export function ScopeSummary({ items }: ScopeSummaryProps) {
             </span>
             <ul className="flex flex-col gap-0.5 text-xs text-neutral-300">
               {claims.map(({ scope, label }) => (
-                <li key={scope}>{label}</li>
+                <li key={scope}>{localizedOAuthScopeDescription(t, scope, label)}</li>
               ))}
             </ul>
           </div>

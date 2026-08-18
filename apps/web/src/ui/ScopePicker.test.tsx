@@ -3,8 +3,10 @@ import userEvent from '@testing-library/user-event';
 import { useState } from 'react';
 import { describe, expect, test } from 'vitest';
 
-import { API_KEY_SCOPES, type ApiKeyScope } from '@bettertrack/contracts';
+import { API_KEY_SCOPES, OAUTH_SCOPE_LABELS, type ApiKeyScope } from '@bettertrack/contracts';
 
+import { I18nProvider, localizedMessage } from '../i18n';
+import { oauthScopeDescriptionKey } from '../lib/oauthScopeCopy';
 import { isParanoidBlockedScope, ScopePicker, ScopeSummary } from './ScopePicker';
 
 /**
@@ -59,16 +61,17 @@ describe('ScopePicker', () => {
       'Group portfolios',
       'Vault sync',
       'Account security',
+      'Feedback',
     ]) {
       expect(screen.getAllByText(label)).toHaveLength(1);
     }
     // The read/write column labels appear as visible text.
     expect(screen.getAllByText('Read').length).toBeGreaterThan(0);
     expect(screen.getAllByText('Write').length).toBeGreaterThan(0);
-    // 8 modules with read+write (16) + market (read only, 1) + vault sync and
-    // account security (one Access toggle each, 2) = 19. Verbose descriptions are gone
-    // — the row IS the module now.
-    expect(screen.getAllByRole('checkbox').length).toBe(19);
+    // 8 modules with read+write (16) + market (read only, 1) + feedback (write
+    // only, 1) + vault sync and account security (one Access toggle each, 2) =
+    // 20. Verbose descriptions are gone — the row IS the module now.
+    expect(screen.getAllByRole('checkbox').length).toBe(20);
   });
 
   test('ticking Write auto-ticks and locks Read (#371 — write implies read)', async () => {
@@ -124,6 +127,7 @@ describe('ScopePicker', () => {
       /alerts · write/i,
       /cash · write/i,
       /group portfolios · write/i,
+      /feedback · write/i,
     ];
     for (const rx of writes) {
       await user.click(screen.getByRole('checkbox', { name: rx }));
@@ -137,7 +141,7 @@ describe('ScopePicker', () => {
     expect(new Set(last)).toEqual(new Set(API_KEY_SCOPES));
   });
 
-  test('Market has no Write half and combined scopes use one Access toggle', () => {
+  test('single-half modules and combined scopes render only their real capability', () => {
     render(<PickerHarness />);
     // Market: read only, no write.
     expect(screen.queryByRole('checkbox', { name: /market · write/i })).not.toBeInTheDocument();
@@ -153,6 +157,11 @@ describe('ScopePicker', () => {
       screen.getByRole('checkbox', { name: /account security · access/i }),
     ).toBeInTheDocument();
     expect(screen.getByRole('checkbox', { name: /vault sync · access/i })).toBeInTheDocument();
+    // Feedback is create-only in v1: the real scope is write-only, with no
+    // invented read or Access capability.
+    expect(screen.queryByRole('checkbox', { name: /feedback · read/i })).not.toBeInTheDocument();
+    expect(screen.getByRole('checkbox', { name: /feedback · write/i })).toBeInTheDocument();
+    expect(screen.queryByRole('checkbox', { name: /feedback · access/i })).not.toBeInTheDocument();
   });
 
   test('removes server-portfolio grants entirely for a paranoid account', () => {
@@ -236,11 +245,37 @@ describe('ScopePicker', () => {
     );
     const details = container.querySelector('details');
     expect(details?.open).toBe(true);
-    expect(screen.getAllByRole('checkbox').length).toBe(19);
+    expect(screen.getAllByRole('checkbox').length).toBe(20);
   });
 });
 
 describe('ScopeSummary', () => {
+  test('ships distinct EN and DE descriptions for every stable scope id', () => {
+    for (const scope of API_KEY_SCOPES) {
+      const key = oauthScopeDescriptionKey(scope);
+      const english = localizedMessage('en', key);
+      const german = localizedMessage('de', key);
+
+      expect(english, `en: ${scope}`).toBe(OAUTH_SCOPE_LABELS[scope]);
+      expect(german, `de: ${scope}`).not.toBe(english);
+    }
+  });
+
+  test('localizes feedback consent copy from its scope id instead of the server English label', () => {
+    render(
+      <I18nProvider initialLocale="de">
+        <ScopeSummary
+          items={[{ scope: 'feedback:write', label: OAUTH_SCOPE_LABELS['feedback:write'] }]}
+        />
+      </I18nProvider>,
+    );
+
+    expect(
+      screen.getByText('Feedback, Funktionswünsche und Fehlerberichte in deinem Namen senden'),
+    ).toBeInTheDocument();
+    expect(screen.queryByText(OAUTH_SCOPE_LABELS['feedback:write'])).not.toBeInTheDocument();
+  });
+
   test('groups requested scopes by module in the canonical order (Portfolio → Social → Market → …)', () => {
     // Deliberately out-of-order + across modules to prove the grouping.
     render(

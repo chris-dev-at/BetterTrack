@@ -829,6 +829,8 @@ export interface AppConfig {
     search: ProgressiveSchedule;
     /** Friend-request creation, per user — blunts bulk email→username probing (§6.9). */
     social: ProgressiveSchedule;
+    /** Authenticated feedback submissions, per user — five per hour (#1315). */
+    feedback: ProgressiveSchedule;
     /** Paranoid vault writes, per user — a modest dedicated write budget (§13.5 V5-P13, design §4). */
     vault: ProgressiveSchedule;
     /** Personal API key request rate, per key id (bearer requests, §6.13). */
@@ -1155,6 +1157,18 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
         limit: 30,
         cooldownsSec: [60, 300, 900, 3600],
         decaySec: 15 * 60,
+      },
+      // Feedback capture (#1315): enough for a short reporting session while
+      // keeping the owner queue resistant to one authenticated account's spam.
+      // The route keys this by user id for both cookie and bearer callers, and
+      // retains an exhausted counter so a short cooldown cannot reopen the
+      // hourly allowance.
+      feedback: {
+        windowSec: 60 * 60,
+        limit: 5,
+        cooldownsSec: [60, 300, 900, 3600],
+        decaySec: 15 * 60,
+        retainCountOnViolation: true,
       },
       // Paranoid vault writes, per user (§13.5 V5-P13, design §4): a modest
       // dedicated write budget like every other write family. Generous enough

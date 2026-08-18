@@ -104,6 +104,7 @@ describe('OpenAPI document', () => {
       '/custom-assets',
       '/conglomerates',
       '/backtest/preview',
+      '/feedback',
       '/social/requests',
     ];
     for (const path of expectedPaths) {
@@ -139,6 +140,16 @@ describe('OpenAPI document', () => {
     // A scope-gated module route accepts both the cookie and a bearer token.
     const notifications = (paths['/notifications'] as JsonObject).get as JsonObject;
     expect(notifications.security).toEqual([{ sessionCookie: [] }, { apiKeyBearer: [] }]);
+
+    // #1315: feedback is explicitly scope-gated, so SDKs advertise both the
+    // cookie and bearer paths instead of a bearer discovering API_KEY_FORBIDDEN.
+    const feedback = (paths['/feedback'] as JsonObject).post as JsonObject;
+    expect(feedback.security).toEqual([{ sessionCookie: [] }, { apiKeyBearer: [] }]);
+    const feedbackCreated = ((feedback.responses as JsonObject)['201'] as JsonObject)
+      .content as JsonObject;
+    expect((feedbackCreated['application/json'] as JsonObject).schema).toEqual({
+      $ref: '#/components/schemas/CreateFeedbackResponse',
+    });
 
     // The cash endpoint changed from an unbounded chronological ledger to a
     // bounded newest-first page. External clients must see both semantics in

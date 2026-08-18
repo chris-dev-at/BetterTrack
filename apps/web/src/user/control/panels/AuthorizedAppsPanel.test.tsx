@@ -14,6 +14,7 @@ vi.mock('../../../lib/oauthApi', () => ({
 }));
 
 import { listOAuthGrants, revokeOAuthGrant } from '../../../lib/oauthApi';
+import { I18nProvider } from '../../../i18n';
 import { ResolvedPrivacyModeProvider } from '../../vault/usePrivacyMode';
 import { AuthorizedAppsPanel } from './AuthorizedAppsPanel';
 
@@ -32,11 +33,22 @@ const ONE_GRANT: OAuthGrantListResponse = {
   ],
 };
 
-function renderPanel() {
+const FEEDBACK_GRANT: OAuthGrantListResponse = {
+  grants: [
+    {
+      ...ONE_GRANT.grants[0]!,
+      scopes: ['feedback:write'],
+    },
+  ],
+};
+
+function renderPanel(initialLocale = 'en') {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: 0 } } });
   return render(
     <QueryClientProvider client={client}>
-      <AuthorizedAppsPanel />
+      <I18nProvider initialLocale={initialLocale}>
+        <AuthorizedAppsPanel />
+      </I18nProvider>
     </QueryClientProvider>,
   );
 }
@@ -77,6 +89,20 @@ describe('AuthorizedAppsPanel', () => {
     await user.click(screen.getByRole('button', { name: 'Confirm revoke' }));
 
     await waitFor(() => expect(revokeOAuthGrant).toHaveBeenCalledWith(ONE_GRANT.grants[0]!.id));
+  });
+
+  test('localizes feedback grant copy from the stable scope id', async () => {
+    vi.mocked(listOAuthGrants).mockResolvedValue(FEEDBACK_GRANT);
+    renderPanel('de');
+
+    expect(
+      await screen.findByText(
+        'Feedback, Funktionswünsche und Fehlerberichte in deinem Namen senden',
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText('Send feedback, feature requests and bug reports on your behalf'),
+    ).not.toBeInTheDocument();
   });
 
   test('marks a scope Paranoid mode refuses instead of hiding it from the grant', async () => {

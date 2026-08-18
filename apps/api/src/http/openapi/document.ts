@@ -336,6 +336,10 @@ const componentSchemas = {
   IdeaListResponse: contracts.ideaListResponseSchema,
   IdeaResponse: contracts.ideaResponseSchema,
 
+  // Authenticated in-app feedback (#1315)
+  CreateFeedbackRequest: contracts.createFeedbackRequestSchema,
+  CreateFeedbackResponse: contracts.createFeedbackResponseSchema,
+
   // Broker CSV imports (§13.4 V4-P8)
   ImportBrokerListResponse: contracts.importBrokerListResponseSchema,
   ImportPreviewResponse: contracts.importPreviewResponseSchema,
@@ -2640,6 +2644,17 @@ const endpoints: EndpointDef[] = [
     params: contracts.ideaIdParamSchema,
     status: 201,
     response: R.IdeaResponse,
+  },
+
+  // Feedback (#1315) — one authenticated, create-only queue for every client
+  {
+    method: 'post',
+    path: '/feedback',
+    tag: 'Feedback',
+    summary: 'Submit a feature request, bug report, or other feedback.',
+    body: R.CreateFeedbackRequest,
+    status: 201,
+    response: R.CreateFeedbackResponse,
   },
 
   // Standing orders (§13.5 V5-P6b)
