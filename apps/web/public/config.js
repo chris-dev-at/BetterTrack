@@ -5,4 +5,4 @@
 // In a subdomains/ports deployment each nginx server block OVERWRITES this file
 // at container start with the per-origin values (see infra/nginx/templates and
 // docker-entrypoint), so the same built image serves every origin unchanged.
-window.__BT__ = { app: 'user', apiOrigin: '' };
+window.__BT__ = { app: 'user', apiOrigin: '', googleDriveClientId: '' };
