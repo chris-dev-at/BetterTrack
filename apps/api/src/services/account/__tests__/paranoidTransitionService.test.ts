@@ -40,6 +40,7 @@ import {
   shareAudienceMembers,
   shareAudiences,
   transactions,
+  usageEvents,
   userFollows,
   users,
   watchlists,
@@ -535,6 +536,53 @@ describe('paranoid public transitions', () => {
       meta: { mediaSet: ['server'], vaultVersion: 1, idempotent: false },
     });
     expect(JSON.stringify(audit)).not.toMatch(/House|250000|opaque-vault/i);
+  });
+
+  /**
+   * Enabling the mode has to erase the PAST leak too, not only stop the future
+   * one. `usage_events` folded one row per (user, feature, asset, day), so an
+   * account converting today arrives carrying a day-by-day history of the asset
+   * roster it used to hold — captured from the ordinary asset reads any normal
+   * account makes. The `purge`-classified sweep destroys it inside the same
+   * transaction that flips the flag; the zero-probe that follows would abort the
+   * enable if anything survived.
+   */
+  it('purges the pre-existing usage_events roster history at enable', async () => {
+    const user = await harness.seedUser();
+    const bystander = await harness.seedUser({
+      email: 'bystander@test.dev',
+      username: 'bystander',
+    });
+    await seedNormalGraph(user);
+
+    const today = new Date().toISOString().slice(0, 10);
+    const yesterday = new Date(Date.now() - 86_400_000).toISOString().slice(0, 10);
+    await harness.db.insert(usageEvents).values([
+      // The roster: which assets this account looked at, day by day.
+      { userId: user.id, feature: 'assets', assetId: ASSET_ID, day: today, hits: 12 },
+      { userId: user.id, feature: 'assets', assetId: ASSET_ID, day: yesterday, hits: 9 },
+      // Non-asset rows for the same user go too: the `hits` counter on a bare
+      // `feature='assets'` row still tracks how many holdings were priced.
+      { userId: user.id, feature: 'assets', assetId: '', day: today, hits: 31 },
+      { userId: user.id, feature: 'portfolio', assetId: '', day: today, hits: 4 },
+      // Another account's telemetry is untouched — the purge is user-scoped.
+      { userId: bystander.id, feature: 'assets', assetId: ASSET_ID, day: today, hits: 7 },
+    ]);
+
+    const agent = await login(user);
+    const response = await agent
+      .post('/api/v1/account/paranoid/enable')
+      .set(...XRW)
+      .send(await serverEnable(user.id));
+    expect(response.status).toBe(200);
+    expect((await accountState(user.id))?.privacyMode).toBe('paranoid');
+
+    expect(
+      await harness.db.select().from(usageEvents).where(eq(usageEvents.userId, user.id)),
+    ).toEqual([]);
+    expect(
+      await harness.db.select().from(usageEvents).where(eq(usageEvents.userId, bystander.id)),
+    ).toHaveLength(1);
   });
 
   it('requires CSRF and strict supported media evidence', async () => {

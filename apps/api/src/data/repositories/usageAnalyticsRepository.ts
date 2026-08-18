@@ -1,4 +1,4 @@
-import { and, count, desc, eq, gte, ne, sql } from 'drizzle-orm';
+import { and, count, desc, eq, gte, inArray, ne, sql } from 'drizzle-orm';
 
 import type { Database } from '../db';
 import {
@@ -71,10 +71,32 @@ export interface UsageAnalyticsRepository {
 }
 
 export function createUsageAnalyticsRepository(db: Database): UsageAnalyticsRepository {
+  /** The paranoid subset of a batch's distinct authors — one bounded lookup. */
+  const paranoidUserIds = async (rows: readonly UsageEventUpsert[]): Promise<Set<string>> => {
+    const ids = [...new Set(rows.map((r) => r.userId))];
+    const paranoid = await db
+      .select({ id: users.id })
+      .from(users)
+      .where(and(inArray(users.id, ids), eq(users.privacyMode, 'paranoid')));
+    return new Set(paranoid.map((r) => r.id));
+  };
+
   return {
     async upsertEvents(rows: UsageEventUpsert[]): Promise<void> {
       if (rows.length === 0) return;
-      const values: NewUsageEventRow[] = rows.map((r) => ({
+      // Second line of defence for paranoid accounts (§13.5 V5-P13 arc b), and
+      // the one that closes the enable RACE: `usageCapture` drops the signal at
+      // request time, but the service buffers in memory and flushes on a timer,
+      // so signals captured while the account was still `normal` can arrive
+      // AFTER the enable transaction purged the table — re-creating exactly the
+      // holdings-roster rows that were just deleted, with nothing left to sweep
+      // them again. Re-reading the mode at the write boundary discards those,
+      // and makes the rule hold for any future caller of `capture` that forgets
+      // the middleware guard.
+      const paranoid = await paranoidUserIds(rows);
+      const admitted = paranoid.size === 0 ? rows : rows.filter((r) => !paranoid.has(r.userId));
+      if (admitted.length === 0) return;
+      const values: NewUsageEventRow[] = admitted.map((r) => ({
         userId: r.userId,
         feature: r.feature,
         assetId: r.assetId,
