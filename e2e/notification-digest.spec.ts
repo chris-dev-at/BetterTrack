@@ -1,9 +1,8 @@
 import { expect, request as newRequestContext, test, type Page } from '@playwright/test';
 
-import { API_BASE_URL } from './support/config';
 import { createE1Harness } from './support/e1';
 import { provisionUser } from './support/users';
-import { loginAsAdmin } from './support/adminApi';
+import { newAdminRequestContext } from './support/adminApi';
 
 /**
  * V5-P14 [E1] — digest delivery + quiet-hours release ([#734]).
@@ -42,8 +41,7 @@ test('digest: a daily-digest user gets exactly one matrix-honoring summary for t
 }) => {
   test.setTimeout(120_000);
 
-  const apiRequest = await newRequestContext.newContext({ baseURL: API_BASE_URL });
-  await loginAsAdmin(apiRequest);
+  const apiRequest = await newAdminRequestContext(newRequestContext);
   const recipient = await provisionUser(browser, apiRequest, 'digestrcpt');
   await apiRequest.dispose();
   const page = recipient.page;
@@ -123,8 +121,7 @@ test('quiet hours: a non-urgent notification defers and releases once at window 
 }) => {
   test.setTimeout(120_000);
 
-  const apiRequest = await newRequestContext.newContext({ baseURL: API_BASE_URL });
-  await loginAsAdmin(apiRequest);
+  const apiRequest = await newAdminRequestContext(newRequestContext);
   const recipient = await provisionUser(browser, apiRequest, 'quietrcpt');
   await apiRequest.dispose();
   const page = recipient.page;

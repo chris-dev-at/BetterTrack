@@ -3,7 +3,7 @@ import { expect, request as newRequestContext, test, type Page } from '@playwrig
 import { API_BASE_URL } from './support/config';
 import { relockTaxYear, unlockTaxYear } from './support/taxYears';
 import { provisionUser } from './support/users';
-import { loginAsAdmin } from './support/adminApi';
+import { newAdminRequestContext } from './support/adminApi';
 import { cashSourceAction, cashSourceRow } from './support/cashSurface';
 
 /**
@@ -160,8 +160,7 @@ test('DE tax mode: FIFO, Sparer-Pauschbetrag exhaustion, both loss pots, and rep
 }) => {
   test.setTimeout(240_000);
 
-  const apiRequest = await newRequestContext.newContext({ baseURL: API_BASE_URL });
-  await loginAsAdmin(apiRequest);
+  const apiRequest = await newAdminRequestContext(newRequestContext);
   const owner = await provisionUser(browser, apiRequest, 'detaxowner');
   await apiRequest.dispose();
 

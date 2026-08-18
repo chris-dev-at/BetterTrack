@@ -1,7 +1,6 @@
 import { expect, request as newRequestContext, test, type Page } from '@playwright/test';
 
-import { loginAsAdmin } from './support/adminApi';
-import { API_BASE_URL } from './support/config';
+import { newAdminRequestContext } from './support/adminApi';
 import { provisionUserInContext } from './support/users';
 
 /**
@@ -106,8 +105,7 @@ test('forecast: a scheduled cash-add lifts the enabled one-year projection', asy
 }) => {
   test.setTimeout(120_000);
 
-  const apiRequest = await newRequestContext.newContext({ baseURL: API_BASE_URL });
-  await loginAsAdmin(apiRequest);
+  const apiRequest = await newAdminRequestContext(newRequestContext);
   // Use the test context so this scenario retains each project's device
   // emulation; in particular, mobile-chromium exercises the Pixel 7 viewport.
   const owner = await provisionUserInContext(context, apiRequest, 'forecastowner');

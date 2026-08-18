@@ -1,8 +1,7 @@
 import { expect, request as newRequestContext, test } from '@playwright/test';
 
-import { loginAsAdmin } from './support/adminApi';
+import { newAdminRequestContext } from './support/adminApi';
 import { cashSourceAction, cashSourceRow, cashSourceRows } from './support/cashSurface';
-import { API_BASE_URL } from './support/config';
 import { provisionUser } from './support/users';
 
 /**
@@ -15,8 +14,7 @@ import { provisionUser } from './support/users';
 test('cash sources: create, deposit and transfer between two sources', async ({ browser }) => {
   test.setTimeout(120_000);
 
-  const apiRequest = await newRequestContext.newContext({ baseURL: API_BASE_URL });
-  await loginAsAdmin(apiRequest);
+  const apiRequest = await newAdminRequestContext(newRequestContext);
   const owner = await provisionUser(browser, apiRequest, 'cashowner');
   await apiRequest.dispose();
 

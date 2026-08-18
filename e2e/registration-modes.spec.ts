@@ -3,7 +3,7 @@ import { expect, request as newRequestContext, test } from '@playwright/test';
 import {
   createRegistrationToken,
   getRegistrationMode,
-  loginAsAdmin,
+  newAdminRequestContext,
   newAdminBrowserContext,
   setRegistrationMode,
 } from './support/adminApi';
@@ -22,8 +22,7 @@ import { dismissFirstRun, expectUserShellReady } from './support/flows';
 test('registration modes: open mode allows self-serve signup at /register', async ({ browser }) => {
   test.setTimeout(120_000);
 
-  const apiRequest = await newRequestContext.newContext({ baseURL: API_BASE_URL });
-  await loginAsAdmin(apiRequest);
+  const apiRequest = await newAdminRequestContext(newRequestContext);
   const priorMode = await getRegistrationMode(apiRequest);
   await setRegistrationMode(apiRequest, 'open');
 
@@ -66,8 +65,7 @@ test('registration modes: open mode allows self-serve signup at /register', asyn
 test('registration modes: invite-token mode consumes a single-use token', async ({ browser }) => {
   test.setTimeout(180_000);
 
-  const apiRequest = await newRequestContext.newContext({ baseURL: API_BASE_URL });
-  await loginAsAdmin(apiRequest);
+  const apiRequest = await newAdminRequestContext(newRequestContext);
   const priorMode = await getRegistrationMode(apiRequest);
   await setRegistrationMode(apiRequest, 'invite_token');
   const token = await createRegistrationToken(apiRequest, {
@@ -141,8 +139,7 @@ test('registration modes: approval mode gates on admin approve / reject via the 
 }) => {
   test.setTimeout(240_000);
 
-  const apiRequest = await newRequestContext.newContext({ baseURL: API_BASE_URL });
-  await loginAsAdmin(apiRequest);
+  const apiRequest = await newAdminRequestContext(newRequestContext);
   const priorMode = await getRegistrationMode(apiRequest);
   await setRegistrationMode(apiRequest, 'approval');
 
@@ -239,8 +236,7 @@ test('registration modes: closed mode leaves /register without a usable form', a
 }) => {
   test.setTimeout(60_000);
 
-  const apiRequest = await newRequestContext.newContext({ baseURL: API_BASE_URL });
-  await loginAsAdmin(apiRequest);
+  const apiRequest = await newAdminRequestContext(newRequestContext);
 
   let context: Awaited<ReturnType<typeof browser.newContext>> | undefined;
   try {
