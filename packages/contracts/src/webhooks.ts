@@ -56,41 +56,136 @@ export const WEBHOOK_EVENT_TYPES = [
 export type WebhookEventType = (typeof WEBHOOK_EVENT_TYPES)[number];
 export const webhookEventTypeSchema = z.enum(WEBHOOK_EVENT_TYPES);
 
+export interface ParanoidWebhookEventTypeClassification {
+  readonly disposition: 'killed' | 'allowed';
+  readonly reason: string;
+}
+
+/**
+ * Explicit paranoid-mode policy for every subscribable webhook event. This is
+ * deliberately exhaustive: appending a contract event must fail typecheck
+ * until its server-side fan-out receives a documented policy decision.
+ */
+export const PARANOID_WEBHOOK_EVENT_TYPE_CLASSIFICATIONS = {
+  'alert.triggered': {
+    disposition: 'allowed',
+    reason: 'Paranoid-compatible server alerts remain available without portfolio payloads.',
+  },
+  'friend.request': {
+    disposition: 'allowed',
+    reason: 'Friend requests carry social relationship data rather than portfolio content.',
+  },
+  'friend.accepted': {
+    disposition: 'allowed',
+    reason: 'Friend acceptances carry social relationship data rather than portfolio content.',
+  },
+  'portfolio.shared': {
+    disposition: 'killed',
+    reason: 'Portfolio sharing is unavailable because paranoid portfolios remain client-side.',
+  },
+  'watchlist.shared': {
+    disposition: 'killed',
+    reason: 'Shared watchlists reveal account-owned investing data disabled in paranoid mode.',
+  },
+  'conglomerate.shared': {
+    disposition: 'killed',
+    reason: 'Shared conglomerates reveal account-owned investing data disabled in paranoid mode.',
+  },
+  'friend.activity': {
+    disposition: 'killed',
+    reason: 'Friend activity can reveal portfolio-derived actions disabled in paranoid mode.',
+  },
+  'follow.published': {
+    disposition: 'killed',
+    reason: 'Published follows can reveal portfolio-derived activity disabled in paranoid mode.',
+  },
+  'follow.alert.created': {
+    disposition: 'killed',
+    reason: 'Follow-alert creation can reveal account-owned investing data in paranoid mode.',
+  },
+  'follow.alert.fired': {
+    disposition: 'killed',
+    reason: 'Follow-alert delivery can reveal account-owned investing data in paranoid mode.',
+  },
+  'account.temp_password': {
+    disposition: 'allowed',
+    reason: 'Temporary-password notices contain account security data, not portfolio content.',
+  },
+  'account.data_export': {
+    disposition: 'allowed',
+    reason: 'Account-export notices report export status without exposing portfolio content.',
+  },
+  'earnings.reminder': {
+    disposition: 'allowed',
+    reason: 'Earnings reminders carry market-calendar data rather than portfolio content.',
+  },
+  'chat.message': {
+    disposition: 'allowed',
+    reason: 'Private chat remains separate from server-side portfolio content.',
+  },
+  'dividend.event': {
+    disposition: 'killed',
+    reason: 'Dividend events can reveal portfolio holdings unavailable to the paranoid server.',
+  },
+  'budget.exceeded': {
+    disposition: 'killed',
+    reason: 'Budget events reveal private cash data unavailable to the paranoid server.',
+  },
+  'mirror.invite': {
+    disposition: 'killed',
+    reason: 'Mirrorchain participation is unavailable because paranoid sharing is disabled.',
+  },
+  'mirror.member_joined': {
+    disposition: 'killed',
+    reason: 'Mirrorchain participation is unavailable because paranoid sharing is disabled.',
+  },
+  'mirror.member_left': {
+    disposition: 'killed',
+    reason: 'Mirrorchain participation is unavailable because paranoid sharing is disabled.',
+  },
+  'mirror.member_removed': {
+    disposition: 'killed',
+    reason: 'Mirrorchain participation is unavailable because paranoid sharing is disabled.',
+  },
+  'mirror.removed': {
+    disposition: 'killed',
+    reason: 'Mirrorchain participation is unavailable because paranoid sharing is disabled.',
+  },
+  'mirror.ownership_transferred': {
+    disposition: 'killed',
+    reason: 'Mirrorchain participation is unavailable because paranoid sharing is disabled.',
+  },
+  'mirror.chain_dissolved': {
+    disposition: 'killed',
+    reason: 'Mirrorchain participation is unavailable because paranoid sharing is disabled.',
+  },
+  'mirror.sync_stalled': {
+    disposition: 'killed',
+    reason: 'Mirrorchain participation is unavailable because paranoid sharing is disabled.',
+  },
+  'standing_order.skipped': {
+    disposition: 'killed',
+    reason:
+      'Standing-order events reveal private schedule data unavailable to the paranoid server.',
+  },
+} as const satisfies Record<WebhookEventType, ParanoidWebhookEventTypeClassification>;
+
 /**
  * The subscribable catalog entries a **paranoid** account can never receive
  * (docs/paranoid-design.md §8 item 8). The server never fans these out for such
- * an account — the PD3b enforcement registry kills them under the
- * `portfolioWebhooks` capability — so the create/edit form must not offer them
- * either. Like {@link WEBHOOK_EVENT_TYPES} this list is the product surface
- * stated here because contracts cannot import the API layer; the API carries a
- * drift-guard test asserting it stays exactly the subscribable half of the
- * registry's `webhookEventTypes` union (the registry additionally kills
- * `portfolio.changed`, which is not subscribable and so is absent here).
+ * an account, so the create/edit form must not offer them either. This
+ * projection preserves catalog order and is derived from the exhaustive policy
+ * above; the API registry consumes the same projection and additionally kills
+ * `portfolio.changed`, which is not subscribable and so is absent here.
  */
-export const PARANOID_KILLED_WEBHOOK_EVENT_TYPES = [
-  'portfolio.shared',
-  'watchlist.shared',
-  'conglomerate.shared',
-  'friend.activity',
-  'follow.published',
-  'follow.alert.created',
-  'follow.alert.fired',
-  'dividend.event',
-  'budget.exceeded',
-  'mirror.invite',
-  'mirror.member_joined',
-  'mirror.member_left',
-  'mirror.member_removed',
-  'mirror.removed',
-  'mirror.ownership_transferred',
-  'mirror.chain_dissolved',
-  'mirror.sync_stalled',
-  'standing_order.skipped',
-] as const satisfies readonly WebhookEventType[];
+export const PARANOID_KILLED_WEBHOOK_EVENT_TYPES: readonly WebhookEventType[] =
+  WEBHOOK_EVENT_TYPES.filter(
+    (type) => PARANOID_WEBHOOK_EVENT_TYPE_CLASSIFICATIONS[type].disposition === 'killed',
+  );
 
 /** True when a paranoid account can never receive this subscribable event. */
 export function isParanoidKilledWebhookEventType(type: WebhookEventType): boolean {
-  return (PARANOID_KILLED_WEBHOOK_EVENT_TYPES as readonly WebhookEventType[]).includes(type);
+  return PARANOID_WEBHOOK_EVENT_TYPE_CLASSIFICATIONS[type].disposition === 'killed';
 }
 
 /** Signature transport headers on every delivery POST. */
