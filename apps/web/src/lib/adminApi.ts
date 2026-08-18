@@ -1,5 +1,6 @@
 import {
   adminApiKeyListResponseSchema,
+  adminFeedbackListResponseSchema,
   apiKeyAuditResponseSchema,
   apiKeyTierListResponseSchema,
   apiKeyTierSchema,
@@ -29,6 +30,7 @@ import {
   okResponseSchema,
   problemSchema,
   problemListResponseSchema,
+  updateFeedbackStatusResponseSchema,
   monitoringStatusResponseSchema,
   aiSettingsResponseSchema,
   aiTestConnectionResponseSchema,
@@ -44,6 +46,8 @@ import {
   twoFactorRecoveryCodesResponseSchema,
   versionResponseSchema,
   type AdminHealthResponse,
+  type AdminFeedbackListResponse,
+  type AdminFeedbackListQuery,
   type AdminInviteListResponse,
   type AdminStats,
   type AdminTwoFactorEmailStartRequest,
@@ -74,6 +78,8 @@ import {
   type ProblemKind,
   type ProblemListResponse,
   type ProblemStatus,
+  type UpdateFeedbackStatusRequest,
+  type UpdateFeedbackStatusResponse,
   type MonitoringStatusResponse,
   type AiSettingsResponse,
   type AiTestConnectionRequest,
@@ -363,6 +369,35 @@ export async function resolveProblem(id: string): Promise<Problem> {
 export async function reopenProblem(id: string): Promise<Problem> {
   const data = await apiRequest<unknown>(`/admin/problems/${id}/reopen`, { method: 'POST' });
   return problemSchema.parse(data);
+}
+
+// --- Admin: feedback inbox -------------------------------------------------
+
+export async function listAdminFeedback(
+  params: Partial<AdminFeedbackListQuery> = {},
+  signal?: AbortSignal,
+): Promise<AdminFeedbackListResponse> {
+  const data = await apiRequest<unknown>('/admin/feedback', {
+    query: {
+      category: params.category,
+      sort: params.sort,
+      page: params.page,
+      limit: params.limit,
+    },
+    signal,
+  });
+  return adminFeedbackListResponseSchema.parse(data);
+}
+
+export async function updateFeedbackStatus(
+  id: string,
+  body: UpdateFeedbackStatusRequest,
+): Promise<UpdateFeedbackStatusResponse> {
+  const data = await apiRequest<unknown>(`/admin/feedback/${id}/status`, {
+    method: 'PATCH',
+    body,
+  });
+  return updateFeedbackStatusResponseSchema.parse(data);
 }
 
 // --- Admin: Usage analytics (§13.5 V5-P2 arc (b), first-party only) --------
