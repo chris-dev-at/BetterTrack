@@ -75,7 +75,7 @@ available: every `vault` table — including the `purge-only` ones — is enroll
 the strict v1 client document contract and must carry each of its Drizzle columns
 in a payload schema, so classifying telemetry `vault` would mean a cross-client
 blob-format change to ship rows nobody wants back. `server` is not available
-either: it means *kept*, and these rows are deleted.
+either: it means _kept_, and these rows are deleted.
 
 `purge` is deliberately the narrowest of the three, because it is the only value
 that permits "destroyed but never captured" — which is also a green way to stop
