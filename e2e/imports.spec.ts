@@ -5,7 +5,6 @@ import { fileURLToPath } from 'node:url';
 import { expect, request as newRequestContext, test } from '@playwright/test';
 
 import { newAdminRequestContext } from './support/adminApi';
-import { API_BASE_URL } from './support/config';
 import { provisionUser } from './support/users';
 
 /**

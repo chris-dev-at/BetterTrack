@@ -1,7 +1,7 @@
 import { expect, request as newRequestContext, test } from '@playwright/test';
 
 import { newAdminRequestContext } from './support/adminApi';
-import { ACCOUNT_PASSWORD, API_BASE_URL } from './support/config';
+import { ACCOUNT_PASSWORD } from './support/config';
 import {
   activity,
   apiGet,

@@ -6,9 +6,13 @@ import {
   type Page,
 } from '@playwright/test';
 
-import { getRegistrationMode, newAdminRequestContext, setRegistrationMode } from './support/adminApi';
+import {
+  getRegistrationMode,
+  newAdminRequestContext,
+  setRegistrationMode,
+} from './support/adminApi';
 import { passwordSignIn as submitPasswordSignIn } from './support/auth';
-import { ACCOUNT_PASSWORD, API_BASE_URL, FAKE_GOOGLE_URL } from './support/config';
+import { ACCOUNT_PASSWORD, FAKE_GOOGLE_URL } from './support/config';
 import { dismissFirstRun, expectUserShellReady } from './support/flows';
 import { provisionUser } from './support/users';
 

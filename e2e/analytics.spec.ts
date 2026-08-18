@@ -1,7 +1,6 @@
 import { expect, request as newRequestContext, test } from '@playwright/test';
 
 import { newAdminRequestContext } from './support/adminApi';
-import { API_BASE_URL } from './support/config';
 import { recordSapTrade } from './support/flows';
 import { provisionUser } from './support/users';
 

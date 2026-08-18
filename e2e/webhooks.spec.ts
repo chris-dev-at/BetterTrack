@@ -3,7 +3,6 @@ import { randomUUID } from 'node:crypto';
 import { expect, request as newRequestContext, test, type Page } from '@playwright/test';
 
 import { newAdminRequestContext } from './support/adminApi';
-import { API_BASE_URL } from './support/config';
 import {
   createCaptureReceiver,
   createWebhookHarness,

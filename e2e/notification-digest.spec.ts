@@ -1,6 +1,5 @@
 import { expect, request as newRequestContext, test, type Page } from '@playwright/test';
 
-import { API_BASE_URL } from './support/config';
 import { createE1Harness } from './support/e1';
 import { provisionUser } from './support/users';
 import { newAdminRequestContext } from './support/adminApi';

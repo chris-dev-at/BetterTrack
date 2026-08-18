@@ -1,7 +1,6 @@
 import { expect, request as newRequestContext, test, type Locator } from '@playwright/test';
 
 import { newAdminRequestContext } from './support/adminApi';
-import { API_BASE_URL } from './support/config';
 import { provisionUserInContext } from './support/users';
 
 /**

@@ -3,7 +3,6 @@ import type { Page } from '@playwright/test';
 
 import { newAdminRequestContext } from './support/adminApi';
 import { cashMovementRow } from './support/cashSurface';
-import { API_BASE_URL } from './support/config';
 import { recentOpenBookingDates } from './support/dates';
 import { provisionUser } from './support/users';
 

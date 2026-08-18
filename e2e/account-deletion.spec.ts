@@ -2,7 +2,7 @@ import { expect, request as newRequestContext, test } from '@playwright/test';
 
 import { newAdminRequestContext } from './support/adminApi';
 import { passwordSignIn } from './support/auth';
-import { ACCOUNT_PASSWORD, API_BASE_URL } from './support/config';
+import { ACCOUNT_PASSWORD } from './support/config';
 import { befriend, provisionUser } from './support/users';
 
 /**

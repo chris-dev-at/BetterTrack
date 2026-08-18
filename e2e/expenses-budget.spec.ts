@@ -1,7 +1,6 @@
 import { expect, request as newRequestContext, test } from '@playwright/test';
 
 import { newAdminRequestContext } from './support/adminApi';
-import { API_BASE_URL } from './support/config';
 import { apiV1, buildBankStatement } from './support/e2';
 import { provisionUser } from './support/users';
 
