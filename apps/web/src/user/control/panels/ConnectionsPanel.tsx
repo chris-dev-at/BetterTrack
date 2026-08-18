@@ -7,6 +7,7 @@ import { useT } from '../../../i18n';
 import type { TranslateFn } from '../../../i18n';
 import { ApiError } from '../../../lib/apiClient';
 import { formatDateTime } from '../../../lib/format';
+import { getGoogleDriveClientId } from '../../../lib/runtimeConfig';
 import {
   getGoogleLinkStatus,
   getParanoidMediaState,
@@ -748,7 +749,7 @@ export function ConnectionsPanel({
   driveConnection,
   driveUnlock,
   drivePrepare,
-  driveConfigured = Boolean(import.meta.env.VITE_GOOGLE_DRIVE_CLIENT_ID),
+  driveConfigured = Boolean(getGoogleDriveClientId()),
 }: {
   driveConnection?: DriveConnectionController | null;
   driveUnlock?:

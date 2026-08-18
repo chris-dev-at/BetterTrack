@@ -62,6 +62,27 @@ mounted files immediately without a reload. Update legal files only in the
 landing tree, then use the render commands above and the updater checks before
 deployment.
 
+## Browser Google Drive runtime configuration
+
+Set `BT_GOOGLE_DRIVE_CLIENT_ID` in the deployment env to the public client id of
+a Google Cloud OAuth **Web application** credential whose authorized JavaScript
+origin is the BetterTrack user-app origin. BetterTrack requests only
+`https://www.googleapis.com/auth/drive.appdata`. Leaving the value blank hides
+the Google Drive card entirely.
+
+The client id is public by design; do not put a client secret, access token, or
+refresh token in this variable. The OAuth flow remains browser-only through
+Google Identity Services: the BetterTrack API receives no Drive token, file id,
+or proxied Drive request.
+
+After changing the value, recreate only the `web` container with the same base
+and topology Compose files used by the deployment (for example, append
+`up -d --no-deps --force-recreate web` to the relevant Compose invocation).
+This regenerates `/config.js` at container start without rebuilding the image.
+Fetch the user origin's `/config.js` and confirm its `googleDriveClientId`; set
+the variable blank and recreate `web` again to remove the value and hide the
+card.
+
 ## Deployment-host log and image retention
 
 Every repository Compose service uses Docker's `local` log driver with an

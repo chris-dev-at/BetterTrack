@@ -1,6 +1,6 @@
 import { expect, request as newRequestContext, test, type Page } from '@playwright/test';
 
-import { loginAsAdmin } from './support/adminApi';
+import { newAdminRequestContext } from './support/adminApi';
 import { cashSourceRow } from './support/cashSurface';
 import { API_BASE_URL } from './support/config';
 import { recentOpenBookingDates } from './support/dates';
@@ -50,8 +50,7 @@ test('dividends: an AT-mode dividend lands net of withholding in cash, no auto-r
 }) => {
   test.setTimeout(120_000);
 
-  const apiRequest = await newRequestContext.newContext({ baseURL: API_BASE_URL });
-  await loginAsAdmin(apiRequest);
+  const apiRequest = await newAdminRequestContext(newRequestContext);
   const owner = await provisionUser(browser, apiRequest, 'divowner');
   await apiRequest.dispose();
 

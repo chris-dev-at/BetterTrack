@@ -1,9 +1,8 @@
 import { expect, request as newRequestContext, test } from '@playwright/test';
 import type { Page } from '@playwright/test';
 
-import { loginAsAdmin } from './support/adminApi';
+import { newAdminRequestContext } from './support/adminApi';
 import { cashMovementRow } from './support/cashSurface';
-import { API_BASE_URL } from './support/config';
 import { recentOpenBookingDates } from './support/dates';
 import { provisionUser } from './support/users';
 
@@ -134,8 +133,7 @@ test('cash flow: a rule tags a real entry, the ledger shows it, and a budget blo
 }) => {
   test.setTimeout(180_000);
 
-  const apiRequest = await newRequestContext.newContext({ baseURL: API_BASE_URL });
-  await loginAsAdmin(apiRequest);
+  const apiRequest = await newAdminRequestContext(newRequestContext);
   const owner = await provisionUser(browser, apiRequest, 'cashflowowner');
   await apiRequest.dispose();
   const page = owner.page;

@@ -1,6 +1,6 @@
 import { expect, request as newRequestContext, test } from '@playwright/test';
 
-import { createInvite, loginAsAdmin } from './support/adminApi';
+import { createInvite, newAdminRequestContext } from './support/adminApi';
 import { passwordSignIn } from './support/auth';
 import { ACCOUNT_PASSWORD, API_BASE_URL } from './support/config';
 import { acceptInvite } from './support/flows';
@@ -43,8 +43,7 @@ test('oauth consent: first-party chooser renders and Use another account round-t
   const firstUsername = `e2eoautha${runId}`.slice(0, 40);
   const secondUsername = `e2eoauthb${runId}`.slice(0, 40);
 
-  const apiRequest = await newRequestContext.newContext({ baseURL: API_BASE_URL });
-  await loginAsAdmin(apiRequest);
+  const apiRequest = await newAdminRequestContext(newRequestContext);
   const firstInvite = await createInvite(apiRequest, firstEmail);
   const secondInvite = await createInvite(apiRequest, secondEmail);
   await apiRequest.dispose();
@@ -171,8 +170,7 @@ test('oauth consent: third-party scopes render grouped by module in plain langua
   const username = `e2econsentgrp${runId}`.slice(0, 40);
   const redirectUri = `https://third-party-${runId}.example.com/cb`;
 
-  const apiRequest = await newRequestContext.newContext({ baseURL: API_BASE_URL });
-  await loginAsAdmin(apiRequest);
+  const apiRequest = await newAdminRequestContext(newRequestContext);
   const invite = await createInvite(apiRequest, email);
   await apiRequest.dispose();
 

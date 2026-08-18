@@ -25,6 +25,7 @@ describe('createRealtimeSocket', () => {
         app,
         apiOrigin: '',
         productOrigin: 'https://bettertrack.at',
+        googleDriveClientId: '',
       });
 
       expect(createRealtimeSocket()).toBe(fakeSocket);
@@ -42,6 +43,7 @@ describe('createRealtimeSocket', () => {
       app: 'user',
       apiOrigin: 'https://api.example.test',
       productOrigin: 'https://bettertrack.at',
+      googleDriveClientId: '',
     });
 
     expect(createRealtimeSocket()).toBe(fakeSocket);

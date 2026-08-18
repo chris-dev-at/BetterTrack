@@ -1,7 +1,6 @@
 import { expect, request as newRequestContext, test, type Locator } from '@playwright/test';
 
-import { loginAsAdmin } from './support/adminApi';
-import { API_BASE_URL } from './support/config';
+import { newAdminRequestContext } from './support/adminApi';
 import { provisionUserInContext } from './support/users';
 
 /**
@@ -60,8 +59,7 @@ test('shell chrome fits the viewport and keeps every main area reachable', async
 }, testInfo) => {
   test.setTimeout(180_000);
 
-  const apiRequest = await newRequestContext.newContext({ baseURL: API_BASE_URL });
-  await loginAsAdmin(apiRequest);
+  const apiRequest = await newAdminRequestContext(newRequestContext);
   const mobile = testInfo.project.name === 'mobile-chromium';
   const user = await provisionUserInContext(context, apiRequest, `chrome-${testInfo.project.name}`);
   await apiRequest.dispose();

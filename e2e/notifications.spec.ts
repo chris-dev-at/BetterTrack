@@ -1,7 +1,6 @@
 import { expect, request as newRequestContext, test } from '@playwright/test';
 
-import { loginAsAdmin } from './support/adminApi';
-import { API_BASE_URL } from './support/config';
+import { newAdminRequestContext } from './support/adminApi';
 import { provisionUser } from './support/users';
 
 /**
@@ -21,8 +20,7 @@ test('notifications: bell deep-link + read archives it into the Archived view', 
 }) => {
   test.setTimeout(180_000);
 
-  const apiRequest = await newRequestContext.newContext({ baseURL: API_BASE_URL });
-  await loginAsAdmin(apiRequest);
+  const apiRequest = await newAdminRequestContext(newRequestContext);
   const sender = await provisionUser(browser, apiRequest, 'notifsender');
   const recipient = await provisionUser(browser, apiRequest, 'notifrecipient');
   await apiRequest.dispose();

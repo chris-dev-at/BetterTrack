@@ -2,7 +2,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
-import { beforeEach, describe, expect, test, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
 import type { ParanoidMediaStateResponse, ParanoidVaultMediaState } from '@bettertrack/contracts';
 
@@ -151,10 +151,17 @@ function renderPanel(
 
 beforeEach(() => {
   vi.clearAllMocks();
+  vi.stubEnv('VITE_GOOGLE_DRIVE_CLIENT_ID', '');
+  delete window.__BT__;
   // Google off by default so the section stays hidden unless a test opts in.
   vi.mocked(getGoogleLinkStatus).mockResolvedValue(GOOGLE_OFF);
   vi.mocked(getParanoidMediaState).mockResolvedValue(NORMAL_MEDIA);
   vi.mocked(unlinkGoogle).mockResolvedValue(undefined);
+});
+
+afterEach(() => {
+  vi.unstubAllEnvs();
+  delete window.__BT__;
 });
 
 describe('ConnectionsPanel — connector slots (V5-P0c)', () => {
@@ -275,6 +282,26 @@ describe('ConnectionsPanel — Google account (§13.4 V4-P4b, moved from Securit
 });
 
 describe('ConnectionsPanel — paranoid Google Drive app data', () => {
+  test('hides the Drive card when the runtime client id is not configured', async () => {
+    vi.mocked(getParanoidMediaState).mockResolvedValue(SERVER_MEDIA);
+    window.__BT__ = { googleDriveClientId: '' };
+    renderPanel();
+
+    expect(await screen.findByText('Bank & broker cash sync')).toBeInTheDocument();
+    await waitFor(() =>
+      expect(screen.queryByText('Google Drive app data')).not.toBeInTheDocument(),
+    );
+  });
+
+  test('shows the Drive card when the runtime client id is configured', async () => {
+    vi.mocked(getParanoidMediaState).mockResolvedValue(SERVER_MEDIA);
+    window.__BT__ = { googleDriveClientId: 'runtime.apps.googleusercontent.com' };
+    renderPanel();
+
+    expect(await screen.findByText('Google Drive app data')).toBeInTheDocument();
+    expect(await screen.findByText('Disconnected')).toBeInTheDocument();
+  });
+
   test('retries a recoverable storage-status failure', async () => {
     vi.mocked(getParanoidMediaState)
       .mockRejectedValueOnce(new Error('offline'))

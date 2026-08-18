@@ -1,8 +1,7 @@
 import { expect, request as newRequestContext, test, type Page } from '@playwright/test';
 
-import { loginAsAdmin } from './support/adminApi';
+import { newAdminRequestContext } from './support/adminApi';
 import { cashSourceAction, cashSourceRow } from './support/cashSurface';
-import { API_BASE_URL } from './support/config';
 import { recentOpenBookingDates } from './support/dates';
 import { recordSapTrade } from './support/flows';
 import { provisionUser } from './support/users';
@@ -71,8 +70,7 @@ test('AT tax mode: annual settlement applies a loss refund only within the same 
 }) => {
   test.setTimeout(120_000);
 
-  const apiRequest = await newRequestContext.newContext({ baseURL: API_BASE_URL });
-  await loginAsAdmin(apiRequest);
+  const apiRequest = await newAdminRequestContext(newRequestContext);
   const owner = await provisionUser(browser, apiRequest, 'taxowner');
   await apiRequest.dispose();
 
