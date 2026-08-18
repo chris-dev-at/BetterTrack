@@ -905,6 +905,11 @@ export const NON_V5_SURFACES = [
     note: 'V1 SMTP diagnostics (#81); still English-only.',
   },
   {
+    path: 'admin/pages/FeedbackPage.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'Post-V5 owner feedback inbox (#1316); localized and tested in its own feature change.',
+  },
+  {
     path: 'admin/pages/InvitesPage.tsx',
     reason: 'no-v5-deliverable',
     note: 'V1 invite management (#11); still English-only.',
@@ -1379,6 +1384,11 @@ export const NON_V5_ROUTES = [
   },
   { path: '/admin/audit', reason: 'no-v5-deliverable', note: 'V1 admin audit log.' },
   { path: '/admin/email', reason: 'no-v5-deliverable', note: 'V1 SMTP diagnostics.' },
+  {
+    path: '/admin/feedback',
+    reason: 'no-v5-deliverable',
+    note: 'Post-V5 owner feedback inbox (#1316).',
+  },
   { path: '/admin/invites', reason: 'no-v5-deliverable', note: 'V1 invite management.' },
   { path: '/admin/users/:userId', reason: 'no-v5-deliverable', note: 'V2 admin user detail.' },
   {
@@ -1777,7 +1787,9 @@ export const V5_ASYNC_STATE_DEBT: V5AsyncStateDebtLedger = {};
  * offenders disappear from the review record. The reason each component is
  * outside the V5 deliverable lives beside it in NON_V5_SURFACES.
  */
-export const DEFERRED_NON_V5_ASYNC_READ_SITE_BASELINE = 55;
+// #1316 adds one fully handled post-V5 admin feedback read. It increases the
+// analyzed non-V5 read universe without adding any deferred state debt.
+export const DEFERRED_NON_V5_ASYNC_READ_SITE_BASELINE = 56;
 
 export const DEFERRED_NON_V5_ASYNC_STATE_DEBT_CEILING = {
   readSites: 42,

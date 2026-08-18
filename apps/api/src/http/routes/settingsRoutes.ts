@@ -23,21 +23,50 @@ import {
   type UpdateTaxSettingsRequest,
   type UpdateWidgetLayoutRequest,
   type WidgetLayoutNamespaceParam,
+  scopeSatisfies,
 } from '@bettertrack/contracts';
 
-import { ApiError } from '../../errors';
+import { forbidden } from '../../errors';
 
 import { DiscordSetupError } from '../../services/notifications/discordSetupService';
 import { TelegramSetupError } from '../../services/notifications/telegramSetupService';
 
 import { requireUser } from '../middleware/session';
+import { ACCOUNT_SECURITY_SCOPE, taxYearLockRouteAcceptsBearer } from '../middleware/bearerAuth';
 import { validateBody, validateParams } from '../middleware/validate';
 import type { AppContext } from '../context';
 
 /**
+ * Defense-in-depth for the three bearer-callable tax-year lock routes. The
+ * global policy makes the same decision before routing, but this guard remains
+ * independently method/path-aware AND scope-aware so bypassing or regressing
+ * that table cannot expose the ritual to an unrelated bearer.
+ */
+export const requireCookieSessionOrTaxYearLockBearer: RequestHandler = (req, _res, next) => {
+  const bearerAllowed =
+    req.apiKey !== undefined &&
+    scopeSatisfies(req.apiKey.scopes, ACCOUNT_SECURITY_SCOPE) &&
+    taxYearLockRouteAcceptsBearer(
+      req.method,
+      `/settings${req.path === '/' || req.path === '' ? '' : req.path}`,
+    );
+  if ((!req.apiKey && req.sessionId) || bearerAllowed) {
+    next();
+    return;
+  }
+  next(
+    forbidden(
+      'This tax-year lock endpoint requires the owning session or account-security access.',
+      'API_KEY_FORBIDDEN',
+    ),
+  );
+};
+
+/**
  * Per-user settings endpoints (PROJECTPLAN.md §6.10, §6.11, §8). V1 exposes the
  * notification channel toggles the dispatcher honors; every handler is
- * session-required and strictly scoped to the caller.
+ * authenticated and strictly scoped to the caller, with bearer-capable
+ * subtrees carrying their own explicit scope guards.
  */
 export function createSettingsRouter(ctx: AppContext): Router {
   const router = Router();
@@ -255,26 +284,13 @@ export function createSettingsRouter(ctx: AppContext): Router {
   // ── Tax year locking (§16 2026-08-07) ──────────────────────────────────────
   // Elapsed Vienna years auto-lock; mutations dated into them 409
   // (TAX_YEAR_LOCKED) until the explicit unlock ritual below re-opens ONE
-  // named year for amendments. Strictly browser-cookie-session (never bearer):
-  // the global policy table already refuses bearer tokens on this subtree —
-  // this local guard is the defense-in-depth twin (the paranoid pattern).
-  const requireBrowserSession: RequestHandler = (req, _res, next) => {
-    if (req.apiKey || !req.sessionId) {
-      next(
-        new ApiError(
-          403,
-          'API_KEY_FORBIDDEN',
-          'Tax year unlocking is available only to the owning browser session.',
-        ),
-      );
-      return;
-    }
-    next();
-  };
+  // named year for amendments. The owning cookie session and a bearer holding
+  // `account:security` share this account-state surface; the local guard is an
+  // independent route + scope check behind the global policy table.
 
   // GET /settings/taxes/years — the caller's lock state (current year +
   // explicitly-unlocked years). Powers the report banner and the mobile slot.
-  router.get('/taxes/years', requireBrowserSession, async (req, res) => {
+  router.get('/taxes/years', requireCookieSessionOrTaxYearLockBearer, async (req, res) => {
     res.json(await ctx.taxYearLock.lockState(req.authUser!.id));
   });
 
@@ -282,7 +298,7 @@ export function createSettingsRouter(ctx: AppContext): Router {
   // named elapsed year for amendments. Per-account throttled + audited.
   router.post(
     '/taxes/years/:year/unlock',
-    requireBrowserSession,
+    requireCookieSessionOrTaxYearLockBearer,
     validateParams(taxYearLockParamsSchema),
     validateBody(unlockTaxYearRequestSchema),
     async (req, res) => {
@@ -302,7 +318,7 @@ export function createSettingsRouter(ctx: AppContext): Router {
   // no re-auth: locking is the safe direction).
   router.post(
     '/taxes/years/:year/relock',
-    requireBrowserSession,
+    requireCookieSessionOrTaxYearLockBearer,
     validateParams(taxYearLockParamsSchema),
     async (req, res) => {
       const { year } = req.valid?.params as { year: number };
