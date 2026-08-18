@@ -124,6 +124,18 @@ test('authenticated admins reach the guarded users page', async () => {
   expect(await screen.findByText('jane@bettertrack.test')).toBeInTheDocument();
 });
 
+test('authenticated admins reach the guarded feedback inbox', async () => {
+  vi.mocked(api.getMe).mockResolvedValue(admin);
+  vi.mocked(api.listAdminFeedback).mockResolvedValue({
+    submissions: [],
+    pagination: { page: 1, limit: 20, total: 0, totalPages: 0 },
+  });
+
+  renderAt('/admin/feedback');
+
+  expect(await screen.findByText('No feedback yet.')).toBeInTheDocument();
+});
+
 test('the admin language control persists across an admin remount', async () => {
   vi.mocked(api.getMe).mockResolvedValue(admin);
   const user = userEvent.setup();

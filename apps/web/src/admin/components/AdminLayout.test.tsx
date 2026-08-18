@@ -22,6 +22,7 @@ import { Modal } from './Modal';
 const ADMIN_NAV_KEYS = [
   'admin.nav.users',
   'admin.nav.invites',
+  'admin.nav.feedback',
   'admin.nav.settings',
   'admin.nav.featureFlags',
   'admin.nav.ai',

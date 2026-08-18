@@ -63,3 +63,76 @@ export const createFeedbackResponseSchema = z
   })
   .strict();
 export type CreateFeedbackResponse = z.infer<typeof createFeedbackResponseSchema>;
+
+/** Feedback lifecycle states in the owner triage queue. Mirrors the DB enum. */
+export const FEEDBACK_STATUSES = ['new', 'triaged', 'done'] as const;
+export const feedbackStatusSchema = z.enum(FEEDBACK_STATUSES);
+export type FeedbackStatus = z.infer<typeof feedbackStatusSchema>;
+
+/** Available inbox orderings; category priority is the owner-defined default. */
+export const FEEDBACK_SORTS = ['category', 'newest'] as const;
+export const feedbackSortSchema = z.enum(FEEDBACK_SORTS);
+export type FeedbackSort = z.infer<typeof feedbackSortSchema>;
+
+/** One owner-visible submission, including the authenticated submitter. */
+export const adminFeedbackSubmissionSchema = z
+  .object({
+    id: z.string().uuid(),
+    category: feedbackCategorySchema,
+    subject: z.string().nullable(),
+    message: z.string(),
+    context: feedbackContextSchema.nullable(),
+    status: feedbackStatusSchema,
+    submitter: z
+      .object({
+        id: z.string().uuid(),
+        username: z.string(),
+        email: z.string().email(),
+      })
+      .strict(),
+    createdAt: z.string().datetime(),
+    updatedAt: z.string().datetime(),
+  })
+  .strict();
+export type AdminFeedbackSubmission = z.infer<typeof adminFeedbackSubmissionSchema>;
+
+/** Filter, order and page controls for `GET /admin/feedback`. */
+export const adminFeedbackListQuerySchema = z
+  .object({
+    category: feedbackCategorySchema.optional(),
+    sort: feedbackSortSchema.default('category'),
+    page: z.coerce.number().int().min(1).default(1),
+    limit: z.coerce.number().int().min(1).max(100).default(20),
+  })
+  .strict();
+export type AdminFeedbackListQuery = z.infer<typeof adminFeedbackListQuerySchema>;
+
+export const adminFeedbackListResponseSchema = z
+  .object({
+    submissions: z.array(adminFeedbackSubmissionSchema),
+    pagination: z
+      .object({
+        page: z.number().int().min(1),
+        limit: z.number().int().min(1).max(100),
+        total: z.number().int().nonnegative(),
+        totalPages: z.number().int().nonnegative(),
+      })
+      .strict(),
+  })
+  .strict();
+export type AdminFeedbackListResponse = z.infer<typeof adminFeedbackListResponseSchema>;
+
+/** Admin status transition for one submission. */
+export const updateFeedbackStatusRequestSchema = z
+  .object({ status: feedbackStatusSchema })
+  .strict();
+export type UpdateFeedbackStatusRequest = z.infer<typeof updateFeedbackStatusRequestSchema>;
+
+export const updateFeedbackStatusResponseSchema = z
+  .object({
+    id: z.string().uuid(),
+    status: feedbackStatusSchema,
+    updatedAt: z.string().datetime(),
+  })
+  .strict();
+export type UpdateFeedbackStatusResponse = z.infer<typeof updateFeedbackStatusResponseSchema>;

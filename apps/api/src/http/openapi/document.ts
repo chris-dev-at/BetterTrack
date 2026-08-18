@@ -339,6 +339,9 @@ const componentSchemas = {
   // Authenticated in-app feedback (#1315)
   CreateFeedbackRequest: contracts.createFeedbackRequestSchema,
   CreateFeedbackResponse: contracts.createFeedbackResponseSchema,
+  AdminFeedbackListResponse: contracts.adminFeedbackListResponseSchema,
+  UpdateFeedbackStatusRequest: contracts.updateFeedbackStatusRequestSchema,
+  UpdateFeedbackStatusResponse: contracts.updateFeedbackStatusResponseSchema,
 
   // Broker CSV imports (§13.4 V4-P8)
   ImportBrokerListResponse: contracts.importBrokerListResponseSchema,
@@ -1723,6 +1726,25 @@ const endpoints: EndpointDef[] = [
     params: contracts.idParamSchema,
     status: 200,
     response: R.Problem,
+  },
+  {
+    method: 'get',
+    path: '/admin/feedback',
+    tag: 'Admin',
+    summary: 'Category-priority inbox for authenticated web and native feedback.',
+    query: contracts.adminFeedbackListQuerySchema,
+    status: 200,
+    response: R.AdminFeedbackListResponse,
+  },
+  {
+    method: 'patch',
+    path: '/admin/feedback/{id}/status',
+    tag: 'Admin',
+    summary: 'Update one feedback submission lifecycle status.',
+    params: contracts.idParamSchema,
+    body: R.UpdateFeedbackStatusRequest,
+    status: 200,
+    response: R.UpdateFeedbackStatusResponse,
   },
   {
     method: 'get',

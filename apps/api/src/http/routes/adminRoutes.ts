@@ -56,6 +56,7 @@ import type { AppContext } from '../context';
 import { requireAdmin, requireAdminTwoFactor } from '../middleware/session';
 import type { RateLimiters } from '../middleware/rateLimit';
 import { registerAdminApiKeyRoutes } from './adminApiKeyRoutes';
+import { registerAdminFeedbackRoutes } from './adminFeedbackRoutes';
 import { registerAdminProblemsRoutes } from './adminProblemsRoutes';
 import { registerAdminMonitoringRoutes } from './adminMonitoringRoutes';
 import {
@@ -112,6 +113,10 @@ export function createAdminRouter(ctx: AppContext, limiters: RateLimiters): Rout
   // Admin Problems page (§13.5 V5-P2 arc (d), the Sentry replacement): captured
   // errors/failed jobs/provider failures with a resolve flow. Registered flat.
   registerAdminProblemsRoutes(router, ctx);
+
+  // Authenticated web + native submissions converge in one category-priority
+  // owner inbox. Registered flat behind the existing admin + 2FA gates.
+  registerAdminFeedbackRoutes(router, ctx);
 
   // Admin monitoring / Diagnostics (§13.5 V5-P2 arc (a), owner 2026-07-19):
   // Grafana/Prometheus reachability status + the external-access runtime

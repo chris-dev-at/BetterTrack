@@ -4309,6 +4309,7 @@
       "ai": "AI",
       "users": "Users",
       "invites": "Invites",
+      "feedback": "Feedback",
       "settings": "Settings",
       "accountDefaults": "Account defaults",
       "announcements": "Announcements",
@@ -4815,6 +4816,56 @@
       "context": "Context",
       "resolve": "Resolve",
       "reopen": "Reopen"
+    },
+    "feedback": {
+      "title": "Feedback",
+      "subtitle": "Feature requests first, followed by bugs and other submissions.",
+      "refresh": "Refresh",
+      "loading": "Loading feedback…",
+      "loadError": "Could not load feedback.",
+      "actionError": "Could not update the feedback status.",
+      "empty": "No feedback yet.",
+      "filters": {
+        "category": "Category",
+        "sort": "Sort",
+        "all": "All categories"
+      },
+      "sort": {
+        "category": "Priority: features first",
+        "newest": "Newest first"
+      },
+      "category": {
+        "feature": "Feature/change",
+        "bug": "Bug",
+        "other": "Other"
+      },
+      "status": {
+        "new": "New",
+        "triaged": "Triaged",
+        "done": "Done"
+      },
+      "statusControl": "Status for feedback from {{user}}",
+      "fields": {
+        "status": "Status",
+        "message": "Message",
+        "submittedBy": "Submitted by",
+        "createdAt": "Submitted at"
+      },
+      "diagnostics": {
+        "title": "Diagnostics",
+        "platform": "Platform",
+        "appVersion": "App version",
+        "osVersion": "OS version",
+        "device": "Device",
+        "locale": "Locale",
+        "screen": "Screen"
+      },
+      "pagination": {
+        "navigation": "Feedback pages",
+        "summary": "Page {{page}} of {{pages}} · {{total}} total",
+        "previous": "Previous",
+        "next": "Next"
+      }
     },
     "featureFlags": {
       "title": "Feature flags",
