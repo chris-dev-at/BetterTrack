@@ -348,15 +348,27 @@ export function schemaTableNames(): string[] {
  *  - `server` — kept unchanged (identity/auth, friends + chat, private
  *    watchlists/conglomerates/ideas, price alerts, notifications, and the vault
  *    ciphertext rows themselves).
+ *  - `purge` — SERVER-side rows that are not the client's to hold, but that must
+ *    not EXIST for a paranoid account: derived telemetry/operational state whose
+ *    columns are portfolio-identifying. Purged and zero-probed at enable exactly
+ *    like `vault`, but deliberately NOT part of the encrypted document — it is
+ *    never captured, never restored, and (guarded by the completeness test) may
+ *    never appear in `VAULT_TABLE_ENTITY_KINDS` or {@link PARANOID_REHYDRATION_POLICY}.
+ *    `vault` was not available here: EVERY `vault` table — `purge-only` ones
+ *    included — is enrolled in the strict v1 client document, so classifying
+ *    telemetry `vault` would mean shipping it into the user's encrypted blob (a
+ *    cross-client format change) to hold rows nobody wants back. `server` was
+ *    not available either: it means "kept", and the enable transaction deletes
+ *    these. See `usage_events` below for the case that forced the third value.
  *
  * The completeness test enforces the SAME "every table classified, CI fails
  * otherwise" contract as the export axis — so a future table cannot silently
  * leak: adding it to the schema forces the author to classify it, and
- * classifying it `vault` automatically enrolls it in purge + probe + rehydration.
- * That is the rule that keeps the "zero portfolio rows server-side" guarantee
- * durable as the schema grows.
+ * classifying it `vault` automatically enrolls it in purge + probe + rehydration
+ * (`purge` in purge + probe alone). That is the rule that keeps the "zero
+ * portfolio rows server-side" guarantee durable as the schema grows.
  */
-export type ParanoidClassification = 'vault' | 'server';
+export type ParanoidClassification = 'vault' | 'server' | 'purge';
 
 /**
  * The second compulsory policy for each `vault` table. `restore` means an entity
@@ -446,7 +458,22 @@ export const PARANOID_TABLE_CLASSIFICATION: Record<string, ParanoidClassificatio
   audit_log: 'server',
   email_log: 'server',
   problems: 'server',
-  usage_events: 'server',
+  // PURGED, not kept. `usage_events` folds one row per (user, feature, asset,
+  // day). A paranoid client values its portfolio locally, which means one
+  // `GET /assets/:id/quote` PER HOLDING, every day — so the `feature='assets'`
+  // rows recorded that user's complete holdings ROSTER, keyed to their user id,
+  // daily. That is precisely what the mode promises the server cannot learn, so
+  // the rows must not exist for a paranoid account: capture is suppressed going
+  // forward (`usageCapture` + the `upsertEvents` write boundary) and the enable
+  // transaction deletes the history a converting user brings with them.
+  //
+  // `purge` rather than `vault`: this is operator telemetry, not user data worth
+  // restoring, and `vault` would force it into the strict v1 encrypted document
+  // (see the axis doc above). The user-level counters simply end at the moment
+  // the account turns paranoid.
+  usage_events: 'purge',
+  // The (day, feature) rollup carries NO user id and NO asset id — a global
+  // aggregate over all accounts, so it identifies nothing and stays server-side.
   usage_daily: 'server',
   app_settings: 'server',
   idempotency_keys: 'server',
@@ -618,13 +645,32 @@ export const PARANOID_REHYDRATION_HANDLERS = [
   'cashRuleTag',
 ] as const satisfies readonly VaultEntityKind[];
 
-/** The `vault`-classified table names (purge/probe/rehydration iterate these). */
+/** The `vault`-classified table names (the encrypted document + rehydration). */
 export const PARANOID_VAULT_TABLE_NAMES: readonly string[] = Object.entries(
   PARANOID_TABLE_CLASSIFICATION,
 )
   .filter(([, c]) => c === 'vault')
   .map(([table]) => table)
   .sort();
+
+/** The `purge`-classified table names — destroyed at enable, never captured. */
+export const PARANOID_PURGE_ONLY_TABLE_NAMES: readonly string[] = Object.entries(
+  PARANOID_TABLE_CLASSIFICATION,
+)
+  .filter(([, c]) => c === 'purge')
+  .map(([table]) => table)
+  .sort();
+
+/**
+ * Everything the enable sweep destroys and then zero-probes: both classifications
+ * that must leave no row behind. The purge/probe handler sets and the purge order
+ * are checked against THIS list, so a new table on either axis cannot join the
+ * classification without also joining the sweep.
+ */
+export const PARANOID_PURGED_TABLE_NAMES: readonly string[] = [
+  ...PARANOID_VAULT_TABLE_NAMES,
+  ...PARANOID_PURGE_ONLY_TABLE_NAMES,
+].sort();
 
 /**
  * The subset whose rows the enable purge destroys IRREVERSIBLY — everything the
