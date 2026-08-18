@@ -28,7 +28,7 @@ import {
   runAlertsEvaluation,
 } from '../../apps/api/src/services/alerts/alertEvaluator';
 import { createExpenseBudgetService } from '../../apps/api/src/services/expenses/budgetService';
-import { PARANOID_VAULT_TABLE_NAMES } from '../../apps/api/src/services/export/manifest';
+import { PARANOID_PURGED_TABLE_NAMES } from '../../apps/api/src/services/export/manifest';
 import { createNotificationCenter } from '../../apps/api/src/services/notifications/notificationCenter';
 import {
   createNotificationDispatcher,
@@ -523,6 +523,19 @@ export function createPd9Harness(): Pd9Harness {
               .from(schema.transactions)
               .where(inArray(schema.transactions.portfolioId, values)),
           ),
+        // `purge`-classified rather than `vault` (PR #1344): telemetry that folds
+        // one row per (user, feature, asset, day). A paranoid client prices every
+        // holding itself, so these rows recorded the account's complete holdings
+        // ROSTER, daily. It never enters the encrypted document, but it IS
+        // destroyed at enable — so it belongs in the zero-cleartext evidence PD9
+        // exists to produce, and the union below is what keeps it there.
+        usage_events: () =>
+          probe(
+            db
+              .select({ value: count() })
+              .from(schema.usageEvents)
+              .where(eq(schema.usageEvents.userId, scope.userId)),
+          ),
         user_tax_settings: () =>
           probe(
             db
@@ -531,8 +544,17 @@ export function createPd9Harness(): Pd9Harness {
               .where(eq(schema.userTaxSettings.userId, scope.userId)),
           ),
       };
-      assertSameNames('PD9 probe', Object.keys(handlers), PARANOID_VAULT_TABLE_NAMES);
-      assertSameNames('production probe', PARANOID_PROBE_HANDLER_NAMES, PARANOID_VAULT_TABLE_NAMES);
+      // Both sides are checked against `vault ∪ purge` — every table the enable
+      // sweep destroys and zero-probes — not against `vault` alone. Comparing to
+      // the vault set would now be wrong twice over: it would throw on the
+      // production probe, and it would let PD9's evidence silently stop covering
+      // a purge-classified table.
+      assertSameNames('PD9 probe', Object.keys(handlers), PARANOID_PURGED_TABLE_NAMES);
+      assertSameNames(
+        'production probe',
+        PARANOID_PROBE_HANDLER_NAMES,
+        PARANOID_PURGED_TABLE_NAMES,
+      );
       return Object.fromEntries(
         await Promise.all(
           Object.entries(handlers).map(async ([name, handler]) => [name, await handler()]),
@@ -933,6 +955,12 @@ function assertSameNames(
   const left = [...actual].sort();
   const right = [...expected].sort();
   if (left.length !== right.length || left.some((name, index) => name !== right[index])) {
-    throw new Error(`${label} coverage drifted from the paranoid vault classification.`);
+    const missing = right.filter((name) => !left.includes(name));
+    const extra = left.filter((name) => !right.includes(name));
+    throw new Error(
+      `${label} coverage drifted from the paranoid purge classification (vault ∪ purge)` +
+        `${missing.length > 0 ? `; missing: ${missing.join(', ')}` : ''}` +
+        `${extra.length > 0 ? `; unexpected: ${extra.join(', ')}` : ''}.`,
+    );
   }
 }
