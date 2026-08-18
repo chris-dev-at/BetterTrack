@@ -424,6 +424,22 @@ function runtimeConfigs(
 
 const SECURITY_INCLUDE = 'include /etc/nginx/bt-includes/static-security-headers.conf;';
 const CONDITIONAL_HSTS_INCLUDE = 'include /etc/nginx/bt-includes/static-hsts.conf;';
+const REVALIDATED_ROOT_ASSETS = 'location ~* ^/(service-worker\\.js|manifest\\.webmanifest)$ {';
+const IMMUTABLE_ASSETS = 'location ~* \\.(js|css|woff2?|ttf|eot|png|jpg|jpeg|gif|svg|ico|webp)$ {';
+
+function assertDeploySafeStaticCaching(serverBlock: string): void {
+  const revalidated = section(serverBlock, REVALIDATED_ROOT_ASSETS, IMMUTABLE_ASSETS);
+  const immutable = section(serverBlock, IMMUTABLE_ASSETS, 'location / {');
+
+  expect(revalidated).toContain(SECURITY_INCLUDE);
+  expect(revalidated).toContain(CONDITIONAL_HSTS_INCLUDE);
+  expect(revalidated).toContain('add_header Cache-Control "no-cache" always;');
+  expect(revalidated).toContain('try_files $uri =404;');
+  expect(immutable).toContain('add_header Cache-Control "public, max-age=31536000, immutable";');
+  expect(serverBlock.indexOf(REVALIDATED_ROOT_ASSETS)).toBeLessThan(
+    serverBlock.indexOf(IMMUTABLE_ASSETS),
+  );
+}
 
 const SUBDOMAINS_ENV: Record<string, string> = {
   BT_DOMAIN: 'track.example.at',
@@ -485,10 +501,15 @@ describe('subdomains template', () => {
   });
 
   it('applies the shared policy and conditional HSTS to every static response path', () => {
-    // user: server + config.js + assets; admin: same; product + mobile: server.
-    expect(occurrences(out, SECURITY_INCLUDE)).toBe(8);
-    expect(occurrences(out, CONDITIONAL_HSTS_INCLUDE)).toBe(8);
+    // user: server + config.js + mutable roots + assets; admin: same; product + mobile: server.
+    expect(occurrences(out, SECURITY_INCLUDE)).toBe(10);
+    expect(occurrences(out, CONDITIONAL_HSTS_INCLUDE)).toBe(10);
     expect(section(out, '# ── API origin', '# ── Web origin')).not.toContain(SECURITY_INCLUDE);
+  });
+
+  it('revalidates deploy roots while retaining immutable build assets', () => {
+    assertDeploySafeStaticCaching(section(out, '# ── Web origin', '# ── Admin origin'));
+    assertDeploySafeStaticCaching(section(out, '# ── Admin origin', '# ── Product origin'));
   });
 });
 
@@ -517,10 +538,15 @@ describe('ports template', () => {
   });
 
   it('applies the shared policy to every static response path without literal HSTS', () => {
-    expect(occurrences(out, SECURITY_INCLUDE)).toBe(8);
-    expect(occurrences(out, CONDITIONAL_HSTS_INCLUDE)).toBe(8);
+    expect(occurrences(out, SECURITY_INCLUDE)).toBe(10);
+    expect(occurrences(out, CONDITIONAL_HSTS_INCLUDE)).toBe(10);
     expect(section(out, '# ── API port', '# ── Web port')).not.toContain(SECURITY_INCLUDE);
     expect(out).not.toContain('add_header Strict-Transport-Security');
+  });
+
+  it('revalidates deploy roots while retaining immutable build assets', () => {
+    assertDeploySafeStaticCaching(section(out, '# ── Web port', '# ── Admin port'));
+    assertDeploySafeStaticCaching(section(out, '# ── Admin port', '# ── Product port'));
   });
 });
 

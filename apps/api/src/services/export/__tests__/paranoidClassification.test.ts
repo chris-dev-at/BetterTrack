@@ -10,8 +10,13 @@ import {
   PARANOID_PROBE_HANDLER_NAMES,
   PARANOID_PURGE_HANDLER_NAMES,
 } from '../../../data/repositories/paranoidTransitionRepository';
+import { VAULT_TABLE_ENTITY_KINDS } from '@bettertrack/contracts';
+
 import {
   EXPORT_TABLE_CLASSIFICATION,
+  PARANOID_PURGED_TABLE_NAMES,
+  PARANOID_PURGE_ONLY_TABLE_NAMES,
+  PARANOID_PURGE_REASONS,
   PARANOID_REHYDRATION_POLICY,
   PARANOID_TABLE_CLASSIFICATION,
   PARANOID_VAULT_TABLE_NAMES,
@@ -40,9 +45,9 @@ describe('paranoid table classification completeness', () => {
     expect(stale, `classification names a non-existent table: ${stale.join(', ')}`).toEqual([]);
   });
 
-  it('only uses the two allowed axis values', () => {
+  it('only uses the three allowed axis values', () => {
     for (const [table, c] of Object.entries(PARANOID_TABLE_CLASSIFICATION)) {
-      expect(['vault', 'server'], `${table} has an invalid classification`).toContain(c);
+      expect(['vault', 'server', 'purge'], `${table} has an invalid classification`).toContain(c);
     }
   });
 
@@ -147,8 +152,73 @@ describe('paranoid table classification completeness', () => {
     expect(PARANOID_VAULT_TABLE_NAMES.length).toBeLessThan(tables.length);
   });
 
-  it('drives both destructive handlers and zero-cleartext probes from the full vault set', () => {
-    expect(PARANOID_PURGE_HANDLER_NAMES).toEqual([...PARANOID_VAULT_TABLE_NAMES]);
-    expect(PARANOID_PROBE_HANDLER_NAMES).toEqual([...PARANOID_VAULT_TABLE_NAMES]);
+  it('drives both destructive handlers and zero-cleartext probes from the full purged set', () => {
+    expect(PARANOID_PURGE_HANDLER_NAMES).toEqual([...PARANOID_PURGED_TABLE_NAMES]);
+    expect(PARANOID_PROBE_HANDLER_NAMES).toEqual([...PARANOID_PURGED_TABLE_NAMES]);
+  });
+
+  /**
+   * The `purge` axis value (added for `usage_events`) destroys + zero-probes a
+   * table WITHOUT enrolling it in the encrypted document. These three guards are
+   * what stop it from becoming a quiet backdoor into that document — or, worse, a
+   * way to mark a table destroyed while the client still believes it holds it.
+   */
+  describe('the purge axis', () => {
+    it('purges and probes every purge-classified table, exactly like a vault table', () => {
+      for (const table of PARANOID_PURGE_ONLY_TABLE_NAMES) {
+        expect(PARANOID_PURGE_HANDLER_NAMES, `${table} needs a purge handler`).toContain(table);
+        expect(PARANOID_PROBE_HANDLER_NAMES, `${table} needs a zero-probe`).toContain(table);
+      }
+    });
+
+    it('never carries a purge-classified table into the encrypted document', () => {
+      for (const table of PARANOID_PURGE_ONLY_TABLE_NAMES) {
+        expect(
+          Object.keys(VAULT_TABLE_ENTITY_KINDS),
+          `${table} is purge-classified and must NOT enter the strict v1 document`,
+        ).not.toContain(table);
+        expect(
+          PARANOID_REHYDRATION_POLICY[table],
+          `${table} is purge-classified: it is never restored, so it takes no rehydration policy`,
+        ).toBeUndefined();
+        expect(PARANOID_VAULT_TABLE_NAMES, `${table} is not vault content`).not.toContain(table);
+      }
+    });
+
+    /**
+     * The leak this axis exists for: a paranoid client prices every holding
+     * itself, so `usage_events` recorded the account's holdings roster daily.
+     */
+    it('purges usage_events and keeps the non-identifying rollup server-side', () => {
+      expect(PARANOID_TABLE_CLASSIFICATION['usage_events']).toBe('purge');
+      // `usage_daily` is keyed (day, feature) across ALL accounts — no user id,
+      // no asset id — so it identifies nobody and is deliberately NOT purged.
+      expect(PARANOID_TABLE_CLASSIFICATION['usage_daily']).toBe('server');
+    });
+
+    /**
+     * `purge` made "destroyed but never captured" a CI-green state for the first
+     * time — which also makes flipping an existing `vault` table here a green way
+     * to stop capturing it. The export axis answers the same hazard by demanding
+     * a non-empty reason for every `skip`; this demands one for every `purge`.
+     */
+    it('states a non-empty reason for every purge-classified table', () => {
+      expect(Object.keys(PARANOID_PURGE_REASONS).sort()).toEqual([
+        ...PARANOID_PURGE_ONLY_TABLE_NAMES,
+      ]);
+      for (const [table, reason] of Object.entries(PARANOID_PURGE_REASONS)) {
+        expect(reason.trim().length, `${table} needs a stated reason`).toBeGreaterThan(0);
+      }
+    });
+
+    /**
+     * The membership roster is PINNED, not merely derived. Adding a second table
+     * to this axis is a deliberate act that has to edit this list — so a future
+     * change cannot quietly move a captured table into "destroyed, never
+     * captured" and stay green.
+     */
+    it('has exactly one member, and adding another is a deliberate review', () => {
+      expect([...PARANOID_PURGE_ONLY_TABLE_NAMES]).toEqual(['usage_events']);
+    });
   });
 });

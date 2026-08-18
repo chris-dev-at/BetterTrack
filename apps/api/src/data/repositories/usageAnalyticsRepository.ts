@@ -8,6 +8,10 @@ import {
   type NewUsageDailyRow,
   type NewUsageEventRow,
 } from '../schema';
+import { withFreshLockedPrivacyModes } from './paranoidEnforcementRepository';
+// Reused, not re-declared: sharing the constant is what keeps the flush's lock
+// hold bounded by the SAME number as the admin batch if that number ever moves.
+import { PARANOID_ADMIN_METADATA_LOCK_CHUNK } from './paranoidTransitionRepository';
 
 /**
  * The sentinel feature key in {@link usageDaily} that carries the all-features
@@ -70,28 +74,91 @@ export interface UsageAnalyticsRepository {
   topAssets(sinceDay: string, limit: number): Promise<UsageTopAssetCount[]>;
 }
 
-export function createUsageAnalyticsRepository(db: Database): UsageAnalyticsRepository {
+export function createUsageAnalyticsRepository(
+  db: Database,
+  /**
+   * The DEDICATED privacy-lock pool (`server.ts` / `worker.ts`), never the
+   * request pool — `withFreshLockedPrivacyModes` holds an open transaction
+   * across the insert below, and a lock reserved on the pool it then needs a
+   * connection from can deadlock. Required, not defaulted: silently falling back
+   * to `db` would degrade the guarantee without anyone noticing.
+   */
+  lockDb: Database,
+): UsageAnalyticsRepository {
   return {
     async upsertEvents(rows: UsageEventUpsert[]): Promise<void> {
       if (rows.length === 0) return;
-      const values: NewUsageEventRow[] = rows.map((r) => ({
-        userId: r.userId,
-        feature: r.feature,
-        assetId: r.assetId,
-        day: r.day,
-        hits: r.hits,
-        lastSeenAt: r.lastSeenAt,
-      }));
-      await db
-        .insert(usageEvents)
-        .values(values)
-        .onConflictDoUpdate({
-          target: [usageEvents.userId, usageEvents.feature, usageEvents.assetId, usageEvents.day],
-          set: {
-            hits: sql`${usageEvents.hits} + excluded.hits`,
-            lastSeenAt: sql`excluded.last_seen_at`,
-          },
+      // Second line of defence for paranoid accounts (§13.5 V5-P13 arc b), and
+      // the one that closes the enable RACE. `usageCapture` drops the signal at
+      // request time, but the service buffers in memory and flushes on a timer,
+      // so signals taken while the account was still `normal` can arrive AFTER
+      // the enable transaction purged the table — re-creating exactly the
+      // holdings-roster rows that were just deleted, with nothing left to sweep
+      // them again.
+      //
+      // An UNLOCKED re-read would not close that: paranoid enable flips
+      // `privacy_mode` in its LAST statement but takes `FOR UPDATE` on the row
+      // in its FIRST (`lockState`), so a plain SELECT landing anywhere inside
+      // the transaction still sees `normal`, admits the batch, and its INSERT
+      // then lands the instant the enable commits — after the in-transaction
+      // zero-probe has already passed. The window is the whole transaction.
+      //
+      // So take the same `FOR KEY SHARE` lock every other guarded action takes.
+      // It conflicts with exactly one thing, the transition's `FOR UPDATE`:
+      //  - flush locks first  → enable waits, then purges these rows;
+      //  - enable locks first → flush waits, then reads `paranoid` and drops them.
+      // Holding it ACROSS the insert is the point; releasing before writing
+      // would restore the race.
+      //
+      // CHUNKED by the same rule and the same constant as the admin metadata
+      // batch: a flush buffer spans every account active in the window, so an
+      // unchunked lock would grow both the `FOR KEY SHARE` hold and the
+      // `inArray` list with the account table, and a transition's `FOR UPDATE`
+      // would wait behind all of it. Chunking is safe here because the guarantee
+      // is per-account — a user's rows live in exactly one chunk and are locked
+      // for it, so no chunk depends on another.
+      const byUser = new Map<string, UsageEventUpsert[]>();
+      for (const row of rows) {
+        const bucket = byUser.get(row.userId);
+        if (bucket) bucket.push(row);
+        else byUser.set(row.userId, [row]);
+      }
+      const ids = [...byUser.keys()];
+      for (let index = 0; index < ids.length; index += PARANOID_ADMIN_METADATA_LOCK_CHUNK) {
+        const chunk = ids.slice(index, index + PARANOID_ADMIN_METADATA_LOCK_CHUNK);
+        await withFreshLockedPrivacyModes(lockDb, chunk, async (modes) => {
+          // Fail closed: only a confirmed-`normal` account is written. A `null`
+          // mode means the row no longer resolves (deleted mid-flush), which
+          // would otherwise fail the FK and lose the whole batch.
+          const admitted = chunk
+            .filter((userId) => modes.get(userId) === 'normal')
+            .flatMap((userId) => byUser.get(userId) ?? []);
+          if (admitted.length === 0) return;
+          const values: NewUsageEventRow[] = admitted.map((r) => ({
+            userId: r.userId,
+            feature: r.feature,
+            assetId: r.assetId,
+            day: r.day,
+            hits: r.hits,
+            lastSeenAt: r.lastSeenAt,
+          }));
+          await db
+            .insert(usageEvents)
+            .values(values)
+            .onConflictDoUpdate({
+              target: [
+                usageEvents.userId,
+                usageEvents.feature,
+                usageEvents.assetId,
+                usageEvents.day,
+              ],
+              set: {
+                hits: sql`${usageEvents.hits} + excluded.hits`,
+                lastSeenAt: sql`excluded.last_seen_at`,
+              },
+            });
         });
+      }
     },
 
     async rollupDay(day: string): Promise<void> {
