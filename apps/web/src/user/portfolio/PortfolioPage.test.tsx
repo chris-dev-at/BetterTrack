@@ -5,7 +5,7 @@ import { cloneElement, isValidElement } from 'react';
 import { MemoryRouter, useNavigate } from 'react-router-dom';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
-import type { Transaction } from '@bettertrack/contracts';
+import type { PrivacyMode, Transaction } from '@bettertrack/contracts';
 
 // ─── Mocks ────────────────────────────────────────────────────────────────────
 
@@ -99,6 +99,7 @@ import {
 } from '../../lib/portfolioApi';
 import { PortfolioPage } from './PortfolioPage';
 import { setViewportWidth } from '../../test/viewport';
+import { ResolvedPrivacyModeProvider } from '../vault/usePrivacyMode';
 
 /** The single auto-created default portfolio (§6.8) resolved before any scoped call. */
 const DEFAULT_PORTFOLIO_ID = 'p1';
@@ -241,18 +242,33 @@ const HISTORY = {
   ],
 };
 
+const RECATEGORIZATION_QUERY_KEY = ['custom-assets', 'recategorization'] as const;
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-function renderPage(initialPath = '/portfolio') {
+function renderPage(initialPath = '/portfolio', privacyMode?: PrivacyMode) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const page =
+    privacyMode === undefined ? (
+      <PortfolioPage />
+    ) : (
+      <ResolvedPrivacyModeProvider mode={privacyMode}>
+        <PortfolioPage />
+      </ResolvedPrivacyModeProvider>
+    );
   const view = render(
     <QueryClientProvider client={client}>
-      <MemoryRouter initialEntries={[initialPath]}>
-        <PortfolioPage />
-      </MemoryRouter>
+      <MemoryRouter initialEntries={[initialPath]}>{page}</MemoryRouter>
     </QueryClientProvider>,
   );
   return { ...view, client };
+}
+
+async function waitForRecategorizationState(client: QueryClient, status: 'success' | 'error') {
+  await waitFor(
+    () => expect(client.getQueryState(RECATEGORIZATION_QUERY_KEY)?.status).toBe(status),
+    { timeout: 10_000 },
+  );
 }
 
 function transactionPage(
@@ -1081,12 +1097,21 @@ describe('PortfolioPage — top winners / losers', () => {
 describe('PortfolioPage — re-categorize banner (V3-P2)', () => {
   beforeEach(() => vi.mocked(getPortfolio).mockResolvedValue(PORTFOLIO));
 
+  test('never mounts the server-row probe for a paranoid account', async () => {
+    renderPage('/portfolio', 'paranoid');
+
+    await screen.findByRole('region', { name: 'Holdings' });
+    expect(getRecategorizationStatus).not.toHaveBeenCalled();
+    expect(dismissRecategorization).not.toHaveBeenCalled();
+  });
+
   test('keeps a terminal background-probe failure invisible', async () => {
     vi.mocked(getRecategorizationStatus).mockRejectedValue(
       new ApiError(404, 'NOT_FOUND', 'status unavailable'),
     );
-    renderPage();
+    const { client } = renderPage();
 
+    await waitForRecategorizationState(client, 'error');
     await screen.findByRole('region', { name: 'Holdings' });
     expect(screen.queryByText("This information isn't available.")).not.toBeInTheDocument();
     expect(screen.queryByText(/Kategoriestatus|need categories/i)).not.toBeInTheDocument();
@@ -1096,10 +1121,11 @@ describe('PortfolioPage — re-categorize banner (V3-P2)', () => {
     vi.mocked(getRecategorizationStatus).mockRejectedValue(
       new ApiError(503, 'UNAVAILABLE', 'status unavailable'),
     );
-    renderPage();
+    const { client } = renderPage();
 
+    await waitForRecategorizationState(client, 'error');
     expect(
-      await screen.findByText(
+      screen.getByText(
         "Couldn't check whether custom investments need categories. Please try again.",
       ),
     ).toBeInTheDocument();
@@ -1107,8 +1133,9 @@ describe('PortfolioPage — re-categorize banner (V3-P2)', () => {
   });
 
   test('stays hidden when nothing is pending', async () => {
-    renderPage();
+    const { client } = renderPage();
     // Wait for the page to settle, then confirm no banner rendered.
+    await waitForRecategorizationState(client, 'success');
     await screen.findByRole('region', { name: 'Holdings' });
     expect(screen.queryByText(/need a category/i)).not.toBeInTheDocument();
   });
@@ -1117,14 +1144,19 @@ describe('PortfolioPage — re-categorize banner (V3-P2)', () => {
     // First status read reports pending; the refetch after dismiss returns 0.
     vi.mocked(getRecategorizationStatus).mockResolvedValueOnce({ pending: 2 });
     const user = userEvent.setup();
-    renderPage();
+    const { client } = renderPage();
 
-    const banner = await screen.findByText(/need a category/i);
+    await waitForRecategorizationState(client, 'success');
+
+    const banner = screen.getByText(/need a category/i);
     expect(banner).toBeInTheDocument();
 
     await user.click(screen.getByRole('button', { name: 'Dismiss' }));
     expect(vi.mocked(dismissRecategorization)).toHaveBeenCalledTimes(1);
 
+    await waitFor(() =>
+      expect(client.getQueryData(RECATEGORIZATION_QUERY_KEY)).toEqual({ pending: 0 }),
+    );
     await waitFor(() => expect(screen.queryByText(/need a category/i)).not.toBeInTheDocument());
   });
 });

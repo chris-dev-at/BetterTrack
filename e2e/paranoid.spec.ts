@@ -252,17 +252,19 @@ test.describe('PD9 paranoid-mode end-to-end gate', () => {
       });
 
       await test.step('[PD9-A5] killed/kept browser route matrix', async () => {
-        for (const [from, to] of KILLED_ROUTE_MATRIX) {
-          expect(isParanoidKilledPath(from), `${from} must remain in the product kill list`).toBe(
-            true,
-          );
-          expect(safeDestination(from), `${from} safe destination drifted`).toBe(to);
-          await expectRedirect(page, from, to);
-        }
-        await navigateInApp(page, '/people');
-        // Level-pinned: the People page renders the "Friends" h1 AND a
-        // same-named section heading, and role-name matching is substring.
-        await expect(page.getByRole('heading', { name: 'Friends', level: 1 })).toBeVisible();
+        await expectNoForbiddenApiResponses(page, async () => {
+          for (const [from, to] of KILLED_ROUTE_MATRIX) {
+            expect(isParanoidKilledPath(from), `${from} must remain in the product kill list`).toBe(
+              true,
+            );
+            expect(safeDestination(from), `${from} safe destination drifted`).toBe(to);
+            await expectRedirect(page, from, to);
+          }
+          await navigateInApp(page, '/people');
+          // Level-pinned: the People page renders the "Friends" h1 AND a
+          // same-named section heading, and role-name matching is substring.
+          await expect(page.getByRole('heading', { name: 'Friends', level: 1 })).toBeVisible();
+        });
       });
 
       await test.step('[PD9-A7] real evaluator and notification dispatcher', async () => {
@@ -657,12 +659,39 @@ async function assertClientMoneyWithoutServerReads(
   };
   page.on('request', listener);
   try {
-    await navigateInApp(page, '/portfolio');
-    await assertKnownMoney(page, fixture);
+    await expectNoForbiddenApiResponses(page, async () => {
+      await navigateInApp(page, '/portfolio');
+      await assertKnownMoney(page, fixture);
+    });
   } finally {
     page.off('request', listener);
   }
   expect(reads).toEqual([]);
+}
+
+/** A killed paranoid route must be absent, not a background 403 the UI swallows. */
+async function expectNoForbiddenApiResponses(
+  page: Page,
+  action: () => Promise<void>,
+): Promise<void> {
+  const forbidden: string[] = [];
+  const listener = (response: {
+    status(): number;
+    url(): string;
+    request(): { method(): string };
+  }) => {
+    const path = new URL(response.url()).pathname;
+    if (response.status() === 403 && path.startsWith('/api/v1/')) {
+      forbidden.push(`${response.request().method()} ${path}`);
+    }
+  };
+  page.on('response', listener);
+  try {
+    await action();
+  } finally {
+    page.off('response', listener);
+  }
+  expect(forbidden).toEqual([]);
 }
 
 async function assertKnownMoney(page: Page, fixture: MoneyFixture): Promise<void> {
