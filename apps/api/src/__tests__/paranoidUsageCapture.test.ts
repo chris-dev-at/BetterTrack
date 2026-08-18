@@ -6,6 +6,7 @@ import { describe, expect, it } from 'vitest';
 import { createApiKeyResponseSchema, type CachedResult, type Quote } from '@bettertrack/contracts';
 
 import * as schema from '../data/schema';
+import { withExclusiveParanoidTransitionTestLock } from '../data/repositories/paranoidEnforcementRepository';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 import { createStubMarketData } from '../testing/marketDataStubs';
 
@@ -173,6 +174,56 @@ describe('usage capture never records a paranoid account', () => {
     await makeParanoid(h, user.id);
     // …and only now does the timer fire, after the enable already committed.
     await h.ctx.usageAnalytics.flush();
+
+    expect(await usageRowsFor(h, user.id)).toEqual([]);
+  });
+
+  /**
+   * …and the interleaving the case above CANNOT see. Enable flips `privacy_mode`
+   * in its LAST statement but takes `FOR UPDATE` on the row in its FIRST, so an
+   * unlocked re-read landing anywhere inside that transaction still sees
+   * `normal`, admits the batch, and lands its INSERT the moment the enable
+   * commits — after the in-transaction zero-probe has already passed. The window
+   * is the whole transaction, not an instant.
+   *
+   * The fix is to take the same `FOR KEY SHARE` lock every other guarded action
+   * takes and to hold it ACROSS the insert. What this asserts is exactly that
+   * ordering: while a transition holds the exclusive lock, the flush cannot
+   * complete. (Per `withLockedPrivacyModes`' documented limit 1, the default
+   * PGlite harness emulates the locks in-process — the ordering is real here,
+   * the row-level primitive itself only under `TEST_DATABASE_URL`.)
+   */
+  it('cannot write while an enable transaction holds the account lock', async () => {
+    const h = await createTestApp();
+    const user = await h.seedUser({ email: 'lockrace@test.dev', username: 'lockrace' });
+    h.ctx.usageAnalytics.capture({ userId: user.id, feature: 'assets', assetId: 'held-asset-id' });
+
+    let releaseTransition!: () => void;
+    let transitionLocked!: () => void;
+    const released = new Promise<void>((resolve) => {
+      releaseTransition = resolve;
+    });
+    const locked = new Promise<void>((resolve) => {
+      transitionLocked = resolve;
+    });
+    // The enable transaction: lock the row, flip the mode, stay open.
+    const transition = withExclusiveParanoidTransitionTestLock(h.db, user.id, async () => {
+      await makeParanoid(h, user.id);
+      transitionLocked();
+      await released;
+    });
+    await locked;
+
+    const flush = h.ctx.usageAnalytics.flush();
+    const raced = await Promise.race([
+      flush.then(() => 'flushed' as const),
+      new Promise<'blocked'>((resolve) => setTimeout(() => resolve('blocked'), 150)),
+    ]);
+    expect(raced, 'the flush wrote without taking the privacy lock').toBe('blocked');
+
+    releaseTransition();
+    await transition;
+    await flush;
 
     expect(await usageRowsFor(h, user.id)).toEqual([]);
   });

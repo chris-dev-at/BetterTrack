@@ -736,7 +736,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // in memory and flushes on a timer in real processes; tests keep the timer off
   // and flush explicitly. Reads back DAU/WAU/MAU + counters behind admin.
   const usageAnalytics = createUsageAnalyticsService({
-    repo: createUsageAnalyticsRepository(db),
+    repo: createUsageAnalyticsRepository(db, privacyLockDb),
     logger,
     startTimer: !config.isTest,
   });

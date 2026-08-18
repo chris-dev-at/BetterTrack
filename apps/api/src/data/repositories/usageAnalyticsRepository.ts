@@ -1,4 +1,4 @@
-import { and, count, desc, eq, gte, inArray, ne, sql } from 'drizzle-orm';
+import { and, count, desc, eq, gte, ne, sql } from 'drizzle-orm';
 
 import type { Database } from '../db';
 import {
@@ -8,6 +8,7 @@ import {
   type NewUsageDailyRow,
   type NewUsageEventRow,
 } from '../schema';
+import { withFreshLockedPrivacyModes } from './paranoidEnforcementRepository';
 
 /**
  * The sentinel feature key in {@link usageDaily} that carries the all-features
@@ -70,50 +71,67 @@ export interface UsageAnalyticsRepository {
   topAssets(sinceDay: string, limit: number): Promise<UsageTopAssetCount[]>;
 }
 
-export function createUsageAnalyticsRepository(db: Database): UsageAnalyticsRepository {
-  /** The paranoid subset of a batch's distinct authors — one bounded lookup. */
-  const paranoidUserIds = async (rows: readonly UsageEventUpsert[]): Promise<Set<string>> => {
-    const ids = [...new Set(rows.map((r) => r.userId))];
-    const paranoid = await db
-      .select({ id: users.id })
-      .from(users)
-      .where(and(inArray(users.id, ids), eq(users.privacyMode, 'paranoid')));
-    return new Set(paranoid.map((r) => r.id));
-  };
-
+export function createUsageAnalyticsRepository(
+  db: Database,
+  /**
+   * The DEDICATED privacy-lock pool (`server.ts` / `worker.ts`), never the
+   * request pool — `withFreshLockedPrivacyModes` holds an open transaction
+   * across the insert below, and a lock reserved on the pool it then needs a
+   * connection from can deadlock. Required, not defaulted: silently falling back
+   * to `db` would degrade the guarantee without anyone noticing.
+   */
+  lockDb: Database,
+): UsageAnalyticsRepository {
   return {
     async upsertEvents(rows: UsageEventUpsert[]): Promise<void> {
       if (rows.length === 0) return;
       // Second line of defence for paranoid accounts (§13.5 V5-P13 arc b), and
-      // the one that closes the enable RACE: `usageCapture` drops the signal at
+      // the one that closes the enable RACE. `usageCapture` drops the signal at
       // request time, but the service buffers in memory and flushes on a timer,
-      // so signals captured while the account was still `normal` can arrive
-      // AFTER the enable transaction purged the table — re-creating exactly the
+      // so signals taken while the account was still `normal` can arrive AFTER
+      // the enable transaction purged the table — re-creating exactly the
       // holdings-roster rows that were just deleted, with nothing left to sweep
-      // them again. Re-reading the mode at the write boundary discards those,
-      // and makes the rule hold for any future caller of `capture` that forgets
-      // the middleware guard.
-      const paranoid = await paranoidUserIds(rows);
-      const admitted = paranoid.size === 0 ? rows : rows.filter((r) => !paranoid.has(r.userId));
-      if (admitted.length === 0) return;
-      const values: NewUsageEventRow[] = admitted.map((r) => ({
-        userId: r.userId,
-        feature: r.feature,
-        assetId: r.assetId,
-        day: r.day,
-        hits: r.hits,
-        lastSeenAt: r.lastSeenAt,
-      }));
-      await db
-        .insert(usageEvents)
-        .values(values)
-        .onConflictDoUpdate({
-          target: [usageEvents.userId, usageEvents.feature, usageEvents.assetId, usageEvents.day],
-          set: {
-            hits: sql`${usageEvents.hits} + excluded.hits`,
-            lastSeenAt: sql`excluded.last_seen_at`,
-          },
-        });
+      // them again.
+      //
+      // An UNLOCKED re-read would not close that: paranoid enable flips
+      // `privacy_mode` in its LAST statement but takes `FOR UPDATE` on the row
+      // in its FIRST (`lockState`), so a plain SELECT landing anywhere inside
+      // the transaction still sees `normal`, admits the batch, and its INSERT
+      // then lands the instant the enable commits — after the in-transaction
+      // zero-probe has already passed. The window is the whole transaction.
+      //
+      // So take the same `FOR KEY SHARE` lock every other guarded action takes.
+      // It conflicts with exactly one thing, the transition's `FOR UPDATE`:
+      //  - flush locks first  → enable waits, then purges these rows;
+      //  - enable locks first → flush waits, then reads `paranoid` and drops them.
+      // Holding it ACROSS the insert is the point; releasing before writing
+      // would restore the race.
+      const ids = [...new Set(rows.map((r) => r.userId))];
+      await withFreshLockedPrivacyModes(lockDb, ids, async (modes) => {
+        // Fail closed: only a confirmed-`normal` account is written. A `null`
+        // mode means the row no longer resolves (deleted mid-flush), which would
+        // otherwise fail the FK and lose the whole batch.
+        const admitted = rows.filter((r) => modes.get(r.userId) === 'normal');
+        if (admitted.length === 0) return;
+        const values: NewUsageEventRow[] = admitted.map((r) => ({
+          userId: r.userId,
+          feature: r.feature,
+          assetId: r.assetId,
+          day: r.day,
+          hits: r.hits,
+          lastSeenAt: r.lastSeenAt,
+        }));
+        await db
+          .insert(usageEvents)
+          .values(values)
+          .onConflictDoUpdate({
+            target: [usageEvents.userId, usageEvents.feature, usageEvents.assetId, usageEvents.day],
+            set: {
+              hits: sql`${usageEvents.hits} + excluded.hits`,
+              lastSeenAt: sql`excluded.last_seen_at`,
+            },
+          });
+      });
     },
 
     async rollupDay(day: string): Promise<void> {
