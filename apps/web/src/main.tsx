@@ -2,6 +2,7 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 
 import App from './App';
+import { installVitePreloadErrorRecovery } from './chunkRecovery';
 import './index.css';
 import { initializeAppPwa } from './lib/appServiceWorker';
 import { getRuntimeConfig } from './lib/runtimeConfig';
@@ -26,6 +27,11 @@ if (appKind !== 'admin') bootUiScale();
 // or a bfcache restore carrying a stale attribute. Admin is excluded for the
 // same reason it opts out of the interface scale: its own visual system.
 if (appKind !== 'admin') bootTheme();
+
+// Vite reports a dead lazy chunk before React sees the rejected import. A
+// release-scoped session guard gives the new shell one full-reload attempt and
+// leaves a repeated failure to the existing error-boundary path.
+installVitePreloadErrorRecovery();
 
 createRoot(rootElement, createRootErrorOptions(import.meta.env.DEV)).render(
   <StrictMode>
