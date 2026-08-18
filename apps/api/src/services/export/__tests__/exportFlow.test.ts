@@ -158,6 +158,13 @@ describe('account data export', () => {
     const bob = await harness.seedUser({ email: 'bob@bettertrack.test', username: 'bob' });
     const aliceP = await seedPortfolio(alice.id, 'Alice-Main');
     const bobP = await seedPortfolio(bob.id, 'Bob-Main');
+    const [aliceFeedback, bobFeedback] = await harness.db
+      .insert(schema.feedback)
+      .values([
+        { userId: alice.id, category: 'feature', message: 'Alice feature' },
+        { userId: bob.id, category: 'bug', message: 'Bob bug' },
+      ])
+      .returning({ id: schema.feedback.id });
 
     const agent = await loginAgent(harness.app, alice.email, alice.password);
     const reqRes = await agent
@@ -174,6 +181,11 @@ describe('account data export', () => {
     const ids = (JSON.parse(files['data/portfolios.json']!) as { id: string }[]).map((p) => p.id);
     expect(ids).toContain(aliceP);
     expect(ids).not.toContain(bobP);
+    const feedbackIds = (JSON.parse(files['data/feedback.json']!) as { id: string }[]).map(
+      (row) => row.id,
+    );
+    expect(feedbackIds).toContain(aliceFeedback!.id);
+    expect(feedbackIds).not.toContain(bobFeedback!.id);
   });
 
   it('the collector produces exactly the classified entity set', async () => {
