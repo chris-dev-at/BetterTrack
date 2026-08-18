@@ -14,6 +14,14 @@ import { resetProgressiveLimiter } from '../security/progressiveLimiter';
 export const LOGIN_ACCOUNT_NAMESPACE = 'login_account';
 
 /**
+ * Per-account issuance budget for bearer-started Google LINK tickets (#1328).
+ * The public callback is independently protected by the login per-IP HTTP rail;
+ * this namespace prevents a distributed caller from minting ceremonies for one
+ * compromised account without consuming the normal login failure budget.
+ */
+export const GOOGLE_LINK_ACCOUNT_NAMESPACE = 'google_link_account';
+
+/**
  * Per-account wrong-second-factor throttle for login and session-authenticated
  * TOTP re-auth (§6.1, §10, §13.2 V2-P5). Independent of the password-failure
  * counter above and of the per-IP request limiter the HTTP middleware keeps: a

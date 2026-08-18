@@ -458,11 +458,18 @@ function resolveAuthPolicy(
   if (path === '/auth/first-run/complete' && requestMethod.toUpperCase() === 'POST') {
     return { kind: 'scope', read: ACCOUNT_SECURITY_SCOPE, write: ACCOUNT_SECURITY_SCOPE };
   }
+  // The native Google LINK start is authenticated account-security state
+  // (#1328). Admit only the exact POST; the public Google return leg carries no
+  // bearer, and the legacy `/auth/google/start` must keep demoting bearers to an
+  // anonymous sign-in intent rather than inheriting this exception.
+  if (path === '/auth/google/link/start' && requestMethod.toUpperCase() === 'POST') {
+    return { kind: 'scope', read: ACCOUNT_SECURITY_SCOPE, write: ACCOUNT_SECURITY_SCOPE };
+  }
   // Account-security surface, both safe + unsafe methods gated by one scope:
   // the session manager, password change, PIN status/verify/manage, 2FA
   // management (enroll/confirm/disable/status/recovery-codes/email/*), and the
-  // Google link status + unlink (§13.4 V4-P4b). The Google start/callback
-  // redirects stay session/public (they fall through to the default below).
+  // Google link status + unlink (§13.4 V4-P4b). The legacy Google start/callback
+  // redirects and the new public native callback fall through to the default.
   const accountSecurity =
     path === '/auth/sessions' ||
     path.startsWith('/auth/sessions/') ||

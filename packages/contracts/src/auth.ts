@@ -399,6 +399,35 @@ export const googleLinkStatusResponseSchema = z
 export type GoogleLinkStatusResponse = z.infer<typeof googleLinkStatusResponseSchema>;
 
 /**
+ * `POST /auth/google/link/start` — the authenticated native client receives the
+ * Google authorization URL for a server-bound, one-time LINK ceremony. The
+ * redirect target is deliberately absent: the server selects the registered
+ * BetterTrackMobile deep link and never reflects one from this request.
+ */
+export const googleMobileLinkStartResponseSchema = z
+  .object({
+    authorizationUrl: z.string().url(),
+    expiresAt: z.string().datetime(),
+  })
+  .strict();
+export type GoogleMobileLinkStartResponse = z.infer<typeof googleMobileLinkStartResponseSchema>;
+
+/**
+ * Google's public browser return leg for a bearer-started mobile LINK. Extra
+ * provider parameters are retained, but only these three values influence the
+ * ceremony. In particular, a supplied `redirect_uri` is not part of the
+ * contract and the API explicitly refuses it rather than reflecting it.
+ */
+export const googleMobileLinkCallbackQuerySchema = z
+  .object({
+    state: z.string().min(1).max(256).optional(),
+    code: z.string().min(1).max(4096).optional(),
+    error: z.string().min(1).max(256).optional(),
+  })
+  .passthrough();
+export type GoogleMobileLinkCallbackQuery = z.infer<typeof googleMobileLinkCallbackQuerySchema>;
+
+/**
  * `POST /auth/google/unlink` — re-authenticate with the account password, then
  * remove the Google link. Refused (409) while Google is the only usable sign-in
  * method, so a re-auth password is always available when an unlink is allowed.
