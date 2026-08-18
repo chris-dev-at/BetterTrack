@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import {
   MAX_PASSWORD_LENGTH,
@@ -41,6 +41,8 @@ interface EnableErrorCopy {
   vars?: Record<string, string | number>;
 }
 
+type DrivePreparationState = 'idle' | 'preparing' | 'ready' | 'failed';
+
 export function ParanoidEnableWizard({
   onCancel,
   onEnabled,
@@ -56,6 +58,7 @@ export function ParanoidEnableWizard({
   const [advanced, setAdvanced] = useState(false);
   const [driveOnly, setDriveOnly] = useState(false);
   const [drive, setDrive] = useState<DataHome | null>(null);
+  const [drivePreparation, setDrivePreparation] = useState<DrivePreparationState>('idle');
   const [authorizingDrive, setAuthorizingDrive] = useState(false);
   const [passphrase, setPassphrase] = useState('');
   const [confirmation, setConfirmation] = useState('');
@@ -66,6 +69,7 @@ export function ParanoidEnableWizard({
   const [stage, setStage] = useState<VaultEnableStage | null>(null);
   const [captureCompletedRequests, setCaptureCompletedRequests] = useState(0);
   const [error, setError] = useState<EnableErrorCopy | null>(null);
+  const drivePreparationGeneration = useRef(0);
 
   const mediaSet = useMemo<VaultMediaSet>(
     () =>
@@ -93,7 +97,40 @@ export function ParanoidEnableWizard({
     setLostKeyAcknowledged(false);
   }
 
+  const prepareDrive = useCallback(() => {
+    const generation = ++drivePreparationGeneration.current;
+    setDrive(null);
+    setError(null);
+    setDrivePreparation('preparing');
+    void runtime
+      .prepareDriveStorage()
+      .then(() => {
+        if (drivePreparationGeneration.current !== generation) return;
+        setDrivePreparation('ready');
+      })
+      .catch(() => {
+        if (drivePreparationGeneration.current !== generation) return;
+        setDrive(null);
+        setDrivePreparation('failed');
+        setError({ key: 'vault.enable.errors.drivePreparation' });
+      });
+  }, [runtime.prepareDriveStorage]);
+
+  useEffect(() => {
+    if (!driveSelected) {
+      drivePreparationGeneration.current += 1;
+      setDrive(null);
+      setDrivePreparation('idle');
+      return;
+    }
+    prepareDrive();
+    return () => {
+      drivePreparationGeneration.current += 1;
+    };
+  }, [driveSelected, prepareDrive]);
+
   async function authorizeDrive() {
+    if (drivePreparation !== 'ready') return;
     setError(null);
     setAuthorizingDrive(true);
     // Invoke the runtime before the first await so GIS starts from this explicit
@@ -307,21 +344,33 @@ export function ParanoidEnableWizard({
           {driveSelected ? (
             <div aria-live="polite" className="bt-soft flex flex-col gap-2 p-3 text-sm">
               <p>
-                {drive == null
-                  ? t('vault.enable.media.driveAuthorizationRequired')
-                  : t('vault.enable.media.driveConnected')}
+                {drivePreparation === 'idle' || drivePreparation === 'preparing'
+                  ? t('vault.enable.media.preparingDrive')
+                  : drive == null
+                    ? t('vault.enable.media.driveAuthorizationRequired')
+                    : t('vault.enable.media.driveConnected')}
               </p>
               <div>
                 <Button
-                  disabled={authorizingDrive}
-                  onClick={() => void authorizeDrive()}
+                  disabled={
+                    authorizingDrive ||
+                    drivePreparation === 'idle' ||
+                    drivePreparation === 'preparing'
+                  }
+                  onClick={() =>
+                    void (drivePreparation === 'failed' ? prepareDrive() : authorizeDrive())
+                  }
                   variant="secondary"
                 >
                   {authorizingDrive
                     ? t('vault.enable.media.connectingDrive')
-                    : drive == null
-                      ? t('vault.enable.media.connectDrive')
-                      : t('vault.enable.media.reconnectDrive')}
+                    : drivePreparation === 'idle' || drivePreparation === 'preparing'
+                      ? t('vault.enable.media.preparingDrive')
+                      : drivePreparation === 'failed'
+                        ? t('vault.enable.media.retryDrivePreparation')
+                        : drive == null
+                          ? t('vault.enable.media.connectDrive')
+                          : t('vault.enable.media.reconnectDrive')}
                 </Button>
               </div>
             </div>

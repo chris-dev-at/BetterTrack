@@ -3598,8 +3598,10 @@
         "driveCopy": "Zusätzlich eine geprüfte Kopie in meinem Google Drive speichern",
         "driveAuthorizationRequired": "Verbinde Google Drive, bevor du fortfährst. So kannst du Anmelde- oder Popup-Probleme lösen, bevor du deine Tresor-Passphrase und dein Wiederherstellungspaket erstellst.",
         "driveConnected": "Google Drive ist verbunden und für die verschlüsselte Kopie bereit.",
+        "preparingDrive": "Google-Anmeldung wird vorbereitet…",
         "connectDrive": "Google Drive verbinden",
         "reconnectDrive": "Google Drive erneut verbinden",
+        "retryDrivePreparation": "Google-Drive-Einrichtung erneut versuchen",
         "connectingDrive": "Google Drive wird verbunden…",
         "advanced": "Erweitert",
         "driveOnly": {
@@ -3633,6 +3635,7 @@
         "commit": "Der paranoide Modus wird abgeschlossen…"
       },
       "errors": {
+        "drivePreparation": "Google Drive konnte nicht vorbereitet werden. Prüfe deine Verbindung und versuche es erneut. Dein Konto wurde nicht geändert.",
         "driveAuthorization": "Google Drive konnte nicht verbunden werden. Erlaube das Google-Anmelde-Popup, wähle das richtige Konto und versuche es erneut. Dein Konto wurde nicht geändert.",
         "driveReauthorization": "Google Drive muss erneut verbunden werden, bevor die Übertragung starten kann. Erlaube das Google-Anmelde-Popup und versuche es erneut. Dein Konto wurde nicht geändert.",
         "migrate": "Deine aktuellen Daten konnten nicht vollständig gesammelt werden. Es wurde nichts geändert; versuche es nach Wiederherstellung der Verbindung erneut.",

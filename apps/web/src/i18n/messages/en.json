@@ -3598,8 +3598,10 @@
         "driveCopy": "Also keep a verified copy in my Google Drive",
         "driveAuthorizationRequired": "Connect Google Drive before continuing, so you can resolve any sign-in or popup problem before creating your vault passphrase and recovery kit.",
         "driveConnected": "Google Drive is connected and ready for the encrypted copy.",
+        "preparingDrive": "Preparing Google sign-in…",
         "connectDrive": "Connect Google Drive",
         "reconnectDrive": "Reconnect Google Drive",
+        "retryDrivePreparation": "Retry Google Drive setup",
         "connectingDrive": "Connecting Google Drive…",
         "advanced": "Advanced",
         "driveOnly": {
@@ -3633,6 +3635,7 @@
         "commit": "Finalizing Paranoid mode…"
       },
       "errors": {
+        "drivePreparation": "Google Drive could not be prepared. Check your connection and try again. Your account has not changed.",
         "driveAuthorization": "Google Drive could not be connected. Allow the Google sign-in popup, choose the right account, and try again. Your account has not changed.",
         "driveReauthorization": "Google Drive needs to be reconnected before the transfer can start. Allow the Google sign-in popup and try again. Your account has not changed.",
         "migrate": "Your current data could not be collected completely. Nothing was changed; retry after the connection recovers.",

@@ -36,6 +36,8 @@ export interface VaultRuntime {
   ): Promise<DriveConnectionController>;
   /** Try the optional non-extractable device key without prompting. */
   unlockFromDevice(options: Omit<VaultDriveUnlockOptions, 'keepUnlocked'>): Promise<boolean>;
+  /** Prepare GIS before exposing a Drive authorization gesture. */
+  prepareDriveStorage(): Promise<void>;
   /** User-gesture GIS authorization used by the pre-enable media round trip. */
   authorizeDriveStorage(): Promise<DataHome>;
   reconnect(): Promise<VaultSyncState>;
