@@ -141,6 +141,89 @@ describe('ParanoidEnableWizard', () => {
       driveOnly: false,
       keepUnlocked: false,
     });
+    expect(mocks.authorizeDriveStorage).not.toHaveBeenCalled();
+  });
+
+  it('connects Google Drive from the storage step before showing the passphrase step', async () => {
+    const user = userEvent.setup();
+    render(<ParanoidEnableWizard onCancel={() => {}} onEnabled={() => {}} />);
+
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
+    await user.click(
+      screen.getByRole('checkbox', { name: 'Also keep a verified copy in my Google Drive' }),
+    );
+
+    expect(screen.getByText(/Connect Google Drive before continuing/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Continue' })).toBeDisabled();
+    await user.click(screen.getByRole('button', { name: 'Connect Google Drive' }));
+
+    expect(mocks.authorizeDriveStorage).toHaveBeenCalledOnce();
+    expect(screen.getByText(/Google Drive is connected and ready/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Continue' })).toBeEnabled();
+    expect(mocks.prepare).not.toHaveBeenCalled();
+    expect(mocks.enable).not.toHaveBeenCalled();
+    expect(mocks.commitApi).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
+    expect(screen.getByLabelText('Vault passphrase')).toBeInTheDocument();
+  });
+
+  it('keeps the account untouched when the early Google Drive popup is blocked', async () => {
+    mocks.authorizeDriveStorage.mockRejectedValueOnce(new Error('popup blocked'));
+    const user = userEvent.setup();
+    render(<ParanoidEnableWizard onCancel={() => {}} onEnabled={() => {}} />);
+
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
+    await user.click(
+      screen.getByRole('checkbox', { name: 'Also keep a verified copy in my Google Drive' }),
+    );
+    await user.click(screen.getByRole('button', { name: 'Connect Google Drive' }));
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      /Allow the Google sign-in popup.*account has not changed/i,
+    );
+    expect(screen.getByRole('heading', { name: 'Choose encrypted storage' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Continue' })).toBeDisabled();
+    expect(screen.queryByLabelText('Vault passphrase')).not.toBeInTheDocument();
+    expect(mocks.prepare).not.toHaveBeenCalled();
+    expect(mocks.deliver).not.toHaveBeenCalled();
+    expect(mocks.migrate).not.toHaveBeenCalled();
+    expect(mocks.enable).not.toHaveBeenCalled();
+    expect(mocks.commitApi).not.toHaveBeenCalled();
+  });
+
+  it('refreshes an early Drive authorization from the final Enable gesture when it is stale', async () => {
+    const earlyDrive = { medium: 'drive' };
+    const refreshedDrive = { medium: 'drive', refreshed: true };
+    mocks.authorizeDriveStorage
+      .mockResolvedValueOnce(earlyDrive)
+      .mockResolvedValueOnce(refreshedDrive);
+    const user = userEvent.setup();
+    render(<ParanoidEnableWizard onCancel={() => {}} onEnabled={() => {}} />);
+
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
+    await user.click(
+      screen.getByRole('checkbox', { name: 'Also keep a verified copy in my Google Drive' }),
+    );
+    await user.click(screen.getByRole('button', { name: 'Connect Google Drive' }));
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
+    await user.type(screen.getByLabelText('Vault passphrase'), 'correct horse battery staple 729');
+    await user.type(
+      screen.getByLabelText('Confirm vault passphrase'),
+      'correct horse battery staple 729',
+    );
+    await user.click(screen.getByRole('button', { name: 'Download recovery kit' }));
+    await user.click(
+      screen.getByRole('checkbox', { name: 'I have stored my recovery kit safely.' }),
+    );
+    await user.click(screen.getByRole('checkbox', { name: /my data is gone forever/i }));
+    await user.click(screen.getByRole('button', { name: 'Enable Paranoid mode' }));
+
+    expect(mocks.authorizeDriveStorage).toHaveBeenCalledTimes(2);
+    expect(mocks.enable).toHaveBeenCalledWith(
+      expect.objectContaining({ mediaSet: ['server', 'drive'] }),
+      expect.objectContaining({ drive: refreshedDrive }),
+    );
   });
 
   it.each([

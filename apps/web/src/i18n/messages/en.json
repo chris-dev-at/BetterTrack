@@ -3596,6 +3596,11 @@
           "body": "Encrypted on BetterTrack; only you can read it."
         },
         "driveCopy": "Also keep a verified copy in my Google Drive",
+        "driveAuthorizationRequired": "Connect Google Drive before continuing, so you can resolve any sign-in or popup problem before creating your vault passphrase and recovery kit.",
+        "driveConnected": "Google Drive is connected and ready for the encrypted copy.",
+        "connectDrive": "Connect Google Drive",
+        "reconnectDrive": "Reconnect Google Drive",
+        "connectingDrive": "Connecting Google Drive…",
         "advanced": "Advanced",
         "driveOnly": {
           "title": "Google Drive only",
@@ -3628,6 +3633,8 @@
         "commit": "Finalizing Paranoid mode…"
       },
       "errors": {
+        "driveAuthorization": "Google Drive could not be connected. Allow the Google sign-in popup, choose the right account, and try again. Your account has not changed.",
+        "driveReauthorization": "Google Drive needs to be reconnected before the transfer can start. Allow the Google sign-in popup and try again. Your account has not changed.",
         "migrate": "Your current data could not be collected completely. Nothing was changed; retry after the connection recovers.",
         "validate": "The prepared vault failed its safety check, so BetterTrack stopped before writing anything. Nothing was changed and your normal account is unchanged.",
         "encrypt": "This browser could not encrypt the vault. Nothing was changed.",

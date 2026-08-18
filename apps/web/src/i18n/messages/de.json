@@ -3596,6 +3596,11 @@
           "body": "Bei BetterTrack verschlüsselt; nur du kannst die Daten lesen."
         },
         "driveCopy": "Zusätzlich eine geprüfte Kopie in meinem Google Drive speichern",
+        "driveAuthorizationRequired": "Verbinde Google Drive, bevor du fortfährst. So kannst du Anmelde- oder Popup-Probleme lösen, bevor du deine Tresor-Passphrase und dein Wiederherstellungspaket erstellst.",
+        "driveConnected": "Google Drive ist verbunden und für die verschlüsselte Kopie bereit.",
+        "connectDrive": "Google Drive verbinden",
+        "reconnectDrive": "Google Drive erneut verbinden",
+        "connectingDrive": "Google Drive wird verbunden…",
         "advanced": "Erweitert",
         "driveOnly": {
           "title": "Nur Google Drive",
@@ -3628,6 +3633,8 @@
         "commit": "Der paranoide Modus wird abgeschlossen…"
       },
       "errors": {
+        "driveAuthorization": "Google Drive konnte nicht verbunden werden. Erlaube das Google-Anmelde-Popup, wähle das richtige Konto und versuche es erneut. Dein Konto wurde nicht geändert.",
+        "driveReauthorization": "Google Drive muss erneut verbunden werden, bevor die Übertragung starten kann. Erlaube das Google-Anmelde-Popup und versuche es erneut. Dein Konto wurde nicht geändert.",
         "migrate": "Deine aktuellen Daten konnten nicht vollständig gesammelt werden. Es wurde nichts geändert; versuche es nach Wiederherstellung der Verbindung erneut.",
         "validate": "Der vorbereitete Tresor hat die Sicherheitsprüfung nicht bestanden, deshalb hat BetterTrack vor dem ersten Schreibvorgang abgebrochen. Es wurde nichts geändert und dein normales Konto ist unverändert.",
         "encrypt": "Dieser Browser konnte den Tresor nicht verschlüsseln. Es wurde nichts geändert.",
