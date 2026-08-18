@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+import { PARANOID_REHYDRATION_HANDLERS, type VaultEntityKind } from '@bettertrack/contracts';
+
 import type { PortfolioStore } from '../../../lib/portfolioStore';
 
 vi.mock('../../../lib/portfolioApi', async (importOriginal) => {
@@ -183,6 +185,337 @@ function storeWithSell(current: {
 }
 
 describe('buildNormalVaultDocument', () => {
+  it('emits exactly every restorable entity kind from a fully populated capture', async () => {
+    const fixtureId = (value: number) =>
+      `018f0000-0000-7000-8002-${String(value).padStart(12, '0')}`;
+    const sourceId = fixtureId(1);
+    const movementId = fixtureId(2);
+    const dividendId = fixtureId(3);
+    const expenseCategoryId = fixtureId(4);
+    const expenseTransactionId = fixtureId(5);
+    const expenseRuleId = fixtureId(6);
+    const expenseBudgetId = fixtureId(7);
+    const cashTagId = fixtureId(8);
+    const cashRuleId = fixtureId(9);
+    const cashBudgetId = fixtureId(10);
+
+    vi.mocked(listDividends).mockResolvedValue({
+      dividends: [
+        {
+          id: dividendId,
+          assetId: ASSET_ID,
+          grossAmountEur: 5,
+          executedAt: '2026-07-10T09:00:00.000Z',
+          note: null,
+          taxMode: 'none',
+          taxCountry: null,
+          taxAmountEur: null,
+          cashSourceId: sourceId,
+          source: 'manual',
+          createdAt: '2026-07-10T09:00:00.000Z',
+          asset: ASSET,
+        },
+      ],
+    });
+    vi.mocked(getTaxYearReports).mockResolvedValue({
+      years: [
+        {
+          year: 2026,
+          realizedPnlEur: 0,
+          dividendsGrossEur: 5,
+          taxWithheldEur: 0,
+          taxRefundedEur: 0,
+          taxNetEur: 0,
+        },
+      ],
+    });
+    vi.mocked(getTaxYearReport).mockResolvedValue({
+      year: 2026,
+      summary: {
+        year: 2026,
+        realizedPnlEur: 0,
+        dividendsGrossEur: 5,
+        taxWithheldEur: 0,
+        taxRefundedEur: 0,
+        taxNetEur: 0,
+      },
+      positions: [
+        {
+          asset: ASSET,
+          realizedPnlEur: 0,
+          dividendsGrossEur: 5,
+          taxEur: 0,
+          sells: [],
+          dividends: [
+            {
+              dividendId,
+              executedAt: '2026-07-10T09:00:00.000Z',
+              grossAmountEur: 5,
+              taxMode: 'none',
+              taxCountry: null,
+              taxAmountEur: null,
+              taxParams: null,
+            },
+          ],
+        },
+      ],
+    });
+    vi.mocked(listExpenseCategories).mockResolvedValue({
+      categories: [
+        {
+          id: expenseCategoryId,
+          name: 'Groceries',
+          direction: 'expense',
+          color: '#123456',
+          createdAt: NOW,
+          updatedAt: NOW,
+        },
+      ],
+    });
+    vi.mocked(listExpenseTransactions).mockResolvedValue({
+      transactions: [
+        {
+          id: expenseTransactionId,
+          categoryId: expenseCategoryId,
+          direction: 'expense',
+          amount: 25,
+          currency: 'EUR',
+          bookedOn: '2026-07-12',
+          description: 'Market',
+          source: 'manual',
+          createdAt: NOW,
+          updatedAt: NOW,
+        },
+      ],
+    });
+    vi.mocked(listExpenseRules).mockResolvedValue({
+      rules: [
+        {
+          id: expenseRuleId,
+          categoryId: expenseCategoryId,
+          matchType: 'contains',
+          pattern: 'market',
+          priority: 0,
+          enabled: true,
+          createdAt: NOW,
+          updatedAt: NOW,
+        },
+      ],
+    });
+    vi.mocked(listExpenseBudgets).mockResolvedValue({
+      period: '2026-07',
+      budgets: [
+        {
+          id: expenseBudgetId,
+          categoryId: expenseCategoryId,
+          categoryName: 'Groceries',
+          categoryColor: '#123456',
+          amount: 300,
+          currency: 'EUR',
+          period: '2026-07',
+          spent: 25,
+          remaining: 275,
+          exceeded: false,
+        },
+      ],
+    });
+    vi.mocked(listCashTags).mockResolvedValue({
+      tags: [
+        {
+          id: cashTagId,
+          name: 'Salary',
+          color: '#abcdef',
+          system: false,
+          systemKey: null,
+          createdAt: NOW,
+          updatedAt: NOW,
+        },
+      ],
+    });
+    vi.mocked(listCashRules).mockResolvedValue({
+      rules: [
+        {
+          id: cashRuleId,
+          tagIds: [cashTagId],
+          matchType: 'contains',
+          pattern: 'salary',
+          priority: 0,
+          enabled: true,
+          createdAt: NOW,
+          updatedAt: NOW,
+        },
+      ],
+    });
+    vi.mocked(listAllCashBudgets).mockResolvedValue({
+      budgets: [
+        {
+          id: cashBudgetId,
+          portfolioId: PORTFOLIO_ID,
+          tagId: cashTagId,
+          period: null,
+          amount: 1_000,
+          currency: 'EUR',
+          createdAt: NOW,
+          updatedAt: NOW,
+        },
+      ],
+    });
+    vi.mocked(listStandingOrderRuns).mockResolvedValue({
+      runs: [
+        {
+          id: RUN_ID,
+          standingOrderId: ORDER_ID,
+          periodKey: '2026-07-01',
+          bookedAt: NOW,
+        },
+      ],
+    });
+
+    const store: PortfolioStore = {
+      ...apiPortfolioStore,
+      listPortfolios: vi.fn(async () => ({
+        portfolios: [
+          {
+            id: PORTFOLIO_ID,
+            name: 'Main',
+            visibility: 'private' as const,
+            sortOrder: 0,
+            isDefault: true,
+            defaultPayFromCash: false,
+            archivedAt: null,
+          },
+        ],
+      })),
+      listTransactions: vi.fn(async () => ({
+        items: [
+          {
+            id: TRANSACTION_ID,
+            assetId: ASSET_ID,
+            side: 'buy' as const,
+            quantity: 1,
+            price: 100,
+            fee: 1,
+            executedAt: '2026-07-01T09:00:00.000Z',
+            note: null,
+            allowUncovered: false,
+            uncoveredEntryPrice: null,
+            source: 'manual',
+            asset: ASSET,
+          },
+        ],
+        nextCursor: null,
+      })),
+      getCashMovements: vi.fn(async () => ({
+        balanceEur: 1_000,
+        sources: [
+          {
+            id: sourceId,
+            name: 'Main',
+            type: 'cash' as const,
+            isMain: true,
+            archivedAt: null,
+            balanceEur: 1_000,
+            createdAt: NOW,
+          },
+        ],
+        movements: [
+          {
+            id: movementId,
+            kind: 'deposit' as const,
+            amountEur: 1_000,
+            sourceId,
+            transactionId: null,
+            transferId: null,
+            counterpartSourceId: null,
+            dividendId: null,
+            taxYear: null,
+            executedAt: NOW,
+            note: 'Salary',
+            source: 'manual' as const,
+            createdAt: NOW,
+            tags: [cashTagId],
+          },
+        ],
+        nextCursor: null,
+      })),
+      getPortfolioTaxSettings: vi.fn(async () => ({
+        effective: { mode: 'none' as const, country: null },
+        override: { mode: 'none' as const, country: null },
+        userDefault: { mode: 'none' as const, country: null },
+        source: 'portfolio' as const,
+      })),
+      getTaxSettings: vi.fn(async () => ({ mode: 'none' as const, country: null })),
+      listCustomAssets: vi.fn(async () => ({
+        assets: [
+          {
+            id: CUSTOM_ASSET_ID,
+            symbol: 'HOUSE',
+            name: 'House',
+            category: 'other' as const,
+            currency: 'EUR',
+            type: 'custom' as const,
+            smoothing: false,
+            needsRecategorization: false,
+            latestValue: { date: '2026-07-01', value: 250_000 },
+          },
+        ],
+      })),
+      getValuePoints: vi.fn(async () => ({
+        points: [{ date: '2026-07-01', value: 250_000 }],
+      })),
+      listStandingOrders: vi.fn(async () => ({
+        orders: [
+          {
+            id: ORDER_ID,
+            portfolioId: PORTFOLIO_ID,
+            kind: 'cash-add' as const,
+            assetId: null,
+            assetSymbol: null,
+            assetName: null,
+            amount: 100,
+            currency: 'EUR',
+            label: 'Salary',
+            cadence: 'monthly' as const,
+            anchorDay: 1,
+            startDate: '2026-07-01',
+            endDate: null,
+            status: 'active' as const,
+            lastRunAt: NOW,
+            lastPeriodKey: '2026-07-01',
+            nextRunDate: '2026-08-01',
+            createdAt: NOW,
+            updatedAt: NOW,
+          },
+        ],
+      })),
+    };
+    let generatedId = 100;
+
+    const document = await buildNormalVaultDocument({
+      userId: USER_ID,
+      deviceId: DEVICE_ID,
+      store,
+      now: () => NOW,
+      id: () => fixtureId(generatedId++),
+    });
+
+    const emittedKinds = new Set(
+      Object.entries(document.entities)
+        .filter(([, entities]) => entities.length > 0)
+        .map(([kind]) => kind as VaultEntityKind),
+    );
+    const handlerKinds = new Set<VaultEntityKind>(PARANOID_REHYDRATION_HANDLERS);
+
+    expect(
+      PARANOID_REHYDRATION_HANDLERS.filter((kind) => !emittedKinds.has(kind)),
+      'rehydration handlers without a capture emit branch',
+    ).toEqual([]);
+    expect(
+      [...emittedKinds].filter((kind) => !handlerKinds.has(kind)),
+      'capture emit branches without a rehydration handler',
+    ).toEqual([]);
+  });
+
   it('collects the complete normal portfolio graph through the store before enable', async () => {
     const listPortfolios = vi.fn(async () => ({
       portfolios: [
