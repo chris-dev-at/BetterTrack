@@ -62,9 +62,8 @@ export interface CollectedExport {
 /**
  * Columns never written to an export, matched by their (camelCase) property name
  * as Drizzle returns them: password/token/secret hashes, the raw legacy share
- * token, opaque binary caches, and the federated `subject` (an opaque provider
- * id). Stripping is by key name so a future sensitive column on an
- * already-exported table is dropped by default rather than leaked.
+ * token, and opaque binary caches. Stripping is by key name so a future sensitive
+ * column on an already-exported table is dropped by default rather than leaked.
  */
 const SENSITIVE_KEYS: ReadonlySet<string> = new Set([
   'passwordHash',
@@ -77,19 +76,34 @@ const SENSITIVE_KEYS: ReadonlySet<string> = new Set([
   'codeHash',
   'downloadTokenHash',
   'token',
-  'subject',
 ]);
 
-function stripSensitive<T extends Record<string, unknown>>(row: T): Record<string, unknown> {
+/** Columns whose meaning is sensitive only on one exported entity. */
+const ENTITY_SENSITIVE_KEYS = {
+  // The OIDC `sub` is an opaque provider identifier. Feedback subjects with the
+  // same property name are user-authored account data and must remain exported.
+  externalIdentities: new Set(['subject']),
+} as const satisfies Readonly<Record<string, ReadonlySet<string>>>;
+
+type EntityWithSensitiveKeys = keyof typeof ENTITY_SENSITIVE_KEYS;
+
+function stripSensitive<T extends Record<string, unknown>>(
+  row: T,
+  entity?: EntityWithSensitiveKeys,
+): Record<string, unknown> {
+  const entitySensitiveKeys = entity ? ENTITY_SENSITIVE_KEYS[entity] : undefined;
   const out: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(row)) {
-    if (!SENSITIVE_KEYS.has(key)) out[key] = value;
+    if (!SENSITIVE_KEYS.has(key) && !entitySensitiveKeys?.has(key)) out[key] = value;
   }
   return out;
 }
 
-function sanitize(rows: Record<string, unknown>[]): Record<string, unknown>[] {
-  return rows.map(stripSensitive);
+function sanitize(
+  rows: Record<string, unknown>[],
+  entity?: EntityWithSensitiveKeys,
+): Record<string, unknown>[] {
+  return rows.map((row) => stripSensitive(row, entity));
 }
 
 /**
@@ -266,7 +280,7 @@ export async function collectUserExport(
   const allEntities: Record<string, unknown[]> = {
     account: sanitize(accountRows),
     apiKeys: sanitize(apiKeyRows),
-    externalIdentities: sanitize(externalIdentityRows),
+    externalIdentities: sanitize(externalIdentityRows, 'externalIdentities'),
     oauthClients: sanitize(oauthClientRows),
     oauthGrants: sanitize(oauthGrantRows),
     watchlists: sanitize(watchlistRows),

@@ -161,8 +161,19 @@ describe('account data export', () => {
     const [aliceFeedback, bobFeedback] = await harness.db
       .insert(schema.feedback)
       .values([
-        { userId: alice.id, category: 'feature', message: 'Alice feature' },
-        { userId: bob.id, category: 'bug', message: 'Bob bug' },
+        {
+          userId: alice.id,
+          category: 'feature',
+          subject: 'Alice forecast idea',
+          message: 'Alice feature',
+          context: { screen: '/forecast' },
+        },
+        {
+          userId: bob.id,
+          category: 'bug',
+          subject: 'Bob private subject',
+          message: 'Bob bug',
+        },
       ])
       .returning({ id: schema.feedback.id });
 
@@ -181,11 +192,18 @@ describe('account data export', () => {
     const ids = (JSON.parse(files['data/portfolios.json']!) as { id: string }[]).map((p) => p.id);
     expect(ids).toContain(aliceP);
     expect(ids).not.toContain(bobP);
-    const feedbackIds = (JSON.parse(files['data/feedback.json']!) as { id: string }[]).map(
-      (row) => row.id,
-    );
-    expect(feedbackIds).toContain(aliceFeedback!.id);
-    expect(feedbackIds).not.toContain(bobFeedback!.id);
+    const feedbackRows = JSON.parse(files['data/feedback.json']!) as Record<string, unknown>[];
+    expect(feedbackRows).toHaveLength(1);
+    expect(feedbackRows[0]).toMatchObject({
+      id: aliceFeedback!.id,
+      userId: alice.id,
+      category: 'feature',
+      subject: 'Alice forecast idea',
+      message: 'Alice feature',
+      context: { screen: '/forecast' },
+      status: 'new',
+    });
+    expect(feedbackRows).not.toContainEqual(expect.objectContaining({ id: bobFeedback!.id }));
   });
 
   it('the collector produces exactly the classified entity set', async () => {
@@ -201,6 +219,13 @@ describe('account data export', () => {
       logoUrl: 'https://client.example/logo.png',
       logoBytes: Buffer.from([0x89, 0x50, 0x4e, 0x47]),
       logoContentType: 'image/png',
+    });
+    await harness.db.insert(schema.externalIdentities).values({
+      userId: user.id,
+      provider: 'google',
+      subject: 'opaque-google-subject',
+      email: user.email,
+      emailVerified: true,
     });
     const collected = await collectUserExport(harness.db, user.id);
     expect(Object.keys(collected.entities).sort()).toEqual([...EXPORTED_ENTITY_NAMES]);
@@ -220,6 +245,12 @@ describe('account data export', () => {
       logoUrl: 'https://client.example/logo.png',
       logoContentType: 'image/png',
     });
+    // `subject` is table-sensitive: the opaque OIDC identifier stays redacted
+    // even though user-authored feedback subjects remain in account exports.
+    const identities = collected.entities.externalIdentities as Record<string, unknown>[];
+    expect(identities).toHaveLength(1);
+    expect(identities[0]).not.toHaveProperty('subject');
+    expect(identities[0]).toMatchObject({ provider: 'google', email: user.email });
   });
 
   it('rejects a wrong re-auth without creating a job', async () => {
