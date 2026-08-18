@@ -2,8 +2,8 @@ import { useMemo } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
 
-import { listPortfolios } from '../../../lib/portfolioApi';
 import { ACTIVE_PORTFOLIO_PARAM, resolveActivePortfolio } from '../PortfolioSwitcher';
+import { usePortfolioStore } from '../PortfolioStoreProvider';
 
 /**
  * Resolve the active portfolio exactly the way every portfolio-scoped page
@@ -12,10 +12,11 @@ import { ACTIVE_PORTFOLIO_PARAM, resolveActivePortfolio } from '../PortfolioSwit
  * doesn't repeat the same lookup.
  */
 export function useActivePortfolio() {
+  const store = usePortfolioStore();
   const [searchParams] = useSearchParams();
   const portfoliosQuery = useQuery({
     queryKey: ['portfolios'],
-    queryFn: ({ signal }) => listPortfolios(signal),
+    queryFn: ({ signal }) => store.listPortfolios(signal),
     staleTime: 60_000,
   });
   const activeParam = searchParams.get(ACTIVE_PORTFOLIO_PARAM);

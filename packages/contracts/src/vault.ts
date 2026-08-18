@@ -921,6 +921,36 @@ export const vaultEntityKindSchema = z.enum(VAULT_ENTITY_KINDS);
 export type VaultEntityKind = z.infer<typeof vaultEntityKindSchema>;
 
 /**
+ * Entity kinds whose normal-account rows survive paranoid enable only through
+ * the encrypted document. This is the shared enrollment boundary for the web
+ * capture branches and the API rehydration handlers: either side adding a kind
+ * without the other must fail its completeness gate before the one-way purge
+ * can run in production.
+ */
+export const PARANOID_REHYDRATION_HANDLERS = [
+  'portfolio',
+  'transaction',
+  'dividend',
+  'cashSource',
+  'cashMovement',
+  'portfolioSetting',
+  'taxSetting',
+  'customAsset',
+  'customAssetValue',
+  'standingOrder',
+  'standingOrderRun',
+  'expenseCategory',
+  'expenseTransaction',
+  'expenseRule',
+  'expenseBudget',
+  'cashTag',
+  'cashMovementTag',
+  'cashBudget',
+  'cashRule',
+  'cashRuleTag',
+] as const satisfies readonly VaultEntityKind[];
+
+/**
  * Per-entity sync metadata (`§2`/`§4`): a uuidv7 id, a monotonic `rev` bumped on
  * every edit, an `editedAt` instant + the writing `editedBy` deviceId, and a
  * `deletedAt` tombstone (kept ≥ 180 days) so long-offline merges stay correct.
