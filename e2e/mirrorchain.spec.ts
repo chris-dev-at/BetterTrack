@@ -1,7 +1,7 @@
 import { expect, request as newRequestContext, test } from '@playwright/test';
 
-import { loginAsAdmin } from './support/adminApi';
-import { ACCOUNT_PASSWORD, API_BASE_URL } from './support/config';
+import { newAdminRequestContext } from './support/adminApi';
+import { ACCOUNT_PASSWORD } from './support/config';
 import {
   activity,
   apiGet,
@@ -110,13 +110,12 @@ test.describe('mirrorchain lifecycle UI gate', () => {
   }) => {
     test.setTimeout(300_000);
 
-    const apiRequest = await newRequestContext.newContext({ baseURL: API_BASE_URL });
+    const apiRequest = await newAdminRequestContext(newRequestContext);
     let owner: E2EUser | undefined;
     let member: E2EUser | undefined;
     let successor: E2EUser | undefined;
 
     try {
-      await loginAsAdmin(apiRequest);
       owner = await provisionUser(browser, apiRequest, 'mclifecycleowner');
       member = await provisionUser(browser, apiRequest, 'mclifecyclemember');
       successor = await provisionUser(browser, apiRequest, 'mclifecyclesuccessor');
@@ -384,8 +383,7 @@ test.describe('mirrorchain lifecycle UI gate', () => {
 test('mirrorchain: a member buy propagates to every copy, attributed', async ({ browser }) => {
   test.setTimeout(180_000);
 
-  const apiRequest = await newRequestContext.newContext({ baseURL: API_BASE_URL });
-  await loginAsAdmin(apiRequest);
+  const apiRequest = await newAdminRequestContext(newRequestContext);
   const owner = await provisionUser(browser, apiRequest, 'mcbuyowner');
   const member = await provisionUser(browser, apiRequest, 'mcbuymember');
   await apiRequest.dispose();
@@ -429,8 +427,7 @@ test('mirrorchain: concurrent edits converge with exactly one MIRROR_CONFLICT', 
 }) => {
   test.setTimeout(180_000);
 
-  const apiRequest = await newRequestContext.newContext({ baseURL: API_BASE_URL });
-  await loginAsAdmin(apiRequest);
+  const apiRequest = await newAdminRequestContext(newRequestContext);
   const alice = await provisionUser(browser, apiRequest, 'mccncalice');
   const bob = await provisionUser(browser, apiRequest, 'mccncbob');
   await apiRequest.dispose();
@@ -521,8 +518,7 @@ test('mirrorchain: concurrent edits converge with exactly one MIRROR_CONFLICT', 
 test('mirrorchain: the per-copy audit trail enumerates every applied op', async ({ browser }) => {
   test.setTimeout(180_000);
 
-  const apiRequest = await newRequestContext.newContext({ baseURL: API_BASE_URL });
-  await loginAsAdmin(apiRequest);
+  const apiRequest = await newAdminRequestContext(newRequestContext);
   const owner = await provisionUser(browser, apiRequest, 'mcauditowner');
   const member = await provisionUser(browser, apiRequest, 'mcauditmember');
   await apiRequest.dispose();
@@ -569,8 +565,7 @@ test('mirrorchain: the per-copy audit trail enumerates every applied op', async 
 test('mirrorchain: a kick leaves a fully working, un-synced fork', async ({ browser }) => {
   test.setTimeout(180_000);
 
-  const apiRequest = await newRequestContext.newContext({ baseURL: API_BASE_URL });
-  await loginAsAdmin(apiRequest);
+  const apiRequest = await newAdminRequestContext(newRequestContext);
   const owner = await provisionUser(browser, apiRequest, 'mckickowner');
   const member = await provisionUser(browser, apiRequest, 'mckickmember');
   await apiRequest.dispose();
@@ -648,8 +643,7 @@ test('mirrorchain: transfer makes the target owner and demotes the old owner', a
 }) => {
   test.setTimeout(180_000);
 
-  const apiRequest = await newRequestContext.newContext({ baseURL: API_BASE_URL });
-  await loginAsAdmin(apiRequest);
+  const apiRequest = await newAdminRequestContext(newRequestContext);
   const owner = await provisionUser(browser, apiRequest, 'mcxferowner');
   const member = await provisionUser(browser, apiRequest, 'mcxfermember');
   await apiRequest.dispose();
@@ -685,8 +679,7 @@ test('mirrorchain: a non-owner deletion leaves the chain, other copies + sync in
 }) => {
   test.setTimeout(240_000);
 
-  const apiRequest = await newRequestContext.newContext({ baseURL: API_BASE_URL });
-  await loginAsAdmin(apiRequest);
+  const apiRequest = await newAdminRequestContext(newRequestContext);
   const owner = await provisionUser(browser, apiRequest, 'mcdelowner');
   const leaver = await provisionUser(browser, apiRequest, 'mcdelleaver');
   const other = await provisionUser(browser, apiRequest, 'mcdelother');

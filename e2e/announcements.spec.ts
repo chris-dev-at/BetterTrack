@@ -1,6 +1,6 @@
 import { expect, request as newRequestContext, test } from '@playwright/test';
 
-import { loginAsAdmin } from './support/adminApi';
+import { newAdminRequestContext } from './support/adminApi';
 import { passwordSignIn } from './support/auth';
 import { API_BASE_URL } from './support/config';
 import { expectUserShellReady } from './support/flows';
@@ -23,8 +23,7 @@ test('announcements: an active announcement reaches every user and stays dismiss
 }) => {
   test.setTimeout(180_000);
 
-  const apiRequest = await newRequestContext.newContext({ baseURL: API_BASE_URL });
-  await loginAsAdmin(apiRequest);
+  const apiRequest = await newAdminRequestContext(newRequestContext);
 
   const alice = await provisionUser(browser, apiRequest, 'annalice');
   const bob = await provisionUser(browser, apiRequest, 'annbob');

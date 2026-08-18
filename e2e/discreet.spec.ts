@@ -1,8 +1,7 @@
 import { expect, request as newRequestContext, test, type Page } from '@playwright/test';
 
-import { loginAsAdmin } from './support/adminApi';
+import { newAdminRequestContext } from './support/adminApi';
 import { cashSourceAction, cashSourceRow } from './support/cashSurface';
-import { API_BASE_URL } from './support/config';
 import { provisionUser } from './support/users';
 
 /**
@@ -53,8 +52,7 @@ test('discreet mode masks every absolute amount on the portfolio surface and tog
 }) => {
   test.setTimeout(240_000);
 
-  const apiRequest = await newRequestContext.newContext({ baseURL: API_BASE_URL });
-  await loginAsAdmin(apiRequest);
+  const apiRequest = await newAdminRequestContext(newRequestContext);
   const user = await provisionUser(browser, apiRequest, 'discreet');
   await apiRequest.dispose();
 

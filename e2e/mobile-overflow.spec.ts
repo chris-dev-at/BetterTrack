@@ -12,7 +12,7 @@ import {
 } from '@playwright/test';
 import ts from 'typescript';
 
-import { loginAsAdmin } from './support/adminApi';
+import { newAdminRequestContext } from './support/adminApi';
 import { API_BASE_URL } from './support/config';
 import { expectUserShellReady } from './support/flows';
 import { provisionUser, provisionUserInContext } from './support/users';
@@ -1753,8 +1753,7 @@ for (const profile of VIEWPORT_PROFILES) {
       await setStoredLocale(anonymousPage, 'en');
       await anonymousPage.close();
 
-      const apiRequest = await newRequestContext.newContext({ baseURL: API_BASE_URL });
-      await loginAsAdmin(apiRequest);
+      const apiRequest = await newAdminRequestContext(newRequestContext);
       const owner = await provisionUserInContext(
         context,
         apiRequest,
