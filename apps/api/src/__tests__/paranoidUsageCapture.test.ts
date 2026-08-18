@@ -241,4 +241,50 @@ describe('usage capture never records a paranoid account', () => {
     expect(await usageRowsFor(h, paranoid.id)).toEqual([]);
     expect((await usageRowsFor(h, normal.id)).map((r) => r.assetId)).toEqual(['public']);
   });
+
+  /**
+   * The flush takes its lock in chunks of `PARANOID_ADMIN_METADATA_LOCK_CHUNK`,
+   * so that neither the `FOR KEY SHARE` hold nor the `inArray` list grows with
+   * the account table (the rule established at
+   * `paranoidTransitionRepository.ts`'s admin metadata batch). Every other case
+   * here fits in a single chunk; this one crosses the boundary and puts the
+   * paranoid account in the SECOND chunk, where a per-chunk bug would leave it
+   * un-suppressed.
+   */
+  it('suppresses a paranoid account that falls beyond the first lock chunk', async () => {
+    const h = await createTestApp();
+    // Inserted directly: 101 argon2 password hashes would dominate the runtime,
+    // and only the `users` rows matter to the write boundary.
+    const rows = Array.from({ length: 101 }, (_, i) => ({
+      email: `chunk${i}@test.dev`,
+      username: `chunk_user_${i}`,
+      passwordHash: 'not-a-real-hash',
+      role: 'user' as const,
+      status: 'active' as const,
+      baseCurrency: 'EUR',
+      locale: 'en',
+    }));
+    const seeded = await h.db.insert(schema.users).values(rows).returning({ id: schema.users.id });
+    expect(seeded).toHaveLength(101);
+
+    const beyondFirstChunk = seeded[100]!.id;
+    await makeParanoid(h, beyondFirstChunk);
+
+    for (const user of seeded) {
+      h.ctx.usageAnalytics.capture({
+        userId: user.id,
+        feature: 'assets',
+        assetId: `asset-for-${user.id}`,
+      });
+    }
+    await h.ctx.usageAnalytics.flush();
+
+    // The paranoid account in the second chunk wrote nothing…
+    expect(await usageRowsFor(h, beyondFirstChunk)).toEqual([]);
+    // …while every other account in both chunks still recorded exactly one row,
+    // so chunking suppressed the right account and dropped nobody else.
+    const written = await h.db.select().from(schema.usageEvents);
+    expect(written).toHaveLength(100);
+    expect(written.some((r) => r.userId === beyondFirstChunk)).toBe(false);
+  });
 });
