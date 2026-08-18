@@ -37,6 +37,7 @@ function setRuntimeApp(app: 'user' | 'admin') {
     app,
     apiOrigin: '',
     productOrigin: 'https://bettertrack.at',
+    googleDriveClientId: '',
   });
 }
 

@@ -1,3 +1,5 @@
+/// <reference types="vite/client" />
+
 /**
  * SPA runtime configuration (PROJECTPLAN.md §7.1). The same built web image is
  * served from every origin (user + admin); each nginx server block writes a
@@ -8,7 +10,8 @@
  *   window.__BT__ = {
  *     app: "user" | "admin",
  *     apiOrigin: "https://api.example",
- *     productOrigin: "https://example"
+ *     productOrigin: "https://example",
+ *     googleDriveClientId: "123.apps.googleusercontent.com"
  *   }
  *
  * `apiOrigin` empty (the dev/default stub) means "same origin" — the Vite proxy
@@ -22,6 +25,8 @@ export interface RuntimeConfig {
   apiOrigin: string;
   /** Absolute product-site origin that serves the public legal documents. */
   productOrigin: string;
+  /** Public Google Cloud SPA OAuth client id, or '' when Drive is disabled. */
+  googleDriveClientId: string;
 }
 
 declare global {
@@ -34,6 +39,7 @@ const DEFAULTS: RuntimeConfig = {
   app: 'user',
   apiOrigin: '',
   productOrigin: 'https://bettertrack.at',
+  googleDriveClientId: '',
 };
 
 export function getRuntimeConfig(): RuntimeConfig {
@@ -47,7 +53,20 @@ export function getRuntimeConfig(): RuntimeConfig {
     typeof injected?.productOrigin === 'string' && injected.productOrigin.length > 0
       ? injected.productOrigin.replace(/\/$/, '')
       : DEFAULTS.productOrigin;
-  return { app, apiOrigin, productOrigin };
+  const googleDriveClientId =
+    typeof injected?.googleDriveClientId === 'string'
+      ? injected.googleDriveClientId.trim()
+      : DEFAULTS.googleDriveClientId;
+  return { app, apiOrigin, productOrigin, googleDriveClientId };
+}
+
+/** Runtime Drive configuration wins; the Vite value preserves local/build-arg use. */
+export function getGoogleDriveClientId(): string {
+  return (
+    getRuntimeConfig().googleDriveClientId ||
+    import.meta.env.VITE_GOOGLE_DRIVE_CLIENT_ID?.trim() ||
+    ''
+  );
 }
 
 /** Base URL for the JSON API: `${apiOrigin}/api/v1`, or relative `/api/v1`. */

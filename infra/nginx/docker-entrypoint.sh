@@ -142,6 +142,19 @@ else
 fi
 PRODUCT_ORIGIN="$(validated_origin 'http https' "$PRODUCT_ORIGIN_NAME" "$PRODUCT_ORIGIN")" || exit 1
 
+# Public Google Cloud SPA OAuth client id rendered into config.js. The value is
+# not a secret, but it still crosses a shell → JavaScript boundary: accept only
+# the character set used by Google client ids so configuration can never inject
+# JavaScript into the user or admin origin. Blank deliberately disables Drive.
+BT_GOOGLE_DRIVE_CLIENT_ID="${BT_GOOGLE_DRIVE_CLIENT_ID:-}"
+case "$BT_GOOGLE_DRIVE_CLIENT_ID" in
+    '') ;;
+    *[!A-Za-z0-9._-]*)
+        echo "bettertrack-web: BT_GOOGLE_DRIVE_CLIENT_ID must be a Google Cloud SPA OAuth client id" >&2
+        exit 1
+        ;;
+esac
+
 # ── frame-src origin for the admin Grafana embed (§13.5 V5-P2 arc (a)) ────────
 # The Diagnostics panel embeds BT_GRAFANA_PUBLIC_URL verbatim when that
 # auth-gated-subdomain path is configured (apps/api/src/config/env.ts:230 →
@@ -206,7 +219,7 @@ export API_UPSTREAM="${API_UPSTREAM:-api:3000}"
 # (§13.3 V3-P12). The apex origin serves its product page, `mobile.` serves the
 # mobile placeholder — both proxied to this upstream over the internal network.
 export LANDING_UPSTREAM="${LANDING_UPSTREAM:-landing:80}"
-export API_ORIGIN PRODUCT_ORIGIN WS_ORIGIN GRAFANA_FRAME_SRC
+export API_ORIGIN PRODUCT_ORIGIN WS_ORIGIN GRAFANA_FRAME_SRC BT_GOOGLE_DRIVE_CLIENT_ID
 
 # The override keeps the shipped paths fixed while allowing the topology test to
 # execute this exact entrypoint against an isolated temporary nginx tree (same
@@ -220,7 +233,7 @@ if [ ! -f "$TEMPLATE" ]; then
 fi
 
 # Restrict envsubst to OUR vars so nginx runtime vars ($host, $uri, …) survive.
-VARS='${BT_DOMAIN} ${BT_SUB_API} ${BT_SUB_WEB} ${BT_SUB_ADMIN} ${BT_SUB_MOBILE} ${BT_PORT_API} ${BT_PORT_WEB} ${BT_PORT_ADMIN} ${BT_PORT_PRODUCT} ${BT_PORT_MOBILE} ${API_UPSTREAM} ${LANDING_UPSTREAM} ${API_ORIGIN} ${PRODUCT_ORIGIN} ${WS_ORIGIN} ${GRAFANA_FRAME_SRC}'
+VARS='${BT_DOMAIN} ${BT_SUB_API} ${BT_SUB_WEB} ${BT_SUB_ADMIN} ${BT_SUB_MOBILE} ${BT_PORT_API} ${BT_PORT_WEB} ${BT_PORT_ADMIN} ${BT_PORT_PRODUCT} ${BT_PORT_MOBILE} ${BT_GOOGLE_DRIVE_CLIENT_ID} ${API_UPSTREAM} ${LANDING_UPSTREAM} ${API_ORIGIN} ${PRODUCT_ORIGIN} ${WS_ORIGIN} ${GRAFANA_FRAME_SRC}'
 INCLUDE_DIR="${NGINX_ROOT}/bt-includes"
 mkdir -p "$INCLUDE_DIR"
 envsubst "$VARS" \

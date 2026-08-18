@@ -451,6 +451,7 @@ const SUBDOMAINS_ENV: Record<string, string> = {
   LANDING_UPSTREAM: 'landing:80',
   API_ORIGIN: 'https://api.track.example.at',
   PRODUCT_ORIGIN: 'https://track.example.at',
+  BT_GOOGLE_DRIVE_CLIENT_ID: '',
   WS_ORIGIN: 'wss://api.track.example.at',
   // Rendered empty unless BT_GRAFANA_PUBLIC_URL is configured; the entrypoint
   // suite below covers the configured shape against the real script.
@@ -467,6 +468,7 @@ const PORTS_ENV: Record<string, string> = {
   LANDING_UPSTREAM: 'landing:80',
   API_ORIGIN: 'http://track.example.at:3000',
   PRODUCT_ORIGIN: 'http://track.example.at:8082',
+  BT_GOOGLE_DRIVE_CLIENT_ID: '',
   WS_ORIGIN: 'ws://track.example.at:3000',
   GRAFANA_FRAME_SRC: '',
 };
@@ -847,15 +849,17 @@ describe('landing registration status presentation', () => {
 });
 
 describe('shipped web Compose topology → rendered browser policy', () => {
-  it('passes every policy-interpolated origin variable to the front proxy', () => {
+  it('passes every browser-runtime variable to the front proxy', () => {
     // The CSP is rendered by THIS service at container start, so a variable the
     // policy interpolates must be in its own environment block — the api's copy
     // does not reach nginx (the round-2 landing regression, one layer over).
     const shipped = composeWebEnvironment({});
     expect(Object.keys(shipped)).toContain('BT_API_ORIGIN');
     expect(Object.keys(shipped)).toContain('BT_PRODUCT_ORIGIN');
+    expect(Object.keys(shipped)).toContain('BT_GOOGLE_DRIVE_CLIENT_ID');
     expect(Object.keys(shipped)).toContain('BT_GRAFANA_PUBLIC_URL');
     expect(shipped['BT_PRODUCT_ORIGIN']).toBe('');
+    expect(shipped['BT_GOOGLE_DRIVE_CLIENT_ID']).toBe('');
     expect(shipped['BT_GRAFANA_PUBLIC_URL']).toBe('');
     expect(
       composeWebEnvironment({ BT_GRAFANA_PUBLIC_URL: 'https://grafana.bettertrack.at' })[
@@ -986,6 +990,38 @@ describe('shipped web Compose topology → rendered browser policy', () => {
     },
   );
 
+  it('re-renders the Drive client id on container restart without rebuilding the image', () => {
+    const clientId = '123-runtime.apps.googleusercontent.com';
+
+    for (const mode of ['subdomains', 'ports']) {
+      const configured = runWebEntrypoint(
+        composeWebEnvironment({
+          BT_MODE: mode,
+          BT_DOMAIN: 'money.example.net',
+          BT_GOOGLE_DRIVE_CLIENT_ID: clientId,
+        }),
+      );
+      expect(configured.status).toBe(0);
+      expect(
+        runtimeConfigs(configured.defaultConf).map((config) => config.value['googleDriveClientId']),
+      ).toEqual([clientId, clientId]);
+
+      const unconfigured = runWebEntrypoint(
+        composeWebEnvironment({
+          BT_MODE: mode,
+          BT_DOMAIN: 'money.example.net',
+          BT_GOOGLE_DRIVE_CLIENT_ID: '',
+        }),
+      );
+      expect(unconfigured.status).toBe(0);
+      expect(
+        runtimeConfigs(unconfigured.defaultConf).map(
+          (config) => config.value['googleDriveClientId'],
+        ),
+      ).toEqual(['', '']);
+    }
+  });
+
   it.each([
     ['subdomains', 'https://api.money.example.net', 'https://money.example.net'],
     ['ports', 'http://money.example.net:3000', 'http://money.example.net:8082'],
@@ -1003,11 +1039,26 @@ describe('shipped web Compose topology → rendered browser policy', () => {
       const configs = runtimeConfigs(rendered.defaultConf);
       expect(configs.map((config) => config.globals)).toEqual([['window'], ['window']]);
       expect(configs.map((config) => config.value)).toEqual([
-        { app: 'user', apiOrigin, productOrigin },
-        { app: 'admin', apiOrigin, productOrigin },
+        { app: 'user', apiOrigin, productOrigin, googleDriveClientId: '' },
+        { app: 'admin', apiOrigin, productOrigin, googleDriveClientId: '' },
       ]);
     },
   );
+
+  it('refuses a Drive client id that could escape the runtime-config string', () => {
+    const rendered = runWebEntrypoint(
+      composeWebEnvironment({
+        BT_MODE: 'subdomains',
+        BT_DOMAIN: 'bettertrack.at',
+        BT_GOOGLE_DRIVE_CLIENT_ID: 'client" }; globalThis.pwned = true; //',
+      }),
+    );
+
+    expect(rendered.status).not.toBe(0);
+    expect(rendered.stderr).toContain('BT_GOOGLE_DRIVE_CLIENT_ID');
+    expect(rendered.defaultConf).toBeNull();
+    expect(rendered.policy).toBeNull();
+  });
 
   // Every one of these is a well-formed URL as far as the api's zod `.url()`
   // contract goes, so nothing upstream stops them; the nginx literal they land
