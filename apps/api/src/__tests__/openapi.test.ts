@@ -151,6 +151,23 @@ describe('OpenAPI document', () => {
       $ref: '#/components/schemas/CreateFeedbackResponse',
     });
 
+    // #1327: plural remembered-device management is the bearer-capable sibling
+    // of the browser-cookie mint/forget pair. Security is derived from the same
+    // method/path policy as middleware — no endpoint-local OpenAPI override.
+    for (const [method, path] of [
+      ['get', '/auth/remembered-devices'],
+      ['delete', '/auth/remembered-devices/{handle}'],
+      ['delete', '/auth/remembered-devices'],
+    ] as const) {
+      const operation = (paths[path] as JsonObject)[method] as JsonObject;
+      expect(operation.security, `security for ${method.toUpperCase()} ${path}`).toEqual([
+        { sessionCookie: [] },
+        { apiKeyBearer: [] },
+      ]);
+    }
+    const rememberInBrowser = (paths['/auth/remembered-device'] as JsonObject).post as JsonObject;
+    expect(rememberInBrowser.security).toEqual([{ sessionCookie: [] }]);
+
     // The cash endpoint changed from an unbounded chronological ledger to a
     // bounded newest-first page. External clients must see both semantics in
     // the generated reference instead of discovering truncation implicitly.

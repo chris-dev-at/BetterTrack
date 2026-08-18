@@ -307,7 +307,7 @@ export function loadBearerAuth(ctx: AppContext): RequestHandler {
 type PathPolicy =
   | { kind: 'allow' }
   | { kind: 'admin' }
-  | { kind: 'session-only' }
+  | { kind: 'session-only'; bearerMessage?: string }
   | { kind: 'scope'; read: string; write: string };
 
 /** The scope gating the account-security surface (2FA, sessions, password, PIN). */
@@ -388,12 +388,24 @@ const MODULE_POLICIES: readonly { prefix: string; read: string; write: string }[
  * cookie-session / public. `verify`/`email-code` are the public login-challenge
  * endpoints — excluded here so they never read as bearer-callable.
  */
-function resolveAuthPolicy(path: string): PathPolicy | null {
+function resolveAuthPolicy(path: string, method: string): PathPolicy | null {
   // Identity + self-service logout/self-revocation: any valid bearer, no scope.
   if (path === '/auth/me' || path === '/auth/logout') return { kind: 'allow' };
   // Public login-2FA challenge endpoints — never bearer (pending-token based).
   if (path === '/auth/2fa/verify' || path === '/auth/2fa/email-code') {
     return { kind: 'session-only' };
+  }
+  // The singular mint route is intentionally browser-only: its only useful
+  // result is a signed `bt_rdid` cookie in the browser / Custom-Tab jar that will
+  // run the next OAuth login. A bearer would put that cookie on the app's own
+  // HTTP client and strand the binding. Native clients manage existing bindings
+  // through the plural account-security surface below (#1327).
+  if (path === '/auth/remembered-device' && method.toUpperCase() === 'POST') {
+    return {
+      kind: 'session-only',
+      bearerMessage:
+        'Remembering a device requires a browser session so the cookie reaches the browser used for OAuth login.',
+    };
   }
   // Account-security surface, both safe + unsafe methods gated by one scope:
   // the session manager, password change, PIN status/verify/manage, 2FA
@@ -403,6 +415,8 @@ function resolveAuthPolicy(path: string): PathPolicy | null {
   const accountSecurity =
     path === '/auth/sessions' ||
     path.startsWith('/auth/sessions/') ||
+    path === '/auth/remembered-devices' ||
+    path.startsWith('/auth/remembered-devices/') ||
     path === '/auth/change-password' ||
     path === '/auth/pin' ||
     path.startsWith('/auth/pin/') ||
@@ -435,7 +449,7 @@ function resolvePolicy(
   // separation, §6.12) — 404 to disclose nothing.
   if (path === '/admin' || path.startsWith('/admin/')) return { kind: 'admin' };
   // /auth carve-outs (#361) — resolved before anything else in the group.
-  const authPolicy = resolveAuthPolicy(path);
+  const authPolicy = resolveAuthPolicy(path, requestMethod);
   if (authPolicy) return authPolicy;
   // Paranoid mode transitions (§13.5 V5-P13) are strictly browser-cookie-session
   // only — the same rule as `/vault/*` below, for a strictly stronger reason.
@@ -609,7 +623,12 @@ export function enforceApiKeyScope(ctx: AppContext): RequestHandler {
       return;
     }
     if (policy.kind === 'session-only') {
-      next(forbidden('This endpoint is not accessible with an API key.', 'API_KEY_FORBIDDEN'));
+      next(
+        forbidden(
+          policy.bearerMessage ?? 'This endpoint is not accessible with an API key.',
+          'API_KEY_FORBIDDEN',
+        ),
+      );
       return;
     }
     if (policy.kind === 'allow') {

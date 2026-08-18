@@ -130,6 +130,13 @@ export const rememberedDeviceKey = (deviceId: string) =>
 /** Reverse index that lets account deletion enumerate every remembered device. */
 export const rememberedDevicesForUserKey = (userId: string) => `remember_dev_user:${userId}`;
 
+/**
+ * Display-only creation/last-seen metadata for remembered-device management.
+ * Keyed by the raw server-side id, expires with the binding, and is deleted by
+ * every binding-retirement path. It never contains the id itself.
+ */
+export const rememberedDeviceMetadataKey = (deviceId: string) => `remember_dev_meta:${deviceId}`;
+
 /** Matches the fixed 400-day lifetime of the signed `bt_rdid` browser cookie. */
 export const REMEMBERED_DEVICE_TTL_SECONDS = 400 * 24 * 60 * 60;
 
@@ -183,7 +190,11 @@ async function deleteRememberedDeviceIds(
   for (const batch of rememberedDeviceBatches([...deviceIds])) {
     const transaction = redis.multi();
     for (const deviceId of batch) {
-      transaction.del(rememberedDeviceKey(deviceId), pinQuickAuthMarkerKey(deviceId));
+      transaction.del(
+        rememberedDeviceKey(deviceId),
+        rememberedDeviceMetadataKey(deviceId),
+        pinQuickAuthMarkerKey(deviceId),
+      );
     }
     await transaction.exec();
   }
@@ -297,7 +308,11 @@ async function retireRememberedBindings(
   for (const batch of rememberedDeviceBatches(bindings)) {
     const transaction = redis.multi();
     for (const { deviceId, userId } of batch) {
-      transaction.del(rememberedDeviceKey(deviceId), pinQuickAuthMarkerKey(deviceId));
+      transaction.del(
+        rememberedDeviceKey(deviceId),
+        rememberedDeviceMetadataKey(deviceId),
+        pinQuickAuthMarkerKey(deviceId),
+      );
       transaction.srem(rememberedDevicesForUserKey(userId), deviceId);
     }
     await transaction.exec();
