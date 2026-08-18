@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import {
   PARANOID_KILLED_WEBHOOK_EVENT_TYPES,
+  PARANOID_WEBHOOK_EVENT_TYPE_CLASSIFICATIONS,
   WEBHOOK_AUTO_DISABLE_THRESHOLD,
   WEBHOOK_DELIVERY_HEADER,
   WEBHOOK_EVENT_HEADER,
@@ -906,13 +907,27 @@ describe('subscribable catalog', () => {
     expect([...WEBHOOK_EVENT_TYPES].sort()).toEqual([...DISPATCHABLE_EVENT_TYPES].sort());
   });
 
-  it("the contracts paranoid kill list is exactly the registry's subscribable half", () => {
-    // The SPA's create form hides these, and it reads the contracts constant
-    // rather than restating the list. Bind it to the PD3b enforcement registry
-    // here so a newly kill-listed event cannot stay offerable in that form.
+  it('exhaustively classifies the catalog and derives the paranoid registry decision', () => {
+    expect(Object.keys(PARANOID_WEBHOOK_EVENT_TYPE_CLASSIFICATIONS)).toEqual([
+      ...WEBHOOK_EVENT_TYPES,
+    ]);
+
+    for (const type of WEBHOOK_EVENT_TYPES) {
+      const classification = PARANOID_WEBHOOK_EVENT_TYPE_CLASSIFICATIONS[type];
+      expect(classification.reason.trim(), `${type} needs a rationale`).not.toBe('');
+      expect(classification.reason, `${type} rationale must stay on one line`).not.toMatch(
+        /[\r\n]/,
+      );
+      expect(isParanoidKilledWebhookEvent({ type } as DomainEvent), type).toBe(
+        classification.disposition === 'killed',
+      );
+    }
+
+    // Both the SPA and the API registry consume this record-derived projection.
     const killedByRegistry = WEBHOOK_EVENT_TYPES.filter((type) =>
       isParanoidKilledWebhookEvent({ type } as DomainEvent),
     );
+    expect(killedByRegistry).toHaveLength(18);
     expect([...PARANOID_KILLED_WEBHOOK_EVENT_TYPES].sort()).toEqual([...killedByRegistry].sort());
     // `portfolio.changed` is killed by the registry but is not subscribable, so
     // the contracts list is a strict subset of the registry union by design.
