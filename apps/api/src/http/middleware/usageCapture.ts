@@ -49,6 +49,19 @@ export function createUsageCaptureMiddleware(usage: UsageAnalyticsService): Requ
     res.on('finish', () => {
       // Only successful, authenticated first-party traffic counts as usage.
       if (!req.authUser || res.statusCode >= 400) return;
+      // A paranoid account is NEVER captured (§13.5 V5-P13 arc b). Its client
+      // values the portfolio locally, which means one `GET /assets/:id/quote`
+      // per holding per day — capturing those wrote the account's complete
+      // holdings ROSTER into `usage_events`, keyed to its user id, every day.
+      // The whole signal is dropped rather than just the asset id: a bare
+      // `feature='assets'` row still folds a `hits` counter that tracks how many
+      // holdings were priced, and `usage_events` feeds analytics only (DAU/WAU/
+      // MAU, feature counters, top assets) — no rate limit or quota reads it, so
+      // there is no accounting left to preserve. `privacyMode` is refreshed from
+      // the user row on every authenticated request by `toAuthUser`, and all
+      // three principals (cookie session, personal API key, OAuth grant) build
+      // `authUser` through it, so the bearer paths are covered here too.
+      if (req.authUser.privacyMode === 'paranoid') return;
       const segment = segmentOf(req);
       if (!segment) return;
       const feature = FEATURE_BY_SEGMENT[segment];

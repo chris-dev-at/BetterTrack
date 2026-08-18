@@ -62,6 +62,16 @@ server {
         return 200 'window.__BT__ = { app: "user", apiOrigin: "${API_ORIGIN}", productOrigin: "${PRODUCT_ORIGIN}" };';
     }
 
+    # A service-worker update check must reach the current deploy, and the
+    # manifest is likewise a mutable root asset. This regex must stay before
+    # the generic immutable-extension location below.
+    location ~* ^/(service-worker\.js|manifest\.webmanifest)$ {
+        include /etc/nginx/bt-includes/static-security-headers.conf;
+        include /etc/nginx/bt-includes/static-hsts.conf;
+        add_header Cache-Control "no-cache" always;
+        try_files $uri =404;
+    }
+
     location ~* \.(js|css|woff2?|ttf|eot|png|jpg|jpeg|gif|svg|ico|webp)$ {
         expires max;
         include /etc/nginx/bt-includes/static-security-headers.conf;
@@ -93,6 +103,13 @@ server {
         include /etc/nginx/bt-includes/static-hsts.conf;
         add_header Cache-Control "no-store";
         return 200 'window.__BT__ = { app: "admin", apiOrigin: "${API_ORIGIN}", productOrigin: "${PRODUCT_ORIGIN}" };';
+    }
+
+    location ~* ^/(service-worker\.js|manifest\.webmanifest)$ {
+        include /etc/nginx/bt-includes/static-security-headers.conf;
+        include /etc/nginx/bt-includes/static-hsts.conf;
+        add_header Cache-Control "no-cache" always;
+        try_files $uri =404;
     }
 
     location ~* \.(js|css|woff2?|ttf|eot|png|jpg|jpeg|gif|svg|ico|webp)$ {

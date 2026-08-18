@@ -1,8 +1,13 @@
-import { useState } from 'react';
+import { lazy, Suspense, useState } from 'react';
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
+import {
+  CHUNK_RECOVERY_SESSION_KEY,
+  recoverFromChunkLoadError,
+  type ChunkRecoveryEnvironment,
+} from '../chunkRecovery';
 import { createRootErrorOptions } from '../rootErrorHandling';
 import { ErrorBoundary } from './ErrorBoundary';
 
@@ -13,6 +18,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  sessionStorage.removeItem(CHUNK_RECOVERY_SESSION_KEY);
   vi.restoreAllMocks();
 });
 
@@ -95,6 +101,47 @@ describe('ErrorBoundary', () => {
 
     expect(console.error).toHaveBeenCalledOnce();
     expect(console.error).toHaveBeenCalledWith('Caught render error', error, expect.any(Object));
+  });
+
+  test('a failed lazy import reloads once, then leaves a repeated failure in the boundary', async () => {
+    const reload = vi.fn();
+    const environment: ChunkRecoveryEnvironment = {
+      release: 'deploy-a',
+      reload,
+      storage: sessionStorage,
+    };
+    const recover = (error: unknown) => recoverFromChunkLoadError(error, environment);
+    const failedImport = () =>
+      Promise.reject<{ default: () => null }>(
+        new TypeError('Failed to fetch dynamically imported module: /assets/page-old.js'),
+      );
+    const FirstLazyPage = lazy(failedImport);
+
+    const first = render(
+      <ErrorBoundary>
+        <Suspense fallback={<p>Loading</p>}>
+          <FirstLazyPage />
+        </Suspense>
+      </ErrorBoundary>,
+      createRootErrorOptions(false, recover),
+    );
+
+    await screen.findByRole('alert');
+    expect(reload).toHaveBeenCalledOnce();
+    first.unmount();
+
+    const RepeatedLazyPage = lazy(failedImport);
+    render(
+      <ErrorBoundary>
+        <Suspense fallback={<p>Loading</p>}>
+          <RepeatedLazyPage />
+        </Suspense>
+      </ErrorBoundary>,
+      createRootErrorOptions(false, recover),
+    );
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Something went wrong.');
+    expect(reload).toHaveBeenCalledOnce();
   });
 
   test('creates a fallback state for primitive throwables', () => {

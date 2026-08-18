@@ -464,7 +464,7 @@ const mirror = createMirrorService({
 // capture happens here — the API captures) that materializes the daily
 // aggregates the admin page serves. Timer off; the cron drives it.
 const usageAnalytics = createUsageAnalyticsService({
-  repo: createUsageAnalyticsRepository(db),
+  repo: createUsageAnalyticsRepository(db, lockDb),
   logger,
   startTimer: false,
 });

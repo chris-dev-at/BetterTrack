@@ -984,7 +984,13 @@ export const PARANOID_JOB_POLICIES: readonly ParanoidJobPolicyEntry[] = [
   jobPolicy('usageAnalyticsJobs.ts', 'createUsageRollupJob', 'usage.rollup', {
     capability: null,
     mode: 'kept',
-    reason: 'Usage rollups are aggregate telemetry, not portfolio content.',
+    reason:
+      'The rollup writes `usage_daily`, keyed (day, feature) across ALL accounts — ' +
+      'no user id, no asset id — so it is aggregate telemetry, not portfolio ' +
+      'content. Note the narrower claim (PR #1344): the RAW `usage_events` rows it ' +
+      'reads were portfolio-identifying, one per (user, feature, asset, day), and a ' +
+      'paranoid client prices every holding itself — which is why that table is ' +
+      '`purge`-classified and a paranoid account has no rows here to aggregate.',
   }),
   jobPolicy('earningsReminderJob.ts', 'createEarningsReminderJob', 'notifications.earningsRemind', {
     capability: 'portfolioJobs',
