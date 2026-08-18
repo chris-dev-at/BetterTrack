@@ -138,6 +138,24 @@ test('shows a localized API validation error and keeps typed feedback after a fa
   expect(screen.getByLabelText('Message')).toHaveValue('The typed report must remain here.');
 });
 
+test('falls back safely when validation details do not contain field error arrays', async () => {
+  vi.mocked(submitFeedback).mockRejectedValue(
+    new ApiError(400, 'VALIDATION_ERROR', 'Invalid request.', {
+      fieldErrors: { message: 'not an array' },
+    }),
+  );
+  const user = userEvent.setup();
+  renderDialog();
+
+  await user.selectOptions(screen.getByLabelText('Category'), 'other');
+  await user.type(screen.getByLabelText('Message'), 'The service rejected this request.');
+  await user.click(screen.getByRole('button', { name: 'Submit feedback' }));
+
+  expect(
+    await screen.findByText("Couldn't submit your feedback. Please try again."),
+  ).toBeInTheDocument();
+});
+
 test('rejects a whitespace-only message before submitting', async () => {
   const user = userEvent.setup();
   renderDialog();

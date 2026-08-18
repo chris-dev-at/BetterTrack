@@ -170,6 +170,7 @@ const CONTROL_CORE_ROUTES = [
   '/control/defaults',
   '/control/notifications',
   '/control/notification-log',
+  '/control/feedback',
   '/control/privacy',
   '/control/connections',
   '/control/api',

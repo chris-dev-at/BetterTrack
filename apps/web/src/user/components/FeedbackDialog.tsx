@@ -20,17 +20,15 @@ type SubmissionState = 'idle' | 'pending' | 'success' | 'error';
 /** The three API categories, kept in the server's triage order. */
 const CATEGORIES: readonly FeedbackCategory[] = ['feature', 'bug', 'other'];
 
-function hasValidationFieldError(details: unknown, field: string): boolean {
-  if (typeof details !== 'object' || details === null || !('fieldErrors' in details)) return false;
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
 
-  const fieldErrors = details.fieldErrors;
-  return (
-    typeof fieldErrors === 'object' &&
-    fieldErrors !== null &&
-    field in fieldErrors &&
-    Array.isArray(fieldErrors[field]) &&
-    fieldErrors[field].length > 0
-  );
+function hasValidationFieldError(details: unknown, field: string): boolean {
+  if (!isRecord(details) || !isRecord(details.fieldErrors)) return false;
+
+  const fieldError = details.fieldErrors[field];
+  return Array.isArray(fieldError) && fieldError.length > 0;
 }
 
 function feedbackErrorMessage(t: ReturnType<typeof useT>, error: unknown): string {
