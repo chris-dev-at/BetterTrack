@@ -1031,6 +1031,15 @@ const OVERLAY_SCENARIOS: readonly OverlayScenario[] = [
     justification: 'Covers a Dialog portalled above the already-open Control Center dialog.',
   },
   {
+    label: 'feedback composer sheet',
+    sources: ['apps/web/src/user/components/FeedbackDialog.tsx'],
+    route: '/control/feedback',
+    action: { kind: 'click', selector: '.bt-cc__content .bt-btn--primary' },
+    expectedSelector: '.bt-dialog__panel--phone-sheet',
+    justification:
+      'Covers the feedback-specific category, subject, message and submission controls above the Control Center.',
+  },
+  {
     label: 'global create menu',
     sources: ['apps/web/src/user/components/OriginShell.tsx'],
     route: '/portfolio',
