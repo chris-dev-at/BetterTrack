@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { act, render, screen, waitFor } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -266,6 +266,52 @@ describe('ParanoidEnableWizard', () => {
     );
   });
 
+  it('locks navigation and discards a late final Drive authorization after dismissal', async () => {
+    const finalAuthorization = deferred<{ medium: 'drive' }>();
+    mocks.authorizeDriveStorage
+      .mockResolvedValueOnce({ medium: 'drive' })
+      .mockReturnValueOnce(finalAuthorization.promise);
+    const user = userEvent.setup();
+    const rendered = render(<ParanoidEnableWizard onCancel={() => {}} onEnabled={() => {}} />);
+
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
+    await user.click(
+      screen.getByRole('checkbox', { name: 'Also keep a verified copy in my Google Drive' }),
+    );
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Connect Google Drive' })).toBeEnabled(),
+    );
+    await user.click(screen.getByRole('button', { name: 'Connect Google Drive' }));
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
+    await user.type(screen.getByLabelText('Vault passphrase'), 'correct horse battery staple 729');
+    await user.type(
+      screen.getByLabelText('Confirm vault passphrase'),
+      'correct horse battery staple 729',
+    );
+    await user.click(screen.getByRole('button', { name: 'Download recovery kit' }));
+    await user.click(
+      screen.getByRole('checkbox', { name: 'I have stored my recovery kit safely.' }),
+    );
+    await user.click(screen.getByRole('checkbox', { name: /my data is gone forever/i }));
+    await user.click(screen.getByRole('button', { name: 'Enable Paranoid mode' }));
+
+    await waitFor(() => expect(mocks.authorizeDriveStorage).toHaveBeenCalledTimes(2));
+    expect(screen.getByRole('button', { name: 'Back' })).toBeDisabled();
+
+    // A route/panel close can still unmount the wizard while Google owns its
+    // popup. Resolving it afterwards must not encrypt with the now-zeroed key
+    // or commit the storage choice the user just left.
+    rendered.unmount();
+    await act(async () => {
+      finalAuthorization.resolve({ medium: 'drive' });
+      await finalAuthorization.promise;
+    });
+
+    expect(mocks.enable).not.toHaveBeenCalled();
+    expect(mocks.migrate).not.toHaveBeenCalled();
+    expect(mocks.commitApi).not.toHaveBeenCalled();
+  });
+
   it('stops before migration when final Drive reauthorization fails', async () => {
     mocks.authorizeDriveStorage
       .mockResolvedValueOnce({ medium: 'drive' })
@@ -529,3 +575,11 @@ describe('ParanoidEnableWizard', () => {
     );
   });
 });
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}

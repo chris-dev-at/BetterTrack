@@ -52,6 +52,45 @@ describe('Google Drive GIS token client', () => {
     expect(client.getAccessToken()).toMatchObject({ status: 'consent-required' });
   });
 
+  it('keeps the first popup synchronous after a fresh client finishes preloading GIS', async () => {
+    let completeLoad!: (oauth2: GoogleOauth2) => void;
+    let callback!: (response: GoogleTokenResponse) => void;
+    const loadOauth2 = vi.fn(
+      () =>
+        new Promise<GoogleOauth2>((resolve) => {
+          completeLoad = resolve;
+        }),
+    );
+    const requestAccessToken = vi.fn(() => {
+      callback({ access_token: 'fresh-token', expires_in: 3600 });
+    });
+    const client = createGoogleDriveTokenClient({
+      clientId: 'browser-client-id',
+      loadOauth2,
+    });
+
+    const preparation = client.prepare();
+    expect(loadOauth2).toHaveBeenCalledOnce();
+    expect(requestAccessToken).not.toHaveBeenCalled();
+
+    completeLoad({
+      initTokenClient(config) {
+        callback = config.callback;
+        return { requestAccessToken };
+      },
+    });
+    await preparation;
+
+    const authorization = client.authorize();
+    // No await happens between the click-facing call above and GIS opening its
+    // popup. This is the fresh-browser contract the Drive controls rely on.
+    expect(requestAccessToken).toHaveBeenCalledOnce();
+    await expect(authorization).resolves.toMatchObject({
+      status: 'ok',
+      accessToken: 'fresh-token',
+    });
+  });
+
   it('keeps expiry, absent consent and gesture reauthorization distinct', async () => {
     let clock = 10_000;
     let callback!: (response: GoogleTokenResponse) => void;

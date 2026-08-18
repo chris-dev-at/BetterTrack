@@ -454,6 +454,9 @@
         "connect": "Connect Drive",
         "disconnect": "Disconnect Drive",
         "signIn": "Sign in to Google to sync",
+        "preparing": "Preparing Google sign-in…",
+        "retryPreparation": "Retry Google sign-in",
+        "preparationFailed": "Google sign-in could not be prepared. Check your connection and try again.",
         "unlockRequired": "Unlock your encrypted vault to change its storage.",
         "unlockPrompt": "Enter your vault passphrase. Drive authorization and migration continue from this gesture.",
         "passphraseLabel": "Vault passphrase",
@@ -3667,6 +3670,9 @@
       "recoveryKit": "Use a recovery kit",
       "recoveryKitHint": "Choose bettertrack-recovery-kit.txt instead of entering the passphrase.",
       "driveGesture": "Google may ask you to sign in so this device can read the encrypted Drive copy.",
+      "preparingDrive": "Preparing Google sign-in…",
+      "drivePreparationFailed": "Google sign-in could not be prepared. Check your connection and try again.",
+      "retryDrivePreparation": "Retry Google sign-in",
       "action": "Unlock vault",
       "unlocking": "Unlocking…",
       "stuck": {
@@ -3721,6 +3727,9 @@
       },
       "reauthorize": "Sign in to Google and resume",
       "reauthorizing": "Connecting…",
+      "preparingDrive": "Preparing Google sign-in…",
+      "drivePreparationFailed": "Google sign-in could not be prepared. Check your connection and try again.",
+      "retryDrivePreparation": "Retry Google sign-in",
       "restore": "Storage and restore options",
       "drive": {
         "signIn": "Sign in to Google to sync"

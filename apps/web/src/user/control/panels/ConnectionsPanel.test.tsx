@@ -309,6 +309,36 @@ describe('ConnectionsPanel — paranoid Google Drive app data', () => {
     expect(await screen.findByText('Google Drive app-data storage connected.')).toBeInTheDocument();
   });
 
+  test('preloads GIS before enabling a Drive connection gesture', async () => {
+    vi.mocked(getParanoidMediaState).mockResolvedValue(SERVER_MEDIA);
+    let finishPreparation!: () => void;
+    const prepareDrive = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finishPreparation = resolve;
+        }),
+    );
+    const drive = controller();
+    const user = userEvent.setup();
+    renderPanel('/settings/connections', {
+      driveConnection: drive,
+      driveConfigured: true,
+      drivePrepare: prepareDrive,
+    });
+
+    await waitFor(() => expect(prepareDrive).toHaveBeenCalledOnce());
+    expect(await screen.findByRole('button', { name: 'Preparing Google sign-in…' })).toBeDisabled();
+    expect(drive.connect).not.toHaveBeenCalled();
+
+    finishPreparation();
+
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Connect Drive' })).toBeEnabled(),
+    );
+    await user.click(screen.getByRole('button', { name: 'Connect Drive' }));
+    expect(drive.connect).toHaveBeenCalledOnce();
+  });
+
   test('refreshes a committed storage choice when follow-up synchronization needs attention', async () => {
     vi.mocked(getParanoidMediaState)
       .mockResolvedValueOnce(SERVER_MEDIA)

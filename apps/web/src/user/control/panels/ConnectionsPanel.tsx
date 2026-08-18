@@ -21,6 +21,7 @@ import type {
   DriveConnectionController,
   VaultRetiredPurgeResult,
 } from '../../vault/media';
+import { useDriveGisPreparation } from '../../vault/drive/useDriveGisPreparation';
 import { useResolvedPrivacyModeState, vaultMediaQueryKey } from '../../vault/usePrivacyMode';
 import {
   useOptionalVaultRuntime,
@@ -285,11 +286,13 @@ function DriveVaultSection({
   accountId,
   connection,
   configured,
+  prepareDrive,
   unlock,
 }: {
   accountId: string | null;
   connection: DriveConnectionController | null;
   configured: boolean;
+  prepareDrive: (() => Promise<void>) | null;
   unlock:
     | ((passphrase: string, options: VaultDriveUnlockOptions) => Promise<DriveConnectionController>)
     | null;
@@ -311,6 +314,18 @@ function DriveVaultSection({
     retry: false,
     staleTime: 15_000,
   });
+  const drivePreparation = useDriveGisPreparation(configured && prepareDrive != null, prepareDrive);
+  const driveReady = prepareDrive == null || drivePreparation.state === 'ready';
+  const drivePreparing =
+    prepareDrive != null &&
+    (drivePreparation.state === 'idle' || drivePreparation.state === 'preparing');
+  const driveActionDisabled = working || drivePreparing;
+
+  function driveActionLabel(key: string): string {
+    if (drivePreparing) return t('settings.connections.drive.preparing');
+    if (!driveReady) return t('settings.connections.drive.retryPreparation');
+    return t(key);
+  }
 
   if (query.isError) {
     return (
@@ -447,6 +462,10 @@ function DriveVaultSection({
   }
 
   async function run(action: DriveCardAction): Promise<void> {
+    if (!driveReady) {
+      if (drivePreparation.state === 'failed') drivePreparation.retry();
+      return;
+    }
     if (requireUnlocked(action)) return;
     setWorking(true);
     setMessage(null);
@@ -467,6 +486,10 @@ function DriveVaultSection({
 
   async function unlockAndContinue(): Promise<void> {
     if (!unlock || !unlockAction || passphrase.length === 0) return;
+    if (!driveReady) {
+      if (drivePreparation.state === 'failed') drivePreparation.retry();
+      return;
+    }
     setWorking(true);
     setMessage(null);
     let activeConnection: DriveConnectionController;
@@ -504,24 +527,24 @@ function DriveVaultSection({
       >
         {configured && (!selected || needsSignIn) ? (
           <Button
-            disabled={working}
+            disabled={driveActionDisabled}
             onClick={() => void run('connect')}
             size="sm"
             variant="primary"
           >
-            {t(
+            {driveActionLabel(
               selected ? 'settings.connections.drive.signIn' : 'settings.connections.drive.connect',
             )}
           </Button>
         ) : null}
         {configured && selected && media.mediaSet.length > 1 ? (
           <Button
-            disabled={working}
+            disabled={driveActionDisabled}
             onClick={() => void run('disconnect')}
             size="sm"
             variant="quiet"
           >
-            {t('settings.connections.drive.disconnect')}
+            {driveActionLabel('settings.connections.drive.disconnect')}
           </Button>
         ) : null}
       </Row>
@@ -535,6 +558,11 @@ function DriveVaultSection({
       {message ? (
         <Row stack>
           <Alert tone={message.tone}>{t(message.key)}</Alert>
+        </Row>
+      ) : null}
+      {drivePreparation.state === 'failed' ? (
+        <Row stack>
+          <PanelNote warn>{t('settings.connections.drive.preparationFailed')}</PanelNote>
         </Row>
       ) : null}
       {!configured ? (
@@ -575,8 +603,12 @@ function DriveVaultSection({
               />
             </Field>
             <div className="flex flex-wrap gap-2">
-              <Button disabled={working || passphrase.length === 0} size="sm" type="submit">
-                {t('settings.connections.drive.unlockAndContinue')}
+              <Button
+                disabled={driveActionDisabled || passphrase.length === 0}
+                size="sm"
+                type="submit"
+              >
+                {driveActionLabel('settings.connections.drive.unlockAndContinue')}
               </Button>
               <Button
                 disabled={working}
@@ -606,14 +638,14 @@ function DriveVaultSection({
               )}
             </PanelNote>
             <Button
-              disabled={working || !configured}
+              disabled={driveActionDisabled || !configured}
               onClick={() =>
                 void run(media.mediaSet.includes('server') ? 'drive-only' : 'add-server')
               }
               size="sm"
               type="button"
             >
-              {t(
+              {driveActionLabel(
                 media.mediaSet.includes('server')
                   ? 'settings.connections.drive.storage.useDriveOnly'
                   : 'settings.connections.drive.storage.addServer',
@@ -635,13 +667,13 @@ function DriveVaultSection({
               )}
             </PanelNote>
             <Button
-              disabled={working || !purgeReady || !configured}
+              disabled={driveActionDisabled || !purgeReady || !configured}
               onClick={() => void run('purge')}
               size="sm"
               type="button"
               variant="danger"
             >
-              {t('settings.connections.drive.retired.purge')}
+              {driveActionLabel('settings.connections.drive.retired.purge')}
             </Button>
           </div>
         </PanelFold>
@@ -715,12 +747,14 @@ function ConnectorSlots() {
 export function ConnectionsPanel({
   driveConnection,
   driveUnlock,
+  drivePrepare,
   driveConfigured = Boolean(import.meta.env.VITE_GOOGLE_DRIVE_CLIENT_ID),
 }: {
   driveConnection?: DriveConnectionController | null;
   driveUnlock?:
     | ((passphrase: string, options: VaultDriveUnlockOptions) => Promise<DriveConnectionController>)
     | null;
+  drivePrepare?: (() => Promise<void>) | null;
   driveConfigured?: boolean;
 } = {}) {
   const t = useT();
@@ -730,6 +764,8 @@ export function ConnectionsPanel({
     driveConnection === undefined ? (runtime?.connection ?? null) : driveConnection;
   const resolvedDriveUnlock =
     driveUnlock === undefined ? (runtime?.unlockWithPassphrase ?? null) : driveUnlock;
+  const resolvedDrivePrepare =
+    drivePrepare === undefined ? (runtime?.prepareDriveStorage ?? null) : drivePrepare;
   return (
     <div className="bt-cc-panel">
       <PanelHead title={t('control.connections')} />
@@ -740,6 +776,7 @@ export function ConnectionsPanel({
         accountId={privacy.accountId}
         configured={driveConfigured}
         connection={resolvedDriveConnection}
+        prepareDrive={resolvedDrivePrepare}
         unlock={resolvedDriveUnlock}
       />
 

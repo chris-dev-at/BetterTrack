@@ -70,6 +70,7 @@ export function ParanoidEnableWizard({
   const [captureCompletedRequests, setCaptureCompletedRequests] = useState(0);
   const [error, setError] = useState<EnableErrorCopy | null>(null);
   const drivePreparationGeneration = useRef(0);
+  const enableOperationGeneration = useRef(0);
 
   const mediaSet = useMemo<VaultMediaSet>(
     () =>
@@ -84,12 +85,24 @@ export function ParanoidEnableWizard({
 
   useEffect(
     () => () => {
+      // A Google popup cannot be cancelled, but its result must never revive a
+      // wizard that was dismissed while the popup was open. In particular, the
+      // captured material is zeroed during unmount, so continuing would make a
+      // vault from disposed key material.
+      enableOperationGeneration.current += 1;
+    },
+    [],
+  );
+
+  useEffect(
+    () => () => {
       material?.dispose();
     },
     [material],
   );
 
   function resetMaterial() {
+    enableOperationGeneration.current += 1;
     material?.dispose();
     setMaterial(null);
     setKitDownloaded(false);
@@ -176,6 +189,10 @@ export function ParanoidEnableWizard({
     ) {
       return;
     }
+    const selectedMaterial = material;
+    const selectedMediaSet = mediaSet;
+    const operationGeneration = ++enableOperationGeneration.current;
+    const isCurrentOperation = () => enableOperationGeneration.current === operationGeneration;
     let selectedDrive = drive;
     if (driveSelected) {
       setAuthorizingDrive(true);
@@ -185,14 +202,18 @@ export function ParanoidEnableWizard({
       // capture, encrypted write, or server transition starts.
       try {
         selectedDrive = await runtime.authorizeDriveStorage();
+        if (!isCurrentOperation()) return;
         setDrive(selectedDrive);
       } catch {
-        setError({ key: 'vault.enable.errors.driveReauthorization' });
+        if (isCurrentOperation()) {
+          setError({ key: 'vault.enable.errors.driveReauthorization' });
+        }
         return;
       } finally {
-        setAuthorizingDrive(false);
+        if (isCurrentOperation()) setAuthorizingDrive(false);
       }
     }
+    if (!isCurrentOperation()) return;
     setStep(4);
     setError(null);
     setCaptureCompletedRequests(0);
@@ -213,8 +234,8 @@ export function ParanoidEnableWizard({
       // like cancellation exists.
       result = await enablePreparedVault(
         {
-          mediaSet,
-          material,
+          mediaSet: selectedMediaSet,
+          material: selectedMaterial,
           onStage: setStage,
         },
         {
@@ -249,7 +270,7 @@ export function ParanoidEnableWizard({
     try {
       await runtime.unlockWithPassphrase(passphrase, {
         authorizeDrive: false,
-        driveOnly: mediaSet.length === 1 && mediaSet[0] === 'drive',
+        driveOnly: selectedMediaSet.length === 1 && selectedMediaSet[0] === 'drive',
         keepUnlocked: false,
       });
     } catch {
@@ -287,6 +308,7 @@ export function ParanoidEnableWizard({
           <label className="bt-panel flex items-start gap-3 p-3">
             <input
               checked={!driveOnly}
+              disabled={authorizingDrive}
               onChange={() => {
                 setDriveOnly(false);
                 setError(null);
@@ -302,6 +324,7 @@ export function ParanoidEnableWizard({
             <label className="bt-soft flex items-start gap-2 text-sm">
               <input
                 checked={includeDrive}
+                disabled={authorizingDrive}
                 onChange={(event) => {
                   setIncludeDrive(event.target.checked);
                   setError(null);
@@ -328,6 +351,7 @@ export function ParanoidEnableWizard({
             <label className="bt-panel mt-2 flex items-start gap-3 p-3">
               <input
                 checked={driveOnly}
+                disabled={authorizingDrive}
                 onChange={() => {
                   setDriveOnly(true);
                   setIncludeDrive(true);
@@ -383,6 +407,7 @@ export function ParanoidEnableWizard({
           <p className="bt-soft text-sm">{t('vault.enable.passphraseDistinct')}</p>
           <TextField
             autoComplete="new-password"
+            disabled={authorizingDrive}
             label={t('vault.enable.passphrase')}
             maxLength={MAX_PASSWORD_LENGTH}
             minLength={MIN_PASSWORD_LENGTH}
@@ -395,6 +420,7 @@ export function ParanoidEnableWizard({
           />
           <TextField
             autoComplete="new-password"
+            disabled={authorizingDrive}
             label={t('vault.enable.passphraseConfirm')}
             maxLength={MAX_PASSWORD_LENGTH}
             minLength={MIN_PASSWORD_LENGTH}
@@ -405,7 +431,11 @@ export function ParanoidEnableWizard({
             type="password"
             value={confirmation}
           />
-          <Button onClick={() => void downloadRecoveryKit()} variant="secondary">
+          <Button
+            disabled={authorizingDrive}
+            onClick={() => void downloadRecoveryKit()}
+            variant="secondary"
+          >
             {kitDownloaded
               ? t('vault.enable.downloadAgain')
               : t('vault.enable.downloadRecoveryKit')}
@@ -413,7 +443,7 @@ export function ParanoidEnableWizard({
           <label className="bt-soft flex items-start gap-2 text-sm">
             <input
               checked={kitStored}
-              disabled={!kitDownloaded}
+              disabled={!kitDownloaded || authorizingDrive}
               onChange={(event) => setKitStored(event.target.checked)}
               style={CHECKBOX_STYLE}
               type="checkbox"
@@ -423,6 +453,7 @@ export function ParanoidEnableWizard({
           <label className="bt-panel flex items-start gap-2 p-3 text-sm">
             <input
               checked={lostKeyAcknowledged}
+              disabled={authorizingDrive}
               onChange={(event) => setLostKeyAcknowledged(event.target.checked)}
               style={CHECKBOX_STYLE}
               type="checkbox"
@@ -467,7 +498,11 @@ export function ParanoidEnableWizard({
       <div className="flex flex-wrap justify-end gap-2">
         {step < 4 ? (
           <Button
+            disabled={authorizingDrive}
             onClick={() => {
+              if (authorizingDrive) return;
+              enableOperationGeneration.current += 1;
+              setAuthorizingDrive(false);
               if (step === 1) onCancel();
               else setStep((step - 1) as 1 | 2 | 3);
             }}
