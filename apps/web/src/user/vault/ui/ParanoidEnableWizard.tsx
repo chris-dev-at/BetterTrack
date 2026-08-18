@@ -206,6 +206,9 @@ export function ParanoidEnableWizard({
         setDrive(selectedDrive);
       } catch {
         if (isCurrentOperation()) {
+          // The early capability is no longer trustworthy. Clearing it keeps
+          // step 2's Drive gate closed if the user goes back to reconnect.
+          setDrive(null);
           setError({ key: 'vault.enable.errors.driveReauthorization' });
         }
         return;

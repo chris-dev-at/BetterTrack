@@ -312,7 +312,7 @@ describe('ParanoidEnableWizard', () => {
     expect(mocks.commitApi).not.toHaveBeenCalled();
   });
 
-  it('stops before migration when final Drive reauthorization fails', async () => {
+  it('requires a new Drive connection after final reauthorization fails', async () => {
     mocks.authorizeDriveStorage
       .mockResolvedValueOnce({ medium: 'drive' })
       .mockRejectedValueOnce(new Error('token expired'));
@@ -346,6 +346,15 @@ describe('ParanoidEnableWizard', () => {
     expect(mocks.migrate).not.toHaveBeenCalled();
     expect(mocks.enable).not.toHaveBeenCalled();
     expect(mocks.commitApi).not.toHaveBeenCalled();
+
+    // The failed final check invalidates the early Drive home. Going back
+    // cannot re-enter the passphrase/recovery step until Drive reconnects.
+    await user.click(screen.getByRole('button', { name: 'Back' }));
+    expect(screen.getByRole('heading', { name: 'Choose encrypted storage' })).toBeInTheDocument();
+    const continueButton = screen.getByRole('button', { name: 'Continue' });
+    expect(continueButton).toBeDisabled();
+    await user.click(continueButton);
+    expect(screen.queryByLabelText('Vault passphrase')).not.toBeInTheDocument();
   });
 
   it.each([
