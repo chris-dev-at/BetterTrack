@@ -393,7 +393,7 @@ export async function updateFeedbackStatus(
   id: string,
   body: UpdateFeedbackStatusRequest,
 ): Promise<UpdateFeedbackStatusResponse> {
-  const data = await apiRequest<unknown>(`/admin/feedback/${id}/status`, {
+  const data = await apiRequest<unknown>(`/admin/feedback/${id}`, {
     method: 'PATCH',
     body,
   });

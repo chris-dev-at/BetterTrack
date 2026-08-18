@@ -3,11 +3,14 @@ import { describe, expect, it } from 'vitest';
 import {
   FEEDBACK_CONTEXT_MAX_BYTES,
   FEEDBACK_CONTEXT_MAX_KEYS,
+  FEEDBACK_DECLINED_REASON_REQUIRED,
   FEEDBACK_MESSAGE_MAX_LENGTH,
+  FEEDBACK_SHIPPED_VERSION_REQUIRED,
   FEEDBACK_SUBJECT_MAX_LENGTH,
   adminFeedbackListQuerySchema,
   adminFeedbackListResponseSchema,
   createFeedbackRequestSchema,
+  myFeedbackResponseSchema,
   updateFeedbackStatusRequestSchema,
 } from './feedback';
 
@@ -104,6 +107,9 @@ describe('feedback contracts', () => {
           message: 'Add a compact scenario switcher.',
           context: { platform: 'android' },
           status: 'new',
+          lastStatusChangeAt: '2026-08-18T08:00:00.000Z',
+          declinedReason: null,
+          shippedVersion: null,
           submitter: {
             id: '00000000-0000-7000-8000-000000000002',
             username: 'mobile-user',
@@ -117,7 +123,62 @@ describe('feedback contracts', () => {
     });
 
     expect(response.success).toBe(true);
-    expect(updateFeedbackStatusRequestSchema.safeParse({ status: 'done' }).success).toBe(true);
+    expect(updateFeedbackStatusRequestSchema.safeParse({ status: 'working_on_it' }).success).toBe(
+      true,
+    );
+    expect(
+      updateFeedbackStatusRequestSchema.safeParse({
+        status: 'declined',
+        declinedReason: 'This would make the compact workflow harder to use.',
+      }).success,
+    ).toBe(true);
+    expect(
+      updateFeedbackStatusRequestSchema.safeParse({
+        status: 'shipped',
+        shippedVersion: '5.4.0',
+      }).success,
+    ).toBe(true);
     expect(updateFeedbackStatusRequestSchema.safeParse({ status: 'closed' }).success).toBe(false);
+  });
+
+  it('requires the owner explanation/version in the shared transition contract', () => {
+    const declined = updateFeedbackStatusRequestSchema.safeParse({ status: 'declined' });
+    expect(declined.success).toBe(false);
+    if (!declined.success) {
+      expect(declined.error.issues[0]).toMatchObject({
+        path: ['declinedReason'],
+        params: { apiErrorCode: FEEDBACK_DECLINED_REASON_REQUIRED },
+      });
+    }
+
+    const shipped = updateFeedbackStatusRequestSchema.safeParse({ status: 'shipped' });
+    expect(shipped.success).toBe(false);
+    if (!shipped.success) {
+      expect(shipped.error.issues[0]).toMatchObject({
+        path: ['shippedVersion'],
+        params: { apiErrorCode: FEEDBACK_SHIPPED_VERSION_REQUIRED },
+      });
+    }
+  });
+
+  it('reserves unread reply counts in caller-owned status rows', () => {
+    expect(
+      myFeedbackResponseSchema.safeParse({
+        submissions: [
+          {
+            id: '00000000-0000-7000-8000-000000000001',
+            category: 'bug',
+            subject: null,
+            message: 'The status read-back closes the loop.',
+            status: 'shipped',
+            lastStatusChangeAt: '2026-08-18T09:00:00.000Z',
+            declinedReason: null,
+            shippedVersion: '5.4.0',
+            unreadReplyCount: 0,
+            createdAt: '2026-08-18T08:00:00.000Z',
+          },
+        ],
+      }).success,
+    ).toBe(true);
   });
 });

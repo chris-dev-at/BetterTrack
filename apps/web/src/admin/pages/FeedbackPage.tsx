@@ -26,7 +26,10 @@ const CATEGORY_TONE = {
 const STATUS_TONE = {
   new: 'amber',
   triaged: 'sky',
-  done: 'green',
+  working_on_it: 'amber',
+  saved_as_future_idea: 'neutral',
+  declined: 'red',
+  shipped: 'green',
 } as const;
 
 const DIAGNOSTIC_KEYS = [
@@ -228,7 +231,11 @@ function FeedbackRow({
             >
               <option value="new">{t('admin.feedback.status.new')}</option>
               <option value="triaged">{t('admin.feedback.status.triaged')}</option>
-              <option value="done">{t('admin.feedback.status.done')}</option>
+              {submission.status !== 'new' && submission.status !== 'triaged' ? (
+                <option value={submission.status}>
+                  {t(`admin.feedback.status.${submission.status}`)}
+                </option>
+              ) : null}
             </select>
           </label>
         </div>

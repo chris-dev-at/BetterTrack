@@ -32,6 +32,8 @@ import { FIRST_PARTY_CLIENTS, seedFirstPartyClients } from '../services/oauth/fi
  *   - 0081 (`0081_first_party_client_vault_sync_scope`) appends #1043's single
  *     inherently read-write vault:sync scope.
  *   - 0088 (`0088_feedback`) appends #1315's create-only feedback:write scope.
+ *   - 0089 (`0089_feedback_status_history`) appends #1338's caller-history
+ *     feedback:read scope.
  *
  * The shared harness only ever replays migrations onto an empty DB (and truncates),
  * so — exactly like the 0019 / 0024 data-migration suites — this boots a throwaway
@@ -46,6 +48,7 @@ const TARGET_0079 = '0079_first_party_client_cash_scopes';
 const TARGET_0080 = '0080_first_party_client_mirrorchain_scopes';
 const TARGET_0081 = '0081_first_party_client_vault_sync_scope';
 const TARGET_0088 = '0088_feedback';
+const TARGET_0089 = '0089_feedback_status_history';
 const OAUTH_LOGO_CACHE_MIGRATION = '0074_oauth_client_logo_cache';
 
 const MOBILE = FIRST_PARTY_CLIENTS.find((c) => c.clientId === 'btc_IbT1mzw_7kBiPHPkGfaE0Q')!;
@@ -97,8 +100,12 @@ const VAULT_SYNC_SCOPES = ['vault:sync'];
 const VAULT_SYNC_ERA_CEILING = [...MIRRORCHAIN_ERA_CEILING, ...VAULT_SYNC_SCOPES];
 
 /** The create-only scope 0088 appends for #1315, pinned to the migration payload. */
-const FEEDBACK_SCOPES = ['feedback:write'];
-const FEEDBACK_ERA_CEILING = [...VAULT_SYNC_ERA_CEILING, ...FEEDBACK_SCOPES];
+const FEEDBACK_WRITE_SCOPES = ['feedback:write'];
+const FEEDBACK_WRITE_ERA_CEILING = [...VAULT_SYNC_ERA_CEILING, ...FEEDBACK_WRITE_SCOPES];
+
+/** The caller-history scope 0089 appends for #1338, pinned to the migration payload. */
+const FEEDBACK_READ_SCOPES = ['feedback:read'];
+const FEEDBACK_ERA_CEILING = [...FEEDBACK_WRITE_ERA_CEILING, ...FEEDBACK_READ_SCOPES];
 
 interface JournalEntry {
   idx: number;
@@ -530,28 +537,27 @@ describe(`migration ${TARGET_0088} — first-party client feedback scope (union-
     client = await bootUpTo(TARGET_0088);
   });
 
-  it('reaches the live ceiling additively, idempotently and without narrowing extras', async () => {
+  it('reaches its frozen write-era ceiling additively and without narrowing extras', async () => {
     const before = (await readClient(client, CLIENT_ID))!;
     expect(before.scopes).toEqual(VAULT_SYNC_ERA_CEILING);
 
     await applyMigration(client, TARGET_0088);
 
     const row = (await readClient(client, CLIENT_ID))!;
-    expect(row.scopes).toEqual(FEEDBACK_ERA_CEILING);
-    expect(row.scopes).toEqual(CEILING);
+    expect(row.scopes).toEqual(FEEDBACK_WRITE_ERA_CEILING);
     expect(row.redirect_uris).toEqual([CANONICAL_URI]);
     expect(row.id).toBe(before.id);
     expect(row.created_at).toEqual(before.created_at);
 
     // The migration also creates the table and enums, which are deliberately
     // one-shot DDL. Replaying its guarded OAuth UPDATE alone is a true no-op,
-    // and migrate-only has converged far enough that the code seed has nothing
-    // to do either.
+    // while the current code seed deliberately converges the later read scope.
     await applyMigrationChunkContaining(client, TARGET_0088, 'UPDATE "oauth_clients"');
     expect(await readClient(client, CLIENT_ID)).toEqual(row);
     const repo = createOAuthRepository(drizzlePglite(client, { schema }) as unknown as Database);
     const seeded = (await seedFirstPartyClients(repo)).find((r) => r.clientId === CLIENT_ID)!;
-    expect(seeded.action).toBe('unchanged');
+    expect(seeded.action).toBe('converged');
+    expect(seeded.scopes).toEqual(CEILING);
 
     // An admin-customized row keeps its order and extra; only feedback:write is appended.
     await client.exec(`
@@ -564,6 +570,51 @@ describe(`migration ${TARGET_0088} — first-party client feedback scope (union-
 
     const partialRow = (await readClient(client, CLIENT_ID))!;
     expect(partialRow.scopes).toEqual(['portfolio:read', 'experimental:beta', 'feedback:write']);
+    expect(new Set(partialRow.scopes).size).toBe(partialRow.scopes.length);
+  });
+});
+
+describe(`migration ${TARGET_0089} — first-party client feedback read scope (union-only)`, () => {
+  let client: PGlite;
+
+  beforeEach(async () => {
+    client = await bootUpTo(TARGET_0089);
+  });
+
+  it('reaches the live ceiling additively, idempotently and without narrowing extras', async () => {
+    const before = (await readClient(client, CLIENT_ID))!;
+    expect(before.scopes).toEqual(FEEDBACK_WRITE_ERA_CEILING);
+
+    await applyMigration(client, TARGET_0089);
+
+    const row = (await readClient(client, CLIENT_ID))!;
+    expect(row.scopes).toEqual(FEEDBACK_ERA_CEILING);
+    expect(row.scopes).toEqual(CEILING);
+    expect(row.redirect_uris).toEqual([CANONICAL_URI]);
+    expect(row.id).toBe(before.id);
+    expect(row.created_at).toEqual(before.created_at);
+
+    await applyMigrationChunkContaining(client, TARGET_0089, 'UPDATE "oauth_clients"');
+    expect(await readClient(client, CLIENT_ID)).toEqual(row);
+    const repo = createOAuthRepository(drizzlePglite(client, { schema }) as unknown as Database);
+    const seeded = (await seedFirstPartyClients(repo)).find((r) => r.clientId === CLIENT_ID)!;
+    expect(seeded.action).toBe('unchanged');
+
+    await client.exec(`
+      UPDATE "oauth_clients"
+      SET "scopes" = ARRAY['portfolio:read','experimental:beta','feedback:write']::text[]
+      WHERE "client_id" = '${CLIENT_ID}';
+    `);
+
+    await applyMigrationChunkContaining(client, TARGET_0089, 'UPDATE "oauth_clients"');
+
+    const partialRow = (await readClient(client, CLIENT_ID))!;
+    expect(partialRow.scopes).toEqual([
+      'portfolio:read',
+      'experimental:beta',
+      'feedback:write',
+      'feedback:read',
+    ]);
     expect(new Set(partialRow.scopes).size).toBe(partialRow.scopes.length);
   });
 });

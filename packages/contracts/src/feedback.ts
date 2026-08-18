@@ -64,10 +64,96 @@ export const createFeedbackResponseSchema = z
   .strict();
 export type CreateFeedbackResponse = z.infer<typeof createFeedbackResponseSchema>;
 
-/** Feedback lifecycle states in the owner triage queue. Mirrors the DB enum. */
-export const FEEDBACK_STATUSES = ['new', 'triaged', 'done'] as const;
+/**
+ * Feedback lifecycle states in the owner triage queue. `new` and `triaged`
+ * retain the names shipped by #1315; the outcome states close the loop without
+ * the ambiguous former `done` value.
+ */
+export const FEEDBACK_STATUSES = [
+  'new',
+  'triaged',
+  'working_on_it',
+  'saved_as_future_idea',
+  'declined',
+  'shipped',
+] as const;
 export const feedbackStatusSchema = z.enum(FEEDBACK_STATUSES);
 export type FeedbackStatus = z.infer<typeof feedbackStatusSchema>;
+
+export const FEEDBACK_DECLINED_REASON_MAX_LENGTH = 1000;
+export const FEEDBACK_SHIPPED_VERSION_MAX_LENGTH = 64;
+
+/** Stable API error codes for the two owner-required outcome details. */
+export const FEEDBACK_DECLINED_REASON_REQUIRED = 'FEEDBACK_DECLINED_REASON_REQUIRED';
+export const FEEDBACK_SHIPPED_VERSION_REQUIRED = 'FEEDBACK_SHIPPED_VERSION_REQUIRED';
+export const FEEDBACK_STATUS_DETAILS_INVALID = 'FEEDBACK_STATUS_DETAILS_INVALID';
+
+interface FeedbackStatusDetails {
+  status: FeedbackStatus;
+  declinedReason?: string | null;
+  shippedVersion?: string | null;
+}
+
+function addStatusDetailIssue(
+  refinement: z.RefinementCtx,
+  path: 'declinedReason' | 'shippedVersion',
+  code: string,
+  message: string,
+): void {
+  refinement.addIssue({
+    code: z.ZodIssueCode.custom,
+    path: [path],
+    message,
+    params: { apiErrorCode: code },
+  });
+}
+
+/**
+ * Pair lifecycle outcomes with their required explanation/version. Custom issue
+ * metadata lets the generic HTTP validator return a stable, actionable error
+ * code while the rule itself remains owned by this shared contract.
+ */
+function refineFeedbackStatusDetails(
+  value: FeedbackStatusDetails,
+  refinement: z.RefinementCtx,
+): void {
+  const hasDeclinedReason =
+    typeof value.declinedReason === 'string' && value.declinedReason.trim().length > 0;
+  const hasShippedVersion =
+    typeof value.shippedVersion === 'string' && value.shippedVersion.trim().length > 0;
+
+  if (value.status === 'declined' && !hasDeclinedReason) {
+    addStatusDetailIssue(
+      refinement,
+      'declinedReason',
+      FEEDBACK_DECLINED_REASON_REQUIRED,
+      'A declined submission requires a reason.',
+    );
+  } else if (value.status !== 'declined' && value.declinedReason != null) {
+    addStatusDetailIssue(
+      refinement,
+      'declinedReason',
+      FEEDBACK_STATUS_DETAILS_INVALID,
+      'A declined reason is only valid for declined submissions.',
+    );
+  }
+
+  if (value.status === 'shipped' && !hasShippedVersion) {
+    addStatusDetailIssue(
+      refinement,
+      'shippedVersion',
+      FEEDBACK_SHIPPED_VERSION_REQUIRED,
+      'A shipped submission requires a version.',
+    );
+  } else if (value.status !== 'shipped' && value.shippedVersion != null) {
+    addStatusDetailIssue(
+      refinement,
+      'shippedVersion',
+      FEEDBACK_STATUS_DETAILS_INVALID,
+      'A shipped version is only valid for shipped submissions.',
+    );
+  }
+}
 
 /** Available inbox orderings; category priority is the owner-defined default. */
 export const FEEDBACK_SORTS = ['category', 'newest'] as const;
@@ -83,6 +169,9 @@ export const adminFeedbackSubmissionSchema = z
     message: z.string(),
     context: feedbackContextSchema.nullable(),
     status: feedbackStatusSchema,
+    lastStatusChangeAt: z.string().datetime(),
+    declinedReason: z.string().max(FEEDBACK_DECLINED_REASON_MAX_LENGTH).nullable(),
+    shippedVersion: z.string().max(FEEDBACK_SHIPPED_VERSION_MAX_LENGTH).nullable(),
     submitter: z
       .object({
         id: z.string().uuid(),
@@ -93,8 +182,32 @@ export const adminFeedbackSubmissionSchema = z
     createdAt: z.string().datetime(),
     updatedAt: z.string().datetime(),
   })
-  .strict();
+  .strict()
+  .superRefine(refineFeedbackStatusDetails);
 export type AdminFeedbackSubmission = z.infer<typeof adminFeedbackSubmissionSchema>;
+
+/** One caller-owned submission returned by `GET /feedback/mine`. */
+export const myFeedbackSubmissionSchema = z
+  .object({
+    id: z.string().uuid(),
+    category: feedbackCategorySchema,
+    subject: z.string().nullable(),
+    message: z.string(),
+    status: feedbackStatusSchema,
+    lastStatusChangeAt: z.string().datetime(),
+    declinedReason: z.string().max(FEEDBACK_DECLINED_REASON_MAX_LENGTH).nullable(),
+    shippedVersion: z.string().max(FEEDBACK_SHIPPED_VERSION_MAX_LENGTH).nullable(),
+    unreadReplyCount: z.number().int().nonnegative(),
+    createdAt: z.string().datetime(),
+  })
+  .strict()
+  .superRefine(refineFeedbackStatusDetails);
+export type MyFeedbackSubmission = z.infer<typeof myFeedbackSubmissionSchema>;
+
+export const myFeedbackResponseSchema = z
+  .object({ submissions: z.array(myFeedbackSubmissionSchema) })
+  .strict();
+export type MyFeedbackResponse = z.infer<typeof myFeedbackResponseSchema>;
 
 /** Filter, order and page controls for `GET /admin/feedback`. */
 export const adminFeedbackListQuerySchema = z
@@ -124,15 +237,24 @@ export type AdminFeedbackListResponse = z.infer<typeof adminFeedbackListResponse
 
 /** Admin status transition for one submission. */
 export const updateFeedbackStatusRequestSchema = z
-  .object({ status: feedbackStatusSchema })
-  .strict();
+  .object({
+    status: feedbackStatusSchema,
+    declinedReason: z.string().max(FEEDBACK_DECLINED_REASON_MAX_LENGTH).optional(),
+    shippedVersion: z.string().max(FEEDBACK_SHIPPED_VERSION_MAX_LENGTH).optional(),
+  })
+  .strict()
+  .superRefine(refineFeedbackStatusDetails);
 export type UpdateFeedbackStatusRequest = z.infer<typeof updateFeedbackStatusRequestSchema>;
 
 export const updateFeedbackStatusResponseSchema = z
   .object({
     id: z.string().uuid(),
     status: feedbackStatusSchema,
+    lastStatusChangeAt: z.string().datetime(),
+    declinedReason: z.string().max(FEEDBACK_DECLINED_REASON_MAX_LENGTH).nullable(),
+    shippedVersion: z.string().max(FEEDBACK_SHIPPED_VERSION_MAX_LENGTH).nullable(),
     updatedAt: z.string().datetime(),
   })
-  .strict();
+  .strict()
+  .superRefine(refineFeedbackStatusDetails);
 export type UpdateFeedbackStatusResponse = z.infer<typeof updateFeedbackStatusResponseSchema>;

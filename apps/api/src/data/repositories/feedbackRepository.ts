@@ -3,7 +3,7 @@ import { and, count, desc, eq, sql, type SQL } from 'drizzle-orm';
 import type {
   AdminFeedbackListQuery,
   CreateFeedbackRequest,
-  FeedbackStatus,
+  UpdateFeedbackStatusRequest,
 } from '@bettertrack/contracts';
 
 import type { Database } from '../db';
@@ -16,10 +16,12 @@ export interface AdminFeedbackRow extends FeedbackRow {
 /** Persistence seam shared by client capture and the owner-only triage queue. */
 export interface FeedbackRepository {
   create(userId: string, input: CreateFeedbackRequest): Promise<FeedbackRow>;
+  /** Caller ownership is part of the query and cannot be widened by HTTP input. */
+  listMine(userId: string): Promise<FeedbackRow[]>;
   listForAdmin(
     params: AdminFeedbackListQuery,
   ): Promise<{ rows: AdminFeedbackRow[]; total: number }>;
-  setStatus(id: string, status: FeedbackStatus, at: Date): Promise<FeedbackRow | null>;
+  setStatus(id: string, input: UpdateFeedbackStatusRequest, at: Date): Promise<FeedbackRow | null>;
 }
 
 export function createFeedbackRepository(db: Database): FeedbackRepository {
@@ -35,6 +37,14 @@ export function createFeedbackRepository(db: Database): FeedbackRepository {
       const [row] = await db.insert(feedback).values(values).returning();
       if (!row) throw new Error('Feedback vanished after insert');
       return row;
+    },
+
+    async listMine(userId) {
+      return db
+        .select()
+        .from(feedback)
+        .where(eq(feedback.userId, userId))
+        .orderBy(desc(feedback.createdAt), desc(feedback.id));
     },
 
     async listForAdmin(params) {
@@ -56,6 +66,9 @@ export function createFeedbackRepository(db: Database): FeedbackRepository {
           message: feedback.message,
           context: feedback.context,
           status: feedback.status,
+          lastStatusChangeAt: feedback.lastStatusChangeAt,
+          declinedReason: feedback.declinedReason,
+          shippedVersion: feedback.shippedVersion,
           createdAt: feedback.createdAt,
           updatedAt: feedback.updatedAt,
           submitterId: users.id,
@@ -87,10 +100,16 @@ export function createFeedbackRepository(db: Database): FeedbackRepository {
       };
     },
 
-    async setStatus(id, status, at) {
+    async setStatus(id, input, at) {
       const [row] = await db
         .update(feedback)
-        .set({ status, updatedAt: at })
+        .set({
+          status: input.status,
+          lastStatusChangeAt: at,
+          declinedReason: input.status === 'declined' ? (input.declinedReason ?? null) : null,
+          shippedVersion: input.status === 'shipped' ? (input.shippedVersion ?? null) : null,
+          updatedAt: at,
+        })
         .where(eq(feedback.id, id))
         .returning();
       return row ?? null;

@@ -45,6 +45,9 @@ const submission: AdminFeedbackSubmission = {
     futureDiagnostic: { raw: 'must not render' },
   },
   status: 'new',
+  lastStatusChangeAt: '2026-08-18T08:00:00.000Z',
+  declinedReason: null,
+  shippedVersion: null,
   submitter: {
     id: '00000000-0000-7000-8000-000000000002',
     username: 'mobile_owner',
@@ -145,26 +148,35 @@ test('filters and sorts the inbox, restoring category priority when the filter c
 
 test('changes status and reloads the persisted row', async () => {
   const user = userEvent.setup();
-  const done = { ...submission, status: 'done' as const };
+  const triaged = {
+    ...submission,
+    status: 'triaged' as const,
+    lastStatusChangeAt: '2026-08-18T09:00:00.000Z',
+  };
   vi.mocked(api.updateFeedbackStatus).mockResolvedValue({
     id: submission.id,
-    status: 'done',
+    status: 'triaged',
+    lastStatusChangeAt: '2026-08-18T09:00:00.000Z',
+    declinedReason: null,
+    shippedVersion: null,
     updatedAt: '2026-08-18T09:00:00.000Z',
   });
   vi.mocked(api.listAdminFeedback)
     .mockResolvedValueOnce(list())
-    .mockResolvedValue(list({ submissions: [done] }));
+    .mockResolvedValue(list({ submissions: [triaged] }));
   renderPage();
 
   const status = await screen.findByRole('combobox', {
     name: 'Status for feedback from mobile_owner',
   });
-  await user.selectOptions(status, 'done');
+  await user.selectOptions(status, 'triaged');
 
   await waitFor(() =>
-    expect(api.updateFeedbackStatus).toHaveBeenCalledWith(submission.id, { status: 'done' }),
+    expect(api.updateFeedbackStatus).toHaveBeenCalledWith(submission.id, {
+      status: 'triaged',
+    }),
   );
-  await waitFor(() => expect(status).toHaveValue('done'));
+  await waitFor(() => expect(status).toHaveValue('triaged'));
   expect(vi.mocked(api.listAdminFeedback).mock.calls.length).toBeGreaterThanOrEqual(2);
 });
 

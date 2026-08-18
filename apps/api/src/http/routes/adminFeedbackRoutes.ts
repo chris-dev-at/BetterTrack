@@ -23,7 +23,7 @@ export function registerAdminFeedbackRoutes(router: Router, ctx: AppContext): vo
   });
 
   router.patch(
-    '/feedback/:id/status',
+    '/feedback/:id',
     validateParams(idParamSchema),
     validateBody(updateFeedbackStatusRequestSchema),
     async (req, res) => {
