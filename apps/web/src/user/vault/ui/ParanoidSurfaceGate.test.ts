@@ -1,49 +1,45 @@
 import { describe, expect, it } from 'vitest';
 
+import { PARANOID_CLIENT_ROUTE_DECISIONS } from '@bettertrack/contracts';
+
 import { isParanoidKilledPath, safeDestination, surfaceAllowed } from './ParanoidSurfaceGate';
 
+const KILLED_CLIENT_ROUTE_RULES = PARANOID_CLIENT_ROUTE_DECISIONS.flatMap(
+  (decision) => decision.clientRoutes,
+);
+
+const KILLED_ROUTE_CASES = KILLED_CLIENT_ROUTE_RULES.flatMap(
+  (rule): [path: string, destination: string][] => [
+    [rule.path, rule.destination],
+    ...(rule.match === 'prefix'
+      ? [[`${rule.path}/representative-child`, rule.destination] as [string, string]]
+      : []),
+  ],
+);
+
+const NORMALIZED_KILLED_ROUTE_CASES = KILLED_CLIENT_ROUTE_RULES.flatMap(
+  (rule): [path: string, destination: string][] => [
+    [`${rule.path}/`, rule.destination],
+    [rule.path.toUpperCase(), rule.destination],
+    [`${rule.path.toUpperCase()}///`, rule.destination],
+  ],
+);
+
 describe('paranoid route and surface matrix', () => {
-  it.each([
-    '/s/public-token',
-    '/u/jane',
-    '/people/shared',
-    '/people/shared/portfolio-id',
-    '/people/profile',
-    '/people/following',
-    '/control/profile',
-    '/portfolio/import',
-    '/portfolio/cash-flow',
-    '/portfolio/cash-flow/transactions',
-    '/portfolio/cash-flow/budgets',
-    '/portfolio/cash-flow/categories',
-    '/portfolio/cash-flow/rules',
-    '/portfolio/cash-flow/import',
-    // The renamed canonical area (V5 cash fusion phase 2) — same decision,
-    // both vocabularies.
-    '/portfolio/cash',
-    '/portfolio/cash/movements',
-    '/portfolio/cash/transactions',
-    '/portfolio/cash/budgets',
-    '/portfolio/cash/labels',
-    '/portfolio/cash/tags',
-    '/portfolio/cash/rules',
-    '/portfolio/cash/categories',
-    '/portfolio/cash/import',
-    '/portfolio/people',
-    '/portfolio/tax/print',
-    '/assets/news',
-    '/social/my-shared',
-    '/social/shared-with-me/portfolio-id',
-    '/social/profile',
-  ])('removes killed path %s', (path) => {
-    expect(isParanoidKilledPath(path)).toBe(true);
+  it('pins the complete client kill-rule set', () => {
+    expect(KILLED_CLIENT_ROUTE_RULES).toHaveLength(29);
   });
 
-  it.each(['/people/following/', '/PEOPLE/FOLLOWING', '/PeOpLe/FoLlOwInG/'])(
+  it.each(KILLED_ROUTE_CASES)('removes killed path %s and redirects to %s', (path, destination) => {
+    expect(isParanoidKilledPath(path)).toBe(true);
+    expect(safeDestination(path)).toBe(destination);
+  });
+
+  it.each(NORMALIZED_KILLED_ROUTE_CASES)(
     'normalizes router-equivalent killed path %s',
-    (path) => {
+    (path, destination) => {
       expect(isParanoidKilledPath(path)).toBe(true);
-      expect(safeDestination(path)).toBe('/people');
+      expect(safeDestination(path)).toBe(destination);
     },
   );
 
@@ -69,23 +65,6 @@ describe('paranoid route and surface matrix', () => {
     '/control/account',
   ])('keeps explicit private/auth/client surface %s', (path) => {
     expect(isParanoidKilledPath(path)).toBe(false);
-  });
-
-  it.each([
-    // The Control Center is an overlay: a killed panel must land on a sibling
-    // panel, not on /portfolio, which would close the popup outright.
-    ['/control/profile', '/control/account'],
-    ['/people/profile', '/people'],
-    ['/people/following', '/people'],
-    ['/social/my-shared', '/people'],
-    ['/assets/news', '/assets'],
-    ['/portfolio/cash-flow/budgets', '/portfolio/cash/accounts'],
-    ['/portfolio/cash/budgets', '/portfolio/cash/accounts'],
-    ['/portfolio/cash', '/portfolio/cash/accounts'],
-    ['/portfolio/tax/print', '/portfolio/tax'],
-    ['/portfolio/import', '/portfolio'],
-  ])('redirects killed %s to %s', (from, to) => {
-    expect(safeDestination(from)).toBe(to);
   });
 
   it('keeps normal-mode compatibility while allowing only kept paranoid surfaces', () => {
