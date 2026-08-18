@@ -16,6 +16,7 @@ import {
   EXPORT_TABLE_CLASSIFICATION,
   PARANOID_PURGED_TABLE_NAMES,
   PARANOID_PURGE_ONLY_TABLE_NAMES,
+  PARANOID_PURGE_REASONS,
   PARANOID_REHYDRATION_POLICY,
   PARANOID_TABLE_CLASSIFICATION,
   PARANOID_VAULT_TABLE_NAMES,
@@ -193,6 +194,31 @@ describe('paranoid table classification completeness', () => {
       // `usage_daily` is keyed (day, feature) across ALL accounts — no user id,
       // no asset id — so it identifies nobody and is deliberately NOT purged.
       expect(PARANOID_TABLE_CLASSIFICATION['usage_daily']).toBe('server');
+    });
+
+    /**
+     * `purge` made "destroyed but never captured" a CI-green state for the first
+     * time — which also makes flipping an existing `vault` table here a green way
+     * to stop capturing it. The export axis answers the same hazard by demanding
+     * a non-empty reason for every `skip`; this demands one for every `purge`.
+     */
+    it('states a non-empty reason for every purge-classified table', () => {
+      expect(Object.keys(PARANOID_PURGE_REASONS).sort()).toEqual([
+        ...PARANOID_PURGE_ONLY_TABLE_NAMES,
+      ]);
+      for (const [table, reason] of Object.entries(PARANOID_PURGE_REASONS)) {
+        expect(reason.trim().length, `${table} needs a stated reason`).toBeGreaterThan(0);
+      }
+    });
+
+    /**
+     * The membership roster is PINNED, not merely derived. Adding a second table
+     * to this axis is a deliberate act that has to edit this list — so a future
+     * change cannot quietly move a captured table into "destroyed, never
+     * captured" and stay green.
+     */
+    it('has exactly one member, and adding another is a deliberate review', () => {
+      expect([...PARANOID_PURGE_ONLY_TABLE_NAMES]).toEqual(['usage_events']);
     });
   });
 });

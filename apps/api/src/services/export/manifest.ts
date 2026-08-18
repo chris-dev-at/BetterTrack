@@ -386,6 +386,36 @@ const restore = (entity: VaultEntityKind): ParanoidRehydrationPolicy => ({
 });
 const purgeOnly = (): ParanoidRehydrationPolicy => ({ kind: 'purge-only' });
 
+/**
+ * The compulsory reason for each `purge` table — the third axis value's
+ * equivalent of `skipped(reason)` on the export axis and of the restore/
+ * purge-only declaration on the vault axis, and it exists for a specific
+ * reason.
+ *
+ * BEFORE `purge` existed the invariant was: destroyed ⇒ `vault` ⇒ captured into
+ * the encrypted document AND explicitly declared restore-or-discard. `purge`
+ * makes "destroyed but never captured" a legal, CI-green state for the FIRST
+ * time — which also means flipping an existing `vault` table here (dropping its
+ * entity kind, policy and handler) is now a green way to turn a restorable table
+ * into a destroyed one, where the only green alternative used to be `server`,
+ * i.e. KEPT. It also escapes the `VAULT_TABLE_ENTITY_KINDS` gate, the one thing
+ * that forced a change to the destroy-set to be visible outside `apps/api`.
+ *
+ * So the value carries a stated, auditable why per table, and the completeness
+ * test pins the membership list itself: a second table cannot join this axis
+ * without a reviewer editing the expected roster in
+ * `paranoidClassification.test.ts` on purpose.
+ */
+export const PARANOID_PURGE_REASONS: Record<string, string> = {
+  usage_events:
+    'Operator telemetry whose columns are portfolio-identifying: one row per ' +
+    '(user, feature, asset, day), and a paranoid client prices every holding ' +
+    'itself, so `feature=assets` rows recorded the account holdings ROSTER daily. ' +
+    'Not `vault` — it is telemetry no client should hold and nobody wants ' +
+    'restored, and enrolling it in the strict v1 document would be a ' +
+    'cross-client blob-format change. Not `server` — that means kept.',
+};
+
 export const PARANOID_TABLE_CLASSIFICATION: Record<string, ParanoidClassification> = {
   // ── vault: portfolio / money content (client-encrypted, purged at enable) ──
   portfolios: 'vault',
@@ -474,6 +504,14 @@ export const PARANOID_TABLE_CLASSIFICATION: Record<string, ParanoidClassificatio
   usage_events: 'purge',
   // The (day, feature) rollup carries NO user id and NO asset id — a global
   // aggregate over all accounts, so it identifies nothing and stays server-side.
+  //
+  // ACCEPTED SIDE EFFECT: `rollupDay` recomputes a day's aggregate from the raw
+  // events, and the cron re-materializes a trailing 3-day window, so purging a
+  // converting user retroactively lowers the already-published `usage_daily`
+  // numbers for those days (older days keep their historical values). Admin
+  // analytics losing a few counts for a privacy guarantee is the intended trade,
+  // and it is preferable to the alternative — keeping the raw rows alive to
+  // protect an aggregate.
   usage_daily: 'server',
   app_settings: 'server',
   idempotency_keys: 'server',
