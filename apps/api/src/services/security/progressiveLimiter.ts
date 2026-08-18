@@ -29,6 +29,13 @@ export interface ProgressiveSchedule {
    * decays back to zero (§10 — "decays after ~15 min of good behavior").
    */
   decaySec: number;
+  /**
+   * Keep an exhausted window's counter until its original expiry instead of
+   * starting a fresh allowance after the cooldown. Use this for hard budgets
+   * such as feedback's five accepted submissions per hour. Cooldowns still use
+   * the progressive ladder, but can never outlive the retained window.
+   */
+  retainCountOnViolation?: boolean;
 }
 
 export interface ProgressiveDecision {
@@ -100,10 +107,24 @@ local rungCount = tonumber(ARGV[4])
 local rungIndex = math.min(level + 1, rungCount)
 local retryAfterSec = tonumber(ARGV[4 + rungIndex])
 local nextLevel = math.min(level + 1, rungCount)
+local retainCount = tonumber(ARGV[5 + rungCount]) == 1
 
-redis.call('SET', KEYS[1], '1', 'EX', retryAfterSec)
+if retainCount then
+  -- Keep the hard window closed after a short cooldown expires. Cap each
+  -- cooldown at the counter's remaining lifetime so a newly-opened window is
+  -- never held shut by the previous window's penalty marker.
+  local remainingWindowMs = redis.call('PTTL', KEYS[2])
+  local cooldownMs = retryAfterSec * 1000
+  if remainingWindowMs >= 0 then
+    cooldownMs = math.min(cooldownMs, math.max(1, remainingWindowMs))
+  end
+  redis.call('SET', KEYS[1], '1', 'PX', cooldownMs)
+  retryAfterSec = math.max(1, math.ceil(cooldownMs / 1000))
+else
+  redis.call('SET', KEYS[1], '1', 'EX', retryAfterSec)
+  redis.call('DEL', KEYS[2])
+end
 redis.call('SET', KEYS[3], tostring(nextLevel), 'EX', ARGV[3])
-redis.call('DEL', KEYS[2])
 
 return { 0, retryAfterSec, nextLevel, 1 }
 `;
@@ -158,6 +179,7 @@ export function createProgressiveLimiter(
         schedule.decaySec,
         schedule.cooldownsSec.length,
         ...schedule.cooldownsSec,
+        schedule.retainCountOnViolation ? 1 : 0,
       )) as [number, number, number, number];
       const [allowed, retryAfterSec, level, cooldownStarted] = result;
       return {

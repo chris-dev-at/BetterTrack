@@ -14,6 +14,7 @@ import {
 
 import * as schema from '../data/schema';
 import { FIRST_PARTY_CLIENTS } from '../services/oauth/firstPartyClients';
+import { progressiveKeys } from '../services/security/progressiveLimiter';
 import { createTestApp, type SeededUser, type TestHarness } from '../testing/createTestApp';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
@@ -95,6 +96,29 @@ describe('POST /api/v1/feedback', () => {
     expect(row!.createdAt.toISOString()).toBe(created.createdAt);
   });
 
+  it('accepts empty subjects and preserves supplied subject text verbatim', async () => {
+    const user = await harness.seedUser({
+      email: 'feedback-subject@bt.test',
+      username: 'feedbacksubject',
+    });
+    const agent = await loginAgent(harness.app, user);
+
+    for (const subject of ['', '  Keep this spacing  ']) {
+      const response = await agent
+        .post('/api/v1/feedback')
+        .set(...XRW)
+        .send({ category: 'other', message: 'Subject contract', subject });
+      expect(response.status).toBe(201);
+
+      const created = createFeedbackResponseSchema.parse(response.body);
+      const [row] = await harness.db
+        .select({ subject: schema.feedback.subject })
+        .from(schema.feedback)
+        .where(eq(schema.feedback.id, created.id));
+      expect(row?.subject).toBe(subject);
+    }
+  });
+
   it('accepts exactly 5000 message characters and returns standard validation errors beyond it', async () => {
     const user = await harness.seedUser({ email: 'bounds@bt.test', username: 'bounds' });
     const agent = await loginAgent(harness.app, user);
@@ -154,7 +178,7 @@ describe('POST /api/v1/feedback', () => {
     expect(apiErrorSchema.parse(response.body).error.code).toBe('INSUFFICIENT_SCOPE');
   });
 
-  it('uses the configured five-per-hour user limit and standard limiter envelope', async () => {
+  it('keeps the configured five-per-hour budget closed through cooldown recovery', async () => {
     harness = await createTestApp({ rateLimitsEnabled: true });
     const user = await harness.seedUser({ email: 'limited@bt.test', username: 'limited' });
     const agent = await loginAgent(harness.app, user);
@@ -177,8 +201,33 @@ describe('POST /api/v1/feedback', () => {
     expect(apiErrorSchema.parse(limited.body).error.code).toBe('RATE_LIMITED');
     expect(limited.headers['retry-after']).toBeDefined();
 
-    const [stored] = await harness.db.select({ value: count() }).from(schema.feedback);
+    const keys = progressiveKeys('feedback', user.id);
+    expect(await harness.ctx.redis.get(keys.count)).toBe(String(configuredLimit + 1));
+
+    // Simulate the one-minute first cooldown expiring while the original hourly
+    // counter is still live. A fresh five-row allowance must not open here.
+    await harness.ctx.redis.del(keys.cooldown);
+    const afterCooldown = await agent
+      .post('/api/v1/feedback')
+      .set(...XRW)
+      .send({ category: 'other', message: 'Still inside the same hour' });
+    expect(afterCooldown.status).toBe(429);
+    expect(apiErrorSchema.parse(afterCooldown.body).error.code).toBe('RATE_LIMITED');
+
+    let [stored] = await harness.db.select({ value: count() }).from(schema.feedback);
     expect(stored?.value).toBe(configuredLimit);
+
+    // Simulate the hourly window and its bounded cooldown expiring together.
+    // The next request starts a new allowance and persists normally.
+    await harness.ctx.redis.del(keys.count, keys.cooldown);
+    const nextWindow = await agent
+      .post('/api/v1/feedback')
+      .set(...XRW)
+      .send({ category: 'other', message: 'A new hourly window' });
+    expect(nextWindow.status).toBe(201);
+
+    [stored] = await harness.db.select({ value: count() }).from(schema.feedback);
+    expect(stored?.value).toBe(configuredLimit + 1);
   });
 });
 

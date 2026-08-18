@@ -49,7 +49,7 @@ export const createFeedbackRequestSchema = z
   .object({
     category: feedbackCategorySchema,
     message: z.string().min(1).max(FEEDBACK_MESSAGE_MAX_LENGTH),
-    subject: z.string().trim().min(1).max(FEEDBACK_SUBJECT_MAX_LENGTH).optional(),
+    subject: z.string().max(FEEDBACK_SUBJECT_MAX_LENGTH).optional(),
     context: feedbackContextSchema.optional(),
   })
   .strict();

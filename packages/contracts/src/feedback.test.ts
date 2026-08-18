@@ -47,21 +47,16 @@ describe('feedback contracts', () => {
     ).toBe(false);
   });
 
-  it('normalizes a supplied subject and rejects an empty one', () => {
-    const normalized = createFeedbackRequestSchema.parse({
-      category: 'feature',
-      message: 'A useful request',
-      subject: '  Better import preview  ',
-    });
-
-    expect(normalized.subject).toBe('Better import preview');
-    expect(
-      createFeedbackRequestSchema.safeParse({
+  it('accepts an empty optional subject and preserves supplied text verbatim', () => {
+    for (const subject of ['', '   ', '  Better import preview  ']) {
+      const parsed = createFeedbackRequestSchema.parse({
         category: 'feature',
         message: 'A useful request',
-        subject: '   ',
-      }).success,
-    ).toBe(false);
+        subject,
+      });
+
+      expect(parsed.subject).toBe(subject);
+    }
   });
 
   it('bounds diagnostics by key count and serialized UTF-8 size without locking their names', () => {

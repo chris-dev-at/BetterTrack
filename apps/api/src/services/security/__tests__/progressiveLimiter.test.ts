@@ -187,6 +187,36 @@ describe('progressive limiter — escalation & decay (§10)', () => {
     expect(await redis.get(keys.level)).toBe('2');
   });
 
+  it('can retain an exhausted hard-window counter through cooldown expiry', async () => {
+    const hardWindowSchedule: ProgressiveSchedule = {
+      ...SCHEDULE,
+      retainCountOnViolation: true,
+    };
+    const limiter = createProgressiveLimiter(redis, 'hard', hardWindowSchedule);
+    const keys = progressiveKeys('hard', 'user');
+
+    for (let i = 0; i < hardWindowSchedule.limit; i += 1) {
+      expect((await limiter.consume('user')).allowed).toBe(true);
+    }
+    expect((await limiter.consume('user')).allowed).toBe(false);
+    expect(await redis.get(keys.count)).toBe(String(hardWindowSchedule.limit + 1));
+    expect(await redis.ttl(keys.count)).toBeGreaterThan(0);
+
+    // The first short cooldown elapsed, but the original counting window did
+    // not: the next request must remain rejected rather than gaining a fresh
+    // allowance.
+    await redis.del(keys.cooldown);
+    expect((await limiter.consume('user')).allowed).toBe(false);
+    expect(await redis.get(keys.count)).toBe(String(hardWindowSchedule.limit + 2));
+    expect(await redis.ttl(keys.count)).toBeGreaterThan(0);
+
+    // Once the retained window and its bounded cooldown expire, a new window
+    // starts normally.
+    await redis.del(keys.count, keys.cooldown);
+    expect((await limiter.consume('user')).allowed).toBe(true);
+    expect(await redis.get(keys.count)).toBe('1');
+  });
+
   it('sustained violations climb the ladder and cap at the last rung', async () => {
     const limiter = createProgressiveLimiter(redis, 't', SCHEDULE);
     const keys = progressiveKeys('t', 'ip');
