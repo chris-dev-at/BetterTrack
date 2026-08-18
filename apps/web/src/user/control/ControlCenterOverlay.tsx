@@ -343,9 +343,15 @@ export interface ControlCenterOverlayProps {
    * popup, so closing reveals that page instead of jumping somewhere else.
    */
   closeTo?: string;
+  /** The page shown behind this overlay, retained for contextual child actions. */
+  screen?: string;
 }
 
-export function ControlCenterOverlay({ panel, closeTo = '/' }: ControlCenterOverlayProps = {}) {
+export function ControlCenterOverlay({
+  panel,
+  closeTo = '/',
+  screen,
+}: ControlCenterOverlayProps = {}) {
   const t = useT();
   const navigate = useNavigate();
   const params = useParams();
@@ -545,7 +551,7 @@ export function ControlCenterOverlay({ panel, closeTo = '/' }: ControlCenterOver
             )}
 
             <div className="bt-cc__content" key={active.id}>
-              <Active />
+              {active.id === 'feedback' ? <FeedbackPanel screen={screen} /> : <Active />}
             </div>
           </div>
         </div>

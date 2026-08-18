@@ -50,7 +50,8 @@ vi.mock('./panels/DeleteAccountPanel', () => ({
   DeleteAccountPanel: () => createElement('p', null, 'delete-account-panel'),
 }));
 vi.mock('./panels/FeedbackPanel', () => ({
-  FeedbackPanel: () => createElement('p', null, 'feedback-panel'),
+  FeedbackPanel: ({ screen }: { screen?: string }) =>
+    createElement('p', { 'data-screen': screen }, 'feedback-panel'),
 }));
 // The privacy panel stands in for a panel whose modal replaces (and detaches)
 // its opener, reproducing the focus-restoration corner case from the review.
@@ -90,7 +91,14 @@ function Opener() {
   );
 }
 
-function renderAt(path: string, { entries, locale }: { entries?: string[]; locale?: string } = {}) {
+function renderAt(
+  path: string,
+  {
+    entries,
+    locale,
+    screen: backgroundScreen,
+  }: { entries?: string[]; locale?: string; screen?: string } = {},
+) {
   return render(
     <I18nProvider initialLocale={locale}>
       <MemoryRouter initialEntries={entries ?? [path]} initialIndex={(entries?.length ?? 1) - 1}>
@@ -102,7 +110,10 @@ function renderAt(path: string, { entries, locale }: { entries?: string[]; local
           {/* Mirrors UserApp: ONE optional-param node — two separate nodes
               would remount the overlay when a click crosses between them. */}
           <Route path="/control/data" element={<p>data-management-page</p>} />
-          <Route path="/control/:panel?" element={<ControlCenterOverlay />} />
+          <Route
+            path="/control/:panel?"
+            element={<ControlCenterOverlay screen={backgroundScreen} />}
+          />
         </Routes>
       </MemoryRouter>
     </I18nProvider>,
@@ -156,6 +167,15 @@ describe('ControlCenterOverlay', () => {
 
     expect(within(popup()).getByText(marker)).toBeInTheDocument();
     expect(within(popup()).getByRole('link', { name: label, current: 'page' })).toBeVisible();
+  });
+
+  test('passes the page behind the popup to the feedback panel', () => {
+    renderAt('/control/feedback', { screen: '/portfolio?portfolio=portfolio-1' });
+
+    expect(within(popup()).getByText('feedback-panel')).toHaveAttribute(
+      'data-screen',
+      '/portfolio?portfolio=portfolio-1',
+    );
   });
 
   test('every declared panel id renders its own panel', () => {

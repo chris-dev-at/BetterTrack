@@ -362,7 +362,11 @@ function UserShell() {
             </div>
           }
         >
-          <ControlCenterOverlay closeTo={href(background.current)} panel={control.panel} />
+          <ControlCenterOverlay
+            closeTo={href(background.current)}
+            panel={control.panel}
+            screen={href(background.current)}
+          />
         </Suspense>
       ) : null}
     </>

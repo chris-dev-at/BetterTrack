@@ -20,11 +20,36 @@ type SubmissionState = 'idle' | 'pending' | 'success' | 'error';
 /** The three API categories, kept in the server's triage order. */
 const CATEGORIES: readonly FeedbackCategory[] = ['feature', 'bug', 'other'];
 
+function hasValidationFieldError(details: unknown, field: string): boolean {
+  if (typeof details !== 'object' || details === null || !('fieldErrors' in details)) return false;
+
+  const fieldErrors = details.fieldErrors;
+  return (
+    typeof fieldErrors === 'object' &&
+    fieldErrors !== null &&
+    field in fieldErrors &&
+    Array.isArray(fieldErrors[field]) &&
+    fieldErrors[field].length > 0
+  );
+}
+
 function feedbackErrorMessage(t: ReturnType<typeof useT>, error: unknown): string {
-  // Validation failures deliberately keep the API's exact message. It is the
-  // authoritative contract and is more useful than replacing "max 5000" with
-  // a generic client-side failure.
-  if (error instanceof ApiError && error.message) return error.message;
+  if (error instanceof ApiError) {
+    if (error.code === 'VALIDATION_ERROR') {
+      if (hasValidationFieldError(error.details, 'message')) {
+        return t('feedback.messageTooLong', { max: FEEDBACK_MESSAGE_MAX_LENGTH });
+      }
+      if (hasValidationFieldError(error.details, 'subject')) {
+        return t('feedback.subjectTooLong', { max: FEEDBACK_SUBJECT_MAX_LENGTH });
+      }
+      if (hasValidationFieldError(error.details, 'category')) return t('feedback.categoryRequired');
+    }
+
+    // API errors with a dedicated message (for example, rate limits) remain
+    // useful. The validation envelope itself is deliberately generic, so its
+    // field details above provide the user-facing copy instead.
+    if (error.message && error.message !== 'Invalid request.') return error.message;
+  }
   return t('feedback.submitError');
 }
 
@@ -33,7 +58,7 @@ function feedbackErrorMessage(t: ReturnType<typeof useT>, error: unknown): strin
  * and the Developer hub both open this same dialog, so the user returns to the
  * context in which the report started.
  */
-export function FeedbackDialog({ onClose }: { onClose: () => void }) {
+export function FeedbackDialog({ onClose, screen }: { onClose: () => void; screen?: string }) {
   const t = useT();
   const { locale } = useI18n();
   const location = useLocation();
@@ -43,16 +68,18 @@ export function FeedbackDialog({ onClose }: { onClose: () => void }) {
   const [attempted, setAttempted] = useState(false);
   const [state, setState] = useState<SubmissionState>('idle');
   const [submissionError, setSubmissionError] = useState<string | null>(null);
+  const normalizedSubject = subject.trim();
+  const normalizedMessage = message.trim();
 
   const categoryError = attempted && category === '' ? t('feedback.categoryRequired') : undefined;
   const subjectError =
-    subject.length > FEEDBACK_SUBJECT_MAX_LENGTH
+    normalizedSubject.length > FEEDBACK_SUBJECT_MAX_LENGTH
       ? t('feedback.subjectTooLong', { max: FEEDBACK_SUBJECT_MAX_LENGTH })
       : undefined;
   const messageError =
-    message.length > FEEDBACK_MESSAGE_MAX_LENGTH
+    normalizedMessage.length > FEEDBACK_MESSAGE_MAX_LENGTH
       ? t('feedback.messageTooLong', { max: FEEDBACK_MESSAGE_MAX_LENGTH })
-      : attempted && message.length === 0
+      : attempted && normalizedMessage.length === 0
         ? t('feedback.messageRequired')
         : undefined;
 
@@ -69,9 +96,9 @@ export function FeedbackDialog({ onClose }: { onClose: () => void }) {
 
     if (
       category === '' ||
-      subject.length > FEEDBACK_SUBJECT_MAX_LENGTH ||
-      message.length === 0 ||
-      message.length > FEEDBACK_MESSAGE_MAX_LENGTH ||
+      normalizedSubject.length > FEEDBACK_SUBJECT_MAX_LENGTH ||
+      normalizedMessage.length === 0 ||
+      normalizedMessage.length > FEEDBACK_MESSAGE_MAX_LENGTH ||
       state === 'pending'
     ) {
       return;
@@ -79,14 +106,14 @@ export function FeedbackDialog({ onClose }: { onClose: () => void }) {
 
     const body: CreateFeedbackRequest = {
       category,
-      message,
-      ...(subject === '' ? {} : { subject }),
+      message: normalizedMessage,
+      ...(normalizedSubject === '' ? {} : { subject: normalizedSubject }),
       context: {
         platform: 'web',
         appVersion: typeof __APP_RELEASE__ === 'string' ? __APP_RELEASE__ : 'unknown',
         browser: typeof navigator === 'undefined' ? 'unknown' : navigator.userAgent,
         locale,
-        screen: `${location.pathname}${location.search}${location.hash}`,
+        screen: screen ?? `${location.pathname}${location.search}${location.hash}`,
       },
     };
 
@@ -188,7 +215,7 @@ export function FeedbackDialog({ onClose }: { onClose: () => void }) {
             value={message}
           />
         </Field>
-        <p aria-live="polite" className="bt-field__hint self-end" style={{ marginTop: -10 }}>
+        <p className="bt-field__hint -mt-2.5 self-end">
           {t('feedback.messageCounter', {
             count: message.length,
             max: FEEDBACK_MESSAGE_MAX_LENGTH,
