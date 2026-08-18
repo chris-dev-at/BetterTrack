@@ -18,5 +18,9 @@ test('at 390 px every developer hub destination stays in the phone-safe list', (
     'href',
     '/control/webhooks',
   );
+  expect(screen.getByRole('link', { name: /Send feedback/ })).toHaveAttribute(
+    'href',
+    '/control/feedback',
+  );
   expect(container.querySelector('.bt-hub-page')).toBeInTheDocument();
 });

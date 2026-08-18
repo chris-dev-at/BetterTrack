@@ -15,6 +15,7 @@ import { AuthorizedAppsPanel } from './panels/AuthorizedAppsPanel';
 import { ConnectionsPanel } from './panels/ConnectionsPanel';
 import { DefaultsPanel } from './panels/DefaultsPanel';
 import { DeleteAccountPanel } from './panels/DeleteAccountPanel';
+import { FeedbackPanel } from './panels/FeedbackPanel';
 import { NotificationLogPanel } from './panels/NotificationLogPanel';
 import { NotificationsPanel } from './panels/NotificationsPanel';
 import { OAuthAppsPanel } from './panels/OAuthAppsPanel';
@@ -198,6 +199,18 @@ export const CONTROL_GROUPS: readonly ControlGroup[] = [
         ],
         icon: 'inbox',
         Component: NotificationLogPanel,
+      },
+      {
+        id: 'feedback',
+        labelKey: 'control.feedback',
+        keywordKeys: [
+          'feedback.title',
+          'feedback.settingsLabel',
+          'feedback.categoryOption.feature',
+          'feedback.categoryOption.bug',
+        ],
+        icon: 'pen',
+        Component: FeedbackPanel,
       },
       {
         id: 'privacy',

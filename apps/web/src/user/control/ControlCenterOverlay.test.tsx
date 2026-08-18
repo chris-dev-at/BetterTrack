@@ -49,6 +49,9 @@ vi.mock('./panels/WebhooksPanel', () => ({
 vi.mock('./panels/DeleteAccountPanel', () => ({
   DeleteAccountPanel: () => createElement('p', null, 'delete-account-panel'),
 }));
+vi.mock('./panels/FeedbackPanel', () => ({
+  FeedbackPanel: () => createElement('p', null, 'feedback-panel'),
+}));
 // The privacy panel stands in for a panel whose modal replaces (and detaches)
 // its opener, reproducing the focus-restoration corner case from the review.
 vi.mock('./panels/PrivacyPanel', async () => {
@@ -141,6 +144,7 @@ describe('ControlCenterOverlay', () => {
     ['/control/defaults', 'defaults-panel', 'Portfolio defaults'],
     ['/control/notifications', 'notifications-panel', 'Notifications'],
     ['/control/notification-log', 'notification-log-panel', 'Notification log'],
+    ['/control/feedback', 'feedback-panel', 'Send feedback'],
     ['/control/connections', 'connections-panel', 'Connections'],
     ['/control/api', 'api-panel', 'API keys'],
     ['/control/oauth-apps', 'oauth-apps-panel', 'OAuth apps'],
@@ -158,7 +162,7 @@ describe('ControlCenterOverlay', () => {
     const ids = CONTROL_GROUPS.flatMap((group) => group.panels.map((panel) => panel.id));
     // The taxonomy and the deep-link table above must not drift apart (the
     // table covers all but `privacy`, whose stub is the nested-modal fixture).
-    expect(ids).toHaveLength(15);
+    expect(ids).toHaveLength(16);
     for (const id of ids) {
       const view = renderAt(`/control/${id}`);
       expect(
