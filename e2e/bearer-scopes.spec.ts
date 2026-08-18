@@ -1,6 +1,6 @@
 import { expect, request as newRequestContext, test } from '@playwright/test';
 
-import { loginAsAdmin } from './support/adminApi';
+import { newAdminRequestContext } from './support/adminApi';
 import { API_BASE_URL } from './support/config';
 import { befriend, provisionUser } from './support/users';
 
@@ -24,8 +24,7 @@ test('bearer scopes: chat:write sends a DM; no notifications:read → 403; admin
 }) => {
   test.setTimeout(180_000);
 
-  const apiRequest = await newRequestContext.newContext({ baseURL: API_BASE_URL });
-  await loginAsAdmin(apiRequest);
+  const apiRequest = await newAdminRequestContext(newRequestContext);
   const sender = await provisionUser(browser, apiRequest, 'bearsender');
   const recipient = await provisionUser(browser, apiRequest, 'bearrecipient');
   await apiRequest.dispose();

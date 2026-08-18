@@ -6,7 +6,7 @@ import {
   type Page,
 } from '@playwright/test';
 
-import { getRegistrationMode, loginAsAdmin, setRegistrationMode } from './support/adminApi';
+import { getRegistrationMode, newAdminRequestContext, setRegistrationMode } from './support/adminApi';
 import { passwordSignIn as submitPasswordSignIn } from './support/auth';
 import { ACCOUNT_PASSWORD, API_BASE_URL, FAKE_GOOGLE_URL } from './support/config';
 import { dismissFirstRun, expectUserShellReady } from './support/flows';
@@ -70,8 +70,7 @@ test('google identity block lives under Settings → Connections and is gone fro
 }) => {
   test.setTimeout(120_000);
 
-  const apiRequest = await newRequestContext.newContext({ baseURL: API_BASE_URL });
-  await loginAsAdmin(apiRequest);
+  const apiRequest = await newAdminRequestContext(newRequestContext);
   const user = await provisionUser(browser, apiRequest, 'gconn');
   try {
     const page = user.page;
@@ -109,9 +108,8 @@ test('google login: verified-email match links an existing account; Google and p
 }) => {
   test.setTimeout(180_000);
 
-  const apiRequest = await newRequestContext.newContext({ baseURL: API_BASE_URL });
+  const apiRequest = await newAdminRequestContext(newRequestContext);
   const idp = await newRequestContext.newContext();
-  await loginAsAdmin(apiRequest);
   const user = await provisionUser(browser, apiRequest, 'glink');
   // Only the account is needed; drop the provisioning context so the sign-in
   // flows below run anonymous (a live session would turn `start` into a LINK flow).
@@ -160,9 +158,8 @@ test('google login: verified-email match links an existing account; Google and p
 test('google login: open mode registers a brand-new verified identity', async ({ browser }) => {
   test.setTimeout(180_000);
 
-  const apiRequest = await newRequestContext.newContext({ baseURL: API_BASE_URL });
+  const apiRequest = await newAdminRequestContext(newRequestContext);
   const idp = await newRequestContext.newContext();
-  await loginAsAdmin(apiRequest);
   const priorMode = await getRegistrationMode(apiRequest);
   await setRegistrationMode(apiRequest, 'open');
 
@@ -204,9 +201,8 @@ test('google login: an unverified Google email never links and falls through to 
 }) => {
   test.setTimeout(180_000);
 
-  const apiRequest = await newRequestContext.newContext({ baseURL: API_BASE_URL });
+  const apiRequest = await newAdminRequestContext(newRequestContext);
   const idp = await newRequestContext.newContext();
-  await loginAsAdmin(apiRequest);
   const user = await provisionUser(browser, apiRequest, 'gunver');
   await user.context.close();
   const priorMode = await getRegistrationMode(apiRequest);
@@ -261,9 +257,8 @@ test('google login: closed mode rejects a brand-new identity with the friendly m
 }) => {
   test.setTimeout(120_000);
 
-  const apiRequest = await newRequestContext.newContext({ baseURL: API_BASE_URL });
+  const apiRequest = await newAdminRequestContext(newRequestContext);
   const idp = await newRequestContext.newContext();
-  await loginAsAdmin(apiRequest);
   const priorMode = await getRegistrationMode(apiRequest);
   await setRegistrationMode(apiRequest, 'closed');
 

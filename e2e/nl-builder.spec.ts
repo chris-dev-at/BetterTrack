@@ -1,6 +1,6 @@
 import { expect, request as newRequestContext, test } from '@playwright/test';
 
-import { loginAsAdmin } from './support/adminApi';
+import { newAdminRequestContext } from './support/adminApi';
 import { API_BASE_URL } from './support/config';
 import { clearAiProvider, createFakeOllama, setAiProvider } from './support/e3';
 import { provisionUser } from './support/users';
@@ -38,8 +38,7 @@ test('nl builder: a local-provider draft is reviewed and confirmed before it com
   test.setTimeout(120_000);
 
   const fake = await createFakeOllama(DRAFT_COMPLETION);
-  const apiRequest = await newRequestContext.newContext({ baseURL: API_BASE_URL });
-  await loginAsAdmin(apiRequest);
+  const apiRequest = await newAdminRequestContext(newRequestContext);
 
   try {
     // Point the runtime AI provider at the in-process fake (no redeploy).

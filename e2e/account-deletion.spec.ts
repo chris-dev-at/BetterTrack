@@ -1,6 +1,6 @@
 import { expect, request as newRequestContext, test } from '@playwright/test';
 
-import { loginAsAdmin } from './support/adminApi';
+import { newAdminRequestContext } from './support/adminApi';
 import { passwordSignIn } from './support/auth';
 import { ACCOUNT_PASSWORD, API_BASE_URL } from './support/config';
 import { befriend, provisionUser } from './support/users';
@@ -24,8 +24,7 @@ test('account deletion: re-auth + typed confirm deletes the account, revokes ses
 }) => {
   test.setTimeout(240_000);
 
-  const apiRequest = await newRequestContext.newContext({ baseURL: API_BASE_URL });
-  await loginAsAdmin(apiRequest);
+  const apiRequest = await newAdminRequestContext(newRequestContext);
   const owner = await provisionUser(browser, apiRequest, 'delowner');
   const friend = await provisionUser(browser, apiRequest, 'delfriend');
   await apiRequest.dispose();

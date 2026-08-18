@@ -3,7 +3,13 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
-import type { APIRequestContext, APIResponse, Browser, BrowserContext } from '@playwright/test';
+import type {
+  APIRequest,
+  APIRequestContext,
+  APIResponse,
+  Browser,
+  BrowserContext,
+} from '@playwright/test';
 
 import { ADMIN_BASE_URL, ADMIN_EMAIL, ADMIN_PASSWORD, API_BASE_URL } from './config';
 
@@ -27,8 +33,29 @@ const CSRF_HEADERS = { 'X-Requested-With': 'BetterTrack' };
 const ADMIN_TOTP_SECRET_FILE =
   process.env.E2E_ADMIN_TOTP_FILE ?? join(tmpdir(), 'bettertrack-e2e-admin-totp');
 
+/**
+ * Cross-process replay cursor for the TOTP secret above. A failed spec is
+ * retried in a new Playwright worker, so an in-memory cursor alone can mint the
+ * same 30-second code that the previous worker just consumed. Keep the cursor
+ * next to the secret by default; deployments that isolate the secret path get
+ * an isolated cursor automatically.
+ */
+const ADMIN_TOTP_STEP_FILE =
+  process.env.E2E_ADMIN_TOTP_STEP_FILE ?? `${ADMIN_TOTP_SECRET_FILE}.last-step`;
+
+const TOTP_STEP_MS = 30_000;
+const TOTP_BOUNDARY_GRACE_MS = 100;
+
 /** In-process mirror of the persisted secret; primed lazily from disk on first read. */
 let cachedAdminTotpSecret: string | null = null;
+
+/** Undefined means "not read yet"; null means the cursor file was absent or invalid. */
+let cachedAdminTotpStep: number | null | undefined;
+
+type AdminStorageState = Awaited<ReturnType<APIRequestContext['storageState']>>;
+
+/** One setup promise per Playwright worker process; every spec clones its cookie. */
+let assuredAdminStorageState: Promise<AdminStorageState> | null = null;
 
 /**
  * A shard can legitimately cross the production-shaped 25/minute login-IP
@@ -81,6 +108,57 @@ function persistAdminTotpSecret(secret: string): void {
   } catch {
     // Best-effort — in-process cache still covers this worker's remaining specs.
   }
+}
+
+function readAdminTotpStep(): number | null {
+  if (cachedAdminTotpStep !== undefined) return cachedAdminTotpStep;
+  try {
+    const parsed = Number(readFileSync(ADMIN_TOTP_STEP_FILE, 'utf8').trim());
+    cachedAdminTotpStep = Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null;
+  } catch {
+    cachedAdminTotpStep = null;
+  }
+  return cachedAdminTotpStep;
+}
+
+function persistAdminTotpStep(step: number): void {
+  cachedAdminTotpStep = step;
+  try {
+    mkdirSync(dirname(ADMIN_TOTP_STEP_FILE), { recursive: true });
+    writeFileSync(ADMIN_TOTP_STEP_FILE, String(step), { mode: 0o600 });
+  } catch {
+    // Best-effort — the in-process cursor still protects this worker.
+  }
+}
+
+const totpStepAt = (nowMs: number): number => Math.floor(nowMs / TOTP_STEP_MS);
+
+/**
+ * Mint a code from a step this harness has not already attempted. Persist the
+ * reservation before the request so a Playwright worker crash cannot make its
+ * retry replay a code that the API accepted just before the crash.
+ */
+async function freshAdminTotpCode(secret: string): Promise<string> {
+  let nowMs = Date.now();
+  const lastStep = readAdminTotpStep();
+  if (lastStep !== null && totpStepAt(nowMs) <= lastStep) {
+    const waitMs = (lastStep + 1) * TOTP_STEP_MS - nowMs + TOTP_BOUNDARY_GRACE_MS;
+    // A cursor more than one step ahead means the shared file came from a host
+    // with a materially different clock. Fail instead of silently sleeping for
+    // an unbounded period.
+    if (waitMs > TOTP_STEP_MS * 2) {
+      throw new Error(
+        `Admin TOTP step cursor ${lastStep} is ahead of the local clock; remove ` +
+          `${ADMIN_TOTP_STEP_FILE} after fixing the clock skew.`,
+      );
+    }
+    await new Promise((resolve) => setTimeout(resolve, Math.max(0, waitMs)));
+    nowMs = Date.now();
+  }
+
+  const step = totpStepAt(nowMs);
+  persistAdminTotpStep(step);
+  return generateTotpCode(secret, nowMs);
 }
 
 /** RFC 4648 base32 decode — only what the admin-2FA enroll endpoint returns (uppercase, no padding). */
@@ -151,9 +229,10 @@ async function signInAsAdminOnce(request: APIRequestContext): Promise<'assured' 
           `${ADMIN_EMAIL}\`) so the fresh-boot enrollment path can run again.`,
       );
     }
+    const code = await freshAdminTotpCode(secret);
     const verifyRes = await postAdminAuth(request, '/api/v1/auth/2fa/verify', () => ({
       pendingToken: body.pendingToken,
-      code: generateTotpCode(secret),
+      code,
     }));
     if (!verifyRes.ok()) {
       throw new Error(`Admin 2FA verify failed: ${verifyRes.status()} ${await verifyRes.text()}`);
@@ -216,7 +295,7 @@ async function signInAsAdminOnce(request: APIRequestContext): Promise<'assured' 
  * attempt signs in again through the now-armed TOTP challenge and comes back
  * assured.
  */
-export async function loginAsAdmin(request: APIRequestContext): Promise<void> {
+async function loginAsAdmin(request: APIRequestContext): Promise<void> {
   if ((await signInAsAdminOnce(request)) === 'assured') return;
   if ((await signInAsAdminOnce(request)) === 'assured') return;
   // The second attempt can only report 'enrolled' if the admin's confirmed
@@ -228,9 +307,45 @@ export async function loginAsAdmin(request: APIRequestContext): Promise<void> {
   );
 }
 
+async function createAssuredAdminStorageState(
+  requestFactory: APIRequest,
+): Promise<AdminStorageState> {
+  const request = await requestFactory.newContext({ baseURL: API_BASE_URL });
+  try {
+    await loginAsAdmin(request);
+    const state = await request.storageState();
+    const sessionCookies = state.cookies.filter((cookie) => cookie.name === 'bt_sid');
+    if (sessionCookies.length !== 1) {
+      throw new Error('Admin sign-in did not produce exactly one bt_sid session cookie.');
+    }
+    return { cookies: sessionCookies, origins: [] };
+  } finally {
+    await request.dispose();
+  }
+}
+
+/**
+ * Returns a disposable request context carrying the worker's one assured admin
+ * session. Only callers that explicitly request an admin context receive the
+ * cached cookie; Playwright's ordinary browser and API contexts remain signed
+ * out. Disposing the returned context never destroys the cached server session.
+ */
+export async function newAdminRequestContext(
+  requestFactory: APIRequest,
+): Promise<APIRequestContext> {
+  if (!assuredAdminStorageState) {
+    assuredAdminStorageState = createAssuredAdminStorageState(requestFactory).catch((error) => {
+      assuredAdminStorageState = null;
+      throw error;
+    });
+  }
+  const storageState = await assuredAdminStorageState;
+  return requestFactory.newContext({ baseURL: API_BASE_URL, storageState });
+}
+
 /**
  * Opens a fresh browser context signed in as the admin, by lifting the admin
- * session cookie out of {@link loginAsAdmin}'s request context and attaching it
+ * session cookie out of {@link newAdminRequestContext}'s request context and attaching it
  * to a new browser context. The admin app's session bootstrap (calls
  * `/auth/me` + `/admin/security/2fa/status`) then finds a confirmed admin, so
  * the SPA lands directly on the console — no admin-login UI to drive. Test
@@ -244,7 +359,8 @@ export async function newAdminBrowserContext(
   const sessionCookies = state.cookies.filter((c) => c.name === 'bt_sid');
   if (sessionCookies.length === 0) {
     throw new Error(
-      'No bt_sid cookie in the admin API context — did you await loginAsAdmin() first?',
+      'No bt_sid cookie in the admin API context — did you create it with ' +
+        'newAdminRequestContext()?',
     );
   }
   // The ADMIN console's origin, not the user app's: the console is the same SPA

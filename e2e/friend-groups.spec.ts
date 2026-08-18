@@ -1,6 +1,6 @@
 import { expect, request as newRequestContext, test } from '@playwright/test';
 
-import { loginAsAdmin } from './support/adminApi';
+import { newAdminRequestContext } from './support/adminApi';
 import { API_BASE_URL } from './support/config';
 import { befriend, provisionUser } from './support/users';
 
@@ -20,8 +20,7 @@ test('friend groups: a portfolio shared to a group is visible to members only', 
 }) => {
   test.setTimeout(180_000);
 
-  const apiRequest = await newRequestContext.newContext({ baseURL: API_BASE_URL });
-  await loginAsAdmin(apiRequest);
+  const apiRequest = await newAdminRequestContext(newRequestContext);
   const owner = await provisionUser(browser, apiRequest, 'groupowner');
   const member = await provisionUser(browser, apiRequest, 'groupmember');
   const outsider = await provisionUser(browser, apiRequest, 'groupoutsider');

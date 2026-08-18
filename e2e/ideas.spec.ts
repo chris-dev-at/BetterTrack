@@ -1,6 +1,6 @@
 import { expect, request as newRequestContext, test } from '@playwright/test';
 
-import { loginAsAdmin } from './support/adminApi';
+import { newAdminRequestContext } from './support/adminApi';
 import { API_BASE_URL } from './support/config';
 import { activateConglomerate } from './support/flows';
 import { befriend, provisionUser } from './support/users';
@@ -24,8 +24,7 @@ test('ideas: save → reopen restores, share specific-friends read-only + clone,
 }) => {
   test.setTimeout(300_000);
 
-  const apiRequest = await newRequestContext.newContext({ baseURL: API_BASE_URL });
-  await loginAsAdmin(apiRequest);
+  const apiRequest = await newAdminRequestContext(newRequestContext);
   const author = await provisionUser(browser, apiRequest, 'ideaauthor');
   const chosen = await provisionUser(browser, apiRequest, 'chosenfriend');
   const excluded = await provisionUser(browser, apiRequest, 'excludedfriend');

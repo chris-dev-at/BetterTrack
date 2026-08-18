@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 
 import { expect, request as newRequestContext, test, type Page } from '@playwright/test';
 
-import { loginAsAdmin } from './support/adminApi';
+import { newAdminRequestContext } from './support/adminApi';
 import { API_BASE_URL } from './support/config';
 import {
   createCaptureReceiver,
@@ -86,8 +86,7 @@ test('webhooks: a Settings-created webhook delivers a verifiable signed payload'
 
   const receiver = await createCaptureReceiver();
   const harness = createWebhookHarness();
-  const apiRequest = await newRequestContext.newContext({ baseURL: API_BASE_URL });
-  await loginAsAdmin(apiRequest);
+  const apiRequest = await newAdminRequestContext(newRequestContext);
   const owner = await provisionUser(browser, apiRequest, 'whdeliver');
   await apiRequest.dispose();
 
@@ -145,8 +144,7 @@ test('webhooks: a dead receiver retries, auto-disables, and re-enables from Sett
 
   const receiver = await createCaptureReceiver();
   const harness = createWebhookHarness();
-  const apiRequest = await newRequestContext.newContext({ baseURL: API_BASE_URL });
-  await loginAsAdmin(apiRequest);
+  const apiRequest = await newAdminRequestContext(newRequestContext);
   const owner = await provisionUser(browser, apiRequest, 'whdisable');
   await apiRequest.dispose();
 

@@ -6,7 +6,7 @@ import {
   type Page,
 } from '@playwright/test';
 
-import { loginAsAdmin } from './support/adminApi';
+import { newAdminRequestContext } from './support/adminApi';
 import { API_BASE_URL } from './support/config';
 import { activateConglomerate } from './support/flows';
 import { provisionUser } from './support/users';
@@ -42,8 +42,7 @@ test('workboard benchmark: catalog + blueprint benchmarks, yearly-rebalance stat
 }) => {
   test.setTimeout(240_000);
 
-  const apiRequest = await newRequestContext.newContext({ baseURL: API_BASE_URL });
-  await loginAsAdmin(apiRequest);
+  const apiRequest = await newAdminRequestContext(newRequestContext);
   const owner = await provisionUser(browser, apiRequest, 'benchowner');
   await apiRequest.dispose();
 

@@ -1,6 +1,6 @@
 import { expect, request as newRequestContext, test } from '@playwright/test';
 
-import { loginAsAdmin, setChatBanByUsername } from './support/adminApi';
+import { newAdminRequestContext, setChatBanByUsername } from './support/adminApi';
 import { API_BASE_URL } from './support/config';
 import { befriend, provisionUser } from './support/users';
 
@@ -14,8 +14,7 @@ test('admin chat ban: a banned user sees the neutral notice and cannot send', as
 }) => {
   test.setTimeout(120_000);
 
-  const apiRequest = await newRequestContext.newContext({ baseURL: API_BASE_URL });
-  await loginAsAdmin(apiRequest);
+  const apiRequest = await newAdminRequestContext(newRequestContext);
   const sender = await provisionUser(browser, apiRequest, 'bansender');
   const recipient = await provisionUser(browser, apiRequest, 'banrecipient');
 

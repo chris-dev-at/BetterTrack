@@ -1,6 +1,6 @@
 import { expect, request as newRequestContext, test } from '@playwright/test';
 
-import { loginAsAdmin } from './support/adminApi';
+import { newAdminRequestContext } from './support/adminApi';
 import { API_BASE_URL } from './support/config';
 import { apiV1, buildBankStatement } from './support/e2';
 import { provisionUser } from './support/users';
@@ -41,8 +41,7 @@ test.skip('expenses: bank import → categorize → dashboard → single budget 
 }) => {
   test.setTimeout(240_000);
 
-  const apiRequest = await newRequestContext.newContext({ baseURL: API_BASE_URL });
-  await loginAsAdmin(apiRequest);
+  const apiRequest = await newAdminRequestContext(newRequestContext);
   const owner = await provisionUser(browser, apiRequest, 'expuser');
   await apiRequest.dispose();
 

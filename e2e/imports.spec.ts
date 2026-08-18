@@ -4,7 +4,7 @@ import { fileURLToPath } from 'node:url';
 
 import { expect, request as newRequestContext, test } from '@playwright/test';
 
-import { loginAsAdmin } from './support/adminApi';
+import { newAdminRequestContext } from './support/adminApi';
 import { API_BASE_URL } from './support/config';
 import { provisionUser } from './support/users';
 
@@ -49,8 +49,7 @@ test('imports: TR CSV — autodetect, staged preview, transactional apply, re-up
 }) => {
   test.setTimeout(240_000);
 
-  const apiRequest = await newRequestContext.newContext({ baseURL: API_BASE_URL });
-  await loginAsAdmin(apiRequest);
+  const apiRequest = await newAdminRequestContext(newRequestContext);
   const owner = await provisionUser(browser, apiRequest, 'importsowner');
   await apiRequest.dispose();
 
@@ -137,8 +136,7 @@ test('imports: TR CSV — autodetect, staged preview, transactional apply, re-up
 test('imports: malformed row shows as error while the rest apply', async ({ browser }) => {
   test.setTimeout(180_000);
 
-  const apiRequest = await newRequestContext.newContext({ baseURL: API_BASE_URL });
-  await loginAsAdmin(apiRequest);
+  const apiRequest = await newAdminRequestContext(newRequestContext);
   const owner = await provisionUser(browser, apiRequest, 'importserr');
   await apiRequest.dispose();
 

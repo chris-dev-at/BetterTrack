@@ -6,7 +6,7 @@ import {
   type Page,
 } from '@playwright/test';
 
-import { loginAsAdmin } from './support/adminApi';
+import { newAdminRequestContext } from './support/adminApi';
 import { API_BASE_URL } from './support/config';
 import { provisionUserInContext } from './support/users';
 
@@ -36,18 +36,14 @@ const CANVAS = {
 const theme = (page: Page) => page.locator('html').getAttribute('data-bt-theme');
 
 /**
- * ONE admin session for the whole file.
- *
- * The seeded admin is 2FA-mandatory, and its TOTP step is 30 seconds wide — so
- * three per-test `loginAsAdmin` calls inside one worker (`workers: 1`) present
- * the same code three times and the API rejects the replays. Signing in once
- * per file is both correct and what the single-test specs do implicitly.
+ * ONE disposable admin request context for the whole file. The harness clones
+ * the worker's cached assured session, so this file does not perform another
+ * TOTP sign-in while retaining its existing beforeAll/afterAll lifecycle.
  */
 let apiRequest: APIRequestContext;
 
 test.beforeAll(async () => {
-  apiRequest = await newRequestContext.newContext({ baseURL: API_BASE_URL });
-  await loginAsAdmin(apiRequest);
+  apiRequest = await newAdminRequestContext(newRequestContext);
 });
 
 test.afterAll(async () => {

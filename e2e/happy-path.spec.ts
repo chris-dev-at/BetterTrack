@@ -1,6 +1,6 @@
 import { expect, request as newRequestContext, test } from '@playwright/test';
 
-import { createInvite, loginAsAdmin } from './support/adminApi';
+import { createInvite, newAdminRequestContext } from './support/adminApi';
 import { ACCOUNT_PASSWORD, API_BASE_URL } from './support/config';
 import { acceptInvite, openAssetAndWatchFromDetail, watchAsset } from './support/flows';
 
@@ -21,8 +21,7 @@ test('happy path: invite through friend sharing', async ({ browser }) => {
   const ownerUsername = `e2eowner${runId}`.slice(0, 40);
   const friendUsername = `e2efriend${runId}`.slice(0, 40);
 
-  const apiRequest = await newRequestContext.newContext({ baseURL: API_BASE_URL });
-  await loginAsAdmin(apiRequest);
+  const apiRequest = await newAdminRequestContext(newRequestContext);
   const ownerToken = await createInvite(apiRequest, ownerEmail);
   const friendToken = await createInvite(apiRequest, friendEmail);
   await apiRequest.dispose();
