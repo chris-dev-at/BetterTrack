@@ -363,6 +363,18 @@ describe('paranoid enforcement completeness', () => {
     expect(clientGateDecisionProblems()).toEqual([]);
   });
 
+  it('gives every shared client-gate decision a unique id and explanation', () => {
+    const ids = PARANOID_CLIENT_ROUTE_DECISIONS.map((decision) => decision.id);
+
+    expect(ids.filter((id) => id.trim().length === 0)).toEqual([]);
+    expect(ids).toHaveLength(new Set(ids).size);
+    expect(
+      PARANOID_CLIENT_ROUTE_DECISIONS.filter((decision) => decision.reason.trim().length === 0).map(
+        (decision) => decision.id,
+      ),
+    ).toEqual([]);
+  });
+
   it('discovers nullable and prototype-declared context methods from the production contract', () => {
     // QueueRegistry is intentionally null in createTestApp(), while Redis
     // methods are class-declared. Both must remain candidates in this gate.

@@ -17,23 +17,31 @@ const KILLED_ROUTE_CASES = KILLED_CLIENT_ROUTE_RULES.flatMap(
   ],
 );
 
-const NORMALIZATION_RULE =
-  KILLED_CLIENT_ROUTE_RULES.find((rule) => rule.match === 'exact') ?? KILLED_CLIENT_ROUTE_RULES[0]!;
+const NORMALIZED_KILLED_ROUTE_CASES = KILLED_CLIENT_ROUTE_RULES.flatMap(
+  (rule): [path: string, destination: string][] => [
+    [`${rule.path}/`, rule.destination],
+    [rule.path.toUpperCase(), rule.destination],
+    [`${rule.path.toUpperCase()}///`, rule.destination],
+  ],
+);
 
 describe('paranoid route and surface matrix', () => {
+  it('pins the complete client kill-rule set', () => {
+    expect(KILLED_CLIENT_ROUTE_RULES).toHaveLength(29);
+  });
+
   it.each(KILLED_ROUTE_CASES)('removes killed path %s and redirects to %s', (path, destination) => {
     expect(isParanoidKilledPath(path)).toBe(true);
     expect(safeDestination(path)).toBe(destination);
   });
 
-  it.each([
-    `${NORMALIZATION_RULE.path}/`,
-    NORMALIZATION_RULE.path.toUpperCase(),
-    `${NORMALIZATION_RULE.path.toUpperCase()}///`,
-  ])('normalizes router-equivalent killed path %s', (path) => {
-    expect(isParanoidKilledPath(path)).toBe(true);
-    expect(safeDestination(path)).toBe(NORMALIZATION_RULE.destination);
-  });
+  it.each(NORMALIZED_KILLED_ROUTE_CASES)(
+    'normalizes router-equivalent killed path %s',
+    (path, destination) => {
+      expect(isParanoidKilledPath(path)).toBe(true);
+      expect(safeDestination(path)).toBe(destination);
+    },
+  );
 
   it.each([
     '/',

@@ -64,7 +64,11 @@ export function surfaceAllowed(mode: PrivacyMode, surface: 'kept' | 'killed'): b
   return mode === 'normal' || surface === 'kept';
 }
 
-/** Where a killed path lands. Exported so the route matrix is testable whole. */
+/**
+ * Where a killed path lands. Exported so the route matrix is testable whole.
+ * Both cash vocabularies deliberately land directly on the canonical accounts
+ * page instead of bouncing through the router's legacy redirect.
+ */
 export function safeDestination(pathname: string): string {
   return matchingKilledRoute(pathname)?.destination ?? '/portfolio';
 }
