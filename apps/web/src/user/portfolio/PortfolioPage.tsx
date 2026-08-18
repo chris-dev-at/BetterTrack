@@ -1798,6 +1798,9 @@ export function PortfolioPage() {
       />
 
       <NormalModeOnly>
+        {/* This migration flag exists only on server-side custom-asset rows.
+            Vault assets have no recategorization state, so paranoid mode must
+            not mount (or adapt) this server probe. */}
         <RecategorizeBanner />
       </NormalModeOnly>
 
