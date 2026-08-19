@@ -28,6 +28,7 @@ function scopeOnlyApp(privacyMode: PrivacyMode): Application {
       id: `${privacyMode}-key`,
       scopes: ['cash:read', 'mirrorchain:read', 'vault:sync'],
       kind: 'personal',
+      firstParty: false,
       securityGeneration: 0,
     };
     next();
