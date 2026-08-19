@@ -68,8 +68,6 @@ export type ParanoidVaultPutResult =
   | { status: 'too_large'; sizeBytes: number; maxBytes: number }
   | { status: 'malformed'; reason: string }
   | { status: 'medium_inactive' }
-  /** Vaults v2 (r2 §11): this account flipped to a v2 vault; legacy is read-only. */
-  | { status: 'migrated_tombstone' }
   | { status: 'proof_key_conflict' };
 
 export type RetiredPurgeChallengeResult =

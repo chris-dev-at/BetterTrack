@@ -143,6 +143,26 @@ describe('strict vault-payload completeness', () => {
     expect([...PARANOID_REHYDRATION_HANDLERS].sort()).toEqual(entities);
   });
 
+  /**
+   * Fields the strict vault payload carries WITHOUT a backing Drizzle column.
+   *
+   * There is exactly one legitimate reason for an entry here: the column was
+   * dropped, but the field cannot be removed from the `.strict()` client
+   * document because documents already written in the field's lifetime carry the
+   * key and would fail validation without it. `portfolios.vault_id` / `.alias`
+   * were dropped with the per-portfolio vault v2 surface (owner ruling
+   * 2026-08-19, PROJECTPLAN §16); a paranoid account's vault written while v2
+   * existed still has both keys, and that vault is the ONLY copy of its data.
+   *
+   * This is a frozen ledger, not a general exemption: adding an entry means
+   * proving the same "already-written documents would break" argument. Removing
+   * one requires a document migration in `migrateVaultDocument`, never a
+   * schema-only edit.
+   */
+  const VESTIGIAL_PAYLOAD_FIELDS: Readonly<Record<string, readonly string[]>> = {
+    portfolios: ['alias', 'vaultId'],
+  };
+
   it('carries every persisted Drizzle column and names any omission', () => {
     for (const tableName of vaultTables) {
       const table = tablesByName.get(tableName);
@@ -161,7 +181,9 @@ describe('strict vault-payload completeness', () => {
       const expectedDataFields = persisted.filter((column) => column !== 'id').sort();
       const carriedDataFields = Object.keys(rowSchema.shape).sort();
       const missing = expectedDataFields.filter((column) => !carriedDataFields.includes(column));
-      const stale = carriedDataFields.filter((column) => !expectedDataFields.includes(column));
+      const stale = carriedDataFields
+        .filter((column) => !expectedDataFields.includes(column))
+        .filter((column) => !(VESTIGIAL_PAYLOAD_FIELDS[tableName] ?? []).includes(column));
 
       expect(
         missing,

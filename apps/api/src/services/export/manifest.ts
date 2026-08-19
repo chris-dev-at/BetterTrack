@@ -297,21 +297,6 @@ export const EXPORT_TABLE_CLASSIFICATION: Record<string, TableClassification> = 
   paranoid_rehydration_receipts: skipped(
     'Paranoid-disable idempotency receipt — non-sensitive internal transition metadata, never portfolio data.',
   ),
-  // Vaults v2 (docs/VAULTS_V2_DESIGN.md §3). Same reasoning as the v1 rows
-  // above: `vault_docs` is opaque ciphertext + CAS metadata and `vaults` is the
-  // container's cleartext name/backend selection, which is routing metadata
-  // rather than portfolio content. Neither belongs in a cleartext export —
-  // exporting a vault's ciphertext without its passphrase would be noise, and
-  // the user already holds the only copy that can open it.
-  vaults: skipped(
-    'Vaults v2 container metadata (name + storage backends) — routing metadata for client-encrypted documents, not portfolio content.',
-  ),
-  vault_docs: skipped(
-    'Vaults v2 document ciphertext — an opaque encrypted blob + CAS/version metadata the server can never decrypt.',
-  ),
-  vault_leave_receipts: skipped(
-    'Vaults v2 leave idempotency receipt — non-sensitive internal transition metadata, never portfolio data.',
-  ),
 };
 
 /** Every entity name the classification claims is exported (dedup, sorted). */
@@ -615,15 +600,6 @@ export const PARANOID_TABLE_CLASSIFICATION: Record<string, ParanoidClassificatio
   paranoid_enable_transitions: 'server',
   // PD3a completion receipt + non-sensitive data-home metadata remain server-side.
   paranoid_rehydration_receipts: 'server',
-  // Vaults v2 (docs/VAULTS_V2_DESIGN.md §3). Server-classified for the same
-  // reason as the v1 vault rows: they hold ciphertext and routing metadata, and
-  // they must SURVIVE an account-level paranoid enable rather than be purged by
-  // it — a v2 vault is a data home, not data to destroy.
-  vaults: 'server',
-  vault_docs: 'server',
-  // The leave receipt is transition bookkeeping, exactly like PD3a's rehydration
-  // receipt above: server-classified so it is neither purged nor carried.
-  vault_leave_receipts: 'server',
 };
 
 /**
