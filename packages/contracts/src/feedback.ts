@@ -239,8 +239,8 @@ export type AdminFeedbackListResponse = z.infer<typeof adminFeedbackListResponse
 export const updateFeedbackStatusRequestSchema = z
   .object({
     status: feedbackStatusSchema,
-    declinedReason: z.string().max(FEEDBACK_DECLINED_REASON_MAX_LENGTH).optional(),
-    shippedVersion: z.string().max(FEEDBACK_SHIPPED_VERSION_MAX_LENGTH).optional(),
+    declinedReason: z.string().max(FEEDBACK_DECLINED_REASON_MAX_LENGTH).nullable().optional(),
+    shippedVersion: z.string().max(FEEDBACK_SHIPPED_VERSION_MAX_LENGTH).nullable().optional(),
   })
   .strict()
   .superRefine(refineFeedbackStatusDetails);

@@ -621,8 +621,9 @@ export const problems = pgTable(
  * Authenticated user feedback (#1315). Both web and native clients write into
  * this one owner-visible queue. `context` is bounded and validated at the
  * contract edge but stays shape-extensible JSON so client diagnostics can grow
- * without a schema migration. V1 is create-only for users: no read-back route,
- * anonymous submissions, or attachments.
+ * without a schema migration. Authenticated users can create submissions and
+ * read back only their own rows; anonymous submissions and attachments remain
+ * unsupported.
  */
 export const feedback = pgTable(
   'feedback',
