@@ -68,15 +68,20 @@ const jwksBody = JSON.stringify({ keys: [publicJwk] });
  * @property {string} [name]
  */
 
-/** The identity the next `/authorize` will bind a code to (single, sequential). */
-/** @type {GoogleIdentity | null} */
+/**
+ * The identity the next `/authorize` will bind a code to (single, sequential).
+ * @type {GoogleIdentity | null}
+ */
 let pendingIdentity = null;
-/** code → identity, so the token exchange mints exactly what authorize captured. */
-/** @type {Map<string, GoogleIdentity>} */
+/**
+ * code → identity, so the token exchange mints exactly what authorize captured.
+ * @type {Map<string, GoogleIdentity>}
+ */
 const codesToIdentity = new Map();
 
-/** Read a whole request body as a string. */
 /**
+ * Read a whole request body as a string.
+ *
  * @param {import('node:http').IncomingMessage} req
  * @returns {Promise<string>}
  */
