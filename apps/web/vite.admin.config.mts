@@ -19,7 +19,10 @@ import { mergeConfig, type Plugin } from 'vite';
 
 import base from './vite.config';
 
-const ADMIN_CONFIG_JS = `window.__BT__ = { app: 'admin', apiOrigin: '' };\n`;
+const ADMIN_CONFIG_JS = `window.__BT__ = ${JSON.stringify({
+  app: 'admin',
+  apiOrigin: process.env.BT_E2E_API_ORIGIN ?? '',
+})};\n`;
 
 /** Answers /config.js with the admin runtime config before static serving. */
 function adminRuntimeConfig(): Plugin {
