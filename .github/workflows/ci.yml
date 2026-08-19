@@ -205,11 +205,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Install Playwright browser
-        # ubuntu-latest already ships Chrome/Chromium and their runtime
-        # libraries. Install only Playwright's version-matched headless shell so
-        # an apt mirror outage cannot consume the entire bounded e2e job before
-        # the regression gates start.
-        run: pnpm exec playwright install --only-shell chromium
+        run: pnpm exec playwright install --with-deps chromium
 
       - name: Run mobile happy path and overflow gate
         # Keep PR CI to the two regression gates; the full two-project suite is
