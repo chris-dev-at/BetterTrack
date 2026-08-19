@@ -64,7 +64,10 @@ export type OAuthClientLookupRow = Pick<
   | 'isFirstParty'
 > & { hasLogo: boolean };
 
-export type OAuthGrantClientRow = Pick<OAuthClientRow, 'clientId' | 'name' | 'scopes'>;
+export type OAuthGrantClientRow = Pick<
+  OAuthClientRow,
+  'clientId' | 'name' | 'scopes' | 'isFirstParty'
+>;
 
 const oauthClientListSelection = {
   id: oauthClients.id,
@@ -411,6 +414,7 @@ export function createOAuthRepository(db: Database) {
             clientId: oauthClients.clientId,
             name: oauthClients.name,
             scopes: oauthClients.scopes,
+            isFirstParty: oauthClients.isFirstParty,
           },
         })
         .from(oauthGrants)
@@ -530,7 +534,7 @@ export function createOAuthRepository(db: Database) {
           token: OAuthAccessTokenRow;
           grant: OAuthGrantRow;
           user: UserRow;
-          client: Pick<OAuthClientRow, 'scopes'>;
+          client: Pick<OAuthClientRow, 'scopes' | 'isFirstParty'>;
         }
       | undefined
     > {
@@ -539,7 +543,10 @@ export function createOAuthRepository(db: Database) {
           token: oauthAccessTokens,
           grant: oauthGrants,
           user: users,
-          client: { scopes: oauthClients.scopes },
+          client: {
+            scopes: oauthClients.scopes,
+            isFirstParty: oauthClients.isFirstParty,
+          },
         })
         .from(oauthAccessTokens)
         .innerJoin(oauthGrants, eq(oauthAccessTokens.grantId, oauthGrants.id))
