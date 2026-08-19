@@ -158,7 +158,7 @@ describe('paranoid table classification completeness', () => {
   });
 
   /**
-   * The `purge` axis value (added for `usage_events`) destroys + zero-probes a
+   * The `purge` axis value (added for operational identifier telemetry) destroys + zero-probes a
    * table WITHOUT enrolling it in the encrypted document. These three guards are
    * what stop it from becoming a quiet backdoor into that document — or, worse, a
    * way to mark a table destroyed while the client still believes it holds it.
@@ -217,8 +217,8 @@ describe('paranoid table classification completeness', () => {
      * change cannot quietly move a captured table into "destroyed, never
      * captured" and stay green.
      */
-    it('has exactly one member, and adding another is a deliberate review', () => {
-      expect([...PARANOID_PURGE_ONLY_TABLE_NAMES]).toEqual(['usage_events']);
+    it('pins every member so adding another is a deliberate review', () => {
+      expect([...PARANOID_PURGE_ONLY_TABLE_NAMES]).toEqual(['api_key_request_log', 'usage_events']);
     });
   });
 });

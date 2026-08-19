@@ -7,8 +7,10 @@ import { VAULT_FORMAT_VERSION, type VaultMediaSet } from '@bettertrack/contracts
 
 import type { Database } from '../db';
 import {
+  apiKeyRequestLog,
   assetIdentities,
   assets,
+  auditLog,
   cashBudgetFires,
   cashBudgets,
   cashMovementTags,
@@ -201,6 +203,8 @@ const probe = async (query: PromiseLike<Array<{ value: number }>>): Promise<numb
  * destructive statement can run.
  */
 const PURGE_HANDLERS: Record<string, PurgeHandler> = {
+  api_key_request_log: ({ userId, tx }) =>
+    tx.delete(apiKeyRequestLog).where(eq(apiKeyRequestLog.userId, userId)),
   assets: async ({ customAssetIds, tx, userId }) => {
     // #794's database-enforced identity seam removes every content-bearing
     // custom asset while retaining only its opaque (id, owner_id) integrity key.
@@ -296,6 +300,8 @@ const PURGE_HANDLERS: Record<string, PurgeHandler> = {
  * ordering remains hand-authored because leaves must disappear before parents.
  */
 const PARANOID_PURGE_ORDER = [
+  // FK-independent operational telemetry, scoped directly to the user.
+  'api_key_request_log',
   'cash_budget_fires',
   'cash_movement_tags',
   'cash_rule_tags',
@@ -328,6 +334,13 @@ const PARANOID_PURGE_ORDER = [
 
 /** One scope-aware zero-cleartext query per classified table. */
 const PROBE_HANDLERS: Record<string, ProbeHandler> = {
+  api_key_request_log: ({ userId, tx }) =>
+    probe(
+      tx
+        .select({ value: count() })
+        .from(apiKeyRequestLog)
+        .where(eq(apiKeyRequestLog.userId, userId)),
+    ),
   assets: ({ userId, tx }) =>
     probe(tx.select({ value: count() }).from(assets).where(eq(assets.ownerId, userId))),
   cash_budget_fires: ({ cashBudgetIds, tx }) =>
@@ -950,6 +963,23 @@ export function createParanoidTransitionTransactionRepository(
 
     async purgeVaultRows(userId) {
       assertPurgeCompleteness();
+
+      // `audit_log` remains a retained security trail, but historic denied
+      // bearer probes can carry a concrete resource path. Remove only that
+      // field, only for this actor and action; the audit row and every other
+      // user's metadata survive unchanged. Runtime writes use the same account
+      // privacy lock and replace the path before persistence.
+      await tx
+        .update(auditLog)
+        .set({ meta: sql`${auditLog.meta} - 'path'` })
+        .where(
+          and(
+            eq(auditLog.actorId, userId),
+            eq(auditLog.action, 'api_key.scope_denied'),
+            sql`${auditLog.meta} ? 'path'`,
+          ),
+        );
+
       const scope = await collectPurgeScope(tx, userId);
       for (const tableName of PARANOID_PURGE_ORDER) {
         await PURGE_HANDLERS[tableName]!(scope);

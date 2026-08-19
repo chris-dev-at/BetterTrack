@@ -411,6 +411,12 @@ const purgeOnly = (): ParanoidRehydrationPolicy => ({ kind: 'purge-only' });
  * `paranoidClassification.test.ts` on purpose.
  */
 export const PARANOID_PURGE_REASONS: Record<string, string> = {
+  api_key_request_log:
+    'Operational API-key telemetry whose concrete paths can contain portfolio ' +
+    'asset UUIDs. Historical rows are destroyed at enable and future paranoid ' +
+    'request-log capture is suppressed at its locked write boundary. Not `vault` — request ' +
+    'telemetry is not client data and must never enter the encrypted document. ' +
+    'Not `server` — that means kept.',
   usage_events:
     'Operator telemetry whose columns are portfolio-identifying: one row per ' +
     '(user, feature, asset, day), and a paranoid client prices every holding ' +
@@ -467,7 +473,10 @@ export const PARANOID_TABLE_CLASSIFICATION: Record<string, ParanoidClassificatio
   asset_identities: 'server',
   api_keys: 'server',
   api_key_tiers: 'server',
-  api_key_request_log: 'server',
+  // Concrete bearer paths can be `/assets/<uuid>/quote`, tied directly to the
+  // key owner. Future paranoid writes are suppressed at the locked repository
+  // boundary; historical rows are purge-only telemetry, never vault content.
+  api_key_request_log: 'purge',
   external_identities: 'server',
   oauth_clients: 'server',
   oauth_grants: 'server',

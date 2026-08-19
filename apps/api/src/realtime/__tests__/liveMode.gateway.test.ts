@@ -178,7 +178,7 @@ function collectFrames(socket: ClientSocket): RealtimeLiveFrame[] {
 describe('Live Mode over the gateway (§6.3, V3-P7b)', () => {
   it('two concurrent viewers ⇒ exactly one upstream loop (provider-call counter)', async () => {
     const assetId = await seedAsset();
-    const alice = await connectUser('alice@bt.test', 'alice');
+    const { socket: alice, user: aliceUser } = await connectAccount('alice@bt.test', 'alice');
     const bob = await connectUser('bob@bt.test', 'bob');
     const aliceFrames = collectFrames(alice);
     const bobFrames = collectFrames(bob);
@@ -186,6 +186,13 @@ describe('Live Mode over the gateway (§6.3, V3-P7b)', () => {
     expect(await watch(alice, assetId, '10m')).toMatchObject({ ok: true });
     expect(await watch(bob, assetId, '1h')).toMatchObject({ ok: true });
     expect(harness.ctx.liveMode.watcherCount(assetId)).toBe(2);
+    const admissionState = [
+      await harness.ctx.redis.hvals(realtimeAdmissionKeys.userWatchAssets(aliceUser.id)),
+      await harness.ctx.redis.zrange(realtimeAdmissionKeys.globalWatches, 0, -1),
+      await harness.ctx.redis.keys('bt:rt:watch:asset:*'),
+    ];
+    expect(admissionState[0]).toEqual([expect.stringMatching(/^opaque:/)]);
+    expect(JSON.stringify(admissionState)).not.toContain(assetId);
 
     await vi.waitFor(() => {
       expect(aliceFrames.length).toBeGreaterThanOrEqual(3);
@@ -728,6 +735,22 @@ describe('Live Mode over the gateway (§6.3, V3-P7b)', () => {
       })
       .returning();
     const globalAssetId = await seedAsset();
+
+    // A normal account already uses an opaque admission identity and the
+    // warning rail never correlates users with assets. The transition hook can
+    // therefore keep this global watch alive across the mode flip.
+    await expect(watch(socket, globalAssetId, '10m')).resolves.toMatchObject({ ok: true });
+    const preTransitionValues = await harness.ctx.redis.hvals(
+      realtimeAdmissionKeys.userWatchAssets(user.id),
+    );
+    expect(preTransitionValues).toEqual([expect.stringMatching(/^opaque:/)]);
+    expect(JSON.stringify(preTransitionValues)).not.toContain(globalAssetId);
+    await harness.ctx.realtime.invalidateOwnedLiveMode(user.id);
+    expect(await harness.ctx.redis.hvals(realtimeAdmissionKeys.userWatchAssets(user.id))).toEqual(
+      preTransitionValues,
+    );
+    expect(harness.ctx.liveMode.watcherCount(globalAssetId)).toBe(1);
+
     await harness.db
       .update(users)
       .set({
@@ -743,6 +766,39 @@ describe('Live Mode over the gateway (§6.3, V3-P7b)', () => {
     });
     expect(harness.ctx.liveMode.watcherCount(customAsset!.id)).toBe(0);
     await expect(watch(socket, globalAssetId, '10m')).resolves.toMatchObject({ ok: true });
+
+    const userAssetValues = await harness.ctx.redis.hvals(
+      realtimeAdmissionKeys.userWatchAssets(user.id),
+    );
+    const globalAssetValues = await harness.ctx.redis.zrange(
+      realtimeAdmissionKeys.globalWatches,
+      0,
+      -1,
+    );
+    const globalAssetKeys = await harness.ctx.redis.keys('bt:rt:watch:asset:*');
+    expect(userAssetValues).toHaveLength(1);
+    expect(userAssetValues[0]).toMatch(/^opaque:/);
+    expect(globalAssetValues).toEqual(userAssetValues);
+    expect(JSON.stringify([userAssetValues, globalAssetValues, globalAssetKeys])).not.toContain(
+      globalAssetId,
+    );
+
+    // Failure logs keep enough context to diagnose the account/socket, but the
+    // raw asset id must not be reintroduced beside that user id.
+    const logAssetId = await seedAsset('-private-log');
+    const warn = vi.spyOn(harness.ctx.logger, 'warn');
+    const liveWatch = vi.spyOn(harness.ctx.liveMode, 'watch').mockImplementationOnce(() => {
+      throw new Error('forced live start failure');
+    });
+    await expect(watch(socket, logAssetId, '10m')).resolves.toEqual({
+      ok: false,
+      error: 'LIVE_START_FAILED',
+    });
+    liveWatch.mockRestore();
+    const failureLog = warn.mock.calls.find((call) => call[1] === 'live loop start failed');
+    expect(failureLog?.[0]).toMatchObject({ userId: user.id });
+    expect(failureLog?.[0]).not.toHaveProperty('assetId');
+    expect(JSON.stringify(failureLog)).not.toContain(logAssetId);
   });
 
   it('releases a held watch even when the unwatch frame is rate-limited', async () => {
