@@ -100,15 +100,17 @@ export function withExclusiveParanoidTransitionTestLock<T>(
  * remains compatible with FK checks and non-key account updates performed by
  * the guarded action on another pooled connection.
  *
- * TWO KNOWN LIMITS, both deliberate and both worth reading before trusting a
+ * THREE KNOWN LIMITS, all deliberate and all worth reading before trusting a
  * green suite:
  *
  *  1. Under `NODE_ENV=test` the default (PGlite) harness has ONE physical
  *     connection, so a real `FOR KEY SHARE` would self-deadlock. The
  *     in-process reader/writer emulation above preserves the ORDERING the
- *     regressions assert, but it is NOT the production primitive — only the
- *     integration mode (`TEST_DATABASE_URL`, real Postgres 17) exercises the
- *     row locks themselves.
+ *     regressions assert, but it is NOT the production primitive. Vitest keeps
+ *     `NODE_ENV=test` even with `TEST_DATABASE_URL`, so real Postgres alone does
+ *     not change this branch. The dedicated `paranoidPrivacyLocks.test.ts`
+ *     integration suite explicitly selects the production branch and is the
+ *     only test suite that exercises the row locks themselves.
  *  2. In production the guarded action runs inside this open transaction, and
  *     several callers perform provider I/O within it (alert quote reads, the
  *     earnings calendar across a whole watchlist, the per-user reminder scan).
