@@ -113,6 +113,7 @@ const componentSchemas = {
   RegisterRequest: contracts.registerRequestSchema,
   AcceptInviteRequest: contracts.acceptInviteRequestSchema,
   GoogleLinkStatusResponse: contracts.googleLinkStatusResponseSchema,
+  GoogleMobileLinkStartResponse: contracts.googleMobileLinkStartResponseSchema,
   GoogleUnlinkRequest: contracts.googleUnlinkRequestSchema,
   GoogleRegisterTicketResponse: contracts.googleRegisterTicketResponseSchema,
   GoogleRegisterRequest: contracts.googleRegisterRequestSchema,
@@ -1173,6 +1174,25 @@ const endpoints: EndpointDef[] = [
       code: z.string().optional(),
       error: z.string().optional(),
     }),
+    status: 302,
+  },
+  {
+    method: 'post',
+    path: '/auth/google/link/start',
+    tag: 'Auth',
+    summary:
+      'Mint a short-lived, hashed, one-time Google LINK ticket bound to the authenticated account and return its authorization URL. Bearers require account:security; no redirect target is accepted. 404 when Google is not configured.',
+    status: 200,
+    response: R.GoogleMobileLinkStartResponse,
+  },
+  {
+    method: 'get',
+    path: '/auth/google/link/callback',
+    tag: 'Auth',
+    summary:
+      'Public Google return leg for a native LINK ticket. Atomically consumes state, links only the server-bound account, never mints a session, and redirects only to BetterTrackMobile’s registered deep link with stable success/error parameters. 404 when Google is not configured.',
+    public: true,
+    query: contracts.googleMobileLinkCallbackQuerySchema,
     status: 302,
   },
   {
