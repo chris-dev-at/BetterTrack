@@ -1,4 +1,8 @@
 import type { DomainEvent } from '../events';
+import type {
+  ParanoidElapsedRetirementPurgeResult,
+  ParanoidVaultRepository,
+} from '../data/repositories/paranoidVaultRepository';
 import {
   isParanoidKilledWebhookEvent,
   paranoidWebhookSubjectIds,
@@ -9,10 +13,164 @@ import {
   type ParanoidModeGuard,
 } from '../services/account/paranoidEnforcement';
 
-import type { JobDefinition, QueueName } from './types';
+import { QUEUE_NAMES, type JobDefinition, type QueueName } from './types';
 
 const PARANOID_JOB_BOUND = Symbol('paranoid-job-bound');
 const PARANOID_USER_FILTER_JOB = Symbol('paranoid-user-filter-job');
+
+export const PARANOID_RETIRED_PURGE_SCHEDULER_ID = 'paranoid.retiredPurge';
+/** Hourly keeps the automatic deletion close to the promised `purgeAfter`. */
+export const PARANOID_RETIRED_PURGE_CRON = '17 * * * *';
+export const PARANOID_RETIRED_PURGE_TZ = 'UTC';
+export const PARANOID_RETIRED_PURGE_BATCH_SIZE = 100;
+export const PARANOID_RETIRED_PURGE_MAX_ROWS_PER_RUN = 10_000;
+
+/**
+ * Every outcome that leaves ciphertext in place. The operator instruction in
+ * `docs/ops.md` is "go look at those accounts", which needs the reason: server
+ * media re-added (`state_conflict`) is a settled state to leave alone, while an
+ * account back on `privacyMode: 'normal'` (`mode_required`) is a rehydration
+ * that did not finish clearing its retirement.
+ */
+type ParanoidRetiredPurgeSkipStatus = Exclude<
+  ParanoidElapsedRetirementPurgeResult['status'],
+  'ok' | 'already_purged'
+>;
+
+export interface ParanoidRetiredPurgeJobDeps {
+  vaults: Pick<ParanoidVaultRepository, 'listElapsedRetirements' | 'purgeElapsedRetirement'>;
+  now?: () => Date;
+  batchSize?: number;
+  maxRowsPerRun?: number;
+}
+
+/**
+ * Delete expired Drive-only recovery copies without requiring the owner to
+ * return. The retirement generation `(userId, retiredVersion)` is the natural
+ * idempotency key: repeat/concurrent runs converge after deletion, and the
+ * repository rechecks that exact generation under the user's row lock before
+ * touching bytes. It also refuses active server media and staged candidates.
+ *
+ * The scan is a RESTARTED sweep, not a draining queue: every run begins at
+ * `userId` order zero, and a retirement a guard permanently refuses (server
+ * media re-added and left live, or the account back on `privacyMode: 'normal'`)
+ * keeps its place in that order and its share of the per-run ceiling. The
+ * elapsed set is bounded by the number of paranoid accounts that ever switched
+ * to Drive-only, so a blocked prefix wider than `maxRowsPerRun` is not a state
+ * this deployment can reach — but it is a real precondition, so the run makes
+ * it observable rather than silent: `skipped` counts the refusals,
+ * `skippedByStatus` names the guard behind each one, and the ceiling warning
+ * carries the cursor it stopped at, so a prefix that never advances between
+ * runs shows up as a stalled `lastUserId` with a non-zero `skipped`.
+ */
+export function createParanoidRetiredPurgeJob(
+  deps: ParanoidRetiredPurgeJobDeps,
+): JobDefinition<'paranoid.retiredPurge'> {
+  const now = deps.now ?? (() => new Date());
+  const batchSize = deps.batchSize ?? PARANOID_RETIRED_PURGE_BATCH_SIZE;
+  const maxRowsPerRun = deps.maxRowsPerRun ?? PARANOID_RETIRED_PURGE_MAX_ROWS_PER_RUN;
+  if (!Number.isSafeInteger(batchSize) || batchSize < 1) {
+    throw new Error('paranoid retirement purge batch size must be a positive integer');
+  }
+  if (!Number.isSafeInteger(maxRowsPerRun) || maxRowsPerRun < batchSize) {
+    throw new Error(
+      'paranoid retirement purge per-run ceiling must be an integer at least one batch wide',
+    );
+  }
+
+  return {
+    name: QUEUE_NAMES.paranoidRetiredPurge,
+    async handler(_job, ctx) {
+      const runAt = now();
+      let afterUserId: string | undefined;
+      let examined = 0;
+      let purged = 0;
+      let converged = 0;
+      let skipped = 0;
+      const skippedByStatus: Partial<Record<ParanoidRetiredPurgeSkipStatus, number>> = {};
+      let drained = false;
+
+      while (examined < maxRowsPerRun) {
+        const limit = Math.min(batchSize, maxRowsPerRun - examined);
+        const retirements = await deps.vaults.listElapsedRetirements({
+          now: runAt,
+          afterUserId,
+          limit,
+        });
+        if (retirements.length === 0) {
+          drained = true;
+          break;
+        }
+
+        for (const retirement of retirements) {
+          const result = await deps.vaults.purgeElapsedRetirement({
+            ...retirement,
+            caller: 'retention-worker',
+            now: runAt,
+          });
+          if (result.status === 'ok') purged += 1;
+          else if (result.status === 'already_purged') converged += 1;
+          else {
+            skipped += 1;
+            skippedByStatus[result.status] = (skippedByStatus[result.status] ?? 0) + 1;
+          }
+        }
+        examined += retirements.length;
+        afterUserId = retirements.at(-1)!.userId;
+        if (retirements.length < limit) {
+          drained = true;
+          break;
+        }
+      }
+
+      // Leaving the loop on a full final batch is ambiguous — the elapsed set
+      // may have been exactly `maxRowsPerRun` rows and is now drained. One
+      // bounded probe past the last key answers it, so the warning below only
+      // fires when work was genuinely left for the next run.
+      if (!drained && afterUserId !== undefined) {
+        const remaining = await deps.vaults.listElapsedRetirements({
+          now: runAt,
+          afterUserId,
+          limit: 1,
+        });
+        drained = remaining.length === 0;
+      }
+
+      if (purged > 0 || converged > 0) {
+        ctx.logger.info(
+          { purged, converged, skipped, examined },
+          'elapsed paranoid server-retirement copies purged',
+        );
+      }
+      if (skipped > 0) {
+        // A retirement the job refuses to touch — server media re-added and
+        // left live, a staged candidate, or the account back on `normal` — is
+        // rescanned every hour and would otherwise retain ciphertext silently.
+        // `skippedByStatus` names which guard refused, because the operator
+        // instruction differs per reason and the counts alone cannot say.
+        ctx.logger.info(
+          { skipped, skippedByStatus, purged, converged, examined },
+          'paranoid server-retirements left in place by their guards',
+        );
+      }
+      if (!drained) {
+        // `lastUserId` is the truncation point. It advancing run over run means
+        // the sweep is making progress through a backlog; standing still with a
+        // non-zero `skipped` means a blocked prefix is holding the ceiling —
+        // and `skippedByStatus` says which guard that prefix is sitting behind.
+        ctx.logger.warn(
+          { examined, purged, converged, skipped, skippedByStatus, lastUserId: afterUserId },
+          'paranoid server-retirement purge reached its per-run ceiling',
+        );
+      }
+    },
+    schedule: {
+      id: PARANOID_RETIRED_PURGE_SCHEDULER_ID,
+      pattern: PARANOID_RETIRED_PURGE_CRON,
+      tz: PARANOID_RETIRED_PURGE_TZ,
+    },
+  };
+}
 
 export type ParanoidUserJobFilter = ((userId: string) => Promise<boolean>) & {
   readonly [PARANOID_USER_FILTER_JOB]: string;

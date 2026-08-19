@@ -38,8 +38,15 @@ export { createJobWorkers, type RunningWorkers, type CreateJobWorkersDeps } from
 export {
   assertParanoidJobBindings,
   bindParanoidJob,
+  createParanoidRetiredPurgeJob,
   createParanoidUserJobFilter,
+  PARANOID_RETIRED_PURGE_BATCH_SIZE,
+  PARANOID_RETIRED_PURGE_MAX_ROWS_PER_RUN,
+  PARANOID_RETIRED_PURGE_SCHEDULER_ID,
+  PARANOID_RETIRED_PURGE_CRON,
+  PARANOID_RETIRED_PURGE_TZ,
   type ParanoidJobBinding,
+  type ParanoidRetiredPurgeJobDeps,
   type ParanoidUserJobFilter,
 } from './paranoidJobs';
 export {

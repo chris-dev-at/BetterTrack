@@ -379,6 +379,28 @@ window takes effect on the next run rather than in one long statement.
   predate their 400-day TTL — no operator action is needed, and it is a no-op
   once that population is gone.
 
+An hourly worker job (`paranoid.retiredPurge`, minute 17 UTC) enforces the one
+retention window that destroys user ciphertext: when a paranoid account switches
+its vault to Drive-only, the previous server copy is kept as a recovery copy for
+a fixed seven days and this job deletes it once that window has elapsed. It is
+not operator-configurable — the window is a product guarantee, not an env var —
+and it refuses any retirement whose account has server media again, a live vault
+row or a staged candidate, so it can only ever complete a switch the user made.
+Deletion is permanent and unrecoverable from the application side; only a
+database backup predating the run holds those bytes. The run logs how many
+copies it purged and, separately, how many it left in place because a guard
+refused them — with `skippedByStatus` naming which guard, because the answer
+decides whether anything needs doing: `state_conflict` is server media that is
+live again (a settled state, leave it), `mode_required` is an account back on
+normal privacy mode whose retirement was never cleared, and `retention_pending`
+or `not_found` on a repeating basis means the scan and the destroy path disagree
+and belongs in a bug report. Each run restarts the sweep from the beginning of
+the account order and stops at a per-run ceiling; the ceiling warning carries
+the cursor it stopped at (`lastUserId`). Advancing between runs means it is
+working through a backlog — the same cursor with a non-zero `skipped` every hour
+would mean refused retirements are holding the ceiling, and those accounts need
+looking at.
+
 ## Recovering an offsite archive
 
 Use a read-only recovery credential, not either production credential:

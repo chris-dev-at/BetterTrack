@@ -100,6 +100,12 @@ function fakeRepo(options: FakeRepoOptions = {}) {
     async getRetirementState() {
       return options.retirement ?? null;
     },
+    async listElapsedRetirements() {
+      return [];
+    },
+    async purgeElapsedRetirement() {
+      return { status: 'not_found' } as const;
+    },
     async purgeRetired(input) {
       purges.push(input);
       return { status: 'ok' } as const;

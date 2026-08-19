@@ -503,15 +503,17 @@
           "both": "Dein verschlüsselter Tresor liegt auf dem BetterTrack-Server und in Drive.",
           "driveOnly": "Drive ist das einzige aktive Tresor-Medium. BetterTrack hält keinen aktiven Portfolio-Geheimtext.",
           "useDriveOnly": "Nur Drive verwenden",
+          "driveOnlyWarning": "Bevor du wechselst: BetterTrack behält sieben Tage lang eine verschlüsselte Wiederherstellungskopie und löscht sie danach automatisch — deine Drive-Kopie kann dabei nicht geprüft werden. Danach lässt sich eine verlorene oder unlesbare Drive-Datei nicht mehr über BetterTrack wiederherstellen.",
           "addServer": "Serverkopie hinzufügen",
-          "driveOnlyNotice": "Nur-Drive-Speicherung aktiviert. Die Server-Wiederherstellungskopie bleibt erhalten, bis du sie ausdrücklich löschst.",
+          "driveOnlyNotice": "Nur-Drive-Speicherung aktiviert. Da dieser Tresor zuvor den Server-Speicher verwendet hat, bleibt seine verschlüsselte Wiederherstellungskopie sieben Tage erhalten und wird danach automatisch gelöscht.",
           "serverAddedNotice": "Eine authentifizierte Serverkopie wurde hinzugefügt."
         },
         "retired": {
           "title": "Aufbewahrte Server-Wiederherstellungskopie",
-          "wait": "Sie bleibt mindestens bis {{date}} wiederherstellbar.",
-          "ready": "Das Wiederherstellungsfenster endete am {{date}}. Vor dem Löschen ist ein frischer authentifizierter Drive-Read-back nötig.",
-          "purge": "Aufbewahrte Serverkopie löschen"
+          "wait": "Wenn du beim ersten Einrichten nur Drive auswählst, speichert BetterTrack von Anfang an keine Portfolio-Daten. Da du von der Server-Speicherung gewechselt hast, bleibt diese verschlüsselte Wiederherstellungskopie bis {{date}} erhalten. Danach löscht BetterTrack sie automatisch.",
+          "staging": "Wenn du beim ersten Einrichten nur Drive auswählst, speichert BetterTrack von Anfang an keine Portfolio-Daten. Da du von der Server-Speicherung gewechselt hast, wird diese verschlüsselte Wiederherstellungskopie weiterhin bis {{date}} aufbewahrt. Derzeit wird eine neue Serverkopie überprüft; solange das läuft, wird sie weder automatisch noch manuell gelöscht.",
+          "ready": "Wenn du beim ersten Einrichten nur Drive auswählst, speichert BetterTrack von Anfang an keine Portfolio-Daten. Da du von der Server-Speicherung gewechselt hast, blieb die verschlüsselte Wiederherstellungskopie bis {{date}} erhalten. Das Zeitfenster ist beendet: BetterTrack löscht sie automatisch; du kannst sie auch jetzt sofort löschen. Beim sofortigen Löschen wird zuerst deine Drive-Kopie erneut gelesen, Google fragt dich dabei eventuell nach einer erneuten Freigabe.",
+          "purge": "Jetzt löschen"
         }
       },
       "sync": {

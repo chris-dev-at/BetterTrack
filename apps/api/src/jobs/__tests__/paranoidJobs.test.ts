@@ -1,0 +1,432 @@
+import { eq } from 'drizzle-orm';
+import { pino } from 'pino';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { VAULT_RETIRED_SERVER_MIN_RETENTION_MS } from '@bettertrack/contracts';
+
+import type { Database } from '../../data/db';
+import {
+  paranoidVaultHistory,
+  paranoidVaultRetired,
+  paranoidVaultRetirements,
+  paranoidVaults,
+  users,
+} from '../../data/schema';
+import {
+  createParanoidVaultRepository,
+  type ParanoidVaultRepository,
+} from '../../data/repositories/paranoidVaultRepository';
+import type { Logger } from '../../logger';
+import { createTestApp, type TestHarness } from '../../testing/createTestApp';
+import {
+  createParanoidRetiredPurgeJob,
+  PARANOID_RETIRED_PURGE_CRON,
+  PARANOID_RETIRED_PURGE_SCHEDULER_ID,
+  PARANOID_RETIRED_PURGE_TZ,
+} from '../paranoidJobs';
+import type { JobContext } from '../types';
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+const T0 = new Date('2026-08-01T10:00:00.000Z');
+const RUN_AT = new Date(T0.getTime() + VAULT_RETIRED_SERVER_MIN_RETENTION_MS);
+const RETENTION = { maxVersions: 10, maxAgeMs: 30 * DAY_MS };
+const PROOF_KEY = 'retirement-proof-public-key';
+const logger = pino({ level: 'silent' }) as unknown as Logger;
+
+let harness: TestHarness;
+let db: Database;
+let vaults: ParanoidVaultRepository;
+
+beforeEach(async () => {
+  harness = await createTestApp();
+  db = harness.db;
+  vaults = createParanoidVaultRepository(db);
+});
+
+function ctx(): JobContext {
+  return {
+    events: harness.ctx.events,
+    deadLetter: {} as JobContext['deadLetter'],
+    redis: harness.ctx.redis,
+    logger,
+  };
+}
+
+interface LogLine {
+  level: 'info' | 'warn';
+  fields: Record<string, unknown>;
+  message: string;
+}
+
+/** The run's only operator trace, so the counters it carries are asserted. */
+function recordingCtx(lines: LogLine[]): JobContext {
+  const record =
+    (level: LogLine['level']) => (fields: Record<string, unknown>, message: string) => {
+      lines.push({ level, fields, message });
+    };
+  const recorder = {
+    info: record('info'),
+    warn: record('warn'),
+    error: () => {},
+    debug: () => {},
+    trace: () => {},
+    fatal: () => {},
+    child: () => recorder,
+  } as unknown as Logger;
+  return { ...ctx(), logger: recorder };
+}
+
+function blob(text: string): Buffer {
+  return Buffer.from(text, 'utf8');
+}
+
+async function seedParanoidUser(name: string): Promise<string> {
+  const user = await harness.seedUser({ email: `${name}@bt.test`, username: name });
+  await db
+    .update(users)
+    .set({
+      privacyMode: 'paranoid',
+      paranoidMediaSet: ['server'],
+      paranoidDriveAttestedVersion: null,
+    })
+    .where(eq(users.id, user.id));
+  return user.id;
+}
+
+async function writeServerVault(
+  userId: string,
+  values: readonly string[],
+  now: Date,
+): Promise<number> {
+  for (const [index, value] of values.entries()) {
+    const bytes = blob(value);
+    const version = index + 1;
+    expect(
+      await vaults.compareAndSwap({
+        userId,
+        expectedVersion: version === 1 ? null : version - 1,
+        version,
+        formatVersion: 1,
+        sizeBytes: bytes.length,
+        blob: bytes,
+        retirementProofPublicKey: PROOF_KEY,
+        retention: RETENTION,
+        now,
+      }),
+    ).toMatchObject({ status: 'ok', version });
+  }
+  return values.length;
+}
+
+async function retireServerVault(
+  userId: string,
+  values: readonly string[],
+  now: Date,
+): Promise<number> {
+  const retiredVersion = await writeServerVault(userId, values, now);
+  const serverOnly = { mediaSet: ['server'] as Array<'server'>, driveAttestedVersion: null };
+  const both = {
+    mediaSet: ['server', 'drive'] as Array<'server' | 'drive'>,
+    driveAttestedVersion: retiredVersion,
+  };
+  expect(
+    await vaults.transitionMedia({
+      userId,
+      expected: serverOnly,
+      nextMediaSet: both.mediaSet,
+      verification: { kind: 'drive', version: retiredVersion },
+      candidateReadbackVerified: false,
+      now,
+    }),
+  ).toMatchObject({ status: 'ok' });
+  expect(
+    await vaults.transitionMedia({
+      userId,
+      expected: both,
+      nextMediaSet: ['drive'],
+      verification: { kind: 'drive', version: retiredVersion },
+      candidateReadbackVerified: false,
+      now,
+    }),
+  ).toMatchObject({ status: 'ok' });
+  return retiredVersion;
+}
+
+async function reAddServerVault(
+  userId: string,
+  retiredVersion: number,
+  latestValue: string,
+): Promise<void> {
+  const bytes = blob(latestValue);
+  const staged = await vaults.stageServerCandidate({
+    userId,
+    version: retiredVersion,
+    formatVersion: 1,
+    sizeBytes: bytes.length,
+    blob: bytes,
+    retirementProofPublicKey: PROOF_KEY,
+    now: new Date(T0.getTime() + 1),
+    expiresAt: new Date(T0.getTime() + 10 * 60 * 1000),
+  });
+  expect(staged).toMatchObject({ status: 'ok' });
+  if (staged.status !== 'ok') throw new Error('server candidate was not staged');
+
+  expect(
+    await vaults.transitionMedia({
+      userId,
+      expected: { mediaSet: ['drive'], driveAttestedVersion: retiredVersion },
+      nextMediaSet: ['server', 'drive'],
+      verification: {
+        kind: 'server-candidate',
+        candidateId: staged.candidate.id,
+        readback: 'verified-candidate-readback-receipt',
+      },
+      candidateReadbackVerified: true,
+      now: new Date(T0.getTime() + 2),
+    }),
+  ).toMatchObject({ status: 'ok' });
+}
+
+async function retiredRows(userId: string) {
+  return db.select().from(paranoidVaultRetired).where(eq(paranoidVaultRetired.userId, userId));
+}
+
+async function retirementRows(userId: string) {
+  return db
+    .select()
+    .from(paranoidVaultRetirements)
+    .where(eq(paranoidVaultRetirements.userId, userId));
+}
+
+describe('paranoid.retiredPurge', () => {
+  it('is an hourly, idempotently registered automatic-retirement schedule', () => {
+    const job = createParanoidRetiredPurgeJob({ vaults });
+
+    expect(job.schedule).toEqual({
+      id: PARANOID_RETIRED_PURGE_SCHEDULER_ID,
+      pattern: PARANOID_RETIRED_PURGE_CRON,
+      tz: PARANOID_RETIRED_PURGE_TZ,
+    });
+  });
+
+  it('purges an elapsed retirement once and makes a second run a clean no-op', async () => {
+    const userId = await seedParanoidUser('elapsed_once');
+    await retireServerVault(userId, ['retired-v1', 'retired-v2'], T0);
+    const purge = vi.spyOn(vaults, 'purgeElapsedRetirement');
+    const job = createParanoidRetiredPurgeJob({ vaults, now: () => RUN_AT });
+
+    await job.handler({} as never, ctx());
+    expect(await retiredRows(userId)).toEqual([]);
+    expect(await retirementRows(userId)).toEqual([]);
+    expect(purge).toHaveBeenCalledOnce();
+    // The proof-free entry point is only reachable by naming its one caller.
+    expect(purge).toHaveBeenCalledWith(
+      expect.objectContaining({ userId, caller: 'retention-worker' }),
+    );
+
+    await job.handler({} as never, ctx());
+    expect(purge).toHaveBeenCalledOnce();
+    expect(await retiredRows(userId)).toEqual([]);
+    expect(await retirementRows(userId)).toEqual([]);
+  });
+
+  it('purges only elapsed Drive-only rows and skips re-added or otherwise live server media', async () => {
+    const elapsedUserId = await seedParanoidUser('elapsed_target');
+    await retireServerVault(elapsedUserId, ['elapsed-v1', 'elapsed-v2'], T0);
+
+    const futureUserId = await seedParanoidUser('future_other');
+    await retireServerVault(futureUserId, ['future-v1', 'future-v2'], new Date(T0.getTime() + 1));
+
+    const reAddedUserId = await seedParanoidUser('server_readded');
+    const reAddedVersion = await retireServerVault(reAddedUserId, ['readded-v1', 'readded-v2'], T0);
+    await reAddServerVault(reAddedUserId, reAddedVersion, 'readded-v2');
+
+    const liveUserId = await seedParanoidUser('live_never_retired');
+    await writeServerVault(liveUserId, ['live-v1', 'live-v2'], T0);
+
+    const purge = vi.spyOn(vaults, 'purgeElapsedRetirement');
+    const job = createParanoidRetiredPurgeJob({ vaults, now: () => RUN_AT, batchSize: 1 });
+    await job.handler({} as never, ctx());
+
+    expect(await retiredRows(elapsedUserId)).toEqual([]);
+    expect(await retirementRows(elapsedUserId)).toEqual([]);
+
+    // One millisecond inside the seven-day window is still protected, and an
+    // owner-scoped purge must not spill into this other user's rows.
+    expect(await retiredRows(futureUserId)).toHaveLength(2);
+    expect(await retirementRows(futureUserId)).toHaveLength(1);
+    expect(purge).not.toHaveBeenCalledWith(expect.objectContaining({ userId: futureUserId }));
+
+    // The scan saw this elapsed retirement, but its locked recheck found the
+    // server medium had been restored and skipped both the live row and the
+    // retained recovery set.
+    expect(purge).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: reAddedUserId, retiredVersion: reAddedVersion }),
+    );
+    expect(await retiredRows(reAddedUserId)).toHaveLength(2);
+    expect(await retirementRows(reAddedUserId)).toHaveLength(1);
+    expect(
+      await db.select().from(paranoidVaults).where(eq(paranoidVaults.userId, reAddedUserId)),
+    ).toMatchObject([{ version: reAddedVersion }]);
+
+    // A live vault that never entered retirement is outside the scan entirely.
+    expect(purge).not.toHaveBeenCalledWith(expect.objectContaining({ userId: liveUserId }));
+    expect(
+      await db.select().from(paranoidVaults).where(eq(paranoidVaults.userId, liveUserId)),
+    ).toMatchObject([{ version: 2 }]);
+    expect(
+      await db
+        .select()
+        .from(paranoidVaultHistory)
+        .where(eq(paranoidVaultHistory.userId, liveUserId)),
+    ).toMatchObject([{ version: 1 }]);
+  });
+
+  it('logs retained copies a guard refused, so a permanently stuck retirement is visible', async () => {
+    const reAddedUserId = await seedParanoidUser('stuck_readded');
+    const reAddedVersion = await retireServerVault(reAddedUserId, ['stuck-v1'], T0);
+    await reAddServerVault(reAddedUserId, reAddedVersion, 'stuck-v1');
+
+    const lines: LogLine[] = [];
+    const job = createParanoidRetiredPurgeJob({ vaults, now: () => RUN_AT });
+    await job.handler({} as never, recordingCtx(lines));
+
+    // Nothing was purged, so the purge line stays silent — but the retained
+    // ciphertext this run declined to touch still has to leave a trace.
+    expect(lines.filter((line) => line.message.includes('purged'))).toEqual([]);
+    expect(lines).toContainEqual({
+      level: 'info',
+      fields: {
+        skipped: 1,
+        // Which guard refused, not just that one did: `docs/ops.md` tells the
+        // operator to act on this line, and the action differs per reason.
+        skippedByStatus: { state_conflict: 1 },
+        purged: 0,
+        converged: 0,
+        examined: 1,
+      },
+      message: 'paranoid server-retirements left in place by their guards',
+    });
+    expect(await retiredRows(reAddedUserId)).toHaveLength(1);
+  });
+
+  it('refuses the proof-free purge of a retirement still inside its window', async () => {
+    const userId = await seedParanoidUser('retention_window');
+    const retiredVersion = await retireServerVault(userId, ['pending-v1', 'pending-v2'], T0);
+
+    // The job's scan filter is what normally keeps this row out of reach, so
+    // the destroy path is called directly here: a scan-filter regression must
+    // still hit a guard rather than delete a copy the user was promised until
+    // `purgeAfter`. One millisecond short of the window is enough to prove it.
+    expect(
+      await vaults.purgeElapsedRetirement({
+        userId,
+        retiredVersion,
+        caller: 'retention-worker',
+        now: new Date(RUN_AT.getTime() - 1),
+      }),
+    ).toEqual({ status: 'retention_pending', purgeAfter: RUN_AT });
+    expect(await retiredRows(userId)).toHaveLength(2);
+    expect(await retirementRows(userId)).toMatchObject([{ retiredVersion }]);
+
+    // The same call at the deadline itself is the purge — the boundary is
+    // inclusive, exactly as the `purgeAfter` shown to the user reads.
+    expect(
+      await vaults.purgeElapsedRetirement({
+        userId,
+        retiredVersion,
+        caller: 'retention-worker',
+        now: RUN_AT,
+      }),
+    ).toEqual({ status: 'ok' });
+    expect(await retiredRows(userId)).toEqual([]);
+    expect(await retirementRows(userId)).toEqual([]);
+  });
+
+  it('counts a retirement that vanished between scan and purge as converged, not purged', async () => {
+    const userId = await seedParanoidUser('converged_replay');
+    const retiredVersion = await retireServerVault(userId, ['converged-v1'], T0);
+    expect(
+      await vaults.purgeElapsedRetirement({
+        userId,
+        retiredVersion,
+        caller: 'retention-worker',
+        now: RUN_AT,
+      }),
+    ).toEqual({ status: 'ok' });
+
+    // Replays the exact scan result a concurrent run already acted on.
+    let served = false;
+    const lines: LogLine[] = [];
+    const job = createParanoidRetiredPurgeJob({
+      vaults: {
+        async listElapsedRetirements() {
+          if (served) return [];
+          served = true;
+          return [{ userId, retiredVersion }];
+        },
+        purgeElapsedRetirement: (input) => vaults.purgeElapsedRetirement(input),
+      },
+      now: () => RUN_AT,
+    });
+    await job.handler({} as never, recordingCtx(lines));
+
+    expect(lines).toContainEqual({
+      level: 'info',
+      fields: { purged: 0, converged: 1, skipped: 0, examined: 1 },
+      message: 'elapsed paranoid server-retirement copies purged',
+    });
+  });
+
+  it('warns about its per-run ceiling only when rows were genuinely left behind', async () => {
+    const firstUserId = await seedParanoidUser('ceiling_first');
+    await retireServerVault(firstUserId, ['ceiling-a1'], T0);
+
+    // An elapsed set that exactly fills the ceiling is drained, not truncated.
+    const exactFit: LogLine[] = [];
+    await createParanoidRetiredPurgeJob({
+      vaults,
+      now: () => RUN_AT,
+      batchSize: 1,
+      maxRowsPerRun: 1,
+    }).handler({} as never, recordingCtx(exactFit));
+    expect(exactFit.filter((line) => line.level === 'warn')).toEqual([]);
+    expect(await retirementRows(firstUserId)).toEqual([]);
+
+    const secondUserId = await seedParanoidUser('ceiling_second');
+    await retireServerVault(secondUserId, ['ceiling-b1'], T0);
+    const thirdUserId = await seedParanoidUser('ceiling_third');
+    await retireServerVault(thirdUserId, ['ceiling-c1'], T0);
+
+    const truncated: LogLine[] = [];
+    await createParanoidRetiredPurgeJob({
+      vaults,
+      now: () => RUN_AT,
+      batchSize: 1,
+      maxRowsPerRun: 1,
+    }).handler({} as never, recordingCtx(truncated));
+    // The cursor the run stopped at is part of the warning: a blocked prefix
+    // shows up as this value standing still across runs.
+    expect(truncated).toContainEqual({
+      level: 'warn',
+      fields: {
+        examined: 1,
+        purged: 1,
+        converged: 0,
+        skipped: 0,
+        skippedByStatus: {},
+        lastUserId: expect.any(String),
+      },
+      message: 'paranoid server-retirement purge reached its per-run ceiling',
+    });
+    // Exactly one of the two was taken; the other waits for the next run.
+    const remaining = [
+      ...(await retirementRows(secondUserId)),
+      ...(await retirementRows(thirdUserId)),
+    ];
+    expect(remaining).toHaveLength(1);
+    const warned = truncated.filter((line) => line.level === 'warn');
+    expect(warned).toHaveLength(1);
+    expect([secondUserId, thirdUserId]).toContain(warned[0]!.fields.lastUserId);
+  });
+});

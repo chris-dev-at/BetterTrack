@@ -18,8 +18,9 @@ reimplemented), and persists only ciphertext — a single versioned **blob** —
 to the storage media the user picked: the BetterTrack server, the user's
 Google Drive, both, or **Drive-only** (zero cleartext portfolio rows and no
 active server-medium copy). A retired encrypted recovery copy can remain until
-the separate signed purge in §5. The server keeps running everything that never
-reads the portfolio — identity, auth, friends, chat, price alerts,
+its §5 retention window ends — destroyed then by the owner's signed purge or,
+without them, by the automatic elapsed purge. The server keeps running
+everything that never reads the portfolio — identity, auth, friends, chat, price alerts,
 notifications, market data — and for the vault it is a **blind blob store with
 compare-and-swap**, exactly as blind as Drive. The key never leaves the user's
 devices; there is no escrow, no reset, no support backdoor: **lost key ⇒ lost
@@ -358,14 +359,34 @@ sequence for every switch:
    ⇒ the PATCH transaction atomically removes the blob + bounded history from
    the **active server medium** and moves those ciphertext versions into the
    **retired recovery set**. Drive-only begins immediately — active server blob
-   and history reads are empty — while the recoverable ciphertext stays behind
-   a separately authenticated signed purge gate for its seven-day minimum
-   retention window. Only that later gate (matching the retired version, a
-   fresh Drive readback, the server challenge, and client-held Ed25519 proof)
-   destroys the retired bytes; a media PATCH or client attestation alone never
-   does. Removing `drive` ⇒ the client best-effort deletes the Drive file (and
-   tells the user if it could not; the leftover is their own ciphertext in
-   their own Drive).
+   and history reads are empty — while the recoverable ciphertext stays in the
+   retired set for its seven-day minimum retention window. **Exactly two
+   destroyers exist, and neither can act before that window elapses:** (i) the
+   owner's separately authenticated signed purge gate (matching the retired
+   version, a fresh Drive readback, the server challenge, and client-held
+   Ed25519 proof), offered in the UI as the post-window "delete it now"
+   shortcut; and (ii) the hourly `paranoid.retiredPurge` worker, which destroys
+   the same retirement automatically once the window has elapsed, so reaching
+   zero server bytes never depends on the owner returning. The worker is
+   authorized by the elapsed deadline alone — no Drive readback, no challenge,
+   no signature — but it runs the manual gate's own transaction and therefore
+   skips no guard except the proof: the owner row is locked first, re-added
+   server media / a live active row / a staged candidate refuse as a state
+   conflict, the exact retired generation must still match, and `now` must be
+   at or past `retiredAt + retention`. The accepted consequence: a user whose
+   Drive copy became unreadable during the window loses the last recoverable
+   ciphertext when the window ends (§16, 2026-08-19). **That is disclosed
+   before the switch is made, not only after it** — the warning
+   (`settings.connections.drive.storage.driveOnlyWarning`, EN + DE) sits
+   directly above the "Use Drive only" control, the one gesture that starts the
+   window, and says the automatic deletion cannot check Drive first; the dated
+   retained-copy notice then restates it for the whole window. A binding rule
+   for this arc: any future change that makes the destruction earlier, wider or
+   less checkable ships its pre-switch copy in the same change. A media PATCH
+   or client attestation alone still never
+   destroys retired bytes. Removing `drive` ⇒ the client best-effort deletes
+   the Drive file (and tells the user if it could not; the leftover is their
+   own ciphertext in their own Drive).
 3. The last medium can never be removed (media set non-empty; the server
    validates the PATCH, the UI never offers it).
 
@@ -374,8 +395,9 @@ shipped #896 sequence literally: enable on Drive → add server through an
 inactive candidate (round trip verified) → force a Drive verification failure
 and prove the active server source is retained → retry removal → probe zero
 active/history server bytes plus the recoverable retired set → app fully
-functional. Total server ciphertext reaches zero only through the separate
-retention-qualified signed purge gate.
+functional. Total server ciphertext reaches zero only through a
+retention-qualified destroyer — the owner's signed purge gate or the automatic
+elapsed-retention worker — and never before the retention window ends.
 
 ## 6. The Google Drive medium (end-user OAuth)
 
@@ -535,10 +557,12 @@ cleartext purge, revocation, derived-state retirement). It specifically does NOT
 clear `paranoid_vault_server_candidates`, `paranoid_vault_retired` or
 `paranoid_vault_retirements`, which a fresh `normal → paranoid` transition does
 clear because they cannot exist yet. On an established account those rows are
-the §5 retirement recovery set, destroyable only through the signed purge gate
-(matching retired version + Ed25519 retirement proof + the minimum retention
-window); a replayed enable satisfies none of those checks, and an account that
-retired the server medium passes the retry's "no active server ciphertext"
+the §5 retirement recovery set, destroyable only through a §5
+retention-qualified destroyer (the signed purge gate, which matches the retired
+version and takes an Ed25519 retirement proof after the minimum retention
+window, or the automatic elapsed purge, which still matches that same version
+and window); a replayed enable satisfies none of those checks, and an account
+that retired the server medium passes the retry's "no active server ciphertext"
 test precisely because its recovery ciphertext lives outside the active
 medium.
 

@@ -16,6 +16,7 @@ vi.mock('../../../lib/userApi', () => ({
 import { ApiError } from '../../../lib/apiClient';
 import { getGoogleLinkStatus, getParanoidMediaState, unlinkGoogle } from '../../../lib/userApi';
 import type { DriveConnectionController } from '../../vault/media';
+import { mediaStateFacts } from '../../vault/media/mediaState.testSupport';
 import { ConnectionsPanel } from './ConnectionsPanel';
 
 const GOOGLE_OFF = {
@@ -39,33 +40,31 @@ const NORMAL_MEDIA: ParanoidMediaStateResponse = {
   mediaState: null,
 };
 
-const SERVER_STATE: ParanoidVaultMediaState = {
-  mediaSet: ['server'],
-  driveAttestedVersion: null,
-  server: { disposition: 'active', candidate: null, retired: null },
-};
+// Every media state here is derived the way the server derives it (see
+// `mediaStateFacts`), so no test can assert over a disposition/candidate/retired
+// combination `mediaStateOf` would never emit.
+const SERVER_STATE: ParanoidVaultMediaState = mediaStateFacts({ mediaSet: ['server'] });
 
 const SERVER_MEDIA: ParanoidMediaStateResponse = {
   privacyMode: 'paranoid',
   mediaState: SERVER_STATE,
 };
 
-const BOTH_STATE: ParanoidVaultMediaState = {
+const BOTH_STATE: ParanoidVaultMediaState = mediaStateFacts({
   mediaSet: ['server', 'drive'],
   driveAttestedVersion: 4,
-  server: { disposition: 'active', candidate: null, retired: null },
-};
+});
 
 const BOTH_MEDIA: ParanoidMediaStateResponse = {
   privacyMode: 'paranoid',
   mediaState: BOTH_STATE,
 };
 
-const DRIVE_ONLY_STATE: ParanoidVaultMediaState = {
+/** Drive-only with the server side fully settled: no live row, no leftovers. */
+const DRIVE_ONLY_STATE: ParanoidVaultMediaState = mediaStateFacts({
   mediaSet: ['drive'],
   driveAttestedVersion: 4,
-  server: { disposition: 'retired', candidate: null, retired: null },
-};
+});
 
 const DRIVE_ONLY_MEDIA: ParanoidMediaStateResponse = {
   privacyMode: 'paranoid',
@@ -75,7 +74,15 @@ const DRIVE_ONLY_MEDIA: ParanoidMediaStateResponse = {
 const RETIRED_SERVER = {
   version: 4,
   retiredAt: '2026-07-20T08:00:00.000Z',
-  purgeAfter: '2026-08-20T08:00:00.000Z',
+  purgeAfter: '2099-08-20T08:00:00.000Z',
+} as const;
+
+const STAGED_CANDIDATE = {
+  candidateId: '0198f3a1-0000-7000-8000-00000000c0de',
+  version: 5,
+  formatVersion: 2,
+  sizeBytes: 2048,
+  expiresAt: '2099-08-20T08:00:00.000Z',
 } as const;
 
 function controller(
@@ -491,13 +498,52 @@ describe('ConnectionsPanel — paranoid Google Drive app data', () => {
     await waitFor(() => expect(drive.addServerCopy).toHaveBeenCalledTimes(1));
   });
 
+  test('warns that the automatic deletion cannot check Drive before the switch is made', async () => {
+    const drive = controller();
+    const unlock = vi.fn(async () => drive);
+    const user = userEvent.setup();
+    vi.mocked(getParanoidMediaState).mockResolvedValue(BOTH_MEDIA);
+    const rendered = renderPanel('/settings/connections', {
+      driveConnection: null,
+      driveUnlock: unlock,
+      driveConfigured: true,
+    });
+
+    await user.click(await screen.findByText('Vault storage copies'));
+    expect(
+      screen.getByText(
+        /BetterTrack keeps one encrypted recovery copy for seven days and then deletes it automatically/,
+      ),
+    ).toHaveTextContent(/it cannot check your Drive copy first/);
+
+    // It precedes the gesture that starts the window, and stays on screen
+    // through the passphrase step that gesture opens.
+    await user.click(screen.getByRole('button', { name: 'Use Drive only' }));
+    expect(await screen.findByLabelText('Vault passphrase')).toBeInTheDocument();
+    expect(drive.useDriveOnly).not.toHaveBeenCalled();
+    expect(screen.getByText(/it cannot check your Drive copy first/)).toBeInTheDocument();
+
+    // Nothing left to warn about once the server copy is already gone.
+    rendered.unmount();
+    vi.mocked(getParanoidMediaState).mockResolvedValue(DRIVE_ONLY_MEDIA);
+    renderPanel('/settings/connections', {
+      driveConnection: drive,
+      driveConfigured: true,
+    });
+    await user.click(await screen.findByText('Vault storage copies'));
+    expect(screen.queryByText(/it cannot check your Drive copy first/)).not.toBeInTheDocument();
+  });
+
   test('hides stale server-retirement purge controls after the server copy is active again', async () => {
+    // Server media is back and live, so its disposition outranks the leftover
+    // retirement row that has not been cleared yet.
     vi.mocked(getParanoidMediaState).mockResolvedValue({
       privacyMode: 'paranoid',
-      mediaState: {
-        ...BOTH_STATE,
-        server: { ...BOTH_STATE.server, retired: RETIRED_SERVER },
-      },
+      mediaState: mediaStateFacts({
+        mediaSet: ['server', 'drive'],
+        driveAttestedVersion: 4,
+        retired: RETIRED_SERVER,
+      }),
     });
     renderPanel('/settings/connections', {
       driveConnection: controller(),
@@ -506,9 +552,84 @@ describe('ConnectionsPanel — paranoid Google Drive app data', () => {
 
     expect(await screen.findByText('Google Drive app data')).toBeInTheDocument();
     expect(screen.queryByText('Retained server recovery copy')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Delete it now' })).not.toBeInTheDocument();
+  });
+
+  test('shows the dated automatic-retention state without opening a fold', async () => {
+    vi.mocked(getParanoidMediaState).mockResolvedValue({
+      privacyMode: 'paranoid',
+      mediaState: mediaStateFacts({
+        mediaSet: ['drive'],
+        driveAttestedVersion: 4,
+        retired: RETIRED_SERVER,
+      }),
+    });
+    renderPanel('/settings/connections', {
+      driveConnection: controller(),
+      driveConfigured: true,
+    });
+
     expect(
-      screen.queryByRole('button', { name: 'Delete retained server copy' }),
-    ).not.toBeInTheDocument();
+      await screen.findByText(/Drive-only selected during initial setup stores no portfolio bytes/),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Because you switched from server storage/)).toBeInTheDocument();
+    expect(screen.getByText(/deletes it automatically after that date/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Delete it now' })).toBeDisabled();
+
+    const foldedStorage = screen.getByText('Vault storage copies').closest('details');
+    expect(foldedStorage).not.toHaveAttribute('open');
+  });
+
+  test('keeps the retained copy on screen while a replacement server copy is staged', async () => {
+    // The state the server really emits here: a staged candidate outranks the
+    // retirement in the disposition label, and both copies are server-held.
+    const staged = mediaStateFacts({
+      mediaSet: ['drive'],
+      driveAttestedVersion: 4,
+      candidate: STAGED_CANDIDATE,
+      retired: { ...RETIRED_SERVER, purgeAfter: '2000-08-20T08:00:00.000Z' },
+    });
+    expect(staged.server.disposition).toBe('inactive-candidate');
+    vi.mocked(getParanoidMediaState).mockResolvedValue({
+      privacyMode: 'paranoid',
+      mediaState: staged,
+    });
+    renderPanel('/settings/connections', {
+      driveConnection: controller(),
+      driveConfigured: true,
+    });
+
+    // Retired ciphertext is still server-held here, so the state stays visible
+    // even though both destroyers refuse it while the candidate exists.
+    expect(await screen.findByText('Retained server recovery copy')).toBeInTheDocument();
+    expect(
+      screen.getByText(/A new server copy is being verified right now, so nothing is deleted/),
+    ).toBeInTheDocument();
+    // The staging copy is what the notice ternary picked, not the elapsed-window
+    // copy this past `purgeAfter` would otherwise select.
+    expect(screen.queryByText(/you can delete it now instead of waiting/)).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Delete it now' })).not.toBeInTheDocument();
+  });
+
+  test('keeps manual deletion as a delete-now shortcut after the recovery window', async () => {
+    vi.mocked(getParanoidMediaState).mockResolvedValue({
+      privacyMode: 'paranoid',
+      mediaState: mediaStateFacts({
+        mediaSet: ['drive'],
+        driveAttestedVersion: 4,
+        retired: { ...RETIRED_SERVER, purgeAfter: '2000-08-20T08:00:00.000Z' },
+      }),
+    });
+    const drive = controller();
+    const user = userEvent.setup();
+    renderPanel('/settings/connections', {
+      driveConnection: drive,
+      driveConfigured: true,
+    });
+
+    await user.click(await screen.findByRole('button', { name: 'Delete it now' }));
+
+    await waitFor(() => expect(drive.purgeRetiredServer).toHaveBeenCalledOnce());
   });
 
   test('unlocks from the user gesture before starting a storage transition', async () => {

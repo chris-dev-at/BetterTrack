@@ -881,8 +881,8 @@ export const PARANOID_CONTEXT_SERVICE_EXEMPTIONS: readonly ParanoidServiceExempt
   ),
 ] as const;
 
-const jobPolicy = (
-  file: string,
+const jobPolicyFrom = (
+  sourceFile: string,
   symbol: string,
   name: string,
   policy: ParanoidJobPolicy,
@@ -890,13 +890,21 @@ const jobPolicy = (
   surface: {
     kind: 'job',
     source: {
-      file: `apps/api/src/jobs/definitions/${file}`,
+      file: sourceFile,
       symbol,
     },
     name,
   },
   policy,
 });
+
+const jobPolicy = (
+  file: string,
+  symbol: string,
+  name: string,
+  policy: ParanoidJobPolicy,
+): ParanoidJobPolicyEntry =>
+  jobPolicyFrom(`apps/api/src/jobs/definitions/${file}`, symbol, name, policy);
 
 /**
  * Every production registration must declare its paranoid-mode handling by
@@ -1023,6 +1031,16 @@ export const PARANOID_JOB_POLICIES: readonly ParanoidJobPolicyEntry[] = [
     mode: 'kept',
     reason: 'API-key audit-log cleanup is retention infrastructure.',
   }),
+  jobPolicyFrom(
+    'apps/api/src/jobs/paranoidJobs.ts',
+    'createParanoidRetiredPurgeJob',
+    'paranoid.retiredPurge',
+    {
+      capability: null,
+      mode: 'kept',
+      reason: 'Elapsed encrypted-vault retirement cleanup is privacy-retention infrastructure.',
+    },
+  ),
   jobPolicy('retentionJobs.ts', 'createDataRetentionCleanupJob', 'data.retentionCleanup', {
     capability: null,
     mode: 'kept',

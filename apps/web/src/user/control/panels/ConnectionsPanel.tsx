@@ -347,11 +347,21 @@ function DriveVaultSection({
         : 'connected'
       : 'disconnected';
   const retired = media.server.retired;
-  const canPurgeRetiredServer =
-    retired != null &&
-    media.server.disposition === 'retired' &&
-    !media.mediaSet.includes('server') &&
-    media.server.candidate == null;
+  // Visibility and deletability are separate questions. Retired ciphertext is
+  // still server-held while a new server copy is being staged, so the state has
+  // to stay on screen there; only the purge (which both destroyers refuse
+  // against a staged candidate) is withheld.
+  //
+  // Visibility asks what still holds bytes, so it reads the facts rather than
+  // `disposition`: that label is priority-ordered (`active` > staged candidate >
+  // retired), so a staged candidate hides the retirement behind
+  // `'inactive-candidate'` — the exact window this notice exists for. Only a
+  // live server row makes the retirement moot, and that is the disposition the
+  // predicate excludes.
+  const retiredServerHeld =
+    retired != null && !media.mediaSet.includes('server') && media.server.disposition !== 'active';
+  const candidateStaged = media.server.candidate != null;
+  const canPurgeRetiredServer = retiredServerHeld && !candidateStaged;
   const purgeReady = retired != null && Date.now() >= Date.parse(retired.purgeAfter);
 
   async function refresh(): Promise<void> {
@@ -606,6 +616,13 @@ function DriveVaultSection({
                   : 'settings.connections.drive.storage.driveOnly',
               )}
             </PanelNote>
+            {/* The disclosure §16 (2026-08-19) promises BEFORE the switch, at
+                the only gesture that starts it: the automatic purge is what
+                makes Drive-only true, and it cannot read Drive first, so an
+                unreadable Drive copy is unrecoverable once the window ends. */}
+            {media.mediaSet.includes('server') ? (
+              <PanelNote warn>{t('settings.connections.drive.storage.driveOnlyWarning')}</PanelNote>
+            ) : null}
             <Button
               disabled={working || !configured}
               onClick={() =>
@@ -624,28 +641,39 @@ function DriveVaultSection({
         </PanelFold>
       ) : null}
 
-      {canPurgeRetiredServer ? (
-        <PanelFold summary={t('settings.connections.drive.retired.title')}>
+      {retiredServerHeld ? (
+        <Row stack>
           <div className="flex flex-col items-start gap-2">
-            <PanelNote>
+            <span className="bt-cc-row__label">
+              {t('settings.connections.drive.retired.title')}
+            </span>
+            {/* This state is intentionally outside every fold: Drive-only is
+                not a zero-server-bytes claim until this dated recovery copy is
+                gone. The hourly job finishes it automatically; the button is
+                the post-window "delete now" shortcut. */}
+            <Alert tone="info">
               {t(
-                purgeReady
-                  ? 'settings.connections.drive.retired.ready'
-                  : 'settings.connections.drive.retired.wait',
+                candidateStaged
+                  ? 'settings.connections.drive.retired.staging'
+                  : purgeReady
+                    ? 'settings.connections.drive.retired.ready'
+                    : 'settings.connections.drive.retired.wait',
                 { date: formatDateTime(retired.purgeAfter) },
               )}
-            </PanelNote>
-            <Button
-              disabled={working || !purgeReady || !configured}
-              onClick={() => void run('purge')}
-              size="sm"
-              type="button"
-              variant="danger"
-            >
-              {t('settings.connections.drive.retired.purge')}
-            </Button>
+            </Alert>
+            {canPurgeRetiredServer ? (
+              <Button
+                disabled={working || !purgeReady || !configured}
+                onClick={() => void run('purge')}
+                size="sm"
+                type="button"
+                variant="danger"
+              >
+                {t('settings.connections.drive.retired.purge')}
+              </Button>
+            ) : null}
           </div>
-        </PanelFold>
+        </Row>
       ) : null}
     </PanelGroup>
   );
