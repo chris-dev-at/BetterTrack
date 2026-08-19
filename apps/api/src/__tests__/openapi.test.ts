@@ -158,6 +158,25 @@ describe('OpenAPI document', () => {
       ]);
     }
 
+    // #1328: only the JSON start leg is authenticated + bearer-callable. Both
+    // Google browser callbacks are genuinely public, while the legacy anonymous
+    // sign-in start remains public but never advertises bearer authentication.
+    const mobileGoogleLinkStart = (paths['/auth/google/link/start'] as JsonObject)
+      .post as JsonObject;
+    expect(mobileGoogleLinkStart.security).toEqual([{ sessionCookie: [] }, { apiKeyBearer: [] }]);
+    expect(
+      ((mobileGoogleLinkStart.responses as JsonObject)['200'] as JsonObject).content,
+    ).toMatchObject({
+      'application/json': {
+        schema: { $ref: '#/components/schemas/GoogleMobileLinkStartResponse' },
+      },
+    });
+    expect(
+      ((paths['/auth/google/link/callback'] as JsonObject).get as JsonObject).security,
+    ).toEqual([]);
+    expect(((paths['/auth/google/start'] as JsonObject).get as JsonObject).security).toEqual([]);
+    expect(((paths['/auth/google/callback'] as JsonObject).get as JsonObject).security).toEqual([]);
+
     // Registration remains an owning-browser ceremony. Public passkey sign-in
     // remains public, but neither class advertises bearer-token authentication.
     for (const [method, path] of [

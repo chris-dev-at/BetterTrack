@@ -779,6 +779,24 @@ describe('#1324 account:security parity for native account state', () => {
   });
 });
 
+describe('#1328 bearer-started Google LINK policy', () => {
+  it('scope-evaluates the one new bearer route and keeps the legacy start closed', async () => {
+    const { token } = await mintKey(['market:read']);
+    const denied = await request(harness.app)
+      .post('/api/v1/auth/google/link/start')
+      .set(bearer(token));
+
+    expect(denied.status).toBe(403);
+    expect(denied.body.error.code).toBe('INSUFFICIENT_SCOPE');
+    expect(denied.body.error.message).toContain(ACCOUNT_SECURITY_SCOPE);
+    expect(pathAcceptsBearer('/auth/google/link/start', 'POST')).toBe(true);
+    expect(pathAcceptsBearer('/auth/google/link/start', 'GET')).toBe(false);
+    expect(pathAcceptsBearer('/auth/google/start', 'GET')).toBe(false);
+    expect(pathAcceptsBearer('/auth/google/callback', 'GET')).toBe(false);
+    expect(pathAcceptsBearer('/auth/google/link/callback', 'GET')).toBe(false);
+  });
+});
+
 describe('#888 bearer 2FA generation interleavings', () => {
   it('rejects a first-factor confirmation admitted before promotion', async () => {
     const { token, userId } = await mintKey(['account:security']);
