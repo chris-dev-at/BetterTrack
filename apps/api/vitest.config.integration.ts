@@ -1,5 +1,11 @@
 import { defineConfig } from 'vitest/config';
 
+if (!process.env.TEST_DATABASE_URL) {
+  throw new Error(
+    'TEST_DATABASE_URL is required for vitest.config.integration.ts; the real Postgres suite must not silently skip.',
+  );
+}
+
 /**
  * Vitest config for the real-service integration job (postgres:17 + redis:7).
  * Run via: TEST_DATABASE_URL=... TEST_REDIS_URL=... pnpm test:integration
