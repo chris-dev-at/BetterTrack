@@ -58,7 +58,9 @@ export function createParanoidRetiredPurgeJob(
       let afterUserId: string | undefined;
       let examined = 0;
       let purged = 0;
+      let converged = 0;
       let skipped = 0;
+      let drained = false;
 
       while (examined < maxRowsPerRun) {
         const limit = Math.min(batchSize, maxRowsPerRun - examined);
@@ -67,7 +69,10 @@ export function createParanoidRetiredPurgeJob(
           afterUserId,
           limit,
         });
-        if (retirements.length === 0) break;
+        if (retirements.length === 0) {
+          drained = true;
+          break;
+        }
 
         for (const retirement of retirements) {
           const result = await deps.vaults.purgeElapsedRetirement({
@@ -75,22 +80,48 @@ export function createParanoidRetiredPurgeJob(
             now: runAt,
           });
           if (result.status === 'ok') purged += 1;
+          else if (result.status === 'already_purged') converged += 1;
           else skipped += 1;
         }
         examined += retirements.length;
         afterUserId = retirements.at(-1)!.userId;
-        if (retirements.length < limit) break;
+        if (retirements.length < limit) {
+          drained = true;
+          break;
+        }
       }
 
-      if (purged > 0) {
+      // Leaving the loop on a full final batch is ambiguous — the elapsed set
+      // may have been exactly `maxRowsPerRun` rows and is now drained. One
+      // bounded probe past the last key answers it, so the warning below only
+      // fires when work was genuinely left for the next run.
+      if (!drained && afterUserId !== undefined) {
+        const remaining = await deps.vaults.listElapsedRetirements({
+          now: runAt,
+          afterUserId,
+          limit: 1,
+        });
+        drained = remaining.length === 0;
+      }
+
+      if (purged > 0 || converged > 0) {
         ctx.logger.info(
-          { purged, skipped, examined },
+          { purged, converged, skipped, examined },
           'elapsed paranoid server-retirement copies purged',
         );
       }
-      if (examined === maxRowsPerRun) {
+      if (skipped > 0) {
+        // A retirement the job refuses to touch — server media re-added and
+        // left live, a staged candidate, or the account back on `normal` — is
+        // rescanned every hour and would otherwise retain ciphertext silently.
+        ctx.logger.info(
+          { skipped, purged, converged, examined },
+          'paranoid server-retirements left in place by their guards',
+        );
+      }
+      if (!drained) {
         ctx.logger.warn(
-          { examined, purged, skipped },
+          { examined, purged, converged, skipped },
           'paranoid server-retirement purge reached its per-run ceiling',
         );
       }

@@ -52,6 +52,30 @@ function ctx(): JobContext {
   };
 }
 
+interface LogLine {
+  level: 'info' | 'warn';
+  fields: Record<string, unknown>;
+  message: string;
+}
+
+/** The run's only operator trace, so the counters it carries are asserted. */
+function recordingCtx(lines: LogLine[]): JobContext {
+  const record =
+    (level: LogLine['level']) => (fields: Record<string, unknown>, message: string) => {
+      lines.push({ level, fields, message });
+    };
+  const recorder = {
+    info: record('info'),
+    warn: record('warn'),
+    error: () => {},
+    debug: () => {},
+    trace: () => {},
+    fatal: () => {},
+    child: () => recorder,
+  } as unknown as Logger;
+  return { ...ctx(), logger: recorder };
+}
+
 function blob(text: string): Buffer {
   return Buffer.from(text, 'utf8');
 }
@@ -252,5 +276,95 @@ describe('paranoid.retiredPurge', () => {
         .from(paranoidVaultHistory)
         .where(eq(paranoidVaultHistory.userId, liveUserId)),
     ).toMatchObject([{ version: 1 }]);
+  });
+
+  it('logs retained copies a guard refused, so a permanently stuck retirement is visible', async () => {
+    const reAddedUserId = await seedParanoidUser('stuck_readded');
+    const reAddedVersion = await retireServerVault(reAddedUserId, ['stuck-v1'], T0);
+    await reAddServerVault(reAddedUserId, reAddedVersion, 'stuck-v1');
+
+    const lines: LogLine[] = [];
+    const job = createParanoidRetiredPurgeJob({ vaults, now: () => RUN_AT });
+    await job.handler({} as never, recordingCtx(lines));
+
+    // Nothing was purged, so the purge line stays silent — but the retained
+    // ciphertext this run declined to touch still has to leave a trace.
+    expect(lines.filter((line) => line.message.includes('purged'))).toEqual([]);
+    expect(lines).toContainEqual({
+      level: 'info',
+      fields: { skipped: 1, purged: 0, converged: 0, examined: 1 },
+      message: 'paranoid server-retirements left in place by their guards',
+    });
+    expect(await retiredRows(reAddedUserId)).toHaveLength(1);
+  });
+
+  it('counts a retirement that vanished between scan and purge as converged, not purged', async () => {
+    const userId = await seedParanoidUser('converged_replay');
+    const retiredVersion = await retireServerVault(userId, ['converged-v1'], T0);
+    expect(await vaults.purgeElapsedRetirement({ userId, retiredVersion, now: RUN_AT })).toEqual({
+      status: 'ok',
+    });
+
+    // Replays the exact scan result a concurrent run already acted on.
+    let served = false;
+    const lines: LogLine[] = [];
+    const job = createParanoidRetiredPurgeJob({
+      vaults: {
+        async listElapsedRetirements() {
+          if (served) return [];
+          served = true;
+          return [{ userId, retiredVersion }];
+        },
+        purgeElapsedRetirement: (input) => vaults.purgeElapsedRetirement(input),
+      },
+      now: () => RUN_AT,
+    });
+    await job.handler({} as never, recordingCtx(lines));
+
+    expect(lines).toContainEqual({
+      level: 'info',
+      fields: { purged: 0, converged: 1, skipped: 0, examined: 1 },
+      message: 'elapsed paranoid server-retirement copies purged',
+    });
+  });
+
+  it('warns about its per-run ceiling only when rows were genuinely left behind', async () => {
+    const firstUserId = await seedParanoidUser('ceiling_first');
+    await retireServerVault(firstUserId, ['ceiling-a1'], T0);
+
+    // An elapsed set that exactly fills the ceiling is drained, not truncated.
+    const exactFit: LogLine[] = [];
+    await createParanoidRetiredPurgeJob({
+      vaults,
+      now: () => RUN_AT,
+      batchSize: 1,
+      maxRowsPerRun: 1,
+    }).handler({} as never, recordingCtx(exactFit));
+    expect(exactFit.filter((line) => line.level === 'warn')).toEqual([]);
+    expect(await retirementRows(firstUserId)).toEqual([]);
+
+    const secondUserId = await seedParanoidUser('ceiling_second');
+    await retireServerVault(secondUserId, ['ceiling-b1'], T0);
+    const thirdUserId = await seedParanoidUser('ceiling_third');
+    await retireServerVault(thirdUserId, ['ceiling-c1'], T0);
+
+    const truncated: LogLine[] = [];
+    await createParanoidRetiredPurgeJob({
+      vaults,
+      now: () => RUN_AT,
+      batchSize: 1,
+      maxRowsPerRun: 1,
+    }).handler({} as never, recordingCtx(truncated));
+    expect(truncated).toContainEqual({
+      level: 'warn',
+      fields: { examined: 1, purged: 1, converged: 0, skipped: 0 },
+      message: 'paranoid server-retirement purge reached its per-run ceiling',
+    });
+    // Exactly one of the two was taken; the other waits for the next run.
+    const remaining = [
+      ...(await retirementRows(secondUserId)),
+      ...(await retirementRows(thirdUserId)),
+    ];
+    expect(remaining).toHaveLength(1);
   });
 });

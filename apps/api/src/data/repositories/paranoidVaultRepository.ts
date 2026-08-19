@@ -258,6 +258,16 @@ export type ParanoidRetiredPurgeResult =
   | { status: 'retention_pending'; purgeAfter: Date }
   | { status: 'proof_required' };
 
+/**
+ * The retention worker gets one extra outcome the HTTP gate does not: the
+ * retirement had already converged (a concurrent run or the owner's own purge
+ * won the race). It is as successful as `ok`, but this run deleted nothing, so
+ * counting it as a purge would overstate what the job did.
+ */
+export type ParanoidElapsedRetirementPurgeResult =
+  | ParanoidRetiredPurgeResult
+  | { status: 'already_purged' };
+
 export interface ParanoidVaultRepository {
   /** Internal metadata primitive; byte-serving callers must use readCurrent. */
   getCurrent(userId: string): Promise<ParanoidVaultRow | null>;
@@ -291,7 +301,7 @@ export interface ParanoidVaultRepository {
   ): Promise<ParanoidElapsedRetirement[]>;
   purgeElapsedRetirement(
     input: ParanoidElapsedRetirementPurgeInput,
-  ): Promise<ParanoidRetiredPurgeResult>;
+  ): Promise<ParanoidElapsedRetirementPurgeResult>;
   purgeRetired(input: ParanoidRetiredPurgeInput): Promise<ParanoidRetiredPurgeResult>;
 }
 
@@ -345,7 +355,7 @@ export function createParanoidVaultRepository(
     retiredVersion: number;
     authorization: 'client-proof' | 'elapsed-retention' | null;
     now: Date;
-  }): Promise<ParanoidRetiredPurgeResult> =>
+  }): Promise<ParanoidElapsedRetirementPurgeResult> =>
     db.transaction(async (tx) => {
       const [user] = await tx
         .select({
@@ -411,10 +421,15 @@ export function createParanoidVaultRepository(
           selection.driveAttestedVersion !== null &&
           input.retiredVersion <= selection.driveAttestedVersion;
         if (!alreadyPurged) return { status: 'not_found' } as const;
-        // `ok` is the answer to an authorized purge on every path, replay
+        // Success is the answer to an authorized purge on every path, replay
         // included. An HTTP caller still reaches this only through a verified
         // proof; the retention worker reaches it only after the elapsed scan.
+        // The worker alone is told the difference, so its log can separate
+        // "this run deleted bytes" from "someone else already had".
         if (input.authorization === null) return { status: 'proof_required' } as const;
+        if (input.authorization === 'elapsed-retention') {
+          return { status: 'already_purged' } as const;
+        }
         return { status: 'ok' } as const;
       }
       // A staged candidate is still server-held ciphertext. Do not report a
@@ -1251,10 +1266,14 @@ export function createParanoidVaultRepository(
     },
 
     async purgeRetired(input) {
-      return purgeRetiredTransaction({
+      const result = await purgeRetiredTransaction({
         ...input,
         authorization: input.proofVerified ? 'client-proof' : null,
       });
+      // Unreachable: `already_purged` is only produced for the worker's
+      // `elapsed-retention` authorization. Narrowed rather than cast so the
+      // HTTP result type stays exactly what the contract serializes.
+      return result.status === 'already_purged' ? { status: 'ok' } : result;
     },
   };
 }

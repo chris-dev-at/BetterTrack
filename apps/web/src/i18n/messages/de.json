@@ -510,7 +510,7 @@
         "retired": {
           "title": "Aufbewahrte Server-Wiederherstellungskopie",
           "wait": "Wenn du beim ersten Einrichten nur Drive auswählst, speichert BetterTrack von Anfang an keine Portfolio-Daten. Da du von der Server-Speicherung gewechselt hast, bleibt diese verschlüsselte Wiederherstellungskopie bis {{date}} erhalten. Danach löscht BetterTrack sie automatisch.",
-          "ready": "Wenn du beim ersten Einrichten nur Drive auswählst, speichert BetterTrack von Anfang an keine Portfolio-Daten. Da du von der Server-Speicherung gewechselt hast, blieb die verschlüsselte Wiederherstellungskopie bis {{date}} erhalten. Das Zeitfenster ist beendet: BetterTrack löscht sie automatisch; du kannst sie auch jetzt sofort löschen.",
+          "ready": "Wenn du beim ersten Einrichten nur Drive auswählst, speichert BetterTrack von Anfang an keine Portfolio-Daten. Da du von der Server-Speicherung gewechselt hast, blieb die verschlüsselte Wiederherstellungskopie bis {{date}} erhalten. Das Zeitfenster ist beendet: BetterTrack löscht sie automatisch; du kannst sie auch jetzt sofort löschen. Beim sofortigen Löschen wird zuerst deine Drive-Kopie erneut gelesen, Google fragt dich dabei eventuell nach einer erneuten Freigabe.",
           "purge": "Jetzt löschen"
         }
       },
