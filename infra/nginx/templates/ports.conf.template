@@ -79,6 +79,9 @@ server {
     }
 
     location / {
+        include /etc/nginx/bt-includes/static-security-headers.conf;
+        include /etc/nginx/bt-includes/static-hsts.conf;
+        add_header Cache-Control "no-cache" always;
         try_files $uri $uri/ /index.html;
     }
 }
@@ -117,6 +120,9 @@ server {
     }
 
     location / {
+        include /etc/nginx/bt-includes/static-security-headers.conf;
+        include /etc/nginx/bt-includes/static-hsts.conf;
+        add_header Cache-Control "no-cache" always;
         try_files $uri $uri/ /index.html;
     }
 }
