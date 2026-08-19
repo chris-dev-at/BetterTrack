@@ -232,6 +232,8 @@ export interface Pd9Harness {
   }): Promise<Pd9PurgeOnlyFixture>;
   purgeOnlyCounts(fixture: Pd9PurgeOnlyFixture): Promise<Record<string, number>>;
   vaultStorage(email: string): Promise<Pd9VaultStorageProbe>;
+  /** Backdate the real retirement row so the browser can exercise purge without a seven-day wait. */
+  makeRetirementPurgeable(email: string): Promise<void>;
   fireAlert(input: { email: string; alertId: string }): Promise<Pd9AlertFireResult>;
   evaluateRestoredCurrentBudget(email: string): Promise<{
     emitted: DispatchableEvent[];
@@ -729,6 +731,20 @@ export function createPd9Harness(): Pd9Harness {
         retired: bytesProbe(retired),
         retirements: retirements.length,
       };
+    },
+
+    async makeRetirementPurgeable(email) {
+      const userId = await userIdFor(email);
+      // Seed the retention boundary in the past. This is the deterministic
+      // server-side seam: browser clock overrides cannot satisfy the SQL gate.
+      const updated = await db
+        .update(schema.paranoidVaultRetirements)
+        .set({ retiredAt: new Date('2000-01-01T00:00:00.000Z') })
+        .where(eq(schema.paranoidVaultRetirements.userId, userId))
+        .returning({ userId: schema.paranoidVaultRetirements.userId });
+      if (updated.length !== 1) {
+        throw new Error(`PD9 expected exactly one retirement row for ${email}.`);
+      }
     },
 
     async fireAlert({ email, alertId }) {
