@@ -1,5 +1,8 @@
 import type { DomainEvent } from '../events';
-import type { ParanoidVaultRepository } from '../data/repositories/paranoidVaultRepository';
+import type {
+  ParanoidElapsedRetirementPurgeResult,
+  ParanoidVaultRepository,
+} from '../data/repositories/paranoidVaultRepository';
 import {
   isParanoidKilledWebhookEvent,
   paranoidWebhookSubjectIds,
@@ -22,6 +25,18 @@ export const PARANOID_RETIRED_PURGE_TZ = 'UTC';
 export const PARANOID_RETIRED_PURGE_BATCH_SIZE = 100;
 export const PARANOID_RETIRED_PURGE_MAX_ROWS_PER_RUN = 10_000;
 
+/**
+ * Every outcome that leaves ciphertext in place. The operator instruction in
+ * `docs/ops.md` is "go look at those accounts", which needs the reason: server
+ * media re-added (`state_conflict`) is a settled state to leave alone, while an
+ * account back on `privacyMode: 'normal'` (`mode_required`) is a rehydration
+ * that did not finish clearing its retirement.
+ */
+type ParanoidRetiredPurgeSkipStatus = Exclude<
+  ParanoidElapsedRetirementPurgeResult['status'],
+  'ok' | 'already_purged'
+>;
+
 export interface ParanoidRetiredPurgeJobDeps {
   vaults: Pick<ParanoidVaultRepository, 'listElapsedRetirements' | 'purgeElapsedRetirement'>;
   now?: () => Date;
@@ -43,10 +58,10 @@ export interface ParanoidRetiredPurgeJobDeps {
  * elapsed set is bounded by the number of paranoid accounts that ever switched
  * to Drive-only, so a blocked prefix wider than `maxRowsPerRun` is not a state
  * this deployment can reach — but it is a real precondition, so the run makes
- * it observable rather than silent: `skipped` counts the refusals and the
- * ceiling warning carries the cursor it stopped at, so a prefix that never
- * advances between runs shows up as a stalled `lastUserId` with a non-zero
- * `skipped`.
+ * it observable rather than silent: `skipped` counts the refusals,
+ * `skippedByStatus` names the guard behind each one, and the ceiling warning
+ * carries the cursor it stopped at, so a prefix that never advances between
+ * runs shows up as a stalled `lastUserId` with a non-zero `skipped`.
  */
 export function createParanoidRetiredPurgeJob(
   deps: ParanoidRetiredPurgeJobDeps,
@@ -72,6 +87,7 @@ export function createParanoidRetiredPurgeJob(
       let purged = 0;
       let converged = 0;
       let skipped = 0;
+      const skippedByStatus: Partial<Record<ParanoidRetiredPurgeSkipStatus, number>> = {};
       let drained = false;
 
       while (examined < maxRowsPerRun) {
@@ -94,7 +110,10 @@ export function createParanoidRetiredPurgeJob(
           });
           if (result.status === 'ok') purged += 1;
           else if (result.status === 'already_purged') converged += 1;
-          else skipped += 1;
+          else {
+            skipped += 1;
+            skippedByStatus[result.status] = (skippedByStatus[result.status] ?? 0) + 1;
+          }
         }
         examined += retirements.length;
         afterUserId = retirements.at(-1)!.userId;
@@ -127,17 +146,20 @@ export function createParanoidRetiredPurgeJob(
         // A retirement the job refuses to touch — server media re-added and
         // left live, a staged candidate, or the account back on `normal` — is
         // rescanned every hour and would otherwise retain ciphertext silently.
+        // `skippedByStatus` names which guard refused, because the operator
+        // instruction differs per reason and the counts alone cannot say.
         ctx.logger.info(
-          { skipped, purged, converged, examined },
+          { skipped, skippedByStatus, purged, converged, examined },
           'paranoid server-retirements left in place by their guards',
         );
       }
       if (!drained) {
         // `lastUserId` is the truncation point. It advancing run over run means
         // the sweep is making progress through a backlog; standing still with a
-        // non-zero `skipped` means a blocked prefix is holding the ceiling.
+        // non-zero `skipped` means a blocked prefix is holding the ceiling —
+        // and `skippedByStatus` says which guard that prefix is sitting behind.
         ctx.logger.warn(
-          { examined, purged, converged, skipped, lastUserId: afterUserId },
+          { examined, purged, converged, skipped, skippedByStatus, lastUserId: afterUserId },
           'paranoid server-retirement purge reached its per-run ceiling',
         );
       }

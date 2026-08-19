@@ -351,8 +351,15 @@ function DriveVaultSection({
   // still server-held while a new server copy is being staged, so the state has
   // to stay on screen there; only the purge (which both destroyers refuse
   // against a staged candidate) is withheld.
+  //
+  // Visibility asks what still holds bytes, so it reads the facts rather than
+  // `disposition`: that label is priority-ordered (`active` > staged candidate >
+  // retired), so a staged candidate hides the retirement behind
+  // `'inactive-candidate'` — the exact window this notice exists for. Only a
+  // live server row makes the retirement moot, and that is the disposition the
+  // predicate excludes.
   const retiredServerHeld =
-    retired != null && media.server.disposition === 'retired' && !media.mediaSet.includes('server');
+    retired != null && !media.mediaSet.includes('server') && media.server.disposition !== 'active';
   const candidateStaged = media.server.candidate != null;
   const canPurgeRetiredServer = retiredServerHeld && !candidateStaged;
   const purgeReady = retired != null && Date.now() >= Date.parse(retired.purgeAfter);

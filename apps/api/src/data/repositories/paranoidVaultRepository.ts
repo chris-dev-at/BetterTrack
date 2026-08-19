@@ -1253,6 +1253,10 @@ export function createParanoidVaultRepository(
     },
 
     async listElapsedRetirements(input) {
+      // Deliberately unindexed on `retiredAt`: this is a filtered scan in
+      // primary-key order over a table bounded by the paranoid accounts that
+      // ever switched to Drive-only, run once an hour. Recorded so the plan is
+      // a known choice rather than a mystery if that population ever grows.
       const retiredAtOrBefore = new Date(
         input.now.getTime() - VAULT_RETIRED_SERVER_MIN_RETENTION_MS,
       );

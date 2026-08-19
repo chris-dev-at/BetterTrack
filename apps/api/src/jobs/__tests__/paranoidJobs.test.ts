@@ -296,10 +296,51 @@ describe('paranoid.retiredPurge', () => {
     expect(lines.filter((line) => line.message.includes('purged'))).toEqual([]);
     expect(lines).toContainEqual({
       level: 'info',
-      fields: { skipped: 1, purged: 0, converged: 0, examined: 1 },
+      fields: {
+        skipped: 1,
+        // Which guard refused, not just that one did: `docs/ops.md` tells the
+        // operator to act on this line, and the action differs per reason.
+        skippedByStatus: { state_conflict: 1 },
+        purged: 0,
+        converged: 0,
+        examined: 1,
+      },
       message: 'paranoid server-retirements left in place by their guards',
     });
     expect(await retiredRows(reAddedUserId)).toHaveLength(1);
+  });
+
+  it('refuses the proof-free purge of a retirement still inside its window', async () => {
+    const userId = await seedParanoidUser('retention_window');
+    const retiredVersion = await retireServerVault(userId, ['pending-v1', 'pending-v2'], T0);
+
+    // The job's scan filter is what normally keeps this row out of reach, so
+    // the destroy path is called directly here: a scan-filter regression must
+    // still hit a guard rather than delete a copy the user was promised until
+    // `purgeAfter`. One millisecond short of the window is enough to prove it.
+    expect(
+      await vaults.purgeElapsedRetirement({
+        userId,
+        retiredVersion,
+        caller: 'retention-worker',
+        now: new Date(RUN_AT.getTime() - 1),
+      }),
+    ).toEqual({ status: 'retention_pending', purgeAfter: RUN_AT });
+    expect(await retiredRows(userId)).toHaveLength(2);
+    expect(await retirementRows(userId)).toMatchObject([{ retiredVersion }]);
+
+    // The same call at the deadline itself is the purge — the boundary is
+    // inclusive, exactly as the `purgeAfter` shown to the user reads.
+    expect(
+      await vaults.purgeElapsedRetirement({
+        userId,
+        retiredVersion,
+        caller: 'retention-worker',
+        now: RUN_AT,
+      }),
+    ).toEqual({ status: 'ok' });
+    expect(await retiredRows(userId)).toEqual([]);
+    expect(await retirementRows(userId)).toEqual([]);
   });
 
   it('counts a retirement that vanished between scan and purge as converged, not purged', async () => {
@@ -373,6 +414,7 @@ describe('paranoid.retiredPurge', () => {
         purged: 1,
         converged: 0,
         skipped: 0,
+        skippedByStatus: {},
         lastUserId: expect.any(String),
       },
       message: 'paranoid server-retirement purge reached its per-run ceiling',

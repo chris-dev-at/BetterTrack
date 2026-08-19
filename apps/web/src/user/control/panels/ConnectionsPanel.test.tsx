@@ -16,6 +16,7 @@ vi.mock('../../../lib/userApi', () => ({
 import { ApiError } from '../../../lib/apiClient';
 import { getGoogleLinkStatus, getParanoidMediaState, unlinkGoogle } from '../../../lib/userApi';
 import type { DriveConnectionController } from '../../vault/media';
+import { mediaStateFacts } from '../../vault/media/mediaState.testSupport';
 import { ConnectionsPanel } from './ConnectionsPanel';
 
 const GOOGLE_OFF = {
@@ -39,33 +40,31 @@ const NORMAL_MEDIA: ParanoidMediaStateResponse = {
   mediaState: null,
 };
 
-const SERVER_STATE: ParanoidVaultMediaState = {
-  mediaSet: ['server'],
-  driveAttestedVersion: null,
-  server: { disposition: 'active', candidate: null, retired: null },
-};
+// Every media state here is derived the way the server derives it (see
+// `mediaStateFacts`), so no test can assert over a disposition/candidate/retired
+// combination `mediaStateOf` would never emit.
+const SERVER_STATE: ParanoidVaultMediaState = mediaStateFacts({ mediaSet: ['server'] });
 
 const SERVER_MEDIA: ParanoidMediaStateResponse = {
   privacyMode: 'paranoid',
   mediaState: SERVER_STATE,
 };
 
-const BOTH_STATE: ParanoidVaultMediaState = {
+const BOTH_STATE: ParanoidVaultMediaState = mediaStateFacts({
   mediaSet: ['server', 'drive'],
   driveAttestedVersion: 4,
-  server: { disposition: 'active', candidate: null, retired: null },
-};
+});
 
 const BOTH_MEDIA: ParanoidMediaStateResponse = {
   privacyMode: 'paranoid',
   mediaState: BOTH_STATE,
 };
 
-const DRIVE_ONLY_STATE: ParanoidVaultMediaState = {
+/** Drive-only with the server side fully settled: no live row, no leftovers. */
+const DRIVE_ONLY_STATE: ParanoidVaultMediaState = mediaStateFacts({
   mediaSet: ['drive'],
   driveAttestedVersion: 4,
-  server: { disposition: 'retired', candidate: null, retired: null },
-};
+});
 
 const DRIVE_ONLY_MEDIA: ParanoidMediaStateResponse = {
   privacyMode: 'paranoid',
@@ -536,12 +535,15 @@ describe('ConnectionsPanel — paranoid Google Drive app data', () => {
   });
 
   test('hides stale server-retirement purge controls after the server copy is active again', async () => {
+    // Server media is back and live, so its disposition outranks the leftover
+    // retirement row that has not been cleared yet.
     vi.mocked(getParanoidMediaState).mockResolvedValue({
       privacyMode: 'paranoid',
-      mediaState: {
-        ...BOTH_STATE,
-        server: { ...BOTH_STATE.server, retired: RETIRED_SERVER },
-      },
+      mediaState: mediaStateFacts({
+        mediaSet: ['server', 'drive'],
+        driveAttestedVersion: 4,
+        retired: RETIRED_SERVER,
+      }),
     });
     renderPanel('/settings/connections', {
       driveConnection: controller(),
@@ -556,10 +558,11 @@ describe('ConnectionsPanel — paranoid Google Drive app data', () => {
   test('shows the dated automatic-retention state without opening a fold', async () => {
     vi.mocked(getParanoidMediaState).mockResolvedValue({
       privacyMode: 'paranoid',
-      mediaState: {
-        ...DRIVE_ONLY_STATE,
-        server: { disposition: 'retired', candidate: null, retired: RETIRED_SERVER },
-      },
+      mediaState: mediaStateFacts({
+        mediaSet: ['drive'],
+        driveAttestedVersion: 4,
+        retired: RETIRED_SERVER,
+      }),
     });
     renderPanel('/settings/connections', {
       driveConnection: controller(),
@@ -578,16 +581,18 @@ describe('ConnectionsPanel — paranoid Google Drive app data', () => {
   });
 
   test('keeps the retained copy on screen while a replacement server copy is staged', async () => {
+    // The state the server really emits here: a staged candidate outranks the
+    // retirement in the disposition label, and both copies are server-held.
+    const staged = mediaStateFacts({
+      mediaSet: ['drive'],
+      driveAttestedVersion: 4,
+      candidate: STAGED_CANDIDATE,
+      retired: { ...RETIRED_SERVER, purgeAfter: '2000-08-20T08:00:00.000Z' },
+    });
+    expect(staged.server.disposition).toBe('inactive-candidate');
     vi.mocked(getParanoidMediaState).mockResolvedValue({
       privacyMode: 'paranoid',
-      mediaState: {
-        ...DRIVE_ONLY_STATE,
-        server: {
-          disposition: 'retired',
-          candidate: STAGED_CANDIDATE,
-          retired: { ...RETIRED_SERVER, purgeAfter: '2000-08-20T08:00:00.000Z' },
-        },
-      },
+      mediaState: staged,
     });
     renderPanel('/settings/connections', {
       driveConnection: controller(),
@@ -600,20 +605,20 @@ describe('ConnectionsPanel — paranoid Google Drive app data', () => {
     expect(
       screen.getByText(/A new server copy is being verified right now, so nothing is deleted/),
     ).toBeInTheDocument();
+    // The staging copy is what the notice ternary picked, not the elapsed-window
+    // copy this past `purgeAfter` would otherwise select.
+    expect(screen.queryByText(/you can delete it now instead of waiting/)).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Delete it now' })).not.toBeInTheDocument();
   });
 
   test('keeps manual deletion as a delete-now shortcut after the recovery window', async () => {
     vi.mocked(getParanoidMediaState).mockResolvedValue({
       privacyMode: 'paranoid',
-      mediaState: {
-        ...DRIVE_ONLY_STATE,
-        server: {
-          disposition: 'retired',
-          candidate: null,
-          retired: { ...RETIRED_SERVER, purgeAfter: '2000-08-20T08:00:00.000Z' },
-        },
-      },
+      mediaState: mediaStateFacts({
+        mediaSet: ['drive'],
+        driveAttestedVersion: 4,
+        retired: { ...RETIRED_SERVER, purgeAfter: '2000-08-20T08:00:00.000Z' },
+      }),
     });
     const drive = controller();
     const user = userEvent.setup();
