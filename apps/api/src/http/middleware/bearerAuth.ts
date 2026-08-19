@@ -374,73 +374,173 @@ type PathPolicy =
   | { kind: 'session-only'; bearerMessage?: string }
   | { kind: 'scope'; read: string; write: string; firstPartyOnly?: true };
 
+export type BearerModulePolicy =
+  | {
+      readonly prefix: `/${string}`;
+      readonly kind: 'scope';
+      readonly read: string;
+      readonly write: string;
+    }
+  | {
+      readonly prefix: `/${string}`;
+      readonly kind: 'allow' | 'admin' | 'session-only';
+      readonly reason: string;
+    };
+
 /** The scope gating account-security state shared by the web and native clients. */
 export const ACCOUNT_SECURITY_SCOPE = 'account:security';
 
 /**
- * Coarse per-module scope map (§6.13). Read scopes gate safe methods; write
- * scopes gate mutations. Read-only modules (market) carry a write scope string
- * no key can hold, so any mutation is denied *and audited* through the same path
- * as a genuine missing-scope. Anything not matched here is default-denied — a
- * new user router is unreachable by API key until it opts in.
+ * Explicit bearer classification for every top-level API module mounted by
+ * `app.ts`. Read scopes gate safe methods; write scopes gate mutations.
+ * Read-only modules (market) carry a write scope string no key can hold, so any
+ * mutation is denied *and audited* through the same path as a genuine missing
+ * scope. Session-only entries are deliberate defaults; exact route carve-outs
+ * (auth, vault sync, tax-year locks) resolve before this table.
  *
  * The `/settings` catch-all keeps the coarse account/profile bucket on the
  * social scope (unchanged since V2-P12); the more specific `/settings/notifications`
  * prefs route is remapped to the notifications scope in {@link resolvePolicy}
  * before this table is consulted (#361).
+ *
+ * This table is also consumed by the real-app mount census in
+ * `checkOpenapiCoverage.ts`. Do not add a second classification list: runtime
+ * enforcement, generated OpenAPI bearer security and the completeness gate all
+ * depend on these entries.
  */
-const MODULE_POLICIES: readonly { prefix: string; read: string; write: string }[] = [
-  { prefix: '/portfolios', read: 'portfolio:read', write: 'portfolio:write' },
-  { prefix: '/custom-assets', read: 'portfolio:read', write: 'portfolio:write' },
+export const MODULE_POLICIES = [
+  {
+    prefix: '/version',
+    kind: 'allow',
+    reason: 'Deployment metadata is mounted before authentication and is public.',
+  },
+  {
+    prefix: '/health',
+    kind: 'allow',
+    reason: 'Liveness and readiness probes are mounted before authentication and are public.',
+  },
+  {
+    prefix: '/feature-flags',
+    kind: 'session-only',
+    reason: 'The SPA bootstrap flag map has no bearer scope in the current catalog.',
+  },
+  {
+    prefix: '/auth',
+    kind: 'session-only',
+    reason: 'Authentication defaults closed; native account-security carve-outs resolve first.',
+  },
+  {
+    prefix: '/account',
+    kind: 'scope',
+    read: ACCOUNT_SECURITY_SCOPE,
+    write: ACCOUNT_SECURITY_SCOPE,
+  },
+  {
+    prefix: '/admin',
+    kind: 'admin',
+    reason: 'User bearer credentials never cross the admin account-kind boundary.',
+  },
+  { prefix: '/workboard', kind: 'scope', read: 'workboard:read', write: 'workboard:write' },
+  { prefix: '/search', kind: 'scope', read: 'market:read', write: 'market:write' },
+  { prefix: '/assets', kind: 'scope', read: 'market:read', write: 'market:write' },
+  { prefix: '/portfolios', kind: 'scope', read: 'portfolio:read', write: 'portfolio:write' },
+  {
+    prefix: '/custom-assets',
+    kind: 'scope',
+    read: 'portfolio:read',
+    write: 'portfolio:write',
+  },
   // Standing orders (§13.5 V5-P6b) manage recurring portfolio writes — the same
   // scope pair as /portfolios, declared so the module never default-denies.
-  { prefix: '/standing-orders', read: 'portfolio:read', write: 'portfolio:write' },
+  {
+    prefix: '/standing-orders',
+    kind: 'scope',
+    read: 'portfolio:read',
+    write: 'portfolio:write',
+  },
   // Broker CSV imports (§13.4 V4-P8) stage + apply portfolio data — the same
   // scope pair as /portfolios, declared here so the module never falls through
   // to the session-only default (the #396/#405 gap class).
-  { prefix: '/imports', read: 'portfolio:read', write: 'portfolio:write' },
+  { prefix: '/imports', kind: 'scope', read: 'portfolio:read', write: 'portfolio:write' },
   // Analytics deep-dive (§13.3 V3-P9) reads portfolio-derived series/stats — a
   // read-only surface, but declared with the portfolio scope pair so it never
   // falls through to the session-only default (the #396/#405 gap class).
-  { prefix: '/analytics', read: 'portfolio:read', write: 'portfolio:write' },
-  { prefix: '/workboard', read: 'workboard:read', write: 'workboard:write' },
-  { prefix: '/conglomerates', read: 'workboard:read', write: 'workboard:write' },
-  { prefix: '/backtest', read: 'workboard:read', write: 'workboard:write' },
+  { prefix: '/analytics', kind: 'scope', read: 'portfolio:read', write: 'portfolio:write' },
+  {
+    prefix: '/conglomerates',
+    kind: 'scope',
+    read: 'workboard:read',
+    write: 'workboard:write',
+  },
+  { prefix: '/backtest', kind: 'scope', read: 'workboard:read', write: 'workboard:write' },
   // Ideas (§13.4 V4-P9) are a Workboard surface — a saved Workboard analysis —
   // so they gate on the same workboard scope pair as conglomerates/backtest.
-  { prefix: '/ideas', read: 'workboard:read', write: 'workboard:write' },
+  { prefix: '/ideas', kind: 'scope', read: 'workboard:read', write: 'workboard:write' },
   // #1315/#1338: explicit feedback read/write scopes keep both capture and the
   // caller-owned status history out of the session-only fallback that caused
   // the recurring API_KEY_FORBIDDEN module-policy gap.
-  { prefix: '/feedback', read: 'feedback:read', write: 'feedback:write' },
-  { prefix: '/assets', read: 'market:read', write: 'market:write' },
-  { prefix: '/search', read: 'market:read', write: 'market:write' },
+  { prefix: '/feedback', kind: 'scope', read: 'feedback:read', write: 'feedback:write' },
+  {
+    prefix: '/expenses',
+    kind: 'session-only',
+    reason: 'The superseded read-only expense surface has no bearer scope classification.',
+  },
   // #361: `social:write` and `notifications:*` are now real, granularly-enforced
   // scopes. GET the notifications inbox needs `notifications:read`; mutating it
   // needs `notifications:write`; the social graph mutation needs `social:write`.
-  { prefix: '/social', read: 'social:read', write: 'social:write' },
-  { prefix: '/notifications', read: 'notifications:read', write: 'notifications:write' },
+  { prefix: '/social', kind: 'scope', read: 'social:read', write: 'social:write' },
+  {
+    prefix: '/notifications',
+    kind: 'scope',
+    read: 'notifications:read',
+    write: 'notifications:write',
+  },
   // #396: friend chat (V3-P8) shipped without a row here, so every bearer
   // request to /chat/* fell through to the session-only default — a 403 no
   // matter which scopes the token held. Cookie sessions bypass this map, which
   // is why web chat worked and only bearer clients (mobile, #349) hit it.
-  { prefix: '/chat', read: 'chat:read', write: 'chat:write' },
+  { prefix: '/chat', kind: 'scope', read: 'chat:read', write: 'chat:write' },
   // #405: price alerts (V3-P10) shipped without a row here — the same gap class
   // as chat (#396). Every bearer request to /alerts/* fell through to the
   // session-only default (403 API_KEY_FORBIDDEN regardless of scope), so the
   // mobile app could never reach alerts. Cookie sessions bypass this map, which
   // is why web alerts worked and only bearer clients hit it.
-  { prefix: '/alerts', read: 'alerts:read', write: 'alerts:write' },
+  { prefix: '/alerts', kind: 'scope', read: 'alerts:read', write: 'alerts:write' },
   // #1041: cash classification (tags, budgets, rules, summaries and trends)
   // is a distinct mobile module. Movement/source ledger CRUD remains under the
   // existing /portfolios policy; this row admits only the /cash/* surface.
-  { prefix: '/cash', read: 'cash:read', write: 'cash:write' },
+  { prefix: '/cash', kind: 'scope', read: 'cash:read', write: 'cash:write' },
   // #1042: group-portfolio participation has its own scope pair. The explicit
   // method + route allowlist in resolvePolicy keeps lifecycle administration
   // session-only even though the module itself is now scope-addressable.
-  { prefix: '/mirrorchain', read: 'mirrorchain:read', write: 'mirrorchain:write' },
-  { prefix: '/settings', read: 'social:read', write: 'social:write' },
-];
+  {
+    prefix: '/mirrorchain',
+    kind: 'scope',
+    read: 'mirrorchain:read',
+    write: 'mirrorchain:write',
+  },
+  {
+    prefix: '/ai',
+    kind: 'session-only',
+    reason: 'AI capability and generation endpoints have no bearer scope in the current catalog.',
+  },
+  { prefix: '/settings', kind: 'scope', read: 'social:read', write: 'social:write' },
+  {
+    prefix: '/vault',
+    kind: 'session-only',
+    reason: 'Vault storage defaults closed; the exact vault:sync allowlist resolves first.',
+  },
+  {
+    prefix: '/vaults',
+    kind: 'session-only',
+    reason: 'Vault lifecycle defaults closed; the exact vault:sync allowlist resolves first.',
+  },
+  {
+    prefix: '/oauth',
+    kind: 'session-only',
+    reason: 'Consent is session-bound and token exchange is handled on the public pre-guard rail.',
+  },
+] as const satisfies readonly BearerModulePolicy[];
 
 /**
  * Bearer-callable sub-paths of the otherwise cookie-only `/auth/*` group (#361).
@@ -518,8 +618,8 @@ function resolveAuthPolicy(
     return { kind: 'scope', read: ACCOUNT_SECURITY_SCOPE, write: ACCOUNT_SECURITY_SCOPE };
   }
   // Any other /auth path (login, register, password-reset, invite, accept-invite,
-  // /auth/session single, /auth/2fa bare) stays cookie-session / public.
-  if (path === '/auth' || path.startsWith('/auth/')) return { kind: 'session-only' };
+  // /auth/session single, /auth/2fa bare) falls through to the module's explicit
+  // session-only default.
   return null;
 }
 
@@ -536,9 +636,6 @@ function resolvePolicy(
   // exactly this reason). Every literal in this table is lowercase, so folding
   // case can only align a rule with the route Express picked.
   const path = requestPath.toLowerCase();
-  // Admin is never reachable by API key regardless of scopes (account-kind
-  // separation, §6.12) — 404 to disclose nothing.
-  if (path === '/admin' || path.startsWith('/admin/')) return { kind: 'admin' };
   // /auth carve-outs (#361) — resolved before anything else in the group.
   const authPolicy = resolveAuthPolicy(path, requestMethod, allowPathTemplate);
   if (authPolicy) return authPolicy;
@@ -550,16 +647,10 @@ function resolvePolicy(
   // input. Disable writes a caller-authored document back into the account. So
   // neither direction may ride a personal API key or a delegated OAuth token
   // holding `account:security` (plausible for a sessions/2FA integration), which
-  // also carries no CSRF header. Checked BEFORE the `/account/` branch, which
-  // would otherwise fold both routes into that coarse account-security scope.
+  // also carries no CSRF header. Checked BEFORE the `/account` module policy,
+  // which would otherwise fold both routes into that coarse account-security scope.
   if (path === '/account/paranoid' || path.startsWith('/account/paranoid/')) {
     return { kind: 'session-only' };
-  }
-  // Account lifecycle (#362): self-service deletion is part of the
-  // account-security surface — the mobile in-app flow calls it with a bearer
-  // holding `account:security` (deletion is additionally re-auth-gated).
-  if (path === '/account' || path.startsWith('/account/')) {
-    return { kind: 'scope', read: ACCOUNT_SECURITY_SCOPE, write: ACCOUNT_SECURITY_SCOPE };
   }
   // Key management + OAuth app registration remain cookie-session only: a
   // delegated token must not mint/list/revoke keys or register OAuth apps. Grant
@@ -616,29 +707,26 @@ function resolvePolicy(
   // allowlist admits the live blob, media-state read and conflict-history reads
   // only. Staging, media transitions, retirement and purge stay browser-session
   // work, and any future /vault route defaults closed.
-  if (path === '/vault' || path.startsWith('/vault/')) {
-    return routeAllowlistAccepts(
-      VAULT_SYNC_BEARER_ROUTE_ALLOWLIST,
-      requestMethod,
-      path,
-      allowPathTemplate,
-    )
-      ? { kind: 'scope', read: VAULT_SYNC_SCOPE, write: VAULT_SYNC_SCOPE }
-      : { kind: 'session-only' };
+  if (
+    (path === '/vault' || path.startsWith('/vault/')) &&
+    routeAllowlistAccepts(VAULT_SYNC_BEARER_ROUTE_ALLOWLIST, requestMethod, path, allowPathTemplate)
+  ) {
+    return { kind: 'scope', read: VAULT_SYNC_SCOPE, write: VAULT_SYNC_SCOPE };
   }
   // Vaults v2 (`docs/VAULTS_V2_DESIGN.md` §3): the same `vault:sync` exception
   // on the `{vaultId}`-scoped surface. Method-aware because `GET /vaults`
   // synchronizes while `POST /vaults` creates, and both share one path. An
   // unlisted route — including every future one — defaults closed.
-  if (path === '/vaults' || path.startsWith('/vaults/')) {
-    return routeAllowlistAccepts(
+  if (
+    (path === '/vaults' || path.startsWith('/vaults/')) &&
+    routeAllowlistAccepts(
       VAULTS_SYNC_BEARER_ROUTE_ALLOWLIST,
       requestMethod,
       path,
       allowPathTemplate,
     )
-      ? { kind: 'scope', read: VAULT_SYNC_SCOPE, write: VAULT_SYNC_SCOPE }
-      : { kind: 'session-only' };
+  ) {
+    return { kind: 'scope', read: VAULT_SYNC_SCOPE, write: VAULT_SYNC_SCOPE };
   }
   // The per-portfolio vault transitions. Resolved BEFORE the `/portfolios`
   // module row below, which would otherwise fold a one-way purge and a
@@ -679,13 +767,11 @@ function resolvePolicy(
   if (path === '/settings/notifications' || path.startsWith('/settings/notifications/')) {
     return { kind: 'scope', read: 'notifications:read', write: 'notifications:write' };
   }
-  // The OAuth authorize/consent + token endpoints are never reachable with a
-  // bearer token — consent is a cookie-session page, token exchange is public.
-  if (path === '/oauth' || path.startsWith('/oauth/')) return { kind: 'session-only' };
-  if (path === '/health' || path.startsWith('/health')) return { kind: 'allow' };
   for (const p of MODULE_POLICIES) {
     if (path === p.prefix || path.startsWith(`${p.prefix}/`)) {
-      return { kind: 'scope', read: p.read, write: p.write };
+      return p.kind === 'scope'
+        ? { kind: 'scope', read: p.read, write: p.write }
+        : { kind: p.kind };
     }
   }
   return { kind: 'session-only' };
