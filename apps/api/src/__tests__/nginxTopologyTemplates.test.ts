@@ -424,6 +424,7 @@ function runtimeConfigs(
 
 const SECURITY_INCLUDE = 'include /etc/nginx/bt-includes/static-security-headers.conf;';
 const CONDITIONAL_HSTS_INCLUDE = 'include /etc/nginx/bt-includes/static-hsts.conf;';
+const NOINDEX_HEADER = 'add_header X-Robots-Tag "noindex, nofollow" always;';
 const REVALIDATED_ROOT_ASSETS = 'location ~* ^/(service-worker\\.js|manifest\\.webmanifest)$ {';
 const IMMUTABLE_ASSETS = 'location ~* \\.(js|css|woff2?|ttf|eot|png|jpg|jpeg|gif|svg|ico|webp)$ {';
 
@@ -441,15 +442,33 @@ function assertDeploySafeStaticCaching(serverBlock: string): void {
   );
 }
 
-function assertSpaDocumentCaching(serverBlock: string): void {
-  const locationIndex = serverBlock.lastIndexOf('location / {');
+function locationBlock(serverBlock: string, location: string): string {
+  const locationIndex = serverBlock.lastIndexOf(location);
   expect(locationIndex).toBeGreaterThanOrEqual(0);
 
-  const document = serverBlock.slice(locationIndex);
+  let depth = 0;
+  for (let index = locationIndex; index < serverBlock.length; index += 1) {
+    const character = serverBlock[index];
+    if (character === '{') depth += 1;
+    if (character === '}') {
+      depth -= 1;
+      if (depth === 0) return serverBlock.slice(locationIndex, index + 1);
+    }
+  }
+
+  throw new Error(`unterminated ${location} block`);
+}
+
+function assertSpaDocumentCaching(
+  serverBlock: string,
+  expectedHeaders: readonly string[] = [],
+): void {
+  const document = locationBlock(serverBlock, 'location / {');
   expect(document).toContain(SECURITY_INCLUDE);
   expect(document).toContain(CONDITIONAL_HSTS_INCLUDE);
   expect(document).toContain('add_header Cache-Control "no-cache" always;');
   expect(document).toContain('try_files $uri $uri/ /index.html;');
+  for (const header of expectedHeaders) expect(document).toContain(header);
 }
 
 const SUBDOMAINS_ENV: Record<string, string> = {
@@ -526,8 +545,12 @@ describe('subdomains template', () => {
   });
 
   it('revalidates SPA documents without dropping their shared browser headers', () => {
-    assertSpaDocumentCaching(section(out, '# ── Web origin', '# ── Admin origin'));
-    assertSpaDocumentCaching(section(out, '# ── Admin origin', '# ── Product origin'));
+    assertSpaDocumentCaching(section(out, '# ── Web origin', '# ── Admin origin'), [
+      NOINDEX_HEADER,
+    ]);
+    assertSpaDocumentCaching(section(out, '# ── Admin origin', '# ── Product origin'), [
+      NOINDEX_HEADER,
+    ]);
   });
 });
 

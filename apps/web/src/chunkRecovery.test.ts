@@ -9,8 +9,12 @@ import {
   type ChunkRecoveryEnvironment,
 } from './chunkRecovery';
 
-function recoveryEnvironment(reload = vi.fn()): ChunkRecoveryEnvironment {
+function recoveryEnvironment(
+  reload = vi.fn(),
+  online: () => boolean = () => true,
+): ChunkRecoveryEnvironment {
   return {
+    online,
     release: 'deploy-a',
     reload,
     storage: sessionStorage,
@@ -59,17 +63,17 @@ describe('chunk recovery', () => {
 
   it('leaves a chunk failure in place offline, then recovers after reconnecting', () => {
     const reload = vi.fn();
-    const online = vi.spyOn(navigator, 'onLine', 'get');
+    const online = vi.fn<() => boolean>();
 
-    online.mockReturnValue(false);
-    expect(reloadForChunkRecovery(recoveryEnvironment(reload))).toBe(false);
+    online.mockReturnValueOnce(false).mockReturnValueOnce(true);
+    expect(reloadForChunkRecovery(recoveryEnvironment(reload, online))).toBe(false);
     expect(reload).not.toHaveBeenCalled();
     expect(sessionStorage.getItem(CHUNK_RECOVERY_SESSION_KEY)).toBeNull();
 
-    online.mockReturnValue(true);
-    expect(reloadForChunkRecovery(recoveryEnvironment(reload))).toBe(true);
+    expect(reloadForChunkRecovery(recoveryEnvironment(reload, online))).toBe(true);
     expect(reload).toHaveBeenCalledOnce();
     expect(sessionStorage.getItem(CHUNK_RECOVERY_SESSION_KEY)).toBe('deploy-a');
+    expect(online).toHaveBeenCalledTimes(2);
   });
 
   it('prevents Vite from rethrowing only for the first reload attempt in a release', () => {
