@@ -37,18 +37,28 @@ const PRIMARY_DESTINATIONS = [
 
 const INTERACTIVE_TARGETS =
   'a:visible, button:visible, input:visible, select:visible, textarea:visible';
+const TOUCH_TARGET_FLOOR_PX = 44;
+const SUBPIXEL_LAYOUT_EPSILON_PX = 0.001;
 
 async function expectTouchTargetFloor(targets: Locator, context: string) {
-  const undersizedTargets = await targets.evaluateAll((elements) =>
-    elements
-      .map((element) => {
-        const box = element.getBoundingClientRect();
-        return {
-          label: element.getAttribute('aria-label') ?? element.textContent,
-          ...box.toJSON(),
-        };
-      })
-      .filter((target) => target.width < 44 || target.height < 44),
+  const undersizedTargets = await targets.evaluateAll(
+    (elements, { floorPx, epsilonPx }) =>
+      elements
+        .map((element) => {
+          const box = element.getBoundingClientRect();
+          return {
+            label: element.getAttribute('aria-label') ?? element.textContent,
+            ...box.toJSON(),
+          };
+        })
+        // Chromium exposes layout floats here. A declared 44px target can land
+        // at 43.99998px after device-scale conversion, which is still the exact
+        // 44px CSS floor rather than an undersized control. Tolerate only that
+        // named representation epsilon; a real 43.99px target continues to fail.
+        .filter(
+          (target) => target.width < floorPx - epsilonPx || target.height < floorPx - epsilonPx,
+        ),
+    { floorPx: TOUCH_TARGET_FLOOR_PX, epsilonPx: SUBPIXEL_LAYOUT_EPSILON_PX },
   );
 
   expect(undersizedTargets, `${context} has undersized chrome targets`).toEqual([]);
