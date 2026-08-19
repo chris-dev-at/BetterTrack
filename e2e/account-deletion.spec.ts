@@ -73,7 +73,9 @@ test('account deletion: re-auth + typed confirm deletes the account, revokes ses
     await expect(deletedRow).not.toContainText(ownerUsername);
 
     await deletedRow.first().click();
-    await expect(friend.page.getByText(messageBody)).toBeVisible({ timeout: 15_000 });
+    await expect(
+      friend.page.getByLabel('Messages with Deleted user').getByText(messageBody, { exact: true }),
+    ).toBeVisible({ timeout: 15_000 });
     await expect(friend.page.getByText(/this account no longer exists/i)).toBeVisible();
     await expect(friend.page.getByPlaceholder('Message')).toHaveCount(0);
   } finally {
