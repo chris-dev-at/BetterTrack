@@ -75,7 +75,7 @@ const DRIVE_ONLY_MEDIA: ParanoidMediaStateResponse = {
 const RETIRED_SERVER = {
   version: 4,
   retiredAt: '2026-07-20T08:00:00.000Z',
-  purgeAfter: '2026-08-20T08:00:00.000Z',
+  purgeAfter: '2099-08-20T08:00:00.000Z',
 } as const;
 
 function controller(
@@ -506,9 +506,55 @@ describe('ConnectionsPanel — paranoid Google Drive app data', () => {
 
     expect(await screen.findByText('Google Drive app data')).toBeInTheDocument();
     expect(screen.queryByText('Retained server recovery copy')).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Delete it now' })).not.toBeInTheDocument();
+  });
+
+  test('shows the dated automatic-retention state without opening a fold', async () => {
+    vi.mocked(getParanoidMediaState).mockResolvedValue({
+      privacyMode: 'paranoid',
+      mediaState: {
+        ...DRIVE_ONLY_STATE,
+        server: { disposition: 'retired', candidate: null, retired: RETIRED_SERVER },
+      },
+    });
+    renderPanel('/settings/connections', {
+      driveConnection: controller(),
+      driveConfigured: true,
+    });
+
     expect(
-      screen.queryByRole('button', { name: 'Delete retained server copy' }),
-    ).not.toBeInTheDocument();
+      await screen.findByText(/Drive-only selected during initial setup stores no portfolio bytes/),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Because you switched from server storage/)).toBeInTheDocument();
+    expect(screen.getByText(/deletes it automatically after that date/)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Delete it now' })).toBeDisabled();
+
+    const foldedStorage = screen.getByText('Vault storage copies').closest('details');
+    expect(foldedStorage).not.toHaveAttribute('open');
+  });
+
+  test('keeps manual deletion as a delete-now shortcut after the recovery window', async () => {
+    vi.mocked(getParanoidMediaState).mockResolvedValue({
+      privacyMode: 'paranoid',
+      mediaState: {
+        ...DRIVE_ONLY_STATE,
+        server: {
+          disposition: 'retired',
+          candidate: null,
+          retired: { ...RETIRED_SERVER, purgeAfter: '2000-08-20T08:00:00.000Z' },
+        },
+      },
+    });
+    const drive = controller();
+    const user = userEvent.setup();
+    renderPanel('/settings/connections', {
+      driveConnection: drive,
+      driveConfigured: true,
+    });
+
+    await user.click(await screen.findByRole('button', { name: 'Delete it now' }));
+
+    await waitFor(() => expect(drive.purgeRetiredServer).toHaveBeenCalledOnce());
   });
 
   test('unlocks from the user gesture before starting a storage transition', async () => {

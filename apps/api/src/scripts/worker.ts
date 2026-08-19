@@ -39,6 +39,7 @@ import {
   createJobWorkers,
   createAlertsEvaluateJob,
   createFxRefreshSpotJob,
+  createParanoidRetiredPurgeJob,
   createParanoidUserJobFilter,
   createMirrorReplicateJob,
   createMirrorInviteCleanupJob,
@@ -162,6 +163,7 @@ const { db, client } = createDatabase(config.databaseUrl);
 // bounded per job rather than by a client socket.
 const { db: lockDb, client: lockClient } = createDatabase(config.databaseUrl);
 const workerUserRepo = createUserRepository(db);
+const workerParanoidVaultRepo = createParanoidVaultRepository(db, lockDb);
 const paranoidGuard = createParanoidModeGuard({
   privacyModeFor: async (userId) => (await workerUserRepo.findById(userId))?.privacyMode ?? null,
   withLockedPrivacyModes: (userIds, run) => withLockedPrivacyModes(lockDb, userIds, run),
@@ -603,6 +605,12 @@ const definitions = assembleRegisteredJobDefinitions({
   createApiKeyRequestLogCleanupJob: createApiKeyRequestLogCleanupJob({
     requestLog: createApiKeyRequestLogRepository(db),
   }),
+  // V5-P13: once a switched-to-Drive-only recovery window elapses, finish the
+  // zero-server-bytes promise automatically. The repository rechecks the live
+  // media state under lock, so a server copy re-added after scanning is skipped.
+  createParanoidRetiredPurgeJob: createParanoidRetiredPurgeJob({
+    vaults: workerParanoidVaultRepo,
+  }),
   // V5-P14 PL-01: bounded daily retention sweep over identifying operational
   // trails. A zero-day config keeps that table forever and skips its branch;
   // the remembered-device sweep runs regardless, since those bindings carry a
@@ -610,7 +618,7 @@ const definitions = assembleRegisteredJobDefinitions({
   createDataRetentionCleanupJob: createDataRetentionCleanupJob({
     audit: createAuditRepository(db),
     emailLog: createEmailLogRepository(db),
-    vaultStaging: createParanoidVaultRepository(db),
+    vaultStaging: workerParanoidVaultRepo,
     users: workerUserRepo,
     auditRetentionDays: config.retention.auditDays,
     emailLogRetentionDays: config.retention.emailLogDays,

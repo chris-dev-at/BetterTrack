@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, lt, lte } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, lt, lte } from 'drizzle-orm';
 
 import {
   VAULT_HISTORY_PAGE_DEFAULT,
@@ -237,6 +237,19 @@ export interface ParanoidRetiredPurgeInput {
   now: Date;
 }
 
+export interface ParanoidElapsedRetirementListInput {
+  now: Date;
+  afterUserId?: string;
+  limit: number;
+}
+
+export interface ParanoidElapsedRetirement {
+  userId: string;
+  retiredVersion: number;
+}
+
+export type ParanoidElapsedRetirementPurgeInput = Omit<ParanoidRetiredPurgeInput, 'proofVerified'>;
+
 export type ParanoidRetiredPurgeResult =
   | { status: 'ok' }
   | { status: 'not_found' }
@@ -273,6 +286,12 @@ export interface ParanoidVaultRepository {
   ): Promise<ParanoidVaultServerCandidateRow | null>;
   transitionMedia(input: ParanoidMediaTransitionInput): Promise<ParanoidMediaTransitionResult>;
   getRetirementState(userId: string): Promise<ParanoidRetirementState | null>;
+  listElapsedRetirements(
+    input: ParanoidElapsedRetirementListInput,
+  ): Promise<ParanoidElapsedRetirement[]>;
+  purgeElapsedRetirement(
+    input: ParanoidElapsedRetirementPurgeInput,
+  ): Promise<ParanoidRetiredPurgeResult>;
   purgeRetired(input: ParanoidRetiredPurgeInput): Promise<ParanoidRetiredPurgeResult>;
 }
 
@@ -320,6 +339,111 @@ export function createParanoidVaultRepository(
         return true;
       }),
     );
+
+  const purgeRetiredTransaction = async (input: {
+    userId: string;
+    retiredVersion: number;
+    authorization: 'client-proof' | 'elapsed-retention' | null;
+    now: Date;
+  }): Promise<ParanoidRetiredPurgeResult> =>
+    db.transaction(async (tx) => {
+      const [user] = await tx
+        .select({
+          privacyMode: users.privacyMode,
+          mediaSet: users.paranoidMediaSet,
+          driveAttestedVersion: users.paranoidDriveAttestedVersion,
+        })
+        .from(users)
+        .where(eq(users.id, input.userId))
+        .for('update');
+      if (!user) return { status: 'not_found' } as const;
+      if (user.privacyMode !== 'paranoid') return { status: 'mode_required' } as const;
+      const selection = mediaSelectionOf(user);
+      const [active] = await tx
+        .select()
+        .from(paranoidVaults)
+        .where(eq(paranoidVaults.userId, input.userId))
+        .for('update');
+      let [candidate] = await tx
+        .select()
+        .from(paranoidVaultServerCandidates)
+        .where(eq(paranoidVaultServerCandidates.userId, input.userId))
+        .for('update');
+      // Candidate reads and transitions clean this up on access. Purge must do
+      // the same under its lock: an expired staging row is no longer a
+      // recoverable candidate and must not indefinitely block retirement
+      // cleanup when no background sweeper has run.
+      if (candidate && candidate.expiresAt.getTime() <= input.now.getTime()) {
+        await tx
+          .delete(paranoidVaultServerCandidates)
+          .where(eq(paranoidVaultServerCandidates.id, candidate.id));
+        candidate = undefined;
+      }
+      const [retirement] = await tx
+        .select()
+        .from(paranoidVaultRetirements)
+        .where(eq(paranoidVaultRetirements.userId, input.userId))
+        .for('update');
+      const current = mediaStateOf(
+        selection,
+        Boolean(active),
+        candidate ?? null,
+        retirement ?? null,
+      );
+      if (!retirement) {
+        // `(userId, retiredVersion)` is the retirement purge's natural
+        // idempotency key. Once that row is gone, the surviving Drive
+        // attestation lets an exact/older replay converge as a clean no-op;
+        // a future version or any remaining server medium is still unknown.
+        // The postcondition is asserted, not inferred: this reads the retired
+        // set under the same lock rather than deducing emptiness from the
+        // media columns.
+        const [remainingRetired] = await tx
+          .select({ version: paranoidVaultRetired.version })
+          .from(paranoidVaultRetired)
+          .where(eq(paranoidVaultRetired.userId, input.userId))
+          .limit(1);
+        const alreadyPurged =
+          !remainingRetired &&
+          !selection.mediaSet.includes('server') &&
+          !active &&
+          !candidate &&
+          selection.driveAttestedVersion !== null &&
+          input.retiredVersion <= selection.driveAttestedVersion;
+        if (!alreadyPurged) return { status: 'not_found' } as const;
+        // `ok` is the answer to an authorized purge on every path, replay
+        // included. An HTTP caller still reaches this only through a verified
+        // proof; the retention worker reaches it only after the elapsed scan.
+        if (input.authorization === null) return { status: 'proof_required' } as const;
+        return { status: 'ok' } as const;
+      }
+      // A staged candidate is still server-held ciphertext. Do not report a
+      // successful retirement purge unless this transaction leaves no server
+      // bytes behind; preserving the candidate lets its owner either promote
+      // it or let its normal expiry cleanup run first. The active-row checks
+      // also make an automatic elapsed-retirement purge safe if server media
+      // was re-added after the job's candidate scan.
+      if (selection.mediaSet.includes('server') || active || candidate) {
+        return { status: 'state_conflict', current } as const;
+      }
+      // This generation check keeps a stale background scan from deleting a
+      // newer retirement created for the same account.
+      if (retirement.retiredVersion !== input.retiredVersion) {
+        return { status: 'state_conflict', current } as const;
+      }
+      if (input.authorization === null) return { status: 'proof_required' } as const;
+      const purgeAfter = new Date(
+        retirement.retiredAt.getTime() + VAULT_RETIRED_SERVER_MIN_RETENTION_MS,
+      );
+      if (input.now.getTime() < purgeAfter.getTime()) {
+        return { status: 'retention_pending', purgeAfter } as const;
+      }
+      await tx.delete(paranoidVaultRetired).where(eq(paranoidVaultRetired.userId, input.userId));
+      await tx
+        .delete(paranoidVaultRetirements)
+        .where(eq(paranoidVaultRetirements.userId, input.userId));
+      return { status: 'ok' } as const;
+    });
 
   return {
     async getCurrent(userId) {
@@ -1101,100 +1225,35 @@ export function createParanoidVaultRepository(
       return row ?? null;
     },
 
+    async listElapsedRetirements(input) {
+      const retiredAtOrBefore = new Date(
+        input.now.getTime() - VAULT_RETIRED_SERVER_MIN_RETENTION_MS,
+      );
+      const after = input.afterUserId
+        ? gt(paranoidVaultRetirements.userId, input.afterUserId)
+        : undefined;
+      return db
+        .select({
+          userId: paranoidVaultRetirements.userId,
+          retiredVersion: paranoidVaultRetirements.retiredVersion,
+        })
+        .from(paranoidVaultRetirements)
+        .where(and(lte(paranoidVaultRetirements.retiredAt, retiredAtOrBefore), after))
+        .orderBy(asc(paranoidVaultRetirements.userId))
+        .limit(input.limit);
+    },
+
+    async purgeElapsedRetirement(input) {
+      // The retention worker is authorized by the elapsed owner-visible gate,
+      // then the shared transaction rechecks the exact generation and every
+      // live-server guard. It does not impersonate a client signature.
+      return purgeRetiredTransaction({ ...input, authorization: 'elapsed-retention' });
+    },
+
     async purgeRetired(input) {
-      return db.transaction(async (tx) => {
-        const [user] = await tx
-          .select({
-            privacyMode: users.privacyMode,
-            mediaSet: users.paranoidMediaSet,
-            driveAttestedVersion: users.paranoidDriveAttestedVersion,
-          })
-          .from(users)
-          .where(eq(users.id, input.userId))
-          .for('update');
-        if (!user) return { status: 'not_found' } as const;
-        if (user.privacyMode !== 'paranoid') return { status: 'mode_required' } as const;
-        const selection = mediaSelectionOf(user);
-        const [active] = await tx
-          .select()
-          .from(paranoidVaults)
-          .where(eq(paranoidVaults.userId, input.userId))
-          .for('update');
-        let [candidate] = await tx
-          .select()
-          .from(paranoidVaultServerCandidates)
-          .where(eq(paranoidVaultServerCandidates.userId, input.userId))
-          .for('update');
-        // Candidate reads and transitions clean this up on access. Purge must
-        // do the same under its lock: an expired staging row is no longer a
-        // recoverable candidate and must not indefinitely block retirement
-        // cleanup when no background sweeper has run.
-        if (candidate && candidate.expiresAt.getTime() <= input.now.getTime()) {
-          await tx
-            .delete(paranoidVaultServerCandidates)
-            .where(eq(paranoidVaultServerCandidates.id, candidate.id));
-          candidate = undefined;
-        }
-        const [retirement] = await tx
-          .select()
-          .from(paranoidVaultRetirements)
-          .where(eq(paranoidVaultRetirements.userId, input.userId))
-          .for('update');
-        const current = mediaStateOf(
-          selection,
-          Boolean(active),
-          candidate ?? null,
-          retirement ?? null,
-        );
-        if (!retirement) {
-          // `(userId, retiredVersion)` is the retirement purge's natural
-          // idempotency key. Once that row is gone, the surviving Drive
-          // attestation lets an exact/older replay converge as a clean no-op;
-          // a future version or any remaining server medium is still unknown.
-          // The postcondition is asserted, not inferred: this reads the retired
-          // set under the same lock rather than deducing emptiness from the
-          // media columns.
-          const [remainingRetired] = await tx
-            .select({ version: paranoidVaultRetired.version })
-            .from(paranoidVaultRetired)
-            .where(eq(paranoidVaultRetired.userId, input.userId))
-            .limit(1);
-          const alreadyPurged =
-            !remainingRetired &&
-            !selection.mediaSet.includes('server') &&
-            !active &&
-            !candidate &&
-            selection.driveAttestedVersion !== null &&
-            input.retiredVersion <= selection.driveAttestedVersion;
-          if (!alreadyPurged) return { status: 'not_found' } as const;
-          // `ok` is the answer to a verified proof on every path, replay
-          // included — the same defence-in-depth guard the destructive path
-          // below carries behind the `proofVerified: true` literal marker.
-          if (!input.proofVerified) return { status: 'proof_required' } as const;
-          return { status: 'ok' } as const;
-        }
-        // A staged candidate is still server-held ciphertext. Do not report a
-        // successful retirement purge unless this transaction leaves no server
-        // bytes behind; preserving the candidate lets its owner either promote
-        // it or let its normal expiry cleanup run first.
-        if (selection.mediaSet.includes('server') || active || candidate) {
-          return { status: 'state_conflict', current } as const;
-        }
-        if (retirement.retiredVersion !== input.retiredVersion) {
-          return { status: 'state_conflict', current } as const;
-        }
-        if (!input.proofVerified) return { status: 'proof_required' } as const;
-        const purgeAfter = new Date(
-          retirement.retiredAt.getTime() + VAULT_RETIRED_SERVER_MIN_RETENTION_MS,
-        );
-        if (input.now.getTime() < purgeAfter.getTime()) {
-          return { status: 'retention_pending', purgeAfter } as const;
-        }
-        await tx.delete(paranoidVaultRetired).where(eq(paranoidVaultRetired.userId, input.userId));
-        await tx
-          .delete(paranoidVaultRetirements)
-          .where(eq(paranoidVaultRetirements.userId, input.userId));
-        return { status: 'ok' } as const;
+      return purgeRetiredTransaction({
+        ...input,
+        authorization: input.proofVerified ? 'client-proof' : null,
       });
     },
   };

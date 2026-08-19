@@ -171,6 +171,14 @@ export const JOB_REGISTRATION_DESCRIPTORS = [
     'apiKeyJobs.ts',
     'createApiKeyRequestLogCleanupJob',
   ),
+  {
+    key: 'createParanoidRetiredPurgeJob',
+    name: QUEUE_NAMES.paranoidRetiredPurge,
+    source: {
+      file: 'apps/api/src/jobs/paranoidJobs.ts',
+      symbol: 'createParanoidRetiredPurgeJob',
+    },
+  },
   descriptor(
     'createDataRetentionCleanupJob',
     QUEUE_NAMES.dataRetentionCleanup,

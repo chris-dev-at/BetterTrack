@@ -625,16 +625,23 @@ function DriveVaultSection({
       ) : null}
 
       {canPurgeRetiredServer ? (
-        <PanelFold summary={t('settings.connections.drive.retired.title')}>
+        <Row stack>
           <div className="flex flex-col items-start gap-2">
-            <PanelNote>
+            <span className="bt-cc-row__label">
+              {t('settings.connections.drive.retired.title')}
+            </span>
+            {/* This state is intentionally outside every fold: Drive-only is
+                not a zero-server-bytes claim until this dated recovery copy is
+                gone. The hourly job finishes it automatically; the button is
+                the post-window "delete now" shortcut. */}
+            <Alert tone="info">
               {t(
                 purgeReady
                   ? 'settings.connections.drive.retired.ready'
                   : 'settings.connections.drive.retired.wait',
                 { date: formatDateTime(retired.purgeAfter) },
               )}
-            </PanelNote>
+            </Alert>
             <Button
               disabled={working || !purgeReady || !configured}
               onClick={() => void run('purge')}
@@ -645,7 +652,7 @@ function DriveVaultSection({
               {t('settings.connections.drive.retired.purge')}
             </Button>
           </div>
-        </PanelFold>
+        </Row>
       ) : null}
     </PanelGroup>
   );

@@ -64,6 +64,9 @@ export const QUEUE_NAMES = {
   // V5-P10 API-key governance (issue 2/2): daily retention sweep over the
   // bounded per-key request-log audit trail.
   apiKeyRequestLogCleanup: 'apiKeys.requestLogCleanup',
+  // V5-P13 Drive-only retirement: hourly removal of encrypted recovery copies
+  // after the owner-visible seven-day retention window has elapsed.
+  paranoidRetiredPurge: 'paranoid.retiredPurge',
   // V5-P14 PL-01: bounded daily purge of identifying audit + email-log rows.
   dataRetentionCleanup: 'data.retentionCleanup',
   systemHeartbeat: 'system.heartbeat',
@@ -104,6 +107,7 @@ export interface JobPayloads {
   'webhooks.deliver': { subscriptionId: string; deliveryId: string; event: DomainEvent };
   'webhooks.deliveryCleanup': Record<string, never>;
   'apiKeys.requestLogCleanup': Record<string, never>;
+  'paranoid.retiredPurge': Record<string, never>;
   'data.retentionCleanup': Record<string, never>;
   'system.heartbeat': Record<string, never>;
 }

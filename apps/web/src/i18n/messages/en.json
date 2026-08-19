@@ -504,14 +504,14 @@
           "driveOnly": "Drive is the only active vault medium. BetterTrack holds no active portfolio ciphertext.",
           "useDriveOnly": "Use Drive only",
           "addServer": "Add server copy",
-          "driveOnlyNotice": "Drive-only storage activated. The server recovery copy remains retained until you explicitly delete it.",
+          "driveOnlyNotice": "Drive-only storage activated. Because this vault previously used server storage, its encrypted recovery copy remains for seven days and is then deleted automatically.",
           "serverAddedNotice": "An authenticated server copy was added."
         },
         "retired": {
           "title": "Retained server recovery copy",
-          "wait": "It remains recoverable until at least {{date}}.",
-          "ready": "The recovery window ended on {{date}}. A fresh authenticated Drive read is required before deletion.",
-          "purge": "Delete retained server copy"
+          "wait": "Drive-only selected during initial setup stores no portfolio bytes on BetterTrack. Because you switched from server storage, this encrypted recovery copy remains until {{date}}. BetterTrack deletes it automatically after that date.",
+          "ready": "Drive-only selected during initial setup stores no portfolio bytes on BetterTrack. Because you switched from server storage, the encrypted recovery copy stayed until {{date}}. Its window has ended, so BetterTrack will delete it automatically; you can delete it now instead of waiting.",
+          "purge": "Delete it now"
         }
       },
       "sync": {

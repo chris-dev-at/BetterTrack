@@ -1,4 +1,5 @@
 import type { DomainEvent } from '../events';
+import type { ParanoidVaultRepository } from '../data/repositories/paranoidVaultRepository';
 import {
   isParanoidKilledWebhookEvent,
   paranoidWebhookSubjectIds,
@@ -9,10 +10,98 @@ import {
   type ParanoidModeGuard,
 } from '../services/account/paranoidEnforcement';
 
-import type { JobDefinition, QueueName } from './types';
+import { QUEUE_NAMES, type JobDefinition, type QueueName } from './types';
 
 const PARANOID_JOB_BOUND = Symbol('paranoid-job-bound');
 const PARANOID_USER_FILTER_JOB = Symbol('paranoid-user-filter-job');
+
+export const PARANOID_RETIRED_PURGE_SCHEDULER_ID = 'paranoid.retiredPurge';
+/** Hourly keeps the automatic deletion close to the promised `purgeAfter`. */
+export const PARANOID_RETIRED_PURGE_CRON = '17 * * * *';
+export const PARANOID_RETIRED_PURGE_TZ = 'UTC';
+export const PARANOID_RETIRED_PURGE_BATCH_SIZE = 100;
+export const PARANOID_RETIRED_PURGE_MAX_ROWS_PER_RUN = 10_000;
+
+export interface ParanoidRetiredPurgeJobDeps {
+  vaults: Pick<ParanoidVaultRepository, 'listElapsedRetirements' | 'purgeElapsedRetirement'>;
+  now?: () => Date;
+  batchSize?: number;
+  maxRowsPerRun?: number;
+}
+
+/**
+ * Delete expired Drive-only recovery copies without requiring the owner to
+ * return. The retirement generation `(userId, retiredVersion)` is the natural
+ * idempotency key: repeat/concurrent runs converge after deletion, and the
+ * repository rechecks that exact generation under the user's row lock before
+ * touching bytes. It also refuses active server media and staged candidates.
+ */
+export function createParanoidRetiredPurgeJob(
+  deps: ParanoidRetiredPurgeJobDeps,
+): JobDefinition<'paranoid.retiredPurge'> {
+  const now = deps.now ?? (() => new Date());
+  const batchSize = deps.batchSize ?? PARANOID_RETIRED_PURGE_BATCH_SIZE;
+  const maxRowsPerRun = deps.maxRowsPerRun ?? PARANOID_RETIRED_PURGE_MAX_ROWS_PER_RUN;
+  if (!Number.isSafeInteger(batchSize) || batchSize < 1) {
+    throw new Error('paranoid retirement purge batch size must be a positive integer');
+  }
+  if (!Number.isSafeInteger(maxRowsPerRun) || maxRowsPerRun < batchSize) {
+    throw new Error(
+      'paranoid retirement purge per-run ceiling must be an integer at least one batch wide',
+    );
+  }
+
+  return {
+    name: QUEUE_NAMES.paranoidRetiredPurge,
+    async handler(_job, ctx) {
+      const runAt = now();
+      let afterUserId: string | undefined;
+      let examined = 0;
+      let purged = 0;
+      let skipped = 0;
+
+      while (examined < maxRowsPerRun) {
+        const limit = Math.min(batchSize, maxRowsPerRun - examined);
+        const retirements = await deps.vaults.listElapsedRetirements({
+          now: runAt,
+          afterUserId,
+          limit,
+        });
+        if (retirements.length === 0) break;
+
+        for (const retirement of retirements) {
+          const result = await deps.vaults.purgeElapsedRetirement({
+            ...retirement,
+            now: runAt,
+          });
+          if (result.status === 'ok') purged += 1;
+          else skipped += 1;
+        }
+        examined += retirements.length;
+        afterUserId = retirements.at(-1)!.userId;
+        if (retirements.length < limit) break;
+      }
+
+      if (purged > 0) {
+        ctx.logger.info(
+          { purged, skipped, examined },
+          'elapsed paranoid server-retirement copies purged',
+        );
+      }
+      if (examined === maxRowsPerRun) {
+        ctx.logger.warn(
+          { examined, purged, skipped },
+          'paranoid server-retirement purge reached its per-run ceiling',
+        );
+      }
+    },
+    schedule: {
+      id: PARANOID_RETIRED_PURGE_SCHEDULER_ID,
+      pattern: PARANOID_RETIRED_PURGE_CRON,
+      tz: PARANOID_RETIRED_PURGE_TZ,
+    },
+  };
+}
 
 export type ParanoidUserJobFilter = ((userId: string) => Promise<boolean>) & {
   readonly [PARANOID_USER_FILTER_JOB]: string;
