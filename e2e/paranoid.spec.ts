@@ -397,6 +397,16 @@ test.describe('PD9 paranoid-mode end-to-end gate', () => {
         await harness.makeRetirementPurgeable(owner!.email);
         // Refetch the server-authored purgeAfter timestamp. A browser-only
         // clock override cannot make the repository retention gate elapse.
+        // The account gate seeds this query from its short-lived local mode
+        // cache after reload, so wait for the first authoritative GET rather
+        // than sampling that intentionally stale bootstrap value.
+        const refreshedMedia = page.waitForResponse(
+          (response) =>
+            response.request().method() === 'GET' &&
+            new URL(response.url()).pathname === '/api/v1/vault/media' &&
+            response.ok(),
+          { timeout: 30_000 },
+        );
         await page.reload();
         // The reload drops the in-memory vault key, so the global gate — not the
         // panel's inline form — is the deterministic way back in, and it leaves
@@ -404,8 +414,12 @@ test.describe('PD9 paranoid-mode end-to-end gate', () => {
         await fillPd9Secret(page, 'Vault passphrase', 'passphrase');
         await page.getByRole('button', { name: 'Unlock vault' }).click();
         await navigateInApp(page, '/control/connections');
+        await refreshedMedia;
         await openVaultStorage(page);
 
+        await expect(page.getByText('Retained server recovery copy', { exact: true })).toBeVisible({
+          timeout: 30_000,
+        });
         const retiredFold = await openFold(page, 'Retained server recovery copy');
         const purge = page.getByRole('button', { name: 'Delete retained server copy' });
         await expect(purge).toBeEnabled();
