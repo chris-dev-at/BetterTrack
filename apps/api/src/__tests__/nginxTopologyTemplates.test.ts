@@ -441,6 +441,17 @@ function assertDeploySafeStaticCaching(serverBlock: string): void {
   );
 }
 
+function assertSpaDocumentCaching(serverBlock: string): void {
+  const locationIndex = serverBlock.lastIndexOf('location / {');
+  expect(locationIndex).toBeGreaterThanOrEqual(0);
+
+  const document = serverBlock.slice(locationIndex);
+  expect(document).toContain(SECURITY_INCLUDE);
+  expect(document).toContain(CONDITIONAL_HSTS_INCLUDE);
+  expect(document).toContain('add_header Cache-Control "no-cache" always;');
+  expect(document).toContain('try_files $uri $uri/ /index.html;');
+}
+
 const SUBDOMAINS_ENV: Record<string, string> = {
   BT_DOMAIN: 'track.example.at',
   BT_SUB_API: 'api',
@@ -503,15 +514,20 @@ describe('subdomains template', () => {
   });
 
   it('applies the shared policy and conditional HSTS to every static response path', () => {
-    // user: server + config.js + mutable roots + assets; admin: same; product + mobile: server.
-    expect(occurrences(out, SECURITY_INCLUDE)).toBe(10);
-    expect(occurrences(out, CONDITIONAL_HSTS_INCLUDE)).toBe(10);
+    // user: server + config.js + mutable roots + assets + document; admin: same; product + mobile: server.
+    expect(occurrences(out, SECURITY_INCLUDE)).toBe(12);
+    expect(occurrences(out, CONDITIONAL_HSTS_INCLUDE)).toBe(12);
     expect(section(out, '# ── API origin', '# ── Web origin')).not.toContain(SECURITY_INCLUDE);
   });
 
   it('revalidates deploy roots while retaining immutable build assets', () => {
     assertDeploySafeStaticCaching(section(out, '# ── Web origin', '# ── Admin origin'));
     assertDeploySafeStaticCaching(section(out, '# ── Admin origin', '# ── Product origin'));
+  });
+
+  it('revalidates SPA documents without dropping their shared browser headers', () => {
+    assertSpaDocumentCaching(section(out, '# ── Web origin', '# ── Admin origin'));
+    assertSpaDocumentCaching(section(out, '# ── Admin origin', '# ── Product origin'));
   });
 });
 
@@ -540,8 +556,8 @@ describe('ports template', () => {
   });
 
   it('applies the shared policy to every static response path without literal HSTS', () => {
-    expect(occurrences(out, SECURITY_INCLUDE)).toBe(10);
-    expect(occurrences(out, CONDITIONAL_HSTS_INCLUDE)).toBe(10);
+    expect(occurrences(out, SECURITY_INCLUDE)).toBe(12);
+    expect(occurrences(out, CONDITIONAL_HSTS_INCLUDE)).toBe(12);
     expect(section(out, '# ── API port', '# ── Web port')).not.toContain(SECURITY_INCLUDE);
     expect(out).not.toContain('add_header Strict-Transport-Security');
   });
@@ -549,6 +565,11 @@ describe('ports template', () => {
   it('revalidates deploy roots while retaining immutable build assets', () => {
     assertDeploySafeStaticCaching(section(out, '# ── Web port', '# ── Admin port'));
     assertDeploySafeStaticCaching(section(out, '# ── Admin port', '# ── Product port'));
+  });
+
+  it('revalidates SPA documents without dropping their shared browser headers', () => {
+    assertSpaDocumentCaching(section(out, '# ── Web port', '# ── Admin port'));
+    assertSpaDocumentCaching(section(out, '# ── Admin port', '# ── Product port'));
   });
 });
 

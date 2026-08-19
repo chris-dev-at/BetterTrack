@@ -5,6 +5,7 @@ import {
   installVitePreloadErrorRecovery,
   isChunkLoadError,
   recoverFromChunkLoadError,
+  reloadForChunkRecovery,
   type ChunkRecoveryEnvironment,
 } from './chunkRecovery';
 
@@ -52,6 +53,21 @@ describe('chunk recovery', () => {
         recoveryEnvironment(reload),
       ),
     ).toBe(false);
+    expect(reload).toHaveBeenCalledOnce();
+    expect(sessionStorage.getItem(CHUNK_RECOVERY_SESSION_KEY)).toBe('deploy-a');
+  });
+
+  it('leaves a chunk failure in place offline, then recovers after reconnecting', () => {
+    const reload = vi.fn();
+    const online = vi.spyOn(navigator, 'onLine', 'get');
+
+    online.mockReturnValue(false);
+    expect(reloadForChunkRecovery(recoveryEnvironment(reload))).toBe(false);
+    expect(reload).not.toHaveBeenCalled();
+    expect(sessionStorage.getItem(CHUNK_RECOVERY_SESSION_KEY)).toBeNull();
+
+    online.mockReturnValue(true);
+    expect(reloadForChunkRecovery(recoveryEnvironment(reload))).toBe(true);
     expect(reload).toHaveBeenCalledOnce();
     expect(sessionStorage.getItem(CHUNK_RECOVERY_SESSION_KEY)).toBe('deploy-a');
   });

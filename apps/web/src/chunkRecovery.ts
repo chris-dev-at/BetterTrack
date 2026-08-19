@@ -61,6 +61,7 @@ export function isChunkLoadError(error: unknown): boolean {
 export function reloadForChunkRecovery(environment?: ChunkRecoveryEnvironment): boolean {
   const activeEnvironment = environment ?? browserEnvironment();
   if (activeEnvironment === null) return false;
+  if (typeof navigator !== 'undefined' && navigator.onLine === false) return false;
 
   try {
     if (
@@ -101,6 +102,7 @@ export function installVitePreloadErrorRecovery(
   target: EventTarget = window,
 ): () => void {
   const onPreloadError = (event: Event) => {
+    // preventDefault() makes Vite resolve the failed module as undefined before navigation commits.
     if (reloadForChunkRecovery(environment)) event.preventDefault();
   };
 
