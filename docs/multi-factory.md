@@ -150,7 +150,7 @@ writer opened its own PR — is a no-op (a PR already exists).
   `MF_STALL_SECS` (default 3600 s) with an assignment present triggers
   killed-mid-run recovery: authoritative GH re-check → salvage approved PR to
   the queue, or reset labels + assignment for rescheduling)
-- `merge-queue/<epoch>-prNN.json` — FIFO, consumed by the merger only
+- `merge-queue/<epoch>-prNN.json` — FIFO-preferring, consumed by the merger only
 - `control/mode` — `run` | `run-out` | `close-down` (owner/dashboard-written)
 - `control/phase` — `running` | `draining` | `drained` (master-written)
 - `logs/events.log` — every container's factory event lines (`[master]`/`[wN]`)

@@ -6,7 +6,7 @@
 # /work/mfstate, host multi-factory/state/):
 #   assignments/worker-N.json   master-written, removed on ack
 #   status/worker-N.json(.hb)   worker-written phase + heartbeat
-#   merge-queue/<epoch>-prNN.json  FIFO of reviewer-approved PRs
+#   merge-queue/<epoch>-prNN.json  FIFO-preferring queue of reviewer-approved PRs
 #   control/mode                run | run-out | close-down   (owner/dashboard-written)
 #   control/phase               running | draining | drained (master-written)
 #   control/composer-request.json  optional one-shot owner composition brief
@@ -1182,10 +1182,10 @@ scheduler(){ # $1=mode — assigns runnable, non-conflicting issues to idle work
 # the oldest genuinely mergeable record still wins. Note that look-ahead does not
 # only ever MERGE: a non-head record it reaches takes the same branches the head
 # would have, so ci_fix_red_step / conflict_fix_step / requeue_for_review /
-# mark_human are no longer head-privileged. That is bounded to one such action
-# per tick (only pending and refused-merge continue the scan) and it always makes
-# forward progress. LLM (ci-fix) and the rare BEHIND re-gate remain blocking by
-# design (single sequential merger).
+# mark_human are no longer head-privileged. Remediation work stays bounded to one
+# record per tick; no-action deferrals (pending, transient reads, protocol
+# backoff) and refused merges may continue the scan. LLM work and the rare
+# BEHIND re-gate remain blocking by design (single sequential merger).
 requeue_for_review(){ # $1=queue file $2=issue $3=reason
   local f=$1 n=$2 why=$3
   log "merger: approval invalidated for issue #$n — $why; requeueing for fresh review"
@@ -1200,8 +1200,9 @@ requeue_for_review(){ # $1=queue file $2=issue $3=reason
 # on every path that retires the PR from the queue for good, so the queue dir
 # stays self-cleaning. Legacy `-<head>`-suffixed files predating the re-key are
 # swept alongside.
-mergefail_clear(){ # $1=pr
-  rm -f "$QUEUE/.mergefail-pr$1" "$QUEUE"/.mergefail-pr"$1"-* 2>/dev/null || true
+mergefail_clear(){ # $1=pr $2=legacy-only (optional; preserve the current counter)
+  [ "${2:-}" = legacy-only ] || rm -f "$QUEUE/.mergefail-pr$1" 2>/dev/null || true
+  rm -f "$QUEUE"/.mergefail-pr"$1"-* 2>/dev/null || true
 }
 
 ci_fix_state_file(){ printf '%s/issue-%s-pr%s.json' "$CIFIX" "$1" "$2"; }
@@ -1248,6 +1249,7 @@ ci_fix_red_step(){ # $1=queue file $2=issue $3=pr $4=approved head
   if [ "$status" = running ] || [ "$status" = protocol-backoff ]; then
     current=$(mf_pr_head "$pr") || {
       log "merger: cannot reconcile in-flight CI-fix state for PR #$pr"
+      MERGER_SCAN_NEXT=1
       return 0
     }
     if [ -n "$source_head" ] && [ "$current" != "$source_head" ]; then
@@ -1270,9 +1272,10 @@ ci_fix_red_step(){ # $1=queue file $2=issue $3=pr $4=approved head
     rm -f "$f"; mergefail_clear "$pr"
     return 0
   fi
-  [ "$status" = exhausted ] && { rm -f "$f"; return 0; }
+  [ "$status" = exhausted ] && { rm -f "$f"; mergefail_clear "$pr"; return 0; }
   if [ "$status" = protocol-backoff ] && [ "$now" -lt "$next_at" ]; then
     log "merger: CI-fix protocol retry for PR #$pr is delayed until epoch $next_at"
+    MERGER_SCAN_NEXT=1
     return 0
   fi
   if [ "$invocations" -ge 2 ]; then
@@ -1362,14 +1365,18 @@ conflict_fix_step(){ # $1=queue file $2=issue $3=pr $4=approved head
     [ "$stale" = "$marker" ] || rm -f "$stale"
   done
   if [ -f "$marker" ]; then
-    current=$(mf_pr_head "$pr") || { log "merger: cannot reconcile conflict-fix for PR #$pr — retrying next tick"; return 0; }
+    current=$(mf_pr_head "$pr") || {
+      log "merger: cannot reconcile conflict-fix for PR #$pr — retrying next tick"
+      MERGER_SCAN_NEXT=1
+      return 0
+    }
     if [ -n "$current" ] && [ "$current" != "$approved_head" ]; then
       rm -f "$marker"
       requeue_for_review "$f" "$n" "conflict-fix pushed ${current:0:12}"
     else
       log "merger: PR #$pr still conflicts with main after its one conflict-fix attempt"
       mark_human "$n" "PR #$pr conflicts with main after the factory's one conflict-fix attempt"
-      rm -f "$f" "$marker"
+      rm -f "$f" "$marker"; mergefail_clear "$pr"
     fi
     return 0
   fi
@@ -1385,8 +1392,20 @@ conflict_fix_step(){ # $1=queue file $2=issue $3=pr $4=approved head
   else
     log "merger: conflict-fix produced no pushed head on PR #$pr"
     mark_human "$n" "PR #$pr conflicts with main; the factory's conflict-fix attempt pushed nothing"
-    rm -f "$f" "$marker"
+    rm -f "$f" "$marker"; mergefail_clear "$pr"
   fi
+}
+
+route_dirty_step(){ # $1=queue file $2=issue $3=pr $4=approved head
+  local f=$1 n=$2 pr=$3 approved_head=$4 dirty_head
+  # Re-check the head immediately before spending a fixer run — a push in the
+  # intervening second requeues for review instead of wasting an LLM call.
+  dirty_head=$(mf_pr_head "$pr") || { MERGER_SCAN_NEXT=1; return 0; }
+  if [ "$dirty_head" != "$approved_head" ]; then
+    requeue_for_review "$f" "$n" "head changed from ${approved_head:0:12}"
+    return 0
+  fi
+  conflict_fix_step "$f" "$n" "$pr" "$approved_head"
 }
 
 queue_approval_check(){ # $1=queue JSON; sets QUEUE_APPROVAL_STATE
@@ -1471,14 +1490,14 @@ merger_record_step(){ # $1=queue file; SETS MERGER_SCAN_NEXT=1 when the caller m
   # proven non-interacting, else the originally approved one. queue_approval_check
   # independently validates the approval comment against the original approved_head.
   approved_head=$(jq -r '.carried_head // .approved_head // ""' "$f")
-  if [ "$MF_DRY_RUN" = 1 ]; then log "DRY: would merge PR #$pr (issue #$n)"; rm -f "$f"; return 0; fi
+  if [ "$MF_DRY_RUN" = 1 ]; then log "DRY: would merge PR #$pr (issue #$n)"; rm -f "$f"; mergefail_clear "$pr"; return 0; fi
   local pstate
   pstate=$(gh pr view "$pr" --json state -q '.state' 2>/dev/null || echo unknown)
   case "$pstate" in
     MERGED) log "merger: PR #$pr already merged — finalizing"
             finalize_issue "$pr" "$n"; rm -f "$f" "$ci_state"; mergefail_clear "$pr"; return 0;;
     OPEN)   ;;
-    unknown) log "merger: cannot read PR #$pr (transient?) — retrying next tick"; return 0;;
+    unknown) log "merger: cannot read PR #$pr (transient?) — retrying next tick"; MERGER_SCAN_NEXT=1; return 0;;
     *)      mark_human "$n" "PR #$pr $pstate without merge"; rm -f "$f" "$ci_state"; mergefail_clear "$pr"; return 0;;
   esac
 
@@ -1494,10 +1513,11 @@ merger_record_step(){ # $1=queue file; SETS MERGER_SCAN_NEXT=1 when the caller m
     if [ "$afails" -ge "$MF_APPROVAL_READ_MAX" ]; then
       log "merger: approval unreadable for PR #$pr after $afails consecutive attempts — parking with a human"
       mark_human "$n" "approval state for queued PR #$pr is unreadable after $afails attempts"
-      rm -f "$f" "$apprfail"
+      rm -f "$f" "$apprfail"; mergefail_clear "$pr"
     else
       atomic_write "$apprfail" "$afails"
       log "merger: approval read failed for PR #$pr — retrying next tick ($afails/$MF_APPROVAL_READ_MAX)"
+      MERGER_SCAN_NEXT=1
     fi
     return 0
   fi
@@ -1517,18 +1537,11 @@ merger_record_step(){ # $1=queue file; SETS MERGER_SCAN_NEXT=1 when the caller m
   local merge_state
   merge_state=$(gh pr view "$pr" --json mergeStateStatus -q .mergeStateStatus 2>/dev/null) || {
     log "merger: merge-state read failed for PR #$pr — retrying next tick"
+    MERGER_SCAN_NEXT=1
     return 0
   }
   if [ "$merge_state" = DIRTY ]; then
-    # Re-check the head immediately before spending a fixer run — a push in the
-    # intervening second requeues for review instead of wasting an LLM call.
-    local dirty_head
-    dirty_head=$(mf_pr_head "$pr") || return 0
-    if [ "$dirty_head" != "$approved_head" ]; then
-      requeue_for_review "$f" "$n" "head changed from ${approved_head:0:12}"
-      return 0
-    fi
-    conflict_fix_step "$f" "$n" "$pr" "$approved_head"
+    route_dirty_step "$f" "$n" "$pr" "$approved_head"
     return 0
   fi
 
@@ -1537,23 +1550,25 @@ merger_record_step(){ # $1=queue file; SETS MERGER_SCAN_NEXT=1 when the caller m
   rollup_json=$(gh pr view "$pr" --json statusCheckRollup \
     -q '.statusCheckRollup' 2>/dev/null) || {
     log "merger: rollup read failed for PR #$pr — retrying next tick"
+    MERGER_SCAN_NEXT=1
     return 0
   }
   rollup_state=$(ci_rollup_state <<<"$rollup_json" 2>/dev/null) || {
     log "merger: malformed rollup for PR #$pr — retrying next tick"
+    MERGER_SCAN_NEXT=1
     return 0
   }
   case "$rollup_state" in
     red) ci_fix_red_step "$f" "$n" "$pr" "$approved_head"; return 0;;
     pending) MERGER_SCAN_NEXT=1; return 0;;
     green) ;;
-    *) log "merger: unknown rollup classification for PR #$pr — retrying next tick"; return 0;;
+    *) log "merger: unknown rollup classification for PR #$pr — retrying next tick"; MERGER_SCAN_NEXT=1; return 0;;
   esac
 
   # Green. A strict-BEHIND update changes code and therefore invalidates review;
   # update now, then let the normal head check requeue it for a fresh review.
   local current_head
-  current_head=$(mf_pr_head "$pr") || return 0
+  current_head=$(mf_pr_head "$pr") || { MERGER_SCAN_NEXT=1; return 0; }
   if [ "$current_head" != "$approved_head" ]; then
     requeue_for_review "$f" "$n" "head changed before merge"
     return 0
@@ -1570,12 +1585,18 @@ merger_record_step(){ # $1=queue file; SETS MERGER_SCAN_NEXT=1 when the caller m
   # the updated record reads `pending` next tick and look-ahead moves past it.
   #
   # The earlier merge-state read can go stale while GitHub recomputes strict
-  # branch protection. Re-read at the merge boundary so a newly-BEHIND PR takes
-  # the established update-branch path instead of spending a doomed merge call.
+  # branch protection. Re-read at the merge boundary so a newly-BEHIND or DIRTY
+  # PR takes its established remediation path instead of spending a doomed merge
+  # call.
   merge_state=$(gh pr view "$pr" --json mergeStateStatus -q .mergeStateStatus 2>/dev/null) || {
     log "merger: merge-state recheck failed for PR #$pr — retrying next tick"
+    MERGER_SCAN_NEXT=1
     return 0
   }
+  if [ "$merge_state" = DIRTY ]; then
+    route_dirty_step "$f" "$n" "$pr" "$approved_head"
+    return 0
+  fi
   if [ "$merge_state" = BEHIND ]; then
     update_behind_step "$f" "$pr" "$current_head"
     return 0
@@ -1595,7 +1616,7 @@ merger_record_step(){ # $1=queue file; SETS MERGER_SCAN_NEXT=1 when the caller m
     # `head`/`updated_at` are written for diagnostics ONLY — nothing reads them
     # back; see mergefail_clear for the counter's lifetime.
     local mergefail=$QUEUE/.mergefail-pr$pr mfails
-    rm -f "$QUEUE"/.mergefail-pr"$pr"-* 2>/dev/null
+    mergefail_clear "$pr" legacy-only
     mfails=$(jq -r '.count // 0' "$mergefail" 2>/dev/null || echo 0)
     case "$mfails" in ''|*[!0-9]*) mfails=0;; esac
     mfails=$((mfails + 1))
@@ -1615,10 +1636,11 @@ merger_record_step(){ # $1=queue file; SETS MERGER_SCAN_NEXT=1 when the caller m
 }
 
 merger_step(){
-  local limit=$MF_MERGE_LOOKAHEAD head f MERGER_SCAN_NEXT
+  local limit=$MF_MERGE_LOOKAHEAD head f MERGER_SCAN_NEXT listing
   local -a window=()
   case "$limit" in ''|*[!0-9]*) limit=5;; esac
   [ "$limit" -ge 1 ] || limit=1
+  [ "$limit" -le 10 ] || limit=10
   # Snapshot the FIFO window into an array BEFORE iterating, and never leave a
   # reader bound to the loop. A `while read … done < <(…)` form redirects stdin
   # for the ENTIRE compound command, body included, so every callee would
@@ -1626,8 +1648,11 @@ merger_step(){
   # conflict-fix `claude -p` runs, which fold non-TTY stdin into the prompt
   # (factory/lib.sh cc() pipes only stdout). Reading the listing up front keeps
   # the loop body on the master's own stdin, as it was before look-ahead.
-  mapfile -t window < <(ls "$QUEUE" 2>/dev/null \
+  listing=$(ls "$QUEUE" 2>/dev/null \
     | grep -E '^[0-9]+-pr[0-9]+\.json$' | sort -n | head -n "$limit")
+  while IFS= read -r head; do
+    [ -n "$head" ] && window[${#window[@]}]=$head
+  done <<<"$listing"
   for head in ${window[@]+"${window[@]}"}; do
     [ -n "$head" ] || continue
     f=$QUEUE/$head
