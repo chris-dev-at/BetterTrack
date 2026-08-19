@@ -189,9 +189,10 @@ describe('usage capture never records a paranoid account', () => {
    * The fix is to take the same `FOR KEY SHARE` lock every other guarded action
    * takes and to hold it ACROSS the insert. What this asserts is exactly that
    * ordering: while a transition holds the exclusive lock, the flush cannot
-   * complete. (Per `withLockedPrivacyModes`' documented limit 1, the default
-   * PGlite harness emulates the locks in-process — the ordering is real here,
-   * the row-level primitive itself only under `TEST_DATABASE_URL`.)
+   * complete. (Per `withLockedPrivacyModes`' documented limit 1, this unit
+   * suite uses the in-process emulation even when the harness points at
+   * `TEST_DATABASE_URL`; `paranoidPrivacyLocks.test.ts` explicitly selects the
+   * production branch for the real row-lock counterpart.)
    */
   it('cannot write while an enable transaction holds the account lock', async () => {
     const h = await createTestApp();
