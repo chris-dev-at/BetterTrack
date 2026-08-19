@@ -1,8 +1,9 @@
-import { Router, type Request } from 'express';
+import { Router, type Request, type RequestHandler } from 'express';
 
 import {
   acceptInviteRequestSchema,
   changePasswordRequestSchema,
+  googleMobileLinkCallbackQuerySchema,
   googleRegisterRequestSchema,
   googleUnlinkRequestSchema,
   loginRequestSchema,
@@ -16,6 +17,7 @@ import {
   passwordResetRequestSchema,
   pinQuickAuthRequestSchema,
   pinVerifyRequestSchema,
+  rememberedDeviceHandleParamSchema,
   registerRequestSchema,
   sessionHandleParamSchema,
   setPinLockRequestSchema,
@@ -28,6 +30,7 @@ import {
   twoFactorVerifyRequestSchema,
   type AcceptInviteRequest,
   type ChangePasswordRequest,
+  type GoogleMobileLinkCallbackQuery,
   type GoogleRegisterRequest,
   type GoogleUnlinkRequest,
   type LoginRequest,
@@ -40,6 +43,7 @@ import {
   type PasswordResetRequest,
   type PinQuickAuthRequest,
   type PinVerifyRequest,
+  type RememberedDeviceHandleParam,
   type RegisterRequest,
   type SetPinLockRequest,
   type SetPinRequest,
@@ -66,7 +70,7 @@ import {
   setSessionCookie,
 } from '../cookies';
 import { requireAuth, requireUser } from '../middleware/session';
-import { validateBody, validateParams } from '../middleware/validate';
+import { validateBody, validateParams, validateQuery } from '../middleware/validate';
 import type { RateLimiters } from '../middleware/rateLimit';
 import { toMeResponse, toMeResponseFromRow } from '../serializers';
 import type { AppContext } from '../context';
@@ -380,9 +384,11 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
     },
   );
 
-  // Remember THIS device for the caller (a PIN user) so future OAuth flows can
-  // quick-re-auth. Cookie-session only (requireUser 403s bearer/admin): sets the
-  // signed httpOnly `bt_rdid` cookie and returns the identity the client stores.
+  // Remember THIS browser for the caller (a PIN user) so future OAuth flows can
+  // quick-re-auth. Cookie-session only: `bt_rdid` must land in the same browser /
+  // Custom-Tab cookie jar that performs the next OAuth login. A bearer call would
+  // set it on an app HTTP client and create an orphaned binding, so the sibling
+  // plural management routes below are the native-client surface (#1327).
   router.post('/remembered-device', requireUser, async (req, res) => {
     const { deviceId, record } = await ctx.auth.rememberDevice(req.authUser!.id, req.ip);
     setRememberedDeviceCookie(res, ctx.config, deviceId);
@@ -396,6 +402,31 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
   router.delete('/remembered-device', async (req, res) => {
     await ctx.auth.forgetDevice(readDeviceId(req), req.ip);
     clearRememberedDeviceCookie(res, ctx.config);
+    res.json({ ok: true });
+  });
+
+  // Manage every live binding owned by the authenticated account. Unlike the
+  // singular cookie routes, these work with either a user session or a bearer
+  // holding `account:security`. The service starts at the caller's reverse index;
+  // no route accepts a user id or ever receives a raw device id.
+  router.get('/remembered-devices', requireUser, async (req, res) => {
+    const devices = await ctx.auth.listRememberedDevices(req.authUser!.id);
+    res.json({ devices });
+  });
+
+  router.delete(
+    '/remembered-devices/:handle',
+    requireUser,
+    validateParams(rememberedDeviceHandleParamSchema),
+    async (req, res) => {
+      const { handle } = req.valid?.params as RememberedDeviceHandleParam;
+      await ctx.auth.revokeRememberedDevice(req.authUser!.id, handle, req.ip);
+      res.json({ ok: true });
+    },
+  );
+
+  router.delete('/remembered-devices', requireUser, async (req, res) => {
+    await ctx.auth.revokeAllRememberedDevices(req.authUser!.id, req.ip);
     res.json({ ok: true });
   });
 
@@ -666,6 +697,13 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
   // browser redirects (no JSON), and the whole surface 404s when Google is not
   // configured (env-gated). `link-status`/`unlink` back Settings → Security and,
   // per #361 convention, accept a bearer holding `account:security`.
+  const requireGoogleConfigured: RequestHandler = (_req, _res, next) => {
+    if (!ctx.google.isEnabled()) {
+      next(notFound());
+      return;
+    }
+    next();
+  };
 
   // Kick off the flow: bind a single-use `state` and redirect to Google. A live
   // cookie session turns this into a "link Google to my account" flow (from
@@ -722,6 +760,51 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
       }
     }
   });
+
+  // Native LINK ceremony (#1328). Unlike `/google/start`, this is authenticated
+  // account state: a bearer with `account:security` (or the owning cookie
+  // session) mints a short-lived server-bound ticket and receives JSON. No
+  // account selector or redirect target is accepted from the client.
+  router.post(
+    '/google/link/start',
+    requireGoogleConfigured,
+    requireAuth,
+    limiters.login,
+    async (req, res) => {
+      res.json(await ctx.google.startMobileLink(req.authUser!.id, req.ip));
+    },
+  );
+
+  // Google's public return leg for the native ticket. The service atomically
+  // consumes state before verification and resolves the target user exclusively
+  // from that server record. This route never sets a BetterTrack session cookie;
+  // its only Location is the fixed, registered BetterTrackMobile deep link.
+  router.get(
+    '/google/link/callback',
+    requireGoogleConfigured,
+    limiters.login,
+    validateQuery(googleMobileLinkCallbackQuerySchema),
+    async (req, res) => {
+      const query = req.valid?.query as GoogleMobileLinkCallbackQuery;
+      const result = await ctx.google.handleMobileLinkCallback({
+        state: query.state,
+        code: query.code,
+        providerError: query.error,
+        suppliedRedirectUri: Object.prototype.hasOwnProperty.call(query, 'redirect_uri')
+          ? query.redirect_uri
+          : undefined,
+        ip: req.ip,
+      });
+      res.redirect(
+        googleMobileLinkRedirect(
+          result.redirectUri,
+          result.status === 'linked'
+            ? { google: 'linked' }
+            : { error: googleErrorParam(result.code) },
+        ),
+      );
+    },
+  );
 
   // ── Google-assisted registration: connect → prefill → submit (owner 2026-07-16) ──
   // The pending ticket rides a signed httpOnly `bt_goog_reg` cookie set at the
@@ -850,4 +933,15 @@ function googleErrorParam(code: string): string {
     default:
       return 'google_failed';
   }
+}
+
+/** Build the final native Location from the server-selected registered base. */
+function googleMobileLinkRedirect(
+  redirectUri: string,
+  query: { google: 'linked' } | { error: string },
+): string {
+  const target = new URL(redirectUri);
+  if ('google' in query) target.searchParams.set('google', query.google);
+  else target.searchParams.set('error', query.error);
+  return target.toString();
 }

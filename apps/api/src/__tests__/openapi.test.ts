@@ -159,6 +159,25 @@ describe('OpenAPI document', () => {
       ]);
     }
 
+    // #1328: only the JSON start leg is authenticated + bearer-callable. Both
+    // Google browser callbacks are genuinely public, while the legacy anonymous
+    // sign-in start remains public but never advertises bearer authentication.
+    const mobileGoogleLinkStart = (paths['/auth/google/link/start'] as JsonObject)
+      .post as JsonObject;
+    expect(mobileGoogleLinkStart.security).toEqual([{ sessionCookie: [] }, { apiKeyBearer: [] }]);
+    expect(
+      ((mobileGoogleLinkStart.responses as JsonObject)['200'] as JsonObject).content,
+    ).toMatchObject({
+      'application/json': {
+        schema: { $ref: '#/components/schemas/GoogleMobileLinkStartResponse' },
+      },
+    });
+    expect(
+      ((paths['/auth/google/link/callback'] as JsonObject).get as JsonObject).security,
+    ).toEqual([]);
+    expect(((paths['/auth/google/start'] as JsonObject).get as JsonObject).security).toEqual([]);
+    expect(((paths['/auth/google/callback'] as JsonObject).get as JsonObject).security).toEqual([]);
+
     // Registration remains an owning-browser ceremony. Public passkey sign-in
     // remains public, but neither class advertises bearer-token authentication.
     for (const [method, path] of [
@@ -217,6 +236,23 @@ describe('OpenAPI document', () => {
     });
     expect(paths).toHaveProperty('/admin/feedback/{id}');
     expect(paths).not.toHaveProperty('/admin/feedback/{id}/status');
+
+    // #1327: plural remembered-device management is the bearer-capable sibling
+    // of the browser-cookie mint/forget pair. Security is derived from the same
+    // method/path policy as middleware — no endpoint-local OpenAPI override.
+    for (const [method, path] of [
+      ['get', '/auth/remembered-devices'],
+      ['delete', '/auth/remembered-devices/{handle}'],
+      ['delete', '/auth/remembered-devices'],
+    ] as const) {
+      const operation = (paths[path] as JsonObject)[method] as JsonObject;
+      expect(operation.security, `security for ${method.toUpperCase()} ${path}`).toEqual([
+        { sessionCookie: [] },
+        { apiKeyBearer: [] },
+      ]);
+    }
+    const rememberInBrowser = (paths['/auth/remembered-device'] as JsonObject).post as JsonObject;
+    expect(rememberInBrowser.security).toEqual([{ sessionCookie: [] }]);
 
     // The cash endpoint changed from an unbounded chronological ledger to a
     // bounded newest-first page. External clients must see both semantics in

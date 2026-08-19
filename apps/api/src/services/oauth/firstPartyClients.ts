@@ -26,6 +26,16 @@ export interface FirstPartyClientDefinition {
   scopeCeiling: readonly ApiKeyScope[];
 }
 
+/** Stable public identifier shipped by the official native client. */
+export const BETTERTRACK_MOBILE_CLIENT_ID = 'btc_IbT1mzw_7kBiPHPkGfaE0Q';
+
+/**
+ * Native return target for the bearer-started Google LINK ceremony (#1328).
+ * It is registered additively beside the ordinary OAuth authorization-code
+ * callback and is never accepted from a request at runtime.
+ */
+export const BETTERTRACK_MOBILE_GOOGLE_LINK_REDIRECT_URI = 'bettertrack://oauth/google-link';
+
 /**
  * The official first-party apps, seeded on every deploy (see
  * {@link seedFirstPartyClients}).
@@ -42,9 +52,9 @@ export interface FirstPartyClientDefinition {
  */
 export const FIRST_PARTY_CLIENTS: readonly FirstPartyClientDefinition[] = [
   {
-    clientId: 'btc_IbT1mzw_7kBiPHPkGfaE0Q',
+    clientId: BETTERTRACK_MOBILE_CLIENT_ID,
     name: 'BetterTrackMobile',
-    redirectUris: ['bettertrack://oauth/callback'],
+    redirectUris: ['bettertrack://oauth/callback', BETTERTRACK_MOBILE_GOOGLE_LINK_REDIRECT_URI],
     public: true,
     // Full platform ceiling — mobile is the trusted
     // first-party surface. Listed in the canonical API_KEY_SCOPES order; adding a

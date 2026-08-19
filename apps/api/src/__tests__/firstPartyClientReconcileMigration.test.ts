@@ -10,7 +10,11 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import type { Database } from '../data/db';
 import { createOAuthRepository } from '../data/repositories/oauthRepository';
 import * as schema from '../data/schema';
-import { FIRST_PARTY_CLIENTS, seedFirstPartyClients } from '../services/oauth/firstPartyClients';
+import {
+  BETTERTRACK_MOBILE_GOOGLE_LINK_REDIRECT_URI,
+  FIRST_PARTY_CLIENTS,
+  seedFirstPartyClients,
+} from '../services/oauth/firstPartyClients';
 
 /**
  * The first-party-client reconcile migrations self-heal the BetterTrackMobile OAuth
@@ -550,14 +554,22 @@ describe(`migration ${TARGET_0088} — first-party client feedback scope (union-
     expect(row.created_at).toEqual(before.created_at);
 
     // The migration also creates the table and enums, which are deliberately
-    // one-shot DDL. Replaying its guarded OAuth UPDATE alone is a true no-op,
-    // while the current code seed deliberately converges the later read scope.
+    // one-shot DDL. Replaying its guarded OAuth UPDATE alone is a true no-op.
+    // The live union-only seed then appends both the later feedback:read scope
+    // and #1328 native Google LINK redirect, preserves the old URI and becomes
+    // a true no-op on its second run.
     await applyMigrationChunkContaining(client, TARGET_0088, 'UPDATE "oauth_clients"');
     expect(await readClient(client, CLIENT_ID)).toEqual(row);
     const repo = createOAuthRepository(drizzlePglite(client, { schema }) as unknown as Database);
     const seeded = (await seedFirstPartyClients(repo)).find((r) => r.clientId === CLIENT_ID)!;
     expect(seeded.action).toBe('converged');
     expect(seeded.scopes).toEqual(CEILING);
+    expect(seeded.redirectUris).toEqual([
+      CANONICAL_URI,
+      BETTERTRACK_MOBILE_GOOGLE_LINK_REDIRECT_URI,
+    ]);
+    const seededAgain = (await seedFirstPartyClients(repo)).find((r) => r.clientId === CLIENT_ID)!;
+    expect(seededAgain.action).toBe('unchanged');
 
     // An admin-customized row keeps its order and extra; only feedback:write is appended.
     await client.exec(`
@@ -598,7 +610,14 @@ describe(`migration ${TARGET_0089} — first-party client feedback read scope (u
     expect(await readClient(client, CLIENT_ID)).toEqual(row);
     const repo = createOAuthRepository(drizzlePglite(client, { schema }) as unknown as Database);
     const seeded = (await seedFirstPartyClients(repo)).find((r) => r.clientId === CLIENT_ID)!;
-    expect(seeded.action).toBe('unchanged');
+    expect(seeded.action).toBe('converged');
+    expect(seeded.scopes).toEqual(CEILING);
+    expect(seeded.redirectUris).toEqual([
+      CANONICAL_URI,
+      BETTERTRACK_MOBILE_GOOGLE_LINK_REDIRECT_URI,
+    ]);
+    const seededAgain = (await seedFirstPartyClients(repo)).find((r) => r.clientId === CLIENT_ID)!;
+    expect(seededAgain.action).toBe('unchanged');
 
     await client.exec(`
       UPDATE "oauth_clients"
