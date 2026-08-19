@@ -1,6 +1,8 @@
 # PARANOID VAULTS — per-portfolio client-encrypted privacy (V5-P13 arc b, redefined 2026-08-19)
 
-**Status:** DRAFT, awaiting owner ack. This note is the complete rewrite of the
+**Status:** ACKED & RULED 2026-08-20 — the five gate questions are answered
+(§21) and the owner delegated all further paranoid decisions to the Chief;
+implementation issues may be cut from §20. This note is the complete rewrite of the
 paranoid design under the owner's **final, total redefinition of 2026-08-19**
 (§2 below, verbatim — the binding text). It supersedes the account-level model
 of the 2026-07-21 #651 note that previously lived at this path, the 2026-07-17
@@ -37,7 +39,7 @@ implementation go back through PROJECTPLAN §16.
 18. Interplay: exports, deletion, admin, mirrorchain, autonomy seams
 19. What changes and what dies in the live codebase
 20. Build decomposition (epics, ordered)
-21. Open owner questions
+21. Ruled — the five gate decisions (2026-08-20)
 22. Constraints & non-goals
 
 ---
@@ -397,8 +399,8 @@ with zero user migration.
   re-mint (silent while the Google session lives, a user gesture otherwise);
   the sync indicator (§14) surfaces "sign in to Google (Y) to sync" — never a
   silent stall.
-- **Scope recommendation — move from `drive.appdata` to `drive.file` with a
-  visible "BetterTrack Vaults" folder.** The hidden `appDataFolder` is
+- **Scope RULED (2026-08-20, §21 Q5) — move from `drive.appdata` to
+  `drive.file` with a visible "BetterTrack Vaults" folder.** The hidden `appDataFolder` is
   namespaced per (Google account × OAuth client), NOT per BetterTrack user —
   today two BetterTrack users backing up to the same Google account, or one
   user with several vaults, share one invisible namespace. That is workable
@@ -769,8 +771,9 @@ cannot help (§18). The only server-side "recovery" is destruction: a
 **"start fresh"** flow deletes the vault's blobs (through the §7 gates where
 retirement applies) and frees its locked stubs for deletion — it never
 recreates data. The creation ceremony makes the user acknowledge exactly this
-at the friction ladder's strong rung, and the phrase-issuance step forces a
-write-down confirmation (§20 E8). Contrast, always stated beside it: a
+once, compactly, and the phrase-issuance step verifies one randomly chosen
+word as the write-down check (§21 Q2 ruling; §20 E8). Contrast, always stated
+beside it: a
 forgotten **device password** loses nothing (§12 keystore reset); a lost
 **phone** loses nothing while another copy of the phrase exists. Per-vault
 blast radius is the design's mercy: one lost phrase never touches the other
@@ -778,62 +781,43 @@ vaults or the account.
 
 ## 17. Transition plan for live account-level paranoid accounts
 
-Accounts live on the shipped V5-P13 account mode (`privacy_mode = 'paranoid'`,
-one account blob in `paranoid_vaults`, cleartext long purged) must land on the
-new model with **no silent data loss**. The account-level surface keeps
-running until the transition completes — one implementation at a time is the
-sequencing rule, not a second variant: the new surface replaces the old the
-moment each account converts, and the old code is deleted when zero accounts
-remain on it.
+**RULED 2026-08-20 (§21 Q3): (C) backup + wipe.** The owner chose the cheap
+path over a lossless conversion; the in-place wizard (former recommendation A)
+is never built. The plan:
 
-**Stated assumption, with evidence: every live paranoid account is
-server-media-only in practice.** Google Drive has never worked on production —
-`BT_GOOGLE_DRIVE_CLIENT_ID` was never set on the prod host, so the web runtime
-config served `googleDriveClientId: ""` and the GIS client could not even
-initialize (docs/ops.md, "Browser Google Drive runtime configuration"; §8).
-No `drive`-media or Drive-only account can therefore exist on prod. This
-simplifies the plan: step 2's Drive branch (confirm the Google account that
-already holds the file) is designed but expected to run for zero users; every
-real conversion is a pure server-blob → per-portfolio-docs re-encryption with
-no Drive discovery step. The conversion wizard still verifies the actual
-`paranoid_media_set` per account rather than assuming — dev/staging hosts have
-had working Drive config.
+1. **External ciphertext backup first** — the PR #1392 ops pattern
+   (`scripts/ops/export-vault-v2-backup.mjs` is the verified-dump precedent):
+   dump every `paranoid_vaults` account blob + bounded history to a verified
+   archive on the prod host, offsite copy confirmed, THEN any destructive
+   step. The owner runs/authorizes the backup, exactly as with the v2
+   teardown.
+2. **Wipe + reset**: one migration retires the account-level rows (quarantined
+   behind the backup, `zz_`-prefix pattern), flips affected accounts'
+   `privacy_mode` to `normal`, and clears the account-kill state. Those
+   accounts come back feature-complete and empty of previously vaulted
+   content; the legacy passphrase and recovery kit die with the wipe.
+3. **Notice**: affected accounts get a one-time in-app notice at next login —
+   "Paranoid mode has a new shape; the old paranoid data was retired with the
+   old system" — with the create-a-vault CTA. No conversion ceremony, no
+   legacy passphrase prompt.
+4. **The account-level surface is deleted in the same arc** (§19) — the
+   one-implementation rule holds with zero unconverted-account bookkeeping.
 
-**Recommendation — (A) in-place conversion ceremony at next unlocked login:**
+**Evidence this is safe** (kept from the analysis): every live paranoid
+account is server-media-only in practice. Google Drive never worked on
+production — `BT_GOOGLE_DRIVE_CLIENT_ID` was never set on the prod host, so
+the web runtime config served `googleDriveClientId: ""` and the GIS client
+could not even initialize (docs/ops.md, "Browser Google Drive runtime
+configuration"; §8) — so no Drive-only data exists to strand. The wipe
+migration still verifies actual `paranoid_media_set` values rather than
+assuming.
 
-1. The client unlocks the legacy vault as today (passphrase or recovery kit —
-   the last time either exists).
-2. A blocking-but-friendly wizard: "Paranoid mode has a new shape" → creates
-   one vault (default name, media = the account's existing media set; if
-   `drive ∈ media`, the wizard creates the `drive_connections` row by asking
-   the user to confirm the Google account that already holds the file) → runs
-   the seed-phrase issuance ceremony (12 words, write-down confirmation,
-   custody choice) → re-encrypts the account document as per-portfolio docs +
-   common doc under the new K_c → verified round trips on every medium.
-3. One conversion commit (step-up-gated, §15): creates the locked stub
-   portfolio rows **under the document's own portfolio UUIDs** (so
-   `asset_identities` claims and kept references hold), sets `vault_id` on
-   them, flips `privacy_mode` to `normal`, retires the account blob into
-   bounded history, and the per-portfolio kill takes over — the rest of the
-   account (bearer scopes, expenses pages, the Home board) un-kills
-   immediately, which for these users is a strict upgrade.
-4. Old credentials retire per account: the passphrase and recovery kit are
-   dead after conversion, and the wizard says so.
-
-Cleartext never touches the server at any point; the account is never
-feature-dark; a user who does not log in simply stays on the (still running)
-account-level surface until they do. When the admin-visible count of
-unconverted accounts reaches zero — or after a notice window, for stragglers,
-the owner authorizes an external ciphertext backup + destruction per the
-PR #1392 ops pattern (`scripts/ops/export-vault-v2-backup.mjs` is the
-verified-dump precedent) — the account-level surface is deleted (§19).
-
-**Alternatives, listed and not recommended:** (B) rehydrate-first (disable to
-cleartext, then move-in) — reuses shipped code but parks the user's portfolio
-in server cleartext mid-flight, exactly the betrayal a paranoid user opted out
-of, and is impossible for Drive-only accounts without first re-adding the
-server medium; (C) backup + wipe + start fresh — acceptable ONLY if the owner
-confirms the live paranoid population is test accounts (owner question, §21).
+**Alternatives, listed and not built:** (A) in-place re-encryption ceremony at
+next unlocked login — fully designed in this note's git history (PR #1401
+draft revisions); revive it only if a real, non-test paranoid population ever
+needs a lossless path. (B) rehydrate-first — rejected outright: it parks the
+user's portfolio in server cleartext mid-flight, exactly the betrayal a
+paranoid user opted out of.
 
 ## 18. Interplay: exports, deletion, admin, mirrorchain, autonomy seams
 
@@ -848,10 +832,10 @@ confirms the live paranoid population is test accounts (owner question, §21).
   they remain the user's own ciphertext in their own Drive (the confirm says
   so, and app access is revocable at Google).
 - **Admin:** per-user view shows vault count, per-vault media + doc
-  sizes/versions/timestamps, unconverted-legacy flag (§17), Drive-connection
-  count — no portfolio numbers to show, which is the feature. Admin can never
-  reset a phrase or device password, never read a doc, never convert on the
-  user's behalf.
+  sizes/versions/timestamps, legacy-wiped marker (§17 — the account went
+  through the backup+wipe), Drive-connection count — no portfolio numbers to
+  show, which is the feature. Admin can never reset a phrase or device
+  password, never read a doc, never restore wiped data.
 - **Mirrorchain:** mutual exclusion is portfolio-scoped (§9 precondition, §11
   item 6); severed-fork provenance rides the owning vault's common doc with
   the v1 §7.1 capture/merge/prune/validate discipline intact.
@@ -899,51 +883,49 @@ the mobile PLATFORM_ASKS Drive-naming contract (§8, when E5 lands).
 
 ## 20. Build decomposition (epics, ordered — contract-form issues cut from these after ack)
 
-| #   | Epic                                            | Scope sketch                                                                                                                                                                                                                                                                                                                                           | Rough size / tier                  |
-| --- | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------- |
-| E0  | **Contracts + schema**                          | `vaults`, `vault_blobs` (+history/candidates/retirement re-key), `drive_connections`, `portfolios.vault_id`/`vault_alias`, envelope v2 + doc-set zod contracts, classification axis gains the doc bucket, per-portfolio revision token contract                                                                                                        | L, T1 (schema + contract keystone) |
-| E1  | **Per-vault blind store**                       | Vault CRUD routes, per-doc GET/PUT CAS + history, size caps per kind, `vault:sync` re-key, OpenAPI                                                                                                                                                                                                                                                     | M, T2                              |
-| E2  | **Per-portfolio enforcement + account un-kill** | Registry re-key portfolio-first, `VAULTED_PORTFOLIO` guard, bearer un-kill (delete account rail), matrix + probe + full-functionality regression, mirrorchain exclusion re-scope                                                                                                                                                                       | L, T1 (security boundary)          |
-| E3  | **Client key core**                             | BIP39 gen/validate, derivation chain (§4), keySlots, key_fingerprint, endpoint keystore + device password custody + plain-custody warning + lockout/reset (§12); test vectors incl. tamper/rollback                                                                                                                                                    | L, T1 (keystone crypto)            |
-| E4  | **Move-in / move-out pipeline**                 | Per-portfolio capture token + double-read capture, purge sweep + share revocation + stub, strict per-portfolio restore + solvency + fork-provenance validation, §15 step-up on both, idempotent retry semantics                                                                                                                                        | XL, T1 (the destructive core)      |
-| E5  | **Drive multi-connection**                      | `drive_connections` CRUD + UI, per-connection GIS with login_hint, per-vault binding + connection migration, §8 namespace + ownerDigest discipline, revocation/disconnect flows, mobile contract addendum                                                                                                                                              | L, T2                              |
-| E6  | **Client engine re-home + composition**         | Store resolution per portfolio, engine on portfolio docs, cross-portfolio tax/aggregate composition + lock qualifiers, standing-order client materialization, client cleartext export per vault                                                                                                                                                        | XL, T1 (money)                     |
-| E7  | **QR transfer**                                 | The §13 `btvault1:` payload spec verbatim (web renderer + phone scanner against ONE spec); sender step-up + expiring full-screen QR, receiver scan → checksum → verified open → custody choice, secure-screen flags contract for native                                                                                                                | M, T2                              |
-| E8  | **Web UX**                                      | Vault manager (create ceremony: name → media/connection → 12 words + write-down confirm + custody), locked stubs + state→affordance invariant everywhere, the `VaultSyncChip` per-vault generalization (§14 — aggregate state + per-vault popover rows, visual design untouched, owner keeper), move-in/out wizards, Settings → Privacy rewrite, EN+DE | L, T2 (flagship UX, owner-eye)     |
-| E9  | **Transition + v1 retirement**                  | §17 conversion wizard + commit route, unconverted-count admin surface, straggler backup ceremony, then the §19 deletion train (append-only drops)                                                                                                                                                                                                      | L, T2 with T1 review on the commit |
-| E10 | **e2e + gate**                                  | Playwright: full create→move-in→lock→unlock→move-out arc; Drive-only vault round trip; two-users-one-Drive isolation; mixed-account full-functionality sweep; QR handoff (mocked camera); wrong-password lockout; conversion flow; joins the V5-P14 suite                                                                                              | M, T3/T2                           |
+| #   | Epic                                            | Scope sketch                                                                                                                                                                                                                                                                                                                                                                  | Rough size / tier                  |
+| --- | ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------- |
+| E0  | **Contracts + schema**                          | `vaults`, `vault_blobs` (+history/candidates/retirement re-key), `drive_connections`, `portfolios.vault_id`/`vault_alias`, envelope v2 + doc-set zod contracts, classification axis gains the doc bucket, per-portfolio revision token contract                                                                                                                               | L, T1 (schema + contract keystone) |
+| E1  | **Per-vault blind store**                       | Vault CRUD routes, per-doc GET/PUT CAS + history, size caps per kind, `vault:sync` re-key, OpenAPI                                                                                                                                                                                                                                                                            | M, T2                              |
+| E2  | **Per-portfolio enforcement + account un-kill** | Registry re-key portfolio-first, `VAULTED_PORTFOLIO` guard, bearer un-kill (delete account rail), matrix + probe + full-functionality regression, mirrorchain exclusion re-scope                                                                                                                                                                                              | L, T1 (security boundary)          |
+| E3  | **Client key core**                             | BIP39 gen/validate, derivation chain (§4), keySlots, key_fingerprint, endpoint keystore + device password custody + plain-custody warning + lockout/reset (§12); test vectors incl. tamper/rollback                                                                                                                                                                           | L, T1 (keystone crypto)            |
+| E4  | **Move-in / move-out pipeline**                 | Per-portfolio capture token + double-read capture, purge sweep + share revocation + stub, strict per-portfolio restore + solvency + fork-provenance validation, §15 step-up on both, idempotent retry semantics                                                                                                                                                               | XL, T1 (the destructive core)      |
+| E5  | **Drive multi-connection**                      | `drive_connections` CRUD + UI, per-connection GIS with login_hint, per-vault binding + connection migration, §8 namespace + ownerDigest discipline, revocation/disconnect flows, mobile contract addendum                                                                                                                                                                     | L, T2                              |
+| E6  | **Client engine re-home + composition**         | Store resolution per portfolio, engine on portfolio docs, cross-portfolio tax/aggregate composition + lock qualifiers, standing-order client materialization, client cleartext export per vault                                                                                                                                                                               | XL, T1 (money)                     |
+| E7  | **QR transfer**                                 | The §13 `btvault1:` payload spec verbatim (web renderer + phone scanner against ONE spec); sender step-up + expiring full-screen QR, receiver scan → checksum → verified open → custody choice, secure-screen flags contract for native                                                                                                                                       | M, T2                              |
+| E8  | **Web UX**                                      | Vault manager (create ceremony: name → media/connection → 12 words + ONE-word verify + lost-phrase ack + custody, §21 Q2), locked stubs + state→affordance invariant everywhere, the `VaultSyncChip` per-vault generalization (§14 — aggregate state + per-vault popover rows, visual design untouched, owner keeper), move-in/out wizards, Settings → Privacy rewrite, EN+DE | L, T2 (flagship UX, owner-eye)     |
+| E9  | **Transition + v1 retirement**                  | §17 as ruled (C): owner-run verified ciphertext backup (export-script pattern) → wipe/reset migration (privacy_mode→normal, account-kill cleared, rows quarantined) → one-time fresh-start notice, then the §19 deletion train (append-only drops)                                                                                                                            | M, T2 with T1 review on the wipe   |
+| E10 | **e2e + gate**                                  | Playwright: full create→move-in→lock→unlock→move-out arc; Drive-only vault round trip; two-users-one-Drive isolation; mixed-account full-functionality sweep; QR handoff (mocked camera); wrong-password lockout; fresh-start notice after the §17 wipe; joins the V5-P14 suite                                                                                               | M, T3/T2                           |
 
 Ordering: E0 first; E1+E3 parallel after E0; E2 after E1; E4 after E1+E3; E5
 after E1; E6 after E4; E7 after E3; E8 after E4 (wizards) with early shell
 work parallel; E9 after E4+E6+E8; E10 last. Every epic: suite green, EN+DE,
 append-only migrations, OpenAPI/route-census regeneration where touched.
 
-## 21. Open owner questions
+## 21. Ruled — the five gate decisions (2026-08-20)
 
-Deliberately few — only what the ruling text does not settle:
+Asked and answered in chat on 2026-08-20. The owner answered Q1–Q4 and
+delegated everything further to the Chief ("you are now responsible for all
+following decisions"), who ruled Q5. Binding:
 
-1. **Move-out:** confirm a portfolio may exit its vault back to a normal
-   server portfolio from an unlocked device (§10 designs it so). The
-   alternative reading — vaulting is permanent and deletion is the only
-   exit — is buildable but user-hostile; say which you want.
-2. **Creation ceremony friction:** the 12-word issuance forces a write-down
-   confirmation (re-enter 2–3 randomly chosen words) plus the lost-phrase
-   acknowledgment before the vault activates. Acceptable, or too much
-   friction for the main path?
-3. **Transition (§17):** approve recommendation A (in-place re-encryption
-   ceremony at next unlocked login; the account-level surface retires when the
-   last account converts). If the live paranoid accounts are test-only, say
-   so — then backup + wipe (C) is cheaper and A's wizard is never built.
-4. **Vault names in cleartext (§3):** vault names and locked-stub aliases are
-   server-visible config so the UI can render them while locked. Fine, or
-   must even names live only inside the ciphertext (locked stubs then render
-   generic labels)?
-5. **Drive visibility (§8):** recommendation is `drive.file` with a visible
-   "BetterTrack Vaults" folder — you can SEE your backup exists and download
-   the ciphertext yourself; the app still cannot touch any other Drive file.
-   The alternative keeps today's hidden app-data folder (invisible, cannot be
-   accidentally deleted, but only our app can ever reach it). Since Drive
-   never worked on prod, switching now costs zero migration. Pick one.
+1. **Move-out: ALLOWED.** §10 stands exactly as designed — unlocked device,
+   loud "becomes server-readable again" warning, restore as a normal server
+   portfolio.
+2. **Creation ceremony: middle ground** (owner verbatim: "validate only one
+   word. no 20 years waiting and lots of friction"). Issuance shows the 12
+   words, then verifies exactly ONE randomly chosen word plus one compact
+   lost-phrase-means-lost-data acknowledgment. No multi-word drills, no
+   added waiting.
+3. **Transition: (C) backup + wipe.** §17 is rewritten accordingly; the
+   in-place conversion wizard (former recommendation A) is never built.
+4. **Vault names: cleartext, stated calmly.** Names and locked-stub aliases
+   stay server-visible config (§3). The paranoid explainer communicates it as
+   a plain fact among the feature points — "encrypted: everything inside the
+   portfolio; not encrypted: the vault's name and storage config; features
+   X/Y keep working" — no alarm banners, no bloat (owner wording).
+5. **Drive: `drive.file` with the visible "BetterTrack Vaults" folder**
+   (Chief's delegated ruling). §8's recommendation is adopted; the hidden
+   app-data folder retires. Zero migration cost — Drive never worked on prod.
 
 ## 22. Constraints & non-goals
 
@@ -963,7 +945,7 @@ Deliberately few — only what the ruling text does not settle:
 - **Encrypted-vault SHARING is far future** — `keySlots[]` keeps it possible;
   no flows are designed now.
 - **Metadata honesty, recorded:** the server still sees that vaults exist,
-  their names (pending §21 Q4), media configs, Drive-connection identities
+  their names (ruled cleartext, §21 Q4), media configs, Drive-connection identities
   (email/sub — config, not content), locked-stub portfolio ids + aliases, doc
   sizes/versions/timestamps, login/session activity, alert rules and
   watchlists (asset-level interest), and market-data request patterns. None of
