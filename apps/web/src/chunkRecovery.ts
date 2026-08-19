@@ -14,6 +14,7 @@ interface SessionStorageLike {
 }
 
 export interface ChunkRecoveryEnvironment {
+  online?: () => boolean;
   release: string;
   reload: () => void;
   storage: SessionStorageLike;
@@ -22,6 +23,7 @@ export interface ChunkRecoveryEnvironment {
 function browserEnvironment(): ChunkRecoveryEnvironment | null {
   try {
     return {
+      online: () => navigator.onLine,
       release: __APP_RELEASE__,
       reload: () => window.location.reload(),
       storage: window.sessionStorage,
@@ -61,6 +63,7 @@ export function isChunkLoadError(error: unknown): boolean {
 export function reloadForChunkRecovery(environment?: ChunkRecoveryEnvironment): boolean {
   const activeEnvironment = environment ?? browserEnvironment();
   if (activeEnvironment === null) return false;
+  if (activeEnvironment.online?.() === false) return false;
 
   try {
     if (
@@ -101,6 +104,7 @@ export function installVitePreloadErrorRecovery(
   target: EventTarget = window,
 ): () => void {
   const onPreloadError = (event: Event) => {
+    // preventDefault() makes Vite resolve the failed module as undefined before navigation commits.
     if (reloadForChunkRecovery(environment)) event.preventDefault();
   };
 
