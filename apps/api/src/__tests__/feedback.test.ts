@@ -9,6 +9,8 @@ import {
   apiErrorSchema,
   createApiKeyResponseSchema,
   createFeedbackResponseSchema,
+  impliedReadScope,
+  myFeedbackResponseSchema,
   type ApiKeyScope,
 } from '@bettertrack/contracts';
 
@@ -231,10 +233,115 @@ describe('POST /api/v1/feedback', () => {
   });
 });
 
-describe('feedback:write OAuth catalog', () => {
-  it('is grantable and pre-allowed for BetterTrackMobile', () => {
+describe('GET /api/v1/feedback/mine', () => {
+  it('returns only the caller-owned rows, newest first, with reserved unread counts', async () => {
+    const caller = await harness.seedUser({ email: 'mine@bt.test', username: 'mine' });
+    const other = await harness.seedUser({ email: 'other@bt.test', username: 'otherfeedback' });
+    const [olderMine, newerMine, otherRow] = await harness.db
+      .insert(schema.feedback)
+      .values([
+        {
+          userId: caller.id,
+          category: 'feature',
+          message: 'This shipped.',
+          status: 'shipped',
+          shippedVersion: '5.4.0',
+          createdAt: new Date('2026-08-16T08:00:00.000Z'),
+          lastStatusChangeAt: new Date('2026-08-18T08:00:00.000Z'),
+        },
+        {
+          userId: caller.id,
+          category: 'bug',
+          message: 'This is new.',
+          createdAt: new Date('2026-08-17T08:00:00.000Z'),
+        },
+        {
+          userId: other.id,
+          category: 'other',
+          message: 'This belongs to somebody else.',
+          status: 'declined',
+          declinedReason: 'It is outside BetterTrack’s product scope.',
+          createdAt: new Date('2026-08-18T08:00:00.000Z'),
+        },
+      ])
+      .returning();
+    const agent = await loginAgent(harness.app, caller);
+
+    const response = await agent.get('/api/v1/feedback/mine');
+    expect(response.status).toBe(200);
+    const mine = myFeedbackResponseSchema.parse(response.body);
+    expect(mine.submissions.map((row) => row.id)).toEqual([newerMine!.id, olderMine!.id]);
+    expect(mine.submissions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: olderMine!.id,
+          status: 'shipped',
+          shippedVersion: '5.4.0',
+          declinedReason: null,
+          unreadReplyCount: 0,
+          lastStatusChangeAt: '2026-08-18T08:00:00.000Z',
+        }),
+      ]),
+    );
+    expect(mine.submissions.some((row) => row.id === otherRow!.id)).toBe(false);
+  });
+
+  it('admits feedback:read bearers and returns INSUFFICIENT_SCOPE without it', async () => {
+    const allowed = await mintKey(['feedback:read']);
+    await harness.db.insert(schema.feedback).values({
+      userId: allowed.user.id,
+      category: 'feature',
+      message: 'Native status read-back.',
+    });
+
+    const reached = await request(harness.app)
+      .get('/api/v1/feedback/mine')
+      .set('Authorization', `Bearer ${allowed.token}`);
+    expect(reached.status, JSON.stringify(reached.body)).toBe(200);
+    expect(myFeedbackResponseSchema.parse(reached.body).submissions).toHaveLength(1);
+
+    const denied = await mintKey(['portfolio:read']);
+    const rejected = await request(harness.app)
+      .get('/api/v1/feedback/mine')
+      .set('Authorization', `Bearer ${denied.token}`);
+    expect(rejected.status).toBe(403);
+    expect(apiErrorSchema.parse(rejected.body).error.code).toBe('INSUFFICIENT_SCOPE');
+  });
+});
+
+describe('feedback status storage constraints', () => {
+  it('rejects declined rows without reasons and shipped rows without versions', async () => {
+    const user = await harness.seedUser({
+      email: 'feedback-check@bt.test',
+      username: 'feedbackcheck',
+    });
+
+    await expect(
+      harness.db.insert(schema.feedback).values({
+        userId: user.id,
+        category: 'other',
+        message: 'Missing reason.',
+        status: 'declined',
+      }),
+    ).rejects.toThrow();
+    await expect(
+      harness.db.insert(schema.feedback).values({
+        userId: user.id,
+        category: 'feature',
+        message: 'Missing version.',
+        status: 'shipped',
+      }),
+    ).rejects.toThrow();
+  });
+});
+
+describe('feedback OAuth scope catalog', () => {
+  it('grants both scopes to BetterTrackMobile and makes write imply read', () => {
     const mobile = FIRST_PARTY_CLIENTS.find((client) => client.name === 'BetterTrackMobile');
     expect(API_KEY_SCOPES).toContain('feedback:write');
+    expect(API_KEY_SCOPES).toContain('feedback:read');
     expect(mobile?.scopeCeiling).toContain('feedback:write');
+    expect(mobile?.scopeCeiling).toContain('feedback:read');
+    expect(impliedReadScope('feedback:write')).toBe('feedback:read');
   });
 });

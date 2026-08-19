@@ -68,10 +68,10 @@ describe('ScopePicker', () => {
     // The read/write column labels appear as visible text.
     expect(screen.getAllByText('Read').length).toBeGreaterThan(0);
     expect(screen.getAllByText('Write').length).toBeGreaterThan(0);
-    // 8 modules with read+write (16) + market (read only, 1) + feedback (write
-    // only, 1) + vault sync and account security (one Access toggle each, 2) =
-    // 20. Verbose descriptions are gone — the row IS the module now.
-    expect(screen.getAllByRole('checkbox').length).toBe(20);
+    // 9 modules with read+write (18) + market (read only, 1) + vault sync and
+    // account security (one Access toggle each, 2) = 21. Verbose descriptions
+    // are gone — the row IS the module now.
+    expect(screen.getAllByRole('checkbox').length).toBe(21);
   });
 
   test('ticking Write auto-ticks and locks Read (#371 — write implies read)', async () => {
@@ -157,9 +157,8 @@ describe('ScopePicker', () => {
       screen.getByRole('checkbox', { name: /account security · access/i }),
     ).toBeInTheDocument();
     expect(screen.getByRole('checkbox', { name: /vault sync · access/i })).toBeInTheDocument();
-    // Feedback is create-only in v1: the real scope is write-only, with no
-    // invented read or Access capability.
-    expect(screen.queryByRole('checkbox', { name: /feedback · read/i })).not.toBeInTheDocument();
+    // Feedback exposes caller-owned history plus capture as a normal r/w pair.
+    expect(screen.getByRole('checkbox', { name: /feedback · read/i })).toBeInTheDocument();
     expect(screen.getByRole('checkbox', { name: /feedback · write/i })).toBeInTheDocument();
     expect(screen.queryByRole('checkbox', { name: /feedback · access/i })).not.toBeInTheDocument();
   });
@@ -245,7 +244,7 @@ describe('ScopePicker', () => {
     );
     const details = container.querySelector('details');
     expect(details?.open).toBe(true);
-    expect(screen.getAllByRole('checkbox').length).toBe(20);
+    expect(screen.getAllByRole('checkbox').length).toBe(21);
   });
 });
 

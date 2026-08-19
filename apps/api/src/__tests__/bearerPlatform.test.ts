@@ -464,6 +464,21 @@ describe('#361 route × scope matrix', () => {
       scope: 'alerts:write',
       body: { assetId: MISSING_ID, kind: 'price_above', threshold: 100 },
     },
+    // #1338: feedback read-back must resolve through MODULE_POLICIES instead of
+    // the session-only API_KEY_FORBIDDEN fallback; capture remains a write.
+    {
+      name: 'own feedback status history',
+      method: 'get',
+      path: '/feedback/mine',
+      scope: 'feedback:read',
+    },
+    {
+      name: 'feedback submission',
+      method: 'post',
+      path: '/feedback',
+      scope: 'feedback:write',
+      body: { category: 'other', message: 'Bearer matrix feedback' },
+    },
     { name: '2fa status', method: 'get', path: '/auth/2fa/status', scope: 'account:security' },
     { name: 'sessions list', method: 'get', path: '/auth/sessions', scope: 'account:security' },
     {
@@ -772,6 +787,7 @@ describe('#1324 account:security parity for native account state', () => {
       'mirrorchain:write',
       'vault:sync',
       'feedback:write',
+      'feedback:read',
     ];
     expect(API_KEY_SCOPES).toEqual(preexistingScopes);
     const mobile = FIRST_PARTY_CLIENTS.find((client) => client.name === 'BetterTrackMobile');

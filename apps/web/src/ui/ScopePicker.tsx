@@ -87,7 +87,7 @@ const SCOPE_MODULES: readonly ScopeModule[] = [
   },
   { key: 'vaultSync', read: null, write: null, combined: 'vault:sync' },
   { key: 'accountSecurity', read: null, write: null, combined: 'account:security' },
-  { key: 'feedback', read: null, write: 'feedback:write', combined: null },
+  { key: 'feedback', read: 'feedback:read', write: 'feedback:write', combined: null },
 ];
 
 /**

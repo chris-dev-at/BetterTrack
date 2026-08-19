@@ -7,11 +7,15 @@ import type { RateLimiters } from '../middleware/rateLimit';
 import { requireUser } from '../middleware/session';
 import { validateBody } from '../middleware/validate';
 
-/** Authenticated, create-only feedback capture (#1315). */
+/** Authenticated feedback capture plus caller-owned lifecycle read-back. */
 export function createFeedbackRouter(ctx: AppContext, limiters: RateLimiters): Router {
   const router = Router();
 
   router.use(requireUser);
+
+  router.get('/mine', async (req, res) => {
+    res.json(await ctx.feedback.listMine(req.authUser!.id));
+  });
 
   router.post(
     '/',

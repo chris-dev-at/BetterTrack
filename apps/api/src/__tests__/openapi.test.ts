@@ -105,6 +105,7 @@ describe('OpenAPI document', () => {
       '/conglomerates',
       '/backtest/preview',
       '/feedback',
+      '/feedback/mine',
       '/social/requests',
     ];
     for (const path of expectedPaths) {
@@ -226,6 +227,15 @@ describe('OpenAPI document', () => {
     expect((feedbackCreated['application/json'] as JsonObject).schema).toEqual({
       $ref: '#/components/schemas/CreateFeedbackResponse',
     });
+    const myFeedback = (paths['/feedback/mine'] as JsonObject).get as JsonObject;
+    expect(myFeedback.security).toEqual([{ sessionCookie: [] }, { apiKeyBearer: [] }]);
+    const myFeedbackOk = ((myFeedback.responses as JsonObject)['200'] as JsonObject)
+      .content as JsonObject;
+    expect((myFeedbackOk['application/json'] as JsonObject).schema).toEqual({
+      $ref: '#/components/schemas/MyFeedbackResponse',
+    });
+    expect(paths).toHaveProperty('/admin/feedback/{id}');
+    expect(paths).not.toHaveProperty('/admin/feedback/{id}/status');
 
     // #1327: plural remembered-device management is the bearer-capable sibling
     // of the browser-cookie mint/forget pair. Security is derived from the same

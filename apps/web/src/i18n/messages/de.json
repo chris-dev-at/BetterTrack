@@ -341,7 +341,8 @@
         "mirrorchain:read": "Deine Gruppenportfolios, Mitglieder, Aktivitäten und Einladungen ansehen",
         "mirrorchain:write": "Einladungen zu Gruppenportfolios annehmen oder ablehnen und Gruppenportfolios verlassen",
         "vault:sync": "Deinen clientseitig verschlüsselten Tresor zwischen deinen Geräten synchronisieren",
-        "feedback:write": "Feedback, Funktionswünsche und Fehlerberichte in deinem Namen senden"
+        "feedback:write": "Feedback, Funktionswünsche und Fehlerberichte in deinem Namen senden",
+        "feedback:read": "Deine Feedback-Einreichungen und deren Status ansehen"
       },
       "module": {
         "portfolio": {
@@ -390,7 +391,7 @@
         },
         "feedback": {
           "label": "Feedback",
-          "description": "Funktionswünsche, Fehlerberichte und sonstiges Feedback in deinem Namen senden. Feedback ist in v1 nur schreibbar."
+          "description": "Deine Feedback-Einreichungen und deren Status ansehen oder Funktionswünsche, Fehlerberichte und sonstiges Feedback in deinem Namen senden."
         }
       }
     }
@@ -4490,7 +4491,10 @@
       "status": {
         "new": "Neu",
         "triaged": "Triagiert",
-        "done": "Erledigt"
+        "working_on_it": "In Arbeit",
+        "saved_as_future_idea": "Als zukünftige Idee gespeichert",
+        "declined": "Abgelehnt",
+        "shipped": "Veröffentlicht"
       },
       "statusControl": "Status für Feedback von {{user}}",
       "fields": {
