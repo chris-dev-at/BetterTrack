@@ -37,6 +37,8 @@ const PRIMARY_DESTINATIONS = [
 
 const INTERACTIVE_TARGETS =
   'a:visible, button:visible, input:visible, select:visible, textarea:visible';
+const TOUCH_TARGET_FLOOR_PX = 44;
+const SUBPIXEL_LAYOUT_EPSILON_PX = 0.001;
 
 async function expectTouchTargetFloor(targets: Locator, context: string) {
   const undersizedTargets = await targets.evaluateAll((elements) =>
@@ -50,11 +52,12 @@ async function expectTouchTargetFloor(targets: Locator, context: string) {
       })
       // Chromium exposes layout floats here. A declared 44px target can land
       // at 43.99998px after device-scale conversion, which is still the exact
-      // 44px CSS floor rather than an undersized control. Round only that
-      // representation noise away; a real 43.99px target continues to fail.
+      // 44px CSS floor rather than an undersized control. Tolerate only that
+      // named representation epsilon; a real 43.99px target continues to fail.
       .filter(
         (target) =>
-          Math.round(target.width * 100) / 100 < 44 || Math.round(target.height * 100) / 100 < 44,
+          target.width < TOUCH_TARGET_FLOOR_PX - SUBPIXEL_LAYOUT_EPSILON_PX ||
+          target.height < TOUCH_TARGET_FLOOR_PX - SUBPIXEL_LAYOUT_EPSILON_PX,
       ),
   );
 

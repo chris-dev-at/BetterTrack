@@ -159,7 +159,11 @@ export default defineConfig({
     {
       command: `pnpm --filter @bettertrack/web exec vite --config vite.admin.config.mts --port ${ADMIN_PORT} --strictPort`,
       url: ADMIN_BASE_URL,
-      env: { ...process.env, BT_WEB_DEV_PROXY_TARGET: API_BASE_URL },
+      env: {
+        ...process.env,
+        BT_E2E_API_ORIGIN: API_BASE_URL,
+        BT_WEB_DEV_PROXY_TARGET: API_BASE_URL,
+      },
       reuseExistingServer: false,
       timeout: 60_000,
     },

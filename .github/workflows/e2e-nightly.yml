@@ -79,12 +79,14 @@ jobs:
           playwright_status=${PIPESTATUS[0]}
           set -e
 
-          transport_errors=$(grep -Ec 'Error: (read |write )?(ECONNRESET|EPIPE)' playwright-shard.log || true)
+          transport_errors=$(grep -Ec '(ECONNRESET|EPIPE)' playwright-shard.log || true)
           printf 'Playwright exit code: %s\n' "$playwright_status"
           printf 'ECONNRESET/EPIPE errors: %s\n' "$transport_errors"
           if (( transport_errors > 0 )); then
             echo '::error::The e2e stack emitted transport reset errors; inspect playwright-shard.log.'
-            exit 1
+            if (( playwright_status == 0 )); then
+              exit 1
+            fi
           fi
           exit "$playwright_status"
 
