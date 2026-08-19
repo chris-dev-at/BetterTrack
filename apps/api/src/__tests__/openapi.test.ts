@@ -177,6 +177,23 @@ describe('OpenAPI document', () => {
       expect(operation.security, `security for ${method.toUpperCase()} ${path}`).toEqual([]);
     }
 
+    // #1325: the policy table marks both exact grant-management operations as
+    // bearer-capable, so the generator derives both schemes without an endpoint
+    // security override. The prose documents the narrower first-party condition
+    // that an OpenAPI security-scheme union cannot express on its own.
+    for (const [method, path] of [
+      ['get', '/settings/oauth-grants'],
+      ['delete', '/settings/oauth-grants/{id}'],
+    ] as const) {
+      const operation = (paths[path] as JsonObject)[method] as JsonObject;
+      expect(operation.security, `${method.toUpperCase()} ${path}`).toEqual([
+        { sessionCookie: [] },
+        { apiKeyBearer: [] },
+      ]);
+      expect(operation.description).toContain('first-party OAuth client');
+      expect(operation.description).toContain('account:security');
+    }
+
     // A scope-gated module route accepts both the cookie and a bearer token.
     const notifications = (paths['/notifications'] as JsonObject).get as JsonObject;
     expect(notifications.security).toEqual([{ sessionCookie: [] }, { apiKeyBearer: [] }]);
