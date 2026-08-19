@@ -55,6 +55,11 @@ const TARGET_0088 = '0088_feedback';
 const TARGET_0090 = '0090_feedback_status_history';
 const OAUTH_LOGO_CACHE_MIGRATION = '0074_oauth_client_logo_cache';
 
+const FEEDBACK_MIGRATION_USER_ID = '019cdef0-0000-7000-8000-000000000001';
+const FEEDBACK_DONE_ID = '019cdef0-0000-7000-8000-000000000002';
+const FEEDBACK_NEW_ID = '019cdef0-0000-7000-8000-000000000003';
+const FEEDBACK_TRIAGED_ID = '019cdef0-0000-7000-8000-000000000004';
+
 const MOBILE = FIRST_PARTY_CLIENTS.find((c) => c.clientId === 'btc_IbT1mzw_7kBiPHPkGfaE0Q')!;
 const CLIENT_ID = MOBILE.clientId;
 const CEILING = [...MOBILE.scopeCeiling];
@@ -643,5 +648,61 @@ describe(`migration ${TARGET_0090} — first-party client feedback read scope (u
       'feedback:read',
     ]);
     expect(new Set(partialRow.scopes).size).toBe(partialRow.scopes.length);
+  });
+});
+
+describe(`migration ${TARGET_0090} — feedback status history`, () => {
+  it('stamps remapped done rows at migration time and retains unchanged status timestamps', async () => {
+    const client = await bootUpTo(TARGET_0090);
+    await client.exec(`
+      INSERT INTO "users" ("id", "email", "username", "password_hash")
+      VALUES ('${FEEDBACK_MIGRATION_USER_ID}', 'feedback-migration@bettertrack.test', 'feedback_migration', 'x');
+      INSERT INTO "feedback"
+        ("id", "user_id", "category", "message", "status", "updated_at")
+      VALUES
+        ('${FEEDBACK_DONE_ID}', '${FEEDBACK_MIGRATION_USER_ID}', 'feature', 'Done before migration', 'done', '2025-01-01T10:00:00Z'),
+        ('${FEEDBACK_NEW_ID}', '${FEEDBACK_MIGRATION_USER_ID}', 'bug', 'New before migration', 'new', '2025-02-02T11:00:00Z'),
+        ('${FEEDBACK_TRIAGED_ID}', '${FEEDBACK_MIGRATION_USER_ID}', 'other', 'Triaged before migration', 'triaged', '2025-03-03T12:00:00Z');
+    `);
+    const migrationStarted = await client.query<{ at: string }>(
+      `SELECT clock_timestamp()::text AS "at"`,
+    );
+
+    await applyMigration(client, TARGET_0090);
+
+    const migrationFinished = await client.query<{ at: string }>(
+      `SELECT clock_timestamp()::text AS "at"`,
+    );
+    const result = await client.query<{
+      id: string;
+      status: string;
+      updatedAt: string;
+      lastStatusChangeAt: string;
+    }>(`
+      SELECT
+        "id",
+        "status"::text AS "status",
+        "updated_at"::text AS "updatedAt",
+        "last_status_change_at"::text AS "lastStatusChangeAt"
+      FROM "feedback"
+      WHERE "id" IN ('${FEEDBACK_DONE_ID}', '${FEEDBACK_NEW_ID}', '${FEEDBACK_TRIAGED_ID}')
+    `);
+    const rows = new Map(result.rows.map((row) => [row.id, row]));
+    const done = rows.get(FEEDBACK_DONE_ID)!;
+    const unchangedNew = rows.get(FEEDBACK_NEW_ID)!;
+    const unchangedTriaged = rows.get(FEEDBACK_TRIAGED_ID)!;
+
+    expect(done.status).toBe('triaged');
+    expect(done.lastStatusChangeAt).not.toBe(done.updatedAt);
+    expect(Date.parse(done.lastStatusChangeAt)).toBeGreaterThanOrEqual(
+      Date.parse(migrationStarted.rows[0]!.at),
+    );
+    expect(Date.parse(done.lastStatusChangeAt)).toBeLessThanOrEqual(
+      Date.parse(migrationFinished.rows[0]!.at),
+    );
+    expect(unchangedNew.status).toBe('new');
+    expect(unchangedNew.lastStatusChangeAt).toBe(unchangedNew.updatedAt);
+    expect(unchangedTriaged.status).toBe('triaged');
+    expect(unchangedTriaged.lastStatusChangeAt).toBe(unchangedTriaged.updatedAt);
   });
 });
