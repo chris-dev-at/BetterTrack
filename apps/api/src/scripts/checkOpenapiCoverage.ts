@@ -7,6 +7,7 @@ import type { Redis } from 'ioredis';
 import { createApp } from '../app';
 import { loadConfig } from '../config/env';
 import type { AppContext } from '../http/context';
+import { MODULE_POLICIES } from '../http/middleware/bearerAuth';
 import { getOpenApiDocument } from '../http/openapi';
 import { createLogger } from '../logger';
 
@@ -68,8 +69,23 @@ export interface CoverageResult {
   missing: string[];
   /** `"METHOD /path"` entries documented but not actually mounted (phantom endpoints). */
   phantom: string[];
+  bearerModules: BearerModulePolicyCoverage;
   mountedCount: number;
   documentedCount: number;
+}
+
+export interface BearerModulePolicyCoverage {
+  ok: boolean;
+  /** Top-level API modules discovered from the real Express wiring. */
+  mounted: string[];
+  /** Top-level API modules explicitly present in `MODULE_POLICIES`. */
+  classified: string[];
+  /** Mounted modules with no bearer policy. */
+  unclassified: string[];
+  /** Bearer policies whose module is no longer mounted. */
+  unmountedPolicies: string[];
+  /** Repeated policy prefixes, which would make resolver order significant. */
+  duplicatePolicies: string[];
 }
 
 /**
@@ -84,6 +100,20 @@ const API_PREFIX = '/api/v1';
 /** The HTTP methods a path item's operations can be keyed by (per {@link EndpointDef}). */
 const HTTP_METHODS = ['get', 'post', 'put', 'patch', 'delete'];
 const EXPRESS_HTTP_METHODS = METHODS.map((method) => method.toLowerCase());
+
+function sortedUnique(values: readonly string[]): string[] {
+  return [...new Set(values)].sort();
+}
+
+function duplicates(values: readonly string[]): string[] {
+  const seen = new Set<string>();
+  const repeated = new Set<string>();
+  for (const value of values) {
+    if (seen.has(value)) repeated.add(value);
+    seen.add(value);
+  }
+  return [...repeated].sort();
+}
 
 function toOpenApiPath(path: string): string {
   return path.replace(/:([A-Za-z0-9_]+)/g, '{$1}');
@@ -396,6 +426,75 @@ export function buildRouteTable(
   return surfaces;
 }
 
+/**
+ * Top-level API module mounts derived from the real route wiring. Every mounted
+ * surface kind participates so a router containing only `use`/`all` handlers
+ * cannot disappear from the bearer census.
+ */
+export function mountedApiModulePaths(surfaces: readonly MountedSurface[]): string[] {
+  const modulePrefix = `${API_PREFIX}/`;
+  return sortedUnique(
+    surfaces.flatMap((surface) => {
+      if (!surface.path.startsWith(modulePrefix)) return [];
+      const segment = surface.path.slice(modulePrefix.length).split('/', 1)[0];
+      return segment ? [`${modulePrefix}${segment}`] : [];
+    }),
+  );
+}
+
+/** Compare actual API module wiring with the sole runtime bearer policy table. */
+export function findBearerModulePolicyCoverage(
+  surfaces: readonly MountedSurface[],
+): BearerModulePolicyCoverage {
+  const mounted = mountedApiModulePaths(surfaces);
+  const policyPaths = MODULE_POLICIES.map((policy) => `${API_PREFIX}${policy.prefix}`);
+  const classified = sortedUnique(policyPaths);
+  const mountedSet = new Set(mounted);
+  const classifiedSet = new Set(classified);
+  const unclassified = mounted.filter((path) => !classifiedSet.has(path));
+  const unmountedPolicies = classified.filter((path) => !mountedSet.has(path));
+  const duplicatePolicies = duplicates(policyPaths);
+
+  return {
+    ok:
+      unclassified.length === 0 && unmountedPolicies.length === 0 && duplicatePolicies.length === 0,
+    mounted,
+    classified,
+    unclassified,
+    unmountedPolicies,
+    duplicatePolicies,
+  };
+}
+
+function bearerModulePolicyCoverageMessage(coverage: BearerModulePolicyCoverage): string {
+  const problems = ['Bearer module policy coverage failed.'];
+  if (coverage.unclassified.length > 0) {
+    problems.push(
+      'Mounted API modules without an explicit bearer classification:',
+      ...coverage.unclassified.map((path) => `  - ${path}`),
+    );
+  }
+  if (coverage.unmountedPolicies.length > 0) {
+    problems.push(
+      'Bearer classifications without a mounted API module:',
+      ...coverage.unmountedPolicies.map((path) => `  - ${path}`),
+    );
+  }
+  if (coverage.duplicatePolicies.length > 0) {
+    problems.push(
+      'Duplicate bearer module classifications:',
+      ...coverage.duplicatePolicies.map((path) => `  - ${path}`),
+    );
+  }
+  return problems.join('\n');
+}
+
+/** Fail closed with mount-path diagnostics suitable for CI output. */
+export function assertBearerModulePolicyCoverage(surfaces: readonly MountedSurface[]): void {
+  const coverage = findBearerModulePolicyCoverage(surfaces);
+  if (!coverage.ok) throw new Error(bearerModulePolicyCoverageMessage(coverage));
+}
+
 /** Mounted routes with no matching operation in the OpenAPI document, as `"METHOD /path"`. */
 export function findUndocumentedRoutes(
   surfaces: readonly MountedSurface[],
@@ -452,11 +551,13 @@ export function checkCoverage(): CoverageResult {
   const doc = getOpenApiDocument() as unknown as OpenApiDocumentLike;
   const missing = findUndocumentedRoutes(mounted, doc);
   const phantom = findPhantomRoutes(mounted, doc);
+  const bearerModules = findBearerModulePolicyCoverage(mounted);
 
   return {
-    ok: missing.length === 0 && phantom.length === 0,
+    ok: missing.length === 0 && phantom.length === 0 && bearerModules.ok,
     missing,
     phantom,
+    bearerModules,
     mountedCount: mounted.filter((surface) => surface.kind === 'route').length,
     documentedCount: Object.keys(doc.paths).length,
   };
@@ -486,12 +587,16 @@ function main(): void {
           'each from the `endpoints` table in apps/api/src/http/openapi/document.ts or mount it.',
       );
     }
+    if (!result.bearerModules.ok) {
+      console.error(bearerModulePolicyCoverageMessage(result.bearerModules));
+    }
     process.exitCode = 1;
     return;
   }
   console.log(
     `OpenAPI coverage OK — ${result.mountedCount} mounted routes all documented ` +
-      `(${result.documentedCount} paths in the spec).`,
+      `(${result.documentedCount} paths in the spec); bearer policies cover all ` +
+      `${result.bearerModules.mounted.length} API modules.`,
   );
 }
 

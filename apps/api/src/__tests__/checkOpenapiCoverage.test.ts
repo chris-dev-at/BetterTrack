@@ -1,8 +1,12 @@
+import express from 'express';
 import { describe, expect, it } from 'vitest';
 
+import { createApp } from '../app';
 import {
+  assertBearerModulePolicyCoverage,
   buildRouteTable,
   checkCoverage,
+  findBearerModulePolicyCoverage,
   findPhantomRoutes,
   findUndocumentedRoutes,
 } from '../scripts/checkOpenapiCoverage';
@@ -19,9 +23,33 @@ describe('checkOpenapiCoverage', () => {
 
     expect(result.missing).toEqual([]);
     expect(result.phantom).toEqual([]);
+    expect(result.bearerModules.ok).toBe(true);
     expect(result.ok).toBe(true);
     expect(result.mountedCount).toBeGreaterThan(0);
     expect(result.documentedCount).toBeGreaterThan(0);
+  });
+
+  it('classifies the real mounted API module set exactly in both directions', () => {
+    const coverage = findBearerModulePolicyCoverage(buildRouteTable());
+
+    expect(coverage.unclassified).toEqual([]);
+    expect(coverage.unmountedPolicies).toEqual([]);
+    expect(coverage.duplicatePolicies).toEqual([]);
+    expect(coverage.classified).toEqual(coverage.mounted);
+    expect(coverage.ok).toBe(true);
+  });
+
+  it('names a newly mounted API module that has no bearer classification', () => {
+    const fixturePath = '/api/v1/bearer-policy-fixture';
+    const routes = buildRouteTable((ctx) => {
+      const app = createApp(ctx);
+      const router = express.Router();
+      router.get('/probe', (_request, response) => response.sendStatus(204));
+      app.use(fixturePath, router);
+      return app;
+    });
+
+    expect(() => assertBearerModulePolicyCoverage(routes)).toThrow(fixturePath);
   });
 
   it('reports a mounted route with no matching operation in the spec', () => {
