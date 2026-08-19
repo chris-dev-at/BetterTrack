@@ -248,7 +248,19 @@ export interface ParanoidElapsedRetirement {
   retiredVersion: number;
 }
 
-export type ParanoidElapsedRetirementPurgeInput = Omit<ParanoidRetiredPurgeInput, 'proofVerified'>;
+export interface ParanoidElapsedRetirementPurgeInput {
+  userId: string;
+  retiredVersion: number;
+  /**
+   * Literal marker, the proof-free twin of {@link ParanoidRetiredPurgeInput.proofVerified}:
+   * this entry point destroys ciphertext with no client signature, so reaching
+   * it has to be a deliberate statement that the caller IS the retention
+   * worker. A future service holding the repository cannot drift into it by
+   * passing the fields it already has.
+   */
+  caller: 'retention-worker';
+  now: Date;
+}
 
 export type ParanoidRetiredPurgeResult =
   | { status: 'ok' }
@@ -1261,8 +1273,15 @@ export function createParanoidVaultRepository(
     async purgeElapsedRetirement(input) {
       // The retention worker is authorized by the elapsed owner-visible gate,
       // then the shared transaction rechecks the exact generation and every
-      // live-server guard. It does not impersonate a client signature.
-      return purgeRetiredTransaction({ ...input, authorization: 'elapsed-retention' });
+      // live-server guard. It does not impersonate a client signature. The
+      // fields are listed rather than spread so the `caller` marker cannot be
+      // forwarded into the shared transaction as an authorization input.
+      return purgeRetiredTransaction({
+        userId: input.userId,
+        retiredVersion: input.retiredVersion,
+        now: input.now,
+        authorization: 'elapsed-retention',
+      });
     },
 
     async purgeRetired(input) {

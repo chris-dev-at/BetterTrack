@@ -389,7 +389,11 @@ row or a staged candidate, so it can only ever complete a switch the user made.
 Deletion is permanent and unrecoverable from the application side; only a
 database backup predating the run holds those bytes. The run logs how many
 copies it purged and, separately, how many it left in place because a guard
-refused them.
+refused them. Each run restarts the sweep from the beginning of the account
+order and stops at a per-run ceiling; the ceiling warning carries the cursor it
+stopped at (`lastUserId`). Advancing between runs means it is working through a
+backlog — the same cursor with a non-zero `skipped` every hour would mean
+refused retirements are holding the ceiling, and those accounts need looking at.
 
 ## Recovering an offsite archive
 

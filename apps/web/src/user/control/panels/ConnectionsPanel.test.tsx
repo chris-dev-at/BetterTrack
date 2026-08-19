@@ -78,6 +78,14 @@ const RETIRED_SERVER = {
   purgeAfter: '2099-08-20T08:00:00.000Z',
 } as const;
 
+const STAGED_CANDIDATE = {
+  candidateId: '0198f3a1-0000-7000-8000-00000000c0de',
+  version: 5,
+  formatVersion: 2,
+  sizeBytes: 2048,
+  expiresAt: '2099-08-20T08:00:00.000Z',
+} as const;
+
 function controller(
   authorization: DriveConnectionController['authorization'] = 'connected',
 ): DriveConnectionController {
@@ -491,6 +499,42 @@ describe('ConnectionsPanel — paranoid Google Drive app data', () => {
     await waitFor(() => expect(drive.addServerCopy).toHaveBeenCalledTimes(1));
   });
 
+  test('warns that the automatic deletion cannot check Drive before the switch is made', async () => {
+    const drive = controller();
+    const unlock = vi.fn(async () => drive);
+    const user = userEvent.setup();
+    vi.mocked(getParanoidMediaState).mockResolvedValue(BOTH_MEDIA);
+    const rendered = renderPanel('/settings/connections', {
+      driveConnection: null,
+      driveUnlock: unlock,
+      driveConfigured: true,
+    });
+
+    await user.click(await screen.findByText('Vault storage copies'));
+    expect(
+      screen.getByText(
+        /BetterTrack keeps one encrypted recovery copy for seven days and then deletes it automatically/,
+      ),
+    ).toHaveTextContent(/it cannot check your Drive copy first/);
+
+    // It precedes the gesture that starts the window, and stays on screen
+    // through the passphrase step that gesture opens.
+    await user.click(screen.getByRole('button', { name: 'Use Drive only' }));
+    expect(await screen.findByLabelText('Vault passphrase')).toBeInTheDocument();
+    expect(drive.useDriveOnly).not.toHaveBeenCalled();
+    expect(screen.getByText(/it cannot check your Drive copy first/)).toBeInTheDocument();
+
+    // Nothing left to warn about once the server copy is already gone.
+    rendered.unmount();
+    vi.mocked(getParanoidMediaState).mockResolvedValue(DRIVE_ONLY_MEDIA);
+    renderPanel('/settings/connections', {
+      driveConnection: drive,
+      driveConfigured: true,
+    });
+    await user.click(await screen.findByText('Vault storage copies'));
+    expect(screen.queryByText(/it cannot check your Drive copy first/)).not.toBeInTheDocument();
+  });
+
   test('hides stale server-retirement purge controls after the server copy is active again', async () => {
     vi.mocked(getParanoidMediaState).mockResolvedValue({
       privacyMode: 'paranoid',
@@ -531,6 +575,32 @@ describe('ConnectionsPanel — paranoid Google Drive app data', () => {
 
     const foldedStorage = screen.getByText('Vault storage copies').closest('details');
     expect(foldedStorage).not.toHaveAttribute('open');
+  });
+
+  test('keeps the retained copy on screen while a replacement server copy is staged', async () => {
+    vi.mocked(getParanoidMediaState).mockResolvedValue({
+      privacyMode: 'paranoid',
+      mediaState: {
+        ...DRIVE_ONLY_STATE,
+        server: {
+          disposition: 'retired',
+          candidate: STAGED_CANDIDATE,
+          retired: { ...RETIRED_SERVER, purgeAfter: '2000-08-20T08:00:00.000Z' },
+        },
+      },
+    });
+    renderPanel('/settings/connections', {
+      driveConnection: controller(),
+      driveConfigured: true,
+    });
+
+    // Retired ciphertext is still server-held here, so the state stays visible
+    // even though both destroyers refuse it while the candidate exists.
+    expect(await screen.findByText('Retained server recovery copy')).toBeInTheDocument();
+    expect(
+      screen.getByText(/A new server copy is being verified right now, so nothing is deleted/),
+    ).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Delete it now' })).not.toBeInTheDocument();
   });
 
   test('keeps manual deletion as a delete-now shortcut after the recovery window', async () => {

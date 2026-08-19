@@ -347,11 +347,14 @@ function DriveVaultSection({
         : 'connected'
       : 'disconnected';
   const retired = media.server.retired;
-  const canPurgeRetiredServer =
-    retired != null &&
-    media.server.disposition === 'retired' &&
-    !media.mediaSet.includes('server') &&
-    media.server.candidate == null;
+  // Visibility and deletability are separate questions. Retired ciphertext is
+  // still server-held while a new server copy is being staged, so the state has
+  // to stay on screen there; only the purge (which both destroyers refuse
+  // against a staged candidate) is withheld.
+  const retiredServerHeld =
+    retired != null && media.server.disposition === 'retired' && !media.mediaSet.includes('server');
+  const candidateStaged = media.server.candidate != null;
+  const canPurgeRetiredServer = retiredServerHeld && !candidateStaged;
   const purgeReady = retired != null && Date.now() >= Date.parse(retired.purgeAfter);
 
   async function refresh(): Promise<void> {
@@ -606,6 +609,13 @@ function DriveVaultSection({
                   : 'settings.connections.drive.storage.driveOnly',
               )}
             </PanelNote>
+            {/* The disclosure §16 (2026-08-19) promises BEFORE the switch, at
+                the only gesture that starts it: the automatic purge is what
+                makes Drive-only true, and it cannot read Drive first, so an
+                unreadable Drive copy is unrecoverable once the window ends. */}
+            {media.mediaSet.includes('server') ? (
+              <PanelNote warn>{t('settings.connections.drive.storage.driveOnlyWarning')}</PanelNote>
+            ) : null}
             <Button
               disabled={working || !configured}
               onClick={() =>
@@ -624,7 +634,7 @@ function DriveVaultSection({
         </PanelFold>
       ) : null}
 
-      {canPurgeRetiredServer ? (
+      {retiredServerHeld ? (
         <Row stack>
           <div className="flex flex-col items-start gap-2">
             <span className="bt-cc-row__label">
@@ -636,21 +646,25 @@ function DriveVaultSection({
                 the post-window "delete now" shortcut. */}
             <Alert tone="info">
               {t(
-                purgeReady
-                  ? 'settings.connections.drive.retired.ready'
-                  : 'settings.connections.drive.retired.wait',
+                candidateStaged
+                  ? 'settings.connections.drive.retired.staging'
+                  : purgeReady
+                    ? 'settings.connections.drive.retired.ready'
+                    : 'settings.connections.drive.retired.wait',
                 { date: formatDateTime(retired.purgeAfter) },
               )}
             </Alert>
-            <Button
-              disabled={working || !purgeReady || !configured}
-              onClick={() => void run('purge')}
-              size="sm"
-              type="button"
-              variant="danger"
-            >
-              {t('settings.connections.drive.retired.purge')}
-            </Button>
+            {canPurgeRetiredServer ? (
+              <Button
+                disabled={working || !purgeReady || !configured}
+                onClick={() => void run('purge')}
+                size="sm"
+                type="button"
+                variant="danger"
+              >
+                {t('settings.connections.drive.retired.purge')}
+              </Button>
+            ) : null}
           </div>
         </Row>
       ) : null}

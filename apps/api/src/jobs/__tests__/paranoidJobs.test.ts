@@ -219,6 +219,10 @@ describe('paranoid.retiredPurge', () => {
     expect(await retiredRows(userId)).toEqual([]);
     expect(await retirementRows(userId)).toEqual([]);
     expect(purge).toHaveBeenCalledOnce();
+    // The proof-free entry point is only reachable by naming its one caller.
+    expect(purge).toHaveBeenCalledWith(
+      expect.objectContaining({ userId, caller: 'retention-worker' }),
+    );
 
     await job.handler({} as never, ctx());
     expect(purge).toHaveBeenCalledOnce();
@@ -301,9 +305,14 @@ describe('paranoid.retiredPurge', () => {
   it('counts a retirement that vanished between scan and purge as converged, not purged', async () => {
     const userId = await seedParanoidUser('converged_replay');
     const retiredVersion = await retireServerVault(userId, ['converged-v1'], T0);
-    expect(await vaults.purgeElapsedRetirement({ userId, retiredVersion, now: RUN_AT })).toEqual({
-      status: 'ok',
-    });
+    expect(
+      await vaults.purgeElapsedRetirement({
+        userId,
+        retiredVersion,
+        caller: 'retention-worker',
+        now: RUN_AT,
+      }),
+    ).toEqual({ status: 'ok' });
 
     // Replays the exact scan result a concurrent run already acted on.
     let served = false;
@@ -355,9 +364,17 @@ describe('paranoid.retiredPurge', () => {
       batchSize: 1,
       maxRowsPerRun: 1,
     }).handler({} as never, recordingCtx(truncated));
+    // The cursor the run stopped at is part of the warning: a blocked prefix
+    // shows up as this value standing still across runs.
     expect(truncated).toContainEqual({
       level: 'warn',
-      fields: { examined: 1, purged: 1, converged: 0, skipped: 0 },
+      fields: {
+        examined: 1,
+        purged: 1,
+        converged: 0,
+        skipped: 0,
+        lastUserId: expect.any(String),
+      },
       message: 'paranoid server-retirement purge reached its per-run ceiling',
     });
     // Exactly one of the two was taken; the other waits for the next run.
@@ -366,5 +383,8 @@ describe('paranoid.retiredPurge', () => {
       ...(await retirementRows(thirdUserId)),
     ];
     expect(remaining).toHaveLength(1);
+    const warned = truncated.filter((line) => line.level === 'warn');
+    expect(warned).toHaveLength(1);
+    expect([secondUserId, thirdUserId]).toContain(warned[0]!.fields.lastUserId);
   });
 });

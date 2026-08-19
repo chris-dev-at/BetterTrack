@@ -373,10 +373,17 @@ sequence for every switch:
    skips no guard except the proof: the owner row is locked first, re-added
    server media / a live active row / a staged candidate refuse as a state
    conflict, the exact retired generation must still match, and `now` must be
-   at or past `retiredAt + retention`. The accepted consequence, stated in the
-   UI copy before the switch: a user whose Drive copy became unreadable during
-   the window loses the last recoverable ciphertext when the window ends
-   (§16, 2026-08-19). A media PATCH or client attestation alone still never
+   at or past `retiredAt + retention`. The accepted consequence: a user whose
+   Drive copy became unreadable during the window loses the last recoverable
+   ciphertext when the window ends (§16, 2026-08-19). **That is disclosed
+   before the switch is made, not only after it** — the warning
+   (`settings.connections.drive.storage.driveOnlyWarning`, EN + DE) sits
+   directly above the "Use Drive only" control, the one gesture that starts the
+   window, and says the automatic deletion cannot check Drive first; the dated
+   retained-copy notice then restates it for the whole window. A binding rule
+   for this arc: any future change that makes the destruction earlier, wider or
+   less checkable ships its pre-switch copy in the same change. A media PATCH
+   or client attestation alone still never
    destroys retired bytes. Removing `drive` ⇒ the client best-effort deletes
    the Drive file (and tells the user if it could not; the leftover is their
    own ciphertext in their own Drive).

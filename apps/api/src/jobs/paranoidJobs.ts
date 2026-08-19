@@ -35,6 +35,18 @@ export interface ParanoidRetiredPurgeJobDeps {
  * idempotency key: repeat/concurrent runs converge after deletion, and the
  * repository rechecks that exact generation under the user's row lock before
  * touching bytes. It also refuses active server media and staged candidates.
+ *
+ * The scan is a RESTARTED sweep, not a draining queue: every run begins at
+ * `userId` order zero, and a retirement a guard permanently refuses (server
+ * media re-added and left live, or the account back on `privacyMode: 'normal'`)
+ * keeps its place in that order and its share of the per-run ceiling. The
+ * elapsed set is bounded by the number of paranoid accounts that ever switched
+ * to Drive-only, so a blocked prefix wider than `maxRowsPerRun` is not a state
+ * this deployment can reach — but it is a real precondition, so the run makes
+ * it observable rather than silent: `skipped` counts the refusals and the
+ * ceiling warning carries the cursor it stopped at, so a prefix that never
+ * advances between runs shows up as a stalled `lastUserId` with a non-zero
+ * `skipped`.
  */
 export function createParanoidRetiredPurgeJob(
   deps: ParanoidRetiredPurgeJobDeps,
@@ -77,6 +89,7 @@ export function createParanoidRetiredPurgeJob(
         for (const retirement of retirements) {
           const result = await deps.vaults.purgeElapsedRetirement({
             ...retirement,
+            caller: 'retention-worker',
             now: runAt,
           });
           if (result.status === 'ok') purged += 1;
@@ -120,8 +133,11 @@ export function createParanoidRetiredPurgeJob(
         );
       }
       if (!drained) {
+        // `lastUserId` is the truncation point. It advancing run over run means
+        // the sweep is making progress through a backlog; standing still with a
+        // non-zero `skipped` means a blocked prefix is holding the ceiling.
         ctx.logger.warn(
-          { examined, purged, converged, skipped },
+          { examined, purged, converged, skipped, lastUserId: afterUserId },
           'paranoid server-retirement purge reached its per-run ceiling',
         );
       }
