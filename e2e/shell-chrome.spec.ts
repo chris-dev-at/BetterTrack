@@ -48,7 +48,14 @@ async function expectTouchTargetFloor(targets: Locator, context: string) {
           ...box.toJSON(),
         };
       })
-      .filter((target) => target.width < 44 || target.height < 44),
+      // Chromium exposes layout floats here. A declared 44px target can land
+      // at 43.99998px after device-scale conversion, which is still the exact
+      // 44px CSS floor rather than an undersized control. Round only that
+      // representation noise away; a real 43.99px target continues to fail.
+      .filter(
+        (target) =>
+          Math.round(target.width * 100) / 100 < 44 || Math.round(target.height * 100) / 100 < 44,
+      ),
   );
 
   expect(undersizedTargets, `${context} has undersized chrome targets`).toEqual([]);

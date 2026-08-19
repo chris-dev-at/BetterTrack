@@ -1,6 +1,7 @@
 import { expect, request as newRequestContext, test } from '@playwright/test';
 
 import { createInvite, newAdminRequestContext } from './support/adminApi';
+import { setWideningAudienceThroughLadder } from './support/audience';
 import { ACCOUNT_PASSWORD } from './support/config';
 import { acceptInvite, openAssetAndWatchFromDetail, watchAsset } from './support/flows';
 
@@ -161,8 +162,7 @@ test('happy path: invite through friend sharing', async ({ browser }) => {
   await mainRow.getByRole('button', { name: 'Share' }).click();
   const audiencePicker = owner.getByRole('dialog', { name: /Share/ });
   await expect(audiencePicker).toBeVisible();
-  await audiencePicker.getByText('All friends', { exact: true }).click();
-  await audiencePicker.getByRole('button', { name: 'Save' }).click();
+  await setWideningAudienceThroughLadder(audiencePicker, { audience: 'all_friends' });
   await expect(audiencePicker).toBeHidden();
 
   // owner sends the friend request
@@ -199,6 +199,10 @@ test('happy path: invite through friend sharing', async ({ browser }) => {
   // sees the "General" watchlist read-only inside the same friend-card row.
   await owner.goto('/workbench');
   await owner.getByRole('button', { name: 'Share with friends' }).click();
+  const watchlistPicker = owner.getByRole('dialog', { name: /Share/ });
+  await expect(watchlistPicker).toBeVisible();
+  await setWideningAudienceThroughLadder(watchlistPicker, { audience: 'all_friends' });
+  await expect(watchlistPicker).toBeHidden();
   await expect(owner.getByRole('button', { name: 'Shared with friends' })).toBeVisible();
 
   await friend.goto('/people');

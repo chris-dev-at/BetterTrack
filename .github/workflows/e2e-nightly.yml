@@ -71,7 +71,22 @@ jobs:
         # interrupt, flushes the blob reporter, and the report upload below runs.
         # Invoke Playwright directly: passing `-- --shard=…` through the pnpm
         # script forwards a literal `--` and silently runs every test per shard.
-        run: timeout --signal=INT --kill-after=2m 60m pnpm exec playwright test --shard=${{ matrix.shard }}/4
+        shell: bash
+        run: |
+          set +e
+          set -o pipefail
+          timeout --signal=INT --kill-after=2m 60m pnpm exec playwright test --shard=${{ matrix.shard }}/4 2>&1 | tee playwright-shard.log
+          playwright_status=${PIPESTATUS[0]}
+          set -e
+
+          transport_errors=$(grep -Ec 'Error: (read |write )?(ECONNRESET|EPIPE)' playwright-shard.log || true)
+          printf 'Playwright exit code: %s\n' "$playwright_status"
+          printf 'ECONNRESET/EPIPE errors: %s\n' "$transport_errors"
+          if (( transport_errors > 0 )); then
+            echo '::error::The e2e stack emitted transport reset errors; inspect playwright-shard.log.'
+            exit 1
+          fi
+          exit "$playwright_status"
 
       - name: Upload Playwright shard report
         # This single upload is deliberately after the soft timeout above. A
@@ -84,6 +99,7 @@ jobs:
           path: |
             blob-report/
             test-results/
+            playwright-shard.log
           retention-days: 7
           # An externally cancelled runner may not let Playwright flush a report.
           # Keep the diagnostics upload non-fatal; the merge job explicitly fails
