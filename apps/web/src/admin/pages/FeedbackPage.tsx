@@ -231,7 +231,13 @@ function FeedbackRow({
             >
               <option value="new">{t('admin.feedback.status.new')}</option>
               <option value="triaged">{t('admin.feedback.status.triaged')}</option>
-              {submission.status !== 'new' && submission.status !== 'triaged' ? (
+              <option value="working_on_it">{t('admin.feedback.status.working_on_it')}</option>
+              <option value="saved_as_future_idea">
+                {t('admin.feedback.status.saved_as_future_idea')}
+              </option>
+              {!['new', 'triaged', 'working_on_it', 'saved_as_future_idea'].includes(
+                submission.status,
+              ) ? (
                 <option value={submission.status}>
                   {t(`admin.feedback.status.${submission.status}`)}
                 </option>

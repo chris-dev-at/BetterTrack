@@ -169,6 +169,12 @@ test('changes status and reloads the persisted row', async () => {
   const status = await screen.findByRole('combobox', {
     name: 'Status for feedback from mobile_owner',
   });
+  expect(within(status).getByRole('option', { name: 'Working on it' })).toHaveValue(
+    'working_on_it',
+  );
+  expect(within(status).getByRole('option', { name: 'Saved as a future idea' })).toHaveValue(
+    'saved_as_future_idea',
+  );
   await user.selectOptions(status, 'triaged');
 
   await waitFor(() =>
