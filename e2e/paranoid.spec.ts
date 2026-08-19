@@ -404,6 +404,7 @@ test.describe('PD9 paranoid-mode end-to-end gate', () => {
         await fillPd9Secret(page, 'Vault passphrase', 'passphrase');
         await page.getByRole('button', { name: 'Unlock vault' }).click();
         await navigateInApp(page, '/control/connections');
+        await openVaultStorage(page);
 
         const retiredFold = await openFold(page, 'Retained server recovery copy');
         const purge = page.getByRole('button', { name: 'Delete retained server copy' });
