@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import request from 'supertest';
 import type { Application } from 'express';
 import { beforeEach, describe, expect, it } from 'vitest';
@@ -14,6 +14,7 @@ import { hashToken } from '../services/crypto/tokens';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
+const RESOURCE_ASSET_ID = '018f0000-0000-7000-8000-000000001345';
 
 let harness: TestHarness;
 
@@ -34,7 +35,12 @@ async function loginAgent(app: Application, identifier: string, password: string
 }
 
 /** Log in as a fresh user and mint a key with the given scopes; returns the token + key id. */
-async function mintKey(scopes: string[]): Promise<{ agent: Agent; token: string; id: string }> {
+async function mintKey(scopes: string[]): Promise<{
+  agent: Agent;
+  token: string;
+  id: string;
+  user: Awaited<ReturnType<TestHarness['seedUser']>>;
+}> {
   const user = await harness.seedUser();
   const agent = await loginAgent(harness.app, user.email, user.password);
   const res = await agent
@@ -43,7 +49,7 @@ async function mintKey(scopes: string[]): Promise<{ agent: Agent; token: string;
     .send({ name: 'test key', scopes });
   expect(res.status).toBe(201);
   const parsed = createApiKeyResponseSchema.parse(res.body);
-  return { agent, token: parsed.token, id: parsed.key.id };
+  return { agent, token: parsed.token, id: parsed.key.id, user };
 }
 
 async function auditActions(): Promise<string[]> {
@@ -123,6 +129,50 @@ describe('bearer scope enforcement', () => {
       .set('Authorization', `Bearer ${token}`)
       .send({ name: 'From API' });
     expect(res.status).toBe(201);
+  });
+
+  it('keeps a normal account resource path in the denied-scope audit record', async () => {
+    const { token, id } = await mintKey(['portfolio:read']);
+    const path = `/assets/${RESOURCE_ASSET_ID}/quote`;
+
+    const response = await request(harness.app)
+      .get(`/api/v1${path}`)
+      .set('Authorization', `Bearer ${token}`);
+    expect(response.status).toBe(403);
+
+    const [denial] = await harness.db
+      .select()
+      .from(schema.auditLog)
+      .where(
+        and(eq(schema.auditLog.targetId, id), eq(schema.auditLog.action, 'api_key.scope_denied')),
+      );
+    expect(denial?.meta).toMatchObject({ path });
+  });
+
+  it('keeps the denied audit record but redacts a paranoid account resource id', async () => {
+    const { token, id, user } = await mintKey(['portfolio:read']);
+    await harness.db
+      .update(schema.users)
+      .set({
+        privacyMode: 'paranoid',
+        paranoidMediaSet: ['drive'],
+        paranoidDriveAttestedVersion: 1,
+      })
+      .where(eq(schema.users.id, user.id));
+
+    const response = await request(harness.app)
+      .get(`/api/v1/assets/${RESOURCE_ASSET_ID}/quote`)
+      .set('Authorization', `Bearer ${token}`);
+    expect(response.status).toBe(403);
+
+    const [denial] = await harness.db
+      .select()
+      .from(schema.auditLog)
+      .where(
+        and(eq(schema.auditLog.targetId, id), eq(schema.auditLog.action, 'api_key.scope_denied')),
+      );
+    expect(denial?.meta).toMatchObject({ path: '[redacted-resource-path]' });
+    expect(JSON.stringify(denial)).not.toContain(RESOURCE_ASSET_ID);
   });
 });
 

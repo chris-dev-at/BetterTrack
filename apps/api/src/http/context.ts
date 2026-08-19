@@ -720,7 +720,9 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     ephemeralIdleMs: config.cookie.ephemeralIdleMs,
     ephemeralCapMs: config.cookie.ephemeralCapMs,
   });
-  const audit = createAuditService(auditRepo);
+  const audit = createAuditService(auditRepo, (userId, run) =>
+    withFreshLockedPrivacyModes(privacyLockDb, [userId], (modes) => run(modes.get(userId) ?? null)),
+  );
 
   // Typed domain event bus (§9, §4.5) — ephemeral cross-process fan-out for
   // realtime signals. It is built before credential services so lifecycle
@@ -751,7 +753,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   const apiKeys = createApiKeyService({
     repo: createApiKeyRepository(db),
     tierRepo: createApiKeyTierRepository(db),
-    requestLogRepo: createApiKeyRequestLogRepository(db),
+    requestLogRepo: createApiKeyRequestLogRepository(db, privacyLockDb),
     userRepo,
     events,
     audit,

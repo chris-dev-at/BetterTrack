@@ -601,7 +601,7 @@ const definitions = assembleRegisteredJobDefinitions({
   // V5-P10 API-key governance (issue 2/2): the daily retention sweep over the
   // bounded per-key request-log audit trail.
   createApiKeyRequestLogCleanupJob: createApiKeyRequestLogCleanupJob({
-    requestLog: createApiKeyRequestLogRepository(db),
+    requestLog: createApiKeyRequestLogRepository(db, lockDb),
   }),
   // V5-P14 PL-01: bounded daily retention sweep over identifying operational
   // trails. A zero-day config keeps that table forever and skips its branch;
