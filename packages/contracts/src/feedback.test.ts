@@ -162,6 +162,32 @@ describe('feedback contracts', () => {
     }
   });
 
+  it('reports the specific required-detail codes when outcome details are null', () => {
+    const declined = updateFeedbackStatusRequestSchema.safeParse({
+      status: 'declined',
+      declinedReason: null,
+    });
+    expect(declined.success).toBe(false);
+    if (!declined.success) {
+      expect(declined.error.issues[0]).toMatchObject({
+        path: ['declinedReason'],
+        params: { apiErrorCode: FEEDBACK_DECLINED_REASON_REQUIRED },
+      });
+    }
+
+    const shipped = updateFeedbackStatusRequestSchema.safeParse({
+      status: 'shipped',
+      shippedVersion: null,
+    });
+    expect(shipped.success).toBe(false);
+    if (!shipped.success) {
+      expect(shipped.error.issues[0]).toMatchObject({
+        path: ['shippedVersion'],
+        params: { apiErrorCode: FEEDBACK_SHIPPED_VERSION_REQUIRED },
+      });
+    }
+  });
+
   it('rejects outcome details attached to a different status', () => {
     const declinedReason = updateFeedbackStatusRequestSchema.safeParse({
       status: 'triaged',

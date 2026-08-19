@@ -43,7 +43,8 @@ export const EXPORT_TABLE_CLASSIFICATION: Record<string, TableClassification> = 
   notifications: exported('notifications'),
   notification_settings: exported('notificationSettings'),
   // User-authored product feedback and the bounded diagnostics they chose to
-  // submit are part of their account data, even though v1 has no read-back API.
+  // submit are part of their account data; caller-owned lifecycle read-back
+  // deliberately omits those diagnostics, while the full export preserves them.
   feedback: exported('feedback'),
   conglomerates: exported('conglomerates'),
   conglomerate_positions: exported('conglomeratePositions'),

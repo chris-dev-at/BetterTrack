@@ -186,7 +186,7 @@ describe('admin feedback inbox', () => {
     });
   });
 
-  it('returns specific contract errors for missing declined/shipped details', async () => {
+  it('returns specific contract errors for missing or null declined/shipped details', async () => {
     const { rows } = await seedQueue();
 
     const declined = await adminAgent
@@ -202,6 +202,24 @@ describe('admin feedback inbox', () => {
       .send({ status: 'shipped' });
     expect(shipped.status).toBe(400);
     expect(apiErrorSchema.parse(shipped.body).error.code).toBe(FEEDBACK_SHIPPED_VERSION_REQUIRED);
+
+    const declinedNull = await adminAgent
+      .patch(`/api/v1/admin/feedback/${rows[2]!.id}`)
+      .set(...XRW)
+      .send({ status: 'declined', declinedReason: null });
+    expect(declinedNull.status).toBe(400);
+    expect(apiErrorSchema.parse(declinedNull.body).error.code).toBe(
+      FEEDBACK_DECLINED_REASON_REQUIRED,
+    );
+
+    const shippedNull = await adminAgent
+      .patch(`/api/v1/admin/feedback/${rows[3]!.id}`)
+      .set(...XRW)
+      .send({ status: 'shipped', shippedVersion: null });
+    expect(shippedNull.status).toBe(400);
+    expect(apiErrorSchema.parse(shippedNull.body).error.code).toBe(
+      FEEDBACK_SHIPPED_VERSION_REQUIRED,
+    );
   });
 
   it('keeps list and status routes unreachable to a signed-in non-admin', async () => {
