@@ -43,7 +43,11 @@ test('account deletion: re-auth + typed confirm deletes the account, revokes ses
     await newChat.getByRole('button', { name: friend.username }).click();
     await owner.page.getByPlaceholder('Message').fill(messageBody);
     await owner.page.getByRole('button', { name: 'Send' }).click();
-    await expect(owner.page.getByText(messageBody)).toBeVisible({ timeout: 15_000 });
+    await expect(
+      owner.page
+        .getByRole('log', { name: `Messages with ${friend.username}` })
+        .getByText(messageBody, { exact: true }),
+    ).toBeVisible({ timeout: 15_000 });
 
     // Danger-zone deletion: the stable public URL Google Play points at. The
     // form gates on typed confirmation + current password server-side; on
@@ -74,7 +78,9 @@ test('account deletion: re-auth + typed confirm deletes the account, revokes ses
 
     await deletedRow.first().click();
     await expect(
-      friend.page.getByLabel('Messages with Deleted user').getByText(messageBody, { exact: true }),
+      friend.page
+        .getByRole('log', { name: 'Messages with Deleted user' })
+        .getByText(messageBody, { exact: true }),
     ).toBeVisible({ timeout: 15_000 });
     await expect(friend.page.getByText(/this account no longer exists/i)).toBeVisible();
     await expect(friend.page.getByPlaceholder('Message')).toHaveCount(0);
