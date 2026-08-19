@@ -3,7 +3,11 @@ import { beforeEach, describe, expect, it } from 'vitest';
 
 import { createOAuthRepository } from '../data/repositories/oauthRepository';
 import * as schema from '../data/schema';
-import { FIRST_PARTY_CLIENTS, seedFirstPartyClients } from '../services/oauth/firstPartyClients';
+import {
+  BETTERTRACK_MOBILE_GOOGLE_LINK_REDIRECT_URI,
+  FIRST_PARTY_CLIENTS,
+  seedFirstPartyClients,
+} from '../services/oauth/firstPartyClients';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 /**
@@ -18,7 +22,7 @@ import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 const MOBILE = FIRST_PARTY_CLIENTS.find((c) => c.clientId === 'btc_IbT1mzw_7kBiPHPkGfaE0Q')!;
 const CEILING = [...MOBILE.scopeCeiling];
-const CANONICAL_URI = MOBILE.redirectUris[0]!;
+const CANONICAL_URIS = [...MOBILE.redirectUris];
 
 let harness: TestHarness;
 let repo: ReturnType<typeof createOAuthRepository>;
@@ -46,7 +50,7 @@ async function seedExistingMobile(input: {
     clientId: MOBILE.clientId,
     name: MOBILE.name,
     clientSecretHash: null,
-    redirectUris: input.redirectUris ?? [CANONICAL_URI],
+    redirectUris: input.redirectUris ?? CANONICAL_URIS,
     scopes: input.scopes,
     isPublic: true,
     isFirstParty: true,
@@ -65,7 +69,8 @@ describe('seedFirstPartyClients (#395)', () => {
 
     const row = (await clientRow(MOBILE.clientId))!;
     expect(row.name).toBe(MOBILE.name);
-    expect(row.redirectUris).toEqual([CANONICAL_URI]);
+    expect(row.redirectUris).toEqual(CANONICAL_URIS);
+    expect(row.redirectUris).toContain(BETTERTRACK_MOBILE_GOOGLE_LINK_REDIRECT_URI);
     expect(row.scopes).toEqual(CEILING);
     expect(row.isPublic).toBe(true);
     expect(row.isFirstParty).toBe(true);
@@ -134,7 +139,7 @@ describe('seedFirstPartyClients (#395)', () => {
     await seedFirstPartyClients(repo);
 
     const row = (await clientRow(MOBILE.clientId))!;
-    expect(row.redirectUris).toEqual([extraUri, CANONICAL_URI]); // existing first, canonical appended
+    expect(row.redirectUris).toEqual([extraUri, ...CANONICAL_URIS]); // existing first, canonical appended
   });
 
   it('leaves an unrelated OAuth client completely untouched', async () => {

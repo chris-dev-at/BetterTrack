@@ -14,6 +14,14 @@ import { resetProgressiveLimiter } from '../security/progressiveLimiter';
 export const LOGIN_ACCOUNT_NAMESPACE = 'login_account';
 
 /**
+ * Per-account issuance budget for bearer-started Google LINK tickets (#1328).
+ * The public callback is independently protected by the login per-IP HTTP rail;
+ * this namespace prevents a distributed caller from minting ceremonies for one
+ * compromised account without consuming the normal login failure budget.
+ */
+export const GOOGLE_LINK_ACCOUNT_NAMESPACE = 'google_link_account';
+
+/**
  * Per-account wrong-second-factor throttle for login and session-authenticated
  * TOTP re-auth (§6.1, §10, §13.2 V2-P5). Independent of the password-failure
  * counter above and of the per-IP request limiter the HTTP middleware keeps: a
@@ -130,6 +138,13 @@ export const rememberedDeviceKey = (deviceId: string) =>
 /** Reverse index that lets account deletion enumerate every remembered device. */
 export const rememberedDevicesForUserKey = (userId: string) => `remember_dev_user:${userId}`;
 
+/**
+ * Display-only creation/last-seen metadata for remembered-device management.
+ * Keyed by the raw server-side id, expires with the binding, and is deleted by
+ * every binding-retirement path. It never contains the id itself.
+ */
+export const rememberedDeviceMetadataKey = (deviceId: string) => `remember_dev_meta:${deviceId}`;
+
 /** Matches the fixed 400-day lifetime of the signed `bt_rdid` browser cookie. */
 export const REMEMBERED_DEVICE_TTL_SECONDS = 400 * 24 * 60 * 60;
 
@@ -183,7 +198,11 @@ async function deleteRememberedDeviceIds(
   for (const batch of rememberedDeviceBatches([...deviceIds])) {
     const transaction = redis.multi();
     for (const deviceId of batch) {
-      transaction.del(rememberedDeviceKey(deviceId), pinQuickAuthMarkerKey(deviceId));
+      transaction.del(
+        rememberedDeviceKey(deviceId),
+        rememberedDeviceMetadataKey(deviceId),
+        pinQuickAuthMarkerKey(deviceId),
+      );
     }
     await transaction.exec();
   }
@@ -297,7 +316,11 @@ async function retireRememberedBindings(
   for (const batch of rememberedDeviceBatches(bindings)) {
     const transaction = redis.multi();
     for (const { deviceId, userId } of batch) {
-      transaction.del(rememberedDeviceKey(deviceId), pinQuickAuthMarkerKey(deviceId));
+      transaction.del(
+        rememberedDeviceKey(deviceId),
+        rememberedDeviceMetadataKey(deviceId),
+        pinQuickAuthMarkerKey(deviceId),
+      );
       transaction.srem(rememberedDevicesForUserKey(userId), deviceId);
     }
     await transaction.exec();
