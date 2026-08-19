@@ -80,13 +80,23 @@ jobs:
           set -e
 
           transport_errors=$(grep -Ec '(ECONNRESET|EPIPE)' playwright-shard.log || true)
+          totp_errors=$(grep -Ec 'TWO_FACTOR_INVALID_CODE' playwright-shard.log || true)
+          rate_limit_errors=$(grep -Ec 'RATE_LIMITED' playwright-shard.log || true)
           printf 'Playwright exit code: %s\n' "$playwright_status"
           printf 'ECONNRESET/EPIPE errors: %s\n' "$transport_errors"
+          printf 'TWO_FACTOR_INVALID_CODE errors: %s\n' "$totp_errors"
+          printf 'RATE_LIMITED errors: %s\n' "$rate_limit_errors"
           if (( transport_errors > 0 )); then
             echo '::error::The e2e stack emitted transport reset errors; inspect playwright-shard.log.'
-            if (( playwright_status == 0 )); then
-              exit 1
-            fi
+          fi
+          if (( totp_errors > 0 )); then
+            echo '::error::The e2e stack emitted invalid-TOTP errors; inspect playwright-shard.log.'
+          fi
+          if (( rate_limit_errors > 0 )); then
+            echo '::error::The e2e stack emitted rate-limit errors; inspect playwright-shard.log.'
+          fi
+          if (( playwright_status == 0 && (transport_errors > 0 || totp_errors > 0 || rate_limit_errors > 0) )); then
+            exit 1
           fi
           exit "$playwright_status"
 
@@ -145,6 +155,70 @@ jobs:
             exit 1
           fi
           printf 'Merging %s Playwright blob report(s).\n' "${#reports[@]}"
+
+      - name: Verify PD9 cleartext proof
+        shell: bash
+        run: |
+          shopt -s nullglob
+          reports=(all-blob-reports/blob-report/*.zip)
+          combined_report=$(mktemp)
+          trap 'rm -f "$combined_report"' EXIT
+          for report in "${reports[@]}"; do
+            unzip -p "$report" report.jsonl >> "$combined_report"
+          done
+
+          node - "$combined_report" <<'NODE'
+          const { appendFileSync, readFileSync } = require('node:fs');
+
+          const reportPath = process.argv[2];
+          const records = readFileSync(reportPath, 'utf8')
+            .split('\n')
+            .filter(Boolean)
+            .map((line) => JSON.parse(line));
+          const proofTitle = '[PD9-A2] complete DB cleartext probe';
+
+          const successfulResults = new Set(
+            records
+              .filter(
+                (record) =>
+                  record.method === 'onTestEnd' && record.params?.result?.status === 'passed',
+              )
+              .map((record) => record.params.result.id),
+          );
+          const completedSteps = new Set(
+            records
+              .filter(
+                (record) =>
+                  record.method === 'onStepEnd' && !record.params?.step?.error,
+              )
+              .map(
+                (record) =>
+                  `${record.params.testId}:${record.params.resultId}:${record.params.step.id}`,
+              ),
+          );
+          const successfulProofs = records.filter((record) => {
+            if (
+              record.method !== 'onStepBegin' ||
+              record.params?.step?.title !== proofTitle ||
+              !successfulResults.has(record.params.resultId)
+            ) {
+              return false;
+            }
+            return completedSteps.has(
+              `${record.params.testId}:${record.params.resultId}:${record.params.step.id}`,
+            );
+          });
+
+          if (successfulProofs.length !== 1) {
+            throw new Error(
+              `Expected one successful ${proofTitle} step; found ${successfulProofs.length}.`,
+            );
+          }
+
+          const message = `Verified ${proofTitle} at ${process.env.GITHUB_SHA}.`;
+          console.log(message);
+          appendFileSync(process.env.GITHUB_STEP_SUMMARY, `- ${message}\n`);
+          NODE
 
       - name: Merge Playwright reports
         run: pnpm exec playwright merge-reports --reporter=html,github,list ./all-blob-reports/blob-report
