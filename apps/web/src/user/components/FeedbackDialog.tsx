@@ -2,6 +2,7 @@ import { useLayoutEffect, useRef, useState, type FormEvent } from 'react';
 import { useLocation } from 'react-router-dom';
 
 import {
+  FEEDBACK_CONTEXT_MAX_BYTES,
   FEEDBACK_MESSAGE_MAX_LENGTH,
   FEEDBACK_SUBJECT_MAX_LENGTH,
   type CreateFeedbackRequest,
@@ -20,6 +21,22 @@ type SubmissionState = 'idle' | 'pending' | 'success' | 'error';
 /** The three API categories, kept in the server's triage order. */
 const CATEGORIES: readonly FeedbackCategory[] = ['feature', 'bug', 'other'];
 
+type AutoFeedbackContext = {
+  appVersion: string;
+  browser: string;
+  locale: string;
+  platform: string;
+  screen: string;
+};
+
+const CONTEXT_TRUNCATION_ORDER: readonly (keyof AutoFeedbackContext)[] = [
+  'browser',
+  'screen',
+  'appVersion',
+  'locale',
+  'platform',
+];
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
@@ -29,6 +46,48 @@ function hasValidationFieldError(details: unknown, field: string): boolean {
 
   const fieldError = details.fieldErrors[field];
   return Array.isArray(fieldError) && fieldError.length > 0;
+}
+
+function serializedByteLength(value: unknown): number {
+  return new TextEncoder().encode(JSON.stringify(value)).length;
+}
+
+function truncateContextField(
+  context: AutoFeedbackContext,
+  field: keyof AutoFeedbackContext,
+): void {
+  const characters = Array.from(context[field]);
+  let lowerBound = 0;
+  let upperBound = characters.length;
+
+  while (lowerBound < upperBound) {
+    const candidateLength = Math.ceil((lowerBound + upperBound) / 2);
+    context[field] = characters.slice(0, candidateLength).join('');
+
+    if (serializedByteLength(context) <= FEEDBACK_CONTEXT_MAX_BYTES) {
+      lowerBound = candidateLength;
+    } else {
+      upperBound = candidateLength - 1;
+    }
+  }
+
+  context[field] = characters.slice(0, lowerBound).join('');
+}
+
+function buildFeedbackContext({
+  appVersion,
+  browser,
+  locale,
+  screen,
+}: Omit<AutoFeedbackContext, 'platform'>): AutoFeedbackContext {
+  const context: AutoFeedbackContext = { appVersion, browser, locale, platform: 'web', screen };
+
+  for (const field of CONTEXT_TRUNCATION_ORDER) {
+    if (serializedByteLength(context) <= FEEDBACK_CONTEXT_MAX_BYTES) return context;
+    truncateContextField(context, field);
+  }
+
+  return context;
 }
 
 function feedbackErrorMessage(t: ReturnType<typeof useT>, error: unknown): string {
@@ -41,6 +100,7 @@ function feedbackErrorMessage(t: ReturnType<typeof useT>, error: unknown): strin
         return t('feedback.subjectTooLong', { max: FEEDBACK_SUBJECT_MAX_LENGTH });
       }
       if (hasValidationFieldError(error.details, 'category')) return t('feedback.categoryRequired');
+      if (hasValidationFieldError(error.details, 'context')) return t('feedback.contextTooLong');
     }
 
     // API errors with a dedicated message (for example, rate limits) remain
@@ -67,8 +127,6 @@ export function FeedbackDialog({ onClose, screen }: { onClose: () => void; scree
   const [state, setState] = useState<SubmissionState>('idle');
   const [submissionError, setSubmissionError] = useState<string | null>(null);
   const confirmationCloseRef = useRef<HTMLButtonElement>(null);
-  const normalizedSubject = subject.trim();
-  const normalizedMessage = message.trim();
 
   // The dialog remains mounted when the form becomes its confirmation state,
   // so its mount-time focus trap does not see the new action. Keep focus in
@@ -79,13 +137,13 @@ export function FeedbackDialog({ onClose, screen }: { onClose: () => void; scree
 
   const categoryError = attempted && category === '' ? t('feedback.categoryRequired') : undefined;
   const subjectError =
-    normalizedSubject.length > FEEDBACK_SUBJECT_MAX_LENGTH
+    subject.length > FEEDBACK_SUBJECT_MAX_LENGTH
       ? t('feedback.subjectTooLong', { max: FEEDBACK_SUBJECT_MAX_LENGTH })
       : undefined;
   const messageError =
-    normalizedMessage.length > FEEDBACK_MESSAGE_MAX_LENGTH
+    message.length > FEEDBACK_MESSAGE_MAX_LENGTH
       ? t('feedback.messageTooLong', { max: FEEDBACK_MESSAGE_MAX_LENGTH })
-      : attempted && normalizedMessage.length === 0
+      : attempted && message.length === 0
         ? t('feedback.messageRequired')
         : undefined;
 
@@ -102,9 +160,9 @@ export function FeedbackDialog({ onClose, screen }: { onClose: () => void; scree
 
     if (
       category === '' ||
-      normalizedSubject.length > FEEDBACK_SUBJECT_MAX_LENGTH ||
-      normalizedMessage.length === 0 ||
-      normalizedMessage.length > FEEDBACK_MESSAGE_MAX_LENGTH ||
+      subject.length > FEEDBACK_SUBJECT_MAX_LENGTH ||
+      message.length === 0 ||
+      message.length > FEEDBACK_MESSAGE_MAX_LENGTH ||
       state === 'pending'
     ) {
       return;
@@ -112,15 +170,14 @@ export function FeedbackDialog({ onClose, screen }: { onClose: () => void; scree
 
     const body: CreateFeedbackRequest = {
       category,
-      message: normalizedMessage,
-      ...(normalizedSubject === '' ? {} : { subject: normalizedSubject }),
-      context: {
-        platform: 'web',
+      message,
+      ...(subject === '' ? {} : { subject }),
+      context: buildFeedbackContext({
         appVersion: typeof __APP_RELEASE__ === 'string' ? __APP_RELEASE__ : 'unknown',
         browser: typeof navigator === 'undefined' ? 'unknown' : navigator.userAgent,
         locale,
         screen: screen ?? `${location.pathname}${location.search}${location.hash}`,
-      },
+      }),
     };
 
     setState('pending');

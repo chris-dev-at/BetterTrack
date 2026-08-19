@@ -3,7 +3,7 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, expect, test, vi } from 'vitest';
 
-import { FEEDBACK_MESSAGE_MAX_LENGTH } from '@bettertrack/contracts';
+import { FEEDBACK_CONTEXT_MAX_BYTES, FEEDBACK_MESSAGE_MAX_LENGTH } from '@bettertrack/contracts';
 
 vi.mock('../../lib/feedbackApi', () => ({ submitFeedback: vi.fn() }));
 
@@ -64,8 +64,8 @@ test('at 390 px submits feedback from the Settings panel with client context', a
   await waitFor(() =>
     expect(submitFeedback).toHaveBeenCalledWith({
       category: 'feature',
-      subject: 'A quicker import flow',
-      message: 'Please add a shortcut.',
+      subject: '  A quicker import flow  ',
+      message: '  Please add a shortcut.  ',
       context: {
         platform: 'web',
         appVersion: expect.any(String),
@@ -180,6 +180,25 @@ test('shows a localized API validation error and keeps typed feedback after a fa
   expect(screen.getByLabelText('Message')).toHaveValue('The typed report must remain here.');
 });
 
+test('shows a localized context validation error', async () => {
+  vi.mocked(submitFeedback).mockRejectedValue(
+    new ApiError(400, 'VALIDATION_ERROR', 'Invalid request.', {
+      fieldErrors: { context: ['Context must serialise to at most 16384 bytes.'] },
+      formErrors: [],
+    }),
+  );
+  const user = userEvent.setup();
+  renderDialog();
+
+  await user.selectOptions(screen.getByLabelText('Category'), 'other');
+  await user.type(screen.getByLabelText('Message'), 'The service rejected the diagnostics.');
+  await user.click(screen.getByRole('button', { name: 'Submit feedback' }));
+
+  expect(
+    await screen.findByText('The attached technical details are too large. Please try again.'),
+  ).toBeInTheDocument();
+});
+
 test('falls back safely when validation details do not contain field error arrays', async () => {
   vi.mocked(submitFeedback).mockRejectedValue(
     new ApiError(400, 'VALIDATION_ERROR', 'Invalid request.', {
@@ -198,14 +217,47 @@ test('falls back safely when validation details do not contain field error array
   ).toBeInTheDocument();
 });
 
-test('rejects a whitespace-only message before submitting', async () => {
+test('preserves supplied feedback text verbatim, including whitespace-only values', async () => {
+  vi.mocked(submitFeedback).mockResolvedValue({
+    id: '00000000-0000-4000-8000-000000000001',
+    createdAt: '2026-08-18T12:00:00.000Z',
+  });
   const user = userEvent.setup();
   renderDialog();
 
   await user.selectOptions(screen.getByLabelText('Category'), 'other');
-  await user.type(screen.getByLabelText('Message'), '   ');
+  await user.type(screen.getByLabelText('Subject (optional)'), '   ');
+  await user.type(screen.getByLabelText('Message'), ' \t ');
   await user.click(screen.getByRole('button', { name: 'Submit feedback' }));
 
-  expect(submitFeedback).not.toHaveBeenCalled();
-  expect(await screen.findByText('Write a message.')).toBeInTheDocument();
+  await waitFor(() => expect(submitFeedback).toHaveBeenCalledOnce());
+  expect(vi.mocked(submitFeedback).mock.calls[0]?.[0]).toEqual(
+    expect.objectContaining({
+      category: 'other',
+      message: ' \t ',
+      subject: '   ',
+    }),
+  );
+});
+
+test('bounds automatically attached diagnostics to the context byte limit', async () => {
+  vi.mocked(submitFeedback).mockResolvedValue({
+    id: '00000000-0000-4000-8000-000000000001',
+    createdAt: '2026-08-18T12:00:00.000Z',
+  });
+  const user = userEvent.setup();
+  const longScreen = `/portfolio?query=${'x'.repeat(FEEDBACK_CONTEXT_MAX_BYTES)}`;
+  renderFeedbackPanel(longScreen);
+
+  await user.click(screen.getByRole('button', { name: 'Write feedback' }));
+  await user.selectOptions(screen.getByLabelText('Category'), 'bug');
+  await user.type(screen.getByLabelText('Message'), 'The route should not block this report.');
+  await user.click(screen.getByRole('button', { name: 'Submit feedback' }));
+
+  await waitFor(() => expect(submitFeedback).toHaveBeenCalledOnce());
+  const request = vi.mocked(submitFeedback).mock.calls[0]?.[0];
+  expect(request?.context?.screen).toMatch(/^\/portfolio\?query=/);
+  expect(new TextEncoder().encode(JSON.stringify(request?.context)).length).toBeLessThanOrEqual(
+    FEEDBACK_CONTEXT_MAX_BYTES,
+  );
 });

@@ -5753,6 +5753,7 @@
     "messageRequired": "Schreibe eine Nachricht.",
     "subjectTooLong": "Dein Betreff darf höchstens {{max}} Zeichen haben.",
     "messageTooLong": "Deine Nachricht darf höchstens {{max}} Zeichen haben.",
+    "contextTooLong": "Die angehängten technischen Details sind zu umfangreich. Bitte versuche es erneut.",
     "submit": "Feedback senden",
     "submitting": "Wird gesendet…",
     "success": "Danke — dein Feedback wurde gesendet.",
