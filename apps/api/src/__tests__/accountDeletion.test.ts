@@ -15,6 +15,7 @@ import * as schema from '../data/schema';
 import {
   pinQuickAuthMarkerKey,
   rememberedDeviceKey,
+  rememberedDeviceMetadataKey,
   rememberedDevicesForUserKey,
 } from '../services/auth/loginThrottle';
 import { generateTotpCode, TOTP_STEP_SECONDS } from '../services/auth/totp';
@@ -334,6 +335,8 @@ describe('DELETE /account — hard delete (acceptance sweep)', () => {
     expect(await harness.ctx.redis.get(rememberedDeviceKey(first.deviceId))).toBeNull();
     expect(await harness.ctx.redis.get(rememberedDeviceKey(second.deviceId))).toBeNull();
     expect(await harness.ctx.redis.get(rememberedDeviceKey(legacyDeviceId))).toBeNull();
+    expect(await harness.ctx.redis.get(rememberedDeviceMetadataKey(first.deviceId))).toBeNull();
+    expect(await harness.ctx.redis.get(rememberedDeviceMetadataKey(second.deviceId))).toBeNull();
     expect(await harness.ctx.redis.get(pinQuickAuthMarkerKey(first.deviceId))).toBeNull();
     expect(await harness.ctx.redis.get(pinQuickAuthMarkerKey(second.deviceId))).toBeNull();
     expect(await harness.ctx.redis.get(pinQuickAuthMarkerKey(legacyDeviceId))).toBeNull();

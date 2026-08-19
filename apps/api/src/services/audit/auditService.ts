@@ -96,6 +96,12 @@ export const AuditAction = {
   RegistrationRequestApproved: 'registration.approved',
   RegistrationRequestRejected: 'registration.rejected',
   // Federated (Google) sign-in identity link/unlink (§13.4 V4-P4b).
+  /** Bearer/cookie caller minted a native Google LINK ceremony (#1328). */
+  ExternalIdentityLinkStarted: 'external_identity.link_started',
+  /** Native Google LINK ceremony completed (including an idempotent same-link). */
+  ExternalIdentityLinkSucceeded: 'external_identity.link_succeeded',
+  /** Native Google LINK ceremony was refused, invalid, expired or rate-limited. */
+  ExternalIdentityLinkFailed: 'external_identity.link_failed',
   ExternalIdentityLinked: 'external_identity.linked',
   ExternalIdentityUnlinked: 'external_identity.unlinked',
   EmailSendFailed: 'email.send_failed',
