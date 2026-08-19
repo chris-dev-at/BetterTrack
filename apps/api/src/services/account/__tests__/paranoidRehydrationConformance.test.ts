@@ -116,8 +116,11 @@ function strictPortfolioEntity(row: typeof portfolios.$inferSelect) {
     visibility: row.visibility,
     sortOrder: row.sortOrder,
     defaultPayFromCash: row.defaultPayFromCash,
-    vaultId: row.vaultId,
-    alias: row.alias,
+    // Vestigial vault-v2 document fields (PROJECTPLAN §16, 2026-08-19): the
+    // columns are gone, the `.strict()` document keeps the keys for backward
+    // compatibility, so a freshly captured entity always writes them as null.
+    vaultId: null,
+    alias: null,
     archivedAt: row.archivedAt?.toISOString() ?? null,
   });
 }

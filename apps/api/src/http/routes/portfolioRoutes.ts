@@ -1,4 +1,4 @@
-import { Router, type RequestHandler } from 'express';
+import { Router } from 'express';
 
 import {
   cashEntryRequestSchema,
@@ -27,13 +27,7 @@ import {
   updateCashSourceRequestSchema,
   updatePortfolioRequestSchema,
   updateTaxSettingsRequestSchema,
-  portfolioVaultStateSchema,
-  setPortfolioAliasRequestSchema,
   updateTransactionRequestSchema,
-  vaultJoinRequestSchema,
-  vaultJoinResponseSchema,
-  vaultLeaveRequestSchema,
-  vaultLeaveResponseSchema,
   type CashEntryRequest,
   type CashMovementsQuery,
   type CashPreviewRequest,
@@ -58,13 +52,9 @@ import {
   type UpdatePortfolioRequest,
   type UpdatePortfolioResponse,
   type UpdateTaxSettingsRequest,
-  type SetPortfolioAliasRequest,
   type UpdateTransactionRequest,
-  type VaultJoinRequest,
-  type VaultLeaveRequest,
 } from '@bettertrack/contracts';
 
-import { forbidden } from '../../errors';
 import { serializeTaxYearReportCsv, taxReportCsvFilename } from '../../services/tax/taxReportCsv';
 import { conditionalGet, CONDITIONAL_LAST_MODIFIED } from '../middleware/conditional';
 import { createIdempotency, withIdempotencyExecution } from '../middleware/idempotency';
@@ -715,78 +705,6 @@ export function createPortfolioRouter(ctx: AppContext): Router {
       await ctx.mirror.submitTransactionDelete(req.authUser!.id, portfolioId, txId, { baseSeq });
       res.status(204).send();
     }),
-  );
-
-  // ── Vaults v2 transitions (`docs/VAULTS_V2_DESIGN.md` §3) ─────────────────
-  // Both are OWNING-BROWSER-SESSION only. `bearerAuth.resolvePolicy` pins them
-  // ahead of the `/portfolios` module row, and the router-local guard below
-  // repeats the decision so a policy-table regression alone cannot expose
-  // either. Join hard-deletes this portfolio's cleartext; leave writes a
-  // caller-authored document back into the account. Neither may ride a token.
-  const requireOwnerBrowserSessionForVault: RequestHandler = (req, _res, next) => {
-    if (req.apiKey) {
-      next(forbidden('This endpoint is not accessible with an API key.', 'API_KEY_FORBIDDEN'));
-      return;
-    }
-    next();
-  };
-
-  // POST /portfolios/:portfolioId/vault — JOIN. One transaction: store the
-  // client-encrypted blob, purge this portfolio's cleartext rows, set vault_id.
-  router.post(
-    '/:portfolioId/vault',
-    requireOwnerBrowserSessionForVault,
-    validateParams(portfolioIdParamSchema),
-    validateBody(vaultJoinRequestSchema),
-    async (req, res) => {
-      const { portfolioId } = req.valid?.params as { portfolioId: string };
-      const result = await ctx.vaults.join(
-        req.authUser!.id,
-        portfolioId,
-        req.valid?.body as VaultJoinRequest,
-        req.ip ?? null,
-      );
-      res.status(200).json(vaultJoinResponseSchema.parse(result));
-    },
-  );
-
-  // PATCH /portfolios/:portfolioId/alias — the split-out rename for a VAULTED
-  // portfolio. The ordinary rename route also carries `visibility`, and sharing
-  // a vaulted portfolio must stay unreachable, so that whole route is killed
-  // while vaulted; this one writes the cleartext alias column and nothing else.
-  // A normal portfolio is refused (409) — its rename stays where it always was.
-  router.patch(
-    '/:portfolioId/alias',
-    requireOwnerBrowserSessionForVault,
-    validateParams(portfolioIdParamSchema),
-    validateBody(setPortfolioAliasRequestSchema),
-    async (req, res) => {
-      const { portfolioId } = req.valid?.params as { portfolioId: string };
-      const { alias } = req.valid?.body as SetPortfolioAliasRequest;
-      const state = await ctx.vaults.setAlias(req.authUser!.id, portfolioId, alias, req.ip ?? null);
-      res.json(portfolioVaultStateSchema.parse(state));
-    },
-  );
-
-  // DELETE /portfolios/:portfolioId/vault — LEAVE. The reverse, equally atomic:
-  // repopulate from the posted plaintext rows, clear vault_id, retire the blob.
-  // A DELETE with a body is deliberate — it mirrors the account-level disable,
-  // where the restore document IS the request.
-  router.delete(
-    '/:portfolioId/vault',
-    requireOwnerBrowserSessionForVault,
-    validateParams(portfolioIdParamSchema),
-    validateBody(vaultLeaveRequestSchema),
-    async (req, res) => {
-      const { portfolioId } = req.valid?.params as { portfolioId: string };
-      const result = await ctx.vaults.leave(
-        req.authUser!.id,
-        portfolioId,
-        req.valid?.body as VaultLeaveRequest,
-        req.ip ?? null,
-      );
-      res.status(200).json(vaultLeaveResponseSchema.parse(result));
-    },
   );
 
   return router;

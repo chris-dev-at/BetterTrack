@@ -191,17 +191,6 @@ user/vault/ui/ParanoidEnableWizard.tsx
 user/vault/ui/ParanoidSurfaceGate.tsx
 user/vault/ui/VaultSyncChip.tsx
 user/vault/ui/VaultUnlockGate.tsx
-user/vault/v2/ui/CreateVaultWizard.tsx
-user/vault/v2/ui/LockedPortfolioRow.tsx
-user/vault/v2/ui/MoveIntoVaultDialog.tsx
-user/vault/v2/ui/MoveOutOfVaultDialog.tsx
-user/vault/v2/ui/PortfolioVaultSection.tsx
-user/vault/v2/ui/VaultHowItWorksPage.tsx
-user/vault/v2/ui/VaultKeyDiagram.tsx
-user/vault/v2/ui/VaultQrImportDialog.tsx
-user/vault/v2/ui/VaultQrShareDialog.tsx
-user/vault/v2/ui/VaultUnlockDialog.tsx
-user/vault/v2/ui/VaultsProvider.tsx
 user/workboard/BudgetCalculator.tsx
 user/workboard/ComparisonPage.tsx
 user/workboard/ConglomerateBuilderPage.tsx
@@ -272,7 +261,6 @@ const EXPECTED_V5_ROUTES = baseline(`
 /register
 /s/:token
 /u/:username
-/vault/how-it-works
 /workbench
 /workbench/blueprints
 /workbench/blueprints/:id
