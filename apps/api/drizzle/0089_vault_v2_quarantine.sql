@@ -111,10 +111,19 @@ ALTER TABLE "vault_docs" RENAME TO "zz_vault_v2_backup_vault_docs";
 ALTER TABLE "vault_leave_receipts" RENAME TO "zz_vault_v2_backup_vault_leave_receipts";
 --> statement-breakpoint
 
--- ── 5. Rename the indexes off the live namespace ────────────────────────────
--- Index and constraint names do not follow a table rename. Freeing the original
--- names keeps the quarantine from colliding with anything later, and makes a
--- stray `vaults_*` object in `pg_indexes` a real signal rather than residue.
+-- ── 5. Rename the secondary indexes off the live namespace ─────────────────
+-- Index and constraint names do not follow a table rename, so the quarantine
+-- would otherwise keep sitting on the original names. The renames below cover
+-- the SECONDARY indexes only.
+--
+-- Not exhaustive, deliberately: the three primary-key constraints keep their
+-- original names (`vaults_pkey`, `vault_docs_pkey`,
+-- `vault_leave_receipts_pkey`), so those identifiers stay occupied until the
+-- tables are dropped. That is accepted rather than fixed — renaming a PK
+-- constraint buys nothing here (the ops script drops these tables outright) and
+-- is pure added risk on a migration that runs at deploy. A future table named
+-- `vaults` would therefore need its own PK constraint name, which is a
+-- deliberate collision with a quarantine that is meant to be temporary.
 ALTER INDEX IF EXISTS "vaults_user_name_unique" RENAME TO "zz_vault_v2_backup_vaults_user_name_unique";
 --> statement-breakpoint
 ALTER INDEX IF EXISTS "vaults_user_idx" RENAME TO "zz_vault_v2_backup_vaults_user_idx";

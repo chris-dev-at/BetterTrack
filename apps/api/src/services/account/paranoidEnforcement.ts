@@ -1212,13 +1212,18 @@ export const PARANOID_KEPT_ROUTE_RULES: readonly ParanoidExemptRouteRule[] = [
   ...keptRoutes(
     'These API-root opaque mounts are the known authentication, audit, rate-limit, request-policy and paranoid-capability middleware; concrete operations are classified separately.',
     [
-      // Ten now: #884 added the registry-driven paranoid route guard
-      // ({@link createParanoidRouteGuard}) after the request-policy middleware,
-      // and Vaults v2 adds its PORTFOLIO-scoped counterpart
-      // ({@link createVaultedPortfolioRouteGuard}) immediately after that. Both
-      // are the enforcement points for the killed route families below, so both
-      // are themselves kept — a guard that killed its own mount would 403 every
-      // request a paranoid account makes.
+      // The API-root cross-cutting middleware chain, including the
+      // registry-driven paranoid route guard ({@link createParanoidRouteGuard})
+      // that #884 added after the request-policy middleware. That guard is the
+      // enforcement point for the killed route families below, so it is itself
+      // kept — a guard that killed its own mount would 403 every request a
+      // paranoid account makes.
+      //
+      // The count is a deliberate over-approximation: the census requires every
+      // mounted opaque leaf to be classified but tolerates a spare rule, so this
+      // stays stable across middleware added or removed at this mount. It shrank
+      // by one real mount when the per-portfolio vault v2 route guard was
+      // removed with the rest of that surface (PROJECTPLAN §16, 2026-08-19).
       ...Array.from({ length: 10 }, (_, index) =>
         productionOpaqueRoute({
           mountedPath: '/api/v1',
