@@ -9,13 +9,14 @@ import {
   apiKeyTierSchema,
 } from '@bettertrack/contracts';
 
-import { apiKeyRequestLog, apiKeyTiers } from '../data/schema';
+import { apiKeyRequestLog, apiKeyTiers, users } from '../data/schema';
 import { createApiKeyRequestLogRepository } from '../data/repositories/apiKeyRequestLogRepository';
 import { createApiKeyService } from '../services/apiKeys/apiKeyService';
 import { API_KEY_REQUEST_LOG_RETENTION_DAYS, createApiKeyRequestLogCleanupJob } from '../jobs';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
+const RESOURCE_ASSET_ID = '018f0000-0000-7000-8000-000000001345';
 
 let harness: TestHarness;
 
@@ -194,7 +195,7 @@ describe('per-key request-log audit trail (§13.5 V5-P10, issue 2/2)', () => {
       .send({ name: 'x', baseCurrency: 'EUR' });
 
     // The capture is fire-and-forget on `finish`; poll briefly for the rows.
-    const repo = createApiKeyRequestLogRepository(harness.db);
+    const repo = createApiKeyRequestLogRepository(harness.db, harness.db);
     let rows = await repo.listForKey(keyId, 50);
     for (let i = 0; i < 40 && rows.length < 2; i += 1) {
       await new Promise((r) => setTimeout(r, 10));
@@ -202,6 +203,46 @@ describe('per-key request-log audit trail (§13.5 V5-P10, issue 2/2)', () => {
     }
     expect(rows.length).toBeGreaterThanOrEqual(2);
     expect(rows.some((r) => r.status === 403)).toBe(true);
+  });
+
+  it('keeps the concrete resource path for a normal account', async () => {
+    const { token, keyId } = await mintKey(['portfolio:read']);
+    const path = `/assets/${RESOURCE_ASSET_ID}/quote`;
+
+    await request(harness.app).get(`/api/v1${path}`).set('Authorization', `Bearer ${token}`);
+
+    const repo = createApiKeyRequestLogRepository(harness.db, harness.db);
+    let rows = await repo.listForKey(keyId, 10);
+    for (let i = 0; i < 40 && rows.length === 0; i += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      rows = await repo.listForKey(keyId, 10);
+    }
+    expect(rows[0]?.path).toBe(path);
+  });
+
+  it('suppresses request-log capture for a paranoid account', async () => {
+    const { userId, keyId } = await mintKey(['portfolio:read']);
+    await harness.db
+      .update(users)
+      .set({
+        privacyMode: 'paranoid',
+        paranoidMediaSet: ['drive'],
+        paranoidDriveAttestedVersion: 1,
+      })
+      .where(eq(users.id, userId));
+
+    await harness.ctx.apiKeys.recordRequest({
+      keyId,
+      userId,
+      method: 'GET',
+      path: `/assets/${RESOURCE_ASSET_ID}/quote`,
+      status: 200,
+    });
+
+    const repo = createApiKeyRequestLogRepository(harness.db, harness.db);
+    const rows = await repo.listForKey(keyId, 10);
+    expect(rows).toEqual([]);
+    expect(JSON.stringify(rows)).not.toContain(RESOURCE_ASSET_ID);
   });
 
   it('never lets a log-write failure surface — recordRequest swallows repo errors', async () => {
@@ -239,11 +280,11 @@ describe('per-key request-log audit trail (§13.5 V5-P10, issue 2/2)', () => {
     ]);
 
     const job = createApiKeyRequestLogCleanupJob({
-      requestLog: createApiKeyRequestLogRepository(harness.db),
+      requestLog: createApiKeyRequestLogRepository(harness.db, harness.db),
     });
     await job.handler({} as never, { logger: harness.ctx.logger } as never);
 
-    const repo = createApiKeyRequestLogRepository(harness.db);
+    const repo = createApiKeyRequestLogRepository(harness.db, harness.db);
     const remaining = await repo.listForKey(keyId, 50);
     expect(remaining).toHaveLength(1);
     expect(remaining[0]!.path).toBe('/fresh');

@@ -256,11 +256,52 @@ describe('#1325 first-party OAuth grant management', () => {
     expect(denials).toHaveLength(2);
     expect(denials.map(({ meta }) => meta)).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ requiredScope: 'account:security', method: 'GET' }),
-        expect.objectContaining({ requiredScope: 'account:security', method: 'DELETE' }),
+        expect.objectContaining({
+          requiredScope: 'account:security',
+          method: 'GET',
+          path: '/settings/oauth-grants',
+        }),
+        expect.objectContaining({
+          requiredScope: 'account:security',
+          method: 'DELETE',
+          path: `/settings/oauth-grants/${grantId}`,
+        }),
       ]),
     );
     await request(harness.app).get('/api/v1/auth/me').set(bearer(token)).expect(200);
+  });
+
+  it('redacts the sibling OAuth denial path for a paranoid account', async () => {
+    const { token, grantId, user } = await mintThirdPartyToken(['account:security']);
+    await harness.db
+      .update(schema.users)
+      .set({
+        privacyMode: 'paranoid',
+        paranoidMediaSet: ['drive'],
+        paranoidDriveAttestedVersion: 1,
+      })
+      .where(eq(schema.users.id, user.id));
+
+    const response = await request(harness.app)
+      .delete(`/api/v1/settings/oauth-grants/${grantId}`)
+      .set(bearer(token));
+    expect(response.status).toBe(403);
+    expect(response.body.error.code).toBe('API_KEY_FORBIDDEN');
+
+    const [denial] = await harness.db
+      .select()
+      .from(schema.auditLog)
+      .where(
+        and(
+          eq(schema.auditLog.actorId, user.id),
+          eq(schema.auditLog.action, 'api_key.scope_denied'),
+        ),
+      );
+    expect(denial?.meta).toMatchObject({
+      kind: 'oauth',
+      path: '[redacted-resource-path]',
+    });
+    expect(JSON.stringify(denial?.meta)).not.toContain(grantId);
   });
 
   it('refuses a personal key holding account:security on list and revoke', async () => {
