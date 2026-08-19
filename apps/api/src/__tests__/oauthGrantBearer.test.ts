@@ -49,6 +49,7 @@ const EXPECTED_SCOPES = [
   'mirrorchain:write',
   'vault:sync',
   'feedback:write',
+  'feedback:read',
 ] as const satisfies readonly ApiKeyScope[];
 
 type Agent = ReturnType<typeof request.agent>;

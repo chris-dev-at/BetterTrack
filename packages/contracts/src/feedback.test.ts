@@ -6,6 +6,7 @@ import {
   FEEDBACK_DECLINED_REASON_REQUIRED,
   FEEDBACK_MESSAGE_MAX_LENGTH,
   FEEDBACK_SHIPPED_VERSION_REQUIRED,
+  FEEDBACK_STATUS_DETAILS_INVALID,
   FEEDBACK_SUBJECT_MAX_LENGTH,
   adminFeedbackListQuerySchema,
   adminFeedbackListResponseSchema,
@@ -157,6 +158,32 @@ describe('feedback contracts', () => {
       expect(shipped.error.issues[0]).toMatchObject({
         path: ['shippedVersion'],
         params: { apiErrorCode: FEEDBACK_SHIPPED_VERSION_REQUIRED },
+      });
+    }
+  });
+
+  it('rejects outcome details attached to a different status', () => {
+    const declinedReason = updateFeedbackStatusRequestSchema.safeParse({
+      status: 'triaged',
+      declinedReason: 'This detail cannot belong to a triaged submission.',
+    });
+    expect(declinedReason.success).toBe(false);
+    if (!declinedReason.success) {
+      expect(declinedReason.error.issues[0]).toMatchObject({
+        path: ['declinedReason'],
+        params: { apiErrorCode: FEEDBACK_STATUS_DETAILS_INVALID },
+      });
+    }
+
+    const shippedVersion = updateFeedbackStatusRequestSchema.safeParse({
+      status: 'working_on_it',
+      shippedVersion: '5.4.0',
+    });
+    expect(shippedVersion.success).toBe(false);
+    if (!shippedVersion.success) {
+      expect(shippedVersion.error.issues[0]).toMatchObject({
+        path: ['shippedVersion'],
+        params: { apiErrorCode: FEEDBACK_STATUS_DETAILS_INVALID },
       });
     }
   });
