@@ -4,10 +4,11 @@ import type { ApiKeyService } from '../../services/apiKeys/apiKeyService';
 
 /**
  * Per-key request-log capture (§13.5 V5-P10, issue 2/2). Plain middleware — it
- * adds NO route. For a personal-API-key request it folds one bounded audit line
- * (method, mount-relative path, response status) into the request log on
- * `finish`, so even a denied (403/429) request is recorded. Cookie sessions and
- * OAuth grants are ignored (OAuth carries its own audit).
+ * adds NO route. For a normal account's personal-API-key request it folds one
+ * bounded audit line (method, mount-relative path, response status) into the
+ * request log on `finish`, so even a denied (403/429) request is recorded.
+ * Paranoid capture is suppressed at the locked repository boundary. Cookie
+ * sessions and OAuth grants are ignored (OAuth carries its own audit).
  *
  * Capture is fire-and-forget and best-effort: `recordRequest` scrubs the path
  * and swallows any write failure, so the audit trail can NEVER add a failure
