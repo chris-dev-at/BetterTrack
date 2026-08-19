@@ -13,6 +13,8 @@ const keyByUserOrIp = (req: Request): string => req.authUser?.id ?? req.ip ?? 'u
 
 export interface RateLimiters {
   login: RequestHandler;
+  /** Public native Google LINK callbacks, isolated from the shared login-IP budget. */
+  googleLinkCallback: RequestHandler;
   general: RequestHandler;
   /** Per-API-key limiter (bearer requests only; a no-op for cookie sessions). */
   apiKey: RequestHandler;
@@ -107,6 +109,11 @@ export function createRateLimiters(ctx: AppContext): RateLimiters {
   };
 
   const loginLimiter = createProgressiveLimiter(ctx.redis, 'login_ip', loginIp);
+  const googleLinkCallbackLimiter = createProgressiveLimiter(
+    ctx.redis,
+    'google_link_callback_ip',
+    loginIp,
+  );
   const generalLimiter = createProgressiveLimiter(ctx.redis, 'general', general);
   // Short-window burst dimension (owner report #202): a page-reload flood fires
   // far more requests in a few seconds than the 15-min steady-state allowance can
@@ -121,6 +128,7 @@ export function createRateLimiters(ctx: AppContext): RateLimiters {
 
   return {
     login: guard([loginLimiter], keyByIp),
+    googleLinkCallback: guard([googleLinkCallbackLimiter], keyByIp),
     general: guard([generalBurstLimiter, generalLimiter], keyByUserOrIp),
     apiKey: apiKeyGuard(apiKey),
     // Admin endpoints share the general schedule (§10); a distinct namespace
