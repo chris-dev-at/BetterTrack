@@ -5,6 +5,7 @@ import {
   request as newRequestContext,
   test,
   type APIResponse,
+  type Locator,
   type Page,
   type TestInfo,
 } from '@playwright/test';
@@ -397,25 +398,21 @@ test.describe('PD9 paranoid-mode end-to-end gate', () => {
         // Refetch the server-authored purgeAfter timestamp. A browser-only
         // clock override cannot make the repository retention gate elapse.
         await page.reload();
+        // The reload drops the in-memory vault key, so the global gate — not the
+        // panel's inline form — is the deterministic way back in, and it leaves
+        // the runtime's Drive connection installed. One flow, no branch.
+        await fillPd9Secret(page, 'Vault passphrase', 'passphrase');
+        await page.getByRole('button', { name: 'Unlock vault' }).click();
+        await navigateInApp(page, '/control/connections');
 
-        const retiredFold = page.getByText('Retained server recovery copy', { exact: true });
-        await expect(retiredFold).toBeVisible();
-        await retiredFold.click();
+        const retiredFold = await openFold(page, 'Retained server recovery copy');
         const purge = page.getByRole('button', { name: 'Delete retained server copy' });
         await expect(purge).toBeEnabled();
         await purge.click();
 
-        const passphrase = page.getByLabel('Vault passphrase');
-        const purgedNotice = page.getByText('The retained server recovery copy was deleted.', {
-          exact: true,
-        });
-        await expect(passphrase.or(purgedNotice)).toBeVisible();
-        if (await passphrase.isVisible()) {
-          await fillPd9Secret(page, 'Vault passphrase', 'passphrase');
-          await page.getByRole('button', { name: 'Unlock and continue' }).click();
-        }
-
-        await expect(purgedNotice).toBeVisible();
+        await expect(
+          page.getByText('The retained server recovery copy was deleted.', { exact: true }),
+        ).toBeVisible();
         await expect(retiredFold).toHaveCount(0);
         expect(await harness.vaultStorage(owner!.email)).toEqual(emptyVaultStorage());
       });
@@ -771,12 +768,19 @@ async function lockVault(page: Page): Promise<void> {
   await expect(page.getByText('Unlock your vault', { exact: true })).toBeVisible();
 }
 
-async function openVaultStorage(page: Page): Promise<void> {
-  const fold = page.getByText('Vault storage copies', { exact: true });
+/** Open one `PanelFold` by its summary text, whatever state it was left in. */
+async function openFold(page: Page, summaryText: string): Promise<Locator> {
+  const fold = page.getByText(summaryText, { exact: true });
+  await expect(fold).toBeVisible();
   const open = await fold.evaluate(
     (summary) => (summary.parentElement as HTMLDetailsElement | null)?.open === true,
   );
   if (!open) await fold.click();
+  return fold;
+}
+
+async function openVaultStorage(page: Page): Promise<void> {
+  await openFold(page, 'Vault storage copies');
 }
 
 async function expectRedirect(page: Page, from: string, to: string): Promise<void> {

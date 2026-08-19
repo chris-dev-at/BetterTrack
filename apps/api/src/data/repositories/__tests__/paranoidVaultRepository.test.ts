@@ -594,10 +594,20 @@ describe('retired server vault purge', () => {
     ).toHaveLength(1);
   });
 
-  it('purges exactly the retired set at purgeAfter and preserves live vault and history rows', async () => {
+  it("purges exactly the caller's retired set at purgeAfter and leaves another user's rows intact", async () => {
     let clock = T0;
     const now = () => clock;
     const retiredVersion = await retireServerVault(userId, ['retired-v1', 'retired-v2'], now());
+    // The second holder of the very tables the purge deletes from. This is the
+    // scoping witness: without a concurrent retirement, dropping the
+    // `where user_id = …` clause off either delete leaves every other
+    // assertion here passing, because no other user has rows in those tables.
+    const retiredUserId = await seedParanoidUser('other-retired@bt.test', 'otherretired');
+    const otherRetiredVersion = await retireServerVault(
+      retiredUserId,
+      ['other-v1', 'other-v2'],
+      now(),
+    );
     const liveUserId = await seedParanoidUser('live-vault@bt.test', 'livevault');
     await writeServerVault(liveUserId, ['live-v1', 'live-v2'], now());
 
@@ -620,6 +630,19 @@ describe('retired server vault purge', () => {
         .from(paranoidVaultRetirements)
         .where(eq(paranoidVaultRetirements.userId, userId)),
     ).toEqual([]);
+    expect(
+      (
+        await db
+          .select()
+          .from(paranoidVaultRetired)
+          .where(eq(paranoidVaultRetired.userId, retiredUserId))
+      )
+        .map((row) => row.version)
+        .sort((left, right) => left - right),
+    ).toEqual([1, 2]);
+    expect(await repo.getRetirementState(retiredUserId)).toMatchObject({
+      retiredVersion: otherRetiredVersion,
+    });
     expect(
       await db.select().from(paranoidVaults).where(eq(paranoidVaults.userId, liveUserId)),
     ).toMatchObject([{ version: 2 }]);
@@ -683,5 +706,28 @@ describe('retired server vault purge', () => {
         .from(paranoidVaultRetirements)
         .where(eq(paranoidVaultRetirements.userId, userId)),
     ).toEqual([]);
+  });
+
+  it('refuses to report convergence while retired ciphertext is still on the server', async () => {
+    let clock = T0;
+    const now = () => clock;
+    const retiredVersion = await retireServerVault(userId, ['retired-v1'], now());
+    clock = new Date(T0.getTime() + VAULT_RETIRED_SERVER_MIN_RETENTION_MS);
+    // Drop only the bookkeeping row. The media columns still read "converged",
+    // so a branch that INFERRED emptiness from them would answer `ok` while the
+    // retired ciphertext it claims to have purged is still there.
+    await db.delete(paranoidVaultRetirements).where(eq(paranoidVaultRetirements.userId, userId));
+
+    expect(
+      await repo.purgeRetired({
+        userId,
+        retiredVersion,
+        proofVerified: true,
+        now: now(),
+      }),
+    ).toEqual({ status: 'not_found' });
+    expect(
+      await db.select().from(paranoidVaultRetired).where(eq(paranoidVaultRetired.userId, userId)),
+    ).toHaveLength(1);
   });
 });
