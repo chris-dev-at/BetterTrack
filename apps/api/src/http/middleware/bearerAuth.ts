@@ -371,7 +371,7 @@ export function loadBearerAuth(ctx: AppContext): RequestHandler {
 type PathPolicy =
   | { kind: 'allow' }
   | { kind: 'admin' }
-  | { kind: 'session-only' }
+  | { kind: 'session-only'; bearerMessage?: string }
   | { kind: 'scope'; read: string; write: string; firstPartyOnly?: true };
 
 export type BearerModulePolicy =
@@ -581,6 +581,18 @@ function resolveAuthPolicy(
   if (path === '/auth/first-run/complete' && requestMethod.toUpperCase() === 'POST') {
     return { kind: 'scope', read: ACCOUNT_SECURITY_SCOPE, write: ACCOUNT_SECURITY_SCOPE };
   }
+  // The singular mint route is intentionally browser-only: its only useful
+  // result is a signed `bt_rdid` cookie in the browser / Custom-Tab jar that will
+  // run the next OAuth login. A bearer would put that cookie on the app's own
+  // HTTP client and strand the binding. Native clients manage existing bindings
+  // through the plural account-security surface below (#1327).
+  if (path === '/auth/remembered-device' && requestMethod.toUpperCase() === 'POST') {
+    return {
+      kind: 'session-only',
+      bearerMessage:
+        'Remembering a device requires a browser session so the cookie reaches the browser used for OAuth login.',
+    };
+  }
   // Account-security surface, both safe + unsafe methods gated by one scope:
   // the session manager, password change, PIN status/verify/manage, 2FA
   // management (enroll/confirm/disable/status/recovery-codes/email/*), and the
@@ -589,6 +601,8 @@ function resolveAuthPolicy(
   const accountSecurity =
     path === '/auth/sessions' ||
     path.startsWith('/auth/sessions/') ||
+    path === '/auth/remembered-devices' ||
+    path.startsWith('/auth/remembered-devices/') ||
     path === '/auth/change-password' ||
     path === '/auth/pin' ||
     path.startsWith('/auth/pin/') ||
@@ -812,7 +826,12 @@ export function enforceApiKeyScope(ctx: AppContext): RequestHandler {
       return;
     }
     if (policy.kind === 'session-only') {
-      next(forbidden('This endpoint is not accessible with an API key.', 'API_KEY_FORBIDDEN'));
+      next(
+        forbidden(
+          policy.bearerMessage ?? 'This endpoint is not accessible with an API key.',
+          'API_KEY_FORBIDDEN',
+        ),
+      );
       return;
     }
     if (policy.kind === 'allow') {
