@@ -191,6 +191,15 @@ export const TAX_YEAR_LOCK_BEARER_ROUTE_ALLOWLIST = [
   },
 ] as const satisfies readonly BearerRoute[];
 
+/**
+ * The exact grant-management routes a trusted first-party OAuth client may use.
+ * Everything else under `/settings/oauth-grants` remains cookie-session-only.
+ */
+export const OAUTH_GRANT_FIRST_PARTY_BEARER_ROUTE_ALLOWLIST = [
+  { method: 'GET', path: '/settings/oauth-grants' },
+  { method: 'DELETE', path: '/settings/oauth-grants/{id}' },
+] as const satisfies readonly BearerRoute[];
+
 function normalizedRouteSegments(path: string): string[] {
   return normalizeRoutePath(path).split('/').filter(Boolean);
 }
@@ -265,6 +274,15 @@ export function taxYearLockRouteAcceptsBearer(method: string, path: string): boo
   return routeAllowlistAccepts(TAX_YEAR_LOCK_BEARER_ROUTE_ALLOWLIST, method, path);
 }
 
+/** Whether one live grant-management request is in the first-party bearer allowlist. */
+export function oauthGrantRouteAcceptsBearer(method: string, path: string): boolean {
+  return routeAllowlistAccepts(
+    OAUTH_GRANT_FIRST_PARTY_BEARER_ROUTE_ALLOWLIST,
+    method,
+    path.toLowerCase(),
+  );
+}
+
 /**
  * Local defense-in-depth for the mirrorchain router. The global policy makes
  * the same decision before routing, but keeping this default-deny allowlist on
@@ -315,6 +333,10 @@ export function loadBearerAuth(ctx: AppContext): RequestHandler {
           id: keyPrincipal.keyId,
           scopes: keyPrincipal.scopes,
           kind: 'personal',
+          // A btk_ credential is not an OAuth client. It must stay false so a
+          // personal key cannot reopen credential-management escalation by
+          // enumerating or revoking the account's delegated grants.
+          firstParty: false,
           securityGeneration: keyPrincipal.user.securityGeneration,
           // Carry the resolved per-key tier onto the request so the rate-limit
           // middleware can read (limit, windowSec) from it — without this the
@@ -332,6 +354,7 @@ export function loadBearerAuth(ctx: AppContext): RequestHandler {
           id: oauthPrincipal.grantId,
           scopes: oauthPrincipal.scopes,
           kind: 'oauth',
+          firstParty: oauthPrincipal.firstParty,
           securityGeneration: oauthPrincipal.user.securityGeneration,
         };
         next();
@@ -349,7 +372,7 @@ type PathPolicy =
   | { kind: 'allow' }
   | { kind: 'admin' }
   | { kind: 'session-only' }
-  | { kind: 'scope'; read: string; write: string };
+  | { kind: 'scope'; read: string; write: string; firstPartyOnly?: true };
 
 export type BearerModulePolicy =
   | {
@@ -605,20 +628,36 @@ function resolvePolicy(
   // input. Disable writes a caller-authored document back into the account. So
   // neither direction may ride a personal API key or a delegated OAuth token
   // holding `account:security` (plausible for a sessions/2FA integration), which
-  // also carries no CSRF header. Checked BEFORE the `/account/` branch, which
-  // would otherwise fold both routes into that coarse account-security scope.
+  // also carries no CSRF header. Checked BEFORE the `/account` module policy,
+  // which would otherwise fold both routes into that coarse account-security scope.
   if (path === '/account/paranoid' || path.startsWith('/account/paranoid/')) {
     return { kind: 'session-only' };
   }
-  // Key management + OAuth app/grant lifecycle are cookie-session only: a
-  // delegated token must not mint/list/revoke keys, register OAuth apps or manage
-  // grants (no privilege escalation). Checked before the `/settings` module
-  // policy below, which would otherwise grant these to a social scope.
+  // Key management + OAuth app registration remain cookie-session only: a
+  // delegated token must not mint/list/revoke keys or register OAuth apps. Grant
+  // management has one narrower exception below for trusted first-party clients.
+  // Checked before the `/settings` module policy, which would otherwise grant
+  // these credential routes to a social scope.
   if (path === '/settings/api-keys' || path.startsWith('/settings/api-keys/')) {
     return { kind: 'session-only' };
   }
   if (path === '/settings/oauth-clients' || path.startsWith('/settings/oauth-clients/')) {
     return { kind: 'session-only' };
+  }
+  if (
+    routeAllowlistAccepts(
+      OAUTH_GRANT_FIRST_PARTY_BEARER_ROUTE_ALLOWLIST,
+      requestMethod,
+      path,
+      allowPathTemplate,
+    )
+  ) {
+    return {
+      kind: 'scope',
+      read: ACCOUNT_SECURITY_SCOPE,
+      write: ACCOUNT_SECURITY_SCOPE,
+      firstPartyOnly: true,
+    };
   }
   if (path === '/settings/oauth-grants' || path.startsWith('/settings/oauth-grants/')) {
     return { kind: 'session-only' };
@@ -720,10 +759,11 @@ function resolvePolicy(
 }
 
 /**
- * Whether a mount-relative `/api/v1` path accepts a bearer token at the auth
- * layer (a personal API key OR a delegated OAuth access token) — i.e. anything
- * that is `allow` (identity/logout/health) or scope-gated. Session-only and
- * admin paths do not. The OpenAPI document derives each route's `security`
+ * Whether a mount-relative `/api/v1` path accepts at least one bearer token at
+ * the auth layer — i.e. anything that is `allow` (identity/logout/health) or
+ * scope-gated. A scope policy may additionally restrict the bearer to a trusted
+ * first-party OAuth client. Session-only and admin paths do not. The OpenAPI
+ * document derives each route's `security`
  * requirement from this so the spec can never drift from the real middleware
  * policy (#361, fixes the doc's blanket sessionCookie-only claim). Usually the
  * method only changes the required read/write half; the MIRRORCHAIN participation
@@ -793,17 +833,36 @@ export function enforceApiKeyScope(ctx: AppContext): RequestHandler {
     // `:read` requirement, so no read-only route is unreachable to a write-scoped
     // token. Enforced here at check time — the single authoritative point that
     // also covers tokens minted before the rule.
-    if (scopeSatisfies(req.apiKey.scopes, required)) {
-      next();
+    if (!scopeSatisfies(req.apiKey.scopes, required)) {
+      denyScope(ctx, req, required).then(
+        () =>
+          next(
+            forbidden(`API key is missing the required scope "${required}".`, 'INSUFFICIENT_SCOPE'),
+          ),
+        next,
+      );
       return;
     }
-    denyScope(ctx, req, required).then(
-      () =>
-        next(
-          forbidden(`API key is missing the required scope "${required}".`, 'INSUFFICIENT_SCOPE'),
-        ),
-      next,
-    );
+    if (policy.firstPartyOnly && !req.apiKey.firstParty) {
+      // Scope is deliberately checked first: a first-party client missing the
+      // contractually required scope gets actionable INSUFFICIENT_SCOPE. Once a
+      // token does hold it, this trust-boundary refusal says only that the route
+      // is first-party-only — it does not imply scope alone would ever suffice.
+      // Reuse the established audited denial rail: probing another app's grants
+      // is a credential-boundary event the account owner must be able to trace.
+      denyScope(ctx, req, required).then(
+        () =>
+          next(
+            forbidden(
+              'This endpoint is available to first-party OAuth clients only.',
+              'API_KEY_FORBIDDEN',
+            ),
+          ),
+        next,
+      );
+      return;
+    }
+    next();
   };
 }
 
