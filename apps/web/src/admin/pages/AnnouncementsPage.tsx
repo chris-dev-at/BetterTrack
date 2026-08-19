@@ -254,7 +254,7 @@ export function AnnouncementsPage() {
                   English body
                 </label>
                 <span aria-hidden="true" className="bt-field__required-marker">
-                  {' *'}
+                  {'*'}
                 </span>
               </span>
               <textarea
@@ -282,7 +282,7 @@ export function AnnouncementsPage() {
                   German body
                 </label>
                 <span aria-hidden="true" className="bt-field__required-marker">
-                  {' *'}
+                  {'*'}
                 </span>
               </span>
               <textarea

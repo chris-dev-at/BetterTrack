@@ -233,7 +233,7 @@ export function Field({
           <label htmlFor={htmlFor}>{label}</label>
           {isRequired ? (
             <span aria-hidden="true" className="bt-field__required-marker">
-              {' *'}
+              {'*'}
             </span>
           ) : null}
         </span>
