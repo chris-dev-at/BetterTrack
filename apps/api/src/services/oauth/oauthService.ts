@@ -56,6 +56,8 @@ export interface OAuthPrincipal {
   /** Absolute access-token deadline used to terminate an idle socket on time. */
   expiresAt: Date;
   scopes: ApiKeyScope[];
+  /** Whether the already-joined client row is an official, trusted app. */
+  firstParty: boolean;
 }
 
 export interface OAuthServiceDeps {
@@ -770,6 +772,7 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
         accessTokenId: found.token.id,
         expiresAt: found.token.expiresAt,
         scopes: clampToAllowed(found.token.scopes as ApiKeyScope[], found.client.scopes),
+        firstParty: found.client.isFirstParty,
       };
     },
 
@@ -792,6 +795,7 @@ export function createOAuthService(deps: OAuthServiceDeps): OAuthService {
         accessTokenId,
         expiresAt,
         scopes: clampToAllowed(scopes, active.client.scopes),
+        firstParty: active.client.isFirstParty,
       };
     },
 
