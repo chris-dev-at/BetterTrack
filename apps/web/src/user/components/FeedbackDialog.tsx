@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from 'react';
+import { useLayoutEffect, useRef, useState, type FormEvent } from 'react';
 import { useLocation } from 'react-router-dom';
 
 import {
@@ -66,8 +66,16 @@ export function FeedbackDialog({ onClose, screen }: { onClose: () => void; scree
   const [attempted, setAttempted] = useState(false);
   const [state, setState] = useState<SubmissionState>('idle');
   const [submissionError, setSubmissionError] = useState<string | null>(null);
+  const confirmationCloseRef = useRef<HTMLButtonElement>(null);
   const normalizedSubject = subject.trim();
   const normalizedMessage = message.trim();
+
+  // The dialog remains mounted when the form becomes its confirmation state,
+  // so its mount-time focus trap does not see the new action. Keep focus in
+  // the modal by handing it explicitly to the only confirmation action.
+  useLayoutEffect(() => {
+    if (state === 'success') confirmationCloseRef.current?.focus();
+  }, [state]);
 
   const categoryError = attempted && category === '' ? t('feedback.categoryRequired') : undefined;
   const subjectError =
@@ -137,7 +145,7 @@ export function FeedbackDialog({ onClose, screen }: { onClose: () => void; scree
         <div className="flex flex-col gap-4">
           <Alert tone="success">{t('feedback.success')}</Alert>
           <div className="flex justify-end">
-            <Button onClick={onClose} variant="primary">
+            <Button onClick={onClose} ref={confirmationCloseRef} variant="primary">
               {t('common.close')}
             </Button>
           </div>

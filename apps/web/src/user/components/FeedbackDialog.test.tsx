@@ -76,6 +76,7 @@ test('at 390 px submits feedback from the Settings panel with client context', a
     }),
   );
   expect(await screen.findByText('Thanks — your feedback was submitted.')).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: 'Close' })).toHaveFocus();
 });
 
 test('keeps an in-flight submission open to prevent duplicate feedback', async () => {
