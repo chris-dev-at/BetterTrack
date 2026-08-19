@@ -216,6 +216,7 @@ describe.skipIf(!REAL_DATABASE_URL)('privacy row locks (real Postgres)', () => {
     const observer = postgres(REAL_DATABASE_URL!, { max: 1 });
     const releaseEnable = deferred();
     const enableStarted = deferred();
+    const capturedAt = new Date('2026-08-19T12:00:00.000Z');
     let enable: Promise<unknown> | undefined;
     let flush: Promise<void> | undefined;
 
@@ -223,11 +224,13 @@ describe.skipIf(!REAL_DATABASE_URL)('privacy row locks (real Postgres)', () => {
       userId: user.id,
       feature: 'assets',
       assetId: 'guarded-asset-id',
+      occurredAt: capturedAt,
     });
     harness.ctx.usageAnalytics.capture({
       userId: controlUser.id,
       feature: 'workboard',
       assetId: 'control-asset-id',
+      occurredAt: capturedAt,
     });
 
     try {
@@ -273,6 +276,7 @@ describe.skipIf(!REAL_DATABASE_URL)('privacy row locks (real Postgres)', () => {
               userId: schema.usageEvents.userId,
               feature: schema.usageEvents.feature,
               assetId: schema.usageEvents.assetId,
+              day: schema.usageEvents.day,
               hits: schema.usageEvents.hits,
             })
             .from(schema.usageEvents)
@@ -282,6 +286,7 @@ describe.skipIf(!REAL_DATABASE_URL)('privacy row locks (real Postgres)', () => {
             userId: controlUser.id,
             feature: 'workboard',
             assetId: 'control-asset-id',
+            day: '2026-08-19',
             hits: 1,
           },
         ]);

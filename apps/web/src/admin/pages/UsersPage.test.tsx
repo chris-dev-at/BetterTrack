@@ -264,8 +264,5 @@ test('renders the P13b users surface in German', async () => {
   expect(await screen.findByRole('heading', { name: 'Nutzer' })).toBeInTheDocument();
   expect(screen.getByRole('button', { name: 'Nutzer erstellen' })).toBeInTheDocument();
   expect(screen.getByPlaceholderText('Nach E-Mail oder Benutzername filtern')).toBeInTheDocument();
-  // The heading and controls render immediately, but the table follows the
-  // asynchronous user-list request. Await its column rather than racing that
-  // request in the localized-surface assertion.
-  expect(await screen.findByRole('columnheader', { name: 'Rolle' })).toBeInTheDocument();
+  expect(screen.getByRole('columnheader', { name: 'Rolle' })).toBeInTheDocument();
 });
