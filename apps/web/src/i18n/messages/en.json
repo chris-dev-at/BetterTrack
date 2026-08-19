@@ -5732,7 +5732,36 @@
     "notificationLog": "Notification log",
     "profile": "Public profile",
     "authorizedApps": "Authorized apps",
-    "appearance": "Appearance"
+    "appearance": "Appearance",
+    "feedback": "Send feedback",
+    "feedbackSub": "Feature requests and bug reports"
+  },
+  "feedback": {
+    "title": "Send feedback",
+    "dialogDescription": "Send a feature request, bug report, or other note to BetterTrack.",
+    "settingsLabel": "Help improve BetterTrack",
+    "settingsHint": "Feature request, bug report, or another note.",
+    "open": "Write feedback",
+    "category": "Category",
+    "categoryPlaceholder": "Select a category",
+    "categoryOption": {
+      "feature": "Feature / improvement",
+      "bug": "Bug",
+      "other": "Other"
+    },
+    "subject": "Subject (optional)",
+    "message": "Message",
+    "messagePlaceholder": "What would you like us to know?",
+    "messageCounter": "{{count}}/{{max}}",
+    "categoryRequired": "Choose a category.",
+    "messageRequired": "Write a message.",
+    "subjectTooLong": "Your subject must be no more than {{max}} characters.",
+    "messageTooLong": "Your message must be no more than {{max}} characters.",
+    "contextTooLong": "The attached technical details are too large. Please try again.",
+    "submit": "Submit feedback",
+    "submitting": "Submitting…",
+    "success": "Thanks — your feedback was submitted.",
+    "submitError": "Couldn't submit your feedback. Please try again."
   },
   "privacy": {
     "subtitle": "Control what the screen shows and where your data lives.",

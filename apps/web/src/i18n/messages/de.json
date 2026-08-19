@@ -5732,7 +5732,36 @@
     "notificationLog": "Benachrichtigungsprotokoll",
     "profile": "Öffentliches Profil",
     "authorizedApps": "Autorisierte Apps",
-    "appearance": "Darstellung"
+    "appearance": "Darstellung",
+    "feedback": "Feedback senden",
+    "feedbackSub": "Funktionswünsche und Fehlerberichte"
+  },
+  "feedback": {
+    "title": "Feedback senden",
+    "dialogDescription": "Sende BetterTrack einen Funktionswunsch, Fehlerbericht oder anderen Hinweis.",
+    "settingsLabel": "Hilf BetterTrack besser zu machen",
+    "settingsHint": "Funktionswunsch, Fehlerbericht oder anderer Hinweis.",
+    "open": "Feedback schreiben",
+    "category": "Kategorie",
+    "categoryPlaceholder": "Kategorie auswählen",
+    "categoryOption": {
+      "feature": "Funktion / Verbesserung",
+      "bug": "Fehler",
+      "other": "Sonstiges"
+    },
+    "subject": "Betreff (optional)",
+    "message": "Nachricht",
+    "messagePlaceholder": "Was möchtest du uns mitteilen?",
+    "messageCounter": "{{count}}/{{max}}",
+    "categoryRequired": "Wähle eine Kategorie.",
+    "messageRequired": "Schreibe eine Nachricht.",
+    "subjectTooLong": "Dein Betreff darf höchstens {{max}} Zeichen haben.",
+    "messageTooLong": "Deine Nachricht darf höchstens {{max}} Zeichen haben.",
+    "contextTooLong": "Die angehängten technischen Details sind zu umfangreich. Bitte versuche es erneut.",
+    "submit": "Feedback senden",
+    "submitting": "Wird gesendet…",
+    "success": "Danke — dein Feedback wurde gesendet.",
+    "submitError": "Dein Feedback konnte nicht gesendet werden. Bitte versuche es erneut."
   },
   "privacy": {
     "subtitle": "Steuere, was der Bildschirm zeigt und wo deine Daten liegen.",
