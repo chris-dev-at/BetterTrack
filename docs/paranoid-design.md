@@ -494,17 +494,17 @@ it exists for a reason that is still true:
 
 **What happens to each attached thing, explicitly:**
 
-| Thing | On move-in |
-| --- | --- |
-| Transactions, dividends, cash sources + movements, history | Into the portfolio doc; server rows hard-deleted; client engine re-derives all series |
-| Snapshots / derived rows | Purged, never carried (re-derived on move-out) |
-| Tax settlement rows for the portfolio | Into the doc; cross-portfolio tax composes per §14 |
-| Standing orders + run ledger | Into the doc; client materializes due rows with deterministic UUIDv5 occurrence ids (v1 §8 item 9) |
-| Existing shares / audiences / public-profile inclusion of the portfolio | Revoked permanently; NOT restored on move-out (the v1 #730/#992 rule, now portfolio-scoped) |
-| Price alerts | Untouched — asset-level rows, zero portfolio reference (v1 §9); nothing to kill |
-| Conglomerates / workboard | Untouched — hypothetical baskets reference `asset_identities`, not portfolios; custom-asset identity claims survive via the v1 tombstone/claim seam |
-| Home board widgets scoped to it | Render through the `PortfolioStore` seam: live when the vault is unlocked, a locked-state tile with the unlock affordance otherwise |
-| Imports in flight | Precondition-blocked; historical import batches ride the doc |
+| Thing                                                                   | On move-in                                                                                                                                          |
+| ----------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Transactions, dividends, cash sources + movements, history              | Into the portfolio doc; server rows hard-deleted; client engine re-derives all series                                                               |
+| Snapshots / derived rows                                                | Purged, never carried (re-derived on move-out)                                                                                                      |
+| Tax settlement rows for the portfolio                                   | Into the doc; cross-portfolio tax composes per §14                                                                                                  |
+| Standing orders + run ledger                                            | Into the doc; client materializes due rows with deterministic UUIDv5 occurrence ids (v1 §8 item 9)                                                  |
+| Existing shares / audiences / public-profile inclusion of the portfolio | Revoked permanently; NOT restored on move-out (the v1 #730/#992 rule, now portfolio-scoped)                                                         |
+| Price alerts                                                            | Untouched — asset-level rows, zero portfolio reference (v1 §9); nothing to kill                                                                     |
+| Conglomerates / workboard                                               | Untouched — hypothetical baskets reference `asset_identities`, not portfolios; custom-asset identity claims survive via the v1 tombstone/claim seam |
+| Home board widgets scoped to it                                         | Render through the `PortfolioStore` seam: live when the vault is unlocked, a locked-state tile with the unlock affordance otherwise                 |
+| Imports in flight                                                       | Precondition-blocked; historical import batches ride the doc                                                                                        |
 
 ## 10. Portfolio move-out (the designed exit)
 
@@ -640,22 +640,55 @@ safely, not refused:
 **Sender (the device holding the phrase):** Vault settings → "Show transfer
 QR". Requires a live unlock AND, for wrapped custody, a fresh password entry
 (≤ 60 s old) — the QR displays the master secret, so showing it is itself a
-step-up act. The QR encodes
-`btvault://import?v=1&m=<space-joined words>&vault=<vaultId>&name=<label hint>`
-rendered full-screen with: an explicit banner ("Anyone who captures this code
-owns this vault — no screenshots, no screen sharing, mind who can see your
-screen"), a 60-second auto-expiry that blanks the code (manual re-show), no
-clipboard path, no network transmission of any kind (display→camera is the
-whole channel), and nothing logged or persisted. The native apps additionally
-set the platform secure-screen flag (FLAG_SECURE / iOS capture detection) on
-both the show and scan screens — recorded as a mobile-board contract item.
+step-up act. The QR is rendered full-screen with: an explicit banner ("Anyone
+who captures this code owns this vault — no screenshots, no screen sharing,
+mind who can see your screen"), a 60-second auto-expiry that blanks the code
+(manual re-show), no clipboard path, no network transmission of any kind
+(display→camera is the whole channel), and nothing logged or persisted. The
+native apps additionally set the platform secure-screen flag (FLAG_SECURE /
+iOS capture detection) on both the show and scan screens — recorded as a
+mobile-board contract item.
 
-**Receiver (the phone):** camera scan → BIP39 checksum validation → the vault
-id/name hint pre-fills → custody choice (wrapped default — set/enter the
-device password; plain behind the §12 warning) → **verified open**: the client
-fetches the vault header doc from any reachable medium and proves the words
-decrypt it (key_fingerprint match) BEFORE saving to the keystore, so a
-mis-scan can never store dead words.
+**Payload format (binding — the ONE spec the web renderer and the phone
+scanner are both built against; requested by the mobile dev 2026-08-19):**
+
+```
+btvault1:m=<words>&v=<vaultId>[&n=<name>][&f=<fingerprint>]
+```
+
+- **Version = the scheme prefix.** `btvault1:` is the version marker. An
+  unknown prefix (`btvault2:`, anything else) is REJECTED with an "update the
+  app" notice — never best-effort parsed; within `btvault1:` unknown query
+  keys are IGNORED (additive extension), and a missing required key is a
+  reject. Deliberately `scheme:query`, no `//` authority — platform URL
+  parsers disagree about custom-scheme authorities, so everything after the
+  first `:` is parsed as one `application/x-www-form-urlencoded` query
+  string, which every platform parses identically.
+- **`m` (required):** the 12 BIP39 English-wordlist words themselves —
+  lowercase, NFKD, single-space separated, percent-encoded (spaces become
+  `%20` or `+`). Words, not entropy bytes and not wordlist indices: the BIP39
+  checksum already rides IN the words (the last word carries the 4 checksum
+  bits), so the scanner validates integrity against the standard wordlist
+  with zero extra fields; words are what the user wrote down, so a generic QR
+  reader shows a human-recoverable payload (worst case: type the words); and
+  there is no entropy-encoding/endianness/checksum-recompute step where two
+  implementations can silently diverge — which is the whole two-guesses risk
+  this spec exists to remove.
+- **`v` (required):** the vault UUID (lowercase hyphenated).
+- **`n` (optional):** display-name hint, percent-encoded, ≤ 64 chars.
+- **`f` (optional, recommended):** the vault's `key_fingerprint` (§4,
+  base64url) so the receiver can pre-check the words against the intended
+  vault before any network fetch.
+- **QR encoding:** byte mode, UTF-8, error-correction level M. The payload is
+  ~150–220 chars — a comfortably scannable version-7-ish code.
+
+**Receiver (the phone):** camera scan → prefix check → BIP39 checksum
+validation of `m` → the vault id/name hint pre-fills → custody choice
+(wrapped default — set/enter the device password; plain behind the §12
+warning) → **verified open**: the client fetches the vault header doc from
+any reachable medium and proves the words decrypt it (`f`/key_fingerprint
+match first when present) BEFORE saving to the keystore, so a mis-scan can
+never store dead words.
 
 Manual word entry remains the fallback everywhere the QR is offered.
 
@@ -866,19 +899,19 @@ the mobile PLATFORM_ASKS Drive-naming contract (§8, when E5 lands).
 
 ## 20. Build decomposition (epics, ordered — contract-form issues cut from these after ack)
 
-| # | Epic | Scope sketch | Rough size / tier |
-| --- | --- | --- | --- |
-| E0 | **Contracts + schema** | `vaults`, `vault_blobs` (+history/candidates/retirement re-key), `drive_connections`, `portfolios.vault_id`/`vault_alias`, envelope v2 + doc-set zod contracts, classification axis gains the doc bucket, per-portfolio revision token contract | L, T1 (schema + contract keystone) |
-| E1 | **Per-vault blind store** | Vault CRUD routes, per-doc GET/PUT CAS + history, size caps per kind, `vault:sync` re-key, OpenAPI | M, T2 |
-| E2 | **Per-portfolio enforcement + account un-kill** | Registry re-key portfolio-first, `VAULTED_PORTFOLIO` guard, bearer un-kill (delete account rail), matrix + probe + full-functionality regression, mirrorchain exclusion re-scope | L, T1 (security boundary) |
-| E3 | **Client key core** | BIP39 gen/validate, derivation chain (§4), keySlots, key_fingerprint, endpoint keystore + device password custody + plain-custody warning + lockout/reset (§12); test vectors incl. tamper/rollback | L, T1 (keystone crypto) |
-| E4 | **Move-in / move-out pipeline** | Per-portfolio capture token + double-read capture, purge sweep + share revocation + stub, strict per-portfolio restore + solvency + fork-provenance validation, §15 step-up on both, idempotent retry semantics | XL, T1 (the destructive core) |
-| E5 | **Drive multi-connection** | `drive_connections` CRUD + UI, per-connection GIS with login_hint, per-vault binding + connection migration, §8 namespace + ownerDigest discipline, revocation/disconnect flows, mobile contract addendum | L, T2 |
-| E6 | **Client engine re-home + composition** | Store resolution per portfolio, engine on portfolio docs, cross-portfolio tax/aggregate composition + lock qualifiers, standing-order client materialization, client cleartext export per vault | XL, T1 (money) |
-| E7 | **QR transfer** | Sender step-up + expiring full-screen QR, receiver scan → checksum → verified open → custody choice, secure-screen flags contract for native | M, T2 |
-| E8 | **Web UX** | Vault manager (create ceremony: name → media/connection → 12 words + write-down confirm + custody), locked stubs + state→affordance invariant everywhere, the `VaultSyncChip` per-vault generalization (§14 — aggregate state + per-vault popover rows, visual design untouched, owner keeper), move-in/out wizards, Settings → Privacy rewrite, EN+DE | L, T2 (flagship UX, owner-eye) |
-| E9 | **Transition + v1 retirement** | §17 conversion wizard + commit route, unconverted-count admin surface, straggler backup ceremony, then the §19 deletion train (append-only drops) | L, T2 with T1 review on the commit |
-| E10 | **e2e + gate** | Playwright: full create→move-in→lock→unlock→move-out arc; Drive-only vault round trip; two-users-one-Drive isolation; mixed-account full-functionality sweep; QR handoff (mocked camera); wrong-password lockout; conversion flow; joins the V5-P14 suite | M, T3/T2 |
+| #   | Epic                                            | Scope sketch                                                                                                                                                                                                                                                                                                                                           | Rough size / tier                  |
+| --- | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------- |
+| E0  | **Contracts + schema**                          | `vaults`, `vault_blobs` (+history/candidates/retirement re-key), `drive_connections`, `portfolios.vault_id`/`vault_alias`, envelope v2 + doc-set zod contracts, classification axis gains the doc bucket, per-portfolio revision token contract                                                                                                        | L, T1 (schema + contract keystone) |
+| E1  | **Per-vault blind store**                       | Vault CRUD routes, per-doc GET/PUT CAS + history, size caps per kind, `vault:sync` re-key, OpenAPI                                                                                                                                                                                                                                                     | M, T2                              |
+| E2  | **Per-portfolio enforcement + account un-kill** | Registry re-key portfolio-first, `VAULTED_PORTFOLIO` guard, bearer un-kill (delete account rail), matrix + probe + full-functionality regression, mirrorchain exclusion re-scope                                                                                                                                                                       | L, T1 (security boundary)          |
+| E3  | **Client key core**                             | BIP39 gen/validate, derivation chain (§4), keySlots, key_fingerprint, endpoint keystore + device password custody + plain-custody warning + lockout/reset (§12); test vectors incl. tamper/rollback                                                                                                                                                    | L, T1 (keystone crypto)            |
+| E4  | **Move-in / move-out pipeline**                 | Per-portfolio capture token + double-read capture, purge sweep + share revocation + stub, strict per-portfolio restore + solvency + fork-provenance validation, §15 step-up on both, idempotent retry semantics                                                                                                                                        | XL, T1 (the destructive core)      |
+| E5  | **Drive multi-connection**                      | `drive_connections` CRUD + UI, per-connection GIS with login_hint, per-vault binding + connection migration, §8 namespace + ownerDigest discipline, revocation/disconnect flows, mobile contract addendum                                                                                                                                              | L, T2                              |
+| E6  | **Client engine re-home + composition**         | Store resolution per portfolio, engine on portfolio docs, cross-portfolio tax/aggregate composition + lock qualifiers, standing-order client materialization, client cleartext export per vault                                                                                                                                                        | XL, T1 (money)                     |
+| E7  | **QR transfer**                                 | The §13 `btvault1:` payload spec verbatim (web renderer + phone scanner against ONE spec); sender step-up + expiring full-screen QR, receiver scan → checksum → verified open → custody choice, secure-screen flags contract for native                                                                                                                | M, T2                              |
+| E8  | **Web UX**                                      | Vault manager (create ceremony: name → media/connection → 12 words + write-down confirm + custody), locked stubs + state→affordance invariant everywhere, the `VaultSyncChip` per-vault generalization (§14 — aggregate state + per-vault popover rows, visual design untouched, owner keeper), move-in/out wizards, Settings → Privacy rewrite, EN+DE | L, T2 (flagship UX, owner-eye)     |
+| E9  | **Transition + v1 retirement**                  | §17 conversion wizard + commit route, unconverted-count admin surface, straggler backup ceremony, then the §19 deletion train (append-only drops)                                                                                                                                                                                                      | L, T2 with T1 review on the commit |
+| E10 | **e2e + gate**                                  | Playwright: full create→move-in→lock→unlock→move-out arc; Drive-only vault round trip; two-users-one-Drive isolation; mixed-account full-functionality sweep; QR handoff (mocked camera); wrong-password lockout; conversion flow; joins the V5-P14 suite                                                                                              | M, T3/T2                           |
 
 Ordering: E0 first; E1+E3 parallel after E0; E2 after E1; E4 after E1+E3; E5
 after E1; E6 after E4; E7 after E3; E8 after E4 (wizards) with early shell
