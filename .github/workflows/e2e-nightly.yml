@@ -64,11 +64,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Install Playwright browsers
-        # ubuntu-latest already ships Chrome/Chromium and their runtime
-        # libraries. Every project below is headless, so install Playwright's
-        # version-matched headless shell without making apt mirrors part of the
-        # browser-install critical path.
-        run: pnpm exec playwright install --only-shell chromium
+        run: pnpm exec playwright install --with-deps chromium
 
       - name: Run Playwright shard
         # Fail the test step before the job deadline so Playwright receives an
