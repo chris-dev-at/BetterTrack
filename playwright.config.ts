@@ -130,7 +130,7 @@ export default defineConfig({
       timeout: 120_000,
     },
     {
-      command: `pnpm --filter @bettertrack/web dev --port ${WEB_PORT} --strictPort`,
+      command: `pnpm --filter @bettertrack/web exec vite --config vite.e2e.config.mts --port ${WEB_PORT} --strictPort`,
       url: WEB_BASE_URL,
       // Vite's dev proxy target must follow the API's port, or a moved API base
       // URL would leave `/api` pointing at whatever owns 3000 (§4.6 same-origin
@@ -145,6 +145,7 @@ export default defineConfig({
       // and the Drive boundary itself is doubled by e2e/support/pd9Drive.
       env: {
         ...process.env,
+        BT_E2E_API_ORIGIN: API_BASE_URL,
         BT_WEB_DEV_PROXY_TARGET: API_BASE_URL,
         VITE_GOOGLE_DRIVE_CLIENT_ID: GOOGLE_CLIENT_ID,
       },
@@ -158,7 +159,11 @@ export default defineConfig({
     {
       command: `pnpm --filter @bettertrack/web exec vite --config vite.admin.config.mts --port ${ADMIN_PORT} --strictPort`,
       url: ADMIN_BASE_URL,
-      env: { ...process.env, BT_WEB_DEV_PROXY_TARGET: API_BASE_URL },
+      env: {
+        ...process.env,
+        BT_E2E_API_ORIGIN: API_BASE_URL,
+        BT_WEB_DEV_PROXY_TARGET: API_BASE_URL,
+      },
       reuseExistingServer: false,
       timeout: 60_000,
     },
