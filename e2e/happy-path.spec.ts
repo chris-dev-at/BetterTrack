@@ -3,6 +3,7 @@ import { expect, request as newRequestContext, test } from '@playwright/test';
 import { createInvite, newAdminRequestContext } from './support/adminApi';
 import { setWideningAudienceThroughLadder } from './support/audience';
 import { ACCOUNT_PASSWORD } from './support/config';
+import { recentOpenBookingDates } from './support/dates';
 import { acceptInvite, openAssetAndWatchFromDetail, watchAsset } from './support/flows';
 
 /**
@@ -92,12 +93,21 @@ test('happy path: invite through friend sharing', async ({ browser }) => {
   await cashDialog.getByRole('button', { name: 'Deposit cash' }).click();
   await expect(cashDialog).toBeHidden();
 
+  const [sapTradeDate] = await recentOpenBookingDates(owner, 1);
   await owner.getByRole('button', { name: '+ Transaction' }).click();
   const buyDialog = owner.getByRole('dialog', { name: /new transaction/i });
   await buyDialog.getByRole('searchbox', { name: 'Search assets' }).fill('SAP');
   await buyDialog.getByRole('button', { name: 'Select SAP.DE', exact: true }).click();
+  // The historical-price assist can map the round €50 input back to a closed
+  // tax year. This cash-flow test needs a deliberately open recent booking day,
+  // so make both fields manual before entering the fixture price.
+  const unlinkDateAndPrice = buyDialog.getByRole('button', { name: 'Unlink date and price' });
+  await unlinkDateAndPrice.waitFor({ state: 'visible', timeout: 20_000 });
+  await unlinkDateAndPrice.click();
+  await buyDialog.getByLabel('Date for SAP.DE').fill(sapTradeDate!);
   await buyDialog.getByLabel('Quantity for SAP.DE').fill('4');
   await buyDialog.getByLabel('Price for SAP.DE').fill('50');
+  await expect(buyDialog.getByLabel('Date for SAP.DE')).toHaveValue(sapTradeDate!);
   // Keyboard toggle + checked assertion (main's #1019 hardening) — .check()
   // proved unreliable against the styled control. The preview assertion states
   // the resulting balance: 800 deposited − 4 × 50 = 600, the property the
