@@ -294,7 +294,11 @@ function StandingOrderNoticeText({ notice }: { notice: StandingOrderNotice }) {
       : notice.kind === 'insufficient-cash'
         ? 'forecast.standingOrders.list.notBookedInsufficientCash'
         : 'forecast.standingOrders.list.notBookedFailed';
-  return <span className="text-xs bt-gold-note">{t(key, { date })}</span>;
+  return (
+    <span className={cx('text-xs', notice.kind === 'failed' ? 'bt-neg' : 'bt-gold-note')}>
+      {t(key, { date })}
+    </span>
+  );
 }
 
 function useVaultStandingOrderMaterialization(): StandingOrderMaterializationResult | null {
@@ -324,6 +328,9 @@ function standingOrderNotice(
   // moment the row moves on — another device books the occurrence, the watermark
   // advances, the user shortens `endDate` — so letting it speak for the schedule
   // is what kept resurrecting notices on ended, booked and not-yet-due orders.
+  // `STANDING_ORDERS_QUERY_KEY` can briefly retain the previous document
+  // watermark after a scan; that cache seam is knowingly tolerated because this
+  // is scan-bound copy, and entries booked in the published scan are suppressed.
   const dueDate = outstandingDueDate(order, result.today);
   if (dueDate === null) return null;
 
