@@ -4,6 +4,17 @@
 -- for an owner to classify deliberately with a reason or shipped version.
 ALTER TABLE "feedback" ALTER COLUMN "status" DROP DEFAULT;
 --> statement-breakpoint
+ALTER TABLE "feedback" ADD COLUMN "last_status_change_at" timestamp with time zone;
+--> statement-breakpoint
+-- Capture the legacy state before the enum rewrite erases the distinction between
+-- an already-triaged row and a `done` row that this migration returns to triage.
+-- Only that remap is a status transition; unchanged rows retain their old update time.
+UPDATE "feedback"
+SET "last_status_change_at" = CASE
+	WHEN "status"::text = 'done' THEN now()
+	ELSE "updated_at"
+END;
+--> statement-breakpoint
 CREATE TYPE "public"."feedback_status_v2" AS ENUM(
 	'new',
 	'triaged',
@@ -27,10 +38,6 @@ DROP TYPE "public"."feedback_status";
 ALTER TYPE "public"."feedback_status_v2" RENAME TO "feedback_status";
 --> statement-breakpoint
 ALTER TABLE "feedback" ALTER COLUMN "status" SET DEFAULT 'new'::"public"."feedback_status";
---> statement-breakpoint
-ALTER TABLE "feedback" ADD COLUMN "last_status_change_at" timestamp with time zone;
---> statement-breakpoint
-UPDATE "feedback" SET "last_status_change_at" = "updated_at";
 --> statement-breakpoint
 ALTER TABLE "feedback" ALTER COLUMN "last_status_change_at" SET DEFAULT now();
 --> statement-breakpoint
