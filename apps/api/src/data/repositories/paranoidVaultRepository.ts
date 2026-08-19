@@ -1146,7 +1146,33 @@ export function createParanoidVaultRepository(
           candidate ?? null,
           retirement ?? null,
         );
-        if (!retirement) return { status: 'not_found' } as const;
+        if (!retirement) {
+          // `(userId, retiredVersion)` is the retirement purge's natural
+          // idempotency key. Once that row is gone, the surviving Drive
+          // attestation lets an exact/older replay converge as a clean no-op;
+          // a future version or any remaining server medium is still unknown.
+          // The postcondition is asserted, not inferred: this reads the retired
+          // set under the same lock rather than deducing emptiness from the
+          // media columns.
+          const [remainingRetired] = await tx
+            .select({ version: paranoidVaultRetired.version })
+            .from(paranoidVaultRetired)
+            .where(eq(paranoidVaultRetired.userId, input.userId))
+            .limit(1);
+          const alreadyPurged =
+            !remainingRetired &&
+            !selection.mediaSet.includes('server') &&
+            !active &&
+            !candidate &&
+            selection.driveAttestedVersion !== null &&
+            input.retiredVersion <= selection.driveAttestedVersion;
+          if (!alreadyPurged) return { status: 'not_found' } as const;
+          // `ok` is the answer to a verified proof on every path, replay
+          // included — the same defence-in-depth guard the destructive path
+          // below carries behind the `proofVerified: true` literal marker.
+          if (!input.proofVerified) return { status: 'proof_required' } as const;
+          return { status: 'ok' } as const;
+        }
         // A staged candidate is still server-held ciphertext. Do not report a
         // successful retirement purge unless this transaction leaves no server
         // bytes behind; preserving the candidate lets its owner either promote
