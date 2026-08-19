@@ -40,6 +40,10 @@ export default defineConfig({
       // #1128: replica force-delete and a direct withdrawal must serialize on
       // the real two-session advisory lock before either mutates the ledger.
       'src/__tests__/mirrorReplication.test.ts',
+      // #1348: Vitest keeps NODE_ENV=test even here, so this suite explicitly
+      // selects withLockedPrivacyModes' production branch and proves the users
+      // row's KEY SHARE / UPDATE conflicts on separate Postgres sessions.
+      'src/__tests__/paranoidPrivacyLocks.test.ts',
       // …and the journal-ordering invariant that was the actual root cause (a
       // misordered `when` makes drizzle skip a migration on any database that
       // already applied a later-stamped one).
