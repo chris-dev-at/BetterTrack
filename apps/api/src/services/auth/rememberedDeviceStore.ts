@@ -58,7 +58,7 @@ export interface RememberedDeviceStore {
   /** Idempotently revoke one verified binding selected by its safe handle. */
   revokeForUser(userId: string, handle: string): Promise<boolean>;
   /** Revoke every verified binding owned by this user and return the count. */
-  revokeAllForUser(userId: string): Promise<number>;
+  revokeAllForUser(userId: string, onRevoked?: (handle: string) => void): Promise<number>;
 }
 
 function timestamp(value: unknown): number | null {
@@ -80,6 +80,17 @@ function parseMetadata(raw: string | null): RememberedDeviceMetadata {
 
 const iso = (value: number | null): string | null =>
   value === null ? null : new Date(value).toISOString();
+
+function pipelineValue<T>(
+  results: [error: Error | null, result: unknown][] | null,
+  index: number,
+): T {
+  const entry = results?.[index];
+  if (!entry) throw new Error('Remembered-device read pipeline returned an incomplete result');
+  const [error, value] = entry;
+  if (error) throw error;
+  return value as T;
+}
 
 export function createRememberedDeviceStore(
   redis: Redis,
@@ -168,17 +179,26 @@ export function createRememberedDeviceStore(
     async listForUser(userId) {
       const indexKey = rememberedDevicesForUserKey(userId);
       const deviceIds = await redis.smembers(indexKey);
-      const devices: RememberedDeviceSummary[] = [];
+      if (deviceIds.length === 0) return [];
 
+      const reads = redis.pipeline();
       for (const deviceId of deviceIds) {
         const bindingKey = rememberedDeviceKey(deviceId);
-        const boundUserId = await redis.get(bindingKey);
+        reads.get(bindingKey).pttl(bindingKey).get(rememberedDeviceMetadataKey(deviceId));
+      }
+      const readResults = await reads.exec();
+      const devices: RememberedDeviceSummary[] = [];
+
+      for (const [index, deviceId] of deviceIds.entries()) {
+        const resultOffset = index * 3;
+        const bindingKey = rememberedDeviceKey(deviceId);
+        const boundUserId = pipelineValue<string | null>(readResults, resultOffset);
         if (boundUserId !== userId) {
           await pruneUnownedIndexMember(userId, deviceId, boundUserId);
           continue;
         }
 
-        let ttlMs = await redis.pttl(bindingKey);
+        let ttlMs = pipelineValue<number>(readResults, resultOffset + 1);
         if (ttlMs === -1) {
           // A bounded reverse-index member may still come from the brief legacy
           // retention transition. Give that already-live binding the standard
@@ -196,7 +216,7 @@ export function createRememberedDeviceStore(
           continue;
         }
 
-        const metadata = parseMetadata(await redis.get(rememberedDeviceMetadataKey(deviceId)));
+        const metadata = parseMetadata(pipelineValue<string | null>(readResults, resultOffset + 2));
         devices.push({
           handle: rememberedDeviceHandle(deviceId),
           createdAt: iso(metadata.createdAt),
@@ -205,10 +225,15 @@ export function createRememberedDeviceStore(
         });
       }
 
-      // Recent activity first, then creation; legacy rows fall back to expiry.
+      // Recent activity first, then creation. Legacy rows have no trustworthy
+      // activity timestamp and stay after every metadata-backed binding.
       devices.sort((left, right) => {
-        const leftOrder = left.lastSeenAt ?? left.createdAt ?? left.expiresAt;
-        const rightOrder = right.lastSeenAt ?? right.createdAt ?? right.expiresAt;
+        const leftOrder = left.lastSeenAt ?? left.createdAt;
+        const rightOrder = right.lastSeenAt ?? right.createdAt;
+        if (leftOrder === null) {
+          return rightOrder === null ? right.expiresAt.localeCompare(left.expiresAt) : 1;
+        }
+        if (rightOrder === null) return -1;
         return rightOrder.localeCompare(leftOrder);
       });
       return devices;
@@ -232,16 +257,22 @@ export function createRememberedDeviceStore(
       return false;
     },
 
-    async revokeAllForUser(userId) {
+    async revokeAllForUser(userId, onRevoked) {
       const deviceIds = await redis.smembers(rememberedDevicesForUserKey(userId));
+      if (deviceIds.length === 0) return 0;
+
+      const reads = redis.pipeline();
+      for (const deviceId of deviceIds) reads.get(rememberedDeviceKey(deviceId));
+      const readResults = await reads.exec();
       let revoked = 0;
-      for (const deviceId of deviceIds) {
-        const boundUserId = await redis.get(rememberedDeviceKey(deviceId));
+      for (const [index, deviceId] of deviceIds.entries()) {
+        const boundUserId = pipelineValue<string | null>(readResults, index);
         if (boundUserId !== userId) {
           await pruneUnownedIndexMember(userId, deviceId, boundUserId);
           continue;
         }
         await clearForUser(userId, deviceId);
+        onRevoked?.(rememberedDeviceHandle(deviceId));
         revoked += 1;
       }
       return revoked;
