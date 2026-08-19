@@ -7,7 +7,7 @@ import type { Redis } from 'ioredis';
 import { createApp } from '../app';
 import { loadConfig } from '../config/env';
 import type { AppContext } from '../http/context';
-import { MODULE_POLICIES } from '../http/middleware/bearerAuth';
+import { MODULE_POLICIES, pathAcceptsBearer } from '../http/middleware/bearerAuth';
 import { getOpenApiDocument } from '../http/openapi';
 import { createLogger } from '../logger';
 
@@ -27,6 +27,8 @@ export interface MountedRoute {
   readonly kind: 'route';
   method: string;
   path: string;
+  /** Literal top-level `app.use` path that owns this surface, when present. */
+  readonly applicationMountPath?: string;
 }
 
 /**
@@ -37,6 +39,8 @@ export interface MountedRoute {
 export interface AllMethodsMountedRoute {
   readonly kind: 'all-methods-route';
   readonly path: string;
+  /** Literal top-level `app.use` path that owns this surface, when present. */
+  readonly applicationMountPath?: string;
 }
 
 /**
@@ -51,6 +55,8 @@ export interface OpaqueMountedSurface {
   readonly handler: string;
   /** One-based occurrence among handlers with the same mounted path and name. */
   readonly occurrence: number;
+  /** Literal top-level `app.use` path that owns this surface, when present. */
+  readonly applicationMountPath?: string;
 }
 
 export type MountedSurface = MountedRoute | AllMethodsMountedRoute | OpaqueMountedSurface;
@@ -76,16 +82,18 @@ export interface CoverageResult {
 
 export interface BearerModulePolicyCoverage {
   ok: boolean;
-  /** Top-level API modules discovered from the real Express wiring. */
+  /** Top-level API modules and direct nested application mounts discovered from Express. */
   mounted: string[];
-  /** Top-level API modules explicitly present in `MODULE_POLICIES`. */
+  /** Mounts with a top-level row, a closed parent, or a distinct nested admission boundary. */
   classified: string[];
-  /** Mounted modules with no bearer policy. */
+  /** Nested mounts that silently inherit a bearer-capable parent without a distinct boundary. */
   unclassified: string[];
   /** Bearer policies whose module is no longer mounted. */
   unmountedPolicies: string[];
   /** Repeated policy prefixes, which would make resolver order significant. */
   duplicatePolicies: string[];
+  /** Policy prefixes that violate the required single-segment top-level shape. */
+  invalidPolicyPrefixes: string[];
 }
 
 /**
@@ -270,6 +278,7 @@ function collectRouterRoutes(
   out: MountedSurface[],
   recordedUseMounts: WeakMap<object, RecordedUseMount>,
   opaqueOccurrences: Map<string, number>,
+  applicationMountPath?: string,
 ): void {
   for (const layer of stack) {
     if (layer.route) {
@@ -284,7 +293,11 @@ function collectRouterRoutes(
       for (const path of routePaths) {
         const mountedPath = joinMountedPath(base, path);
         if (handlesAllMethods) {
-          out.push({ kind: 'all-methods-route', path: mountedPath });
+          out.push({
+            kind: 'all-methods-route',
+            path: mountedPath,
+            ...(applicationMountPath === undefined ? {} : { applicationMountPath }),
+          });
           continue;
         }
         for (const method of methods) {
@@ -292,6 +305,7 @@ function collectRouterRoutes(
             kind: 'route',
             method: method.toUpperCase(),
             path: mountedPath,
+            ...(applicationMountPath === undefined ? {} : { applicationMountPath }),
           });
         }
       }
@@ -310,6 +324,7 @@ function collectRouterRoutes(
 
     for (const path of mount.paths) {
       const mountedPath = joinMountedPath(base, path);
+      const owningApplicationMountPath = base === '' ? mountedPath : applicationMountPath;
       if (layer.handle?.stack && Array.isArray(layer.handle.stack)) {
         collectRouterRoutes(
           layer.handle.stack,
@@ -317,6 +332,7 @@ function collectRouterRoutes(
           out,
           recordedUseMounts,
           opaqueOccurrences,
+          owningApplicationMountPath,
         );
       } else {
         const handler = handlerName(layer.handle);
@@ -328,6 +344,9 @@ function collectRouterRoutes(
           path: mountedPath,
           handler,
           occurrence,
+          ...(owningApplicationMountPath === undefined
+            ? {}
+            : { applicationMountPath: owningApplicationMountPath }),
         });
       }
     }
@@ -426,9 +445,10 @@ export function buildRouteTable(
 }
 
 /**
- * Top-level API module mounts derived from the real route wiring. Every mounted
- * surface kind participates so a router containing only `use`/`all` handlers
- * cannot disappear from the bearer census.
+ * API module mounts derived from the real route wiring. Every mounted surface
+ * kind contributes its top-level module. Direct application mounts below that
+ * module also retain their exact `app.use` path, so a new
+ * `/api/v1/<module>/<submodule>` mount cannot disappear into its parent row.
  */
 export function mountedApiModulePaths(surfaces: readonly MountedSurface[]): string[] {
   const modulePrefix = `${API_PREFIX}/`;
@@ -436,8 +456,50 @@ export function mountedApiModulePaths(surfaces: readonly MountedSurface[]): stri
     surfaces.flatMap((surface) => {
       if (!surface.path.startsWith(modulePrefix)) return [];
       const segment = surface.path.slice(modulePrefix.length).split('/', 1)[0];
-      return segment ? [`${modulePrefix}${segment}`] : [];
+      if (!segment) return [];
+
+      const paths = [`${modulePrefix}${segment}`];
+      const applicationMountPath = surface.applicationMountPath;
+      if (
+        applicationMountPath?.startsWith(modulePrefix) &&
+        applicationMountPath.slice(modulePrefix.length).split('/').filter(Boolean).length > 1
+      ) {
+        paths.push(applicationMountPath);
+      }
+      return paths;
     }),
+  );
+}
+
+function isTopLevelApiModulePath(path: string): boolean {
+  const modulePrefix = `${API_PREFIX}/`;
+  return (
+    path.startsWith(modulePrefix) &&
+    path.slice(modulePrefix.length).split('/').filter(Boolean).length === 1
+  );
+}
+
+/**
+ * `MODULE_POLICIES` deliberately remains a single-segment table so
+ * `unmountedPolicies` stays a symmetric top-level mount check. A direct nested
+ * `app.use` is classified when its parent rejects bearer credentials or when
+ * runtime bearer admission differs from its parent. A same-admission sub-router
+ * below a bearer-capable parent belongs inside that parent router instead of
+ * silently inheriting through application wiring.
+ */
+function nestedMountIsBearerClassified(path: string): boolean {
+  const modulePrefix = `${API_PREFIX}/`;
+  const relativePath = path.slice(API_PREFIX.length);
+  const parentSegment = path.slice(modulePrefix.length).split('/', 1)[0];
+  if (!parentSegment) return false;
+  const parentPath = `/${parentSegment}`;
+  const methods = ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'];
+  const parentAcceptsBearer = methods.some((method) => pathAcceptsBearer(parentPath, method));
+
+  if (!parentAcceptsBearer) return true;
+
+  return methods.some(
+    (method) => pathAcceptsBearer(relativePath, method) !== pathAcceptsBearer(parentPath, method),
   );
 }
 
@@ -447,21 +509,34 @@ export function findBearerModulePolicyCoverage(
 ): BearerModulePolicyCoverage {
   const mounted = mountedApiModulePaths(surfaces);
   const policyPaths = MODULE_POLICIES.map((policy) => `${API_PREFIX}${policy.prefix}`);
-  const classified = sortedUnique(policyPaths);
+  const invalidPolicyPrefixes = sortedUnique(
+    policyPaths.filter((path) => !isTopLevelApiModulePath(path)),
+  );
+  const topLevelPolicyPaths = policyPaths.filter(isTopLevelApiModulePath);
+  const explicitlyClassifiedNestedMounts = mounted.filter(
+    (path) => !isTopLevelApiModulePath(path) && nestedMountIsBearerClassified(path),
+  );
+  const classified = sortedUnique([...topLevelPolicyPaths, ...explicitlyClassifiedNestedMounts]);
   const mountedSet = new Set(mounted);
   const classifiedSet = new Set(classified);
   const unclassified = mounted.filter((path) => !classifiedSet.has(path));
-  const unmountedPolicies = classified.filter((path) => !mountedSet.has(path));
+  const unmountedPolicies = sortedUnique(
+    topLevelPolicyPaths.filter((path) => !mountedSet.has(path)),
+  );
   const duplicatePolicies = duplicates(policyPaths);
 
   return {
     ok:
-      unclassified.length === 0 && unmountedPolicies.length === 0 && duplicatePolicies.length === 0,
+      unclassified.length === 0 &&
+      unmountedPolicies.length === 0 &&
+      duplicatePolicies.length === 0 &&
+      invalidPolicyPrefixes.length === 0,
     mounted,
     classified,
     unclassified,
     unmountedPolicies,
     duplicatePolicies,
+    invalidPolicyPrefixes,
   };
 }
 
@@ -483,6 +558,12 @@ function bearerModulePolicyCoverageMessage(coverage: BearerModulePolicyCoverage)
     problems.push(
       'Duplicate bearer module classifications:',
       ...coverage.duplicatePolicies.map((path) => `  - ${path}`),
+    );
+  }
+  if (coverage.invalidPolicyPrefixes.length > 0) {
+    problems.push(
+      'Bearer module classifications must remain single-segment top-level prefixes:',
+      ...coverage.invalidPolicyPrefixes.map((path) => `  - ${path}`),
     );
   }
   return problems.join('\n');

@@ -350,7 +350,8 @@ export const MODULE_POLICIES = [
   {
     prefix: '/version',
     kind: 'allow',
-    reason: 'Deployment metadata is mounted before authentication and is public.',
+    reason:
+      'Deployment metadata is mounted before authentication and is public; its census row changed pathAcceptsBearer("/version") from false to true with no observable effect.',
   },
   {
     prefix: '/health',
