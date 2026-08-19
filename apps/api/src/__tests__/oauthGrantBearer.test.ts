@@ -18,7 +18,11 @@ import { createOAuthRepository } from '../data/repositories/oauthRepository';
 import * as schema from '../data/schema';
 import { openApiPathTemplateAcceptsBearer, pathAcceptsBearer } from '../http/middleware/bearerAuth';
 import { requireCookieSessionOrFirstPartyOAuthGrant } from '../http/routes/settingsRoutes';
-import { FIRST_PARTY_CLIENTS, seedFirstPartyClients } from '../services/oauth/firstPartyClients';
+import {
+  BETTERTRACK_MOBILE_GOOGLE_LINK_REDIRECT_URI,
+  FIRST_PARTY_CLIENTS,
+  seedFirstPartyClients,
+} from '../services/oauth/firstPartyClients';
 import { createTestApp, type TestHarness } from '../testing/createTestApp';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
@@ -385,7 +389,11 @@ describe('#1325 first-party OAuth grant management', () => {
       {
         clientId: 'btc_IbT1mzw_7kBiPHPkGfaE0Q',
         name: 'BetterTrackMobile',
-        redirectUris: ['bettertrack://oauth/callback'],
+        // #1328 additively registers the native Google-LINK return target beside
+        // the ordinary authorization-code callback. It grants nothing: what this
+        // test pins as unwidened is the scope ceiling below, and the roster stays
+        // one client. A redirect URI is only a return address the server selects.
+        redirectUris: ['bettertrack://oauth/callback', BETTERTRACK_MOBILE_GOOGLE_LINK_REDIRECT_URI],
         public: true,
         scopeCeiling: EXPECTED_SCOPES,
       },
