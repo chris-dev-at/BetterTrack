@@ -307,6 +307,7 @@ function DriveVaultSection({
   } | null>(null);
   const [unlockAction, setUnlockAction] = useState<DriveCardAction | null>(null);
   const [passphrase, setPassphrase] = useState('');
+  const [driveConnectionRequested, setDriveConnectionRequested] = useState(false);
   const authorization = useDriveAuthorization(connection);
   const mediaQueryKey = vaultMediaQueryKey(accountId);
   const query = useQuery({
@@ -315,16 +316,26 @@ function DriveVaultSection({
     retry: false,
     staleTime: 15_000,
   });
-  const drivePreparation = useDriveGisPreparation(configured && prepareDrive != null, prepareDrive);
+  // Loading GIS contacts Google, so do not do it just because Connections is
+  // open. A vault already using Drive is an intended Drive flow; a server-only
+  // vault starts preparation only after its explicit Connect Drive gesture.
+  const driveSelected =
+    query.data?.privacyMode === 'paranoid' &&
+    query.data.mediaState?.mediaSet.includes('drive') === true;
+  const drivePreparationEnabled =
+    configured && prepareDrive != null && (driveSelected || driveConnectionRequested);
+  const drivePreparation = useDriveGisPreparation(drivePreparationEnabled, prepareDrive);
   const driveReady = prepareDrive == null || drivePreparation.state === 'ready';
   const drivePreparing =
-    prepareDrive != null &&
+    drivePreparationEnabled &&
     (drivePreparation.state === 'idle' || drivePreparation.state === 'preparing');
   const driveActionDisabled = working || drivePreparing;
 
   function driveActionLabel(key: string): string {
     if (drivePreparing) return t('settings.connections.drive.preparing');
-    if (!driveReady) return t('settings.connections.drive.retryPreparation');
+    if (drivePreparationEnabled && drivePreparation.state === 'failed') {
+      return t('settings.connections.drive.retryPreparation');
+    }
     return t(key);
   }
 
@@ -350,7 +361,7 @@ function DriveVaultSection({
 
   if (query.data.privacyMode !== 'paranoid' || query.data.mediaState == null) return null;
   const media = query.data.mediaState;
-  const selected = media.mediaSet.includes('drive');
+  const selected = driveSelected;
   if (!configured && !selected) return null;
 
   const needsSignIn = selected && authorization !== 'connected';
@@ -464,7 +475,11 @@ function DriveVaultSection({
 
   async function run(action: DriveCardAction): Promise<void> {
     if (!driveReady) {
-      if (drivePreparation.state === 'failed') drivePreparation.retry();
+      if (!drivePreparationEnabled) {
+        setDriveConnectionRequested(true);
+      } else if (drivePreparation.state === 'failed') {
+        drivePreparation.retry();
+      }
       return;
     }
     if (requireUnlocked(action)) return;
@@ -488,7 +503,11 @@ function DriveVaultSection({
   async function unlockAndContinue(): Promise<void> {
     if (!unlock || !unlockAction || passphrase.length === 0) return;
     if (!driveReady) {
-      if (drivePreparation.state === 'failed') drivePreparation.retry();
+      if (!drivePreparationEnabled) {
+        setDriveConnectionRequested(true);
+      } else if (drivePreparation.state === 'failed') {
+        drivePreparation.retry();
+      }
       return;
     }
     setWorking(true);

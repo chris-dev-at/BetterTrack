@@ -336,7 +336,7 @@ describe('ConnectionsPanel — paranoid Google Drive app data', () => {
     expect(await screen.findByText('Google Drive app-data storage connected.')).toBeInTheDocument();
   });
 
-  test('preloads GIS before enabling a Drive connection gesture', async () => {
+  test('starts GIS preparation only after a server-only vault requests a Drive connection', async () => {
     vi.mocked(getParanoidMediaState).mockResolvedValue(SERVER_MEDIA);
     let finishPreparation!: () => void;
     const prepareDrive = vi.fn(
@@ -353,6 +353,11 @@ describe('ConnectionsPanel — paranoid Google Drive app data', () => {
       drivePrepare: prepareDrive,
     });
 
+    expect(await screen.findByRole('button', { name: 'Connect Drive' })).toBeEnabled();
+    expect(prepareDrive).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole('button', { name: 'Connect Drive' }));
+
     await waitFor(() => expect(prepareDrive).toHaveBeenCalledOnce());
     expect(await screen.findByRole('button', { name: 'Preparing Google sign-in…' })).toBeDisabled();
     expect(drive.connect).not.toHaveBeenCalled();
@@ -364,6 +369,52 @@ describe('ConnectionsPanel — paranoid Google Drive app data', () => {
     );
     await user.click(screen.getByRole('button', { name: 'Connect Drive' }));
     expect(drive.connect).toHaveBeenCalledOnce();
+  });
+
+  test('preloads GIS for an existing Drive vault before its sign-in gesture', async () => {
+    vi.mocked(getParanoidMediaState).mockResolvedValue(BOTH_MEDIA);
+    let finishPreparation!: () => void;
+    const prepareDrive = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finishPreparation = resolve;
+        }),
+    );
+    const drive = controller('token-expired');
+    const user = userEvent.setup();
+    renderPanel('/settings/connections', {
+      driveConnection: drive,
+      driveConfigured: true,
+      drivePrepare: prepareDrive,
+    });
+
+    await waitFor(() => expect(prepareDrive).toHaveBeenCalledOnce());
+    for (const button of await screen.findAllByRole('button', {
+      name: 'Preparing Google sign-in…',
+    })) {
+      expect(button).toBeDisabled();
+    }
+
+    finishPreparation();
+
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Sign in to Google to sync' })).toBeEnabled(),
+    );
+    await user.click(screen.getByRole('button', { name: 'Sign in to Google to sync' }));
+    expect(drive.connect).toHaveBeenCalledOnce();
+  });
+
+  test('does not preload GIS when the account has no paranoid Drive medium', async () => {
+    vi.mocked(getParanoidMediaState).mockResolvedValue(NORMAL_MEDIA);
+    const prepareDrive = vi.fn(async () => undefined);
+    renderPanel('/settings/connections', {
+      driveConfigured: true,
+      drivePrepare: prepareDrive,
+    });
+
+    await waitFor(() => expect(getParanoidMediaState).toHaveBeenCalledOnce());
+
+    expect(prepareDrive).not.toHaveBeenCalled();
   });
 
   test('refreshes a committed storage choice when follow-up synchronization needs attention', async () => {
