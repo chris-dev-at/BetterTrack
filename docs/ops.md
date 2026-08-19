@@ -62,6 +62,19 @@ mounted files immediately without a reload. Update legal files only in the
 landing tree, then use the render commands above and the updater checks before
 deployment.
 
+## Google sign-in and account linking
+
+When `BT_GOOGLE_CLIENT_ID` and `BT_GOOGLE_CLIENT_SECRET` enable Google sign-in,
+register both API callbacks as authorized redirect URIs on that Google Cloud OAuth
+Web application credential:
+
+- `${apiOrigin}/api/v1/auth/google/callback`
+- `${apiOrigin}/api/v1/auth/google/link/callback`
+
+The second URI is required for the native Google account-linking flow. Here,
+`${apiOrigin}` is the deployment's effective API origin (the explicit
+`BT_API_ORIGIN` value or the origin derived from its topology settings).
+
 ## Browser Google Drive runtime configuration
 
 Set `BT_GOOGLE_DRIVE_CLIENT_ID` in the deployment env to the public client id of
