@@ -424,6 +424,7 @@ function runtimeConfigs(
 
 const SECURITY_INCLUDE = 'include /etc/nginx/bt-includes/static-security-headers.conf;';
 const CONDITIONAL_HSTS_INCLUDE = 'include /etc/nginx/bt-includes/static-hsts.conf;';
+const NOINDEX_HEADER = 'add_header X-Robots-Tag "noindex, nofollow" always;';
 const REVALIDATED_ROOT_ASSETS = 'location ~* ^/(service-worker\\.js|manifest\\.webmanifest)$ {';
 const IMMUTABLE_ASSETS = 'location ~* \\.(js|css|woff2?|ttf|eot|png|jpg|jpeg|gif|svg|ico|webp)$ {';
 
@@ -439,6 +440,35 @@ function assertDeploySafeStaticCaching(serverBlock: string): void {
   expect(serverBlock.indexOf(REVALIDATED_ROOT_ASSETS)).toBeLessThan(
     serverBlock.indexOf(IMMUTABLE_ASSETS),
   );
+}
+
+function locationBlock(serverBlock: string, location: string): string {
+  const locationIndex = serverBlock.lastIndexOf(location);
+  expect(locationIndex).toBeGreaterThanOrEqual(0);
+
+  let depth = 0;
+  for (let index = locationIndex; index < serverBlock.length; index += 1) {
+    const character = serverBlock[index];
+    if (character === '{') depth += 1;
+    if (character === '}') {
+      depth -= 1;
+      if (depth === 0) return serverBlock.slice(locationIndex, index + 1);
+    }
+  }
+
+  throw new Error(`unterminated ${location} block`);
+}
+
+function assertSpaDocumentCaching(
+  serverBlock: string,
+  expectedHeaders: readonly string[] = [],
+): void {
+  const document = locationBlock(serverBlock, 'location / {');
+  expect(document).toContain(SECURITY_INCLUDE);
+  expect(document).toContain(CONDITIONAL_HSTS_INCLUDE);
+  expect(document).toContain('add_header Cache-Control "no-cache" always;');
+  expect(document).toContain('try_files $uri $uri/ /index.html;');
+  for (const header of expectedHeaders) expect(document).toContain(header);
 }
 
 const SUBDOMAINS_ENV: Record<string, string> = {
@@ -503,15 +533,24 @@ describe('subdomains template', () => {
   });
 
   it('applies the shared policy and conditional HSTS to every static response path', () => {
-    // user: server + config.js + mutable roots + assets; admin: same; product + mobile: server.
-    expect(occurrences(out, SECURITY_INCLUDE)).toBe(10);
-    expect(occurrences(out, CONDITIONAL_HSTS_INCLUDE)).toBe(10);
+    // user: server + config.js + mutable roots + assets + document; admin: same; product + mobile: server.
+    expect(occurrences(out, SECURITY_INCLUDE)).toBe(12);
+    expect(occurrences(out, CONDITIONAL_HSTS_INCLUDE)).toBe(12);
     expect(section(out, '# ── API origin', '# ── Web origin')).not.toContain(SECURITY_INCLUDE);
   });
 
   it('revalidates deploy roots while retaining immutable build assets', () => {
     assertDeploySafeStaticCaching(section(out, '# ── Web origin', '# ── Admin origin'));
     assertDeploySafeStaticCaching(section(out, '# ── Admin origin', '# ── Product origin'));
+  });
+
+  it('revalidates SPA documents without dropping their shared browser headers', () => {
+    assertSpaDocumentCaching(section(out, '# ── Web origin', '# ── Admin origin'), [
+      NOINDEX_HEADER,
+    ]);
+    assertSpaDocumentCaching(section(out, '# ── Admin origin', '# ── Product origin'), [
+      NOINDEX_HEADER,
+    ]);
   });
 });
 
@@ -540,8 +579,8 @@ describe('ports template', () => {
   });
 
   it('applies the shared policy to every static response path without literal HSTS', () => {
-    expect(occurrences(out, SECURITY_INCLUDE)).toBe(10);
-    expect(occurrences(out, CONDITIONAL_HSTS_INCLUDE)).toBe(10);
+    expect(occurrences(out, SECURITY_INCLUDE)).toBe(12);
+    expect(occurrences(out, CONDITIONAL_HSTS_INCLUDE)).toBe(12);
     expect(section(out, '# ── API port', '# ── Web port')).not.toContain(SECURITY_INCLUDE);
     expect(out).not.toContain('add_header Strict-Transport-Security');
   });
@@ -549,6 +588,11 @@ describe('ports template', () => {
   it('revalidates deploy roots while retaining immutable build assets', () => {
     assertDeploySafeStaticCaching(section(out, '# ── Web port', '# ── Admin port'));
     assertDeploySafeStaticCaching(section(out, '# ── Admin port', '# ── Product port'));
+  });
+
+  it('revalidates SPA documents without dropping their shared browser headers', () => {
+    assertSpaDocumentCaching(section(out, '# ── Web port', '# ── Admin port'));
+    assertSpaDocumentCaching(section(out, '# ── Admin port', '# ── Product port'));
   });
 });
 
