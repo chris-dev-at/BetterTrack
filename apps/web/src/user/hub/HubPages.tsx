@@ -60,6 +60,12 @@ const DEVELOPER_ENTRIES: readonly DeveloperEntry[] = [
     subKey: 'control.webhooksSub',
   },
   {
+    to: '/control/feedback',
+    icon: 'pen',
+    labelKey: 'control.feedback',
+    subKey: 'control.feedbackSub',
+  },
+  {
     to: '/developer/oauth-apps',
     icon: 'grid',
     labelKey: 'control.oauthApps',

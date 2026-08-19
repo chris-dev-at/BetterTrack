@@ -22,6 +22,7 @@ vi.mock('../lib/workboardApi', () => ({
 // network call; these tests only assert we reached the authenticated shell.
 vi.mock('../lib/portfolioApi');
 vi.mock('../lib/socialApi');
+vi.mock('../lib/feedbackApi', () => ({ submitFeedback: vi.fn() }));
 vi.mock('../lib/alertsApi', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../lib/alertsApi')>()),
   listAlerts: vi.fn(),
@@ -30,6 +31,7 @@ vi.mock('../lib/alertsApi', async (importOriginal) => ({
 
 import { ApiError, apiRequest } from '../lib/apiClient';
 import { listAlerts, rearmAlert } from '../lib/alertsApi';
+import { submitFeedback } from '../lib/feedbackApi';
 import * as api from '../lib/userApi';
 import { listPortfolios } from '../lib/portfolioApi';
 import { listFollowing, listItemFollows } from '../lib/socialApi';
@@ -156,6 +158,34 @@ test('/people/following renders and is reachable from People navigation', async 
   expect(screen.getAllByRole('link', { name: 'Following' })[0]).toHaveAttribute(
     'href',
     '/people/following',
+  );
+});
+
+test('a cold feedback control link records its actual route, not the Home backdrop', async () => {
+  vi.mocked(api.getMe).mockResolvedValue(member);
+  vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [] });
+  vi.mocked(submitFeedback).mockResolvedValue({
+    id: '00000000-0000-4000-8000-000000000001',
+    createdAt: '2026-08-19T12:00:00.000Z',
+  });
+  const user = userEvent.setup();
+
+  renderAt('/control/feedback?source=bookmark#report');
+
+  const controlCenter = await waitForColdStart(() =>
+    screen.getByRole('dialog', { name: 'Control Center' }),
+  );
+  await user.click(within(controlCenter).getByRole('button', { name: 'Write feedback' }));
+  await user.selectOptions(screen.getByLabelText('Category'), 'bug');
+  await user.type(screen.getByLabelText('Message'), 'A direct link should retain its route.');
+  await user.click(screen.getByRole('button', { name: 'Submit feedback' }));
+
+  await waitFor(() =>
+    expect(submitFeedback).toHaveBeenCalledWith(
+      expect.objectContaining({
+        context: expect.objectContaining({ screen: '/control/feedback?source=bookmark#report' }),
+      }),
+    ),
   );
 });
 

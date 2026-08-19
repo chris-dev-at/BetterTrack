@@ -15,6 +15,7 @@ import { AuthorizedAppsPanel } from './panels/AuthorizedAppsPanel';
 import { ConnectionsPanel } from './panels/ConnectionsPanel';
 import { DefaultsPanel } from './panels/DefaultsPanel';
 import { DeleteAccountPanel } from './panels/DeleteAccountPanel';
+import { FeedbackPanel } from './panels/FeedbackPanel';
 import { NotificationLogPanel } from './panels/NotificationLogPanel';
 import { NotificationsPanel } from './panels/NotificationsPanel';
 import { OAuthAppsPanel } from './panels/OAuthAppsPanel';
@@ -200,6 +201,18 @@ export const CONTROL_GROUPS: readonly ControlGroup[] = [
         Component: NotificationLogPanel,
       },
       {
+        id: 'feedback',
+        labelKey: 'control.feedback',
+        keywordKeys: [
+          'feedback.title',
+          'feedback.settingsLabel',
+          'feedback.categoryOption.feature',
+          'feedback.categoryOption.bug',
+        ],
+        icon: 'pen',
+        Component: FeedbackPanel,
+      },
+      {
         id: 'privacy',
         labelKey: 'control.privacy',
         keywordKeys: [
@@ -330,9 +343,15 @@ export interface ControlCenterOverlayProps {
    * popup, so closing reveals that page instead of jumping somewhere else.
    */
   closeTo?: string;
+  /** The page shown behind this overlay, retained for contextual child actions. */
+  screen?: string;
 }
 
-export function ControlCenterOverlay({ panel, closeTo = '/' }: ControlCenterOverlayProps = {}) {
+export function ControlCenterOverlay({
+  panel,
+  closeTo = '/',
+  screen,
+}: ControlCenterOverlayProps = {}) {
   const t = useT();
   const navigate = useNavigate();
   const params = useParams();
@@ -532,7 +551,7 @@ export function ControlCenterOverlay({ panel, closeTo = '/' }: ControlCenterOver
             )}
 
             <div className="bt-cc__content" key={active.id}>
-              <Active />
+              {active.id === 'feedback' ? <FeedbackPanel screen={screen} /> : <Active />}
             </div>
           </div>
         </div>
