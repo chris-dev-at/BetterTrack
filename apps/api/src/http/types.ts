@@ -45,12 +45,15 @@ declare global {
        * (`bto_…`, `kind: 'oauth'`, `id` is the grant id). Its presence means:
        * skip CSRF (no cookies), enforce the token's scopes, and rate-limit per
        * token/grant id. Mutually exclusive with cookie-session auth. Both kinds
-       * ride the exact same scope-enforcement rail.
+       * ride the exact same scope-enforcement rail; selected routes additionally
+       * require an official first-party OAuth client.
        */
       apiKey?: {
         id: string;
         scopes: string[];
         kind: 'personal' | 'oauth';
+        /** Official-client trust from the joined OAuth client row; personal keys are false. */
+        firstParty: boolean;
         /**
          * Exact durable account-security generation read while authenticating
          * this bearer. Security mutations use it as their compare-and-swap

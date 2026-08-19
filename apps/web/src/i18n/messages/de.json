@@ -4309,6 +4309,7 @@
       "ai": "KI",
       "users": "Nutzer",
       "invites": "Einladungen",
+      "feedback": "Feedback",
       "settings": "Einstellungen",
       "accountDefaults": "Kontovorgaben",
       "announcements": "Ankündigungen",
@@ -4815,6 +4816,56 @@
       "context": "Kontext",
       "resolve": "Erledigen",
       "reopen": "Wieder öffnen"
+    },
+    "feedback": {
+      "title": "Feedback",
+      "subtitle": "Funktions- und Änderungswünsche zuerst, danach Fehler und sonstige Rückmeldungen.",
+      "refresh": "Aktualisieren",
+      "loading": "Feedback wird geladen…",
+      "loadError": "Feedback konnte nicht geladen werden.",
+      "actionError": "Der Feedback-Status konnte nicht aktualisiert werden.",
+      "empty": "Noch kein Feedback vorhanden.",
+      "filters": {
+        "category": "Kategorie",
+        "sort": "Sortierung",
+        "all": "Alle Kategorien"
+      },
+      "sort": {
+        "category": "Priorität: Funktionen zuerst",
+        "newest": "Neueste zuerst"
+      },
+      "category": {
+        "feature": "Funktion/Änderung",
+        "bug": "Fehler",
+        "other": "Sonstiges"
+      },
+      "status": {
+        "new": "Neu",
+        "triaged": "Triagiert",
+        "done": "Erledigt"
+      },
+      "statusControl": "Status für Feedback von {{user}}",
+      "fields": {
+        "status": "Status",
+        "message": "Nachricht",
+        "submittedBy": "Eingereicht von",
+        "createdAt": "Eingereicht am"
+      },
+      "diagnostics": {
+        "title": "Diagnosedaten",
+        "platform": "Plattform",
+        "appVersion": "App-Version",
+        "osVersion": "Betriebssystemversion",
+        "device": "Gerät",
+        "locale": "Sprache/Region",
+        "screen": "Ansicht"
+      },
+      "pagination": {
+        "navigation": "Feedback-Seiten",
+        "summary": "Seite {{page}} von {{pages}} · {{total}} insgesamt",
+        "previous": "Zurück",
+        "next": "Weiter"
+      }
     },
     "featureFlags": {
       "title": "Feature-Flags",

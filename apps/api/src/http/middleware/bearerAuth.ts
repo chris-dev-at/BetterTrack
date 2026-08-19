@@ -160,6 +160,46 @@ export const VAULT_SESSION_ONLY_ROUTES = [
   { method: 'POST', path: '/vault/media/retired/purge' },
 ] as const satisfies readonly BearerRoute[];
 
+/**
+ * Native account-security clients may manage existing passkeys, but they may
+ * not enter either WebAuthn ceremony. Keeping the three management operations
+ * in an exact method + path allowlist means registration, public sign-in and
+ * every future `/auth/passkeys/*` route remain closed to bearer credentials.
+ */
+export const PASSKEY_MANAGEMENT_BEARER_ROUTE_ALLOWLIST = [
+  { method: 'GET', path: '/auth/passkeys' },
+  { method: 'PATCH', path: '/auth/passkeys/{id}' },
+  { method: 'DELETE', path: '/auth/passkeys/{id}' },
+] as const satisfies readonly BearerRoute[];
+
+/**
+ * The account-level tax-year lock ritual exposed to native clients. The year
+ * segment is numeric, unlike the UUID resource ids used by the other exact
+ * allowlists in this module.
+ */
+export const TAX_YEAR_LOCK_BEARER_ROUTE_ALLOWLIST = [
+  { method: 'GET', path: '/settings/taxes/years' },
+  {
+    method: 'POST',
+    path: '/settings/taxes/years/{year}/unlock',
+    param: 'positive-integer',
+  },
+  {
+    method: 'POST',
+    path: '/settings/taxes/years/{year}/relock',
+    param: 'positive-integer',
+  },
+] as const satisfies readonly BearerRoute[];
+
+/**
+ * The exact grant-management routes a trusted first-party OAuth client may use.
+ * Everything else under `/settings/oauth-grants` remains cookie-session-only.
+ */
+export const OAUTH_GRANT_FIRST_PARTY_BEARER_ROUTE_ALLOWLIST = [
+  { method: 'GET', path: '/settings/oauth-grants' },
+  { method: 'DELETE', path: '/settings/oauth-grants/{id}' },
+] as const satisfies readonly BearerRoute[];
+
 function normalizedRouteSegments(path: string): string[] {
   return normalizeRoutePath(path).split('/').filter(Boolean);
 }
@@ -224,6 +264,25 @@ export function mirrorchainRouteAcceptsBearer(method: string, path: string): boo
   return routeAllowlistAccepts(MIRRORCHAIN_BEARER_ROUTE_ALLOWLIST, method, path);
 }
 
+/** Whether one exact method + path is an existing-passkey management route. */
+export function passkeyManagementRouteAcceptsBearer(method: string, path: string): boolean {
+  return routeAllowlistAccepts(PASSKEY_MANAGEMENT_BEARER_ROUTE_ALLOWLIST, method, path);
+}
+
+/** Whether one exact method + path is in the tax-year lock bearer surface. */
+export function taxYearLockRouteAcceptsBearer(method: string, path: string): boolean {
+  return routeAllowlistAccepts(TAX_YEAR_LOCK_BEARER_ROUTE_ALLOWLIST, method, path);
+}
+
+/** Whether one live grant-management request is in the first-party bearer allowlist. */
+export function oauthGrantRouteAcceptsBearer(method: string, path: string): boolean {
+  return routeAllowlistAccepts(
+    OAUTH_GRANT_FIRST_PARTY_BEARER_ROUTE_ALLOWLIST,
+    method,
+    path.toLowerCase(),
+  );
+}
+
 /**
  * Local defense-in-depth for the mirrorchain router. The global policy makes
  * the same decision before routing, but keeping this default-deny allowlist on
@@ -274,6 +333,10 @@ export function loadBearerAuth(ctx: AppContext): RequestHandler {
           id: keyPrincipal.keyId,
           scopes: keyPrincipal.scopes,
           kind: 'personal',
+          // A btk_ credential is not an OAuth client. It must stay false so a
+          // personal key cannot reopen credential-management escalation by
+          // enumerating or revoking the account's delegated grants.
+          firstParty: false,
           securityGeneration: keyPrincipal.user.securityGeneration,
           // Carry the resolved per-key tier onto the request so the rate-limit
           // middleware can read (limit, windowSec) from it — without this the
@@ -291,6 +354,7 @@ export function loadBearerAuth(ctx: AppContext): RequestHandler {
           id: oauthPrincipal.grantId,
           scopes: oauthPrincipal.scopes,
           kind: 'oauth',
+          firstParty: oauthPrincipal.firstParty,
           securityGeneration: oauthPrincipal.user.securityGeneration,
         };
         next();
@@ -308,10 +372,10 @@ type PathPolicy =
   | { kind: 'allow' }
   | { kind: 'admin' }
   | { kind: 'session-only'; bearerMessage?: string }
-  | { kind: 'scope'; read: string; write: string };
+  | { kind: 'scope'; read: string; write: string; firstPartyOnly?: true };
 
-/** The scope gating the account-security surface (2FA, sessions, password, PIN). */
-const ACCOUNT_SECURITY_SCOPE = 'account:security';
+/** The scope gating account-security state shared by the web and native clients. */
+export const ACCOUNT_SECURITY_SCOPE = 'account:security';
 
 /**
  * Coarse per-module scope map (§6.13). Read scopes gate safe methods; write
@@ -388,19 +452,41 @@ const MODULE_POLICIES: readonly { prefix: string; read: string; write: string }[
  * cookie-session / public. `verify`/`email-code` are the public login-challenge
  * endpoints — excluded here so they never read as bearer-callable.
  */
-function resolveAuthPolicy(path: string, method: string): PathPolicy | null {
+function resolveAuthPolicy(
+  path: string,
+  requestMethod: string,
+  allowPathTemplate: boolean,
+): PathPolicy | null {
   // Identity + self-service logout/self-revocation: any valid bearer, no scope.
   if (path === '/auth/me' || path === '/auth/logout') return { kind: 'allow' };
   // Public login-2FA challenge endpoints — never bearer (pending-token based).
   if (path === '/auth/2fa/verify' || path === '/auth/2fa/email-code') {
     return { kind: 'session-only' };
   }
+  // Existing-passkey management is native-callable, but only through this
+  // method-aware allowlist. Registration and login ceremonies — plus unknown
+  // future passkey routes — deliberately fall through to session-only below.
+  if (
+    routeAllowlistAccepts(
+      PASSKEY_MANAGEMENT_BEARER_ROUTE_ALLOWLIST,
+      requestMethod,
+      path,
+      allowPathTemplate,
+    )
+  ) {
+    return { kind: 'scope', read: ACCOUNT_SECURITY_SCOPE, write: ACCOUNT_SECURITY_SCOPE };
+  }
+  // First-run completion is set-once, idempotent account state. Only the real
+  // POST route is widened; another method on the same path remains closed.
+  if (path === '/auth/first-run/complete' && requestMethod.toUpperCase() === 'POST') {
+    return { kind: 'scope', read: ACCOUNT_SECURITY_SCOPE, write: ACCOUNT_SECURITY_SCOPE };
+  }
   // The singular mint route is intentionally browser-only: its only useful
   // result is a signed `bt_rdid` cookie in the browser / Custom-Tab jar that will
   // run the next OAuth login. A bearer would put that cookie on the app's own
   // HTTP client and strand the binding. Native clients manage existing bindings
   // through the plural account-security surface below (#1327).
-  if (path === '/auth/remembered-device' && method.toUpperCase() === 'POST') {
+  if (path === '/auth/remembered-device' && requestMethod.toUpperCase() === 'POST') {
     return {
       kind: 'session-only',
       bearerMessage:
@@ -449,7 +535,7 @@ function resolvePolicy(
   // separation, §6.12) — 404 to disclose nothing.
   if (path === '/admin' || path.startsWith('/admin/')) return { kind: 'admin' };
   // /auth carve-outs (#361) — resolved before anything else in the group.
-  const authPolicy = resolveAuthPolicy(path, requestMethod);
+  const authPolicy = resolveAuthPolicy(path, requestMethod, allowPathTemplate);
   if (authPolicy) return authPolicy;
   // Paranoid mode transitions (§13.5 V5-P13) are strictly browser-cookie-session
   // only — the same rule as `/vault/*` below, for a strictly stronger reason.
@@ -470,15 +556,31 @@ function resolvePolicy(
   if (path === '/account' || path.startsWith('/account/')) {
     return { kind: 'scope', read: ACCOUNT_SECURITY_SCOPE, write: ACCOUNT_SECURITY_SCOPE };
   }
-  // Key management + OAuth app/grant lifecycle are cookie-session only: a
-  // delegated token must not mint/list/revoke keys, register OAuth apps or manage
-  // grants (no privilege escalation). Checked before the `/settings` module
-  // policy below, which would otherwise grant these to a social scope.
+  // Key management + OAuth app registration remain cookie-session only: a
+  // delegated token must not mint/list/revoke keys or register OAuth apps. Grant
+  // management has one narrower exception below for trusted first-party clients.
+  // Checked before the `/settings` module policy, which would otherwise grant
+  // these credential routes to a social scope.
   if (path === '/settings/api-keys' || path.startsWith('/settings/api-keys/')) {
     return { kind: 'session-only' };
   }
   if (path === '/settings/oauth-clients' || path.startsWith('/settings/oauth-clients/')) {
     return { kind: 'session-only' };
+  }
+  if (
+    routeAllowlistAccepts(
+      OAUTH_GRANT_FIRST_PARTY_BEARER_ROUTE_ALLOWLIST,
+      requestMethod,
+      path,
+      allowPathTemplate,
+    )
+  ) {
+    return {
+      kind: 'scope',
+      read: ACCOUNT_SECURITY_SCOPE,
+      write: ACCOUNT_SECURITY_SCOPE,
+      firstPartyOnly: true,
+    };
   }
   if (path === '/settings/oauth-grants' || path.startsWith('/settings/oauth-grants/')) {
     return { kind: 'session-only' };
@@ -489,14 +591,20 @@ function resolvePolicy(
   if (path === '/settings/webhooks' || path.startsWith('/settings/webhooks/')) {
     return { kind: 'session-only' };
   }
-  // Tax year locking (§16 2026-08-07): the unlock ritual re-verifies the
-  // account password and re-opens a legally-settled year — strictly a
-  // browser-cookie-session act, never a bearer's (no delegated token or
-  // personal key may unlock, re-lock, or even read the lock surface).
-  // Checked before the `/settings` module catch-all below, which would
-  // otherwise fold these under the social scope.
+  // Tax-year lock state is account-security state shared by web and native
+  // clients (owner ruling 2026-08-17). The password re-auth and per-account
+  // throttle remain in the unlock service for both credential kinds. Keep an
+  // exact route allowlist here so a future sibling cannot inherit access from
+  // this carve-out or from the `/settings` social-scope catch-all below.
   if (path === '/settings/taxes/years' || path.startsWith('/settings/taxes/years/')) {
-    return { kind: 'session-only' };
+    return routeAllowlistAccepts(
+      TAX_YEAR_LOCK_BEARER_ROUTE_ALLOWLIST,
+      requestMethod,
+      path,
+      allowPathTemplate,
+    )
+      ? { kind: 'scope', read: ACCOUNT_SECURITY_SCOPE, write: ACCOUNT_SECURITY_SCOPE }
+      : { kind: 'session-only' };
   }
   // #1043: native clients may synchronize the already-encrypted vault with the
   // single inherently read-write vault:sync scope. The exact method-aware
@@ -579,10 +687,11 @@ function resolvePolicy(
 }
 
 /**
- * Whether a mount-relative `/api/v1` path accepts a bearer token at the auth
- * layer (a personal API key OR a delegated OAuth access token) — i.e. anything
- * that is `allow` (identity/logout/health) or scope-gated. Session-only and
- * admin paths do not. The OpenAPI document derives each route's `security`
+ * Whether a mount-relative `/api/v1` path accepts at least one bearer token at
+ * the auth layer — i.e. anything that is `allow` (identity/logout/health) or
+ * scope-gated. A scope policy may additionally restrict the bearer to a trusted
+ * first-party OAuth client. Session-only and admin paths do not. The OpenAPI
+ * document derives each route's `security`
  * requirement from this so the spec can never drift from the real middleware
  * policy (#361, fixes the doc's blanket sessionCookie-only claim). Usually the
  * method only changes the required read/write half; the MIRRORCHAIN participation
@@ -617,6 +726,14 @@ export function enforceApiKeyScope(ctx: AppContext): RequestHandler {
       next();
       return;
     }
+    // Bearer credentials are a user-app rail. An account promoted to admin may
+    // still have a not-yet-revoked personal key or OAuth grant; disclose no
+    // user surface to that principal, just as `/admin/*` discloses nothing to a
+    // bearer regardless of its scopes.
+    if (req.authUser?.role === 'admin') {
+      next(notFound());
+      return;
+    }
     const policy = resolvePolicy(req.path, req.method);
     if (policy.kind === 'admin') {
       next(notFound());
@@ -649,17 +766,36 @@ export function enforceApiKeyScope(ctx: AppContext): RequestHandler {
     // `:read` requirement, so no read-only route is unreachable to a write-scoped
     // token. Enforced here at check time — the single authoritative point that
     // also covers tokens minted before the rule.
-    if (scopeSatisfies(req.apiKey.scopes, required)) {
-      next();
+    if (!scopeSatisfies(req.apiKey.scopes, required)) {
+      denyScope(ctx, req, required).then(
+        () =>
+          next(
+            forbidden(`API key is missing the required scope "${required}".`, 'INSUFFICIENT_SCOPE'),
+          ),
+        next,
+      );
       return;
     }
-    denyScope(ctx, req, required).then(
-      () =>
-        next(
-          forbidden(`API key is missing the required scope "${required}".`, 'INSUFFICIENT_SCOPE'),
-        ),
-      next,
-    );
+    if (policy.firstPartyOnly && !req.apiKey.firstParty) {
+      // Scope is deliberately checked first: a first-party client missing the
+      // contractually required scope gets actionable INSUFFICIENT_SCOPE. Once a
+      // token does hold it, this trust-boundary refusal says only that the route
+      // is first-party-only — it does not imply scope alone would ever suffice.
+      // Reuse the established audited denial rail: probing another app's grants
+      // is a credential-boundary event the account owner must be able to trace.
+      denyScope(ctx, req, required).then(
+        () =>
+          next(
+            forbidden(
+              'This endpoint is available to first-party OAuth clients only.',
+              'API_KEY_FORBIDDEN',
+            ),
+          ),
+        next,
+      );
+      return;
+    }
+    next();
   };
 }
 

@@ -252,7 +252,8 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
   // ── First-run setup (§6.12) ────────────────────────────────────────────────
   // Mark the caller's setup run as done — finished or dismissed. Idempotent and
   // set-once (see `userRepo.markFirstRunCompleted`), so a replay is harmless. It
-  // only ever affects the caller's own row; there is no id in the payload.
+  // only ever affects the caller's own row; there is no id in the payload. The
+  // owning session and `account:security` bearer use the same handler.
   router.post('/first-run/complete', requireAuth, async (req, res) => {
     const user = await ctx.auth.completeFirstRun(req.authUser!.id);
     res.json(toMeResponseFromRow(user));
@@ -535,11 +536,11 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
   });
 
   // ── Passkeys / WebAuthn (§13.4 V4-P4) ───────────────────────────────────────
-  // Management is user-kind session only (`requireUser`), alongside 2FA. Adding
-  // (register/verify) and deleting are re-auth-gated in the service — a fresh
-  // password or a 2FA factor — exactly like disabling 2FA; listing and renaming
-  // ride the session alone. Options are always minted server-side from
-  // `config.webauthn` and carry a single-use, short-TTL challenge.
+  // Existing-passkey management accepts the owning user session or an
+  // `account:security` bearer. Deleting remains re-auth-gated in the service —
+  // a fresh password or a 2FA factor — while rename deliberately is not.
+  // Registration stays session-only and origin-bound; options are minted
+  // server-side from `config.webauthn` with a single-use, short-TTL challenge.
   router.get('/passkeys', requireUser, async (req, res) => {
     res.json(await ctx.passkeys.list(req.authUser!.id));
   });

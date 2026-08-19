@@ -137,6 +137,63 @@ describe('OpenAPI document', () => {
     const apiKeys = (paths['/settings/api-keys'] as JsonObject).get as JsonObject;
     expect(apiKeys.security).toEqual([{ sessionCookie: [] }]);
 
+    // #1324: existing-passkey management, first-run completion and tax-year
+    // locks share account:security across the cookie and bearer front ends. The
+    // markers are derived from the same exact method/path policy as live
+    // requests; no endpoint-local security override may drift from it.
+    const nativeAccountSecurityOperations = [
+      ['get', '/auth/passkeys'],
+      ['patch', '/auth/passkeys/{id}'],
+      ['delete', '/auth/passkeys/{id}'],
+      ['post', '/auth/first-run/complete'],
+      ['get', '/settings/taxes/years'],
+      ['post', '/settings/taxes/years/{year}/unlock'],
+      ['post', '/settings/taxes/years/{year}/relock'],
+    ] as const;
+    for (const [method, path] of nativeAccountSecurityOperations) {
+      const operation = (paths[path] as JsonObject)[method] as JsonObject;
+      expect(operation.security, `security for ${method.toUpperCase()} ${path}`).toEqual([
+        { sessionCookie: [] },
+        { apiKeyBearer: [] },
+      ]);
+    }
+
+    // Registration remains an owning-browser ceremony. Public passkey sign-in
+    // remains public, but neither class advertises bearer-token authentication.
+    for (const [method, path] of [
+      ['post', '/auth/passkeys/register/options'],
+      ['post', '/auth/passkeys/register/verify'],
+    ] as const) {
+      const operation = (paths[path] as JsonObject)[method] as JsonObject;
+      expect(operation.security, `security for ${method.toUpperCase()} ${path}`).toEqual([
+        { sessionCookie: [] },
+      ]);
+    }
+    for (const [method, path] of [
+      ['post', '/auth/passkeys/login/options'],
+      ['post', '/auth/passkeys/login/verify'],
+    ] as const) {
+      const operation = (paths[path] as JsonObject)[method] as JsonObject;
+      expect(operation.security, `security for ${method.toUpperCase()} ${path}`).toEqual([]);
+    }
+
+    // #1325: the policy table marks both exact grant-management operations as
+    // bearer-capable, so the generator derives both schemes without an endpoint
+    // security override. The prose documents the narrower first-party condition
+    // that an OpenAPI security-scheme union cannot express on its own.
+    for (const [method, path] of [
+      ['get', '/settings/oauth-grants'],
+      ['delete', '/settings/oauth-grants/{id}'],
+    ] as const) {
+      const operation = (paths[path] as JsonObject)[method] as JsonObject;
+      expect(operation.security, `${method.toUpperCase()} ${path}`).toEqual([
+        { sessionCookie: [] },
+        { apiKeyBearer: [] },
+      ]);
+      expect(operation.description).toContain('first-party OAuth client');
+      expect(operation.description).toContain('account:security');
+    }
+
     // A scope-gated module route accepts both the cookie and a bearer token.
     const notifications = (paths['/notifications'] as JsonObject).get as JsonObject;
     expect(notifications.security).toEqual([{ sessionCookie: [] }, { apiKeyBearer: [] }]);
