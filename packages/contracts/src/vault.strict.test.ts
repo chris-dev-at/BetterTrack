@@ -43,17 +43,20 @@ describe('public paranoid transitions', () => {
 
   it('ties selected media evidence to one exact supported vault version', () => {
     const REVISION = 'aXf9_capture-token';
+    const credential = { password: 'account-password' };
     expect(
       paranoidEnableRequestSchema.parse({
         mediaSet: ['server'],
         vaultVersion: 1,
         normalDataRevision: REVISION,
+        ...credential,
       }),
     ).toEqual({
       mediaSet: ['server'],
       vaultVersion: 1,
       driveAttestation: null,
       normalDataRevision: REVISION,
+      ...credential,
     });
     expect(
       paranoidEnableRequestSchema.parse({
@@ -61,35 +64,50 @@ describe('public paranoid transitions', () => {
         vaultVersion: 7,
         driveAttestation: { verifiedRoundTrip: true, vaultVersion: 7 },
         normalDataRevision: REVISION,
+        ...credential,
       }),
     ).toEqual({
       mediaSet: ['drive'],
       vaultVersion: 7,
       driveAttestation: { verifiedRoundTrip: true, vaultVersion: 7 },
       normalDataRevision: REVISION,
+      ...credential,
     });
 
     for (const invalid of [
-      { mediaSet: ['drive'], vaultVersion: 7, normalDataRevision: REVISION },
+      { mediaSet: ['drive'], vaultVersion: 7, normalDataRevision: REVISION, ...credential },
       {
         mediaSet: ['drive'],
         vaultVersion: 7,
         driveAttestation: { verifiedRoundTrip: true, vaultVersion: 6 },
         normalDataRevision: REVISION,
+        ...credential,
       },
       {
         mediaSet: ['server'],
         vaultVersion: 7,
         driveAttestation: { verifiedRoundTrip: true, vaultVersion: 7 },
         normalDataRevision: REVISION,
+        ...credential,
       },
-      { mediaSet: ['server'], vaultVersion: 0, normalDataRevision: REVISION },
-      { mediaSet: ['server'], vaultVersion: 1, normalDataRevision: REVISION, plaintextHash: 'x' },
+      { mediaSet: ['server'], vaultVersion: 0, normalDataRevision: REVISION, ...credential },
+      {
+        mediaSet: ['server'],
+        vaultVersion: 1,
+        normalDataRevision: REVISION,
+        plaintextHash: 'x',
+        ...credential,
+      },
       // The capture token is NOT optional: an enable without it would skip the
       // compare-and-swap on the one transition that cannot be undone.
       { mediaSet: ['server'], vaultVersion: 1 },
-      { mediaSet: ['server'], vaultVersion: 1, normalDataRevision: '' },
-      { mediaSet: ['server'], vaultVersion: 1, normalDataRevision: 'not a token' },
+      { mediaSet: ['server'], vaultVersion: 1, normalDataRevision: '', ...credential },
+      {
+        mediaSet: ['server'],
+        vaultVersion: 1,
+        normalDataRevision: 'not a token',
+        ...credential,
+      },
     ]) {
       expect(paranoidEnableRequestSchema.safeParse(invalid).success).toBe(false);
     }
@@ -100,8 +118,11 @@ describe('public paranoid transitions', () => {
       confirm: true,
       rehydrationId: uuid(90),
       document: emptyDocument,
+      password: 'account-password',
     };
     expect(paranoidDisableRequestSchema.parse(request)).toEqual(request);
+    const { password: _password, ...withoutCredential } = request;
+    expect(paranoidDisableRequestSchema.safeParse(withoutCredential).success).toBe(false);
     expect(paranoidDisableRequestSchema.safeParse({ ...request, confirm: false }).success).toBe(
       false,
     );

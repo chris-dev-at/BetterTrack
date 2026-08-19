@@ -6,6 +6,7 @@ import {
   PARANOID_TRANSITION_ERROR_CODES,
   passwordSchema,
   vaultMediaSetSchema,
+  type ParanoidTransitionCredential,
   type VaultMediaSet,
 } from '@bettertrack/contracts';
 
@@ -26,6 +27,7 @@ import {
   type VaultEnableStage,
 } from './enable';
 import { captureNormalVault, VaultCaptureUnstableError } from './migration';
+import { ParanoidStepUpFields } from './ParanoidStepUpFields';
 
 const KILL_LIST_KEYS = [
   'sharing',
@@ -60,6 +62,7 @@ export function ParanoidEnableWizard({
   const [kitDownloaded, setKitDownloaded] = useState(false);
   const [kitStored, setKitStored] = useState(false);
   const [lostKeyAcknowledged, setLostKeyAcknowledged] = useState(false);
+  const [credential, setCredential] = useState<ParanoidTransitionCredential | null>(null);
   const [stage, setStage] = useState<VaultEnableStage | null>(null);
   const [captureCompletedRequests, setCaptureCompletedRequests] = useState(0);
   const [error, setError] = useState<EnableErrorCopy | null>(null);
@@ -110,7 +113,14 @@ export function ParanoidEnableWizard({
   }
 
   async function enable() {
-    if (user == null || material == null || !kitDownloaded || !kitStored || !lostKeyAcknowledged) {
+    if (
+      user == null ||
+      material == null ||
+      !kitDownloaded ||
+      !kitStored ||
+      !lostKeyAcknowledged ||
+      credential == null
+    ) {
       return;
     }
     setStep(4);
@@ -137,6 +147,7 @@ export function ParanoidEnableWizard({
         {
           mediaSet,
           material,
+          credential,
           onStage: setStage,
         },
         {
@@ -306,6 +317,7 @@ export function ParanoidEnableWizard({
             />
             <strong>{t('vault.enable.lostKeyAcknowledgment')}</strong>
           </label>
+          <ParanoidStepUpFields idPrefix="vault-enable-step-up" onChange={setCredential} />
         </div>
       ) : null}
 
@@ -358,7 +370,13 @@ export function ParanoidEnableWizard({
         ) : null}
         {step === 3 ? (
           <Button
-            disabled={!passphraseValid || !kitDownloaded || !kitStored || !lostKeyAcknowledged}
+            disabled={
+              !passphraseValid ||
+              !kitDownloaded ||
+              !kitStored ||
+              !lostKeyAcknowledged ||
+              credential == null
+            }
             onClick={() => void enable()}
           >
             {t('vault.enable.action')}

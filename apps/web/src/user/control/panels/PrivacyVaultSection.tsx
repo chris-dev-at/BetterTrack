@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 
 import { useQueryClient } from '@tanstack/react-query';
 
-import { passwordSchema } from '@bettertrack/contracts';
+import { passwordSchema, type ParanoidTransitionCredential } from '@bettertrack/contracts';
 
 import { useT } from '../../../i18n';
 import { deliverClientDownload } from '../../vault/export/deliver';
@@ -11,6 +11,7 @@ import { useVaultMoneySession } from '../../vault/engine/VaultMoneyEngineContext
 import { hasUnambiguousBranch, type VaultSyncStatus } from '../../vault/sync';
 import type { VaultRuntime } from '../../vault/VaultRuntimeContext';
 import { disableUnlockedVault } from '../../vault/ui/disable';
+import { ParanoidStepUpFields } from '../../vault/ui/ParanoidStepUpFields';
 import { CHECKBOX_STYLE } from '../../components/ui';
 import { Button, Field, Input } from '../../../ui/origin';
 import type { Notice } from './PrivacyPanel';
@@ -304,6 +305,9 @@ function VaultDestructiveActions({
   const t = useT();
   const [freshConfirmed, setFreshConfirmed] = useState(false);
   const [disableConfirmed, setDisableConfirmed] = useState(false);
+  const [disableCredential, setDisableCredential] = useState<ParanoidTransitionCredential | null>(
+    null,
+  );
   const [working, setWorking] = useState(false);
   // Disable rehydrates the ACTIVE branch and the server then drops the blob and
   // its history, so a split the user has not resolved would lose the other side
@@ -325,11 +329,12 @@ function VaultDestructiveActions({
   }
 
   async function disable() {
-    if (accountId == null || document == null || disableBlocked) return;
+    if (accountId == null || document == null || disableBlocked || disableCredential == null)
+      return;
     setWorking(true);
     onNotice(null);
     try {
-      await disableUnlockedVault(document, accountId);
+      await disableUnlockedVault(document, accountId, disableCredential);
     } catch {
       onNotice({ tone: 'error', key: 'vault.settings.disableError' });
       setWorking(false);
@@ -387,10 +392,16 @@ function VaultDestructiveActions({
             />
             <span>{t('vault.settings.disableConfirm')}</span>
           </label>
+          <ParanoidStepUpFields
+            disabled={working}
+            idPrefix="vault-disable-step-up"
+            onChange={setDisableCredential}
+          />
           <Button
             disabled={
               working ||
               !disableConfirmed ||
+              disableCredential == null ||
               document == null ||
               accountId == null ||
               disableBlocked

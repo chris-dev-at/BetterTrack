@@ -351,8 +351,15 @@ describe('paranoid disable request', () => {
   const emptyDocument = { schemaVersion: 1 as const, entities: [], mergeLog: [] };
   const base = { confirm: true as const, rehydrationId: UUID_A, document: emptyDocument };
 
-  it('asks a restoring disable for nothing but the confirmation', () => {
-    expect(paranoidDisableRequestSchema.safeParse(base).success).toBe(true);
+  it('requires in-request step-up for an ordinary restoring disable', () => {
+    expect(paranoidDisableRequestSchema.safeParse(base).success).toBe(false);
+    for (const credential of [
+      { password: 'hunter2hunter2' },
+      { code: '123456' },
+      { recoveryCode: 'abcd-efgh' },
+    ]) {
+      expect(paranoidDisableRequestSchema.safeParse({ ...base, ...credential }).success).toBe(true);
+    }
   });
 
   it('requires the account-deletion rung on the irreversible discard', () => {

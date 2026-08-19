@@ -6,6 +6,7 @@ import {
   exportRequestSchema,
   paranoidDisableRequestSchema,
   paranoidEnableRequestSchema,
+  scopeSatisfies,
   type DeleteAccountRequest,
   type ExportDownloadRequest,
   type ExportRequest,
@@ -20,6 +21,10 @@ import {
 } from '../../services/account/paranoidTransitionService';
 import { GLOBAL_JSON_BODY_LIMIT } from '../bodyLimits';
 import { clearSessionCookie } from '../cookies';
+import {
+  ACCOUNT_SECURITY_SCOPE,
+  accountParanoidRouteAcceptsBearer,
+} from '../middleware/bearerAuth';
 import { requireUser } from '../middleware/session';
 import { validateBody } from '../middleware/validate';
 import type { RateLimiters } from '../middleware/rateLimit';
@@ -65,32 +70,35 @@ export const paranoidDisableJsonLimitBytes = (vaultMaxBytes: number): number =>
 export const EXPORT_DOWNLOAD_STALL_TIMEOUT_MS = 60_000;
 
 /**
- * The privacy-mode transitions are owner-browser-session work, and the global
- * bearer policy marks `/account/paranoid/*` session-only for that reason. This is
- * the second, LOCAL half of the same rule — the mirror of `/vault`'s own
- * `requireCookieSession`, and the structural answer to how these two routes got
- * bearer-reachable in the first place: they were mounted on a router whose
- * `/account/**` policy row grants `account:security`, and inherited it silently.
- * Stating the boundary in the router means a future transition route, a remount,
- * or a reshuffle of the policy table cannot quietly re-widen it, and direct-router
- * use in a test carries the same rule as production.
+ * Local defense-in-depth for the two bearer-callable privacy-mode transitions.
+ * A bearer must hold `account:security` AND match the exact method/path allowlist;
+ * fork-provenance, normal-revision and every future sibling stay cookie-only even
+ * if the global table is bypassed or reshuffled. Both admitted request bodies
+ * carry the account credential that replaces CSRF on the bearer rail.
  *
  * The sibling `/account` routes deliberately stay bearer-callable (the mobile
  * in-app deletion and export flows, #362/#494), so this is per-route, not a
  * router-wide `use`.
  */
-const requireOwnerBrowserSession: RequestHandler = (req, _res, next) => {
-  if (req.apiKey || !req.sessionId) {
-    next(
-      new ApiError(
-        403,
-        'API_KEY_FORBIDDEN',
-        'Privacy mode transitions are available only to the owning browser session.',
-      ),
+export const requireOwnerBrowserSession: RequestHandler = (req, _res, next) => {
+  const bearerTransitionAllowed =
+    req.apiKey !== undefined &&
+    scopeSatisfies(req.apiKey.scopes, ACCOUNT_SECURITY_SCOPE) &&
+    accountParanoidRouteAcceptsBearer(
+      req.method,
+      `/account${req.path === '/' || req.path === '' ? '' : req.path}`,
     );
+  if ((!req.apiKey && req.sessionId) || bearerTransitionAllowed) {
+    next();
     return;
   }
-  next();
+  next(
+    new ApiError(
+      403,
+      'API_KEY_FORBIDDEN',
+      'This privacy-mode endpoint is not available to this credential.',
+    ),
+  );
 };
 
 /**
@@ -145,7 +153,11 @@ export function createAccountRouter(ctx: AppContext, limiters: RateLimiters): Ro
     validateBody(paranoidEnableRequestSchema),
     async (req, res) => {
       const body = req.valid?.body as ParanoidEnableRequest;
-      res.json(await runTransition(() => ctx.paranoidTransitions.enable(req.authUser!.id, body)));
+      res.json(
+        await runTransition(() =>
+          ctx.paranoidTransitions.enable(req.authUser!.id, body, { ip: req.ip }),
+        ),
+      );
     },
   );
 
@@ -209,15 +221,12 @@ export function createAccountRouter(ctx: AppContext, limiters: RateLimiters): Ro
     });
   };
 
-  // Two shapes on one route. The restoring disable hands the decrypted rows
-  // back, so `confirm` + the document is its whole gate. `discard: true`
-  // destroys a vault nobody can decrypt any more, so the service re-runs the
-  // account-deletion rung server-side (typed username + password/TOTP/recovery
-  // behind a per-account progressive throttle) — the client-side confirmation
-  // in the locked gate's fold is a UX affordance, never the gate. The route
-  // keeps the per-account vault schedule; the credential counter is the
-  // service's own, so a wrong password here can never buy attempts anywhere
-  // else (and the restoring disable's budget is unchanged).
+  // Both shapes carry password/TOTP/recovery step-up material, verified under
+  // the rehydration account lock before any row write. `discard: true` also
+  // carries the account-deletion rung's typed username because it destroys a
+  // vault nobody can decrypt. The route keeps the per-account vault schedule;
+  // wrong credentials accrue on the transition service's separate progressive
+  // counter and never buy attempts on another auth surface.
   router.post(
     '/paranoid/disable',
     requireUser,

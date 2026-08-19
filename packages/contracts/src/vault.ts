@@ -1775,11 +1775,37 @@ export type ParanoidDriveReadinessAttestation = z.infer<
   typeof paranoidDriveReadinessAttestationSchema
 >;
 
+const paranoidTransitionCredentialFields = {
+  password: z.string().min(1).max(MAX_PASSWORD_LENGTH).optional(),
+  /** A fresh 6-digit authenticator (TOTP) code — 2FA-enrolled accounts only. */
+  code: z.string().trim().min(4).max(16).optional(),
+  /** An unused recovery code — consumed atomically on successful verification. */
+  recoveryCode: z.string().trim().min(4).max(64).optional(),
+} as const;
+
+/**
+ * In-request step-up shared by both paranoid transition directions. Bearer
+ * callers cannot rely on the cookie-only `/auth/reauth` endpoint, and carrying
+ * the same credential on the web path keeps the security boundary identical.
+ */
+export const paranoidTransitionCredentialSchema = z
+  .object(paranoidTransitionCredentialFields)
+  .strict()
+  .refine(
+    (value) =>
+      value.password !== undefined || value.code !== undefined || value.recoveryCode !== undefined,
+    {
+      message: 'Re-authentication is required: send your password or a two-factor code.',
+    },
+  );
+export type ParanoidTransitionCredential = z.infer<typeof paranoidTransitionCredentialSchema>;
+
 /**
  * `POST /account/paranoid/enable`. Evidence for every selected medium is tied to
  * one exact supported vault version: the server medium is checked against the
  * blind blob row, while Drive is accepted only with this strict client
- * attestation.
+ * attestation. The account credential is verified under the same account lock
+ * as the destructive purge for cookie and bearer callers alike.
  */
 export const paranoidEnableRequestSchema = z
   .object({
@@ -1798,9 +1824,21 @@ export const paranoidEnableRequestSchema = z
      * undone.
      */
     normalDataRevision: normalDataRevisionSchema,
+    ...paranoidTransitionCredentialFields,
   })
   .strict()
   .superRefine((value, ctx) => {
+    if (
+      value.password === undefined &&
+      value.code === undefined &&
+      value.recoveryCode === undefined
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['password'],
+        message: 'Re-authentication is required: send your password or a two-factor code.',
+      });
+    }
     const driveSelected = value.mediaSet.includes('drive');
     if (driveSelected && value.driveAttestation === null) {
       ctx.addIssue({
@@ -1846,36 +1884,23 @@ export type ParanoidEnableResponse = z.infer<typeof paranoidEnableResponseSchema
  * key from PD3a; the literal confirmation prevents an unlocked document alone
  * from authorizing the destructive mode transition.
  *
- * The ordinary disable RESTORES the vault's rows, so `confirm` plus the
- * decrypted document is the whole gate. `discard: true` does the opposite — it
- * destroys a vault its owner can no longer decrypt — so it carries the SAME two
- * gates as `DELETE /account` ({@link deleteAccountRequestSchema}): the typed
- * `confirmUsername`, and a server-verified credential (current password, or a
- * fresh TOTP `code` / unused `recoveryCode` on a 2FA account). Both are
- * verified server-side; a client-only confirmation would be skipped by anyone
- * POSTing the endpoint directly from a live session.
+ * Every disable carries an in-request, server-verified credential (current
+ * password, or a fresh TOTP `code` / unused `recoveryCode` on a 2FA account).
+ * `discard: true` does the opposite of an ordinary restore — it destroys a vault
+ * its owner can no longer decrypt — so it additionally carries the typed
+ * `confirmUsername` gate from `DELETE /account` ({@link deleteAccountRequestSchema}).
+ * All gates are verified server-side; a client-only confirmation would be
+ * skipped by anyone POSTing the endpoint directly.
  */
 export const paranoidDisableRequestSchema = paranoidDisableRehydrationRequestSchema
   .extend({
     confirm: z.literal(true),
     /** Required for `discard`: must match the account's username (case-insensitive). */
     confirmUsername: z.string().trim().min(1).max(40).optional(),
-    password: z.string().min(1).max(MAX_PASSWORD_LENGTH).optional(),
-    /** A fresh 6-digit authenticator (TOTP) code — 2FA-enrolled accounts only. */
-    code: z.string().trim().min(4).max(16).optional(),
-    /** An unused recovery code — consumed on success AND on a failed match. */
-    recoveryCode: z.string().trim().min(4).max(64).optional(),
+    ...paranoidTransitionCredentialFields,
   })
   .strict()
   .superRefine((value, ctx) => {
-    if (value.discard !== true) return;
-    if (value.confirmUsername === undefined) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        path: ['confirmUsername'],
-        message: 'Discarding the vault requires the typed username confirmation.',
-      });
-    }
     if (
       value.password === undefined &&
       value.code === undefined &&
@@ -1885,6 +1910,14 @@ export const paranoidDisableRequestSchema = paranoidDisableRehydrationRequestSch
         code: z.ZodIssueCode.custom,
         path: ['password'],
         message: 'Re-authentication is required: send your password or a two-factor code.',
+      });
+    }
+    if (value.discard !== true) return;
+    if (value.confirmUsername === undefined) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['confirmUsername'],
+        message: 'Discarding the vault requires the typed username confirmation.',
       });
     }
   });

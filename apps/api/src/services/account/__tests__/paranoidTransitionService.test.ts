@@ -51,8 +51,11 @@ import { createTestApp, type SeededUser, type TestHarness } from '../../../testi
 import { hashToken } from '../../crypto/tokens';
 import { liveRingKey } from '../../liveMode/ringBuffer';
 import type { AuditService } from '../../audit/auditService';
-import type { ParanoidDiscardReauth } from '../paranoidDiscardReauth';
+import { ACCOUNT_PARANOID_TRANSITION_NAMESPACE } from '../../auth/loginThrottle';
+import { generateTotpCode, TOTP_STEP_SECONDS } from '../../auth/totp';
+import { progressiveKeys } from '../../security/progressiveLimiter';
 import type { ParanoidRehydrationService } from '../paranoidRehydrationService';
+import type { ParanoidTransitionReauth } from '../paranoidTransitionReauth';
 import {
   createParanoidTransitionService,
   type ParanoidEnableStage,
@@ -65,6 +68,7 @@ const REHYDRATION_ID = '018f0000-0000-7000-8000-000000000503';
 const OTHER_REHYDRATION_ID = '018f0000-0000-7000-8000-000000000504';
 const RESTORED_SOURCE_ID = '018f0000-0000-7000-8000-000000000505';
 const EDITED_AT = '2026-07-24T10:00:00.000Z';
+const ACCOUNT_PASSWORD = 'user-strong-password-1';
 
 let harness: TestHarness;
 
@@ -75,15 +79,13 @@ beforeEach(async () => {
 type Agent = ReturnType<typeof request.agent>;
 
 /**
- * These harnesses drive enable / admin metadata only. The discard gate is a
- * REQUIRED dependency (a composition that forgets it must not typecheck), so
- * they supply one that fails loudly if a path ever reaches it unexpectedly.
+ * Focused service harnesses do not exercise password hashing. The transition
+ * gate is a REQUIRED dependency, so they supply an explicit successful verifier.
  */
-function neverReachedDiscardReauth(): ParanoidDiscardReauth {
+function acceptingTransitionReauth(): ParanoidTransitionReauth {
   return {
-    verify: async () => {
-      throw new Error('these tests never take the discard exit');
-    },
+    verify: async () => undefined,
+    recordFailure: async () => false,
   };
 }
 
@@ -191,6 +193,7 @@ async function serverEnable(userId: string, vaultVersion = 1): Promise<ParanoidE
     vaultVersion,
     driveAttestation: null,
     normalDataRevision: revision,
+    password: ACCOUNT_PASSWORD,
   };
 }
 
@@ -210,12 +213,14 @@ async function driveEnable(userId: string, vaultVersion: number): Promise<Parano
     vaultVersion,
     driveAttestation: { verifiedRoundTrip: true, vaultVersion },
     normalDataRevision: revision,
+    password: ACCOUNT_PASSWORD,
   };
 }
 
 function disableRequest(userId: string, rehydrationId = REHYDRATION_ID): ParanoidDisableRequest {
   return {
     confirm: true,
+    password: ACCOUNT_PASSWORD,
     rehydrationId,
     document: {
       schemaVersion: 1,
@@ -286,6 +291,7 @@ function cashRestoreRequest(userId: string, movementId: string): ParanoidDisable
   });
   return paranoidDisableRequestSchema.parse({
     confirm: true,
+    password: ACCOUNT_PASSWORD,
     rehydrationId: REHYDRATION_ID,
     document: {
       schemaVersion: 1,
@@ -1146,6 +1152,243 @@ describe('paranoid public transitions', () => {
     );
   });
 
+  it('enables and disables over account:security bearer with fresh in-body re-auth', async () => {
+    const user = await harness.seedUser();
+    await seedNormalGraph(user);
+    const key = await harness.ctx.apiKeys.create({
+      userId: user.id,
+      name: 'native privacy transitions',
+      scopes: ['account:security'],
+    });
+    const authorization = { Authorization: `Bearer ${key.token}` };
+
+    const enabled = await request(harness.app)
+      .post('/api/v1/account/paranoid/enable')
+      .set(authorization)
+      .send(await driveEnable(user.id, 1));
+    expect(enabled.status, JSON.stringify(enabled.body)).toBe(200);
+    expect(enabled.body).toMatchObject({ mode: 'paranoid', mediaSet: ['drive'] });
+    expect((await accountState(user.id))?.privacyMode).toBe('paranoid');
+
+    const body = disableRequest(user.id);
+    const disabled = await request(harness.app)
+      .post('/api/v1/account/paranoid/disable')
+      .set(authorization)
+      .send(body);
+    expect(disabled.status, JSON.stringify(disabled.body)).toBe(200);
+    expect(disabled.body).toMatchObject({ mode: 'normal', idempotent: false });
+
+    // The durable rehydration id is still the retry key; the credential is
+    // freshly verified but never participates in replay matching.
+    const retried = await request(harness.app)
+      .post('/api/v1/account/paranoid/disable')
+      .set(authorization)
+      .send(body);
+    expect(retried.status, JSON.stringify(retried.body)).toBe(200);
+    expect(retried.body.idempotent).toBe(true);
+  });
+
+  it('rejects a missing credential on both rails without touching cleartext or ciphertext', async () => {
+    const user = await harness.seedUser();
+    const { portfolioId } = await seedNormalGraph(user);
+    const agent = await login(user);
+    const key = await harness.ctx.apiKeys.create({
+      userId: user.id,
+      name: 'missing transition credential',
+      scopes: ['account:security'],
+    });
+    const { password: _password, ...missingCredential } = await driveEnable(user.id, 1);
+
+    const cookie = await agent
+      .post('/api/v1/account/paranoid/enable')
+      .set(...XRW)
+      .send(missingCredential);
+    expect(cookie.status).toBe(400);
+    const bearer = await request(harness.app)
+      .post('/api/v1/account/paranoid/enable')
+      .set('Authorization', `Bearer ${key.token}`)
+      .send(missingCredential);
+    expect(bearer.status).toBe(400);
+    expect((await accountState(user.id))?.privacyMode).toBe('normal');
+    expect(
+      await harness.db.select().from(portfolios).where(eq(portfolios.id, portfolioId)),
+    ).toHaveLength(1);
+    expect(
+      await harness.db.select().from(paranoidVaults).where(eq(paranoidVaults.userId, user.id)),
+    ).toHaveLength(1);
+
+    await agent
+      .post('/api/v1/account/paranoid/enable')
+      .set(...XRW)
+      .send(await driveEnable(user.id, 1))
+      .expect(200);
+    const { password: _restorePassword, ...missingDisableCredential } = disableRequest(user.id);
+    const cookieMissingDisable = await agent
+      .post('/api/v1/account/paranoid/disable')
+      .set(...XRW)
+      .send(missingDisableCredential);
+    expect(cookieMissingDisable.status).toBe(400);
+    const missingDisable = await request(harness.app)
+      .post('/api/v1/account/paranoid/disable')
+      .set('Authorization', `Bearer ${key.token}`)
+      .send(missingDisableCredential);
+    expect(missingDisable.status).toBe(400);
+    expect((await accountState(user.id))?.privacyMode).toBe('paranoid');
+  });
+
+  it('audits wrong passwords, progressively throttles per account, and preserves the graph', async () => {
+    const user = await harness.seedUser();
+    const { portfolioId } = await seedNormalGraph(user);
+    const key = await harness.ctx.apiKeys.create({
+      userId: user.id,
+      name: 'transition throttle',
+      scopes: ['account:security'],
+    });
+    const body = { ...(await driveEnable(user.id, 1)), password: 'definitely-wrong-password' };
+    const attempt = () =>
+      request(harness.app)
+        .post('/api/v1/account/paranoid/enable')
+        .set('Authorization', `Bearer ${key.token}`)
+        .send(body);
+
+    for (let index = 0; index < 10; index += 1) {
+      const denied = await attempt();
+      expect(denied.status, `attempt ${index + 1}: ${JSON.stringify(denied.body)}`).toBe(401);
+      expect(denied.body.error.code).toBe('INVALID_CREDENTIALS');
+    }
+    const throttled = await attempt();
+    expect(throttled.status).toBe(429);
+    expect(throttled.body.error.details.retryAfter).toBeGreaterThan(0);
+    expect((await accountState(user.id))?.privacyMode).toBe('normal');
+    expect(
+      await harness.db.select().from(portfolios).where(eq(portfolios.id, portfolioId)),
+    ).toHaveLength(1);
+    expect(
+      await harness.db.select().from(paranoidVaults).where(eq(paranoidVaults.userId, user.id)),
+    ).toHaveLength(1);
+
+    const failures = await harness.db
+      .select()
+      .from(auditLog)
+      .where(eq(auditLog.action, 'account.paranoid_transition_reauth_fail'));
+    expect(failures).toHaveLength(11);
+    expect(failures.at(-1)?.meta).toEqual({ kind: 'password', locked: true });
+    expect(JSON.stringify(failures)).not.toContain('definitely-wrong-password');
+    const keys = progressiveKeys(ACCOUNT_PARANOID_TRANSITION_NAMESPACE, user.id);
+    expect(await harness.ctx.redis.ttl(keys.cooldown)).toBeGreaterThan(0);
+  });
+
+  it('rejects stale TOTP without mutation and accepts a fresh code', async () => {
+    const totpUser = await harness.seedUser();
+    const { portfolioId: totpPortfolioId } = await seedNormalGraph(totpUser);
+    const totpEnrollment = await harness.ctx.twoFactor.enrollTotp(totpUser.id);
+    await harness.ctx.twoFactor.confirmTotp(
+      totpUser.id,
+      generateTotpCode(totpEnrollment.secret, Date.now() - TOTP_STEP_SECONDS * 1000),
+    );
+    const totpKey = await harness.ctx.apiKeys.create({
+      userId: totpUser.id,
+      name: 'totp transition',
+      scopes: ['account:security'],
+    });
+    const { password: _totpPassword, ...totpEnable } = await driveEnable(totpUser.id, 1);
+    const stale = await request(harness.app)
+      .post('/api/v1/account/paranoid/enable')
+      .set('Authorization', `Bearer ${totpKey.token}`)
+      .send({
+        ...totpEnable,
+        code: generateTotpCode(totpEnrollment.secret, Date.now() - 3 * TOTP_STEP_SECONDS * 1000),
+      });
+    expect(stale.status).toBe(401);
+    expect(stale.body.error.code).toBe('TWO_FACTOR_INVALID_CODE');
+    expect((await accountState(totpUser.id))?.privacyMode).toBe('normal');
+    expect(
+      await harness.db.select().from(portfolios).where(eq(portfolios.id, totpPortfolioId)),
+    ).toHaveLength(1);
+    expect(
+      await harness.ctx.redis.get(
+        progressiveKeys(ACCOUNT_PARANOID_TRANSITION_NAMESPACE, totpUser.id).count,
+      ),
+    ).toBe('1');
+
+    const totpAccepted = await request(harness.app)
+      .post('/api/v1/account/paranoid/enable')
+      .set('Authorization', `Bearer ${totpKey.token}`)
+      .send({ ...totpEnable, code: generateTotpCode(totpEnrollment.secret) });
+    expect(totpAccepted.status, JSON.stringify(totpAccepted.body)).toBe(200);
+    await request(harness.app)
+      .post('/api/v1/account/paranoid/disable')
+      .set('Authorization', `Bearer ${totpKey.token}`)
+      .send(disableRequest(totpUser.id))
+      .expect(200);
+
+    const failures = await harness.db
+      .select()
+      .from(auditLog)
+      .where(eq(auditLog.action, 'account.paranoid_transition_reauth_fail'));
+    expect(failures.map((row) => row.meta)).toContainEqual({ kind: 'totp', locked: false });
+  });
+
+  it('consumes one recovery code and rejects its replay without touching the vault', async () => {
+    const recoveryUser = await harness.seedUser();
+    await seedNormalGraph(recoveryUser);
+    const recoveryEnrollment = await harness.ctx.twoFactor.enrollTotp(recoveryUser.id);
+    const recoveryConfirmation = await harness.ctx.twoFactor.confirmTotp(
+      recoveryUser.id,
+      generateTotpCode(recoveryEnrollment.secret, Date.now() - TOTP_STEP_SECONDS * 1000),
+    );
+    const recoveryCode = recoveryConfirmation.response.recoveryCodes![0]!;
+    const recoveryKey = await harness.ctx.apiKeys.create({
+      userId: recoveryUser.id,
+      name: 'recovery transition',
+      scopes: ['account:security'],
+    });
+    const { password: _recoveryPassword, ...recoveryEnable } = await serverEnable(
+      recoveryUser.id,
+      1,
+    );
+    const recoveryAccepted = await request(harness.app)
+      .post('/api/v1/account/paranoid/enable')
+      .set('Authorization', `Bearer ${recoveryKey.token}`)
+      .send({ ...recoveryEnable, recoveryCode });
+    expect(recoveryAccepted.status, JSON.stringify(recoveryAccepted.body)).toBe(200);
+
+    const { password: _disablePassword, ...recoveryDisable } = disableRequest(recoveryUser.id);
+    const spent = await request(harness.app)
+      .post('/api/v1/account/paranoid/disable')
+      .set('Authorization', `Bearer ${recoveryKey.token}`)
+      .send({ ...recoveryDisable, recoveryCode });
+    expect(spent.status).toBe(401);
+    expect(spent.body.error.code).toBe('TWO_FACTOR_INVALID_CODE');
+    expect((await accountState(recoveryUser.id))?.privacyMode).toBe('paranoid');
+    expect(
+      await harness.db
+        .select()
+        .from(paranoidVaults)
+        .where(eq(paranoidVaults.userId, recoveryUser.id)),
+    ).toHaveLength(1);
+    expect(
+      await harness.ctx.redis.get(
+        progressiveKeys(ACCOUNT_PARANOID_TRANSITION_NAMESPACE, recoveryUser.id).count,
+      ),
+    ).toBe('1');
+    await request(harness.app)
+      .post('/api/v1/account/paranoid/disable')
+      .set('Authorization', `Bearer ${recoveryKey.token}`)
+      .send(disableRequest(recoveryUser.id))
+      .expect(200);
+
+    const failures = await harness.db
+      .select()
+      .from(auditLog)
+      .where(eq(auditLog.action, 'account.paranoid_transition_reauth_fail'));
+    expect(failures.map((row) => row.meta)).toContainEqual({
+      kind: 'recovery_code',
+      locked: false,
+    });
+    expect(JSON.stringify(failures)).not.toContain(recoveryCode);
+  });
+
   it('discards an unrecoverable vault into an empty normal account, but only when asked explicitly', async () => {
     // docs/paranoid-design.md §3 — "lost key ⇒ lost data … the only
     // server-side recovery is destruction". The unlock gate's Start-fresh is
@@ -1164,7 +1407,12 @@ describe('paranoid public transitions', () => {
     const silent = await agent
       .post('/api/v1/account/paranoid/disable')
       .set(...XRW)
-      .send({ confirm: true, rehydrationId: REHYDRATION_ID, document: emptyDocument });
+      .send({
+        confirm: true,
+        password: user.password,
+        rehydrationId: REHYDRATION_ID,
+        document: emptyDocument,
+      });
     expect(silent.status).toBe(400);
     expect(silent.body.error.code).toBe('PARANOID_REHYDRATION_INVALID');
     expect((await accountState(user.id))?.privacyMode).toBe('paranoid');
@@ -1282,7 +1530,7 @@ describe('paranoid public transitions', () => {
     const failures = await harness.db
       .select()
       .from(auditLog)
-      .where(eq(auditLog.action, 'account.paranoid_discard_fail'));
+      .where(eq(auditLog.action, 'account.paranoid_transition_reauth_fail'));
     expect(failures).toHaveLength(1);
 
     // The full rung passes.
@@ -1410,7 +1658,7 @@ describe('admin metadata batching', () => {
         },
       } satisfies ParanoidRehydrationService,
       audit: { record: async () => undefined } as unknown as AuditService,
-      discardReauth: neverReachedDiscardReauth(),
+      transitionReauth: acceptingTransitionReauth(),
     });
 
     // The list path must take ONE privacy lock and a fixed set of queries. A
@@ -1449,7 +1697,7 @@ describe.each<ParanoidEnableStage>(['locked', 'sharingRevoked', 'vaultPurged', '
         audit: {
           record: async () => undefined,
         } as unknown as AuditService,
-        discardReauth: neverReachedDiscardReauth(),
+        transitionReauth: acceptingTransitionReauth(),
         afterEnableStage(stage) {
           if (stage === failureStage) throw new Error(`injected ${stage}`);
         },
@@ -1505,7 +1753,7 @@ describe('enable rollback at an outcome-ambiguous commit', () => {
         },
       } satisfies ParanoidRehydrationService,
       audit: { record: async () => undefined } as unknown as AuditService,
-      discardReauth: neverReachedDiscardReauth(),
+      transitionReauth: acceptingTransitionReauth(),
       prepareExportFile: async (artifact: { id: string; filePath: string }) => {
         retirement.push(`prepare:${artifact.id}`);
         return {

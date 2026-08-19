@@ -90,14 +90,14 @@ export const ACCOUNT_PASSKEY_NAMESPACE = 'account_passkey_account';
 export const REAUTH_ACCOUNT_NAMESPACE = 'reauth_account';
 
 /**
- * Per-account brute-force throttle for the paranoid `discard` re-auth (§13.5
- * V5-P13, docs/paranoid-design.md §3). Destroying an undecryptable vault
- * re-verifies a credential exactly like account deletion; wrong attempts accrue
- * here — independent of the login/2FA counters, of deletion/export/passkey, and
- * of the per-IP limiter — so this exit is never a lighter-weight oracle than
- * login. Reuses the `loginAccount` schedule like every sibling re-auth.
+ * Per-account brute-force throttle for paranoid mode-transition re-auth (§13.5
+ * V5-P13). Enable, restoring disable and the lost-key discard all re-verify a
+ * credential exactly like account deletion; wrong attempts accrue here —
+ * independent of the login/2FA counters, of deletion/export/passkey, and of the
+ * per-IP limiter — so neither transition is a lighter-weight oracle than login.
+ * Reuses the `loginAccount` schedule like every sibling re-auth.
  */
-export const ACCOUNT_PARANOID_DISCARD_NAMESPACE = 'account_paranoid_discard_account';
+export const ACCOUNT_PARANOID_TRANSITION_NAMESPACE = 'account_paranoid_transition_account';
 
 /**
  * Per-account brute-force throttle for the tax-year unlock re-auth (§16

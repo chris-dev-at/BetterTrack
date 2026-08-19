@@ -22,6 +22,7 @@ const ORDER_ID = '018f0000-0000-7000-8000-000000000006';
 const MISSING_ASSET_ID = '018f0000-0000-7000-8000-000000000007';
 const AT = '2026-07-30T09:00:00.000Z';
 const REVISION = 'r3v1s10n-token';
+const CREDENTIAL = { password: 'account-password' };
 
 /** The smallest document the unlock validator accepts: one live portfolio. */
 function migratedDocument(): VaultDocument {
@@ -120,6 +121,7 @@ describe('paranoid enable ordering', () => {
         {
           mediaSet: ['server', 'drive'],
           material: material(),
+          credential: CREDENTIAL,
           onStage: (stage) => stages.push(stage),
         },
         {
@@ -150,7 +152,9 @@ describe('paranoid enable ordering', () => {
     // The server re-derives it under the account lock, so a write that landed
     // anywhere in the (long, lock-free) window above refuses the transition
     // instead of purging rows this document never saw.
-    expect(commit).toHaveBeenCalledWith(expect.objectContaining({ normalDataRevision: REVISION }));
+    expect(commit).toHaveBeenCalledWith(
+      expect.objectContaining({ normalDataRevision: REVISION, password: 'account-password' }),
+    );
   });
 
   it('never commits or claims success when a selected medium fails read-back verification', async () => {
@@ -162,6 +166,7 @@ describe('paranoid enable ordering', () => {
         {
           mediaSet: ['server', 'drive'],
           material: material(),
+          credential: CREDENTIAL,
         },
         {
           server: memoryHome('server'),
@@ -190,6 +195,7 @@ describe('paranoid enable ordering', () => {
         {
           mediaSet: ['server', 'drive'],
           material: material(),
+          credential: CREDENTIAL,
           onStage: (stage) => stages.push(stage),
         },
         {
@@ -225,7 +231,7 @@ describe('paranoid enable ordering', () => {
 
     const failure = await captureError(() =>
       enablePreparedVault(
-        { mediaSet: ['server'], material: material() },
+        { mediaSet: ['server'], material: material(), credential: CREDENTIAL },
         {
           server,
           migrate: async () => capture(emptyVaultDocument()),

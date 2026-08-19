@@ -5,6 +5,7 @@ import {
   VAULT_ENTITY_SCHEMAS,
   vaultStrictDocumentV1Schema,
   type ParanoidDisableRequest,
+  type ParanoidTransitionCredential,
   type VaultDocument,
   type VaultEntity,
   type VaultEntityKind,
@@ -91,11 +92,13 @@ export function toStrictRestoreDocument(document: VaultDocument): VaultStrictDoc
 export function paranoidDisableRequestFor(
   rehydrationId: string,
   document: VaultDocument,
+  credential: ParanoidTransitionCredential,
 ): ParanoidDisableRequest {
   return paranoidDisableRequestSchema.parse({
     rehydrationId,
     confirm: true,
     document: toStrictRestoreDocument(document),
+    ...credential,
   });
 }
 

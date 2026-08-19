@@ -182,7 +182,7 @@ export function VaultUnlockGate({
  * BetterTrack holds no escrow, so the only exit that does not need the key is
  * destruction. Friction is the account-deletion rung, in full: the username has
  * to be typed AND a credential re-verified — both server-side (see
- * `paranoidDiscardReauth`). This form only collects them; a caller POSTing the
+ * the shared transition re-auth gate). This form only collects them; a caller POSTing the
  * endpoint from a live session faces exactly the same two gates.
  */
 function StuckFold({

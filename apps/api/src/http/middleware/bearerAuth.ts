@@ -33,15 +33,36 @@ interface BearerRoute {
 }
 
 /**
- * The sync-only bearer exception for the opaque paranoid vault (#1043).
- * `vault:sync` is inherently read-write, but the route surface remains
- * method-aware and default-closed: storage/media transitions and account-mode
- * transitions are deliberately absent from this list.
+ * The two account-mode transitions admitted by the owner’s shared-control-layer
+ * ruling (2026-08-17). Exact method + path matching is load-bearing: provenance,
+ * capture-revision and every future `/account/paranoid/*` sibling stay closed.
+ *
+ * Bearer requests intentionally skip CSRF. These two bodies instead carry a
+ * password/TOTP/recovery-code step-up that is verified under the transition's
+ * account lock before any destructive write; the cookie path carries the same
+ * credential so both front-ends share one boundary.
+ */
+export const ACCOUNT_PARANOID_BEARER_ROUTE_ALLOWLIST = [
+  { method: 'POST', path: '/account/paranoid/enable' },
+  { method: 'POST', path: '/account/paranoid/disable' },
+] as const satisfies readonly BearerRoute[];
+
+/**
+ * The bearer surface for opaque paranoid-vault sync and its verified storage
+ * lifecycle (#1043, #1326). `vault:sync` is inherently read-write, but the route
+ * surface remains method-aware and default-closed. Media changes keep their
+ * readback receipts; retired-byte purge keeps its short-lived challenge plus
+ * Ed25519 signature, so widening the transport does not weaken either ceremony.
  */
 export const VAULT_SYNC_BEARER_ROUTE_ALLOWLIST = [
   { method: 'GET', path: '/vault' },
   { method: 'PUT', path: '/vault' },
   { method: 'GET', path: '/vault/media' },
+  { method: 'PATCH', path: '/vault/media' },
+  { method: 'PUT', path: '/vault/media/server-candidate' },
+  { method: 'GET', path: '/vault/media/server-candidate/{candidateId}' },
+  { method: 'POST', path: '/vault/media/retired/purge/challenge' },
+  { method: 'POST', path: '/vault/media/retired/purge' },
   { method: 'GET', path: '/vault/history' },
   { method: 'GET', path: '/vault/history/{version}', param: 'positive-integer' },
 ] as const satisfies readonly BearerRoute[];
@@ -148,17 +169,12 @@ export const MIRRORCHAIN_BEARER_ROUTE_ALLOWLIST = [
 export const MIRRORCHAIN_SESSION_ONLY_ROUTES: readonly BearerRoute[] = [];
 
 /**
- * Vault storage/media mutations that are explicitly outside opaque bearer
- * synchronization. Kept beside the sync allowlist for the same mounted-route
- * completeness check used by MIRRORCHAIN.
+ * Vault routes explicitly kept outside bearer synchronization. Empty after the
+ * #1326 media-lifecycle widening, but retained as mounted-route policy metadata:
+ * adding a future route now fails the completeness census until it is placed in
+ * either this list or the exact bearer allowlist above.
  */
-export const VAULT_SESSION_ONLY_ROUTES = [
-  { method: 'PATCH', path: '/vault/media' },
-  { method: 'PUT', path: '/vault/media/server-candidate' },
-  { method: 'GET', path: '/vault/media/server-candidate/{candidateId}' },
-  { method: 'POST', path: '/vault/media/retired/purge/challenge' },
-  { method: 'POST', path: '/vault/media/retired/purge' },
-] as const satisfies readonly BearerRoute[];
+export const VAULT_SESSION_ONLY_ROUTES: readonly BearerRoute[] = [];
 
 /**
  * Native account-security clients may manage existing passkeys, but they may
@@ -247,6 +263,11 @@ function routeAllowlistAccepts(
         (normalizedMethod === 'HEAD' && route.method === 'GET')) &&
       matchesRoute(path, route, allowPathTemplate),
   );
+}
+
+/** Whether one exact method + path is an admitted paranoid account transition. */
+export function accountParanoidRouteAcceptsBearer(method: string, path: string): boolean {
+  return routeAllowlistAccepts(ACCOUNT_PARANOID_BEARER_ROUTE_ALLOWLIST, method, path);
 }
 
 /** Whether one exact method + path is in the paranoid-vault sync allowlist. */
@@ -641,18 +662,21 @@ function resolvePolicy(
   // /auth carve-outs (#361) — resolved before anything else in the group.
   const authPolicy = resolveAuthPolicy(path, requestMethod, allowPathTemplate);
   if (authPolicy) return authPolicy;
-  // Paranoid mode transitions (§13.5 V5-P13) are strictly browser-cookie-session
-  // only — the same rule as `/vault/*` below, for a strictly stronger reason.
-  // Enable is a one-way destructive purge of every cleartext row plus every
-  // outbound and inbound share, and a Drive-only media set carries no
-  // server-verifiable evidence at all: the caller's own attestation IS the whole
-  // input. Disable writes a caller-authored document back into the account. So
-  // neither direction may ride a personal API key or a delegated OAuth token
-  // holding `account:security` (plausible for a sessions/2FA integration), which
-  // also carries no CSRF header. Checked BEFORE the `/account` module policy,
-  // which would otherwise fold both routes into that coarse account-security scope.
+  // Owner ruling 2026-08-17: phone and web are peers on account state. Only the
+  // exact enable/disable POSTs inherit account:security, and both carry an
+  // in-request step-up verified under the transition lock. Bearers skip CSRF by
+  // design; that credential is the replacement proof. Capture/provenance reads
+  // and every future sibling remain session-only by default. Checked BEFORE the
+  // coarse `/account` module policy so an unlisted sibling cannot inherit it.
   if (path === '/account/paranoid' || path.startsWith('/account/paranoid/')) {
-    return { kind: 'session-only' };
+    return routeAllowlistAccepts(
+      ACCOUNT_PARANOID_BEARER_ROUTE_ALLOWLIST,
+      requestMethod,
+      path,
+      allowPathTemplate,
+    )
+      ? { kind: 'scope', read: ACCOUNT_SECURITY_SCOPE, write: ACCOUNT_SECURITY_SCOPE }
+      : { kind: 'session-only' };
   }
   // Key management + OAuth app registration remain cookie-session only: a
   // delegated token must not mint/list/revoke keys or register OAuth apps. Grant
@@ -704,11 +728,10 @@ function resolvePolicy(
       ? { kind: 'scope', read: ACCOUNT_SECURITY_SCOPE, write: ACCOUNT_SECURITY_SCOPE }
       : { kind: 'session-only' };
   }
-  // #1043: native clients may synchronize the already-encrypted vault with the
-  // single inherently read-write vault:sync scope. The exact method-aware
-  // allowlist admits the live blob, media-state read and conflict-history reads
-  // only. Staging, media transitions, retirement and purge stay browser-session
-  // work, and any future /vault route defaults closed.
+  // #1043/#1326: native clients synchronize the already-encrypted vault and run
+  // the existing verified media lifecycle with the single inherently read-write
+  // vault:sync scope. The exact method-aware allowlist keeps every future route
+  // closed until its security ceremony is reviewed explicitly.
   if (
     (path === '/vault' || path.startsWith('/vault/')) &&
     routeAllowlistAccepts(VAULT_SYNC_BEARER_ROUTE_ALLOWLIST, requestMethod, path, allowPathTemplate)
@@ -846,7 +869,17 @@ export function enforceApiKeyScope(ctx: AppContext): RequestHandler {
       return;
     }
     const required = SAFE_METHODS.has(req.method) ? policy.read : policy.write;
-    if (req.authUser?.privacyMode === 'paranoid' && isParanoidKilledScope(required)) {
+    // `account:security` is normally killed once an account is paranoid, but
+    // #1326's exact disable POST is the escape hatch itself. Its fresh
+    // credential is verified inside the transition lock before any restore;
+    // exempting that ONE allowlisted request avoids making bearer enable a
+    // one-way trap without reopening sessions/2FA or a future sibling.
+    const paranoidTransition = accountParanoidRouteAcceptsBearer(req.method, req.path);
+    if (
+      req.authUser?.privacyMode === 'paranoid' &&
+      isParanoidKilledScope(required) &&
+      !paranoidTransition
+    ) {
       next(
         forbidden(
           'This API scope is unavailable while paranoid mode is active.',

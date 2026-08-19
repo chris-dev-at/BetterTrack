@@ -83,11 +83,11 @@ const serverMediumInactive = (message: string): ApiError =>
   new ApiError(409, VAULT_ERROR_CODES.serverMediumInactive, message);
 
 /**
- * Local defense-in-depth for #1043's sync-only bearer exception. A bearer may
- * reach only the exact opaque sync reads/writes listed by the global policy;
- * every media/storage transition and every future route still requires the
- * owning cookie session. Direct-router use therefore cannot silently widen the
- * exception if the mount or global policy changes later.
+ * Local defense-in-depth for #1043/#1326's vault bearer surface. A bearer may
+ * reach only the exact opaque sync and verified media-lifecycle routes listed by
+ * the global policy, and must independently hold `vault:sync`. Direct-router use
+ * therefore cannot silently widen a future route if the mount or global policy
+ * changes later.
  */
 export const requireCookieSessionOrVaultSync: RequestHandler = (req, _res, next) => {
   const bearerSyncAllowed =
@@ -113,11 +113,12 @@ export const requireCookieSessionOrVaultSync: RequestHandler = (req, _res, next)
 
 /**
  * Vault write state machine: an owning cookie session may write while the
- * account is normal so the enable wizard can stage its encrypted server copy,
- * and may keep writing after the transition. A `vault:sync` bearer cannot own
- * that transition, so it may write only after privacyMode is paranoid. Once
- * paranoid, the repository additionally requires `server` to be an active
- * medium under the same account lock as the CAS.
+ * account is normal so the web enable wizard can stage its encrypted server
+ * copy, and may keep writing after the transition. A `vault:sync` bearer may
+ * enable with its verified Drive copy, then add server storage through the
+ * candidate ceremony; it cannot replace the web wizard's normal-mode staging
+ * write. Once paranoid, the repository additionally requires `server` to be an
+ * active medium under the same account lock as the CAS.
  */
 const requireBearerVaultWriteState: RequestHandler = (req, _res, next) => {
   if (req.apiKey && req.authUser?.privacyMode !== 'paranoid') {
@@ -150,10 +151,11 @@ const requireParanoidHistory: RequestHandler = (req, _res, next) => {
  * side rather than derived, so whoever writes it first pins a value nobody else
  * can reproduce. #1043 grants a bearer opaque byte sync, explicitly not that
  * authority, so this second cleartext header is not read at all on the bearer
- * path — it resolves to `null`, which is inert in both CAS branches: the create
- * branch stores no key and the update branch keeps whatever the row already has
- * (`current.retirementProofPublicKey ?? …`). The owning browser session
- * therefore remains the only enroller, on a vault a bearer created as well.
+ * path — it resolves to `null`. Active CAS keeps an existing key; #1326's
+ * bearer-callable server-candidate path may inherit ONLY the immutable key from
+ * an existing retired set, and promotion returns `proof_required` when none was
+ * ever enrolled. The owning browser session therefore remains the only enroller,
+ * including on a vault a bearer created or staged.
  */
 function parseRetirementProofPublicKey(req: Parameters<RequestHandler>[0]): string | null {
   if (req.apiKey) return null;
@@ -343,8 +345,9 @@ export function createVaultRouter(ctx: AppContext, limiters: RateLimiters): Rout
     }
   });
 
-  // Raw candidate read-back. The opaque receipt is HMAC-bound to this browser
-  // session, candidate id/version and expiry; PATCH cannot promote without it.
+  // Raw candidate read-back. The opaque receipt is HMAC-bound to this account,
+  // candidate id/version and expiry; PATCH cannot promote without it. The same
+  // ceremony therefore works for cookie and vault:sync bearer callers.
   router.get(
     '/media/server-candidate/:candidateId',
     validateParams(paranoidServerCandidateParamSchema),

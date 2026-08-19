@@ -125,6 +125,23 @@ export interface ParanoidRehydrationService {
   rehydrate(
     userId: string,
     request: ParanoidDisableRehydrationRequest,
+    options?: {
+      /**
+       * Runs after `getState` takes the users-row `FOR UPDATE` lock and before
+       * idempotency inspection or any restore write. The transition facade uses
+       * this for its in-request credential check.
+       */
+      afterAccountLock?: (context: {
+        auth: {
+          username: string;
+          passwordHash: string;
+          twoFactorSecret: string | null;
+          twoFactorEnabled: boolean;
+          twoFactorEmailEnabled: boolean;
+        };
+        tx: Database;
+      }) => void | Promise<void>;
+    },
   ): Promise<ParanoidDisableRehydrationResult>;
 }
 
@@ -2486,7 +2503,7 @@ export function createParanoidRehydrationService(
   };
 
   return {
-    async rehydrate(userId, request) {
+    async rehydrate(userId, request, options) {
       const parsed = paranoidDisableRehydrationRequestSchema.safeParse(request);
       if (!parsed.success) {
         throw new ParanoidRehydrationError('INVALID_REFERENCE', 'rehydration request is malformed');
@@ -2530,6 +2547,7 @@ export function createParanoidRehydrationService(
         const state = await transition.getState(userId);
         if (!state)
           throw new ParanoidRehydrationError('ACCOUNT_NOT_FOUND', 'account does not exist');
+        await options?.afterAccountLock?.({ auth: state.auth, tx });
         if (state.receipt) {
           if (state.receipt.rehydrationId !== normalizedRequest.rehydrationId) {
             throw new ParanoidRehydrationError(

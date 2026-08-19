@@ -40,6 +40,13 @@ import {
  */
 export interface ParanoidRehydrationTransactionRepository {
   getState(userId: string): Promise<{
+    auth: {
+      username: string;
+      passwordHash: string;
+      twoFactorSecret: string | null;
+      twoFactorEnabled: boolean;
+      twoFactorEmailEnabled: boolean;
+    };
     privacyMode: 'normal' | 'paranoid';
     receipt: { rehydrationId: string; completedAt: Date } | null;
   } | null>;
@@ -54,7 +61,14 @@ export function createParanoidRehydrationTransactionRepository(
   return {
     async getState(userId) {
       const [user] = await executor
-        .select({ privacyMode: users.privacyMode })
+        .select({
+          username: users.username,
+          passwordHash: users.passwordHash,
+          twoFactorSecret: users.twoFactorSecret,
+          twoFactorEnabled: users.twoFactorEnabled,
+          twoFactorEmailEnabled: users.twoFactorEmailEnabled,
+          privacyMode: users.privacyMode,
+        })
         .from(users)
         .where(eq(users.id, userId))
         .for('update');
@@ -67,7 +81,17 @@ export function createParanoidRehydrationTransactionRepository(
         .from(paranoidRehydrationReceipts)
         .where(eq(paranoidRehydrationReceipts.userId, userId))
         .for('update');
-      return { privacyMode: user.privacyMode, receipt: receipt ?? null };
+      return {
+        auth: {
+          username: user.username,
+          passwordHash: user.passwordHash,
+          twoFactorSecret: user.twoFactorSecret,
+          twoFactorEnabled: user.twoFactorEnabled,
+          twoFactorEmailEnabled: user.twoFactorEmailEnabled,
+        },
+        privacyMode: user.privacyMode,
+        receipt: receipt ?? null,
+      };
     },
 
     async insertReceipt(userId, rehydrationId, completedAt) {
@@ -773,9 +797,23 @@ export function createParanoidVaultRepository(
         ) {
           return { status: 'verification_failed', current } as const;
         }
-        if (retirement && input.retirementProofPublicKey !== retirement.retirementProofPublicKey) {
+        // A vault:sync bearer deliberately cannot submit/pin this verifier.
+        // When server bytes were previously retired, inherit their immutable
+        // key into the candidate; an explicitly supplied DIFFERENT key still
+        // conflicts. This preserves the proof ceremony while allowing the
+        // bearer-widened candidate route to restore server media.
+        if (
+          retirement &&
+          input.retirementProofPublicKey !== null &&
+          input.retirementProofPublicKey !== retirement.retirementProofPublicKey
+        ) {
           return { status: 'proof_key_conflict', current } as const;
         }
+        const candidateInput = {
+          ...input,
+          retirementProofPublicKey:
+            input.retirementProofPublicKey ?? retirement?.retirementProofPublicKey ?? null,
+        };
 
         let [candidate] = await tx
           .select()
@@ -788,7 +826,7 @@ export function createParanoidVaultRepository(
             .where(eq(paranoidVaultServerCandidates.id, candidate.id));
           candidate = undefined;
         }
-        if (candidate && sameCandidate(candidate, input)) {
+        if (candidate && sameCandidate(candidate, candidateInput)) {
           return { status: 'ok', candidate, idempotent: true } as const;
         }
         if (candidate) {
@@ -804,7 +842,7 @@ export function createParanoidVaultRepository(
             formatVersion: input.formatVersion,
             sizeBytes: input.sizeBytes,
             blob: input.blob,
-            retirementProofPublicKey: input.retirementProofPublicKey,
+            retirementProofPublicKey: candidateInput.retirementProofPublicKey,
             createdAt: input.now,
             expiresAt: input.expiresAt,
           })

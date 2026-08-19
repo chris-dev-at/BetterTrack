@@ -1100,6 +1100,7 @@ describe('paranoid rehydration severed-fork provenance', () => {
       vaultVersion: 1,
       driveAttestation: { verifiedRoundTrip: true, vaultVersion: 1 },
       normalDataRevision: revision,
+      password: 'user-strong-password-1',
     });
     expect(
       await harness.db.select().from(mirrorRows).where(eq(mirrorRows.portfolioId, forkPortfolioId)),

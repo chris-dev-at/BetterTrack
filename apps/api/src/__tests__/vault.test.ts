@@ -484,7 +484,7 @@ describe('vault blob store', () => {
 });
 
 describe('durable paranoid server-media lifecycle', () => {
-  it('rejects personal and delegated account-security bearers from vault transitions', async () => {
+  it('requires vault:sync, not account:security, for widened media transitions', async () => {
     const user = await harness.seedUser({ email: 'key-vault@bt.test', username: 'keyvault' });
     const personal = await harness.ctx.apiKeys.create({
       userId: user.id,
@@ -496,7 +496,7 @@ describe('durable paranoid server-media lifecycle', () => {
       .set('Authorization', `Bearer ${personal.token}`)
       .send({ mediaSet: ['server'], expectedVaultVersion: 1 });
     expect(personalResult.status).toBe(403);
-    expect(personalResult.body.error.code).toBe('API_KEY_FORBIDDEN');
+    expect(personalResult.body.error.code).toBe('INSUFFICIENT_SCOPE');
 
     const delegated = await mintDelegatedSecurityToken();
     const delegatedResult = await request(harness.app)
@@ -504,7 +504,7 @@ describe('durable paranoid server-media lifecycle', () => {
       .set('Authorization', `Bearer ${delegated}`)
       .send({ retiredVersion: 1 });
     expect(delegatedResult.status).toBe(403);
-    expect(delegatedResult.body.error.code).toBe('API_KEY_FORBIDDEN');
+    expect(delegatedResult.body.error.code).toBe('INSUFFICIENT_SCOPE');
   });
 
   it('enrols a legacy active vault into the immutable retirement verifier on its first CAS update', async () => {

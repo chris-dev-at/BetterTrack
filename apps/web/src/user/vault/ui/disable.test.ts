@@ -26,6 +26,7 @@ import { disableUnlockedVault, discardLockedVault } from './disable';
 
 const ACCOUNT_ID = '018f0000-0000-7000-8000-0000000000ab';
 const CREDENTIAL = { confirmUsername: 'ada', password: 'hunter2hunter2' };
+const STEP_UP = { password: CREDENTIAL.password };
 const USER_ID = '018f0000-0000-7000-8000-000000000001';
 const PORTFOLIO_ID = '018f0000-0000-7000-8000-000000000010';
 const MARKET_ID = '018f0000-0000-7000-8000-000000000030';
@@ -189,10 +190,11 @@ describe('toStrictRestoreDocument', () => {
   });
 
   it('sends the filtered document on disable', async () => {
-    await disableUnlockedVault(documentWithAssetTable(), ACCOUNT_ID);
+    await disableUnlockedVault(documentWithAssetTable(), ACCOUNT_ID, STEP_UP);
 
     const body = api.disableParanoidMode.mock.calls[0]![0] as ParanoidDisableRequest;
     expect(body.discard).toBeUndefined();
+    expect(body.password).toBe(CREDENTIAL.password);
     expect(
       body.document.entities
         .filter((row) => row.kind === 'customAsset')
@@ -204,7 +206,7 @@ describe('toStrictRestoreDocument', () => {
   });
 
   it('carries §7.1 fork provenance to the server — without it the exit is refused forever', async () => {
-    await disableUnlockedVault(documentWithRetainedFork(), ACCOUNT_ID);
+    await disableUnlockedVault(documentWithRetainedFork(), ACCOUNT_ID, STEP_UP);
 
     const body = api.disableParanoidMode.mock.calls[0]![0] as ParanoidDisableRequest;
     // A sanctioned chain correction replaces the local row, so `localId =

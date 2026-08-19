@@ -3,6 +3,7 @@ import {
   VAULT_FORMAT_VERSION,
   type ParanoidEnableRequest,
   type ParanoidEnableResponse,
+  type ParanoidTransitionCredential,
   type VaultDocument,
   type VaultMediaSet,
   type VaultWrappedKey,
@@ -83,6 +84,8 @@ export interface EnableVaultDependencies {
 export interface EnableVaultInput {
   mediaSet: VaultMediaSet;
   material: PreparedVaultMaterial;
+  /** Account credential for the server-side transition step-up. */
+  credential: ParanoidTransitionCredential;
   signal?: AbortSignal;
   onStage?: (stage: VaultEnableStage) => void;
 }
@@ -279,6 +282,7 @@ export async function enablePreparedVault(
         // inside what the server re-checks under the account lock before it
         // deletes anything.
         normalDataRevision: capture.normalDataRevision,
+        ...input.credential,
       });
       return { envelope, version: nextVersion, receipt };
     } catch (cause) {

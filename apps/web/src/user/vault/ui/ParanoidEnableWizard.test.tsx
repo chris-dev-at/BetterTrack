@@ -1,6 +1,7 @@
 import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 
 import { PARANOID_TRANSITION_ERROR_CODES } from '@bettertrack/contracts';
 
@@ -50,11 +51,23 @@ vi.mock('../../../lib/userApi', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../lib/userApi')>();
   return { ...actual, enableParanoidMode: mocks.commitApi };
 });
+vi.mock('../../../lib/twoFactorApi', () => ({
+  getTwoFactorStatus: vi.fn(async () => ({ totpEnabled: false })),
+}));
 
 import { ParanoidEnableWizard } from './ParanoidEnableWizard';
 import { ApiError, isRateLimitHandledLocally } from '../../../lib/apiClient';
 import { VaultEnableError } from './enable';
 import { VaultCaptureUnstableError } from './migration';
+
+function renderWizard(onEnabled: () => void = () => {}) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return render(
+    <QueryClientProvider client={client}>
+      <ParanoidEnableWizard onCancel={() => {}} onEnabled={onEnabled} />
+    </QueryClientProvider>,
+  );
+}
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -92,7 +105,7 @@ describe('ParanoidEnableWizard', () => {
   it('orders review → default storage → distinct passphrase/recovery → verified migration', async () => {
     const user = userEvent.setup();
     const enabled = vi.fn();
-    render(<ParanoidEnableWizard onCancel={() => {}} onEnabled={enabled} />);
+    renderWizard(enabled);
 
     expect(screen.getByRole('heading', { name: 'What changes' })).toBeInTheDocument();
     expect(screen.getByText(/Sharing, shared items, comments/i)).toBeInTheDocument();
@@ -128,11 +141,17 @@ describe('ParanoidEnableWizard', () => {
         name: 'If I lose my vault passphrase and my recovery kit, my data is gone forever. BetterTrack cannot recover it.',
       }),
     );
+    expect(enable).toBeDisabled();
+    await user.type(screen.getByLabelText('Current account password'), 'account-password');
     expect(enable).toBeEnabled();
 
     await user.click(enable);
 
     expect(mocks.enable).toHaveBeenCalledOnce();
+    expect(mocks.enable).toHaveBeenCalledWith(
+      expect.objectContaining({ credential: { password: 'account-password' } }),
+      expect.any(Object),
+    );
     expect(enabled).toHaveBeenCalledWith(
       expect.objectContaining({ mode: 'paranoid', mediaSet: ['server'] }),
     );
@@ -154,7 +173,7 @@ describe('ParanoidEnableWizard', () => {
       }),
     );
     const user = userEvent.setup();
-    render(<ParanoidEnableWizard onCancel={() => {}} onEnabled={() => {}} />);
+    renderWizard();
 
     await user.click(screen.getByRole('button', { name: 'Continue' }));
     await user.click(screen.getByRole('button', { name: 'Continue' }));
@@ -168,6 +187,7 @@ describe('ParanoidEnableWizard', () => {
       screen.getByRole('checkbox', { name: 'I have stored my recovery kit safely.' }),
     );
     await user.click(screen.getByRole('checkbox', { name: /my data is gone forever/i }));
+    await user.type(screen.getByLabelText('Current account password'), 'account-password');
     await user.click(screen.getByRole('button', { name: 'Enable Paranoid mode' }));
 
     expect(await screen.findByRole('alert')).toHaveTextContent(expected);
@@ -183,7 +203,7 @@ describe('ParanoidEnableWizard', () => {
       }),
     );
     const user = userEvent.setup();
-    render(<ParanoidEnableWizard onCancel={() => {}} onEnabled={() => {}} />);
+    renderWizard();
 
     await user.click(screen.getByRole('button', { name: 'Continue' }));
     await user.click(screen.getByRole('button', { name: 'Continue' }));
@@ -197,6 +217,7 @@ describe('ParanoidEnableWizard', () => {
       screen.getByRole('checkbox', { name: 'I have stored my recovery kit safely.' }),
     );
     await user.click(screen.getByRole('checkbox', { name: /my data is gone forever/i }));
+    await user.type(screen.getByLabelText('Current account password'), 'account-password');
     await user.click(screen.getByRole('button', { name: 'Enable Paranoid mode' }));
 
     expect(await screen.findByRole('alert')).toHaveTextContent(
@@ -238,7 +259,7 @@ describe('ParanoidEnableWizard', () => {
       },
     );
     const user = userEvent.setup();
-    render(<ParanoidEnableWizard onCancel={() => {}} onEnabled={() => {}} />);
+    renderWizard();
 
     await user.click(screen.getByRole('button', { name: 'Continue' }));
     await user.click(screen.getByRole('button', { name: 'Continue' }));
@@ -252,6 +273,7 @@ describe('ParanoidEnableWizard', () => {
       screen.getByRole('checkbox', { name: 'I have stored my recovery kit safely.' }),
     );
     await user.click(screen.getByRole('checkbox', { name: /my data is gone forever/i }));
+    await user.type(screen.getByLabelText('Current account password'), 'account-password');
     await user.click(screen.getByRole('button', { name: 'Enable Paranoid mode' }));
 
     expect(await screen.findByText(expected)).toBeInTheDocument();
@@ -269,7 +291,7 @@ describe('ParanoidEnableWizard', () => {
         }),
       );
       const user = userEvent.setup();
-      render(<ParanoidEnableWizard onCancel={() => {}} onEnabled={() => {}} />);
+      renderWizard();
 
       await user.click(screen.getByRole('button', { name: 'Continue' }));
       await user.click(screen.getByRole('button', { name: 'Continue' }));
@@ -286,6 +308,7 @@ describe('ParanoidEnableWizard', () => {
         screen.getByRole('checkbox', { name: 'I have stored my recovery kit safely.' }),
       );
       await user.click(screen.getByRole('checkbox', { name: /my data is gone forever/i }));
+      await user.type(screen.getByLabelText('Current account password'), 'account-password');
       await user.click(screen.getByRole('button', { name: 'Enable Paranoid mode' }));
 
       expect(await screen.findByRole('alert')).toHaveTextContent(/request limit.*37 seconds/i);
@@ -319,7 +342,7 @@ describe('ParanoidEnableWizard', () => {
       },
     );
     const user = userEvent.setup();
-    render(<ParanoidEnableWizard onCancel={() => {}} onEnabled={() => {}} />);
+    renderWizard();
 
     await user.click(screen.getByRole('button', { name: 'Continue' }));
     await user.click(screen.getByRole('button', { name: 'Continue' }));
@@ -333,6 +356,7 @@ describe('ParanoidEnableWizard', () => {
       screen.getByRole('checkbox', { name: 'I have stored my recovery kit safely.' }),
     );
     await user.click(screen.getByRole('checkbox', { name: /my data is gone forever/i }));
+    await user.type(screen.getByLabelText('Current account password'), 'account-password');
     await user.click(screen.getByRole('button', { name: 'Enable Paranoid mode' }));
 
     expect(mocks.commitApi).toHaveBeenCalledOnce();
@@ -349,7 +373,7 @@ describe('ParanoidEnableWizard', () => {
       }),
     );
     const user = userEvent.setup();
-    render(<ParanoidEnableWizard onCancel={() => {}} onEnabled={() => {}} />);
+    renderWizard();
 
     await user.click(screen.getByRole('button', { name: 'Continue' }));
     await user.click(screen.getByRole('button', { name: 'Continue' }));
@@ -363,6 +387,7 @@ describe('ParanoidEnableWizard', () => {
       screen.getByRole('checkbox', { name: 'I have stored my recovery kit safely.' }),
     );
     await user.click(screen.getByRole('checkbox', { name: /my data is gone forever/i }));
+    await user.type(screen.getByLabelText('Current account password'), 'account-password');
     await user.click(screen.getByRole('button', { name: 'Enable Paranoid mode' }));
 
     expect(await screen.findByRole('alert')).toHaveTextContent(

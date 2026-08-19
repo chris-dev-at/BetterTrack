@@ -65,6 +65,7 @@ import { unlockTaxYears } from '../../../testing/taxYearUnlocks';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
 const REHYDRATION_ID = '018f0000-0000-7000-8000-0000000009a1';
+const ACCOUNT_PASSWORD = 'user-strong-password-1';
 /** Fixed clock: "the current period" and the standing-order calendar must not drift. */
 const NOW = new Date('2026-07-15T12:00:00.000Z');
 
@@ -398,6 +399,7 @@ function restoreDocument(userId: string, captured: Captured): ParanoidDisableReq
   // opaque 400 later.
   return paranoidDisableRequestSchema.parse({
     confirm: true,
+    password: ACCOUNT_PASSWORD,
     rehydrationId: REHYDRATION_ID,
     document: { schemaVersion: 1, entities, mergeLog: [], mirrorProvenance: [] },
   });
@@ -423,6 +425,7 @@ async function enable(agent: Agent, userId: string, normalDataRevision?: string)
       vaultVersion: 1,
       driveAttestation: { verifiedRoundTrip: true, vaultVersion: 1 },
       normalDataRevision: revision,
+      password: ACCOUNT_PASSWORD,
     });
 }
 

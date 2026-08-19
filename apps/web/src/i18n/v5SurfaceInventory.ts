@@ -731,6 +731,7 @@ export const V5_SURFACE_INVENTORY = [
       'user/vault/VaultRuntimeProvider.tsx',
       'user/vault/engine/VaultMoneyEngineProvider.tsx',
       'user/vault/ui/ParanoidEnableWizard.tsx',
+      'user/vault/ui/ParanoidStepUpFields.tsx',
       'user/vault/ui/ParanoidSurfaceGate.tsx',
       'user/vault/ui/VaultSyncChip.tsx',
       'user/vault/ui/VaultUnlockGate.tsx',
@@ -1472,6 +1473,13 @@ export interface V5AsyncReadExemption {
 
 export const V5_ASYNC_READ_EXEMPTIONS = [
   {
+    component: 'user/vault/ui/ParanoidStepUpFields.tsx',
+    read: 'ParanoidStepUpFields.twoFactor',
+    states: ['loading', 'error'],
+    reason:
+      'Password step-up is always available and remains the compact fallback while the optional TOTP-capability read is pending or unavailable; only a confirmed TOTP enrollment reveals the code switch.',
+  },
+  {
     component: 'user/vault/v2/ui/VaultsProvider.tsx',
     read: 'VaultsProvider.directory',
     states: ['loading', 'error'],
@@ -1772,9 +1780,10 @@ export type V5AsyncStateDebtLedger = Readonly<
 
 /**
  * Exact anti-shrinkage baseline; #1147 adds the reviewed on-demand holding
- * read, board #68 item 4 the Analysis money twin behind the scrub tooltip.
+ * read, board #68 item 4 the Analysis money twin behind the scrub tooltip, and
+ * #1326 the optional TOTP-capability read for paranoid transition step-up.
  */
-export const V5_ASYNC_READ_SITE_BASELINE = 184;
+export const V5_ASYNC_READ_SITE_BASELINE = 185;
 
 /** Ratchet this downward whenever #739 removes a read site or missing state. */
 export const V5_ASYNC_STATE_DEBT_CEILING = { readSites: 0, stateGaps: 0 } as const;

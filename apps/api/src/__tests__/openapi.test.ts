@@ -304,13 +304,17 @@ describe('OpenAPI document', () => {
       ]);
     }
 
-    // #1043: only opaque vault sync operations advertise bearer auth. Media
-    // transitions, candidate/retirement lifecycle and account transitions stay
-    // owning-browser-session operations in the generated contract too.
+    // #1043/#1326: opaque vault sync plus the proof-gated media lifecycle
+    // advertise vault:sync bearer auth.
     const vaultBearerOperations = [
       ['get', '/vault'],
       ['put', '/vault'],
       ['get', '/vault/media'],
+      ['patch', '/vault/media'],
+      ['put', '/vault/media/server-candidate'],
+      ['get', '/vault/media/server-candidate/{candidateId}'],
+      ['post', '/vault/media/retired/purge/challenge'],
+      ['post', '/vault/media/retired/purge'],
       ['get', '/vault/history'],
       ['get', '/vault/history/{version}'],
     ] as const;
@@ -322,27 +326,18 @@ describe('OpenAPI document', () => {
       ]);
     }
 
-    const vaultSessionOperations = [
-      ['patch', '/vault/media'],
-      ['put', '/vault/media/server-candidate'],
-      ['get', '/vault/media/server-candidate/{candidateId}'],
-      ['post', '/vault/media/retired/purge/challenge'],
-      ['post', '/vault/media/retired/purge'],
-    ] as const;
-    for (const [method, path] of vaultSessionOperations) {
-      const operation = (paths[path] as JsonObject)[method] as JsonObject;
-      expect(operation.security, `security for ${method.toUpperCase()} ${path}`).toEqual([
-        { sessionCookie: [] },
-      ]);
-    }
-
-    // Paranoid transitions (§13.5 V5-P13) are session-only in the middleware, so
-    // the derived spec must NOT advertise a bearer for either direction — a
-    // client-generated SDK that offered it would only ever get 403s, and the
-    // sibling `/account/*` routes stay bearer-callable, so this cannot be assumed.
+    // Only the two credential-bearing transition POSTs advertise account:security.
     for (const [method, path] of [
       ['post', '/account/paranoid/enable'],
       ['post', '/account/paranoid/disable'],
+    ] as const) {
+      const operation = (paths[path] as JsonObject)[method] as JsonObject;
+      expect(operation.security, `security for ${method.toUpperCase()} ${path}`).toEqual([
+        { sessionCookie: [] },
+        { apiKeyBearer: [] },
+      ]);
+    }
+    for (const [method, path] of [
       ['get', '/account/paranoid/fork-provenance'],
       ['get', '/account/paranoid/normal-revision'],
     ] as const) {
@@ -363,6 +358,15 @@ describe('OpenAPI document', () => {
     // The security scheme itself is the session cookie.
     const securitySchemes = (doc.components as JsonObject).securitySchemes as JsonObject;
     expect((securitySchemes.sessionCookie as JsonObject).in).toBe('cookie');
+
+    const transitionSchemas = ((doc.components as JsonObject).schemas ?? {}) as JsonObject;
+    for (const schemaName of ['ParanoidEnableRequest', 'ParanoidDisableRequest']) {
+      const schema = transitionSchemas[schemaName] as JsonObject;
+      const encoded = JSON.stringify(schema);
+      expect(encoded, schemaName).toContain('password');
+      expect(encoded, schemaName).toContain('code');
+      expect(encoded, schemaName).toContain('recoveryCode');
+    }
   });
 
   it('documents the recursive vault JSON columns without mutating the contracts module', () => {

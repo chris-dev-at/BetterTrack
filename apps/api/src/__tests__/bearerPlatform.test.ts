@@ -38,6 +38,7 @@ import {
   taxYearLockRouteAcceptsBearer,
 } from '../http/middleware/bearerAuth';
 import { requireCookieSessionOrTaxYearLockBearer } from '../http/routes/settingsRoutes';
+import { requireOwnerBrowserSession } from '../http/routes/accountRoutes';
 import {
   ACCOUNT_PASSKEY_NAMESPACE,
   ACCOUNT_TAX_YEAR_UNLOCK_NAMESPACE,
@@ -1546,35 +1547,30 @@ describe('#1041 bearer /cash coverage — cash classification for mobile', () =>
   });
 });
 
-describe('#730/#1043 paranoid transitions stay session-only beside bearer vault sync', () => {
-  // Both directions of the privacy-mode transition and the vault media they act
-  // on. Enable hard-deletes every cleartext row and revokes every share with no
-  // undo; disable writes a caller-authored document back into the account. The
-  // policy table's `/account/` branch classified them as `account:security` —
-  // a scope a third-party OAuth app can plausibly hold for a sessions/2FA
-  // integration — so both were reachable by a bearer, without CSRF, on nothing
-  // but the caller's own Drive attestation.
-  const SESSION_ONLY: { name: string; method: 'get' | 'post' | 'put' | 'patch'; path: string }[] = [
-    { name: 'paranoid enable', method: 'post', path: '/account/paranoid/enable' },
-    { name: 'paranoid disable', method: 'post', path: '/account/paranoid/disable' },
-    { name: 'fork provenance', method: 'get', path: '/account/paranoid/fork-provenance' },
-    { name: 'normal revision', method: 'get', path: '/account/paranoid/normal-revision' },
-    // #1043 admits opaque sync only. Media changes and recovery-media lifecycle
-    // still belong exclusively to the owning browser session.
-    { name: 'vault media transition', method: 'patch', path: '/vault/media' },
-    { name: 'retired vault purge', method: 'post', path: '/vault/media/retired/purge' },
-  ];
+describe('#1326 bearer privacy transitions and verified vault-media lifecycle', () => {
+  const TRANSITIONS = [
+    { method: 'post', path: '/account/paranoid/enable', scope: ACCOUNT_SECURITY_SCOPE },
+    { method: 'post', path: '/account/paranoid/disable', scope: ACCOUNT_SECURITY_SCOPE },
+  ] as const;
+  const MEDIA_LIFECYCLE = [
+    { method: 'patch', path: '/vault/media', scope: 'vault:sync' },
+    { method: 'put', path: '/vault/media/server-candidate', scope: 'vault:sync' },
+    {
+      method: 'get',
+      path: `/vault/media/server-candidate/${MISSING_ID}`,
+      scope: 'vault:sync',
+    },
+    { method: 'post', path: '/vault/media/retired/purge/challenge', scope: 'vault:sync' },
+    { method: 'post', path: '/vault/media/retired/purge', scope: 'vault:sync' },
+  ] as const;
+  const WIDENED = [...TRANSITIONS, ...MEDIA_LIFECYCLE] as const;
 
-  const ENABLE_BODY = {
-    mediaSet: ['drive'],
-    vaultVersion: 1,
-    driveAttestation: { verifiedRoundTrip: true, vaultVersion: 1 },
-    normalDataRevision: 'capture-token',
-  };
-
-  const call = (token: string, row: (typeof SESSION_ONLY)[number]) => {
-    const url = `/api/v1${row.path}`;
+  function call(
+    token: string,
+    row: { method: 'get' | 'post' | 'put' | 'patch'; path: string; scope: string },
+  ) {
     const base = request(harness.app);
+    const url = `/api/v1${row.path}`;
     const started =
       row.method === 'get'
         ? base.get(url)
@@ -1583,69 +1579,91 @@ describe('#730/#1043 paranoid transitions stay session-only beside bearer vault 
           : row.method === 'patch'
             ? base.patch(url)
             : base.post(url);
-    return started.set(bearer(token)).send(ENABLE_BODY);
-  };
+    return started.set(bearer(token)).send({});
+  }
 
-  it.each(SESSION_ONLY)(
-    'a personal key holding account:security gets 403 API_KEY_FORBIDDEN: $name',
-    async (row) => {
-      const { token } = await mintKey(['account:security', 'vault:sync']);
-      const res = await call(token, row);
-      expect(res.status, `${row.method} ${row.path} → ${JSON.stringify(res.body)}`).toBe(403);
-      expect(res.body.error.code).toBe('API_KEY_FORBIDDEN');
-    },
-  );
+  it.each(WIDENED)('requires the exact bearer scope: $method $path', async (row) => {
+    const { token } = await mintKey(['market:read']);
+    const res = await call(token, row);
+    expect(res.status, `${row.method} ${row.path} → ${JSON.stringify(res.body)}`).toBe(403);
+    expect(res.body.error.code).toBe('INSUFFICIENT_SCOPE');
+    expect(res.body.error.message).toContain(row.scope);
+  });
 
-  it.each(SESSION_ONLY)(
-    'a delegated OAuth token holding account:security gets 403 API_KEY_FORBIDDEN: $name',
-    async (row) => {
-      const { token } = await mintOAuthToken(['account:security', 'vault:sync']);
-      const res = await call(token, row);
-      expect(res.status, `${row.method} ${row.path} → ${JSON.stringify(res.body)}`).toBe(403);
-      expect(res.body.error.code).toBe('API_KEY_FORBIDDEN');
-    },
-  );
+  it.each(WIDENED)('a fully scoped personal key reaches the route: $method $path', async (row) => {
+    const { token } = await mintKey([row.scope]);
+    const res = await call(token, row);
+    expect(
+      res.body.error?.code,
+      `${row.method} ${row.path} → ${JSON.stringify(res.body)}`,
+    ).not.toBe('API_KEY_FORBIDDEN');
+  });
 
-  it('the refusal survives a variant-cased path, which Express routes to the same handler', async () => {
-    // Express matches routes case-insensitively, so `/Account/Paranoid/enable`
-    // reaches the identical handler. A policy table that compared the raw path
-    // would fall through this carve-out onto the coarse `/account/` scope row and
-    // hand the destructive route right back to the bearer.
-    const { token } = await mintKey(['account:security', 'vault:sync']);
-    for (const path of [
-      '/api/v1/Account/Paranoid/enable',
-      '/api/v1/account/PARANOID/disable',
-      '/api/v1/Vault',
-    ]) {
-      const res = await request(harness.app).post(path).set(bearer(token)).send(ENABLE_BODY);
-      expect(res.status, `POST ${path} → ${JSON.stringify(res.body)}`).toBe(403);
-      expect(res.body.error.code, `POST ${path}`).toBe('API_KEY_FORBIDDEN');
+  it.each(TRANSITIONS)('a fully scoped OAuth token reaches $path', async (row) => {
+    const { token } = await mintOAuthToken([row.scope]);
+    const res = await call(token, row);
+    expect(res.body.error?.code, JSON.stringify(res.body)).not.toBe('API_KEY_FORBIDDEN');
+  });
+
+  it('keeps every transition sibling and future account-paranoid route closed', async () => {
+    const { token } = await mintKey([ACCOUNT_SECURITY_SCOPE]);
+    for (const row of [
+      { method: 'get', path: '/account/paranoid/fork-provenance' },
+      { method: 'get', path: '/account/paranoid/normal-revision' },
+      { method: 'post', path: '/account/paranoid/fork-provenance' },
+      { method: 'post', path: '/account/paranoid/normal-revision' },
+      { method: 'post', path: '/account/paranoid/future-transition' },
+      { method: 'get', path: '/account/paranoid/enable' },
+    ] as const) {
+      const res = await call(token, { ...row, scope: ACCOUNT_SECURITY_SCOPE });
+      expect(res.status, `${row.method} ${row.path}`).toBe(403);
+      expect(res.body.error.code, row.path).toBe('API_KEY_FORBIDDEN');
     }
   });
 
-  it('the policy TABLE itself refuses them, independently of the router’s local guard', () => {
-    // Both layers now say no: the global table (asserted here, and again through
-    // the derived OpenAPI `security` in openapi.test.ts) and the per-route
-    // `requireOwnerBrowserSession` in accountRoutes. Pinning the table directly
-    // means a regression there is still caught even though the local guard would
-    // keep the end-to-end 403s above green.
+  it('pins the exact global policy independently of each router local guard', () => {
+    for (const row of WIDENED) {
+      expect(pathAcceptsBearer(row.path, row.method), `${row.method} ${row.path}`).toBe(true);
+    }
     for (const [method, path] of [
-      ['POST', '/account/paranoid/enable'],
-      ['POST', '/account/paranoid/disable'],
       ['GET', '/account/paranoid/fork-provenance'],
       ['GET', '/account/paranoid/normal-revision'],
-      ['PATCH', '/vault/media'],
-      ['POST', '/vault/media/retired/purge'],
+      ['POST', '/account/paranoid/fork-provenance'],
+      ['POST', '/account/paranoid/normal-revision'],
+      ['POST', '/account/paranoid/future-transition'],
+      ['GET', '/account/paranoid/enable'],
     ] as const) {
       expect(pathAcceptsBearer(path, method), `${method} ${path}`).toBe(false);
     }
-    // …while the coarse account-security surface and exact sync exception are untouched.
-    for (const path of ['/account', '/account/export', '/auth/sessions', '/auth/2fa/status']) {
-      expect(pathAcceptsBearer(path), `pathAcceptsBearer(${path})`).toBe(true);
+  });
+
+  it('the account router local guard independently repeats exact route and scope checks', () => {
+    const invoke = (method: string, path: string, scopes: string[]) => {
+      const next = vi.fn();
+      requireOwnerBrowserSession(
+        {
+          apiKey: { id: 'key', scopes },
+          method,
+          path,
+        } as unknown as Request,
+        {} as Response,
+        next,
+      );
+      return next;
+    };
+
+    expect(invoke('POST', '/paranoid/enable', [ACCOUNT_SECURITY_SCOPE])).toHaveBeenCalledWith();
+    expect(invoke('POST', '/paranoid/disable', [ACCOUNT_SECURITY_SCOPE])).toHaveBeenCalledWith();
+    for (const denied of [
+      invoke('GET', '/paranoid/enable', [ACCOUNT_SECURITY_SCOPE]),
+      invoke('POST', '/paranoid/future', [ACCOUNT_SECURITY_SCOPE]),
+      invoke('POST', '/paranoid/enable', ['market:read']),
+    ]) {
+      expect(denied.mock.calls[0]![0]).toMatchObject({
+        statusCode: 403,
+        code: 'API_KEY_FORBIDDEN',
+      });
     }
-    expect(pathAcceptsBearer('/vault', 'GET')).toBe(true);
-    expect(pathAcceptsBearer('/vault', 'PUT')).toBe(true);
-    expect(pathAcceptsBearer('/vault/media', 'GET')).toBe(true);
   });
 
   it('the carve-out is surgical: the rest of the account-security surface stays bearer-callable', async () => {
@@ -1654,14 +1672,13 @@ describe('#730/#1043 paranoid transitions stay session-only beside bearer vault 
     await request(harness.app).get('/api/v1/account/export').set(bearer(token)).expect(200);
   });
 
-  it('CSRF is the live gate for the cookie session that owns these routes', async () => {
-    // With the bearer refused, the browser cookie session is the ONLY caller —
-    // so its own mutation guard has to be asserted, not assumed.
+  it('cookie parity keeps CSRF and the same in-body credential boundary', async () => {
     const user = await seedFreshUser();
     const agent = await loginAgent(harness.app, user.email, user.password);
+    const body = {};
 
     for (const path of ['/api/v1/account/paranoid/enable', '/api/v1/account/paranoid/disable']) {
-      const noHeader = await agent.post(path).send(ENABLE_BODY);
+      const noHeader = await agent.post(path).send(body);
       expect(noHeader.status, `${path} without X-Requested-With`).toBe(403);
       expect(noHeader.body.error.code).toBe('CSRF_HEADER_REQUIRED');
 
@@ -1669,7 +1686,7 @@ describe('#730/#1043 paranoid transitions stay session-only beside bearer vault 
         .post(path)
         .set(...XRW)
         .set('Origin', 'https://evil.example')
-        .send(ENABLE_BODY);
+        .send(body);
       expect(foreignOrigin.status, `${path} from a foreign origin`).toBe(403);
       expect(foreignOrigin.body.error.code).toBe('CSRF_ORIGIN_REJECTED');
     }
@@ -1680,7 +1697,12 @@ describe('#730/#1043 paranoid transitions stay session-only beside bearer vault 
     const reached = await agent
       .post('/api/v1/account/paranoid/enable')
       .set(...XRW)
-      .send({ mediaSet: [] });
+      .send({
+        mediaSet: ['drive'],
+        vaultVersion: 1,
+        driveAttestation: { verifiedRoundTrip: true, vaultVersion: 1 },
+        normalDataRevision: 'capture-token',
+      });
     expect(reached.status, JSON.stringify(reached.body)).toBe(400);
   });
 });

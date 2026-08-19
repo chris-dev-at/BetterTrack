@@ -382,11 +382,11 @@
         },
         "vaultSync": {
           "label": "Vault sync",
-          "description": "Synchronize your client-encrypted vault across your devices. Privacy-mode and storage transitions stay in your browser session."
+          "description": "Synchronize your client-encrypted vault across your devices and manage its verified encrypted storage locations."
         },
         "accountSecurity": {
           "label": "Account security",
-          "description": "Manage sign-in sessions, two-factor authentication, password and the app PIN."
+          "description": "Manage sign-in sessions, two-factor authentication, password and the app PIN, and confirm privacy-mode transitions."
         },
         "feedback": {
           "label": "Feedback",
@@ -3589,6 +3589,13 @@
     },
     "lock": {
       "action": "Lock vault"
+    },
+    "stepUp": {
+      "passwordLabel": "Current account password",
+      "codeLabel": "Authenticator code",
+      "hint": "Confirm with your BetterTrack account password — not the vault passphrase — or a fresh authenticator code.",
+      "useCode": "Use an authenticator code instead",
+      "usePassword": "Use your password instead"
     },
     "enable": {
       "title": "Enable Paranoid mode",

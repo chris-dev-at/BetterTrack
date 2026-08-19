@@ -72,6 +72,14 @@ import {
 } from './paranoidEnforcementRepository';
 
 export interface LockedParanoidTransitionState {
+  /** Account credentials read by the same SELECT ... FOR UPDATE as mode state. */
+  auth: {
+    username: string;
+    passwordHash: string;
+    twoFactorSecret: string | null;
+    twoFactorEnabled: boolean;
+    twoFactorEmailEnabled: boolean;
+  };
   privacyMode: 'normal' | 'paranoid';
   enableStaging: { expiresAt: Date } | null;
   mediaSet: VaultMediaSet | null;
@@ -719,6 +727,11 @@ export function createParanoidTransitionTransactionRepository(
     async lockState(userId) {
       const [user] = await tx
         .select({
+          username: users.username,
+          passwordHash: users.passwordHash,
+          twoFactorSecret: users.twoFactorSecret,
+          twoFactorEnabled: users.twoFactorEnabled,
+          twoFactorEmailEnabled: users.twoFactorEmailEnabled,
           privacyMode: users.privacyMode,
           mediaSet: users.paranoidMediaSet,
           driveAttestedVersion: users.paranoidDriveAttestedVersion,
@@ -785,6 +798,13 @@ export function createParanoidTransitionTransactionRepository(
       ]);
 
       return {
+        auth: {
+          username: user.username,
+          passwordHash: user.passwordHash,
+          twoFactorSecret: user.twoFactorSecret,
+          twoFactorEnabled: user.twoFactorEnabled,
+          twoFactorEmailEnabled: user.twoFactorEmailEnabled,
+        },
         privacyMode: user.privacyMode,
         enableStaging: enableStaging ?? null,
         mediaSet: user.mediaSet as VaultMediaSet | null,

@@ -215,7 +215,7 @@ import {
   createParanoidVaultService,
   type ParanoidVaultService,
 } from '../services/account/paranoidVaultService';
-import { createParanoidDiscardReauth } from '../services/account/paranoidDiscardReauth';
+import { createParanoidTransitionReauth } from '../services/account/paranoidTransitionReauth';
 import { createParanoidRehydrationService } from '../services/account/paranoidRehydrationService';
 import {
   createParanoidTransitionService,
@@ -1946,11 +1946,10 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   const paranoidTransitions = createParanoidTransitionService({
     db,
     vaults: paranoidVaultRepository,
-    // The §3 destruction exit re-authenticates like `DELETE /account`.
-    discardReauth: createParanoidDiscardReauth({
+    // Both directions re-authenticate under their transition lock like `DELETE /account`.
+    transitionReauth: createParanoidTransitionReauth({
       config,
       redis,
-      userRepo,
       passwordHasher,
       twoFactor,
       audit,

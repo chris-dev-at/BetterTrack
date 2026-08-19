@@ -188,6 +188,7 @@ user/vault/VaultAccountRoot.tsx
 user/vault/VaultRuntimeProvider.tsx
 user/vault/engine/VaultMoneyEngineProvider.tsx
 user/vault/ui/ParanoidEnableWizard.tsx
+user/vault/ui/ParanoidStepUpFields.tsx
 user/vault/ui/ParanoidSurfaceGate.tsx
 user/vault/ui/VaultSyncChip.tsx
 user/vault/ui/VaultUnlockGate.tsx

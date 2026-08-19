@@ -63,8 +63,8 @@ export const AuditAction = {
   /** Client-encrypted data-home transitions; metadata is media/version only. */
   ParanoidEnabled: 'account.paranoid_enabled',
   ParanoidDisabled: 'account.paranoid_disabled',
-  /** A failed re-auth on the irreversible paranoid discard (throttled like deletion). */
-  ParanoidDiscardFail: 'account.paranoid_discard_fail',
+  /** A failed in-request re-auth on either paranoid mode transition. */
+  ParanoidTransitionReauthFail: 'account.paranoid_transition_reauth_fail',
   /**
    * Vaults v2 lifecycle (`docs/VAULTS_V2_DESIGN.md` §3). Metadata is the vault
    * id, its cleartext name/backends and the affected portfolio id — never a

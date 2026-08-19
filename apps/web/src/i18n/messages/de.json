@@ -382,11 +382,11 @@
         },
         "vaultSync": {
           "label": "Tresor-Synchronisierung",
-          "description": "Deinen clientseitig verschlüsselten Tresor zwischen deinen Geräten synchronisieren. Datenschutzmodus- und Speicherwechsel bleiben deiner Browser-Sitzung vorbehalten."
+          "description": "Deinen clientseitig verschlüsselten Tresor zwischen deinen Geräten synchronisieren und seine geprüften verschlüsselten Speicherorte verwalten."
         },
         "accountSecurity": {
           "label": "Kontosicherheit",
-          "description": "Sitzungen, Zwei-Faktor-Authentifizierung, Passwort und die App-PIN verwalten."
+          "description": "Sitzungen, Zwei-Faktor-Authentifizierung, Passwort und die App-PIN verwalten sowie Datenschutzmodus-Wechsel bestätigen."
         },
         "feedback": {
           "label": "Feedback",
@@ -3589,6 +3589,13 @@
     },
     "lock": {
       "action": "Tresor sperren"
+    },
+    "stepUp": {
+      "passwordLabel": "Aktuelles Kontopasswort",
+      "codeLabel": "Authenticator-Code",
+      "hint": "Bestätige mit deinem BetterTrack-Kontopasswort — nicht mit der Tresor-Passphrase — oder einem frischen Authenticator-Code.",
+      "useCode": "Stattdessen einen Authenticator-Code verwenden",
+      "usePassword": "Stattdessen dein Passwort verwenden"
     },
     "enable": {
       "title": "Paranoiden Modus aktivieren",

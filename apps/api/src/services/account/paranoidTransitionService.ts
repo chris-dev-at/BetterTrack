@@ -33,7 +33,7 @@ import {
 } from '../../data/repositories/paranoidTransitionRepository';
 import type { Logger } from '../../logger';
 import { AuditAction, type AuditService } from '../audit/auditService';
-import type { ParanoidDiscardReauth } from './paranoidDiscardReauth';
+import type { ParanoidTransitionReauth } from './paranoidTransitionReauth';
 import {
   ParanoidRehydrationError,
   type ParanoidRehydrationService,
@@ -81,12 +81,8 @@ export interface ParanoidTransitionServiceDeps {
    */
   lockDb?: Database;
   rehydration: ParanoidRehydrationService;
-  /**
-   * Gate for the irreversible `discard` disable. Required, not optional: a
-   * composition that omits it must fail to typecheck rather than silently ship
-   * an unauthenticated vault-destruction endpoint.
-   */
-  discardReauth: ParanoidDiscardReauth;
+  /** Required account-locked step-up gate for both transition directions. */
+  transitionReauth: ParanoidTransitionReauth;
   audit: AuditService;
   /** Optional so unit harnesses can compose the service without a log sink. */
   logger?: Logger;
@@ -124,10 +120,14 @@ export interface PreparedExportFileRetirement {
 }
 
 export interface ParanoidTransitionService {
-  enable(userId: string, request: ParanoidEnableRequest): Promise<ParanoidEnableResponse>;
+  enable(
+    userId: string,
+    request: ParanoidEnableRequest,
+    options?: { ip?: string | null },
+  ): Promise<ParanoidEnableResponse>;
   /**
-   * `options.ip` is audit/throttle context for the `discard` re-auth only; the
-   * restoring disable ignores it.
+   * `options.ip` is audit/throttle context for the in-request step-up shared by
+   * restoring and discarding disables.
    */
   disable(
     userId: string,
@@ -297,7 +297,7 @@ export function createParanoidTransitionService(
       return paranoidNormalRevisionResponseSchema.parse({ revision });
     },
 
-    async enable(userId, request) {
+    async enable(userId, request, options) {
       const parsed = paranoidEnableRequestSchema.safeParse(request);
       if (!parsed.success) {
         throw new ParanoidTransitionError(
@@ -384,6 +384,18 @@ export function createParanoidTransitionService(
           if (!state) {
             throw new ParanoidTransitionError('ACCOUNT_NOT_FOUND', 'Account does not exist.');
           }
+          // Bearer requests skip CSRF by design; this in-body step-up is the
+          // equivalent proof for bearer and cookie callers. Verify only after
+          // `lockState` owns the users-row FOR UPDATE lock, and before any
+          // sharing/cleartext purge. The enable idempotency key remains the exact
+          // mediaSet + vaultVersion + attestation evidence, never the credential.
+          await deps.transitionReauth.verify({
+            userId,
+            body: input,
+            ip: options?.ip,
+            auth: state.auth,
+            db: tx,
+          });
           await stage('locked');
 
           if (state.privacyMode === 'paranoid') {
@@ -596,6 +608,7 @@ export function createParanoidTransitionService(
           }
         });
       } catch (error) {
+        await deps.transitionReauth.recordFailure(error);
         if (restoreRetirementsOnFailure && preparedRetirements.length > 0) {
           try {
             await rollbackRetirements();
@@ -640,13 +653,25 @@ export function createParanoidTransitionService(
         recoveryCode: _recoveryCode,
         ...rehydration
       } = parsed.data;
-      if (rehydration.discard === true) {
-        await deps.discardReauth.verify({ userId, body: parsed.data, ip: options?.ip });
-      }
       let restored;
       try {
-        restored = await deps.rehydration.rehydrate(userId, rehydration);
+        restored = await deps.rehydration.rehydrate(userId, rehydration, {
+          // `rehydrationId` is disable's durable idempotency key. Credential
+          // material never participates in replay matching, but every retry is
+          // freshly verified after the rehydration transaction takes the same
+          // users-row lock that protects its restore/purge writes.
+          afterAccountLock: ({ auth, tx }) =>
+            deps.transitionReauth.verify({
+              userId,
+              body: parsed.data,
+              ip: options?.ip,
+              auth,
+              db: tx,
+              requireUsernameConfirmation: rehydration.discard === true,
+            }),
+        });
       } catch (error) {
+        await deps.transitionReauth.recordFailure(error);
         mapRehydrationError(error);
       }
 

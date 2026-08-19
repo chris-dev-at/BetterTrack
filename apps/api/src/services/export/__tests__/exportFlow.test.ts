@@ -534,6 +534,7 @@ describe('account data export', () => {
       vaultVersion: 1,
       driveAttestation: null,
       normalDataRevision: revision,
+      password: user.password,
     });
     releaseCollection();
     const [exportResponse, enabled] = await Promise.all([exportPromise, enablePromise]);

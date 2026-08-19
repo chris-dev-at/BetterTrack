@@ -2,6 +2,7 @@ import {
   VAULT_DOCUMENT_V1_VERSION,
   vaultStrictDocumentV1Schema,
   type ParanoidDisableResponse,
+  type ParanoidTransitionCredential,
   type VaultDocument,
   type VaultStrictDocumentV1,
 } from '@bettertrack/contracts';
@@ -33,8 +34,9 @@ const REHYDRATION_ID_PREFIX = 'bettertrack:vault-rehydration:';
 export async function disableUnlockedVault(
   document: VaultDocument,
   accountId: string,
+  credential: ParanoidTransitionCredential,
 ): Promise<ParanoidDisableResponse> {
-  return rehydrateAndDisable(accountId, toStrictRestoreDocument(document), null);
+  return rehydrateAndDisable(accountId, toStrictRestoreDocument(document), credential, false);
 }
 
 /**
@@ -42,12 +44,9 @@ export async function disableUnlockedVault(
  * (account password, or a fresh TOTP code on a 2FA account). The server
  * verifies both — this type only carries them there.
  */
-export interface ParanoidDiscardCredential {
+export type ParanoidDiscardCredential = ParanoidTransitionCredential & {
   confirmUsername: string;
-  password?: string;
-  code?: string;
-  recoveryCode?: string;
-}
+};
 
 /**
  * The locked-vault exit (docs/paranoid-design.md §3, verbatim: "lost key ⇒ lost
@@ -70,7 +69,7 @@ export interface ParanoidDiscardCredential {
  *
  * Unlike the restoring disable it is IRREVERSIBLE, so it carries the
  * account-deletion rung: the typed username and a re-verified credential, both
- * checked on the server (`paranoidDiscardReauth`).
+ * checked on the server by the shared transition re-auth gate.
  */
 export async function discardLockedVault(
   accountId: string,
@@ -81,13 +80,14 @@ export async function discardLockedVault(
     entities: [],
     mergeLog: [],
   });
-  return rehydrateAndDisable(accountId, document, credential);
+  return rehydrateAndDisable(accountId, document, credential, true);
 }
 
 async function rehydrateAndDisable(
   accountId: string,
   document: VaultStrictDocumentV1,
-  credential: ParanoidDiscardCredential | null,
+  credential: ParanoidTransitionCredential | ParanoidDiscardCredential,
+  discard: boolean,
 ): Promise<ParanoidDisableResponse> {
   const storageKey = `${REHYDRATION_ID_PREFIX}${accountId}`;
   const rehydrationId = storedRehydrationId(storageKey) ?? globalThis.crypto.randomUUID();
@@ -96,7 +96,8 @@ async function rehydrateAndDisable(
     rehydrationId,
     document,
     confirm: true,
-    ...(credential === null ? {} : { discard: true, ...credential }),
+    ...credential,
+    ...(discard ? { discard: true } : {}),
   });
   forgetRehydrationId(storageKey);
   return result;

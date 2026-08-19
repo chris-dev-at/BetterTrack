@@ -8,6 +8,8 @@ import { beforeEach, describe, expect, test, vi } from 'vitest';
 
 import type { ParanoidVaultMediaState, PrivacyMode } from '@bettertrack/contracts';
 
+import { waitForColdStart } from '../../../test/waitForColdStart';
+
 const toggleDiscreetMode = vi.fn(async () => undefined);
 const USER_ID = '018f0000-0000-7000-8000-000000000001';
 const auth = { user: { id: USER_ID, username: 'jane', discreetMode: false }, toggleDiscreetMode };
@@ -77,6 +79,9 @@ vi.mock('../../vault/ui/ParanoidEnableWizard', async (importOriginal) => {
       enableStub ? enableStub(props) : <actual.ParanoidEnableWizard {...props} />,
   };
 });
+vi.mock('../../../lib/twoFactorApi', () => ({
+  getTwoFactorStatus: vi.fn(async () => ({ totpEnabled: false })),
+}));
 const RECEIPT: Parameters<ParanoidEnableWizardProps['onEnabled']>[0] = {
   mode: 'paranoid',
   mediaSet: ['server'],
@@ -191,7 +196,9 @@ describe('PrivacyPanel (§13.5 V5-P13)', () => {
     await user.click(screen.getByRole('button', { name: 'Open migration' }));
 
     // The wizard is its own chunk (#1089), so it arrives a tick later.
-    expect(await screen.findByRole('heading', { name: 'What changes' })).toBeInTheDocument();
+    expect(
+      await waitForColdStart(() => screen.getByRole('heading', { name: 'What changes' })),
+    ).toBeInTheDocument();
     expect(screen.getByText(/Sharing, shared items, comments/i)).toBeInTheDocument();
     expect(screen.getByText(/Server portfolio analytics/i)).toBeInTheDocument();
     expect(screen.queryByText(/coming soon/i)).not.toBeInTheDocument();
@@ -311,6 +318,9 @@ describe('PrivacyPanel (§13.5 V5-P13)', () => {
     await user.click(await screen.findByRole('checkbox', { name: /disable Paranoid mode/i }));
 
     expect(screen.queryByText(/unsynced changes on more than one device/i)).not.toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Restore normal mode' })).toBeEnabled();
+    const restore = screen.getByRole('button', { name: 'Restore normal mode' });
+    expect(restore).toBeDisabled();
+    await user.type(screen.getByLabelText('Current account password'), 'account-password');
+    expect(restore).toBeEnabled();
   });
 });

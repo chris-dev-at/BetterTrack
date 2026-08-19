@@ -1,4 +1,4 @@
-import { createHash, generateKeyPairSync, randomBytes } from 'node:crypto';
+import { createHash, generateKeyPairSync, randomBytes, sign } from 'node:crypto';
 
 import { eq } from 'drizzle-orm';
 import type { Application, Request, Response } from 'express';
@@ -14,11 +14,19 @@ import {
   VAULT_HISTORY_MEDIUM_HEADER,
   VAULT_HISTORY_SIZE_BYTES_HEADER,
   VAULT_RETIREMENT_PROOF_PUBLIC_KEY_HEADER,
+  VAULT_SERVER_CANDIDATE_READBACK_HEADER,
+  serializeRetiredServerPurgeTranscript,
   type ApiKeyScope,
 } from '@bettertrack/contracts';
 
 import { createOAuthRepository } from '../data/repositories/oauthRepository';
-import { paranoidEnableTransitions, paranoidVaults, users } from '../data/schema';
+import {
+  paranoidEnableTransitions,
+  paranoidVaultRetirements,
+  paranoidVaultServerCandidates,
+  paranoidVaults,
+  users,
+} from '../data/schema';
 import {
   VAULT_SESSION_ONLY_ROUTES,
   VAULT_SYNC_BEARER_ROUTE_ALLOWLIST,
@@ -42,9 +50,9 @@ import {
 } from './bearerRouteInventory';
 
 /**
- * #1043 — the deliberate bearer exception for paranoid-vault synchronization.
- * Sync sees only an opaque BTVAULT1 envelope; every account/media transition
- * remains an owning-browser-session operation.
+ * #1043/#1326 — bearer synchronization plus the verified media lifecycle.
+ * Sync sees only opaque BTVAULT1 envelopes; lifecycle writes keep their
+ * readback/proof ceremonies and account-mode transitions require fresh re-auth.
  */
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
@@ -119,6 +127,29 @@ function ed25519PublicKey(): string {
   return generateKeyPairSync('ed25519')
     .publicKey.export({ type: 'spki', format: 'der' })
     .toString('base64url');
+}
+
+function retirementProofKey() {
+  const { privateKey, publicKey } = generateKeyPairSync('ed25519');
+  return {
+    privateKey,
+    publicKey: publicKey.export({ type: 'spki', format: 'der' }).toString('base64url'),
+  };
+}
+
+function purgeSignature(
+  privateKey: ReturnType<typeof retirementProofKey>['privateKey'],
+  retiredVersion: number,
+  observedVersion: number,
+  challenge: string,
+): string {
+  return sign(
+    null,
+    Buffer.from(
+      serializeRetiredServerPurgeTranscript({ retiredVersion, observedVersion, challenge }),
+    ),
+    privateKey,
+  ).toString('base64url');
 }
 
 async function storedProofKey(userId: string): Promise<string | null> {
@@ -208,6 +239,11 @@ describe('#1043 vault bearer policy', () => {
     { method: 'GET', path: '/vault' },
     { method: 'PUT', path: '/vault' },
     { method: 'GET', path: '/vault/media' },
+    { method: 'PATCH', path: '/vault/media' },
+    { method: 'PUT', path: '/vault/media/server-candidate' },
+    { method: 'GET', path: '/vault/media/server-candidate/{candidateId}' },
+    { method: 'POST', path: '/vault/media/retired/purge/challenge' },
+    { method: 'POST', path: '/vault/media/retired/purge' },
     { method: 'GET', path: '/vault/history' },
     // The segment matcher is declared by the entry, not inferred from how the
     // placeholder is spelled, so renaming `{version}` cannot widen matching.
@@ -216,8 +252,6 @@ describe('#1043 vault bearer policy', () => {
 
   const SESSION_ONLY = [
     ...VAULT_SESSION_ONLY_ROUTES,
-    { method: 'POST', path: '/account/paranoid/enable' },
-    { method: 'POST', path: '/account/paranoid/disable' },
     { method: 'GET', path: '/account/paranoid/fork-provenance' },
     { method: 'GET', path: '/account/paranoid/normal-revision' },
   ] as const;
@@ -237,8 +271,8 @@ describe('#1043 vault bearer policy', () => {
     },
   ] as const;
 
-  const livePath = (path: string): string => path.replace('{version}', '12');
-  const liveSessionPath = (path: string): string => path.replace('{candidateId}', MISSING_ID);
+  const livePath = (path: string): string =>
+    path.replace('{version}', '12').replace('{candidateId}', MISSING_ID);
 
   it('pins the exact sync routes and defaults transitions and future routes closed', () => {
     expect(VAULT_SYNC_BEARER_ROUTE_ALLOWLIST).toEqual(EXPECTED_ALLOWLIST);
@@ -251,7 +285,7 @@ describe('#1043 vault bearer policy', () => {
     expect(vaultSyncRouteAcceptsBearer('GET', '/vault/history/12')).toBe(true);
 
     for (const route of SESSION_ONLY) {
-      const path = liveSessionPath(route.path);
+      const path = livePath(route.path);
       expect(pathAcceptsBearer(path, route.method)).toBe(false);
       expect(openApiPathTemplateAcceptsBearer(route.path, route.method)).toBe(false);
     }
@@ -329,7 +363,7 @@ describe('#1043 vault bearer policy', () => {
     const syncKey = { id: 'key', scopes: ['vault:sync'] };
 
     // Unlisted route: refused even though the token holds the right scope.
-    const rejected = guard(syncKey, 'PATCH', '/media');
+    const rejected = guard(syncKey, 'PATCH', '/future-media');
     expect(rejected).toHaveBeenCalledOnce();
     expect(rejected.mock.calls[0]![0]).toMatchObject({
       statusCode: 403,
@@ -343,8 +377,12 @@ describe('#1043 vault bearer policy', () => {
       statusCode: 403,
       code: 'API_KEY_FORBIDDEN',
     });
+    expect(
+      guard({ id: 'key', scopes: ['market:read'] }, 'PATCH', '/media').mock.calls[0]![0],
+    ).toMatchObject({ statusCode: 403, code: 'API_KEY_FORBIDDEN' });
 
     expect(guard(syncKey, 'PUT', '/')).toHaveBeenCalledWith();
+    expect(guard(syncKey, 'PATCH', '/media')).toHaveBeenCalledWith();
   });
 });
 
@@ -414,6 +452,7 @@ describe('#1043 bearer vault synchronization', () => {
         vaultVersion: 1,
         driveAttestation: null,
         normalDataRevision: revision.body.revision,
+        password: user.password,
       });
     expect(enabled.status, JSON.stringify(enabled.body)).toBe(200);
     expect(enabled.body).toMatchObject({ mode: 'paranoid', mediaSet: ['server'], vaultVersion: 1 });
@@ -555,35 +594,270 @@ describe('#1043 bearer vault synchronization', () => {
     expect((historical.body as Buffer).equals(v2)).toBe(true);
   });
 
-  it('keeps every transition and provenance endpoint session-only with vault:sync', async () => {
+  it('keeps account-transition siblings closed while #1326 exact routes reach their handlers', async () => {
     const { token } = await mintPersonalToken(['vault:sync', 'account:security'], 'transition');
-    const cases = [
-      { method: 'post', path: '/account/paranoid/enable' },
-      { method: 'post', path: '/account/paranoid/disable' },
+    const closed = [
       { method: 'get', path: '/account/paranoid/fork-provenance' },
       { method: 'get', path: '/account/paranoid/normal-revision' },
-      { method: 'patch', path: '/vault/media' },
-      { method: 'put', path: '/vault/media/server-candidate' },
-      { method: 'get', path: `/vault/media/server-candidate/${MISSING_ID}` },
-      { method: 'post', path: '/vault/media/retired/purge/challenge' },
-      { method: 'post', path: '/vault/media/retired/purge' },
     ] as const;
 
-    for (const row of cases) {
+    for (const row of closed) {
       const api = request(harness.app);
       const url = `/api/v1${row.path}`;
-      const started =
-        row.method === 'get'
-          ? api.get(url)
-          : row.method === 'post'
-            ? api.post(url)
-            : row.method === 'put'
-              ? api.put(url)
-              : api.patch(url);
+      const started = api.get(url);
       const response = await started.set(bearer(token)).send({});
       expect(response.status, `${row.method.toUpperCase()} ${row.path}`).toBe(403);
       expect(response.body.error.code, row.path).toBe('API_KEY_FORBIDDEN');
     }
+
+    for (const path of [
+      '/account/paranoid/enable',
+      '/account/paranoid/disable',
+      '/vault/media/retired/purge/challenge',
+    ]) {
+      const response = await request(harness.app)
+        .post(`/api/v1${path}`)
+        .set(bearer(token))
+        .send({});
+      expect(response.body.error?.code, `${path}: ${JSON.stringify(response.body)}`).not.toBe(
+        'API_KEY_FORBIDDEN',
+      );
+    }
+  });
+
+  it('runs candidate, media-transition, and signed-purge ceremonies through vault:sync', async () => {
+    const user = await seedUser('bearerlifecycle');
+    await setParanoidServer(user.id);
+    const agent = await loginAgent(harness.app, user);
+    const key = await harness.ctx.apiKeys.create({
+      userId: user.id,
+      name: 'vault lifecycle',
+      scopes: ['vault:sync'],
+    });
+    const authorization = bearer(key.token);
+    const { privateKey, publicKey } = retirementProofKey();
+    const { privateKey: forgedPrivateKey } = retirementProofKey();
+    const v1 = envelope(1, new Uint8Array([1, 3, 2, 6]));
+    const serverOnly = { mediaSet: ['server'], driveAttestedVersion: null };
+    const both = { mediaSet: ['server', 'drive'], driveAttestedVersion: 1 };
+    const driveOnly = { mediaSet: ['drive'], driveAttestedVersion: 1 };
+    const patchMedia = (body: Record<string, unknown>) =>
+      request(harness.app).patch('/api/v1/vault/media').set(authorization).send(body);
+
+    await agent
+      .put('/api/v1/vault')
+      .set(...XRW)
+      .set(...OCTET)
+      .set('If-None-Match', '*')
+      .set(VAULT_RETIREMENT_PROOF_PUBLIC_KEY_HEADER, publicKey)
+      .send(v1)
+      .expect(204);
+
+    await patchMedia({
+      expected: serverOnly,
+      nextMediaSet: both.mediaSet,
+      verification: { kind: 'drive', version: 1 },
+    }).expect(200);
+    const stale = await patchMedia({
+      expected: { mediaSet: both.mediaSet, driveAttestedVersion: 2 },
+      nextMediaSet: driveOnly.mediaSet,
+      verification: { kind: 'drive', version: 1 },
+    });
+    expect(stale.status).toBe(409);
+    expect(stale.body.error.code).toBe('VAULT_MEDIA_STATE_CONFLICT');
+
+    const retired = await patchMedia({
+      expected: both,
+      nextMediaSet: driveOnly.mediaSet,
+      verification: { kind: 'drive', version: 1 },
+    });
+    expect(retired.status, JSON.stringify(retired.body)).toBe(200);
+    expect(retired.body.server.disposition).toBe('retired');
+    await patchMedia({
+      expected: both,
+      nextMediaSet: driveOnly.mediaSet,
+      verification: { kind: 'drive', version: 1 },
+    }).expect(200);
+
+    const stageCandidate = () =>
+      request(harness.app)
+        .put('/api/v1/vault/media/server-candidate')
+        .set(authorization)
+        .set(...OCTET)
+        .set(VAULT_RETIREMENT_PROOF_PUBLIC_KEY_HEADER, publicKey)
+        .send(v1);
+    const staged = await stageCandidate();
+    expect(staged.status, JSON.stringify(staged.body)).toBe(200);
+    const candidateId = staged.body.candidateId as string;
+    expect((await stageCandidate()).body.candidateId).toBe(candidateId);
+    const readback = await request(harness.app)
+      .get(`/api/v1/vault/media/server-candidate/${candidateId}`)
+      .set(authorization)
+      .responseType('blob');
+    expect(readback.status).toBe(200);
+    expect((readback.body as Buffer).equals(v1)).toBe(true);
+    const receipt = readback.headers[
+      VAULT_SERVER_CANDIDATE_READBACK_HEADER.toLowerCase()
+    ] as string;
+
+    const other = await seedUser('otherreceipt');
+    await harness.db
+      .update(users)
+      .set({
+        privacyMode: 'paranoid',
+        paranoidMediaSet: ['drive'],
+        paranoidDriveAttestedVersion: 1,
+      })
+      .where(eq(users.id, other.id));
+    const otherKey = await harness.ctx.apiKeys.create({
+      userId: other.id,
+      name: 'other vault',
+      scopes: ['vault:sync'],
+    });
+    const otherAuth = bearer(otherKey.token);
+    const otherProof = retirementProofKey();
+    const otherStaged = await request(harness.app)
+      .put('/api/v1/vault/media/server-candidate')
+      .set(otherAuth)
+      .set(...OCTET)
+      .set(VAULT_RETIREMENT_PROOF_PUBLIC_KEY_HEADER, otherProof.publicKey)
+      .send(v1);
+    expect(otherStaged.status, JSON.stringify(otherStaged.body)).toBe(200);
+    const otherReadback = await request(harness.app)
+      .get(`/api/v1/vault/media/server-candidate/${otherStaged.body.candidateId as string}`)
+      .set(otherAuth);
+    const noPinnedVerifier = await request(harness.app)
+      .patch('/api/v1/vault/media')
+      .set(otherAuth)
+      .send({
+        expected: driveOnly,
+        nextMediaSet: both.mediaSet,
+        verification: {
+          kind: 'server-candidate',
+          candidateId: otherStaged.body.candidateId,
+          readback: otherReadback.headers[
+            VAULT_SERVER_CANDIDATE_READBACK_HEADER.toLowerCase()
+          ] as string,
+        },
+      });
+    expect(noPinnedVerifier.status).toBe(409);
+    expect(noPinnedVerifier.body.error.code).toBe('VAULT_RETIRED_SERVER_PROOF_REQUIRED');
+    const accountBoundFailure = await patchMedia({
+      expected: driveOnly,
+      nextMediaSet: both.mediaSet,
+      verification: {
+        kind: 'server-candidate',
+        candidateId,
+        readback: otherReadback.headers[
+          VAULT_SERVER_CANDIDATE_READBACK_HEADER.toLowerCase()
+        ] as string,
+      },
+    });
+    expect(accountBoundFailure.status).toBe(412);
+    expect(accountBoundFailure.body.error.code).toBe('VAULT_MEDIA_VERIFICATION_FAILED');
+    expect(
+      await harness.db
+        .select({ id: paranoidVaultServerCandidates.id })
+        .from(paranoidVaultServerCandidates)
+        .where(eq(paranoidVaultServerCandidates.userId, user.id)),
+    ).toHaveLength(1);
+
+    await patchMedia({
+      expected: driveOnly,
+      nextMediaSet: both.mediaSet,
+      verification: { kind: 'server-candidate', candidateId, readback: receipt },
+    }).expect(200);
+    await patchMedia({
+      expected: both,
+      nextMediaSet: serverOnly.mediaSet,
+      verification: { kind: 'server', version: 1 },
+    }).expect(200);
+    await patchMedia({
+      expected: serverOnly,
+      nextMediaSet: both.mediaSet,
+      verification: { kind: 'drive', version: 1 },
+    }).expect(200);
+    await patchMedia({
+      expected: both,
+      nextMediaSet: driveOnly.mediaSet,
+      verification: { kind: 'drive', version: 1 },
+    }).expect(200);
+
+    const wrongRetirement = await request(harness.app)
+      .post('/api/v1/vault/media/retired/purge/challenge')
+      .set(authorization)
+      .send({ retiredVersion: 2 });
+    expect(wrongRetirement.status).toBe(409);
+    expect(wrongRetirement.body.error.code).toBe('VAULT_MEDIA_STATE_CONFLICT');
+
+    const prepared = await request(harness.app)
+      .post('/api/v1/vault/media/retired/purge/challenge')
+      .set(authorization)
+      .send({ retiredVersion: 1 });
+    expect(prepared.status, JSON.stringify(prepared.body)).toBe(200);
+    const challenge = prepared.body.challenge as string;
+    const unsigned = await request(harness.app)
+      .post('/api/v1/vault/media/retired/purge')
+      .set(authorization)
+      .send({ retiredVersion: 1, observedVersion: 2, challenge });
+    expect(unsigned.status).toBe(400);
+    const forged = await request(harness.app)
+      .post('/api/v1/vault/media/retired/purge')
+      .set(authorization)
+      .send({
+        retiredVersion: 1,
+        observedVersion: 2,
+        challenge,
+        signature: purgeSignature(forgedPrivateKey, 1, 2, challenge),
+      });
+    expect(forged.status).toBe(412);
+    expect(forged.body.error.code).toBe('VAULT_RETIRED_SERVER_PROOF_INVALID');
+
+    const expiring = await request(harness.app)
+      .post('/api/v1/vault/media/retired/purge/challenge')
+      .set(authorization)
+      .send({ retiredVersion: 1 });
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(new Date(Date.parse(expiring.body.expiresAt as string) + 1));
+    try {
+      const expired = await request(harness.app)
+        .post('/api/v1/vault/media/retired/purge')
+        .set(authorization)
+        .send({
+          retiredVersion: 1,
+          observedVersion: 2,
+          challenge: expiring.body.challenge,
+          signature: purgeSignature(privateKey, 1, 2, expiring.body.challenge as string),
+        });
+      expect(expired.status).toBe(412);
+      expect(expired.body.error.code).toBe('VAULT_RETIRED_SERVER_PROOF_INVALID');
+    } finally {
+      vi.useRealTimers();
+    }
+    expect(
+      (await request(harness.app).get('/api/v1/vault/history/1').set(authorization)).status,
+    ).toBe(200);
+
+    await harness.db
+      .update(paranoidVaultRetirements)
+      .set({ retiredAt: new Date(Date.now() - 8 * 24 * 60 * 60 * 1000) })
+      .where(eq(paranoidVaultRetirements.userId, user.id));
+    const fresh = await request(harness.app)
+      .post('/api/v1/vault/media/retired/purge/challenge')
+      .set(authorization)
+      .send({ retiredVersion: 1 });
+    const purged = await request(harness.app)
+      .post('/api/v1/vault/media/retired/purge')
+      .set(authorization)
+      .send({
+        retiredVersion: 1,
+        observedVersion: 2,
+        challenge: fresh.body.challenge,
+        signature: purgeSignature(privateKey, 1, 2, fresh.body.challenge as string),
+      });
+    expect(purged.status, JSON.stringify(purged.body)).toBe(200);
+    expect(purged.body).toEqual({ purged: true });
+    await request(harness.app).get('/api/v1/vault/history/1').set(authorization).expect(404);
   });
 
   it('exempts vault:sync while paranoid portfolio scopes still fail closed', async () => {
