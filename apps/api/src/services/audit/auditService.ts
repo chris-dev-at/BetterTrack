@@ -1,5 +1,13 @@
 import type { AuditRepository, RecordAuditInput } from '../../data/repositories/auditRepository';
 
+type LockedPrivacyMode = 'normal' | 'paranoid' | null;
+type WithAuditPrivacyMode = <T>(
+  userId: string,
+  run: (privacyMode: LockedPrivacyMode) => Promise<T>,
+) => Promise<T>;
+
+const PARANOID_AUDIT_RESOURCE_PATH = '[redacted-resource-path]';
+
 /** Audit actions written across auth/admin flows (PROJECTPLAN.md §5.5, §10). */
 export const AuditAction = {
   LoginSuccess: 'login.success',
@@ -170,9 +178,35 @@ export interface AuditService {
   }): ReturnType<AuditRepository['listForTarget']>;
 }
 
-export function createAuditService(auditRepo: AuditRepository): AuditService {
+export function createAuditService(
+  auditRepo: AuditRepository,
+  withPrivacyMode: WithAuditPrivacyMode = (_userId, run) => run('normal'),
+): AuditService {
   return {
-    record: (input) => auditRepo.record(input),
+    record: (input) => {
+      const meta = input.meta;
+      if (
+        input.action !== AuditAction.ApiKeyScopeDenied ||
+        !input.actorId ||
+        !meta ||
+        typeof meta !== 'object' ||
+        Array.isArray(meta) ||
+        typeof (meta as Record<string, unknown>).path !== 'string'
+      ) {
+        return auditRepo.record(input);
+      }
+
+      // Both personal-key and OAuth scope denials use this one action. Hold the
+      // privacy lock through persistence so a denial racing paranoid enable is
+      // either written first and scrubbed by enable, or written redacted after
+      // the transition commits. Unknown/deleted actors fail closed as redacted.
+      return withPrivacyMode(input.actorId, (privacyMode) =>
+        auditRepo.record({
+          ...input,
+          meta: privacyMode === 'normal' ? meta : { ...meta, path: PARANOID_AUDIT_RESOURCE_PATH },
+        }),
+      );
+    },
     list: (params) => auditRepo.list(params),
     listForTarget: (params) => auditRepo.listForTarget(params),
   };

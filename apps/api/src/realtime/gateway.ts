@@ -1,4 +1,4 @@
-import { randomUUID } from 'node:crypto';
+import { createHmac, randomUUID } from 'node:crypto';
 import type { Server as HttpServer } from 'node:http';
 
 import cookieParser from 'cookie-parser';
@@ -307,6 +307,15 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
   const allowedOrigins = new Set(corsOrigins);
   const admission =
     deps.realtimeAdmission ?? createRealtimeAdmission(deps.redis, deps.realtimeAdmissionOptions);
+  // Admission never needs to reverse this identifier: it only compares keys
+  // and counts distinct assets. Key every account's id from first write so a
+  // later paranoid transition has no raw Redis key/AOF history to erase, while
+  // normal and paranoid viewers still coalesce onto the same global identity.
+  const admissionAssetId = (assetId: string): string =>
+    `opaque:${createHmac('sha256', config.sessionSecrets[0]!)
+      .update('bettertrack:realtime-watch\0')
+      .update(assetId)
+      .digest('base64url')}`;
   const admissionLeaseTtlMs =
     deps.realtimeAdmissionOptions?.leaseTtlMs ?? REALTIME_ADMISSION_LEASE_TTL_MS;
   const admissionNow = deps.realtimeAdmissionOptions?.now ?? Date.now;
@@ -662,6 +671,8 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
     rateMs: number | undefined;
     /** Null for global market assets; set for account-owned custom assets. */
     ownerId: string | null;
+    /** Keyed/opaque Redis admission identity; never a catalog asset id. */
+    admissionAssetId: string;
     leaseId: string;
     userId: string;
     expiresAtMs: number;
@@ -766,10 +777,10 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
         await admission.releaseWatch({
           leaseId: entry.leaseId,
           userId: entry.userId,
-          assetId,
+          assetId: entry.admissionAssetId,
         });
       } catch (err) {
-        logger.warn({ err, assetId }, 'realtime watch lease release failed');
+        logger.warn({ err, userId: entry.userId }, 'realtime watch lease release failed');
       }
     }
     if (leaveRoom && !socket.disconnected) {
@@ -820,7 +831,7 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
             admission.renewWatch({
               leaseId: entry.leaseId,
               userId: lease.userId,
-              assetId,
+              assetId: entry.admissionAssetId,
             }),
           );
           // An intentional unwatch may have completed while Redis renewed.
@@ -1102,6 +1113,11 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
     // the shared loop nor the backfill.
     await withAccountPrivacyLock(principal.userId, async () => {
       const { assetId, window } = parsed.data;
+      // The server must still address the requested market asset to provide
+      // Live Mode, but Redis admission state never persists the catalog id. A
+      // keyed digest preserves cross-process distinct-asset accounting without
+      // making UUIDs recoverable from Redis/AOF.
+      const redisAssetId = admissionAssetId(assetId);
       const resolved = await deps
         .resolveWatchableAsset(principal.userId, assetId)
         .catch(() => null);
@@ -1132,10 +1148,10 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
           admitted = await admission.acquireWatch({
             leaseId,
             userId: principal.userId,
-            assetId,
+            assetId: redisAssetId,
           });
         } catch (err) {
-          logger.warn({ err, userId: principal.userId, assetId }, 'live watch admission failed');
+          logger.warn({ err, userId: principal.userId }, 'live watch admission failed');
           respond({ ok: false, error: 'UNAVAILABLE' });
           return;
         }
@@ -1145,14 +1161,22 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
         }
         if (admissionNow() >= leaseExpiresAtMs - admissionDeadlineSlackMs) {
           await admission
-            .releaseWatch({ leaseId, userId: principal.userId, assetId })
+            .releaseWatch({
+              leaseId,
+              userId: principal.userId,
+              assetId: redisAssetId,
+            })
             .catch(() => undefined);
           respond({ ok: false, error: 'UNAVAILABLE' });
           return;
         }
         if (socket.disconnected) {
           await admission
-            .releaseWatch({ leaseId, userId: principal.userId, assetId })
+            .releaseWatch({
+              leaseId,
+              userId: principal.userId,
+              assetId: redisAssetId,
+            })
             .catch(() => undefined);
           respond({ ok: false, error: 'GONE' });
           return;
@@ -1160,22 +1184,31 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
         try {
           if (!liveMode.watch(assetId, resolved.ref, rateMs, admitted.sharedGlobalAsset)) {
             await admission
-              .releaseWatch({ leaseId, userId: principal.userId, assetId })
+              .releaseWatch({
+                leaseId,
+                userId: principal.userId,
+                assetId: redisAssetId,
+              })
               .catch(() => undefined);
             respond({ ok: false, error: 'LIVE_START_FAILED' });
             return;
           }
         } catch (err) {
           await admission
-            .releaseWatch({ leaseId, userId: principal.userId, assetId })
+            .releaseWatch({
+              leaseId,
+              userId: principal.userId,
+              assetId: redisAssetId,
+            })
             .catch(() => undefined);
-          logger.warn({ err, userId: principal.userId, assetId }, 'live loop start failed');
+          logger.warn({ err, userId: principal.userId }, 'live loop start failed');
           respond({ ok: false, error: 'LIVE_START_FAILED' });
           return;
         }
         entry = {
           rateMs,
           ownerId: resolved.ownerId,
+          admissionAssetId: redisAssetId,
           leaseId,
           userId: principal.userId,
           expiresAtMs: leaseExpiresAtMs,
@@ -1186,7 +1219,7 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
           await socket.join(assetRoom(assetId));
         } catch (err) {
           await releaseLiveWatch(socket, assetId, entry, false);
-          logger.warn({ err, userId: principal.userId, assetId }, 'live room join failed');
+          logger.warn({ err, userId: principal.userId }, 'live room join failed');
           respond({ ok: false, error: 'LIVE_START_FAILED' });
           return;
         }
@@ -1212,7 +1245,7 @@ export function createRealtimeGateway(deps: RealtimeGatewayDeps): RealtimeGatewa
         if (startedHere && watched.get(assetId) === entry) {
           await releaseLiveWatch(socket, assetId, entry, true);
         }
-        logger.warn({ err, userId: principal.userId, assetId }, 'live backfill failed');
+        logger.warn({ err, userId: principal.userId }, 'live backfill failed');
         respond({ ok: false, error: 'LIVE_START_FAILED' });
         return;
       }
