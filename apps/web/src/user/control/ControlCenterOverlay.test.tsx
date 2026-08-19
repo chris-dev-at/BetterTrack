@@ -49,6 +49,10 @@ vi.mock('./panels/WebhooksPanel', () => ({
 vi.mock('./panels/DeleteAccountPanel', () => ({
   DeleteAccountPanel: () => createElement('p', null, 'delete-account-panel'),
 }));
+vi.mock('./panels/FeedbackPanel', () => ({
+  FeedbackPanel: ({ screen }: { screen?: string }) =>
+    createElement('p', { 'data-screen': screen }, 'feedback-panel'),
+}));
 // The privacy panel stands in for a panel whose modal replaces (and detaches)
 // its opener, reproducing the focus-restoration corner case from the review.
 vi.mock('./panels/PrivacyPanel', async () => {
@@ -87,7 +91,14 @@ function Opener() {
   );
 }
 
-function renderAt(path: string, { entries, locale }: { entries?: string[]; locale?: string } = {}) {
+function renderAt(
+  path: string,
+  {
+    entries,
+    locale,
+    screen: backgroundScreen,
+  }: { entries?: string[]; locale?: string; screen?: string } = {},
+) {
   return render(
     <I18nProvider initialLocale={locale}>
       <MemoryRouter initialEntries={entries ?? [path]} initialIndex={(entries?.length ?? 1) - 1}>
@@ -99,7 +110,10 @@ function renderAt(path: string, { entries, locale }: { entries?: string[]; local
           {/* Mirrors UserApp: ONE optional-param node — two separate nodes
               would remount the overlay when a click crosses between them. */}
           <Route path="/control/data" element={<p>data-management-page</p>} />
-          <Route path="/control/:panel?" element={<ControlCenterOverlay />} />
+          <Route
+            path="/control/:panel?"
+            element={<ControlCenterOverlay screen={backgroundScreen} />}
+          />
         </Routes>
       </MemoryRouter>
     </I18nProvider>,
@@ -141,6 +155,7 @@ describe('ControlCenterOverlay', () => {
     ['/control/defaults', 'defaults-panel', 'Portfolio defaults'],
     ['/control/notifications', 'notifications-panel', 'Notifications'],
     ['/control/notification-log', 'notification-log-panel', 'Notification log'],
+    ['/control/feedback', 'feedback-panel', 'Send feedback'],
     ['/control/connections', 'connections-panel', 'Connections'],
     ['/control/api', 'api-panel', 'API keys'],
     ['/control/oauth-apps', 'oauth-apps-panel', 'OAuth apps'],
@@ -154,11 +169,20 @@ describe('ControlCenterOverlay', () => {
     expect(within(popup()).getByRole('link', { name: label, current: 'page' })).toBeVisible();
   });
 
+  test('passes the page behind the popup to the feedback panel', () => {
+    renderAt('/control/feedback', { screen: '/portfolio?portfolio=portfolio-1' });
+
+    expect(within(popup()).getByText('feedback-panel')).toHaveAttribute(
+      'data-screen',
+      '/portfolio?portfolio=portfolio-1',
+    );
+  });
+
   test('every declared panel id renders its own panel', () => {
     const ids = CONTROL_GROUPS.flatMap((group) => group.panels.map((panel) => panel.id));
     // The taxonomy and the deep-link table above must not drift apart (the
     // table covers all but `privacy`, whose stub is the nested-modal fixture).
-    expect(ids).toHaveLength(15);
+    expect(ids).toHaveLength(16);
     for (const id of ids) {
       const view = renderAt(`/control/${id}`);
       expect(

@@ -2,12 +2,14 @@ import { and, desc, eq, lt } from 'drizzle-orm';
 
 import type { Database } from '../db';
 import { apiKeyRequestLog, type ApiKeyRequestLogRow } from '../schema';
+import { withFreshLockedPrivacyModes } from './paranoidEnforcementRepository';
 
 /**
  * Bounded per-key request-log audit trail (§13.5 V5-P10, issue 2/2). One row per
  * bearer request (method, mount-relative path, response status). The path is
  * PII-scrubbed by the caller before it reaches here. The log is bounded by the
- * retention-cleanup cron that prunes by age via {@link deleteOlderThan}.
+ * retention-cleanup cron that prunes by age via {@link deleteOlderThan}; rows
+ * for paranoid accounts are deliberately never written.
  */
 export interface RecordApiKeyRequestInput {
   keyId: string;
@@ -17,15 +19,24 @@ export interface RecordApiKeyRequestInput {
   status: number;
 }
 
-export function createApiKeyRequestLogRepository(db: Database) {
+export function createApiKeyRequestLogRepository(db: Database, lockDb: Database) {
   return {
     async record(input: RecordApiKeyRequestInput): Promise<void> {
-      await db.insert(apiKeyRequestLog).values({
-        keyId: input.keyId,
-        userId: input.userId,
-        method: input.method,
-        path: input.path,
-        status: input.status,
+      // Hold the account privacy lock through the insert. A request that began
+      // while the account was normal may finish while paranoid enable owns the
+      // row lock: if this write wins, enable waits and purges it; if enable wins,
+      // this re-read observes `paranoid` and suppresses the operational row.
+      // That keeps the purge-classified table genuinely empty for paranoid
+      // accounts instead of weakening the classification to mean "safe rows".
+      await withFreshLockedPrivacyModes(lockDb, [input.userId], async (modes) => {
+        if (modes.get(input.userId) !== 'normal') return;
+        await db.insert(apiKeyRequestLog).values({
+          keyId: input.keyId,
+          userId: input.userId,
+          method: input.method,
+          path: input.path,
+          status: input.status,
+        });
       });
     },
 

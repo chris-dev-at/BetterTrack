@@ -90,6 +90,7 @@ export interface ApiKeyService {
   /**
    * Capture one bearer request into the bounded per-key request log. Best-effort
    * and PII-scrubbed — a write failure is swallowed (never affects the request).
+   * The repository suppresses capture while paranoid mode is active.
    */
   recordRequest(input: {
     keyId: string;
