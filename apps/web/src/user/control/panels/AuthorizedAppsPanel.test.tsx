@@ -26,6 +26,8 @@ const ONE_GRANT: OAuthGrantListResponse = {
       id: '00000000-0000-0000-0000-0000000000dd',
       clientId: 'btc_some_app',
       appName: 'Charting Buddy',
+      firstParty: false,
+      current: false,
       scopes: ['portfolio:read'],
       createdAt: '2026-07-01T08:00:00.000Z',
       lastUsedAt: null,
@@ -38,6 +40,17 @@ const FEEDBACK_GRANT: OAuthGrantListResponse = {
     {
       ...ONE_GRANT.grants[0]!,
       scopes: ['feedback:write'],
+    },
+  ],
+};
+
+const FIRST_PARTY_GRANT: OAuthGrantListResponse = {
+  grants: [
+    {
+      ...ONE_GRANT.grants[0]!,
+      clientId: 'btc_bettertrack_mobile',
+      appName: 'BetterTrackMobile',
+      firstParty: true,
     },
   ],
 };
@@ -89,6 +102,16 @@ describe('AuthorizedAppsPanel', () => {
     await user.click(screen.getByRole('button', { name: 'Confirm revoke' }));
 
     await waitFor(() => expect(revokeOAuthGrant).toHaveBeenCalledWith(ONE_GRANT.grants[0]!.id));
+  });
+
+  test.each([
+    ['en', 'BetterTrack app'],
+    ['de', 'BetterTrack-App'],
+  ])('badges a first-party grant in %s', async (locale, badge) => {
+    vi.mocked(listOAuthGrants).mockResolvedValue(FIRST_PARTY_GRANT);
+    renderPanel(locale);
+
+    expect(await screen.findByText(badge)).toBeInTheDocument();
   });
 
   test('localizes feedback grant copy from the stable scope id', async () => {

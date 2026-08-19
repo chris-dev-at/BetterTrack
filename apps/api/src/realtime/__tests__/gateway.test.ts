@@ -292,7 +292,7 @@ async function mintOAuthToken(
     client_secret: clientSecret,
   });
   expect(tokenRes.status).toBe(200);
-  const grants = await harness.ctx.oauth.listGrants(userId);
+  const grants = await harness.ctx.oauth.listGrants(userId, null);
   expect(grants).toHaveLength(1);
   return {
     accessToken: tokenRes.body.access_token as string,
@@ -340,7 +340,7 @@ async function mintFirstPartyOAuthToken(
     client_secret: clientSecret,
   });
   expect(tokenRes.status).toBe(200);
-  const grants = await harness.ctx.oauth.listGrants(userId);
+  const grants = await harness.ctx.oauth.listGrants(userId, null);
   expect(grants).toHaveLength(1);
   return { accessToken: tokenRes.body.access_token as string, clientRowId: client.id };
 }
