@@ -114,19 +114,20 @@ export function createDataRetentionCleanupJob(
         batchSize,
         maxRowsPerRun,
       );
+      const abandonedVaultStagesExamined = vaultStaging.deleted;
       const devices = await sweepLegacyRememberedDeviceBindings(ctx.redis, deps.users);
 
-      if (audit.deleted > 0 || emailLog.deleted > 0 || vaultStaging.deleted > 0) {
+      if (audit.deleted > 0 || emailLog.deleted > 0 || abandonedVaultStagesExamined > 0) {
         ctx.logger.info(
           {
             auditPruned: audit.deleted,
             emailLogPruned: emailLog.deleted,
-            abandonedVaultStagesPruned: vaultStaging.deleted,
+            abandonedVaultStagesExamined,
             // A capped run leaves eligible rows behind on purpose; the next
             // scheduled run continues, so this must be visible in the log.
             deferredToNextRun: audit.capped || emailLog.capped || vaultStaging.capped,
           },
-          'expired audit, email-log and abandoned vault-staging rows pruned',
+          'expired audit and email-log rows pruned; abandoned vault-staging rows examined',
         );
       }
       if (devices.legacy > 0) {

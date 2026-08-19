@@ -36,12 +36,12 @@ beforeEach(async () => {
 const noUsers: Pick<UserRepository, 'listByIds'> = { listByIds: async () => [] };
 const noVaultStaging = { cleanupExpiredEnableStaging: async () => 0 };
 
-function ctx(): JobContext {
+function ctx(jobLogger: Logger = logger): JobContext {
   return {
     events: harness.ctx.events,
     deadLetter: {} as JobContext['deadLetter'],
     redis: harness.ctx.redis,
-    logger,
+    logger: jobLogger,
   };
 }
 
@@ -143,6 +143,35 @@ describe('data.retentionCleanup', () => {
 
     expect(auditDelete).not.toHaveBeenCalled();
     expect(emailDelete).toHaveBeenCalledOnce();
+  });
+
+  it('continues a full vault-staging batch and reports examined rows truthfully', async () => {
+    const cleanupExpiredEnableStaging = vi.fn().mockResolvedValueOnce(2).mockResolvedValueOnce(1);
+    const info = vi.fn();
+    const job = createDataRetentionCleanupJob({
+      audit: { deleteOlderThan: vi.fn() },
+      emailLog: { deleteOlderThan: vi.fn() },
+      vaultStaging: { cleanupExpiredEnableStaging },
+      users: noUsers,
+      auditRetentionDays: 0,
+      emailLogRetentionDays: 0,
+      batchSize: 2,
+      now: () => NOW,
+    });
+
+    await job.handler({} as never, ctx({ info } as unknown as Logger));
+
+    expect(cleanupExpiredEnableStaging).toHaveBeenNthCalledWith(1, NOW, 2);
+    expect(cleanupExpiredEnableStaging).toHaveBeenNthCalledWith(2, NOW, 2);
+    expect(info).toHaveBeenCalledWith(
+      {
+        auditPruned: 0,
+        emailLogPruned: 0,
+        abandonedVaultStagesExamined: 3,
+        deferredToNextRun: false,
+      },
+      'expired audit and email-log rows pruned; abandoned vault-staging rows examined',
+    );
   });
 });
 

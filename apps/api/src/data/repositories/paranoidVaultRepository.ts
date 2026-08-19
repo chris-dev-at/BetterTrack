@@ -255,6 +255,12 @@ export interface ParanoidVaultRepository {
   ): Promise<ParanoidVaultReadResult>;
   beginEnableStaging(input: ParanoidEnableStagingInput): Promise<void>;
   expireEnableStaging(userId: string, now: Date): Promise<boolean>;
+  /**
+   * Examines at most `limit` expired staging rows and returns the number selected,
+   * including rows refreshed or deleted before their locked expiry check. A short
+   * count is the caller's drain-convergence signal, so counting only successful
+   * expirations could leave later eligible rows unexamined after such a race.
+   */
   cleanupExpiredEnableStaging(expiresAtOrBefore: Date, limit: number): Promise<number>;
   getMediaState(userId: string): Promise<ParanoidMediaStateResponse | null>;
   listHistory(
@@ -321,7 +327,7 @@ export function createParanoidVaultRepository(
       }),
     );
 
-  return {
+  const repository: ParanoidVaultRepository = {
     async getCurrent(userId) {
       const [row] = await db.select().from(paranoidVaults).where(eq(paranoidVaults.userId, userId));
       return row ?? null;
@@ -456,11 +462,10 @@ export function createParanoidVaultRepository(
         .where(lte(paranoidEnableTransitions.expiresAt, expiresAtOrBefore))
         .orderBy(asc(paranoidEnableTransitions.expiresAt), asc(paranoidEnableTransitions.userId))
         .limit(limit);
-      let cleaned = 0;
       for (const row of expired) {
-        if (await expireEnableStaging(row.userId, expiresAtOrBefore)) cleaned += 1;
+        await repository.expireEnableStaging(row.userId, expiresAtOrBefore);
       }
-      return cleaned;
+      return expired.length;
     },
 
     async getMediaState(userId) {
@@ -1172,6 +1177,7 @@ export function createParanoidVaultRepository(
       });
     },
   };
+  return repository;
 }
 
 function mediaSelectionOf(row: {
