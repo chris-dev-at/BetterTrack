@@ -671,12 +671,6 @@ export const PARANOID_CONTEXT_SERVICE_EXEMPTIONS: readonly ParanoidServiceExempt
     'The opaque ciphertext vault is the deliberate paranoid-mode data home.',
   ),
   serviceExemption(
-    'vaults',
-    ['*'],
-    'kept',
-    'Vaults v2 (docs/VAULTS_V2_DESIGN.md §3): the multi-vault ciphertext store is the v2 paranoid data home, and every method is ownership-scoped in its repository. The server stores and returns ciphertext without ever parsing it, so no method can expose portfolio content; the join/leave transitions are additionally pinned to the owning browser session at the HTTP layer.',
-  ),
-  serviceExemption(
     'paranoidTransitions',
     ['*'],
     'kept',
@@ -1351,14 +1345,6 @@ export const PARANOID_KEPT_ROUTE_RULES: readonly ParanoidExemptRouteRule[] = [
   ...keptRoutes('The opaque ciphertext vault is the paranoid-mode data home.', [
     { exact: '/vault' },
     { prefix: '/vault/' },
-  ]),
-  // Vaults v2 (`docs/VAULTS_V2_DESIGN.md` §3). Same reasoning as `/vault`
-  // above and then some: these routes move ciphertext and cleartext vault
-  // NAMES, nothing else. They are the data home in the v2 model, so killing
-  // them for an account-level paranoid account would strand it mid-migration.
-  ...keptRoutes('Multi-vault ciphertext containers are the v2 paranoid data home.', [
-    { exact: '/vaults' },
-    { prefix: '/vaults/' },
   ]),
   ...keptRoutes(
     'Local workboard organization remains available; sharing settings are classified separately.',
