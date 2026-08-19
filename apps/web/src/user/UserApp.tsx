@@ -319,13 +319,19 @@ function UserShell() {
    */
   const control = matchControlPanel(location.pathname);
   const background = useRef<Location>(CONTROL_COLD_BACKGROUND);
+  const hasBackground = useRef(false);
   // Only a page an authenticated session is actually looking at can be the page
   // behind the popup: anything rendered while the session is still resolving is
   // a gate on its way somewhere else.
   if (status === 'authenticated' && control === null && !isTransientLocation(location.pathname)) {
     background.current = location;
+    hasBackground.current = true;
   }
   const pageLocation = control === null ? location : background.current;
+  // A cold control deep link still paints Home as a safe visual backdrop, but
+  // feedback diagnostics must describe the URL the user actually opened. Once
+  // the shell has seen a real page, that page remains the report's origin.
+  const overlayScreen = hasBackground.current ? href(background.current) : href(location);
 
   if (status === 'loading') return <Splash />;
   if (status === 'session-unavailable') {
@@ -365,7 +371,7 @@ function UserShell() {
           <ControlCenterOverlay
             closeTo={href(background.current)}
             panel={control.panel}
-            screen={href(background.current)}
+            screen={overlayScreen}
           />
         </Suspense>
       ) : null}
