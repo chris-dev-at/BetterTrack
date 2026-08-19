@@ -1,6 +1,6 @@
 import type { Redis } from 'ioredis';
 import RedisMock from 'ioredis-mock';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
   pinQuickAuthMarkerKey,
@@ -96,5 +96,42 @@ describe('remembered-device Redis ownership boundary', () => {
 
     const [legacy] = await store.listForUser(USER_A);
     expect(legacy).toMatchObject({ createdAt: null, lastSeenAt: null });
+  });
+
+  it('sorts a pre-sidecar binding after a fresh metadata-backed binding', async () => {
+    await redis.set(rememberedDeviceKey(DEVICE_A), USER_A, 'EX', REMEMBERED_DEVICE_TTL_SECONDS);
+    await redis.sadd(rememberedDevicesForUserKey(USER_A), DEVICE_A);
+    now += 60_000;
+    await store.createForUser(USER_A, DEVICE_B);
+
+    const listed = await store.listForUser(USER_A);
+    expect(listed.map((device) => device.handle)).toEqual([
+      rememberedDeviceHandle(DEVICE_B),
+      rememberedDeviceHandle(DEVICE_A),
+    ]);
+  });
+
+  it('pipelines list and revoke-all reads regardless of device count', async () => {
+    await store.createForUser(USER_A, DEVICE_A);
+    await store.createForUser(USER_A, DEVICE_B);
+    const pipeline = vi.spyOn(redis, 'pipeline');
+    const get = vi.spyOn(redis, 'get');
+    const pttl = vi.spyOn(redis, 'pttl');
+
+    await expect(store.listForUser(USER_A)).resolves.toHaveLength(2);
+    expect(pipeline).toHaveBeenCalledTimes(1);
+    expect(get).not.toHaveBeenCalled();
+    expect(pttl).not.toHaveBeenCalled();
+
+    pipeline.mockClear();
+    const revokedHandles: string[] = [];
+    await expect(
+      store.revokeAllForUser(USER_A, (handle) => revokedHandles.push(handle)),
+    ).resolves.toBe(2);
+    expect(pipeline).toHaveBeenCalledTimes(1);
+    expect(get).not.toHaveBeenCalled();
+    expect(revokedHandles.sort()).toEqual(
+      [rememberedDeviceHandle(DEVICE_A), rememberedDeviceHandle(DEVICE_B)].sort(),
+    );
   });
 });

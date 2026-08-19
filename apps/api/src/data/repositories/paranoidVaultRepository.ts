@@ -151,8 +151,6 @@ export type ParanoidVaultCasResult =
   | { status: 'ok'; version: number; updatedAt: Date }
   | { status: 'precondition_failed'; currentVersion: number | null }
   | { status: 'medium_inactive' }
-  /** Vaults v2 (r2 §11): this account flipped to a v2 vault; legacy is read-only. */
-  | { status: 'migrated_tombstone' }
   | { status: 'proof_key_conflict' };
 
 export interface ParanoidVaultHistoryListInput {
@@ -600,18 +598,6 @@ export function createParanoidVaultRepository(
         retirementProofPublicKey = null,
       } = input;
       return db.transaction(async (tx) => {
-        // Vaults v2 migration commit point (design r2 §11), checked FIRST: once
-        // `migrated_to` is set the legacy vault is a READ-ONLY TOMBSTONE, and
-        // that is true regardless of the account's mode or media selection — a
-        // write would fork the account's truth across two authoritative stores.
-        // The flag is terminal and never cleared, so an unlocked read of it
-        // cannot go stale in the direction that matters.
-        const [migrated] = await tx
-          .select({ migratedTo: paranoidVaults.migratedTo })
-          .from(paranoidVaults)
-          .where(eq(paranoidVaults.userId, userId));
-        if (migrated?.migratedTo) return { status: 'migrated_tombstone' } as const;
-
         const [owner] = await tx
           .select({ privacyMode: users.privacyMode, mediaSet: users.paranoidMediaSet })
           .from(users)
@@ -643,11 +629,6 @@ export function createParanoidVaultRepository(
           .from(paranoidVaults)
           .where(eq(paranoidVaults.userId, userId))
           .for('update');
-
-        // Re-checked under the row lock: the early probe above answers the
-        // common case without waiting, this one closes the race with a flip
-        // that commits between the two reads.
-        if (current?.migratedTo) return { status: 'migrated_tombstone' } as const;
 
         if (expectedVersion === null) {
           if (current) return { status: 'precondition_failed', currentVersion: current.version };

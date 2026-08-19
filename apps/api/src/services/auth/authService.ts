@@ -1707,22 +1707,23 @@ export function createAuthService(deps: AuthServiceDeps): AuthService {
         targetType: 'user',
         targetId: userId,
         ip,
-        meta: { via: 'management' },
+        meta: { via: 'management', handle },
       });
     },
 
     async revokeAllRememberedDevices(userId, ip) {
-      const revoked = await rememberedDevices.revokeAllForUser(userId);
+      const revokedHandles: string[] = [];
+      await rememberedDevices.revokeAllForUser(userId, (handle) => revokedHandles.push(handle));
       // One audit row per binding, not one aggregate row: each revoked device is
       // a distinct security action even though the public response is minimal.
-      for (let index = 0; index < revoked; index += 1) {
+      for (const handle of revokedHandles) {
         await audit.record({
           actorId: userId,
           action: AuditAction.RememberedDeviceForgotten,
           targetType: 'user',
           targetId: userId,
           ip,
-          meta: { via: 'management_all' },
+          meta: { via: 'management_all', handle },
         });
       }
     },

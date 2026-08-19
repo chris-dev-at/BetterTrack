@@ -1,5 +1,24 @@
 # Vaults v2 — per-portfolio paranoid mode as multi-vault wallets
 
+> **SUPERSEDED AND WITHDRAWN — 2026-08-19 owner ruling (PROJECTPLAN §16).**
+> This design is no longer binding on anything. BetterTrack has exactly ONE
+> paranoid implementation: the account-level V5-P13 mode (PROJECTPLAN §13.5).
+>
+> The per-portfolio surface described below was built, shipped, and has now been
+> removed in full — routes, services, tables, client, contracts and conformance
+> vectors. It shipped a **false privacy promise**: the create wizard offered
+> `server` / `drive` / `both` storage backends while containing no Google Drive
+> code at all, so a user choosing "Drive only" had every byte of ciphertext
+> stored on the BetterTrack server and none on Drive.
+>
+> There is deliberately **no port path** from v2 to v1. The server-side v2 rows
+> were quarantined by migration `0089_vault_v2_quarantine.sql` for external
+> backup and destruction via `scripts/ops/export-vault-v2-backup.mjs`.
+>
+> Kept only as the historical record of a withdrawn design. Do not implement
+> from it, and do not cite it as a contract — the mobile app's matching v2
+> conformance replay must be dropped too.
+
 Owner-directed redesign (2026-08-07/08). Supersedes the account-level paranoid
 model (§13.5) as the product shape; the account-level machinery remains the
 crypto substrate. This document is the binding contract for the platform

@@ -195,11 +195,13 @@ describe('remembered-device management — session + account:security bearer', (
     await harness.ctx.auth.setPin(userB.id, PIN);
     const revokeOne = await harness.ctx.auth.rememberDevice(userA.id);
     const revokeWithAll = await harness.ctx.auth.rememberDevice(userA.id);
+    const secondRevokeWithAll = await harness.ctx.auth.rememberDevice(userA.id);
     const expireBeforeList = await harness.ctx.auth.rememberDevice(userA.id);
     const foreign = await harness.ctx.auth.rememberDevice(userB.id);
     for (const deviceId of [
       revokeOne.deviceId,
       revokeWithAll.deviceId,
+      secondRevokeWithAll.deviceId,
       expireBeforeList.deviceId,
       foreign.deviceId,
     ]) {
@@ -228,6 +230,7 @@ describe('remembered-device management — session + account:security bearer', (
       expect.arrayContaining([
         rememberedDeviceHandle(revokeOne.deviceId),
         rememberedDeviceHandle(revokeWithAll.deviceId),
+        rememberedDeviceHandle(secondRevokeWithAll.deviceId),
         rememberedDeviceHandle(expireBeforeList.deviceId),
       ]),
     );
@@ -235,6 +238,7 @@ describe('remembered-device management — session + account:security bearer', (
     for (const rawId of [
       revokeOne.deviceId,
       revokeWithAll.deviceId,
+      secondRevokeWithAll.deviceId,
       expireBeforeList.deviceId,
       foreign.deviceId,
     ]) {
@@ -301,6 +305,12 @@ describe('remembered-device management — session + account:security bearer', (
       harness.ctx.auth.quickAuth({ deviceId: revokeWithAll.deviceId }),
     ).rejects.toMatchObject({ statusCode: 401, code: 'REMEMBER_DEVICE_UNKNOWN' });
     expect(await harness.ctx.redis.get(pinQuickAuthMarkerKey(revokeWithAll.deviceId))).toBeNull();
+    await expect(
+      harness.ctx.auth.quickAuth({ deviceId: secondRevokeWithAll.deviceId }),
+    ).rejects.toMatchObject({ statusCode: 401, code: 'REMEMBER_DEVICE_UNKNOWN' });
+    expect(
+      await harness.ctx.redis.get(pinQuickAuthMarkerKey(secondRevokeWithAll.deviceId)),
+    ).toBeNull();
 
     // B's binding and quick-auth marker survive every A operation.
     expect(await harness.ctx.redis.get(rememberedDeviceKey(foreign.deviceId))).toBe(userB.id);
@@ -317,8 +327,23 @@ describe('remembered-device management — session + account:security bearer', (
       .where(
         and(eq(auditLog.actorId, userA.id), eq(auditLog.action, 'remembered_device.forgotten')),
       );
-    // One row for revoke-one and one for the only remaining live binding in
-    // revoke-all. Foreign/expired/idempotent no-ops are deliberately not audited.
-    expect(revokeAudits).toHaveLength(2);
+    // One row for revoke-one and one per remaining live binding in revoke-all.
+    // Foreign/expired/idempotent no-ops are deliberately not audited.
+    expect(revokeAudits).toHaveLength(3);
+    const managementAudit = revokeAudits.find(
+      (row) => (row.meta as { via?: string } | null)?.via === 'management',
+    );
+    expect(managementAudit?.meta).toMatchObject({ via: 'management', handle: oneHandle });
+
+    const revokeAllHandles = revokeAudits
+      .filter((row) => (row.meta as { via?: string } | null)?.via === 'management_all')
+      .map((row) => (row.meta as { handle?: string } | null)?.handle)
+      .sort();
+    expect(revokeAllHandles).toEqual(
+      [
+        rememberedDeviceHandle(revokeWithAll.deviceId),
+        rememberedDeviceHandle(secondRevokeWithAll.deviceId),
+      ].sort(),
+    );
   });
 });

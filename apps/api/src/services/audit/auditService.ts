@@ -66,20 +66,6 @@ export const AuditAction = {
   /** A failed re-auth on the irreversible paranoid discard (throttled like deletion). */
   ParanoidDiscardFail: 'account.paranoid_discard_fail',
   /**
-   * Vaults v2 lifecycle (`docs/VAULTS_V2_DESIGN.md` §3). Metadata is the vault
-   * id, its cleartext name/backends and the affected portfolio id — never a
-   * byte of ciphertext, a version of a document, or any row count.
-   */
-  VaultCreated: 'vault.created',
-  VaultUpdated: 'vault.updated',
-  VaultDeleted: 'vault.deleted',
-  VaultPortfolioJoined: 'vault.portfolio_joined',
-  VaultPortfolioLeft: 'vault.portfolio_left',
-  /** The one-way v1 → v2 commit point (design r2 §11): legacy becomes read-only. */
-  VaultMigrated: 'vault.migrated',
-  /** Cleartext display alias of a vaulted portfolio; the label text is never logged. */
-  VaultPortfolioAliasSet: 'vault.portfolio_alias_set',
-  /**
    * Generic session step-up (`POST /auth/reauth`). `meta.purpose` is the
    * caller-supplied provenance string; it is never trusted for authorization.
    */

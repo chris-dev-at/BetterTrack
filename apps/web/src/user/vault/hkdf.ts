@@ -1,16 +1,18 @@
 import { VaultCryptoError } from './errors';
 
 /**
- * HKDF-SHA256 (RFC 5869) over WebCrypto — the r3 derivation primitive.
+ * HKDF-SHA256 (RFC 5869) over WebCrypto.
  *
- * Three consumers, all specified in `docs/VAULTS_V2_DESIGN.md` r3:
- *  - §18 migration content key: `HKDF(VK, "btv2-migration-v1", 32)`
- *  - §18 migration doc IVs / writer identity: `HKDF(K_c, "btv2-migration-iv" ‖ docId, 12)` …
- *  - §21 header-MAC key: `HKDF(K_c, "btv2-header-mac-v1", 32)`
+ * CURRENTLY UNUSED IN PRODUCTION. Its only three consumers — the vault-v2
+ * migration content key, the migration document IVs, and the v2 header-MAC key
+ * — went away with the per-portfolio vault v2 surface (owner ruling 2026-08-19,
+ * PROJECTPLAN §16). The primitive is kept, with its conformance test, because it
+ * is a correct standalone RFC 5869 implementation and deleting working vault
+ * crypto is not something to do as a side effect of removing a feature.
  *
- * The salt defaults to EMPTY (RFC 5869 then uses a zeroed hash-length salt),
- * which is what every r3 derivation specifies — domain separation rides
- * entirely on the `info` strings.
+ * The salt defaults to EMPTY (RFC 5869 then uses a zeroed hash-length salt) —
+ * domain separation rides entirely on the `info` strings, so any future consumer
+ * must pick an `info` nobody else uses.
  */
 export async function hkdfSha256(
   ikm: Uint8Array,
