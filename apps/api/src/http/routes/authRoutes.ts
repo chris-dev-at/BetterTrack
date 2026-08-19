@@ -17,6 +17,7 @@ import {
   passwordResetRequestSchema,
   pinQuickAuthRequestSchema,
   pinVerifyRequestSchema,
+  rememberedDeviceHandleParamSchema,
   registerRequestSchema,
   sessionHandleParamSchema,
   setPinLockRequestSchema,
@@ -42,6 +43,7 @@ import {
   type PasswordResetRequest,
   type PinQuickAuthRequest,
   type PinVerifyRequest,
+  type RememberedDeviceHandleParam,
   type RegisterRequest,
   type SetPinLockRequest,
   type SetPinRequest,
@@ -382,9 +384,11 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
     },
   );
 
-  // Remember THIS device for the caller (a PIN user) so future OAuth flows can
-  // quick-re-auth. Cookie-session only (requireUser 403s bearer/admin): sets the
-  // signed httpOnly `bt_rdid` cookie and returns the identity the client stores.
+  // Remember THIS browser for the caller (a PIN user) so future OAuth flows can
+  // quick-re-auth. Cookie-session only: `bt_rdid` must land in the same browser /
+  // Custom-Tab cookie jar that performs the next OAuth login. A bearer call would
+  // set it on an app HTTP client and create an orphaned binding, so the sibling
+  // plural management routes below are the native-client surface (#1327).
   router.post('/remembered-device', requireUser, async (req, res) => {
     const { deviceId, record } = await ctx.auth.rememberDevice(req.authUser!.id, req.ip);
     setRememberedDeviceCookie(res, ctx.config, deviceId);
@@ -398,6 +402,31 @@ export function createAuthRouter(ctx: AppContext, limiters: RateLimiters): Route
   router.delete('/remembered-device', async (req, res) => {
     await ctx.auth.forgetDevice(readDeviceId(req), req.ip);
     clearRememberedDeviceCookie(res, ctx.config);
+    res.json({ ok: true });
+  });
+
+  // Manage every live binding owned by the authenticated account. Unlike the
+  // singular cookie routes, these work with either a user session or a bearer
+  // holding `account:security`. The service starts at the caller's reverse index;
+  // no route accepts a user id or ever receives a raw device id.
+  router.get('/remembered-devices', requireUser, async (req, res) => {
+    const devices = await ctx.auth.listRememberedDevices(req.authUser!.id);
+    res.json({ devices });
+  });
+
+  router.delete(
+    '/remembered-devices/:handle',
+    requireUser,
+    validateParams(rememberedDeviceHandleParamSchema),
+    async (req, res) => {
+      const { handle } = req.valid?.params as RememberedDeviceHandleParam;
+      await ctx.auth.revokeRememberedDevice(req.authUser!.id, handle, req.ip);
+      res.json({ ok: true });
+    },
+  );
+
+  router.delete('/remembered-devices', requireUser, async (req, res) => {
+    await ctx.auth.revokeAllRememberedDevices(req.authUser!.id, req.ip);
     res.json({ ok: true });
   });
 

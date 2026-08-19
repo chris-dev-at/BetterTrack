@@ -545,6 +545,39 @@ export const rememberedDeviceResponseSchema = z
 export type RememberedDeviceResponse = z.infer<typeof rememberedDeviceResponseSchema>;
 
 /**
+ * One safe display row in the caller's remembered-device manager (#1327).
+ * `handle` is a one-way digest used only to select a binding for revocation; it
+ * is never the raw `bt_rdid` cookie value. Historical bindings predate the
+ * metadata sidecar, so their unavailable timestamps are explicit `null`s
+ * rather than invented dates. Expiry always comes from the live Redis binding.
+ */
+export const rememberedDeviceSummarySchema = z
+  .object({
+    handle: z.string().min(1).max(256),
+    createdAt: z.string().datetime().nullable(),
+    lastSeenAt: z.string().datetime().nullable(),
+    expiresAt: z.string().datetime(),
+  })
+  .strict();
+export type RememberedDeviceSummary = z.infer<typeof rememberedDeviceSummarySchema>;
+
+/** `GET /auth/remembered-devices` — the caller's live trusted-device bindings. */
+export const rememberedDeviceListResponseSchema = z
+  .object({ devices: z.array(rememberedDeviceSummarySchema) })
+  .strict();
+export type RememberedDeviceListResponse = z.infer<typeof rememberedDeviceListResponseSchema>;
+
+/**
+ * `DELETE /auth/remembered-devices/:handle` path param. The store treats every
+ * unknown well-bounded string as the same idempotent no-op; it never turns this
+ * client value into a Redis key.
+ */
+export const rememberedDeviceHandleParamSchema = z
+  .object({ handle: z.string().min(1).max(256) })
+  .strict();
+export type RememberedDeviceHandleParam = z.infer<typeof rememberedDeviceHandleParamSchema>;
+
+/**
  * Login-time 2FA challenge (PROJECTPLAN.md §6.1, §13.2 V2-P5). When an account
  * has 2FA enabled, a correct password does **not** mint a session: the API
  * returns this challenge carrying a short-lived, single-purpose `pendingToken`
