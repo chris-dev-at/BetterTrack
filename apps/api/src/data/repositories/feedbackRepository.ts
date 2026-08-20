@@ -90,14 +90,13 @@ export interface FeedbackRepository {
   listForAdmin(
     params: AdminFeedbackListQuery,
   ): Promise<{ rows: AdminFeedbackRow[]; total: number }>;
-  setStatus(
-    id: string,
-    input: UpdateFeedbackStatusRequest,
-    at: Date,
-  ): Promise<FeedbackStatusWrite | null>;
+  setStatus(id: string, input: UpdateFeedbackStatusRequest): Promise<FeedbackStatusWrite | null>;
 }
 
-export function createFeedbackRepository(db: Database): FeedbackRepository {
+export function createFeedbackRepository(
+  db: Database,
+  now: () => Date = () => new Date(),
+): FeedbackRepository {
   /**
    * Submitter-rail parent scoping. Ownership is only half of it: a submission the
    * owner has tombstoned (#1400) has left their rail entirely, so it must read as
@@ -411,7 +410,7 @@ export function createFeedbackRepository(db: Database): FeedbackRepository {
       };
     },
 
-    async setStatus(id, input, at) {
+    async setStatus(id, input) {
       return db.transaction(async (tx) => {
         const [current] = await tx.select().from(feedback).where(eq(feedback.id, id)).for('update');
         if (!current) return null;
@@ -428,14 +427,22 @@ export function createFeedbackRepository(db: Database): FeedbackRepository {
           return { row: current, changed: false };
         }
 
+        // This timestamp is both lifecycle state and the durable notification
+        // identity, so allocate it only after the row lock serializes competing
+        // transitions. A coarse or backwards-moving wall clock must not make two
+        // genuine transitions share an event key.
+        const observedAt = now();
+        const transitionAt = new Date(
+          Math.max(observedAt.getTime(), current.lastStatusChangeAt.getTime() + 1),
+        );
         const [row] = await tx
           .update(feedback)
           .set({
             status: input.status,
-            lastStatusChangeAt: at,
+            lastStatusChangeAt: transitionAt,
             declinedReason,
             shippedVersion,
-            updatedAt: at,
+            updatedAt: transitionAt,
           })
           .where(eq(feedback.id, id))
           .returning();

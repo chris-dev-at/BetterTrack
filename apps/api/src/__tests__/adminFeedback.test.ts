@@ -15,6 +15,7 @@ import {
   updateFeedbackStatusResponseSchema,
 } from '@bettertrack/contracts';
 
+import { createFeedbackRepository } from '../data/repositories/feedbackRepository';
 import * as schema from '../data/schema';
 import { progressiveKeys } from '../services/security/progressiveLimiter';
 import { createTestApp, type SeededUser, type TestHarness } from '../testing/createTestApp';
@@ -298,6 +299,50 @@ describe('admin feedback inbox', () => {
       lastStatusChangeAt: first.lastStatusChangeAt,
     });
     expect(await notificationRows(admin.id, 'feedback.status_changed')).toHaveLength(0);
+  });
+
+  it('keeps distinct same-clock status transitions as distinct notification events', async () => {
+    const { rows, webUser } = await seedQueue();
+    const target = rows[0]!;
+    const sharedClock = new Date('2026-08-20T12:00:00.000Z');
+    const repo = createFeedbackRepository(harness.db, () => sharedClock);
+
+    // The row lock serializes concurrent writers into this same sequence. Even
+    // though both observe one wall-clock instant, each committed transition must
+    // receive a distinct monotonic identity.
+    const triaged = await repo.setStatus(target.id, { status: 'triaged' });
+    const working = await repo.setStatus(target.id, { status: 'working_on_it' });
+    expect(triaged?.changed).toBe(true);
+    expect(working?.changed).toBe(true);
+    expect(working!.row.lastStatusChangeAt.getTime()).toBeGreaterThan(
+      triaged!.row.lastStatusChangeAt.getTime(),
+    );
+
+    const events = [triaged!, working!].map(({ row }) => {
+      const occurredAt = row.lastStatusChangeAt.toISOString();
+      return {
+        type: 'feedback.status_changed' as const,
+        userId: row.userId,
+        feedbackId: row.id,
+        status: row.status,
+        lastStatusChangeAt: occurredAt,
+        occurredAt,
+      };
+    });
+    await harness.ctx.notificationDispatcher.dispatch(events[0]!);
+    await harness.ctx.notificationDispatcher.dispatch(events[1]!);
+    // Redelivery of one transition still dedupes without swallowing the other.
+    await harness.ctx.notificationDispatcher.dispatch(events[0]!);
+
+    const notices = await notificationRows(webUser.id, 'feedback.status_changed');
+    expect(notices).toHaveLength(2);
+    expect(
+      notices.map((notice) => (notice.payload as { eventKey: string }).eventKey).sort(),
+    ).toEqual(
+      events
+        .map((event) => `feedback.status_changed:${event.feedbackId}:${event.lastStatusChangeAt}`)
+        .sort(),
+    );
   });
 
   it('lets an admin read and reply to any submission through the shared thread wire shape', async () => {

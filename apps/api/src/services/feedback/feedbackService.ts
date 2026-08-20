@@ -243,7 +243,7 @@ export function createFeedbackService({ repo, notify }: FeedbackServiceDeps): Fe
     },
 
     async updateStatus(adminUserId, id, input) {
-      const transition = await repo.setStatus(id, input, new Date());
+      const transition = await repo.setStatus(id, input);
       if (!transition) return null;
       const { row, changed } = transition;
 
