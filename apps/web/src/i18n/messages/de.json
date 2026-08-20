@@ -1148,14 +1148,14 @@
         "registeredOn": "Registriert {{createdAt}}"
       },
       "grants": {
-        "sectionDescription": "Drittanbieter-Apps, denen du Zugriff auf dein Konto erlaubt hast. Der Widerruf einer App macht ihre Tokens sofort ungültig — sie muss erneut autorisiert werden, um wieder Zugriff zu erhalten.",
+        "sectionDescription": "Apps, denen du Zugriff auf dein Konto erlaubt hast. Der Widerruf einer App macht ihre Tokens sofort ungültig — sie muss erneut autorisiert werden, um wieder Zugriff zu erhalten.",
         "loadError": {
           "title": "Deine autorisierten Apps konnten nicht geladen werden"
         },
         "empty": {
           "title": "Keine autorisierten Apps"
         },
-        "canAccess": "{{appName}} kann:",
+        "canAccess": " kann:",
         "firstPartyBadge": "BetterTrack-App",
         "authorizedLastUsed": "Autorisiert {{createdAt}} · zuletzt verwendet {{lastUsedAt}}",
         "authorizedNeverUsed": "Autorisiert {{createdAt}} · nie verwendet",
@@ -4462,6 +4462,9 @@
       "loadError": "Feedback konnte nicht geladen werden.",
       "actionError": "Der Feedback-Status konnte nicht aktualisiert werden.",
       "empty": "Noch kein Feedback vorhanden.",
+      "archive": "Archivieren",
+      "unarchive": "Wiederherstellen",
+      "archived": "Archiviert",
       "filters": {
         "category": "Kategorie",
         "sort": "Sortierung",

@@ -98,7 +98,7 @@ export const FI_HIGH_RATE_THRESHOLD_EUR = 30_000;
 /**
  * The countries the `country_specific` engine ships (#635). Adding a country =
  * add it here + a settle function below + the service-level engine entry
- * (`services/tax/openYear.ts` documents the full checklist).
+ * (`services/tax/livingYear.ts` documents the full checklist).
  */
 export const SUPPORTED_TAX_COUNTRIES = [TAX_COUNTRY_AT, TAX_COUNTRY_DE, TAX_COUNTRY_FI] as const;
 export type SupportedTaxCountry = (typeof SUPPORTED_TAX_COUNTRIES)[number];

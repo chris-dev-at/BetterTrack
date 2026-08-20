@@ -249,6 +249,10 @@ describe('OpenAPI document', () => {
     expect(deleteFeedback.responses as JsonObject).toHaveProperty('204');
     expect(paths).toHaveProperty('/admin/feedback/{id}');
     expect(paths).not.toHaveProperty('/admin/feedback/{id}/status');
+    expect(paths).not.toHaveProperty('/admin/feedback/{id}/archive');
+    expect(((paths['/admin/feedback/{id}'] as JsonObject).patch as JsonObject).security).toEqual([
+      { sessionCookie: [] },
+    ]);
     const feedbackThread = (paths['/feedback/{id}/messages'] as JsonObject).get as JsonObject;
     expect(feedbackThread.security).toEqual([{ sessionCookie: [] }, { apiKeyBearer: [] }]);
     const feedbackThreadOk = ((feedbackThread.responses as JsonObject)['200'] as JsonObject)

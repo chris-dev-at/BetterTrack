@@ -67,12 +67,13 @@ function OAuthGrantRow({ grant }: { grant: OAuthGrantSummary }) {
       main={
         <>
           <span className="bt-cc-row__label">
-            {t('settings.api.grants.canAccess', { appName: grant.appName })}
+            <span>{grant.appName}</span>
             {grant.firstParty ? (
               <Badge className="ml-2" tone="blue">
                 {t('settings.api.grants.firstPartyBadge')}
               </Badge>
             ) : null}
+            <span>{t('settings.api.grants.canAccess')}</span>
           </span>
           {/* The plain-language scope descriptions, not the raw scope strings —
               this is a privacy control, so it reads in the user's words. A
@@ -112,8 +113,8 @@ function OAuthGrantRow({ grant }: { grant: OAuthGrantSummary }) {
 
 /**
  * Control Center → Authorized apps (PROJECTPLAN.md §6.13, V2-P12; R2 split).
- * The PRIVACY half of the retired API-access page: which third-party apps can
- * reach YOUR account, what each may do (in the words the consent screen used),
+ * The PRIVACY half of the retired API-access page: which apps can reach YOUR
+ * account, what each may do (in the words the consent screen used),
  * and one two-step revoke that kills its tokens immediately.
  *
  * The group label would only restate the panel head ("Authorized apps"), so the
