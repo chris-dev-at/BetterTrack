@@ -134,4 +134,68 @@ describe('remembered-device Redis ownership boundary', () => {
       [rememberedDeviceHandle(DEVICE_A), rememberedDeviceHandle(DEVICE_B)].sort(),
     );
   });
+
+  it('revokes a large mixed fan-out with one read pipeline and one write transaction', async () => {
+    const ownedDeviceIds = Array.from({ length: 25 }, (_, index) => `owned-device-${index}`);
+    const foreignDeviceIds = Array.from({ length: 3 }, (_, index) => `foreign-device-${index}`);
+    const staleDeviceIds = Array.from({ length: 2 }, (_, index) => `stale-device-${index}`);
+    const existingForeignIndex = await redis.smembers(rememberedDevicesForUserKey(USER_B));
+
+    for (const deviceId of ownedDeviceIds) {
+      await store.createForUser(USER_A, deviceId);
+      await redis.set(pinQuickAuthMarkerKey(deviceId), '1');
+    }
+    for (const deviceId of foreignDeviceIds) {
+      await store.createForUser(USER_B, deviceId);
+      await redis.set(pinQuickAuthMarkerKey(deviceId), '1');
+      await redis.sadd(rememberedDevicesForUserKey(USER_A), deviceId);
+    }
+    for (const deviceId of staleDeviceIds) {
+      await redis.sadd(rememberedDevicesForUserKey(USER_A), deviceId);
+      await redis.set(rememberedDeviceMetadataKey(deviceId), '{"createdAt":1}');
+      await redis.set(pinQuickAuthMarkerKey(deviceId), '1');
+    }
+
+    const batchPrototype = Object.getPrototypeOf(redis.pipeline()) as {
+      exec: (...args: unknown[]) => unknown;
+    };
+    const exec = vi.spyOn(batchPrototype, 'exec');
+    const pipeline = vi.spyOn(redis, 'pipeline');
+    const multi = vi.spyOn(redis, 'multi');
+    const get = vi.spyOn(redis, 'get');
+    const revokedHandles: string[] = [];
+
+    await expect(
+      store.revokeAllForUser(USER_A, (handle) => revokedHandles.push(handle)),
+    ).resolves.toBe(ownedDeviceIds.length);
+    expect(pipeline).toHaveBeenCalledTimes(1);
+    expect(multi).toHaveBeenCalledTimes(1);
+    expect(exec).toHaveBeenCalledTimes(2);
+    expect(get).not.toHaveBeenCalled();
+    expect(revokedHandles.sort()).toEqual(ownedDeviceIds.map(rememberedDeviceHandle).sort());
+
+    exec.mockRestore();
+    pipeline.mockRestore();
+    multi.mockRestore();
+    get.mockRestore();
+
+    expect(await redis.smembers(rememberedDevicesForUserKey(USER_A))).toEqual([]);
+    expect((await redis.smembers(rememberedDevicesForUserKey(USER_B))).sort()).toEqual(
+      [...existingForeignIndex, ...foreignDeviceIds].sort(),
+    );
+    for (const deviceId of ownedDeviceIds) {
+      expect(await redis.get(rememberedDeviceKey(deviceId))).toBeNull();
+      expect(await redis.get(rememberedDeviceMetadataKey(deviceId))).toBeNull();
+      expect(await redis.get(pinQuickAuthMarkerKey(deviceId))).toBeNull();
+    }
+    for (const deviceId of foreignDeviceIds) {
+      expect(await redis.get(rememberedDeviceKey(deviceId))).toBe(USER_B);
+      expect(await redis.get(rememberedDeviceMetadataKey(deviceId))).not.toBeNull();
+      expect(await redis.get(pinQuickAuthMarkerKey(deviceId))).toBe('1');
+    }
+    for (const deviceId of staleDeviceIds) {
+      expect(await redis.get(rememberedDeviceMetadataKey(deviceId))).toBeNull();
+      expect(await redis.get(pinQuickAuthMarkerKey(deviceId))).toBeNull();
+    }
+  });
 });
