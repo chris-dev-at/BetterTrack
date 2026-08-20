@@ -666,6 +666,12 @@ export const PARANOID_CONTEXT_SERVICE_EXEMPTIONS: readonly ParanoidServiceExempt
     'The opaque ciphertext vault is the deliberate paranoid-mode data home.',
   ),
   serviceExemption(
+    'vaults',
+    ['*'],
+    'kept',
+    'Per-vault config plus opaque ciphertext sync are the E1 paranoid-mode data home; E2 owns portfolio enforcement re-keying.',
+  ),
+  serviceExemption(
     'paranoidTransitions',
     ['*'],
     'kept',
@@ -1347,9 +1353,11 @@ export const PARANOID_KEPT_ROUTE_RULES: readonly ParanoidExemptRouteRule[] = [
     { exact: '/alerts' },
     { pattern: /^\/alerts\/(?!sharing$)[^/]+(?:\/rearm)?$/ },
   ]),
-  ...keptRoutes('The opaque ciphertext vault is the paranoid-mode data home.', [
+  ...keptRoutes('Opaque ciphertext vault storage is the paranoid-mode data home.', [
     { exact: '/vault' },
     { prefix: '/vault/' },
+    { exact: '/vaults' },
+    { prefix: '/vaults/' },
   ]),
   ...keptRoutes(
     'Local workboard organization remains available; sharing settings are classified separately.',

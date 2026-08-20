@@ -445,6 +445,8 @@ describe('DELETE /account — hard delete (acceptance sweep)', () => {
       .values({
         userId: user.id,
         name: 'Doomed vault',
+        headerDocId: '018f6a3e-aaaa-7000-8000-000000000001',
+        commonDocId: '018f6a3e-aaaa-7000-8000-000000000002',
         media: ['server', 'drive'],
         driveConnectionId: connection!.id,
         // Deterministic TEST VECTORS, not secrets: the canonical Ed25519
@@ -472,7 +474,7 @@ describe('DELETE /account — hard delete (acceptance sweep)', () => {
       { ...docRow, docId: '018f6a3e-aaaa-7000-8000-000000000002', docKind: 'common' },
       {
         ...docRow,
-        docId: '018f6a3e-aaaa-7000-8000-000000000003',
+        docId: portfolio!.id,
         docKind: 'portfolio',
         portfolioId: portfolio!.id,
       },

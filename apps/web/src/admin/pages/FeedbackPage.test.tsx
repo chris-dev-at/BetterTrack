@@ -49,6 +49,7 @@ const submission: AdminFeedbackSubmission = {
   declinedReason: null,
   shippedVersion: null,
   deletedByUser: false,
+  archivedAt: null,
   submitter: {
     id: '00000000-0000-7000-8000-000000000002',
     username: 'mobile_owner',

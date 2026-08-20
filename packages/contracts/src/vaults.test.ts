@@ -13,10 +13,18 @@ import {
   encodeVaultDocEnvelope,
   encodeVaultEnvelope,
   inspectVaultDocEnvelope,
+  perVaultMediaTransitionRequestSchema,
+  perVaultRetiredServerPurgeChallengeRequestSchema,
+  perVaultRetiredServerPurgeRequestSchema,
+  perVaultRetiredServerPurgeResponseSchema,
+  perVaultServerCandidateReadParamsSchema,
+  perVaultServerCandidateStageParamsSchema,
   portfolioVaultMoveInRequestSchema,
   portfolioVaultMoveOutRequestSchema,
   readVaultDocServerHeader,
   serializeVaultDocHeader,
+  serializePerVaultRetiredServerPurgeTranscript,
+  serializeVaultRetirementVersionSet,
   vaultCommonDocSchema,
   vaultDocEnvelopeHeaderSchema,
   vaultHeaderDocSchema,
@@ -25,6 +33,7 @@ import {
   vaultMediaSchema,
   vaultPortfolioDocSchema,
   vaultStepUpCredentialSchema,
+  vaultVersionSetHashSchema,
   type VaultDocEnvelopeHeader,
 } from './index';
 
@@ -48,6 +57,7 @@ const OTHER_DOC_ID = '018f6a3e-2222-7000-8000-000000000002';
 const KEY_ID = '018f6a3e-3333-7000-8000-000000000001';
 const DEVICE_ID = '018f6a3e-4444-7000-8000-000000000001';
 const WRITE_ID = '018f6a3e-5555-7000-8000-000000000001';
+const TRANSITION_ID = '018f6a3e-6666-7000-8000-000000000001';
 
 function base64url(bytes: Uint8Array): string {
   let binary = '';
@@ -284,19 +294,53 @@ describe('envelope v2 — strict fail-closed versioning (§5)', () => {
     expect(() => inspectVaultDocEnvelope(envelope)).toThrow(VaultEnvelopeError);
   });
 
-  it('server header read yields exactly formatVersion + docVersion, even for future formats', async () => {
+  it('server header read yields exactly the R2 six-field projection, even for future formats', async () => {
     const sealed = await seal();
     expect(readVaultDocServerHeader(sealed.envelope)).toEqual({
       formatVersion: 2,
       docVersion: 7,
+      vaultId: VAULT_ID,
+      docId: DOC_ID,
+      docKind: 'portfolio',
+      writeId: WRITE_ID,
     });
     // The blind store must keep accepting newer formats verbatim (§5 makes
-    // versioning a CLIENT decision) — only the two CAS fields are read.
+    // versioning a CLIENT decision) — only the six R2 addressing fields are read.
     const future = encodeVaultEnvelope(
-      { formatVersion: 99, docVersion: 3, mystery: true },
+      {
+        formatVersion: 99,
+        docVersion: 3,
+        vaultId: OTHER_VAULT_ID,
+        docId: OTHER_DOC_ID,
+        docKind: 'common',
+        writeId: WRITE_ID,
+        mystery: true,
+      },
       new Uint8Array(16),
     );
-    expect(readVaultDocServerHeader(future)).toEqual({ formatVersion: 99, docVersion: 3 });
+    expect(readVaultDocServerHeader(future)).toEqual({
+      formatVersion: 99,
+      docVersion: 3,
+      vaultId: OTHER_VAULT_ID,
+      docId: OTHER_DOC_ID,
+      docKind: 'common',
+      writeId: WRITE_ID,
+    });
+  });
+
+  it('server header read refuses when any R2 addressing field is absent', () => {
+    const incomplete = encodeVaultEnvelope(
+      {
+        formatVersion: 2,
+        docVersion: 1,
+        vaultId: VAULT_ID,
+        docId: DOC_ID,
+        docKind: 'header',
+        // writeId deliberately absent.
+      },
+      new Uint8Array(16),
+    );
+    expect(() => readVaultDocServerHeader(incomplete)).toThrow(VaultEnvelopeError);
   });
 });
 
@@ -307,6 +351,8 @@ describe('media enum — the reserved `local` value (§22, acceptance d)', () =>
     expect(
       createVaultRequestSchema.safeParse({
         name: 'Future phone vault',
+        headerDocId: DOC_ID,
+        commonDocId: OTHER_DOC_ID,
         media: ['local'],
         keyFingerprint: 'A'.repeat(16),
         retirementProofPublicKey: RETIREMENT_PUBLIC_KEY,
@@ -323,6 +369,8 @@ describe('media enum — the reserved `local` value (§22, acceptance d)', () =>
   it('requires the Drive binding iff the drive medium is selected', () => {
     const base = {
       name: 'Drive vault',
+      headerDocId: DOC_ID,
+      commonDocId: OTHER_DOC_ID,
       keyFingerprint: 'A'.repeat(16),
       retirementProofPublicKey: RETIREMENT_PUBLIC_KEY,
     };
@@ -341,6 +389,30 @@ describe('media enum — the reserved `local` value (§22, acceptance d)', () =>
         driveConnectionId: VAULT_ID,
       }).success,
     ).toBe(false);
+  });
+
+  it('requires distinct config-registered header/common document ids (R1)', () => {
+    const base = {
+      name: 'Registered docs',
+      media: ['server'],
+      keyFingerprint: 'A'.repeat(16),
+      retirementProofPublicKey: RETIREMENT_PUBLIC_KEY,
+    };
+    expect(
+      createVaultRequestSchema.safeParse({
+        ...base,
+        headerDocId: DOC_ID,
+        commonDocId: OTHER_DOC_ID,
+      }).success,
+    ).toBe(true);
+    expect(
+      createVaultRequestSchema.safeParse({
+        ...base,
+        headerDocId: DOC_ID,
+        commonDocId: DOC_ID,
+      }).success,
+    ).toBe(false);
+    expect(createVaultRequestSchema.safeParse(base).success).toBe(false);
   });
 });
 
@@ -475,6 +547,188 @@ const PKCS8_PRIVATE_KEY = base64url(
     ...new Array<number>(32).fill(0),
   ]),
 );
+
+describe('per-vault media transition batches (R3)', () => {
+  const expectedDrive = {
+    media: ['drive'] as const,
+    driveConnectionId: VAULT_ID,
+    mediaAttestedAt: '2026-08-20T12:00:00.000Z',
+  };
+  const nextBoth = {
+    media: ['drive', 'server'] as const,
+    driveConnectionId: VAULT_ID,
+  };
+  const readbacks = [
+    { candidateId: KEY_ID, docId: DOC_ID, readback: 'r'.repeat(32) },
+    { candidateId: DEVICE_ID, docId: OTHER_DOC_ID, readback: 's'.repeat(32) },
+  ];
+
+  it('accepts one transition-scoped readback per distinct staged doc', () => {
+    expect(
+      perVaultMediaTransitionRequestSchema.safeParse({
+        transitionId: TRANSITION_ID,
+        expected: expectedDrive,
+        next: nextBoth,
+        verification: { kind: 'server-candidates', readbacks },
+      }).success,
+    ).toBe(true);
+    expect(
+      perVaultServerCandidateStageParamsSchema.parse({
+        vaultId: VAULT_ID,
+        transitionId: TRANSITION_ID,
+        docId: DOC_ID,
+      }),
+    ).toEqual({ vaultId: VAULT_ID, transitionId: TRANSITION_ID, docId: DOC_ID });
+    expect(
+      perVaultServerCandidateStageParamsSchema.safeParse({
+        vaultId: VAULT_ID,
+        transitionId: '018f6a3e-6666-4000-8000-000000000001',
+        docId: DOC_ID,
+      }).success,
+    ).toBe(false);
+    expect(
+      perVaultServerCandidateReadParamsSchema.parse({ vaultId: VAULT_ID, candidateId: KEY_ID }),
+    ).toEqual({ vaultId: VAULT_ID, candidateId: KEY_ID });
+  });
+
+  it('rejects duplicate doc attestations and the wrong verification kind', () => {
+    expect(
+      perVaultMediaTransitionRequestSchema.safeParse({
+        transitionId: TRANSITION_ID,
+        expected: expectedDrive,
+        next: nextBoth,
+        verification: {
+          kind: 'server-candidates',
+          readbacks: [readbacks[0], { ...readbacks[1], docId: DOC_ID }],
+        },
+      }).success,
+    ).toBe(false);
+    expect(
+      perVaultMediaTransitionRequestSchema.safeParse({
+        transitionId: TRANSITION_ID,
+        expected: expectedDrive,
+        next: nextBoth,
+        verification: { kind: 'drive', driveConnectionId: VAULT_ID, docs: [] },
+      }).success,
+    ).toBe(false);
+  });
+
+  it('binds Drive verification to the target connection', () => {
+    const request = {
+      transitionId: TRANSITION_ID,
+      expected: {
+        media: ['server'],
+        driveConnectionId: null,
+        mediaAttestedAt: null,
+      },
+      next: { media: ['server', 'drive'], driveConnectionId: VAULT_ID },
+      verification: {
+        kind: 'drive',
+        driveConnectionId: VAULT_ID,
+        docs: [{ docId: DOC_ID, docVersion: 1, writeId: WRITE_ID }],
+      },
+    } as const;
+    expect(perVaultMediaTransitionRequestSchema.safeParse(request).success).toBe(true);
+    expect(
+      perVaultMediaTransitionRequestSchema.safeParse({
+        ...request,
+        verification: { ...request.verification, driveConnectionId: OTHER_VAULT_ID },
+      }).success,
+    ).toBe(false);
+
+    expect(
+      perVaultMediaTransitionRequestSchema.safeParse({
+        transitionId: TRANSITION_ID,
+        expected: expectedDrive,
+        next: { ...nextBoth, driveConnectionId: OTHER_VAULT_ID },
+        verification: { kind: 'server-candidates', readbacks },
+      }).success,
+    ).toBe(false);
+  });
+});
+
+describe('per-vault retirement generation + version-set purge transcript (R4)', () => {
+  // Deterministic TEST VECTOR, not a secret: unpadded base64url shape of SHA-256.
+  const VERSION_SET_HASH = 'A'.repeat(43);
+  const CHALLENGE = 'challenge-'.padEnd(32, 'c');
+  const SIGNATURE = 's'.repeat(86);
+  const observedDocs = [
+    { docId: OTHER_DOC_ID, docVersion: 8, writeId: DEVICE_ID },
+    { docId: DOC_ID, docVersion: 7, writeId: WRITE_ID },
+  ];
+
+  it('canonicalizes the sorted (docId, docVersion) set before hashing', () => {
+    const first = serializeVaultRetirementVersionSet([
+      { docId: OTHER_DOC_ID, docVersion: 8 },
+      { docId: DOC_ID, docVersion: 9 },
+      { docId: DOC_ID, docVersion: 7 },
+    ]);
+    const reordered = serializeVaultRetirementVersionSet([
+      { docId: DOC_ID, docVersion: 7 },
+      { docId: OTHER_DOC_ID, docVersion: 8 },
+      { docId: DOC_ID, docVersion: 9 },
+    ]);
+    expect(new TextDecoder().decode(first)).toBe(
+      JSON.stringify([
+        [DOC_ID, 7],
+        [DOC_ID, 9],
+        [OTHER_DOC_ID, 8],
+      ]),
+    );
+    expect(Array.from(reordered)).toEqual(Array.from(first));
+    expect(vaultVersionSetHashSchema.safeParse(VERSION_SET_HASH).success).toBe(true);
+    expect(vaultVersionSetHashSchema.safeParse(`${VERSION_SET_HASH}A`).success).toBe(false);
+  });
+
+  it('pins identity in challenge, request and purge response shapes', () => {
+    const identity = { vaultId: VAULT_ID, generation: 3, versionSetHash: VERSION_SET_HASH };
+    expect(perVaultRetiredServerPurgeChallengeRequestSchema.parse(identity)).toEqual(identity);
+    const request = {
+      ...identity,
+      observedDocs,
+      challenge: CHALLENGE,
+      signature: SIGNATURE,
+    };
+    expect(perVaultRetiredServerPurgeRequestSchema.safeParse(request).success).toBe(true);
+    expect(perVaultRetiredServerPurgeResponseSchema.parse({ ...identity, purged: true })).toEqual({
+      ...identity,
+      purged: true,
+    });
+    expect(
+      perVaultRetiredServerPurgeRequestSchema.safeParse({
+        ...request,
+        observedDocs: [observedDocs[0], { ...observedDocs[1], docId: OTHER_DOC_ID }],
+      }).success,
+    ).toBe(false);
+  });
+
+  it('canonicalizes observed docs inside the domain-separated signed transcript', () => {
+    const request = perVaultRetiredServerPurgeRequestSchema.parse({
+      vaultId: VAULT_ID,
+      generation: 3,
+      versionSetHash: VERSION_SET_HASH,
+      observedDocs,
+      challenge: CHALLENGE,
+      signature: SIGNATURE,
+    });
+    const reversed = { ...request, observedDocs: [...request.observedDocs].reverse() };
+    const transcript = serializePerVaultRetiredServerPurgeTranscript(request);
+    expect(Array.from(serializePerVaultRetiredServerPurgeTranscript(reversed))).toEqual(
+      Array.from(transcript),
+    );
+    expect(JSON.parse(new TextDecoder().decode(transcript))).toEqual([
+      'bettertrack.per-vault-retired-server-purge.v1',
+      VAULT_ID,
+      3,
+      VERSION_SET_HASH,
+      [
+        [DOC_ID, 7, WRITE_ID],
+        [OTHER_DOC_ID, 8, DEVICE_ID],
+      ],
+      CHALLENGE,
+    ]);
+  });
+});
 
 describe('move-in / move-out / step-up bodies (§9, §10, §15)', () => {
   const stepUp = { password: 'hunter2hunter2' };

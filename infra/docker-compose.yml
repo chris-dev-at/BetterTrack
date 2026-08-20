@@ -119,6 +119,7 @@ x-api-worker-environment: &api-worker-environment
   BT_VAULT_HISTORY_MAX_AGE_DAYS: '${BT_VAULT_HISTORY_MAX_AGE_DAYS:-30}'
   BT_VAULT_RATE_WINDOW_SEC: '${BT_VAULT_RATE_WINDOW_SEC:-60}'
   BT_VAULT_RATE_LIMIT: '${BT_VAULT_RATE_LIMIT:-60}'
+  BT_VAULT_READ_RATE_LIMIT: '${BT_VAULT_READ_RATE_LIMIT:-600}'
 
 services:
   # Front proxy: serves the user + admin SPAs and reverse-proxies the api origin.
