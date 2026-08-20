@@ -158,9 +158,15 @@ describe('strict vault-payload completeness', () => {
    * proving the same "already-written documents would break" argument. Removing
    * one requires a document migration in `migrateVaultDocument`, never a
    * schema-only edit.
+   *
+   * `vaultId` left this list with the E0 per-portfolio vaults keystone (#1410):
+   * `portfolios.vault_id` is a real column again (a FRESH one — see the schema
+   * comment), so the field is now column-backed rather than vestigial. `alias`
+   * stays: its E0 successor column is deliberately named `vault_alias`, so the
+   * retired `alias` name remains payload-only.
    */
   const VESTIGIAL_PAYLOAD_FIELDS: Readonly<Record<string, readonly string[]>> = {
-    portfolios: ['alias', 'vaultId'],
+    portfolios: ['alias'],
   };
 
   it('carries every persisted Drizzle column and names any omission', () => {

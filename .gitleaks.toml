@@ -13,6 +13,11 @@ id = "generic-api-key"
   [[rules.allowlists]]
   description = "Deterministic test tokens and documented non-secret placeholders"
   paths = [
+    # Per-portfolio vault schema tests (#1410 E0): deterministic AES-GCM/Ed25519
+    # test vectors — a fixed 16-char key fingerprint and a canonical-prefix DER
+    # proof key, public by design, never real key material.
+    '''^apps/api/src/__tests__/accountDeletion\.test\.ts$''',
+    '''^apps/api/src/__tests__/vaultsSchema\.test\.ts$''',
     '''^apps/api/src/__tests__/accountKind\.test\.ts$''',
     '''^apps/api/src/__tests__/admin\.test\.ts$''',
     '''^apps/api/src/__tests__/appSettings\.test\.ts$''',

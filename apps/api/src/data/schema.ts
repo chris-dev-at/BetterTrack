@@ -1262,8 +1262,33 @@ export const portfolios = pgTable(
     // VALUE` that drizzle cannot run inside its transactional migration. The
     // read path narrows unrecognized text back to NULL rather than trusting it.
     kind: text('kind'),
+    // ── Per-portfolio paranoid vaults (docs/paranoid-design.md §3, E0 #1410) ──
+    // NULL ⇒ a normal portfolio, today's behavior byte-for-byte. NOT NULL ⇒ the
+    // LOCKED STUB: this row keeps only identity + alias + vault membership while
+    // every content row lives in the vault's encrypted portfolio doc (zero
+    // cleartext, probed by E4). The stub exists for (a) enforcement keying (E2),
+    // (b) same-UUID move-out (§10), (c) rendering "N locked portfolios" + the
+    // unlock affordance. Deliberately NO delete action on the FK: a vault cannot
+    // be deleted while a stub references it (§3 — the E1 route refuses too). The
+    // migration declares this FK DEFERRABLE INITIALLY DEFERRED (drizzle cannot
+    // express it): the refusal checks at COMMIT, so the account-deletion cascade
+    // — which removes both sides in one transaction — passes regardless of
+    // Postgres's cascade ordering, while any lone vault delete still refuses.
+    //
+    // PR #1392 dropped the v2 columns of the same intent (`vault_id`/`alias`,
+    // 0089 §1/§3); these are FRESH columns — `vault_alias` is deliberately not
+    // named `alias` so the retired column name stays retired.
+    vaultId: uuid('vault_id').references(() => vaults.id),
+    // The locked-row display label, cleartext by design (§21 Q4 ruling). The
+    // TRUE name travels inside the ciphertext (header-doc roster).
+    vaultAlias: text('vault_alias'),
   },
-  (t) => [uniqueIndex('portfolios_user_name_unique').on(t.userId, t.name)],
+  (t) => [
+    uniqueIndex('portfolios_user_name_unique').on(t.userId, t.name),
+    index('portfolios_vault_idx').on(t.vaultId),
+    // An alias without a vault membership is meaningless — move-out clears both.
+    check('portfolios_vault_alias_state', sql`${t.vaultAlias} is null or ${t.vaultId} is not null`),
+  ],
 );
 
 export const transactionSideEnum = pgEnum('transaction_side', ['buy', 'sell']);
@@ -3850,6 +3875,340 @@ export type NewParanoidVaultRetiredRow = typeof paranoidVaultRetired.$inferInser
 export type ParanoidRehydrationReceiptRow = typeof paranoidRehydrationReceipts.$inferSelect;
 export type NewParanoidRehydrationReceiptRow = typeof paranoidRehydrationReceipts.$inferInsert;
 
+// ── PARANOID VAULTS — the per-portfolio model ────────────────────────────────
+// (`docs/paranoid-design.md` §3/§7/§8, ACKED & RULED 2026-08-20; §13.5 V5-P13
+// arc b; epic E0 #1410.)
+//
+// An account owns N vaults; a vault is a storage CONFIG (server / a separately
+// authenticated Google Drive connection / both) whose encrypted DOC SET holds
+// its member portfolios' content. These tables are the server side of that
+// model: config rows + a blind per-doc blob store. They COEXIST with the v1
+// account-singleton `paranoid_*` tables above — the v1 surface keeps serving
+// live paranoid accounts until the §17 transition retires it (epic E9).
+//
+// The quarantined per-portfolio v2 surface (`zz_vault_v2_backup_*`, migration
+// 0089) stays quarantined and unreferenced: no port function, no data
+// migration out of it. The 0089 rename freed the `vaults`/`vault_docs` TABLE
+// names but not the PK CONSTRAINT names (`vaults_pkey` is still held by the
+// quarantine), which is why `vaults` below names its primary key explicitly.
+
+/**
+ * One separately authenticated Google Drive connection (§8) — account CONFIG,
+ * N per user. Stores the IDENTITY the client captured at consent time via
+ * Drive `about.get(fields=user)`; it lets the UI list connections, lets a
+ * vault bind to one, and tells a fresh signed-in device WHICH Google account
+ * to ask for. It is convenience and config, never a decryption or discovery
+ * prerequisite (the same identity is echoed inside the encrypted header doc).
+ *
+ * **No tokens, no refresh tokens, no file ids — EVER.** Drive access tokens
+ * are minted in the browser per connection (GIS, `login_hint` = `google_sub`)
+ * and stay memory-only; the server must hold zero capability to fetch a Drive
+ * copy, or the Drive-only "zero capability" guarantee (§8/§22) is a lie.
+ *
+ * `google_sub` is UNIQUE PER USER, deliberately NOT globally unique: two
+ * BetterTrack users may hold connections to the same Google account — the
+ * shared-physical-Drive case (§8); the digest-named, ownership-checked object
+ * namespace is the isolation, never the registry.
+ */
+export const driveConnections = pgTable(
+  'drive_connections',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    /** The Google account's stable OIDC subject id (opaque ASCII, ≤ 255). */
+    googleSub: text('google_sub').notNull(),
+    /** Display identity captured at consent — config, not portfolio content. */
+    email: text('email').notNull(),
+    displayName: text('display_name'),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    /** Last time a client proved the connection still works (revocation flagging). */
+    lastVerifiedAt: timestamp('last_verified_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('drive_connections_user_sub_unique').on(t.userId, t.googleSub)],
+);
+
+/**
+ * One paranoid vault: a storage config the ruling's own words define ("just
+ * configs on how to save something"). Knowing THAT a vault exists, where it
+ * stores and which portfolios are inside is required to enforce §11 and to
+ * render locked stubs — it is account config, never portfolio content. What
+ * the server can never do is read a doc.
+ */
+export const vaults = pgTable(
+  'vaults',
+  {
+    /** uuidv7, app-generated (schema convention). */
+    id: uuid('id').$defaultFn(newId).notNull(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    /**
+     * User-visible label — CLEARTEXT BY DESIGN (§21 Q4 ruling): it is config
+     * and the UI needs it while locked. The TRUE name travels inside the
+     * encrypted header doc.
+     */
+    name: text('name').notNull(),
+    /**
+     * Media set ⊆ {server, drive}, non-empty (CHECK below). The contract enum
+     * additionally knows the RESERVED `local` value (phone-local-only, a
+     * future version) — the CHECK is the deepest server boundary rejecting it
+     * until that version ships (§22).
+     */
+    media: text('media').array().notNull(),
+    /**
+     * Bound Drive connection — required iff `drive ∈ media` (CHECK below).
+     * NO delete action: disconnecting a Google account refuses while a vault
+     * is bound to it (§8). The migration declares the FK DEFERRABLE INITIALLY
+     * DEFERRED (drizzle cannot express it) so the account-deletion cascade
+     * passes while any lone disconnect still refuses at commit.
+     */
+    driveConnectionId: uuid('drive_connection_id').references(() => driveConnections.id),
+    /**
+     * Immutable Ed25519 public verifier of the per-vault retirement proof key
+     * (§7 — same semantics as `paranoid_vaults.retirement_proof_public_key`).
+     * NOT NULL from birth: the creation ceremony always generates the keypair
+     * and the private half lives inside the encrypted common doc, so there is
+     * no legacy-nullable grace like v1's.
+     */
+    retirementProofPublicKey: text('retirement_proof_public_key').notNull(),
+    /**
+     * Non-secret HKDF verification tag of K_c (§4) — lets a client confirm
+     * "these words open THIS vault" before destructive steps. Never a key.
+     */
+    keyFingerprint: text('key_fingerprint').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    /**
+     * Explicitly named: the default `vaults_pkey` is still occupied by the
+     * 0089 quarantine (`zz_vault_v2_backup_vaults` kept its original PK
+     * constraint name — 0089 §5 accepted that as a deliberate collision).
+     */
+    primaryKey({ name: 'vaults_v3_pk', columns: [t.id] }),
+    uniqueIndex('vaults_user_name_unique').on(t.userId, t.name),
+    index('vaults_drive_connection_idx').on(t.driveConnectionId),
+    /**
+     * The §3 config invariants in one CHECK: (1) `media` is exactly one
+     * non-empty duplicate-free subset of {server, drive} (the enumeration
+     * pattern proven by `users_paranoid_media_state`; `local` and anything
+     * unknown are rejected here); (2) a Drive connection is bound IFF the
+     * drive medium is selected — a stale binding is as invalid as a missing
+     * one.
+     */
+    check(
+      'vaults_media_state',
+      sql`(
+          ${t.media} = array['server']::text[]
+          or ${t.media} = array['drive']::text[]
+          or ${t.media} = array['server', 'drive']::text[]
+          or ${t.media} = array['drive', 'server']::text[]
+        )
+        and (
+          (${t.media} @> array['drive']::text[] and ${t.driveConnectionId} is not null)
+          or (not ${t.media} @> array['drive']::text[] and ${t.driveConnectionId} is null)
+        )`,
+    ),
+  ],
+);
+
+/**
+ * The blind per-doc blob store (§3/§5/§6): one row per `(vault_id, doc_id)` of
+ * a vault's doc set (`header` / `common` / one `portfolio` doc per member).
+ * `blob` is the full opaque envelope v2 (magic + cleartext-but-portfolio-free
+ * header + AES-256-GCM ciphertext) — stored and returned verbatim, never
+ * interpreted past the envelope header (`formatVersion` + `docVersion` for
+ * CAS, exactly the v1 discipline). `version` is the per-doc monotonic CAS
+ * token surfaced as the `ETag`. Per-kind size caps ride the
+ * `BT_VAULT_MAX_BYTES_*` env family (enforced by the E1 store).
+ */
+export const vaultBlobs = pgTable(
+  'vault_blobs',
+  {
+    vaultId: uuid('vault_id')
+      .notNull()
+      .references(() => vaults.id, { onDelete: 'cascade' }),
+    /** Client-minted doc identity (uuidv7); also bound inside the AAD (§5). */
+    docId: uuid('doc_id').notNull(),
+    /**
+     * Bare text + CHECK rather than a pg enum for the `portfolios.kind`
+     * reason: the token set is contract-owned and a future kind must stay a
+     * code + CHECK change, not an `ALTER TYPE` drizzle cannot run
+     * transactionally.
+     */
+    docKind: text('doc_kind').notNull(),
+    /**
+     * The member portfolio a `portfolio` doc belongs to — set IFF
+     * `doc_kind = 'portfolio'` (CHECK below). NO delete action on purpose: a
+     * locked stub cannot be deleted from under its only surviving copy — the
+     * doc folds first (move-out / vault deletion / §16 "start fresh"). The
+     * migration declares the FK DEFERRABLE INITIALLY DEFERRED (drizzle cannot
+     * express it), so the account-deletion cascade — where the vault cascade
+     * removes these rows in the same transaction — passes, while any lone
+     * stub delete still refuses at commit.
+     */
+    portfolioId: uuid('portfolio_id').references(() => portfolios.id),
+    /** Monotonic per-doc compare-and-swap token. Starts at 1. */
+    version: integer('version').notNull(),
+    /** Envelope layout version read from the header — the ONLY other field. */
+    formatVersion: integer('format_version').notNull(),
+    /** Envelope byte length — the per-kind size-cap guard reads it; no content. */
+    sizeBytes: integer('size_bytes').notNull(),
+    /** The opaque envelope bytes. Never interpreted server-side. */
+    blob: bytea('blob').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    primaryKey({ name: 'vault_blobs_pk', columns: [t.vaultId, t.docId] }),
+    // The doc set's shape: at most one header and one common doc per vault,
+    // and one portfolio doc per portfolio ANYWHERE (a portfolio lives in at
+    // most one vault).
+    uniqueIndex('vault_blobs_header_unique')
+      .on(t.vaultId)
+      .where(sql`${t.docKind} = 'header'`),
+    uniqueIndex('vault_blobs_common_unique')
+      .on(t.vaultId)
+      .where(sql`${t.docKind} = 'common'`),
+    uniqueIndex('vault_blobs_portfolio_unique')
+      .on(t.portfolioId)
+      .where(sql`${t.docKind} = 'portfolio'`),
+    check('vault_blobs_doc_kind', sql`${t.docKind} in ('header', 'common', 'portfolio')`),
+    check(
+      'vault_blobs_portfolio_state',
+      sql`(${t.docKind} = 'portfolio' and ${t.portfolioId} is not null)
+        or (${t.docKind} <> 'portfolio' and ${t.portfolioId} is null)`,
+    ),
+  ],
+);
+
+/**
+ * Bounded per-doc ciphertext history — the corruption/bad-write safety net
+ * (§6), `paranoid_vault_history` re-keyed to `(vault_id, doc_id)`. Superseded
+ * blobs are archived here and pruned to the configured window (last N
+ * versions / M days — the same `BT_VAULT_HISTORY_*` knobs as v1). Ciphertext +
+ * version metadata only, exactly like the live row.
+ */
+export const vaultBlobHistory = pgTable(
+  'vault_blob_history',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    vaultId: uuid('vault_id')
+      .notNull()
+      .references(() => vaults.id, { onDelete: 'cascade' }),
+    docId: uuid('doc_id').notNull(),
+    version: integer('version').notNull(),
+    formatVersion: integer('format_version').notNull(),
+    sizeBytes: integer('size_bytes').notNull(),
+    blob: bytea('blob').notNull(),
+    /** When this version was superseded — age bound + restore-picker ordering. */
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex('vault_blob_history_doc_version_unique').on(t.vaultId, t.docId, t.version),
+    index('vault_blob_history_doc_created_idx').on(t.vaultId, t.docId, t.createdAt),
+  ],
+);
+
+/**
+ * Inactive, expiring server-medium staging (§7 rule 1),
+ * `paranoid_vault_server_candidates` re-keyed per doc: adding the server
+ * medium stages the vault's FULL doc set here — one row per `(vault_id,
+ * doc_id)` — and a client must read back and verify every doc before the
+ * transition promotes the set. Staging bytes never activates the medium.
+ */
+export const vaultServerCandidates = pgTable(
+  'vault_server_candidates',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    vaultId: uuid('vault_id')
+      .notNull()
+      .references(() => vaults.id, { onDelete: 'cascade' }),
+    docId: uuid('doc_id').notNull(),
+    version: integer('version').notNull(),
+    formatVersion: integer('format_version').notNull(),
+    sizeBytes: integer('size_bytes').notNull(),
+    blob: bytea('blob').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+  },
+  (t) => [
+    uniqueIndex('vault_server_candidates_doc_unique').on(t.vaultId, t.docId),
+    index('vault_server_candidates_expires_idx').on(t.expiresAt),
+  ],
+);
+
+/**
+ * One durable retirement record per VAULT (`paranoid_vault_retirements`
+ * re-keyed): its verifier + timestamp bind the separate purge gate (§7 —
+ * minimum retention, server challenge, Ed25519 proof from inside the
+ * encrypted common doc). Removing the server medium retires the vault's whole
+ * doc set at once, so the record is per vault while the retired BYTES below
+ * are per `(vault_id, doc_id, version)`; v1's singleton `retired_version`
+ * column has no per-doc meaning and intentionally does not carry over. The
+ * verifier is PINNED here at retirement time (not read from `vaults`) so a
+ * later key rotation can never re-bind an already-retired set.
+ *
+ * BINDING E1 OBLIGATION (review round 1 on #1424): this table and
+ * `vault_retired` cascade on a vaults-row delete — deliberately, because a
+ * restraining FK here would break the V4-P2c account-deletion cascade. That
+ * makes the §7 purge gate ROUTE-ENFORCED by design: `DELETE /vaults/:vaultId`
+ * MUST refuse (or route through the signed-purge challenge) while a
+ * `vault_retirements` row exists for the vault, or a zero-portfolio vault
+ * with a live retired set could be deleted straight past the Ed25519
+ * challenge and the minimum-retention window, cascading the recovery set
+ * away. The E1 route test must pin this refusal.
+ */
+export const vaultRetirements = pgTable('vault_retirements', {
+  vaultId: uuid('vault_id')
+    .primaryKey()
+    .references(() => vaults.id, { onDelete: 'cascade' }),
+  retirementProofPublicKey: text('retirement_proof_public_key').notNull(),
+  retiredAt: timestamp('retired_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * Recoverable server ciphertext after a server-medium removal
+ * (`paranoid_vault_retired` re-keyed to `(vault_id, doc_id)`). Separate from
+ * active history so an identical version can later be active again without
+ * weakening the retirement retention/purge boundary (§7 rule 2).
+ */
+export const vaultRetired = pgTable(
+  'vault_retired',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    vaultId: uuid('vault_id')
+      .notNull()
+      .references(() => vaults.id, { onDelete: 'cascade' }),
+    docId: uuid('doc_id').notNull(),
+    version: integer('version').notNull(),
+    formatVersion: integer('format_version').notNull(),
+    sizeBytes: integer('size_bytes').notNull(),
+    blob: bytea('blob').notNull(),
+    /** Original active/history timestamp; safe history metadata only. */
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull(),
+    retiredAt: timestamp('retired_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex('vault_retired_doc_version_unique').on(t.vaultId, t.docId, t.version)],
+);
+
+export type DriveConnectionRow = typeof driveConnections.$inferSelect;
+export type NewDriveConnectionRow = typeof driveConnections.$inferInsert;
+export type VaultRow = typeof vaults.$inferSelect;
+export type NewVaultRow = typeof vaults.$inferInsert;
+export type VaultBlobRow = typeof vaultBlobs.$inferSelect;
+export type NewVaultBlobRow = typeof vaultBlobs.$inferInsert;
+export type VaultBlobHistoryRow = typeof vaultBlobHistory.$inferSelect;
+export type NewVaultBlobHistoryRow = typeof vaultBlobHistory.$inferInsert;
+export type VaultServerCandidateRow = typeof vaultServerCandidates.$inferSelect;
+export type NewVaultServerCandidateRow = typeof vaultServerCandidates.$inferInsert;
+export type VaultRetirementRow = typeof vaultRetirements.$inferSelect;
+export type NewVaultRetirementRow = typeof vaultRetirements.$inferInsert;
+export type VaultRetiredRow = typeof vaultRetired.$inferSelect;
+export type NewVaultRetiredRow = typeof vaultRetired.$inferInsert;
+
 export const schema = {
   users,
   apiKeys,
@@ -3944,6 +4303,13 @@ export const schema = {
   paranoidVaultRetirements,
   paranoidVaultRetired,
   paranoidRehydrationReceipts,
+  driveConnections,
+  vaults,
+  vaultBlobs,
+  vaultBlobHistory,
+  vaultServerCandidates,
+  vaultRetirements,
+  vaultRetired,
   userRoleEnum,
   userStatusEnum,
   assetTypeEnum,
