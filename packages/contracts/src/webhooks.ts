@@ -184,8 +184,13 @@ export const PARANOID_KILLED_WEBHOOK_EVENT_TYPES: readonly WebhookEventType[] =
   );
 
 /** True when a paranoid account can never receive this subscribable event. */
-export function isParanoidKilledWebhookEventType(type: WebhookEventType): boolean {
-  return PARANOID_WEBHOOK_EVENT_TYPE_CLASSIFICATIONS[type].disposition === 'killed';
+export function isParanoidKilledWebhookEventType(type: string): boolean {
+  const classification = (
+    PARANOID_WEBHOOK_EVENT_TYPE_CLASSIFICATIONS as Readonly<
+      Record<string, ParanoidWebhookEventTypeClassification | undefined>
+    >
+  )[type];
+  return classification?.disposition === 'killed';
 }
 
 /** Signature transport headers on every delivery POST. */
