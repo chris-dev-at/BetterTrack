@@ -37,7 +37,7 @@ CONTROL=$MFSTATE/control; LOGS=$MFSTATE/logs; CIFIX=$MFSTATE/ci-fix
 : "${MF_CIFIX_PROTOCOL_BACKOFF:=300}" # delay before the one no-head protocol retry
 : "${MF_APPROVAL_READ_MAX:=40}"   # consecutive approval-read failures before the queue head parks to a human
 : "${MF_MERGE_FAIL_MAX:=40}"      # merge refusals for one PR before parking it with a human
-: "${MF_MERGE_LOOKAHEAD:=5}"      # FIFO records inspected per tick while earlier entries are deferred
+: "${MF_MERGE_LOOKAHEAD:=5}"      # FIFO records inspected per tick; invalid defaults to 5, then clamps to 1-10
 : "${MF_DRY_RUN:=0}"
 if [ -z "${MF_MASTER_SESSION:-}" ]; then
   MF_MASTER_NONCE=$(od -An -N8 -tx1 /dev/urandom 2>/dev/null | tr -d ' \n')
@@ -1505,6 +1505,8 @@ merger_record_step(){ # $1=queue file; SETS MERGER_SCAN_NEXT=1 when the caller m
   # Read failures are usually transient — but a deterministic one (observed
   # live: an unparseable comment payload on PR #891) must not jam the FIFO
   # forever. Bounded consecutive failures park the head with a human instead.
+  # Look-ahead may advance this counter for every inspected record during one
+  # outage; the high default bound accepts that trade to avoid head starvation.
   local apprfail=$QUEUE/.apprfail-pr$pr afails
   if ! queue_approval_check "$f"; then
     afails=$(cat "$apprfail" 2>/dev/null || echo 0)
@@ -1651,7 +1653,7 @@ merger_step(){
   listing=$(ls "$QUEUE" 2>/dev/null \
     | grep -E '^[0-9]+-pr[0-9]+\.json$' | sort -n | head -n "$limit")
   while IFS= read -r head; do
-    [ -n "$head" ] && window[${#window[@]}]=$head
+    [ -n "$head" ] && window+=("$head")
   done <<<"$listing"
   for head in ${window[@]+"${window[@]}"}; do
     [ -n "$head" ] || continue

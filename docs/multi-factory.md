@@ -21,11 +21,12 @@ same `factory/lib.sh` internals, and **the two must never run at the same time**
 | ci-fix    | master | issue difficulty                     | one CI-repair attempt before needs-human                               |
 
 The merge queue is FIFO-**preferring**, not strictly serial: each tick inspects up
-to `MF_MERGE_LOOKAHEAD` records (default 5) in FIFO order and skips past entries
-that are only _deferred_ — CI still pending, or a merge command GitHub refused —
-so an already-CLEAN PR behind them is not starved. Queue files are never
-reordered or rewritten, and at most one merge lands per tick, so the oldest
-genuinely mergeable record always wins.
+to `MF_MERGE_LOOKAHEAD` records (default 5; invalid values reset to 5, then the
+value is clamped to 1–10) in FIFO order and skips past entries that are only
+_deferred_ — CI still pending, or a merge command GitHub refused — so an
+already-CLEAN PR behind them is not starved. Queue files are never reordered or
+rewritten, and at most one merge lands per tick, so the oldest genuinely
+mergeable record always wins.
 
 ## Difficulty routing & model providers (mflib.sh)
 

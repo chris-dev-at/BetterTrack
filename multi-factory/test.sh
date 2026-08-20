@@ -990,9 +990,9 @@ mstatus(){ :; }
 notify(){ :; }
 jq -nc '{pr:77,issue:707,touches:["x/**"],approved_head:"aaaa1111",approval_kind:"reviewer",approval_comment_id:"5"}' >"$QDIR/1000-pr77.json"
 jq -nc '{pr:78,issue:708,touches:["clean/**"],approved_head:"head78",approval_kind:"reviewer",approval_comment_id:"78"}' >"$QDIR/1001-pr78.json"
-queue_approval_check(){
-  [ "$(jq -r '.pr' "$1")" != 77 ] || return 1
-  QUEUE_APPROVAL_STATE=valid
+mf_pr_comments_json(){
+  [ "$1" = 78 ] || return 1
+  printf '%s\n' '[{"id":78,"body":"reviewed\nFACTORY-REVIEW-HEAD: head78\nFACTORY-VERDICT: APPROVE"}]'
 }
 gh(){
   if [ "$1 $2" = "pr view" ]; then
@@ -1006,7 +1006,7 @@ gh(){
   if [ "$1 $2" = "pr merge" ]; then printf '%s\n' "$3" >>"$READFAIL_MERGES"; return 0; fi
   return 1
 }
-mf_pr_head(){ echo "head$1"; }
+mf_pr_head(){ [ "$1" != 77 ] || return 1; echo "head$1"; }
 : >"$QDIR/.mergefail-pr77"
 : >"$QDIR/.mergefail-pr77-oldhead"
 MF_APPROVAL_READ_MAX=2
