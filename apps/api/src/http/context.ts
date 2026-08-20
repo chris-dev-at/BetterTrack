@@ -1471,8 +1471,8 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   });
 
   // One queue for web + native feedback. User identity is supplied by the
-  // authenticated capture route; only the admin router exposes read/update.
-  const feedback = createFeedbackService({ repo: createFeedbackRepository(db) });
+  // authenticated capture route; only the admin router exposes read/mutations.
+  const feedback = createFeedbackService({ repo: createFeedbackRepository(db), audit });
 
   // Broker CSV imports (§13.4 V4-P8): staged upload → preview → apply. Staging
   // has its own tables; every APPLY write routes through the portfolio/tax

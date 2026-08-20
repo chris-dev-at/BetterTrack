@@ -56,6 +56,9 @@ export const AuditAction = {
   UserUsernameChanged: 'user.username_changed',
   UserEmailChanged: 'user.email_changed',
   UserDeleted: 'user.deleted',
+  /** Admin workspace hygiene for the helpdesk queue; no submitter lifecycle change. */
+  FeedbackArchived: 'feedback.archived',
+  FeedbackUnarchived: 'feedback.unarchived',
   AccountDeleteFail: 'account.delete_fail',
   // Self-service data export (§13.4 V4-P6a, #494).
   AccountExportRequested: 'account.export_requested',

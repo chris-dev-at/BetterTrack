@@ -4462,6 +4462,9 @@
       "loadError": "Feedback konnte nicht geladen werden.",
       "actionError": "Der Feedback-Status konnte nicht aktualisiert werden.",
       "empty": "Noch kein Feedback vorhanden.",
+      "archive": "Archivieren",
+      "unarchive": "Wiederherstellen",
+      "archived": "Archiviert",
       "filters": {
         "category": "Kategorie",
         "sort": "Sortierung",

@@ -331,6 +331,10 @@ const componentSchemas = {
   AdminFeedbackListResponse: contracts.adminFeedbackListResponseSchema,
   UpdateFeedbackStatusRequest: contracts.updateFeedbackStatusRequestSchema,
   UpdateFeedbackStatusResponse: contracts.updateFeedbackStatusResponseSchema,
+  UpdateFeedbackArchiveRequest: contracts.updateFeedbackArchiveRequestSchema,
+  UpdateFeedbackArchiveResponse: contracts.updateFeedbackArchiveResponseSchema,
+  UpdateFeedbackRequest: contracts.updateFeedbackRequestSchema,
+  UpdateFeedbackResponse: contracts.updateFeedbackResponseSchema,
 
   // Broker CSV imports (§13.4 V4-P8)
   ImportBrokerListResponse: contracts.importBrokerListResponseSchema,
@@ -1782,11 +1786,11 @@ const endpoints: EndpointDef[] = [
     method: 'patch',
     path: '/admin/feedback/{id}',
     tag: 'Admin',
-    summary: 'Update one feedback submission lifecycle status.',
+    summary: 'Update one feedback submission lifecycle status or workspace archive state.',
     params: contracts.idParamSchema,
-    body: R.UpdateFeedbackStatusRequest,
+    body: R.UpdateFeedbackRequest,
     status: 200,
-    response: R.UpdateFeedbackStatusResponse,
+    response: R.UpdateFeedbackResponse,
   },
   {
     method: 'get',
