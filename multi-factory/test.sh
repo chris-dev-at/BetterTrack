@@ -984,25 +984,49 @@ echo "— merger: bounded approval-read failures park the queue head (#891 jam)"
 MF_DRY_RUN=0
 QDIR=$MFSTATE/merge-queue
 HUMAN_LOG=$T/human.log; : >"$HUMAN_LOG"
+READFAIL_MERGES=$T/readfail-merges.log; : >"$READFAIL_MERGES"
 mark_human(){ printf '%s|%s\n' "$1" "$2" >>"$HUMAN_LOG"; }
 mstatus(){ :; }
 notify(){ :; }
 jq -nc '{pr:77,issue:707,touches:["x/**"],approved_head:"aaaa1111",approval_kind:"reviewer",approval_comment_id:"5"}' >"$QDIR/1000-pr77.json"
-gh(){ case "$*" in *"--json state"*) echo OPEN;; *) return 1;; esac; }
-mf_pr_head(){ return 1; }          # deterministic approval-read failure
+jq -nc '{pr:78,issue:708,touches:["clean/**"],approved_head:"head78",approval_kind:"reviewer",approval_comment_id:"78"}' >"$QDIR/1001-pr78.json"
+mf_pr_comments_json(){
+  [ "$1" = 78 ] || return 1
+  printf '%s\n' '[{"id":78,"body":"reviewed\nFACTORY-REVIEW-HEAD: head78\nFACTORY-VERDICT: APPROVE"}]'
+}
+gh(){
+  if [ "$1 $2" = "pr view" ]; then
+    case "$5" in
+      state) echo OPEN;;
+      mergeStateStatus) echo CLEAN;;
+      statusCheckRollup) echo '[{"conclusion":"SUCCESS","status":"COMPLETED"}]';;
+    esac
+    return 0
+  fi
+  if [ "$1 $2" = "pr merge" ]; then printf '%s\n' "$3" >>"$READFAIL_MERGES"; return 0; fi
+  return 1
+}
+mf_pr_head(){ [ "$1" != 77 ] || return 1; echo "head$1"; }
+: >"$QDIR/.mergefail-pr77"
+: >"$QDIR/.mergefail-pr77-oldhead"
 MF_APPROVAL_READ_MAX=2
 merger_step
 [ -f "$QDIR/1000-pr77.json" ] && ok "first read failure retains the queue head" || bad "queue head dropped on first read failure"
 check "read-failure counter recorded" "1" "$(cat "$QDIR/.apprfail-pr77" 2>/dev/null)"
+check "look-ahead scans past a transient approval read failure" "78" "$(<"$READFAIL_MERGES")"
 merger_step
 [ -f "$QDIR/1000-pr77.json" ] && bad "queue head must park after the failure cap" || ok "queue head parked after the failure cap"
 check "parked head escalated to a human" "1" "$(grep -c '^707|' "$HUMAN_LOG")"
 [ -f "$QDIR/.apprfail-pr77" ] && bad "failure counter must be cleared" || ok "failure counter cleared"
+[ -f "$QDIR/.mergefail-pr77" ] && bad "parked head must clear its refusal counter" || ok "parked head cleared its refusal counter"
+[ -f "$QDIR/.mergefail-pr77-oldhead" ] && bad "parked head must clear legacy refusal counters" || ok "parked head cleared legacy refusal counters"
 
 echo "— merger: DIRTY queue head gets one conflict-fix, then review or human"
 : >"$HUMAN_LOG"
 CONFLICT_CALLS=$T/conflict-calls; : >"$CONFLICT_CALLS"
 jq -nc '{pr:88,issue:808,touches:["y/**"],approved_head:"bbbb2222",approval_kind:"reviewer",approval_comment_id:"6"}' >"$QDIR/1001-pr88.json"
+: >"$QDIR/.mergefail-pr88"
+: >"$QDIR/.mergefail-pr88-oldhead"
 queue_approval_check(){ QUEUE_APPROVAL_STATE=valid; }
 issue_difficulty(){ echo hard; }
 mf_cc(){ printf '%s %s\n' "$1" "$2" >>"$CONFLICT_CALLS"; }
@@ -1018,6 +1042,8 @@ check "conflict-fix invoked once through the ci-fix role" "1" "$(grep -c '^ci-fi
 [ -f "$QDIR/1001-pr88.json" ] && bad "no-push conflict-fix must clear the queue head" || ok "no-push conflict-fix cleared the queue head"
 check "no-push conflict-fix escalated to a human" "1" "$(grep -c '^808|' "$HUMAN_LOG")"
 [ -f "$QDIR/.conflictfix-pr88-bbbb2222" ] && bad "conflict marker must be cleared" || ok "conflict marker cleared"
+[ -f "$QDIR/.mergefail-pr88" ] && bad "conflict human park must clear its refusal counter" || ok "conflict human park cleared its refusal counter"
+[ -f "$QDIR/.mergefail-pr88-oldhead" ] && bad "conflict human park must clear legacy refusal counters" || ok "conflict human park cleared legacy refusal counters"
 # pushed-head variant: the resolved merge goes to a fresh review, not a human
 : >"$HUMAN_LOG"; : >"$CONFLICT_CALLS"
 REQUEUED=$T/requeued.log; : >"$REQUEUED"
@@ -1071,6 +1097,34 @@ check "look-ahead merges the clean second record" "42" "$(<"$LOOKAHEAD_MERGES")"
 [ -f "$QDIR/1005-pr42.json" ] && bad "merged look-ahead record must leave the queue" || ok "merged look-ahead record left the queue"
 rm -f "$QDIR/1004-pr41.json"
 
+echo "— merger: protocol-backoff records do not stall the look-ahead window"
+BACKOFF_MERGES=$T/backoff-merges.log; : >"$BACKOFF_MERGES"
+jq -nc '{pr:60,issue:410,touches:["backoff/**"],approved_head:"head60",approval_kind:"reviewer",approval_comment_id:"60"}' >"$QDIR/1006-pr60.json"
+jq -nc '{pr:61,issue:411,touches:["clean/**"],approved_head:"head61",approval_kind:"reviewer",approval_comment_id:"61"}' >"$QDIR/1007-pr61.json"
+mkdir -p "$CIFIX"
+jq -nc --argjson next_at "$(( $(date +%s) + 3600 ))" \
+  '{issue:410,pr:60,invocations:1,valid_fix_used:false,status:"protocol-backoff",next_at:$next_at,source_head:"head60"}' \
+  >"$(ci_fix_state_file 410 60)"
+mf_pr_head(){ echo "head$1"; }
+gh(){
+  if [ "$1 $2" = "pr view" ]; then
+    case "$5" in
+      state) echo OPEN;;
+      mergeStateStatus) echo CLEAN;;
+      statusCheckRollup)
+        if [ "$3" = 60 ]; then echo '[{"conclusion":"FAILURE","status":"COMPLETED"}]'; else echo '[{"conclusion":"SUCCESS","status":"COMPLETED"}]'; fi
+        ;;
+    esac
+    return 0
+  fi
+  if [ "$1 $2" = "pr merge" ]; then printf '%s\n' "$3" >>"$BACKOFF_MERGES"; return 0; fi
+  return 0
+}
+merger_step
+check "look-ahead scans past a delayed CI-fix retry" "61" "$(<"$BACKOFF_MERGES")"
+[ -f "$QDIR/1006-pr60.json" ] && ok "protocol-backoff record remains queued" || bad "protocol-backoff record was dropped"
+rm -f "$QDIR/1006-pr60.json" "$(ci_fix_state_file 410 60)"
+
 echo "— merger: look-ahead still prefers the FIFO head and merges once per tick"
 # Every other merger case has at most ONE mergeable record, so a look-ahead that
 # reordered the queue or kept scanning after a landed merge would stay green.
@@ -1099,20 +1153,30 @@ rm -f "$QDIR/1011-pr44.json"
 echo "— merger: the look-ahead window is bounded and MF_MERGE_LOOKAHEAD sanitized"
 BOUND_SEEN=$T/bound-seen.log
 BOUND_MERGES=$T/bound-merges.log
-seed_bound_queue(){ # three records: two pending, then one mergeable
-  jq -nc '{pr:45,issue:405,touches:["c/**"],approved_head:"head45",approval_kind:"reviewer",approval_comment_id:"45"}' >"$QDIR/1012-pr45.json"
-  jq -nc '{pr:46,issue:406,touches:["d/**"],approved_head:"head46",approval_kind:"reviewer",approval_comment_id:"46"}' >"$QDIR/1013-pr46.json"
-  jq -nc '{pr:47,issue:407,touches:["e/**"],approved_head:"head47",approval_kind:"reviewer",approval_comment_id:"47"}' >"$QDIR/1014-pr47.json"
+clear_bound_queue(){
+  local pr
+  for pr in 45 46 47 48 49 50 51 52 53 54 55; do
+    rm -f "$QDIR/$((967 + pr))-pr$pr.json"
+  done
+}
+seed_bound_queue(){ # eleven records; BOUND_MERGEABLE selects the green one
+  local pr
+  clear_bound_queue
+  for pr in 45 46 47 48 49 50 51 52 53 54 55; do
+    jq -nc --argjson pr "$pr" --argjson issue "$((360 + pr))" --arg head "head$pr" --arg comment "$pr" \
+      '{pr:$pr,issue:$issue,touches:["bound/**"],approved_head:$head,approval_kind:"reviewer",approval_comment_id:$comment}' \
+      >"$QDIR/$((967 + pr))-pr$pr.json"
+  done
   : >"$BOUND_SEEN"; : >"$BOUND_MERGES"
 }
-mf_pr_head(){ case "$1" in 45) echo head45;; 46) echo head46;; 47) echo head47;; esac; }
+mf_pr_head(){ echo "head$1"; }
 gh(){
   if [ "$1 $2" = "pr view" ]; then
     case "$5" in
       state) printf '%s\n' "$3" >>"$BOUND_SEEN"; echo OPEN;;   # first read of a record
       mergeStateStatus) echo CLEAN;;
       statusCheckRollup)
-        if [ "$3" = 47 ]; then echo '[{"conclusion":"SUCCESS","status":"COMPLETED"}]'; else echo '[]'; fi
+        if [ "$3" = "$BOUND_MERGEABLE" ]; then echo '[{"conclusion":"SUCCESS","status":"COMPLETED"}]'; else echo '[]'; fi
         ;;
     esac
     return 0
@@ -1120,23 +1184,34 @@ gh(){
   if [ "$1 $2" = "pr merge" ]; then printf '%s\n' "$3" >>"$BOUND_MERGES"; return 0; fi
   return 0
 }
+BOUND_MERGEABLE=55
 seed_bound_queue
 MF_MERGE_LOOKAHEAD=2
 merger_step
 check "look-ahead stops at the limit — the 3rd record is never inspected" \
   "45 46" "$(tr '\n' ' ' <"$BOUND_SEEN" | sed 's/ *$//')"
 check "a mergeable record beyond the limit does not merge" "0" "$(wc -l <"$BOUND_MERGES" | tr -d ' ')"
+BOUND_MERGEABLE=50
 seed_bound_queue
 MF_MERGE_LOOKAHEAD=abc
 merger_step
-check "non-numeric limit falls back to the default 5" "47" "$(<"$BOUND_MERGES")"
+check "non-numeric limit inspects exactly the default five" \
+  "45 46 47 48 49" "$(tr '\n' ' ' <"$BOUND_SEEN" | sed 's/ *$//')"
+check "fallback-to-5 leaves the mergeable 6th record untouched" "0" "$(wc -l <"$BOUND_MERGES" | tr -d ' ')"
+BOUND_MERGEABLE=55
 seed_bound_queue
 MF_MERGE_LOOKAHEAD=0
 merger_step
 check "zero limit clamps to the FIFO head alone" "45" "$(tr -d '\n' <"$BOUND_SEEN")"
 check "zero limit merges nothing behind the pending head" "0" "$(wc -l <"$BOUND_MERGES" | tr -d ' ')"
+seed_bound_queue
+MF_MERGE_LOOKAHEAD=999
+merger_step
+check "oversized limit clamps to ten records" \
+  "45 46 47 48 49 50 51 52 53 54" "$(tr '\n' ' ' <"$BOUND_SEEN" | sed 's/ *$//')"
+check "upper clamp leaves the mergeable 11th record untouched" "0" "$(wc -l <"$BOUND_MERGES" | tr -d ' ')"
 MF_MERGE_LOOKAHEAD=5
-rm -f "$QDIR/1012-pr45.json" "$QDIR/1013-pr46.json" "$QDIR/1014-pr47.json"
+clear_bound_queue
 
 echo "— merger: look-ahead never leaks the queue listing into a fixer's stdin"
 # `while read … done < <(ls …)` binds the queue-listing pipe to fd 0 for the
@@ -1195,6 +1270,39 @@ check "BEHIND recheck never invokes merge" "0" "$(wc -l <"$RECHECK_MERGES" | tr 
 [ -f "$QDIR/1006-pr57.json" ] && ok "updated BEHIND record stays queued" || bad "updated BEHIND record was dropped"
 rm -f "$QDIR/1006-pr57.json"
 
+echo "— merger: merge-state recheck routes newly-DIRTY PRs to conflict-fix"
+DIRTY_RECHECK_STATES=$T/dirty-recheck-states.log; : >"$DIRTY_RECHECK_STATES"
+DIRTY_RECHECK_FIXES=$T/dirty-recheck-fixes.log; : >"$DIRTY_RECHECK_FIXES"
+DIRTY_RECHECK_MERGES=$T/dirty-recheck-merges.log; : >"$DIRTY_RECHECK_MERGES"
+: >"$HUMAN_LOG"
+jq -nc '{pr:58,issue:508,touches:["race-dirty/**"],approved_head:"dirty-race-head",approval_kind:"reviewer",approval_comment_id:"58"}' >"$QDIR/1006-pr58.json"
+: >"$QDIR/.mergefail-pr58"
+: >"$QDIR/.mergefail-pr58-oldhead"
+mf_pr_head(){ echo dirty-race-head; }
+mf_cc(){ printf '%s %s\n' "$1" "$2" >>"$DIRTY_RECHECK_FIXES"; }
+gh(){
+  if [ "$1 $2" = "pr view" ]; then
+    case "$5" in
+      state) echo OPEN;;
+      statusCheckRollup) echo '[{"conclusion":"SUCCESS","status":"COMPLETED"}]';;
+      mergeStateStatus)
+        printf '%s\n' read >>"$DIRTY_RECHECK_STATES"
+        if [ "$(wc -l <"$DIRTY_RECHECK_STATES" | tr -d ' ')" = 1 ]; then echo CLEAN; else echo DIRTY; fi
+        ;;
+    esac
+    return 0
+  fi
+  if [ "$1 $2" = "pr merge" ]; then printf '%s\n' "$3" >>"$DIRTY_RECHECK_MERGES"; return 0; fi
+  return 1
+}
+merger_step
+check "DIRTY boundary race is read at admission and at the boundary" "2" "$(wc -l <"$DIRTY_RECHECK_STATES" | tr -d ' ')"
+check "DIRTY boundary race invokes conflict-fix" "ci-fix hard" "$(<"$DIRTY_RECHECK_FIXES")"
+check "DIRTY boundary race never invokes merge" "0" "$(wc -l <"$DIRTY_RECHECK_MERGES" | tr -d ' ')"
+[ -f "$QDIR/1006-pr58.json" ] && bad "no-push boundary conflict-fix must clear the queue record" || ok "no-push boundary conflict-fix cleared the queue record"
+[ -f "$QDIR/.mergefail-pr58" ] && bad "boundary conflict park must clear its refusal counter" || ok "boundary conflict park cleared its refusal counter"
+[ -f "$QDIR/.mergefail-pr58-oldhead" ] && bad "boundary conflict park must clear legacy refusal counters" || ok "boundary conflict park cleared legacy refusal counters"
+
 echo "— merger: refusal budget survives head churn (BLOCKED/DRAFT class)"
 : >"$HUMAN_LOG"
 MERGER_LOG=$T/merger.log; : >"$MERGER_LOG"
@@ -1202,6 +1310,7 @@ BLOCKED_LOOKAHEAD_MERGES=$T/blocked-lookahead-merges.log; : >"$BLOCKED_LOOKAHEAD
 log(){ printf '%s\n' "$*" >>"$MERGER_LOG"; }
 jq -nc '{pr:66,issue:606,touches:["v/**"],approved_head:"eeee5555",approval_kind:"reviewer",approval_comment_id:"9"}' >"$QDIR/1007-pr66.json"
 jq -nc '{pr:67,issue:607,touches:["w/**"],approved_head:"ffff6666",approval_kind:"reviewer",approval_comment_id:"10"}' >"$QDIR/1008-pr67.json"
+: >"$QDIR/.mergefail-pr66-oldhead"
 gh(){ case "$*" in
   *"--json state"*) echo OPEN;;
   *"--json statusCheckRollup"*) echo '[{"conclusion":"SUCCESS","status":"","state":""}]';;
@@ -1219,6 +1328,7 @@ merger_step
 check "blocked head look-ahead merges the clean second record" "67" "$(<"$BLOCKED_LOOKAHEAD_MERGES")"
 check "merge-refusal counter recorded" "1" "$(jq -r '.count' "$QDIR/.mergefail-pr66" 2>/dev/null)"
 check "merge-refusal state carries its diagnostic head" "eeee5555" "$(jq -r '.head' "$QDIR/.mergefail-pr66" 2>/dev/null)"
+[ -f "$QDIR/.mergefail-pr66-oldhead" ] && bad "refusal path must sweep legacy counters through mergefail_clear" || ok "refusal path swept legacy counters through mergefail_clear"
 check "merge-failure log identifies PR and head" "1" "$(grep -c 'merge command failed for PR #66 at head eeee5555' "$MERGER_LOG")"
 REFUSAL_HEAD=ffff7777
 jq -nc '{pr:66,issue:606,touches:["v/**"],approved_head:"ffff7777",approval_kind:"reviewer",approval_comment_id:"11"}' >"$QDIR/1007-pr66.json"
