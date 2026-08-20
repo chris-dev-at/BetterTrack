@@ -181,12 +181,12 @@ test('registration modes: approval mode gates on admin approve / reject via the 
       timeout: 15_000,
     });
 
-    // (3) Admin drives the real Settings page — approve A, reject B. Each row
-    // is keyed on the applicant's username, so we scope by that to avoid a
-    // race between them.
+    // (3) Admin drives the real People → Registration page — approve A, reject
+    // B. Each row is keyed on the applicant's username, so we scope by that to
+    // avoid a race between them.
     adminCtx = await newAdminBrowserContext(browser, apiRequest);
     const adminPage = await adminCtx.newPage();
-    await adminPage.goto('/admin/settings');
+    await adminPage.goto('/admin/registration');
     const approveRow = adminPage.getByRole('listitem').filter({ hasText: approveUsername });
     await expect(approveRow).toBeVisible({ timeout: 30_000 });
     await approveRow.getByRole('button', { name: 'Approve' }).click();
