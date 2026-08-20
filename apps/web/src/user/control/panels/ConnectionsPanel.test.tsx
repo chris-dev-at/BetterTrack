@@ -282,11 +282,13 @@ describe('ConnectionsPanel — Google account (§13.4 V4-P4b, moved from Securit
 });
 
 describe('ConnectionsPanel — paranoid Google Drive app data', () => {
-  test('hides the Drive card when the runtime client id is not configured', async () => {
+  test('never renders the Drive card without a runtime client id', async () => {
     vi.mocked(getParanoidMediaState).mockResolvedValue(SERVER_MEDIA);
     window.__BT__ = { googleDriveClientId: '' };
     renderPanel();
 
+    // The initial render is pending, so this catches a titled skeleton flash.
+    expect(screen.queryByText('Google Drive app data')).not.toBeInTheDocument();
     expect(await screen.findByText('Bank & broker cash sync')).toBeInTheDocument();
     await waitFor(() =>
       expect(screen.queryByText('Google Drive app data')).not.toBeInTheDocument(),
@@ -300,6 +302,34 @@ describe('ConnectionsPanel — paranoid Google Drive app data', () => {
 
     expect(await screen.findByText('Google Drive app data')).toBeInTheDocument();
     expect(await screen.findByText('Disconnected')).toBeInTheDocument();
+  });
+
+  test('shows the Drive card when Drive is already selected without a runtime client id', async () => {
+    vi.mocked(getParanoidMediaState).mockResolvedValue(DRIVE_ONLY_MEDIA);
+    window.__BT__ = { googleDriveClientId: '' };
+    renderPanel();
+
+    expect(await screen.findByText('Google Drive app data')).toBeInTheDocument();
+    expect(await screen.findByText('Needs sign-in')).toBeInTheDocument();
+  });
+
+  test('suppresses Drive status errors without a runtime client id', async () => {
+    let rejectRequest!: (reason?: unknown) => void;
+    vi.mocked(getParanoidMediaState).mockImplementation(
+      () =>
+        new Promise<ParanoidMediaStateResponse>((_resolve, reject) => {
+          rejectRequest = reject;
+        }),
+    );
+    window.__BT__ = { googleDriveClientId: '' };
+    renderPanel();
+
+    expect(screen.queryByText('Google Drive app data')).not.toBeInTheDocument();
+    await waitFor(() => expect(getParanoidMediaState).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      rejectRequest(new Error('offline'));
+    });
+    expect(screen.queryByText('Google Drive app data')).not.toBeInTheDocument();
   });
 
   test('retries a recoverable storage-status failure', async () => {
