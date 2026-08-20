@@ -67,6 +67,12 @@ function submissionPreview(submission: MyFeedbackSubmission): string {
   return submission.subject ?? submission.message;
 }
 
+function unreadRepliesLabel(count: number, t: ReturnType<typeof useT>): string {
+  return t(count === 1 ? 'feedback.unreadRepliesOne' : 'feedback.unreadRepliesOther', {
+    count,
+  });
+}
+
 function clearUnreadReplyCount(
   current: MyFeedbackResponse | undefined,
   feedbackId: string,
@@ -89,6 +95,7 @@ function MySubmissionRow({
 }) {
   const t = useT();
   const headline = outcomeHeadline(submission, t);
+  const unreadReplies = unreadRepliesLabel(submission.unreadReplyCount, t);
 
   return (
     <li className="bt-cc-list__item">
@@ -103,11 +110,9 @@ function MySubmissionRow({
               {t(`feedback.status.${submission.status}`)}
             </Badge>
             {submission.unreadReplyCount > 0 ? (
-              <Badge
-                aria-label={t('feedback.unreadReplies', { count: submission.unreadReplyCount })}
-                tone="blue"
-              >
-                {submission.unreadReplyCount}
+              <Badge role="status" tone="blue">
+                <span aria-hidden="true">{submission.unreadReplyCount}</span>
+                <span className="sr-only">{unreadReplies}</span>
               </Badge>
             ) : null}
           </div>
@@ -160,18 +165,19 @@ function FeedbackThread({
     mutationFn: (body: string) => sendFeedbackMessage(submission.id, { body }),
     onSuccess: ({ message }) => {
       setDraft('');
-      queryClient.setQueryData<InfiniteData<FeedbackThreadResponse>>(key, (current) => {
-        const firstPage = current?.pages[0];
-        if (!current || !firstPage || firstPage.messages.some((row) => row.id === message.id)) {
-          return current;
-        }
-        return {
-          ...current,
-          pages: [
-            { ...firstPage, messages: [message, ...firstPage.messages] },
-            ...current.pages.slice(1),
-          ],
-        };
+      const current = queryClient.getQueryData<InfiniteData<FeedbackThreadResponse>>(key);
+      const firstPage = current?.pages[0];
+      if (!current || !firstPage) {
+        void queryClient.invalidateQueries({ queryKey: key });
+        return;
+      }
+      if (firstPage.messages.some((row) => row.id === message.id)) return;
+      queryClient.setQueryData<InfiniteData<FeedbackThreadResponse>>(key, {
+        ...current,
+        pages: [
+          { ...firstPage, messages: [message, ...firstPage.messages] },
+          ...current.pages.slice(1),
+        ],
       });
     },
   });
@@ -275,7 +281,7 @@ function FeedbackThread({
         <div className="flex flex-wrap items-center justify-end gap-3">
           {replyMutation.isError ? <Alert tone="error">{t('feedback.replyError')}</Alert> : null}
           <Button
-            disabled={trimmedDraft.length === 0 || replyMutation.isPending}
+            disabled={trimmedDraft.length === 0 || replyMutation.isPending || !query.isSuccess}
             type="submit"
             variant="primary"
           >
@@ -333,7 +339,9 @@ export function MyFeedbackSubmissionsDialog({
 
   function openThread(submission: MyFeedbackSubmission) {
     setSelected(submission);
-    markReadMutation.mutate(submission.id);
+    if (submission.unreadReplyCount > 0) {
+      markReadMutation.mutate(submission.id);
+    }
   }
 
   return (
