@@ -6,6 +6,12 @@ if (!process.env.TEST_DATABASE_URL) {
   );
 }
 
+if (!process.env.TEST_REDIS_URL) {
+  throw new Error(
+    'TEST_REDIS_URL is required for vitest.config.integration.ts; the real Redis suites must not silently degrade to ioredis-mock.',
+  );
+}
+
 /**
  * Vitest config for the real-service integration job (postgres:17 + redis:7).
  * Run via: TEST_DATABASE_URL=... TEST_REDIS_URL=... pnpm test:integration

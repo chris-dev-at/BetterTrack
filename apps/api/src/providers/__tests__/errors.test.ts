@@ -24,10 +24,10 @@ async function yahooHttpError(status: 404 | 429 | 500, body = `HTTP ${status}`):
   }
 }
 
-async function yahooEnvelopeError(status: 404 | 429): Promise<unknown> {
+async function yahooEnvelopeError(status: 404 | 429, message?: string): Promise<unknown> {
   const code = status === 404 ? 'Not Found' : 'Too Many Requests';
   const description =
-    status === 404 ? 'No data found, symbol may be delisted' : 'Too Many Requests';
+    message ?? (status === 404 ? 'No data found, symbol may be delisted' : 'Too Many Requests');
   return yahooHttpError(
     status,
     JSON.stringify({ finance: { result: null, error: { code, description } } }),
@@ -63,6 +63,18 @@ describe('yahoo-finance2 v4 HTTPError classification', () => {
     expect(isRateLimitError(error)).toBe(false);
   });
 
+  it('recognizes a parameterized quoteSummary envelope 404', async () => {
+    const error = await yahooEnvelopeError(404, 'Quote not found for ticker symbol: BRK-B');
+
+    expect(error).toMatchObject({
+      name: 'Error',
+      message: 'Quote not found for ticker symbol: BRK-B',
+    });
+    expect(error).not.toHaveProperty('code');
+    expect(isNotFoundError(error)).toBe(true);
+    expect(isRateLimitError(error)).toBe(false);
+  });
+
   it('recognizes a real v4 JSON-envelope rate-limit error without a numeric code', async () => {
     const error = await yahooEnvelopeError(429);
 
@@ -74,6 +86,7 @@ describe('yahoo-finance2 v4 HTTPError classification', () => {
 
   it('does not classify unrelated or non-Yahoo errors with similar messages', () => {
     const unrelated = new Error('boom');
+    const unattestedBareNotFound = new Error('Not Found');
     const nonYahooNotFound = Object.assign(new Error('No data found, symbol may be delisted'), {
       name: 'FetchError',
     });
@@ -81,15 +94,33 @@ describe('yahoo-finance2 v4 HTTPError classification', () => {
       name: 'FetchError',
     });
     const similarNotFound = new Error('No data found; symbol may be delisted');
+    const embeddedQuoteSummaryNotFound = new Error(
+      'Upstream said: Quote not found for ticker symbol: AAPL',
+    );
     const similarRateLimit = new Error('Request failed: Too Many Requests');
 
     for (const error of [
       unrelated,
+      unattestedBareNotFound,
       nonYahooNotFound,
       nonYahooRateLimit,
       similarNotFound,
+      embeddedQuoteSummaryNotFound,
       similarRateLimit,
     ]) {
+      expect(isNotFoundError(error)).toBe(false);
+      expect(isRateLimitError(error)).toBe(false);
+    }
+  });
+
+  it('rejects exact-message impostors that only claim the Error name', () => {
+    const notFoundImpostor = {
+      name: 'Error',
+      message: 'No data found, symbol may be delisted',
+    };
+    const rateLimitImpostor = { name: 'Error', message: 'Too Many Requests' };
+
+    for (const error of [notFoundImpostor, rateLimitImpostor]) {
       expect(isNotFoundError(error)).toBe(false);
       expect(isRateLimitError(error)).toBe(false);
     }

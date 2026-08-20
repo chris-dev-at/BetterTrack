@@ -115,6 +115,7 @@ describe('OpenAPI document', () => {
       '/feedback',
       '/feedback/mine',
       '/feedback/{id}',
+      '/feedback/{id}/messages',
       '/social/requests',
     ];
     for (const path of expectedPaths) {
@@ -248,6 +249,24 @@ describe('OpenAPI document', () => {
     expect(deleteFeedback.responses as JsonObject).toHaveProperty('204');
     expect(paths).toHaveProperty('/admin/feedback/{id}');
     expect(paths).not.toHaveProperty('/admin/feedback/{id}/status');
+    const feedbackThread = (paths['/feedback/{id}/messages'] as JsonObject).get as JsonObject;
+    expect(feedbackThread.security).toEqual([{ sessionCookie: [] }, { apiKeyBearer: [] }]);
+    const feedbackThreadOk = ((feedbackThread.responses as JsonObject)['200'] as JsonObject)
+      .content as JsonObject;
+    expect((feedbackThreadOk['application/json'] as JsonObject).schema).toEqual({
+      $ref: '#/components/schemas/FeedbackThreadResponse',
+    });
+    expect(((paths['/feedback/{id}/messages'] as JsonObject).post as JsonObject).security).toEqual([
+      { sessionCookie: [] },
+      { apiKeyBearer: [] },
+    ]);
+    expect(((paths['/feedback/{id}/read'] as JsonObject).post as JsonObject).security).toEqual([
+      { sessionCookie: [] },
+      { apiKeyBearer: [] },
+    ]);
+    expect(
+      ((paths['/admin/feedback/{id}/messages'] as JsonObject).get as JsonObject).security,
+    ).toEqual([{ sessionCookie: [] }]);
 
     // #1327: plural remembered-device management is the bearer-capable sibling
     // of the browser-cookie mint/forget pair. Security is derived from the same

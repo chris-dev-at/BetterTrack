@@ -258,24 +258,37 @@ export function createRememberedDeviceStore(
     },
 
     async revokeAllForUser(userId, onRevoked) {
-      const deviceIds = await redis.smembers(rememberedDevicesForUserKey(userId));
+      const indexKey = rememberedDevicesForUserKey(userId);
+      const deviceIds = await redis.smembers(indexKey);
       if (deviceIds.length === 0) return 0;
 
       const reads = redis.pipeline();
       for (const deviceId of deviceIds) reads.get(rememberedDeviceKey(deviceId));
       const readResults = await reads.exec();
-      let revoked = 0;
+      const writes = redis.multi();
+      const revokedHandles: string[] = [];
       for (const [index, deviceId] of deviceIds.entries()) {
         const boundUserId = pipelineValue<string | null>(readResults, index);
         if (boundUserId !== userId) {
-          await pruneUnownedIndexMember(userId, deviceId, boundUserId);
+          writes.srem(indexKey, deviceId);
+          if (boundUserId === null) {
+            writes.del(rememberedDeviceMetadataKey(deviceId), pinQuickAuthMarkerKey(deviceId));
+          }
           continue;
         }
-        await clearForUser(userId, deviceId);
-        onRevoked?.(rememberedDeviceHandle(deviceId));
-        revoked += 1;
+        writes
+          .del(
+            rememberedDeviceKey(deviceId),
+            rememberedDeviceMetadataKey(deviceId),
+            pinQuickAuthMarkerKey(deviceId),
+          )
+          .srem(indexKey, deviceId);
+        revokedHandles.push(rememberedDeviceHandle(deviceId));
       }
-      return revoked;
+      await writes.exec();
+
+      for (const handle of revokedHandles) onRevoked?.(handle);
+      return revokedHandles.length;
     },
   };
 
