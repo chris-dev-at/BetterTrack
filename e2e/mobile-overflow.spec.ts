@@ -1152,6 +1152,13 @@ const OVERLAY_EXCLUSIONS: readonly OverlayExclusion[] = [
       'Menu contents depend on each configurable widget kind and layout state; the widget-builder e2e flow owns that state matrix.',
   },
   {
+    surface: 'VaultTransferQr sender screen',
+    sources: ['apps/web/src/user/vault/ui/VaultTransferQr.tsx'],
+    routes: ['/control/privacy'],
+    justification:
+      'E7 intentionally ships this sender primitive without a production mount; E8 supplies its per-vault adapter and the reachable vault-manager trigger.',
+  },
+  {
     surface: 'VaultSyncChip status dialog',
     sources: ['apps/web/src/user/vault/ui/VaultSyncChip.tsx'],
     routes: ['/'],
