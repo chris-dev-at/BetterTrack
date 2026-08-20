@@ -58,33 +58,39 @@ const PD9_ALERT_CONVERGENCE_TIMEOUT_MS = 45_000;
 /** Gap between convergence polls; each poll also re-runs the focused evaluation. */
 const PD9_ALERT_POLL_INTERVAL_MS = 1_000;
 
+/**
+ * Frozen traceability for the transition-era account-level gate exercised by
+ * this spec. These assertions do not claim coverage of the replacement
+ * per-vault V5-P13 contract; that mapping belongs to its later E10 gate.
+ */
 export const PD9_TRACEABILITY = [
   {
-    criterion: 'design note owner-acked BEFORE code',
+    criterion: 'Design note §16-logged + owner-acked BEFORE code',
     assertion: '[PD9-A1] binding design precondition',
   },
   {
-    criterion: 'zero cleartext rows for that portfolio',
+    criterion: 'Mode on ⇒ server stores no cleartext portfolio data (schema/probe test)',
     assertion: '[PD9-A2] complete DB cleartext probe',
   },
   {
-    criterion: 'Drive-only vault round trip: zero server bytes',
+    criterion:
+      'Drive-only round trip: zero portfolio rows server-side and the app remains fully functional (e2e)',
     assertion: '[PD9-A3] Drive-only enable and zero active server medium round trip',
   },
   {
-    criterion: 'per-vault media switching migrates docs correctly',
+    criterion: 'Media switching migrates the blob correctly (test)',
     assertion: '[PD9-A4] verified media ordering and retained-source failure',
   },
   {
-    criterion: 'sharing/public-profile inclusion',
+    criterion: 'Social/sharing surfaces are absent for the account (matrix test)',
     assertion: '[PD9-A5] killed/kept browser route matrix',
   },
   {
-    criterion: 'a client computes correct stats from encrypted fixture data',
+    criterion: 'A client computes correct stats from encrypted fixture data (test)',
     assertion: '[PD9-A6] known custom-asset totals without portfolio API reads',
   },
   {
-    criterion: 'alerts still fire',
+    criterion: 'Alerts still fire (test)',
     assertion: '[PD9-A7] real evaluator and notification dispatcher',
   },
 ] as const;
@@ -107,8 +113,8 @@ function sectionBetween(
  * Repository precondition for running the transition-era account-level PD9
  * gate. The binding redesign must be owner-acked, preserve #896's
  * retired-recovery semantics, and retire the live account-level surface only
- * after the ruled backup + wipe. Its current acceptance invariants must remain
- * recorded before the destructive browser flow starts.
+ * after the ruled backup + wipe. It intentionally does not claim coverage of
+ * the replacement per-vault acceptance contract.
  */
 export async function assertPd9DesignPrecondition(): Promise<void> {
   const [document, projectPlan] = await Promise.all([
@@ -199,13 +205,6 @@ export async function assertPd9DesignPrecondition(): Promise<void> {
   ];
   if (legacyRetirementSemantics.some((evidence) => !sectionNineteen.includes(evidence))) {
     throw new Error('PD9 design §19 no longer keeps the account-level gate until transition.');
-  }
-
-  const v5P13Acceptance = normalized(
-    sectionBetween(projectPlan, '| **V5-P13 —', '| **V5-P13b —', 'PROJECTPLAN V5-P13 row'),
-  );
-  if (PD9_TRACEABILITY.some(({ criterion }) => !v5P13Acceptance.includes(criterion))) {
-    throw new Error('PD9 traceability no longer maps the current V5-P13 acceptance contract.');
   }
 }
 
