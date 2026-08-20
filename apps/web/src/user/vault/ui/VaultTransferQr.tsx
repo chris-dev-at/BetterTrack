@@ -23,6 +23,7 @@ import {
   VAULT_TRANSFER_QR_EXPIRY_MS,
   VAULT_TRANSFER_QR_OPTIONS,
   VAULT_TRANSFER_STEP_UP_MAX_AGE_MS,
+  type VaultTransferQrCustody,
   type VaultTransferQrSource,
 } from '../qr';
 
@@ -164,14 +165,29 @@ export function VaultTransferQr({
     setPhase('blocked');
   }
 
+  function requirePasswordStepUp(generation: number) {
+    if (requestGeneration.current !== generation) return;
+    freshPasswordAt.current = null;
+    setSecret(null);
+    setDevicePassword('');
+    setErrorKey(null);
+    setPhase('password');
+  }
+
   async function reveal(generation: number) {
     let mnemonic: string;
+    let finalCustody: VaultTransferQrCustody;
     try {
-      await source.requireLiveUnlock();
+      const initialCustody = await source.requireLiveUnlock();
       if (requestGeneration.current !== generation) return;
+      if (initialCustody === 'wrapped' && !hasFreshPasswordStepUp()) {
+        requirePasswordStepUp(generation);
+        return;
+      }
+      if (initialCustody === 'plain') freshPasswordAt.current = null;
       mnemonic = await source.readMnemonic();
       if (requestGeneration.current !== generation) return;
-      await source.requireLiveUnlock();
+      finalCustody = await source.requireLiveUnlock();
     } catch {
       block(generation, 'vault.transfer.sender.errors.unlockRequired');
       return;
@@ -192,6 +208,11 @@ export function VaultTransferQr({
       return;
     }
     if (requestGeneration.current !== generation) return;
+    if (finalCustody === 'wrapped' && !hasFreshPasswordStepUp()) {
+      requirePasswordStepUp(generation);
+      return;
+    }
+    if (finalCustody === 'plain') freshPasswordAt.current = null;
     setDevicePassword('');
     setSecret({ mnemonic, payload, source, vaultId, vaultName, keyFingerprint });
     setErrorKey(null);
@@ -205,26 +226,42 @@ export function VaultTransferQr({
     setErrorKey(null);
     setManualOpen(showWords);
     setPhase('checking');
+    let custody: VaultTransferQrCustody;
     try {
-      await source.requireLiveUnlock();
+      custody = await source.requireLiveUnlock();
     } catch {
       block(generation, 'vault.transfer.sender.errors.unlockRequired');
       return;
     }
     if (requestGeneration.current !== generation) return;
-    if (source.custody === 'wrapped' && !hasFreshPasswordStepUp()) {
-      setPhase('password');
+    if (custody === 'wrapped' && !hasFreshPasswordStepUp()) {
+      requirePasswordStepUp(generation);
       return;
     }
+    if (custody === 'plain') freshPasswordAt.current = null;
     await reveal(generation);
   }
 
   async function submitPassword(event: FormEvent) {
     event.preventDefault();
-    if (source.custody !== 'wrapped' || devicePassword.length === 0) return;
+    if (devicePassword.length === 0) return;
     const generation = ++requestGeneration.current;
     setErrorKey(null);
     setPhase('checking');
+    let custody: VaultTransferQrCustody;
+    try {
+      custody = await source.requireLiveUnlock();
+    } catch {
+      block(generation, 'vault.transfer.sender.errors.unlockRequired');
+      return;
+    }
+    if (requestGeneration.current !== generation) return;
+    if (custody === 'plain') {
+      freshPasswordAt.current = null;
+      setDevicePassword('');
+      await reveal(generation);
+      return;
+    }
     try {
       await source.verifyDevicePassword(devicePassword);
     } catch {
@@ -236,6 +273,7 @@ export function VaultTransferQr({
       return;
     }
     if (requestGeneration.current !== generation) return;
+    setDevicePassword('');
     freshPasswordAt.current = now();
     await reveal(generation);
   }

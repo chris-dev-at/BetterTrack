@@ -9,7 +9,7 @@ import { createVaultTransferQrSource } from './senderSource';
 
 class ControlledKeystore implements Pick<
   EndpointVaultKeystore,
-  'readMnemonic' | 'subscribeToSessionEnd' | 'verifyDevicePassword' | 'withContentKey'
+  'readMnemonic' | 'stateFor' | 'subscribeToSessionEnd' | 'verifyDevicePassword' | 'withContentKey'
 > {
   readonly mnemonic = deferred<string>();
   readonly readMnemonic = vi.fn((_vaultId: string) => this.mnemonic.promise);
@@ -24,6 +24,13 @@ class ControlledKeystore implements Pick<
   }
 
   async verifyDevicePassword(_devicePassword: string): Promise<void> {}
+
+  async stateFor() {
+    return {
+      status: 'stored+plain' as const,
+      requiredAction: { kind: 'open-silently' as const },
+    };
+  }
 
   async withContentKey<T>(
     _vaultId: string,
@@ -57,7 +64,6 @@ describe('createVaultTransferQrSource', () => {
   it('rejects a mnemonic read that crosses live-session revocation', async () => {
     const keystore = new ControlledKeystore();
     const source = createVaultTransferQrSource({
-      custody: 'plain',
       keystore,
       vaultId: VAULT_TRANSFER_VECTOR_VAULT_ID,
     });

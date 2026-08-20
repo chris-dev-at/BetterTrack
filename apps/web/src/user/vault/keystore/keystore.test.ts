@@ -14,6 +14,7 @@ import {
   deriveVaultWrapKey,
   wrapContentKey,
 } from '../keys/keyCore';
+import { createVaultTransferQrSource } from '../qr/senderSource';
 import { acknowledgePlainCustodyRisk } from './acknowledgment';
 import { EndpointVaultKeystore, lockoutDelayMs } from './core';
 import type { DevicePasswordArgon2, DevicePasswordArgon2Options } from './deviceCrypto';
@@ -357,6 +358,22 @@ describe('endpoint keystore custody and verified persistence', () => {
     expect((await storage.readEntry(VAULT_1)) as { custody: string }).toMatchObject({
       custody: 'plain',
     });
+  });
+
+  it('derives transfer reveal custody from the current real keystore entry', async () => {
+    const storage = new MemoryEndpointStorage();
+    const core = keystore(storage);
+    await core.storePlainAfterVerifiedOpen({
+      vaultId: VAULT_1,
+      mnemonic: MNEMONIC,
+      acknowledgment: acknowledgePlainCustodyRisk(VAULT_1),
+      fetchHeaderEnvelope: verifiedHeaderFetch(VAULT_1),
+    });
+    const source = createVaultTransferQrSource({ keystore: core, vaultId: VAULT_1 });
+
+    await expect(source.requireLiveUnlock()).resolves.toBe('plain');
+    await core.switchToWrapped(VAULT_1, PASSWORD);
+    await expect(source.requireLiveUnlock()).resolves.toBe('wrapped');
   });
 
   it('re-verifies the device password without dropping the live E7 content-key session', async () => {
