@@ -656,6 +656,8 @@ export const feedback = pgTable(
     submitterLastReadAt: timestamp('submitter_last_read_at', { withTimezone: true }),
     adminLastReadAt: timestamp('admin_last_read_at', { withTimezone: true }),
     deletedByUserAt: timestamp('deleted_by_user_at', { withTimezone: true }),
+    // Admin workspace hygiene only: never exposed on the submitter rail.
+    archivedAt: timestamp('archived_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     // No trigger/$onUpdate owns these: status transitions set both explicitly.
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
