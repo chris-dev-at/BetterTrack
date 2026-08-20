@@ -34,6 +34,7 @@ test('Field keeps a required marker out of its control accessible name', () => {
   const marker = container.querySelector<HTMLElement>('.bt-field__required-marker')!;
   expect(marker).toHaveAttribute('aria-hidden', 'true');
   expect(marker).toHaveTextContent('*');
+  expect(marker.textContent).toBe('*');
 });
 
 function DialogFixture() {
