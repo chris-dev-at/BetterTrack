@@ -94,7 +94,7 @@ interface AlertFixture {
 test.use({ trace: 'off', screenshot: 'off', video: 'off' });
 
 test.describe('PD9 paranoid-mode end-to-end gate', () => {
-  test('normal account remains on the server store after opening the migration wizard with the Drive seam installed', async ({
+  test('normal account remains on the server store after opening the paranoid setup wizard with the Drive seam installed', async ({
     context,
   }, testInfo) => {
     const diagnostics: string[] = [];
@@ -439,15 +439,10 @@ test.describe('PD9 paranoid-mode end-to-end gate', () => {
           .getByLabel('I want to rehydrate this unlocked vault and disable Paranoid mode.')
           .check();
         await page.getByRole('button', { name: 'Restore normal mode' }).click();
-        // Back-to-normal signal. The old locator watched for `vault.settings.normal`
-        // ("Client-encrypted vault"), the label of the account-level enable row that
-        // the Vaults-v2 panel redesign deleted — the same latent staleness as the
-        // `Set up` → `Open migration` relabel, and it only became reachable once the
-        // seam repair let this block run to its end. The legacy entry replaces it
-        // one-for-one: PrivacyPanel renders it exclusively under
-        // `privacy.privacyMode === 'normal'`, so it appears only after the disable
-        // has actually flipped the account back.
-        await expect(page.getByRole('button', { name: 'Open migration' })).toBeVisible({
+        // Back-to-normal signal. PrivacyPanel renders the setup entry exclusively
+        // under `privacy.privacyMode === 'normal'`, so it appears only after the
+        // disable has actually flipped the account back.
+        await expect(page.getByRole('button', { name: 'Set up', exact: true })).toBeVisible({
           timeout: 30_000,
         });
 
@@ -666,7 +661,7 @@ async function enableDriveOnly(page: Page, sensitive: Pd9SensitiveCanary[]): Pro
 }
 
 // Post-PERF1 the vault stack is code-split: `VaultRuntimeProvider` is pulled in
-// only when the privacy panel's legacy entry sets `?enable=1`, so this gesture —
+// only when the privacy panel's setup entry sets `?enable=1`, so this gesture —
 // not a bare page load — is what makes the boundary double observable.
 //
 // This is also where the seam is proven POSITIVELY, and it is what makes the
@@ -677,7 +672,7 @@ async function enableDriveOnly(page: Page, sensitive: Pd9SensitiveCanary[]): Pro
 // that the helper is not a no-op.
 async function openParanoidSetup(page: Page): Promise<void> {
   await page.goto('/control/privacy');
-  await page.getByRole('button', { name: 'Open migration' }).click();
+  await page.getByRole('button', { name: 'Set up', exact: true }).click();
   // Heading FIRST, flag second, so the two failure modes stay distinguishable.
   // On a cold Vite dev server the vault/crypto chunk is the slowest transform in
   // the suite; asserting the flag first would report that slowness as
