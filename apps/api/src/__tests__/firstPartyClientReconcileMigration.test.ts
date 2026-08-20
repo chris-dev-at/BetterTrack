@@ -38,6 +38,10 @@ import {
  *   - 0088 (`0088_feedback`) appends #1315's create-only feedback:write scope.
  *   - 0090 (`0090_feedback_status_history`) appends #1338's caller-history
  *     feedback:read scope.
+ *   - 0092 (`0092_first_party_grant_scopes`) is the first of the family to reach
+ *     past the CLIENT row into #1393's active GRANTS: it unions both feedback
+ *     scopes into live BetterTrackMobile grants minted before 0088/0090 widened
+ *     the client. Revoked and third-party grants stay untouched.
  *
  * The shared harness only ever replays migrations onto an empty DB (and truncates),
  * so — exactly like the 0019 / 0024 data-migration suites — this boots a throwaway
@@ -53,6 +57,7 @@ const TARGET_0080 = '0080_first_party_client_mirrorchain_scopes';
 const TARGET_0081 = '0081_first_party_client_vault_sync_scope';
 const TARGET_0088 = '0088_feedback';
 const TARGET_0090 = '0090_feedback_status_history';
+const TARGET_0092 = '0092_first_party_grant_scopes';
 const OAUTH_LOGO_CACHE_MIGRATION = '0074_oauth_client_logo_cache';
 
 const FEEDBACK_MIGRATION_USER_ID = '019cdef0-0000-7000-8000-000000000001';
@@ -704,5 +709,92 @@ describe(`migration ${TARGET_0090} — feedback status history`, () => {
     expect(unchangedNew.lastStatusChangeAt).toBe(unchangedNew.updatedAt);
     expect(unchangedTriaged.status).toBe('triaged');
     expect(unchangedTriaged.lastStatusChangeAt).toBe(unchangedTriaged.updatedAt);
+  });
+});
+
+/**
+ * #1393 — the first reconcile migration that reaches past the CLIENT ceiling into
+ * the GRANT rows. 0088 (`feedback:write`) and 0090 (`feedback:read`) both widened
+ * only `oauth_clients.scopes`, so mobile grants minted before them stayed narrow
+ * and every bearer derived from them 403'd — on prod permanently, because the
+ * migrate-only updater never runs the boot reconcile that would union the ceiling
+ * into active grants. This heals BOTH scopes in one union-only, replay-guarded
+ * statement, scoped through the stable public client id + `is_first_party`, so no
+ * third-party consent record can be caught by it and no revoked authorization
+ * record is rewritten.
+ */
+describe(`migration ${TARGET_0092} — active first-party grant feedback scopes`, () => {
+  let client: PGlite;
+
+  beforeEach(async () => {
+    client = await bootUpTo(TARGET_0092);
+  });
+
+  async function readGrant(id: string): Promise<{ scopes: string[]; revoked_at: string | null }> {
+    const result = await client.query<{ scopes: string[]; revoked_at: string | null }>(
+      `SELECT "scopes", "revoked_at" FROM "oauth_grants" WHERE "id" = $1`,
+      [id],
+    );
+    return result.rows[0]!;
+  }
+
+  it('widens only a live BetterTrackMobile grant and remains idempotent', async () => {
+    const userId = '10000000-0000-4000-8000-000000000090';
+    const thirdPartyClientId = '20000000-0000-4000-8000-000000000090';
+    const activeGrantId = '30000000-0000-4000-8000-000000000090';
+    const revokedGrantId = '40000000-0000-4000-8000-000000000090';
+    const thirdPartyGrantId = '50000000-0000-4000-8000-000000000090';
+    // The realistic prod shape for a grant issued BETWEEN 0088 and 0090: it
+    // already consented to feedback:write and must gain only the missing read
+    // half, in ceiling order and without a duplicate.
+    const partialGrantId = '60000000-0000-4000-8000-000000000090';
+
+    await client.exec(`
+      INSERT INTO "users" ("id", "email", "username", "password_hash")
+      VALUES ('${userId}', 'grant-heal@bt.test', 'grantheal', 'hash');
+
+      INSERT INTO "oauth_clients"
+        ("id", "user_id", "client_id", "name", "client_secret_hash",
+         "redirect_uris", "scopes", "is_public", "is_first_party")
+      VALUES
+        ('${thirdPartyClientId}', '${userId}', 'btc_thirdPartyGrantHeal', 'Third party', NULL,
+         ARRAY['https://third.example/callback']::text[],
+         ARRAY['portfolio:read','feedback:write','feedback:read']::text[], true, false);
+
+      INSERT INTO "oauth_grants" ("id", "client_id", "user_id", "scopes", "revoked_at")
+      VALUES
+        ('${activeGrantId}',
+         (SELECT "id" FROM "oauth_clients" WHERE "client_id" = '${CLIENT_ID}'),
+         '${userId}', ARRAY['portfolio:read']::text[], NULL),
+        ('${revokedGrantId}',
+         (SELECT "id" FROM "oauth_clients" WHERE "client_id" = '${CLIENT_ID}'),
+         '${userId}', ARRAY['portfolio:read']::text[], now()),
+        ('${partialGrantId}',
+         (SELECT "id" FROM "oauth_clients" WHERE "client_id" = '${CLIENT_ID}'),
+         '${userId}', ARRAY['portfolio:read','feedback:write']::text[], NULL),
+        ('${thirdPartyGrantId}', '${thirdPartyClientId}', '${userId}',
+         ARRAY['portfolio:read']::text[], NULL);
+    `);
+
+    await applyMigration(client, TARGET_0092);
+
+    expect(await readGrant(activeGrantId)).toEqual({
+      scopes: ['portfolio:read', 'feedback:write', 'feedback:read'],
+      revoked_at: null,
+    });
+    const partial = await readGrant(partialGrantId);
+    expect(partial.scopes).toEqual(['portfolio:read', 'feedback:write', 'feedback:read']);
+    expect(new Set(partial.scopes).size).toBe(partial.scopes.length);
+    expect((await readGrant(revokedGrantId)).scopes).toEqual(['portfolio:read']);
+    expect((await readGrant(revokedGrantId)).revoked_at).not.toBeNull();
+    expect(await readGrant(thirdPartyGrantId)).toEqual({
+      scopes: ['portfolio:read'],
+      revoked_at: null,
+    });
+
+    const afterFirstRun = await readGrant(activeGrantId);
+    await applyMigrationChunkContaining(client, TARGET_0092, 'UPDATE "oauth_grants"');
+    expect(await readGrant(activeGrantId)).toEqual(afterFirstRun);
+    expect((await readGrant(partialGrantId)).scopes).toEqual(partial.scopes);
   });
 });
