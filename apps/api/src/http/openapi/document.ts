@@ -608,6 +608,16 @@ interface EndpointDef {
   /** Contract body returned with HTTP 503 by readiness-style public probes. */
   unavailableResponse?: z.ZodTypeAny;
   /**
+   * Stable `ApiError.error.code` values emitted by this operation beyond the
+   * shared authentication and optional admin step-up guards.
+   */
+  errorCodes?: readonly string[];
+  /**
+   * This operation runs behind the mandatory admin 2FA gate and can therefore
+   * return the shared `ADMIN_2FA_SETUP_REQUIRED` refusal.
+   */
+  adminStepUp?: boolean;
+  /**
    * Success response media type; defaults to JSON. Paranoid-vault ciphertext
    * reads use `application/octet-stream` and describe their opaque bodies with a
    * binary schema.
@@ -1778,6 +1788,7 @@ const endpoints: EndpointDef[] = [
     path: '/admin/feedback',
     tag: 'Admin',
     summary: 'Category-priority inbox for authenticated web and native feedback.',
+    adminStepUp: true,
     query: contracts.adminFeedbackListQuerySchema,
     status: 200,
     response: R.AdminFeedbackListResponse,
@@ -1787,6 +1798,8 @@ const endpoints: EndpointDef[] = [
     path: '/admin/feedback/{id}',
     tag: 'Admin',
     summary: 'Update one feedback submission lifecycle status or workspace archive state.',
+    adminStepUp: true,
+    errorCodes: contracts.FEEDBACK_STATUS_ERROR_CODES,
     params: contracts.idParamSchema,
     body: R.UpdateFeedbackRequest,
     status: 200,
@@ -1797,6 +1810,7 @@ const endpoints: EndpointDef[] = [
     path: '/admin/feedback/{id}/messages',
     tag: 'Admin',
     summary: 'Read one submission’s admin ↔ submitter support thread.',
+    adminStepUp: true,
     params: contracts.idParamSchema,
     query: contracts.feedbackThreadQuerySchema,
     status: 200,
@@ -1807,6 +1821,7 @@ const endpoints: EndpointDef[] = [
     path: '/admin/feedback/{id}/messages',
     tag: 'Admin',
     summary: 'Reply to a feedback submission as the authenticated admin.',
+    adminStepUp: true,
     params: contracts.idParamSchema,
     body: R.SendFeedbackMessageRequest,
     status: 201,
@@ -1817,6 +1832,7 @@ const endpoints: EndpointDef[] = [
     path: '/admin/feedback/{id}/read',
     tag: 'Admin',
     summary: 'Mark one feedback support thread read for the admin side.',
+    adminStepUp: true,
     params: contracts.idParamSchema,
     status: 200,
     response: R.OkResponse,
@@ -2765,6 +2781,7 @@ const endpoints: EndpointDef[] = [
     path: '/feedback',
     tag: 'Feedback',
     summary: 'Submit a feature request, bug report, or other feedback.',
+    errorCodes: contracts.FEEDBACK_SUBMISSION_ERROR_CODES,
     body: R.CreateFeedbackRequest,
     status: 201,
     response: R.CreateFeedbackResponse,
@@ -4572,6 +4589,36 @@ const errorResponse = (description: string) => ({
   content: jsonContent(R.ApiError),
 });
 
+function errorCodesForEndpoint(endpoint: EndpointDef): string[] {
+  return [
+    ...(endpoint.public ? [] : [contracts.AUTH_ERROR_CODES.unauthenticated]),
+    ...(endpoint.adminStepUp ? [contracts.ADMIN_2FA_SETUP_REQUIRED] : []),
+    ...(endpoint.errorCodes ?? []),
+  ].filter((code, index, all) => all.indexOf(code) === index);
+}
+
+/**
+ * zod-to-openapi v7 preserves operation metadata but drops specification
+ * extensions from response configs. Apply the operation-level extension to its
+ * generated output instead, leaving the wire `ApiError` schema unchanged.
+ */
+function addErrorCodeExtensions<T extends { paths: Record<string, unknown> }>(document: T): T {
+  for (const endpoint of endpoints) {
+    const errorCodes = errorCodesForEndpoint(endpoint);
+    if (errorCodes.length === 0) continue;
+
+    const pathItem = document.paths[endpoint.path] as Record<string, unknown> | undefined;
+    const operation = pathItem?.[endpoint.method] as Record<string, unknown> | undefined;
+    if (!operation) {
+      throw new Error(
+        `OpenAPI operation missing while adding error-code metadata: ${endpoint.method.toUpperCase()} ${endpoint.path}`,
+      );
+    }
+    operation['x-error-codes'] = errorCodes;
+  }
+  return document;
+}
+
 for (const ep of endpoints) {
   const responses: Record<string, ResponseConfig> = {};
   responses[ep.status] = ep.response
@@ -4751,22 +4798,26 @@ export function buildOpenApiDocument() {
 
 function generateOpenApiDocument() {
   const generator = new OpenApiGeneratorV3(registry.definitions);
-  return generator.generateDocument({
-    openapi: '3.0.3',
-    info: {
-      title: 'BetterTrack API',
-      version: API_VERSION,
-      description:
-        'BetterTrack HTTP API. Base path `/api/v1`, JSON, camelCase. Errors use the ' +
-        'envelope `{ error: { code, message, details? } }`. Routes require either a ' +
-        'session cookie or a bearer token — a personal API key or a delegated OAuth ' +
-        'access token (§6.13) — unless marked public.\n\n' +
-        INTEGRATION_GUIDE,
-    },
-    servers: [{ url: '/api/v1', description: 'BetterTrack API v1 (relative to the API origin).' }],
-    // Either scheme authenticates a request; API-key scopes further gate access.
-    security: [{ [SESSION_SECURITY]: [] }, { [BEARER_SECURITY]: [] }],
-  });
+  return addErrorCodeExtensions(
+    generator.generateDocument({
+      openapi: '3.0.3',
+      info: {
+        title: 'BetterTrack API',
+        version: API_VERSION,
+        description:
+          'BetterTrack HTTP API. Base path `/api/v1`, JSON, camelCase. Errors use the ' +
+          'envelope `{ error: { code, message, details? } }`. Routes require either a ' +
+          'session cookie or a bearer token — a personal API key or a delegated OAuth ' +
+          'access token (§6.13) — unless marked public.\n\n' +
+          INTEGRATION_GUIDE,
+      },
+      servers: [
+        { url: '/api/v1', description: 'BetterTrack API v1 (relative to the API origin).' },
+      ],
+      // Either scheme authenticates a request; API-key scopes further gate access.
+      security: [{ [SESSION_SECURITY]: [] }, { [BEARER_SECURITY]: [] }],
+    }),
+  );
 }
 
 let cached: ReturnType<typeof buildOpenApiDocument> | null = null;

@@ -410,6 +410,41 @@ describe('OpenAPI document', () => {
     expect((securitySchemes.sessionCookie as JsonObject).in).toBe('cookie');
   });
 
+  it('publishes contract-owned feedback error codes as operation metadata', () => {
+    const document = buildOpenApiDocument() as unknown as JsonObject;
+    const paths = document.paths as JsonObject;
+    const submitFeedback = (paths['/feedback'] as JsonObject).post as JsonObject;
+    const updateFeedback = (paths['/admin/feedback/{id}'] as JsonObject).patch as JsonObject;
+    const submittedCodes = submitFeedback['x-error-codes'] as string[];
+    const updatedCodes = updateFeedback['x-error-codes'] as string[];
+
+    expect(submittedCodes).toEqual(
+      expect.arrayContaining([
+        contracts.AUTH_ERROR_CODES.unauthenticated,
+        ...contracts.FEEDBACK_SUBMISSION_ERROR_CODES,
+      ]),
+    );
+    expect(updatedCodes).toEqual(
+      expect.arrayContaining([
+        contracts.AUTH_ERROR_CODES.unauthenticated,
+        contracts.ADMIN_2FA_SETUP_REQUIRED,
+        ...contracts.FEEDBACK_STATUS_ERROR_CODES,
+      ]),
+    );
+
+    // The feedback routes above are mounted API operations; keep this coverage
+    // dynamic so a newly exported `*_LIMIT`, `*_REQUIRED`, or `*_INVALID`
+    // feedback error cannot silently remain a bare `ApiError.error.code`.
+    const exportedFeedbackCodes = Object.entries(contracts).flatMap(([name, value]) =>
+      /^FEEDBACK_.*_(?:LIMIT|REQUIRED|INVALID)$/.test(name) && typeof value === 'string'
+        ? [value]
+        : [],
+    );
+    expect([...submittedCodes, ...updatedCodes]).toEqual(
+      expect.arrayContaining(exportedFeedbackCodes),
+    );
+  });
+
   it('documents the recursive vault JSON columns without mutating the contracts module', () => {
     // The hint that lets the generator past ZodLazy is installed for the duration
     // of one generateDocument() call and removed again, so importing the OpenAPI
