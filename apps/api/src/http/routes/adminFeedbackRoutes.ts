@@ -89,6 +89,7 @@ export function registerAdminFeedbackRoutes(
     async (req, res) => {
       const { id } = req.valid?.params as { id: string };
       const result = await ctx.feedback.updateStatus(
+        req.authUser!.id,
         id,
         req.valid?.body as UpdateFeedbackStatusRequest,
       );

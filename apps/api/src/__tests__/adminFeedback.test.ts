@@ -1,4 +1,4 @@
-import { count, eq } from 'drizzle-orm';
+import { and, count, eq } from 'drizzle-orm';
 import type { Application } from 'express';
 import request from 'supertest';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -36,6 +36,7 @@ describe('admin feedback inbox', () => {
 
   beforeEach(async () => {
     await harness.db.delete(schema.feedback);
+    await harness.db.delete(schema.notifications);
   });
 
   async function loginAgent(app: Application, user: SeededUser): Promise<Agent> {
@@ -106,6 +107,13 @@ describe('admin feedback inbox', () => {
       .returning();
 
     return { rows, webUser, mobileUser };
+  }
+
+  function notificationRows(userId: string, type: string) {
+    return harness.db
+      .select()
+      .from(schema.notifications)
+      .where(and(eq(schema.notifications.userId, userId), eq(schema.notifications.type, type)));
   }
 
   it('lists both clients category-first, supports newest sort, filtering and pagination', async () => {
@@ -259,6 +267,39 @@ describe('admin feedback inbox', () => {
     });
   });
 
+  it('notifies a submitter once for an idempotent status transition', async () => {
+    const { rows, webUser } = await seedQueue();
+    const target = rows[0]!;
+
+    const firstResponse = await adminAgent
+      .patch(`/api/v1/admin/feedback/${target.id}`)
+      .set(...XRW)
+      .send({ status: 'triaged' });
+    expect(firstResponse.status).toBe(200);
+    const first = updateFeedbackStatusResponseSchema.parse(firstResponse.body);
+
+    // Same lifecycle payload is an HTTP retry, not a fresh transition. The
+    // repository preserves lastStatusChangeAt, so the natural dispatcher key is
+    // stable even before its unique (user, eventKey) marker backs it up.
+    const retryResponse = await adminAgent
+      .patch(`/api/v1/admin/feedback/${target.id}`)
+      .set(...XRW)
+      .send({ status: 'triaged' });
+    expect(retryResponse.status).toBe(200);
+    const retry = updateFeedbackStatusResponseSchema.parse(retryResponse.body);
+    expect(retry.lastStatusChangeAt).toBe(first.lastStatusChangeAt);
+
+    const notices = await notificationRows(webUser.id, 'feedback.status_changed');
+    expect(notices).toHaveLength(1);
+    expect(notices[0]?.payload).toMatchObject({
+      eventKey: `feedback.status_changed:${target.id}:${first.lastStatusChangeAt}`,
+      feedbackId: target.id,
+      status: 'triaged',
+      lastStatusChangeAt: first.lastStatusChangeAt,
+    });
+    expect(await notificationRows(admin.id, 'feedback.status_changed')).toHaveLength(0);
+  });
+
   it('lets an admin read and reply to any submission through the shared thread wire shape', async () => {
     const { rows, webUser } = await seedQueue();
     const submission = rows[0]!;
@@ -269,6 +310,9 @@ describe('admin feedback inbox', () => {
       .set(...XRW)
       .send({ body: 'Here are extra details.' });
     expect(submitterPost.status).toBe(201);
+    // The submitter's own insert is visible to staff through the thread, but it
+    // must never bounce a feedback notification back to its author.
+    expect(await notificationRows(webUser.id, 'feedback.reply_created')).toHaveLength(0);
 
     const adminRead = await adminAgent.get(`/api/v1/admin/feedback/${submission.id}/messages`);
     expect(adminRead.status).toBe(200);
@@ -285,11 +329,32 @@ describe('admin feedback inbox', () => {
       .set(...XRW)
       .send({ body: 'Thank you — we can reproduce it.' });
     expect(adminPost.status).toBe(201);
-    expect(sendFeedbackMessageResponseSchema.parse(adminPost.body).message).toMatchObject({
+    const adminMessage = sendFeedbackMessageResponseSchema.parse(adminPost.body).message;
+    expect(adminMessage).toMatchObject({
       feedbackId: submission.id,
       senderId: admin.id,
       authorSide: 'admin',
     });
+
+    const firstNotices = await notificationRows(webUser.id, 'feedback.reply_created');
+    expect(firstNotices).toHaveLength(1);
+    expect(firstNotices[0]?.payload).toMatchObject({
+      eventKey: `feedback.reply_created:${adminMessage.id}`,
+      feedbackId: submission.id,
+      messageId: adminMessage.id,
+    });
+    expect(await notificationRows(admin.id, 'feedback.reply_created')).toHaveLength(0);
+
+    // BullMQ may redeliver an already-inserted message event. Its durable message
+    // id is the idempotency key, so the dispatcher must retain exactly one row.
+    await harness.ctx.notificationDispatcher.dispatch({
+      type: 'feedback.reply_created',
+      userId: webUser.id,
+      feedbackId: submission.id,
+      messageId: adminMessage.id,
+      occurredAt: adminMessage.createdAt,
+    });
+    expect(await notificationRows(webUser.id, 'feedback.reply_created')).toHaveLength(1);
 
     const submitterRead = await submitterAgent.get(`/api/v1/feedback/${submission.id}/messages`);
     const submitterThread = feedbackThreadResponseSchema.parse(submitterRead.body);

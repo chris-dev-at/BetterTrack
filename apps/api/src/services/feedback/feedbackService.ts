@@ -25,6 +25,7 @@ import type {
   FeedbackThreadLookup,
 } from '../../data/repositories/feedbackRepository';
 import { conflict } from '../../errors';
+import type { NotificationCenter } from '../notifications/notificationCenter';
 
 const DEFAULT_THREAD_LIMIT = 40;
 
@@ -142,6 +143,7 @@ export interface FeedbackService {
   markReadForAdmin(id: string): Promise<boolean>;
   /** Owner-only lifecycle transition; returns null when the row vanished. */
   updateStatus(
+    adminUserId: string,
     id: string,
     input: UpdateFeedbackStatusRequest,
   ): Promise<UpdateFeedbackStatusResponse | null>;
@@ -149,9 +151,10 @@ export interface FeedbackService {
 
 export interface FeedbackServiceDeps {
   repo: FeedbackRepository;
+  notify: NotificationCenter;
 }
 
-export function createFeedbackService({ repo }: FeedbackServiceDeps): FeedbackService {
+export function createFeedbackService({ repo, notify }: FeedbackServiceDeps): FeedbackService {
   return {
     async submit(userId, input) {
       const row = await repo.create(userId, input);
@@ -215,17 +218,46 @@ export function createFeedbackService({ repo }: FeedbackServiceDeps): FeedbackSe
     },
 
     async sendMessageForAdmin(adminUserId, id, input) {
-      const row = await repo.createMessageForAdmin(adminUserId, id, input.body);
-      return row ? { message: toThreadMessage(row, 'admin') } : null;
+      const created = await repo.createMessageForAdmin(adminUserId, id, input.body);
+      if (!created) return null;
+      const { row, submitterUserId, deletedByUserAt } = created;
+
+      // A staff reply notifies its submitter only. This also covers the unusual
+      // self-helpdesk case: an admin answering their own submission never receives
+      // a notification about their own action. A user-deleted thread has left the
+      // submitter rail entirely, so it remains silent while admins retain the audit.
+      if (deletedByUserAt === null && submitterUserId !== adminUserId) {
+        await notify.emit({
+          type: 'feedback.reply_created',
+          userId: submitterUserId,
+          feedbackId: id,
+          messageId: row.id,
+          occurredAt: row.createdAt.toISOString(),
+        });
+      }
+      return { message: toThreadMessage(row, 'admin') };
     },
 
     markReadForAdmin(id) {
       return repo.markReadForAdmin(id);
     },
 
-    async updateStatus(id, input) {
-      const row = await repo.setStatus(id, input, new Date());
-      if (!row) return null;
+    async updateStatus(adminUserId, id, input) {
+      const transition = await repo.setStatus(id, input, new Date());
+      if (!transition) return null;
+      const { row, changed } = transition;
+
+      if (changed && row.deletedByUserAt === null && row.userId !== adminUserId) {
+        const occurredAt = row.lastStatusChangeAt.toISOString();
+        await notify.emit({
+          type: 'feedback.status_changed',
+          userId: row.userId,
+          feedbackId: row.id,
+          status: row.status,
+          lastStatusChangeAt: occurredAt,
+          occurredAt,
+        });
+      }
       return {
         id: row.id,
         status: row.status,

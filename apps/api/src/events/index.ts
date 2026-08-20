@@ -28,6 +28,8 @@ export type {
   BudgetExceededEvent,
   StandingOrderSkippedEvent,
   StandingOrderSkipOutcome,
+  FeedbackStatusChangedEvent,
+  FeedbackReplyCreatedEvent,
   RealtimePrincipalInvalidatedEvent,
   MirrorNotificationEvent,
 } from './types';

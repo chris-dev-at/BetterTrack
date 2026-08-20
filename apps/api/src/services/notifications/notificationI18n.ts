@@ -256,6 +256,34 @@ export const NOTIFICATION_COPY: Record<
       title: 'Syncing {{chain}} is stuck',
       body: 'The group portfolio {{chain}} could not finish syncing. Open it and choose Retry sync.',
     },
+    feedbackStatusNew: {
+      title: 'Feedback reopened',
+      body: 'Your feedback submission is back in the inbox.',
+    },
+    feedbackStatusTriaged: {
+      title: 'Feedback update',
+      body: 'Your feedback submission is being reviewed.',
+    },
+    feedbackStatusWorkingOnIt: {
+      title: 'Feedback in progress',
+      body: 'Work has started on your feedback submission.',
+    },
+    feedbackStatusSavedAsFutureIdea: {
+      title: 'Feedback saved for later',
+      body: 'Your feedback submission has been saved as a future idea.',
+    },
+    feedbackStatusDeclined: {
+      title: 'Feedback update',
+      body: 'Your feedback submission was declined. Open it for details.',
+    },
+    feedbackStatusShipped: {
+      title: 'Feedback shipped',
+      body: 'Your feedback submission was shipped.',
+    },
+    feedbackReplyCreated: {
+      title: 'New feedback reply',
+      body: 'There is a new reply to your feedback submission.',
+    },
   },
   de: {
     friendRequest: {
@@ -481,6 +509,34 @@ export const NOTIFICATION_COPY: Record<
     mirrorSyncStalled: {
       title: 'Synchronisierung von {{chain}} hängt',
       body: 'Das Gruppen-Portfolio {{chain}} konnte nicht fertig synchronisiert werden. Öffne es und wähle „Synchronisierung wiederholen“.',
+    },
+    feedbackStatusNew: {
+      title: 'Feedback wieder geöffnet',
+      body: 'Dein Feedback ist wieder im Posteingang.',
+    },
+    feedbackStatusTriaged: {
+      title: 'Feedback-Update',
+      body: 'Dein Feedback wird geprüft.',
+    },
+    feedbackStatusWorkingOnIt: {
+      title: 'Feedback in Bearbeitung',
+      body: 'Die Arbeit an deinem Feedback hat begonnen.',
+    },
+    feedbackStatusSavedAsFutureIdea: {
+      title: 'Feedback für später gespeichert',
+      body: 'Dein Feedback wurde als zukünftige Idee gespeichert.',
+    },
+    feedbackStatusDeclined: {
+      title: 'Feedback-Update',
+      body: 'Dein Feedback wurde abgelehnt. Öffne es für Details.',
+    },
+    feedbackStatusShipped: {
+      title: 'Feedback umgesetzt',
+      body: 'Dein Feedback wurde umgesetzt.',
+    },
+    feedbackReplyCreated: {
+      title: 'Neue Antwort auf dein Feedback',
+      body: 'Es gibt eine neue Antwort auf dein Feedback.',
     },
   },
 };
