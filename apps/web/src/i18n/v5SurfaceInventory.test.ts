@@ -198,7 +198,9 @@ user/vault/ui/VaultCreationCeremony.tsx
 user/vault/ui/VaultManager.tsx
 user/vault/ui/VaultRestorePicker.tsx
 user/vault/ui/VaultStateAction.tsx
+user/vault/ui/VaultReceivePhrase.tsx
 user/vault/ui/VaultSyncChip.tsx
+user/vault/ui/VaultTransferQr.tsx
 user/vault/ui/VaultUnlockGate.tsx
 user/workboard/BudgetCalculator.tsx
 user/workboard/ComparisonPage.tsx

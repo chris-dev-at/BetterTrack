@@ -743,7 +743,9 @@ export const V5_SURFACE_INVENTORY = [
       'user/vault/ui/VaultManager.tsx',
       'user/vault/ui/VaultRestorePicker.tsx',
       'user/vault/ui/VaultStateAction.tsx',
+      'user/vault/ui/VaultReceivePhrase.tsx',
       'user/vault/ui/VaultSyncChip.tsx',
+      'user/vault/ui/VaultTransferQr.tsx',
       'user/vault/ui/VaultUnlockGate.tsx',
       'ui/MoneyText.tsx',
       'ui/charts/AllocationDonut.tsx',
@@ -751,7 +753,7 @@ export const V5_SURFACE_INVENTORY = [
     ],
     copyRoots: ['privacy', 'vault', 'vaultMoney', 'vaultExports', 'common.charts'],
     copyReview:
-      'Discreet masking (including allocation charts), custody, media, enable/unlock/sync, loss, and recovery copy reviewed.',
+      'Discreet masking (including allocation charts), custody, media, enable/unlock/sync, QR transfer, loss, and recovery copy reviewed.',
     states: {
       loading: covered(
         'Account-mode, enable, unlock, and sync transitions expose Splash/progress/status.',
@@ -774,8 +776,10 @@ export const V5_SURFACE_INVENTORY = [
       'user/vault/ui/VaultCreationCeremony.test.tsx',
       'user/vault/ui/VaultManager.test.tsx',
       'user/vault/ui/VaultRestorePicker.test.tsx',
+      'user/vault/ui/VaultReceivePhrase.test.tsx',
       'user/vault/ui/VaultUnlockGate.test.tsx',
       'user/vault/ui/VaultSyncChip.test.tsx',
+      'user/vault/ui/VaultTransferQr.test.tsx',
       'ui/MoneyText.test.tsx',
       'ui/charts/AllocationDonut.test.tsx',
     ],

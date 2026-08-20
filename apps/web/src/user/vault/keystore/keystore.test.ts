@@ -346,6 +346,29 @@ describe('endpoint keystore custody and verified persistence', () => {
     });
   });
 
+  it('re-verifies the device password without dropping the live E7 content-key session', async () => {
+    const storage = new MemoryEndpointStorage();
+    const core = keystore(storage);
+    await core.storeAfterVerifiedOpen({
+      vaultId: VAULT_1,
+      mnemonic: MNEMONIC,
+      devicePassword: PASSWORD,
+      fetchHeaderEnvelope: verifiedHeaderFetch(VAULT_1),
+    });
+
+    await expect(core.verifyDevicePassword(PASSWORD)).resolves.toBeUndefined();
+    await expect(core.withContentKey(VAULT_1, () => 'still-open')).resolves.toBe('still-open');
+    await expect(core.verifyDevicePassword(WRONG_PASSWORD)).rejects.toMatchObject({
+      code: 'wrong-password',
+      details: { failures: 1 },
+    });
+    await expect(core.withContentKey(VAULT_1, () => 'preserved')).resolves.toBe('preserved');
+    await expect(core.verifyDevicePassword(PASSWORD)).resolves.toBeUndefined();
+    expect((await storage.readEndpointSnapshot()).metadata).toMatchObject({
+      lockout: { failures: 0, lockedUntil: null },
+    });
+  });
+
   it('never writes a checksum-valid but non-opening phrase before verified open succeeds', async () => {
     const storage = new MemoryEndpointStorage();
     const core = keystore(storage);
