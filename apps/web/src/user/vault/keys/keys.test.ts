@@ -1,7 +1,7 @@
 import { webcrypto } from 'node:crypto';
 
 import { deflateSync } from 'fflate';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it, vi } from 'vitest';
 
 import {
   VAULT_DOC_SCHEMA_VERSION,
@@ -22,6 +22,7 @@ import {
   deriveVaultWrapKey,
   openVaultKey,
   selectActiveSeedKeySlot,
+  wrapContentKey,
   type VaultContentKeyMaterial,
 } from './keyCore';
 import {
@@ -171,6 +172,28 @@ describe('seed phrase key derivation and document vectors', () => {
     zeroBytes(wrap2);
     zeroBytes(first.contentKey);
     zeroBytes(second.contentKey);
+  });
+
+  it('rejects a zeroized content key before key-slot encryption begins', async () => {
+    const wrapKey = await deriveVaultWrapKey(MNEMONIC, VAULT_1);
+    const randomBytes = vi.fn(filledRandom(0x33));
+    try {
+      await expect(
+        wrapContentKey({
+          contentKey: new Uint8Array(32),
+          wrapKey,
+          vaultId: VAULT_1,
+          keyId: KEY_1,
+          randomBytes,
+        }),
+      ).rejects.toMatchObject({
+        name: 'VaultKeyCoreError',
+        code: 'invalid-key-material',
+      });
+      expect(randomBytes).not.toHaveBeenCalled();
+    } finally {
+      zeroBytes(wrapKey);
+    }
   });
 
   it('requires exactly one active seed-v1 slot and checks an expected fingerprint', async () => {

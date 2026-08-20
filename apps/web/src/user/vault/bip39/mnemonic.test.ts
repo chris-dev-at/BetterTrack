@@ -21,6 +21,8 @@ import {
 
 const ZERO_ENTROPY_MNEMONIC =
   'abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about';
+const SEVEN_F_ENTROPY_MNEMONIC =
+  'legal winner thank year wave sausage worth useful legal winner thank yellow';
 
 function bytesToHex(bytes: Uint8Array): string {
   return [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('');
@@ -60,6 +62,19 @@ describe('English 12-word BIP39', () => {
     expect(bytesToHex(seed)).toBe(expectedSeedHex);
   });
 
+  it('pins a second published BIP39 mnemonic with the binding empty passphrase', async () => {
+    // TEST VECTOR: canonical BIP39 0x7f…7f 128-bit entropy mnemonic, published
+    // in the standard vector set; BetterTrack always uses the empty passphrase.
+    const expectedSeedHex =
+      '878386efb78845b3355bd15ea4d39ef97d179cb712b77d5c12b6be415fffeffe' +
+      '5f377ba02bf3f8544ab800b955e51fbff09828f682052a20faa6addbbddfb096';
+
+    const seed = await deriveMnemonicSeed(SEVEN_F_ENTROPY_MNEMONIC);
+
+    expect(seed).toHaveLength(BIP39_SEED_BYTES);
+    expect(bytesToHex(seed)).toBe(expectedSeedHex);
+  });
+
   it('reports wrong count, unknown word, checksum, and entropy length distinctly', () => {
     const wrongCount = ZERO_ENTROPY_MNEMONIC.split(' ').slice(0, -1).join(' ');
     const unknownWord = ZERO_ENTROPY_MNEMONIC.replace('about', 'notaword');
@@ -80,9 +95,7 @@ describe('English 12-word BIP39', () => {
     const mathRandom = vi.spyOn(Math, 'random');
 
     try {
-      expect(generateMnemonic(randomBytes)).toBe(
-        'legal winner thank year wave sausage worth useful legal winner thank yellow',
-      );
+      expect(generateMnemonic(randomBytes)).toBe(SEVEN_F_ENTROPY_MNEMONIC);
       expect(randomBytes).toHaveBeenCalledOnce();
       expect(randomBytes).toHaveBeenCalledWith(BIP39_ENTROPY_BYTES);
       expect(dateNow).not.toHaveBeenCalled();

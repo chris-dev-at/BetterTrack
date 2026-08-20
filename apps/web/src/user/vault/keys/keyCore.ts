@@ -23,6 +23,7 @@ import { deriveMnemonicSeed } from '../bip39/mnemonic';
 import { hkdfSha256 } from '../hkdf';
 import { decodeBase64Url, encodeBase64Url } from './base64url';
 import { VaultKeyCoreError, asVaultKeyCoreError } from './errors';
+import { requireContentKey, requireKey } from './keyValidation';
 
 export const VAULT_CONTENT_KEY_BYTES = VAULT_KEY_BYTES;
 export const VAULT_WRAP_KEY_BYTES = VAULT_KEY_BYTES;
@@ -71,11 +72,13 @@ export async function deriveVaultWrapKey(mnemonic: string, vaultId: string): Pro
 
 export function generateContentKey(randomBytes: RandomBytes = secureRandomBytes): Uint8Array {
   const contentKey = randomBytes(VAULT_CONTENT_KEY_BYTES);
-  if (!(contentKey instanceof Uint8Array) || contentKey.length !== VAULT_CONTENT_KEY_BYTES) {
+  try {
+    requireContentKey(contentKey);
+    return contentKey;
+  } catch (cause) {
     if (contentKey instanceof Uint8Array) zeroBytes(contentKey);
-    throw new VaultKeyCoreError('invalid-key-material', 'Content key must be 256 bits.');
+    throw cause;
   }
-  return contentKey;
 }
 
 export async function wrapContentKey(input: {
@@ -85,7 +88,7 @@ export async function wrapContentKey(input: {
   keyId: string;
   randomBytes?: RandomBytes;
 }): Promise<VaultKeySlot> {
-  requireKey(input.contentKey, 'Content key');
+  requireContentKey(input.contentKey);
   requireKey(input.wrapKey, 'Wrap key');
   requireSlotIdentity(input.vaultId, input.keyId);
   const iv = (input.randomBytes ?? secureRandomBytes)(VAULT_IV_BYTES);
@@ -143,7 +146,7 @@ export async function unwrapContentKey(input: {
       keySlotAad(input.vaultId, input.keyId),
     );
     try {
-      requireKey(contentKey, 'Unwrapped content key');
+      requireContentKey(contentKey);
       return contentKey;
     } catch (cause) {
       zeroBytes(contentKey);
@@ -177,7 +180,7 @@ export function selectActiveSeedKeySlot(
 }
 
 export async function deriveKeyFingerprint(contentKey: Uint8Array): Promise<VaultKeyFingerprint> {
-  requireKey(contentKey, 'Content key');
+  requireContentKey(contentKey);
   const fingerprintBytes = await hkdfSha256(
     contentKey,
     utf8(VAULT_KEY_FINGERPRINT_HKDF_INFO),
@@ -284,12 +287,6 @@ export async function deriveAccountBinding(accountId: string): Promise<string> {
     return binding;
   } finally {
     zeroBytes(digest);
-  }
-}
-
-function requireKey(key: Uint8Array, name: string): void {
-  if (!(key instanceof Uint8Array) || key.length !== VAULT_KEY_BYTES) {
-    throw new VaultKeyCoreError('invalid-key-material', `${name} must be 256 bits.`);
   }
 }
 

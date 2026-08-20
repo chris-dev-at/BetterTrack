@@ -3,7 +3,7 @@ import { webcrypto } from 'node:crypto';
 import 'fake-indexeddb/auto';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { VAULT_DOC_SCHEMA_VERSION } from '@bettertrack/contracts';
+import { VAULT_DOC_SCHEMA_VERSION, inspectVaultDocEnvelope } from '@bettertrack/contracts';
 
 import { utf8, zeroBytes } from '../bytes';
 import { mnemonicToEntropy } from '../bip39/mnemonic';
@@ -460,6 +460,64 @@ describe('endpoint keystore custody and verified persistence', () => {
     expect(borrowed).toEqual(new Uint8Array(32));
     release.resolve();
     await expect(operation).rejects.toMatchObject({ code: 'session-ended' });
+  });
+
+  it('rejects encryption under a borrowed K_c wiped during an async callback', async () => {
+    const storage = new MemoryEndpointStorage();
+    const core = keystore(storage);
+    await core.storeAfterVerifiedOpen({
+      vaultId: VAULT_1,
+      mnemonic: MNEMONIC,
+      devicePassword: PASSWORD,
+      fetchHeaderEnvelope: verifiedHeaderFetch(VAULT_1),
+    });
+    const sourceEnvelope = await createHeaderEnvelope(VAULT_1, MNEMONIC, 0x31);
+    const inspected = inspectVaultDocEnvelope(sourceEnvelope);
+    if (inspected.status === 'update-required') throw new Error('unexpected future envelope');
+    const header = {
+      keyId: inspected.header.keyId,
+      keySlots: inspected.header.keySlots,
+      vaultId: inspected.header.vaultId,
+      docId: inspected.header.docId,
+      docKind: inspected.header.docKind,
+      accountBinding: inspected.header.accountBinding,
+      docVersion: inspected.header.docVersion + 1,
+      schemaVersion: inspected.header.schemaVersion,
+      deviceId: inspected.header.deviceId,
+      writeId: inspected.header.writeId,
+      writtenAt: inspected.header.writtenAt,
+    };
+    const started = deferred<void>();
+    const release = deferred<void>();
+    const randomBytes = vi.fn(deterministicRandom());
+    const plaintext = utf8('stale borrowed K_c probe');
+    let borrowed: Uint8Array | undefined;
+    let producedEnvelope: Uint8Array | undefined;
+    const operation = core.withContentKey(VAULT_1, async (contentKey) => {
+      borrowed = contentKey;
+      started.resolve();
+      await release.promise;
+      const encrypted = await encryptVaultDoc({
+        plaintext,
+        contentKey,
+        header,
+        randomBytes,
+      });
+      producedEnvelope = encrypted.envelope;
+    });
+    await started.promise;
+
+    core.endSession();
+    expect(borrowed).toEqual(new Uint8Array(32));
+    release.resolve();
+    await expect(operation).rejects.toMatchObject({
+      name: 'VaultKeyCoreError',
+      code: 'invalid-key-material',
+    });
+    expect(randomBytes).not.toHaveBeenCalled();
+    expect(producedEnvelope).toBeUndefined();
+    zeroBytes(plaintext);
+    zeroBytes(sourceEnvelope);
   });
 
   it('scopes plain-custody acknowledgments to one vault and one live session', async () => {

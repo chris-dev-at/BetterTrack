@@ -24,6 +24,7 @@ import {
 import { decodeBase64Url, encodeBase64Url } from './base64url';
 import { VaultKeyCoreError, asVaultKeyCoreError } from './errors';
 import { openVaultKey, selectActiveSeedKeySlot } from './keyCore';
+import { requireContentKey } from './keyValidation';
 
 export type VaultDocHeaderInput = Omit<VaultDocEnvelopeHeader, 'formatVersion' | 'cipher' | 'iv'>;
 
@@ -63,6 +64,7 @@ export interface VerifiedVaultHeaderOpen extends DecryptedVaultDoc {
 }
 
 export async function encryptVaultDoc(input: EncryptVaultDocInput): Promise<EncryptedVaultDoc> {
+  requireContentKey(input.contentKey);
   selectActiveSeedKeySlot(input.header.keySlots, input.header.keyId);
   const iv = (input.randomBytes ?? secureRandomBytes)(VAULT_IV_BYTES);
   let compressed: Uint8Array | undefined;

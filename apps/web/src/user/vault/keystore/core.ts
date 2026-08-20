@@ -479,6 +479,11 @@ export class EndpointVaultKeystore {
     }
   }
 
+  /**
+   * Borrows a session-scoped K_c copy that is wiped when custody locks.
+   * Consumers MUST call assertSessionCurrent between any crypto operation and
+   * any external side effect; an async suspension may cross a session teardown.
+   */
   withContentKey<T>(
     vaultId: string,
     operation: (

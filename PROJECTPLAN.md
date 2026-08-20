@@ -982,6 +982,7 @@ The intentional parking lot — scoped out of V1, designed-for in V1. Roughly or
 
 | Date | Decision | Why |
 |---|---|---|
+| 2026-08-20 | **Paranoid `seed-v1` key-slot wire contract pinned for E7:** AES-256-GCM AAD is exactly `bettertrack-vault-key-slot-v1:${vaultId}:${keyId}`, and `wrappedKc` is unpadded base64url of `12-byte IV \| ciphertext \| 16-byte GCM tag`. E7 hoists `VAULT_KEY_SLOT_WRAP_AAD_PREFIX` into `packages/contracts` when phone unwrap lands. | PR #1426 review found this cross-platform format only in the web implementation; documenting and later centralizing it prevents phone/web unwrap drift. |
 | 2026-06-12 | Stack: React+Vite SPA + Express API, TS monorepo, Postgres, Redis, Docker | Owner choice — "proper big scale", matches existing experience |
 | 2026-06-12 | Closed accounts; admin-created **and** invite links; email mandatory | Owner decision |
 | 2026-06-12 | Notification channels abstracted; v1 = in-app + email (email primary) | Owner decision; Telegram/Discord later as plug-ins |
