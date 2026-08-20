@@ -30,34 +30,27 @@ vi.mock('qrcode.react', async (importOriginal) => {
   };
 });
 
-import { VaultTransferQr, type VaultTransferQrSource } from './VaultTransferQr';
+import { VaultTransferQr } from './VaultTransferQr';
 
 const DEVICE_PASSWORD = 'correct endpoint password';
 const SECOND_VAULT_ID = '018f6a3e-1111-7000-8000-000000000002';
 
-interface SessionSourceControl {
-  endSession(): void;
-}
-
-function wrappedSource(): Extract<VaultTransferQrSource, { custody: 'wrapped' }> &
-  SessionSourceControl {
+function wrappedSource() {
   const lifecycle = sessionLifecycle();
   return {
     ...lifecycle,
-    custody: 'wrapped',
-    requireLiveUnlock: vi.fn(async () => undefined),
+    requireLiveUnlock: vi.fn(async () => 'wrapped' as const),
     verifyDevicePassword: vi.fn(async () => undefined),
     readMnemonic: vi.fn(async () => VAULT_TRANSFER_VECTOR_MNEMONIC),
   };
 }
 
-function plainSource(): Extract<VaultTransferQrSource, { custody: 'plain' }> &
-  SessionSourceControl {
+function plainSource() {
   const lifecycle = sessionLifecycle();
   return {
     ...lifecycle,
-    custody: 'plain',
-    requireLiveUnlock: vi.fn(async () => undefined),
+    requireLiveUnlock: vi.fn(async () => 'plain' as const),
+    verifyDevicePassword: vi.fn(async () => undefined),
     readMnemonic: vi.fn(async () => VAULT_TRANSFER_VECTOR_MNEMONIC),
   };
 }
@@ -79,7 +72,7 @@ function sessionLifecycle() {
 
 class ControlledTransferKeystore implements Pick<
   EndpointVaultKeystore,
-  'readMnemonic' | 'subscribeToSessionEnd' | 'verifyDevicePassword' | 'withContentKey'
+  'readMnemonic' | 'stateFor' | 'subscribeToSessionEnd' | 'verifyDevicePassword' | 'withContentKey'
 > {
   readonly mnemonic = deferred<string>();
   readonly readMnemonic = vi.fn(() => this.mnemonic.promise);
@@ -94,6 +87,13 @@ class ControlledTransferKeystore implements Pick<
   }
 
   async verifyDevicePassword(): Promise<void> {}
+
+  async stateFor() {
+    return {
+      status: 'stored+plain' as const,
+      requiredAction: { kind: 'open-silently' as const },
+    };
+  }
 
   async withContentKey<T>(
     _vaultId: string,
@@ -172,6 +172,38 @@ describe('VaultTransferQr sender', () => {
     expect(screen.queryByLabelText('Vault seed-phrase transfer QR code')).not.toBeInTheDocument();
   });
 
+  it('rechecks wrapped password freshness after an asynchronous mnemonic read', async () => {
+    let clock = 0;
+    const mnemonic = deferred<string>();
+    const source = wrappedSource();
+    source.readMnemonic = vi.fn(() => mnemonic.promise);
+    render(
+      <VaultTransferQr
+        now={() => clock}
+        source={source}
+        vaultId={VAULT_TRANSFER_VECTOR_VAULT_ID}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show transfer QR' }));
+    const password = await screen.findByLabelText('Device password');
+    fireEvent.change(password, { target: { value: DEVICE_PASSWORD } });
+    fireEvent.submit(password.closest('form')!);
+    await vi.waitFor(() => expect(source.readMnemonic).toHaveBeenCalledTimes(1));
+    expect(screen.queryByLabelText('Device password')).not.toBeInTheDocument();
+
+    clock = VAULT_TRANSFER_STEP_UP_MAX_AGE_MS + 1_000;
+    await act(async () => {
+      mnemonic.resolve(VAULT_TRANSFER_VECTOR_MNEMONIC);
+      await mnemonic.promise;
+    });
+
+    expect(await screen.findByLabelText('Device password')).toBeInTheDocument();
+    expect(source.verifyDevicePassword).toHaveBeenCalledTimes(1);
+    expect(screen.queryByLabelText('Vault seed-phrase transfer QR code')).not.toBeInTheDocument();
+    expect(screen.queryAllByText('abandon')).toHaveLength(0);
+  });
+
   it('requires a live unlock for plain custody too', async () => {
     const source = plainSource();
     source.requireLiveUnlock = vi.fn(async () => {
@@ -198,6 +230,7 @@ describe('VaultTransferQr sender', () => {
     const source = plainSource();
     source.requireLiveUnlock = vi.fn(async () => {
       source.endSession();
+      return 'plain' as const;
     });
     render(<VaultTransferQr source={source} vaultId={VAULT_TRANSFER_VECTOR_VAULT_ID} />);
 
@@ -217,6 +250,7 @@ describe('VaultTransferQr sender', () => {
     const callSequence: string[] = [];
     source.requireLiveUnlock = vi.fn(async () => {
       callSequence.push('unlock');
+      return 'plain' as const;
     });
     source.readMnemonic = vi.fn(async () => {
       callSequence.push('read');
@@ -358,7 +392,6 @@ describe('VaultTransferQr sender', () => {
   it('does not reveal a production-source plain read that crosses session end', async () => {
     const keystore = new ControlledTransferKeystore();
     const source = createVaultTransferQrSource({
-      custody: 'plain',
       keystore,
       vaultId: VAULT_TRANSFER_VECTOR_VAULT_ID,
     });
@@ -387,7 +420,6 @@ describe('VaultTransferQr sender', () => {
   it('invalidates in-flight and visible secrets when rebound to another vault source', async () => {
     const firstKeystore = new ControlledTransferKeystore();
     const firstSource = createVaultTransferQrSource({
-      custody: 'plain',
       keystore: firstKeystore,
       vaultId: VAULT_TRANSFER_VECTOR_VAULT_ID,
     });
