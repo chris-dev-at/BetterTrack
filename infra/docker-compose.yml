@@ -25,6 +25,9 @@ x-api-worker-environment: &api-worker-environment
   NODE_ENV: production
   PORT: '3000'
   BT_EXPORT_DIR: '/var/lib/bettertrack/exports'
+  # Read-only mount of the backup scheduler's status volume; the admin Overview
+  # projects freshness from it and never writes here.
+  BT_BACKUP_STATUS_FILE: '/status/backup-status.env'
 
   # Required data stores and cookie signing.
   DATABASE_URL: '${DATABASE_URL}'
@@ -217,6 +220,9 @@ services:
       <<: *api-worker-environment
     volumes:
       - exportdata:/var/lib/bettertrack/exports
+      # Read-only: the admin backup-readiness tile reads this status file. The
+      # api must never be able to rewrite the scheduler's own evidence.
+      - backupstatus:/status:ro
     depends_on:
       db:
         condition: service_healthy

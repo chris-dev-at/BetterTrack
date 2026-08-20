@@ -73,9 +73,16 @@ export function createRegistrationRequestRepository(db: Database) {
       await db.delete(registrationRequests).where(eq(registrationRequests.id, id));
     },
 
+    /**
+     * Pending applications, counted in SQL. This used to select every id and take
+     * `.length`; the admin Overview reads it on every landing (#1406 W1), so the
+     * cost must not grow with the queue.
+     */
     async count(): Promise<number> {
-      const rows = await db.select({ id: registrationRequests.id }).from(registrationRequests);
-      return rows.length;
+      const [row] = await db
+        .select({ total: sql<number>`count(*)::int` })
+        .from(registrationRequests);
+      return row?.total ?? 0;
     },
   };
 }

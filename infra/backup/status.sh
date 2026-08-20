@@ -108,7 +108,15 @@ bt_status_update() {
         echo "bettertrack-backup-status: could not write temporary status file ${temp_file}" >&2
         status_code=1
     fi
-    if [ "${status_code}" -eq 0 ] && ! chmod 0640 "${temp_file}"; then
+    # 0644, not 0640: the scheduler runs as root, while the api container runs as
+    # the unprivileged `bettertrack` user and mounts this volume READ-ONLY to
+    # project the admin readiness tile (#1406 W1). Group-only read left the api
+    # with EACCES, which its fail-soft path could only report as "unreadable".
+    # Nothing here is a secret — the file holds freshness epochs, outcome tags, an
+    # artifact name, a size and a checksum, all of which the operator already sees.
+    # Verify in production with:
+    #   docker compose exec api cat /status/backup-status.env
+    if [ "${status_code}" -eq 0 ] && ! chmod 0644 "${temp_file}"; then
         echo "bettertrack-backup-status: could not set permissions on ${temp_file}" >&2
         status_code=1
     fi
