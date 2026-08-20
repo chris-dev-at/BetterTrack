@@ -3725,6 +3725,65 @@
         "signIn": "Bei Google anmelden, um zu synchronisieren"
       }
     },
+    "transfer": {
+      "manualWords": "Stattdessen 12 Wörter anzeigen",
+      "manualEntry": "Stattdessen 12 Wörter eingeben",
+      "sender": {
+        "showQr": "Transfer-QR anzeigen",
+        "title": "Diesen Tresor übertragen",
+        "checking": "Die aktive Tresorsitzung wird geprüft…",
+        "passwordHint": "Das Anzeigen der Phrase ist eine zusätzliche Sicherheitsaktion. Gib das Gerätepasswort dieses Endpunkts erneut ein; die Bestätigung gilt höchstens 60 Sekunden.",
+        "devicePassword": "Gerätepasswort",
+        "verifyAndShowQr": "Prüfen und QR anzeigen",
+        "verifyAndShowWords": "Prüfen und Wörter anzeigen",
+        "banner": "Wer diesen Code aufnimmt, besitzt diesen Tresor — keine Screenshots, keine Bildschirmfreigabe, und achte darauf, wer deinen Bildschirm sehen kann.",
+        "qrAria": "Transfer-QR-Code für die Tresor-Seed-Phrase",
+        "expires": "Dieser Code wird nach 60 Sekunden automatisch ausgeblendet.",
+        "expired": "Dieser Transfer-Code ist abgelaufen und jetzt ausgeblendet. Zeige ihn manuell erneut an.",
+        "showAgain": "Erneut anzeigen",
+        "errors": {
+          "unlockRequired": "Entsperre und öffne diesen Tresor auf diesem Gerät, bevor du seinen Transfer-Code anzeigst.",
+          "password": "Das Gerätepasswort konnte nicht bestätigt werden. Der Transfer-Code bleibt verborgen."
+        }
+      },
+      "receiver": {
+        "title": "Übertragenen Tresor öffnen",
+        "intro": "Scanne oder füge einen Transfer-Code ein, oder gib die 12 Wörter manuell ein. BetterTrack prüft den verschlüsselten Tresor, bevor auf diesem Gerät etwas gespeichert wird.",
+        "method": "Übertragungsmethode der Phrase",
+        "scanPaste": "Code scannen oder einfügen",
+        "payload": "Transfer-Code",
+        "payloadHint": "Füge den vollständigen Wert ein, der mit btvault1: beginnt.",
+        "mnemonic": "Seed-Phrase mit 12 Wörtern",
+        "mnemonicHint": "Gib die englischen Wörter in der richtigen Reihenfolge und durch Leerzeichen getrennt ein.",
+        "vaultId": "Tresor-ID",
+        "nameOptional": "Tresorname (optional)",
+        "fingerprintOptional": "Schlüsselfingerabdruck (optional)",
+        "checked": "Phrase und Transfer-Format sind gültig",
+        "vaultName": "Tresorname",
+        "custody": "Schutz auf diesem Gerät",
+        "wrapped": "Mit einem Gerätepasswort schützen",
+        "wrappedHint": "Empfohlen und standardmäßig ausgewählt. Die Phrase wird verschlüsselt, bevor dieser Endpunkt sie speichert.",
+        "plain": "Ohne Passwort-Verpackung speichern",
+        "plainHint": "Erweiterte Wiederherstellungsoption mit schwächerem Schutz in diesem Browserprofil.",
+        "devicePassword": "Gerätepasswort",
+        "devicePasswordHint": "Lege das Passwort dieses Endpunkts fest oder gib es ein. Es verlässt dieses Gerät nie.",
+        "plainWarning": "Ohne Passwort-Verpackung kann jede Person mit Zugriff auf dieses Browserprofil die Seed-Phrase wiederherstellen und den Tresor übernehmen.",
+        "plainAcknowledgment": "Ich verstehe den schwächeren Schutz und möchte für diesen Tresor die ungeschützte Verwahrung verwenden.",
+        "verifying": "Tresor wird geprüft…",
+        "open": "Tresor prüfen und öffnen",
+        "back": "Zurück",
+        "errors": {
+          "updateRequired": "Dieser Transfer-Code verwendet eine nicht unterstützte Version. Aktualisiere die App und versuche es erneut.",
+          "missingMnemonic": "Der Transfer-Code enthält keine Seed-Phrase und wurde abgelehnt.",
+          "missingVaultId": "Der Transfer-Code enthält keine Tresor-ID und wurde abgelehnt.",
+          "invalidMnemonic": "Die Seed-Phrase muss aus 12 gültigen englischen BIP39-Wörtern mit gültiger Prüfsumme bestehen.",
+          "invalidVaultId": "Der Transfer-Code enthält eine ungültige Tresor-ID.",
+          "invalidName": "Der Hinweis zum Tresornamen ist länger als 64 Zeichen.",
+          "invalidFingerprint": "Der Transfer-Code enthält einen ungültigen Schlüsselfingerabdruck.",
+          "verification": "Die Phrase konnte den authentifizierten Tresorkopf nicht öffnen. Auf diesem Gerät wurde nichts gespeichert."
+        }
+      }
+    },
     "settings": {
       "title": "Paranoider Modus",
       "normal": "Clientseitig verschlüsselter Tresor",

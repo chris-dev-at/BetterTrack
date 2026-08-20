@@ -189,7 +189,9 @@ user/vault/VaultRuntimeProvider.tsx
 user/vault/engine/VaultMoneyEngineProvider.tsx
 user/vault/ui/ParanoidEnableWizard.tsx
 user/vault/ui/ParanoidSurfaceGate.tsx
+user/vault/ui/VaultReceivePhrase.tsx
 user/vault/ui/VaultSyncChip.tsx
+user/vault/ui/VaultTransferQr.tsx
 user/vault/ui/VaultUnlockGate.tsx
 user/workboard/BudgetCalculator.tsx
 user/workboard/ComparisonPage.tsx

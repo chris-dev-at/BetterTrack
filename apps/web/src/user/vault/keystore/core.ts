@@ -50,6 +50,12 @@ interface StoredMnemonicRead {
   revision: number;
 }
 
+interface RecordedPasswordFailure {
+  revision: number;
+  failures: number;
+  lockedUntil: number | null;
+}
+
 export interface EndpointVaultKeystoreOptions {
   storage?: EndpointKeystoreStorage;
   argon2?: DevicePasswordArgon2;
@@ -213,6 +219,80 @@ export class EndpointVaultKeystore {
     } finally {
       if (candidate != null) zeroBytes(candidate);
       for (const bytes of entropy.values()) zeroBytes(bytes);
+    }
+  }
+
+  /**
+   * E7 step-up: verifies the endpoint password without tearing down the live
+   * content-key session. No mnemonic is read, no remote medium is touched, and
+   * the normal wrong-password lockout ladder still advances.
+   */
+  async verifyDevicePassword(devicePassword: string): Promise<void> {
+    const generation = this.sessionGeneration;
+    const stable = await this.readStableEntries();
+    this.reconcileSessionRevision(stable.revision);
+    this.requireCurrentGeneration(generation);
+    if (
+      stable.metadata == null ||
+      this.devicePasswordMetadata == null ||
+      this.deviceKey == null ||
+      this.sessionRevision !== stable.revision
+    ) {
+      throw new EndpointKeystoreError(
+        'phrase-locked',
+        'A live wrapped-custody session is required for password step-up.',
+      );
+    }
+    const metadata = parseEndpointPasswordMetadata(stable.metadata);
+    if (!sameEndpointPassword(metadata, this.devicePasswordMetadata)) {
+      this.endSession();
+      throw new EndpointKeystoreError(
+        'session-ended',
+        'Endpoint password metadata changed before step-up.',
+      );
+    }
+    this.assertNotLockedOut(metadata);
+
+    let candidate: Uint8Array | undefined;
+    try {
+      candidate = await deriveDeviceKey(devicePassword, metadata.kdf, this.argon2);
+      this.requireCurrentGeneration(generation);
+      if (!(await verifyEndpointPassword(metadata, candidate))) {
+        const failure = await this.registerWrongPassword(metadata, stable.revision);
+        this.requireCurrentGeneration(generation);
+        if (failure.revision !== stable.revision + 1) {
+          this.endSession();
+          throw new EndpointKeystoreError(
+            'session-ended',
+            'Endpoint custody changed during password step-up.',
+          );
+        }
+        this.sessionRevision = failure.revision;
+        this.devicePasswordMetadata = {
+          ...metadata,
+          lockout: { failures: failure.failures, lockedUntil: failure.lockedUntil },
+        };
+        throw passwordFailureError(failure);
+      }
+      this.requireCurrentGeneration(generation);
+      if (metadata.lockout.failures === 0 && metadata.lockout.lockedUntil == null) return;
+
+      const resetRevision = await this.resetPasswordLockout(metadata, stable.revision);
+      this.requireCurrentGeneration(generation);
+      if (resetRevision !== stable.revision + 1) {
+        this.endSession();
+        throw new EndpointKeystoreError(
+          'session-ended',
+          'Endpoint custody changed during password step-up.',
+        );
+      }
+      this.sessionRevision = resetRevision;
+      this.devicePasswordMetadata = {
+        ...metadata,
+        lockout: { failures: 0, lockedUntil: null },
+      };
+    } finally {
+      if (candidate != null) zeroBytes(candidate);
     }
   }
 
@@ -727,6 +807,15 @@ export class EndpointVaultKeystore {
     verifiedMetadata: EndpointPasswordMetadataV1,
     expectedRevision: number,
   ): Promise<never> {
+    throw passwordFailureError(
+      await this.registerWrongPassword(verifiedMetadata, expectedRevision),
+    );
+  }
+
+  private async registerWrongPassword(
+    verifiedMetadata: EndpointPasswordMetadataV1,
+    expectedRevision: number,
+  ): Promise<RecordedPasswordFailure> {
     let revision = expectedRevision;
     for (let retry = 0; retry < 32; retry += 1) {
       const now = this.now();
@@ -755,13 +844,7 @@ export class EndpointVaultKeystore {
         continue;
       }
       const { failures, lockedUntil } = updated.result;
-      throw new EndpointKeystoreError(
-        lockedUntil == null ? 'wrong-password' : 'locked-out',
-        lockedUntil == null
-          ? 'The endpoint device password is incorrect.'
-          : 'Device-password verification is temporarily locked.',
-        { failures, ...(lockedUntil == null ? {} : { retryAt: lockedUntil }) },
-      );
+      return { revision: updated.revision, failures, lockedUntil };
     }
     throw new EndpointKeystoreError(
       'session-ended',
@@ -901,4 +984,17 @@ function openedVaultReceipt(verified: VerifiedVaultHeaderOpen): OpenedVault {
     keyId: verified.keyId,
     keyFingerprint: verified.keyFingerprint,
   };
+}
+
+function passwordFailureError(failure: RecordedPasswordFailure): EndpointKeystoreError {
+  return new EndpointKeystoreError(
+    failure.lockedUntil == null ? 'wrong-password' : 'locked-out',
+    failure.lockedUntil == null
+      ? 'The endpoint device password is incorrect.'
+      : 'Device-password verification is temporarily locked.',
+    {
+      failures: failure.failures,
+      ...(failure.lockedUntil == null ? {} : { retryAt: failure.lockedUntil }),
+    },
+  );
 }
