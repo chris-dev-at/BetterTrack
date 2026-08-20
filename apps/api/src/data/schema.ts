@@ -663,6 +663,12 @@ export const feedback = pgTable(
   (t) => [
     index('feedback_user_created_idx').on(t.userId, t.createdAt),
     index('feedback_status_created_idx').on(t.status, t.createdAt),
+    check('feedback_message_length', sql`char_length(${t.message}) between 1 and 5000`),
+    check('feedback_subject_length', sql`${t.subject} is null or char_length(${t.subject}) <= 120`),
+    check(
+      'feedback_context_object',
+      sql`${t.context} is null or jsonb_typeof(${t.context}) = 'object'`,
+    ),
     check(
       'feedback_status_metadata_pair',
       sql`(
