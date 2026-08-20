@@ -6,10 +6,11 @@ import {
   feedbackThreadQuerySchema,
   idParamSchema,
   sendFeedbackMessageRequestSchema,
-  updateFeedbackStatusRequestSchema,
+  updateFeedbackRequestSchema,
   type AdminFeedbackListQuery,
   type FeedbackThreadQuery,
   type SendFeedbackMessageRequest,
+  type UpdateFeedbackRequest,
   type UpdateFeedbackStatusRequest,
 } from '@bettertrack/contracts';
 
@@ -85,14 +86,21 @@ export function registerAdminFeedbackRoutes(
   router.patch(
     '/feedback/:id',
     validateParams(idParamSchema),
-    validateBody(updateFeedbackStatusRequestSchema),
+    validateBody(updateFeedbackRequestSchema),
     async (req, res) => {
       const { id } = req.valid?.params as { id: string };
-      const result = await ctx.feedback.updateStatus(
-        req.authUser!.id,
-        id,
-        req.valid?.body as UpdateFeedbackStatusRequest,
-      );
+      const body = req.valid?.body as UpdateFeedbackRequest;
+      const result =
+        'archived' in body
+          ? await ctx.feedback.setArchived(id, body.archived, {
+              id: req.authUser!.id,
+              ip: req.ip,
+            })
+          : await ctx.feedback.updateStatus(
+              req.authUser!.id,
+              id,
+              body as UpdateFeedbackStatusRequest,
+            );
       if (!result) throw notFound('Feedback not found.');
       res.json(result);
     },

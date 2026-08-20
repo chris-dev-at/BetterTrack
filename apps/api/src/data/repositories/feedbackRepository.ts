@@ -1,4 +1,4 @@
-import { and, count, desc, eq, gt, isNull, lt, or, sql, type SQL } from 'drizzle-orm';
+import { and, count, desc, eq, gt, isNotNull, isNull, lt, or, sql, type SQL } from 'drizzle-orm';
 
 import {
   FEEDBACK_OPEN_SUBMISSION_LIMIT,
@@ -46,6 +46,12 @@ export interface FeedbackThreadPage {
   nextCursor: string | null;
 }
 
+export interface FeedbackArchiveMutation {
+  row: FeedbackRow;
+  /** False only when the requested archive state was already stored. */
+  changed: boolean;
+}
+
 /**
  * Thread read outcomes. `not_found` covers both a missing submission and one
  * owned by another user — ownership is part of the parent SELECT, so the two are
@@ -91,6 +97,8 @@ export interface FeedbackRepository {
     params: AdminFeedbackListQuery,
   ): Promise<{ rows: AdminFeedbackRow[]; total: number }>;
   setStatus(id: string, input: UpdateFeedbackStatusRequest): Promise<FeedbackStatusWrite | null>;
+  /** Idempotently set the admin-only workspace archive state for any submission. */
+  setArchived(id: string, archived: boolean, at: Date): Promise<FeedbackArchiveMutation | null>;
 }
 
 export function createFeedbackRepository(
@@ -354,6 +362,9 @@ export function createFeedbackRepository(
     async listForAdmin(params) {
       const conditions: SQL[] = [];
       if (params.category) conditions.push(eq(feedback.category, params.category));
+      conditions.push(
+        params.archived ? isNotNull(feedback.archivedAt) : isNull(feedback.archivedAt),
+      );
       const where = conditions.length > 0 ? and(...conditions) : undefined;
       const priorityOrder = sql<number>`case ${feedback.category}
         when 'feature' then 0
@@ -379,6 +390,7 @@ export function createFeedbackRepository(
           submitterLastReadAt: feedback.submitterLastReadAt,
           adminLastReadAt: feedback.adminLastReadAt,
           deletedByUserAt: feedback.deletedByUserAt,
+          archivedAt: feedback.archivedAt,
           createdAt: feedback.createdAt,
           updatedAt: feedback.updatedAt,
           submitterId: users.id,
@@ -447,6 +459,28 @@ export function createFeedbackRepository(
           .where(eq(feedback.id, id))
           .returning();
         if (!row) throw new Error('Feedback vanished during its locked status transition');
+        return { row, changed: true };
+      });
+    },
+
+    async setArchived(id, archived, at) {
+      return db.transaction(async (tx) => {
+        // The row lock makes a repeated archive/unarchive a genuine no-op: it
+        // preserves both timestamps and the audit trail instead of merely
+        // converging the final state after two writes race each other.
+        const [current] = await tx.select().from(feedback).where(eq(feedback.id, id)).for('update');
+        if (!current) return null;
+
+        if ((current.archivedAt !== null) === archived) {
+          return { row: current, changed: false };
+        }
+
+        const [row] = await tx
+          .update(feedback)
+          .set({ archivedAt: archived ? at : null, updatedAt: at })
+          .where(eq(feedback.id, id))
+          .returning();
+        if (!row) throw new Error('Feedback vanished during archive mutation');
         return { row, changed: true };
       });
     },

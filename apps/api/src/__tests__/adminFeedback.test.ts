@@ -4,6 +4,7 @@ import request from 'supertest';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
 
 import {
+  FEEDBACK_OPEN_LIMIT,
   FEEDBACK_DECLINED_REASON_REQUIRED,
   FEEDBACK_SHIPPED_VERSION_REQUIRED,
   adminFeedbackListResponseSchema,
@@ -12,6 +13,7 @@ import {
   feedbackThreadResponseSchema,
   myFeedbackResponseSchema,
   sendFeedbackMessageResponseSchema,
+  updateFeedbackArchiveResponseSchema,
   updateFeedbackStatusResponseSchema,
 } from '@bettertrack/contracts';
 
@@ -150,6 +152,230 @@ describe('admin feedback inbox', () => {
     const secondPage = adminFeedbackListResponseSchema.parse(secondResponse.body);
     expect(secondPage.submissions.map((row) => row.category)).toEqual(['bug', 'other']);
     expect(secondPage.pagination).toEqual({ page: 2, limit: 2, total: 4, totalPages: 2 });
+  });
+
+  it('archives the admin inbox only, with idempotent audit-visible toggles', async () => {
+    const { rows, webUser } = await seedQueue();
+    const target = rows[0]!;
+    const submitterAgent = await loginAgent(harness.app, webUser);
+    const mineBefore = await submitterAgent.get('/api/v1/feedback/mine');
+
+    const firstArchive = await adminAgent
+      .patch(`/api/v1/admin/feedback/${target.id}`)
+      .set(...XRW)
+      .send({ archived: true });
+    expect(firstArchive.status).toBe(200);
+    const archived = updateFeedbackArchiveResponseSchema.parse(firstArchive.body);
+    expect(archived).toMatchObject({ id: target.id, archivedAt: expect.any(String) });
+
+    const secondArchive = await adminAgent
+      .patch(`/api/v1/admin/feedback/${target.id}`)
+      .set(...XRW)
+      .send({ archived: true });
+    expect(secondArchive.status).toBe(200);
+    expect(secondArchive.body).toEqual(firstArchive.body);
+
+    const activeInbox = adminFeedbackListResponseSchema.parse(
+      (await adminAgent.get('/api/v1/admin/feedback')).body,
+    );
+    expect(activeInbox.pagination.total).toBe(3);
+    expect(activeInbox.submissions.map((row) => row.id)).not.toContain(target.id);
+
+    const archivedInbox = adminFeedbackListResponseSchema.parse(
+      (await adminAgent.get('/api/v1/admin/feedback').query({ archived: 'true' })).body,
+    );
+    expect(archivedInbox.pagination.total).toBe(1);
+    expect(archivedInbox.submissions).toEqual([
+      expect.objectContaining({ id: target.id, archivedAt: archived.archivedAt }),
+    ]);
+
+    // Archive is intentionally invisible on the submitter rail, including its
+    // byte-level response shape and ordering.
+    const mineWhileArchived = await submitterAgent.get('/api/v1/feedback/mine');
+    expect(mineWhileArchived.text).toBe(mineBefore.text);
+
+    const firstUnarchive = await adminAgent
+      .patch(`/api/v1/admin/feedback/${target.id}`)
+      .set(...XRW)
+      .send({ archived: false });
+    expect(firstUnarchive.status).toBe(200);
+    expect(updateFeedbackArchiveResponseSchema.parse(firstUnarchive.body)).toMatchObject({
+      id: target.id,
+      archivedAt: null,
+    });
+
+    const secondUnarchive = await adminAgent
+      .patch(`/api/v1/admin/feedback/${target.id}`)
+      .set(...XRW)
+      .send({ archived: false });
+    expect(secondUnarchive.status).toBe(200);
+    expect(secondUnarchive.body).toEqual(firstUnarchive.body);
+
+    const restoredInbox = adminFeedbackListResponseSchema.parse(
+      (await adminAgent.get('/api/v1/admin/feedback')).body,
+    );
+    expect(restoredInbox.pagination.total).toBe(4);
+    expect(
+      adminFeedbackListResponseSchema.parse(
+        (await adminAgent.get('/api/v1/admin/feedback').query({ archived: 'true' })).body,
+      ).submissions,
+    ).toEqual([]);
+
+    const [notificationCount] = await harness.db
+      .select({ value: count() })
+      .from(schema.notifications)
+      .where(eq(schema.notifications.userId, target.userId));
+    expect(notificationCount?.value).toBe(0);
+
+    const auditRows = await harness.db
+      .select({
+        action: schema.auditLog.action,
+        actorId: schema.auditLog.actorId,
+        targetType: schema.auditLog.targetType,
+        targetId: schema.auditLog.targetId,
+      })
+      .from(schema.auditLog)
+      .where(
+        and(eq(schema.auditLog.targetType, 'feedback'), eq(schema.auditLog.targetId, target.id)),
+      );
+    expect(auditRows).toHaveLength(2);
+    expect(auditRows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          action: 'feedback.archived',
+          actorId: admin.id,
+          targetType: 'feedback',
+          targetId: target.id,
+        }),
+        expect.objectContaining({
+          action: 'feedback.unarchived',
+          actorId: admin.id,
+          targetType: 'feedback',
+          targetId: target.id,
+        }),
+      ]),
+    );
+  });
+
+  it('archives tombstones and terminal rows without changing lifecycle state', async () => {
+    const { rows } = await seedQueue();
+    const declinedTarget = rows[0]!;
+    const shippedTarget = rows[1]!;
+
+    await adminAgent
+      .patch(`/api/v1/admin/feedback/${declinedTarget.id}`)
+      .set(...XRW)
+      .send({
+        status: 'declined',
+        declinedReason: 'This does not fit the current product direction.',
+      })
+      .expect(200);
+    await adminAgent
+      .patch(`/api/v1/admin/feedback/${shippedTarget.id}`)
+      .set(...XRW)
+      .send({ status: 'shipped', shippedVersion: '5.5.0' })
+      .expect(200);
+
+    const archivedDeclined = updateFeedbackArchiveResponseSchema.parse(
+      (
+        await adminAgent
+          .patch(`/api/v1/admin/feedback/${declinedTarget.id}`)
+          .set(...XRW)
+          .send({ archived: true })
+      ).body,
+    );
+    const archivedShipped = updateFeedbackArchiveResponseSchema.parse(
+      (
+        await adminAgent
+          .patch(`/api/v1/admin/feedback/${shippedTarget.id}`)
+          .set(...XRW)
+          .send({ archived: true })
+      ).body,
+    );
+
+    queueSequence += 1;
+    const tombstoneUser = await harness.seedUser({
+      email: `feedback-archive-tombstone-${queueSequence}@bt.test`,
+      username: `feedback_archive_tombstone_${queueSequence}`,
+    });
+    const tombstoneAgent = await loginAgent(harness.app, tombstoneUser);
+    const created = await tombstoneAgent
+      .post('/api/v1/feedback')
+      .set(...XRW)
+      .send({ category: 'help', message: 'Please archive this deleted request.' })
+      .expect(201);
+    const tombstoneId = created.body.id as string;
+    await tombstoneAgent
+      .delete(`/api/v1/feedback/${tombstoneId}`)
+      .set(...XRW)
+      .expect(204);
+    await adminAgent
+      .patch(`/api/v1/admin/feedback/${tombstoneId}`)
+      .set(...XRW)
+      .send({ archived: true })
+      .expect(200);
+
+    // A status change remains available on an archived row and does not
+    // silently return that row to the active inbox.
+    await adminAgent
+      .patch(`/api/v1/admin/feedback/${shippedTarget.id}`)
+      .set(...XRW)
+      .send({ status: 'working_on_it' })
+      .expect(200);
+
+    const archivedInbox = adminFeedbackListResponseSchema.parse(
+      (await adminAgent.get('/api/v1/admin/feedback').query({ archived: 'true' })).body,
+    );
+    expect(archivedInbox.submissions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: declinedTarget.id,
+          status: 'declined',
+          archivedAt: archivedDeclined.archivedAt,
+        }),
+        expect.objectContaining({
+          id: shippedTarget.id,
+          status: 'working_on_it',
+          archivedAt: archivedShipped.archivedAt,
+        }),
+        expect.objectContaining({ id: tombstoneId, deletedByUser: true }),
+      ]),
+    );
+    expect(archivedInbox.submissions).toHaveLength(3);
+  });
+
+  it('does not let archiving make room under the 20-open submission cap', async () => {
+    queueSequence += 1;
+    const user = await harness.seedUser({
+      email: `feedback-archive-cap-${queueSequence}@bt.test`,
+      username: `feedback_archive_cap_${queueSequence}`,
+    });
+    const agent = await loginAgent(harness.app, user);
+    const rows = await harness.db
+      .insert(schema.feedback)
+      .values(
+        Array.from({ length: 20 }, (_, index) => ({
+          userId: user.id,
+          category: 'other' as const,
+          message: `Open request ${index}.`,
+        })),
+      )
+      .returning();
+
+    for (const row of rows.slice(0, 5)) {
+      await adminAgent
+        .patch(`/api/v1/admin/feedback/${row.id}`)
+        .set(...XRW)
+        .send({ archived: true })
+        .expect(200);
+    }
+
+    const refused = await agent
+      .post('/api/v1/feedback')
+      .set(...XRW)
+      .send({ category: 'other', message: 'The 21st request remains refused.' });
+    expect(refused.status).toBe(409);
+    expect(apiErrorSchema.parse(refused.body).error.code).toBe(FEEDBACK_OPEN_LIMIT);
   });
 
   it('round-trips help and improvement from create through mine and the admin inbox', async () => {

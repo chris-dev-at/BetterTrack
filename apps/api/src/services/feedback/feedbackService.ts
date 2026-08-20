@@ -14,6 +14,7 @@ import {
   type MyFeedbackSubmission,
   type SendFeedbackMessageRequest,
   type SendFeedbackMessageResponse,
+  type UpdateFeedbackArchiveResponse,
   type UpdateFeedbackStatusRequest,
   type UpdateFeedbackStatusResponse,
 } from '@bettertrack/contracts';
@@ -25,6 +26,7 @@ import type {
   FeedbackThreadLookup,
 } from '../../data/repositories/feedbackRepository';
 import { conflict } from '../../errors';
+import { AuditAction, type AuditService } from '../audit/auditService';
 import type { NotificationCenter } from '../notifications/notificationCenter';
 
 const DEFAULT_THREAD_LIMIT = 40;
@@ -38,6 +40,11 @@ export type FeedbackThreadResult =
   | { status: 'not_found' }
   | { status: 'invalid_cursor' };
 
+export interface FeedbackAdminActor {
+  id: string;
+  ip?: string | null;
+}
+
 function toAdminSubmission(row: AdminFeedbackRow): AdminFeedbackSubmission {
   return {
     id: row.id,
@@ -50,6 +57,7 @@ function toAdminSubmission(row: AdminFeedbackRow): AdminFeedbackSubmission {
     declinedReason: row.declinedReason,
     shippedVersion: row.shippedVersion,
     deletedByUser: row.deletedByUserAt !== null,
+    archivedAt: row.archivedAt ? row.archivedAt.toISOString() : null,
     submitter: row.submitter,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
@@ -147,14 +155,25 @@ export interface FeedbackService {
     id: string,
     input: UpdateFeedbackStatusRequest,
   ): Promise<UpdateFeedbackStatusResponse | null>;
+  /** Archive/unarchive is admin workspace hygiene, independent of lifecycle status. */
+  setArchived(
+    id: string,
+    archived: boolean,
+    actor: FeedbackAdminActor,
+  ): Promise<UpdateFeedbackArchiveResponse | null>;
 }
 
 export interface FeedbackServiceDeps {
   repo: FeedbackRepository;
   notify: NotificationCenter;
+  audit: AuditService;
 }
 
-export function createFeedbackService({ repo, notify }: FeedbackServiceDeps): FeedbackService {
+export function createFeedbackService({
+  repo,
+  notify,
+  audit,
+}: FeedbackServiceDeps): FeedbackService {
   return {
     async submit(userId, input) {
       const row = await repo.create(userId, input);
@@ -265,6 +284,29 @@ export function createFeedbackService({ repo, notify }: FeedbackServiceDeps): Fe
         declinedReason: row.declinedReason,
         shippedVersion: row.shippedVersion,
         updatedAt: row.updatedAt.toISOString(),
+      };
+    },
+
+    async setArchived(id, archived, actor) {
+      const result = await repo.setArchived(id, archived, new Date());
+      if (!result) return null;
+
+      // A same-state request is deliberately side-effect free. That keeps the
+      // PATCH idempotent in the audit trail as well as in the feedback row.
+      if (result.changed) {
+        await audit.record({
+          actorId: actor.id,
+          action: archived ? AuditAction.FeedbackArchived : AuditAction.FeedbackUnarchived,
+          targetType: 'feedback',
+          targetId: result.row.id,
+          ip: actor.ip ?? null,
+        });
+      }
+
+      return {
+        id: result.row.id,
+        archivedAt: result.row.archivedAt ? result.row.archivedAt.toISOString() : null,
+        updatedAt: result.row.updatedAt.toISOString(),
       };
     },
   };

@@ -4473,6 +4473,9 @@
       "loadError": "Could not load feedback.",
       "actionError": "Could not update the feedback status.",
       "empty": "No feedback yet.",
+      "archive": "Archive",
+      "unarchive": "Unarchive",
+      "archived": "Archived",
       "filters": {
         "category": "Category",
         "sort": "Sort",

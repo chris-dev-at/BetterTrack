@@ -17,6 +17,9 @@ import {
   feedbackThreadResponseSchema,
   myFeedbackResponseSchema,
   sendFeedbackMessageRequestSchema,
+  updateFeedbackArchiveRequestSchema,
+  updateFeedbackArchiveResponseSchema,
+  updateFeedbackRequestSchema,
   updateFeedbackStatusRequestSchema,
 } from './feedback';
 
@@ -100,13 +103,20 @@ describe('feedback contracts', () => {
 
   it('defaults the admin inbox to category priority and the first page', () => {
     expect(adminFeedbackListQuerySchema.parse({})).toEqual({
+      archived: false,
       sort: 'category',
       page: 1,
       limit: 20,
     });
     expect(
-      adminFeedbackListQuerySchema.parse({ category: 'bug', sort: 'newest', page: '2' }),
-    ).toMatchObject({ category: 'bug', sort: 'newest', page: 2 });
+      adminFeedbackListQuerySchema.parse({
+        category: 'bug',
+        archived: 'true',
+        sort: 'newest',
+        page: '2',
+      }),
+    ).toMatchObject({ category: 'bug', archived: true, sort: 'newest', page: 2 });
+    expect(adminFeedbackListQuerySchema.parse({ archived: 'false' }).archived).toBe(false);
   });
 
   it('validates admin rows and locks status transitions to the shipped lifecycle', () => {
@@ -123,6 +133,7 @@ describe('feedback contracts', () => {
           declinedReason: null,
           shippedVersion: null,
           deletedByUser: false,
+          archivedAt: null,
           submitter: {
             id: '00000000-0000-7000-8000-000000000002',
             username: 'mobile-user',
@@ -152,6 +163,24 @@ describe('feedback contracts', () => {
       }).success,
     ).toBe(true);
     expect(updateFeedbackStatusRequestSchema.safeParse({ status: 'closed' }).success).toBe(false);
+  });
+
+  it('separates archive state from lifecycle transitions on the generic admin PATCH', () => {
+    expect(updateFeedbackArchiveRequestSchema.parse({ archived: true })).toEqual({
+      archived: true,
+    });
+    expect(updateFeedbackRequestSchema.safeParse({ archived: false }).success).toBe(true);
+    expect(updateFeedbackRequestSchema.safeParse({ status: 'triaged' }).success).toBe(true);
+    expect(
+      updateFeedbackRequestSchema.safeParse({ status: 'triaged', archived: true }).success,
+    ).toBe(false);
+    expect(
+      updateFeedbackArchiveResponseSchema.safeParse({
+        id: '00000000-0000-7000-8000-000000000001',
+        archivedAt: '2026-08-20T12:00:00.000Z',
+        updatedAt: '2026-08-20T12:00:00.000Z',
+      }).success,
+    ).toBe(true);
   });
 
   it('requires the owner explanation/version in the shared transition contract', () => {
