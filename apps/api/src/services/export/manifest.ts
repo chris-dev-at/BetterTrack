@@ -52,6 +52,7 @@ export const EXPORT_TABLE_CLASSIFICATION: Record<string, TableClassification> = 
   // submit are part of their account data; caller-owned lifecycle read-back
   // deliberately omits those diagnostics, while the full export preserves them.
   feedback: exported('feedback'),
+  feedback_messages: exported('feedbackMessages'),
   conglomerates: exported('conglomerates'),
   conglomerate_positions: exported('conglomeratePositions'),
   share_links: exported('conglomerateShareLinks'),
@@ -579,6 +580,7 @@ export const PARANOID_TABLE_CLASSIFICATION: Record<string, ParanoidClassificatio
   // Voluntary feedback and bounded client diagnostics contain no portfolio or
   // money data, so paranoid accounts keep (and can export) these rows normally.
   feedback: 'server',
+  feedback_messages: 'server',
   // Friendships + chat REMAIN — they carry no portfolio data (§8, §16).
   friend_requests: 'server',
   friendships: 'server',
