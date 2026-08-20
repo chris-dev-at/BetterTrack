@@ -1101,6 +1101,11 @@ export const NON_V5_SURFACES = [
     note: 'PARANOID E9 §17 one-time fresh-start notice, outside the §13.5 P0–P13c plan.',
   },
   {
+    path: 'user/components/MyFeedbackSubmissionsDialog.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'Owner-ordered FEEDBACK-8 submitter history and reply thread (#1342), extending #1317 outside the §13.5 P0–P13c plan.',
+  },
+  {
     path: 'user/components/LocalNav.tsx',
     reason: 'no-v5-deliverable',
     note: 'Origin-redesign local nav strip (#935).',
@@ -1935,8 +1940,9 @@ export const V5_ASYNC_STATE_DEBT: V5AsyncStateDebtLedger = {};
  * offenders disappear from the review record. The reason each component is
  * outside the V5 deliverable lives beside it in NON_V5_SURFACES.
  */
-// #1316 adds one fully handled post-V5 admin feedback read. It increases the
-// analyzed non-V5 read universe without adding any deferred state debt.
+// #1316 adds one fully handled post-V5 admin feedback read. #1342 adds the
+// fully handled submitter list + thread reads. They increase the analyzed
+// non-V5 read universe without adding any deferred state debt.
 //
 // 56 → 69 with the post-V5 admin rebuild W1 (#1406): the operator Overview (8),
 // the People workspace's Registration page (3) and the ⌘K palette (2). Two of the
@@ -1959,7 +1965,10 @@ export const V5_ASYNC_STATE_DEBT: V5AsyncStateDebtLedger = {};
 //     strip renders its tabs with no chip rather than a zero, so a failed count
 //     can never be mistaken for "nothing is waiting".
 // The debt ceiling below is unchanged: none of the seven adds a state gap.
-export const DEFERRED_NON_V5_ASYNC_READ_SITE_BASELINE = 74;
+//
+// 74 → 76 with FEEDBACK-8's list and cursor-paginated thread reads (#1342).
+// Both render `AsyncReadState`, so neither adds a state gap either.
+export const DEFERRED_NON_V5_ASYNC_READ_SITE_BASELINE = 76;
 
 // PARANOID-E6 (#1416) pays down one gap: PerformanceChartWidget's single-portfolio
 // `historyQuery` now renders `UnavailableHomeAggregate` on isError, so its error
