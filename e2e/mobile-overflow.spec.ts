@@ -166,6 +166,7 @@ const CONTROL_CORE_ROUTES = [
   '/control/profile',
   '/control/sign-in',
   '/control/sessions',
+  '/control/trusted-devices',
   '/control/defaults',
   '/control/notifications',
   '/control/notification-log',
