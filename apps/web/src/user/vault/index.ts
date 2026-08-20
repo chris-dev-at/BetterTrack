@@ -1,4 +1,5 @@
 export * from './crypto';
+export * from './bip39';
 export * from './custody';
 export * from './dataHome';
 export * from './drive';
@@ -8,9 +9,11 @@ export * from './errors';
 export * from './export';
 export * from './localDataHome';
 export * from './lock';
+export * from './keystore';
 export * from './merge';
 export * from './media';
 export * from './migration';
+export * from './keys';
 export * from './mirrorProvenance';
 export * from './paranoidDisable';
 export * from './quarantine';

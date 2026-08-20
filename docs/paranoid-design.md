@@ -207,6 +207,14 @@ mnemonic (12 words)
 key_fingerprint = base64url(HKDF-SHA256(K_c, info = "bettertrack-vault-fingerprint-v1"))[0..16]
 ```
 
+**Binding `seed-v1` key-slot wire contract for E7 phone unwrap:** wrap the
+random 32-byte `K_c` with AES-256-GCM under `K_wrap`, using a fresh 12-byte IV
+and UTF-8 AAD exactly `bettertrack-vault-key-slot-v1:${vaultId}:${keyId}`.
+`wrappedKc` is unpadded base64url of
+`IV || ciphertext || 16-byte GCM tag` (WebCrypto's ciphertext result already
+contains the appended tag); E7 MUST consume this layout byte-for-byte and fail
+closed on malformed length or authentication.
+
 Notes, each deliberate:
 
 - No Argon2id on the mnemonic: KDF stretching defends low-entropy human
