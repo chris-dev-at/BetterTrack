@@ -58,6 +58,26 @@ describe('production session-secret safety', () => {
   });
 });
 
+describe('vault rate-limit configuration', () => {
+  it('keeps read and write budgets independent while sharing the configured window', () => {
+    const c = config({
+      BT_VAULT_RATE_WINDOW_SEC: '17',
+      BT_VAULT_RATE_LIMIT: '3',
+      BT_VAULT_READ_RATE_LIMIT: '31',
+    });
+
+    expect(c.rateLimits.vault).toMatchObject({ windowSec: 17, limit: 3 });
+    expect(c.rateLimits.vaultRead).toMatchObject({ windowSec: 17, limit: 31 });
+  });
+
+  it('gives reads a larger default budget without changing the write default', () => {
+    const c = config({});
+
+    expect(c.rateLimits.vault.limit).toBe(60);
+    expect(c.rateLimits.vaultRead.limit).toBe(600);
+  });
+});
+
 describe('subdomains mode', () => {
   it('derives https api/web/admin subdomains of BT_DOMAIN by default', () => {
     const c = config({ BT_MODE: 'subdomains', BT_DOMAIN: 'track.example.at' });

@@ -3,10 +3,15 @@ import type { Redis } from 'ioredis';
 import type { ParanoidDisableRequest } from '@bettertrack/contracts';
 
 import type { AppConfig } from '../../config/env';
+import type { Database } from '../../data/db';
+import { createTwoFactorRepository } from '../../data/repositories/twoFactorRepository';
 import type { UserRepository } from '../../data/repositories/userRepository';
-import { badRequest, tooManyRequests, unauthorized } from '../../errors';
+import { ApiError, badRequest, tooManyRequests, unauthorized } from '../../errors';
 import { AuditAction, type AuditService } from '../audit/auditService';
-import { ACCOUNT_PARANOID_DISCARD_NAMESPACE } from '../auth/loginThrottle';
+import {
+  ACCOUNT_PARANOID_DISCARD_NAMESPACE,
+  ACCOUNT_VAULT_DELETE_NAMESPACE,
+} from '../auth/loginThrottle';
 import type { TwoFactorService } from '../auth/twoFactorService';
 import type { PasswordHasher } from '../password/passwordHasher';
 import { createProgressiveLimiter } from '../security/progressiveLimiter';
@@ -39,6 +44,38 @@ export interface ParanoidDiscardReauth {
   }): Promise<void>;
 }
 
+/** The additional same-lock verifier used by R5's per-vault delete. */
+export interface VaultDeleteReauth {
+  /**
+   * §15 step-up while the caller owns the users-row lock. Keeping the
+   * credential read and the destructive delete in one transaction closes the
+   * password/factor-change race that a preliminary re-auth request would leave.
+   */
+  verifyVaultDelete(input: {
+    userId: string;
+    vaultId: string;
+    body: VaultDeleteCredential;
+    ip?: string | null;
+    auth: LockedVaultDeleteAuth;
+    db: Database;
+  }): Promise<void>;
+  /** Persist a wrong-credential audit only after the caller's transaction rolls back. */
+  recordVaultDeleteFailure(error: unknown): Promise<boolean>;
+}
+
+export interface VaultDeleteCredential {
+  password?: string;
+  code?: string;
+  recoveryCode?: string;
+}
+
+export interface LockedVaultDeleteAuth {
+  passwordHash: string;
+  twoFactorSecret: string | null;
+  twoFactorEnabled: boolean;
+  twoFactorEmailEnabled: boolean;
+}
+
 export interface ParanoidDiscardReauthDeps {
   config: AppConfig;
   redis: Redis;
@@ -50,7 +87,7 @@ export interface ParanoidDiscardReauthDeps {
 
 export function createParanoidDiscardReauth(
   deps: ParanoidDiscardReauthDeps,
-): ParanoidDiscardReauth {
+): ParanoidDiscardReauth & VaultDeleteReauth {
   const { config, redis, userRepo, passwordHasher, twoFactor, audit } = deps;
 
   // Its own namespace on the shared login schedule: wrong attempts here must not
@@ -61,6 +98,27 @@ export function createParanoidDiscardReauth(
     ACCOUNT_PARANOID_DISCARD_NAMESPACE,
     config.rateLimits.loginAccount,
   );
+  const vaultDeleteThrottle = createProgressiveLimiter(
+    redis,
+    ACCOUNT_VAULT_DELETE_NAMESPACE,
+    config.rateLimits.loginAccount,
+  );
+
+  class VaultDeleteReauthFailure extends ApiError {
+    constructor(
+      response: ApiError,
+      readonly auditMeta: {
+        userId: string;
+        vaultId: string;
+        ip?: string | null;
+        kind: string;
+        locked: boolean;
+      },
+    ) {
+      super(response.statusCode, response.code, response.message, response.details);
+      this.name = 'VaultDeleteReauthFailure';
+    }
+  }
 
   async function failReauth(userId: string, ip: string | null | undefined, kind: string) {
     const decision = await throttle.consume(userId);
@@ -116,6 +174,66 @@ export function createParanoidDiscardReauth(
         throw unauthorized('Re-authenticate with your password.', 'INVALID_CREDENTIALS');
       }
       await throttle.reset(userId);
+    },
+    async verifyVaultDelete({ userId, vaultId, body, ip, auth, db }) {
+      const cooling = await vaultDeleteThrottle.peek(userId);
+      if (cooling > 0) {
+        throw tooManyRequests(cooling, 'Too many attempts. Please wait and retry.');
+      }
+
+      const fail = async (kind: string): Promise<never> => {
+        const decision = await vaultDeleteThrottle.consume(userId);
+        const response = !decision.allowed
+          ? tooManyRequests(decision.retryAfterSec, 'Too many attempts. Please wait and retry.')
+          : kind === 'password'
+            ? unauthorized('Current password is incorrect.', 'INVALID_CREDENTIALS')
+            : unauthorized('That code is incorrect or has expired.', 'TWO_FACTOR_INVALID_CODE');
+        throw new VaultDeleteReauthFailure(response, {
+          userId,
+          vaultId,
+          ip,
+          kind,
+          locked: !decision.allowed,
+        });
+      };
+
+      const factorState = {
+        secret: auth.twoFactorSecret,
+        enabled: auth.twoFactorEnabled,
+        emailEnabled: auth.twoFactorEmailEnabled,
+      };
+      if (body.password !== undefined) {
+        if (!(await passwordHasher.verify(auth.passwordHash, body.password))) {
+          await fail('password');
+        }
+      } else if (body.recoveryCode !== undefined) {
+        const ok = await twoFactor.consumeRecoveryCode(
+          userId,
+          body.recoveryCode,
+          factorState,
+          createTwoFactorRepository(db),
+        );
+        if (!ok) await fail('recovery_code');
+      } else if (body.code !== undefined) {
+        const ok = await twoFactor.verifyTotpCode(userId, body.code, factorState);
+        if (!ok) await fail('totp');
+      } else {
+        // Direct service calls stay fail-closed if contract validation is bypassed.
+        throw unauthorized('Re-authentication is required.', 'INVALID_CREDENTIALS');
+      }
+      await vaultDeleteThrottle.reset(userId);
+    },
+    async recordVaultDeleteFailure(error) {
+      if (!(error instanceof VaultDeleteReauthFailure)) return false;
+      await audit.record({
+        actorId: error.auditMeta.userId,
+        action: AuditAction.VaultDeleteReauthFail,
+        targetType: 'vault',
+        targetId: error.auditMeta.vaultId,
+        ip: error.auditMeta.ip,
+        meta: { kind: error.auditMeta.kind, locked: error.auditMeta.locked },
+      });
+      return true;
     },
   };
 }

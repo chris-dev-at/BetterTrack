@@ -68,6 +68,13 @@ export const AuditAction = {
   ParanoidDisabled: 'account.paranoid_disabled',
   /** A failed re-auth on the irreversible paranoid discard (throttled like deletion). */
   ParanoidDiscardFail: 'account.paranoid_discard_fail',
+  /** Per-vault lifecycle metadata only; ciphertext and credentials are never copied. */
+  VaultCreated: 'vault.created',
+  VaultUpdated: 'vault.updated',
+  VaultDeleted: 'vault.deleted',
+  VaultMediaChanged: 'vault.media_changed',
+  VaultRetiredPurged: 'vault.retired_purged',
+  VaultDeleteReauthFail: 'vault.delete_reauth_fail',
   /**
    * Generic session step-up (`POST /auth/reauth`). `meta.purpose` is the
    * caller-supplied provenance string; it is never trusted for authorization.
