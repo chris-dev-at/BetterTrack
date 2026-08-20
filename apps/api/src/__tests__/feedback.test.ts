@@ -6,6 +6,8 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import {
   API_KEY_SCOPES,
   FEEDBACK_MESSAGE_MAX_LENGTH,
+  FEEDBACK_OPEN_LIMIT,
+  FEEDBACK_OPEN_SUBMISSION_LIMIT,
   apiErrorSchema,
   createApiKeyResponseSchema,
   createFeedbackResponseSchema,
@@ -70,6 +72,19 @@ const validBody = {
     futureDiagnostic: { supported: true },
   },
 };
+
+async function seedOpenFeedback(userId: string, total: number) {
+  return harness.db
+    .insert(schema.feedback)
+    .values(
+      Array.from({ length: total }, (_, index) => ({
+        userId,
+        category: 'bug' as const,
+        message: `Open request ${index + 1}`,
+      })),
+    )
+    .returning();
+}
 
 describe('POST /api/v1/feedback', () => {
   it('persists a valid session submission as new and returns its id + creation stamp', async () => {
@@ -231,6 +246,78 @@ describe('POST /api/v1/feedback', () => {
     [stored] = await harness.db.select({ value: count() }).from(schema.feedback);
     expect(stored?.value).toBe(configuredLimit + 1);
   });
+
+  it('refuses the 21st open request and reopens slots after delete or terminal triage', async () => {
+    const user = await harness.seedUser({
+      email: 'feedback-open-cap@bt.test',
+      username: 'feedbackopencap',
+    });
+    const agent = await loginAgent(harness.app, user);
+    const rows = await seedOpenFeedback(user.id, FEEDBACK_OPEN_SUBMISSION_LIMIT);
+
+    const limited = await agent
+      .post('/api/v1/feedback')
+      .set(...XRW)
+      .send({ category: 'help', message: 'Request 21' });
+    expect(limited.status).toBe(409);
+    const limitError = apiErrorSchema.parse(limited.body).error;
+    expect(limitError.code).toBe(FEEDBACK_OPEN_LIMIT);
+    expect(limitError.message).toContain('wait for triage or delete an open request');
+
+    await agent
+      .delete(`/api/v1/feedback/${rows[0]!.id}`)
+      .set(...XRW)
+      .expect(204);
+    await agent
+      .post('/api/v1/feedback')
+      .set(...XRW)
+      .send({ category: 'improvement', message: 'The deleted row made room.' })
+      .expect(201);
+
+    await harness.ctx.feedback.updateStatus(rows[1]!.id, {
+      status: 'shipped',
+      shippedVersion: '5.5.0',
+    });
+    await agent
+      .post('/api/v1/feedback')
+      .set(...XRW)
+      .send({ category: 'feature', message: 'The shipped row made room.' })
+      .expect(201);
+
+    await harness.ctx.feedback.updateStatus(rows[2]!.id, {
+      status: 'declined',
+      declinedReason: 'This request is outside the product scope.',
+    });
+    await agent
+      .post('/api/v1/feedback')
+      .set(...XRW)
+      .send({ category: 'other', message: 'The declined row made room.' })
+      .expect(201);
+  });
+
+  it('serializes two parallel creates at 19 open rows so only one lands', async () => {
+    const { token, user } = await mintKey(['feedback:write']);
+    await seedOpenFeedback(user.id, FEEDBACK_OPEN_SUBMISSION_LIMIT - 1);
+
+    const responses = await Promise.all(
+      [1, 2].map((requestNumber) =>
+        request(harness.app)
+          .post('/api/v1/feedback')
+          .set('Authorization', `Bearer ${token}`)
+          .send({ category: 'help', message: `Parallel request ${requestNumber}` }),
+      ),
+    );
+
+    expect(responses.map((response) => response.status).sort()).toEqual([201, 409]);
+    expect(responses.find((response) => response.status === 409)?.body.error.code).toBe(
+      FEEDBACK_OPEN_LIMIT,
+    );
+    const [stored] = await harness.db
+      .select({ value: count() })
+      .from(schema.feedback)
+      .where(eq(schema.feedback.userId, user.id));
+    expect(stored?.value).toBe(FEEDBACK_OPEN_SUBMISSION_LIMIT);
+  });
 });
 
 describe('GET /api/v1/feedback/mine', () => {
@@ -309,7 +396,95 @@ describe('GET /api/v1/feedback/mine', () => {
   });
 });
 
+describe('DELETE /api/v1/feedback/:id', () => {
+  it('soft-deletes only the caller own row and returns the same success twice', async () => {
+    const owner = await harness.seedUser({
+      email: 'feedback-delete@bt.test',
+      username: 'feedbackdelete',
+    });
+    const other = await harness.seedUser({
+      email: 'feedback-delete-other@bt.test',
+      username: 'feedbackdeleteother',
+    });
+    const [owned, foreign] = await harness.db
+      .insert(schema.feedback)
+      .values([
+        { userId: owner.id, category: 'help', message: 'Please help.' },
+        { userId: other.id, category: 'bug', message: 'Somebody else’s row.' },
+      ])
+      .returning();
+    const agent = await loginAgent(harness.app, owner);
+
+    await agent
+      .delete(`/api/v1/feedback/${foreign!.id}`)
+      .set(...XRW)
+      .expect(404);
+    await agent
+      .delete(`/api/v1/feedback/${owned!.id}`)
+      .set(...XRW)
+      .expect(204);
+    await agent
+      .delete(`/api/v1/feedback/${owned!.id}`)
+      .set(...XRW)
+      .expect(204);
+
+    const mine = myFeedbackResponseSchema.parse((await agent.get('/api/v1/feedback/mine')).body);
+    expect(mine.submissions).toEqual([]);
+    const [stored] = await harness.db
+      .select()
+      .from(schema.feedback)
+      .where(eq(schema.feedback.id, owned!.id));
+    expect(stored?.deletedByUserAt).toBeInstanceOf(Date);
+  });
+
+  it('admits feedback:write bearers and refuses an unrelated scope specifically', async () => {
+    const allowed = await mintKey(['feedback:write']);
+    const [allowedRow] = await harness.db
+      .insert(schema.feedback)
+      .values({ userId: allowed.user.id, category: 'improvement', message: 'Bearer row.' })
+      .returning();
+    await request(harness.app)
+      .delete(`/api/v1/feedback/${allowedRow!.id}`)
+      .set('Authorization', `Bearer ${allowed.token}`)
+      .expect(204);
+
+    const denied = await mintKey(['portfolio:read']);
+    const [deniedRow] = await harness.db
+      .insert(schema.feedback)
+      .values({ userId: denied.user.id, category: 'bug', message: 'Narrow bearer row.' })
+      .returning();
+    const response = await request(harness.app)
+      .delete(`/api/v1/feedback/${deniedRow!.id}`)
+      .set('Authorization', `Bearer ${denied.token}`);
+    expect(response.status).toBe(403);
+    expect(apiErrorSchema.parse(response.body).error.code).toBe('INSUFFICIENT_SCOPE');
+  });
+});
+
 describe('feedback status storage constraints', () => {
+  it('stores both additive helpdesk categories and rejects unknown values in PostgreSQL', async () => {
+    const user = await harness.seedUser({
+      email: 'feedback-category-check@bt.test',
+      username: 'feedbackcategorycheck',
+    });
+    const stored = await harness.db
+      .insert(schema.feedback)
+      .values([
+        { userId: user.id, category: 'help', message: 'Help request.' },
+        { userId: user.id, category: 'improvement', message: 'Improvement request.' },
+      ])
+      .returning({ category: schema.feedback.category });
+    expect(stored.map((row) => row.category)).toEqual(['help', 'improvement']);
+
+    await expect(
+      harness.db.insert(schema.feedback).values({
+        userId: user.id,
+        category: 'unknown' as 'bug',
+        message: 'The storage enum must reject this.',
+      }),
+    ).rejects.toThrow();
+  });
+
   it('rejects declined rows without reasons and shipped rows without versions', async () => {
     const user = await harness.seedUser({
       email: 'feedback-check@bt.test',

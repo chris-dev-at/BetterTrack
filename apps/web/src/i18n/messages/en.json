@@ -4450,7 +4450,7 @@
     },
     "feedback": {
       "title": "Feedback",
-      "subtitle": "Feature requests first, followed by bugs and other submissions.",
+      "subtitle": "Feature ideas, bugs, help requests, improvements, and other submissions.",
       "refresh": "Refresh",
       "loading": "Loading feedback…",
       "loadError": "Could not load feedback.",
@@ -4466,9 +4466,11 @@
         "newest": "Newest first"
       },
       "category": {
-        "feature": "Feature/change",
+        "feature": "Feature idea",
         "bug": "Bug",
-        "other": "Other"
+        "other": "Other",
+        "help": "Need help",
+        "improvement": "Improvement"
       },
       "status": {
         "new": "New",
@@ -4479,6 +4481,7 @@
         "shipped": "Shipped"
       },
       "statusControl": "Status for feedback from {{user}}",
+      "deletedByUser": "Deleted by user",
       "fields": {
         "status": "Status",
         "message": "Message",
@@ -5364,20 +5367,22 @@
     "authorizedApps": "Authorized apps",
     "appearance": "Appearance",
     "feedback": "Send feedback",
-    "feedbackSub": "Feature requests and bug reports"
+    "feedbackSub": "Help requests, improvements, features, and bugs"
   },
   "feedback": {
     "title": "Send feedback",
-    "dialogDescription": "Send a feature request, bug report, or other note to BetterTrack.",
+    "dialogDescription": "Send a bug, help request, improvement, feature idea, or other note to BetterTrack.",
     "settingsLabel": "Help improve BetterTrack",
-    "settingsHint": "Feature request, bug report, or another note.",
+    "settingsHint": "Bug, help request, improvement, feature idea, or another note.",
     "open": "Write feedback",
     "category": "Category",
     "categoryPlaceholder": "Select a category",
     "categoryOption": {
-      "feature": "Feature / improvement",
+      "feature": "Feature idea",
       "bug": "Bug",
-      "other": "Other"
+      "other": "Other",
+      "help": "Need help",
+      "improvement": "Improvement"
     },
     "subject": "Subject (optional)",
     "message": "Message",
@@ -5391,7 +5396,18 @@
     "submit": "Submit feedback",
     "submitting": "Submitting…",
     "success": "Thanks — your feedback was submitted.",
-    "submitError": "Couldn't submit your feedback. Please try again."
+    "submitError": "Couldn't submit your feedback. Please try again.",
+    "openLimit": "You already have 20 open requests. Please wait for triage or delete an open request before submitting another.",
+    "status": {
+      "new": "Sent",
+      "triaged": "Read / in review",
+      "working_on_it": "In progress",
+      "saved_as_future_idea": "On the waiting list",
+      "shipped": "Shipped",
+      "comingIn": "Coming in {{version}}",
+      "declined": "Declined",
+      "declinedWithReason": "Declined — {{reason}}"
+    }
   },
   "privacy": {
     "subtitle": "Control what the screen shows and where your data lives.",

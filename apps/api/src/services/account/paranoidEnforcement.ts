@@ -1335,8 +1335,12 @@ export const PARANOID_KEPT_ROUTE_RULES: readonly ParanoidExemptRouteRule[] = [
     { prefix: '/notifications/' },
   ]),
   ...keptRoutes(
-    'Authenticated feedback and its caller-owned status history contain no server portfolio data.',
-    [{ exact: '/feedback' }, { exact: '/feedback/mine' }],
+    'Authenticated feedback, caller-owned status history and deletion contain no server portfolio data.',
+    [
+      { exact: '/feedback' },
+      { exact: '/feedback/mine' },
+      { pattern: /^\/feedback\/(?!mine$)[^/]+$/ },
+    ],
   ),
   ...keptRoutes('Alert CRUD is provenance-filtered; sharing settings are classified separately.', [
     { exact: '/alerts' },
