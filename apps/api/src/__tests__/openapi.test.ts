@@ -146,18 +146,16 @@ describe('OpenAPI document', () => {
     const apiKeys = (paths['/settings/api-keys'] as JsonObject).get as JsonObject;
     expect(apiKeys.security).toEqual([{ sessionCookie: [] }]);
 
-    // #1324: existing-passkey management, first-run completion and tax-year
-    // locks share account:security across the cookie and bearer front ends. The
-    // markers are derived from the same exact method/path policy as live
-    // requests; no endpoint-local security override may drift from it.
+    // #1324/#1399: existing-passkey management, first-run completion and the
+    // tax-year documentation list share account:security across the cookie and
+    // bearer front ends. The markers are derived from the same exact method/path
+    // policy as live requests; no endpoint-local security override may drift.
     const nativeAccountSecurityOperations = [
       ['get', '/auth/passkeys'],
       ['patch', '/auth/passkeys/{id}'],
       ['delete', '/auth/passkeys/{id}'],
       ['post', '/auth/first-run/complete'],
       ['get', '/settings/taxes/years'],
-      ['post', '/settings/taxes/years/{year}/unlock'],
-      ['post', '/settings/taxes/years/{year}/relock'],
     ] as const;
     for (const [method, path] of nativeAccountSecurityOperations) {
       const operation = (paths[path] as JsonObject)[method] as JsonObject;
@@ -166,6 +164,8 @@ describe('OpenAPI document', () => {
         { apiKeyBearer: [] },
       ]);
     }
+    expect(paths['/settings/taxes/years/{year}/unlock']).toBeUndefined();
+    expect(paths['/settings/taxes/years/{year}/relock']).toBeUndefined();
 
     // #1328: only the JSON start leg is authenticated + bearer-callable. Both
     // Google browser callbacks are genuinely public, while the legacy anonymous

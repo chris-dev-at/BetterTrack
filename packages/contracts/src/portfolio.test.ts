@@ -15,12 +15,10 @@ import {
   portfolioKindSchema,
   portfolioSummarySchema,
   sourceTagSchema,
-  taxYearLockParamsSchema,
-  taxYearLockStateResponseSchema,
+  taxYearChangesResponseSchema,
   taxYearSummarySchema,
   transactionListQuerySchema,
   transactionListResponseSchema,
-  unlockTaxYearRequestSchema,
   updatePortfolioRequestSchema,
 } from './portfolio';
 
@@ -202,9 +200,10 @@ describe('transaction pagination modes and facets', () => {
   });
 });
 
-describe('tax year locking (§16 2026-08-07)', () => {
+describe('living tax-year documentation (§16 2026-08-19)', () => {
   const summary = {
     year: 2025,
+    lastChangedAt: '2026-08-19T10:30:00.000Z',
     realizedPnlEur: 100,
     dividendsGrossEur: 0,
     taxWithheldEur: 27.5,
@@ -212,34 +211,24 @@ describe('tax year locking (§16 2026-08-07)', () => {
     taxNetEur: 27.5,
   };
 
-  it('the year summary states the policy lock as a real boolean (or omits it on open years)', () => {
+  it('the year summary requires a nullable last-change marker', () => {
     expect(taxYearSummarySchema.safeParse(summary).success).toBe(true);
-    expect(taxYearSummarySchema.safeParse({ ...summary, locked: true }).success).toBe(true);
-    // `false` = elapsed but explicitly unlocked for amendments — a legal wire
-    // value, not an omission (the mobile slot keys off exactly this).
-    expect(taxYearSummarySchema.safeParse({ ...summary, locked: false }).success).toBe(true);
+    expect(taxYearSummarySchema.safeParse({ ...summary, lastChangedAt: null }).success).toBe(true);
+    expect(taxYearSummarySchema.safeParse({ ...summary, lastChangedAt: 'yesterday' }).success).toBe(
+      false,
+    );
   });
 
-  it('the unlock body carries exactly the re-auth password', () => {
-    expect(unlockTaxYearRequestSchema.safeParse({ password: 'hunter2!' }).success).toBe(true);
-    expect(unlockTaxYearRequestSchema.safeParse({ password: '' }).success).toBe(false);
-    expect(unlockTaxYearRequestSchema.safeParse({}).success).toBe(false);
-    // .strict(): no smuggled fields beside the credential.
-    expect(unlockTaxYearRequestSchema.safeParse({ password: 'x', year: 2025 }).success).toBe(false);
-  });
-
-  it('the year param coerces route strings and bounds the range', () => {
-    expect(taxYearLockParamsSchema.parse({ year: '2025' })).toEqual({ year: 2025 });
-    expect(taxYearLockParamsSchema.safeParse({ year: '1024' }).success).toBe(false);
-    expect(taxYearLockParamsSchema.safeParse({ year: 'soon' }).success).toBe(false);
-  });
-
-  it('the lock state names the current year and the unlocked exceptions', () => {
+  it('the account documentation list carries newest-first-compatible markers', () => {
     expect(
-      taxYearLockStateResponseSchema.safeParse({ currentYear: 2026, unlockedYears: [2024, 2025] })
-        .success,
+      taxYearChangesResponseSchema.safeParse({
+        years: [
+          { year: 2025, lastChangedAt: '2026-08-19T10:30:00.000Z' },
+          { year: 2024, lastChangedAt: null },
+        ],
+      }).success,
     ).toBe(true);
-    expect(taxYearLockStateResponseSchema.safeParse({ currentYear: 2026 }).success).toBe(false);
+    expect(taxYearChangesResponseSchema.safeParse({ years: [{ year: 2025 }] }).success).toBe(false);
   });
 });
 

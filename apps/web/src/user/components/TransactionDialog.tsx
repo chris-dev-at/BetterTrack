@@ -944,10 +944,7 @@ export function TransactionDialog(props: TransactionDialogProps) {
         err instanceof ApiError &&
         (err.code === 'OVERSELL' ||
           err.code === 'INSUFFICIENT_CASH' ||
-          err.code === 'TRANSACTION_CASH_LINKED' ||
-          // Tax year lock (§16 2026-08-07): the server copy names the locked
-          // year and the unlock path — exactly what the user must act on.
-          err.code === 'TAX_YEAR_LOCKED')
+          err.code === 'TRANSACTION_CASH_LINKED')
       ) {
         setError(err.message);
       } else if (

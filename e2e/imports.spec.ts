@@ -29,8 +29,8 @@ async function currentYearCsv(filePath: string) {
     throw new Error(`CSV fixture ${path.basename(filePath)} has no year token`);
   }
 
-  // Resolve at upload time so a suite started before Vienna's Jan 1 boundary
-  // cannot retain the newly elapsed (and therefore auto-locked) tax year.
+  // Resolve at upload time so a suite started across Vienna's Jan 1 boundary
+  // still books every fixture row into one deterministic tax year.
   const currentViennaYear = new Intl.DateTimeFormat('en', {
     timeZone: 'Europe/Vienna',
     year: 'numeric',

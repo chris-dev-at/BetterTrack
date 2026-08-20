@@ -300,10 +300,6 @@ import { createSocialService, type SocialService } from '../services/social/soci
 import { createCommentService, type CommentService } from '../services/social/commentService';
 import { createTaxService, type TaxService } from '../services/tax/taxService';
 import {
-  createTaxYearLockService,
-  type TaxYearLockService,
-} from '../services/tax/taxYearLockService';
-import {
   createWorkboardService,
   type WorkboardService,
 } from '../services/workboard/workboardService';
@@ -360,12 +356,6 @@ export interface AppContext {
   snapshots: PortfolioSnapshotService;
   /** Realized P/L, tax modes, dividends + the per-year report (§13.3 V3-P4). */
   tax: TaxService;
-  /**
-   * Tax year locking (§16 2026-08-07): lock state + the session-only,
-   * password-re-authenticated unlock/relock ritual. The mutation gates run
-   * inside the tax/portfolio services; routes only expose the ritual.
-   */
-  taxYearLock: TaxYearLockService;
   /**
    * MIRRORCHAIN replication core (§13.5 V5-P7 M2, design §§1–3): the write-path
    * seam for synced copies — op append under the chain lock, origin apply,
@@ -1306,19 +1296,6 @@ export function buildContext(deps: BuildContextDeps): AppContext {
   // Tax engine (V3-P4): built before the portfolio service, which folds its
   // per-sell tax plans into transaction writes.
   const taxRepo = createTaxRepository(db);
-  // Tax year locking (§16 2026-08-07): the API-layer lock policy the tax and
-  // portfolio mutation paths gate through, plus the session-only unlock
-  // ritual. Shares the tax engine's clock seam so the lock boundary and the
-  // open/closed derivation boundary can never disagree.
-  const taxYearLock = createTaxYearLockService({
-    config,
-    redis,
-    taxRepo,
-    userRepo,
-    passwordHasher,
-    audit,
-    now: deps.taxNow,
-  });
   const tax = createTaxService({
     taxRepo,
     portfolioSettingsRepo,
@@ -1328,7 +1305,6 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     portfolioRepo,
     currencyService: currency,
     snapshots,
-    yearLock: taxYearLock,
     logger,
     now: deps.taxNow,
     paranoid: paranoidGuard,
@@ -1373,7 +1349,6 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     snapshots,
     taxService: tax,
     standingOrders,
-    yearLock: taxYearLock,
     friendshipRepo,
     audience,
     profile: profileRepo,
@@ -1996,7 +1971,6 @@ export function buildContext(deps: BuildContextDeps): AppContext {
       portfolioMarketIntel,
       marketIntel,
       tax,
-      taxYearLock,
       expenses,
       expenseBudgets,
       aiFeatures,
@@ -2037,7 +2011,6 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     portfolio: guarded.portfolio,
     snapshots: guarded.snapshots,
     tax: guarded.tax,
-    taxYearLock: guarded.taxYearLock,
     mirror: guarded.mirror,
     customAssets: guarded.customAssets,
     conglomerate: guarded.conglomerate,

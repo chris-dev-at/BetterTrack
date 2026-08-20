@@ -143,15 +143,6 @@ async function setup() {
   const pid = await defaultPortfolioId(agent);
   const tech = await seedAsset('MTA.DE', 'Muster Tech AG');
   const etf = await seedAsset('BWE.DE', 'Beispiel World ETF');
-  // Tax year lock (§16 2026-08-07): the golden fixtures carry historical
-  // (2024/2025) rows, and an import IS a backdated mutation — a real user
-  // must unlock those years first (the per-row refusal names them). These
-  // suites test the import pipeline itself, so they run in amendment mode;
-  // the gate is pinned by taxYearLock.test.ts.
-  await harness.db
-    .insert(schema.taxYearUnlocks)
-    .values([2024, 2025].map((year) => ({ userId: user.id, year })))
-    .onConflictDoNothing();
   return { user, agent, pid, tech, etf };
 }
 

@@ -66,9 +66,8 @@ export const EXPORT_TABLE_CLASSIFICATION: Record<string, TableClassification> = 
   // tax choices, exported alongside the user-level default.
   portfolio_settings: exported('portfolioSettings'),
   user_tax_settings: exported('taxSettings'),
-  // Tax year locking (§16 2026-08-07): the user's explicitly-unlocked elapsed
-  // years — part of their tax record's posture, so it travels with the export.
-  tax_year_unlocks: exported('taxYearUnlocks'),
+  // The durable last-edit marker is part of the user's living tax record.
+  tax_year_changes: exported('taxYearChanges'),
   friend_requests: exported('friendRequests'),
   friendships: exported('friendships'),
   user_follows: exported('userFollows'),
@@ -507,11 +506,9 @@ export const PARANOID_TABLE_CLASSIFICATION: Record<string, ParanoidClassificatio
   passkeys: 'server',
   device_tokens: 'server',
   push_subscriptions: 'server',
-  // Tax year locking (§16 2026-08-07): account-level lock POLICY, not money
-  // content — rows carry only year numbers (like the security posture rows
-  // above), so a paranoid account keeps them server-side; the mode's tax
-  // surface itself is killed for paranoid accounts by the route/service rules.
-  tax_year_unlocks: 'server',
+  // Account-level server-mode tax-documentation metadata. The surface is
+  // killed for paranoid accounts with the rest of server tax reporting.
+  tax_year_changes: 'server',
 
   // ── server: operational / global records (kept) ────────────────────────────
   audit_log: 'server',

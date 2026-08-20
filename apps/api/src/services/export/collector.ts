@@ -31,7 +31,7 @@ import {
   shareAudiences,
   shareLinks,
   sharedItemActivityPrefs,
-  taxYearUnlocks,
+  taxYearChanges,
   transactions,
   userFollows,
   userTaxSettings,
@@ -176,7 +176,7 @@ export async function collectUserExport(
     feedbackRows,
     ideaRows,
     taxSettingRows,
-    taxYearUnlockRows,
+    taxYearChangeRows,
     friendRequestRows,
     friendshipRows,
     userFollowRows,
@@ -213,7 +213,7 @@ export async function collectUserExport(
     db.select().from(feedback).where(eq(feedback.userId, userId)),
     db.select().from(ideas).where(eq(ideas.ownerId, userId)),
     db.select().from(userTaxSettings).where(eq(userTaxSettings.userId, userId)),
-    db.select().from(taxYearUnlocks).where(eq(taxYearUnlocks.userId, userId)),
+    db.select().from(taxYearChanges).where(eq(taxYearChanges.userId, userId)),
     db
       .select()
       .from(friendRequests)
@@ -300,7 +300,7 @@ export async function collectUserExport(
     cashMovements: sanitize(cashMovementRows),
     portfolioSettings: sanitize(portfolioSettingRows),
     taxSettings: sanitize(taxSettingRows),
-    taxYearUnlocks: sanitize(taxYearUnlockRows),
+    taxYearChanges: sanitize(taxYearChangeRows),
     friendRequests: sanitize(friendRequestRows),
     friendships: sanitize(friendshipRows),
     userFollows: sanitize(userFollowRows),

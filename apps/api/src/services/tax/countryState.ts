@@ -47,7 +47,7 @@ export function rowEngineCountry(
   if (taxCountry === TAX_COUNTRY_DE || taxCountry === TAX_COUNTRY_FI) return taxCountry;
   throw new Error(
     `Tax engine: no settlement component for frozen tax country "${taxCountry}" — ` +
-      'wire it into SUPPORTED_TAX_COUNTRIES and the country modules (openYear.ts checklist)',
+      'wire it into SUPPORTED_TAX_COUNTRIES and the living-year country modules',
   );
 }
 
@@ -80,7 +80,7 @@ export function portfolioHasFiRows(
 }
 
 /**
- * The FI component of a closed year's held-tax target (#635): the progressive
+ * The FI component of a documented year's held-tax target (#635): the progressive
  * {@link fiYearTargetEur} over the year's FI-frozen rows — sells with their
  * recomputed FIFO gains (FI mandates FIFO like DE), dividends with their
  * gross. 0 for a year without FI rows; no cross-year carry (v1).

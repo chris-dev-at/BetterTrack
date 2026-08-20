@@ -965,8 +965,8 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
             taxMode: 'none',
           }),
         ];
-        // These rows predate the effective-mode change; their frozen state and
-        // the current open-year sell must both remain fail-closed.
+        // These rows predate the effective-mode change; every tax-sensitive
+        // sell must remain fail-closed without the client engine.
         configureEffectiveEngineTaxMode(document, mode);
         const engine = createMutableEngine(document);
         const store = createVaultPortfolioStore(engine, { now: () => AT });
@@ -988,7 +988,7 @@ describe('vaultPortfolioStore privacy and correctness boundaries', () => {
     );
 
     it.each(['country_specific', 'custom'] as const)(
-      'rejects a pre-open-year sell introduction and deletion under effective %s tax before CAS',
+      'rejects a tax-sensitive sell introduction and deletion under effective %s tax before CAS',
       async (mode) => {
         const editableBuyId = GENERATED_IDS[0];
         const preEngineSellId = GENERATED_IDS[1];

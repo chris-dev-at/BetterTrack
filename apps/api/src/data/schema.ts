@@ -1926,11 +1926,10 @@ export type PortfolioSnapshotStateRow = typeof portfolioSnapshotState.$inferSele
  * user — a missing row IS `none` mode (the pre-V3-P4 default), so the feature
  * is additive by construction. `country` is set exactly when the mode is
  * `country_specific` (AT, DE and FI ship as of V5-P4/#635); the CHECK makes
- * the pair unrepresentable any other way. Rows freeze the mode they were
- * recorded under, but OPEN (current-and-later) years re-derive live under the
- * active regime — switching reshapes their settled tax via corrections, while
- * closed years settle only by the delta of their frozen decomposition
- * (§16 2026-07-21, superseding the forward-only rule of §16 2026-07-08).
+ * the pair unrepresentable any other way. Event rows retain the mode recorded
+ * at write time, while every documented year re-derives live under the active
+ * regime; switching reshapes settled tax through correction movements
+ * (§16 2026-08-19, superseding the calendar-boundary rules).
  */
 export const userTaxSettings = pgTable(
   'user_tax_settings',
@@ -1971,30 +1970,26 @@ export const userTaxSettings = pgTable(
 );
 
 /**
- * Explicit tax-year unlocks (owner directive 2026-08-07, §16). A tax year
- * auto-locks the moment the Vienna calendar year ends: the LOCKED state is the
- * absence of a row here for any year before the current one, so fully-elapsed
- * years start locked with no backfill and every future rollover locks the
- * ending year with no job. One row = one year the user explicitly opened for
- * amendments through the re-authenticated unlock ritual; it stays open until
- * the user explicitly re-locks (row deleted). Per USER, not per portfolio —
- * amending a tax year is an account-level legal act, like the filings it
- * mirrors. The current (open) year is never lockable, so `year` is always in
- * the past relative to the unlock moment. Cascades away with the user.
+ * Living tax-documentation change clock (owner directive 2026-08-19, §16).
+ * Every dated portfolio mutation touches one row for its Europe/Vienna year;
+ * deletes therefore remain visible even when no source row survives. The
+ * marker is account-wide because tax-year documentation spans all of a user's
+ * portfolios. Database triggers own the writes so imports, standing orders,
+ * mirror replicas and every other repository caller share the same contract.
  */
-export const taxYearUnlocks = pgTable(
-  'tax_year_unlocks',
+export const taxYearChanges = pgTable(
+  'tax_year_changes',
   {
     userId: uuid('user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
     year: integer('year').notNull(),
-    unlockedAt: timestamp('unlocked_at', { withTimezone: true }).notNull().defaultNow(),
+    lastChangedAt: timestamp('last_changed_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [primaryKey({ columns: [t.userId, t.year] })],
 );
 
-export type TaxYearUnlockRow = typeof taxYearUnlocks.$inferSelect;
+export type TaxYearChangeRow = typeof taxYearChanges.$inferSelect;
 
 /**
  * Per-portfolio setting overrides (issue #636). The override layer of the
@@ -4255,7 +4250,7 @@ export const schema = {
   portfolioDailySnapshots,
   portfolioSnapshotState,
   userTaxSettings,
-  taxYearUnlocks,
+  taxYearChanges,
   portfolioSettings,
   widgetLayouts,
   friendRequests,

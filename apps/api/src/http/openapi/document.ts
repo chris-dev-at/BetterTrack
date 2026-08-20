@@ -281,9 +281,7 @@ const componentSchemas = {
   TaxSettingsResponse: contracts.taxSettingsResponseSchema,
   UpdateTaxSettingsRequest: contracts.updateTaxSettingsRequestSchema,
   PortfolioTaxSettingsResponse: contracts.portfolioTaxSettingsResponseSchema,
-  // Tax year locking (§16 2026-08-07)
-  UnlockTaxYearRequest: contracts.unlockTaxYearRequestSchema,
-  TaxYearLockStateResponse: contracts.taxYearLockStateResponseSchema,
+  TaxYearChangesResponse: contracts.taxYearChangesResponseSchema,
   CreateDividendRequest: contracts.createDividendRequestSchema,
   CreateDividendResponse: contracts.createDividendResponseSchema,
   DividendListResponse: contracts.dividendListResponseSchema,
@@ -4153,42 +4151,20 @@ const endpoints: EndpointDef[] = [
     method: 'patch',
     path: '/settings/taxes',
     tag: 'Settings',
-    summary: 'Switch the tax mode; applies forward only (§16).',
+    summary: 'Switch the tax mode for the living tax documentation (§16).',
     body: R.UpdateTaxSettingsRequest,
     status: 200,
     response: R.TaxSettingsResponse,
   },
 
-  // Tax year locking (§16 2026-08-07) — session-only (never reachable by a
-  // bearer token): elapsed years auto-lock; the unlock ritual re-verifies the
-  // account password and opens ONE named year for amendments until re-locked.
+  // Living tax-year documentation (§16 2026-08-19).
   {
     method: 'get',
     path: '/settings/taxes/years',
     tag: 'Settings',
-    summary: 'The caller’s tax-year lock state: current year + explicitly-unlocked years.',
+    summary: 'The caller’s account-wide tax-year last-change markers.',
     status: 200,
-    response: R.TaxYearLockStateResponse,
-  },
-  {
-    method: 'post',
-    path: '/settings/taxes/years/{year}/unlock',
-    tag: 'Settings',
-    summary:
-      'Unlock one elapsed tax year for amendments (password re-auth; audited; stays open until re-locked).',
-    params: contracts.taxYearLockParamsSchema,
-    body: R.UnlockTaxYearRequest,
-    status: 200,
-    response: R.TaxYearLockStateResponse,
-  },
-  {
-    method: 'post',
-    path: '/settings/taxes/years/{year}/relock',
-    tag: 'Settings',
-    summary: 'Re-lock a previously unlocked tax year (audited; idempotent).',
-    params: contracts.taxYearLockParamsSchema,
-    status: 200,
-    response: R.TaxYearLockStateResponse,
+    response: R.TaxYearChangesResponse,
   },
 
   // Personal API keys (§6.13, V2-P12) — session-only (never reachable by a key).
