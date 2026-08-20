@@ -202,6 +202,13 @@ const envSchema = z.object({
   // in production so a mid-download restart never loses a ready file.
   BT_EXPORT_DIR: z.string().optional(),
 
+  // ── Backup readiness surface (#1406 W1) ────────────────────────────────────
+  // Path to the backup scheduler's machine-readable status file, mounted
+  // READ-ONLY into the api container. Unset ⇒ the admin Overview's readiness
+  // tile reads "not configured"; the API never writes here and never runs a
+  // backup, so the worst case of a wrong path is a blank tile.
+  BT_BACKUP_STATUS_FILE: optionalNonEmpty,
+
   // ── Data retention (§13.5 V5-P14, PL-01) ─────────────────────────────────
   // Owner-adjustable retention windows for identifying operational trails.
   // Unset (or blank) uses the conservative defaults below; explicit `0` keeps
@@ -372,6 +379,8 @@ export const COMPOSE_MANAGED_ENV_KEYS = Object.freeze({
   PORT: 'The internal API port is coupled to the proxy upstream and healthcheck.',
   BT_EXPORT_DIR:
     'The durable export path is coupled to the shared named-volume mount in both containers.',
+  BT_BACKUP_STATUS_FILE:
+    'The readiness status path is coupled to the read-only backupstatus volume mounted into the api container.',
 } satisfies Partial<Record<EnvSchemaKey, string>>);
 
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
@@ -811,6 +820,15 @@ export interface AppConfig {
     dir: string;
   };
   /**
+   * Backup readiness (#1406 W1). `statusFile` is the read-only path to the
+   * scheduler's machine-readable status file; `undefined` on a deployment
+   * without the backup sidecar, which the admin surface reports as "not
+   * configured" rather than as a failure.
+   */
+  backup: {
+    statusFile?: string;
+  };
+  /**
    * Operational data retention (§13.5 V5-P14, PL-01). Values are whole days;
    * `0` means retain forever, while an unset env uses the documented defaults.
    */
@@ -1141,6 +1159,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     },
     dataExport: {
       dir: e.BT_EXPORT_DIR && e.BT_EXPORT_DIR.trim() !== '' ? e.BT_EXPORT_DIR : DEFAULT_EXPORT_DIR,
+    },
+    backup: {
+      statusFile: e.BT_BACKUP_STATUS_FILE,
     },
     retention: {
       auditDays: e.BT_AUDIT_RETENTION_DAYS,

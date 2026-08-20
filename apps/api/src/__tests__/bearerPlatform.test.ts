@@ -450,6 +450,12 @@ describe('#361 route × scope matrix', () => {
       scope: 'feedback:write',
       body: { category: 'other', message: 'Bearer matrix feedback' },
     },
+    {
+      name: 'own feedback deletion',
+      method: 'delete',
+      path: `/feedback/${MISSING_ID}`,
+      scope: 'feedback:write',
+    },
     { name: '2fa status', method: 'get', path: '/auth/2fa/status', scope: 'account:security' },
     { name: 'sessions list', method: 'get', path: '/auth/sessions', scope: 'account:security' },
     {

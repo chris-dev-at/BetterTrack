@@ -59,8 +59,14 @@ export const privacyModeEnum = pgEnum('privacy_mode', ['normal', 'paranoid']);
 export const problemKindEnum = pgEnum('problem_kind', ['error', 'job', 'provider']);
 export const problemStatusEnum = pgEnum('problem_status', ['open', 'resolved']);
 
-/** Authenticated in-app feedback, triaged category-first in the admin inbox. */
-export const feedbackCategoryEnum = pgEnum('feedback_category', ['feature', 'bug', 'other']);
+/** Authenticated in-app feedback; existing wire values stay in their shipped order. */
+export const feedbackCategoryEnum = pgEnum('feedback_category', [
+  'feature',
+  'bug',
+  'other',
+  'help',
+  'improvement',
+]);
 export const feedbackStatusEnum = pgEnum('feedback_status', [
   'new',
   'triaged',
@@ -642,6 +648,7 @@ export const feedback = pgTable(
       .defaultNow(),
     declinedReason: text('declined_reason'),
     shippedVersion: varchar('shipped_version', { length: 64 }),
+    deletedByUserAt: timestamp('deleted_by_user_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     // No trigger/$onUpdate owns these: status transitions set both explicitly.
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),

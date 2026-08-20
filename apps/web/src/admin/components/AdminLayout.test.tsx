@@ -8,44 +8,72 @@ import { afterEach, beforeEach, expect, test, vi } from 'vitest';
 import { I18nProvider, LOCALES, localizedMessage } from '../../i18n';
 import { setViewportWidth } from '../../test/viewport';
 
-vi.mock('../AuthContext', () => ({
-  useAuth: () => ({
+vi.mock('../AuthContext', () => {
+  // Stable identities: `useResource` keys its effect on these callbacks, so a
+  // fresh spy per render would re-fire every read forever.
+  const session = {
     status: 'authenticated',
     user: { username: 'root', email: 'admin@bettertrack.test' },
     logout: vi.fn(),
-  }),
-}));
+    clearSession: vi.fn(),
+    requireTwoFactorSetup: vi.fn(),
+  };
+  return {
+    useAuth: () => session,
+    isAdminTwoFactorSetupRequired: () => false,
+  };
+});
+vi.mock('../../lib/adminApi');
 
 import { AdminLayout } from './AdminLayout';
 import { Modal } from './Modal';
 
+// Every page destination the six-workspace sidebar offers (#1406 W1). Two of the
+// six workspaces carry their landing route on the workspace label itself, so
+// those live in ADMIN_WORKSPACE_KEYS below rather than here.
 const ADMIN_NAV_KEYS = [
-  'admin.nav.users',
-  'admin.nav.invites',
   'admin.nav.feedback',
+  'admin.nav.users',
+  'admin.nav.registration',
+  'admin.nav.invites',
+  'admin.nav.health',
+  'admin.nav.problems',
+  'admin.nav.monitoring',
+  'admin.nav.email',
+  'admin.nav.usageAnalytics',
   'admin.nav.settings',
   'admin.nav.featureFlags',
   'admin.nav.ai',
   'admin.nav.accountDefaults',
   'admin.nav.announcements',
-  'admin.nav.oauthApps',
-  'admin.nav.apiKeys',
-  'admin.nav.health',
-  'admin.nav.problems',
-  'admin.nav.monitoring',
-  'admin.nav.usageAnalytics',
-  'admin.nav.email',
   'admin.nav.audit',
   'admin.nav.security',
+  'admin.nav.oauthApps',
+  'admin.nav.apiKeys',
+] as const;
+
+const ADMIN_WORKSPACE_KEYS = [
+  'admin.nav.sections.overview',
+  'admin.nav.sections.support',
+  'admin.nav.sections.people',
+  'admin.nav.sections.operations',
+  'admin.nav.sections.product',
+  'admin.nav.sections.securityApi',
+] as const;
+
+/** The workspaces that own a landing route, so their label is also a link. */
+const ADMIN_WORKSPACE_LANDING_KEYS = [
+  'admin.nav.sections.overview',
+  'admin.nav.sections.support',
 ] as const;
 
 const ADMIN_SHELL_KEYS = [
   'admin.nav.console',
   'admin.nav.loading',
   'admin.nav.language',
-  'admin.nav.sections.people',
-  'admin.nav.sections.configuration',
-  'admin.nav.sections.diagnostics',
+  'admin.palette.trigger',
+  'admin.palette.shortcut',
+  ...ADMIN_WORKSPACE_KEYS,
   ...ADMIN_NAV_KEYS,
 ] as const;
 
@@ -69,6 +97,7 @@ function AdminTestApp({
           <Route element={<AdminLayout />}>
             <Route path="/admin/users" element={<Bomb />} />
             <Route path="/admin/invites" element={invitesElement} />
+            <Route path="/admin/health" element={<p>Health page</p>} />
           </Route>
         </Routes>
       </MemoryRouter>
@@ -224,15 +253,65 @@ test.each(['en', 'de'] as const)('every navigation entry resolves through %s', (
   for (const key of ADMIN_NAV_KEYS) {
     expect(screen.getByRole('link', { name: localizedMessage(locale, key) })).toBeInTheDocument();
   }
-  for (const key of [
-    'admin.nav.sections.people',
-    'admin.nav.sections.configuration',
-    'admin.nav.sections.diagnostics',
-  ]) {
+  for (const key of ADMIN_WORKSPACE_KEYS) {
     expect(
       screen.getByRole('heading', { name: localizedMessage(locale, key) }),
     ).toBeInTheDocument();
   }
+  // A workspace that owns a landing page is reachable, not just a caption.
+  for (const key of ADMIN_WORKSPACE_LANDING_KEYS) {
+    expect(screen.getByRole('link', { name: localizedMessage(locale, key) })).toBeInTheDocument();
+  }
+});
+
+test('the sidebar offers the six operator workspaces in their decided order', () => {
+  renderAdmin('/admin/invites');
+
+  const nav = screen.getByRole('navigation', { name: 'Admin console' });
+  const headings = within(nav)
+    .getAllByRole('heading')
+    .map((heading) => heading.textContent);
+
+  expect(headings).toEqual([
+    'Overview',
+    'Support',
+    'People',
+    'Operations',
+    'Product & Comms',
+    'Security & API',
+  ]);
+});
+
+test('⌘K opens the command palette from anywhere in the console', async () => {
+  const user = userEvent.setup();
+  renderAdmin('/admin/invites');
+
+  expect(screen.queryByRole('dialog', { name: 'Admin command palette' })).not.toBeInTheDocument();
+
+  await user.keyboard('{Meta>}k{/Meta}');
+
+  const palette = await screen.findByRole('dialog', { name: 'Admin command palette' });
+  expect(within(palette).getByRole('combobox')).toHaveFocus();
+
+  await user.keyboard('{Escape}');
+  expect(screen.queryByRole('dialog', { name: 'Admin command palette' })).not.toBeInTheDocument();
+});
+
+test('the sidebar trigger opens the same palette', async () => {
+  const user = userEvent.setup();
+  renderAdmin('/admin/invites');
+
+  await user.click(screen.getAllByRole('button', { name: /Search or jump to/ })[0]!);
+
+  expect(await screen.findByRole('dialog', { name: 'Admin command palette' })).toBeInTheDocument();
+});
+
+test('only the dense operator workspaces widen the content column', () => {
+  const { container: wide } = renderAdmin('/admin/health');
+  expect(wide.querySelector('main > div')?.className).toContain('max-w-7xl');
+
+  const { container: standard } = renderAdmin('/admin/invites');
+  expect(standard.querySelector('main > div')?.className).toContain('max-w-5xl');
 });
 
 test('the compact language control re-renders the admin shell immediately', async () => {
@@ -246,7 +325,7 @@ test('the compact language control re-renders the admin shell immediately', asyn
 
   expect(screen.getByRole('combobox', { name: 'Sprache der Konsole' })).toHaveValue('de');
   expect(screen.getByRole('navigation', { name: 'Admin-Konsole' })).toBeInTheDocument();
-  expect(screen.getByRole('heading', { name: 'Konfiguration' })).toBeInTheDocument();
+  expect(screen.getByRole('heading', { name: 'Produkt & Kommunikation' })).toBeInTheDocument();
   expect(screen.getByRole('link', { name: 'Nutzer' })).toBeInTheDocument();
   expect(screen.getByRole('button', { name: 'Abmelden' })).toBeInTheDocument();
 });

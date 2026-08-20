@@ -44,6 +44,7 @@ const stats: AdminStats = {
   activeUserCount: 2,
   disabledUserCount: 0,
   pendingInviteCount: 0,
+  pendingRegistrationCount: 0,
 };
 
 function renderPage(locale = 'en') {

@@ -1,20 +1,23 @@
-import type {
-  AdminFeedbackListQuery,
-  AdminFeedbackListResponse,
-  AdminFeedbackSubmission,
-  CreateFeedbackRequest,
-  CreateFeedbackResponse,
-  FeedbackContext,
-  MyFeedbackResponse,
-  MyFeedbackSubmission,
-  UpdateFeedbackStatusRequest,
-  UpdateFeedbackStatusResponse,
+import {
+  FEEDBACK_OPEN_LIMIT,
+  FEEDBACK_OPEN_SUBMISSION_LIMIT,
+  type AdminFeedbackListQuery,
+  type AdminFeedbackListResponse,
+  type AdminFeedbackSubmission,
+  type CreateFeedbackRequest,
+  type CreateFeedbackResponse,
+  type FeedbackContext,
+  type MyFeedbackResponse,
+  type MyFeedbackSubmission,
+  type UpdateFeedbackStatusRequest,
+  type UpdateFeedbackStatusResponse,
 } from '@bettertrack/contracts';
 
 import type {
   AdminFeedbackRow,
   FeedbackRepository,
 } from '../../data/repositories/feedbackRepository';
+import { conflict } from '../../errors';
 
 function toAdminSubmission(row: AdminFeedbackRow): AdminFeedbackSubmission {
   return {
@@ -27,6 +30,7 @@ function toAdminSubmission(row: AdminFeedbackRow): AdminFeedbackSubmission {
     lastStatusChangeAt: row.lastStatusChangeAt.toISOString(),
     declinedReason: row.declinedReason,
     shippedVersion: row.shippedVersion,
+    deletedByUser: row.deletedByUserAt !== null,
     submitter: row.submitter,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
@@ -56,6 +60,8 @@ export interface FeedbackService {
   submit(userId: string, input: CreateFeedbackRequest): Promise<CreateFeedbackResponse>;
   /** Caller-owned status history; ownership is enforced inside the repository. */
   listMine(userId: string): Promise<MyFeedbackResponse>;
+  /** Caller-owned, idempotent soft delete; false means absent or owned by somebody else. */
+  deleteMine(userId: string, id: string): Promise<boolean>;
   /** Owner-only queue read; authorization is enforced by the parent admin router. */
   listForAdmin(input: AdminFeedbackListQuery): Promise<AdminFeedbackListResponse>;
   /** Owner-only lifecycle transition; returns null when the row vanished. */
@@ -73,11 +79,21 @@ export function createFeedbackService({ repo }: FeedbackServiceDeps): FeedbackSe
   return {
     async submit(userId, input) {
       const row = await repo.create(userId, input);
+      if (!row) {
+        throw conflict(
+          `You already have ${FEEDBACK_OPEN_SUBMISSION_LIMIT} open requests. Please wait for triage or delete an open request before submitting another.`,
+          FEEDBACK_OPEN_LIMIT,
+        );
+      }
       return { id: row.id, createdAt: row.createdAt.toISOString() };
     },
 
     async listMine(userId) {
       return { submissions: (await repo.listMine(userId)).map(toMySubmission) };
+    },
+
+    async deleteMine(userId, id) {
+      return Boolean(await repo.deleteMine(userId, id, new Date()));
     },
 
     async listForAdmin(input) {

@@ -59,6 +59,7 @@ import { registerAdminApiKeyRoutes } from './adminApiKeyRoutes';
 import { registerAdminFeedbackRoutes } from './adminFeedbackRoutes';
 import { registerAdminProblemsRoutes } from './adminProblemsRoutes';
 import { registerAdminMonitoringRoutes } from './adminMonitoringRoutes';
+import { registerAdminOpsRoutes } from './adminOpsRoutes';
 import {
   registerAdminSecurityRoutes,
   registerAdminSessionPolicyRoutes,
@@ -127,6 +128,11 @@ export function createAdminRouter(ctx: AppContext, limiters: RateLimiters): Rout
   // API-key governance (§13.5 V5-P10, issue 2/2): admin-configurable rate tiers
   // + per-key request-log audit view. Registered flat like the surfaces above.
   registerAdminApiKeyRoutes(router, ctx);
+
+  // Operator reads for the Overview cockpit (#1406 W1): backup / restore-drill
+  // readiness projected off the scheduler's status file. Read-only, registered
+  // flat like the surfaces above.
+  registerAdminOpsRoutes(router, ctx);
 
   // First-party usage analytics (§13.5 V5-P2 arc (b)): DAU/WAU/MAU, feature
   // counters, top assets and the registration funnel — computed from our own

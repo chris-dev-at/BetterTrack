@@ -162,6 +162,7 @@ const componentSchemas = {
   CreateInviteResponse: contracts.createInviteResponseSchema,
   AdminStats: contracts.adminStatsSchema,
   AdminHealthResponse: contracts.adminHealthResponseSchema,
+  AdminBackupStatusResponse: contracts.adminBackupStatusResponseSchema,
   AppSettingsResponse: contracts.appSettingsResponseSchema,
   // Registration modes (§6.12, §13.4 V4-P4a)
   PublicRegistrationInfoResponse: contracts.publicRegistrationInfoResponseSchema,
@@ -1539,6 +1540,15 @@ const endpoints: EndpointDef[] = [
   },
   {
     method: 'get',
+    path: '/admin/ops/backup-status',
+    tag: 'Admin',
+    summary:
+      'Backup and restore-drill readiness, projected read-only from the scheduler status file.',
+    status: 200,
+    response: R.AdminBackupStatusResponse,
+  },
+  {
+    method: 'get',
     path: '/admin/settings',
     tag: 'Admin',
     summary: 'Global app settings (registration mode + beta toggle).',
@@ -2705,6 +2715,14 @@ const endpoints: EndpointDef[] = [
     summary: 'List the caller’s own feedback submissions and their lifecycle status.',
     status: 200,
     response: R.MyFeedbackResponse,
+  },
+  {
+    method: 'delete',
+    path: '/feedback/{id}',
+    tag: 'Feedback',
+    summary: 'Hide one caller-owned submission while retaining an admin-visible tombstone.',
+    params: contracts.idParamSchema,
+    status: 204,
   },
   {
     method: 'post',
