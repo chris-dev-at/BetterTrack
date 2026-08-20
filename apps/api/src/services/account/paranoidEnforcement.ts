@@ -1107,6 +1107,7 @@ export const PARANOID_KILL_REGISTRY: readonly ParanoidKillRegistryEntry[] = [
     services: servicesFor('standingOrderExecution'),
     scopes: [],
     jobs: jobsFor('standingOrderExecution'),
+    // The standing-order webhook rail lives under `portfolioWebhooks`.
     webhookEventTypes: [],
   },
   {

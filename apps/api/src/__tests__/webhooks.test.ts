@@ -16,6 +16,7 @@ import {
   WEBHOOK_SIGNATURE_HEADER,
   WEBHOOK_TIMESTAMP_HEADER,
   createWebhookSubscriptionResponseSchema,
+  isParanoidKilledWebhookEventType,
   webhookDeliveryListResponseSchema,
   webhookSubscriptionListResponseSchema,
 } from '@bettertrack/contracts';
@@ -933,5 +934,9 @@ describe('subscribable catalog', () => {
     // the contracts list is a strict subset of the registry union by design.
     expect(isParanoidKilledWebhookEvent({ type: 'portfolio.changed' } as DomainEvent)).toBe(true);
     expect(WEBHOOK_EVENT_TYPES as readonly string[]).not.toContain('portfolio.changed');
+  });
+
+  it('returns false for a webhook event type outside the current catalog', () => {
+    expect(isParanoidKilledWebhookEventType('future.unknown')).toBe(false);
   });
 });
