@@ -803,6 +803,22 @@
         "loggingOut": "Logging out…",
         "logOutAllOthers": "Log out all other devices"
       },
+      "trustedDevices": {
+        "title": "Trusted devices",
+        "description": "Remembered devices can use your PIN to sign in. Revoke any you no longer use.",
+        "loadError": {
+          "title": "Couldn't load your trusted devices"
+        },
+        "empty": "No trusted devices",
+        "device": "Trusted device",
+        "timestamps": "Added {{createdAt}} · last active {{lastSeenAt}} · expires {{expiresAt}}",
+        "revoke": "Revoke",
+        "revokeError": "Couldn't revoke that trusted device. Please try again.",
+        "revokeAll": "Revoke all trusted devices",
+        "confirmRevokeAll": "Revoke all trusted devices? They’ll no longer be available for PIN sign-in.",
+        "revoking": "Revoking…",
+        "revokeAllError": "Couldn't revoke your trusted devices. Please try again."
+      },
       "pin": {
         "genericError": "Could not update your PIN. Please try again.",
         "pinLabel": "PIN",
@@ -5374,6 +5390,7 @@
     "leavesPopup": "Opens as its own page",
     "signIn": "Sign-in",
     "sessions": "Sessions",
+    "trustedDevices": "Trusted devices",
     "notificationLog": "Notification log",
     "profile": "Public profile",
     "authorizedApps": "Authorized apps",

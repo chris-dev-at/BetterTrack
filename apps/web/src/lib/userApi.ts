@@ -5,6 +5,7 @@ import {
   inviteValidationResponseSchema,
   loginResponseSchema,
   meResponseSchema,
+  okResponseSchema,
   paranoidDisableResponseSchema,
   paranoidEnableResponseSchema,
   paranoidForkProvenanceResponseSchema,
@@ -19,6 +20,7 @@ import {
   pinQuickAuthResponseSchema,
   publicRegistrationInfoResponseSchema,
   registerResponseSchema,
+  rememberedDeviceListResponseSchema,
   rememberedDeviceResponseSchema,
   retiredServerPurgeChallengeResponseSchema,
   retiredServerPurgeResponseSchema,
@@ -72,6 +74,7 @@ import {
   type PinQuickAuthResponse,
   type PinVerifyRequest,
   type RememberedDeviceResponse,
+  type RememberedDeviceSummary,
   type RevokeSessionsResponse,
   type RetiredServerPurgeChallengeResponse,
   type RetiredServerPurgeRequest,
@@ -447,6 +450,28 @@ export async function forgetRememberedDevice(): Promise<void> {
     method: 'DELETE',
     suppressAuthRedirect: true,
   });
+}
+
+/** The caller's live remembered-device bindings for the Trusted devices panel. */
+export async function listRememberedDevices(
+  signal?: AbortSignal,
+): Promise<RememberedDeviceSummary[]> {
+  const data = await apiRequest<unknown>('/auth/remembered-devices', { signal });
+  return rememberedDeviceListResponseSchema.parse(data).devices;
+}
+
+/** Revoke one remembered-device binding by its opaque, safe-to-send handle. */
+export async function revokeRememberedDevice(handle: string): Promise<void> {
+  const data = await apiRequest<unknown>(`/auth/remembered-devices/${encodeURIComponent(handle)}`, {
+    method: 'DELETE',
+  });
+  okResponseSchema.parse(data);
+}
+
+/** Revoke every remembered-device binding for the signed-in user. */
+export async function revokeAllRememberedDevices(): Promise<void> {
+  const data = await apiRequest<unknown>('/auth/remembered-devices', { method: 'DELETE' });
+  okResponseSchema.parse(data);
 }
 
 /**
