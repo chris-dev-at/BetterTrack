@@ -388,6 +388,16 @@ export function createPd9Harness(): Pd9Harness {
 
     async probeCleartext(scope) {
       const handlers: Record<string, () => Promise<number>> = {
+        // Purge-only API request telemetry can contain portfolio asset UUIDs in
+        // its concrete paths. It never enters the encrypted document, but the
+        // enable sweep destroys it, so PD9 must prove it reaches zero too.
+        api_key_request_log: () =>
+          probe(
+            db
+              .select({ value: count() })
+              .from(schema.apiKeyRequestLog)
+              .where(eq(schema.apiKeyRequestLog.userId, scope.userId)),
+          ),
         assets: () =>
           probe(
             db
