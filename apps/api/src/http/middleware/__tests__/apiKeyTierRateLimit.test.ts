@@ -26,6 +26,7 @@ const ctx = (): AppContext => {
       search: base,
       social: base,
       feedback: base,
+      feedbackThread: base,
       vault: base,
       apiKey: base,
       loginIp: base,

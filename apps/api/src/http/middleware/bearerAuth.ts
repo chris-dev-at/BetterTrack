@@ -401,12 +401,11 @@ export const MODULE_POLICIES = [
   // Ideas (§13.4 V4-P9) are a Workboard surface — a saved Workboard analysis —
   // so they gate on the same workboard scope pair as conglomerates/backtest.
   { prefix: '/ideas', kind: 'scope', read: 'workboard:read', write: 'workboard:write' },
-  // #1315/#1338: explicit feedback read/write scopes keep both capture and the
-  // caller-owned status history out of the session-only fallback that caused
-  // the recurring API_KEY_FORBIDDEN module-policy gap. #1338 splits the read
-  // half off `feedback:write` as that row's comment demanded: GET /feedback/mine
-  // exposes a user's submission history, so write access must not silently
-  // grant it.
+  // #1315/#1338/#1339: explicit feedback scopes keep capture, caller-owned
+  // status history and nested support-thread routes out of the session-only
+  // fallback that caused the recurring API_KEY_FORBIDDEN module-policy gap.
+  // Reads remain separate from `feedback:write`: submission/thread history must
+  // not be granted silently by capture/reply access.
   { prefix: '/feedback', kind: 'scope', read: 'feedback:read', write: 'feedback:write' },
   {
     prefix: '/expenses',

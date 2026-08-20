@@ -21,8 +21,10 @@ export interface RateLimiters {
   admin: RequestHandler;
   search: RequestHandler;
   social: RequestHandler;
-  /** Authenticated feedback submissions, per user (#1315). */
+  /** Authenticated feedback capture, per author. */
   feedback: RequestHandler;
+  /** Support-thread replies, per author — independent of the capture budget. */
+  feedbackThread: RequestHandler;
   /** Paranoid vault writes, per user (§13.5 V5-P13). */
   vault: RequestHandler;
 }
@@ -38,8 +40,18 @@ export interface RateLimiters {
  * way of deterministic API tests; the limiter primitive itself is unit-tested.
  */
 export function createRateLimiters(ctx: AppContext): RateLimiters {
-  const { enabled, general, generalBurst, search, social, feedback, vault, loginIp, apiKey } =
-    ctx.config.rateLimits;
+  const {
+    enabled,
+    general,
+    generalBurst,
+    search,
+    social,
+    feedback,
+    feedbackThread,
+    vault,
+    loginIp,
+    apiKey,
+  } = ctx.config.rateLimits;
 
   /**
    * Guard a request against one or more limiters sharing a key. Each is consumed
@@ -124,6 +136,11 @@ export function createRateLimiters(ctx: AppContext): RateLimiters {
   const searchLimiter = createProgressiveLimiter(ctx.redis, 'search', search);
   const socialLimiter = createProgressiveLimiter(ctx.redis, 'social', social);
   const feedbackLimiter = createProgressiveLimiter(ctx.redis, 'feedback', feedback);
+  const feedbackThreadLimiter = createProgressiveLimiter(
+    ctx.redis,
+    'feedback_thread',
+    feedbackThread,
+  );
   const vaultLimiter = createProgressiveLimiter(ctx.redis, 'vault', vault);
 
   return {
@@ -138,8 +155,12 @@ export function createRateLimiters(ctx: AppContext): RateLimiters {
     // Friend-request creation, per user — blunts bulk email→username probing (§6.9).
     social: guard([socialLimiter], keyByUserOrIp),
     // Text-only feedback creation is deliberately small-volume: five accepted
-    // POST attempts per user/hour before the standard progressive 429.
+    // POST attempts per author/hour before the progressive 429.
     feedback: guard([feedbackLimiter], keyByUserOrIp),
+    // Support-thread replies, per author — its own namespace and counter, so a
+    // spent capture allowance never closes a live conversation (and an owner
+    // working through the inbox is never throttled by the anti-spam budget).
+    feedbackThread: guard([feedbackThreadLimiter], keyByUserOrIp),
     // Paranoid vault writes, per user — a modest dedicated write budget (§13.5
     // V5-P13, design §4).
     vault: guard([vaultLimiter], keyByUserOrIp),
