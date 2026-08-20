@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link } from 'react-router-dom';
 
 import type {
@@ -9,6 +9,7 @@ import type {
 
 import { useT, type TranslateFn } from '../../i18n';
 import * as api from '../../lib/adminApi';
+import { formatBackupAge, formatDuration } from '../formatDuration';
 import { useResource } from '../useResource';
 import { Alert, Badge, Button, EmptyState, PageHeader, Spinner, cx } from '../components/ui';
 
@@ -43,6 +44,43 @@ interface AttentionItem {
 }
 
 /**
+ * Fire `onSeen` the first time the returned ref's element is on screen, then stop
+ * observing. Where `IntersectionObserver` is unavailable (jsdom, older engines)
+ * it reports "seen" immediately — degrading to eager loading is the safe
+ * direction: the tile still fills in, it just costs what it used to.
+ */
+function useObserveOnce(onSeen: (seen: true) => void) {
+  const ref = useRef<HTMLDivElement>(null);
+  const seenRef = useRef(false);
+
+  useEffect(() => {
+    if (seenRef.current) return;
+    const element = ref.current;
+    const markSeen = () => {
+      if (seenRef.current) return;
+      seenRef.current = true;
+      onSeen(true);
+    };
+
+    if (element === null || typeof IntersectionObserver !== 'function') {
+      markSeen();
+      return;
+    }
+
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) {
+        markSeen();
+        observer.disconnect();
+      }
+    });
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [onSeen]);
+
+  return ref;
+}
+
+/**
  * The operator Overview (#1406 W1) — the console's landing page.
  *
  * Attention first: everything that wants a human is folded into one ranked queue
@@ -56,33 +94,33 @@ interface AttentionItem {
 export function OverviewPage() {
   const t = useT();
 
+  // The approval-queue size rides on `/admin/stats` as a COUNT: the attention row
+  // needs a number, and listing the whole queue to read `.length` would have made
+  // the landing read grow with the backlog.
   const stats = useResource((signal) => api.getStats(signal), []);
   const health = useResource((signal) => api.getAdminHealth(signal), []);
   const problems = useResource((signal) => api.listProblems({ limit: 1 }, signal), []);
-  const registrations = useResource((signal) => api.listRegistrationRequests(signal), []);
   const email = useResource((signal) => api.getEmailStatus(signal), []);
   const backup = useResource((signal) => api.getBackupStatus(signal), []);
   const version = useResource((signal) => api.getVersion(signal), []);
   const audit = useResource((signal) => api.listAudit({ limit: RECENT_AUDIT_LIMIT }, signal), []);
 
-  // Usage analytics recomputes today's rollup on read, so it is the one heavy
-  // call on this page. It is issued after the attention reads rather than in the
-  // same burst, and it never gates anything above it.
-  const [analyticsReady, setAnalyticsReady] = useState(false);
-  useEffect(() => {
-    const id = setTimeout(() => setAnalyticsReady(true), 0);
-    return () => clearTimeout(id);
-  }, []);
+  // Usage analytics materializes TODAY's rollup server-side on every read, so it
+  // is by far the most expensive call this page can make — and it feeds one tile
+  // below the fold. It is therefore loaded only once that tile is actually on
+  // screen: an operator who lands, reads the attention queue and leaves never
+  // triggers the rollup at all.
+  const [tilesSeen, setTilesSeen] = useState(false);
+  const tilesRef = useObserveOnce(setTilesSeen);
   const analytics = useResource(
-    (signal) => (analyticsReady ? api.getUsageAnalytics(signal) : Promise.resolve(null)),
-    [analyticsReady],
+    (signal) => (tilesSeen ? api.getUsageAnalytics(signal) : Promise.resolve(null)),
+    [tilesSeen],
   );
 
   const reloadAll = () => {
     stats.reload();
     health.reload();
     problems.reload();
-    registrations.reload();
     email.reload();
     backup.reload();
     version.reload();
@@ -94,7 +132,6 @@ export function OverviewPage() {
     stats.loading ||
     health.loading ||
     problems.loading ||
-    registrations.loading ||
     email.loading ||
     backup.loading ||
     audit.loading;
@@ -102,25 +139,25 @@ export function OverviewPage() {
   const attention = useMemo(
     () =>
       buildAttentionQueue(t, {
-        pendingRegistrations: registrations.data?.requests.length ?? 0,
+        pendingRegistrations: stats.data?.pendingRegistrationCount ?? 0,
         openProblems: problems.data?.openCount ?? 0,
         health: health.data ?? null,
         smtpEnabled: email.data?.enabled ?? null,
         backup: backup.data ?? null,
       }),
-    [backup.data, email.data, health.data, problems.data, registrations.data, t],
+    [backup.data, email.data, health.data, problems.data, stats.data, t],
   );
 
   // Every attention source failing at once would render a falsely calm "all
   // clear", so an unreadable queue says so instead of claiming nothing is wrong.
   const attentionUnknown =
-    registrations.error !== null ||
+    stats.error !== null ||
     problems.error !== null ||
     health.error !== null ||
     email.error !== null ||
     backup.error !== null;
   const attentionLoading =
-    registrations.loading || problems.loading || health.loading || email.loading || backup.loading;
+    stats.loading || problems.loading || health.loading || email.loading || backup.loading;
 
   return (
     <div className="flex flex-col gap-6">
@@ -145,7 +182,12 @@ export function OverviewPage() {
             </h2>
             {attention.length > 0 ? (
               <Badge tone="amber">
-                {t('admin.overview.attention.count', { count: attention.length })}
+                {t(
+                  attention.length === 1
+                    ? 'admin.overview.attention.countOne'
+                    : 'admin.overview.attention.countOther',
+                  { count: attention.length },
+                )}
               </Badge>
             ) : null}
           </div>
@@ -191,7 +233,7 @@ export function OverviewPage() {
             </ul>
           ) : attentionUnknown ? (
             <div className="px-4 py-4">
-              <Alert tone="info">{t('admin.overview.attention.unknown')}</Alert>
+              <Alert tone="error">{t('admin.overview.attention.unknown')}</Alert>
             </div>
           ) : (
             <div className="px-4 py-6">
@@ -201,7 +243,7 @@ export function OverviewPage() {
 
           {attentionUnknown && attention.length > 0 ? (
             <div className="border-t border-neutral-800 px-4 py-3">
-              <Alert tone="info">{t('admin.overview.attention.partial')}</Alert>
+              <Alert tone="error">{t('admin.overview.attention.partial')}</Alert>
             </div>
           ) : null}
         </section>
@@ -214,7 +256,11 @@ export function OverviewPage() {
         />
       </div>
 
-      <section aria-label={t('admin.overview.tiles.title')} className="flex flex-col gap-3">
+      <section
+        aria-label={t('admin.overview.tiles.title')}
+        className="flex flex-col gap-3"
+        ref={tilesRef}
+      >
         <h2 className="text-sm font-semibold text-neutral-100">
           {t('admin.overview.tiles.title')}
         </h2>
@@ -236,7 +282,7 @@ export function OverviewPage() {
           />
           <Tile
             label={t('admin.overview.tiles.activeUsers')}
-            loading={!analyticsReady || (analytics.loading && !analytics.data)}
+            loading={!tilesSeen || (analytics.loading && !analytics.data)}
             error={analytics.error}
             onRetry={analytics.reload}
             value={analytics.data ? String(analytics.data.activeUsers.daily) : null}
@@ -273,7 +319,7 @@ export function OverviewPage() {
             loading={health.loading && !health.data}
             error={health.error}
             onRetry={health.reload}
-            value={health.data ? formatDuration(health.data.uptimeSeconds) : null}
+            value={health.data ? formatDuration(t, health.data.uptimeSeconds) : null}
             foot={
               health.data
                 ? t('admin.overview.tiles.apiVersion', { version: health.data.version })
@@ -420,7 +466,7 @@ function buildAttentionQueue(
       key: 'backup',
       severity: input.backup.level === 'critical' ? 'critical' : 'warn',
       title: t('admin.overview.attention.backup.title'),
-      detail: t(`admin.overview.backup.reason.${input.backup.reason}`),
+      detail: t(`admin.backup.reason.${input.backup.reason}`),
       to: '/admin/health',
     });
   }
@@ -456,12 +502,17 @@ function Tile({
       {loading ? (
         <Spinner label={t('common.loading')} />
       ) : error ? (
-        <button
-          className="self-start text-xs text-sky-400 underline focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
-          onClick={onRetry}
-        >
-          {t('common.retry')}
-        </button>
+        <div className="flex flex-col items-start gap-1">
+          <span className="text-xs text-amber-300">
+            {t('admin.overview.tiles.loadError', { tile: label })}
+          </span>
+          <button
+            className="text-xs text-sky-400 underline focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+            onClick={onRetry}
+          >
+            {t('common.retry')}
+          </button>
+        </div>
       ) : (
         <>
           <span
@@ -517,51 +568,53 @@ function BackupTile({
   return (
     <div className="flex flex-col gap-2 rounded-lg border border-neutral-800 bg-neutral-900 p-4 lg:col-span-2">
       <div className="flex items-center justify-between gap-3">
-        <span className="text-sm font-semibold text-neutral-100">
-          {t('admin.overview.backup.title')}
-        </span>
-        {data ? <Badge tone={tone}>{t(`admin.overview.backup.level.${data.level}`)}</Badge> : null}
+        <span className="text-sm font-semibold text-neutral-100">{t('admin.backup.title')}</span>
+        {data ? <Badge tone={tone}>{t(`admin.backup.level.${data.level}`)}</Badge> : null}
       </div>
 
       {loading ? (
         <Spinner label={t('common.loading')} />
       ) : error ? (
         <Alert tone="info">
-          {t('admin.overview.backup.loadError')}{' '}
+          {t('admin.backup.loadError')}{' '}
           <button className="underline" onClick={onRetry}>
             {t('common.retry')}
           </button>
         </Alert>
-      ) : data === null ? null : !data.configured ? (
-        <p className="text-sm text-neutral-400">{t('admin.overview.backup.notConfigured')}</p>
-      ) : (
-        <dl className="grid gap-2 sm:grid-cols-2">
-          <div className="flex flex-col">
-            <dt className="text-[10px] uppercase tracking-wide text-neutral-500">
-              {t('admin.overview.backup.lastDump')}
-            </dt>
-            <dd className="text-sm text-neutral-200">
-              {data.backup.ageSeconds === null
-                ? t('admin.overview.backup.never')
-                : t('admin.overview.backup.ago', { age: formatDuration(data.backup.ageSeconds) })}
-            </dd>
-          </div>
-          <div className="flex flex-col">
-            <dt className="text-[10px] uppercase tracking-wide text-neutral-500">
-              {t('admin.overview.backup.lastDrill')}
-            </dt>
-            <dd className="text-sm text-neutral-200">
-              {data.restore.ageSeconds === null
-                ? t('admin.overview.backup.never')
-                : t('admin.overview.backup.ago', { age: formatDuration(data.restore.ageSeconds) })}
-            </dd>
-          </div>
-          <div className="sm:col-span-2">
-            <p className="text-xs text-neutral-400">
-              {t(`admin.overview.backup.reason.${data.reason}`)}
-            </p>
-          </div>
-        </dl>
+      ) : data === null ? null : (
+        <>
+          {/* The reason line renders for every outcome, including the ones that
+              carry no facts — "we cannot read the file" has to be sayable, and
+              it must not collapse into the benign "not configured" wording. */}
+          <p
+            className={cx(
+              'text-sm',
+              data.level === 'critical' ? 'text-red-300' : 'text-neutral-400',
+            )}
+          >
+            {t(`admin.backup.reason.${data.reason}`)}
+          </p>
+          {data.configured ? (
+            <dl className="grid gap-2 sm:grid-cols-2">
+              <div className="flex flex-col">
+                <dt className="text-[10px] uppercase tracking-wide text-neutral-500">
+                  {t('admin.backup.lastDump')}
+                </dt>
+                <dd className="text-sm text-neutral-200">
+                  {formatBackupAge(t, data.backup.ageSeconds)}
+                </dd>
+              </div>
+              <div className="flex flex-col">
+                <dt className="text-[10px] uppercase tracking-wide text-neutral-500">
+                  {t('admin.backup.lastDrill')}
+                </dt>
+                <dd className="text-sm text-neutral-200">
+                  {formatBackupAge(t, data.restore.ageSeconds)}
+                </dd>
+              </div>
+            </dl>
+          ) : null}
+        </>
       )}
     </div>
   );
@@ -597,12 +650,15 @@ function DeployStrip({
         {loading ? (
           <Spinner label={t('common.loading')} />
         ) : error ? (
-          <button
-            className="self-start text-xs text-sky-400 underline focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
-            onClick={onRetry}
-          >
-            {t('common.retry')}
-          </button>
+          <span className="flex flex-wrap items-center gap-2">
+            <span className="text-xs text-amber-300">{t('admin.overview.deploy.loadError')}</span>
+            <button
+              className="text-xs text-sky-400 underline focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+              onClick={onRetry}
+            >
+              {t('common.retry')}
+            </button>
+          </span>
         ) : (
           <span>
             {t('admin.overview.deploy.api')}{' '}
@@ -697,17 +753,4 @@ function ActivityCard({
 function humanizeAction(action: string): string {
   const words = action.replace(/[._-]+/g, ' ').trim();
   return words.length === 0 ? action : words.charAt(0).toUpperCase() + words.slice(1);
-}
-
-/** Whole seconds → a compact `1d 2h`, `3h 4m`, `5m 6s`, or `7s` string. */
-function formatDuration(totalSeconds: number): string {
-  const s = Math.max(0, Math.floor(totalSeconds));
-  const days = Math.floor(s / 86400);
-  const hours = Math.floor((s % 86400) / 3600);
-  const minutes = Math.floor((s % 3600) / 60);
-  const seconds = s % 60;
-  if (days > 0) return `${days}d ${hours}h`;
-  if (hours > 0) return `${hours}h ${minutes}m`;
-  if (minutes > 0) return `${minutes}m ${seconds}s`;
-  return `${seconds}s`;
 }

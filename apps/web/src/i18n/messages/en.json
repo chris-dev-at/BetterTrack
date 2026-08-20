@@ -4642,7 +4642,6 @@
       },
       "attention": {
         "title": "Needs your attention",
-        "count": "{{count}} items",
         "allClear": "All clear — nothing is waiting for you.",
         "unknown": "The attention checks could not be read. Refresh to try again.",
         "partial": "Some checks could not be read, so this list may be incomplete.",
@@ -4678,7 +4677,9 @@
         },
         "backup": {
           "title": "Backup readiness"
-        }
+        },
+        "countOne": "1 item",
+        "countOther": "{{count}} items"
       },
       "tiles": {
         "title": "At a glance",
@@ -4692,39 +4693,15 @@
         "gatewayOn": "Gateway attached",
         "gatewayOff": "Gateway disabled",
         "uptime": "API uptime",
-        "apiVersion": "Version {{version}}"
-      },
-      "backup": {
-        "title": "Backup & restore drill",
-        "notConfigured": "No backup status file is wired into this deployment.",
-        "loadError": "Could not read the backup status.",
-        "lastDump": "Last successful dump",
-        "lastDrill": "Last successful restore drill",
-        "ago": "{{age}} ago",
-        "never": "Never",
-        "level": {
-          "ok": "Ready",
-          "warn": "Unproven",
-          "critical": "Not ready",
-          "unknown": "Not configured"
-        },
-        "reason": {
-          "healthy": "A recent dump exists and a recent restore drill proved it.",
-          "not_configured": "This deployment reports no backup status.",
-          "unreadable": "The backup status file could not be read.",
-          "backup_missing": "No successful dump has been recorded.",
-          "backup_stale": "The newest dump is older than the 26-hour target.",
-          "restore_missing": "No restore drill has ever passed, so recovery is unproven.",
-          "restore_stale": "The newest restore drill is older than the 35-day target.",
-          "offsite_failed": "The last offsite upload failed; the local dump is intact.",
-          "scheduler_unhealthy": "The backup scheduler reports itself unhealthy."
-        }
+        "apiVersion": "Version {{version}}",
+        "loadError": "{{tile}} could not be read."
       },
       "deploy": {
         "title": "Deploys",
         "web": "Web",
         "api": "API",
-        "builtAt": "API built {{date}}"
+        "builtAt": "API built {{date}}",
+        "loadError": "The API build marker could not be read."
       },
       "activity": {
         "title": "Recent admin activity",
@@ -4746,7 +4723,48 @@
       "changeMode": "Change the mode in Settings",
       "decideError": "Could not update that registration request.",
       "createTokenError": "Could not create the registration token.",
-      "revokeTokenError": "Could not revoke the registration token."
+      "revokeTokenError": "Could not revoke the registration token.",
+      "modeUnknown": "The active registration mode could not be read, so it is unclear whether this applies right now.",
+      "requestGone": "That application is no longer in the queue — someone may have handled it already.",
+      "tokenGone": "That token no longer exists; it may already have been revoked."
+    },
+    "backup": {
+      "title": "Backup & restore drill",
+      "notConfigured": "No backup status file is wired into this deployment.",
+      "loadError": "Could not read the backup status.",
+      "lastDump": "Last successful dump",
+      "lastDrill": "Last successful restore drill",
+      "dumpBudget": "Dump must be newer than",
+      "drillBudget": "Drill must be newer than",
+      "ago": "{{age}} ago",
+      "never": "Never",
+      "level": {
+        "ok": "Ready",
+        "warn": "Unproven",
+        "critical": "Not ready",
+        "unknown": "Not configured"
+      },
+      "reason": {
+        "healthy": "A recent dump exists and a recent restore drill proved it.",
+        "not_configured": "This deployment reports no backup status.",
+        "permission_denied": "The backup status file exists but this server may not read it. Check the mount and the file permissions.",
+        "unreadable": "The backup status file could not be read.",
+        "backup_missing": "No successful dump has been recorded.",
+        "backup_stale": "The newest dump is older than the 26-hour target.",
+        "clock_skew": "The recorded backup time lies in the future, so the evidence cannot be trusted. Check the clocks.",
+        "restore_missing": "No restore drill has ever passed, so recovery is unproven.",
+        "restore_stale": "The newest restore drill is older than the 35-day target.",
+        "offsite_failed": "The last offsite upload failed; the local dump is intact.",
+        "scheduler_unhealthy": "The backup scheduler reports a problem with the stored backup."
+      }
+    },
+    "common": {
+      "duration": {
+        "dayHour": "{{days}} d {{hours}} h",
+        "hourMinute": "{{hours}} h {{minutes}} min",
+        "minuteSecond": "{{minutes}} min {{seconds}} s",
+        "second": "{{seconds}} s"
+      }
     }
   },
   "create": {

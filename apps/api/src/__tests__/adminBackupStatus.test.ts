@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { chmod, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -79,6 +79,25 @@ describe('backup status reader', () => {
     expect(status.reason).toBe('unreadable');
   });
 
+  it('reports a permission failure as its own reason, never as "not configured"', async () => {
+    // The production shape of this bug: the scheduler runs as root and the api
+    // runs unprivileged, so a group-only mode on the shared volume locks the api
+    // out. That must never be reported as "this deploy has no backups".
+    const path = await write(statusFile());
+    await chmod(path, 0o000);
+    // Root ignores the mode bits, so a root test runner cannot observe EACCES.
+    if (typeof process.getuid === 'function' && process.getuid() === 0) return;
+
+    const status = await readBackupStatus(path, NOW);
+
+    expect(status.configured).toBe(false);
+    expect(status.reason).toBe('permission_denied');
+    expect(status.reason).not.toBe('not_configured');
+    // Critical, not unknown: losing all sight of whether the database is
+    // recoverable is an operational problem, and the Overview must raise it.
+    expect(status.level).toBe('critical');
+  });
+
   it('projects a healthy status file', async () => {
     const status = await readBackupStatus(await write(statusFile()), NOW);
 
@@ -146,6 +165,45 @@ describe('backup status reader', () => {
     expect(status.reason).toBe('scheduler_unhealthy');
   });
 
+  // healthcheck.sh marks the container stale for artifact loss as well as for a
+  // stale dump. A recorded dump whose file is gone, truncated, or no longer
+  // matches its checksum is a TOTAL loss of that recovery point — the timestamps
+  // still look perfect, so only the scheduler's reason reveals it.
+  it.each([
+    'artifact_missing',
+    'artifact_invalid',
+    'artifact_size_missing',
+    'artifact_size_mismatch',
+    'artifact_checksum_missing',
+    'backup_missing',
+    'backup_clock_skew',
+  ])('ranks scheduler reason %s as critical, not amber', async (reason) => {
+    const status = await readBackupStatus(
+      await write(statusFile({ health_outcome: 'stale', health_reason: reason })),
+      NOW,
+    );
+    expect(status.level).toBe('critical');
+    expect(status.reason).toBe('scheduler_unhealthy');
+    expect(status.scheduler.reason).toBe(reason);
+  });
+
+  it('keeps a non-artifact scheduler complaint at warn', async () => {
+    const status = await readBackupStatus(
+      await write(statusFile({ health_outcome: 'stale', health_reason: 'restore_too_old' })),
+      NOW,
+    );
+    expect(status.level).toBe('warn');
+    expect(status.reason).toBe('scheduler_unhealthy');
+  });
+
+  it('treats any non-healthy scheduler outcome as unhealthy, not just the literal "stale"', async () => {
+    const status = await readBackupStatus(
+      await write(statusFile({ health_outcome: 'failed', health_reason: 'artifact_missing' })),
+      NOW,
+    );
+    expect(status.level).toBe('critical');
+  });
+
   it('flags a failed offsite upload without downgrading the local recovery point', async () => {
     const status = await readBackupStatus(
       await write(statusFile({ offsite_outcome: 'failed' })),
@@ -187,13 +245,48 @@ describe('backup status reader', () => {
     expect(status.reason).toBe('unreadable');
   });
 
-  it('clamps a future timestamp to a zero age instead of a negative one', async () => {
+  // A dump dated in the future used to clamp to age 0 and render GREEN — a
+  // year-30000 timestamp read as "backed up seconds ago". The evidence comes from
+  // a machine whose clock we cannot trust, so it is not fresh.
+  it('refuses to call a future-dated dump fresh', async () => {
     const status = await readBackupStatus(
       await write(statusFile({ last_success_epoch: String(NOW_EPOCH + 5 * HOUR) })),
       NOW,
     );
-    expect(status.backup.ageSeconds).toBe(0);
+    expect(status.level).toBe('critical');
+    expect(status.reason).toBe('clock_skew');
+    // No fabricated age: the reason carries the explanation instead.
+    expect(status.backup.ageSeconds).toBeNull();
+    expect(status.backup.lastSuccessAt).toBe('2026-08-20T15:00:00.000Z');
+  });
+
+  it('refuses a future-dated restore drill too', async () => {
+    const status = await readBackupStatus(
+      await write(statusFile({ restore_last_success_epoch: String(NOW_EPOCH + 40 * DAY) })),
+      NOW,
+    );
+    expect(status.level).toBe('critical');
+    expect(status.reason).toBe('clock_skew');
+  });
+
+  it('tolerates a few minutes of container clock drift without alarming', async () => {
+    const status = await readBackupStatus(
+      await write(statusFile({ last_success_epoch: String(NOW_EPOCH + 60) })),
+      NOW,
+    );
     expect(status.level).toBe('ok');
+    expect(status.backup.ageSeconds).toBe(0);
+  });
+
+  // `bt_status_get` in infra/backup/status.sh assigns on every awk match and
+  // prints at END, so the shell resolves a duplicated key to the LAST one. The
+  // API must not disagree with the tool an operator debugs with.
+  it('resolves a duplicated key the same way the shell reader does (last wins)', async () => {
+    const status = await readBackupStatus(
+      await write(`${statusFile()}last_success_epoch=${NOW_EPOCH - 3 * HOUR}\n`),
+      NOW,
+    );
+    expect(status.backup.ageSeconds).toBe(3 * HOUR);
   });
 });
 

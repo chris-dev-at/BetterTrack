@@ -4642,7 +4642,6 @@
       },
       "attention": {
         "title": "Braucht deine Aufmerksamkeit",
-        "count": "{{count}} Einträge",
         "allClear": "Alles ruhig — nichts wartet auf dich.",
         "unknown": "Die Prüfungen konnten nicht gelesen werden. Aktualisiere, um es erneut zu versuchen.",
         "partial": "Einige Prüfungen konnten nicht gelesen werden, die Liste ist womöglich unvollständig.",
@@ -4657,10 +4656,10 @@
           "unit": "offen"
         },
         "component": {
-          "title": "{{component}} ist nicht gesund"
+          "title": "{{component}} ist nicht in Ordnung"
         },
         "heartbeat": {
-          "title": "Herzschlag des Job-Systems"
+          "title": "Heartbeat des Job-Systems"
         },
         "queueFailed": {
           "title": "Fehlgeschlagene Jobs in den Queues",
@@ -4678,7 +4677,9 @@
         },
         "backup": {
           "title": "Backup-Bereitschaft"
-        }
+        },
+        "countOne": "1 Eintrag",
+        "countOther": "{{count}} Einträge"
       },
       "tiles": {
         "title": "Auf einen Blick",
@@ -4692,39 +4693,15 @@
         "gatewayOn": "Gateway verbunden",
         "gatewayOff": "Gateway deaktiviert",
         "uptime": "API-Laufzeit",
-        "apiVersion": "Version {{version}}"
-      },
-      "backup": {
-        "title": "Backup & Restore-Probe",
-        "notConfigured": "In dieser Umgebung ist keine Backup-Statusdatei eingebunden.",
-        "loadError": "Der Backup-Status konnte nicht gelesen werden.",
-        "lastDump": "Letzter erfolgreicher Dump",
-        "lastDrill": "Letzte erfolgreiche Restore-Probe",
-        "ago": "vor {{age}}",
-        "never": "Nie",
-        "level": {
-          "ok": "Bereit",
-          "warn": "Ungeprüft",
-          "critical": "Nicht bereit",
-          "unknown": "Nicht konfiguriert"
-        },
-        "reason": {
-          "healthy": "Ein aktueller Dump existiert und eine aktuelle Restore-Probe hat ihn bestätigt.",
-          "not_configured": "Diese Umgebung meldet keinen Backup-Status.",
-          "unreadable": "Die Backup-Statusdatei konnte nicht gelesen werden.",
-          "backup_missing": "Es ist kein erfolgreicher Dump vermerkt.",
-          "backup_stale": "Der neueste Dump ist älter als das 26-Stunden-Ziel.",
-          "restore_missing": "Es gab noch keine bestandene Restore-Probe, die Wiederherstellung ist ungeprüft.",
-          "restore_stale": "Die neueste Restore-Probe ist älter als das 35-Tage-Ziel.",
-          "offsite_failed": "Der letzte Offsite-Upload ist fehlgeschlagen; der lokale Dump ist intakt.",
-          "scheduler_unhealthy": "Der Backup-Scheduler meldet sich selbst als ungesund."
-        }
+        "apiVersion": "Version {{version}}",
+        "loadError": "{{tile}} konnte nicht gelesen werden."
       },
       "deploy": {
         "title": "Deploys",
         "web": "Web",
         "api": "API",
-        "builtAt": "API gebaut am {{date}}"
+        "builtAt": "API gebaut am {{date}}",
+        "loadError": "Die API-Build-Kennung konnte nicht gelesen werden."
       },
       "activity": {
         "title": "Letzte Admin-Aktionen",
@@ -4741,12 +4718,53 @@
     },
     "registration": {
       "title": "Registrierung",
-      "subtitle": "Wer hereinkommt: die Freigabeliste und die Zugangstoken für die Anmeldung.",
+      "subtitle": "Wer hereinkommt: die Freigabewarteschlange und die Zugangstoken für die Anmeldung.",
       "currentMode": "Aktueller Registrierungsmodus",
       "changeMode": "Modus in den Einstellungen ändern",
       "decideError": "Diese Registrierungsanfrage konnte nicht aktualisiert werden.",
       "createTokenError": "Das Registrierungstoken konnte nicht erstellt werden.",
-      "revokeTokenError": "Das Registrierungstoken konnte nicht widerrufen werden."
+      "revokeTokenError": "Das Registrierungstoken konnte nicht widerrufen werden.",
+      "modeUnknown": "Der aktive Registrierungsmodus konnte nicht gelesen werden, daher ist unklar, ob das hier gerade greift.",
+      "requestGone": "Diese Anfrage steht nicht mehr in der Warteschlange — vielleicht hat sie jemand bereits bearbeitet.",
+      "tokenGone": "Dieses Token existiert nicht mehr; womöglich wurde es bereits widerrufen."
+    },
+    "backup": {
+      "title": "Backup & Restore-Probe",
+      "notConfigured": "In dieser Umgebung ist keine Backup-Statusdatei eingebunden.",
+      "loadError": "Der Backup-Status konnte nicht gelesen werden.",
+      "lastDump": "Letzter erfolgreicher Dump",
+      "lastDrill": "Letzte erfolgreiche Restore-Probe",
+      "dumpBudget": "Dump darf höchstens alt sein",
+      "drillBudget": "Probe darf höchstens alt sein",
+      "ago": "vor {{age}}",
+      "never": "Nie",
+      "level": {
+        "ok": "Bereit",
+        "warn": "Ungeprüft",
+        "critical": "Nicht bereit",
+        "unknown": "Nicht konfiguriert"
+      },
+      "reason": {
+        "healthy": "Ein aktueller Dump existiert und eine aktuelle Restore-Probe hat ihn bestätigt.",
+        "not_configured": "Diese Umgebung meldet keinen Backup-Status.",
+        "permission_denied": "Die Backup-Statusdatei existiert, dieser Server darf sie aber nicht lesen. Prüfe die Einbindung und die Dateirechte.",
+        "unreadable": "Die Backup-Statusdatei konnte nicht gelesen werden.",
+        "backup_missing": "Es ist kein erfolgreicher Dump vermerkt.",
+        "backup_stale": "Der neueste Dump ist älter als das 26-Stunden-Ziel.",
+        "clock_skew": "Der vermerkte Backup-Zeitpunkt liegt in der Zukunft, der Nachweis ist damit nicht vertrauenswürdig. Prüfe die Uhren.",
+        "restore_missing": "Es gab noch keine bestandene Restore-Probe, die Wiederherstellung ist ungeprüft.",
+        "restore_stale": "Die neueste Restore-Probe ist älter als das 35-Tage-Ziel.",
+        "offsite_failed": "Der letzte Offsite-Upload ist fehlgeschlagen; der lokale Dump ist intakt.",
+        "scheduler_unhealthy": "Der Backup-Scheduler meldet ein Problem mit dem gespeicherten Backup."
+      }
+    },
+    "common": {
+      "duration": {
+        "dayHour": "{{days}} T {{hours}} Std.",
+        "hourMinute": "{{hours}} Std. {{minutes}} Min.",
+        "minuteSecond": "{{minutes}} Min. {{seconds}} Sek.",
+        "second": "{{seconds}} Sek."
+      }
     }
   },
   "create": {

@@ -444,6 +444,12 @@ export const adminStatsSchema = z.object({
   activeUserCount: z.number().int(),
   disabledUserCount: z.number().int(),
   pendingInviteCount: z.number().int(),
+  /**
+   * Pending approval-queue applications (#1406 W1). A COUNT, deliberately: the
+   * operator Overview only needs the number for its attention row, and reading
+   * `.length` off the unbounded list read would have grown with the queue.
+   */
+  pendingRegistrationCount: z.number().int(),
 });
 export type AdminStats = z.infer<typeof adminStatsSchema>;
 
@@ -847,9 +853,19 @@ export type AdminBackupStatusLevel = z.infer<typeof adminBackupStatusLevelSchema
 /** Why the verdict is what it is — a coarse, secret-free tag the UI localizes. */
 export const ADMIN_BACKUP_STATUS_REASONS = [
   'not_configured',
+  /**
+   * A path IS configured but the API cannot read it — the mount is missing, or
+   * the file's mode/owner locks the unprivileged api user out. Kept distinct from
+   * `not_configured` because the two need opposite actions: one is "this deploy
+   * has no backup sidecar", the other is "your backup evidence exists and you
+   * cannot see it", which must never read as benign.
+   */
+  'permission_denied',
   'unreadable',
   'backup_missing',
   'backup_stale',
+  /** Recorded success lies in the future — the evidence cannot be trusted. */
+  'clock_skew',
   'restore_missing',
   'restore_stale',
   'offsite_failed',

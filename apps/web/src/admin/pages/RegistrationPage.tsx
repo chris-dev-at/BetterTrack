@@ -52,6 +52,10 @@ export function RegistrationPage() {
   const t = useT();
   const settings = useResource((signal) => api.getSettings(signal), []);
   const mode = settings.data?.registrationMode ?? null;
+  // A failed settings read is NOT the same as a mode that happens to be off: the
+  // sections below must say "we could not tell" rather than "this is inactive",
+  // which would read as a deliberate configuration.
+  const modeKnown = mode !== null;
 
   return (
     <div className="flex flex-col gap-6">
@@ -82,10 +86,23 @@ export function RegistrationPage() {
         </Link>
       </section>
 
-      <ApprovalQueueSection active={mode === 'approval'} />
-      <RegistrationTokensSection active={mode === 'invite_token'} />
+      <ApprovalQueueSection active={modeKnown ? mode === 'approval' : 'unknown'} />
+      <RegistrationTokensSection active={modeKnown ? mode === 'invite_token' : 'unknown'} />
     </div>
   );
+}
+
+/** Whether the surrounding mode gates this section on, off, or is itself unknown. */
+type SectionActivity = boolean | 'unknown';
+
+/**
+ * The trailing hint after a section description: nothing when the mode is on, an
+ * "inactive" note when it is off, and an honest "could not read the mode" note
+ * when the settings read failed.
+ */
+function activityHintKey(active: SectionActivity, inactiveKey: string): string | null {
+  if (active === true) return null;
+  return active === 'unknown' ? 'admin.registration.modeUnknown' : inactiveKey;
 }
 
 /**
@@ -93,7 +110,7 @@ export function RegistrationPage() {
  * Approve creates the account (and emails the applicant); reject drops it (and
  * emails the applicant). Either way the row leaves the queue.
  */
-function ApprovalQueueSection({ active }: { active: boolean }) {
+function ApprovalQueueSection({ active }: { active: SectionActivity }) {
   const t = useT();
   const requests = useResource((signal) => api.listRegistrationRequests(signal), []);
   const decide = useAdminMutation(
@@ -101,8 +118,16 @@ function ApprovalQueueSection({ active }: { active: boolean }) {
       decision === 'approve'
         ? api.approveRegistrationRequest(id)
         : api.rejectRegistrationRequest(id),
-    { errorKey: 'admin.registration.decideError', onSuccess: requests.reload },
+    {
+      errorKey: 'admin.registration.decideError',
+      // A 404 here means this one application is already gone — a colleague or
+      // another tab acted first. Banner + reload, never a forced sign-out.
+      notFound: 'surface',
+      notFoundErrorKey: 'admin.registration.requestGone',
+      onSuccess: requests.reload,
+    },
   );
+  const hintKey = activityHintKey(active, 'admin.settings.approvals.inactive');
 
   return (
     <section className="flex flex-col gap-3 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
@@ -112,7 +137,7 @@ function ApprovalQueueSection({ active }: { active: boolean }) {
         </h2>
         <p className="text-sm text-neutral-400">
           {t('admin.settings.approvals.description')}
-          {active ? null : ` ${t('admin.settings.approvals.inactive')}`}
+          {hintKey ? ` ${t(hintKey)}` : null}
         </p>
       </div>
 
@@ -146,14 +171,14 @@ function ApprovalQueueSection({ active }: { active: boolean }) {
               <span className="flex items-center gap-2">
                 <Button
                   onClick={() => void decide.runFor(req.id, req.id, 'approve')}
-                  disabled={decide.pending === req.id}
+                  disabled={decide.isPending(req.id)}
                 >
                   {t('admin.settings.approvals.approve')}
                 </Button>
                 <Button
                   variant="secondary"
                   onClick={() => void decide.runFor(req.id, req.id, 'reject')}
-                  disabled={decide.pending === req.id}
+                  disabled={decide.isPending(req.id)}
                 >
                   {t('admin.settings.approvals.reject')}
                 </Button>
@@ -173,7 +198,7 @@ function ApprovalQueueSection({ active }: { active: boolean }) {
  * gate the invite-token mode. Create single- or multi-use tokens with an optional
  * expiry; the register URL is shown once. Revoke kills a token immediately.
  */
-function RegistrationTokensSection({ active }: { active: boolean }) {
+function RegistrationTokensSection({ active }: { active: SectionActivity }) {
   const t = useT();
   const tokens = useResource((signal) => api.listRegistrationTokens(signal), []);
 
@@ -202,11 +227,17 @@ function RegistrationTokensSection({ active }: { active: boolean }) {
 
   const revoke = useAdminMutation((id: string) => api.revokeRegistrationToken(id), {
     errorKey: 'admin.registration.revokeTokenError',
+    // A token that vanished between listing and revoking is already revoked as
+    // far as the operator cares — a banner, not a sign-out.
+    notFound: 'surface',
+    notFoundErrorKey: 'admin.registration.tokenGone',
     onSuccess: () => {
       setRevokingId(null);
       tokens.reload();
     },
   });
+
+  const hintKey = activityHintKey(active, 'admin.settings.tokens.inactive');
 
   function onCreate(event: FormEvent) {
     event.preventDefault();
@@ -222,7 +253,7 @@ function RegistrationTokensSection({ active }: { active: boolean }) {
         </h2>
         <p className="text-sm text-neutral-400">
           {t('admin.settings.tokens.description')}
-          {active ? null : ` ${t('admin.settings.tokens.inactive')}`}
+          {hintKey ? ` ${t(hintKey)}` : null}
         </p>
       </div>
 
@@ -251,8 +282,8 @@ function RegistrationTokensSection({ active }: { active: boolean }) {
           onChange={(e) => setExpiresInDays(e.target.value)}
           placeholder={t('admin.settings.tokens.never')}
         />
-        <Button type="submit" disabled={create.pending !== false}>
-          {create.pending !== false ? t('common.creating') : t('admin.settings.tokens.create')}
+        <Button type="submit" disabled={create.pending}>
+          {create.pending ? t('common.creating') : t('admin.settings.tokens.create')}
         </Button>
       </form>
 
@@ -307,16 +338,16 @@ function RegistrationTokensSection({ active }: { active: boolean }) {
                     </span>
                     <Button
                       variant="secondary"
-                      disabled={revoke.pending !== false}
+                      disabled={revoke.busy}
                       onClick={() => void revoke.runFor(token.id, token.id)}
                     >
-                      {revoke.pending === token.id
+                      {revoke.isPending(token.id)
                         ? t('admin.confirmations.revokeRegistrationToken.pending')
                         : t('admin.confirmations.revokeRegistrationToken.confirm')}
                     </Button>
                     <Button
                       variant="secondary"
-                      disabled={revoke.pending !== false}
+                      disabled={revoke.busy}
                       onClick={() => setRevokingId(null)}
                     >
                       {t('common.cancel')}
@@ -325,7 +356,7 @@ function RegistrationTokensSection({ active }: { active: boolean }) {
                 ) : (
                   <Button
                     variant="secondary"
-                    disabled={revokingId !== null || revoke.pending !== false}
+                    disabled={revokingId !== null || revoke.busy}
                     onClick={() => {
                       revoke.clearError();
                       setRevokingId(token.id);

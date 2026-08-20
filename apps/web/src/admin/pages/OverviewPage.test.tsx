@@ -99,10 +99,10 @@ beforeEach(() => {
     activeUserCount: 40,
     disabledUserCount: 2,
     pendingInviteCount: 1,
+    pendingRegistrationCount: 0,
   });
   vi.mocked(api.getAdminHealth).mockResolvedValue(healthyHealth);
   vi.mocked(api.listProblems).mockResolvedValue({ problems: [], openCount: 0 });
-  vi.mocked(api.listRegistrationRequests).mockResolvedValue({ requests: [] });
   vi.mocked(api.getEmailStatus).mockResolvedValue({ enabled: true });
   vi.mocked(api.getBackupStatus).mockResolvedValue(readyBackup);
   vi.mocked(api.getVersion).mockResolvedValue({
@@ -130,11 +130,12 @@ test('a quiet deployment renders an explicit all-clear instead of an empty card'
 });
 
 test('ranks the attention queue with the worst signal first and links each row to its workspace', async () => {
-  vi.mocked(api.listRegistrationRequests).mockResolvedValue({
-    requests: [
-      { id: 'r1', email: 'a@test.dev', username: 'a', createdAt: '2026-08-19T10:00:00.000Z' },
-      { id: 'r2', email: 'b@test.dev', username: 'b', createdAt: '2026-08-19T11:00:00.000Z' },
-    ],
+  vi.mocked(api.getStats).mockResolvedValue({
+    userCount: 42,
+    activeUserCount: 40,
+    disabledUserCount: 2,
+    pendingInviteCount: 1,
+    pendingRegistrationCount: 2,
   });
   vi.mocked(api.listProblems).mockResolvedValue({ problems: [], openCount: 4 });
   vi.mocked(api.getEmailStatus).mockResolvedValue({ enabled: false });
@@ -170,7 +171,7 @@ test('ranks the attention queue with the worst signal first and links each row t
 test('never renders a false all-clear when the attention reads failed', async () => {
   const { ApiError } = await import('../../lib/apiClient');
   const outage = new ApiError(500, 'internal_error', 'Something went wrong.');
-  vi.mocked(api.listRegistrationRequests).mockRejectedValue(outage);
+  vi.mocked(api.getStats).mockRejectedValue(outage);
   vi.mocked(api.listProblems).mockRejectedValue(outage);
   vi.mocked(api.getAdminHealth).mockRejectedValue(outage);
   vi.mocked(api.getEmailStatus).mockRejectedValue(outage);
@@ -211,11 +212,32 @@ test('shows "not configured" for a deployment without a backup status file', asy
 
   renderPage();
 
-  expect(
-    await screen.findByText('No backup status file is wired into this deployment.'),
-  ).toBeInTheDocument();
+  expect(await screen.findByText('This deployment reports no backup status.')).toBeInTheDocument();
   // "unknown" is never an attention row — an unwired tile is not a problem.
   expect(await screen.findByText('All clear — nothing is waiting for you.')).toBeInTheDocument();
+});
+
+// The production failure this guards: the api container could not read the
+// scheduler's status file at all. "Not configured" would have read as benign and
+// hidden a total loss of backup visibility.
+test('treats an unreadable backup status as a critical signal, not as "not configured"', async () => {
+  vi.mocked(api.getBackupStatus).mockResolvedValue({
+    ...readyBackup,
+    configured: false,
+    level: 'critical',
+    reason: 'permission_denied',
+  });
+
+  renderPage();
+
+  // Once in the attention queue, once on the tile — both must say it.
+  expect(
+    await screen.findAllByText(
+      'The backup status file exists but this server may not read it. Check the mount and the file permissions.',
+    ),
+  ).toHaveLength(2);
+  expect(screen.queryByText('All clear — nothing is waiting for you.')).not.toBeInTheDocument();
+  expect(screen.getByText('Not ready')).toBeInTheDocument();
 });
 
 test('renders both deploy markers and the standing stat tiles', async () => {

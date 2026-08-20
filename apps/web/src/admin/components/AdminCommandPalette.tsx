@@ -311,7 +311,12 @@ export function AdminCommandPalette({ isOpen, onClose }: { isOpen: boolean; onCl
           ))}
         </ul>
 
-        {trimmed.length > 0 && visible.length === 0 ? (
+        {/* Reachable when the query matched nothing ANYWHERE. Keyed on rows, not
+            on sections: once a query exists the remote sections always carry a
+            note, so a section-count test could never fire. Suppressed while a
+            search is still running, so "nothing matches" is never shown about a
+            result that has not arrived. */}
+        {trimmed.length > 0 && rows.length === 0 && !users.loading && !problems.loading ? (
           <p className="px-4 py-6 text-center text-sm text-neutral-400" role="status">
             {t('admin.palette.noResults', { query: trimmed })}
           </p>

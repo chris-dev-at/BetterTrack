@@ -47,6 +47,7 @@ const stats: AdminStats = {
   activeUserCount: 1,
   disabledUserCount: 0,
   pendingInviteCount: 0,
+  pendingRegistrationCount: 0,
 };
 
 /** An enrolled admin: the mandatory-2FA setup gate is satisfied (#400). */

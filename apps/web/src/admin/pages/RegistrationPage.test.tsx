@@ -1,4 +1,4 @@
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, expect, test, vi } from 'vitest';
@@ -119,6 +119,88 @@ test('rejects a pending registration from the queue', async () => {
   await waitFor(() => expect(api.rejectRegistrationRequest).toHaveBeenCalledWith('req-1'));
 });
 
+// The regression this guards: `apiClient.isNotAuthorized` is `401 || 404`,
+// because admin reads answer 404 to non-admins on purpose. Routing a row-scoped
+// WRITE through that rule logged a working admin out over a benign delete race —
+// the row was simply already handled in another tab.
+test('a 404 on a row-scoped write shows a banner and keeps the admin signed in', async () => {
+  const { ApiError } = await import('../../lib/apiClient');
+  vi.mocked(api.listRegistrationRequests).mockResolvedValue({ requests: [pendingRequest] });
+  vi.mocked(api.approveRegistrationRequest).mockRejectedValueOnce(
+    new ApiError(404, 'not_found', 'Registration request not found.'),
+  );
+
+  renderPage();
+
+  await userEvent.click(await screen.findByRole('button', { name: /approve/i }));
+
+  expect(
+    await screen.findByText(
+      'That application is no longer in the queue — someone may have handled it already.',
+    ),
+  ).toBeInTheDocument();
+  // Still on the page, still authenticated: no login redirect, no 2FA trap.
+  expect(screen.getByRole('heading', { name: 'Registration' })).toBeInTheDocument();
+  expect(screen.getByRole('button', { name: /approve/i })).toBeInTheDocument();
+});
+
+test('a 404 when revoking a token is a banner too, not a sign-out', async () => {
+  const { ApiError } = await import('../../lib/apiClient');
+  vi.mocked(api.listRegistrationTokens).mockResolvedValue({ tokens: [registrationToken] });
+  vi.mocked(api.revokeRegistrationToken).mockRejectedValueOnce(
+    new ApiError(404, 'not_found', 'Token not found.'),
+  );
+  const user = userEvent.setup();
+
+  renderPage();
+
+  await screen.findByText(registrationToken.label!);
+  await user.click(screen.getByRole('button', { name: 'Revoke' }));
+  await user.click(screen.getByRole('button', { name: 'Confirm revoke' }));
+
+  expect(
+    await screen.findByText('That token no longer exists; it may already have been revoked.'),
+  ).toBeInTheDocument();
+  expect(screen.getByRole('heading', { name: 'Registration' })).toBeInTheDocument();
+});
+
+test('two rows acted on at once keep their own progress state', async () => {
+  const second = { ...pendingRequest, id: 'req-2', username: 'second_user' };
+  vi.mocked(api.listRegistrationRequests).mockResolvedValue({
+    requests: [pendingRequest, second],
+  });
+
+  // Row A settles first; row B is still in flight and must stay disabled.
+  let releaseB: (() => void) | undefined;
+  vi.mocked(api.approveRegistrationRequest).mockImplementation((id: string) => {
+    if (id === 'req-1') return Promise.resolve({} as never);
+    return new Promise((resolve) => {
+      releaseB = () => resolve({} as never);
+    });
+  });
+
+  const user = userEvent.setup();
+  renderPage();
+
+  await screen.findByText('queue_user');
+  const rows = screen.getAllByRole('listitem');
+  const approveB = within(rows[1]!).getByRole('button', { name: /approve/i });
+  const approveA = within(rows[0]!).getByRole('button', { name: /approve/i });
+
+  await user.click(approveB);
+  await waitFor(() => expect(approveB).toBeDisabled());
+
+  await user.click(approveA);
+  await waitFor(() => expect(api.approveRegistrationRequest).toHaveBeenCalledWith('req-1'));
+
+  // A finishing while B is still working must not re-enable B's control.
+  await waitFor(() => expect(approveA).toBeEnabled());
+  expect(approveB).toBeDisabled();
+
+  releaseB?.();
+  await waitFor(() => expect(approveB).toBeEnabled());
+});
+
 test('surfaces a localized banner when a decision fails, and never reloads the queue', async () => {
   const { ApiError } = await import('../../lib/apiClient');
   vi.mocked(api.listRegistrationRequests).mockResolvedValue({ requests: [pendingRequest] });
@@ -189,6 +271,21 @@ test('offers a retry after the queue read fails', async () => {
   await userEvent.click(screen.getAllByRole('button', { name: 'Try again' })[0]!);
 
   expect(await screen.findByText('queue_user')).toBeInTheDocument();
+});
+
+test('a failed settings read says the mode is unknown, never that it is inactive', async () => {
+  const { ApiError } = await import('../../lib/apiClient');
+  vi.mocked(api.getSettings).mockRejectedValue(
+    new ApiError(500, 'internal_error', 'Something went wrong.'),
+  );
+
+  renderPage();
+
+  expect(
+    await screen.findAllByText(/The active registration mode could not be read/),
+  ).not.toHaveLength(0);
+  // "Not the active mode right now." would claim a configuration we never read.
+  expect(screen.queryByText(/not the active mode/i)).not.toBeInTheDocument();
 });
 
 test('renders the registration surface in German', async () => {
