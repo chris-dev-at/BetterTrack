@@ -426,11 +426,16 @@ export function createSettingsRouter(ctx: AppContext): Router {
 
   // GET /settings/oauth-grants — apps the caller has authorized (active grants).
   router.get('/oauth-grants', requireCookieSessionOrFirstPartyOAuthGrant, async (req, res) => {
-    const grants = await ctx.oauth.listGrants(req.authUser!.id);
+    const currentGrantId = req.apiKey?.kind === 'oauth' ? req.apiKey.id : null;
+    const grants = await ctx.oauth.listGrants(req.authUser!.id, currentGrantId);
     res.json({ grants });
   });
 
-  // DELETE /settings/oauth-grants/:id — revoke a grant; kills its tokens instantly.
+  /**
+   * DELETE /settings/oauth-grants/:id — revoke a grant; kills its tokens instantly.
+   * A first-party client revoking its own authenticated grant during logout is
+   * intentional; the next authorization presents consent again.
+   */
   router.delete(
     '/oauth-grants/:id',
     requireCookieSessionOrFirstPartyOAuthGrant,
