@@ -313,6 +313,8 @@ function DriveVaultSection({
     staleTime: 15_000,
   });
 
+  if (!configured && (query.isError || query.isPending)) return null;
+
   if (query.isError) {
     return (
       <PanelGroup label={t('settings.connections.drive.title')}>

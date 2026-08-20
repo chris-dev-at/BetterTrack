@@ -81,7 +81,7 @@ Set `BT_GOOGLE_DRIVE_CLIENT_ID` in the deployment env to the public client id of
 a Google Cloud OAuth **Web application** credential whose authorized JavaScript
 origin is the BetterTrack user-app origin. BetterTrack requests only
 `https://www.googleapis.com/auth/drive.appdata`. Leaving the value blank hides
-the Google Drive card entirely.
+the Google Drive card unless Drive is already a selected vault medium.
 
 The client id is public by design; do not put a client secret, access token, or
 refresh token in this variable. The OAuth flow remains browser-only through
@@ -94,7 +94,8 @@ and topology Compose files used by the deployment (for example, append
 This regenerates `/config.js` at container start without rebuilding the image.
 Fetch the user origin's `/config.js` and confirm its `googleDriveClientId`; set
 the variable blank and recreate `web` again to remove the value and hide the
-card.
+card, unless the image was built with the legacy `VITE_GOOGLE_DRIVE_CLIENT_ID`
+fallback.
 
 ## Deployment-host log and image retention
 
