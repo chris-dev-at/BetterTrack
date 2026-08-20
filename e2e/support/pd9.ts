@@ -60,35 +60,48 @@ const PD9_ALERT_POLL_INTERVAL_MS = 1_000;
 
 export const PD9_TRACEABILITY = [
   {
-    criterion: 'Design note §16-logged + owner-acked BEFORE code',
+    criterion: 'design note owner-acked BEFORE code',
     assertion: '[PD9-A1] binding design precondition',
   },
   {
-    criterion: 'Mode on ⇒ server stores no cleartext portfolio data (schema/probe test)',
+    criterion: 'zero cleartext rows for that portfolio',
     assertion: '[PD9-A2] complete DB cleartext probe',
   },
   {
-    criterion:
-      'Drive-only round trip: zero portfolio rows server-side and the app remains fully functional (e2e)',
+    criterion: 'Drive-only vault round trip: zero server bytes',
     assertion: '[PD9-A3] Drive-only enable and zero active server medium round trip',
   },
   {
-    criterion: 'Media switching migrates the blob correctly (test)',
+    criterion: 'per-vault media switching migrates docs correctly',
     assertion: '[PD9-A4] verified media ordering and retained-source failure',
   },
   {
-    criterion: 'Social/sharing surfaces are absent for the account (matrix test)',
+    criterion: 'sharing/public-profile inclusion',
     assertion: '[PD9-A5] killed/kept browser route matrix',
   },
   {
-    criterion: 'A client computes correct stats from encrypted fixture data (test)',
+    criterion: 'a client computes correct stats from encrypted fixture data',
     assertion: '[PD9-A6] known custom-asset totals without portfolio API reads',
   },
   {
-    criterion: 'Alerts still fire (test)',
+    criterion: 'alerts still fire',
     assertion: '[PD9-A7] real evaluator and notification dispatcher',
   },
 ] as const;
+
+function sectionBetween(
+  source: string,
+  startMarker: string,
+  endMarker: string,
+  label: string,
+): string {
+  const start = source.indexOf(startMarker);
+  const end = start < 0 ? -1 : source.indexOf(endMarker, start + startMarker.length);
+  if (start < 0 || end < 0 || end <= start) {
+    throw new Error(`PD9 ${label} boundaries are missing.`);
+  }
+  return source.slice(start, end);
+}
 
 /**
  * Repository precondition for running the transition-era account-level PD9
@@ -103,7 +116,6 @@ export async function assertPd9DesignPrecondition(): Promise<void> {
     readFile(join(process.cwd(), 'PROJECTPLAN.md'), 'utf8'),
   ]);
   const normalized = (value: string) => value.replace(/\s+/g, ' ');
-  const normalizedProjectPlan = normalized(projectPlan);
   const statusEnd = document.indexOf('**Table of contents**');
   if (statusEnd < 0) {
     throw new Error('PD9 design status boundary is missing.');
@@ -125,11 +137,10 @@ export async function assertPd9DesignPrecondition(): Promise<void> {
     throw new Error('PD9 design status still relies on the superseded pending-ack gate.');
   }
 
-  const sectionSeven = normalized(
-    document.slice(document.indexOf('## 7.'), document.indexOf('## 8.')),
-  );
+  const sectionSeven = normalized(sectionBetween(document, '## 7.', '## 8.', 'design §7'));
   const retirementSemantics = [
     'retired recovery set',
+    'destroyable only through the signed purge gate',
     'minimum 7-day retention',
     'fresh other-medium readback',
     'Ed25519 proof with the private key held inside the encrypted common doc',
@@ -168,9 +179,7 @@ export async function assertPd9DesignPrecondition(): Promise<void> {
     throw new Error('PD9 current owner ruling is missing from PROJECTPLAN §16.');
   }
 
-  const sectionSeventeen = normalized(
-    document.slice(document.indexOf('## 17.'), document.indexOf('## 18.')),
-  );
+  const sectionSeventeen = normalized(sectionBetween(document, '## 17.', '## 18.', 'design §17'));
   const transitionSemantics = [
     'RULED 2026-08-20 (§21 Q3): (C) backup + wipe',
     'External ciphertext backup first',
@@ -182,9 +191,7 @@ export async function assertPd9DesignPrecondition(): Promise<void> {
     throw new Error('PD9 design §17 does not preserve the ruled backup-before-wipe transition.');
   }
 
-  const sectionNineteen = normalized(
-    document.slice(document.indexOf('## 19.'), document.indexOf('## 20.')),
-  );
+  const sectionNineteen = normalized(sectionBetween(document, '## 19.', '## 20.', 'design §19'));
   const legacyRetirementSemantics = [
     'Dies at the end of §17 (not before)',
     'the account-level enable/disable pipeline',
@@ -194,16 +201,10 @@ export async function assertPd9DesignPrecondition(): Promise<void> {
     throw new Error('PD9 design §19 no longer keeps the account-level gate until transition.');
   }
 
-  const currentAcceptance = [
-    'design note owner-acked BEFORE code',
-    'zero cleartext rows for that portfolio',
-    'Drive-only vault round trip: zero server bytes',
-    'per-vault media switching migrates docs correctly',
-    'sharing/public-profile inclusion',
-    'a client computes correct stats from encrypted fixture data',
-    'alerts still fire',
-  ];
-  if (currentAcceptance.some((evidence) => !normalizedProjectPlan.includes(evidence))) {
+  const v5P13Acceptance = normalized(
+    sectionBetween(projectPlan, '| **V5-P13 —', '| **V5-P13b —', 'PROJECTPLAN V5-P13 row'),
+  );
+  if (PD9_TRACEABILITY.some(({ criterion }) => !v5P13Acceptance.includes(criterion))) {
     throw new Error('PD9 traceability no longer maps the current V5-P13 acceptance contract.');
   }
 }
