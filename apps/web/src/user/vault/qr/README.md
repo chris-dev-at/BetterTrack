@@ -4,6 +4,7 @@ The binding payload is `btvault1:m=<words>&v=<vaultId>[&n=<name>][&f=<fingerprin
 There is deliberately no `//` authority: split at the first colon and parse the remainder as one
 `application/x-www-form-urlencoded` query. Reject every prefix except `btvault1:` with an
 update-required result, reject either missing required key, and ignore unknown query keys.
+Reject repeated `m` or `v` keys rather than selecting one occurrence.
 
 `m` is the lowercase, NFKD, single-space-separated 12-word English BIP39 phrase, including its
 checksum. `v` is the lowercase hyphenated vault UUID. `n` is an optional percent-encoded display

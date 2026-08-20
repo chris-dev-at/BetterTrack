@@ -385,6 +385,24 @@ describe('endpoint keystore custody and verified persistence', () => {
     expect(await storage.readEntry(VAULT_1)).toBeNull();
   });
 
+  it('classifies an unavailable header separately from a rejected phrase and never writes', async () => {
+    const storage = new MemoryEndpointStorage();
+    const core = keystore(storage);
+
+    await expect(
+      core.storeAfterVerifiedOpen({
+        vaultId: VAULT_1,
+        mnemonic: MNEMONIC,
+        devicePassword: PASSWORD,
+        fetchHeaderEnvelope: async () => {
+          throw new Error('offline');
+        },
+      }),
+    ).rejects.toMatchObject({ code: 'vault-header-unavailable' });
+    expect((await storage.readEndpointSnapshot()).metadata).toBeNull();
+    expect(await storage.readEntry(VAULT_1)).toBeNull();
+  });
+
   it('synchronously wipes unlocked K_c and requires another password after every session boundary', async () => {
     const storage = new MemoryEndpointStorage();
     const core = keystore(storage);

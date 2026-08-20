@@ -660,15 +660,27 @@ export class EndpointVaultKeystore {
     fetchHeaderEnvelope: FetchVaultHeaderEnvelope,
     expectedFingerprint: OpenedVault['keyFingerprint'] | undefined,
   ): Promise<VerifiedVaultHeaderOpen> {
+    let envelope: Uint8Array;
+    try {
+      envelope = await fetchHeaderEnvelope({ vaultId });
+    } catch (cause) {
+      if (cause instanceof EndpointKeystoreError) throw cause;
+      throw new EndpointKeystoreError(
+        'vault-header-unavailable',
+        'The authenticated vault header could not be fetched.',
+        {},
+        { cause },
+      );
+    }
+    if (!(envelope instanceof Uint8Array)) {
+      throw new EndpointKeystoreError(
+        'vault-header-unavailable',
+        'Vault header fetch did not return envelope bytes.',
+      );
+    }
+
     let verified: VerifiedVaultHeaderOpen;
     try {
-      const envelope = await fetchHeaderEnvelope({ vaultId });
-      if (!(envelope instanceof Uint8Array)) {
-        throw new EndpointKeystoreError(
-          'verification-failed',
-          'Vault header fetch did not return envelope bytes.',
-        );
-      }
       verified = await openVaultHeaderWithMnemonic({
         envelope,
         mnemonic,

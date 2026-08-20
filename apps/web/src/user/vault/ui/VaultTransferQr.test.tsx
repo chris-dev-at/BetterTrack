@@ -1,16 +1,33 @@
 import 'fake-indexeddb/auto';
 
+import type { ComponentProps } from 'react';
+
 import { act, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  parseVaultTransferPayload,
   VAULT_TRANSFER_QR_EXPIRY_MS,
-  VAULT_TRANSFER_QR_OPTIONS,
   VAULT_TRANSFER_STEP_UP_MAX_AGE_MS,
   VAULT_TRANSFER_VECTOR_FINGERPRINT,
   VAULT_TRANSFER_VECTOR_MNEMONIC,
   VAULT_TRANSFER_VECTOR_VAULT_ID,
 } from '../qr';
+
+const qrEncoder = vi.hoisted(() => ({ render: vi.fn() }));
+
+vi.mock('qrcode.react', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('qrcode.react')>();
+  const { createElement } = await import('react');
+  return {
+    ...actual,
+    QRCodeSVG: (props: ComponentProps<typeof actual.QRCodeSVG>) => {
+      qrEncoder.render(props);
+      return createElement(actual.QRCodeSVG, props);
+    },
+  };
+});
+
 import { VaultTransferQr, type VaultTransferQrSource } from './VaultTransferQr';
 
 const DEVICE_PASSWORD = 'correct endpoint password';
@@ -43,6 +60,7 @@ async function openWrapped() {
 afterEach(() => {
   vi.useRealTimers();
   vi.restoreAllMocks();
+  qrEncoder.render.mockClear();
   localStorage.clear();
   sessionStorage.clear();
   document.cookie = 'vault-transfer-test=; Max-Age=0; path=/';
@@ -97,9 +115,12 @@ describe('VaultTransferQr sender', () => {
     expect(source.requireLiveUnlock).toHaveBeenCalledTimes(1);
     expect(screen.queryByLabelText('Device password')).not.toBeInTheDocument();
     expect(screen.queryByLabelText('Vault seed-phrase transfer QR code')).not.toBeInTheDocument();
+    expect(
+      screen.queryByText('This transfer code expired and is now blank. Show it again manually.'),
+    ).not.toBeInTheDocument();
   });
 
-  it('uses byte-mode UTF-8, exact level M, and renders a roughly 220-character payload', async () => {
+  it('passes the byte-only payload with exact level M and boost disabled to the encoder', async () => {
     const source = plainSource();
     render(
       <VaultTransferQr
@@ -112,27 +133,67 @@ describe('VaultTransferQr sender', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Show transfer QR' }));
     const qr = await screen.findByLabelText('Vault seed-phrase transfer QR code');
+    const props = latestQrEncoderProps();
 
     expect({
-      mode: qr.getAttribute('data-encoding-mode'),
-      characterEncoding: qr.getAttribute('data-character-encoding'),
-      errorCorrectionLevel: qr.getAttribute('data-error-correction-level'),
-      payloadLength: Number(qr.getAttribute('data-payload-length')),
-      configured: VAULT_TRANSFER_QR_OPTIONS,
+      payloadPrefix: props.value.slice(0, 'btvault1:'.length),
+      payloadLength: props.value.length,
+      level: props.level,
+      boostLevel: props.boostLevel,
       rendered: qr.querySelector('path') !== null,
     }).toEqual({
-      mode: 'byte',
-      characterEncoding: 'UTF-8',
-      errorCorrectionLevel: 'M',
+      payloadPrefix: 'btvault1:',
       payloadLength: 217,
-      configured: {
-        mode: 'byte',
-        characterEncoding: 'UTF-8',
-        errorCorrectionLevel: 'M',
-        boostErrorCorrectionLevel: false,
-      },
+      level: 'M',
+      boostLevel: false,
       rendered: true,
     });
+  });
+
+  it('omits a legal vault name that is too long for the optional transfer hint', async () => {
+    const source = wrappedSource();
+    render(
+      <VaultTransferQr
+        source={source}
+        vaultId={VAULT_TRANSFER_VECTOR_VAULT_ID}
+        vaultName={'x'.repeat(80)}
+      />,
+    );
+
+    await openWrapped();
+
+    expect(parseVaultTransferPayload(latestQrEncoderProps().value)).toEqual({
+      mnemonic: VAULT_TRANSFER_VECTOR_MNEMONIC,
+      vaultId: VAULT_TRANSFER_VECTOR_VAULT_ID,
+    });
+    expect(source.verifyDevicePassword).toHaveBeenCalledTimes(1);
+    expect(
+      screen.queryByText(
+        'The device password could not be verified. The transfer code remains hidden.',
+      ),
+    ).not.toBeInTheDocument();
+  });
+
+  it('does not misreport payload creation failures as a rejected device password', async () => {
+    const source = wrappedSource();
+    source.readMnemonic = vi.fn(async () => 'not a valid seed phrase');
+    render(<VaultTransferQr source={source} vaultId={VAULT_TRANSFER_VECTOR_VAULT_ID} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show transfer QR' }));
+    const password = await screen.findByLabelText('Device password');
+    fireEvent.change(password, { target: { value: DEVICE_PASSWORD } });
+    fireEvent.submit(password.closest('form')!);
+
+    expect(
+      await screen.findByText(
+        'The transfer code could not be created. Close this screen and try again.',
+      ),
+    ).toBeInTheDocument();
+    expect(source.verifyDevicePassword).toHaveBeenCalledTimes(1);
+    expect(screen.queryByText(/device password could not be verified/i)).not.toBeInTheDocument();
+    expect(
+      screen.queryByText('This transfer code expired and is now blank. Show it again manually.'),
+    ).not.toBeInTheDocument();
   });
 
   it('blanks the code at 60 seconds and only restores it after a manual action', async () => {
@@ -209,6 +270,16 @@ describe('VaultTransferQr sender', () => {
     });
   });
 });
+
+function latestQrEncoderProps(): {
+  value: string;
+  level?: string;
+  boostLevel?: boolean;
+} {
+  const props = qrEncoder.render.mock.lastCall?.[0];
+  if (props == null) throw new Error('QR encoder was not rendered.');
+  return props as { value: string; level?: string; boostLevel?: boolean };
+}
 
 async function persistentSurfaceSnapshot() {
   return {

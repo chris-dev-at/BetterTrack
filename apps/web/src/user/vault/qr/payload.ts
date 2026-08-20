@@ -44,6 +44,12 @@ export function parseVaultTransferPayload(payload: string): VaultTransferPayload
   }
 
   const query = new URLSearchParams(payload.slice(separator + 1));
+  if (query.getAll('m').length > 1) {
+    throw new VaultTransferPayloadError('invalid-mnemonic');
+  }
+  if (query.getAll('v').length > 1) {
+    throw new VaultTransferPayloadError('invalid-vault-id');
+  }
   const rawMnemonic = query.get('m');
   if (rawMnemonic == null || rawMnemonic === '') {
     throw new VaultTransferPayloadError('missing-mnemonic');

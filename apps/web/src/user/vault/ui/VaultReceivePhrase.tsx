@@ -6,6 +6,7 @@ import { useT } from '../../../i18n';
 import { Button, Field, Input, Textarea } from '../../../ui/origin';
 import { acknowledgePlainCustodyRisk } from '../keystore/acknowledgment';
 import type { EndpointVaultKeystore } from '../keystore/core';
+import { EndpointKeystoreError } from '../keystore/errors';
 import type { FetchVaultHeaderEnvelope, OpenedVault } from '../keystore/types';
 import {
   parseVaultTransferPayload,
@@ -147,8 +148,8 @@ export function VaultReceivePhrase({
       setDevicePassword('');
       setPlainAcknowledged(false);
       onOpened(receipt);
-    } catch {
-      setErrorKey('vault.transfer.receiver.errors.verification');
+    } catch (error) {
+      setErrorKey(receiveErrorKey(error));
     } finally {
       setWorking(false);
     }
@@ -419,4 +420,10 @@ export function payloadErrorKey(error: unknown): string {
     'invalid-fingerprint': 'vault.transfer.receiver.errors.invalidFingerprint',
   };
   return keys[outcome];
+}
+
+function receiveErrorKey(error: unknown): string {
+  return error instanceof EndpointKeystoreError && error.code === 'verification-failed'
+    ? 'vault.transfer.receiver.errors.verification'
+    : 'vault.transfer.receiver.errors.operation';
 }

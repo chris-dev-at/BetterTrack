@@ -54,6 +54,14 @@ export const VAULT_TRANSFER_CONFORMANCE_VECTORS = {
       'btvault1:m=abandon+abandon+abandon+abandon+abandon+abandon+abandon+abandon+abandon+abandon+abandon+about',
     outcome: 'missing-vault-id',
   },
+  duplicateMnemonic: {
+    payload: `${VAULT_TRANSFER_GOLDEN_PAYLOAD}&m=${VAULT_TRANSFER_VECTOR_MNEMONIC.replaceAll(' ', '+')}`,
+    outcome: 'invalid-mnemonic',
+  },
+  duplicateVaultId: {
+    payload: `${VAULT_TRANSFER_GOLDEN_PAYLOAD}&v=${VAULT_TRANSFER_VECTOR_VAULT_ID}`,
+    outcome: 'invalid-vault-id',
+  },
   unknownExtraKey: {
     payload: `${VAULT_TRANSFER_GOLDEN_PAYLOAD}&future=ignored`,
     expected: EXPECTED,

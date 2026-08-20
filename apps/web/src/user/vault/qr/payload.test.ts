@@ -46,6 +46,18 @@ describe('btvault1 payload conformance vectors', () => {
     expect(rejectedOutcome(VECTORS.missingVaultId.payload)).toBe(VECTORS.missingVaultId.outcome);
   });
 
+  it('rejects duplicate mnemonic keys', () => {
+    expect(rejectedOutcome(VECTORS.duplicateMnemonic.payload)).toBe(
+      VECTORS.duplicateMnemonic.outcome,
+    );
+  });
+
+  it('rejects duplicate vault-id keys', () => {
+    expect(rejectedOutcome(VECTORS.duplicateVaultId.payload)).toBe(
+      VECTORS.duplicateVaultId.outcome,
+    );
+  });
+
   it('ignores an unknown additive key', () => {
     expect(parseVaultTransferPayload(VECTORS.unknownExtraKey.payload)).toEqual(
       VECTORS.unknownExtraKey.expected,
