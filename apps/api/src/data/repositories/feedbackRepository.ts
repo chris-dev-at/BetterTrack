@@ -90,6 +90,13 @@ export function createFeedbackRepository(db: Database): FeedbackRepository {
   ): Promise<FeedbackThreadLookup> {
     const lastReadAtColumn =
       viewerSide === 'submitter' ? feedback.submitterLastReadAt : feedback.adminLastReadAt;
+    // Unread is "rows from the other side", not chat's "rows I did not author".
+    // For the submitter the two coincide — only the owner can author a
+    // `submitter` row. For staff they differ: admin B does not see admin A's
+    // reply as unread. That follows from the single shared `adminLastReadAt`
+    // marker the issue prescribes (A marking read advances B's marker too), so
+    // per-admin unread is not expressible on this schema by construction, and
+    // is a non-event on a single-owner install.
     const otherSide: FeedbackMessageAuthorSide = viewerSide === 'submitter' ? 'admin' : 'submitter';
 
     const [thread] = await db

@@ -223,6 +223,13 @@ export const FEEDBACK_THREAD_MESSAGE_MAX_LENGTH = 4000;
  * nullability: a deleted author anonymizes their messages instead of recalling
  * them (#362), and `authorSide` keeps the staff boundary explicit either way,
  * without adding chat-only chip fields.
+ *
+ * `senderId` is additionally viewer-relative: on the submitter rail an
+ * admin-side row always reads `null`, because a staff account's internal id is
+ * identity the product surfaces to a user nowhere else (the account export
+ * scrubs the same field). On the admin rail it is the queue's record of who
+ * answered. Consumers must therefore attribute from `authorSide`, never from
+ * the presence of an id.
  */
 export const feedbackThreadMessageSchema = z
   .object({

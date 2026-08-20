@@ -230,6 +230,20 @@ describe('admin feedback inbox', () => {
       'admin',
       'submitter',
     ]);
+
+    // The submitter gets the answer, never the answerer: a staff account id is
+    // identity we surface to a user nowhere else, and the account export scrubs
+    // this very field — the live endpoint must not hand back what the export
+    // removes. Their own row keeps their own id.
+    expect(submitterThread.messages.map((message) => message.senderId)).toEqual([null, webUser.id]);
+    expect(JSON.stringify(submitterThread)).not.toContain(admin.id);
+
+    // The same rows on the admin rail keep the id — that is the queue's record
+    // of who answered.
+    const adminReread = feedbackThreadResponseSchema.parse(
+      (await adminAgent.get(`/api/v1/admin/feedback/${submission.id}/messages`)).body,
+    );
+    expect(adminReread.messages.map((message) => message.senderId)).toEqual([admin.id, webUser.id]);
   });
 
   it('derives unread messages after each side marker and marks only that side read', async () => {
@@ -362,6 +376,14 @@ describe('admin feedback inbox', () => {
     expect(
       await harness.db.select().from(schema.users).where(eq(schema.users.id, staff.id)),
     ).toEqual([]);
+
+    // Anonymization is proven at the storage layer, not by the submitter rail's
+    // projection (which nulls staff ids either way): the row itself lost its FK.
+    const [storedReply] = await harness.db
+      .select()
+      .from(schema.feedbackMessages)
+      .where(eq(schema.feedbackMessages.feedbackId, submission!.id));
+    expect(storedReply).toMatchObject({ authorSide: 'admin', authorUserId: null });
 
     // The submitter keeps the answer they were given; only the internal id goes,
     // and `authorSide` still carries the staff attribution.

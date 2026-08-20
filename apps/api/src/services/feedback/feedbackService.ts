@@ -51,24 +51,41 @@ function toAdminSubmission(row: AdminFeedbackRow): AdminFeedbackSubmission {
   };
 }
 
-function toThreadMessage(row: FeedbackMessageRow): FeedbackThreadMessage {
+/**
+ * Which rail is rendering the thread. The two see the same rows, but not the
+ * same `senderId`: `authorUserId` on an admin-side row is the replying staff
+ * account's internal id, identity the product surfaces to a user nowhere else.
+ * The account export already projects it to null for exactly that reason
+ * (`services/export/collector.ts`), so the live endpoint the same user calls
+ * must not hand back what the export scrubs — otherwise the scrub is one `GET`
+ * from being defeated. `authorSide: 'admin'` carries the attribution the
+ * submitter actually needs. On the admin rail the id stays: it is the queue's
+ * own audit trail of who answered.
+ */
+type ThreadAudience = 'submitter' | 'admin';
+
+function toThreadMessage(row: FeedbackMessageRow, audience: ThreadAudience): FeedbackThreadMessage {
+  const staffRowOnSubmitterRail = audience === 'submitter' && row.authorSide === 'admin';
   return {
     id: row.id,
     feedbackId: row.feedbackId,
-    senderId: row.authorUserId,
+    senderId: staffRowOnSubmitterRail ? null : row.authorUserId,
     authorSide: row.authorSide,
     body: row.body,
     createdAt: row.createdAt.toISOString(),
   };
 }
 
-function toThreadResult(lookup: FeedbackThreadLookup): FeedbackThreadResult {
+function toThreadResult(
+  lookup: FeedbackThreadLookup,
+  audience: ThreadAudience,
+): FeedbackThreadResult {
   if (lookup.status !== 'ok') return lookup;
   return {
     status: 'ok',
     thread: {
       thread: lookup.page.thread,
-      messages: lookup.page.rows.map(toThreadMessage),
+      messages: lookup.page.rows.map((row) => toThreadMessage(row, audience)),
       nextCursor: lookup.page.nextCursor,
     },
   };
@@ -96,6 +113,7 @@ export interface FeedbackService {
   submit(userId: string, input: CreateFeedbackRequest): Promise<CreateFeedbackResponse>;
   /** Caller-owned status history; ownership is enforced inside the repository. */
   listMine(userId: string): Promise<MyFeedbackResponse>;
+  /** Caller-owned thread page; staff `senderId`s are anonymized on this rail. */
   getThreadForSubmitter(
     userId: string,
     id: string,
@@ -144,12 +162,13 @@ export function createFeedbackService({ repo }: FeedbackServiceDeps): FeedbackSe
           cursor: input.cursor,
           limit: input.limit ?? DEFAULT_THREAD_LIMIT,
         }),
+        'submitter',
       );
     },
 
     async sendMessageForSubmitter(userId, id, input) {
       const row = await repo.createMessageForSubmitter(userId, id, input.body);
-      return row ? { message: toThreadMessage(row) } : null;
+      return row ? { message: toThreadMessage(row, 'submitter') } : null;
     },
 
     markReadForSubmitter(userId, id) {
@@ -175,12 +194,13 @@ export function createFeedbackService({ repo }: FeedbackServiceDeps): FeedbackSe
           cursor: input.cursor,
           limit: input.limit ?? DEFAULT_THREAD_LIMIT,
         }),
+        'admin',
       );
     },
 
     async sendMessageForAdmin(adminUserId, id, input) {
       const row = await repo.createMessageForAdmin(adminUserId, id, input.body);
-      return row ? { message: toThreadMessage(row) } : null;
+      return row ? { message: toThreadMessage(row, 'admin') } : null;
     },
 
     markReadForAdmin(id) {
