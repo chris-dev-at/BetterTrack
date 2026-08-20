@@ -177,7 +177,37 @@ test.describe('PD9 paranoid-mode end-to-end gate', () => {
     try {
       await test.step('[PD9-A1] binding design precondition', async () => {
         await assertPd9DesignPrecondition();
-        expect(PD9_TRACEABILITY).toHaveLength(7);
+        expect(PD9_TRACEABILITY).toEqual([
+          {
+            criterion: 'Design note §16-logged + owner-acked BEFORE code',
+            assertion: '[PD9-A1] binding design precondition',
+          },
+          {
+            criterion: 'Mode on ⇒ server stores no cleartext portfolio data (schema/probe test)',
+            assertion: '[PD9-A2] complete DB cleartext probe',
+          },
+          {
+            criterion:
+              'Drive-only round trip: zero portfolio rows server-side and the app remains fully functional (e2e)',
+            assertion: '[PD9-A3] Drive-only enable and zero active server medium round trip',
+          },
+          {
+            criterion: 'Media switching migrates the blob correctly (test)',
+            assertion: '[PD9-A4] verified media ordering and retained-source failure',
+          },
+          {
+            criterion: 'Social/sharing surfaces are absent for the account (matrix test)',
+            assertion: '[PD9-A5] killed/kept browser route matrix',
+          },
+          {
+            criterion: 'A client computes correct stats from encrypted fixture data (test)',
+            assertion: '[PD9-A6] known custom-asset totals without portfolio API reads',
+          },
+          {
+            criterion: 'Alerts still fire (test)',
+            assertion: '[PD9-A7] real evaluator and notification dispatcher',
+          },
+        ]);
       });
 
       owner = await provisionUserInContext(context, admin, 'pd9vault');
