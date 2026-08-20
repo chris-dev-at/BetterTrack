@@ -33,8 +33,12 @@ const YAHOO_ENVELOPE_ERROR_NAMES: Record<YahooEnvelopeStatus, string> = {
 };
 
 const YAHOO_ENVELOPE_ERROR_MESSAGES: Record<YahooEnvelopeStatus, ReadonlySet<string>> = {
-  404: new Set(['No data found, symbol may be delisted', 'Not Found']),
+  404: new Set(['No data found, symbol may be delisted']),
   429: new Set(['Too Many Requests']),
+};
+
+const YAHOO_ENVELOPE_ERROR_PATTERNS: Partial<Record<YahooEnvelopeStatus, readonly RegExp[]>> = {
+  404: [/^Quote not found for ticker symbol: .+$/],
 };
 
 /**
@@ -43,12 +47,15 @@ const YAHOO_ENVELOPE_ERROR_MESSAGES: Record<YahooEnvelopeStatus, ReadonlySet<str
  * falls back to a plain `Error` for names it does not export and never copies
  * the numeric HTTP status onto the error. Keep these fallbacks deliberately
  * narrow: the derived Yahoo name (or plain fallback) must be paired with one
- * of Yahoo's exact status descriptions.
+ * of Yahoo's known status descriptions.
  */
 function isYahooEnvelopeStatusError(err: unknown, status: YahooEnvelopeStatus): boolean {
   if (!(err instanceof Error)) return false;
   if (err.name !== 'Error' && err.name !== YAHOO_ENVELOPE_ERROR_NAMES[status]) return false;
-  return YAHOO_ENVELOPE_ERROR_MESSAGES[status].has(err.message);
+  return (
+    YAHOO_ENVELOPE_ERROR_MESSAGES[status].has(err.message) ||
+    YAHOO_ENVELOPE_ERROR_PATTERNS[status]?.some((pattern) => pattern.test(err.message)) === true
+  );
 }
 
 /**
