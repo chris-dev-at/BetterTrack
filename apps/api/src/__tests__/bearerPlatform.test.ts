@@ -451,6 +451,12 @@ describe('#361 route × scope matrix', () => {
       body: { category: 'other', message: 'Bearer matrix feedback' },
     },
     {
+      name: 'own feedback deletion',
+      method: 'delete',
+      path: `/feedback/${MISSING_ID}`,
+      scope: 'feedback:write',
+    },
+    {
       name: 'feedback thread',
       method: 'get',
       path: `/feedback/${MISSING_ID}/messages`,

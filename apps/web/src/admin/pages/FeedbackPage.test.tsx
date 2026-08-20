@@ -48,6 +48,7 @@ const submission: AdminFeedbackSubmission = {
   lastStatusChangeAt: '2026-08-18T08:00:00.000Z',
   declinedReason: null,
   shippedVersion: null,
+  deletedByUser: false,
   submitter: {
     id: '00000000-0000-7000-8000-000000000002',
     username: 'mobile_owner',
@@ -108,6 +109,18 @@ test('renders the submitter and labelled diagnostics without raw or absent conte
   expect(row).not.toHaveTextContent('futureDiagnostic');
   expect(row).not.toHaveTextContent('undefined');
   expect(row).not.toHaveTextContent('null');
+});
+
+test('offers every helpdesk category and tags rows deleted by their submitter', async () => {
+  vi.mocked(api.listAdminFeedback).mockResolvedValue(
+    list({ submissions: [{ ...submission, category: 'help', deletedByUser: true }] }),
+  );
+  renderPage();
+
+  expect(await screen.findByText('Deleted by user')).toBeInTheDocument();
+  const category = screen.getByRole('combobox', { name: 'Category' });
+  expect(within(category).getByRole('option', { name: 'Need help' })).toHaveValue('help');
+  expect(within(category).getByRole('option', { name: 'Improvement' })).toHaveValue('improvement');
 });
 
 test('filters and sorts the inbox, restoring category priority when the filter clears', async () => {

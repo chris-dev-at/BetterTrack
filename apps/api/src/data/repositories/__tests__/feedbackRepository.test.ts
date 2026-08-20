@@ -30,7 +30,8 @@ describe('feedback repository ownership boundary', () => {
 
       const rows = await repo.listMine(owner.id);
 
-      expect(rows.map((row) => row.id)).toEqual([owned.id]);
+      expect(owned).not.toBeNull();
+      expect(rows.map((row) => row.id)).toEqual([owned!.id]);
       expect(rows.every((row) => row.userId === owner.id)).toBe(true);
     } finally {
       await harness.ctx.redis.quit?.();
@@ -53,24 +54,27 @@ describe('feedback repository ownership boundary', () => {
         category: 'other',
         message: 'Repository-owned thread',
       });
+      expect(owned).not.toBeNull();
 
-      await expect(repo.getThreadForSubmitter(other.id, owned.id, { limit: 40 })).resolves.toEqual({
-        status: 'not_found',
-      });
+      await expect(repo.getThreadForSubmitter(other.id, owned!.id, { limit: 40 })).resolves.toEqual(
+        {
+          status: 'not_found',
+        },
+      );
       await expect(
-        repo.createMessageForSubmitter(other.id, owned.id, 'Must not be stored.'),
+        repo.createMessageForSubmitter(other.id, owned!.id, 'Must not be stored.'),
       ).resolves.toBeNull();
-      await expect(repo.markReadForSubmitter(other.id, owned.id)).resolves.toBe(false);
+      await expect(repo.markReadForSubmitter(other.id, owned!.id)).resolves.toBe(false);
 
       await expect(
-        repo.createMessageForSubmitter(owner.id, owned.id, 'Owner-authored detail.'),
+        repo.createMessageForSubmitter(owner.id, owned!.id, 'Owner-authored detail.'),
       ).resolves.toMatchObject({ authorSide: 'submitter', authorUserId: owner.id });
       await expect(
-        repo.getThreadForSubmitter(owner.id, owned.id, { limit: 40 }),
+        repo.getThreadForSubmitter(owner.id, owned!.id, { limit: 40 }),
       ).resolves.toMatchObject({
         status: 'ok',
         page: {
-          thread: { id: owned.id, unreadCount: 0 },
+          thread: { id: owned!.id, unreadCount: 0 },
           rows: [{ body: 'Owner-authored detail.' }],
         },
       });
@@ -92,6 +96,7 @@ describe('feedback repository ownership boundary', () => {
       });
       const repo = createFeedbackRepository(harness.db);
       const owned = await repo.create(owner.id, { category: 'other', message: 'Ordered thread' });
+      expect(owned).not.toBeNull();
 
       // Written in an order that disagrees with their stamps — as a backfill, an
       // import or a fixture can. Insertion order fixes the UUIDv7 ids, so an
@@ -100,21 +105,21 @@ describe('feedback repository ownership boundary', () => {
         .insert(schema.feedbackMessages)
         .values([
           {
-            feedbackId: owned.id,
+            feedbackId: owned!.id,
             authorSide: 'admin' as const,
             authorUserId: staff.id,
             body: 'Newest reply.',
             createdAt: new Date('2026-08-10T08:00:00.000Z'),
           },
           {
-            feedbackId: owned.id,
+            feedbackId: owned!.id,
             authorSide: 'admin' as const,
             authorUserId: staff.id,
             body: 'Oldest reply.',
             createdAt: new Date('2026-08-01T08:00:00.000Z'),
           },
           {
-            feedbackId: owned.id,
+            feedbackId: owned!.id,
             authorSide: 'admin' as const,
             authorUserId: staff.id,
             body: 'Middle reply.',
@@ -125,18 +130,18 @@ describe('feedback repository ownership boundary', () => {
       await harness.db
         .update(schema.feedback)
         .set({ submitterLastReadAt: new Date('2026-08-03T08:00:00.000Z') })
-        .where(eq(schema.feedback.id, owned.id));
+        .where(eq(schema.feedback.id, owned!.id));
 
       // Two replies land after the read marker, and they are exactly the two the
       // first page shows — page position can no longer contradict unread state.
-      const first = await repo.getThreadForSubmitter(owner.id, owned.id, { limit: 2 });
+      const first = await repo.getThreadForSubmitter(owner.id, owned!.id, { limit: 2 });
       expect(first.status).toBe('ok');
       const firstPage = first.status === 'ok' ? first.page : null;
       expect(firstPage?.thread.unreadCount).toBe(2);
       expect(firstPage?.rows.map((row) => row.id)).toEqual([newest!.id, middle!.id]);
       expect(firstPage?.nextCursor).toBe(middle!.id);
 
-      const second = await repo.getThreadForSubmitter(owner.id, owned.id, {
+      const second = await repo.getThreadForSubmitter(owner.id, owned!.id, {
         limit: 2,
         cursor: firstPage!.nextCursor!,
       });
@@ -147,7 +152,7 @@ describe('feedback repository ownership boundary', () => {
       // A cursor naming no row in this thread is reported, not ignored: the old
       // behaviour re-served page one under a cursor that never advanced.
       await expect(
-        repo.getThreadForSubmitter(owner.id, owned.id, { limit: 2, cursor: owned.id }),
+        repo.getThreadForSubmitter(owner.id, owned!.id, { limit: 2, cursor: owned!.id }),
       ).resolves.toEqual({ status: 'invalid_cursor' });
     } finally {
       await harness.ctx.redis.quit?.();
@@ -170,7 +175,8 @@ describe('feedback repository ownership boundary', () => {
         category: 'bug',
         message: 'Staff answers this one.',
       });
-      const reply = await repo.createMessageForAdmin(staff.id, owned.id, 'We can reproduce it.');
+      expect(owned).not.toBeNull();
+      const reply = await repo.createMessageForAdmin(staff.id, owned!.id, 'We can reproduce it.');
       expect(reply).toMatchObject({ authorSide: 'admin', authorUserId: staff.id });
 
       // The exact statement both deletion paths rely on (userRepository.remove →
@@ -182,13 +188,54 @@ describe('feedback repository ownership boundary', () => {
 
       // Anonymized, not recalled — the body the submitter received survives and
       // `authorSide` still carries the staff attribution.
-      const after = await repo.getThreadForSubmitter(submitter.id, owned.id, { limit: 40 });
+      const after = await repo.getThreadForSubmitter(submitter.id, owned!.id, { limit: 40 });
       expect(after).toMatchObject({
         status: 'ok',
         page: {
           rows: [{ id: reply!.id, authorSide: 'admin', authorUserId: null, body: reply!.body }],
         },
       });
+    } finally {
+      await harness.ctx.redis.quit?.();
+    }
+  });
+
+  it('can only tombstone the supplied caller own row and stays idempotent', async () => {
+    const harness = await createTestApp();
+    try {
+      const owner = await harness.seedUser({
+        email: 'feedback-delete-owner@bt.test',
+        username: 'feedbackdeleteowner',
+      });
+      const other = await harness.seedUser({
+        email: 'feedback-delete-other@bt.test',
+        username: 'feedbackdeleteother',
+      });
+      const repo = createFeedbackRepository(harness.db);
+      const owned = await repo.create(owner.id, {
+        category: 'help',
+        message: 'Please help with my import.',
+      });
+      const foreign = await repo.create(other.id, {
+        category: 'improvement',
+        message: 'Make the preview clearer.',
+      });
+      expect(owned).not.toBeNull();
+      expect(foreign).not.toBeNull();
+
+      expect(await repo.deleteMine(owner.id, foreign!.id, new Date())).toBeNull();
+      const deletedAt = new Date('2026-08-20T12:00:00.000Z');
+      const first = await repo.deleteMine(owner.id, owned!.id, deletedAt);
+      const second = await repo.deleteMine(
+        owner.id,
+        owned!.id,
+        new Date('2026-08-20T13:00:00.000Z'),
+      );
+
+      expect(first?.deletedByUserAt).toEqual(deletedAt);
+      expect(second?.deletedByUserAt).toEqual(deletedAt);
+      expect(await repo.listMine(owner.id)).toEqual([]);
+      expect((await repo.listMine(other.id)).map((row) => row.id)).toEqual([foreign!.id]);
     } finally {
       await harness.ctx.redis.quit?.();
     }

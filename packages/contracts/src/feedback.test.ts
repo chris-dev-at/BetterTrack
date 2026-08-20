@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  FEEDBACK_CATEGORIES,
   FEEDBACK_CONTEXT_MAX_BYTES,
   FEEDBACK_CONTEXT_MAX_KEYS,
   FEEDBACK_DECLINED_REASON_REQUIRED,
@@ -34,6 +35,12 @@ describe('feedback contracts', () => {
     });
 
     expect(result.success).toBe(true);
+    expect(FEEDBACK_CATEGORIES).toEqual(['feature', 'bug', 'other', 'help', 'improvement']);
+    for (const category of ['help', 'improvement'] as const) {
+      expect(
+        createFeedbackRequestSchema.safeParse({ category, message: 'Helpdesk request' }).success,
+      ).toBe(true);
+    }
   });
 
   it('rejects an empty/over-length message, unknown category, and over-length subject', () => {
@@ -115,6 +122,7 @@ describe('feedback contracts', () => {
           lastStatusChangeAt: '2026-08-18T08:00:00.000Z',
           declinedReason: null,
           shippedVersion: null,
+          deletedByUser: false,
           submitter: {
             id: '00000000-0000-7000-8000-000000000002',
             username: 'mobile-user',

@@ -114,6 +114,7 @@ describe('OpenAPI document', () => {
       '/backtest/preview',
       '/feedback',
       '/feedback/mine',
+      '/feedback/{id}',
       '/feedback/{id}/messages',
       '/social/requests',
     ];
@@ -243,6 +244,9 @@ describe('OpenAPI document', () => {
     expect((myFeedbackOk['application/json'] as JsonObject).schema).toEqual({
       $ref: '#/components/schemas/MyFeedbackResponse',
     });
+    const deleteFeedback = (paths['/feedback/{id}'] as JsonObject).delete as JsonObject;
+    expect(deleteFeedback.security).toEqual([{ sessionCookie: [] }, { apiKeyBearer: [] }]);
+    expect(deleteFeedback.responses as JsonObject).toHaveProperty('204');
     expect(paths).toHaveProperty('/admin/feedback/{id}');
     expect(paths).not.toHaveProperty('/admin/feedback/{id}/status');
     const feedbackThread = (paths['/feedback/{id}/messages'] as JsonObject).get as JsonObject;

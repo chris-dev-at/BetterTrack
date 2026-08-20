@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest';
 
-import { NOTIFICATION_MESSAGE_KEYS, VAULT_MEDIA } from '@bettertrack/contracts';
+import { FEEDBACK_STATUSES, NOTIFICATION_MESSAGE_KEYS, VAULT_MEDIA } from '@bettertrack/contracts';
 
 import { notificationMessagePath } from '../lib/notificationText';
 import { vaultStoreErrorKey } from '../user/vault/engine/errorCopy';
@@ -51,6 +51,25 @@ test('registers every not-found string in EN and DE', () => {
       expect(localizedMessage(locale.code, key)).not.toBe(key);
     }
   }
+});
+
+test('registers the submitter-facing helpdesk flow labels in EN and DE', () => {
+  for (const locale of Object.values(LOCALES)) {
+    for (const status of FEEDBACK_STATUSES) {
+      const key = `feedback.status.${status}`;
+      expect(localizedMessage(locale.code, key), `${locale.code}: ${key}`).not.toBe(key);
+    }
+    for (const key of ['feedback.status.comingIn', 'feedback.status.declinedWithReason']) {
+      expect(localizedMessage(locale.code, key), `${locale.code}: ${key}`).not.toBe(key);
+    }
+  }
+
+  expect(localizedMessage('en', 'feedback.status.new')).toBe('Sent');
+  expect(localizedMessage('en', 'feedback.status.triaged')).toBe('Read / in review');
+  expect(localizedMessage('en', 'feedback.status.working_on_it')).toBe('In progress');
+  expect(localizedMessage('en', 'feedback.status.saved_as_future_idea')).toBe(
+    'On the waiting list',
+  );
 });
 
 test('registers title/body copy for every dispatcher notification message key', () => {

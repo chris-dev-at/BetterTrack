@@ -1,10 +1,11 @@
 import { and, count, desc, eq, gt, isNull, lt, or, sql, type SQL } from 'drizzle-orm';
 
-import type {
-  AdminFeedbackListQuery,
-  CreateFeedbackRequest,
-  FeedbackMessageAuthorSide,
-  UpdateFeedbackStatusRequest,
+import {
+  FEEDBACK_OPEN_SUBMISSION_LIMIT,
+  type AdminFeedbackListQuery,
+  type CreateFeedbackRequest,
+  type FeedbackMessageAuthorSide,
+  type UpdateFeedbackStatusRequest,
 } from '@bettertrack/contracts';
 
 import type { Database } from '../db';
@@ -45,9 +46,12 @@ export type FeedbackThreadLookup =
 
 /** Persistence seam shared by client capture and the owner-only triage queue. */
 export interface FeedbackRepository {
-  create(userId: string, input: CreateFeedbackRequest): Promise<FeedbackRow>;
+  /** Returns null when the caller already has the maximum number of open rows. */
+  create(userId: string, input: CreateFeedbackRequest): Promise<FeedbackRow | null>;
   /** Caller ownership is part of the query and cannot be widened by HTTP input. */
   listMine(userId: string): Promise<MyFeedbackRow[]>;
+  /** Idempotent caller-owned tombstone; returns null for absent or foreign rows. */
+  deleteMine(userId: string, id: string, at: Date): Promise<FeedbackRow | null>;
   /** Every submitter method scopes the parent row by both id and owner in SQL. */
   getThreadForSubmitter(
     userId: string,
@@ -78,6 +82,21 @@ export interface FeedbackRepository {
 
 export function createFeedbackRepository(db: Database): FeedbackRepository {
   /**
+   * Submitter-rail parent scoping. Ownership is only half of it: a submission the
+   * owner has tombstoned (#1400) has left their rail entirely, so it must read as
+   * missing on the thread endpoints too rather than merely dropping out of
+   * `/feedback/mine` — otherwise a submitter could still read and answer a
+   * conversation they deleted, in replies they would never see again. The admin
+   * rail passes no user id and so keeps seeing tombstoned rows, which is exactly
+   * the audit trail the tombstone exists to preserve.
+   */
+  function submitterScope(submitterUserId?: string): SQL | undefined {
+    return submitterUserId
+      ? and(eq(feedback.userId, submitterUserId), isNull(feedback.deletedByUserAt))
+      : undefined;
+  }
+
+  /**
    * Resolve a viewer-relative thread head and page. Submitter ownership, when
    * supplied, is part of the parent SELECT; a missing and another user's id are
    * therefore indistinguishable before any message row is read.
@@ -102,12 +121,7 @@ export function createFeedbackRepository(db: Database): FeedbackRepository {
     const [thread] = await db
       .select({ id: feedback.id, lastReadAt: lastReadAtColumn })
       .from(feedback)
-      .where(
-        and(
-          eq(feedback.id, id),
-          submitterUserId ? eq(feedback.userId, submitterUserId) : undefined,
-        ),
-      )
+      .where(and(eq(feedback.id, id), submitterScope(submitterUserId)))
       .limit(1);
     if (!thread) return { status: 'not_found' };
 
@@ -181,12 +195,7 @@ export function createFeedbackRepository(db: Database): FeedbackRepository {
       const [thread] = await tx
         .select({ id: feedback.id })
         .from(feedback)
-        .where(
-          and(
-            eq(feedback.id, id),
-            submitterUserId ? eq(feedback.userId, submitterUserId) : undefined,
-          ),
-        )
+        .where(and(eq(feedback.id, id), submitterScope(submitterUserId)))
         .limit(1);
       if (!thread) return null;
 
@@ -201,23 +210,47 @@ export function createFeedbackRepository(db: Database): FeedbackRepository {
 
   return {
     async create(userId, input) {
-      const values: NewFeedbackRow = {
-        userId,
-        category: input.category,
-        subject: input.subject ?? null,
-        message: input.message,
-        context: (input.context ?? null) as NewFeedbackRow['context'],
-      };
-      const [row] = await db.insert(feedback).values(values).returning();
-      if (!row) throw new Error('Feedback vanished after insert');
-      return row;
+      return db.transaction(async (tx) => {
+        // The stable parent row is the per-user serialization point. A second
+        // create cannot count until the first transaction has committed its
+        // insert, so two requests at 19 open rows cannot both become row 20.
+        const [owner] = await tx
+          .select({ id: users.id })
+          .from(users)
+          .where(eq(users.id, userId))
+          .for('update');
+        if (!owner) throw new Error('Cannot create feedback for a missing user');
+
+        const [open] = await tx
+          .select({ value: count() })
+          .from(feedback)
+          .where(
+            and(
+              eq(feedback.userId, userId),
+              isNull(feedback.deletedByUserAt),
+              sql`${feedback.status} not in ('declined', 'shipped')`,
+            ),
+          );
+        if ((open?.value ?? 0) >= FEEDBACK_OPEN_SUBMISSION_LIMIT) return null;
+
+        const values: NewFeedbackRow = {
+          userId,
+          category: input.category,
+          subject: input.subject ?? null,
+          message: input.message,
+          context: (input.context ?? null) as NewFeedbackRow['context'],
+        };
+        const [row] = await tx.insert(feedback).values(values).returning();
+        if (!row) throw new Error('Feedback vanished after insert');
+        return row;
+      });
     },
 
     async listMine(userId) {
       const rows = await db
         .select()
         .from(feedback)
-        .where(eq(feedback.userId, userId))
+        .where(and(eq(feedback.userId, userId), isNull(feedback.deletedByUserAt)))
         .orderBy(desc(feedback.createdAt), desc(feedback.id));
       if (rows.length === 0) return [];
 
@@ -265,7 +298,7 @@ export function createFeedbackRepository(db: Database): FeedbackRepository {
       const rows = await db
         .update(feedback)
         .set({ submitterLastReadAt: sql`now()` })
-        .where(and(eq(feedback.id, id), eq(feedback.userId, userId)))
+        .where(and(eq(feedback.id, id), submitterScope(userId)))
         .returning({ id: feedback.id });
       return rows.length > 0;
     },
@@ -279,6 +312,21 @@ export function createFeedbackRepository(db: Database): FeedbackRepository {
       return rows.length > 0;
     },
 
+    async deleteMine(userId, id, at) {
+      const [row] = await db
+        .update(feedback)
+        .set({
+          deletedByUserAt: sql<Date>`coalesce(${feedback.deletedByUserAt}, ${at})`,
+          updatedAt: sql<Date>`case
+            when ${feedback.deletedByUserAt} is null then ${at}
+            else ${feedback.updatedAt}
+          end`,
+        })
+        .where(and(eq(feedback.id, id), eq(feedback.userId, userId)))
+        .returning();
+      return row ?? null;
+    },
+
     async listForAdmin(params) {
       const conditions: SQL[] = [];
       if (params.category) conditions.push(eq(feedback.category, params.category));
@@ -286,7 +334,10 @@ export function createFeedbackRepository(db: Database): FeedbackRepository {
       const priorityOrder = sql<number>`case ${feedback.category}
         when 'feature' then 0
         when 'bug' then 1
-        else 2
+        when 'other' then 2
+        when 'help' then 3
+        when 'improvement' then 4
+        else 5
       end`;
 
       const rows = await db
@@ -303,6 +354,7 @@ export function createFeedbackRepository(db: Database): FeedbackRepository {
           shippedVersion: feedback.shippedVersion,
           submitterLastReadAt: feedback.submitterLastReadAt,
           adminLastReadAt: feedback.adminLastReadAt,
+          deletedByUserAt: feedback.deletedByUserAt,
           createdAt: feedback.createdAt,
           updatedAt: feedback.updatedAt,
           submitterId: users.id,

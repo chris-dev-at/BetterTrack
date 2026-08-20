@@ -27,6 +27,14 @@ export function createFeedbackRouter(ctx: AppContext, limiters: RateLimiters): R
     res.json(await ctx.feedback.listMine(req.authUser!.id));
   });
 
+  router.delete('/:id', validateParams(idParamSchema), async (req, res) => {
+    const { id } = req.valid?.params as { id: string };
+    if (!(await ctx.feedback.deleteMine(req.authUser!.id, id))) {
+      throw notFound('Feedback not found.');
+    }
+    res.status(204).send();
+  });
+
   router.get(
     '/:id/messages',
     validateParams(idParamSchema),

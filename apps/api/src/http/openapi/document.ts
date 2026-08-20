@@ -2739,6 +2739,14 @@ const endpoints: EndpointDef[] = [
     response: R.MyFeedbackResponse,
   },
   {
+    method: 'delete',
+    path: '/feedback/{id}',
+    tag: 'Feedback',
+    summary: 'Hide one caller-owned submission while retaining an admin-visible tombstone.',
+    params: contracts.idParamSchema,
+    status: 204,
+  },
+  {
     method: 'post',
     path: '/feedback',
     tag: 'Feedback',
