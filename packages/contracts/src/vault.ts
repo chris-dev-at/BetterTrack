@@ -365,7 +365,6 @@ export const PARANOID_CLIENT_ROUTE_DECISIONS: readonly ParanoidClientRouteDecisi
     serverRoutes: [
       { capability: 'portfolioServer', match: 'exact', path: '/settings/taxes' },
       { capability: 'portfolioServer', match: 'exact', path: '/settings/taxes/years' },
-      { capability: 'portfolioServer', match: 'prefix', path: '/settings/taxes/years/' },
     ],
     clientRoutes: [
       { match: 'prefix', path: '/portfolio/tax/print', destination: '/portfolio/tax' },

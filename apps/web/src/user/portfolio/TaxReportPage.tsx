@@ -1,16 +1,12 @@
 import { lazy, Suspense, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useQuery } from '@tanstack/react-query';
 
 import { useI18n, useT } from '../../i18n';
-import { ApiError } from '../../lib/apiClient';
 import { getTaxYearReport, getTaxYearReports, taxYearReportCsvUrl } from '../../lib/portfolioApi';
-import { relockTaxYear, unlockTaxYear } from '../../lib/settingsApi';
 import { Disclaimer, EmptyState } from '../../ui';
 import { Button, Icon, PageHead, SkeletonBlock } from '../../ui/origin';
-import { Alert, TextField } from '../components/ui';
-import { Dialog } from '../components/Dialog';
-import { useMutationFeedback } from '../hooks/useMutationFeedback';
+import { Alert } from '../components/ui';
 import { useResolvedPrivacyMode } from '../vault/usePrivacyMode';
 import { portfolioTaxSettingsKey, taxModeLabelKey } from './portfolioTax';
 import {
@@ -64,81 +60,6 @@ function YearActions({ portfolioId, year }: { portfolioId: string; year: number 
         {t('portfolio.taxReport.export.print')}
       </Link>
     </div>
-  );
-}
-
-/**
- * The unlock ritual (§16 2026-08-07): a passed year's taxes never change until
- * the user re-authenticates with their password and opens that ONE year for
- * amendments. The dialog is deliberately explicit about what unlocking means —
- * backdated entries will change the year's settled taxes until it is re-locked.
- */
-function UnlockYearDialog({
-  year,
-  onClose,
-  onUnlocked,
-}: {
-  year: number;
-  onClose: () => void;
-  onUnlocked: () => void;
-}) {
-  const t = useT();
-  const [password, setPassword] = useState('');
-  const [error, setError] = useState<string | null>(null);
-
-  const mutation = useMutation({
-    mutationFn: () => unlockTaxYear(year, password),
-    onSuccess: () => {
-      onUnlocked();
-    },
-    onError: (err: unknown) => {
-      if (err instanceof ApiError && err.code === 'INVALID_CREDENTIALS') {
-        setError(t('portfolio.taxReport.unlockDialog.wrongPassword'));
-      } else if (err instanceof ApiError && err.status === 429) {
-        setError(t('portfolio.taxReport.unlockDialog.throttled'));
-      } else {
-        setError(t('common.genericError'));
-      }
-    },
-  });
-
-  return (
-    <Dialog
-      description={t('portfolio.taxReport.unlockDialog.description', { year })}
-      onClose={onClose}
-      phoneSheet
-      title={t('portfolio.taxReport.unlockDialog.title', { year })}
-      widthClassName="max-w-md"
-    >
-      <form
-        className="flex flex-col gap-4"
-        onSubmit={(event) => {
-          event.preventDefault();
-          setError(null);
-          mutation.mutate();
-        }}
-      >
-        <Alert tone="info">{t('portfolio.taxReport.unlockDialog.consequence', { year })}</Alert>
-        <TextField
-          autoComplete="current-password"
-          label={t('portfolio.taxReport.unlockDialog.passwordLabel')}
-          name="password"
-          onChange={(e) => setPassword(e.target.value)}
-          required
-          type="password"
-          value={password}
-        />
-        {error ? <Alert tone="error">{error}</Alert> : null}
-        <div className="flex justify-end gap-2">
-          <Button disabled={mutation.isPending} onClick={onClose} variant="quiet">
-            {t('common.cancel')}
-          </Button>
-          <Button disabled={mutation.isPending || password.length === 0} type="submit">
-            {t('portfolio.taxReport.unlockDialog.confirm', { year })}
-          </Button>
-        </div>
-      </form>
-    </Dialog>
   );
 }
 
@@ -213,12 +134,8 @@ function YearDetail({ portfolioId, year }: { portfolioId: string; year: number }
 export function TaxReportPage() {
   const t = useT();
   const store = usePortfolioStore();
-  const queryClient = useQueryClient();
-  const feedback = useMutationFeedback();
   const [searchParams] = useSearchParams();
   const [expandedYear, setExpandedYear] = useState<number | null>(null);
-  // Tax year locking (§16 2026-08-07): which year the unlock ritual is open for.
-  const [unlockingYear, setUnlockingYear] = useState<number | null>(null);
 
   // Paranoid accounts never fetch server tax data (PD7): every server query
   // below stays disabled until the account resolves to 'normal'. Pre-populated
@@ -253,22 +170,6 @@ export function TaxReportPage() {
     queryFn: ({ signal }) => getTaxYearReports(active!.id, signal),
     enabled: serverReadsEnabled && Boolean(active) && taxActive,
     staleTime: 30_000,
-  });
-
-  // The lock state is PER USER (an amendment is an account-level legal act):
-  // every portfolio's report of the same year flips together, so the whole
-  // taxYears family invalidates on either transition.
-  const invalidateReports = () =>
-    void queryClient.invalidateQueries({ queryKey: ['portfolio', 'taxYears'] });
-  const relockMutation = useMutation({
-    mutationFn: (year: number) => relockTaxYear(year),
-    onSuccess: (_state, year) => {
-      invalidateReports();
-      feedback.success(t('portfolio.taxReport.relockSuccess', { year }));
-    },
-    onError: (err: unknown) => {
-      feedback.error(t('common.genericError'), err);
-    },
   });
 
   const header = (
@@ -331,42 +232,9 @@ export function TaxReportPage() {
   }
 
   const years = reportQuery.data?.years ?? [];
-  // Elapsed years the user explicitly opened for amendments (§16 2026-08-07):
-  // the wire states them as `locked: false` (locked years are `true`, open
-  // years omit the key). They stay amendable until explicitly re-locked, so
-  // the banner below keeps the state loudly visible.
-  const unlockedYears = years.filter((summary) => summary.locked === false);
-
   return (
     <div>
       {header}
-
-      {unlockedYears.length > 0 ? (
-        <div className="bt-section">
-          <Alert tone="info">
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-              <span className="font-semibold">
-                {unlockedYears.length === 1
-                  ? t('portfolio.taxReport.unlockedBannerOne', { year: unlockedYears[0]!.year })
-                  : t('portfolio.taxReport.unlockedBannerOther', {
-                      years: unlockedYears.map((summary) => summary.year).join(', '),
-                    })}
-              </span>
-              {unlockedYears.map((summary) => (
-                <Button
-                  disabled={relockMutation.isPending}
-                  key={summary.year}
-                  onClick={() => relockMutation.mutate(summary.year)}
-                  size="sm"
-                  variant="quiet"
-                >
-                  {t('portfolio.taxReport.relockYearAction', { year: summary.year })}
-                </Button>
-              ))}
-            </div>
-          </Alert>
-        </div>
-      ) : null}
 
       {/* Which mode these numbers were computed under — read-only (issue #636).
           Configuration lives in the Settings tab; naming the mode here is what
@@ -456,8 +324,6 @@ export function TaxReportPage() {
                       setExpandedYear((cur) => (cur === summary.year ? null : summary.year))
                     }
                     detail={<YearDetail portfolioId={active.id} year={summary.year} />}
-                    onUnlock={(year) => setUnlockingYear(year)}
-                    onRelock={(year) => relockMutation.mutate(year)}
                   />
                 ))}
               </tbody>
@@ -465,19 +331,6 @@ export function TaxReportPage() {
           </div>
         )}
       </div>
-
-      {unlockingYear !== null ? (
-        <UnlockYearDialog
-          year={unlockingYear}
-          onClose={() => setUnlockingYear(null)}
-          onUnlocked={() => {
-            const year = unlockingYear;
-            setUnlockingYear(null);
-            invalidateReports();
-            feedback.success(t('portfolio.taxReport.unlockSuccess', { year }));
-          }}
-        />
-      ) : null}
     </div>
   );
 }

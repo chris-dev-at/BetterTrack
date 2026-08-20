@@ -1250,13 +1250,6 @@ const OVERLAY_EXCLUSIONS: readonly OverlayExclusion[] = [
       'It writes a reconciliation movement to a selected source; cash-source e2e owns the resulting balance history.',
   },
   {
-    surface: 'tax-year unlock dialog',
-    sources: ['apps/web/src/user/portfolio/TaxReportPage.tsx'],
-    routes: ['/portfolio/tax'],
-    justification:
-      'It only opens for a year that has locked after year end, and confirming re-authenticates with the account password; tax-lock e2e owns that ritual.',
-  },
-  {
     surface: 'manual value-point editor',
     sources: ['apps/web/src/user/portfolio/ValuePointEditor.tsx'],
     routes: ['/portfolio'],

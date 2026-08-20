@@ -3,7 +3,7 @@ import { expect, request as newRequestContext, test, type Page } from '@playwrig
 import { newAdminRequestContext } from './support/adminApi';
 import { cashSourceRow } from './support/cashSurface';
 import { API_BASE_URL } from './support/config';
-import { recentOpenBookingDates } from './support/dates';
+import { recentBookingDates } from './support/dates';
 import { recordSapTrade } from './support/flows';
 import { provisionUser } from './support/users';
 
@@ -56,7 +56,7 @@ test('dividends: an AT-mode dividend lands net of withholding in cash, no auto-r
 
   const page = owner.page;
   const api = owner.context.request;
-  const dates = await recentOpenBookingDates(page, 2);
+  const dates = recentBookingDates(2);
   const buyDate = dates[0]!;
   const dividendDate = dates[1]!;
 

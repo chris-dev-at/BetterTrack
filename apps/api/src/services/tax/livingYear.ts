@@ -5,12 +5,12 @@ import type { TransactionRecord } from '../../data/repositories/transactionRepos
 import {
   costBasisStrategyForCountry,
   customCarryForYears,
-  deCarryPots,
   floorCents,
   settleAtYear,
   settleCustomYear,
   settleDeYear,
   settleFiYear,
+  viennaYearOf,
   TAX_COUNTRY_AT,
   TAX_COUNTRY_DE,
   TAX_COUNTRY_FI,
@@ -27,32 +27,20 @@ import {
 } from '../../domain/tax';
 
 /**
- * Open-year LIVE tax derivation (issue #635) — the rebuild of the frozen-at-
- * entry model. The §16 boundary:
- *
- *  - **Closed years** (Vienna years before the current one) keep their
- *    recording-time semantics: frozen modes coexist (countryState/customState),
- *    backdated mutations still settle into them append-only, and a settings
- *    switch never wholesale re-taxes them.
- *  - **Open years** (the current Vienna year and later) are re-derived in
- *    full under the portfolio's CURRENT effective settings, on every write
- *    path and on every report read — a continuously-derived withholding
- *    balance. Rows frozen under `none`/another regime re-tax; switching a
- *    mode heals the year (this is the 2026-€0 root-cause fix: sells recorded
- *    while the setting was `none` froze `taxMode='none'` and could never
- *    enter the AT pool, while their P/L still showed).
+ * Living-year tax derivation (#1399). Every Vienna tax year is re-derived in
+ * full under the portfolio's current effective settings on every mutation and
+ * report read. Calendar rollover has no behavioral meaning.
  *
  * Manual rows are the one carve-out: a `manual_per_trade` row's tax is a
  * user-stated fact — it never enters a derivation and its withholding is
  * never engine-refunded (the pre-existing doctrine, unchanged).
  *
  * Adding a country = a domain settle function + a branch in
- * {@link settleOpenYears} + the frozen-component analog in countryState.ts +
- * the contracts enum + picker/i18n entries.
+ * {@link settleLiveYears} + the contracts enum + picker/i18n entries.
  */
 
-/** The regime the CURRENT settings put open years under. `manual` = no derivation. */
-export type OpenRegime =
+/** The regime current settings put every year under. `manual` = no derivation. */
+export type LiveRegime =
   | { kind: 'none' }
   | { kind: 'manual' }
   | { kind: 'country'; country: SupportedTaxCountry }
@@ -63,20 +51,20 @@ export type OpenRegime =
  * other unrecognized value fails LOUD instead of silently running the AT
  * engine (#669 hardening — same rationale as `rowEngineCountry`).
  */
-export function openCountryOf(country: string | null): SupportedTaxCountry {
+export function liveCountryOf(country: string | null): SupportedTaxCountry {
   if (country === null || country === TAX_COUNTRY_AT) return TAX_COUNTRY_AT;
   if (country === TAX_COUNTRY_DE || country === TAX_COUNTRY_FI) return country;
   throw new Error(
-    `Tax engine: no open-year engine for tax country "${country}" — ` +
+    `Tax engine: no live engine for tax country "${country}" — ` +
       'wire it in (see the adding-a-country checklist above) before settings can select it',
   );
 }
 
-/** The open-year regime of the resolved per-portfolio settings. */
-export function openRegimeOf(
+/** The live regime of the resolved per-portfolio settings. */
+export function liveRegimeOf(
   settings: UserTaxSettingsRecord,
   parseParams: (settings: UserTaxSettingsRecord) => CustomTaxParams,
-): OpenRegime {
+): LiveRegime {
   switch (settings.mode) {
     case 'none':
       return { kind: 'none' };
@@ -85,26 +73,62 @@ export function openRegimeOf(
     case 'custom':
       return { kind: 'custom', params: parseParams(settings) };
     default:
-      return { kind: 'country', country: openCountryOf(settings.country) };
+      return { kind: 'country', country: liveCountryOf(settings.country) };
   }
 }
 
-/** The cost-basis strategy the regime realizes open-year sells under (null = none). */
-export function openRegimeStrategy(regime: OpenRegime): CostBasisStrategy | null {
+/** The cost-basis strategy the regime realizes sells under (null = none). */
+export function liveRegimeStrategy(regime: LiveRegime): CostBasisStrategy | null {
   if (regime.kind === 'country') return costBasisStrategyForCountry(regime.country);
   if (regime.kind === 'custom') return regime.params.costBasis;
   return null;
 }
 
-/** A sell that participates in open-year derivation (everything but manual facts). */
+/** A sell that participates in live derivation (everything but manual facts). */
 export const isDerivableSell = (t: TransactionRecord): boolean =>
   t.side === 'sell' && t.taxMode !== 'manual_per_trade';
 
-/** A dividend that participates in open-year derivation. */
+/** A dividend that participates in live derivation. */
 export const isDerivableDividend = (d: DividendRecord): boolean => d.taxMode !== 'manual_per_trade';
 
-/** The row data + recomputed views the open-year derivation runs over. */
-export interface OpenYearRowView {
+/** Vienna tax year of a persisted row timestamp. */
+export const viennaYearOfDate = (at: Date): number => viennaYearOf(at.toISOString());
+
+/** A row whose attached tax belongs to the automatic engine. */
+export const isAutomaticTaxMode = (mode: TransactionRecord['taxMode']): boolean =>
+  mode === 'country_specific' || mode === 'custom';
+
+/**
+ * Automatic tax currently held for one year. Manual facts are excluded so a
+ * live reconciliation can never refund or reinterpret them.
+ */
+export function heldForYear(
+  transactions: readonly TransactionRecord[],
+  dividendRows: readonly DividendRecord[],
+  movements: readonly CashMovementRecord[],
+  year: number,
+): number {
+  let held = 0;
+  for (const row of transactions) {
+    if (row.side !== 'sell' || !isAutomaticTaxMode(row.taxMode)) continue;
+    if (viennaYearOfDate(row.executedAt) === year) held += row.taxAmountEur ?? 0;
+  }
+  for (const row of dividendRows) {
+    if (!isAutomaticTaxMode(row.taxMode)) continue;
+    if (viennaYearOfDate(row.executedAt) === year) held += row.taxAmountEur ?? 0;
+  }
+  for (const movement of movements) {
+    if (movement.taxYear !== year) continue;
+    if (movement.transactionId !== null || movement.dividendId !== null) continue;
+    if (movement.kind === 'tax_withholding' || movement.kind === 'tax_refund') {
+      held += -movement.amountEur;
+    }
+  }
+  return floorCents(held);
+}
+
+/** The row data and recomputed views the live derivation runs over. */
+export interface LiveYearRowView {
   transactions: readonly TransactionRecord[];
   dividendRows: readonly DividendRecord[];
   /**
@@ -119,78 +143,65 @@ export interface OpenYearRowView {
 }
 
 /**
- * Every open Vienna year carrying ANY derivable state — a derivable sell or
+ * Every Vienna year carrying any derivable state — a derivable sell or
  * dividend, or an unattached tax correction that must be steerable back to a
  * (possibly zero) target. Ascending.
  */
-export function openDerivableYears(
-  view: Pick<OpenYearRowView, 'transactions' | 'dividendRows' | 'yearOf'>,
+export function liveDerivableYears(
+  view: Pick<LiveYearRowView, 'transactions' | 'dividendRows' | 'yearOf'>,
   movements: readonly CashMovementRecord[],
-  openFromYear: number,
 ): number[] {
   const years = new Set<number>();
   for (const t of view.transactions) {
     if (isDerivableSell(t)) {
-      const year = view.yearOf(t.executedAt);
-      if (year >= openFromYear) years.add(year);
+      years.add(view.yearOf(t.executedAt));
     }
   }
   for (const d of view.dividendRows) {
     if (isDerivableDividend(d)) {
-      const year = view.yearOf(d.executedAt);
-      if (year >= openFromYear) years.add(year);
+      years.add(view.yearOf(d.executedAt));
     }
   }
   for (const m of movements) {
     if (m.kind !== 'tax_withholding' && m.kind !== 'tax_refund') continue;
     if (m.transactionId !== null || m.dividendId !== null) continue;
-    if (m.taxYear !== null && m.taxYear >= openFromYear) years.add(m.taxYear);
+    if (m.taxYear !== null) years.add(m.taxYear);
   }
   return [...years].sort((a, b) => a - b);
 }
 
-/** A new (not-yet-inserted) event entering an open year on a write path. */
-export type NewOpenEvent =
+/** A new (not-yet-inserted) event entering a year on a write path. */
+export type NewLiveEvent =
   | { kind: 'sell_gain'; tempId: string; assetId: string }
   | { kind: 'dividend'; amountEur: number };
 
 /** One dated derivable event of an existing row (amount resolved per regime). */
-interface OpenEventSource {
+interface LiveEventSource {
   at: number;
   source:
     | { kind: 'sell_gain'; id: string; assetId: string }
     | { kind: 'dividend'; amountEur: number };
 }
 
-export interface SettleOpenYearsInput {
+export interface SettleLiveYearsInput {
   /** The current regime — `manual` must be filtered by the caller (no derivation). */
-  regime: Exclude<OpenRegime, { kind: 'manual' }>;
-  view: OpenYearRowView;
-  /** Open years to settle, any order (settled ascending, carry chained through). */
+  regime: Exclude<LiveRegime, { kind: 'manual' }>;
+  view: LiveYearRowView;
+  /** Years to settle, any order (settled ascending, carry chained through). */
   years: readonly number[];
-  /** The year's currently-held ENGINE tax (frozen row amounts + corrections). */
+  /** The year's currently held automatic tax (attached row amounts + corrections). */
   heldOf: (year: number) => number;
-  /**
-   * Frozen DE events of CLOSED years (ascending fold seeds the pot chain into
-   * the first open year). Only consulted when the regime is DE.
-   */
-  closedDeEvents?: ReadonlyMap<number, readonly DeTaxableEvent[]>;
-  /**
-   * Frozen custom events of CLOSED years for the ACTIVE parameter set only
-   * (seeds the custom carry). Only consulted when the regime is custom.
-   */
-  closedCustomEvents?: ReadonlyMap<number, readonly CustomTaxableEvent[]>;
-  /** Batch additions per open year (write paths), in recording order. */
-  newEventsByYear?: ReadonlyMap<number, readonly NewOpenEvent[]>;
+  /** Batch additions per year (write paths), in recording order. */
+  newEventsByYear?: ReadonlyMap<number, readonly NewLiveEvent[]>;
 }
 
-export interface OpenYearSettlement {
+export interface LiveYearSettlement {
   year: number;
   /**
    * Delta (signed: positive = withhold, negative = refund) reconciling the
    * year's derived target with what is held, BEFORE new events — posts as an
    * unattached correction. This is the self-healing seam: a mode switch, a
-   * re-shaped history or a legacy `none`-frozen row all surface here.
+   * re-shaped history or a legacy row recorded under another mode all surface here.
    */
   correctionDeltaEur: number;
   /** Marginal delta per new event of the year, in input order. */
@@ -202,18 +213,18 @@ export interface OpenYearSettlement {
 }
 
 /**
- * Settle every open year under the CURRENT regime: full re-derivation over
- * all derivable rows (chronological), carry chained from the closed years'
- * frozen state through earlier open years. Deterministic and shared by every
+ * Settle every year under the current regime: full re-derivation over all
+ * derivable rows (chronological), with carry chained from earlier years.
+ * Deterministic and shared by every
  * path — write, delete, dividend and report reconciliation all steer the same
  * target, so corrections can never oscillate between paths.
  */
-export function settleOpenYears(input: SettleOpenYearsInput): OpenYearSettlement[] {
+export function settleLiveYears(input: SettleLiveYearsInput): LiveYearSettlement[] {
   const { regime, view } = input;
   const years = [...new Set(input.years)].sort((a, b) => a - b);
   if (years.length === 0) return [];
 
-  const strategy = openRegimeStrategy(regime);
+  const strategy = liveRegimeStrategy(regime);
   const realizations = strategy ? view.realizationsFor(strategy) : null;
   const gainOf = (id: string): number => {
     const realization = realizations?.get(id);
@@ -223,8 +234,8 @@ export function settleOpenYears(input: SettleOpenYearsInput): OpenYearSettlement
     return realization.realizedPnlEur;
   };
 
-  const eventsOfYear = (year: number): OpenEventSource[] => {
-    const events: OpenEventSource[] = [];
+  const eventsOfYear = (year: number): LiveEventSource[] => {
+    const events: LiveEventSource[] = [];
     for (const t of view.transactions) {
       if (!isDerivableSell(t) || view.yearOf(t.executedAt) !== year) continue;
       events.push({
@@ -242,23 +253,13 @@ export function settleOpenYears(input: SettleOpenYearsInput): OpenYearSettlement
     return events.sort((a, b) => a.at - b.at);
   };
 
-  // Carry seeds from the closed years' frozen state (ascending fold).
-  const ascendingClosed = <T>(byYear: ReadonlyMap<number, readonly T[]> | undefined): T[][] =>
-    byYear
-      ? [...byYear.keys()]
-          .filter((y) => y < years[0]!)
-          .sort((a, b) => a - b)
-          .map((y) => [...byYear.get(y)!])
-      : [];
-
   let dePots: DePots | null =
     regime.kind === 'country' && regime.country === TAX_COUNTRY_DE
-      ? deCarryPots(ascendingClosed(input.closedDeEvents))
+      ? { aktienEur: 0, sonstigeEur: 0 }
       : null;
-  const customPriorYears: CustomTaxableEvent[][] =
-    regime.kind === 'custom' ? ascendingClosed(input.closedCustomEvents) : [];
+  const customPriorYears: CustomTaxableEvent[][] = [];
 
-  const results: OpenYearSettlement[] = [];
+  const results: LiveYearSettlement[] = [];
   for (const year of years) {
     const existing = eventsOfYear(year);
     const news = input.newEventsByYear?.get(year) ?? [];
@@ -306,9 +307,8 @@ export function settleOpenYears(input: SettleOpenYearsInput): OpenYearSettlement
     }
 
     if (regime.kind === 'country') {
-      // DE: pots chain from the closed years' frozen events through every
-      // earlier open year's derived events.
-      const toDeEvent = (e: OpenEventSource): DeTaxableEvent =>
+      // DE loss pots chain through every earlier year in the live series.
+      const toDeEvent = (e: LiveEventSource): DeTaxableEvent =>
         e.source.kind === 'sell_gain'
           ? {
               kind: 'sell_gain',
@@ -347,9 +347,8 @@ export function settleOpenYears(input: SettleOpenYearsInput): OpenYearSettlement
       continue;
     }
 
-    // Custom: the ACTIVE parameter set derives the whole year; carry chains
-    // from the closed years' same-set frozen events through earlier open years.
-    const toCustomEvent = (e: OpenEventSource): CustomTaxableEvent =>
+    // Custom carry chains through every earlier year in the live series.
+    const toCustomEvent = (e: LiveEventSource): CustomTaxableEvent =>
       e.source.kind === 'sell_gain'
         ? { kind: 'sell_gain', amountEur: gainOf(e.source.id) }
         : { kind: 'dividend', amountEur: e.source.amountEur };
@@ -377,16 +376,4 @@ export function settleOpenYears(input: SettleOpenYearsInput): OpenYearSettlement
   }
 
   return results;
-}
-
-/** Restrict a per-year event map to CLOSED years (strictly before `openFromYear`). */
-export function closedYearSlice<T>(
-  byYear: ReadonlyMap<number, readonly T[]>,
-  openFromYear: number,
-): Map<number, readonly T[]> {
-  const closed = new Map<number, readonly T[]>();
-  for (const [year, events] of byYear) {
-    if (year < openFromYear) closed.set(year, events);
-  }
-  return closed;
 }

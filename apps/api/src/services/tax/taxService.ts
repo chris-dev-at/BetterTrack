@@ -8,6 +8,7 @@ import {
   type PortfolioTaxSettingsResponse,
   type TaxSettingsResponse,
   type TaxYearListResponse,
+  type TaxYearChangesResponse,
   type TaxYearPosition,
   type TaxYearReportResponse,
   type TaxYearSummary,
@@ -49,17 +50,12 @@ import {
   dePotCategoryForAssetType,
   manualTaxEur,
   realizedSellsEur,
-  settleAtYear,
-  settleCustomYear,
-  settleDeYear,
-  settleFiYear,
   TAX_COUNTRY_AT,
   TAX_COUNTRY_DE,
   TAX_COUNTRY_FI,
   taxMovementForDelta,
   viennaYearOf,
   type CostBasisStrategy,
-  type CustomTaxableEvent,
   type CustomTaxParams,
   type DePotCategory,
   type DeTaxableEvent,
@@ -71,43 +67,29 @@ import {
 import type { ParanoidModeGuard } from '../account/paranoidEnforcement';
 import {
   deEventsByYear,
-  dePotsInForYear,
-  deTargetForYear,
   deYearStateForYear,
-  fiTargetForYear,
   isDeDividend,
   isDeSell,
-  isFiDividend,
-  isFiSell,
   portfolioHasDeRows,
   portfolioHasFiRows,
-  rowEngineCountry,
   type DeRowView,
 } from './countryState';
 import {
-  closedYearSlice,
+  heldForYear,
   isDerivableDividend,
   isDerivableSell,
-  openCountryOf,
-  openDerivableYears,
-  openRegimeOf,
-  openRegimeStrategy,
-  settleOpenYears,
-  type NewOpenEvent,
-  type OpenRegime,
-  type OpenYearRowView,
-  type OpenYearSettlement,
-} from './openYear';
-import {
-  customCarryIntoYear,
-  customGroups,
-  customParamsKey,
-  isCustomFifoSell,
-  isCustomSell,
-  mergeCustomEvents,
-  type CustomGroup,
-  type CustomRowView,
-} from './customState';
+  liveCountryOf,
+  liveDerivableYears,
+  liveRegimeOf,
+  liveRegimeStrategy,
+  settleLiveYears,
+  viennaYearOfDate,
+  type NewLiveEvent,
+  type LiveRegime,
+  type LiveYearRowView,
+  type LiveYearSettlement,
+} from './livingYear';
+import { isCustomFifoSell } from './customState';
 import {
   activeCustomParams,
   parseTaxOverride,
@@ -115,24 +97,10 @@ import {
   settingsRecordFromInput,
   TAX_SYSTEM_DEFAULT,
 } from './settings';
-import {
-  atTargetForYear,
-  buildFrozenComponentState,
-  closedReshapeCorrections,
-  customTargetForYear,
-  existingAtPool,
-  heldForYear,
-  isEngineTaxed,
-  lockedResidueForYear,
-  scopeClosedMutation,
-  viennaYearOfDate,
-  type FrozenComponentState,
-} from './closedSettlement';
 import { badRequest, notFound, unprocessable } from '../../errors';
 import type { Logger } from '../../logger';
 import { FxRateUnavailableError, type CurrencyService } from '../currency/currencyService';
 import type { PortfolioSnapshotService } from '../portfolio/portfolioSnapshots';
-import type { TaxYearLockGuard } from './taxYearLockService';
 
 /**
  * Tax service (V3-P4, §13.3, issue #331): the orchestration seam between the
@@ -140,30 +108,21 @@ import type { TaxYearLockGuard } from './taxYearLockService';
  * planning the portfolio service folds into transaction writes, dividends
  * (record / list / delete), and the per-year report.
  *
- * The load-bearing invariants, all enforced here on the way into the pure
- * engine (§16 2026-07-08 cutover semantics):
+ * The load-bearing invariants, all enforced here on the way into the pure engine:
  *
- *  - **Recording-time mode.** Every sell/dividend is taxed per the mode active
- *    when it is *recorded*; the applied mode + computed tax freeze onto the
- *    row. Mode switches never recompute existing rows — they apply forward.
+ *  - **Living documentation.** Every automatic year is re-derived under the
+ *    portfolio's current regime. Calendar rollover never changes mutability or
+ *    calculation behavior; manual-per-trade rows remain literal user facts.
  *  - **Trade-date year, Vienna calendar.** Aggregation buckets by the trade's
  *    `executedAt` in Europe/Vienna; the AT pool of a year contains only rows
  *    that were themselves taxed under AT mode. The pool is **per portfolio**
  *    (a portfolio models one depot; the report is portfolio-scoped and tax
  *    cash stays in the portfolio's sources).
  *  - **Append-only settlement.** The tax *held* for a year is derived from
- *    movements (attached settlements mirror their row's frozen tax 1:1;
+ *    movements (attached settlements mirror their row's recorded tax 1:1;
  *    unattached corrections carry an explicit `taxYear`), and every mutation
  *    that re-shapes history — a backdated buy shifting existing AT gains, a
  *    deletion — posts a correcting movement rather than editing anything.
- *  - **A closed year's open-era state is locked (#635).** Every closed-year
- *    mutation settles the year by the CHANGE in its standalone frozen
- *    decomposition (ΔF): the residue `held − Σ standalone frozen targets` is
- *    computed on the PRE-mutation state and carried into the post-mutation
- *    target, so whatever joint-pool state the live derivation reached —
- *    healed rows, deliberate refunds, allowance/threshold coupling frozen
- *    into attached marginals — survives by construction and is never
- *    reconciled away (see {@link lockedResidueForYear}).
  *  - **EUR at trade dates.** Realized gains are computed in EUR with each
  *    leg converted at its own trade-date rate (§5.4 historical rates), so FX
  *    moves are part of the taxable gain, as they are for KESt. An
@@ -181,12 +140,6 @@ export interface TaxServiceDeps {
   currencyService: CurrencyService;
   /** The V5-P1 snapshot layer (issue #553): dividend writes invalidate through it. */
   snapshots: PortfolioSnapshotService;
-  /**
-   * Tax year locking (§16 2026-08-07): the API-layer gate refusing mutations
-   * dated into — or amendments reshaping — a locked year, BEFORE any planning
-   * or correction posting. Sits strictly in FRONT of the settlement machinery.
-   */
-  yearLock: TaxYearLockGuard;
   logger?: Logger;
   /** Injectable clock (tests); defaults to the wall clock. */
   now?: () => number;
@@ -235,10 +188,7 @@ export interface TransactionTaxPlanInput {
    * portfolio service so both share one resolution (and its caching).
    */
   resolveSourceId: (explicitId: string | undefined) => Promise<string>;
-  /**
-   * MIRRORCHAIN replica apply (design §2): skip the tax-year lock guard — the
-   * origin actor's own lock state gated the op before it entered the chain.
-   */
+  /** MIRRORCHAIN replica apply (design §2): permit copy-local cash skew. */
   force?: boolean;
 }
 
@@ -288,8 +238,8 @@ export interface TaxService {
    * The corrections deleting a transaction necessitates (posted by the caller
    * after the delete): removing an engine-taxed sell — or a buy that feeds
    * sells' bases — re-shapes year pools, and each affected year settles
-   * append-only against the simulated post-delete state (open years under the
-   * CURRENT regime — #635 live model — hence the `userId` for settings).
+   * append-only against the simulated post-delete state (every year under the
+   * CURRENT regime — #1399 living-document model — hence `userId` for settings).
    */
   planTransactionDeleteCorrections(
     userId: string,
@@ -331,6 +281,8 @@ export interface TaxService {
   ): Promise<void>;
   /** Per-year summaries (realized P/L, dividends, taxes), newest first. */
   getYearReports(userId: string, portfolioId: string): Promise<TaxYearListResponse>;
+  /** Account-wide living tax-documentation markers, newest first. */
+  getYearChanges(userId: string): Promise<TaxYearChangesResponse>;
   /** One year with per-position drill-down. */
   getYearReport(userId: string, portfolioId: string, year: number): Promise<TaxYearReportResponse>;
 }
@@ -341,24 +293,13 @@ const NOTE_AT_REFUNDED = 'KESt refunded (AT)';
 const NOTE_AT_CORRECTION = 'Tax year correction (AT)';
 const NOTE_DE_WITHHELD = 'KapESt + Soli withheld (DE)';
 const NOTE_DE_REFUNDED = 'KapESt + Soli refunded (DE)';
-const NOTE_DE_CORRECTION = 'Tax year correction (DE)';
 const NOTE_MANUAL_WITHHELD = 'Tax withheld (manual entry)';
 const NOTE_CUSTOM_WITHHELD = 'Tax withheld (custom rules)';
 const NOTE_CUSTOM_REFUNDED = 'Tax refunded (custom rules)';
-const NOTE_CUSTOM_CORRECTION = 'Tax year correction (custom rules)';
 const NOTE_FI_WITHHELD = 'Capital-income tax withheld (FI)';
 const NOTE_FI_REFUNDED = 'Capital-income tax refunded (FI)';
-const NOTE_FI_CORRECTION = 'Tax year correction (FI)';
 const NOTE_OFF_CORRECTION = 'Tax year correction (tax tracking off)';
-/**
- * Open-year LIVE-derivation corrections (#635) carry their own note strings,
- * distinct from the closed-year machinery's, so the cash history states which
- * corrections the live derivation posted (a mode switch healing a year reads
- * differently from a backdated-trade reconciliation). Descriptive only: the
- * closed-year lock derives each year's residue from held-vs-decomposition
- * state ({@link lockedResidueForYear}), never from these markers — attached
- * joint-pool marginals carry open-era state too, and notes could not see it.
- */
+/** Living-year corrections carry stable, descriptive cash-history notes. */
 const NOTE_AT_LIVE_CORRECTION = 'Live tax correction (AT)';
 const NOTE_DE_LIVE_CORRECTION = 'Live tax correction (DE)';
 const NOTE_FI_LIVE_CORRECTION = 'Live tax correction (FI)';
@@ -385,17 +326,8 @@ const settlementNote = (regime: SettleRegime, kind: TaxMovementSpec['kind']): st
           ? NOTE_AT_WITHHELD
           : NOTE_AT_REFUNDED;
 
-const correctionNote = (regime: SettleRegime): string =>
-  regime === 'custom'
-    ? NOTE_CUSTOM_CORRECTION
-    : regime === TAX_COUNTRY_DE
-      ? NOTE_DE_CORRECTION
-      : regime === TAX_COUNTRY_FI
-        ? NOTE_FI_CORRECTION
-        : NOTE_AT_CORRECTION;
-
-/** The correction note of an open-year regime (`none` backs engine tax out). */
-const openCorrectionNote = (regime: OpenRegime): string =>
+/** The correction note of a live regime (`none` backs automatic tax out). */
+const liveCorrectionNote = (regime: LiveRegime): string =>
   regime.kind === 'none'
     ? NOTE_OFF_CORRECTION
     : regime.kind === 'custom'
@@ -576,7 +508,7 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
 
   /** The country the ACTIVE `country_specific` settings tax new rows under. */
   const effectiveCountry = (settings: UserTaxSettingsRecord): EngineCountry =>
-    openCountryOf(settings.country);
+    liveCountryOf(settings.country);
 
   /** A stored 2-char country narrowed to the contract enum (`AT`|`DE`|`FI`|null). */
   const toContractCountry = (country: string | null): EngineCountry | null =>
@@ -584,27 +516,24 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
       ? country
       : null;
 
-  /** A row's frozen custom parameter snapshot narrowed to the contract shape (null when absent). */
+  /** A row's recorded custom parameter snapshot narrowed to the contract shape. */
   const toContractCustomParams = (params: unknown): CustomTaxParams | null => {
     const parsed = customTaxParamsSchema.safeParse(params);
     return parsed.success ? parsed.data : null;
   };
 
-  /** The first OPEN Vienna year (#635): the current year at `now`. Years before it are closed. */
-  const openFromYearNow = (): number => viennaYearOf(new Date(now()).toISOString());
+  /** The live regime of the resolved settings ({@link liveRegimeOf}). */
+  const liveRegimeForSettings = (settings: UserTaxSettingsRecord): LiveRegime =>
+    liveRegimeOf(settings, activeCustomParams);
 
-  /** The open-year regime of the resolved settings ({@link openRegimeOf}). */
-  const openRegimeForSettings = (settings: UserTaxSettingsRecord): OpenRegime =>
-    openRegimeOf(settings, activeCustomParams);
-
-  /** Assemble the {@link OpenYearRowView} the open-year derivation runs over. */
-  function buildOpenView(
+  /** Assemble the {@link LiveYearRowView} the living-year derivation runs over. */
+  function buildLiveView(
     transactions: readonly TransactionRecord[],
     dividendRows: readonly DividendRecord[],
     realizations: ReadonlyMap<string, SellRealizationEur>,
     fifoRealizations: ReadonlyMap<string, SellRealizationEur>,
     assetsById: ReadonlyMap<string, AssetRow>,
-  ): OpenYearRowView {
+  ): LiveYearRowView {
     return {
       transactions,
       dividendRows,
@@ -636,22 +565,6 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
       dividendRows,
       deRealizations,
       categoryOf: categoryLookup(assetsById),
-      yearOf: viennaYearOfDate,
-    };
-  }
-
-  /** Assemble the {@link CustomRowView} the customState derivations run over. */
-  function buildCustomView(
-    transactions: readonly TransactionRecord[],
-    dividendRows: readonly DividendRecord[],
-    realizations: ReadonlyMap<string, SellRealizationEur>,
-    fifoRealizations: ReadonlyMap<string, SellRealizationEur>,
-  ): CustomRowView {
-    return {
-      transactions,
-      dividendRows,
-      realizationsFor: (strategy: CostBasisStrategy) =>
-        strategy === 'fifo' ? fifoRealizations : realizations,
       yearOf: viennaYearOfDate,
     };
   }
@@ -730,11 +643,13 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
     };
   }
 
-  function movementToDto(r: CashMovementRecord): CashMovementDto {
+  function movementToDto(
+    r: Omit<CashMovementRecord, 'amountEur'> & { amountEur: number | string },
+  ): CashMovementDto {
     return {
       id: r.id,
       kind: r.kind,
-      amountEur: r.amountEur,
+      amountEur: Number(r.amountEur),
       sourceId: r.sourceId,
       transactionId: r.transactionId,
       transferId: r.transferId,
@@ -817,215 +732,29 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
 
   // ── Transaction batch planning ─────────────────────────────────────────────
 
-  /**
-   * #656 round 4: a batch recorded under a NON-ENGINE mode (`none` /
-   * `manual_per_trade`) still reshapes engine-frozen history — its (back)dated
-   * buys re-base the moving average under existing engine-taxed sells, and any
-   * batch trade of a DE/FI/custom-FIFO asset shifts that asset's frozen sells'
-   * lot consumption. The engine write path and the delete path settle such
-   * years append-only; without this pass a non-engine write would silently
-   * drift held away from the frozen decomposition, and the year's next touch
-   * would absorb the drift into the locked residue
-   * ({@link lockedResidueForYear}) permanently.
-   *
-   * Each affected closed-machinery year settles by exactly the CHANGE in its
-   * standalone frozen decomposition — the centralized
-   * {@link closedReshapeCorrections} (#669): with no new engine rows and no
-   * cascaded movements, both held terms cancel and the correction reduces to
-   * `ΔF = Σ F_after − Σ F_before`, so the year's locked open-era state
-   * survives by construction. `manual` treats every year as closed-machinery
-   * (`openFrom = ∞`, mirroring {@link planTransactionDeleteCorrections});
-   * `none` settles closed years only — its open years re-derive to the
-   * tracking-off target on the next read.
-   */
-  /** The earliest Vienna year a batch writes rows into (buys included). */
-  const minInputYear = (inputs: readonly TransactionInput[]): number =>
-    Math.min(...inputs.map((i) => viennaYearOf(new Date(i.executedAt).toISOString())));
-
-  async function planNonEngineReshapeCorrections(
-    userId: string,
-    portfolioId: string,
-    inputs: readonly TransactionInput[],
-    assetsById: ReadonlyMap<string, AssetRow>,
-    openFrom: number,
-    opts?: { force?: boolean },
-  ): Promise<{ extras: BatchCashMovement[]; proposed: SourcedCashMovement[] }> {
-    const batchAssets = new Set(inputs.map((i) => i.assetId));
-    const allTxns = await transactionRepo.listForPortfolio(portfolioId);
-    // Fast path: every affected-year source below requires an engine-frozen
-    // sell of a batch asset (lots and averages are per asset), so a portfolio
-    // without one skips the remaining loads entirely.
-    const touchesEngineSells = allTxns.some(
-      (t) => t.side === 'sell' && isEngineTaxed(t.taxMode) && batchAssets.has(t.assetId),
-    );
-    if (!touchesEngineSells) return { extras: [], proposed: [] };
-    const [dividendRows, movements] = await Promise.all([
-      taxRepo.listForPortfolio(portfolioId),
-      cashMovementRepo.listForPortfolio(portfolioId),
-    ]);
-    // The choke point (#669): a non-engine batch adds no engine rows, so both
-    // sides share the row set — its trades enter only through the recomputed
-    // realizations of the mutated assets.
-    const rows = { transactions: allTxns, dividendRows };
-    const scope = scopeClosedMutation({
-      before: rows,
-      after: rows,
-      movements,
-      mutationYears: [],
-      mutatedAssetIds: batchAssets,
-      openFrom,
-    });
-    if (scope.years.length === 0) return { extras: [], proposed: [] };
-    // Tax year lock (§16 2026-08-07): an amendment that would reshape a LATER
-    // locked year is refused here — before any correction is planned.
-    if (!opts?.force) {
-      await deps.yearLock.assertReshapeAmendable(userId, {
-        amendedYear: minInputYear(inputs),
-        reshapedYears: scope.years,
-      });
-    }
-    const { involveDe, involveFi, involveCustom } = scope;
-
-    // The EUR replay both sides need: engine sells of the affected years plus
-    // — with a chained regime involved — every DE/custom-sell asset anywhere.
-    const yearsSet = new Set(scope.years);
-    const neededAssetIds = new Set<string>();
-    for (const t of allTxns) {
-      if (t.side !== 'sell' || !isEngineTaxed(t.taxMode)) continue;
-      if (
-        yearsSet.has(viennaYearOfDate(t.executedAt)) ||
-        (involveDe && isDeSell(t)) ||
-        (involveCustom && isCustomSell(t))
-      ) {
-        neededAssetIds.add(t.assetId);
-      }
-    }
-    const mergedAssets = new Map(assetsById);
-    const missingAssetIds = [...neededAssetIds].filter((id) => !mergedAssets.has(id));
-    if (missingAssetIds.length > 0) {
-      for (const [id, row] of await loadAssets(missingAssetIds)) mergedAssets.set(id, row);
-    }
-    // One FX pass serves both sides: the post state includes the pending
-    // trades (they shift lots/averages even though they carry no engine tax),
-    // the baseline filters them back out.
-    const postTaxables = await buildTaxables(
-      allTxns,
-      inputs.map((input, index) => ({ tempId: `pending-${index}`, input })),
-      neededAssetIds,
-      currencyLookup(mergedAssets),
-      createTradeDateConverter(fxWriteError),
-    );
-    const pendingIds = new Set(inputs.map((_, index) => `pending-${index}`));
-    const baselineTaxables = postTaxables.filter((t) => !pendingIds.has(t.id));
-
-    const componentState = (taxables: readonly TaxableTransaction[]): FrozenComponentState => {
-      const realizations = realizationsById(taxables);
-      const fifo =
-        involveDe || involveFi || involveCustom
-          ? realizationsById(taxables, 'fifo')
-          : new Map<string, SellRealizationEur>();
-      return buildFrozenComponentState({
-        transactions: allTxns,
-        dividendRows,
-        realizations,
-        fifoRealizations: fifo,
-        categoryOf: categoryLookup(mergedAssets),
-        involveDe,
-        involveFi,
-        involveCustom,
-      });
-    };
-    const before = componentState(baselineTaxables);
-    const after = componentState(postTaxables);
-
-    // Labeled like a deleted buy's reshape: by the reshaped rows' regime
-    // (custom over DE over FI over AT when mixed).
-    const reshaped = allTxns.filter(
-      (t) => t.side === 'sell' && isEngineTaxed(t.taxMode) && batchAssets.has(t.assetId),
-    );
-    let noteRegime: SettleRegime = TAX_COUNTRY_AT;
-    if (reshaped.some(isCustomSell)) noteRegime = 'custom';
-    else if (reshaped.some(isDeSell)) noteRegime = TAX_COUNTRY_DE;
-    else if (reshaped.some(isFiSell)) noteRegime = TAX_COUNTRY_FI;
-
-    const extras: BatchCashMovement[] = [];
-    const proposed: SourcedCashMovement[] = [];
-    const nowIso = new Date(now()).toISOString();
-    for (const { year, deltaEur } of closedReshapeCorrections({
-      years: scope.years,
-      before,
-      movementsBefore: movements,
-      after,
-      movementsAfter: movements,
-    })) {
-      const spec = taxMovementForDelta(deltaEur);
-      if (!spec) continue;
-      const sourceId = await correctionSourceId(portfolioId);
-      extras.push({
-        kind: spec.kind,
-        amountEur: spec.amountEur,
-        sourceId,
-        note: correctionNote(noteRegime),
-        taxYear: year,
-        executedAt: new Date(now()),
-      });
-      proposed.push({ kind: spec.kind, amountEur: spec.amountEur, occurredAt: nowIso, sourceId });
-    }
-    return { extras, proposed };
-  }
-
   async function planTransactionTaxes(
     planInput: TransactionTaxPlanInput,
   ): Promise<TransactionTaxPlan> {
     const { userId, portfolioId, inputs, assetsById, resolveSourceId } = planInput;
     await deps.paranoid?.assertAllowed(userId, 'portfolioServer');
-    // Issue #636: resolve the mode that applies to THIS portfolio (override ??
-    // user default ?? none). It still freezes onto each row at recording time.
     const settings = await effectiveSettings(userId, portfolioId);
-
     const rows: PlannedRowTax[] = inputs.map((input) => ({
       tax:
-        input.side === 'sell' && settings.mode !== 'none'
-          ? null // filled below per mode
-          : input.side === 'sell'
-            ? { mode: 'none', country: null, amountEur: null }
-            : null,
+        input.side === 'sell' && settings.mode === 'none'
+          ? { mode: 'none', country: null, amountEur: null }
+          : null,
       movement: null,
     }));
+    for (const input of inputs) assertManualEntryAllowed(settings, input, input.side);
 
-    for (const input of inputs) {
-      assertManualEntryAllowed(settings, input, input.side);
-    }
-    if (settings.mode === 'none') {
-      // #656 round 4: untaxed rows can still reshape engine-frozen CLOSED
-      // years — settle those by ΔF (open years re-derive on the next read).
-      const reshape = await planNonEngineReshapeCorrections(
-        userId,
-        portfolioId,
-        inputs,
-        assetsById,
-        openFromYearNow(),
-        { force: planInput.force },
-      );
-      return { rows, extras: reshape.extras, proposed: reshape.proposed };
-    }
+    const pendingSells = inputs.flatMap((input, index) =>
+      input.side === 'sell' ? [{ index, tempId: `pending-${index}`, input }] : [],
+    );
 
-    const pendingSells: Array<{ index: number; tempId: string; input: TransactionInput }> = [];
-    inputs.forEach((input, index) => {
-      if (input.side === 'sell') {
-        pendingSells.push({ index, tempId: `pending-${index}`, input });
-      }
-    });
-
-    // ── Manual per trade: literal recording, zero automation. The V5-P4c
-    // configurable default fills in where no explicit entry arrived — an
-    // explicit entry (including an explicit 0) always wins, and with no
-    // default configured the behavior is byte-identical pre-V5-P4. Manually
-    // recorded rows only: imported broker history settled its taxes at the
-    // broker, so a non-`manual` batch never receives the default. ───────────
+    // Manual rows are literal facts. They never enter automatic derivation,
+    // irrespective of their calendar year.
     if (settings.mode === 'manual_per_trade') {
       const defaultApplies = (planInput.source ?? 'manual') === 'manual';
-      /** The amount/rate that applies to one sell: explicit entry, else the default. */
       const effectiveEntry = (input: TransactionInput) => {
         const hasExplicit = input.taxAmountEur !== undefined || input.taxRatePct !== undefined;
         if (hasExplicit) {
@@ -1038,37 +767,34 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
             }
           : { taxAmountEur: null, taxRatePct: null };
       };
-      // Realized gains are needed only as the base of a RATE entry; convert
-      // only those assets so an amount-only entry never depends on FX.
       const rateAssetIds = new Set(
         pendingSells
-          .filter((p) => effectiveEntry(p.input).taxRatePct !== null)
-          .map((p) => p.input.assetId),
+          .filter(({ input }) => effectiveEntry(input).taxRatePct !== null)
+          .map(({ input }) => input.assetId),
       );
       let realizations = new Map<string, SellRealizationEur>();
       if (rateAssetIds.size > 0) {
-        // Rate assets come from the batch, so their rows are already loaded.
-        const existingOfRateAssets = (
+        const existing = (
           await Promise.all(
             [...rateAssetIds].map((assetId) => transactionRepo.listForAsset(portfolioId, assetId)),
           )
         ).flat();
-        const taxables = await buildTaxables(
-          existingOfRateAssets,
-          pendingSells.map((p) => ({ tempId: p.tempId, input: p.input })),
-          rateAssetIds,
-          currencyLookup(assetsById),
-          createTradeDateConverter(fxWriteError),
+        realizations = realizationsById(
+          await buildTaxables(
+            existing,
+            pendingSells.map(({ tempId, input }) => ({ tempId, input })),
+            rateAssetIds,
+            currencyLookup(assetsById),
+            createTradeDateConverter(fxWriteError),
+          ),
         );
-        realizations = realizationsById(taxables);
       }
-
       const proposed: SourcedCashMovement[] = [];
       for (const { index, tempId, input } of pendingSells) {
-        const executedAtIso = new Date(input.executedAt).toISOString();
+        const executedAt = new Date(input.executedAt).toISOString();
         const entry = effectiveEntry(input);
         const baseEur =
-          entry.taxRatePct !== null ? (realizations.get(tempId)?.realizedPnlEur ?? 0) : 0;
+          entry.taxRatePct === null ? 0 : (realizations.get(tempId)?.realizedPnlEur ?? 0);
         const taxEur = manualTaxEur({ ...entry, baseEur });
         const row: PlannedRowTax = {
           tax: { mode: 'manual_per_trade', country: null, amountEur: taxEur },
@@ -1081,452 +807,141 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
             amountEur: -taxEur,
             sourceId,
             note: NOTE_MANUAL_WITHHELD,
-            taxYear: viennaYearOf(executedAtIso),
+            taxYear: viennaYearOf(executedAt),
           };
           proposed.push({
             kind: 'tax_withholding',
             amountEur: -taxEur,
-            occurredAt: executedAtIso,
+            occurredAt: executedAt,
             sourceId,
           });
         }
         rows[index] = row;
       }
-      // #656 round 4: manual derives nothing, so EVERY year is closed-
-      // machinery (`openFrom = ∞`, mirroring the delete path) — settle the
-      // batch's engine-frozen reshapes by ΔF before returning.
-      const reshape = await planNonEngineReshapeCorrections(
-        userId,
-        portfolioId,
-        inputs,
-        assetsById,
-        Number.POSITIVE_INFINITY,
-        { force: planInput.force },
-      );
-      return {
-        rows,
-        extras: reshape.extras,
-        proposed: [...proposed, ...reshape.proposed],
-      };
+      return { rows, extras: [], proposed };
     }
 
-    // ── Engine modes: country-specific (AT | DE | FI) or custom (V5-P4c).
-    // #635 live model: OPEN years (>= the current Vienna year) re-derive in
-    // full under the ACTIVE regime — every derivable row of the year enters
-    // the settlement regardless of the mode frozen onto it at entry. CLOSED
-    // years keep the recording-time coexistence machinery: a year's held tax
-    // is the SUM of every frozen regime's independent target — AT pool + DE
-    // year + FI pool + one component per frozen custom parameter group. ─────
-    const isCustomMode = settings.mode === 'custom';
-    const activeParams = isCustomMode ? activeCustomParams(settings) : null;
-    const activeKey = activeParams ? customParamsKey(activeParams) : undefined;
-    const country: EngineCountry | null = isCustomMode ? null : effectiveCountry(settings);
-    const regime: SettleRegime = isCustomMode ? 'custom' : country!;
-    const openRegime: OpenRegime = isCustomMode
-      ? { kind: 'custom', params: activeParams! }
-      : { kind: 'country', country: country! };
-    const openFrom = openFromYearNow();
-    const openStrategy = openRegimeStrategy(openRegime);
-    const [allTxns, dividendRows, movements] = await Promise.all([
+    const regime = liveRegimeForSettings(settings);
+    if (regime.kind === 'manual') throw new Error('Manual tax regime reached automatic planner');
+    const [transactions, dividendRows, movements] = await Promise.all([
       transactionRepo.listForPortfolio(portfolioId),
       taxRepo.listForPortfolio(portfolioId),
       cashMovementRepo.listForPortfolio(portfolioId),
     ]);
-    // The choke point (#669): affected CLOSED years + involved regimes from
-    // mode-independent facts — the batch's sell years, its mutated assets
-    // (realizations are per-asset: a (back)dated trade reshapes its asset's
-    // moving average and FIFO lot consumption under engine-frozen sells in
-    // any year), and the chain-sensitive ripple. No per-regime gate here.
-    const batchAssets = new Set(inputs.map((i) => i.assetId));
-    const sideRows = { transactions: allTxns, dividendRows };
-    const scope = scopeClosedMutation({
-      before: sideRows,
-      after: sideRows,
-      movements,
-      mutationYears: pendingSells.map((p) =>
-        viennaYearOf(new Date(p.input.executedAt).toISOString()),
-      ),
-      mutatedAssetIds: batchAssets,
-      recordingRegime: openRegime,
-      openFrom,
-    });
-    // Tax year lock (§16 2026-08-07): an amendment that would reshape a LATER
-    // locked year is refused here — before any settlement is planned. The
-    // batch's own dated years were already gated at the service entry.
-    if (!planInput.force && scope.years.length > 0) {
-      await deps.yearLock.assertReshapeAmendable(userId, {
-        amendedYear: minInputYear(inputs),
-        reshapedYears: scope.years,
-      });
-    }
-    const { involveDe, involveFi, involveCustom } = scope;
-    const closedYears = scope.years;
-
-    // Open years (#635 live model): the years the batch sells into, plus
-    // every derivable open-year sell of a mutated asset (the batch's trades
-    // shift its lot consumption / moving average regardless of frozen mode).
-    const openSeeds = new Set<number>(
-      pendingSells
-        .map((p) => viennaYearOf(new Date(p.input.executedAt).toISOString()))
-        .filter((y) => y >= openFrom),
-    );
-    for (const t of allTxns) {
-      if (!isDerivableSell(t) || !batchAssets.has(t.assetId)) continue;
-      const year = viennaYearOfDate(t.executedAt);
-      if (year >= openFrom) openSeeds.add(year);
-    }
-    // #635 chain integrity: once ANY open year settles — or a closed chained
-    // year changed (its carry-outs cross the boundary) — settle EVERY
-    // derivable open year, so the DE/custom carry chain stays whole. A year
-    // whose target did not move settles to a zero correction and posts nothing.
-    if (openSeeds.size > 0 || (scope.chainSensitive && closedYears.length > 0)) {
-      const derivableView = { transactions: allTxns, dividendRows, yearOf: viennaYearOfDate };
-      for (const year of openDerivableYears(derivableView, movements, openFrom)) {
-        openSeeds.add(year);
-      }
-    }
-
-    // Assets whose EUR replay the affected pools need: every batch-sell asset,
-    // every asset with an existing engine-taxed sell in an affected year (or a
-    // derivable sell in an affected OPEN year — #635), and — with a
-    // chain-spanning regime involved — every DE/custom-sell asset anywhere
-    // (carry chains span all prior years, and the custom grouping derivation
-    // replays every custom sell).
-    const closedYearsSet = new Set(closedYears);
-    const neededAssetIds = new Set(pendingSells.map((p) => p.input.assetId));
-    for (const t of allTxns) {
-      if (t.side !== 'sell') continue;
-      const year = viennaYearOfDate(t.executedAt);
-      const derivableOpen = year >= openFrom && isDerivableSell(t);
-      if (!derivableOpen && !isEngineTaxed(t.taxMode)) continue;
-      if (
-        closedYearsSet.has(year) ||
-        openSeeds.has(year) ||
-        (involveDe && isDeSell(t)) ||
-        (involveCustom && isCustomSell(t))
-      ) {
-        neededAssetIds.add(t.assetId);
-      }
-    }
-
-    // Pools span the whole portfolio, so needed assets may lie outside the
-    // batch — load the missing rows for their currencies.
+    const strategy = liveRegimeStrategy(regime);
+    const neededAssetIds = new Set([
+      ...transactions.filter((row) => row.side === 'sell').map((row) => row.assetId),
+      ...pendingSells.map(({ input }) => input.assetId),
+    ]);
     const mergedAssets = new Map(assetsById);
-    const missingAssetIds = [...neededAssetIds].filter((id) => !mergedAssets.has(id));
-    if (missingAssetIds.length > 0) {
-      for (const [id, row] of await loadAssets(missingAssetIds)) mergedAssets.set(id, row);
+    const missingAssets = [...neededAssetIds].filter((assetId) => !mergedAssets.has(assetId));
+    for (const [assetId, asset] of await loadAssets(missingAssets))
+      mergedAssets.set(assetId, asset);
+
+    let movingAverage = new Map<string, SellRealizationEur>();
+    let fifo = new Map<string, SellRealizationEur>();
+    if (strategy !== null && neededAssetIds.size > 0) {
+      const taxables = await buildTaxables(
+        transactions,
+        inputs.map((input, index) => ({ tempId: `pending-${index}`, input })),
+        neededAssetIds,
+        currencyLookup(mergedAssets),
+        createTradeDateConverter(fxWriteError),
+      );
+      movingAverage = realizationsById(taxables);
+      if (strategy === 'fifo') fifo = realizationsById(taxables, 'fifo');
     }
-    const taxables = await buildTaxables(
-      allTxns,
-      inputs.map((input, index) => ({ tempId: `pending-${index}`, input })),
-      neededAssetIds,
-      currencyLookup(mergedAssets),
-      createTradeDateConverter(fxWriteError),
+
+    const years = new Set(
+      liveDerivableYears({ transactions, dividendRows, yearOf: viennaYearOfDate }, movements),
     );
-    const realizations = realizationsById(taxables);
-    const fifoRealizations =
-      involveDe || involveFi || involveCustom || openStrategy === 'fifo'
-        ? realizationsById(taxables, 'fifo')
-        : new Map<string, SellRealizationEur>();
-    const deView = buildDeView(allTxns, dividendRows, fifoRealizations, mergedAssets);
-    // Pending DE events join the pot chain year by year as the ascending loop
-    // settles them, so a later year's pot-ins see the earlier years' new rows.
-    const pendingDeEvents = new Map<number, DeTaxableEvent[]>();
-    const deEventsWithPending = (): Map<number, DeTaxableEvent[]> =>
-      deEventsByYear(deView, pendingDeEvents);
-    // The frozen custom parameter groups; pending custom events chain the same
-    // way through the ACTIVE group as the ascending loop settles them.
-    const frozenGroups = involveCustom
-      ? customGroups(buildCustomView(allTxns, dividendRows, realizations, fifoRealizations))
-      : new Map<string, CustomGroup>();
-    const pendingCustomEvents = new Map<number, CustomTaxableEvent[]>();
+    const sellsByYear = new Map<number, typeof pendingSells>();
+    for (const pending of pendingSells) {
+      const year = viennaYearOf(new Date(pending.input.executedAt).toISOString());
+      years.add(year);
+      const rowsForYear = sellsByYear.get(year) ?? [];
+      rowsForYear.push(pending);
+      sellsByYear.set(year, rowsForYear);
+    }
+    if (years.size === 0) return { rows, extras: [], proposed: [] };
+
+    const newEventsByYear = new Map<number, NewLiveEvent[]>();
+    for (const [year, sells] of sellsByYear) {
+      newEventsByYear.set(
+        year,
+        sells.map(({ tempId, input }) => ({
+          kind: 'sell_gain',
+          tempId,
+          assetId: input.assetId,
+        })),
+      );
+    }
+    const settlements = settleLiveYears({
+      regime,
+      view: buildLiveView(transactions, dividendRows, movingAverage, fifo, mergedAssets),
+      years: [...years],
+      heldOf: (year) => heldForYear(transactions, dividendRows, movements, year),
+      newEventsByYear,
+    });
 
     const extras: BatchCashMovement[] = [];
     const proposed: SourcedCashMovement[] = [];
-    const nowIso = new Date(now()).toISOString();
-
-    const yearSellsOf = (year: number) =>
-      pendingSells
-        .filter((p) => viennaYearOf(new Date(p.input.executedAt).toISOString()) === year)
-        .sort(
-          (a, b) =>
-            Date.parse(a.input.executedAt) - Date.parse(b.input.executedAt) || a.index - b.index,
-        );
-    /** Freeze one settled pending sell onto its row (+ settlement movement). */
-    const assignSellRow = async (
-      pendingSell: { index: number; tempId: string; input: TransactionInput },
-      deltaEur: number,
-      year: number,
-    ): Promise<void> => {
-      const executedAtIso = new Date(pendingSell.input.executedAt).toISOString();
-      const row: PlannedRowTax = {
-        tax: isCustomMode
-          ? { mode: 'custom', country: null, amountEur: deltaEur, params: activeParams }
-          : { mode: 'country_specific', country, amountEur: deltaEur },
-        movement: null,
-      };
-      const spec = taxMovementForDelta(deltaEur);
-      if (spec) {
-        const sourceId = await resolveSourceId(pendingSell.input.cashSourceId);
-        row.movement = {
-          kind: spec.kind,
-          amountEur: spec.amountEur,
+    const correctionAt = new Date(now());
+    for (const settlement of settlements) {
+      const correction = taxMovementForDelta(settlement.correctionDeltaEur);
+      if (correction) {
+        const sourceId = await correctionSourceId(portfolioId);
+        extras.push({
+          kind: correction.kind,
+          amountEur: correction.amountEur,
           sourceId,
-          note: settlementNote(regime, spec.kind),
-          taxYear: year,
-        };
+          note: liveCorrectionNote(regime),
+          taxYear: settlement.year,
+          executedAt: correctionAt,
+        });
         proposed.push({
-          kind: spec.kind,
-          amountEur: spec.amountEur,
-          occurredAt: executedAtIso,
+          kind: correction.kind,
+          amountEur: correction.amountEur,
+          occurredAt: correctionAt.toISOString(),
           sourceId,
         });
       }
-      rows[pendingSell.index] = row;
-    };
-    const pushCorrection = async (
-      correctionDeltaEur: number,
-      year: number,
-      note: string = correctionNote(regime),
-    ): Promise<void> => {
-      const correctionSpec = taxMovementForDelta(correctionDeltaEur);
-      if (!correctionSpec) return;
-      const sourceId = await correctionSourceId(portfolioId);
-      extras.push({
-        kind: correctionSpec.kind,
-        amountEur: correctionSpec.amountEur,
-        sourceId,
-        note,
-        taxYear: year,
-        executedAt: new Date(now()),
-      });
-      proposed.push({
-        kind: correctionSpec.kind,
-        amountEur: correctionSpec.amountEur,
-        occurredAt: nowIso,
-        sourceId,
-      });
-    };
-
-    // ── Closed years: recording-time coexistence semantics (pre-#635), plus
-    // the year's locked residue — settlements apply exactly the CHANGE in the
-    // standalone frozen decomposition ({@link lockedResidueForYear}). The
-    // baseline side uses realizations WITHOUT the pending batch: its
-    // (back)dated trades reshape existing rows' gains, and that reshape is
-    // precisely the delta a correction may carry. ───────────────────────────
-    let closedBaseline: FrozenComponentState | null = null;
-    if (closedYears.length > 0) {
-      const pendingIds = new Set(inputs.map((_, index) => `pending-${index}`));
-      const baselineTaxables = taxables.filter((t) => !pendingIds.has(t.id));
-      const baselineRealizations = realizationsById(baselineTaxables);
-      const baselineFifo =
-        involveDe || involveFi || involveCustom
-          ? realizationsById(baselineTaxables, 'fifo')
-          : new Map<string, SellRealizationEur>();
-      closedBaseline = buildFrozenComponentState({
-        transactions: allTxns,
-        dividendRows,
-        realizations: baselineRealizations,
-        fifoRealizations: baselineFifo,
-        categoryOf: categoryLookup(mergedAssets),
-        involveDe,
-        involveFi,
-        involveCustom,
-      });
-    }
-    for (const year of closedYears) {
-      const yearSells = yearSellsOf(year);
-      const heldEur = heldForYear(allTxns, dividendRows, movements, year);
-      const residueEur = lockedResidueForYear(closedBaseline!, movements, year);
-      // The frozen custom groups' components — every group when a country
-      // engine settles; all but the ACTIVE group when custom settles (that one
-      // is steered by settleCustomYear itself).
-      const customTarget = involveCustom
-        ? customTargetForYear(frozenGroups, year, isCustomMode ? activeKey : undefined)
-        : 0;
-      // The FI component of a closed year (#635): the frozen FI rows' pool
-      // target — steered by settleFiYear itself when FI is the active country.
-      const fiTargetOf = (): number =>
-        involveFi
-          ? fiTargetForYear(allTxns, dividendRows, fifoRealizations, year, viennaYearOfDate)
-          : 0;
-      const fiTarget = country === TAX_COUNTRY_FI ? 0 : fiTargetOf();
-
-      let correctionDeltaEur: number;
-      let newEventDeltasEur: number[];
-      if (isCustomMode) {
-        // Custom: AT/DE/FI components stay put (their recomputed targets
-        // reflect any batch backdating); the active group's carry chains over
-        // its frozen rows plus already-settled pending events of earlier years.
-        const atTarget = atTargetForYear(allTxns, dividendRows, realizations, year);
-        const deTarget = involveDe ? deTargetForYear(deEventsWithPending(), year) : 0;
-        const params = activeParams!;
-        const activeEvents = mergeCustomEvents(
-          frozenGroups.get(activeKey!)?.eventsByYear,
-          pendingCustomEvents,
-        );
-        const newEvents: CustomTaxableEvent[] = yearSells.map((p) => {
-          const realization = (params.costBasis === 'fifo' ? fifoRealizations : realizations).get(
-            p.tempId,
-          );
-          if (!realization) {
-            throw new Error(`Tax engine: no ${params.costBasis} realization for ${p.tempId}`);
-          }
-          return { kind: 'sell_gain' as const, amountEur: realization.realizedPnlEur };
-        });
-        const settlement = settleCustomYear({
-          params,
-          carry: customCarryIntoYear(params, activeEvents, year),
-          existingEvents: frozenGroups.get(activeKey!)?.eventsByYear.get(year) ?? [],
-          heldEur: floorCents(heldEur - atTarget - deTarget - fiTarget - customTarget - residueEur),
-          newEvents,
-        });
-        correctionDeltaEur = settlement.correctionDeltaEur;
-        newEventDeltasEur = settlement.newEventDeltasEur;
-        if (newEvents.length > 0) {
-          pendingCustomEvents.set(year, [...(pendingCustomEvents.get(year) ?? []), ...newEvents]);
-        }
-      } else if (country === TAX_COUNTRY_AT) {
-        // The DE + FI + custom components (frozen rows only — an AT batch never
-        // adds their events, but its backdated trades may have re-shaped their
-        // lot bases; the recomputed realizations already reflect that).
-        const deTarget = involveDe ? deTargetForYear(deEventsWithPending(), year) : 0;
-        const pool = existingAtPool(allTxns, dividendRows, realizations, year);
-        const settlement = settleAtYear({
-          ...pool,
-          heldEur: floorCents(heldEur - deTarget - fiTarget - customTarget - residueEur),
-          newEvents: yearSells.map((p) => {
-            const realization = realizations.get(p.tempId);
-            if (!realization) {
-              throw new Error(`Tax engine: no realization for pending sell ${p.tempId}`);
-            }
-            return { kind: 'sell_gain' as const, amountEur: realization.realizedPnlEur };
-          }),
-        });
-        correctionDeltaEur = settlement.correctionDeltaEur;
-        newEventDeltasEur = settlement.newEventDeltasEur;
-      } else if (country === TAX_COUNTRY_FI) {
-        // FI (#635): pool-style like AT over the frozen FI rows, FIFO gains,
-        // progressive target; the AT/DE/custom components stay put.
-        const atTarget = atTargetForYear(allTxns, dividendRows, realizations, year);
-        const deTarget = involveDe ? deTargetForYear(deEventsWithPending(), year) : 0;
-        const existingGainsEur: number[] = [];
-        const existingDividendsEur: number[] = [];
-        for (const t of allTxns) {
-          if (!isFiSell(t) || viennaYearOfDate(t.executedAt) !== year) continue;
-          const realization = fifoRealizations.get(t.id);
-          if (!realization) {
-            throw new Error(`Tax engine: no FIFO realization for FI sell ${t.id}`);
-          }
-          existingGainsEur.push(realization.realizedPnlEur);
-        }
-        for (const d of dividendRows) {
-          if (isFiDividend(d) && viennaYearOfDate(d.executedAt) === year) {
-            existingDividendsEur.push(d.grossAmountEur);
-          }
-        }
-        const settlement = settleFiYear({
-          existingGainsEur,
-          existingDividendsEur,
-          heldEur: floorCents(heldEur - atTarget - deTarget - customTarget - residueEur),
-          newEvents: yearSells.map((p) => {
-            const realization = fifoRealizations.get(p.tempId);
-            if (!realization) {
-              throw new Error(`Tax engine: no FIFO realization for pending sell ${p.tempId}`);
-            }
-            return { kind: 'sell_gain' as const, amountEur: realization.realizedPnlEur };
-          }),
-        });
-        correctionDeltaEur = settlement.correctionDeltaEur;
-        newEventDeltasEur = settlement.newEventDeltasEur;
-      } else {
-        // DE: the AT + FI + custom components stay put; pots chain over frozen
-        // rows plus the already-settled pending events of earlier years.
-        const atTarget = atTargetForYear(allTxns, dividendRows, realizations, year);
-        const events = deEventsWithPending();
-        const potIns = dePotsInForYear(events, year);
-        const newEvents: DeTaxableEvent[] = yearSells.map((p) => {
-          const realization = fifoRealizations.get(p.tempId);
-          if (!realization) {
-            throw new Error(`Tax engine: no FIFO realization for pending sell ${p.tempId}`);
-          }
-          return {
-            kind: 'sell_gain' as const,
-            category: deView.categoryOf(p.input.assetId),
-            amountEur: realization.realizedPnlEur,
+      const yearSells = sellsByYear.get(settlement.year) ?? [];
+      for (const [eventIndex, pending] of yearSells.entries()) {
+        if (regime.kind === 'none') continue;
+        const deltaEur = settlement.newEventDeltasEur[eventIndex]!;
+        const row: PlannedRowTax = {
+          tax:
+            regime.kind === 'custom'
+              ? { mode: 'custom', country: null, amountEur: deltaEur, params: regime.params }
+              : {
+                  mode: 'country_specific',
+                  country: regime.country,
+                  amountEur: deltaEur,
+                },
+          movement: null,
+        };
+        const movement = taxMovementForDelta(deltaEur);
+        if (movement) {
+          const sourceId = await resolveSourceId(pending.input.cashSourceId);
+          const movementRegime: SettleRegime = regime.kind === 'custom' ? 'custom' : regime.country;
+          row.movement = {
+            kind: movement.kind,
+            amountEur: movement.amountEur,
+            sourceId,
+            note: settlementNote(movementRegime, movement.kind),
+            taxYear: settlement.year,
           };
-        });
-        const settlement = settleDeYear({
-          aktienPotInEur: potIns.aktienEur,
-          sonstigePotInEur: potIns.sonstigeEur,
-          existingEvents: events.get(year) ?? [],
-          heldEur: floorCents(heldEur - atTarget - fiTarget - customTarget - residueEur),
-          newEvents,
-        });
-        correctionDeltaEur = settlement.correctionDeltaEur;
-        newEventDeltasEur = settlement.newEventDeltasEur;
-        if (newEvents.length > 0) pendingDeEvents.set(year, newEvents);
-      }
-
-      await pushCorrection(correctionDeltaEur, year);
-      for (const [i, pendingSell] of yearSells.entries()) {
-        await assignSellRow(pendingSell, newEventDeltasEur[i]!, year);
+          proposed.push({
+            kind: movement.kind,
+            amountEur: movement.amountEur,
+            occurredAt: new Date(pending.input.executedAt).toISOString(),
+            sourceId,
+          });
+        }
+        rows[pending.index] = row;
       }
     }
-
-    // ── Open years (#635): full live re-derivation under the active regime. ─
-    const openYearsToSettle = [...openSeeds].sort((a, b) => a - b);
-    if (openYearsToSettle.length > 0) {
-      const openView = buildOpenView(
-        allTxns,
-        dividendRows,
-        realizations,
-        fifoRealizations,
-        mergedAssets,
-      );
-      const openYearSells = new Map<number, ReturnType<typeof yearSellsOf>>();
-      const newEventsByYear = new Map<number, NewOpenEvent[]>();
-      for (const year of openYearsToSettle) {
-        const yearSells = yearSellsOf(year);
-        openYearSells.set(year, yearSells);
-        if (yearSells.length > 0) {
-          newEventsByYear.set(
-            year,
-            yearSells.map((p) => ({
-              kind: 'sell_gain' as const,
-              tempId: p.tempId,
-              assetId: p.input.assetId,
-            })),
-          );
-        }
-      }
-      const settlements = settleOpenYears({
-        regime: openRegime,
-        view: openView,
-        years: openYearsToSettle,
-        heldOf: (year) => heldForYear(allTxns, dividendRows, movements, year),
-        closedDeEvents: involveDe ? closedYearSlice(deEventsWithPending(), openFrom) : undefined,
-        closedCustomEvents: isCustomMode
-          ? closedYearSlice(
-              mergeCustomEvents(frozenGroups.get(activeKey!)?.eventsByYear, pendingCustomEvents),
-              openFrom,
-            )
-          : undefined,
-        newEventsByYear,
-      });
-      for (const settlement of settlements) {
-        await pushCorrection(
-          settlement.correctionDeltaEur,
-          settlement.year,
-          openCorrectionNote(openRegime),
-        );
-        const yearSells = openYearSells.get(settlement.year) ?? [];
-        for (const [i, pendingSell] of yearSells.entries()) {
-          await assignSellRow(pendingSell, settlement.newEventDeltasEur[i]!, settlement.year);
-        }
-      }
-    }
-
     return { rows, extras, proposed };
   }
 
@@ -1536,246 +951,70 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
     userId: string,
     portfolioId: string,
     transaction: TransactionRecord,
-    opts?: { force?: boolean },
+    _opts?: { force?: boolean },
   ): Promise<NewCashMovement[]> {
-    const isCsSell = transaction.side === 'sell' && transaction.taxMode === 'country_specific';
-    const deletedWasCustom = isCustomSell(transaction);
-    // #635: open years re-settle under the CURRENT regime (live model); a
-    // `manual` regime derives nothing, so its open years keep the frozen
-    // coexistence semantics exactly like closed years.
-    const settings = await effectiveSettings(userId, portfolioId);
-    const openRegime = openRegimeForSettings(settings);
-    const openFrom = openRegime.kind === 'manual' ? Number.POSITIVE_INFINITY : openFromYearNow();
-    const openStrategy = openRegimeStrategy(openRegime);
-    const [allTxns, dividendRows, movements] = await Promise.all([
+    const regime = liveRegimeForSettings(await effectiveSettings(userId, portfolioId));
+    if (regime.kind === 'manual') return [];
+    const [transactions, dividendRows, movements] = await Promise.all([
       transactionRepo.listForPortfolio(portfolioId),
       taxRepo.listForPortfolio(portfolioId),
       cashMovementRepo.listForPortfolio(portfolioId),
     ]);
-
-    // Simulate the post-delete world: the row and its movements are gone.
-    const remainingTxns = allTxns.filter((t) => t.id !== transaction.id);
-    const remainingMovements = movements.filter((m) => m.transactionId !== transaction.id);
-
-    const deletedWasDe = isCsSell && rowEngineCountry(transaction.taxCountry) === TAX_COUNTRY_DE;
-    const deletedWasFi = isCsSell && rowEngineCountry(transaction.taxCountry) === TAX_COUNTRY_FI;
-
-    // The choke point (#669): affected CLOSED years + involved regimes from
-    // mode-independent facts — the deleted row's year, its asset's engine-
-    // frozen sells on either side (their recomputed gains / FIFO lots shift),
-    // and the chain-sensitive ripple. The delete adds no engine events, so
-    // no recording regime enters the scoping.
-    const deletedYear = viennaYearOfDate(transaction.executedAt);
-    const scope = scopeClosedMutation({
-      before: { transactions: allTxns, dividendRows },
-      after: { transactions: remainingTxns, dividendRows },
-      movements,
-      mutationYears: [deletedYear],
-      mutatedAssetIds: new Set([transaction.assetId]),
-      openFrom,
-    });
-    // Tax year lock (§16 2026-08-07): deleting an amendable-year row must not
-    // reshape a LATER locked year. The row's own dated year was already gated
-    // by the delete path before planning.
-    if (!opts?.force && scope.years.length > 0) {
-      await deps.yearLock.assertReshapeAmendable(userId, {
-        amendedYear: deletedYear,
-        reshapedYears: scope.years,
-      });
-    }
-    const { involveDe, involveFi, involveCustom } = scope;
-
-    // Open years (#635): the deleted derivable row's own open year, plus
-    // every derivable open-year sell of the asset (its moving average / lot
-    // consumption shifts), widened to all derivable open years once any
-    // settles or a closed chained year changed.
-    const openSeeds = new Set<number>();
-    if (
-      transaction.side === 'sell' &&
-      transaction.taxMode !== 'manual_per_trade' &&
-      deletedYear >= openFrom
-    ) {
-      openSeeds.add(deletedYear);
-    }
-    for (const t of remainingTxns) {
-      if (t.assetId !== transaction.assetId || !isDerivableSell(t)) continue;
-      const year = viennaYearOfDate(t.executedAt);
-      if (year >= openFrom) openSeeds.add(year);
-    }
-    // #635 chain integrity: once any open year re-settles, settle all of them.
-    if (openSeeds.size > 0 || (scope.chainSensitive && scope.years.length > 0)) {
-      const derivableView = {
-        transactions: remainingTxns,
-        dividendRows,
-        yearOf: viennaYearOfDate,
-      };
-      for (const year of openDerivableYears(derivableView, remainingMovements, openFrom)) {
-        openSeeds.add(year);
-      }
-    }
-    if (scope.years.length === 0 && openSeeds.size === 0) return [];
-
-    const closedYearsSet = new Set(scope.years);
-    const neededAssetIds = new Set<string>();
-    // The pre-delete baseline needs the deleted row's own realization when it
-    // was engine-frozen — its standalone contribution is part of the delta.
-    if (isCsSell || deletedWasCustom) neededAssetIds.add(transaction.assetId);
-    for (const t of remainingTxns) {
-      if (t.side !== 'sell') continue;
-      const year = viennaYearOfDate(t.executedAt);
-      const derivableOpen = year >= openFrom && isDerivableSell(t);
-      if (!derivableOpen && !isEngineTaxed(t.taxMode)) continue;
-      if (
-        closedYearsSet.has(year) ||
-        openSeeds.has(year) ||
-        (involveDe && isDeSell(t)) ||
-        (involveCustom && isCustomSell(t))
-      ) {
-        neededAssetIds.add(t.assetId);
-      }
-    }
-
-    let realizations = new Map<string, SellRealizationEur>();
-    let fifoRealizations = new Map<string, SellRealizationEur>();
-    let baselineRealizations = new Map<string, SellRealizationEur>();
-    let baselineFifo = new Map<string, SellRealizationEur>();
-    let assetsById = new Map<string, AssetRow>();
-    if (neededAssetIds.size > 0) {
-      assetsById = await loadAssets(allTxns.map((t) => t.assetId));
-      // One FX pass over the PRE-delete rows serves both sides: filtering the
-      // deleted row out replays exactly the post-delete realizations.
-      const baselineTaxables = await buildTaxables(
-        allTxns,
+    const remainingTransactions = transactions.filter((row) => row.id !== transaction.id);
+    const remainingMovements = movements.filter((row) => row.transactionId !== transaction.id);
+    const strategy = liveRegimeStrategy(regime);
+    const neededAssetIds = new Set(
+      remainingTransactions.filter((row) => row.side === 'sell').map((row) => row.assetId),
+    );
+    const assetsById = await loadAssets([
+      ...remainingTransactions.map((row) => row.assetId),
+      ...dividendRows.map((row) => row.assetId),
+    ]);
+    let movingAverage = new Map<string, SellRealizationEur>();
+    let fifo = new Map<string, SellRealizationEur>();
+    if (strategy !== null && neededAssetIds.size > 0) {
+      const taxables = await buildTaxables(
+        remainingTransactions,
         [],
         neededAssetIds,
         currencyLookup(assetsById),
         createTradeDateConverter(fxWriteError),
       );
-      const taxables = baselineTaxables.filter((t) => t.id !== transaction.id);
-      realizations = realizationsById(taxables);
-      baselineRealizations = realizationsById(baselineTaxables);
-      if (involveDe || involveFi || involveCustom || openStrategy === 'fifo') {
-        fifoRealizations = realizationsById(taxables, 'fifo');
-        baselineFifo = realizationsById(baselineTaxables, 'fifo');
-      }
+      movingAverage = realizationsById(taxables);
+      if (strategy === 'fifo') fifo = realizationsById(taxables, 'fifo');
     }
-    // The POST-delete decomposition and the PRE-delete baseline the closed
-    // years' locked residue reads from — both through the one shared builder.
-    const categoryOf = categoryLookup(assetsById);
-    const afterState = buildFrozenComponentState({
-      transactions: remainingTxns,
-      dividendRows,
-      realizations,
-      fifoRealizations,
-      categoryOf,
-      involveDe,
-      involveFi,
-      involveCustom,
+    const years = new Set(
+      liveDerivableYears(
+        {
+          transactions: remainingTransactions,
+          dividendRows,
+          yearOf: viennaYearOfDate,
+        },
+        remainingMovements,
+      ),
+    );
+    years.add(viennaYearOfDate(transaction.executedAt));
+    const settlements = settleLiveYears({
+      regime,
+      view: buildLiveView(remainingTransactions, dividendRows, movingAverage, fifo, assetsById),
+      years: [...years],
+      heldOf: (year) => heldForYear(remainingTransactions, dividendRows, remainingMovements, year),
     });
-    const closedBaseline = buildFrozenComponentState({
-      transactions: allTxns,
-      dividendRows,
-      realizations: baselineRealizations,
-      fifoRealizations: baselineFifo,
-      categoryOf,
-      involveDe,
-      involveFi,
-      involveCustom,
-    });
-
-    // The regime the closed-year corrections are labeled with: an engine-taxed
-    // deleted row names its own; a deleted BUY has none — it reshapes its
-    // asset's engine-taxed sells, so label by theirs (custom over DE over AT
-    // when mixed; the amount is the combined reconciliation either way).
-    let noteRegime: SettleRegime = deletedWasCustom
-      ? 'custom'
-      : deletedWasDe
-        ? TAX_COUNTRY_DE
-        : deletedWasFi
-          ? TAX_COUNTRY_FI
-          : TAX_COUNTRY_AT;
-    if (transaction.side === 'buy') {
-      const reshaped = remainingTxns.filter(
-        (t) => t.assetId === transaction.assetId && t.side === 'sell' && isEngineTaxed(t.taxMode),
-      );
-      if (reshaped.some(isCustomSell)) noteRegime = 'custom';
-      else if (reshaped.some(isDeSell)) noteRegime = TAX_COUNTRY_DE;
-      else if (reshaped.some(isFiSell)) noteRegime = TAX_COUNTRY_FI;
-    }
-
-    // Closed years settle through the centralized reshape settlement (#669):
-    // held shifts by exactly the decomposition's change plus the attached tax
-    // the delete cascaded away — algebraically the combined post-delete
-    // frozen target (components never mix) plus the year's locked residue.
-    // The signed delta includes refund-off custom groups (§16): a reshape is
-    // a data correction, exempt from the ratchet.
     const corrections: NewCashMovement[] = [];
-    for (const { year, deltaEur } of closedReshapeCorrections({
-      years: scope.years,
-      before: closedBaseline,
-      movementsBefore: movements,
-      after: afterState,
-      movementsAfter: remainingMovements,
-    })) {
-      const spec = taxMovementForDelta(deltaEur);
-      if (spec) {
-        corrections.push(
-          correctionMovement(
-            spec,
-            await correctionSourceId(portfolioId),
-            year,
-            correctionNote(noteRegime),
-          ),
-        );
-      }
-    }
-
-    // Open years (#635): live re-derivation over the remaining rows.
-    const openYearsToSettle = [...openSeeds].sort((a, b) => a - b);
-    if (openYearsToSettle.length > 0 && openRegime.kind !== 'manual') {
-      const openView = buildOpenView(
-        remainingTxns,
-        dividendRows,
-        realizations,
-        fifoRealizations,
-        assetsById,
+    for (const settlement of settlements) {
+      const spec = taxMovementForDelta(settlement.correctionDeltaEur);
+      if (!spec) continue;
+      corrections.push(
+        correctionMovement(
+          spec,
+          await correctionSourceId(portfolioId),
+          settlement.year,
+          liveCorrectionNote(regime),
+        ),
       );
-      const settlements = settleOpenYears({
-        regime: openRegime,
-        view: openView,
-        years: openYearsToSettle,
-        heldOf: (year) => heldForYear(remainingTxns, dividendRows, remainingMovements, year),
-        closedDeEvents:
-          openRegime.kind === 'country' && openRegime.country === TAX_COUNTRY_DE
-            ? closedYearSlice(afterState.deEvents, openFrom)
-            : undefined,
-        closedCustomEvents:
-          openRegime.kind === 'custom'
-            ? closedYearSlice(
-                afterState.customGroups.get(customParamsKey(openRegime.params))?.eventsByYear ??
-                  new Map<number, CustomTaxableEvent[]>(),
-                openFrom,
-              )
-            : undefined,
-      });
-      for (const settlement of settlements) {
-        const spec = taxMovementForDelta(settlement.correctionDeltaEur);
-        if (spec) {
-          corrections.push(
-            correctionMovement(
-              spec,
-              await correctionSourceId(portfolioId),
-              settlement.year,
-              openCorrectionNote(openRegime),
-            ),
-          );
-        }
-      }
     }
     return corrections;
   }
-
-  // ── Dividends ──────────────────────────────────────────────────────────────
 
   async function resolveFlowSource(portfolioId: string, sourceId: string | undefined) {
     if (sourceId === undefined) return cashSourceRepo.getOrCreateMain(portfolioId);
@@ -1808,54 +1047,35 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
     opts?: { source?: string; force?: boolean },
   ): Promise<CreateDividendResponse> {
     await requireOwnedPortfolio(userId, portfolioId);
-    // Source tag (V5-P0c): `manual` unless the CSV apply path passes a broker.
-    // (`source` below is the cash SOURCE — a different concept, V3-P3.)
     const sourceTag = opts?.source ?? 'manual';
-
-    const assetRows = await portfolioRepo.assetsByIds([input.assetId]);
-    const asset = assetRows[0];
+    const [asset] = await portfolioRepo.assetsByIds([input.assetId]);
     if (!asset || (asset.ownerId !== null && asset.ownerId !== userId)) {
       throw notFound('Asset not found.', 'ASSET_NOT_FOUND');
     }
-    // A dividend belongs to a *holding* (§13.3 V3-P4c): the asset must have
-    // been transacted in this portfolio.
-    const assetTxns = await transactionRepo.listForAsset(portfolioId, input.assetId);
-    if (assetTxns.length === 0) {
+    if ((await transactionRepo.listForAsset(portfolioId, input.assetId)).length === 0) {
       throw badRequest(
         'Dividends can only be recorded on assets this portfolio holds.',
         'DIVIDEND_ASSET_NOT_HELD',
       );
     }
 
-    // Issue #636: the mode that applies to THIS portfolio (override ?? default).
     const settings = await effectiveSettings(userId, portfolioId);
     assertManualEntryAllowed(settings, input, 'dividend');
-
     const source = await resolveFlowSource(portfolioId, input.cashSourceId);
     const executedAt = input.executedAt ? new Date(input.executedAt) : new Date(now());
-    const executedAtIso = executedAt.toISOString();
-    const year = viennaYearOf(executedAtIso);
-    // Tax year lock (§16 2026-08-07): a dividend dated into a locked year is
-    // refused before any planning; replica applies bypass (origin-gated).
-    if (!opts?.force) await deps.yearLock.assertYearsAmendable(userId, [year]);
-    // Cash is whole-cent money (#322): quantize the entered gross.
+    const year = viennaYearOf(executedAt.toISOString());
     const grossEur = floorCents(input.grossAmountEur);
     if (grossEur <= 0) {
       throw badRequest('The dividend amount rounds to €0.00.', 'DIVIDEND_AMOUNT_TOO_SMALL');
     }
 
     let taxAmountEur: number | null = null;
-    let taxCountry: string | null = null;
+    let taxCountry: SupportedTaxCountry | null = null;
     let taxParams: CustomTaxParams | null = null;
     let rowSettlement: TaxMovementSpec | null = null;
     const extras: NewCashMovement[] = [];
 
     if (settings.mode === 'manual_per_trade') {
-      // The V5-P4c configurable default applies where no explicit entry
-      // arrived; an explicit entry (including 0) wins, blank default = today's
-      // behavior byte-identically. Manually recorded dividends only: an
-      // imported broker dividend settled its tax at the broker, so a
-      // non-`manual` source tag never receives the default.
       const hasExplicit = input.taxAmountEur !== undefined || input.taxRatePct !== undefined;
       const defaultApplies = sourceTag === 'manual';
       taxAmountEur = manualTaxEur({
@@ -1874,353 +1094,74 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
       if (taxAmountEur !== null && taxAmountEur > 0) {
         rowSettlement = { kind: 'tax_withholding', amountEur: -taxAmountEur };
       }
-    } else if (settings.mode === 'country_specific' || settings.mode === 'custom') {
-      const isCustomMode = settings.mode === 'custom';
-      const params = isCustomMode ? activeCustomParams(settings) : null;
-      const activeKey = params ? customParamsKey(params) : undefined;
-      const country = isCustomMode ? null : effectiveCountry(settings);
-      taxCountry = country;
-      taxParams = params;
-      const openRegime: OpenRegime = isCustomMode
-        ? { kind: 'custom', params: params! }
-        : { kind: 'country', country: country! };
-      const openFrom = openFromYearNow();
-      const openStrategy = openRegimeStrategy(openRegime);
-      const [allTxns, dividendRows, movements] = await Promise.all([
+    } else if (settings.mode !== 'none') {
+      const regime = liveRegimeForSettings(settings);
+      if (regime.kind === 'manual' || regime.kind === 'none') {
+        throw new Error('Invalid automatic dividend regime');
+      }
+      taxCountry = regime.kind === 'country' ? regime.country : null;
+      taxParams = regime.kind === 'custom' ? regime.params : null;
+      const [transactions, dividendRows, currentMovements] = await Promise.all([
         transactionRepo.listForPortfolio(portfolioId),
         taxRepo.listForPortfolio(portfolioId),
         cashMovementRepo.listForPortfolio(portfolioId),
       ]);
-      const regime: SettleRegime = isCustomMode ? 'custom' : country!;
-      // The choke point (#669): the dividend's own (steered) year plus —
-      // with chain-sensitive state involved — every later engine-settled
-      // CLOSED year (a backdated gross may consume carry balances earlier
-      // years handed down); open years re-settle through the live
-      // derivation instead (#635). A dividend reshapes no realizations, so
-      // both sides share the rows and no mutated assets enter the scoping.
-      // Deliberately wider than the pre-#669 active-regime gate: the ripple
-      // runs whenever ANY chain-sensitive frozen rows exist (an AT dividend
-      // beside unrelated frozen DE rows still scans) — the extra years
-      // settle to ΔF = 0 by construction; over-inclusion is the safe side
-      // of the killed bug class.
-      const sideRows = { transactions: allTxns, dividendRows };
-      const scope = scopeClosedMutation({
-        before: sideRows,
-        after: sideRows,
-        movements,
-        mutationYears: [year],
-        mutatedAssetIds: new Set<string>(),
-        recordingRegime: openRegime,
-        openFrom,
-      });
-      // Tax year lock (§16 2026-08-07): an amendment dividend must not feed
-      // carry into a LATER locked year (chain-sensitive regimes).
-      if (!opts?.force && scope.years.length > 0) {
-        await deps.yearLock.assertReshapeAmendable(userId, {
-          amendedYear: year,
-          reshapedYears: scope.years,
-        });
-      }
-      const { involveDe, involveFi, involveCustom } = scope;
-      const rippleYears = scope.years.filter((y) => y !== year);
-      // The open years the write re-settles: every derivable open year when
-      // the dividend lands in an open year (its marginal delta needs the live
-      // pool) or when a closed chained year's carry-outs may cross the
-      // boundary.
-      const derivableView = { transactions: allTxns, dividendRows, yearOf: viennaYearOfDate };
-      const openYearsToSettle =
-        year >= openFrom || (scope.chainSensitive && scope.years.length > 0)
-          ? [
-              ...new Set([
-                ...openDerivableYears(derivableView, movements, openFrom),
-                ...(year >= openFrom ? [year] : []),
-              ]),
-            ]
-          : [];
-
-      const neededAssetIds = new Set<string>();
-      for (const t of allTxns) {
-        if (t.side !== 'sell') continue;
-        const txnYear = viennaYearOfDate(t.executedAt);
-        const derivableOpen = txnYear >= openFrom && isDerivableSell(t);
-        if (!derivableOpen && !isEngineTaxed(t.taxMode)) continue;
-        if (
-          txnYear === year ||
-          scope.years.includes(txnYear) ||
-          (derivableOpen && openYearsToSettle.includes(txnYear)) ||
-          (involveDe && isDeSell(t)) ||
-          (involveCustom && isCustomSell(t))
-        ) {
-          neededAssetIds.add(t.assetId);
-        }
-      }
-      let realizations = new Map<string, SellRealizationEur>();
-      let fifoRealizations = new Map<string, SellRealizationEur>();
-      let assetsById = new Map<string, AssetRow>();
+      const neededAssetIds = new Set(
+        transactions.filter((row) => row.side === 'sell').map((row) => row.assetId),
+      );
+      const assetsById = await loadAssets([
+        ...transactions.map((row) => row.assetId),
+        ...dividendRows.map((row) => row.assetId),
+        input.assetId,
+      ]);
+      let movingAverage = new Map<string, SellRealizationEur>();
+      let fifo = new Map<string, SellRealizationEur>();
       if (neededAssetIds.size > 0) {
-        assetsById = await loadAssets(allTxns.map((t) => t.assetId));
         const taxables = await buildTaxables(
-          allTxns,
+          transactions,
           [],
           neededAssetIds,
           currencyLookup(assetsById),
           createTradeDateConverter(fxWriteError),
         );
-        realizations = realizationsById(taxables);
-        if (involveDe || involveFi || involveCustom || openStrategy === 'fifo') {
-          fifoRealizations = realizationsById(taxables, 'fifo');
-        }
+        movingAverage = realizationsById(taxables);
+        if (liveRegimeStrategy(regime) === 'fifo') fifo = realizationsById(taxables, 'fifo');
       }
-      const deView = buildDeView(allTxns, dividendRows, fifoRealizations, assetsById);
-      const frozenDeEvents = involveDe
-        ? deEventsByYear(deView)
-        : new Map<number, DeTaxableEvent[]>();
-      const frozenGroups = involveCustom
-        ? customGroups(buildCustomView(allTxns, dividendRows, realizations, fifoRealizations))
-        : new Map<string, CustomGroup>();
-
-      let deltaEur: number;
-      if (year >= openFrom) {
-        // ── The dividend lands in an OPEN year (#635): live settle across
-        // all open years; its marginal delta comes out of the derivation. ──
-        const openView = buildOpenView(
-          allTxns,
-          dividendRows,
-          realizations,
-          fifoRealizations,
-          assetsById,
-        );
-        const settlements = settleOpenYears({
-          regime: openRegime,
-          view: openView,
-          years: openYearsToSettle,
-          heldOf: (y) => heldForYear(allTxns, dividendRows, movements, y),
-          closedDeEvents:
-            country === TAX_COUNTRY_DE ? closedYearSlice(frozenDeEvents, openFrom) : undefined,
-          closedCustomEvents: isCustomMode
-            ? closedYearSlice(
-                frozenGroups.get(activeKey!)?.eventsByYear ??
-                  new Map<number, CustomTaxableEvent[]>(),
-                openFrom,
-              )
-            : undefined,
-          newEventsByYear: new Map([[year, [{ kind: 'dividend' as const, amountEur: grossEur }]]]),
-        });
-        deltaEur = 0;
-        for (const settlement of settlements) {
-          if (settlement.year === year) deltaEur = settlement.newEventDeltasEur[0]!;
-          const correctionSpec = taxMovementForDelta(settlement.correctionDeltaEur);
-          if (correctionSpec) {
-            extras.push(
-              correctionMovement(
-                correctionSpec,
-                await correctionSourceId(portfolioId),
-                settlement.year,
-                openCorrectionNote(openRegime),
-              ),
-            );
-          }
-        }
-      } else {
-        // ── Backdated into a CLOSED year: recording-time coexistence
-        // machinery (frozen AT/DE/FI/custom components, pre-#635) plus the
-        // year's locked residue. A dividend reshapes no realizations, so the
-        // current maps ARE the pre-mutation baseline. ──────────────────────
-        const closedBaseline: FrozenComponentState = {
-          transactions: allTxns,
-          dividendRows,
-          realizations,
-          fifoRealizations,
-          deEvents: frozenDeEvents,
-          customGroups: frozenGroups,
-          involveDe,
-          involveFi,
-          involveCustom,
-        };
-        const heldEur = heldForYear(allTxns, dividendRows, movements, year);
-        const residueEur = lockedResidueForYear(closedBaseline, movements, year);
-        const customTarget = involveCustom
-          ? customTargetForYear(frozenGroups, year, isCustomMode ? activeKey : undefined)
-          : 0;
-        const fiTargetClosed = (): number =>
-          involveFi
-            ? fiTargetForYear(allTxns, dividendRows, fifoRealizations, year, viennaYearOfDate)
-            : 0;
-
-        let correctionDeltaEur: number;
-        if (isCustomMode) {
-          const atTarget = atTargetForYear(allTxns, dividendRows, realizations, year);
-          const deTarget = involveDe ? deTargetForYear(frozenDeEvents, year) : 0;
-          const activeGroup = frozenGroups.get(activeKey!);
-          const settlement = settleCustomYear({
-            params: params!,
-            carry: customCarryIntoYear(params!, activeGroup?.eventsByYear ?? new Map(), year),
-            existingEvents: activeGroup?.eventsByYear.get(year) ?? [],
-            heldEur: floorCents(
-              heldEur - atTarget - deTarget - fiTargetClosed() - customTarget - residueEur,
-            ),
-            newEvents: [{ kind: 'dividend', amountEur: grossEur }],
-          });
-          correctionDeltaEur = settlement.correctionDeltaEur;
-          deltaEur = settlement.newEventDeltasEur[0]!;
-        } else if (country === TAX_COUNTRY_AT) {
-          const deTarget = involveDe ? deTargetForYear(frozenDeEvents, year) : 0;
-          const pool = existingAtPool(allTxns, dividendRows, realizations, year);
-          const settlement = settleAtYear({
-            ...pool,
-            heldEur: floorCents(heldEur - deTarget - fiTargetClosed() - customTarget - residueEur),
-            newEvents: [{ kind: 'dividend', amountEur: grossEur }],
-          });
-          correctionDeltaEur = settlement.correctionDeltaEur;
-          deltaEur = settlement.newEventDeltasEur[0]!;
-        } else if (country === TAX_COUNTRY_FI) {
-          const atTarget = atTargetForYear(allTxns, dividendRows, realizations, year);
-          const deTarget = involveDe ? deTargetForYear(frozenDeEvents, year) : 0;
-          const existingGainsEur: number[] = [];
-          const existingDividendsEur: number[] = [];
-          for (const t of allTxns) {
-            if (!isFiSell(t) || viennaYearOfDate(t.executedAt) !== year) continue;
-            const realization = fifoRealizations.get(t.id);
-            if (!realization) {
-              throw new Error(`Tax engine: no FIFO realization for FI sell ${t.id}`);
-            }
-            existingGainsEur.push(realization.realizedPnlEur);
-          }
-          for (const d of dividendRows) {
-            if (isFiDividend(d) && viennaYearOfDate(d.executedAt) === year) {
-              existingDividendsEur.push(d.grossAmountEur);
-            }
-          }
-          const settlement = settleFiYear({
-            existingGainsEur,
-            existingDividendsEur,
-            heldEur: floorCents(heldEur - atTarget - deTarget - customTarget - residueEur),
-            newEvents: [{ kind: 'dividend', amountEur: grossEur }],
-          });
-          correctionDeltaEur = settlement.correctionDeltaEur;
-          deltaEur = settlement.newEventDeltasEur[0]!;
-        } else {
-          const atTarget = atTargetForYear(allTxns, dividendRows, realizations, year);
-          const potIns = dePotsInForYear(frozenDeEvents, year);
-          const settlement = settleDeYear({
-            aktienPotInEur: potIns.aktienEur,
-            sonstigePotInEur: potIns.sonstigeEur,
-            existingEvents: frozenDeEvents.get(year) ?? [],
-            heldEur: floorCents(heldEur - atTarget - fiTargetClosed() - customTarget - residueEur),
-            newEvents: [{ kind: 'dividend', amountEur: grossEur }],
-          });
-          correctionDeltaEur = settlement.correctionDeltaEur;
-          deltaEur = settlement.newEventDeltasEur[0]!;
-        }
-        const correctionSpec = taxMovementForDelta(correctionDeltaEur);
-        if (correctionSpec) {
+      const years = new Set(
+        liveDerivableYears(
+          { transactions, dividendRows, yearOf: viennaYearOfDate },
+          currentMovements,
+        ),
+      );
+      years.add(year);
+      const settlements = settleLiveYears({
+        regime,
+        view: buildLiveView(transactions, dividendRows, movingAverage, fifo, assetsById),
+        years: [...years],
+        heldOf: (settlementYear) =>
+          heldForYear(transactions, dividendRows, currentMovements, settlementYear),
+        newEventsByYear: new Map([[year, [{ kind: 'dividend', amountEur: grossEur }]]]),
+      });
+      for (const settlement of settlements) {
+        const correction = taxMovementForDelta(settlement.correctionDeltaEur);
+        if (correction) {
           extras.push(
             correctionMovement(
-              correctionSpec,
+              correction,
               await correctionSourceId(portfolioId),
-              year,
-              correctionNote(regime),
+              settlement.year,
+              liveCorrectionNote(regime),
             ),
           );
         }
-        // A backdated dividend entering a chained regime can consume carry
-        // balances earlier years handed down — re-settle every LATER
-        // engine-settled CLOSED year through the centralized reshape
-        // settlement (#669) against the decomposition with the new gross
-        // folded into its regime (zero-delta years post nothing).
-        const withNewDe =
-          country === TAX_COUNTRY_DE
-            ? deEventsByYear(
-                deView,
-                new Map([[year, [{ kind: 'dividend', amountEur: grossEur } as DeTaxableEvent]]]),
-              )
-            : frozenDeEvents;
-        // The active custom group with the new dividend folded into its year.
-        const withNewActive: CustomGroup | null = isCustomMode
-          ? {
-              key: activeKey!,
-              params: params!,
-              eventsByYear: mergeCustomEvents(
-                frozenGroups.get(activeKey!)?.eventsByYear,
-                new Map([
-                  [year, [{ kind: 'dividend', amountEur: grossEur } as CustomTaxableEvent]],
-                ]),
-              ),
-            }
-          : null;
-        const withNewGroups = withNewActive
-          ? new Map([...frozenGroups, [withNewActive.key, withNewActive]])
-          : frozenGroups;
-        if (rippleYears.length > 0) {
-          const afterWithNew: FrozenComponentState = {
-            ...closedBaseline,
-            deEvents: withNewDe,
-            customGroups: withNewGroups,
-          };
-          for (const { year: y, deltaEur } of closedReshapeCorrections({
-            years: rippleYears,
-            before: closedBaseline,
-            movementsBefore: movements,
-            after: afterWithNew,
-            movementsAfter: movements,
-          })) {
-            const spec = taxMovementForDelta(deltaEur);
-            if (!spec) continue;
-            extras.push(
-              correctionMovement(
-                spec,
-                await correctionSourceId(portfolioId),
-                y,
-                correctionNote(regime),
-              ),
-            );
-          }
-        }
-        // Carry crossing the open boundary (#635): the open years re-derive
-        // with the backdated dividend folded into the closed chain.
-        if (openYearsToSettle.length > 0) {
-          const openView = buildOpenView(
-            allTxns,
-            dividendRows,
-            realizations,
-            fifoRealizations,
-            assetsById,
-          );
-          const settlements = settleOpenYears({
-            regime: openRegime,
-            view: openView,
-            years: openYearsToSettle,
-            heldOf: (y) => heldForYear(allTxns, dividendRows, movements, y),
-            closedDeEvents:
-              country === TAX_COUNTRY_DE ? closedYearSlice(withNewDe, openFrom) : undefined,
-            closedCustomEvents:
-              isCustomMode && withNewActive
-                ? closedYearSlice(withNewActive.eventsByYear, openFrom)
-                : undefined,
-          });
-          for (const settlement of settlements) {
-            const spec = taxMovementForDelta(settlement.correctionDeltaEur);
-            if (spec) {
-              extras.push(
-                correctionMovement(
-                  spec,
-                  await correctionSourceId(portfolioId),
-                  settlement.year,
-                  openCorrectionNote(openRegime),
-                ),
-              );
-            }
-          }
+        if (settlement.year === year) {
+          taxAmountEur = settlement.newEventDeltasEur[0] ?? 0;
         }
       }
-      taxAmountEur = deltaEur;
-      rowSettlement = taxMovementForDelta(deltaEur);
+      rowSettlement = taxMovementForDelta(taxAmountEur ?? 0);
     }
 
-    // The gross inflow first, its settlement second (same timestamp — input
-    // order breaks the tie, so the inflow funds the withholding), corrections
-    // last at "now".
-    const movements: (NewCashMovement & { linkDividend?: boolean })[] = [
+    const newMovements: (NewCashMovement & { linkDividend?: boolean })[] = [
       {
         sourceId: source.id,
         kind: 'dividend',
@@ -2231,7 +1172,13 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
       },
     ];
     if (rowSettlement) {
-      movements.push({
+      const movementRegime: SettleRegime | null =
+        settings.mode === 'custom'
+          ? 'custom'
+          : settings.mode === 'country_specific'
+            ? effectiveCountry(settings)
+            : null;
+      newMovements.push({
         sourceId: source.id,
         kind: rowSettlement.kind,
         amountEur: rowSettlement.amountEur,
@@ -2239,27 +1186,17 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
         note:
           settings.mode === 'manual_per_trade'
             ? NOTE_MANUAL_WITHHELD
-            : settlementNote(
-                settings.mode === 'custom'
-                  ? 'custom'
-                  : taxCountry === TAX_COUNTRY_DE
-                    ? TAX_COUNTRY_DE
-                    : TAX_COUNTRY_AT,
-                rowSettlement.kind,
-              ),
+            : settlementNote(movementRegime!, rowSettlement.kind),
         taxYear: year,
         linkDividend: true,
       });
     }
-    movements.push(...extras);
+    newMovements.push(...extras);
 
     const existing = await cashMovementRepo.listForPortfolio(portfolioId);
-    // Waived in MIRRORCHAIN force mode (design §2/§8): the copy-local tax
-    // settlement may skew a replica's source; it renders honestly, never gates.
     if (!opts?.force) {
-      assertCashSolvent(existing.map(toDomainMovement), movements.map(newToDomainMovement));
+      assertCashSolvent(existing.map(toDomainMovement), newMovements.map(newToDomainMovement));
     }
-
     const inserted = await taxRepo.insertDividend(
       portfolioId,
       {
@@ -2274,37 +1211,18 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
         taxParams,
         source: sourceTag,
       },
-      movements,
+      newMovements,
     );
-    // Earliest affected day (§16 rule 5): the (possibly backdated) dividend's
-    // own day — its gross + settlement legs share it; corrections post at now.
-    const affectedFrom = movements
-      .map((m) => dayOfDate(m.executedAt))
-      .reduce((a, b) => (a < b ? a : b));
-    await invalidateHistory(portfolioId, affectedFrom);
-
+    await invalidateHistory(
+      portfolioId,
+      newMovements
+        .map((movement) => dayOfDate(movement.executedAt))
+        .reduce((left, right) => (left < right ? left : right)),
+    );
     const { balanceBySource, totalEur } = await cashBalances(portfolioId);
     return {
       dividend: dividendToDto(inserted.dividend, asset),
-      movements: inserted.movements.map((row) =>
-        movementToDto({
-          id: row.id,
-          portfolioId: row.portfolioId,
-          sourceId: row.sourceId,
-          kind: row.kind,
-          amountEur: Number(row.amountEur),
-          transactionId: row.transactionId ?? null,
-          transferId: row.transferId ?? null,
-          counterpartSourceId: row.counterpartSourceId ?? null,
-          dividendId: row.dividendId ?? null,
-          taxYear: row.taxYear ?? null,
-          executedAt: row.executedAt,
-          note: row.note ?? null,
-          source: row.source,
-          originalCurrency: row.originalCurrency ?? null,
-          createdAt: row.createdAt,
-        }),
-      ),
+      movements: inserted.movements.map((row) => movementToDto(row)),
       sourceBalanceEur: balanceBySource.get(source.id) ?? 0,
       balanceEur: totalEur,
     };
@@ -2339,236 +1257,96 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
     await requireOwnedPortfolio(userId, portfolioId);
     const dividend = await taxRepo.findByIdForPortfolio(portfolioId, dividendId);
     if (!dividend) throw notFound('Dividend not found.', 'DIVIDEND_NOT_FOUND');
-    // Tax year lock (§16 2026-08-07): deleting a dividend dated into a locked
-    // year is refused before any planning; replica applies bypass.
-    if (!opts?.force) {
-      await deps.yearLock.assertYearsAmendable(userId, [viennaYearOfDate(dividend.executedAt)]);
-    }
-
-    const [allTxns, dividendRows, movements] = await Promise.all([
+    const [transactions, dividendRows, movements] = await Promise.all([
       transactionRepo.listForPortfolio(portfolioId),
       taxRepo.listForPortfolio(portfolioId),
       cashMovementRepo.listForPortfolio(portfolioId),
     ]);
-    const remainingDividends = dividendRows.filter((d) => d.id !== dividendId);
-    const remainingMovements = movements.filter((m) => m.dividendId !== dividendId);
-
-    // An engine-taxed dividend's removal re-settles its year against the
-    // remaining rows — and, when a chained regime is involved, every later
-    // engine-taxed CLOSED year: the gross it contributed may have been
-    // consuming carry balances that now chain further (the combined
-    // AT+DE+FI+custom target catches every component). Open years re-settle
-    // through the live derivation (#635) — a derivable dividend's removal
-    // re-shapes the open pool even when it was frozen 'none'.
-    const settings = await effectiveSettings(userId, portfolioId);
-    const openRegime = openRegimeForSettings(settings);
-    const openFrom = openRegime.kind === 'manual' ? Number.POSITIVE_INFINITY : openFromYearNow();
-    const openStrategy = openRegimeStrategy(openRegime);
+    const remainingDividends = dividendRows.filter((row) => row.id !== dividendId);
+    const remainingMovements = movements.filter((row) => row.dividendId !== dividendId);
+    const regime = liveRegimeForSettings(await effectiveSettings(userId, portfolioId));
     const corrections: NewCashMovement[] = [];
-    const year = viennaYearOfDate(dividend.executedAt);
-    const wasEngine = dividend.taxMode === 'country_specific' || dividend.taxMode === 'custom';
-    const openDelete = year >= openFrom && isDerivableDividend(dividend);
-    if (wasEngine || openDelete) {
-      const deletedWasCustom = dividend.taxMode === 'custom';
-      const deletedWasDe =
-        !deletedWasCustom && wasEngine && rowEngineCountry(dividend.taxCountry) === TAX_COUNTRY_DE;
-      const deletedWasFi =
-        !deletedWasCustom && wasEngine && rowEngineCountry(dividend.taxCountry) === TAX_COUNTRY_FI;
 
-      // The choke point (#669): the deleted dividend's own year plus — with
-      // chain-sensitive state involved (the deleted row's own frozen set
-      // counts: its gross fed carry) — every later engine-settled closed
-      // year. A dividend touches no realizations, so no mutated assets.
-      const scope = scopeClosedMutation({
-        before: { transactions: allTxns, dividendRows },
-        after: { transactions: allTxns, dividendRows: remainingDividends },
-        movements,
-        mutationYears: [year],
-        mutatedAssetIds: new Set<string>(),
-        openFrom,
-      });
-      // Tax year lock (§16 2026-08-07): the removal must not reshape a LATER
-      // locked year through carry chains.
-      if (!opts?.force && scope.years.length > 0) {
-        await deps.yearLock.assertReshapeAmendable(userId, {
-          amendedYear: year,
-          reshapedYears: scope.years,
-        });
-      }
-      const { involveDe, involveFi, involveCustom } = scope;
-      // Open years re-settle when the deleted dividend was itself open, or a
-      // closed chained year's carry-outs may cross the boundary.
-      const derivableView = {
-        transactions: allTxns,
-        dividendRows: remainingDividends,
-        yearOf: viennaYearOfDate,
-      };
-      const openYearsToSettle =
-        openDelete || (scope.chainSensitive && scope.years.length > 0)
-          ? openDerivableYears(derivableView, remainingMovements, openFrom)
-          : [];
-
-      const closedYearsSet = new Set(scope.years);
-      const neededAssetIds = new Set<string>();
-      for (const t of allTxns) {
-        if (t.side !== 'sell') continue;
-        const txnYear = viennaYearOfDate(t.executedAt);
-        const derivableOpen = txnYear >= openFrom && isDerivableSell(t);
-        if (!derivableOpen && !isEngineTaxed(t.taxMode)) continue;
-        if (
-          closedYearsSet.has(txnYear) ||
-          (derivableOpen && openYearsToSettle.includes(txnYear)) ||
-          (involveDe && isDeSell(t)) ||
-          (involveCustom && isCustomSell(t))
-        ) {
-          neededAssetIds.add(t.assetId);
-        }
-      }
-      let realizations = new Map<string, SellRealizationEur>();
-      let fifoRealizations = new Map<string, SellRealizationEur>();
-      let assetsById = new Map<string, AssetRow>();
-      if (neededAssetIds.size > 0) {
-        assetsById = await loadAssets(allTxns.map((t) => t.assetId));
+    if (regime.kind !== 'manual') {
+      const strategy = liveRegimeStrategy(regime);
+      const neededAssetIds = new Set(
+        transactions.filter((row) => row.side === 'sell').map((row) => row.assetId),
+      );
+      const assetsById = await loadAssets([
+        ...transactions.map((row) => row.assetId),
+        ...remainingDividends.map((row) => row.assetId),
+      ]);
+      let movingAverage = new Map<string, SellRealizationEur>();
+      let fifo = new Map<string, SellRealizationEur>();
+      if (strategy !== null && neededAssetIds.size > 0) {
         const taxables = await buildTaxables(
-          allTxns,
+          transactions,
           [],
           neededAssetIds,
           currencyLookup(assetsById),
           createTradeDateConverter(fxWriteError),
         );
-        realizations = realizationsById(taxables);
-        if (involveDe || involveFi || involveCustom || openStrategy === 'fifo') {
-          fifoRealizations = realizationsById(taxables, 'fifo');
-        }
+        movingAverage = realizationsById(taxables);
+        if (strategy === 'fifo') fifo = realizationsById(taxables, 'fifo');
       }
-      // The POST-delete decomposition and the PRE-delete baseline (deleted
-      // dividend still in) the closed years' locked residue reads from —
-      // realizations are dividend-agnostic, so both sides share them.
-      const categoryOf = categoryLookup(assetsById);
-      const afterState = buildFrozenComponentState({
-        transactions: allTxns,
-        dividendRows: remainingDividends,
-        realizations,
-        fifoRealizations,
-        categoryOf,
-        involveDe,
-        involveFi,
-        involveCustom,
+      const years = new Set(
+        liveDerivableYears(
+          {
+            transactions,
+            dividendRows: remainingDividends,
+            yearOf: viennaYearOfDate,
+          },
+          remainingMovements,
+        ),
+      );
+      years.add(viennaYearOfDate(dividend.executedAt));
+      const settlements = settleLiveYears({
+        regime,
+        view: buildLiveView(transactions, remainingDividends, movingAverage, fifo, assetsById),
+        years: [...years],
+        heldOf: (year) => heldForYear(transactions, remainingDividends, remainingMovements, year),
       });
-      const closedBaseline = buildFrozenComponentState({
-        transactions: allTxns,
-        dividendRows,
-        realizations,
-        fifoRealizations,
-        categoryOf,
-        involveDe,
-        involveFi,
-        involveCustom,
-      });
-
-      for (const { year: y, deltaEur } of closedReshapeCorrections({
-        years: scope.years,
-        before: closedBaseline,
-        movementsBefore: movements,
-        after: afterState,
-        movementsAfter: remainingMovements,
-      })) {
-        const spec = taxMovementForDelta(deltaEur);
+      for (const settlement of settlements) {
+        const spec = taxMovementForDelta(settlement.correctionDeltaEur);
         if (!spec) continue;
         corrections.push(
           correctionMovement(
             spec,
             await correctionSourceId(portfolioId),
-            y,
-            correctionNote(
-              deletedWasCustom
-                ? 'custom'
-                : deletedWasDe
-                  ? TAX_COUNTRY_DE
-                  : deletedWasFi
-                    ? TAX_COUNTRY_FI
-                    : TAX_COUNTRY_AT,
-            ),
+            settlement.year,
+            liveCorrectionNote(regime),
           ),
         );
       }
-
-      if (openYearsToSettle.length > 0 && openRegime.kind !== 'manual') {
-        const openView = buildOpenView(
-          allTxns,
-          remainingDividends,
-          realizations,
-          fifoRealizations,
-          assetsById,
-        );
-        const settlements = settleOpenYears({
-          regime: openRegime,
-          view: openView,
-          years: openYearsToSettle,
-          heldOf: (y) => heldForYear(allTxns, remainingDividends, remainingMovements, y),
-          closedDeEvents:
-            openRegime.kind === 'country' && openRegime.country === TAX_COUNTRY_DE
-              ? closedYearSlice(afterState.deEvents, openFrom)
-              : undefined,
-          closedCustomEvents:
-            openRegime.kind === 'custom'
-              ? closedYearSlice(
-                  afterState.customGroups.get(customParamsKey(openRegime.params))?.eventsByYear ??
-                    new Map<number, CustomTaxableEvent[]>(),
-                  openFrom,
-                )
-              : undefined,
-        });
-        for (const settlement of settlements) {
-          const spec = taxMovementForDelta(settlement.correctionDeltaEur);
-          if (spec) {
-            corrections.push(
-              correctionMovement(
-                spec,
-                await correctionSourceId(portfolioId),
-                settlement.year,
-                openCorrectionNote(openRegime),
-              ),
-            );
-          }
-        }
-      }
     }
 
-    // Removing the gross inflow (and adding corrections) must never strand a
-    // later outflow: replay the remaining history first (no silent negatives).
-    // Waived in MIRRORCHAIN force mode (design §2): replicas follow the chain's
-    // total order; a tax-skewed copy renders its negative balance honestly.
     if (!opts?.force) {
       try {
         projectCashLedgerBySource([
           ...remainingMovements.map(toDomainMovement),
           ...corrections.map(newToDomainMovement),
         ]);
-      } catch (err) {
-        if (err instanceof InsufficientCashError) {
+      } catch (error) {
+        if (error instanceof InsufficientCashError) {
           throw badRequest(
             'Deleting this dividend would overdraw your cash balance on a later date. Add cash or remove the dependent movements first.',
             'CASH_LEDGER_WOULD_GO_NEGATIVE',
-            { availableEur: err.balanceEur, shortfallEur: err.shortfallEur },
+            { availableEur: error.balanceEur, shortfallEur: error.shortfallEur },
           );
         }
-        throw err;
+        throw error;
       }
     }
-
-    const deleted = await taxRepo.deleteForPortfolioWithCorrections(
+    if (!(await taxRepo.deleteForPortfolioWithCorrections(portfolioId, dividendId, corrections))) {
+      throw notFound('Dividend not found.', 'DIVIDEND_NOT_FOUND');
+    }
+    await invalidateHistory(
       portfolioId,
-      dividendId,
-      corrections,
+      [
+        dayOfDate(dividend.executedAt),
+        ...corrections.map((row) => dayOfDate(row.executedAt)),
+      ].sort()[0]!,
     );
-    if (!deleted) throw notFound('Dividend not found.', 'DIVIDEND_NOT_FOUND');
-    // The removed dividend's day, or an earlier-dated correction (§16 rule 6).
-    const affectedFrom = [
-      dayOfDate(dividend.executedAt),
-      ...corrections.map((c) => dayOfDate(c.executedAt)),
-    ].reduce((a, b) => (a < b ? a : b));
-    await invalidateHistory(portfolioId, affectedFrom);
   }
 
   // ── Reports ────────────────────────────────────────────────────────────────
@@ -2585,34 +1363,24 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
     /** Per-year DE events of the frozen DE rows (empty without DE rows). */
     frozenDeEvents: Map<number, DeTaxableEvent[]>;
     assetsById: Map<string, AssetRow>;
-    /** #635: the current open-year regime and its realization strategy. */
-    openRegime: OpenRegime;
-    openStrategy: CostBasisStrategy | null;
-    /** First live year for DERIVATION (∞ under the manual regime). */
-    openFrom: number;
-    /** First non-lockable year for the report flag (always the current Vienna year). */
-    lockedBefore: number;
-    /**
-     * Elapsed years the user explicitly unlocked for amendments (§16
-     * 2026-08-07): the report states `locked: false` for them — the wire
-     * signal behind the "unlocked for amendments — re-lock" banner.
-     */
-    unlockedYears: ReadonlySet<number>;
-    /** Live settlements of the open years (empty under the manual regime). */
-    openSettlements: OpenYearSettlement[];
+    /** Current automatic regime and its realization strategy. */
+    liveRegime: LiveRegime;
+    liveStrategy: CostBasisStrategy | null;
+    /** Account-wide edit markers keyed by Vienna year. */
+    lastChangedByYear: ReadonlyMap<number, string>;
+    /** Live settlements of every automatic year (empty under the manual regime). */
+    liveSettlements: LiveYearSettlement[];
   }
 
   async function loadReportState(userId: string, portfolioId: string): Promise<ReportState> {
     const settings = await effectiveSettings(userId, portfolioId);
-    const openRegime = openRegimeForSettings(settings);
-    const lockedBefore = openFromYearNow();
-    const openFrom = openRegime.kind === 'manual' ? Number.POSITIVE_INFINITY : lockedBefore;
-    const openStrategy = openRegimeStrategy(openRegime);
-    const unlockedYears = await deps.yearLock.unlockedYears(userId);
-    const [transactions, dividendRows, movements] = await Promise.all([
+    const liveRegime = liveRegimeForSettings(settings);
+    const liveStrategy = liveRegimeStrategy(liveRegime);
+    const [transactions, dividendRows, movements, yearChanges] = await Promise.all([
       transactionRepo.listForPortfolio(portfolioId),
       taxRepo.listForPortfolio(portfolioId),
       cashMovementRepo.listForPortfolio(portfolioId),
+      taxRepo.listTaxYearChanges(userId),
     ]);
     // Realized P/L is a financial fact across ALL sells regardless of tax
     // mode; every asset with a sell needs its EUR replay.
@@ -2639,7 +1407,7 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
         createTradeDateConverter(fxReadError),
       );
       realizations = realizationsById(taxables);
-      if (involveDe || involveFi || customFifoSellIds.size > 0 || openStrategy === 'fifo') {
+      if (involveDe || involveFi || customFifoSellIds.size > 0 || liveStrategy === 'fifo') {
         deRealizations = realizationsById(taxables, 'fifo');
       }
     }
@@ -2647,33 +1415,16 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
       ? deEventsByYear(buildDeView(transactions, dividendRows, deRealizations, assetsById))
       : new Map<number, DeTaxableEvent[]>();
 
-    // #635: derive the open years' live state under the CURRENT regime — the
-    // report's self-healing input (reconciled by {@link reconcileOpenYears}).
-    let openSettlements: OpenYearSettlement[] = [];
-    if (openRegime.kind !== 'manual') {
+    let liveSettlements: LiveYearSettlement[] = [];
+    if (liveRegime.kind !== 'manual') {
       const derivableView = { transactions, dividendRows, yearOf: viennaYearOfDate };
-      const openYears = openDerivableYears(derivableView, movements, openFrom);
-      if (openYears.length > 0) {
-        const frozenGroups = customGroups(
-          buildCustomView(transactions, dividendRows, realizations, deRealizations),
-        );
-        openSettlements = settleOpenYears({
-          regime: openRegime,
-          view: buildOpenView(transactions, dividendRows, realizations, deRealizations, assetsById),
-          years: openYears,
+      const liveYears = liveDerivableYears(derivableView, movements);
+      if (liveYears.length > 0) {
+        liveSettlements = settleLiveYears({
+          regime: liveRegime,
+          view: buildLiveView(transactions, dividendRows, realizations, deRealizations, assetsById),
+          years: liveYears,
           heldOf: (year) => heldForYear(transactions, dividendRows, movements, year),
-          closedDeEvents:
-            openRegime.kind === 'country' && openRegime.country === TAX_COUNTRY_DE
-              ? closedYearSlice(frozenDeEvents, openFrom)
-              : undefined,
-          closedCustomEvents:
-            openRegime.kind === 'custom'
-              ? closedYearSlice(
-                  frozenGroups.get(customParamsKey(openRegime.params))?.eventsByYear ??
-                    new Map<number, CustomTaxableEvent[]>(),
-                  openFrom,
-                )
-              : undefined,
         });
       }
     }
@@ -2686,18 +1437,22 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
       customFifoSellIds,
       frozenDeEvents,
       assetsById,
-      openRegime,
-      openStrategy,
-      openFrom,
-      lockedBefore,
-      unlockedYears,
-      openSettlements,
+      liveRegime,
+      liveStrategy,
+      lastChangedByYear: new Map(
+        yearChanges.flatMap((change) =>
+          change.lastChangedAt === null
+            ? []
+            : [[change.year, change.lastChangedAt.toISOString()] as const],
+        ),
+      ),
+      liveSettlements,
     };
   }
 
   /**
-   * Self-heal the open years on a report read (#635): post the unattached
-   * corrections that steer each open year's held tax onto its live derived
+   * Self-heal every year on a report read: post the unattached corrections
+   * that steer held tax onto the live derived
    * target. A withholding correction takes cash out — it must never break the
    * ledger's no-negative invariant from a read path, so an insolvent one is
    * skipped (logged) and retried on the next read once cash is there; the
@@ -2709,8 +1464,8 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
    * settlement was derived against — the loser of the race skips and the
    * next read re-derives from the winner's state.
    */
-  async function reconcileOpenYears(portfolioId: string, state: ReportState): Promise<void> {
-    const pending = state.openSettlements.filter((s) => s.correctionDeltaEur !== 0);
+  async function reconcileLiveYears(portfolioId: string, state: ReportState): Promise<void> {
+    const pending = state.liveSettlements.filter((s) => s.correctionDeltaEur !== 0);
     if (pending.length === 0) return;
     const sourceId = await correctionSourceId(portfolioId);
     const inserted = await cashMovementRepo.insertReconciled(portfolioId, (fresh) => {
@@ -2742,7 +1497,7 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
           spec,
           sourceId,
           settlement.year,
-          openCorrectionNote(state.openRegime),
+          liveCorrectionNote(state.liveRegime),
         );
         if (spec.kind === 'tax_withholding') {
           try {
@@ -2775,7 +1530,7 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
   }
 
   /**
-   * Settings-change reconciliation (#635): re-derive + heal the open years
+   * Settings-change reconciliation: re-derive and heal every year
    * right after a per-portfolio tax write, so the new regime's corrections
    * post immediately. Deliberately non-fatal — an unavailable FX rate (or any
    * other read-side failure) must not fail the settings write itself; the
@@ -2784,7 +1539,7 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
   async function reconcilePortfolio(userId: string, portfolioId: string): Promise<void> {
     try {
       const state = await loadReportState(userId, portfolioId);
-      await reconcileOpenYears(portfolioId, state);
+      await reconcileLiveYears(portfolioId, state);
     } catch (err) {
       deps.logger?.warn(
         { portfolioId, err },
@@ -2794,23 +1549,15 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
   }
 
   /**
-   * The realization of one sell as the report states it. Open-year derivable
-   * sells show the ACTIVE regime's strategy (#635 — that is the taxed truth
-   * of the live model). Frozen semantics elsewhere: a DE-frozen sell — or one
-   * frozen under a FIFO-based custom parameter set — shows its FIFO
-   * realization; every other sell keeps the moving-average view (for AT rows
-   * the taxed truth, for untaxed rows the pre-V5-P4 financial fact).
+   * Automatic rows use the active regime's strategy in every year. Under the
+   * literal manual regime, stored DE/custom facts retain their original basis.
    */
   function reportRealization(
     state: ReportState,
     t: TransactionRecord,
   ): SellRealizationEur | undefined {
-    if (
-      state.openStrategy !== null &&
-      isDerivableSell(t) &&
-      viennaYearOfDate(t.executedAt) >= state.openFrom
-    ) {
-      return state.openStrategy === 'fifo'
+    if (state.liveRegime.kind !== 'manual' && isDerivableSell(t)) {
+      return state.liveStrategy === 'fifo'
         ? state.deRealizations.get(t.id)
         : state.realizations.get(t.id);
     }
@@ -2820,14 +1567,12 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
   }
 
   /**
-   * The DE year-end block. Closed years: present exactly when the year has
-   * DE-FROZEN rows (recording-time truth). Open years (#635): present exactly
-   * when the ACTIVE regime is DE and the year has derivable rows — the block
-   * then shows the LIVE derivation (pots/allowance over all derivable rows).
+   * The DE year-end block follows the active live regime. Manual mode is the
+   * sole literal-fact fallback and renders stored DE rows as recorded.
    */
   function deSummaryForYear(state: ReportState, year: number): TaxYearSummary['de'] {
-    if (year >= state.openFrom) {
-      if (state.openRegime.kind !== 'country' || state.openRegime.country !== TAX_COUNTRY_DE) {
+    if (state.liveRegime.kind !== 'manual') {
+      if (state.liveRegime.kind !== 'country' || state.liveRegime.country !== TAX_COUNTRY_DE) {
         return undefined;
       }
       const hasDerivable =
@@ -2837,7 +1582,7 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
         state.dividendRows.some(
           (d) => isDerivableDividend(d) && viennaYearOfDate(d.executedAt) === year,
         );
-      const deState = state.openSettlements.find((s) => s.year === year)?.deState;
+      const deState = state.liveSettlements.find((s) => s.year === year)?.deState;
       if (!hasDerivable || !deState) return undefined;
       return {
         allowanceUsedEur: floorCents(deState.outcome.allowanceUsedEur),
@@ -2886,12 +1631,12 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
     }
     taxWithheldEur = floorCents(taxWithheldEur);
     taxRefundedEur = floorCents(taxRefundedEur);
-    // #635: an open year's net tax IS the live derived target (plus the
+    // A year's net tax is the live derived target (plus the
     // manual-fact component) — normally identical to the movement sum after
     // reconciliation, and still the correct current figure when a withholding
     // correction had to be deferred for solvency.
     let taxNetEur = floorCents(taxWithheldEur - taxRefundedEur);
-    const settlement = state.openSettlements.find((s) => s.year === year);
+    const settlement = state.liveSettlements.find((s) => s.year === year);
     if (settlement) {
       const engineHeldEur = heldForYear(
         state.transactions,
@@ -2904,6 +1649,7 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
     const de = deSummaryForYear(state, year);
     return {
       year,
+      lastChangedAt: state.lastChangedByYear.get(year) ?? null,
       realizedPnlEur,
       dividendsGrossEur,
       taxWithheldEur,
@@ -2911,10 +1657,6 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
       taxNetEur,
       // Omit the key entirely for non-DE years (exact pre-V5-P4 shape).
       ...(de !== undefined ? { de } : {}),
-      // Tax year lock (§16 2026-08-07): elapsed years state their POLICY lock —
-      // `true` = mutations refused, `false` = explicitly unlocked for
-      // amendments. Open years omit the key (live derivation, #635).
-      ...(year < state.lockedBefore ? { locked: !state.unlockedYears.has(year) } : {}),
     };
   }
 
@@ -2933,7 +1675,7 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
   async function getYearReports(userId: string, portfolioId: string): Promise<TaxYearListResponse> {
     await requireOwnedPortfolio(userId, portfolioId);
     const state = await loadReportState(userId, portfolioId);
-    await reconcileOpenYears(portfolioId, state);
+    await reconcileLiveYears(portfolioId, state);
     return { years: reportYears(state).map((year) => yearSummary(state, year)) };
   }
 
@@ -2944,7 +1686,7 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
   ): Promise<TaxYearReportResponse> {
     await requireOwnedPortfolio(userId, portfolioId);
     const state = await loadReportState(userId, portfolioId);
-    await reconcileOpenYears(portfolioId, state);
+    await reconcileLiveYears(portfolioId, state);
 
     const byAsset = new Map<string, { sells: TransactionRecord[]; dividends: DividendRecord[] }>();
     const bucket = (assetId: string) => {
@@ -3055,6 +1797,16 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
       return toSettingsResponse(record);
     },
 
+    async getYearChanges(userId) {
+      const years = await taxRepo.listTaxYearDocumentation(userId);
+      return {
+        years: years.map((row) => ({
+          year: row.year,
+          lastChangedAt: row.lastChangedAt === null ? null : row.lastChangedAt.toISOString(),
+        })),
+      };
+    },
+
     getEffectiveSettings: effectiveSettings,
     getPortfolioTaxSettings,
 
@@ -3077,8 +1829,7 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
           : {}),
       };
       await portfolioSettingsRepo.setSetting(portfolioId, PORTFOLIO_SETTING_KEY_TAX, value);
-      // #635 live model: the new regime applies to the open years NOW — post
-      // the corrections immediately rather than waiting for a report read.
+      // #1399: the new regime applies to every documented year immediately.
       await reconcilePortfolio(userId, portfolioId);
       return getPortfolioTaxSettings(userId, portfolioId);
     },
@@ -3086,8 +1837,7 @@ export function createTaxService(deps: TaxServiceDeps): TaxService {
     async clearPortfolioTaxOverride(userId, portfolioId) {
       await requireOwnedPortfolio(userId, portfolioId);
       await portfolioSettingsRepo.deleteSetting(portfolioId, PORTFOLIO_SETTING_KEY_TAX);
-      // #635: dropping the override re-derives the open years under the
-      // inherited default.
+      // #1399: dropping the override re-derives every year under the inherited default.
       await reconcilePortfolio(userId, portfolioId);
       return getPortfolioTaxSettings(userId, portfolioId);
     },

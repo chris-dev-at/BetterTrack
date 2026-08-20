@@ -3,7 +3,7 @@ import type { Page } from '@playwright/test';
 
 import { newAdminRequestContext } from './support/adminApi';
 import { cashMovementRow } from './support/cashSurface';
-import { recentOpenBookingDates } from './support/dates';
+import { recentBookingDates } from './support/dates';
 import { provisionUser } from './support/users';
 
 /**
@@ -137,7 +137,7 @@ test('cash flow: a rule tags a real entry, the ledger shows it, and a budget blo
   const owner = await provisionUser(browser, apiRequest, 'cashflowowner');
   await apiRequest.dispose();
   const page = owner.page;
-  const dates = await recentOpenBookingDates(page, 2);
+  const dates = recentBookingDates(2);
   const fundingDate = dates[0]!;
   const spendDate = dates[1]!;
 

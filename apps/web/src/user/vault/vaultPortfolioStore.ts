@@ -100,7 +100,6 @@ import {
   type SourcedCashMovement,
 } from '@bettertrack/domain/cashLedger';
 import { OversellError, reducePosition } from '@bettertrack/domain/holdings';
-import { viennaYearOf } from '@bettertrack/domain/tax';
 import { uuidv7 } from 'uuidv7';
 
 import { getAssetDetail } from '../../lib/assetApi';
@@ -689,7 +688,7 @@ export function createVaultPortfolioStore(
         current,
         candidates.map(({ input }) => input.assetId),
       );
-      assertLocallySupportedTransactions(current, portfolioId, candidates, context.now());
+      assertLocallySupportedTransactions(current, portfolioId, candidates);
       const initialCandidate = appendTransactionCandidates(
         appendMarketSnapshots(current, marketSnapshots, engine.deviceId, context.now()),
         candidates,
@@ -705,7 +704,7 @@ export function createVaultPortfolioStore(
 
       const mutationState = await engine.mutate(({ document }) => {
         requirePortfolio(document, portfolioId);
-        assertLocallySupportedTransactions(document, portfolioId, candidates, context.now());
+        assertLocallySupportedTransactions(document, portfolioId, candidates);
         const candidate = appendTransactionCandidates(
           appendMarketSnapshots(document, marketSnapshots, engine.deviceId, context.now()),
           candidates,
@@ -754,7 +753,6 @@ export function createVaultPortfolioStore(
         currentEntity,
         dataPatch,
         financialEdit,
-        context.now(),
       );
       if (financialEdit) {
         const prospective: VaultEntity = {
@@ -781,7 +779,6 @@ export function createVaultPortfolioStore(
             existing,
             dataPatch,
             financialEdit,
-            context.now(),
           );
           return { ...data, ...persistedDataPatch };
         },
@@ -799,7 +796,7 @@ export function createVaultPortfolioStore(
       const document = requireDocument(engine);
       requirePortfolio(document, portfolioId);
       const transaction = requireOwnedEntity(document, 'transaction', transactionId, portfolioId);
-      assertTransactionDeleteTaxSupported(document, portfolioId, transaction, context.now());
+      assertTransactionDeleteTaxSupported(document, portfolioId, transaction);
       const prospective = tombstoneTransactionTree(
         document,
         transaction,
@@ -1347,7 +1344,7 @@ async function deleteTransactionTree(
   const mutationState = await context.engine.mutate(({ document }) => {
     requirePortfolio(document, portfolioId);
     const transaction = requireOwnedEntity(document, 'transaction', transactionId, portfolioId);
-    assertTransactionDeleteTaxSupported(document, portfolioId, transaction, context.now());
+    assertTransactionDeleteTaxSupported(document, portfolioId, transaction);
     const next = tombstoneTransactionTree(
       document,
       transaction,
@@ -3760,7 +3757,6 @@ function assertLocallySupportedTransactions(
     id: string;
     input: ReturnType<typeof transactionInputSchema.parse>;
   }[],
-  now: string,
 ): void {
   const requiresDerivedEngine = candidates.some(
     ({ input }) =>
@@ -3772,7 +3768,7 @@ function assertLocallySupportedTransactions(
   );
   const effectiveTaxSettings = effectivePortfolioTaxSettings(document, portfolioId);
   const effectiveTaxMode = effectiveTaxSettings.mode;
-  const openFromYear = taxEngineOpenFromYear(effectiveTaxMode, now);
+  const automaticRegime = isAutomaticTaxMode(effectiveTaxMode);
   const recordsManualDefaultTax =
     effectiveTaxSettings.hasManualDefault && candidates.some(({ input }) => input.side === 'sell');
   const recordsEngineTax = candidates.some(
@@ -3784,7 +3780,7 @@ function assertLocallySupportedTransactions(
       (entity) =>
         stringField(entity.data, 'portfolioId') === portfolioId &&
         stringField(entity.data, 'assetId') === input.assetId &&
-        sellRequiresClientTaxEngine(entity, openFromYear) &&
+        sellRequiresClientTaxEngine(entity, automaticRegime) &&
         taxSellFollowsTransaction(entity, input.executedAt, id),
     ),
   );
@@ -3802,7 +3798,6 @@ function assertTransactionUpdateTaxSupported(
   transaction: VaultEntity,
   patch: TransactionDataPatch,
   financialEdit: boolean,
-  now: string,
 ): void {
   if (isFrozenTaxSensitiveSell(transaction)) {
     throw taxOperationUnavailable();
@@ -3810,7 +3805,7 @@ function assertTransactionUpdateTaxSupported(
   if (!financialEdit) return;
   const assetId = stringField(transaction.data, 'assetId');
   const effectiveTaxMode = effectivePortfolioTaxSettings(document, portfolioId).mode;
-  const openFromYear = taxEngineOpenFromYear(effectiveTaxMode, now);
+  const automaticRegime = isAutomaticTaxMode(effectiveTaxMode);
   const prospectiveTransaction: VaultEntity = {
     ...transaction,
     data: definedFields({ ...transaction.data, ...patch }),
@@ -3819,14 +3814,14 @@ function assertTransactionUpdateTaxSupported(
     (isAutomaticTaxMode(effectiveTaxMode) &&
       stringField(prospectiveTransaction.data, 'side') === 'sell') ||
     isFrozenTaxSensitiveSell(prospectiveTransaction) ||
-    sellRequiresClientTaxEngine(transaction, openFromYear) ||
-    sellRequiresClientTaxEngine(prospectiveTransaction, openFromYear) ||
+    sellRequiresClientTaxEngine(transaction, automaticRegime) ||
+    sellRequiresClientTaxEngine(prospectiveTransaction, automaticRegime) ||
     liveEntities(document, 'transaction').some(
       (entity) =>
         entity.id !== transaction.id &&
         stringField(entity.data, 'portfolioId') === portfolioId &&
         stringField(entity.data, 'assetId') === assetId &&
-        sellRequiresClientTaxEngine(entity, openFromYear) &&
+        sellRequiresClientTaxEngine(entity, automaticRegime) &&
         (taxSellFollowsTransaction(
           entity,
           stringField(transaction.data, 'executedAt'),
@@ -3847,21 +3842,20 @@ function assertTransactionDeleteTaxSupported(
   document: VaultDocument,
   portfolioId: string,
   transaction: VaultEntity,
-  now: string,
 ): void {
   const assetId = stringField(transaction.data, 'assetId');
   const effectiveTaxMode = effectivePortfolioTaxSettings(document, portfolioId).mode;
-  const openFromYear = taxEngineOpenFromYear(effectiveTaxMode, now);
+  const automaticRegime = isAutomaticTaxMode(effectiveTaxMode);
   if (
     isFrozenTaxSensitiveSell(transaction) ||
     (isAutomaticTaxMode(effectiveTaxMode) && stringField(transaction.data, 'side') === 'sell') ||
-    sellRequiresClientTaxEngine(transaction, openFromYear) ||
+    sellRequiresClientTaxEngine(transaction, automaticRegime) ||
     liveEntities(document, 'transaction').some(
       (entity) =>
         entity.id !== transaction.id &&
         stringField(entity.data, 'portfolioId') === portfolioId &&
         stringField(entity.data, 'assetId') === assetId &&
-        sellRequiresClientTaxEngine(entity, openFromYear) &&
+        sellRequiresClientTaxEngine(entity, automaticRegime) &&
         taxSellFollowsTransaction(
           entity,
           stringField(transaction.data, 'executedAt'),
@@ -3938,24 +3932,20 @@ function nullableTaxMode(mode: unknown): VaultTaxMode | null {
   throw new VaultCryptoError('update-required', 'This vault was written by a newer app version.');
 }
 
-function taxEngineOpenFromYear(mode: VaultTaxMode, now: string): number | null {
-  return isAutomaticTaxMode(mode) ? viennaYearOf(now) : null;
-}
-
 function isAutomaticTaxMode(mode: VaultTaxMode): mode is 'country_specific' | 'custom' {
   return mode === 'country_specific' || mode === 'custom';
 }
 
-function sellRequiresClientTaxEngine(entity: VaultEntity, openFromYear: number | null): boolean {
+function sellRequiresClientTaxEngine(entity: VaultEntity, automaticRegime: boolean): boolean {
   if (isEngineTaxedSell(entity)) return true;
   if (
-    openFromYear == null ||
+    !automaticRegime ||
     stringField(entity.data, 'side') !== 'sell' ||
     frozenTransactionTaxMode(entity) === 'manual_per_trade'
   ) {
     return false;
   }
-  return viennaYearOf(stringField(entity.data, 'executedAt')) >= openFromYear;
+  return true;
 }
 
 /**

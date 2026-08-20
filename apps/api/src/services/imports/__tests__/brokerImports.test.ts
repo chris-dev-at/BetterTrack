@@ -9,6 +9,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import {
   applyImportResponseSchema,
   importPreviewResponseSchema,
+  taxYearChangesResponseSchema,
   type ApplyImportResponse,
   type ImportPreviewResponse,
 } from '@bettertrack/contracts';
@@ -16,7 +17,6 @@ import {
 import * as schema from '../../../data/schema';
 import { createStubMarketData } from '../../../testing/marketDataStubs';
 import { createTestApp, type TestHarness } from '../../../testing/createTestApp';
-import { unlockRecentTaxYears } from '../../../testing/taxYearUnlocks';
 
 /**
  * George/Flatex/IBKR mappers through the FROZEN import framework's HTTP surface
@@ -88,10 +88,6 @@ async function seedAsset(symbol: string, name: string, currency = 'EUR') {
 
 async function setup() {
   const user = await harness.seedUser();
-  // Amendment mode (§16 2026-08-07): broker fixtures carry historical rows —
-  // a real user must unlock those years first; these suites test the import
-  // pipeline itself. The gate is pinned by taxYearLock.test.ts.
-  await unlockRecentTaxYears(harness.db, user.id);
   const agent = await loginAgent(harness.app, user.email, user.password);
   const pid = await defaultPortfolioId(agent);
   return { user, agent, pid };
@@ -178,6 +174,14 @@ describe('George (Erste Bank) through the apply path', () => {
     const result = await apply(agent, preview.batch.id);
     expect(result.applied).toBe(4);
     expect(result.failed).toBe(0);
+
+    const yearChanges = await agent.get('/api/v1/settings/taxes/years');
+    expect(yearChanges.status).toBe(200);
+    expect(
+      taxYearChangesResponseSchema
+        .parse(yearChanges.body)
+        .years.find((entry) => entry.year === 2024)?.lastChangedAt,
+    ).toEqual(expect.any(String));
 
     // Golden transaction set — exact rows, newest first (§13.4 acceptance).
     expect((await transactions(agent, pid)).map(txComparable)).toEqual([

@@ -14,7 +14,6 @@ import { resolvePortfolioSetting } from '@bettertrack/domain/settingsScope';
 import {
   TAX_COUNTRY_AT,
   TAX_COUNTRY_DE,
-  costBasisStrategyForCountry,
   customCarryForYears,
   deCarryPots,
   dePotCategoryForAssetType,
@@ -58,6 +57,7 @@ type TaxRegime =
   | { kind: 'custom'; params: CustomTaxParams };
 
 interface TaxEngineOptions {
+  /** Shared engine clock; tax derivation deliberately has no calendar cutoff. */
   now?: () => number;
   cache?: VaultDerivedCache<ClientTaxReport>;
 }
@@ -76,7 +76,6 @@ export function createClientTaxEngine(
   market: MarketDataSource,
   options: TaxEngineOptions = {},
 ): ClientTaxEngine {
-  const now = options.now ?? Date.now;
   const cache = options.cache ?? new VaultDerivedCache<ClientTaxReport>();
 
   return {
@@ -89,7 +88,6 @@ export function createClientTaxEngine(
         const snapshot = validatedVaultSnapshot(sync);
         const model = readPortfolioModel(snapshot.document, portfolioId);
         const settings = effectiveTaxSettings(snapshot.document, model);
-        const currentYear = viennaYearOf(new Date(now()).toISOString());
         const converted = await taxableTransactions(model, market, signal);
         const fxWatermarks = converted.watermarks.sort().join('|');
         const assetPriceWatermark = `${converted.stale ? 'stale' : 'fresh'}:${
@@ -102,7 +100,7 @@ export function createClientTaxEngine(
           vaultVersion: snapshot.vaultVersion,
           writeId: snapshot.writeId,
           assetPriceWatermark,
-          range: `tax:${year}:${currentYear}`,
+          range: `tax:${year}`,
         };
         const cached = cache.get(key);
         if (cached !== undefined) {
@@ -110,7 +108,7 @@ export function createClientTaxEngine(
           return { ok: true, value: cached };
         }
 
-        const report = buildTaxReport(model, converted.rows, settings, year, currentYear);
+        const report = buildTaxReport(model, converted.rows, settings, year);
         const value: ClientTaxReport = {
           ownerUserId: snapshot.ownerUserId,
           vaultKeyId: snapshot.vaultKeyId,
@@ -277,7 +275,6 @@ function buildTaxReport(
   taxables: readonly TaxableTransaction[],
   settings: EffectiveTaxSettings,
   requestedYear: number,
-  currentYear: number,
 ): { report: TaxYearReportResponse; computedTaxTargetEur: number } {
   projectCashLedgerBySource(model.cashMovements);
   const moving = realizationMap(realizedSellsEur(taxables, 'moving-average'));
@@ -288,20 +285,20 @@ function buildTaxReport(
     .map((transaction) => ({
       row: transaction,
       year: viennaYearOf(transaction.executedAt),
-      regime: regimeForRow(transaction, activeRegime, currentYear),
+      regime: regimeForRow(transaction, activeRegime),
     }));
   const assignedDividends = model.dividends.map((dividend) => ({
     row: dividend,
     year: viennaYearOf(dividend.executedAt),
-    regime: regimeForRow(dividend, activeRegime, currentYear),
+    regime: regimeForRow(dividend, activeRegime),
   }));
 
   const realizationFor = (
     transaction: ClientTransactionRecord,
-    year: number,
+    _year: number,
     regime: TaxRegime,
   ): SellRealizationEur => {
-    const strategy = strategyForReportRow(transaction, regime, year, currentYear, settings);
+    const strategy = strategyForReportRow(regime);
     const realization = (strategy === 'fifo' ? fifo : moving).get(transaction.id);
     if (realization === undefined) {
       throw moneyFailure(
@@ -423,7 +420,6 @@ function buildTaxReport(
   const summary = summaryForYear(
     model,
     requestedYear,
-    currentYear,
     settings.mode !== 'manual_per_trade',
     assignedSells,
     assignedDividends,
@@ -449,7 +445,6 @@ function buildTaxReport(
 function summaryForYear(
   model: ClientPortfolioModel,
   year: number,
-  currentYear: number,
   liveDerivation: boolean,
   sells: Array<{ row: ClientTransactionRecord; year: number; regime: TaxRegime }>,
   dividends: Array<{ row: ClientDividendRecord; year: number; regime: TaxRegime }>,
@@ -494,10 +489,7 @@ function summaryForYear(
         .filter((entry) => entry.regime.kind === 'manual')
         .reduce((total, entry) => total + (entry.row.taxAmountEur ?? 0), 0),
   );
-  const taxNetEur =
-    year < currentYear || !liveDerivation
-      ? movementNet
-      : floorCents(automaticTargetEur + manualTax);
+  const taxNetEur = liveDerivation ? floorCents(automaticTargetEur + manualTax) : movementNet;
   const de =
     deState === undefined
       ? undefined
@@ -514,13 +506,13 @@ function summaryForYear(
 
   return {
     year,
+    lastChangedAt: null,
     realizedPnlEur,
     dividendsGrossEur,
     taxWithheldEur,
     taxRefundedEur,
     taxNetEur,
     ...(de === undefined ? {} : { de }),
-    ...(year < currentYear ? { locked: true } : {}),
   };
 }
 
@@ -631,10 +623,8 @@ function addRegimeEvent(
 function regimeForRow(
   row: ClientTransactionRecord | ClientDividendRecord,
   active: TaxRegime,
-  currentYear: number,
 ): TaxRegime {
-  const year = viennaYearOf(row.executedAt);
-  if (year >= currentYear && row.taxMode !== 'manual_per_trade' && active.kind !== 'manual') {
+  if (row.taxMode !== 'manual_per_trade' && active.kind !== 'manual') {
     return active;
   }
   if (row.taxMode === 'manual_per_trade') return { kind: 'manual' };
@@ -655,37 +645,7 @@ function regimeForRow(
   throw moneyFailure('TAX_MODE_UNSUPPORTED', `Unsupported frozen tax mode ${String(row.taxMode)}.`);
 }
 
-function strategyForReportRow(
-  transaction: ClientTransactionRecord,
-  regime: TaxRegime,
-  year: number,
-  currentYear: number,
-  settings: EffectiveTaxSettings,
-): CostBasisStrategy {
-  if (
-    year >= currentYear &&
-    transaction.taxMode !== 'manual_per_trade' &&
-    settings.mode !== 'manual_per_trade'
-  ) {
-    if (settings.mode === 'country_specific') {
-      return costBasisStrategyForCountry(settings.country);
-    }
-    if (settings.mode === 'custom' && settings.custom !== null) return settings.custom.costBasis;
-    if (settings.mode !== 'none') return 'moving-average';
-  }
-  if (transaction.taxMode === 'country_specific') {
-    if (transaction.taxCountry === null || transaction.taxCountry === TAX_COUNTRY_AT) {
-      return 'moving-average';
-    }
-    if (transaction.taxCountry === TAX_COUNTRY_DE) return 'fifo';
-    throw moneyFailure(
-      'TAX_MODE_UNSUPPORTED',
-      `Tax country ${String(transaction.taxCountry)} is unsupported by the paranoid client engine.`,
-    );
-  }
-  if (transaction.taxMode === 'custom') {
-    return parseCustom(transaction.taxParams).costBasis;
-  }
+function strategyForReportRow(regime: TaxRegime): CostBasisStrategy {
   if (regime.kind === 'de') return 'fifo';
   if (regime.kind === 'custom') return regime.params.costBasis;
   return 'moving-average';

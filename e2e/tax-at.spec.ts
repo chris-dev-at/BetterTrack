@@ -2,7 +2,7 @@ import { expect, request as newRequestContext, test, type Page } from '@playwrig
 
 import { newAdminRequestContext } from './support/adminApi';
 import { cashSourceAction, cashSourceRow } from './support/cashSurface';
-import { recentOpenBookingDates } from './support/dates';
+import { recentBookingDates } from './support/dates';
 import { recordSapTrade } from './support/flows';
 import { provisionUser } from './support/users';
 
@@ -75,7 +75,7 @@ test('AT tax mode: annual settlement applies a loss refund only within the same 
   await apiRequest.dispose();
 
   const page = owner.page;
-  const dates = await recentOpenBookingDates(page, 5);
+  const dates = recentBookingDates(5);
   const fundingDate = dates[0]!;
   const gainBuyDate = dates[1]!;
   const gainSellDate = dates[2]!;

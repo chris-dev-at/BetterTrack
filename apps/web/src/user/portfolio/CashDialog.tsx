@@ -166,12 +166,7 @@ export function CashDialog({
       onSubmitted();
       onClose();
     } catch (err) {
-      if (
-        err instanceof ApiError &&
-        // TAX_YEAR_LOCKED (§16 2026-08-07): the server copy names the locked
-        // year and the unlock path — surface it verbatim like the cash gate.
-        (err.code === 'INSUFFICIENT_CASH' || err.code === 'TAX_YEAR_LOCKED')
-      ) {
+      if (err instanceof ApiError && err.code === 'INSUFFICIENT_CASH') {
         setError(err.message);
       } else {
         setError(t('portfolio.cash.saveError'));
