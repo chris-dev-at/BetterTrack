@@ -44,7 +44,10 @@ export function createFeedbackRouter(ctx: AppContext, limiters: RateLimiters): R
 
   router.post(
     '/:id/messages',
-    limiters.feedback,
+    // Replies carry their own conversation budget: a submitter who has spent
+    // the hourly capture allowance must still be able to answer a question,
+    // and a submitter mid-conversation must still be able to file something new.
+    limiters.feedbackThread,
     validateParams(idParamSchema),
     validateBody(sendFeedbackMessageRequestSchema),
     async (req, res) => {
@@ -59,6 +62,10 @@ export function createFeedbackRouter(ctx: AppContext, limiters: RateLimiters): R
     },
   );
 
+  // Deliberately on the app-wide `general` budget alone: advancing a read marker
+  // is one idempotent `UPDATE ... SET now()` that a client fires on every thread
+  // open, so metering it against the conversation budget would spend reply
+  // allowance on reads. §10's write budget stays where the cost is — the insert.
   router.post('/:id/read', validateParams(idParamSchema), async (req, res) => {
     const { id } = req.valid?.params as { id: string };
     if (!(await ctx.feedback.markReadForSubmitter(req.authUser!.id, id))) {

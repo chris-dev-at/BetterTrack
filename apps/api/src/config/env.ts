@@ -862,6 +862,8 @@ export interface AppConfig {
     social: ProgressiveSchedule;
     /** Authenticated feedback submissions, per user — five per hour (#1315). */
     feedback: ProgressiveSchedule;
+    /** Support-thread replies, per author — a conversation budget, not the capture guard (#1339). */
+    feedbackThread: ProgressiveSchedule;
     /** Paranoid vault writes, per user — a modest dedicated write budget (§13.5 V5-P13, design §4). */
     vault: ProgressiveSchedule;
     /** Personal API key request rate, per key id (bearer requests, §6.13). */
@@ -1207,6 +1209,22 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
         cooldownsSec: [60, 300, 900, 3600],
         decaySec: 15 * 60,
         retainCountOnViolation: true,
+      },
+      // Support-thread replies (#1339), per author — deliberately NOT the
+      // capture budget above. Replying is the workflow the thread exists for:
+      // the owner answering a queue of submissions in one sitting, and a
+      // submitter answering follow-up questions, are both normal traffic, and
+      // neither may be turned away because the other rail's five-per-hour
+      // anti-spam allowance is spent. Sized for a conversation (a message every
+      // minute, sustained, for an hour) and — again unlike capture — an
+      // exhausted counter is NOT retained, so the bounded cooldown genuinely
+      // reopens the rail. Admin callers additionally pass the router-level
+      // `admin` budget, so this one only has to be conversation-shaped.
+      feedbackThread: {
+        windowSec: 60 * 60,
+        limit: 60,
+        cooldownsSec: [60, 300, 900, 3600],
+        decaySec: 15 * 60,
       },
       // Paranoid vault writes, per user (§13.5 V5-P13, design §4): a modest
       // dedicated write budget like every other write family. Generous enough

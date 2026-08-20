@@ -48,7 +48,9 @@ export function registerAdminFeedbackRoutes(
 
   router.post(
     '/feedback/:id/messages',
-    limiters.feedback,
+    // The conversation budget (§10), not the capture guard: answering a queue
+    // of submissions in one sitting is the workflow this rail exists for.
+    limiters.feedbackThread,
     validateParams(idParamSchema),
     validateBody(sendFeedbackMessageRequestSchema),
     async (req, res) => {
@@ -63,6 +65,9 @@ export function registerAdminFeedbackRoutes(
     },
   );
 
+  // As on the submitter rail: an idempotent marker UPDATE fired on every thread
+  // open stays on the router-level `admin` budget rather than spending reply
+  // allowance (see feedbackRoutes.ts).
   router.post('/feedback/:id/read', validateParams(idParamSchema), async (req, res) => {
     const { id } = req.valid?.params as { id: string };
     if (!(await ctx.feedback.markReadForAdmin(id))) {

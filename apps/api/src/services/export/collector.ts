@@ -108,6 +108,17 @@ function sanitize(
 }
 
 /**
+ * Support-thread replies from staff belong in the export — their bodies were
+ * addressed to this user — but `authorUserId` on an admin-side row is the
+ * replying account's internal id, identity the product never surfaces to a user
+ * anywhere else. Project it to null; `authorSide: 'admin'` already carries the
+ * meaning. Submitter-authored rows keep their (own) id verbatim.
+ */
+function projectFeedbackMessages(rows: Record<string, unknown>[]): Record<string, unknown>[] {
+  return rows.map((row) => (row.authorSide === 'admin' ? { ...row, authorUserId: null } : row));
+}
+
+/**
  * One CSV cell: JSON-safe stringify, quoting anything with a comma/quote/newline.
  * Also neutralizes spreadsheet formula injection — a leading `=`, `+`, `-`, `@`
  * (or tab/CR) in user-controlled text (e.g. `transactions.note`) is prefixed with
@@ -295,7 +306,7 @@ export async function collectUserExport(
     notifications: sanitize(notificationRows),
     notificationSettings: sanitize(notificationSettingRows),
     feedback: sanitize(feedbackRows),
-    feedbackMessages: sanitize(feedbackMessageRows),
+    feedbackMessages: projectFeedbackMessages(sanitize(feedbackMessageRows)),
     conglomerates: sanitize(conglomerateFull),
     conglomeratePositions: sanitize(conglomeratePositionRows),
     conglomerateShareLinks: sanitize(conglomerateShareLinkRows),

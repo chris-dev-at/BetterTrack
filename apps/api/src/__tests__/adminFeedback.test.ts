@@ -16,6 +16,7 @@ import {
 } from '@bettertrack/contracts';
 
 import * as schema from '../data/schema';
+import { progressiveKeys } from '../services/security/progressiveLimiter';
 import { createTestApp, type SeededUser, type TestHarness } from '../testing/createTestApp';
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
@@ -387,7 +388,7 @@ describe('admin feedback inbox', () => {
     expect(reply.status).toBe(404);
   });
 
-  it('rate-limits admin replies with the dedicated feedback budget', async () => {
+  it('meters admin replies on the conversation budget, not the capture budget', async () => {
     const limitedHarness = await createTestApp({ rateLimitsEnabled: true });
     try {
       const limitedAdmin = await limitedHarness.seedAdmin();
@@ -396,21 +397,42 @@ describe('admin feedback inbox', () => {
         email: 'limited-admin-feedback@bt.test',
         username: 'limitedadminfeedback',
       });
-      const [submission] = await limitedHarness.db
+      const captureLimit = limitedHarness.ctx.config.rateLimits.feedback.limit;
+      const threadLimit = limitedHarness.ctx.config.rateLimits.feedbackThread.limit;
+      expect(threadLimit).toBeGreaterThan(captureLimit);
+      const submissions = await limitedHarness.db
         .insert(schema.feedback)
-        .values({ userId: submitter.id, category: 'other', message: 'Rate-limit replies.' })
+        .values(
+          Array.from({ length: captureLimit + 1 }, (_, index) => ({
+            userId: submitter.id,
+            category: 'other' as const,
+            message: `Rate-limit replies ${index}.`,
+          })),
+        )
         .returning();
-      const configuredLimit = limitedHarness.ctx.config.rateLimits.feedback.limit;
 
-      for (let index = 0; index < configuredLimit; index += 1) {
+      // Answering a queue of submissions in one sitting is the workflow this
+      // rail exists for: the owner must not be throttled against their own
+      // inbox by the submitter-facing anti-spam allowance.
+      for (const [index, submission] of submissions.entries()) {
         const accepted = await limitedAdminAgent
-          .post(`/api/v1/admin/feedback/${submission!.id}/messages`)
+          .post(`/api/v1/admin/feedback/${submission.id}/messages`)
           .set(...XRW)
           .send({ body: `Admin reply ${index}` });
         expect(accepted.status).toBe(201);
       }
+      // Replies never consume the capture budget, which stays whole for the
+      // owner's own `POST /feedback`.
+      expect(
+        await limitedHarness.ctx.redis.get(progressiveKeys('feedback', limitedAdmin.id).count),
+      ).toBeNull();
+
+      // The conversation budget is still a budget: exhaust it and the rail closes.
+      const threadKeys = progressiveKeys('feedback_thread', limitedAdmin.id);
+      expect(await limitedHarness.ctx.redis.get(threadKeys.count)).toBe(String(submissions.length));
+      await limitedHarness.ctx.redis.set(threadKeys.count, String(threadLimit), 'EX', 3600);
       const limited = await limitedAdminAgent
-        .post(`/api/v1/admin/feedback/${submission!.id}/messages`)
+        .post(`/api/v1/admin/feedback/${submissions[0]!.id}/messages`)
         .set(...XRW)
         .send({ body: 'One too many.' });
       expect(limited.status).toBe(429);

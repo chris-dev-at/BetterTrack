@@ -183,7 +183,7 @@ describe('POST /api/v1/feedback', () => {
     expect(apiErrorSchema.parse(response.body).error.code).toBe('INSUFFICIENT_SCOPE');
   });
 
-  it('keeps the configured five-per-hour budget closed through cooldown recovery', async () => {
+  it('keeps the configured five-per-hour capture budget closed through cooldown recovery', async () => {
     harness = await createTestApp({ rateLimitsEnabled: true });
     const user = await harness.seedUser({ email: 'limited@bt.test', username: 'limited' });
     const agent = await loginAgent(harness.app, user);
@@ -201,12 +201,20 @@ describe('POST /api/v1/feedback', () => {
     }
 
     const limited = await agent
-      .post(`/api/v1/feedback/${threadId}/messages`)
+      .post('/api/v1/feedback')
       .set(...XRW)
-      .send({ body: 'One too many across the shared feedback budget.' });
+      .send({ category: 'other', message: 'One too many for the capture budget.' });
     expect(limited.status).toBe(429);
     expect(apiErrorSchema.parse(limited.body).error.code).toBe('RATE_LIMITED');
     expect(limited.headers['retry-after']).toBeDefined();
+
+    // A spent capture allowance is an anti-spam guard on *new* submissions; it
+    // must never silence a live conversation, so the reply rail is unaffected.
+    const replyWhileClosed = await agent
+      .post(`/api/v1/feedback/${threadId}/messages`)
+      .set(...XRW)
+      .send({ body: 'Answering the owner’s question mid-cooldown.' });
+    expect(replyWhileClosed.status).toBe(201);
 
     const keys = progressiveKeys('feedback', user.id);
     expect(await harness.ctx.redis.get(keys.count)).toBe(String(configuredLimit + 1));
@@ -215,9 +223,9 @@ describe('POST /api/v1/feedback', () => {
     // counter is still live. A fresh five-row allowance must not open here.
     await harness.ctx.redis.del(keys.cooldown);
     const afterCooldown = await agent
-      .post(`/api/v1/feedback/${threadId}/messages`)
+      .post('/api/v1/feedback')
       .set(...XRW)
-      .send({ body: 'Still inside the same hour.' });
+      .send({ category: 'other', message: 'Still inside the same hour.' });
     expect(afterCooldown.status).toBe(429);
     expect(apiErrorSchema.parse(afterCooldown.body).error.code).toBe('RATE_LIMITED');
 
@@ -235,6 +243,52 @@ describe('POST /api/v1/feedback', () => {
 
     [stored] = await harness.db.select({ value: count() }).from(schema.feedback);
     expect(stored?.value).toBe(configuredLimit + 1);
+  });
+
+  it('meters thread replies on their own conversation budget', async () => {
+    harness = await createTestApp({ rateLimitsEnabled: true });
+    const user = await harness.seedUser({
+      email: 'thread-limited@bt.test',
+      username: 'threadlimited',
+    });
+    const agent = await loginAgent(harness.app, user);
+    const created = await agent
+      .post('/api/v1/feedback')
+      .set(...XRW)
+      .send({ category: 'other', message: 'Opening submission.' });
+    expect(created.status).toBe(201);
+    const threadId = createFeedbackResponseSchema.parse(created.body).id;
+
+    const captureKeys = progressiveKeys('feedback', user.id);
+    const threadKeys = progressiveKeys('feedback_thread', user.id);
+    const threadLimit = harness.ctx.config.rateLimits.feedbackThread.limit;
+    expect(threadLimit).toBeGreaterThan(harness.ctx.config.rateLimits.feedback.limit);
+
+    const reply = await agent
+      .post(`/api/v1/feedback/${threadId}/messages`)
+      .set(...XRW)
+      .send({ body: 'A first reply.' });
+    expect(reply.status).toBe(201);
+    // The reply counted against the conversation budget only — the capture
+    // counter still shows just the single submission above.
+    expect(await harness.ctx.redis.get(threadKeys.count)).toBe('1');
+    expect(await harness.ctx.redis.get(captureKeys.count)).toBe('1');
+
+    // Exhausting the conversation budget closes replies — and only replies.
+    await harness.ctx.redis.set(threadKeys.count, String(threadLimit), 'EX', 3600);
+    const limitedReply = await agent
+      .post(`/api/v1/feedback/${threadId}/messages`)
+      .set(...XRW)
+      .send({ body: 'One reply too many.' });
+    expect(limitedReply.status).toBe(429);
+    expect(apiErrorSchema.parse(limitedReply.body).error.code).toBe('RATE_LIMITED');
+    expect(limitedReply.headers['retry-after']).toBeDefined();
+
+    const stillCapturing = await agent
+      .post('/api/v1/feedback')
+      .set(...XRW)
+      .send({ category: 'bug', message: 'A separate report while mid-conversation.' });
+    expect(stillCapturing.status).toBe(201);
   });
 });
 

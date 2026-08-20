@@ -690,7 +690,9 @@ export const feedbackMessages = pgTable(
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
-    index('feedback_messages_feedback_idx').on(t.feedbackId, t.id),
+    // Threads page newest-first on `(created_at, id)` — the same key the unread
+    // count derives from — so the index carries that order, not the id-only one.
+    index('feedback_messages_feedback_idx').on(t.feedbackId, t.createdAt, t.id),
     check('feedback_messages_not_empty', sql`${t.body} ~ '[^[:space:]]'`),
     check('feedback_messages_body_length', sql`char_length(${t.body}) <= 4000`),
   ],

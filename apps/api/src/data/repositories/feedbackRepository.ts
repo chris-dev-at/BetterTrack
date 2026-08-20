@@ -93,6 +93,30 @@ export function createFeedbackRepository(db: Database): FeedbackRepository {
       .limit(1);
     if (!thread) return null;
 
+    // Page and unread count must share one ordering key. Unread is derived from
+    // a `created_at` marker, so the page is keyset-ordered by `created_at` with
+    // the UUIDv7 `id` as tiebreak — a row written with an explicit `createdAt`
+    // (a backfill, an import, a fixture) then cannot land in a page position
+    // that contradicts its own unread classification. The wire cursor stays the
+    // message id, so its stamp is resolved here, scoped to this thread; an id
+    // that names no row in this thread simply doesn't constrain the page.
+    const [cursorRow] = params.cursor
+      ? await db
+          .select({ id: feedbackMessages.id, createdAt: feedbackMessages.createdAt })
+          .from(feedbackMessages)
+          .where(and(eq(feedbackMessages.feedbackId, id), eq(feedbackMessages.id, params.cursor)))
+          .limit(1)
+      : [];
+    const beforeCursor = cursorRow
+      ? or(
+          lt(feedbackMessages.createdAt, cursorRow.createdAt),
+          and(
+            eq(feedbackMessages.createdAt, cursorRow.createdAt),
+            lt(feedbackMessages.id, cursorRow.id),
+          ),
+        )
+      : undefined;
+
     const [unreadRows, rows] = await Promise.all([
       db
         .select({ value: count() })
@@ -107,13 +131,8 @@ export function createFeedbackRepository(db: Database): FeedbackRepository {
       db
         .select()
         .from(feedbackMessages)
-        .where(
-          and(
-            eq(feedbackMessages.feedbackId, id),
-            params.cursor ? lt(feedbackMessages.id, params.cursor) : undefined,
-          ),
-        )
-        .orderBy(desc(feedbackMessages.id))
+        .where(and(eq(feedbackMessages.feedbackId, id), beforeCursor))
+        .orderBy(desc(feedbackMessages.createdAt), desc(feedbackMessages.id))
         .limit(params.limit + 1),
     ]);
     const hasMore = rows.length > params.limit;

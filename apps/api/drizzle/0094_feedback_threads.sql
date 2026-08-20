@@ -29,4 +29,4 @@ FOREIGN KEY ("author_user_id") REFERENCES "public"."users"("id")
 ON DELETE no action ON UPDATE no action;
 --> statement-breakpoint
 CREATE INDEX "feedback_messages_feedback_idx"
-ON "feedback_messages" USING btree ("feedback_id","id");
+ON "feedback_messages" USING btree ("feedback_id","created_at","id");
