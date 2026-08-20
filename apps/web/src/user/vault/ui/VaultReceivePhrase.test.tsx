@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import type { OpenedVault, StorePlainPhraseInput } from '../keystore';
 import { consumePlainCustodyAcknowledgment } from '../keystore/acknowledgment';
+import { EndpointKeystoreError } from '../keystore/errors';
 import {
   VAULT_TRANSFER_GOLDEN_PAYLOAD,
   VAULT_TRANSFER_VECTOR_FINGERPRINT,
@@ -149,7 +150,7 @@ describe('VaultReceivePhrase receiver', () => {
     const user = userEvent.setup();
     const keystore = receiver();
     keystore.storeAfterVerifiedOpen = vi.fn(async () => {
-      throw new Error('authenticated header did not open');
+      throw new EndpointKeystoreError('verification-failed', 'Authenticated header did not open.');
     });
     const onOpened = vi.fn();
     render(
@@ -171,5 +172,42 @@ describe('VaultReceivePhrase receiver', () => {
     ).toBeInTheDocument();
     expect(onOpened).not.toHaveBeenCalled();
     expect(keystore.storePlainAfterVerifiedOpen).not.toHaveBeenCalled();
+  });
+
+  it('does not blame the phrase when the authenticated header is unavailable', async () => {
+    const user = userEvent.setup();
+    const keystore = receiver();
+    keystore.storeAfterVerifiedOpen = vi.fn(async () => {
+      throw new EndpointKeystoreError(
+        'vault-header-unavailable',
+        'Authenticated header is offline.',
+      );
+    });
+    const onOpened = vi.fn();
+    render(
+      <VaultReceivePhrase
+        fetchHeaderEnvelope={vi.fn(async () => {
+          throw new Error('offline');
+        })}
+        initialPayload={VAULT_TRANSFER_GOLDEN_PAYLOAD}
+        keystore={keystore}
+        onOpened={onOpened}
+      />,
+    );
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
+    await user.type(screen.getByLabelText('Device password'), 'new endpoint password');
+    await user.click(screen.getByRole('button', { name: 'Verify and open vault' }));
+
+    expect(
+      await screen.findByText(
+        'The vault could not be opened or saved right now. Nothing was saved on this device; check the connection and try again.',
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(
+        'The phrase did not open the authenticated vault header. Nothing was saved on this device.',
+      ),
+    ).not.toBeInTheDocument();
+    expect(onOpened).not.toHaveBeenCalled();
   });
 });

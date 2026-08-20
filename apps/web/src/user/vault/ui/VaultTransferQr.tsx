@@ -11,6 +11,7 @@ import { useOverlayEscape } from '../../../ui/overlayStack';
 import { useFocusTrap } from '../../../ui/useFocusTrap';
 import {
   serializeVaultTransferPayload,
+  VAULT_TRANSFER_NAME_MAX_CHARS,
   VAULT_TRANSFER_QR_EXPIRY_MS,
   VAULT_TRANSFER_QR_OPTIONS,
   VAULT_TRANSFER_STEP_UP_MAX_AGE_MS,
@@ -28,7 +29,7 @@ export interface VaultTransferQrProps {
   onClosed?: () => void;
 }
 
-type TransferPhase = 'closed' | 'checking' | 'password' | 'visible' | 'expired';
+type TransferPhase = 'closed' | 'checking' | 'password' | 'visible' | 'expired' | 'blocked';
 
 interface VisibleSecret {
   mnemonic: string;
@@ -93,15 +94,37 @@ export function VaultTransferQr({
     return age >= 0 && age <= VAULT_TRANSFER_STEP_UP_MAX_AGE_MS;
   }
 
+  function block(generation: number, nextErrorKey: string) {
+    if (requestGeneration.current !== generation) return;
+    setErrorKey(nextErrorKey);
+    setPhase('blocked');
+  }
+
   async function reveal(generation: number) {
-    await source.requireLiveUnlock();
-    const mnemonic = await source.readMnemonic();
-    const payload = serializeVaultTransferPayload({
-      mnemonic,
-      vaultId,
-      ...(vaultName === undefined ? {} : { name: vaultName }),
-      ...(keyFingerprint === undefined ? {} : { fingerprint: keyFingerprint }),
-    });
+    let mnemonic: string;
+    try {
+      await source.requireLiveUnlock();
+      if (requestGeneration.current !== generation) return;
+      mnemonic = await source.readMnemonic();
+    } catch {
+      block(generation, 'vault.transfer.sender.errors.unlockRequired');
+      return;
+    }
+    if (requestGeneration.current !== generation) return;
+
+    let payload: string;
+    try {
+      const name = transferNameHint(vaultName);
+      payload = serializeVaultTransferPayload({
+        mnemonic,
+        vaultId,
+        ...(name === undefined ? {} : { name }),
+        ...(keyFingerprint === undefined ? {} : { fingerprint: keyFingerprint }),
+      });
+    } catch {
+      block(generation, 'vault.transfer.sender.errors.payload');
+      return;
+    }
     if (requestGeneration.current !== generation) return;
     setDevicePassword('');
     setSecret({ mnemonic, payload });
@@ -117,17 +140,16 @@ export function VaultTransferQr({
     setPhase('checking');
     try {
       await source.requireLiveUnlock();
-      if (requestGeneration.current !== generation) return;
-      if (source.custody === 'wrapped' && !hasFreshPasswordStepUp()) {
-        setPhase('password');
-        return;
-      }
-      await reveal(generation);
     } catch {
-      if (requestGeneration.current !== generation) return;
-      setErrorKey('vault.transfer.sender.errors.unlockRequired');
-      setPhase('expired');
+      block(generation, 'vault.transfer.sender.errors.unlockRequired');
+      return;
     }
+    if (requestGeneration.current !== generation) return;
+    if (source.custody === 'wrapped' && !hasFreshPasswordStepUp()) {
+      setPhase('password');
+      return;
+    }
+    await reveal(generation);
   }
 
   async function submitPassword(event: FormEvent) {
@@ -138,16 +160,17 @@ export function VaultTransferQr({
     setPhase('checking');
     try {
       await source.verifyDevicePassword(devicePassword);
-      if (requestGeneration.current !== generation) return;
-      freshPasswordAt.current = now();
-      await reveal(generation);
     } catch {
       if (requestGeneration.current !== generation) return;
       freshPasswordAt.current = null;
       setDevicePassword('');
       setErrorKey('vault.transfer.sender.errors.password');
       setPhase('password');
+      return;
     }
+    if (requestGeneration.current !== generation) return;
+    freshPasswordAt.current = now();
+    await reveal(generation);
   }
 
   return (
@@ -236,10 +259,6 @@ export function VaultTransferQr({
                       <QRCodeSVG
                         aria-label={t('vault.transfer.sender.qrAria')}
                         boostLevel={VAULT_TRANSFER_QR_OPTIONS.boostErrorCorrectionLevel}
-                        data-character-encoding={VAULT_TRANSFER_QR_OPTIONS.characterEncoding}
-                        data-encoding-mode={VAULT_TRANSFER_QR_OPTIONS.mode}
-                        data-error-correction-level={VAULT_TRANSFER_QR_OPTIONS.errorCorrectionLevel}
-                        data-payload-length={secret.payload.length}
                         level={VAULT_TRANSFER_QR_OPTIONS.errorCorrectionLevel}
                         marginSize={4}
                         size={280}
@@ -284,6 +303,17 @@ export function VaultTransferQr({
                     </div>
                   </div>
                 ) : null}
+
+                {phase === 'blocked' ? (
+                  <div className="flex w-full max-w-md flex-wrap justify-center gap-2">
+                    <Button onClick={() => void requestShow(false)} variant="primary">
+                      {t('vault.transfer.sender.showAgain')}
+                    </Button>
+                    <Button onClick={() => void requestShow(true)} variant="quiet">
+                      {t('vault.transfer.manualWords')}
+                    </Button>
+                  </div>
+                ) : null}
               </div>
             </div>,
             document.body,
@@ -291,4 +321,11 @@ export function VaultTransferQr({
         : null}
     </>
   );
+}
+
+/** The display name is only a wire hint; a legal longer vault name must never block transfer. */
+function transferNameHint(vaultName: string | undefined): string | undefined {
+  if (vaultName === undefined) return undefined;
+  const normalized = vaultName.normalize('NFKD');
+  return [...normalized].length <= VAULT_TRANSFER_NAME_MAX_CHARS ? normalized : undefined;
 }

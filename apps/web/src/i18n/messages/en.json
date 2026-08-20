@@ -3989,7 +3989,8 @@
         "showAgain": "Show again",
         "errors": {
           "unlockRequired": "Unlock and open this vault on this device before showing its transfer code.",
-          "password": "The device password could not be verified. The transfer code remains hidden."
+          "password": "The device password could not be verified. The transfer code remains hidden.",
+          "payload": "The transfer code could not be created. Close this screen and try again."
         }
       },
       "receiver": {
@@ -4026,7 +4027,8 @@
           "invalidVaultId": "The transfer code contains an invalid vault ID.",
           "invalidName": "The vault-name hint is longer than 64 characters.",
           "invalidFingerprint": "The transfer code contains an invalid key fingerprint.",
-          "verification": "The phrase did not open the authenticated vault header. Nothing was saved on this device."
+          "verification": "The phrase did not open the authenticated vault header. Nothing was saved on this device.",
+          "operation": "The vault could not be opened or saved right now. Nothing was saved on this device; check the connection and try again."
         }
       }
     },
