@@ -1171,6 +1171,7 @@
           "title": "Keine autorisierten Apps"
         },
         "canAccess": "{{appName}} kann:",
+        "firstPartyBadge": "BetterTrack-App",
         "authorizedLastUsed": "Autorisiert {{createdAt}} · zuletzt verwendet {{lastUsedAt}}",
         "authorizedNeverUsed": "Autorisiert {{createdAt}} · nie verwendet",
         "revokeAccess": "Zugriff widerrufen"

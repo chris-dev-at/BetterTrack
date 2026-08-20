@@ -10,7 +10,7 @@ import { localizedOAuthScopeDescription } from '../../../lib/oauthScopeCopy';
 import { listOAuthGrants, revokeOAuthGrant } from '../../../lib/oauthApi';
 import { Skeleton } from '../../../ui';
 import { isParanoidBlockedScope } from '../../../ui/ScopePicker';
-import { Button } from '../../../ui/origin';
+import { Badge, Button } from '../../../ui/origin';
 import { Alert } from '../../components/ui';
 import { useResolvedPrivacyMode } from '../../vault/usePrivacyMode';
 import { PanelGroup, PanelHead, PanelList, PanelListItem, PanelNote, Row } from './panelKit';
@@ -68,6 +68,11 @@ function OAuthGrantRow({ grant }: { grant: OAuthGrantSummary }) {
         <>
           <span className="bt-cc-row__label">
             {t('settings.api.grants.canAccess', { appName: grant.appName })}
+            {grant.firstParty ? (
+              <Badge className="ml-2" tone="blue">
+                {t('settings.api.grants.firstPartyBadge')}
+              </Badge>
+            ) : null}
           </span>
           {/* The plain-language scope descriptions, not the raw scope strings —
               this is a privacy control, so it reads in the user's words. A
