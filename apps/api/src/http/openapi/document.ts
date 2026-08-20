@@ -91,6 +91,26 @@ const componentSchemas = {
   RetiredServerPurgeRequest: contracts.retiredServerPurgeRequestSchema,
   RetiredServerPurgeResponse: contracts.retiredServerPurgeResponseSchema,
 
+  // Per-vault blind blob store (paranoid E1 #1411)
+  VaultConfig: contracts.vaultConfigSchema,
+  VaultListResponse: contracts.vaultListResponseSchema,
+  CreateVaultRequest: contracts.createVaultRequestSchema,
+  CreateVaultResponse: contracts.createVaultResponseSchema,
+  PatchVaultRequest: contracts.patchVaultRequestSchema,
+  PatchVaultResponse: contracts.patchVaultResponseSchema,
+  DeleteVaultRequest: contracts.deleteVaultRequestSchema,
+  DeleteVaultResponse: contracts.deleteVaultResponseSchema,
+  PerVaultMediaStateResponse: contracts.perVaultMediaStateResponseSchema,
+  PerVaultMediaTransitionRequest: contracts.perVaultMediaTransitionRequestSchema,
+  PerVaultMediaTransitionResponse: contracts.perVaultMediaTransitionResponseSchema,
+  PerVaultServerCandidateMetadata: contracts.perVaultServerCandidateMetadataSchema,
+  PerVaultRetiredServerPurgeChallengeRequest:
+    contracts.perVaultRetiredServerPurgeChallengeRequestSchema,
+  PerVaultRetiredServerPurgeChallengeResponse:
+    contracts.perVaultRetiredServerPurgeChallengeResponseSchema,
+  PerVaultRetiredServerPurgeRequest: contracts.perVaultRetiredServerPurgeRequestSchema,
+  PerVaultRetiredServerPurgeResponse: contracts.perVaultRetiredServerPurgeResponseSchema,
+
   // Auth (§6.1)
   LoginRequest: contracts.loginRequestSchema,
   RegisterRequest: contracts.registerRequestSchema,
@@ -581,6 +601,57 @@ const idempotencyKeyHeaders = z.object({
   }),
 });
 
+// Per-doc CAS/readback headers (E1 #1411). These are machine-readable rather
+// than prose-only so generated clients can actually perform the blind-store
+// protocol without guessing header names or response metadata.
+const perVaultConditionalReadHeaders = z.object({
+  'If-None-Match': z.string().optional().openapi({
+    description:
+      'Optional strong document ETag such as `"7"`; a match returns 304 without ciphertext.',
+    example: '"7"',
+  }),
+});
+const perVaultCasWriteHeaders = z.object({
+  'If-Match': z.string().optional().openapi({
+    description:
+      'Strong ETag of the current document version for replacement, for example `"7"`. Send exactly one CAS precondition.',
+    example: '"7"',
+  }),
+  'If-None-Match': z.literal('*').optional().openapi({
+    description: 'Send `*` only for first creation. Send exactly one of If-None-Match or If-Match.',
+  }),
+});
+const perVaultEtagResponseHeaders = z.object({
+  ETag: z.string().openapi({
+    description: 'Strong ETag carrying this document’s integer CAS version.',
+    example: '"7"',
+  }),
+});
+const perVaultHistoryResponseHeaders = perVaultEtagResponseHeaders.extend({
+  [contracts.VAULT_HISTORY_CREATED_AT_HEADER]: z.string().datetime().openapi({
+    description: 'When this ciphertext version entered bounded server history.',
+  }),
+  [contracts.VAULT_HISTORY_SIZE_BYTES_HEADER]: z.string().openapi({
+    description: 'Opaque envelope byte length as a base-10 integer.',
+    example: '4096',
+  }),
+  [contracts.VAULT_HISTORY_MEDIUM_HEADER]: z.literal('server').openapi({
+    description: 'Storage medium holding this retained ciphertext.',
+  }),
+});
+const perVaultCandidateReadbackResponseHeaders = perVaultEtagResponseHeaders.extend({
+  [contracts.VAULT_SERVER_CANDIDATE_ID_HEADER]: z.string().uuid().openapi({
+    description: 'Identity of the inactive candidate that was read back.',
+  }),
+  [contracts.VAULT_SERVER_CANDIDATE_EXPIRES_AT_HEADER]: z.string().datetime().openapi({
+    description: 'Expiry of this inactive candidate and its readback receipt.',
+  }),
+  [contracts.VAULT_SERVER_CANDIDATE_READBACK_HEADER]: z.string().openapi({
+    description:
+      'Opaque short-lived receipt supplied in the matching full-set media-transition attestation.',
+  }),
+});
+
 // ── Endpoint table ──────────────────────────────────────────────────────────
 type Method = 'get' | 'post' | 'put' | 'patch' | 'delete';
 
@@ -596,6 +667,8 @@ interface EndpointDef {
   params?: z.AnyZodObject;
   query?: z.AnyZodObject;
   body?: z.ZodTypeAny;
+  /** Additional request headers derived into OpenAPI parameters. */
+  requestHeaders?: z.AnyZodObject;
   /**
    * Request body media type; defaults to JSON. The CSV upload (§13.4 V4-P8) is
    * the one `multipart/form-data` endpoint — its file part is described in its
@@ -605,6 +678,8 @@ interface EndpointDef {
   status: number;
   /** Success response schema; omit for empty (204) responses. */
   response?: z.ZodTypeAny;
+  /** Headers present on the success response, including empty 204 responses. */
+  responseHeaders?: z.AnyZodObject;
   /** Contract body returned with HTTP 503 by readiness-style public probes. */
   unavailableResponse?: z.ZodTypeAny;
   /**
@@ -4448,7 +4523,197 @@ const endpoints: EndpointDef[] = [
     response: R.OAuthTokenResponse,
   },
 
-  // Paranoid vault (§13.5 V5-P13 arc b) — the BLIND server blob store.
+  // Per-vault paranoid storage (E1 #1411) — config plus the BLIND per-doc store.
+  {
+    method: 'get',
+    path: '/vaults',
+    tag: 'Vault',
+    summary: 'List the caller’s cleartext vault storage configurations.',
+    status: 200,
+    response: R.VaultListResponse,
+  },
+  {
+    method: 'post',
+    path: '/vaults',
+    tag: 'Vault',
+    summary:
+      'Create a vault configuration with client-minted singleton doc ids and an immutable retirement verifier.',
+    body: R.CreateVaultRequest,
+    status: 201,
+    response: R.CreateVaultResponse,
+  },
+  {
+    method: 'get',
+    path: '/vaults/{vaultId}',
+    tag: 'Vault',
+    summary: 'Read one caller-owned vault configuration; another owner’s id is not found.',
+    params: contracts.vaultIdParamSchema,
+    status: 200,
+    response: R.CreateVaultResponse,
+  },
+  {
+    method: 'patch',
+    path: '/vaults/{vaultId}',
+    tag: 'Vault',
+    summary: 'Rename one caller-owned vault without changing its media transition state.',
+    params: contracts.vaultIdParamSchema,
+    body: R.PatchVaultRequest,
+    status: 200,
+    response: R.PatchVaultResponse,
+  },
+  {
+    method: 'delete',
+    path: '/vaults/{vaultId}',
+    tag: 'Vault',
+    summary:
+      'Delete an unreferenced vault only after in-request password, TOTP, or recovery-code step-up.',
+    description:
+      'Available to an owning session or a bearer holding account:security. The same in-body step-up applies to both. Deletion refuses while a portfolio references the vault or while its signed-purge retirement gate remains live.',
+    params: contracts.vaultIdParamSchema,
+    body: R.DeleteVaultRequest,
+    status: 200,
+    response: R.DeleteVaultResponse,
+  },
+  {
+    method: 'get',
+    path: '/vaults/{vaultId}/docs/{docId}',
+    tag: 'Vault',
+    summary:
+      'Read one caller-owned opaque vault document byte-for-byte with its per-document ETag.',
+    description:
+      'The server reads only the six cleartext addressing/idempotency header fields and never parses the encrypted payload.',
+    params: contracts.vaultDocParamsSchema,
+    requestHeaders: perVaultConditionalReadHeaders,
+    status: 200,
+    response: z.string().openapi({
+      type: 'string',
+      format: 'binary',
+      description: 'Opaque envelope-v2 document bytes (never interpreted server-side).',
+    }),
+    responseContentType: 'application/octet-stream',
+    responseHeaders: perVaultEtagResponseHeaders,
+  },
+  {
+    method: 'put',
+    path: '/vaults/{vaultId}/docs/{docId}',
+    tag: 'Vault',
+    summary:
+      'Compare-and-swap one opaque vault document using If-None-Match: * or If-Match: "<version>".',
+    description:
+      'A stale or missing precondition returns 412 or 428 without mutation. Per-kind byte caps return 413. Replaying the same (vaultId, docId, writeId) at the current docVersion is a no-op.',
+    params: contracts.vaultDocParamsSchema,
+    requestHeaders: perVaultCasWriteHeaders,
+    body: z.string().openapi({
+      type: 'string',
+      format: 'binary',
+      description: 'Opaque envelope-v2 document bytes (never interpreted server-side).',
+    }),
+    bodyContentType: 'application/octet-stream',
+    status: 204,
+    responseHeaders: perVaultEtagResponseHeaders,
+  },
+  {
+    method: 'get',
+    path: '/vaults/{vaultId}/docs/{docId}/history',
+    tag: 'Vault',
+    summary: 'List retained ciphertext-history metadata for one caller-owned vault document.',
+    params: contracts.vaultDocParamsSchema,
+    query: contracts.vaultHistoryListQuerySchema,
+    status: 200,
+    response: R.VaultHistoryListResponse,
+  },
+  {
+    method: 'get',
+    path: '/vaults/{vaultId}/docs/{docId}/history/{version}',
+    tag: 'Vault',
+    summary: 'Read one retained historical vault document as byte-identical opaque ciphertext.',
+    params: contracts.vaultDocHistoryVersionParamSchema,
+    status: 200,
+    response: z.string().openapi({
+      type: 'string',
+      format: 'binary',
+      description: 'Opaque historical envelope-v2 document bytes.',
+    }),
+    responseContentType: 'application/octet-stream',
+    responseHeaders: perVaultHistoryResponseHeaders,
+  },
+  {
+    method: 'get',
+    path: '/vaults/{vaultId}/media',
+    tag: 'Vault',
+    summary:
+      'Read one vault’s durable media selection, attestation, candidate and retirement metadata.',
+    params: contracts.vaultIdParamSchema,
+    status: 200,
+    response: R.PerVaultMediaStateResponse,
+  },
+  {
+    method: 'patch',
+    path: '/vaults/{vaultId}/media',
+    tag: 'Vault',
+    summary:
+      'Commit one verified full-document-set media transition; removing server retires bytes instead of purging them.',
+    params: contracts.vaultIdParamSchema,
+    body: R.PerVaultMediaTransitionRequest,
+    status: 200,
+    response: R.PerVaultMediaTransitionResponse,
+  },
+  {
+    method: 'put',
+    path: '/vaults/{vaultId}/media/server-candidate/{transitionId}/docs/{docId}',
+    tag: 'Vault',
+    summary:
+      'Stage one opaque server candidate inside a client-chosen full-document-set transition.',
+    params: contracts.perVaultServerCandidateStageParamsSchema,
+    body: z.string().openapi({
+      type: 'string',
+      format: 'binary',
+      description: 'Opaque inactive envelope-v2 candidate bytes.',
+    }),
+    bodyContentType: 'application/octet-stream',
+    status: 200,
+    response: R.PerVaultServerCandidateMetadata,
+  },
+  {
+    method: 'get',
+    path: '/vaults/{vaultId}/media/server-candidate/{candidateId}',
+    tag: 'Vault',
+    summary:
+      'Read back one caller-owned inactive server candidate and receive its verification receipt.',
+    params: contracts.perVaultServerCandidateReadParamsSchema,
+    status: 200,
+    response: z.string().openapi({
+      type: 'string',
+      format: 'binary',
+      description: 'Opaque inactive envelope-v2 candidate bytes.',
+    }),
+    responseContentType: 'application/octet-stream',
+    responseHeaders: perVaultCandidateReadbackResponseHeaders,
+  },
+  {
+    method: 'post',
+    path: '/vaults/{vaultId}/media/retired/purge/challenge',
+    tag: 'Vault',
+    summary:
+      'Issue a short-lived challenge bound to one retirement generation and version-set hash.',
+    params: contracts.vaultIdParamSchema,
+    body: R.PerVaultRetiredServerPurgeChallengeRequest,
+    status: 200,
+    response: R.PerVaultRetiredServerPurgeChallengeResponse,
+  },
+  {
+    method: 'post',
+    path: '/vaults/{vaultId}/media/retired/purge',
+    tag: 'Vault',
+    summary:
+      'Purge a retained server set only after the retention floor and a valid Ed25519 transcript proof.',
+    params: contracts.vaultIdParamSchema,
+    body: R.PerVaultRetiredServerPurgeRequest,
+    status: 200,
+    response: R.PerVaultRetiredServerPurgeResponse,
+  },
+
+  // Legacy account-singleton paranoid vault — kept unchanged through E9.
   {
     method: 'get',
     path: '/vault/history',
@@ -4621,14 +4886,16 @@ function addErrorCodeExtensions<T extends { paths: Record<string, unknown> }>(do
 
 for (const ep of endpoints) {
   const responses: Record<string, ResponseConfig> = {};
+  const successHeaders = ep.responseHeaders ? { headers: ep.responseHeaders } : {};
   responses[ep.status] = ep.response
     ? {
         description: 'Success.',
+        ...successHeaders,
         content: ep.responseContentType
           ? { [ep.responseContentType]: { schema: ep.response } }
           : jsonContent(ep.response),
       }
-    : { description: 'No content.' };
+    : { description: 'No content.', ...successHeaders };
   if (ep.body || ep.query || ep.params) {
     responses['400'] = errorResponse('Invalid request (VALIDATION_ERROR).');
   }
@@ -4663,6 +4930,10 @@ for (const ep of endpoints) {
     : openApiPathTemplateAcceptsBearer(ep.path, ep.method)
       ? [{ [SESSION_SECURITY]: [] }, { [BEARER_SECURITY]: [] }]
       : [{ [SESSION_SECURITY]: [] }];
+  const requestHeaders =
+    ep.idempotent && ep.requestHeaders
+      ? idempotencyKeyHeaders.merge(ep.requestHeaders)
+      : (ep.requestHeaders ?? (ep.idempotent ? idempotencyKeyHeaders : undefined));
 
   registry.registerPath({
     method: ep.method,
@@ -4674,7 +4945,7 @@ for (const ep of endpoints) {
     request: {
       ...(ep.params ? { params: ep.params } : {}),
       ...(ep.query ? { query: ep.query } : {}),
-      ...(ep.idempotent ? { headers: idempotencyKeyHeaders } : {}),
+      ...(requestHeaders ? { headers: requestHeaders } : {}),
       ...(ep.body
         ? {
             body: {

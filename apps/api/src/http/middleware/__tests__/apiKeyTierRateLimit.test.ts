@@ -28,6 +28,7 @@ const ctx = (): AppContext => {
       feedback: base,
       feedbackThread: base,
       vault: base,
+      vaultRead: base,
       apiKey: base,
       loginIp: base,
       loginAccount: base,

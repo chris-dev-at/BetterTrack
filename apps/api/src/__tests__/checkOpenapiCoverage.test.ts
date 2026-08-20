@@ -37,6 +37,7 @@ describe('checkOpenapiCoverage', () => {
     expect(coverage.duplicatePolicies).toEqual([]);
     expect(coverage.invalidPolicyPrefixes).toEqual([]);
     expect(coverage.mounted).toContain('/api/v1/settings/webhooks');
+    expect(coverage.mounted).toContain('/api/v1/vaults');
     expect(coverage.classified).toEqual(coverage.mounted);
     expect(coverage.ok).toBe(true);
   });
