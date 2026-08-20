@@ -217,6 +217,88 @@ export const myFeedbackResponseSchema = z
   .strict();
 export type MyFeedbackResponse = z.infer<typeof myFeedbackResponseSchema>;
 
+/** Support-thread authors are explicit because admins and submitters use separate auth rails. */
+export const FEEDBACK_MESSAGE_AUTHOR_SIDES = ['submitter', 'admin'] as const;
+export const feedbackMessageAuthorSideSchema = z.enum(FEEDBACK_MESSAGE_AUTHOR_SIDES);
+export type FeedbackMessageAuthorSide = z.infer<typeof feedbackMessageAuthorSideSchema>;
+
+/** Keep feedback replies aligned with chat's bounded, text-only message body. */
+export const FEEDBACK_THREAD_MESSAGE_MAX_LENGTH = 4000;
+
+/**
+ * One message in a submission-owned support thread. `senderId`, `body`, and
+ * `createdAt` intentionally match chat's message idiom — including its
+ * nullability: a deleted author anonymizes their messages instead of recalling
+ * them (#362), and `authorSide` keeps the staff boundary explicit either way,
+ * without adding chat-only chip fields.
+ *
+ * `senderId` is additionally viewer-relative: on the submitter rail an
+ * admin-side row always reads `null`, because a staff account's internal id is
+ * identity the product surfaces to a user nowhere else (the account export
+ * scrubs the same field). On the admin rail it is the queue's record of who
+ * answered. Consumers must therefore attribute from `authorSide`, never from
+ * the presence of an id.
+ */
+export const feedbackThreadMessageSchema = z
+  .object({
+    id: z.string().uuid(),
+    feedbackId: z.string().uuid(),
+    senderId: z.string().uuid().nullable(),
+    authorSide: feedbackMessageAuthorSideSchema,
+    body: z.string().min(1).max(FEEDBACK_THREAD_MESSAGE_MAX_LENGTH),
+    createdAt: z.string().datetime(),
+  })
+  .strict();
+export type FeedbackThreadMessage = z.infer<typeof feedbackThreadMessageSchema>;
+
+/** Viewer-relative thread summary; unread is always derived from a last-read marker. */
+export const feedbackThreadSummarySchema = z
+  .object({
+    id: z.string().uuid(),
+    unreadCount: z.number().int().nonnegative(),
+  })
+  .strict();
+export type FeedbackThreadSummary = z.infer<typeof feedbackThreadSummarySchema>;
+
+/**
+ * A cursor that names no message in the addressed thread — stale, foreign, or
+ * fabricated. Answered as a 400 rather than silently re-serving page one, which
+ * would loop a client on the same page under a cursor that never advances.
+ */
+export const FEEDBACK_THREAD_CURSOR_UNKNOWN = 'FEEDBACK_THREAD_CURSOR_UNKNOWN';
+
+/** Newest-first keyset pagination, structurally parallel to a chat thread query. */
+export const feedbackThreadQuerySchema = z
+  .object({
+    cursor: z.string().uuid().optional(),
+    limit: z.coerce.number().int().min(1).max(100).optional(),
+  })
+  .strict();
+export type FeedbackThreadQuery = z.infer<typeof feedbackThreadQuerySchema>;
+
+/** A page of one feedback thread, using chat's messages + nextCursor response idiom. */
+export const feedbackThreadResponseSchema = z
+  .object({
+    thread: feedbackThreadSummarySchema,
+    messages: z.array(feedbackThreadMessageSchema),
+    nextCursor: z.string().nullable(),
+  })
+  .strict();
+export type FeedbackThreadResponse = z.infer<typeof feedbackThreadResponseSchema>;
+
+/** Both submitters and admins post the same bounded text-only shape. */
+export const sendFeedbackMessageRequestSchema = z
+  .object({
+    body: z.string().trim().min(1).max(FEEDBACK_THREAD_MESSAGE_MAX_LENGTH),
+  })
+  .strict();
+export type SendFeedbackMessageRequest = z.infer<typeof sendFeedbackMessageRequestSchema>;
+
+export const sendFeedbackMessageResponseSchema = z
+  .object({ message: feedbackThreadMessageSchema })
+  .strict();
+export type SendFeedbackMessageResponse = z.infer<typeof sendFeedbackMessageResponseSchema>;
+
 /** Filter, order and page controls for `GET /admin/feedback`. */
 export const adminFeedbackListQuerySchema = z
   .object({

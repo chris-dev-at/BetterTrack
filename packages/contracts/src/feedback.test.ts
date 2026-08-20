@@ -9,10 +9,14 @@ import {
   FEEDBACK_SHIPPED_VERSION_REQUIRED,
   FEEDBACK_STATUS_DETAILS_INVALID,
   FEEDBACK_SUBJECT_MAX_LENGTH,
+  FEEDBACK_THREAD_MESSAGE_MAX_LENGTH,
   adminFeedbackListQuerySchema,
   adminFeedbackListResponseSchema,
   createFeedbackRequestSchema,
+  feedbackThreadMessageSchema,
+  feedbackThreadResponseSchema,
   myFeedbackResponseSchema,
+  sendFeedbackMessageRequestSchema,
   updateFeedbackStatusRequestSchema,
 } from './feedback';
 
@@ -241,5 +245,55 @@ describe('feedback contracts', () => {
         ],
       }).success,
     ).toBe(true);
+  });
+
+  it('keeps support-thread messages parallel to chat while making the author side explicit', () => {
+    expect(sendFeedbackMessageRequestSchema.parse({ body: '  A concise reply.  ' })).toEqual({
+      body: 'A concise reply.',
+    });
+    expect(sendFeedbackMessageRequestSchema.safeParse({ body: '   ' }).success).toBe(false);
+    expect(
+      sendFeedbackMessageRequestSchema.safeParse({
+        body: 'x'.repeat(FEEDBACK_THREAD_MESSAGE_MAX_LENGTH + 1),
+      }).success,
+    ).toBe(false);
+
+    expect(
+      feedbackThreadResponseSchema.safeParse({
+        thread: {
+          id: '00000000-0000-7000-8000-000000000001',
+          unreadCount: 1,
+        },
+        messages: [
+          {
+            id: '00000000-0000-7000-8000-000000000002',
+            feedbackId: '00000000-0000-7000-8000-000000000001',
+            senderId: '00000000-0000-7000-8000-000000000003',
+            authorSide: 'admin',
+            body: 'We are looking into this.',
+            createdAt: '2026-08-20T08:00:00.000Z',
+          },
+        ],
+        nextCursor: null,
+      }).success,
+    ).toBe(true);
+  });
+
+  it('accepts an anonymized author but never a malformed one', () => {
+    const message = {
+      id: '00000000-0000-7000-8000-000000000002',
+      feedbackId: '00000000-0000-7000-8000-000000000001',
+      authorSide: 'admin' as const,
+      body: 'The account that wrote this is gone; the answer is not.',
+      createdAt: '2026-08-20T08:00:00.000Z',
+    };
+
+    // A deleted author anonymizes their messages (#362) rather than recalling
+    // them, so the wire must carry the null the SET NULL column produces.
+    expect(feedbackThreadMessageSchema.safeParse({ ...message, senderId: null }).success).toBe(
+      true,
+    );
+    expect(feedbackThreadMessageSchema.safeParse({ ...message, senderId: '' }).success).toBe(false);
+    expect(feedbackThreadMessageSchema.safeParse(message).success).toBe(false);
   });
 });

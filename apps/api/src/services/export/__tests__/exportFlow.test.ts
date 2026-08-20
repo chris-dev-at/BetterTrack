@@ -206,6 +206,49 @@ describe('account data export', () => {
     expect(feedbackRows).not.toContainEqual(expect.objectContaining({ id: bobFeedback!.id }));
   });
 
+  it('exports staff replies without the replying admin’s internal user id', async () => {
+    const user = await harness.seedUser({
+      email: 'threaded@bettertrack.test',
+      username: 'threaded',
+    });
+    const admin = await harness.seedAdmin();
+    const [submission] = await harness.db
+      .insert(schema.feedback)
+      .values({ userId: user.id, category: 'bug', message: 'Something is off.' })
+      .returning({ id: schema.feedback.id });
+    await harness.db.insert(schema.feedbackMessages).values([
+      {
+        feedbackId: submission!.id,
+        authorSide: 'submitter',
+        authorUserId: user.id,
+        body: 'Here are the details.',
+      },
+      {
+        feedbackId: submission!.id,
+        authorSide: 'admin',
+        authorUserId: admin.id,
+        body: 'Thanks — fixed in the next release.',
+      },
+    ]);
+
+    const collected = await collectUserExport(harness.db, user.id);
+    const messages = collected.entities.feedbackMessages as Record<string, unknown>[];
+    expect(messages).toHaveLength(2);
+    // The staff body is the user's own correspondence and stays exported; the
+    // admin account id behind it is identity the product never surfaces.
+    expect(messages).toContainEqual(
+      expect.objectContaining({
+        authorSide: 'admin',
+        authorUserId: null,
+        body: 'Thanks — fixed in the next release.',
+      }),
+    );
+    expect(messages).toContainEqual(
+      expect.objectContaining({ authorSide: 'submitter', authorUserId: user.id }),
+    );
+    expect(JSON.stringify(messages)).not.toContain(admin.id);
+  });
+
   it('the collector produces exactly the classified entity set', async () => {
     const user = await harness.seedUser();
     await harness.db.insert(schema.oauthClients).values({
