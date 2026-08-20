@@ -1,9 +1,13 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, expect, test, vi } from 'vitest';
 
-import { FEEDBACK_CONTEXT_MAX_BYTES, FEEDBACK_MESSAGE_MAX_LENGTH } from '@bettertrack/contracts';
+import {
+  FEEDBACK_CONTEXT_MAX_BYTES,
+  FEEDBACK_MESSAGE_MAX_LENGTH,
+  FEEDBACK_OPEN_LIMIT,
+} from '@bettertrack/contracts';
 
 vi.mock('../../lib/feedbackApi', () => ({ submitFeedback: vi.fn() }));
 
@@ -53,6 +57,9 @@ test('at 390 px submits feedback from the Settings panel with client context', a
   const dialog = screen.getByRole('dialog', { name: 'Send feedback' });
   expect(dialog).toHaveClass('bt-dialog__panel--phone-sheet');
   expect(screen.getByText(`0/${FEEDBACK_MESSAGE_MAX_LENGTH}`)).toBeInTheDocument();
+  for (const label of ['Feature idea', 'Bug', 'Other', 'Need help', 'Improvement']) {
+    expect(within(dialog).getByRole('option', { name: label })).toBeInTheDocument();
+  }
 
   await user.selectOptions(screen.getByLabelText('Category'), 'feature');
   await user.type(screen.getByLabelText('Subject (optional)'), '  A quicker import flow  ');
@@ -178,6 +185,25 @@ test('shows a localized API validation error and keeps typed feedback after a fa
   ).toBeInTheDocument();
   expect(screen.getByLabelText('Subject (optional)')).toHaveValue('Something else');
   expect(screen.getByLabelText('Message')).toHaveValue('The typed report must remain here.');
+});
+
+test('shows localized open-request-cap copy instead of the server fallback', async () => {
+  vi.mocked(submitFeedback).mockRejectedValue(
+    new ApiError(409, FEEDBACK_OPEN_LIMIT, 'Unlocalized server fallback.'),
+  );
+  const user = userEvent.setup();
+  renderDialog();
+
+  await user.selectOptions(screen.getByLabelText('Category'), 'help');
+  await user.type(screen.getByLabelText('Message'), 'One request too many.');
+  await user.click(screen.getByRole('button', { name: 'Submit feedback' }));
+
+  expect(
+    await screen.findByText(
+      'You already have 20 open requests. Please wait for triage or delete an open request before submitting another.',
+    ),
+  ).toBeInTheDocument();
+  expect(screen.queryByText('Unlocalized server fallback.')).not.toBeInTheDocument();
 });
 
 test('shows a localized context validation error', async () => {

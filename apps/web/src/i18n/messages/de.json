@@ -4450,7 +4450,7 @@
     },
     "feedback": {
       "title": "Feedback",
-      "subtitle": "Funktions- und Änderungswünsche zuerst, danach Fehler und sonstige Rückmeldungen.",
+      "subtitle": "Funktionsideen, Fehler, Hilfeanfragen, Verbesserungen und sonstige Rückmeldungen.",
       "refresh": "Aktualisieren",
       "loading": "Feedback wird geladen…",
       "loadError": "Feedback konnte nicht geladen werden.",
@@ -4466,9 +4466,11 @@
         "newest": "Neueste zuerst"
       },
       "category": {
-        "feature": "Funktion/Änderung",
+        "feature": "Funktionsidee",
         "bug": "Fehler",
-        "other": "Sonstiges"
+        "other": "Sonstiges",
+        "help": "Hilfeanfrage",
+        "improvement": "Verbesserung"
       },
       "status": {
         "new": "Neu",
@@ -4479,6 +4481,7 @@
         "shipped": "Veröffentlicht"
       },
       "statusControl": "Status für Feedback von {{user}}",
+      "deletedByUser": "Vom Benutzer gelöscht",
       "fields": {
         "status": "Status",
         "message": "Nachricht",
@@ -5364,20 +5367,22 @@
     "authorizedApps": "Autorisierte Apps",
     "appearance": "Darstellung",
     "feedback": "Feedback senden",
-    "feedbackSub": "Funktionswünsche und Fehlerberichte"
+    "feedbackSub": "Hilfeanfragen, Verbesserungen, Ideen und Fehler"
   },
   "feedback": {
     "title": "Feedback senden",
-    "dialogDescription": "Sende BetterTrack einen Funktionswunsch, Fehlerbericht oder anderen Hinweis.",
+    "dialogDescription": "Sende BetterTrack einen Fehler, eine Hilfeanfrage, Verbesserung, Funktionsidee oder einen anderen Hinweis.",
     "settingsLabel": "Hilf BetterTrack besser zu machen",
-    "settingsHint": "Funktionswunsch, Fehlerbericht oder anderer Hinweis.",
+    "settingsHint": "Fehler, Hilfeanfrage, Verbesserung, Funktionsidee oder anderer Hinweis.",
     "open": "Feedback schreiben",
     "category": "Kategorie",
     "categoryPlaceholder": "Kategorie auswählen",
     "categoryOption": {
-      "feature": "Funktion / Verbesserung",
+      "feature": "Funktionsidee",
       "bug": "Fehler",
-      "other": "Sonstiges"
+      "other": "Sonstiges",
+      "help": "Ich brauche Hilfe",
+      "improvement": "Verbesserung"
     },
     "subject": "Betreff (optional)",
     "message": "Nachricht",
@@ -5391,7 +5396,18 @@
     "submit": "Feedback senden",
     "submitting": "Wird gesendet…",
     "success": "Danke — dein Feedback wurde gesendet.",
-    "submitError": "Dein Feedback konnte nicht gesendet werden. Bitte versuche es erneut."
+    "submitError": "Dein Feedback konnte nicht gesendet werden. Bitte versuche es erneut.",
+    "openLimit": "Du hast bereits 20 offene Anfragen. Bitte warte auf die Prüfung oder lösche eine offene Anfrage, bevor du eine weitere sendest.",
+    "status": {
+      "new": "Gesendet",
+      "triaged": "Gelesen / in Prüfung",
+      "working_on_it": "In Bearbeitung",
+      "saved_as_future_idea": "Auf der Warteliste",
+      "shipped": "Veröffentlicht",
+      "comingIn": "Kommt mit {{version}}",
+      "declined": "Abgelehnt",
+      "declinedWithReason": "Abgelehnt — {{reason}}"
+    }
   },
   "privacy": {
     "subtitle": "Steuere, was der Bildschirm zeigt und wo deine Daten liegen.",

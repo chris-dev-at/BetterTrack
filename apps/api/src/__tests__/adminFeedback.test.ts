@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm';
+import { count, eq } from 'drizzle-orm';
 import type { Application } from 'express';
 import request from 'supertest';
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest';
@@ -9,6 +9,7 @@ import {
   adminFeedbackListResponseSchema,
   apiErrorSchema,
   createApiKeyResponseSchema,
+  myFeedbackResponseSchema,
   updateFeedbackStatusResponseSchema,
 } from '@bettertrack/contracts';
 
@@ -136,6 +137,74 @@ describe('admin feedback inbox', () => {
     const secondPage = adminFeedbackListResponseSchema.parse(secondResponse.body);
     expect(secondPage.submissions.map((row) => row.category)).toEqual(['bug', 'other']);
     expect(secondPage.pagination).toEqual({ page: 2, limit: 2, total: 4, totalPages: 2 });
+  });
+
+  it('round-trips help and improvement from create through mine and the admin inbox', async () => {
+    queueSequence += 1;
+    const user = await harness.seedUser({
+      email: `helpdesk-categories-${queueSequence}@bt.test`,
+      username: `helpdesk_categories_${queueSequence}`,
+    });
+    const agent = await loginAgent(harness.app, user);
+
+    for (const category of ['help', 'improvement'] as const) {
+      await agent
+        .post('/api/v1/feedback')
+        .set(...XRW)
+        .send({ category, message: `${category} request` })
+        .expect(201);
+    }
+
+    const mine = myFeedbackResponseSchema.parse((await agent.get('/api/v1/feedback/mine')).body);
+    expect(mine.submissions.map((row) => row.category).sort()).toEqual(['help', 'improvement']);
+
+    const admin = adminFeedbackListResponseSchema.parse(
+      (await adminAgent.get('/api/v1/admin/feedback').query({ sort: 'newest' })).body,
+    );
+    expect(admin.submissions.map((row) => row.category).sort()).toEqual(['help', 'improvement']);
+    expect(admin.submissions.every((row) => row.deletedByUser === false)).toBe(true);
+  });
+
+  it('keeps a user-deleted tombstone mutable for admins without notifying the user', async () => {
+    queueSequence += 1;
+    const user = await harness.seedUser({
+      email: `helpdesk-delete-${queueSequence}@bt.test`,
+      username: `helpdesk_delete_${queueSequence}`,
+    });
+    const agent = await loginAgent(harness.app, user);
+    const created = await agent
+      .post('/api/v1/feedback')
+      .set(...XRW)
+      .send({ category: 'help', message: 'I no longer need help.' });
+    expect(created.status).toBe(201);
+
+    await agent
+      .delete(`/api/v1/feedback/${created.body.id as string}`)
+      .set(...XRW)
+      .expect(204);
+    expect(
+      myFeedbackResponseSchema.parse((await agent.get('/api/v1/feedback/mine')).body).submissions,
+    ).toEqual([]);
+
+    const listed = adminFeedbackListResponseSchema.parse(
+      (await adminAgent.get('/api/v1/admin/feedback')).body,
+    );
+    expect(listed.submissions).toHaveLength(1);
+    expect(listed.submissions[0]).toMatchObject({
+      id: created.body.id,
+      deletedByUser: true,
+    });
+
+    const transitioned = await adminAgent
+      .patch(`/api/v1/admin/feedback/${created.body.id as string}`)
+      .set(...XRW)
+      .send({ status: 'shipped', shippedVersion: '5.5.0' });
+    expect(transitioned.status).toBe(200);
+    const [notifications] = await harness.db
+      .select({ value: count() })
+      .from(schema.notifications)
+      .where(eq(schema.notifications.userId, user.id));
+    expect(notifications?.value).toBe(0);
   });
 
   it('lets an admin persist declined reasons and shipped versions with status timestamps', async () => {

@@ -1,9 +1,16 @@
 import { z } from 'zod';
 
-/** Feedback categories in the owner's category-first triage order. */
-export const FEEDBACK_CATEGORIES = ['feature', 'bug', 'other'] as const;
+/**
+ * Feedback categories in their wire-compatible order. The first three values
+ * shipped to mobile in #1315; new categories must only ever be appended.
+ */
+export const FEEDBACK_CATEGORIES = ['feature', 'bug', 'other', 'help', 'improvement'] as const;
 export const feedbackCategorySchema = z.enum(FEEDBACK_CATEGORIES);
 export type FeedbackCategory = z.infer<typeof feedbackCategorySchema>;
+
+/** Open, non-deleted requests allowed per submitter before triage must make room. */
+export const FEEDBACK_OPEN_SUBMISSION_LIMIT = 20;
+export const FEEDBACK_OPEN_LIMIT = 'FEEDBACK_OPEN_LIMIT';
 
 /** User-authored feedback body and optional subject limits. */
 export const FEEDBACK_MESSAGE_MAX_LENGTH = 5000;
@@ -172,6 +179,7 @@ export const adminFeedbackSubmissionSchema = z
     lastStatusChangeAt: z.string().datetime(),
     declinedReason: z.string().max(FEEDBACK_DECLINED_REASON_MAX_LENGTH).nullable(),
     shippedVersion: z.string().max(FEEDBACK_SHIPPED_VERSION_MAX_LENGTH).nullable(),
+    deletedByUser: z.boolean(),
     submitter: z
       .object({
         id: z.string().uuid(),
