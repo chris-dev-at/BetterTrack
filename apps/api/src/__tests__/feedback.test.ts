@@ -6,6 +6,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import {
   API_KEY_SCOPES,
   FEEDBACK_MESSAGE_MAX_LENGTH,
+  FEEDBACK_THREAD_CURSOR_UNKNOWN,
   apiErrorSchema,
   createApiKeyResponseSchema,
   createFeedbackResponseSchema,
@@ -440,6 +441,61 @@ describe('feedback submission threads', () => {
 
     const [stored] = await harness.db.select({ value: count() }).from(schema.feedbackMessages);
     expect(stored?.value).toBe(1);
+  });
+
+  it('reports an unresolvable page cursor instead of silently re-serving page one', async () => {
+    const owner = await harness.seedUser({
+      email: 'thread-cursor@bt.test',
+      username: 'threadcursor',
+    });
+    const [submission, sibling] = await harness.db
+      .insert(schema.feedback)
+      .values([
+        { userId: owner.id, category: 'bug', message: 'Cursor thread.' },
+        { userId: owner.id, category: 'other', message: 'Sibling thread.' },
+      ])
+      .returning();
+    const agent = await loginAgent(harness.app, owner);
+    for (const body of ['First.', 'Second.']) {
+      await agent
+        .post(`/api/v1/feedback/${submission!.id}/messages`)
+        .set(...XRW)
+        .send({ body })
+        .expect(201);
+    }
+    const siblingPost = await agent
+      .post(`/api/v1/feedback/${sibling!.id}/messages`)
+      .set(...XRW)
+      .send({ body: 'Belongs to the other thread.' });
+    expect(siblingPost.status).toBe(201);
+    const siblingCursor = sendFeedbackMessageResponseSchema.parse(siblingPost.body).message.id;
+
+    // A cursor this thread issued still pages, newest-first.
+    const firstPage = feedbackThreadResponseSchema.parse(
+      (await agent.get(`/api/v1/feedback/${submission!.id}/messages`).query({ limit: 1 })).body,
+    );
+    expect(firstPage.messages.map((message) => message.body)).toEqual(['Second.']);
+    expect(firstPage.nextCursor).not.toBeNull();
+    const secondPage = feedbackThreadResponseSchema.parse(
+      (
+        await agent
+          .get(`/api/v1/feedback/${submission!.id}/messages`)
+          .query({ limit: 1, cursor: firstPage.nextCursor! })
+      ).body,
+    );
+    expect(secondPage.messages.map((message) => message.body)).toEqual(['First.']);
+    expect(secondPage.nextCursor).toBeNull();
+
+    // A cursor from the caller's OTHER thread — and one naming no row at all —
+    // constrain nothing, so serving them would return page one again under a
+    // cursor that never advances. Both must fail visibly instead.
+    for (const cursor of [siblingCursor, MISSING_ID]) {
+      const response = await agent
+        .get(`/api/v1/feedback/${submission!.id}/messages`)
+        .query({ limit: 1, cursor });
+      expect(response.status, JSON.stringify(response.body)).toBe(400);
+      expect(apiErrorSchema.parse(response.body).error.code).toBe(FEEDBACK_THREAD_CURSOR_UNKNOWN);
+    }
   });
 
   it('admits feedback:read bearers on a thread and scope-refuses other keys', async () => {

@@ -1,6 +1,7 @@
 import { Router } from 'express';
 
 import {
+  FEEDBACK_THREAD_CURSOR_UNKNOWN,
   createFeedbackRequestSchema,
   feedbackThreadQuerySchema,
   idParamSchema,
@@ -10,7 +11,7 @@ import {
   type SendFeedbackMessageRequest,
 } from '@bettertrack/contracts';
 
-import { notFound } from '../../errors';
+import { badRequest, notFound } from '../../errors';
 import type { AppContext } from '../context';
 import type { RateLimiters } from '../middleware/rateLimit';
 import { requireUser } from '../middleware/session';
@@ -37,8 +38,13 @@ export function createFeedbackRouter(ctx: AppContext, limiters: RateLimiters): R
         id,
         req.valid?.query as FeedbackThreadQuery,
       );
-      if (!result) throw notFound('Feedback not found.');
-      res.json(result);
+      // Ownership is resolved before the cursor, so a foreign submission still
+      // 404s exactly like a missing one — the 400 is only ever about the cursor.
+      if (result.status === 'not_found') throw notFound('Feedback not found.');
+      if (result.status === 'invalid_cursor') {
+        throw badRequest('Unknown thread cursor.', FEEDBACK_THREAD_CURSOR_UNKNOWN);
+      }
+      res.json(result.thread);
     },
   );
 

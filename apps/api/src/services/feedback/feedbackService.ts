@@ -20,10 +20,19 @@ import type { FeedbackMessageRow } from '../../data/schema';
 import type {
   AdminFeedbackRow,
   FeedbackRepository,
-  FeedbackThreadPage,
+  FeedbackThreadLookup,
 } from '../../data/repositories/feedbackRepository';
 
 const DEFAULT_THREAD_LIMIT = 40;
+
+/**
+ * Thread read outcome, carried to the routes so each maps to its own status: a
+ * missing/foreign submission is a no-leak 404, an unresolvable cursor a 400.
+ */
+export type FeedbackThreadResult =
+  | { status: 'ok'; thread: FeedbackThreadResponse }
+  | { status: 'not_found' }
+  | { status: 'invalid_cursor' };
 
 function toAdminSubmission(row: AdminFeedbackRow): AdminFeedbackSubmission {
   return {
@@ -53,11 +62,15 @@ function toThreadMessage(row: FeedbackMessageRow): FeedbackThreadMessage {
   };
 }
 
-function toThreadResponse(page: FeedbackThreadPage): FeedbackThreadResponse {
+function toThreadResult(lookup: FeedbackThreadLookup): FeedbackThreadResult {
+  if (lookup.status !== 'ok') return lookup;
   return {
-    thread: page.thread,
-    messages: page.rows.map(toThreadMessage),
-    nextCursor: page.nextCursor,
+    status: 'ok',
+    thread: {
+      thread: lookup.page.thread,
+      messages: lookup.page.rows.map(toThreadMessage),
+      nextCursor: lookup.page.nextCursor,
+    },
   };
 }
 
@@ -87,7 +100,7 @@ export interface FeedbackService {
     userId: string,
     id: string,
     input: FeedbackThreadQuery,
-  ): Promise<FeedbackThreadResponse | null>;
+  ): Promise<FeedbackThreadResult>;
   sendMessageForSubmitter(
     userId: string,
     id: string,
@@ -96,7 +109,7 @@ export interface FeedbackService {
   markReadForSubmitter(userId: string, id: string): Promise<boolean>;
   /** Owner-only queue read; authorization is enforced by the parent admin router. */
   listForAdmin(input: AdminFeedbackListQuery): Promise<AdminFeedbackListResponse>;
-  getThreadForAdmin(id: string, input: FeedbackThreadQuery): Promise<FeedbackThreadResponse | null>;
+  getThreadForAdmin(id: string, input: FeedbackThreadQuery): Promise<FeedbackThreadResult>;
   sendMessageForAdmin(
     adminUserId: string,
     id: string,
@@ -126,11 +139,12 @@ export function createFeedbackService({ repo }: FeedbackServiceDeps): FeedbackSe
     },
 
     async getThreadForSubmitter(userId, id, input) {
-      const page = await repo.getThreadForSubmitter(userId, id, {
-        cursor: input.cursor,
-        limit: input.limit ?? DEFAULT_THREAD_LIMIT,
-      });
-      return page ? toThreadResponse(page) : null;
+      return toThreadResult(
+        await repo.getThreadForSubmitter(userId, id, {
+          cursor: input.cursor,
+          limit: input.limit ?? DEFAULT_THREAD_LIMIT,
+        }),
+      );
     },
 
     async sendMessageForSubmitter(userId, id, input) {
@@ -156,11 +170,12 @@ export function createFeedbackService({ repo }: FeedbackServiceDeps): FeedbackSe
     },
 
     async getThreadForAdmin(id, input) {
-      const page = await repo.getThreadForAdmin(id, {
-        cursor: input.cursor,
-        limit: input.limit ?? DEFAULT_THREAD_LIMIT,
-      });
-      return page ? toThreadResponse(page) : null;
+      return toThreadResult(
+        await repo.getThreadForAdmin(id, {
+          cursor: input.cursor,
+          limit: input.limit ?? DEFAULT_THREAD_LIMIT,
+        }),
+      );
     },
 
     async sendMessageForAdmin(adminUserId, id, input) {

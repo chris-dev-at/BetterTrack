@@ -329,6 +329,55 @@ describe('admin feedback inbox', () => {
     ).toBe(0);
   });
 
+  it('deletes a replying admin cleanly, anonymizing their staff rows instead of recalling them', async () => {
+    const submitter = await harness.seedUser({
+      email: 'feedback-staff-delete@bt.test',
+      username: 'feedbackstaffdelete',
+    });
+    const [submission] = await harness.db
+      .insert(schema.feedback)
+      .values({ userId: submitter.id, category: 'bug', message: 'A second admin answers this.' })
+      .returning();
+    const staff = await harness.seedAdmin({
+      email: 'second-admin-feedback@bt.test',
+      username: 'secondadminfeedback',
+      password: 'second-admin-strong-password-1',
+    });
+    const staffAgent = await harness.loginAdmin(staff);
+    const reply = await staffAgent
+      .post(`/api/v1/admin/feedback/${submission!.id}/messages`)
+      .set(...XRW)
+      .send({ body: 'Staff answer that outlives its author.' });
+    expect(reply.status).toBe(201);
+
+    // The owner later deletes that admin. Their replies sit on ANOTHER user's
+    // submission, so nothing else clears them: under a NO ACTION FK the bare
+    // `DELETE FROM users` raised 23503 and left the target disabled, sessions
+    // destroyed — half-deleted.
+    const deleted = await adminAgent
+      .delete(`/api/v1/admin/users/${staff.id}`)
+      .set(...XRW)
+      .send({ confirmUsername: staff.username });
+    expect(deleted.status, JSON.stringify(deleted.body)).toBe(200);
+    expect(
+      await harness.db.select().from(schema.users).where(eq(schema.users.id, staff.id)),
+    ).toEqual([]);
+
+    // The submitter keeps the answer they were given; only the internal id goes,
+    // and `authorSide` still carries the staff attribution.
+    const submitterAgent = await loginAgent(harness.app, submitter);
+    const thread = feedbackThreadResponseSchema.parse(
+      (await submitterAgent.get(`/api/v1/feedback/${submission!.id}/messages`)).body,
+    );
+    expect(thread.thread.unreadCount).toBe(1);
+    expect(thread.messages).toHaveLength(1);
+    expect(thread.messages[0]).toMatchObject({
+      senderId: null,
+      authorSide: 'admin',
+      body: 'Staff answer that outlives its author.',
+    });
+  });
+
   it('returns specific contract errors for missing or null declined/shipped details', async () => {
     const { rows } = await seedQueue();
 

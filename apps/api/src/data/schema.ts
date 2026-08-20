@@ -672,8 +672,9 @@ export const feedback = pgTable(
 /**
  * One text reply on a feedback submission (#1339). The submission is the
  * natural thread parent, so feedback does not need chat's separate conversation
- * table. The author side records the auth rail while `author_user_id` preserves
- * which concrete admin or submitter wrote the audit-trail row.
+ * table. The author side records the auth rail — which is the attribution that
+ * survives everything — while `author_user_id` names the concrete account when
+ * it still exists.
  */
 export const feedbackMessages = pgTable(
   'feedback_messages',
@@ -683,9 +684,12 @@ export const feedbackMessages = pgTable(
       .notNull()
       .references(() => feedback.id, { onDelete: 'cascade' }),
     authorSide: feedbackMessageAuthorSideEnum('author_side').notNull(),
-    authorUserId: uuid('author_user_id')
-      .notNull()
-      .references(() => users.id),
+    // Nullable + ON DELETE SET NULL, exactly as chat's sender (#362): an admin's
+    // replies sit on OTHER users' submissions, so nothing else removes them —
+    // a NO ACTION FK would make any admin who has ever answered undeletable and
+    // fail the bare `DELETE FROM users` both deletion paths rely on. Anonymize
+    // instead of recalling: `author_side` carries the staff attribution.
+    authorUserId: uuid('author_user_id').references(() => users.id, { onDelete: 'set null' }),
     body: text('body').notNull(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },

@@ -1,6 +1,7 @@
 import { type Router } from 'express';
 
 import {
+  FEEDBACK_THREAD_CURSOR_UNKNOWN,
   adminFeedbackListQuerySchema,
   feedbackThreadQuerySchema,
   idParamSchema,
@@ -12,7 +13,7 @@ import {
   type UpdateFeedbackStatusRequest,
 } from '@bettertrack/contracts';
 
-import { notFound } from '../../errors';
+import { badRequest, notFound } from '../../errors';
 import type { AppContext } from '../context';
 import type { RateLimiters } from '../middleware/rateLimit';
 import { validateBody, validateParams, validateQuery } from '../middleware/validate';
@@ -41,8 +42,13 @@ export function registerAdminFeedbackRoutes(
         id,
         req.valid?.query as FeedbackThreadQuery,
       );
-      if (!result) throw notFound('Feedback not found.');
-      res.json(result);
+      if (result.status === 'not_found') throw notFound('Feedback not found.');
+      // A cursor from another thread never constrains this one — say so (as on
+      // the submitter rail) instead of silently re-serving page one.
+      if (result.status === 'invalid_cursor') {
+        throw badRequest('Unknown thread cursor.', FEEDBACK_THREAD_CURSOR_UNKNOWN);
+      }
+      res.json(result.thread);
     },
   );
 

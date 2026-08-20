@@ -32,6 +32,17 @@ export interface FeedbackThreadPage {
   nextCursor: string | null;
 }
 
+/**
+ * Thread read outcomes. `not_found` covers both a missing submission and one
+ * owned by another user — ownership is part of the parent SELECT, so the two are
+ * indistinguishable. `invalid_cursor` is only ever reachable *after* that gate,
+ * so answering it distinctly cannot reveal anything about a foreign thread.
+ */
+export type FeedbackThreadLookup =
+  | { status: 'ok'; page: FeedbackThreadPage }
+  | { status: 'not_found' }
+  | { status: 'invalid_cursor' };
+
 /** Persistence seam shared by client capture and the owner-only triage queue. */
 export interface FeedbackRepository {
   create(userId: string, input: CreateFeedbackRequest): Promise<FeedbackRow>;
@@ -42,11 +53,11 @@ export interface FeedbackRepository {
     userId: string,
     id: string,
     params: { cursor?: string; limit: number },
-  ): Promise<FeedbackThreadPage | null>;
+  ): Promise<FeedbackThreadLookup>;
   getThreadForAdmin(
     id: string,
     params: { cursor?: string; limit: number },
-  ): Promise<FeedbackThreadPage | null>;
+  ): Promise<FeedbackThreadLookup>;
   createMessageForSubmitter(
     userId: string,
     id: string,
@@ -76,7 +87,7 @@ export function createFeedbackRepository(db: Database): FeedbackRepository {
     viewerSide: FeedbackMessageAuthorSide,
     params: { cursor?: string; limit: number },
     submitterUserId?: string,
-  ): Promise<FeedbackThreadPage | null> {
+  ): Promise<FeedbackThreadLookup> {
     const lastReadAtColumn =
       viewerSide === 'submitter' ? feedback.submitterLastReadAt : feedback.adminLastReadAt;
     const otherSide: FeedbackMessageAuthorSide = viewerSide === 'submitter' ? 'admin' : 'submitter';
@@ -91,15 +102,14 @@ export function createFeedbackRepository(db: Database): FeedbackRepository {
         ),
       )
       .limit(1);
-    if (!thread) return null;
+    if (!thread) return { status: 'not_found' };
 
     // Page and unread count must share one ordering key. Unread is derived from
     // a `created_at` marker, so the page is keyset-ordered by `created_at` with
     // the UUIDv7 `id` as tiebreak — a row written with an explicit `createdAt`
     // (a backfill, an import, a fixture) then cannot land in a page position
     // that contradicts its own unread classification. The wire cursor stays the
-    // message id, so its stamp is resolved here, scoped to this thread; an id
-    // that names no row in this thread simply doesn't constrain the page.
+    // message id, so its stamp is resolved here, scoped to this thread.
     const [cursorRow] = params.cursor
       ? await db
           .select({ id: feedbackMessages.id, createdAt: feedbackMessages.createdAt })
@@ -107,6 +117,11 @@ export function createFeedbackRepository(db: Database): FeedbackRepository {
           .where(and(eq(feedbackMessages.feedbackId, id), eq(feedbackMessages.id, params.cursor)))
           .limit(1)
       : [];
+    // A cursor naming no row in THIS thread is a client error, not an empty
+    // constraint: ignoring it would hand back page one under a `nextCursor` that
+    // points at the end of page one again, looping the caller forever instead of
+    // telling them the cursor is wrong.
+    if (params.cursor && !cursorRow) return { status: 'invalid_cursor' };
     const beforeCursor = cursorRow
       ? or(
           lt(feedbackMessages.createdAt, cursorRow.createdAt),
@@ -138,9 +153,12 @@ export function createFeedbackRepository(db: Database): FeedbackRepository {
     const hasMore = rows.length > params.limit;
     const page = hasMore ? rows.slice(0, params.limit) : rows;
     return {
-      thread: { id: thread.id, unreadCount: unreadRows[0]?.value ?? 0 },
-      rows: page,
-      nextCursor: hasMore ? (page.at(-1)?.id ?? null) : null,
+      status: 'ok',
+      page: {
+        thread: { id: thread.id, unreadCount: unreadRows[0]?.value ?? 0 },
+        rows: page,
+        nextCursor: hasMore ? (page.at(-1)?.id ?? null) : null,
+      },
     };
   }
 

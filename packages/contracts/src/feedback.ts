@@ -219,14 +219,16 @@ export const FEEDBACK_THREAD_MESSAGE_MAX_LENGTH = 4000;
 
 /**
  * One message in a submission-owned support thread. `senderId`, `body`, and
- * `createdAt` intentionally match chat's message idiom; `authorSide` makes the
- * staff boundary explicit without adding chat-only chip fields.
+ * `createdAt` intentionally match chat's message idiom — including its
+ * nullability: a deleted author anonymizes their messages instead of recalling
+ * them (#362), and `authorSide` keeps the staff boundary explicit either way,
+ * without adding chat-only chip fields.
  */
 export const feedbackThreadMessageSchema = z
   .object({
     id: z.string().uuid(),
     feedbackId: z.string().uuid(),
-    senderId: z.string().uuid(),
+    senderId: z.string().uuid().nullable(),
     authorSide: feedbackMessageAuthorSideSchema,
     body: z.string().min(1).max(FEEDBACK_THREAD_MESSAGE_MAX_LENGTH),
     createdAt: z.string().datetime(),
@@ -242,6 +244,13 @@ export const feedbackThreadSummarySchema = z
   })
   .strict();
 export type FeedbackThreadSummary = z.infer<typeof feedbackThreadSummarySchema>;
+
+/**
+ * A cursor that names no message in the addressed thread — stale, foreign, or
+ * fabricated. Answered as a 400 rather than silently re-serving page one, which
+ * would loop a client on the same page under a cursor that never advances.
+ */
+export const FEEDBACK_THREAD_CURSOR_UNKNOWN = 'FEEDBACK_THREAD_CURSOR_UNKNOWN';
 
 /** Newest-first keyset pagination, structurally parallel to a chat thread query. */
 export const feedbackThreadQuerySchema = z

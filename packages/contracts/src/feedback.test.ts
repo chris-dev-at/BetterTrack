@@ -12,6 +12,7 @@ import {
   adminFeedbackListQuerySchema,
   adminFeedbackListResponseSchema,
   createFeedbackRequestSchema,
+  feedbackThreadMessageSchema,
   feedbackThreadResponseSchema,
   myFeedbackResponseSchema,
   sendFeedbackMessageRequestSchema,
@@ -268,5 +269,23 @@ describe('feedback contracts', () => {
         nextCursor: null,
       }).success,
     ).toBe(true);
+  });
+
+  it('accepts an anonymized author but never a malformed one', () => {
+    const message = {
+      id: '00000000-0000-7000-8000-000000000002',
+      feedbackId: '00000000-0000-7000-8000-000000000001',
+      authorSide: 'admin' as const,
+      body: 'The account that wrote this is gone; the answer is not.',
+      createdAt: '2026-08-20T08:00:00.000Z',
+    };
+
+    // A deleted author anonymizes their messages (#362) rather than recalling
+    // them, so the wire must carry the null the SET NULL column produces.
+    expect(feedbackThreadMessageSchema.safeParse({ ...message, senderId: null }).success).toBe(
+      true,
+    );
+    expect(feedbackThreadMessageSchema.safeParse({ ...message, senderId: '' }).success).toBe(false);
+    expect(feedbackThreadMessageSchema.safeParse(message).success).toBe(false);
   });
 });
