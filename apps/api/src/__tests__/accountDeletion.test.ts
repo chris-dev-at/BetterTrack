@@ -447,6 +447,9 @@ describe('DELETE /account — hard delete (acceptance sweep)', () => {
         name: 'Doomed vault',
         media: ['server', 'drive'],
         driveConnectionId: connection!.id,
+        // Deterministic TEST VECTORS, not secrets: the canonical Ed25519
+        // DER-SPKI prefix padded to shape + a fixed 16-char fingerprint
+        // (mirrors vaultsSchema.test.ts).
         retirementProofPublicKey: 'MCowBQYDK2VwAyEA' + 'A'.repeat(27) + '=',
         keyFingerprint: 'Abcdef0123456789',
       })

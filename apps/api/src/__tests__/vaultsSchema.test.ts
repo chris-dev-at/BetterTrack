@@ -15,6 +15,9 @@ import { createTestApp, type TestHarness } from '../testing/createTestApp';
  * here by insert, not assumed.
  */
 
+// Deterministic TEST VECTORS, not secrets: the canonical Ed25519 DER-SPKI
+// prefix padded to shape, and a fixed 16-char base64url key fingerprint. The
+// DB stores both as opaque text — only the contracts validate their format.
 const PROOF_KEY = 'MCowBQYDK2VwAyEA' + 'A'.repeat(27) + '=';
 const FINGERPRINT = 'Abcdef0123456789';
 
