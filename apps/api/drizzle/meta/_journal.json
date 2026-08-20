@@ -645,6 +645,13 @@
       "when": 1787184331000,
       "tag": "0091_paranoid_vaults_keystone",
       "breakpoints": true
+    },
+    {
+      "idx": 92,
+      "version": "7",
+      "when": 1787190000000,
+      "tag": "0092_first_party_grant_scopes",
+      "breakpoints": true
     }
   ]
 }
