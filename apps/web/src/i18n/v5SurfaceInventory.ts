@@ -1073,6 +1073,11 @@ export const NON_V5_SURFACES = [
     note: 'V2 session list, re-housed by the R2 Control Center.',
   },
   {
+    path: 'user/control/panels/TrustedDevicesPanel.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'Post-V5 mobile-parity remembered-device manager (#1391).',
+  },
+  {
     path: 'user/control/panels/panelKit.tsx',
     reason: 'no-user-copy',
     note: 'R2 Control Center panel primitives; every string is caller-supplied.',
@@ -1765,9 +1770,10 @@ export const V5_ASYNC_STATE_DEBT: V5AsyncStateDebtLedger = {};
  * offenders disappear from the review record. The reason each component is
  * outside the V5 deliverable lives beside it in NON_V5_SURFACES.
  */
-// #1316 adds one fully handled post-V5 admin feedback read. It increases the
-// analyzed non-V5 read universe without adding any deferred state debt.
-export const DEFERRED_NON_V5_ASYNC_READ_SITE_BASELINE = 56;
+// #1316 adds one fully handled post-V5 admin feedback read; #1391 adds the
+// fully handled Trusted devices read. Both increase the analyzed non-V5 read
+// universe without adding any deferred state debt.
+export const DEFERRED_NON_V5_ASYNC_READ_SITE_BASELINE = 57;
 
 export const DEFERRED_NON_V5_ASYNC_STATE_DEBT_CEILING = {
   readSites: 42,
