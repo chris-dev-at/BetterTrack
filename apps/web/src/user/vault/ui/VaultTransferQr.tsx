@@ -58,8 +58,7 @@ export function VaultTransferQr({
   const [errorKey, setErrorKey] = useState<string | null>(null);
   const requestGeneration = useRef(0);
   const freshPasswordAt = useRef<number | null>(null);
-  const phaseRef = useRef<TransferPhase>(phase);
-  phaseRef.current = phase;
+  const overlayOpen = useRef(false);
   const open = phase !== 'closed';
   const { containerRef, onKeyDown } = useFocusTrap<HTMLDivElement>({
     active: open,
@@ -67,6 +66,7 @@ export function VaultTransferQr({
   });
 
   const close = useCallback(() => {
+    overlayOpen.current = false;
     requestGeneration.current += 1;
     setSecret(null);
     setDevicePassword('');
@@ -81,13 +81,14 @@ export function VaultTransferQr({
   useEffect(
     () =>
       source.subscribeToSessionEnd(() => {
+        const shouldBlock = overlayOpen.current;
         requestGeneration.current += 1;
         freshPasswordAt.current = null;
         flushSync(() => {
           setSecret(null);
           setDevicePassword('');
           setManualOpen(false);
-          if (phaseRef.current !== 'closed') {
+          if (shouldBlock) {
             setErrorKey('vault.transfer.sender.errors.unlockRequired');
             setPhase('blocked');
           }
@@ -155,6 +156,7 @@ export function VaultTransferQr({
   }
 
   async function requestShow(showWords: boolean) {
+    overlayOpen.current = true;
     const generation = ++requestGeneration.current;
     setSecret(null);
     setErrorKey(null);
