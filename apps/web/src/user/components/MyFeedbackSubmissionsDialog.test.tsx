@@ -120,6 +120,30 @@ test('clears an unread-reply badge when its thread opens and keeps it clear afte
   expect(screen.queryByRole('status')).not.toBeInTheDocument();
 });
 
+test('advances the read marker when a stale list has no unread replies', async () => {
+  const newlyArrivedReply: FeedbackThreadMessage = {
+    id: '00000000-0000-4000-8000-000000000005',
+    feedbackId: FEEDBACK_ID,
+    senderId: null,
+    authorSide: 'admin',
+    body: 'A reply arrived after the submissions list was loaded.',
+    createdAt: '2026-08-18T12:02:00.000Z',
+  };
+  const staleSubmission = submission({ unreadReplyCount: 0 });
+  vi.mocked(listMyFeedback)
+    .mockResolvedValueOnce({ submissions: [staleSubmission] })
+    .mockResolvedValue({ submissions: [{ ...staleSubmission, unreadReplyCount: 0 }] });
+  vi.mocked(getFeedbackThread).mockResolvedValue(thread([newlyArrivedReply]));
+  const user = userEvent.setup();
+
+  renderDialog();
+
+  await user.click((await screen.findByText(staleSubmission.subject!)).closest('button')!);
+
+  expect(await screen.findByText(newlyArrivedReply.body)).toBeInTheDocument();
+  await waitFor(() => expect(markFeedbackRead).toHaveBeenCalledWith(FEEDBACK_ID));
+});
+
 test('posts a reply and renders the conversation in chronological order', async () => {
   const adminMessage: FeedbackThreadMessage = {
     id: '00000000-0000-4000-8000-000000000002',

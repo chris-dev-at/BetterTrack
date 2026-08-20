@@ -339,9 +339,10 @@ export function MyFeedbackSubmissionsDialog({
 
   function openThread(submission: MyFeedbackSubmission) {
     setSelected(submission);
-    if (submission.unreadReplyCount > 0) {
-      markReadMutation.mutate(submission.id);
-    }
+    // The list can be stale if an admin reply arrives after it was fetched.
+    // Always advance the server-side marker when a thread is opened so a
+    // subsequently refreshed list cannot restore an already-viewed badge.
+    markReadMutation.mutate(submission.id);
   }
 
   return (
