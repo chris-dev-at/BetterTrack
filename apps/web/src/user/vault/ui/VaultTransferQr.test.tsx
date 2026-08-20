@@ -193,6 +193,24 @@ describe('VaultTransferQr sender', () => {
     ).not.toBeInTheDocument();
   });
 
+  it('moves an immediately revoked show request to the locked state', async () => {
+    const source = plainSource();
+    source.requireLiveUnlock = vi.fn(async () => {
+      source.endSession();
+    });
+    render(<VaultTransferQr source={source} vaultId={VAULT_TRANSFER_VECTOR_VAULT_ID} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show transfer QR' }));
+
+    expect(
+      await screen.findByText(
+        'Unlock and open this vault on this device before showing its transfer code.',
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText('Checking this endpoint…')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Vault seed-phrase transfer QR code')).not.toBeInTheDocument();
+  });
+
   it('passes the byte-only payload with exact level M and boost disabled to the encoder', async () => {
     const source = plainSource();
     const callSequence: string[] = [];
