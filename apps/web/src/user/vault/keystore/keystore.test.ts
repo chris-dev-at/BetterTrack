@@ -490,7 +490,7 @@ describe('endpoint keystore custody and verified persistence', () => {
     });
   });
 
-  it('synchronously zeros an active borrowed K_c when the session ends', async () => {
+  it('zeros an active borrowed K_c before synchronously notifying session listeners', async () => {
     const storage = new MemoryEndpointStorage();
     const core = keystore(storage);
     await core.storeAfterVerifiedOpen({
@@ -509,9 +509,15 @@ describe('endpoint keystore custody and verified persistence', () => {
     });
     await started.promise;
     expect(borrowed).toEqual(new Uint8Array(32).fill(0x31));
+    const sessionEnded = vi.fn(() => {
+      expect(borrowed).toEqual(new Uint8Array(32));
+    });
+    const unsubscribe = core.subscribeToSessionEnd(sessionEnded);
 
     core.endSession();
     expect(borrowed).toEqual(new Uint8Array(32));
+    expect(sessionEnded).toHaveBeenCalledTimes(1);
+    unsubscribe();
     release.resolve();
     await expect(operation).rejects.toMatchObject({ code: 'session-ended' });
   });
