@@ -155,7 +155,10 @@ export async function collectUserExport(
   // dependents can `inArray` on them (empty set ⇒ no rows, never a broad scan).
   const [portfolioRows, conglomerateRows, audienceRows, customAssetRows, feedbackRows] =
     await Promise.all([
-      db.select({ id: portfolios.id }).from(portfolios).where(eq(portfolios.userId, userId)),
+      db
+        .select({ id: portfolios.id, vaultId: portfolios.vaultId })
+        .from(portfolios)
+        .where(eq(portfolios.userId, userId)),
       db
         .select({ id: conglomerates.id })
         .from(conglomerates)
@@ -168,6 +171,11 @@ export async function collectUserExport(
       db.select().from(feedback).where(eq(feedback.userId, userId)),
     ]);
   const portfolioIds = portfolioRows.map((r) => r.id);
+  // A vault-backed portfolio row is only a locked config stub. Its cleartext
+  // descendants are forbidden by the per-vault model, but filter them here too
+  // as a fail-closed export boundary in case stale/invalid rows survive a race or
+  // an interrupted move-in. The stub itself remains ordinary account config.
+  const cleartextPortfolioIds = portfolioRows.filter((r) => r.vaultId === null).map((r) => r.id);
   const conglomerateIds = conglomerateRows.map((r) => r.id);
   const audienceIds = audienceRows.map((r) => r.id);
   const customAssetIds = customAssetRows.map((r) => r.id);
@@ -253,22 +261,22 @@ export async function collectUserExport(
     // A user's OWN authored messages only — never the partner's content.
     db.select().from(chatMessages).where(eq(chatMessages.senderId, userId)),
     db.select().from(announcementDismissals).where(eq(announcementDismissals.userId, userId)),
-    inIds(portfolioIds, (ids) =>
+    inIds(cleartextPortfolioIds, (ids) =>
       db.select().from(transactions).where(inArray(transactions.portfolioId, ids)),
     ),
-    inIds(portfolioIds, (ids) =>
+    inIds(cleartextPortfolioIds, (ids) =>
       db.select().from(portfolioCashSources).where(inArray(portfolioCashSources.portfolioId, ids)),
     ),
-    inIds(portfolioIds, (ids) =>
+    inIds(cleartextPortfolioIds, (ids) =>
       db.select().from(dividends).where(inArray(dividends.portfolioId, ids)),
     ),
-    inIds(portfolioIds, (ids) =>
+    inIds(cleartextPortfolioIds, (ids) =>
       db
         .select()
         .from(portfolioCashMovements)
         .where(inArray(portfolioCashMovements.portfolioId, ids)),
     ),
-    inIds(portfolioIds, (ids) =>
+    inIds(cleartextPortfolioIds, (ids) =>
       db.select().from(portfolioSettings).where(inArray(portfolioSettings.portfolioId, ids)),
     ),
     db.select().from(conglomerates).where(eq(conglomerates.ownerId, userId)),
