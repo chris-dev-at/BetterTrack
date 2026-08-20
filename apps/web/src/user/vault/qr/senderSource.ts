@@ -3,8 +3,10 @@ import type { EndpointVaultKeystore } from '../keystore/core';
 interface VaultTransferQrSourceBase {
   /** Local-memory/IndexedDB check only: this never fetches a remote medium. */
   requireLiveUnlock(): Promise<void>;
-  /** Reads only from the already-unlocked endpoint keystore. */
+  /** Reads only while the endpoint keystore session remains live. */
   readMnemonic(): Promise<string>;
+  /** Synchronously blanks secret-bearing UI when the keystore session ends. */
+  subscribeToSessionEnd(listener: () => void): () => void;
 }
 
 export type VaultTransferQrSource =
@@ -18,13 +20,22 @@ export type VaultTransferQrSource =
     });
 
 export function createVaultTransferQrSource(input: {
-  keystore: Pick<EndpointVaultKeystore, 'readMnemonic' | 'verifyDevicePassword' | 'withContentKey'>;
+  keystore: Pick<
+    EndpointVaultKeystore,
+    'readMnemonic' | 'subscribeToSessionEnd' | 'verifyDevicePassword' | 'withContentKey'
+  >;
   vaultId: string;
   custody: 'wrapped' | 'plain';
 }): VaultTransferQrSource {
   const common: VaultTransferQrSourceBase = {
     requireLiveUnlock: () => input.keystore.withContentKey(input.vaultId, () => undefined),
-    readMnemonic: () => input.keystore.readMnemonic(input.vaultId),
+    readMnemonic: () =>
+      input.keystore.withContentKey(input.vaultId, async (_contentKey, _keyId, assertCurrent) => {
+        const mnemonic = await input.keystore.readMnemonic(input.vaultId);
+        assertCurrent();
+        return mnemonic;
+      }),
+    subscribeToSessionEnd: (listener) => input.keystore.subscribeToSessionEnd(listener),
   };
   return input.custody === 'wrapped'
     ? {

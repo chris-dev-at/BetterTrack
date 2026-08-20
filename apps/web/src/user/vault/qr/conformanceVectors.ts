@@ -99,4 +99,12 @@ export const VAULT_TRANSFER_CONFORMANCE_VECTORS = {
       vaultId: VAULT_TRANSFER_VECTOR_VAULT_ID,
     },
   },
+  nonAsciiName: {
+    payload: `btvault1:m=${VAULT_TRANSFER_VECTOR_MNEMONIC.replaceAll(' ', '+')}&v=${VAULT_TRANSFER_VECTOR_VAULT_ID}&n=Caf%C3%A9`,
+    expected: {
+      mnemonic: VAULT_TRANSFER_VECTOR_MNEMONIC,
+      vaultId: VAULT_TRANSFER_VECTOR_VAULT_ID,
+      name: 'Café',
+    },
+  },
 } as const;
