@@ -1,6 +1,6 @@
 import { createHash, generateKeyPairSync, randomBytes } from 'node:crypto';
 
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import type { Application, Request, Response } from 'express';
 import request from 'supertest';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -18,16 +18,21 @@ import {
 } from '@bettertrack/contracts';
 
 import { createOAuthRepository } from '../data/repositories/oauthRepository';
-import { paranoidEnableTransitions, paranoidVaults, users } from '../data/schema';
+import { auditLog, paranoidEnableTransitions, paranoidVaults, users } from '../data/schema';
 import {
+  VAULT_ACCOUNT_SECURITY_BEARER_ROUTE_ALLOWLIST,
   VAULT_SESSION_ONLY_ROUTES,
   VAULT_SYNC_BEARER_ROUTE_ALLOWLIST,
   openApiPathTemplateAcceptsBearer,
   pathAcceptsBearer,
+  vaultAccountSecurityRouteAcceptsBearer,
   vaultSyncRouteAcceptsBearer,
 } from '../http/middleware/bearerAuth';
 import { buildRouteTable, type MountedSurface } from '../scripts/checkOpenapiCoverage';
-import { requireCookieSessionOrVaultSync } from '../http/routes/vaultRoutes';
+import {
+  requireCookieSessionOrPerVaultAccess,
+  requireCookieSessionOrVaultSync,
+} from '../http/routes/vaultRoutes';
 import {
   isParanoidKilledScope,
   PARANOID_MODE_ERROR_CODE,
@@ -49,6 +54,7 @@ import {
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
 const OCTET = ['Content-Type', 'application/octet-stream'] as const;
+// Deterministic TEST VECTOR identifiers only; none is a credential or secret.
 const MOBILE_CLIENT_ID = 'btc_IbT1mzw_7kBiPHPkGfaE0Q';
 const UUID_A = '018f0000-0000-7000-8000-00000000000a';
 const UUID_B = '018f0000-0000-7000-8000-00000000000b';
@@ -104,14 +110,30 @@ async function setParanoidServer(userId: string): Promise<void> {
 async function mintPersonalToken(
   scopes: ApiKeyScope[],
   prefix = 'vaultbearer',
-): Promise<{ user: SeededUser; token: string }> {
+): Promise<{ user: SeededUser; token: string; id: string }> {
   const user = await seedUser(prefix);
   const key = await harness.ctx.apiKeys.create({
     userId: user.id,
     name: `${prefix} key`,
     scopes,
   });
-  return { user, token: key.token };
+  return { user, token: key.token, id: key.key.id };
+}
+
+async function createRealPerVault(userId: string, name: string): Promise<string> {
+  const result = await harness.ctx.vaults.create(userId, {
+    name,
+    headerDocId: UUID_A,
+    commonDocId: UUID_B,
+    media: ['server'],
+    driveConnectionId: null,
+    // Deterministic TEST VECTOR (E0's public fingerprint fixture), not a secret.
+    keyFingerprint: 'Abcdef0123456789',
+    retirementProofPublicKey: ed25519PublicKey(),
+  });
+  expect(result.status).toBe('ok');
+  if (result.status !== 'ok') throw new Error(`vault creation failed: ${result.status}`);
+  return result.vault.id;
 }
 
 /** A real Ed25519 SPKI verifier — the route parses it in Node before storing it. */
@@ -211,11 +233,46 @@ describe('#1043 vault bearer policy', () => {
     { method: 'GET', path: '/vault/history' },
     // The segment matcher is declared by the entry, not inferred from how the
     // placeholder is spelled, so renaming `{version}` cannot widen matching.
-    { method: 'GET', path: '/vault/history/{version}', param: 'positive-integer' },
+    {
+      method: 'GET',
+      path: '/vault/history/{version}',
+      params: { version: 'positive-integer' },
+    },
+    { method: 'GET', path: '/vaults/{vaultId}/docs/{docId}' },
+    { method: 'PUT', path: '/vaults/{vaultId}/docs/{docId}' },
+    { method: 'GET', path: '/vaults/{vaultId}/docs/{docId}/history' },
+    {
+      method: 'GET',
+      path: '/vaults/{vaultId}/docs/{docId}/history/{version}',
+      params: { version: 'positive-integer' },
+    },
+    { method: 'GET', path: '/vaults/{vaultId}/media' },
+  ] as const;
+
+  const ACCOUNT_SECURITY_ALLOWLIST = [{ method: 'DELETE', path: '/vaults/{vaultId}' }] as const;
+
+  const EXPECTED_SESSION_ONLY = [
+    { method: 'PATCH', path: '/vault/media' },
+    { method: 'PUT', path: '/vault/media/server-candidate' },
+    { method: 'GET', path: '/vault/media/server-candidate/{candidateId}' },
+    { method: 'POST', path: '/vault/media/retired/purge/challenge' },
+    { method: 'POST', path: '/vault/media/retired/purge' },
+    { method: 'GET', path: '/vaults' },
+    { method: 'POST', path: '/vaults' },
+    { method: 'GET', path: '/vaults/{vaultId}' },
+    { method: 'PATCH', path: '/vaults/{vaultId}' },
+    { method: 'PATCH', path: '/vaults/{vaultId}/media' },
+    {
+      method: 'PUT',
+      path: '/vaults/{vaultId}/media/server-candidate/{transitionId}/docs/{docId}',
+    },
+    { method: 'GET', path: '/vaults/{vaultId}/media/server-candidate/{candidateId}' },
+    { method: 'POST', path: '/vaults/{vaultId}/media/retired/purge/challenge' },
+    { method: 'POST', path: '/vaults/{vaultId}/media/retired/purge' },
   ] as const;
 
   const SESSION_ONLY = [
-    ...VAULT_SESSION_ONLY_ROUTES,
+    ...EXPECTED_SESSION_ONLY,
     { method: 'POST', path: '/account/paranoid/enable' },
     { method: 'POST', path: '/account/paranoid/disable' },
     { method: 'GET', path: '/account/paranoid/fork-provenance' },
@@ -237,11 +294,32 @@ describe('#1043 vault bearer policy', () => {
     },
   ] as const;
 
-  const livePath = (path: string): string => path.replace('{version}', '12');
-  const liveSessionPath = (path: string): string => path.replace('{candidateId}', MISSING_ID);
+  const EXPECTED_PER_VAULT_ROUTER_GUARDS = [
+    {
+      method: `${BEARER_OPAQUE_MOUNT_METHOD}:requireUser[1]`,
+      path: '/vaults',
+    },
+    {
+      method: `${BEARER_OPAQUE_MOUNT_METHOD}:requireCookieSessionOrPerVaultAccess[1]`,
+      path: '/vaults',
+    },
+    {
+      method: `${BEARER_OPAQUE_MOUNT_METHOD}:<anonymous>[1]`,
+      path: '/vaults',
+    },
+  ] as const;
 
-  it('pins the exact sync routes and defaults transitions and future routes closed', () => {
+  const livePath = (path: string): string =>
+    path
+      .replaceAll('{vaultId}', UUID_A)
+      .replaceAll('{docId}', UUID_B)
+      .replaceAll('{transitionId}', UUID_C)
+      .replaceAll('{candidateId}', MISSING_ID)
+      .replaceAll('{version}', '12');
+
+  it('pins the exact sync and account-security routes and defaults every sibling closed', () => {
     expect(VAULT_SYNC_BEARER_ROUTE_ALLOWLIST).toEqual(EXPECTED_ALLOWLIST);
+    expect(VAULT_SESSION_ONLY_ROUTES).toEqual(EXPECTED_SESSION_ONLY);
     for (const route of EXPECTED_ALLOWLIST) {
       const path = livePath(route.path);
       expect(vaultSyncRouteAcceptsBearer(route.method, path)).toBe(true);
@@ -250,13 +328,41 @@ describe('#1043 vault bearer policy', () => {
     }
     expect(vaultSyncRouteAcceptsBearer('GET', '/vault/history/12')).toBe(true);
 
+    expect(VAULT_ACCOUNT_SECURITY_BEARER_ROUTE_ALLOWLIST).toEqual(ACCOUNT_SECURITY_ALLOWLIST);
+    for (const route of ACCOUNT_SECURITY_ALLOWLIST) {
+      const path = livePath(route.path);
+      expect(vaultAccountSecurityRouteAcceptsBearer(route.method, path)).toBe(true);
+      expect(pathAcceptsBearer(path, route.method)).toBe(true);
+      expect(openApiPathTemplateAcceptsBearer(route.path, route.method)).toBe(true);
+    }
+
     for (const route of SESSION_ONLY) {
-      const path = liveSessionPath(route.path);
+      const path = livePath(route.path);
       expect(pathAcceptsBearer(path, route.method)).toBe(false);
       expect(openApiPathTemplateAcceptsBearer(route.path, route.method)).toBe(false);
     }
     expect(pathAcceptsBearer('/vault/future-transition', 'GET')).toBe(false);
     expect(pathAcceptsBearer('/vault/history/admin', 'GET')).toBe(false);
+    expect(pathAcceptsBearer('/vaults/future-transition', 'GET')).toBe(false);
+    expect(pathAcceptsBearer(`/vaults/${UUID_A}`, 'POST')).toBe(false);
+  });
+
+  it('matches each placeholder by its own declared kind on per-doc history routes', () => {
+    const history = `/vaults/${UUID_A}/docs/${UUID_B}/history/12`;
+    expect(vaultSyncRouteAcceptsBearer('GET', history)).toBe(true);
+    expect(pathAcceptsBearer(history, 'GET')).toBe(true);
+    expect(
+      openApiPathTemplateAcceptsBearer('/vaults/{vaultId}/docs/{docId}/history/{version}', 'GET'),
+    ).toBe(true);
+
+    expect(vaultSyncRouteAcceptsBearer('GET', `/vaults/12/docs/${UUID_B}/history/12`)).toBe(false);
+    expect(vaultSyncRouteAcceptsBearer('GET', `/vaults/${UUID_A}/docs/12/history/12`)).toBe(false);
+    expect(vaultSyncRouteAcceptsBearer('GET', `/vaults/${UUID_A}/docs/${UUID_B}/history/0`)).toBe(
+      false,
+    );
+    expect(
+      vaultSyncRouteAcceptsBearer('GET', '/vaults/{vaultId}/docs/{docId}/history/{version}'),
+    ).toBe(false);
   });
 
   it('classifies every real mounted vault route as sync or session-only', () => {
@@ -265,7 +371,31 @@ describe('#1043 vault bearer policy', () => {
       ...VAULT_SYNC_BEARER_ROUTE_ALLOWLIST,
       ...VAULT_SESSION_ONLY_ROUTES,
       ...EXPECTED_ROUTER_GUARDS,
-    ].map(({ method, path }) => ({ method, path }));
+    ]
+      .filter(({ path }) => path === '/vault' || path.startsWith('/vault/'))
+      .map(({ method, path }) => ({ method, path }));
+    const sortRoutes = (routes: Array<{ method: string; path: string }>) =>
+      routes.sort(
+        (left, right) =>
+          left.path.localeCompare(right.path) || left.method.localeCompare(right.method),
+      );
+
+    expect(new Set(classified.map((route) => `${route.method} ${route.path}`)).size).toBe(
+      classified.length,
+    );
+    expect(sortRoutes(mounted)).toEqual(sortRoutes(classified));
+  });
+
+  it('classifies every mounted per-vault operation without inheriting a module-wide scope', () => {
+    const mounted = mountedBearerRouteInventory(buildRouteTable(), '/vaults');
+    const classified = [
+      ...VAULT_SYNC_BEARER_ROUTE_ALLOWLIST,
+      ...VAULT_ACCOUNT_SECURITY_BEARER_ROUTE_ALLOWLIST,
+      ...VAULT_SESSION_ONLY_ROUTES,
+      ...EXPECTED_PER_VAULT_ROUTER_GUARDS,
+    ]
+      .filter(({ path }) => path === '/vaults' || path.startsWith('/vaults/'))
+      .map(({ method, path }) => ({ method, path }));
     const sortRoutes = (routes: Array<{ method: string; path: string }>) =>
       routes.sort(
         (left, right) =>
@@ -314,6 +444,8 @@ describe('#1043 vault bearer policy', () => {
     expect(vaultSyncRouteAcceptsBearer('GET', '/vault/history/{version}')).toBe(false);
     expect(pathAcceptsBearer('/vault/history/{version}', 'GET')).toBe(false);
     expect(pathAcceptsBearer('/vault/media/server-candidate/12', 'HEAD')).toBe(false);
+    expect(pathAcceptsBearer(`/vaults/${UUID_A}/docs/${UUID_B}`, 'HEAD')).toBe(true);
+    expect(pathAcceptsBearer(`/vaults/${UUID_A}`, 'HEAD')).toBe(false);
   });
 
   it('keeps the router-local guard default-closed independently of global scope policy', () => {
@@ -346,9 +478,198 @@ describe('#1043 vault bearer policy', () => {
 
     expect(guard(syncKey, 'PUT', '/')).toHaveBeenCalledWith();
   });
+
+  it('makes the per-vault local guard hide admin principals and audit INSUFFICIENT_SCOPE', async () => {
+    const { user, id } = await mintPersonalToken(['market:read'], 'local-vault-guard');
+    const guard = requireCookieSessionOrPerVaultAccess(harness.ctx);
+    const invoke = (role: 'user' | 'admin') =>
+      new Promise<unknown>((resolve) => {
+        guard(
+          {
+            apiKey: {
+              id,
+              scopes: ['market:read'],
+              kind: 'personal',
+              firstParty: false,
+              securityGeneration: 0,
+            },
+            authUser: { id: user.id, role, privacyMode: 'normal' },
+            method: 'GET',
+            path: `/${UUID_A}/docs/${UUID_B}`,
+            ip: '127.0.0.1',
+          } as unknown as Request,
+          {} as Response,
+          (error?: unknown) => resolve(error),
+        );
+      });
+
+    await expect(invoke('admin')).resolves.toMatchObject({ statusCode: 404 });
+    await expect(invoke('user')).resolves.toMatchObject({
+      statusCode: 403,
+      code: 'INSUFFICIENT_SCOPE',
+    });
+
+    const [denial] = await harness.db
+      .select({ meta: auditLog.meta })
+      .from(auditLog)
+      .where(and(eq(auditLog.targetId, id), eq(auditLog.action, 'api_key.scope_denied')));
+    expect(denial?.meta).toMatchObject({
+      requiredScope: 'vault:sync',
+      method: 'GET',
+      path: `/vaults/${UUID_A}/docs/${UUID_B}`,
+    });
+  });
 });
 
 describe('#1043 bearer vault synchronization', () => {
+  it('reaches every per-vault sync read plus the opaque document write handler', async () => {
+    const { user, token } = await mintPersonalToken(['vault:sync'], 'pervault-sync');
+    // Deterministic TEST VECTOR bytes: deliberately not JSON or an envelope.
+    // Service spies isolate this as an auth/router test and prove the HTTP layer
+    // forwards opaque bytes without attempting to parse them itself.
+    const currentBytes = Buffer.from([0, 255, 16, 42, 200, 7]);
+    const writeBytes = Buffer.from([222, 173, 0, 190, 239]);
+    // Deterministic TEST VECTOR, deliberately not a verifier: the per-vault
+    // bearer write must ignore this legacy enrollment header completely.
+    const ignoredRetirementVerifier = 'ignored-per-vault-retirement-verifier';
+    const createdAt = new Date('2026-08-20T12:00:00.000Z');
+    const row = {
+      vaultId: UUID_A,
+      docId: UUID_B,
+      docKind: 'header' as const,
+      portfolioId: null,
+      version: 1,
+      formatVersion: 2,
+      sizeBytes: currentBytes.length,
+      blob: currentBytes,
+      createdAt,
+      updatedAt: createdAt,
+    };
+    const putDoc = vi
+      .spyOn(harness.ctx.vaults, 'putDoc')
+      .mockResolvedValue({ status: 'ok', row, idempotent: false });
+    const readDoc = vi
+      .spyOn(harness.ctx.vaults, 'readDoc')
+      .mockResolvedValue({ status: 'ok', row });
+    const listHistory = vi.spyOn(harness.ctx.vaults, 'listHistory').mockResolvedValue({
+      status: 'ok',
+      page: {
+        items: [
+          {
+            version: 1,
+            createdAt: createdAt.toISOString(),
+            sizeBytes: currentBytes.length,
+            medium: 'server',
+          },
+        ],
+        nextCursor: null,
+      },
+    });
+    const getHistory = vi.spyOn(harness.ctx.vaults, 'getHistory').mockResolvedValue({
+      status: 'ok',
+      value: {
+        id: UUID_C,
+        vaultId: UUID_A,
+        docId: UUID_B,
+        version: 1,
+        formatVersion: 2,
+        sizeBytes: currentBytes.length,
+        blob: currentBytes,
+        createdAt,
+      },
+    });
+    const getMediaState = vi.spyOn(harness.ctx.vaults, 'getMediaState').mockResolvedValue({
+      vaultId: UUID_A,
+      media: ['server'],
+      driveConnectionId: null,
+      mediaAttestedAt: createdAt.toISOString(),
+      mediaAttestedDriveConnectionId: null,
+      server: { disposition: 'active', candidates: [], retirement: null },
+    });
+
+    const put = await request(harness.app)
+      .put(`/api/v1/vaults/${UUID_A}/docs/${UUID_B}`)
+      .set(bearer(token))
+      .set(...OCTET)
+      .set('If-None-Match', '*')
+      .set(VAULT_RETIREMENT_PROOF_PUBLIC_KEY_HEADER, ignoredRetirementVerifier)
+      .send(writeBytes);
+    expect(put.status, JSON.stringify(put.body)).toBe(204);
+    expect(put.headers.etag).toBe('"1"');
+    expect(putDoc).toHaveBeenCalledWith({
+      userId: user.id,
+      vaultId: UUID_A,
+      docId: UUID_B,
+      expectedVersion: null,
+      blob: writeBytes,
+    });
+    expect(putDoc.mock.calls[0]![0]).not.toHaveProperty('retirementProofPublicKey');
+
+    const current = await request(harness.app)
+      .get(`/api/v1/vaults/${UUID_A}/docs/${UUID_B}`)
+      .set(bearer(token))
+      .responseType('blob');
+    expect(current.status, JSON.stringify(current.body)).toBe(200);
+    expect(current.headers.etag).toBe('"1"');
+    expect((current.body as Buffer).equals(currentBytes)).toBe(true);
+    expect(readDoc).toHaveBeenCalledWith(user.id, UUID_A, UUID_B);
+
+    const history = await request(harness.app)
+      .get(`/api/v1/vaults/${UUID_A}/docs/${UUID_B}/history`)
+      .set(bearer(token));
+    expect(history.status, JSON.stringify(history.body)).toBe(200);
+    expect(history.body.items).toHaveLength(1);
+    expect(listHistory).toHaveBeenCalledWith(user.id, UUID_A, UUID_B, {});
+
+    const historical = await request(harness.app)
+      .get(`/api/v1/vaults/${UUID_A}/docs/${UUID_B}/history/1`)
+      .set(bearer(token))
+      .responseType('blob');
+    expect(historical.status, JSON.stringify(historical.body)).toBe(200);
+    expect((historical.body as Buffer).equals(currentBytes)).toBe(true);
+    expect(getHistory).toHaveBeenCalledWith(user.id, UUID_A, UUID_B, 1);
+
+    const media = await request(harness.app)
+      .get(`/api/v1/vaults/${UUID_A}/media`)
+      .set(bearer(token));
+    expect(media.status, JSON.stringify(media.body)).toBe(200);
+    expect(media.body).toMatchObject({
+      vaultId: UUID_A,
+      media: ['server'],
+      server: { disposition: 'active' },
+    });
+    expect(getMediaState).toHaveBeenCalledWith(user.id, UUID_A);
+  });
+
+  it('runs bearer vault deletion through real §15 step-up and preserves the row on a wrong password', async () => {
+    const { user, token } = await mintPersonalToken(['account:security'], 'pervault-delete-wrong');
+    const vaultId = await createRealPerVault(user.id, 'Bearer wrong-password vault');
+
+    const denied = await request(harness.app)
+      .delete(`/api/v1/vaults/${vaultId}`)
+      .set(bearer(token))
+      .send({ stepUp: { password: 'deterministic-wrong-password' } });
+    expect(denied.status, JSON.stringify(denied.body)).toBe(401);
+    expect(denied.body.error.code).toBe('INVALID_CREDENTIALS');
+    expect(await harness.ctx.vaults.get(user.id, vaultId)).not.toBeNull();
+  });
+
+  it('runs bearer vault deletion through real §15 step-up and deletes on the correct password', async () => {
+    const { user, token } = await mintPersonalToken(
+      ['account:security'],
+      'pervault-delete-correct',
+    );
+    const vaultId = await createRealPerVault(user.id, 'Bearer correct-password vault');
+
+    const deleted = await request(harness.app)
+      .delete(`/api/v1/vaults/${vaultId}`)
+      .set(bearer(token))
+      .send({ stepUp: { password: user.password } });
+    expect(deleted.status, JSON.stringify(deleted.body)).toBe(200);
+    expect(deleted.body).toEqual({ ok: true });
+    expect(await harness.ctx.vaults.get(user.id, vaultId)).toBeNull();
+  });
+
   it('refuses normal-mode bearer writes without disturbing the session enable window', async () => {
     const { user, token } = await mintPersonalToken(['vault:sync'], 'writestate');
     const v1 = envelope(1, new Uint8Array([1, 6, 4]));
@@ -555,7 +876,7 @@ describe('#1043 bearer vault synchronization', () => {
     expect((historical.body as Buffer).equals(v2)).toBe(true);
   });
 
-  it('keeps every transition and provenance endpoint session-only with vault:sync', async () => {
+  it('keeps config, transitions, provenance and future vault routes session-only', async () => {
     const { token } = await mintPersonalToken(['vault:sync', 'account:security'], 'transition');
     const cases = [
       { method: 'post', path: '/account/paranoid/enable' },
@@ -567,6 +888,23 @@ describe('#1043 bearer vault synchronization', () => {
       { method: 'get', path: `/vault/media/server-candidate/${MISSING_ID}` },
       { method: 'post', path: '/vault/media/retired/purge/challenge' },
       { method: 'post', path: '/vault/media/retired/purge' },
+      { method: 'get', path: '/vaults' },
+      { method: 'post', path: '/vaults' },
+      { method: 'get', path: `/vaults/${UUID_A}` },
+      { method: 'patch', path: `/vaults/${UUID_A}` },
+      { method: 'patch', path: `/vaults/${UUID_A}/media` },
+      {
+        method: 'put',
+        path: `/vaults/${UUID_A}/media/server-candidate/${UUID_C}/docs/${UUID_B}`,
+      },
+      {
+        method: 'get',
+        path: `/vaults/${UUID_A}/media/server-candidate/${MISSING_ID}`,
+      },
+      { method: 'post', path: `/vaults/${UUID_A}/media/retired/purge/challenge` },
+      { method: 'post', path: `/vaults/${UUID_A}/media/retired/purge` },
+      // A future sibling must not inherit either scope from the module prefix.
+      { method: 'get', path: '/vaults/future-transition' },
     ] as const;
 
     for (const row of cases) {
@@ -584,6 +922,18 @@ describe('#1043 bearer vault synchronization', () => {
       expect(response.status, `${row.method.toUpperCase()} ${row.path}`).toBe(403);
       expect(response.body.error.code, row.path).toBe('API_KEY_FORBIDDEN');
     }
+  });
+
+  it('requires account:security rather than vault:sync for per-vault deletion', async () => {
+    const { token } = await mintPersonalToken(['vault:sync'], 'delete-scope');
+    const denied = await request(harness.app)
+      .delete(`/api/v1/vaults/${UUID_A}`)
+      .set(bearer(token))
+      .send({ password: 'not examined before scope authorization' });
+
+    expect(denied.status).toBe(403);
+    expect(denied.body.error.code).toBe('INSUFFICIENT_SCOPE');
+    expect(denied.body.error.message).toContain('account:security');
   });
 
   it('exempts vault:sync while paranoid portfolio scopes still fail closed', async () => {
@@ -615,6 +965,13 @@ describe('#1043 bearer vault synchronization', () => {
     expect(denied.status).toBe(403);
     expect(denied.body.error.code).toBe('INSUFFICIENT_SCOPE');
     expect(denied.body.error.message).toContain('vault:sync');
+
+    const deniedPerDoc = await request(harness.app)
+      .get(`/api/v1/vaults/${UUID_A}/docs/${UUID_B}`)
+      .set(bearer(missing.token));
+    expect(deniedPerDoc.status).toBe(403);
+    expect(deniedPerDoc.body.error.code).toBe('INSUFFICIENT_SCOPE');
+    expect(deniedPerDoc.body.error.message).toContain('vault:sync');
   });
 
   it('never lets a bearer pin the immutable retirement verifier, on a fresh or a keyless vault', async () => {

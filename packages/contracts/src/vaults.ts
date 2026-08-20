@@ -11,6 +11,7 @@ import {
   vaultEntityKindSchema,
   vaultEntitySchema,
   vaultJsonSchema,
+  vaultCandidateReadbackSchema,
   vaultMergeRecordSchema,
   vaultMirrorProvenanceSchema,
   vaultRetirementProofPublicKeySchema,
@@ -157,27 +158,86 @@ export const vaultKeyFingerprintSchema = z
   .length(VAULT_KEY_FINGERPRINT_CHARS);
 export type VaultKeyFingerprint = z.infer<typeof vaultKeyFingerprintSchema>;
 
+function requireDistinctVaultConfigDocIds(
+  value: { headerDocId: string; commonDocId: string },
+  ctx: z.RefinementCtx,
+): void {
+  if (value.headerDocId === value.commonDocId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['commonDocId'],
+      message: 'headerDocId and commonDocId must be distinct',
+    });
+  }
+}
+
+function requireVaultMediaAttestationState(
+  value: {
+    media: VaultMedia[];
+    driveConnectionId?: string | null;
+    mediaAttestedAt: string | null;
+    mediaAttestedDriveConnectionId: string | null;
+  },
+  ctx: z.RefinementCtx,
+): void {
+  if (value.mediaAttestedAt === null) {
+    if (value.mediaAttestedDriveConnectionId !== null) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['mediaAttestedDriveConnectionId'],
+        message: 'an attesting Drive connection requires an attestation timestamp',
+      });
+    }
+    return;
+  }
+  const expectedConnection = value.media.includes('drive') ? value.driveConnectionId : null;
+  if (
+    value.mediaAttestedDriveConnectionId !== expectedConnection ||
+    (value.media.includes('drive') && expectedConnection == null)
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['mediaAttestedDriveConnectionId'],
+      message:
+        'the media attestation must name the current Drive connection when Drive is selected',
+    });
+  }
+}
+
 /** One vault config row as the narrow `GET /vaults` projection returns it. */
 export const vaultConfigSchema = z
   .object({
     id: z.string().uuid(),
     name: vaultNameSchema,
+    /** Config-registered identity of the vault's singleton encrypted header doc. */
+    headerDocId: z.string().uuid(),
+    /** Config-registered identity of the vault's singleton encrypted common doc. */
+    commonDocId: z.string().uuid(),
     media: vaultMediaListSchema,
     /** Bound Drive connection — non-null exactly when `drive ∈ media` (§3). */
     driveConnectionId: z.string().uuid().nullable(),
     keyFingerprint: vaultKeyFingerprintSchema,
     /** Public verifier of the per-vault retirement proof key (§7). */
     retirementProofPublicKey: vaultRetirementProofPublicKeySchema,
+    /** Lifetime monotonic allocator; the next retirement takes counter + 1 (R4). */
+    retirementGeneration: z.number().int().min(0).max(VAULT_VERSION_MAX),
+    /** Last successful full-doc-set media attestation, or null before one exists. */
+    mediaAttestedAt: z.string().datetime().nullable(),
+    /** Drive connection proven by that attestation; null for a server-only proof. */
+    mediaAttestedDriveConnectionId: z.string().uuid().nullable(),
     createdAt: z.string().datetime(),
     updatedAt: z.string().datetime(),
   })
-  .strict();
+  .strict()
+  .superRefine(requireDistinctVaultConfigDocIds)
+  .superRefine(requireDriveBinding)
+  .superRefine(requireVaultMediaAttestationState);
 export type VaultConfig = z.infer<typeof vaultConfigSchema>;
 
-const requireDriveBinding = (
+function requireDriveBinding(
   value: { media: VaultMedia[]; driveConnectionId?: string | null },
   ctx: z.RefinementCtx,
-): void => {
+): void {
   const driveSelected = value.media.includes('drive');
   const bound = value.driveConnectionId != null;
   if (driveSelected && !bound) {
@@ -194,7 +254,7 @@ const requireDriveBinding = (
       message: 'a Drive connection binding requires the drive medium',
     });
   }
-};
+}
 
 /**
  * `POST /vaults` (route is E1). The client mints the vault id? No — the server
@@ -207,13 +267,18 @@ const requireDriveBinding = (
 export const createVaultRequestSchema = z
   .object({
     name: vaultNameSchema,
+    /** Client-minted singleton header-doc UUID, registered before any blob write. */
+    headerDocId: z.string().uuid(),
+    /** Client-minted singleton common-doc UUID, distinct from `headerDocId`. */
+    commonDocId: z.string().uuid(),
     media: vaultMediaListSchema,
     driveConnectionId: z.string().uuid().nullable().default(null),
     keyFingerprint: vaultKeyFingerprintSchema,
     retirementProofPublicKey: vaultRetirementProofPublicKeySchema,
   })
   .strict()
-  .superRefine(requireDriveBinding);
+  .superRefine(requireDriveBinding)
+  .superRefine(requireDistinctVaultConfigDocIds);
 export type CreateVaultRequest = z.infer<typeof createVaultRequestSchema>;
 
 export const createVaultResponseSchema = z.object({ vault: vaultConfigSchema }).strict();
@@ -390,14 +455,19 @@ export const vaultDocEnvelopeHeaderSchema = z
 export type VaultDocEnvelopeHeader = z.infer<typeof vaultDocEnvelopeHeaderSchema>;
 
 /**
- * The ONLY view of a v2 header the server is allowed to read — the format
- * version and the per-doc CAS token. Non-strict, so it strips every other
- * field on parse: the blind store literally cannot inspect the crypto
- * parameters or key slots, exactly like v1's `vaultServerHeaderSchema`.
+ * The ONLY view of a v2 header the server is allowed to read (R2): the six
+ * addressing/idempotency facts `{ formatVersion, docVersion, vaultId, docId,
+ * docKind, writeId }`. Non-strict, so every crypto parameter, key slot and
+ * payload-adjacent field is stripped. These six values are deliberately
+ * cleartext server facts; reading past them is a blind-store design violation.
  */
 export const vaultDocServerHeaderSchema = z.object({
   formatVersion: z.number().int().positive(),
   docVersion: vaultDocVersionSchema,
+  vaultId: z.string().uuid(),
+  docId: z.string().uuid(),
+  docKind: vaultDocKindSchema,
+  writeId: z.string().uuid(),
 });
 export type VaultDocServerHeader = z.infer<typeof vaultDocServerHeaderSchema>;
 
@@ -505,7 +575,7 @@ export function inspectVaultDocEnvelope(bytes: Uint8Array): VaultDocEnvelopeInsp
 
 /**
  * Server-side header read for the per-doc blind store (E1): decode the wire
- * prefix and validate ONLY the two fields the store is entitled to. Never
+ * prefix and validate ONLY the six fields the store is entitled to. Never
  * gates on version — the server stores newer formats verbatim; versioning is a
  * CLIENT decision (§5).
  */
@@ -513,7 +583,7 @@ export function readVaultDocServerHeader(bytes: Uint8Array): VaultDocServerHeade
   const { header } = decodeVaultEnvelope(bytes);
   const parsed = vaultDocServerHeaderSchema.safeParse(header);
   if (!parsed.success) {
-    throw new VaultEnvelopeError('vault doc envelope header missing formatVersion/docVersion');
+    throw new VaultEnvelopeError('vault doc envelope header missing server addressing fields');
   }
   return parsed.data;
 }
@@ -690,7 +760,13 @@ export type VaultPortfolioDoc = z.infer<typeof vaultPortfolioDocSchema>;
 // no account/doc key). What E0 re-keys is the ADDRESS: every route talks about
 // one `(vaultId, docId)`.
 
-/** Route params of the per-doc blind store: `/vaults/:vaultId/docs/:docId`. */
+/**
+ * Route params of the per-doc blind store: `/vaults/:vaultId/docs/:docId`.
+ * R1 BINDING: when the envelope says `docKind: 'portfolio'`, this `docId` IS
+ * the portfolio UUID (`docId === portfolioId`), and the owner-scoped locked
+ * stub must already carry this `vaultId`. Header/common doc ids are the two
+ * distinct config-registered UUIDs supplied at vault creation.
+ */
 export const vaultDocParamsSchema = z
   .object({ vaultId: z.string().uuid(), docId: z.string().uuid() })
   .strict();
@@ -705,6 +781,417 @@ export const vaultDocHistoryVersionParamSchema = z
   })
   .strict();
 export type VaultDocHistoryVersionParam = z.infer<typeof vaultDocHistoryVersionParamSchema>;
+
+// ── Per-vault media attestation + retirement purge (§7, R3/R4) ──────────────
+
+/** One client-opened media transition batch (R3; uuidv7 by protocol). */
+export const perVaultMediaTransitionIdSchema = z
+  .string()
+  .uuid()
+  .refine((value) => value[14]?.toLowerCase() === '7', 'transitionId must be a UUIDv7');
+export type PerVaultMediaTransitionId = z.infer<typeof perVaultMediaTransitionIdSchema>;
+
+/**
+ * One freshly read-back doc address. The server compares this R2 projection
+ * with its own live/candidate envelope header; it never parses ciphertext.
+ */
+export const perVaultMediaDocAttestationSchema = z
+  .object({
+    docId: z.string().uuid(),
+    docVersion: vaultDocVersionSchema,
+    writeId: z.string().uuid(),
+  })
+  .strict();
+export type PerVaultMediaDocAttestation = z.infer<typeof perVaultMediaDocAttestationSchema>;
+
+function requireDistinctDocIds(docs: readonly { docId: string }[], ctx: z.RefinementCtx): void {
+  const seen = new Set<string>();
+  for (let index = 0; index < docs.length; index += 1) {
+    const docId = docs[index]!.docId;
+    if (seen.has(docId)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: [index, 'docId'],
+        message: 'docId must appear exactly once in a media attestation',
+      });
+    }
+    seen.add(docId);
+  }
+}
+
+const perVaultMediaDocAttestationListSchema = z
+  .array(perVaultMediaDocAttestationSchema)
+  .superRefine(requireDistinctDocIds);
+
+/** Client CAS view of the current media config before a transition. */
+export const perVaultMediaExpectedStateSchema = z
+  .object({
+    media: vaultMediaListSchema,
+    driveConnectionId: z.string().uuid().nullable(),
+    mediaAttestedAt: z.string().datetime().nullable(),
+  })
+  .strict()
+  .superRefine(requireDriveBinding);
+export type PerVaultMediaExpectedState = z.infer<typeof perVaultMediaExpectedStateSchema>;
+
+/** Target media config; the server supplies the successful attestation stamp. */
+export const perVaultMediaNextStateSchema = z
+  .object({
+    media: vaultMediaListSchema,
+    driveConnectionId: z.string().uuid().nullable(),
+  })
+  .strict()
+  .superRefine(requireDriveBinding);
+export type PerVaultMediaNextState = z.infer<typeof perVaultMediaNextStateSchema>;
+
+/** One HMAC receipt returned only after byte-exact candidate readback. */
+export const perVaultServerCandidateReadbackSchema = z
+  .object({
+    candidateId: z.string().uuid(),
+    docId: z.string().uuid(),
+    readback: vaultCandidateReadbackSchema,
+  })
+  .strict();
+export type PerVaultServerCandidateReadback = z.infer<typeof perVaultServerCandidateReadbackSchema>;
+
+const perVaultServerCandidateReadbackListSchema = z
+  .array(perVaultServerCandidateReadbackSchema)
+  .superRefine(requireDistinctDocIds);
+
+/**
+ * Full-set verification for one media edge. `server-candidates` carries one
+ * signed readback receipt per staged doc; Drive/server variants carry the R2
+ * addressing projection of every freshly read doc. Empty sets remain valid at
+ * contract level—the repository's exact set equality decides completeness.
+ */
+export const perVaultMediaTransitionVerificationSchema = z.discriminatedUnion('kind', [
+  z
+    .object({
+      kind: z.literal('server-candidates'),
+      readbacks: perVaultServerCandidateReadbackListSchema,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('drive'),
+      driveConnectionId: z.string().uuid(),
+      docs: perVaultMediaDocAttestationListSchema,
+    })
+    .strict(),
+  z
+    .object({
+      kind: z.literal('server'),
+      docs: perVaultMediaDocAttestationListSchema,
+    })
+    .strict(),
+]);
+export type PerVaultMediaTransitionVerification = z.infer<
+  typeof perVaultMediaTransitionVerificationSchema
+>;
+
+/**
+ * `PATCH /vaults/:vaultId/media` (R3). A client opens one transition id and
+ * commits exactly one media edge (or one Drive-connection replacement). Every
+ * live doc must appear exactly once in the required verification variant;
+ * repository-side set equality makes a partial batch fail closed.
+ */
+export const perVaultMediaTransitionRequestSchema = z
+  .object({
+    transitionId: perVaultMediaTransitionIdSchema,
+    expected: perVaultMediaExpectedStateSchema,
+    next: perVaultMediaNextStateSchema,
+    verification: perVaultMediaTransitionVerificationSchema,
+  })
+  .strict()
+  .superRefine((value, ctx) => {
+    const added = value.next.media.filter((medium) => !value.expected.media.includes(medium));
+    const removed = value.expected.media.filter((medium) => !value.next.media.includes(medium));
+    const connectionChanged = value.expected.driveConnectionId !== value.next.driveConnectionId;
+    const driveReplacement =
+      added.length === 0 &&
+      removed.length === 0 &&
+      connectionChanged &&
+      value.expected.media.includes('drive') &&
+      value.next.media.includes('drive');
+    const driveMembershipChanged = added[0] === 'drive' || removed[0] === 'drive';
+
+    if (added.length + removed.length !== 1 && !driveReplacement) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['next', 'media'],
+        message: 'a media transition must change exactly one medium or one Drive connection',
+      });
+      return;
+    }
+
+    if (connectionChanged && !driveReplacement && !driveMembershipChanged) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['next', 'driveConnectionId'],
+        message: 'a media edge cannot also replace the Drive connection',
+      });
+    }
+
+    let requiredKind: PerVaultMediaTransitionVerification['kind'] | null = null;
+    if (added[0] === 'server') requiredKind = 'server-candidates';
+    else if (removed[0] === 'drive') requiredKind = 'server';
+    else if (added[0] === 'drive' || removed[0] === 'server' || driveReplacement) {
+      requiredKind = 'drive';
+    }
+
+    // `local` is deliberately contract-visible but server-reserved. Leave its
+    // transition structurally parseable so the service can return its stable
+    // reserved-medium refusal instead of a generic validation error.
+    if (requiredKind !== null && value.verification.kind !== requiredKind) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['verification', 'kind'],
+        message: `this media transition requires ${requiredKind} full-set verification`,
+      });
+    }
+    if (
+      value.verification.kind === 'drive' &&
+      value.verification.driveConnectionId !== value.next.driveConnectionId
+    ) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['verification', 'driveConnectionId'],
+        message: 'Drive verification must attest the target Drive connection',
+      });
+    }
+  });
+export type PerVaultMediaTransitionRequest = z.infer<typeof perVaultMediaTransitionRequestSchema>;
+
+/** Raw candidate-stage address: one doc inside one client-opened transition. */
+export const perVaultServerCandidateStageParamsSchema = z
+  .object({
+    vaultId: z.string().uuid(),
+    transitionId: perVaultMediaTransitionIdSchema,
+    docId: z.string().uuid(),
+  })
+  .strict();
+export type PerVaultServerCandidateStageParams = z.infer<
+  typeof perVaultServerCandidateStageParamsSchema
+>;
+
+/** Owner-scoped readback address for one inactive per-doc candidate. */
+export const perVaultServerCandidateReadParamsSchema = z
+  .object({ vaultId: z.string().uuid(), candidateId: z.string().uuid() })
+  .strict();
+export type PerVaultServerCandidateReadParams = z.infer<
+  typeof perVaultServerCandidateReadParamsSchema
+>;
+
+/** @deprecated Prefer the explicit stage/read param schemas above. */
+export const perVaultServerCandidateParamsSchema = perVaultServerCandidateReadParamsSchema;
+export type PerVaultServerCandidateParams = PerVaultServerCandidateReadParams;
+
+/** Portfolio-content-free metadata for one staged candidate row. */
+export const perVaultServerCandidateMetadataSchema = z
+  .object({
+    candidateId: z.string().uuid(),
+    transitionId: perVaultMediaTransitionIdSchema,
+    docId: z.string().uuid(),
+    docKind: vaultDocKindSchema,
+    docVersion: vaultDocVersionSchema,
+    formatVersion: z.number().int().positive(),
+    writeId: z.string().uuid(),
+    sizeBytes: z.number().int().positive(),
+    expiresAt: z.string().datetime(),
+  })
+  .strict();
+export type PerVaultServerCandidateMetadata = z.infer<typeof perVaultServerCandidateMetadataSchema>;
+
+/** Unpadded base64url SHA-256 over a canonical retirement version set. */
+export const vaultVersionSetHashSchema = z
+  .string()
+  .regex(/^[A-Za-z0-9_-]{43}$/, 'must be an unpadded base64url sha256 digest');
+export type VaultVersionSetHash = z.infer<typeof vaultVersionSetHashSchema>;
+
+/** Positive per-vault retirement generation allocated from `vaults`. */
+export const vaultRetirementGenerationSchema = z.number().int().min(1).max(VAULT_VERSION_MAX);
+export type VaultRetirementGeneration = z.infer<typeof vaultRetirementGenerationSchema>;
+
+export interface VaultRetirementVersionPair {
+  docId: string;
+  docVersion: number;
+}
+
+/** Locale-independent ordering for cryptographic transcript inputs. */
+function compareCanonicalDocIds(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+/**
+ * Canonical bytes hashed for R4's `versionSetHash`: JSON tuples sorted by
+ * `(docId, docVersion)`. Every active/history row moved into `vault_retired`
+ * contributes one tuple; ciphertext and timestamps never enter the digest.
+ */
+export function serializeVaultRetirementVersionSet(
+  pairs: readonly VaultRetirementVersionPair[],
+): Uint8Array {
+  const canonical = [...pairs]
+    .sort(
+      (left, right) =>
+        compareCanonicalDocIds(left.docId, right.docId) || left.docVersion - right.docVersion,
+    )
+    .map(({ docId, docVersion }) => [docId, docVersion] as const);
+  return new TextEncoder().encode(JSON.stringify(canonical));
+}
+
+/** Safe summary of the current per-vault retired server set. */
+export const perVaultRetirementMetadataSchema = z
+  .object({
+    generation: vaultRetirementGenerationSchema,
+    versionSetHash: vaultVersionSetHashSchema,
+    retiredAt: z.string().datetime(),
+    purgeAfter: z.string().datetime(),
+  })
+  .strict();
+export type PerVaultRetirementMetadata = z.infer<typeof perVaultRetirementMetadataSchema>;
+
+export const perVaultServerDispositionSchema = z.enum([
+  'active',
+  'inactive-candidates',
+  'retired',
+  'empty',
+]);
+export type PerVaultServerDisposition = z.infer<typeof perVaultServerDispositionSchema>;
+
+/** Blind media-state response: config/attestation metadata, never ciphertext. */
+export const perVaultMediaStateSchema = z
+  .object({
+    vaultId: z.string().uuid(),
+    media: vaultMediaListSchema,
+    driveConnectionId: z.string().uuid().nullable(),
+    mediaAttestedAt: z.string().datetime().nullable(),
+    mediaAttestedDriveConnectionId: z.string().uuid().nullable(),
+    server: z
+      .object({
+        disposition: perVaultServerDispositionSchema,
+        candidates: z.array(perVaultServerCandidateMetadataSchema),
+        retirement: perVaultRetirementMetadataSchema.nullable(),
+      })
+      .strict(),
+  })
+  .strict()
+  .superRefine(requireDriveBinding)
+  .superRefine(requireVaultMediaAttestationState);
+export type PerVaultMediaState = z.infer<typeof perVaultMediaStateSchema>;
+
+export const perVaultMediaStateResponseSchema = perVaultMediaStateSchema;
+export type PerVaultMediaStateResponse = z.infer<typeof perVaultMediaStateResponseSchema>;
+
+export const perVaultMediaTransitionResponseSchema = perVaultMediaStateSchema;
+export type PerVaultMediaTransitionResponse = z.infer<typeof perVaultMediaTransitionResponseSchema>;
+
+const perVaultRetirementIdentitySchema = z
+  .object({
+    vaultId: z.string().uuid(),
+    generation: vaultRetirementGenerationSchema,
+    versionSetHash: vaultVersionSetHashSchema,
+  })
+  .strict();
+
+/** Request a short-lived challenge for exactly one retired version set. */
+export const perVaultRetiredServerPurgeChallengeRequestSchema = perVaultRetirementIdentitySchema;
+export type PerVaultRetiredServerPurgeChallengeRequest = z.infer<
+  typeof perVaultRetiredServerPurgeChallengeRequestSchema
+>;
+
+export const perVaultRetiredServerPurgeChallengeResponseSchema = z
+  .object({
+    vaultId: z.string().uuid(),
+    generation: vaultRetirementGenerationSchema,
+    versionSetHash: vaultVersionSetHashSchema,
+    challenge: z.string().min(32).max(2048),
+    expiresAt: z.string().datetime(),
+  })
+  .strict();
+export type PerVaultRetiredServerPurgeChallengeResponse = z.infer<
+  typeof perVaultRetiredServerPurgeChallengeResponseSchema
+>;
+
+/**
+ * Purge proof for one retired set. `observedDocs` is the freshly read full
+ * current roster on the surviving medium. The server verifies exact doc-id
+ * coverage, while the signed transcript binds the client-owned docVersion and
+ * writeId facts without numerically version-gating them (R2), before the
+ * Ed25519 proof can authorize deletion.
+ */
+export const perVaultRetiredServerPurgeRequestSchema = z
+  .object({
+    vaultId: z.string().uuid(),
+    generation: vaultRetirementGenerationSchema,
+    versionSetHash: vaultVersionSetHashSchema,
+    observedDocs: perVaultMediaDocAttestationListSchema,
+    challenge: z.string().min(32).max(2048),
+    signature: z
+      .string()
+      .regex(/^[A-Za-z0-9_-]+$/, 'must be base64url')
+      .min(80)
+      .max(256),
+  })
+  .strict();
+export type PerVaultRetiredServerPurgeRequest = z.infer<
+  typeof perVaultRetiredServerPurgeRequestSchema
+>;
+
+export const perVaultRetiredServerPurgeResponseSchema = z
+  .object({
+    purged: z.literal(true),
+    vaultId: z.string().uuid(),
+    generation: vaultRetirementGenerationSchema,
+    versionSetHash: vaultVersionSetHashSchema,
+  })
+  .strict();
+export type PerVaultRetiredServerPurgeResponse = z.infer<
+  typeof perVaultRetiredServerPurgeResponseSchema
+>;
+
+/** Domain-separated canonical bytes signed by the encrypted common-doc key. */
+export function serializePerVaultRetiredServerPurgeTranscript(
+  input: PerVaultRetiredServerPurgeRequest,
+): Uint8Array {
+  const observedDocs = [...input.observedDocs]
+    .sort((left, right) => compareCanonicalDocIds(left.docId, right.docId))
+    .map(({ docId, docVersion, writeId }) => [docId, docVersion, writeId] as const);
+  return new TextEncoder().encode(
+    JSON.stringify([
+      'bettertrack.per-vault-retired-server-purge.v1',
+      input.vaultId,
+      input.generation,
+      input.versionSetHash,
+      observedDocs,
+      input.challenge,
+    ]),
+  );
+}
+
+/** Stable refusal codes for the parallel per-vault surface. */
+export const PER_VAULT_ERROR_CODES = {
+  notFound: 'VAULT_NOT_FOUND',
+  nameConflict: 'VAULT_NAME_CONFLICT',
+  reservedMedium: 'VAULT_MEDIA_RESERVED',
+  driveBindingInvalid: 'VAULT_DRIVE_BINDING_INVALID',
+  portfolioBindingMismatch: 'VAULT_PORTFOLIO_BINDING_MISMATCH',
+  docAddressMismatch: 'VAULT_DOC_ADDRESS_MISMATCH',
+  docKindMismatch: 'VAULT_DOC_KIND_MISMATCH',
+  preconditionRequired: 'VAULT_PRECONDITION_REQUIRED',
+  preconditionFailed: 'VAULT_PRECONDITION_FAILED',
+  tooLarge: 'VAULT_TOO_LARGE',
+  malformed: 'VAULT_MALFORMED',
+  mediaStateConflict: 'VAULT_MEDIA_STATE_CONFLICT',
+  mediaVerificationFailed: 'VAULT_MEDIA_VERIFICATION_FAILED',
+  mediaPartialSet: 'VAULT_MEDIA_PARTIAL_SET',
+  serverCandidateNotFound: 'VAULT_SERVER_CANDIDATE_NOT_FOUND',
+  retirementConflict: 'VAULT_RETIRED_SERVER_CONFLICT',
+  retirementRetention: 'VAULT_RETIRED_SERVER_RETENTION',
+  retirementProofInvalid: 'VAULT_RETIRED_SERVER_PROOF_INVALID',
+  deleteReferenced: 'VAULT_REFERENCED_BY_PORTFOLIO',
+  deleteRetirementPending: 'VAULT_RETIREMENT_PENDING',
+} as const;
+export type PerVaultErrorCode = (typeof PER_VAULT_ERROR_CODES)[keyof typeof PER_VAULT_ERROR_CODES];
 
 // ── Per-portfolio revision token + move-in / move-out bodies (§9, §10) ───────
 

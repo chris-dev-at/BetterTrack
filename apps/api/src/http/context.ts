@@ -202,6 +202,8 @@ import {
   type WebhookDeliveryJob,
 } from '../services/webhooks';
 import { createParanoidVaultRepository } from '../data/repositories/paranoidVaultRepository';
+import { createVaultBlobRepository } from '../data/repositories/vaultBlobRepository';
+import { createVaultRepository } from '../data/repositories/vaultRepository';
 import { createReauthService, type ReauthService } from '../services/auth/reauthService';
 import {
   createParanoidEnforcementRepository,
@@ -213,6 +215,7 @@ import {
   type ParanoidVaultService,
 } from '../services/account/paranoidVaultService';
 import { createParanoidDiscardReauth } from '../services/account/paranoidDiscardReauth';
+import { createVaultService, type VaultService } from '../services/account/vaultService';
 import { createParanoidRehydrationService } from '../services/account/paranoidRehydrationService';
 import {
   createParanoidTransitionService,
@@ -392,6 +395,8 @@ export interface AppContext {
    * a size cap and bounded ciphertext history. Never reads the payload.
    */
   paranoidVault: ParanoidVaultService;
+  /** Per-vault config, blind per-doc CAS store, media retirement, and signed purge (E1). */
+  vaults: VaultService;
   /**
    * Generic session step-up (`POST /auth/reauth`). The missing primitive for
    * sensitive acts that happen entirely client-side and so have no destructive
@@ -1898,18 +1903,29 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     presence,
   });
 
+  const discardReauth = createParanoidDiscardReauth({
+    config,
+    redis,
+    userRepo,
+    passwordHasher,
+    twoFactor,
+    audit,
+  });
+  const vaultsService = createVaultService({
+    configs: createVaultRepository(db),
+    blobs: createVaultBlobRepository(db),
+    docMaxBytes: config.vault.docMaxBytes,
+    retention: config.vault.history,
+    proofSecret: config.sessionSecrets[0],
+    audit,
+    deleteReauth: discardReauth,
+  });
+
   const paranoidTransitions = createParanoidTransitionService({
     db,
     vaults: paranoidVaultRepository,
     // The §3 destruction exit re-authenticates like `DELETE /account`.
-    discardReauth: createParanoidDiscardReauth({
-      config,
-      redis,
-      userRepo,
-      passwordHasher,
-      twoFactor,
-      audit,
-    }),
+    discardReauth,
     // Admin metadata locks on the dedicated pool and reads on the main one, the
     // same split every other privacy-lock call site uses.
     lockDb: privacyLockDb,
@@ -2024,6 +2040,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     cashTags: guarded.cashTags,
     cashBudgets: guarded.cashBudgets,
     paranoidVault,
+    vaults: vaultsService,
     reauth,
     paranoidTransitions,
     paranoidGuard,
