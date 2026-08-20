@@ -1,34 +1,16 @@
 import { useEffect, useState } from 'react';
-import type { FormEvent } from 'react';
+import { Link } from 'react-router-dom';
 
-import {
-  REGISTRATION_MODES,
-  type RegistrationMode,
-  type RegistrationToken,
-} from '@bettertrack/contracts';
+import { REGISTRATION_MODES, type RegistrationMode } from '@bettertrack/contracts';
 
 import { useT, type TranslateFn } from '../../i18n';
 import * as api from '../../lib/adminApi';
 import { useResource } from '../useResource';
-import {
-  Alert,
-  Badge,
-  Button,
-  CopyField,
-  EmptyState,
-  PageHeader,
-  Spinner,
-  TextField,
-  cx,
-} from '../components/ui';
+import { Alert, Badge, Button, PageHeader, Spinner, cx } from '../components/ui';
 
 function errorMessage(err: unknown, t: TranslateFn): string {
   void err;
   return t('common.genericError');
-}
-
-function formatDateTime(iso: string): string {
-  return new Date(iso).toLocaleString();
 }
 
 interface ModeMeta {
@@ -67,18 +49,14 @@ function modeMeta(t: TranslateFn): ModeMeta[] {
   ];
 }
 
-const TOKEN_STATUS_TONE: Record<RegistrationToken['status'], 'green' | 'amber' | 'neutral'> = {
-  active: 'green',
-  exhausted: 'neutral',
-  expired: 'neutral',
-  revoked: 'amber',
-};
-
 /**
  * Admin global settings (PROJECTPLAN.md §6.12, §8, §13.4 V4-P4a): the
- * registration-mode selector plus the two surfaces the self-serve modes need —
- * registration access tokens (invite-token mode) and the approval queue (approval
- * mode). Reads state via `GET /admin/settings` and persists edits via `PATCH`.
+ * registration-mode selector and the beta toggle. Reads state via
+ * `GET /admin/settings` and persists edits via `PATCH`.
+ *
+ * The two surfaces the self-serve modes need — registration access tokens and
+ * the approval queue — moved to the People workspace's Registration page with
+ * the #1406 W1 IA; this page links to them instead of hosting them.
  */
 export function SettingsPage() {
   const t = useT();
@@ -206,8 +184,17 @@ export function SettingsPage() {
             </div>
           </section>
 
-          <RegistrationTokensSection active={savedMode === 'invite_token'} />
-          <ApprovalQueueSection active={savedMode === 'approval'} />
+          {savedMode === 'invite_token' || savedMode === 'approval' ? (
+            <p className="text-sm text-neutral-400">
+              {t('admin.settings.registration.manageLead')}{' '}
+              <Link
+                className="text-sky-400 underline focus:outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+                to="/admin/registration"
+              >
+                {t('admin.settings.registration.manageLink')}
+              </Link>
+            </p>
+          ) : null}
 
           <section className="flex flex-col gap-3 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
             <div className="flex flex-col gap-1">
@@ -242,269 +229,5 @@ export function SettingsPage() {
         </>
       )}
     </div>
-  );
-}
-
-/**
- * Registration access tokens (§13.4 V4-P4a) — admin-issued, hash-only tokens that
- * gate the invite-token mode. Create single- or multi-use tokens with an optional
- * expiry; the register URL is shown once. Revoke kills a token immediately.
- */
-function RegistrationTokensSection({ active }: { active: boolean }) {
-  const t = useT();
-  const tokens = useResource((signal) => api.listRegistrationTokens(signal), []);
-
-  const [label, setLabel] = useState('');
-  const [maxUses, setMaxUses] = useState('1');
-  const [expiresInDays, setExpiresInDays] = useState('');
-  const [creating, setCreating] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [createdUrl, setCreatedUrl] = useState<string | null>(null);
-  const [revokingId, setRevokingId] = useState<string | null>(null);
-  const [revokeBusy, setRevokeBusy] = useState(false);
-
-  async function onCreate(e: FormEvent) {
-    e.preventDefault();
-    setError(null);
-    setCreatedUrl(null);
-    setCreating(true);
-    try {
-      const uses = Number.parseInt(maxUses, 10);
-      const days = expiresInDays.trim() === '' ? undefined : Number.parseInt(expiresInDays, 10);
-      const res = await api.createRegistrationToken({
-        ...(label.trim() ? { label: label.trim() } : {}),
-        maxUses: Number.isFinite(uses) ? uses : 1,
-        ...(days !== undefined && Number.isFinite(days) ? { expiresInDays: days } : {}),
-      });
-      setCreatedUrl(res.registerUrl);
-      setLabel('');
-      setMaxUses('1');
-      setExpiresInDays('');
-      tokens.reload();
-    } catch (err) {
-      setError(errorMessage(err, t));
-    } finally {
-      setCreating(false);
-    }
-  }
-
-  async function onRevoke(id: string) {
-    if (revokingId !== id || revokeBusy) return;
-    setError(null);
-    setRevokeBusy(true);
-    try {
-      await api.revokeRegistrationToken(id);
-      tokens.reload();
-      setRevokingId(null);
-    } catch (err) {
-      setError(errorMessage(err, t));
-    } finally {
-      setRevokeBusy(false);
-    }
-  }
-
-  return (
-    <section className="flex flex-col gap-3 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
-      <div className="flex flex-col gap-1">
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-neutral-400">
-          {t('admin.settings.tokens.title')}
-        </h2>
-        <p className="text-sm text-neutral-400">
-          {t('admin.settings.tokens.description')}
-          {active ? null : ` ${t('admin.settings.tokens.inactive')}`}
-        </p>
-      </div>
-
-      <form onSubmit={onCreate} className="flex flex-wrap items-end gap-3">
-        <TextField
-          label={t('admin.settings.tokens.label')}
-          name="token-label"
-          value={label}
-          onChange={(e) => setLabel(e.target.value)}
-          placeholder={t('admin.settings.tokens.labelPlaceholder')}
-        />
-        <TextField
-          label={t('admin.settings.tokens.maxUses')}
-          name="token-max-uses"
-          type="number"
-          min={1}
-          value={maxUses}
-          onChange={(e) => setMaxUses(e.target.value)}
-        />
-        <TextField
-          label={t('admin.settings.tokens.expiresInDays')}
-          name="token-expires"
-          type="number"
-          min={1}
-          value={expiresInDays}
-          onChange={(e) => setExpiresInDays(e.target.value)}
-          placeholder={t('admin.settings.tokens.never')}
-        />
-        <Button type="submit" disabled={creating}>
-          {creating ? t('common.creating') : t('admin.settings.tokens.create')}
-        </Button>
-      </form>
-
-      {error ? <Alert tone="error">{error}</Alert> : null}
-      {createdUrl ? (
-        <CopyField label={t('admin.settings.tokens.urlLabel')} value={createdUrl} />
-      ) : null}
-
-      {tokens.loading ? (
-        <Spinner label={t('admin.settings.tokens.loading')} />
-      ) : tokens.error ? (
-        <Alert tone="error">{tokens.error}</Alert>
-      ) : tokens.data && tokens.data.tokens.length > 0 ? (
-        <ul className="flex flex-col gap-2">
-          {tokens.data.tokens.map((token) => (
-            <li
-              key={token.id}
-              className="flex items-center justify-between gap-3 rounded-md border border-neutral-800 px-3 py-2"
-            >
-              <span className="flex min-w-0 flex-col gap-0.5">
-                <span className="flex items-center gap-2 text-sm text-neutral-100">
-                  <span className="truncate">
-                    {token.label ?? t('admin.settings.tokens.untitled')}
-                  </span>
-                  <Badge tone={TOKEN_STATUS_TONE[token.status]}>
-                    {t(`admin.settings.tokens.status.${token.status}`)}
-                  </Badge>
-                </span>
-                <span className="text-xs text-neutral-400">
-                  {t('admin.settings.tokens.uses', {
-                    used: token.useCount,
-                    max: token.maxUses,
-                  })}
-                  {token.expiresAt
-                    ? ` · ${t('admin.settings.tokens.expires', { date: formatDateTime(token.expiresAt) })}`
-                    : ` · ${t('admin.settings.tokens.noExpiry')}`}
-                </span>
-              </span>
-              {token.status === 'active' ? (
-                revokingId === token.id ? (
-                  <span className="flex flex-wrap items-center justify-end gap-2">
-                    <span className="text-xs text-neutral-400">
-                      {t('admin.confirmations.revokeRegistrationToken.prompt', {
-                        name: token.label ?? token.id,
-                      })}
-                    </span>
-                    <Button
-                      variant="secondary"
-                      disabled={revokeBusy}
-                      onClick={() => void onRevoke(token.id)}
-                    >
-                      {revokeBusy
-                        ? t('admin.confirmations.revokeRegistrationToken.pending')
-                        : t('admin.confirmations.revokeRegistrationToken.confirm')}
-                    </Button>
-                    <Button
-                      variant="secondary"
-                      disabled={revokeBusy}
-                      onClick={() => setRevokingId(null)}
-                    >
-                      {t('common.cancel')}
-                    </Button>
-                  </span>
-                ) : (
-                  <Button
-                    variant="secondary"
-                    disabled={revokingId !== null || revokeBusy}
-                    onClick={() => {
-                      setError(null);
-                      setRevokingId(token.id);
-                    }}
-                  >
-                    {t('admin.actions.revoke')}
-                  </Button>
-                )
-              ) : null}
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <EmptyState>{t('admin.settings.tokens.empty')}</EmptyState>
-      )}
-    </section>
-  );
-}
-
-/**
- * Approval queue (§13.4 V4-P4a) — pending applications from the approval mode.
- * Approve creates the account (and emails the applicant); reject drops it (and
- * emails the applicant). Either way the row leaves the queue.
- */
-function ApprovalQueueSection({ active }: { active: boolean }) {
-  const t = useT();
-  const requests = useResource((signal) => api.listRegistrationRequests(signal), []);
-  const [error, setError] = useState<string | null>(null);
-  const [busyId, setBusyId] = useState<string | null>(null);
-
-  async function act(id: string, kind: 'approve' | 'reject') {
-    setError(null);
-    setBusyId(id);
-    try {
-      if (kind === 'approve') await api.approveRegistrationRequest(id);
-      else await api.rejectRegistrationRequest(id);
-      requests.reload();
-    } catch (err) {
-      setError(errorMessage(err, t));
-    } finally {
-      setBusyId(null);
-    }
-  }
-
-  return (
-    <section className="flex flex-col gap-3 rounded-lg border border-neutral-800 bg-neutral-900 p-4">
-      <div className="flex flex-col gap-1">
-        <h2 className="text-sm font-semibold uppercase tracking-wide text-neutral-400">
-          {t('admin.settings.approvals.title')}
-        </h2>
-        <p className="text-sm text-neutral-400">
-          {t('admin.settings.approvals.description')}
-          {active ? null : ` ${t('admin.settings.approvals.inactive')}`}
-        </p>
-      </div>
-
-      {error ? <Alert tone="error">{error}</Alert> : null}
-
-      {requests.loading ? (
-        <Spinner label={t('admin.settings.approvals.loading')} />
-      ) : requests.error ? (
-        <Alert tone="error">{requests.error}</Alert>
-      ) : requests.data && requests.data.requests.length > 0 ? (
-        <ul className="flex flex-col gap-2">
-          {requests.data.requests.map((req) => (
-            <li
-              key={req.id}
-              className="flex items-center justify-between gap-3 rounded-md border border-neutral-800 px-3 py-2"
-            >
-              <span className="flex min-w-0 flex-col gap-0.5">
-                <span className="truncate text-sm text-neutral-100">{req.username}</span>
-                <span className="break-words text-xs text-neutral-400">
-                  {req.email} ·{' '}
-                  {t('admin.settings.approvals.requested', {
-                    date: formatDateTime(req.createdAt),
-                  })}
-                </span>
-              </span>
-              <span className="flex items-center gap-2">
-                <Button onClick={() => void act(req.id, 'approve')} disabled={busyId === req.id}>
-                  {t('admin.settings.approvals.approve')}
-                </Button>
-                <Button
-                  variant="secondary"
-                  onClick={() => void act(req.id, 'reject')}
-                  disabled={busyId === req.id}
-                >
-                  {t('admin.settings.approvals.reject')}
-                </Button>
-              </span>
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <EmptyState>{t('admin.settings.approvals.empty')}</EmptyState>
-      )}
-    </section>
   );
 }
