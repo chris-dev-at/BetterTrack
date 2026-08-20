@@ -1340,9 +1340,10 @@ export const PARANOID_KEPT_ROUTE_RULES: readonly ParanoidExemptRouteRule[] = [
     { exact: '/notifications' },
     { prefix: '/notifications/' },
   ]),
-  ...keptRoutes('Authenticated feedback capture reads no server portfolio data.', [
-    { exact: '/feedback' },
-  ]),
+  ...keptRoutes(
+    'Authenticated feedback and its caller-owned status history contain no server portfolio data.',
+    [{ exact: '/feedback' }, { exact: '/feedback/mine' }],
+  ),
   ...keptRoutes('Alert CRUD is provenance-filtered; sharing settings are classified separately.', [
     { exact: '/alerts' },
     { pattern: /^\/alerts\/(?!sharing$)[^/]+(?:\/rearm)?$/ },
@@ -1674,6 +1675,10 @@ export const PARANOID_API_SCOPE_CLASSIFICATIONS: Readonly<
   'feedback:write': {
     disposition: 'allowed',
     reason: 'Voluntary feedback submission reads no server-held portfolio data.',
+  },
+  'feedback:read': {
+    disposition: 'allowed',
+    reason: 'Caller-owned feedback status history contains no server-held portfolio data.',
   },
 };
 

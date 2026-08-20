@@ -325,6 +325,7 @@ const componentSchemas = {
   // Authenticated in-app feedback (#1315)
   CreateFeedbackRequest: contracts.createFeedbackRequestSchema,
   CreateFeedbackResponse: contracts.createFeedbackResponseSchema,
+  MyFeedbackResponse: contracts.myFeedbackResponseSchema,
   AdminFeedbackListResponse: contracts.adminFeedbackListResponseSchema,
   UpdateFeedbackStatusRequest: contracts.updateFeedbackStatusRequestSchema,
   UpdateFeedbackStatusResponse: contracts.updateFeedbackStatusResponseSchema,
@@ -1768,7 +1769,7 @@ const endpoints: EndpointDef[] = [
   },
   {
     method: 'patch',
-    path: '/admin/feedback/{id}/status',
+    path: '/admin/feedback/{id}',
     tag: 'Admin',
     summary: 'Update one feedback submission lifecycle status.',
     params: contracts.idParamSchema,
@@ -2698,7 +2699,15 @@ const endpoints: EndpointDef[] = [
     response: R.IdeaResponse,
   },
 
-  // Feedback (#1315) — one authenticated, create-only queue for every client
+  // Feedback (#1315/#1338) — capture plus caller-owned lifecycle read-back
+  {
+    method: 'get',
+    path: '/feedback/mine',
+    tag: 'Feedback',
+    summary: 'List the caller’s own feedback submissions and their lifecycle status.',
+    status: 200,
+    response: R.MyFeedbackResponse,
+  },
   {
     method: 'post',
     path: '/feedback',

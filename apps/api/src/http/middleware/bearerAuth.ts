@@ -415,12 +415,13 @@ export const MODULE_POLICIES = [
   // Ideas (§13.4 V4-P9) are a Workboard surface — a saved Workboard analysis —
   // so they gate on the same workboard scope pair as conglomerates/backtest.
   { prefix: '/ideas', kind: 'scope', read: 'workboard:read', write: 'workboard:write' },
-  // #1315: feedback is a create-only module in v1. Mapping it explicitly is
-  // critical: without this row a bearer falls through to API_KEY_FORBIDDEN
-  // before the new feedback:write scope can ever be evaluated.
-  // Revisit the read half when #1338 adds GET /feedback/mine: write access must
-  // not silently grant access to a user's submission history.
-  { prefix: '/feedback', kind: 'scope', read: 'feedback:write', write: 'feedback:write' },
+  // #1315/#1338: explicit feedback read/write scopes keep both capture and the
+  // caller-owned status history out of the session-only fallback that caused
+  // the recurring API_KEY_FORBIDDEN module-policy gap. #1338 splits the read
+  // half off `feedback:write` as that row's comment demanded: GET /feedback/mine
+  // exposes a user's submission history, so write access must not silently
+  // grant it.
+  { prefix: '/feedback', kind: 'scope', read: 'feedback:read', write: 'feedback:write' },
   {
     prefix: '/expenses',
     kind: 'session-only',

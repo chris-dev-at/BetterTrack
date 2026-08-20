@@ -341,7 +341,8 @@
         "mirrorchain:read": "View your group portfolios, members, activity and invitations",
         "mirrorchain:write": "Accept or decline group invitations and leave group portfolios",
         "vault:sync": "Synchronize your client-encrypted vault across your devices",
-        "feedback:write": "Send feedback, feature requests and bug reports on your behalf"
+        "feedback:write": "Send feedback, feature requests and bug reports on your behalf",
+        "feedback:read": "View your feedback submissions and their status"
       },
       "module": {
         "portfolio": {
@@ -390,7 +391,7 @@
         },
         "feedback": {
           "label": "Feedback",
-          "description": "Send feature requests, bug reports and other feedback on your behalf. Feedback is write-only in v1."
+          "description": "View your feedback submissions and their status, or send feature requests, bug reports and other feedback on your behalf."
         }
       }
     }
@@ -4491,7 +4492,10 @@
       "status": {
         "new": "New",
         "triaged": "Triaged",
-        "done": "Done"
+        "working_on_it": "Working on it",
+        "saved_as_future_idea": "Saved as a future idea",
+        "declined": "Declined",
+        "shipped": "Shipped"
       },
       "statusControl": "Status for feedback from {{user}}",
       "fields": {

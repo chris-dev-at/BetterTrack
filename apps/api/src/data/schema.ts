@@ -61,7 +61,14 @@ export const problemStatusEnum = pgEnum('problem_status', ['open', 'resolved']);
 
 /** Authenticated in-app feedback, triaged category-first in the admin inbox. */
 export const feedbackCategoryEnum = pgEnum('feedback_category', ['feature', 'bug', 'other']);
-export const feedbackStatusEnum = pgEnum('feedback_status', ['new', 'triaged', 'done']);
+export const feedbackStatusEnum = pgEnum('feedback_status', [
+  'new',
+  'triaged',
+  'working_on_it',
+  'saved_as_future_idea',
+  'declined',
+  'shipped',
+]);
 
 export const users = pgTable(
   'users',
@@ -614,8 +621,9 @@ export const problems = pgTable(
  * Authenticated user feedback (#1315). Both web and native clients write into
  * this one owner-visible queue. `context` is bounded and validated at the
  * contract edge but stays shape-extensible JSON so client diagnostics can grow
- * without a schema migration. V1 is create-only for users: no read-back route,
- * anonymous submissions, or attachments.
+ * without a schema migration. Authenticated users can create submissions and
+ * read back only their own rows; anonymous submissions and attachments remain
+ * unsupported.
  */
 export const feedback = pgTable(
   'feedback',
@@ -629,13 +637,28 @@ export const feedback = pgTable(
     message: text('message').notNull(),
     context: jsonb('context'),
     status: feedbackStatusEnum('status').notNull().default('new'),
+    lastStatusChangeAt: timestamp('last_status_change_at', { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    declinedReason: text('declined_reason'),
+    shippedVersion: varchar('shipped_version', { length: 64 }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
-    // No trigger/$onUpdate owns this: future status transitions must set it explicitly.
+    // No trigger/$onUpdate owns these: status transitions set both explicitly.
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (t) => [
     index('feedback_user_created_idx').on(t.userId, t.createdAt),
     index('feedback_status_created_idx').on(t.status, t.createdAt),
+    check(
+      'feedback_status_metadata_pair',
+      sql`(
+        (${t.status} = 'declined' and ${t.declinedReason} is not null and btrim(${t.declinedReason}) <> '' and char_length(${t.declinedReason}) <= 1000 and ${t.shippedVersion} is null)
+        or
+        (${t.status} = 'shipped' and ${t.shippedVersion} is not null and btrim(${t.shippedVersion}) <> '' and char_length(${t.shippedVersion}) <= 64 and ${t.declinedReason} is null)
+        or
+        (${t.status} not in ('declined', 'shipped') and ${t.declinedReason} is null and ${t.shippedVersion} is null)
+      )`,
+    ),
   ],
 );
 
