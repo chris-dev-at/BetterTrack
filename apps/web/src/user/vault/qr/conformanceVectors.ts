@@ -107,4 +107,12 @@ export const VAULT_TRANSFER_CONFORMANCE_VECTORS = {
       name: 'Café',
     },
   },
+  maxLengthComposedName: {
+    payload: `btvault1:m=${VAULT_TRANSFER_VECTOR_MNEMONIC.replaceAll(' ', '+')}&v=${VAULT_TRANSFER_VECTOR_VAULT_ID}&n=${'%C3%A9'.repeat(64)}`,
+    expected: {
+      mnemonic: VAULT_TRANSFER_VECTOR_MNEMONIC,
+      vaultId: VAULT_TRANSFER_VECTOR_VAULT_ID,
+      name: 'é'.repeat(64),
+    },
+  },
 } as const;

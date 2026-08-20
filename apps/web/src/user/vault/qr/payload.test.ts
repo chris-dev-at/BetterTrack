@@ -99,6 +99,12 @@ describe('btvault1 payload conformance vectors', () => {
     expect(parsed).toEqual(VECTORS.nonAsciiName.expected);
     expect(serializeVaultTransferPayload(parsed)).toBe(VECTORS.nonAsciiName.payload);
   });
+
+  it('preserves a composed display hint at the exact 64-code-point boundary', () => {
+    const parsed = parseVaultTransferPayload(VECTORS.maxLengthComposedName.payload);
+    expect(parsed).toEqual(VECTORS.maxLengthComposedName.expected);
+    expect(serializeVaultTransferPayload(parsed)).toBe(VECTORS.maxLengthComposedName.payload);
+  });
 });
 
 it('pins the fixed serializer golden', () => {
