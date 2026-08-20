@@ -297,10 +297,8 @@ test('an unknown authenticated admin path renders a not-found state without navi
   expect(await screen.findByText('Page not found')).toBeInTheDocument();
   expect(screen.getByText('/admin/blabla', { selector: 'code' })).toBeInTheDocument();
   expect(screen.getByRole('navigation', { name: 'Admin console' })).toBeInTheDocument();
-  expect(screen.getByRole('link', { name: 'Back to start' })).toHaveAttribute(
-    'href',
-    '/admin/users',
-  );
+  // "Back to start" is the operator Overview since the #1406 W1 IA landed.
+  expect(screen.getByRole('link', { name: 'Back to start' })).toHaveAttribute('href', '/admin');
   expect(screen.getByRole('button', { name: 'Back to previous page' })).toBeInTheDocument();
 
   const pathname = screen.getByTestId('location').textContent;

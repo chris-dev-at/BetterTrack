@@ -282,7 +282,7 @@ export const V5_SURFACE_INVENTORY = [
     components: ['admin/AdminApp.tsx', 'admin/components/AdminLayout.tsx'],
     copyRoots: ['admin.nav'],
     copyReview:
-      'Console chrome every V5 admin surface is reached through: the section nav entries added by P0 (Account defaults), P2 (Problems, Monitoring, Usage analytics, Feature flags), P10 (API keys), P12 (AI) and P13c (Security), plus the console title, language switch, and burger-drawer labels.',
+      'Console chrome every V5 admin surface is reached through: the nav entries added by P0 (Account defaults), P2 (Problems, Monitoring, Usage analytics, Feature flags), P10 (API keys), P12 (AI) and P13c (Security), plus the console title, language switch, and burger-drawer labels. The post-V5 W1 rebuild (#1406) regrouped those same entries under six operator workspaces and added the palette trigger label; the pages themselves and their routes are unchanged.',
     states: {
       loading: unverified(
         'AdminLayout renders the localized admin.nav.loading spinner until the session resolves.',
@@ -855,6 +855,11 @@ export const NON_V5_SURFACES = [
     note: 'V1 admin session provider; holds state, renders nothing.',
   },
   {
+    path: 'admin/components/AdminCommandPalette.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'Post-V5 admin rebuild W1 (#1406) ⌘K palette; localized and tested in its own feature change.',
+  },
+  {
     path: 'admin/components/EmailLogTable.tsx',
     reason: 'no-v5-deliverable',
     note: 'V2 email-log table (#187).',
@@ -898,6 +903,21 @@ export const NON_V5_SURFACES = [
     path: 'admin/pages/InvitesPage.tsx',
     reason: 'no-v5-deliverable',
     note: 'V1 invite management (#11); still English-only.',
+  },
+  {
+    path: 'admin/pages/OverviewPage.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'Post-V5 admin rebuild W1 (#1406) operator Overview; localized and tested in its own feature change.',
+  },
+  {
+    path: 'admin/pages/RegistrationPage.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'Post-V5 admin rebuild W1 (#1406): the approval queue and access tokens, re-housed out of the V5 settings page into the People workspace.',
+  },
+  {
+    path: 'admin/pages/SupportPage.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'Post-V5 admin rebuild W1 (#1406) Support landing; the helpdesk console it stands in for is W3.',
   },
   {
     path: 'admin/pages/UserDetailPage.tsx',
@@ -1363,6 +1383,11 @@ export const NON_V5_ROUTES = [
     note: 'V4-P2c self-service account deletion.',
   },
   {
+    path: '/admin',
+    reason: 'no-v5-deliverable',
+    note: 'Post-V5 admin rebuild W1 (#1406): the console index stopped redirecting to Users and now lands on the operator Overview.',
+  },
+  {
     path: '/admin/announcements',
     reason: 'no-v5-deliverable',
     note: 'V4-P5 announcement composer.',
@@ -1375,6 +1400,16 @@ export const NON_V5_ROUTES = [
     note: 'Post-V5 owner feedback inbox (#1316).',
   },
   { path: '/admin/invites', reason: 'no-v5-deliverable', note: 'V1 invite management.' },
+  {
+    path: '/admin/registration',
+    reason: 'no-v5-deliverable',
+    note: 'Post-V5 admin rebuild W1 (#1406): the People workspace’s approval queue and access tokens.',
+  },
+  {
+    path: '/admin/support',
+    reason: 'no-v5-deliverable',
+    note: 'Post-V5 admin rebuild W1 (#1406): the Support workspace landing ahead of the W3 helpdesk console.',
+  },
   { path: '/admin/users/:userId', reason: 'no-v5-deliverable', note: 'V2 admin user detail.' },
   {
     path: '/ask',
@@ -1751,8 +1786,13 @@ export type V5AsyncStateDebtLedger = Readonly<
  * also the cause of #1372 — it fired unconditionally above the router, so an
  * anonymous public share issued a protected `GET /vaults`, took the 401 through
  * the shared unauthorized-session handling, and had its own share query cleared.
+ *
+ * 183 → 181 with the #1406 W1 admin IA: the approval queue and the registration
+ * access tokens moved off SettingsPage into the People workspace's own page, so
+ * two reads left the inventoried V5 surface. Neither read was dropped — both are
+ * re-analyzed under the deferred non-V5 ledger, with their states still observed.
  */
-export const V5_ASYNC_READ_SITE_BASELINE = 183;
+export const V5_ASYNC_READ_SITE_BASELINE = 181;
 
 /** Ratchet this downward whenever #739 removes a read site or missing state. */
 export const V5_ASYNC_STATE_DEBT_CEILING = { readSites: 0, stateGaps: 0 } as const;
@@ -1767,7 +1807,14 @@ export const V5_ASYNC_STATE_DEBT: V5AsyncStateDebtLedger = {};
  */
 // #1316 adds one fully handled post-V5 admin feedback read. It increases the
 // analyzed non-V5 read universe without adding any deferred state debt.
-export const DEFERRED_NON_V5_ASYNC_READ_SITE_BASELINE = 56;
+//
+// 56 → 70 with the post-V5 admin rebuild W1 (#1406): the operator Overview (9),
+// the People workspace's Registration page (3) and the ⌘K palette (2). Two of the
+// Registration reads are the approval-queue and access-token reads that moved off
+// the inventoried SettingsPage, so the pair is re-analyzed here rather than lost.
+// Every one of the fourteen observes both its loading and its error state, which
+// is why the debt ceiling below is unchanged.
+export const DEFERRED_NON_V5_ASYNC_READ_SITE_BASELINE = 70;
 
 export const DEFERRED_NON_V5_ASYNC_STATE_DEBT_CEILING = {
   readSites: 42,
