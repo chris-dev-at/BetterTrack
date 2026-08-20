@@ -313,12 +313,20 @@ export function createFeedbackRepository(db: Database): FeedbackRepository {
     },
 
     async deleteMine(userId, id, at) {
+      // Both tombstone stamps ride raw SQL fragments (COALESCE + CASE keep the
+      // repeat idempotent), which puts them OUTSIDE the column's drizzle type
+      // mapping: the `Date` reaches postgres-js unencoded and its Bind writer
+      // throws `ERR_INVALID_ARG_TYPE` on a non-string, so every DELETE answered
+      // 500 in production while PGlite — which serialises a `Date` happily —
+      // kept the whole suite green. Explicit ISO string + ::timestamptz cast,
+      // exactly as #437's notification-archive COALESCE already does.
+      const atIso = at.toISOString();
       const [row] = await db
         .update(feedback)
         .set({
-          deletedByUserAt: sql<Date>`coalesce(${feedback.deletedByUserAt}, ${at})`,
+          deletedByUserAt: sql<Date>`coalesce(${feedback.deletedByUserAt}, ${atIso}::timestamptz)`,
           updatedAt: sql<Date>`case
-            when ${feedback.deletedByUserAt} is null then ${at}
+            when ${feedback.deletedByUserAt} is null then ${atIso}::timestamptz
             else ${feedback.updatedAt}
           end`,
         })

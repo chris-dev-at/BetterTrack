@@ -30,6 +30,12 @@ export default defineConfig({
       // (COALESCE + ::timestamptz casts) whose param typing differs between
       // PGlite and postgres-js — keep them proven on the real engine.
       'src/__tests__/notificationsArchive.test.ts',
+      // #1443: the feedback tombstone repeated exactly that shape and shipped a
+      // bare `Date` param inside its COALESCE/CASE — postgres-js threw at Bind
+      // and EVERY production delete answered 500 while the PGlite suite stayed
+      // green. The delete-per-status matrix lives here so the engine that broke
+      // is the engine that proves it.
+      'src/__tests__/feedbackDeleteMatrix.test.ts',
       // #417 P1 follow-up: keep the idempotency claim/replay/mismatch/concurrent
       // semantics proven against real postgres + postgres-js (migration 0034 was
       // silently skipped on prod while every fresh-database run stayed green).
