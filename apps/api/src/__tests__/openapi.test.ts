@@ -51,6 +51,14 @@ describe('OpenAPI document', () => {
     expect(schemas.ApiError).toBeDefined();
     expect(schemas.MeResponse).toBeDefined();
 
+    const grantList = schemas.OAuthGrantListResponse as JsonObject;
+    const grantArray = (grantList.properties as JsonObject).grants as JsonObject;
+    const grantRow = grantArray.items as JsonObject;
+    const grantProperties = grantRow.properties as JsonObject;
+    expect(grantProperties.firstParty).toEqual({ type: 'boolean' });
+    expect(grantProperties.current).toEqual({ type: 'boolean' });
+    expect(grantRow.required).toEqual(expect.arrayContaining(['firstParty', 'current']));
+
     // Paths exist for every documented endpoint.
     const paths = doc.paths as JsonObject;
     expect(Object.keys(paths).length).toBeGreaterThan(0);

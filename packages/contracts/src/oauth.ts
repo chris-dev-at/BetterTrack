@@ -217,6 +217,8 @@ export const oauthGrantSummarySchema = z
     id: z.string().uuid(),
     clientId: z.string(),
     appName: z.string(),
+    firstParty: z.boolean(),
+    current: z.boolean(),
     scopes: z.array(apiKeyScopeSchema),
     createdAt: z.string(),
     lastUsedAt: z.string().nullable(),
