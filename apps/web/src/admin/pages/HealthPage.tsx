@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 
 import type {
+  AdminBackupStatusLevel,
   AdminHealthComponent,
   AdminHealthResponse,
   HealthStatus,
@@ -8,6 +9,7 @@ import type {
 
 import { useT } from '../../i18n';
 import * as api from '../../lib/adminApi';
+import { formatBackupAge, formatDuration } from '../formatDuration';
 import { useResource } from '../useResource';
 import { Alert, Badge, Button, PageHeader, Spinner } from '../components/ui';
 
@@ -21,19 +23,6 @@ const STATUS_TONE: Record<HealthStatus, 'green' | 'amber' | 'red'> = {
 function StatusBadge({ status }: { status: HealthStatus }) {
   const t = useT();
   return <Badge tone={STATUS_TONE[status]}>{t(`admin.health.status.${status}`)}</Badge>;
-}
-
-/** Whole seconds → a compact `1d 2h`, `3h 4m`, `5m 6s`, or `7s` string. */
-function formatUptime(totalSeconds: number): string {
-  const s = Math.max(0, Math.floor(totalSeconds));
-  const days = Math.floor(s / 86400);
-  const hours = Math.floor((s % 86400) / 3600);
-  const minutes = Math.floor((s % 3600) / 60);
-  const seconds = s % 60;
-  if (days > 0) return `${days}d ${hours}h`;
-  if (hours > 0) return `${hours}h ${minutes}m`;
-  if (minutes > 0) return `${minutes}m ${seconds}s`;
-  return `${seconds}s`;
 }
 
 /** One labelled component row: name, its status pill, and optional detail slot. */
@@ -97,6 +86,93 @@ export function HealthPage() {
 
         {data ? <HealthBody data={data} /> : null}
       </section>
+
+      {/* The Overview's backup attention row points here, so the evidence behind
+          it has to live here too (#1406 W1). Read-only and fail-soft: the panel
+          is a projection of the scheduler's own status file, and this page never
+          starts a dump, a drill, or an upload. */}
+      <BackupReadinessPanel />
+    </div>
+  );
+}
+
+const BACKUP_LEVEL_TONE: Record<AdminBackupStatusLevel, 'green' | 'amber' | 'red' | 'neutral'> = {
+  ok: 'green',
+  warn: 'amber',
+  critical: 'red',
+  unknown: 'neutral',
+};
+
+/**
+ * Backup / restore-drill readiness (docs/ops.md: 26 h dump, 35 d drill). Green
+ * means a recent dump AND a recent drill; amber means the recovery point exists
+ * but is unproven; red means there is no trustworthy recovery point.
+ */
+function BackupReadinessPanel() {
+  const t = useT();
+  const backup = useResource((signal) => api.getBackupStatus(signal), []);
+  const { data, loading, error, reload } = backup;
+
+  return (
+    <section
+      aria-label={t('admin.backup.title')}
+      className="flex flex-col gap-3 rounded-lg border border-neutral-800 bg-neutral-900 p-4"
+    >
+      <div className="flex items-center justify-between gap-3">
+        <h2 className="text-sm font-medium text-neutral-300">{t('admin.backup.title')}</h2>
+        {data ? (
+          <Badge tone={BACKUP_LEVEL_TONE[data.level]}>
+            {t(`admin.backup.level.${data.level}`)}
+          </Badge>
+        ) : null}
+      </div>
+
+      {loading && !data ? <Spinner label={t('common.loading')} /> : null}
+      {error ? (
+        <Alert tone="info">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span>{t('admin.backup.loadError')}</span>
+            <Button variant="secondary" onClick={reload}>
+              {t('common.retry')}
+            </Button>
+          </div>
+        </Alert>
+      ) : null}
+
+      {data ? (
+        <>
+          <p className="text-xs text-neutral-400">{t(`admin.backup.reason.${data.reason}`)}</p>
+          {data.configured ? (
+            <dl className="grid grid-cols-2 gap-3 text-xs sm:grid-cols-4">
+              <BackupFact
+                label={t('admin.backup.lastDump')}
+                value={formatBackupAge(t, data.backup.ageSeconds)}
+              />
+              <BackupFact
+                label={t('admin.backup.lastDrill')}
+                value={formatBackupAge(t, data.restore.ageSeconds)}
+              />
+              <BackupFact
+                label={t('admin.backup.dumpBudget')}
+                value={formatDuration(t, data.backup.maxAgeSeconds)}
+              />
+              <BackupFact
+                label={t('admin.backup.drillBudget')}
+                value={formatDuration(t, data.restore.maxAgeSeconds)}
+              />
+            </dl>
+          ) : null}
+        </>
+      ) : null}
+    </section>
+  );
+}
+
+function BackupFact({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="flex flex-col">
+      <dt className="uppercase tracking-wide text-neutral-400">{label}</dt>
+      <dd className="text-neutral-200">{value}</dd>
     </div>
   );
 }
@@ -122,7 +198,7 @@ function HealthBody({ data }: { data: AdminHealthResponse }) {
           </div>
           <div className="flex flex-col">
             <dt className="uppercase tracking-wide text-neutral-400">{t('admin.health.uptime')}</dt>
-            <dd className="text-neutral-200">{formatUptime(data.uptimeSeconds)}</dd>
+            <dd className="text-neutral-200">{formatDuration(t, data.uptimeSeconds)}</dd>
           </div>
           <div className="flex flex-col">
             <dt className="uppercase tracking-wide text-neutral-400">

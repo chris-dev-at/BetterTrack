@@ -808,14 +808,19 @@ export function createAdminService(deps: AdminServiceDeps) {
       activeUserCount: number;
       disabledUserCount: number;
       pendingInviteCount: number;
+      pendingRegistrationCount: number;
     }> {
       const counts = await userRepo.counts();
       const pendingInviteCount = await inviteRepo.pendingCount();
+      // #1406 W1: the Overview attention row needs the approval-queue size, and a
+      // count keeps that landing read bounded instead of listing the whole queue.
+      const pendingRegistrationCount = await registrationRequestRepo.count();
       return {
         userCount: counts.total,
         activeUserCount: counts.activeRecentLogin,
         disabledUserCount: counts.disabled,
         pendingInviteCount,
+        pendingRegistrationCount,
       };
     },
 
