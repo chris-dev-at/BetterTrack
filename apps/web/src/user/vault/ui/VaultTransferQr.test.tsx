@@ -6,6 +6,7 @@ import { act, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  createVaultTransferQrSource,
   parseVaultTransferPayload,
   VAULT_TRANSFER_QR_EXPIRY_MS,
   VAULT_TRANSFER_STEP_UP_MAX_AGE_MS,
@@ -13,6 +14,7 @@ import {
   VAULT_TRANSFER_VECTOR_MNEMONIC,
   VAULT_TRANSFER_VECTOR_VAULT_ID,
 } from '../qr';
+import type { EndpointVaultKeystore } from '../keystore/core';
 
 const qrEncoder = vi.hoisted(() => ({ render: vi.fn() }));
 
@@ -72,6 +74,52 @@ function sessionLifecycle() {
       for (const listener of [...listeners]) listener();
     },
   };
+}
+
+class ControlledTransferKeystore implements Pick<
+  EndpointVaultKeystore,
+  'readMnemonic' | 'subscribeToSessionEnd' | 'verifyDevicePassword' | 'withContentKey'
+> {
+  readonly mnemonic = deferred<string>();
+  readonly readMnemonic = vi.fn(() => this.mnemonic.promise);
+  private readonly listeners = new Set<() => void>();
+  private generation = 0;
+
+  subscribeToSessionEnd(listener: () => void): () => void {
+    this.listeners.add(listener);
+    return () => {
+      this.listeners.delete(listener);
+    };
+  }
+
+  async verifyDevicePassword(): Promise<void> {}
+
+  async withContentKey<T>(
+    _vaultId: string,
+    operation: (
+      contentKey: Uint8Array,
+      keyId: string,
+      assertSessionCurrent: () => void,
+    ) => Promise<T> | T,
+  ): Promise<T> {
+    const generation = this.generation;
+    const contentKey = new Uint8Array(32);
+    const assertSessionCurrent = () => {
+      if (generation !== this.generation) throw new Error('session-ended');
+    };
+    try {
+      const result = await operation(contentKey, 'test-key', assertSessionCurrent);
+      assertSessionCurrent();
+      return result;
+    } finally {
+      contentKey.fill(0);
+    }
+  }
+
+  endSession(): void {
+    this.generation += 1;
+    for (const listener of [...this.listeners]) listener();
+  }
 }
 
 async function openWrapped() {
@@ -288,21 +336,24 @@ describe('VaultTransferQr sender', () => {
     ).toBeInTheDocument();
   });
 
-  it('does not reveal an in-flight plain-custody read after the live session ends', async () => {
-    const pendingMnemonic = deferred<string>();
-    const source = plainSource();
-    source.readMnemonic = vi.fn(() => pendingMnemonic.promise);
+  it('does not reveal a production-source plain read that crosses session end', async () => {
+    const keystore = new ControlledTransferKeystore();
+    const source = createVaultTransferQrSource({
+      custody: 'plain',
+      keystore,
+      vaultId: VAULT_TRANSFER_VECTOR_VAULT_ID,
+    });
     render(<VaultTransferQr source={source} vaultId={VAULT_TRANSFER_VECTOR_VAULT_ID} />);
 
     fireEvent.click(screen.getByRole('button', { name: 'Show transfer QR' }));
-    await vi.waitFor(() => expect(source.readMnemonic).toHaveBeenCalledTimes(1));
+    await vi.waitFor(() => expect(keystore.readMnemonic).toHaveBeenCalledTimes(1));
 
-    act(() => source.endSession());
+    act(() => keystore.endSession());
     expect(screen.queryByLabelText('Vault seed-phrase transfer QR code')).not.toBeInTheDocument();
 
     await act(async () => {
-      pendingMnemonic.resolve(VAULT_TRANSFER_VECTOR_MNEMONIC);
-      await pendingMnemonic.promise;
+      keystore.mnemonic.resolve(VAULT_TRANSFER_VECTOR_MNEMONIC);
+      await keystore.mnemonic.promise;
     });
 
     expect(screen.queryByLabelText('Vault seed-phrase transfer QR code')).not.toBeInTheDocument();
