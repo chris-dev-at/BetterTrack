@@ -111,13 +111,13 @@ test('clears an unread-reply badge when its thread opens and keeps it clear afte
 
   renderDialog();
 
-  expect(await screen.findByLabelText('2 unread replies')).toBeInTheDocument();
+  expect(await screen.findByRole('status')).toHaveTextContent('2 unread replies');
   await user.click(screen.getByText(unread.subject!).closest('button')!);
 
   await waitFor(() => expect(markFeedbackRead).toHaveBeenCalledWith(FEEDBACK_ID));
-  await waitFor(() => expect(screen.queryByLabelText('2 unread replies')).not.toBeInTheDocument());
   await waitFor(() => expect(listMyFeedback).toHaveBeenCalledTimes(2));
-  expect(screen.queryByLabelText('2 unread replies')).not.toBeInTheDocument();
+  await user.click(screen.getByRole('button', { name: 'All submissions' }));
+  expect(screen.queryByRole('status')).not.toBeInTheDocument();
 });
 
 test('posts a reply and renders the conversation in chronological order', async () => {
@@ -158,6 +158,44 @@ test('posts a reply and renders the conversation in chronological order', async 
   const renderedMessages = screen.getAllByTestId('feedback-thread-message');
   expect(renderedMessages[0]).toHaveTextContent(adminMessage.body);
   expect(renderedMessages[1]).toHaveTextContent(reply.body);
+});
+
+test('waits for the initial conversation before sending a reply', async () => {
+  const reply: FeedbackThreadMessage = {
+    id: '00000000-0000-4000-8000-000000000003',
+    feedbackId: FEEDBACK_ID,
+    senderId: '00000000-0000-4000-8000-000000000004',
+    authorSide: 'submitter',
+    body: 'I can send a concrete example.',
+    createdAt: '2026-08-18T12:01:00.000Z',
+  };
+  let resolveThread!: (response: FeedbackThreadResponse) => void;
+  const threadPromise = new Promise<FeedbackThreadResponse>((resolve) => {
+    resolveThread = resolve;
+  });
+  const current = submission();
+  vi.mocked(listMyFeedback).mockResolvedValue({ submissions: [current] });
+  vi.mocked(getFeedbackThread).mockReturnValue(threadPromise);
+  vi.mocked(sendFeedbackMessage).mockResolvedValue({ message: reply });
+  const user = userEvent.setup();
+
+  renderDialog();
+
+  await user.click((await screen.findByText(current.subject!)).closest('button')!);
+  await user.type(await screen.findByLabelText('Reply'), reply.body);
+
+  expect(screen.getByRole('button', { name: 'Send reply' })).toBeDisabled();
+  expect(sendFeedbackMessage).not.toHaveBeenCalled();
+
+  resolveThread(thread());
+
+  await waitFor(() => expect(screen.getByRole('button', { name: 'Send reply' })).toBeEnabled());
+  await user.click(screen.getByRole('button', { name: 'Send reply' }));
+
+  await waitFor(() =>
+    expect(sendFeedbackMessage).toHaveBeenCalledWith(FEEDBACK_ID, { body: reply.body }),
+  );
+  expect(await screen.findByText(reply.body)).toBeInTheDocument();
 });
 
 test('offers the feedback form from an empty phone-sized submissions list', async () => {
