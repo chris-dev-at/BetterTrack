@@ -79,6 +79,13 @@ const LONG_WEBHOOK_DESCRIPTION =
 const LONG_WEBHOOK_URL = `https://example.com/mobile-overflow/${'deeply-nested-segment/'.repeat(
   20,
 )}delivery-endpoint`;
+const LONG_FEEDBACK_SUBJECT =
+  'Mobile overflow feedback submission with a deliberately long subject that must stay contained in the submissions list'.slice(
+    0,
+    120,
+  );
+const LONG_FEEDBACK_MESSAGE =
+  'Please keep this deliberately long feedback message readable inside the narrow submission thread without clipping its reply controls.';
 // The exhaustive inventory generates hundreds of trace snapshots. Recycle the
 // renderer between bounded batches so a single page does not accumulate every
 // route's React/Vite state and crash before the later Control Center surfaces.
@@ -672,6 +679,17 @@ async function createRouteFixtures(
     }),
     'creating the long webhook row',
   );
+  await responseJson<{ id: string }>(
+    await api.post(`${API_BASE_URL}/api/v1/feedback`, {
+      headers,
+      data: {
+        category: 'improvement',
+        subject: LONG_FEEDBACK_SUBJECT,
+        message: LONG_FEEDBACK_MESSAGE,
+      },
+    }),
+    'creating the populated feedback submission',
+  );
 
   // A real friend request gives the owner both a long-username social row and
   // an actual notification row. Accept it after observing the incoming request
@@ -757,6 +775,10 @@ async function createRouteFixtures(
   // Test-integrity assertions: this fixture is intentionally not a fresh/empty
   // account. These API reads fail before the viewport sweep if any seed seam
   // drifts, instead of silently turning the route assertions into empty states.
+  const feedback = await responseJson<{ submissions: Array<{ subject: string | null }> }>(
+    await api.get(`${API_BASE_URL}/api/v1/feedback/mine`),
+    'checking the populated feedback state',
+  );
   const [portfolio, cash, cashSources, tags, webhooks, notifications] = await Promise.all([
     responseJson<{ holdings: Array<{ asset: { id: string } }> }>(
       await api.get(`${API_BASE_URL}/api/v1/portfolios/${portfolioId!}`),
@@ -792,6 +814,9 @@ async function createRouteFixtures(
   expect(webhooks.subscriptions.some((subscription) => subscription.url === LONG_WEBHOOK_URL)).toBe(
     true,
   );
+  expect(
+    feedback.submissions.some((submission) => submission.subject === LONG_FEEDBACK_SUBJECT),
+  ).toBe(true);
   expect(notifications.items.length).toBeGreaterThan(0);
 
   return {
@@ -1037,6 +1062,32 @@ const OVERLAY_SCENARIOS: readonly OverlayScenario[] = [
     expectedSelector: '.bt-dialog__panel--phone-sheet',
     justification:
       'Covers the feedback-specific category, subject, message and submission controls above the Control Center.',
+  },
+  {
+    label: 'feedback submissions sheet',
+    sources: ['apps/web/src/user/components/MyFeedbackSubmissionsDialog.tsx'],
+    route: '/control/feedback',
+    action: { kind: 'click', selector: '.bt-cc__content .bt-btn--quiet' },
+    expectedSelector: '.bt-dialog__panel--phone-sheet',
+    sentinel: () => LONG_FEEDBACK_SUBJECT,
+    justification:
+      'Covers the populated submission rows and their long subject, status and last-change content above the Control Center.',
+  },
+  {
+    label: 'feedback submission thread sheet',
+    sources: ['apps/web/src/user/components/MyFeedbackSubmissionsDialog.tsx'],
+    route: '/control/feedback',
+    action: {
+      kind: 'click-sequence',
+      selectors: [
+        '.bt-cc__content .bt-btn--quiet',
+        '.bt-dialog__panel--phone-sheet .bt-cc-list > .bt-cc-list__item > button',
+      ],
+    },
+    expectedSelector: '.bt-dialog__panel--phone-sheet',
+    sentinel: () => LONG_FEEDBACK_MESSAGE,
+    justification:
+      'Covers the submission detail, empty conversation, reply field and send control with a long user-authored message.',
   },
   {
     label: 'global create menu',
