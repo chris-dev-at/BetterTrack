@@ -1,4 +1,12 @@
-import { useCallback, useEffect, useId, useRef, useState, type FormEvent } from 'react';
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
+  type FormEvent,
+} from 'react';
 import { createPortal, flushSync } from 'react-dom';
 
 import { QRCodeSVG } from 'qrcode.react';
@@ -34,6 +42,10 @@ type TransferPhase = 'closed' | 'checking' | 'password' | 'visible' | 'expired' 
 interface VisibleSecret {
   mnemonic: string;
   payload: string;
+  source: VaultTransferQrSource;
+  vaultId: string;
+  vaultName: string | undefined;
+  keyFingerprint: VaultKeyFingerprint | undefined;
 }
 
 /**
@@ -59,6 +71,14 @@ export function VaultTransferQr({
   const requestGeneration = useRef(0);
   const freshPasswordAt = useRef<number | null>(null);
   const overlayOpen = useRef(false);
+  const binding = useRef({ source, vaultId, vaultName, keyFingerprint });
+  const currentSecret =
+    secret?.source === source &&
+    secret.vaultId === vaultId &&
+    secret.vaultName === vaultName &&
+    secret.keyFingerprint === keyFingerprint
+      ? secret
+      : null;
   const open = phase !== 'closed';
   const { containerRef, onKeyDown } = useFocusTrap<HTMLDivElement>({
     active: open,
@@ -78,24 +98,47 @@ export function VaultTransferQr({
 
   useOverlayEscape(open, close, containerRef);
 
-  useEffect(
-    () =>
-      source.subscribeToSessionEnd(() => {
-        const shouldBlock = overlayOpen.current;
-        requestGeneration.current += 1;
-        freshPasswordAt.current = null;
-        flushSync(() => {
-          setSecret(null);
-          setDevicePassword('');
-          setManualOpen(false);
-          if (shouldBlock) {
-            setErrorKey('vault.transfer.sender.errors.unlockRequired');
-            setPhase('blocked');
-          }
-        });
-      }),
-    [source],
-  );
+  useLayoutEffect(() => {
+    const previous = binding.current;
+    const bindingChanged =
+      previous.source !== source ||
+      previous.vaultId !== vaultId ||
+      previous.vaultName !== vaultName ||
+      previous.keyFingerprint !== keyFingerprint;
+    binding.current = { source, vaultId, vaultName, keyFingerprint };
+
+    if (bindingChanged) {
+      overlayOpen.current = false;
+      freshPasswordAt.current = null;
+      setSecret(null);
+      setDevicePassword('');
+      setErrorKey(null);
+      setManualOpen(false);
+      setPhase('closed');
+    }
+
+    const unsubscribe = source.subscribeToSessionEnd(() => {
+      const shouldBlock = overlayOpen.current;
+      requestGeneration.current += 1;
+      freshPasswordAt.current = null;
+      flushSync(() => {
+        setSecret(null);
+        setDevicePassword('');
+        setManualOpen(false);
+        if (shouldBlock) {
+          setErrorKey('vault.transfer.sender.errors.unlockRequired');
+          setPhase('blocked');
+        }
+      });
+    });
+
+    return () => {
+      unsubscribe();
+      overlayOpen.current = false;
+      requestGeneration.current += 1;
+      freshPasswordAt.current = null;
+    };
+  }, [keyFingerprint, source, vaultId, vaultName]);
 
   useEffect(() => {
     if (phase !== 'visible') return;
@@ -150,7 +193,7 @@ export function VaultTransferQr({
     }
     if (requestGeneration.current !== generation) return;
     setDevicePassword('');
-    setSecret({ mnemonic, payload });
+    setSecret({ mnemonic, payload, source, vaultId, vaultName, keyFingerprint });
     setErrorKey(null);
     setPhase('visible');
   }
@@ -274,7 +317,7 @@ export function VaultTransferQr({
                   </form>
                 ) : null}
 
-                {phase === 'visible' && secret != null ? (
+                {phase === 'visible' && currentSecret != null ? (
                   <>
                     <p className="w-full rounded-lg border border-amber-600 bg-amber-950/50 p-4 text-sm font-semibold text-amber-100">
                       {t('vault.transfer.sender.banner')}
@@ -286,7 +329,7 @@ export function VaultTransferQr({
                         level={VAULT_TRANSFER_QR_OPTIONS.errorCorrectionLevel}
                         marginSize={4}
                         size={280}
-                        value={secret.payload}
+                        value={currentSecret.payload}
                       />
                     </div>
                     <p aria-live="polite" className="bt-muted text-sm">
@@ -301,7 +344,7 @@ export function VaultTransferQr({
                         {t('vault.transfer.manualWords')}
                       </summary>
                       <ol className="mt-4 grid grid-cols-2 gap-x-6 gap-y-2 sm:grid-cols-3">
-                        {secret.mnemonic.split(' ').map((word, index) => (
+                        {currentSecret.mnemonic.split(' ').map((word, index) => (
                           <li className="bt-num text-sm" key={`${index}-${word}`}>
                             <span className="bt-muted mr-2">{index + 1}.</span>
                             {word}

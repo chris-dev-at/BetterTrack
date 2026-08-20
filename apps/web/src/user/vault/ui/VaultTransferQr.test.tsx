@@ -33,6 +33,7 @@ vi.mock('qrcode.react', async (importOriginal) => {
 import { VaultTransferQr, type VaultTransferQrSource } from './VaultTransferQr';
 
 const DEVICE_PASSWORD = 'correct endpoint password';
+const SECOND_VAULT_ID = '018f6a3e-1111-7000-8000-000000000002';
 
 interface SessionSourceControl {
   endSession(): void;
@@ -381,6 +382,42 @@ describe('VaultTransferQr sender', () => {
         'Unlock and open this vault on this device before showing its transfer code.',
       ),
     ).toBeInTheDocument();
+  });
+
+  it('invalidates in-flight and visible secrets when rebound to another vault source', async () => {
+    const firstKeystore = new ControlledTransferKeystore();
+    const firstSource = createVaultTransferQrSource({
+      custody: 'plain',
+      keystore: firstKeystore,
+      vaultId: VAULT_TRANSFER_VECTOR_VAULT_ID,
+    });
+    const secondSource = plainSource();
+    const view = render(
+      <VaultTransferQr source={firstSource} vaultId={VAULT_TRANSFER_VECTOR_VAULT_ID} />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show transfer QR' }));
+    await vi.waitFor(() => expect(firstKeystore.readMnemonic).toHaveBeenCalledTimes(1));
+
+    view.rerender(<VaultTransferQr source={secondSource} vaultId={SECOND_VAULT_ID} />);
+    await act(async () => {
+      firstKeystore.mnemonic.resolve(VAULT_TRANSFER_VECTOR_MNEMONIC);
+      await firstKeystore.mnemonic.promise;
+    });
+
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Vault seed-phrase transfer QR code')).not.toBeInTheDocument();
+    expect(screen.queryAllByText('abandon')).toHaveLength(0);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show transfer QR' }));
+    expect(parseVaultTransferPayload((await latestQr()).value)).toMatchObject({
+      vaultId: SECOND_VAULT_ID,
+    });
+
+    view.rerender(<VaultTransferQr source={plainSource()} vaultId={SECOND_VAULT_ID} />);
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+    expect(screen.queryByLabelText('Vault seed-phrase transfer QR code')).not.toBeInTheDocument();
+    expect(screen.queryAllByText('abandon')).toHaveLength(0);
   });
 
   it('has no network, clipboard, log, analytics, error-report or persistence leak path', async () => {
