@@ -328,10 +328,13 @@ describe('paranoid client money engine', () => {
         computedTaxTargetEur: 0,
         report: {
           summary: { taxNetEur: 0 },
-          positions: [{ realizedPnlEur: 37 }],
         },
       },
     });
+    if (!untaxed.ok) return;
+    // Living-year semantics apply the active `none` regime to the whole year;
+    // its moving-average basis includes the additional pre-sell buy.
+    expect(untaxed.value.report.positions[0]?.realizedPnlEur).toBeCloseTo(3.833333333333343);
 
     const ratchetParams = {
       ratePct: 20,

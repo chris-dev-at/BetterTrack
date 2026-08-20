@@ -227,10 +227,7 @@ export interface CreateTestAppOptions {
    * auto-archive sweep threshold provable deterministically.
    */
   notificationNow?: () => Date;
-  /**
-   * Controlled clock for the tax engine (#635) — the open/closed Vienna-year
-   * boundary derives from it, so tests can advance it across a rollover.
-   */
+  /** Controlled tax-engine clock for deterministic correction timestamps in tests. */
   taxNow?: () => number;
   /**
    * Controlled clock for the expense budget/dashboard engine (§13.5 V5-P9) — the

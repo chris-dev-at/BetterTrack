@@ -1,6 +1,12 @@
 import { describe, expect, test } from 'vitest';
 
-import { NOTIFICATION_MESSAGE_KEYS, VAULT_MEDIA } from '@bettertrack/contracts';
+import {
+  ADMIN_BACKUP_STATUS_LEVELS,
+  ADMIN_BACKUP_STATUS_REASONS,
+  FEEDBACK_STATUSES,
+  NOTIFICATION_MESSAGE_KEYS,
+  VAULT_MEDIA,
+} from '@bettertrack/contracts';
 
 import { notificationMessagePath } from '../lib/notificationText';
 import { vaultStoreErrorKey } from '../user/vault/engine/errorCopy';
@@ -51,6 +57,25 @@ test('registers every not-found string in EN and DE', () => {
       expect(localizedMessage(locale.code, key)).not.toBe(key);
     }
   }
+});
+
+test('registers the submitter-facing helpdesk flow labels in EN and DE', () => {
+  for (const locale of Object.values(LOCALES)) {
+    for (const status of FEEDBACK_STATUSES) {
+      const key = `feedback.status.${status}`;
+      expect(localizedMessage(locale.code, key), `${locale.code}: ${key}`).not.toBe(key);
+    }
+    for (const key of ['feedback.status.comingIn', 'feedback.status.declinedWithReason']) {
+      expect(localizedMessage(locale.code, key), `${locale.code}: ${key}`).not.toBe(key);
+    }
+  }
+
+  expect(localizedMessage('en', 'feedback.status.new')).toBe('Sent');
+  expect(localizedMessage('en', 'feedback.status.triaged')).toBe('Read / in review');
+  expect(localizedMessage('en', 'feedback.status.working_on_it')).toBe('In progress');
+  expect(localizedMessage('en', 'feedback.status.saved_as_future_idea')).toBe(
+    'On the waiting list',
+  );
 });
 
 test('registers title/body copy for every dispatcher notification message key', () => {
@@ -133,6 +158,36 @@ test('registers status copy for every vault sync state and medium in EN and DE',
     }
     for (const medium of VAULT_MEDIA) {
       const key = `vault.sync.medium.${medium}`;
+      expect(localizedMessage(locale.code, key), `${locale.code}: ${key}`).not.toBe(key);
+    }
+  }
+});
+
+test('registers backup readiness copy for every contract level and reason in EN and DE', () => {
+  // The Overview tile and the Health panel both render
+  // `admin.backup.level.<level>` and `admin.backup.reason.<reason>` as template
+  // literals off the contract enums, so a member missing from BOTH catalogs is
+  // parity-clean and would paint its raw dot-path at exactly the moment an
+  // operator is trying to find out whether the backups are alive. Iterate the
+  // contract tuples so the API's vocabulary and the catalogs stay bound.
+  for (const locale of Object.values(LOCALES)) {
+    for (const level of ADMIN_BACKUP_STATUS_LEVELS) {
+      const key = `admin.backup.level.${level}`;
+      expect(localizedMessage(locale.code, key), `${locale.code}: ${key}`).not.toBe(key);
+    }
+    for (const reason of ADMIN_BACKUP_STATUS_REASONS) {
+      const key = `admin.backup.reason.${reason}`;
+      expect(localizedMessage(locale.code, key), `${locale.code}: ${key}`).not.toBe(key);
+    }
+  }
+});
+
+test('registers a localized unit for every duration magnitude in EN and DE', () => {
+  // `formatDuration` picks one of these by magnitude; a missing member would
+  // paint a dot-path where an uptime or a backup age belongs.
+  for (const locale of Object.values(LOCALES)) {
+    for (const unit of ['dayHour', 'hourMinute', 'minuteSecond', 'second']) {
+      const key = `admin.common.duration.${unit}`;
       expect(localizedMessage(locale.code, key), `${locale.code}: ${key}`).not.toBe(key);
     }
   }

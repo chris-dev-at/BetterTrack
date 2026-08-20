@@ -1682,26 +1682,7 @@
       },
       "expandYear": "Details für {{year}} anzeigen",
       "collapseYear": "Details für {{year}} ausblenden",
-      "locked": "Gesperrt",
-      "lockedHint": "Dieses Steuerjahr ist abgelaufen und gesperrt: Einträge mit Datum in diesem Jahr werden abgelehnt, seine abgerechneten Steuern ändern sich nicht mehr. Zum Nacherfassen zuerst entsperren.",
-      "unlocked": "Für Korrekturen entsperrt",
-      "unlockedHint": "Du hast dieses vergangene Jahr entsperrt: rückdatierte Einträge werden angenommen und verändern seine abgerechneten Steuern, bis du es wieder sperrst.",
-      "unlockAction": "Entsperren…",
-      "relockAction": "Wieder sperren",
-      "relockYearAction": "{{year}} wieder sperren",
-      "unlockedBannerOne": "Steuerjahr {{year}} ist für Korrekturen entsperrt — danach wieder sperren.",
-      "unlockedBannerOther": "Die Steuerjahre {{years}} sind für Korrekturen entsperrt — danach wieder sperren.",
-      "unlockSuccess": "Steuerjahr {{year}} für Korrekturen entsperrt.",
-      "relockSuccess": "Steuerjahr {{year}} wieder gesperrt.",
-      "unlockDialog": {
-        "title": "Steuerjahr {{year}} entsperren",
-        "description": "Ein vergangenes Jahr zu korrigieren ist ein bewusster Schritt — bestätige ihn mit deinem Passwort.",
-        "consequence": "Solange {{year}} entsperrt ist, ändern Einträge mit Datum in diesem Jahr seine abgerechneten Steuern — Korrekturen werden als eigene Buchungen erfasst, nichts wird umgeschrieben. Das Jahr bleibt korrigierbar, bis du es wieder sperrst.",
-        "passwordLabel": "Dein Passwort",
-        "confirm": "{{year}} entsperren",
-        "wrongPassword": "Dieses Passwort ist falsch.",
-        "throttled": "Zu viele Versuche. Bitte warte kurz und versuche es erneut."
-      },
+      "lastEdited": "Zuletzt bearbeitet: {{date}}",
       "realized": "Realisiert",
       "tax": "Steuer",
       "sell": {
@@ -3968,9 +3949,13 @@
       "audit": "Audit-Protokoll",
       "sections": {
         "people": "Personen",
-        "configuration": "Konfiguration",
-        "diagnostics": "Diagnose"
-      }
+        "overview": "Übersicht",
+        "support": "Support",
+        "operations": "Betrieb",
+        "product": "Produkt & Kommunikation",
+        "securityApi": "Sicherheit & API"
+      },
+      "registration": "Registrierung"
     },
     "settings": {
       "title": "Einstellungen",
@@ -3999,7 +3984,9 @@
             "title": "Offen",
             "description": "Automatische Registrierung — jeder kann ein Konto erstellen und sich direkt anmelden."
           }
-        }
+        },
+        "manageLead": "Die Freigabeliste und die Zugangstoken für diesen Modus liegen im Bereich Personen.",
+        "manageLink": "Registrierung öffnen"
       },
       "features": {
         "title": "Funktionsschalter",
@@ -4469,7 +4456,7 @@
     },
     "feedback": {
       "title": "Feedback",
-      "subtitle": "Funktions- und Änderungswünsche zuerst, danach Fehler und sonstige Rückmeldungen.",
+      "subtitle": "Funktionsideen, Fehler, Hilfeanfragen, Verbesserungen und sonstige Rückmeldungen.",
       "refresh": "Aktualisieren",
       "loading": "Feedback wird geladen…",
       "loadError": "Feedback konnte nicht geladen werden.",
@@ -4485,9 +4472,11 @@
         "newest": "Neueste zuerst"
       },
       "category": {
-        "feature": "Funktion/Änderung",
+        "feature": "Funktionsidee",
         "bug": "Fehler",
-        "other": "Sonstiges"
+        "other": "Sonstiges",
+        "help": "Hilfeanfrage",
+        "improvement": "Verbesserung"
       },
       "status": {
         "new": "Neu",
@@ -4498,6 +4487,7 @@
         "shipped": "Veröffentlicht"
       },
       "statusControl": "Status für Feedback von {{user}}",
+      "deletedByUser": "Vom Benutzer gelöscht",
       "fields": {
         "status": "Status",
         "message": "Nachricht",
@@ -4613,6 +4603,168 @@
       },
       "loadMore": "Mehr laden",
       "loadingMore": "Wird geladen…"
+    },
+    "palette": {
+      "trigger": "Suchen oder springen…",
+      "shortcut": "⌘K",
+      "title": "Admin-Befehlspalette",
+      "inputAria": "Seiten, Nutzer und Probleme durchsuchen",
+      "placeholder": "Seiten, Nutzer, Probleme suchen…",
+      "resultsAria": "Suchergebnisse",
+      "groups": {
+        "pages": "Seiten",
+        "people": "Personen",
+        "problems": "Offene Probleme"
+      },
+      "verb": {
+        "page": "Seite",
+        "user": "Nutzer",
+        "disabled": "Deaktiviert"
+      },
+      "searching": "Wird gesucht…",
+      "noUsers": "Keine passenden Nutzer.",
+      "noProblems": "Keine passenden offenen Probleme.",
+      "usersError": "Nutzersuche fehlgeschlagen.",
+      "problemsError": "Probleme konnten nicht geladen werden.",
+      "noResults": "Nichts passt zu „{{query}}“.",
+      "navigateHint": "↑ ↓ zum Wechseln",
+      "openHint": "↵ zum Öffnen",
+      "scopeNote": "Nur Navigation — hier wird nichts verändert."
+    },
+    "overview": {
+      "title": "Übersicht",
+      "subtitle": "Was dich braucht — und danach der Zustand von allem anderen.",
+      "refresh": "Aktualisieren",
+      "severity": {
+        "critical": "Kritisch",
+        "warn": "Achtung",
+        "info": "Wartet"
+      },
+      "attention": {
+        "title": "Braucht deine Aufmerksamkeit",
+        "allClear": "Alles ruhig — nichts wartet auf dich.",
+        "unknown": "Die Prüfungen konnten nicht gelesen werden. Aktualisiere, um es erneut zu versuchen.",
+        "partial": "Einige Prüfungen konnten nicht gelesen werden, die Liste ist womöglich unvollständig.",
+        "registrations": {
+          "title": "Registrierungsanfragen",
+          "detail": "Anfragen, die auf Freigabe oder Ablehnung warten.",
+          "unit": "offen"
+        },
+        "problems": {
+          "title": "Offene Probleme",
+          "detail": "Erfasste Fehler, fehlgeschlagene Jobs und Provider-Ausfälle.",
+          "unit": "offen"
+        },
+        "component": {
+          "title": "{{component}} ist nicht in Ordnung"
+        },
+        "heartbeat": {
+          "title": "Heartbeat des Job-Systems"
+        },
+        "queueFailed": {
+          "title": "Fehlgeschlagene Jobs in den Queues",
+          "detail": "Jobs, die alle Wiederholungen aufgebraucht haben.",
+          "unit": "fehlgeschlagen"
+        },
+        "queueBacklog": {
+          "title": "Rückstau in den Queues",
+          "detail": "Wartende Jobs stauen sich auf.",
+          "unit": "wartend"
+        },
+        "smtp": {
+          "title": "Ausgehende E-Mails sind aus",
+          "detail": "SMTP ist nicht konfiguriert, es wird keine Kontopost zugestellt."
+        },
+        "backup": {
+          "title": "Backup-Bereitschaft"
+        },
+        "countOne": "1 Eintrag",
+        "countOther": "{{count}} Einträge"
+      },
+      "tiles": {
+        "title": "Auf einen Blick",
+        "users": "Konten",
+        "usersFoot": "{{active}} aktiv · {{disabled}} deaktiviert",
+        "activeUsers": "Aktive Nutzer",
+        "dau": "heute",
+        "activeUsersFoot": "{{weekly}} diese Woche · {{monthly}} diesen Monat",
+        "gateway": "Realtime-Gateway",
+        "sockets": "Sockets",
+        "gatewayOn": "Gateway verbunden",
+        "gatewayOff": "Gateway deaktiviert",
+        "uptime": "API-Laufzeit",
+        "apiVersion": "Version {{version}}",
+        "loadError": "{{tile}} konnte nicht gelesen werden."
+      },
+      "deploy": {
+        "title": "Deploys",
+        "web": "Web",
+        "api": "API",
+        "builtAt": "API gebaut am {{date}}",
+        "loadError": "Die API-Build-Kennung konnte nicht gelesen werden."
+      },
+      "activity": {
+        "title": "Letzte Admin-Aktionen",
+        "viewAll": "Audit-Log ansehen",
+        "empty": "Noch keine Admin-Aktionen erfasst.",
+        "loadError": "Die letzten Aktionen konnten nicht geladen werden."
+      }
+    },
+    "support": {
+      "title": "Support",
+      "subtitle": "Wo Meldungen von Nutzern ankommen und beantwortet werden.",
+      "comingSoon": "Die Helpdesk-Konsole — Verläufe, interne Notizen, Tags und gespeicherte Ansichten — kommt mit W3.",
+      "openInbox": "Feedback-Postfach öffnen"
+    },
+    "registration": {
+      "title": "Registrierung",
+      "subtitle": "Wer hereinkommt: die Freigabewarteschlange und die Zugangstoken für die Anmeldung.",
+      "currentMode": "Aktueller Registrierungsmodus",
+      "changeMode": "Modus in den Einstellungen ändern",
+      "decideError": "Diese Registrierungsanfrage konnte nicht aktualisiert werden.",
+      "createTokenError": "Das Registrierungstoken konnte nicht erstellt werden.",
+      "revokeTokenError": "Das Registrierungstoken konnte nicht widerrufen werden.",
+      "modeUnknown": "Der aktive Registrierungsmodus konnte nicht gelesen werden, daher ist unklar, ob das hier gerade greift.",
+      "requestGone": "Diese Anfrage steht nicht mehr in der Warteschlange — vielleicht hat sie jemand bereits bearbeitet.",
+      "tokenGone": "Dieses Token existiert nicht mehr; womöglich wurde es bereits widerrufen."
+    },
+    "backup": {
+      "title": "Backup & Restore-Probe",
+      "notConfigured": "In dieser Umgebung ist keine Backup-Statusdatei eingebunden.",
+      "loadError": "Der Backup-Status konnte nicht gelesen werden.",
+      "lastDump": "Letzter erfolgreicher Dump",
+      "lastDrill": "Letzte erfolgreiche Restore-Probe",
+      "dumpBudget": "Dump darf höchstens alt sein",
+      "drillBudget": "Probe darf höchstens alt sein",
+      "ago": "vor {{age}}",
+      "never": "Nie",
+      "level": {
+        "ok": "Bereit",
+        "warn": "Ungeprüft",
+        "critical": "Nicht bereit",
+        "unknown": "Nicht konfiguriert"
+      },
+      "reason": {
+        "healthy": "Ein aktueller Dump existiert und eine aktuelle Restore-Probe hat ihn bestätigt.",
+        "not_configured": "Diese Umgebung meldet keinen Backup-Status.",
+        "permission_denied": "Die Backup-Statusdatei existiert, dieser Server darf sie aber nicht lesen. Prüfe die Einbindung und die Dateirechte.",
+        "unreadable": "Die Backup-Statusdatei konnte nicht gelesen werden.",
+        "backup_missing": "Es ist kein erfolgreicher Dump vermerkt.",
+        "backup_stale": "Der neueste Dump ist älter als das 26-Stunden-Ziel.",
+        "clock_skew": "Der vermerkte Backup-Zeitpunkt liegt in der Zukunft, der Nachweis ist damit nicht vertrauenswürdig. Prüfe die Uhren.",
+        "restore_missing": "Es gab noch keine bestandene Restore-Probe, die Wiederherstellung ist ungeprüft.",
+        "restore_stale": "Die neueste Restore-Probe ist älter als das 35-Tage-Ziel.",
+        "offsite_failed": "Der letzte Offsite-Upload ist fehlgeschlagen; der lokale Dump ist intakt.",
+        "scheduler_unhealthy": "Der Backup-Scheduler meldet ein Problem mit dem gespeicherten Backup."
+      }
+    },
+    "common": {
+      "duration": {
+        "dayHour": "{{days}} T {{hours}} Std.",
+        "hourMinute": "{{hours}} Std. {{minutes}} Min.",
+        "minuteSecond": "{{minutes}} Min. {{seconds}} Sek.",
+        "second": "{{seconds}} Sek."
+      }
     }
   },
   "create": {
@@ -5383,20 +5535,22 @@
     "authorizedApps": "Autorisierte Apps",
     "appearance": "Darstellung",
     "feedback": "Feedback senden",
-    "feedbackSub": "Funktionswünsche und Fehlerberichte"
+    "feedbackSub": "Hilfeanfragen, Verbesserungen, Ideen und Fehler"
   },
   "feedback": {
     "title": "Feedback senden",
-    "dialogDescription": "Sende BetterTrack einen Funktionswunsch, Fehlerbericht oder anderen Hinweis.",
+    "dialogDescription": "Sende BetterTrack einen Fehler, eine Hilfeanfrage, Verbesserung, Funktionsidee oder einen anderen Hinweis.",
     "settingsLabel": "Hilf BetterTrack besser zu machen",
-    "settingsHint": "Funktionswunsch, Fehlerbericht oder anderer Hinweis.",
+    "settingsHint": "Fehler, Hilfeanfrage, Verbesserung, Funktionsidee oder anderer Hinweis.",
     "open": "Feedback schreiben",
     "category": "Kategorie",
     "categoryPlaceholder": "Kategorie auswählen",
     "categoryOption": {
-      "feature": "Funktion / Verbesserung",
+      "feature": "Funktionsidee",
       "bug": "Fehler",
-      "other": "Sonstiges"
+      "other": "Sonstiges",
+      "help": "Ich brauche Hilfe",
+      "improvement": "Verbesserung"
     },
     "subject": "Betreff (optional)",
     "message": "Nachricht",
@@ -5410,7 +5564,18 @@
     "submit": "Feedback senden",
     "submitting": "Wird gesendet…",
     "success": "Danke — dein Feedback wurde gesendet.",
-    "submitError": "Dein Feedback konnte nicht gesendet werden. Bitte versuche es erneut."
+    "submitError": "Dein Feedback konnte nicht gesendet werden. Bitte versuche es erneut.",
+    "openLimit": "Du hast bereits 20 offene Anfragen. Bitte warte auf die Prüfung oder lösche eine offene Anfrage, bevor du eine weitere sendest.",
+    "status": {
+      "new": "Gesendet",
+      "triaged": "Gelesen / in Prüfung",
+      "working_on_it": "In Bearbeitung",
+      "saved_as_future_idea": "Auf der Warteliste",
+      "shipped": "Veröffentlicht",
+      "comingIn": "Kommt mit {{version}}",
+      "declined": "Abgelehnt",
+      "declinedWithReason": "Abgelehnt — {{reason}}"
+    }
   },
   "privacy": {
     "subtitle": "Steuere, was der Bildschirm zeigt und wo deine Daten liegen.",

@@ -115,23 +115,9 @@ export const PASSKEY_MANAGEMENT_BEARER_ROUTE_ALLOWLIST = [
   { method: 'DELETE', path: '/auth/passkeys/{id}' },
 ] as const satisfies readonly BearerRoute[];
 
-/**
- * The account-level tax-year lock ritual exposed to native clients. The year
- * segment is numeric, unlike the UUID resource ids used by the other exact
- * allowlists in this module.
- */
-export const TAX_YEAR_LOCK_BEARER_ROUTE_ALLOWLIST = [
+/** The account-level tax-documentation list exposed to native clients. */
+export const TAX_YEAR_DOCUMENTATION_BEARER_ROUTE_ALLOWLIST = [
   { method: 'GET', path: '/settings/taxes/years' },
-  {
-    method: 'POST',
-    path: '/settings/taxes/years/{year}/unlock',
-    param: 'positive-integer',
-  },
-  {
-    method: 'POST',
-    path: '/settings/taxes/years/{year}/relock',
-    param: 'positive-integer',
-  },
 ] as const satisfies readonly BearerRoute[];
 
 /**
@@ -207,9 +193,9 @@ export function passkeyManagementRouteAcceptsBearer(method: string, path: string
   return routeAllowlistAccepts(PASSKEY_MANAGEMENT_BEARER_ROUTE_ALLOWLIST, method, path);
 }
 
-/** Whether one exact method + path is in the tax-year lock bearer surface. */
-export function taxYearLockRouteAcceptsBearer(method: string, path: string): boolean {
-  return routeAllowlistAccepts(TAX_YEAR_LOCK_BEARER_ROUTE_ALLOWLIST, method, path);
+/** Whether one exact method + path is the tax-year documentation read. */
+export function taxYearDocumentationRouteAcceptsBearer(method: string, path: string): boolean {
+  return routeAllowlistAccepts(TAX_YEAR_DOCUMENTATION_BEARER_ROUTE_ALLOWLIST, method, path);
 }
 
 /** Whether one live grant-management request is in the first-party bearer allowlist. */
@@ -334,7 +320,7 @@ export const ACCOUNT_SECURITY_SCOPE = 'account:security';
  * Read-only modules (market) carry a write scope string no key can hold, so any
  * mutation is denied *and audited* through the same path as a genuine missing
  * scope. Session-only entries are deliberate defaults; exact route carve-outs
- * (auth, vault sync, tax-year locks) resolve before this table.
+ * (auth, vault sync, tax-year documentation) resolve before this table.
  *
  * The `/settings` catch-all keeps the coarse account/profile bucket on the
  * social scope (unchanged since V2-P12); the more specific `/settings/notifications`
@@ -624,14 +610,12 @@ function resolvePolicy(
   if (path === '/settings/webhooks' || path.startsWith('/settings/webhooks/')) {
     return { kind: 'session-only' };
   }
-  // Tax-year lock state is account-security state shared by web and native
-  // clients (owner ruling 2026-08-17). The password re-auth and per-account
-  // throttle remain in the unlock service for both credential kinds. Keep an
-  // exact route allowlist here so a future sibling cannot inherit access from
-  // this carve-out or from the `/settings` social-scope catch-all below.
+  // Tax-year documentation is account state shared by web and native clients.
+  // Keep an exact read-only allowlist so a future sibling cannot inherit access
+  // from this carve-out or the `/settings` social-scope catch-all below.
   if (path === '/settings/taxes/years' || path.startsWith('/settings/taxes/years/')) {
     return routeAllowlistAccepts(
-      TAX_YEAR_LOCK_BEARER_ROUTE_ALLOWLIST,
+      TAX_YEAR_DOCUMENTATION_BEARER_ROUTE_ALLOWLIST,
       requestMethod,
       path,
       allowPathTemplate,

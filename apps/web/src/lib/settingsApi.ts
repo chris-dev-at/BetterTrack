@@ -5,7 +5,7 @@ import {
   homeLayoutEnvelopeSchema,
   notificationSettingsResponseSchema,
   taxSettingsResponseSchema,
-  taxYearLockStateResponseSchema,
+  taxYearChangesResponseSchema,
   telegramConfirmResponseSchema,
   telegramSettingsResponseSchema,
   type AccountSettingsResponse,
@@ -15,7 +15,7 @@ import {
   type HomeLayoutEnvelope,
   type NotificationSettingsResponse,
   type TaxSettingsResponse,
-  type TaxYearLockStateResponse,
+  type TaxYearChangesResponse,
   type TelegramConfirmResponse,
   type TelegramSettingsResponse,
   type UpdateAccountSettingsRequest,
@@ -82,7 +82,7 @@ export async function getTaxSettings(signal?: AbortSignal): Promise<TaxSettingsR
 /**
  * `PATCH /settings/taxes` — switch tax mode (V3-P4). `country` is required with
  * `country_specific` and rejected with any other mode (the contract enforces the
- * pair); switching applies forward only and never rewrites recorded rows.
+ * pair); every derivable tax year remains living documentation under it.
  */
 export async function updateTaxSettings(
   body: UpdateTaxSettingsRequest,
@@ -91,37 +91,10 @@ export async function updateTaxSettings(
   return taxSettingsResponseSchema.parse(data);
 }
 
-// ── Tax year locking (§16 2026-08-07) ───────────────────────────────────────
-// Elapsed Vienna years auto-lock against mutations (409 TAX_YEAR_LOCKED); the
-// unlock ritual below re-verifies the account password and opens ONE named
-// year for amendments until it is explicitly re-locked. Session-only — these
-// calls are never reachable with a bearer token.
-
-/** `GET /settings/taxes/years` — the caller's lock state. */
-export async function getTaxYearLockState(signal?: AbortSignal): Promise<TaxYearLockStateResponse> {
+/** `GET /settings/taxes/years` — account-wide living-documentation markers. */
+export async function getTaxYearChanges(signal?: AbortSignal): Promise<TaxYearChangesResponse> {
   const data = await apiRequest<unknown>('/settings/taxes/years', { signal });
-  return taxYearLockStateResponseSchema.parse(data);
-}
-
-/** `POST /settings/taxes/years/:year/unlock` — password re-auth, then open the year. */
-export async function unlockTaxYear(
-  year: number,
-  password: string,
-): Promise<TaxYearLockStateResponse> {
-  const data = await apiRequest<unknown>(`/settings/taxes/years/${year}/unlock`, {
-    method: 'POST',
-    body: { password },
-  });
-  return taxYearLockStateResponseSchema.parse(data);
-}
-
-/** `POST /settings/taxes/years/:year/relock` — close the year again (idempotent). */
-export async function relockTaxYear(year: number): Promise<TaxYearLockStateResponse> {
-  const data = await apiRequest<unknown>(`/settings/taxes/years/${year}/relock`, {
-    method: 'POST',
-    body: {},
-  });
-  return taxYearLockStateResponseSchema.parse(data);
+  return taxYearChangesResponseSchema.parse(data);
 }
 
 // ── Home widget board (R2 home-widgets) ─────────────────────────────────────

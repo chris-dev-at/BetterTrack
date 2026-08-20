@@ -7,20 +7,18 @@ import {
   TAX_COUNTRY_DE,
   TAX_COUNTRY_FI,
   type CustomTaxParams,
-  type DeTaxableEvent,
 } from '../../../domain/tax';
 import {
-  closedYearSlice,
   isDerivableDividend,
   isDerivableSell,
-  openCountryOf,
-  openDerivableYears,
-  openRegimeOf,
-  openRegimeStrategy,
-  settleOpenYears,
-  type OpenRegime,
-  type OpenYearRowView,
-} from '../openYear';
+  liveCountryOf,
+  liveDerivableYears,
+  liveRegimeOf,
+  liveRegimeStrategy,
+  settleLiveYears,
+  type LiveRegime,
+  type LiveYearRowView,
+} from '../livingYear';
 import {
   categoryOfBuilder,
   divRecord,
@@ -31,14 +29,11 @@ import {
 } from './records';
 
 /**
- * The open-year LIVE tax derivation (#635) — the rebuild's self-healing core
- * and the home of the forward-only mode switch (#341). Closed years stay
- * frozen; the current Vienna year and later are re-derived on every path under
- * the portfolio's CURRENT effective settings, so a row frozen under `none`
- * re-taxes when the setting flips to a real regime (the 2026-€0 root cause).
+ * Living-year tax derivation (#1399): every automatic year follows the same
+ * current-regime engine, while manual facts stay literal.
  *
  * Every assertion is a cent-exact figure driven through the REAL engine — the
- * domain settlements behind `settleOpenYears` — with no DB and no network.
+ * domain settlements behind `settleLiveYears` — with no DB and no network.
  */
 
 const settings = (over: Partial<UserTaxSettingsRecord> = {}): UserTaxSettingsRecord => ({
@@ -54,10 +49,10 @@ const parseParams = (): CustomTaxParams => AT_AS_CUSTOM_PARAMS;
 
 /** Assemble the row view the derivation runs over from records + an asset-type map. */
 function viewOf(
-  transactions: OpenYearRowView['transactions'],
-  dividendRows: OpenYearRowView['dividendRows'] = [],
+  transactions: LiveYearRowView['transactions'],
+  dividendRows: LiveYearRowView['dividendRows'] = [],
   assetType: Record<string, string> = {},
-): OpenYearRowView {
+): LiveYearRowView {
   return {
     transactions,
     dividendRows,
@@ -67,55 +62,55 @@ function viewOf(
   };
 }
 
-describe('openCountryOf', () => {
+describe('liveCountryOf', () => {
   it('narrows to a supported engine; legacy null ⇒ AT', () => {
-    expect(openCountryOf('DE')).toBe(TAX_COUNTRY_DE);
-    expect(openCountryOf('FI')).toBe(TAX_COUNTRY_FI);
-    expect(openCountryOf('AT')).toBe(TAX_COUNTRY_AT);
-    expect(openCountryOf(null)).toBe(TAX_COUNTRY_AT);
+    expect(liveCountryOf('DE')).toBe(TAX_COUNTRY_DE);
+    expect(liveCountryOf('FI')).toBe(TAX_COUNTRY_FI);
+    expect(liveCountryOf('AT')).toBe(TAX_COUNTRY_AT);
+    expect(liveCountryOf(null)).toBe(TAX_COUNTRY_AT);
   });
 
   it('fails LOUD on an unwired country instead of silently running the AT engine (#669)', () => {
-    expect(() => openCountryOf('US')).toThrow(/no open-year engine/);
+    expect(() => liveCountryOf('US')).toThrow(/no live engine/);
   });
 });
 
-describe('openRegimeOf', () => {
-  it('maps each mode to its open-year regime', () => {
-    expect(openRegimeOf(settings({ mode: 'none' }), parseParams)).toEqual({ kind: 'none' });
-    expect(openRegimeOf(settings({ mode: 'manual_per_trade' }), parseParams)).toEqual({
+describe('liveRegimeOf', () => {
+  it('maps each mode to its live regime', () => {
+    expect(liveRegimeOf(settings({ mode: 'none' }), parseParams)).toEqual({ kind: 'none' });
+    expect(liveRegimeOf(settings({ mode: 'manual_per_trade' }), parseParams)).toEqual({
       kind: 'manual',
     });
     expect(
-      openRegimeOf(settings({ mode: 'country_specific', country: 'DE' }), parseParams),
+      liveRegimeOf(settings({ mode: 'country_specific', country: 'DE' }), parseParams),
     ).toEqual({ kind: 'country', country: TAX_COUNTRY_DE });
     // A legacy country_specific row with no country still resolves to AT.
     expect(
-      openRegimeOf(settings({ mode: 'country_specific', country: null }), parseParams),
+      liveRegimeOf(settings({ mode: 'country_specific', country: null }), parseParams),
     ).toEqual({ kind: 'country', country: TAX_COUNTRY_AT });
-    expect(openRegimeOf(settings({ mode: 'custom' }), parseParams)).toEqual({
+    expect(liveRegimeOf(settings({ mode: 'custom' }), parseParams)).toEqual({
       kind: 'custom',
       params: AT_AS_CUSTOM_PARAMS,
     });
   });
 });
 
-describe('openRegimeStrategy', () => {
+describe('liveRegimeStrategy', () => {
   it('picks the cost basis each regime realizes sells under', () => {
-    expect(openRegimeStrategy({ kind: 'country', country: TAX_COUNTRY_AT })).toBe('moving-average');
-    expect(openRegimeStrategy({ kind: 'country', country: TAX_COUNTRY_DE })).toBe('fifo');
-    expect(openRegimeStrategy({ kind: 'country', country: TAX_COUNTRY_FI })).toBe('fifo');
-    expect(openRegimeStrategy({ kind: 'custom', params: AT_AS_CUSTOM_PARAMS })).toBe(
+    expect(liveRegimeStrategy({ kind: 'country', country: TAX_COUNTRY_AT })).toBe('moving-average');
+    expect(liveRegimeStrategy({ kind: 'country', country: TAX_COUNTRY_DE })).toBe('fifo');
+    expect(liveRegimeStrategy({ kind: 'country', country: TAX_COUNTRY_FI })).toBe('fifo');
+    expect(liveRegimeStrategy({ kind: 'custom', params: AT_AS_CUSTOM_PARAMS })).toBe(
       'moving-average',
     );
     expect(
-      openRegimeStrategy({
+      liveRegimeStrategy({
         kind: 'custom',
         params: { ...AT_AS_CUSTOM_PARAMS, costBasis: 'fifo' },
       }),
     ).toBe('fifo');
-    expect(openRegimeStrategy({ kind: 'none' })).toBeNull();
-    expect(openRegimeStrategy({ kind: 'manual' })).toBeNull();
+    expect(liveRegimeStrategy({ kind: 'none' })).toBeNull();
+    expect(liveRegimeStrategy({ kind: 'manual' })).toBeNull();
   });
 });
 
@@ -141,11 +136,11 @@ describe('isDerivableSell / isDerivableDividend', () => {
   });
 });
 
-describe('openDerivableYears', () => {
-  it('collects derivable rows + unattached tax corrections at/after the open-from year', () => {
+describe('liveDerivableYears', () => {
+  it('collects derivable rows and unattached corrections from every year', () => {
     const transactions = [
       txRecord({ id: 's-old', side: 'sell', executedAt: new Date('2024-06-10T10:00:00Z') }),
-      txRecord({ id: 's-open', side: 'sell', executedAt: new Date('2026-06-10T10:00:00Z') }),
+      txRecord({ id: 's-live', side: 'sell', executedAt: new Date('2026-06-10T10:00:00Z') }),
       txRecord({
         id: 's-manual',
         side: 'sell',
@@ -157,9 +152,8 @@ describe('openDerivableYears', () => {
       divRecord({ id: 'd', grossAmountEur: 5, executedAt: new Date('2025-06-10T10:00:00Z') }),
     ];
     const movements = [
-      // An unattached correction of an open year with no live rows (rows deleted).
+      // An unattached correction with no surviving rows still keeps its year live.
       taxMovement({ id: 'm1', kind: 'tax_refund', amountEur: 10, taxYear: 2028 }),
-      // A closed-year movement is excluded.
       taxMovement({ id: 'm2', kind: 'tax_withholding', amountEur: -5, taxYear: 2023 }),
       // An attached movement (belongs to a row) is not a standalone year signal.
       taxMovement({
@@ -167,33 +161,19 @@ describe('openDerivableYears', () => {
         kind: 'tax_withholding',
         amountEur: -5,
         taxYear: 2029,
-        transactionId: 's-open',
+        transactionId: 's-live',
       }),
     ];
-    // Open from 2025: 2024 sell excluded, manual sell excluded, 2023 + attached
-    // movements excluded; 2025 dividend, 2026 sell and 2028 correction remain.
-    expect(openDerivableYears({ transactions, dividendRows, yearOf }, movements, 2025)).toEqual([
-      2025, 2026, 2028,
+    expect(liveDerivableYears({ transactions, dividendRows, yearOf }, movements)).toEqual([
+      2023, 2024, 2025, 2026, 2028,
     ]);
-  });
-});
-
-describe('closedYearSlice', () => {
-  it('keeps strictly-before-open years and drops the rest', () => {
-    const byYear = new Map<number, readonly number[]>([
-      [2023, [1]],
-      [2024, [2]],
-      [2025, [3]],
-      [2026, [4]],
-    ]);
-    expect([...closedYearSlice(byYear, 2025).keys()].sort((a, b) => a - b)).toEqual([2023, 2024]);
   });
 });
 
 // ─── AT: intra-year loss offset, refund of tax already paid, hard Jan-1 reset ──
 
-describe('settleOpenYears — AT (flat KESt)', () => {
-  const atRegime: OpenRegime = { kind: 'country', country: TAX_COUNTRY_AT };
+describe('settleLiveYears — AT (flat KESt)', () => {
+  const atRegime: LiveRegime = { kind: 'country', country: TAX_COUNTRY_AT };
 
   it('taxes a later year in full despite a prior-year loss (hard Jan-1 reset, no carry)', () => {
     const transactions = [
@@ -202,7 +182,7 @@ describe('settleOpenYears — AT (flat KESt)', () => {
       txRecord({ id: 'b2', side: 'buy', quantity: 10, price: 100, executedAt: d('2026-02-10') }),
       txRecord({ id: 's2', side: 'sell', quantity: 10, price: 145, executedAt: d('2026-06-10') }),
     ];
-    const results = settleOpenYears({
+    const results = settleLiveYears({
       regime: atRegime,
       view: viewOf(transactions),
       years: [2026, 2025], // any order in → ascending out
@@ -228,7 +208,7 @@ describe('settleOpenYears — AT (flat KESt)', () => {
       txRecord({ id: 'b2', side: 'buy', quantity: 10, price: 100, executedAt: d('2026-08-10') }),
       txRecord({ id: 's2', side: 'sell', quantity: 10, price: 90, executedAt: d('2026-09-10') }),
     ];
-    const [result] = settleOpenYears({
+    const [result] = settleLiveYears({
       regime: atRegime,
       view: viewOf(transactions),
       years: [2026],
@@ -244,7 +224,7 @@ describe('settleOpenYears — AT (flat KESt)', () => {
       txRecord({ id: 'b1', side: 'buy', quantity: 10, price: 100, executedAt: d('2026-01-10') }),
       txRecord({ id: 's1', side: 'sell', quantity: 10, price: 145, executedAt: d('2026-06-10') }),
     ];
-    const [result] = settleOpenYears({
+    const [result] = settleLiveYears({
       regime: atRegime,
       view: viewOf(transactions),
       years: [2026],
@@ -269,7 +249,7 @@ describe('settleOpenYears — AT (flat KESt)', () => {
       }),
     ];
     // 27.5 % × 33.33 = 9.16575 → floors to 9.16.
-    const [result] = settleOpenYears({
+    const [result] = settleLiveYears({
       regime: atRegime,
       view: viewOf(transactions),
       years: [2026],
@@ -280,9 +260,9 @@ describe('settleOpenYears — AT (flat KESt)', () => {
   });
 });
 
-// ─── FI: progressive pääomatulovero over the open-year pool ────────────────────
+// ─── FI: progressive pääomatulovero over the living-year pool ─────────────────
 
-describe('settleOpenYears — FI (progressive)', () => {
+describe('settleLiveYears — FI (progressive)', () => {
   it('taxes 30 % to €30k and 34 % above via the FIFO-realized pool', () => {
     const transactions = [
       txRecord({
@@ -302,7 +282,7 @@ describe('settleOpenYears — FI (progressive)', () => {
         executedAt: d('2026-06-10'),
       }),
     ];
-    const [result] = settleOpenYears({
+    const [result] = settleLiveYears({
       regime: { kind: 'country', country: TAX_COUNTRY_FI },
       view: viewOf(transactions),
       years: [2026],
@@ -314,12 +294,12 @@ describe('settleOpenYears — FI (progressive)', () => {
   });
 });
 
-// ─── The forward-only mode switch (#341): open years heal, closed years don't ─
+// ─── Mode switches re-derive every documented year (#1399) ────────────────────
 
-describe('settleOpenYears — mode-switch healing (#341)', () => {
-  it('re-taxes a `none`-frozen open-year sell after a switch to AT (the 2026-€0 fix)', () => {
+describe('settleLiveYears — mode-switch healing (#341)', () => {
+  it('re-taxes a previously untaxed sell after a switch to AT', () => {
     // Both rows were frozen while the setting was `none`, so nothing was ever
-    // withheld — yet the P/L exists. Switching to AT re-derives the open year.
+    // withheld — yet the P/L exists. Switching to AT re-derives the year.
     const transactions = [
       txRecord({
         id: 'b1',
@@ -340,7 +320,7 @@ describe('settleOpenYears — mode-switch healing (#341)', () => {
         executedAt: d('2026-06-10'),
       }),
     ];
-    const [result] = settleOpenYears({
+    const [result] = settleLiveYears({
       regime: { kind: 'country', country: TAX_COUNTRY_AT },
       view: viewOf(transactions),
       years: [2026],
@@ -357,7 +337,7 @@ describe('settleOpenYears — mode-switch healing (#341)', () => {
       txRecord({ id: 'b1', side: 'buy', quantity: 10, price: 100, executedAt: d('2026-01-10') }),
       txRecord({ id: 's1', side: 'sell', quantity: 10, price: 145, executedAt: d('2026-06-10') }),
     ];
-    const [result] = settleOpenYears({
+    const [result] = settleLiveYears({
       regime: { kind: 'none' },
       view: viewOf(transactions),
       years: [2026],
@@ -372,12 +352,12 @@ describe('settleOpenYears — mode-switch healing (#341)', () => {
   });
 });
 
-// ─── DE: dual pots + allowance through the live derivation, closed-year seed ───
+// ─── DE: dual pots + allowance through the live derivation ────────────────────
 
-describe('settleOpenYears — DE (Abgeltungsteuer + Soli)', () => {
-  const deRegime: OpenRegime = { kind: 'country', country: TAX_COUNTRY_DE };
+describe('settleLiveYears — DE (Abgeltungsteuer + Soli)', () => {
+  const deRegime: LiveRegime = { kind: 'country', country: TAX_COUNTRY_DE };
 
-  it('derives allowance, base, KapESt and Soli for an open year', () => {
+  it('derives allowance, base, KapESt and Soli for a documented year', () => {
     const transactions = [
       txRecord({
         id: 'b1',
@@ -407,7 +387,7 @@ describe('settleOpenYears — DE (Abgeltungsteuer + Soli)', () => {
         executedAt: d('2026-07-10'),
       }),
     ];
-    const [result] = settleOpenYears({
+    const [result] = settleLiveYears({
       regime: deRegime,
       view: viewOf(transactions, dividends, { stk: 'stock', fund: 'etf' }),
       years: [2026],
@@ -423,8 +403,26 @@ describe('settleOpenYears — DE (Abgeltungsteuer + Soli)', () => {
     expect(result!.deState?.outcome.totalTaxEur).toBe(395.62);
   });
 
-  it('seeds the loss pots from CLOSED years into the first open year', () => {
+  it('chains loss pots through earlier living years', () => {
     const transactions = [
+      txRecord({
+        id: 'b0',
+        side: 'buy',
+        quantity: 10,
+        price: 100,
+        taxCountry: 'DE',
+        assetId: 'stk',
+        executedAt: d('2024-01-10'),
+      }),
+      txRecord({
+        id: 's0',
+        side: 'sell',
+        quantity: 10,
+        price: 20,
+        taxCountry: 'DE',
+        assetId: 'stk',
+        executedAt: d('2024-06-10'),
+      }),
       txRecord({
         id: 'b1',
         side: 'buy',
@@ -444,15 +442,11 @@ describe('settleOpenYears — DE (Abgeltungsteuer + Soli)', () => {
         executedAt: d('2025-06-10'),
       }),
     ];
-    const closedDeEvents = new Map<number, readonly DeTaxableEvent[]>([
-      [2024, [{ kind: 'sell_gain', category: 'aktien', amountEur: -800 }]],
-    ]);
-    const [result] = settleOpenYears({
+    const [, result] = settleLiveYears({
       regime: deRegime,
       view: viewOf(transactions, [], { stk: 'stock' }),
-      years: [2025],
+      years: [2024, 2025],
       heldOf: () => 0,
-      closedDeEvents,
     });
     // 2024's €800 Aktien loss carries in and offsets 2025's €2,500 gain → 1,700;
     // − €1,000 allowance = base 700 → KapESt 175 + Soli 9.62 = 184.62.
@@ -464,8 +458,8 @@ describe('settleOpenYears — DE (Abgeltungsteuer + Soli)', () => {
 
 // ─── Custom: the parameterized regime through the live derivation ──────────────
 
-describe('settleOpenYears — custom regime', () => {
-  it('AT_AS_CUSTOM_PARAMS reproduces the AT open-year target', () => {
+describe('settleLiveYears — custom regime', () => {
+  it('AT_AS_CUSTOM_PARAMS reproduces the AT living-year target', () => {
     const transactions = [
       txRecord({
         id: 'b1',
@@ -484,7 +478,7 @@ describe('settleOpenYears — custom regime', () => {
         executedAt: d('2026-06-10'),
       }),
     ];
-    const [result] = settleOpenYears({
+    const [result] = settleLiveYears({
       regime: { kind: 'custom', params: AT_AS_CUSTOM_PARAMS },
       view: viewOf(transactions),
       years: [2026],
@@ -494,8 +488,26 @@ describe('settleOpenYears — custom regime', () => {
     expect(result!.targetAfterEur).toBe(123.75);
   });
 
-  it('carries a loss pot from CLOSED years when carryForward is on', () => {
+  it('carries a loss pot through earlier living years when carryForward is on', () => {
     const params: CustomTaxParams = { ...AT_AS_CUSTOM_PARAMS, carryForward: true };
+    const transactions = [
+      txRecord({
+        id: 'b0',
+        side: 'buy',
+        quantity: 10,
+        price: 100,
+        taxMode: 'custom',
+        executedAt: d('2024-01-10'),
+      }),
+      txRecord({
+        id: 's0',
+        side: 'sell',
+        quantity: 10,
+        price: 70,
+        taxMode: 'custom',
+        executedAt: d('2024-06-10'),
+      }),
+    ];
     const dividends = [
       divRecord({
         id: 'd1',
@@ -504,12 +516,11 @@ describe('settleOpenYears — custom regime', () => {
         executedAt: d('2025-07-10'),
       }),
     ];
-    const [result] = settleOpenYears({
+    const [, result] = settleLiveYears({
       regime: { kind: 'custom', params },
-      view: viewOf([], dividends),
-      years: [2025],
+      view: viewOf(transactions, dividends),
+      years: [2024, 2025],
       heldOf: () => 0,
-      closedCustomEvents: new Map([[2024, [{ kind: 'sell_gain', amountEur: -300 }]]]),
     });
     // 2024's €300 loss parks in the pot; 2025's €500 dividend nets to €200 →
     // 27.5 % × 200 = 55.
@@ -518,10 +529,10 @@ describe('settleOpenYears — custom regime', () => {
   });
 });
 
-describe('settleOpenYears — no years', () => {
-  it('returns nothing when there are no open years to settle', () => {
+describe('settleLiveYears — no years', () => {
+  it('returns nothing when there are no years to settle', () => {
     expect(
-      settleOpenYears({
+      settleLiveYears({
         regime: { kind: 'none' },
         view: viewOf([]),
         years: [],

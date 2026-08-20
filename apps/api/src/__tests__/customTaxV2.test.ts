@@ -463,6 +463,7 @@ describe('custom mode settles end-to-end (V5-P4c)', () => {
     expect(years).toEqual([
       {
         year: 2026,
+        lastChangedAt: expect.any(String),
         realizedPnlEur: 350,
         dividendsGrossEur: 0,
         taxWithheldEur: 123.75,
@@ -480,7 +481,7 @@ describe('custom mode settles end-to-end (V5-P4c)', () => {
     });
   });
 
-  it('parameter changes re-derive the open year under the new set (#635); rows keep their snapshots', async () => {
+  it('parameter changes re-derive the year under the new set; rows keep their snapshots', async () => {
     const { agent, pid, asset } = await setup({ mode: 'custom', custom: RATE10 });
 
     await trade(agent, pid, {
@@ -500,8 +501,7 @@ describe('custom mode settles end-to-end (V5-P4c)', () => {
       addProceedsToCash: true,
     });
 
-    // Parameter change: the OPEN year re-derives in full under the new set
-    // (#635 live model — supersedes the forward-only cutover).
+    // Parameter change: the year re-derives in full under the new set.
     const RATE20: CustomTaxParams = { ...RATE10, ratePct: 20 };
     await patchTaxSettings(agent, { mode: 'custom', custom: RATE20 });
 
@@ -560,7 +560,7 @@ describe('custom mode settles end-to-end (V5-P4c)', () => {
     });
   });
 
-  it('switching AT→custom re-derives the open year under the custom set (#635)', async () => {
+  it('switching AT→custom re-derives the year under the custom set', async () => {
     const { agent, pid, asset } = await setup({ mode: 'country_specific', country: 'AT' });
 
     await trade(agent, pid, {

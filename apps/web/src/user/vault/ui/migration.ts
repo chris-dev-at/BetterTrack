@@ -214,7 +214,7 @@ export class VaultCaptureUnstableError extends Error {
  * - `GET /portfolios/:id/cash` materializes its main source
  *   (`portfolio_cash_sources`);
  * - `GET …/reports/tax-years` and `…/tax-years/:year` run the #635 self-heal,
- *   posting each open year's pending tax correction (`portfolio_cash_movements`,
+ *   posting each documented year's pending tax correction (`portfolio_cash_movements`,
  *   and through the auto-tagger `cash_movement_tags` / `cash_tags`);
  * - `GET /expenses/categories` seeds the default categories
  *   (`expense_categories`);

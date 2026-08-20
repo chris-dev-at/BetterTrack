@@ -249,9 +249,11 @@ export const V5_SURFACE_INVENTORY = [
       'assets.live',
       'workboard.overview',
       'admin.health',
+      'admin.backup',
+      'admin.common.duration',
     ],
     copyReview:
-      'Intraday/live labels, prior-close label, dense-chart states, and failover status reviewed.',
+      'Intraday/live labels, prior-close label, dense-chart states, and failover status reviewed. #1406 W1 adds the read-only backup/restore-drill panel the Overview attention row links to, and moves the hand-built uptime string onto the localized shared duration units.',
     states: {
       loading: covered(
         'Portfolio, analytics, asset, watchlist, and health reads all render skeleton/spinner states.',
@@ -280,9 +282,9 @@ export const V5_SURFACE_INVENTORY = [
     // claimed by the phase surface that ships it.
     routes: [],
     components: ['admin/AdminApp.tsx', 'admin/components/AdminLayout.tsx'],
-    copyRoots: ['admin.nav'],
+    copyRoots: ['admin.nav', 'admin.palette'],
     copyReview:
-      'Console chrome every V5 admin surface is reached through: the section nav entries added by P0 (Account defaults), P2 (Problems, Monitoring, Usage analytics, Feature flags), P10 (API keys), P12 (AI) and P13c (Security), plus the console title, language switch, and burger-drawer labels.',
+      'Console chrome every V5 admin surface is reached through: the nav entries added by P0 (Account defaults), P2 (Problems, Monitoring, Usage analytics, Feature flags), P10 (API keys), P12 (AI) and P13c (Security), plus the console title, language switch, and burger-drawer labels. The post-V5 W1 rebuild (#1406) regrouped those same entries under six operator workspaces, pointed the console index and the not-found fallback at the new Overview instead of Users, and added the shell-hosted palette trigger and shortcut. Every existing page path is unchanged.',
     states: {
       loading: unverified(
         'AdminLayout renders the localized admin.nav.loading spinner until the session resolves.',
@@ -781,12 +783,10 @@ export const V5_SURFACE_INVENTORY = [
       'admin.users',
     ],
     copyReview:
-      'Phone-safe admin login/traps, registration settings, and user management reviewed in both catalogs; responsive behavior remains covered by the P13b admin-mobile gate.',
+      'Phone-safe admin login/traps, the registration-mode selector, and user management reviewed in both catalogs; responsive behavior remains covered by the P13b admin-mobile gate. The registration access tokens and the approval queue this row once also covered moved to the People workspace with #1406 W1 — their copy still lives under `admin.settings.*`, but it is now reviewed on admin/pages/RegistrationPage.tsx.',
     states: {
-      loading: covered('Session, settings, user, token, request, and 2FA progress stays explicit.'),
-      empty: unverified(
-        'User search, registration tokens, and approval requests distinguish empty results.',
-      ),
+      loading: covered('Session, settings, user, and 2FA progress stays explicit.'),
+      empty: unverified('User search distinguishes an empty result from an unread one.'),
       error: covered(
         'Session and resource reads expose localized retry; form and mutation failures remain inline.',
       ),
@@ -855,6 +855,11 @@ export const NON_V5_SURFACES = [
     note: 'V1 admin session provider; holds state, renders nothing.',
   },
   {
+    path: 'admin/components/AdminCommandPalette.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'Post-V5 admin rebuild W1 (#1406) ⌘K palette; localized and tested in its own feature change.',
+  },
+  {
     path: 'admin/components/EmailLogTable.tsx',
     reason: 'no-v5-deliverable',
     note: 'V2 email-log table (#187).',
@@ -898,6 +903,21 @@ export const NON_V5_SURFACES = [
     path: 'admin/pages/InvitesPage.tsx',
     reason: 'no-v5-deliverable',
     note: 'V1 invite management (#11); still English-only.',
+  },
+  {
+    path: 'admin/pages/OverviewPage.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'Post-V5 admin rebuild W1 (#1406) operator Overview; localized and tested in its own feature change.',
+  },
+  {
+    path: 'admin/pages/RegistrationPage.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'Post-V5 admin rebuild W1 (#1406): the approval queue and access tokens, re-housed out of the V5 settings page into the People workspace.',
+  },
+  {
+    path: 'admin/pages/SupportPage.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'Post-V5 admin rebuild W1 (#1406) Support landing; the helpdesk console it stands in for is W3.',
   },
   {
     path: 'admin/pages/UserDetailPage.tsx',
@@ -1363,6 +1383,11 @@ export const NON_V5_ROUTES = [
     note: 'V4-P2c self-service account deletion.',
   },
   {
+    path: '/admin',
+    reason: 'no-v5-deliverable',
+    note: 'Post-V5 admin rebuild W1 (#1406): the console index stopped redirecting to Users and now lands on the operator Overview.',
+  },
+  {
     path: '/admin/announcements',
     reason: 'no-v5-deliverable',
     note: 'V4-P5 announcement composer.',
@@ -1375,6 +1400,16 @@ export const NON_V5_ROUTES = [
     note: 'Post-V5 owner feedback inbox (#1316).',
   },
   { path: '/admin/invites', reason: 'no-v5-deliverable', note: 'V1 invite management.' },
+  {
+    path: '/admin/registration',
+    reason: 'no-v5-deliverable',
+    note: 'Post-V5 admin rebuild W1 (#1406): the People workspace’s approval queue and access tokens.',
+  },
+  {
+    path: '/admin/support',
+    reason: 'no-v5-deliverable',
+    note: 'Post-V5 admin rebuild W1 (#1406): the Support workspace landing ahead of the W3 helpdesk console.',
+  },
   { path: '/admin/users/:userId', reason: 'no-v5-deliverable', note: 'V2 admin user detail.' },
   {
     path: '/ask',
@@ -1751,8 +1786,17 @@ export type V5AsyncStateDebtLedger = Readonly<
  * also the cause of #1372 — it fired unconditionally above the router, so an
  * anonymous public share issued a protected `GET /vaults`, took the 401 through
  * the shared unauthorized-session handling, and had its own share query cleared.
+ *
+ * 183 → 181 with the #1406 W1 admin IA: the approval queue and the registration
+ * access tokens moved off SettingsPage into the People workspace's own page, so
+ * two reads left the inventoried V5 surface. Neither read was dropped — both are
+ * re-analyzed under the deferred non-V5 ledger, with their states still observed.
+ *
+ * 181 → 182 with the W1 review: HealthPage gained the read-only backup/restore
+ * drill panel the Overview's attention row links to. It observes both its
+ * loading and its error state, so the zero-debt ceiling below is unaffected.
  */
-export const V5_ASYNC_READ_SITE_BASELINE = 183;
+export const V5_ASYNC_READ_SITE_BASELINE = 182;
 
 /** Ratchet this downward whenever #739 removes a read site or missing state. */
 export const V5_ASYNC_STATE_DEBT_CEILING = { readSites: 0, stateGaps: 0 } as const;
@@ -1767,7 +1811,16 @@ export const V5_ASYNC_STATE_DEBT: V5AsyncStateDebtLedger = {};
  */
 // #1316 adds one fully handled post-V5 admin feedback read. It increases the
 // analyzed non-V5 read universe without adding any deferred state debt.
-export const DEFERRED_NON_V5_ASYNC_READ_SITE_BASELINE = 56;
+//
+// 56 → 69 with the post-V5 admin rebuild W1 (#1406): the operator Overview (8),
+// the People workspace's Registration page (3) and the ⌘K palette (2). Two of the
+// Registration reads are the approval-queue and access-token reads that moved off
+// the inventoried SettingsPage, so the pair is re-analyzed here rather than lost.
+// The Overview reads the approval-queue SIZE off `/admin/stats` rather than
+// listing the queue (W1 review M5), which is why it holds eight reads and not
+// nine. Every one of the thirteen observes both its loading and its error state,
+// which is why the debt ceiling below is unchanged.
+export const DEFERRED_NON_V5_ASYNC_READ_SITE_BASELINE = 69;
 
 export const DEFERRED_NON_V5_ASYNC_STATE_DEBT_CEILING = {
   readSites: 42,

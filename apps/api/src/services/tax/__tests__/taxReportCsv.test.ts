@@ -30,6 +30,7 @@ const AT_YEAR: TaxYearReportResponse = {
   year: 2026,
   summary: {
     year: 2026,
+    lastChangedAt: null,
     realizedPnlEur: 350,
     dividendsGrossEur: 40,
     taxWithheldEur: 123.75,
@@ -76,6 +77,7 @@ const DE_YEAR: TaxYearReportResponse = {
   year: 2025,
   summary: {
     year: 2025,
+    lastChangedAt: null,
     realizedPnlEur: 800,
     dividendsGrossEur: 100,
     taxWithheldEur: 150.25,
@@ -257,6 +259,7 @@ describe('serializeTaxYearReportCsv', () => {
         year: 2024,
         summary: {
           year: 2024,
+          lastChangedAt: null,
           realizedPnlEur: 0,
           dividendsGrossEur: 0,
           taxWithheldEur: 0,

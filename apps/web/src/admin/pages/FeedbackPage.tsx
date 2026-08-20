@@ -21,6 +21,8 @@ const CATEGORY_TONE = {
   feature: 'sky',
   bug: 'red',
   other: 'neutral',
+  help: 'amber',
+  improvement: 'green',
 } as const;
 
 const STATUS_TONE = {
@@ -115,6 +117,8 @@ export function FeedbackPage() {
             <option value="feature">{t('admin.feedback.category.feature')}</option>
             <option value="bug">{t('admin.feedback.category.bug')}</option>
             <option value="other">{t('admin.feedback.category.other')}</option>
+            <option value="help">{t('admin.feedback.category.help')}</option>
+            <option value="improvement">{t('admin.feedback.category.improvement')}</option>
           </select>
         </label>
 
@@ -208,6 +212,9 @@ function FeedbackRow({
               <Badge tone={STATUS_TONE[submission.status]}>
                 {t(`admin.feedback.status.${submission.status}`)}
               </Badge>
+              {submission.deletedByUser ? (
+                <Badge tone="neutral">{t('admin.feedback.deletedByUser')}</Badge>
+              ) : null}
             </div>
             {submission.subject ? (
               <h2 className="break-words text-base font-semibold text-neutral-100">

@@ -101,16 +101,6 @@ export const REAUTH_ACCOUNT_NAMESPACE = 'reauth_account';
 export const ACCOUNT_PARANOID_DISCARD_NAMESPACE = 'account_paranoid_discard_account';
 
 /**
- * Per-account brute-force throttle for the tax-year unlock re-auth (§16
- * 2026-08-07). Opening a locked tax year for amendments re-verifies the
- * account password; wrong attempts accrue here — independent of the login/2FA
- * counters and the per-IP limiter — so the unlock endpoint is never a
- * lighter-weight password oracle than login. Reuses the `loginAccount`
- * schedule like every sibling re-auth.
- */
-export const ACCOUNT_TAX_YEAR_UNLOCK_NAMESPACE = 'account_tax_year_unlock_account';
-
-/**
  * Consecutive-failure counter for the PIN gate (§6.1). Kept separate from the
  * login throttle above: five wrong PINs in a row drop the user back to full login
  * (the session is destroyed), so the gate can never be a lighter-weight bypass of

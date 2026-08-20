@@ -24,30 +24,19 @@ import {
   floorCents,
   realizedSellsEur,
   taxMovementForDelta,
-  viennaYearOf,
-  TAX_COUNTRY_DE,
   type CostBasisStrategy,
   type SellRealizationEur,
   type TaxableTransaction,
 } from '../../domain/tax';
 import {
-  buildFrozenComponentState,
-  engineTaxedYears,
-  frozenTargetForYear,
   heldForYear,
-  lockedResidueForYear,
+  liveDerivableYears,
+  liveRegimeOf,
+  settleLiveYears,
   viennaYearOfDate,
-} from './closedSettlement';
-import { deYearStateForYear, portfolioHasDeRows, portfolioHasFiRows } from './countryState';
-import { customParamsKey, portfolioHasCustomRows } from './customState';
-import {
-  closedYearSlice,
-  openDerivableYears,
-  openRegimeOf,
-  settleOpenYears,
-  type OpenRegime,
-  type OpenYearSettlement,
-} from './openYear';
+  type LiveRegime,
+  type LiveYearSettlement,
+} from './livingYear';
 import {
   activeCustomParams,
   PORTFOLIO_SETTING_KEY_TAX,
@@ -65,7 +54,7 @@ export interface ReplayRestoredTaxStateInput {
   userId: string;
   /** The exact restored portfolios whose money rows should be replayed. */
   portfolioIds: readonly string[];
-  /** The replay boundary's clock; determines the current Vienna/open tax year. */
+  /** Timestamp assigned to corrections created by this replay. */
   now: Date;
   toEur: TaxReplayToEur;
 }
@@ -83,18 +72,12 @@ export interface ReplayedDeYearState {
 
 export interface ReplayedTaxYearState {
   year: number;
-  /** Calendar state; a manual regime can keep an open calendar year frozen. */
-  lifecycle: 'open' | 'closed';
-  /** `live` means settleOpenYears derived the target; `frozen` preserves locked history. */
-  derivation: 'live' | 'frozen';
+  /** Automatic rows are always live; manual-only state remains literal. */
+  derivation: 'live' | 'manual';
   /** Engine tax held after replay and any correction inserted by this call. */
   heldEur: number;
   /** The state the normal engine considers settled after replay. */
   targetEur: number;
-  /** Standalone frozen-component target (AT + DE + FI + custom groups). */
-  frozenTargetEur: number;
-  /** Present for frozen state: held minus the standalone decomposition. */
-  lockedResidueEur: number | null;
   /** DE pot/allowance state when the year is derived under DE. */
   de: ReplayedDeYearState | null;
 }
@@ -109,7 +92,7 @@ export interface ReplayedTaxState {
   portfolios: ReplayedTaxPortfolioState[];
 }
 
-const OPEN_CORRECTION_NOTES = {
+const LIVE_CORRECTION_NOTES = {
   none: 'Tax year correction (tax tracking off)',
   AT: 'Live tax correction (AT)',
   DE: 'Live tax correction (DE)',
@@ -117,20 +100,20 @@ const OPEN_CORRECTION_NOTES = {
   custom: 'Live tax correction (custom rules)',
 } as const;
 
-const regimeLabel = (regime: OpenRegime): ReplayedTaxPortfolioState['effectiveRegime'] => {
+const regimeLabel = (regime: LiveRegime): ReplayedTaxPortfolioState['effectiveRegime'] => {
   if (regime.kind === 'none') return 'none';
   if (regime.kind === 'manual') return 'manual_per_trade';
   if (regime.kind === 'custom') return 'custom';
   return regime.country;
 };
 
-const correctionNote = (regime: Exclude<OpenRegime, { kind: 'manual' }>): string => {
-  if (regime.kind === 'none') return OPEN_CORRECTION_NOTES.none;
-  if (regime.kind === 'custom') return OPEN_CORRECTION_NOTES.custom;
-  return OPEN_CORRECTION_NOTES[regime.country];
+const correctionNote = (regime: Exclude<LiveRegime, { kind: 'manual' }>): string => {
+  if (regime.kind === 'none') return LIVE_CORRECTION_NOTES.none;
+  if (regime.kind === 'custom') return LIVE_CORRECTION_NOTES.custom;
+  return LIVE_CORRECTION_NOTES[regime.country];
 };
 
-const deState = (state: NonNullable<OpenYearSettlement['deState']>): ReplayedDeYearState => ({
+const deState = (state: NonNullable<LiveYearSettlement['deState']>): ReplayedDeYearState => ({
   allowanceUsedEur: floorCents(state.outcome.allowanceUsedEur),
   allowanceRemainingEur: floorCents(state.outcome.allowanceRemainingEur),
   aktienPotInEur: floorCents(state.potIns.aktienEur),
@@ -200,10 +183,8 @@ const realizationsById = (
  * This entry point intentionally accepts the transaction itself and never
  * opens, commits, or rolls one back. Every repository below is constructed
  * against that executor. The restored source rows are re-read on every call;
- * open-year reconciliation therefore converges: after the first correction is
- * inserted, a second call sees the updated held amount and inserts nothing.
- * Closed years are never re-taxed—their held-vs-frozen gap is reconstructed as
- * the same locked residue the normal mutation paths preserve.
+ * living-year reconciliation therefore converges: after the first correction
+ * is inserted, a second call sees the updated held amount and inserts nothing.
  */
 export async function replayRestoredTaxState(
   tx: Database,
@@ -221,7 +202,6 @@ export async function replayRestoredTaxState(
   const movementRepo = createCashMovementRepository(tx);
   const sourceRepo = createCashSourceRepository(tx);
   const userDefault = await taxRepo.getUserTaxSettings(input.userId);
-  const currentYear = viennaYearOf(input.now.toISOString());
   const portfolios: ReplayedTaxPortfolioState[] = [];
 
   for (const portfolioId of portfolioIds) {
@@ -236,7 +216,7 @@ export async function replayRestoredTaxState(
       movementRepo.listForPortfolio(portfolioId),
     ]);
     const settings = resolveEffectiveTaxSettings(userDefault, rawOverride);
-    const regime = openRegimeOf(settings, activeCustomParams);
+    const regime = liveRegimeOf(settings, activeCustomParams);
     const assetIds = [
       ...new Set([
         ...transactions.map((row) => row.assetId),
@@ -258,33 +238,17 @@ export async function replayRestoredTaxState(
       if (!asset) throw new Error(`Tax replay: asset ${assetId} is unavailable`);
       return dePotCategoryForAssetType(asset.type);
     };
-    const involveDe = portfolioHasDeRows(transactions, dividends);
-    const involveFi = portfolioHasFiRows(transactions, dividends);
-    const involveCustom = portfolioHasCustomRows(transactions, dividends);
-    const frozen = buildFrozenComponentState({
-      transactions,
-      dividendRows: dividends,
-      realizations: movingAverage,
-      fifoRealizations: fifo,
-      categoryOf,
-      involveDe,
-      involveFi,
-      involveCustom,
-    });
-
-    const openFrom = regime.kind === 'manual' ? Number.POSITIVE_INFINITY : currentYear;
-    const openYears =
+    const liveYears =
       regime.kind === 'manual'
         ? []
-        : openDerivableYears(
+        : liveDerivableYears(
             { transactions, dividendRows: dividends, yearOf: viennaYearOfDate },
             initialMovements,
-            openFrom,
           );
     const settlements =
       regime.kind === 'manual'
         ? []
-        : settleOpenYears({
+        : settleLiveYears({
             regime,
             view: {
               transactions,
@@ -293,20 +257,8 @@ export async function replayRestoredTaxState(
               categoryOf,
               yearOf: viennaYearOfDate,
             },
-            years: openYears,
+            years: liveYears,
             heldOf: (year) => heldForYear(transactions, dividends, initialMovements, year),
-            closedDeEvents:
-              regime.kind === 'country' && regime.country === TAX_COUNTRY_DE
-                ? closedYearSlice(frozen.deEvents, openFrom)
-                : undefined,
-            closedCustomEvents:
-              regime.kind === 'custom'
-                ? closedYearSlice(
-                    frozen.customGroups.get(customParamsKey(regime.params))?.eventsByYear ??
-                      new Map(),
-                    openFrom,
-                  )
-                : undefined,
           });
 
     let movements: CashMovementRecord[] = [...initialMovements];
@@ -368,38 +320,35 @@ export async function replayRestoredTaxState(
     const settlementByYear = new Map(
       settlements.map((settlement) => [settlement.year, settlement]),
     );
-    const allYears = new Set(engineTaxedYears(transactions, dividends, movements));
-    for (const year of openYears) allYears.add(year);
+    const allYears = new Set<number>();
+    for (const row of transactions) {
+      if (row.side === 'sell') allYears.add(viennaYearOfDate(row.executedAt));
+    }
+    for (const row of dividends) allYears.add(viennaYearOfDate(row.executedAt));
+    for (const movement of movements) {
+      if (movement.taxYear !== null) allYears.add(movement.taxYear);
+    }
+    for (const year of liveYears) allYears.add(year);
     const years = [...allYears]
       .sort((a, b) => a - b)
       .map((year): ReplayedTaxYearState => {
         const heldEur = heldForYear(transactions, dividends, movements, year);
-        const frozenTargetEur = frozenTargetForYear(frozen, year);
         const live = settlementByYear.get(year);
         if (live) {
           return {
             year,
-            lifecycle: year >= currentYear ? 'open' : 'closed',
             derivation: 'live',
             heldEur,
             targetEur: live.targetAfterEur,
-            frozenTargetEur,
-            lockedResidueEur: null,
             de: live.deState ? deState(live.deState) : null,
           };
         }
-        const residue = lockedResidueForYear(frozen, movements, year);
-        const frozenDe =
-          frozen.deEvents.has(year) && involveDe ? deYearStateForYear(frozen.deEvents, year) : null;
         return {
           year,
-          lifecycle: year >= currentYear ? 'open' : 'closed',
-          derivation: 'frozen',
+          derivation: 'manual',
           heldEur,
-          targetEur: floorCents(frozenTargetEur + residue),
-          frozenTargetEur,
-          lockedResidueEur: residue,
-          de: frozenDe ? deState(frozenDe) : null,
+          targetEur: heldEur,
+          de: null,
         };
       });
 

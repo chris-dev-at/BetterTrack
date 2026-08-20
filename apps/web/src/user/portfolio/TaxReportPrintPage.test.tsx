@@ -40,6 +40,7 @@ const AT_REPORT: TaxYearReportResponse = {
   year: 2026,
   summary: {
     year: 2026,
+    lastChangedAt: null,
     realizedPnlEur: 350,
     dividendsGrossEur: 40,
     taxWithheldEur: 123.75,
@@ -85,6 +86,7 @@ const DE_REPORT: TaxYearReportResponse = {
   year: 2025,
   summary: {
     year: 2025,
+    lastChangedAt: null,
     realizedPnlEur: 1250,
     dividendsGrossEur: 0,
     taxWithheldEur: 263.75,
@@ -173,6 +175,7 @@ describe('TaxReportPrintPage', () => {
       year: 2019,
       summary: {
         year: 2019,
+        lastChangedAt: null,
         realizedPnlEur: 0,
         dividendsGrossEur: 0,
         taxWithheldEur: 0,

@@ -64,9 +64,9 @@ import {
  * refreshing its quote via `pollQuote`).
  *
  * **Timestamps (#1119 AC 4).** Every money row is dated at the scan instant —
- * the engine writes through the repositories without traversing the tax-year
- * unlock ritual, so a pre-open scan must never produce a row in an earlier,
- * possibly locked (#1168) tax year. The accepted quote's provider `asOf` is
+ * the engine writes through the repositories at booking time, so a pre-open
+ * scan must never produce a row in an earlier tax year (#1168). The accepted
+ * quote's provider `asOf` is
  * RECORDED on the order's `lastRunAt` as the market-hours stamp (record-only;
  * see {@link resolveBookQuote}). The scheduled period identity lives in the
  * run's `period_key`.

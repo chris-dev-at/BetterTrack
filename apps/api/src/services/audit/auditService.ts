@@ -140,12 +140,6 @@ export const AuditAction = {
   MirrorRoleChanged: 'mirror.role_changed',
   MirrorOwnershipTransferred: 'mirror.ownership_transferred',
   MirrorChainDissolved: 'mirror.chain_dissolved',
-  // Tax year locking (§16 2026-08-07): the explicit unlock ritual that opens
-  // one elapsed tax year for amendments, its re-lock, and a failed unlock
-  // re-auth (per-account throttled like export/deletion).
-  TaxYearUnlocked: 'tax_year.unlocked',
-  TaxYearRelocked: 'tax_year.relocked',
-  TaxYearUnlockReauthFail: 'tax_year.unlock_reauth_fail',
   // Outbound webhooks (§13.5 V5-P10, issue 1/2): subscription lifecycle + the
   // auto-disable that a dead receiver triggers (the disable is audit-visible).
   WebhookCreated: 'webhook.created',
