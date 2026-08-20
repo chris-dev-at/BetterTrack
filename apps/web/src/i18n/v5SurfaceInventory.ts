@@ -1057,6 +1057,11 @@ export const NON_V5_SURFACES = [
     note: 'Owner-ordered FEEDBACK-3 web reporter (#1317), added outside the §13.5 P0–P13c plan.',
   },
   {
+    path: 'user/components/MyFeedbackSubmissionsDialog.tsx',
+    reason: 'no-v5-deliverable',
+    note: 'Owner-ordered FEEDBACK-8 submitter history and reply thread (#1342), extending #1317 outside the §13.5 P0–P13c plan.',
+  },
+  {
     path: 'user/components/LocalNav.tsx',
     reason: 'no-v5-deliverable',
     note: 'Origin-redesign local nav strip (#935).',
@@ -1809,8 +1814,9 @@ export const V5_ASYNC_STATE_DEBT: V5AsyncStateDebtLedger = {};
  * offenders disappear from the review record. The reason each component is
  * outside the V5 deliverable lives beside it in NON_V5_SURFACES.
  */
-// #1316 adds one fully handled post-V5 admin feedback read. It increases the
-// analyzed non-V5 read universe without adding any deferred state debt.
+// #1316 adds one fully handled post-V5 admin feedback read. #1342 adds the
+// fully handled submitter list + thread reads. They increase the analyzed
+// non-V5 read universe without adding any deferred state debt.
 //
 // 56 → 69 with the post-V5 admin rebuild W1 (#1406): the operator Overview (8),
 // the People workspace's Registration page (3) and the ⌘K palette (2). Two of the
@@ -1820,7 +1826,8 @@ export const V5_ASYNC_STATE_DEBT: V5AsyncStateDebtLedger = {};
 // listing the queue (W1 review M5), which is why it holds eight reads and not
 // nine. Every one of the thirteen observes both its loading and its error state,
 // which is why the debt ceiling below is unchanged.
-export const DEFERRED_NON_V5_ASYNC_READ_SITE_BASELINE = 69;
+// 69 → 71 with FEEDBACK-8's list and cursor-paginated thread reads (#1342).
+export const DEFERRED_NON_V5_ASYNC_READ_SITE_BASELINE = 71;
 
 export const DEFERRED_NON_V5_ASYNC_STATE_DEBT_CEILING = {
   readSites: 42,
