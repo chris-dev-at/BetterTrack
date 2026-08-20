@@ -291,6 +291,27 @@ const envSchema = z.object({
     .int()
     .min(1024)
     .default(16 * 1024 * 1024),
+  // Per-portfolio vaults (docs/paranoid-design.md §3, E0 #1410): per-doc-kind
+  // envelope size caps for the per-vault doc set (header / common / one doc per
+  // member portfolio). Same ops-knob family as BT_VAULT_MAX_BYTES, which keeps
+  // capping the v1 account-singleton blob until E9 retires it. The per-doc
+  // history reuses the BT_VAULT_HISTORY_* window below (same semantics, one
+  // knob family — deliberately no second pair of history knobs).
+  BT_VAULT_MAX_BYTES_HEADER: z.coerce
+    .number()
+    .int()
+    .min(1024)
+    .default(1 * 1024 * 1024),
+  BT_VAULT_MAX_BYTES_COMMON: z.coerce
+    .number()
+    .int()
+    .min(1024)
+    .default(4 * 1024 * 1024),
+  BT_VAULT_MAX_BYTES_PORTFOLIO: z.coerce
+    .number()
+    .int()
+    .min(1024)
+    .default(8 * 1024 * 1024),
   BT_VAULT_HISTORY_MAX_VERSIONS: z.coerce.number().int().min(1).max(1000).default(10),
   BT_VAULT_HISTORY_MAX_AGE_DAYS: z.coerce.number().int().min(1).max(3650).default(30),
   // Dedicated modest write limiter for vault PUTs (like every other write
@@ -686,6 +707,16 @@ export interface AppConfig {
    */
   vault: {
     maxBytes: number;
+    /**
+     * Per-doc-kind envelope caps of the PER-PORTFOLIO vault doc set
+     * (docs/paranoid-design.md §3, E0 #1410); the E1 blind store enforces them
+     * at its PUT boundary. The per-doc history shares `history` below.
+     */
+    docMaxBytes: {
+      header: number;
+      common: number;
+      portfolio: number;
+    };
     history: {
       maxVersions: number;
       maxAgeMs: number;
@@ -1048,6 +1079,13 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     },
     vault: {
       maxBytes: e.BT_VAULT_MAX_BYTES,
+      // Per-doc-kind caps of the per-portfolio vault doc set (E0 #1410); the
+      // E1 blind store enforces them at its PUT boundary.
+      docMaxBytes: {
+        header: e.BT_VAULT_MAX_BYTES_HEADER,
+        common: e.BT_VAULT_MAX_BYTES_COMMON,
+        portfolio: e.BT_VAULT_MAX_BYTES_PORTFOLIO,
+      },
       history: {
         maxVersions: e.BT_VAULT_HISTORY_MAX_VERSIONS,
         maxAgeMs: e.BT_VAULT_HISTORY_MAX_AGE_DAYS * 24 * 60 * 60 * 1000,

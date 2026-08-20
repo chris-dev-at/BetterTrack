@@ -66,6 +66,7 @@ function portfolioEntity(userId: string, portfolioId: string) {
 
     vaultId: null,
     alias: null,
+    vaultAlias: null,
     archivedAt: null,
   });
 }
@@ -121,6 +122,7 @@ function strictPortfolioEntity(row: typeof portfolios.$inferSelect) {
     // compatibility, so a freshly captured entity always writes them as null.
     vaultId: null,
     alias: null,
+    vaultAlias: null,
     archivedAt: row.archivedAt?.toISOString() ?? null,
   });
 }

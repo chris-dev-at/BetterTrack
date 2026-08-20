@@ -33,3 +33,4 @@ export * from './expenses';
 export * from './cash';
 export * from './webhooks';
 export * from './vault';
+export * from './vaults';

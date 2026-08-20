@@ -1025,23 +1025,34 @@ const portfolioRowSchema = z
      */
     kind: portfolioKindSchema.nullable().optional(),
     /**
-     * VESTIGIAL, DELIBERATELY RETAINED. Both fields were added by the
-     * per-portfolio vault v2 surface, which was removed by the 2026-08-19 owner
-     * ruling (PROJECTPLAN §16). Their server-side counterparts — the `vaults`
-     * table and `portfolios.vault_id` / `portfolios.alias` — are gone.
+     * `vaultId` re-gained a server column with the E0 per-portfolio vaults
+     * keystone (#1410 — `portfolios.vault_id`, always NULL in any portfolio
+     * this ACCOUNT-level document can carry: a per-portfolio-vaulted portfolio
+     * is a content-free locked stub with nothing left to capture, and the two
+     * paranoid systems are mutually exclusive per account until E9 retires
+     * this one). `alias` remains VESTIGIAL: its v2 column was dropped by PR
+     * #1392 and its E0 successor is deliberately named `vault_alias` /
+     * `vaultAlias` (below) so the retired name stays retired.
      *
-     * They stay HERE because this object is `.strict()` and describes the
-     * CLIENT-ENCRYPTED v1 document, not a server row. Every paranoid document
-     * written while v2 existed carries both keys (zod's `.default(null)` filled
-     * them in on parse and the client re-serialized what it parsed), so dropping
-     * them would make those documents fail validation — a paranoid account whose
-     * vault silently stops opening, with no server-side copy to fall back on.
-     *
-     * Nothing reads them. Do not repurpose them; a future format version can
-     * drop them behind a document migration in `migrateVaultDocument`.
+     * Both keep `.default(null)` because this object is `.strict()` and
+     * describes the CLIENT-ENCRYPTED v1 document: every paranoid document
+     * written while v2 existed carries both keys (zod's `.default(null)`
+     * filled them in on parse and the client re-serialized what it parsed), so
+     * dropping either would make those documents fail validation — a paranoid
+     * account whose vault silently stops opening, with no server-side copy to
+     * fall back on. Nothing reads them. Do not repurpose `alias`; a future
+     * format version can drop it behind a document migration in
+     * `migrateVaultDocument`.
      */
     vaultId: uuidSchema.nullable().default(null),
     alias: z.string().nullable().default(null),
+    /**
+     * The E0 locked-stub label column (`portfolios.vault_alias`, #1410).
+     * Always NULL here for the same mutual-exclusion reason as `vaultId`;
+     * `.default(null)` keeps every document written before the column existed
+     * parseable (the `kind` / `dedupHash` precedent).
+     */
+    vaultAlias: z.string().nullable().default(null),
   })
   .strict();
 
