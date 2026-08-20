@@ -1,6 +1,6 @@
 import { createHash, generateKeyPairSync, randomBytes } from 'node:crypto';
 
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import type { Application, Request, Response } from 'express';
 import request from 'supertest';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -18,7 +18,7 @@ import {
 } from '@bettertrack/contracts';
 
 import { createOAuthRepository } from '../data/repositories/oauthRepository';
-import { paranoidEnableTransitions, paranoidVaults, users } from '../data/schema';
+import { auditLog, paranoidEnableTransitions, paranoidVaults, users } from '../data/schema';
 import {
   VAULT_ACCOUNT_SECURITY_BEARER_ROUTE_ALLOWLIST,
   VAULT_SESSION_ONLY_ROUTES,
@@ -29,7 +29,10 @@ import {
   vaultSyncRouteAcceptsBearer,
 } from '../http/middleware/bearerAuth';
 import { buildRouteTable, type MountedSurface } from '../scripts/checkOpenapiCoverage';
-import { requireCookieSessionOrVaultSync } from '../http/routes/vaultRoutes';
+import {
+  requireCookieSessionOrPerVaultAccess,
+  requireCookieSessionOrVaultSync,
+} from '../http/routes/vaultRoutes';
 import {
   isParanoidKilledScope,
   PARANOID_MODE_ERROR_CODE,
@@ -107,14 +110,30 @@ async function setParanoidServer(userId: string): Promise<void> {
 async function mintPersonalToken(
   scopes: ApiKeyScope[],
   prefix = 'vaultbearer',
-): Promise<{ user: SeededUser; token: string }> {
+): Promise<{ user: SeededUser; token: string; id: string }> {
   const user = await seedUser(prefix);
   const key = await harness.ctx.apiKeys.create({
     userId: user.id,
     name: `${prefix} key`,
     scopes,
   });
-  return { user, token: key.token };
+  return { user, token: key.token, id: key.key.id };
+}
+
+async function createRealPerVault(userId: string, name: string): Promise<string> {
+  const result = await harness.ctx.vaults.create(userId, {
+    name,
+    headerDocId: UUID_A,
+    commonDocId: UUID_B,
+    media: ['server'],
+    driveConnectionId: null,
+    // Deterministic TEST VECTOR (E0's public fingerprint fixture), not a secret.
+    keyFingerprint: 'Abcdef0123456789',
+    retirementProofPublicKey: ed25519PublicKey(),
+  });
+  expect(result.status).toBe('ok');
+  if (result.status !== 'ok') throw new Error(`vault creation failed: ${result.status}`);
+  return result.vault.id;
 }
 
 /** A real Ed25519 SPKI verifier — the route parses it in Node before storing it. */
@@ -459,6 +478,47 @@ describe('#1043 vault bearer policy', () => {
 
     expect(guard(syncKey, 'PUT', '/')).toHaveBeenCalledWith();
   });
+
+  it('makes the per-vault local guard hide admin principals and audit INSUFFICIENT_SCOPE', async () => {
+    const { user, id } = await mintPersonalToken(['market:read'], 'local-vault-guard');
+    const guard = requireCookieSessionOrPerVaultAccess(harness.ctx);
+    const invoke = (role: 'user' | 'admin') =>
+      new Promise<unknown>((resolve) => {
+        guard(
+          {
+            apiKey: {
+              id,
+              scopes: ['market:read'],
+              kind: 'personal',
+              firstParty: false,
+              securityGeneration: 0,
+            },
+            authUser: { id: user.id, role, privacyMode: 'normal' },
+            method: 'GET',
+            path: `/${UUID_A}/docs/${UUID_B}`,
+            ip: '127.0.0.1',
+          } as unknown as Request,
+          {} as Response,
+          (error?: unknown) => resolve(error),
+        );
+      });
+
+    await expect(invoke('admin')).resolves.toMatchObject({ statusCode: 404 });
+    await expect(invoke('user')).resolves.toMatchObject({
+      statusCode: 403,
+      code: 'INSUFFICIENT_SCOPE',
+    });
+
+    const [denial] = await harness.db
+      .select({ meta: auditLog.meta })
+      .from(auditLog)
+      .where(and(eq(auditLog.targetId, id), eq(auditLog.action, 'api_key.scope_denied')));
+    expect(denial?.meta).toMatchObject({
+      requiredScope: 'vault:sync',
+      method: 'GET',
+      path: `/vaults/${UUID_A}/docs/${UUID_B}`,
+    });
+  });
 });
 
 describe('#1043 bearer vault synchronization', () => {
@@ -581,25 +641,33 @@ describe('#1043 bearer vault synchronization', () => {
     expect(getMediaState).toHaveBeenCalledWith(user.id, UUID_A);
   });
 
-  it('lets account:security reach the in-request step-up vault deletion handler', async () => {
-    const { user, token } = await mintPersonalToken(['account:security'], 'pervault-delete');
-    const deleteVault = vi.spyOn(harness.ctx.vaults, 'delete').mockResolvedValue({ status: 'ok' });
-    // Deterministic TEST VECTOR only; the stub proves handler reachability and
-    // deliberately does not evaluate this non-secret password string.
-    const body = { stepUp: { password: 'deterministic-test-password' } };
+  it('runs bearer vault deletion through real §15 step-up and preserves the row on a wrong password', async () => {
+    const { user, token } = await mintPersonalToken(['account:security'], 'pervault-delete-wrong');
+    const vaultId = await createRealPerVault(user.id, 'Bearer wrong-password vault');
+
+    const denied = await request(harness.app)
+      .delete(`/api/v1/vaults/${vaultId}`)
+      .set(bearer(token))
+      .send({ stepUp: { password: 'deterministic-wrong-password' } });
+    expect(denied.status, JSON.stringify(denied.body)).toBe(401);
+    expect(denied.body.error.code).toBe('INVALID_CREDENTIALS');
+    expect(await harness.ctx.vaults.get(user.id, vaultId)).not.toBeNull();
+  });
+
+  it('runs bearer vault deletion through real §15 step-up and deletes on the correct password', async () => {
+    const { user, token } = await mintPersonalToken(
+      ['account:security'],
+      'pervault-delete-correct',
+    );
+    const vaultId = await createRealPerVault(user.id, 'Bearer correct-password vault');
 
     const deleted = await request(harness.app)
-      .delete(`/api/v1/vaults/${UUID_A}`)
+      .delete(`/api/v1/vaults/${vaultId}`)
       .set(bearer(token))
-      .send(body);
+      .send({ stepUp: { password: user.password } });
     expect(deleted.status, JSON.stringify(deleted.body)).toBe(200);
     expect(deleted.body).toEqual({ ok: true });
-    expect(deleteVault).toHaveBeenCalledOnce();
-    expect(deleteVault.mock.calls[0]![0]).toMatchObject({
-      userId: user.id,
-      vaultId: UUID_A,
-      body,
-    });
+    expect(await harness.ctx.vaults.get(user.id, vaultId)).toBeNull();
   });
 
   it('refuses normal-mode bearer writes without disturbing the session enable window', async () => {

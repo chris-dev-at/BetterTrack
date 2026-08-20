@@ -170,7 +170,6 @@ export async function collectUserExport(
       db.select({ id: assets.id }).from(assets).where(eq(assets.ownerId, userId)),
       db.select().from(feedback).where(eq(feedback.userId, userId)),
     ]);
-  const portfolioIds = portfolioRows.map((r) => r.id);
   // A vault-backed portfolio row is only a locked config stub. Its cleartext
   // descendants are forbidden by the per-vault model, but filter them here too
   // as a fail-closed export boundary in case stale/invalid rows survive a race or

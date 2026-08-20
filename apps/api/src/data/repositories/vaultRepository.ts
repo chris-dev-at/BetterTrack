@@ -1,4 +1,4 @@
-import { and, asc, count, eq } from 'drizzle-orm';
+import { and, asc, count, eq, inArray } from 'drizzle-orm';
 
 import type { VaultConfig, VaultMediaList } from '@bettertrack/contracts';
 
@@ -9,6 +9,7 @@ export type VaultCreateResult =
   | { status: 'ok'; vault: VaultConfig }
   | { status: 'name_taken' }
   | { status: 'drive_not_found' }
+  | { status: 'portfolio_binding_mismatch' }
   | { status: 'reserved_medium' };
 
 export type VaultPatchResult =
@@ -135,6 +136,22 @@ export function createVaultRepository(db: Database): VaultRepository {
       if (input.media.includes('local')) return { status: 'reserved_medium' };
       try {
         return await db.transaction(async (tx) => {
+          // R1 reserves both singleton addresses for config docs. Reject a
+          // collision with any portfolio UUID in this owner's namespace before
+          // creating the vault; otherwise that portfolio could never join the
+          // vault without making its required full-doc roster ambiguous.
+          const [portfolioCollision] = await tx
+            .select({ id: portfolios.id })
+            .from(portfolios)
+            .where(
+              and(
+                eq(portfolios.userId, input.userId),
+                inArray(portfolios.id, [input.headerDocId, input.commonDocId]),
+              ),
+            )
+            .limit(1);
+          if (portfolioCollision) return { status: 'portfolio_binding_mismatch' as const };
+
           if (input.driveConnectionId) {
             const [connection] = await tx
               .select({ id: driveConnections.id })
@@ -199,7 +216,7 @@ export function createVaultRepository(db: Database): VaultRepository {
       try {
         return await db.transaction(async (rawTx) => {
           const tx = rawTx as unknown as Database;
-          // Lock order is account then vault everywhere a credential gates a
+          // The account row is the first lock everywhere a credential gates a
           // destructive vault write. The factor/password columns are therefore
           // the exact state the commit is authorized against (§15).
           const [owner] = await tx
@@ -213,6 +230,12 @@ export function createVaultRepository(db: Database): VaultRepository {
             .where(eq(users.id, input.userId))
             .for('update');
           if (!owner) return { status: 'not_found' as const };
+
+          // R5 review round 1: spend and audit step-up before even resolving
+          // whether this owner has the supplied vault id. In particular, an
+          // account:security bearer cannot use an invalid credential to probe
+          // vault existence or any later deletion gate.
+          await input.verifyStepUp(owner, tx);
 
           const [vault] = await tx
             .select({ id: vaults.id })
@@ -232,10 +255,7 @@ export function createVaultRepository(db: Database): VaultRepository {
             .from(portfolios)
             .where(eq(portfolios.vaultId, input.vaultId));
 
-          // Resolve blockers under the same locks, but do not disclose either
-          // result until §15 step-up succeeds. This keeps account:security
-          // bearers from probing deletion state with an unverified credential.
-          await input.verifyStepUp(owner, tx);
+          // Resolve and disclose blockers only after §15 step-up succeeds.
           if (retirement) return { status: 'retirement_pending' as const };
           if (Number(members?.value ?? 0) > 0) return { status: 'referenced' as const };
           await tx

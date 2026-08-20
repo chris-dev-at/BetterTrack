@@ -69,11 +69,16 @@ import {
 } from '@bettertrack/contracts';
 
 import { ApiError, EnvelopeApiError, forbidden, notFound } from '../../errors';
+import {
+  isParanoidKilledScope,
+  PARANOID_MODE_ERROR_CODE,
+} from '../../services/account/paranoidEnforcement';
 
 import type { AppContext } from '../context';
 import {
   ACCOUNT_SECURITY_SCOPE,
   VAULT_SYNC_SCOPE,
+  recordBearerScopeDenied,
   vaultAccountSecurityRouteAcceptsBearer,
   vaultSyncRouteAcceptsBearer,
 } from '../middleware/bearerAuth';
@@ -616,32 +621,85 @@ const perVaultRawBody = (ctx: AppContext): RequestHandler => {
 };
 
 /** Defense-in-depth mirror of the exact global `/vaults` bearer policy. */
-export const requireCookieSessionOrPerVaultAccess: RequestHandler = (req, _res, next) => {
-  const path = `/vaults${req.path === '/' || req.path === '' ? '' : req.path}`;
-  const bearerAllowed =
-    req.apiKey !== undefined &&
-    ((scopeSatisfies(req.apiKey.scopes, VAULT_SYNC_SCOPE) &&
-      vaultSyncRouteAcceptsBearer(req.method, path)) ||
-      (scopeSatisfies(req.apiKey.scopes, ACCOUNT_SECURITY_SCOPE) &&
-        vaultAccountSecurityRouteAcceptsBearer(req.method, path)));
-  if ((!req.apiKey && req.sessionId) || bearerAllowed) {
+function buildCookieSessionOrPerVaultAccess(ctx: AppContext): RequestHandler {
+  // Named independently of the factory: the production-route census pins the
+  // opaque mount by handler name as well as by its `/vaults` mount point.
+  return function requireCookieSessionOrPerVaultAccess(req, _res, next) {
+    if (!req.apiKey && req.sessionId) {
+      next();
+      return;
+    }
+    if (!req.apiKey) {
+      next(
+        forbidden(
+          'This vault endpoint is available only to the owning browser session.',
+          'API_KEY_FORBIDDEN',
+        ),
+      );
+      return;
+    }
+    // Match the global bearer guard's user/admin boundary even if this router
+    // is remounted without that guard: a bearer-backed admin principal learns
+    // nothing about the user vault surface.
+    if (req.authUser?.role === 'admin') {
+      next(notFound());
+      return;
+    }
+
+    const path = `/vaults${req.path === '/' || req.path === '' ? '' : req.path}`;
+    const requiredScope = vaultSyncRouteAcceptsBearer(req.method, path)
+      ? VAULT_SYNC_SCOPE
+      : vaultAccountSecurityRouteAcceptsBearer(req.method, path)
+        ? ACCOUNT_SECURITY_SCOPE
+        : null;
+    if (requiredScope === null) {
+      next(
+        forbidden(
+          'This vault endpoint is available only to the owning browser session.',
+          'API_KEY_FORBIDDEN',
+        ),
+      );
+      return;
+    }
+    if (req.authUser?.privacyMode === 'paranoid' && isParanoidKilledScope(requiredScope)) {
+      next(
+        forbidden(
+          'This API scope is unavailable while paranoid mode is active.',
+          PARANOID_MODE_ERROR_CODE,
+        ),
+      );
+      return;
+    }
+    if (!scopeSatisfies(req.apiKey.scopes, requiredScope)) {
+      recordBearerScopeDenied(ctx, req, requiredScope, path).then(
+        () =>
+          next(
+            forbidden(
+              `API key is missing the required scope "${requiredScope}".`,
+              'INSUFFICIENT_SCOPE',
+            ),
+          ),
+        next,
+      );
+      return;
+    }
     next();
-    return;
-  }
-  next(
-    forbidden(
-      'This vault endpoint is available only to the owning browser session.',
-      'API_KEY_FORBIDDEN',
-    ),
-  );
-};
+  };
+}
+
+export { buildCookieSessionOrPerVaultAccess as requireCookieSessionOrPerVaultAccess };
 
 /** Parallel per-vault E1 surface. The legacy `/vault` router above is unchanged. */
 export function createVaultsRouter(ctx: AppContext, limiters: RateLimiters): Router {
   const router = Router();
   const parseRawDocument = perVaultRawBody(ctx);
 
-  router.use(requireUser, requireCookieSessionOrPerVaultAccess, limiters.vault);
+  router.use(requireUser, buildCookieSessionOrPerVaultAccess(ctx));
+  router.use((req, res, next) => {
+    const limiter =
+      req.method === 'GET' || req.method === 'HEAD' ? limiters.vaultRead : limiters.vault;
+    limiter(req, res, next);
+  });
 
   router.get('/', async (req, res) => {
     const vaults = await ctx.vaults.list(req.authUser!.id);
@@ -677,6 +735,12 @@ export function createVaultsRouter(ctx: AppContext, limiters: RateLimiters): Rou
           400,
           PER_VAULT_ERROR_CODES.reservedMedium,
           'The local vault medium is reserved and is not supported by this server.',
+        );
+      case 'portfolio_binding_mismatch':
+        throw new ApiError(
+          409,
+          PER_VAULT_ERROR_CODES.portfolioBindingMismatch,
+          'Vault singleton document ids cannot collide with an owned portfolio id.',
         );
     }
   });
@@ -929,6 +993,12 @@ export function createVaultsRouter(ctx: AppContext, limiters: RateLimiters): Rou
             409,
             PER_VAULT_ERROR_CODES.retirementConflict,
             'Retained server bytes conflict with this media transition.',
+          );
+        case 'retirement_pending':
+          throw new ApiError(
+            409,
+            PER_VAULT_ERROR_CODES.deleteRetirementPending,
+            'The retired server set must pass the signed purge gate before server is re-added.',
           );
       }
     },

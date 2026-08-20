@@ -829,7 +829,7 @@ export function enforceApiKeyScope(ctx: AppContext): RequestHandler {
     // token. Enforced here at check time — the single authoritative point that
     // also covers tokens minted before the rule.
     if (!scopeSatisfies(req.apiKey.scopes, required)) {
-      denyScope(ctx, req, required).then(
+      recordBearerScopeDenied(ctx, req, required).then(
         () =>
           next(
             forbidden(`API key is missing the required scope "${required}".`, 'INSUFFICIENT_SCOPE'),
@@ -845,7 +845,7 @@ export function enforceApiKeyScope(ctx: AppContext): RequestHandler {
       // is first-party-only — it does not imply scope alone would ever suffice.
       // Reuse the established audited denial rail: probing another app's grants
       // is a credential-boundary event the account owner must be able to trace.
-      denyScope(ctx, req, required).then(
+      recordBearerScopeDenied(ctx, req, required).then(
         () =>
           next(
             forbidden(
@@ -861,12 +861,22 @@ export function enforceApiKeyScope(ctx: AppContext): RequestHandler {
   };
 }
 
-function denyScope(ctx: AppContext, req: Request, requiredScope: string): Promise<void> {
+/**
+ * Persist one bearer scope refusal through the credential-kind-specific audit
+ * service. Router-local defense-in-depth guards reuse this rail so a future
+ * middleware remount cannot silently lose the global guard's denial audit.
+ */
+export function recordBearerScopeDenied(
+  ctx: AppContext,
+  req: Request,
+  requiredScope: string,
+  path = req.path,
+): Promise<void> {
   const common = {
     userId: req.authUser!.id,
     requiredScope,
     method: req.method,
-    path: req.path,
+    path,
     ip: req.ip ?? null,
   };
   if (req.apiKey!.kind === 'oauth') {

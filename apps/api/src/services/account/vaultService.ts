@@ -9,6 +9,7 @@ import {
 import {
   readVaultDocServerHeader,
   serializePerVaultRetiredServerPurgeTranscript,
+  PER_VAULT_ERROR_CODES,
   VAULT_RETIRED_PURGE_CHALLENGE_TTL_MS,
   VAULT_SERVER_CANDIDATE_TTL_MS,
   VaultEnvelopeError,
@@ -27,14 +28,15 @@ import {
   type VaultHistoryListResponse,
 } from '@bettertrack/contracts';
 
-import type {
-  VaultBlobReadResult,
-  VaultBlobRepository,
-  VaultBlobRetention,
-  VaultBlobWriteResult,
-  VaultCandidateResult,
-  VaultMediaTransitionResult,
-  VaultRetiredPurgeResult,
+import {
+  LegacyVaultCandidateError,
+  type VaultBlobReadResult,
+  type VaultBlobRepository,
+  type VaultBlobRetention,
+  type VaultBlobWriteResult,
+  type VaultCandidateResult,
+  type VaultMediaTransitionResult,
+  type VaultRetiredPurgeResult,
 } from '../../data/repositories/vaultBlobRepository';
 import type {
   VaultCreateResult,
@@ -43,6 +45,7 @@ import type {
   VaultRepository,
 } from '../../data/repositories/vaultRepository';
 import type { VaultServerCandidateRow } from '../../data/schema';
+import { ApiError } from '../../errors';
 import { AuditAction, type AuditService } from '../audit/auditService';
 import type { VaultDeleteReauth } from './paranoidDiscardReauth';
 
@@ -199,7 +202,7 @@ function verifyOpaqueToken(
 
 function candidateMetadata(row: VaultServerCandidateRow): PerVaultServerCandidateMetadata {
   const header = readVaultDocServerHeader(row.blob);
-  if (!row.transitionId) throw new Error('E1 candidate missing transition id');
+  if (!row.transitionId) throw new LegacyVaultCandidateError();
   return {
     candidateId: row.id,
     transitionId: row.transitionId,
@@ -211,6 +214,14 @@ function candidateMetadata(row: VaultServerCandidateRow): PerVaultServerCandidat
     sizeBytes: row.sizeBytes,
     expiresAt: row.expiresAt.toISOString(),
   };
+}
+
+function legacyCandidateRefusal(): ApiError {
+  return new ApiError(
+    409,
+    PER_VAULT_ERROR_CODES.mediaStateConflict,
+    'A legacy server candidate has no transition identity and must be re-staged.',
+  );
 }
 
 function verifyRetiredSignature(
@@ -362,8 +373,13 @@ export function createVaultService(deps: VaultServiceDeps): VaultService {
       return deps.blobs.getHistory(userId, vaultId, docId, version);
     },
 
-    getMediaState(userId, vaultId) {
-      return deps.blobs.getMediaState(userId, vaultId, now());
+    async getMediaState(userId, vaultId) {
+      try {
+        return await deps.blobs.getMediaState(userId, vaultId, now());
+      } catch (error) {
+        if (error instanceof LegacyVaultCandidateError) throw legacyCandidateRefusal();
+        throw error;
+      }
     },
 
     async stageServerCandidate(input) {
@@ -390,13 +406,17 @@ export function createVaultService(deps: VaultServiceDeps): VaultService {
         now: stagedAt,
         expiresAt: new Date(stagedAt.getTime() + VAULT_SERVER_CANDIDATE_TTL_MS),
       });
-      return result.status === 'ok'
-        ? {
-            status: 'ok',
-            candidate: candidateMetadata(result.row),
-            idempotent: result.idempotent,
-          }
-        : result;
+      if (result.status !== 'ok') return result;
+      try {
+        return {
+          status: 'ok',
+          candidate: candidateMetadata(result.row),
+          idempotent: result.idempotent,
+        };
+      } catch (error) {
+        if (error instanceof LegacyVaultCandidateError) throw legacyCandidateRefusal();
+        throw error;
+      }
     },
 
     getServerCandidate(userId, vaultId, candidateId) {
@@ -404,7 +424,8 @@ export function createVaultService(deps: VaultServiceDeps): VaultService {
     },
 
     issueCandidateReadback(userId, vaultId, candidate) {
-      if (!deps.proofSecret || !candidate.transitionId) return null;
+      if (!candidate.transitionId) throw legacyCandidateRefusal();
+      if (!deps.proofSecret) return null;
       const header = readVaultDocServerHeader(candidate.blob);
       return signOpaqueToken(deps.proofSecret, 'per-vault-candidate-readback', {
         userId,
@@ -441,13 +462,19 @@ export function createVaultService(deps: VaultServiceDeps): VaultService {
           }
         }
       }
-      const result = await deps.blobs.transitionMedia({
-        userId,
-        vaultId,
-        request,
-        verifiedCandidateIds,
-        now: at,
-      });
+      let result: VaultMediaTransitionResult;
+      try {
+        result = await deps.blobs.transitionMedia({
+          userId,
+          vaultId,
+          request,
+          verifiedCandidateIds,
+          now: at,
+        });
+      } catch (error) {
+        if (error instanceof LegacyVaultCandidateError) throw legacyCandidateRefusal();
+        throw error;
+      }
       if (result.status === 'ok' && !result.idempotent) {
         await deps.audit.record({
           actorId: userId,

@@ -66,6 +66,7 @@ export type VaultMediaTransitionResult =
   | { status: 'not_found' }
   | { status: 'reserved_medium' }
   | { status: 'state_conflict'; current: PerVaultMediaState }
+  | { status: 'retirement_pending'; current: PerVaultMediaState }
   | { status: 'partial_set'; current: PerVaultMediaState }
   | { status: 'verification_failed'; current: PerVaultMediaState }
   | { status: 'drive_not_found'; current: PerVaultMediaState }
@@ -159,6 +160,19 @@ interface ExpectedDoc {
   portfolioId: string | null;
 }
 
+/**
+ * A nullable transition id exists only for candidates written before R3. Such
+ * a row has no batch identity and therefore cannot safely participate in an
+ * E1 readback or transition. The service maps this domain refusal to a stable
+ * 409 instead of exposing an invariant Error as a 500.
+ */
+export class LegacyVaultCandidateError extends Error {
+  constructor() {
+    super('A legacy server candidate has no transition id and must be re-staged.');
+    this.name = 'LegacyVaultCandidateError';
+  }
+}
+
 function mediaEqual(left: readonly string[], right: readonly string[]): boolean {
   return left.length === right.length && left.every((medium) => right.includes(medium));
 }
@@ -200,7 +214,7 @@ function headerOf(row: { blob: Buffer }): VaultDocServerHeader {
 
 function candidateMetadata(row: VaultServerCandidateRow): PerVaultServerCandidateMetadata {
   const header = headerOf(row);
-  if (!row.transitionId) throw new Error('E1 server candidate has no transition id');
+  if (!row.transitionId) throw new LegacyVaultCandidateError();
   return {
     candidateId: row.id,
     transitionId: row.transitionId,
@@ -228,7 +242,7 @@ function attestationsOf(
   rows: readonly { docId: string; version: number; blob: Buffer }[],
 ): PerVaultMediaDocAttestation[] {
   return [...rows]
-    .sort((left, right) => left.docId.localeCompare(right.docId))
+    .sort((left, right) => (left.docId < right.docId ? -1 : left.docId > right.docId ? 1 : 0))
     .map((row) => {
       const header = headerOf(row);
       return { docId: row.docId, docVersion: row.version, writeId: header.writeId };
@@ -876,6 +890,26 @@ export function createVaultBlobRepository(db: Database): VaultBlobRepository {
             if (!connection) return { status: 'drive_not_found', current } as const;
           }
           if (added[0] === 'server') {
+            const [pendingRetirement] = await tx
+              .select({ vaultId: vaultRetirements.vaultId })
+              .from(vaultRetirements)
+              .where(eq(vaultRetirements.vaultId, input.vaultId))
+              .for('update');
+            if (pendingRetirement) {
+              // A retained recovery set must pass its signed purge gate before
+              // server can become active again. Allowing promotion here would
+              // make purge, deletion, and another retirement all refuse. Drop
+              // the now-unusable staging batch as part of the refusal so the
+              // signed purge can proceed immediately; re-add starts a fresh
+              // batch only after that gate succeeds.
+              await tx
+                .delete(vaultServerCandidates)
+                .where(eq(vaultServerCandidates.vaultId, input.vaultId));
+              return {
+                status: 'retirement_pending',
+                current: await mediaState(tx, vault, input.now, false),
+              } as const;
+            }
             const candidates = await tx
               .select()
               .from(vaultServerCandidates)

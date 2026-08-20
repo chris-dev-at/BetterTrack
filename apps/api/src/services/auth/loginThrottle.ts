@@ -101,12 +101,13 @@ export const REAUTH_ACCOUNT_NAMESPACE = 'reauth_account';
 export const ACCOUNT_PARANOID_DISCARD_NAMESPACE = 'account_paranoid_discard_account';
 
 /**
-
  * Per-account brute-force throttle for the in-request vault deletion step-up
  * (paranoid design §15). It is deliberately independent of login, account
  * deletion, generic re-auth, and the v1 lost-key discard counter.
  */
 export const ACCOUNT_VAULT_DELETE_NAMESPACE = 'account_vault_delete_account';
+
+/**
  * Consecutive-failure counter for the PIN gate (§6.1). Kept separate from the
  * login throttle above: five wrong PINs in a row drop the user back to full login
  * (the session is destroyed), so the gate can never be a lighter-weight bypass of

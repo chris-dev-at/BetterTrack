@@ -2,6 +2,7 @@ import { createHash, createHmac, generateKeyPairSync, sign } from 'node:crypto';
 
 import { count, eq } from 'drizzle-orm';
 import type { Application } from 'express';
+import postgres from 'postgres';
 import request from 'supertest';
 import { beforeEach, describe, expect, it } from 'vitest';
 
@@ -40,6 +41,7 @@ import { createTestApp, type SeededUser, type TestHarness } from '../testing/cre
 
 const XRW = ['X-Requested-With', 'BetterTrack'] as const;
 const OCTET = ['Content-Type', 'application/octet-stream'] as const;
+const REAL_DATABASE_URL = process.env.TEST_DATABASE_URL;
 
 // Deterministic TEST VECTORS: syntactically valid UUIDs/AEAD-header strings.
 // They are public format fixtures, not credentials or production key material.
@@ -65,6 +67,46 @@ let h: TestHarness;
 beforeEach(async () => {
   h = await createTestApp();
 });
+
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((done) => {
+    resolve = done;
+  });
+  return { promise, resolve };
+}
+
+interface DatabaseLockWait {
+  pid: number;
+  query: string;
+  waitEvent: string | null;
+}
+
+async function waitForVaultRowLockWaiters(
+  observer: ReturnType<typeof postgres>,
+  minimum: number,
+): Promise<DatabaseLockWait[]> {
+  const deadline = Date.now() + 4_000;
+  let observed: DatabaseLockWait[] = [];
+  while (Date.now() < deadline) {
+    observed = await observer<DatabaseLockWait[]>`
+      SELECT pid, query, wait_event AS "waitEvent"
+      FROM pg_stat_activity
+      WHERE datname = current_database()
+        AND wait_event_type = 'Lock'
+    `;
+    const vaultWaiters = observed.filter(
+      (row) => /from\s+"?vaults"?/iu.test(row.query) && /for update/iu.test(row.query),
+    );
+    if (new Set(vaultWaiters.map(({ pid }) => pid)).size >= minimum) return vaultWaiters;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  throw new Error(
+    `Timed out waiting for ${minimum} vault row-lock waiters; observed ${JSON.stringify(
+      observed.map(({ pid, query, waitEvent }) => ({ pid, query, waitEvent })),
+    )}`,
+  );
+}
 
 async function login(app: Application, user: SeededUser): Promise<Agent> {
   const agent = request.agent(app);
@@ -285,6 +327,43 @@ describe('E1 vault config CRUD', () => {
     expect(missingDrive.status).toBe(409);
     expect(missingDrive.body.error.code).toBe('VAULT_DRIVE_BINDING_INVALID');
   });
+
+  it('refuses singleton ids colliding with an owned portfolio before they can create a permanent partial set', async () => {
+    const user = await h.seedUser({
+      email: 'e1-config-owned-id@bt.test',
+      username: 'e1_config_owned_id',
+    });
+    const agent = await login(h.app, user);
+    const [ownedPortfolio] = await h.db
+      .insert(portfolios)
+      .values({ userId: user.id, name: 'Owned singleton-collision probe' })
+      .returning();
+    if (!ownedPortfolio) throw new Error('portfolio insert failed');
+
+    for (const field of ['headerDocId', 'commonDocId'] as const) {
+      const singletonIds = { headerDocId: newId(), commonDocId: newId() };
+      singletonIds[field] = ownedPortfolio.id;
+      const rejected = await agent
+        .post('/api/v1/vaults')
+        .set(...XRW)
+        .send({
+          name: `Owned UUID collision ${field}`,
+          ...singletonIds,
+          media: ['server'],
+          driveConnectionId: null,
+          keyFingerprint: FINGERPRINT,
+          retirementProofPublicKey: proofKeys().publicKey,
+        });
+      expect(rejected.status).toBe(409);
+      expect(rejected.body.error.code).toBe('VAULT_PORTFOLIO_BINDING_MISMATCH');
+    }
+
+    const [stored] = await h.db
+      .select({ value: count() })
+      .from(vaults)
+      .where(eq(vaults.userId, user.id));
+    expect(Number(stored?.value ?? 0)).toBe(0);
+  });
 });
 
 describe('E1 per-vault blind document CAS', () => {
@@ -466,6 +545,102 @@ describe('E1 per-vault blind document CAS', () => {
     expect(addressResponse.status).toBe(400);
     expect(addressResponse.body.error.code).toBe('VAULT_DOC_ADDRESS_MISMATCH');
 
+    const [stored] = await h.db.select({ value: count() }).from(vaultBlobs);
+    expect(Number(stored?.value ?? 0)).toBe(0);
+  });
+
+  it('uses the registered doc-kind guard so a header address cannot borrow the 8MiB portfolio cap', async () => {
+    h = await createTestApp({
+      env: {
+        BT_VAULT_MAX_BYTES_HEADER: '1024',
+        BT_VAULT_MAX_BYTES_COMMON: '1280',
+        BT_VAULT_MAX_BYTES_PORTFOLIO: '1536',
+      },
+    });
+    const user = await h.seedUser({
+      email: 'e1-kind-cap-guard@bt.test',
+      username: 'e1_kind_cap_guard',
+    });
+    const agent = await login(h.app, user);
+    const vault = await createVault({ user, agent });
+    const disguisedHeader = envelopeAtSize(1400, {
+      vaultId: vault.id,
+      docId: vault.headerDocId,
+      docKind: 'portfolio',
+      docVersion: 1,
+      writeId: newId(),
+    });
+
+    const rejected = await putDoc(agent, vault.id, vault.headerDocId, disguisedHeader, {
+      create: true,
+    });
+    expect(rejected.status).toBe(400);
+    expect(rejected.body.error.code).toBe('VAULT_DOC_KIND_MISMATCH');
+    const [stored] = await h.db.select({ value: count() }).from(vaultBlobs);
+    expect(Number(stored?.value ?? 0)).toBe(0);
+  });
+
+  it('rejects a replayed writeId with different bytes and preserves the committed blob', async () => {
+    const user = await h.seedUser({
+      email: 'e1-write-id-bytes@bt.test',
+      username: 'e1_write_id_bytes',
+    });
+    const agent = await login(h.app, user);
+    const vault = await createVault({ user, agent });
+    const writeId = newId();
+    const committed = envelope({
+      vaultId: vault.id,
+      docId: vault.headerDocId,
+      docKind: 'header',
+      docVersion: 1,
+      writeId,
+      ciphertext: new Uint8Array([0xde, 0xad, 0xbe, 0xef]),
+    });
+    expect(
+      (await putDoc(agent, vault.id, vault.headerDocId, committed, { create: true })).status,
+    ).toBe(204);
+    const alteredReplay = envelope({
+      vaultId: vault.id,
+      docId: vault.headerDocId,
+      docKind: 'header',
+      docVersion: 1,
+      writeId,
+      ciphertext: new Uint8Array([0xba, 0xad, 0xf0, 0x0d]),
+    });
+
+    const rejected = await putDoc(agent, vault.id, vault.headerDocId, alteredReplay, {
+      version: 1,
+    });
+    expect(rejected.status).toBe(412);
+    expect(rejected.body.error.code).toBe('VAULT_PRECONDITION_FAILED');
+    const current = await agent
+      .get(`/api/v1/vaults/${vault.id}/docs/${vault.headerDocId}`)
+      .responseType('blob');
+    expect(current.status).toBe(200);
+    expect(Buffer.from(current.body as Buffer)).toEqual(committed);
+  });
+
+  it('requires a document precondition before entering CAS', async () => {
+    const user = await h.seedUser({
+      email: 'e1-precondition-required@bt.test',
+      username: 'e1_precondition_required',
+    });
+    const agent = await login(h.app, user);
+    const vault = await createVault({ user, agent });
+    const blob = envelope({
+      vaultId: vault.id,
+      docId: vault.headerDocId,
+      docKind: 'header',
+      docVersion: 1,
+    });
+
+    const rejected = await agent
+      .put(`/api/v1/vaults/${vault.id}/docs/${vault.headerDocId}`)
+      .set(...XRW)
+      .set(...OCTET)
+      .send(blob);
+    expect(rejected.status).toBe(428);
+    expect(rejected.body.error.code).toBe('VAULT_PRECONDITION_REQUIRED');
     const [stored] = await h.db.select({ value: count() }).from(vaultBlobs);
     expect(Number(stored?.value ?? 0)).toBe(0);
   });
@@ -780,6 +955,95 @@ describe('E1 per-vault blind document CAS', () => {
     const history = await agent.get(`/api/v1/vaults/${vault.id}/docs/${vault.headerDocId}/history`);
     expect(history.body.items.map((item: { version: number }) => item.version)).toEqual([2]);
   });
+
+  it.skipIf(!REAL_DATABASE_URL)(
+    'serializes overlapping doc CAS transactions so a stale writer cannot overwrite the winner',
+    async () => {
+      if (!REAL_DATABASE_URL) throw new Error('Real Postgres is required for the row-lock test');
+      const user = await h.seedUser({ email: 'e1-cas-lock@bt.test', username: 'e1_cas_lock' });
+      const agent = await login(h.app, user);
+      const vault = await createVault({ user, agent });
+      const v1 = envelope({
+        vaultId: vault.id,
+        docId: vault.headerDocId,
+        docKind: 'header',
+        docVersion: 1,
+        writeId: newId(),
+      });
+      expect((await putDoc(agent, vault.id, vault.headerDocId, v1, { create: true })).status).toBe(
+        204,
+      );
+      const contenders = [
+        envelope({
+          vaultId: vault.id,
+          docId: vault.headerDocId,
+          docKind: 'header',
+          docVersion: 2,
+          writeId: newId(),
+          ciphertext: new Uint8Array([0xa1]),
+        }),
+        envelope({
+          vaultId: vault.id,
+          docId: vault.headerDocId,
+          docKind: 'header',
+          docVersion: 3,
+          writeId: newId(),
+          ciphertext: new Uint8Array([0xb2]),
+        }),
+      ];
+      const controller = postgres(REAL_DATABASE_URL, { max: 1 });
+      const observer = postgres(REAL_DATABASE_URL, { max: 1 });
+      const lockReady = deferred();
+      const releaseLock = deferred();
+      let first: ReturnType<typeof putDoc> | undefined;
+      let second: ReturnType<typeof putDoc> | undefined;
+      const lockOwner = controller.begin(async (transaction) => {
+        await transaction`SELECT id FROM vaults WHERE id = ${vault.id} FOR UPDATE`;
+        lockReady.resolve();
+        await releaseLock.promise;
+      });
+
+      try {
+        await Promise.race([
+          lockReady.promise,
+          lockOwner.then(() => {
+            throw new Error('Vault row-lock owner exited before acquiring the test lock');
+          }),
+        ]);
+        first = putDoc(agent, vault.id, vault.headerDocId, contenders[0]!, { version: 1 });
+        await waitForVaultRowLockWaiters(observer, 1);
+        second = putDoc(agent, vault.id, vault.headerDocId, contenders[1]!, { version: 1 });
+        const waiters = await waitForVaultRowLockWaiters(observer, 2);
+        expect(new Set(waiters.map(({ pid }) => pid)).size).toBeGreaterThanOrEqual(2);
+        releaseLock.resolve();
+        await lockOwner;
+        const responses = await Promise.all([first!, second!]);
+        expect(responses.map(({ status }) => status).sort()).toEqual([204, 412]);
+        const winnerIndex = responses.findIndex(({ status }) => status === 204);
+        const rejected = responses.find(({ status }) => status === 412)!;
+        expect(rejected.body.error.code).toBe('VAULT_PRECONDITION_FAILED');
+        const current = await agent
+          .get(`/api/v1/vaults/${vault.id}/docs/${vault.headerDocId}`)
+          .responseType('blob');
+        expect(Buffer.from(current.body as Buffer)).toEqual(contenders[winnerIndex]);
+        const history = await h.db
+          .select()
+          .from(vaultBlobHistory)
+          .where(eq(vaultBlobHistory.vaultId, vault.id));
+        expect(history).toHaveLength(1);
+        expect(history[0]?.blob).toEqual(v1);
+      } finally {
+        releaseLock.resolve();
+        await Promise.allSettled([
+          lockOwner,
+          first ?? Promise.resolve(),
+          second ?? Promise.resolve(),
+        ]);
+        await Promise.all([controller.end(), observer.end()]);
+      }
+    },
+    15_000,
+  );
 });
 
 describe('E1 R3/R4 media transitions and purge', () => {
@@ -1030,6 +1294,8 @@ describe('E1 R3/R4 media transitions and purge', () => {
       retiredRowCount,
     );
 
+    // Deterministic TEST VECTOR: old enough to clear §7 retention while the
+    // already-issued short-lived challenge remains valid.
     await h.db
       .update(vaultRetirements)
       .set({ retiredAt: new Date('2026-08-01T00:00:00.000Z') })
@@ -1098,6 +1364,292 @@ describe('E1 R3/R4 media transitions and purge', () => {
       .set(...XRW)
       .send({ stepUp: { password: user.password } });
     expect(deletedAfterPurge.status, JSON.stringify(deletedAfterPurge.body)).toBe(200);
+  });
+
+  it('rotates the candidate receipt on re-stage so an old candidateId cannot satisfy transition', async () => {
+    const user = await h.seedUser({
+      email: 'e1-candidate-restage@bt.test',
+      username: 'e1_candidate_restage',
+    });
+    const agent = await login(h.app, user);
+    const [connection] = await h.db
+      .insert(driveConnections)
+      .values({
+        userId: user.id,
+        googleSub: 'e1-candidate-restage-google-sub',
+        email: 'candidate-restage@example.test',
+      })
+      .returning();
+    if (!connection) throw new Error('connection insert failed');
+    const vault = await createVault({
+      user,
+      agent,
+      media: ['drive'],
+      driveConnectionId: connection.id,
+    });
+    const transitionId = newId();
+    const stage = (docId: string, blob: Buffer) =>
+      agent
+        .put(`/api/v1/vaults/${vault.id}/media/server-candidate/${transitionId}/docs/${docId}`)
+        .set(...XRW)
+        .set(...OCTET)
+        .send(blob);
+    const read = (candidateId: string) =>
+      agent
+        .get(`/api/v1/vaults/${vault.id}/media/server-candidate/${candidateId}`)
+        .responseType('blob');
+
+    const oldHeader = await stage(
+      vault.headerDocId,
+      envelope({
+        vaultId: vault.id,
+        docId: vault.headerDocId,
+        docKind: 'header',
+        docVersion: 1,
+        writeId: newId(),
+      }),
+    );
+    expect(oldHeader.status).toBe(200);
+    const oldReadback = await read(oldHeader.body.candidateId as string);
+    expect(oldReadback.status).toBe(200);
+
+    const replacementHeader = await stage(
+      vault.headerDocId,
+      envelope({
+        vaultId: vault.id,
+        docId: vault.headerDocId,
+        docKind: 'header',
+        docVersion: 2,
+        writeId: newId(),
+      }),
+    );
+    expect(replacementHeader.status).toBe(200);
+    expect(replacementHeader.body.candidateId).not.toBe(oldHeader.body.candidateId);
+    const replacementReadback = await read(replacementHeader.body.candidateId as string);
+    expect(replacementReadback.status).toBe(200);
+
+    const stagedCommon = await stage(
+      vault.commonDocId,
+      envelope({
+        vaultId: vault.id,
+        docId: vault.commonDocId,
+        docKind: 'common',
+        docVersion: 1,
+        writeId: newId(),
+      }),
+    );
+    expect(stagedCommon.status).toBe(200);
+    const commonReadback = await read(stagedCommon.body.candidateId as string);
+    expect(commonReadback.status).toBe(200);
+
+    const rejected = await agent
+      .patch(`/api/v1/vaults/${vault.id}/media`)
+      .set(...XRW)
+      .send({
+        transitionId,
+        expected: {
+          media: ['drive'],
+          driveConnectionId: connection.id,
+          mediaAttestedAt: null,
+        },
+        next: { media: ['drive', 'server'], driveConnectionId: connection.id },
+        verification: {
+          kind: 'server-candidates',
+          readbacks: [
+            {
+              candidateId: oldHeader.body.candidateId,
+              docId: vault.headerDocId,
+              readback: oldReadback.headers['x-bettertrack-vault-candidate-readback'],
+            },
+            {
+              candidateId: stagedCommon.body.candidateId,
+              docId: vault.commonDocId,
+              readback: commonReadback.headers['x-bettertrack-vault-candidate-readback'],
+            },
+          ],
+        },
+      });
+    expect(rejected.status).toBe(412);
+    expect(rejected.body.error.code).toBe('VAULT_MEDIA_PARTIAL_SET');
+    const state = await agent.get(`/api/v1/vaults/${vault.id}/media`);
+    expect(state.body.media).toEqual(['drive']);
+    expect(
+      state.body.server.candidates.map(({ candidateId }: { candidateId: string }) => candidateId),
+    ).toContain(replacementHeader.body.candidateId);
+  });
+
+  it('refuses server re-add while retired rows exist so purge remains reachable before promotion', async () => {
+    const user = await h.seedUser({
+      email: 'e1-retire-before-readd@bt.test',
+      username: 'e1_retire_before_readd',
+    });
+    const agent = await login(h.app, user);
+    const keys = proofKeys();
+    const [connection] = await h.db
+      .insert(driveConnections)
+      .values({
+        userId: user.id,
+        googleSub: 'e1-retire-before-readd-google-sub',
+        email: 'retire-before-readd@example.test',
+      })
+      .returning();
+    if (!connection) throw new Error('connection insert failed');
+    const vault = await createVault({
+      user,
+      agent,
+      media: ['server', 'drive'],
+      driveConnectionId: connection.id,
+      publicKey: keys.publicKey,
+    });
+    const docs = [
+      {
+        docId: vault.headerDocId,
+        docKind: 'header' as const,
+        docVersion: 1,
+        writeId: newId(),
+      },
+      {
+        docId: vault.commonDocId,
+        docKind: 'common' as const,
+        docVersion: 1,
+        writeId: newId(),
+      },
+    ].map((doc) => ({ ...doc, blob: envelope({ vaultId: vault.id, ...doc }) }));
+    for (const doc of docs) {
+      expect((await putDoc(agent, vault.id, doc.docId, doc.blob, { create: true })).status).toBe(
+        204,
+      );
+    }
+    const retired = await agent
+      .patch(`/api/v1/vaults/${vault.id}/media`)
+      .set(...XRW)
+      .send({
+        transitionId: newId(),
+        expected: {
+          media: ['server', 'drive'],
+          driveConnectionId: connection.id,
+          mediaAttestedAt: null,
+        },
+        next: { media: ['drive'], driveConnectionId: connection.id },
+        verification: {
+          kind: 'drive',
+          driveConnectionId: connection.id,
+          docs: docs.map(({ docId, docVersion, writeId }) => ({
+            docId,
+            docVersion,
+            writeId,
+          })),
+        },
+      });
+    expect(retired.status, JSON.stringify(retired.body)).toBe(200);
+
+    const transitionId = newId();
+    const readbacks: PerVaultServerCandidateReadback[] = [];
+    for (const doc of docs) {
+      const staged = await agent
+        .put(`/api/v1/vaults/${vault.id}/media/server-candidate/${transitionId}/docs/${doc.docId}`)
+        .set(...XRW)
+        .set(...OCTET)
+        .send(doc.blob);
+      expect(staged.status).toBe(200);
+      const readback = await agent
+        .get(`/api/v1/vaults/${vault.id}/media/server-candidate/${staged.body.candidateId}`)
+        .responseType('blob');
+      expect(readback.status).toBe(200);
+      readbacks.push({
+        candidateId: staged.body.candidateId as string,
+        docId: doc.docId,
+        readback: readback.headers['x-bettertrack-vault-candidate-readback'] as string,
+      });
+    }
+
+    const refused = await agent
+      .patch(`/api/v1/vaults/${vault.id}/media`)
+      .set(...XRW)
+      .send({
+        transitionId,
+        expected: {
+          media: ['drive'],
+          driveConnectionId: connection.id,
+          mediaAttestedAt: retired.body.mediaAttestedAt,
+        },
+        next: { media: ['drive', 'server'], driveConnectionId: connection.id },
+        verification: { kind: 'server-candidates', readbacks },
+      });
+    expect(refused.status).toBe(409);
+    expect(refused.body.error.code).toBe('VAULT_RETIREMENT_PENDING');
+    expect(
+      Number(
+        (
+          await h.db
+            .select({ value: count() })
+            .from(vaultServerCandidates)
+            .where(eq(vaultServerCandidates.vaultId, vault.id))
+        )[0]?.value,
+      ),
+    ).toBe(0);
+    const state = await agent.get(`/api/v1/vaults/${vault.id}/media`);
+    expect(state.body.media).toEqual(['drive']);
+    expect(state.body.server.retirement).toEqual(retired.body.server.retirement);
+    expect(
+      Number(
+        (
+          await h.db
+            .select({ value: count() })
+            .from(vaultRetired)
+            .where(eq(vaultRetired.vaultId, vault.id))
+        )[0]?.value,
+      ),
+    ).toBe(2);
+
+    // Deterministic TEST VECTOR: old enough to clear §7 retention while the
+    // challenge issued immediately below remains valid.
+    await h.db
+      .update(vaultRetirements)
+      .set({ retiredAt: new Date('2026-08-01T00:00:00.000Z') })
+      .where(eq(vaultRetirements.vaultId, vault.id));
+    const identity = {
+      vaultId: vault.id,
+      generation: retired.body.server.retirement.generation as number,
+      versionSetHash: retired.body.server.retirement.versionSetHash as string,
+    };
+    const challenge = await agent
+      .post(`/api/v1/vaults/${vault.id}/media/retired/purge/challenge`)
+      .set(...XRW)
+      .send(identity);
+    expect(challenge.status).toBe(200);
+    const unsigned = {
+      ...identity,
+      observedDocs: docs.map(({ docId, docVersion, writeId }) => ({
+        docId,
+        docVersion,
+        writeId,
+      })),
+      challenge: challenge.body.challenge as string,
+      signature: 'A'.repeat(86),
+    };
+    const purged = await agent
+      .post(`/api/v1/vaults/${vault.id}/media/retired/purge`)
+      .set(...XRW)
+      .send({
+        ...unsigned,
+        signature: sign(
+          null,
+          Buffer.from(serializePerVaultRetiredServerPurgeTranscript(unsigned)),
+          keys.privateKey,
+        ).toString('base64url'),
+      });
+    expect(purged.status, JSON.stringify(purged.body)).toBe(200);
+    expect(
+      Number(
+        (
+          await h.db
+            .select({ value: count() })
+            .from(vaultRetirements)
+            .where(eq(vaultRetirements.vaultId, vault.id))
+        )[0]?.value,
+      ),
+    ).toBe(0);
   });
 
   it('binds every portfolio doc to one transition and rejects stale full-set facts', async () => {
@@ -1743,6 +2295,58 @@ describe('E1 R3/R4 media transitions and purge', () => {
       0,
     );
   });
+
+  it('maps legacy NULL-transition candidates to a stable refusal on both read paths', async () => {
+    const user = await h.seedUser({
+      email: 'e1-legacy-candidate@bt.test',
+      username: 'e1_legacy_candidate',
+    });
+    const agent = await login(h.app, user);
+    const [connection] = await h.db
+      .insert(driveConnections)
+      .values({
+        userId: user.id,
+        googleSub: 'e1-legacy-candidate-google-sub',
+        email: 'legacy-candidate@example.test',
+      })
+      .returning();
+    if (!connection) throw new Error('connection insert failed');
+    const vault = await createVault({
+      user,
+      agent,
+      media: ['drive'],
+      driveConnectionId: connection.id,
+    });
+    const blob = envelope({
+      vaultId: vault.id,
+      docId: vault.headerDocId,
+      docKind: 'header',
+      docVersion: 1,
+    });
+    const [legacy] = await h.db
+      .insert(vaultServerCandidates)
+      .values({
+        transitionId: null,
+        vaultId: vault.id,
+        docId: vault.headerDocId,
+        version: 1,
+        formatVersion: 2,
+        sizeBytes: blob.length,
+        blob,
+        expiresAt: new Date(Date.now() + 60_000),
+      })
+      .returning();
+    if (!legacy) throw new Error('legacy candidate insert failed');
+
+    for (const path of [
+      `/api/v1/vaults/${vault.id}/media`,
+      `/api/v1/vaults/${vault.id}/media/server-candidate/${legacy.id}`,
+    ]) {
+      const refused = await agent.get(path);
+      expect(refused.status).toBe(409);
+      expect(refused.body.error.code).toBe('VAULT_MEDIA_STATE_CONFLICT');
+    }
+  });
 });
 
 describe('E1 ownership, deletion gates, and limiter', () => {
@@ -1903,6 +2507,29 @@ describe('E1 ownership, deletion gates, and limiter', () => {
     expect(foreignDocResponses.map((response) => response.status)).toEqual([
       404, 404, 404, 404, 404,
     ]);
+  });
+
+  it('performs delete step-up before revealing whether the vault exists', async () => {
+    const user = await h.seedUser({
+      email: 'e1-delete-existence@bt.test',
+      username: 'e1_delete_existence',
+    });
+    const agent = await login(h.app, user);
+    const unknownVaultId = newId();
+
+    const unverified = await agent
+      .delete(`/api/v1/vaults/${unknownVaultId}`)
+      .set(...XRW)
+      .send({ stepUp: { password: 'definitely-wrong' } });
+    expect(unverified.status).toBe(401);
+    expect(unverified.body.error.code).toBe('INVALID_CREDENTIALS');
+
+    const verified = await agent
+      .delete(`/api/v1/vaults/${unknownVaultId}`)
+      .set(...XRW)
+      .send({ stepUp: { password: user.password } });
+    expect(verified.status).toBe(404);
+    expect(verified.body.error.code).toBe('VAULT_NOT_FOUND');
   });
 
   it('requires step-up, refuses portfolio + retirement gates, and then deletes', async () => {
@@ -2272,16 +2899,30 @@ describe('E1 ownership, deletion gates, and limiter', () => {
     expect(Number((await h.db.select({ value: count() }).from(vaultBlobs))[0]?.value)).toBe(2);
   });
 
-  it('applies the dedicated vault limiter to config reads as well as writes', async () => {
+  it('keeps vault read and write limiter budgets independent', async () => {
     h = await createTestApp({
-      env: { BT_VAULT_RATE_LIMIT: '1', BT_VAULT_RATE_WINDOW_SEC: '60' },
+      env: {
+        BT_VAULT_RATE_LIMIT: '1',
+        BT_VAULT_READ_RATE_LIMIT: '1',
+        BT_VAULT_RATE_WINDOW_SEC: '60',
+      },
       rateLimitsEnabled: true,
     });
     const user = await h.seedUser({ email: 'e1-limit@bt.test', username: 'e1_limit' });
     const agent = await login(h.app, user);
-    await createVault({ user, agent });
-    const limited = await agent.get('/api/v1/vaults');
-    expect(limited.status).toBe(429);
-    expect(limited.body.error.code).toBe('RATE_LIMITED');
+    const vault = await createVault({ user, agent });
+    // Express serves HEAD through the GET route; it must share the read budget,
+    // not consume the mutation allowance.
+    const firstRead = await agent.head('/api/v1/vaults');
+    expect(firstRead.status).toBe(200);
+    const limitedRead = await agent.get('/api/v1/vaults');
+    expect(limitedRead.status).toBe(429);
+    expect(limitedRead.body.error.code).toBe('RATE_LIMITED');
+    const limitedWrite = await agent
+      .patch(`/api/v1/vaults/${vault.id}`)
+      .set(...XRW)
+      .send({ name: 'Write budget already consumed' });
+    expect(limitedWrite.status).toBe(429);
+    expect(limitedWrite.body.error.code).toBe('RATE_LIMITED');
   });
 });

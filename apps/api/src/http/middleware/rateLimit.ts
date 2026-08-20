@@ -27,6 +27,8 @@ export interface RateLimiters {
   feedbackThread: RequestHandler;
   /** Paranoid vault writes, per user (§13.5 V5-P13). */
   vault: RequestHandler;
+  /** Paranoid vault reads, per user, isolated from the write counter/cooldown. */
+  vaultRead: RequestHandler;
 }
 
 /**
@@ -49,6 +51,7 @@ export function createRateLimiters(ctx: AppContext): RateLimiters {
     feedback,
     feedbackThread,
     vault,
+    vaultRead,
     loginIp,
     apiKey,
   } = ctx.config.rateLimits;
@@ -142,6 +145,7 @@ export function createRateLimiters(ctx: AppContext): RateLimiters {
     feedbackThread,
   );
   const vaultLimiter = createProgressiveLimiter(ctx.redis, 'vault', vault);
+  const vaultReadLimiter = createProgressiveLimiter(ctx.redis, 'vault_read', vaultRead);
 
   return {
     login: guard([loginLimiter], keyByIp),
@@ -164,5 +168,8 @@ export function createRateLimiters(ctx: AppContext): RateLimiters {
     // Paranoid vault writes, per user — a modest dedicated write budget (§13.5
     // V5-P13, design §4).
     vault: guard([vaultLimiter], keyByUserOrIp),
+    // Vault reads have an independent, larger sync budget. Their counter and
+    // cooldown never consume or inherit state from the write namespace.
+    vaultRead: guard([vaultReadLimiter], keyByUserOrIp),
   };
 }
