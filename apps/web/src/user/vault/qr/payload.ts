@@ -105,11 +105,10 @@ function validatedVaultId(value: string): string {
 }
 
 function validatedName(value: string): string {
-  const normalized = value.normalize('NFKD');
-  if ([...normalized].length > VAULT_TRANSFER_NAME_MAX_CHARS) {
+  if ([...value].length > VAULT_TRANSFER_NAME_MAX_CHARS) {
     throw new VaultTransferPayloadError('invalid-name');
   }
-  return normalized;
+  return value;
 }
 
 function validatedFingerprint(value: string): string {

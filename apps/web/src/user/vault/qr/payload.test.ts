@@ -93,6 +93,12 @@ describe('btvault1 payload conformance vectors', () => {
       VECTORS.percent20Spaces.expected,
     );
   });
+
+  it('preserves a non-ASCII display hint without Unicode normalization', () => {
+    const parsed = parseVaultTransferPayload(VECTORS.nonAsciiName.payload);
+    expect(parsed).toEqual(VECTORS.nonAsciiName.expected);
+    expect(serializeVaultTransferPayload(parsed)).toBe(VECTORS.nonAsciiName.payload);
+  });
 });
 
 it('pins the fixed serializer golden', () => {

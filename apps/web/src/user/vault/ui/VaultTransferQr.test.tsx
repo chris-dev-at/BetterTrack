@@ -32,8 +32,15 @@ import { VaultTransferQr, type VaultTransferQrSource } from './VaultTransferQr';
 
 const DEVICE_PASSWORD = 'correct endpoint password';
 
-function wrappedSource(): Extract<VaultTransferQrSource, { custody: 'wrapped' }> {
+interface SessionSourceControl {
+  endSession(): void;
+}
+
+function wrappedSource(): Extract<VaultTransferQrSource, { custody: 'wrapped' }> &
+  SessionSourceControl {
+  const lifecycle = sessionLifecycle();
   return {
+    ...lifecycle,
     custody: 'wrapped',
     requireLiveUnlock: vi.fn(async () => undefined),
     verifyDevicePassword: vi.fn(async () => undefined),
@@ -41,11 +48,29 @@ function wrappedSource(): Extract<VaultTransferQrSource, { custody: 'wrapped' }>
   };
 }
 
-function plainSource(): Extract<VaultTransferQrSource, { custody: 'plain' }> {
+function plainSource(): Extract<VaultTransferQrSource, { custody: 'plain' }> &
+  SessionSourceControl {
+  const lifecycle = sessionLifecycle();
   return {
+    ...lifecycle,
     custody: 'plain',
     requireLiveUnlock: vi.fn(async () => undefined),
     readMnemonic: vi.fn(async () => VAULT_TRANSFER_VECTOR_MNEMONIC),
+  };
+}
+
+function sessionLifecycle() {
+  const listeners = new Set<() => void>();
+  return {
+    subscribeToSessionEnd(listener: () => void) {
+      listeners.add(listener);
+      return () => {
+        listeners.delete(listener);
+      };
+    },
+    endSession() {
+      for (const listener of [...listeners]) listener();
+    },
   };
 }
 
@@ -122,6 +147,14 @@ describe('VaultTransferQr sender', () => {
 
   it('passes the byte-only payload with exact level M and boost disabled to the encoder', async () => {
     const source = plainSource();
+    const callSequence: string[] = [];
+    source.requireLiveUnlock = vi.fn(async () => {
+      callSequence.push('unlock');
+    });
+    source.readMnemonic = vi.fn(async () => {
+      callSequence.push('read');
+      return VAULT_TRANSFER_VECTOR_MNEMONIC;
+    });
     render(
       <VaultTransferQr
         keyFingerprint={VAULT_TRANSFER_VECTOR_FINGERPRINT}
@@ -148,6 +181,7 @@ describe('VaultTransferQr sender', () => {
       boostLevel: false,
       rendered: true,
     });
+    expect(callSequence).toEqual(['unlock', 'unlock', 'read', 'unlock']);
   });
 
   it('omits a legal vault name that is too long for the optional transfer hint', async () => {
@@ -172,6 +206,22 @@ describe('VaultTransferQr sender', () => {
         'The device password could not be verified. The transfer code remains hidden.',
       ),
     ).not.toBeInTheDocument();
+  });
+
+  it('preserves a 64-character composed Unicode vault-name hint', async () => {
+    const source = plainSource();
+    const vaultName = 'é'.repeat(64);
+    render(
+      <VaultTransferQr
+        source={source}
+        vaultId={VAULT_TRANSFER_VECTOR_VAULT_ID}
+        vaultName={vaultName}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show transfer QR' }));
+
+    expect(parseVaultTransferPayload((await latestQr()).value)).toMatchObject({ name: vaultName });
   });
 
   it('does not misreport payload creation failures as a rejected device password', async () => {
@@ -217,6 +267,51 @@ describe('VaultTransferQr sender', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Show again' }));
     });
     expect(screen.getByLabelText('Vault seed-phrase transfer QR code')).toBeInTheDocument();
+  });
+
+  it('synchronously blanks an already-visible phrase when the live session ends', async () => {
+    const source = plainSource();
+    render(<VaultTransferQr source={source} vaultId={VAULT_TRANSFER_VECTOR_VAULT_ID} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show transfer QR' }));
+    await screen.findByLabelText('Vault seed-phrase transfer QR code');
+    expect(screen.getAllByText('abandon')).toHaveLength(11);
+
+    act(() => source.endSession());
+
+    expect(screen.queryByLabelText('Vault seed-phrase transfer QR code')).not.toBeInTheDocument();
+    expect(screen.queryAllByText('abandon')).toHaveLength(0);
+    expect(
+      screen.getByText(
+        'Unlock and open this vault on this device before showing its transfer code.',
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it('does not reveal an in-flight plain-custody read after the live session ends', async () => {
+    const pendingMnemonic = deferred<string>();
+    const source = plainSource();
+    source.readMnemonic = vi.fn(() => pendingMnemonic.promise);
+    render(<VaultTransferQr source={source} vaultId={VAULT_TRANSFER_VECTOR_VAULT_ID} />);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show transfer QR' }));
+    await vi.waitFor(() => expect(source.readMnemonic).toHaveBeenCalledTimes(1));
+
+    act(() => source.endSession());
+    expect(screen.queryByLabelText('Vault seed-phrase transfer QR code')).not.toBeInTheDocument();
+
+    await act(async () => {
+      pendingMnemonic.resolve(VAULT_TRANSFER_VECTOR_MNEMONIC);
+      await pendingMnemonic.promise;
+    });
+
+    expect(screen.queryByLabelText('Vault seed-phrase transfer QR code')).not.toBeInTheDocument();
+    expect(screen.queryAllByText('abandon')).toHaveLength(0);
+    expect(
+      screen.getByText(
+        'Unlock and open this vault on this device before showing its transfer code.',
+      ),
+    ).toBeInTheDocument();
   });
 
   it('has no network, clipboard, log, analytics, error-report or persistence leak path', async () => {
@@ -279,6 +374,19 @@ function latestQrEncoderProps(): {
   const props = qrEncoder.render.mock.lastCall?.[0];
   if (props == null) throw new Error('QR encoder was not rendered.');
   return props as { value: string; level?: string; boostLevel?: boolean };
+}
+
+async function latestQr() {
+  await screen.findByLabelText('Vault seed-phrase transfer QR code');
+  return latestQrEncoderProps();
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((next) => {
+    resolve = next;
+  });
+  return { promise, resolve };
 }
 
 async function persistentSurfaceSnapshot() {

@@ -250,6 +250,19 @@ afterEach(() => {
 });
 
 describe('endpoint keystore custody and verified persistence', () => {
+  it('notifies and detaches synchronous session-end listeners', () => {
+    const core = keystore(new MemoryEndpointStorage());
+    const listener = vi.fn();
+    const unsubscribe = core.subscribeToSessionEnd(listener);
+
+    core.endSession();
+    expect(listener).toHaveBeenCalledTimes(1);
+
+    unsubscribe();
+    core.endSession();
+    expect(listener).toHaveBeenCalledTimes(1);
+  });
+
   it('defaults to wrapped custody and one password unlocks all phrases on one endpoint only', async () => {
     const firstStorage = new MemoryEndpointStorage();
     const secondStorage = new MemoryEndpointStorage();

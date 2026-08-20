@@ -77,6 +77,7 @@ export class EndpointVaultKeystore {
   private readonly wrappedEntropy = new Map<string, Uint8Array>();
   private readonly contentKeys = new Map<string, CachedContentKey>();
   private readonly activeContentKeyBorrows = new Set<Uint8Array>();
+  private readonly sessionEndListeners = new Set<() => void>();
   private sessionGeneration = 0;
   private sessionRevision: number | null = null;
 
@@ -626,6 +627,15 @@ export class EndpointVaultKeystore {
     this.sessionGeneration += 1;
     invalidatePlainCustodyAcknowledgments();
     this.clearSessionSecrets();
+    this.notifySessionEnd();
+  }
+
+  /** Synchronous revocation signal for secret-bearing session UI. */
+  subscribeToSessionEnd(listener: () => void): () => void {
+    this.sessionEndListeners.add(listener);
+    return () => {
+      this.sessionEndListeners.delete(listener);
+    };
   }
 
   handleIdle(pinLockEnabled: boolean): void {
@@ -917,7 +927,12 @@ export class EndpointVaultKeystore {
     this.sessionGeneration += 1;
     invalidatePlainCustodyAcknowledgments();
     this.clearSessionSecrets();
+    this.notifySessionEnd();
     return this.sessionGeneration;
+  }
+
+  private notifySessionEnd(): void {
+    for (const listener of [...this.sessionEndListeners]) listener();
   }
 
   private requireCurrentGeneration(generation: number): void {

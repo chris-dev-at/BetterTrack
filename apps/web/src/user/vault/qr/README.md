@@ -8,9 +8,10 @@ Reject repeated `m` or `v` keys rather than selecting one occurrence.
 
 `m` is the lowercase, NFKD, single-space-separated 12-word English BIP39 phrase, including its
 checksum. `v` is the lowercase hyphenated vault UUID. `n` is an optional percent-encoded display
-hint of at most 64 characters. `f` is the optional 16-character base64url key fingerprint. Encode
-the QR as UTF-8 byte mode with exact error-correction level M. Native clients must run the exported
-conformance vectors against their scanner before shipping.
+hint of at most 64 Unicode code points; preserve its decoded value exactly without normalization.
+`f` is the optional 16-character base64url key fingerprint. Encode the QR as UTF-8 byte mode with
+exact error-correction level M. Native clients must run the exported conformance vectors against
+their scanner before shipping.
 
 Fingerprint verification is fetch-then-compare: the receiver must fetch the opaque header envelope,
 unwrap its active key slot with the phrase, compare the derived content-key fingerprint, and only

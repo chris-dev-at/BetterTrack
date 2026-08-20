@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useId, useRef, useState, type FormEvent } from 'react';
-import { createPortal } from 'react-dom';
+import { createPortal, flushSync } from 'react-dom';
 
 import { QRCodeSVG } from 'qrcode.react';
 
@@ -58,6 +58,8 @@ export function VaultTransferQr({
   const [errorKey, setErrorKey] = useState<string | null>(null);
   const requestGeneration = useRef(0);
   const freshPasswordAt = useRef<number | null>(null);
+  const phaseRef = useRef<TransferPhase>(phase);
+  phaseRef.current = phase;
   const open = phase !== 'closed';
   const { containerRef, onKeyDown } = useFocusTrap<HTMLDivElement>({
     active: open,
@@ -75,6 +77,24 @@ export function VaultTransferQr({
   }, [onClosed]);
 
   useOverlayEscape(open, close, containerRef);
+
+  useEffect(
+    () =>
+      source.subscribeToSessionEnd(() => {
+        requestGeneration.current += 1;
+        freshPasswordAt.current = null;
+        flushSync(() => {
+          setSecret(null);
+          setDevicePassword('');
+          setManualOpen(false);
+          if (phaseRef.current !== 'closed') {
+            setErrorKey('vault.transfer.sender.errors.unlockRequired');
+            setPhase('blocked');
+          }
+        });
+      }),
+    [source],
+  );
 
   useEffect(() => {
     if (phase !== 'visible') return;
@@ -106,6 +126,8 @@ export function VaultTransferQr({
       await source.requireLiveUnlock();
       if (requestGeneration.current !== generation) return;
       mnemonic = await source.readMnemonic();
+      if (requestGeneration.current !== generation) return;
+      await source.requireLiveUnlock();
     } catch {
       block(generation, 'vault.transfer.sender.errors.unlockRequired');
       return;
@@ -326,6 +348,5 @@ export function VaultTransferQr({
 /** The display name is only a wire hint; a legal longer vault name must never block transfer. */
 function transferNameHint(vaultName: string | undefined): string | undefined {
   if (vaultName === undefined) return undefined;
-  const normalized = vaultName.normalize('NFKD');
-  return [...normalized].length <= VAULT_TRANSFER_NAME_MAX_CHARS ? normalized : undefined;
+  return [...vaultName].length <= VAULT_TRANSFER_NAME_MAX_CHARS ? vaultName : undefined;
 }
