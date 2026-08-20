@@ -16,6 +16,7 @@ import {
   portfolioVaultMoveInRequestSchema,
   portfolioVaultMoveOutRequestSchema,
   readVaultDocServerHeader,
+  serializeVaultDocHeader,
   vaultCommonDocSchema,
   vaultDocEnvelopeHeaderSchema,
   vaultHeaderDocSchema,
@@ -184,6 +185,34 @@ describe('envelope v2 — round trip and the AAD anti-swap guarantee (§5, §8)'
     );
     const { headerBytes, ciphertext } = decodeGeneric(mutated);
     await expect(decryptWithAad(sealed, ciphertext, headerBytes)).rejects.toThrow();
+  });
+
+  /**
+   * Canonicalization pin (review round 1 on #1424): the writer serializes the
+   * SCHEMA-parsed header, so two writers handing the codec the same fields in
+   * ANY key order must emit byte-identical wire headers — otherwise the exact
+   * same logical header could carry two different AADs and a re-encode by a
+   * cooperating device would fail decryption. This property currently rides
+   * zod's parse-time key ordering; this test exists to break loudly if a zod
+   * upgrade ever changes it.
+   */
+  it('serializes a fully key-shuffled header to byte-identical canonical AAD bytes', async () => {
+    const header = await makeHeader();
+    const canonical = serializeVaultDocHeader(header);
+    const reverseKeys = <T extends Record<string, unknown>>(value: T): T =>
+      Object.fromEntries(Object.entries(value).reverse()) as T;
+    const shuffled = reverseKeys({
+      ...header,
+      keySlots: header.keySlots.map((slot) => reverseKeys(slot)),
+    }) as VaultDocEnvelopeHeader;
+    expect(Object.keys(shuffled)).not.toEqual(Object.keys(header));
+
+    expect(Array.from(serializeVaultDocHeader(shuffled))).toEqual(Array.from(canonical));
+    const envelope = encodeVaultDocEnvelope(shuffled, new Uint8Array(16));
+    const inspected = inspectVaultDocEnvelope(envelope);
+    expect(inspected.status).toBe('supported');
+    if (inspected.status !== 'supported') return;
+    expect(Array.from(inspected.headerBytes)).toEqual(Array.from(canonical));
   });
 
   it('fails closed on any single-byte header mutation', async () => {

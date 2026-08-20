@@ -4150,6 +4150,16 @@ export const vaultServerCandidates = pgTable(
  * column has no per-doc meaning and intentionally does not carry over. The
  * verifier is PINNED here at retirement time (not read from `vaults`) so a
  * later key rotation can never re-bind an already-retired set.
+ *
+ * BINDING E1 OBLIGATION (review round 1 on #1424): this table and
+ * `vault_retired` cascade on a vaults-row delete — deliberately, because a
+ * restraining FK here would break the V4-P2c account-deletion cascade. That
+ * makes the §7 purge gate ROUTE-ENFORCED by design: `DELETE /vaults/:vaultId`
+ * MUST refuse (or route through the signed-purge challenge) while a
+ * `vault_retirements` row exists for the vault, or a zero-portfolio vault
+ * with a live retired set could be deleted straight past the Ed25519
+ * challenge and the minimum-retention window, cascading the recovery set
+ * away. The E1 route test must pin this refusal.
  */
 export const vaultRetirements = pgTable('vault_retirements', {
   vaultId: uuid('vault_id')

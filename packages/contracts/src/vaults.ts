@@ -539,6 +539,11 @@ export type VaultDocBucket = (typeof VAULT_DOC_BUCKETS)[number];
  * ACCOUNT-scoped in the live schema (`user_id`, no portfolio column) — so the
  * mechanical rule lands them in the `common` doc. If a portfolio-scoped
  * expense area ever ships, its tables classify `portfolio` by the same rule.
+ * The same nuance covers tax: §5 lists "tax settlement rows" in the portfolio
+ * doc, and they ARE there — as the frozen `taxMode`/`taxCountry`/
+ * `taxAmountEur`/`taxParams` fields embedded on each transaction/dividend row
+ * — while `taxSetting` (the `user_tax_settings` account-level defaults) is
+ * account-scoped and rides the `common` doc by the same mechanical rule.
  */
 export const VAULT_ENTITY_DOC_BUCKETS: Record<VaultEntityKind, VaultDocBucket> = {
   // portfolio-scoped → the portfolio doc (§5)
