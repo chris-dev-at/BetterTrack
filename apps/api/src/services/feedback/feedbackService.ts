@@ -5,16 +5,25 @@ import type {
   CreateFeedbackRequest,
   CreateFeedbackResponse,
   FeedbackContext,
+  FeedbackThreadMessage,
+  FeedbackThreadQuery,
+  FeedbackThreadResponse,
   MyFeedbackResponse,
   MyFeedbackSubmission,
+  SendFeedbackMessageRequest,
+  SendFeedbackMessageResponse,
   UpdateFeedbackStatusRequest,
   UpdateFeedbackStatusResponse,
 } from '@bettertrack/contracts';
 
+import type { FeedbackMessageRow } from '../../data/schema';
 import type {
   AdminFeedbackRow,
   FeedbackRepository,
+  FeedbackThreadPage,
 } from '../../data/repositories/feedbackRepository';
+
+const DEFAULT_THREAD_LIMIT = 40;
 
 function toAdminSubmission(row: AdminFeedbackRow): AdminFeedbackSubmission {
   return {
@@ -33,6 +42,25 @@ function toAdminSubmission(row: AdminFeedbackRow): AdminFeedbackSubmission {
   };
 }
 
+function toThreadMessage(row: FeedbackMessageRow): FeedbackThreadMessage {
+  return {
+    id: row.id,
+    feedbackId: row.feedbackId,
+    senderId: row.authorUserId,
+    authorSide: row.authorSide,
+    body: row.body,
+    createdAt: row.createdAt.toISOString(),
+  };
+}
+
+function toThreadResponse(page: FeedbackThreadPage): FeedbackThreadResponse {
+  return {
+    thread: page.thread,
+    messages: page.rows.map(toThreadMessage),
+    nextCursor: page.nextCursor,
+  };
+}
+
 function toMySubmission(
   row: Awaited<ReturnType<FeedbackRepository['listMine']>>[number],
 ): MyFeedbackSubmission {
@@ -45,8 +73,7 @@ function toMySubmission(
     lastStatusChangeAt: row.lastStatusChangeAt.toISOString(),
     declinedReason: row.declinedReason,
     shippedVersion: row.shippedVersion,
-    // Reserved for #1339's thread/read-marker model.
-    unreadReplyCount: 0,
+    unreadReplyCount: row.unreadReplyCount,
     createdAt: row.createdAt.toISOString(),
   };
 }
@@ -56,8 +83,26 @@ export interface FeedbackService {
   submit(userId: string, input: CreateFeedbackRequest): Promise<CreateFeedbackResponse>;
   /** Caller-owned status history; ownership is enforced inside the repository. */
   listMine(userId: string): Promise<MyFeedbackResponse>;
+  getThreadForSubmitter(
+    userId: string,
+    id: string,
+    input: FeedbackThreadQuery,
+  ): Promise<FeedbackThreadResponse | null>;
+  sendMessageForSubmitter(
+    userId: string,
+    id: string,
+    input: SendFeedbackMessageRequest,
+  ): Promise<SendFeedbackMessageResponse | null>;
+  markReadForSubmitter(userId: string, id: string): Promise<boolean>;
   /** Owner-only queue read; authorization is enforced by the parent admin router. */
   listForAdmin(input: AdminFeedbackListQuery): Promise<AdminFeedbackListResponse>;
+  getThreadForAdmin(id: string, input: FeedbackThreadQuery): Promise<FeedbackThreadResponse | null>;
+  sendMessageForAdmin(
+    adminUserId: string,
+    id: string,
+    input: SendFeedbackMessageRequest,
+  ): Promise<SendFeedbackMessageResponse | null>;
+  markReadForAdmin(id: string): Promise<boolean>;
   /** Owner-only lifecycle transition; returns null when the row vanished. */
   updateStatus(
     id: string,
@@ -80,6 +125,23 @@ export function createFeedbackService({ repo }: FeedbackServiceDeps): FeedbackSe
       return { submissions: (await repo.listMine(userId)).map(toMySubmission) };
     },
 
+    async getThreadForSubmitter(userId, id, input) {
+      const page = await repo.getThreadForSubmitter(userId, id, {
+        cursor: input.cursor,
+        limit: input.limit ?? DEFAULT_THREAD_LIMIT,
+      });
+      return page ? toThreadResponse(page) : null;
+    },
+
+    async sendMessageForSubmitter(userId, id, input) {
+      const row = await repo.createMessageForSubmitter(userId, id, input.body);
+      return row ? { message: toThreadMessage(row) } : null;
+    },
+
+    markReadForSubmitter(userId, id) {
+      return repo.markReadForSubmitter(userId, id);
+    },
+
     async listForAdmin(input) {
       const { rows, total } = await repo.listForAdmin(input);
       return {
@@ -91,6 +153,23 @@ export function createFeedbackService({ repo }: FeedbackServiceDeps): FeedbackSe
           totalPages: Math.ceil(total / input.limit),
         },
       };
+    },
+
+    async getThreadForAdmin(id, input) {
+      const page = await repo.getThreadForAdmin(id, {
+        cursor: input.cursor,
+        limit: input.limit ?? DEFAULT_THREAD_LIMIT,
+      });
+      return page ? toThreadResponse(page) : null;
+    },
+
+    async sendMessageForAdmin(adminUserId, id, input) {
+      const row = await repo.createMessageForAdmin(adminUserId, id, input.body);
+      return row ? { message: toThreadMessage(row) } : null;
+    },
+
+    markReadForAdmin(id) {
+      return repo.markReadForAdmin(id);
     },
 
     async updateStatus(id, input) {

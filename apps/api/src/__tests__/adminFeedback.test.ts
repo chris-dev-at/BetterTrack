@@ -9,6 +9,9 @@ import {
   adminFeedbackListResponseSchema,
   apiErrorSchema,
   createApiKeyResponseSchema,
+  feedbackThreadResponseSchema,
+  myFeedbackResponseSchema,
+  sendFeedbackMessageResponseSchema,
   updateFeedbackStatusResponseSchema,
 } from '@bettertrack/contracts';
 
@@ -20,12 +23,13 @@ type Agent = ReturnType<typeof request.agent>;
 
 describe('admin feedback inbox', () => {
   let harness: TestHarness;
+  let admin: SeededUser;
   let adminAgent: Agent;
   let queueSequence = 0;
 
   beforeAll(async () => {
     harness = await createTestApp();
-    const admin = await harness.seedAdmin();
+    admin = await harness.seedAdmin();
     adminAgent = await harness.loginAdmin(admin);
   }, 60_000);
 
@@ -186,6 +190,144 @@ describe('admin feedback inbox', () => {
     });
   });
 
+  it('lets an admin read and reply to any submission through the shared thread wire shape', async () => {
+    const { rows, webUser } = await seedQueue();
+    const submission = rows[0]!;
+    const submitterAgent = await loginAgent(harness.app, webUser);
+
+    const submitterPost = await submitterAgent
+      .post(`/api/v1/feedback/${submission.id}/messages`)
+      .set(...XRW)
+      .send({ body: 'Here are extra details.' });
+    expect(submitterPost.status).toBe(201);
+
+    const adminRead = await adminAgent.get(`/api/v1/admin/feedback/${submission.id}/messages`);
+    expect(adminRead.status).toBe(200);
+    const adminThread = feedbackThreadResponseSchema.parse(adminRead.body);
+    expect(adminThread.thread).toEqual({ id: submission.id, unreadCount: 1 });
+    expect(adminThread.messages[0]).toMatchObject({
+      senderId: webUser.id,
+      authorSide: 'submitter',
+      body: 'Here are extra details.',
+    });
+
+    const adminPost = await adminAgent
+      .post(`/api/v1/admin/feedback/${submission.id}/messages`)
+      .set(...XRW)
+      .send({ body: 'Thank you — we can reproduce it.' });
+    expect(adminPost.status).toBe(201);
+    expect(sendFeedbackMessageResponseSchema.parse(adminPost.body).message).toMatchObject({
+      feedbackId: submission.id,
+      senderId: admin.id,
+      authorSide: 'admin',
+    });
+
+    const submitterRead = await submitterAgent.get(`/api/v1/feedback/${submission.id}/messages`);
+    const submitterThread = feedbackThreadResponseSchema.parse(submitterRead.body);
+    expect(submitterThread.thread.unreadCount).toBe(1);
+    expect(submitterThread.messages.map((message) => message.authorSide)).toEqual([
+      'admin',
+      'submitter',
+    ]);
+  });
+
+  it('derives unread messages after each side marker and marks only that side read', async () => {
+    const submitter = await harness.seedUser({
+      email: 'feedback-unread@bt.test',
+      username: 'feedbackunread',
+    });
+    const marker = new Date('2026-08-18T12:00:00.000Z');
+    const before = new Date('2026-08-18T11:00:00.000Z');
+    const after = new Date('2026-08-19T09:00:00.000Z');
+    const [submission] = await harness.db
+      .insert(schema.feedback)
+      .values({
+        userId: submitter.id,
+        category: 'bug',
+        message: 'Unread derivation.',
+        submitterLastReadAt: marker,
+        adminLastReadAt: marker,
+      })
+      .returning();
+    await harness.db.insert(schema.feedbackMessages).values([
+      {
+        feedbackId: submission!.id,
+        authorSide: 'admin',
+        authorUserId: admin.id,
+        body: 'Old admin reply.',
+        createdAt: before,
+      },
+      {
+        feedbackId: submission!.id,
+        authorSide: 'submitter',
+        authorUserId: submitter.id,
+        body: 'Old submitter reply.',
+        createdAt: before,
+      },
+      {
+        feedbackId: submission!.id,
+        authorSide: 'admin',
+        authorUserId: admin.id,
+        body: 'New admin reply one.',
+        createdAt: after,
+      },
+      {
+        feedbackId: submission!.id,
+        authorSide: 'admin',
+        authorUserId: admin.id,
+        body: 'New admin reply two.',
+        createdAt: after,
+      },
+      {
+        feedbackId: submission!.id,
+        authorSide: 'submitter',
+        authorUserId: submitter.id,
+        body: 'New submitter reply.',
+        createdAt: after,
+      },
+    ]);
+    const submitterAgent = await loginAgent(harness.app, submitter);
+
+    const mineBefore = myFeedbackResponseSchema.parse(
+      (await submitterAgent.get('/api/v1/feedback/mine')).body,
+    );
+    expect(mineBefore.submissions[0]?.unreadReplyCount).toBe(2);
+    expect(
+      feedbackThreadResponseSchema.parse(
+        (await submitterAgent.get(`/api/v1/feedback/${submission!.id}/messages`)).body,
+      ).thread.unreadCount,
+    ).toBe(2);
+    expect(
+      feedbackThreadResponseSchema.parse(
+        (await adminAgent.get(`/api/v1/admin/feedback/${submission!.id}/messages`)).body,
+      ).thread.unreadCount,
+    ).toBe(1);
+
+    await submitterAgent
+      .post(`/api/v1/feedback/${submission!.id}/read`)
+      .set(...XRW)
+      .expect(200);
+    const mineAfter = myFeedbackResponseSchema.parse(
+      (await submitterAgent.get('/api/v1/feedback/mine')).body,
+    );
+    expect(mineAfter.submissions[0]?.unreadReplyCount).toBe(0);
+    expect(
+      feedbackThreadResponseSchema.parse(
+        (await adminAgent.get(`/api/v1/admin/feedback/${submission!.id}/messages`)).body,
+      ).thread.unreadCount,
+    ).toBe(1);
+
+    await adminAgent
+      .post(`/api/v1/admin/feedback/${submission!.id}/read`)
+      .set(...XRW)
+      .expect(200);
+    expect(
+      feedbackThreadResponseSchema.parse(
+        (await adminAgent.get(`/api/v1/admin/feedback/${submission!.id}/messages`)).body,
+      ).thread.unreadCount,
+    ).toBe(0);
+  });
+
   it('returns specific contract errors for missing or null declined/shipped details', async () => {
     const { rows } = await seedQueue();
 
@@ -234,6 +376,48 @@ describe('admin feedback inbox', () => {
       .set(...XRW)
       .send({ status: 'triaged' });
     expect(update.status).toBe(404);
+
+    const thread = await agent.get(`/api/v1/admin/feedback/${rows[0]!.id}/messages`);
+    expect(thread.status).toBe(404);
+
+    const reply = await agent
+      .post(`/api/v1/admin/feedback/${rows[0]!.id}/messages`)
+      .set(...XRW)
+      .send({ body: 'Not an admin.' });
+    expect(reply.status).toBe(404);
+  });
+
+  it('rate-limits admin replies with the dedicated feedback budget', async () => {
+    const limitedHarness = await createTestApp({ rateLimitsEnabled: true });
+    try {
+      const limitedAdmin = await limitedHarness.seedAdmin();
+      const limitedAdminAgent = await limitedHarness.loginAdmin(limitedAdmin);
+      const submitter = await limitedHarness.seedUser({
+        email: 'limited-admin-feedback@bt.test',
+        username: 'limitedadminfeedback',
+      });
+      const [submission] = await limitedHarness.db
+        .insert(schema.feedback)
+        .values({ userId: submitter.id, category: 'other', message: 'Rate-limit replies.' })
+        .returning();
+      const configuredLimit = limitedHarness.ctx.config.rateLimits.feedback.limit;
+
+      for (let index = 0; index < configuredLimit; index += 1) {
+        const accepted = await limitedAdminAgent
+          .post(`/api/v1/admin/feedback/${submission!.id}/messages`)
+          .set(...XRW)
+          .send({ body: `Admin reply ${index}` });
+        expect(accepted.status).toBe(201);
+      }
+      const limited = await limitedAdminAgent
+        .post(`/api/v1/admin/feedback/${submission!.id}/messages`)
+        .set(...XRW)
+        .send({ body: 'One too many.' });
+      expect(limited.status).toBe(429);
+      expect(apiErrorSchema.parse(limited.body).error.code).toBe('RATE_LIMITED');
+    } finally {
+      await limitedHarness.ctx.redis.quit?.();
+    }
   });
 
   it('keeps status transitions unreachable to personal API keys', async () => {

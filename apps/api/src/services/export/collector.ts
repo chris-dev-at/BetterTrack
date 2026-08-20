@@ -13,6 +13,7 @@ import {
   dividends,
   externalIdentities,
   feedback,
+  feedbackMessages,
   friendRequests,
   friendships,
   ideas,
@@ -141,22 +142,25 @@ export async function collectUserExport(
 ): Promise<CollectedExport> {
   // Owner-id sets that the indirected tables key off. Resolved first so their
   // dependents can `inArray` on them (empty set ⇒ no rows, never a broad scan).
-  const [portfolioRows, conglomerateRows, audienceRows, customAssetRows] = await Promise.all([
-    db.select({ id: portfolios.id }).from(portfolios).where(eq(portfolios.userId, userId)),
-    db
-      .select({ id: conglomerates.id })
-      .from(conglomerates)
-      .where(eq(conglomerates.ownerId, userId)),
-    db
-      .select({ id: shareAudiences.id })
-      .from(shareAudiences)
-      .where(eq(shareAudiences.ownerId, userId)),
-    db.select({ id: assets.id }).from(assets).where(eq(assets.ownerId, userId)),
-  ]);
+  const [portfolioRows, conglomerateRows, audienceRows, customAssetRows, feedbackRows] =
+    await Promise.all([
+      db.select({ id: portfolios.id }).from(portfolios).where(eq(portfolios.userId, userId)),
+      db
+        .select({ id: conglomerates.id })
+        .from(conglomerates)
+        .where(eq(conglomerates.ownerId, userId)),
+      db
+        .select({ id: shareAudiences.id })
+        .from(shareAudiences)
+        .where(eq(shareAudiences.ownerId, userId)),
+      db.select({ id: assets.id }).from(assets).where(eq(assets.ownerId, userId)),
+      db.select().from(feedback).where(eq(feedback.userId, userId)),
+    ]);
   const portfolioIds = portfolioRows.map((r) => r.id);
   const conglomerateIds = conglomerateRows.map((r) => r.id);
   const audienceIds = audienceRows.map((r) => r.id);
   const customAssetIds = customAssetRows.map((r) => r.id);
+  const feedbackIds = feedbackRows.map((r) => r.id);
 
   /** Query a table only when its owner-id set is non-empty. */
   const inIds = async <T>(ids: string[], run: (ids: string[]) => Promise<T[]>): Promise<T[]> =>
@@ -173,7 +177,7 @@ export async function collectUserExport(
     alertRows,
     notificationRows,
     notificationSettingRows,
-    feedbackRows,
+    feedbackMessageRows,
     ideaRows,
     taxSettingRows,
     taxYearChangeRows,
@@ -210,7 +214,9 @@ export async function collectUserExport(
     db.select().from(alerts).where(eq(alerts.userId, userId)),
     db.select().from(notifications).where(eq(notifications.userId, userId)),
     db.select().from(notificationSettings).where(eq(notificationSettings.userId, userId)),
-    db.select().from(feedback).where(eq(feedback.userId, userId)),
+    inIds(feedbackIds, (ids) =>
+      db.select().from(feedbackMessages).where(inArray(feedbackMessages.feedbackId, ids)),
+    ),
     db.select().from(ideas).where(eq(ideas.ownerId, userId)),
     db.select().from(userTaxSettings).where(eq(userTaxSettings.userId, userId)),
     db.select().from(taxYearChanges).where(eq(taxYearChanges.userId, userId)),
@@ -289,6 +295,7 @@ export async function collectUserExport(
     notifications: sanitize(notificationRows),
     notificationSettings: sanitize(notificationSettingRows),
     feedback: sanitize(feedbackRows),
+    feedbackMessages: sanitize(feedbackMessageRows),
     conglomerates: sanitize(conglomerateFull),
     conglomeratePositions: sanitize(conglomeratePositionRows),
     conglomerateShareLinks: sanitize(conglomerateShareLinkRows),

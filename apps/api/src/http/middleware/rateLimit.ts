@@ -21,7 +21,7 @@ export interface RateLimiters {
   admin: RequestHandler;
   search: RequestHandler;
   social: RequestHandler;
-  /** Authenticated feedback submissions, per user (#1315). */
+  /** Authenticated feedback submissions and thread replies, per author. */
   feedback: RequestHandler;
   /** Paranoid vault writes, per user (§13.5 V5-P13). */
   vault: RequestHandler;
@@ -137,8 +137,8 @@ export function createRateLimiters(ctx: AppContext): RateLimiters {
     search: guard([searchLimiter], keyByUserOrIp),
     // Friend-request creation, per user — blunts bulk email→username probing (§6.9).
     social: guard([socialLimiter], keyByUserOrIp),
-    // Text-only feedback creation is deliberately small-volume: five accepted
-    // POST attempts per user/hour before the standard progressive 429.
+    // Text-only feedback creation/replies are deliberately small-volume: five
+    // accepted POST attempts per author/hour before the progressive 429.
     feedback: guard([feedbackLimiter], keyByUserOrIp),
     // Paranoid vault writes, per user — a modest dedicated write budget (§13.5
     // V5-P13, design §4).

@@ -116,7 +116,7 @@ export function createAdminRouter(ctx: AppContext, limiters: RateLimiters): Rout
 
   // Authenticated web + native submissions converge in one category-priority
   // owner inbox. Registered flat behind the existing admin + 2FA gates.
-  registerAdminFeedbackRoutes(router, ctx);
+  registerAdminFeedbackRoutes(router, ctx, limiters);
 
   // Admin monitoring / Diagnostics (§13.5 V5-P2 arc (a), owner 2026-07-19):
   // Grafana/Prometheus reachability status + the external-access runtime

@@ -69,6 +69,10 @@ export const feedbackStatusEnum = pgEnum('feedback_status', [
   'declined',
   'shipped',
 ]);
+export const feedbackMessageAuthorSideEnum = pgEnum('feedback_message_author_side', [
+  'submitter',
+  'admin',
+]);
 
 export const users = pgTable(
   'users',
@@ -642,6 +646,9 @@ export const feedback = pgTable(
       .defaultNow(),
     declinedReason: text('declined_reason'),
     shippedVersion: varchar('shipped_version', { length: 64 }),
+    // Derived-unread markers for the submission-owned support thread (#1339).
+    submitterLastReadAt: timestamp('submitter_last_read_at', { withTimezone: true }),
+    adminLastReadAt: timestamp('admin_last_read_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     // No trigger/$onUpdate owns these: status transitions set both explicitly.
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
@@ -659,6 +666,33 @@ export const feedback = pgTable(
         (${t.status} not in ('declined', 'shipped') and ${t.declinedReason} is null and ${t.shippedVersion} is null)
       )`,
     ),
+  ],
+);
+
+/**
+ * One text reply on a feedback submission (#1339). The submission is the
+ * natural thread parent, so feedback does not need chat's separate conversation
+ * table. The author side records the auth rail while `author_user_id` preserves
+ * which concrete admin or submitter wrote the audit-trail row.
+ */
+export const feedbackMessages = pgTable(
+  'feedback_messages',
+  {
+    id: uuid('id').primaryKey().$defaultFn(newId),
+    feedbackId: uuid('feedback_id')
+      .notNull()
+      .references(() => feedback.id, { onDelete: 'cascade' }),
+    authorSide: feedbackMessageAuthorSideEnum('author_side').notNull(),
+    authorUserId: uuid('author_user_id')
+      .notNull()
+      .references(() => users.id),
+    body: text('body').notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index('feedback_messages_feedback_idx').on(t.feedbackId, t.id),
+    check('feedback_messages_not_empty', sql`${t.body} ~ '[^[:space:]]'`),
+    check('feedback_messages_body_length', sql`char_length(${t.body}) <= 4000`),
   ],
 );
 
@@ -2777,6 +2811,8 @@ export type ProblemRow = typeof problems.$inferSelect;
 export type NewProblemRow = typeof problems.$inferInsert;
 export type FeedbackRow = typeof feedback.$inferSelect;
 export type NewFeedbackRow = typeof feedback.$inferInsert;
+export type FeedbackMessageRow = typeof feedbackMessages.$inferSelect;
+export type NewFeedbackMessageRow = typeof feedbackMessages.$inferInsert;
 export type UsageEventRow = typeof usageEvents.$inferSelect;
 export type NewUsageEventRow = typeof usageEvents.$inferInsert;
 export type UsageDailyRow = typeof usageDaily.$inferSelect;
