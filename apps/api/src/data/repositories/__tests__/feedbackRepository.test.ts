@@ -38,6 +38,49 @@ describe('feedback repository ownership boundary', () => {
     }
   });
 
+  it('excludes tombstoned submissions from the unread reply aggregate', async () => {
+    const harness = await createTestApp();
+    try {
+      const owner = await harness.seedUser({
+        email: 'feedback-unread-tombstone-owner@bt.test',
+        username: 'feedbackunreadtombowner',
+      });
+      const staff = await harness.seedUser({
+        email: 'feedback-unread-tombstone-staff@bt.test',
+        username: 'feedbackunreadtombstaff',
+      });
+      const repo = createFeedbackRepository(harness.db);
+      const live = await repo.create(owner.id, {
+        category: 'help',
+        message: 'Keep this submission visible.',
+      });
+      const tombstoned = await repo.create(owner.id, {
+        category: 'bug',
+        message: 'Remove this submission from my list.',
+      });
+      expect(live).not.toBeNull();
+      expect(tombstoned).not.toBeNull();
+
+      await expect(
+        repo.createMessageForAdmin(staff.id, live!.id, 'Unread live reply.'),
+      ).resolves.not.toBeNull();
+      await expect(
+        repo.createMessageForAdmin(staff.id, tombstoned!.id, 'Unread tombstoned reply.'),
+      ).resolves.not.toBeNull();
+      await expect(
+        repo.deleteMine(owner.id, tombstoned!.id, new Date('2026-08-20T12:00:00.000Z')),
+      ).resolves.not.toBeNull();
+
+      const rows = await repo.listMine(owner.id);
+
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({ id: live!.id, unreadReplyCount: 1 });
+      expect(rows.some((row) => row.id === tombstoned!.id)).toBe(false);
+    } finally {
+      await harness.ctx.redis.quit?.();
+    }
+  });
+
   it('scopes submitter thread reads, writes, and read markers in repository SQL', async () => {
     const harness = await createTestApp();
     try {
