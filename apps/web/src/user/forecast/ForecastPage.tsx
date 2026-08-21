@@ -22,6 +22,7 @@ import {
 import { ProjectionSection } from './ProjectionSection';
 import { StandingOrdersSection } from './StandingOrdersSection';
 import { usePortfolioStore } from '../portfolio/PortfolioStoreProvider';
+import { isVaultedPortfolio } from '../portfolio/lockedPortfolio';
 import { clientSeriesCagrPct } from '../vault/engine/clientSeries';
 import { useResolvedPrivacyMode } from '../vault/usePrivacyMode';
 
@@ -94,7 +95,9 @@ function usePortfolioPrefill(): {
     queryFn: ({ signal }) => store.listPortfolios(signal),
     staleTime: 60_000,
   });
-  const portfolios = portfoliosQuery.data?.portfolios ?? [];
+  const portfolios = (portfoliosQuery.data?.portfolios ?? []).filter(
+    (portfolio) => !isVaultedPortfolio(portfolio),
+  );
   const portfolioId = useMemo(() => {
     return (portfolios.find((p) => p.isDefault) ?? portfolios[0])?.id ?? null;
   }, [portfolios]);

@@ -23,6 +23,10 @@ vi.mock('../../lib/socialApi', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../lib/socialApi')>()),
   listFriends: vi.fn(),
 }));
+const vaultMocks = vi.hoisted(() => ({ stateFor: vi.fn() }));
+vi.mock('../vault/keystore/runtime', () => ({
+  endpointVaultKeystore: { stateFor: vaultMocks.stateFor },
+}));
 
 import { MIRROR_MAX_MEMBERS } from '@bettertrack/contracts';
 
@@ -57,6 +61,8 @@ type Summary = {
     memberCount: number;
     sync: { appliedSeq: number; lastSeq: number; percent: number; synced: boolean };
   };
+  vaultId?: string;
+  vaultAlias?: string;
 };
 
 function summary(over: Partial<Summary> & { id: string; name: string }): Summary {
@@ -158,6 +164,10 @@ beforeEach(() => {
   sessionStorage.clear();
   localStorage.clear();
   resetPortfolioKindCache();
+  vaultMocks.stateFor.mockResolvedValue({
+    status: 'not-on-this-endpoint',
+    requiredAction: { kind: 'provide-phrase', methods: ['enter-words', 'scan-qr'] },
+  });
 });
 
 describe('resolveActivePortfolio session stickiness', () => {
@@ -243,6 +253,28 @@ describe('PortfolioSwitcher', () => {
     const menu = await findPopover();
     expect(within(menu).getByRole('button', { name: /Main/ })).toBeInTheDocument();
     expect(within(menu).getByRole('button', { name: /Trading/ })).toBeInTheDocument();
+  });
+
+  test('uses only a vaulted alias, counts locked rows, and carries its recovery action inline', async () => {
+    const locked = summary({
+      id: '018f0000-0000-7000-8000-000000000001',
+      name: 'Secret real name',
+      vaultId: '018f0000-0000-7000-8000-000000000002',
+      vaultAlias: 'Vault portfolio 1',
+      sortOrder: 1,
+    });
+    vi.mocked(listPortfolios).mockResolvedValue({ portfolios: [MAIN, locked] });
+    const user = userEvent.setup();
+    renderSwitcher();
+
+    await user.click(await screen.findByRole('button', { name: 'Switch portfolio' }));
+    expect(await screen.findByRole('button', { name: 'Vault portfolio 1' })).toBeInTheDocument();
+    expect(screen.queryByText('Secret real name')).not.toBeInTheDocument();
+    expect(screen.getByText('1 locked portfolio')).toBeInTheDocument();
+    expect(await screen.findByRole('link', { name: 'Enter words' })).toHaveAttribute(
+      'href',
+      '/control/privacy?vault=018f0000-0000-7000-8000-000000000002&action=provide-phrase',
+    );
   });
 
   test('keeps the cached portfolio choices visible after a failed background refetch', async () => {
