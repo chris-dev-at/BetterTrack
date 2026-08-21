@@ -293,9 +293,12 @@ function DirectoryVaultSyncChip({ vaults }: { vaults: readonly VaultDirectorySyn
                     >
                       {t('vault.sync.aggregate.openRestore')}
                     </Link>
-                  ) : (
-                    <VaultStateAction state={row.endpointState} vaultId={row.vault.id} />
-                  )}
+                  ) : null}
+                  {/* The storage recovery link answers the storage problem; the
+                      endpoint affordance rides alongside it rather than instead
+                      of it, so a row that is BOTH needs-sign-in and locked on
+                      this device still shows its unlock / enter-words step. */}
+                  <VaultStateAction state={row.endpointState} vaultId={row.vault.id} />
                 </li>
               ))}
             </ul>

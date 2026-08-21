@@ -69,7 +69,18 @@ export function endpointVaultStateCase(state: EndpointVaultState): EndpointVault
   if (state.status === 'not-on-this-endpoint') {
     return 'not-on-this-endpoint:provide-phrase';
   }
-  return 'endpoint-keystore-invalid:reset-endpoint-keystore';
+  if (state.status === 'endpoint-keystore-invalid') {
+    return 'endpoint-keystore-invalid:reset-endpoint-keystore';
+  }
+  // Exhaustive by construction: a state added to E3 without a branch here fails
+  // to widen to `never` and the build stops. Without this, a new state would
+  // fall through to the catch-all and silently offer "Reset this device" — the
+  // most destructive affordance in the set — for a state nobody mapped.
+  return assertNeverVaultState(state);
+}
+
+function assertNeverVaultState(state: never): never {
+  throw new Error(`unmapped-endpoint-vault-state:${JSON.stringify(state)}`);
 }
 
 export function vaultStateAffordance(state: EndpointVaultState): VaultStateAffordance {

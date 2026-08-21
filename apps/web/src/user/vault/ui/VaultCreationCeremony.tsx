@@ -12,6 +12,7 @@ import {
   type MnemonicWordChallenge,
 } from '../bip39';
 import { PER_VAULT_DRIVE_PROVISIONING_AVAILABLE } from '../capabilities';
+import { VaultProvisionIncompleteError } from '../provisionErrors';
 
 export interface VaultCreationInput {
   name: string;
@@ -54,7 +55,10 @@ export function VaultCreationCeremony({
   const [devicePassword, setDevicePassword] = useState('');
   const [plainRiskAcknowledged, setPlainRiskAcknowledged] = useState(false);
   const [working, setWorking] = useState(false);
-  const [failed, setFailed] = useState(false);
+  // Two different failures, two different next steps: nothing was created and a
+  // retry is right, or an empty vault was left behind and a retry would add a
+  // second one instead of finishing the first.
+  const [failure, setFailure] = useState<{ key: string; leftoverVault?: string } | null>(null);
 
   const words = useMemo(() => (mnemonic === '' ? [] : mnemonic.split(' ')), [mnemonic]);
   const needsDrive = mediaChoice !== 'server';
@@ -93,7 +97,7 @@ export function VaultCreationCeremony({
       return;
     }
     setWorking(true);
-    setFailed(false);
+    setFailure(null);
     try {
       await onCreate({
         name: name.trim(),
@@ -105,8 +109,12 @@ export function VaultCreationCeremony({
         plainRiskAcknowledged,
       });
       onCreated();
-    } catch {
-      setFailed(true);
+    } catch (error) {
+      setFailure(
+        error instanceof VaultProvisionIncompleteError
+          ? { key: 'vault.creation.errorIncomplete', leftoverVault: error.vaultName }
+          : { key: 'vault.creation.error' },
+      );
     } finally {
       setWorking(false);
     }
@@ -276,9 +284,9 @@ export function VaultCreationCeremony({
               </label>
             ) : null}
           </details>
-          {failed ? (
+          {failure ? (
             <p className="bt-neg text-sm" role="alert">
-              {t('vault.creation.error')}
+              {t(failure.key, { name: failure.leftoverVault ?? '' })}
             </p>
           ) : null}
         </div>

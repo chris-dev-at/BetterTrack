@@ -2,6 +2,7 @@ import { render, screen } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 
+import { VaultProvisionIncompleteError } from '../provisionErrors';
 import { VaultCreationCeremony } from './VaultCreationCeremony';
 
 const PHRASE =
@@ -98,6 +99,39 @@ describe('VaultCreationCeremony', () => {
       2,
     );
     expect(screen.getByRole('radio', { name: /Encrypted on BetterTrack/i })).toBeEnabled();
+  });
+
+  it('names the leftover vault when provisioning stopped after the row was created', async () => {
+    const user = userEvent.setup();
+    render(
+      <VaultCreationCeremony
+        challengeFactory={() => ({ wordNumber: 12 })}
+        connections={[]}
+        onCancel={() => {}}
+        onCreate={vi.fn(async () => {
+          throw new VaultProvisionIncompleteError('Long-term');
+        })}
+        onCreated={() => {}}
+        phraseFactory={() => PHRASE}
+      />,
+    );
+
+    await user.type(screen.getByLabelText('Vault name'), 'Long-term');
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
+    await user.click(screen.getByRole('button', { name: 'I stored the words' }));
+    await user.type(screen.getByLabelText('Word 12'), 'about');
+    await user.click(screen.getByRole('button', { name: 'Verify word' }));
+    await user.click(screen.getByRole('checkbox'));
+    await user.click(screen.getByRole('button', { name: 'Continue' }));
+    await user.type(screen.getByLabelText('Device password'), 'device-only-secret');
+    await user.click(screen.getByRole('button', { name: 'Create vault' }));
+
+    // "Try again" would mint a SECOND vault, so the leftover is named instead.
+    const alert = await screen.findByRole('alert');
+    expect(alert).toHaveTextContent('Long-term');
+    expect(alert).toHaveTextContent(/delete “Long-term” in the list below first/i);
+    expect(alert).not.toHaveTextContent('No recovery step was skipped');
   });
 
   it('uses the supplied random single-word challenge without adding a delay gate', async () => {

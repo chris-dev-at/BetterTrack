@@ -13,7 +13,6 @@ import { PER_VAULT_ERROR_CODES } from '@bettertrack/contracts';
 
 import { useT } from '../../../i18n';
 import { ApiError } from '../../../lib/apiClient';
-import { listPortfolios } from '../../../lib/portfolioApi';
 import {
   deleteVault,
   DRIVE_CONNECTIONS_QUERY_KEY,
@@ -27,6 +26,8 @@ import { Button, Field, Input, Select, SkeletonBlock } from '../../../ui/origin'
 import { CHECKBOX_STYLE } from '../../components/ui';
 import { useAuth } from '../../AuthContext';
 import { portfolioDisplayName } from '../../portfolio/lockedPortfolio';
+import { usePortfolioStore } from '../../portfolio/PortfolioStoreProvider';
+import { PER_VAULT_DRIVE_PROVISIONING_AVAILABLE } from '../capabilities';
 import type { EndpointVaultState } from '../keystore';
 import { endpointVaultKeystore } from '../keystore/runtime';
 import { provisionVault, type ProvisionVaultInput } from '../provisionVault';
@@ -72,6 +73,23 @@ const DEFERRED_ACTION_REASONS = {
 
 type DeferrableAction = keyof typeof DEFERRED_ACTION_REASONS;
 
+/**
+ * Every `?action=` this surface knows. Anything else is a stale or hand-edited
+ * deep link — still a state, and a state without a next action is a design bug,
+ * so it gets the vault's own live affordance instead of a raw i18n key and a
+ * Continue button that can only refuse.
+ */
+const ACCESS_ACTIONS: ReadonlySet<string> = new Set([
+  'unlock',
+  'open',
+  'provide-phrase',
+  'reset-endpoint',
+  'scan-qr',
+  'rotate',
+  'start-fresh',
+  'restore',
+]);
+
 /** Null when the action can run; otherwise the i18n key explaining why not. */
 function deferredReasonKey(action: string, operations: VaultManagerOperations): string | null {
   const available: Record<DeferrableAction, boolean> = {
@@ -92,6 +110,7 @@ export function VaultManager({
 }) {
   const t = useT();
   const { user } = useAuth();
+  const store = usePortfolioStore();
   const queryClient = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
   const [creating, setCreating] = useState(false);
@@ -100,15 +119,29 @@ export function VaultManager({
     queryFn: ({ signal }) => listVaults(signal),
   });
   const vaults = vaultsQuery.data ?? [];
+  // The Drive connection directory is E5's route (#1415), unmounted on `main`.
+  // This build also refuses to provision a Drive vault at all, so the ceremony
+  // does not need the list: asking for it on every "Create vault" click would
+  // 404 into a permanent error banner with a Retry that can never succeed,
+  // directly above step 1. Only a vault ALREADY bound to Drive needs the names,
+  // and one can exist only once E5 has landed the route that serves them.
+  const driveConnectionsNeeded =
+    (creating && PER_VAULT_DRIVE_PROVISIONING_AVAILABLE) ||
+    vaults.some((vault) => vault.media.includes('drive'));
   const connectionsQuery = useQuery({
     queryKey: DRIVE_CONNECTIONS_QUERY_KEY,
     queryFn: ({ signal }) => listVaultDriveConnections(signal),
-    enabled: creating || vaults.some((vault) => vault.media.includes('drive')),
+    enabled: driveConnectionsNeeded,
     retry: false,
   });
+  // The canonical portfolio read: same key and same store seam as the switcher,
+  // the workspace and home, so this panel shares their cache entry instead of
+  // issuing a second identical request — and, in paranoid v1, still reads
+  // through the vault-backed store rather than around it.
   const portfoliosQuery = useQuery({
-    queryKey: ['portfolios', 'active'],
-    queryFn: ({ signal }) => listPortfolios(signal),
+    queryKey: ['portfolios'],
+    queryFn: ({ signal }) => store.listPortfolios(signal),
+    staleTime: 60_000,
   });
   const endpointQueries = useQueries({
     queries: vaults.map((vault) => ({
@@ -172,8 +205,10 @@ export function VaultManager({
 
       {creating ? (
         <>
-          {connectionsQuery.isPending ? <SkeletonBlock height={48} /> : null}
-          {connectionsQuery.isError ? (
+          {driveConnectionsNeeded && connectionsQuery.isPending ? (
+            <SkeletonBlock height={48} />
+          ) : null}
+          {driveConnectionsNeeded && connectionsQuery.isError ? (
             <div className="bt-soft flex flex-wrap items-center justify-between gap-3" role="alert">
               <span>{t('vault.manager.connectionsError')}</span>
               <Button onClick={() => void connectionsQuery.refetch()} size="sm" type="button">
@@ -555,6 +590,26 @@ function VaultAccessAction({
   // A deep link can still reach a deferred action. It gets the reason and the
   // vault's live next step — never a Continue button that can only refuse.
   const deferredKey = deferredReasonKey(effectiveAction, operations);
+
+  // A stale or hand-edited `?action=` never becomes a raw key on screen with a
+  // Continue that can only throw: it gets named as unknown, plus this vault's
+  // own live next step.
+  if (!ACCESS_ACTIONS.has(effectiveAction)) {
+    return (
+      <section
+        aria-label={t('vault.manager.access.title', { name: vault.name })}
+        className="bt-panel flex flex-col gap-3 p-4"
+      >
+        <h4 className="bt-h2">{t('vault.manager.access.title', { name: vault.name })}</h4>
+        <DeferredActionNotice reasonKey="vault.manager.access.unknownAction" vault={vault} />
+        <div className="flex flex-wrap justify-end gap-2">
+          <Button onClick={onClose} type="button" variant="quiet">
+            {t('common.cancel')}
+          </Button>
+        </div>
+      </section>
+    );
+  }
 
   if (effectiveAction === 'open') {
     return (
