@@ -2161,6 +2161,8 @@
         "editDefault": "Edit the account default →",
         "loadError": "Couldn’t load this portfolio’s tax mode."
       },
+      "vaultHeading": "Private vault",
+      "vaultHint": "Move this portfolio into one of your encrypted vaults. Its money data stops being readable by the server, and its existing shares are revoked for good.",
       "groupHeading": "Group portfolio",
       "groupHint": "Share this portfolio with friends — everyone edits the same book.",
       "groupActive": "{{name}} · {{count}} members",
@@ -3602,6 +3604,12 @@
       "deleteAction": "Delete empty vault",
       "deleteReferenced": "This vault still contains a portfolio. Move every portfolio out before deleting it.",
       "deleteError": "The vault could not be deleted. Nothing changed.",
+      "deferred": {
+        "rotate": "Rotating the recovery words isn’t available yet: it needs a verified round trip on every storage this vault uses. Until then this vault and its words stay exactly as they are.",
+        "startFresh": "Starting fresh isn’t available yet: discarding a vault’s encrypted copies needs the same verified storage round trip. To remove a vault today, move its portfolios out and delete it.",
+        "scanQr": "Scanning a transfer QR isn’t available yet. Enter the 12 words on this device instead.",
+        "restore": "Choosing an older encrypted copy isn’t available yet. Every copy is kept — none is discarded — and this vault’s current copy stays usable."
+      },
       "explainer": {
         "names": "Vault names and storage settings stay readable so BetterTrack can show and route them while locked.",
         "storage": "Portfolio contents are encrypted in your browser before they reach the selected storage.",
@@ -3638,7 +3646,6 @@
         "scan-qr": "Scan the transfer QR from an already unlocked device.",
         "restore": "Choose among the authenticated current and bounded history copies. Damaged copies stay visible for diagnosis.",
         "restoreLoadError": "Restore copies could not be loaded.",
-        "unavailable": "This action is not available on this device yet.",
         "reset-endpoint": "Reset only this device’s stored custody. Server and Drive ciphertext stay untouched.",
         "rotate": "Rotation replaces the recovery words after every selected copy passes a verified round trip.",
         "start-fresh": "Starting fresh permanently discards this vault’s encrypted contents. Other vaults and account data stay unchanged.",
@@ -3666,7 +3673,8 @@
       "media": {
         "server": "Encrypted documents stay on BetterTrack.",
         "drive": "Encrypted documents stay only in the selected Drive.",
-        "both": "Keep verified encrypted copies in both places."
+        "both": "Keep verified encrypted copies in both places.",
+        "driveSoon": "Drive storage for a new vault isn’t available yet — choose BetterTrack for now."
       },
       "driveConnectionLabel": "Google Drive connection",
       "driveConnectionPlaceholder": "Choose a Drive account",
@@ -3721,6 +3729,7 @@
       "subject": "{{portfolio}} · {{vault}}",
       "targetLabel": "Target vault",
       "targetPlaceholder": "Choose a vault",
+      "targetStateError": "The target vault’s state on this device could not be read.",
       "credentialKind": "Confirmation method",
       "credentialValue": "Account confirmation",
       "credential": {
@@ -3734,7 +3743,9 @@
         "import": "Finish or cancel the pending import before moving this portfolio.",
         "importFix": "Open imports",
         "export": "Wait for the account export to finish before moving this portfolio.",
-        "exportFix": "Open account export"
+        "exportFix": "Open account export",
+        "vaultLocked": "Open the target vault on this device before moving a portfolio into it.",
+        "captureUnavailable": "This version can’t prepare the portfolio’s encrypted copy on this device yet, so no move can start. Nothing about this portfolio changes."
       },
       "stepUpHint": "Confirm with your BetterTrack account password, a current authenticator code, or a recovery code.",
       "moveIn": {

@@ -16,6 +16,7 @@ import {
   transitionVaultMedia,
 } from '../../lib/vaultApi';
 import { utf8, zeroBytes } from './bytes';
+import { PER_VAULT_DRIVE_PROVISIONING_AVAILABLE } from './capabilities';
 import { endpointVaultKeystore } from './keystore/runtime';
 import { acknowledgePlainCustodyRisk } from './keystore';
 import {
@@ -45,7 +46,7 @@ export interface ProvisionVaultInput {
  * branch from leaving a half-created Drive vault while that adapter is absent.
  */
 export async function provisionVault(input: ProvisionVaultInput): Promise<VaultConfig> {
-  if (input.media.includes('drive')) {
+  if (!PER_VAULT_DRIVE_PROVISIONING_AVAILABLE && input.media.includes('drive')) {
     throw new Error('per-vault-drive-provisioning-unavailable');
   }
 

@@ -180,6 +180,52 @@ describe('VaultManager', () => {
     await waitFor(() => expect(restoreCandidate).toHaveBeenCalledOnce());
   });
 
+  it.each([
+    ['rotate', /Rotating the recovery words isn’t available yet/i],
+    ['start-fresh', /Starting fresh isn’t available yet/i],
+    ['scan-qr', /Scanning a transfer QR isn’t available yet/i],
+    ['restore', /Choosing an older encrypted copy isn’t available yet/i],
+  ])(
+    'explains %s in the shipped configuration instead of disabling it silently',
+    async (action, reason) => {
+      // No `operations` override: exactly what PrivacyPanel mounts.
+      const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter initialEntries={[`/control/privacy?vault=${VAULT_ID}&action=${action}`]}>
+            <VaultManager />
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+
+      expect(await screen.findAllByText(reason)).not.toHaveLength(0);
+      // The action cannot run, so no Continue is offered at all — and the
+      // vault's own live next step is still one click away.
+      expect(screen.queryByRole('button', { name: 'Continue' })).not.toBeInTheDocument();
+      expect(await screen.findAllByRole('link', { name: 'Enter words' })).not.toHaveLength(0);
+    },
+  );
+
+  it('keeps deferred row actions visible without linking into a dead end', async () => {
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/control/privacy']}>
+          <VaultManager />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    expect(await screen.findByText('Rotate recovery words')).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Rotate recovery words' })).not.toBeInTheDocument();
+    expect(screen.getByText('Start fresh')).toBeInTheDocument();
+    expect(screen.queryByRole('link', { name: 'Start fresh' })).not.toBeInTheDocument();
+    expect(
+      screen.getByText(/Rotating the recovery words isn’t available yet/i),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/Starting fresh isn’t available yet/i)).toBeInTheDocument();
+  });
+
   it('presents start fresh as step-up-gated destruction', async () => {
     const startFresh = vi.fn(async () => undefined);
     const user = userEvent.setup();
@@ -200,8 +246,20 @@ describe('VaultManager', () => {
     );
   });
 
+  it('refuses delete while a portfolio is inside before any request is sent', async () => {
+    renderManager();
+
+    expect(await screen.findByText('Vault portfolio 1')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Delete' })).toBeDisabled();
+    expect(screen.getByText(/still contains a portfolio/i)).toBeInTheDocument();
+    expect(mocks.deleteVault).not.toHaveBeenCalled();
+  });
+
   it('renames and reports the exact referenced-vault delete refusal', async () => {
     const user = userEvent.setup();
+    // The membership list this device holds is empty — another device moved a
+    // portfolio in — so the server refusal is the one that has to explain it.
+    mocks.listPortfolios.mockResolvedValue({ portfolios: [], defaultPortfolioId: null });
     mocks.deleteVault.mockRejectedValue(
       new ApiError(409, 'VAULT_REFERENCED_BY_PORTFOLIO', 'still referenced'),
     );

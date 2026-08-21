@@ -35,7 +35,7 @@ import { vaultStateAffordance } from '../vaultStateAffordance';
 import { VaultCreationCeremony, type VaultCreationInput } from './VaultCreationCeremony';
 import { VaultRestorePicker } from './VaultRestorePicker';
 import { VaultStateAction } from './VaultStateAction';
-import { vaultEndpointStateQueryKey } from './useVaultEndpointState';
+import { useVaultEndpointState, vaultEndpointStateQueryKey } from './useVaultEndpointState';
 
 export interface VaultManagerOperations {
   provision(input: ProvisionVaultInput): Promise<VaultConfig>;
@@ -47,10 +47,43 @@ export interface VaultManagerOperations {
   restoreCandidate?(vault: VaultConfig, candidate: RestoreCandidate): Promise<void>;
 }
 
+/**
+ * What this build can actually do. The optional operations above are the seams
+ * their epics fill; until then this surface states which one is missing instead
+ * of offering a control that refuses — every entry either acts or explains.
+ */
 const DEFAULT_OPERATIONS: VaultManagerOperations = {
   provision: provisionVault,
   fetchHeader: (vault) => readVaultHeaderDocument(vault.id, vault.headerDocId),
 };
+
+/**
+ * Deferred actions, each with the copy that names what is still missing:
+ * rotation and "start fresh" both need E5's authenticated per-medium round trip
+ * (#1415), the restore write needs E6's client engine (#1416), and the QR
+ * reader is E7's surface (#1417).
+ */
+const DEFERRED_ACTION_REASONS = {
+  rotate: 'vault.manager.deferred.rotate',
+  'start-fresh': 'vault.manager.deferred.startFresh',
+  'scan-qr': 'vault.manager.deferred.scanQr',
+  restore: 'vault.manager.deferred.restore',
+} as const;
+
+type DeferrableAction = keyof typeof DEFERRED_ACTION_REASONS;
+
+/** Null when the action can run; otherwise the i18n key explaining why not. */
+function deferredReasonKey(action: string, operations: VaultManagerOperations): string | null {
+  const available: Record<DeferrableAction, boolean> = {
+    rotate: operations.rotate != null,
+    'start-fresh': operations.startFresh != null,
+    'scan-qr': operations.scanQr != null,
+    restore: operations.listRestoreCandidates != null && operations.restoreCandidate != null,
+  };
+  if (!(action in available)) return null;
+  const key = action as DeferrableAction;
+  return available[key] ? null : DEFERRED_ACTION_REASONS[key];
+}
 
 export function VaultManager({
   operations = DEFAULT_OPERATIONS,
@@ -194,6 +227,7 @@ export function VaultManager({
               )}
               membershipReady={portfoliosQuery.isSuccess}
               onChanged={refreshVaults}
+              operations={operations}
               vault={vault}
             />
           ))}
@@ -223,6 +257,7 @@ function VaultManagerRow({
   memberships,
   membershipReady,
   onChanged,
+  operations,
 }: {
   vault: VaultConfig;
   endpointQuery: UseQueryResult<EndpointVaultState, Error> | undefined;
@@ -230,6 +265,7 @@ function VaultManagerRow({
   memberships: readonly PortfolioSummary[];
   membershipReady: boolean;
   onChanged(): Promise<void>;
+  operations: VaultManagerOperations;
 }) {
   const t = useT();
   const [renameOpen, setRenameOpen] = useState(false);
@@ -242,6 +278,8 @@ function VaultManagerRow({
   const [working, setWorking] = useState(false);
   const [errorKey, setErrorKey] = useState<string | null>(null);
   const state = endpointQuery?.data;
+  const rotateDeferred = deferredReasonKey('rotate', operations);
+  const startFreshDeferred = deferredReasonKey('start-fresh', operations);
 
   async function saveName() {
     if (name.trim() === '' || name.trim() === vault.name) return;
@@ -339,27 +377,45 @@ function VaultManagerRow({
         <Link className="bt-link" to={`/control/connections?vault=${encodeURIComponent(vault.id)}`}>
           {t('vault.manager.action.changeMedia')}
         </Link>
-        <Link
-          className="bt-link"
-          to={`/control/privacy?vault=${encodeURIComponent(vault.id)}&action=rotate`}
-        >
-          {t('vault.manager.action.rotate')}
-        </Link>
-        <Link
-          className="bt-link"
-          to={`/control/privacy?vault=${encodeURIComponent(vault.id)}&action=start-fresh`}
-        >
-          {t('vault.manager.action.startFresh')}
-        </Link>
+        {/* An action this build cannot finish is never a link: it stays visible
+            as what it is, with the missing piece named beside it. */}
+        {rotateDeferred ? (
+          <span className="bt-muted">{t('vault.manager.action.rotate')}</span>
+        ) : (
+          <Link
+            className="bt-link"
+            to={`/control/privacy?vault=${encodeURIComponent(vault.id)}&action=rotate`}
+          >
+            {t('vault.manager.action.rotate')}
+          </Link>
+        )}
+        {startFreshDeferred ? (
+          <span className="bt-muted">{t('vault.manager.action.startFresh')}</span>
+        ) : (
+          <Link
+            className="bt-link"
+            to={`/control/privacy?vault=${encodeURIComponent(vault.id)}&action=start-fresh`}
+          >
+            {t('vault.manager.action.startFresh')}
+          </Link>
+        )}
         <button
           className="bt-link bt-neg"
-          disabled={!membershipReady}
+          disabled={!membershipReady || memberships.length > 0}
           onClick={() => setDeleteOpen((open) => !open)}
           type="button"
         >
           {t('common.delete')}
         </button>
       </div>
+      {rotateDeferred ? <p className="bt-meta">{t(rotateDeferred)}</p> : null}
+      {startFreshDeferred ? <p className="bt-meta">{t(startFreshDeferred)}</p> : null}
+      {/* "Delete refuses while a portfolio is inside, and says so" — said with
+          the membership list already in hand, not after a server round trip.
+          The server refusal below still stands for the cross-device race. */}
+      {membershipReady && memberships.length > 0 ? (
+        <p className="bt-meta">{t('vault.manager.deleteReferenced')}</p>
+      ) : null}
 
       {renameOpen ? (
         <div className="flex flex-wrap items-end gap-2">
@@ -496,10 +552,9 @@ function VaultAccessAction({
   const needsSecret = effectiveAction === 'unlock' || needsPhrase;
   const isReset = effectiveAction === 'reset-endpoint';
   const isStartFresh = effectiveAction === 'start-fresh';
-  const unavailable =
-    (effectiveAction === 'rotate' && !operations.rotate) ||
-    (effectiveAction === 'start-fresh' && !operations.startFresh) ||
-    (effectiveAction === 'scan-qr' && !operations.scanQr);
+  // A deep link can still reach a deferred action. It gets the reason and the
+  // vault's live next step — never a Continue button that can only refuse.
+  const deferredKey = deferredReasonKey(effectiveAction, operations);
 
   if (effectiveAction === 'open') {
     return (
@@ -522,7 +577,7 @@ function VaultAccessAction({
           <p className="bt-row-sub">{t('vault.manager.access.restore')}</p>
         </div>
         {!restoreAvailable ? (
-          <p className="bt-soft text-sm">{t('vault.manager.access.unavailable')}</p>
+          <DeferredActionNotice reasonKey={DEFERRED_ACTION_REASONS.restore} vault={vault} />
         ) : restoreCandidates.isPending ? (
           <SkeletonBlock height={96} />
         ) : restoreCandidates.isError ? (
@@ -559,6 +614,7 @@ function VaultAccessAction({
           {t(`vault.manager.access.${effectiveAction}`)}
         </p>
       </div>
+      {deferredKey ? <DeferredActionNotice reasonKey={deferredKey} vault={vault} /> : null}
       {needsSecret ? (
         <Field
           htmlFor={`vault-access-secret-${vault.id}`}
@@ -589,15 +645,18 @@ function VaultAccessAction({
               value={devicePassword}
             />
           </Field>
-          <Button
-            disabled={!operations.scanQr}
-            onClick={() => void operations.scanQr?.(vault)}
-            size="sm"
-            type="button"
-            variant="quiet"
-          >
-            {t('vault.manager.action.scanQr')}
-          </Button>
+          {operations.scanQr ? (
+            <Button
+              onClick={() => void operations.scanQr?.(vault)}
+              size="sm"
+              type="button"
+              variant="quiet"
+            >
+              {t('vault.manager.action.scanQr')}
+            </Button>
+          ) : (
+            <p className="bt-meta">{t(DEFERRED_ACTION_REASONS['scan-qr'])}</p>
+          )}
         </>
       ) : null}
       {isReset ? (
@@ -640,23 +699,52 @@ function VaultAccessAction({
         <Button disabled={working} onClick={onClose} type="button" variant="quiet">
           {t('common.cancel')}
         </Button>
-        <Button
-          disabled={
-            working ||
-            (needsSecret && secret.trim() === '') ||
-            (needsPhrase && devicePassword === '') ||
-            (isReset && !resetAcknowledged) ||
-            (isStartFresh && (!destructionAcknowledged || stepUpValue.trim() === '')) ||
-            unavailable
-          }
-          onClick={() => void submit()}
-          type="button"
-          variant={isStartFresh ? 'danger' : 'primary'}
-        >
-          {working ? t('common.loading') : t('vault.manager.access.action')}
-        </Button>
+        {deferredKey ? null : (
+          <Button
+            disabled={
+              working ||
+              (needsSecret && secret.trim() === '') ||
+              (needsPhrase && devicePassword === '') ||
+              (isReset && !resetAcknowledged) ||
+              (isStartFresh && (!destructionAcknowledged || stepUpValue.trim() === ''))
+            }
+            onClick={() => void submit()}
+            type="button"
+            variant={isStartFresh ? 'danger' : 'primary'}
+          >
+            {working ? t('common.loading') : t('vault.manager.access.action')}
+          </Button>
+        )}
       </div>
     </section>
+  );
+}
+
+/**
+ * The §12 invariant applied to an action this build cannot finish: say what is
+ * missing, and still offer the vault's own live next step. Never a silent
+ * disabled control — "a state without a next action is a design bug".
+ */
+function DeferredActionNotice({ reasonKey, vault }: { reasonKey: string; vault: VaultConfig }) {
+  const t = useT();
+  const stateQuery = useVaultEndpointState(vault.id);
+  return (
+    <div className="bt-soft flex flex-col items-start gap-2 text-sm">
+      <p>{t(reasonKey)}</p>
+      {stateQuery.data ? (
+        <VaultStateAction state={stateQuery.data} vaultId={vault.id} />
+      ) : (
+        <Button
+          disabled={stateQuery.isPending}
+          onClick={() => void stateQuery.refetch()}
+          size="sm"
+          type="button"
+          variant="quiet"
+        >
+          {stateQuery.isError ? t('common.retry') : t('common.loading')}
+        </Button>
+      )}
+    </div>
   );
 }
 

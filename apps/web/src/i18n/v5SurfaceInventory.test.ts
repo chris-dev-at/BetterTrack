@@ -193,6 +193,7 @@ user/vault/engine/VaultMoneyEngineProvider.tsx
 user/vault/ui/ParanoidEnableWizard.tsx
 user/vault/ui/ParanoidSurfaceGate.tsx
 user/vault/ui/PortfolioVaultMoveWizard.tsx
+user/vault/ui/PortfolioVaultSection.tsx
 user/vault/ui/VaultCreationCeremony.tsx
 user/vault/ui/VaultManager.tsx
 user/vault/ui/VaultRestorePicker.tsx

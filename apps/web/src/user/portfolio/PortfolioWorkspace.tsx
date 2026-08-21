@@ -10,10 +10,9 @@ import { SECTION_NAV, useSectionNavItems } from '../components/sectionNav';
 import { Button, SubTabLink } from '../../ui/origin';
 import { isParanoidKilledPath } from '../vault/ui/ParanoidSurfaceGate';
 import { useResolvedPrivacyMode } from '../vault/usePrivacyMode';
-import { ACTIVE_PORTFOLIO_PARAM } from './PortfolioSwitcher';
+import { ACTIVE_PORTFOLIO_PARAM, resolveActivePortfolio } from './PortfolioSwitcher';
 import { LockedPortfolioStub } from './LockedPortfolioStub';
 import { isVaultedPortfolio } from './lockedPortfolio';
-import { resolveActivePortfolio } from './PortfolioSwitcher';
 import { usePortfolioStore } from './PortfolioStoreProvider';
 
 /**
@@ -48,8 +47,12 @@ export function PortfolioWorkspace() {
   const locked = isVaultedPortfolio(active);
   // A locked stub has one job: lead to its state action. Portfolio operations,
   // including Import, never remain as tempting dead-end tabs around it.
-  const visibleItems =
-    !portfolios.isSuccess || locked ? items.filter((item) => item.to === '/portfolio') : items;
+  //
+  // Only a KNOWN-locked portfolio collapses the strip. Collapsing it while the
+  // list is still in flight would blank the local nav down to Overview on every
+  // cold load of the hot path — the page body below already refuses to render
+  // anything but a skeleton until the same read resolves, so nothing leaks.
+  const visibleItems = locked ? items.filter((item) => item.to === '/portfolio') : items;
 
   return (
     <div>

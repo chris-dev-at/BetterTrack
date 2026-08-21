@@ -289,9 +289,6 @@ test('the rail tree is the vital subset of the full in-page strip', async () => 
     .filter((link) => link.closest('#bt-rail-group-portfolio') !== null)
     .map((el) => el.textContent);
   const strip = screen.getByRole('navigation', { name: 'Portfolio workspace' });
-  await waitFor(() =>
-    expect(within(strip).getByRole('link', { name: 'Analysis' })).toBeInTheDocument(),
-  );
   const stripChildren = within(strip)
     .getAllByRole('link')
     .map((el) => el.textContent);
@@ -491,9 +488,7 @@ test('the in-page strip renders in full alongside the rail tree', async () => {
     screen.getByRole('navigation', { name: 'Portfolio workspace' }),
   );
   expect(strip).not.toHaveClass('bt-hide-when-rail');
-  expect(
-    await waitForColdStart(() => within(strip).getByRole('link', { name: 'Analysis' })),
-  ).toBeInTheDocument();
+  expect(within(strip).getByRole('link', { name: 'Analysis' })).toBeInTheDocument();
 });
 
 test('the rail utilities expose Ask, Review and the Control Center', async () => {
@@ -835,9 +830,6 @@ test('the portfolio workspace shows the switcher and its local tabs', async () =
     await waitForColdStart(() => screen.getByRole('button', { name: 'Switch portfolio' })),
   ).toBeInTheDocument();
   const tabs = screen.getByRole('navigation', { name: 'Portfolio workspace' });
-  await waitFor(() =>
-    expect(within(tabs).getByRole('link', { name: 'Analysis' })).toBeInTheDocument(),
-  );
   // Parked tabs append the "Planned" dot to their accessible name — anchor the
   // match so "Plan" does not also match every parked tab's name.
   for (const tab of ['Overview', 'Transactions', 'Cash', 'Analysis', 'Tax', 'Plan', 'Files']) {

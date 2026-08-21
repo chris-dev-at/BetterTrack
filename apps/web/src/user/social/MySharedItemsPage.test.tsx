@@ -145,6 +145,24 @@ describe('MySharedItemsPage', () => {
     await waitFor(() => expect(share).toBeEnabled());
   });
 
+  test('names every shared portfolio while the vault metadata is still pending', async () => {
+    const read = deferred<Awaited<ReturnType<typeof listPortfolios>>>();
+    vi.mocked(listMyShared).mockResolvedValue(WITH_PORTFOLIO);
+    vi.mocked(listPortfolios).mockReturnValue(read.promise);
+    renderPage();
+
+    // The sharing action waits for the metadata; the row's NAME never does —
+    // masking it would rename every plain portfolio on each background refetch.
+    expect(await screen.findByText('Main')).toBeInTheDocument();
+    expect(screen.queryByText('Locked portfolio')).not.toBeInTheDocument();
+
+    await act(async () => {
+      read.resolve(portfolioList());
+    });
+
+    expect(screen.getByText('Main')).toBeInTheDocument();
+  });
+
   test('retries failed MIRRORCHAIN metadata before opening a live, authoritative picker', async () => {
     vi.mocked(listMyShared).mockResolvedValue(WITH_PORTFOLIO);
     vi.mocked(listPortfolios)
@@ -303,7 +321,7 @@ describe('MySharedItemsPage', () => {
     // Every kind is present — a private portfolio, a never-shared conglomerate
     // and a never-shared watchlist — under its own section heading.
     await waitFor(() => expect(screen.getByText('Tech basket')).toBeInTheDocument());
-    expect(await screen.findByText('Main')).toBeInTheDocument();
+    expect(screen.getByText('Main')).toBeInTheDocument();
     expect(screen.getByText('General')).toBeInTheDocument();
     expect(screen.getByText('Portfolios')).toBeInTheDocument();
     expect(screen.getByText('Blueprints')).toBeInTheDocument();

@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
@@ -192,6 +192,11 @@ describe('VaultSyncChip', () => {
     );
 
     await user.click(screen.getByRole('button', { name: 'Locked (4)' }));
+    // The popover subtitle is the same interpolated aggregate line as the chip
+    // label — never the raw `Locked ({{count}})` token.
+    const popover = screen.getByRole('dialog', { name: 'Encrypted vault sync' });
+    expect(within(popover).getByText('Locked (4)')).toBeInTheDocument();
+    expect(popover.textContent).not.toContain('{{');
     expect(screen.getAllByRole('link', { name: 'Unlock' })).toHaveLength(1);
     expect(screen.getAllByRole('link', { name: 'Reset this device' })).toHaveLength(2);
     expect(screen.getAllByRole('link', { name: 'Open' })).toHaveLength(2);

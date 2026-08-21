@@ -11,7 +11,11 @@ import { useT } from '../../../i18n';
 import { formatDateTime } from '../../../lib/format';
 import { Icon } from '../../../ui/origin';
 import { cx } from '../../components/ui';
-import { projectVaultMediaSyncStatus, type VaultDirectorySyncInput } from '../media/status';
+import {
+  projectVaultMediaSyncStatus,
+  type VaultAggregateSyncProjection,
+  type VaultDirectorySyncInput,
+} from '../media/status';
 import { useVaultRuntime } from '../VaultRuntimeContext';
 import { VaultStateAction } from './VaultStateAction';
 
@@ -160,24 +164,40 @@ function LegacyVaultSyncChip({ media }: { media: ParanoidVaultMediaState }) {
   );
 }
 
+/**
+ * The aggregate line, resolved ONCE for every place that shows it: the chip
+ * label, its aria-label and the popover subtitle. Two of the four aggregate
+ * messages carry a placeholder (`Locked ({{count}})`, `Attention: {{name}}`),
+ * and `interpolate()` keeps an unfilled token verbatim — so a caller that
+ * renders `projection.messageKey` without params paints `{{count}}` on screen.
+ * One function, one call site per surface, no way to drift again.
+ */
+function aggregateSyncLabel(
+  t: ReturnType<typeof useT>,
+  projection: VaultAggregateSyncProjection,
+): string {
+  if (projection.overall === 'attention') {
+    return t('vault.sync.aggregate.attention', {
+      name: projection.attentionVaultName ?? t('vault.lockedStub.fallbackAlias'),
+    });
+  }
+  if (projection.overall === 'locked') {
+    return t(
+      projection.lockedCount === 1
+        ? 'vault.sync.aggregate.lockedOne'
+        : 'vault.sync.aggregate.locked',
+      { count: projection.lockedCount },
+    );
+  }
+  return t(projection.messageKey);
+}
+
 function DirectoryVaultSyncChip({ vaults }: { vaults: readonly VaultDirectorySyncInput[] }) {
   const t = useT();
   const [open, setOpen] = useState(false);
   const rootRef = useRef<HTMLDivElement>(null);
   const projection = useMemo(() => projectVaultMediaSyncStatus({ vaults }), [vaults]);
-  const label =
-    projection.overall === 'attention'
-      ? t('vault.sync.aggregate.attention', {
-          name: projection.attentionVaultName ?? t('vault.lockedStub.fallbackAlias'),
-        })
-      : projection.overall === 'locked'
-        ? t(
-            projection.lockedCount === 1
-              ? 'vault.sync.aggregate.lockedOne'
-              : 'vault.sync.aggregate.locked',
-            { count: projection.lockedCount },
-          )
-        : t(`vault.sync.aggregate.${projection.overall}`);
+  const label = aggregateSyncLabel(t, projection);
 
   useEffect(() => {
     if (!open) return;
@@ -222,7 +242,7 @@ function DirectoryVaultSyncChip({ vaults }: { vaults: readonly VaultDirectorySyn
           <div className="flex flex-col gap-3 p-3">
             <div>
               <p className="bt-row-title">{t('vault.sync.popoverTitle')}</p>
-              <p className="bt-row-sub">{t(projection.messageKey)}</p>
+              <p className="bt-row-sub">{label}</p>
             </div>
             <ul className="flex max-h-80 flex-col gap-3 overflow-y-auto">
               {projection.rows.map((row) => (
