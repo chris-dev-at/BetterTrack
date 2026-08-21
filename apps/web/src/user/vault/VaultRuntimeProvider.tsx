@@ -34,6 +34,7 @@ import { createServerBlobDataHome } from './serverBlobDataHome';
 import type { DataHome } from './dataHome';
 import type { VaultSyncState } from './sync';
 import { VAULT_LOCK_REQUEST_EVENT } from './lockSignal';
+import { vaultTransferRuntime, type VaultTransferRuntime } from './qr/runtime';
 import { equalBytes } from './bytes';
 import { zeroBytes } from './bytes';
 import {
@@ -71,6 +72,8 @@ export interface VaultRuntimeProviderDependencies {
     keyId: string,
     options: UnlockedVaultDriveRuntimeOptions,
   ) => UnlockedVaultDriveRuntime;
+  /** Exact per-vault transfer session instance; focused tests inject it. */
+  transferRuntime?: VaultTransferRuntime;
 }
 
 /**
@@ -92,6 +95,7 @@ export function VaultRuntimeProvider({
   const [core] = useState(
     () => new VaultLockCore({ custody: dependencies?.custody ?? createIndexedDbVaultCustody() }),
   );
+  const [transfer] = useState(() => dependencies?.transferRuntime ?? vaultTransferRuntime);
   const [connection, setConnection] = useState<DriveConnectionController | null>(null);
   const [sync, setSync] = useState<VaultDriveSyncCoordinator | null>(null);
   const [phase, setPhase] = useState<'locked' | 'unlocking' | 'unlocked'>('locked');
@@ -135,10 +139,11 @@ export function VaultRuntimeProvider({
   );
 
   const lock = useCallback(
-    async (options: { broadcast?: boolean } = {}) => {
+    async (options: { broadcast?: boolean; transferAlreadyRevoked?: boolean } = {}) => {
       operationGenerationRef.current += 1;
       // Revoke every plaintext seam before the first await. The gate can paint
       // in the same React turn while IndexedDB custody cleanup finishes.
+      if (options.transferAlreadyRevoked !== true) transfer.endSession();
       setPhase('locked');
       setConnection(null);
       setSync(null);
@@ -157,7 +162,7 @@ export function VaultRuntimeProvider({
       // marker above also prevents a stale custody key from reopening the vault.
       await core.lock(userId == null ? undefined : custodyDeviceId(userId)).catch(() => undefined);
     },
-    [core, userId],
+    [core, transfer, userId],
   );
 
   useLayoutEffect(() => {
@@ -181,11 +186,13 @@ export function VaultRuntimeProvider({
 
   useEffect(() => {
     const onRequest = () => {
-      void lock();
+      // The endpoint-wide normal-branch runtime listens to this same signal.
+      // An injected/unbound runtime relies on the provider to revoke it here.
+      void lock({ transferAlreadyRevoked: transfer.lockSignalBound });
     };
     globalThis.addEventListener(VAULT_LOCK_REQUEST_EVENT, onRequest);
     return () => globalThis.removeEventListener(VAULT_LOCK_REQUEST_EVENT, onRequest);
-  }, [lock]);
+  }, [lock, transfer.lockSignalBound]);
 
   useEffect(() => {
     if (connection == null || sync == null) return;
@@ -293,6 +300,7 @@ export function VaultRuntimeProvider({
         if (runtimeRef.current === installed) runtimeRef.current = null;
         if (operationGenerationRef.current === operationGeneration) {
           operationGenerationRef.current += 1;
+          transfer.endSession();
           setConnection(null);
           setSync(null);
           setSyncState(null);
@@ -314,6 +322,7 @@ export function VaultRuntimeProvider({
       dependencies?.readEnvelope,
       dependencies?.server,
       drive,
+      transfer,
       tokens,
       userId,
     ],
@@ -497,6 +506,7 @@ export function VaultRuntimeProvider({
   const value = useMemo<VaultRuntime>(
     () => ({
       core,
+      transfer,
       connection,
       sync,
       lockState: core.state,
@@ -517,6 +527,7 @@ export function VaultRuntimeProvider({
     [
       connection,
       core,
+      transfer,
       authorizeDriveStorage,
       changePassphrase,
       cleanupAfterDisable,

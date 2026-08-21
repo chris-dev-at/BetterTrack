@@ -1,8 +1,13 @@
-import { vaultIdParamSchema, vaultKeyFingerprintSchema } from '@bettertrack/contracts';
+import {
+  VAULT_QR_SCHEME_PREFIX,
+  vaultIdParamSchema,
+  vaultKeyFingerprintSchema,
+} from '@bettertrack/contracts';
 
 import { mnemonicToEntropy, normalizeMnemonic } from '../bip39/mnemonic';
 
-export const VAULT_TRANSFER_SCHEME = 'btvault1:' as const;
+/** Keep E7's parser/serializer on E0's binding version marker. */
+export const VAULT_TRANSFER_SCHEME = VAULT_QR_SCHEME_PREFIX;
 export const VAULT_TRANSFER_NAME_MAX_CHARS = 64;
 
 export const VAULT_TRANSFER_PAYLOAD_ERROR_OUTCOMES = [

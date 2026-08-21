@@ -3981,7 +3981,15 @@
         "loading": "Loading transferable vaults…",
         "empty": "No transferable vault is registered for this account yet.",
         "unavailable": "Vault details could not be loaded. You can still receive with a transfer code.",
-        "received": "The transferred vault was verified and saved on this device."
+        "received": "The transferred vault was verified and saved on this device.",
+        "opening": "Opening the local vault session…",
+        "notOnEndpoint": "This vault’s phrase is not stored on this device. Receive it from another device first.",
+        "openError": "This vault could not be opened for transfer right now.",
+        "sessionEnded": "The vault session was locked. Reopen it before transferring.",
+        "reopen": "Reopen for transfer",
+        "unlockHint": "Unlocks the endpoint phrase before the transfer step-up.",
+        "unlock": "Unlock for transfer",
+        "unlockError": "The device password could not unlock this endpoint."
       },
       "sender": {
         "showQr": "Show transfer QR",
@@ -3993,6 +4001,7 @@
         "verifyAndShowWords": "Verify and show words",
         "banner": "Anyone who captures this code owns this vault — no screenshots, no screen sharing, mind who can see your screen.",
         "qrAria": "Vault seed-phrase transfer QR code",
+        "vaultId": "Vault ID",
         "expires": "This code blanks automatically after 60 seconds.",
         "expired": "This transfer code expired and is now blank. Show it again manually.",
         "showAgain": "Show again",

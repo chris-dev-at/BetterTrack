@@ -7,6 +7,7 @@ import { MemoryRouter, useLocation } from 'react-router-dom';
 import { beforeEach, describe, expect, test, vi } from 'vitest';
 
 import type { ParanoidVaultMediaState, PrivacyMode } from '@bettertrack/contracts';
+import { createVaultTransferRuntime } from '../../vault/qr/runtime';
 
 const toggleDiscreetMode = vi.fn(async () => undefined);
 const USER_ID = '018f0000-0000-7000-8000-000000000001';
@@ -30,7 +31,11 @@ vi.mock('../../vault/usePrivacyMode', () => ({
   }),
 }));
 /** `null` = no vault providers above the panel, which is a normal account. */
-let vaultRuntime: object | null = {};
+const transferRuntime = createVaultTransferRuntime({
+  bindLockSignal: false,
+  requestJson: vi.fn(async () => ({ vaults: [] })),
+});
+let vaultRuntime: object | null = { transfer: transferRuntime };
 vi.mock('../../vault/VaultRuntimeContext', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../vault/VaultRuntimeContext')>()),
   useOptionalVaultRuntime: () => vaultRuntime,
@@ -114,7 +119,7 @@ beforeEach(() => {
   privacyMode = 'normal';
   mediaState = null;
   syncStatus = null;
-  vaultRuntime = {};
+  vaultRuntime = { transfer: transferRuntime };
   auth.user = { id: USER_ID, username: 'jane', discreetMode: false };
   toggleDiscreetMode.mockImplementation(async () => undefined);
 });
@@ -152,17 +157,16 @@ describe('PrivacyPanel (§13.5 V5-P13)', () => {
     expect(screen.getByRole('switch', { name: 'Discreet mode' })).not.toBeChecked();
   });
 
-  test('renders for a normal account with no vault runtime above it', () => {
-    // Owner ruling 2026-08-19 (PROJECTPLAN §16): the per-portfolio vault v2
-    // surface is gone, so this panel owns the ONE paranoid entry point again.
-    // Discreet mode plus the account-level setup CTA is the whole panel, and no
-    // per-portfolio signpost may come back.
+  test('keeps the per-vault receive entry reachable for a normal account without the legacy runtime', async () => {
+    // E7 is account-mode independent: a fresh endpoint must be able to receive
+    // a per-vault phrase before any legacy account-level runtime is unlocked.
     vaultRuntime = null;
 
     renderPanel();
 
     expect(screen.getByRole('switch', { name: 'Discreet mode' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Set up' })).toBeInTheDocument();
+    expect(await screen.findByText('Transfer between devices')).toBeInTheDocument();
     expect(screen.queryByRole('link', { name: 'Open portfolio settings' })).not.toBeInTheDocument();
     expect(screen.queryByRole('link', { name: 'Read' })).not.toBeInTheDocument();
   });

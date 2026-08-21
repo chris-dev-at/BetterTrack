@@ -2,9 +2,17 @@ import 'fake-indexeddb/auto';
 
 import type { ComponentProps } from 'react';
 
-import { act, fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
+import { VAULT_DOC_SCHEMA_VERSION } from '@bettertrack/contracts';
+
+import { utf8, zeroBytes } from '../bytes';
+import { acknowledgePlainCustodyRisk } from '../keystore/acknowledgment';
+import { EndpointVaultKeystore } from '../keystore/core';
+import { createIndexedDbEndpointKeystoreStorage } from '../keystore/storage';
+import { encryptVaultDoc } from '../keys/documents';
+import { deriveAccountBinding, deriveVaultWrapKey, wrapContentKey } from '../keys/keyCore';
 import {
   createVaultTransferQrSource,
   parseVaultTransferPayload,
@@ -14,7 +22,6 @@ import {
   VAULT_TRANSFER_VECTOR_MNEMONIC,
   VAULT_TRANSFER_VECTOR_VAULT_ID,
 } from '../qr';
-import type { EndpointVaultKeystore } from '../keystore/core';
 
 const qrEncoder = vi.hoisted(() => ({ render: vi.fn() }));
 
@@ -31,9 +38,15 @@ vi.mock('qrcode.react', async (importOriginal) => {
 });
 
 import { VaultTransferQr } from './VaultTransferQr';
+import { VaultReceivePhrase } from './VaultReceivePhrase';
 
 const DEVICE_PASSWORD = 'correct endpoint password';
 const SECOND_VAULT_ID = '018f6a3e-1111-7000-8000-000000000002';
+const HEADER_KEY_ID = '018f6a3e-3333-7000-8000-000000000001';
+const HEADER_DOC_ID = '018f6a3e-2222-7000-8000-000000000001';
+const HEADER_DEVICE_ID = '018f6a3e-4444-7000-8000-000000000001';
+const HEADER_WRITE_ID = '018f6a3e-5555-7000-8000-000000000001';
+const testDatabaseNames = new Set<string>();
 
 function wrappedSource() {
   const lifecycle = sessionLifecycle();
@@ -131,7 +144,7 @@ async function openWrapped() {
   return screen.findByLabelText('Vault seed-phrase transfer QR code');
 }
 
-afterEach(() => {
+afterEach(async () => {
   vi.useRealTimers();
   vi.restoreAllMocks();
   qrEncoder.render.mockClear();
@@ -140,6 +153,9 @@ afterEach(() => {
   document.cookie = 'vault-transfer-test=; Max-Age=0; path=/';
   Reflect.deleteProperty(globalThis, 'reportError');
   Reflect.deleteProperty(navigator, 'clipboard');
+  Reflect.deleteProperty(globalThis, 'caches');
+  await Promise.all([...testDatabaseNames].map(deleteDatabase));
+  testDatabaseNames.clear();
 });
 
 describe('VaultTransferQr sender', () => {
@@ -325,6 +341,58 @@ describe('VaultTransferQr sender', () => {
     expect(parseVaultTransferPayload((await latestQr()).value)).toMatchObject({ name: vaultName });
   });
 
+  it('completes manual handoff using only the words and vault ID shown by the sender', async () => {
+    const source = plainSource();
+    const databaseName = `bettertrack-transfer-manual-${testDatabaseNames.size + 1}`;
+    testDatabaseNames.add(databaseName);
+    const receiverKeystore = new EndpointVaultKeystore({
+      storage: createIndexedDbEndpointKeystoreStorage({ databaseName }),
+      randomBytes: deterministicRandom(),
+    });
+    const header = await createHeaderEnvelope(VAULT_TRANSFER_VECTOR_VAULT_ID, 0x52);
+    const onOpened = vi.fn();
+    const sender = render(
+      <VaultTransferQr source={source} vaultId={VAULT_TRANSFER_VECTOR_VAULT_ID} />,
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: 'Show 12 words instead' }));
+    await screen.findByLabelText('Vault seed-phrase transfer QR code');
+    const exposedVaultId = screen.getByText(VAULT_TRANSFER_VECTOR_VAULT_ID).textContent ?? '';
+    const exposedMnemonic = screen
+      .getAllByRole('listitem')
+      .map((item) => (item.textContent ?? '').replace(/^\d+\.\s*/, ''))
+      .join(' ');
+    sender.unmount();
+
+    render(
+      <VaultReceivePhrase
+        fetchHeaderEnvelope={vi.fn(async () => header.slice())}
+        keystore={receiverKeystore}
+        onOpened={onOpened}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Enter 12 words instead' }));
+    fireEvent.change(screen.getByLabelText('12-word seed phrase'), {
+      target: { value: exposedMnemonic },
+    });
+    fireEvent.change(screen.getByLabelText('Vault ID'), {
+      target: { value: exposedVaultId },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Continue' }));
+
+    expect(exposedMnemonic).toBe(VAULT_TRANSFER_VECTOR_MNEMONIC);
+    expect(exposedVaultId).toBe(VAULT_TRANSFER_VECTOR_VAULT_ID);
+    expect(await screen.findByText(VAULT_TRANSFER_VECTOR_VAULT_ID)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('radio', { name: /store without password wrapping/i }));
+    fireEvent.click(screen.getByRole('checkbox', { name: /i understand the weaker protection/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Verify and open vault' }));
+
+    await waitFor(() => expect(onOpened).toHaveBeenCalledTimes(1));
+    expect(onOpened).toHaveBeenCalledWith({
+      opened: expect.objectContaining({ vaultId: VAULT_TRANSFER_VECTOR_VAULT_ID }),
+    });
+  });
+
   it('does not misreport payload creation failures as a rejected device password', async () => {
     const source = wrappedSource();
     source.readMnemonic = vi.fn(async () => 'not a valid seed phrase');
@@ -453,9 +521,28 @@ describe('VaultTransferQr sender', () => {
   });
 
   it('has no network, clipboard, log, analytics, error-report or persistence leak path', async () => {
+    const databaseName = `bettertrack-transfer-reveal-${testDatabaseNames.size + 1}`;
+    testDatabaseNames.add(databaseName);
+    const keystore = new EndpointVaultKeystore({
+      storage: createIndexedDbEndpointKeystoreStorage({ databaseName }),
+      randomBytes: deterministicRandom(),
+    });
+    const header = await createHeaderEnvelope(VAULT_TRANSFER_VECTOR_VAULT_ID, 0x31);
+    await keystore.storePlainAfterVerifiedOpen({
+      vaultId: VAULT_TRANSFER_VECTOR_VAULT_ID,
+      mnemonic: VAULT_TRANSFER_VECTOR_MNEMONIC,
+      acknowledgment: acknowledgePlainCustodyRisk(VAULT_TRANSFER_VECTOR_VAULT_ID),
+      fetchHeaderEnvelope: async () => header.slice(),
+    });
+    const source = createVaultTransferQrSource({
+      keystore,
+      vaultId: VAULT_TRANSFER_VECTOR_VAULT_ID,
+    });
+
     localStorage.setItem('unrelated', 'theme');
     sessionStorage.setItem('unrelated', 'tab');
     document.cookie = 'vault-transfer-test=unrelated; path=/';
+    installInspectableCaches();
     const before = await persistentSurfaceSnapshot();
     const fetchSpy = vi.spyOn(globalThis, 'fetch');
     const clipboardWrite = vi.fn(async () => undefined);
@@ -472,7 +559,6 @@ describe('VaultTransferQr sender', () => {
     const dispatchSpy = vi.spyOn(window, 'dispatchEvent');
     const reportError = vi.fn();
     Object.defineProperty(globalThis, 'reportError', { configurable: true, value: reportError });
-    const source = wrappedSource();
     render(
       <VaultTransferQr
         keyFingerprint={VAULT_TRANSFER_VECTOR_FINGERPRINT}
@@ -481,8 +567,11 @@ describe('VaultTransferQr sender', () => {
       />,
     );
 
-    await openWrapped();
+    fireEvent.click(screen.getByRole('button', { name: 'Show transfer QR' }));
+    const payload = (await latestQr()).value;
     const after = await persistentSurfaceSnapshot();
+    const persistedValues = persistentValues(after);
+    const forbiddenBytes = [utf8(VAULT_TRANSFER_VECTOR_MNEMONIC), utf8(payload)];
 
     expect({
       fetches: fetchSpy.mock.calls,
@@ -501,6 +590,12 @@ describe('VaultTransferQr sender', () => {
       storageUnchanged: before,
       manualFallbackCount: 2,
     });
+    expect(JSON.stringify(after)).not.toContain(VAULT_TRANSFER_VECTOR_MNEMONIC);
+    expect(JSON.stringify(after)).not.toContain(payload);
+    for (const forbidden of forbiddenBytes) {
+      expect(containsByteSequence(persistedValues, forbidden)).toBe(false);
+      zeroBytes(forbidden);
+    }
   });
 });
 
@@ -528,6 +623,34 @@ function deferred<T>() {
 }
 
 async function persistentSurfaceSnapshot() {
+  const databaseNames = (await indexedDB.databases())
+    .map(({ name }) => name)
+    .filter((name): name is string => name != null)
+    .sort();
+  const databases = await Promise.all(
+    databaseNames.map(async (name) => ({ name, stores: await readAllDatabaseStores(name) })),
+  );
+  const cacheNames = typeof globalThis.caches === 'undefined' ? [] : await globalThis.caches.keys();
+  const cacheContents = await Promise.all(
+    cacheNames.sort().map(async (name) => {
+      const cache = await globalThis.caches.open(name);
+      const requests = await cache.keys();
+      return {
+        name,
+        entries: await Promise.all(
+          requests.map(async (request) => {
+            const response = await cache.match(request);
+            const binary = response?.clone();
+            return {
+              url: request.url,
+              text: response == null ? null : await response.text(),
+              bytes: binary == null ? null : new Uint8Array(await binary.arrayBuffer()),
+            };
+          }),
+        ),
+      };
+    }),
+  );
   return {
     local: Object.keys(localStorage)
       .sort()
@@ -536,6 +659,173 @@ async function persistentSurfaceSnapshot() {
       .sort()
       .map((key) => [key, sessionStorage.getItem(key)]),
     cookie: document.cookie,
-    databases: (await indexedDB.databases()).map(({ name, version }) => ({ name, version })),
+    databases,
+    caches: cacheContents,
   };
+}
+
+async function readAllDatabaseStores(databaseName: string): Promise<unknown[]> {
+  const db = await new Promise<IDBDatabase>((resolve, reject) => {
+    const request = indexedDB.open(databaseName);
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+  try {
+    const storeNames = Array.from(db.objectStoreNames).sort();
+    if (storeNames.length === 0) return [];
+    const transaction = db.transaction(storeNames, 'readonly');
+    return await Promise.all(
+      storeNames.map(async (name) => {
+        const store = transaction.objectStore(name);
+        const [keys, values] = await Promise.all([
+          idbRequest(store.getAllKeys()),
+          idbRequest(store.getAll()),
+        ]);
+        return { name, keys, values };
+      }),
+    );
+  } finally {
+    db.close();
+  }
+}
+
+function idbRequest<T>(request: IDBRequest<T>): Promise<T> {
+  return new Promise((resolve, reject) => {
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+function persistentValues(snapshot: Awaited<ReturnType<typeof persistentSurfaceSnapshot>>) {
+  return [snapshot.databases, snapshot.caches];
+}
+
+function containsByteSequence(value: unknown, needle: Uint8Array): boolean {
+  if (typeof value === 'string') return bytesContain(utf8(value), needle);
+  if (value instanceof ArrayBuffer) return bytesContain(new Uint8Array(value), needle);
+  if (ArrayBuffer.isView(value)) {
+    return bytesContain(new Uint8Array(value.buffer, value.byteOffset, value.byteLength), needle);
+  }
+  if (Array.isArray(value)) return value.some((entry) => containsByteSequence(entry, needle));
+  if (value != null && typeof value === 'object') {
+    return Object.values(value).some((entry) => containsByteSequence(entry, needle));
+  }
+  return false;
+}
+
+function bytesContain(haystack: Uint8Array, needle: Uint8Array): boolean {
+  if (needle.length === 0) return true;
+  for (let offset = 0; offset + needle.length <= haystack.length; offset += 1) {
+    let matches = true;
+    for (let index = 0; index < needle.length; index += 1) {
+      if (haystack[offset + index] !== needle[index]) {
+        matches = false;
+        break;
+      }
+    }
+    if (matches) return true;
+  }
+  return false;
+}
+
+function installInspectableCaches(): void {
+  const records = new Map<string, Map<string, Uint8Array>>([
+    [
+      'unrelated-cache',
+      new Map([['https://cache.test/public-resource', utf8('unrelated public response')]]),
+    ],
+  ]);
+  const open = async (cacheName: string) => {
+    const entries = records.get(cacheName) ?? new Map<string, Uint8Array>();
+    records.set(cacheName, entries);
+    return {
+      keys: async () => [...entries.keys()].map((url) => new Request(url)),
+      match: async (request: RequestInfo | URL) => {
+        const bytes = entries.get(requestUrl(request));
+        return bytes == null ? undefined : new Response(bytes.slice());
+      },
+      put: async (request: RequestInfo | URL, response: Response) => {
+        entries.set(requestUrl(request), new Uint8Array(await response.arrayBuffer()));
+      },
+    } as unknown as Cache;
+  };
+  Object.defineProperty(globalThis, 'caches', {
+    configurable: true,
+    value: {
+      keys: async () => [...records.keys()],
+      open,
+    } as unknown as CacheStorage,
+  });
+}
+
+function requestUrl(request: RequestInfo | URL): string {
+  return typeof request === 'string'
+    ? request
+    : request instanceof URL
+      ? request.toString()
+      : request.url;
+}
+
+function deterministicRandom(): (length: number) => Uint8Array {
+  let next = 1;
+  return (length) =>
+    Uint8Array.from({ length }, () => {
+      const value = next % 256;
+      next += 1;
+      return value;
+    });
+}
+
+async function createHeaderEnvelope(vaultId: string, contentByte: number): Promise<Uint8Array> {
+  const contentKey = new Uint8Array(32).fill(contentByte);
+  const wrapKey = await deriveVaultWrapKey(VAULT_TRANSFER_VECTOR_MNEMONIC, vaultId);
+  try {
+    const keySlot = await wrapContentKey({
+      contentKey,
+      wrapKey,
+      vaultId,
+      keyId: HEADER_KEY_ID,
+      randomBytes: deterministicRandom(),
+    });
+    const encrypted = await encryptVaultDoc({
+      plaintext: utf8(
+        JSON.stringify({
+          schemaVersion: VAULT_DOC_SCHEMA_VERSION,
+          name: 'Transfer leak test vault',
+          portfolios: [],
+          keySlots: [keySlot],
+          driveConnection: null,
+          created: { at: '2026-08-20T12:00:00.000Z', deviceId: HEADER_DEVICE_ID },
+        }),
+      ),
+      contentKey,
+      header: {
+        keyId: HEADER_KEY_ID,
+        keySlots: [keySlot],
+        vaultId,
+        docId: HEADER_DOC_ID,
+        docKind: 'header',
+        accountBinding: await deriveAccountBinding('018f6a3e-0000-7000-8000-00000000aaaa'),
+        docVersion: 1,
+        schemaVersion: VAULT_DOC_SCHEMA_VERSION,
+        deviceId: HEADER_DEVICE_ID,
+        writeId: HEADER_WRITE_ID,
+        writtenAt: '2026-08-20T12:00:00.000Z',
+      },
+      randomBytes: deterministicRandom(),
+    });
+    return encrypted.envelope;
+  } finally {
+    zeroBytes(contentKey);
+    zeroBytes(wrapKey);
+  }
+}
+
+function deleteDatabase(databaseName: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const request = indexedDB.deleteDatabase(databaseName);
+    request.onsuccess = () => resolve();
+    request.onerror = () => reject(request.error);
+    request.onblocked = () => reject(new Error(`Deletion of ${databaseName} was blocked.`));
+  });
 }

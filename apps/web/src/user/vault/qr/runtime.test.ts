@@ -44,5 +44,14 @@ describe('vault transfer production runtime', () => {
       `https://api.example.test/api/v1/vaults/${VAULT.id}/docs/${VAULT.headerDocId}`,
       { credentials: 'include', cache: 'no-store' },
     );
+
+    runtime.registerOpenedVault({
+      vaultId: VAULT.id,
+      keyId: '018f6a3e-3333-7000-8000-000000000001',
+      keyFingerprint: VAULT.keyFingerprint,
+    });
+    expect(runtime.isVaultOpen(VAULT.id)).toBe(true);
+    runtime.endSession();
+    expect(runtime.isVaultOpen(VAULT.id)).toBe(false);
   });
 });
