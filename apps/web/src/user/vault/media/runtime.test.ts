@@ -677,6 +677,7 @@ function tokenClient(): GoogleDriveTokenClient {
     }),
     clear: vi.fn(),
     markExpired: vi.fn(),
+    markRevoked: vi.fn(),
   };
 }
 

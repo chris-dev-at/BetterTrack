@@ -1,5 +1,5 @@
 /** The only Google Drive permission BetterTrack may ever request. */
-export const DRIVE_APPDATA_SCOPE = 'https://www.googleapis.com/auth/drive.appdata';
+export const DRIVE_FILE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
 
 const GIS_SCRIPT_SRC = 'https://accounts.google.com/gsi/client';
 const TOKEN_EXPIRY_SKEW_MS = 30_000;
@@ -8,7 +8,8 @@ export type DriveAuthorizationState =
   | 'consent-required'
   | 'connected'
   | 'token-expired'
-  | 'gesture-required';
+  | 'gesture-required'
+  | 'revoked';
 
 export type DriveAccessTokenResult =
   | { status: 'ok'; accessToken: string; expiresAt: number }
@@ -37,6 +38,10 @@ export interface GoogleOauth2 {
     client_id: string;
     scope: string;
     include_granted_scopes: boolean;
+    /** GIS calls the OAuth `login_hint` parameter `hint`. */
+    hint?: string;
+    /** Kept explicit as well so the requested principal is auditably pinned. */
+    login_hint?: string;
     callback: (response: GoogleTokenResponse) => void;
     error_callback?: (error: { type?: string; message?: string }) => void;
   }): GoogleTokenClient;
@@ -44,6 +49,10 @@ export interface GoogleOauth2 {
 
 export interface GoogleDriveTokenClientOptions {
   clientId: string;
+  /** Google stable subject for one registered Drive connection. */
+  loginHint?: string;
+  /** Human-readable identity used only in actionable local error copy. */
+  identityLabel?: string;
   loadOauth2?: () => Promise<GoogleOauth2>;
   now?: () => number;
 }
@@ -59,10 +68,11 @@ export interface GoogleDriveTokenClient {
   /** Drop the in-memory capability immediately. */
   clear(): void;
   markExpired(): void;
+  markRevoked(): void;
 }
 
 /**
- * Google Identity Services token client for Drive appdata. It deliberately has
+ * Google Identity Services token client for one Drive connection. It deliberately has
  * no storage adapter: access tokens and expiry live only in this closure and
  * are never serialized, logged, analyzed, or sent to the BetterTrack API.
  */
@@ -123,12 +133,15 @@ export function createGoogleDriveTokenClient(
       return { status: 'ok', ...token };
     }
     if (token) expireToken();
+    const identity = options.identityLabel?.trim();
     return {
       status: state === 'connected' ? 'token-expired' : state,
       message:
         state === 'consent-required'
           ? 'Google Drive consent is required.'
-          : 'Sign in to Google to continue Drive synchronization.',
+          : identity
+            ? `Sign in to Google (${identity}) to sync.`
+            : 'Sign in to Google to continue Drive synchronization.',
     };
   }
 
@@ -166,10 +179,12 @@ export function createGoogleDriveTokenClient(
 
     token = null;
     clearExpiryTimer();
-    const nextState =
-      response.error === 'access_denied' || response.error === 'consent_required'
-        ? 'consent-required'
-        : 'gesture-required';
+    const nextState: Exclude<DriveAuthorizationState, 'connected' | 'token-expired'> =
+      response.error === 'invalid_grant' || response.error === 'invalid_token'
+        ? 'revoked'
+        : response.error === 'access_denied' || response.error === 'consent_required'
+          ? 'consent-required'
+          : 'gesture-required';
     replaceState(nextState);
     finish(generation, {
       status: nextState,
@@ -177,7 +192,11 @@ export function createGoogleDriveTokenClient(
         response.error_description ??
         (nextState === 'consent-required'
           ? 'Google Drive consent is required.'
-          : 'A user gesture is required to sign in to Google Drive.'),
+          : nextState === 'revoked'
+            ? options.identityLabel
+              ? `Sign in to Google (${options.identityLabel}) to sync.`
+              : 'The Google Drive connection was revoked. Sign in again to sync.'
+            : 'A user gesture is required to sign in to Google Drive.'),
     });
   }
 
@@ -237,14 +256,15 @@ export function createGoogleDriveTokenClient(
       try {
         const client: GoogleTokenClient = oauth2.initTokenClient({
           client_id: options.clientId,
-          scope: DRIVE_APPDATA_SCOPE,
+          scope: DRIVE_FILE_SCOPE,
           include_granted_scopes: false,
+          ...(options.loginHint ? { hint: options.loginHint, login_hint: options.loginHint } : {}),
           callback: (response) => handleResponse(generation, response),
           error_callback: (error) => handlePopupError(generation, error),
         });
         client.requestAccessToken({
-          prompt: state === 'consent-required' ? 'consent' : '',
-          scope: DRIVE_APPDATA_SCOPE,
+          prompt: state === 'consent-required' || state === 'revoked' ? 'consent' : '',
+          scope: DRIVE_FILE_SCOPE,
           include_granted_scopes: false,
         });
       } catch (cause) {
@@ -275,6 +295,18 @@ export function createGoogleDriveTokenClient(
         message: 'Sign in to Google to continue Drive synchronization.',
       });
       expireToken();
+    },
+
+    markRevoked() {
+      cancelPending({
+        status: 'revoked',
+        message: options.identityLabel
+          ? `Sign in to Google (${options.identityLabel}) to sync.`
+          : 'The Google Drive connection was revoked. Sign in again to sync.',
+      });
+      token = null;
+      clearExpiryTimer();
+      replaceState('revoked');
     },
   };
 }

@@ -672,6 +672,12 @@ export const PARANOID_CONTEXT_SERVICE_EXEMPTIONS: readonly ParanoidServiceExempt
     'Per-vault config plus opaque ciphertext sync are the E1 paranoid-mode data home; E2 owns portfolio enforcement re-keying.',
   ),
   serviceExemption(
+    'driveConnections',
+    ['*'],
+    'kept',
+    'Drive identities and per-vault bindings are client-storage routing metadata; OAuth tokens and Drive file identifiers never enter the server.',
+  ),
+  serviceExemption(
     'paranoidTransitions',
     ['*'],
     'kept',
@@ -1359,6 +1365,10 @@ export const PARANOID_KEPT_ROUTE_RULES: readonly ParanoidExemptRouteRule[] = [
     { exact: '/vaults' },
     { prefix: '/vaults/' },
   ]),
+  ...keptRoutes(
+    'Drive connection rows contain identity and routing metadata only; Drive credentials and file identifiers remain client-side.',
+    [{ exact: '/drive-connections' }, { prefix: '/drive-connections/' }],
+  ),
   ...keptRoutes(
     'Local workboard organization remains available; sharing settings are classified separately.',
     [

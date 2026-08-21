@@ -1,4 +1,10 @@
-import { VAULT_FORMAT_VERSION } from '@bettertrack/contracts';
+import {
+  inspectVaultDocEnvelope,
+  VAULT_ACCOUNT_BINDING_INFO_PREFIX,
+  VAULT_DOC_FORMAT_VERSION,
+  VAULT_FORMAT_VERSION,
+  type VaultDocKind,
+} from '@bettertrack/contracts';
 
 import { equalBytes } from '../bytes';
 import type {
@@ -19,8 +25,14 @@ const DRIVE_UPLOAD_API = 'https://www.googleapis.com/upload/drive/v3';
 const FILE_FIELDS = 'id,name,size,modifiedTime,headRevisionId,appProperties';
 const DUPLICATE_SCAN_LIMIT = '100';
 const DRIVE_VAULT_FILE_CONTEXT = 'bettertrack-drive-vault-account-v1:';
+const DRIVE_VAULT_DOC_FILE_CONTEXT = 'bettertrack-drive-vault-v2:';
+const DRIVE_OWNER_CONTEXT = 'bettertrack-drive-owner-v1:';
+const DRIVE_VAULT_DIGEST_CONTEXT = 'bettertrack-drive-vault-id-v1:';
 const DRIVE_VAULT_FILE_PREFIX = 'bettertrack-vault-';
 const DRIVE_VAULT_FILE_SUFFIX = '.btenc';
+const DRIVE_FOLDER_NAME = 'BetterTrack Vaults';
+const DRIVE_FOLDER_MIME = 'application/vnd.google-apps.folder';
+const DRIVE_FOLDER_MARKER = 'bettertrack-vaults-v1';
 
 interface DriveFile {
   id: string;
@@ -38,6 +50,21 @@ interface ValidDriveFile {
   sizeBytes: number;
   updatedAt: string | null;
   headRevisionId: string;
+  ownerDigest: string;
+  vaultDigest: string | null;
+  docKind: VaultDocKind | null;
+}
+
+interface DriveAddress {
+  mode: 'legacy' | 'doc';
+  accountId: string;
+  vaultId: string | null;
+  docId: string | null;
+  docKind: VaultDocKind | null;
+  fileName: string;
+  ownerDigest: string;
+  vaultDigest: string | null;
+  accountBinding: string | null;
 }
 
 type DriveFileResult =
@@ -56,7 +83,7 @@ export type DriveReplicaVerifier = (
 
 export interface DriveReplicaCycle {
   /**
-   * Every same-name Drive object, in deterministic metadata order. The PD5
+   * Every same-address Drive object, in deterministic metadata order. The PD5
    * coordinator must authenticate and reconcile every observation before it
    * invokes `converge`.
    */
@@ -82,15 +109,22 @@ export interface DriveDataHome extends DataHome {
 export interface DriveDataHomeOptions {
   /** BetterTrack account id; hashed before it is used as a Drive selector. */
   accountId: string;
-  tokens: Pick<GoogleDriveTokenClient, 'getAccessToken' | 'markExpired'>;
+  /** Envelope-v2 address; supply all three together for a per-document home. */
+  vaultId?: string;
+  docId?: string;
+  docKind?: VaultDocKind;
+  tokens: Pick<GoogleDriveTokenClient, 'getAccessToken' | 'markExpired' | 'markRevoked'>;
   fetch?: typeof fetch;
   isOnline?: () => boolean;
   boundary?: () => string;
+  /** Test/rehydration seam for an already-discovered visible folder id. */
+  folderId?: string;
 }
 
 /**
- * One-file Google Drive appdata adapter. File ids and access tokens stay inside
- * this browser boundary; callers see only the generic encrypted `DataHome`.
+ * One-file Google Drive adapter. New callers pass a per-vault document address;
+ * the account-singleton form remains only until E9 retires envelope v1. File
+ * ids and access tokens stay inside this browser boundary.
  */
 export function createDriveDataHome(options: DriveDataHomeOptions): DriveDataHome {
   const accountId = options.accountId.trim();
@@ -100,12 +134,23 @@ export function createDriveDataHome(options: DriveDataHomeOptions): DriveDataHom
     options.isOnline ??
     (() => (typeof navigator === 'undefined' ? true : navigator.onLine !== false));
   const boundary = options.boundary ?? (() => `bettertrack-${crypto.randomUUID()}`);
-  const fileNamePromise = driveVaultFileName(accountId);
+  const hasAnyDocAddress =
+    options.vaultId != null || options.docId != null || options.docKind != null;
+  const hasCompleteDocAddress =
+    options.vaultId != null && options.docId != null && options.docKind != null;
+  if (hasAnyDocAddress && !hasCompleteDocAddress) {
+    throw new Error('A Drive document address requires vaultId, docId, and docKind together.');
+  }
+  const addressPromise = driveAddress(accountId, options.vaultId, options.docId, options.docKind);
+  let cachedFolderId = options.folderId?.trim() || null;
+  let cachedFileId: string | null = null;
 
   return {
     medium: 'drive',
 
     async read(): Promise<DataHomeReadResult> {
+      const cached = await readCachedFile();
+      if (cached) return cloneReadResult(cached);
       const replicas = await observeReplicas();
       return cloneReadResult(
         replicas.observations.find((observation) => observation.status === 'ok') ??
@@ -119,7 +164,8 @@ export function createDriveDataHome(options: DriveDataHomeOptions): DriveDataHom
       envelope: Uint8Array,
       { ifVersion }: DataHomeWriteOptions,
     ): Promise<DataHomeWriteResult> {
-      const outgoing = inspectOutgoing(envelope);
+      const address = await addressPromise;
+      const outgoing = inspectOutgoing(envelope, address);
       if ('status' in outgoing) return outgoing;
       if (ifVersion !== null && outgoing.version <= ifVersion) {
         return corrupt(
@@ -185,6 +231,28 @@ export function createDriveDataHome(options: DriveDataHomeOptions): DriveDataHom
       return read.status === 'ok' ? { status: 'ok', medium: 'drive', info: read.info } : read;
     },
   };
+
+  async function readCachedFile(): Promise<DataHomeReadResult | null> {
+    if (!cachedFileId) return null;
+    const address = await addressPromise;
+    const found = await getFile(cachedFileId);
+    if (found.status === 'absent') {
+      cachedFileId = null;
+      return null;
+    }
+    if (found.status === 'failure') return transport(found.failure);
+    if (found.status === 'corrupt') return found.result;
+    if (address.mode === 'doc') {
+      const match = await fileMatchesAddress(found.file, address);
+      if (match.status === 'failure') return transport(match.failure);
+      if (match.status === 'corrupt') return match.result;
+      if (match.status === 'skip') {
+        cachedFileId = null;
+        return null;
+      }
+    }
+    return download(found.file);
+  }
 
   async function observeReplicas(): Promise<DriveReplicaCycle> {
     const found = await findFile();
@@ -324,10 +392,17 @@ export function createDriveDataHome(options: DriveDataHomeOptions): DriveDataHom
   }
 
   async function findFile(): Promise<DriveFileResult> {
-    const fileName = await fileNamePromise;
+    const address = await addressPromise;
+    const formatVersion = address.mode === 'doc' ? VAULT_DOC_FORMAT_VERSION : VAULT_FORMAT_VERSION;
+    const filters = [
+      appPropertyFilter('ownerDigest', address.ownerDigest),
+      appPropertyFilter('formatVersion', String(formatVersion)),
+      ...(address.vaultDigest ? [appPropertyFilter('vaultDigest', address.vaultDigest)] : []),
+      ...(address.docKind ? [appPropertyFilter('docKind', address.docKind)] : []),
+      'trashed = false',
+    ];
     const params = new URLSearchParams({
-      spaces: 'appDataFolder',
-      q: `name = '${fileName}' and trashed = false`,
+      q: filters.join(' and '),
       fields: `files(${FILE_FIELDS})`,
       pageSize: DUPLICATE_SCAN_LIMIT,
     });
@@ -336,7 +411,7 @@ export function createDriveDataHome(options: DriveDataHomeOptions): DriveDataHom
     if (!listed.response.ok) {
       return {
         status: 'failure',
-        failure: httpFailure(listed.response, 'Drive appdata lookup failed.'),
+        failure: httpFailure(listed.response, 'Drive vault lookup failed.'),
       };
     }
 
@@ -348,7 +423,7 @@ export function createDriveDataHome(options: DriveDataHomeOptions): DriveDataHom
         status: 'failure',
         failure: {
           code: 'api-failure',
-          message: 'Drive appdata lookup returned invalid JSON.',
+          message: 'Drive vault lookup returned invalid JSON.',
           cause,
         },
       };
@@ -366,7 +441,7 @@ export function createDriveDataHome(options: DriveDataHomeOptions): DriveDataHom
           undefined,
           null,
           'malformed-metadata',
-          'Drive appdata contains invalid vault metadata.',
+          'Drive contains invalid vault metadata.',
         ),
       };
     }
@@ -374,16 +449,25 @@ export function createDriveDataHome(options: DriveDataHomeOptions): DriveDataHom
 
     const validated: ValidDriveFile[] = [];
     for (const file of files) {
-      const result = validateFile(file, fileName);
+      const result = validateFile(file, address);
       if (result.status !== 'ok') return result;
-      validated.push(result.file);
+      if (address.mode === 'legacy') {
+        validated.push(result.file);
+        continue;
+      }
+      const match = await fileMatchesAddress(result.file, address);
+      if (match.status === 'failure' || match.status === 'corrupt') return match;
+      if (match.status === 'match') validated.push(result.file);
     }
+    if (validated.length === 0) return { status: 'absent' };
     const ordered = [...validated].sort(compareDriveFiles);
+    if (cachedFileId && !ordered.some(({ id }) => id === cachedFileId)) cachedFileId = null;
+    cachedFileId = ordered[0]!.id;
     return { status: 'ok', file: ordered[0]!, files: ordered };
   }
 
   async function getFile(id: string): Promise<DriveFileResult> {
-    const fileName = await fileNamePromise;
+    const address = await addressPromise;
     const response = await driveFetch(
       `${DRIVE_API}/files/${encodeURIComponent(id)}?fields=${encodeURIComponent(FILE_FIELDS)}`,
     );
@@ -396,7 +480,7 @@ export function createDriveDataHome(options: DriveDataHomeOptions): DriveDataHom
       };
     }
     try {
-      return validateFile(await response.response.json(), fileName);
+      return validateFile(await response.response.json(), address);
     } catch (cause) {
       return {
         status: 'failure',
@@ -405,6 +489,49 @@ export function createDriveDataHome(options: DriveDataHomeOptions): DriveDataHom
           message: 'Drive metadata refresh returned invalid JSON.',
           cause,
         },
+      };
+    }
+  }
+
+  async function fileMatchesAddress(
+    file: ValidDriveFile,
+    address: DriveAddress,
+  ): Promise<
+    { status: 'match' | 'skip' } | Extract<DriveFileResult, { status: 'failure' | 'corrupt' }>
+  > {
+    const downloaded = await driveFetch(
+      `${DRIVE_API}/files/${encodeURIComponent(file.id)}?alt=media`,
+    );
+    if (downloaded.status === 'failure') return downloaded;
+    if (!downloaded.response.ok) {
+      return {
+        status: 'failure',
+        failure: httpFailure(downloaded.response, 'Drive document-address lookup failed.'),
+      };
+    }
+    try {
+      const inspected = inspectVaultDocEnvelope(
+        new Uint8Array(await downloaded.response.arrayBuffer()),
+      );
+      return {
+        status:
+          inspected.status === 'supported' &&
+          inspected.header.vaultId === address.vaultId &&
+          inspected.header.docId === address.docId &&
+          inspected.header.docKind === address.docKind &&
+          inspected.header.accountBinding === address.accountBinding
+            ? 'match'
+            : 'skip',
+      };
+    } catch (cause) {
+      return {
+        status: 'corrupt',
+        result: corrupt(
+          undefined,
+          file.version,
+          'corrupt-bytes',
+          cause instanceof Error ? cause.message : 'Drive document bytes are corrupt.',
+        ),
       };
     }
   }
@@ -429,7 +556,7 @@ export function createDriveDataHome(options: DriveDataHomeOptions): DriveDataHom
         cause,
       });
     }
-    const inspected = inspectEnvelope(envelope, file);
+    const inspected = inspectEnvelope(envelope, file, await addressPromise);
     if ('status' in inspected) return inspected;
     return { status: 'ok', medium: 'drive', envelope, info: inspected };
   }
@@ -439,6 +566,21 @@ export function createDriveDataHome(options: DriveDataHomeOptions): DriveDataHom
     outgoing: DataHomeInfo,
     fileId: string | null,
   ): Promise<DataHomeWriteResult> {
+    if (fileId === null) {
+      // A second observation immediately before the first write narrows the
+      // concurrent-create window. A race after this point is kept as a
+      // duplicate branch and repaired by the authenticated merge coordinator.
+      const rechecked = await findFile();
+      if (rechecked.status === 'failure') return transport(rechecked.failure);
+      if (rechecked.status === 'corrupt') return rechecked.result;
+      if (rechecked.status === 'ok') {
+        return {
+          status: 'conflict',
+          medium: 'drive',
+          currentVersion: rechecked.file.version,
+        };
+      }
+    }
     const acknowledged = await sendUpload(envelope, outgoing, fileId);
     if (acknowledged.status === 'failure') return transport(acknowledged.failure);
     if (acknowledged.status === 'corrupt') return acknowledged.result;
@@ -504,14 +646,30 @@ export function createDriveDataHome(options: DriveDataHomeOptions): DriveDataHom
     outgoing: DataHomeInfo,
     fileId: string | null,
   ): Promise<DriveFileResult> {
-    const fileName = await fileNamePromise;
+    const address = await addressPromise;
+    let folderId: string | null = null;
+    if (fileId === null) {
+      const ensured = await ensureFolder(address.ownerDigest);
+      if (typeof ensured !== 'string') return ensured;
+      folderId = ensured;
+    }
     const marker = boundary();
     const metadata = {
-      ...(fileId === null ? { name: fileName, parents: ['appDataFolder'] } : {}),
-      appProperties: {
-        vaultVersion: String(outgoing.version),
-        formatVersion: String(VAULT_FORMAT_VERSION),
-      },
+      ...(fileId === null ? { name: address.fileName, parents: [folderId!] } : {}),
+      appProperties:
+        address.mode === 'doc'
+          ? {
+              ownerDigest: address.ownerDigest,
+              vaultDigest: address.vaultDigest!,
+              docKind: address.docKind!,
+              docVersion: String(outgoing.version),
+              formatVersion: String(VAULT_DOC_FORMAT_VERSION),
+            }
+          : {
+              ownerDigest: address.ownerDigest,
+              vaultVersion: String(outgoing.version),
+              formatVersion: String(VAULT_FORMAT_VERSION),
+            },
     };
     const body = new Blob([
       `--${marker}\r\nContent-Type: application/json; charset=UTF-8\r\n\r\n`,
@@ -544,7 +702,7 @@ export function createDriveDataHome(options: DriveDataHomeOptions): DriveDataHom
 
     let acknowledged: DriveFileResult;
     try {
-      acknowledged = validateFile(await uploaded.response.json(), fileName);
+      acknowledged = validateFile(await uploaded.response.json(), address);
     } catch (cause) {
       return {
         status: 'failure',
@@ -557,6 +715,7 @@ export function createDriveDataHome(options: DriveDataHomeOptions): DriveDataHom
       };
     }
     if (acknowledged.status !== 'ok') return acknowledged;
+    cachedFileId = acknowledged.file.id;
     if (acknowledged.file.version !== outgoing.version) {
       return {
         status: 'corrupt',
@@ -571,12 +730,94 @@ export function createDriveDataHome(options: DriveDataHomeOptions): DriveDataHom
     return acknowledged;
   }
 
+  async function ensureFolder(ownerDigest: string): Promise<string | DriveFileResult> {
+    if (cachedFolderId) return cachedFolderId;
+    const query = new URLSearchParams({
+      q: [
+        `mimeType = '${DRIVE_FOLDER_MIME}'`,
+        appPropertyFilter('ownerDigest', ownerDigest),
+        appPropertyFilter('folderMarker', DRIVE_FOLDER_MARKER),
+        'trashed = false',
+      ].join(' and '),
+      fields: 'files(id,appProperties)',
+      pageSize: DUPLICATE_SCAN_LIMIT,
+    });
+    const listed = await driveFetch(`${DRIVE_API}/files?${query.toString()}`);
+    if (listed.status === 'failure') return listed;
+    if (!listed.response.ok) {
+      return {
+        status: 'failure',
+        failure: httpFailure(listed.response, 'Drive folder lookup failed.'),
+      };
+    }
+    let payload: { files?: unknown[] };
+    try {
+      payload = (await listed.response.json()) as { files?: unknown[] };
+    } catch (cause) {
+      return {
+        status: 'failure',
+        failure: { code: 'api-failure', message: 'Drive folder lookup failed.', cause },
+      };
+    }
+    const existing = Array.isArray(payload.files)
+      ? payload.files
+          .map((file) =>
+            typeof file === 'object' &&
+            file !== null &&
+            typeof (file as { id?: unknown }).id === 'string'
+              ? ((file as { id: string }).id ?? null)
+              : null,
+          )
+          .filter((id): id is string => Boolean(id))
+          .sort()[0]
+      : undefined;
+    if (existing) {
+      cachedFolderId = existing;
+      return existing;
+    }
+
+    const created = await driveFetch(`${DRIVE_API}/files?fields=id%2CappProperties`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: DRIVE_FOLDER_NAME,
+        mimeType: DRIVE_FOLDER_MIME,
+        appProperties: { ownerDigest, folderMarker: DRIVE_FOLDER_MARKER },
+      }),
+    });
+    if (created.status === 'failure') return created;
+    if (!created.response.ok) {
+      return {
+        status: 'failure',
+        failure: httpFailure(created.response, 'Drive folder creation failed.', true),
+      };
+    }
+    try {
+      const value = (await created.response.json()) as { id?: unknown };
+      if (typeof value.id !== 'string' || value.id.length === 0) {
+        throw new Error('missing folder id');
+      }
+      cachedFolderId = value.id;
+      return value.id;
+    } catch (cause) {
+      return {
+        status: 'failure',
+        failure: {
+          code: 'api-failure',
+          message: 'Drive folder creation returned invalid metadata.',
+          cause,
+          indeterminate: true,
+        },
+      };
+    }
+  }
+
   async function convergeDuplicateFiles(
     frozenFiles: readonly ValidDriveFile[],
     observations: readonly DataHomeReadResult[],
     envelope: Uint8Array,
   ): Promise<DataHomeWriteResult> {
-    const outgoing = inspectOutgoing(envelope);
+    const outgoing = inspectOutgoing(envelope, await addressPromise);
     if ('status' in outgoing) return outgoing;
     if (frozenFiles.length < 2 || observations.length !== frozenFiles.length) {
       return transport({
@@ -786,6 +1027,17 @@ export function createDriveDataHome(options: DriveDataHomeOptions): DriveDataHom
         },
       };
     }
+    if ((response.status === 400 || response.status === 401) && (await hasRevokedGrant(response))) {
+      options.tokens.markRevoked();
+      return {
+        status: 'failure',
+        failure: {
+          code: 'revoked',
+          httpStatus: response.status,
+          message: 'The Google Drive connection was revoked. Sign in again to sync.',
+        },
+      };
+    }
     if (response.status === 401) {
       options.tokens.markExpired();
       return {
@@ -803,11 +1055,27 @@ export function createDriveDataHome(options: DriveDataHomeOptions): DriveDataHom
         failure: {
           code: 'permission-denied',
           httpStatus: 403,
-          message: 'Google Drive appdata access was denied.',
+          message: 'Google Drive file access was denied.',
         },
       };
     }
     return { status: 'ok', response };
+  }
+}
+
+async function hasRevokedGrant(response: Response): Promise<boolean> {
+  try {
+    const payload = (await response.clone().json()) as {
+      error?: string | { status?: string; message?: string };
+      error_description?: string;
+    };
+    const detail =
+      typeof payload.error === 'string'
+        ? `${payload.error} ${payload.error_description ?? ''}`
+        : `${payload.error?.status ?? ''} ${payload.error?.message ?? ''}`;
+    return /invalid[_ -]?(grant|token)/iu.test(detail);
+  } catch {
+    return false;
   }
 }
 
@@ -877,21 +1145,27 @@ function sameDriveFile(left: ValidDriveFile, right: ValidDriveFile): boolean {
   );
 }
 
-function validateFile(value: unknown, expectedName: string): DriveFileResult {
+function validateFile(value: unknown, address: DriveAddress): DriveFileResult {
   if (typeof value !== 'object' || value === null) {
     return malformedMetadata('Drive returned a non-object vault file.');
   }
   const file = value as Partial<DriveFile>;
-  const version = Number(file.appProperties?.vaultVersion);
+  const version = Number(
+    address.mode === 'doc' ? file.appProperties?.docVersion : file.appProperties?.vaultVersion,
+  );
   const formatVersion = Number(file.appProperties?.formatVersion);
   const sizeBytes = Number(file.size ?? 0);
   if (
     typeof file.id !== 'string' ||
     file.id.length === 0 ||
-    file.name !== expectedName ||
+    typeof file.name !== 'string' ||
     !Number.isInteger(version) ||
     version < 1 ||
-    formatVersion !== VAULT_FORMAT_VERSION ||
+    formatVersion !== (address.mode === 'doc' ? VAULT_DOC_FORMAT_VERSION : VAULT_FORMAT_VERSION) ||
+    file.appProperties?.ownerDigest !== address.ownerDigest ||
+    (address.mode === 'doc' &&
+      (file.appProperties?.vaultDigest !== address.vaultDigest ||
+        file.appProperties?.docKind !== address.docKind)) ||
     !Number.isSafeInteger(sizeBytes) ||
     sizeBytes <= 0 ||
     typeof file.headRevisionId !== 'string' ||
@@ -909,18 +1183,95 @@ function validateFile(value: unknown, expectedName: string): DriveFileResult {
         ? file.modifiedTime
         : null,
     headRevisionId: file.headRevisionId,
+    ownerDigest: address.ownerDigest,
+    vaultDigest: address.vaultDigest,
+    docKind: address.docKind,
   };
   return { status: 'ok', file: valid, files: [valid] };
 }
 
-/** Stable, opaque selector within one Google principal's shared appDataFolder. */
+/** Stable, opaque selector. New files bind account + vault + document ids. */
 export async function driveVaultFileName(
+  accountId: string,
+  vaultId?: string,
+  docId?: string,
+  subtle: SubtleCrypto = globalThis.crypto.subtle,
+): Promise<string> {
+  if ((vaultId == null) !== (docId == null)) {
+    throw new Error('A Drive vault file name requires vaultId and docId together.');
+  }
+  const context =
+    vaultId && docId
+      ? `${DRIVE_VAULT_DOC_FILE_CONTEXT}${accountId}:${vaultId}:${docId}`
+      : `${DRIVE_VAULT_FILE_CONTEXT}${accountId}`;
+  const scoped = new TextEncoder().encode(context);
+  const digest = new Uint8Array(await subtle.digest('SHA-256', scoped));
+  return `${DRIVE_VAULT_FILE_PREFIX}${base64url(digest)}${DRIVE_VAULT_FILE_SUFFIX}`;
+}
+
+export async function driveOwnerDigest(
   accountId: string,
   subtle: SubtleCrypto = globalThis.crypto.subtle,
 ): Promise<string> {
-  const scoped = new TextEncoder().encode(`${DRIVE_VAULT_FILE_CONTEXT}${accountId}`);
-  const digest = new Uint8Array(await subtle.digest('SHA-256', scoped));
-  return `${DRIVE_VAULT_FILE_PREFIX}${base64url(digest)}${DRIVE_VAULT_FILE_SUFFIX}`;
+  return sha256Base64Url(`${DRIVE_OWNER_CONTEXT}${accountId}`, subtle);
+}
+
+export async function driveVaultDigest(
+  accountId: string,
+  vaultId: string,
+  subtle: SubtleCrypto = globalThis.crypto.subtle,
+): Promise<string> {
+  return sha256Base64Url(`${DRIVE_VAULT_DIGEST_CONTEXT}${accountId}:${vaultId}`, subtle);
+}
+
+async function driveAddress(
+  accountId: string,
+  vaultId?: string,
+  docId?: string,
+  docKind?: VaultDocKind,
+): Promise<DriveAddress> {
+  const ownerDigest = await driveOwnerDigest(accountId);
+  if (vaultId && docId && docKind) {
+    const [fileName, vaultDigest, accountBinding] = await Promise.all([
+      driveVaultFileName(accountId, vaultId, docId),
+      driveVaultDigest(accountId, vaultId),
+      sha256Base64Url(`${VAULT_ACCOUNT_BINDING_INFO_PREFIX}${accountId}`),
+    ]);
+    return {
+      mode: 'doc',
+      accountId,
+      vaultId,
+      docId,
+      docKind,
+      fileName,
+      ownerDigest,
+      vaultDigest,
+      accountBinding,
+    };
+  }
+  return {
+    mode: 'legacy',
+    accountId,
+    vaultId: null,
+    docId: null,
+    docKind: null,
+    fileName: await driveVaultFileName(accountId),
+    ownerDigest,
+    vaultDigest: null,
+    accountBinding: null,
+  };
+}
+
+async function sha256Base64Url(
+  value: string,
+  subtle: SubtleCrypto = globalThis.crypto.subtle,
+): Promise<string> {
+  const digest = new Uint8Array(await subtle.digest('SHA-256', new TextEncoder().encode(value)));
+  return base64url(digest);
+}
+
+function appPropertyFilter(key: string, value: string): string {
+  return `appProperties has { key='${key}' and value='${value}' }`;
 }
 
 function base64url(bytes: Uint8Array): string {
@@ -936,8 +1287,41 @@ function malformedMetadata(message: string): DriveFileResult {
   };
 }
 
-function inspectOutgoing(envelope: Uint8Array): DataHomeInfo | DataHomeCorruptCandidate {
+function inspectOutgoing(
+  envelope: Uint8Array,
+  address: DriveAddress,
+): DataHomeInfo | DataHomeCorruptCandidate {
   try {
+    if (address.mode === 'doc') {
+      const inspected = inspectVaultDocEnvelope(envelope);
+      if (inspected.status === 'update-required') {
+        return corrupt(
+          envelope,
+          null,
+          'unsupported-version',
+          'The Drive vault document was written by a newer app version.',
+        );
+      }
+      if (
+        inspected.header.vaultId !== address.vaultId ||
+        inspected.header.docId !== address.docId ||
+        inspected.header.docKind !== address.docKind ||
+        inspected.header.accountBinding !== address.accountBinding
+      ) {
+        return corrupt(
+          envelope,
+          inspected.header.docVersion,
+          'corrupt-bytes',
+          'The encrypted Drive document does not match its account, vault, and document address.',
+        );
+      }
+      return {
+        medium: 'drive',
+        version: inspected.header.docVersion,
+        sizeBytes: envelope.byteLength,
+        updatedAt: inspected.header.writtenAt,
+      };
+    }
     const inspected = inspectVaultEnvelope(envelope);
     if (inspected.status === 'update-required') {
       return corrupt(
@@ -966,10 +1350,15 @@ function inspectOutgoing(envelope: Uint8Array): DataHomeInfo | DataHomeCorruptCa
 function inspectEnvelope(
   envelope: Uint8Array,
   file: ValidDriveFile,
+  address: DriveAddress,
 ): DataHomeInfo | DataHomeCorruptCandidate {
-  const inspected = inspectOutgoing(envelope);
+  const inspected = inspectOutgoing(envelope, address);
   if ('status' in inspected) return inspected;
-  if (inspected.version !== file.version || file.formatVersion !== VAULT_FORMAT_VERSION) {
+  if (
+    inspected.version !== file.version ||
+    file.formatVersion !==
+      (address.mode === 'doc' ? VAULT_DOC_FORMAT_VERSION : VAULT_FORMAT_VERSION)
+  ) {
     return corrupt(
       envelope,
       file.version,

@@ -1,5 +1,7 @@
 import {
   apiErrorSchema,
+  createDriveConnectionResponseSchema,
+  driveConnectionListResponseSchema,
   googleLinkStatusResponseSchema,
   googleRegisterTicketResponseSchema,
   inviteValidationResponseSchema,
@@ -12,6 +14,8 @@ import {
   paranoidMediaStateResponseSchema,
   paranoidMediaTransitionResponseSchema,
   paranoidServerCandidateMetadataSchema,
+  perVaultMediaStateResponseSchema,
+  perVaultMediaTransitionResponseSchema,
   passkeyListResponseSchema,
   passkeyLoginOptionsResponseSchema,
   passkeyRegisterOptionsResponseSchema,
@@ -25,6 +29,7 @@ import {
   revokeSessionsResponseSchema,
   sessionInfoResponseSchema,
   sessionListResponseSchema,
+  vaultListResponseSchema,
   exportRequestResponseSchema,
   exportStatusResponseSchema,
   parseVaultEtag,
@@ -36,6 +41,8 @@ import {
   type AcceptInviteRequest,
   type ChangePasswordRequest,
   type DeleteAccountRequest,
+  type CreateDriveConnectionRequest,
+  type DriveConnection,
   type ExportDownloadRequest,
   type ExportRequest,
   type ExportRequestResponse,
@@ -65,6 +72,8 @@ import {
   type ParanoidMediaTransitionRequest,
   type ParanoidMediaTransitionResponse,
   type ParanoidServerCandidateMetadata,
+  type PerVaultMediaState,
+  type PerVaultMediaTransitionRequest,
   type PublicRegistrationInfoResponse,
   type RegisterRequest,
   type RegisterResponse,
@@ -81,6 +90,7 @@ import {
   type SetPinRequest,
   type TwoFactorEmailCodeRequest,
   type TwoFactorVerifyRequest,
+  type VaultConfig,
 } from '@bettertrack/contracts';
 
 import { ApiError, apiRequest } from './apiClient';
@@ -313,6 +323,66 @@ export async function purgeRetiredParanoidServer(body: RetiredServerPurgeRequest
     body,
   });
   retiredServerPurgeResponseSchema.parse(data);
+}
+
+/** Browser-session Drive identity registry. No function accepts a Google token. */
+export async function listDriveConnections(signal?: AbortSignal): Promise<DriveConnection[]> {
+  const data = await apiRequest<unknown>('/drive-connections', { signal });
+  return driveConnectionListResponseSchema.parse(data).connections;
+}
+
+export async function createDriveConnection(
+  identity: CreateDriveConnectionRequest,
+): Promise<DriveConnection> {
+  const data = await apiRequest<unknown>('/drive-connections', {
+    method: 'POST',
+    body: identity,
+  });
+  return createDriveConnectionResponseSchema.parse(data).connection;
+}
+
+export async function verifyDriveConnection(connectionId: string): Promise<DriveConnection> {
+  const data = await apiRequest<unknown>(
+    `/drive-connections/${encodeURIComponent(connectionId)}/verified`,
+    { method: 'PATCH' },
+  );
+  return createDriveConnectionResponseSchema.parse(data).connection;
+}
+
+export async function deleteDriveConnection(
+  connectionId: string,
+  acknowledgeBound = false,
+): Promise<void> {
+  await apiRequest<unknown>(`/drive-connections/${encodeURIComponent(connectionId)}`, {
+    method: 'DELETE',
+    query: acknowledgeBound ? { acknowledgeBound: 'true' } : undefined,
+  });
+}
+
+export async function listVaultConfigs(signal?: AbortSignal): Promise<VaultConfig[]> {
+  const data = await apiRequest<unknown>('/vaults', { signal });
+  return vaultListResponseSchema.parse(data).vaults;
+}
+
+export async function getVaultMediaState(
+  vaultId: string,
+  signal?: AbortSignal,
+): Promise<PerVaultMediaState> {
+  const data = await apiRequest<unknown>(`/vaults/${encodeURIComponent(vaultId)}/media`, {
+    signal,
+  });
+  return perVaultMediaStateResponseSchema.parse(data);
+}
+
+export async function transitionVaultMedia(
+  vaultId: string,
+  body: PerVaultMediaTransitionRequest,
+): Promise<PerVaultMediaState> {
+  const data = await apiRequest<unknown>(`/vaults/${encodeURIComponent(vaultId)}/media`, {
+    method: 'PATCH',
+    body,
+  });
+  return perVaultMediaTransitionResponseSchema.parse(data);
 }
 
 async function rawVaultRequest(path: string, init: RequestInit = {}): Promise<Response> {

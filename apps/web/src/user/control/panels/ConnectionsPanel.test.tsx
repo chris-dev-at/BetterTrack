@@ -4,18 +4,35 @@ import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, test, vi } from 'vitest';
 
-import type { ParanoidMediaStateResponse, ParanoidVaultMediaState } from '@bettertrack/contracts';
+import type {
+  DriveConnection,
+  ParanoidMediaStateResponse,
+  ParanoidVaultMediaState,
+  VaultConfig,
+} from '@bettertrack/contracts';
 
 vi.mock('../../../lib/userApi', () => ({
+  createDriveConnection: vi.fn(),
+  deleteDriveConnection: vi.fn(),
   getGoogleLinkStatus: vi.fn(),
   getParanoidMediaState: vi.fn(),
+  listDriveConnections: vi.fn(),
+  listVaultConfigs: vi.fn(),
   unlinkGoogle: vi.fn(),
+  verifyDriveConnection: vi.fn(),
   googleStartUrl: vi.fn(() => 'http://api.test/api/v1/auth/google/start'),
 }));
 
 import { ApiError } from '../../../lib/apiClient';
-import { getGoogleLinkStatus, getParanoidMediaState, unlinkGoogle } from '../../../lib/userApi';
+import {
+  getGoogleLinkStatus,
+  getParanoidMediaState,
+  listDriveConnections,
+  listVaultConfigs,
+  unlinkGoogle,
+} from '../../../lib/userApi';
 import type { DriveConnectionController } from '../../vault/media';
+import type { DriveConnectionRegistry } from '../../vault/media/driveConnectionRegistry';
 import { ConnectionsPanel } from './ConnectionsPanel';
 
 const GOOGLE_OFF = {
@@ -156,6 +173,8 @@ beforeEach(() => {
   // Google off by default so the section stays hidden unless a test opts in.
   vi.mocked(getGoogleLinkStatus).mockResolvedValue(GOOGLE_OFF);
   vi.mocked(getParanoidMediaState).mockResolvedValue(NORMAL_MEDIA);
+  vi.mocked(listDriveConnections).mockResolvedValue([]);
+  vi.mocked(listVaultConfigs).mockResolvedValue([]);
   vi.mocked(unlinkGoogle).mockResolvedValue(undefined);
 });
 
@@ -281,17 +300,97 @@ describe('ConnectionsPanel — Google account (§13.4 V4-P4b, moved from Securit
   });
 });
 
-describe('ConnectionsPanel — paranoid Google Drive app data', () => {
+describe('ConnectionsPanel — Drive connection registry (E5)', () => {
+  const y: DriveConnection = {
+    id: '018f0000-0000-7000-8000-000000000501',
+    googleSub: 'sub-y',
+    email: 'y@example.test',
+    displayName: 'Drive Y',
+    createdAt: '2026-08-20T12:00:00.000Z',
+    lastVerifiedAt: '2026-08-20T12:00:00.000Z',
+  };
+  const z: DriveConnection = {
+    ...y,
+    id: '018f0000-0000-7000-8000-000000000502',
+    googleSub: 'sub-z',
+    email: 'z@example.test',
+    displayName: 'Drive Z',
+  };
+  const vault = {
+    id: '018f0000-0000-7000-8000-000000000503',
+    name: 'Vault A',
+    driveConnectionId: y.id,
+    media: ['server', 'drive'],
+  } as VaultConfig;
+
+  function registry(disconnect = vi.fn(async () => undefined)): DriveConnectionRegistry {
+    return {
+      connect: vi.fn(async () => ({ status: 'ok' as const, connection: z })),
+      authorize: vi.fn(async (connection) => ({ status: 'ok' as const, connection })),
+      authorization: vi.fn(() => 'connected' as const),
+      subscribe: vi.fn(() => () => undefined),
+      tokens: vi.fn(() => null),
+      disconnect,
+    };
+  }
+
+  test('lists separate identities and moves one vault through the supplied verified migration', async () => {
+    vi.mocked(listDriveConnections).mockResolvedValue([y, z]);
+    vi.mocked(listVaultConfigs).mockResolvedValue([vault]);
+    const moveVault = vi.fn(async () => ({ cleanupFailures: [] }));
+    const user = userEvent.setup();
+    renderPanel('/settings/connections', {
+      driveRegistry: registry(),
+      driveMoveVault: moveVault,
+    });
+
+    expect(await screen.findByText('Drive Y · y@example.test')).toBeInTheDocument();
+    expect(screen.getByText('Drive Z · z@example.test')).toBeInTheDocument();
+    expect(screen.getByText('Used by: Vault A')).toBeInTheDocument();
+    await user.click(screen.getByText('Vault Drive bindings'));
+    await user.selectOptions(screen.getByLabelText('Move Vault A to Drive account'), z.id);
+    await user.click(screen.getByRole('button', { name: 'Move' }));
+
+    await waitFor(() => expect(moveVault).toHaveBeenCalledWith(vault.id, z.id));
+    expect(
+      await screen.findByText('The vault was verified in the new Drive account and moved.'),
+    ).toBeInTheDocument();
+  });
+
+  test('requires explicit acknowledgement and states that Drive files remain', async () => {
+    vi.mocked(listDriveConnections).mockResolvedValue([y]);
+    vi.mocked(listVaultConfigs).mockResolvedValue([vault]);
+    const disconnect = vi
+      .fn()
+      .mockRejectedValueOnce(new ApiError(409, 'DRIVE_CONNECTION_BOUND', 'bound'))
+      .mockResolvedValueOnce(undefined);
+    const user = userEvent.setup();
+    renderPanel('/settings/connections', { driveRegistry: registry(disconnect) });
+
+    await user.click(await screen.findByRole('button', { name: 'Disconnect' }));
+    expect(
+      await screen.findByText(/encrypted files remain your property in Google Drive/i),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole('button', { name: 'Disconnect and leave files in Drive' }));
+
+    await waitFor(() => expect(disconnect).toHaveBeenLastCalledWith(y, true));
+    expect(
+      await screen.findByText('Drive account disconnected. Its files remain in Google Drive.'),
+    ).toBeInTheDocument();
+  });
+});
+
+describe('ConnectionsPanel — paranoid Google Drive storage', () => {
   test('never renders the Drive card without a runtime client id', async () => {
     vi.mocked(getParanoidMediaState).mockResolvedValue(SERVER_MEDIA);
     window.__BT__ = { googleDriveClientId: '' };
     renderPanel();
 
     // The initial render is pending, so this catches a titled skeleton flash.
-    expect(screen.queryByText('Google Drive app data')).not.toBeInTheDocument();
+    expect(screen.queryByText('Google Drive vault storage')).not.toBeInTheDocument();
     expect(await screen.findByText('Bank & broker cash sync')).toBeInTheDocument();
     await waitFor(() =>
-      expect(screen.queryByText('Google Drive app data')).not.toBeInTheDocument(),
+      expect(screen.queryByText('Google Drive vault storage')).not.toBeInTheDocument(),
     );
   });
 
@@ -300,7 +399,7 @@ describe('ConnectionsPanel — paranoid Google Drive app data', () => {
     window.__BT__ = { googleDriveClientId: 'runtime.apps.googleusercontent.com' };
     renderPanel();
 
-    expect(await screen.findByText('Google Drive app data')).toBeInTheDocument();
+    expect(await screen.findByText('Google Drive vault storage')).toBeInTheDocument();
     expect(await screen.findByText('Disconnected')).toBeInTheDocument();
   });
 
@@ -309,7 +408,7 @@ describe('ConnectionsPanel — paranoid Google Drive app data', () => {
     window.__BT__ = { googleDriveClientId: '' };
     renderPanel();
 
-    expect(await screen.findByText('Google Drive app data')).toBeInTheDocument();
+    expect(await screen.findByText('Google Drive vault storage')).toBeInTheDocument();
     expect(await screen.findByText('Needs sign-in')).toBeInTheDocument();
   });
 
@@ -324,12 +423,12 @@ describe('ConnectionsPanel — paranoid Google Drive app data', () => {
     window.__BT__ = { googleDriveClientId: '' };
     renderPanel();
 
-    expect(screen.queryByText('Google Drive app data')).not.toBeInTheDocument();
+    expect(screen.queryByText('Google Drive vault storage')).not.toBeInTheDocument();
     await waitFor(() => expect(getParanoidMediaState).toHaveBeenCalledTimes(1));
     await act(async () => {
       rejectRequest(new Error('offline'));
     });
-    expect(screen.queryByText('Google Drive app data')).not.toBeInTheDocument();
+    expect(screen.queryByText('Google Drive vault storage')).not.toBeInTheDocument();
   });
 
   test('retries a recoverable storage-status failure', async () => {
@@ -358,12 +457,12 @@ describe('ConnectionsPanel — paranoid Google Drive app data', () => {
       driveConfigured: true,
     });
 
-    expect(await screen.findByText('Google Drive app data')).toBeInTheDocument();
+    expect(await screen.findByText('Google Drive vault storage')).toBeInTheDocument();
     expect(await screen.findByText('Disconnected')).toBeInTheDocument();
     await user.click(screen.getByRole('button', { name: 'Connect Drive' }));
 
     await waitFor(() => expect(drive.connect).toHaveBeenCalledTimes(1));
-    expect(await screen.findByText('Google Drive app-data storage connected.')).toBeInTheDocument();
+    expect(await screen.findByText('Google Drive vault storage connected.')).toBeInTheDocument();
   });
 
   test('refreshes a committed storage choice when follow-up synchronization needs attention', async () => {
@@ -433,7 +532,7 @@ describe('ConnectionsPanel — paranoid Google Drive app data', () => {
     await user.click(screen.getByRole('button', { name: 'Connect Drive' }));
     expect(
       await screen.findByText(
-        'A Google Drive copy of your vault could not be decrypted with this vault key. BetterTrack never deletes ciphertext it cannot verify — remove the BetterTrack app data in your Google account, then try again.',
+        'A Google Drive copy of your vault could not be decrypted with this vault key. BetterTrack never deletes ciphertext it cannot verify — remove the affected encrypted file from BetterTrack Vaults, then try again.',
       ),
     ).toBeInTheDocument();
   });
@@ -534,7 +633,7 @@ describe('ConnectionsPanel — paranoid Google Drive app data', () => {
       driveConfigured: true,
     });
 
-    expect(await screen.findByText('Google Drive app data')).toBeInTheDocument();
+    expect(await screen.findByText('Google Drive vault storage')).toBeInTheDocument();
     expect(screen.queryByText('Retained server recovery copy')).not.toBeInTheDocument();
     expect(
       screen.queryByRole('button', { name: 'Delete retained server copy' }),

@@ -1721,6 +1721,11 @@ export const V5_NON_HOOK_ASYNC_BOUNDARY = [
     note: 'Drive authorization snapshot from the vault connection controller.',
   },
   {
+    component: 'user/control/panels/ConnectionsPanel.tsx',
+    site: 'useRegistryAuthorization.useSyncExternalStore',
+    note: 'Per-connection GIS authorization snapshot; every state is rendered in the Drive identity row.',
+  },
+  {
     component: 'user/control/panels/NotificationsPanel.tsx',
     site: 'WebPushRow.useEffect',
     note: 'Reads the browser web-push permission/subscription state on mount.',
@@ -1796,7 +1801,7 @@ export type V5AsyncStateDebtLedger = Readonly<
  * drill panel the Overview's attention row links to. It observes both its
  * loading and its error state, so the zero-debt ceiling below is unaffected.
  */
-export const V5_ASYNC_READ_SITE_BASELINE = 182;
+export const V5_ASYNC_READ_SITE_BASELINE = 184;
 
 /** Ratchet this downward whenever #739 removes a read site or missing state. */
 export const V5_ASYNC_STATE_DEBT_CEILING = { readSites: 0, stateGaps: 0 } as const;

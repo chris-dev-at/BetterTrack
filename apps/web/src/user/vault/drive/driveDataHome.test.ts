@@ -6,14 +6,27 @@ import { base64ToBytes } from '../bytes';
 import { decodeVaultEnvelope, encodeVaultEnvelope } from '../envelope';
 import { vaultInteroperabilityFixture } from '@bettertrack/domain/vaultVectors';
 import {
+  encodeVaultDocEnvelope,
+  VAULT_CONTENT_CIPHER,
+  VAULT_DOC_FORMAT_VERSION,
+} from '@bettertrack/contracts';
+import { deriveAccountBinding } from '../keys';
+import {
   createDriveDataHome,
+  driveOwnerDigest,
+  driveVaultDigest,
   driveVaultFileName,
   type DriveDataHomeOptions,
 } from './driveDataHome';
 
 const ACCOUNT_A = '018f0000-0000-7000-8000-0000000000a1';
 const ACCOUNT_B = '018f0000-0000-7000-8000-0000000000b2';
+const VAULT_A = '018f0000-0000-7000-8000-0000000000c3';
+const VAULT_B = '018f0000-0000-7000-8000-0000000000d4';
+const DOC_A = '018f0000-0000-7000-8000-0000000000e5';
+const DOC_B = '018f0000-0000-7000-8000-0000000000f6';
 let accountFileName = '';
+let accountOwnerDigest = '';
 const envelope = base64ToBytes(
   vaultInteroperabilityFixture.initial.envelopeBase64,
   'envelope-invalid',
@@ -49,13 +62,54 @@ function metadata(
     size: String(envelope.byteLength),
     modifiedTime: '2026-07-27T10:00:00.000Z',
     headRevisionId: 'revision-1',
-    appProperties: { vaultVersion: '1', formatVersion: '1' },
+    appProperties: {
+      ownerDigest: accountOwnerDigest,
+      vaultVersion: '1',
+      formatVersion: '1',
+    },
     ...overrides,
   };
 }
 
+async function envelopeV2Doc(
+  accountId: string,
+  vaultId: string,
+  docId: string,
+  docVersion = 1,
+): Promise<Uint8Array> {
+  return encodeVaultDocEnvelope(
+    {
+      formatVersion: VAULT_DOC_FORMAT_VERSION,
+      cipher: VAULT_CONTENT_CIPHER,
+      iv: 'AA',
+      keyId: '018f0000-0000-7000-8000-000000000201',
+      keySlots: [
+        {
+          keyId: '018f0000-0000-7000-8000-000000000201',
+          slot: 'seed-v1',
+          wrappedKc: 'opaque-wrapped-key',
+        },
+      ],
+      vaultId,
+      docId,
+      docKind: 'header',
+      accountBinding: await deriveAccountBinding(accountId),
+      docVersion,
+      schemaVersion: 1,
+      deviceId: '018f0000-0000-7000-8000-000000000202',
+      writeId: `018f0000-0000-7000-8000-${String(docVersion).padStart(12, '0')}`,
+      writtenAt: '2026-08-20T12:00:00.000Z',
+    },
+    new Uint8Array([1, 7, 3, 9]),
+  );
+}
+
 function createTestDriveDataHome(options: Omit<DriveDataHomeOptions, 'accountId'>) {
-  return createDriveDataHome({ accountId: ACCOUNT_A, ...options });
+  return createDriveDataHome({
+    accountId: ACCOUNT_A,
+    folderId: 'visible-bettertrack-folder',
+    ...options,
+  });
 }
 
 function json(value: unknown, status = 200): Response {
@@ -76,6 +130,7 @@ function tokenSource() {
         }) as const,
     ),
     markExpired: vi.fn(),
+    markRevoked: vi.fn(),
   };
 }
 
@@ -172,7 +227,11 @@ class CorruptWinnerDrive {
           size: '3',
           modifiedTime: '2026-07-27T12:00:00.000Z',
           headRevisionId: 'corrupt-revision',
-          appProperties: { vaultVersion: '2', formatVersion: '1' },
+          appProperties: {
+            ownerDigest: accountOwnerDigest,
+            vaultVersion: '2',
+            formatVersion: '1',
+          },
         }),
         envelope: new Uint8Array([1, 2, 3]),
       },
@@ -274,7 +333,11 @@ class ConcurrentUpdateDrive {
             const responseMetadata = metadata({
               size: String(patch.envelope.byteLength),
               headRevisionId: `revision-2-${patch.writer}`,
-              appProperties: { vaultVersion: '2', formatVersion: '1' },
+              appProperties: {
+                ownerDigest: accountOwnerDigest,
+                vaultVersion: '2',
+                formatVersion: '1',
+              },
             });
             this.current = {
               metadata: responseMetadata,
@@ -296,7 +359,7 @@ class ConcurrentUpdateDrive {
   }
 }
 
-class SharedAccountAppDataFolder {
+class SharedPhysicalDrive {
   private readonly files = new Map<
     string,
     { metadata: ReturnType<typeof metadata>; envelope: Uint8Array }
@@ -319,11 +382,11 @@ class SharedAccountAppDataFolder {
     const method = init?.method ?? 'GET';
     if (method === 'GET' && url.includes('/drive/v3/files?')) {
       const query = new URL(url).searchParams.get('q') ?? '';
-      const selectedName = /^name = '([^']+)' and trashed = false$/.exec(query)?.[1];
+      const selectedOwner = /key='ownerDigest' and value='([^']+)'/.exec(query)?.[1];
       return json({
         files: [...this.files.values()]
           .map((file) => file.metadata)
-          .filter((file) => file.name === selectedName),
+          .filter((file) => file.appProperties.ownerDigest === selectedOwner),
       });
     }
 
@@ -340,6 +403,10 @@ class SharedAccountAppDataFolder {
         size: String(outgoingEnvelope.byteLength),
         headRevisionId: `shared-revision-${id}`,
         appProperties: {
+          ownerDigest:
+            ACCOUNT_A === (name.includes(await driveVaultFileName(ACCOUNT_A)) ? ACCOUNT_A : '')
+              ? await driveOwnerDigest(ACCOUNT_A)
+              : await driveOwnerDigest(ACCOUNT_B),
           vaultVersion: String(header.vaultVersion),
           formatVersion: String(header.formatVersion),
         },
@@ -359,14 +426,15 @@ class SharedAccountAppDataFolder {
   }
 }
 
-describe('Drive appdata DataHome', () => {
+describe('Drive file DataHome', () => {
   beforeEach(async () => {
     vi.restoreAllMocks();
     Object.defineProperty(globalThis, 'crypto', { configurable: true, value: webcrypto });
     accountFileName = await driveVaultFileName(ACCOUNT_A);
+    accountOwnerDigest = await driveOwnerDigest(ACCOUNT_A);
   });
 
-  it('reads one appDataFolder file and validates app properties against opaque bytes', async () => {
+  it('reads by owner appProperties and validates them against opaque bytes', async () => {
     const tokens = tokenSource();
     const fetch = vi
       .fn<typeof globalThis.fetch>()
@@ -381,15 +449,17 @@ describe('Drive appdata DataHome', () => {
       info: { version: 1, sizeBytes: envelope.byteLength },
     });
     if (result.status === 'ok') expect(result.envelope).toEqual(envelope);
-    expect(fetch.mock.calls[0]![0]).toContain('spaces=appDataFolder');
+    expect(fetch.mock.calls[0]![0]).toContain('ownerDigest');
+    expect(fetch.mock.calls[0]![0]).not.toContain('name+%3D');
     expect(new Headers(fetch.mock.calls[0]![1]?.headers).get('Authorization')).toBe(
       'Bearer browser-memory-token',
     );
   });
 
-  it('creates one multipart appdata file with version properties and no history clone', async () => {
+  it('creates one multipart Drive file with version properties and no history clone', async () => {
     const fetch = vi
       .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(json({ files: [] }))
       .mockResolvedValueOnce(json({ files: [] }))
       .mockResolvedValueOnce(json(metadata()))
       .mockResolvedValueOnce(json({ files: [metadata()] }))
@@ -404,24 +474,27 @@ describe('Drive appdata DataHome', () => {
       status: 'ok',
       info: { version: 1 },
     });
-    const body = fetch.mock.calls[1]![1]?.body;
+    const body = fetch.mock.calls[2]![1]?.body;
     expect(body).toBeInstanceOf(Blob);
     const text = await blobText(body as Blob);
-    expect(text).toContain('"parents":["appDataFolder"]');
+    expect(text).toContain('"parents":["visible-bettertrack-folder"]');
+    expect(text).toContain(`"ownerDigest":"${accountOwnerDigest}"`);
     expect(text).toContain('"vaultVersion":"1"');
     expect(text).toContain('"formatVersion":"1"');
     expect(text).not.toContain('revisions');
   });
 
-  it('isolates two BetterTrack accounts inside one shared appDataFolder', async () => {
-    const folder = new SharedAccountAppDataFolder();
+  it('isolates two BetterTrack accounts inside one shared physical Drive', async () => {
+    const folder = new SharedPhysicalDrive();
     const homeA = createDriveDataHome({
       accountId: ACCOUNT_A,
+      folderId: 'visible-bettertrack-folder',
       tokens: tokenSource(),
       fetch: folder.fetchFor(envelope),
     });
     const homeB = createDriveDataHome({
       accountId: ACCOUNT_B,
+      folderId: 'visible-bettertrack-folder',
       tokens: tokenSource(),
       fetch: folder.fetchFor(concurrentCreateEnvelope),
     });
@@ -451,6 +524,209 @@ describe('Drive appdata DataHome', () => {
     expect(readB).toMatchObject({ status: 'ok', info: { version: 1 } });
     if (readA.status === 'ok') expect(readA.envelope).toEqual(envelope);
     if (readB.status === 'ok') expect(readB.envelope).toEqual(concurrentCreateEnvelope);
+  });
+
+  it('uses the visible folder and digest-only envelope-v2 metadata, then survives renames', async () => {
+    const bytes = await envelopeV2Doc(ACCOUNT_A, VAULT_A, DOC_A);
+    const [ownerDigest, vaultDigest, fileName] = await Promise.all([
+      driveOwnerDigest(ACCOUNT_A),
+      driveVaultDigest(ACCOUNT_A, VAULT_A),
+      driveVaultFileName(ACCOUNT_A, VAULT_A, DOC_A),
+    ]);
+    const driveFile = metadata({
+      id: 'doc-file-id',
+      name: fileName,
+      size: String(bytes.byteLength),
+      appProperties: {
+        ownerDigest,
+        vaultDigest,
+        docKind: 'header',
+        docVersion: '1',
+        formatVersion: '2',
+      },
+    });
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      // Initial lookup + the concurrent-create recheck.
+      .mockResolvedValueOnce(json({ files: [] }))
+      .mockResolvedValueOnce(json({ files: [] }))
+      // Visible folder lookup and creation.
+      .mockResolvedValueOnce(json({ files: [] }))
+      .mockResolvedValueOnce(json({ id: 'bettertrack-folder', appProperties: {} }))
+      // Upload acknowledgement, appProperties confirmation scan/readback.
+      .mockResolvedValueOnce(json(driveFile))
+      .mockResolvedValueOnce(json({ files: [driveFile] }))
+      .mockResolvedValueOnce(new Response(bytes.slice(), { status: 200 }))
+      .mockResolvedValueOnce(new Response(bytes.slice(), { status: 200 }));
+    const home = createDriveDataHome({
+      accountId: ACCOUNT_A,
+      vaultId: VAULT_A,
+      docId: DOC_A,
+      docKind: 'header',
+      tokens: tokenSource(),
+      fetch,
+      boundary: () => 'v2-boundary',
+    });
+
+    await expect(home.write(bytes, { ifVersion: null })).resolves.toMatchObject({
+      status: 'ok',
+      info: { version: 1 },
+    });
+
+    const folderCreate = fetch.mock.calls.find(
+      ([url, init]) =>
+        init?.method === 'POST' &&
+        String(url).includes('/drive/v3/files?fields=id%2CappProperties'),
+    );
+    expect(JSON.parse(String(folderCreate?.[1]?.body))).toEqual({
+      name: 'BetterTrack Vaults',
+      mimeType: 'application/vnd.google-apps.folder',
+      appProperties: { ownerDigest, folderMarker: 'bettertrack-vaults-v1' },
+    });
+    const upload = fetch.mock.calls.find(([url]) => String(url).includes('/upload/drive/v3/files'));
+    const multipart = await blobText(upload?.[1]?.body as Blob);
+    expect(multipart).toContain(`"name":"${fileName}"`);
+    expect(multipart).toContain('"parents":["bettertrack-folder"]');
+    expect(multipart).toContain(`"ownerDigest":"${ownerDigest}"`);
+    expect(multipart).toContain(`"vaultDigest":"${vaultDigest}"`);
+    expect(multipart).toContain('"docKind":"header"');
+    expect(multipart).toContain('"docVersion":"1"');
+    expect(multipart).not.toMatch(/email|vaultName|portfolio/i);
+    expect(String(fetch.mock.calls[0]![0])).not.toContain(fileName);
+
+    const renamed = { ...driveFile, name: 'owner-renamed-file.btenc' };
+    fetch
+      .mockResolvedValueOnce(json(renamed))
+      .mockResolvedValueOnce(new Response(bytes.slice(), { status: 200 }))
+      .mockResolvedValueOnce(new Response(bytes.slice(), { status: 200 }));
+    await expect(home.read()).resolves.toMatchObject({ status: 'ok', info: { version: 1 } });
+    expect(String(fetch.mock.calls.at(-3)?.[0])).toContain('/files/doc-file-id?fields=');
+    expect(String(fetch.mock.calls.at(-3)?.[0])).not.toContain(fileName);
+  });
+
+  it('reuses a renamed visible folder by appProperties instead of creating another', async () => {
+    const bytes = await envelopeV2Doc(ACCOUNT_A, VAULT_A, DOC_B);
+    const driveFile = metadata({
+      id: 'second-doc-file',
+      name: await driveVaultFileName(ACCOUNT_A, VAULT_A, DOC_B),
+      size: String(bytes.byteLength),
+      appProperties: {
+        ownerDigest: await driveOwnerDigest(ACCOUNT_A),
+        vaultDigest: await driveVaultDigest(ACCOUNT_A, VAULT_A),
+        docKind: 'header',
+        docVersion: '1',
+        formatVersion: '2',
+      },
+    });
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(json({ files: [] }))
+      .mockResolvedValueOnce(json({ files: [] }))
+      .mockResolvedValueOnce(
+        json({ files: [{ id: 'renamed-folder-id', name: 'My encrypted savings' }] }),
+      )
+      .mockResolvedValueOnce(json(driveFile))
+      .mockResolvedValueOnce(json({ files: [driveFile] }))
+      .mockResolvedValueOnce(new Response(bytes.slice(), { status: 200 }))
+      .mockResolvedValueOnce(new Response(bytes.slice(), { status: 200 }));
+    const home = createDriveDataHome({
+      accountId: ACCOUNT_A,
+      vaultId: VAULT_A,
+      docId: DOC_B,
+      docKind: 'header',
+      tokens: tokenSource(),
+      fetch,
+      boundary: () => 'reused-folder-boundary',
+    });
+
+    await expect(home.write(bytes, { ifVersion: null })).resolves.toMatchObject({ status: 'ok' });
+
+    const folderCreates = fetch.mock.calls.filter(
+      ([url, init]) =>
+        init?.method === 'POST' && String(url).includes('www.googleapis.com/drive/v3/files?'),
+    );
+    expect(folderCreates).toHaveLength(0);
+    const upload = fetch.mock.calls.find(([url]) => String(url).includes('/upload/drive/v3/files'));
+    expect(await blobText(upload?.[1]?.body as Blob)).toContain('"parents":["renamed-folder-id"]');
+  });
+
+  it('makes names collision-safe and refuses a foreign owner before any update', async () => {
+    const [accountName, vaultName, docName, otherAccountName] = await Promise.all([
+      driveVaultFileName(ACCOUNT_A, VAULT_A, DOC_A),
+      driveVaultFileName(ACCOUNT_A, VAULT_B, DOC_A),
+      driveVaultFileName(ACCOUNT_A, VAULT_A, DOC_B),
+      driveVaultFileName(ACCOUNT_B, VAULT_A, DOC_A),
+    ]);
+    expect(accountName).toBe('bettertrack-vault-OEUtAU-s8kLWD_WshBFsy2_K9pK0l0kh7QtQ82VJKvU.btenc');
+    await expect(driveOwnerDigest(ACCOUNT_A)).resolves.toBe(
+      '0bzuQKYPonJTktDBgjmKTlMpk5PGw92OZL4ZuGIH55A',
+    );
+    expect(new Set([accountName, vaultName, docName, otherAccountName]).size).toBe(4);
+    for (const name of [accountName, vaultName, docName, otherAccountName]) {
+      expect(name).not.toMatch(new RegExp(`${ACCOUNT_A}|${ACCOUNT_B}|${VAULT_A}|${DOC_A}`));
+    }
+
+    const bytes = await envelopeV2Doc(ACCOUNT_A, VAULT_A, DOC_A, 2);
+    const foreign = metadata({
+      id: 'foreign-file',
+      name: 'maliciously-renamed.btenc',
+      size: String(bytes.byteLength),
+      appProperties: {
+        ownerDigest: await driveOwnerDigest(ACCOUNT_B),
+        vaultDigest: await driveVaultDigest(ACCOUNT_A, VAULT_A),
+        docKind: 'header',
+        docVersion: '1',
+        formatVersion: '2',
+      },
+    });
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(json({ files: [foreign] }));
+    const home = createDriveDataHome({
+      accountId: ACCOUNT_A,
+      vaultId: VAULT_A,
+      docId: DOC_A,
+      docKind: 'header',
+      tokens: tokenSource(),
+      fetch,
+      folderId: 'unused-folder',
+    });
+
+    await expect(home.write(bytes, { ifVersion: 1 })).resolves.toMatchObject({
+      status: 'corrupt',
+      reason: 'malformed-metadata',
+    });
+    expect(fetch.mock.calls.some(([, init]) => init?.method === 'PATCH')).toBe(false);
+  });
+
+  it('does not expose a copied foreign document even when its selectors are forged', async () => {
+    const foreignBytes = await envelopeV2Doc(ACCOUNT_B, VAULT_A, DOC_A);
+    const copied = metadata({
+      id: 'copied-foreign-file',
+      name: 'harmless-looking-copy.btenc',
+      size: String(foreignBytes.byteLength),
+      appProperties: {
+        ownerDigest: await driveOwnerDigest(ACCOUNT_A),
+        vaultDigest: await driveVaultDigest(ACCOUNT_A, VAULT_A),
+        docKind: 'header',
+        docVersion: '1',
+        formatVersion: '2',
+      },
+    });
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(json({ files: [copied] }))
+      .mockResolvedValueOnce(new Response(foreignBytes.slice(), { status: 200 }));
+    const home = createDriveDataHome({
+      accountId: ACCOUNT_A,
+      vaultId: VAULT_A,
+      docId: DOC_A,
+      docKind: 'header',
+      tokens: tokenSource(),
+      fetch,
+      folderId: 'irrelevant-folder',
+    });
+
+    await expect(home.read()).resolves.toEqual({ status: 'absent', medium: 'drive' });
+    expect(fetch.mock.calls.some(([, init]) => init?.method === 'PATCH')).toBe(false);
   });
 
   it('preserves concurrent creates until the coordinator publishes convergence', async () => {
@@ -573,6 +849,7 @@ describe('Drive appdata DataHome', () => {
       tokens: {
         getAccessToken: () => ({ status: 'consent-required', message: 'consent' }),
         markExpired: vi.fn(),
+        markRevoked: vi.fn(),
       },
       fetch: vi.fn(),
     });
@@ -585,6 +862,7 @@ describe('Drive appdata DataHome', () => {
       tokens: {
         getAccessToken: () => ({ status: 'gesture-required', message: 'gesture' }),
         markExpired: vi.fn(),
+        markRevoked: vi.fn(),
       },
       fetch: vi.fn(),
     });
@@ -640,6 +918,21 @@ describe('Drive appdata DataHome', () => {
       failure: { code: 'token-expired' },
     });
     expect(tokens.markExpired).toHaveBeenCalled();
+
+    const revokedTokens = tokenSource();
+    const revoked = createTestDriveDataHome({
+      tokens: revokedTokens,
+      fetch: vi
+        .fn()
+        .mockResolvedValue(
+          json({ error: 'invalid_grant', error_description: 'authorization revoked' }, 400),
+        ),
+    });
+    await expect(revoked.read()).resolves.toMatchObject({
+      status: 'transport-failure',
+      failure: { code: 'revoked' },
+    });
+    expect(revokedTokens.markRevoked).toHaveBeenCalledTimes(1);
 
     const apiFailure = createTestDriveDataHome({
       tokens: tokenSource(),

@@ -204,6 +204,7 @@ import {
 import { createParanoidVaultRepository } from '../data/repositories/paranoidVaultRepository';
 import { createVaultBlobRepository } from '../data/repositories/vaultBlobRepository';
 import { createVaultRepository } from '../data/repositories/vaultRepository';
+import { createDriveConnectionRepository } from '../data/repositories/driveConnectionRepository';
 import { createReauthService, type ReauthService } from '../services/auth/reauthService';
 import {
   createParanoidEnforcementRepository,
@@ -216,6 +217,10 @@ import {
 } from '../services/account/paranoidVaultService';
 import { createParanoidDiscardReauth } from '../services/account/paranoidDiscardReauth';
 import { createVaultService, type VaultService } from '../services/account/vaultService';
+import {
+  createDriveConnectionService,
+  type DriveConnectionService,
+} from '../services/account/driveConnectionService';
 import { createParanoidRehydrationService } from '../services/account/paranoidRehydrationService';
 import {
   createParanoidTransitionService,
@@ -397,6 +402,8 @@ export interface AppContext {
   paranoidVault: ParanoidVaultService;
   /** Per-vault config, blind per-doc CAS store, media retirement, and signed purge (E1). */
   vaults: VaultService;
+  /** Browser-only Google Drive identity registry; stores config, never Drive capability. */
+  driveConnections: DriveConnectionService;
   /**
    * Generic session step-up (`POST /auth/reauth`). The missing primitive for
    * sensitive acts that happen entirely client-side and so have no destructive
@@ -1920,6 +1927,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     audit,
     deleteReauth: discardReauth,
   });
+  const driveConnectionsService = createDriveConnectionService(createDriveConnectionRepository(db));
 
   const paranoidTransitions = createParanoidTransitionService({
     db,
@@ -2041,6 +2049,7 @@ export function buildContext(deps: BuildContextDeps): AppContext {
     cashBudgets: guarded.cashBudgets,
     paranoidVault,
     vaults: vaultsService,
+    driveConnections: driveConnectionsService,
     reauth,
     paranoidTransitions,
     paranoidGuard,

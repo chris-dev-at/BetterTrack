@@ -1,17 +1,38 @@
+import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { resolve } from 'node:path';
+
 import { describe, expect, it, vi } from 'vitest';
 
 import {
   createGoogleDriveTokenClient,
-  DRIVE_APPDATA_SCOPE,
+  DRIVE_FILE_SCOPE,
   type GoogleOauth2,
   type GoogleTokenResponse,
 } from './gisTokenClient';
+import { readGoogleDriveIdentity } from './driveIdentity';
 
 describe('Google Drive GIS token client', () => {
-  it('requests exactly Drive appdata and keeps tokens only in closure memory', async () => {
+  it('contains no retired hidden-folder scope anywhere in shipped web source', () => {
+    const root = resolve(process.cwd(), 'src');
+    const shipped: string[] = [];
+    const visit = (directory: string) => {
+      for (const name of readdirSync(directory)) {
+        const path = resolve(directory, name);
+        if (statSync(path).isDirectory()) visit(path);
+        else if (!/\.(test|spec)\.[cm]?[jt]sx?$/u.test(name))
+          shipped.push(readFileSync(path, 'utf8'));
+      }
+    };
+    visit(root);
+    expect(shipped.join('\n')).not.toContain('drive.appdata');
+    expect(DRIVE_FILE_SCOPE).toBe('https://www.googleapis.com/auth/drive.file');
+  });
+
+  it('requests exactly drive.file with the connection login hint and keeps tokens in memory', async () => {
     let callback!: (response: GoogleTokenResponse) => void;
     let configuredScope: string | undefined;
     let includeGrantedScopes: boolean | undefined;
+    let configuredLoginHint: string | undefined;
     const requestAccessToken = vi.fn(() => {
       callback({ access_token: 'memory-only-token', expires_in: 3600 });
     });
@@ -19,6 +40,7 @@ describe('Google Drive GIS token client', () => {
       initTokenClient(config) {
         configuredScope = config.scope;
         includeGrantedScopes = config.include_granted_scopes;
+        configuredLoginHint = config.login_hint;
         callback = config.callback;
         return { requestAccessToken };
       },
@@ -26,6 +48,7 @@ describe('Google Drive GIS token client', () => {
     const localWrite = vi.spyOn(Storage.prototype, 'setItem');
     const client = createGoogleDriveTokenClient({
       clientId: 'browser-client-id',
+      loginHint: 'google-sub-y',
       loadOauth2: async () => oauth2,
       now: () => 1_000,
     });
@@ -35,12 +58,13 @@ describe('Google Drive GIS token client', () => {
       accessToken: 'memory-only-token',
       expiresAt: 3_601_000,
     });
-    expect(configuredScope).toBe(DRIVE_APPDATA_SCOPE);
-    expect(configuredScope).toBe('https://www.googleapis.com/auth/drive.appdata');
+    expect(configuredScope).toBe(DRIVE_FILE_SCOPE);
+    expect(configuredScope).toBe('https://www.googleapis.com/auth/drive.file');
+    expect(configuredLoginHint).toBe('google-sub-y');
     expect(includeGrantedScopes).toBe(false);
     expect(requestAccessToken).toHaveBeenCalledWith({
       prompt: 'consent',
-      scope: DRIVE_APPDATA_SCOPE,
+      scope: DRIVE_FILE_SCOPE,
       include_granted_scopes: false,
     });
     expect(client.getAccessToken()).toMatchObject({ status: 'ok' });
@@ -49,6 +73,71 @@ describe('Google Drive GIS token client', () => {
     expect(requestAccessToken).toHaveBeenCalledTimes(1);
     client.clear();
     expect(client.getAccessToken()).toMatchObject({ status: 'consent-required' });
+  });
+
+  it('flags invalid_grant and exposes an identity-specific sign-in action', async () => {
+    let callback!: (response: GoogleTokenResponse) => void;
+    const client = createGoogleDriveTokenClient({
+      clientId: 'browser-client-id',
+      loginHint: 'google-sub-z',
+      identityLabel: 'drive-z@example.test',
+      loadOauth2: async () => ({
+        initTokenClient(config) {
+          callback = config.callback;
+          return {
+            requestAccessToken: () =>
+              callback({ error: 'invalid_grant', error_description: 'grant revoked' }),
+          };
+        },
+      }),
+    });
+
+    await expect(client.authorize()).resolves.toEqual({
+      status: 'revoked',
+      message: 'grant revoked',
+    });
+    expect(client.state).toBe('revoked');
+    expect(client.getAccessToken()).toEqual({
+      status: 'revoked',
+      message: 'Sign in to Google (drive-z@example.test) to sync.',
+    });
+  });
+
+  it('captures the stable Drive identity with about.get and returns no capability fields', async () => {
+    const tokens = {
+      getAccessToken: vi.fn(() => ({
+        status: 'ok' as const,
+        accessToken: 'fresh-browser-token',
+        expiresAt: Date.now() + 60_000,
+      })),
+      markExpired: vi.fn(),
+      markRevoked: vi.fn(),
+    };
+    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          user: {
+            permissionId: 'stable-google-sub',
+            emailAddress: 'drive@example.test',
+            displayName: 'Drive owner',
+          },
+        }),
+        { status: 200, headers: { 'Content-Type': 'application/json' } },
+      ),
+    );
+
+    const identity = await readGoogleDriveIdentity(tokens, fetch);
+
+    expect(identity).toEqual({
+      googleSub: 'stable-google-sub',
+      email: 'drive@example.test',
+      displayName: 'Drive owner',
+    });
+    expect(Object.keys(identity).sort()).toEqual(['displayName', 'email', 'googleSub']);
+    expect(fetch.mock.calls[0]![0]).toBe('https://www.googleapis.com/drive/v3/about?fields=user');
+    expect(new Headers(fetch.mock.calls[0]![1]?.headers).get('Authorization')).toBe(
+      'Bearer fresh-browser-token',
+    );
   });
 
   it('keeps expiry, absent consent and gesture reauthorization distinct', async () => {

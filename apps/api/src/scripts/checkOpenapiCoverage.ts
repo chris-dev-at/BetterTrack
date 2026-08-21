@@ -190,6 +190,7 @@ function buildInertContext(): AppContext {
     cashBudgets: inertService('cashBudgets'),
     paranoidVault: inertService('paranoidVault'),
     vaults: inertService('vaults'),
+    driveConnections: inertService('driveConnections'),
     reauth: inertService('reauth'),
     paranoidTransitions: inertService('paranoidTransitions'),
     webhooks: inertService('webhooks'),

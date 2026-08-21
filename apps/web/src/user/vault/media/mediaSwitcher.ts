@@ -562,7 +562,7 @@ export function createVaultMediaSwitcher(options: VaultMediaSwitcherOptions): Va
       const authenticated = await authenticate(observation);
       if (authenticated.status === 'failed') {
         // A Drive object that no longer authenticates is a dead end the user
-        // has to clear in Google's own "manage app data": BetterTrack must not
+        // has to clear in the visible Drive folder: BetterTrack must not
         // delete bytes it cannot verify, and it must say so honestly.
         return { ...authenticated, stage: 'authenticate-drive' };
       }
